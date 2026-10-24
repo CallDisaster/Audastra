@@ -20,13 +20,19 @@ Result<TerrainRampPlan> Rejected(const char* code, const char* text) {
 
 } // namespace
 
-bool IsCanonicalTerrainCornerRampBrush(const TerrainBrush& brush) noexcept {
+namespace {
+bool IsCanonicalRampBrush(const TerrainBrush& brush, TerrainBrushKind kind) noexcept {
     const TerrainBrush neutral;
-    return brush.kind == TerrainBrushKind::CornerRamp && brush.shape == neutral.shape && brush.radius == neutral.radius
+    return brush.kind == kind && brush.shape == neutral.shape && brush.radius == neutral.radius
         && brush.groundTexture.empty() && brush.cliffTexture == neutral.cliffTexture && brush.levelDelta == 0
         && brush.strength == neutral.strength && brush.seed == neutral.seed && !brush.anchor && !brush.size
         && !brush.variation && !brush.randomizeVariation && brush.waterHeight == neutral.waterHeight
         && brush.pathingRestrictions == neutral.pathingRestrictions;
+}
+} // namespace
+
+bool IsCanonicalTerrainCornerRampBrush(const TerrainBrush& brush) noexcept {
+    return IsCanonicalRampBrush(brush, TerrainBrushKind::CornerRamp);
 }
 
 std::optional<TerrainStrokePoint> SnapTerrainCornerRampPoint(
@@ -92,7 +98,9 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
     return Result<TerrainCornerRampPlan>::Success(plan);
 }
 
-Result<TerrainRampPlan> PlanTerrainRamp(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
+namespace {
+Result<TerrainRampPlan> PlanStraightRampGeometry(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
+    bool allowWater) {
     if (!Consistent(terrain) || terrain.header.version != 11)
         return Rejected("TERRAIN_RAMP_LAYOUT", "坡道编辑需要完整的经典 W3E v11 地形");
     const auto& header = terrain.header;
@@ -129,11 +137,11 @@ Result<TerrainRampPlan> PlanTerrainRamp(const TerrainGridSnapshot& terrain, cons
             if (x < 0 || y < 0 || x >= header.width || y >= header.height)
                 return Rejected("TERRAIN_RAMP_NEIGHBORHOOD", "坡道缺少完整邻域，不能贴近地图外缘创建");
             const auto& vertex = at(x, y);
-            if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw != 0 || vertex.HasWater()
+            if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw != 0 || (!allowWater && vertex.HasWater())
                 || vertex.IsBoundary() || vertex.IsMapEdge() || vertex.UnknownWaterFlags() != 0
                 || vertex.groundHeightRaw > 0x3fff || vertex.groundHeightRaw != rawHeight
                 || vertex.CliffLevel() != (step <= 0 ? high : low))
-                return Rejected("TERRAIN_RAMP_NEIGHBORHOOD", "坡道需要等原始地高的干地直台阶，邻域不能包含水、边界或不同方向的层级变化");
+                return Rejected("TERRAIN_RAMP_NEIGHBORHOOD", "坡道需要等原始地高的直台阶，邻域不能包含边界、未知位或不同方向的层级变化，旧算法仍只支持干地");
             if (vertex.IsRamp()) {
                 if (step < 0 || step > 2)
                     return Rejected("TERRAIN_RAMP_EXISTING", "相邻坡道超出本次直坡形态，未修改地形");
@@ -144,6 +152,8 @@ Result<TerrainRampPlan> PlanTerrainRamp(const TerrainGridSnapshot& terrain, cons
             return Rejected("TERRAIN_RAMP_EXISTING", "相邻坡道的三点不完整，不能继续修改");
     }
     TerrainRampPlan plan;
+    plan.highX = static_cast<std::uint32_t>(highX); plan.highY = static_cast<std::uint32_t>(highY);
+    plan.directionX = dx; plan.directionY = dy;
     const auto lowX = highX + 2 * dx, lowY = highY + 2 * dy;
     for (int step = 0; step < 3; ++step)
         plan.vertexIndices[static_cast<std::size_t>(step)] = static_cast<std::uint32_t>(
@@ -157,6 +167,36 @@ Result<TerrainRampPlan> PlanTerrainRamp(const TerrainGridSnapshot& terrain, cons
     footprint.centerY = header.offset[1] + (highY + dy) * double(TerrainGridSnapshot::tileSize);
     footprint.radius = 1.5 * TerrainGridSnapshot::tileSize;
     return Result<TerrainRampPlan>::Success(plan);
+}
+} // namespace
+
+Result<TerrainRampPlan> PlanTerrainRamp(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
+    return PlanStraightRampGeometry(terrain, point, false);
+}
+
+std::optional<TerrainStrokePoint> SnapTerrainStraightRampPoint(
+    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
+    return SnapTerrainCornerRampPoint(terrain, point);
+}
+
+bool IsCanonicalTerrainStraightRampBrush(const TerrainBrush& brush) noexcept {
+    return IsCanonicalRampBrush(brush, TerrainBrushKind::StraightRamp);
+}
+
+Result<TerrainRampPlan> PlanTerrainStraightRamp(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
+    if (!Consistent(terrain) || terrain.header.version != 11 || terrain.header.width > 2049 || terrain.header.height > 2049)
+        return Rejected("TERRAIN_STRAIGHT_RAMP_LAYOUT", "原版直坡需要完整的经典W3E v11网格。");
+    for (std::size_t axis = 0; axis < 2; ++axis) {
+        const double first = terrain.header.offset[axis];
+        const double last = first + 128.0 * ((axis ? terrain.header.height : terrain.header.width) - 1);
+        if (!std::isfinite(first) || std::fmod(first, 128.0) != 0 || first < -32768.0 || last > 32640.0)
+            return Rejected("TERRAIN_STRAIGHT_RAMP_COORDINATE", "原版直坡只接受128对齐且在原版九位坐标范围内的地形。");
+    }
+    const auto snapped = SnapTerrainStraightRampPoint(terrain, point);
+    if (!snapped || snapped->x != point.x || snapped->y != point.y
+        || double(static_cast<float>(point.x)) != point.x || double(static_cast<float>(point.y)) != point.y)
+        return Rejected("TERRAIN_STRAIGHT_RAMP_CANONICAL_POINT", "原版直坡需要每轴地格内32或96世界单位的单个精确落点。");
+    return PlanStraightRampGeometry(terrain, point, true);
 }
 
 Result<TerrainStrokeResult> ApplyTerrainRampStroke(

@@ -151,6 +151,19 @@ Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const MapData::MapDataE
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }
 
+Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected,
+    const MapData::TerrainPathingResources& resources, const MapData::TerrainBrush& brush,
+    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads,
+    const MapData::TerrainWaterBrushLimits& limits) {
+    if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
+    if (points.size() != 1)
+        return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_STRAIGHT_RAMP_POINTS", "一级直坡每笔必须恰好一个canonical采样点。");
+    auto plan = session.PrepareTerrainStraightRampEdit(resources, brush, points, followDoodads, limits);
+    if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+    return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
+}
+
 Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(MapData::MapDataEditSession& session,
     const MapDataQueryBinding& document, const PreparedTerrainEdit& prepared,
     const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& prepublish) {

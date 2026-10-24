@@ -233,6 +233,9 @@ public:
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
         bool followDoodads = true, const TerrainWaterBrushLimits& limits = {},
         TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::WetTerrain) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(const TerrainPathingResources& resources,
+        const TerrainBrush& brush, std::span<const TerrainStrokePoint> points, bool followDoodads = false,
+        const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     // 输入实际native资源owner；不能用任意W3I覆写或自报规则授予范围保存资格。

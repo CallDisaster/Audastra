@@ -58,6 +58,10 @@ private:
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
         const MapData::TerrainBrush&, std::span<const MapData::TerrainStrokePoint>, bool,
         const MapData::TerrainWaterBrushLimits&, MapData::TerrainCornerRampAlgorithm);
+    friend Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(const MapData::MapDataEditSession&,
+        const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
+        const MapData::TerrainBrush&, std::span<const MapData::TerrainStrokePoint>, bool,
+        const MapData::TerrainWaterBrushLimits&);
 };
 
 // 宿主在同一串行临界区提供实际文档身份；服务不读盘、不替宿主猜来源或修订。
@@ -93,6 +97,12 @@ private:
     const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
     bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {},
     MapData::TerrainCornerRampAlgorithm algorithm = MapData::TerrainCornerRampAlgorithm::WetTerrain);
+// 新直坡保留旧Ramp语义，实际规则/来源、单点、预算、提交与拐角共用。
+[[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(
+    const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
+    const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
+    const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
+    bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {});
 [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(
     MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const PreparedTerrainEdit& prepared,

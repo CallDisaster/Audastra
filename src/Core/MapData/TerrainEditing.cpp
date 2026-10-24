@@ -222,6 +222,8 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
         return Failure("PATHING_BRUSH_SESSION_REQUIRED", "通行限制须通过包含源 WPM 的地图编辑会话提交。");
     case TerrainBrushKind::CornerRamp:
         return Failure("TERRAIN_CORNER_RAMP_OWNER_REQUIRED", "拐角坡道须通过捕获实际规则与完整DOO的结构事务。");
+    case TerrainBrushKind::StraightRamp:
+        return Failure("TERRAIN_STRAIGHT_RAMP_OWNER_REQUIRED", "一级含水直坡须通过捕获实际规则与完整DOO的结构事务。");
     default:
         return Failure("TERRAIN_BRUSH_KIND", "未知的地形笔刷");
     }
@@ -241,6 +243,11 @@ std::optional<TerrainBrushFootprint> GetTerrainBrushFootprint(
     if (brush.kind == TerrainBrushKind::CornerRamp) {
         const auto plan = PlanTerrainCornerRamp(terrain, point);
         return IsCanonicalTerrainCornerRampBrush(brush) && plan.Succeeded() && plan.value
+            ? std::optional{plan.value->footprint} : std::nullopt;
+    }
+    if (brush.kind == TerrainBrushKind::StraightRamp) {
+        const auto plan = PlanTerrainStraightRamp(terrain, point);
+        return IsCanonicalTerrainStraightRampBrush(brush) && plan.Succeeded() && plan.value
             ? std::optional{plan.value->footprint} : std::nullopt;
     }
     const auto at = FootprintAt(terrain, point, brush.radius, brush.size);
