@@ -87,6 +87,20 @@ std::string Canonical(std::string_view name) {
     std::replace(key.begin(), key.end(), '\\', '/');
     return key;
 }
+bool SameOrdinaryDoodadWire(std::span<const std::byte> before, const DoodadPlacements& original,
+    std::span<const std::byte> after, const DoodadPlacements& current) {
+    const auto prefix = [](std::span<const std::byte> bytes, const DoodadPlacements& parsed) {
+        // 调用者已用完整经典reader读到EOF；特殊尾是version/count及每项16字节。
+        // 直接比较其前全部原字，包含头、普通数量、嵌套掉落物和浮点位，不复制或重写记录。
+        if (parsed.recordLayout != PlacementRecordLayout::Classic
+            || !IsClassicPlacementVersion(parsed.version, parsed.subversion) || parsed.specialVersion != 0
+            || bytes.size() < 8 || parsed.specialDoodads.size() > (bytes.size() - 8) / 16)
+            return std::span<const std::byte>{};
+        return bytes.first(bytes.size() - 8 - parsed.specialDoodads.size() * 16);
+    };
+    const auto oldPrefix = prefix(before, original), newPrefix = prefix(after, current);
+    return !oldPrefix.empty() && std::equal(oldPrefix.begin(), oldPrefix.end(), newPrefix.begin(), newPrefix.end());
+}
 std::string_view Ground(const TerrainHeader& header, const TerrainVertex& vertex) {
     const auto index = vertex.GroundTextureIndex();
     return index < header.groundTilesets.size() ? std::string_view(header.groundTilesets[index]) : std::string_view{};
@@ -668,9 +682,11 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             if (!objectPathing.footprints.empty()) {
                 const bool walkable = std::any_of(objectPathing.footprints.begin(), objectPathing.footprints.end(),
                     [](const auto& type) { return type.contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression; });
-                // 首域冻结整个DOO而非手写字段白名单；桥Z跟随及special删除也不能混入。
-                if (walkable && result.nativeDoodads_ != result.nativeAfterDoodads_)
-                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED", "含可行走对象的地形保存须保持完整DOO字节不变；请撤销摆放跟随或特殊模型删除。");
+                // special删除仅重建地形覆盖，不写普通桥的投影来源。普通段仍逐字冻结，
+                // 含桥Z和其它普通对象的Z；尾段变化的保存资格另由会话私有水刷谱系核验。
+                if (walkable && result.nativeDoodads_ != result.nativeAfterDoodads_
+                    && !SameOrdinaryDoodadWire(result.nativeDoodads_, *doodads, result.nativeAfterDoodads_, *afterDoodads))
+                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED", "含可行走对象的地形保存须保持完整普通DOO原字不变；特殊尾段仅允许会话可信水刷事务。");
                 const auto captured = result.CaptureNativeFootprints(reader, before.header,
                     doodads->doodads, objectPathing.footprints);
                 if (!captured.Succeeded()) throw Failure{captured.diagnostics};

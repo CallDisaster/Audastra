@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 
@@ -1523,6 +1524,202 @@ Bytes BridgeExpectedPathing(Fixture& f, bool deep, bool blackPixel) {
         if (!(blackPixel && x==16 && y==14)) expected[16+y*32+x]=x<18 ? std::byte{0x15} : std::byte{0x11};
     return expected;
 }
+void BridgeSpecialExpectedLayers(Bytes& pathing) {
+    // 独立字面footprint：桥(256,256)吸附2格后覆盖(6..9)^2，绿色普通物覆盖x8..11/y6..9。
+    // 桥抑制全部terrain（包括special投影），作者11及普通绿色04仍保留。
+    for (unsigned y = 6; y < 10; ++y) for (unsigned x = 6; x < 10; ++x)
+        pathing[16 + y * 32 + x] = std::byte{0x11};
+    for (unsigned y = 6; y < 10; ++y) for (unsigned x = 8; x < 12; ++x)
+        pathing[16 + y * 32 + x] |= std::byte{4};
+}
+void BridgeSpecialWaterFixture(Fixture& f) {
+    SpecialWaterDeleteFixture(f);
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    DoodadPlacement bridge; bridge.rawcode = "Br01"; bridge.position = {256, 256, 19};
+    bridge.scale = {1, 1, 1}; bridge.flags = 2; bridge.lifePercent = 100; bridge.creationId = 913;
+    auto blocker = bridge; blocker.rawcode = "Bl01"; blocker.position = {320, 256, 0}; blocker.creationId = 914;
+    placements.doodads.push_back(std::move(bridge)); placements.doodads.push_back(std::move(blocker));
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    f.Member("Units/DestructableData.slk") = Slk({"destructableID", "code", "walkable", "pathTex", "fixedRot"},
+        {{"Br01", "Br01", "1", std::string(kBridgeTexture), "0"}});
+    f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Doo1", "Doo1", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Doo2", "Doo2", std::string(kUniformDoodadTexture), "C", "45"},
+         {"Ord0", "Ord0", "_", "E", "-1"},
+         {"Bl01", "Bl01", std::string(kBridgeBlockerTexture), "E", "-1"}});
+    Bytes texture(18 + 16 * 4, std::byte{}); texture[2] = std::byte{2};
+    texture[12] = texture[14] = std::byte{4}; texture[16] = std::byte{32}; texture[17] = std::byte{40};
+    for (unsigned i = 0; i < 16; ++i) texture[18 + i * 4] = texture[19 + i * 4] = texture[20 + i * 4] = std::byte{255};
+    f.members.push_back({std::string(kBridgeTexture), std::move(texture)});
+    Bytes blockerTexture(18 + 16 * 3, std::byte{}); blockerTexture[2] = std::byte{2};
+    blockerTexture[12] = blockerTexture[14] = std::byte{4}; blockerTexture[16] = std::byte{24};
+    for (unsigned i = 0; i < 16; ++i) blockerTexture[19 + i * 3] = std::byte{255};
+    f.members.push_back({std::string(kBridgeBlockerTexture), std::move(blockerTexture)});
+    BridgeSpecialExpectedLayers(f.Member("war3map.wpm")); f.Open();
+}
+void PaintBridgeSpecialWater(Fixture& f) {
+    const auto before = Take(f.edits->Snapshot(MapDataKind::Doodads, kBudget));
+    Require(before.Doodads().has_value(), "bridge water preparation has complete current DOO");
+    const auto rules = Take(TerrainPathingSave::CaptureWaterBrushRules(*f.archive, f.original,
+        *f.edits->Terrain(), *before.Doodads(), f.gameRoot, true, kBudget));
+    const Services::MapDataQueryBinding document{"bridge-special-water-save", 1, 0, f.archive->SourceSha256()};
+    const Services::TerrainEditBinding binding{document, f.edits->SessionIdentity(), f.edits->Revision(), f.edits->TerrainSourceRevision()};
+    TerrainWaterStrokeOptions options; options.shape = TerrainBrushShape::Square; options.randomSeed = 1;
+    const TerrainStrokePoint point{256, 256};
+    const auto prepared = Take(Services::PrepareTerrainWaterEdit(*f.edits, document, binding, rules,
+        options, std::span(&point, 1), false));
+    Take(Services::ApplyTerrainEdit(*f.edits, document, prepared));
+}
+void WalkableBridgeSpecialDeletionRestoresAndUsesFormalSaveHistory() {
+    for (const bool inPlace : {false, true}) {
+        Fixture f; BridgeSpecialWaterFixture(f);
+        const auto originalTerrain = f.Member("war3map.w3e"), originalPathing = f.Member("war3map.wpm");
+        const auto originalDoodads = f.Member("war3map.doo");
+        auto deleted = Take(ParseDoodadPlacements(originalDoodads));
+        deleted.specialDoodads = {deleted.specialDoodads[2], deleted.specialDoodads[1]};
+        const auto deletedDoodads = Take(deleted.Serialize());
+        PaintBridgeSpecialWater(f);
+        const auto waterTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        auto waterPathing = originalPathing;
+        // 手写完整G1：四个地格围住L1湿顶点，db悬崖环内最近顶点为1b；再叠桥和普通绿色物。
+        for (unsigned y = 4; y < 12; ++y) for (unsigned x = 4; x < 12; ++x)
+            waterPathing[16 + y * 32 + x] = std::byte{0xdb};
+        for (unsigned y = 6; y < 10; ++y) for (unsigned x = 6; x < 10; ++x)
+            waterPathing[16 + y * 32 + x] = std::byte{0x1b};
+        BridgeSpecialExpectedLayers(waterPathing);
+        const auto matches = [&](const MapDataEditSession& edits, bool water) {
+            const auto snapshot = Take(edits.Snapshot(MapDataKind::Doodads, kBudget));
+            return Take(SerializeMapTerrain(*edits.Terrain())) == (water ? waterTerrain : originalTerrain)
+                && snapshot.Doodads() && Take(snapshot.Doodads()->Serialize()) == (water ? deletedDoodads : originalDoodads);
+        };
+        Require(matches(*f.edits, true) && f.edits->Revision() == 1 && f.edits->CanUndo(),
+            "one real water command preserves every ordinary byte and deletes special source0 with swap-last order");
+        const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.archive, *f.edits));
+        const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+        Require(wire.size() >= 4 && wire[3] == std::byte{'3'} && journal.strokes.size() == 1
+            && !journal.strokes.front().intent.followDoodads && journal.strokes.front().intent.waterBrush,
+            "actual bridge plus special deletion records one non-followed typed FTJ3 water command");
+        auto restored = Take(TerrainPathingSave::RestoreJournal(*f.archive, MapDocument::FromArchive(*f.archive),
+            originalTerrain, originalPathing, Take(DecodeTerrainStrokeJournal(wire)), *f.edits, f.gameRoot));
+        Require(restored.receipts.size() == 1 && restored.session->MatchesTerrainJournalDraft(*f.edits)
+            && matches(*restored.session, true), "owned FTJ3 replay restores full W3E/DOO and private special provenance");
+        Require(restored.session->Undo() && !restored.session->CanUndo() && matches(*restored.session, false)
+            && restored.session->Redo() && !restored.session->CanRedo() && matches(*restored.session, true),
+            "restored real command walks both full terrain and ordinary/special DOO endpoints");
+        f.edits = std::move(restored.session);
+        const auto identity = f.edits->SessionIdentity();
+        std::vector<std::pair<std::filesystem::path, std::string>> preserved;
+        if (!inPlace) preserved.emplace_back(f.archive->SourcePath(), f.archive->SourceSha256());
+        const auto saveAndCommit = [&](const char* name, bool water) {
+            Require(matches(*f.edits, water), "formal save begins at the exact complete bridge/special history endpoint");
+            const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+            const auto plan = f.Plan(); Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "bridge special save rebuilds pathing");
+            Services::MapSaveTask task; Check(task.FreezeArchive(*f.archive));
+            task.target = inPlace ? f.archive->SourcePath() : f.root / name; task.inPlace = inPlace;
+            task.inPlaceOptions.backupDirectory = f.root / "backups";
+            task.replacements = f.edits->Replacements(); Check(plan.InstallPathingOutput(*f.edits, task.replacements));
+            task.beforePublish = [&] { return plan.VerifyForSave(*f.edits, task.sourceSha256, task.replacements, task.removals); };
+            Services::MapSaveService::Run(task);
+            if (!task.succeeded) for (const auto& diagnostic : task.diagnostics)
+                std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+            Require(task.executed && task.succeeded && task.nextSession, "formal save worker publishes and reopens bridge/special state");
+            if (inPlace) {
+                Require(!task.backup.empty() && Take(Sha256File(task.backup)) == sourceSha,
+                    "each in-place publication keeps a verified full pre-save archive backup");
+                preserved.emplace_back(task.backup, sourceSha);
+            }
+            auto saved = Take(MapArchiveSession::Open(task.written)); Check(plan.VerifyReadback(saved));
+            Require(Take(saved.ReadMember("war3map.w3e")) == (water ? waterTerrain : originalTerrain)
+                && Take(saved.ReadMember("war3map.wpm")) == (water ? waterPathing : originalPathing)
+                && Take(saved.ReadMember("war3map.doo")) == (water ? deletedDoodads : originalDoodads),
+                "independent archive reopen matches complete W3E/DOO and literal full WPM including bridge/blocker overlap");
+            for (const auto& member : f.members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm" && member.name != "war3map.doo")
+                Require(Take(saved.ReadMember(member.name)) == member.data, "formal bridge special save preserves Units and every unrelated member");
+            for (const auto& [path, sha] : preserved)
+                Require(Take(Sha256File(path)) == sha, "subsequent save preserves each SaveAs source or each in-place backup");
+            const auto revision = f.edits->Revision(), sourceRevision = f.edits->TerrainSourceRevision();
+            Check(plan.CommitSaved(*f.edits, MapDocument::FromArchive(saved)));
+            Require(!f.edits->IsDirty() && f.edits->Replacements().empty() && f.edits->SessionIdentity() == identity
+                && f.edits->Revision() == revision && f.edits->TerrainSourceRevision() == sourceRevision + 1,
+                "verified formal save rebases the same clean session without adding commands or erasing history");
+            if (!inPlace) preserved.emplace_back(saved.SourcePath(), saved.SourceSha256());
+            f.archive = std::make_unique<MapArchiveSession>(std::move(saved));
+        };
+        saveAndCommit("bridge-special-deleted.w3x", true);
+        Require(f.edits->Undo() && !f.edits->CanUndo() && f.edits->CanRedo() && matches(*f.edits, false),
+            "saved deletion Undo restores original special order and all ordinary wire bytes");
+        saveAndCommit("bridge-special-undone.w3x", false);
+        Require(f.edits->Redo() && !f.edits->CanRedo() && matches(*f.edits, true),
+            "saved Undo Redo restores exactly the private deleted set without rerunning deletion");
+        saveAndCommit("bridge-special-redone.w3x", true);
+    }
+}
+void WalkableBridgeSpecialDeletionKeepsOrdinaryAndProvenanceGates() {
+    Fixture f; BridgeSpecialWaterFixture(f); PaintBridgeSpecialWater(f);
+    const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+    const auto waterTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto snapshot = Take(f.edits->Snapshot(MapDataKind::Doodads, kBudget));
+    const auto deleted = *snapshot.Doodads(); const auto deletedDoodads = Take(deleted.Serialize());
+    const auto plan = f.Plan(); const auto output = f.Output(plan);
+    for (unsigned mode = 0; mode < 10; ++mode) {
+        auto changed = deleted;
+        if (mode == 0) changed.doodads[1].position[2] += 1;
+        if (mode == 1) changed.doodads[0].position[2] += 1;
+        if (mode == 2) changed.doodads[0].flags ^= 1;
+        if (mode == 3) changed.doodads[0].position[0] += 1;
+        if (mode == 4) changed.doodads[0].rotation += 0.25f;
+        if (mode == 5) std::swap(changed.doodads[0], changed.doodads[2]);
+        if (mode == 6) changed.doodads.pop_back();
+        if (mode == 7) changed.doodads[0].itemSets[0].items[0].chance += 1;
+        if (mode == 8) changed.doodads[0].itemSets[0].items[0].rawcode = "drop";
+        if (mode == 9) changed.doodads[2].rotation = -0.0f;
+        const auto wire = Take(changed.Serialize());
+        const auto refused = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget, &wire);
+        Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"),
+            "special deletion cannot authorize any ordinary wire change: Z, flags, XY, angle, order, count, nested drops or signed zero");
+    }
+    for (const bool reorder : {false, true}) {
+        auto changed = deleted;
+        if (reorder) std::reverse(changed.specialDoodads.begin(), changed.specialDoodads.end());
+        else changed.specialDoodads.pop_back();
+        Check(f.edits->EditDoodads(changed));
+        const auto refused = f.Plan().SaveGate();
+        Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_SPECIAL_PROVENANCE_REQUIRED"),
+            "manual special deletion or reordering never inherits the private water command provenance");
+        Require(f.edits->Undo(), "Undo independent special mutation");
+        const auto undone = Take(f.edits->Snapshot(MapDataKind::Doodads, kBudget));
+        Require(undone.Doodads() && Take(undone.Doodads()->Serialize()) == deletedDoodads,
+            "Undo of unrecorded special mutation returns the exact trusted DOO state");
+    }
+    for (const bool unknownTail : {false, true}) {
+        auto wire = deletedDoodads;
+        if (unknownTail) wire.push_back(std::byte{0});
+        else wire[wire.size() - 8 - deleted.specialDoodads.size() * 16] = std::byte{1};
+        const auto refused = TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget, &wire);
+        Require(!refused.Succeeded() && HasCode(refused, unknownTail ? "PLACEMENT_TRAILING_DATA" : "PLACEMENT_SPECIAL_VERSION"),
+            "prefix calculation cannot grant an owner to unknown trailing bytes or a nonzero special wire version");
+    }
+    const auto freshPlan = f.Plan(); const auto freshOutput = f.Output(freshPlan);
+    auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "bridge-special-frozen.w3x", freshOutput)).path));
+    for (const bool reorder : {false, true}) {
+        auto changed = deleted;
+        if (reorder) std::reverse(changed.specialDoodads.begin(), changed.specialDoodads.end());
+        const auto wire = reorder ? Take(changed.Serialize()) : f.Member("war3map.doo");
+        auto substituted = freshOutput;
+        const auto entry = std::find_if(substituted.begin(), substituted.end(), [](const auto& member) { return member.name == "war3map.doo"; });
+        Require(entry != substituted.end(), "coupled bridge/special output contains full DOO"); entry->data = wire;
+        Require(!freshPlan.VerifyForSave(*f.edits, f.archive->SourceSha256(), substituted).Succeeded(),
+            "frozen output binds the exact trusted new special order and rejects restoring an old tail");
+        const std::array<MemberReplacement, 1> replacement{{{"war3map.doo", wire}}};
+        auto wrong = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / (reorder ? "bridge-special-reordered.w3x" : "bridge-special-reinserted.w3x"), replacement)).path));
+        Require(!freshPlan.VerifyReadback(wrong).Succeeded(), "independent readback rejects the same changed special tail");
+    }
+    Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output).Succeeded()
+        && Take(Sha256File(f.archive->SourcePath())) == sourceSha && f.edits->IsDirty()
+        && Take(SerializeMapTerrain(*f.edits->Terrain())) == waterTerrain,
+        "rejections preserve source and unsaved water draft while earlier frozen session revisions remain stale");
+}
 struct BridgeOriginalModification {
     std::string field;
     NativeValueType type;
@@ -2241,6 +2438,8 @@ int main() {
         SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();
         ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers();
         WalkableBridgesUseTheNormalSaveAndUndoChain();
+        WalkableBridgeSpecialDeletionRestoresAndUsesFormalSaveHistory();
+        WalkableBridgeSpecialDeletionKeepsOrdinaryAndProvenanceGates();
         CategoryCBridgesUseTheSharedSaveAndUndoChain();
         CategoryCBridgeSourcesAndOldPathingStayBound();
         BridgeOriginalUsesTheNormalSaveAndUndoChain();
