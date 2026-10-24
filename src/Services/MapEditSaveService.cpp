@@ -695,6 +695,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 if (attached.Succeeded()) attached = edits.AttachPathing((*members.value)[1].bytes);
                 if (!attached.Succeeded())
                     minimapInputFailure.insert(minimapInputFailure.end(), attached.diagnostics.begin(), attached.diagnostics.end());
+            } else if (shadowOnly && (*members.value)[0].present && !(*members.value)[1].present) {
+                // 独立阴影计算不消费WPM。这里只接受准确捕获证明的缺失，不能
+                // 将损坏、读取失败或未知来源当成缺失，也不为生成图像伪造WPM。
+                // 无关MapBLP暂不生成，现有保留guard仍核对其真实存在/缺失状态。
+                minimapInputFailure.push_back({DiagnosticSeverity::Error, "TerrainMinimapSave",
+                    "CLASSIC_MINIMAP_GENERATION_UNSUPPORTED",
+                    "源图准确缺少WPM；仅计算阴影时不补写通行文件，自动小地图暂不生成。"});
             }
         }
         if (fieldRequest) {

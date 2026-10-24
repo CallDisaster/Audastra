@@ -144,5 +144,64 @@ void CheckRealTerrainShadowSave(const MapArchiveSession& original,
         << " actual_direction_capture_budget=" << light.CaptureBudgetBytes()
         << " expected_shadow_is_literal=true mmp_baseline_uses_product_generator=true"
         << " stale_w3e_rejected_before_execution=true native_oracle=false native_editor_verified=false game_verified=false\n";
+
+    // 原版独立阴影计算不读取WPM；缺MapBLP也不能间接强迫这个请求创建WPM。
+    // 只在原创副本上准确删除实际存在的成员，保留完整DOO/脚本/profile来源。
+    const std::array<std::string, 3> absentNames{"war3map.wpm", "war3mapMap.blp", "war3mapMap.tga"};
+    const auto originalImages = Take(source.DescribeExactMemberIdentities(source.SourceSha256(), absentNames));
+    std::vector<std::string> removals;
+    for (std::size_t i = 0; i < absentNames.size(); ++i)
+        if (originalImages.members[i].present) removals.push_back(absentNames[i]);
+    const auto withoutPathing = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+        scenario / "source-without-pathing-or-minimap.w3x", {}, removals)).path));
+    const auto verifyAbsent = [&](const MapArchiveSession& archive) {
+        const auto state = Take(archive.DescribeExactMemberIdentities(archive.SourceSha256(), absentNames));
+        Require(std::all_of(state.members.begin(), state.members.end(), [](const auto& member) { return !member.present; }),
+            "actual exact identities prove WPM, BLP and TGA absent rather than unlisted or unreadable");
+    };
+    verifyAbsent(withoutPathing);
+    auto absentRequest = request;
+    absentRequest.sourceMap = withoutPathing.SourcePath();
+    absentRequest.expectedSourceSha256 = withoutPathing.SourceSha256();
+    absentRequest.targetCandidate = scenario / "saved-without-pathing-or-minimap.w3x";
+    Require(absentRequest.minimapChoice == TerrainMinimapSaveChoice::Automatic,
+        "missing-WPM shadow regression uses the actual public default automatic minimap choice");
+    const auto absentSaved = Take(SaveMapEditCandidate(absentRequest));
+    const auto absentReadback = Take(MapArchiveSession::Open(absentSaved.candidate));
+    verifyAbsent(absentReadback);
+    const auto absentShadow = Take(absentReadback.ReadMember("war3map.shd"));
+    const auto absentParsed = Take(ParseMapShadow(absentShadow, width, height));
+    Require(absentShadow == Bytes(pixels, std::byte{0}) && absentParsed.intensities.size() == pixels
+        && std::all_of(absentParsed.intensities.begin(), absentParsed.intensities.end(), [](auto value) { return value == 0; }),
+        "missing unrelated pathing/minimap still writes and independently reads every literal zero SHD pixel");
+    Require(absentSaved.scriptPreserved && !absentSaved.generatedMissingMinimap
+        && absentSaved.originalTerrainSha256 == terrainSha && absentSaved.savedTerrainSha256 == terrainSha
+        && absentSaved.appliedStrokeCount == 0 && absentSaved.editedMembers.empty(),
+        "shadow-only missing-WPM result does not invent terrain/pathing/image edits or replace the authored script");
+    const auto warning = [&](std::string_view code) {
+        return std::any_of(absentSaved.diagnostics.begin(), absentSaved.diagnostics.end(), [&](const auto& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::Warning && diagnostic.code == code;
+        });
+    };
+    Require(warning("CLASSIC_MINIMAP_GENERATION_UNSUPPORTED") && warning("MINIMAP_GENERATION_SKIPPED"),
+        "known missing WPM is a visible bounded minimap capability warning, never a silent fallback or generic baseline waiver");
+    for (const auto& member : withoutPathing.Members()) {
+        if (Text::LowerAscii(member.name) == "war3map.shd") continue;
+        Require(Take(absentReadback.ReadMember(member.name)) == member.data,
+            "shadow-only missing-WPM save preserves all unrelated original members byte-for-byte");
+    }
+    Check(markers->VerifyReadback(absentReadback)); Check(light.VerifySources(kBytes));
+    Require(absentSaved.sourceSha256 == withoutPathing.SourceSha256()
+        && absentSaved.candidateSha256 == absentReadback.SourceSha256()
+        && absentSaved.candidateSha256 == Take(Sha256File(absentSaved.candidate))
+        && Take(Sha256File(withoutPathing.SourcePath())) == withoutPathing.SourceSha256()
+        && Take(Sha256File(source.SourcePath())) == source.SourceSha256()
+        && Take(Sha256File(original.SourcePath())) == original.SourceSha256(),
+        "missing-WPM save binds the actual candidate identity and leaves every source archive unchanged");
+    std::cout << "playable_explicit_shadow_without_pathing_minimap_passed source_sha256=" << withoutPathing.SourceSha256()
+        << " candidate_sha256=" << absentSaved.candidateSha256 << " w3e_sha256=" << terrainSha
+        << " shd_bytes=" << absentShadow.size() << " shd_sha256=" << Take(Sha256(absentShadow))
+        << " wpm_absent=true map_blp_absent=true map_tga_absent=true minimap_capability_warning=true"
+        << " expected_shadow_is_literal=true source_unchanged=true native_oracle=false native_editor_verified=false game_verified=false\n";
 }
 } // namespace War3Map::TerrainSaveTests
