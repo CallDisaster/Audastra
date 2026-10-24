@@ -1,5 +1,6 @@
 #include "EditorProject.h"
 #include "ProjectOpen.h"
+#include "ProjectObjectCatalog.h"
 #include "AssetOwnedPayload.h"
 #include "ProjectQuerySources.h"
 #include "MapSaveJob.h"
@@ -43,10 +44,12 @@
 #include <QTest>
 #include <QThread>
 #include <QUndoStack>
+#include <Windows.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <stdexcept>
 
@@ -200,11 +203,14 @@ std::vector<MapArchiveMember> TerrainSaveMembers() {
         {"war3map.j", {scriptBytes.begin(), scriptBytes.end()}}};
 }
 
-bool BindTerrainSaveProject(EditorProject& project, const std::filesystem::path& source) {
+bool BindTerrainSaveProject(EditorProject& project, const std::filesystem::path& source,
+    const std::function<bool()>& beforeLoad = {}) {
     auto opened = MapArchiveSession::Open(source);
     if (!opened.Succeeded() || !opened.value) return false;
     project.projectRoot_ = source.parent_path(); project.sourceArchivePath_ = source;
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*opened.value));
+    // 来源变化夹具在旧归档快照之后、LoadMapDocument建立物编来源租约之前注入。
+    if (beforeLoad && !beforeLoad()) return false;
     project.LoadMapDocument();
     if (!project.mapEdits_ || !project.mapEdits_->Terrain()) return false;
     project.ResetEditTracking();
@@ -751,6 +757,7 @@ private slots:
     void WalkableDestructableOriginalWorkerRejectsBeforeWrite();
     void WalkableDestructableWorkerRejectsBeforeWrite_data();
     void WalkableDestructableWorkerRejectsBeforeWrite();
+    void NativeObjectCatalogReadLeaseBlocksSourceWrite();
     void PathingIntentLateEditStalesFrozenProject();
     void LegacyPathingIntentProjectKeepsStrictCompatibility();
     void TerrainSavePrepareStillRequiresToolchain();
@@ -2020,8 +2027,35 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
     const auto target = inPlace ? source : std::filesystem::path(root.filePath("must-not-exist.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    auto expectedSourceSha = sourceSha.value;
+    QString sourceDriftError = QStringLiteral("地形保存夹具绑定失败");
+    const auto beforeLoad = [&] {
+        if (mutation != NativeDoodadQtMutation::SourceDrift) return true;
+        QFile external(QString::fromStdWString(source.wstring()));
+        const auto fail = [&](const char* stage) {
+            sourceDriftError = QString::fromUtf8(stage) + ": " + external.errorString(); return false;
+        };
+        if (!external.open(QIODevice::ReadWrite)) return fail("打开来源");
+        const auto originalSize = external.size();
+        if (!external.seek(32)) return fail("读取来源位置");
+        char changedByte = 0;
+        if (external.read(&changedByte, 1) != 1) return fail("读取来源字节");
+        changedByte ^= 1;
+        if (!external.seek(32) || external.write(&changedByte, 1) != 1 || !external.flush()) return fail("原位改写来源");
+        if (external.size() != originalSize) return fail("来源长度改变");
+        external.close();
+        const auto driftedSha = Sha256File(source);
+        if (!driftedSha.Succeeded() || !driftedSha.value || driftedSha.value == sourceSha.value) return fail("来源SHA未确认变化");
+        expectedSourceSha = driftedSha.value;
+        return true;
+    };
     EditorProject project; QUndoStack undo; project.mapDataUndoStack_ = &undo;
-    QVERIFY(BindTerrainSaveProject(project, source));
+    QVERIFY2(BindTerrainSaveProject(project, source, beforeLoad), qPrintable(sourceDriftError));
+    QCOMPARE(project.archiveSession_->SourceSha256(), *sourceSha.value);
+    if (mutation == NativeDoodadQtMutation::SourceDrift) {
+        QVERIFY(expectedSourceSha != sourceSha.value);
+        QVERIFY(HasReadDiagnostic(project.archiveSession_->VerifySourceUnchanged(), "SOURCE_CHANGED"));
+    }
     if (mutation == NativeDoodadQtMutation::FollowHeight) {
         MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Raise;
         brush.radius = 0; brush.strength = 32;
@@ -2053,33 +2087,19 @@ void EditorProjectTests::CheckNativeDoodadWorkerRejectsBeforeWrite(const std::ve
     const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
     const auto trackingGeneration = project.editRevision_.Generation(), trackingRevision = project.editRevision_.Revision();
     auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job && job->terrainDerivationRequired);
+    QCOMPARE(job->sourceSha256, *sourceSha.value);
     job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
     if (inPlace) {
         job->inPlace = true;
         job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
         QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
     }
-    auto expectedSourceSha = sourceSha.value;
     if (mutation == NativeDoodadQtMutation::ResourceReplacement) {
         const auto texture = std::find_if(members.begin(), members.end(),
             [](const auto& member) { return member.name == "PathTextures/bridge.tga"; });
         QVERIFY(texture != members.end());
         auto changed = texture->data; changed[18] ^= std::byte{1};
         job->replacements.push_back({texture->name, std::move(changed)});
-    } else if (mutation == NativeDoodadQtMutation::SourceDrift) {
-        QFile external(QString::fromStdWString(source.wstring()));
-        // 与既有来源变化用例一致，原位改一个字节；不追加尾部，也不替换文件身份。
-        QVERIFY2(external.open(QIODevice::ReadWrite), qPrintable(external.errorString()));
-        const auto originalSize = external.size();
-        QVERIFY2(external.seek(32), qPrintable(external.errorString()));
-        char changedByte = 0; QCOMPARE(external.read(&changedByte, 1), qint64{1});
-        changedByte ^= 1;
-        QVERIFY2(external.seek(32), qPrintable(external.errorString()));
-        QCOMPARE(external.write(&changedByte, 1), qint64{1});
-        QVERIFY2(external.flush(), qPrintable(external.errorString()));
-        QCOMPARE(external.size(), originalSize); external.close();
-        const auto driftedSha = Sha256File(source); QVERIFY(driftedSha.Succeeded() && driftedSha.value != sourceSha.value);
-        expectedSourceSha = driftedSha.value;
     }
     InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
     QVERIFY(!job->succeeded && !job->nextSession && !job->terrainReadbackStatus && job->written.empty());
@@ -2339,6 +2359,30 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite() {
         : scenario == "source-drift" ? NativeDoodadQtMutation::SourceDrift : NativeDoodadQtMutation::None;
     const auto expectedCode = code.toUtf8();
     CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, expectedCode.constData(), mutation);
+}
+
+void EditorProjectTests::NativeObjectCatalogReadLeaseBlocksSourceWrite() {
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto source = std::filesystem::path(root.filePath("catalog-guard-source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, WalkableDestructableQtMembers(false)).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded() && sourceSha.value);
+    const auto attributes = GetFileAttributesW(source.c_str());
+    QVERIFY(attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_READONLY));
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    const auto catalog = ProjectEffectiveObjectCatalog(project); QVERIFY(catalog);
+    const auto verified = VerifyProjectObjectCatalog(project);
+    QVERIFY2(verified.Succeeded(), ReadDiagnosticText(verified).c_str());
+    QFile readable(QString::fromStdWString(source.wstring()));
+    QVERIFY2(readable.open(QIODevice::ReadOnly), qPrintable(readable.errorString()));
+    QCOMPARE(readable.read(1).size(), qsizetype{1}); readable.close();
+    // 正常Load后持有真实物编来源只读租约；不是只读属性或失效路径造成不能写。
+    QFile external(QString::fromStdWString(source.wstring()));
+    QVERIFY2(!external.open(QIODevice::ReadWrite), "物编来源租约应阻止打开当前来源以写入");
+    QVERIFY(external.error() != QFileDevice::NoError);
+    QCOMPARE(ProjectEffectiveObjectCatalog(project), catalog);
+    QVERIFY(project.archiveSession_->VerifySourceUnchanged().Succeeded());
+    QCOMPARE(project.archiveSession_->SourceSha256(), *sourceSha.value);
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
 
 void EditorProjectTests::PathingIntentLateEditStalesFrozenProject() {
