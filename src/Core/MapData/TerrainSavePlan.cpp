@@ -121,7 +121,11 @@ template<class Function> Result<TerrainSavePlan> Guard(Function&& function) {
 
 bool TerrainSavePlan::HasTerrainChanges(const MapDataEditSession& edits) noexcept {
     return edits.TerrainDirty() || edits.pathing_ != edits.pathingOriginal_
-        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges();
+        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges()
+        // 已附入地形的会话即使撤回最后一笔W3E，也不能漏掉仍未保存的普通摆放。
+        // 这里只要求保存门介入；仅Z不变域仍可沿旧门，其余必须取得完整G0/G1。
+        || (edits.terrain_ && edits.pathing_ && edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)]
+            != edits.original_[MapDataEditSession::Index(MapDataKind::Doodads)]);
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source,
@@ -323,7 +327,8 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     }
     if (mixedProof && !plan.RebuiltPathing() && plan.saveGate_.Succeeded())
         plan.saveGate_ = Reject("TERRAIN_SAVE_MIXED_INPUTS_UNVERIFIED", "混合物编或导入修改需要完整原通行重现与实际依赖检查，当前未取得完整结果。");
-    plan.pathingInvariant_ = mixedProof || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges();
+    plan.pathingInvariant_ = plan.RebuiltPathing() || mixedProof
+        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges();
     plan.pathingInvariant_ = plan.pathingInvariant_ || edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.cliffTilesets != edits.terrainOriginal_->header.cliffTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;

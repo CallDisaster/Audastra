@@ -5,6 +5,7 @@
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
 #include "War3MapCore/MapData/TerrainNativeUnitsProof.h"
+#include "War3MapCore/MapData/TerrainNativeDoodadsProof.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
@@ -861,23 +862,39 @@ Status MapDataEditSession::VerifyTerrainSourceBaseline(std::span<const std::byte
 Status MapDataEditSession::VerifyTerrainDoodadChange(std::span<const std::byte> before,
     std::span<const std::byte> after) const {
     if (std::equal(before.begin(), before.end(), after.begin(), after.end())) return Status::Ok();
+    auto original = ParseDoodadPlacements(before), current = ParseDoodadPlacements(after);
+    if (!original.Succeeded() || !original.value) return {original.diagnostics};
+    if (!current.Succeeded() || !current.value) return {current.diagnostics};
+    const auto provenance = VerifyTerrainSpecialDoodadProvenance(*original.value, *current.value);
+    if (!provenance.Succeeded()) return provenance;
+    // 旧仅Z保存域不变。新普通DOO变换/增删必须由native双阶段保存链另持私有证明。
+    current.value->specialDoodads = original.value->specialDoodads;
+    const auto normalized = current.value->Serialize();
+    if (!normalized.Succeeded() || !normalized.value) return {normalized.diagnostics};
+    return VerifyDoodadPlacementElevationOnly(before, *normalized.value);
+}
+
+Status MapDataEditSession::VerifyTerrainSpecialDoodadChange(std::span<const std::byte> before,
+    std::span<const std::byte> after) const {
+    if (std::equal(before.begin(), before.end(), after.begin(), after.end())) return Status::Ok();
+    auto original = ParseDoodadPlacements(before), current = ParseDoodadPlacements(after);
+    if (!original.Succeeded() || !original.value) return {original.diagnostics};
+    if (!current.Succeeded() || !current.value) return {current.diagnostics};
+    return VerifyTerrainSpecialDoodadProvenance(*original.value, *current.value);
+}
+
+Status MapDataEditSession::VerifyTerrainSpecialDoodadProvenance(
+    const DoodadPlacements& before, const DoodadPlacements& after) const {
     const auto same = [](const auto& a, const auto& b) {
         return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](const auto& x, const auto& y) {
             return x.rawcode == y.rawcode && x.variation == y.variation && x.position == y.position;
         });
     };
-    auto original = ParseDoodadPlacements(before), current = ParseDoodadPlacements(after);
-    if (!original.Succeeded() || !original.value) return {original.diagnostics};
-    if (!current.Succeeded() || !current.value) return {current.diagnostics};
     if (!specialDoodads_ || !savedSpecialDoodads_
-        || !same(original.value->specialDoodads, *savedSpecialDoodads_)
-        || !same(current.value->specialDoodads, *specialDoodads_))
+        || !same(before.specialDoodads, *savedSpecialDoodads_)
+        || !same(after.specialDoodads, *specialDoodads_))
         return Status::Failure("MapData.Edit", "TERRAIN_SPECIAL_PROVENANCE_REQUIRED", "特殊模型集合未由本会话可信水刷事务生成或恢复；请撤销该摆放修改，或从实际地图来源重放水刷。");
-    // 只替回已由私有命令身份核对的special段，普通DOO仍逐字执行原来的仅Z检查。
-    current.value->specialDoodads = original.value->specialDoodads;
-    const auto normalized = current.value->Serialize();
-    if (!normalized.Succeeded() || !normalized.value) return {normalized.diagnostics};
-    return VerifyDoodadPlacementElevationOnly(before, *normalized.value);
+    return Status::Ok();
 }
 
 Status MapDataEditSession::VerifyTerrainCandidateForSave(
@@ -886,7 +903,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::optional<std::vector<std::byte>>& doodads,
     const TerrainPathingResources* resources, const std::vector<std::byte>* restrictions,
     const std::optional<std::vector<std::byte>>* units, bool nativeRebuild,
-    const TerrainNativeUnitsProof* nativeUnits) const {
+    const TerrainNativeUnitsProof* nativeUnits, const TerrainNativeDoodadsProof* nativeDoodads) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
@@ -897,7 +914,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         if (!settings.Succeeded()) return settings;
     }
     if (!TerrainDiffers(terrain, terrainOriginal_) && pathing == pathingOriginal_
-        && specialDoodads_ == savedSpecialDoodads_ && !HasTerrainBoundsChanges()) return Status::Ok();
+        && specialDoodads_ == savedSpecialDoodads_ && !HasTerrainBoundsChanges()
+        && (!terrain || doodads == original_[Index(MapDataKind::Doodads)])) return Status::Ok();
     if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
     if (!pathingProtected_ || !originalPathingRestrictions_ || !pathingRestrictions_)
@@ -919,6 +937,11 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
             return result;
         };
         const auto doo = check(MapDataKind::Doodads, doodads, [&](const auto& before, const auto& after) {
+            if (nativeRebuild && nativeDoodads) {
+                // 私有证明在预收预算后核过完整codec和特殊谱系；此处只复核
+                // 同一session/revision及完整成员身份，不再无预算解析第二遍。
+                return nativeDoodads->Verify(*this, before, after);
+            }
             return nativeRebuild ? VerifyTerrainDoodadChange(before, after) : VerifyDoodadPlacementElevationOnly(before, after);
         });
         if (!doo.Succeeded()) return doo;
@@ -958,7 +981,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         return reject("W3E 头部、贴图表或顶点数量已改变，尚无对应 WPM 生成规则");
     // 按源图到当前 W3E 的最终原始净差判定；工程恢复没有可靠的笔刷来源身份，
     // 不能只检查 Raise/Lower/Smooth 枚举来保护 UI 与 Agent 共用的保存路径。
-    bool invariantChanged = !SameHeader(newHeader, oldHeader);
+    bool invariantChanged = !SameHeader(newHeader, oldHeader)
+        || doodads != original_[Index(MapDataKind::Doodads)];
     // 上方已完整核对私有范围状态绑定的旧/新W3I与全部MapEdge位。
     // 仅原版G0/G1重建可消费该可信0x4000变化，未知0x8000及无owner草稿仍拒绝。
     const auto protectedWaterFlags = nativeRebuild && boundsState_ ? 0x8000u : 0xc000u;

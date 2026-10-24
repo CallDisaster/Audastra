@@ -138,7 +138,9 @@ private:
     [[nodiscard]] Status CaptureResourceMembers(const MemberReader& reader,
         std::span<const std::string> names, std::size_t requiredCount, const ResourceVisitor& visitor);
     [[nodiscard]] Status CaptureNativeFootprints(const MemberReader& reader, const TerrainHeader& header,
-        std::span<const DoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types);
+        std::span<const DoodadPlacement> placements,
+        std::optional<std::span<const DoodadPlacement>> afterPlacements,
+        std::span<const TerrainNativeDoodadPathingType> types);
     [[nodiscard]] Status CaptureSpecialFootprints(const MemberReader& reader,
         const TerrainGridSnapshot& terrain,
         std::span<const SpecialDoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types,
@@ -178,6 +180,8 @@ private:
     std::string waterBrushDoodadsSha_;
     std::vector<TerrainWaterSpecialDoodadShape> waterSpecialShapes_;
     std::vector<std::uint8_t> nativeStaticAttributes_;
+    // nullopt仅表示完整普通wire未变，可共享旧层；显式空的新集合仍有独立零层。
+    std::optional<std::vector<std::uint8_t>> nativeAfterStaticAttributes_;
     std::array<std::vector<std::uint8_t>, 2> nativeSpecialAttributes_;
     std::array<std::size_t, 2> nativeSpecialCount_{};
     std::array<std::string, 2> nativeTerrainSha_;

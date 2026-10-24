@@ -115,7 +115,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         const auto objectBound = resources.VerifyWaterBrushDoodads(doodads, original_[doodadIndex] ? std::span<const std::byte>{*original_[doodadIndex]} : std::span<const std::byte>{});
         if (!objectBound.Succeeded()) return {{}, objectBound.diagnostics};
         if (current_[doodadIndex] && original_[doodadIndex]) {
-            const auto provenance = VerifyTerrainDoodadChange(*original_[doodadIndex], *current_[doodadIndex]);
+            // 规则owner已经绑定当前完整DOO。落笔只消费特殊模型形状及其私有谱系；
+            // 普通对象的XY/旋转/增删另由正式保存的双阶段G0/G1解释，不在编辑时误当仅Z。
+            const auto provenance = VerifyTerrainSpecialDoodadChange(*original_[doodadIndex], *current_[doodadIndex]);
             if (!provenance.Succeeded()) return {{}, provenance.diagnostics};
         }
         auto algorithmLimits = limits;

@@ -2478,6 +2478,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
             "mixed save keeps the exact old-WPM rejection and its useful diagnostic");
     }
 }
+#include "TerrainOrdinaryDoodadSaveCases.h"
 } // namespace
 
 int main() {
@@ -2527,6 +2528,11 @@ int main() {
         WalkableBridgeSourceAndResourceDependenciesRemainBound();
         WalkableBridgesUseTheDirectoryRecipe();
         MixedObjectAndResourceSavesUseActualPathingDependencies();
+        OrdinaryDoodadMutationsUseBothSaveStages();
+        OrdinaryDoodadMoveSurvivesZeroNetTerrainAndHistory();
+        OrdinaryDoodadSaveKeepsActualDependenciesAndBudgets();
+        OrdinaryMutationsDoNotAcquireSpecialOrBridgeAuthority();
+        OrdinaryMoveThenNativeWaterUsesTheCurrentDoodadOwner();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

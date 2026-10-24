@@ -47,6 +47,7 @@ std::string FootprintPath(std::string_view path) {
 
 Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& reader,
     const TerrainHeader& header, std::span<const DoodadPlacement> placements,
+    std::optional<std::span<const DoodadPlacement>> afterPlacements,
     std::span<const TerrainNativeDoodadPathingType> types) {
     try {
         if (types.empty()) return Status::Ok();
@@ -68,10 +69,10 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
             objectWorkBytes_ += count * each;
         };
         if (header.width < 2 || header.height < 2 || header.width > 2049 || header.height > 2049
-            || types.size() > placements.size())
+            || types.size() > placements.size() + (afterPlacements ? afterPlacements->size() : 0))
             Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地输入需要完整经典地形尺寸及实际摆放类型集合。");
         struct Type { const TerrainNativeDoodadPathingType* value; std::string path; bool used = false; };
-        struct Instance { const DoodadPlacement* placement; const TerrainNativeDoodadPathingType* type; };
+        struct Instance { const DoodadPlacement* placement; const TerrainNativeDoodadPathingType* type; bool after; };
         // 类型解析已预留自身输出；这里另计两棵树的节点、名称列表、精确读取结果、
         // 依赖及其增长容量。字符串按最大经典路径的双倍容量预留六份：归一化、
         // 名称、reader名称、canonical临时、依赖名称和归档/SHA；分组key只借用path。
@@ -83,13 +84,18 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
             + 6 * stringStorage;
         reserve(types.size(), perType);
         // vector按至多双倍容量计费；重复实例仍必须完整参与，不能只按rawcode计一次。
-        reserve(placements.size(), 2 * sizeof(Instance));
+        reserve(placements.size() + (afterPlacements ? afterPlacements->size() : 0), 2 * sizeof(Instance));
         const auto width = std::size_t{header.width - 1} * 4;
         const auto height = std::size_t{header.height - 1} * 4;
         reserve(width, height);
         const auto cells = width * height;
         nativeStaticAttributes_.assign(cells, 0);
         reserve(nativeStaticAttributes_.capacity() - cells, 1);
+        if (afterPlacements) {
+            reserve(width, height);
+            nativeAfterStaticAttributes_.emplace(cells, 0);
+            reserve(nativeAfterStaticAttributes_->capacity() - cells, 1);
+        }
 
         std::map<std::string_view, Type, std::less<>> byRawcode;
         std::map<std::string_view, std::vector<Instance>, std::less<>> groups;
@@ -103,16 +109,20 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                     && type.contribution != TerrainNativeFootprintContribution::WalkableTerrainSuppression)
                 Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地贡献类别未经同次来源解释。");
         }
-        for (const auto& placement : placements) {
-            const auto found = byRawcode.find(placement.rawcode);
-            if (found == byRawcode.end()) continue; // 已由同次严格分类器解释的零贡献类型。
-            if (found->second.value->contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
-                && (placement.flags != 2 || placement.lifePercent != 100))
-                Fail("TERRAIN_WALKABLE_DESTRUCTABLE_STATE", "可行走对象仅支持wire flags=2且lifePercent=100的完整生存实例："
-                    + placement.rawcode + " #" + std::to_string(placement.creationId));
-            found->second.used = true;
-            groups[found->second.path].push_back({&placement, found->second.value});
-        }
+        const auto append = [&](std::span<const DoodadPlacement> stage, bool after) {
+            for (const auto& placement : stage) {
+                const auto found = byRawcode.find(placement.rawcode);
+                if (found == byRawcode.end()) continue; // 已由同次严格分类器解释的零贡献类型。
+                if (found->second.value->contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
+                    && (placement.flags != 2 || placement.lifePercent != 100))
+                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_STATE", "可行走对象仅支持wire flags=2且lifePercent=100的完整生存实例："
+                        + placement.rawcode + " #" + std::to_string(placement.creationId));
+                found->second.used = true;
+                groups[found->second.path].push_back({&placement, found->second.value, after});
+            }
+        };
+        append(placements, false);
+        if (afterPlacements) append(*afterPlacements, true);
         for (const auto& [rawcode, type] : byRawcode)
             if (!type.used) Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地类型没有对应的实际摆放：" + std::string(rawcode));
         std::vector<std::string> names;
@@ -147,7 +157,8 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                 for (const auto& instance : instances) {
                     const auto snapCells = instance.type->gridPolicy == TerrainDoodadGridPolicy::StartupCategoryC
                         ? nativeCategoryDirectory_->CategoryCSnapCells() : std::uint8_t{2};
-                    auto status = AddDoodadFootprint(nativeStaticAttributes_, header,
+                    auto& attributes = instance.after ? *nativeAfterStaticAttributes_ : nativeStaticAttributes_;
+                    auto status = AddDoodadFootprint(attributes, header,
                         *instance.placement, footprint, snapCells, instance.type->fixedRotationDegrees,
                         instance.type->contribution);
                     for (auto& diagnostic : status.diagnostics) diagnostic.message = instance.placement->rawcode

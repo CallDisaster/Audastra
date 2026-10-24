@@ -27,6 +27,7 @@ class PreparedMapDataPlacement;
 class TerrainSavePlan;
 class TerrainPathingResources;
 class TerrainNativeUnitsProof;
+class TerrainNativeDoodadsProof;
 
 // 仅已提交的摆放操作提供完整行谱系；空目标表示删除，未被指向的新行表示新增。
 // 不能用rawcode、创建编号或坐标猜测映射。此值在EditReceipt中只读。
@@ -40,6 +41,7 @@ struct PlacementRowLineage {
 // 不触碰源归档，撤销/重做恢复覆盖状态，MapArchiveSession 负责候选发布。
 class MapDataEditSession {
     friend class TerrainSavePlan;
+    friend class TerrainNativeDoodadsProof;
     friend class Services::AuxiliaryEditing;
     struct Command;
     struct TerrainBoundsState;
@@ -341,9 +343,14 @@ private:
         const TerrainPathingResources* resources = nullptr,
         const std::vector<std::byte>* restrictions = nullptr,
         const std::optional<std::vector<std::byte>>* units = nullptr,
-        bool nativeRebuild = false, const TerrainNativeUnitsProof* nativeUnits = nullptr) const;
+        bool nativeRebuild = false, const TerrainNativeUnitsProof* nativeUnits = nullptr,
+        const TerrainNativeDoodadsProof* nativeDoodads = nullptr) const;
     [[nodiscard]] Status VerifyTerrainDoodadChange(std::span<const std::byte> before,
         std::span<const std::byte> after) const;
+    [[nodiscard]] Status VerifyTerrainSpecialDoodadChange(std::span<const std::byte> before,
+        std::span<const std::byte> after) const;
+    [[nodiscard]] Status VerifyTerrainSpecialDoodadProvenance(
+        const DoodadPlacements& before, const DoodadPlacements& after) const;
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,

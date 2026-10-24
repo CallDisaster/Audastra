@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainNativeUnitsProof.h"
+#include "War3MapCore/MapData/TerrainNativeDoodadsProof.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
@@ -26,6 +27,21 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     const TerrainSavePlanLimits& limits, std::size_t& total, const NativeResourceCapture* nativeCapture) {
     using Output = Result<std::vector<std::byte>>;
     std::optional<TerrainNativeUnitsProof> unitsProof;
+    std::optional<TerrainNativeDoodadsProof> doodadsProof;
+    const auto& sourceDoodads = edits.original_[MapDataEditSession::Index(MapDataKind::Doodads)];
+    const auto& currentDoodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
+    if (sourceDoodads != currentDoodads && sourceDoodads && currentDoodads
+        && edits.specialDoodads_ == edits.savedSpecialDoodads_) {
+        if (total > limits.maximumBytes)
+            return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "地形计划没有剩余普通DOO核对预算。");
+        const auto required = TerrainNativeDoodadsProof::RequiredWorkingBytes(
+            sourceDoodads->size(), currentDoodads->size(), limits.maximumBytes - total);
+        if (!required.Succeeded() || !required.value) return {{}, required.diagnostics};
+        total += *required.value;
+        auto proof = TerrainNativeDoodadsProof::Prepare(edits, sourceSha256_, *required.value);
+        if (!proof.Succeeded() || !proof.value) return {{}, std::move(proof.diagnostics)};
+        doodadsProof = std::move(*proof.value);
+    }
     const auto& sourceUnits = edits.original_[MapDataEditSession::Index(MapDataKind::Units)];
     const auto& currentUnits = edits.current_[MapDataEditSession::Index(MapDataKind::Units)];
     if (sourceUnits != currentUnits) {
@@ -44,11 +60,10 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     }
     const auto shape = edits.VerifyTerrainCandidateForSave(edits.terrain_, edits.pathing_,
         edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], nullptr, nullptr, nullptr, true,
-        unitsProof ? &*unitsProof : nullptr);
+        unitsProof ? &*unitsProof : nullptr, doodadsProof ? &*doodadsProof : nullptr);
     if (!shape.Succeeded()) return {{}, shape.diagnostics};
     if ((!source && !workspace) || total > limits.maximumBytes)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SOURCE", "通行重建缺少唯一来源或剩余预算。");
-    const auto& currentDoodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
     auto captured = nativeCapture ? (*nativeCapture)(*edits.terrainOriginal_, *edits.terrain_,
         currentDoodads ? &*currentDoodads : nullptr, limits.maximumBytes - total) : source
         ? TerrainPathingResources::CaptureNative(*source, *edits.terrainOriginal_, *edits.terrain_, gameRoot, limits.maximumBytes - total)

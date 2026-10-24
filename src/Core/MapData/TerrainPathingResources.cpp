@@ -591,7 +591,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 editedDoodads = Take(ParseDoodadPlacements(*currentDoodads)); afterDoodads = &*editedDoodads;
             } else result.nativeAfterDoodads_ = result.nativeDoodads_;
         }
-        const bool typedObjects = native && (!doodads->doodads.empty() || !doodads->specialDoodads.empty()
+        const bool typedObjects = native && (!doodads->doodads.empty() || !afterDoodads->doodads.empty() || !doodads->specialDoodads.empty()
             || !afterDoodads->specialDoodads.empty()) && validator;
         if (typedObjects) {
             // 有无W3B均核对实际对象类别；W3D缺失也固定身份，不能用新导入遮蔽分类。
@@ -681,12 +681,16 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         if (!resources.Succeeded()) throw Failure{resources.diagnostics};
         if (typedObjects) {
             // 在reserve之前检查列表额度；validator的累计工作预留包括这块空间。
-            const auto records = doodads->doodads.size() + doodads->specialDoodads.size() + afterDoodads->specialDoodads.size();
+            const bool sameOrdinary = SameOrdinaryDoodadWire(result.nativeDoodads_, *doodads,
+                result.nativeAfterDoodads_, *afterDoodads);
+            const auto ordinaryRecords = doodads->doodads.size() + (sameOrdinary ? 0 : afterDoodads->doodads.size());
+            const auto records = ordinaryRecords + doodads->specialDoodads.size() + afterDoodads->specialDoodads.size();
             if (records > (maximumBytes - result.sourceBytes_) / (sizeof(std::string_view) * 4))
                 Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "摆放分类列表超过剩余解析预算。");
             std::vector<std::string_view> rawcodes;
-            rawcodes.reserve(doodads->doodads.size());
+            rawcodes.reserve(ordinaryRecords);
             for (const auto& object : doodads->doodads) rawcodes.emplace_back(object.rawcode);
+            if (!sameOrdinary) for (const auto& object : afterDoodads->doodads) rawcodes.emplace_back(object.rawcode);
             std::vector<std::string_view> specialRawcodes;
             specialRawcodes.reserve(doodads->specialDoodads.size() + afterDoodads->specialDoodads.size());
             for (const auto& object : doodads->specialDoodads) specialRawcodes.emplace_back(object.rawcode);
@@ -719,7 +723,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                     && !SameOrdinaryDoodadWire(result.nativeDoodads_, *doodads, result.nativeAfterDoodads_, *afterDoodads))
                     Fail("TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED", "含可行走对象的地形保存须保持完整普通DOO原字不变；特殊尾段仅允许会话可信水刷事务。");
                 const auto captured = result.CaptureNativeFootprints(reader, before.header,
-                    doodads->doodads, objectPathing.footprints);
+                    doodads->doodads, sameOrdinary ? std::nullopt
+                        : std::optional{std::span<const DoodadPlacement>(afterDoodads->doodads)}, objectPathing.footprints);
                 if (!captured.Succeeded()) throw Failure{captured.diagnostics};
             }
             if (!specialRawcodes.empty()) {
@@ -989,7 +994,8 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
         input.terrain = &terrain;
         input.playableBounds = stage == TerrainNativeStage::After && nativeAfterBounds_ ? *nativeAfterBounds_ : *nativeBounds_;
         input.groundRules = nativeGround_; input.water = waterRules_;
-        input.staticAttributes = nativeStaticAttributes_;
+        input.staticAttributes = stage == TerrainNativeStage::After && nativeAfterStaticAttributes_
+            ? *nativeAfterStaticAttributes_ : nativeStaticAttributes_;
         input.specialDoodadCount = nativeSpecialCount_[index]; input.specialAttributes = nativeSpecialAttributes_[index];
         input.maximumCliffLevel = nativeMaximumCliffLevel_;
         return Take(GenerateTerrainNativePathing(input, maximumBytes));
@@ -1147,6 +1153,7 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
     bytes += nativeGround_.capacity() * sizeof(TerrainNativeGroundRule) + nativeDoodads_.capacity()
         + nativeStaticAttributes_.capacity() + nativeSpecialAttributes_[0].capacity() + nativeSpecialAttributes_[1].capacity()
         + nativeAfterDoodads_.capacity() + waterBrushDoodadsSha_.capacity() + waterSpecialShapes_.capacity() * sizeof(TerrainWaterSpecialDoodadShape);
+    if (nativeAfterStaticAttributes_) bytes += nativeAfterStaticAttributes_->capacity();
     for (const auto& shape : waterSpecialShapes_) bytes += shape.rawcode.capacity() + shape.relativeCliffLevels.capacity() + 1;
     for (const auto& rule : nativeGround_) bytes += rule.rawcode.capacity() + 1;
     for (const auto& sha : nativeTerrainSha_) bytes += sha.capacity() + 1;
