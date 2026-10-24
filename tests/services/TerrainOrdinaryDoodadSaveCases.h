@@ -228,8 +228,9 @@ void OrdinaryMoveThenNativeWaterUsesTheCurrentDoodadOwner() {
     for (unsigned y = 6; y < 10; ++y) for (unsigned x = 6; x < 10; ++x) expected[16 + y * 32 + x] = std::byte{0x1b};
     const auto terrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
     const auto journal = f.edits->ExportTerrainStrokeJournal();
-    Require(!journal.Succeeded() && HasCode(journal, "TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE")
+    Require(journal.Succeeded() && journal.value && journal.value->strokes.size() == 2
+        && journal.value->strokes[0].frozenDoodads && journal.value->strokes[1].intent.waterBrush
         && f.edits->IsDirty() && Take(OrdinaryCurrent(f).Serialize()) == movedWire,
-        "ordinary edits are retained as raw project data and cannot be falsely replayed as terrain-only typed commands");
+        "ordinary edit keeps its frozen full command before the water step rather than impersonating a terrain brush");
     f.SaveExpected("ordinary-move-before-native-water.w3x", terrain, expected, &movedWire, true);
 }

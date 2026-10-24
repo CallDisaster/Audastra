@@ -36,7 +36,7 @@ public:
     [[nodiscard]] static Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(const WorkspaceSnapshot& source,
         const MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
         const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes = 64u * 1024u * 1024u);
-    // journal只持typed意图和身份；实际来源、资源、私有special谱系仍从owned replay重建。
+    // journal持typed意图/身份和有界普通DOO中段；实际来源、资源及私有special谱系仍从owned replay重建。
     [[nodiscard]] static Result<MapData::TerrainStrokeJournal> CaptureJournal(const MapArchiveSession& source,
         const MapData::MapDataEditSession& edits);
     [[nodiscard]] static Result<MapData::TerrainStrokeJournal> CaptureJournal(const WorkspaceSnapshot& source,

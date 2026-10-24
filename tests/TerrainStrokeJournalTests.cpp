@@ -1,4 +1,6 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainClassicDoodads.h"
+#include "War3MapCore/Hash.h"
 
 #include <algorithm>
 #include <iostream>
@@ -52,7 +54,8 @@ void StrictCodecRoundtripAndMalformedInputs() {
     Require(EncodeTerrainStrokeJournal(invalid).Succeeded(), "4096 points remains in domain");
     invalid.strokes[0].intent.points.push_back({256, 256});
     Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "4097 points cannot be trimmed or split");
-    invalid = Journal(); invalid.strokes.assign(129, invalid.strokes.front());
+    invalid = Journal(); const auto oversizedStroke = invalid.strokes.front();
+    invalid.strokes.assign(129, oversizedStroke);
     Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "129 strokes rejected");
     invalid = Journal(); auto& water = invalid.strokes[0];
     water.intent.brush = {}; water.intent.waterBrush = TerrainWaterStrokeOptions{}; water.rulesSha256.assign(64, 'd');
@@ -355,6 +358,8 @@ void RemoveWaterUsesTheOrdinaryJournalOpcode() {
         "native shallow/deep creation followed by removal keeps ordered FTJ3 history");
 }
 
+#include "TerrainDoodadsJournalCases.h"
+
 void LogicalQtReplayAndSavedBoundary() {
     SessionFixture f; f.Raise(); const auto first = f.session.LastEdit();
     const auto firstState = f.session.TerrainJournalStateFingerprint();
@@ -400,6 +405,9 @@ int main() {
         BoundsVersionHasIndependentPayloadAndStrictVariants();
         PaletteVersionHasStrictZeroPointPayload();
         RemoveWaterUsesTheOrdinaryJournalOpcode();
+        OrdinaryDoodadsDeltaIsBoundedAndPreservesFullClassicIdentity();
+        OrdinaryDoodadsJournalVersionAndStrictVariants();
+        OrdinaryDoodadsFreezeKeepsRealCommandScopeAndUndo();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

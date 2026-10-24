@@ -194,6 +194,10 @@ public:
     // 宿主仍须以MatchesTerrainJournalDraft逐字比较全部输出后才能安装候选。
     [[nodiscard]] Status RestoreTerrainJournalDescriptions(const MapDataEditSession& expected,
         std::size_t maximumBytes, std::size_t maximumWork);
+    // owned journal工厂的普通DOO窄域步骤；完整CAS及同特殊尾后走正常EditDoodads。
+    // 不恢复raw尾段来源，不接受任意成员或special改动。
+    [[nodiscard]] Status ReplayTerrainJournalDoodads(const TerrainDoodadsJournalEdit& edit,
+        std::size_t maximumBytes, std::size_t maximumWork);
     [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges(); }
     // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
     [[nodiscard]] std::string TerrainJournalStateFingerprint() const;

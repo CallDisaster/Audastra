@@ -834,7 +834,7 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
         return fail("TERRAIN_JOURNAL_SAVED_BOUNDARY");
     // 工程CAS是频繁冷读；原始Undo历史不裁剪，导出只扫描有界尾部。
     if (cursor_ - terrainJournalSavedCursor_ > 4096) return fail("TERRAIN_JOURNAL_BUDGET");
-    std::vector<const Command*> active;
+    std::vector<std::shared_ptr<const Command>> active;
     std::unordered_set<std::uint64_t> activeIdentities;
     for (auto i = terrainJournalSavedCursor_; i < cursor_; ++i) {
         const auto& command = *history_[i];
@@ -846,19 +846,51 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
         } else {
             if (!activeIdentities.insert(command.logicalIdentity).second)
                 return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
-            active.push_back(&command);
+            active.push_back(history_[i]);
         }
     }
     if (active.size() > 128) return fail("TERRAIN_JOURNAL_BUDGET");
     TerrainStrokeJournal journal;
-    std::size_t points = 0;
-    for (const auto* command : active) {
+    std::size_t points = 0, frozenBytes = 0;
+    for (const auto& command : active) {
         if (command->boundsIntent) {
             TerrainJournalStroke bounds; bounds.intent.bounds = command->boundsIntent;
             bounds.rulesSha256 = command->boundsRulesSha256;
             journal.strokes.push_back(std::move(bounds)); continue;
         }
         if (!command->terrainStroke) {
+            if (command->changes.size() == 1 && command->changes.front().kind == MapDataKind::Doodads
+                && command->changes.front().before && command->changes.front().after && command->terrain.empty()
+                && !command->headerBefore && !command->headerAfter && !command->pathingBefore && !command->pathingAfter
+                && !command->restrictionBefore && !command->restrictionAfter && !command->specialBefore && !command->specialAfter
+                && !command->boundsBefore && !command->boundsAfter) {
+                const auto& change = command->changes.front();
+                const auto retainedBefore = frozenBytes;
+                const auto retain = [&](std::size_t count, std::size_t element = 1) {
+                    if (count > (TerrainJournalMaximumBytes - frozenBytes) / element) return false;
+                    frozenBytes += count * element; return true;
+                };
+                // 别名也保活Command的原生摆放行谱系；只读容量，不在UI解析或散列大DOO。
+                if (!retain(4096 + sizeof(Command)) || !retain(command->changes.capacity(), sizeof(MemberChange))
+                    || !retain(change.before->capacity()) || !retain(change.after->capacity()))
+                    return fail("TERRAIN_JOURNAL_BUDGET");
+                if (command->placements) {
+                    // 普通摆放事务至多为Units/DOO各保留一条谱系，先限容再访问嵌套容量。
+                    if (command->placements->size() > 2
+                        || !retain(command->placements->capacity(), sizeof(PlacementRowLineage)))
+                        return fail("TERRAIN_JOURNAL_BUDGET");
+                    for (const auto& lineage : *command->placements)
+                        if (!retain(lineage.beforeToAfter.capacity(), sizeof(std::optional<std::uint32_t>)))
+                            return fail("TERRAIN_JOURNAL_BUDGET");
+                }
+                FrozenTerrainDoodadsJournalEdit frozen;
+                frozen.before_ = std::shared_ptr<const std::vector<std::byte>>(command, &*change.before);
+                frozen.after_ = std::shared_ptr<const std::vector<std::byte>>(command, &*change.after);
+                frozen.sessionIdentity_ = command->sessionIdentity; frozen.logicalIdentity_ = command->logicalIdentity;
+                frozen.retainedBytes_ = frozenBytes - retainedBefore;
+                TerrainJournalStroke ordinary; ordinary.frozenDoodads = std::move(frozen);
+                journal.strokes.push_back(std::move(ordinary)); continue;
+            }
             // 四说明字段不影响资源/地形重放。正文已由raw W3I保存，不能重复序列化
             // 进typed记录，更不能把任意其它设置或WTS事务当作说明修改跳过。
             if (command->changes.size() == 1 && command->changes.front().kind == MapDataKind::Settings
@@ -927,6 +959,30 @@ std::string MapDataEditSession::TerrainJournalStateFingerprint() const {
     journal.value->sourceSha256.assign(64, '0');
     for (std::size_t i = 0; i < TerrainJournalMemberNames.size(); ++i)
         journal.value->members.push_back({std::string(TerrainJournalMemberNames[i]), i < 2, i < 2 ? std::string(64, '0') : std::string{}, 0});
+    if (std::any_of(journal.value->strokes.begin(), journal.value->strokes.end(), [](const auto& stroke) { return stroke.frozenDoodads.has_value(); })) {
+        // CAS只在当前会话比较：不可变真实command的session/logicalIdentity一一绑定正文。
+        // 保留有序variant与typed笔划摘要；Undo归并回同一活动前缀时令牌也精确回原值。
+        // 不物化delta、不读DOO，后台持久化仍必须重新完整SHA/codec。
+        std::string scope = "FTJ7-command-scope:";
+        std::vector<TerrainJournalStroke> typed;
+        typed.reserve(journal.value->strokes.size());
+        for (auto& stroke : journal.value->strokes) {
+            if (stroke.frozenDoodads) {
+                scope += "D:" + std::to_string(stroke.frozenDoodads->SessionIdentity()) + ":"
+                    + std::to_string(stroke.frozenDoodads->LogicalIdentity()) + ";";
+            } else { scope += "T;"; typed.push_back(std::move(stroke)); }
+        }
+        journal.value->strokes = std::move(typed);
+        if (!journal.value->strokes.empty()) {
+            const auto wire = EncodeTerrainStrokeJournal(*journal.value);
+            if (!wire.Succeeded() || !wire.value) return required + "unexpressible";
+            const auto typedHash = Sha256(*wire.value);
+            if (!typedHash.Succeeded() || !typedHash.value) return {};
+            scope += *typedHash.value;
+        }
+        const auto hash = Sha256(std::as_bytes(std::span(scope.data(), scope.size())));
+        return hash.Succeeded() && hash.value ? required + "mixed:" + *hash.value : std::string{};
+    }
     const auto bytes = EncodeTerrainStrokeJournal(*journal.value);
     if (!bytes.Succeeded() || !bytes.value) return required + "unexpressible";
     const auto hash = Sha256(*bytes.value);

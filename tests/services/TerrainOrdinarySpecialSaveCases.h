@@ -76,8 +76,9 @@ void OrdinarySpecialMutationsUseBothStagesAndSavedHistory() {
         Require(!f.edits->VerifyTerrainPathingForSave().Succeeded(),
             "the public invariant gate is not expanded to authorize mixed static contributions");
         const auto journal = f.edits->ExportTerrainStrokeJournal();
-        Require(!journal.Succeeded() && HasCode(journal, "TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE"),
-            "ordinary XY history remains a full raw project draft rather than a fabricated terrain-only replay");
+        Require(journal.Succeeded() && journal.value && journal.value->strokes.size() == 2
+            && journal.value->strokes[moveFirst ? 0 : 1].frozenDoodads,
+            "mixed history freezes the actual ordinary command in order without granting raw special provenance");
         f.SaveExpected("ordinary-special-final.w3x", waterTerrain,
             OrdinarySpecialExpectedPathing(f, true, true), &combinedWire, true);
         Require(f.edits->Undo(), "first mixed command remains undoable across native save");

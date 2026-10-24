@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/TerrainClassicDoodads.h"
 
 #include <algorithm>
 #include <new>
@@ -11,16 +12,6 @@
 namespace War3Map::MapData {
 namespace {
 constexpr auto kSubsystem = "Terrain.NativeDoodads";
-constexpr std::size_t kMaximumBytes = 64u * 1024u * 1024u;
-constexpr std::size_t Ceil(std::size_t count, std::size_t size) { return count / size + (count % size != 0); }
-// ROC普通记录最短42字节，嵌套集合/物品最少4/8，特殊记录16。
-// 四份树涵盖parser、writer内部重新解析与完整原字往返；十份wire预留
-// OriginalBytes副本、writer容量增长和散列。实际解析前由保存总预算预收。
-constexpr auto kExpansion = std::max({Ceil(sizeof(DoodadPlacement), 42),
-    Ceil(sizeof(PlacementItemSet), 4), Ceil(sizeof(PlacementItemChoice), 8),
-    Ceil(sizeof(SpecialDoodadPlacement), 16), std::size_t{1}});
-constexpr auto kFactor = 4 * kExpansion + 10;
-constexpr auto kFixedBytes = 4 * sizeof(DoodadPlacements) + 4096;
 
 Status Fail(const char* code, std::string message) { return Status::Failure(kSubsystem, code, std::move(message)); }
 bool ValidSha(std::string_view value) {
@@ -28,32 +19,11 @@ bool ValidSha(std::string_view value) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     });
 }
-Result<DoodadPlacements> Roundtrip(std::span<const std::byte> wire) {
-    PlacementReadLimits limits; limits.maxBytes = wire.size();
-    auto parsed = ParseDoodadPlacements(wire, limits);
-    if (!parsed.Succeeded() || !parsed.value) return parsed;
-    if (parsed.value->recordLayout != PlacementRecordLayout::Classic
-        || !IsClassicPlacementVersion(parsed.value->version, parsed.value->subversion)
-        || parsed.value->specialVersion != 0)
-        return Result<DoodadPlacements>::Failure(kSubsystem, "TERRAIN_NATIVE_DOODADS_LAYOUT",
-            "地形组合保存只接受完整经典无皮肤DOO成员。");
-    auto encoded = parsed.value->Serialize(limits);
-    if (!encoded.Succeeded() || !encoded.value) return {{}, std::move(encoded.diagnostics)};
-    if (!std::equal(wire.begin(), wire.end(), encoded.value->begin(), encoded.value->end()))
-        return Result<DoodadPlacements>::Failure(kSubsystem, "TERRAIN_NATIVE_DOODADS_ROUNDTRIP",
-            "DOO不能由唯一经典codec逐字往返，未取得普通对象编辑资格。");
-    return parsed;
-}
 }
 
 Result<std::size_t> TerrainNativeDoodadsProof::RequiredWorkingBytes(
     std::size_t beforeBytes, std::size_t afterBytes, std::size_t remainingBytes) {
-    using Output = Result<std::size_t>;
-    if (remainingBytes > kMaximumBytes || beforeBytes > kMaximumBytes || afterBytes > kMaximumBytes - beforeBytes
-        || remainingBytes < kFixedBytes || beforeBytes + afterBytes > (remainingBytes - kFixedBytes) / kFactor)
-        return Output::Failure(kSubsystem, "TERRAIN_NATIVE_DOODADS_BUDGET",
-            "剩余地形保存预算不足以完整解析并逐字往返旧/新DOO。");
-    return Output::Success(kFixedBytes + (beforeBytes + afterBytes) * kFactor);
+    return TerrainClassicDoodadsWorkingBytes(beforeBytes, afterBytes, remainingBytes);
 }
 
 Result<TerrainNativeDoodadsProof> TerrainNativeDoodadsProof::Prepare(
@@ -69,8 +39,8 @@ Result<TerrainNativeDoodadsProof> TerrainNativeDoodadsProof::Prepare(
         if (!required.Succeeded() || !required.value) return {{}, required.diagnostics};
         if (*required.value != prepaidBytes)
             return Output::Failure(kSubsystem, "TERRAIN_NATIVE_DOODADS_BUDGET", "DOO证明须消费保存计划精确预收的工作额度。");
-        auto old = Roundtrip(*before); if (!old.Succeeded() || !old.value) return {{}, std::move(old.diagnostics)};
-        auto current = Roundtrip(*after); if (!current.Succeeded() || !current.value) return {{}, std::move(current.diagnostics)};
+        auto old = ReadTerrainClassicDoodadsRoundtrip(*before); if (!old.Succeeded() || !old.value) return {{}, std::move(old.diagnostics)};
+        auto current = ReadTerrainClassicDoodadsRoundtrip(*after); if (!current.Succeeded() || !current.value) return {{}, std::move(current.diagnostics)};
         const auto provenance = session.VerifyTerrainSpecialDoodadProvenance(*old.value, *current.value);
         if (!provenance.Succeeded()) return {{}, provenance.diagnostics};
         if (old.value->version != current.value->version || old.value->subversion != current.value->subversion)

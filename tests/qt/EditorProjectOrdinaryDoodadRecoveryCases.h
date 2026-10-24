@@ -1,7 +1,7 @@
 #pragma once
 
 // 在EditorProjectTests类声明之后包含；复用其原创MPQ与真实工程/地图保存入口。
-// 普通DOO命令尚无FTJ表达，明确验证raw冷恢复而非伪造旧撤销历史。
+// 明确制作旧版raw-only工程，验证兼容恢复不会伪造已经丢失的撤销历史。
 namespace {
 void AddOrdinaryRecoveryPattern(std::vector<std::byte>& pathing, unsigned x) {
     // 独立字面矩阵：原创3x2顶原点TGA(黑蓝绿/红青紫)，角0投影为2x3。
@@ -86,7 +86,8 @@ void EditorProjectTests::OrdinaryDoodadProjectRawColdRestoreAndNativeSave() {
     PushMapDataEdit(project, "Pathing restriction", "保留独立通行限制");
     QCOMPARE(initialUndo.count(), 3);
     const auto journal = project.mapEdits_->ExportTerrainStrokeJournal();
-    QVERIFY(!journal.Succeeded() && HasReadDiagnostic(journal, "TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE"));
+    QVERIFY(journal.Succeeded() && journal.value && journal.value->strokes.size() == 3);
+    QVERIFY(journal.value->strokes.front().frozenDoodads);
     const auto draft = TerrainJournalDraftBytes(*project.mapEdits_);
     const auto restrictions = project.mapEdits_->SerializePathingRestrictionDraft();
     QVERIFY(restrictions.Succeeded() && !restrictions.value->empty());
@@ -103,9 +104,25 @@ void EditorProjectTests::OrdinaryDoodadProjectRawColdRestoreAndNativeSave() {
     expectedDraftPathing[16 + 1 * 32 + 1] |= std::byte{0x04};
     QCOMPARE(draft.at("war3map.wpm"), expectedDraftPathing);
 
+    const auto completeForge = std::filesystem::path(root.filePath("ordinary-ftj7.forge").toStdWString());
+    const auto saved = project.SaveProjectToPath(completeForge); QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
+    QVERIFY(!HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    // 旧版确实没有前向记录：从实际新工程同时删除声明与载荷，raw覆盖逐字保留。
+    const auto complete = MapArchiveSession::Open(completeForge); QVERIFY(complete.Succeeded());
+    QVERIFY(complete.value->HasMember("overlay/editor/terrain-strokes.bin"));
+    auto legacyFiles = std::vector<MapArchiveMember>(complete.value->Members().begin(), complete.value->Members().end());
+    std::erase_if(legacyFiles, [](const auto& entry) { return entry.name == "overlay/editor/terrain-strokes.bin"; });
+    for (auto& entry : legacyFiles) if (entry.name == "project.json") {
+        auto legacyManifest = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(entry.data.data()),
+            static_cast<qsizetype>(entry.data.size()))).object();
+        legacyManifest.remove("terrainStrokeJournal");
+        legacyManifest["terrainJournalWarning"] = QStringLiteral("草稿已完整保留；旧版工程没有前向记录，普通摆放与水刷历史未恢复。");
+        const auto json = QJsonDocument(legacyManifest).toJson(QJsonDocument::Compact);
+        const auto bytes = std::as_bytes(std::span(json.data(), static_cast<std::size_t>(json.size())));
+        entry.data.assign(bytes.begin(), bytes.end());
+    }
     const auto forge = std::filesystem::path(root.filePath("ordinary.forge").toStdWString());
-    const auto saved = project.SaveProjectToPath(forge); QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
-    QVERIFY(HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    QVERIFY(WriteVerifiedArchive(forge, legacyFiles).Succeeded());
     auto opened = PrepareProjectOpen(forge, game); QVERIFY2(opened.Succeeded(), ReadDiagnosticText(opened).c_str());
     QVERIFY(HasReadDiagnostic(opened, "TERRAIN_JOURNAL_DRAFT_ONLY"));
     QVERIFY(!HasReadDiagnostic(opened, "TERRAIN_JOURNAL_RESTORED"));

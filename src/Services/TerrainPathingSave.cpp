@@ -42,6 +42,26 @@ bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke) {
         && palette.expectedRawcode != palette.replacementRawcode;
 }
 
+Status ValidateJournalReplayAlignment(std::span<const MapData::TerrainStrokeIntent> strokes,
+    const MapData::TerrainStrokeJournal* journal) {
+    if (!journal) return Status::Ok();
+    const auto valid = MapData::ValidateTerrainStrokeJournal(*journal);
+    if (!valid.Succeeded()) return valid;
+    if (journal->strokes.size() != strokes.size())
+        return Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_INTENT_ALIGNMENT", "工程记录和私有重放意图数量不一致。");
+    for (std::size_t i = 0; i < strokes.size(); ++i) {
+        const auto& record = journal->strokes[i];
+        // 即使工厂由同一份记录复制，仍逐项双向核对所有字段与准确variant。
+        // 公共ReplayStrokes没有journal，不能靠空点/默认brush进入普通DOO分支。
+        const bool placeholder = MapData::IsTerrainDoodadsJournalPlaceholder(strokes[i]);
+        if (!MapData::EqualTerrainJournalIntent(strokes[i], record.intent)
+            || placeholder != record.ordinaryDoodads.has_value() || record.frozenDoodads
+            || (record.ordinaryDoodads && (!record.rulesSha256.empty() || record.cliffEnforceWaterLimits)))
+            return Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_INTENT_ALIGNMENT", "普通DOO记录必须对应唯一中性占位，typed笔划不能借占位或顺序取得恢复资格。");
+    }
+    return Status::Ok();
+}
+
 template<class Source, class Reader>
 Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(const Source& source, const MapData::MapDataEditSession& edits,
     MapData::TerrainTextureTable table, std::uint32_t slot, const std::string& rawcode,
@@ -119,8 +139,14 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         return fail("TERRAIN_REPLAY_LIMITS", "重放预算只能收紧且不能为零。");
     if (strokes.empty() || strokes.size() > 128)
         return fail("TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
+    const auto aligned = ValidateJournalReplayAlignment(strokes, journal);
+    if (!aligned.Succeeded()) return {{}, aligned.diagnostics};
     std::size_t pointCount = 0;
+    std::size_t inputIndex = 0;
     for (const auto& stroke : strokes) {
+        const bool ordinary = journal && journal->strokes[inputIndex].ordinaryDoodads.has_value();
+        ++inputIndex;
+        if (ordinary) continue;
         if (stroke.palette) {
             if (!PaletteCommand(stroke)) return fail("TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换，不能携带笔刷、范围或采样点。");
             continue;
@@ -150,7 +176,23 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         const auto beforeRevision = candidate.Revision();
         if (!candidate.Terrain()) return fail("TERRAIN_REPLAY_UNAVAILABLE", "重放候选缺少当前地形。");
         const TerrainEditBinding binding{document, candidate.SessionIdentity(), candidate.Revision(), candidate.TerrainSourceRevision()};
-        if (stroke.palette) {
+        if (journal && journal->strokes[strokeIndex].ordinaryDoodads) {
+            const auto& edit = *journal->strokes[strokeIndex].ordinaryDoodads;
+            const auto available = limits.maximumCandidateBytes - historyBytes;
+            const auto cost = MapData::MeasureTerrainDoodadsJournalEdit(edit.beforeBytes, edit.afterBytes,
+                available, limits.maximumWork - work);
+            if (!cost.Succeeded() || !cost.value
+                || cost.value->workingBytes > available
+                || !reserve(work, limits.maximumWork, cost.value->work)
+                || !reserve(historyBytes, limits.maximumCandidateBytes, cost.value->retainedBytes))
+                return fail("TERRAIN_REPLAY_BUDGET", "普通DOO完整codec、命令历史或累计散列预算不足。");
+            const auto applied = candidate.ReplayTerrainJournalDoodads(edit, cost.value->workingBytes, cost.value->work);
+            if (!applied.Succeeded()) return {{}, applied.diagnostics};
+            if (candidate.Revision() == beforeRevision)
+                return fail("TERRAIN_JOURNAL_NO_CHANGE", "普通DOO记录没有形成真实命令，未安装任何前缀。");
+            if (receipts) receipts->push_back(candidate.LastEdit());
+            ++strokeIndex; continue;
+        } else if (stroke.palette) {
             const auto& intent = *stroke.palette;
             const auto& table = intent.table == MapData::TerrainTextureTable::Ground
                 ? candidate.Terrain()->header.groundTilesets : candidate.Terrain()->header.cliffTilesets;
@@ -443,8 +485,14 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
         return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_LIMITS", "重放预算只能收紧且不能为零。");
     if (strokes.empty() || strokes.size() > 128)
         return Output::Failure("Terrain.Replay", "TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
+    const auto aligned = ValidateJournalReplayAlignment(strokes, journal);
+    if (!aligned.Succeeded()) return {{}, aligned.diagnostics};
     std::size_t points = 0;
+    std::size_t inputIndex = 0;
     for (const auto& stroke : strokes) {
+        const bool ordinary = journal && journal->strokes[inputIndex].ordinaryDoodads.has_value();
+        ++inputIndex;
+        if (ordinary) continue;
         if (stroke.palette) {
             if (!PaletteCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换，不能携带笔刷、范围或采样点。");
             continue;
@@ -563,6 +611,10 @@ Result<MapData::TerrainStrokeJournal> CaptureJournal(const MapData::MapDataEditS
         }
         journal.members.push_back({std::string(MapData::TerrainJournalMemberNames[i]), member.present, std::move(hash), member.bytes.size()});
     }
+    const auto materialized = MapData::MaterializeTerrainJournalDoodads(journal);
+    if (!materialized.Succeeded()) return {{}, materialized.diagnostics};
+    const auto valid = MapData::ValidateTerrainStrokeJournal(journal);
+    if (!valid.Succeeded()) return {{}, valid.diagnostics};
     return Result<MapData::TerrainStrokeJournal>::Success(std::move(journal));
 }
 
@@ -610,6 +662,12 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
     if (!charge(remaining.maximumCandidateBytes, descriptionBytes, 1)
         || !charge(remaining.maximumWork, descriptionWork, 1))
         return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "工程说明合并没有留下完整重放预算。");
+    // 解码后的journal正文仍与候选共存；普通DOO的插入载荷不能只收临时patch/命令而漏掉输入驻留。
+    for (const auto& stroke : journal.strokes)
+        if (stroke.ordinaryDoodads
+            && (!charge(remaining.maximumCandidateBytes, stroke.ordinaryDoodads->inserted.size(), 1)
+                || !charge(remaining.maximumWork, stroke.ordinaryDoodads->inserted.size(), 1)))
+            return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "普通DOO记录的输入载荷超过剩余候选或工作预算。");
     // owned factory现有接口接收连续typed intents；在复制任何点之前预收该有界副本。
     if (!charge(remaining.maximumCandidateBytes, journal.strokes.size(), sizeof(MapData::TerrainStrokeIntent)))
         return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向笔划副本超过候选预算。");

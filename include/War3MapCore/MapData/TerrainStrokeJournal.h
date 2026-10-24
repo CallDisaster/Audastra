@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/MapData/TerrainStrokeIntent.h"
+#include "War3MapCore/MapData/TerrainDoodadsJournal.h"
 
 #include <array>
 #include <string_view>
@@ -20,6 +21,10 @@ struct TerrainJournalMember {
 };
 struct TerrainJournalStroke {
     TerrainStrokeIntent intent;
+    // FTJ7独立普通DOO记录；intent必须完全中性，不进入公共笔刷请求域。
+    std::optional<TerrainDoodadsJournalEdit> ordinaryDoodads;
+    // 仅UI冻结的真实历史别名，后台Capture物化前不能编码、解码或恢复。
+    std::optional<FrozenTerrainDoodadsJournalEdit> frozenDoodads;
     // FTJ6新增独立palette变体，复用实际owner的完整规则/来源摘要；不携带验证位。
     // 水算法由intent.waterBrush.algorithm显式决定：FTJ1/2固定v1，FTJ3/4逐水笔记录v1/v2。
     // FTJ4沿用FTJ3正文布局，新增独立CornerRamp=13，必需单点/实际规则与完整DOO摘要。
@@ -36,6 +41,8 @@ struct TerrainStrokeJournal {
 };
 
 [[nodiscard]] Status ValidateTerrainStrokeJournal(const TerrainStrokeJournal& journal);
+// Services后台补来源身份后调用；累计预收codec/扫描/中段容量，成功后释放全部冻结别名。
+[[nodiscard]] Status MaterializeTerrainJournalDoodads(TerrainStrokeJournal& journal);
 [[nodiscard]] Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJournal& journal);
 [[nodiscard]] Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byte> bytes);
 
