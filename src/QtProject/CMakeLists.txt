@@ -56,6 +56,7 @@ qt_add_library(War3MapQtProject STATIC
     ProjectSummary.cpp
     UiLibraryState.cpp
     UiLibraryWatch.cpp
+    BundledUiLibrary.cpp BundledUiLibrary.h
     ProjectReferences.cpp
     ProjectDeletionAssessment.cpp
     ProjectValidation.cpp
@@ -76,5 +77,11 @@ target_link_libraries(War3MapQtProject
         War3MapEditor::Services
         Qt6::Core
         Qt6::Gui)
+# 编辑器自带的触发器函数库包（AudastraUI），作者确认后装进数据根。
+file(GLOB_RECURSE audastra_ui_library CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/assets/ui-library/*")
+qt_add_resources(War3MapQtProject "audastra_ui_library"
+    PREFIX "/audastra/ui-library"
+    BASE "${PROJECT_SOURCE_DIR}/assets/ui-library"
+    FILES ${audastra_ui_library})
 target_compile_definitions(War3MapQtProject PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(War3MapQtProject PRIVATE /W4 /permissive- /utf-8)

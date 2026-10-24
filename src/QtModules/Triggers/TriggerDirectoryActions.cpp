@@ -300,46 +300,15 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
     if (trigger == nullptr || trigger->name.text == name) {
         return;
     }
-    std::unique_ptr<QtProject::TriggerGraphSnapshotUndoCommand> command;
-    try {
-        if (!project_.uiCatalog_) return;
-        const auto references = project_.CaptureTriggerMapObjectReferences();
-        const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()
-            ? references.value->get() : nullptr;
-        const auto binding = Trigger::CaptureTriggerGraphBinding(*document, *project_.uiCatalog_, objects);
-        if (!binding.Succeeded()) {
-            project_.AddDiagnostics(binding.diagnostics);
-            ShowStatus(tr("未重命名：%1").arg(FirstMessage(binding.diagnostics, tr("来源校验失败"))), 10000);
-            return;
-        }
-        Trigger::TriggerGraphEditBatch batch;
-        batch.expected = *binding.value;
-        // 不替作者签发代码审计：自定义正文、非空 WCT 与不透明脚本仍由 Core 明确拒绝。
-        batch.operations.emplace_back(Trigger::GraphRename{
-            {Trigger::GraphRecordKind::Trigger, item.triggerId, {}}, trigger->name, name, {}});
-        Trigger::TriggerDocument before(*document);
-        Trigger::TriggerDocument candidate(before);
-        const auto renamed = Trigger::ApplyTriggerGraphEditBatch(candidate, *project_.uiCatalog_, batch, {}, objects);
-        if (!renamed.Succeeded()) {
-            project_.AddDiagnostics(renamed.diagnostics);
-            ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("引用同步校验失败"))), 10000);
-            return;
-        }
-        command = std::make_unique<QtProject::TriggerGraphSnapshotUndoCommand>(
-            project_, std::move(before), std::move(candidate), tr("重命名触发器"));
-        if (!command->Ready()) {
-            ShowStatus(tr("未重命名：来源通知、会话或函数目录已变化。"), 10000);
-            return;
-        }
-    } catch (...) {
-        project_.AddDiagnostic(tr("错误"), tr("触发器"), QStringLiteral("TRIGGER_RENAME_PREPARE_FAILED"),
-            tr("无法准备完整引用同步事务；未重命名、未发布候选。"));
-        ShowStatus(tr("未重命名：无法准备完整引用同步事务。"), 10000);
+    // 不替作者签发代码审计：自定义正文、非空 WCT 与不透明脚本仍由 Core 明确拒绝。
+    std::vector<Trigger::GraphEditOperation> operations;
+    operations.emplace_back(Trigger::GraphRename{{Trigger::GraphRecordKind::Trigger, item.triggerId, {}}, trigger->name, name, {}});
+    const auto renamed = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("重命名触发器"));
+    if (!renamed.Succeeded()) {
+        project_.AddDiagnostics(renamed.diagnostics);
+        ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("引用同步校验失败"))), 10000);
         return;
     }
-    const auto published = command->FirstPublication();
-    project_.triggerUndoStack_->push(command.release());
-    if (!*published) { ShowStatus(tr("未重命名：完整引用同步事务未能发布。"), 10000); return; }
     RefreshExplorer();
 }
 

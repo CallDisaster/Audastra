@@ -1,3 +1,4 @@
+#include "AudastraUiCatalog.h"
 #include "War3MapCore/GameUi/FrameDefinition.h"
 #include "War3MapCore/GameUi/FrameLibrary.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
@@ -28,71 +29,21 @@ using namespace War3Map::Trigger;
 void Require(bool value, const std::string& message) {
     if (!value) throw std::runtime_error(message);
 }
-void Write(const std::filesystem::path& file, std::string_view text) {
-    std::filesystem::create_directories(file.parent_path());
-    std::ofstream stream(file, std::ios::binary);
-    stream << text;
-    Require(stream.good(), "write " + file.string());
-}
 std::string First(const std::vector<Diagnostic>& diagnostics) {
     return diagnostics.empty() ? std::string("（无诊断）") : diagnostics.front().code + " " + diagnostics.front().message;
 }
 bool Contains(const std::string& text, std::string_view part) { return text.find(part) != std::string::npos; }
 
-// 生成文本用到的原版函数，参数类型与 TriggerData 一致。
-constexpr std::string_view kBaseDefine =
-    "[TriggerTypes]\n"
-    "boolean=0,1,1,Boolean,boolean\ninteger=0,1,1,Integer,integer\nreal=0,1,1,Real,real\nstring=0,1,1,String,string\n"
-    "ComparisonOperator=0,0,0,Comparison\nEqualNotEqualOperator=0,0,0,EqualNotEqual\nArithmeticOperator=0,0,0,Arithmetic\n"
-    "scriptcode=0,0,0,Script,string\n"
-    "[TriggerParams]\n"
-    "OperatorEqual=0,ComparisonOperator,==,Equal\nOperatorNotEqual=0,ComparisonOperator,!=,NotEqual\n"
-    "OperatorEqualENE=0,EqualNotEqualOperator,==,Equal\nOperatorNotEqualENE=0,EqualNotEqualOperator,!=,NotEqual\n"
-    "OperatorAdd=0,ArithmeticOperator,+,Add\nOperatorMultiply=0,ArithmeticOperator,*,Multiply\n";
-constexpr std::string_view kBaseEvent = "[TriggerRegisterTimerEventSingle]\n[[.args]]\ntype=real\n";
-constexpr std::string_view kBaseCondition =
-    "[OperatorCompareBoolean]\nreturns=boolean\n[[.args]]\ntype=boolean\n[[.args]]\ntype=EqualNotEqualOperator\n[[.args]]\ntype=boolean\n"
-    "[OperatorCompareInteger]\nreturns=boolean\n[[.args]]\ntype=integer\n[[.args]]\ntype=ComparisonOperator\n[[.args]]\ntype=integer\n"
-    "[OperatorCompareReal]\nreturns=boolean\n[[.args]]\ntype=real\n[[.args]]\ntype=ComparisonOperator\n[[.args]]\ntype=real\n"
-    "[OperatorCompareString]\nreturns=boolean\n[[.args]]\ntype=string\n[[.args]]\ntype=EqualNotEqualOperator\n[[.args]]\ntype=string\n";
-constexpr std::string_view kBaseAction =
-    "[IfThenElseMultiple]\n[ForLoopAMultiple]\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
-    "[SetVariable]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n[ReturnAction]\n[CommentString]\n[[.args]]\ntype=scriptcode\n";
-constexpr std::string_view kBaseCall =
-    "[GetForLoopIndexA]\nreturns=integer\n"
-    "[I2R]\nreturns=real\n[[.args]]\ntype=integer\n[I2S]\nreturns=string\n[[.args]]\ntype=integer\n"
-    "[OperatorInt]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=integer\n"
-    "[OperatorReal]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=real\n"
-    "[OperatorString]\nreturns=string\n[[.args]]\ntype=string\n[[.args]]\ntype=string\n";
-
 struct Fixture {
-    std::filesystem::path root = std::filesystem::temp_directory_path()
-        / ("Audastra-UiTriggers-" + std::to_string(GetCurrentProcessId()) + '-' + std::to_string(GetTickCount64()));
+    AudastraUiTest::Catalog files;
     UiCatalog catalog;
     TriggerDocument doc;
 
     Fixture() {
-        Write(root / "ui/config", "base\nAudastraUI\n");
-        Write(root / "ui/base/define.txt", kBaseDefine);
-        Write(root / "ui/base/event.txt", kBaseEvent);
-        Write(root / "ui/base/condition.txt", kBaseCondition);
-        Write(root / "ui/base/action.txt", kBaseAction);
-        Write(root / "ui/base/call.txt", kBaseCall);
-        const std::filesystem::path library = AUDASTRA_UI_LIBRARY_DIR "/AudastraUI";
-        std::filesystem::create_directories(root / "ui/AudastraUI");
-        for (const auto* name : {"define.txt", "event.txt", "action.txt", "call.txt"}) {
-            std::filesystem::copy_file(library / name, root / "ui/AudastraUI" / name);
-        }
-        auto loaded = UiCatalog::Load(root / "ui");
-        Require(loaded.Succeeded(), "AudastraUI 函数库读入：" + First(loaded.diagnostics));
-        catalog = std::move(*loaded.value);
-        auto empty = WtgWctCodec{}.CreateEmpty(catalog);
-        Require(empty.Succeeded(), "空触发器文档：" + First(empty.diagnostics));
-        doc = std::move(*empty.value);
-    }
-    ~Fixture() {
-        std::error_code error;
-        std::filesystem::remove_all(root, error);
+        const auto error = files.Load();
+        Require(error.empty(), error);
+        catalog = std::move(*files.catalog);
+        doc = std::move(*files.document);
     }
 
     Result<TriggerGraphEditReceipt> Apply(const std::string& text) {

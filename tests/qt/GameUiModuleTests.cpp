@@ -1,6 +1,8 @@
+#include "AudastraUiCatalog.h"
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
 #include "GameUiModule.h"
+#include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -70,6 +72,7 @@ private slots:
     void DescriptionPreviewDrivesFrames();
     void AuthoringStagesDescriptionImport();
     void DescriptionDataTablesEdit();
+    void GeneratesDescriptionTriggers();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -530,6 +533,84 @@ void GameUiModuleTests::DescriptionDataTablesEdit() {
     page->findChild<QCheckBox*>(QStringLiteral("showRawFields"))->setChecked(true);
     QCOMPARE(values->horizontalHeaderItem(0)->text(), QStringLiteral("id"));
     QCOMPARE(values->item(0, 2)->text(), QStringLiteral("integer"));
+}
+
+// 一键生成：经共用触发器事务写进 AudastraUI 类别，基础模板放进待保存修改；预览与重复生成不改地图。
+void GameUiModuleTests::GeneratesDescriptionTriggers() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    auto definitions = SyntheticDefinitions();
+    definitions.gameSkins = "[Default]\nMasterFont=Fonts\\dfst-m3u.ttf\n";
+    module.LoadDefinitionsForTesting(std::move(definitions));
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Cast"), QStringLiteral("读条"), &error), qPrintable(error));
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Bar, &error), QStringLiteral("bar1"));
+    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Text, &error), QStringLiteral("text1"));
+    QVERIFY2(module.EditDescription(QStringLiteral("Cast"),
+                 QStringLiteral(R"([{"op":"set_frame","frame":"text1","fields":{"fontHeight":0.013}}])"), {}, &error),
+        qPrintable(error));
+    auto* button = page->findChild<QPushButton*>(QStringLiteral("gameUiGenerateTriggers"));
+    QVERIFY(button && button->isEnabled());
+
+    // 没有触发器文档时明确拒绝。
+    QVERIFY(!module.GenerateDescriptionTriggers(QStringLiteral("Cast"), true, &error));
+    QVERIFY(error.contains(QStringLiteral("触发器")));
+
+    AudastraUiTest::Catalog files;
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto assetSteps = project.AssetUndoStack()->count();
+    const auto category = [&project]() -> const Trigger::CategoryRecord* {
+        const auto& rows = project.triggerDocument_->categories;
+        const auto found = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.name.text == kUiTriggerCategory; });
+        return found == rows.end() ? nullptr : &*found;
+    };
+    const auto staged = [&project](std::string_view path) {
+        const auto entries = project.AssetEntries();
+        return std::any_of(entries.begin(), entries.end(),
+            [&](const auto& entry) { return entry.path.compare(QString::fromUtf8(path.data(), qsizetype(path.size())), Qt::CaseInsensitive) == 0; });
+    };
+
+    const auto preview = module.GenerateDescriptionTriggers(QStringLiteral("Cast"), true, &error);
+    QVERIFY2(preview, qPrintable(error));
+    QVERIFY(preview->featureText.contains(QStringLiteral("AudastraUISetFont(udg_AUI_Cast_text1, \"Fonts\\\\dfst-m3u.ttf\", 0.013, 0)")));
+    QCOMPARE(preview->triggers, (QStringList{QStringLiteral("读条 创建 Cast_Create"), QStringLiteral("读条 更新 Cast_Update")}));
+    QVERIFY(!category() && project.triggerUndoStack_->count() == 0 && project.AssetUndoStack()->count() == assetSteps);
+
+    const auto applied = module.GenerateDescriptionTriggers(QStringLiteral("Cast"), false, &error);
+    QVERIFY2(applied, qPrintable(error));
+    QVERIFY(category());
+    const auto categoryId = category()->categoryId;
+    QCOMPARE(std::count_if(project.triggerDocument_->triggers.begin(), project.triggerDocument_->triggers.end(),
+                 [&](const auto& row) { return row.categoryId == categoryId; }), 2);
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+    QCOMPARE(applied->templateFiles.size(), qsizetype{2});
+    QVERIFY(staged(kUiTemplateTocMember) && staged(kUiTemplateFdfMember));
+    QCOMPARE(project.AssetUndoStack()->count(), assetSteps + 1);
+
+    // 描述没变时再生成：触发器与模板都已相同，不再加撤销步骤。
+    const auto again = module.GenerateDescriptionTriggers(QStringLiteral("Cast"), false, &error);
+    QVERIFY2(again, qPrintable(error));
+    QVERIFY(again->templateFiles.isEmpty());
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+    QCOMPARE(project.AssetUndoStack()->count(), assetSteps + 1);
+
+    // 触发器那一步可以撤销。
+    project.triggerUndoStack_->undo();
+    QVERIFY(!category());
+
+    // 描述不合法的部分（锚在游戏代码区域）整体拒绝，什么都不改。
+    QVERIFY2(module.EditDescription(QStringLiteral("Cast"),
+                 QStringLiteral(R"([{"op":"set_frame","frame":"bar1","fields":{"anchors":[{"point":"center","to":"game:Minimap","toPoint":"center"}]}}])"),
+                 {}, &error),
+        qPrintable(error));
+    QVERIFY(!module.GenerateDescriptionTriggers(QStringLiteral("Cast"), false, &error));
+    QVERIFY(error.contains(QStringLiteral("Minimap")));
+    QVERIFY(!category() && project.triggerUndoStack_->index() == 0);
 }
 
 int main(int argc, char** argv) {

@@ -10,6 +10,7 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <set>
 #include <string>
@@ -330,4 +331,11 @@ private:
     std::shared_ptr<bool> firstPublication_ = std::make_shared<bool>(false);
     [[nodiscard]] bool CanApply(bool forward) const;
 };
+
+// 按当前触发器文档签发绑定，在副本上应用整批图操作；内容有变化时作为一条撤销命令发布。
+// beforePublish 在整批检查通过之后、发布之前调用（例如放入同一功能要用的导入文件），失败时不发布。
+// 任一步失败都不改当前触发器文档并原样返回诊断。各模块的界面操作与 Agent 工具共用。
+[[nodiscard]] Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperations(EditorProject& project,
+    std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel,
+    const std::function<Status()>& beforePublish = {});
 } // namespace War3Map::QtProject

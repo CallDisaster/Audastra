@@ -687,8 +687,19 @@ set_tests_properties(qt-sound-module PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 
+# 自带函数库包的安装：只写包目录，不碰 config。
+qt_add_executable(war3-map-bundled-ui-library-tests BundledUiLibraryTests.cpp)
+target_link_libraries(war3-map-bundled-ui-library-tests PRIVATE War3MapEditor::QtProject Qt6::Test)
+target_compile_options(war3-map-bundled-ui-library-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-bundled-ui-library COMMAND war3-map-bundled-ui-library-tests)
+set_tests_properties(qt-bundled-ui-library PROPERTIES TIMEOUT 45
+    ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
+
 qt_add_executable(war3-map-game-ui-module-tests GameUiModuleTests.cpp)
 target_link_libraries(war3-map-game-ui-module-tests PRIVATE War3MapEditor::QtModuleGameUi Qt6::Test)
+target_include_directories(war3-map-game-ui-module-tests PRIVATE "${PROJECT_SOURCE_DIR}/tests/helpers")
+target_compile_definitions(war3-map-game-ui-module-tests PRIVATE AUDASTRA_UI_LIBRARY_DIR="${PROJECT_SOURCE_DIR}/assets/ui-library")
 target_compile_options(war3-map-game-ui-module-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-game-ui-module COMMAND war3-map-game-ui-module-tests)
 set_tests_properties(qt-game-ui-module PROPERTIES TIMEOUT 45
