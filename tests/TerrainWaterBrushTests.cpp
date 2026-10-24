@@ -597,6 +597,8 @@ void HeightFalloffIndependentBoundaries() {
         && !Math::EncodeBaseHeight(std::numeric_limits<double>::infinity()), "unsupported height output fails closed");
 }
 
+#include "TerrainWaterSpecialRuntimeCases.h"
+
 } // namespace
 
 int main() {
@@ -609,6 +611,11 @@ int main() {
         SpecialDoodadChecksDoNotExpandProcessing(); OrdinaryDoodadExpansionIsBudgetedBeforeCopy(); SpecialDoodadSourceFactsAndFailuresAreAtomic();
         SpecialDoodadDuplicateXyCannotLeaveInvalidSurvivor(); SpecialDoodadLegacyApplyCannotDiscardOwnedDeletion();
         HeightFalloffIndependentBoundaries();
-        std::cout << "TerrainWaterBrush: 18 scenario groups passed\n"; return 0;
+        SpecialRuntimeMappingPreservesDisabledRows();
+        SpecialRuntimeDuplicateXyAndRecaptureUseActiveOrder();
+        SpecialRuntimeNoDeletionKeepsRawSource();
+        SpecialRuntimeMappingKeepsBudgetsAndAtomicFailures();
+        SpecialRuntimeDuplicateXyStillRejectsInvalidSurvivor();
+        std::cout << "TerrainWaterBrush: 23 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "TerrainWaterBrush: " << error.what() << '\n'; return 1; }
 }

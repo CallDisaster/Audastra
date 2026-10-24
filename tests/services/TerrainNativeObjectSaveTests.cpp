@@ -2524,6 +2524,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
     }
 }
 #include "TerrainOrdinaryDoodadSaveCases.h"
+#include "TerrainSpecialRuntimeSaveCases.h"
 #include "TerrainDoodadColorSaveCases.h"
 #include "TerrainOrdinarySpecialSaveCases.h"
 #include "TerrainOrdinaryJournalSaveCases.h"
@@ -2595,6 +2596,7 @@ int main() {
         UnitsJournalRecoveryRetainsWaterBothOrdersAndCompleteRaw();
         UnitsJournalInterleavingRejectsSourceOrderBudgetAndFinalDrift();
         StartLocationsJournalRequiresCompletePrivateReplayAndFinalRaw();
+        SpecialRuntimeMixedRowsUseFormalSavingAndHistory();
         BridgeAllowsOnlyUnrelatedOrdinaryMutationsThroughFormalHistory();
         BridgeRecordBytesOrderAndClassificationRemainMandatory();
         BridgeOrdinaryFrozenOutputSourcesAndBudgetRemainBound();
