@@ -29,6 +29,16 @@ void RequireF32Bits(float actual, std::uint32_t expected, const char* why) {
     std::cout << detail.str() << '\n';
     if (std::bit_cast<std::uint32_t>(actual) != expected) throw std::runtime_error(detail.str());
 }
+void RequireF32At(float actual, std::uint32_t expected, std::size_t index, const char* why) {
+    if (std::bit_cast<std::uint32_t>(actual) == expected) return;
+    const auto indexed = std::string(why) + " [index=" + std::to_string(index) + "]";
+    RequireF32Bits(actual, expected, indexed.c_str());
+}
+void RequireF32GridEqual(std::span<const float> actual, std::span<const float> expected, const char* why) {
+    Require(actual.size() == expected.size(), why);
+    for (std::size_t index = 0; index < actual.size(); ++index)
+        RequireF32At(actual[index], std::bit_cast<std::uint32_t>(expected[index]), index, why);
+}
 template<class T> T Take(Result<T> result) {
     if (!result.Succeeded() || !result.value) {
         std::string message;
@@ -192,7 +202,8 @@ void OrderedAndSaved() {
     const auto grid = Take(owner->Sample());
     Require(grid.width == 8 && grid.height == 4 && grid.receiverHeights.size() == 32, "完整SHD像素中心网格");
     for (std::size_t y = 0; y < 4; ++y) for (std::size_t x = 0; x < 8; ++x)
-        Require(grid.receiverHeights[y * 8 + x] == (x < 4 ? 96.1f : 128.1f), "variation5 modulo2取1；隐藏GEOS仍接收；普通格保原地高");
+        RequireF32At(grid.receiverHeights[y * 8 + x], x < 4 ? 0x42c03333u : 0x4300199au, y * 8 + x,
+            "variation5 modulo2取1；隐藏GEOS仍接收；普通格保原地高");
     Check(owner->VerifySources(*fixture.source));
     auto bake = Take(TerrainShadowBake::Capture(*fixture.source, fixture.game));
     const std::array<MemberReplacement, 1> output{{{"war3map.shd", bake->Bytes()}}};
@@ -206,10 +217,12 @@ void OrderedAndSaved() {
     fixture.Set(std::string(kOne), Model(96, true)); fixture.Open();
     const auto lastMiss = Take(Take(fixture.Capture())->Sample());
     for (std::size_t y = 0; y < 4; ++y) for (std::size_t x = 0; x < 4; ++x)
-        Require(lastMiss.receiverHeights[y * 8 + x] == (x < 2 ? 0.1f : 128.1f), "最后未知组false必须最近顶点回退，不是any-hit");
+        RequireF32At(lastMiss.receiverHeights[y * 8 + x], x < 2 ? 0x3dcccccdu : 0x4300199au, y * 8 + x,
+            "最后未知组false必须最近顶点回退，不是any-hit");
     fixture.Set(std::string(kOne), Model(96, false, 128, false, false, true)); fixture.Open();
     const auto emptyLast = Take(Take(fixture.Capture())->Sample());
-    Require(emptyLast.receiverHeights == lastMiss.receiverHeights, "最后零长度list组仍返回false，不能丢空组沿用旧命中");
+    RequireF32GridEqual(emptyLast.receiverHeights, lastMiss.receiverHeights,
+        "最后零长度list组仍返回false，不能丢空组沿用旧命中");
     fixture.Set(std::string(kOne), Model(3000, false, 128, false, true)); fixture.Open();
     const auto negative = Take(Take(fixture.Capture())->Sample());
     // 独立IEEE F32算式：原角度常量得到cos=-1.6292068494294654e-7，首三角
@@ -219,17 +232,23 @@ void OrderedAndSaved() {
     RequireF32Bits(negative.receiverHeights.front(), 0x453b8199u, "原strip保留；signed交距为负也参与最小值");
     fixture.Set(std::string(kOne), Model(64, false, 256)); fixture.Open();
     const auto overhang = Take(Take(fixture.Capture())->Sample());
-    Require(overhang.receiverHeights[4] == 64.1f, "普通格向上扫描同block模型，不能只采当前格ground");
+    // 独立水平三角算式：像素(144,16)只命中第二list三角，det=32768.00091154628，
+    // inverse=0x38000000；F32(qx/qy)后t=1344.0001220703125 (0x44a80001)。
+    // F32(-1280+t+0.1)=64.1001205444336，与理想平面64.1f不同。
+    RequireF32Bits(overhang.receiverHeights[4], 0x42803343u, "普通格向上扫描同block模型，不能只采当前格ground");
 
     for (auto& vertex : fixture.terrain.vertices) vertex.groundHeightRaw += 128;
     const std::array<MemberReplacement, 1> relief{{{"war3map.w3e", Take(SerializeMapTerrain(fixture.terrain))}}};
-    Require(Take(Take(fixture.Capture(relief))->Sample()).receiverHeights.front() == 96.1f,
+    // 同一宽256模型抬升32后，首点命中第一三角：det=-32768.00123695829，
+    // inverse=0xb7ffffff，t=2463.999755859375 (0x4519ffff)。最终F32=0x42c03353。
+    RequireF32Bits(Take(Take(fixture.Capture(relief))->Sample()).receiverHeights.front(), 0x42c03353u,
         "实际最终W3E的统一raw起伏抬升模型32，而不混入layer高度");
 
     Fixture bounded;
     Check(IO::WriteFileBytes(bounded.game / "WorldEditData.txt", Text("[Light]\nDirection=3,0,-4\n[Terrain]\nMaxHeight=0\nMinHeight=-256\n")));
     const auto skipped = Take(bounded.Capture());
-    Require(skipped->RecordCount() == 0 && Take(skipped->Sample()).receiverHeights.front() == 0.1f,
+    Require(skipped->RecordCount() == 0, "原版MaxHeight拒建record");
+    RequireF32Bits(Take(skipped->Sample()).receiverHeights.front(), 0x3dcccccdu,
         "原版MaxHeight拒建record后模型格返回0，再加0.1，不能偷偷夹回地高");
 }
 
@@ -307,7 +326,8 @@ void FrozenSources() {
     const std::array<MemberReplacement, 1> added{{{std::string(kTwo), Model(200)}}};
     Rejected(owner->VerifySources(*fixture.source, added), "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
     const auto next = Take(fixture.Capture(added));
-    Require(Take(next->Sample()).receiverHeights.front() == 200.1f, "新增首缺变体改变count和modulo，旧absence不可沿用");
+    RequireF32Bits(Take(next->Sample()).receiverHeights.front(), 0x4348199au,
+        "新增首缺变体改变count和modulo，旧absence不可沿用");
     auto saved = Take(fixture.source->SaveCandidate(fixture.root / "added-variant.w3x", added));
     Check(next->VerifyReadback(Take(MapArchiveSession::Open(saved.path))));
     Rejected(next->VerifyReadback(*fixture.source), "TERRAIN_SHADOW_RECEIVER_READBACK_STALE");
@@ -362,9 +382,10 @@ void ActualGameRootCannotBeMixedWithAnotherCasterOwner() {
         "caster只读身份须固定于捕获时实际存在的规范目录");
     const auto own = Take(TerrainShadowReceiverResources::Capture(*fixture.source, fixture.game, casters, light));
     const auto other = Take(TerrainShadowReceiverResources::Capture(*fixture.source, otherGame, otherCasters, otherLight));
-    Require(Take(own->Sample()).receiverHeights.front() == 64.1f
-        && Take(other->Sample()).receiverHeights.front() == 200.1f,
-        "两个原创游戏目录各自正确绑定实际不同的模型winner");
+    RequireF32Bits(Take(own->Sample()).receiverHeights.front(), 0x42803333u,
+        "原创游戏目录A绑定实际64高模型winner");
+    RequireF32Bits(Take(other->Sample()).receiverHeights.front(), 0x4348199au,
+        "原创游戏目录B绑定实际200高模型winner");
     // B的light/profile与receiver根均一致，唯一错配是借了A的caster owner。
     // 不能等到profile漂移检查再偶然拒绝，更不能把A的DOO筛选与B的模型混成成功。
     Rejected(TerrainShadowReceiverResources::Capture(*fixture.source, otherGame, casters, otherLight),
@@ -421,20 +442,32 @@ void GuardsAndOrdinary() {
 }
 void BoundedSourceAndReadbackVerification() {
     Fixture fixture;
-    // 每个有效MDX约69KiB，两个变体及缺失项都须复核。256KiB容得下一项
-    // stored/decoded缓冲，却容不下旧复核所保留的两份模型缓存与解析工作。
-    fixture.Set(std::string(kZero), Model(64, false, 128, false, false, false, 256));
-    fixture.Set(std::string(kOne), Model(96, false, 128, false, false, false, 256)); fixture.Open();
+    // 两个原创合法MDX以TEXS增加正文，不增加接收几何。逐项复核只保留
+    // 一项stored/decoded；完整捕获必须同时保留两个变体及额外解析工作。
+    const auto zero = Model(64, false, 128, false, false, false, 1024);
+    const auto one = Model(96, false, 128, false, false, false, 1024);
+    fixture.Set(std::string(kZero), zero); fixture.Set(std::string(kOne), one); fixture.Open();
     const auto owner = Take(fixture.Capture());
-    TerrainShadowCasterVerificationLimits scratch; scratch.maximumWorkingBytes = 256u * 1024u;
+    // 原256KiB低额度只能覆盖light固定owner，类别目录得到0额度，必须在
+    // profile层拒绝；不能把此失败误当成receiver正文重捕获预算的证据。
+    TerrainShadowCasterVerificationLimits insufficient; insufficient.maximumWorkingBytes = 256u * 1024u;
+    TerrainShadowReceiverLimits profileRecapture; profileRecapture.maximumWorkingBytes = insufficient.maximumWorkingBytes;
+    Rejected(fixture.Capture({}, profileRecapture), "TERRAIN_CATEGORY_BUDGET");
+    Rejected(owner->VerifySources(*fixture.source, {}, {}, insufficient), "TERRAIN_CATEGORY_BUDGET");
+    const auto profile = Take(TerrainShadowResources::Capture(fixture.game,
+        Game::NativeEditorStartupRules::Classic127aExpansion, 16u * 1024u * 1024u));
+    TerrainShadowCasterVerificationLimits scratch;
+    scratch.maximumWorkingBytes = std::max(profile.CaptureBudgetBytes(), 2 * std::max(zero.size(), one.size()) + 64u * 1024u);
     Require(owner->WorkingBytes() > scratch.maximumWorkingBytes, "窄复核额度小于完整接收面捕获工作量");
     TerrainShadowReceiverLimits recapture; recapture.maximumWorkingBytes = scratch.maximumWorkingBytes;
-    Rejected(fixture.Capture({}, recapture));
+    Rejected(fixture.Capture({}, recapture), "FILE_READ_BUDGET_EXCEEDED");
     Check(owner->VerifySources(*fixture.source, {}, {}, scratch));
     const auto candidate = Take(fixture.source->SaveCandidate(fixture.root / "bounded-receiver-readback.w3x", {}));
     const auto saved = Take(MapArchiveSession::Open(candidate.path)); Check(owner->VerifyReadback(saved, scratch));
+    Rejected(owner->VerifyReadback(saved, insufficient), "TERRAIN_CATEGORY_BUDGET");
     auto tiny = scratch; tiny.maximumWorkingBytes = 1;
-    Rejected(owner->VerifySources(*fixture.source, {}, {}, tiny)); Rejected(owner->VerifyReadback(saved, tiny));
+    Rejected(owner->VerifySources(*fixture.source, {}, {}, tiny), "TERRAIN_SHADOW_BUDGET");
+    Rejected(owner->VerifyReadback(saved, tiny), "TERRAIN_SHADOW_BUDGET");
     tiny = scratch; tiny.maximumFileBytes = 1; Rejected(owner->VerifyReadback(saved, tiny));
     const std::vector<MemberReplacement> late{{std::string(kTwo), Model(128)}};
     Rejected(owner->VerifySources(*fixture.source, late, {}, scratch), "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
