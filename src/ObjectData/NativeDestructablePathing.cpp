@@ -294,7 +294,16 @@ const ObjectFieldDefinition& UniqueBridgeField(const Text::SlkCells& cells, cons
     }
     return field;
 }
-void ApplyBridgeOriginal(const ObjectRecord& original, const NativeObjectDocument& document,
+void ValidateCustomBridgeSelector(const ObjectFieldDefinition& field) {
+    // 已证Custom三getter分别从新ID取覆盖、从标准父取缺省；实际三字段没有对象选择器。
+    // 未证useSpecific/notSpecific如何参与Custom身份解析，不能沿用父context猜测其适用性。
+    for (const auto* name : {"usespecific", "notspecific"}) {
+        const auto selector = field.metadata.find(name);
+        if (selector != field.metadata.end() && !selector->second.empty())
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "自定义桥实际使用的字段含未支持的对象选择器：" + field.fieldId);
+    }
+}
+void ApplyBridgeOverrides(const ObjectRecord& original, const NativeObjectDocument& document,
     const StandardObjectEntry& standard, const ObjectFieldSchema& schema, const Text::SlkCells& cells,
     std::optional<std::string_view>& path, std::optional<float>& rotation) {
     ObjectFieldContext context;
@@ -307,8 +316,9 @@ void ApplyBridgeOriginal(const ObjectRecord& original, const NativeObjectDocumen
         // 先识别元数据声明的逻辑字段，再检查标量地址；data拼接后的sourceKey不能把坏地址伪装成其它字段。
         const auto sourceKey = Text::LowerAscii(match.definition->sourceField);
         if (sourceKey != "walkable" && sourceKey != "pathtex" && sourceKey != "fixedrot")
-            Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准桥Original仅支持walkable、pathTex和fixedRot覆盖：" + modification.key.fieldId);
+            Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走桥仅支持walkable、pathTex和fixedRot覆盖：" + modification.key.fieldId);
         const auto& field = UniqueBridgeField(cells, schema, context, sourceKey);
+        if (original.parentRawcode) ValidateCustomBridgeSelector(field);
         if (!match.safeToEdit || match.definition != &field || match.sourceKey != sourceKey || match.sourceIndex)
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖没有可靠的唯一标量地址：" + modification.key.fieldId);
         if (modification.key.level || modification.key.variation || modification.key.dataIndex || modification.valueWasOpaque
@@ -520,21 +530,24 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 walkable = value != "0";
             }
             if (walkable) {
-                // 标准桥只扩展v2 Original；Custom的wire身份及继承仍未进入已证域。
-                // 同rawcode的Doodad/W3D已在上方排除，其它对象的W3B不影响此资格。
-                if (standard->key.rawcode != rawcode || (native && native->parentRawcode))
-                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走对象仅支持唯一标准类型及其Original覆盖：" + std::string(rawcode));
+                // Custom的唯一标准父、父无原生覆盖和跨类别冲突已由上方逐项核实。
+                // 5B6B40/5B6BB0/5B6CA0只在字段缺失时将查询ID替换为5B6740返回的标准父。
+                const bool custom = native && native->parentRawcode;
+                if (standard->key.rawcode != rawcode && !custom)
+                    Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走对象没有唯一标准类型或一层标准父：" + std::string(rawcode));
+                if (custom) ValidateCustomBridgeSelector(*field.definition);
                 const auto standardPath = standard->fields.find("pathtex");
                 std::optional<std::string_view> path;
                 if (standardPath != standard->fields.end()) path = standardPath->second;
                 auto rotation = FixedRotation(standard->Field("fixedrot"));
-                if (native) ApplyBridgeOriginal(*native, *destructables, *standard, schema, metadataCells, path, rotation);
+                if (native) ApplyBridgeOverrides(*native, *destructables, *standard, schema, metadataCells, path, rotation);
                 if (!path || path->empty() || *path == "_" || *path == "none"
                     || !rotation || *rotation < -360 || *rotation > 360)
                     Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走标准对象需要有效的非空pathTex和明确有限的[-360,360] fixedRot：" + std::string(rawcode));
                 // 5496D0向Doodads目录查询category；这里已证明无同名Doodad行/原生覆盖。
                 // 其缺行getter先清空字符串，因此502580回退到wire DWORD>>8的低字节。
                 // 426890按小端原样读DWORD，该字节就是文件rawcode的第二个字符。
+                // 62B420→62BA10→564900→563EF0保留DOO新ID于record+4，549680原样传入；Custom不能改用父ID。
                 // 非C无论类别目录是否包含该字符都不能命中502600，故确定采用2格。
                 if (rawcode[1] == 'C')
                     Fail("TERRAIN_WALKABLE_DESTRUCTABLE_GRID", "可行走对象的C类别回退尚未绑定最终目录，不能确定吸附网格：" + std::string(rawcode));

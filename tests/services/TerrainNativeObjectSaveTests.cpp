@@ -1414,16 +1414,17 @@ Bytes BridgeOriginalMetadata(bool explicitScalar = false, std::string rotationTy
          {"bptx", "pathTex", "DestructableData", pathType, "0"},
          {"brot", "fixedRot", "DestructableData", rotationType, "0"}});
 }
-void BridgeOriginal(Fixture& f, std::initializer_list<BridgeOriginalModification> modifications, bool custom = false) {
+void BridgeOriginal(Fixture& f, std::initializer_list<BridgeOriginalModification> modifications, bool custom = false,
+    std::string childRawcode = "NewB", std::string parentRawcode = "Br01") {
     auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
     if (custom) {
-        Check(document.AddCustomObject("NewB", "Br01"));
+        Check(document.AddCustomObject(childRawcode, parentRawcode));
         auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
-        placements.doodads.front().rawcode = "NewB";
+        placements.doodads.front().rawcode = childRawcode;
         f.Member("war3map.doo") = Take(placements.Serialize());
     } else Check(document.AddOriginalObject("Br01"));
     for (const auto& modification : modifications)
-        Check(document.AddModification({ObjectType::Destructable, custom ? "NewB" : "Br01"},
+        Check(document.AddModification({ObjectType::Destructable, custom ? childRawcode : "Br01"},
             {modification.field}, modification.type, modification.value));
     f.Member("war3map.w3b") = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(document));
     f.Member("Units/DestructableMetaData.slk") = BridgeOriginalMetadata();
@@ -1440,7 +1441,8 @@ Bytes BridgeOriginalExpectedPathing(Fixture& f, bool deep, bool turned = false, 
             expected[16 + y * 32 + x] = x < 18 ? std::byte{0x15} : std::byte{0x11};
     return expected;
 }
-void PatternedBridgeOriginal(Fixture& f, float rotation, NativeValueType rotationType = NativeValueType::Unreal) {
+void PatternedBridgeOriginal(Fixture& f, float rotation, NativeValueType rotationType = NativeValueType::Unreal,
+    bool custom = false) {
     WalkableBridge(f);
     auto texture = f.Member(kBridgeTexture);
     texture[18] = texture[19] = texture[20] = std::byte{};
@@ -1450,7 +1452,7 @@ void PatternedBridgeOriginal(Fixture& f, float rotation, NativeValueType rotatio
     f.Member("Units/DestructableData.slk") = Slk({"destructableID", "code", "walkable", "pathTex", "fixedRot"},
         {{"Br01", "Br01", "0", std::string(kBridgeTexture), rotation == 90 ? "0" : "90"}});
     BridgeOriginal(f, {{"bwlk", NativeValueType::Int32, std::int32_t{1}},
-        {"bptx", NativeValueType::String, std::string(kBridgeOriginalTexture)}, {"brot", rotationType, rotation}});
+        {"bptx", NativeValueType::String, std::string(kBridgeOriginalTexture)}, {"brot", rotationType, rotation}}, custom);
     f.Member("war3map.wpm") = BridgeOriginalExpectedPathing(f, false, rotation == 90);
 }
 void BridgeOriginalUsesTheNormalSaveAndUndoChain() {
@@ -1552,48 +1554,207 @@ void BridgeOriginalRejectsUnsupportedValuesAndMetadata() {
     }
     {
         Fixture f; WalkableBridge(f); BridgeOriginal(f, {}, true);
+        const auto parsed = NativeObjectCodec(ObjectType::Destructable).Parse(f.Member("war3map.w3b"));
+        const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
+        Require(document != nullptr, "parent override refusal fixture has a native document");
+        auto changed = *document; Check(changed.AddOriginalObject("Br01"));
+        f.Member("war3map.w3b") = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(changed));
+        refuse(f, "TERRAIN_NATIVE_OBJECT_INHERITANCE");
+    }
+}
+void BridgeCustomUsesTheNormalSaveAndUndoChain() {
+    {
+        Fixture f; WalkableBridge(f, true); BridgeOriginal(f, {}, true);
+        // 空Custom只要求实际分类使用的walkable元数据；其它字段沿唯一标准父回退。
+        f.Member("Units/DestructableMetaData.slk") = Slk({"ID", "field", "slk", "type", "index"},
+            {{"bwlk", "walkable", "DestructableData", "bool", "0"}});
+        f.Open(); f.Paint();
+        const auto shallow = BridgeExpectedPathing(f, false, true), deep = BridgeExpectedPathing(f, true, true);
+        f.SaveExpected("bridge-custom-empty-deep.w3x", f.ExpectedTerrain(true), deep);
+        Require(f.edits->Undo(), "undo saved empty Custom bridge terrain change");
+        f.SaveExpected("bridge-custom-empty-undone.w3x", f.ExpectedTerrain(false), shallow);
+        Require(f.edits->Redo(), "redo saved empty Custom bridge terrain change");
+        f.SaveExpected("bridge-custom-empty-redone.w3x", f.ExpectedTerrain(true), deep);
+    }
+    for (const auto type : {NativeValueType::Real, NativeValueType::Unreal}) for (const float rotation : {-1.0f, 0.0f, 90.0f}) {
+        Fixture f; PatternedBridgeOriginal(f, rotation, type, true);
+        f.Member("Units/DestructableMetaData.slk") = BridgeOriginalMetadata(rotation == 0,
+            type == NativeValueType::Real ? "real" : "unreal", rotation == -1 ? "int" : "bool",
+            rotation == 90 ? "string" : "pathingTexture");
+        f.Open(); f.Paint();
+        const auto shallow = BridgeOriginalExpectedPathing(f, false, rotation == 90);
+        const auto deep = BridgeOriginalExpectedPathing(f, true, rotation == 90);
+        Require(shallow == f.Member("war3map.wpm"), "Custom source WPM uses complete independent effective-field bytes");
+        f.SaveExpected("bridge-custom-deep.w3x", f.ExpectedTerrain(true), deep);
+        Require(f.edits->Undo(), "undo saved Custom bridge terrain change");
+        f.SaveExpected("bridge-custom-undone.w3x", f.ExpectedTerrain(false), shallow);
+        Require(f.edits->Redo(), "redo saved Custom bridge terrain change");
+        f.SaveExpected("bridge-custom-redone.w3x", f.ExpectedTerrain(true), deep);
+    }
+    for (const auto* type : {"bool", "int"}) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {{"bwlk", NativeValueType::Int32, std::int32_t{0}}}, true);
+        f.Member("Units/DestructableMetaData.slk") = BridgeOriginalMetadata(false, "unreal", type);
+        f.Member("war3map.wpm") = BridgeOriginalExpectedPathing(f, false, false, false);
+        f.Open(); f.Paint();
+        f.SaveExpected("bridge-custom-walkable-zero.w3x", f.ExpectedTerrain(true), BridgeOriginalExpectedPathing(f, true, false, false));
+    }
+    {
+        Fixture f; WalkableBridge(f, true);
+        f.Member("Units/DestructableData.slk") = Slk({"destructableID", "code", "walkable", "pathTex", "fixedRot"},
+            {{"SC01", "SC01", "1", std::string(kBridgeTexture), "0"}});
+        BridgeOriginal(f, {}, true, "NewB", "SC01");
+        // 父第二字符C不能污染新ID的非C两格策略；未使用字段和无关字段的selector不参与分类。
+        f.Member("Units/DestructableMetaData.slk") = Slk({"ID", "field", "slk", "type", "index", "useSpecific", "notSpecific"},
+            {{"bwlk", "walkable", "DestructableData", "bool", "0", "", ""},
+             {"bptx", "pathTex", "DestructableData", "pathingTexture", "0", "SC01", ""},
+             {"brot", "fixedRot", "DestructableData", "unreal", "0", "", "NewB"},
+             {"bnam", "Name", "DestructableData", "string", "0", "SC01", "NewB"}});
+        f.Open(); f.Paint();
+        f.SaveExpected("bridge-custom-parent-c-child-nonc.w3x", f.ExpectedTerrain(true), BridgeExpectedPathing(f, true, true));
+    }
+}
+void BridgeCustomRejectsUnsupportedValuesMetadataAndParents() {
+    const auto refuse = [](Fixture& f, const char* code) {
+        f.Open(); f.Paint();
+        const auto source = Take(Sha256File(f.archive->SourcePath()));
+        const auto draft = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        const auto currentDoodads = [&] {
+            const auto snapshot = Take(f.edits->Snapshot(MapDataKind::Doodads, kBudget));
+            Require(snapshot.Doodads().has_value(), "Custom refusal fixture has a bounded parsed DOO snapshot");
+            return Take(snapshot.Doodads()->Serialize());
+        };
+        const auto doodads = currentDoodads();
+        const auto plan = f.Plan();
+        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), code), "invalid Custom bridge fails at its exact value, metadata, identity or state gate");
+        Require(f.edits->IsDirty() && f.edits->CanUndo() && Take(Sha256File(f.archive->SourcePath())) == source
+            && Take(SerializeMapTerrain(*f.edits->Terrain())) == draft
+            && currentDoodads() == doodads,
+            "Custom refusal preserves source, complete terrain and DOO draft, and undo history");
+    };
+    for (const std::string path : {"", "_", "none"}) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {{"bptx", NativeValueType::String, path}}, true);
         refuse(f, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
+    }
+    for (const auto& modification : std::initializer_list<BridgeOriginalModification>{
+        {"bptx", NativeValueType::Int32, std::int32_t{0}}, {"brot", NativeValueType::Int32, std::int32_t{90}},
+        {"brot", NativeValueType::Real, 90.0f}, {"brot", NativeValueType::String, std::string("90")}}) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {modification}, true);
+        refuse(f, "TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE");
+    }
+    for (const auto& modification : std::initializer_list<BridgeOriginalModification>{
+        {"bwlk", NativeValueType::Real, 1.0f}, {"bwlk", NativeValueType::Int32, std::int32_t{2}}}) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {modification}, true);
+        refuse(f, "TERRAIN_NATIVE_OBJECT_WALKABLE_TYPE");
+    }
+    for (const float value : {-361.0f, 361.0f}) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {{"brot", NativeValueType::Unreal, value}}, true);
+        refuse(f, "TERRAIN_DOODAD_FIXED_ROTATION");
+    }
+    for (const std::uint32_t bits : {0x7fc00000u, 0x7f800000u, 0xff800000u}) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {{"brot", NativeValueType::Unreal, 0.0f}}, true);
+        auto& bytes = f.Member("war3map.w3b");
+        // 经典W3B单Custom/单modifier：field@24、type@28、F32@32。
+        Require(bytes.size() == 40 && bytes[24] == std::byte{'b'} && bytes[28] == std::byte{2}, "Custom nonfinite fixture uses the classic scalar wire address");
+        for (unsigned i = 0; i < 4; ++i) bytes[32 + i] = static_cast<std::byte>((bits >> (8 * i)) & 255);
+        refuse(f, "TERRAIN_DOODAD_FIXED_ROTATION");
+    }
+    for (const bool excluded : {false, true}) for (const unsigned field : {0u, 1u, 2u}) {
+        Fixture f; PatternedBridgeOriginal(f, 90, NativeValueType::Unreal, true);
+        std::vector<std::string> walk{"bwlk", "walkable", "DestructableData", "bool", "0", ""};
+        std::vector<std::string> path{"bptx", "pathTex", "DestructableData", "pathingTexture", "0", ""};
+        std::vector<std::string> rotation{"brot", "fixedRot", "DestructableData", "unreal", "0", ""};
+        auto* selected = field == 0 ? &walk : (field == 1 ? &path : &rotation);
+        selected->back() = excluded ? "NewB" : "Br01";
+        f.Member("Units/DestructableMetaData.slk") = Slk({"ID", "field", "slk", "type", "index", excluded ? "notSpecific" : "useSpecific"},
+            {walk, path, rotation});
+        refuse(f, "TERRAIN_NATIVE_OBJECT_METADATA");
+    }
+    for (const bool unknown : {false, true}) {
+        Fixture f; WalkableBridge(f);
+        BridgeOriginal(f, {{unknown ? "zzzz" : "bnam", NativeValueType::String, std::string("renamed")}}, true);
+        if (!unknown) f.Member("Units/DestructableMetaData.slk") = Slk({"ID", "field", "slk", "type", "index"},
+            {{"bwlk", "walkable", "DestructableData", "bool", "0"}, {"bnam", "Name", "DestructableData", "string", "0"}});
+        refuse(f, unknown ? "TERRAIN_NATIVE_OBJECT_METADATA" : "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED");
+    }
+    for (unsigned mode = 0; mode < 8; ++mode) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {}, true, "NewB", mode == 2 ? "Gone" : "Br01");
+        if (mode < 2) {
+            const auto parsed = NativeObjectCodec(ObjectType::Destructable).Parse(f.Member("war3map.w3b"));
+            const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
+            Require(document != nullptr, "Custom parent refusal fixture has a native document");
+            auto changed = *document;
+            if (mode == 0) Check(changed.AddOriginalObject("Br01"));
+            else Check(changed.AddCustomObject("Br01", "Dst0"));
+            f.Member("war3map.w3b") = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(changed));
+        }
+        if (mode == 3) f.Member("Units/DestructableData.slk") = Slk({"destructableID", "code", "walkable", "pathTex", "fixedRot"},
+            {{"Br01", "Br01", "1", std::string(kBridgeTexture), "0"}, {"NewB", "NewB", "1", std::string(kBridgeTexture), "0"}});
+        if (mode == 4 || mode == 6) {
+            const std::string identity = mode == 4 ? "Br01" : "NewB";
+            f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+                {{"Bl01", "Bl01", std::string(kBridgeBlockerTexture), "E", "-1"}, {identity, identity, "_", "E", "0"}});
+        }
+        if (mode == 5 || mode == 7) {
+            auto doodad = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+            Check(doodad.AddOriginalObject(mode == 5 ? "Br01" : "NewB"));
+            f.members.push_back({"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(doodad))});
+        }
+        refuse(f, mode < 6 ? "TERRAIN_NATIVE_OBJECT_INHERITANCE" : "TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS");
+    }
+    {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {}, true, "NC01", "Br01");
+        refuse(f, "TERRAIN_WALKABLE_DESTRUCTABLE_GRID");
+    }
+    for (const unsigned mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u}) {
+        Fixture f; WalkableBridge(f); BridgeOriginal(f, {}, true);
+        auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+        if (mode < 4) placements.doodads.front().flags = std::array<std::uint8_t, 4>{0, 1, 3, 4}[mode];
+        else placements.doodads.front().lifePercent = std::array<std::uint8_t, 3>{0, 50, 99}[mode - 4];
+        f.Member("war3map.doo") = Take(placements.Serialize());
+        refuse(f, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
     }
 }
 void BridgeOriginalDependenciesAndOldPathingRemainBound() {
-    Fixture f; PatternedBridgeOriginal(f, 90); f.Open(); f.Paint();
-    const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
-    Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
-    Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1).Succeeded(),
-        "Original bridge W3B and actual metadata consume the exact cumulative capture budget");
-    const auto plan = f.Plan(); const auto output = f.Output(plan);
-    const auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "bridge-original-frozen.w3x", output)).path));
-    for (const char* name : {"war3map.w3b", "Units/DestructableMetaData.slk"}) {
-        auto changed = f.Member(name);
-        if (std::string_view(name) == "war3map.w3b") {
-            const auto parsed = NativeObjectCodec(ObjectType::Destructable).Parse(changed);
-            const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
-            Require(document != nullptr, "bridge Original dependency fixture has a native document");
-            auto replacement = *document;
-            Check(replacement.SetModification({ObjectType::Destructable, "Br01"}, {"brot"}, Value{0.0f}));
-            changed = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(replacement));
-        } else changed.push_back(std::byte{'\n'});
-        auto altered = output; altered.push_back({name, changed});
-        Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), altered).Succeeded(), "bridge Original W3B and metadata remain frozen before publication");
-        const std::array<std::string, 1> removed{name};
-        Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output, removed).Succeeded(), "bridge Original dependencies cannot be removed");
-        const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
-        const auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / (std::string(name) == "war3map.w3b"
-            ? "bridge-original-w3b-tampered.w3x" : "bridge-original-metadata-tampered.w3x"), replacement)).path));
-        Require(!plan.VerifyReadback(tampered).Succeeded(), "independent readback rejects bridge Original W3B or metadata drift");
+    for (const bool custom : {false, true}) {
+        Fixture f; PatternedBridgeOriginal(f, 90, NativeValueType::Unreal, custom); f.Open(); f.Paint();
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, kBudget));
+        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes()));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), {}, owner.CaptureBudgetBytes() - 1).Succeeded(),
+            "Original and Custom bridge W3B and actual metadata consume the exact cumulative capture budget");
+        const auto plan = f.Plan(); const auto output = f.Output(plan);
+        const auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "bridge-original-frozen.w3x", output)).path));
+        for (const char* name : {"war3map.w3b", "Units/DestructableMetaData.slk"}) {
+            auto changed = f.Member(name);
+            if (std::string_view(name) == "war3map.w3b") {
+                const auto parsed = NativeObjectCodec(ObjectType::Destructable).Parse(changed);
+                const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
+                Require(document != nullptr, "bridge Original dependency fixture has a native document");
+                auto replacement = *document;
+                Check(replacement.SetModification({ObjectType::Destructable, custom ? "NewB" : "Br01"}, {"brot"}, Value{0.0f}));
+                changed = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(replacement));
+            } else changed.push_back(std::byte{'\n'});
+            auto altered = output; altered.push_back({name, changed});
+            Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), altered).Succeeded(), "bridge Original W3B and metadata remain frozen before publication");
+            const std::array<std::string, 1> removed{name};
+            Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output, removed).Succeeded(), "bridge Original dependencies cannot be removed");
+            const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
+            const auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / (std::string(name) == "war3map.w3b"
+                ? "bridge-original-w3b-tampered.w3x" : "bridge-original-metadata-tampered.w3x"), replacement)).path));
+            Require(!plan.VerifyReadback(tampered).Succeeded(), "independent readback rejects bridge Original W3B or metadata drift");
+        }
+        Require(!plan.VerifyForSave(*f.edits, std::string(64, '0'), output).Succeeded(), "bridge Original retains source SHA CAS");
+        for (const unsigned row : {0u, 1u}) {
+            Fixture changed; PatternedBridgeOriginal(changed, 90, NativeValueType::Unreal, custom); changed.Open(); changed.Paint();
+            auto placements = Take(ParseDoodadPlacements(changed.Member("war3map.doo"))); placements.doodads[row].position[2] = 16;
+            Check(changed.edits->EditDoodads(placements));
+            const auto gate = changed.Plan().SaveGate();
+            Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"), "Original bridge still freezes the entire DOO including unrelated ordinary Z");
+        }
+        Fixture unexplained; PatternedBridgeOriginal(unexplained, 90, NativeValueType::Unreal, custom);
+        unexplained.Member("war3map.wpm")[16 + 16 * 32 + 18] ^= std::byte{2};
+        unexplained.Open(); unexplained.Paint(); const auto gate = unexplained.Plan().SaveGate();
+        Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"), "Original bridge cannot hide an unexplained source WPM bit under terrain suppression");
     }
-    Require(!plan.VerifyForSave(*f.edits, std::string(64, '0'), output).Succeeded(), "bridge Original retains source SHA CAS");
-    for (const unsigned row : {0u, 1u}) {
-        Fixture changed; PatternedBridgeOriginal(changed, 90); changed.Open(); changed.Paint();
-        auto placements = Take(ParseDoodadPlacements(changed.Member("war3map.doo"))); placements.doodads[row].position[2] = 16;
-        Check(changed.edits->EditDoodads(placements));
-        const auto gate = changed.Plan().SaveGate();
-        Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED"), "Original bridge still freezes the entire DOO including unrelated ordinary Z");
-    }
-    Fixture unexplained; PatternedBridgeOriginal(unexplained, 90);
-    unexplained.Member("war3map.wpm")[16 + 16 * 32 + 18] ^= std::byte{2};
-    unexplained.Open(); unexplained.Paint(); const auto gate = unexplained.Plan().SaveGate();
-    Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"), "Original bridge cannot hide an unexplained source WPM bit under terrain suppression");
 }
 void WalkableBridgesUseTheNormalSaveAndUndoChain() {
     for (const bool black : {false,true}) {
@@ -1752,6 +1913,8 @@ int main() {
         WalkableBridgesUseTheNormalSaveAndUndoChain();
         BridgeOriginalUsesTheNormalSaveAndUndoChain();
         BridgeOriginalRejectsUnsupportedValuesAndMetadata();
+        BridgeCustomUsesTheNormalSaveAndUndoChain();
+        BridgeCustomRejectsUnsupportedValuesMetadataAndParents();
         BridgeOriginalDependenciesAndOldPathingRemainBound();
         WalkableBridgesPreserveOverlappingSavedRestrictionIntent();
         WalkableBridgeStateAndWholeDoodadFreezeRejectBeforePublication();

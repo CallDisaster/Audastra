@@ -7,9 +7,11 @@ namespace War3Map::ObjectData {
 
 // 只解释捕获者已持有的原字节，不读取磁盘、不生成通行、不授予保存资格。
 // 要求W3B/W3D（缺失也显式提供）、两类SLK和DestructableMetaData五项基础来源。
-// 非walkable可破坏物接受标准对象、原版覆盖或单层标准父继承；walkable桥仅接受唯一标准
-// 对象及v2 Original的空记录或精确walkable/pathTex/fixedRot覆盖，不接受Custom。其覆盖
-// 字段须按实际DestructableMetaData唯一绑定到零索引标量，并保持wire类型；实例及完整DOO
+// 非walkable可破坏物接受标准对象、原版覆盖或单层标准父继承；walkable桥接受唯一标准
+// 对象、v2 Original及无父覆盖的一层Custom。原生记录只接受空记录或精确walkable/pathTex/
+// fixedRot覆盖；覆盖字段须按实际DestructableMetaData唯一绑定到零索引标量并保持wire类型。
+// Custom实际使用的walkable/覆盖字段不能带对象选择器，未覆盖字段才回退标准父；网格始终
+// 按DOO新ID第二字节而非父ID解释。实例及完整DOO
 // 冻结、实际占地和旧WPM仍由owner核实。普通装饰物
 // 接受标准对象、v2 Original覆盖及无父覆盖的一层Custom继承。原生记录缺少第六项实际
 // DoodadMetaData时返回TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED，供可信owner
