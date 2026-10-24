@@ -69,6 +69,7 @@ class WorldOutlinerModel;
 class WorldAssetBrowser;
 struct WorldTerrainCache;
 struct WorldTerrainLoaded;
+class WorldTerrainHeightRules;
 struct WorldPlacementPresentationCandidate;
 struct WorldPathingHelperCache;
 struct WorldPathingHelperPrepared;
@@ -477,6 +478,7 @@ private:
     std::shared_ptr<std::uint64_t> instanceRevisionGate_;
     std::uint64_t modelGeneration_ = 0; // 模型线程运行期间又换代时，结束后按此补一次加载
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain_;
+    std::shared_ptr<const WorldTerrainHeightRules> terrainHeightRules_; // 与最后实际显示地形同时发布的只读owner及来源租约。
     std::shared_ptr<const MapData::TerrainGridSnapshot> rawTerrain_; // 对应编辑会话的不可变原始快照
     std::shared_ptr<const Render::TerrainCliffs> cliffs_; // 当前地形已烘焙的悬崖，随模型场景提交
     // 当前显示的模型场景（GUI 线程原位更新实例后交给视口）及构建它的请求、来源标识。

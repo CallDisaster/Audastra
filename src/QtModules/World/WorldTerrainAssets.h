@@ -1,12 +1,14 @@
 #pragma once
 
 #include "War3MapCore/Render/DayNightLighting.h"
+#include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Render/ModelAnimation.h"
 #include "War3MapCore/Render/TerrainMaterials.h"
 #include "War3MapCore/Render/TerrainCliffs.h"
 #include "War3MapCore/Render/TerrainGroundMesh.h"
 #include "War3MapCore/Render/TerrainTextureAtlas.h"
 #include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/Resources/ResourceResolver.h"
 #include <cstddef>
 #include <cstdint>
@@ -47,6 +49,21 @@ struct WorldTerrainSources {
 [[nodiscard]] bool SameWorldTerrainSources(const WorldTerrainSources& a, const WorldTerrainSources& b);
 [[nodiscard]] Result<WorldTerrainSources> CaptureWorldTerrainSources(const QtProject::EditorProject& project,
     std::size_t maxEntries = std::numeric_limits<std::size_t>::max(), const WorldOwnedIdentityLimits& identityLimits = {});
+// 捕获完成后只读共享；UI精确摆放可独立核文件身份，不借用worker资源读取器。
+class WorldTerrainHeightRules {
+public:
+    [[nodiscard]] std::optional<std::uint8_t> HeightMaximumCliffLevel() const noexcept {
+        return rules_.HeightMaximumCliffLevel();
+    }
+    [[nodiscard]] Status VerifyCurrentSource() const { return sources_->Verify(); }
+private:
+    friend class WorldResourceReader;
+    WorldTerrainHeightRules(MapData::TerrainPathingResources rules,
+        std::shared_ptr<const Render::AnimationSourceGuard> sources)
+        : rules_(std::move(rules)), sources_(std::move(sources)) {}
+    MapData::TerrainPathingResources rules_;
+    std::shared_ptr<const Render::AnimationSourceGuard> sources_;
+};
 // worker 内打开只读解析器（校验地图 SHA；游戏包按需挂载）。不可复制或并发读取。
 // 初始场景reader后续仅作来源检查；专用实例reader可在前一资源任务结束后独占移交，
 // 继续实际读取，逐项来源及任务前后租约复核不因挂载复用而省略。
@@ -72,7 +89,12 @@ public:
     [[nodiscard]] Result<Render::AnimationResource> ReadAnimationResource(std::string_view path, std::uint64_t maxBytes);
     // 直接读已验证归档里的地图数据成员（如 war3map.j）：地图数据不在资源清单里，不经资源层查找。
     [[nodiscard]] Result<std::vector<std::byte>> ReadMapArchiveMember(std::string_view path, std::size_t maxBytes);
+    // 与本reader同一会话覆盖/地图租约的坡道高度规则；仅在后台任务边界读取/复核。
+    [[nodiscard]] Result<std::shared_ptr<const WorldTerrainHeightRules>> CaptureHeightRules(std::uint8_t tileset);
+    [[nodiscard]] Status VerifyHeightRules(const WorldTerrainHeightRules& rules) const;
 private:
+    [[nodiscard]] Result<std::vector<ArchiveExactMember>> ReadHeightMembers(
+        std::span<const std::string> names, const ArchiveExactMemberLimits& limits) const;
     WorldResourceReader();
     struct State;
     std::unique_ptr<State> state_;

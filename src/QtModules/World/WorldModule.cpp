@@ -475,6 +475,7 @@ void WorldModule::Refresh() {
     }
     shownMap_.clear();
     terrain_.reset();
+    terrainHeightRules_.reset();
     rawTerrain_.reset();
     terrainCache_.reset();
     waterFrameVisible_ = false;
@@ -563,6 +564,7 @@ void WorldModule::Refresh() {
             terrainStatus_->setText(tr("地形网格提交失败")); return;
         }
         terrain_ = result->value->terrain;
+        terrainHeightRules_ = result->value->heightRules;
         rawTerrain_ = sourceRaw ? sourceRaw : result->value->rawTerrain;
         if (!viewport_->SetPickingTerrain(terrain_, mesh.stride, displayRevision)) {
             RecordTerrainLoad("picking-bind-failed", Status::Failure("World", "WORLD_TERRAIN_PICKING_BIND",
@@ -1336,6 +1338,7 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
         return false;
     }
     terrain_ = loaded.terrain;
+    terrainHeightRules_ = loaded.heightRules;
     // 拖动预览与正式提交都把新悬崖层和地面一起显示；地面隐藏的悬崖格不会出现空洞。
     if (layered) cliffLayer_->Show(*loaded.cliffLayer);
     else if (!loaded.cliffLayerDiagnostics.empty()) project_.AddDiagnostics(loaded.cliffLayerDiagnostics);

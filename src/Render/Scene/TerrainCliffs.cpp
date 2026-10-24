@@ -1,4 +1,5 @@
 #include "War3MapCore/Render/TerrainCliffs.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/MapData/TerrainRampEditing.h"
@@ -248,6 +249,38 @@ std::size_t ApplyRampHeights(MapData::TerrainGridSnapshot& terrain) {
         terrain.maximum[2] = std::max(terrain.maximum[2], vertex.position[2]);
     }
     return lifted;
+}
+
+Result<std::size_t> ApplyRampHeights(MapData::TerrainGridSnapshot& terrain,
+    std::uint8_t actualMaximumCliffLevel, std::size_t maximumBytes) try {
+    using Output = Result<std::size_t>;
+    const auto width = terrain.header.width, height = terrain.header.height;
+    if (terrain.header.version != 11 || width < 2 || height < 2 || width > 2049 || height > 2049
+        || static_cast<std::uint64_t>(width) * height != terrain.vertices.size()
+        || actualMaximumCliffLevel > 14)
+        return Output::Failure(std::string(kSubsystem), "TERRAIN_RAMP_HEIGHT_INPUT", "完整坡道显示需要有效地形及实际0..14层级上限。");
+    if (maximumBytes > 64u * 1024u * 1024u || terrain.vertices.size() > maximumBytes / sizeof(float))
+        return Output::Failure(std::string(kSubsystem), "TERRAIN_RAMP_HEIGHT_BUDGET", "完整坡道显示的临时高度数组超过预算。");
+    std::vector<float> lift(terrain.vertices.size(), 0.0f);
+    std::size_t lifted = 0;
+    for (std::uint32_t y = 0; y < height; ++y) for (std::uint32_t x = 0; x < width; ++x) {
+        const auto index = static_cast<std::size_t>(y) * width + x;
+        if (!terrain.vertices[index].IsRamp()) continue;
+        const auto state = MapData::QueryNativeTerrainRamp(terrain, actualMaximumCliffLevel, x, y);
+        if (!state.Succeeded() || !state.value) return {{}, state.diagnostics};
+        lift[index] = state.value->heightOffset;
+        if (lift[index] != 0) ++lifted;
+    }
+    if (!lifted) return Output::Success(0);
+    for (std::size_t i = 0; i < lift.size(); ++i) terrain.vertices[i].position[2] += lift[i];
+    terrain.minimum[2] = terrain.maximum[2] = terrain.vertices.front().position[2];
+    for (const auto& vertex : terrain.vertices) {
+        terrain.minimum[2] = std::min(terrain.minimum[2], vertex.position[2]);
+        terrain.maximum[2] = std::max(terrain.maximum[2], vertex.position[2]);
+    }
+    return Output::Success(lifted);
+} catch (const std::bad_alloc&) {
+    return Result<std::size_t>::Failure(std::string(kSubsystem), "TERRAIN_RAMP_HEIGHT_BUDGET", "完整坡道显示高度数组分配失败。");
 }
 
 Result<TerrainCliffs> BuildTerrainCliffs(const MapData::TerrainGridSnapshot& terrain,

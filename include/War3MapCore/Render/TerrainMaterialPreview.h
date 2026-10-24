@@ -58,6 +58,7 @@ struct TerrainMaterialPreview {
 [[nodiscard]] Result<TerrainMaterialPreview> BuildTerrainMaterialPreview(
     const MapData::TerrainGridSnapshot& terrain, const Resources::ResourceResolver& resolver,
     const TerrainMaterialPreviewLimits& limits = {}, const TerrainLighting& lighting = {},
-    std::optional<std::uint32_t> waterFrameIndex = std::nullopt, bool includeCliffs = false);
+    std::optional<std::uint32_t> waterFrameIndex = std::nullopt, bool includeCliffs = false,
+    std::optional<std::uint8_t> actualMaximumCliffLevel = std::nullopt);
 
 } // namespace War3Map::Render

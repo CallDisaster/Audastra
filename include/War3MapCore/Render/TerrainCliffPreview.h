@@ -43,11 +43,12 @@ struct TerrainCliffPreview {
 // 必须使用来源绑定、有限额的 resolver；调用方负责锁定地图和来源版本并验证最终帧身份。
 [[nodiscard]] Result<TerrainCliffPreview> BuildTerrainCliffPreview(
     const MapData::TerrainGridSnapshot& terrain, const Resources::ResourceResolver& resolver,
-    const TerrainCliffPreviewLimits& limits = {});
+    const TerrainCliffPreviewLimits& limits = {}, std::optional<std::uint8_t> actualMaximumCliffLevel = std::nullopt);
 
 // 已加载材质目录的入口，供地面/水面/悬崖共享同一次 SLK 读取。
 [[nodiscard]] Result<TerrainCliffPreview> BuildTerrainCliffPreview(
     const MapData::TerrainGridSnapshot& terrain, const TerrainMaterialCatalog& catalog,
-    const Resources::ResourceResolver& resolver, const TerrainCliffPreviewLimits& limits = {});
+    const Resources::ResourceResolver& resolver, const TerrainCliffPreviewLimits& limits = {},
+    std::optional<std::uint8_t> actualMaximumCliffLevel = std::nullopt);
 
 } // namespace War3Map::Render

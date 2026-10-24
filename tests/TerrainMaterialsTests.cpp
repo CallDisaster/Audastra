@@ -1,5 +1,6 @@
 #include "War3MapCore/Render/TerrainMaterials.h"
 #include "War3MapCore/Render/TerrainMaterialPreview.h"
+#include "War3MapCore/MapData/TerrainEditing.h"
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Game/GameDataSource.h"
@@ -427,6 +428,45 @@ void TestResolverLayers() {
     Require(fixture.backing->reads.at("TERRAINART\\TERRAIN.SLK") == 1, "损坏高层表不得回退低层表");
 }
 
+void TestMaterialPreviewUsesActualFullRampHeights() {
+    Fixture fixture;
+    for (const int expectedHeight : {32, 64, 96}) {
+        MapData::TerrainGridSnapshot terrain;
+        terrain.header = fixture.terrain;
+        terrain.header.width = terrain.header.height = 5;
+        terrain.vertices.resize(25);
+        for (unsigned y = 0; y < 5; ++y) for (unsigned x = 0; x < 5; ++x) {
+            auto& vertex = terrain.vertices[y * 5 + x];
+            vertex.groundHeightRaw = vertex.waterHeightAndFlagsRaw = 8192;
+            vertex.cliffAndLayerRaw = 2;
+            if (x == 0 || y == 0 || x == 4 || y == 4) continue;
+            vertex.textureAndFlagsRaw = 0x10;
+            if ((expectedHeight == 32 && x == 3 && y == 3)
+                || (expectedHeight == 64 && ((x == 1 && y == 1) || (x == 3 && y == 3)))
+                || (expectedHeight == 96 && (x == 3 || y == 3))) vertex.cliffAndLayerRaw = 3;
+        }
+        MapData::RefreshTerrainDerived(terrain, 0, 0, 5, 5);
+        const auto exact = BuildTerrainMaterialPreview(terrain, fixture.resolver, {}, TerrainLighting{false}, {}, false, 12);
+        if (!exact.Succeeded()) for (const auto& diagnostic : exact.diagnostics)
+            std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+        Require(exact.Succeeded() && exact.value && exact.value->rampAdjustedVertices != 0,
+            "材质预览须接受实际最大层级并使用完整S高度");
+        std::size_t centerVertices = 0;
+        for (const auto& vertex : exact.value->ground.vertices) if (vertex.x == 256 && vertex.y == 256) {
+            ++centerVertices; Require(vertex.z == expectedHeight, "实际材质入口的中心须为独立32/64/96高度");
+        }
+        Require(centerVertices != 0 && std::none_of(exact.diagnostics.begin(), exact.diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_HEIGHT_APPROXIMATE"; }),
+            "实际规则路径不得报告近似或漏掉中心顶点");
+        const auto approximate = BuildTerrainMaterialPreview(terrain, fixture.resolver, {}, TerrainLighting{false});
+        Require(approximate.Succeeded() && std::any_of(approximate.diagnostics.begin(), approximate.diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_HEIGHT_APPROXIMATE"; }),
+            "缺实际规则的兼容材质路径必须明确报告坡道近似");
+        Rejected(BuildTerrainMaterialPreview(terrain, fixture.resolver, {}, TerrainLighting{false}, {}, false, 15),
+            "TERRAIN_RAMP_HEIGHT_INPUT");
+    }
+}
+
 void InspectGameMap(const std::filesystem::path& gameRoot, const std::filesystem::path& mapPath) {
     auto game = Game::GameDataSource::Mount(gameRoot);
     Require(game.Succeeded(), "真实游戏 MPQ 挂载失败");
@@ -508,6 +548,7 @@ int main(int argc, char** argv) {
         TestWaterFrameIgnoresUnusedMips();
         TestZeroContributionMaterialPreview();
         TestResolverLayers();
+        TestMaterialPreviewUsesActualFullRampHeights();
         if (argc == 3) InspectGameMap(std::filesystem::path(argv[1]), std::filesystem::path(argv[2]));
         std::cout << "TerrainMaterials tests passed\n";
         return 0;

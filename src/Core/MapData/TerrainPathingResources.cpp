@@ -465,8 +465,11 @@ Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reade
         if (captured.size() != names.size())
             Fail("TERRAIN_PATHING_RESOURCE_MISSING", "精确资源捕获未返回完整成员集合。");
         // 地图成员整批保留后才读取游戏回退；两类调用共享同一存储/解码预算。
-        for (const auto& member : captured) {
-            if (member.bytes.size() > remaining())
+        for (std::size_t i = 0; i < captured.size(); ++i) {
+            const auto& member = captured[i];
+            if (Canonical(member.name) != Canonical(names[i]) || (!member.present && !member.bytes.empty()))
+                Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "精确资源捕获的成员次序或存在性载荷不一致。");
+            if (member.bytes.size() > limits.memberBytes || member.bytes.size() > remaining())
                 Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "通行表与配置超过保存计划剩余预算。");
             sourceBytes_ += member.bytes.size();
         }
@@ -941,6 +944,58 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
     });
 }
 
+Result<TerrainPathingResources> TerrainPathingResources::CaptureHeightRules(const HeightSourceReader& reader,
+    std::uint8_t tileset, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    return Guard<TerrainPathingResources>([&] {
+        if (!reader || !maximumBytes || maximumBytes > 64u * 1024u * 1024u)
+            Fail("TERRAIN_HEIGHT_RULE_BUDGET", "坡道高度规则需要真实读取器及1..64MiB捕获预算。");
+        TerrainPathingResources result;
+        result.tileset_ = tileset; result.capturedMaximumBytes_ = maximumBytes;
+        result.heightRulesOnly_ = true;
+        if (!gameRoot.empty()) {
+            std::error_code error;
+            result.gameRoot_ = std::filesystem::absolute(gameRoot, error).lexically_normal();
+            if (error) Fail("TERRAIN_PATHING_RESOURCE_ROOT", "无法固定坡道高度规则的游戏来源路径。");
+        }
+        for (const auto& profile : kClassicProfiles) RejectLooseInput(result.gameRoot_, profile.path);
+        result.nativeMaximumCliffLevel_ = Take(result.CaptureNativeCliffLimit(reader));
+        result.heightRuleFingerprint_ = Take(result.HeightRuleDependencyFingerprint());
+        return result;
+    });
+}
+
+Status TerrainPathingResources::VerifyHeightRuleSources(const HeightSourceReader& reader, std::size_t maximumBytes) const {
+    if (!reader || !heightRulesOnly_ || !nativeMaximumCliffLevel_)
+        return Status::Failure(kSubsystem, "TERRAIN_HEIGHT_RULE_UNAVAILABLE", "没有实际捕获的坡道高度规则owner。");
+    return VerifyReadbackMembers(reader, maximumBytes, true);
+}
+
+Result<std::string> TerrainPathingResources::HeightRuleDependencyFingerprint() const {
+    return Guard<std::string>([&] {
+        if (!heightRuleFingerprint_.empty()) return heightRuleFingerprint_;
+        if (!heightRulesOnly_ || !nativeMaximumCliffLevel_ || dependencies_.size() != kClassicProfiles.size())
+            Fail("TERRAIN_HEIGHT_RULE_UNAVAILABLE", "坡道高度规则没有完整来源身份。");
+        std::vector<std::byte> wire;
+        const auto number = [&](std::uint64_t value) {
+            if (wire.size() > 1024u * 1024u - 8) Fail("TERRAIN_HEIGHT_RULE_BUDGET", "坡道高度来源摘要超过1MiB。");
+            for (unsigned shift = 0; shift < 64; shift += 8) wire.push_back(std::byte((value >> shift) & 255));
+        };
+        const auto text = [&](std::string_view value) {
+            number(value.size());
+            if (value.size() > 1024u * 1024u - wire.size()) Fail("TERRAIN_HEIGHT_RULE_BUDGET", "坡道高度来源摘要超过1MiB。");
+            const auto bytes = std::as_bytes(std::span(value.data(), value.size()));
+            wire.insert(wire.end(), bytes.begin(), bytes.end());
+        };
+        text("terrain-native-ramp-height-rules-v1"); text(IO::GenericPathUtf8(gameRoot_));
+        number(tileset_); number(*nativeMaximumCliffLevel_); number(dependencies_.size());
+        for (const auto& dependency : dependencies_) {
+            text(dependency.name); text(dependency.sha256); text(dependency.gameArchive);
+            number(dependency.bytes); number(dependency.mapPresent); number(dependency.mapOnly); number(dependency.gameAbsent);
+        }
+        return Take(Sha256(wire));
+    });
+}
+
 Result<std::uint8_t> TerrainPathingResources::CaptureNativeCliffLimit(const MemberReader& reader) {
     return Guard<std::uint8_t>([&] {
         std::vector<std::string> names;
@@ -1133,9 +1188,14 @@ Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader
         // 读取上限同时约束存储和解码大小；不能以解码长度代替调用者预算。
         limits.totalBytes = maximumBytes;
         const auto actual = Take(reader(names, limits));
+        if (actual.size() != dependencies_.size())
+            Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "来源复核没有返回完整依赖集合。");
         auto remaining = maximumBytes;
         for (std::size_t i = 0; i < actual.size(); ++i) {
             const auto& expected = dependencies_[i];
+            if (Canonical(actual[i].name) != expected.name || (!actual[i].present && !actual[i].bytes.empty())
+                || actual[i].bytes.size() > limits.memberBytes || actual[i].bytes.size() > remaining)
+                Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "来源复核的成员顺序或累计预算不匹配。");
             if (actual[i].present != expected.mapPresent)
                 Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "保存回读的通行输入不同：" + expected.name);
             if (actual[i].present) {
@@ -1170,7 +1230,7 @@ Status TerrainPathingResources::VerifyGameDependencies(std::size_t remainingByte
     auto checked = Guard<bool>([&] {
         std::optional<Game::GameDataSource> game;
         for (const auto& dependency : dependencies_) {
-            if (waterBrushRules_ && !dependency.mapOnly) RejectLooseInput(gameRoot_, dependency.name);
+            if ((waterBrushRules_ || heightRulesOnly_) && !dependency.mapOnly) RejectLooseInput(gameRoot_, dependency.name);
             if (dependency.mapPresent || dependency.mapOnly) continue;
             if (!game) game = Take(Game::GameDataSource::MountStrict(gameRoot_, tileset_));
             if (dependency.gameAbsent) {
@@ -1208,7 +1268,7 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
     for (const auto& rule : nativeGround_) bytes += rule.rawcode.capacity() + 1;
     for (const auto& sha : nativeTerrainSha_) bytes += sha.capacity() + 1;
     if (nativeSettingsOutputSha_) bytes += nativeSettingsOutputSha_->capacity() + 1;
-    bytes += waterBrushInputSha_.capacity() + 1;
+    bytes += waterBrushInputSha_.capacity() + heightRuleFingerprint_.capacity() + 2;
     if (nativeCategoryDirectory_) bytes += nativeCategoryDirectory_->OwnedCapacityBytes();
     if (waterBrushRules_) {
         bytes += waterBrushRules_->groundRules.capacity() * sizeof(TerrainWaterGroundRule)

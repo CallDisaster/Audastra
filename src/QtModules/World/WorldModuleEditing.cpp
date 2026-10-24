@@ -1,6 +1,7 @@
 // 世界视图的编辑交互：摆放/区域/镜头的选择与拖动、删除、摆放面板、编辑叠加线与状态文本。
 // 数据修改全部经 MapData::PlacementEditing 提交到共用地图数据撤销栈，本文件只做交互与显示。
 #include "WorldModule.h"
+#include "WorldTerrainAssets.h"
 #include "WorldAnimationPlayer.h"
 #include "WorldPlacementPreview.h"
 #include "WorldPlacementModels.h"
@@ -535,8 +536,14 @@ void WorldModule::PlaceAt(double x, double y, bool snap) {
         project_.AddDiagnostics(diagnostics);
         selectionStatus_->setText(tr("不能摆放：%1").arg(WorldDiagnosticText(diagnostics)));
     };
-    const auto ground = project_.mapEdits_->InspectTerrainPoint({x, y});
+    if (terrainHeightRules_) {
+        const auto current = terrainHeightRules_->VerifyCurrentSource();
+        if (!current.Succeeded()) { report(current.diagnostics); return; }
+    }
+    const auto maximum = terrainHeightRules_ ? terrainHeightRules_->HeightMaximumCliffLevel() : std::nullopt;
+    const auto ground = project_.mapEdits_->InspectTerrainPoint({x, y}, maximum);
     if (!ground.Succeeded()) { report(ground.diagnostics); return; }
+    if (ground.value->groundHeightApproximate) { report(ground.diagnostics); return; }
     auto context = QtProject::MakeObjectContextProvider(project_);
     const auto object = context(placing_->first);
     if (!object.Succeeded()) { report(object.diagnostics); return; }
@@ -1164,16 +1171,27 @@ void WorldModule::ResolveStrandedUnits(std::shared_ptr<const MapData::TerrainGri
         status = MapData::DeletePlacements(*project_.mapEdits_, ids);
         text = tr("移除 %1 个无法落脚的单位").arg(ids.size()); description = "删除摆放";
     } else if (box.clickedButton() == move) {
+        if (terrainHeightRules_) {
+            const auto current = terrainHeightRules_->VerifyCurrentSource();
+            if (!current.Succeeded()) { project_.AddDiagnostics(current.diagnostics); return; }
+        }
         std::vector<MapData::PlacementMove> moves;
         std::size_t unplaced = 0;
         for (const auto& unit : stranded) {
             const auto target = MapData::NearestTerrainGroundStandable(*after, unit.position[0], unit.position[1]);
-            const auto oldGround = MapData::SampleGroundHeight(*after, unit.position[0], unit.position[1], MapData::TerrainHeightSource::RawWithRamps);
-            const auto newGround = target ? MapData::SampleGroundHeight(*after, target->x, target->y, MapData::TerrainHeightSource::RawWithRamps) : std::nullopt;
-            if (!target || !oldGround || !newGround) { ++unplaced; continue; }
+            if (!target) { ++unplaced; continue; }
+            const auto maximum = terrainHeightRules_ ? terrainHeightRules_->HeightMaximumCliffLevel() : std::nullopt;
+            const auto oldGround = project_.mapEdits_->InspectTerrainPoint({unit.position[0], unit.position[1]}, maximum);
+            const auto newGround = project_.mapEdits_->InspectTerrainPoint({target->x, target->y}, maximum);
+            if (!oldGround.Succeeded() || !newGround.Succeeded()
+                || oldGround.value->groundHeightApproximate || newGround.value->groundHeightApproximate) {
+                project_.AddDiagnostics(oldGround.diagnostics); project_.AddDiagnostics(newGround.diagnostics);
+                selectionStatus_->setText(tr("坡道实际高度规则不可用，单位保持原位"));
+                return; // 不用近似高度提交一部分对象。
+            }
             // 保持与地面的相对高度。
             moves.push_back({unit.id, {static_cast<float>(target->x), static_cast<float>(target->y),
-                unit.position[2] - *oldGround + *newGround}, std::nullopt});
+                unit.position[2] - oldGround.value->groundHeight + newGround.value->groundHeight}, std::nullopt});
         }
         if (moves.empty()) { selectionStatus_->setText(tr("附近没有可站立的位置，单位保持原位")); return; }
         status = MapData::MovePlacements(*project_.mapEdits_, moves);

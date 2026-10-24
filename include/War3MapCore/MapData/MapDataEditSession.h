@@ -210,7 +210,9 @@ public:
     [[nodiscard]] bool HasTerrainPathing() const noexcept { return pathing_.has_value(); }
     // 附上来源或保存为新基线会变化；这些操作不消耗正常编辑/撤销 Revision。
     [[nodiscard]] std::uint64_t TerrainSourceRevision() const noexcept { return terrainSourceRevision_; }
-    [[nodiscard]] Result<TerrainPointSample> InspectTerrainPoint(const TerrainStrokePoint& point) const;
+    // actualMaximumCliffLevel由宿主同地图实际规则owner提供；缺少时坡道高度明确报告为近似。
+    [[nodiscard]] Result<TerrainPointSample> InspectTerrainPoint(const TerrainStrokePoint& point,
+        std::optional<std::uint8_t> actualMaximumCliffLevel = {}) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainEdit(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads = true,
         std::size_t maximumLevelPropagationWork = TerrainLevelPropagationMaximumWork) const;

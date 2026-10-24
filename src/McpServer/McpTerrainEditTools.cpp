@@ -196,6 +196,7 @@ QJsonObject SampleJson(const TerrainPointSample& point) {
         {"added_restrictions", point.addedPathingRestrictions}};
     if (point.pathingFlags) { pathing.insert("x", static_cast<int>(point.pathingX)); pathing.insert("y", static_cast<int>(point.pathingY)); }
     return {{"x", point.point.x}, {"y", point.point.y}, {"ground_height", point.groundHeight},
+        {"ground_height_approximate", point.groundHeightApproximate},
         {"nearest_vertex", QJsonObject{{"x", static_cast<int>(point.vertexX)}, {"y", static_cast<int>(point.vertexY)},
             {"ground_height_raw", vertex.groundHeightRaw}, {"water_height_flags_raw", vertex.waterHeightAndFlagsRaw},
             {"texture_flags_raw", vertex.textureAndFlagsRaw}, {"variation_raw", vertex.variationRaw},
