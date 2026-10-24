@@ -1,7 +1,10 @@
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
+#include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
 
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 
@@ -47,6 +50,13 @@ void Rejected(const Status& result, std::string_view code = {}) {
 }
 Bytes Text(std::string_view text) {
     Bytes bytes; for (const auto ch : text) bytes.push_back(static_cast<std::byte>(ch)); return bytes;
+}
+void Put32(Bytes& bytes, std::uint32_t value) {
+    for (unsigned shift = 0; shift < 32; shift += 8) bytes.push_back(static_cast<std::byte>((value >> shift) & 255));
+}
+Bytes Pathing(std::uint32_t width, std::uint32_t height) {
+    auto bytes = Text("MP3W"); Put32(bytes, 0); Put32(bytes, width); Put32(bytes, height);
+    bytes.resize(16 + static_cast<std::size_t>(width) * height, std::byte{0x82}); return bytes;
 }
 Bytes Slk(const std::vector<std::string>& columns, const std::vector<std::vector<std::string>>& rows) {
     std::string text = "ID;PWXL;N;E\n";
@@ -134,6 +144,22 @@ struct Fixture {
     void UpdateUnits() { Member("war3mapUnits.doo") = Take(units.Serialize()); Open(); }
     std::shared_ptr<const TerrainMinimapMarkers> Capture(std::span<const MemberReplacement> output = {}) {
         return Take(TerrainMinimapMarkers::Capture(*source, game, output));
+    }
+    void Freeze(MapSaveTask& task, std::string_view target = "adapter-candidate.w3x") const {
+        Check(task.FreezeArchive(*source)); task.target = root / target;
+    }
+    void PrepareOrdinary(MapSaveTask& task) const {
+        task.prepareFinalDerived = [this](MapSaveTask& current) {
+            std::shared_ptr<const TerrainSavePlan> noPlan;
+            const auto checked = PrepareTerrainMinimapMarkers(current, game, nullptr, noPlan);
+            Require(!noPlan, "普通MMP保存不能臆造地形计划"); return checked;
+        };
+    }
+    std::unique_ptr<MapDataEditSession> TerrainSession() {
+        members.push_back({"war3map.wpm", Pathing(64, 32)}); Open();
+        auto edits = std::make_unique<MapDataEditSession>(MapDocument::FromArchive(*source));
+        Check(edits->AttachTerrain(Member("war3map.w3e"))); Check(edits->AttachPathing(Member("war3map.wpm")));
+        return edits;
     }
 };
 void ExactOrderCoordinatesAndReadback() {
@@ -268,12 +294,176 @@ void EmptyUnitLayerDoesNotInventSources() {
     const std::vector<MemberReplacement> bad{{"war3mapUnits.doo", {}}};
     Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, bad));
 }
+void OrdinarySaveRebuildsMarkersWithoutMapBlpOrTerrainPlan() {
+    Fixture fixture;
+    MapSaveTask task; fixture.Freeze(task);
+    // 普通物编修改没有W3E笔刷，也没有MapBLP生成资格；MMP仍消费最终物编。
+    task.replacements.push_back({"war3map.w3u", UnitOverride(NativeValueType::Int32, std::int32_t{0})});
+    const auto expected = fixture.Capture(task.replacements)->Bytes();
+    fixture.PrepareOrdinary(task); MapSaveService::Run(task);
+    if (!task.succeeded) Check({task.diagnostics});
+    Require(task.succeeded && task.nextSession && task.minimapMarkers, "普通保存以独立owner写出并回读MMP");
+    const auto readback = Take(MapArchiveSession::Open(task.target));
+    Require(Take(readback.ReadMember("war3map.mmp")) == expected, "正式通用保存使用最终单位物编生成的完整MMP原字");
+    Require(Take(readback.ReadMember("war3map.w3u")) == task.replacements.front().data, "同次普通物编修改正常保存");
+    for (const auto* name : {"war3map.w3e", "war3map.shd", "war3map.j", "war3mapMap.tga"})
+        Require(Take(readback.ReadMember(name)) == fixture.Member(name), "普通图标重建保留其它作者成员");
+    const std::array<std::string, 1> blpName{"war3mapMap.blp"};
+    const auto captured = Take(readback.CaptureExactMembers(blpName));
+    Require(!captured.front().present, "MMP不能冒充小地图图像生成或新增MapBLP");
+    Check(task.minimapMarkers->VerifyReadback(readback));
+}
+void AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits() {
+    Fixture fixture;
+    const auto original = fixture.Capture()->Bytes();
+    fixture.members.push_back({"war3map.mmp", original});
+    fixture.units.units.push_back(Unit("Who?", 15, 0, 0, 9)); fixture.UpdateUnits();
+    MapSaveTask task; fixture.Freeze(task);
+    const auto native = UnitOverride(NativeValueType::Int32, std::int32_t{0});
+    task.replacements.push_back({"war3map.w3u", native}); fixture.PrepareOrdinary(task);
+    MapSaveService::Run(task);
+    if (!task.succeeded) Check({task.diagnostics});
+    Require(task.succeeded && task.nextSession && !task.minimapMarkers, "未支持对象不应阻断普通物编保存");
+    Code(task.diagnostics, "TERRAIN_MMP_PRESERVED_UNSUPPORTED");
+    Require(std::none_of(task.diagnostics.begin(), task.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.severity == DiagnosticSeverity::Error;
+    }), "能力不足只留明确warning，不能偷偷把错误带入成功任务");
+    const auto readback = Take(MapArchiveSession::Open(task.target));
+    Require(Take(readback.ReadMember("war3map.mmp")) == original, "能力不足必须保留旧MMP完整字节");
+    Require(Take(readback.ReadMember("war3map.w3u")) == native, "保留图标不能丢掉本次真实物编修改");
+    Require(Take(readback.ReadMember("war3mapMap.tga")) == fixture.Member("war3mapMap.tga"), "能力不足也保留作者图像");
+}
+void PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate() {
+    Fixture fixture; auto edits = fixture.TerrainSession();
+    const auto baseline = Take(TerrainSavePlan::Prepare(*fixture.source, *edits)); Check(baseline.SaveGate());
+    MapSaveTask task; fixture.Freeze(task);
+    std::shared_ptr<const TerrainSavePlan> plan = std::make_shared<const TerrainSavePlan>(baseline);
+    Check(PrepareTerrainMinimapMarkers(task, fixture.game, edits.get(), plan));
+    Require(task.minimapMarkers && plan && plan->Members()[3].action == TerrainSaveMemberAction::WriteEdited,
+        "真实capture的canonical W3E允许把MMP安装进同一地形计划");
+    Require(plan->Members()[3].outputBytes == task.minimapMarkers->Bytes().size(), "计划记录完整MMP输出大小");
+    Check(plan->VerifyForSave(*edits, task.sourceSha256, task.replacements));
+    task.beforePublish = [&] { return plan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals); };
+    MapSaveService::Run(task);
+    if (!task.succeeded) Check({task.diagnostics});
+    Require(task.succeeded && task.nextSession, "同一计划与通用保存的双门通过");
+    Check(plan->VerifyReadback(*task.nextSession));
+
+    auto stalePlan = baseline;
+    auto moved = fixture.units; moved.units[0].position[2] += 1;
+    Check(edits->SetSerialized(MapDataKind::Units, Take(moved.Serialize())));
+    Rejected(task.minimapMarkers->AdmitToPlan(stalePlan, *edits), "TERRAIN_SAVE_PLAN_STALE");
+
+    Fixture different; auto differentEdits = different.TerrainSession();
+    different.Member("war3map.j").push_back(std::byte{'x'}); different.Open();
+    auto foreignPlan = Take(TerrainSavePlan::Prepare(*different.source, *differentEdits));
+    Rejected(task.minimapMarkers->AdmitToPlan(foreignPlan, *differentEdits), "TERRAIN_MMP_SOURCE_STALE");
+
+    // 只改变W3E高度也仍须匹配plan的最终W3E，不能因图标正文恰好不变而放行。
+    auto changedTerrain = fixture.terrain; changedTerrain.vertices[0].groundHeightRaw += 4;
+    RefreshTerrainDerived(changedTerrain, 0, 0, 17, 9);
+    const std::array finalTerrain{MemberReplacement{"war3map.w3e", Take(SerializeMapTerrain(changedTerrain))}};
+    const auto mismatched = fixture.Capture(finalTerrain);
+    auto originalPlan = baseline;
+    Rejected(mismatched->AdmitToPlan(originalPlan, *edits), "TERRAIN_MMP_DEPENDENCY_STALE");
+}
+void PlanBudgetPreservesOriginalOutputWithoutPartialInstall() {
+    Fixture fixture; auto edits = fixture.TerrainSession();
+    // 查出真实Prepare的精确容量界；不把实现私有计数或固定fixture字节数复制到测试。
+    std::size_t lower = 0, upper = TerrainSavePlanLimits{}.maximumBytes;
+    while (lower < upper) {
+        const auto middle = lower + (upper - lower) / 2;
+        const auto prepared = TerrainSavePlan::Prepare(*fixture.source, *edits, {middle});
+        if (prepared.Succeeded() && prepared.value) upper = middle; else lower = middle + 1;
+    }
+    auto exact = Take(TerrainSavePlan::Prepare(*fixture.source, *edits, {lower})); Check(exact.SaveGate());
+    const auto owner = fixture.Capture();
+    Rejected(owner->AdmitToPlan(exact, *edits), "TERRAIN_MMP_BUDGET");
+    Require(exact.Members()[3].action == TerrainSaveMemberAction::Preserve && exact.Replacements().empty(),
+        "plan预算不足不能留下半份MMP安装");
+    MapSaveTask task; fixture.Freeze(task);
+    std::shared_ptr<const TerrainSavePlan> plan = std::make_shared<const TerrainSavePlan>(exact);
+    const auto originalPlan = plan;
+    Check(PrepareTerrainMinimapMarkers(task, fixture.game, edits.get(), plan));
+    Require(plan == originalPlan && !task.minimapMarkers && task.replacements.empty(),
+        "自动plan容量不足保留原计划、原MMP与最终列表");
+    Code(task.diagnostics, "TERRAIN_MMP_PRESERVED_UNSUPPORTED");
+    MapSaveService::Run(task);
+    if (!task.succeeded) Check({task.diagnostics});
+    Require(task.succeeded && task.nextSession, "图标容量不足不阻断其它正常保存");
+    Check(plan->VerifyReadback(*task.nextSession));
+}
+void AdapterConflictsAndFrozenSourceRemainHardFailures() {
+    Fixture fixture;
+    const auto runConflict = [&](bool removal) {
+        MapSaveTask task; fixture.Freeze(task);
+        if (removal) task.removals.push_back("WAR3MAP.MMP");
+        else task.replacements.push_back({"WaR3MaP.MmP", fixture.Capture()->Bytes()});
+        std::shared_ptr<const TerrainSavePlan> noPlan;
+        Rejected(PrepareTerrainMinimapMarkers(task, fixture.game, nullptr, noPlan), "TERRAIN_MMP_FINAL_CONFLICT");
+        Require(!task.minimapMarkers && !std::filesystem::exists(task.target), "冲突准备不能安装owner或写目标");
+    };
+    runConflict(false); runConflict(true);
+    MapSaveTask twice; fixture.Freeze(twice);
+    std::shared_ptr<const TerrainSavePlan> noPlan;
+    Check(PrepareTerrainMinimapMarkers(twice, fixture.game, nullptr, noPlan));
+    const auto bytes = twice.minimapMarkers->Bytes();
+    Rejected(PrepareTerrainMinimapMarkers(twice, fixture.game, nullptr, noPlan), "TERRAIN_MMP_FINAL_CONFLICT");
+    Require(twice.replacements.size() == 1 && twice.replacements.front().data == bytes, "重复准备不能覆盖第一次完整输出");
+    MapSaveTask stale; fixture.Freeze(stale); stale.sourceSha256[0] ^= 1;
+    Rejected(PrepareTerrainMinimapMarkers(stale, fixture.game, nullptr, noPlan), "TERRAIN_MMP_SOURCE_STALE");
+    Require(!stale.minimapMarkers && stale.replacements.empty(), "错误来源身份绝不能降级为保留警告");
+
+    MapSaveTask unreadable; fixture.Freeze(unreadable);
+    const auto sourceBytes = Take(IO::ReadFileBytes(fixture.source->SourcePath()));
+    Check(IO::WriteFileBytes(fixture.source->SourcePath(), Text("changed private source archive")));
+    Rejected(PrepareTerrainMinimapMarkers(unreadable, fixture.game, nullptr, noPlan), "SOURCE_CHANGED");
+    Require(!unreadable.minimapMarkers && unreadable.replacements.empty()
+        && !std::filesystem::exists(unreadable.target), "真实来源读取失败不能当作能力不足写出地图");
+    Check(IO::WriteFileBytes(fixture.source->SourcePath(), sourceBytes));
+}
+void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        Fixture fixture; MapSaveTask task; fixture.Freeze(task); fixture.PrepareOrdinary(task);
+        task.beforePublish = [&]() -> Status {
+            Require(task.minimapMarkers && task.InFinalDerivedStage() == false,
+                "回调必须确实位于派生完成后、归档写出前");
+            if (mode == 0) {
+                const auto marker = std::find_if(task.replacements.begin(), task.replacements.end(), [](const auto& member) {
+                    return member.name == "war3map.mmp";
+                });
+                Require(marker != task.replacements.end(), "回调修改的必须是已安装的实际MMP");
+                marker->data.back() ^= std::byte{1};
+            } else if (mode == 1) {
+                auto moved = fixture.units; moved.units[1].position[0] += 128;
+                task.replacements.push_back({"war3mapUnits.doo", Take(moved.Serialize())});
+            } else if (mode == 2) {
+                const std::vector<MapArchiveMember> patch{{"UI/war3skins.txt", Text("[Default]\nTeamColor=Fixture/TeamColor\n")}};
+                Take(WriteVerifiedArchive(fixture.game / "war3patch.mpq", patch));
+            } else {
+                Check(IO::WriteFileBytes(fixture.source->SourcePath(), Text("source changed after final capture")));
+            }
+            return Status::Ok();
+        };
+        MapSaveService::Run(task);
+        Require(task.executed && !task.succeeded && !task.nextSession && task.written.empty()
+            && !std::filesystem::exists(task.target), "发布前MMP/依赖/来源被改动必须在写目标之前拒绝");
+        Code(task.diagnostics, mode == 0 ? "TERRAIN_MMP_OUTPUT_MISMATCH"
+            : mode == 3 ? "SOURCE_CHANGED" : "TERRAIN_MMP_DEPENDENCY_STALE");
+        Require(std::none_of(task.diagnostics.begin(), task.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_MMP_PRESERVED_UNSUPPORTED";
+        }), "最后来源与输出门不得降级成自动能力警告");
+    }
+}
 }
 
 int main() {
     try {
         ExactOrderCoordinatesAndReadback(); FinalOverlayAndDrift(); RealMetadataAndAbilityInheritance();
         MissingSourcesBudgetsAndGameWinner(); EmptyUnitLayerDoesNotInventSources();
+        OrdinarySaveRebuildsMarkersWithoutMapBlpOrTerrainPlan(); AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits();
+        PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate(); PlanBudgetPreservesOriginalOutputWithoutPartialInstall();
+        AdapterConflictsAndFrozenSourceRemainHardFailures(); BeforePublishCannotChangeMarkersOrConsumedDependencies();
         std::cout << "Terrain MMP actual capture tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
