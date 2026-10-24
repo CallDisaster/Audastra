@@ -38,6 +38,70 @@ struct Fixture {
     TerrainShadowProjection Project() const { return Take(ProjectTerrainShadow(Input())); }
 };
 
+TerrainGridSnapshot OrdinaryTerrain() {
+    TerrainGridSnapshot terrain;
+    terrain.header.width = terrain.header.height = 2;
+    terrain.header.offset = {-128, -128};
+    terrain.vertices.resize(4);
+    for (auto& vertex : terrain.vertices) {
+        vertex.groundHeightRaw = vertex.waterHeightAndFlagsRaw = 8192;
+        vertex.cliffAndLayerRaw = 2;
+        vertex.position.fill(std::numeric_limits<float>::quiet_NaN()); // 显示副本不得参与原始采样。
+    }
+    terrain.vertices[1].groundHeightRaw += 512; // 东南角128，其余0。
+    return terrain;
+}
+
+void LightComesFromExplicitEditorDirection() {
+    Require(Take(PrepareTerrainShadowLightDirection({3, 0, -4})) == std::array<float, 3>{-0.6f, -0.0f, 0.8f},
+        "actual editor direction is normalized and negated rather than treated as DNC toward-light");
+    Require(Take(PrepareTerrainShadowLightDirection({6, 0, -8})) == Take(PrepareTerrainShadowLightDirection({3, 0, -4})),
+        "normalization removes positive source magnitude");
+    const auto zero = PrepareTerrainShadowLightDirection({0, 0, 0});
+    Require(!zero.Succeeded() && !zero.value, "zero editor direction cannot invent a default light");
+    const auto nonfinite = PrepareTerrainShadowLightDirection({0, std::numeric_limits<float>::infinity(), -1});
+    Require(!nonfinite.Succeeded() && !nonfinite.value, "nonfinite editor direction cannot publish a value");
+}
+
+void SamplesActualW3eCentersWithNativeTriangleSplit() {
+    auto terrain = OrdinaryTerrain();
+    const auto result = Take(SampleOrdinaryTerrainShadowHeights(terrain, {}));
+    Require(result.width == 4 && result.height == 4 && result.receiverHeights.size() == 16,
+        "one actual W3E cell produces four by four SHD receiver centers");
+    Require(result.receiverHeights[0] == static_cast<float>(16.0 + 0.1)
+        && result.receiverHeights[3] == static_cast<float>(112.0 + 0.1)
+        && result.receiverHeights[15] == static_cast<float>(16.0 + 0.1),
+        "literal triangle heights differ from bilinear interpolation and include the native 0.1 offset");
+    const TerrainShadowHeightSamples input{result.width, result.height, result.receiverHeights, {-1, 0, 0.125f}};
+    Require(Take(ProjectTerrainShadow(input)).terrainShadowBits.size() == 16,
+        "actual W3E sampling feeds the same terrain projection kernel");
+
+    const auto fail = [](const auto& result, std::string_view code) {
+        Require(!result.Succeeded() && !result.value, "unsupported surface must not return partial height samples");
+        Require(std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+            [&](const auto& item) { return item.code == code; }), "height failure must locate its actual unsupported surface");
+    };
+    const std::array<SpecialDoodadPlacement, 1> special{};
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, special), "TERRAIN_SHADOW_SPECIAL_GEOMETRY");
+    terrain.vertices[0].textureAndFlagsRaw |= 0x10;
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, {}), "TERRAIN_SHADOW_RAMP_GEOMETRY");
+    terrain = OrdinaryTerrain(); terrain.vertices[3].cliffAndLayerRaw = 3;
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, {}), "TERRAIN_SHADOW_CLIFF_GEOMETRY");
+    terrain = OrdinaryTerrain(); terrain.header.offset[0] = -127;
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, {}), "TERRAIN_SHADOW_COORDINATE");
+    terrain = OrdinaryTerrain(); terrain.vertices[2].extendedTextureLayout = true;
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, {}), "TERRAIN_SHADOW_TERRAIN_FLAGS");
+    terrain = OrdinaryTerrain();
+    auto limits = TerrainShadowRebuildLimits{};
+    limits.maximumSampleBytes = 16 * sizeof(float) - 1;
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, {}, limits), "TERRAIN_SHADOW_BUDGET");
+    limits = {}; limits.maximumWork = result.work - 1;
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, {}, limits), "TERRAIN_SHADOW_BUDGET");
+    std::stop_source cancellation;
+    cancellation.request_stop();
+    fail(SampleOrdinaryTerrainShadowHeights(terrain, {}, {}, cancellation.get_token()), "TERRAIN_SHADOW_CANCELLED");
+}
+
 void CardinalProjectionStopsAtEqualHeight() {
     Fixture fixture;
     for (std::size_t y = 0; y < 4; ++y) fixture.heights[y * 4] = 8;
@@ -144,6 +208,8 @@ void OriginalShadowCodecRemainsLossless() {
 
 int main() {
     try {
+        LightComesFromExplicitEditorDirection();
+        SamplesActualW3eCentersWithNativeTriangleSplit();
         CardinalProjectionStopsAtEqualHeight();
         SlantedProjectionRetainsTruncationAndAxisTie();
         RejectsMissingNonfiniteAndUnboundedInputs();
