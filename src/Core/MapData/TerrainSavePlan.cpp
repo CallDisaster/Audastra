@@ -325,6 +325,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         plan.saveGate_ = Reject("TERRAIN_SAVE_MIXED_INPUTS_UNVERIFIED", "混合物编或导入修改需要完整原通行重现与实际依赖检查，当前未取得完整结果。");
     plan.pathingInvariant_ = mixedProof || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges();
     plan.pathingInvariant_ = plan.pathingInvariant_ || edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
+        || edits.terrain_->header.cliffTilesets != edits.terrainOriginal_->header.cliffTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
     if (edits.pathing_->size() == edits.pathingOriginal_->size())
         for (std::size_t i = 16; i < edits.pathing_->size(); ++i)

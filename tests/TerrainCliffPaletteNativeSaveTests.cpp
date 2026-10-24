@@ -310,6 +310,61 @@ void ChangedPaletteRejectsDuplicateIdsWithoutCleaningHistoricalTables() {
         && Take(SerializeMapTerrain(*fixture.edits->Terrain())) == fixture.members[0].data,
         "unchanged historical duplicate slots stay byte-identical and retain the previous native domain");
 }
+
+void ExistingCustomPaletteFreezesPlacementAndObjectOutputs() {
+    UnitPlacements units;
+    UnitPlacement unit; unit.rawcode = "u001"; unit.creationId = 1; unit.scale = {1, 1, 1};
+    units.units.push_back(unit);
+    const auto sourceUnits = Take(units.Serialize());
+    units.units[0].rotation = 0.75f;
+    const auto changedUnits = Take(units.Serialize());
+    Bytes sourceAbility(12, std::byte{0}); sourceAbility[0] = std::byte{2};
+    // 完整经典v2能力物编：原表一条A001、零修改，自定义表为空。
+    auto changedAbility = sourceAbility; changedAbility[4] = std::byte{1};
+    auto abilityRecord = Text("A001"); abilityRecord.resize(12, std::byte{0});
+    changedAbility.insert(changedAbility.begin() + 8, abilityRecord.begin(), abilityRecord.end());
+    for (const bool sourceMembers : {false, true}) {
+        Fixture fixture; Prepare(fixture);
+        auto grid = *fixture.edits->Terrain(); grid.header.usesCustomTileset = true;
+        fixture.members[0].data = Take(SerializeMapTerrain(grid));
+        if (sourceMembers) {
+            fixture.members[4].data = sourceUnits;
+            fixture.members.push_back({"war3map.w3a", sourceAbility});
+        } else {
+            // 保持共享夹具的TGA固定索引，但实际来源确实没有Units成员。
+            fixture.members[4] = {"without-units.bin", Text("preserved missing-units fixture member")};
+        }
+        Reopen(fixture, "already-custom-palette-source.w3x");
+        Replace(fixture, 0, "Cl02");
+        Require(fixture.edits->Terrain()->header.usesCustomTileset
+            && Take(SerializeMapTerrain(*fixture.edits->Terrain())) == ExpectedHeaderChange(fixture.members[0].data, 0, "Cl02"),
+            "the source custom-table flag stays set while only a cliff rawcode changes");
+        const auto plan = Take(TerrainSavePlan::PrepareForSave(*fixture.archive, *fixture.edits, {}));
+        Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "existing custom palettes still take complete native G0/G1");
+        auto output = fixture.edits->Replacements(); Check(plan.InstallPathingOutput(*fixture.edits, output));
+        Check(plan.VerifyForSave(*fixture.edits, fixture.archive->SourceSha256(), output));
+        for (const auto& late : {MemberReplacement{"war3mapUnits.doo", changedUnits},
+            MemberReplacement{"war3map.w3a", changedAbility}}) {
+            auto tampered = output; tampered.push_back(late);
+            Require(HasCode(plan.VerifyForSave(*fixture.edits, fixture.archive->SourceSha256(), tampered),
+                "TERRAIN_SAVE_PLAN_MEMBER_MISMATCH"),
+                "a prepared custom-palette save rejects late added or changed Units and unrelated ability data");
+            const auto path = fixture.directory / (late.name == "war3mapUnits.doo" ? "late-units.w3x" : "late-ability.w3x");
+            const auto readback = Take(MapArchiveSession::Open(Take(fixture.archive->SaveCandidate(path, tampered)).path));
+            Require(!plan.VerifyReadback(readback).Succeeded(),
+                "independent readback rejects the same added or changed placement and object outputs");
+        }
+        fixture.Save("already-custom-palette.w3x");
+        RequireOtherMembersPreserved(fixture);
+        if (sourceMembers) {
+            // 正式编辑先于计划冻结，仍由原来的私有Units证明核对完整新旧成员。
+            Check(fixture.edits->EditUnits(units)); Replace(fixture, 0, "Cl03");
+            fixture.Save("already-custom-palette-with-units.w3x");
+            Require(Take(fixture.archive->ReadMember("war3mapUnits.doo")) == changedUnits,
+                "a legitimate pre-prepare Units edit still saves through the existing typed proof");
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -322,6 +377,7 @@ int main() {
         DirectoryAliasesAndChangedSourceAreRejected();
         PaletteCountAndOriginalWpmRemainProtected();
         ChangedPaletteRejectsDuplicateIdsWithoutCleaningHistoricalTables();
+        ExistingCustomPaletteFreezesPlacementAndObjectOutputs();
         std::cout << "terrain cliff palette native save tests passed\n"; return 0;
     } catch (const std::exception& exception) { std::cerr << exception.what() << '\n'; return 1; }
 }
