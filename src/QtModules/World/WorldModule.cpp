@@ -1049,6 +1049,7 @@ void WorldModule::RefreshMapEdits() {
 
 bool WorldModule::StructuralBrushEnforceWaterLimits() const {
     return CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp
+        || CurrentBrushKind() == MapData::TerrainBrushKind::StraightRamp
         || (terrainEnforceWaterLimits_ && terrainEnforceWaterLimits_->isChecked());
 }
 
@@ -1235,7 +1236,8 @@ void WorldModule::StartTerrainRender() {
             *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy, representation, shadowContext);
         else if (request.preview) {
             if (request.waterBrush || request.brush.kind == MapData::TerrainBrushKind::CliffLevel
-                || request.brush.kind == MapData::TerrainBrushKind::CornerRamp) {
+                || request.brush.kind == MapData::TerrainBrushKind::CornerRamp
+                || request.brush.kind == MapData::TerrainBrushKind::StraightRamp) {
                 if (!request.waterCapture || !request.waterCapture->resources.WaterBrushRules()) {
                     result->diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_PREVIEW_INPUT",
                         "水刷预览缺少本笔冻结的规则或装饰物来源。").diagnostics; return;
@@ -1246,6 +1248,9 @@ void WorldModule::StartTerrainRender() {
                     if (request.waterBrush) return MapData::PrepareTerrainWaterStroke(*request.source, rules,
                         *request.waterBrush, request.points, capture.request->doodads, capture.resources.WaterSpecialShapes());
                     const auto& brush = request.brush;
+                    if (brush.kind == MapData::TerrainBrushKind::StraightRamp)
+                        return MapData::PrepareTerrainStraightRampStroke(*request.source, rules, brush, request.points,
+                            capture.request->doodads, capture.resources.WaterSpecialShapes());
                     if (brush.kind == MapData::TerrainBrushKind::CornerRamp)
                         return MapData::PrepareTerrainCornerRampStroke(*request.source, rules, brush, request.points,
                             capture.request->doodads, capture.resources.WaterSpecialShapes());

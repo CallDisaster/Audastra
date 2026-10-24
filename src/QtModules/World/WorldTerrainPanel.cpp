@@ -124,6 +124,7 @@ public:
             path.moveTo(5, 4); path.lineTo(19, 20);
             break;
         case MapData::TerrainBrushKind::Ramp:
+        case MapData::TerrainBrushKind::StraightRamp:
             path.moveTo(3, 18); path.lineTo(7, 18); path.lineTo(17, 6); path.lineTo(21, 6);
             break;
         case MapData::TerrainBrushKind::CornerRamp:
@@ -215,6 +216,7 @@ QWidget* WorldModule::BuildTerrainPage() {
         std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"},
         std::tuple{tr("移除水面"), MapData::TerrainBrushKind::RemoveWater, "RemoveWater"},
         std::tuple{tr("直坡"), MapData::TerrainBrushKind::Ramp, "Ramp"},
+        std::tuple{tr("含水直坡"), MapData::TerrainBrushKind::StraightRamp, "StraightRamp"},
         std::tuple{tr("拐角坡道"), MapData::TerrainBrushKind::CornerRamp, "CornerRamp"},
         std::tuple{tr("边界"), MapData::TerrainBrushKind::Boundary, "Boundary"},
         std::tuple{tr("通行限制"), MapData::TerrainBrushKind::PathingRestriction, "PathingRestriction"}};
@@ -229,6 +231,8 @@ QWidget* WorldModule::BuildTerrainPage() {
         button->setText(label);
         if (kind == MapData::TerrainBrushKind::RemoveWater)
             button->setToolTip(tr("移除水面，保留地形高度和原始水高；保存时重新核对通行性与小地图。"));
+        if (kind == MapData::TerrainBrushKind::StraightRamp)
+            button->setToolTip(tr("单击创建或移除一级直坡，支持干地和含水地形；拖动不扩大范围。"));
         button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         button->setMinimumHeight(52);
@@ -590,7 +594,8 @@ void WorldModule::UpdateTerrainBrushControls() {
         std::pair{terrainCliffSection_, waterBrush || kind == MapData::TerrainBrushKind::CliffLevel || kind == MapData::TerrainBrushKind::CliffTexture},
         std::pair{terrainWaterSection_, kind == MapData::TerrainBrushKind::WaterHeight},
         std::pair{terrainWaterBrushSection_, NeedsStructuralBrushRules()},
-        std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp || kind == MapData::TerrainBrushKind::CornerRamp},
+        std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp || kind == MapData::TerrainBrushKind::CornerRamp
+            || kind == MapData::TerrainBrushKind::StraightRamp},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
         std::pair{terrainBoundarySection_, kind == MapData::TerrainBrushKind::Boundary},
         std::pair{terrainPathingSection_, kind == MapData::TerrainBrushKind::PathingRestriction},
@@ -601,8 +606,9 @@ void WorldModule::UpdateTerrainBrushControls() {
         if (appearing) UiKit::FadeIn(section, 160, 0.2);
     }
     for (auto* button : terrainCliffDeltas_->buttons()) button->setVisible(kind == MapData::TerrainBrushKind::CliffLevel);
-    terrainEnforceWaterLimits_->setVisible(kind != MapData::TerrainBrushKind::CornerRamp);
-    const bool sized = kind != MapData::TerrainBrushKind::Ramp && kind != MapData::TerrainBrushKind::CornerRamp;
+    const bool pointRamp = kind == MapData::TerrainBrushKind::CornerRamp || kind == MapData::TerrainBrushKind::StraightRamp;
+    terrainEnforceWaterLimits_->setVisible(!pointRamp);
+    const bool sized = kind != MapData::TerrainBrushKind::Ramp && !pointRamp;
     terrainRadius_->setEnabled(sized); terrainRadiusSlider_->setEnabled(sized);
     for (auto* button : terrainShapes_->buttons()) button->setEnabled(sized);
     if (shaping) {

@@ -219,7 +219,8 @@ private:
     [[nodiscard]] std::optional<MapData::TerrainWaterBrushKind> CurrentWaterBrushKind() const;
     [[nodiscard]] bool NeedsStructuralBrushRules() const {
         return CurrentWaterBrushKind().has_value() || CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel
-            || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp;
+            || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp
+            || CurrentBrushKind() == MapData::TerrainBrushKind::StraightRamp;
     }
     [[nodiscard]] bool StructuralBrushEnforceWaterLimits() const;
     [[nodiscard]] bool WaterBrushCaptureCurrent() const;

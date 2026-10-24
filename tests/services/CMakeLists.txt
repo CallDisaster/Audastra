@@ -216,7 +216,7 @@ target_compile_options(war3-map-object-resource-query-tests PRIVATE /W4 /permiss
 add_test(NAME services-object-resource-query COMMAND war3-map-object-resource-query-tests)
 set_tests_properties(services-object-resource-query PROPERTIES TIMEOUT 60)
 
-add_executable(war3-map-save-service-tests MapSaveServiceTests.cpp)
+add_executable(war3-map-save-service-tests MapSaveServiceTests.cpp TerrainStraightRampHostCases.h)
 target_link_libraries(war3-map-save-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-save-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-save-service-tests PRIVATE /W4 /permissive- /utf-8)
@@ -305,6 +305,12 @@ target_link_libraries(audastra-terrain-wet-corner-service-tests PRIVATE War3MapE
 target_compile_definitions(audastra-terrain-wet-corner-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-wet-corner-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-wet-corner COMMAND audastra-terrain-wet-corner-service-tests)
+
+add_executable(audastra-terrain-straight-ramp-service-tests TerrainStraightRampServiceTests.cpp ../TerrainStraightRampFixtures.h)
+target_link_libraries(audastra-terrain-straight-ramp-service-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-straight-ramp-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-straight-ramp-service-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-straight-ramp COMMAND audastra-terrain-straight-ramp-service-tests)
 
 add_executable(audastra-native-destructable-pathing-tests
     NativeDestructablePathingTests.cpp TerrainEmptyParentCases.h TerrainBridgeNameCases.h)

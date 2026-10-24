@@ -854,6 +854,8 @@ private slots:
     void TerrainTextureSlotWorkerRejectsStale();
     void TerrainTextureSlotWorkerSurvivesModuleDestruction();
     void TerrainRampKeepsCellAndWholeStroke();
+    void TerrainStraightRampUsesFrozenSingleClickAndUndo();
+    void TerrainStraightRampRejectsStaleStroke();
     void TerrainBoundaryMarksAndRestores_data();
     void TerrainBoundaryMarksAndRestores();
     void TerrainPathingUsesCellsAndPreservesSource_data();
@@ -5385,6 +5387,8 @@ void WorldModuleTests::ShadowRelationMemoTracksAttachGenerationsAndSessionIdenti
     QVERIFY(memo.Query(edits, source.get(), compare) == std::optional<bool>{true});
     QCOMPARE(comparisons, 5);
 }
+
+#include "TerrainStraightRampWorldCases.h"
 
 int main(int argc, char** argv) {
     if (qEnvironmentVariable("FORGE_H1_CAPTURE_DIR").isEmpty()) qputenv("QT_QPA_PLATFORM", "offscreen");

@@ -176,9 +176,9 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
             << " native_oracle=false native_editor_verified=false game_verified=false\n";
     }
 }
-void CheckRealCornerRampSave(const MapArchiveSession& original,
+static void CheckRealPointRampSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
-    const std::filesystem::path& game) {
+    const std::filesystem::path& game, bool straight) {
     const auto originalTerrain = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
     Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
         "corner ramp uses the playable original 64-cell map");
@@ -191,7 +191,11 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
     Require(waterResources.WaterBrushRules(), "corner scenarios capture actual water and maximum-level rules");
     const double waterOffset = waterResources.WaterBrushRules()->waterLayerOffset;
     for (const bool wet : {false, true}) for (const int dx : {-1, 1}) for (const int dy : {-1, 1}) {
-        const auto scenario = directory / (std::string(wet ? "playable-wet-corner-ramp-" : "playable-corner-ramp-")
+        const int nx = straight ? (dx < 0 ? dy : 0) : dx;
+        const int ny = straight ? (dx > 0 ? dy : 0) : dy;
+        const auto prefix = straight ? (wet ? "playable-wet-straight-ramp-" : "playable-straight-ramp-")
+            : (wet ? "playable-wet-corner-ramp-" : "playable-corner-ramp-");
+        const auto scenario = directory / (std::string(prefix)
             + (dx > 0 ? "east-" : "west-") + (dy > 0 ? "north" : "south"));
         Require(std::filesystem::create_directory(scenario), "exclusive actual corner scenario");
         auto before = originalTerrain;
@@ -199,7 +203,8 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
             auto& vertex = before.vertices[std::size_t(y) * 65 + x];
             Require(!vertex.IsRamp() && !vertex.HasWater() && !vertex.IsBlight(),
                 "original corner seed is dry, has no ramp or blight");
-            const bool high = (x - 32) * dx <= 0 && (y - 32) * dy <= 0;
+            const bool high = straight ? (x - 32) * nx + (y - 32) * ny <= 0
+                : (x - 32) * dx <= 0 && (y - 32) * dy <= 0;
             vertex.cliffAndLayerRaw = std::uint8_t(high ? 3 : 2);
         }
         if (wet) {
@@ -218,7 +223,9 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
         }
         RefreshTerrainDerived(before, 0, 0, 65, 65);
         auto after = before;
-        for (int x = 0; x < 3; ++x) for (int y = 0; y < 3; ++y)
+        if (straight) for (int step = 0; step < 3; ++step)
+            after.vertices[std::size_t(32 + step * ny) * 65 + 32 + step * nx].textureAndFlagsRaw |= 0x10;
+        else for (int x = 0; x < 3; ++x) for (int y = 0; y < 3; ++y)
             after.vertices[std::size_t(32 + y * dy) * 65 + 32 + x * dx].textureAndFlagsRaw |= 0x10;
         RefreshTerrainDerived(after, 0, 0, 65, 65);
         const auto beforeBytes = Take(SerializeMapTerrain(before)), afterBytes = Take(SerializeMapTerrain(after));
@@ -229,7 +236,7 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
         auto originalWpm = Take(original.ReadMember("war3map.wpm")), expectedWpm = originalWpm;
         Require(g0.size() == 256 * 256 && g1.size() == g0.size() && originalWpm.size() == 16 + g0.size(),
             "actual corner pathing covers every source cell");
-        // 此专项验证实际资源和公共编排；完整独立字面WPM另见Core/Services角坡测试。
+        // 此专项验证实际资源和公共编排；完整独立字面WPM另见Core/Services直坡及角坡测试。
         for (std::size_t i = 0; i < g0.size(); ++i) {
             originalWpm[i + 16] = (originalWpm[i + 16] & std::byte{0x11}) | g0[i];
             expectedWpm[i + 16] = (expectedWpm[i + 16] & std::byte{0x11}) | g1[i];
@@ -237,18 +244,22 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
         Require(originalWpm != expectedWpm, "corner changes real native pathing rather than only journal state");
         auto current = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x",
             std::array<MemberReplacement, 1>{{{"war3map.wpm", originalWpm}}})).path));
-        const TerrainStrokePoint point{before.header.offset[0] + 32 * 128 + dx * 32,
-            before.header.offset[1] + 32 * 128 + dy * 32};
+        const TerrainStrokePoint point{before.header.offset[0] + 32 * 128 + (nx == 0 ? 1 : nx) * 32,
+            before.header.offset[1] + 32 * 128 + (ny == 0 ? 1 : ny) * 32};
         for (const bool create : {true, false}) {
             const auto& currentTerrain = create ? before : after;
             const auto rules = Take(TerrainPathingSave::CaptureWaterBrushRules(current,
                 currentTerrain, currentTerrain, doodads, game, true, kBytes));
-            TerrainBrush brush; brush.kind = TerrainBrushKind::CornerRamp; brush.value = create;
-            const auto candidate = Take(PrepareTerrainCornerRampStroke(currentTerrain, *rules.WaterBrushRules(),
-                brush, std::span(&point, 1), doodads, rules.WaterSpecialShapes()));
+            TerrainBrush brush; brush.kind = straight ? TerrainBrushKind::StraightRamp : TerrainBrushKind::CornerRamp;
+            brush.value = create;
+            const auto candidate = Take(straight
+                ? PrepareTerrainStraightRampStroke(currentTerrain, *rules.WaterBrushRules(), brush,
+                    std::span(&point, 1), doodads, rules.WaterSpecialShapes())
+                : PrepareTerrainCornerRampStroke(currentTerrain, *rules.WaterBrushRules(), brush,
+                    std::span(&point, 1), doodads, rules.WaterSpecialShapes()));
             const auto& expectedTerrain = create ? afterBytes : beforeBytes;
             Require(Take(SerializeMapTerrain(candidate.terrain)) == expectedTerrain,
-                "actual rules preserve independent complete nine-bit W3E literal in every direction");
+                "actual rules preserve independent complete three/nine-bit W3E literal in every direction");
             MapEditSaveRequest request;
             request.sourceMap = current.SourcePath(); request.targetCandidate = scenario / (create ? "created.w3x" : "removed.w3x");
             request.toolRoot = tool; request.gameRoot = game; request.expectedSourceSha256 = current.SourceSha256();
@@ -268,7 +279,8 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
             }
             Require(Take(Sha256File(current.SourcePath())) == current.SourceSha256()
                 && Take(Sha256File(original.SourcePath())) == original.SourceSha256(), "corner keeps every source immutable");
-            std::cout << "playable_corner_ramp_save_passed wet=" << wet << " dx=" << dx << " dy=" << dy << " create=" << create
+            std::cout << (straight ? "playable_straight_ramp_save_passed wet=" : "playable_corner_ramp_save_passed wet=")
+                << wet << " dx=" << dx << " dy=" << dy << " normal_x=" << nx << " normal_y=" << ny << " create=" << create
                 << " source_sha256=" << current.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
                 << " w3e_sha256=" << Take(Sha256(expectedTerrain)) << " wpm_sha256=" << Take(Sha256(create ? expectedWpm : originalWpm))
                 << " actual_rules_sha256=" << Take(rules.WaterBrushDependencyFingerprint())
@@ -276,5 +288,15 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
             current = std::move(readback);
         }
     }
+}
+void CheckRealCornerRampSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game) {
+    CheckRealPointRampSave(original, directory, tool, game, false);
+}
+void CheckRealStraightRampSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game) {
+    CheckRealPointRampSave(original, directory, tool, game, true);
 }
 } // namespace War3Map::TerrainSaveTests

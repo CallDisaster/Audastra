@@ -991,6 +991,8 @@ private slots:
     void StartLocationsDescriptionsProjectColdRestore();
     void CornerRampProjectColdRestoreAndNativeSave_data();
     void CornerRampProjectColdRestoreAndNativeSave();
+    void StraightRampProjectColdRestoreAndNativeSave_data();
+    void StraightRampProjectColdRestoreAndNativeSave();
     void PlayableBoundsProjectColdRestoreAndNativeSave_data();
     void PlayableBoundsProjectColdRestoreAndNativeSave();
     void GeneratedObjectsSurviveCommitAndSecondSave();
@@ -1101,6 +1103,7 @@ private:
 #include "TerrainGroundPaletteAppendProjectCases.h"
 #include "TerrainCliffPaletteAppendProjectCases.h"
 #include "EditorProjectRemoveWaterCases.h"
+#include "TerrainStraightRampProjectCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
     QTemporaryDir root; QVERIFY(root.isValid());
@@ -5359,7 +5362,7 @@ int main(int argc, char** argv) {
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
                 if (name.startsWith(prefix)) return QStringLiteral("derived");
             for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "NativePathing",
-                    "PlacementHeight", "PathingIntent", "LegacyPathing", "NativeObjectCatalog"})
+                    "PlacementHeight", "PathingIntent", "LegacyPathing", "NativeObjectCatalog", "StraightRamp"})
                 if (name.startsWith(prefix)) return QStringLiteral("native-pathing");
             return QStringLiteral("base");
         };

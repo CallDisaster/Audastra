@@ -2613,8 +2613,11 @@ void TestMapCreationRejectsUnboundedOrExistingInputs() {
         "existing target is rejected before loading a catalog");
 }
 
+#include "TerrainStraightRampHostCases.h"
+
 int main() {
     try {
+        War3Map::Tests::TerrainStraightRampHostValidation();
         TestFrozenSourceAndVerifiedCandidate();
         TestClassicV1CommonMapSaveAndTemplateBoundary();
         TestOptionalRealClassicV1MapSave();

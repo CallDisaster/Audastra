@@ -13,4 +13,7 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
 void CheckRealCornerRampSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game);
+void CheckRealStraightRampSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game);
 }

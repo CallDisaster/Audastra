@@ -787,7 +787,8 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         return;
     }
     if ((CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel
-            || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp) && !WaterBrushCaptureCurrent()) {
+            || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp
+            || CurrentBrushKind() == MapData::TerrainBrushKind::StraightRamp) && !WaterBrushCaptureCurrent()) {
         QueueWaterBrushCapture();
         selectionStatus_->setText(tr("请等待地形规则就绪后重新落笔")); return;
     }
@@ -822,14 +823,18 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         ExtendTerrainStroke(x, y); UpdateSelectionText(); return;
     }
     strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
-    if (CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp) {
-        const auto point = MapData::SnapTerrainCornerRampPoint(*source, {x, y});
-        const auto plan = point ? MapData::PlanTerrainCornerRamp(*source, *point)
-            : Result<MapData::TerrainCornerRampPlan>::Failure("Terrain.Ramp", "TERRAIN_CORNER_RAMP_OUTSIDE", "落点超出地图。");
+    const bool straightRamp = CurrentBrushKind() == MapData::TerrainBrushKind::StraightRamp;
+    if (CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp || straightRamp) {
+        const auto point = straightRamp ? MapData::SnapTerrainStraightRampPoint(*source, {x, y})
+            : MapData::SnapTerrainCornerRampPoint(*source, {x, y});
+        Status plan;
+        if (!point) plan = Status::Failure("Terrain.Ramp", "TERRAIN_RAMP_OUTSIDE", "落点超出地图。");
+        else if (straightRamp) plan.diagnostics = MapData::PlanTerrainStraightRamp(*source, *point).diagnostics;
+        else plan.diagnostics = MapData::PlanTerrainCornerRamp(*source, *point).diagnostics;
         if (!plan.Succeeded()) {
-            selectionStatus_->setText(tr("不能创建或移除拐角坡道：%1").arg(WorldDiagnosticText(plan.diagnostics))); return;
+            selectionStatus_->setText(tr("不能创建或移除坡道：%1").arg(WorldDiagnosticText(plan.diagnostics))); return;
         }
-        strokeBrush_ = {}; strokeBrush_.kind = MapData::TerrainBrushKind::CornerRamp;
+        strokeBrush_ = {}; strokeBrush_.kind = CurrentBrushKind();
         strokeBrush_.value = terrainRampModes_->checkedId() != 0;
         strokeBase_ = std::move(source); strokeRevision_ = project_.mapEdits_->Revision();
         strokeWaterCapture_ = waterCapture_; strokePoints_ = {*point};
@@ -903,8 +908,9 @@ void WorldModule::StartTerrainStroke(double x, double y) {
 
 void WorldModule::ExtendTerrainStroke(double x, double y) {
     if (!strokeBase_ || !std::isfinite(x) || !std::isfinite(y)) return;
-    // 拐角坡道每次按下只处理一个规范落点；拖动不能隐式扩成多笔事务。
-    if (strokeBrush_.kind == MapData::TerrainBrushKind::CornerRamp) return;
+    // 结构坡道每次按下只处理一个规范落点；拖动不能隐式扩成多笔事务。
+    if (strokeBrush_.kind == MapData::TerrainBrushKind::CornerRamp
+        || strokeBrush_.kind == MapData::TerrainBrushKind::StraightRamp) return;
     if (strokeBrush_.kind == MapData::TerrainBrushKind::Ramp) {
         // 坡道按所在悬崖格取法向；吸附到最近顶点会把高侧半格错误移到平地。
         // 保留原落点，拖动按半格补采样；Core 仍对整笔预检，坏点不能留下半笔修改。
@@ -987,7 +993,8 @@ void WorldModule::FinishTerrainStroke() {
     const bool pathing = strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction;
     const bool water = strokeWaterBrush_.has_value();
     const bool corner = strokeBrush_.kind == MapData::TerrainBrushKind::CornerRamp;
-    const bool structural = water || corner || strokeBrush_.kind == MapData::TerrainBrushKind::CliffLevel;
+    const bool straight = strokeBrush_.kind == MapData::TerrainBrushKind::StraightRamp;
+    const bool structural = water || corner || straight || strokeBrush_.kind == MapData::TerrainBrushKind::CliffLevel;
     if ((pathing || structural) && before != strokeRevision_) {
         CancelTerrainStroke(); selectionStatus_->setText(tr("地形编辑修订已变化，请重新落笔")); return;
     }
@@ -999,7 +1006,7 @@ void WorldModule::FinishTerrainStroke() {
     const auto terrainBefore = project_.mapEdits_->Terrain();
     if (structural) {
         std::shared_ptr<const MapData::MapDataEditSession> frozen;
-        if (corner) {
+        if (corner || straight) {
             auto captured = project_.mapEdits_->FreezeForSave(MapData::TerrainWaterBrushLimits{}.maximumCandidateBytes);
             if (!captured.Succeeded()) {
                 CancelTerrainStroke(); selectionStatus_->setText(WorldDiagnosticText(captured.diagnostics)); return;
@@ -1038,7 +1045,9 @@ void WorldModule::StartWaterBrushCommit() {
         if (request->frozen && status->Succeeded()) {
             timer.restart();
             const auto& brush = std::get<MapData::TerrainBrush>(request->brush);
-            *cornerPlan = request->frozen->PrepareTerrainCornerRampEdit(request->capture->resources, brush, request->points, true);
+            *cornerPlan = brush.kind == MapData::TerrainBrushKind::StraightRamp
+                ? request->frozen->PrepareTerrainStraightRampEdit(request->capture->resources, brush, request->points, true)
+                : request->frozen->PrepareTerrainCornerRampEdit(request->capture->resources, brush, request->points, true);
             *prepareElapsed = timer.elapsed();
             // 候选计算期间来源也可能变化；发布前重验实际归档，GUI只做修订CAS。
             if (cornerPlan->Succeeded()) *status = QtProject::VerifyTerrainWaterEditResources(*request->capture);
@@ -1113,8 +1122,8 @@ void WorldModule::PublishTerrainStrokeResult(Result<MapData::TerrainStrokeResult
     pushingTerrainStrokeUndo_ = false;
     if (!project_.mapDataUndoStack_) RefreshPlacements();
     if (water) {
-        // 水刷只允许同事务的Z跟随；不能调用下方会搬移XY或删除对象的补救对话框。
-        selectionStatus_->setText(tr("水面已修改；水边对象的站立位置请另行检查，可撤销本笔"));
+        // 结构笔刷只允许同事务的Z跟随；不能调用下方会搬移XY或删除对象的补救对话框。
+        selectionStatus_->setText(tr("地形已修改；附近对象的站立位置请另行检查，可撤销本笔"));
         return;
     }
     // 落笔事件结束后再询问，避免在鼠标释放处理中开模态窗口。
@@ -1405,16 +1414,18 @@ void WorldModule::UpdateOverlay() {
         MapData::TerrainBrush brush;
         brush.kind = CurrentBrushKind();
         const bool corner = brush.kind == MapData::TerrainBrushKind::CornerRamp;
-        if (!corner) brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
+        const bool straight = brush.kind == MapData::TerrainBrushKind::StraightRamp;
+        if (!corner && !straight) brush.size = static_cast<std::uint32_t>(terrainRadius_->value());
         const bool pathing = brush.kind == MapData::TerrainBrushKind::PathingRestriction;
         const double size = pathing ? MapData::kPathingCellSize : MapData::TerrainGridSnapshot::tileSize;
         const MapData::TerrainStrokePoint point{(*brushCursor_)[0], (*brushCursor_)[1]};
-        const auto snapped = corner ? MapData::SnapTerrainCornerRampPoint(*terrain, point) : std::optional{point};
+        const auto snapped = straight ? MapData::SnapTerrainStraightRampPoint(*terrain, point)
+            : corner ? MapData::SnapTerrainCornerRampPoint(*terrain, point) : std::optional{point};
         if (const auto footprint = !snapped ? std::nullopt : pathing
                 ? MapData::GetPathingRestrictionFootprint(terrain->header, brush, *snapped)
                 : MapData::GetTerrainBrushFootprint(*terrain, brush, *snapped)) {
             const double cx = footprint->centerX, cy = footprint->centerY, extent = footprint->radius;
-            if (brush.kind == MapData::TerrainBrushKind::Ramp || corner) {
+            if (brush.kind == MapData::TerrainBrushKind::Ramp || corner || straight) {
                 const auto& origin = terrain->header.offset;
                 Render::AppendGroundRectangle(lines, terrain,
                     static_cast<float>(origin[0] + (footprint->x0 - 0.5) * size),
