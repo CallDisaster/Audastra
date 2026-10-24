@@ -453,6 +453,42 @@ std::vector<MapArchiveMember> StartupCategoryCQtMembers(std::size_t footprintSta
     return members;
 }
 
+std::vector<MapArchiveMember> EffectiveCategoryQtMembers(bool custom, const std::string& standardCategory,
+    const std::optional<std::string>& categoryOverride, const std::string& rawcode, std::size_t footprintStart) {
+    using namespace ObjectData;
+    auto members = StartupCategoryCQtMembers(footprintStart);
+    if (members.empty()) return {};
+    const std::string parent = custom ? (standardCategory == "C" ? "PC01" : "PE01") : rawcode;
+    for (auto& member : members) {
+        if (member.name == "Doodads/Doodads.slk")
+            member.data = NativeDoodadQtTable({"doodID", "code", "pathTex", "category", "fixedRot"},
+                {{parent, parent, "PathTextures/C-grid.tga", standardCategory, "270"}});
+        if (member.name == "war3map.doo") {
+            auto placements = MapData::ParseDoodadPlacements(member.data);
+            if (!placements.Succeeded() || !placements.value || placements.value->doodads.size() != 1) return {};
+            placements.value->doodads.front().rawcode = rawcode;
+            const auto wire = placements.value->Serialize();
+            if (!wire.Succeeded() || !wire.value) return {};
+            member.data = *wire.value;
+        }
+    }
+    // dcat真实类型为doodadCategory，wire必须为String；不以字段名替代metadata地址校验。
+    members.push_back({"Doodads/DoodadMetaData.slk", NativeDoodadQtTable(
+        {"ID", "field", "slk", "type", "repeat", "data", "index"},
+        {{"dptx", "pathTex", "DoodadData", "pathingTexture", "0", "0", "0"},
+            {"dcat", "category", "DoodadData", "doodadCategory", "0", "0", "0"}})});
+    auto native = NativeObjectDocument::CreateEmpty(ObjectType::Doodad);
+    if (!native.Succeeded() || !native.value) return {};
+    const auto added = custom ? native.value->AddCustomObject(rawcode, parent) : native.value->AddOriginalObject(rawcode);
+    if (!added.Succeeded()) return {};
+    if (categoryOverride && !native.value->AddModification({ObjectType::Doodad, rawcode}, {"dcat"},
+        NativeValueType::String, *categoryOverride).Succeeded()) return {};
+    const auto wire = NativeObjectCodec(ObjectType::Doodad).Serialize(*native.value);
+    if (!wire.Succeeded() || !wire.value) return {};
+    members.push_back({"war3map.w3d", *wire.value});
+    return members;
+}
+
 std::vector<MapArchiveMember> FixedRotationQtMembers(bool custom, float degrees, bool wrongWireType = false) {
     using namespace ObjectData;
     auto members = NativePathingQtMembers();
@@ -821,6 +857,12 @@ private slots:
     void CGridStartupDirectoryDriftRejectsBeforeWrite();
     void CGridStartupDirectoryUnavailableRejectsBeforeWrite_data();
     void CGridStartupDirectoryUnavailableRejectsBeforeWrite();
+    void EffectiveDoodadCategorySaveAndUndoRedo_data();
+    void EffectiveDoodadCategorySaveAndUndoRedo();
+    void EffectiveDoodadCategoryWorkerRejectsBeforeWrite_data();
+    void EffectiveDoodadCategoryWorkerRejectsBeforeWrite();
+    void EffectiveDoodadCategorySourceDriftRejectsBeforeWrite_data();
+    void EffectiveDoodadCategorySourceDriftRejectsBeforeWrite();
     void FixedRotationNormalSaveAndUndoRedo_data();
     void FixedRotationNormalSaveAndUndoRedo();
     void FixedRotationWorkerRejectsBeforeWrite_data();
@@ -2027,6 +2069,120 @@ void EditorProjectTests::CGridStartupDirectoryNormalSaveAndUndoRedo() {
     QCOMPARE(members[2].data[16 + 12 * 32 + 12], footprintStart == 12 ? std::byte{0x1d} : std::byte{0x19});
     QCOMPARE(members[2].data[16 + 21 * 32 + 21], footprintStart == 14 ? std::byte{0x1d} : std::byte{0x19});
     CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace, false, nullptr, game);
+}
+
+void EditorProjectTests::EffectiveDoodadCategorySaveAndUndoRedo_data() {
+    QTest::addColumn<bool>("custom"); QTest::addColumn<QString>("standardCategory");
+    QTest::addColumn<QString>("categoryOverride"); QTest::addColumn<bool>("hasOverride");
+    QTest::addColumn<QString>("rawcode"); QTest::addColumn<int>("footprintStart"); QTest::addColumn<bool>("inPlace");
+    struct Row { const char* name; bool custom; const char* standard; const char* overrideValue; const char* rawcode; int start; };
+    const Row rows[]{
+        {"original-E-to-C", false, "E", "C", "OE01", 12},
+        {"original-C-to-E", false, "C", "E", "OC01", 14},
+        {"custom-E-to-C", true, "E", "C", "ZE01", 12},
+        {"custom-C-to-E", true, "C", "E", "ZC01", 14},
+        {"custom-inherit-C", true, "C", nullptr, "ZE01", 12},
+        {"custom-inherit-E", true, "E", nullptr, "ZC01", 14},
+        {"standard-empty-new-id-C", false, "", nullptr, "OC01", 12},
+        {"standard-underscore-new-id-E", false, "_", nullptr, "OE01", 14},
+        {"custom-explicit-empty-new-id-E", true, "C", "", "ZE01", 14},
+        {"custom-leading-underscore-new-id-C", true, "E", "_suffix", "ZC01", 12}};
+    for (const auto& row : rows) for (const bool inPlace : {false, true}) {
+        const auto name = QString("effective-category-%1-%2").arg(row.name, inPlace ? "in-place" : "save-as").toUtf8();
+        QTest::newRow(name.constData()) << row.custom << QString::fromUtf8(row.standard)
+            << QString::fromUtf8(row.overrideValue ? row.overrideValue : "") << (row.overrideValue != nullptr)
+            << QString::fromUtf8(row.rawcode) << row.start << inPlace;
+    }
+}
+
+void EditorProjectTests::EffectiveDoodadCategorySaveAndUndoRedo() {
+    QFETCH(bool, custom); QFETCH(QString, standardCategory); QFETCH(QString, categoryOverride); QFETCH(bool, hasOverride);
+    QFETCH(QString, rawcode); QFETCH(int, footprintStart); QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, "[DoodadCategories]\nC=custom\n"));
+    const std::optional<std::string> overrideValue = hasOverride ? std::optional(categoryOverride.toStdString()) : std::nullopt;
+    const auto members = EffectiveCategoryQtMembers(custom, standardCategory.toStdString(), overrideValue,
+        rawcode.toStdString(), static_cast<std::size_t>(footprintStart)); QVERIFY(!members.empty());
+    const auto other = EffectiveCategoryQtMembers(custom, standardCategory.toStdString(), overrideValue,
+        rawcode.toStdString(), footprintStart == 12 ? 14 : 12); QVERIFY(!other.empty());
+    QVERIFY(members[2].data != other[2].data);
+    QCOMPARE(members[2].data[16 + 12 * 32 + 12], footprintStart == 12 ? std::byte{0x1d} : std::byte{0x19});
+    QCOMPARE(members[2].data[16 + 21 * 32 + 21], footprintStart == 14 ? std::byte{0x1d} : std::byte{0x19});
+    // 空覆盖与未覆盖不同；Custom回退必须用DOO新ID，不能借父ID或父category。
+    CheckNativeDoodadNormalSaveAndUndoRedo(members, inPlace, false, nullptr, game);
+}
+
+void EditorProjectTests::EffectiveDoodadCategoryWorkerRejectsBeforeWrite_data() {
+    QTest::addColumn<QString>("scenario"); QTest::addColumn<bool>("inPlace"); QTest::addColumn<QString>("code");
+    for (const auto* scenario : {"wrong-wire", "selector", "duplicate-category-address", "old-wpm-other-grid"})
+        for (const bool inPlace : {false, true}) {
+            const auto name = QString("effective-category-reject-%1-%2").arg(scenario, inPlace ? "in-place" : "save-as").toUtf8();
+            const auto code = std::string_view(scenario) == "wrong-wire" ? "TERRAIN_NATIVE_OBJECT_DOODAD_TYPE"
+                : std::string_view(scenario) == "old-wpm-other-grid" ? "TERRAIN_PATHING_SOURCE_UNEXPLAINED"
+                : "TERRAIN_NATIVE_OBJECT_METADATA";
+            QTest::newRow(name.constData()) << QString::fromUtf8(scenario) << inPlace << QString::fromUtf8(code);
+        }
+}
+
+void EditorProjectTests::EffectiveDoodadCategoryWorkerRejectsBeforeWrite() {
+    using namespace ObjectData;
+    QFETCH(QString, scenario); QFETCH(bool, inPlace); QFETCH(QString, code);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, "[DoodadCategories]\nC=custom\n"));
+    const bool custom = scenario == "selector";
+    const std::string rawcode = custom ? "ZE01" : "OE01";
+    auto members = EffectiveCategoryQtMembers(custom, "E", std::string("C"), rawcode,
+        scenario == "old-wpm-other-grid" ? 14 : 12); QVERIFY(!members.empty());
+    if (scenario == "wrong-wire") {
+        const auto w3d = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "war3map.w3d"; });
+        QVERIFY(w3d != members.end());
+        auto parsed = NativeObjectCodec(ObjectType::Doodad).Parse(w3d->data); QVERIFY(parsed.Succeeded());
+        auto* native = dynamic_cast<NativeObjectDocument*>(parsed.document.get()); QVERIFY(native);
+        QVERIFY(native->RemoveModification({ObjectType::Doodad, rawcode}, {"dcat"}).Succeeded());
+        QVERIFY(native->AddModification({ObjectType::Doodad, rawcode}, {"dcat"}, NativeValueType::Int32, std::int32_t{67}).Succeeded());
+        const auto wire = NativeObjectCodec(ObjectType::Doodad).Serialize(*native); QVERIFY(wire.Succeeded() && wire.value);
+        w3d->data = *wire.value;
+    } else if (scenario == "selector" || scenario == "duplicate-category-address") {
+        const auto metadata = std::find_if(members.begin(), members.end(),
+            [](const auto& member) { return member.name == "Doodads/DoodadMetaData.slk"; });
+        QVERIFY(metadata != members.end());
+        std::vector<std::vector<std::string>> rows{
+            {"dptx", "pathTex", "DoodadData", "pathingTexture", "0", "0", "0", ""},
+            {"dcat", "category", "DoodadData", "doodadCategory", "0", "0", "0", scenario == "selector" ? "PE01" : ""}};
+        if (scenario == "duplicate-category-address")
+            rows.push_back({"dca2", "category", "DoodadData", "doodadCategory", "0", "0", "0", ""});
+        metadata->data = NativeDoodadQtTable({"ID", "field", "slk", "type", "repeat", "data", "index", "useSpecific"}, rows);
+    }
+    const auto expectedCode = code.toUtf8();
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, expectedCode.constData(), NativeDoodadQtMutation::None, game);
+}
+
+void EditorProjectTests::EffectiveDoodadCategorySourceDriftRejectsBeforeWrite_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::newRow("effective-category-drift-save-as") << false;
+    QTest::newRow("effective-category-drift-in-place") << true;
+}
+
+void EditorProjectTests::EffectiveDoodadCategorySourceDriftRejectsBeforeWrite() {
+    QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    const auto game = std::filesystem::path(root.filePath("startup-game").toStdWString());
+    QVERIFY(WriteStartupCategoryQtGame(game, "[DoodadCategories]\nC=custom\n"));
+    const auto members = EffectiveCategoryQtMembers(true, "E", std::string("C"), "ZE01", 12); QVERIFY(!members.empty());
+    int mutationCalls = 0;
+    const auto mutate = [&]() -> Status {
+        ++mutationCalls;
+        if (!std::filesystem::remove(game / "war3.mpq"))
+            return Status::Failure("Test", "CATEGORY_FIXTURE_MUTATION_FAILED", "无法改写有效category的实际启动来源。");
+        const std::vector<MapArchiveMember> replacement{{"UI/WorldEditData.txt", Tests::WaterText("[DoodadCategories]\nE=environment\n")}};
+        auto written = WriteVerifiedArchive(game / "war3.mpq", replacement);
+        return written.Succeeded() ? Status::Ok() : Status{std::move(written.diagnostics)};
+    };
+    CheckNativeDoodadWorkerRejectsBeforeWrite(members, inPlace, "TERRAIN_CATEGORY_SOURCE_CHANGED",
+        NativeDoodadQtMutation::None, game, mutate);
+    QCOMPARE(mutationCalls, 1);
 }
 
 void EditorProjectTests::CheckNativeDoodadNormalSaveAndUndoRedo(const std::vector<MapArchiveMember>& members, bool inPlace,
