@@ -1,6 +1,7 @@
 #include "GameUiModule.h"
 
 #include "GameUiAuthoringJson.h"
+#include "GameUiChoice.h"
 
 #include <QAbstractItemView>
 #include <QComboBox>
@@ -11,7 +12,6 @@
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSplitter>
-#include <QStyledItemDelegate>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
@@ -30,7 +30,7 @@ using namespace War3Map::GameUi;
 
 QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
-constexpr int kChoiceRole = Qt::UserRole + 41;  // 选择列单元在文件里的取值
+constexpr int kChoiceRole = kGameUiChoiceRole;
 
 struct Column {
     const char* key;
@@ -44,7 +44,7 @@ constexpr Column kOverrideColumns[] = {{"frame", QT_TR_NOOP("框架")}, {"textur
     {"visible", QT_TR_NOOP("显示")}, {"value", QT_TR_NOOP("进度")}};
 constexpr Column kEventColumns[] = {{"id", QT_TR_NOOP("编号")}, {"frame", QT_TR_NOOP("框架")}, {"on", QT_TR_NOOP("触发")}};
 
-using Options = QList<std::pair<QString, QString>>;  // 显示文字、文件里的取值
+using Options = GameUiOptions;
 
 template <std::size_t N>
 QString ColumnKey(const Column (&columns)[N], int column) {
@@ -63,38 +63,6 @@ void SetHeaders(QTableWidget* table, const Column (&columns)[N], bool raw) {
     table->setHorizontalHeaderLabels(labels);
 }
 
-// 选择列：单元格显示文字，编辑时弹出列表，选中即提交。
-class ChoiceDelegate final : public QStyledItemDelegate {
-public:
-    ChoiceDelegate(std::function<Options()> options, QObject* parent) : QStyledItemDelegate(parent), options_(std::move(options)) {}
-
-    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&, const QModelIndex&) const override {
-        auto* box = new QComboBox(parent);
-        for (const auto& [label, data] : options_()) box->addItem(label, data);
-        auto* self = const_cast<ChoiceDelegate*>(this);
-        connect(box, &QComboBox::activated, self, [self, box] {
-            emit self->commitData(box);
-            emit self->closeEditor(box);
-        });
-        QTimer::singleShot(0, box, &QComboBox::showPopup);
-        return box;
-    }
-
-    void setEditorData(QWidget* editor, const QModelIndex& index) const override {
-        auto* box = static_cast<QComboBox*>(editor);
-        box->setCurrentIndex(std::max(0, box->findData(index.data(kChoiceRole))));
-    }
-
-    // 显示文字与取值一次写入，只发一次修改。
-    void setModelData(QWidget* editor, QAbstractItemModel* model, const QModelIndex& index) const override {
-        const auto* box = static_cast<QComboBox*>(editor);
-        model->setItemData(index, {{Qt::DisplayRole, box->currentText()}, {kChoiceRole, box->currentData()}});
-    }
-
-private:
-    std::function<Options()> options_;
-};
-
 template <std::size_t N>
 QTableWidget* MakeTable(QWidget* parent, const char* name, const Column (&columns)[N]) {
     auto* table = new QTableWidget(0, static_cast<int>(N), parent);
@@ -111,7 +79,8 @@ QTableWidget* MakeTable(QWidget* parent, const char* name, const Column (&column
 }
 
 void SetChoices(QTableWidget* table, int column, std::function<Options()> options) {
-    table->setItemDelegateForColumn(column, new ChoiceDelegate(std::move(options), table));
+    table->setItemDelegateForColumn(column,
+        new GameUiChoiceDelegate([options = std::move(options)](const QModelIndex&) { return options(); }, table));
 }
 
 QPushButton* Button(QWidget* parent, const char* name, const QString& text) {
@@ -146,11 +115,7 @@ QTableWidgetItem* Cell(const QString& text, bool editable = true) {
 }
 
 QTableWidgetItem* ChoiceCell(const Options& options, const QString& value) {
-    QString label = value;
-    for (const auto& [text, data] : options) {
-        if (data == value) label = text;
-    }
-    auto* item = Cell(label);
+    auto* item = Cell(GameUiChoiceLabel(options, value));
     item->setData(kChoiceRole, value);
     return item;
 }

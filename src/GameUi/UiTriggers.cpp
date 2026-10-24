@@ -1,6 +1,7 @@
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include "War3MapCore/GameUi/GameCodeLayout.h"
+#include "FeatureTextWriter.h"
 #include "UiDescriptionText.h"
 
 #include <algorithm>
@@ -29,95 +30,16 @@ constexpr std::array<std::array<double, 2>, 9> kScreenPoints{{{0.0, 0.6}, {0.4, 
 constexpr std::array<std::string_view, 3> kJustifyH{"AudastraJustifyLeft", "AudastraJustifyCenter", "AudastraJustifyRight"};
 constexpr std::array<std::string_view, 3> kJustifyV{"AudastraJustifyTop", "AudastraJustifyMiddle", "AudastraJustifyBottom"};
 
-using Lines = std::vector<std::string>;
-
-Diagnostic Note(DiagnosticSeverity severity, const char* code, std::string message) {
-    return Diagnostic{severity, "GameUi", code, std::move(message), std::nullopt};
-}
-
-void Append(Lines& out, const Lines& in, int depth = 0) {
-    const std::string pad(static_cast<std::size_t>(depth) * 4, ' ');
-    for (const auto& line : in) out.push_back(pad + line);
-}
-
-// 紧凑 T 写法的文本字面量：\" \\ \n \r \t 转义。
-std::string Quote(std::string_view text) {
-    std::string out = "\"";
-    for (const char c : text) {
-        switch (c) {
-        case '"': out += "\\\""; break;
-        case '\\': out += "\\\\"; break;
-        case '\n': out += "\\n"; break;
-        case '\r': out += "\\r"; break;
-        case '\t': out += "\\t"; break;
-        default: out.push_back(c);
-        }
-    }
-    return out + "\"";
-}
-
-// JASS 实数字面量：定点、最多 6 位小数、去掉末尾的 0，不用指数写法。
-std::string Real(double value) {
-    if (!std::isfinite(value)) value = 0.0;
-    std::array<char, 64> buffer{};
-    const int written = std::snprintf(buffer.data(), buffer.size(), "%.6f", value);
-    std::string text(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0);
-    while (text.ends_with('0')) text.pop_back();
-    if (text.ends_with('.')) text.pop_back();
-    if (text.empty() || text == "-0") text = "0";
-    return text;
-}
-
-std::string Call(std::string_view name, std::initializer_list<std::string> args = {}) {
-    std::string out(name);
-    out += '(';
-    bool first = true;
-    for (const auto& arg : args) {
-        if (!first) out += ", ";
-        out += arg;
-        first = false;
-    }
-    return out + ')';
-}
-
-Lines If(const Lines& conditions, const Lines& then, const Lines& otherwise = {}) {
-    Lines out{"IfThenElseMultiple() {", "    if:"};
-    Append(out, conditions, 2);
-    out.push_back("    then:");
-    Append(out, then, 2);
-    if (!otherwise.empty()) {
-        out.push_back("    else:");
-        Append(out, otherwise, 2);
-    }
-    out.push_back("}");
-    return out;
-}
+using namespace detail;  // 自然 T 写法
 
 Lines Loop(std::uint32_t count, const Lines& body) {
-    Lines out{Call("ForLoopAMultiple", {"0", std::to_string(count - 1)}) + " {", "    actions:"};
-    Append(out, body, 2);
-    out.push_back("}");
-    return out;
+    return Block(Call("ForLoopAMultiple", {"0", std::to_string(count - 1)}), "actions", body);
 }
 
 std::uint32_t Hash(std::string_view text) {
     std::uint32_t hash = 2166136261u;
     for (const unsigned char c : text) hash = (hash ^ c) * 16777619u;
     return hash;
-}
-
-// 功能写法里的名字：含 : ( ) 或首尾空格时加双引号。
-std::string FeatureName(const std::string& name) {
-    const bool quote = name.find_first_of(":()") != std::string::npos || name.front() == ' ' || name.back() == ' ';
-    return quote ? "\"" + name + "\"" : name;
-}
-
-bool UsableLabel(std::string_view label) {
-    if (label.empty() || label.find('"') != std::string_view::npos) return false;
-    for (const unsigned char c : label) {
-        if (c < 0x20) return false;
-    }
-    return true;
 }
 
 enum class Property : std::uint8_t { Texture, Text, Visible, Value };
@@ -167,12 +89,9 @@ public:
         }
 
         UiTriggerPlan plan;
-        std::string text = "变量:\n";
+        FeatureTextBuilder text;
         auto variable = [&](const std::string& name, std::string_view type, std::uint32_t size, const std::string& initial) {
-            text += "    " + name + ": " + std::string(type);
-            if (size) text += "[" + std::to_string(size) + "]";
-            text += " = " + initial + "\n";
-            plan.variables.push_back(name);
+            text.Variable(name, type, size ? std::optional<std::uint32_t>(size) : std::nullopt, initial);
         };
         for (const auto& info : frames_) {
             variable(UiFrameVariableName(d_.id, info.frame->id), "AudastraFrame", GroupSize(info), "AudastraFrameNone");
@@ -180,18 +99,9 @@ public:
         for (const auto& value : d_.values) variable(UiValueVariableName(d_.id, value.id), ValueType(value.type), value.size, Initial(value));
         if (!d_.states.empty()) variable(UiStateVariableName(d_.id), "string", 0, "\"\"");
 
-        auto trigger = [&](const std::string& name, const Lines& events, const Lines& actions) {
-            text += "触发器 " + FeatureName(name) + ":\n";
-            if (!events.empty()) {
-                text += "    events:\n";
-                for (const auto& line : events) text += "        " + line + "\n";
-            }
-            text += "    actions:\n";
-            for (const auto& line : actions) text += "        " + line + "\n";
-            plan.triggers.push_back(name);
-        };
+        auto trigger = [&](const std::string& name, const Lines& events, const Lines& actions) { text.Trigger(name, events, actions); };
         // 触发器的脚本名只保留 ASCII 字母数字，中文全变成下划线；名字末尾的 ASCII 编号保证脚本名不重。
-        auto named = [&](std::string_view role, const std::string& key) { return name_ + " " + std::string(role) + " " + d_.id + "_" + key; };
+        auto named = [&](std::string_view role, const std::string& key) { return UiTriggerName(d_, role, key); };
         trigger(named("创建", "Create"), {Call("TriggerRegisterTimerEventSingle", {"0"})}, create);
         trigger(named("更新", "Update"), {}, refresh);
         for (const auto& state : d_.states) {
@@ -199,7 +109,9 @@ public:
             trigger(named(role, "State_" + state.id), {}, State(state));
         }
         if (!d_.states.empty()) trigger(named("基础状态", "BaseState"), {}, BaseState(update));
-        plan.featureText = std::move(text);
+        plan.featureText = text.Text();
+        plan.variables = std::move(text.variables);
+        plan.triggers = std::move(text.triggers);
 
         Result<UiTriggerPlan> result = Result<UiTriggerPlan>::Success(std::move(plan));
         result.diagnostics = std::move(warnings_);
@@ -787,6 +699,11 @@ std::string UiValueVariableName(std::string_view description, std::string_view v
 
 std::string UiStateVariableName(std::string_view description) {
     return "AUIS_" + std::string(description);
+}
+
+std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key) {
+    const std::string& name = UsableLabel(description.label) ? description.label : description.id;
+    return name + " " + std::string(role) + " " + description.id + "_" + std::string(key);
 }
 
 std::string UiEventKey(std::string_view description, std::string_view event) {

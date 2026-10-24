@@ -432,7 +432,26 @@ private:
             return;
         }
         for (std::size_t i = 0; i < written.size(); ++i)
-            eca.arguments.push_back(Argument(written[i], TriggerTypeSystem::DeclaredType(definition, i), depth + 1));
+            eca.arguments.push_back(Argument(written[i], ArgumentType(definition, written, i), depth + 1));
+    }
+    // 声明为 Null 的参数按前面的值定类型（同 TriggerTypeSystem::ExpectedType）：YDWE 取最近的类型选择器，
+    // 原版（SetVariable 等）取前一个参数，这里只认已声明的变量。触发器等显示名据此换成 gg_ 生成名。
+    std::string ArgumentType(const UiDefinition& definition, const std::vector<Expression>& written, std::size_t position) const {
+        std::string declared = TriggerTypeSystem::DeclaredType(definition, position);
+        if (declared != "Null") return declared;
+        const auto plainName = [](const Expression& expression) { return !expression.call && expression.kind == TokenKind::Name; };
+        for (std::size_t index = position; index-- > 0;) {
+            if (!types_.IsTypeSelector(TriggerTypeSystem::DeclaredType(definition, index))) continue;
+            if (!plainName(written[index])) return declared;
+            const auto type = TriggerTypeSystem::TypeFromTypename(written[index].text);
+            return type.empty() ? declared : type;
+        }
+        if (position == 0 || !plainName(written[position - 1])) return declared;
+        const auto& name = written[position - 1].text;
+        const auto variable = std::find_if(document_.variables.begin(), document_.variables.end(), [&](const VariableRecord& row) {
+            return row.name.text == name || (name.starts_with("udg_") && row.name.text == name.substr(4));
+        });
+        return variable == document_.variables.end() ? declared : variable->typeName.text;
     }
     GraphArgumentValue Argument(const Expression& expression, const std::string& declaredType, std::size_t depth) {
         GraphArgumentValue argument;

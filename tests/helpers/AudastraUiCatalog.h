@@ -46,6 +46,11 @@ struct Catalog {
         / ("Audastra-UiCatalog-" + std::to_string(GetCurrentProcessId()) + '-' + std::to_string(GetTickCount64()));
     std::optional<War3Map::Trigger::UiCatalog> catalog;
     std::optional<War3Map::Trigger::TriggerDocument> document;
+    // 额外的合成层（放在基础层与 AudastraUI 之间），测试按需补函数。
+    struct Layer {
+        std::string name, define, event, condition, action, call;
+    };
+    std::optional<Layer> extra;
 
     Catalog() = default;
     Catalog(const Catalog&) = delete;
@@ -70,10 +75,18 @@ struct Catalog {
             return stream.good();
         };
         const auto ui = root / "ui";
-        if (!write(ui / "config", "base\nAudastraUI\n") || !write(ui / "base/define.txt", kBaseDefine)
+        const std::string config = "base\n" + (extra ? extra->name + "\n" : std::string()) + "AudastraUI\n";
+        if (!write(ui / "config", config) || !write(ui / "base/define.txt", kBaseDefine)
             || !write(ui / "base/event.txt", kBaseEvent) || !write(ui / "base/condition.txt", kBaseCondition)
             || !write(ui / "base/action.txt", kBaseAction) || !write(ui / "base/call.txt", kBaseCall))
             return "写不出合成基础层：" + ui.string();
+        if (extra) {
+            const auto layer = ui / extra->name;
+            if (!write(layer / "define.txt", extra->define) || !write(layer / "event.txt", extra->event)
+                || !write(layer / "condition.txt", extra->condition) || !write(layer / "action.txt", extra->action)
+                || !write(layer / "call.txt", extra->call))
+                return "写不出额外合成层：" + layer.string();
+        }
         std::error_code error;
         std::filesystem::copy(PackageDirectory(), ui / "AudastraUI", std::filesystem::copy_options::recursive, error);
         if (error) return "复制 AudastraUI 包失败：" + error.message();
