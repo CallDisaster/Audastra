@@ -94,7 +94,11 @@ void JpegUsesMeasuredPeakAndDeclaredDimensions() {
     const auto encoded = Take(Image::EncodeBlpJpegSingleMip(input)).bytes;
     Image::BlpDecodeLimits limits; limits.maxDimension = 256;
     const auto generous = Take(Image::DecodeBlpBudgeted(encoded, limits));
-    limits.maxWorkingBytes = generous.workingBytes;
+    // 256²、四分量1×1采样：原BLP + 去160字节包装后的JPEG + 64KiB固定预留
+    // + 4×65536×2系数 + 4×65536组件像素 + 65536单平面。RGBA阶段峰值较小。
+    const auto expectedPeak = encoded.size() + (encoded.size() - 160) + 917504;
+    Require(generous.workingBytes == expectedPeak, "JPEG peak matches independently counted component geometry");
+    limits.maxWorkingBytes = expectedPeak;
     const auto exact = Take(Image::DecodeBlpBudgeted(encoded, limits));
     Require(exact.image.rgba == generous.image.rgba && exact.workingBytes > encoded.size() + exact.image.rgba.size(),
         "JPEG budget includes coefficients and planes, not only output pixels");
