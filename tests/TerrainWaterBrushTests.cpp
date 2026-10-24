@@ -51,7 +51,7 @@ DoodadPlacements EmptyDoodads() {
 TerrainWaterBrush Brush(TerrainGridSnapshot& terrain, TerrainWaterBrushKind kind = TerrainWaterBrushKind::Shallow,
     TerrainBrushShape shape = TerrainBrushShape::Square, std::uint32_t x = 8, std::uint32_t y = 8) {
     RefreshTerrainDerived(terrain, 0, 0, terrain.header.width, terrain.header.height);
-    const auto anchor = CaptureTerrainWaterStrokeAnchor(terrain, {double(x) * 128.0, double(y) * 128.0});
+    const auto anchor = CaptureTerrainWaterStrokeAnchor(terrain, {double(x) * 128.0, double(y) * 128.0}, 14);
     Require(anchor.Succeeded(), "fixed anchor captures from original terrain");
     return {kind, shape, 1, 0, 1, *anchor.value};
 }
@@ -139,7 +139,7 @@ void OwnedCandidateMatchesApplyAndPreservesInput() {
             && prepared.diagnostics.front().code == applied.diagnostics.front().code,
             "owned and Apply failures preserve the same diagnostic");
     }
-    At(source, 20, 20).textureAndFlagsRaw |= 0x10; RefreshTerrainDerived(source, 0, 0, 33, 33);
+    At(source, 20, 20).waterHeightAndFlagsRaw |= 0x8000; RefreshTerrainDerived(source, 0, 0, 33, 33);
     const auto rejected = Bytes(source);
     const std::array invalidPoints{points.front(), TerrainStrokePoint{2560, 2560}};
     const auto invalid = PrepareTerrainWaterStroke(source, Rules(), brush, invalidPoints, doodads);
@@ -195,6 +195,71 @@ void WetAnchorExactStepAndFixedStroke() {
         && At(grid, 20, 20).waterHeightAndFlagsRaw == 8320, "later point reuses first B/L/R despite different original terrain");
 }
 
+void ExistingRampAnchorsKeepRawBaseAndCompleteGroundSeparate() {
+    const auto doodads = EmptyDoodads(); const TerrainStrokePoint point{1024, 1024};
+    // 独立字面图：直R64及三个S角。原始B均32，完整G分别64/96/128。
+    for (const int variant : {0, 32, 64, 96}) {
+        auto source = Flat(33, 8320);
+        if (!variant) {
+            for (std::uint32_t y = 7; y <= 9; ++y) At(source, 8, y).textureAndFlagsRaw |= 0x10;
+            At(source, 8, 9).cliffAndLayerRaw = 3;
+        } else for (std::uint32_t x = 7; x <= 9; ++x) for (std::uint32_t y = 7; y <= 9; ++y) {
+            auto& vertex = At(source, x, y); vertex.textureAndFlagsRaw |= 0x10;
+            if ((variant == 32 && x == 9 && y == 9)
+                || (variant == 64 && ((x == 7 && y == 7) || (x == 9 && y == 9)))
+                || (variant == 96 && (x == 9 || y == 9))) vertex.cliffAndLayerRaw = 3;
+        }
+        const int lift = variant ? variant : 64;
+        for (const bool wet : {false, true}) {
+            auto grid = source;
+            if (wet) { At(grid, 8, 8).textureAndFlagsRaw |= 0x40; At(grid, 8, 8).waterHeightAndFlagsRaw = 8064; }
+            auto brush = Brush(grid);
+            Require(brush.anchor.groundHeightRaw == 8320 && brush.anchor.rampHeightOffset == lift
+                && brush.anchor.hasWater == wet, "v2 freezes raw B independently of literal native ramp lift");
+            const auto before = Bytes(grid);
+            const auto prepared = PrepareTerrainWaterStroke(grid, Rules(false), brush, std::span(&point, 1), doodads);
+            Require(prepared.Succeeded() && prepared.value && Bytes(grid) == before,
+                "dry and wet existing ramps prepare without mutating their source");
+            const auto& result = prepared.value->terrain;
+            Require(At(result, 8, 8).waterHeightAndFlagsRaw == (wet ? 8064 : 8320 + 4 * lift)
+                && At(result, 10, 10).groundHeightRaw == 8320,
+                "new water uses complete anchor G while expanded platform still uses raw B; old water keeps raw R");
+            Require(At(result, 8, 8).CliffLevel() == (wet ? (lift >= 64 ? 0 : 1) : 1),
+                "wet target uses complete G and retains the exact-negative-step extra decrement");
+            auto exact = TerrainWaterBrushLimits{}; exact.maximumWork = prepared.value->result.work;
+            Require(PrepareTerrainWaterStroke(grid, Rules(false), brush, std::span(&point, 1), doodads, {}, exact).Succeeded(),
+                "v2 complete anchor and postprocessing fit their exact measured work boundary");
+            --exact.maximumWork;
+            Require(!PrepareTerrainWaterStroke(grid, Rules(false), brush, std::span(&point, 1), doodads, {}, exact).Succeeded(),
+                "one less work unit rejects the whole candidate");
+            auto forged = brush; forged.anchor.rampHeightOffset = 0;
+            Require(!PrepareTerrainWaterStroke(grid, Rules(false), forged, std::span(&point, 1), doodads).Succeeded(),
+                "caller cannot omit the actual ramp contribution from its v2 anchor");
+            auto legacy = brush; legacy.algorithm = TerrainWaterAlgorithm::LegacyFlat; legacy.anchor.rampHeightOffset = 0;
+            Require(!CaptureTerrainWaterStrokeAnchor(grid, point).Succeeded()
+                && !PrepareTerrainWaterStroke(grid, Rules(false), legacy, std::span(&point, 1), doodads).Succeeded(),
+                "the same old ramp remains outside legacy water semantics");
+            auto bad = grid; At(bad, 6, 6).waterHeightAndFlagsRaw |= 0x8000;
+            Require(!CaptureTerrainWaterStrokeAnchor(bad, point, 14).Succeeded()
+                && !PrepareTerrainWaterStroke(bad, Rules(false), brush, std::span(&point, 1), doodads).Succeeded(),
+                "an unknown second-halo field cannot fall back to zero lift");
+            Require(CaptureTerrainWaterStrokeAnchor(grid, point, 2).Succeeded()
+                && !CaptureTerrainWaterStrokeAnchor(grid, point, 15).Succeeded()
+                && !CaptureTerrainWaterStrokeAnchor(grid, point, 14, 511).Succeeded()
+                && CaptureTerrainWaterStrokeAnchor(grid, point, 14, 512).Succeeded(),
+                "anchor requires the actual in-domain maximum and the whole precharged query budget");
+            Require(Bytes(grid) == before, "all native and legacy failures preserve exact source fields");
+        }
+    }
+    auto isolated = Flat(); At(isolated, 8, 8).textureAndFlagsRaw |= 0x10;
+    const auto cleared = PrepareTerrainWaterStroke(isolated, Rules(), Brush(isolated), std::span(&point, 1), doodads);
+    Require(cleared.Succeeded() && !At(cleared.value->terrain, 8, 8).IsRamp(),
+        "new water runs live native cleanup and clears an invalid old bit without creating a ramp");
+    auto invalid = Brush(isolated); invalid.algorithm = static_cast<TerrainWaterAlgorithm>(3);
+    Require(!PrepareTerrainWaterStroke(isolated, Rules(), invalid, std::span(&point, 1), doodads).Succeeded(),
+        "unknown water algorithm cannot select an implicit branch");
+}
+
 void WaterLimitsAndOrderedShore() {
     const auto doodads = EmptyDoodads(); const TerrainStrokePoint point{1024, 1024};
     for (const bool enforce : {false, true}) {
@@ -223,9 +288,10 @@ void AtomicFailureAndLocalDomain() {
     Require(ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads).Succeeded(), "unrelated unknown raw bits do not reject");
     Require(At(grid, 30, 30).groundHeightRaw == 0x4000 && (At(grid, 30, 30).waterHeightAndFlagsRaw & 0x8000), "unrelated unknown fields remain exact");
     grid = Flat(); At(grid, 20, 20).textureAndFlagsRaw |= 0x10; brush = Brush(grid);
+    brush.algorithm = TerrainWaterAlgorithm::LegacyFlat;
     const auto original = Bytes(grid); const std::array points{point, TerrainStrokePoint{2560, 2560}};
     Require(!ApplyTerrainWaterStroke(grid, Rules(), brush, points, doodads).Succeeded() && Bytes(grid) == original,
-        "later local ramp rejects and restores all earlier point writes");
+        "legacy water still rejects a later local ramp and restores all earlier point writes");
     grid = Flat(); brush = Brush(grid); const auto clean = Bytes(grid);
     TerrainWaterBrushLimits work; work.maximumWork = 4500;
     Require(!ApplyTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, {}, work).Succeeded() && Bytes(grid) == clean,
@@ -463,7 +529,7 @@ void SpecialDoodadSourceFactsAndFailuresAreAtomic() {
     refused(PrepareTerrainWaterStroke(grid, Rules(), brush, std::span(&point, 1), doodads, validShapes, work),
         "TERRAIN_WATER_WORK_BUDGET");
 
-    auto late = grid; At(late, 20, 20).textureAndFlagsRaw |= 0x10;
+    auto late = grid; At(late, 20, 20).waterHeightAndFlagsRaw |= 0x8000;
     RefreshTerrainDerived(late, 0, 0, 33, 33); const auto lateBefore = Bytes(late);
     const std::array points{point, TerrainStrokePoint{2560, 2560}};
     const auto lateResult = PrepareTerrainWaterStroke(late, Rules(), brush, points, doodads, validShapes);
@@ -536,13 +602,13 @@ void HeightFalloffIndependentBoundaries() {
 int main() {
     try {
         OwnedCandidateMatchesApplyAndPreservesInput();
-        DryAnchorAndExactCoupling(); WetAnchorExactStepAndFixedStroke(); WaterLimitsAndOrderedShore();
+        DryAnchorAndExactCoupling(); WetAnchorExactStepAndFixedStroke(); ExistingRampAnchorsKeepRawBaseAndCompleteGroundSeparate(); WaterLimitsAndOrderedShore();
         AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadDeletesFirstMiddleAndLast();
         SpecialDoodadMultiDeleteUsesCollectedSourceOrder(); SpecialDoodadDuplicateXyUsesCurrentFirstRow();
         SpecialDoodadRepeatedPointsDoNotDeleteTwice(); SpecialDoodadRejectsLateShoreChange();
         SpecialDoodadChecksDoNotExpandProcessing(); OrdinaryDoodadExpansionIsBudgetedBeforeCopy(); SpecialDoodadSourceFactsAndFailuresAreAtomic();
         SpecialDoodadDuplicateXyCannotLeaveInvalidSurvivor(); SpecialDoodadLegacyApplyCannotDiscardOwnedDeletion();
         HeightFalloffIndependentBoundaries();
-        std::cout << "TerrainWaterBrush: 17 scenario groups passed\n"; return 0;
+        std::cout << "TerrainWaterBrush: 18 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << "TerrainWaterBrush: " << error.what() << '\n'; return 1; }
 }

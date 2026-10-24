@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -29,7 +30,7 @@ void StrictCodecRoundtripAndMalformedInputs() {
         Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every truncated record fails closed");
     auto changed = wire; changed.push_back(std::byte{0});
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "unknown trailing extension rejected");
-    changed = wire; changed[3] = std::byte{'3'};
+    changed = wire; changed[3] = std::byte{'4'};
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "unknown version rejected");
     changed = wire; changed[88] = std::byte{2};
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "nonboolean member presence rejected");
@@ -58,6 +59,78 @@ void StrictCodecRoundtripAndMalformedInputs() {
     Require(EncodeTerrainStrokeJournal(invalid).Succeeded(), "water options have independent neutral ordinary brush");
     water.intent.brush.seed = 1;
     Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "water ordinary conflicts rejected");
+}
+
+Bytes LegacyWaterGolden(bool nativeCliff) {
+    // 独立固定wire夹具：这些标量/IEEE字节直接来自FTJ1/2合同，不调用产品编码器。
+    Bytes bytes;
+    const auto hex = [&](std::string_view value) {
+        const auto digit = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+        for (std::size_t i = 0; i < value.size(); i += 2)
+            bytes.push_back(std::byte(digit(value[i]) * 16 + digit(value[i + 1])));
+    };
+    const auto text = [&](std::string_view value) {
+        bytes.push_back(std::byte(value.size())); hex("000000");
+        for (const char c : value) bytes.push_back(std::byte(c));
+    };
+    hex(nativeCliff ? "46544a32" : "46544a31"); text(std::string(64, 'a')); hex("0a");
+    for (std::size_t i = 0; i < TerrainJournalMemberNames.size(); ++i) {
+        text(TerrainJournalMemberNames[i]); hex(i < 2 ? "01" : "00"); text(i < 2 ? std::string(64, 'b') : "");
+        hex(i < 2 ? "0400000000000000" : "0000000000000000");
+    }
+    hex("00000000"); hex(nativeCliff ? "02000000" : "01000000");
+    for (const bool cliff : {false, true}) {
+        if (cliff && !nativeCliff) break;
+        hex(cliff ? "0600" : "0000");
+        hex("01000000" "00000000" "00" "00000000" "01" "00000042" "00000000"
+            "000000" "00000000" "0200");
+        hex(cliff ? "00" : "01");
+        if (!cliff) hex("0000" "01000000" "00" "00000000" "01");
+        if (nativeCliff) hex(cliff ? "0100" : "00");
+        text(std::string(64, 'd')); hex("02000000");
+        hex("0000000000007040" "0000000000007040" "0000000000007840" "0000000000007040");
+    }
+    return bytes;
+}
+
+void WaterAlgorithmVersionIsCanonicalAndLegacyBytesRemainExact() {
+    auto journal = Journal(); auto& water = journal.strokes.front();
+    water.intent.brush = {}; water.intent.waterBrush = TerrainWaterStrokeOptions{};
+    water.intent.waterBrush->algorithm = TerrainWaterAlgorithm::LegacyFlat; water.rulesSha256.assign(64, 'd');
+    const auto legacy1 = LegacyWaterGolden(false);
+    Require(Take(EncodeTerrainStrokeJournal(journal)) == legacy1, "legacy FTJ1 water retains every original byte");
+    const auto old1 = Take(DecodeTerrainStrokeJournal(legacy1));
+    Require(old1.strokes.front().intent.waterBrush->algorithm == TerrainWaterAlgorithm::LegacyFlat
+        && Take(EncodeTerrainStrokeJournal(old1)) == legacy1, "FTJ1 decoding cannot upgrade water by the new default");
+    TerrainJournalStroke cliff; cliff.intent.brush.kind = TerrainBrushKind::CliffLevel;
+    cliff.intent.points = water.intent.points; cliff.rulesSha256.assign(64, 'd'); cliff.cliffEnforceWaterLimits = false;
+    journal.strokes.push_back(cliff);
+    const auto legacy2 = LegacyWaterGolden(true);
+    Require(Take(EncodeTerrainStrokeJournal(journal)) == legacy2, "mixed FTJ2 keeps legacy water and cliff bytes exact");
+    const auto old2 = Take(DecodeTerrainStrokeJournal(legacy2));
+    Require(old2.strokes.front().intent.waterBrush->algorithm == TerrainWaterAlgorithm::LegacyFlat
+        && Take(EncodeTerrainStrokeJournal(old2)) == legacy2, "FTJ2 rule digest cannot opt its water into v2");
+    auto native = journal.strokes.front(); native.intent.waterBrush->algorithm = TerrainWaterAlgorithm::NativeRamps;
+    journal.strokes.insert(journal.strokes.begin() + 1, native);
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+    Require(wire[3] == std::byte{'3'} && decoded.strokes[0].intent.waterBrush->algorithm == TerrainWaterAlgorithm::LegacyFlat
+        && decoded.strokes[1].intent.waterBrush->algorithm == TerrainWaterAlgorithm::NativeRamps
+        && decoded.strokes[2].cliffEnforceWaterLimits == false && Take(EncodeTerrainStrokeJournal(decoded)) == wire,
+        "FTJ3 retains explicit mixed water algorithms and the existing cliff option");
+    for (std::size_t size = 0; size < wire.size(); ++size)
+        Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every FTJ3 truncation fails closed");
+    journal.strokes = {native}; const auto single = Take(EncodeTerrainStrokeJournal(journal));
+    // 最后104字节是digest长度/64字节文本及2个点；前面依次为水版本和cliff optional。
+    const auto algorithmOffset = single.size() - 106;
+    auto invalid = single; invalid[algorithmOffset] = std::byte{9};
+    Require(!DecodeTerrainStrokeJournal(invalid).Succeeded(), "unknown persisted water algorithm is rejected");
+    invalid = single; invalid[algorithmOffset] = std::byte{1};
+    Require(!DecodeTerrainStrokeJournal(invalid).Succeeded(), "FTJ3 with no v2 water is noncanonical");
+    invalid = legacy1; invalid[3] = std::byte{'3'};
+    Require(!DecodeTerrainStrokeJournal(invalid).Succeeded(), "changing only the magic cannot upgrade an old record");
+    journal.strokes.front().intent.waterBrush->algorithm = static_cast<TerrainWaterAlgorithm>(255);
+    Require(!EncodeTerrainStrokeJournal(journal).Succeeded(), "unknown typed algorithm is rejected before encoding");
 }
 
 void NativeCliffVersionAndOptionsRemainExplicit() {
@@ -145,6 +218,7 @@ void OversizedUiStrokeAndOpaqueDraftRemainEditable() {
 int main() {
     try {
         StrictCodecRoundtripAndMalformedInputs(); NativeCliffVersionAndOptionsRemainExplicit();
+        WaterAlgorithmVersionIsCanonicalAndLegacyBytesRemainExact();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

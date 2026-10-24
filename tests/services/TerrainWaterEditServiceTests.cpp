@@ -571,6 +571,88 @@ void NativeCornerCliffSavesAndRestoresLiteralPathing() {
         "reopened native corner candidate matches exact W3E and all independently stated WPM bytes");
 }
 
+void NativeCornerWaterRestoresSavesAndRejectsUnexplainedLiteralPathing() {
+    for (const bool wet : {false, true}) {
+        Fixture f;
+        for (std::size_t y = 15; y <= 17; ++y) for (std::size_t x = 15; x <= 17; ++x) {
+            auto& vertex = f.grid.vertices[y * 33 + x]; vertex.textureAndFlagsRaw |= 0x10;
+            if (x == 17 && y == 17) vertex.cliffAndLayerRaw = 3;
+        }
+        if (wet) {
+            auto& center = f.grid.vertices[16 * 33 + 16]; center.textureAndFlagsRaw |= 0x40;
+            center.waterHeightAndFlagsRaw = 8064; // R=-32低于旧G=64，原G0仍是干分类。
+        }
+        RefreshTerrainDerived(f.grid, 0, 0, 33, 33); f.members[0].data = Take(SerializeMapTerrain(f.grid));
+        const auto block = [](Bytes& bytes, std::size_t cellX, std::size_t cellY) {
+            for (std::size_t y = cellY * 4; y < cellY * 4 + 4; ++y)
+                for (std::size_t x = cellX * 4; x < cellX * 4 + 4; ++x)
+                    bytes[16 + y * 128 + x] = std::byte{0xdb};
+        };
+        // 独立字面G0：S32九角的五个阻断地格；不调用分类器或WPM生成器制造来源。
+        for (const auto cell : std::array<std::array<std::size_t, 2>, 5>{
+            {{17, 15}, {17, 16}, {15, 17}, {16, 17}, {17, 17}}}) block(f.members[1].data, cell[0], cell[1]);
+        f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+            Take(WriteVerifiedArchive(f.root / "water-corner-source.w3x", f.members)).path)));
+        f.edits = Session(f); const auto rules = f.Rules();
+        TerrainWaterStrokeOptions options; options.shape = TerrainBrushShape::Square; options.randomSeed = 17;
+        const auto prepared = Take(PrepareTerrainWaterEdit(*f.edits, f.Document(), f.Binding(), rules, options, std::span(&f.point, 1)));
+        Require(prepared.Plan().WaterBrush()->anchor.groundHeightRaw == 8320
+            && prepared.Plan().WaterBrush()->anchor.rampHeightOffset == 32, "service freezes raw B32 and S32 independently");
+        Take(ApplyTerrainEdit(*f.edits, f.Document(), prepared));
+        const auto after = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+        const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+        Require(wire[3] == std::byte{'3'}, "actual v2 water command uses FTJ3 project persistence");
+        const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+        const auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+            f.members[0].data, f.members[1].data, decoded, *f.edits, f.game));
+        Require(Take(SerializeMapTerrain(*restored.session->Terrain())) == after
+            && restored.receipts.size() == 1, "FTJ3 restores the entire exact v2 water command");
+        Require(restored.session->Replay(restored.receipts.front(), false).Succeeded()
+            && Take(SerializeMapTerrain(*restored.session->Terrain())) == f.members[0].data
+            && restored.session->Replay(restored.receipts.front(), true).Succeeded()
+            && Take(SerializeMapTerrain(*restored.session->Terrain())) == after,
+            "restored real receipt supports one complete Undo and Redo");
+        auto legacy = journal; legacy.strokes.front().intent.waterBrush->algorithm = TerrainWaterAlgorithm::LegacyFlat;
+        const auto oldWire = Take(EncodeTerrainStrokeJournal(legacy));
+        const auto oldRestore = TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+            f.members[0].data, f.members[1].data, Take(DecodeTerrainStrokeJournal(oldWire)), *f.edits, f.game);
+        Require(oldWire[3] == std::byte{'1'} && !oldRestore.Succeeded() && !oldRestore.value,
+            "legacy FTJ1 water continues to reject the identical ramp instead of adopting v2 on restore");
+        const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
+        auto replacements = f.edits->Replacements();
+        Require(plan.SaveGate().Succeeded() && plan.RebuiltPathing()
+            && plan.InstallPathingOutput(*f.edits, replacements).Succeeded()
+            && plan.VerifyForSave(*f.edits, f.source->SourceSha256(), replacements).Succeeded(),
+            "existing dry/wet corner water reaches the normal full native save gate");
+        const auto written = Take(f.source->SaveCandidate(f.root / "native-corner-water.w3x", replacements));
+        const auto saved = Take(MapArchiveSession::Open(written.path));
+        auto expected = f.members[1].data; std::fill(expected.begin() + 16, expected.end(), std::byte{0x51});
+        // 新中心L1与旧东北L3的七个普通悬崖格，旧两个仅R单角地格恢复通行。
+        for (const auto cell : std::array<std::array<std::size_t, 2>, 7>{
+            {{15, 15}, {16, 15}, {15, 16}, {16, 16}, {17, 16}, {16, 17}, {17, 17}}}) block(expected, cell[0], cell[1]);
+        // 干起点新R=64、G=-96为深水，最近顶点16的4x4格为0x0a+作者0x11。
+        // 湿起点保留R=-32成为浅水；四个所属地格均阻断，仍是0xca+作者0x11。
+        if (!wet) for (std::size_t y = 62; y < 66; ++y) for (std::size_t x = 62; x < 66; ++x)
+            expected[16 + y * 128 + x] = std::byte{0x1b};
+        Require(plan.VerifyReadback(saved).Succeeded() && Take(saved.ReadMember("war3map.w3e")) == after
+            && Take(saved.ReadMember("war3map.wpm")) == expected, "independent archive readback matches every literal G1 byte");
+        Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == f.members[0].data
+            && f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == after, "ordinary save planning preserves the real Undo/Redo command");
+        // 来源中一个干地格故意丢失原生0x40；可解析WPM也不能获得保存资格。
+        f.members[1].data[16 + 10 * 128 + 10] = std::byte{0x11};
+        f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+            Take(WriteVerifiedArchive(f.root / "unexplained-water-corner.w3x", f.members)).path)));
+        f.edits = Session(f); const auto wrongRules = f.Rules();
+        const auto wrong = Take(PrepareTerrainWaterEdit(*f.edits, f.Document(), f.Binding(), wrongRules, options, std::span(&f.point, 1)));
+        Take(ApplyTerrainEdit(*f.edits, f.Document(), wrong));
+        const auto denied = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
+        Require(!denied.SaveGate().Succeeded() && !denied.RebuiltPathing()
+            && HasCode(denied.SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+            "a single unexplained literal G0 cell rejects complete native saving without returning an output");
+    }
+}
+
 void SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource() {
     for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
         Fixture f(true);
@@ -662,6 +744,8 @@ void DirectSaveRejectsEveryConflictingOrdinaryField() {
     Require(HasCode(SaveMapEditCandidate(request), "SAVE_STROKE_WATER_BOUNDS"), "water classic size is bounded before source reads");
     request = f.Request(); request.terrainStrokes[0].waterBrush->cliffTexture = 15;
     Require(HasCode(SaveMapEditCandidate(request), "SAVE_STROKE_WATER_BOUNDS"), "water cliff sentinel is not a resource slot");
+    request = f.Request(); request.terrainStrokes[0].waterBrush->algorithm = static_cast<TerrainWaterAlgorithm>(3);
+    Require(HasCode(SaveMapEditCandidate(request), "SAVE_STROKE_WATER_BOUNDS"), "unknown water algorithm is rejected before source reads");
     request = f.Request(); request.terrainStrokes[0].points.push_back({33, 16});
     Require(HasCode(SaveMapEditCandidate(request), "SAVE_VERTEX_BOUNDS"), "direct water save rejects a later outside vertex");
     Require(Take(Sha256File(f.source->SourcePath())) == f.source->SourceSha256() && !std::filesystem::exists(request.targetCandidate),
@@ -895,6 +979,7 @@ int main() {
         WaterServiceCandidatesPassNativePlanAndIndependentArchiveReadback();
         NativeCliffSavesAndRestoresWithoutUpgradingLegacyHistory();
         NativeCornerCliffSavesAndRestoresLiteralPathing();
+        NativeCornerWaterRestoresSavesAndRejectsUnexplainedLiteralPathing();
         SavedWaterStrokeUndoAndRedoRebaseAgainstEachSavedSource();
         DirectSaveRejectsEveryConflictingOrdinaryField();
         DirectSaveUsesOrderedWaterAndOriginalScriptGate();

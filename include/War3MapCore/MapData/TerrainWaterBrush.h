@@ -8,6 +8,7 @@
 namespace War3Map::MapData {
 
 enum class TerrainWaterBrushKind { Shallow, Deep };
+enum class TerrainWaterAlgorithm : std::uint8_t { LegacyFlat = 1, NativeRamps = 2 };
 
 // 外部有序笔划只指定选项；锚点由可信服务在本笔第一点从当前地形捕获。
 // 与只调已有水面的TerrainBrushKind::WaterHeight保持独立。
@@ -18,6 +19,8 @@ struct TerrainWaterStrokeOptions {
     std::uint8_t cliffTexture = 0;
     std::uint32_t randomSeed = 0;
     bool enforceWaterLimits = true;
+    // FTJ1/2恢复固定为LegacyFlat；新产品落笔使用完整原版坡道地高。
+    TerrainWaterAlgorithm algorithm = TerrainWaterAlgorithm::NativeRamps;
 };
 
 struct TerrainWaterGroundRule {
@@ -46,6 +49,7 @@ struct TerrainWaterStrokeAnchor {
     std::uint16_t groundHeightRaw, waterHeightRaw;
     std::uint8_t cliffLevel;
     bool hasWater;
+    std::uint8_t rampHeightOffset = 0; // 原始B另存，G额外使用已验证的0/32/64/96偏移。
 };
 
 struct TerrainWaterBrush {
@@ -55,6 +59,7 @@ struct TerrainWaterBrush {
     std::uint8_t cliffTexture;
     std::uint32_t randomSeed; // 明确的单笔 MSVCRT 序列起始状态，不使用进程全局 rand。
     TerrainWaterStrokeAnchor anchor;
+    TerrainWaterAlgorithm algorithm = TerrainWaterAlgorithm::NativeRamps;
 };
 
 // 由实际解析的 DOO special 记录及其已加载资源生成。范围是地格半开区间；
@@ -98,8 +103,13 @@ struct TerrainWaterStrokeCandidate {
 [[nodiscard]] Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
 
+// 新水算法：actual max来自本笔实际规则；查询前核固定512工作预算，不猜默认值。
+[[nodiscard]] Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(
+    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point, std::uint8_t maximumCliffLevel,
+    std::size_t maximumWork = 512);
+
 // owned W3E 候选内依原顺序执行水面、扩大平台、层级/palette/variation、岸线、
-// 荒芜、越界地高衰减和 palette 传播。旧坡道/未知位只在实际访问区域拒绝。
+// 荒芜、越界地高衰减和 palette 传播。v2允许已验证的旧坡道；v1仍在实际访问区拒绝。
 // specialShapes 必须与实际解析的 special 记录一一对应；形状失配项依原阶段删除，
 // 同时返回完整DOO候选和实际源记录回执。未闭合的空占地混合集合仍明确拒绝。
 // 地形source只复制一次；成功或失败均不修改输入地形或DOO。

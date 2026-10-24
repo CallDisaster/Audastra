@@ -424,6 +424,48 @@ void NativeCliffFollowsCompleteCornerRampHeight() {
         && f.edits->Snapshot().Doodads()->doodads.front().position[2] == 133,
         "one Redo restores exact corner bytes and ground offsets");
 }
+void NativeWaterFollowsExistingCornerAndKeepsOneCompleteUndo() {
+    for (const bool wet : {false, true}) {
+        Fixture f(false, true);
+        for (std::size_t y = 15; y <= 17; ++y) for (std::size_t x = 15; x <= 17; ++x) {
+            auto& vertex = f.grid.vertices[y * 33 + x]; vertex.textureAndFlagsRaw |= 0x10;
+            if (x == 17 && y == 17) vertex.cliffAndLayerRaw = 3;
+        }
+        if (wet) {
+            auto& center = f.grid.vertices[16 * 33 + 16]; center.textureAndFlagsRaw |= 0x40;
+            center.waterHeightAndFlagsRaw = 8064;
+        }
+        RefreshTerrainDerived(f.grid, 0, 0, 33, 33);
+        SetMember(f.members, "war3map.w3e", Take(SerializeMapTerrain(f.grid)));
+        f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
+            Take(WriteVerifiedArchive(f.directory / "water-corner-source.w3x", f.members)).path)));
+        f.edits = f.Session(); const auto rules = f.Rules(*f.edits);
+        const TerrainWaterBrush brush{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 1, 1,
+            Take(CaptureTerrainWaterStrokeAnchor(*f.edits->Terrain(), f.point, rules.WaterBrushRules()->maximumCliffLevel))};
+        const auto before = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        const auto beforeUnits = f.Current("war3mapUnits.doo", *f.edits), beforeDoodads = f.Current("war3map.doo", *f.edits);
+        const Unchanged initial(*f.edits);
+        const auto prepared = Take(f.edits->PrepareTerrainWaterEdit(rules, brush, std::span(&f.point, 1), true));
+        initial.Verify(*f.edits); Take(f.edits->ApplyPreparedTerrainEdit(prepared));
+        const auto after = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        const auto snapshot = f.edits->Snapshot();
+        Require(snapshot.Units()->units.front().position[2] == -118
+            && snapshot.Doodads()->doodads.front().position[2] == -123
+            && snapshot.Units()->units.back().position[2] == 52,
+            "both complete DOO groups retain offsets over literal S32 ground64 to new ground-96");
+        const auto journal = Take(f.edits->ExportTerrainStrokeJournal());
+        Require(journal.strokes.size() == 1 && journal.strokes.front().intent.waterBrush
+            && journal.strokes.front().intent.waterBrush->algorithm == TerrainWaterAlgorithm::NativeRamps,
+            "the actual v2 command records its algorithm with its rule identity");
+        Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == before
+            && f.Current("war3mapUnits.doo", *f.edits) == beforeUnits && f.Current("war3map.doo", *f.edits) == beforeDoodads,
+            "one Undo restores the complete old ramp, water fields and both original placement members");
+        Require(f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == after
+            && f.edits->Snapshot().Doodads()->doodads.front().position[2] == -123,
+            "one Redo restores the same complete native water command");
+        Require(!f.edits->ApplyPreparedTerrainEdit(prepared).Succeeded(), "v2 verified anchor cannot bypass revision CAS");
+    }
+}
 void NativeCliffWithoutRuleDigestCannotBecomeLegacyJournal() {
     Fixture f(false, false); const auto rules = f.Rules(*f.edits);
     TerrainBrush brush; brush.kind = TerrainBrushKind::CliffLevel; brush.size = 1;
@@ -492,6 +534,7 @@ int main() {
         FullSizeStrokeUsesActualPhaseBudget();
         OrdinaryCliffUsesOneNativeSessionTransaction();
         NativeCliffFollowsCompleteCornerRampHeight();
+        NativeWaterFollowsExistingCornerAndKeepsOneCompleteUndo();
         NativeCliffWithoutRuleDigestCannotBecomeLegacyJournal();
         NativeFollowChargesOnlyActualInMapSamples();
         std::cout << "TerrainWaterSessionTests passed\n"; return 0;

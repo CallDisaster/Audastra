@@ -108,7 +108,9 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             const auto& water = *stroke.waterBrush;
             if ((water.kind != MapData::TerrainWaterBrushKind::Shallow && water.kind != MapData::TerrainWaterBrushKind::Deep)
                 || (water.shape != MapData::TerrainBrushShape::Circle && water.shape != MapData::TerrainBrushShape::Square)
-                || water.size < 1 || water.size > 8 || water.cliffTexture >= 15)
+                || water.size < 1 || water.size > 8 || water.cliffTexture >= 15
+                || (water.algorithm != MapData::TerrainWaterAlgorithm::LegacyFlat
+                    && water.algorithm != MapData::TerrainWaterAlgorithm::NativeRamps))
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_WATER_BOUNDS", "浅/深水笔刷种类、形状、经典尺寸或悬崖槽位非法。");
         } else {
             switch (stroke.brush.kind) {

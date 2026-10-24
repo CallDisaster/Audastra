@@ -753,11 +753,20 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
     if (expressible) {
         stroke.intent.points = plan.points_; stroke.intent.followDoodads = plan.followDoodads_;
         if (plan.waterBrush_) {
-            const auto anchor = CaptureTerrainWaterStrokeAnchor(*plan.before_, plan.points_.front());
-            const auto& actual = plan.waterBrush_->anchor;
-            expressible = anchor.Succeeded() && anchor.value && plan.waterIntentOptions_
-                && anchor.value->groundHeightRaw == actual.groundHeightRaw && anchor.value->waterHeightRaw == actual.waterHeightRaw
-                && anchor.value->cliffLevel == actual.cliffLevel && anchor.value->hasWater == actual.hasWater;
+            expressible = expressible && plan.waterIntentOptions_ && !plan.waterRulesSha256_.empty()
+                && plan.waterIntentOptions_->algorithm == plan.waterBrush_->algorithm;
+            if (plan.waterBrush_->algorithm == TerrainWaterAlgorithm::NativeRamps) {
+                // 私有位只由已完成实际max/完整锚点复核的Core候选设置；来源、before指针与
+                // revision仍由上面的统一CAS门限定，不在提交时重复未计费的坡道查询。
+                expressible = expressible && plan.waterAnchorVerified_;
+            } else {
+                const auto anchor = CaptureTerrainWaterStrokeAnchor(*plan.before_, plan.points_.front());
+                const auto& actual = plan.waterBrush_->anchor;
+                expressible = expressible && plan.waterBrush_->algorithm == TerrainWaterAlgorithm::LegacyFlat
+                    && anchor.Succeeded() && anchor.value && !actual.rampHeightOffset
+                    && anchor.value->groundHeightRaw == actual.groundHeightRaw && anchor.value->waterHeightRaw == actual.waterHeightRaw
+                    && anchor.value->cliffLevel == actual.cliffLevel && anchor.value->hasWater == actual.hasWater;
+            }
             stroke.intent.waterBrush = plan.waterIntentOptions_; stroke.rulesSha256 = plan.waterRulesSha256_;
         } else {
             stroke.intent.brush = plan.brush_;

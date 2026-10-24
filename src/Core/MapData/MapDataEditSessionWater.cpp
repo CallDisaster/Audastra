@@ -67,7 +67,10 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         && sizeof(SpecialDoodadPlacement) <= 8 * 16 && sizeof(PlacementItemSet) <= 8 * 4
         && sizeof(PlacementItemChoice) <= 8 * 8 && sizeof(PlacementInventoryItem) <= 8 * 8
         && sizeof(PlacementAbility) <= 8 * 12, "Recalculate the bounded placement wire multiplier after layout growth");
-    std::size_t work = 0;
+    // 产品入口捕获v2起点时同样查询完整5x5坡道域；在任何该查询前已核单次512预算，
+    // 会话在本笔总账预收它。Core候选自己的独立复核另计入result.work。
+    std::size_t work = water && water->algorithm == TerrainWaterAlgorithm::NativeRamps ? 512 : 0;
+    if (work > limits.maximumWork) return budgetFailure();
     const auto reserve = [](std::size_t& used, std::size_t limit, std::size_t count, std::size_t element) {
         if (element && count > (limit - used) / element) return false;
         used += count * element;
@@ -196,8 +199,10 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             limits.maximumWork - work);
         if (prepared.value) {
             if (!reserve(work, limits.maximumWork, prepared.value->waterPreparationWork_, 1)) return budgetFailure();
-            if (water) prepared.value->waterBrush_ = *water;
-            else prepared.value->brush_ = *cliff;
+            if (water) {
+                prepared.value->waterBrush_ = *water;
+                prepared.value->waterAnchorVerified_ = water->algorithm == TerrainWaterAlgorithm::NativeRamps;
+            } else prepared.value->brush_ = *cliff;
             const auto digestBytes = resources.WaterBrushDependencyBudgetBytes();
             auto journalPeak = finalBytes, journalWork = work;
             if (points.size() <= 4096 && digestBytes
@@ -210,7 +215,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
                     prepared.value->waterRulesSha256_ = *fingerprint.value;
                     if (cliff) prepared.value->cliffEnforceWaterLimits_ = resources.WaterBrushRules()->enforceWaterLimits;
                     if (water) prepared.value->waterIntentOptions_ = TerrainWaterStrokeOptions{water->kind, water->shape, water->size,
-                        water->cliffTexture, water->randomSeed, resources.WaterBrushRules()->enforceWaterLimits};
+                        water->cliffTexture, water->randomSeed, resources.WaterBrushRules()->enforceWaterLimits, water->algorithm};
                 }
             } // 旧Core兼容owner、超域或journal额外预算不足仍可编辑，但不记录typed来源。
             prepared.value->waterResult_ = candidate.value->result;

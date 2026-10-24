@@ -98,6 +98,7 @@ public:
         std::optional<TerrainWaterBrush> waterBrush_;
         std::optional<TerrainWaterBrushResult> waterResult_;
         std::optional<TerrainWaterStrokeOptions> waterIntentOptions_;
+        bool waterAnchorVerified_ = false; // v2纯候选已按实际规则完整核过不可变起点。
         std::string waterRulesSha256_;
         std::optional<bool> cliffEnforceWaterLimits_;
         std::size_t waterPreparationWork_ = 0;

@@ -70,6 +70,7 @@ struct StructuralBrush {
     TerrainWaterStrokeAnchor anchor;
     std::optional<TerrainWaterBrushKind> waterKind;
     int cliffDelta = 0;
+    TerrainWaterAlgorithm waterAlgorithm = TerrainWaterAlgorithm::NativeRamps;
 };
 
 std::optional<GridPoint> Snap(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
@@ -108,7 +109,8 @@ public:
 
     TerrainWaterBrushResult Run(std::span<const TerrainStrokePoint> points, const TerrainGridSnapshot& original) {
         const double anchorBase = double(brush_.anchor.groundHeightRaw) / 4.0 - 2048.0;
-        const double anchorGround = anchorBase + 128.0 * (int(brush_.anchor.cliffLevel) - 2);
+        const double anchorGround = anchorBase + 128.0 * (int(brush_.anchor.cliffLevel) - 2)
+            + (brush_.waterKind && brush_.waterAlgorithm == TerrainWaterAlgorithm::NativeRamps ? brush_.anchor.rampHeightOffset : 0);
         const double uniformWater = brush_.anchor.hasWater
             ? double(brush_.anchor.waterHeightRaw) / 4.0 - 2048.0 : anchorGround;
         const auto waterRaw = brush_.waterKind ? Encode(uniformWater) : std::uint16_t{0};
@@ -184,7 +186,8 @@ private:
         result_.work += count;
     }
     TerrainVertex& Inspect(std::uint32_t x, std::uint32_t y) {
-        Work(); auto& vertex = grid_.vertices[Index(x, y)]; ValidateVertex(vertex, x, y, !brush_.waterKind);
+        Work(); auto& vertex = grid_.vertices[Index(x, y)];
+        ValidateVertex(vertex, x, y, !brush_.waterKind || brush_.waterAlgorithm == TerrainWaterAlgorithm::NativeRamps);
         if (vertex.CliffTextureIndex() != 15 && vertex.CliffTextureIndex() >= grid_.header.cliffTilesets.size())
             Reject("TERRAIN_WATER_CLIFF_RESOURCE", "实际处理点的悬崖 palette 不在源 W3E 表中。");
         return vertex;
@@ -441,7 +444,8 @@ private:
             if (rule == rules_.groundRules.end()) Reject("TERRAIN_WATER_BLIGHT_RESOURCE", "荒芜处理点缺少已加载地面资源规则：" + rawcode);
             bool clear = !rule->permitsBlight || (next.HasWater() && Water(next) + rules_.waterLayerOffset > GroundAt(x, y, next));
             // 57E5C0(a4=1)：有坡道邻格时只查5A82D0(mode1)，不能再混入raw悬崖或special。
-            const auto ramp = !clear && !brush_.waterKind ? RampState(x, y) : TerrainNativeRampState{};
+            const auto ramp = !clear && (!brush_.waterKind || brush_.waterAlgorithm == TerrainWaterAlgorithm::NativeRamps)
+                ? RampState(x, y) : TerrainNativeRampState{};
             if (!clear && ramp.belongsToRampCell) clear = ramp.hasUnblockedRampCell;
             for (int dx = 0; dx <= 1 && !clear && !ramp.belongsToRampCell; ++dx) for (int dy = 0; dy <= 1; ++dy) {
                 const int cx = int(x) - dx, cy = int(y) - dy;
@@ -522,7 +526,7 @@ private:
         }
         ConvergeCliffs(blocks, brush_.cliffTexture);
         // 5A8BF0：按脏块x外/y内在live网格分类，只清除已不属于含R/S地格的旧位。
-        // 水刷仍在Read中拒绝旧坡道，其锚点G尚未扩域；普通悬崖复用已闭合查询。
+        // 旧v1水刷仍在Read拒绝坡道；v2和普通悬崖共用完整当前分类。
         EachBlock(blocks, [&](auto x, auto y) {
             auto next = Read(x, y);
             if (next.IsRamp() && !RampState(x, y).belongsToRampCell) {
@@ -559,6 +563,7 @@ std::size_t ValidateInputs(const TerrainGridSnapshot& terrain, const TerrainWate
     if (points.empty() || points.size() > limits.maximumPoints) Reject("TERRAIN_WATER_POINTS", "水刷点数量不在显式预算内。");
     if (brush.size < 1 || brush.size > 8 || (brush.shape != TerrainBrushShape::Circle && brush.shape != TerrainBrushShape::Square)
         || (brush.waterKind && *brush.waterKind != TerrainWaterBrushKind::Shallow && *brush.waterKind != TerrainWaterBrushKind::Deep)
+        || (brush.waterAlgorithm != TerrainWaterAlgorithm::LegacyFlat && brush.waterAlgorithm != TerrainWaterAlgorithm::NativeRamps)
         || (!brush.waterKind && (brush.cliffDelta < -1 || brush.cliffDelta > 1)))
         Reject("TERRAIN_WATER_BRUSH", "水刷种类、形状或经典尺寸非法。");
     const std::array numeric{rules.maxSlopeDegrees, rules.minHeight, rules.maxHeight, rules.waterLayerOffset, rules.deepWaterThreshold};
@@ -567,6 +572,18 @@ std::size_t ValidateInputs(const TerrainGridSnapshot& terrain, const TerrainWate
         Reject("TERRAIN_WATER_RULES", "已加载水刷参数不在有限支持域内。");
     if (brush.anchor.groundHeightRaw > 0x3fff || brush.anchor.waterHeightRaw > 0x3fff || brush.anchor.cliffLevel > 14)
         Reject("TERRAIN_WATER_ANCHOR", "固定水刷锚点的原始字段非法。");
+    if (brush.waterKind && brush.waterAlgorithm == TerrainWaterAlgorithm::NativeRamps) {
+        charge(512);
+        const auto captured = CaptureTerrainWaterStrokeAnchor(terrain, points.front(), rules.maximumCliffLevel);
+        if (!captured.Succeeded() || !captured.value)
+            Reject("TERRAIN_WATER_ANCHOR", "固定水刷起点的完整坡道邻域无法验证。");
+        const auto& actual = *captured.value;
+        if (actual.groundHeightRaw != brush.anchor.groundHeightRaw || actual.waterHeightRaw != brush.anchor.waterHeightRaw
+            || actual.cliffLevel != brush.anchor.cliffLevel || actual.hasWater != brush.anchor.hasWater
+            || actual.rampHeightOffset != brush.anchor.rampHeightOffset)
+            Reject("TERRAIN_WATER_ANCHOR", "固定水刷锚点不是本笔起点在实际规则下的完整原始字段和有效地高。");
+    } else if (brush.anchor.rampHeightOffset)
+        Reject("TERRAIN_WATER_ANCHOR", "旧水刷或普通悬崖不得附带新水算法锚点偏移。");
     if (rules.groundRules.size() > 256 || rules.availableCliffTilesets.size() > 256
         || terrain.header.groundTilesets.size() > 256 || terrain.header.cliffTilesets.size() > 256)
         Reject("TERRAIN_WATER_RULES", "水刷资源表超过经典读取预算。");
@@ -721,6 +738,22 @@ Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(const TerrainGr
     } catch (const Rejection& error) { return Result<TerrainWaterStrokeAnchor>::Failure(std::string(kSubsystem), error.code, error.text); }
 }
 
+Result<TerrainWaterStrokeAnchor> CaptureTerrainWaterStrokeAnchor(const TerrainGridSnapshot& terrain,
+    const TerrainStrokePoint& point, std::uint8_t maximumCliffLevel, std::size_t maximumWork) {
+    try {
+        if (maximumWork < 512) Reject("TERRAIN_WATER_WORK_BUDGET", "完整水刷锚点查询超出本笔工作预算。");
+        ValidateGrid(terrain); const auto at = Snap(terrain, point);
+        if (!at) Reject("TERRAIN_WATER_ANCHOR", "水刷锚点必须是有限地图内坐标。");
+        const auto& vertex = terrain.vertices[std::size_t(at->y) * terrain.header.width + at->x];
+        ValidateVertex(vertex, at->x, at->y, true);
+        const auto state = QueryNativeTerrainRamp(terrain, maximumCliffLevel, at->x, at->y);
+        if (!state.Succeeded() || !state.value) return {{}, state.diagnostics};
+        return Result<TerrainWaterStrokeAnchor>::Success({vertex.groundHeightRaw,
+            static_cast<std::uint16_t>(vertex.waterHeightAndFlagsRaw & 0x3fff), vertex.CliffLevel(), vertex.HasWater(),
+            static_cast<std::uint8_t>(state.value->heightOffset)});
+    } catch (const Rejection& error) { return Result<TerrainWaterStrokeAnchor>::Failure(std::string(kSubsystem), error.code, error.text); }
+}
+
 namespace {
 Result<TerrainWaterStrokeCandidate> PrepareStructuralStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
     const StructuralBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
@@ -756,7 +789,7 @@ Result<TerrainWaterStrokeCandidate> PrepareTerrainWaterStroke(const TerrainGridS
     const TerrainWaterBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
     std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
     return PrepareStructuralStroke(source, rules, {brush.shape, brush.size, brush.cliffTexture, brush.randomSeed,
-        brush.anchor, brush.kind}, points, doodads, specialShapes, limits);
+        brush.anchor, brush.kind, 0, brush.algorithm}, points, doodads, specialShapes, limits);
 }
 
 Result<TerrainWaterStrokeCandidate> PrepareTerrainCliffStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,

@@ -90,7 +90,9 @@ Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const MapData::MapDataEditSe
         return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_EDIT_POINT_BUDGET", "单次地形编辑需要 1 到 4096 个采样点。");
     if ((options.kind != MapData::TerrainWaterBrushKind::Shallow && options.kind != MapData::TerrainWaterBrushKind::Deep)
         || (options.shape != MapData::TerrainBrushShape::Circle && options.shape != MapData::TerrainBrushShape::Square)
-        || options.size < 1 || options.size > 8 || options.cliffTexture >= 15)
+        || options.size < 1 || options.size > 8 || options.cliffTexture >= 15
+        || (options.algorithm != MapData::TerrainWaterAlgorithm::LegacyFlat
+            && options.algorithm != MapData::TerrainWaterAlgorithm::NativeRamps))
         return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_WATER_BRUSH", "水刷种类、形状、经典尺寸或悬崖槽位非法。");
     if (!resources.WaterBrushRules() || resources.WaterBrushRules()->enforceWaterLimits != options.enforceWaterLimits)
         return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_WATER_RULE_OPTIONS", "水刷选项与实际捕获的规则不一致。");
@@ -98,10 +100,13 @@ Result<PreparedTerrainEdit> PrepareTerrainWaterEdit(const MapData::MapDataEditSe
         const auto checked = session.InspectTerrainPoint(point);
         if (!checked.Succeeded() || !checked.value) return {{}, checked.diagnostics};
     }
-    auto anchor = MapData::CaptureTerrainWaterStrokeAnchor(*session.Terrain(), points.front());
+    auto anchor = options.algorithm == MapData::TerrainWaterAlgorithm::NativeRamps
+        ? MapData::CaptureTerrainWaterStrokeAnchor(*session.Terrain(), points.front(),
+            resources.WaterBrushRules()->maximumCliffLevel, limits.maximumWork)
+        : MapData::CaptureTerrainWaterStrokeAnchor(*session.Terrain(), points.front());
     if (!anchor.Succeeded() || !anchor.value) return {{}, std::move(anchor.diagnostics)};
     const MapData::TerrainWaterBrush brush{options.kind, options.shape, options.size, options.cliffTexture,
-        options.randomSeed, *anchor.value};
+        options.randomSeed, *anchor.value, options.algorithm};
     auto plan = session.PrepareTerrainWaterEdit(resources, brush, points, followDoodads, limits);
     if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
     PreparedTerrainEdit prepared(expected, std::move(*plan.value));

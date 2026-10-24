@@ -132,10 +132,10 @@ void ExistingRampsUseCompleteGroundAndClearOnlyInvalidBits() {
         Require(limited.terrain.vertices[8 * 17 + 8].CliffLevel() == (offset == 32 ? 2 : 1),
             "wet native cliff lower bound includes the existing complete ramp ground");
         TerrainWaterBrush water{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 1, 1,
-            {8192, std::uint16_t(8192 + 300 * 4), 2, true}};
+            {8192, std::uint16_t(8192 + 300 * 4), 2, true}, TerrainWaterAlgorithm::LegacyFlat};
         Require(!CaptureTerrainWaterStrokeAnchor(wet, point).Succeeded()
             && !PrepareTerrainWaterStroke(wet, limitedRules, water, std::span(&point, 1), {}).Succeeded(),
-            "water brush continues to reject its unexpanded old-ramp anchor domain");
+            "legacy water and its legacy anchor capture retain the old-ramp rejection domain");
         source.vertices[6 * 17 + 6].waterHeightAndFlagsRaw |= 0x8000;
         Require(!SampleGroundHeight(source, point.x, point.y, TerrainHeightSource::RawWithRamps, 14),
             "native follow sampling rejects an unknown second-halo input instead of using zero lift");

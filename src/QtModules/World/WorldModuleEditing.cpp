@@ -790,7 +790,8 @@ void WorldModule::StartTerrainStroke(double x, double y) {
         if (terrainCliffTexture_->currentIndex() < 0) {
             selectionStatus_->setText(tr("当前地图没有可用的悬崖贴图")); return;
         }
-        const auto anchor = MapData::CaptureTerrainWaterStrokeAnchor(*source, {x, y});
+        const auto anchor = MapData::CaptureTerrainWaterStrokeAnchor(*source, {x, y},
+            waterCapture_->resources.WaterBrushRules()->maximumCliffLevel);
         if (!anchor.Succeeded()) {
             selectionStatus_->setText(tr("不能建立水刷锚点：%1").arg(WorldDiagnosticText(anchor.diagnostics))); return;
         }
