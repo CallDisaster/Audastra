@@ -1,6 +1,8 @@
 #include "TerrainGroundBrushRealTests.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapMinimapMarkers.h"
+#include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Text/SlkCells.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -104,11 +106,56 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
     auto baseline = Take(original.ReadMember("war3map.wpm"));
     Require(baseline.size() == 16 + 256 * 256 && oldNative.size() == 256 * 256, "manual ground pathing dimensions");
     for (std::size_t i = 0; i < oldNative.size(); ++i) baseline[i + 16] = (baseline[i + 16] & std::byte{0x11}) | oldNative[i];
+    // 完整二值非零影图与多条v0图标只验证现有保原字合同，不冒充原版烘焙/图标生成。
+    ShadowGridSnapshot shadow;
+    shadow.width = (before.header.width - 1) * 4; shadow.height = (before.header.height - 1) * 4;
+    shadow.intensities.resize(std::size_t{shadow.width} * shadow.height, 0);
+    for (std::size_t y = 29; y < 34; ++y) for (std::size_t x = 17; x < 24; ++x)
+        shadow.intensities[y * shadow.width + x] = 255;
+    shadow.intensities[(shadow.height - 31) * shadow.width + shadow.width - 19] = 255;
+    shadow.intensities[(shadow.height / 2) * shadow.width + shadow.width / 3] = 255;
+    const auto shadowBytes = Take(SerializeMapShadow(shadow));
+    MinimapMarkersSnapshot markers;
+    markers.records = {{0, {31, 43}, {0x11, 0x44, 0xaa, 0xff}},
+        {1, {177, 67}, {0xaa, 0xbb, 0x44, 0xff}}, {2, {91, 213}, {0x44, 0x11, 0xcc, 0xff}}};
+    const auto markerBytes = Take(SerializeMapMinimapMarkers(markers));
+    const auto verifyDerived = [&](const MapArchiveSession& archive, const char* phase, const char* kind) {
+        Require(archive.HasMember("war3map.shd") && archive.HasMember("war3map.mmp"),
+            "ground derived fixture retains both populated members");
+        const auto actualShadowBytes = Take(archive.ReadMember("war3map.shd"));
+        const auto actualMarkerBytes = Take(archive.ReadMember("war3map.mmp"));
+        Require(actualShadowBytes.size() == std::size_t{shadow.width} * shadow.height
+            && actualShadowBytes == shadowBytes && actualMarkerBytes.size() == 8 + 3 * 16
+            && actualMarkerBytes == markerBytes, "ground derived members retain complete sizes and exact fixture bytes");
+        const auto actualShadow = Take(ParseMapShadow(actualShadowBytes, shadow.width, shadow.height));
+        const auto nonzero = std::count(actualShadow.intensities.begin(), actualShadow.intensities.end(), std::uint8_t{255});
+        Require(actualShadow.width == shadow.width && actualShadow.height == shadow.height && nonzero == 37
+            && actualShadow.intensities == shadow.intensities
+            && std::all_of(actualShadow.intensities.begin(), actualShadow.intensities.end(),
+                [](auto value) { return value == 0 || value == 255; }),
+            "full-size asymmetric shadow contains exactly the authored nonzero binary mask");
+        const auto actualMarkers = Take(ParseMapMinimapMarkers(actualMarkerBytes));
+        Require(actualMarkers.version == 0 && actualMarkers.records.size() == 3,
+            "ground marker fixture is complete v0 with three records");
+        for (std::size_t i = 0; i < markers.records.size(); ++i) {
+            const auto& expectedMarker = markers.records[i]; const auto& actualMarker = actualMarkers.records[i];
+            Require(actualMarker.typeRaw == expectedMarker.typeRaw && actualMarker.positionRaw == expectedMarker.positionRaw
+                && actualMarker.colorBgra == expectedMarker.colorBgra,
+                "ground marker records retain their exact order, type, coordinates and colors");
+        }
+        std::cout << "ground_derived_members kind=" << kind << " phase=" << phase << " archive_sha256=" << archive.SourceSha256()
+            << " shd_present=true shd_bytes=" << actualShadowBytes.size() << " shd_sha256=" << Take(Sha256(actualShadowBytes))
+            << " shd_nonzero=" << nonzero << " mmp_present=true mmp_bytes=" << actualMarkerBytes.size()
+            << " mmp_sha256=" << Take(Sha256(actualMarkerBytes)) << " mmp_version=0 mmp_records=3"
+            << " native_editor_verified=false game_verified=false\n";
+    };
     for (const bool cliff : {false, true}) {
         const auto scenario = directory / (cliff ? "playable-cliff" : "playable-pathing-texture");
         Require(std::filesystem::create_directory(scenario), "exclusive ground brush scenario");
-        const std::array<MemberReplacement, 1> seeded{{{"war3map.wpm", baseline}}};
+        const std::array<MemberReplacement, 3> seeded{{{"war3map.wpm", baseline},
+            {"war3map.shd", shadowBytes}, {"war3map.mmp", markerBytes}}};
         const auto source = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "source.w3x", seeded)).path));
+        verifyDerived(source, "source", cliff ? "cliff" : "texture");
         MapEditSaveRequest request;
         request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
         request.toolRoot = tool; request.gameRoot = game;
@@ -144,6 +191,7 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
             if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp") continue;
             Require(Take(readback.ReadMember(member.name)) == member.data, "ground save preserves every unrelated member");
         }
+        verifyDerived(readback, "saved", cliff ? "cliff" : "texture");
         Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "ground save leaves source untouched");
         std::cout << "playable_ground_save_passed kind=" << (cliff ? "cliff" : "texture")
             << " texture=" << (cliff ? "unchanged" : texture) << " source_sha256=" << source.SourceSha256()
