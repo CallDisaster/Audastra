@@ -93,7 +93,7 @@ Status MapDataEditSession::Apply(MapDataKind kind, Result<std::vector<std::byte>
 }
 
 Status MapDataEditSession::Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
-    std::vector<MemberChange>& changes) const {
+    std::vector<MemberChange>& changes, bool ownedBounds) const {
     const auto index = Index(kind);
     if (index >= states_.size())
         return Status::Failure("MapData.Edit", "MAP_KIND_INVALID", "未知的公共地图成员类别");
@@ -135,6 +135,10 @@ Status MapDataEditSession::Prepare(MapDataKind kind, Result<std::vector<std::byt
     if (state.state != MapDataState::Ready && !knownSettingsTail)
         return Status::Failure("MapData.Edit", "MAP_OUTPUT_UNSAFE",
             "修改后的地图成员存在重复身份或无法作为完整可编辑结构");
+    if (kind == MapDataKind::Settings && boundsState_ && !ownedBounds
+        && (!checked.Settings() || !boundsState_->MatchesSettings(*checked.Settings())))
+        return Status::Failure("MapData.Edit", "TERRAIN_BOUNDS_TYPED_COMMAND_REQUIRED",
+            "当前地图已有范围事务；可玩区域和镜头边界请通过地图范围命令修改，未改动任何成员。");
     if (after == current_[index]) return Status::Ok();
     changes.push_back({kind, current_[index], std::move(after)});
     return Status::Ok();

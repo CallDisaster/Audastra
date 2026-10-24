@@ -270,6 +270,7 @@ private:
         std::vector<std::byte> mapEdges;
         [[nodiscard]] static std::shared_ptr<const TerrainBoundsState> Capture(const MapSettings&, const TerrainGridSnapshot&);
         [[nodiscard]] bool Matches(const MapSettings&, const TerrainGridSnapshot&) const noexcept;
+        [[nodiscard]] bool MatchesSettings(const MapSettings&) const noexcept;
         [[nodiscard]] bool Equivalent(const TerrainBoundsState&) const noexcept;
         void RestoreGeometry(MapSettings&) const noexcept;
     };
@@ -301,7 +302,7 @@ private:
     };
     [[nodiscard]] Status Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized);
     [[nodiscard]] Status Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
-        std::vector<MemberChange>& changes) const;
+        std::vector<MemberChange>& changes, bool ownedBounds = false) const;
     [[nodiscard]] Status Commit(std::vector<MemberChange> changes);
     [[nodiscard]] Status CommitCommand(Command command,
         const std::function<Status(const EditReceipt&)>& prepublish = {});

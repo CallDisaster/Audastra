@@ -888,6 +888,12 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
+    // 即使可信范围已经保存且W3E/WPM无净差，也不能让随后raw设置或草稿覆写
+    // 跳过密封geometry/MapEdge复核。
+    if (boundsState_) {
+        const auto settings = VerifyTerrainSettingsForSave();
+        if (!settings.Succeeded()) return settings;
+    }
     if (!TerrainDiffers(terrain, terrainOriginal_) && pathing == pathingOriginal_
         && specialDoodads_ == savedSpecialDoodads_ && !HasTerrainBoundsChanges()) return Status::Ok();
     if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)

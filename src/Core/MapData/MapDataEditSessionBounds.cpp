@@ -30,14 +30,17 @@ std::shared_ptr<const MapDataEditSession::TerrainBoundsState> MapDataEditSession
 
 bool MapDataEditSession::TerrainBoundsState::Matches(const MapSettings& settings,
     const TerrainGridSnapshot& terrain) const noexcept {
-    if (!SameCamera(cameraBounds, settings.cameraBounds) || cameraMargins != settings.cameraMargins
-        || playableWidth != settings.playableWidth || playableHeight != settings.playableHeight
-        || flags != (settings.flags & 0x400u) || width != terrain.header.width || height != terrain.header.height
+    if (!MatchesSettings(settings) || width != terrain.header.width || height != terrain.header.height
         || terrain.vertices.size() != static_cast<std::size_t>(width) * height
         || mapEdges.size() != (terrain.vertices.size() + 7) / 8) return false;
     for (std::size_t i = 0; i < terrain.vertices.size(); ++i)
         if (terrain.vertices[i].IsMapEdge() != ((mapEdges[i / 8] & std::byte(1u << (i % 8))) != std::byte{0})) return false;
     return true;
+}
+
+bool MapDataEditSession::TerrainBoundsState::MatchesSettings(const MapSettings& settings) const noexcept {
+    return SameCamera(cameraBounds, settings.cameraBounds) && cameraMargins == settings.cameraMargins
+        && playableWidth == settings.playableWidth && playableHeight == settings.playableHeight && flags == (settings.flags & 0x400u);
 }
 
 bool MapDataEditSession::TerrainBoundsState::Equivalent(const TerrainBoundsState& other) const noexcept {
@@ -143,7 +146,7 @@ Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::Prepar
     auto candidate = PrepareTerrainCandidate(next, changed, {}, false, false, false, false);
     if (!candidate.Succeeded() || !candidate.value) return {{}, candidate.diagnostics};
     auto command = *candidate.value->command_;
-    const auto settings = Prepare(MapDataKind::Settings, projected.value->Serialize(), command.changes);
+    const auto settings = Prepare(MapDataKind::Settings, projected.value->Serialize(), command.changes, true);
     if (!settings.Succeeded()) return {{}, settings.diagnostics};
     auto fingerprint = resources.TerrainBoundsDependencyFingerprint();
     if (!fingerprint.Succeeded() || !fingerprint.value) return {{}, fingerprint.diagnostics};

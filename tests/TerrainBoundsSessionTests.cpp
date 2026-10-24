@@ -143,11 +143,18 @@ void PreparationNoOpStaleAndPrepublishAreAtomic() {
     const auto fresh = Take(f.edits->PrepareTerrainBoundsEdit(owner, {{1, 1, 9, 7}}));
     Check(f.edits->ApplyPreparedTerrainBoundsEdit(fresh)); Check(f.edits->VerifyTerrainSettingsForSave());
     auto tampered = *f.edits->Snapshot().Settings(); tampered.cameraBounds[0] += 128;
-    Check(f.edits->EditSettings(tampered));
-    Require(HasCode(f.edits->VerifyTerrainSettingsForSave(), "TERRAIN_BOUNDS_STATE_CHANGED"), "raw settings write cannot forge typed bounds proof");
-    Require(f.edits->Undo(), "undo unauthorized geometry" ); Check(f.edits->VerifyTerrainSettingsForSave());
+    Require(HasCode(f.edits->EditSettings(tampered), "TERRAIN_BOUNDS_TYPED_COMMAND_REQUIRED"), "raw settings cannot forge typed bounds proof");
+    Check(f.edits->VerifyTerrainSettingsForSave());
     f.Save("description-and-bounds.w3x");
     Require(f.edits->Snapshot().Settings()->mapName == "changed description field", "four description fields combine with owned geometry");
+    auto afterSave = *f.edits->Snapshot().Settings(); afterSave.cameraMargins[0] += 1;
+    const auto revision = f.edits->Revision();
+    Require(HasCode(f.edits->EditSettings(afterSave), "TERRAIN_BOUNDS_TYPED_COMMAND_REQUIRED")
+        && HasCode(f.edits->SetSerialized(MapDataKind::Settings, Take(afterSave.Serialize())), "TERRAIN_BOUNDS_TYPED_COMMAND_REQUIRED"),
+        "both raw write paths reject camera-margin tampering even after bounds were saved");
+    Require(f.edits->Revision() == revision && !f.edits->IsDirty(), "saved bounds tampering preserves revision and clean bytes");
+    const auto unchangedPlan = Take(TerrainSavePlan::PrepareForSave(*f.archive, *f.edits, {}));
+    Check(unchangedPlan.SaveGate());
 }
 }
 
