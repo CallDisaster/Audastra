@@ -438,7 +438,8 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     QVERIFY(submitted.contains("writes_map") && !submitted.value("writes_map").toBool());
     request = context; request.insert("action", "status"); request.insert("request_id", submitted.value("request_id"));
     QJsonObject completed;
-    QTRY_VERIFY_WITH_TIMEOUT((completed = f.tools->Invoke("code.check", request)).value("state").toString() == QStringLiteral("complete"), 2000);
+    QTRY_VERIFY2_WITH_TIMEOUT((completed = f.tools->Invoke("code.check", request)).value("state").toString() == QStringLiteral("complete"),
+        qPrintable(Explain(completed)), 2000);
     QVERIFY2(completed.value("ok").toBool() && completed.value("passed").toBool(), qPrintable(Explain(completed)));
     QVERIFY(completed.value("syntax_checked").toBool());
     QVERIFY(!completed.value("semantic_checked").toBool() && !completed.value("context_complete").toBool());
