@@ -3,6 +3,7 @@
 #include "War3MapCore/Game/NativeDoodadCategoryDirectory.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Text/TextUtil.h"
 
@@ -15,6 +16,7 @@ namespace War3Map::TerrainSaveTests {
 namespace {
 using namespace MapData;
 using namespace Services;
+using namespace ObjectData;
 constexpr std::size_t kBytes = 64u * 1024u * 1024u;
 
 void Require(bool value, const char* message) {
@@ -34,12 +36,105 @@ void Check(const Status& status) {
     for (const auto& item : status.diagnostics) message += item.code + ": " + item.message + "\n";
     throw std::runtime_error(message);
 }
+
+void CheckCategoryOverrides(const MapArchiveSession& original, const MapEditSaveRequest& prototype,
+    const DoodadPlacements& placements, const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    const TerrainDoodadFootprint& footprint, std::uint8_t categorySnap,
+    const ObjectFieldSchema& schema, const StandardObjectCatalog& catalog) {
+    const auto parent = placements.doodads.back().rawcode;
+    const auto* standard = catalog.Find(ObjectType::Doodad, parent);
+    Require(standard && standard->Field("category") == "C", "real category override parent is an actual C doodad");
+    ObjectFieldContext context; context.rawcode = parent; context.baseCode = standard->Field("code");
+    const auto field = schema.MatchSourceField(ObjectType::Doodad, "category", context);
+    Require(field.definition && field.safeToEdit && field.sourceKey == "category" && !field.sourceIndex
+        && field.definition->nativeValueType == NativeValueType::String && !field.definition->repeat && !field.definition->data
+        && Text::LowerAscii(field.definition->sourceTable) == "doodaddata"
+        && Text::LowerAscii(field.definition->valueType) == "doodadcategory",
+        "actual category metadata has a unique editable String address without a test-only type substitution");
+    const auto root = prototype.targetCandidate.parent_path();
+    auto background = placements; background.doodads.pop_back();
+    const std::array<MemberReplacement, 1> backgroundMember{{{"war3map.doo", Take(background.Serialize())}}};
+    const auto backgroundArchive = Take(MapArchiveSession::Open(Take(original.SaveCandidate(
+        root / "category-background.w3x", backgroundMember)).path));
+    const auto backgroundRules = Take(TerrainPathingSave::CaptureNative(backgroundArchive, before, after, prototype.gameRoot, kBytes));
+    const auto backgroundOld = Take(backgroundRules.GenerateNative(before, kBytes));
+    const auto backgroundNew = Take(backgroundRules.GenerateNative(after, kBytes));
+    struct Case { const char* name; const char* id; const char* value; bool custom; bool overrideCategory; std::uint8_t snap; };
+    const std::array<Case, 5> cases{{
+        {"original-category", "", "Eextra", false, true, 2},
+        {"original-category-fallback", "", "_extra", false, true, parent[1] == 'C' ? categorySnap : std::uint8_t{2}},
+        {"custom-category-inherited", "ZE01", "", true, false, categorySnap},
+        {"custom-category-empty", "ZE01", "", true, true, 2},
+        {"custom-category-prefix", "ZC01", "Eextra", true, true, 2}
+    }};
+    for (const auto& item : cases) {
+        const auto directory = root / item.name;
+        Require(std::filesystem::create_directory(directory), "exclusive actual category override directory");
+        auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+        auto placed = placements;
+        const std::string id = item.custom ? item.id : parent;
+        if (item.custom) {
+            Require(!catalog.Find(ObjectType::Doodad, id) && !catalog.Find(ObjectType::Destructable, id),
+                "category custom fixture never shadows a standard object");
+            Check(document.AddCustomObject(id, parent));
+            placed.doodads.back().rawcode = id;
+        } else Check(document.AddOriginalObject(parent));
+        if (item.overrideCategory) Check(document.AddModification({ObjectType::Doodad, id}, field.modification,
+            NativeValueType::String, std::string(item.value)));
+        const std::array<MemberReplacement, 2> changes{{{"war3map.doo", Take(placed.Serialize())},
+            {"war3map.w3d", Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document))}}};
+        const auto seed = Take(MapArchiveSession::Open(Take(original.SaveCandidate(directory / "seeded.w3x", changes)).path));
+        const auto rules = Take(TerrainPathingSave::CaptureNative(seed, before, after, prototype.gameRoot, kBytes));
+        const auto generatedOld = Take(rules.GenerateNative(before, kBytes));
+        const auto generatedNew = Take(rules.GenerateNative(after, kBytes));
+        auto expectedOld = backgroundOld, expectedNew = backgroundNew;
+        std::vector<std::uint8_t> contribution(backgroundOld.size());
+        Check(AddDoodadFootprint(contribution, before.header, placed.doodads.back(), footprint, item.snap, std::nullopt));
+        Require(generatedOld.size() == contribution.size() && generatedNew.size() == contribution.size(),
+            "actual category source keeps pathing dimensions");
+        for (std::size_t i = 0; i < contribution.size(); ++i) {
+            const auto encoded = static_cast<std::byte>(((contribution[i] & 7) << 1) | ((contribution[i] & 0x38) << 2));
+            expectedOld[i] |= encoded; expectedNew[i] |= encoded;
+        }
+        Require(generatedOld == expectedOld && generatedNew == expectedNew,
+            "actual metadata category and String inheritance select the expected footprint grid");
+        auto oldWpm = Take(seed.ReadMember("war3map.wpm")), expectedWpm = oldWpm;
+        Require(oldWpm.size() == contribution.size() + 16, "category override WPM has exact dimensions");
+        for (std::size_t i = 0; i < contribution.size(); ++i) {
+            oldWpm[i + 16] = (oldWpm[i + 16] & std::byte{0x11}) | expectedOld[i];
+            expectedWpm[i + 16] = (expectedWpm[i + 16] & std::byte{0x11}) | expectedNew[i];
+        }
+        Require(oldWpm != expectedWpm, "each actual category override case changes water pathing");
+        const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", oldWpm}}};
+        const auto source = Take(MapArchiveSession::Open(Take(seed.SaveCandidate(directory / "source.w3x", pathing)).path));
+        auto request = prototype; request.sourceMap = source.SourcePath(); request.expectedSourceSha256 = source.SourceSha256();
+        request.targetCandidate = directory / "saved.w3x";
+        const auto saved = Take(SaveMapEditCandidate(request));
+        const auto readback = Take(MapArchiveSession::Open(saved.candidate));
+        Require(saved.scriptPreserved && Take(readback.ReadMember("war3map.wpm")) == expectedWpm
+            && Take(readback.ReadMember("war3map.w3e")) == Take(SerializeMapTerrain(after)),
+            "actual category overrides survive public save with complete terrain and pathing readback");
+        for (const auto& member : source.Members()) {
+            const auto name = Text::LowerAscii(member.name);
+            if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp") continue;
+            Require(Take(readback.ReadMember(member.name)) == member.data, "category override save preserves every unrelated member");
+        }
+        Check(rules.VerifyReadback(readback, kBytes));
+        Require(Take(Sha256File(seed.SourcePath())) == seed.SourceSha256()
+            && Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "category override save never mutates its sources");
+        std::cout << "category_override_save_passed kind=" << item.name << " snap_cells=" << unsigned(item.snap)
+            << " metadata_field=" << field.modification.fieldId << " source_sha256=" << source.SourceSha256()
+            << " candidate_sha256=" << saved.candidateSha256 << " native_editor_verified=false game_verified=false\n";
+    }
+    Require(Take(Sha256File(backgroundArchive.SourcePath())) == backgroundArchive.SourceSha256()
+        && Take(Sha256File(original.SourcePath())) == original.SourceSha256(), "category override background sources remain untouched");
+}
 } // namespace
 
 void CheckRealCategoryDirectorySave(const MapArchiveSession& source,
     const MapEditSaveRequest& request, const DoodadPlacements& placements,
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
-    std::span<const std::byte> footprintBytes) {
+    std::span<const std::byte> footprintBytes, const ObjectFieldSchema& schema, const StandardObjectCatalog& catalog) {
     const auto directory = request.targetCandidate.parent_path();
     const auto categories = Take(Game::NativeDoodadCategoryDirectory::Capture(request.gameRoot,
         Game::NativeEditorStartupRules::Classic127aExpansion, kBytes));
@@ -144,5 +239,6 @@ void CheckRealCategoryDirectorySave(const MapArchiveSession& source,
     std::cout << "category_c_grid_save_passed snap_cells=" << unsigned(snap)
         << " source_sha256=" << consistent.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
         << " native_editor_verified=false game_verified=false\n";
+    CheckCategoryOverrides(consistent, accepted, shifted, dryBefore, dryAfter, footprint, snap, schema, catalog);
 }
 } // namespace War3Map::TerrainSaveTests

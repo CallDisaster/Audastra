@@ -710,7 +710,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             }
             if (withCategoryC) {
                 Require(placements.doodads.back().rawcode == categoryCRawcode, "actual C instance is the final ordinary placement");
-                TerrainSaveTests::CheckRealCategoryDirectorySave(source, request, placements, before, after, categoryCSource.bytes);
+                TerrainSaveTests::CheckRealCategoryDirectorySave(source, request, placements, before, after, categoryCSource.bytes, schema, catalog);
             }
         }
         SpecialWaterDeletionUsesPublicSave(original, directory.path, tool, game, uniformRawcode, doodads, w3b, sourceScript);
