@@ -168,6 +168,57 @@ void BoundsAfterBrushAndRepeatedBoundsRecoverAgainstOriginalSource() {
         "height followed by two bounds commands reaches ordinary native archive save");
 }
 
+void BoundsReplayUsesTypedShapeAndPreservesPointBudget() {
+    Fixture f;
+    const auto original = MapDocument::FromMembers(f.members);
+    const auto replay = [&](const std::vector<TerrainStrokeIntent>& strokes) {
+        return Services::TerrainPathingSave::ReplayStrokes(*f.archive, original,
+            f.members[0].data, f.members[1].data, strokes, {});
+    };
+    TerrainStrokeIntent bounds; bounds.bounds = TerrainBoundsEditIntent{{1, 1, 9, 7}};
+    auto valid = Take(replay({bounds}));
+    Require(bounds.points.empty() && valid.session->HasTerrainBoundsChanges(),
+        "typed bounds replay succeeds without inventing a brush sample");
+    Check(valid.session->VerifyTerrainSettingsForSave());
+
+    std::vector<TerrainStrokeIntent> malformed(9, bounds);
+    malformed[0].points.push_back({0, 0});
+    malformed[1].brush.kind = TerrainBrushKind::Blight;
+    malformed[2].followDoodads = true;
+    malformed[3].waterBrush = TerrainWaterStrokeOptions{};
+    malformed[4].bounds->algorithm = 2;
+    malformed[5].bounds->playable.west = malformed[5].bounds->playable.east;
+    malformed[6].bounds->playable.south = malformed[6].bounds->playable.north;
+    malformed[7].bounds->playable.east = 2049;
+    malformed[8].bounds->playable.north = 2049;
+    for (const auto& invalid : malformed) {
+        const auto refused = replay({bounds, invalid});
+        Require(!refused.value && HasCode(Status{refused.diagnostics}, "TERRAIN_REPLAY_BOUNDS_CONFLICT"),
+            "malformed bounds reject the complete sequence without returning a candidate prefix");
+    }
+    const TerrainStrokeIntent empty;
+    for (const auto& sequence : {std::vector<TerrainStrokeIntent>{empty, bounds},
+        std::vector<TerrainStrokeIntent>{bounds, empty}}) {
+        const auto refused = replay(sequence);
+        Require(!refused.value && HasCode(Status{refused.diagnostics}, "TERRAIN_PATCH_POINT_BUDGET"),
+            "ordinary empty strokes remain invalid on either side of typed bounds");
+    }
+
+    TerrainStrokeIntent blight; blight.brush.kind = TerrainBrushKind::Blight; blight.brush.radius = 0;
+    blight.points.assign(2048, TerrainStrokePoint{0, 0});
+    auto clearBlight = blight; clearBlight.brush.value = false;
+    std::vector<TerrainStrokeIntent> exact{blight, bounds, clearBlight};
+    auto atLimit = Take(replay(exact));
+    Require(atLimit.session->HasTerrainBoundsChanges() && atLimit.receipts.size() == 3,
+        "bounds between brush strokes consume no samples from the exact 4096-point allowance");
+    exact.back().points.push_back({0, 0});
+    const auto overflow = replay(exact);
+    Require(!overflow.value && HasCode(Status{overflow.diagnostics}, "TERRAIN_PATCH_POINT_BUDGET"),
+        "the cumulative 4097th ordinary sample still rejects the whole sequence across typed bounds");
+    Require(f.edits->Revision() == 0 && !f.edits->IsDirty(),
+        "successful and rejected replay attempts leave the caller's original edit session unchanged");
+}
+
 void NativeMapEdgeExceptionRequiresSealedBounds() {
     Fixture raw;
     auto unowned = raw.members[0].data;
@@ -218,6 +269,7 @@ int main() {
         PreparationNoOpStaleAndPrepublishAreAtomic();
         BoundsColdRecoveryRetainsWholeDraftAndDescriptionFields();
         BoundsAfterBrushAndRepeatedBoundsRecoverAgainstOriginalSource();
+        BoundsReplayUsesTypedShapeAndPreservesPointBudget();
         NativeMapEdgeExceptionRequiresSealedBounds();
         std::cout << "terrain bounds session tests passed\n"; return 0;
     } catch (const std::exception& exception) { std::cerr << exception.what() << '\n'; return 1; }

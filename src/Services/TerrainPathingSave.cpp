@@ -311,6 +311,13 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
         return Output::Failure("Terrain.Replay", "TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
     std::size_t points = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.bounds) {
+            const auto& r = stroke.bounds->playable;
+            if (!Neutral(stroke.brush) || !stroke.points.empty() || stroke.followDoodads || stroke.waterBrush
+                || stroke.bounds->algorithm != 1 || r.west >= r.east || r.south >= r.north || r.east > 2048 || r.north > 2048)
+                return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BOUNDS_CONFLICT", "范围命令需要独立的半开地格矩形，不能携带笔刷或采样点。");
+            continue;
+        }
         if (stroke.points.empty() || stroke.points.size() > 4096 - points)
             return Output::Failure("Terrain.Replay", "TERRAIN_PATCH_POINT_BUDGET", "地形重放累计点数超过4096或包含空笔划。");
         points += stroke.points.size();
