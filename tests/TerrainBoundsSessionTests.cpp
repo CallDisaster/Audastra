@@ -241,23 +241,43 @@ void NativeMapEdgeExceptionRequiresSealedBounds() {
     Require(owned.edits->Undo(), "undo restores the sealed bounds mask after a refused save");
     Check(owned.edits->VerifyTerrainSettingsForSave());
 
-    // 两种未知高位都不属于这个0x4000例外；可信范围不能授予未知高度语义。
+    // water bit15和可解析的ground bit14都不属于MapEdge例外；范围不授予未知高度语义。
     for (const bool unknownWater : {true, false}) {
         auto extra = sealedTerrain;
-        extra[45 + (2 * 11 + 2) * 7 + (unknownWater ? 3 : 1)] |= std::byte{0x80};
+        extra[45 + (2 * 11 + 2) * 7 + (unknownWater ? 3 : 1)] |=
+            unknownWater ? std::byte{0x80} : std::byte{0x40};
         Check(owned.edits->SetTerrain(extra));
         Check(owned.edits->VerifyTerrainSettingsForSave());
         const auto revision = owned.edits->Revision();
+        const auto sourceRevision = owned.edits->TerrainSourceRevision();
+        const auto canUndo = owned.edits->CanUndo(), canRedo = owned.edits->CanRedo();
         const auto refused = Take(TerrainSavePlan::PrepareForSave(*owned.archive, *owned.edits, {}));
         Require(HasCode(refused.SaveGate(), "MAP_TERRAIN_PATHING_UNVERIFIED"),
             "sealed MapEdge ownership does not authorize unknown ground or water flag changes");
         Require(owned.edits->Revision() == revision && owned.edits->IsDirty()
+            && owned.edits->TerrainSourceRevision() == sourceRevision
+            && owned.edits->CanUndo() == canUndo && owned.edits->CanRedo() == canRedo
             && Take(SerializeMapTerrain(*owned.edits->Terrain())) == extra,
-            "rejected extra flags preserve complete draft and revision");
+            "save-layer refusal preserves complete draft, source revision and Undo/Redo availability");
         Require(owned.edits->Undo(), "refusal retains the raw change's undo command");
     }
     Require(Take(SerializeMapTerrain(*owned.edits->Terrain())) == sealedTerrain,
         "both rejected flag changes undo to the exact sealed mask");
+    // ground bit15在W3E parser更早拒绝，不能把它误作已安装草稿再检查保存门。
+    auto ambiguousGround = sealedTerrain;
+    ambiguousGround[45 + (2 * 11 + 2) * 7 + 1] |= std::byte{0x80};
+    const auto revision = owned.edits->Revision(), sourceRevision = owned.edits->TerrainSourceRevision();
+    const auto canUndo = owned.edits->CanUndo(), canRedo = owned.edits->CanRedo(), dirty = owned.edits->IsDirty();
+    const auto sourceSha = owned.archive->SourceSha256();
+    const auto parseRefused = owned.edits->SetTerrain(ambiguousGround);
+    Require(HasCode(parseRefused, "TERRAIN_GROUND_HEIGHT_AMBIGUOUS")
+        && owned.edits->Revision() == revision && owned.edits->TerrainSourceRevision() == sourceRevision
+        && owned.edits->CanUndo() == canUndo && owned.edits->CanRedo() == canRedo && owned.edits->IsDirty() == dirty
+        && Take(SerializeMapTerrain(*owned.edits->Terrain())) == sealedTerrain,
+        "parser refusal installs no ground bit15 draft and preserves source revision, dirty state and Undo/Redo");
+    Require(owned.archive->SourceSha256() == sourceSha
+        && Take(owned.archive->ReadMember("war3map.w3e")) == owned.members[0].data,
+        "both refusal layers leave the actual archive source identity and complete W3E unchanged");
     const auto valid = Take(TerrainSavePlan::PrepareForSave(*owned.archive, *owned.edits, {}));
     Check(valid.SaveGate()); Require(valid.RebuiltPathing(), "sealed bounds still use complete original and current native pathing");
 }
