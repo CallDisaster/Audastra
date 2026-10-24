@@ -602,6 +602,23 @@ void NativeCornerWaterRestoresSavesAndRejectsUnexplainedLiteralPathing() {
         Require(prepared.Plan().WaterBrush()->anchor.groundHeightRaw == 8320
             && prepared.Plan().WaterBrush()->anchor.rampHeightOffset == 32, "service freezes raw B32 and S32 independently");
         Take(ApplyTerrainEdit(*f.edits, f.Document(), prepared));
+        // 原版5F0990干岸分支：G<W时，L'=trunc((W-G)/128)+L+1。
+        // 干起点W=64使七个G=32的邻点升至L3，东北原已L3；湿起点W=-32不升岸线。
+        // 这是x/y=14..18的独立完整层级字面矩阵，不从候选分类或生成器取得预期。
+        constexpr std::array<std::string_view, 5> dryLevels{"22222", "23332", "23132", "23332", "22222"};
+        constexpr std::array<std::string_view, 5> wetLevels{"22222", "22222", "22122", "22232", "22222"};
+        const auto& expectedLevels = wet ? wetLevels : dryLevels;
+        for (std::size_t y = 14; y <= 18; ++y) for (std::size_t x = 14; x <= 18; ++x) {
+            const auto& vertex = f.edits->Terrain()->vertices[y * 33 + x];
+            Require(vertex.CliffLevel() == expectedLevels[y - 14][x - 14] - '0',
+                "corner water matches every layer in the independent dry/wet 5x5 matrix");
+            Require(!vertex.IsRamp(), "corner water cleanup removes all nine obsolete ramp flags");
+            Require(vertex.groundHeightRaw == 8320, "corner water and shore cleanup preserve the raw B32 platform");
+            Require(vertex.HasWater() == (x == 16 && y == 16),
+                "shore water raw propagation does not add water flags to dry neighbors");
+        }
+        Require(f.edits->Terrain()->vertices[16 * 33 + 16].waterHeightAndFlagsRaw == (wet ? 8064 : 8448),
+            "the water center retains the independently stated old or newly anchored raw surface");
         const auto after = Take(SerializeMapTerrain(*f.edits->Terrain()));
         const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
         const auto wire = Take(EncodeTerrainStrokeJournal(journal));
@@ -631,9 +648,14 @@ void NativeCornerWaterRestoresSavesAndRejectsUnexplainedLiteralPathing() {
         const auto written = Take(f.source->SaveCandidate(f.root / "native-corner-water.w3x", replacements));
         const auto saved = Take(MapArchiveSession::Open(written.path));
         auto expected = f.members[1].data; std::fill(expected.begin() + 16, expected.end(), std::byte{0x51});
-        // 新中心L1与旧东北L3的七个普通悬崖格，旧两个仅R单角地格恢复通行。
-        for (const auto cell : std::array<std::array<std::size_t, 2>, 7>{
-            {{15, 15}, {16, 15}, {15, 16}, {16, 16}, {17, 16}, {16, 17}, {17, 17}}}) block(expected, cell[0], cell[1]);
+        if (wet) {
+            // 湿起点只有新中心L1与旧东北L3的七个普通悬崖格；其余旧R单角格恢复通行。
+            for (const auto cell : std::array<std::array<std::size_t, 2>, 7>{
+                {{15, 15}, {16, 15}, {15, 16}, {16, 16}, {17, 16}, {16, 17}, {17, 17}}}) block(expected, cell[0], cell[1]);
+        } else {
+            // 干起点八邻点最终为L3，中心L1、外圈L2；14..17的十六个地格全部阻断。
+            for (std::size_t y = 14; y <= 17; ++y) for (std::size_t x = 14; x <= 17; ++x) block(expected, x, y);
+        }
         // 干起点新R=64、G=-96为深水，最近顶点16的4x4格为0x0a+作者0x11。
         // 湿起点保留R=-32成为浅水；四个所属地格均阻断，仍是0xca+作者0x11。
         if (!wet) for (std::size_t y = 62; y < 66; ++y) for (std::size_t x = 62; x < 66; ++x)
