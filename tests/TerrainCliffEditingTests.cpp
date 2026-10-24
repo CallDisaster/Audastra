@@ -4,14 +4,22 @@
 
 #include <algorithm>
 #include <iostream>
+#include <source_location>
 #include <stdexcept>
+#include <string>
 
 using namespace War3Map;
 using namespace War3Map::MapData;
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
-template<class T> T Take(Result<T> value) {
-    if (!value.Succeeded() || !value.value) throw std::runtime_error("cliff fixture operation failed");
+template<class T> T Take(Result<T> value, const std::source_location& location = std::source_location::current()) {
+    if (!value.Succeeded() || !value.value) {
+        std::string message = std::string(location.function_name()) + ":" + std::to_string(location.line());
+        for (const auto& diagnostic : value.diagnostics)
+            message += "\n" + diagnostic.code + ": " + diagnostic.message;
+        if (value.diagnostics.empty()) message += "\ncliff fixture operation returned no value or diagnostics";
+        throw std::runtime_error(message);
+    }
     return std::move(*value.value);
 }
 TerrainGridSnapshot Flat() {
@@ -88,6 +96,7 @@ void ExistingRampsUseCompleteGroundAndClearOnlyInvalidBits() {
         auto& vertex = edge.vertices[y * 17]; vertex.textureAndFlagsRaw |= 0x10;
         if (y == 9) vertex.cliffAndLayerRaw = 3;
     }
+    RefreshTerrainDerived(edge, 0, 0, 17, 17);
     const TerrainStrokePoint edgePoint{0, 1024};
     brush = Brush(edge); brush.levelDelta = 0;
     const auto edgeEdited = Take(PrepareTerrainCliffStroke(edge, Rules(), brush, std::span(&edgePoint, 1), {}));
@@ -126,6 +135,7 @@ void ExistingRampsUseCompleteGroundAndClearOnlyInvalidBits() {
         for (auto& vertex : wet.vertices) {
             vertex.textureAndFlagsRaw |= 0x40; vertex.waterHeightAndFlagsRaw = 8192 + 300 * 4;
         }
+        RefreshTerrainDerived(wet, 0, 0, 17, 17);
         auto limitedRules = Rules(); limitedRules.enforceWaterLimits = true;
         brush = Brush(wet); brush.levelDelta = -1;
         const auto limited = Take(PrepareTerrainCliffStroke(wet, limitedRules, brush, std::span(&point, 1), {}));
