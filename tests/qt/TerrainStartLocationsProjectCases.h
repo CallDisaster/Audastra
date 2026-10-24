@@ -192,6 +192,8 @@ void EditorProjectTests::StartLocationsDescriptionsProjectColdRestore_data() {
 void EditorProjectTests::StartLocationsDescriptionsProjectColdRestore() {
     QFETCH(bool, descriptionFirst); QFETCH(bool, settingsRoute);
     QTemporaryDir root; QVERIFY(root.isValid());
+    // 工程归档独立于源工作区，冷恢复仍从原始地图读取并核对来源。
+    QTemporaryDir projectOutput; QVERIFY(projectOutput.isValid());
     const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
     const auto game = std::filesystem::path(root.filePath("game").toStdWString());
     QVERIFY(std::filesystem::create_directory(game));
@@ -202,7 +204,7 @@ void EditorProjectTests::StartLocationsDescriptionsProjectColdRestore() {
     };
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
-    const auto forge = std::filesystem::path(root.filePath("starts-descriptions.forge").toStdWString());
+    const auto forge = std::filesystem::path(projectOutput.filePath("starts-descriptions.forge").toStdWString());
     std::map<std::string, std::vector<std::byte>> finalDraft;
     const auto originalSettings = Tests::WaterTake(MapData::MapSettings::Parse(member("war3map.w3i")));
     auto moved = Tests::WaterTake(MapData::ParseUnitPlacements(member("war3mapUnits.doo")));
@@ -266,7 +268,7 @@ void EditorProjectTests::StartLocationsDescriptionsProjectColdRestore() {
     QVERIFY((*opened.value)->terrainJournalWarning.empty());
     QCOMPARE((*opened.value)->terrainReceipts.size(), std::size_t{2});
     QCOMPARE(TerrainJournalDraftBytes(*(*opened.value)->mapDataEdits), finalDraft);
-    const auto secondForge = std::filesystem::path(root.filePath("starts-descriptions-again.forge").toStdWString());
+    const auto secondForge = std::filesystem::path(projectOutput.filePath("starts-descriptions-again.forge").toStdWString());
     {
         EditorProject cold; QUndoStack undo; cold.mapDataUndoStack_ = &undo;
         QVERIFY(BindPreparedTerrainJournal(cold, **opened.value, game)); QCOMPARE(undo.count(), 2);
