@@ -38,6 +38,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaMethod>
 #include <QSettings>
 #include <QStandardItemModel>
 #include <QDir>
@@ -4845,6 +4846,35 @@ int main(int argc, char** argv) {
         if (settings.status() != QSettings::NoError) return 2;
     }
     EditorProjectTests tests;
-    return QTest::qExec(&tests, argc, argv);
+    auto arguments = QCoreApplication::arguments();
+    QString group;
+    for (qsizetype index = 1; index < arguments.size();) {
+        if (!arguments[index].startsWith("--case-group=")) { ++index; continue; }
+        if (!group.isEmpty()) return 2;
+        group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
+        if (group != "base" && group != "native-pathing" && group != "derived") return 2;
+    }
+    if (!group.isEmpty()) {
+        // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
+        // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
+        const auto groupOf = [](const QByteArray& name) {
+            for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
+                if (name.startsWith(prefix)) return QStringLiteral("derived");
+            for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "NativePathing",
+                    "PlacementHeight", "PathingIntent", "LegacyPathing", "NativeObjectCatalog"})
+                if (name.startsWith(prefix)) return QStringLiteral("native-pathing");
+            return QStringLiteral("base");
+        };
+        const auto& meta = EditorProjectTests::staticMetaObject;
+        qsizetype selected = 0;
+        for (int index = meta.methodOffset(); index < meta.methodCount(); ++index) {
+            const auto method = meta.method(index); const auto name = method.name();
+            if (method.methodType() != QMetaMethod::Slot || method.parameterCount() != 0 || name.endsWith("_data")
+                || name == "initTestCase" || name == "cleanupTestCase" || name == "init" || name == "cleanup") continue;
+            if (groupOf(name) == group) { arguments.append(QString::fromLatin1(name)); ++selected; }
+        }
+        if (!selected) return 2;
+    }
+    return QTest::qExec(&tests, arguments);
 }
 #include "EditorProjectTests.moc"

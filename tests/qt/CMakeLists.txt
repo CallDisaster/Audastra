@@ -595,10 +595,19 @@ target_link_libraries(war3-map-editor-project-tests PRIVATE War3MapEditor::QtPro
 target_compile_options(war3-map-editor-project-tests PRIVATE /W4 /permissive- /utf-8)
 set(editor_project_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-$<CONFIG>.qtest.txt")
 add_test(NAME qt-editor-project COMMAND war3-map-editor-project-tests
-    -o -,txt -o "${editor_project_log},txt")
+    --case-group=base -o -,txt -o "${editor_project_log},txt")
 set_tests_properties(qt-editor-project PROPERTIES TIMEOUT 30
     ATTACHED_FILES_ON_FAIL "${editor_project_log}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
+foreach(editor_project_group IN ITEMS native-pathing derived)
+    set(editor_project_group_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-${editor_project_group}-$<CONFIG>.qtest.txt")
+    add_test(NAME qt-editor-project-${editor_project_group} COMMAND war3-map-editor-project-tests
+        --case-group=${editor_project_group} -o -,txt -o "${editor_project_group_log},txt")
+    set_tests_properties(qt-editor-project-${editor_project_group} PROPERTIES TIMEOUT 30
+        ATTACHED_FILES_ON_FAIL "${editor_project_group_log}"
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+endforeach()
 
 target_link_libraries(war3-map-qt-model-tests PRIVATE War3MapEditor::QtModuleTriggers War3MapEditor::QtModuleObjects)
 
