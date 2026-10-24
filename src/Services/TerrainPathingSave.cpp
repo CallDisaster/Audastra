@@ -665,7 +665,7 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
     // 解码后的journal正文仍与候选共存；普通DOO的插入载荷不能只收临时patch/命令而漏掉输入驻留。
     for (const auto& stroke : journal.strokes)
         if (stroke.ordinaryDoodads
-            && (!charge(remaining.maximumCandidateBytes, stroke.ordinaryDoodads->inserted.size(), 1)
+            && (!charge(remaining.maximumCandidateBytes, stroke.ordinaryDoodads->inserted.capacity(), 1)
                 || !charge(remaining.maximumWork, stroke.ordinaryDoodads->inserted.size(), 1)))
             return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "普通DOO记录的输入载荷超过剩余候选或工作预算。");
     // owned factory现有接口接收连续typed intents；在复制任何点之前预收该有界副本。
