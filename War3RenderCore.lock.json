@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.20",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "9baf7436ba48f56bd48f471551bb0cf5edbee578",
+  "commit": "2573eb48e74d81794cc368854cd06c979db021c5",
   "files": [
     {
       "path": ".gitattributes",
@@ -14,7 +14,7 @@
     },
     {
       "path": "CMakeLists.txt",
-      "sha256": "ce048ce3e4fc8db0844c6566b094aa3ea64075d8a6d4e2691ffa2204bb86f1bb"
+      "sha256": "c34ceed8d8b945d2d74d57822a7400ad5e6a2fb3e9daf830b7ff33146aabec88"
     },
     {
       "path": "COPYRIGHT.md",
@@ -87,6 +87,10 @@
     {
       "path": "include/War3MapCore/Render/MdxPose.h",
       "sha256": "f806c3844b483949bbf3e71a9655bdff5a377e78cc3cfd9e1f60a56f757e2625"
+    },
+    {
+      "path": "include/War3MapCore/Render/MdxTerrainReceiver.h",
+      "sha256": "4df5dab0086f4078c44d13e268e0c4ff9af484ceb757f0c15406bf170de7679d"
     },
     {
       "path": "include/War3MapCore/RenderPlugin.h",
@@ -278,7 +282,7 @@
     },
     {
       "path": "src/Render/Assets/MdxModel.cpp",
-      "sha256": "c47609e2616e3f4c68bc4456e4753d173273caf99aa4b10d646dbe81956311c9"
+      "sha256": "c68f29a4a04621f25c3da59156927780568b5866332dce18be29cde69829486c"
     },
     {
       "path": "src/Render/Assets/MdxNoControllerStatic.h",
@@ -305,6 +309,10 @@
       "sha256": "74d8042720aa0b7bfcf2274b51c8503d350e59198ffd1ac6bc99bba921aca377"
     },
     {
+      "path": "src/Render/Assets/MdxPrimitiveRead.h",
+      "sha256": "06c503a130a23784df44550fde8a3ead3bbe5fcbd10e96b0beeeb18605959f77"
+    },
+    {
       "path": "src/Render/Assets/MdxReadInternal.h",
       "sha256": "1efdeca53469997dfb46c471b7448fb625adbedfcd56bd98eefb6879ab94dd2b"
     },
@@ -314,7 +322,11 @@
     },
     {
       "path": "src/Render/Assets/MdxStaticParseBudget.h",
-      "sha256": "d0efa4332c8373de6ce5b95ed58202397c57fddd96a67691ee371b99e2483939"
+      "sha256": "b36e062a80f9006c98acef8cfa1c1e398d7bbaec881c9c546eacabfedee1fc61"
+    },
+    {
+      "path": "src/Render/Assets/MdxTerrainReceiver.cpp",
+      "sha256": "1d5408c31dfe8dd994c5e100c94075dea09caccf068ae93b6788aada934fbd31"
     },
     {
       "path": "src/Render/Scene/ModelSceneData.h",
@@ -434,7 +446,7 @@
     },
     {
       "path": "src/RenderCore/TestTargets.cmake",
-      "sha256": "bf47cc76ac9f80465c180992bca1361af90290211edb25c110717855d30e7a45"
+      "sha256": "dc017cddfbe12b1ce6a2a92c730e6de64f1f906995064dcde8d4d9805c504fcb"
     },
     {
       "path": "tests/ExternalFrameTests.cpp",
@@ -486,7 +498,11 @@
     },
     {
       "path": "tests/MdxNoControllerStaticTests.cpp",
-      "sha256": "9d0f9e29c2cb67385b43768787f4d5360ba0fabbced2b1910b82b92468504b7b"
+      "sha256": "8983dd671b93268cc77c75449453024bf2b7e96a93bdf1a9bcb1601778f430b6"
+    },
+    {
+      "path": "tests/MdxTerrainReceiverTests.cpp",
+      "sha256": "6d11dfaca7d61be959d67ff370fc8d3d94e317f976973e0bb4ad7c832d5a5af7"
     },
     {
       "path": "tests/MdxTestModel.h",
