@@ -43,6 +43,29 @@ bool MapDataEditSession::TerrainBoundsState::MatchesSettings(const MapSettings& 
         && playableWidth == settings.playableWidth && playableHeight == settings.playableHeight && flags == (settings.flags & 0x400u);
 }
 
+bool MapDataEditSession::TerrainBoundsState::MatchesSettingsBytes(std::span<const std::byte> bytes) const noexcept {
+    // v25的geometry前只有三个I32和四个零结尾说明串。无分配地读取已由会话
+    // 完整解析过的窄前缀，供noexcept dirty检测覆盖历史Replay/Undo的raw设置。
+    const auto number = [&](std::size_t offset) {
+        std::uint32_t value = 0;
+        for (unsigned i = 0; i < 4; ++i) value |= std::to_integer<std::uint32_t>(bytes[offset + i]) << (i * 8);
+        return value;
+    };
+    if (bytes.size() < 12 || number(0) != 25) return false;
+    std::size_t cursor = 12;
+    for (unsigned field = 0; field < 4; ++field) {
+        while (cursor < bytes.size() && bytes[cursor] != std::byte{0}) ++cursor;
+        if (cursor == bytes.size()) return false;
+        ++cursor;
+    }
+    if (bytes.size() - cursor < 60) return false;
+    for (const auto value : cameraBounds) { if (number(cursor) != std::bit_cast<std::uint32_t>(value)) return false; cursor += 4; }
+    for (const auto value : cameraMargins) { if (number(cursor) != std::bit_cast<std::uint32_t>(value)) return false; cursor += 4; }
+    if (number(cursor) != std::bit_cast<std::uint32_t>(playableWidth)
+        || number(cursor + 4) != std::bit_cast<std::uint32_t>(playableHeight)) return false;
+    return (number(cursor + 8) & 0x400u) == flags;
+}
+
 bool MapDataEditSession::TerrainBoundsState::Equivalent(const TerrainBoundsState& other) const noexcept {
     return SameCamera(cameraBounds, other.cameraBounds) && cameraMargins == other.cameraMargins
         && playableWidth == other.playableWidth && playableHeight == other.playableHeight && flags == other.flags
@@ -56,7 +79,9 @@ void MapDataEditSession::TerrainBoundsState::RestoreGeometry(MapSettings& settin
 }
 
 bool MapDataEditSession::HasTerrainBoundsChanges() const noexcept {
-    return boundsState_ && (!savedBoundsState_ || !boundsState_->Equivalent(*savedBoundsState_));
+    const auto& settings = current_[Index(MapDataKind::Settings)];
+    return boundsState_ && (!savedBoundsState_ || !boundsState_->Equivalent(*savedBoundsState_)
+        || !settings || !boundsState_->MatchesSettingsBytes(*settings));
 }
 
 Status MapDataEditSession::VerifyTerrainSettingsForSave() const try {

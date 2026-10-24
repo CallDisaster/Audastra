@@ -271,6 +271,7 @@ private:
         [[nodiscard]] static std::shared_ptr<const TerrainBoundsState> Capture(const MapSettings&, const TerrainGridSnapshot&);
         [[nodiscard]] bool Matches(const MapSettings&, const TerrainGridSnapshot&) const noexcept;
         [[nodiscard]] bool MatchesSettings(const MapSettings&) const noexcept;
+        [[nodiscard]] bool MatchesSettingsBytes(std::span<const std::byte>) const noexcept;
         [[nodiscard]] bool Equivalent(const TerrainBoundsState&) const noexcept;
         void RestoreGeometry(MapSettings&) const noexcept;
     };
