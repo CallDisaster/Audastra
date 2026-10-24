@@ -3,7 +3,9 @@
 #include "EditorProject.h"
 #include "GameUiAuthoringJson.h"
 #include "GameUiCanvas.h"
+#include "Modules/ModuleHost.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QCheckBox>
 #include <QHBoxLayout>
@@ -277,8 +279,25 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
         QString error;
         if (!RemoveSelectedDescriptionFrame(&error) && !error.isEmpty()) ReportAuthoring(error);
     });
+    generateTriggersButton_ = new QPushButton(tr("生成触发器"), toolbar);
+    generateTriggersButton_->setObjectName(QStringLiteral("gameUiGenerateTriggers"));
+    connect(generateTriggersButton_, &QPushButton::clicked, this, [this] {
+        const FrameNode* node = tree_ && selected_ < tree_->Nodes().size() ? &tree_->Nodes()[selected_] : nullptr;
+        if (!node || !node->uiFrame) return;
+        QString error;
+        const auto generated = GenerateDescriptionTriggers(Text(node->uiFrame->description), false, &error);
+        if (!generated) {
+            ReportAuthoring(error);
+            return;
+        }
+        authoringDiagnostics_ = generated->warnings;
+        UpdateProblems();
+        if (host_) {
+            host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(std::string(kUiTriggerCategory))), 8000);
+        }
+    });
     UpdateAuthoringControls();
-    return {newDescriptionButton_, addFrameButton_, removeFrameButton_};
+    return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_};
 }
 
 void GameUiModule::UpdateAuthoringControls() {
@@ -287,6 +306,7 @@ void GameUiModule::UpdateAuthoringControls() {
     const bool isFrame = inDescription && !node->uiFrame->frame.empty();
     if (addFrameButton_) addFrameButton_->setEnabled(inDescription);
     if (removeFrameButton_) removeFrameButton_->setEnabled(isFrame);
+    if (generateTriggersButton_) generateTriggersButton_->setEnabled(inDescription);
     if (canvas_) canvas_->SetDraggable(isFrame);
 }
 

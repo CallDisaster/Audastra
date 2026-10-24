@@ -195,6 +195,7 @@ GameUiDefinitions LoadGameUiDefinitions(GameUiReader& reader) {
         auto plan = GameUi::PlanMapTocs(reader.MapFiles(), scripts);
         mapDiagnostics.insert(mapDiagnostics.end(), plan.diagnostics.begin(), plan.diagnostics.end());
         for (const auto& toc : plan.tocs) library->LoadToc(read, toc, "map");
+        result.mapTocs = std::move(plan.tocs);
         result.tocCalls = std::move(plan.calls);
         // 脚本文字常写成 TRIGSTR_编号，查地图字符串表（同样取最近一次保存的版本）。
         GameUi::TriggerStrings triggerStrings;

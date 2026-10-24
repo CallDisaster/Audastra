@@ -5,7 +5,7 @@ qt_add_library(War3MapQtModuleGameUi STATIC
     GameUiCanvas.cpp GameUiCanvas.h
     GameUiAuthoring.cpp GameUiAuthoringJson.h GameUiDescriptionData.cpp GameUiDescriptionPreview.cpp GameUiInputs.h
     GameUiSimulation.cpp GameUiSources.cpp GameUiSources.h
-    GameUiToolService.cpp GameUiToolService.h)
+    GameUiToolService.cpp GameUiToolService.h GameUiTriggers.cpp)
 add_library(War3MapEditor::QtModuleGameUi ALIAS War3MapQtModuleGameUi)
 target_include_directories(War3MapQtModuleGameUi PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(War3MapQtModuleGameUi PUBLIC

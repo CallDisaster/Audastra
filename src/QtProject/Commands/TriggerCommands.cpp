@@ -1,6 +1,7 @@
 #include "TriggerCommands.h"
 
 #include "EditorProject.h"
+#include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include <type_traits>
 
@@ -666,6 +667,54 @@ void TriggerGraphSnapshotUndoCommand::Apply(bool forward) {
     if (forward) *firstPublication_ = true;
     project_->ObserveTriggerEdit();
     emit project_->TriggerDocumentChanged();
+}
+
+Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperations(EditorProject& project,
+    std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel, const std::function<Status()>& beforePublish) {
+    using Receipt = Trigger::TriggerGraphEditReceipt;
+    constexpr const char* kSubsystem = "QtProject.Trigger";
+    const auto failed = [](std::vector<Diagnostic> diagnostics) {
+        Result<Receipt> failure;
+        failure.diagnostics = std::move(diagnostics);
+        return failure;
+    };
+    if (!project.triggerDocument_ || !project.uiCatalog_ || !project.triggerUndoStack_)
+        return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_UNAVAILABLE", "当前工程没有可编辑的触发器文档。");
+    std::optional<Trigger::TriggerDocument> before, candidate;
+    Result<Receipt> edited;
+    try {
+        const auto references = project.CaptureTriggerMapObjectReferences();
+        const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()
+            ? references.value->get() : nullptr;
+        const auto binding = Trigger::CaptureTriggerGraphBinding(*project.triggerDocument_, *project.uiCatalog_, objects);
+        if (!binding.Succeeded()) return failed(binding.diagnostics);
+        Trigger::TriggerGraphEditBatch batch;
+        batch.expected = *binding.value;
+        batch.operations = std::move(operations);
+        before.emplace(*project.triggerDocument_);
+        candidate.emplace(*before);
+        edited = Trigger::ApplyTriggerGraphEditBatch(*candidate, *project.uiCatalog_, batch, {}, objects);
+    } catch (...) {
+        return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PREPARE_FAILED", "无法准备完整触发器事务；当前文档未改动。");
+    }
+    if (!edited.Succeeded()) return edited;
+    if (beforePublish) {
+        if (const Status ready = beforePublish(); !ready.Succeeded()) return failed(ready.diagnostics);
+    }
+    if (edited.value->before.currentWtgSha256 == edited.value->after.currentWtgSha256
+        && edited.value->before.currentWctSha256 == edited.value->after.currentWctSha256) return edited;
+    std::unique_ptr<TriggerGraphSnapshotUndoCommand> command;
+    try {
+        command = std::make_unique<TriggerGraphSnapshotUndoCommand>(project, std::move(*before), std::move(*candidate), undoLabel);
+    } catch (...) {
+        return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PREPARE_FAILED", "无法准备完整触发器事务；当前文档未改动。");
+    }
+    if (!command->Ready())
+        return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_UNDO_SOURCE_STALE", "来源、会话或函数目录已变化；未发布。");
+    const auto published = command->FirstPublication();
+    project.triggerUndoStack_->push(command.release());
+    if (!*published) return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PUBLISH_FAILED", "完整事务未能发布。");
+    return edited;
 }
 
 } // namespace War3Map::QtProject

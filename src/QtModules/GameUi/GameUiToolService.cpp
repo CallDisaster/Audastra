@@ -1,6 +1,7 @@
 #include "GameUiToolService.h"
 
 #include "GameUiModule.h"
+#include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QBuffer>
 #include <QJsonArray>
@@ -367,6 +368,26 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面描述 %1。").arg(id));
         binding.insert("path", Text(file->path));
         binding.insert("text", Text(SerializeUiDescription(file->description)));
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_description_triggers")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const bool preview = args.value("preview").toBool();
+        QString error;
+        const auto generated = module->GenerateDescriptionTriggers(args.value("description").toString(), preview, &error);
+        if (!generated) return Failure("GAME_UI_TRIGGERS", error);
+        binding.insert("applied", !preview);
+        binding.insert("category", Text(std::string(kUiTriggerCategory)));
+        binding.insert("feature_text", generated->featureText);
+        binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
+        binding.insert("variables", QJsonArray::fromStringList(generated->variables));
+        binding.insert("template_files", QJsonArray::fromStringList(generated->templateFiles));
+        QJsonArray warnings;
+        for (const auto& warning : generated->warnings) {
+            warnings.append(QJsonObject{{"code", Text(warning.code)}, {"message", Text(warning.message)}});
+        }
+        binding.insert("warnings", warnings);
         return binding;
     }
 

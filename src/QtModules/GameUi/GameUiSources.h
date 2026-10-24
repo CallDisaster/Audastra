@@ -72,6 +72,7 @@ struct GameUiDefinitions {
     std::string mapSkin;
     std::vector<GameUi::TeamColor> teamColors;  // 皮肤指定的队伍颜色贴图（排行榜的玩家颜色与图标）
     std::vector<GameUi::TocLoadCall> tocCalls;  // 地图脚本中加载界面目录的调用
+    std::vector<std::string> mapTocs;           // 读入的地图界面目录，按读入顺序
     GameUi::ScriptFramePlan scriptFrames;       // 地图脚本创建的界面
     std::vector<GameUi::MapScriptText> scripts;  // 地图脚本原文（预览模拟用）
     std::vector<GameUiDescriptionFile> descriptions;  // AudastraUI\<编号>.json，按编号排序

@@ -58,7 +58,8 @@ bool ValidSimulationValues(const QJsonValue& value) {
 std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
-             "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit"}) {
+             "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
+             "game_ui_description_triggers"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read";
@@ -109,6 +110,14 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("edits", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256}, {"items", QJsonObject{{"type", "object"}}}});
             required.append("edits");
             required.append("description");
+        } else if (tool.name == "game_ui_description_triggers") {
+            tool.description = "由地图界面描述生成自然 T：框架、数值与状态的全局变量，以及创建（地图开始 0 秒）、更新（按数值刷新绑定的属性）、"
+                "每个状态、回到基础状态的触发器，整批写进触发器编辑器的 AudastraUI 类别（同名触发器整体替换），走触发器撤销栈；"
+                "生成的触发器用到的基础模板 AudastraUI\\AudastraUI.toc/.fdf 随同放进待保存修改。需要函数库已启用 AudastraUI。"
+                "preview 为 true 时只返回生成的功能写法，不改地图。生成不了的部分全部列出并整体拒绝";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("preview", QJsonObject{{"type", "boolean"}});
+            required.append("description");
         } else if (tool.name == "game_ui_preview_set") {
             tool.description = "地图界面描述的预览：切换状态（空字符串为基础状态）、按 编号 或 编号[下标] 给数值（文字、数值或布尔），"
                 "之后的节点查询与绘图显示这组取值。整批检查，任何一项不合法都不改。只改预览，不改地图";
@@ -148,7 +157,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", "种族或宽高比不在可选范围内。");
     }
-    for (const auto* key : {"expansion", "show_hidden"}) {
+    for (const auto* key : {"expansion", "show_hidden", "preview"}) {
         if (args.contains(key) && !args.value(key).isBool()) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是布尔值。");
     }
     if (args.contains("label") && (!args.value("label").isString() || args.value("label").toString().size() > 256))

@@ -114,6 +114,17 @@ public:
     bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
     // 平移描述框架的全部锚点（屏幕单位）；重复实例平移的是整组。
     bool MoveDescriptionFrame(std::uint32_t node, double dx, double dy, QString* error = nullptr);
+    // 由界面描述生成自然 T（UiTriggers.h），整批写进触发器编辑器的 AudastraUI 类别，走触发器撤销栈；
+    // 生成的触发器用到的基础模板随同放进地图的待保存修改。preview 为真时只给出生成结果，不改地图。
+    // 函数库没有启用 AudastraUI、描述生成不了或写入被拒绝时给出原因，什么都不改。
+    struct TriggerGeneration {
+        QString featureText;
+        QStringList triggers;
+        QStringList variables;
+        QStringList templateFiles;  // 本次放进地图的基础模板
+        std::vector<Diagnostic> warnings;
+    };
+    std::optional<TriggerGeneration> GenerateDescriptionTriggers(const QString& id, bool preview, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -244,6 +255,7 @@ private:
     QToolButton* newDescriptionButton_ = nullptr;
     QToolButton* addFrameButton_ = nullptr;
     QPushButton* removeFrameButton_ = nullptr;
+    QPushButton* generateTriggersButton_ = nullptr;
 };
 
 } // namespace War3Map::Modules

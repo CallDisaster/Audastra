@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+class QPushButton;
 class QTableWidget;
 namespace War3Map::QtProject { class EditorProject; }
 
@@ -26,11 +27,14 @@ public:
 private:
     void Populate();
     void MoveSelected(int delta);
+    void UpdateInstallButton();
+    void InstallBundled();
 
     const QtProject::EditorProject& project_;
     UiLibrary::GlobalSettings settings_;
     std::vector<std::string> mapOnly_;
     QTableWidget* packages_ = nullptr;
+    QPushButton* installBundled_ = nullptr;
 };
 
 } // namespace War3Map::Modules

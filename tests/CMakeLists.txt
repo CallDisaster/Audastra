@@ -114,6 +114,7 @@ add_executable(war3-map-game-ui-trigger-tests GameUiTriggerTests.cpp)
 target_link_libraries(war3-map-game-ui-trigger-tests PRIVATE War3MapEditor::GameUi War3MapEditor::Trigger War3MapEditor::Jass)
 target_compile_definitions(war3-map-game-ui-trigger-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN
     AUDASTRA_UI_LIBRARY_DIR="${PROJECT_SOURCE_DIR}/assets/ui-library")
+target_include_directories(war3-map-game-ui-trigger-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/helpers")
 target_compile_options(war3-map-game-ui-trigger-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME core-game-ui-triggers COMMAND war3-map-game-ui-trigger-tests)
 
