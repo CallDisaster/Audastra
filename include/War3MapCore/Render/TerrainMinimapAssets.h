@@ -58,7 +58,7 @@ struct TerrainMinimapAssetCaptureFacts {
     std::size_t cumulativeSourceBytes = 0;
     std::size_t maximumMapBatchRetainedBytes = 0; // 本次phase编码字节size，不是容器capacity或完整内存峰值
     std::size_t uniqueAtlasCount = 0, retainedAtlasRgbaCapacityBytes = 0;
-    // 新增 W3I 原字 capacity 与有界 Settings snapshot/解析的保守峰值；不是全进程峰值。
+    // 同次最终 W3I capacity 与有界 Settings snapshot/解析的保守峰值；不是全进程峰值。
     std::size_t retainedW3iCapacityBytes = 0, estimatedSettingsWorkingBytes = 0;
     bool gameMounted = false;
     static constexpr const char* gameLookupPolicy = "GameDataSource-existing-priority-and-Mpq-FindBlock-v1";
@@ -72,7 +72,8 @@ class TerrainMinimapAssetSnapshot;
 // 调用者必须串行排除 edits 写入。只接真实 ArchiveAndGame 来源，不接任意SHA/atlas/callback。
 // 两种声明边距政策均要求真实map-only W3I同源/当前原字闭环，不根据MapEdge自动选择。
 // Prepare只复用来源基线匹配；其Result成功与SaveGate成功不同，本接口不执行或放宽保存。
-// final列表只覆盖实际消费的地形表、配置和贴图，W3E/W3I仍沿原会话/来源合同。
+// final列表覆盖实际消费的地形表、配置、贴图及同会话最终W3I；W3I先核准确源基线，
+// 再核当前Ready正文与最终列表一致，裁剪/噪点和worker回读均消费该最终正文。
 // 列表必须由保存宿主持有，调用期间不可修改；snapshot不保留其span或正文借用。
 [[nodiscard]] Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(
     const MapArchiveSession& source, const MapData::MapDataEditSession& edits,
@@ -94,7 +95,7 @@ public:
     [[nodiscard]] const std::vector<TerrainMinimapGroundAsset>& GroundAssets() const noexcept { return ground_; }
     [[nodiscard]] const TerrainMinimapAssetCaptureFacts& Facts() const noexcept { return facts_; }
     [[nodiscard]] const std::string& IdentitySha256() const noexcept { return identitySha256_; }
-    static constexpr const char* sourcePolicy = "archive-final-resources-and-game-capture-v4";
+    static constexpr const char* sourcePolicy = "archive-final-resources-settings-and-game-capture-v5";
     static constexpr bool formalSaveAuthorized = false, nativeEditorOrGameVerified = false;
     static constexpr bool pendingImportReplaceRemoveCovered = false, w3iDooShdSemanticsCovered = false;
     // 仅地形资源最终覆盖；上面的完整跨域导入/删除与原生文件语义没有因此放开。

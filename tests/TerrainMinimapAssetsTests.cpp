@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapDocument.h"
@@ -982,11 +983,88 @@ void TestClassicPlayableCaptureAndDependencyReadback() {
     Require(candidate.encoded.quality == 40 && candidate.finalImage.width == 256, "实际捕获应接到单mip JPEG输出");
 }
 
+void TestFinalSettingsCaptureUsesActualCurrentOutput() {
+    constexpr auto policy = TerrainMinimapRangePolicy::ClassicPlayable;
+    auto original = W3i(); Put32(original, 72, 0x400);
+    Fixture fixture(false, original);
+    auto resources = Materials();
+    resources.push_back({"UI\\MiscData.txt", Text("; original fixture\n")});
+    resources.push_back({"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
+    auto source = fixture.Source("final-settings.w3x", resources);
+    const auto sourceSha = Take(Sha256File(source.SourcePath()));
+    const auto baseline = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy));
+    auto settings = Take(MapSettings::Parse(original));
+    settings.mapName = "Original final settings fixture";
+    settings.cameraMargins = {2, 1, 1, 3}; settings.playableWidth = 5; settings.playableHeight = 4;
+    const auto finalSettings = Take(settings.Serialize());
+    Require(fixture.edits.EditSerialized(MapDataKind::Settings, finalSettings).Succeeded(), "通过同一会话修改实际W3I");
+    auto output = fixture.edits.Replacements();
+    output.push_back({"无关\\文件.txt", Text("unrelated final member")});
+    auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy, output));
+    const auto dependency = std::find_if(captured.Dependencies().begin(), captured.Dependencies().end(), [](const auto& item) {
+        return item.kind == TerrainMinimapDependencyKind::Settings;
+    });
+    Require(captured.Input().sourceW3i == finalSettings && dependency != captured.Dependencies().end()
+        && dependency->winner.layer == Resources::ResourceLayer::SessionOverride
+        && dependency->containerIdentity == sourceSha && dependency->encodedSha256 == Take(Sha256(finalSettings))
+        && captured.IdentitySha256() != baseline.IdentitySha256(),
+        "最终W3I必须逐字来自同会话输出，源归档身份和最终正文身份分别保留");
+    Require(VerifyTerrainMinimapAssetsCurrent(captured, source, fixture.edits, {}, {}, output).Succeeded()
+        && VerifyTerrainMinimapAssetsFrozenOutput(captured, source, output).Succeeded(),
+        "最终设置须能经过当前及后台发布前来源复核，无关非ASCII成员不影响捕获");
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy));
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}), "TERRAIN_ASSETS_FINAL_WINNER");
+    const std::vector<MemberReplacement> stale{{"war3map.w3i", original}}, damaged{{"war3map.w3i", Text("damaged-final-settings")}};
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy, stale));
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy, damaged));
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, stale), "TERRAIN_ASSETS_FINAL_BYTES");
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, damaged), "TERRAIN_ASSETS_FINAL_BYTES");
+    const std::array<std::string, 1> removal{"war3map.w3i"};
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy, {}, removal));
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, {}, removal), "TERRAIN_ASSETS_FINAL_REMOVAL");
+    auto duplicate = output; duplicate.push_back({"WAR3MAP.W3I", finalSettings});
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, policy, duplicate));
+    RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(captured, source, duplicate), "TERRAIN_ASSETS_FINAL_DUPLICATE");
+    TerrainMinimapAssetCaptureLimits limits; limits.tables.maxTableBytes = finalSettings.size() - 1;
+    Rejected(CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits, policy, output));
+    limits = {}; limits.maxSourceBytes = captured.Facts().estimatedSettingsWorkingBytes;
+    Require(CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits, policy, output).Succeeded(),
+        "当前正文比源正文更长时，真实设置解析峰值的精确预算可通过");
+    --limits.maxSourceBytes;
+    const auto budget = CaptureTerrainMinimapAssets(source, fixture.edits, {}, limits, policy, output);
+    Rejected(budget);
+    Require(std::any_of(budget.diagnostics.begin(), budget.diagnostics.end(), [](const auto& d) { return d.code == "TERRAIN_ASSETS_BUDGET"; }),
+        "少一个字节须命中分配前设置峰值预算门");
+    auto saved = Saved(fixture, source, "final-settings-saved.w3x", output);
+    Require(VerifyTerrainMinimapAssetsReadback(captured, saved).Succeeded()
+        && Take(saved.ReadMember("war3map.w3i")) == finalSettings
+        && Take(Sha256File(source.SourcePath())) == sourceSha,
+        "独立输出回读消费最终W3I且不修改源图");
+    auto oldSettings = Saved(fixture, source, "old-settings-saved.w3x");
+    RequireRejected(VerifyTerrainMinimapAssetsReadback(captured, oldSettings), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
+    auto objects = Take(CaptureClassicMinimapObjectAssets(std::move(captured), source, fixture.edits, {}, output));
+    TerrainMinimapPostprocessSettings filters; filters.noisePercent = 0;
+    const auto candidate = Take(BuildClassicMinimapCandidate(objects, filters));
+    Require(candidate.manifest.sourceRectangle == std::array<std::uint32_t, 4>{2, 1, 7, 5}
+        && candidate.raw.width == 5 && candidate.raw.height == 4,
+        "逐格小地图必须按最终设置的合法可玩矩形取色，不再使用源W3I");
+
+    Fixture foreign(false, finalSettings); foreign.w3i = original;
+    auto foreignSource = foreign.Source("wrong-settings-baseline.w3x", resources);
+    const std::array<MemberReplacement, 1> foreignOutput{{{"war3map.w3i", finalSettings}}};
+    const auto wrongBaseline = CaptureTerrainMinimapAssets(foreignSource, foreign.edits, {}, {}, policy, foreignOutput);
+    Rejected(wrongBaseline);
+    Require(std::any_of(wrongBaseline.diagnostics.begin(), wrongBaseline.diagnostics.end(), [](const auto& d) {
+        return d.code == "TERRAIN_EDIT_INSPECTION_SOURCE_MISMATCH";
+    }), "当前和最终相等不能掩盖会话原W3I与真实来源不同");
+}
+
 } // namespace
 
 int main() {
     try {
         TestClassicPlayableCaptureAndDependencyReadback();
+        TestFinalSettingsCaptureUsesActualCurrentOutput();
         TestActualMapWinnerAndOriginalMips(); TestGameFallbackAndWinnerChange(); TestSameGamePathChangedMember();
         TestFinalTerrainResourceOverlayWinsAndIsBound();
         TestFinalTerrainResourceRemovalUsesActualGameAndReadback();

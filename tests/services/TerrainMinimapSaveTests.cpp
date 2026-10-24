@@ -3,7 +3,10 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Image/BlpImage.h"
+#include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/Services/TerrainMinimapMarkers.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -71,10 +74,28 @@ Bytes W3i() {
     Put32(bytes, 64, 4); Put32(bytes, 68, 5); bytes[76] = std::byte{'L'};
     return bytes;
 }
-MapDocument SettingsDocument(const std::optional<Bytes>& settings) {
-    if (!settings) return MapDocument::FromMembers({});
-    const std::vector<MapArchiveMember> members{{"war3map.w3i", *settings}};
+MapDocument SettingsDocument(const std::optional<Bytes>& settings, const std::optional<Bytes>& units = {}) {
+    std::vector<MapArchiveMember> members;
+    if (settings) members.push_back({"war3map.w3i", *settings});
+    if (units) members.push_back({"war3mapUnits.doo", *units});
     return MapDocument::FromMembers(members);
+}
+Bytes StartLocation() {
+    UnitPlacements units;
+    UnitPlacement start; start.rawcode = "sloc"; start.position = {512, 384, 0};
+    start.scale = {1, 1, 1}; start.owner = 0; start.creationId = 1;
+    units.units.push_back(std::move(start)); return Take(units.Serialize());
+}
+Bytes TeamColor() {
+    // 原创单像素24位TGA，实际BGRA=(3,2,1,255)。
+    Bytes bytes(21); bytes[2] = std::byte{2}; bytes[12] = bytes[14] = std::byte{1};
+    bytes[16] = std::byte{24}; bytes[17] = std::byte{0x20};
+    bytes[18] = std::byte{3}; bytes[19] = std::byte{2}; bytes[20] = std::byte{1}; return bytes;
+}
+Bytes ImportedMinimap() {
+    Bytes bytes(9); Put32(bytes, 0, 1); Put32(bytes, 4, 1); bytes[8] = std::byte{13};
+    const auto path = Text("war3mapMap.blp");
+    bytes.insert(bytes.end(), path.begin(), path.end()); bytes.push_back(std::byte{0}); return bytes;
 }
 Bytes Slk(const std::vector<std::string>& headers, const std::vector<std::vector<std::string>>& rows = {}) {
     std::string text = "ID;PWXL;N;E\n";
@@ -115,14 +136,15 @@ std::vector<MapArchiveMember> Materials(bool colorful = false) {
 struct Fixture {
     Directory directory;
     Bytes w3e, wpm;
-    std::optional<Bytes> w3i;
+    std::optional<Bytes> w3i, units;
     MapDataEditSession edits;
     std::filesystem::path gameRoot;
     MapArchiveSession source;
     explicit Fixture(bool presentMinimap = false, bool gameWinner = false, bool colorful = false,
         std::optional<Bytes> settings = {}, bool standardEdges = false, std::optional<Bytes> minimapTga = {},
-        bool classicMaterials = false)
-        : w3i(std::move(settings)), edits(SettingsDocument(w3i)) {
+        bool classicMaterials = false, bool startLocation = false, bool importedMinimap = false)
+        : w3i(std::move(settings)), units(startLocation ? std::optional<Bytes>{StartLocation()} : std::nullopt),
+          edits(SettingsDocument(w3i, units)) {
         TerrainGridSnapshot terrain;
         terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
         terrain.header.groundTilesets = {"Tg01"}; terrain.header.cliffTilesets = {"CLdi"}; terrain.vertices.resize(81);
@@ -148,16 +170,23 @@ struct Fixture {
         }
         members.push_back({"war3map.w3e", w3e}); members.push_back({"war3map.wpm", wpm});
         if (w3i) members.push_back({"war3map.w3i", *w3i});
+        if (units) {
+            members.push_back({"war3mapUnits.doo", *units});
+            members.push_back({"Fixture\\TeamColor00.tga", TeamColor()});
+        }
         members.push_back({"war3map.j", Text("function config takes nothing returns nothing\nendfunction\nfunction main takes nothing returns nothing\nendfunction\n")});
         Bytes native(12); Put32(native, 0, 1); members.push_back({"war3map.w3u", native});
         members.push_back({"war3map.shd", {std::byte{17}, std::byte{25}}});
         members.push_back({"unrelated.bin", Text("original unrelated member")});
-        if (presentMinimap) members.push_back({"war3mapMap.blp", {}});
+        if (presentMinimap) members.push_back({"war3mapMap.blp", importedMinimap ? Atlas(true) : Bytes{}});
+        if (importedMinimap) members.push_back({"war3map.imp", ImportedMinimap()});
         if (minimapTga) members.push_back({"war3mapMap.TGA", *minimapTga});
         Take(WriteVerifiedArchive(directory.Path() / "source.w3x", members));
         source = Take(MapArchiveSession::Open(directory.Path() / "source.w3x"));
         gameRoot = directory.Path() / "game"; Require(std::filesystem::create_directory(gameRoot), "创建原创game来源目录");
-        Take(WriteVerifiedArchive(gameRoot / "war3.mpq", Materials(colorful)));
+        auto gameMaterials = Materials(colorful);
+        if (units) gameMaterials.push_back({"UI\\war3skins.txt", Text("[Default]\nTeamColor=Fixture/TeamColor\n")});
+        Take(WriteVerifiedArchive(gameRoot / "war3.mpq", gameMaterials));
     }
     void Stroke(TerrainBrushKind kind = TerrainBrushKind::Raise, float strength = 10.0f,
         TerrainStrokePoint point = {512, 512}) {
@@ -419,6 +448,8 @@ void AutomaticDecisionUsesExactSourceMembers() {
     untouched.replacements.push_back({"war3map.w3u", Take(existing.source.ReadMember("war3map.w3u"))});
     Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(untouched)),
         "模板重现原W3E/W3I/native原字不算净变化，不能额外读取贴图和重建噪点");
+    Require(!Take(TerrainMinimapSave::Prepare(untouched, existing.edits, existing.gameRoot,
+        TerrainMinimapSaveChoice::Automatic)), "最终W3I原字未变时仍沿用既有BLP，不无故启动生成器");
     untouched.replacements.push_back({"unrelated.bin", Text("changed unrelated member")});
     untouched.removals.push_back("not-present.blp");
     Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(untouched)),
@@ -542,6 +573,147 @@ void AutomaticReusesVerifiedPlanAndPreservesOnBudgetFailure() {
         "cloned plan binds the real task and inputs");
 }
 
+void AutomaticFinalSettingsAndMarkersShareTheSavedView() {
+    for (const auto mode : {0, 1, 2}) {
+        auto original = W3i(); Put32(original, 72, 0x400);
+        Fixture fixture(false, false, false, original, false, {}, true, true);
+        const auto sourceSha = Take(Sha256File(fixture.source.SourcePath()));
+        Bytes originalBlp; std::optional<std::uint32_t> originalNoise;
+        {
+            MapSaveTask before; fixture.Freeze(before);
+            const auto baseline = fixture.Prepare(before, TerrainMinimapSaveChoice::Automatic);
+            originalBlp = baseline->MinimapReplacement().data;
+            originalNoise = baseline->ClassicManifest()->postprocessFacts.noiseSeed;
+        }
+        auto settings = Take(MapSettings::Parse(original));
+        settings.mapName = "Final settings save fixture"; settings.author = "Synthetic fixture"; settings.saves = 9;
+        std::array<std::uint32_t, 4> rectangle{1, 2, 5, 7};
+        std::array<std::int32_t, 2> icon{179, 205};
+        if (mode == 1) {
+            settings.cameraMargins = {2, 1, 1, 3}; settings.playableWidth = 5; settings.playableHeight = 4;
+            rectangle = {2, 1, 7, 5}; icon = {102, 128};
+        } else if (mode == 2) {
+            settings.flags &= ~0x400u;
+            settings.cameraBounds = {128, 384, 768, 896, 128, 896, 768, 384};
+            rectangle = {1, 3, 6, 7}; icon = {153, 230};
+        }
+        const auto finalSettings = Take(settings.Serialize());
+        Require(fixture.edits.EditSerialized(MapDataKind::Settings, finalSettings).Succeeded(), "真实设置事务改变最终W3I");
+        MapSaveTask task; fixture.Freeze(task);
+        if (mode == 2) {
+            task.inPlace = true; task.target = fixture.source.SourcePath();
+            task.inPlaceOptions.backupDirectory = fixture.directory.Path() / "backups";
+        }
+        const auto markers = Take(TerrainMinimapMarkers::Capture(*task.archive, fixture.gameRoot,
+            task.replacements, task.removals));
+        const auto settingsDependency = std::find_if(markers->Dependencies().begin(), markers->Dependencies().end(), [](const auto& input) {
+            return input.name == "WAR3MAP.W3I";
+        });
+        Require(settingsDependency != markers->Dependencies().end()
+            && settingsDependency->sha256 == Take(Sha256(finalSettings)), "MMP也必须消费同次最终W3I正文");
+        auto plan = std::make_shared<TerrainSavePlan>(Take(TerrainSavePlan::Prepare(fixture.source, fixture.edits)));
+        Require(markers->AdmitToPlan(*plan, fixture.edits).Succeeded(), "真实MMP owner进入同次保存计划");
+        task.replacements.push_back({"war3map.mmp", markers->Bytes()});
+        const auto preparation = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(task,
+            fixture.edits, fixture.gameRoot, {}, plan));
+        Require(preparation.generated && !preparation.preserved,
+            "只改名称或合法可玩范围必须生成MapBLP，不能退回保留旧图的能力警告");
+        const auto& prepared = preparation.generated;
+        Require(prepared->ClassicManifest()->sourceRectangle == rectangle,
+            "MapBLP必须按最终设置使用与MMP相同的原版可玩区");
+        if (mode == 0) Require(prepared->MinimapReplacement().data == originalBlp
+            && prepared->ClassicManifest()->postprocessFacts.noiseSeed == originalNoise,
+            "只改名称、作者、保存次数不能改变同内容的小地图像素或固定噪点");
+        task.replacements.push_back(prepared->MinimapReplacement());
+        Require(prepared->VerifyCurrent(task, fixture.edits, fixture.gameRoot).Succeeded(), "最终设置当前代际通过同一复核");
+        task.beforePublish = [&] {
+            auto checked = prepared->VerifyFrozenOutput(task);
+            if (checked.Succeeded()) checked = markers->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
+            return checked;
+        };
+        MapSaveService::Run(task);
+        Require(task.succeeded && task.nextSession, "最终设置、MapBLP与MMP必须经过正式worker保存成功");
+        const auto saved = Take(MapArchiveSession::Open(task.target));
+        Require(prepared->VerifyReadback(task, saved).Succeeded() && markers->VerifyReadback(saved).Succeeded()
+            && Take(saved.ReadMember("war3map.w3i")) == finalSettings,
+            "独立Open必须同时核对最终W3I、MapBLP、MMP及其真实来源");
+        const auto mmp = Take(ParseMapMinimapMarkers(Take(saved.ReadMember("war3map.mmp"))));
+        Require(mmp.records.size() == 1 && mmp.records[0].typeRaw == 2 && mmp.records[0].positionRaw == icon
+            && mmp.records[0].colorBgra == std::array<std::uint8_t, 4>{3, 2, 1, 255},
+            "原创开始位置在最终矩形中须得到独立手算的图标坐标及实际贴图颜色");
+        if (task.inPlace) Require(!task.backup.empty() && Take(Sha256File(task.backup)) == sourceSha,
+            "原地保存的真实备份必须等于修改前来源");
+        else Require(Take(Sha256File(fixture.source.SourcePath())) == sourceSha, "另存不修改源图");
+    }
+}
+
+void AutomaticFinalSettingsDriftIsRejectedBeforePublish() {
+    for (const auto mode : {0, 1, 2, 3}) {
+        auto original = W3i(); Put32(original, 72, 0x400);
+        Fixture fixture(false, false, false, original, false, {}, true);
+        const auto sourceSha = Take(Sha256File(fixture.source.SourcePath()));
+        auto settings = Take(MapSettings::Parse(original)); settings.mapName = "Final settings before publish";
+        const auto finalSettings = Take(settings.Serialize());
+        Require(fixture.edits.EditSerialized(MapDataKind::Settings, finalSettings).Succeeded(), "建立最终设置会话");
+        MapSaveTask task; fixture.Freeze(task);
+        const auto prepared = fixture.Prepare(task, TerrainMinimapSaveChoice::Automatic);
+        task.replacements.push_back(prepared->MinimapReplacement());
+        task.beforePublish = [&] {
+            const auto current = std::find_if(task.replacements.begin(), task.replacements.end(), [](const auto& member) {
+                return member.name == "war3map.w3i";
+            });
+            Require(current != task.replacements.end(), "发布前必须仍有最终W3I");
+            if (mode == 0) { auto changed = settings; changed.saves += 1; current->data = Take(changed.Serialize()); }
+            else if (mode == 1) task.replacements.erase(current);
+            else if (mode == 2) { task.replacements.erase(current); task.removals.push_back("war3map.w3i"); }
+            else current->data = Text("damaged-final-w3i");
+            return prepared->VerifyFrozenOutput(task);
+        };
+        MapSaveService::Run(task);
+        Require(!task.succeeded && !task.nextSession && !std::filesystem::exists(task.target),
+            "发布前W3I漂移、遗漏、删除或损坏不得发布部分地图");
+        RequireCode(task.diagnostics, mode == 1 ? "TERRAIN_ASSETS_FINAL_WINNER"
+            : mode == 2 ? "TERRAIN_ASSETS_FINAL_REMOVAL" : "TERRAIN_ASSETS_FINAL_BYTES");
+        Require(Take(Sha256File(fixture.source.SourcePath())) == sourceSha && fixture.edits.IsDirty(),
+            "发布失败必须保持源图和前台未保存编辑");
+    }
+}
+
+void AutomaticFinalSettingsStillProtectsAuthorImages() {
+    for (const auto tga : {false, true}) {
+        auto original = W3i(); Put32(original, 72, 0x400);
+        Fixture fixture(true, false, false, original, false,
+            tga ? std::optional<Bytes>{Text("author TGA bytes")} : std::nullopt, true, false, !tga);
+        const auto imageName = tga ? "war3mapMap.tga" : "war3mapMap.blp";
+        const auto image = Take(fixture.source.ReadMember(imageName));
+        auto settings = Take(MapSettings::Parse(original)); settings.mapName = "Authored image settings edit";
+        const auto finalSettings = Take(settings.Serialize());
+        Require(fixture.edits.EditSerialized(MapDataKind::Settings, finalSettings).Succeeded(), "作者图像保护下正常修改设置");
+        MapSaveTask task; fixture.Freeze(task);
+        Require(!Take(TerrainMinimapSave::RequiresAutomaticGeneration(task)), "设置变化不能覆盖已有TGA或导入清单声明的BLP");
+        const auto prepared = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, fixture.edits, fixture.gameRoot));
+        Require(!prepared.generated, "受保护图像不启动自动生成器");
+        MapSaveService::Run(task);
+        Require(task.succeeded && task.nextSession, "受保护图像不阻止普通设置保存");
+        const auto saved = Take(MapArchiveSession::Open(task.target));
+        Require(Take(saved.ReadMember(imageName)) == image && Take(saved.ReadMember("war3map.w3i")) == finalSettings,
+            "独立回读确认作者图像原字保留且最终设置真实写出");
+        if (!tga) Require(Take(saved.ReadMember("war3map.imp")) == ImportedMinimap(), "作者BLP的导入声明保持原字");
+    }
+}
+
+void AutomaticInvalidFinalRectangleRemainsARealFailure() {
+    auto original = W3i(); Put32(original, 72, 0x400);
+    Fixture fixture(true, false, false, original, false, {}, true);
+    auto settings = Take(MapSettings::Parse(original)); settings.flags &= ~0x400u;
+    const auto finalSettings = Take(settings.Serialize());
+    Require(fixture.edits.EditSerialized(MapDataKind::Settings, finalSettings).Succeeded(), "建立可序列化但空相机矩形的设置");
+    MapSaveTask task; fixture.Freeze(task);
+    Rejected(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, fixture.edits, fixture.gameRoot),
+        "NATIVE_MMP_PLAYABLE_EMPTY");
+    Require(!task.executed && !std::filesystem::exists(task.target), "无效最终矩形不能以保留原图警告掩盖");
+}
+
 } // namespace
 
 int main() {
@@ -553,6 +725,10 @@ int main() {
         AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace();
         AutomaticResourceOverlaySavesAndReadsBack();
         AutomaticReusesVerifiedPlanAndPreservesOnBudgetFailure();
+        AutomaticFinalSettingsAndMarkersShareTheSavedView();
+        AutomaticFinalSettingsDriftIsRejectedBeforePublish();
+        AutomaticFinalSettingsStillProtectsAuthorImages();
+        AutomaticInvalidFinalRectangleRemainsARealFailure();
         std::cout << "Terrain missing-only minimap save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

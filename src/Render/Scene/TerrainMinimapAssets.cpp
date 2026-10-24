@@ -41,9 +41,10 @@ template<class T, class Function> Result<T> Callback(Function&& function) {
     catch (Failure& failure) { return {std::nullopt, std::move(failure.diagnostics)}; }
 }
 std::string Canonical(std::string_view path) { return Take(Resources::CanonicalImportPath(path)); }
-bool ResourceOverlayPath(std::string_view path) {
-    // W3E/W3I只能来自已经验证的编辑会话/源crop；资源覆盖不扩大原生编辑域。
-    return path != "WAR3MAP.W3E" && path != "WAR3MAP.W3I";
+bool ResourceOverlayPath(std::string_view path, bool finalSettings) {
+    // W3E始终来自编辑会话。W3I捕获先单独核源基线，再采用同会话最终正文；
+    // worker复核时才把已封存的最终Settings加入普通依赖视图。
+    return path != "WAR3MAP.W3E" && (path != "WAR3MAP.W3I" || finalSettings);
 }
 
 void Add(std::size_t& used, std::size_t bytes, std::size_t maximum) {
@@ -102,7 +103,8 @@ struct CaptureContext {
     CaptureContext(const MapArchiveSession& archive, const TerrainMinimapAssetCaptureLimits& budget,
         TerrainMinimapAssetCaptureFacts& observed, std::vector<TerrainMinimapAssetDependency>& records,
         std::filesystem::path root, std::uint8_t tileset,
-        std::span<const MemberReplacement> output = {}, std::span<const std::string> removed = {})
+        std::span<const MemberReplacement> output = {}, std::span<const std::string> removed = {},
+        bool finalSettings = false)
         : source(archive), limits(budget), facts(observed), dependencies(records), gameRoot(std::move(root)), mainTileset(tileset) {
         if (output.size() > 16384 || removed.size() > 16384)
             Fail("TERRAIN_ASSETS_BUDGET", "地形资源overlay超过有界成员数量。");
@@ -120,7 +122,7 @@ struct CaptureContext {
             Add(pathBytes, path.size(), ArchiveExactMemberLimits{}.totalPathBytes);
             if (!all.emplace(path).second)
                 Fail("TERRAIN_ASSETS_FINAL_DUPLICATE", "地形资源overlay存在规范路径重复：" + path);
-            if (ResourceOverlayPath(path)) replacements.emplace(path, &replacement);
+            if (ResourceOverlayPath(path, finalSettings)) replacements.emplace(path, &replacement);
         }
         for (const auto& removal : removed) {
             if (removal.size() > ArchiveExactMemberLimits{}.pathBytes)
@@ -131,7 +133,7 @@ struct CaptureContext {
             Add(pathBytes, path.size(), ArchiveExactMemberLimits{}.totalPathBytes);
             if (!all.emplace(path).second)
                 Fail("TERRAIN_ASSETS_FINAL_CONFLICT", "地形资源overlay同时重复删除或替换：" + path);
-            if (ResourceOverlayPath(path)) removals.emplace(path);
+            if (ResourceOverlayPath(path, finalSettings)) removals.emplace(path);
         }
     }
 
@@ -586,36 +588,54 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
                 if (!member.present) Fail("TERRAIN_ASSETS_W3I_MISSING", "地图准确捕获证明缺少W3I；禁止回退game。");
                 if (member.bytes.empty()) Fail("TERRAIN_ASSETS_W3I_EMPTY", "源W3I是真实空成员，不能用于声明边距。");
                 Check(MapData::ValidateTerrainSettingsSourceBaseline(edits, member.present, member.bytes));
+                const MemberReplacement* finalSettings = nullptr;
+                for (const auto& replacement : replacements) {
+                    const auto key = Resources::CanonicalImportPath(replacement.name);
+                    if (!key.Succeeded() || !key.value || *key.value != path) continue;
+                    if (finalSettings) Fail("TERRAIN_ASSETS_W3I_CURRENT", "最终保存列表重复覆盖W3I。");
+                    finalSettings = &replacement;
+                }
+                for (const auto& removal : removals) {
+                    const auto key = Resources::CanonicalImportPath(removal);
+                    if (key.Succeeded() && key.value && *key.value == path)
+                        Fail("TERRAIN_ASSETS_FINAL_REMOVAL", "小地图不能消费本次保存已删除的W3I。");
+                }
+                const auto currentSettingsBytes = Take(edits.SnapshotByteSize(MapDataKind::Settings));
+                if (currentSettingsBytes > limits.tables.maxTableBytes
+                    || (finalSettings && finalSettings->data.size() > limits.tables.maxTableBytes))
+                    Fail("TERRAIN_ASSETS_BUDGET", "当前W3I超过同次设置成员预算。");
                 // Snapshot内部也解析W3I；先计读入原字、当前副本和有界解析峰值，
                 // 在atlas解码前销毁MapDocument，Candidate不会同时保活第二次解析。
                 facts.estimatedSettingsWorkingBytes = facts.cumulativeSourceBytes;
                 Add(facts.estimatedSettingsWorkingBytes, result.input_.currentW3e.capacity(), limits.maxSourceBytes);
                 Add(facts.estimatedSettingsWorkingBytes, member.bytes.capacity(), limits.maxSourceBytes);
+                // 最终正文可以比源正文更长（例如改地图名），输出副本与当前解析暂时重叠。
+                if (finalSettings && finalSettings->data != member.bytes)
+                    Add(facts.estimatedSettingsWorkingBytes, finalSettings->data.size(), limits.maxSourceBytes);
                 Add(facts.estimatedSettingsWorkingBytes, TerrainMinimapMemoryFacts::settingsScratchFixedBytes, limits.maxSourceBytes);
                 const auto remaining = limits.maxSourceBytes - facts.estimatedSettingsWorkingBytes;
-                if (member.bytes.size() > remaining / TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte)
+                if (currentSettingsBytes > remaining / TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte)
                     Fail("TERRAIN_ASSETS_BUDGET", "W3I当前快照与解析预留超过现有累计硬预算。");
-                Add(facts.estimatedSettingsWorkingBytes, member.bytes.size() * TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte,
+                Add(facts.estimatedSettingsWorkingBytes, currentSettingsBytes * TerrainMinimapMemoryFacts::settingsScratchBytesPerSourceByte,
                     limits.maxSourceBytes);
                 {
-                    const auto current = Take(edits.Snapshot(MapDataKind::Settings, member.bytes.size()));
+                    const auto current = Take(edits.Snapshot(MapDataKind::Settings, currentSettingsBytes));
                     const auto& settingsMember = current.Member(MapDataKind::Settings);
-                    const MemberReplacement* finalSettings = nullptr;
-                    for (const auto& replacement : replacements) if (Canonical(replacement.name) == path) {
-                        if (finalSettings) Fail("TERRAIN_ASSETS_W3I_CURRENT", "最终保存列表重复覆盖W3I。");
-                        finalSettings = &replacement;
-                    }
                     const auto& currentBytes = finalSettings ? finalSettings->data : member.bytes;
                     if (settingsMember.state != MapDataState::Ready || settingsMember.memberName != "war3map.w3i"
                         || settingsMember.sources.size() != 1 || settingsMember.sources.front().data != currentBytes)
                         Fail("TERRAIN_ASSETS_W3I_CURRENT", "当前W3I必须Ready、唯一且逐字等于本次最终输出；缺失或不一致不能继续保存。");
-                    if (finalSettings && finalSettings->data != member.bytes)
-                        Fail("CLASSIC_MINIMAP_PLAYABLE_RECT_UNRESOLVED", "当前W3I已通过最终列表核对，但生成器尚不支持对变更后的可玩范围取色。");
                     if (!current.Settings() || current.Settings()->formatVersion != 25 || !current.Settings()->FullyParsed())
-                        Fail("TERRAIN_ASSETS_W3I_LAYOUT", "声明边距仅消费完整classic v25源W3I。");
+                        Fail("TERRAIN_ASSETS_W3I_LAYOUT", "小地图可玩范围仅消费完整classic v25最终W3I。");
+                }
+                const bool settingsChanged = finalSettings && finalSettings->data != member.bytes;
+                if (settingsChanged) {
+                    Add(facts.cumulativeSourceBytes, finalSettings->data.size(), limits.maxSourceBytes);
+                    Add(facts.mapDependencyBytes, finalSettings->data.size(), limits.maxSourceBytes);
+                    member.bytes = finalSettings->data;
                 }
                 // 直接消费map-only exact member；绝不向支持game fallback的resolver请求W3I。
-                context.Record(path, member.bytes, true, source.SourceSha256());
+                context.Record(path, member.bytes, true, source.SourceSha256(), settingsChanged);
                 result.dependencies_[context.dependencyIndices.at(path)].kind = TerrainMinimapDependencyKind::Settings;
                 facts.retainedW3iCapacityBytes = member.bytes.capacity();
                 result.input_.sourceW3i = std::move(member.bytes);
@@ -773,7 +793,7 @@ Status VerifyTerrainMinimapAssetsFrozenOutput(const TerrainMinimapAssetSnapshot&
         facts.cumulativeSourceBytes = hashedBytes;
         std::vector<TerrainMinimapAssetDependency> dependencies;
         CaptureContext context{source, limits, facts, dependencies, binding.gameRoot, binding.mainTileset,
-            replacements, removals};
+            replacements, removals, true};
         Check(context.guard.Watch(source.SourcePath()));
         context.Phase({"war3map.w3e"}, binding.originalTerrainBytes, TerrainMinimapDependencyKind::Table);
         const auto& original = context.mapMembers.front();
