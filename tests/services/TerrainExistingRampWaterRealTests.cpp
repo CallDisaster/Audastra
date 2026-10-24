@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/MapShadow.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
@@ -171,6 +172,87 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
             << " mmp_records=" << markers.records.size() << " source_unchanged=true"
             << " expected_uses_product_core=true expected_uses_native_generator=true expected_uses_mmp_generator=true"
             << " native_oracle=false native_editor_verified=false game_verified=false\n";
+    }
+}
+void CheckRealCornerRampSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game) {
+    const auto originalTerrain = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
+    Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
+        "corner ramp uses the playable original 64-cell map");
+    const auto doodads = Take(ParseDoodadPlacements(Take(original.ReadMember("war3map.doo"))));
+    Require(doodads.doodads.empty() && doodads.specialDoodads.empty(), "corner seed has no unaccounted placement contribution");
+    const auto shadowBytes = Take(SerializeMapShadow(ShadowFixture(originalTerrain)));
+    for (const int dx : {-1, 1}) for (const int dy : {-1, 1}) {
+        const auto scenario = directory / (std::string("playable-corner-ramp-")
+            + (dx > 0 ? "east-" : "west-") + (dy > 0 ? "north" : "south"));
+        Require(std::filesystem::create_directory(scenario), "exclusive actual corner scenario");
+        auto before = originalTerrain;
+        for (int y = 0; y < 65; ++y) for (int x = 0; x < 65; ++x) {
+            auto& vertex = before.vertices[std::size_t(y) * 65 + x];
+            Require(!vertex.IsRamp() && !vertex.HasWater(), "original corner seed is dry and has no ramp");
+            const bool high = (x - 32) * dx <= 0 && (y - 32) * dy <= 0;
+            vertex.cliffAndLayerRaw = std::uint8_t((vertex.cliffAndLayerRaw & 0xf0) | (high ? 3 : 2));
+        }
+        RefreshTerrainDerived(before, 0, 0, 65, 65);
+        auto after = before;
+        for (int x = 0; x < 3; ++x) for (int y = 0; y < 3; ++y)
+            after.vertices[std::size_t(32 + y * dy) * 65 + 32 + x * dx].textureAndFlagsRaw |= 0x10;
+        RefreshTerrainDerived(after, 0, 0, 65, 65);
+        const auto beforeBytes = Take(SerializeMapTerrain(before)), afterBytes = Take(SerializeMapTerrain(after));
+        const std::array<MemberReplacement, 2> seed{{{"war3map.w3e", beforeBytes}, {"war3map.shd", shadowBytes}}};
+        const auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "seeded.w3x", seed)).path));
+        const auto native = Take(TerrainPathingSave::CaptureNative(seeded, before, after, game, kBytes));
+        const auto g0 = Take(native.GenerateNative(before, kBytes)), g1 = Take(native.GenerateNative(after, kBytes));
+        auto originalWpm = Take(original.ReadMember("war3map.wpm")), expectedWpm = originalWpm;
+        Require(g0.size() == 256 * 256 && g1.size() == g0.size() && originalWpm.size() == 16 + g0.size(),
+            "actual corner pathing covers every source cell");
+        // 此专项验证实际资源和公共编排；完整独立字面WPM另见Core/Services角坡测试。
+        for (std::size_t i = 0; i < g0.size(); ++i) {
+            originalWpm[i + 16] = (originalWpm[i + 16] & std::byte{0x11}) | g0[i];
+            expectedWpm[i + 16] = (expectedWpm[i + 16] & std::byte{0x11}) | g1[i];
+        }
+        Require(originalWpm != expectedWpm, "corner changes real native pathing rather than only journal state");
+        auto current = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x",
+            std::array<MemberReplacement, 1>{{{"war3map.wpm", originalWpm}}})).path));
+        const TerrainStrokePoint point{before.header.offset[0] + 32 * 128 + dx * 32,
+            before.header.offset[1] + 32 * 128 + dy * 32};
+        for (const bool create : {true, false}) {
+            const auto& currentTerrain = create ? before : after;
+            const auto rules = Take(TerrainPathingSave::CaptureWaterBrushRules(current,
+                currentTerrain, currentTerrain, doodads, game, true, kBytes));
+            TerrainBrush brush; brush.kind = TerrainBrushKind::CornerRamp; brush.value = create;
+            const auto candidate = Take(PrepareTerrainCornerRampStroke(currentTerrain, *rules.WaterBrushRules(),
+                brush, std::span(&point, 1), doodads, rules.WaterSpecialShapes()));
+            const auto& expectedTerrain = create ? afterBytes : beforeBytes;
+            Require(Take(SerializeMapTerrain(candidate.terrain)) == expectedTerrain,
+                "actual rules preserve independent complete nine-bit W3E literal in every direction");
+            MapEditSaveRequest request;
+            request.sourceMap = current.SourcePath(); request.targetCandidate = scenario / (create ? "created.w3x" : "removed.w3x");
+            request.toolRoot = tool; request.gameRoot = game; request.expectedSourceSha256 = current.SourceSha256();
+            request.expectedTerrainSha256 = Take(Sha256(create ? beforeBytes : afterBytes));
+            request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
+            MapEditTerrainStroke stroke; stroke.brush = brush; stroke.points = {point}; request.terrainStrokes = {stroke};
+            const auto saved = Take(SaveMapEditCandidate(request));
+            auto readback = Take(MapArchiveSession::Open(saved.candidate));
+            Require(Take(readback.ReadMember("war3map.w3e")) == expectedTerrain
+                && Take(readback.ReadMember("war3map.wpm")) == (create ? expectedWpm : originalWpm)
+                && Take(readback.ReadMember("war3map.shd")) == shadowBytes && saved.scriptPreserved,
+                "real-toolchain original map corner create/remove saves and reads back complete terrain/pathing/shadow");
+            for (const auto& member : current.Members()) {
+                const auto name = Text::LowerAscii(member.name);
+                if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp" || name == "war3map.mmp") continue;
+                Require(Take(readback.ReadMember(member.name)) == member.data, "corner preserves every unrelated source member");
+            }
+            Require(Take(Sha256File(current.SourcePath())) == current.SourceSha256()
+                && Take(Sha256File(original.SourcePath())) == original.SourceSha256(), "corner keeps every source immutable");
+            std::cout << "playable_corner_ramp_save_passed dx=" << dx << " dy=" << dy << " create=" << create
+                << " source_sha256=" << current.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
+                << " w3e_sha256=" << Take(Sha256(expectedTerrain)) << " wpm_sha256=" << Take(Sha256(create ? expectedWpm : originalWpm))
+                << " actual_rules_sha256=" << Take(rules.WaterBrushDependencyFingerprint())
+                << " expected_w3e_literal=true expected_uses_native_generator=true native_editor_verified=false game_verified=false\n";
+            current = std::move(readback);
+        }
     }
 }
 } // namespace War3Map::TerrainSaveTests

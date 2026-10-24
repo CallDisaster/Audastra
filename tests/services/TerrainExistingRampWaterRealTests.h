@@ -10,4 +10,7 @@ namespace War3Map::TerrainSaveTests {
 void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game);
+void CheckRealCornerRampSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game);
 }

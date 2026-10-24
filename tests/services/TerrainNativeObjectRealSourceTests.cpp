@@ -453,6 +453,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         if (group == RealSaveGroup::ExistingRamps) {
             TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealExistingRampWaterSave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealCornerRampSave(original, directory.path, tool, game);
             return;
         }
         if (group == RealSaveGroup::Shadows) {
