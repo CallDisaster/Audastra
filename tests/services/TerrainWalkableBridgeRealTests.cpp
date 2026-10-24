@@ -30,11 +30,20 @@ template<class T> T Take(Result<T> result) {
     return std::move(*result.value);
 }
 
-void CheckOriginalBridgeOverrides(const MapArchiveSession& source, const TerrainGridSnapshot& before,
+void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGridSnapshot& before,
     const std::filesystem::path& directory, const std::filesystem::path& game,
     const ObjectData::StandardObjectEntry& object, const ObjectData::ObjectFieldSchema& schema,
-    const MapEditSaveRequest& baseRequest) {
+    const ObjectData::StandardObjectCatalog& catalog, const MapEditSaveRequest& baseRequest) {
     using namespace ObjectData;
+    std::string customRawcode;
+    for (const char suffix : std::string_view("0123456789")) {
+        const auto candidate = std::string("ZbR") + suffix;
+        if (!catalog.Find(ObjectType::Destructable, candidate) && !catalog.Find(ObjectType::Doodad, candidate)) {
+            customRawcode = candidate;
+            break;
+        }
+    }
+    Require(!customRawcode.empty(), "actual custom bridge has a unique non-C test rawcode");
     ObjectFieldContext context; context.rawcode = object.key.rawcode; context.baseCode = object.Field("code");
     const std::array<const char*, 3> names{"walkable", "pathtex", "fixedrot"};
     std::array<ObjectFieldMatch, names.size()> fields;
@@ -43,6 +52,7 @@ void CheckOriginalBridgeOverrides(const MapArchiveSession& source, const Terrain
         const auto& match = fields[i];
         Require(match.definition && match.safeToEdit && match.sourceKey == names[i] && !match.sourceIndex
             && match.definition->repeat == 0 && match.definition->data == 0
+            && match.definition->useSpecific.empty() && match.definition->notSpecific.empty()
             && Text::LowerAscii(match.definition->sourceTable) == "destructabledata",
             "actual bridge metadata has unique nonindexed DestructableData addresses");
     }
@@ -54,20 +64,28 @@ void CheckOriginalBridgeOverrides(const MapArchiveSession& source, const Terrain
     std::cout << "walkable_bridge_override_fields=" << fields[0].modification.fieldId << ','
         << fields[1].modification.fieldId << ',' << fields[2].modification.fieldId
         << " fixed_rot_wire=" << static_cast<int>(*fields[2].definition->nativeValueType) << '\n';
-    for (const bool explicitFields : {false, true}) {
-        const auto scenario = directory / (explicitFields ? "original-typed-fields" : "original-empty");
+    for (const bool custom : {false, true}) for (const bool explicitFields : {false, true}) {
+        const auto scenario = directory / (std::string(custom ? "custom-" : "original-")
+            + (explicitFields ? "typed-fields" : "empty"));
         Require(std::filesystem::create_directory(scenario), "exclusive actual bridge original scenario");
         auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
-        Check(document.AddOriginalObject(object.key.rawcode));
+        const ObjectKey key{ObjectType::Destructable, custom ? customRawcode : object.key.rawcode};
+        if (custom) Check(document.AddCustomObject(key.rawcode, object.key.rawcode));
+        else Check(document.AddOriginalObject(key.rawcode));
         if (explicitFields) {
-            Check(document.AddModification(object.key, fields[0].modification, NativeValueType::Int32, std::int32_t{1}));
-            Check(document.AddModification(object.key, fields[1].modification, NativeValueType::String,
+            Check(document.AddModification(key, fields[0].modification, NativeValueType::Int32, std::int32_t{1}));
+            Check(document.AddModification(key, fields[1].modification, NativeValueType::String,
                 std::string(object.Field("pathtex"))));
-            Check(document.AddModification(object.key, fields[2].modification,
+            Check(document.AddModification(key, fields[2].modification,
                 *fields[2].definition->nativeValueType, 90.0f));
         }
         const auto nativeBytes = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(document));
-        const std::array<MemberReplacement, 1> replacement{{{"war3map.w3b", nativeBytes}}};
+        auto placements = Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo"))));
+        Require(placements.doodads.size() == 1 && placements.doodads.front().rawcode == object.key.rawcode,
+            "actual bridge native scenarios replace only their single synthetic placement identity");
+        placements.doodads.front().rawcode = key.rawcode;
+        const std::array<MemberReplacement, 2> replacement{{{"war3map.w3b", nativeBytes},
+            {"war3map.doo", Take(placements.Serialize())}}};
         const auto seeded = Take(MapArchiveSession::Open(Take(source.SaveCandidate(scenario / "seeded.w3x", replacement)).path));
         const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, before, game, kSaveBytes));
         const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
@@ -96,7 +114,9 @@ void CheckOriginalBridgeOverrides(const MapArchiveSession& source, const Terrain
         }
         Check(afterRules.VerifyReadback(readback, kSaveBytes));
         Require(Take(Sha256File(input.SourcePath())) == input.SourceSha256(), "actual bridge Original source is unchanged");
-        std::cout << "walkable_bridge_original_save=" << (explicitFields ? "typed-fields" : "empty")
+        std::cout << "walkable_bridge_" << (custom ? "custom" : "original")
+            << "_save=" << (explicitFields ? "typed-fields" : "empty") << " rawcode=" << key.rawcode
+            << " parent=" << (custom ? object.key.rawcode : "-")
             << " source_sha256=" << input.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
             << " independent_wpm_oracle=false native_editor_verified=false game_verified=false\n";
     }
@@ -145,9 +165,15 @@ void CheckRealWalkableBridgeSave(const MapArchiveSession& original,
     const auto waterRules = Take(TerrainPathingSave::CaptureWaterBrushRules(original, dry, dry, empty, game, true, kSaveBytes));
     Require(waterRules.WaterBrushRules() != nullptr, "actual source provides complete water brush rules");
     const TerrainStrokePoint point{dry.header.offset[0] + 32 * 128, dry.header.offset[1] + 32 * 128};
-    const TerrainWaterBrush brush{TerrainWaterBrushKind::Deep, TerrainBrushShape::Square, 8, 0, 42,
+    // 原创脚本的两名单位在(-512,0)/(-512,512)；小水池避免出生点落入深水。
+    // 这里只改善人工验收样例，不把可加载或离线WPM结果当作桥上/桥下运动证明。
+    const TerrainWaterBrush brush{TerrainWaterBrushKind::Deep, TerrainBrushShape::Square, 2, 0, 42,
         Take(CaptureTerrainWaterStrokeAnchor(dry, point))};
     const auto before = Take(PrepareTerrainWaterStroke(dry, *waterRules.WaterBrushRules(), brush, std::span(&point, 1), empty)).terrain;
+    Require(point.x == 0 && point.y == 0, "bridge fixture pool shares the scripted world origin");
+    Require(!before.vertices[std::size_t{32} * before.header.width + 28].HasWater()
+        && !before.vertices[std::size_t{36} * before.header.width + 28].HasWater(),
+        "both scripted unit spawn requests remain on dry terrain; in-game spawn and movement are unverified");
     const auto beforeBytes = Take(SerializeMapTerrain(before));
     DoodadPlacement bridge;
     bridge.rawcode = rawcode; bridge.flags = 2; bridge.lifePercent = 100; bridge.creationId = 1;
@@ -198,7 +224,7 @@ void CheckRealWalkableBridgeSave(const MapArchiveSession& original,
     Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "actual bridge source stays unchanged");
     const auto* standard = catalog.Find(ObjectData::ObjectType::Destructable, rawcode);
     Require(standard != nullptr, "selected actual bridge retains its standard catalog identity");
-    CheckOriginalBridgeOverrides(source, before, scenario, game, *standard, schema, request);
+    CheckBridgeNativeOverrides(source, before, scenario, game, *standard, schema, catalog, request);
     placements.doodads.front().lifePercent = 0;
     const std::array<MemberReplacement, 1> dead{{{"war3map.doo", Take(placements.Serialize())}}};
     const auto deadSource = Take(MapArchiveSession::Open(Take(source.SaveCandidate(scenario / "dead-source.w3x", dead)).path));
