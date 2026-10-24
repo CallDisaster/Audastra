@@ -144,6 +144,7 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             case MapData::TerrainBrushKind::RemoveWater:
             case MapData::TerrainBrushKind::Ramp:
             case MapData::TerrainBrushKind::CornerRamp:
+            case MapData::TerrainBrushKind::StraightRamp:
             case MapData::TerrainBrushKind::Boundary:
             case MapData::TerrainBrushKind::PathingRestriction:
                 break;
@@ -153,6 +154,11 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             if (stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp
                 && (!MapData::IsCanonicalTerrainCornerRampBrush(stroke.brush) || stroke.points.size() != 1))
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_CORNER_RAMP", "拐角坡道只接受单个canonical点及创建/移除选项。");
+            if (stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp
+                && (!MapData::IsCanonicalTerrainStraightRampBrush(stroke.brush) || stroke.points.size() != 1
+                    || stroke.pointSpace != MapEditPointSpace::World))
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_STRAIGHT_RAMP",
+                    "实际规则直坡只接受单个规范世界点及创建/移除选项；不接受普通笔刷参数或顶点坐标。");
             if (stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction
                 && (!stroke.brush.pathingRestrictions || (stroke.brush.pathingRestrictions & ~MapData::kPathingRestrictionBits) != 0))
                 return Status::Failure("MapEdit.Save", "PATHING_RESTRICTION_FLAGS", "通行笔划只允许不可走、不可飞和不可建限制。");

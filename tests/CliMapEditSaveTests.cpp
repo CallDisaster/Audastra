@@ -306,6 +306,8 @@ void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
         "bounds and brush share one ordered service request without separate save routes");
 }
 
+#include "CliStraightRampCases.h"
+
 } // namespace
 
 int main() {
@@ -319,6 +321,7 @@ int main() {
         RampUsesExplicitBooleanAndTheSharedSaveGate();
         BoundaryUsesStrictBooleanAndSharedOrderedSave();
         CornerRampUsesOneWorldPointAndStrictBoolean();
+        StraightRampUsesItsOwnWorldPointCommand();
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;

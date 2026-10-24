@@ -978,6 +978,8 @@ void ArchiveExportBindsPathingAndCompanionMembers() {
         "archive failures retain active directory edits");
 }
 
+#include "McpStraightRampEditCases.h"
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -987,6 +989,7 @@ int main(int argc, char** argv) {
         FacadePointQueryPreservesApproximateHeightWarning();
         FacadeRemoveWaterUsesTheOrdinaryTransaction();
         FacadeRejectsUnknownTypesBoundsAndStaleSources();
+        StraightRampFacadeRequiresItsOwnCapturedOwner();
         BoundsFacadeUsesActualResourcesCasAndSharedUndo();
         CodecProvesSourceIntentAndNetBytes();
         FollowingPlacementsRequireExactSourceAndCompleteRecipe();

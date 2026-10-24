@@ -797,7 +797,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 const auto points = WorldPoints(stroke, *grid);
                 if (!points.Succeeded() || !points.value) return Forward(points.diagnostics);
                 intents.push_back({stroke.brush, *points.value, stroke.followDoodads, stroke.waterBrush, {}});
-                // 公共新编辑使用当前显式算法；旧typed历史只从自身版本恢复，不走此入口。
+                // 只有角坡携带其版本算法；StraightRamp 保持中性字段，由新 kind 的固定版本重放。
+                // 旧typed历史只从自身版本恢复，不走此入口。
                 if (!stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp)
                     intents.back().cornerRampAlgorithm = MapData::TerrainCornerRampAlgorithm::WetTerrain;
             }

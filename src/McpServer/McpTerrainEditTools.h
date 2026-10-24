@@ -28,6 +28,9 @@ struct TerrainEditToolHost {
     std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
         const Services::TerrainEditBinding&, const MapData::TerrainBrush&,
         std::span<const MapData::TerrainStrokePoint>, bool)> prepareCornerRamp;
+    std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
+        const Services::TerrainEditBinding&, const MapData::TerrainBrush&,
+        std::span<const MapData::TerrainStrokePoint>, bool)> prepareStraightRamp;
     std::function<Result<Services::PreparedTerrainBoundsEdit>(const TerrainEditToolContext&,
         const Services::TerrainEditBinding&, const MapData::TerrainBoundsEditIntent&)> prepareBounds;
     std::function<Status()> verifyBounds;

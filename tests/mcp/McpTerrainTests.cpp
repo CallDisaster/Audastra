@@ -424,7 +424,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     McpServer server; RegisterAllTools(server);
     const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
     Expect(response && !response->error, "terrain save tool list must be available");
-    bool texture = false, water = false, waterBrush = false, ramp = false, corner = false, bounds = false;
+    bool texture = false, water = false, waterBrush = false, ramp = false, corner = false, straight = false, bounds = false;
     bool cliffLevel = false, cliffTexture = false, boundary = false;
     for (const auto& tool : response->result.toObject().value("tools").toArray()) {
         if (tool.toObject().value("name") != "save_map_edit_candidate") continue;
@@ -453,14 +453,16 @@ void TestNormalSaveTextureAndWaterSchema() {
                     && fields.value("follow_doodads").toObject().value("const") == false
                     && !variant.toObject().value("additionalProperties").toBool(true);
             }
-            if (kind == "corner_ramp") {
+            if (kind == "corner_ramp" || kind == "straight_ramp") {
                 const auto required = variant.toObject().value("required").toArray();
-                corner = fields.size() == 5 && required.size() == 5
+                const bool nativeRamp = fields.size() == 5 && required.size() == 5
                     && required.contains("set_ramp") && fields.value("set_ramp").toObject().value("type") == "boolean"
                     && fields.value("point_space").toObject().value("const") == "world"
                     && fields.value("points").toObject().value("maxItems").toInt() == 1
                     && fields.value("follow_doodads").toObject().value("const") == false
                     && !variant.toObject().value("additionalProperties").toBool(true);
+                if (kind == "corner_ramp") corner = nativeRamp;
+                else straight = nativeRamp;
             }
             if (kind == "playable_bounds") {
                 const auto required = variant.toObject().value("required").toArray();
@@ -500,6 +502,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     Expect(waterBrush, "new shallow/deep water must expose explicit replay options and no caller-supplied anchor or rules");
     Expect(ramp, "ramp save schema requires a real set_ramp boolean, circle and radius0 without height or blight aliases");
     Expect(corner, "corner schema only exposes one world point, explicit set_ramp and no caller-supplied brush or rules");
+    Expect(straight, "straight schema requires its own kind with a single world point and no caller-supplied rules");
     Expect(bounds, "bounds schema only exposes integer half-open cell edges without fake points, rules or object movement");
     Expect(cliffLevel && cliffTexture, "cliff level and pure texture expose distinct strict classic-size contracts");
     Expect(boundary, "boundary schema only exposes its explicit boolean and bounded brush fields");
@@ -769,6 +772,8 @@ void TestNativeWaterSaveTransport() {
         "water transport rejection must not produce a partial map");
 }
 
+#include "McpStraightRampSaveCases.h"
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -805,6 +810,7 @@ int main(int argc, char** argv) {
         TestRampSaveTransport();
         TestBoundarySaveTransport();
         TestCornerRampSaveTransport();
+        TestStraightRampSaveTransport();
         TestPlayableBoundsSaveTransport();
         TestTypedReadAndSourcePreservation();
         TestStaleBindingsAndLifetime();
