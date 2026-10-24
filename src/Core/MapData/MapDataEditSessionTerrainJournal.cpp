@@ -28,7 +28,7 @@ Status MapDataEditSession::ReplayTerrainJournalUnits(const TerrainUnitsJournalEd
     auto after = ApplyTerrainUnitsJournalEdit(*current, edit);
     if (!after.Succeeded() || !after.value) return {after.diagnostics};
     std::vector<MemberChange> changes;
-    const auto prepared = PrepareUnits(*after.value, changes);
+    const auto prepared = PrepareUnits(*after.value, changes, false);
     if (!prepared.Succeeded()) return prepared;
     if (changes.size() != 1 || changes.front().kind != MapDataKind::Units)
         return Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_UNITS_LINKED_SETTINGS",

@@ -368,7 +368,8 @@ private:
     [[nodiscard]] Status VerifyTerrainSpecialDoodadProvenance(
         const DoodadPlacements& before, const DoodadPlacements& after) const;
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers) const;
-    [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const;
+    [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes,
+        bool allowLinkedSettings = true) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
     void Restore(const Command& command, bool forward);

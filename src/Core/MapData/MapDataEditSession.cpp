@@ -388,7 +388,8 @@ Status MapDataEditSession::EditPlacementRows(const MapDocument& source, const Un
     return CommitCommand(std::move(command), prepublish);
 }
 
-Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes) const {
+Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes,
+    bool allowLinkedSettings) const {
     const auto prepared = changes.size();
     auto status = Prepare(MapDataKind::Units, value.Serialize(), changes);
     if (!status.Succeeded() || changes.size() == prepared) return status;
@@ -422,6 +423,10 @@ Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector
     for (const auto& unit : value.units)
         if (unit.rawcode == "sloc" && !existingStarts.contains(unit.creationId)) movedStarts.push_back(&unit);
     if (movedStarts.empty()) return Status::Ok();
+    // FTJ9只承载Units单成员。先由同一联动规则识别，再在读取/解析W3I前拒绝，
+    // 不能消耗未预收的设置codec预算或省略起点同步后提交部分Units。
+    if (!allowLinkedSettings)
+        return StartFailure("TERRAIN_JOURNAL_UNITS_LINKED_SETTINGS", "Units恢复记录不能省略起始位置联动的地图设置。");
     const auto& settingsBytes = current_[Index(MapDataKind::Settings)];
     if (!settingsBytes)
         return StartFailure("MAP_START_SETTINGS_UNAVAILABLE", "地图玩家设置缺失或来源不明确，不能同步起始位置");
