@@ -485,7 +485,7 @@ void NativeCliffSavesAndRestoresWithoutUpgradingLegacyHistory() {
     intent.points = {f.point};
     auto replayed = Take(ReplayFixture(f, *f.source, std::span(&intent, 1)));
     const auto after = Take(SerializeMapTerrain(*replayed.session->Terrain()));
-    const auto journal = Take(replayed.session->ExportTerrainStrokeJournal());
+    const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *replayed.session));
     Require(journal.strokes.size() == 1 && journal.strokes.front().cliffEnforceWaterLimits == true
         && !journal.strokes.front().intent.waterBrush, "fresh ordinary cliff replay captures native rules without pretending to be water");
     const auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
@@ -512,7 +512,7 @@ void NativeCliffSavesAndRestoresWithoutUpgradingLegacyHistory() {
 
     auto legacy = Session(f);
     Take(legacy->EditTerrain(intent.brush, intent.points, false));
-    const auto oldJournal = Take(legacy->ExportTerrainStrokeJournal());
+    const auto oldJournal = Take(TerrainPathingSave::CaptureJournal(*f.source, *legacy));
     Require(oldJournal.strokes.front().rulesSha256.empty() && !oldJournal.strokes.front().cliffEnforceWaterLimits,
         "old ordinary cliff keeps its explicit legacy identity");
     const auto oldRestored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
