@@ -66,13 +66,17 @@ Result<DecodedImage> JpegToRgba(
     return Result<DecodedImage>::Success(std::move(img));
 }
 
-} // namespace
-
-Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
+Result<DecodedImage> DecodeBlpImpl(std::span<const std::byte> data,
+    const BlpDecodeLimits& limits, bool strictMip, std::size_t& workingBytes) try {
+    constexpr std::size_t hardWorkingBytes = 256u * 1024u * 1024u;
+    if (limits.maxDimension == 0 || limits.maxDimension > 4096
+        || limits.maxInputBytes > detail::kMaxJpegInputBytes
+        || limits.maxWorkingBytes == 0 || limits.maxWorkingBytes > hardWorkingBytes)
+        return Result<DecodedImage>::Failure("Image.Blp", "decode-limits", "BLP 解码额度只能收紧内置上限。");
     const auto* p = reinterpret_cast<const std::uint8_t*>(data.data());
     const std::size_t size = data.size();
-    if (size > detail::kMaxJpegInputBytes) {
-        return Result<DecodedImage>::Failure("Image.Blp", "input-budget", "BLP 输入超过 64 MiB 上限。");
+    if (size > limits.maxInputBytes || size > limits.maxWorkingBytes) {
+        return Result<DecodedImage>::Failure("Image.Blp", "input-budget", "BLP 输入超过本次读取或工作额度。");
     }
     if (size < 160) {
         return Result<DecodedImage>::Failure(
@@ -89,7 +93,7 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
     const std::uint32_t alphaBits = ReadU32(p + 8);
     const std::uint32_t width = ReadU32(p + 12);
     const std::uint32_t height = ReadU32(p + 16);
-    if (width == 0 || height == 0 || width > 4096 || height > 4096) {
+    if (width == 0 || height == 0 || width > limits.maxDimension || height > limits.maxDimension) {
         return Result<DecodedImage>::Failure(
             "Image.Blp", "bad-dimensions", "BLP 尺寸非法。");
     }
@@ -100,8 +104,12 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
         mipOffsets[i] = ReadU32(p + 28 + i * 4);
         mipSizes[i] = ReadU32(p + 92 + i * 4);
     }
+    if (strictMip && alphaBits != 0 && alphaBits != 1 && alphaBits != 4 && alphaBits != 8)
+        return Result<DecodedImage>::Failure("Image.Blp", "alpha-depth", "BLP alpha 位数不是明确支持的 0/1/4/8。");
 
     if (compression == 0) {
+        if (strictMip && alphaBits != 0 && alphaBits != 8)
+            return Result<DecodedImage>::Failure("Image.Blp", "alpha-depth", "BLP JPEG 仅支持明确的 0/8 位 alpha。");
         // JPEG 压缩：共享头 + mip0 数据。
         const std::uint32_t jpegHeaderSize = ReadU32(p + 156);
         const std::size_t headerStart = 160;
@@ -111,7 +119,8 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
         }
         const std::uint32_t mipOff = mipOffsets[0];
         const std::uint32_t mipSize = mipSizes[0];
-        if (mipOff == 0 || static_cast<std::size_t>(mipOff) + mipSize > size) {
+        if (mipOff == 0 || static_cast<std::size_t>(mipOff) + mipSize > size
+            || (strictMip && (mipSize == 0 || mipOff < headerStart + jpegHeaderSize))) {
             return Result<DecodedImage>::Failure(
                 "Image.Blp", "mip0", "mip0 数据越界。");
         }
@@ -120,6 +129,9 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
         if (joinedBytes > detail::kMaxJpegInputBytes) {
             return Result<DecodedImage>::Failure("Image.Blp", "jpeg-budget", "BLP 拼接 JPEG 超过 64 MiB 上限。");
         }
+        // 拼接也在JPEG自身预检之前分配，须先收取与原BLP并存的容量。
+        if (joinedBytes > limits.maxWorkingBytes - size)
+            return Result<DecodedImage>::Failure("Image.Blp", "jpeg-budget", "BLP 拼接 JPEG 超过本次剩余工作额度。");
         std::vector<std::byte> jpeg;
         jpeg.reserve(joinedBytes);
         jpeg.insert(jpeg.end(),
@@ -132,6 +144,7 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
         options.expectedWidth = width;
         options.expectedHeight = height;
         options.callerRetainedBytes = data.size();
+        options.maxWorkingBytes = limits.maxWorkingBytes;
         options.allowBlpFinalZeroPadding = true;
         auto decoded = detail::DecodeJpeg(jpeg, options);
         if (!decoded.Succeeded() || !decoded.value.has_value()) {
@@ -144,6 +157,7 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
             }
             return r;
         }
+        workingBytes = decoded.value->workingBytes;
         return JpegToRgba(*decoded.value, alphaBits);
     }
 
@@ -164,6 +178,10 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
         const std::uint8_t* indices = p + mipOff;
         // alpha 平面紧随索引：8 位逐像素；1/4 位按像素顺序从字节低位起打包（与游戏一致）。
         const std::uint32_t bits = alphaBits >= 8 ? 8 : alphaBits >= 4 ? 4 : alphaBits >= 1 ? 1 : 0;
+        const auto planeBytes = pixelCount + (pixelCount * bits + 7) / 8;
+        if (strictMip && (mipOff < paletteStart + 1024 || mipSizes[0] < planeBytes
+            || static_cast<std::size_t>(mipOff) + mipSizes[0] > size))
+            return Result<DecodedImage>::Failure("Image.Blp", "mip0", "BLP 调色板 mip0 声明没有完整覆盖像素平面。");
         const std::uint8_t* alphaPlane = bits ? (indices + pixelCount) : nullptr;
         if (bits && static_cast<std::size_t>(mipOff) + pixelCount + (pixelCount * bits + 7) / 8 > size) {
             return Result<DecodedImage>::Failure(
@@ -176,6 +194,9 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
             return 255;
         };
 
+        if (pixelCount * 4 > limits.maxWorkingBytes - size)
+            return Result<DecodedImage>::Failure("Image.Blp", "working-budget", "BLP 像素超过本次剩余工作额度，尚未分配。");
+        workingBytes = size + pixelCount * 4;
         DecodedImage img;
         img.width = width;
         img.height = height;
@@ -202,6 +223,21 @@ Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) try {
     return Result<DecodedImage>::Failure("Image.Blp", "allocation", "BLP 解码内存分配失败。");
 } catch (const std::length_error&) {
     return Result<DecodedImage>::Failure("Image.Blp", "allocation", "BLP 解码分配长度非法。");
+}
+
+} // namespace
+
+Result<DecodedImage> DecodeBlp(std::span<const std::byte> data) {
+    std::size_t workingBytes = 0;
+    return DecodeBlpImpl(data, BlpDecodeLimits{}, false, workingBytes);
+}
+
+Result<BudgetedBlpImage> DecodeBlpBudgeted(
+    std::span<const std::byte> data, const BlpDecodeLimits& limits) {
+    std::size_t workingBytes = 0;
+    auto decoded = DecodeBlpImpl(data, limits, true, workingBytes);
+    if (!decoded.Succeeded() || !decoded.value) return {{}, std::move(decoded.diagnostics)};
+    return Result<BudgetedBlpImage>::Success({std::move(*decoded.value), workingBytes});
 }
 
 } // namespace War3Map::Image

@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
+#include "War3MapCore/Image/BlpImage.h"
 
 #include <algorithm>
 #include <array>
@@ -203,6 +204,32 @@ Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(std::span<const std::byt
 Result<TerrainDoodadFootprintImage> DecodeDoodadFootprintTgaBudgeted(
     std::span<const std::byte> bytes, std::size_t maximumDecodedBytes) {
     return DecodeFootprintTga(bytes, false, true, maximumDecodedBytes);
+}
+
+Result<TerrainDoodadFootprintImage> DecodeDoodadFootprintBlpBudgeted(
+    std::span<const std::byte> bytes, std::size_t maximumWorkingBytes) {
+    using Return = Result<TerrainDoodadFootprintImage>;
+    Image::BlpDecodeLimits limits;
+    limits.maxDimension = kMaximumSide;
+    // 公共解码器额度包含原输入；owner已单独收取输入，这里仅增加剩余工作额。
+    const auto hardWorking = limits.maxWorkingBytes;
+    if (bytes.size() > hardWorking)
+        return Return::Failure(kSubsystem, "TERRAIN_DOODAD_BLP_BUDGET", "BLP 占地输入超过公共解码器上限。");
+    limits.maxWorkingBytes = bytes.size() + std::min(maximumWorkingBytes, hardWorking - bytes.size());
+    auto decoded = Image::DecodeBlpBudgeted(bytes, limits);
+    if (!decoded.Succeeded() || !decoded.value) return {{}, std::move(decoded.diagnostics)};
+    auto& rgba = decoded.value->image.rgba;
+    // 原版loader以BGRA保留所有通道，包括alpha的同色判断；原地交换不建第二份图。
+    for (std::size_t at = 0; at < rgba.size(); at += 4) std::swap(rgba[at], rgba[at + 2]);
+    bool uniform = true;
+    for (std::size_t at = 4; at < rgba.size(); at += 4)
+        if (!std::equal(rgba.begin(), rgba.begin() + 4, rgba.begin() + at)) { uniform = false; break; }
+    TerrainDoodadFootprintImage result;
+    result.decodedBytes = decoded.value->workingBytes - bytes.size();
+    result.decodedBlpPixels = std::move(rgba);
+    result.footprint = {decoded.value->image.width, decoded.value->image.height,
+        result.decodedBlpPixels, 4, true, uniform, PixelAttributes(std::span(result.decodedBlpPixels).first(4))};
+    return Return::Success(std::move(result));
 }
 
 Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(std::span<const std::byte> bytes) {

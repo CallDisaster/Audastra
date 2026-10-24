@@ -387,6 +387,7 @@ Result<JpegDecoded> DecodeJpeg(std::span<const std::byte> data, const JpegDecode
         return fail("working-budget", "JPEG 输入或调用方保留数据超过工作集预算。");
     }
     const auto availableBytes = options.maxWorkingBytes - options.callerRetainedBytes - size - overheadBytes;
+    std::size_t workingBytes = 0;
     if (size < 4 || p[0] != 0xFF || p[1] != 0xD8) return fail("no-soi", "缺少 JPEG SOI 标记。");
 
     std::array<std::array<std::uint16_t, 64>, 4> quant{};
@@ -488,6 +489,8 @@ Result<JpegDecoded> DecodeJpeg(std::span<const std::byte> data, const JpegDecode
             if (std::max(decodePeak, rgbaPeak) > availableBytes) {
                 return fail("working-budget", "JPEG 系数、像素和平面峰值超过工作集预算，尚未分配系数。");
             }
+            workingBytes = options.callerRetainedBytes + size + overheadBytes
+                + static_cast<std::size_t>(std::max(decodePeak, rgbaPeak));
             largestPlaneSize = static_cast<std::size_t>(largestPlaneBytes);
             for (auto& c : components) {
                 c.coeffs.assign(static_cast<std::size_t>(c.blocksW) * c.blocksH * 64, 0);
@@ -606,6 +609,7 @@ Result<JpegDecoded> DecodeJpeg(std::span<const std::byte> data, const JpegDecode
     result.width = width;
     result.height = height;
     result.components = static_cast<int>(components.size());
+    result.workingBytes = workingBytes;
     result.pixels.assign(static_cast<std::size_t>(width) * height * components.size(), 0);
 
     std::vector<std::uint8_t> plane;

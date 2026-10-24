@@ -29,12 +29,19 @@ struct TerrainDoodadFootprintImage {
     TerrainDoodadFootprint footprint;
     std::unique_ptr<std::byte[]> decodedPixels;
     std::size_t decodedBytes = 0;
+    std::vector<std::byte> decodedBlpPixels;
 };
 
 // maximumDecodedBytes只约束新增像素存储；调用者另计仍并存的原始TGA与其它工作。
 // 分配前核对额度、完整包流及附加区；失败不返回部分图像。
 [[nodiscard]] Result<TerrainDoodadFootprintImage> DecodeDoodadFootprintTgaBudgeted(
     std::span<const std::byte> bytes, std::size_t maximumDecodedBytes);
+
+// BLP的mip0经公共解码器读取，不重采样、不翻行。maximumWorkingBytes约束新增
+// 解码峰值，输入bytes由调用者另计；decodedBytes返回该峰值而非仅最终像素容量。
+// decodedBlpPixels持有转换后的BGRA，移动结果不会改变footprint所借用的地址。
+[[nodiscard]] Result<TerrainDoodadFootprintImage> DecodeDoodadFootprintBlpBudgeted(
+    std::span<const std::byte> bytes, std::size_t maximumWorkingBytes);
 
 // fixedRotationDegrees必须来自实际生效fixedRot字段；负值表示不强制角度。
 // 缺失字段只允许旋转不影响结果的同色正方形。先按wire角度吸附，之后才按

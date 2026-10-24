@@ -15,6 +15,7 @@ struct JpegDecoded {
     int height = 0;
     int components = 0;
     std::vector<std::uint8_t> pixels; // width * height * components
+    std::size_t workingBytes = 0; // 同次解码预检的峰值，含调用方保留与后续RGBA。
 };
 
 // 私有调用约束；公共 DecodeBlp API 不变。预算计入输入、调用方保留字节、

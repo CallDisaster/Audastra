@@ -28,6 +28,20 @@ struct DecodedImage {
 // 不支持的格式（如 BLP2/DXT）返回 Failure，绝不产出损坏像素（fail-closed）。
 [[nodiscard]] Result<DecodedImage> DecodeBlp(std::span<const std::byte> data);
 
+// 有界调用使用同一解码器；额度只能收紧内置硬上限。工作量估算包含原始输入、
+// JPEG拼接、系数、临时平面与RGBA峰值，不是进程RSS。严格核对mip0声明范围。
+struct BlpDecodeLimits {
+    std::size_t maxDimension = 4096;
+    std::size_t maxInputBytes = 64u * 1024u * 1024u;
+    std::size_t maxWorkingBytes = 256u * 1024u * 1024u;
+};
+struct BudgetedBlpImage {
+    DecodedImage image;
+    std::size_t workingBytes = 0;
+};
+[[nodiscard]] Result<BudgetedBlpImage> DecodeBlpBudgeted(
+    std::span<const std::byte> data, const BlpDecodeLimits& limits);
+
 // 编码为 BLP1 调色板格式（content=1）并生成完整 mipmap 链（BlpEncode.cpp）。
 // 调色板由图像（含各级 mipmap）的实际颜色组成，超过 256 色时失败，不做有损量化；灰度图总能编码。
 // alpha 全不透明时不写 alpha 平面。
