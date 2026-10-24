@@ -842,6 +842,10 @@ private slots:
     void TerrainWaterBrushDropsCancelledCommit();
     void TerrainTextureSlotUsesSharedTransaction();
     void TerrainTextureSlotAppendRejectsMissingSource();
+    void TerrainTextureSlotGroundAppendUsesFrozenSourceAndSharedUndo_data();
+    void TerrainTextureSlotGroundAppendUsesFrozenSourceAndSharedUndo();
+    void TerrainTextureSlotGroundAppendRejectsStale_data();
+    void TerrainTextureSlotGroundAppendRejectsStale();
     void TerrainTextureSlotWorkerRejectsStale_data();
     void TerrainTextureSlotWorkerRejectsStale();
     void TerrainTextureSlotWorkerSurvivesModuleDestruction();
@@ -4070,6 +4074,8 @@ void AcceptTerrainPaletteDialog(QWidget* page, const QString& rawcode) {
     });
 }
 } // namespace
+
+#include "WorldGroundPaletteAppendCases.h"
 
 void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     QTemporaryDir directory; QVERIFY(directory.isValid());

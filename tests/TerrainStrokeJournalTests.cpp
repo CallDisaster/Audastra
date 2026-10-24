@@ -359,6 +359,7 @@ void RemoveWaterUsesTheOrdinaryJournalOpcode() {
 }
 
 #include "TerrainDoodadsJournalCases.h"
+#include "TerrainGroundPaletteAppendCases.h"
 
 void LogicalQtReplayAndSavedBoundary() {
     SessionFixture f; f.Raise(); const auto first = f.session.LastEdit();
@@ -408,6 +409,8 @@ int main() {
         OrdinaryDoodadsDeltaIsBoundedAndPreservesFullClassicIdentity();
         OrdinaryDoodadsJournalVersionAndStrictVariants();
         OrdinaryDoodadsFreezeKeepsRealCommandScopeAndUndo();
+        GroundPaletteAppendUsesAnExplicitFTJ6Algorithm();
+        RawGroundAppendRetainsUndoWithoutInventingJournalAuthority();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

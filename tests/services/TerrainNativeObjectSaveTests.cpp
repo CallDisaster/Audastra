@@ -2517,6 +2517,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainOrdinarySpecialSaveCases.h"
 #include "TerrainOrdinaryJournalSaveCases.h"
 #include "TerrainBridgeOrdinarySaveCases.h"
+#include "TerrainGroundPaletteAppendSaveCases.h"
 } // namespace
 
 int main() {
@@ -2580,6 +2581,10 @@ int main() {
         BridgeAllowsOnlyUnrelatedOrdinaryMutationsThroughFormalHistory();
         BridgeRecordBytesOrderAndClassificationRemainMandatory();
         BridgeOrdinaryFrozenOutputSourcesAndBudgetRemainBound();
+        GroundAppendJournalRestoresBothWaterOrdersAndFormalSave();
+        GroundAppendCapturesTheFullResourceAndBeforeTable();
+        GroundAppendsRetainOrderedIntermediateTablesAndWaterLineage();
+        GroundAppendSixteenthEntryAndResourceFailuresStayBounded();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
