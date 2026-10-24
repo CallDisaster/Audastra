@@ -326,6 +326,13 @@ add_test(NAME services-terrain-boundary-real COMMAND audastra-terrain-native-obj
 set_tests_properties(services-terrain-existing-ramp-real services-terrain-shadow-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_tests_properties(services-terrain-units-real services-terrain-boundary-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 
+add_executable(audastra-terrain-cliff-palette-real-tests TerrainCliffPaletteRealTests.cpp)
+target_link_libraries(audastra-terrain-cliff-palette-real-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-cliff-palette-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-cliff-palette-real-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-cliff-palette-real COMMAND audastra-terrain-cliff-palette-real-tests)
+set_tests_properties(services-terrain-cliff-palette-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+
 add_executable(war3-map-import-inventory-tests ImportInventoryQueryTests.cpp)
 target_link_libraries(war3-map-import-inventory-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-import-inventory-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
