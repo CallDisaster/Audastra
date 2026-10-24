@@ -1,15 +1,21 @@
 #include "War3MapCore/GameUi/FrameDefinition.h"
 #include "War3MapCore/GameUi/FrameLibrary.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
+#include "War3MapCore/Jass/JassChecker.h"
+#include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerFeatureText.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/UiCallbackActions.h"
 
 #include <Windows.h>
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <map>
 #include <stdexcept>
 
 // 界面描述生成的自然 T：用合成的原版签名基础层加仓库里真实的 AudastraUI 函数库，
@@ -327,6 +333,55 @@ void TestRefusalsAndTemplates() {
     Require(plan.value->triggers.size() == 2, "无状态时只有创建与更新");
 }
 
+// 脚本部分与函数库定义一一对应：cfg 列出全部函数，.j 的参数个数与类型同定义（事件前补触发器），
+// 并能经 vJass 翻译与 JASS 检查。
+void TestScriptLibrary() {
+    Fixture f;
+    const std::filesystem::path jass = AUDASTRA_UI_LIBRARY_DIR "/AudastraUI/jass";
+    std::ifstream cfgStream(jass / "AudastraUI.cfg", std::ios::binary);
+    std::vector<std::string> listed;
+    for (std::string line; std::getline(cfgStream, line);) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty()) listed.push_back(line);
+    }
+    std::ifstream scriptStream(jass / "AudastraUI.j", std::ios::binary);
+    const std::string script((std::istreambuf_iterator<char>(scriptStream)), std::istreambuf_iterator<char>());
+    Require(!listed.empty() && !script.empty(), "读入 AudastraUI.cfg 与 AudastraUI.j");
+
+    std::map<std::string, std::vector<std::string>> declared;
+    for (const auto& declaration : ScanUiJassDeclarations(script, jass / "AudastraUI.j")) declared[declaration.name] = declaration.parameterTypes;
+    const auto jassType = [](const std::string& type) { return type.starts_with("Audastra") ? std::string("integer") : type; };
+    std::vector<std::string> defined;
+    for (const auto kind : {UiDefinitionKind::Event, UiDefinitionKind::Action, UiDefinitionKind::Call}) {
+        for (const auto* definition : f.catalog.Definitions(kind)) {
+            if (definition->Active().layer != "AudastraUI") continue;
+            defined.push_back(definition->name);
+            std::vector<std::string> expected;
+            if (kind == UiDefinitionKind::Event) expected.push_back("trigger");
+            for (const auto& argument : definition->Active().arguments) expected.push_back(jassType(argument.type));
+            const auto found = declared.find(definition->name);
+            Require(found != declared.end(), "脚本里缺少 " + definition->name);
+            Require(found->second == expected, "参数与定义不符：" + definition->name);
+        }
+    }
+    std::sort(defined.begin(), defined.end());
+    std::sort(listed.begin(), listed.end());
+    Require(defined == listed, "cfg 与函数库定义列出同一组函数");
+
+    constexpr std::string_view common =
+        "type agent extends handle\ntype trigger extends agent\n"
+        "native R2SW takes real r, integer width, integer precision returns string\n"
+        "native SubString takes string source, integer start, integer end returns string\n"
+        "native StringLength takes string s returns integer\n";
+    Jass::VJassOptions options;
+    options.baseScripts = {Jass::JassSource{"common.j", common}};
+    const auto translated = Jass::TranslateVJass(script, "AudastraUI.j", options);
+    Require(translated.Succeeded() && translated.unsupported.empty(), "vJass 翻译：" + First(translated.diagnostics) + translated.unsupported);
+    const std::array<Jass::JassSource, 2> sources{Jass::JassSource{"common.j", common}, Jass::JassSource{"AudastraUI.j", translated.text}};
+    const auto checked = Jass::CheckJass(sources);
+    Require(checked.Succeeded() && checked.completed && checked.semanticChecked, "JASS 检查：" + First(checked.diagnostics));
+}
+
 } // namespace
 
 int main() {
@@ -335,6 +390,7 @@ int main() {
         TestGeneratedText();
         TestAppliedThroughSharedChain();
         TestRefusalsAndTemplates();
+        TestScriptLibrary();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
