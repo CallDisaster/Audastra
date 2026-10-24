@@ -64,6 +64,7 @@ public:
     [[nodiscard]] std::span<const TerrainShadowCasterDependency> Dependencies() const noexcept { return inputs_; }
     [[nodiscard]] std::size_t DestructableCount() const noexcept { return destructableCount_; }
     [[nodiscard]] std::size_t NonShadowDoodadCount() const noexcept { return nonShadowCount_; }
+    // 累计捕获的解压正文。MPQ读取另检查存储与解压长度；此计数不是最小准入预算。
     [[nodiscard]] std::size_t SourceBytes() const noexcept { return sourceBytes_; }
     [[nodiscard]] std::size_t WorkingBytes() const noexcept { return workingBytes_; }
     // 同一冻结最终成员视图重新捕获，核源归档、实际winner/absence与每份原字节。

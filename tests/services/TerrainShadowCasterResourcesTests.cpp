@@ -3,6 +3,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 
 #include <Windows.h>
@@ -289,13 +290,19 @@ void NativeTransformAndSurfaceRefusals() {
     Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output));
 }
 void LimitsCancellationAndRealSourceDrift() {
-    Fixture f; const auto owner = f.Capture();
+    Fixture f;
+    // 最终内存覆盖只消费正文，不需要MPQ存储缓冲；在此单独核正文累计预算。
+    // 归档读取的stored/decoded双门与精确准入额由下个用例独立覆盖。
+    const std::vector<MemberReplacement> finalModel{{"Fixture/Caster1.mdx", f.Member("Fixture/Caster1.mdx")}};
+    const auto owner = f.Capture(finalModel);
     TerrainShadowCasterLimits limits; limits.maximumSourceBytes = owner->SourceBytes();
-    Require(f.Capture({}, {}, limits)->SourceBytes() == limits.maximumSourceBytes, "精确实际读取字节预算可重复");
-    --limits.maximumSourceBytes; Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, {}, {}, limits));
+    Require(f.Capture(finalModel, {}, limits)->SourceBytes() == limits.maximumSourceBytes, "精确正文累计预算可重复");
+    --limits.maximumSourceBytes;
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, finalModel, {}, limits), "TERRAIN_SHADOW_CASTER_BUDGET");
     limits = {}; limits.maximumWorkingBytes = owner->WorkingBytes();
-    Require(f.Capture({}, {}, limits)->WorkingBytes() == limits.maximumWorkingBytes, "精确工作预留预算可重复");
-    --limits.maximumWorkingBytes; Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, {}, {}, limits));
+    Require(f.Capture(finalModel, {}, limits)->WorkingBytes() == limits.maximumWorkingBytes, "精确工作预留预算可重复");
+    --limits.maximumWorkingBytes;
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, finalModel, {}, limits), "TERRAIN_SHADOW_CASTER_BUDGET");
     limits = {}; limits.maximumPlacements = 3;
     Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, {}, {}, limits));
     limits = {}; limits.maximumModels = 0;
@@ -306,6 +313,40 @@ void LimitsCancellationAndRealSourceDrift() {
     auto bytes = Take(IO::ReadFileBytes(f.source->SourcePath())); bytes.push_back(std::byte{0x42});
     Check(IO::WriteFileBytes(f.source->SourcePath(), bytes)); Rejected(owner->VerifySources(*f.source));
 }
+
+void StoredAndDecodedSourceBudgets() {
+    for (const bool fromGame : {false, true}) {
+        Fixture f;
+        // 固定夹具的前六份来源先消费；模型最后读。独立按夹具正文求前缀，
+        // 不用捕获器返回的SourceBytes反推能通过的预算。
+        std::size_t prefixBytes = 0;
+        for (const auto* name : {"war3map.w3e", "war3map.doo", "war3map.w3b", "war3map.w3d",
+            "Units/DestructableData.slk", "Doodads/Doodads.slk"}) prefixBytes += f.Member(name).size();
+        const auto model = f.Member("Fixture/Caster1.mdx");
+        auto archivePath = f.source->SourcePath();
+        if (fromGame) {
+            f.Erase("Fixture/Caster1.mdx"); f.Open();
+            archivePath = Take(WriteVerifiedArchive(f.game / "War3Patch.mpq",
+                std::vector<MapArchiveMember>{{"Fixture/Caster1.mdx", model}})).path;
+        }
+        const auto archive = Take(Mpq::MpqArchive::OpenReadOnly(archivePath));
+        const auto info = archive.GetFileInfo("Fixture/Caster1.mdx");
+        Require(info && info->fileSize == model.size() && info->compressedSize > info->fileSize,
+            "原创小模型必须覆盖存储块大于解压正文的真实MPQ边界");
+        const auto admission = prefixBytes + (std::max)(std::size_t(info->compressedSize), std::size_t(info->fileSize));
+        TerrainShadowCasterLimits limits; limits.maximumSourceBytes = admission;
+        const auto owner = f.Capture({}, {}, limits);
+        const auto& dependency = f.Dependency(*owner, "FIXTURE\\CASTER1.MDX");
+        Require(owner->SourceBytes() == prefixBytes + model.size() && owner->Models()[0].bytes == model,
+            "精确stored/decoded准入额仍返回完整正文并保持实际正文计数");
+        Require(dependency.source == (fromGame ? TerrainShadowCasterSource::Game : TerrainShadowCasterSource::Map)
+            && dependency.gameContainer == (fromGame ? "war3patch.mpq" : ""),
+            "边界用例分别命中实际地图与最高优先级游戏包，不替换来源");
+        Check(owner->VerifySources(*f.source));
+        --limits.maximumSourceBytes;
+        Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, {}, {}, limits), "FILE_READ_BUDGET_EXCEEDED");
+    }
+}
 } // namespace
 
 int main() {
@@ -313,6 +354,7 @@ int main() {
         ActualClassificationAndExactInstances(); FinalViewAndPublicationIdentity(); GameWinnerAndKnownAbsence();
         ActualTilesetAndFinalTableOverrides(); UnsupportedAndCorruptAreNotEmpty(); EmptyAndSpecialListsRemainExplicit();
         StrictVariationAndUniqueModelLimit(); NativeTransformAndSurfaceRefusals(); LimitsCancellationAndRealSourceDrift();
+        StoredAndDecodedSourceBudgets();
         std::cout << "TerrainShadowCasterResourcesTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
