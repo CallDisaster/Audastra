@@ -209,9 +209,15 @@ void OldWpmAndOrdinaryDoodadGatesRemainStrict() {
     doodad.Member("war3map.doo") = Take(placed.Serialize()); doodad.Open(); doodad.Water();
     units = *doodad.edits->Snapshot().Units(); units.units[0].rotation = 1; Check(doodad.edits->EditUnits(units));
     placed.doodads[0].position[0] += 32; Check(doodad.edits->EditDoodads(placed));
+    const auto doodadRevision = doodad.edits->Revision();
+    const auto changedDoodads = Take(doodad.edits->Snapshot().Doodads()->Serialize());
     const auto refused = doodad.Plan();
-    Require(!refused.SaveGate().Succeeded() && HasCode(refused.SaveGate().diagnostics, "MAP_TERRAIN_PATHING_UNVERIFIED"),
-        "Units proof never authorizes ordinary DOO XY or footprint changes");
+    Require(!refused.SaveGate().Succeeded() && !refused.RebuiltPathing()
+        && HasCode(refused.SaveGate().diagnostics, "TERRAIN_NATIVE_OBJECT_ADAPTER_REQUIRED"),
+        "Units proof cannot supply the actual object-category and footprint adapter for changed ordinary DOO");
+    Require(doodad.edits->Revision() == doodadRevision && doodad.edits->IsDirty()
+        && Take(doodad.edits->Snapshot().Doodads()->Serialize()) == changedDoodads,
+        "missing ordinary-object sources retain the whole draft and its revision");
     Fixture missing(false, false); missing.Water();
     units = Take(ParseUnitPlacements(missing.originalUnits)); Check(missing.edits->EditUnits(units));
     const auto missingPlan = missing.Plan();
