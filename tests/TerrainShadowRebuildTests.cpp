@@ -65,6 +65,15 @@ void LightComesFromExplicitEditorDirection() {
 
 void SamplesActualW3eCentersWithNativeTriangleSplit() {
     auto terrain = OrdinaryTerrain();
+    Require(Take(ValidateOrdinaryTerrainShadowSurface(terrain, {})) == 4,
+        "allocation-free validation charges the four actual vertices without pretending to sample receivers");
+    auto surfaceLimits = TerrainShadowRebuildLimits{};
+    surfaceLimits.maximumWork = 4;
+    Require(Take(ValidateOrdinaryTerrainShadowSurface(terrain, {}, surfaceLimits)) == 4,
+        "surface validation succeeds at its exact vertex budget");
+    --surfaceLimits.maximumWork;
+    const auto surfaceBudget = ValidateOrdinaryTerrainShadowSurface(terrain, {}, surfaceLimits);
+    Require(!surfaceBudget.Succeeded() && !surfaceBudget.value, "surface validation does not return a partial work receipt");
     const auto result = Take(SampleOrdinaryTerrainShadowHeights(terrain, {}));
     Require(result.width == 4 && result.height == 4 && result.receiverHeights.size() == 16,
         "one actual W3E cell produces four by four SHD receiver centers");

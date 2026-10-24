@@ -33,10 +33,10 @@ Result<std::array<float, 3>> PrepareTerrainShadowLightDirection(const std::array
     return Output::Success(nativeDirection);
 }
 
-Result<TerrainShadowReceiverGrid> SampleOrdinaryTerrainShadowHeights(const TerrainGridSnapshot& terrain,
+Result<std::size_t> ValidateOrdinaryTerrainShadowSurface(const TerrainGridSnapshot& terrain,
     std::span<const SpecialDoodadPlacement> specialDoodads, const TerrainShadowRebuildLimits& limits,
     std::stop_token cancellation) {
-    using Output = Result<TerrainShadowReceiverGrid>;
+    using Output = Result<std::size_t>;
     const auto fail = [](const char* code, const char* message) { return Output::Failure("MapTerrain.Shadow", code, message); };
     const TerrainShadowRebuildLimits hard;
     if (limits.maximumDimension > hard.maximumDimension || limits.maximumPixels > hard.maximumPixels
@@ -61,27 +61,42 @@ Result<TerrainShadowReceiverGrid> SampleOrdinaryTerrainShadowHeights(const Terra
         if (!std::isfinite(offset) || std::fmod(offset, 128.0) != 0 || offset < -32768 || last > 32640)
             return fail("TERRAIN_SHADOW_COORDINATE", "阴影采样坐标须128对齐并落在原版九位顶点坐标范围内。");
     }
+    std::size_t work = 0;
+    const auto level = terrain.vertices.front().CliffLevel();
+    for (const auto& vertex : terrain.vertices) {
+        if (cancellation.stop_requested())
+            return fail("TERRAIN_SHADOW_CANCELLED", "阴影地形检查已取消，未返回部分采样。");
+        if (work == limits.maximumWork) return fail("TERRAIN_SHADOW_BUDGET", "阴影地形检查超过工作预算。");
+        ++work;
+        if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw != 0
+            || (vertex.groundHeightRaw & 0xC000) != 0 || vertex.UnknownWaterFlags() != 0 || vertex.CliffLevel() == 15)
+            return fail("TERRAIN_SHADOW_TERRAIN_FLAGS", "阴影采样遇到未闭合的地形原始字段，不能套用普通表面。");
+        if (vertex.IsRamp())
+            return fail("TERRAIN_SHADOW_RAMP_GEOMETRY", "坡道阴影需要原版分类及实际表面，不能套用普通采样。");
+        if (vertex.CliffLevel() != level)
+            return fail("TERRAIN_SHADOW_CLIFF_GEOMETRY", "异层悬崖阴影需要实际模型表面，不能套用普通采样。");
+    }
+    return Output::Success(work);
+}
+
+Result<TerrainShadowReceiverGrid> SampleOrdinaryTerrainShadowHeights(const TerrainGridSnapshot& terrain,
+    std::span<const SpecialDoodadPlacement> specialDoodads, const TerrainShadowRebuildLimits& limits,
+    std::stop_token cancellation) {
+    using Output = Result<TerrainShadowReceiverGrid>;
+    const auto fail = [](const char* code, const char* message) { return Output::Failure("MapTerrain.Shadow", code, message); };
+    auto checked = ValidateOrdinaryTerrainShadowSurface(terrain, specialDoodads, limits, cancellation);
+    if (!checked.Succeeded()) return {std::nullopt, std::move(checked.diagnostics)};
+    const auto& header = terrain.header;
+    const auto width = (header.width - 1) * 4, height = (header.height - 1) * 4;
+    const auto count = static_cast<std::size_t>(width) * height;
     try {
         TerrainShadowReceiverGrid candidate;
-        candidate.width = width; candidate.height = height;
+        candidate.width = width; candidate.height = height; candidate.work = *checked.value;
         const auto consume = [&] {
             if (candidate.work == limits.maximumWork) return false;
             ++candidate.work;
             return true;
         };
-        const auto level = terrain.vertices.front().CliffLevel();
-        for (const auto& vertex : terrain.vertices) {
-            if (cancellation.stop_requested())
-                return fail("TERRAIN_SHADOW_CANCELLED", "阴影地形检查已取消，未返回部分采样。");
-            if (!consume()) return fail("TERRAIN_SHADOW_BUDGET", "阴影地形检查超过工作预算。");
-            if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw != 0
-                || (vertex.groundHeightRaw & 0xC000) != 0 || vertex.UnknownWaterFlags() != 0 || vertex.CliffLevel() == 15)
-                return fail("TERRAIN_SHADOW_TERRAIN_FLAGS", "阴影采样遇到未闭合的地形原始字段，不能套用普通表面。");
-            if (vertex.IsRamp())
-                return fail("TERRAIN_SHADOW_RAMP_GEOMETRY", "坡道阴影需要原版分类及实际表面，不能套用普通采样。");
-            if (vertex.CliffLevel() != level)
-                return fail("TERRAIN_SHADOW_CLIFF_GEOMETRY", "异层悬崖阴影需要实际模型表面，不能套用普通采样。");
-        }
         candidate.receiverHeights.reserve(count);
         for (std::uint32_t y = 0; y < height; ++y) {
             for (std::uint32_t x = 0; x < width; ++x) {

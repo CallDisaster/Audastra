@@ -49,6 +49,12 @@ struct TerrainShadowReceiverGrid {
     std::size_t work = 0;
 };
 
+// 只验证完整普通表面与逻辑 receiver 尺寸，不分配高度场。返回实际顶点
+// 检查工作量；采样器及最终资源捕获共用本门禁，不能把通过视为已采样。
+[[nodiscard]] Result<std::size_t> ValidateOrdinaryTerrainShadowSurface(
+    const TerrainGridSnapshot& terrain, std::span<const SpecialDoodadPlacement> specialDoodads,
+    const TerrainShadowRebuildLimits& limits = {}, std::stop_token cancellation = {});
+
 // 从实际经典 W3E 原始字段采样普通地形，每个 SHD 像素中心取高并加 0.1。
 // 复用 Core 的同一 SW/SE/NW、SE/NE/NW 三角采样；不读取显示 position。
 // 当前拒绝坡道、异层悬崖及实际 special DOO 集合。水面不参与接收高度，
