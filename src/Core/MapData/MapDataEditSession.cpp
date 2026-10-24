@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapData/TerrainEditInspection.h"
+#include "War3MapCore/MapData/TerrainStartLocations.h"
 #include "War3MapCore/Hash.h"
 
 #include <algorithm>
@@ -85,6 +86,7 @@ MapDataEditSession::MapDataEditSession(const MapDocument& source) {
     else if (states_[Index(MapDataKind::Doodads)] == MapDataState::Missing)
         specialDoodads_ = std::make_shared<const std::vector<SpecialDoodadPlacement>>();
     savedSpecialDoodads_ = specialDoodads_;
+    InitializeTerrainStartLocations(source);
 }
 
 Status MapDataEditSession::Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized) {
@@ -172,6 +174,9 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     if (static_cast<bool>(value.boundsBefore) != static_cast<bool>(value.boundsAfter)
         || (value.boundsBefore && boundsState_ && value.boundsBefore != boundsState_))
         return Status::Failure("MapData.Edit", "TERRAIN_BOUNDS_STATE_STALE", "范围事务来源已变，未提交任何成员。");
+    if (static_cast<bool>(value.startsBefore) != static_cast<bool>(value.startsAfter)
+        || (value.startsBefore && value.startsBefore != startLocations_))
+        return Status::Failure("MapData.Edit", "TERRAIN_START_STATE_STALE", "起点联动事务来源已变，未提交任何成员。");
     value.beforeRevision = revision_; value.afterRevision = revision_ + 1;
     auto command = std::make_shared<const Command>(std::move(value));
     // 在触碰历史或覆盖前完成可能抛出异常的分配，关联成员与地形不能部分提交。
@@ -218,6 +223,7 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
         boundsState_ = command->boundsAfter;
     }
     if (command->specialAfter) specialDoodads_ = command->specialAfter;
+    if (command->startsAfter) startLocations_ = command->startsAfter;
     if (command->pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
     cursor_ = history_.size();
@@ -333,31 +339,54 @@ Status MapDataEditSession::EditSettings(const MapSettings& requested) {
     if (linked) {
         status = Prepare(MapDataKind::Units, units.value->Serialize(), changes);
         if (!status.Succeeded()) return status;
+        // 玩家页走W3I→Units；仅在真实PrepareUnits能反向生成完全相同的非说明W3I时，
+        // 复用它的私有来源。其它玩家/地图设置仍可按原入口编辑，但不取得地形保存资格。
+        if (changes.size() == 2 && startLocations_) {
+            Command reverse;
+            const auto regenerated = PrepareUnits(*units.value, reverse.changes, true, &reverse);
+            if (!regenerated.Succeeded()) return regenerated;
+            if (reverse.startsBefore && reverse.startsAfter && reverse.changes.size() == 2
+                && reverse.changes[0].kind == MapDataKind::Units && reverse.changes[1].kind == MapDataKind::Settings
+                && reverse.changes[1].after) {
+                const auto requestedSettings = std::find_if(changes.begin(), changes.end(), [](const auto& change) { return change.kind == MapDataKind::Settings; });
+                const auto actual = CanonicalTerrainStartSettings(*reverse.changes[1].after);
+                const auto requestedCanonical = requestedSettings != changes.end() && requestedSettings->after
+                    ? CanonicalTerrainStartSettings(*requestedSettings->after) : Result<std::vector<std::byte>>{};
+                if (actual.Succeeded() && actual.value && requestedCanonical.Succeeded() && requestedCanonical.value
+                    && *actual.value == *requestedCanonical.value) {
+                    reverse.changes[1].after = requestedSettings->after;
+                    auto committed = CommitCommand(std::move(reverse));
+                    return committed.Succeeded() ? std::move(success) : std::move(committed);
+                }
+            }
+        }
     }
     return commit();
 }
 Status MapDataEditSession::EditUnits(const UnitPlacements& value) {
-    std::vector<MemberChange> changes;
-    const auto status = PrepareUnits(value, changes);
-    return status.Succeeded() ? Commit(std::move(changes)) : status;
+    Command command;
+    const auto status = PrepareUnits(value, command.changes, true, &command);
+    return status.Succeeded() ? CommitCommand(std::move(command)) : status;
 }
 
 Status MapDataEditSession::EditPlacements(const UnitPlacements* units, const DoodadPlacements* doodads) {
-    std::vector<MemberChange> changes;
+    Command command;
+    auto& changes = command.changes;
     if (doodads) {
         if (const auto status = Prepare(MapDataKind::Doodads, doodads->Serialize(), changes); !status.Succeeded()) return status;
     }
     if (units) {
-        if (const auto status = PrepareUnits(*units, changes); !status.Succeeded()) return status;
+        if (const auto status = PrepareUnits(*units, changes, true, &command); !status.Succeeded()) return status;
     }
-    return Commit(std::move(changes));
+    return CommitCommand(std::move(command));
 }
 
 Status MapDataEditSession::EditPlacementRows(const MapDocument& source, const UnitPlacements* units, const DoodadPlacements* doodads,
     std::vector<PlacementRowLineage> lineage, const std::function<Status(const EditReceipt&)>& prepublish) {
-    std::vector<MemberChange> changes;
+    Command command;
+    auto& changes = command.changes;
     if (doodads) if (const auto status = Prepare(MapDataKind::Doodads, doodads->Serialize(), changes); !status.Succeeded()) return status;
-    if (units) if (const auto status = PrepareUnits(*units, changes); !status.Succeeded()) return status;
+    if (units) if (const auto status = PrepareUnits(*units, changes, true, &command); !status.Succeeded()) return status;
     bool seenUnits = false, seenDoodads = false;
     const auto invalid = [] { return Status::Failure("MapData.Edit", "MAP_PLACEMENT_LINEAGE_INVALID", "摆放操作未提供完整可信的行映射。"); };
     for (const auto& map : lineage) {
@@ -383,13 +412,12 @@ Status MapDataEditSession::EditPlacementRows(const MapDocument& source, const Un
         }
     }
     if (seenUnits != (units != nullptr) || seenDoodads != (doodads != nullptr)) return invalid();
-    Command command; command.changes = std::move(changes);
     command.placements = std::make_shared<const std::vector<PlacementRowLineage>>(std::move(lineage));
     return CommitCommand(std::move(command), prepublish);
 }
 
 Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes,
-    bool allowLinkedSettings) const {
+    bool allowLinkedSettings, Command* linkedOwner) const {
     const auto prepared = changes.size();
     auto status = Prepare(MapDataKind::Units, value.Serialize(), changes);
     if (!status.Succeeded() || changes.size() == prepared) return status;
@@ -422,7 +450,10 @@ Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector
     }
     for (const auto& unit : value.units)
         if (unit.rawcode == "sloc" && !existingStarts.contains(unit.creationId)) movedStarts.push_back(&unit);
-    if (movedStarts.empty()) return Status::Ok();
+    const auto remember = [&] {
+        return linkedOwner && before ? PrepareTerrainStartLocations(*linkedOwner, *before, value, changes) : Status::Ok();
+    };
+    if (movedStarts.empty()) return remember();
     // FTJ9只承载Units单成员。先由同一联动规则识别，再在读取/解析W3I前拒绝，
     // 不能消耗未预收的设置codec预算或省略起点同步后提交部分Units。
     if (!allowLinkedSettings)
@@ -444,7 +475,12 @@ Status MapDataEditSession::PrepareUnits(const UnitPlacements& value, std::vector
         player->startX = unit->position[0];
         player->startY = unit->position[1];
     }
-    return Prepare(MapDataKind::Settings, settings.value->Serialize(), changes);
+    const auto priorChanges = changes.size();
+    status = Prepare(MapDataKind::Settings, settings.value->Serialize(), changes);
+    if (!status.Succeeded()) return status;
+    // 旧图可能本来sloc/W3I不一致；移动到已有W3I坐标仍是完整起点事务。
+    if (changes.size() == priorChanges) changes.push_back({MapDataKind::Settings, settingsBytes, settingsBytes});
+    return remember();
 }
 Status MapDataEditSession::EditDoodads(const DoodadPlacements& value) {
     return Apply(MapDataKind::Doodads, value.Serialize());
@@ -574,6 +610,8 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
     command.specialAfter = forward ? source.specialAfter : source.specialBefore;
     command.boundsBefore = forward ? source.boundsBefore : source.boundsAfter;
     command.boundsAfter = forward ? source.boundsAfter : source.boundsBefore;
+    command.startsBefore = forward ? source.startsBefore : source.startsAfter;
+    command.startsAfter = forward ? source.startsAfter : source.startsBefore;
     command.boundsIntent = source.boundsIntent; command.boundsRulesSha256 = source.boundsRulesSha256;
     command.logicalForward = source.logicalForward == forward; command.placements = source.placements;
     for (const auto& change : source.changes) {
@@ -638,6 +676,7 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
     terrain_ = std::move(nextTerrain);
     if (command.specialAfter) specialDoodads_ = forward ? command.specialAfter : command.specialBefore;
     if (command.boundsAfter) boundsState_ = forward ? command.boundsAfter : command.boundsBefore;
+    if (command.startsAfter) startLocations_ = forward ? command.startsAfter : command.startsBefore;
     if (command.pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
 }
@@ -694,6 +733,7 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
       nextCommandIdentity_(source.nextCommandIdentity_), terrainSourceRevision_(source.terrainSourceRevision_),
       specialDoodads_(source.specialDoodads_), savedSpecialDoodads_(source.savedSpecialDoodads_),
       boundsState_(source.boundsState_), savedBoundsState_(source.savedBoundsState_),
+      startLocations_(source.startLocations_), savedStartLocations_(source.savedStartLocations_),
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_), pathingOriginal_(source.pathingOriginal_),
       pathing_(source.pathing_), pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
       originalPathingRestrictions_(source.originalPathingRestrictions_) {}
@@ -707,6 +747,7 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, Texture
     : revision_(source.revision_), sessionIdentity_(source.sessionIdentity_), nextCommandIdentity_(source.nextCommandIdentity_),
       terrainSourceRevision_(source.terrainSourceRevision_), specialDoodads_(source.specialDoodads_),
       savedSpecialDoodads_(source.savedSpecialDoodads_), boundsState_(source.boundsState_), savedBoundsState_(source.savedBoundsState_),
+      startLocations_(source.startLocations_), savedStartLocations_(source.savedStartLocations_),
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_) {
     if (!includeDoodads) return;
     for (const auto kind : {MapDataKind::Doodads, MapDataKind::Settings}) {
@@ -818,6 +859,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     preservedSources_.swap(preservedSources);
     terrainOriginal_ = terrain_;
     savedBoundsState_ = boundsState_;
+    savedStartLocations_ = startLocations_;
     specialDoodads_ = savedSpecialDoodads_ = std::move(savedSpecial);
     // 不从P|A反推来源P，已保存意图S单独保留。
     originalPathingRestrictions_ = pathingRestrictions_;
@@ -864,6 +906,44 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
             journal.strokes.push_back(std::move(bounds)); continue;
         }
         if (!command->terrainStroke) {
+            if (command->startsBefore && command->startsAfter && command->changes.size() == 2
+                && command->terrain.empty() && !command->headerBefore && !command->headerAfter
+                && !command->pathingBefore && !command->pathingAfter && !command->restrictionBefore && !command->restrictionAfter
+                && !command->specialBefore && !command->specialAfter && !command->boundsBefore && !command->boundsAfter) {
+                const MemberChange* units = nullptr;
+                const MemberChange* settings = nullptr;
+                for (const auto& change : command->changes) {
+                    if (change.kind == MapDataKind::Units) units = &change;
+                    if (change.kind == MapDataKind::Settings) settings = &change;
+                }
+                if (!units || !settings || !units->before || !units->after || !settings->before || !settings->after)
+                    return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+                const auto retainedBefore = frozenBytes;
+                const auto retain = [&](std::size_t count, std::size_t element = 1) {
+                    if (count > (TerrainJournalMaximumBytes - frozenBytes) / element) return false;
+                    frozenBytes += count * element; return true;
+                };
+                if (!retain(4096 + sizeof(Command)) || !retain(command->changes.capacity(), sizeof(MemberChange))
+                    || !retain(units->before->capacity()) || !retain(units->after->capacity())
+                    || !retain(settings->before->capacity()) || !retain(settings->after->capacity()))
+                    return fail("TERRAIN_JOURNAL_BUDGET");
+                if (command->placements) {
+                    if (command->placements->size() > 2 || !retain(command->placements->capacity(), sizeof(PlacementRowLineage)))
+                        return fail("TERRAIN_JOURNAL_BUDGET");
+                    for (const auto& lineage : *command->placements)
+                        if (!retain(lineage.beforeToAfter.capacity(), sizeof(std::optional<std::uint32_t>)))
+                            return fail("TERRAIN_JOURNAL_BUDGET");
+                }
+                FrozenTerrainStartLocationsJournalEdit frozen;
+                frozen.unitsBefore_ = std::shared_ptr<const std::vector<std::byte>>(command, &*units->before);
+                frozen.unitsAfter_ = std::shared_ptr<const std::vector<std::byte>>(command, &*units->after);
+                frozen.settingsBefore_ = std::shared_ptr<const std::vector<std::byte>>(command, &*settings->before);
+                frozen.settingsAfter_ = std::shared_ptr<const std::vector<std::byte>>(command, &*settings->after);
+                frozen.sessionIdentity_ = command->sessionIdentity; frozen.logicalIdentity_ = command->logicalIdentity;
+                frozen.retainedBytes_ = frozenBytes - retainedBefore;
+                TerrainJournalStroke starts; starts.frozenStartLocations = std::move(frozen);
+                journal.strokes.push_back(std::move(starts)); continue;
+            }
             if (command->changes.size() == 1
                 && (command->changes.front().kind == MapDataKind::Doodads || command->changes.front().kind == MapDataKind::Units)
                 && command->changes.front().before && command->changes.front().after && command->terrain.empty()
@@ -971,11 +1051,13 @@ std::string MapDataEditSession::TerrainJournalStateFingerprint() const {
     for (std::size_t i = 0; i < TerrainJournalMemberNames.size(); ++i)
         journal.value->members.push_back({std::string(TerrainJournalMemberNames[i]), i < 2, i < 2 ? std::string(64, '0') : std::string{}, 0});
     if (std::any_of(journal.value->strokes.begin(), journal.value->strokes.end(), [](const auto& stroke) {
-        return stroke.frozenDoodads.has_value() || stroke.frozenUnits.has_value(); })) {
+        return stroke.frozenDoodads.has_value() || stroke.frozenUnits.has_value() || stroke.frozenStartLocations.has_value(); })) {
         // CAS只在当前会话比较：不可变真实command的session/logicalIdentity一一绑定正文。
         // 保留有序variant与typed笔划摘要；Undo归并回同一活动前缀时令牌也精确回原值。
         // 不物化delta、不读DOO，后台持久化仍必须重新完整SHA/codec。
-        std::string scope = "FTJ9-command-scope:";
+        const bool hasStarts = std::any_of(journal.value->strokes.begin(), journal.value->strokes.end(),
+            [](const auto& stroke) { return stroke.frozenStartLocations.has_value(); });
+        std::string scope = hasStarts ? "FTJA-command-scope:" : "FTJ9-command-scope:";
         std::vector<TerrainJournalStroke> typed;
         typed.reserve(journal.value->strokes.size());
         for (auto& stroke : journal.value->strokes) {
@@ -985,6 +1067,9 @@ std::string MapDataEditSession::TerrainJournalStateFingerprint() const {
             } else if (stroke.frozenUnits) {
                 scope += "U:" + std::to_string(stroke.frozenUnits->SessionIdentity()) + ":"
                     + std::to_string(stroke.frozenUnits->LogicalIdentity()) + ";";
+            } else if (stroke.frozenStartLocations) {
+                scope += "S:" + std::to_string(stroke.frozenStartLocations->SessionIdentity()) + ":"
+                    + std::to_string(stroke.frozenStartLocations->LogicalIdentity()) + ";";
             } else { scope += "T;"; typed.push_back(std::move(stroke)); }
         }
         journal.value->strokes = std::move(typed);

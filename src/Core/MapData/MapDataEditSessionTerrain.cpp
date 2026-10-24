@@ -438,9 +438,14 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
             && add(cost.retainedBytes, maximumBytes, value->mapEdges.capacity())
             && add(cost.comparisonWork, maximumWork, value->mapEdges.size()));
     };
+    const auto starts = [&](const auto& value) {
+        return !value || (add(cost.retainedBytes, maximumBytes, sizeof(TerrainStartLocationsState) + 64)
+            && add(cost.retainedBytes, maximumBytes, value->unitsSha256.capacity() + 1));
+    };
     if (!add(cost.comparisonWork, maximumWork, 1024)
         || !special(specialDoodads_) || !special(savedSpecialDoodads_)
-        || !bounds(boundsState_) || !bounds(savedBoundsState_)) return fail();
+        || !bounds(boundsState_) || !bounds(savedBoundsState_)
+        || !starts(startLocations_) || !starts(savedStartLocations_)) return fail();
     for (std::size_t i = 0; i < original_.size(); ++i) {
         if (!bytes(original_[i]) || !bytes(current_[i])) return fail();
         if (preservedSources_[i]) {
@@ -469,6 +474,7 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
             || !add(cost.retainedBytes, maximumBytes, command->terrain.capacity(), sizeof(TerrainChunk))
             || !special(command->specialBefore) || !special(command->specialAfter)
             || !bounds(command->boundsBefore) || !bounds(command->boundsAfter)
+            || !starts(command->startsBefore) || !starts(command->startsAfter)
             || !add(cost.retainedBytes, maximumBytes, command->boundsRulesSha256.capacity())
             || (command->headerBefore && !header(*command->headerBefore))
             || (command->headerAfter && !header(*command->headerAfter))) return fail();
@@ -662,7 +668,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             const auto followed = follow(units.value->units);
             if (!followed.Succeeded() || !followed.value) return fail(followed.diagnostics);
             if (*followed.value) {
-                if (const auto status = Prepare(MapDataKind::Units, units.value->Serialize(), command.changes); !status.Succeeded())
+                if (const auto status = PrepareUnits(*units.value, command.changes, true, &command); !status.Succeeded())
                     return fail(status.diagnostics);
                 keepRows(MapDataKind::Units, units.value->units.size());
             }
@@ -760,6 +766,10 @@ std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() cons
         add(sizeof(std::vector<SpecialDoodadPlacement>) + 64);
         add((*specials)->capacity(), sizeof(SpecialDoodadPlacement));
         for (const auto& special : **specials) add(special.rawcode.capacity() + 1);
+    }
+    for (const auto* starts : {&command_->startsBefore, &command_->startsAfter}) if (*starts) {
+        add(sizeof(TerrainStartLocationsState) + 64);
+        add((*starts)->unitsSha256.capacity() + 1);
     }
     return bytes;
 }

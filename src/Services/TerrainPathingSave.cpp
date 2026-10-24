@@ -57,9 +57,9 @@ Status ValidateJournalReplayAlignment(std::span<const MapData::TerrainStrokeInte
         // 即使工厂由同一份记录复制，仍逐项双向核对所有字段与准确variant。
         // 公共ReplayStrokes没有journal，不能靠空点/默认brush进入私有摆放分支。
         const bool placeholder = MapData::IsTerrainDoodadsJournalPlaceholder(strokes[i]);
-        const bool placement = record.ordinaryDoodads.has_value() || record.units.has_value();
+        const bool placement = record.ordinaryDoodads.has_value() || record.units.has_value() || record.startLocations.has_value();
         if (!MapData::EqualTerrainJournalIntent(strokes[i], record.intent)
-            || placeholder != placement || record.frozenDoodads || record.frozenUnits
+            || placeholder != placement || record.frozenDoodads || record.frozenUnits || record.frozenStartLocations
             || (placement && (!record.rulesSha256.empty() || record.cliffEnforceWaterLimits)))
             return Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_INTENT_ALIGNMENT", "普通DOO记录必须对应唯一中性占位，typed笔划不能借占位或顺序取得恢复资格。");
     }
@@ -150,7 +150,7 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
     std::size_t inputIndex = 0;
     for (const auto& stroke : strokes) {
         const bool ordinary = journal && (journal->strokes[inputIndex].ordinaryDoodads.has_value()
-            || journal->strokes[inputIndex].units.has_value());
+            || journal->strokes[inputIndex].units.has_value() || journal->strokes[inputIndex].startLocations.has_value());
         ++inputIndex;
         if (ordinary) continue;
         if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.palette)
@@ -214,6 +214,26 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
             if (!applied.Succeeded()) return {{}, applied.diagnostics};
             if (candidate.Revision() == beforeRevision)
                 return fail("TERRAIN_JOURNAL_NO_CHANGE", "Units记录没有形成真实命令，未安装任何前缀。");
+            if (receipts) receipts->push_back(candidate.LastEdit());
+            ++strokeIndex; continue;
+        } else if (journal && journal->strokes[strokeIndex].startLocations) {
+            const auto& edit = *journal->strokes[strokeIndex].startLocations;
+            const auto currentSettings = candidate.SnapshotByteSize(MapDataKind::Settings);
+            if (!currentSettings.Succeeded() || !currentSettings.value) return {{}, currentSettings.diagnostics};
+            if (*currentSettings.value < edit.settings.beforeBytes)
+                return fail("TERRAIN_JOURNAL_START_STALE", "起点记录的完整设置布局已改变。");
+            const auto actualAfter = *currentSettings.value - edit.settings.beforeBytes + edit.settings.afterBytes;
+            const auto available = limits.maximumCandidateBytes - historyBytes;
+            const auto cost = MapData::MeasureTerrainStartLocationsJournalEdit(edit.units.beforeBytes, edit.units.afterBytes,
+                *currentSettings.value, actualAfter, available, limits.maximumWork - work);
+            if (!cost.Succeeded() || !cost.value || cost.value->workingBytes > available
+                || !reserve(work, limits.maximumWork, cost.value->work)
+                || !reserve(historyBytes, limits.maximumCandidateBytes, cost.value->retainedBytes))
+                return fail("TERRAIN_REPLAY_BUDGET", "起点双成员codec、完整联动比较或历史超过累计预算。");
+            const auto applied = candidate.ReplayTerrainJournalStartLocations(edit, cost.value->workingBytes, cost.value->work);
+            if (!applied.Succeeded()) return {{}, applied.diagnostics};
+            if (candidate.Revision() == beforeRevision)
+                return fail("TERRAIN_JOURNAL_NO_CHANGE", "起点记录没有形成真实复合命令，未安装任何前缀。");
             if (receipts) receipts->push_back(candidate.LastEdit());
             ++strokeIndex; continue;
         } else if (stroke.palette) {
@@ -516,7 +536,7 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
     std::size_t inputIndex = 0;
     for (const auto& stroke : strokes) {
         const bool ordinary = journal && (journal->strokes[inputIndex].ordinaryDoodads.has_value()
-            || journal->strokes[inputIndex].units.has_value());
+            || journal->strokes[inputIndex].units.has_value() || journal->strokes[inputIndex].startLocations.has_value());
         ++inputIndex;
         if (ordinary) continue;
         if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.palette)
@@ -701,6 +721,12 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
             && (!charge(remaining.maximumCandidateBytes, stroke.units->inserted.capacity(), 1)
                 || !charge(remaining.maximumWork, stroke.units->inserted.size(), 1)))
             return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "Units记录的输入载荷超过剩余候选或工作预算。");
+        if (stroke.startLocations) for (const auto* edit : {
+            static_cast<const MapData::TerrainPlacementJournalDelta*>(&stroke.startLocations->units), &stroke.startLocations->settings}) {
+            if (!charge(remaining.maximumCandidateBytes, edit->inserted.capacity(), 1)
+                || !charge(remaining.maximumWork, edit->inserted.size(), 1))
+                return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "起点双成员输入载荷超过剩余候选或工作预算。");
+        }
     }
     // owned factory现有接口接收连续typed intents；在复制任何点之前预收该有界副本。
     if (!charge(remaining.maximumCandidateBytes, journal.strokes.size(), sizeof(MapData::TerrainStrokeIntent)))

@@ -45,6 +45,7 @@ class MapDataEditSession {
     friend class Services::AuxiliaryEditing;
     struct Command;
     struct TerrainBoundsState;
+    struct TerrainStartLocationsState;
 public:
     // 不可变事务回执供外层统一撤销栈使用；包含所有联动成员，不重新推导逆操作。
     class EditReceipt {
@@ -202,6 +203,8 @@ public:
     // 仅完整经典Units单成员；PrepareUnits若要求W3I起始位置联动则拒绝，不安装部分命令。
     [[nodiscard]] Status ReplayTerrainJournalUnits(const TerrainUnitsJournalEdit& edit,
         std::size_t maximumBytes, std::size_t maximumWork);
+    [[nodiscard]] Status ReplayTerrainJournalStartLocations(const TerrainStartLocationsJournalEdit& edit,
+        std::size_t maximumBytes, std::size_t maximumWork);
     [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges(); }
     // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
     [[nodiscard]] std::string TerrainJournalStateFingerprint() const;
@@ -300,6 +303,18 @@ private:
         [[nodiscard]] bool Equivalent(const TerrainBoundsState&) const noexcept;
         void RestoreGeometry(MapSettings&) const noexcept;
     };
+    struct TerrainStartLocationsState {
+        struct Player { std::int32_t number = 0; std::uint32_t x = 0, y = 0; };
+        std::array<Player, 16> players{};
+        std::size_t count = 0, unitsBytes = 0;
+        std::string unitsSha256;
+        [[nodiscard]] static Result<std::shared_ptr<const TerrainStartLocationsState>> Capture(
+            std::span<const std::byte>, const UnitPlacements&, const MapSettings&);
+        [[nodiscard]] bool Matches(std::span<const std::byte>, const MapSettings&) const;
+        [[nodiscard]] bool MatchesUnits(std::span<const std::byte>) const;
+        [[nodiscard]] bool MatchesPlayers(const MapSettings&) const noexcept;
+        void RestorePlayers(MapSettings&) const noexcept;
+    };
     struct MemberChange {
         MapDataKind kind;
         std::optional<std::vector<std::byte>> before;
@@ -325,6 +340,7 @@ private:
         std::shared_ptr<const TerrainBoundsState> boundsBefore, boundsAfter;
         std::optional<TerrainBoundsEditIntent> boundsIntent;
         std::string boundsRulesSha256;
+        std::shared_ptr<const TerrainStartLocationsState> startsBefore, startsAfter;
     };
     [[nodiscard]] Status Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized);
     [[nodiscard]] Status Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
@@ -371,7 +387,11 @@ private:
         const DoodadPlacements& before, const DoodadPlacements& after) const;
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes,
-        bool allowLinkedSettings = true) const;
+        bool allowLinkedSettings = true, Command* linkedOwner = nullptr) const;
+    void InitializeTerrainStartLocations(const MapDocument&);
+    [[nodiscard]] Status PrepareTerrainStartLocations(Command&, const UnitPlacements&,
+        const UnitPlacements&, const std::vector<MemberChange>&) const;
+    [[nodiscard]] Status NormalizeTerrainStartLocationsForSave(MapSettings& current, const MapSettings& original) const;
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
     void Restore(const Command& command, bool forward);
@@ -403,6 +423,7 @@ private:
     // 只由真实来源构造、可信水刷更新；与Command一起撤销，保存只移动基线，不丢历史身份。
     std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialDoodads_, savedSpecialDoodads_;
     std::shared_ptr<const TerrainBoundsState> boundsState_, savedBoundsState_;
+    std::shared_ptr<const TerrainStartLocationsState> startLocations_, savedStartLocations_;
     std::shared_ptr<const TerrainGridSnapshot> terrainOriginal_;
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;

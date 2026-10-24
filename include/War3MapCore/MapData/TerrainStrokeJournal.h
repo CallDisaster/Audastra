@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/TerrainStrokeIntent.h"
 #include "War3MapCore/MapData/TerrainDoodadsJournal.h"
 #include "War3MapCore/MapData/TerrainUnitsJournal.h"
+#include "War3MapCore/MapData/TerrainStartLocationsJournal.h"
 
 #include <array>
 #include <string_view>
@@ -29,6 +30,9 @@ struct TerrainJournalStroke {
     // FTJ9完整经典Units，保持与水刷/普通DOO相同的真实命令顺序。
     std::optional<TerrainUnitsJournalEdit> units;
     std::optional<FrozenTerrainUnitsJournalEdit> frozenUnits;
+    // FTJA仅承载真实PrepareUnits产生的Units+W3I起始位置复合命令。
+    std::optional<TerrainStartLocationsJournalEdit> startLocations;
+    std::optional<FrozenTerrainStartLocationsJournalEdit> frozenStartLocations;
     // FTJ6新增独立palette变体，复用实际owner的完整规则/来源摘要；不携带验证位。
     // 水算法由intent.waterBrush.algorithm显式决定：FTJ1/2固定v1，FTJ3/4逐水笔记录v1/v2。
     // FTJ4沿用FTJ3正文布局，新增独立CornerRamp=13，必需单点/实际规则与完整DOO摘要。
