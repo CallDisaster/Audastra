@@ -192,6 +192,52 @@ void ExactOrderCoordinatesAndReadback() {
     const std::vector<std::string> removed{"war3map.mmp"};
     Rejected(owner->VerifyFrozenOutput(*fixture.source, output, removed), "TERRAIN_MMP_OUTPUT_REMOVED");
 }
+void HeaderlessCellsKeepNamedFieldSemanticsAndSourceBinding() {
+    Fixture fixture;
+    const auto expected = fixture.Capture()->Bytes();
+    auto sparse = Slk({"unitBalanceID", "unnamed", "isbldg"},
+        {{"S001", "FALSE", "1"}, {"M001", "FALSE", "1"}, {"P001", "FALSE", "0"},
+         {"N001", "FALSE", "1"}, {"R001", "FALSE", "1"}});
+    const auto erase = [&](std::string_view line) {
+        const auto bytes = Text(line);
+        const auto found = std::search(sparse.begin(), sparse.end(), bytes.begin(), bytes.end());
+        Require(found != sparse.end(), "原创稀疏表有待移除的明确表头");
+        sparse.erase(found, found + bytes.size());
+    };
+    erase("C;X2;Y1;K\"unnamed\"\n");
+    fixture.Member("Units/UnitBalance.slk") = sparse; fixture.Open();
+    const auto owner = fixture.Capture();
+    Require(owner->Bytes() == expected, "无标题列不偏移真实isbldg列或改变MMP语义");
+    const std::vector<MemberReplacement> output{{"war3map.mmp", owner->Bytes()}};
+    Check(owner->VerifyFrozenOutput(*fixture.source, output));
+    const auto saved = Take(fixture.source->SaveCandidate(fixture.root / "sparse-table.w3x", output));
+    const auto readback = Take(MapArchiveSession::Open(saved.path));
+    Check(owner->VerifyReadback(readback));
+    Require(Take(readback.ReadMember("Units/UnitBalance.slk")) == sparse,
+        "保存不改写或丢弃无标题单元格的原表字节");
+
+    auto changed = sparse;
+    const auto value = Text("FALSE");
+    const auto found = std::search(changed.begin(), changed.end(), value.begin(), value.end());
+    Require(found != changed.end(), "原创无标题列含真实正文");
+    *found = std::byte{'T'};
+    const std::vector<MemberReplacement> drift{{"Units/UnitBalance.slk", changed}, {"war3map.mmp", owner->Bytes()}};
+    Rejected(owner->VerifyFrozenOutput(*fixture.source, drift), "TERRAIN_MMP_DEPENDENCY_STALE");
+
+    erase("C;X3;Y1;K\"isbldg\"\n");
+    const std::vector<MemberReplacement> missing{{"Units/UnitBalance.slk", sparse}};
+    Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, missing), "TERRAIN_MMP_TABLE_COLUMN");
+
+    auto duplicate = Text("ID;PWXL;N;E\nC;X1;Y1;K\"unitBalanceID\"\nC;X3;Y1;K\"isbldg\"\n"
+        "C;X1;Y2;K\"S001\"\nC;X2;Y2;KFALSE\nC;X2;Y2;KTRUE\nC;X3;Y2;K1\nE\n");
+    const std::vector<MemberReplacement> repeated{{"Units/UnitBalance.slk", std::move(duplicate)}};
+    Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, repeated));
+    auto large = Text("ID;PWXL;N;E\nC;X1;Y1;K\"unitBalanceID\"\nC;X3;Y1;K\"isbldg\"\n"
+        "C;X1;Y2;K\"S001\"\nC;X2;Y2;K\"" + std::string(4097, 'x') + "\"\nC;X3;Y2;K1\nE\n");
+    const std::vector<MemberReplacement> oversized{{"Units/UnitBalance.slk", std::move(large)}};
+    Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, oversized), "TERRAIN_MMP_TABLE_COLUMN");
+}
+
 void FinalOverlayAndDrift() {
     Fixture fixture;
     const auto owner = fixture.Capture();
@@ -459,7 +505,8 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
 
 int main() {
     try {
-        ExactOrderCoordinatesAndReadback(); FinalOverlayAndDrift(); RealMetadataAndAbilityInheritance();
+        ExactOrderCoordinatesAndReadback(); HeaderlessCellsKeepNamedFieldSemanticsAndSourceBinding();
+        FinalOverlayAndDrift(); RealMetadataAndAbilityInheritance();
         MissingSourcesBudgetsAndGameWinner(); EmptyUnitLayerDoesNotInventSources();
         OrdinarySaveRebuildsMarkersWithoutMapBlpOrTerrainPlan(); AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits();
         PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate(); PlanBudgetPreservesOriginalOutputWithoutPartialInstall();

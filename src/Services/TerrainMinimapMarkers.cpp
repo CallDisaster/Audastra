@@ -216,8 +216,10 @@ Table ReadTable(Context& context, std::string_view name) {
         if (id == row.end() || id->second.size() != 4 || !result.rows.emplace(id->second, y).second)
             Fail("TERRAIN_MMP_TABLE_ID", "MMP表对象ID必须为唯一四字节：" + result.name);
         for (const auto& [x, value] : row) {
-            if (!head->second.contains(x) || value.size() > 4096)
-                Fail("TERRAIN_MMP_TABLE_COLUMN", "MMP表含未声明列或过长字段：" + result.name);
+            // 原版按标题名称查询字段；实际UnitBalance也有无标题的数据列。
+            // 这些单元格仍完整解析、计量并绑定来源，只是不赋予它们字段名称。
+            if (value.size() > 4096)
+                Fail("TERRAIN_MMP_TABLE_COLUMN", "MMP表含过长字段：" + result.name);
         }
     }
     return result;
