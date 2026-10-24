@@ -212,7 +212,7 @@ Status McpWorkspace::VerifyTerrainWaterResources(const MapData::TerrainPathingRe
     const auto environment = CheckEnvironmentUnchanged();
     if (!environment.Succeeded()) return environment;
     if (!mapDataSource_) return Status::Failure("MCP", "TERRAIN_WATER_SOURCE_REQUIRED", "水刷实际目录来源已失效。");
-    return owner.VerifyReadback(mapDataSource_->Snapshot(), MapData::TerrainSavePlanLimits{}.maximumBytes);
+    return owner.VerifySourceInputs(mapDataSource_->Snapshot(), MapData::TerrainSavePlanLimits{}.maximumBytes);
 }
 
 Result<MapData::TerrainPathingResources> McpWorkspace::CaptureTerrainBoundsResources() {
@@ -319,7 +319,7 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
         const auto environment = CheckEnvironmentUnchanged();
         if (!environment.Succeeded()) return environment;
         for (const auto& owner : (*candidate.value)->waterOwners) {
-            const auto unchanged = owner.VerifyReadback(mapDataSource_->Snapshot(), MapData::TerrainSavePlanLimits{}.maximumBytes);
+            const auto unchanged = owner.VerifySourceInputs(mapDataSource_->Snapshot(), MapData::TerrainSavePlanLimits{}.maximumBytes);
             if (!unchanged.Succeeded()) return unchanged;
         }
         const auto unchangedOverlay = session_.PreviewEdit(transaction);

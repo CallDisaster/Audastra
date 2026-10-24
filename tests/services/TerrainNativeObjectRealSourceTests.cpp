@@ -20,6 +20,9 @@
 #include "TerrainPlayableBoundsRealTests.h"
 #include "TerrainShadowRealTests.h"
 #include "TerrainCategoryDirectoryRealTests.h"
+#include "TerrainUnitPlacementRealTests.h"
+#include "TerrainCliffTransportSaveTests.h"
+#include "TerrainBoundaryRealTests.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -460,7 +463,7 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
     }
 }
 
-enum class RealSaveGroup { Objects, ExistingRamps, Shadows };
+enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary };
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game,
     RealSaveGroup group) {
     OwnedDirectory directory;
@@ -489,6 +492,14 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         }
         if (group == RealSaveGroup::Shadows) {
             TerrainSaveTests::CheckRealTerrainShadowSave(original, directory.path, tool, game);
+            return;
+        }
+        if (group == RealSaveGroup::UnitPlacements) {
+            TerrainSaveTests::CheckRealTerrainUnitPlacementSave(original, directory.path, tool, game);
+            return;
+        }
+        if (group == RealSaveGroup::Boundary) {
+            TerrainSaveTests::CheckRealTerrainBoundarySave(original, directory.path, tool, game);
             return;
         }
         const auto sourceScript = Take(original.ReadMember("war3map.j"));
@@ -768,6 +779,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealGroundBrushSave(original, directory.path, tool, game, mounted);
+        TerrainSaveTests::CheckRealCliffTextureSave(original, directory.path, tool, game, mounted);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
@@ -781,7 +793,9 @@ int main(int argc, char** argv) {
         RealSaveGroup group = RealSaveGroup::Objects;
         if (argc == 2 && std::string_view(argv[1]) == "--existing-ramps") group = RealSaveGroup::ExistingRamps;
         else if (argc == 2 && std::string_view(argv[1]) == "--shadows") group = RealSaveGroup::Shadows;
-        else Require(argc == 1, "expected no arguments, --existing-ramps or --shadows");
+        else if (argc == 2 && std::string_view(argv[1]) == "--unit-placement") group = RealSaveGroup::UnitPlacements;
+        else if (argc == 2 && std::string_view(argv[1]) == "--boundary") group = RealSaveGroup::Boundary;
+        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows, --unit-placement or --boundary");
         const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
         const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
         if (tool.empty() || game.empty()) {

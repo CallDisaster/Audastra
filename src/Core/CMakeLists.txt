@@ -58,6 +58,7 @@ add_library(War3MapCore STATIC
     MapData/TerrainStrokeJournal.cpp
     MapData/TerrainSavePlan.cpp
     MapData/TerrainSavePlanPathing.cpp
+    MapData/TerrainNativeUnitsProof.cpp
     MapData/TerrainNativePathing.cpp
     MapData/TerrainPathingResources.cpp
     MapData/TerrainPathingBounds.cpp

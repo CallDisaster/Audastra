@@ -26,6 +26,7 @@ class PreparedMapDataFields;
 class PreparedMapDataPlacement;
 class TerrainSavePlan;
 class TerrainPathingResources;
+class TerrainNativeUnitsProof;
 
 // 仅已提交的摆放操作提供完整行谱系；空目标表示删除，未被指向的新行表示新增。
 // 不能用rawcode、创建编号或坐标猜测映射。此值在EditReceipt中只读。
@@ -340,7 +341,7 @@ private:
         const TerrainPathingResources* resources = nullptr,
         const std::vector<std::byte>* restrictions = nullptr,
         const std::optional<std::vector<std::byte>>* units = nullptr,
-        bool nativeRebuild = false) const;
+        bool nativeRebuild = false, const TerrainNativeUnitsProof* nativeUnits = nullptr) const;
     [[nodiscard]] Status VerifyTerrainDoodadChange(std::span<const std::byte> before,
         std::span<const std::byte> after) const;
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers) const;

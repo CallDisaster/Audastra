@@ -189,6 +189,15 @@ std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int in
         stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight; stroke.brush.waterHeight = *height;
         return stroke;
     }
+    if (kind == L"boundary") {
+        const std::wstring_view value(argv[index + 6]);
+        if (value != L"true" && value != L"false") {
+            error = "boundary value must be true or false"; return std::nullopt;
+        }
+        stroke.brush.kind = MapData::TerrainBrushKind::Boundary;
+        stroke.brush.value = value == L"true";
+        return stroke;
+    }
     if (kind == L"ramp") {
         const std::wstring_view value(argv[index + 6]);
         if (shape != L"circle" || *radius != 0 || (value != L"true" && value != L"false")) {
@@ -200,7 +209,7 @@ std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int in
         return stroke;
     }
     if (kind != L"raise" && kind != L"lower" && kind != L"smooth") {
-        error = "stroke kind must be raise, lower, smooth, texture, water-height, or ramp";
+        error = "stroke kind must be raise, lower, smooth, texture, water-height, ramp, or boundary";
         return std::nullopt;
     }
     const auto strength = ParseNumber<float>(argv[index + 6]);
@@ -233,6 +242,40 @@ std::optional<Services::MapEditTerrainStroke> ParseCornerRamp(wchar_t** argv, in
     stroke.brush.kind = MapData::TerrainBrushKind::CornerRamp;
     stroke.brush.value = value == L"true";
     stroke.points.push_back({*x, *y});
+    return stroke;
+}
+
+// --cliff-stroke <circle|square> <vertex-x> <vertex-y> <size> <slot> <-1|0|1> <seed>
+// --cliff-texture <circle|square> <vertex-x> <vertex-y> <size> <slot>
+std::optional<Services::MapEditTerrainStroke> ParseCliffStroke(
+    wchar_t** argv, int index, bool textureOnly, std::string& error) {
+    const auto x = ParseNumber<std::uint32_t>(argv[index + 2]);
+    const auto y = ParseNumber<std::uint32_t>(argv[index + 3]);
+    const auto size = ParseNumber<std::uint32_t>(argv[index + 4]);
+    const auto slot = ParseNumber<std::uint32_t>(argv[index + 5]);
+    if (!x || !y) { error = "cliff stroke requires uint32 vertex indices"; return std::nullopt; }
+    if (!size || *size < 1 || *size > 8 || !slot || *slot > 14) {
+        error = "cliff stroke requires size 1..8 and cliff slot 0..14"; return std::nullopt;
+    }
+    Services::MapEditTerrainStroke stroke;
+    stroke.brush.kind = textureOnly ? MapData::TerrainBrushKind::CliffTexture : MapData::TerrainBrushKind::CliffLevel;
+    const std::wstring_view shape(argv[index + 1]);
+    if (shape == L"circle") stroke.brush.shape = MapData::TerrainBrushShape::Circle;
+    else if (shape == L"square") stroke.brush.shape = MapData::TerrainBrushShape::Square;
+    else { error = "cliff stroke shape must be circle or square"; return std::nullopt; }
+    stroke.brush.size = *size;
+    stroke.brush.cliffTexture = static_cast<std::uint8_t>(*slot);
+    if (!textureOnly) {
+        const auto delta = ParseNumber<std::int32_t>(argv[index + 6]);
+        const auto seed = ParseNumber<std::uint32_t>(argv[index + 7]);
+        if (!delta || *delta < -1 || *delta > 1 || !seed) {
+            error = "cliff stroke requires level delta -1..1 and uint32 seed"; return std::nullopt;
+        }
+        stroke.brush.levelDelta = *delta;
+        stroke.brush.seed = *seed;
+    }
+    stroke.pointSpace = Services::MapEditPointSpace::TerrainVertex;
+    stroke.points.push_back({static_cast<double>(*x), static_cast<double>(*y)});
     return stroke;
 }
 
@@ -427,6 +470,16 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!stroke) return Invalid(error);
             request.terrainStrokes.push_back(std::move(*stroke));
             index += 4;
+        } else if (flag == L"--cliff-stroke" || flag == L"--cliff-texture") {
+            const bool textureOnly = flag == L"--cliff-texture";
+            const int count = textureOnly ? 5 : 7;
+            if (index + count >= argc) return Invalid(textureOnly
+                ? "--cliff-texture requires five arguments" : "--cliff-stroke requires seven arguments");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");
+            auto stroke = ParseCliffStroke(argv, index, textureOnly, error);
+            if (!stroke) return Invalid(error);
+            request.terrainStrokes.push_back(std::move(*stroke));
+            index += count + 1;
         } else if (flag == L"--water-stroke") {
             if (index + 8 >= argc) return Invalid("--water-stroke requires eight arguments");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");

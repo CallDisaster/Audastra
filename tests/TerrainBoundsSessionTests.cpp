@@ -22,6 +22,14 @@ void BoundsSaveHasLiteralFullByteOraclesAndSavedUndo() {
     Require(f.edits->Revision() == revision + 1 && f.edits->HasTerrainBoundsChanges(), "one compound command advances one revision");
     Check(f.edits->VerifyTerrainSettingsForSave());
     Require(!f.edits->VerifyTerrainPathingForSave().Succeeded(), "preservation-only route cannot approve new bounds");
+    const auto currentOwner = f.Capture();
+    Check(currentOwner.VerifySourceInputs(*f.archive, 64u * 1024u * 1024u));
+    Require(!currentOwner.VerifyReadback(*f.archive, 64u * 1024u * 1024u).Succeeded(),
+        "after the first bounds command the unchanged source is not the future saved output");
+    const auto repeated = Take(f.edits->PrepareTerrainBoundsEdit(currentOwner, {{1, 1, 9, 7}}));
+    Require(!repeated.HasChanges(), "recaptured current rules support a repeated bounds no-op");
+    Check(f.edits->ApplyPreparedTerrainBoundsEdit(repeated));
+    Require(f.edits->Revision() == revision + 1, "repeated bounds leave the original compound revision unchanged");
     f.Save("inset.w3x");
     Require(Take(f.archive->ReadMember("war3map.w3e")) == expectedTerrain, "complete W3E matches independent MapEdge byte oracle");
     Require(Take(f.archive->ReadMember("war3map.w3i")) == expectedW3i, "complete W3I matches independent camera/margin oracle");
@@ -127,6 +135,81 @@ void BoundsColdRecoveryRetainsWholeDraftAndDescriptionFields() {
         && Take(f.archive->ReadMember("war3map.w3i")) == Take(settings.Serialize()),
         "cold-recovered owned geometry and descriptions reach ordinary native archive save");
 }
+
+void BoundsAfterBrushAndRepeatedBoundsRecoverAgainstOriginalSource() {
+    Fixture f;
+    TerrainBrush raise; raise.kind = TerrainBrushKind::Raise; raise.radius = 0; raise.strength = 8;
+    const TerrainStrokePoint point{0, 0}; Take(f.edits->EditTerrain(raise, std::span(&point, 1), false));
+    Check(f.edits->ApplyPreparedTerrainBoundsEdit(Take(f.edits->PrepareTerrainBoundsEdit(f.Capture(), {{1, 1, 9, 7}}))));
+    Check(f.edits->ApplyPreparedTerrainBoundsEdit(Take(f.edits->PrepareTerrainBoundsEdit(f.Capture(), {{2, 2, 8, 6}}))));
+    const auto journal = Take(Services::TerrainPathingSave::CaptureJournal(*f.archive, *f.edits));
+    Require(journal.strokes.size() == 3 && journal.strokes[0].intent.brush.kind == TerrainBrushKind::Raise
+        && journal.strokes[1].intent.bounds && journal.strokes[2].intent.bounds,
+        "ordered recovery includes the height before both distinct bounds commands");
+    const auto terrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto settings = Take(f.edits->Snapshot().Settings()->Serialize());
+    const auto original = MapDocument::FromMembers(f.members);
+    MapDataEditSession raw(original);
+    Check(raw.AttachTerrain(f.members[0].data)); Check(raw.AttachPathing(f.members[1].data));
+    Check(raw.SetTerrainAndPathing(terrain, f.members[1].data));
+    Check(raw.SetSerialized(MapDataKind::Settings, settings));
+    auto recovered = Take(Services::TerrainPathingSave::RestoreJournal(*f.archive, original,
+        f.members[0].data, f.members[1].data, journal, raw, {}));
+    Require(recovered.session->MatchesTerrainJournalDraft(raw) && recovered.receipts.size() == 3,
+        "all three source-bound commands replay without confusing intermediate W3E with the original archive");
+    Check(recovered.session->VerifyTerrainSettingsForSave());
+    for (auto i = recovered.receipts.rbegin(); i != recovered.receipts.rend(); ++i) Check(recovered.session->Replay(*i, false));
+    Require(!recovered.session->IsDirty(), "repeated-bounds recovery retains complete shared Undo");
+    for (const auto& receipt : recovered.receipts) Check(recovered.session->Replay(receipt, true));
+    Require(recovered.session->MatchesTerrainJournalDraft(raw), "repeated-bounds shared Redo restores the whole draft");
+    f.edits = std::move(recovered.session); f.Save("repeated-bounds-recovered.w3x");
+    Require(Take(f.archive->ReadMember("war3map.w3e")) == terrain
+        && Take(f.archive->ReadMember("war3map.w3i")) == settings,
+        "height followed by two bounds commands reaches ordinary native archive save");
+}
+
+void NativeMapEdgeExceptionRequiresSealedBounds() {
+    Fixture raw;
+    auto unowned = raw.members[0].data;
+    unowned[45 + (2 * 11 + 2) * 7 + 3] |= std::byte{0x40};
+    Check(raw.edits->SetTerrain(unowned));
+    const auto rawPlan = Take(TerrainSavePlan::PrepareForSave(*raw.archive, *raw.edits, {}));
+    Require(HasCode(rawPlan.SaveGate(), "MAP_TERRAIN_PATHING_UNVERIFIED"),
+        "raw MapEdge changes do not acquire the typed bounds exception");
+
+    Fixture owned;
+    Check(owned.edits->ApplyPreparedTerrainBoundsEdit(Take(
+        owned.edits->PrepareTerrainBoundsEdit(owned.Capture(), {{1, 1, 9, 7}}))));
+    const auto sealedTerrain = Take(SerializeMapTerrain(*owned.edits->Terrain()));
+    auto changedEdge = sealedTerrain;
+    changedEdge[45 + (2 * 11 + 2) * 7 + 3] ^= std::byte{0x40};
+    Check(owned.edits->SetTerrain(changedEdge));
+    const auto drifted = Take(TerrainSavePlan::PrepareForSave(*owned.archive, *owned.edits, {}));
+    Require(HasCode(drifted.SaveGate(), "TERRAIN_BOUNDS_STATE_CHANGED"),
+        "a typed bounds command cannot authorize a subsequent raw MapEdge overwrite");
+    Require(owned.edits->Undo(), "undo restores the sealed bounds mask after a refused save");
+    Check(owned.edits->VerifyTerrainSettingsForSave());
+
+    // 两种未知高位都不属于这个0x4000例外；可信范围不能授予未知高度语义。
+    for (const bool unknownWater : {true, false}) {
+        auto extra = sealedTerrain;
+        extra[45 + (2 * 11 + 2) * 7 + (unknownWater ? 3 : 1)] |= std::byte{0x80};
+        Check(owned.edits->SetTerrain(extra));
+        Check(owned.edits->VerifyTerrainSettingsForSave());
+        const auto revision = owned.edits->Revision();
+        const auto refused = Take(TerrainSavePlan::PrepareForSave(*owned.archive, *owned.edits, {}));
+        Require(HasCode(refused.SaveGate(), "MAP_TERRAIN_PATHING_UNVERIFIED"),
+            "sealed MapEdge ownership does not authorize unknown ground or water flag changes");
+        Require(owned.edits->Revision() == revision && owned.edits->IsDirty()
+            && Take(SerializeMapTerrain(*owned.edits->Terrain())) == extra,
+            "rejected extra flags preserve complete draft and revision");
+        Require(owned.edits->Undo(), "refusal retains the raw change's undo command");
+    }
+    Require(Take(SerializeMapTerrain(*owned.edits->Terrain())) == sealedTerrain,
+        "both rejected flag changes undo to the exact sealed mask");
+    const auto valid = Take(TerrainSavePlan::PrepareForSave(*owned.archive, *owned.edits, {}));
+    Check(valid.SaveGate()); Require(valid.RebuiltPathing(), "sealed bounds still use complete original and current native pathing");
+}
 }
 
 int main() {
@@ -134,6 +217,8 @@ int main() {
         BoundsSaveHasLiteralFullByteOraclesAndSavedUndo();
         PreparationNoOpStaleAndPrepublishAreAtomic();
         BoundsColdRecoveryRetainsWholeDraftAndDescriptionFields();
+        BoundsAfterBrushAndRepeatedBoundsRecoverAgainstOriginalSource();
+        NativeMapEdgeExceptionRequiresSealedBounds();
         std::cout << "terrain bounds session tests passed\n"; return 0;
     } catch (const std::exception& exception) { std::cerr << exception.what() << '\n'; return 1; }
 }

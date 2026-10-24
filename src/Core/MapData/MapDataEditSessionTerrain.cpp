@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainNativeUnitsProof.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
 #include <algorithm>
@@ -884,7 +885,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const std::optional<std::vector<std::byte>>& pathing,
     const std::optional<std::vector<std::byte>>& doodads,
     const TerrainPathingResources* resources, const std::vector<std::byte>* restrictions,
-    const std::optional<std::vector<std::byte>>* units, bool nativeRebuild) const {
+    const std::optional<std::vector<std::byte>>* units, bool nativeRebuild,
+    const TerrainNativeUnitsProof* nativeUnits) const {
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
@@ -921,7 +923,13 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         });
         if (!doo.Succeeded()) return doo;
         return check(MapDataKind::Units, units ? *units : current_[Index(MapDataKind::Units)],
-            [](const auto& before, const auto& after) { return VerifyUnitPlacementElevationOnly(before, after); });
+            [&](const auto& before, const auto& after) {
+                // 证明只能由完整native保存链按剩余额度构造；普通不变性检查
+                // 保持仅Z规则。此处不把Units动态占地错误烘焙到静态WPM。
+                return nativeRebuild && nativeUnits
+                    ? nativeUnits->Verify(before, after, SessionIdentity(), Revision(), TerrainSourceRevision())
+                    : VerifyUnitPlacementElevationOnly(before, after);
+            });
     };
     if (specialDoodads_ != savedSpecialDoodads_ && !nativeRebuild)
         return reject("可信水刷改变了特殊模型集合，必须分别重算旧/新DOO的完整通行贡献。");
@@ -946,6 +954,9 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     // 按源图到当前 W3E 的最终原始净差判定；工程恢复没有可靠的笔刷来源身份，
     // 不能只检查 Raise/Lower/Smooth 枚举来保护 UI 与 Agent 共用的保存路径。
     bool invariantChanged = !SameHeader(newHeader, oldHeader);
+    // 上方已完整核对私有范围状态绑定的旧/新W3I与全部MapEdge位。
+    // 仅原版G0/G1重建可消费该可信0x4000变化，未知0x8000及无owner草稿仍拒绝。
+    const auto protectedWaterFlags = nativeRebuild && boundsState_ ? 0x8000u : 0xc000u;
     for (std::size_t index = 0; index < terrain->vertices.size(); ++index) {
         const auto& before = terrainOriginal_->vertices[index];
         const auto& after = terrain->vertices[index];
@@ -953,12 +964,14 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         const bool cliffChanged = before.CliffLevel() != after.CliffLevel();
         const bool cliffVariationChanged = before.CliffVariation() != after.CliffVariation();
         const bool cliffTextureChanged = before.CliffTextureIndex() != after.CliffTextureIndex();
-        if ((waterChanged && ((!resources && !nativeRebuild) || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0xc000) != 0))
+        if ((waterChanged && ((!resources && !nativeRebuild) || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & protectedWaterFlags) != 0))
             || (cliffVariationChanged && !nativeRebuild)
             || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && ((!resources && !nativeRebuild)
                 || (cliffTextureChanged && !nativeRebuild)))
             || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw)
-                & ~(kBlightBit | ((resources || nativeRebuild) ? 0x0f : 0) | (nativeRebuild ? 0x50 : 0))) != 0)
+                // Boundary仅在完整原版G0/G1路径放行；原WPM必须逐格解释，
+                // 新边界按所属地格SW记录重算，不能沿用“通行不变”的输出。
+                & ~(kBlightBit | ((resources || nativeRebuild) ? 0x0f : 0) | (nativeRebuild ? 0xd0 : 0))) != 0)
             return reject("地形修改包含尚未验证的悬崖、坡道、水标志或边界变化，不能保留原 WPM");
         if (before.GroundVariation() != after.GroundVariation() && after.GroundVariation() > 17)
             return reject("新地面变体不在已支持的 0 到 17 范围内，未知变体只能原样保留");

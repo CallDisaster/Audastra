@@ -85,6 +85,10 @@ public:
     // 水刷规则owner在此只复核原始来源W3E/规则；不能用编辑后的输出冒充原始来源。
     [[nodiscard]] Status VerifyReadback(const MapArchiveSession& saved, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifyReadback(const WorkspaceSnapshot& saved, std::size_t maximumBytes) const;
+    // 编辑落笔前复核捕获时的真实旧来源；与保存后新W3E/W3I/DOO回读分开。
+    // 所有地图依赖均核对原始SHA/存在性，游戏winner/absence及预算与回读共用。
+    [[nodiscard]] Status VerifySourceInputs(const MapArchiveSession& source, std::size_t maximumBytes) const;
+    [[nodiscard]] Status VerifySourceInputs(const WorkspaceSnapshot& source, std::size_t maximumBytes) const;
     [[nodiscard]] std::size_t SourceBytes() const noexcept { return sourceBytes_; }
     // 原字节读取、严格物编解析与启动类别目录的累计工作预留；保存计划还需计入输出缓冲。
     [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept { return sourceBytes_ + objectWorkBytes_; }
@@ -140,7 +144,8 @@ private:
         std::span<const SpecialDoodadPlacement> placements, std::span<const TerrainNativeDoodadPathingType> types,
         std::uint8_t maximumCliffLevel, std::size_t stage);
     [[nodiscard]] Result<std::uint8_t> CaptureNativeCliffLimit(const MemberReader& reader);
-    [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes) const;
+    [[nodiscard]] Status VerifyReadbackMembers(const MemberReader& reader, std::size_t maximumBytes,
+        bool sourceInputs = false) const;
     [[nodiscard]] Status VerifyGameDependencies(std::size_t remainingBytes) const;
     struct Dependency {
         std::string name, sha256, gameArchive;
