@@ -213,7 +213,7 @@ std::array<std::uint32_t, 4> PlayableRectangle(const TerrainMinimapInput& input,
             : diagnostic.code == "NATIVE_MMP_CAMERA_CONFIG" ? "CLASSIC_MINIMAP_CAMERA_CONFIG"
             : diagnostic.code == "NATIVE_MMP_PLAYABLE_EMPTY" ? "CLASSIC_MINIMAP_PLAYABLE_EMPTY"
             : "CLASSIC_MINIMAP_CAMERA_BOUNDS";
-        Fail(code, diagnostic.message);
+        Fail(code, diagnostic.message.c_str());
     }
     return *rectangle.value;
 }
