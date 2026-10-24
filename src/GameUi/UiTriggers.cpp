@@ -1,0 +1,796 @@
+#include "War3MapCore/GameUi/UiTriggers.h"
+
+#include "War3MapCore/GameUi/GameCodeLayout.h"
+#include "UiDescriptionText.h"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <charconv>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <map>
+#include <optional>
+#include <unordered_map>
+
+namespace War3Map::GameUi {
+namespace {
+
+constexpr double kTemplateFontHeight = 0.011;
+constexpr std::string_view kLoopIndex = "GetForLoopIndexA()";
+
+constexpr std::array<std::string_view, 9> kAnchors{"AudastraAnchorTopLeft", "AudastraAnchorTop",
+    "AudastraAnchorTopRight", "AudastraAnchorLeft", "AudastraAnchorCenter", "AudastraAnchorRight",
+    "AudastraAnchorBottomLeft", "AudastraAnchorBottom", "AudastraAnchorBottomRight"};
+// 屏幕 0.8×0.6 上九个锚点的位置，顺序同 FramePoint。
+constexpr std::array<std::array<double, 2>, 9> kScreenPoints{{{0.0, 0.6}, {0.4, 0.6}, {0.8, 0.6}, {0.0, 0.3},
+    {0.4, 0.3}, {0.8, 0.3}, {0.0, 0.0}, {0.4, 0.0}, {0.8, 0.0}}};
+constexpr std::array<std::string_view, 3> kJustifyH{"AudastraJustifyLeft", "AudastraJustifyCenter", "AudastraJustifyRight"};
+constexpr std::array<std::string_view, 3> kJustifyV{"AudastraJustifyTop", "AudastraJustifyMiddle", "AudastraJustifyBottom"};
+
+using Lines = std::vector<std::string>;
+
+Diagnostic Note(DiagnosticSeverity severity, const char* code, std::string message) {
+    return Diagnostic{severity, "GameUi", code, std::move(message), std::nullopt};
+}
+
+void Append(Lines& out, const Lines& in, int depth = 0) {
+    const std::string pad(static_cast<std::size_t>(depth) * 4, ' ');
+    for (const auto& line : in) out.push_back(pad + line);
+}
+
+// 紧凑 T 写法的文本字面量：\" \\ \n \r \t 转义。
+std::string Quote(std::string_view text) {
+    std::string out = "\"";
+    for (const char c : text) {
+        switch (c) {
+        case '"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out.push_back(c);
+        }
+    }
+    return out + "\"";
+}
+
+// JASS 实数字面量：定点、最多 6 位小数、去掉末尾的 0，不用指数写法。
+std::string Real(double value) {
+    if (!std::isfinite(value)) value = 0.0;
+    std::array<char, 64> buffer{};
+    const int written = std::snprintf(buffer.data(), buffer.size(), "%.6f", value);
+    std::string text(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0);
+    while (text.ends_with('0')) text.pop_back();
+    if (text.ends_with('.')) text.pop_back();
+    if (text.empty() || text == "-0") text = "0";
+    return text;
+}
+
+std::string Call(std::string_view name, std::initializer_list<std::string> args = {}) {
+    std::string out(name);
+    out += '(';
+    bool first = true;
+    for (const auto& arg : args) {
+        if (!first) out += ", ";
+        out += arg;
+        first = false;
+    }
+    return out + ')';
+}
+
+Lines If(const Lines& conditions, const Lines& then, const Lines& otherwise = {}) {
+    Lines out{"IfThenElseMultiple() {", "    if:"};
+    Append(out, conditions, 2);
+    out.push_back("    then:");
+    Append(out, then, 2);
+    if (!otherwise.empty()) {
+        out.push_back("    else:");
+        Append(out, otherwise, 2);
+    }
+    out.push_back("}");
+    return out;
+}
+
+Lines Loop(std::uint32_t count, const Lines& body) {
+    Lines out{Call("ForLoopAMultiple", {"0", std::to_string(count - 1)}) + " {", "    actions:"};
+    Append(out, body, 2);
+    out.push_back("}");
+    return out;
+}
+
+std::uint32_t Hash(std::string_view text) {
+    std::uint32_t hash = 2166136261u;
+    for (const unsigned char c : text) hash = (hash ^ c) * 16777619u;
+    return hash;
+}
+
+// 功能写法里的名字：含 : ( ) 或首尾空格时加双引号。
+std::string FeatureName(const std::string& name) {
+    const bool quote = name.find_first_of(":()") != std::string::npos || name.front() == ' ' || name.back() == ' ';
+    return quote ? "\"" + name + "\"" : name;
+}
+
+bool UsableLabel(std::string_view label) {
+    if (label.empty() || label.find('"') != std::string_view::npos) return false;
+    for (const unsigned char c : label) {
+        if (c < 0x20) return false;
+    }
+    return true;
+}
+
+enum class Property : std::uint8_t { Texture, Text, Visible, Value };
+
+struct FrameInfo {
+    const UiFrame* frame = nullptr;
+    std::optional<std::size_t> parent;
+    std::size_t ordinal = 0;              // 树序，从 1 起
+    std::optional<std::size_t> group;     // 所属重复框架（重复的根自己也算）
+};
+
+class Generator {
+public:
+    Generator(const UiDescription& description, const UiTriggerOptions& options)
+        : d_(description), options_(options), name_(UsableLabel(description.label) ? description.label : description.id) {
+        contextBase_ = 1000000 + (Hash(description.id) % 1000) * 1000000;
+    }
+
+    Result<UiTriggerPlan> Run() {
+        for (const auto& frame : d_.frames) Collect(frame, std::nullopt, std::nullopt);
+        for (const auto& state : d_.states) {
+            for (const auto& entry : state.overrides) {
+                if (entry.texture) overrides_[entry.frame][Property::Texture].push_back(state.id);
+                if (entry.text) overrides_[entry.frame][Property::Text].push_back(state.id);
+                if (entry.visible) overrides_[entry.frame][Property::Visible].push_back(state.id);
+                if (entry.value) overrides_[entry.frame][Property::Value].push_back(state.id);
+            }
+        }
+
+        Lines create = Header();
+        Append(create, If({Call("OperatorCompareBoolean", {Call("AudastraUIIsReady"), "OperatorEqualENE", "false"})},
+            {Call("ReturnAction")}));
+        create.push_back(Call("AudastraUILoadToc", {Quote(kUiTemplateTocMember)}));
+        for (const auto& toc : options_.tocFiles) create.push_back(Call("AudastraUILoadToc", {Quote(toc)}));
+        Append(create, Grouped([&](const FrameInfo& info) { return Creation(info); }));
+        Append(create, Grouped([&](const FrameInfo& info) { return Properties(info); }));
+        const Lines update = Grouped([&](const FrameInfo& info) { return Updates(info); });
+        Append(create, update);
+
+        Lines refresh = Header();
+        Append(refresh, update);
+
+        if (!errors_.empty()) {
+            Result<UiTriggerPlan> failure;
+            failure.diagnostics = std::move(errors_);
+            return failure;
+        }
+
+        UiTriggerPlan plan;
+        std::string text = "变量:\n";
+        auto variable = [&](const std::string& name, std::string_view type, std::uint32_t size, const std::string& initial) {
+            text += "    " + name + ": " + std::string(type);
+            if (size) text += "[" + std::to_string(size) + "]";
+            text += " = " + initial + "\n";
+            plan.variables.push_back(name);
+        };
+        for (const auto& info : frames_) {
+            variable(UiFrameVariableName(d_.id, info.frame->id), "AudastraFrame", GroupSize(info), "AudastraFrameNone");
+        }
+        for (const auto& value : d_.values) variable(UiValueVariableName(d_.id, value.id), ValueType(value.type), value.size, Initial(value));
+        if (!d_.states.empty()) variable(UiStateVariableName(d_.id), "string", 0, "\"\"");
+
+        auto trigger = [&](const std::string& name, const Lines& events, const Lines& actions) {
+            text += "触发器 " + FeatureName(name) + ":\n";
+            if (!events.empty()) {
+                text += "    events:\n";
+                for (const auto& line : events) text += "        " + line + "\n";
+            }
+            text += "    actions:\n";
+            for (const auto& line : actions) text += "        " + line + "\n";
+            plan.triggers.push_back(name);
+        };
+        // 触发器的脚本名只保留 ASCII 字母数字，中文全变成下划线；名字末尾的 ASCII 编号保证脚本名不重。
+        auto named = [&](std::string_view role, const std::string& key) { return name_ + " " + std::string(role) + " " + d_.id + "_" + key; };
+        trigger(named("创建", "Create"), {Call("TriggerRegisterTimerEventSingle", {"0"})}, create);
+        trigger(named("更新", "Update"), {}, refresh);
+        for (const auto& state : d_.states) {
+            const std::string role = "状态 " + (UsableLabel(state.label) ? state.label : state.id);
+            trigger(named(role, "State_" + state.id), {}, State(state));
+        }
+        if (!d_.states.empty()) trigger(named("基础状态", "BaseState"), {}, BaseState(update));
+        plan.featureText = std::move(text);
+
+        Result<UiTriggerPlan> result = Result<UiTriggerPlan>::Success(std::move(plan));
+        result.diagnostics = std::move(warnings_);
+        return result;
+    }
+
+private:
+    void Error(const std::string& message) {
+        errors_.push_back(Note(DiagnosticSeverity::Error, "AUI_TRIGGER_UNSUPPORTED", message));
+    }
+
+    void Collect(const UiFrame& frame, std::optional<std::size_t> parent, std::optional<std::size_t> group) {
+        const std::size_t index = frames_.size();
+        // 描述检查已拒绝嵌套重复。
+        if (frame.repeat) group = index;
+        frames_.push_back(FrameInfo{&frame, parent, index + 1, group});
+        byId_[frame.id] = index;
+        for (const auto& child : frame.children) Collect(child, index, group);
+    }
+
+    [[nodiscard]] std::uint32_t GroupSize(const FrameInfo& info) const {
+        return info.group ? frames_[*info.group].frame->repeat->count : 0;
+    }
+
+    // 按重复分组输出：同一重复框架及其子框架的语句放进同一个循环。
+    template <class Build>
+    Lines Grouped(Build&& build) {
+        Lines out;
+        for (std::size_t i = 0; i < frames_.size();) {
+            const auto& info = frames_[i];
+            if (!info.group) {
+                Append(out, build(info));
+                ++i;
+                continue;
+            }
+            Lines body;
+            const auto group = *info.group;
+            for (; i < frames_.size() && frames_[i].group == group; ++i) Append(body, build(frames_[i]));
+            if (!body.empty()) Append(out, Loop(GroupSize(frames_[group]), body));
+        }
+        return out;
+    }
+
+    Lines Header() const {
+        return {Call("CommentString", {Quote("由界面 " + name_ + "（" + d_.id + "）生成，重新生成会覆盖本触发器")})};
+    }
+
+    // 框架变量在 from 所在上下文里的写法：同一重复组取当前下标，别的重复组取第一个实例。
+    [[nodiscard]] std::string Ref(const FrameInfo& target, const FrameInfo* from) const {
+        std::string name = "udg_" + UiFrameVariableName(d_.id, target.frame->id);
+        if (!target.group) return name;
+        if (from && from->group == target.group) return name + "[" + std::string(kLoopIndex) + "]";
+        return name + "[0]";
+    }
+    [[nodiscard]] std::string Self(const FrameInfo& info) const { return Ref(info, &info); }
+
+    [[nodiscard]] std::string Context(const FrameInfo& info) const {
+        const std::string base = std::to_string(contextBase_ + static_cast<std::uint32_t>(info.ordinal) * 1000);
+        return info.group ? Call("OperatorInt", {base, "OperatorAdd", std::string(kLoopIndex)}) : base;
+    }
+
+    [[nodiscard]] std::string Child(const FrameInfo& info, std::string_view name) const {
+        return Call("AudastraUIFindFrame", {Quote(name), Context(info)});
+    }
+
+    // 文字所在的框架：按钮的文字在模板里的子框架上。
+    [[nodiscard]] std::string TextTarget(const FrameInfo& info) const {
+        return info.frame->type == UiFrameType::Button ? Child(info, "AudastraButtonText") : Self(info);
+    }
+
+    [[nodiscard]] bool IsSimpleTemplate(const UiFrame& frame) {
+        if (!options_.library) {
+            warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_TEMPLATE_UNKNOWN",
+                "没有界面目录，框架 " + frame.id + " 的模板 " + frame.templateName + " 按普通框架创建"));
+            return false;
+        }
+        const auto found = options_.library->FindTemplate(frame.templateName);
+        if (!found || !found->definition) {
+            warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_TEMPLATE_UNKNOWN",
+                "框架 " + frame.id + " 的模板 " + frame.templateName + " 不在已读入的界面目录里，按普通框架创建"));
+            return false;
+        }
+        std::string type = found->definition->frameType;
+        for (auto& c : type) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return type.starts_with("SIMPLE");
+    }
+
+    Lines Creation(const FrameInfo& info) {
+        const UiFrame& frame = *info.frame;
+        const std::string parent = info.parent ? Ref(frames_[*info.parent], &info) : Call("AudastraUIGameUI");
+        std::string created;
+        auto classic = [&](std::string_view name) {
+            return Call("AudastraUICreateFrame", {Quote(name), parent, "0", Context(info)});
+        };
+        switch (frame.type) {
+        case UiFrameType::Panel: created = classic("AudastraPanel"); break;
+        case UiFrameType::Backdrop: created = classic("AudastraBackdrop"); break;
+        case UiFrameType::Text: created = classic("AudastraText"); break;
+        case UiFrameType::Button: created = classic("AudastraButton"); break;
+        case UiFrameType::Bar:
+            created = Call("AudastraUICreateSimpleFrame", {Quote("AudastraBar"), parent, Context(info)});
+            break;
+        case UiFrameType::Template:
+            created = IsSimpleTemplate(frame)
+                ? Call("AudastraUICreateSimpleFrame", {Quote(frame.templateName), parent, Context(info)})
+                : classic(frame.templateName);
+            break;
+        }
+        return {Call("SetVariable", {Self(info), created})};
+    }
+
+    // 锚点偏移；重复的根按实例下标整体平移。
+    [[nodiscard]] std::string Offset(double base, double step, bool shifted) const {
+        if (!shifted || step == 0.0) return Real(base);
+        const std::string moved = Call("OperatorReal", {Call("I2R", {std::string(kLoopIndex)}), "OperatorMultiply", Real(step)});
+        return base == 0.0 ? moved : Call("OperatorReal", {Real(base), "OperatorAdd", moved});
+    }
+
+    Lines Anchors(const FrameInfo& info) {
+        const UiFrame& frame = *info.frame;
+        Lines out;
+        if (frame.anchors.empty()) return out;
+        if (frame.type == UiFrameType::Template) out.push_back(Call("AudastraUIClearPoints", {Self(info)}));
+        const bool root = info.group && frames_[*info.group].frame == &frame;
+        const double dx = root ? frame.repeat->dx : 0.0;
+        const double dy = root ? frame.repeat->dy : 0.0;
+        for (const auto& anchor : frame.anchors) {
+            const auto point = static_cast<std::size_t>(anchor.point);
+            const auto targetPoint = static_cast<std::size_t>(anchor.targetPoint);
+            std::string target;
+            switch (anchor.target) {
+            case UiAnchorTarget::Parent:
+                target = info.parent ? Ref(frames_[*info.parent], &info) : Call("AudastraUIGameUI");
+                break;
+            case UiAnchorTarget::Screen:
+                out.push_back(Call("AudastraUISetAbsPoint", {Self(info), std::string(kAnchors[point]),
+                    Offset(kScreenPoints[targetPoint][0] + anchor.x, dx, root),
+                    Offset(kScreenPoints[targetPoint][1] + anchor.y, dy, root)}));
+                continue;
+            case UiAnchorTarget::Frame: {
+                const auto found = byId_.find(anchor.targetId);
+                if (found == byId_.end()) {
+                    Error("框架 " + frame.id + " 锚在不存在的框架 " + anchor.targetId + " 上");
+                    continue;
+                }
+                target = Ref(frames_[found->second], &info);
+                break;
+            }
+            case UiAnchorTarget::GameArea:
+                if (anchor.targetId != kGameCodeRoot) {
+                    Error("框架 " + frame.id + " 锚在游戏界面区域 " + anchor.targetId + " 上，自然 T 暂时只能锚在整个游戏界面");
+                    continue;
+                }
+                target = Call("AudastraUIGameUI");
+                break;
+            }
+            out.push_back(Call("AudastraUISetPoint", {Self(info), std::string(kAnchors[point]), target,
+                std::string(kAnchors[targetPoint]), Offset(anchor.x, dx, root), Offset(anchor.y, dy, root)}));
+        }
+        return out;
+    }
+
+    Lines TextStyle(const FrameInfo& info) {
+        const UiFrame& frame = *info.frame;
+        Lines out;
+        const std::string target = TextTarget(info);
+        if (!frame.font.empty() || std::abs(frame.fontHeight - kTemplateFontHeight) > 1e-9) {
+            const std::string& font = frame.font.empty() ? options_.defaultFont : frame.font;
+            if (font.empty()) Error("框架 " + frame.id + " 改了字号，但没有游戏默认字体的路径");
+            else out.push_back(Call("AudastraUISetFont", {target, Quote(font), Real(frame.fontHeight), "0"}));
+        }
+        const auto& c = frame.color;
+        if (c[0] != 1.0 || c[1] != 1.0 || c[2] != 1.0 || c[3] != 1.0) {
+            auto byte = [](double v) { return std::to_string(static_cast<int>(std::lround(std::clamp(v, 0.0, 1.0) * 255.0))); };
+            out.push_back(Call("AudastraUISetColor", {target, byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3])}));
+        }
+        if (frame.justifyH != JustifyH::Center || frame.justifyV != JustifyV::Middle) {
+            out.push_back(Call("AudastraUISetTextAlign", {target, std::string(kJustifyH[static_cast<std::size_t>(frame.justifyH)]),
+                std::string(kJustifyV[static_cast<std::size_t>(frame.justifyV)])}));
+        }
+        return out;
+    }
+
+    [[nodiscard]] bool HasReferences(const std::string& text) const {
+        const auto pieces = detail::ParseUiTextTemplate(text, nullptr);
+        if (!pieces) return false;
+        for (const auto& piece : *pieces) {
+            if (piece.reference) return true;
+        }
+        return false;
+    }
+
+    // 改贴图：按钮常态贴图在子框架上。
+    std::optional<std::string> Texture(const FrameInfo& info, const std::string& path) {
+        switch (info.frame->type) {
+        case UiFrameType::Backdrop:
+        case UiFrameType::Bar:
+            return Call("AudastraUISetTexture", {Self(info), Quote(path), "false"});
+        case UiFrameType::Button:
+            return Call("AudastraUISetTexture", {Child(info, "AudastraButtonBackdrop"), Quote(path), "false"});
+        default:
+            Error("框架 " + info.frame->id + " 是 " + std::string(UiFrameTypeName(info.frame->type)) + "，没有贴图");
+            return std::nullopt;
+        }
+    }
+
+    Lines Properties(const FrameInfo& info) {
+        const UiFrame& frame = *info.frame;
+        Lines out = Anchors(info);
+        if (frame.width && frame.height) {
+            out.push_back(Call("AudastraUISetSize", {Self(info), Real(*frame.width), Real(*frame.height)}));
+        } else if (frame.width) {
+            out.push_back(Call("AudastraUISetWidth", {Self(info), Real(*frame.width)}));
+        } else if (frame.height) {
+            out.push_back(Call("AudastraUISetHeight", {Self(info), Real(*frame.height)}));
+        }
+        switch (frame.type) {
+        case UiFrameType::Backdrop:
+            if (!frame.texture.empty()) {
+                if (auto line = Texture(info, frame.texture)) out.push_back(*line);
+            }
+            break;
+        case UiFrameType::Bar:
+            out.push_back(Call("AudastraUISetLimits", {Self(info), "0", "1"}));
+            if (!frame.texture.empty()) {
+                if (auto line = Texture(info, frame.texture)) out.push_back(*line);
+            }
+            if (!frame.background.empty()) {
+                out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraBarBackground"), Quote(frame.background), "false"}));
+            }
+            if (!frame.value.binding) out.push_back(Call("AudastraUISetValue", {Self(info), Real(frame.value.literal)}));
+            break;
+        case UiFrameType::Button:
+            if (!frame.texture.empty()) {
+                if (auto line = Texture(info, frame.texture)) out.push_back(*line);
+            }
+            if (!frame.pushed.empty()) {
+                out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraButtonPushed"), Quote(frame.pushed), "false"}));
+            }
+            [[fallthrough]];
+        case UiFrameType::Text:
+            Append(out, TextStyle(info));
+            if (!frame.text.empty() && !HasReferences(frame.text)) {
+                if (auto text = TextExpression(info, frame.text)) out.push_back(Call("AudastraUISetText", {TextTarget(info), *text}));
+            }
+            break;
+        case UiFrameType::Panel:
+        case UiFrameType::Template:
+            break;
+        }
+        if (!frame.visible.binding && !frame.visible.literal) out.push_back(Call("AudastraUIShow", {Self(info), "false"}));
+        for (const auto& event : d_.events) {
+            if (event.frame != frame.id) continue;
+            const std::string_view kind = event.kind == UiEventKind::Click ? "AudastraFrameEventClick"
+                : event.kind == UiEventKind::Enter ? "AudastraFrameEventEnter" : "AudastraFrameEventLeave";
+            out.push_back(Call("AudastraUIWatchFrame", {Self(info), std::string(kind), Quote(UiEventKey(d_.id, event.id)),
+                info.group ? std::string(kLoopIndex) : std::string("0")}));
+        }
+        return out;
+    }
+
+    const UiValue* FindValue(const std::string& id) const {
+        for (const auto& value : d_.values) {
+            if (value.id == id) return &value;
+        }
+        return nullptr;
+    }
+
+    // 数值变量的写法；取不到时记错误并返回空。perInstance 在重复框架外没有下标，按预览规则不取值。
+    std::optional<std::string> ValueRef(const FrameInfo& info, const std::string& id, bool perInstance,
+        std::optional<std::uint32_t> index, const UiValue** spec) {
+        const UiValue* value = FindValue(id);
+        if (!value) {
+            Error("框架 " + info.frame->id + " 用了不存在的数值 " + id);
+            return std::nullopt;
+        }
+        *spec = value;
+        std::string name = "udg_" + UiValueVariableName(d_.id, id);
+        if (perInstance) {
+            if (!info.group) return std::nullopt;
+            return name + "[" + std::string(kLoopIndex) + "]";
+        }
+        if (index) return name + "[" + std::to_string(*index) + "]";
+        return name;
+    }
+
+    std::optional<std::string> TextExpression(const FrameInfo& info, const std::string& text) {
+        std::string error;
+        const auto pieces = detail::ParseUiTextTemplate(text, &error);
+        if (!pieces) {
+            Error("框架 " + info.frame->id + " 的文字模板有误：" + error);
+            return std::nullopt;
+        }
+        std::optional<std::string> result;
+        for (const auto& piece : *pieces) {
+            std::string part;
+            if (!piece.reference) {
+                part = Quote(piece.literal);
+            } else {
+                const UiValue* spec = nullptr;
+                const auto& reference = *piece.reference;
+                const auto ref = ValueRef(info, reference.id, reference.perInstance, reference.index, &spec);
+                if (!ref) continue;
+                switch (spec->type) {
+                case UiValueType::Real:
+                    part = Call("AudastraUIFormatReal", {*ref, piece.decimals ? std::to_string(*piece.decimals) : "-1"});
+                    break;
+                case UiValueType::Integer: part = Call("I2S", {*ref}); break;
+                case UiValueType::Boolean: part = Call("AudastraUIBooleanText", {*ref}); break;
+                case UiValueType::String: part = *ref; break;
+                }
+            }
+            result = result ? Call("OperatorString", {*result, part}) : part;
+        }
+        return result ? *result : Quote("");
+    }
+
+    std::optional<std::string> NumberExpression(const FrameInfo& info, const UiBinding& binding) {
+        const UiValue* spec = nullptr;
+        auto ref = ValueRef(info, binding.value, binding.perInstance, binding.index, &spec);
+        if (!ref) return std::nullopt;
+        std::string number;
+        switch (spec->type) {
+        case UiValueType::Real: number = *ref; break;
+        case UiValueType::Integer: number = Call("I2R", {*ref}); break;
+        default:
+            Error("框架 " + info.frame->id + " 的数值绑定到 " + spec->id + "，它不是实数或整数");
+            return std::nullopt;
+        }
+        if (binding.scale != 1.0) number = Call("OperatorReal", {number, "OperatorMultiply", Real(binding.scale)});
+        if (binding.offset != 0.0) number = Call("OperatorReal", {number, "OperatorAdd", Real(binding.offset)});
+        return number;
+    }
+
+    Lines FlagStatements(const FrameInfo& info, const UiBinding& binding) {
+        const UiValue* spec = nullptr;
+        const auto ref = ValueRef(info, binding.value, binding.perInstance, binding.index, &spec);
+        if (!ref) return {};
+        const std::string self = Self(info);
+        std::string condition;
+        switch (spec->type) {
+        case UiValueType::Boolean:
+            if (!binding.invert) return {Call("AudastraUIShow", {self, *ref})};
+            condition = Call("OperatorCompareBoolean", {*ref, "OperatorEqualENE", "true"});
+            break;
+        case UiValueType::Integer:
+            condition = Call("OperatorCompareInteger", {*ref, "OperatorNotEqual", "0"});
+            break;
+        case UiValueType::Real:
+            condition = Call("OperatorCompareReal", {*ref, "OperatorNotEqual", "0"});
+            break;
+        case UiValueType::String:
+            Error("框架 " + info.frame->id + " 的显示绑定到文字数值 " + spec->id);
+            return {};
+        }
+        const std::string on = binding.invert ? "false" : "true";
+        const std::string off = binding.invert ? "true" : "false";
+        return If({condition}, {Call("AudastraUIShow", {self, on})}, {Call("AudastraUIShow", {self, off})});
+    }
+
+    // 有状态覆盖这一属性时，只在当前状态不覆盖它时刷新。
+    Lines Guarded(const FrameInfo& info, Property property, Lines statements) const {
+        if (statements.empty()) return statements;
+        const auto frame = overrides_.find(info.frame->id);
+        if (frame == overrides_.end()) return statements;
+        const auto states = frame->second.find(property);
+        if (states == frame->second.end()) return statements;
+        Lines conditions;
+        for (const auto& state : states->second) {
+            conditions.push_back(Call("OperatorCompareString", {"udg_" + UiStateVariableName(d_.id), "OperatorNotEqualENE", Quote(state)}));
+        }
+        return If(conditions, statements);
+    }
+
+    Lines Updates(const FrameInfo& info) {
+        const UiFrame& frame = *info.frame;
+        Lines out;
+        if ((frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) && HasReferences(frame.text)) {
+            if (auto text = TextExpression(info, frame.text)) {
+                Append(out, Guarded(info, Property::Text, {Call("AudastraUISetText", {TextTarget(info), *text})}));
+            }
+        }
+        if (frame.type == UiFrameType::Bar && frame.value.binding) {
+            if (auto number = NumberExpression(info, *frame.value.binding)) {
+                Append(out, Guarded(info, Property::Value, {Call("AudastraUISetValue", {Self(info), *number})}));
+            }
+        }
+        if (frame.visible.binding) Append(out, Guarded(info, Property::Visible, FlagStatements(info, *frame.visible.binding)));
+        return out;
+    }
+
+    // 重复框架上的语句对所有实例执行。
+    Lines ForAll(const FrameInfo& info, const Lines& statements) const {
+        if (!info.group || statements.empty()) return statements;
+        return Loop(GroupSize(frames_[*info.group]), statements);
+    }
+
+    const FrameInfo* Find(const std::string& id) {
+        const auto found = byId_.find(id);
+        if (found == byId_.end()) {
+            Error("状态覆盖了不存在的框架 " + id);
+            return nullptr;
+        }
+        return &frames_[found->second];
+    }
+
+    Lines State(const UiState& state) {
+        Lines out = Header();
+        out.push_back(Call("SetVariable", {"udg_" + UiStateVariableName(d_.id), Quote(state.id)}));
+        for (const auto& entry : state.overrides) {
+            const FrameInfo* info = Find(entry.frame);
+            if (!info) continue;
+            Lines statements;
+            if (entry.texture) {
+                if (auto line = Texture(*info, *entry.texture)) statements.push_back(*line);
+            }
+            if (entry.text) {
+                if (info->frame->type != UiFrameType::Text && info->frame->type != UiFrameType::Button) {
+                    Error("状态 " + state.id + " 给框架 " + entry.frame + " 改文字，它没有文字");
+                } else if (auto text = TextExpression(*info, *entry.text)) {
+                    statements.push_back(Call("AudastraUISetText", {TextTarget(*info), *text}));
+                }
+            }
+            if (entry.visible) statements.push_back(Call("AudastraUIShow", {Self(*info), *entry.visible ? "true" : "false"}));
+            if (entry.value) {
+                if (info->frame->type != UiFrameType::Bar) Error("状态 " + state.id + " 给框架 " + entry.frame + " 改数值，它不是进度条");
+                else statements.push_back(Call("AudastraUISetValue", {Self(*info), Real(*entry.value)}));
+            }
+            Append(out, ForAll(*info, statements));
+        }
+        return out;
+    }
+
+    // 回到基础状态：被覆盖过的属性恢复成描述里的固定值；绑定数值的属性由随后的更新块刷新。
+    Lines BaseState(const Lines& update) {
+        Lines out = Header();
+        out.push_back(Call("SetVariable", {"udg_" + UiStateVariableName(d_.id), Quote("")}));
+        for (const auto& info : frames_) {
+            const auto found = overrides_.find(info.frame->id);
+            if (found == overrides_.end()) continue;
+            const UiFrame& frame = *info.frame;
+            Lines statements;
+            for (const auto& [property, states] : found->second) {
+                switch (property) {
+                case Property::Texture:
+                    if (frame.texture.empty()) {
+                        warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_TEXTURE_RESTORE",
+                            "框架 " + frame.id + " 原本没有贴图，回到基础状态时保留状态设的贴图"));
+                    } else if (auto line = Texture(info, frame.texture)) {
+                        statements.push_back(*line);
+                    }
+                    break;
+                case Property::Text:
+                    if (!HasReferences(frame.text)) {
+                        if (auto text = TextExpression(info, frame.text)) statements.push_back(Call("AudastraUISetText", {TextTarget(info), *text}));
+                    }
+                    break;
+                case Property::Visible:
+                    if (!frame.visible.binding) statements.push_back(Call("AudastraUIShow", {Self(info), frame.visible.literal ? "true" : "false"}));
+                    break;
+                case Property::Value:
+                    if (!frame.value.binding) statements.push_back(Call("AudastraUISetValue", {Self(info), Real(frame.value.literal)}));
+                    break;
+                }
+            }
+            Append(out, ForAll(info, statements));
+        }
+        Append(out, update);
+        return out;
+    }
+
+    static std::string_view ValueType(UiValueType type) {
+        switch (type) {
+        case UiValueType::Real: return "real";
+        case UiValueType::Integer: return "integer";
+        case UiValueType::Boolean: return "boolean";
+        case UiValueType::String: return "string";
+        }
+        return "real";
+    }
+
+    static std::string Initial(const UiValue& value) {
+        switch (value.type) {
+        case UiValueType::String: return Quote(value.defaultValue);
+        case UiValueType::Boolean: return value.defaultValue == "true" ? "true" : "false";
+        case UiValueType::Integer: return value.defaultValue.empty() ? "0" : value.defaultValue;
+        case UiValueType::Real: {
+            double number = 0.0;
+            const auto& text = value.defaultValue;
+            std::from_chars(text.data(), text.data() + text.size(), number);
+            return Real(number);
+        }
+        }
+        return "0";
+    }
+
+    const UiDescription& d_;
+    const UiTriggerOptions& options_;
+    std::string name_;
+    std::uint32_t contextBase_ = 0;
+    std::vector<FrameInfo> frames_;
+    std::unordered_map<std::string, std::size_t> byId_;
+    std::unordered_map<std::string, std::map<Property, std::vector<std::string>>> overrides_;
+    std::vector<Diagnostic> errors_;
+    std::vector<Diagnostic> warnings_;
+};
+
+} // namespace
+
+Result<UiTriggerPlan> GenerateUiTriggers(const UiDescription& description, const UiTriggerOptions& options) {
+    if (const auto problems = ValidateUiDescription(description); !problems.empty()) {
+        for (const auto& problem : problems) {
+            if (problem.severity == DiagnosticSeverity::Error) {
+                Result<UiTriggerPlan> failure;
+                failure.diagnostics = problems;
+                return failure;
+            }
+        }
+    }
+    return Generator(description, options).Run();
+}
+
+std::string UiTemplateTocText() {
+    return std::string(kUiTemplateFdfMember) + "\r\n\r\n";
+}
+
+std::string UiTemplateFdfText() {
+    // 子框架名固定，生成的 T 用“按名字取框架 + 编号”改按钮文字、按下贴图和进度条底图。
+    static constexpr std::string_view text =
+        "// Audastra 界面描述生成的触发器使用的基础模板。由编辑器生成，重新生成会覆盖。\r\n"
+        "\r\n"
+        "Frame \"FRAME\" \"AudastraPanel\" {\r\n"
+        "}\r\n"
+        "\r\n"
+        "Frame \"BACKDROP\" \"AudastraBackdrop\" {\r\n"
+        "}\r\n"
+        "\r\n"
+        "Frame \"TEXT\" \"AudastraText\" {\r\n"
+        "    DecorateFileNames,\r\n"
+        "    FrameFont \"MasterFont\", 0.011, \"\",\r\n"
+        "    FontJustificationH JUSTIFYCENTER,\r\n"
+        "    FontJustificationV JUSTIFYMIDDLE,\r\n"
+        "}\r\n"
+        "\r\n"
+        "Frame \"SIMPLESTATUSBAR\" \"AudastraBar\" {\r\n"
+        "    Width 0.1,\r\n"
+        "    Height 0.012,\r\n"
+        "    Layer \"BACKGROUND\" {\r\n"
+        "        Texture \"AudastraBarBackground\" {\r\n"
+        "            SetAllPoints,\r\n"
+        "        }\r\n"
+        "    }\r\n"
+        "}\r\n"
+        "\r\n"
+        "Frame \"GLUETEXTBUTTON\" \"AudastraButton\" {\r\n"
+        "    Width 0.1,\r\n"
+        "    Height 0.03,\r\n"
+        "    ControlStyle \"AUTOTRACK|HIGHLIGHTONMOUSEOVER\",\r\n"
+        "    ControlBackdrop \"AudastraButtonBackdrop\",\r\n"
+        "    Frame \"BACKDROP\" \"AudastraButtonBackdrop\" {\r\n"
+        "        SetAllPoints,\r\n"
+        "    }\r\n"
+        "    ControlPushedBackdrop \"AudastraButtonPushed\",\r\n"
+        "    Frame \"BACKDROP\" \"AudastraButtonPushed\" {\r\n"
+        "        SetAllPoints,\r\n"
+        "    }\r\n"
+        "    ButtonText \"AudastraButtonText\",\r\n"
+        "    Frame \"TEXT\" \"AudastraButtonText\" {\r\n"
+        "        DecorateFileNames,\r\n"
+        "        FrameFont \"MasterFont\", 0.011, \"\",\r\n"
+        "        FontJustificationH JUSTIFYCENTER,\r\n"
+        "        FontJustificationV JUSTIFYMIDDLE,\r\n"
+        "    }\r\n"
+        "}\r\n";
+    return std::string(text);
+}
+
+std::string UiFrameVariableName(std::string_view description, std::string_view frame) {
+    return "AUI_" + std::string(description) + "_" + std::string(frame);
+}
+
+std::string UiValueVariableName(std::string_view description, std::string_view value) {
+    return "AUIV_" + std::string(description) + "_" + std::string(value);
+}
+
+std::string UiStateVariableName(std::string_view description) {
+    return "AUIS_" + std::string(description);
+}
+
+std::string UiEventKey(std::string_view description, std::string_view event) {
+    return std::string(description) + "." + std::string(event);
+}
+
+} // namespace War3Map::GameUi

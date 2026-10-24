@@ -1,0 +1,121 @@
+[AudastraUIIsReady]
+title = "界面库可用"
+description = "AudastraUI 界面库可用"
+comment = "玩家没装运行库或游戏版本不受支持时为假。"
+category = TC_AudastraUI
+returns = boolean
+
+[AudastraUILastError]
+title = "界面库最近错误"
+description = "AudastraUI 最近一次错误"
+comment = ""
+category = TC_AudastraUI
+returns = string
+
+[AudastraUIGameUI]
+title = "游戏界面"
+description = "游戏界面"
+comment = "整个游戏界面的根框架。"
+category = TC_AudastraUI
+returns = AudastraFrame
+
+[AudastraUIWorldFrame]
+title = "游戏画面框架"
+description = "游戏画面框架"
+comment = ""
+category = TC_AudastraUI
+returns = AudastraFrame
+
+[AudastraUIFindFrame]
+title = "按名字取框架"
+description = "名字为 ${名字}、编号 ${编号} 的框架"
+comment = "游戏自带的框架和模板里的子框架都能这样取。"
+category = TC_AudastraUI
+returns = AudastraFrame
+[[.args]]
+type = string
+[[.args]]
+type = integer
+default = "0"
+
+[AudastraUICreateFrame]
+title = "创建框架"
+description = "按模板 ${模板} 创建框架，父框架 ${父框架}，层级 ${层级}，编号 ${编号}"
+comment = "模板来自已加载的界面目录。"
+category = TC_AudastraUI
+returns = AudastraFrame
+[[.args]]
+type = string
+[[.args]]
+type = AudastraFrame
+default = "AudastraUIGameUI"
+[[.args]]
+type = integer
+default = "0"
+[[.args]]
+type = integer
+default = "0"
+
+[AudastraUICreateSimpleFrame]
+title = "创建 Simple 框架"
+description = "按模板 ${模板} 创建 Simple 框架，父框架 ${父框架}，编号 ${编号}"
+comment = "SIMPLEFRAME、SIMPLESTATUSBAR 等 Simple 类模板用这一条。"
+category = TC_AudastraUI
+returns = AudastraFrame
+[[.args]]
+type = string
+[[.args]]
+type = AudastraFrame
+default = "AudastraUIGameUI"
+[[.args]]
+type = integer
+default = "0"
+
+[AudastraUIFormatReal]
+title = "实数转文字（界面）"
+description = "把 ${数值} 转成文字，保留 ${小数位} 位小数"
+comment = "小数位为 -1 时最多保留 3 位并去掉末尾的 0，与编辑器预览一致。"
+category = TC_AudastraUI
+returns = string
+[[.args]]
+type = real
+[[.args]]
+type = integer
+default = "-1"
+
+[AudastraUIBooleanText]
+title = "布尔值转文字（界面）"
+description = "把 ${值} 转成文字"
+comment = "结果为 true 或 false。"
+category = TC_AudastraUI
+returns = string
+[[.args]]
+type = boolean
+
+[AudastraUIGetTriggerFrame]
+title = "触发界面事件的框架"
+description = "触发界面事件的框架"
+comment = ""
+category = TC_AudastraUI
+returns = AudastraFrame
+
+[AudastraUIGetTriggerIndex]
+title = "触发界面事件的序号"
+description = "触发界面事件的序号"
+comment = "重复框架的实例下标；监听时写入的序号。"
+category = TC_AudastraUI
+returns = integer
+
+[AudastraUIGetTriggerKind]
+title = "触发的界面事件类型"
+description = "触发的界面事件类型"
+comment = ""
+category = TC_AudastraUI
+returns = AudastraFrameEvent
+
+[AudastraUIGetTriggerKey]
+title = "触发的界面事件名"
+description = "触发的界面事件名"
+comment = ""
+category = TC_AudastraUI
+returns = string

@@ -1,0 +1,303 @@
+[AudastraUILoadToc]
+title = "加载界面目录"
+description = "加载界面目录文件 ${路径}"
+comment = "读入 toc 及其列出的 fdf，之后可按其中的模板名创建框架。"
+category = TC_AudastraUI
+[[.args]]
+type = string
+
+[AudastraUISetPoint]
+title = "设置相对锚点"
+description = "把 ${框架} 的 ${锚点} 对齐到 ${目标框架} 的 ${目标锚点}，偏移 (${X}, ${Y})"
+comment = "坐标单位为屏幕坐标，整个屏幕宽 0.8、高 0.6。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = AudastraAnchor
+default = "AudastraAnchorCenter"
+[[.args]]
+type = AudastraFrame
+default = "AudastraUIGameUI"
+[[.args]]
+type = AudastraAnchor
+default = "AudastraAnchorCenter"
+[[.args]]
+type = real
+default = "0"
+[[.args]]
+type = real
+default = "0"
+
+[AudastraUISetAbsPoint]
+title = "设置屏幕锚点"
+description = "把 ${框架} 的 ${锚点} 放到屏幕坐标 (${X}, ${Y})"
+comment = "屏幕左下角为 (0, 0)，右上角为 (0.8, 0.6)。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = AudastraAnchor
+default = "AudastraAnchorCenter"
+[[.args]]
+type = real
+default = "0.4"
+[[.args]]
+type = real
+default = "0.3"
+
+[AudastraUISetAllPoints]
+title = "铺满框架"
+description = "让 ${框架} 四角对齐 ${目标框架}"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = AudastraFrame
+default = "AudastraUIGameUI"
+
+[AudastraUIClearPoints]
+title = "清除锚点"
+description = "清除 ${框架} 的全部锚点"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+
+[AudastraUISetSize]
+title = "设置尺寸"
+description = "设置 ${框架} 的宽 ${宽} 高 ${高}"
+comment = "单位为屏幕坐标。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "0.1"
+[[.args]]
+type = real
+default = "0.02"
+
+[AudastraUISetWidth]
+title = "设置宽度"
+description = "设置 ${框架} 的宽 ${宽}"
+comment = "单位为屏幕坐标。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "0.1"
+
+[AudastraUISetHeight]
+title = "设置高度"
+description = "设置 ${框架} 的高 ${高}"
+comment = "单位为屏幕坐标。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "0.02"
+
+[AudastraUISetScale]
+title = "设置缩放"
+description = "设置 ${框架} 的缩放为 ${比例}"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "1"
+
+[AudastraUIShow]
+title = "显示/隐藏框架"
+description = "设置 ${框架} 显示：${显示}"
+comment = "只影响本机画面。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = boolean
+default = "true"
+
+[AudastraUISetAlpha]
+title = "设置透明度"
+description = "设置 ${框架} 的不透明度为 ${不透明度}"
+comment = "0 为全透明，255 为不透明。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = integer
+default = "255"
+
+[AudastraUISetLevel]
+title = "设置层级"
+description = "设置 ${框架} 的层级为 ${层级}"
+comment = "层级大的画在上面。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = integer
+default = "0"
+
+[AudastraUISetParent]
+title = "设置父框架"
+description = "把 ${框架} 挂到 ${父框架} 下"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = AudastraFrame
+
+[AudastraUISetText]
+title = "设置文字"
+description = "设置 ${框架} 的文字为 ${文字}"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = string
+default = ""
+
+[AudastraUISetFont]
+title = "设置字体"
+description = "设置 ${框架} 的字体为 ${字体}，字号 ${字号}，标志 ${标志}"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = string
+[[.args]]
+type = real
+default = "0.011"
+[[.args]]
+type = integer
+default = "0"
+
+[AudastraUISetTextAlign]
+title = "设置文字对齐"
+description = "设置 ${框架} 的文字 ${水平} 对齐、${竖直} 对齐"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = AudastraJustifyH
+default = "AudastraJustifyCenter"
+[[.args]]
+type = AudastraJustifyV
+default = "AudastraJustifyMiddle"
+
+[AudastraUISetColor]
+title = "设置颜色"
+description = "设置 ${框架} 的颜色为 红 ${红} 绿 ${绿} 蓝 ${蓝} 不透明度 ${不透明度}"
+comment = "各分量 0 到 255。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = integer
+default = "255"
+[[.args]]
+type = integer
+default = "255"
+[[.args]]
+type = integer
+default = "255"
+[[.args]]
+type = integer
+default = "255"
+
+[AudastraUISetTexture]
+title = "设置贴图"
+description = "设置 ${框架} 的贴图为 ${路径}，平铺：${平铺}"
+comment = "背景图、Simple 贴图和进度条的填充都用这一条。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = string
+[[.args]]
+type = boolean
+default = "false"
+
+[AudastraUISetValue]
+title = "设置数值"
+description = "设置 ${框架} 的数值为 ${数值}"
+comment = "用于进度条和滑块。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "1"
+
+[AudastraUISetLimits]
+title = "设置数值范围"
+description = "设置 ${框架} 的数值范围为 ${最小} 到 ${最大}"
+comment = "用于进度条。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "0"
+[[.args]]
+type = real
+default = "1"
+
+[AudastraUISetModel]
+title = "设置模型"
+description = "设置 ${框架} 的模型为 ${路径}，类型 ${类型}"
+comment = ""
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = string
+[[.args]]
+type = integer
+default = "0"
+
+[AudastraUISetEnabled]
+title = "启用/禁用框架"
+description = "设置 ${框架} 启用：${启用}"
+comment = "用于输入框、滑块等控件。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = boolean
+default = "true"
+
+[AudastraUIDestroy]
+title = "删除框架"
+description = "删除 ${框架}"
+comment = "只能删除地图创建的框架，挂在它下面的框架一起删除。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+
+[AudastraUIWatchFrame]
+title = "监听界面事件"
+description = "监听 ${框架} 的 ${事件}，事件名 ${事件名}，序号 ${序号}"
+comment = "事件发生时，用“界面事件”注册的触发器按事件名响应。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = AudastraFrameEvent
+default = "AudastraFrameEventClick"
+[[.args]]
+type = string
+[[.args]]
+type = integer
+default = "0"
