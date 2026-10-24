@@ -122,6 +122,11 @@ public:
         case MapData::TerrainBrushKind::Ramp:
             path.moveTo(3, 18); path.lineTo(7, 18); path.lineTo(17, 6); path.lineTo(21, 6);
             break;
+        case MapData::TerrainBrushKind::CornerRamp:
+            path.moveTo(3, 18); path.lineTo(11, 18); path.lineTo(21, 8);
+            path.moveTo(3, 18); path.lineTo(3, 10); path.lineTo(13, 0);
+            path.moveTo(11, 18); path.lineTo(11, 10); path.lineTo(21, 0);
+            break;
         case MapData::TerrainBrushKind::Boundary:
             path.addRect(QRectF(4, 4, 16, 16));
             path.moveTo(4, 12); path.lineTo(20, 12); path.moveTo(12, 4); path.lineTo(12, 20);
@@ -205,6 +210,7 @@ QWidget* WorldModule::BuildTerrainPage() {
         std::tuple{tr("悬崖类型"), MapData::TerrainBrushKind::CliffTexture, "CliffTexture"},
         std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"},
         std::tuple{tr("直坡"), MapData::TerrainBrushKind::Ramp, "Ramp"},
+        std::tuple{tr("拐角坡道"), MapData::TerrainBrushKind::CornerRamp, "CornerRamp"},
         std::tuple{tr("边界"), MapData::TerrainBrushKind::Boundary, "Boundary"},
         std::tuple{tr("通行限制"), MapData::TerrainBrushKind::PathingRestriction, "PathingRestriction"}};
     for (std::size_t index = 0; index < brushes.size(); ++index) {
@@ -322,7 +328,7 @@ QWidget* WorldModule::BuildTerrainPage() {
     terrainRampSection_ = Surface(terrainPalette_);
     auto* ramp = new QVBoxLayout(terrainRampSection_);
     ramp->setContentsMargins(0, 8, 0, 0); ramp->setSpacing(8);
-    ramp->addWidget(SectionLabel(tr("一级干地直坡"), terrainRampSection_));
+    ramp->addWidget(SectionLabel(tr("坡道"), terrainRampSection_));
     terrainRampModes_ = new QButtonGroup(terrainRampSection_);
     ramp->addWidget(Segment(terrainRampSection_, terrainRampModes_, {{tr("创建"), 1}, {tr("移除"), 0}},
         "worldTerrainRampMode"));
@@ -397,6 +403,7 @@ QWidget* WorldModule::BuildTerrainPage() {
     strengthRow->addWidget(terrainStrengthSlider_, 1); strengthRow->addWidget(terrainStrength_);
     strength->addLayout(strengthRow);
     column->addWidget(terrainStrengthSection_);
+    column->addWidget(BuildTerrainBoundsControls(terrainPalette_));
     column->addStretch(1);
     scroll->setWidget(terrainPalette_);
 
@@ -484,6 +491,7 @@ void WorldModule::RefreshTerrainPalette() {
         viewport_->VertexCount() == source->vertices.size());
     if (!terrainToggle_->isEnabled() && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
     UpdateTerrainBrushControls();
+    UpdateTerrainBoundsControls();
     UpdateToolState();
 }
 
@@ -571,7 +579,7 @@ void WorldModule::UpdateTerrainBrushControls() {
         std::pair{terrainCliffSection_, waterBrush || kind == MapData::TerrainBrushKind::CliffLevel || kind == MapData::TerrainBrushKind::CliffTexture},
         std::pair{terrainWaterSection_, kind == MapData::TerrainBrushKind::WaterHeight},
         std::pair{terrainWaterBrushSection_, NeedsStructuralBrushRules()},
-        std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp},
+        std::pair{terrainRampSection_, kind == MapData::TerrainBrushKind::Ramp || kind == MapData::TerrainBrushKind::CornerRamp},
         std::pair{terrainBlightSection_, kind == MapData::TerrainBrushKind::Blight},
         std::pair{terrainBoundarySection_, kind == MapData::TerrainBrushKind::Boundary},
         std::pair{terrainPathingSection_, kind == MapData::TerrainBrushKind::PathingRestriction},
@@ -582,7 +590,8 @@ void WorldModule::UpdateTerrainBrushControls() {
         if (appearing) UiKit::FadeIn(section, 160, 0.2);
     }
     for (auto* button : terrainCliffDeltas_->buttons()) button->setVisible(kind == MapData::TerrainBrushKind::CliffLevel);
-    const bool sized = kind != MapData::TerrainBrushKind::Ramp;
+    terrainEnforceWaterLimits_->setVisible(kind != MapData::TerrainBrushKind::CornerRamp);
+    const bool sized = kind != MapData::TerrainBrushKind::Ramp && kind != MapData::TerrainBrushKind::CornerRamp;
     terrainRadius_->setEnabled(sized); terrainRadiusSlider_->setEnabled(sized);
     for (auto* button : terrainShapes_->buttons()) button->setEnabled(sized);
     if (shaping) {

@@ -215,6 +215,27 @@ Status McpWorkspace::VerifyTerrainWaterResources(const MapData::TerrainPathingRe
     return owner.VerifyReadback(mapDataSource_->Snapshot(), MapData::TerrainSavePlanLimits{}.maximumBytes);
 }
 
+Result<MapData::TerrainPathingResources> McpWorkspace::CaptureTerrainBoundsResources() {
+    using Output = Result<MapData::TerrainPathingResources>;
+    const auto captured = CaptureTerrainSources();
+    if (!captured.Succeeded()) return Failed<MapData::TerrainPathingResources>(captured);
+    const auto& overlay = activeEdit_ ? activeEdit_->terrain : terrainState_->committed;
+    if (!overlay || !overlay->edits.Terrain())
+        return Output::Failure("MCP", "TERRAIN_BOUNDS_SESSION_REQUIRED", "范围编辑需要当前实际地形会话。");
+    const auto original = MapData::ParseMapTerrain(terrainState_->terrain);
+    if (!original.Succeeded() || !original.value) return Failed<MapData::TerrainPathingResources>(original);
+    const auto current = overlay->edits.Snapshot(MapDataKind::Doodads, MapData::TerrainSavePlanLimits{}.maximumBytes);
+    if (!current.Succeeded() || !current.value) return Failed<MapData::TerrainPathingResources>(current);
+    const auto& member = current.value->Member(MapDataKind::Doodads);
+    if (member.state == MapDataState::Missing)
+        return Services::TerrainPathingSave::CaptureNative(mapDataSource_->Snapshot(), *original.value->Snapshot(),
+            *overlay->edits.Terrain(), gameRoot_, MapData::TerrainSavePlanLimits{}.maximumBytes);
+    if (member.state != MapDataState::Ready || member.sources.size() != 1)
+        return Output::Failure("MCP", "TERRAIN_BOUNDS_DOODADS_UNAVAILABLE", "范围编辑需要唯一完整DOO来源。");
+    return Services::TerrainPathingSave::CaptureNative(mapDataSource_->Snapshot(), *original.value->Snapshot(),
+        *overlay->edits.Terrain(), gameRoot_, MapData::TerrainSavePlanLimits{}.maximumBytes, &member.sources.front().data);
+}
+
 bool McpWorkspace::HasTerrainOverlay() const noexcept {
     return activeEdit_ && activeEdit_->terrain && !activeEdit_->terrain->strokes.empty();
 }

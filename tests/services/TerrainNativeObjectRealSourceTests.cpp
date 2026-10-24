@@ -2,6 +2,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
@@ -10,11 +11,13 @@
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
 #include "War3MapCore/Services/MapCreateService.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/TerrainMinimapMarkers.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "TerrainWalkableBridgeRealTests.h"
 #include "TerrainGroundBrushRealTests.h"
 #include "TerrainExistingRampWaterRealTests.h"
+#include "TerrainPlayableBoundsRealTests.h"
 #include "TerrainShadowRealTests.h"
 #include "TerrainCategoryDirectoryRealTests.h"
 
@@ -127,6 +130,37 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
     }
     const std::array<MemberReplacement, 1> pathing{{{"war3map.wpm", oldWpm}}};
     const auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x", pathing)).path));
+    // 保存前从独立计算的最终W3E/DOO和实际来源捕获MMP expected；
+    // 复用真实资源生成器验证编排，不把保存产物回填expected，也不冒充原版算法oracle。
+    const auto expectedMarkers = Take(TerrainMinimapMarkers::Capture(source, game, afterMembers));
+    const auto expectedMarkerRecords = Take(ParseMapMinimapMarkers(expectedMarkers->Bytes()));
+    const auto verifyDerived = [&](const MapArchiveSession& archive, const char* phase) {
+        Require(archive.HasMember("war3map.shd") == source.HasMember("war3map.shd")
+            && (!source.HasMember("war3map.shd")
+                || Take(archive.ReadMember("war3map.shd")) == Take(source.ReadMember("war3map.shd"))),
+            "water deletion preserves every prior shadow byte or its actual absence");
+        Require(archive.HasMember("war3map.mmp"), "water deletion installs the final generated minimap marker stream");
+        const auto markerBytes = Take(archive.ReadMember("war3map.mmp"));
+        const auto records = Take(ParseMapMinimapMarkers(markerBytes));
+        Require(markerBytes == expectedMarkers->Bytes() && records.version == 0
+            && records.version == expectedMarkerRecords.version
+            && records.records.size() == expectedMarkers->MarkerCount()
+            && records.records.size() == expectedMarkerRecords.records.size(),
+            "water deletion reads back the complete expected MMP v0 bytes and record count");
+        for (std::size_t i = 0; i < records.records.size(); ++i) {
+            const auto& actual = records.records[i]; const auto& expected = expectedMarkerRecords.records[i];
+            Require(actual.typeRaw == expected.typeRaw && actual.positionRaw == expected.positionRaw
+                && actual.colorBgra == expected.colorBgra,
+                "water deletion MMP preserves final marker order, type, coordinates and BGRA exactly");
+        }
+        Check(expectedMarkers->VerifyReadback(archive));
+        std::cout << "water_delete_derived_members phase=" << phase << " repeat=" << repeat
+            << " source_sha256=" << source.SourceSha256() << " candidate_sha256=" << archive.SourceSha256()
+            << " shd_present=" << archive.HasMember("war3map.shd")
+            << " mmp_bytes=" << markerBytes.size() << " mmp_sha256=" << Take(Sha256(markerBytes))
+            << " mmp_version=0 mmp_records=" << records.records.size()
+            << " native_editor_verified=false game_verified=false\n";
+    };
     MapEditSaveRequest request;
     request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
     request.toolRoot = tool; request.gameRoot = game;
@@ -152,11 +186,7 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
         "public save reads back complete coupled W3E, DOO and WPM with the correct old and new model sets");
     Require(Take(readback.ReadMember("war3map.w3b")) == w3b,
         "public special deletion preserves every native destructable byte");
-    for (const auto* member : {"war3map.shd", "war3map.mmp"}) {
-        Require(readback.HasMember(member) == source.HasMember(member)
-            && (!source.HasMember(member) || Take(readback.ReadMember(member)) == Take(source.ReadMember(member))),
-            "water deletion keeps existing shadow and minimap icon bytes or their absence");
-    }
+    verifyDerived(readback, "public-save");
     Check(newRules.VerifyReadback(readback, kSaveBytes));
     if (repeat) {
         // 实际资源下补齐journal重放到正常地形保存计划的闭环；
@@ -185,9 +215,13 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
             baselineTerrain, baselinePathing, decoded, *replayed.session, game));
         Require(restored.receipts.size() == 2 && restored.session->RequiresTerrainStrokeJournal(),
             "actual source replay restores complete receipts and private special deletion lineage");
-        const auto plan = Take(TerrainPathingSave::PrepareForSave(source, *restored.session, game));
+        auto plan = Take(TerrainPathingSave::PrepareForSave(source, *restored.session, game));
+        Check(expectedMarkers->AdmitToPlan(plan, *restored.session));
         auto replacements = restored.session->Replacements();
         Check(plan.InstallPathingOutput(*restored.session, replacements));
+        // InstallPathingOutput只安装WPM；MMP正文仍必须来自实际owner并核对最终视图。
+        replacements.push_back({"war3map.mmp", expectedMarkers->Bytes()});
+        Check(expectedMarkers->VerifyFrozenOutput(source, replacements));
         const auto written = Take(source.SaveCandidate(scenario / "journal-restored.w3x", replacements));
         const auto reopened = Take(MapArchiveSession::Open(written.path));
         Check(plan.VerifyReadback(reopened));
@@ -196,11 +230,7 @@ void SpecialWaterDeletionUsesPublicSave(const MapArchiveSession& original,
             && Take(reopened.ReadMember("war3map.wpm")) == expectedWpm
             && Take(reopened.ReadMember("war3map.j")) == script,
             "journal-restored actual-resource save preserves complete terrain, placements, pathing and checked script");
-        for (const auto* member : {"war3map.shd", "war3map.mmp"}) {
-            Require(reopened.HasMember(member) == source.HasMember(member)
-                && (!source.HasMember(member) || Take(reopened.ReadMember(member)) == Take(source.ReadMember(member))),
-                "actual-resource journal save preserves baked shadow and minimap icon bytes or absence");
-        }
+        verifyDerived(reopened, "journal-restored-save");
         std::cout << "actual_journal_restore_save_passed strokes=2 wire_bytes=" << wire.size()
             << " source_sha256=" << source.SourceSha256() << " candidate_sha256=" << written.sha256
             << " native_editor_verified=false game_verified=false\n";
@@ -453,6 +483,8 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         if (group == RealSaveGroup::ExistingRamps) {
             TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealExistingRampWaterSave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealCornerRampSave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealPlayableBoundsSave(original, directory.path, tool, game);
             return;
         }
         if (group == RealSaveGroup::Shadows) {

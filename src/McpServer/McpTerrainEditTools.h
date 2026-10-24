@@ -2,6 +2,7 @@
 
 #include "McpServer.h"
 #include "War3MapCore/Services/TerrainEditService.h"
+#include "War3MapCore/Services/TerrainBoundsEditService.h"
 
 #include <functional>
 
@@ -24,6 +25,14 @@ struct TerrainEditToolHost {
     std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
         const Services::TerrainEditBinding&, const MapData::TerrainBrush&,
         std::span<const MapData::TerrainStrokePoint>, bool)> prepareCliff;
+    std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
+        const Services::TerrainEditBinding&, const MapData::TerrainBrush&,
+        std::span<const MapData::TerrainStrokePoint>, bool)> prepareCornerRamp;
+    std::function<Result<Services::PreparedTerrainBoundsEdit>(const TerrainEditToolContext&,
+        const Services::TerrainEditBinding&, const MapData::TerrainBoundsEditIntent&)> prepareBounds;
+    std::function<Status()> verifyBounds;
+    std::function<Status(const Services::PreparedTerrainBoundsEdit&,
+        const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>&)> applyBounds;
     // 准备水刷的实际owner由宿主保留到返回；提交前重新核来源和资源身份。
     std::function<Status()> verifyWater;
     std::function<Result<MapData::TerrainStrokeResult>(const Services::PreparedTerrainEdit&,

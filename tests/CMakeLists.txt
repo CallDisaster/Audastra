@@ -164,13 +164,15 @@ add_custom_command(
         "$<TARGET_FILE_DIR:war3-map-core-tests>")
 add_test(NAME core-foundation COMMAND war3-map-core-tests)
 
-foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainRampEditing TerrainCliffEditing TerrainSavePlan TerrainPathingResources TerrainNativePathing TerrainNativeSave TerrainUniformDoodadFootprint TerrainDoodadFootprint TerrainWaterBrush TerrainWaterBrushResources TerrainWaterSession TerrainDerivedCodec NativeMinimapMarkers TerrainShadowRebuild TerrainShadowResources PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
+foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainBoundsEditing TerrainBoundsSession TerrainRampEditing TerrainCliffEditing TerrainSavePlan TerrainPathingResources TerrainNativePathing TerrainNativeSave TerrainUniformDoodadFootprint TerrainDoodadFootprint TerrainWaterBrush TerrainWaterBrushResources TerrainWaterSession TerrainDerivedCodec NativeMinimapMarkers TerrainShadowRebuild TerrainShadowResources PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
     add_executable(war3-map-${service_test}-tests ${service_test}Tests.cpp)
     target_link_libraries(war3-map-${service_test}-tests PRIVATE War3MapEditor::Core)
     target_compile_definitions(war3-map-${service_test}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
     target_compile_options(war3-map-${service_test}-tests PRIVATE /W4 /permissive- /utf-8)
     add_test(NAME core-${service_test} COMMAND war3-map-${service_test}-tests)
 endforeach()
+
+target_link_libraries(war3-map-TerrainBoundsSession-tests PRIVATE War3MapEditor::Services)
 
 add_executable(war3-map-terrain-shadow-caster-tests TerrainShadowCasterTests.cpp)
 target_link_libraries(war3-map-terrain-shadow-caster-tests PRIVATE War3MapEditor::RenderSupport)

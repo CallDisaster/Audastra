@@ -365,6 +365,7 @@ void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
     const auto originalTerrain = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
     Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
         "existing ramp public save uses the playable 64-cell original fixture");
+    Require(!originalTerrain.header.cliffTilesets.empty(), "existing cliff seed has a real selected palette slot");
     for (const bool wet : {false, true}) {
         const auto scenario = directory / (wet ? "playable-wet-ramp-cliff" : "playable-dry-ramp-cliff");
         Require(std::filesystem::create_directory(scenario), "exclusive existing ramp cliff save scenario");
@@ -372,7 +373,9 @@ void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
         for (std::uint32_t y = 0; y < before.header.height; ++y) for (std::uint32_t x = 0; x < before.header.width; ++x) {
             auto& vertex = before.vertices[std::size_t{y} * before.header.width + x];
             Require(!vertex.HasWater() && !vertex.IsRamp(), "existing ramp seed begins with dry original terrain");
-            vertex.cliffAndLayerRaw = static_cast<std::uint8_t>((vertex.cliffAndLayerRaw & 0xf0) | (x <= 31 ? 3 : 2));
+            // 原图是未选材质的平地slot15；手造已有悬崖时必须显式选真实slot0。
+            // 不能保留slot15后制造异层/坡道，再要求保存门把未知旧墙面当安全平地。
+            vertex.cliffAndLayerRaw = static_cast<std::uint8_t>(x <= 31 ? 3 : 2);
         }
         for (const auto x : {31u, 32u, 33u}) before.vertices[32 * 65 + x].textureAndFlagsRaw |= 0x10;
         if (wet) for (std::uint32_t y = 29; y <= 35; ++y) for (std::uint32_t x = 29; x <= 35; ++x) {

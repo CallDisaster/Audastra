@@ -431,8 +431,14 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
         for (const auto& item : *value) if (!add(cost.retainedBytes, maximumBytes, item.rawcode.capacity())) return false;
         return true;
     };
+    const auto bounds = [&](const auto& value) {
+        return !value || (add(cost.retainedBytes, maximumBytes, sizeof(TerrainBoundsState))
+            && add(cost.retainedBytes, maximumBytes, value->mapEdges.capacity())
+            && add(cost.comparisonWork, maximumWork, value->mapEdges.size()));
+    };
     if (!add(cost.comparisonWork, maximumWork, 1024)
-        || !special(specialDoodads_) || !special(savedSpecialDoodads_)) return fail();
+        || !special(specialDoodads_) || !special(savedSpecialDoodads_)
+        || !bounds(boundsState_) || !bounds(savedBoundsState_)) return fail();
     for (std::size_t i = 0; i < original_.size(); ++i) {
         if (!bytes(original_[i]) || !bytes(current_[i])) return fail();
         if (preservedSources_[i]) {
@@ -460,6 +466,8 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
             || !add(cost.retainedBytes, maximumBytes, command->changes.capacity(), sizeof(MemberChange))
             || !add(cost.retainedBytes, maximumBytes, command->terrain.capacity(), sizeof(TerrainChunk))
             || !special(command->specialBefore) || !special(command->specialAfter)
+            || !bounds(command->boundsBefore) || !bounds(command->boundsAfter)
+            || !add(cost.retainedBytes, maximumBytes, command->boundsRulesSha256.capacity())
             || (command->headerBefore && !header(*command->headerBefore))
             || (command->headerAfter && !header(*command->headerAfter))) return fail();
         for (const auto& member : command->changes) if (!bytes(member.before, false) || !bytes(member.after, false)) return fail();
@@ -681,6 +689,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     const auto& candidateUnits = unitChange == command.changes.end() ? unitBytes : unitChange->after;
     PreparedTerrainEdit prepared;
     prepared.before_ = terrain_;
+    prepared.after_ = next;
     prepared.sessionIdentity_ = sessionIdentity_; prepared.revision_ = revision_;
     prepared.sourceRevision_ = terrainSourceRevision_;
     prepared.changed_ = changed;
@@ -776,6 +785,10 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
                 stroke.cliffEnforceWaterLimits = plan.cliffEnforceWaterLimits_;
                 // 规则摘要缺失时可编辑，但不能伪装成旧算法并持久化成可重放记录。
                 if (plan.waterResult_ && (!stroke.cliffEnforceWaterLimits || stroke.rulesSha256.empty())) expressible = false;
+            }
+            if (plan.brush_.kind == TerrainBrushKind::CornerRamp) {
+                stroke.rulesSha256 = plan.waterRulesSha256_;
+                expressible = expressible && plan.points_.size() == 1 && plan.waterResult_ && !stroke.rulesSha256.empty();
             }
             if (plan.brush_.anchor) {
                 const auto anchor = CaptureTerrainStrokeAnchor(*plan.before_, plan.points_.front());
@@ -875,8 +888,14 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
+    // 即使可信范围已经保存且W3E/WPM无净差，也不能让随后raw设置或草稿覆写
+    // 跳过密封geometry/MapEdge复核。
+    if (boundsState_) {
+        const auto settings = VerifyTerrainSettingsForSave();
+        if (!settings.Succeeded()) return settings;
+    }
     if (!TerrainDiffers(terrain, terrainOriginal_) && pathing == pathingOriginal_
-        && specialDoodads_ == savedSpecialDoodads_) return Status::Ok();
+        && specialDoodads_ == savedSpecialDoodads_ && !HasTerrainBoundsChanges()) return Status::Ok();
     if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
     if (!pathingProtected_ || !originalPathingRestrictions_ || !pathingRestrictions_)
@@ -885,8 +904,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         *pathingProtected_, *originalPathingRestrictions_, restrictions ? *restrictions : *pathingRestrictions_);
     if (!layers.Succeeded()) return layers;
     const auto checkPlacements = [&]() -> Status {
-        const auto settings = ValidateTerrainSettingsPathingChange(original_[Index(MapDataKind::Settings)],
-            current_[Index(MapDataKind::Settings)]);
+        const auto settings = VerifyTerrainSettingsForSave();
         if (!settings.Succeeded()) return settings;
         const auto check = [&](MapDataKind kind, const auto& current, auto verify) -> Status {
             const auto& before = original_[Index(kind)];
@@ -907,6 +925,8 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     };
     if (specialDoodads_ != savedSpecialDoodads_ && !nativeRebuild)
         return reject("可信水刷改变了特殊模型集合，必须分别重算旧/新DOO的完整通行贡献。");
+    if (HasTerrainBoundsChanges() && !nativeRebuild)
+        return reject("地图范围已变，必须分别按旧/新W3I重算完整通行贡献。");
     if (!TerrainDiffers(terrain, terrainOriginal_)) {
         if (const auto checked = checkPlacements(); !checked.Succeeded()) return checked;
         return PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain, kPathingRestrictionBits)

@@ -7,6 +7,7 @@
 #include "War3MapCore/MapData/TerrainPointQuery.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
+#include "War3MapCore/MapData/TerrainBoundsEditing.h"
 
 #include <array>
 #include <cstdint>
@@ -40,6 +41,7 @@ class MapDataEditSession {
     friend class TerrainSavePlan;
     friend class Services::AuxiliaryEditing;
     struct Command;
+    struct TerrainBoundsState;
 public:
     // 不可变事务回执供外层统一撤销栈使用；包含所有联动成员，不重新推导逆操作。
     class EditReceipt {
@@ -86,11 +88,14 @@ public:
         [[nodiscard]] std::size_t RetainedCommandBytes() const noexcept;
         [[nodiscard]] std::span<const TerrainStrokePoint> Points() const noexcept { return points_; }
         [[nodiscard]] bool FollowDoodads() const noexcept { return followDoodads_; }
+        // 同一密封候选的只读地形；预览不消费事务或授予保存资格。
+        [[nodiscard]] std::shared_ptr<const TerrainGridSnapshot> TerrainPreview() const noexcept { return after_; }
     private:
         friend class MapDataEditSession;
         PreparedTerrainEdit() = default;
         std::shared_ptr<const Command> command_;
         std::shared_ptr<const TerrainGridSnapshot> before_;
+        std::shared_ptr<const TerrainGridSnapshot> after_;
         std::uint64_t sessionIdentity_ = 0, revision_ = 0, sourceRevision_ = 0;
         TerrainStrokeResult changed_;
         Status terrainPathingGate_;
@@ -106,10 +111,32 @@ public:
         std::vector<TerrainStrokePoint> points_;
         bool followDoodads_ = false;
     };
+    class PreparedTerrainBoundsEdit {
+    public:
+        [[nodiscard]] bool HasChanges() const noexcept { return static_cast<bool>(command_); }
+        [[nodiscard]] const TerrainBoundsEditIntent& Intent() const noexcept { return intent_; }
+        [[nodiscard]] std::size_t ChangedMapEdges() const noexcept { return changedEdges_; }
+        [[nodiscard]] std::size_t PreparationBytes() const noexcept { return preparationBytes_; }
+        [[nodiscard]] std::size_t PreparationWork() const noexcept { return preparationWork_; }
+        [[nodiscard]] std::size_t RetainedCommandBytes() const noexcept;
+        [[nodiscard]] const std::array<float, 8>& CameraBounds() const noexcept { return cameraBounds_; }
+    private:
+        friend class MapDataEditSession;
+        PreparedTerrainBoundsEdit() = default;
+        std::shared_ptr<const Command> command_;
+        std::shared_ptr<const TerrainGridSnapshot> before_;
+        std::shared_ptr<const TerrainBoundsState> beforeBounds_;
+        std::uint64_t sessionIdentity_ = 0, revision_ = 0, sourceRevision_ = 0;
+        TerrainBoundsEditIntent intent_;
+        std::array<float, 8> cameraBounds_{};
+        std::size_t changedEdges_ = 0, preparationBytes_ = 0, preparationWork_ = 0;
+    };
     explicit MapDataEditSession(const MapDocument& source);
     MapDataEditSession(const MapDataEditSession&) = delete; // 会话身份与回执地址不能被复制。
     // 只冻结真实会话的保存输入；不提供可编辑副本，不从持久化字节恢复私有事务身份。
     [[nodiscard]] std::shared_ptr<const MapDataEditSession> FreezeForSave() const;
+    // 在分配前预收快照实际复制的成员/WPM/诊断，地形与私有special仍共享只读所有权。
+    [[nodiscard]] Result<std::shared_ptr<const MapDataEditSession>> FreezeForSave(std::size_t maximumBytes) const;
     MapDataEditSession& operator=(const MapDataEditSession&) = delete;
 
     [[nodiscard]] Status EditSettings(const MapSettings& value);
@@ -157,7 +184,11 @@ public:
     [[nodiscard]] Result<TerrainJournalDraftCost> MeasureTerrainJournalDraft(
         std::size_t maximumBytes, std::size_t maximumWork) const;
     [[nodiscard]] bool MatchesTerrainJournalDraft(const MapDataEditSession& expected) const noexcept;
-    [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_; }
+    // 前向恢复完成后只合并raw草稿的四说明字段；不接受草稿中的范围/其它设置。
+    // 宿主仍须以MatchesTerrainJournalDraft逐字比较全部输出后才能安装候选。
+    [[nodiscard]] Status RestoreTerrainJournalDescriptions(const MapDataEditSession& expected,
+        std::size_t maximumBytes, std::size_t maximumWork);
+    [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges(); }
     // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
     [[nodiscard]] std::string TerrainJournalStateFingerprint() const;
     [[nodiscard]] Result<PathingRestrictionPreview> QueryPathingRestrictions(std::size_t maximumCells = 4096) const;
@@ -179,8 +210,20 @@ public:
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCliffEdit(const TerrainPathingResources& resources,
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
         bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const TerrainPathingResources& resources,
+        const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
+        bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
+    // 输入实际native资源owner；不能用任意W3I覆写或自报规则授予范围保存资格。
+    [[nodiscard]] Result<PreparedTerrainBoundsEdit> PrepareTerrainBoundsEdit(const TerrainPathingResources& resources,
+        const TerrainBoundsEditIntent& intent, std::size_t maximumBytes = 512u * 1024u * 1024u,
+        std::size_t maximumWork = 64u * 1024u * 1024u) const;
+    [[nodiscard]] Status ApplyPreparedTerrainBoundsEdit(const PreparedTerrainBoundsEdit& plan,
+        const std::function<Status(const EditReceipt&)>& prepublish = {});
+    [[nodiscard]] bool HasTerrainBoundsChanges() const noexcept;
+    // 只接受密封范围状态和四说明字段的组合净差，其余W3I字节仍须完全一致。
+    [[nodiscard]] Status VerifyTerrainSettingsForSave() const;
     // 一笔地形笔刷为一次事务，撤销按 16×16 顶点区块保存前后原始字段。
     // followDoodads 为真时，改动范围内的装饰物、单位与物品随地面高度变化（同一事务）。
     [[nodiscard]] Result<TerrainStrokeResult> EditTerrain(const TerrainBrush& brush,
@@ -223,6 +266,20 @@ private:
     friend struct detail::PlacementEditingAccess;
     friend struct detail::TerrainInspectionAccess;
     friend struct detail::MapDataFieldEditingAccess;
+    friend class TerrainPathingResources;
+    struct TerrainBoundsState {
+        std::array<float, 8> cameraBounds{};
+        std::array<std::int32_t, 4> cameraMargins{};
+        std::int32_t playableWidth = 0, playableHeight = 0;
+        std::uint32_t flags = 0, width = 0, height = 0;
+        std::vector<std::byte> mapEdges;
+        [[nodiscard]] static std::shared_ptr<const TerrainBoundsState> Capture(const MapSettings&, const TerrainGridSnapshot&);
+        [[nodiscard]] bool Matches(const MapSettings&, const TerrainGridSnapshot&) const noexcept;
+        [[nodiscard]] bool MatchesSettings(const MapSettings&) const noexcept;
+        [[nodiscard]] bool MatchesSettingsBytes(std::span<const std::byte>) const noexcept;
+        [[nodiscard]] bool Equivalent(const TerrainBoundsState&) const noexcept;
+        void RestoreGeometry(MapSettings&) const noexcept;
+    };
     struct MemberChange {
         MapDataKind kind;
         std::optional<std::vector<std::byte>> before;
@@ -245,10 +302,13 @@ private:
         std::shared_ptr<const std::vector<PlacementRowLineage>> placements;
         std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialBefore, specialAfter;
         std::optional<TerrainJournalStroke> terrainStroke;
+        std::shared_ptr<const TerrainBoundsState> boundsBefore, boundsAfter;
+        std::optional<TerrainBoundsEditIntent> boundsIntent;
+        std::string boundsRulesSha256;
     };
     [[nodiscard]] Status Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized);
     [[nodiscard]] Status Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
-        std::vector<MemberChange>& changes) const;
+        std::vector<MemberChange>& changes, bool ownedBounds = false) const;
     [[nodiscard]] Status Commit(std::vector<MemberChange> changes);
     [[nodiscard]] Status CommitCommand(Command command,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
@@ -313,6 +373,7 @@ private:
     EditReceipt lastApplied_;
     // 只由真实来源构造、可信水刷更新；与Command一起撤销，保存只移动基线，不丢历史身份。
     std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialDoodads_, savedSpecialDoodads_;
+    std::shared_ptr<const TerrainBoundsState> boundsState_, savedBoundsState_;
     std::shared_ptr<const TerrainGridSnapshot> terrainOriginal_;
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;

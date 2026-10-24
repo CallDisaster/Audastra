@@ -22,6 +22,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
 
 #include "Widgets/ElidedLabel.h"
@@ -259,6 +260,7 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
     connect(&project_, &QtProject::EditorProject::ObjectDocumentsReplaced, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::SourceStateChanged, this, [this] {
         CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
+        InvalidateTerrainBoundsControls();
     });
     for (auto* stack : project_.objectUndoStacks_)
         if (stack) connect(stack, &QUndoStack::indexChanged, this, &WorldModule::Refresh);
@@ -441,6 +443,7 @@ WorldViewport* WorldModule::ViewportForTools() const {
 }
 
 void WorldModule::Refresh() {
+    InvalidateTerrainBoundsControls();
     ++selectionCatalogRevision_;
     if (premPresenter_) premPresenter_->Clear();
     if (animation_) animation_->Clear();
@@ -1013,6 +1016,7 @@ void WorldModule::RefreshPlacements() {
 
 void WorldModule::RefreshMapEdits() {
     if (!page_ || !viewport_) return;
+    InvalidateTerrainBoundsControls();
     InvalidateWaterBrushCapture();
     RefreshAssetBrowser();
     // push() 的首次 redo 不改动地图，只同步发出 indexChanged；最终地形已经在 FinishTerrainStroke
@@ -1039,10 +1043,15 @@ void WorldModule::RefreshMapEdits() {
     QueueWaterBrushCapture();
 }
 
+bool WorldModule::StructuralBrushEnforceWaterLimits() const {
+    return CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp
+        || (terrainEnforceWaterLimits_ && terrainEnforceWaterLimits_->isChecked());
+}
+
 bool WorldModule::WaterBrushCaptureCurrent() const {
     return waterCapture_ && terrainEnforceWaterLimits_
         && QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture_->request,
-            terrainEnforceWaterLimits_->isChecked());
+            StructuralBrushEnforceWaterLimits());
 }
 
 void WorldModule::InvalidateWaterBrushCapture() {
@@ -1055,7 +1064,7 @@ void WorldModule::InvalidateWaterBrushCapture() {
 
 void WorldModule::QueueWaterBrushCapture() {
     if (!page_ || !NeedsStructuralBrushRules() || strokeBase_ || waterCommit_ || !terrainEnforceWaterLimits_) return;
-    const bool enforce = terrainEnforceWaterLimits_->isChecked();
+    const bool enforce = StructuralBrushEnforceWaterLimits();
     if (WaterBrushCaptureCurrent()) return;
     if (waterCaptureRequest_ && QtProject::TerrainWaterEditRequestCurrent(project_, *waterCaptureRequest_, enforce)) return;
     InvalidateWaterBrushCapture();
@@ -1092,7 +1101,7 @@ void WorldModule::StartWaterBrushCapture() {
         if (!page_ || generation != generation_) return;
         if (serial == waterCaptureSerial_) {
             terrainWaterBrushStatus_->setProperty("captureMilliseconds", *elapsed);
-            if (!QtProject::TerrainWaterEditRequestCurrent(project_, *request, terrainEnforceWaterLimits_->isChecked())) {
+            if (!QtProject::TerrainWaterEditRequestCurrent(project_, *request, StructuralBrushEnforceWaterLimits())) {
                 waterCaptureRequest_.reset();
                 terrainWaterBrushStatus_->setText(tr("地图或资源修订已变化，请重新选择水刷"));
             } else if (!result->Succeeded()) {
@@ -1220,7 +1229,8 @@ void WorldModule::StartTerrainRender() {
         if (request.selectedWaterFrame)
             *result = RebuildWorldTerrain(*request.source, *cache, keepCliffs, request.selectedWaterFrame, blightPolicy, representation, shadowContext);
         else if (request.preview) {
-            if (request.waterBrush || request.brush.kind == MapData::TerrainBrushKind::CliffLevel) {
+            if (request.waterBrush || request.brush.kind == MapData::TerrainBrushKind::CliffLevel
+                || request.brush.kind == MapData::TerrainBrushKind::CornerRamp) {
                 if (!request.waterCapture || !request.waterCapture->resources.WaterBrushRules()) {
                     result->diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_PREVIEW_INPUT",
                         "水刷预览缺少本笔冻结的规则或装饰物来源。").diagnostics; return;
@@ -1231,6 +1241,9 @@ void WorldModule::StartTerrainRender() {
                     if (request.waterBrush) return MapData::PrepareTerrainWaterStroke(*request.source, rules,
                         *request.waterBrush, request.points, capture.request->doodads, capture.resources.WaterSpecialShapes());
                     const auto& brush = request.brush;
+                    if (brush.kind == MapData::TerrainBrushKind::CornerRamp)
+                        return MapData::PrepareTerrainCornerRampStroke(*request.source, rules, brush, request.points,
+                            capture.request->doodads, capture.resources.WaterSpecialShapes());
                     if (!brush.anchor) return Result<MapData::TerrainWaterStrokeCandidate>::Failure("Terrain.Cliff",
                         "TERRAIN_CLIFF_PREVIEW_ANCHOR", "悬崖预览缺少本笔冻结起点。");
                     return MapData::PrepareTerrainCliffStroke(*request.source, rules,
@@ -1273,7 +1286,7 @@ void WorldModule::StartTerrainRender() {
         if (generation != generation_ || !page_) return;
         if (serial == terrainRenderSerial_) {
             if (waterCapture && !QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request,
-                    terrainEnforceWaterLimits_->isChecked())) {
+                    StructuralBrushEnforceWaterLimits())) {
                 result->value.reset();
                 result->diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_PREVIEW_STALE",
                     "水刷预览对应的地图或资源修订已变化，未显示旧结果。").diagnostics;

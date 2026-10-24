@@ -39,6 +39,8 @@ struct MapEditTerrainStroke {
     // 有值时brush必须逐字段等于TerrainBrush{}；不接受两种笔刷同时指定。
     // 不接受客户端anchor，服务从当前有序地形的第一点捕获并固定整笔。
     std::optional<MapData::TerrainWaterStrokeOptions> waterBrush;
+    // 独立同尺寸可玩区命令：整数地格半开矩形；无points/普通笔刷/水选项。
+    std::optional<MapData::TerrainBoundsEditIntent> bounds;
 };
 
 // 地图数据字段修改：类别 / 行 / 字段寻址（字段目录见 MapData/MapFields.h），绑定成员 SHA、

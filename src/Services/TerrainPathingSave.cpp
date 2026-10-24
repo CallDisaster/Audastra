@@ -3,6 +3,7 @@
 #include "War3MapCore/ObjectData/NativeDestructablePathing.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Services/TerrainEditService.h"
+#include "War3MapCore/Services/TerrainBoundsEditService.h"
 #include "War3MapCore/Hash.h"
 
 #include <algorithm>
@@ -48,6 +49,13 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         return fail("TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.bounds) {
+            const auto& r = stroke.bounds->playable;
+            if (!Neutral(stroke.brush) || !stroke.points.empty() || stroke.followDoodads || stroke.waterBrush
+                || stroke.bounds->algorithm != 1 || r.west >= r.east || r.south >= r.north || r.east > 2048 || r.north > 2048)
+                return fail("TERRAIN_REPLAY_BOUNDS_CONFLICT", "范围命令需要独立的半开地格矩形，不能携带笔刷或采样点。");
+            continue;
+        }
         if (stroke.points.empty() || stroke.points.size() > 4096 - pointCount)
             return fail("TERRAIN_PATCH_POINT_BUDGET", "地形重放累计采样点超过4096或包含空笔划。");
         pointCount += stroke.points.size();
@@ -66,11 +74,63 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         const auto beforeRevision = candidate.Revision();
         if (!candidate.Terrain()) return fail("TERRAIN_REPLAY_UNAVAILABLE", "重放候选缺少当前地形。");
         const TerrainEditBinding binding{document, candidate.SessionIdentity(), candidate.Revision(), candidate.TerrainSourceRevision()};
+        if (stroke.bounds) {
+            const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
+                std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
+            if (!remaining || historyBytes == limits.maximumCandidateBytes || work == limits.maximumWork)
+                return fail("TERRAIN_REPLAY_BUDGET", "范围重放的累计资源、工作或候选预算已用尽。");
+            const auto wire = candidate.SnapshotByteSize(MapDataKind::Doodads);
+            if (!wire.Succeeded() || !wire.value) return {{}, wire.diagnostics};
+            if (!reserve(work, limits.maximumWork, *wire.value, 2)
+                || *wire.value > remaining || *wire.value > (limits.maximumCandidateBytes - historyBytes) / 32)
+                return fail("TERRAIN_REPLAY_BUDGET", "范围命令当前DOO快照超过整个重放预算。");
+            auto resources = [&]() -> Result<MapData::TerrainPathingResources> {
+                auto current = candidate.Snapshot(MapDataKind::Doodads, remaining);
+                if (!current.Succeeded() || !current.value) return {{}, current.diagnostics};
+                const auto& member = current.value->Member(MapDataKind::Doodads);
+                if (member.state == MapDataState::Missing)
+                    return TerrainPathingSave::CaptureNative(source, sourceTerrain, *candidate.Terrain(), gameRoot, remaining);
+                if (member.state != MapDataState::Ready || member.sources.size() != 1)
+                    return Result<MapData::TerrainPathingResources>::Failure("Terrain.Replay", "TERRAIN_REPLAY_DOODADS_UNAVAILABLE",
+                        "范围命令需要唯一完整DOO来源，不能把未知来源当作空表。");
+                return TerrainPathingSave::CaptureNative(source, sourceTerrain, *candidate.Terrain(), gameRoot, remaining,
+                    &member.sources.front().data);
+            }();
+            if (!resources.Succeeded() || !resources.value) return {{}, resources.diagnostics};
+            if (journal) {
+                const auto digestBytes = resources.value->TerrainBoundsDependencyBudgetBytes();
+                if (!digestBytes || digestBytes > limits.maximumCandidateBytes - historyBytes
+                    || !reserve(work, limits.maximumWork, digestBytes, 3))
+                    return fail("TERRAIN_REPLAY_BUDGET", "范围依赖摘要超过剩余候选或累计工作预算。");
+                const auto digest = resources.value->TerrainBoundsDependencyFingerprint(digestBytes);
+                if (!digest.Succeeded() || !digest.value || *digest.value != journal->strokes[strokeIndex].rulesSha256)
+                    return fail("TERRAIN_JOURNAL_RESOURCE_DRIFT", "范围实际来源、规则或缺失项已变化，未安装任何前缀。");
+            }
+            if (!reserve(resourceBytes, limits.maximumResourceBytes, resources.value->CaptureBudgetBytes())
+                || !reserve(ownedResources, limits.maximumResourceBytes, resources.value->OwnedCapacityBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "范围实际规则的累计捕获或保留量超过重放预算。");
+            auto plan = PrepareTerrainBoundsEdit(candidate, document, binding, *resources.value, *stroke.bounds,
+                limits.maximumCandidateBytes - historyBytes, limits.maximumWork - work);
+            if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+            if (!reserve(work, limits.maximumWork, plan.value->Plan().PreparationWork())
+                || !reserve(work, limits.maximumWork, plan.value->Plan().RetainedCommandBytes(), 2)
+                || plan.value->Plan().PreparationBytes() > limits.maximumCandidateBytes - historyBytes
+                || !reserve(historyBytes, limits.maximumCandidateBytes, plan.value->Plan().RetainedCommandBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "范围事务累计历史或工作超出重放预算。");
+            const auto applied = ApplyTerrainBoundsEdit(candidate, document, *plan.value);
+            if (!applied.Succeeded()) return {{}, applied.diagnostics};
+            owners.push_back(std::move(*resources.value));
+            if (candidate.Revision() != beforeRevision) {
+                if (receipts) receipts->push_back(candidate.LastEdit());
+            } else if (journal) return fail("TERRAIN_JOURNAL_NO_CHANGE", "范围记录没有形成真实命令，未安装任何前缀。");
+            ++strokeIndex; continue;
+        }
         const bool nativeCliff = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CliffLevel
             && (!journal || journal->strokes[strokeIndex].cliffEnforceWaterLimits.has_value());
-        if (stroke.waterBrush || nativeCliff) {
+        const bool cornerRamp = !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp;
+        if (stroke.waterBrush || nativeCliff || cornerRamp) {
             const bool enforceWaterLimits = stroke.waterBrush ? stroke.waterBrush->enforceWaterLimits
-                : journal ? *journal->strokes[strokeIndex].cliffEnforceWaterLimits : true;
+                : cornerRamp ? true : journal ? *journal->strokes[strokeIndex].cliffEnforceWaterLimits : true;
             const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
                 std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
             if (!remaining || historyBytes == limits.maximumCandidateBytes || work == limits.maximumWork)
@@ -111,6 +171,8 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
             auto plan = stroke.waterBrush
                 ? PrepareTerrainWaterEdit(candidate, document, binding, *resources.value,
                     *stroke.waterBrush, stroke.points, stroke.followDoodads, waterLimits)
+                : cornerRamp ? PrepareTerrainCornerRampEdit(candidate, document, binding, *resources.value,
+                    stroke.brush, stroke.points, stroke.followDoodads, waterLimits)
                 : PrepareTerrainCliffEdit(candidate, document, binding, *resources.value,
                     stroke.brush, stroke.points, stroke.followDoodads, waterLimits);
             if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
@@ -384,6 +446,25 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
         if (count > budget / element) return false;
         budget -= count * element; return true;
     };
+    // 四说明字段正文保留在raw W3I；为重放后的窄域合并预收临时解析/命令容量。
+    // source与expected都计，不能在CreateReplay耗尽预算后额外分配。
+    std::size_t descriptionBytes = 0, descriptionWork = 0;
+    const auto expectedSettings = expected.SnapshotByteSize(MapDataKind::Settings);
+    if (!expectedSettings.Succeeded() || !expectedSettings.value) return {{}, expectedSettings.diagnostics};
+    const auto& sourceSettings = original.Member(MapDataKind::Settings);
+    std::size_t sourceSettingsBytes = 0;
+    for (const auto& member : sourceSettings.sources) {
+        if (member.data.size() > 1024u * 1024u - sourceSettingsBytes)
+            return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "工程原始W3I超过说明恢复预算。");
+        sourceSettingsBytes += member.data.size();
+    }
+    if (*expectedSettings.value > 1024u * 1024u)
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "工程最终W3I超过说明恢复预算。");
+    descriptionBytes = 4096 + (*expectedSettings.value + sourceSettingsBytes) * 16;
+    descriptionWork = 4096 + (*expectedSettings.value + sourceSettingsBytes) * 8;
+    if (!charge(remaining.maximumCandidateBytes, descriptionBytes, 1)
+        || !charge(remaining.maximumWork, descriptionWork, 1))
+        return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "工程说明合并没有留下完整重放预算。");
     // owned factory现有接口接收连续typed intents；在复制任何点之前预收该有界副本。
     if (!charge(remaining.maximumCandidateBytes, journal.strokes.size(), sizeof(MapData::TerrainStrokeIntent)))
         return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_REPLAY_BUDGET", "前向笔划副本超过候选预算。");
@@ -401,6 +482,11 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
     auto candidate = CreateReplay(source, original, terrain, pathing, intents, gameRoot, remaining, sourceSha,
         std::forward<Reader>(reader), &journal);
     if (!candidate.Succeeded() || !candidate.value) return candidate;
+    const auto beforeDescriptions = candidate.value->session->Revision();
+    const auto descriptions = candidate.value->session->RestoreTerrainJournalDescriptions(expected, descriptionBytes, descriptionWork);
+    if (!descriptions.Succeeded()) return {{}, descriptions.diagnostics};
+    if (candidate.value->session->Revision() != beforeDescriptions)
+        candidate.value->receipts.push_back(candidate.value->session->LastEdit());
     // W3E/WPM、完整DOO/Units和所有其它成员/删除、P/savedS/currentS必须共同相等。
     if (!candidate.value->session->MatchesTerrainJournalDraft(expected))
         return Result<TerrainReplayCandidate>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_OUTPUT_MISMATCH",

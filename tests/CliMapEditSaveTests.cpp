@@ -149,6 +149,54 @@ void RampUsesExplicitBooleanAndTheSharedSaveGate() {
     Rejected(Invoke(args), "requires six arguments");
 }
 
+void CornerRampUsesOneWorldPointAndStrictBoolean() {
+    const auto base = [] {
+        auto args = Arguments();
+        args.insert(args.end(), {L"--corner-ramp", L"1056", L"1056", L"true"});
+        return args;
+    };
+    for (const auto value : {L"true", L"false"}) {
+        auto args = base(); args[11] = value;
+        const auto result = Invoke(args);
+        Require(result.exitCode != 0 && result.output.empty()
+            && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos
+            && result.error.find("SAVE_STROKE_KIND") == std::string::npos,
+            "corner creation/removal must reach the actual shared map source gate");
+    }
+    for (const auto value : {L"nan", L"inf", L"16777217", L"-16777217"}) {
+        auto args = base(); args[9] = value;
+        Rejected(Invoke(args), "requires finite world");
+    }
+    auto args = base(); args[11] = L"1";
+    Rejected(Invoke(args), "requires finite world");
+    args = base(); args.pop_back();
+    Rejected(Invoke(args), "requires world x, world y");
+}
+
+void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
+    const auto base = [] {
+        auto args = Arguments(); args.insert(args.end(), {L"--terrain-bounds", L"1", L"2", L"17", L"14"}); return args;
+    };
+    const auto result = Invoke(base());
+    Require(result.exitCode != 0 && result.output.empty() && result.error.find("SOURCE_LEASE_FAILED") != std::string::npos,
+        "valid half-open bounds reach the actual shared source identity gate");
+    for (const auto value : {L"-1", L"0.5", L"nan", L"4294967296"}) {
+        auto args = base(); args[9] = value;
+        Rejected(Invoke(args), "nonempty integer half-open");
+    }
+    for (const auto value : {L"0", L"1", L"2049"}) {
+        auto args = base(); args[11] = value;
+        Rejected(Invoke(args), "nonempty integer half-open");
+    }
+    auto incomplete = base(); incomplete.pop_back(); Rejected(Invoke(incomplete), "requires west south east north");
+    auto tooMany = Arguments();
+    for (unsigned i = 0; i < 129; ++i) tooMany.insert(tooMany.end(), {L"--terrain-bounds", L"1", L"2", L"17", L"14"});
+    Rejected(Invoke(tooMany), "at most 128 terrain");
+    auto mixed = base(); mixed.insert(mixed.end(), {L"--stroke", L"raise", L"circle", L"4", L"4", L"0", L"8"});
+    Require(Invoke(mixed).error.find("SOURCE_LEASE_FAILED") != std::string::npos,
+        "bounds and brush share one ordered service request without separate save routes");
+}
+
 } // namespace
 
 int main() {
@@ -158,6 +206,8 @@ int main() {
         TypedTextureAndWaterReachTheSaveService();
         NativeWaterUsesExplicitTypedArguments();
         RampUsesExplicitBooleanAndTheSharedSaveGate();
+        CornerRampUsesOneWorldPointAndStrictBoolean();
+        BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

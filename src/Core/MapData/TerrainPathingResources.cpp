@@ -8,6 +8,7 @@
 #include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainBoundsEditing.h"
 #include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "War3MapCore/Resources/TerrainTable.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -734,37 +735,12 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             result.waterRules_ = TerrainNativeWaterRules{*waterHeight, *deepThreshold, waterImpassable};
         }
         if (native) {
-            TerrainNativePlayableBounds bounds;
-            const auto& grid = before.header;
             for (const auto& margin : cameraMargins) if (!margin)
                 Fail("TERRAIN_NATIVE_CAMERA_CONFIG", "原版世界可玩范围需要实际CameraMargins四边配置。");
-            const auto world = [&](std::size_t i) { return *cameraMargins[i] * 128.0; };
-            const auto expandLow = [&](double base, std::size_t i) {
-                return static_cast<float>(static_cast<double>(static_cast<float>(base + world(i))) - world(i));
-            };
-            const auto expandHigh = [&](double base, std::size_t i) {
-                return static_cast<float>(static_cast<double>(static_cast<float>(base - world(i))) + world(i));
-            };
-            if ((settings->flags & 0x400u) != 0) {
-                for (const auto margin : settings->cameraMargins) if (margin < 0)
-                    Fail("TERRAIN_NATIVE_PLAYABLE_BOUNDS", "W3I可玩边距不能为负。");
-                // 先将补足边距与CameraMargins组合并存F32相机角，
-                // 再扩回F32查询矩形；不能仅在double中约去两次边距。
-                bounds = {expandLow(grid.offset[0] + settings->cameraMargins[0] * 128.0, 0),
-                    expandLow(grid.offset[1] + settings->cameraMargins[2] * 128.0, 2),
-                    expandHigh(grid.offset[0] + (static_cast<double>(grid.width - 1) - settings->cameraMargins[1]) * 128.0, 1),
-                    expandHigh(grid.offset[1] + (static_cast<double>(grid.height - 1) - settings->cameraMargins[3]) * 128.0, 3)};
-            } else {
-                bounds = {static_cast<float>(settings->cameraBounds[0] - world(0)),
-                    static_cast<float>(settings->cameraBounds[1] - world(2)),
-                    static_cast<float>(settings->cameraBounds[2] + world(1)),
-                    static_cast<float>(settings->cameraBounds[3] + world(3))};
-            }
-            // 通行查询使用world浮点矩形；不借用小地图clamp+tile取整。
-            if (!std::isfinite(bounds.left) || !std::isfinite(bounds.bottom) || !std::isfinite(bounds.right)
-                || !std::isfinite(bounds.top) || bounds.left >= bounds.right || bounds.bottom >= bounds.top)
-                Fail("TERRAIN_NATIVE_PLAYABLE_BOUNDS", "W3I实际世界可玩矩形无效或为空。");
-            result.nativeBounds_ = bounds;
+            std::array<float, 4> margins{};
+            for (std::size_t i = 0; i < margins.size(); ++i) margins[i] = *cameraMargins[i];
+            result.nativeBounds_ = Take(ComputeTerrainNativePlayableBounds(before.header, *settings, margins));
+            result.nativeCameraMargins_ = margins;
         }
         return result;
     });
@@ -977,8 +953,8 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
     return Guard<std::vector<std::byte>>([&] {
         const auto wire = TerrainWire(terrain, maximumBytes);
         const auto sha = Take(Sha256(wire));
-        if (nativeDoodads_ != nativeAfterDoodads_)
-            Fail("TERRAIN_NATIVE_STAGE_REQUIRED", "DOO发生变化，须显式选择旧或新阶段。");
+        if (nativeDoodads_ != nativeAfterDoodads_ || nativeAfterBounds_)
+            Fail("TERRAIN_NATIVE_STAGE_REQUIRED", "DOO或世界范围发生变化，须显式选择旧或新阶段。");
         return Take(GenerateNative(terrain, sha == nativeTerrainSha_[0] ? TerrainNativeStage::Before : TerrainNativeStage::After, maximumBytes));
     });
 }
@@ -995,33 +971,14 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
                 Fail("TERRAIN_NATIVE_SOURCE_IDENTITY", "请求W3E不属于本次捕获的指定旧/新阶段。");
         }
         TerrainNativePathingInput input;
-        input.terrain = &terrain; input.playableBounds = *nativeBounds_;
+        input.terrain = &terrain;
+        input.playableBounds = stage == TerrainNativeStage::After && nativeAfterBounds_ ? *nativeAfterBounds_ : *nativeBounds_;
         input.groundRules = nativeGround_; input.water = waterRules_;
         input.staticAttributes = nativeStaticAttributes_;
         input.specialDoodadCount = nativeSpecialCount_[index]; input.specialAttributes = nativeSpecialAttributes_[index];
         input.maximumCliffLevel = nativeMaximumCliffLevel_;
         return Take(GenerateTerrainNativePathing(input, maximumBytes));
     });
-}
-
-Status TerrainPathingResources::BindNativeSettingsOutput(const std::optional<std::vector<std::byte>>& source,
-    const std::optional<std::vector<std::byte>>& output) {
-    auto checked = Guard<bool>([&] {
-        const auto dependency = std::find_if(dependencies_.begin(), dependencies_.end(),
-            [](const auto& value) { return value.name == "war3map.w3i"; });
-        if (!nativeBounds_ || !source || !output || dependency == dependencies_.end() || !dependency->mapPresent
-            || source->size() != dependency->bytes || Take(Sha256(*source)) != dependency->sha256)
-            Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终W3I的会话原始字节不属于本次实际捕获来源。");
-        if (output->size() > capturedMaximumBytes_)
-            Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "最终W3I身份超过本次捕获预算。");
-        const auto invariant = ValidateTerrainSettingsPathingChange(source, output);
-        if (!invariant.Succeeded()) throw Failure{invariant.diagnostics};
-        auto sha = Take(Sha256(*output));
-        nativeSettingsOutputBytes_ = output->size();
-        nativeSettingsOutputSha_ = std::move(sha);
-        return true;
-    });
-    return {std::move(checked.diagnostics)};
 }
 
 Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplacement> replacements,

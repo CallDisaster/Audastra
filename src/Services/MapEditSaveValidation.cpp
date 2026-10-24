@@ -1,5 +1,6 @@
 #include "MapEditSaveValidation.h"
 #include "War3MapCore/MapData/PathingRestrictionEditing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 
 #include <algorithm>
 #include <cmath>
@@ -95,6 +96,22 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     }
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.bounds) {
+            const auto& brush = stroke.brush; const MapData::TerrainBrush neutral;
+            const auto& r = stroke.bounds->playable;
+            if (brush.kind != neutral.kind || brush.shape != neutral.shape || brush.radius != neutral.radius
+                || brush.groundTexture != neutral.groundTexture || brush.cliffTexture != neutral.cliffTexture
+                || brush.levelDelta != neutral.levelDelta || brush.value != neutral.value
+                || brush.strength != neutral.strength || brush.seed != neutral.seed || brush.anchor
+                || brush.size || brush.variation || brush.randomizeVariation != neutral.randomizeVariation
+                || brush.waterHeight != neutral.waterHeight || brush.pathingRestrictions != neutral.pathingRestrictions
+                || !stroke.points.empty() || stroke.pointSpace != MapEditPointSpace::World
+                || stroke.followDoodads || stroke.waterBrush || stroke.bounds->algorithm != 1
+                || r.west >= r.east || r.south >= r.north || r.east > 2048 || r.north > 2048)
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_BOUNDS_INVALID",
+                    "可玩区只接受独立的整数地格半开矩形；不搬移对象、不改变地图尺寸、不接受客户端规则。");
+            continue;
+        }
         if (stroke.waterBrush) {
             const auto& brush = stroke.brush;
             const MapData::TerrainBrush neutral;
@@ -123,11 +140,15 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             case MapData::TerrainBrushKind::CliffLevel:
             case MapData::TerrainBrushKind::WaterHeight:
             case MapData::TerrainBrushKind::Ramp:
+            case MapData::TerrainBrushKind::CornerRamp:
             case MapData::TerrainBrushKind::PathingRestriction:
                 break;
             default:
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_KIND", "地形笔刷种类未获识别。");
             }
+            if (stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp
+                && (!MapData::IsCanonicalTerrainCornerRampBrush(stroke.brush) || stroke.points.size() != 1))
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_CORNER_RAMP", "拐角坡道只接受单个canonical点及创建/移除选项。");
             if (stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction
                 && (!stroke.brush.pathingRestrictions || (stroke.brush.pathingRestrictions & ~MapData::kPathingRestrictionBits) != 0))
                 return Status::Failure("MapEdit.Save", "PATHING_RESTRICTION_FLAGS", "通行笔划只允许不可走、不可飞和不可建限制。");

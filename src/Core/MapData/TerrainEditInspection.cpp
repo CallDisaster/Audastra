@@ -38,7 +38,8 @@ struct TerrainInspectionAccess {
                 &edits.original_[index], &edits.current_[index]};
         };
         return {{member(MapDataKind::Doodads), member(MapDataKind::Units), member(MapDataKind::Settings)},
-            edits.terrainOriginal_, edits.terrain_, &edits.pathingOriginal_, &edits.pathing_, edits.pathingRestrictions_, edits.TerrainDirty()};
+            edits.terrainOriginal_, edits.terrain_, &edits.pathingOriginal_, &edits.pathing_, edits.pathingRestrictions_,
+            edits.TerrainDirty() || edits.HasTerrainBoundsChanges()};
     }
 };
 

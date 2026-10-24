@@ -283,7 +283,7 @@ target_compile_definitions(audastra-terrain-edit-service-tests PRIVATE NOMINMAX 
 target_compile_options(audastra-terrain-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-edit COMMAND audastra-terrain-edit-service-tests)
 
-add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp)
+add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp TerrainCornerRampServiceTests.cpp)
 target_link_libraries(audastra-terrain-water-edit-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-water-edit-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-water-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
@@ -303,7 +303,7 @@ add_test(NAME services-terrain-native-object-save COMMAND audastra-terrain-nativ
 
 add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
-    TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainShadowRealTests.cpp)
+    TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp)
 target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-native-object-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /permissive- /utf-8)

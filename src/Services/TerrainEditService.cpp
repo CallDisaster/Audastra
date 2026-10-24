@@ -36,6 +36,11 @@ Status CheckExpected(const MapData::MapDataEditSession& session, const MapDataQu
 
 } // namespace
 
+Status ValidateTerrainEditBinding(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected) {
+    return CheckExpected(session, document, expected);
+}
+
 Result<TerrainEditState> CaptureTerrainEditState(const MapData::MapDataEditSession& session,
     const MapDataQueryBinding& document) {
     if (const auto checked = CheckDocument(document); !checked.Succeeded()) return {{}, checked.diagnostics};
@@ -127,6 +132,19 @@ Result<PreparedTerrainEdit> PrepareTerrainCliffEdit(const MapData::MapDataEditSe
         if (!checked.Succeeded() || !checked.value) return {{}, checked.diagnostics};
     }
     auto plan = session.PrepareTerrainCliffEdit(resources, brush, points, followDoodads, limits);
+    if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+    return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
+}
+
+Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected,
+    const MapData::TerrainPathingResources& resources, const MapData::TerrainBrush& brush,
+    std::span<const MapData::TerrainStrokePoint> points, bool followDoodads,
+    const MapData::TerrainWaterBrushLimits& limits) {
+    if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
+    if (points.size() != 1)
+        return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_CORNER_RAMP_POINTS", "拐角坡道每笔必须恰好一个canonical采样点。");
+    auto plan = session.PrepareTerrainCornerRampEdit(resources, brush, points, followDoodads, limits);
     if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }

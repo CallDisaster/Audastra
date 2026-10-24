@@ -26,6 +26,7 @@
 #include "TerrainWaterEditFixture.h"
 #include "../MapDataFixtures.h"
 #include "../MapDataSpatialFixtures.h"
+#include "../TerrainCornerRampFixtures.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -43,6 +44,7 @@
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
 #include <QUndoStack>
 
 #include <algorithm>
@@ -174,6 +176,18 @@ struct Fixture {
         project.ResetEditTracking();
         return project.editTrackingReady_ && !project.editTrackingFailed_;
     }
+    bool InstallBounds(const TerrainCornerRampFixtures::Fixture& native) {
+        for (const auto& member : native.members)
+            if (!WriteFile(source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)))
+                return Fail("bounds native source");
+        project.war3GameRoot_ = native.game;
+        auto workspace = DirectoryWorkspace::Open(project.projectRoot_);
+        if (!workspace.Succeeded()) return Fail("bounds directory snapshot");
+        project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*workspace.value));
+        project.LoadMapDocument(); project.ResetEditTracking();
+        return project.mapEdits_ && project.mapEdits_->Terrain() && project.mapDataUndoStack_
+            && project.editTrackingReady_ && !project.editTrackingFailed_;
+    }
     bool InstallAuxiliary(bool seeded = false, bool references = false) {
         // 完整原创 T 配对和经典 W3I；引用负例使用实际变量默认值，经过 codec 建立来源 seal。
         if (!WriteFile(ui.filePath("ui/base/define.txt"),
@@ -297,6 +311,8 @@ private slots:
     void AuxiliaryReentryProjectReplacementAndSourceDrift();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
     void WaterToolsCaptureActualResourcesAndKeepOriginalUndo();
+    void BoundsToolsCaptureActualResourcesAndKeepOriginalUndo();
+    void BoundsPreparationRejectsConcurrentRevision();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
@@ -315,7 +331,7 @@ private slots:
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const QStringList expected{"auxiliary_copy", "auxiliary_create", "auxiliary_delete", "auxiliary_update",
-        "code.check", "create_campaign", "edit_campaign", "edit_terrain_stroke", "editor_check_trigger_graph",
+        "code.check", "create_campaign", "edit_campaign", "edit_terrain_bounds", "edit_terrain_stroke", "editor_check_trigger_graph",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
@@ -1413,6 +1429,109 @@ void LiveEditorToolsTests::WaterToolsCaptureActualResourcesAndKeepOriginalUndo()
         QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(session->SessionIdentity(), sessionIdentity);
         QCOMPARE(f.project.mapDataUndoStack_, undo);
     }
+}
+
+void LiveEditorToolsTests::BoundsToolsCaptureActualResourcesAndKeepOriginalUndo() {
+    namespace F = TerrainCornerRampFixtures;
+    F::Fixture native; Fixture f;
+    QVERIFY2(f.Initialize() && f.InstallBounds(native), qPrintable(f.error));
+    auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
+    const auto terrainBytes = [&] { return F::Take(MapData::SerializeMapTerrain(*session->Terrain())); };
+    const auto settingsBytes = [&] { return F::Take(session->Snapshot().Settings()->Serialize()); };
+    const auto originalTerrain = terrainBytes(), originalSettings = settingsBytes();
+    const auto originalUnits = F::Take(session->Snapshot().Units()->Serialize());
+    const auto originalDoodads = F::Take(session->Snapshot().Doodads()->Serialize());
+    const auto triggers = f.Fingerprint();
+    const auto state = f.tools->Invoke("get_terrain_edit_state", {});
+    QVERIFY2(state.value("ok").toBool(), qPrintable(Explain(state)));
+    auto request = f.Context();
+    request["terrain_binding"] = state.value("terrain_binding"); request["dry_run"] = true;
+    request["west"] = 2; request["south"] = 3; request["east"] = 30; request["north"] = 29;
+    const auto context = f.Context();
+    int beforeWrites = 0;
+    f.tools->SetBeforeWrite([&] { ++beforeWrites; return false; });
+    const auto preview = f.tools->Invoke("edit_terrain_bounds", request);
+    QVERIFY2(preview.value("ok").toBool(), qPrintable(Explain(preview)));
+    QVERIFY(!preview.value("applied").toBool()); QVERIFY(!preview.value("map_saved").toBool());
+    QVERIFY(preview.value("native_save_required").toBool());
+    QVERIFY(preview.value("changes").toObject().value("has_changes").toBool());
+    QCOMPARE(beforeWrites, 0); QCOMPARE(undo->count(), 0); QCOMPARE(session->Revision(), std::uint64_t{0});
+    QCOMPARE(terrainBytes(), originalTerrain); QCOMPARE(settingsBytes(), originalSettings); QCOMPARE(f.Context(), context);
+    for (const auto& malformed : {QJsonObject{{"dry_run", "true"}}, QJsonObject{{"points", QJsonArray{}}},
+        QJsonObject{{"west", 2.5}}, QJsonObject{{"north", 2049}}}) {
+        auto invalid = request;
+        for (auto it = malformed.begin(); it != malformed.end(); ++it) invalid[it.key()] = it.value();
+        QVERIFY(!f.tools->Invoke("edit_terrain_bounds", invalid).value("ok").toBool());
+        QCOMPARE(beforeWrites, 0); QCOMPARE(undo->count(), 0);
+    }
+    auto write = request; write["dry_run"] = false;
+    QCOMPARE(ErrorCode(f.tools->Invoke("edit_terrain_bounds", write)), QStringLiteral("LIVE_EDITOR_DRAFT_REJECTED"));
+    QCOMPARE(beforeWrites, 1); QCOMPARE(undo->count(), 0); QCOMPARE(f.Context(), context);
+    f.tools->SetBeforeWrite({});
+    QSignalSpy reloads(&f.project, &EditorProject::MapDocumentChanged);
+    QSignalSpy undoEvents(undo, &QUndoStack::indexChanged);
+    const auto applied = f.tools->Invoke("edit_terrain_bounds", write);
+    QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
+    QVERIFY(applied.value("applied").toBool()); QVERIFY(applied.value("native_save_required").toBool());
+    QVERIFY(!applied.value("map_saved").toBool()); QVERIFY(applied.value("edit_receipt").isObject());
+    QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(f.project.mapDataUndoStack_, undo);
+    QCOMPARE(undo->count(), 1); QCOMPARE(undoEvents.count(), 1); QCOMPARE(reloads.count(), 0);
+    const auto settings = *session->Snapshot().Settings();
+    QCOMPARE(settings.playableWidth, 28); QCOMPARE(settings.playableHeight, 26);
+    const std::array<std::int32_t, 4> margins{2, 2, 3, 3}; QVERIFY(settings.cameraMargins == margins);
+    const std::array<float, 8> camera{256, 384, 3840, 3712, 256, 3712, 3840, 384};
+    QVERIFY(settings.cameraBounds == camera);
+    for (unsigned y = 0; y < 33; ++y) for (unsigned x = 0; x < 33; ++x) {
+        const bool edge = x < 32 && y < 32 && (x < 2 || x >= 30 || y < 3 || y >= 29);
+        QCOMPARE(session->Terrain()->vertices[y * 33 + x].IsMapEdge(), edge);
+    }
+    QCOMPARE(F::Take(session->Snapshot().Units()->Serialize()), originalUnits);
+    QCOMPARE(F::Take(session->Snapshot().Doodads()->Serialize()), originalDoodads);
+    QCOMPARE(f.Fingerprint(), triggers); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+    const auto changedTerrain = terrainBytes(), changedSettings = settingsBytes();
+    QVERIFY(!f.tools->Invoke("edit_terrain_bounds", write).value("ok").toBool()); QCOMPARE(undo->count(), 1);
+    undo->undo(); QCOMPARE(terrainBytes(), originalTerrain); QCOMPARE(settingsBytes(), originalSettings);
+    undo->redo(); QCOMPARE(terrainBytes(), changedTerrain); QCOMPARE(settingsBytes(), changedSettings);
+    auto repeat = f.Context();
+    repeat["terrain_binding"] = f.tools->Invoke("get_terrain_edit_state", {}).value("terrain_binding");
+    repeat["dry_run"] = false; repeat["west"] = 2; repeat["south"] = 3; repeat["east"] = 30; repeat["north"] = 29;
+    const auto noOp = f.tools->Invoke("edit_terrain_bounds", repeat);
+    QVERIFY2(noOp.value("ok").toBool(), qPrintable(Explain(noOp)));
+    QVERIFY(!noOp.value("applied").toBool()); QCOMPARE(undo->count(), 1);
+    QFile terrainSource(f.source.filePath("map/war3map.w3e")); QVERIFY(terrainSource.open(QIODevice::ReadOnly));
+    QCOMPARE(terrainSource.readAll(), Bytes(originalTerrain)); terrainSource.close();
+    // 不发伪来源变化信号；实际文件SHA必须拒绝后续范围命令，保留原会话和Undo。
+    QVERIFY(WriteFile(f.source.filePath("map/UI/MiscData.txt"), "[CameraMargins]\nLeft=4\nRight=4\nBottom=4\nTop=4\n"));
+    repeat["dry_run"] = true;
+    QVERIFY(!f.tools->Invoke("edit_terrain_bounds", repeat).value("ok").toBool());
+    QCOMPARE(terrainBytes(), changedTerrain); QCOMPARE(settingsBytes(), changedSettings); QCOMPARE(undo->count(), 1);
+}
+
+void LiveEditorToolsTests::BoundsPreparationRejectsConcurrentRevision() {
+    namespace F = TerrainCornerRampFixtures;
+    F::Fixture native; Fixture f;
+    QVERIFY2(f.Initialize() && f.InstallBounds(native), qPrintable(f.error));
+    auto* session = f.project.mapEdits_.get();
+    const auto originalTerrain = F::Take(MapData::SerializeMapTerrain(*session->Terrain()));
+    auto request = f.Context();
+    request["terrain_binding"] = f.tools->Invoke("get_terrain_edit_state", {}).value("terrain_binding");
+    request["dry_run"] = false; request["west"] = 2; request["south"] = 3; request["east"] = 30; request["north"] = 29;
+    bool timerRan = false, authorEditSucceeded = false;
+    QJsonObject reentered;
+    QTimer::singleShot(0, &f.project, [&] {
+        timerRan = true;
+        reentered = f.tools->Invoke("edit_terrain_bounds", request);
+        auto settings = *session->Snapshot().Settings(); settings.mapName = "concurrent-author-bounds-edit";
+        authorEditSucceeded = session->EditSettings(settings).Succeeded();
+    });
+    const auto rejected = f.tools->Invoke("edit_terrain_bounds", request);
+    QVERIFY(timerRan); QVERIFY(authorEditSucceeded);
+    QCOMPARE(ErrorCode(reentered), QStringLiteral("LIVE_EDITOR_BUSY"));
+    QVERIFY(!rejected.value("ok").toBool()); QCOMPARE(ErrorCode(rejected), QStringLiteral("TERRAIN_EDIT_STALE"));
+    QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(session->Revision(), std::uint64_t{1});
+    QCOMPARE(session->Snapshot().Settings()->mapName, std::string("concurrent-author-bounds-edit"));
+    QCOMPARE(F::Take(MapData::SerializeMapTerrain(*session->Terrain())), originalTerrain);
+    QCOMPARE(f.project.mapDataUndoStack_->count(), 0);
 }
 
 void LiveEditorToolsTests::EntityFieldsUseOriginalSessionAndAtomicUndo() {

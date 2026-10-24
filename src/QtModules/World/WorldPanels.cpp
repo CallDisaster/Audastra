@@ -666,7 +666,8 @@ void WorldModule::UpdateToolHint() {
     if (tool == Tool::Terrain) {
         const auto* kind = terrainKinds_->checkedButton();
         const bool ramp = CurrentBrushKind() == MapData::TerrainBrushKind::Ramp;
-        toolSubtitle_->setText(ramp ? tr("一级干地直坡 · 三点范围")
+        const bool corner = CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp;
+        toolSubtitle_->setText(corner ? tr("一级干地拐角坡道 · 单点九顶点范围") : ramp ? tr("一级干地直坡 · 三点范围")
             : tr("%1 · 尺寸 %2").arg(kind ? kind->text() : QString{}).arg(terrainRadius_->value()));
         selectionStatus_->setText(strokeBase_ ? tr("涂刷中") : QString{});
         return;

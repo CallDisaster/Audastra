@@ -2,6 +2,7 @@
 #include "MapDataEditSessionTerrainInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/MapFields.h"
+#include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "War3MapCore/Hash.h"
 
 #include <algorithm>
@@ -9,6 +10,8 @@
 #include <atomic>
 #include <bit>
 #include <cctype>
+#include <new>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -91,7 +94,7 @@ Status MapDataEditSession::Apply(MapDataKind kind, Result<std::vector<std::byte>
 }
 
 Status MapDataEditSession::Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
-    std::vector<MemberChange>& changes) const {
+    std::vector<MemberChange>& changes, bool ownedBounds) const {
     const auto index = Index(kind);
     if (index >= states_.size())
         return Status::Failure("MapData.Edit", "MAP_KIND_INVALID", "未知的公共地图成员类别");
@@ -133,6 +136,10 @@ Status MapDataEditSession::Prepare(MapDataKind kind, Result<std::vector<std::byt
     if (state.state != MapDataState::Ready && !knownSettingsTail)
         return Status::Failure("MapData.Edit", "MAP_OUTPUT_UNSAFE",
             "修改后的地图成员存在重复身份或无法作为完整可编辑结构");
+    if (kind == MapDataKind::Settings && boundsState_ && !ownedBounds
+        && (!checked.Settings() || !boundsState_->MatchesSettings(*checked.Settings())))
+        return Status::Failure("MapData.Edit", "TERRAIN_BOUNDS_TYPED_COMMAND_REQUIRED",
+            "当前地图已有范围事务；可玩区域和镜头边界请通过地图范围命令修改，未改动任何成员。");
     if (after == current_[index]) return Status::Ok();
     changes.push_back({kind, current_[index], std::move(after)});
     return Status::Ok();
@@ -143,7 +150,7 @@ Status MapDataEditSession::Commit(std::vector<MemberChange> changes) {
 }
 
 Status MapDataEditSession::CommitCommand(Command value, const std::function<Status(const EditReceipt&)>& prepublish) {
-    if (value.changes.empty() && value.terrain.empty() && !value.headerAfter && !value.pathingAfter && !value.restrictionAfter) return Status::Ok();
+    if (value.changes.empty() && value.terrain.empty() && !value.headerAfter && !value.pathingAfter && !value.restrictionAfter && !value.boundsAfter) return Status::Ok();
     if (revision_ == std::numeric_limits<std::uint64_t>::max() ||
         (!value.logicalIdentity && nextCommandIdentity_ == std::numeric_limits<std::uint64_t>::max()))
         return Status::Failure("MapData.Edit", "MAP_EDIT_ID_EXHAUSTED", "编辑修订或命令身份已用尽。");
@@ -162,6 +169,9 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     if (static_cast<bool>(value.specialBefore) != static_cast<bool>(value.specialAfter)
         || (value.specialBefore && value.specialBefore != specialDoodads_))
         return Status::Failure("MapData.Edit", "TERRAIN_SPECIAL_STATE_STALE", "特殊模型事务来源已变，未提交任何成员。");
+    if (static_cast<bool>(value.boundsBefore) != static_cast<bool>(value.boundsAfter)
+        || (value.boundsBefore && boundsState_ && value.boundsBefore != boundsState_))
+        return Status::Failure("MapData.Edit", "TERRAIN_BOUNDS_STATE_STALE", "范围事务来源已变，未提交任何成员。");
     value.beforeRevision = revision_; value.afterRevision = revision_ + 1;
     auto command = std::make_shared<const Command>(std::move(value));
     // 在触碰历史或覆盖前完成可能抛出异常的分配，关联成员与地形不能部分提交。
@@ -203,6 +213,10 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     for (std::size_t i = 0; i < command->changes.size(); ++i)
         current_[Index(command->changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
+    if (command->boundsAfter) {
+        if (!savedBoundsState_) savedBoundsState_ = command->boundsBefore;
+        boundsState_ = command->boundsAfter;
+    }
     if (command->specialAfter) specialDoodads_ = command->specialAfter;
     if (command->pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
@@ -553,6 +567,9 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
     command.terrainStroke = source.terrainStroke;
     command.specialBefore = forward ? source.specialBefore : source.specialAfter;
     command.specialAfter = forward ? source.specialAfter : source.specialBefore;
+    command.boundsBefore = forward ? source.boundsBefore : source.boundsAfter;
+    command.boundsAfter = forward ? source.boundsAfter : source.boundsBefore;
+    command.boundsIntent = source.boundsIntent; command.boundsRulesSha256 = source.boundsRulesSha256;
     command.logicalForward = source.logicalForward == forward; command.placements = source.placements;
     for (const auto& change : source.changes) {
         const auto& expected = forward ? change.before : change.after;
@@ -615,6 +632,7 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
         current_[Index(command.changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
     if (command.specialAfter) specialDoodads_ = forward ? command.specialAfter : command.specialBefore;
+    if (command.boundsAfter) boundsState_ = forward ? command.boundsAfter : command.boundsBefore;
     if (command.pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
 }
@@ -670,6 +688,7 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
       preservedSources_(source.preservedSources_), revision_(source.revision_), sessionIdentity_(source.sessionIdentity_),
       nextCommandIdentity_(source.nextCommandIdentity_), terrainSourceRevision_(source.terrainSourceRevision_),
       specialDoodads_(source.specialDoodads_), savedSpecialDoodads_(source.savedSpecialDoodads_),
+      boundsState_(source.boundsState_), savedBoundsState_(source.savedBoundsState_),
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_), pathingOriginal_(source.pathingOriginal_),
       pathing_(source.pathing_), pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
       originalPathingRestrictions_(source.originalPathingRestrictions_) {}
@@ -677,6 +696,35 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
 std::shared_ptr<const MapDataEditSession> MapDataEditSession::FreezeForSave() const {
     // 不复制Undo历史/回执地址；快照只读且与前台共享不可变地形和私有special状态。
     return std::shared_ptr<const MapDataEditSession>(new MapDataEditSession(*this, SaveSnapshotTag{}));
+}
+
+Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForSave(std::size_t maximumBytes) const {
+    using Output = Result<std::shared_ptr<const MapDataEditSession>>;
+    const auto fail = [] { return Output::Failure("MapData.Edit", "MAP_SAVE_SNAPSHOT_BUDGET", "冻结会话的原生成员、WPM或诊断复制超过显式预算。"); };
+    std::size_t bytes = 0;
+    const auto add = [&](std::size_t count, std::size_t element = 1) {
+        if (element && count > (maximumBytes - bytes) / element) return false;
+        bytes += count * element; return true;
+    };
+    const auto text = [&](const auto& value) { return add(value.capacity() + 1, sizeof(typename std::decay_t<decltype(value)>::value_type)); };
+    if (!add(1, sizeof(MapDataEditSession) + 64)) return fail();
+    for (std::size_t i = 0; i < original_.size(); ++i) {
+        if (!text(memberNames_[i]) || (original_[i] && !add(original_[i]->capacity()))
+            || (current_[i] && !add(current_[i]->capacity()))) return fail();
+        if (!preservedSources_[i]) continue;
+        const auto& state = *preservedSources_[i];
+        if (!text(state.memberName) || !add(state.sources.capacity(), sizeof(MapArchiveMember))
+            || !add(state.diagnostics.capacity(), sizeof(Diagnostic))) return fail();
+        for (const auto& member : state.sources) if (!text(member.name) || !add(member.data.capacity())) return fail();
+        for (const auto& diagnostic : state.diagnostics) {
+            if (!text(diagnostic.subsystem) || !text(diagnostic.code) || !text(diagnostic.message)) return fail();
+            if (diagnostic.origin && (!text(diagnostic.origin->fingerprint) || !text(diagnostic.origin->source.native()))) return fail();
+        }
+    }
+    if ((pathingOriginal_ && !add(pathingOriginal_->capacity())) || (pathing_ && !add(pathing_->capacity()))) return fail();
+    try { return Output::Success(FreezeForSave()); }
+    catch (const std::bad_alloc&) { return fail(); }
+    catch (const std::length_error&) { return fail(); }
 }
 
 void MapDataEditSession::CommitSaved(const MapDocument& saved) {
@@ -720,6 +768,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     states_.swap(states);
     preservedSources_.swap(preservedSources);
     terrainOriginal_ = terrain_;
+    savedBoundsState_ = boundsState_;
     specialDoodads_ = savedSpecialDoodads_ = std::move(savedSpecial);
     // 不从P|A反推来源P，已保存意图S单独保留。
     originalPathingRestrictions_ = pathingRestrictions_;
@@ -760,7 +809,21 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
     TerrainStrokeJournal journal;
     std::size_t points = 0;
     for (const auto* command : active) {
-        if (!command->terrainStroke) return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+        if (command->boundsIntent) {
+            TerrainJournalStroke bounds; bounds.intent.bounds = command->boundsIntent;
+            bounds.rulesSha256 = command->boundsRulesSha256;
+            journal.strokes.push_back(std::move(bounds)); continue;
+        }
+        if (!command->terrainStroke) {
+            // 四说明字段不影响资源/地形重放。正文已由raw W3I保存，不能重复序列化
+            // 进typed记录，更不能把任意其它设置或WTS事务当作说明修改跳过。
+            if (command->changes.size() == 1 && command->changes.front().kind == MapDataKind::Settings
+                && command->terrain.empty() && !command->headerAfter && !command->pathingAfter
+                && !command->restrictionAfter && !command->placements && !command->specialAfter
+                && !command->boundsAfter && ValidateTerrainSettingsPathingChange(
+                    command->changes.front().before, command->changes.front().after).Succeeded()) continue;
+            return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+        }
         const auto count = command->terrainStroke->intent.points.size();
         if (!count || count > 4096 - points) return fail("TERRAIN_JOURNAL_BUDGET");
         points += count; journal.strokes.push_back(*command->terrainStroke);

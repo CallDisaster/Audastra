@@ -28,6 +28,10 @@ struct TerrainEditState {
 inline constexpr std::size_t TerrainQueryMaximumPoints = 256;
 inline constexpr std::size_t TerrainEditMaximumPoints = 4096;
 
+// 只核文档/会话CAS，不扫描地形和派生WPM；用于已在worker准备的密封命令发布。
+[[nodiscard]] Status ValidateTerrainEditBinding(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected);
+
 class PreparedTerrainEdit {
 public:
     [[nodiscard]] const TerrainEditBinding& Binding() const noexcept { return binding_; }
@@ -47,6 +51,10 @@ private:
         const MapData::TerrainWaterStrokeOptions&, std::span<const MapData::TerrainStrokePoint>, bool,
         const MapData::TerrainWaterBrushLimits&);
     friend Result<PreparedTerrainEdit> PrepareTerrainCliffEdit(const MapData::MapDataEditSession&,
+        const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
+        const MapData::TerrainBrush&, std::span<const MapData::TerrainStrokePoint>, bool,
+        const MapData::TerrainWaterBrushLimits&);
+    friend Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
         const MapData::TerrainBrush&, std::span<const MapData::TerrainStrokePoint>, bool,
         const MapData::TerrainWaterBrushLimits&);
@@ -74,6 +82,12 @@ private:
     bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {});
 // 普通悬崖仍是CliffLevel命令；仅规则来源和内部后处理与水刷共享。
 [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCliffEdit(
+    const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
+    const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
+    const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
+    bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {});
+// 单点一级干地拐角；完整规则/DOO owner、历史与原子提交和水刷共用。
+[[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(
     const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
     const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
