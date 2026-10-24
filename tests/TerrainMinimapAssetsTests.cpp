@@ -1046,7 +1046,7 @@ void TestFinalSettingsCaptureUsesActualCurrentOutput() {
         "独立输出回读消费最终W3I且不修改源图");
     auto oldSettings = Saved(fixture, source, "old-settings-saved.w3x");
     RequireRejected(VerifyTerrainMinimapAssetsReadback(captured, oldSettings), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
-    auto objects = Take(CaptureClassicMinimapObjectAssets(std::move(captured), source, fixture.edits, {}, output));
+    auto objects = Take(CaptureClassicMinimapObjectAssets(std::move(captured), source, fixture.edits, {}, archiveOutput));
     TerrainMinimapPostprocessSettings filters; filters.noisePercent = 0;
     const auto candidate = Take(BuildClassicMinimapCandidate(objects, filters));
     Require(candidate.manifest.sourceRectangle == std::array<std::uint32_t, 4>{2, 1, 7, 5}
