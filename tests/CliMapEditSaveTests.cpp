@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -89,6 +90,33 @@ void TypedTextureAndWaterReachTheSaveService() {
     Rejected(stroke(L"texture", L"中文"), "four-byte ASCII rawcode");
     Rejected(stroke(L"water-height", L"nan"), "water height must be finite");
     Rejected(stroke(L"water-height", L"2048"), "water height must be finite");
+}
+
+void RemoveWaterUsesOnlyItsFootprintAndSharedSaveService() {
+    const auto base = [] {
+        auto args = Arguments();
+        args.insert(args.end(), {L"--remove-water", L"square", L"0", L"4", L"16"});
+        return args;
+    };
+    auto args = base();
+    for (const auto shape : {L"circle", L"square"}) {
+        args[9] = shape;
+        Require(Invoke(args).error.find("SOURCE_LEASE_FAILED") != std::string::npos,
+            "remove-water reaches source checks without a water-height, seed, cliff slot or value");
+    }
+    for (const auto [index, value] : std::vector<std::pair<std::size_t, std::wstring>>{
+            {9, L"triangle"}, {10, L"-1"}, {10, L"4294967296"}, {11, L"nan"}, {12, L"17"}}) {
+        args = base(); args[index] = value; Rejected(Invoke(args), "radius 0..16");
+    }
+    args = base(); args.pop_back(); Rejected(Invoke(args), "requires shape");
+    args = base(); args.push_back(L"true"); Rejected(Invoke(args), "unknown map-edit-save option");
+    args = Arguments();
+    for (unsigned i = 0; i < 129; ++i)
+        args.insert(args.end(), {L"--remove-water", L"circle", L"4", L"4", L"0"});
+    Rejected(Invoke(args), "at most 128 ordered strokes");
+    args = base(); args.insert(args.end(), {L"--stroke", L"raise", L"circle", L"4", L"4", L"0", L"8"});
+    Require(Invoke(args).error.find("SOURCE_LEASE_FAILED") != std::string::npos,
+        "remove-water and height commands keep one ordered request");
 }
 
 void NativeWaterUsesExplicitTypedArguments() {
@@ -285,6 +313,7 @@ int main() {
         LegacyMinimapSwitchesAreRemoved();
         ShadowCalculationUsesTheSharedSaveService();
         TypedTextureAndWaterReachTheSaveService();
+        RemoveWaterUsesOnlyItsFootprintAndSharedSaveService();
         NativeWaterUsesExplicitTypedArguments();
         CliffUsesTypedClassicSizeAndDoesNotAliasTextureToLevel();
         RampUsesExplicitBooleanAndTheSharedSaveGate();

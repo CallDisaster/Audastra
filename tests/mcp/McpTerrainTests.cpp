@@ -704,6 +704,25 @@ void TestCliffSaveTransport() {
     Expect(!std::filesystem::exists(fixture.root / "cliff-candidate.w3x"), "cliff transport failures never create a partial map");
 }
 
+void TestRemoveWaterSaveTransport() {
+    Fixture fixture; McpServer server; RegisterAllTools(server); ScopedSaveRoots roots; roots.Set(fixture.ui);
+    const QJsonObject stroke{{"kind", "remove_water"}, {"shape", "square"}, {"point_space", "terrain_vertex"},
+        {"radius", 16}, {"points", QJsonArray{QJsonObject{{"x", 0}, {"y", 4}}}}, {"follow_doodads", false}};
+    QJsonObject args{{"source_map_path", QString::fromStdWString((fixture.root / "missing.w3x").wstring())},
+        {"output_path", QString::fromStdWString((fixture.root / "remove-candidate.w3x").wstring())},
+        {"expected_source_sha256", QString(64, 'a')}, {"expected_terrain_sha256", QString(64, 'b')}};
+    const auto call = [&](const QJsonObject& value) {
+        args["terrain_strokes"] = QJsonArray{value}; return Call(server, "save_map_edit_candidate", args);
+    };
+    Code(call(stroke), "SOURCE_LEASE_FAILED");
+    for (const auto* field : {"strength", "water_height", "cliff_texture", "seed", "enforce_water_limits", "value", "size", "anchor"}) {
+        auto invalid = stroke; invalid[field] = 1; Code(call(invalid), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
+    }
+    auto invalid = stroke; invalid["radius"] = 17; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_RADIUS_INVALID");
+    invalid = stroke; invalid["follow_doodads"] = true; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_FOLLOW_UNSUPPORTED");
+    invalid = stroke; invalid["shape"] = "triangle"; Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_SHAPE_INVALID");
+}
+
 void TestNativeWaterSaveTransport() {
     Fixture fixture; McpServer server; RegisterAllTools(server);
     ScopedSaveRoots roots; roots.Set(fixture.ui);
@@ -781,6 +800,7 @@ int main(int argc, char** argv) {
         Expect(arguments.size() == 1, "usage: test executable [--write-fixture <new-or-empty-directory>]");
         TestNormalSaveTextureAndWaterSchema();
         TestNativeWaterSaveTransport();
+        TestRemoveWaterSaveTransport();
         TestCliffSaveTransport();
         TestRampSaveTransport();
         TestBoundarySaveTransport();

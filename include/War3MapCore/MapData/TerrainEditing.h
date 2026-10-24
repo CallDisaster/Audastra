@@ -43,6 +43,7 @@ enum class TerrainBrushKind {
     Boundary,     // 边界标志：仅修改 W3E 0x80；保留外缘与 WPM，原生保存仍须通过派生数据门
     PathingRestriction, // WPM 附加限制草稿：仅由 MapDataEditSession 应用，不改变 W3E
     CornerRamp,   // 一级干地九点外角；单点canonical输入，须走实际规则的独立结构事务。
+    RemoveWater,  // 移除水面：仅清 HasWater，保留地高、水原始高度与其它原始字段。
 };
 
 enum class TerrainBrushShape { Circle, Square };
@@ -116,7 +117,7 @@ struct OwnedTerrainStroke {
     std::size_t maximumLevelPropagationWork = TerrainLevelPropagationMaximumWork);
 
 // 依次在每个点上施加笔刷，直接修改 terrain（含派生值）。输入非法时不修改并返回错误。
-// 地图边界顶点只接受贴图、荒芜与边界标志，不改高度与悬崖。
+// 地图边界顶点只接受贴图、荒芜、边界标志与移除水面，不改高度与悬崖。
 [[nodiscard]] Result<TerrainStrokeResult> ApplyTerrainStroke(
     TerrainGridSnapshot& terrain, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points);
 

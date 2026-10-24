@@ -334,6 +334,70 @@ void WaterAndCliffPreserveOtherFields() {
         "water undo restores exact bytes and redo restores the stroke");
 }
 
+void RemoveWaterPreservesRawFieldsAndPlacements() {
+    static_assert(static_cast<unsigned>(TerrainBrushKind::CornerRamp) == 13);
+    static_assert(static_cast<unsigned>(TerrainBrushKind::RemoveWater) == 14);
+    auto grid = Grid();
+    for (std::size_t i = 0; i < grid->vertices.size(); ++i) {
+        auto& vertex = grid->vertices[i];
+        vertex.textureAndFlagsRaw |= 0x70; // 湿点、荒芜与坡道标志同时存在。
+        vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>(0xc000u | (7900u + i));
+        vertex.groundHeightRaw += static_cast<std::uint16_t>(i);
+        vertex.cliffAndLayerRaw = static_cast<std::uint8_t>(0x10 | (2 + i % 3));
+    }
+    RefreshTerrainDerived(*grid, 0, 0, 9, 9);
+    const auto original = *SerializeMapTerrain(*grid).value;
+    TerrainBrush brush; brush.kind = TerrainBrushKind::RemoveWater; brush.radius = 1;
+    const TerrainStrokePoint center{0, 0}; // (2,2)，圆形半径1只清十字五点。
+    const auto removed = ApplyTerrainStroke(*grid, brush, std::span(&center, 1));
+    Require(removed.Succeeded() && !removed.value->Empty() && !removed.value->headerChanged,
+        "remove-water has an ordinary bounded footprint and never changes the palette");
+    const auto output = *SerializeMapTerrain(*grid).value;
+    const auto vertexStart = original.size() - grid->vertices.size() * 7;
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < output.size(); ++i) {
+        if (output[i] == original[i]) continue;
+        Require(i >= vertexStart && (i - vertexStart) % 7 == 4
+            && (original[i] ^ output[i]) == std::byte{0x40}, "only HasWater in each selected raw vertex may change");
+        ++changed;
+    }
+    Require(changed == 5 && At(*grid, 1, 1).HasWater() && !At(*grid, 2, 2).HasWater(),
+        "circle clears the five selected vertices without touching diagonal neighbors");
+    Require(ApplyTerrainStroke(*grid, brush, std::span(&center, 1)).value->Empty(), "removing already dry water is a no-op");
+    brush.shape = TerrainBrushShape::Square; brush.size = 2;
+    Require(ApplyTerrainStroke(*grid, brush, std::span(&center, 1)).Succeeded() && !At(*grid, 1, 1).HasWater(),
+        "classic square size shares ordinary footprint semantics");
+    brush.radius = 0; brush.size.reset();
+    const TerrainStrokePoint edge{-256, -256};
+    Require(ApplyTerrainStroke(*grid, brush, std::span(&edge, 1)).Succeeded()
+        && !At(*grid, 0, 0).HasWater() && At(*grid, 0, 0).IsBoundary(),
+        "edge water can be removed while preserving the boundary and ramp flags");
+
+    DoodadPlacements doodads;
+    DoodadPlacement tree; tree.rawcode = "LTlt"; tree.position = {0, 0, 37}; tree.scale = {1, 1, 1};
+    tree.flags = 2; tree.creationId = 17; doodads.doodads.push_back(tree);
+    doodads.specialDoodads.push_back({"D001", 3, {2, 2}});
+    UnitPlacements units;
+    UnitPlacement unit; unit.rawcode = "hfoo"; unit.position = {0, 0, 51}; unit.scale = {1, 1, 1};
+    unit.flags = 2; unit.creationId = 18; units.units.push_back(unit);
+    const auto doo = *doodads.Serialize().value, unitWire = *units.Serialize().value;
+    const std::vector<MapArchiveMember> members{{"war3map.doo", doo}, {"war3mapUnits.doo", unitWire}};
+    MapDataEditSession edits(MapDocument::FromMembers(members));
+    Require(edits.AttachTerrain(original).Succeeded(), "wet source attaches before any edit");
+    Require(edits.EditTerrain(brush, std::span(&center, 1), true).Succeeded(), "remove-water uses the shared transaction");
+    Require(*edits.Snapshot().Doodads()->Serialize().value == doo && *edits.Snapshot().Units()->Serialize().value == unitWire
+        && !edits.LastEdit().ChangesPlacements(), "following is inert: ordinary/special doodads and units remain byte-identical");
+    const auto dry = *SerializeMapTerrain(*edits.Terrain()).value;
+    Require(!edits.VerifyTerrainPathingForSave().Succeeded(), "remove-water cannot bypass complete native pathing reconstruction");
+    const auto revision = edits.Revision();
+    Require(edits.EditTerrain(brush, std::span(&center, 1), true).Succeeded() && edits.Revision() == revision,
+        "dry no-op does not add undo history or a revision");
+    Require(edits.Undo() && !edits.IsDirty() && *SerializeMapTerrain(*edits.Terrain()).value == original,
+        "undo restores all original raw fields including water");
+    Require(edits.Redo() && *SerializeMapTerrain(*edits.Terrain()).value == dry,
+        "redo restores the exact removal without moving or deleting placements");
+}
+
 void TextureSlotsAreUndoable() {
     const auto document = MapDocument::FromMembers({});
     MapDataEditSession edits(document);
@@ -458,10 +522,11 @@ int main() {
         ExplicitSizesAndVariation();
         NoiseIsBoundedPerStroke();
         WaterAndCliffPreserveOtherFields();
+        RemoveWaterPreservesRawFieldsAndPlacements();
         TextureSlotsAreUndoable();
         BoundaryDraftPreservesRawFieldsAndRestores();
         SessionUnitsFollowAndStandability();
-        std::cout << "TerrainEditing: 13 scenario groups passed\n";
+        std::cout << "TerrainEditing: 14 scenario groups passed\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainEditing: " << exception.what() << '\n';

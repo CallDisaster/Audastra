@@ -66,7 +66,7 @@ struct Fixture {
     std::vector<MapArchiveMember> placements;
     MapDocument document;
     MapDataEditSession edits;
-    explicit Fixture(bool withPlacements = false)
+    explicit Fixture(bool withPlacements = false, bool withWater = false)
         : placements(withPlacements ? FollowPlacementMembers() : std::vector<MapArchiveMember>{}),
           document(MapDocument::FromMembers(placements)), edits(document) {
         Expect(temporary.isValid(), "temporary directory available");
@@ -76,6 +76,9 @@ struct Fixture {
         grid.header.groundTilesets = {"Ldrt", "Lgrs"}; grid.header.cliffTilesets = {"CLdi"};
         grid.vertices.resize(17 * 17);
         for (auto& vertex : grid.vertices) { vertex.groundHeightRaw = 8192; vertex.waterHeightAndFlagsRaw = 7936; vertex.cliffAndLayerRaw = 2; }
+        if (withWater) for (auto& vertex : grid.vertices) {
+            vertex.textureAndFlagsRaw = 0x40; vertex.waterHeightAndFlagsRaw = 8384;
+        }
         RefreshTerrainDerived(grid, 0, 0, 17, 17); terrain = *SerializeMapTerrain(grid).value;
         pathing = {std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
         for (const auto value : {0u, 64u, 64u}) for (unsigned shift = 0; shift < 32; shift += 8)
@@ -192,6 +195,40 @@ void FacadeQueryPreviewApplyAndUndo() {
     Expect(fixture.edits.Undo() && *SerializeMapTerrain(*fixture.edits.Terrain()).value == fixture.terrain,
         "same undo restores exact original terrain bytes");
     Expect(*IO::ReadFileBytes(fixture.source / "war3map.w3e").value == fixture.terrain, "query and edit never write the source file");
+}
+
+void FacadeRemoveWaterUsesTheOrdinaryTransaction() {
+    Fixture fixture(true, true);
+    const auto state = State(fixture);
+    auto request = Stroke(state);
+    request["brush"] = QJsonObject{{"kind", "remove_water"}, {"shape", "square"}, {"size", 1}};
+    request["follow_doodads"] = true;
+    const auto preview = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
+    Expect(preview.value("ok").toBool() && !preview.value("applied").toBool()
+        && !preview.value("terrain_pathing_gate").toObject().value("passed").toBool()
+        && !fixture.edits.CanUndo(), "removal preview is an ordinary draft and preserves the full native save gate");
+    for (const auto* field : {"water_height", "cliff_texture", "seed", "enforce_water_limits", "value", "anchor", "strength"}) {
+        auto invalid = request; auto brush = request.value("brush").toObject(); brush[field] = 1; invalid["brush"] = brush;
+        Expect(!InvokeTerrainEditTool("edit_terrain_stroke", invalid, fixture.Host()).value("ok").toBool(),
+            "remove-water accepts only its ordinary footprint, never native-water or height options");
+    }
+    request["dry_run"] = false;
+    const auto applied = InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host());
+    Expect(applied.value("ok").toBool() && applied.value("applied").toBool()
+        && !fixture.edits.Terrain()->vertices[8 * 17 + 8].HasWater(),
+        "removal applies without a native-water resource host");
+    const auto changed = TerrainTake(SerializeMapTerrain(*fixture.edits.Terrain()));
+    const auto doo = fixture.edits.Snapshot().Doodads()->Serialize(), units = fixture.edits.Snapshot().Units()->Serialize();
+    Expect(doo.Succeeded() && units.Succeeded() && *units.value == fixture.placements[0].data
+        && *doo.value == fixture.placements[1].data && !fixture.edits.LastEdit().ChangesPlacements(),
+        "MCP following keeps ordinary/special doodads and units byte-identical");
+    Expect(!InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host()).value("ok").toBool(),
+        "the same removal envelope cannot replay across its revision change");
+    Expect(fixture.edits.Undo() && TerrainTake(SerializeMapTerrain(*fixture.edits.Terrain())) == fixture.terrain
+        && fixture.edits.Redo() && TerrainTake(SerializeMapTerrain(*fixture.edits.Terrain())) == changed,
+        "MCP removal owns the shared byte-exact undo and redo command");
+    Expect(TerrainTake(IO::ReadFileBytes(fixture.source / "war3map.w3e")) == fixture.terrain,
+        "MCP edit does not write its source map");
 }
 
 void FacadeRejectsUnknownTypesBoundsAndStaleSources() {
@@ -923,6 +960,7 @@ int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     try {
         FacadeQueryPreviewApplyAndUndo();
+        FacadeRemoveWaterUsesTheOrdinaryTransaction();
         FacadeRejectsUnknownTypesBoundsAndStaleSources();
         BoundsFacadeUsesActualResourcesCasAndSharedUndo();
         CodecProvesSourceIntentAndNetBytes();

@@ -846,6 +846,13 @@ void WorldModule::StartTerrainStroke(double x, double y) {
     if (const auto swatch = terrainSwatches_->checkedId(); swatch >= 0 && static_cast<std::size_t>(swatch) < swatchIds_.size())
         brush.groundTexture = swatchIds_[static_cast<std::size_t>(swatch)];
     brush.seed = static_cast<std::uint32_t>(project_.mapEdits_->Revision());
+    if (brush.kind == MapData::TerrainBrushKind::RemoveWater) {
+        // 去水只消费形状与尺寸；隐藏控件的旧材质、无槽位索引等不得污染普通FTJ意图。
+        MapData::TerrainBrush removal;
+        removal.kind = MapData::TerrainBrushKind::RemoveWater;
+        removal.shape = brush.shape; removal.size = brush.size;
+        brush = std::move(removal);
+    }
     if ((brush.kind == MapData::TerrainBrushKind::Texture && brush.groundTexture.size() != 4) ||
         ((brush.kind == MapData::TerrainBrushKind::CliffLevel || brush.kind == MapData::TerrainBrushKind::CliffTexture)
             && terrainCliffTexture_->currentIndex() < 0)) {

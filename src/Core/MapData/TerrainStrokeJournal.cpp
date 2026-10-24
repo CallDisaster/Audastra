@@ -62,7 +62,7 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
     case TerrainBrushKind::Lower: case TerrainBrushKind::Plateau: case TerrainBrushKind::Smooth:
     case TerrainBrushKind::CliffLevel: case TerrainBrushKind::Noise: case TerrainBrushKind::CliffTexture:
     case TerrainBrushKind::WaterHeight: case TerrainBrushKind::Ramp: case TerrainBrushKind::Boundary:
-    case TerrainBrushKind::PathingRestriction: break;
+    case TerrainBrushKind::PathingRestriction: case TerrainBrushKind::RemoveWater: break;
     case TerrainBrushKind::CornerRamp: break;
     default: return false;
     }

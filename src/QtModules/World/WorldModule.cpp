@@ -1209,7 +1209,8 @@ void WorldModule::StartTerrainRender() {
     auto cache = terrainCache_;
     const auto selectedWaterFrame = request.selectedWaterFrame;
     const bool keepPreviewCliffs = request.preview && !request.waterBrush && (request.brush.kind == MapData::TerrainBrushKind::Texture
-        || request.brush.kind == MapData::TerrainBrushKind::Blight || request.brush.kind == MapData::TerrainBrushKind::WaterHeight);
+        || request.brush.kind == MapData::TerrainBrushKind::Blight || request.brush.kind == MapData::TerrainBrushKind::WaterHeight
+        || request.brush.kind == MapData::TerrainBrushKind::RemoveWater);
     const auto keepCliffs = keepPreviewCliffs || selectedWaterFrame ? cliffs_ : nullptr;
     const auto generation = generation_;
     const auto serial = request.serial;

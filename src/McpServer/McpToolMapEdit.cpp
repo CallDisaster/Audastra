@@ -140,6 +140,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     const bool ramp = kind.toString() == "ramp";
     const bool corner = kind.toString() == "corner_ramp";
     const bool texture = kind.toString() == "texture", water = kind.toString() == "water_height";
+    const bool removeWater = kind.toString() == "remove_water";
     const bool cliffLevel = kind.toString() == "cliff_level", cliffTexture = kind.toString() == "cliff_texture";
     const bool cliffBrush = cliffLevel || cliffTexture;
     const bool newWater = kind.toString() == "shallow_water" || kind.toString() == "deep_water";
@@ -154,13 +155,14 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     else if (kind.toString() == "smooth") stroke.brush.kind = MapData::TerrainBrushKind::Smooth;
     else if (texture) stroke.brush.kind = MapData::TerrainBrushKind::Texture;
     else if (water) stroke.brush.kind = MapData::TerrainBrushKind::WaterHeight;
+    else if (removeWater) stroke.brush.kind = MapData::TerrainBrushKind::RemoveWater;
     else if (cliffLevel) stroke.brush.kind = MapData::TerrainBrushKind::CliffLevel;
     else if (cliffTexture) stroke.brush.kind = MapData::TerrainBrushKind::CliffTexture;
     else if (newWater) waterOptions.kind = kind.toString() == "shallow_water"
         ? MapData::TerrainWaterBrushKind::Shallow : MapData::TerrainWaterBrushKind::Deep;
     else {
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_UNSUPPORTED",
-            "当前接受 raise/lower/smooth/blight/boundary/ramp/corner_ramp/texture/cliff_level/cliff_texture/water_height/shallow_water/deep_water；通行性仍由同一保存服务核验。");
+            "当前接受 raise/lower/smooth/blight/boundary/ramp/corner_ramp/texture/cliff_level/cliff_texture/water_height/remove_water/shallow_water/deep_water；通行性仍由同一保存服务核验。");
         return std::nullopt;
     }
     if (!OnlyFields(object, corner
@@ -187,6 +189,8 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
                   "points", "follow_doodads", "ground_texture"}
             : water ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
                   "points", "follow_doodads", "water_height"}
+            : removeWater ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
+                  "points", "follow_doodads"}
             : std::initializer_list<std::string_view>{"kind", "shape", "point_space", "radius",
                   "points", "follow_doodads", "strength"}, error)) return std::nullopt;
     const auto shape = corner ? QJsonValue("circle") : object.value("shape");
@@ -318,7 +322,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
             return std::nullopt;
         }
         stroke.brush.waterHeight = *height;
-    } else if (!newWater && !cliffBrush) {
+    } else if (!newWater && !cliffBrush && !removeWater) {
         auto strength = FiniteFloat(object, "strength", error);
         if (!strength) return std::nullopt;
         const bool smooth = stroke.brush.kind == MapData::TerrainBrushKind::Smooth;
@@ -670,6 +674,8 @@ QJsonObject TerrainStrokeSchema() {
     QJsonObject water = shared;
     water["kind"] = QJsonObject{{"type", "string"}, {"const", "water_height"}};
     water["water_height"] = QJsonObject{{"type", "number"}, {"minimum", -2048}, {"maximum", 2047.75}};
+    QJsonObject removeWater = shared;
+    removeWater["kind"] = QJsonObject{{"type", "string"}, {"const", "remove_water"}};
     QJsonObject newWater = shared;
     newWater.remove("radius");
     newWater["kind"] = QJsonObject{{"type", "string"}, {"enum", QJsonArray{"shallow_water", "deep_water"}}};
@@ -694,10 +700,12 @@ QJsonObject TerrainStrokeSchema() {
     boundaryRequired.append("value");
     rampRequired.append("set_ramp");
     textureRequired.append("ground_texture"); waterRequired.append("water_height");
+    auto removalSchema = BasicSchema(removeWater, required);
+    removalSchema["description"] = "移除水面且保留地形高度、原始水高及所有摆放；不接受高度、种子或悬崖参数，保存仍须核对原水规则并重建通行性。";
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired), BasicSchema(boundary, boundaryRequired),
         BasicSchema(ramp, rampRequired), corner, bounds,
-        BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired),
+        BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired), removalSchema,
         BasicSchema(cliff, {"kind", "shape", "point_space", "size", "cliff_texture", "level_delta", "seed", "points", "follow_doodads"}),
         BasicSchema(cliffTexture, {"kind", "shape", "point_space", "size", "cliff_texture", "points", "follow_doodads"}),
         BasicSchema(newWater, {"kind", "shape", "point_space", "size", "cliff_texture", "seed",

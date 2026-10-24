@@ -216,7 +216,7 @@ Status Validate(const TerrainGridSnapshot& terrain, const TerrainBrush& brush, s
             return Failure("TERRAIN_BRUSH_WATER_HEIGHT", "水面基础高度必须在 -2048 到 2047.75 之间");
         break;
     case TerrainBrushKind::Blight: case TerrainBrushKind::Plateau: case TerrainBrushKind::Ramp:
-    case TerrainBrushKind::Boundary:
+    case TerrainBrushKind::Boundary: case TerrainBrushKind::RemoveWater:
         break;
     case TerrainBrushKind::PathingRestriction:
         return Failure("PATHING_BRUSH_SESSION_REQUIRED", "通行限制须通过包含源 WPM 的地图编辑会话提交。");
@@ -452,7 +452,7 @@ static Result<TerrainStrokeResult> ApplyTerrainStrokeBounded(
                 const auto index = static_cast<std::size_t>(y) * width + x;
                 auto vertex = terrain.vertices[index];
                 const bool shaping = brush.kind != TerrainBrushKind::Texture && brush.kind != TerrainBrushKind::Blight
-                    && brush.kind != TerrainBrushKind::Boundary;
+                    && brush.kind != TerrainBrushKind::Boundary && brush.kind != TerrainBrushKind::RemoveWater;
                 if (shaping && vertex.IsBoundary()) continue;
                 const int level = vertex.CliffLevel();
                 switch (brush.kind) {
@@ -510,6 +510,10 @@ static Result<TerrainStrokeResult> ApplyTerrainStrokeBounded(
                 case TerrainBrushKind::WaterHeight:
                     if (vertex.HasWater()) vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>(
                         (vertex.waterHeightAndFlagsRaw & 0xc000u) | static_cast<std::uint16_t>(std::lround(brush.waterHeight * 4.0 + 8192.0)));
+                    break;
+                case TerrainBrushKind::RemoveWater:
+                    // 显式移除水面不还原历史地形，也不丢弃原始水高与其高位标志。
+                    vertex.textureAndFlagsRaw = static_cast<std::uint8_t>(vertex.textureAndFlagsRaw & ~0x40u);
                     break;
                 case TerrainBrushKind::Ramp:
                     break; // 三点形态已在上方独立预检并返回。

@@ -330,6 +330,31 @@ void PaletteVersionHasStrictZeroPointPayload() {
     Require(!raw.session.ExportTerrainStrokeJournal().Succeeded(), "old raw API without actual owner cannot invent palette provenance");
 }
 
+void RemoveWaterUsesTheOrdinaryJournalOpcode() {
+    static_assert(static_cast<unsigned>(TerrainBrushKind::RemoveWater) == 14);
+    auto journal = Journal();
+    journal.strokes.front().intent.brush.kind = TerrainBrushKind::RemoveWater;
+    journal.strokes.front().intent.brush.shape = TerrainBrushShape::Square;
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    Require(wire[3] == std::byte{'1'}, "ordinary remove-water keeps the FTJ1 layout");
+    const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+    Require(decoded.strokes.front().intent.brush.kind == TerrainBrushKind::RemoveWater
+        && !decoded.strokes.front().intent.waterBrush && decoded.strokes.front().rulesSha256.empty()
+        && Take(EncodeTerrainStrokeJournal(decoded)) == wire,
+        "removal replays as an ordinary brush without inventing native-water ownership");
+    auto unknown = decoded; unknown.strokes.front().intent.brush.kind = static_cast<TerrainBrushKind>(15);
+    Require(!EncodeTerrainStrokeJournal(unknown).Succeeded(), "the next unknown ordinary opcode stays rejected");
+    TerrainJournalStroke water; water.intent.waterBrush = TerrainWaterStrokeOptions{};
+    water.intent.points = journal.strokes.front().intent.points; water.rulesSha256.assign(64, 'd');
+    journal.strokes.insert(journal.strokes.begin(), water);
+    const auto mixed = Take(EncodeTerrainStrokeJournal(journal));
+    const auto restored = Take(DecodeTerrainStrokeJournal(mixed));
+    Require(mixed[3] == std::byte{'3'} && restored.strokes.size() == 2
+        && restored.strokes[0].intent.waterBrush && restored.strokes[1].intent.brush.kind == TerrainBrushKind::RemoveWater
+        && Take(EncodeTerrainStrokeJournal(restored)) == mixed,
+        "native shallow/deep creation followed by removal keeps ordered FTJ3 history");
+}
+
 void LogicalQtReplayAndSavedBoundary() {
     SessionFixture f; f.Raise(); const auto first = f.session.LastEdit();
     const auto firstState = f.session.TerrainJournalStateFingerprint();
@@ -374,6 +399,7 @@ int main() {
         CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered();
         BoundsVersionHasIndependentPayloadAndStrictVariants();
         PaletteVersionHasStrictZeroPointPayload();
+        RemoveWaterUsesTheOrdinaryJournalOpcode();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

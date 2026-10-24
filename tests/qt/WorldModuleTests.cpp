@@ -29,6 +29,7 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapShadow.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Workspace.h"
 #include "War3MapCore/Game/GameDataSource.h"
@@ -829,6 +830,7 @@ private slots:
     void PlacementClickDragAndKeys();
     void TerrainBrushPreservesCameraAndModels();
     void TerrainBrushUsesSharedTransactionAndUndo();
+    void TerrainRemoveWaterUsesOrdinaryStrokeAndUndo();
     void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo_data();
     void TerrainWaterBrushUsesFrozenPrefixAndSharedUndo();
     void TerrainWaterBrushRejectsChangedInputs();
@@ -3776,6 +3778,80 @@ void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
     QVERIFY(!toggle->isChecked());
     QCOMPARE(place->isChecked(), mode == 2);
     QVERIFY(module.PrepareNavigationLeave());
+}
+
+void WorldModuleTests::TerrainRemoveWaterUsesOrdinaryStrokeAndUndo() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    auto members = Tests::TerrainWaterMembers();
+    const auto parsed = MapData::ParseMapTerrain(members.front().data); QVERIFY(parsed.Succeeded());
+    auto grid = *parsed.value->Snapshot();
+    grid.header.cliffTilesets.clear();
+    for (auto& vertex : grid.vertices) {
+        vertex.textureAndFlagsRaw |= 0x40; vertex.waterHeightAndFlagsRaw = 8384; vertex.cliffAndLayerRaw = 0xf2;
+    }
+    MapData::RefreshTerrainDerived(grid, 0, 0, 9, 9);
+    members.front().data = Tests::WaterTake(MapData::SerializeMapTerrain(grid));
+    std::vector<std::byte> pathing{std::byte{'M'}, std::byte{'P'}, std::byte{'3'}, std::byte{'W'}};
+    for (const auto value : {0u, 32u, 32u}) for (unsigned shift = 0; shift < 32; shift += 8)
+        pathing.push_back(static_cast<std::byte>((value >> shift) & 0xff));
+    pathing.resize(16 + 32 * 32, std::byte{0x19});
+    members.push_back({"war3map.wpm", pathing});
+    QtProject::EditorProject project;
+    Tests::InstallTerrainWaterProject(project, directory.path().toStdWString(), false, members);
+    QVERIFY(project.mapEdits_->AttachPathing(pathing).Succeeded());
+    BackendState state; activeBackend = &state;
+    state.viewProjection = {1.0f / 512, 0, 0, 0, 0, 1.0f / 512, 0, 0,
+        0, 0, -1.0f / 4096, 0, -1, -1, 0.5f, 1};
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{81});
+    auto* button = page->findChild<QToolButton*>("worldTerrainBrushRemoveWater");
+    auto* toggle = page->findChild<QPushButton*>("worldTerrainToggle");
+    auto* size = page->findChild<QSpinBox*>("worldTerrainRadius");
+    QVERIFY(button && toggle && size && !button->icon().isNull());
+    QVERIFY(button->toolTip().contains(QStringLiteral("保留地形高度")));
+    button->click(); QVERIFY(button->isChecked()); size->setValue(1);
+    auto* cliff = page->findChild<QComboBox*>("worldTerrainCliffTexture"); QVERIFY(cliff);
+    QCOMPARE(cliff->count(), 0); QCOMPARE(cliff->currentIndex(), -1); // 无悬崖槽位不阻止去水。
+    auto* height = page->findChild<QDoubleSpinBox*>("worldTerrainWaterHeight"); QVERIFY(height);
+    height->setValue(2047.75); // 旧水高控件也不能成为去水意图的一部分。
+    QVERIFY(toggle->isEnabled()); toggle->click(); QVERIFY(viewport->BrushMode());
+    const auto before = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    const auto frameReady = [&] {
+        return state.completed.frameCount > 0 && state.completed.surfaceEpoch == state.surfaceEpoch
+            && state.completed.sceneEpoch == state.sceneEpoch && state.completed.viewEpoch == state.viewEpoch
+            && state.completed.documentRevision == viewport->DocumentRevision();
+    };
+    QTRY_VERIFY(frameReady());
+    const double dpr = viewport->devicePixelRatioF();
+    const QPointF center(state.completed.width / (2 * dpr), state.completed.height / (2 * dpr));
+    Mouse(*viewport, QEvent::MouseMove, center, Qt::NoButton, Qt::NoButton);
+    QTRY_VERIFY(viewport->HoverCoordinate().has_value()); QTRY_VERIFY(frameReady());
+    Mouse(*viewport, QEvent::MouseButtonPress, center, Qt::LeftButton, Qt::LeftButton);
+    Mouse(*viewport, QEvent::MouseButtonRelease, center, Qt::LeftButton, Qt::NoButton);
+    QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto after = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    QVERIFY(after != before); QVERIFY(!project.mapEdits_->Terrain()->vertices[4 * 9 + 4].HasWater());
+    QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].waterHeightAndFlagsRaw, grid.vertices[4 * 9 + 4].waterHeightAndFlagsRaw);
+    QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].groundHeightRaw, grid.vertices[4 * 9 + 4].groundHeightRaw);
+    const auto journal = Services::TerrainPathingSave::CaptureJournal(project.directorySnapshot_->Snapshot(), *project.mapEdits_);
+    QVERIFY(journal.Succeeded());
+    QCOMPARE(journal.value->strokes.size(), std::size_t{1});
+    QVERIFY(!journal.value->strokes.front().intent.waterBrush);
+    QCOMPARE(journal.value->strokes.front().intent.brush.kind, MapData::TerrainBrushKind::RemoveWater);
+    QCOMPARE(journal.value->strokes.front().intent.brush.cliffTexture, std::uint8_t{0});
+    QCOMPARE(journal.value->strokes.front().intent.brush.waterHeight, 0.0f);
+    const auto encoded = MapData::EncodeTerrainStrokeJournal(*journal.value); QVERIFY(encoded.Succeeded());
+    const auto decoded = MapData::DecodeTerrainStrokeJournal(*encoded.value); QVERIFY(decoded.Succeeded());
+    QCOMPARE(decoded.value->strokes.front().intent.brush.kind, MapData::TerrainBrushKind::RemoveWater);
+    const auto replayed = Services::TerrainPathingSave::RestoreJournal(project.directorySnapshot_->Snapshot(),
+        *project.mapDocument_, members.front().data, pathing, *decoded.value, *project.mapEdits_, project.war3GameRoot_);
+    QVERIFY(replayed.Succeeded());
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*replayed.value->session->Terrain())), after);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), before);
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), after);
 }
 
 void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {

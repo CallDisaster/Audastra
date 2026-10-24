@@ -119,6 +119,10 @@ public:
             path.moveTo(3, 15); path.cubicTo(6, 9, 9, 21, 12, 15); path.cubicTo(15, 9, 18, 21, 21, 15);
             path.moveTo(12, 11); path.lineTo(12, 3); path.moveTo(9, 6); path.lineTo(12, 3); path.lineTo(15, 6);
             break;
+        case MapData::TerrainBrushKind::RemoveWater:
+            path.moveTo(3, 15); path.cubicTo(6, 9, 9, 21, 12, 15); path.cubicTo(15, 9, 18, 21, 21, 15);
+            path.moveTo(5, 4); path.lineTo(19, 20);
+            break;
         case MapData::TerrainBrushKind::Ramp:
             path.moveTo(3, 18); path.lineTo(7, 18); path.lineTo(17, 6); path.lineTo(21, 6);
             break;
@@ -209,6 +213,7 @@ QWidget* WorldModule::BuildTerrainPage() {
         std::tuple{tr("噪波"), MapData::TerrainBrushKind::Noise, "Noise"},
         std::tuple{tr("悬崖类型"), MapData::TerrainBrushKind::CliffTexture, "CliffTexture"},
         std::tuple{tr("水面高度"), MapData::TerrainBrushKind::WaterHeight, "WaterHeight"},
+        std::tuple{tr("移除水面"), MapData::TerrainBrushKind::RemoveWater, "RemoveWater"},
         std::tuple{tr("直坡"), MapData::TerrainBrushKind::Ramp, "Ramp"},
         std::tuple{tr("拐角坡道"), MapData::TerrainBrushKind::CornerRamp, "CornerRamp"},
         std::tuple{tr("边界"), MapData::TerrainBrushKind::Boundary, "Boundary"},
@@ -222,6 +227,8 @@ QWidget* WorldModule::BuildTerrainPage() {
         button->setIcon(QIcon(new BrushGlyph(kind)));
         button->setIconSize(QSize(20, 20));
         button->setText(label);
+        if (kind == MapData::TerrainBrushKind::RemoveWater)
+            button->setToolTip(tr("移除水面，保留地形高度和原始水高；保存时重新核对通行性与小地图。"));
         button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         button->setMinimumHeight(52);

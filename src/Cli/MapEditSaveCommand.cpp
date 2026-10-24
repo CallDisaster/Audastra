@@ -152,6 +152,24 @@ std::optional<Trigger::TriggerEditEcaTarget> ParseTriggerEcaTarget(wchar_t** arg
     return target;
 }
 
+// --remove-water <circle|square> <vertex-x> <vertex-y> <radius-0..16>
+std::optional<Services::MapEditTerrainStroke> ParseRemoveWater(wchar_t** argv, int index, std::string& error) {
+    const std::wstring_view shape(argv[index + 1]);
+    const auto x = ParseNumber<std::uint32_t>(argv[index + 2]), y = ParseNumber<std::uint32_t>(argv[index + 3]),
+        radius = ParseNumber<std::uint32_t>(argv[index + 4]);
+    if ((shape != L"circle" && shape != L"square") || !x || !y || !radius || *radius > 16) {
+        error = "--remove-water requires circle/square, uint32 vertex indices, and radius 0..16";
+        return std::nullopt;
+    }
+    Services::MapEditTerrainStroke stroke;
+    stroke.brush.kind = MapData::TerrainBrushKind::RemoveWater;
+    stroke.brush.shape = shape == L"square" ? MapData::TerrainBrushShape::Square : MapData::TerrainBrushShape::Circle;
+    stroke.brush.radius = *radius;
+    stroke.pointSpace = Services::MapEditPointSpace::TerrainVertex;
+    stroke.points.push_back({static_cast<double>(*x), static_cast<double>(*y)});
+    return stroke;
+}
+
 // --stroke <kind> <circle|square> <vertex-x> <vertex-y> <radius-0..16> <value>
 std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int index, std::string& error) {
     const auto x = ParseNumber<std::uint64_t>(argv[index + 3]);
@@ -456,6 +474,13 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             Services::MapEditTerrainStroke bounds;
             bounds.bounds = MapData::TerrainBoundsEditIntent{{*west, *south, *east, *north}};
             request.terrainStrokes.push_back(std::move(bounds)); index += 5;
+        } else if (flag == L"--remove-water") {
+            if (index + 4 >= argc) return Invalid("--remove-water requires shape, vertex x/y, and radius");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");
+            auto stroke = ParseRemoveWater(argv, index, error);
+            if (!stroke) return Invalid(error);
+            request.terrainStrokes.push_back(std::move(*stroke));
+            index += 5;
         } else if (flag == L"--stroke") {
             if (index + 6 >= argc) return Invalid("--stroke requires six arguments");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");
