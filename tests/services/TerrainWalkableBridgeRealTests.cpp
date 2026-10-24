@@ -12,6 +12,7 @@
 #include <iostream>
 #include <span>
 #include <stdexcept>
+#include <vector>
 
 namespace War3Map::TerrainSaveTests {
 namespace {
@@ -66,15 +67,26 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
     std::cout << "walkable_bridge_override_fields=" << fields[0].modification.fieldId << ','
         << fields[1].modification.fieldId << ',' << fields[2].modification.fieldId
         << " fixed_rot_wire=" << static_cast<int>(*fields[2].definition->nativeValueType) << '\n';
-    for (const unsigned kind : {0u, 1u, 2u}) for (const bool explicitFields : {false, true}) {
+    const auto nameField = schema.MatchSourceField(ObjectType::Destructable, "name", context);
+    Require(nameField.definition && nameField.safeToEdit && nameField.sourceKey == "name" && !nameField.sourceIndex
+        && Text::LowerAscii(nameField.definition->sourceTable) == "destructabledata"
+        && nameField.definition->nativeValueType == NativeValueType::String && nameField.definition->index == 0
+        && nameField.definition->repeat == 0 && nameField.definition->data == 0
+        && nameField.definition->useSpecific.empty() && nameField.definition->notSpecific.empty(),
+        "actual bridge Name comes from a unique nonindexed String metadata address");
+    std::array<std::vector<std::byte>, 6> unnamedPathing;
+    std::array<std::vector<std::byte>, 6> unnamedSavedWpm;
+    for (const bool named : {false, true}) for (const unsigned kind : {0u, 1u, 2u}) for (const bool explicitFields : {false, true}) {
         const bool custom = kind != 0, categoryC = kind == 2;
         const auto scenario = directory / (std::string(categoryC ? "custom-c-" : custom ? "custom-" : "original-")
-            + (explicitFields ? "typed-fields" : "empty"));
+            + (explicitFields ? "typed-fields" : "empty") + (named ? "-named" : ""));
         Require(std::filesystem::create_directory(scenario), "exclusive actual bridge original scenario");
         auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
         const ObjectKey key{ObjectType::Destructable, custom ? customRawcodes[categoryC ? 1 : 0] : object.key.rawcode};
         if (custom) Check(document.AddCustomObject(key.rawcode, object.key.rawcode));
         else Check(document.AddOriginalObject(key.rawcode));
+        if (named) Check(document.AddModification(key, nameField.modification, NativeValueType::String,
+            std::string("地形保存桥梁")));
         if (explicitFields) {
             Check(document.AddModification(key, fields[0].modification, NativeValueType::Int32, std::int32_t{1}));
             Check(document.AddModification(key, fields[1].modification, NativeValueType::String,
@@ -99,6 +111,10 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
         const auto seeded = Take(MapArchiveSession::Open(Take(source.SaveCandidate(scenario / "seeded.w3x", replacement)).path));
         const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, before, game, kSaveBytes));
         const auto oldNative = Take(rules.GenerateNative(before, kSaveBytes));
+        const auto pathingIndex = kind * 2 + static_cast<unsigned>(explicitFields);
+        if (named) Require(oldNative == unnamedPathing[pathingIndex],
+            "actual metadata Name override does not change complete static pathing");
+        else unnamedPathing[pathingIndex] = oldNative;
         if (categoryC) {
             const DoodadPlacements empty;
             const std::array<MemberReplacement, 1> noBridge{{{"war3map.doo", Take(empty.Serialize())}}};
@@ -126,6 +142,9 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
         for (std::size_t i = 0; i < newNative.size(); ++i) wpm[i + 16] = (wpm[i + 16] & std::byte{0x11}) | newNative[i];
         Require(saved.scriptPreserved && Take(readback.ReadMember("war3map.wpm")) == wpm,
             "actual bridge Original save reads back complete resource-derived WPM");
+        if (named) Require(wpm == unnamedSavedWpm[pathingIndex],
+            "named and unnamed bridge saves have identical complete WPM members");
+        else unnamedSavedWpm[pathingIndex] = wpm;
         for (const auto& member : input.Members()) {
             const auto name = Text::LowerAscii(member.name);
             if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp") continue;
@@ -138,6 +157,7 @@ void CheckBridgeNativeOverrides(const MapArchiveSession& source, const TerrainGr
             << "_save=" << (explicitFields ? "typed-fields" : "empty") << " rawcode=" << key.rawcode
             << " parent=" << (custom ? object.key.rawcode : "-")
             << " placed_category_c=" << categoryC
+            << " named=" << named
             << " source_sha256=" << input.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
             << " independent_wpm_oracle=false native_editor_verified=false game_verified=false\n";
     }

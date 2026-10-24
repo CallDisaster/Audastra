@@ -307,7 +307,7 @@ target_compile_options(audastra-terrain-wet-corner-service-tests PRIVATE /W4 /pe
 add_test(NAME services-terrain-wet-corner COMMAND audastra-terrain-wet-corner-service-tests)
 
 add_executable(audastra-native-destructable-pathing-tests
-    NativeDestructablePathingTests.cpp TerrainEmptyParentCases.h)
+    NativeDestructablePathingTests.cpp TerrainEmptyParentCases.h TerrainBridgeNameCases.h)
 target_link_libraries(audastra-native-destructable-pathing-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-native-destructable-pathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-native-destructable-pathing-tests PRIVATE /W4 /permissive- /utf-8)

@@ -9,7 +9,8 @@ namespace War3Map::ObjectData {
 // 要求W3B/W3D（缺失也显式提供）、两类SLK和DestructableMetaData五项基础来源。
 // 非walkable可破坏物接受标准对象、原版覆盖或单层标准父继承；walkable桥接受唯一标准
 // 对象、v2 Original及无父覆盖的一层Custom。原生记录只接受空记录或精确walkable/pathTex/
-// fixedRot覆盖；覆盖字段须按实际DestructableMetaData唯一绑定到零索引标量并保持wire类型。
+// fixedRot及Name覆盖；覆盖字段须按实际DestructableMetaData唯一绑定到零索引标量并保持wire类型。
+// Name只按无对象选择器的实际String字段保留，不参与静态通行描述，也不改变原生对象字节。
 // Custom实际使用的walkable/覆盖字段不能带对象选择器，未覆盖字段才回退标准父；网格始终
 // 按DOO新ID第二字节而非父ID解释。实例及完整DOO
 // 冻结、实际占地和旧WPM仍由owner核实。普通装饰物

@@ -1306,8 +1306,8 @@ void WalkableBridgeOriginalRejectsUnknownOrInexactValues() {
         Rejected(fixture.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "fixedRot即使同为F32，wire1也不能冒充metadata Unreal wire2");
     }
     auto unsupported = BridgeOriginalFixture();
-    unsupported.metadata.push_back({{"ID", "Name"}, {"field", "Name"}, {"slk", "DestructableData"}, {"type", "string"}, {"index", "0"}});
-    unsupported.Tables(); unsupported.SetNative(Original("S001", "Name", NativeValueType::String, std::string("bridge")));
+    unsupported.metadata.push_back({{"ID", "Suf0"}, {"field", "EditorSuffix"}, {"slk", "DestructableData"}, {"type", "string"}, {"index", "0"}});
+    unsupported.Tables(); unsupported.SetNative(Original("S001", "Suf0", NativeValueType::String, std::string("bridge")));
     Rejected(unsupported.Inspect({"S001"}), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "其它已知Original字段没有静态注册证据仍不放行");
     unsupported.SetNative(Original("S001", "ZZZ9", NativeValueType::String, std::string("bridge")));
     Rejected(unsupported.Inspect({"S001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "未知Original字段不能由标准walkable授予资格");
@@ -1532,6 +1532,7 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
 }
 #include "NativeDoodadNonPathFieldCases.h"
 #include "TerrainEmptyParentCases.h"
+#include "TerrainBridgeNameCases.h"
 } // namespace
 
 int main() {
@@ -1569,6 +1570,7 @@ int main() {
         SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
         DoodadRepeatedColorFieldsPreservePathing();
         EmptyOriginalParentsKeepExactStandardInheritance();
+        BridgeNameOverridesKeepExactPathing();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {
