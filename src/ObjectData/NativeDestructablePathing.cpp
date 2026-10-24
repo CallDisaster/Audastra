@@ -304,21 +304,23 @@ void ApplyBridgeOriginal(const ObjectRecord& original, const NativeObjectDocumen
         const auto match = schema.MatchNativeField(ObjectType::Destructable, modification.key, context);
         if (!match.definition)
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖含未知元数据字段：" + modification.key.fieldId);
-        if (match.sourceKey != "walkable" && match.sourceKey != "pathtex" && match.sourceKey != "fixedrot")
+        // 先识别元数据声明的逻辑字段，再检查标量地址；data拼接后的sourceKey不能把坏地址伪装成其它字段。
+        const auto sourceKey = Text::LowerAscii(match.definition->sourceField);
+        if (sourceKey != "walkable" && sourceKey != "pathtex" && sourceKey != "fixedrot")
             Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "标准桥Original仅支持walkable、pathTex和fixedRot覆盖：" + modification.key.fieldId);
-        const auto& field = UniqueBridgeField(cells, schema, context, match.sourceKey);
-        if (!match.safeToEdit || match.definition != &field || match.sourceIndex)
+        const auto& field = UniqueBridgeField(cells, schema, context, sourceKey);
+        if (!match.safeToEdit || match.definition != &field || match.sourceKey != sourceKey || match.sourceIndex)
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖没有可靠的唯一标量地址：" + modification.key.fieldId);
         if (modification.key.level || modification.key.variation || modification.key.dataIndex || modification.valueWasOpaque
             || document.ModificationValueType(original.key, modification.key) != field.nativeValueType
             || !addresses.emplace(field.fieldId).second)
             Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "标准桥覆盖必须是唯一、wire类型与元数据一致的无索引值：" + modification.key.fieldId);
-        if (match.sourceKey == "walkable") {
+        if (sourceKey == "walkable") {
             ValidateAddress(field);
             const auto* value = std::get_if<std::int32_t>(&modification.value);
             if (!value || *value != 1)
                 Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "存活桥的walkable覆盖必须是Int32的1。");
-        } else if (match.sourceKey == "pathtex") {
+        } else if (sourceKey == "pathtex") {
             if (field.nativeValueType != NativeValueType::String)
                 Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥pathTex必须是实际DestructableData中的String字段。");
             const auto* value = std::get_if<std::string>(&modification.value);
