@@ -231,6 +231,12 @@ void MergeCategories(std::span<const std::byte> bytes, std::map<std::string, std
 
 Result<NativeDoodadCategoryDirectory> NativeDoodadCategoryDirectory::Capture(
     const std::filesystem::path& gameRoot, NativeEditorStartupRules rules, std::size_t maximumBytes) {
+    return CaptureWithProfiles(gameRoot, rules, maximumBytes, {});
+}
+
+Result<NativeDoodadCategoryDirectory> NativeDoodadCategoryDirectory::CaptureWithProfiles(
+    const std::filesystem::path& gameRoot, NativeEditorStartupRules rules, std::size_t maximumBytes,
+    const ProfileVisitor& visitor) {
     try {
         if (rules != NativeEditorStartupRules::Classic127aExpansion)
             Fail("TERRAIN_CATEGORY_RULES_UNSUPPORTED", "不支持的启动规则版本。");
@@ -333,6 +339,10 @@ Result<NativeDoodadCategoryDirectory> NativeDoodadCategoryDirectory::Capture(
                 source.sha256 = Take(Sha256(bytes));
                 // 逐字节解析工作已在实际读取前预收，包含无关section及重复读取。
                 MergeCategories(bytes, keys, reserve);
+                if (visitor) {
+                    auto status = visitor(logical, bytes);
+                    if (!status.Succeeded()) throw Failure{std::move(status.diagnostics)};
+                }
             }
             output.profiles_.push_back(std::move(source));
         }

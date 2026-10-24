@@ -5,8 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
+
+namespace War3Map::MapData { class TerrainShadowResources; }
 
 namespace War3Map::Game {
 
@@ -28,7 +33,13 @@ public:
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
 
 private:
+    friend class MapData::TerrainShadowResources;
     NativeDoodadCategoryDirectory() = default;
+    // SHD仅观察本owner同次实际读取的完整profile字节；不另造来源或类别资格。
+    using ProfileVisitor = std::function<Status(std::string_view, std::span<const std::byte>)>;
+    [[nodiscard]] static Result<NativeDoodadCategoryDirectory> CaptureWithProfiles(
+        const std::filesystem::path& gameRoot, NativeEditorStartupRules rules, std::size_t maximumBytes,
+        const ProfileVisitor& visitor);
     struct ProfileSource {
         std::string logicalPath, winner, sha256;
         std::size_t bytes = 0;
