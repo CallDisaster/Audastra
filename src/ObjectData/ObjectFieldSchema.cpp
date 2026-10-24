@@ -157,7 +157,7 @@ std::optional<NativeValueType> StorageType(const ObjectFieldDefinition& field) {
         return numbers ? NativeValueType::Int32 : NativeValueType::String;
     }
     // 这些是原版 metadata 的字符串/资源/对象引用编码类型，并非字段 ID 白名单。
-    static const std::set<std::string> strings{"string", "char", "icon", "model", "texture", "pathingtexture",
+    static const std::set<std::string> strings{"string", "char", "icon", "model", "texture", "pathingtexture", "doodadcategory",
         "shadowtexture", "shadowimage", "soundlabel", "unitsound", "ubersplat", "lightningeffect", "orderstring",
         "abilcode", "unitcode", "upgradecode", "upgradeeffect"};
     if (strings.contains(type) || type.ends_with("list") || type.starts_with("pathinglist")) return NativeValueType::String;

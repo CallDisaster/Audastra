@@ -815,6 +815,89 @@ void StartupCategoryCChoosesTheActualGridAndFreezesItsSources() {
     Require(HasCode(unexplained.Plan().SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"), "source directory does not weaken original full WPM explanation");
 }
 
+Bytes CategoryOverride(std::string_view parent, std::string_view placed, const char* value) {
+    auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+    if (parent == placed) Check(document.AddOriginalObject(std::string(placed)));
+    else Check(document.AddCustomObject(std::string(placed), std::string(parent)));
+    if (value) Check(document.AddModification({ObjectType::Doodad, std::string(placed)}, {"Cat9"},
+        NativeValueType::String, std::string(value)));
+    return Take(NativeObjectCodec(ObjectType::Doodad).Serialize(document));
+}
+
+Bytes CategoryExpectedPathing(Fixture& f, bool deep, bool four) {
+    auto expected = f.ExpectedPathing(deep);
+    // 独立预期：8x8绿色贴图放在544；C4为[12,20)，两格为[14,22)，仅OR文件04。
+    const unsigned low = four ? 12 : 14;
+    for (unsigned y = low; y < low + 8; ++y) for (unsigned x = low; x < low + 8; ++x)
+        expected[16 + y * 32 + x] |= std::byte{4};
+    return expected;
+}
+
+void EffectiveDoodadCategoriesUseTheNormalSaveAndUndoChain() {
+    struct Case { const char* placed; const char* standard; const char* value; bool four; };
+    unsigned sequence = 0;
+    for (const auto& sample : std::vector<Case>{
+        {"Doo0", "E", "C", true}, {"Doo0", "C", "E", false},
+        {"XE01", "E", "C", true}, {"XC01", "C", "E", false},
+        {"XE01", "C", nullptr, true}, {"XC01", "E", nullptr, false},
+        {"XC01", "E", "", true}, {"XE01", "C", "_Csuffix", false}}) {
+        Fixture f; CGridDoodad(f);
+        auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+        placements.doodads.front().rawcode = sample.placed; placements.doodads.front().position = {544, 544, 0};
+        f.Member("war3map.doo") = Take(placements.Serialize());
+        f.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
+            {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), sample.standard, "270"}});
+        f.members.push_back({"war3map.w3d", CategoryOverride("Doo0", sample.placed, sample.value)});
+        f.members.push_back({"Doodads/DoodadMetaData.slk", Slk({"ID", "field", "slk", "type", "repeat", "data", "index"},
+            {{"dpt0", "pathTex", "DoodadData", "pathingTexture", "0", "0", "0"},
+             {"Cat9", "category", "DoodadData", "doodadCategory", "0", "0", "0"}})});
+        f.Member("war3map.wpm") = CategoryExpectedPathing(f, false, sample.four);
+        f.Open(); f.Paint();
+        const auto plan = f.Plan(); const auto output = f.Output(plan);
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
+        auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "category-readback.w3x", output)).path));
+        Check(owner.VerifyReadback(saved, kBudget));
+        Require(Take(saved.ReadMember("war3map.wpm")) == CategoryExpectedPathing(f, true, sample.four),
+            "effective category选择整张独立C4或非C2预期，Original/Custom覆盖与继承走相同正式保存链");
+        f.SaveExpected("category-saved.w3x", f.ExpectedTerrain(true), CategoryExpectedPathing(f, true, sample.four));
+        if (sequence == 0 || sequence == 6) {
+            Require(f.edits->Undo(), "category覆盖保存后仍可撤销地形");
+            f.SaveExpected("category-undone.w3x", f.ExpectedTerrain(false), CategoryExpectedPathing(f, false, sample.four));
+            Require(f.edits->Redo(), "category覆盖保存后仍可重做地形");
+            f.SaveExpected("category-redone.w3x", f.ExpectedTerrain(true), CategoryExpectedPathing(f, true, sample.four));
+        }
+        if (sequence == 2) {
+            unsigned tamperedSequence = 0;
+            for (const auto* name : {"war3map.w3d", "Doodads/DoodadMetaData.slk"}) {
+                auto changed = name == std::string_view("war3map.w3d")
+                    ? CategoryOverride("Doo0", sample.placed, "C-same-first-byte") : f.Member(name);
+                if (name != std::string_view("war3map.w3d")) changed.push_back(std::byte{'\n'});
+                auto altered = output; altered.push_back({name, changed});
+                Require(!owner.VerifyFrozenOutput(altered, {}).Succeeded(), "同一类别结果不能绕过W3D/metadata字节冻结");
+                const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
+                auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(
+                    f.root / ("category-tampered-" + std::to_string(tamperedSequence++) + ".w3x"), replacement)).path));
+                Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "独立回读拒绝同类别的原生/metadata来源变更");
+            }
+            Check(IO::WriteFileBytes(f.gameRoot / "WorldEditData.txt", Text("[DoodadCategories]\nC=same-category-new-winner\n")));
+            Require(!owner.VerifyFrozenOutput(output, {}).Succeeded(), "native有效C仍绑定实际startup winner，而非最终C结果");
+        }
+        ++sequence;
+    }
+    Fixture unknown; CGridDoodad(unknown);
+    unknown.Member("Doodads/Doodads.slk") = Slk({"doodID", "code", "pathTex", "category"},
+        {{"Doo0", "Doo0", std::string(kUniformDoodadTexture), "E"}});
+    unknown.members.push_back({"war3map.w3d", CategoryOverride("Doo0", "Doo0", "C")});
+    unknown.members.push_back({"Doodads/DoodadMetaData.slk", Slk({"ID", "field", "slk", "type", "repeat", "index"},
+        {{"dpt0", "pathTex", "DoodadData", "pathingTexture", "0", "0"},
+         {"Cat9", "category", "DoodadData", "doodadCategory", "0", "0"}})});
+    unknown.gameRoot.clear(); unknown.Open(); unknown.Paint();
+    Require(HasCode(unknown.Plan().SaveGate(), "TERRAIN_CATEGORY_SOURCE_REQUIRED"), "native有效C不能借标准E绕过未知startup来源");
+    unknown.gameRoot = unknown.root / "game";
+    unknown.Member("war3map.wpm")[16] ^= std::byte{4}; unknown.Open(); unknown.Paint();
+    Require(HasCode(unknown.Plan().SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"), "category覆盖不放宽完整旧WPM解释门");
+}
+
 void StartupCategoryCPatternedRectangleUsesTheNormalSaveChain() {
     Fixture f; CGridDoodad(f);
     Bytes texture(18 + 8 * 4 * 3); texture[2] = std::byte{2}; texture[12] = std::byte{8};
@@ -1941,6 +2024,7 @@ int main() {
         StartupCategoryCUsesTheNormalSaveAndUndoChain();
         StartupCategoryCBudgetSourcesAndInheritanceStayBound();
         StartupCategoryCChoosesTheActualGridAndFreezesItsSources();
+        EffectiveDoodadCategoriesUseTheNormalSaveAndUndoChain();
         StartupCategoryCPatternedRectangleUsesTheNormalSaveChain();
         NativeDoodadFootprintsUseTheNormalSaveAndUndoChain();
         UniformDoodadTextureIsFrozenAndBudgeted();

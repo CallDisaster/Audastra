@@ -64,7 +64,9 @@ void Synthetic() {
         {{"ID", "alev"}, {"field", "levels"}, {"slk", "AbilityData"}, {"type", "int"}},
     });
     files["upgrade.slk"] = Table({{{"ID", "greq"}, {"field", "Requires"}, {"slk", "Profile"}, {"type", "techList"}, {"repeat", "1"}, {"appendIndex", "1"}, {"index", "-1"}}});
-    files["doodad.slk"] = Table({{{"ID", "dvr1"}, {"field", "vertR"}, {"slk", "DoodadData"}, {"type", "int"}, {"repeat", "10"}}});
+    files["doodad.slk"] = Table({
+        {{"ID", "dvr1"}, {"field", "vertR"}, {"slk", "DoodadData"}, {"type", "int"}, {"repeat", "10"}},
+        {{"ID", "dcat"}, {"field", "category"}, {"slk", "DoodadData"}, {"type", "doodadCategory"}, {"repeat", "0"}, {"index", "0"}}});
     files["strings.txt"] = "\xEF\xBB\xBF[WorldEditStrings]\nWESTRING_TEST_HP=&测试生命上限 (&H)\nWESTRING_TEST_STATS=测试状态（&S）\nWESTRING_TEST_RACE=&测试&&种族\n";
     files["world.txt"] = "[ObjectEditorCategories]\nstats=WESTRING_TEST_STATS\n";
     files["editor.txt"] = "[unitRace]\n00=synthetic,WESTRING_TEST_RACE\n00_Alt=synth,test\nNumValues=1\n";
@@ -102,6 +104,13 @@ void Synthetic() {
     Check(requirement.definition && requirement.modification.level == 2u && !requirement.sourceIndex && requirement.safeToEdit, "appendIndex profile level two is Requires1");
     const auto varied = schema.MatchSourceField(ObjectType::Doodad, "vertr01");
     Check(varied.definition && varied.modification.variation == 1u && !varied.safeToEdit, "doodad padded variation identified but write numbering gate retained");
+    const auto doodadCategory = schema.MatchSourceField(ObjectType::Doodad, "category");
+    Check(doodadCategory.definition && doodadCategory.definition->choices.empty()
+        && doodadCategory.definition->nativeValueType == NativeValueType::String && doodadCategory.safeToEdit,
+        "actual doodadCategory metadata remains String without enum choices");
+    const auto categoryNative = schema.MatchNativeField(ObjectType::Doodad, doodadCategory.modification);
+    Check(categoryNative.safeToEdit && categoryNative.definition == doodadCategory.definition && categoryNative.sourceKey == "category",
+        "category scalar source/native address remains identical");
     const auto list = schema.FindNative(ObjectType::Unit, "uabi");
     Check(list && list->isList && list->referenceTypes == std::vector{ObjectType::Ability}, "ability list reference metadata");
     const auto race = schema.FindNative(ObjectType::Unit, "urac");

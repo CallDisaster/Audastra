@@ -15,9 +15,11 @@ namespace War3Map::ObjectData {
 // 冻结、实际占地和旧WPM仍由owner核实。普通装饰物
 // 接受标准对象、v2 Original覆盖及无父覆盖的一层Custom继承。原生记录缺少第六项实际
 // DoodadMetaData时返回TERRAIN_NATIVE_OBJECT_DOODAD_METADATA_REQUIRED，供可信owner
-// 精确补捕获一次后完整重验；其它错误不能用于重试。category为明确非_的
-// 单可打印ASCII字符时，返回生效路径及实际fixedRot；非C请求2格，
-// C仅请求Core逐实例证明2/4格完整贡献相同，不将字面C当成已证4格类别身份。
+// 精确补捕获一次后完整重验；其它错误不能用于重试。普通category覆盖须绑定实际唯一
+// String标量元数据，无覆盖沿标准父；缺格/空串或首字节'_'按DOO新ID第二字节回退，
+// 其它值只取原始首字节；标准WESTRING_类别因未捕获本地化来源而拒绝。
+// 支持可打印ASCII首字节：非C请求2格，C请求Core捕获实际
+// fresh-startup类别目录后选择2/4格，不将字面C当成已证4格类别身份。
 // owner仍须验证真实贴图、摆放注册及旧WPM，不能仅凭此结果允许保存。
 [[nodiscard]] Result<MapData::TerrainNativeObjectPathing> InspectNativeDestructablePathing(
     std::span<const std::string_view> placedRawcodes, std::span<const ArchiveExactMember> sources,

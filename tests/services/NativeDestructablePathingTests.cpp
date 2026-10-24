@@ -801,13 +801,15 @@ void NonemptyDoodadInspectionKeepsTheNarrowSourceDomain() {
         fixture.doodads[0]["category"] = "E"; fixture.Tables();
     };
     Fixture missing; prepare(missing); missing.doodads[0].erase("category"); missing.Tables();
-    Rejected(missing.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "非空占地不能猜缺失类别");
+    Require(Take(missing.Inspect()).footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::TwoCells,
+        "category列缺失按D001第二字节0选择非C两格");
     missing.doodads.push_back({{"doodID", "D002"}, {"category", "E"}, {"pathTex", "_"}}); missing.Tables();
-    Rejected(missing.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "有category列但目标行缺格也不能猜类别");
-    for (const std::string category : {"", "_", "CC", " C", "C ", "\"C\"", " ", "\t", "\x7f", "\xc3\xa9"}) {
+    Require(Take(missing.Inspect()).footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::TwoCells,
+        "有category列但目标行缺格同样按DOO新ID第二字节回退");
+    for (const std::string category : {" C", " ", "\t", "\x7f", "\xc3\xa9", "WESTRING_CATEGORY", "westring_CATEGORY"}) {
         Fixture invalid; prepare(invalid); invalid.doodads[0]["category"] = category; invalid.Tables();
         const auto result = invalid.Inspect();
-        Rejected(result, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "类别必须是明确非_的单可打印ASCII字符");
+        Rejected(result, "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "类别有效首字节须在支持域，标准本地化文本不能猜解析结果");
     }
     Fixture categoryC; prepare(categoryC); categoryC.doodads[0]["category"] = "C"; categoryC.Tables();
     const auto startup = Take(categoryC.Inspect());
@@ -900,8 +902,7 @@ void DoodadOverridesUseBoundedStandardInheritance() {
         f.Tables(); f.AddDoodadMetadata();
         auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
         Modification(document, "D001", "Pos0", NativeValueType::String, std::string("0")); f.SetNative(document);
-        Rejected(f.Inspect(), std::string_view(key) == "category" ? "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED"
-            : "TERRAIN_NATIVE_OBJECT_METADATA", "unsupported category or nonnumeric fixedRot cannot borrow the standard pose");
+        Rejected(f.Inspect(), "TERRAIN_NATIVE_OBJECT_METADATA", "category缺显式index或nonnumeric fixedRot不能借标准姿态");
         Modification(document, "D001", "Dt00", NativeValueType::String, std::string{}); f.SetNative(document);
         Require(Take(f.Inspect()).footprints.empty(), "explicit zero footprint has no rotation contribution");
     }
@@ -909,6 +910,112 @@ void DoodadOverridesUseBoundedStandardInheritance() {
     auto document = Empty(ObjectType::Doodad);
     Check(document.AddCustomObject("C001", "D001")); Check(document.AddCustomObject("C002", "C001")); chain.SetNative(document);
     Rejected(chain.Inspect({"C002"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "recursive custom inheritance remains explicit and refused");
+}
+
+void DoodadCategoriesUseEffectiveFirstByteAndPlacedId() {
+    using Policy = MapData::TerrainDoodadGridPolicy;
+    for (const auto& [value, expected] : std::vector<std::pair<std::string, Policy>>{
+        {"", Policy::TwoCells}, {"_", Policy::TwoCells}, {"_Ctail", Policy::TwoCells},
+        {"CC", Policy::StartupCategoryC}, {"C ", Policy::StartupCategoryC},
+        {"custom", Policy::TwoCells}, {"E\t\xc3\xa9", Policy::TwoCells}, {"\"C\"", Policy::TwoCells}}) {
+        Fixture f; f.doodads[0]["pathTex"] = "PathTextures\\category.tga";
+        f.doodads[0]["category"] = value; f.Tables();
+        Require(Take(f.Inspect()).footprints[0].gridPolicy == expected,
+            "标准category只读原始首字节，不trim/lower或解释后缀");
+    }
+    for (const bool missing : {false, true}) {
+        Fixture f; f.doodads[0]["doodID"] = "DC01"; f.doodads[0]["code"] = "DC01";
+        f.doodads[0]["pathTex"] = "PathTextures\\category.tga";
+        if (missing) f.doodads[0].erase("category"); else f.doodads[0]["category"] = "_E";
+        f.Tables();
+        Require(Take(f.Inspect({"DC01"})).footprints[0].gridPolicy == Policy::StartupCategoryC,
+            "缺格和任意前导下划线均按DOO第二字节C回退");
+    }
+    struct Case { const char* parent; const char* placed; const char* standard; const char* overrideValue; Policy policy; };
+    for (const auto& sample : std::vector<Case>{
+        {"D001", "D001", "E", "Ctail", Policy::StartupCategoryC},
+        {"D001", "D001", "C", "E", Policy::TwoCells},
+        {"DC01", "DC01", "E", "", Policy::StartupCategoryC},
+        {"DE01", "DE01", "C", "_C", Policy::TwoCells},
+        {"D001", "XC01", "E", "C", Policy::StartupCategoryC},
+        {"D001", "XE01", "C", "E", Policy::TwoCells},
+        {"D001", "XE01", "C", nullptr, Policy::StartupCategoryC},
+        {"D001", "XC01", "E", nullptr, Policy::TwoCells},
+        {"DE01", "XC01", "E", "", Policy::StartupCategoryC},
+        {"DC01", "XE01", "C", "_Csuffix", Policy::TwoCells},
+        {"D001", "XE01", "WESTRING_CATEGORY", "C", Policy::StartupCategoryC},
+        {"D001", "XC01", "E", "WESTRING_CATEGORY", Policy::TwoCells}}) {
+        Fixture f; f.doodads[0]["doodID"] = sample.parent; f.doodads[0]["code"] = sample.parent;
+        f.doodads[0]["pathTex"] = "PathTextures\\category.tga"; f.doodads[0]["category"] = sample.standard;
+        // 字段ID故意不是dcat；实际地址和doodadCategory类型来自同次metadata。
+        f.doodadMetadata.push_back({{"ID", "Cat9"}, {"field", "category"}, {"slk", "DoodadData"},
+            {"type", "doodadCategory"}, {"repeat", "0"}, {"data", "0"}, {"index", "0"}});
+        f.Tables(); f.AddDoodadMetadata();
+        auto document = Empty(ObjectType::Doodad);
+        if (std::string_view(sample.parent) == sample.placed) Check(document.AddOriginalObject(sample.placed));
+        else Check(document.AddCustomObject(sample.placed, sample.parent));
+        if (sample.overrideValue) Modification(document, sample.placed, "Cat9", NativeValueType::String, std::string(sample.overrideValue));
+        f.SetNative(document); const auto before = f.sources[kW3d].bytes;
+        const auto parsed = Take(f.Inspect({sample.placed, sample.placed}));
+        Require(parsed.footprints.size() == 1 && parsed.footprints[0].rawcode == sample.placed
+            && parsed.footprints[0].gridPolicy == sample.policy,
+            "Original/一层Custom使用实际覆盖，缺覆盖继承，空/_按新ID而非父ID回退");
+        Take(f.Inspect({sample.placed, sample.placed}, parsed.workBytes));
+        Rejected(f.Inspect({sample.placed, sample.placed}, parsed.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "category描述符仍完整计入预算");
+        Require(f.sources[kW3d].bytes == before, "类别解析保持原生wire字节");
+    }
+}
+
+void DoodadCategoryOverridesRequireUniqueScalarStringMetadata() {
+    const auto prepare = [](Fixture& f) {
+        f.doodads[0]["pathTex"] = "PathTextures\\category.tga"; f.doodads[0]["category"] = "E";
+        f.doodadMetadata.push_back({{"ID", "Cat9"}, {"field", "category"}, {"slk", "DoodadData"},
+            {"type", "doodadCategory"}, {"repeat", "0"}, {"data", "0"}, {"index", "0"}});
+    };
+    for (unsigned mode = 0; mode < 16; ++mode) {
+        Fixture f; prepare(f); auto& field = f.doodadMetadata.back();
+        if (mode == 0) field.erase("index");
+        if (mode == 1) field["index"] = "1";
+        if (mode == 2) field["index"] = "0tail";
+        if (mode == 3) field.erase("repeat");
+        if (mode == 4) field["repeat"] = "1";
+        if (mode == 5) field["data"] = "1";
+        if (mode == 6) field["appendindex"] = "1";
+        if (mode == 7) field["effectindex"] = "1";
+        if (mode == 8) field["useSpecific"] = "D001";
+        if (mode == 9) field["notSpecific"] = "D002";
+        if (mode == 10 || mode == 11) {
+            auto duplicate = field; duplicate["ID"] = "Cat8";
+            if (mode == 11) duplicate["slk"] = "";
+            f.doodadMetadata.push_back(std::move(duplicate));
+        }
+        if (mode == 12) f.doodadMetadata.push_back({{"ID", "Cat8"}, {"field", "categor"}, {"slk", "DoodadData"},
+            {"type", "string"}, {"repeat", "0"}, {"data", "25"}, {"index", "0"}});
+        if (mode == 13) field["slk"] = "";
+        if (mode == 14) field["type"] = "int";
+        if (mode == 15) field["slk"] = "Doodads";
+        f.Tables(); f.AddDoodadMetadata();
+        auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+        Modification(document, "D001", "Cat9", mode == 14 ? NativeValueType::Int32 : NativeValueType::String,
+            mode == 14 ? Value{std::int32_t{67}} : Value{std::string("C")}); f.SetNative(document);
+        Rejected(f.Inspect(), "TERRAIN_NATIVE_OBJECT_METADATA", "category需要唯一实际String零索引字段，不借默认值、选择器或别名授权");
+    }
+    for (const bool custom : {false, true}) {
+        Fixture f; prepare(f); f.doodadMetadata.back()["useSpecific"] = "D001"; f.Tables(); f.AddDoodadMetadata();
+        auto document = Empty(ObjectType::Doodad); const std::string id = custom ? "XC01" : "D001";
+        if (custom) Check(document.AddCustomObject(id, "D001")); else Check(document.AddOriginalObject(id));
+        Modification(document, id, "Cat9", NativeValueType::String, std::string("C")); f.SetNative(document);
+        Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_METADATA", "Original与Custom均拒绝未证category选择器语义");
+    }
+    Fixture wire; prepare(wire); wire.Tables(); wire.AddDoodadMetadata();
+    auto document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+    Modification(document, "D001", "Cat9", NativeValueType::Int32, std::int32_t{67}); wire.SetNative(document);
+    Rejected(wire.Inspect(), "TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "String元数据的category不能由Int32 wire冒充");
+    Fixture unused; prepare(unused); unused.doodadMetadata.back().erase("index"); unused.Tables(); unused.AddDoodadMetadata();
+    document = Empty(ObjectType::Doodad); Check(document.AddOriginalObject("D001"));
+    Modification(document, "D001", "Cat9", NativeValueType::String, std::string("C"));
+    Modification(document, "D001", "Dt00", NativeValueType::String, std::string{}); unused.SetNative(document);
+    Require(Take(unused.Inspect()).footprints.empty(), "明确禁用pathTex时不新增未贡献category的标量资格要求");
 }
 
 void NativeDoodadRotationUsesExactValuesAndSources() {
@@ -988,7 +1095,7 @@ void NativeDoodadRotationUsesExactValuesAndSources() {
         "a numeric override does not promote C to a verified four-cell grid");
     category.doodadMetadata.push_back({{"ID", "Cat0"}, {"field", "category"}, {"slk", "DoodadData"}, {"type", "string"}, {"repeat", "0"}});
     category.Tables(); Modification(document, "D001", "Cat0", NativeValueType::String, std::string("E")); category.SetNative(document);
-    Rejected(category.Inspect(), "TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "even a valid fixedRot does not authorize native category overrides");
+    Rejected(category.Inspect(), "TERRAIN_NATIVE_OBJECT_METADATA", "有效fixedRot不替代category自己的显式零index元数据");
 }
 
 void WalkableBridgeInspectionOwnsUniqueBoundedResults() {
@@ -1414,6 +1521,8 @@ int main() {
         NonemptyDoodadInspectionKeepsTheNarrowSourceDomain();
         PatternedFootprintReceivesTheActualFixedRotation();
         DoodadOverridesUseBoundedStandardInheritance();
+        DoodadCategoriesUseEffectiveFirstByteAndPlacedId();
+        DoodadCategoryOverridesRequireUniqueScalarStringMetadata();
         NativeDoodadRotationUsesExactValuesAndSources();
         WalkableBridgeInspectionOwnsUniqueBoundedResults();
         WalkableBridgeRequiresExplicitStandardFields();
