@@ -389,16 +389,40 @@ const ObjectFieldDefinition& UniqueBridgeField(const Text::SlkCells& cells, cons
         Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥pathTex必须是实际DestructableData中的String字段。");
     else if (key == "fixedrot" && field.nativeValueType != NativeValueType::Real && field.nativeValueType != NativeValueType::Unreal)
         Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥fixedRot必须是实际DestructableData中的Real或Unreal字段。");
+    else if (key == "name" && (field.nativeValueType != NativeValueType::String
+        || Text::LowerAscii(field.valueType) != "string"))
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "桥名称必须是实际DestructableData中的String字段。");
     std::size_t candidates = 0;
     const auto& header = cells.at(1);
     const auto column = std::find_if(header.begin(), header.end(), [](const auto& cell) {
         return Text::LowerAscii(cell.second) == "field";
     });
     if (column == header.end()) Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥元数据缺少field列。");
+    const auto dataColumn = std::find_if(header.begin(), header.end(), [](const auto& cell) {
+        return Text::LowerAscii(cell.second) == "data";
+    });
     for (const auto& [number, row] : cells) {
         if (number == 1) continue;
         const auto actual = row.find(column->first);
-        if (actual == row.end() || Text::LowerAscii(actual->second) != key) continue;
+        if (actual == row.end()) continue;
+        const auto sourceKey = Text::LowerAscii(actual->second);
+        // Name只在实际使用时扩大范围；检查原始行的data拼接别名，不能让缺slk等被
+        // schema丢弃的nam+E行消失后，将剩下的Name误判为唯一地址。
+        if (key == "name" && sourceKey.size() + 1 == key.size() && key.starts_with(sourceKey)
+            && dataColumn != header.end()) {
+            const auto dataCell = row.find(dataColumn->first);
+            if (dataCell != row.end()) {
+                const auto text = Text::TrimCWhitespace(dataCell->second);
+                if (!text.empty()) {
+                    std::int32_t data = 0;
+                    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), data);
+                    if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size()
+                        || (data > 0 && data <= 26 && static_cast<char>('a' + data - 1) == key.back()))
+                        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "实际桥名称元数据存在未闭合或重复的data拼接候选。");
+                }
+            }
+        }
+        if (sourceKey != key) continue;
         if (++candidates != 1 || schema.FindNative(ObjectType::Destructable, row.at(1)) != &field)
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥元数据含未绑定或重复的" + std::string(key) + "候选。");
     }
@@ -419,7 +443,7 @@ void ValidateCustomBridgeSelector(const ObjectFieldDefinition& field) {
     for (const auto* name : {"usespecific", "notspecific"}) {
         const auto selector = field.metadata.find(name);
         if (selector != field.metadata.end() && !selector->second.empty())
-            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "自定义桥实际使用的字段含未支持的对象选择器：" + field.fieldId);
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "桥实际使用的字段含未支持的对象选择器：" + field.fieldId);
     }
 }
 void ApplyBridgeOverrides(const ObjectRecord& original, const NativeObjectDocument& document,
@@ -434,10 +458,11 @@ void ApplyBridgeOverrides(const ObjectRecord& original, const NativeObjectDocume
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖含未知元数据字段：" + modification.key.fieldId);
         // 先识别元数据声明的逻辑字段，再检查标量地址；data拼接后的sourceKey不能把坏地址伪装成其它字段。
         const auto sourceKey = Text::LowerAscii(match.definition->sourceField);
-        if (sourceKey != "walkable" && sourceKey != "pathtex" && sourceKey != "fixedrot")
-            Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走桥仅支持walkable、pathTex和fixedRot覆盖：" + modification.key.fieldId);
+        if (sourceKey != "walkable" && sourceKey != "pathtex" && sourceKey != "fixedrot" && sourceKey != "name")
+            Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "可行走桥仅支持walkable、pathTex、fixedRot和Name覆盖：" + modification.key.fieldId);
         const auto& field = UniqueBridgeField(cells, schema, context, sourceKey);
-        if (original.parentRawcode) ValidateCustomBridgeSelector(field);
+        // Name是新保留域，两类对象均限已证的无selector元数据；不收紧原三字段Original域。
+        if (original.parentRawcode || sourceKey == "name") ValidateCustomBridgeSelector(field);
         if (!match.safeToEdit || match.definition != &field || match.sourceKey != sourceKey || match.sourceIndex)
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥覆盖没有可靠的唯一标量地址：" + modification.key.fieldId);
         if (modification.key.level || modification.key.variation || modification.key.dataIndex || modification.valueWasOpaque
@@ -456,6 +481,12 @@ void ApplyBridgeOverrides(const ObjectRecord& original, const NativeObjectDocume
             if (!value) Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "标准桥pathTex覆盖不是实际String值。");
             // 516FE0命中Original后直接走5B8A00；明确空串也不能回退标准占地。
             path = *value;
+        } else if (sourceKey == "name") {
+            // 5038C0/503340/503440按实际字段地址只取pathTex/fixedRot/walkable；
+            // 516FE0等三getter不会把Name当作这三项缺省或覆盖。保留原String，
+            // 不参与占地描述，也不修改原生对象字节；空名称同样不改变分类。
+            if (!std::holds_alternative<std::string>(modification.value))
+                Fail("TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE", "桥Name覆盖不是实际String值。");
         } else {
             if (field.nativeValueType != NativeValueType::Real && field.nativeValueType != NativeValueType::Unreal)
                 Fail("TERRAIN_NATIVE_OBJECT_METADATA", "标准桥fixedRot必须是实际DestructableData中的Real或Unreal字段。");
