@@ -2,6 +2,8 @@
 # 以及自有界面描述 audastra.ui）。不依赖 Qt；
 # 编辑器与命令行共用。分析地图脚本时复用 JASS / Lua 的词法与语法分析。
 add_library(War3MapGameUi STATIC
+    CastTriggers.cpp
+    FeatureTextWriter.h
     FrameDefinitionParser.cpp
     FrameDraw.cpp
     FrameLibrary.cpp
