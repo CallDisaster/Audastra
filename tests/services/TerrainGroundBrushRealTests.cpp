@@ -19,6 +19,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <span>
 #include <stdexcept>
 
 namespace War3Map::TerrainSaveTests {
@@ -86,6 +87,47 @@ std::byte DryMask(const TerrainGridSnapshot& terrain, std::size_t px, std::size_
     if (cliff || !flags[2]) mask |= 0x08;
     if (cliff) mask |= 0x80;
     return static_cast<std::byte>(mask);
+}
+
+void CheckDryExistingRampPathing(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::span<const std::byte> oldNative, std::span<const std::byte> newNative,
+    const std::map<std::string, Properties>& properties) {
+    // 单排H/R/L只有中心一个R：相邻四格权重都是1，原本已阻断。
+    // 中心层级2→3后清除三处旧坡道位，同四格由原始层级差阻断。
+    // 因此这笔确实改变W3E，但不能要求它一定改变WPM。
+    for (std::size_t y = 0; y < 65; ++y) for (std::size_t x = 0; x < 65; ++x) {
+        const auto& old = before.vertices[y * 65 + x];
+        const auto& next = after.vertices[y * 65 + x];
+        Require(old.CliffLevel() == (x <= 31 ? 3 : 2)
+            && old.IsRamp() == (y == 32 && x >= 31 && x <= 33),
+            "dry existing ramp has the exact independent split and three raw ramp bits");
+        Require(next.CliffLevel() == (x <= 31 || (x == 32 && y == 32) ? 3 : 2)
+            && !next.IsRamp(), "dry stroke changes only the center layer and clears the invalid old ramp");
+        Require(!old.HasWater() && !next.HasWater()
+            && old.GroundTextureIndex() == next.GroundTextureIndex() && old.IsBlight() == next.IsBlight()
+            && old.IsBoundary() == next.IsBoundary() && old.IsMapEdge() == next.IsMapEdge(),
+            "dry existing ramp keeps every other terrain pathing input unchanged");
+    }
+    // x=30..33/y=30..33的地格字面预期；不调用产品的角分类或通行生成器。
+    // 第一列为高台平地，第二列一直是崖边，中间两行的第三列也因单R阻断。
+    constexpr std::array<bool, 16> blocked{
+        false, true, false, false, false, true, true, false,
+        false, true, true, false, false, true, false, false};
+    for (std::size_t py = 120; py < 136; ++py) for (std::size_t px = 120; px < 136; ++px) {
+        const auto& nearest = before.vertices[((py + 2) / 4) * 65 + (px + 2) / 4];
+        Require(!nearest.IsBoundary() && !nearest.IsMapEdge(), "literal ramp patch is playable interior");
+        const auto& material = properties.at(before.header.groundTilesets.at(nearest.GroundTextureIndex()));
+        unsigned mask = 0x40 | (nearest.IsBlight() ? 0x20 : 0);
+        if (!material[0]) mask |= 0x02;
+        if (!material[1]) mask |= 0x04;
+        if (!material[2]) mask |= 0x08;
+        if (blocked[(py / 4 - 30) * 4 + px / 4 - 30]) mask |= 0x8a;
+        Require(oldNative[py * 256 + px] == static_cast<std::byte>(mask)
+            && newNative[py * 256 + px] == static_cast<std::byte>(mask),
+            "old and final ramp patch agree with literal cells and actual terrain properties");
+    }
+    Require(std::equal(oldNative.begin(), oldNative.end(), newNative.begin(), newNative.end()),
+        "this dry existing ramp stroke legitimately preserves the complete native pathing");
 }
 } // namespace
 
@@ -366,6 +408,11 @@ void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
     Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
         "existing ramp public save uses the playable 64-cell original fixture");
     Require(!originalTerrain.header.cliffTilesets.empty(), "existing cliff seed has a real selected palette slot");
+    Require(!original.HasMember("TerrainArt/Terrain.slk"), "existing ramp oracle uses the actual game-winning terrain table");
+    const auto mounted = Take(Game::GameDataSource::MountStrict(game, originalTerrain.header.mainTileset));
+    const auto table = Take(mounted.ReadFileBoundedWithSource("TerrainArt/Terrain.slk", 2u * 1024u * 1024u));
+    const auto properties = GroundProperties(table);
+    std::cout << "existing_ramp_table winner=" << table.archiveName << " sha256=" << Take(Sha256(table.bytes)) << '\n';
     for (const bool wet : {false, true}) {
         const auto scenario = directory / (wet ? "playable-wet-ramp-cliff" : "playable-dry-ramp-cliff");
         Require(std::filesystem::create_directory(scenario), "exclusive existing ramp cliff save scenario");
@@ -389,6 +436,7 @@ void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
         const auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "seeded.w3x",
             std::array<MemberReplacement, 1>{{{"war3map.w3e", beforeBytes}}})).path));
         const auto doodads = Take(ParseDoodadPlacements(Take(seeded.ReadMember("war3map.doo"))));
+        Require(doodads.doodads.empty() && doodads.specialDoodads.empty(), "existing ramp fixture has no static pathing overlays");
         const auto resources = Take(TerrainPathingSave::CaptureWaterBrushRules(seeded, before, before, doodads, game, true, kBytes));
         const auto* loaded = resources.WaterBrushRules();
         Require(loaded != nullptr, "existing ramp cliff captures actual terrain rules");
@@ -409,6 +457,7 @@ void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
         auto oldPathing = Take(seeded.ReadMember("war3map.wpm"));
         Require(oldPathing.size() == 16 + oldNative.size() && oldNative.size() == newNative.size(),
             "existing ramp pathing uses the complete original grid dimensions");
+        if (!wet) CheckDryExistingRampPathing(before, planned.terrain, oldNative, newNative, properties);
         auto expectedPathing = oldPathing;
         // 此专项复用实际资源生成器检查公共保存编排；独立坡道算法预期在Core测试。
         // 不把这份可操作原创地图的保存回读当作原版或游戏通行验收。
@@ -416,7 +465,8 @@ void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
             oldPathing[i + 16] = (oldPathing[i + 16] & std::byte{0x11}) | oldNative[i];
             expectedPathing[i + 16] = (oldPathing[i + 16] & std::byte{0x11}) | newNative[i];
         }
-        Require(oldPathing != expectedPathing, "existing ramp cliff stroke changes complete native pathing");
+        if (wet) Require(oldPathing != expectedPathing, "wet existing ramp cliff stroke changes complete native pathing");
+        else Require(oldPathing == expectedPathing, "dry existing ramp cliff stroke preserves proven native pathing");
         const auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x",
             std::array<MemberReplacement, 1>{{{"war3map.wpm", oldPathing}}})).path));
         MapEditSaveRequest request;
