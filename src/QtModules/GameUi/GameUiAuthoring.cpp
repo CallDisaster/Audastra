@@ -5,8 +5,10 @@
 #include "GameUiCanvas.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "War3MapCore/GameUi/UiPresets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
+#include <QComboBox>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -125,8 +127,9 @@ bool GameUiModule::StageDescription(UiDescription description, bool create, cons
     return true;
 }
 
-bool GameUiModule::CreateDescription(const QString& id, const QString& label, QString* error) {
-    auto created = NewUiDescription(id.toStdString(), label.toStdString());
+bool GameUiModule::CreateDescription(const QString& id, const QString& label, QString* error, const QString& preset) {
+    auto created = preset.isEmpty() ? NewUiDescription(id.toStdString(), label.toStdString())
+                                    : NewUiDescriptionFromPreset(preset.toStdString(), id.toStdString(), label.toStdString());
     if (!created.value) {
         if (error) *error = FirstMessage(created.diagnostics);
         return false;
@@ -249,7 +252,12 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     auto* labelEdit = new QLineEdit(form);
     labelEdit->setObjectName(QStringLiteral("gameUiNewDescriptionLabel"));
     labelEdit->setPlaceholderText(tr("显示名"));
+    auto* presetBox = new QComboBox(form);
+    presetBox->setObjectName(QStringLiteral("gameUiNewDescriptionPreset"));
+    presetBox->addItem(tr("空白"), QString());
+    for (const auto& preset : UiPresets()) presetBox->addItem(Text(std::string(preset.label)), Text(std::string(preset.id)));
     auto* create = new QPushButton(tr("创建"), form);
+    formLayout->addWidget(presetBox);
     formLayout->addWidget(idEdit);
     formLayout->addWidget(labelEdit);
     formLayout->addWidget(create);
@@ -257,9 +265,9 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     formAction->setDefaultWidget(form);
     createMenu->addAction(formAction);
     newDescriptionButton_->setMenu(createMenu);
-    const auto submit = [this, idEdit, labelEdit, createMenu] {
+    const auto submit = [this, idEdit, labelEdit, presetBox, createMenu] {
         QString error;
-        if (CreateDescription(idEdit->text().trimmed(), labelEdit->text().trimmed(), &error)) {
+        if (CreateDescription(idEdit->text().trimmed(), labelEdit->text().trimmed(), &error, presetBox->currentData().toString())) {
             idEdit->clear();
             labelEdit->clear();
             createMenu->close();

@@ -95,9 +95,12 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             required.append("description");
         } else if (tool.name == "game_ui_description_create") {
-            tool.description = "新建一份空的地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程";
+            tool.description = "新建一份地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程。"
+                "preset 可选起始模板：castbar 读条条（数值 shown、progress、text、remaining，状态 channel、interrupt，"
+                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name）；省略为空白";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("label", QJsonObject{{"type", "string"}, {"maxLength", 256}});
+            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party"}}});
             required.append("description");
         } else if (tool.name == "game_ui_description_edit") {
             tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："
@@ -172,10 +175,10 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
     if (!identity.isString() || identity.toString().isEmpty() || identity.toString().size() > 128 || identity.toString().contains(QChar::Null)
         || !ParseUnsignedId(args, "expected_revision", true).Succeeded())
         return Failure("GAME_UI_ARGUMENT", "工程身份或修订无效。");
-    for (const auto* key : {"race", "aspect"}) {
+    for (const auto* key : {"race", "aspect", "preset"}) {
         if (!args.contains(key)) continue;
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
-        if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", "种族或宽高比不在可选范围内。");
+        if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", "种族、宽高比或界面模板不在可选范围内。");
     }
     for (const auto* key : {"expansion", "show_hidden", "preview"}) {
         if (args.contains(key) && !args.value(key).isBool()) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是布尔值。");

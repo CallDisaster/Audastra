@@ -354,7 +354,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const QString id = args.value("description").toString();
         QString error;
         if (name == QLatin1String("game_ui_description_create") &&
-            !module->CreateDescription(id, args.value("label").toString(), &error)) {
+            !module->CreateDescription(id, args.value("label").toString(), &error, args.value("preset").toString())) {
             return Failure("GAME_UI_DESCRIPTION", error);
         }
         if (name == QLatin1String("game_ui_description_edit")) {

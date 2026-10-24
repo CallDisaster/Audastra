@@ -1,6 +1,7 @@
 #include "AudastraUiCatalog.h"
 #include "CastSpellLayer.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
+#include "War3MapCore/GameUi/UiPresets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -212,6 +213,33 @@ void TestBarBinding() {
     Require(Contains(script, "GetLocalPlayer()"), "显示只按本机玩家");
 }
 
+// 起始模板：读条条模板与读条系统的默认绑定一一对应，团队框架模板能生成界面触发器。
+void TestPresets() {
+    Require(!NewUiDescriptionFromPreset("nothing", "bar", "").Succeeded(), "没有的模板拒绝");
+    Require(!NewUiDescriptionFromPreset("castbar", "9bar", "").Succeeded(), "编号无效拒绝");
+    const auto bar = NewUiDescriptionFromPreset("castbar", "bar", "");
+    Require(bar.Succeeded() && bar.value->label == "读条条", "读条条模板：" + First(bar.diagnostics));
+    Require(ParseUiDescription(SerializeUiDescription(*bar.value)).Succeeded(), "读条条模板写出后能读回");
+    const auto party = NewUiDescriptionFromPreset("party", "party", "队伍");
+    Require(party.Succeeded() && party.value->label == "队伍" && party.value->frames.front().repeat->count == 5, "团队框架模板");
+
+    Fixture f;
+    Require(f.Apply("技能", std::string(kEffects)).Succeeded(), "效果触发器");
+    for (const UiDescription* description : {&*bar.value, &*party.value}) {
+        const auto ui = GenerateUiTriggers(*description);
+        Require(ui.Succeeded(), description->id + " 界面触发器：" + First(ui.diagnostics));
+        Require(f.Apply(kUiTriggerCategory, ui.value->featureText).Succeeded(), description->id + " 界面触发器写入");
+    }
+    using namespace CastBarPreset;
+    CastSystemOptions options = TwoAbilities();
+    options.bar = CastBarBinding{&*bar.value, std::string(kVisible), std::string(kProgress), std::string(kText),
+        std::string(kRemaining), std::string(kChannel), std::string(kInterrupted), 0.5};
+    const auto plan = GenerateCastSystem(options);
+    Require(plan.Succeeded(), "读条条模板绑定读条系统：" + First(plan.diagnostics));
+    Require(f.Apply(kCastTriggerCategory, plan.value->featureText).Succeeded(), "读条系统写入");
+    (void)GeneratedScript(f);
+}
+
 } // namespace
 
 int main() {
@@ -221,6 +249,7 @@ int main() {
         TestGeneratedText();
         TestAppliedAndCompiled();
         TestBarBinding();
+        TestPresets();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

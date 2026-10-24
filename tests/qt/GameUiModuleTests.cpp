@@ -76,6 +76,7 @@ private slots:
     void GeneratesDescriptionTriggers();
     void FramePropertiesEditLayoutAndText();
     void GeneratesCastSystem();
+    void CreatesFromPresets();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -798,6 +799,27 @@ void GameUiModuleTests::GeneratesCastSystem() {
     QVERIFY2(bound, qPrintable(error));
     QVERIFY(bound->featureText.contains(QStringLiteral("udg_AUIV_Bar_progress")));
     QCOMPARE(count(), 12);
+}
+
+void GameUiModuleTests::CreatesFromPresets() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    // 新建界面菜单里的模板列表与 Core 的模板一致。
+    auto* presets = page->findChild<QComboBox*>(QStringLiteral("gameUiNewDescriptionPreset"));
+    QVERIFY(presets);
+    QCOMPARE(presets->count(), 3);
+    QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0);
+    QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{4});
+    QCOMPARE(module.Description(QStringLiteral("Party"))->label, std::string("团队框架"));
+    QVERIFY(module.SelectFrame(QStringLiteral("slot#4")));
+    QVERIFY2(module.CreateDescription(QStringLiteral("Bar"), QStringLiteral("施法条"), &error, QStringLiteral("castbar")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Bar"))->states.size(), std::size_t{2});
+    QVERIFY(!module.CreateDescription(QStringLiteral("Other"), {}, &error, QStringLiteral("nothing")));
+    QVERIFY(!module.Description(QStringLiteral("Other")));
 }
 
 int main(int argc, char** argv) {

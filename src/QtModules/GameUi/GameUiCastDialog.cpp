@@ -1,6 +1,7 @@
 #include "GameUiModule.h"
 
 #include "Modules/ModuleHost.h"
+#include "War3MapCore/GameUi/UiPresets.h"
 
 #include <QComboBox>
 #include <QDialog>
@@ -79,6 +80,9 @@ void GameUiModule::ShowCastSystemDialog() {
         const auto& d = file.description;
         bar->addItem(d.label.empty() ? Text(d.id) : QStringLiteral("%1  %2").arg(Text(d.label), Text(d.id)), Text(d.id));
     }
+    // 新建一份读条条模板（连同它的界面触发器）再绑定。
+    const QString newBar = QStringLiteral("+castbar");
+    bar->addItem(tr("新建读条条"), newBar);
     const auto refill = [&, this] {
         const UiDescription* description = Description(bar->currentData().toString());
         FillValues(visible, description, UiValueType::Boolean, false, {"shown", "visible", "show"});
@@ -106,7 +110,23 @@ void GameUiModule::ShowCastSystemDialog() {
 
     CastSystemRequest request;
     request.bar = bar->currentData().toString();
-    if (!request.bar.isEmpty()) {
+    QString error;
+    if (request.bar == newBar) {
+        QString id = QStringLiteral("castbar");
+        for (int n = 2; Description(id); ++n) id = QStringLiteral("castbar%1").arg(n);
+        if (!CreateDescription(id, {}, &error, QStringLiteral("castbar")) || !GenerateDescriptionTriggers(id, false, &error)) {
+            ReportAuthoring(error);
+            return;
+        }
+        using namespace CastBarPreset;
+        request.bar = id;
+        request.visible = Text(std::string(kVisible));
+        request.progress = Text(std::string(kProgress));
+        request.text = Text(std::string(kText));
+        request.remaining = Text(std::string(kRemaining));
+        request.channel = Text(std::string(kChannel));
+        request.interrupted = Text(std::string(kInterrupted));
+    } else if (!request.bar.isEmpty()) {
         request.visible = visible->currentData().toString();
         request.progress = progress->currentData().toString();
         request.text = text->currentData().toString();
@@ -114,7 +134,6 @@ void GameUiModule::ShowCastSystemDialog() {
         request.channel = channel->currentData().toString();
         request.interrupted = interrupted->currentData().toString();
     }
-    QString error;
     const auto generated = GenerateCastSystem(request, false, &error);
     if (!generated) {
         ReportAuthoring(error);

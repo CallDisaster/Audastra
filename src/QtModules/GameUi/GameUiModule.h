@@ -112,7 +112,8 @@ public:
     void SetShowHidden(bool show);
     // 编写地图界面描述。编辑先按 audastra.ui 的规则检查，再作为导入文件 AudastraUI\<编号>.json 放进地图的待保存修改，
     // 与导入文件同一撤销栈和保存流程。失败时给出原因，什么都不改。edits 的写法见 UiDescriptionEdit.h。
-    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr);
+    // preset 为起始模板编号（UiPresets.h，如 castbar、party），空为空白描述。
+    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr, const QString& preset = {});
     bool EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error = nullptr);
     // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；返回新框架编号，失败为空。
     QString AddDescriptionFrame(GameUi::UiFrameType type, QString* error = nullptr);

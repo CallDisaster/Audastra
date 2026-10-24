@@ -2515,6 +2515,8 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!f.tools->Invoke("game_ui_cast_system", badAbility).value("ok").toBool());
     auto badSeconds = cast; badSeconds["abilities"] = QJsonArray{QJsonObject{{"ability", "A000"}, {"tick", -1}, {"effect", "效果"}}};
     QVERIFY(!f.tools->Invoke("game_ui_cast_system", badSeconds).value("ok").toBool());
+    auto badPreset = args; badPreset["description"] = "Bar"; badPreset["preset"] = "unknown";
+    QVERIFY(!f.tools->Invoke("game_ui_description_create", badPreset).value("ok").toBool());
     auto badBar = cast; badBar["bar"] = QJsonObject{{"description", "CastBar"}, {"visible", "shown"}};
     QVERIFY(!f.tools->Invoke("game_ui_cast_system", badBar).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{6});
