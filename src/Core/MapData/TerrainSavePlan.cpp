@@ -121,7 +121,7 @@ template<class Function> Result<TerrainSavePlan> Guard(Function&& function) {
 
 bool TerrainSavePlan::HasTerrainChanges(const MapDataEditSession& edits) noexcept {
     return edits.TerrainDirty() || edits.pathing_ != edits.pathingOriginal_
-        || edits.specialDoodads_ != edits.savedSpecialDoodads_;
+        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges();
 }
 
 Result<TerrainSavePlan> TerrainSavePlan::Prepare(const MapArchiveSession& source,
@@ -323,7 +323,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     }
     if (mixedProof && !plan.RebuiltPathing() && plan.saveGate_.Succeeded())
         plan.saveGate_ = Reject("TERRAIN_SAVE_MIXED_INPUTS_UNVERIFIED", "混合物编或导入修改需要完整原通行重现与实际依赖检查，当前未取得完整结果。");
-    plan.pathingInvariant_ = mixedProof || edits.specialDoodads_ != edits.savedSpecialDoodads_;
+    plan.pathingInvariant_ = mixedProof || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges();
     plan.pathingInvariant_ = plan.pathingInvariant_ || edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
     if (edits.pathing_->size() == edits.pathingOriginal_->size())
@@ -360,7 +360,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
                 if (!currentBytes || !originalBytes)
                     return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_CHANGED",
                         "范围或摆放成员存在性改变，无法保持原通行：" + source.name);
-                if (index == 0) RequireStatus(ValidateTerrainSettingsPathingChange(originalBytes, currentBytes));
+                if (index == 0) RequireStatus(edits.VerifyTerrainSettingsForSave());
                 AddBytes(currentBytes->size(), total, limits);
                 source.outputBytes = currentBytes->size();
                 source.outputSha256 = Take(Sha256(*currentBytes));

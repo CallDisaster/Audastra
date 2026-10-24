@@ -14,6 +14,7 @@
 namespace War3Map::Services { class TerrainPathingSave; }
 
 namespace War3Map::MapData {
+class MapDataEditSession;
 
 struct DoodadPlacement;
 enum class TerrainNativeStage { Before, After };
@@ -88,6 +89,12 @@ public:
     // 原字节读取、严格物编解析与启动类别目录的累计工作预留；保存计划还需计入输出缓冲。
     [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept { return sourceBytes_ + objectWorkBytes_; }
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
+    [[nodiscard]] const std::array<float, 4>* NativeCameraMargins() const noexcept {
+        return nativeCameraMargins_ ? &*nativeCameraMargins_ : nullptr;
+    }
+    [[nodiscard]] Status VerifyTerrainBoundsInput(const TerrainGridSnapshot& sourceTerrain,
+        const TerrainGridSnapshot& currentTerrain, std::span<const std::byte> sourceSettings) const;
+    [[nodiscard]] Result<std::string> TerrainBoundsDependencyFingerprint() const;
 
 private:
     friend class Services::TerrainPathingSave;
@@ -95,8 +102,7 @@ private:
     TerrainPathingResources() = default;
     // 仅内部保存计划可把会话完整W3I的窄域说明修改绑定到最终身份。
     // 原始依赖仍保留真实来源SHA；外部不能自报最终SHA或验证布尔。
-    [[nodiscard]] Status BindNativeSettingsOutput(const std::optional<std::vector<std::byte>>& source,
-        const std::optional<std::vector<std::byte>>& output);
+    [[nodiscard]] Status BindNativeSettingsOutput(const MapDataEditSession& edits);
     // 只有Services可信适配器可提供解析器；输入只能是同一次实际捕获的字节。
     // 成功值仅描述同次实际来源中的对象语义及解析预留，不是外部资格布尔。
     using NativeObjectValidator = std::function<Result<TerrainNativeObjectPathing>(
@@ -155,6 +161,8 @@ private:
     std::string waterBrushInputSha_;
     std::size_t waterBrushInputBytes_ = 0;
     std::optional<TerrainNativePlayableBounds> nativeBounds_;
+    std::optional<TerrainNativePlayableBounds> nativeAfterBounds_;
+    std::optional<std::array<float, 4>> nativeCameraMargins_;
     std::optional<std::string> nativeSettingsOutputSha_;
     std::size_t nativeSettingsOutputBytes_ = 0;
     std::vector<std::byte> nativeDoodads_, nativeAfterDoodads_;

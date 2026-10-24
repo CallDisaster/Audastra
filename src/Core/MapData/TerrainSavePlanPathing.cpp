@@ -37,8 +37,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
     // 原版G0/G1仍消费同一范围规则；仅四个说明字段可在全文核对后形成不同输出。
     // 资源owner保留旧来源身份，并另外冻结该次完整W3I供写前/写后精确核对。
-    const auto settingsIndex = MapDataEditSession::Index(MapDataKind::Settings);
-    const auto settings = captured.value->BindNativeSettingsOutput(edits.original_[settingsIndex], edits.current_[settingsIndex]);
+    const auto settings = captured.value->BindNativeSettingsOutput(edits);
     if (!settings.Succeeded()) return {{}, settings.diagnostics};
     const auto reserve = [&](std::size_t bytes) {
         if (bytes > limits.maximumBytes - total) return false;

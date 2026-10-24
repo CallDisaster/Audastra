@@ -35,6 +35,7 @@ add_library(War3MapCore STATIC
     MapData/TerrainEditInspection.cpp
     MapData/MapFields.cpp
     MapData/MapDataEditSessionTerrain.cpp
+    MapData/MapDataEditSessionBounds.cpp
     MapData/MapDataEditSessionWater.cpp
     MapData/MapDataEditSessionTerrainQuery.cpp
     MapData/MapDataEditSessionTerrainInternal.h
@@ -59,6 +60,7 @@ add_library(War3MapCore STATIC
     MapData/TerrainSavePlanPathing.cpp
     MapData/TerrainNativePathing.cpp
     MapData/TerrainPathingResources.cpp
+    MapData/TerrainPathingBounds.cpp
     MapData/TerrainPathingFootprints.cpp
     MapData/TerrainUniformDoodadFootprint.cpp
     MapData/TerrainSpecialDoodadPathing.cpp

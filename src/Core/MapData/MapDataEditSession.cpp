@@ -145,7 +145,7 @@ Status MapDataEditSession::Commit(std::vector<MemberChange> changes) {
 }
 
 Status MapDataEditSession::CommitCommand(Command value, const std::function<Status(const EditReceipt&)>& prepublish) {
-    if (value.changes.empty() && value.terrain.empty() && !value.headerAfter && !value.pathingAfter && !value.restrictionAfter) return Status::Ok();
+    if (value.changes.empty() && value.terrain.empty() && !value.headerAfter && !value.pathingAfter && !value.restrictionAfter && !value.boundsAfter) return Status::Ok();
     if (revision_ == std::numeric_limits<std::uint64_t>::max() ||
         (!value.logicalIdentity && nextCommandIdentity_ == std::numeric_limits<std::uint64_t>::max()))
         return Status::Failure("MapData.Edit", "MAP_EDIT_ID_EXHAUSTED", "编辑修订或命令身份已用尽。");
@@ -164,6 +164,9 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     if (static_cast<bool>(value.specialBefore) != static_cast<bool>(value.specialAfter)
         || (value.specialBefore && value.specialBefore != specialDoodads_))
         return Status::Failure("MapData.Edit", "TERRAIN_SPECIAL_STATE_STALE", "特殊模型事务来源已变，未提交任何成员。");
+    if (static_cast<bool>(value.boundsBefore) != static_cast<bool>(value.boundsAfter)
+        || (value.boundsBefore && boundsState_ && value.boundsBefore != boundsState_))
+        return Status::Failure("MapData.Edit", "TERRAIN_BOUNDS_STATE_STALE", "范围事务来源已变，未提交任何成员。");
     value.beforeRevision = revision_; value.afterRevision = revision_ + 1;
     auto command = std::make_shared<const Command>(std::move(value));
     // 在触碰历史或覆盖前完成可能抛出异常的分配，关联成员与地形不能部分提交。
@@ -205,6 +208,10 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     for (std::size_t i = 0; i < command->changes.size(); ++i)
         current_[Index(command->changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
+    if (command->boundsAfter) {
+        if (!savedBoundsState_) savedBoundsState_ = command->boundsBefore;
+        boundsState_ = command->boundsAfter;
+    }
     if (command->specialAfter) specialDoodads_ = command->specialAfter;
     if (command->pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
@@ -555,6 +562,9 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
     command.terrainStroke = source.terrainStroke;
     command.specialBefore = forward ? source.specialBefore : source.specialAfter;
     command.specialAfter = forward ? source.specialAfter : source.specialBefore;
+    command.boundsBefore = forward ? source.boundsBefore : source.boundsAfter;
+    command.boundsAfter = forward ? source.boundsAfter : source.boundsBefore;
+    command.boundsIntent = source.boundsIntent; command.boundsRulesSha256 = source.boundsRulesSha256;
     command.logicalForward = source.logicalForward == forward; command.placements = source.placements;
     for (const auto& change : source.changes) {
         const auto& expected = forward ? change.before : change.after;
@@ -617,6 +627,7 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
         current_[Index(command.changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
     if (command.specialAfter) specialDoodads_ = forward ? command.specialAfter : command.specialBefore;
+    if (command.boundsAfter) boundsState_ = forward ? command.boundsAfter : command.boundsBefore;
     if (command.pathingAfter) pathing_.swap(nextPathing);
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
 }
@@ -672,6 +683,7 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
       preservedSources_(source.preservedSources_), revision_(source.revision_), sessionIdentity_(source.sessionIdentity_),
       nextCommandIdentity_(source.nextCommandIdentity_), terrainSourceRevision_(source.terrainSourceRevision_),
       specialDoodads_(source.specialDoodads_), savedSpecialDoodads_(source.savedSpecialDoodads_),
+      boundsState_(source.boundsState_), savedBoundsState_(source.savedBoundsState_),
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_), pathingOriginal_(source.pathingOriginal_),
       pathing_(source.pathing_), pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
       originalPathingRestrictions_(source.originalPathingRestrictions_) {}
@@ -751,6 +763,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     states_.swap(states);
     preservedSources_.swap(preservedSources);
     terrainOriginal_ = terrain_;
+    savedBoundsState_ = boundsState_;
     specialDoodads_ = savedSpecialDoodads_ = std::move(savedSpecial);
     // 不从P|A反推来源P，已保存意图S单独保留。
     originalPathingRestrictions_ = pathingRestrictions_;
