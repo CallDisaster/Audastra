@@ -590,16 +590,15 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 // 其缺行getter先清空字符串，因此502580回退到wire DWORD>>8的低字节。
                 // 426890按小端原样读DWORD，该字节就是文件rawcode的第二个字符。
                 // 62B420→62BA10→564900→563EF0保留DOO新ID于record+4，549680原样传入；Custom不能改用父ID。
-                // 非C无论类别目录是否包含该字符都不能命中502600，故确定采用2格。
-                if (rawcode[1] == 'C')
-                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_GRID", "可行走对象的C类别回退尚未绑定最终目录，不能确定吸附网格：" + std::string(rawcode));
+                // 非C确定2格；C与普通占地共用可信startup owner，不能仅凭字面C断言4格。
+                const auto policy = rawcode[1] == 'C' ? MapData::TerrainDoodadGridPolicy::StartupCategoryC
+                    : MapData::TerrainDoodadGridPolicy::TwoCells;
                 const auto outputWork = sizeof(std::string_view) * 3 + sizeof(ResolvedDoodadFootprint)
                     + sizeof(MapData::TerrainNativeDoodadPathingType) + rawcode.size() + path->size() + 2;
                 if (outputWork > maximumWorkingBytes - work)
                     Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "可行走对象占地结果超过累计剩余预算。");
                 work += outputWork;
-                footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{*path,
-                    MapData::TerrainDoodadGridPolicy::TwoCells, rotation,
+                footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{*path, policy, rotation,
                     MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression});
             }
         }

@@ -99,11 +99,9 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                     && type.gridPolicy != TerrainDoodadGridPolicy::StartupCategoryC)
                 || !byRawcode.emplace(type.rawcode, Type{&type, FootprintPath(type.pathTexture)}).second)
                 Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地类型没有唯一rawcode或属于尚未捕获的吸附类别。");
-            if ((type.contribution != TerrainNativeFootprintContribution::StaticRgbAttributes
+            if (type.contribution != TerrainNativeFootprintContribution::StaticRgbAttributes
                     && type.contribution != TerrainNativeFootprintContribution::WalkableTerrainSuppression)
-                || (type.contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
-                    && type.gridPolicy != TerrainDoodadGridPolicy::TwoCells))
-                Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地贡献类别或可行走对象吸附策略未经同次来源解释。");
+                Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "占地贡献类别未经同次来源解释。");
         }
         for (const auto& placement : placements) {
             const auto found = byRawcode.find(placement.rawcode);

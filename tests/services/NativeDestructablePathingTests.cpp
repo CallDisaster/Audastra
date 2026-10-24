@@ -1401,7 +1401,8 @@ void WalkableCustomBridgeUsesItsOwnWireIdAndEffectiveFields() {
 
 void WalkableCustomBridgeKeepsInheritanceAndWireGridBoundaries() {
     auto customC = BridgeOriginalFixture(); customC.SetNative(CustomBridge("NC01"));
-    Rejected(customC.Inspect({"NC01"}), "TERRAIN_WALKABLE_DESTRUCTABLE_GRID", "父ID非C不能掩盖Custom新ID第二字节C");
+    Require(Take(customC.Inspect({"NC01"})).footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::StartupCategoryC,
+        "父ID非C不能掩盖Custom新ID第二字节C，仍需可信owner捕获startup选择");
     for (const bool w3d : {false, true}) {
         auto fixture = BridgeOriginalFixture(); auto document = CustomBridge();
         if (w3d) {
@@ -1466,8 +1467,31 @@ void WalkableBridgeGridUsesWireRawcodeFallback() {
         fixture.destructables[0]["destructableID"] = rawcode;
         fixture.destructables[0]["category"] = "E";
         fixture.destructables[0]["code"] = "B001"; fixture.Tables();
-        Rejected(fixture.Inspect({rawcode}), "TERRAIN_WALKABLE_DESTRUCTABLE_GRID",
-            "wire第二字符C仍拒绝，不能用Destructable.category或code伪造已证明2格");
+        const auto actual = Take(fixture.Inspect({rawcode}));
+        Require(actual.footprints.size() == 1
+            && actual.footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::StartupCategoryC,
+            "wire第二字符C请求可信startup目录，不能用Destructable.category或code伪造2格或4格");
+    }
+    for (const bool custom : {false, true}) for (const bool modified : {false, true}) {
+        auto fixture = BridgeOriginalFixture();
+        if (!custom) fixture.destructables[0]["destructableID"] = "BC01";
+        fixture.Tables();
+        auto document = Empty();
+        if (custom) Check(document.AddCustomObject("BC01", "S001")); else Check(document.AddOriginalObject("BC01"));
+        if (modified) {
+            Modification(document, "BC01", "X001", NativeValueType::Int32, std::int32_t{1});
+            Modification(document, "BC01", "Pth0", NativeValueType::String, std::string("PathTextures\\CBridge.tga"));
+            Modification(document, "BC01", "Rot0", NativeValueType::Unreal, 90.0f);
+        }
+        fixture.SetNative(document); const auto before = fixture.sources[kW3b].bytes;
+        const auto result = Take(fixture.Inspect({"BC01", "BC01"}));
+        Require(result.footprints.size() == 1 && result.footprints[0].rawcode == "BC01"
+            && result.footprints[0].gridPolicy == MapData::TerrainDoodadGridPolicy::StartupCategoryC
+            && result.footprints[0].contribution == MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression,
+            "空或有实际覆盖的Original/Custom C桥保留抑制贡献，只委托网格身份给共用owner");
+        Take(fixture.Inspect({"BC01", "BC01"}, result.workBytes));
+        Rejected(fixture.Inspect({"BC01", "BC01"}, result.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "C桥仍受相同精确解析预算约束");
+        Require(fixture.sources[kW3b].bytes == before, "C桥分类不改W3B源字节");
     }
 }
 

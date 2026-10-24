@@ -1829,7 +1829,7 @@ void BridgeCustomRejectsUnsupportedValuesMetadataAndParents() {
     }
     {
         Fixture f; WalkableBridge(f); BridgeOriginal(f, {}, true, "NC01", "Br01");
-        refuse(f, "TERRAIN_WALKABLE_DESTRUCTABLE_GRID");
+        refuse(f, "TERRAIN_CATEGORY_SOURCE_REQUIRED");
     }
     for (const unsigned mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u}) {
         Fixture f; WalkableBridge(f); BridgeOriginal(f, {}, true);
@@ -1882,6 +1882,127 @@ void BridgeOriginalDependenciesAndOldPathingRemainBound() {
         Require(!gate.Succeeded() && HasCode(gate, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"), "Original bridge cannot hide an unexplained source WPM bit under terrain suppression");
     }
 }
+Bytes CategoryCBridgeExpected(Fixture& f, bool deep, bool four, bool turned) {
+    auto expected = f.ExpectedPathing(deep);
+    // 普通绿色blocker的独立4x4预期；桥不能清掉静态04或作者11。
+    for (unsigned y = 14; y < 18; ++y) for (unsigned x = 14; x < 18; ++x)
+        expected[16 + y * 32 + x] = deep ? std::byte{0x1f} : std::byte{0x1d};
+    // top-origin 4x2不对称图，黑、红、绿、蓝 / 蓝、黑、绿、红。
+    // 先按wire角0吸附，再fixedRot0/90旋转；(544,544)下两格宽有不同完整起点。
+    constexpr std::array<unsigned, 8> zero{0, 1, 1, 0, 1, 1, 1, 1};
+    constexpr std::array<unsigned, 8> ninety{1, 1, 1, 0, 1, 1, 0, 1};
+    const auto& pixels = turned ? ninety : zero;
+    const unsigned width = turned ? 4 : 2;
+    const unsigned x0 = turned ? (four ? 14 : 15) : (four ? 15 : 16), y0 = turned ? 17 : 16;
+    for (unsigned i = 0; i < pixels.size(); ++i) if (pixels[i]) {
+        const unsigned x = x0 + i % width, y = y0 + i / width;
+        expected[16 + y * 32 + x] = x >= 14 && x < 18 && y >= 14 && y < 18 ? std::byte{0x15} : std::byte{0x11};
+    }
+    return expected;
+}
+
+void CategoryCBridge(Fixture& f, bool four, bool turned = false, bool custom = true, bool typed = true) {
+    WalkableBridge(f, false, true);
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    for (auto& placed : placements.doodads) if (placed.rawcode == "Br01") {
+        placed.rawcode = "BC01"; placed.position = {544, 544, 0};
+    }
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    const std::string parent = custom ? "Br01" : "BC01";
+    f.Member("Units/DestructableData.slk") = Slk({"destructableID", "code", "walkable", "pathTex", "fixedRot", "category"},
+        {{parent, parent, typed ? "0" : "1", typed ? "_" : std::string(kBridgeTexture),
+            typed ? (turned ? "0" : "90") : (turned ? "90" : "0"), "E"}});
+    auto document = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
+    if (custom) Check(document.AddCustomObject("BC01", parent)); else Check(document.AddOriginalObject("BC01"));
+    if (typed) {
+        Check(document.AddModification({ObjectType::Destructable, "BC01"}, {"bwlk"}, NativeValueType::Int32, std::int32_t{1}));
+        Check(document.AddModification({ObjectType::Destructable, "BC01"}, {"bptx"}, NativeValueType::String, std::string(kBridgeTexture)));
+        Check(document.AddModification({ObjectType::Destructable, "BC01"}, {"brot"}, NativeValueType::Unreal, turned ? 90.0f : 0.0f));
+    }
+    f.Member("war3map.w3b") = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(document));
+    f.Member("Units/DestructableMetaData.slk") = BridgeOriginalMetadata();
+    Bytes texture(18 + 8 * 4); texture[2] = std::byte{2}; texture[12] = std::byte{4}; texture[14] = std::byte{2};
+    texture[16] = std::byte{32}; texture[17] = std::byte{40};
+    constexpr std::array<std::array<unsigned, 3>, 8> colors{{
+        {0, 0, 0}, {0, 0, 255}, {0, 255, 0}, {255, 0, 0},
+        {255, 0, 0}, {0, 0, 0}, {0, 255, 0}, {0, 0, 255}}};
+    for (unsigned i = 0; i < colors.size(); ++i) {
+        for (unsigned channel = 0; channel < 3; ++channel) texture[18 + i * 4 + channel] = static_cast<std::byte>(colors[i][channel]);
+        texture[21 + i * 4] = colors[i] == std::array<unsigned, 3>{0, 0, 0} ? std::byte{255} : std::byte{};
+    }
+    f.Member(kBridgeTexture) = std::move(texture);
+    f.gameRoot = f.root / "game"; Require(std::filesystem::create_directory(f.gameRoot), "private C bridge startup source");
+    Take(WriteVerifiedArchive(f.gameRoot / "war3.mpq", std::vector<MapArchiveMember>{
+        {"UI/WorldEditData.txt", Text(four ? "[DoodadCategories]\nC=bridge\n" : "[DoodadCategories]\nE=known-no-C\n")}}));
+    f.Member("war3map.wpm") = CategoryCBridgeExpected(f, false, four, turned);
+}
+
+void CategoryCBridgesUseTheSharedSaveAndUndoChain() {
+    for (const bool custom : {false, true}) for (const bool typed : {false, true})
+        for (const bool four : {false, true}) for (const bool turned : {false, true}) {
+        Fixture f; CategoryCBridge(f, four, turned, custom, typed); f.Open(); f.Paint();
+        const auto shallow = CategoryCBridgeExpected(f, false, four, turned), deep = CategoryCBridgeExpected(f, true, four, turned);
+        Require(shallow == f.Member("war3map.wpm"), "C桥完整旧WPM使用独立网格和非对称颜色矩阵");
+        f.SaveExpected("c-bridge-saved.w3x", f.ExpectedTerrain(true), deep);
+        if (typed && turned) {
+            Require(f.edits->Undo(), "C桥保存后可撤销地形，原生来源和DOO保持");
+            f.SaveExpected("c-bridge-undone.w3x", f.ExpectedTerrain(false), shallow);
+            Require(f.edits->Redo(), "C桥保存后可重做地形");
+            f.SaveExpected("c-bridge-redone.w3x", f.ExpectedTerrain(true), deep);
+        }
+    }
+}
+
+void CategoryCBridgeSourcesAndOldPathingStayBound() {
+    for (const bool four : {false, true}) {
+        Fixture f; CategoryCBridge(f, four, true); f.Open(); f.Paint();
+        const auto owner = Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, kBudget));
+        Take(TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes()));
+        Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot, owner.CaptureBudgetBytes() - 1).Succeeded(),
+            "C桥startup来源与抑制层共享精确捕获预算");
+        const auto plan = f.Plan(); const auto output = f.Output(plan);
+        auto saved = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "c-bridge-frozen.w3x", output)).path));
+        Check(owner.VerifyReadback(saved, kBudget));
+        for (const auto* name : {"Units/DestructableMetaData.slk", "war3map.w3b", "war3map.doo"}) {
+            auto changed = f.Member(name);
+            if (name == std::string_view("Units/DestructableMetaData.slk")) changed.push_back(std::byte{'\n'});
+            else if (name == std::string_view("war3map.doo")) {
+                auto placements = Take(ParseDoodadPlacements(changed)); placements.doodads[1].position[2] = 7;
+                changed = Take(placements.Serialize());
+            } else {
+                const auto parsed = NativeObjectCodec(ObjectType::Destructable).Parse(changed);
+                const auto* document = dynamic_cast<const NativeObjectDocument*>(parsed.document.get());
+                Require(document != nullptr, "C桥冻结夹具W3B可完整读取");
+                auto replacement = *document;
+                Check(replacement.SetModification({ObjectType::Destructable, "BC01"}, {"brot"}, Value{0.0f}));
+                changed = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(replacement));
+            }
+            auto altered = output; altered.push_back({name, changed});
+            Require(!owner.VerifyFrozenOutput(altered, {}).Succeeded(), "C桥不放宽实际metadata/W3B及完整DOO冻结");
+            const std::array<MemberReplacement, 1> replacement{{{name, changed}}};
+            auto tampered = Take(MapArchiveSession::Open(Take(saved.SaveCandidate(f.root / (std::string(name) == "war3map.w3b"
+                ? "c-bridge-native-changed.w3x" : std::string(name) == "war3map.doo" ? "c-bridge-doo-changed.w3x" : "c-bridge-meta-changed.w3x"), replacement)).path));
+            Require(!owner.VerifyReadback(tampered, kBudget).Succeeded(), "C桥独立回读拒绝来源或无关摆放Z变化");
+        }
+        Check(IO::WriteFileBytes(f.gameRoot / "WorldEditData.txt",
+            Text(four ? "[DoodadCategories]\nC=same-C-new-source\n" : "[DoodadCategories]\nE=same-no-C-new-source\n")));
+        Require(!owner.VerifyFrozenOutput(output, {}).Succeeded() && !owner.VerifyReadback(saved, kBudget).Succeeded(),
+            "相同最终C选择不能代替startup来源CAS");
+    }
+    Fixture unknown; CategoryCBridge(unknown, true); unknown.gameRoot.clear(); unknown.Open(); unknown.Paint();
+    const auto sourceSha = unknown.archive->SourceSha256();
+    const auto draft = unknown.ExpectedTerrain(true);
+    Require(HasCode(unknown.Plan().SaveGate(), "TERRAIN_CATEGORY_SOURCE_REQUIRED") && unknown.edits->CanUndo()
+        && unknown.edits->IsDirty() && unknown.archive->SourceSha256() == sourceSha
+        && Take(SerializeMapTerrain(*unknown.edits->Terrain())) == draft, "未知startup拒绝C桥保存并保留完整草稿与来源");
+    for (const bool four : {false, true}) {
+        Fixture wrongGrid; CategoryCBridge(wrongGrid, four);
+        wrongGrid.Member("war3map.wpm") = CategoryCBridgeExpected(wrongGrid, false, !four, false);
+        wrongGrid.Open(); wrongGrid.Paint();
+        Require(HasCode(wrongGrid.Plan().SaveGate(), "TERRAIN_PATHING_SOURCE_UNEXPLAINED"), "C桥不能把错误旧网格当成作者保护位");
+    }
+}
+
 void WalkableBridgesUseTheNormalSaveAndUndoChain() {
     for (const bool black : {false,true}) {
         Fixture f; WalkableBridge(f,black,true); f.Open(); f.Paint();
@@ -2039,6 +2160,8 @@ int main() {
         SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();
         ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers();
         WalkableBridgesUseTheNormalSaveAndUndoChain();
+        CategoryCBridgesUseTheSharedSaveAndUndoChain();
+        CategoryCBridgeSourcesAndOldPathingStayBound();
         BridgeOriginalUsesTheNormalSaveAndUndoChain();
         BridgeOriginalRejectsUnsupportedValuesAndMetadata();
         BridgeCustomUsesTheNormalSaveAndUndoChain();

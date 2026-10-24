@@ -128,13 +128,16 @@ void WalkableSuppressionSharesProjectionWithoutRgbBits() {
     for (bool top : {false,true}) for (bool alpha : {false,true}) {
         const auto bytes = Pattern(top,alpha); const auto original = bytes;
         const auto image = Take(DecodeDoodadFootprintTga(bytes));
-        for (unsigned q=0; q<4; ++q) {
+        for (const std::uint8_t grid : {std::uint8_t{2}, std::uint8_t{4}}) for (unsigned q=0; q<4; ++q) {
             std::vector<std::uint8_t> actual(256,2), expected(256,2);
-            const auto x = q%2 ? 3u : 4u, y = q%2 ? 4u : 3u, width = q%2 ? 3u : 2u;
+            // 同一非对称3x2图在两种格宽分别有独立起点，不能只验证控制位不验证网格。
+            const auto x = grid == 2 ? (q%2 ? 3u : 4u) : (q%2 ? 2u : 3u);
+            const auto y = grid == 2 ? (q%2 ? 4u : 3u) : (q%2 ? 3u : 2u);
+            const auto width = q%2 ? 3u : 2u;
             for (std::size_t i=0; i<6; ++i) expected[(y+i/width)*16+x+i%width] |= matrices[q][i];
-            Check(AddDoodadFootprint(actual,Header(),Placement(angles[q]),image,2,-1.0f,contribution));
+            Check(AddDoodadFootprint(actual,Header(),Placement(angles[q]),image,grid,-1.0f,contribution));
             Require(actual==expected,"walkable projection preserves other static attributes and writes only literal control40");
-            Check(AddDoodadFootprint(actual,Header(),Placement(angles[q]),image,2,-1.0f,contribution));
+            Check(AddDoodadFootprint(actual,Header(),Placement(angles[q]),image,grid,-1.0f,contribution));
             Require(actual==expected,"duplicate bridges do not erase or multiply the static contribution");
         }
         std::vector<std::uint8_t> cropped(256,0), expected(256,0); expected[0]=0x40;
