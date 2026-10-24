@@ -275,7 +275,7 @@ target_compile_options(audastra-terrain-native-object-save-tests PRIVATE /W4 /pe
 add_test(NAME services-terrain-native-object-save COMMAND audastra-terrain-native-object-save-tests)
 
 add_executable(audastra-terrain-native-object-real-tests
-    TerrainNativeObjectRealSourceTests.cpp TerrainWalkableBridgeRealTests.cpp)
+    TerrainNativeObjectRealSourceTests.cpp TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp)
 target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-native-object-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /permissive- /utf-8)
