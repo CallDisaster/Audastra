@@ -8,6 +8,7 @@
 #include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "War3MapCore/Resources/TerrainTable.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/VerifiedFile.h"
@@ -1003,6 +1004,26 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
     });
 }
 
+Status TerrainPathingResources::BindNativeSettingsOutput(const std::optional<std::vector<std::byte>>& source,
+    const std::optional<std::vector<std::byte>>& output) {
+    auto checked = Guard<bool>([&] {
+        const auto dependency = std::find_if(dependencies_.begin(), dependencies_.end(),
+            [](const auto& value) { return value.name == "war3map.w3i"; });
+        if (!nativeBounds_ || !source || !output || dependency == dependencies_.end() || !dependency->mapPresent
+            || source->size() != dependency->bytes || Take(Sha256(*source)) != dependency->sha256)
+            Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终W3I的会话原始字节不属于本次实际捕获来源。");
+        if (output->size() > capturedMaximumBytes_)
+            Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "最终W3I身份超过本次捕获预算。");
+        const auto invariant = ValidateTerrainSettingsPathingChange(source, output);
+        if (!invariant.Succeeded()) throw Failure{invariant.diagnostics};
+        auto sha = Take(Sha256(*output));
+        nativeSettingsOutputBytes_ = output->size();
+        nativeSettingsOutputSha_ = std::move(sha);
+        return true;
+    });
+    return {std::move(checked.diagnostics)};
+}
+
 Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals) const {
     if (waterBrushRules_)
@@ -1022,6 +1043,11 @@ Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplace
                 const auto sha = replacement ? Take(Sha256(replacement->data)) : dependency.sha256;
                 if (bytes != nativeTerrainBytes_[1] || sha != nativeTerrainSha_[1])
                     Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终W3E不属于本次捕获的新地形修订。");
+            } else if (nativeBounds_ && dependency.name == "war3map.w3i" && nativeSettingsOutputSha_) {
+                const auto bytes = replacement ? replacement->data.size() : dependency.bytes;
+                const auto sha = replacement ? Take(Sha256(replacement->data)) : dependency.sha256;
+                if (bytes != nativeSettingsOutputBytes_ || sha != *nativeSettingsOutputSha_)
+                    Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终W3I遗漏或改变了保存计划冻结的完整说明修改。");
             } else if (nativeBounds_ && dependency.name == "war3map.doo" && dependency.mapPresent && nativeDoodadsFrozen_) {
                 const auto& actual = replacement ? replacement->data : nativeDoodads_;
                 if (actual != nativeAfterDoodads_) Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终DOO遗漏或改变了冻结的特殊集合。");
@@ -1082,8 +1108,12 @@ Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader
                         if (!status.Succeeded()) throw Failure{status.diagnostics};
                     }
                 } else {
-                    const auto size = nativeBounds_ && expected.name == "war3map.w3e" ? nativeTerrainBytes_[1] : expected.bytes;
-                    const auto& sha = nativeBounds_ && expected.name == "war3map.w3e" ? nativeTerrainSha_[1] : expected.sha256;
+                    const bool terrainOutput = nativeBounds_ && expected.name == "war3map.w3e";
+                    const bool settingsOutput = nativeBounds_ && expected.name == "war3map.w3i" && nativeSettingsOutputSha_;
+                    const auto size = terrainOutput ? nativeTerrainBytes_[1]
+                        : settingsOutput ? nativeSettingsOutputBytes_ : expected.bytes;
+                    const auto& sha = terrainOutput ? nativeTerrainSha_[1]
+                        : settingsOutput ? *nativeSettingsOutputSha_ : expected.sha256;
                     if (actual[i].bytes.size() != size || Take(Sha256(actual[i].bytes)) != sha)
                         Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "保存回读的通行输入不同：" + expected.name);
                 }
@@ -1137,6 +1167,7 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
     for (const auto& shape : waterSpecialShapes_) bytes += shape.rawcode.capacity() + shape.relativeCliffLevels.capacity() + 1;
     for (const auto& rule : nativeGround_) bytes += rule.rawcode.capacity() + 1;
     for (const auto& sha : nativeTerrainSha_) bytes += sha.capacity() + 1;
+    if (nativeSettingsOutputSha_) bytes += nativeSettingsOutputSha_->capacity() + 1;
     bytes += waterBrushInputSha_.capacity() + 1;
     if (nativeCategoryDirectory_) bytes += nativeCategoryDirectory_->OwnedCapacityBytes();
     if (waterBrushRules_) {

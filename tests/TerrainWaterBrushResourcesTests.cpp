@@ -316,10 +316,25 @@ void DirectoryCaptureUsesVerifiedSourceAndRejectsUnknownLayout() {
     Require(!TerrainPathingResources::CaptureWaterBrushRules(actual.Snapshot(), fixture.grid, game, true, kBudget).Succeeded(),
         "root and map/ copies cannot compete as unproved directory winners");
     Require(std::filesystem::remove(duplicate), "remove private duplicate fixture");
+    actual = Take(DirectoryWorkspace::Open(root));
+    const auto beforeMisc = Take(TerrainPathingResources::CaptureWaterBrushRules(
+        actual.Snapshot(), fixture.grid, game, true, kBudget));
     const auto lni = root / "table/misc.ini"; std::filesystem::create_directories(lni.parent_path());
-    Check(IO::WriteFileBytes(lni, Profile())); actual = Take(DirectoryWorkspace::Open(root));
-    Require(!TerrainPathingResources::CaptureWaterBrushRules(actual.Snapshot(), fixture.grid, game, true, kBudget).Succeeded(),
-        "unproved LNI configuration source cannot be skipped");
+    Check(IO::WriteFileBytes(lni, Profile("90", "256", "-256", "0")));
+    actual = Take(DirectoryWorkspace::Open(root));
+    const auto withMisc = Take(TerrainPathingResources::CaptureWaterBrushRules(
+        actual.Snapshot(), fixture.grid, game, true, kBudget));
+    Require(withMisc.SourceBytes() == beforeMisc.SourceBytes()
+        && Take(withMisc.WaterBrushDependencyFingerprint()) == Take(beforeMisc.WaterBrushDependencyFingerprint())
+        && withMisc.WaterBrushRules()->maxSlopeDegrees == 30.0f
+        && withMisc.WaterBrushRules()->maximumCliffLevel == 14,
+        "map-only LNI Misc cannot replace or become a dependency of independent startup profiles");
+    Check(beforeMisc.VerifyReadback(actual.Snapshot(), kBudget));
+    Check(withMisc.VerifyReadback(actual.Snapshot(), kBudget));
+    Check(IO::WriteFileBytes(root / "UI/MiscData.txt", Profile("25")));
+    actual = Take(DirectoryWorkspace::Open(root));
+    Require(!withMisc.VerifyReadback(actual.Snapshot(), kBudget).Succeeded(),
+        "ignoring map-only LNI Misc preserves exact actual startup-profile drift rejection");
 }
 
 void RuleAndMetadataReadsShareCallerBudget() {

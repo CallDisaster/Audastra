@@ -567,6 +567,43 @@ void DescriptiveSettingsSaveAlongsideTerrainWithoutChangingThePlayableArea() {
             f.Paint(brush);
         }
         const auto expectedSettings = Take(settings.Serialize());
+        if (rebuild) {
+            const auto plan = f.Plan(); Check(plan.SaveGate());
+            Require(plan.RebuiltPathing(), "description plus material edit freezes a complete native rebuild");
+            auto output = f.edits->Replacements(); Check(plan.InstallPathingOutput(*f.edits, output));
+            Check(plan.VerifyFrozenOutput(f.archive->SourceSha256(), output));
+            const auto settingsOutput = [](auto& replacements) -> auto& {
+                const auto found = std::find_if(replacements.begin(), replacements.end(),
+                    [](const auto& member) { return member.name == "war3map.w3i"; });
+                Require(found != replacements.end(), "mixed native save includes the complete final W3I");
+                return found->data;
+            };
+            Require(settingsOutput(output) == expectedSettings, "frozen description output is the exact session W3I");
+            auto omitted = output;
+            std::erase_if(omitted, [](const auto& member) { return member.name == "war3map.w3i"; });
+            Require(!plan.VerifyFrozenOutput(f.archive->SourceSha256(), omitted).Succeeded(),
+                "native output cannot omit the frozen description W3I");
+            auto stale = output; settingsOutput(stale) = f.members[2].data;
+            Require(!plan.VerifyFrozenOutput(f.archive->SourceSha256(), stale).Succeeded(),
+                "old source W3I cannot replace the frozen final descriptions");
+            auto second = settings; second.author += " second edit";
+            auto rewritten = output; settingsOutput(rewritten) = Take(second.Serialize());
+            Require(!plan.VerifyFrozenOutput(f.archive->SourceSha256(), rewritten).Succeeded(),
+                "a second otherwise allowed description edit is not the frozen W3I output");
+            const auto staleArchive = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(
+                f.directory / "descriptions-stale-readback.w3x", stale)).path));
+            Require(!plan.VerifyReadback(staleArchive).Succeeded(),
+                "native readback rejects old W3I even when final W3E and rebuilt WPM match");
+            const auto rewrittenArchive = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(
+                f.directory / "descriptions-rewritten-readback.w3x", rewritten)).path));
+            Require(!plan.VerifyReadback(rewrittenArchive).Succeeded(),
+                "native readback rejects a second full description W3I");
+            const auto finalArchive = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(
+                f.directory / "descriptions-exact-readback.w3x", output)).path));
+            Check(plan.VerifyReadback(finalArchive));
+            Require(Take(finalArchive.ReadMember("war3map.w3i")) == expectedSettings,
+                "native resource identity accepts only the exact frozen final W3I");
+        }
         f.Save(rebuild ? "descriptions-material.w3x" : "descriptions-height.w3x", rebuild);
         Require(Take(f.archive->ReadMember("war3map.w3i")) == expectedSettings,
             "normal terrain save publishes every descriptive setting as the exact final W3I");
@@ -612,6 +649,19 @@ void DescriptiveSettingsSaveAlongsideTerrainWithoutChangingThePlayableArea() {
     TerrainBrush brush; brush.kind = TerrainBrushKind::Raise; brush.radius = 0; brush.strength = 4;
     bad.Paint(brush);
     Require(!bad.Plan().SaveGate().Succeeded(), "real terrain plan cannot bypass the unchanged playable-area requirement");
+
+    Fixture drift(false);
+    TerrainBrush material; material.kind = TerrainBrushKind::Texture; material.radius = 0; material.groundTexture = "Tg02";
+    drift.Paint(material);
+    auto changedSource = drift.members;
+    auto sourceDescriptions = Take(MapSettings::Parse(changedSource[2].data));
+    sourceDescriptions.author = "Different actual source";
+    changedSource[2].data = Take(sourceDescriptions.Serialize());
+    const auto changedArchive = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(
+        drift.directory / "changed-source-descriptions.w3x", changedSource)).path));
+    const auto refusedSource = TerrainSavePlan::PrepareForSave(changedArchive, *drift.edits, drift.gameRoot);
+    Require(!refusedSource.Succeeded() || !refusedSource.value || !refusedSource.value->SaveGate().Succeeded(),
+        "allowed final descriptions never authorize a session whose original W3I differs from the actual source");
 }
 }
 
