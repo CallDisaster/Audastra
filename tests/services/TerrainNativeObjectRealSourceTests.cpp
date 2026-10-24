@@ -776,6 +776,10 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto playableShallow = PlayableWaterUsesPublicSave(original, directory.path, tool, game, false);
         const auto playableDeep = PlayableWaterUsesPublicSave(original, directory.path, tool, game, true);
         Require(playableShallow != playableDeep, "playable shallow and deep water must not produce identical pathing");
+        TerrainSaveTests::CheckRealRemoveWaterSave(
+            Take(MapArchiveSession::Open(directory.path / "playable-shallow-water" / "saved.w3x")),
+            Take(MapArchiveSession::Open(directory.path / "playable-deep-water" / "saved.w3x")),
+            directory.path, tool, game);
         FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealGroundBrushSave(original, directory.path, tool, game, mounted);

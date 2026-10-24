@@ -11,4 +11,7 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
 void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game);
+void CheckRealRemoveWaterSave(const MapArchiveSession& shallow, const MapArchiveSession& deep,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game);
 }
