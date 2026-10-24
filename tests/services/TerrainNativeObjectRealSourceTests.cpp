@@ -21,6 +21,7 @@
 #include "TerrainShadowRealTests.h"
 #include "TerrainCategoryDirectoryRealTests.h"
 #include "TerrainUnitPlacementRealTests.h"
+#include "TerrainCliffTransportSaveTests.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -773,6 +774,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealGroundBrushSave(original, directory.path, tool, game, mounted);
+        TerrainSaveTests::CheckRealCliffTextureSave(original, directory.path, tool, game, mounted);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
