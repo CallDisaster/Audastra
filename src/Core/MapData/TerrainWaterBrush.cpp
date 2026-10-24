@@ -73,6 +73,7 @@ struct StructuralBrush {
     int cliffDelta = 0;
     TerrainWaterAlgorithm waterAlgorithm = TerrainWaterAlgorithm::NativeRamps;
     std::optional<bool> cornerRamp;
+    TerrainCornerRampAlgorithm cornerAlgorithm = TerrainCornerRampAlgorithm::DryOnly;
 };
 
 std::optional<GridPoint> Snap(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
@@ -548,7 +549,7 @@ private:
     }
     void ApplyCornerRamp(const TerrainStrokePoint& point) {
         Work(64); // 几何查询只读取九点，先预收其有限工作。
-        const auto planned = PlanTerrainCornerRamp(grid_, point);
+        const auto planned = PlanTerrainCornerRamp(grid_, point, brush_.cornerAlgorithm);
         if (!planned.Succeeded() || !planned.value)
             Reject(planned.diagnostics.empty() ? "TERRAIN_CORNER_RAMP_STEP" : planned.diagnostics.front().code,
                 planned.diagnostics.empty() ? "无法规划拐角坡道。" : planned.diagnostics.front().message);
@@ -572,7 +573,7 @@ private:
         const auto selected = [&](std::uint32_t x, std::uint32_t y) {
             return std::find(plan.vertexIndices.begin(), plan.vertexIndices.end(), std::uint32_t(Index(x, y))) != plan.vertexIndices.end();
         };
-        // 接受域明确限完整dirty block及分类halo均为同一干地象限；任何
+        // 接受域明确限完整dirty block及分类halo均为同一一级象限；任何
         // 写后失败只丢弃owned候选，不修改来源或会话，不清水/删special/衰减地高。
         EachBlock(blocks, [&](auto x, auto y) {
             if (x < 2 || y < 2 || x + 2 >= width_ || y + 2 >= height_)
@@ -582,12 +583,13 @@ private:
                 const auto& vertex = Read(nx, ny);
                 const int sx = (int(nx) - int(plan.highX)) * plan.directionX;
                 const int sy = (int(ny) - int(plan.highY)) * plan.directionY;
-                if (vertex.HasWater() || vertex.IsBoundary() || vertex.IsMapEdge()
+                if ((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly && vertex.HasWater())
+                    || vertex.IsBoundary() || vertex.IsMapEdge()
                     || vertex.groundHeightRaw != high.groundHeightRaw
                     || vertex.CliffTextureIndex() != high.CliffTextureIndex()
                     || vertex.CliffLevel() != high.CliffLevel() - ((sx > 0 || sy > 0) ? 1 : 0)
                     || vertex.IsRamp() != (selected(nx, ny) && *brush_.cornerRamp))
-                    Reject("TERRAIN_CORNER_RAMP_DOMAIN", "拐角坡道实际脏块及halo需等地高、同悬崖材质的一级干地象限，不能相交其它旧坡道。");
+                    Reject("TERRAIN_CORNER_RAMP_DOMAIN", "拐角坡道实际脏块及halo需等地高、同悬崖材质的一级象限，不能相交其它旧坡道或旧算法不支持的水。");
             }
         });
         for (const auto& shape : shapes_) {
@@ -900,15 +902,16 @@ Result<TerrainWaterStrokeCandidate> PrepareTerrainCliffStroke(const TerrainGridS
 
 Result<TerrainWaterStrokeCandidate> PrepareTerrainCornerRampStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
     const TerrainBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
-    std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits,
+    TerrainCornerRampAlgorithm algorithm) {
     if (!IsCanonicalTerrainCornerRampBrush(brush) || points.size() != 1)
         return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_CORNER_RAMP_BRUSH",
             "拐角坡道只支持单个canonical落点及创建/移除选项，不能组合其它笔刷字段。");
-    const auto plan = PlanTerrainCornerRamp(source, points.front());
+    const auto plan = PlanTerrainCornerRamp(source, points.front(), algorithm);
     if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
     const auto& high = source.vertices[std::size_t(plan.value->highY) * source.header.width + plan.value->highX];
     return PrepareStructuralStroke(source, rules, {TerrainBrushShape::Circle, 1, high.CliffTextureIndex(), 0,
-        {high.groundHeightRaw, 0, high.CliffLevel(), false}, {}, 0, TerrainWaterAlgorithm::NativeRamps, brush.value},
+        {high.groundHeightRaw, 0, high.CliffLevel(), false}, {}, 0, TerrainWaterAlgorithm::NativeRamps, brush.value, algorithm},
         points, doodads, specialShapes, limits);
 }
 

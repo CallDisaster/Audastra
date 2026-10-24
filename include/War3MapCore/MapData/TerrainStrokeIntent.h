@@ -26,6 +26,8 @@ struct TerrainStrokeIntent {
     std::optional<TerrainBoundsEditIntent> bounds;
     // 独立无采样点命令；实际来源摘要由捕获资源owner生成。
     std::optional<TerrainPaletteEditIntent> palette;
+    // 仅CornerRamp可取2；其余命令保持1。不是来源授权，仍须实际规则owner。
+    TerrainCornerRampAlgorithm cornerRampAlgorithm = TerrainCornerRampAlgorithm::DryOnly;
 };
 
 } // namespace War3Map::MapData

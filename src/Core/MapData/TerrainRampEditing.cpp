@@ -40,10 +40,13 @@ std::optional<TerrainStrokePoint> SnapTerrainCornerRampPoint(
     return TerrainStrokePoint{terrain.header.offset[0] + 128.0 * snap(u), terrain.header.offset[1] + 128.0 * snap(v)};
 }
 
-Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
+Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
+    TerrainCornerRampAlgorithm algorithm) {
     const auto fail = [](const char* code, const char* text) {
         return Result<TerrainCornerRampPlan>::Failure("MapTerrain.Edit", code, text);
     };
+    if (algorithm != TerrainCornerRampAlgorithm::DryOnly && algorithm != TerrainCornerRampAlgorithm::WetTerrain)
+        return fail("TERRAIN_CORNER_RAMP_ALGORITHM", "拐角坡道算法版本未知。");
     if (!Consistent(terrain) || terrain.header.version != 11 || terrain.header.width > 2049 || terrain.header.height > 2049)
         return fail("TERRAIN_CORNER_RAMP_LAYOUT", "拐角坡道需要完整的经典W3E v11网格。");
     const auto& header = terrain.header;
@@ -66,7 +69,7 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
         return fail("TERRAIN_CORNER_RAMP_NEIGHBORHOOD", "拐角坡道九点必须完整位于地图内。");
     const auto& high = terrain.vertices[std::size_t(hy) * header.width + hx];
     if (high.CliffLevel() == 0 || high.CliffLevel() > 14)
-        return fail("TERRAIN_CORNER_RAMP_STEP", "当前只支持一级干地高端外拐角。");
+        return fail("TERRAIN_CORNER_RAMP_STEP", "当前只支持一级高端外拐角。");
     TerrainCornerRampPlan plan; plan.highX = std::uint32_t(hx); plan.highY = std::uint32_t(hy);
     plan.directionX = dx; plan.directionY = dy;
     unsigned rampCount = 0;
@@ -74,10 +77,11 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
         const auto index = std::uint32_t((hy + y * dy) * int(header.width) + hx + x * dx);
         const auto& vertex = terrain.vertices[index];
         if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw || vertex.UnknownWaterFlags()
-            || vertex.HasWater() || vertex.IsBoundary() || vertex.IsMapEdge() || vertex.groundHeightRaw > 0x3fff
+            || (algorithm == TerrainCornerRampAlgorithm::DryOnly && vertex.HasWater())
+            || vertex.IsBoundary() || vertex.IsMapEdge() || vertex.groundHeightRaw > 0x3fff
             || vertex.groundHeightRaw != high.groundHeightRaw
             || vertex.CliffLevel() != high.CliffLevel() - ((x || y) ? 1 : 0))
-            return fail("TERRAIN_CORNER_RAMP_STEP", "拐角坡道需要等原始地高的一级干地外角，不能含水、边界或未知位。");
+            return fail("TERRAIN_CORNER_RAMP_STEP", "拐角坡道需要等原始地高的一级外角，不能含边界、未知位或旧算法不支持的水。");
         plan.vertexIndices[std::size_t(x * 3 + y)] = index; rampCount += vertex.IsRamp();
     }
     if (rampCount != 0 && rampCount != 9)

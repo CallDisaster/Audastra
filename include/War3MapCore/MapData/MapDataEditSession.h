@@ -109,6 +109,7 @@ public:
         bool waterAnchorVerified_ = false; // v2纯候选已按实际规则完整核过不可变起点。
         std::string waterRulesSha256_;
         std::optional<bool> cliffEnforceWaterLimits_;
+        TerrainCornerRampAlgorithm cornerRampAlgorithm_ = TerrainCornerRampAlgorithm::DryOnly;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
         std::vector<TerrainStrokePoint> points_;
@@ -222,7 +223,8 @@ public:
         bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const TerrainPathingResources& resources,
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
-        bool followDoodads = true, const TerrainWaterBrushLimits& limits = {}) const;
+        bool followDoodads = true, const TerrainWaterBrushLimits& limits = {},
+        TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::WetTerrain) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     // 输入实际native资源owner；不能用任意W3I覆写或自报规则授予范围保存资格。
@@ -335,7 +337,8 @@ private:
         std::size_t maximumLevelPropagationWork = TerrainLevelPropagationMaximumWork) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStructuralEdit(const TerrainPathingResources& resources,
         const TerrainWaterBrush* water, const TerrainBrush* cliff, std::span<const TerrainStrokePoint> points,
-        bool followDoodads, const TerrainWaterBrushLimits& limits) const;
+        bool followDoodads, const TerrainWaterBrushLimits& limits,
+        TerrainCornerRampAlgorithm cornerAlgorithm = TerrainCornerRampAlgorithm::DryOnly) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PreparePathingRestrictionEdit(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCandidate(

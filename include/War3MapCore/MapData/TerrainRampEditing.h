@@ -35,13 +35,15 @@ struct TerrainCornerRampPlan {
 // 只查询单点几何与九点原始形态；完整dirty block/halo、实际M、special及
 // live合法性和补角闭包由下面的owned事务核对，预览不授予提交资格。
 [[nodiscard]] Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(
-    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
+    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
+    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::WetTerrain);
 // 新模式只接受默认brush的kind/value替换，拒绝未取证的paint/size组合。
 [[nodiscard]] bool IsCanonicalTerrainCornerRampBrush(const TerrainBrush& brush) noexcept;
 [[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainCornerRampStroke(
     const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainBrush& brush,
     std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
-    std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {});
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {},
+    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::WetTerrain);
 
 // 基于原始层级与 ramp 位计算中点高度偏移。无可识别的插值时返回空。
 // 渲染抬升与原始地形采样共用；已经抬升的显示副本不能再次累加。
