@@ -212,15 +212,18 @@ Table ReadTable(Context& context, std::string_view name) {
             Fail("TERRAIN_MMP_TABLE_COLUMN", "MMP表存在空或重复列：" + result.name);
     for (const auto& [y, row] : result.cells) {
         if (y == 1) continue;
-        const auto id = row.find(1);
-        if (id == row.end() || id->second.size() != 4 || !result.rows.emplace(id->second, y).second)
-            Fail("TERRAIN_MMP_TABLE_ID", "MMP表对象ID必须为唯一四字节：" + result.name);
         for (const auto& [x, value] : row) {
             // 原版按标题名称查询字段；实际UnitBalance也有无标题的数据列。
             // 这些单元格仍完整解析、计量并绑定来源，只是不赋予它们字段名称。
             if (value.size() > 4096)
                 Fail("TERRAIN_MMP_TABLE_COLUMN", "MMP表含过长字段：" + result.name);
         }
+        const auto id = row.find(1);
+        // 与标准物编目录的具名行索引一致：实际AbilityData含没有alias的稀疏占位行。
+        // 原始单元格仍保留并参与预算与来源校验；没有首列的行不能被ID查询命中。
+        if (id == row.end()) continue;
+        if (id->second.size() != 4 || !result.rows.emplace(id->second, y).second)
+            Fail("TERRAIN_MMP_TABLE_ID", "MMP表对象ID必须为唯一四字节：" + result.name);
     }
     return result;
 }

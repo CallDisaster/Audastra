@@ -238,6 +238,46 @@ void HeaderlessCellsKeepNamedFieldSemanticsAndSourceBinding() {
     Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, oversized), "TERRAIN_MMP_TABLE_COLUMN");
 }
 
+void SparseRowsKeepNamedIdsAndSourceBinding() {
+    Fixture fixture;
+    const auto expected = fixture.Capture()->Bytes();
+    const auto sparse = Text("ID;PWXL;N;E\nC;X1;Y1;K\"alias\"\nC;X2;Y1;K\"code\"\n"
+        "C;X1;Y2;K\"Ab01\"\nC;X2;Y2;K\"Agld\"\n"
+        "C;X29;Y3;K\"-\"\nC;X35;Y3;K\"_\"\nC;X49;Y3;K\"-\"\n"
+        "C;X1;Y4;K\"Ab02\"\nC;X2;Y4;K\"Adef\"\nE\n");
+    fixture.Member("Units/AbilityData.slk") = sparse; fixture.Open();
+    const auto owner = fixture.Capture();
+    Require(owner->Bytes() == expected, "无alias占位行不影响具名能力语义");
+    const std::vector<MemberReplacement> output{{"war3map.mmp", owner->Bytes()}};
+    const auto saved = Take(fixture.source->SaveCandidate(fixture.root / "sparse-rows.w3x", output));
+    const auto readback = Take(MapArchiveSession::Open(saved.path));
+    Check(owner->VerifyReadback(readback));
+    Require(Take(readback.ReadMember("Units/AbilityData.slk")) == sparse, "保存逐字保留稀疏占位行");
+
+    auto changed = sparse;
+    const auto needle = Text("C;X35;Y3;K\"_\"");
+    const auto found = std::search(changed.begin(), changed.end(), needle.begin(), needle.end());
+    Require(found != changed.end(), "原创占位行有可变正文");
+    *(found + needle.size() - 2) = std::byte{'-'};
+    const std::vector<MemberReplacement> drift{{"Units/AbilityData.slk", changed}, {"war3map.mmp", owner->Bytes()}};
+    Rejected(owner->VerifyFrozenOutput(*fixture.source, drift), "TERRAIN_MMP_DEPENDENCY_STALE");
+
+    const auto reject = [&](std::string_view extra, std::string_view code) {
+        auto bytes = sparse; bytes.resize(bytes.size() - 2);
+        const auto tail = Text(std::string(extra) + "E\n"); bytes.insert(bytes.end(), tail.begin(), tail.end());
+        const std::vector<MemberReplacement> overlay{{"Units/AbilityData.slk", std::move(bytes)}};
+        Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, overlay), code);
+    };
+    reject("C;X1;Y5;K\"\"\n", "TERRAIN_MMP_TABLE_ID");
+    reject("C;X1;Y5;K\"Ab0\"\n", "TERRAIN_MMP_TABLE_ID");
+    reject("C;X1;Y5;K\"Ab01\"\n", "TERRAIN_MMP_TABLE_ID");
+    reject("C;X2;Y5;K\"" + std::string(4097, 'x') + "\"\n", "TERRAIN_MMP_TABLE_COLUMN");
+    reject("C;X2;Y5;K\"-\"\nC;X2;Y5;K\"_\"\n", {});
+    fixture.Member("Units/UnitAbilities.slk") = Slk({"unitAbilID", "abilList"}, {{"S001", "Ab03"}});
+    fixture.Open();
+    Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game), "TERRAIN_MMP_ABILITY_UNKNOWN");
+}
+
 void FinalOverlayAndDrift() {
     Fixture fixture;
     const auto owner = fixture.Capture();
@@ -506,6 +546,7 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
 int main() {
     try {
         ExactOrderCoordinatesAndReadback(); HeaderlessCellsKeepNamedFieldSemanticsAndSourceBinding();
+        SparseRowsKeepNamedIdsAndSourceBinding();
         FinalOverlayAndDrift(); RealMetadataAndAbilityInheritance();
         MissingSourcesBudgetsAndGameWinner(); EmptyUnitLayerDoesNotInventSources();
         OrdinarySaveRebuildsMarkersWithoutMapBlpOrTerrainPlan(); AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits();
