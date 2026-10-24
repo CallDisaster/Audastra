@@ -1,11 +1,16 @@
 #pragma once
 
 #include "AudastraUiCatalog.h"
+#include "War3MapCore/Jass/JassChecker.h"
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 
 #include <algorithm>
+#include <array>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -67,5 +72,68 @@ struct SystemFixture {
         return generated.text;
     }
 };
+
+// 设了环境变量 AUDASTRA_GAME_SCRIPTS（放游戏 common.j 与 Blizzard.j 的目录）时，用游戏的真实声明检查生成的整图脚本；
+// AudastraUI 的函数按函数库定义写成桩（只核对名字、参数个数与类型），不依赖它的实现。没设时返回 false（跳过），
+// 检查不通过时抛出。游戏文件不随仓库提供。
+inline bool CheckWithGameScripts(const SystemFixture& f, const std::string& script) {
+    wchar_t buffer[1024] = {};
+    const DWORD length = GetEnvironmentVariableW(L"AUDASTRA_GAME_SCRIPTS", buffer, 1024);
+    if (length == 0 || length >= 1024) return false;
+    const std::filesystem::path directory(buffer);
+    const auto read = [&](const char* name) {
+        std::ifstream stream(directory / name, std::ios::binary);
+        Require(stream.good(), std::string("读不到 ") + name);
+        return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    };
+    const std::string common = read("common.j");
+    const std::string blizzard = read("Blizzard.j");
+
+    using War3Map::Trigger::UiDefinitionKind;
+    const auto jassType = [](const std::string& type) { return type.starts_with("Audastra") ? std::string("integer") : type; };
+    const auto fallback = [](const std::string& type) -> std::string {
+        if (type == "integer") return "0";
+        if (type == "real") return "0.0";
+        if (type == "boolean") return "false";
+        if (type == "string") return "\"\"";
+        return "null";
+    };
+    std::string stubs;
+    for (const auto kind : {UiDefinitionKind::Event, UiDefinitionKind::Action, UiDefinitionKind::Call}) {
+        for (const auto* definition : f.catalog.Definitions(kind)) {
+            const auto& active = definition->Active();
+            if (active.layer != "AudastraUI") continue;
+            std::string parameters;
+            std::size_t index = 0;
+            if (kind == UiDefinitionKind::Event) parameters = "trigger p" + std::to_string(index++);
+            for (const auto& argument : active.arguments) {
+                if (!parameters.empty()) parameters += ", ";
+                parameters += jassType(argument.type) + " p" + std::to_string(index++);
+            }
+            std::string returns = "nothing";
+            for (const auto& [key, value] : active.fields) {
+                if (key == "returns") returns = jassType(value);
+            }
+            stubs += "function " + definition->name + " takes " + (parameters.empty() ? "nothing" : parameters) + " returns " + returns + "\n";
+            if (returns != "nothing") stubs += "    return " + fallback(returns) + "\n";
+            stubs += "endfunction\n";
+        }
+    }
+    // 生成的脚本带 YDWE 预处理行（#define、#include）；这里换成空行（行号不变），所以只适用于不用预处理宏的脚本。
+    std::string plain;
+    for (std::size_t start = 0; start < script.size();) {
+        const std::size_t end = std::min(script.find('\n', start), script.size());
+        const std::string_view line(script.data() + start, end - start);
+        if (!line.starts_with("#")) plain += line;
+        plain += '\n';
+        start = end + 1;
+    }
+    const std::array<War3Map::Jass::JassSource, 4> sources{War3Map::Jass::JassSource{"common.j", common},
+        War3Map::Jass::JassSource{"Blizzard.j", blizzard}, War3Map::Jass::JassSource{"AudastraUI.j", stubs},
+        War3Map::Jass::JassSource{"war3map.j", plain}};
+    const auto checked = War3Map::Jass::CheckJass(sources);
+    Require(checked.Succeeded() && checked.completed && checked.semanticChecked, "游戏声明下的 JASS 检查：" + First(checked.diagnostics));
+    return true;
+}
 
 } // namespace AudastraUiTest

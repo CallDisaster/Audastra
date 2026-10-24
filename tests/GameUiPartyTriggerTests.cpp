@@ -198,6 +198,8 @@ void TestBuffs() {
     for (const char* part : {"set udg_AUP_BuffCode[1] = 'B000'", "UnitHasBuffBJ(udg_AUP_Unit[udg_AUP_I], udg_AUP_BuffCode[udg_AUP_BuffI])"}) {
         Require(Contains(script, part), std::string("脚本缺少：") + part);
     }
+    // 本机有游戏脚本时用真实的 common.j 与 Blizzard.j 检查整图脚本（界面触发器与团队框架一起）。
+    if (AudastraUiTest::CheckWithGameScripts(f, script)) std::cout << "party script checked against game scripts\n";
 }
 
 } // namespace
