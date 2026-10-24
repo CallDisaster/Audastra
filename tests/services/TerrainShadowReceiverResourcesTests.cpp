@@ -1,7 +1,10 @@
 #include "War3MapCore/Services/TerrainShadowReceiverResources.h"
 #include "War3MapCore/Services/TerrainShadowBake.h"
+#include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/MapShadow.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -204,6 +207,75 @@ void OrderedAndSaved() {
         "原版MaxHeight拒建record后模型格返回0，再加0.1，不能偷偷夹回地高");
 }
 
+void CompleteCliffBakeUsesProductionSaveAndGuards() {
+    Fixture fixture;
+    // 左侧模型格保留作者的高模型面3000；右侧普通层地高128。实际方向
+    // 从左向右每像素下降约42又2/3，故右侧4列全部被遮，左侧4列全亮。
+    // expected是独立32字节字面格；不调用任何正式采样或投影函数生成。
+    fixture.Set(std::string(kOne), Model(3000)); fixture.Open();
+    const auto receiver = Take(fixture.Capture());
+    Require(receiver->RecordCount() == 1, "生产保存夹具必须先确认确有普通cliff接收记录");
+    Bytes expected(32, std::byte{0});
+    for (std::size_t y = 0; y < 4; ++y) for (std::size_t x = 4; x < 8; ++x) expected[y * 8 + x] = std::byte{0xff};
+    const auto prepare = [&](MapSaveTask& task) {
+        Check(task.FreezeArchive(*fixture.source));
+        task.prepareFinalDerived = [&](MapSaveTask& current) {
+            Require(current.InFinalDerivedStage(), "cliff阴影必须经过正式最终派生阶段");
+            std::shared_ptr<const TerrainSavePlan> plan;
+            const auto status = PrepareTerrainShadowBake(current, fixture.game, nullptr, plan);
+            Require(!plan, "仅计算cliff阴影不能伪造W3E/WPM地形编辑计划");
+            return status;
+        };
+    };
+    MapSaveTask task; prepare(task); task.target = fixture.root / "production-cliff.w3x";
+    task.replacements.push_back({"Fixture/Unrelated.bin", Text("same-save edit sentinel")});
+    MapSaveService::Run(task);
+    if (!task.succeeded) Check({task.diagnostics});
+    Require(task.executed && task.succeeded && task.nextSession && task.terrainShadow
+        && task.terrainShadow->Width() == 8 && task.terrainShadow->Height() == 4
+        && task.terrainShadow->Bytes() == expected && task.terrainShadow->CasterCount() == 0,
+        "正式MapSaveService必须完成带cliff的Bake并写出完整16个FF字面SHD");
+    const auto saved = Take(MapArchiveSession::Open(task.written));
+    Require(Take(saved.ReadMember("war3map.shd")) == expected
+        && Take(saved.ReadMember("Fixture/Unrelated.bin")) == Text("same-save edit sentinel"),
+        "真实归档回读须同时保有完整cliff阴影和本次普通编辑");
+    const auto decoded = Take(ParseMapShadow(Take(saved.ReadMember("war3map.shd")), 8, 4));
+    Require(std::count(decoded.intensities.begin(), decoded.intensities.end(), 255) == 16,
+        "持久SHD是00/FF强度，不能把逻辑bit或旧高位当输出");
+    for (const auto& member : fixture.members) if (member.name != "war3map.shd")
+        Require(Take(saved.ReadMember(member.name)) == member.data, "cliff阴影保存不得改动脚本/地形/表/模型等源成员");
+    Check(task.terrainShadow->VerifyFrozenOutput(*fixture.source, task.replacements));
+    Check(task.terrainShadow->VerifyReadback(saved));
+
+    // 普通保存仍保原SHD；不因增加cliff重算能力而隐式进入生成器。
+    MapSaveTask ordinary; Check(ordinary.FreezeArchive(*fixture.source));
+    ordinary.target = fixture.root / "ordinary-cliff.w3x";
+    ordinary.replacements.push_back({"Fixture/Unrelated.bin", Text("ordinary edit sentinel")});
+    MapSaveService::Run(ordinary);
+    if (!ordinary.succeeded) Check({ordinary.diagnostics});
+    Require(ordinary.succeeded && ordinary.nextSession && !ordinary.terrainShadow
+        && Take(ordinary.nextSession->ReadMember("war3map.shd")) == Bytes(32, std::byte{0x7d}),
+        "含cliff的普通保存保留原SHD，不强制重算");
+
+    for (const bool late : {false, true}) {
+        MapSaveTask denied; prepare(denied);
+        denied.target = fixture.root / (late ? "late-drift.w3x" : "final-drift.w3x");
+        bool reached = false;
+        const auto tamper = [&] {
+            reached = true; Require(bool(denied.terrainShadow), "来源漂移必须发生在真实cliff阴影生成后");
+            denied.replacements.push_back({std::string(kOne), Model(3001)});
+        };
+        if (!late) denied.beforePublish = [&] { tamper(); return Status::Ok(); };
+        MapSaveService::Run(denied, [&](std::string_view stage) { if (late && stage == "archive-candidate") tamper(); });
+        Require(reached && denied.executed && !denied.succeeded && !denied.nextSession
+            && denied.written.empty() && !std::filesystem::exists(denied.target),
+            "final与发布进度回调均不能绕过cliff模型来源绑定，也不能先发布再失败");
+        HasCode(denied.diagnostics, "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
+    }
+    Require(Take(Sha256File(fixture.source->SourcePath())) == fixture.source->SourceSha256(),
+        "成功、普通保存及两个晚期拒绝都不修改原创源图");
+}
+
 void FrozenSources() {
     Fixture fixture; const auto owner = Take(fixture.Capture());
     const std::array<MemberReplacement, 1> added{{{std::string(kTwo), Model(200)}}};
@@ -279,7 +351,7 @@ int main(int argc, char** argv) {
     try {
         const std::string_view group = argc > 1 ? argv[1] : "all";
         Require(group == "ordered" || group == "sources" || group == "guards" || group == "all", "未知测试分组");
-        if (group == "ordered" || group == "all") OrderedAndSaved();
+        if (group == "ordered" || group == "all") { OrderedAndSaved(); CompleteCliffBakeUsesProductionSaveAndGuards(); }
         if (group == "sources" || group == "all") FrozenSources();
         if (group == "guards" || group == "all") GuardsAndOrdinary();
         std::cout << "terrain shadow receiver " << group << " passed\n"; return 0;
