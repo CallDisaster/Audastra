@@ -340,6 +340,8 @@ Result<NativeDoodadCategoryDirectory> NativeDoodadCategoryDirectory::CaptureWith
                 // 逐字节解析工作已在实际读取前预收，包含无关section及重复读取。
                 MergeCategories(bytes, keys, reserve);
                 if (visitor) {
+                    // 观察者另作一次完整字节扫描，不能复用类别解析的工作预留。
+                    reserve(bytes.size());
                     auto status = visitor(logical, bytes);
                     if (!status.Succeeded()) throw Failure{std::move(status.diagnostics)};
                 }

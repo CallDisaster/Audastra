@@ -84,6 +84,22 @@ void UnknownDirectionDoesNotInventDefaults() {
     Require(!TerrainShadowResources::Capture(empty.root, Game::NativeEditorStartupRules::Classic127aExpansion, kBudget).Succeeded(),
         "complete known absence is not a default light");
 }
+
+void ObserverScanHasItsOwnAggregateBudget() {
+    Fixture f;
+    std::string profile = "[Light]\nDirection=3,0,-4\n//";
+    profile.append(1024 * 1024, 'x');
+    f.Loose("WorldEditData.txt", profile);
+    const auto owner = f.Capture();
+    const auto exact = owner.CaptureBudgetBytes();
+    Require(f.Capture(exact).LightDirection() == owner.LightDirection(), "large actual profile supports exact cumulative observer budget");
+    Require(!TerrainShadowResources::Capture(f.root, Game::NativeEditorStartupRules::Classic127aExpansion, exact - 1).Succeeded(),
+        "large observer cannot reuse the earlier category scan budget");
+    const auto category = Take(Game::NativeDoodadCategoryDirectory::Capture(f.root,
+        Game::NativeEditorStartupRules::Classic127aExpansion, kBudget));
+    Require(exact >= category.CaptureBudgetBytes() + profile.size(),
+        "SHD capture accounts at least one additional visit to every actual profile byte");
+}
 } // namespace
 
 int main() {
@@ -91,6 +107,7 @@ int main() {
         DirectionUsesActualFullAppendChain();
         NativeRawKeysAndActualWinnerArePreserved();
         UnknownDirectionDoesNotInventDefaults();
+        ObserverScanHasItsOwnAggregateBudget();
         std::cout << "Terrain shadow actual profile resources tests passed\n";
         return 0;
     } catch (const std::exception& error) {
