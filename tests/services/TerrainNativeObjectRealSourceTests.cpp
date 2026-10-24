@@ -22,6 +22,7 @@
 #include "TerrainCategoryDirectoryRealTests.h"
 #include "TerrainUnitPlacementRealTests.h"
 #include "TerrainCliffTransportSaveTests.h"
+#include "TerrainBoundaryRealTests.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -462,7 +463,7 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
     }
 }
 
-enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements };
+enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary };
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game,
     RealSaveGroup group) {
     OwnedDirectory directory;
@@ -495,6 +496,10 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         }
         if (group == RealSaveGroup::UnitPlacements) {
             TerrainSaveTests::CheckRealTerrainUnitPlacementSave(original, directory.path, tool, game);
+            return;
+        }
+        if (group == RealSaveGroup::Boundary) {
+            TerrainSaveTests::CheckRealTerrainBoundarySave(original, directory.path, tool, game);
             return;
         }
         const auto sourceScript = Take(original.ReadMember("war3map.j"));
@@ -789,7 +794,8 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--existing-ramps") group = RealSaveGroup::ExistingRamps;
         else if (argc == 2 && std::string_view(argv[1]) == "--shadows") group = RealSaveGroup::Shadows;
         else if (argc == 2 && std::string_view(argv[1]) == "--unit-placement") group = RealSaveGroup::UnitPlacements;
-        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows or --unit-placement");
+        else if (argc == 2 && std::string_view(argv[1]) == "--boundary") group = RealSaveGroup::Boundary;
+        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows, --unit-placement or --boundary");
         const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
         const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
         if (tool.empty() || game.empty()) {

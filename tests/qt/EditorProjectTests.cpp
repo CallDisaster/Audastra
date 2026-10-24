@@ -990,6 +990,8 @@ private slots:
     void NativePathingWorkerRebuildsAndRebinds();
     void TerrainUnitPlacementNativeSave_data();
     void TerrainUnitPlacementNativeSave();
+    void BoundaryNativeSave_data();
+    void BoundaryNativeSave();
     void NativePathingWorkerPreflightAndFailure_data();
     void NativePathingWorkerPreflightAndFailure();
     void CGridInvariantNormalSaveAndUndoRedo_data();
@@ -2111,6 +2113,66 @@ void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds() {
     QCOMPARE(project.mapEdits_->Terrain()->vertices[4 * 9 + 4].waterBaseHeight, 80.0f);
     QVERIFY(project.HasUnsavedMapChanges());
     QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
+}
+
+void EditorProjectTests::BoundaryNativeSave_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::newRow("boundary-save-as") << false;
+    QTest::newRow("boundary-save-in-place") << true;
+}
+
+void EditorProjectTests::BoundaryNativeSave() {
+    QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = NativePathingQtMembers(); QVERIFY(!members.empty());
+    members.push_back({"war3mapMap.tga", Tests::WaterText("author boundary minimap remains untouched")});
+    const auto source = std::filesystem::path(root.filePath("boundary-source.w3x").toStdWString());
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    const auto terrain = project.mapEdits_->Terrain(); QVERIFY(terrain);
+    const MapData::TerrainStrokePoint point{terrain->header.offset[0] + 4 * 128, terrain->header.offset[1] + 4 * 128};
+    MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Boundary;
+    brush.shape = MapData::TerrainBrushShape::Square; brush.radius = 0; brush.value = true;
+    QVERIFY(project.mapEdits_->EditTerrain(brush, std::span(&point, 1), false).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("边界正式保存"));
+    const auto finalTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(finalTerrain.Succeeded());
+    auto expectedPathing = members[2].data;
+    // 原版逐格取SW Boundary；只改(4,4)所属的4×4通行像素，保留作者0x11。
+    for (std::size_t y = 16; y < 20; ++y) for (std::size_t x = 16; x < 20; ++x)
+        expectedPathing[16 + y * 32 + x] = std::byte{0xdf};
+    const auto session = project.mapEdits_->SessionIdentity();
+    for (int phase = 0; phase < 3; ++phase) {
+        if (phase == 1) { QVERIFY(project.mapEdits_->Undo()); QVERIFY(project.ObserveMapDataEdit("撤销已保存边界")); }
+        if (phase == 2) { QVERIFY(project.mapEdits_->Redo()); QVERIFY(project.ObserveMapDataEdit("重做已保存边界")); }
+        const auto before = project.sourceArchivePath_;
+        const auto beforeSha = Sha256File(before); QVERIFY(beforeSha.Succeeded());
+        const auto target = inPlace ? before
+            : std::filesystem::path(root.filePath(QString("boundary-saved-%1.w3x").arg(phase)).toStdWString());
+        auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job && job->terrainDerivationRequired);
+        job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
+        if (inPlace) {
+            job->inPlace = true;
+            job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath(QString("boundary-backup-%1").arg(phase)).toStdWString());
+            QVERIFY(std::filesystem::create_directory(job->inPlaceOptions.backupDirectory));
+        }
+        InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+        QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+        QVERIFY(job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
+        QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+        QCOMPARE(job->nextSession->ReadMember("war3map.w3e").value,
+            phase == 1 ? std::optional(members[1].data) : finalTerrain.value);
+        QCOMPARE(job->nextSession->ReadMember("war3map.wpm").value,
+            std::optional(phase == 1 ? members[2].data : expectedPathing));
+        for (const auto& member : members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm"
+            && member.name != "war3map.mmp") QCOMPARE(job->nextSession->ReadMember(member.name).value, std::optional(member.data));
+        QVERIFY(project.CommitMapSave(*job));
+        QCOMPARE(project.mapEdits_->SessionIdentity(), session);
+        QVERIFY(!project.HasUnsavedMapChanges() && !project.mapEdits_->IsDirty());
+        if (inPlace) { QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, beforeSha.value); }
+        else QCOMPARE(Sha256File(before).value, beforeSha.value);
+    }
+    if (!inPlace) QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
 
 void EditorProjectTests::TerrainUnitPlacementNativeSave_data() {
@@ -5143,7 +5205,7 @@ int main(int argc, char** argv) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
-            if (name.startsWith("TerrainUnitPlacement")) return QStringLiteral("terrain-units");
+            if (name.startsWith("TerrainUnitPlacement") || name.startsWith("BoundaryNative")) return QStringLiteral("terrain-units");
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
                 if (name.startsWith(prefix)) return QStringLiteral("derived");
             for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "NativePathing",
