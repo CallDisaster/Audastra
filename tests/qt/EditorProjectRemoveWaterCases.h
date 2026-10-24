@@ -12,7 +12,8 @@ void EditorProjectTests::NativePathingRemoveWaterProjectRoundtripAndSave_data() 
 void EditorProjectTests::NativePathingRemoveWaterProjectRoundtripAndSave() {
     QFETCH(bool, deep); QFETCH(bool, inPlace);
     QTemporaryDir root; QVERIFY(root.isValid());
-    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    QVERIFY(QDir(root.path()).mkpath("map"));
+    const auto source = std::filesystem::path(root.filePath("map/source.w3x").toStdWString());
     const auto game = std::filesystem::path(root.filePath("game").toStdWString());
     QVERIFY(std::filesystem::create_directory(game));
     QVERIFY(WriteVerifiedArchive(game / "war3.mpq", std::vector<MapArchiveMember>{

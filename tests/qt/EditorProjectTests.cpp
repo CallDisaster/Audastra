@@ -977,6 +977,8 @@ private slots:
     void PaletteWaterProjectColdRestoreAndNativeSave();
     void OrdinaryDoodadProjectRawColdRestoreAndNativeSave_data();
     void OrdinaryDoodadProjectRawColdRestoreAndNativeSave();
+    void OrdinaryWaterJournalProjectColdRestoreAndNativeSave_data();
+    void OrdinaryWaterJournalProjectColdRestoreAndNativeSave();
     void CornerRampProjectColdRestoreAndNativeSave_data();
     void CornerRampProjectColdRestoreAndNativeSave();
     void PlayableBoundsProjectColdRestoreAndNativeSave_data();
@@ -1083,6 +1085,7 @@ private:
 };
 
 #include "EditorProjectOrdinaryDoodadRecoveryCases.h"
+#include "TerrainOrdinaryJournalProjectCases.h"
 #include "EditorProjectRemoveWaterCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
@@ -5327,7 +5330,8 @@ int main(int argc, char** argv) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
-            if (name.startsWith("OrdinaryDoodadProject")) return QStringLiteral("terrain-doodads");
+            if (name.startsWith("OrdinaryDoodadProject") || name.startsWith("OrdinaryWaterJournalProject"))
+                return QStringLiteral("terrain-doodads");
             if (name.startsWith("PaletteWaterProject")) return QStringLiteral("terrain-palette");
             if (name.startsWith("TerrainUnitPlacement") || name.startsWith("BoundaryNative")) return QStringLiteral("terrain-units");
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
