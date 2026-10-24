@@ -381,11 +381,9 @@ void OrdinaryCliffUsesOneNativeSessionTransaction() {
     const auto snapshot = f.edits->Snapshot();
     Require(snapshot.Units()->units.front().position[2] == 170
         && snapshot.Doodads()->doodads.front().position[2] == 165, "both placement groups follow the native 128-unit cliff change");
-    const auto journal = Take(f.edits->ExportTerrainStrokeJournal());
-    Require(journal.strokes.size() == 1 && !journal.strokes.front().intent.waterBrush
-        && journal.strokes.front().intent.brush.kind == TerrainBrushKind::CliffLevel
-        && journal.strokes.front().cliffEnforceWaterLimits == true && journal.strokes.front().rulesSha256.size() == 64,
-        "project recovery retains ordinary cliff, actual rule identity and water-limit setting");
+    Require(!rules.WaterBrushDependencyBudgetBytes()
+        && HasCode(f.edits->ExportTerrainStrokeJournal(), "TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE"),
+        "Core-compatible rules cannot grant complete DOO provenance to ordinary cliff recovery");
     Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == before, "one undo restores complete native cliff");
     Require(f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == after, "one redo restores exact native bytes");
     Require(!f.edits->ApplyPreparedTerrainEdit(plan).Succeeded(), "prepared native cliff rejects stale session revision");
@@ -453,10 +451,9 @@ void NativeWaterFollowsExistingCornerAndKeepsOneCompleteUndo() {
             && snapshot.Doodads()->doodads.front().position[2] == -123
             && snapshot.Units()->units.back().position[2] == 52,
             "both complete DOO groups retain offsets over literal S32 ground64 to new ground-96");
-        const auto journal = Take(f.edits->ExportTerrainStrokeJournal());
-        Require(journal.strokes.size() == 1 && journal.strokes.front().intent.waterBrush
-            && journal.strokes.front().intent.waterBrush->algorithm == TerrainWaterAlgorithm::NativeRamps,
-            "the actual v2 command records its algorithm with its rule identity");
+        Require(!rules.WaterBrushDependencyBudgetBytes()
+            && HasCode(f.edits->ExportTerrainStrokeJournal(), "TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE"),
+            "verified v2 anchors cannot replace the missing complete DOO dependency owner");
         Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == before
             && f.Current("war3mapUnits.doo", *f.edits) == beforeUnits && f.Current("war3map.doo", *f.edits) == beforeDoodads,
             "one Undo restores the complete old ramp, water fields and both original placement members");
@@ -473,13 +470,12 @@ void NativeCliffWithoutRuleDigestCannotBecomeLegacyJournal() {
     brush.anchor = Take(CaptureTerrainStrokeAnchor(*f.edits->Terrain(), f.point));
     const Unchanged initial(*f.edits);
     const auto full = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), false));
-    const auto digestWork = rules.WaterBrushDependencyBudgetBytes() * 3;
-    Require(digestWork && full.WaterPreparationWork() > digestWork, "native rule digest has a separate actual work allowance");
-    TerrainWaterBrushLimits limits; limits.maximumWork = full.WaterPreparationWork() - digestWork;
+    Require(!rules.WaterBrushDependencyBudgetBytes(), "Core-compatible rules do not expose a complete journal digest");
+    TerrainWaterBrushLimits limits; limits.maximumWork = full.WaterPreparationWork();
     const auto bounded = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), false, limits));
     initial.Verify(*f.edits);
     Require(bounded.HasChanges() && bounded.WaterPreparationWork() == limits.maximumWork,
-        "native cliff can remain an ordinary draft when only extra journal work is unavailable");
+        "native cliff remains a complete ordinary draft at its actual non-journal work boundary");
     Take(f.edits->ApplyPreparedTerrainEdit(bounded));
     Require(f.edits->IsDirty() && HasCode(f.edits->ExportTerrainStrokeJournal(), "TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE"),
         "a matching caller anchor cannot turn a native cliff without rule digest into legacy replay provenance");
@@ -503,9 +499,8 @@ void NativeFollowChargesOnlyActualInMapSamples() {
         brush.cliffTexture = 1; brush.levelDelta = 1; brush.seed = 1;
         const auto plan = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), true));
         costs[nearby] = plan.WaterPreparationWork();
-        const auto digestWork = rules.WaterBrushDependencyBudgetBytes() * 3;
-        Require(digestWork && costs[nearby] > digestWork, "follow accounting and optional journal work stay separately bounded");
-        TerrainWaterBrushLimits exact; exact.maximumWork = costs[nearby] - digestWork;
+        Require(!rules.WaterBrushDependencyBudgetBytes(), "Core follow budget has no fabricated DOO journal digest work");
+        TerrainWaterBrushLimits exact; exact.maximumWork = costs[nearby];
         const auto bounded = Take(f.edits->PrepareTerrainCliffEdit(rules, brush, std::span(&f.point, 1), true, exact));
         Require(bounded.WaterPreparationWork() == exact.maximumWork, "actual follow cost repeats at its exact non-journal boundary");
         --exact.maximumWork;
