@@ -30,7 +30,7 @@ template<class T> T Take(Result<T> result) {
     return std::move(*result.value);
 }
 
-void CheckOriginalBridgeOverrides(const MapArchiveSession& source, const TerrainSnapshot& before,
+void CheckOriginalBridgeOverrides(const MapArchiveSession& source, const TerrainGridSnapshot& before,
     const std::filesystem::path& directory, const std::filesystem::path& game,
     const ObjectData::StandardObjectEntry& object, const ObjectData::ObjectFieldSchema& schema,
     const MapEditSaveRequest& baseRequest) {
