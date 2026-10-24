@@ -364,6 +364,7 @@ void RemoveWaterUsesTheOrdinaryJournalOpcode() {
 #include "TerrainStartLocationsJournalCases.h"
 #include "TerrainStartLocationsSessionCases.h"
 #include "TerrainGroundPaletteAppendCases.h"
+#include "TerrainCliffPaletteAppendCases.h"
 
 void LogicalQtReplayAndSavedBoundary() {
     SessionFixture f; f.Raise(); const auto first = f.session.LastEdit();
@@ -426,6 +427,8 @@ int main() {
         StartLocationsComposeWithDescriptionsAndGroundFollowing();
         GroundPaletteAppendUsesAnExplicitFTJ6Algorithm();
         RawGroundAppendRetainsUndoWithoutInventingJournalAuthority();
+        CliffPaletteAppendUsesDistinctFTJ6AlgorithmAndBounds();
+        RawCliffAppendUsesSharedUndoWithoutInventingResourceAuthority();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

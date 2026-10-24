@@ -81,7 +81,8 @@ foreach(code_jass_test IN ITEMS JassDeclarationIndex VJassSourceMap JassSymbols)
 endforeach()
 
 add_executable(war3-map-core-tests CoreTests.cpp)
-add_executable(war3-map-terrain-stroke-journal-tests TerrainStrokeJournalTests.cpp)
+add_executable(war3-map-terrain-stroke-journal-tests
+    TerrainStrokeJournalTests.cpp TerrainCliffPaletteAppendCases.h)
 target_link_libraries(war3-map-terrain-stroke-journal-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-map-terrain-stroke-journal-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-terrain-stroke-journal-tests PRIVATE /W4 /permissive- /utf-8)

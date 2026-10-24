@@ -70,6 +70,7 @@ add_library(War3MapCore STATIC
     MapData/TerrainNativeUnitsProof.cpp
     MapData/TerrainNativeDoodadsProof.cpp
     MapData/TerrainNativePathing.cpp
+    MapData/TerrainPaletteEditInternal.h
     MapData/TerrainPathingResources.cpp
     MapData/TerrainPathingBounds.cpp
     MapData/TerrainPathingFootprints.cpp

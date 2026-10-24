@@ -313,7 +313,8 @@ target_compile_definitions(audastra-native-destructable-pathing-tests PRIVATE NO
 target_compile_options(audastra-native-destructable-pathing-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-native-destructable-pathing COMMAND audastra-native-destructable-pathing-tests)
 
-add_executable(audastra-terrain-native-object-save-tests TerrainNativeObjectSaveTests.cpp)
+add_executable(audastra-terrain-native-object-save-tests
+    TerrainNativeObjectSaveTests.cpp TerrainCliffPaletteAppendSaveCases.h)
 target_link_libraries(audastra-terrain-native-object-save-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-native-object-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-save-tests PRIVATE /W4 /permissive- /utf-8)

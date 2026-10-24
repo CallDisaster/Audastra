@@ -977,6 +977,8 @@ private slots:
     void PaletteWaterProjectColdRestoreAndNativeSave();
     void GroundPaletteAppendWaterProjectColdRestoreAndNativeSave_data();
     void GroundPaletteAppendWaterProjectColdRestoreAndNativeSave();
+    void CliffGroundPaletteProjectColdRestoreAndNativeSave_data();
+    void CliffGroundPaletteProjectColdRestoreAndNativeSave();
     void OrdinaryDoodadProjectRawColdRestoreAndNativeSave_data();
     void OrdinaryDoodadProjectRawColdRestoreAndNativeSave();
     void OrdinaryWaterJournalProjectColdRestoreAndNativeSave_data();
@@ -1097,6 +1099,7 @@ private:
 #include "TerrainUnitsJournalProjectCases.h"
 #include "TerrainStartLocationsProjectCases.h"
 #include "TerrainGroundPaletteAppendProjectCases.h"
+#include "TerrainCliffPaletteAppendProjectCases.h"
 #include "EditorProjectRemoveWaterCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {

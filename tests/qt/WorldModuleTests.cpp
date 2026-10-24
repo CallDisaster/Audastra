@@ -846,6 +846,10 @@ private slots:
     void TerrainTextureSlotGroundAppendUsesFrozenSourceAndSharedUndo();
     void TerrainTextureSlotGroundAppendRejectsStale_data();
     void TerrainTextureSlotGroundAppendRejectsStale();
+    void TerrainTextureSlotCliffAppendUsesFrozenSourceAndSharedUndo_data();
+    void TerrainTextureSlotCliffAppendUsesFrozenSourceAndSharedUndo();
+    void TerrainTextureSlotCliffAppendRejectsStale_data();
+    void TerrainTextureSlotCliffAppendRejectsStale();
     void TerrainTextureSlotWorkerRejectsStale_data();
     void TerrainTextureSlotWorkerRejectsStale();
     void TerrainTextureSlotWorkerSurvivesModuleDestruction();
@@ -4076,6 +4080,7 @@ void AcceptTerrainPaletteDialog(QWidget* page, const QString& rawcode) {
 } // namespace
 
 #include "WorldGroundPaletteAppendCases.h"
+#include "WorldCliffPaletteAppendCases.h"
 
 void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     QTemporaryDir directory; QVERIFY(directory.isValid());

@@ -2532,6 +2532,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainStartLocationsSaveCases.h"
 #include "TerrainBridgeOrdinarySaveCases.h"
 #include "TerrainGroundPaletteAppendSaveCases.h"
+#include "TerrainCliffPaletteAppendSaveCases.h"
 } // namespace
 
 int main() {
@@ -2604,6 +2605,9 @@ int main() {
         GroundAppendCapturesTheFullResourceAndBeforeTable();
         GroundAppendsRetainOrderedIntermediateTablesAndWaterLineage();
         GroundAppendSixteenthEntryAndResourceFailuresStayBounded();
+        CliffAppendJournalCombinesGroundWaterAndSavedUndo();
+        CliffAppendCapturesUnusedResourcesAndFullBeforeTable();
+        CliffAppendFifteenthEntryCanBePaintedAndFormallySaved();
         std::cout << "Native object terrain save tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

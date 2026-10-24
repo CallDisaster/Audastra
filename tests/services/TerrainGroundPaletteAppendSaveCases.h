@@ -79,7 +79,7 @@ void GroundAppendCapturesTheFullResourceAndBeforeTable() {
         && !TerrainPathingSave::EditTextureSlot(*f.archive, *f.edits, TerrainTextureTable::Ground, 1, "Tg01", f.gameRoot).Succeeded()
         && !TerrainPathingSave::EditTextureSlot(*f.archive, *f.edits, TerrainTextureTable::Cliff, 1, "Cl02", f.gameRoot).Succeeded()
         && f.edits->Revision() == revision && Take(SerializeMapTerrain(*f.edits->Terrain())) == before,
-        "sparse, duplicate and cliff append requests preserve the exact active source and history");
+        "sparse, duplicate and missing cliff-row requests preserve the exact active source and history");
     const auto pending = Take(TerrainPathingSave::PrepareTextureSlot(*f.archive, *f.edits,
         TerrainTextureTable::Ground, 1, "Tg02", f.gameRoot));
     Require(f.edits->Revision() == revision, "preparation freezes real after-table resources without publishing the append");
