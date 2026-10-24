@@ -2,6 +2,7 @@
 #include "MapDataEditSessionTerrainInternal.h"
 #include "War3MapCore/MapData/MapPathing.h"
 #include "War3MapCore/MapData/MapFields.h"
+#include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "War3MapCore/Hash.h"
 
 #include <algorithm>
@@ -808,7 +809,21 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
     TerrainStrokeJournal journal;
     std::size_t points = 0;
     for (const auto* command : active) {
-        if (!command->terrainStroke) return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+        if (command->boundsIntent) {
+            TerrainJournalStroke bounds; bounds.intent.bounds = command->boundsIntent;
+            bounds.rulesSha256 = command->boundsRulesSha256;
+            journal.strokes.push_back(std::move(bounds)); continue;
+        }
+        if (!command->terrainStroke) {
+            // 四说明字段不影响资源/地形重放。正文已由raw W3I保存，不能重复序列化
+            // 进typed记录，更不能把任意其它设置或WTS事务当作说明修改跳过。
+            if (command->changes.size() == 1 && command->changes.front().kind == MapDataKind::Settings
+                && command->terrain.empty() && !command->headerAfter && !command->pathingAfter
+                && !command->restrictionAfter && !command->placements && !command->specialAfter
+                && !command->boundsAfter && ValidateTerrainSettingsPathingChange(
+                    command->changes.front().before, command->changes.front().after).Succeeded()) continue;
+            return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+        }
         const auto count = command->terrainStroke->intent.points.size();
         if (!count || count > 4096 - points) return fail("TERRAIN_JOURNAL_BUDGET");
         points += count; journal.strokes.push_back(*command->terrainStroke);

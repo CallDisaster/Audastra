@@ -112,6 +112,44 @@ Status MapDataEditSession::VerifyTerrainSettingsForSave() const try {
     return Refuse("TERRAIN_BOUNDS_BUDGET", "范围保存检查容量超限，原编辑保留。");
 }
 
+Status MapDataEditSession::RestoreTerrainJournalDescriptions(const MapDataEditSession& expected,
+    std::size_t maximumBytes, std::size_t maximumWork) try {
+    const auto& current = current_[Index(MapDataKind::Settings)];
+    const auto& raw = expected.current_[Index(MapDataKind::Settings)];
+    if (current == raw) return Status::Ok();
+    if (!current || !raw || current->size() > 1024u * 1024u || raw->size() > 1024u * 1024u
+        || maximumBytes < 4096 || maximumWork < 4096
+        || current->size() > (maximumBytes - 4096) / 16
+        || raw->size() > (maximumBytes - 4096 - current->size() * 16) / 16
+        || current->size() > (maximumWork - 4096) / 8
+        || raw->size() > (maximumWork - 4096 - current->size() * 8) / 8)
+        return Refuse("TERRAIN_REPLAY_BUDGET", "工程说明合并的完整W3I解析、复制或比较超过恢复预算。");
+    auto settings = MapSettings::Parse(*current), descriptions = MapSettings::Parse(*raw);
+    if (!settings.Succeeded() || !settings.value || !descriptions.Succeeded() || !descriptions.value
+        || !settings.value->FullyParsed() || !descriptions.value->FullyParsed()
+        || settings.value->formatVersion != 25 || descriptions.value->formatVersion != 25)
+        return Refuse("TERRAIN_JOURNAL_OUTPUT_MISMATCH", "工程说明合并需要完整经典W3I。");
+    settings.value->mapName = descriptions.value->mapName;
+    settings.value->author = descriptions.value->author;
+    settings.value->description = descriptions.value->description;
+    settings.value->recommendedPlayers = descriptions.value->recommendedPlayers;
+    auto output = settings.value->Serialize();
+    if (!output.Succeeded() || !output.value) return {output.diagnostics};
+    // 比较整个目标，禁止raw geometry或任何未记录字段混入这个窄域桥。
+    if (*output.value != *raw)
+        return Refuse("TERRAIN_JOURNAL_OUTPUT_MISMATCH", "工程W3I包含前向记录和四说明字段之外的变化，未安装候选。");
+    const auto checked = ValidateTerrainSettingsPathingChange(current, output.value);
+    if (!checked.Succeeded()) return checked;
+    std::vector<MemberChange> changes;
+    const auto prepared = Prepare(MapDataKind::Settings, std::move(output), changes);
+    if (!prepared.Succeeded()) return prepared;
+    return changes.empty() ? Status::Ok() : Commit(std::move(changes));
+} catch (const std::bad_alloc&) {
+    return Refuse("TERRAIN_REPLAY_BUDGET", "工程说明合并内存不足，未安装候选。");
+} catch (const std::length_error&) {
+    return Refuse("TERRAIN_REPLAY_BUDGET", "工程说明合并容量超限，未安装候选。");
+}
+
 Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::PrepareTerrainBoundsEdit(
     const TerrainPathingResources& resources, const TerrainBoundsEditIntent& intent,
     std::size_t maximumBytes, std::size_t maximumWork) const try {

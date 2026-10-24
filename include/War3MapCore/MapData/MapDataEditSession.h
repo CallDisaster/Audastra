@@ -184,6 +184,10 @@ public:
     [[nodiscard]] Result<TerrainJournalDraftCost> MeasureTerrainJournalDraft(
         std::size_t maximumBytes, std::size_t maximumWork) const;
     [[nodiscard]] bool MatchesTerrainJournalDraft(const MapDataEditSession& expected) const noexcept;
+    // 前向恢复完成后只合并raw草稿的四说明字段；不接受草稿中的范围/其它设置。
+    // 宿主仍须以MatchesTerrainJournalDraft逐字比较全部输出后才能安装候选。
+    [[nodiscard]] Status RestoreTerrainJournalDescriptions(const MapDataEditSession& expected,
+        std::size_t maximumBytes, std::size_t maximumWork);
     [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges(); }
     // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
     [[nodiscard]] std::string TerrainJournalStateFingerprint() const;

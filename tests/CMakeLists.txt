@@ -172,6 +172,8 @@ foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession Ma
     add_test(NAME core-${service_test} COMMAND war3-map-${service_test}-tests)
 endforeach()
 
+target_link_libraries(war3-map-TerrainBoundsSession-tests PRIVATE War3MapEditor::Services)
+
 add_executable(war3-map-terrain-shadow-caster-tests TerrainShadowCasterTests.cpp)
 target_link_libraries(war3-map-terrain-shadow-caster-tests PRIVATE War3MapEditor::RenderSupport)
 target_compile_definitions(war3-map-terrain-shadow-caster-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

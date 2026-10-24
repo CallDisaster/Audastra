@@ -208,6 +208,57 @@ void CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered() {
         && Take(EncodeTerrainStrokeJournal(decoded)) == wire, "FTJ4 preserves ordered corner/create remove, both water algorithms and native cliff");
 }
 
+void BoundsVersionHasIndependentPayloadAndStrictVariants() {
+    auto journal = Journal(); TerrainJournalStroke bounds;
+    bounds.intent.bounds = TerrainBoundsEditIntent{{1, 2, 17, 14}}; bounds.rulesSha256.assign(64, 'c');
+    journal.strokes = {bounds}; const auto single = Take(EncodeTerrainStrokeJournal(journal));
+    Require(single[3] == std::byte{'5'}, "bounds are explicitly persisted as FTJ5");
+    // FTJ5范围正文没有假笔刷/点：kind1、algorithm1、四个LE u32、SHA长度及正文。
+    const Bytes prefix{std::byte{1}, std::byte{1}, std::byte{1}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{2}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{17}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{14}, std::byte{0}, std::byte{0}, std::byte{0}, std::byte{64}, std::byte{0}, std::byte{0}, std::byte{0}};
+    const auto payload = single.size() - prefix.size() - 64;
+    Require(std::equal(prefix.begin(), prefix.end(), single.begin() + payload)
+        && std::all_of(single.begin() + payload + prefix.size(), single.end(), [](auto c) { return c == std::byte{'c'}; }),
+        "complete bounds payload matches independent literal bytes");
+    const auto decoded = Take(DecodeTerrainStrokeJournal(single));
+    Require(decoded.strokes.front().intent.points.empty() && decoded.strokes.front().intent.bounds->playable.east == 17
+        && Take(EncodeTerrainStrokeJournal(decoded)) == single, "FTJ5 bounds canonical roundtrip uses no synthetic point");
+    for (std::size_t size = 0; size < single.size(); ++size)
+        Require(!DecodeTerrainStrokeJournal(std::span(single).first(size)).Succeeded(), "every FTJ5 truncation fails closed");
+    for (const auto offset : {payload, payload + 1, payload + 2, payload + 18, single.size() - 1}) {
+        auto invalid = single; invalid[offset] = std::byte{255};
+        Require(!DecodeTerrainStrokeJournal(invalid).Succeeded(), "unknown variant, algorithm, rectangle or SHA cannot be decoded");
+    }
+    for (const char old : {'1', '2', '3', '4'}) {
+        auto invalid = single; invalid[3] = std::byte(old);
+        Require(!DecodeTerrainStrokeJournal(invalid).Succeeded(), "legacy codecs cannot grant owned geometry semantics");
+    }
+    auto ordinary = Take(EncodeTerrainStrokeJournal(Journal())); ordinary[3] = std::byte{'5'};
+    Require(!DecodeTerrainStrokeJournal(ordinary).Succeeded(), "FTJ5 cannot be selected merely by replacing old magic");
+    auto invalid = journal; invalid.strokes.front().intent.points = {{0, 0}};
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "bounds cannot hide sampling points");
+    invalid = journal; invalid.strokes.front().intent.followDoodads = true;
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "bounds cannot imply object translation");
+    invalid = journal; invalid.strokes.front().intent.waterBrush.emplace();
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "bounds cannot combine an unrelated water request");
+    invalid = journal; invalid.strokes.front().intent.brush.seed = 1;
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "bounds cannot discard nondefault brush fields");
+    TerrainJournalStroke corner; corner.intent.brush.kind = TerrainBrushKind::CornerRamp;
+    corner.intent.points = {{1056, 1056}}; corner.rulesSha256.assign(64, 'd');
+    TerrainJournalStroke water; water.intent.waterBrush.emplace(); water.intent.points = {{256, 256}};
+    water.intent.waterBrush->algorithm = TerrainWaterAlgorithm::LegacyFlat; water.rulesSha256.assign(64, 'e');
+    journal.strokes.push_back(corner); journal.strokes.push_back(water);
+    water.intent.waterBrush->algorithm = TerrainWaterAlgorithm::NativeRamps; journal.strokes.push_back(water);
+    journal.strokes.push_back(bounds);
+    const auto mixed = Take(EncodeTerrainStrokeJournal(journal)); const auto values = Take(DecodeTerrainStrokeJournal(mixed));
+    Require(values.strokes.size() == 5 && values.strokes[0].intent.bounds && values.strokes[4].intent.bounds
+        && values.strokes[1].intent.brush.kind == TerrainBrushKind::CornerRamp
+        && values.strokes[2].intent.waterBrush->algorithm == TerrainWaterAlgorithm::LegacyFlat
+        && values.strokes[3].intent.waterBrush->algorithm == TerrainWaterAlgorithm::NativeRamps
+        && Take(EncodeTerrainStrokeJournal(values)) == mixed, "mixed FTJ5 retains exact bounds/corner/legacy-water/native-water order");
+}
+
 struct SessionFixture {
     TerrainGridSnapshot terrain;
     Bytes terrainBytes, pathing;
@@ -272,6 +323,7 @@ int main() {
         StrictCodecRoundtripAndMalformedInputs(); NativeCliffVersionAndOptionsRemainExplicit();
         WaterAlgorithmVersionIsCanonicalAndLegacyBytesRemainExact();
         CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered();
+        BoundsVersionHasIndependentPayloadAndStrictVariants();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
