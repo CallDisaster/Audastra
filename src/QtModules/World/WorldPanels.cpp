@@ -422,7 +422,7 @@ void WorldModule::BuildStatusBar(QVBoxLayout* layout) {
     terrainStatus_->setObjectName(QStringLiteral("worldTerrainStatus"));
     terrainPathingWarning_ = new QLabel(tr("通行性待核对"), bar);
     terrainPathingWarning_->setObjectName(QStringLiteral("worldTerrainPathingWarning"));
-    terrainPathingWarning_->setToolTip(tr("保存时会核对地面贴图和水深对通行的影响；无法确认或需要重建时会阻止保存，编辑仍可保存在工程中。"));
+    terrainPathingWarning_->setToolTip(tr("保存时会核对地面贴图、水深和悬崖对通行的影响，必要时按实际资源重建；无法完整核对时会提示原因，修改仍可保存在工程中。"));
     terrainPathingWarning_->hide();
     selectionStatus_ = new UiKit::ElidedLabel(bar);
     selectionStatus_->setObjectName(QStringLiteral("worldToolHint"));

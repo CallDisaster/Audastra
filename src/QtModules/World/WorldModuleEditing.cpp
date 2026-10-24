@@ -1165,7 +1165,7 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
         static_cast<qsizetype>(table[static_cast<std::size_t>(slot)].size()));
     bool accepted = false;
     const QString value = QInputDialog::getText(page_, append ? tr("添加地形贴图") : tr("替换地形贴图"),
-        tr("输入四字符贴图 ID。替换会影响此槽位的所有地形，可撤销。\n贴图通行性联动待核验，修改后可保存工程，暂不能保存地图。"),
+        tr("输入四字符贴图 ID。替换会影响此槽位的所有地形，可撤销。\n保存地图时会按实际资源核对通行，必要时重建；无法完整核对时保留工程中的修改并提示原因。"),
         QLineEdit::Normal, previous, &accepted).trimmed();
     if (!accepted) return;
     if (!project_.mapEdits_ || project_.mapEdits_->Terrain() != source || project_.mapEdits_->Revision() != before) {
