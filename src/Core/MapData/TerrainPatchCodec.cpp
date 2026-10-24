@@ -43,6 +43,10 @@ Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original
     if (strokes.empty() || strokes.size() > 128)
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_STROKE_BUDGET", "地形目录事务需要 1 到 128 笔原始命令。");
     const bool water = std::any_of(strokes.begin(), strokes.end(), [](const auto& stroke) { return stroke.waterBrush.has_value(); });
+    const bool bounds = std::any_of(strokes.begin(), strokes.end(), [](const auto& stroke) { return stroke.bounds.has_value(); });
+    if (bounds)
+        return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_BOUNDS_SCRIPT_REQUIRED",
+            "地图范围需连同最终W3I重建游戏镜头初始化脚本，请使用普通地图保存；独立地形目录补丁不写脚本。");
     if (!trustedReplay && (water || current.specialDoodads_ != current.savedSpecialDoodads_))
         return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_WATER_REPLAY_UNSUPPORTED",
             "Core普通重放入口不捕获水刷资源；须通过Services从实际来源逐笔重放，不能从DOO/W3E覆盖恢复特殊模型删除授权。");

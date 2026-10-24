@@ -121,6 +121,20 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_INVALID", "地形笔刷 kind 必须是已支持的字符串。");
         return std::nullopt;
     }
+    if (kind.toString() == "playable_bounds") {
+        if (!OnlyFields(object, {"kind", "west", "south", "east", "north"}, error)) return std::nullopt;
+        const auto west = Integer(object, "west", error), south = Integer(object, "south", error),
+            east = Integer(object, "east", error), north = Integer(object, "north", error);
+        if (!west || !south || !east || !north) return std::nullopt;
+        if (*west < 0 || *south < 0 || *west >= *east || *south >= *north || *east > 2048 || *north > 2048) {
+            error = Failure("MCP_MAP_EDIT_BOUNDS_INVALID", "可玩区需要0..2048内非空整数地格半开矩形，仍须以实际地形和规则校验。");
+            return std::nullopt;
+        }
+        Services::MapEditTerrainStroke result;
+        result.bounds = MapData::TerrainBoundsEditIntent{{static_cast<std::uint32_t>(*west), static_cast<std::uint32_t>(*south),
+            static_cast<std::uint32_t>(*east), static_cast<std::uint32_t>(*north)}};
+        return result;
+    }
     const bool blight = kind.toString() == "blight";
     const bool ramp = kind.toString() == "ramp";
     const bool corner = kind.toString() == "corner_ramp";
@@ -569,6 +583,9 @@ QJsonObject TriggerEditsSchema() {
 }
 
 QJsonObject TerrainStrokeSchema() {
+    const QJsonObject cell{{"type", "integer"}, {"minimum", 0}, {"maximum", 2048}};
+    const auto bounds = BasicSchema({{"kind", QJsonObject{{"type", "string"}, {"const", "playable_bounds"}}},
+        {"west", cell}, {"south", cell}, {"east", cell}, {"north", cell}}, {"kind", "west", "south", "east", "north"});
     const QJsonObject pointSchema = BasicSchema({{"x", FloatSchema()}, {"y", FloatSchema()}},
         {"x", "y"});
     const QJsonObject pointsSchema{{"type", "array"}, {"minItems", 1}, {"maxItems", 4096},
@@ -620,7 +637,7 @@ QJsonObject TerrainStrokeSchema() {
     textureRequired.append("ground_texture"); waterRequired.append("water_height");
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired),
-        BasicSchema(ramp, rampRequired), corner,
+        BasicSchema(ramp, rampRequired), corner, bounds,
         BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired),
         BasicSchema(newWater, {"kind", "shape", "point_space", "size", "cliff_texture", "seed",
             "enforce_water_limits", "points", "follow_doodads"})}}};

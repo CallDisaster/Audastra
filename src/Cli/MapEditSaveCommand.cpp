@@ -403,6 +403,16 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!operation) return Invalid(error);
             request.fieldEdits.push_back(std::move(*operation));
             index += 8;
+        } else if (flag == L"--terrain-bounds") {
+            if (index + 4 >= argc) return Invalid("--terrain-bounds requires west south east north cell indices");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain strokes are allowed");
+            const auto west = ParseNumber<std::uint32_t>(argv[index + 1]), south = ParseNumber<std::uint32_t>(argv[index + 2]),
+                east = ParseNumber<std::uint32_t>(argv[index + 3]), north = ParseNumber<std::uint32_t>(argv[index + 4]);
+            if (!west || !south || !east || !north || *west >= *east || *south >= *north || *east > 2048 || *north > 2048)
+                return Invalid("--terrain-bounds needs a nonempty integer half-open cell rectangle within 0..2048");
+            Services::MapEditTerrainStroke bounds;
+            bounds.bounds = MapData::TerrainBoundsEditIntent{{*west, *south, *east, *north}};
+            request.terrainStrokes.push_back(std::move(bounds)); index += 5;
         } else if (flag == L"--stroke") {
             if (index + 6 >= argc) return Invalid("--stroke requires six arguments");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");

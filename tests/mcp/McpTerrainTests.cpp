@@ -424,7 +424,7 @@ void TestNormalSaveTextureAndWaterSchema() {
     McpServer server; RegisterAllTools(server);
     const auto response = server.HandleMessage(R"({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}})");
     Expect(response && !response->error, "terrain save tool list must be available");
-    bool texture = false, water = false, waterBrush = false, ramp = false, corner = false;
+    bool texture = false, water = false, waterBrush = false, ramp = false, corner = false, bounds = false;
     for (const auto& tool : response->result.toObject().value("tools").toArray()) {
         if (tool.toObject().value("name") != "save_map_edit_candidate") continue;
         const auto properties = tool.toObject().value("inputSchema").toObject().value("properties").toObject();
@@ -451,6 +451,12 @@ void TestNormalSaveTextureAndWaterSchema() {
                     && fields.value("follow_doodads").toObject().value("const") == false
                     && !variant.toObject().value("additionalProperties").toBool(true);
             }
+            if (kind == "playable_bounds") {
+                const auto required = variant.toObject().value("required").toArray();
+                bounds = fields.size() == 5 && required.size() == 5 && required.contains("west") && required.contains("north")
+                    && fields.value("east").toObject().value("maximum").toInt() == 2048
+                    && !variant.toObject().value("additionalProperties").toBool(true);
+            }
             const auto kinds = fields.value("kind").toObject().value("enum").toArray();
             if (kinds.contains("shallow_water") && kinds.contains("deep_water")) {
                 const auto required = variant.toObject().value("required").toArray();
@@ -466,6 +472,31 @@ void TestNormalSaveTextureAndWaterSchema() {
     Expect(waterBrush, "new shallow/deep water must expose explicit replay options and no caller-supplied anchor or rules");
     Expect(ramp, "ramp save schema requires a real set_ramp boolean, circle and radius0 without height or blight aliases");
     Expect(corner, "corner schema only exposes one world point, explicit set_ramp and no caller-supplied brush or rules");
+    Expect(bounds, "bounds schema only exposes integer half-open cell edges without fake points, rules or object movement");
+}
+
+void TestPlayableBoundsSaveTransport() {
+    Fixture fixture; McpServer server; RegisterAllTools(server); ScopedSaveRoots roots; roots.Set(fixture.ui);
+    const QJsonObject stroke{{"kind", "playable_bounds"}, {"west", 1}, {"south", 2}, {"east", 17}, {"north", 14}};
+    QJsonObject args{{"source_map_path", QString::fromStdWString((fixture.root / "missing.w3x").wstring())},
+        {"output_path", QString::fromStdWString((fixture.root / "bounds-candidate.w3x").wstring())},
+        {"expected_source_sha256", QString(64, 'a')}, {"expected_terrain_sha256", QString(64, 'b')}};
+    const auto call = [&](QJsonObject value) {
+        args["terrain_strokes"] = QJsonArray{value}; return Call(server, "save_map_edit_candidate", args);
+    };
+    Code(call(stroke), "SOURCE_LEASE_FAILED");
+    for (const auto field : {"west", "south", "east", "north"}) {
+        auto invalid = stroke; invalid.remove(field); Code(call(invalid), "MCP_INTEGER_REQUIRED");
+        invalid = stroke; invalid[field] = 1.5; Code(call(invalid), "MCP_INTEGER_INVALID");
+        invalid = stroke; invalid[field] = "1"; Code(call(invalid), "MCP_INTEGER_REQUIRED");
+    }
+    for (const auto [field, value] : {std::pair{"west", -1}, {"east", 1}, {"north", 2049}, {"south", 14}}) {
+        auto invalid = stroke; invalid[field] = value; Code(call(invalid), "MCP_MAP_EDIT_BOUNDS_INVALID");
+    }
+    for (const auto field : {"points", "follow_doodads", "shape", "point_space", "water_height", "actual_margins", "rules_sha256"}) {
+        auto invalid = stroke; invalid[field] = 1; Code(call(invalid), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
+    }
+    Expect(!std::filesystem::exists(fixture.root / "bounds-candidate.w3x"), "invalid bounds cannot publish partial map candidates");
 }
 
 void TestRampSaveTransport() {
@@ -620,6 +651,7 @@ int main(int argc, char** argv) {
         TestNativeWaterSaveTransport();
         TestRampSaveTransport();
         TestCornerRampSaveTransport();
+        TestPlayableBoundsSaveTransport();
         TestTypedReadAndSourcePreservation();
         TestStaleBindingsAndLifetime();
         TestTransactionsAndFailures();
