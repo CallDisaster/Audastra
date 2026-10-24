@@ -81,10 +81,24 @@ Text::SlkCells UniqueTable(const ArchiveExactMember& input, std::string_view idH
     }
     return std::move(*parsed.value);
 }
-std::size_t ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldSchema& schema, ObjectType type) {
+constexpr std::array<std::string_view, 3> kDoodadColorFields{"vertr", "vertg", "vertb"};
+struct SchemaSourceEvidence {
+    std::size_t doodadCategoryFields = 0;
+    std::array<std::size_t, 3> doodadColorFields{};
+    std::array<bool, 3> doodadColorAliases{};
+};
+bool DoodadColorVariantAlias(std::string_view source, std::string_view color) {
+    if (!source.starts_with(color) || source.size() == color.size()) return false;
+    const auto suffix = source.substr(color.size());
+    std::uint32_t variation = 0;
+    const auto parsed = std::from_chars(suffix.data(), suffix.data() + suffix.size(), variation);
+    return parsed.ec == std::errc{} && parsed.ptr == suffix.data() + suffix.size() && variation >= 1 && variation <= 10;
+}
+SchemaSourceEvidence ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldSchema& schema, ObjectType type) {
     std::map<std::string, int, std::less<>> columns;
     for (const auto& [column, name] : cells.at(1)) columns.emplace(Text::LowerAscii(name), column);
-    std::size_t doodadPathFields = 0, doodadRotationFields = 0, doodadCategoryFields = 0;
+    std::size_t doodadPathFields = 0, doodadRotationFields = 0;
+    SchemaSourceEvidence evidence;
     for (const auto& [rowNumber, row] : cells) {
         if (rowNumber == 1) continue;
         const auto logical = [&](std::string_view name) -> std::string_view {
@@ -94,6 +108,27 @@ std::size_t ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldS
             return value == row.end() ? std::string_view{} : value->second;
         };
         const auto* field = schema.FindNative(type, row.at(1));
+        if (type == ObjectType::Doodad) {
+            const auto source = Text::LowerAscii(logical("field"));
+            auto dataSource = source;
+            const auto dataText = Text::TrimCWhitespace(logical("data"));
+            std::int32_t data = 0;
+            bool dataKnown = dataText.empty();
+            if (!dataText.empty()) {
+                const auto parsed = std::from_chars(dataText.data(), dataText.data() + dataText.size(), data);
+                dataKnown = parsed.ec == std::errc{} && parsed.ptr == dataText.data() + dataText.size();
+                if (dataKnown && data > 0 && data <= 26) dataSource += static_cast<char>('a' + data - 1);
+            }
+            for (std::size_t i = 0; i < kDoodadColorFields.size(); ++i) {
+                const auto key = kDoodadColorFields[i];
+                if (source == key) ++evidence.doodadColorFields[i];
+                if (source != key && dataSource == key) evidence.doodadColorAliases[i] = true;
+                // 扫描原始行而非仅schema保留下来的行；slk为空、不可编辑的行也不能
+                // 与vertR01..10等实际列地址形成别名后被忽略。
+                if (DoodadColorVariantAlias(source, key) || DoodadColorVariantAlias(dataSource, key)
+                    || (!dataKnown && key.starts_with(source))) evidence.doodadColorAliases[i] = true;
+            }
+        }
         // schema会丢弃slk为空的行，适用过滤也未经此处原版getter证明；
         // pathTex的原始候选不能因此消失后形成假的“唯一字段”。
         if (type == ObjectType::Doodad && Text::LowerAscii(logical("field")) == "pathtex") {
@@ -107,7 +142,7 @@ std::size_t ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldS
         // category只在实际覆盖参与普通占地时要求唯一；仍统计原始候选，防止loader
         // 丢掉slk为空的行后，剩下的绑定被误判成唯一地址。
         if (type == ObjectType::Doodad && Text::LowerAscii(logical("field")) == "category")
-            ++doodadCategoryFields;
+            ++evidence.doodadCategoryFields;
         if (!field) continue;
         // 普通schema的历史Token处理不能作为保存资格的再次解码。
         // 绑定键必须与严格SLK读取的一次解码逻辑值相同，不能剥掉字面引号或空白后获得地址。
@@ -128,7 +163,7 @@ std::size_t ValidateSchemaSource(const Text::SlkCells& cells, const ObjectFieldS
     }
     if (type == ObjectType::Doodad && doodadPathFields != 1)
         Fail("TERRAIN_NATIVE_OBJECT_METADATA", "实际DoodadMetaData没有唯一的显式pathTex字段。");
-    return doodadCategoryFields;
+    return evidence;
 }
 std::unique_ptr<CodecDocument> Native(const ArchiveExactMember& source, ObjectType type) {
     if (!source.present) {
@@ -182,6 +217,27 @@ void ValidateDoodadAddress(const ObjectFieldDefinition& field) {
         || !field.nativeValueType)
         Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物字段需要DoodadData中的明确非重复零索引地址：" + field.fieldId);
 }
+void ValidateDoodadColorAddress(const ObjectFieldDefinition& field, const SchemaSourceEvidence& evidence) {
+    ValidateMetadataNumbers(field);
+    const auto name = Text::LowerAscii(field.sourceField);
+    const auto color = std::find(kDoodadColorFields.begin(), kDoodadColorFields.end(), name);
+    // 这里只解释原有v2记录，不开放schema的变体编辑门。原版510A00将repeat=10
+    // 的字段展开为1..10，DoodadMetaData虚槽+34恒0；5B5050按ID与两索引精确查找。
+    if (color == kDoodadColorFields.end() || !field.metadata.contains("repeat") || field.repeat != 10
+        || !field.metadata.contains("index") || field.index != 0 || field.data != 0
+        || field.appendIndex != 0 || field.effectIndex != 0 || !field.effectType.empty()
+        || Text::LowerAscii(field.sourceTable) != "doodaddata" || Text::LowerAscii(field.valueType) != "int"
+        || field.nativeValueType != NativeValueType::Int32 || !field.useSpecific.empty() || !field.notSpecific.empty())
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "仅支持实际DoodadData中明确零索引的十变体Int32顶点颜色字段：" + field.fieldId);
+    for (const auto* key : {"usespecific", "notspecific"}) {
+        const auto selector = field.metadata.find(key);
+        if (selector != field.metadata.end() && !selector->second.empty())
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物顶点颜色含未支持的对象选择器：" + field.fieldId);
+    }
+    const auto channel = static_cast<std::size_t>(color - kDoodadColorFields.begin());
+    if (evidence.doodadColorFields[channel] != 1 || evidence.doodadColorAliases[channel])
+        Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物顶点颜色没有唯一原始元数据地址或存在变体列别名：" + field.fieldId);
+}
 const ObjectFieldDefinition& UniqueDoodadField(const ObjectFieldSchema& schema,
     const ObjectFieldContext& context, std::string_view key) {
     const auto field = schema.MatchSourceField(ObjectType::Doodad, key, context);
@@ -201,6 +257,7 @@ const ObjectFieldDefinition& UniqueDoodadField(const ObjectFieldSchema& schema,
 }
 std::string_view EffectiveDoodadPath(const StandardObjectEntry& standard, const ObjectRecord& original,
     const NativeObjectDocument& document, const ObjectFieldSchema& schema, std::string_view fallback,
+    const SchemaSourceEvidence& evidence,
     const ObjectModification*& categoryOverride, const ObjectModification*& rotationOverride) {
     ObjectFieldContext context;
     context.rawcode = standard.key.rawcode; context.baseCode = standard.Field("code");
@@ -211,15 +268,24 @@ std::string_view EffectiveDoodadPath(const StandardObjectEntry& standard, const 
     std::set<std::tuple<std::string_view, std::uint32_t, std::uint32_t>> addresses;
     for (const auto& modification : original.modifications) {
         const auto match = schema.MatchNativeField(ObjectType::Doodad, modification.key, context);
-        if (!match.definition || !match.safeToEdit || match.sourceIndex)
+        if (!match.definition || match.sourceIndex)
             Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物修改字段没有可靠的唯一地址：" + modification.key.fieldId);
-        ValidateDoodadAddress(*match.definition);
-        if (modification.key.level.value_or(0) != 0 || modification.key.variation.value_or(0) != 0
+        const auto variation = modification.key.variation.value_or(0);
+        const bool color = match.definition->repeat != 0;
+        if (color) ValidateDoodadColorAddress(*match.definition, evidence);
+        else {
+            if (!match.safeToEdit)
+                Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物修改字段没有可靠的唯一地址：" + modification.key.fieldId);
+            ValidateDoodadAddress(*match.definition);
+        }
+        if (modification.key.level.value_or(0) != 0 || (color ? variation < 1 || variation > 10 : variation != 0)
             || modification.key.dataIndex.value_or(0) != 0 || modification.valueWasOpaque
             || document.ModificationValueType(original.key, modification.key) != match.definition->nativeValueType
             || !addresses.emplace(modification.key.fieldId, modification.key.variation.value_or(0),
                 modification.key.dataIndex.value_or(0)).second)
-            Fail("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "装饰物覆盖必须是唯一、类型明确且两索引为零的字段：" + standard.key.rawcode);
+            Fail("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "装饰物覆盖必须是唯一、类型明确且属于已证索引域的字段：" + standard.key.rawcode);
+        if (color && !std::holds_alternative<std::int32_t>(modification.value))
+            Fail("TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "装饰物顶点颜色覆盖必须保持实际Int32值。");
         if (match.sourceKey == "category") {
             if (categoryOverride)
                 Fail("TERRAIN_NATIVE_OBJECT_METADATA", "装饰物category覆盖存在重复或别名。");
@@ -449,7 +515,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
         const auto schema = Take(ObjectFieldSchema::Load(reader, schemaOptions));
         ValidateSchemaSource(metadataCells, schema, ObjectType::Destructable);
         std::optional<ObjectFieldSchema> doodadSchema;
-        std::size_t doodadCategoryFields = 0;
+        SchemaSourceEvidence doodadEvidence;
         const auto destructableOwner = Native(*inputs[0], ObjectType::Destructable), doodadOwner = Native(*inputs[1], ObjectType::Doodad);
         const auto* destructables = dynamic_cast<const NativeObjectDocument*>(destructableOwner.get());
         const auto* doodads = dynamic_cast<const NativeObjectDocument*>(doodadOwner.get());
@@ -499,10 +565,10 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                         auto options = schemaOptions;
                         options.sources = {{ObjectType::Doodad, "Doodads/DoodadMetaData.slk"}};
                         doodadSchema = Take(ObjectFieldSchema::Load(reader, options));
-                        doodadCategoryFields = ValidateSchemaSource(cells, *doodadSchema, ObjectType::Doodad);
+                        doodadEvidence = ValidateSchemaSource(cells, *doodadSchema, ObjectType::Doodad);
                     }
                     value = EffectiveDoodadPath(*standardDoodad, *nativeDoodad, *doodads, *doodadSchema,
-                        value, categoryOverride, rotationOverride);
+                        value, doodadEvidence, categoryOverride, rotationOverride);
                 }
                 const bool nonempty = !value.empty() && value != "_" && value != "none";
                 if (special) {
@@ -515,7 +581,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                     specialPaths.emplace(rawcode, specialPath);
                 } else if (nonempty) {
                     const auto category = EffectiveDoodadCategory(*standardDoodad, rawcode, categoryOverride,
-                        doodadSchema ? &*doodadSchema : nullptr, doodadCategoryFields);
+                        doodadSchema ? &*doodadSchema : nullptr, doodadEvidence.doodadCategoryFields);
                     // 临时索引节点、最终vector元素及两个拥有内容的字符串均先预留；
                     // 完整分类后一次性分配最终vector，避免逐项增长遗漏额外容量。
                     const auto outputWork = sizeof(std::string_view) * 3 + sizeof(ResolvedDoodadFootprint)
