@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/MapData/TerrainCliffEditing.h"
+#include "War3MapCore/MapData/TerrainRampEditing.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
@@ -241,6 +242,91 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         std::cout << "playable_ground_save_passed kind=" << (cliff ? "cliff" : "texture")
             << " texture=" << (cliff ? "unchanged" : texture) << " source_sha256=" << source.SourceSha256()
             << " candidate_sha256=" << saved.candidateSha256 << " native_editor_verified=false game_verified=false\n";
+    }
+}
+
+void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game) {
+    const auto originalTerrain = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
+    Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
+        "existing ramp public save uses the playable 64-cell original fixture");
+    for (const bool wet : {false, true}) {
+        const auto scenario = directory / (wet ? "playable-wet-ramp-cliff" : "playable-dry-ramp-cliff");
+        Require(std::filesystem::create_directory(scenario), "exclusive existing ramp cliff save scenario");
+        auto before = originalTerrain;
+        for (std::uint32_t y = 0; y < before.header.height; ++y) for (std::uint32_t x = 0; x < before.header.width; ++x) {
+            auto& vertex = before.vertices[std::size_t{y} * before.header.width + x];
+            Require(!vertex.HasWater() && !vertex.IsRamp(), "existing ramp seed begins with dry original terrain");
+            vertex.cliffAndLayerRaw = static_cast<std::uint8_t>((vertex.cliffAndLayerRaw & 0xf0) | (x <= 31 ? 3 : 2));
+        }
+        for (const auto x : {31u, 32u, 33u}) before.vertices[32 * 65 + x].textureAndFlagsRaw |= 0x10;
+        if (wet) for (std::uint32_t y = 29; y <= 35; ++y) for (std::uint32_t x = 29; x <= 35; ++x) {
+            auto& vertex = before.vertices[std::size_t{y} * 65 + x];
+            vertex.textureAndFlagsRaw |= 0x40;
+            vertex.waterHeightAndFlagsRaw = static_cast<std::uint16_t>((vertex.groundHeightRaw & 0x3fff) + 1200);
+        }
+        RefreshTerrainDerived(before, 0, 0, 65, 65);
+        const auto beforeBytes = Take(SerializeMapTerrain(before));
+        const TerrainStrokePoint point{before.header.offset[0] + 32 * 128, before.header.offset[1] + 32 * 128};
+        const auto seeded = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "seeded.w3x",
+            std::array<MemberReplacement, 1>{{{"war3map.w3e", beforeBytes}}})).path));
+        const auto doodads = Take(ParseDoodadPlacements(Take(seeded.ReadMember("war3map.doo"))));
+        const auto resources = Take(TerrainPathingSave::CaptureWaterBrushRules(seeded, before, before, doodads, game, true, kBytes));
+        const auto* loaded = resources.WaterBrushRules();
+        Require(loaded != nullptr, "existing ramp cliff captures actual terrain rules");
+        Require(TerrainRampHeightOffset(before, 32, 32, loaded->maximumCliffLevel) == 64.0f,
+            "independent three-bit straight ramp midpoint has exactly 64 units of effective ground lift");
+        TerrainBrush options;
+        options.kind = TerrainBrushKind::CliffLevel; options.shape = TerrainBrushShape::Square;
+        options.radius = 0; options.levelDelta = 1; options.cliffTexture = 0; options.seed = 73;
+        const TerrainCliffBrush brush{options.shape, options.radius + 1, options.cliffTexture,
+            options.seed, Take(CaptureTerrainStrokeAnchor(before, point)), options.levelDelta};
+        const auto planned = Take(PrepareTerrainCliffStroke(before, *loaded, brush, std::span(&point, 1),
+            doodads, resources.WaterSpecialShapes()));
+        const auto afterBytes = Take(SerializeMapTerrain(planned.terrain));
+        Require(afterBytes != beforeBytes && !planned.result.changed.Empty(), "actual existing ramp cliff stroke changes terrain");
+        const auto rules = Take(TerrainPathingSave::CaptureNative(seeded, before, planned.terrain, game, kBytes));
+        const auto oldNative = Take(rules.GenerateNative(before, kBytes));
+        const auto newNative = Take(rules.GenerateNative(planned.terrain, kBytes));
+        auto oldPathing = Take(seeded.ReadMember("war3map.wpm"));
+        Require(oldPathing.size() == 16 + oldNative.size() && oldNative.size() == newNative.size(),
+            "existing ramp pathing uses the complete original grid dimensions");
+        auto expectedPathing = oldPathing;
+        // 此专项复用实际资源生成器检查公共保存编排；独立坡道算法预期在Core测试。
+        // 不把这份可操作原创地图的保存回读当作原版或游戏通行验收。
+        for (std::size_t i = 0; i < oldNative.size(); ++i) {
+            oldPathing[i + 16] = (oldPathing[i + 16] & std::byte{0x11}) | oldNative[i];
+            expectedPathing[i + 16] = (oldPathing[i + 16] & std::byte{0x11}) | newNative[i];
+        }
+        Require(oldPathing != expectedPathing, "existing ramp cliff stroke changes complete native pathing");
+        const auto source = Take(MapArchiveSession::Open(Take(seeded.SaveCandidate(scenario / "source.w3x",
+            std::array<MemberReplacement, 1>{{{"war3map.wpm", oldPathing}}})).path));
+        MapEditSaveRequest request;
+        request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
+        request.toolRoot = tool; request.gameRoot = game; request.expectedSourceSha256 = source.SourceSha256();
+        request.expectedTerrainSha256 = Take(Sha256(beforeBytes));
+        MapEditTerrainStroke stroke;
+        stroke.brush = options; stroke.points = {point}; request.terrainStrokes = {stroke};
+        const auto saved = Take(SaveMapEditCandidate(request));
+        const auto readback = Take(MapArchiveSession::Open(saved.candidate));
+        Require(Take(readback.ReadMember("war3map.w3e")) == afterBytes
+            && Take(readback.ReadMember("war3map.wpm")) == expectedPathing,
+            "existing dry/wet ramp public save reads back the complete intended W3E and WPM");
+        Require(saved.scriptPreserved, "existing ramp cliff save preserves the checked playable script");
+        const auto expectedMarkers = Take(TerrainMinimapMarkers::Capture(source, game,
+            std::array<MemberReplacement, 1>{{{"war3map.w3e", afterBytes}}}));
+        Require(expectedMarkers->VerifyReadback(readback).Succeeded(), "existing ramp markers use final terrain and actual dependencies");
+        for (const auto& member : source.Members()) {
+            const auto name = Text::LowerAscii(member.name);
+            if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp" || name == "war3map.mmp") continue;
+            Require(Take(readback.ReadMember(member.name)) == member.data, "existing ramp cliff save preserves unrelated members and prior shadows");
+        }
+        Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "existing ramp cliff save leaves source untouched");
+        Require(rules.VerifyReadback(readback, kBytes).Succeeded(), "existing ramp final actual terrain dependencies remain unchanged");
+        std::cout << "playable_existing_ramp_cliff_save_passed wet=" << wet
+            << " source_sha256=" << source.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
+            << " native_editor_verified=false game_verified=false\n";
     }
 }
 } // namespace War3Map::TerrainSaveTests

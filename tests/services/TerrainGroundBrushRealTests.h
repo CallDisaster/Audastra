@@ -8,4 +8,7 @@ namespace War3Map::TerrainSaveTests {
 void CheckRealGroundBrushSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game, const Game::GameDataSource& mounted);
+void CheckRealExistingRampCliffSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game);
 }

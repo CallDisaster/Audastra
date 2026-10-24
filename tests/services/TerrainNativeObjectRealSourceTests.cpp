@@ -723,6 +723,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, schema, mounted);
         TerrainSaveTests::CheckRealGroundBrushSave(original, directory.path, tool, game, mounted);
+        TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
