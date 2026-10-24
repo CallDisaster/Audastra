@@ -35,11 +35,14 @@ bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke) {
     const auto& palette = *stroke.palette;
     const auto rawcode = [](std::string_view value) { return value.size() == 4
         && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 32 && c <= 126; }); };
-    return palette.algorithm == 1 && (palette.table == MapData::TerrainTextureTable::Ground
+    return (palette.table == MapData::TerrainTextureTable::Ground
         || palette.table == MapData::TerrainTextureTable::Cliff)
         && palette.slot < (palette.table == MapData::TerrainTextureTable::Ground ? 16u : 15u)
-        && rawcode(palette.expectedRawcode) && rawcode(palette.replacementRawcode)
-        && palette.expectedRawcode != palette.replacementRawcode;
+        && rawcode(palette.replacementRawcode)
+        && ((palette.algorithm == 1 && rawcode(palette.expectedRawcode)
+                && palette.expectedRawcode != palette.replacementRawcode)
+            || (palette.algorithm == 2 && palette.table == MapData::TerrainTextureTable::Ground
+                && palette.slot > 0 && palette.expectedRawcode.empty()));
 }
 
 Status ValidateJournalReplayAlignment(std::span<const MapData::TerrainStrokeIntent> strokes,
@@ -75,16 +78,17 @@ Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(cons
     if (table != MapData::TerrainTextureTable::Ground && table != MapData::TerrainTextureTable::Cliff)
         return fail("TERRAIN_TILESET_TABLE", "未知的地形贴图表。");
     const auto& palette = table == MapData::TerrainTextureTable::Ground ? current->header.groundTilesets : current->header.cliffTilesets;
-    if (slot >= palette.size() || current->header.groundTilesets.empty() || current->header.groundTilesets.size() > 16
+    const bool appendGround = table == MapData::TerrainTextureTable::Ground && slot == palette.size() && slot < 16;
+    if ((!appendGround && slot >= palette.size()) || current->header.groundTilesets.empty() || current->header.groundTilesets.size() > 16
         || current->header.cliffTilesets.empty() || current->header.cliffTilesets.size() > 15)
-        return fail("TERRAIN_PALETTE_JOURNAL_DOMAIN", "可信贴图记录只支持经典表的既有槽替换，不能追加、删除或重排。");
+        return fail("TERRAIN_PALETTE_JOURNAL_DOMAIN", "可信贴图记录只支持经典表的既有槽替换或Ground末尾追加，不能删除或重排。");
     // 原公共命令需要完整网格候选；先给两份候选与当前DOO解析预收固定硬帽。
     constexpr std::size_t candidateMaximum = 512u * 1024u * 1024u;
     constexpr std::size_t candidateFixedBytes = 16u * 1024u; // 两套经典表头、短rawcode与命令对象。
     if (current->vertices.size() > std::min((candidateMaximum - candidateFixedBytes) / 256, std::size_t{64} * 1024u * 1024u / 40))
         return fail("TERRAIN_PALETTE_BUDGET", "贴图替换完整候选超过512MiB预算。");
     // 同值仍经原Core验证；该入口当前会复制网格，必须先受候选硬帽约束。
-    if (palette[slot] == rawcode) return edits.PrepareTerrainTextureSlot(table, slot, rawcode);
+    if (!appendGround && palette[slot] == rawcode) return edits.PrepareTerrainTextureSlot(table, slot, rawcode);
     const auto dooBytes = edits.SnapshotByteSize(MapDataKind::Doodads);
     if (!dooBytes.Succeeded() || !dooBytes.value) return {{}, dooBytes.diagnostics};
     if (*dooBytes.value > maximumBytes || *dooBytes.value > (candidateMaximum - candidateFixedBytes - current->vertices.size() * 256) / 32)
@@ -148,7 +152,7 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         ++inputIndex;
         if (ordinary) continue;
         if (stroke.palette) {
-            if (!PaletteCommand(stroke)) return fail("TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换，不能携带笔刷、范围或采样点。");
+            if (!PaletteCommand(stroke)) return fail("TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换或Ground表尾追加，不能携带笔刷、范围或采样点。");
             continue;
         }
         if (stroke.bounds) {
@@ -196,7 +200,8 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
             const auto& intent = *stroke.palette;
             const auto& table = intent.table == MapData::TerrainTextureTable::Ground
                 ? candidate.Terrain()->header.groundTilesets : candidate.Terrain()->header.cliffTilesets;
-            if (intent.slot >= table.size() || table[intent.slot] != intent.expectedRawcode)
+            if (intent.algorithm == 2 ? intent.slot != table.size()
+                : intent.slot >= table.size() || table[intent.slot] != intent.expectedRawcode)
                 return fail("TERRAIN_JOURNAL_PALETTE_DRIFT", "贴图槽已不存在或旧rawcode不同，未安装任何前缀。");
             // prospective与Core命令各自持有一次完整候选；全部扫描、解析和摘要在分配前预收。
             const auto vertices = candidate.Terrain()->vertices.size();
@@ -494,7 +499,7 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
         ++inputIndex;
         if (ordinary) continue;
         if (stroke.palette) {
-            if (!PaletteCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换，不能携带笔刷、范围或采样点。");
+            if (!PaletteCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换或Ground表尾追加，不能携带笔刷、范围或采样点。");
             continue;
         }
         if (stroke.bounds) {

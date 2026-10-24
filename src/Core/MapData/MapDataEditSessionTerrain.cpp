@@ -845,11 +845,12 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     command.headerAfter = next->header;
     if (resources) {
         const auto& palette = table == TerrainTextureTable::Ground ? terrain_->header.groundTilesets : terrain_->header.cliffTilesets;
-        if (!terrainOriginal_ || slot >= palette.size()
+        const bool appendGround = table == TerrainTextureTable::Ground && slot == palette.size() && slot < 16;
+        if (!terrainOriginal_ || (!appendGround && slot >= palette.size())
             || terrain_->header.groundTilesets.empty() || terrain_->header.groundTilesets.size() > 16
             || terrain_->header.cliffTilesets.empty() || terrain_->header.cliffTilesets.size() > 15)
             return Output::Failure("Terrain.Journal", "TERRAIN_PALETTE_JOURNAL_DOMAIN",
-                "可信贴图记录只支持既有槽替换；追加槽仍可作为普通工程草稿编辑。");
+                "可信贴图记录只支持既有槽替换或16槽以内的Ground表尾追加。");
         const auto bound = resources->VerifyWaterBrushInput(*terrainOriginal_, *next);
         if (!bound.Succeeded()) return {{}, bound.diagnostics};
         const auto index = Index(MapDataKind::Doodads);
@@ -866,7 +867,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         const auto digest = resources->WaterBrushDependencyFingerprint();
         if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};
         TerrainJournalStroke stroke;
-        stroke.intent.palette = TerrainPaletteEditIntent{table, slot, palette[slot], rawcode, 1};
+        stroke.intent.palette = TerrainPaletteEditIntent{table, slot, appendGround ? std::string{} : palette[slot], rawcode,
+            static_cast<std::uint8_t>(appendGround ? 2 : 1)};
         stroke.rulesSha256 = *digest.value;
         command.terrainStroke = std::move(stroke);
     }

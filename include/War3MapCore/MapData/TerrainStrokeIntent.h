@@ -6,7 +6,8 @@
 
 namespace War3Map::MapData {
 
-// 只描述既有槽的替换；追加、删除和表重排不在工程重放域内。
+// algorithm1替换既有槽；algorithm2仅追加Ground表尾，旧rawcode为空且slot等于旧表长。
+// 不描述删除、重排、主tileset改变或悬崖槽追加；两种算法共用FTJ6的显式版本字段。
 struct TerrainPaletteEditIntent {
     TerrainTextureTable table = TerrainTextureTable::Ground;
     std::uint32_t slot = 0;

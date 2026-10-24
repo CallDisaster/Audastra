@@ -22,7 +22,7 @@ struct TerrainReplayCandidate {
 // 仍由同一个TerrainSavePlan逐格验证旧WPM、安装输出和核对最终回读。
 class TerrainPathingSave {
 public:
-    // 既有槽替换仍调用Core同一命令；实际source、规则winner及当前DOO捕获成功才记录FTJ6。
+    // 既有槽替换与Ground表尾追加调用Core同一命令；实际source、规则winner和当前DOO捕获成功才记录FTJ6。
     // 调用方应在worker冻结来源和修订；此函数会读取来源与游戏表，不宜在GUI线程调用。
     [[nodiscard]] static Result<MapData::TerrainStrokeResult> EditTextureSlot(const MapArchiveSession& source,
         MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,

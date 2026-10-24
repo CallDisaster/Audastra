@@ -1210,6 +1210,7 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
     if (!project_.mapEdits_ || !project_.mapDataUndoStack_ || strokeBase_ || waterCommit_ || terrainPaletteWorker_ || project_.savingMap_) return;
     const auto source = project_.mapEdits_->Terrain();
     if (!source || source != rawTerrain_) return;
+    if (cliff && append) { selectionStatus_->setText(tr("悬崖贴图只能替换已有槽位，不能追加。")); return; }
     const auto& table = cliff ? source->header.cliffTilesets : source->header.groundTilesets;
     const int slot = append ? static_cast<int>(table.size())
         : (cliff ? terrainCliffTexture_->currentIndex() : terrainSwatches_->checkedId());
@@ -1229,15 +1230,12 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
     const auto selectedTable = cliff ? MapData::TerrainTextureTable::Cliff : MapData::TerrainTextureTable::Ground;
     const auto rawcode = value.toStdString();
     if (!append && rawcode == table[static_cast<std::size_t>(slot)]) return;
-    std::shared_ptr<const QtProject::TerrainWaterEditRequest> ownedRequest;
-    if (!append) {
-        auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true, 64u * 1024u * 1024u, false);
-        if (!request.Succeeded()) {
-            project_.AddDiagnostics(request.diagnostics); selectionStatus_->setText(WorldDiagnosticText(request.diagnostics)); return;
-        }
-        ownedRequest = std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value));
+    auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true, 64u * 1024u * 1024u, false);
+    if (!request.Succeeded()) {
+        project_.AddDiagnostics(request.diagnostics); selectionStatus_->setText(WorldDiagnosticText(request.diagnostics)); return;
     }
-    auto frozen = project_.mapEdits_->FreezeForTerrainTextureSlot(64u * 1024u * 1024u, !append);
+    auto ownedRequest = std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value));
+    auto frozen = project_.mapEdits_->FreezeForTerrainTextureSlot(64u * 1024u * 1024u);
     if (!frozen.Succeeded()) {
         project_.AddDiagnostics(frozen.diagnostics); selectionStatus_->setText(WorldDiagnosticText(frozen.diagnostics)); return;
     }
@@ -1247,15 +1245,14 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
     auto prepared = std::make_shared<Result<MapData::MapDataEditSession::PreparedTerrainEdit>>();
     const auto generation = generation_;
     auto* thread = QThread::create([ownedRequest, frozen = std::move(*frozen.value), selectedTable,
-        slot = static_cast<std::uint32_t>(slot), rawcode, append, prepared] {
+        slot = static_cast<std::uint32_t>(slot), rawcode, prepared] {
         try {
             if (ownedRequest) {
                 const auto sourcePath = QtProject::VerifyTerrainWaterEditRequestSourcePath(*ownedRequest);
                 if (!sourcePath.Succeeded()) { *prepared = {std::nullopt, sourcePath.diagnostics}; return; }
             }
-            // 原有“追加槽”只保留raw工程能力；既有槽必须实际读取map/game赢家后记录FTJ6。
-            *prepared = append ? frozen->PrepareTerrainTextureSlot(selectedTable, slot, rawcode)
-                : ownedRequest->archive ? Services::TerrainPathingSave::PrepareTextureSlot(*ownedRequest->archive, *frozen,
+            // 替换与Ground表尾追加共用实际map/game来源；都不能从raw草稿制造恢复资格。
+            *prepared = ownedRequest->archive ? Services::TerrainPathingSave::PrepareTextureSlot(*ownedRequest->archive, *frozen,
                     selectedTable, slot, rawcode, ownedRequest->gameRoot, ownedRequest->maximumBytes)
                 : Services::TerrainPathingSave::PrepareTextureSlot(*ownedRequest->directory, *frozen,
                     selectedTable, slot, rawcode, ownedRequest->gameRoot, ownedRequest->maximumBytes);
@@ -1297,7 +1294,8 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
         std::unique_ptr<QtProject::MapDataEditCommand> undo;
         const auto applied = project_.mapEdits_->ApplyPreparedTerrainEdit(*prepared->value, [&](const auto& receipt) {
             if (!current()) return Status::Failure("World.TerrainPalette", "WORLD_PALETTE_EDIT_STALE", "发布贴图前地图修订已变化。");
-            try { undo = std::make_unique<QtProject::MapDataEditCommand>(project_, receipt, tr("地形贴图槽"), "替换地形贴图"); }
+            try { undo = std::make_unique<QtProject::MapDataEditCommand>(project_, receipt,
+                append ? tr("追加地形贴图") : tr("替换地形贴图"), append ? "追加地形贴图" : "替换地形贴图"); }
             catch (const std::exception&) { return Status::Failure("World.TerrainPalette", "WORLD_PALETTE_UNDO_FAILED", "无法准备撤销记录，贴图未修改。"); }
             return Status::Ok();
         });
@@ -1309,10 +1307,10 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
         if (project_.mapEdits_->Revision() == before) { page_->setProperty("terrainPaletteOutcome", "unchanged"); return; }
         page_->setProperty("terrainPaletteOutcome", "applied");
         terrainPathingPending_ = true; // 最终native计划统一验证；前台不再扫描整图证明等价。
-        (void)project_.ObserveMapDataEdit("替换地形贴图");
+        (void)project_.ObserveMapDataEdit(append ? "追加地形贴图" : "替换地形贴图");
         pushingTerrainStrokeUndo_ = true; project_.mapDataUndoStack_->push(undo.release()); pushingTerrainStrokeUndo_ = false;
         QueueTerrainRender(project_.mapEdits_->Terrain(), false); RefreshTerrainPalette(); UpdateStatusIndicators();
-        if (append) selectionStatus_->setText(tr("已追加贴图槽；工程保留完整草稿，追加槽尚不支持可信笔划恢复。"));
+        if (append) selectionStatus_->setText(tr("已追加贴图槽，可随工程恢复和撤销；保存地图时会再次核对资源与通行。"));
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
     thread->start(QThread::LowPriority);

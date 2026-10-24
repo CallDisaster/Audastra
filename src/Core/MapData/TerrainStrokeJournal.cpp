@@ -44,11 +44,14 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
     if (intent.palette) {
         const auto& palette = *intent.palette;
         return Neutral(brush) && intent.points.empty() && !intent.followDoodads && !intent.waterBrush
-            && !stroke.cliffEnforceWaterLimits && Sha(stroke.rulesSha256) && palette.algorithm == 1
+            && !stroke.cliffEnforceWaterLimits && Sha(stroke.rulesSha256)
             && (palette.table == TerrainTextureTable::Ground || palette.table == TerrainTextureTable::Cliff)
             && palette.slot < (palette.table == TerrainTextureTable::Ground ? 16u : 15u)
-            && Rawcode(palette.expectedRawcode) && Rawcode(palette.replacementRawcode)
-            && palette.expectedRawcode != palette.replacementRawcode;
+            && Rawcode(palette.replacementRawcode)
+            && ((palette.algorithm == 1 && Rawcode(palette.expectedRawcode)
+                    && palette.expectedRawcode != palette.replacementRawcode)
+                || (palette.algorithm == 2 && palette.table == TerrainTextureTable::Ground
+                    && palette.slot > 0 && palette.expectedRawcode.empty()));
     }
     if (intent.points.empty() || intent.points.size() > 4096 - points || brush.anchor) return false;
     points += intent.points.size();

@@ -368,8 +368,8 @@ void PaletteJournalUsesActualOwnerAndOrderedWaterReplay() {
     Take(Services::TerrainPathingSave::EditTextureSlot(*f.source, *f.edits, TerrainTextureTable::Ground, 0, "Tg02", f.game));
     Require(f.edits->Revision() == revision && Take(f.edits->ExportTerrainStrokeJournal()).strokes.size() == 1,
         "same-slot same-value replacement is a true no-op without duplicate history");
-    Require(!Services::TerrainPathingSave::EditTextureSlot(*f.source, *f.edits, TerrainTextureTable::Ground, 1, "Tg01", f.game).Succeeded(),
-        "typed service does not authorize append even when raw API can append a slot");
+    Require(!Services::TerrainPathingSave::EditTextureSlot(*f.source, *f.edits, TerrainTextureTable::Ground, 1, "Tg02", f.game).Succeeded()
+        && f.edits->Revision() == revision, "ground append cannot duplicate a rawcode already present in another slot");
     const auto rules = f.Rules();
     TerrainWaterBrush water{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 0, 1,
         Take(CaptureTerrainWaterStrokeAnchor(*f.edits->Terrain(), f.point, rules.WaterBrushRules()->maximumCliffLevel))};
