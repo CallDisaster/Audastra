@@ -300,30 +300,38 @@ Result<NativeDoodadCategoryDirectory> NativeDoodadCategoryDirectory::Capture(
                 loose = FindFile(output.canonicalRoot_, logical);
                 if (loose) source.winner = "loose-relative:" + IO::GenericPathUtf8(*loose);
             }
-            const auto remaining = maximumBytes - output.sourceBytes_ - output.workBytes_;
             if (loose) {
 #ifdef _WIN32
                 InputLease lease(*loose);
-                if (lease.Size() > kProfileBytes || lease.Size() > remaining / 2)
+                if (lease.Size() > kProfileBytes)
                     Fail("TERRAIN_CATEGORY_BUDGET", "loose启动profile无法有界读取。");
+                sourceRead(static_cast<std::size_t>(lease.Size()));
+                reserve(static_cast<std::size_t>(lease.Size()));
                 bytes = lease.Read(static_cast<std::size_t>(lease.Size()));
-                output.sourceBytes_ += bytes.size();
 #else
                 Fail("TERRAIN_CATEGORY_SOURCE_UNKNOWN", "当前平台没有启动loose只读HANDLE租约实现。");
 #endif
             } else {
                 for (std::size_t i = archives.size(); i-- > 0;) {
-                    if (!archives[i] || !archives[i]->HasFile(input.path)) continue;
-                    bytes = Take(archives[i]->ReadFileBounded(input.path, std::min(kProfileBytes, remaining / 2)));
+                    if (!archives[i]) continue;
+                    const auto info = archives[i]->GetFileInfo(input.path);
+                    if (!info) continue;
+                    // MPQ扇区偏移表可使存储大小大于解码大小，不能以剩余预算的一半
+                    // 同时限制两个不同尺寸。先按真实块表分别预收，失败仍拒绝winner。
+                    if (info->compressedSize > kProfileBytes || info->fileSize > kProfileBytes)
+                        Fail("TERRAIN_CATEGORY_BUDGET", "MPQ启动profile的存储或解码大小超过单项预算。");
+                    sourceRead(info->compressedSize);
+                    reserve(info->fileSize);
+                    bytes = Take(archives[i]->ReadFileBounded(input.path,
+                        std::max<std::size_t>(info->compressedSize, info->fileSize)));
                     source.winner = "mpq:" + output.archivePaths_[i];
-                    output.sourceBytes_ += bytes.size();
                     break;
                 }
             }
             if (!source.winner.empty()) {
                 source.bytes = bytes.size();
                 source.sha256 = Take(Sha256(bytes));
-                reserve(bytes.size()); // 逐字节解析工作，包含无关section及重复profile读取。
+                // 逐字节解析工作已在实际读取前预收，包含无关section及重复读取。
                 MergeCategories(bytes, keys, reserve);
             }
             output.profiles_.push_back(std::move(source));

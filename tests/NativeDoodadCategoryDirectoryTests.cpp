@@ -3,6 +3,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapArchiveSession.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -146,11 +147,14 @@ void NamedLookupDoesNotRequireTheListfile() {
     CloseHandle(handle);
     auto named = Take(std::move(opened));
     Require(named.RawListfileNames().empty() && named.ListFiles().empty(), "skip-listfile performs no implicit name enumeration");
+    const auto info = named.GetFileInfo("UI/WorldEditData.txt");
+    Require(info && info->fileSize == payload.size(), "named member metadata retains the actual decoded size");
+    const auto readBudget = std::max<std::size_t>(info->compressedSize, info->fileSize);
     Require(named.HasFile("UI/WorldEditData.txt")
-        && Take(named.ReadFileBounded("UI/WorldEditData.txt", payload.size())) == payload,
+        && Take(named.ReadFileBounded("UI/WorldEditData.txt", readBudget)) == payload,
         "named hash lookup and bounded content reads remain independent of listfile loading");
-    Require(!named.ReadFileBounded("UI/WorldEditData.txt", payload.size() - 1).Succeeded(),
-        "skip-listfile does not weaken the named member budget");
+    Require(!named.ReadFileBounded("UI/WorldEditData.txt", readBudget - 1).Succeeded(),
+        "skip-listfile keeps both the stored and decoded member budgets");
     handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     Require(handle != INVALID_HANDLE_VALUE, "second borrowed MPQ lease");
     limits.maxHashTableEntries = 1;
@@ -158,12 +162,38 @@ void NamedLookupDoesNotRequireTheListfile() {
     CloseHandle(handle);
     Require(!refused.Succeeded(), "skip-listfile keeps header/table allocation gates");
 }
+
+void StoredAndDecodedBudgetsNeverFallBack() {
+    Fixture small;
+    const auto shortPayload = Text("[Other]\nC=ignored\n");
+    small.Archive("war3.mpq", {{"UI/WorldEditData.txt", shortPayload}});
+    const auto archive = Take(Mpq::MpqArchive::OpenReadOnly(small.root / "war3.mpq"));
+    const auto info = archive.GetFileInfo("UI/WorldEditData.txt");
+    Require(info && info->fileSize == shortPayload.size() && info->compressedSize > info->fileSize,
+        "short sector member includes its real offset-table storage overhead");
+    const auto captured = small.Capture();
+    Require(small.Capture(captured.CaptureBudgetBytes()).CategoryCSnapCells() == 2,
+        "exact aggregate budget includes stored bytes larger than the decoded profile");
+    Require(!NativeDoodadCategoryDirectory::Capture(small.root, NativeEditorStartupRules::Classic127aExpansion,
+        captured.CaptureBudgetBytes() - 1).Succeeded(), "stored-byte accounting keeps the exact minus-one refusal");
+
+    Fixture higher;
+    higher.Archive("war3.mpq", {{"UI/WorldEditData.txt", Text("[DoodadCategories]\nC=lower\n")}});
+    const auto largePayload = Text(std::string("[Other]\n") + std::string(256 * 1024, 'x') + "\n");
+    higher.Archive("war3patch.mpq", {{"UI/WorldEditData.txt", largePayload}});
+    const auto winner = higher.Capture();
+    Require(winner.CategoryCSnapCells() == 2, "higher profile genuinely overrides a lower C directory");
+    const auto insufficient = winner.CaptureBudgetBytes() - largePayload.size();
+    Require(!NativeDoodadCategoryDirectory::Capture(higher.root, NativeEditorStartupRules::Classic127aExpansion,
+        insufficient).Succeeded(), "an over-budget higher decoded winner never falls back to the lower C profile");
+}
 } // namespace
 int main() {
     try {
         FirstSpellingAndRawEmptyValues(); FixedProfileOrderAndFivePackageWinners();
         LooseSourcesAndAbsenceCas(); UnknownSourcesAndUnsupportedBytesFailClosed();
         NamedLookupDoesNotRequireTheListfile();
+        StoredAndDecodedBudgetsNeverFallBack();
         std::cout << "Native startup doodad category directory checks passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

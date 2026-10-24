@@ -828,8 +828,9 @@ void StartupCategoryCPatternedRectangleUsesTheNormalSaveChain() {
     const auto expected = [&](bool deep) {
         auto result = f.ExpectedPathing(deep);
         // 4格：宽8为偶，X中心512；高4为奇，Y中心576。270度使原图左上到左下。
+        // 红像素内部属性为0x31，文件六位编码为0xC2，不能只保留最低红位0x02。
         for (unsigned y = 16; y < 20; ++y) for (unsigned x = 12; x < 20; ++x)
-            result[16 + y * 32 + x] |= x == 12 && y == 19 ? std::byte{2} : std::byte{4};
+            result[16 + y * 32 + x] |= x == 12 && y == 19 ? std::byte{0xc2} : std::byte{4};
         return result;
     };
     f.Member("war3map.wpm") = expected(false); f.Open(); f.Paint();
