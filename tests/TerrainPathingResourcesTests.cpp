@@ -591,6 +591,8 @@ void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
     fixture.grid.vertices[40].textureAndFlagsRaw = 0x10;
     fixture.terrain = Take(SerializeMapTerrain(fixture.grid)); fixture.members[0].data = fixture.terrain;
     NativeSources(fixture, NativeSettings());
+    fixture.members.push_back({"war3mapMisc.txt", Text(
+        "[Terrain]\nMaxHeight=1536\nMinHeight=1000\nMaxSlope=0\n[Water]\nDeepLevelPathing=0\n")});
     fixture.members.push_back({"TerrainArt/Water.slk", Text("ID;PWXL;N;E\nB;X3;Y2;D0\n"
         "C;X1;Y1;K\"waterID\"\nC;X2;K\"height\"\nC;X3;K\"impassable\"\n"
         "C;X1;Y2;K\"LSha\"\nC;X2;K0\nC;X3;K0\nE\n")});
@@ -614,7 +616,7 @@ void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
     const auto expected = Bytes(1024, std::byte{0x40});
     Require(Take(owner.GenerateNative(fixture.grid, 1024 * 1024)) == expected
         && Take(owner.GenerateNative(after, 1024 * 1024)) == expected,
-        "real nondefault maximum permits both dry-ramp revisions through the complete generated grid");
+        "real nondefault startup maximum governs both dry-ramp revisions despite conflicting map Misc");
     Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, game, owner.CaptureBudgetBytes()));
     Require(!TerrainPathingResources::CaptureNative(source, fixture.grid, after, game,
         owner.CaptureBudgetBytes() - 1).Succeeded(), "dry ramp profile reads and container reservations have an exact budget boundary");
@@ -626,6 +628,12 @@ void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
         "identical ground textures cannot hide a changed MaxHeight source in final output");
     const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(directory.path / "dry-ramp-saved.w3x", output)).path));
     Check(owner.VerifyReadback(saved, 1024 * 1024));
+    auto independentOutput = output;
+    independentOutput.push_back({"war3mapMisc.txt", Text("[Terrain]\nMaxHeight=-256\n[Water]\nDeepLevelPathing=999\n")});
+    Check(owner.VerifyFrozenOutput(independentOutput, {}));
+    const auto independent = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+        directory.path / "dry-ramp-map-misc.w3x", independentOutput)).path));
+    Check(owner.VerifyReadback(independent, 1024 * 1024));
     Take(WriteVerifiedArchive(game / "war3patch.mpq", std::vector<MapArchiveMember>{{"Units/MiscData.txt", maximum}}));
     Require(!owner.VerifyReadback(saved, 1024 * 1024).Succeeded(),
         "a previously absent optional profile becoming a same-valued winner still changes frozen source identity");

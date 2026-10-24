@@ -249,13 +249,46 @@ void MissingProfilesAndGameWinnersStayBound() {
     }
 }
 
-void ExtraOverridesAndLooseSourcesRefuse() {
-    Directory directory; const auto game = GameRoot(directory);
-    Fixture fixture; fixture.Set("war3mapMisc.txt", Profile());
-    const auto custom = fixture.Write(directory.path / "custom.w3x");
-    Require(!TerrainPathingResources::CaptureWaterBrushRules(custom, fixture.grid, game, true, kBudget).Succeeded(),
-        "unproved custom profile merge cannot be silently ignored");
+void MapMiscDoesNotOverrideWaterRulesOrBecomeTheirDependency() {
+    Directory directory;
+    const auto unrelatedGameMisc = Profile("1", "0", "128", "999");
+    const auto game = GameRoot(directory, {{"war3mapMisc.txt", unrelatedGameMisc}});
+    Fixture fixture;
+    const auto mapMisc = Profile("90", "256", "-256", "0");
+    fixture.Set("war3mapMisc.txt", mapMisc);
+    const auto source = fixture.Write(directory.path / "custom.w3x");
+    const auto captured = Take(TerrainPathingResources::CaptureWaterBrushRules(source, fixture.grid, game, true, kBudget));
+    const auto* rules = captured.WaterBrushRules();
+    Require(rules && rules->maxSlopeDegrees == 30.0f && rules->minHeight == -256.0f
+        && rules->maxHeight == 1536.0f && rules->maximumCliffLevel == 14 && rules->deepWaterThreshold == 64.0f,
+        "even conflicting Terrain/Water map Misc values cannot replace the independent startup rules");
+    Require(captured.SourceBytes() == fixture.DecodedBytes() - mapMisc.size(),
+        "map Misc is preserved map content rather than a decoded water-rule dependency");
+    Check(captured.VerifyReadback(source, kBudget));
+    const std::vector<MemberReplacement> changedMisc{{"war3mapMisc.txt", unrelatedGameMisc}};
+    const auto changed = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+        directory.path / "changed-map-misc.w3x", changedMisc)).path));
+    Check(captured.VerifyReadback(changed, kBudget));
+    const std::vector<MemberReplacement> changedStartup{{"UI/MiscData.txt", Profile("25")}};
+    const auto drift = Take(MapArchiveSession::Open(Take(source.SaveCandidate(
+        directory.path / "changed-startup.w3x", changedStartup)).path));
+    Require(!captured.VerifyReadback(drift, kBudget).Succeeded(),
+        "ignoring map Misc does not weaken actual startup source identity");
+
+    // 地图缺失时也不应把游戏MPQ或loose同名Misc借入启动链。
     fixture.Remove("war3mapMisc.txt");
+    const auto without = fixture.Write(directory.path / "without-map-misc.w3x");
+    Check(IO::WriteFileBytes(game / "war3mapMisc.txt", mapMisc));
+    const auto absent = Take(TerrainPathingResources::CaptureWaterBrushRules(without, fixture.grid, game, true, kBudget));
+    Require(absent.SourceBytes() == fixture.DecodedBytes()
+        && absent.WaterBrushRules()->maxHeight == 1536.0f && absent.WaterBrushRules()->deepWaterThreshold == 64.0f,
+        "game fallback with a map-only filename is not a terrain rule source");
+    Check(absent.VerifyReadback(without, kBudget));
+}
+
+void LooseStartupSourcesStillRefuse() {
+    Directory directory; const auto game = GameRoot(directory);
+    Fixture fixture;
     const auto source = fixture.Write(directory.path / "source.w3x");
     const auto captured = Take(TerrainPathingResources::CaptureWaterBrushRules(source, fixture.grid, game, true, kBudget));
     const auto loose = game / "UI/MiscData.txt";
@@ -388,7 +421,8 @@ int main() {
         FullProfileChainRejectsConflictsCsvAndGuardDependentValues();
         InvalidRulesAndUnprovedPaletteRowsRefuse();
         MissingProfilesAndGameWinnersStayBound();
-        ExtraOverridesAndLooseSourcesRefuse();
+        MapMiscDoesNotOverrideWaterRulesOrBecomeTheirDependency();
+        LooseStartupSourcesStillRefuse();
         DirectoryCaptureUsesVerifiedSourceAndRejectsUnknownLayout();
         RuleAndMetadataReadsShareCallerBudget();
         CurrentDraftHasIndependentInputIdentityAndActualPaletteRules();

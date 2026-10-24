@@ -21,10 +21,19 @@
 #include <stdexcept>
 
 namespace War3Map::MapData {
+namespace {
+// v1 wire先写W3E、三张地形表和56项启动profile，历史上随后还写入地图Misc缺失。
+// 成功的旧owner只可能得到下面的缺失tuple；它仅保留wire兼容，绝非实际来源证明。
+static_assert(kClassicProfiles.size() == 56, "v1 dependency wire requires an explicit migration when the startup chain changes");
+constexpr std::size_t kWaterV1StartupDependencies = 60;
+constexpr std::string_view kWaterV1ReservedMisc = "war3mapmisc.txt";
+constexpr std::string_view kEmptySha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+}
+
 std::size_t TerrainPathingResources::WaterBrushDependencyBudgetBytes() const noexcept {
     if (!waterBrushRules_ || waterBrushInputSha_.empty() || waterBrushDoodadsSha_.empty()) return 0;
-    std::size_t maximum = 1024;
-    if (dependencies_.size() > 4096) return 0;
+    std::size_t maximum = 1024 + kWaterV1ReservedMisc.size() + kEmptySha256.size() + 64;
+    if (dependencies_.size() < kWaterV1StartupDependencies || dependencies_.size() >= 4096) return 0;
     for (const auto& dependency : dependencies_) {
         for (const auto* value : {&dependency.name, &dependency.sha256, &dependency.gameArchive}) {
             if (value->size() > 1024 * 1024 - maximum) return 0;
@@ -42,7 +51,7 @@ Result<std::string> TerrainPathingResources::WaterBrushDependencyFingerprint() c
     const auto maximum = WaterBrushDependencyBudgetBytes();
     if (!maximum)
         return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BUDGET", "水刷依赖摘要超过有界记录预算。");
-    // 长度前缀避免字符串拼接歧义；顺序取真实捕获链，不从最终输出反推。
+    // 长度前缀避免字符串拼接歧义；真实依赖按捕获链排序，历史常量槽不进入依赖集合。
     std::vector<std::byte> wire;
     wire.reserve(maximum);
     const auto number = [&wire](std::uint64_t value) {
@@ -53,10 +62,15 @@ Result<std::string> TerrainPathingResources::WaterBrushDependencyFingerprint() c
         wire.insert(wire.end(), bytes.begin(), bytes.end());
     };
     text("terrain-water-dependencies-v1"); text(waterBrushInputSha_); number(waterBrushInputBytes_);
-    text(waterBrushDoodadsSha_); number(waterBrushRules_->enforceWaterLimits); number(dependencies_.size());
+    text(waterBrushDoodadsSha_); number(waterBrushRules_->enforceWaterLimits); number(dependencies_.size() + 1);
+    std::size_t index = 0;
     for (const auto& dependency : dependencies_) {
         text(dependency.name); text(dependency.sha256); text(dependency.gameArchive); number(dependency.bytes);
         number(dependency.mapPresent); number(dependency.mapOnly); number(dependency.gameAbsent);
+        if (++index == kWaterV1StartupDependencies) {
+            text(kWaterV1ReservedMisc); text(kEmptySha256); text(""); number(0);
+            number(false); number(false); number(true);
+        }
     }
     return Sha256(wire);
 } catch (const std::bad_alloc&) {
@@ -802,8 +816,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
 
         std::vector<std::string> names{"TerrainArt/Terrain.slk", "TerrainArt/Water.slk", "TerrainArt/CliffTypes.slk"};
         for (const auto& input : kClassicProfiles) names.emplace_back(input.path);
-        // 固定初始化证据未证明自定义misc合并；存在时明确拒绝，不猜覆盖顺序。
-        names.emplace_back("war3mapMisc.txt");
+        // 原版4D1D40从独立的启动profile读取这些规则；地图Misc对象518D60只替换
+        // 自己的this+4，不合并到该profile。war3mapMisc.txt不是此计算的依赖。
         for (const auto& name : names) RejectLooseInput(result.gameRoot_, name);
         std::vector<TerrainWaterGroundRule> ground;
         std::vector<std::string> cliffs;
@@ -812,10 +826,6 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
         std::array<std::optional<float>, 4> values;
         std::array<bool, 4> unguarded{};
         const auto visitResource = [&](std::size_t i, bool present, const std::vector<std::byte>& bytes) {
-            if (i == names.size() - 1) {
-                if (present) Fail("TERRAIN_WATER_RULE_SOURCE", "war3mapMisc.txt不属于已闭合的经典初始化规则来源链。");
-                return;
-            }
             if (i == 0) {
                 const auto table = Table(names[i], "tileid", bytes);
                 std::set<std::string, std::less<>> ids;
@@ -887,10 +897,9 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushInputs
 Result<std::uint8_t> TerrainPathingResources::CaptureNativeCliffLimit(const MemberReader& reader) {
     return Guard<std::uint8_t>([&] {
         std::vector<std::string> names;
-        names.reserve(kClassicProfiles.size() + 1);
+        names.reserve(kClassicProfiles.size());
         for (const auto& profile : kClassicProfiles) names.emplace_back(profile.path);
-        names.emplace_back("war3mapMisc.txt");
-        // 与水刷使用同一完整初始化profile集合；不能只看MiscData的一处默认值。
+        // 与水刷使用同一完整启动profile集合；地图独立Misc不覆盖原版地形构造字段。
         constexpr std::size_t perSource = sizeof(ArchiveExactMember) + 2 * sizeof(Dependency) + 8 * 260;
         if (sourceBytes_ > capturedMaximumBytes_ || objectWorkBytes_ > capturedMaximumBytes_ - sourceBytes_
             || names.size() > (capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_) / perSource)
@@ -900,8 +909,6 @@ Result<std::uint8_t> TerrainPathingResources::CaptureNativeCliffLimit(const Memb
         bool unconditional = false;
         auto status = CaptureResourceMembers(reader, names, 0, [&](std::size_t i, bool present, std::vector<std::byte>&& bytes) {
             if (!present) return;
-            if (i == kClassicProfiles.size())
-                Fail("TERRAIN_SPECIAL_RULE_SOURCE", "war3mapMisc.txt不属于已闭合的原版地形初始化规则链。");
             std::string_view text;
             if (!bytes.empty()) text = {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
             if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);

@@ -1,5 +1,6 @@
 #include "TerrainCliffJournalTests.h"
 
+#include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
@@ -113,9 +114,127 @@ struct Fixture {
     }
 };
 
+Bytes HistoricalV1DependencyWire(const Fixture& f) {
+    // 固定旧v1的61项字面清单，不读取生产profile数组或owner的依赖集合。
+    constexpr std::array<std::string_view, 61> names{
+        "war3map.w3e", "terrainart/terrain.slk", "terrainart/water.slk", "terrainart/clifftypes.slk",
+        "units/miscdata.txt", "units/miscgame.txt", "ui/miscdata.txt", "ui/worldeditdata.txt",
+        "ui/worldeditstrings.txt", "ui/worldeditgamestrings.txt", "ui/uniteditordata.txt", "ui/aieditordata.txt",
+        "ui/worldeditlayout.txt", "units/commandfunc.txt", "units/commandstrings.txt", "ui/triggerdata.txt",
+        "ui/triggerstrings.txt", "units/humanunitstrings.txt", "units/neutralunitstrings.txt", "units/nightelfunitstrings.txt",
+        "units/orcunitstrings.txt", "units/undeadunitstrings.txt", "units/campaignunitstrings.txt", "units/unitglobalstrings.txt",
+        "units/humanunitfunc.txt", "units/neutralunitfunc.txt", "units/nightelfunitfunc.txt", "units/orcunitfunc.txt",
+        "units/undeadunitfunc.txt", "units/campaignunitfunc.txt", "units/itemstrings.txt", "units/itemfunc.txt",
+        "units/humanabilityfunc.txt", "units/neutralabilityfunc.txt", "units/nightelfabilityfunc.txt", "units/orcabilityfunc.txt",
+        "units/undeadabilityfunc.txt", "units/commonabilityfunc.txt", "units/itemabilityfunc.txt", "units/campaignabilityfunc.txt",
+        "units/humanabilitystrings.txt", "units/neutralabilitystrings.txt", "units/nightelfabilitystrings.txt", "units/orcabilitystrings.txt",
+        "units/undeadabilitystrings.txt", "units/commonabilitystrings.txt", "units/itemabilitystrings.txt", "units/campaignabilitystrings.txt",
+        "units/humanupgradefunc.txt", "units/orcupgradefunc.txt", "units/undeadupgradefunc.txt", "units/nightelfupgradefunc.txt",
+        "units/campaignupgradefunc.txt", "units/neutralupgradefunc.txt", "units/humanupgradestrings.txt", "units/orcupgradestrings.txt",
+        "units/undeadupgradestrings.txt", "units/nightelfupgradestrings.txt", "units/campaignupgradestrings.txt", "units/neutralupgradestrings.txt",
+        "war3mapmisc.txt"};
+    constexpr std::string_view emptySha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const Bytes emptyDoo{
+        std::byte{'W'}, std::byte{'3'}, std::byte{'d'}, std::byte{'o'},
+        std::byte{8}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{11}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0},
+        std::byte{0}, std::byte{0}, std::byte{0}, std::byte{0}};
+    Require(Take(DoodadPlacements{}.Serialize()) == emptyDoo, "legacy digest fixture uses the complete literal empty classic DOO");
+    Bytes wire;
+    const auto u64 = [&](std::uint64_t value) {
+        for (unsigned shift = 0; shift < 64; shift += 8) wire.push_back(std::byte((value >> shift) & 255));
+    };
+    const auto string = [&](std::string_view value) {
+        u64(value.size()); const auto bytes = std::as_bytes(std::span(value.data(), value.size()));
+        wire.insert(wire.end(), bytes.begin(), bytes.end());
+    };
+    const auto terrain = f.Member("war3map.w3e");
+    string("terrain-water-dependencies-v1"); string(Take(Sha256(terrain))); u64(terrain.size());
+    string(Take(Sha256(emptyDoo))); u64(1); u64(61);
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        Bytes bytes;
+        switch (i) {
+        case 0: bytes = terrain; break;
+        case 1: bytes = f.Member("TerrainArt/Terrain.slk"); break;
+        case 2: bytes = f.Member("TerrainArt/Water.slk"); break;
+        case 3: bytes = f.Member("TerrainArt/CliffTypes.slk"); break;
+        case 6: bytes = f.Member("UI/MiscData.txt"); break;
+        default: break;
+        }
+        const bool present = i <= 3 || i == 6;
+        string(names[i]); string(present ? Take(Sha256(bytes)) : std::string(emptySha)); string("");
+        u64(bytes.size()); u64(present); u64(i == 0); u64(!present);
+    }
+    return wire;
+}
+
+void HistoricalV1DigestKeepsIndependentMapMiscOpaque() {
+    Fixture f(false);
+    const auto wire = HistoricalV1DependencyWire(f);
+    const auto expected = Take(Sha256(wire));
+    const auto rules = f.Rules();
+    Require(wire.size() <= rules.WaterBrushDependencyBudgetBytes()
+        && Take(rules.WaterBrushDependencyFingerprint()) == expected,
+        "new capture preserves the complete independent historical v1 wire, including its fixed last absence tuple");
+    const auto sourceBytes = rules.SourceBytes();
+    SetMember(f.members, "war3mapMisc.txt", Text("[Terrain]\nMaxSlope=0\nMinHeight=2000\nMaxHeight=-256\n[Water]\nDeepLevelPathing=0\n"));
+    f.Reopen("map-misc.w3x");
+    const auto present = f.Rules();
+    Require(present.SourceBytes() == sourceBytes && Take(present.WaterBrushDependencyFingerprint()) == expected,
+        "the compatibility tuple neither claims real absence nor hashes conflicting map Misc as a rule source");
+    Require(rules.VerifyReadback(*f.source, kResourceBudget).Succeeded(),
+        "an added opaque map Misc does not invalidate an independent resource owner");
+    SetMember(f.members, "war3mapMisc.txt", Text("changed opaque map Misc")); f.Reopen("changed-map-misc.w3x");
+    Require(Take(f.Rules().WaterBrushDependencyFingerprint()) == expected,
+        "changed map Misc still cannot enter the reserved v1 slot");
+    SetMember(f.members, "UI/MiscData.txt", Text("[Terrain]\nMaxSlope=89\nMinHeight=-256\nMaxHeight=1536\n[Water]\nDeepLevelPathing=128\n"));
+    f.Reopen("changed-startup.w3x");
+    Require(!rules.VerifyReadback(*f.source, kResourceBudget).Succeeded()
+        && Take(f.Rules().WaterBrushDependencyFingerprint()) != expected,
+        "actual startup source bytes remain both fingerprinted and independently rechecked");
+}
+
 TerrainBrush CliffBrush() {
     TerrainBrush brush; brush.kind = TerrainBrushKind::CliffLevel; brush.size = 1;
     brush.cliffTexture = 1; brush.levelDelta = 1; brush.seed = 1; return brush;
+}
+void HistoricalV1DigestRestoresAllJournalVersions() {
+    for (const unsigned version : {1u, 2u, 3u}) {
+        Fixture f(false); const auto rules = f.Rules();
+        const auto digest = Take(Sha256(HistoricalV1DependencyWire(f)));
+        const auto terrain = f.Member("war3map.w3e"), pathing = f.Member("war3map.wpm");
+        auto prepared = [&]() {
+            if (version == 2) return f.edits->PrepareTerrainCliffEdit(rules, CliffBrush(), std::span(&f.point, 1), false);
+            TerrainWaterBrush brush{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 1, 1,
+                Take(CaptureTerrainWaterStrokeAnchor(*f.edits->Terrain(), f.point, rules.WaterBrushRules()->maximumCliffLevel))};
+            brush.algorithm = version == 1 ? TerrainWaterAlgorithm::LegacyFlat : TerrainWaterAlgorithm::NativeRamps;
+            return f.edits->PrepareTerrainWaterEdit(rules, brush, std::span(&f.point, 1), false);
+        }();
+        const auto plan = Take(std::move(prepared));
+        Take(f.edits->ApplyPreparedTerrainEdit(plan));
+        const auto after = Take(SerializeMapTerrain(*f.edits->Terrain()));
+        auto journal = Take(Services::TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+        Require(journal.strokes.size() == 1 && journal.strokes.front().rulesSha256 == digest,
+            "each journal version keeps the independent historical rule digest");
+        // 以独立旧wire摘要作为恢复输入，不能用当前owner摘要替代旧记录资格。
+        journal.strokes.front().rulesSha256 = digest;
+        const auto encoded = Take(EncodeTerrainStrokeJournal(journal));
+        Require(encoded.size() > 4 && encoded[0] == std::byte{'F'} && encoded[1] == std::byte{'T'}
+            && encoded[2] == std::byte{'J'} && encoded[3] == static_cast<std::byte>('0' + version), "journal retains its explicit FTJ1/2/3 wire version");
+        const auto decoded = Take(DecodeTerrainStrokeJournal(encoded));
+        Require(Take(EncodeTerrainStrokeJournal(decoded)) == encoded && decoded.strokes.front().rulesSha256 == digest,
+            "journal codec roundtrips the old digest without upgrading the water algorithm");
+        auto restored = Take(Services::TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+            terrain, pathing, decoded, *f.edits, f.game));
+        Require(restored.session && restored.receipts.size() == 1 && restored.waterOwners.size() == 1
+            && Take(SerializeMapTerrain(*restored.session->Terrain())) == after,
+            "owned replay restores the complete historical command rather than falling back to raw data");
+        Require(restored.session->Undo() && Take(SerializeMapTerrain(*restored.session->Terrain())) == terrain
+            && restored.session->Redo() && Take(SerializeMapTerrain(*restored.session->Terrain())) == after,
+            "all historical journal versions retain complete Undo and Redo");
+    }
 }
 void OrdinaryCliffUsesActualJournalOwner() {
     Fixture f; const auto before = Take(SerializeMapTerrain(*f.edits->Terrain()));
@@ -222,6 +341,8 @@ void NativeFollowChargesActualSamplesAndOptionalDigest() {
 }
 
 void CheckTerrainCliffJournalContracts() {
+    HistoricalV1DigestKeepsIndependentMapMiscOpaque();
+    HistoricalV1DigestRestoresAllJournalVersions();
     OrdinaryCliffUsesActualJournalOwner();
     NativeWaterRecordsExistingCornerAndCompleteUndo();
     NativeCliffWithoutRuleDigestCannotBecomeLegacyJournal();

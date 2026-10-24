@@ -46,6 +46,11 @@ template<class T> bool HasCode(const T& result, std::string_view code) {
 Bytes Text(std::string_view text) {
     return {reinterpret_cast<const std::byte*>(text.data()), reinterpret_cast<const std::byte*>(text.data() + text.size())};
 }
+Bytes ConflictingMapMisc() {
+    // 原创地图独立Misc；四项均与startup规则冲突，保留CRLF和未知字段以核对整成员字节。
+    return Text("// original independent map Misc\r\n[Terrain]\r\nMaxSlope=1\r\nMinHeight=-1024\r\nMaxHeight=-128\r\n"
+        "[Water]\r\nDeepLevelPathing=4096\r\n[Fixture]\r\nMarker=preserve-map-misc-bytes\r\n");
+}
 Bytes Slk(const std::vector<std::string>& columns, std::initializer_list<std::vector<std::string>> rows) {
     std::string text = "ID;PWXL;N;E\n";
     const auto append = [&](const std::vector<std::string>& cells, std::size_t row) {
@@ -151,12 +156,27 @@ struct Fixture {
         Check(plan.SaveGate()); auto output = edits->Replacements(); Check(plan.InstallPathingOutput(*edits, output));
         Check(plan.VerifyForSave(*edits, archive->SourceSha256(), output)); return output;
     }
-    void SaveExpected(const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes* doodads = nullptr) {
+    void SaveExpected(const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes* doodads = nullptr,
+        bool formal = false) {
         const auto sourcePath = archive->SourcePath();
         const auto sourceSha = Take(Sha256File(sourcePath));
+        const auto identity = edits->SessionIdentity(), revision = edits->Revision(), sourceRevision = edits->TerrainSourceRevision();
         const auto plan = Plan(); Check(plan.SaveGate()); Require(plan.RebuiltPathing(), "native pathing rebuilt");
         const auto output = Output(plan);
-        auto saved = Take(MapArchiveSession::Open(Take(archive->SaveCandidate(root / name, output)).path));
+        auto written = root / name;
+        if (formal) {
+            Services::MapSaveTask task; Check(task.FreezeArchive(*archive));
+            task.target = written; task.replacements = output;
+            task.beforePublish = [&] { return plan.VerifyForSave(*edits, task.sourceSha256, task.replacements, task.removals); };
+            Services::MapSaveService::Run(task);
+            if (!task.succeeded) for (const auto& diagnostic : task.diagnostics)
+                std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+            Require(task.executed && task.succeeded && task.nextSession, "formal save worker publishes and reopens the complete expected state");
+            written = task.written;
+        } else {
+            written = Take(archive->SaveCandidate(written, output)).path;
+        }
+        auto saved = Take(MapArchiveSession::Open(written));
         Check(plan.VerifyReadback(saved));
         Require(Take(saved.ReadMember("war3map.w3e")) == terrain, "full independent W3E expected bytes");
         Require(Take(saved.ReadMember("war3map.wpm")) == pathing, "full independent WPM expected bytes");
@@ -166,7 +186,9 @@ struct Fixture {
         }
         Require(Take(Sha256File(sourcePath)) == sourceSha, "save does not rewrite source archive");
         Check(plan.CommitSaved(*edits, MapDocument::FromArchive(saved)));
-        Require(!edits->IsDirty(), "verified saved source becomes the clean baseline");
+        Require(!edits->IsDirty() && edits->Replacements().empty() && edits->SessionIdentity() == identity
+            && edits->Revision() == revision && edits->TerrainSourceRevision() == sourceRevision + 1,
+            "verified save rebases the same clean session without adding commands or erasing history");
         archive = std::make_unique<MapArchiveSession>(std::move(saved));
     }
     void Save(const char* name, bool deep) { SaveExpected(name, ExpectedTerrain(deep), ExpectedPathing(deep)); }
@@ -1558,11 +1580,19 @@ void BridgeSpecialWaterFixture(Fixture& f) {
     f.members.push_back({std::string(kBridgeBlockerTexture), std::move(blockerTexture)});
     BridgeSpecialExpectedLayers(f.Member("war3map.wpm")); f.Open();
 }
-void PaintBridgeSpecialWater(Fixture& f) {
+TerrainPathingResources BridgeSpecialWaterRules(Fixture& f) {
     const auto before = Take(f.edits->Snapshot(MapDataKind::Doodads, kBudget));
     Require(before.Doodads().has_value(), "bridge water preparation has complete current DOO");
-    const auto rules = Take(TerrainPathingSave::CaptureWaterBrushRules(*f.archive, f.original,
+    auto rules = Take(TerrainPathingSave::CaptureWaterBrushRules(*f.archive, f.original,
         *f.edits->Terrain(), *before.Doodads(), f.gameRoot, true, kBudget));
+    const auto* loaded = rules.WaterBrushRules();
+    Require(loaded && loaded->maxSlopeDegrees == 90.0f && loaded->minHeight == -256.0f
+        && loaded->maxHeight == 1536.0f && loaded->maximumCliffLevel == 14 && loaded->deepWaterThreshold == 64.0f,
+        "real water command reads the fixed startup Terrain/Water rules even with conflicting map Misc");
+    return rules;
+}
+void PaintBridgeSpecialWater(Fixture& f) {
+    const auto rules = BridgeSpecialWaterRules(f);
     const Services::MapDataQueryBinding document{"bridge-special-water-save", 1, 0, f.archive->SourceSha256()};
     const Services::TerrainEditBinding binding{document, f.edits->SessionIdentity(), f.edits->Revision(), f.edits->TerrainSourceRevision()};
     TerrainWaterStrokeOptions options; options.shape = TerrainBrushShape::Square; options.randomSeed = 1;
@@ -1571,9 +1601,24 @@ void PaintBridgeSpecialWater(Fixture& f) {
         options, std::span(&point, 1), false));
     Take(Services::ApplyTerrainEdit(*f.edits, document, prepared));
 }
-void WalkableBridgeSpecialDeletionRestoresAndUsesFormalSaveHistory() {
+void WalkableBridgeSpecialDeletionRestoresAndUsesFormalSaveHistory(bool withMapMisc = false) {
     for (const bool inPlace : {false, true}) {
         Fixture f; BridgeSpecialWaterFixture(f);
+        if (withMapMisc) {
+            const auto withoutMisc = BridgeSpecialWaterRules(f);
+            const auto fingerprint = Take(withoutMisc.WaterBrushDependencyFingerprint());
+            const auto sourceSha = f.archive->SourceSha256();
+            f.members.push_back({"war3mapMisc.txt", ConflictingMapMisc()}); f.Open();
+            const auto withMisc = BridgeSpecialWaterRules(f);
+            Require(f.archive->SourceSha256() != sourceSha
+                && Take(withMisc.WaterBrushDependencyFingerprint()) == fingerprint,
+                "map Misc changes archive identity while preserving the versioned water dependency digest");
+            Check(withoutMisc.VerifyReadback(*f.archive, kBudget));
+            const std::array<MemberReplacement, 1> drift{{{"UI/MiscData.txt", Text("[Terrain]\nMaxHeight=1408\n")}}};
+            const auto changed = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "water-startup-drift.w3x", drift)).path));
+            Require(!withMisc.VerifyReadback(changed, kBudget).Succeeded(),
+                "map Misc independence does not permit actual water startup profile drift");
+        }
         const auto originalTerrain = f.Member("war3map.w3e"), originalPathing = f.Member("war3map.wpm");
         const auto originalDoodads = f.Member("war3map.doo");
         auto deleted = Take(ParseDoodadPlacements(originalDoodads));
@@ -2291,7 +2336,7 @@ void WalkableBridgesUseTheDirectoryRecipe() {
     Require(Take(IO::ReadFileBytes(directory/"war3map.doo"))==f.Member("war3map.doo"),"directory sealing preserves full source DOO");
 }
 
-void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers() {
+void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers(bool withMapMisc = false) {
     for (const bool special : {false, true}) {
         Fixture f; SpecialDoodad(f, true);
         // 精确累计解码/解析预算不等于微小MPQ成员的存储峰值；用合法空白固定本用例前提。
@@ -2312,6 +2357,7 @@ void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers() {
         f.Member("war3map.doo") = Take(placements.Serialize());
         f.Member("Doodads/Doodads.slk") = Slk({"doodID","code","pathTex","category","fixedRot"},
             {{"Doo0","Doo0",std::string(kUniformDoodadTexture),"C","45"},{"Ord0","Ord0","_","E","-1"}});
+        if (withMapMisc) f.members.push_back({"war3mapMisc.txt", ConflictingMapMisc()});
         f.Open();
         TerrainBrush brush; brush.kind = TerrainBrushKind::Texture; brush.radius = 0;
         brush.groundTexture = "Tg02"; brush.variation = 0;
@@ -2324,12 +2370,39 @@ void ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers() {
         Require(!TerrainPathingSave::CaptureNative(*f.archive, f.original, *f.edits->Terrain(), f.gameRoot,
             owner.CaptureBudgetBytes()-1).Succeeded(),
             "typed ordinary parse work and ramp/special profile reservations retain one exact shared budget");
+        if (withMapMisc) {
+            const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+            const auto plan = f.Plan(); const auto output = f.Output(plan);
+            auto changedMisc = output;
+            auto miscBytes = ConflictingMapMisc(); const auto marker = Text("// independent map profile revision\r\n");
+            miscBytes.insert(miscBytes.end(), marker.begin(), marker.end());
+            changedMisc.push_back({"war3mapMisc.txt", std::move(miscBytes)});
+            Check(owner.VerifyFrozenOutput(changedMisc, {}));
+            Check(plan.VerifyForSave(*f.edits, sourceSha, changedMisc));
+            const auto changed = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "ramp-map-misc-drift.w3x", changedMisc)).path));
+            Check(owner.VerifyReadback(changed, kBudget)); Check(plan.VerifyReadback(changed));
+            Require(!plan.VerifyFrozenOutput(std::string(64, '0'), changedMisc).Succeeded(),
+                "independent map Misc never relaxes the save plan source archive identity");
+
+            // 固定startup是实际计算依赖，值相同的注释漂移也必须被字节身份拒绝。
+            auto startupBytes = f.Member("UI/MiscData.txt"); startupBytes.insert(startupBytes.end(), marker.begin(), marker.end());
+            auto changedStartup = output; changedStartup.push_back({"UI/MiscData.txt", std::move(startupBytes)});
+            Require(!owner.VerifyFrozenOutput(changedStartup, {}).Succeeded()
+                && !plan.VerifyForSave(*f.edits, sourceSha, changedStartup).Succeeded(),
+                "static ramp and special save still freeze every byte of the actual startup profile");
+            const auto drift = Take(MapArchiveSession::Open(Take(f.archive->SaveCandidate(f.root / "ramp-startup-drift.w3x", changedStartup)).path));
+            Require(!owner.VerifyReadback(drift, kBudget).Succeeded() && !plan.VerifyReadback(drift).Succeeded(),
+                "static ramp and special readback rejects actual startup drift after map Misc was excluded");
+            Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha && f.edits->IsDirty()
+                && f.edits->Revision() == 1 && f.edits->CanUndo() && !f.edits->CanRedo(),
+                "dependency probes preserve the complete original archive and unsaved command history");
+        }
         const auto expectedTerrain = Take(SerializeMapTerrain(terrain));
-        f.SaveExpected("dry-ramp-layered.w3x", expectedTerrain, pathing);
+        f.SaveExpected("dry-ramp-layered.w3x", expectedTerrain, pathing, nullptr, withMapMisc);
         Require(f.edits->Undo(), "undo saved texture on existing dry ramp with typed object layers");
-        f.SaveExpected("dry-ramp-layered-undone.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"));
+        f.SaveExpected("dry-ramp-layered-undone.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"), nullptr, withMapMisc);
         Require(f.edits->Redo(), "redo saved texture on existing dry ramp with typed object layers");
-        f.SaveExpected("dry-ramp-layered-redone.w3x", expectedTerrain, pathing);
+        f.SaveExpected("dry-ramp-layered-redone.w3x", expectedTerrain, pathing, nullptr, withMapMisc);
     }
 }
 void MixedObjectAndResourceSavesUseActualPathingDependencies() {
@@ -2437,8 +2510,10 @@ int main() {
         SharedSpecialAndOrdinaryResourcesRoundTripOnce();
         SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();
         ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers();
+        ExistingDryRampsComposeWithOrdinaryAndSpecialSaveLayers(true);
         WalkableBridgesUseTheNormalSaveAndUndoChain();
         WalkableBridgeSpecialDeletionRestoresAndUsesFormalSaveHistory();
+        WalkableBridgeSpecialDeletionRestoresAndUsesFormalSaveHistory(true);
         WalkableBridgeSpecialDeletionKeepsOrdinaryAndProvenanceGates();
         CategoryCBridgesUseTheSharedSaveAndUndoChain();
         CategoryCBridgeSourcesAndOldPathingStayBound();

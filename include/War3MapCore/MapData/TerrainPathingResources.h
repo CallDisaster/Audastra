@@ -60,6 +60,7 @@ public:
     [[nodiscard]] std::string_view WaterBrushInputSha256() const noexcept { return waterBrushInputSha_; }
     [[nodiscard]] std::size_t WaterBrushInputBytes() const noexcept { return waterBrushInputBytes_; }
     // 实际成功owner的完整依赖/winner/absence及本笔输入摘要；不能代替VerifyReadback。
+    // v1 wire另保留旧mapMisc缺失的固定常量槽，不证明当前地图Misc存在或缺失。
     // 无分配的wire容量上界；0表示缺少身份或超出1MiB/4096依赖记录域。
     [[nodiscard]] std::size_t WaterBrushDependencyBudgetBytes() const noexcept;
     [[nodiscard]] Result<std::string> WaterBrushDependencyFingerprint() const;
