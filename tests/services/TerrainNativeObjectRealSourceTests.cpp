@@ -740,7 +740,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto playableDeep = PlayableWaterUsesPublicSave(original, directory.path, tool, game, true);
         Require(playableShallow != playableDeep, "playable shallow and deep water must not produce identical pathing");
         FixedRotationUsesPublicSave(original, directory.path, tool, game, catalog, schema, mounted);
-        TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, mounted);
+        TerrainSaveTests::CheckRealWalkableBridgeSave(original, directory.path, tool, game, catalog, schema, mounted);
     } catch (...) {
         directory.keep = true;
         std::cerr << "Real-source failure artifacts preserved at " << IO::PathUtf8(directory.path) << '\n';
