@@ -325,12 +325,29 @@ void DirectoryCaptureUsesVerifiedSourceAndRejectsUnknownLayout() {
     const auto withMisc = Take(TerrainPathingResources::CaptureWaterBrushRules(
         actual.Snapshot(), fixture.grid, game, true, kBudget));
     Require(withMisc.SourceBytes() == beforeMisc.SourceBytes()
-        && Take(withMisc.WaterBrushDependencyFingerprint()) == Take(beforeMisc.WaterBrushDependencyFingerprint())
+        && withMisc.WaterBrushInputSha256() == beforeMisc.WaterBrushInputSha256()
+        && withMisc.WaterBrushInputBytes() == beforeMisc.WaterBrushInputBytes()
         && withMisc.WaterBrushRules()->maxSlopeDegrees == 30.0f
-        && withMisc.WaterBrushRules()->maximumCliffLevel == 14,
+        && withMisc.WaterBrushRules()->minHeight == -256.0f
+        && withMisc.WaterBrushRules()->maxHeight == 1536.0f
+        && withMisc.WaterBrushRules()->maximumCliffLevel == 14
+        && withMisc.WaterBrushRules()->waterLayerOffset == 64.0f
+        && withMisc.WaterBrushRules()->deepWaterThreshold == 64.0f
+        && withMisc.WaterBrushRules()->enforceWaterLimits,
         "map-only LNI Misc cannot replace or become a dependency of independent startup profiles");
     Check(beforeMisc.VerifyReadback(actual.Snapshot(), kBudget));
     Check(withMisc.VerifyReadback(actual.Snapshot(), kBudget));
+    // 本Core样例只捕获启动规则和W3E，没有完整实际DOO；非依赖比较不能
+    // 借此授予journal资格，完整DOO来源与摘要由Services真实夹具另行验证。
+    const auto missingJournalRules = [](const Result<std::string>& fingerprint) {
+        return !fingerprint.Succeeded() && !fingerprint.value
+            && std::any_of(fingerprint.diagnostics.begin(), fingerprint.diagnostics.end(),
+                [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_JOURNAL_RULES_MISSING"; });
+    };
+    Require(beforeMisc.WaterBrushDependencyBudgetBytes() == 0 && withMisc.WaterBrushDependencyBudgetBytes() == 0
+        && missingJournalRules(beforeMisc.WaterBrushDependencyFingerprint())
+        && missingJournalRules(withMisc.WaterBrushDependencyFingerprint()),
+        "map-only LNI Misc never grants journal identity to a Core owner without actual complete DOO");
     Check(IO::WriteFileBytes(root / "UI/MiscData.txt", Profile("25")));
     actual = Take(DirectoryWorkspace::Open(root));
     Require(!withMisc.VerifyReadback(actual.Snapshot(), kBudget).Succeeded(),
