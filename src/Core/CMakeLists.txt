@@ -57,7 +57,10 @@ add_library(War3MapCore STATIC
     MapData/TerrainPatchCodec.cpp
     MapData/TerrainStrokeJournal.cpp
     MapData/TerrainClassicDoodads.cpp
+    MapData/TerrainClassicUnits.cpp
     MapData/TerrainDoodadsJournal.cpp
+    MapData/TerrainUnitsJournal.cpp
+    MapData/TerrainPlacementJournal.cpp
     MapData/MapDataEditSessionTerrainJournal.cpp
     MapData/TerrainSavePlan.cpp
     MapData/TerrainSavePlanPathing.cpp

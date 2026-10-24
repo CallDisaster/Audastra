@@ -981,6 +981,8 @@ private slots:
     void OrdinaryDoodadProjectRawColdRestoreAndNativeSave();
     void OrdinaryWaterJournalProjectColdRestoreAndNativeSave_data();
     void OrdinaryWaterJournalProjectColdRestoreAndNativeSave();
+    void UnitsWaterJournalProjectColdRestoreAndNativeSave_data();
+    void UnitsWaterJournalProjectColdRestoreAndNativeSave();
     void CornerRampProjectColdRestoreAndNativeSave_data();
     void CornerRampProjectColdRestoreAndNativeSave();
     void PlayableBoundsProjectColdRestoreAndNativeSave_data();
@@ -1088,6 +1090,7 @@ private:
 
 #include "EditorProjectOrdinaryDoodadRecoveryCases.h"
 #include "TerrainOrdinaryJournalProjectCases.h"
+#include "TerrainUnitsJournalProjectCases.h"
 #include "TerrainGroundPaletteAppendProjectCases.h"
 #include "EditorProjectRemoveWaterCases.h"
 
@@ -5342,7 +5345,8 @@ int main(int argc, char** argv) {
                 return QStringLiteral("terrain-doodads");
             if (name.startsWith("PaletteWaterProject") || name.startsWith("GroundPaletteAppendWaterProject"))
                 return QStringLiteral("terrain-palette");
-            if (name.startsWith("TerrainUnitPlacement") || name.startsWith("BoundaryNative")) return QStringLiteral("terrain-units");
+            if (name.startsWith("TerrainUnitPlacement") || name.startsWith("BoundaryNative")
+                || name.startsWith("UnitsWaterJournalProject")) return QStringLiteral("terrain-units");
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
                 if (name.startsWith(prefix)) return QStringLiteral("derived");
             for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "NativePathing",

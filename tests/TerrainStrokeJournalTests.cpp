@@ -32,7 +32,7 @@ void StrictCodecRoundtripAndMalformedInputs() {
         Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every truncated record fails closed");
     auto changed = wire; changed.push_back(std::byte{0});
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "unknown trailing extension rejected");
-    changed = wire; changed[3] = std::byte{'9'};
+    changed = wire; changed[3] = std::byte{':'};
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "unknown version rejected");
     changed = wire; changed[88] = std::byte{2};
     Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "nonboolean member presence rejected");
@@ -359,6 +359,7 @@ void RemoveWaterUsesTheOrdinaryJournalOpcode() {
 }
 
 #include "TerrainDoodadsJournalCases.h"
+#include "TerrainUnitsJournalCases.h"
 #include "TerrainGroundPaletteAppendCases.h"
 
 void LogicalQtReplayAndSavedBoundary() {
@@ -409,6 +410,9 @@ int main() {
         OrdinaryDoodadsDeltaIsBoundedAndPreservesFullClassicIdentity();
         OrdinaryDoodadsJournalVersionAndStrictVariants();
         OrdinaryDoodadsFreezeKeepsRealCommandScopeAndUndo();
+        UnitsJournalDeltaPreservesCompleteClassicPayload();
+        UnitsJournalCodecKeepsOrderedClosedVariants();
+        UnitsJournalFreezesRealCommandsAndRestoresReceipts();
         GroundPaletteAppendUsesAnExplicitFTJ6Algorithm();
         RawGroundAppendRetainsUndoWithoutInventingJournalAuthority();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
