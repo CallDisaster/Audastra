@@ -4797,6 +4797,7 @@ void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave_data() {
 
 void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave() {
     QFETCH(bool, inPlace);
+    QTemporaryDir projectFiles; QVERIFY(projectFiles.isValid());
     TerrainCornerRampFixtures::Fixture fixture;
     const auto source = fixture.source->SourcePath(), game = fixture.game;
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
@@ -4816,7 +4817,7 @@ void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave() {
     QVERIFY(project.ObserveMapDataEdit("拐角坡道工程夹具"));
     PushMapDataEdit(project, "Corner ramp", "拐角坡道及摆放联动"); QCOMPARE(originalUndo.count(), 1);
     fixture.CheckState(*project.mapEdits_, true);
-    const auto forge = fixture.root / "corner.forge";
+    const auto forge = std::filesystem::path(projectFiles.filePath("corner.forge").toStdWString());
     const auto saved = project.SaveProjectToPath(forge);
     QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
     QCOMPARE(Sha256File(source).value, sourceSha.value);
@@ -4834,7 +4835,7 @@ void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave() {
     QCOMPARE(wire.value->at(3), std::byte{'4'});
     undo.undo(); fixture.CheckState(*restored.mapEdits_, false);
     undo.redo(); fixture.CheckState(*restored.mapEdits_, true);
-    const auto forgeAs = fixture.root / "corner-copy.forge";
+    const auto forgeAs = std::filesystem::path(projectFiles.filePath("corner-copy.forge").toStdWString());
     const auto savedAs = restored.SaveProjectToPath(forgeAs);
     QVERIFY2(savedAs.Succeeded(), ReadDiagnosticText(savedAs).c_str());
     auto reopened = PrepareProjectOpen(forgeAs, game); QVERIFY(reopened.Succeeded());
@@ -4879,6 +4880,7 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave_data() {
 
 void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     QFETCH(bool, inPlace);
+    QTemporaryDir projectFiles; QVERIFY(projectFiles.isValid());
     AudastraTest::TerrainBounds::Fixture fixture;
     const auto source = fixture.archive->SourcePath();
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
@@ -4915,7 +4917,7 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     auto boundsPathing = fixture.members[1].data;
     for (unsigned y = 0; y < 32; ++y) for (unsigned x = 0; x < 40; ++x)
         if (x / 4 < 1 || x / 4 >= 9 || y / 4 < 1 || y / 4 >= 7) boundsPathing[16 + y * 40 + x] = std::byte{0xdf};
-    const auto forge = fixture.directory / "bounds.forge";
+    const auto forge = std::filesystem::path(projectFiles.filePath("bounds.forge").toStdWString());
     const auto saved = project.SaveProjectToPath(forge); QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
     QCOMPARE(Sha256File(source).value, sourceSha.value);
     auto opened = PrepareProjectOpen(forge, game); QVERIFY2(opened.Succeeded(), ReadDiagnosticText(opened).c_str());
@@ -4936,7 +4938,7 @@ void EditorProjectTests::PlayableBoundsProjectColdRestoreAndNativeSave() {
     QCOMPARE(restored.mapEdits_->Snapshot().Settings()->Serialize().value, std::optional(fixture.members[2].data));
     for (int index = 0; index < 3; ++index) undo.redo();
     QCOMPARE(TerrainJournalDraftBytes(*restored.mapEdits_), finalDraft);
-    const auto forgeAs = fixture.directory / "bounds-copy.forge";
+    const auto forgeAs = std::filesystem::path(projectFiles.filePath("bounds-copy.forge").toStdWString());
     const auto copied = restored.SaveProjectToPath(forgeAs); QVERIFY2(copied.Succeeded(), ReadDiagnosticText(copied).c_str());
     auto reopened = PrepareProjectOpen(forgeAs, game); QVERIFY(reopened.Succeeded());
     QCOMPARE((*reopened.value)->terrainReceipts.size(), std::size_t{3});
