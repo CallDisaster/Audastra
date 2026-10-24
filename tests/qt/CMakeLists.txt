@@ -497,8 +497,10 @@ qt_add_executable(audastra-world-terrain-bounds-tests WorldTerrainBoundsTests.cp
 target_link_libraries(audastra-world-terrain-bounds-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
 target_compile_definitions(audastra-world-terrain-bounds-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-world-terrain-bounds-tests PRIVATE /W4 /permissive- /utf-8)
-add_test(NAME qt-world-terrain-bounds COMMAND audastra-world-terrain-bounds-tests)
+set(world_terrain_bounds_log "${CMAKE_CURRENT_BINARY_DIR}/qt-world-terrain-bounds-$<CONFIG>.qtest.txt")
+add_test(NAME qt-world-terrain-bounds COMMAND audastra-world-terrain-bounds-tests -o "${world_terrain_bounds_log},txt")
 set_tests_properties(qt-world-terrain-bounds PROPERTIES TIMEOUT 90
+    ATTACHED_FILES_ON_FAIL "${world_terrain_bounds_log}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 target_link_libraries(war3-map-world-module-tests PRIVATE War3MapEditor::QtModuleWorld
     War3MapEditor::QtModuleMapEntities War3MapEditor::QtModuleMapSettings Qt6::Test War3RenderCore::SkinInput)

@@ -4892,8 +4892,10 @@ void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave() {
     QVERIFY(BindPreparedTerrainJournal(restored, **opened.value, game));
     QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 1);
     fixture.CheckState(*restored.mapEdits_, true);
-    const auto journal = restored.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(journal.Succeeded());
-    const auto wire = MapData::EncodeTerrainStrokeJournal(*journal.value); QVERIFY(wire.Succeeded());
+    const auto journal = Services::TerrainPathingSave::CaptureJournal(*restored.archiveSession_, *restored.mapEdits_);
+    QVERIFY2(journal.Succeeded(), ReadDiagnosticText(journal).c_str());
+    const auto wire = MapData::EncodeTerrainStrokeJournal(*journal.value);
+    QVERIFY2(wire.Succeeded(), ReadDiagnosticText(wire).c_str());
     QCOMPARE(wire.value->at(3), std::byte{'4'});
     undo.undo(); fixture.CheckState(*restored.mapEdits_, false);
     undo.redo(); fixture.CheckState(*restored.mapEdits_, true);
