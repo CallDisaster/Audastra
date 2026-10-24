@@ -797,6 +797,9 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 const auto points = WorldPoints(stroke, *grid);
                 if (!points.Succeeded() || !points.value) return Forward(points.diagnostics);
                 intents.push_back({stroke.brush, *points.value, stroke.followDoodads, stroke.waterBrush, {}});
+                // 公共新编辑使用当前显式算法；旧typed历史只从自身版本恢复，不走此入口。
+                if (!stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp)
+                    intents.back().cornerRampAlgorithm = MapData::TerrainCornerRampAlgorithm::WetTerrain;
             }
             auto replayed = TerrainPathingSave::ReplayStrokes(source, map, *terrainBytes.value, *pathingBytes.value, intents, request.gameRoot);
             if (!replayed.Succeeded() || !replayed.value) return Forward(replayed.diagnostics);

@@ -140,11 +140,11 @@ Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const MapData::MapDataE
     const MapDataQueryBinding& document, const TerrainEditBinding& expected,
     const MapData::TerrainPathingResources& resources, const MapData::TerrainBrush& brush,
     std::span<const MapData::TerrainStrokePoint> points, bool followDoodads,
-    const MapData::TerrainWaterBrushLimits& limits) {
+    const MapData::TerrainWaterBrushLimits& limits, MapData::TerrainCornerRampAlgorithm algorithm) {
     if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
     if (points.size() != 1)
         return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_CORNER_RAMP_POINTS", "拐角坡道每笔必须恰好一个canonical采样点。");
-    auto plan = session.PrepareTerrainCornerRampEdit(resources, brush, points, followDoodads, limits);
+    auto plan = session.PrepareTerrainCornerRampEdit(resources, brush, points, followDoodads, limits, algorithm);
     if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }
