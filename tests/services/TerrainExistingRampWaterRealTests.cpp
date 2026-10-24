@@ -50,6 +50,7 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
     const auto originalTerrain = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
     Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
         "existing ramp water uses the playable 64-cell original fixture");
+    Require(!originalTerrain.header.cliffTilesets.empty(), "existing ramp seed selects a real cliff palette slot");
     const auto doodads = Take(ParseDoodadPlacements(Take(original.ReadMember("war3map.doo"))));
     Require(doodads.specialDoodads.empty(), "water fixture has no unaccounted special deletion");
     const auto initialResources = Take(TerrainPathingSave::CaptureWaterBrushRules(original,
@@ -71,7 +72,8 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
         for (std::uint32_t y = 0; y < 65; ++y) for (std::uint32_t x = 0; x < 65; ++x) {
             auto& vertex = before.vertices[std::size_t{y} * 65 + x];
             Require(!vertex.HasWater() && !vertex.IsRamp(), "existing ramp seed starts with the dry original terrain");
-            vertex.cliffAndLayerRaw = static_cast<std::uint8_t>((vertex.cliffAndLayerRaw & 0xf0) | (x <= 31 ? 3 : 2));
+            // 手造既有墙面须选择实际slot0；slot15只代表未选材质的平地。
+            vertex.cliffAndLayerRaw = static_cast<std::uint8_t>(x <= 31 ? 3 : 2);
         }
         for (const auto x : {31u, 32u, 33u}) before.vertices[32 * 65 + x].textureAndFlagsRaw |= 0x10;
         const auto center = std::size_t{32} * 65 + 32;
@@ -180,6 +182,7 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
     const auto originalTerrain = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
     Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
         "corner ramp uses the playable original 64-cell map");
+    Require(!originalTerrain.header.cliffTilesets.empty(), "corner seed selects a real cliff palette slot");
     const auto doodads = Take(ParseDoodadPlacements(Take(original.ReadMember("war3map.doo"))));
     Require(doodads.doodads.empty() && doodads.specialDoodads.empty(), "corner seed has no unaccounted placement contribution");
     const auto shadowBytes = Take(SerializeMapShadow(ShadowFixture(originalTerrain)));
@@ -192,7 +195,7 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
             auto& vertex = before.vertices[std::size_t(y) * 65 + x];
             Require(!vertex.IsRamp() && !vertex.HasWater(), "original corner seed is dry and has no ramp");
             const bool high = (x - 32) * dx <= 0 && (y - 32) * dy <= 0;
-            vertex.cliffAndLayerRaw = std::uint8_t((vertex.cliffAndLayerRaw & 0xf0) | (high ? 3 : 2));
+            vertex.cliffAndLayerRaw = std::uint8_t(high ? 3 : 2);
         }
         RefreshTerrainDerived(before, 0, 0, 65, 65);
         auto after = before;
