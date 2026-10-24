@@ -71,6 +71,7 @@ target_link_libraries(war3-render-d3d11 PRIVATE d3d11 dxgi War3RenderCore::SkinI
 
 # CPU 材质目录、解码和空间查询共用 Core；不依赖 Qt 或 GPU 插件。
 add_library(War3MapRenderSupport STATIC
+    TerrainShadowCaster.cpp
     Tools/FrameMeasurement.cpp
     Animation/AnimationAssets.cpp
     Animation/AnimationAssetSnapshot.cpp
