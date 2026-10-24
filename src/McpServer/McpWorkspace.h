@@ -121,6 +121,7 @@ public:
     [[nodiscard]] Result<McpWorkspaceTerrainContext> TerrainContext(std::string documentId,
         std::uint64_t documentGeneration);
     [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainWaterResources(bool enforceWaterLimits);
+    [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainBoundsResources();
     [[nodiscard]] Status VerifyTerrainWaterResources(const MapData::TerrainPathingResources& owner) const;
     [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainPlan(
         const Services::PreparedTerrainEdit& plan,

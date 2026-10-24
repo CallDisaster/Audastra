@@ -252,6 +252,11 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
     add("get_terrain_edit_state", "读取当前地形会话、尺寸、贴图表与地形/WPM保存资格。返回明确来源和编辑修订，不能将这道保存门当作整图保存或游戏验证。", identity, {}, ToolPermission::Query);
     auto query = identity; query.insert("terrain_binding", binding); query.insert("points", points(256));
     add("query_terrain_points", "按原terrain_binding查询1..256个世界坐标的地高、最近原顶点、贴图、悬崖和静态WPM原始通行位。缺WPM、超出WPM半开边界分别报告；不等同游戏动态寻路。", query, {"terrain_binding", "points"}, ToolPermission::Query);
+    auto bounds = identity; bounds.insert("terrain_binding", binding);
+    for (const char* edge : {"west", "south", "east", "north"}) bounds.insert(edge, IntegerSchema(0, 2048));
+    bounds.insert("dry_run", QJsonObject{{"type", "boolean"}});
+    add("edit_terrain_bounds", "预览或提交同尺寸可玩区域与游戏镜头边界。west/south/east/north为整数地格半开矩形；不缩放地图、不搬对象，不接受客户端CameraMargins或规则。宿主从实际来源捕获原版规则并复核；提交沿共用Undo，不自行保存。独立目录宿主只预览；实际地图写出须用save_map_edit_candidate的playable_bounds命令，连同最终W3I重建镜头初始化脚本。",
+        bounds, {"project_identity", "expected_revision", "terrain_binding", "west", "south", "east", "north", "dry_run"}, ToolPermission::Edit);
     auto edit = identity; edit.insert("terrain_binding", binding); edit.insert("points", points(4096)); edit.insert("brush", brush);
     edit.insert("dry_run", QJsonObject{{"type", "boolean"}}); edit.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
     add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。ramp仅一级干地直坡；corner_ramp仅干地一级九点外角，每笔恰好一个世界点，两轴各为offset+128*n+32或offset+128*n+96，不自动吸附，brush只接受kind/value，固定检查水位限制，由实际资源Service核对完整修改块和分类邻域。water_height只调已有水面。shallow_water/deep_water须显式给出kind/shape/size/cliff_texture/seed/enforce_water_limits六项，由宿主捕获实际资源；boundary只改边界标志。pathing_restriction按32单位WPM格工作，必须指定blocked_type=walk/fly/build；value=false只撤回本工程新增限制，源限制全部保留。未知派生规则保持原生保存门关闭，独立宿主不可提交尚未通过保存门的笔划；越界和旧修订整笔拒绝。", edit,
@@ -292,6 +297,41 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
         }
         if (!arguments.value("terrain_binding").isObject() || arguments.value("terrain_binding").toObject() != bindingJson)
             return Failure("TERRAIN_EDIT_STALE", "地形来源或修订已变化；请精确回传最新 terrain_binding。");
+        if (name == "edit_terrain_bounds") {
+            TerrainBoundsEditIntent intent{{static_cast<std::uint32_t>(Number(arguments, "west", 0, 2048, true)),
+                static_cast<std::uint32_t>(Number(arguments, "south", 0, 2048, true)),
+                static_cast<std::uint32_t>(Number(arguments, "east", 0, 2048, true)),
+                static_cast<std::uint32_t>(Number(arguments, "north", 0, 2048, true))}};
+            const bool dryRun = Boolean(arguments, "dry_run", true);
+            if (intent.playable.west >= intent.playable.east || intent.playable.south >= intent.playable.north)
+                return Failure("TERRAIN_BOUNDS_RECTANGLE", "可玩区需要非空半开地格矩形。");
+            if (!host.prepareBounds || !host.verifyBounds)
+                return Failure("TERRAIN_BOUNDS_HOST_UNAVAILABLE", "宿主未接入实际来源范围规则捕获与提交前复核。");
+            const auto prepared = host.prepareBounds(context, binding, intent);
+            if (!prepared.Succeeded() || !prepared.value) return Failure(prepared);
+            const auto verified = host.verifyBounds(); if (!verified.Succeeded()) return Failure(verified);
+            QJsonArray camera; for (const auto value : prepared.value->Plan().CameraBounds()) camera.append(value);
+            QJsonObject body{{"ok", true}, {"dry_run", dryRun}, {"applied", false}, {"binding_before", bindingJson},
+                {"scope", Scope(context)}, {"map_saved", false}, {"native_save_required", true},
+                {"changes", QJsonObject{{"has_changes", prepared.value->Plan().HasChanges()},
+                    {"map_edge_vertices", static_cast<double>(prepared.value->Plan().ChangedMapEdges())}, {"camera_bounds", camera}}}};
+            const auto responseBudget = BodyBudget(body); if (!responseBudget.Succeeded()) return Failure(responseBudget);
+            if (dryRun || !prepared.value->Plan().HasChanges()) return Stamp(std::move(body), identity);
+            if (!host.applyBounds) return Failure("TERRAIN_BOUNDS_EDIT_UNSUPPORTED", "宿主尚未接通密封范围命令的共用撤销提交。");
+            const auto validate = [&](const MapDataEditSession::EditReceipt& receipt) -> Status {
+                const auto resources = host.verifyBounds(); if (!resources.Succeeded()) return resources;
+                if (Identity(host) != identity || receipt.SessionIdentity() != context.session->SessionIdentity()
+                    || receipt.BeforeRevision() != binding.terrainRevision)
+                    return Status::Failure("MCP.Terrain", "TERRAIN_EDIT_STALE", "提交前工程、范围来源或原修订已变化。");
+                body["edit_receipt"] = QJsonObject{{"command_identity", QString::number(receipt.CommandIdentity())},
+                    {"before_revision", QString::number(receipt.BeforeRevision())}, {"after_revision", QString::number(receipt.AfterRevision())}};
+                return BodyBudget(body);
+            };
+            const auto applied = host.applyBounds(*prepared.value, validate);
+            if (!applied.Succeeded()) return Failure(applied);
+            body["applied"] = true; body["query_state_again"] = true;
+            return Stamp(std::move(body), Identity(host));
+        }
         const auto points = Points(arguments.value("points"), write ? TerrainEditMaximumPoints : TerrainQueryMaximumPoints);
         if (!write) {
             const auto queried = QueryTerrainPoints(*context.session, context.document, binding, points);

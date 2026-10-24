@@ -9,6 +9,7 @@
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "../support/TerrainBoundsFixture.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -164,8 +165,9 @@ QJsonObject WaterStroke(const QJsonObject& state, bool deep, bool dryRun = true)
 void FacadeQueryPreviewApplyAndUndo() {
     Fixture fixture;
     const auto definitions = TerrainEditToolDefinitions();
-    Expect(definitions.size() == 3 && definitions[0].permission == ToolPermission::Query
-        && definitions[1].permission == ToolPermission::Query && definitions[2].permission == ToolPermission::Edit,
+    Expect(definitions.size() == 4 && definitions[0].permission == ToolPermission::Query
+        && definitions[1].permission == ToolPermission::Query && definitions[2].permission == ToolPermission::Edit
+        && definitions[3].permission == ToolPermission::Edit,
         "tool schemas distinguish bounded reads and edits");
     const auto state = State(fixture);
     Expect(state.value("ok").toBool() && state.value("pathing_available").toBool(), "state returns real source binding");
@@ -257,6 +259,50 @@ void FacadeRejectsUnknownTypesBoundsAndStaleSources() {
 TerrainStrokeIntent Raise() {
     TerrainStrokeIntent intent; intent.brush.kind = TerrainBrushKind::Raise; intent.brush.size = 1; intent.brush.strength = 16;
     intent.points.push_back({0, 0}); return intent;
+}
+
+void BoundsFacadeUsesActualResourcesCasAndSharedUndo() {
+    AudastraTest::TerrainBounds::Fixture fixture;
+    std::optional<TerrainPathingResources> owner;
+    const auto document = [&] { return MapDataQueryBinding{"bounds-facade", 1, fixture.edits->Revision(), fixture.archive->SourceSha256()}; };
+    TerrainEditToolHost host;
+    host.identity = [&] { return QJsonObject{{"project_identity", "bounds-facade"}, {"revision", QString::number(fixture.edits->Revision())}}; };
+    host.context = [&] { return Result<TerrainEditToolContext>::Success({fixture.edits.get(), document(), false, fixture.edits->IsDirty()}); };
+    host.prepareBounds = [&](const auto& context, const auto& binding, const auto& intent) -> Result<PreparedTerrainBoundsEdit> {
+        const auto source = TerrainTake(ParseMapTerrain(fixture.members[0].data));
+        auto captured = TerrainPathingSave::CaptureNative(*fixture.archive, *source.Snapshot(), *fixture.edits->Terrain(), {}, 64u * 1024u * 1024u);
+        if (!captured.Succeeded() || !captured.value) return {{}, captured.diagnostics};
+        owner = std::move(*captured.value);
+        return PrepareTerrainBoundsEdit(*context.session, context.document, binding, *owner, intent);
+    };
+    host.verifyBounds = [&] { return owner ? owner->VerifyReadback(*fixture.archive, 64u * 1024u * 1024u)
+        : Status::Failure("Test", "NO_ACTUAL_OWNER", "missing native owner"); };
+    host.applyBounds = [&](const auto& prepared, const auto& validate) { return ApplyTerrainBoundsEdit(*fixture.edits, document(), prepared, validate); };
+    const auto state = InvokeTerrainEditTool("get_terrain_edit_state", {}, host);
+    Expect(state.value("ok").toBool(), "actual bounds host can report its exact terrain binding");
+    const QJsonObject request{{"project_identity", "bounds-facade"}, {"expected_revision", "0"},
+        {"terrain_binding", state.value("terrain_binding")}, {"west", 1}, {"south", 1}, {"east", 9}, {"north", 7}, {"dry_run", true}};
+    const auto preview = InvokeTerrainEditTool("edit_terrain_bounds", request, host);
+    Expect(preview.value("ok").toBool() && !preview.value("applied").toBool()
+        && preview.value("native_save_required").toBool() && !preview.value("map_saved").toBool()
+        && preview.value("changes").toObject().value("map_edge_vertices").toInt() == 32
+        && !fixture.edits->CanUndo() && fixture.edits->Revision() == 0, "bounds dry-run is actual and does not mutate or claim a save");
+    for (const auto field : {"points", "follow_doodads", "actual_margins", "rules_sha256", "brush"}) {
+        auto invalid = request; invalid[field] = 1;
+        Expect(!InvokeTerrainEditTool("edit_terrain_bounds", invalid, host).value("ok").toBool(), "bounds reject irrelevant or self-attested fields");
+    }
+    auto invalid = request; invalid["west"] = 0.5;
+    Expect(!InvokeTerrainEditTool("edit_terrain_bounds", invalid, host).value("ok").toBool(), "bounds reject fractional cells");
+    auto write = request; write["dry_run"] = false;
+    const auto applied = InvokeTerrainEditTool("edit_terrain_bounds", write, host);
+    Expect(applied.value("ok").toBool() && applied.value("applied").toBool()
+        && applied.value("edit_receipt").toObject().value("before_revision") == "0"
+        && fixture.edits->Revision() == 1 && fixture.edits->HasTerrainBoundsChanges(), "same sealed bounds command publishes one shared Undo transaction");
+    Expect(!InvokeTerrainEditTool("edit_terrain_bounds", write, host).value("ok").toBool(), "old bounds binding cannot replay on a new revision");
+    const auto after = TerrainTake(SerializeMapTerrain(*fixture.edits->Terrain()));
+    Expect(fixture.edits->Undo() && !fixture.edits->IsDirty(), "shared bounds Undo restores complete source");
+    Expect(fixture.edits->Redo() && TerrainTake(SerializeMapTerrain(*fixture.edits->Terrain())) == after,
+        "shared bounds Redo restores exact output bytes");
 }
 
 void CodecProvesSourceIntentAndNetBytes() {
@@ -864,6 +910,7 @@ int main(int argc, char** argv) {
     try {
         FacadeQueryPreviewApplyAndUndo();
         FacadeRejectsUnknownTypesBoundsAndStaleSources();
+        BoundsFacadeUsesActualResourcesCasAndSharedUndo();
         CodecProvesSourceIntentAndNetBytes();
         FollowingPlacementsRequireExactSourceAndCompleteRecipe();
         SealedTerrainUsesExistingDirectoryTransaction();
