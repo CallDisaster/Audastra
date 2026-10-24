@@ -476,8 +476,9 @@ void CrossClassAndUnsupportedInheritance() {
     for (const auto mode : {0, 1, 2, 3, 4, 5}) {
         Fixture fixture;
         auto document = Empty();
-        if (mode == 0) { // 父虽无字段，仍属于Original覆盖，不能借空记录猜继承。
+        if (mode == 0) { // 父有实际字段，即使值与标准相同也不借等价值猜继承。
             Check(document.AddOriginalObject("S002"));
+            Modification(document, "S002", "X001", NativeValueType::Int32, std::int32_t{0});
             Check(document.AddCustomObject("C001", "S002"));
         } else if (mode == 1) {
             Check(document.AddCustomObject("C002", "S002"));
@@ -892,8 +893,10 @@ void DoodadOverridesUseBoundedStandardInheritance() {
         Rejected(f.Inspect({id, id}, parsed.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "inherited output remains budgeted");
         Require(f.sources[kW3d].bytes == before, "inspection does not rewrite native custom records");
         if (custom) {
-            Check(document.AddOriginalObject("D001")); f.SetNative(document);
-            Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "custom parent with any native override remains unsupported");
+            Check(document.AddOriginalObject("D001"));
+            Modification(document, "D001", "Nm00", NativeValueType::String, std::string("parent name"));
+            f.SetNative(document);
+            Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "custom parent with any actual field override remains unsupported");
         }
     }
     for (const auto* key : {"category", "fixedRot"}) {
@@ -1407,9 +1410,12 @@ void WalkableCustomBridgeKeepsInheritanceAndWireGridBoundaries() {
         auto fixture = BridgeOriginalFixture(); auto document = CustomBridge();
         if (w3d) {
             auto parent = Empty(ObjectType::Doodad); Check(parent.AddOriginalObject("S001")); fixture.SetNative(parent);
-        } else Check(document.AddOriginalObject("S001"));
+        } else {
+            Check(document.AddOriginalObject("S001"));
+            Modification(document, "S001", "X001", NativeValueType::Int32, std::int32_t{1});
+        }
         fixture.SetNative(document);
-        Rejected(fixture.Inspect({"N001"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "父对象有W3B或W3D记录时不能继承桥");
+        Rejected(fixture.Inspect({"N001"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "父对象有实际W3B覆盖或任何跨类W3D记录时不能继承桥");
     }
     auto chain = BridgeOriginalFixture(); auto document = CustomBridge(); Check(document.AddCustomObject("N002", "N001")); chain.SetNative(document);
     Rejected(chain.Inspect({"N002"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "Custom桥不接入多层继承");

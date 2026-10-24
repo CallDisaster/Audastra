@@ -189,6 +189,13 @@ ObjectIndex Index(const NativeObjectDocument* document) {
     }
     return result;
 }
+bool HasUnsupportedParentRecord(const ObjectIndex& index, std::string_view rawcode) {
+    const auto parent = index.find(rawcode);
+    // Native()已要求完整、无歧义的经典v2；codec只为Custom设置parentRawcode。
+    // 空Original没有modifier，不能改变标准父的字段；任一实际字段仍未解释。
+    return parent != index.end()
+        && (parent->second->parentRawcode.has_value() || !parent->second->modifications.empty());
+}
 void ValidateMetadataNumbers(const ObjectFieldDefinition& field) {
     for (const auto* name : {"repeat", "data", "index", "appendindex", "effectindex"}) {
         const auto found = field.metadata.find(name);
@@ -542,9 +549,9 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                     Fail("TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "特殊地形记录不能按可破坏物解释：" + std::string(rawcode));
                 if (nativeDoodad && nativeDoodad->parentRawcode) {
                     const auto& parent = *nativeDoodad->parentRawcode;
-                    if (standardDoodad || doodadIndex.contains(parent) || destructableIndex.contains(parent)
+                    if (standardDoodad || HasUnsupportedParentRecord(doodadIndex, parent) || destructableIndex.contains(parent)
                         || catalog.Find(ObjectType::Destructable, parent))
-                        Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "普通装饰物仅支持无原生父覆盖的一层标准继承：" + std::string(rawcode));
+                        Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "普通装饰物仅支持父无实际字段覆盖的一层标准继承：" + std::string(rawcode));
                     standardDoodad = catalog.Find(ObjectType::Doodad, parent);
                 }
                 if (!standardDoodad)
@@ -601,9 +608,9 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "摆放对象没有已知的唯一标准类别：" + std::string(rawcode));
             if (native && native->parentRawcode) {
                 const auto& parent = *native->parentRawcode;
-                if (standard || destructableIndex.contains(parent) || doodadIndex.contains(parent)
+                if (standard || HasUnsupportedParentRecord(destructableIndex, parent) || doodadIndex.contains(parent)
                     || catalog.Find(ObjectType::Doodad, parent))
-                    Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "仅支持无原生父覆盖的一层标准继承：" + std::string(rawcode));
+                    Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "仅支持父无实际字段覆盖的一层标准继承：" + std::string(rawcode));
                 standard = catalog.Find(ObjectType::Destructable, parent);
             }
             if (!standard) Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "原生对象没有唯一标准父对象：" + std::string(rawcode));
@@ -638,7 +645,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 walkable = value != "0";
             }
             if (walkable) {
-                // Custom的唯一标准父、父无原生覆盖和跨类别冲突已由上方逐项核实。
+                // Custom的唯一标准父、父无实际字段覆盖和跨类别冲突已由上方逐项核实。
                 // 5B6B40/5B6BB0/5B6CA0只在字段缺失时将查询ID替换为5B6740返回的标准父。
                 const bool custom = native && native->parentRawcode;
                 if (standard->key.rawcode != rawcode && !custom)
