@@ -973,6 +973,8 @@ private slots:
     void TerrainJournalEqualOutputMapSaveClearsHistoryDirty();
     void TerrainJournalRestoredWaterSavesAndReadsBack_data();
     void TerrainJournalRestoredWaterSavesAndReadsBack();
+    void PaletteWaterProjectColdRestoreAndNativeSave_data();
+    void PaletteWaterProjectColdRestoreAndNativeSave();
     void CornerRampProjectColdRestoreAndNativeSave_data();
     void CornerRampProjectColdRestoreAndNativeSave();
     void PlayableBoundsProjectColdRestoreAndNativeSave_data();
@@ -4851,6 +4853,112 @@ void EditorProjectTests::TerrainJournalRestoredWaterSavesAndReadsBack() {
         MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value);
 }
 
+void EditorProjectTests::PaletteWaterProjectColdRestoreAndNativeSave_data() {
+    QTest::addColumn<bool>("inPlace");
+    QTest::newRow("palette-water-save-as") << false;
+    QTest::newRow("palette-water-save-in-place") << true;
+}
+
+void EditorProjectTests::PaletteWaterProjectColdRestoreAndNativeSave() {
+    QFETCH(bool, inPlace);
+    QTemporaryDir root; QVERIFY(root.isValid());
+    auto members = TerrainJournalWaterMembers();
+    MapData::DoodadPlacements doodads;
+    doodads.specialDoodads = {{"Doo0", 0, {2, 2}}, {"Doo1", 0, {5, 5}}, {"Doo2", 0, {6, 5}}};
+    const auto originalDoo = doodads.Serialize(); QVERIFY(originalDoo.Succeeded());
+    for (auto& member : members) {
+        if (member.name == "war3map.doo") member.data = *originalDoo.value;
+        if (member.name == "TerrainArt\\Terrain.slk") member.data = NativeDoodadQtTable(
+            {"tileID", "dir", "file", "walkable", "flyable", "buildable"},
+            {{"Tg01", "Fixture", "Ground", "1", "1", "1"}, {"Tg02", "Fixture", "Ground", "1", "1", "1"}});
+        if (member.name == "TerrainArt\\CliffTypes.slk") member.data = NativeDoodadQtTable(
+            {"cliffID", "texDir", "texFile", "cliffModelDir", "rampModelDir", "groundTile", "cliffClass"},
+            {{"Cl01", "Fixture", "Ground", "Cliff", "Ramp", "Tg01", "0"},
+                {"Cl02", "Fixture", "Ground", "Cliff", "Ramp", "Tg02", "0"}});
+    }
+    members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable({"destructableID"}, {{"Dst0"}})});
+    members.push_back({"Units/DestructableMetaData.slk", NativeDoodadQtTable(
+        {"ID", "field", "slk", "type", "index"}, {{"p001", "pathTex", "DestructableData", "pathingTexture", "0"}})});
+    members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(
+        {"doodID", "code", "pathTex", "category", "fixedRot"},
+        {{"Doo0", "Doo0", "PathTextures/zero-special.tga", "C", "45"},
+            {"Doo1", "Doo1", "PathTextures/zero-special.tga", "C", "45"},
+            {"Doo2", "Doo2", "PathTextures/zero-special.tga", "C", "45"}})});
+    // 独立全黑4x4 RGB占地不改变G0，却提供特殊模型的真实1格范围。
+    std::vector<std::byte> texture(18 + 16 * 3, std::byte{});
+    texture[2] = std::byte{2}; texture[12] = texture[14] = std::byte{4}; texture[16] = std::byte{24};
+    members.push_back({"PathTextures/zero-special.tga", std::move(texture)});
+    const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+    const auto game = std::filesystem::path(root.filePath("game").toStdWString());
+    QVERIFY(std::filesystem::create_directory(game));
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", TerrainJournalWaterGameMembers()).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source)); project.war3GameRoot_ = game;
+    QUndoStack initialUndo; project.mapDataUndoStack_ = &initialUndo;
+    const auto baselineTerrain = project.archiveSession_->ReadMember("war3map.w3e"); QVERIFY(baselineTerrain.Succeeded());
+    const auto ground = Services::TerrainPathingSave::EditTextureSlot(*project.archiveSession_, *project.mapEdits_,
+        MapData::TerrainTextureTable::Ground, 0, "Tg02", game);
+    QVERIFY2(ground.Succeeded(), ReadDiagnosticText(ground).c_str());
+    QVERIFY(project.ObserveMapDataEdit("可恢复地面槽替换")); PushMapDataEdit(project, "Ground slot", "替换地面槽");
+    auto baseline = MapData::ParseMapTerrain(*baselineTerrain.value); QVERIFY(baseline.Succeeded());
+    const auto current = project.mapEdits_->Snapshot(); QVERIFY(current.Doodads());
+    const auto rules = Services::TerrainPathingSave::CaptureWaterBrushRules(*project.archiveSession_, *baseline.value->Snapshot(),
+        *project.mapEdits_->Terrain(), *current.Doodads(), game, true, 8u * 1024u * 1024u);
+    QVERIFY2(rules.Succeeded(), ReadDiagnosticText(rules).c_str());
+    const MapData::TerrainStrokePoint point{256, 256};
+    const auto anchor = MapData::CaptureTerrainWaterStrokeAnchor(*project.mapEdits_->Terrain(), point,
+        rules.value->WaterBrushRules()->maximumCliffLevel); QVERIFY(anchor.Succeeded());
+    MapData::TerrainWaterBrush water{MapData::TerrainWaterBrushKind::Shallow, MapData::TerrainBrushShape::Square, 1, 0, 1, *anchor.value};
+    const auto plan = project.mapEdits_->PrepareTerrainWaterEdit(*rules.value, water, std::span(&point, 1), false);
+    QVERIFY2(plan.Succeeded(), ReadDiagnosticText(plan).c_str());
+    QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(*plan.value).Succeeded());
+    QVERIFY(project.ObserveMapDataEdit("水刷删除特殊模型来源")); PushMapDataEdit(project, "Water", "水刷删除特殊模型");
+    auto expectedDoo = doodads; expectedDoo.specialDoodads = {doodads.specialDoodads[2], doodads.specialDoodads[1]};
+    const auto deletedDoo = expectedDoo.Serialize(); QVERIFY(deletedDoo.Succeeded());
+    QCOMPARE(project.mapEdits_->Snapshot().Doodads()->Serialize().value, deletedDoo.value);
+    const auto cliff = Services::TerrainPathingSave::EditTextureSlot(*project.archiveSession_, *project.mapEdits_,
+        MapData::TerrainTextureTable::Cliff, 0, "Cl02", game);
+    QVERIFY2(cliff.Succeeded(), ReadDiagnosticText(cliff).c_str());
+    QVERIFY(project.ObserveMapDataEdit("可恢复悬崖槽替换")); PushMapDataEdit(project, "Cliff slot", "替换悬崖槽");
+    const auto finalTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()); QVERIFY(finalTerrain.Succeeded());
+    const auto forge = std::filesystem::path(root.filePath("palette-water.forge").toStdWString());
+    const auto saved = project.SaveProjectToPath(forge); QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
+    auto opened = PrepareProjectOpen(forge, game); QVERIFY2(opened.Succeeded(), ReadDiagnosticText(opened).c_str());
+    QVERIFY(HasReadDiagnostic(opened, "TERRAIN_JOURNAL_RESTORED"));
+    QCOMPARE((*opened.value)->terrainReceipts.size(), std::size_t{3});
+    EditorProject restored; QUndoStack undo; restored.mapDataUndoStack_ = &undo;
+    QVERIFY(BindPreparedTerrainJournal(restored, **opened.value, game)); QCOMPARE(undo.count(), 3);
+    const auto journal = Services::TerrainPathingSave::CaptureJournal(*restored.archiveSession_, *restored.mapEdits_);
+    QVERIFY2(journal.Succeeded(), ReadDiagnosticText(journal).c_str());
+    const auto wire = MapData::EncodeTerrainStrokeJournal(*journal.value); QVERIFY(wire.Succeeded());
+    QCOMPARE(wire.value->at(3), std::byte{'6'});
+    for (int i = 0; i < 3; ++i) undo.undo();
+    QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, baselineTerrain.value);
+    QCOMPARE(restored.mapEdits_->Snapshot().Doodads()->Serialize().value, originalDoo.value);
+    for (int i = 0; i < 3; ++i) undo.redo();
+    QCOMPARE(MapData::SerializeMapTerrain(*restored.mapEdits_->Terrain()).value, finalTerrain.value);
+    QCOMPARE(restored.mapEdits_->Snapshot().Doodads()->Serialize().value, deletedDoo.value);
+    const auto forgeAs = std::filesystem::path(root.filePath("palette-water-copy.forge").toStdWString());
+    QVERIFY(restored.SaveProjectToPath(forgeAs).Succeeded());
+    auto reopened = PrepareProjectOpen(forgeAs, game); QVERIFY2(reopened.Succeeded(), ReadDiagnosticText(reopened).c_str());
+    QCOMPARE((*reopened.value)->terrainReceipts.size(), std::size_t{3});
+    // 真正冷恢复后的私有special谱系还必须通过生产派生保存，不以raw字节相等代替。
+    const auto target = inPlace ? source : std::filesystem::path(root.filePath("saved.w3x").toStdWString());
+    auto job = FreezeNativePathingQtJob(restored, target); QVERIFY(job && job->terrainDerivationRequired);
+    job->terrainSessionSnapshot = restored.mapEdits_->FreezeForSave(); job->minimapGameRoot = game;
+    job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = std::filesystem::path(root.filePath("backups").toStdWString());
+    InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+    QVERIFY(job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
+    const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded());
+    QCOMPARE(actual.value->ReadMember("war3map.w3e").value, finalTerrain.value);
+    QCOMPARE(actual.value->ReadMember("war3map.doo").value, deletedDoo.value);
+    QVERIFY(restored.CommitMapSave(*job)); QVERIFY(!restored.HasUnsavedMapChanges());
+    if (inPlace) { QVERIFY(!job->backup.empty()); QCOMPARE(Sha256File(job->backup).value, sourceSha.value); }
+    else QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
 void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave_data() {
     QTest::addColumn<bool>("inPlace");
     QTest::newRow("corner-project-save-as") << false;
@@ -5203,12 +5311,14 @@ int main(int argc, char** argv) {
         if (!arguments[index].startsWith("--case-group=")) { ++index; continue; }
         if (!group.isEmpty()) return 2;
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
-        if (group != "base" && group != "native-pathing" && group != "derived" && group != "terrain-units") return 2;
+        if (group != "base" && group != "native-pathing" && group != "derived" && group != "terrain-units"
+            && group != "terrain-palette") return 2;
     }
     if (!group.isEmpty()) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
+            if (name.startsWith("PaletteWaterProject")) return QStringLiteral("terrain-palette");
             if (name.startsWith("TerrainUnitPlacement") || name.startsWith("BoundaryNative")) return QStringLiteral("terrain-units");
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
                 if (name.startsWith(prefix)) return QStringLiteral("derived");

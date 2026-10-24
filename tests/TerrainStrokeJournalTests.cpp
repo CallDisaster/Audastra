@@ -281,6 +281,55 @@ struct SessionFixture {
         Take(session.EditTerrain(brush, std::span(&point, 1), false));
     }
 };
+void PaletteVersionHasStrictZeroPointPayload() {
+    auto journal = Journal();
+    TerrainJournalStroke palette;
+    palette.intent.palette = TerrainPaletteEditIntent{TerrainTextureTable::Ground, 0, "Tg01", "Tg02", 1};
+    palette.rulesSha256.assign(64, 'd'); journal.strokes = {palette};
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    Require(wire[3] == std::byte{'6'} && Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(wire)))) == wire,
+        "FTJ6 independently records a zero-point existing palette slot and complete actual rules identity");
+    for (std::size_t i = 0; i < wire.size(); ++i)
+        Require(!DecodeTerrainStrokeJournal(std::span(wire).first(i)).Succeeded(), "every FTJ6 truncation fails closed");
+    // 最后91字节是variant2、algorithm、table、slot、两个Text4及Text64，不使用产品reader寻址。
+    const auto offset = wire.size() - 91;
+    for (const auto [delta, value] : {std::pair{0u, 3u}, {1u, 2u}, {2u, 2u}, {3u, 16u}}) {
+        auto changed = wire; changed[offset + delta] = std::byte(value);
+        Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "unknown FTJ6 variant, algorithm, table and ground slot reject");
+    }
+    auto changed = wire; changed[3] = std::byte{'5'};
+    Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "FTJ5 cannot acquire palette semantics by a magic change");
+    auto invalid = journal; invalid.strokes[0].intent.palette->replacementRawcode = "Tg01";
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "palette no-op cannot be serialized as a real command");
+    invalid = journal; invalid.strokes[0].intent.points = {{1, 1}};
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "palette cannot carry sample points");
+    invalid = journal; invalid.strokes[0].intent.bounds = TerrainBoundsEditIntent{};
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "palette and bounds variants cannot be combined");
+    invalid = journal; invalid.strokes[0].intent.waterBrush = TerrainWaterStrokeOptions{};
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "palette and water variants cannot be combined");
+    invalid = journal; invalid.strokes[0].intent.brush.seed = 1;
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "palette cannot smuggle ordinary brush parameters");
+    invalid = journal; invalid.strokes[0].rulesSha256.clear();
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "palette resource identity remains mandatory");
+    invalid = journal; invalid.strokes[0].intent.palette->table = TerrainTextureTable::Cliff;
+    invalid.strokes[0].intent.palette->slot = 15;
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "sentinel cliff slot15 is outside typed palette edits");
+    journal.strokes.assign(128, palette);
+    Require(EncodeTerrainStrokeJournal(journal).Succeeded(), "128 palette commands need no fabricated sampling points");
+    journal.strokes.front() = Journal().strokes.front();
+    journal.strokes.front().intent.points.assign(4096, {256, 256});
+    const auto mixed = Take(EncodeTerrainStrokeJournal(journal));
+    Require(Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(mixed)))) == mixed,
+        "4096 real points plus127 zero-point palette commands preserve both independent budgets");
+    journal.strokes.front().intent.points.push_back({256, 256});
+    Require(!EncodeTerrainStrokeJournal(journal).Succeeded(), "palette does not raise the4096 sampling limit");
+    journal.strokes.assign(129, palette);
+    Require(!EncodeTerrainStrokeJournal(journal).Succeeded(), "palette still counts toward128 command limit");
+    SessionFixture raw;
+    Take(raw.session.EditTerrainTextureSlot(TerrainTextureTable::Ground, 0, "Tg02"));
+    Require(!raw.session.ExportTerrainStrokeJournal().Succeeded(), "old raw API without actual owner cannot invent palette provenance");
+}
+
 void LogicalQtReplayAndSavedBoundary() {
     SessionFixture f; f.Raise(); const auto first = f.session.LastEdit();
     const auto firstState = f.session.TerrainJournalStateFingerprint();
@@ -324,6 +373,7 @@ int main() {
         WaterAlgorithmVersionIsCanonicalAndLegacyBytesRemainExact();
         CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered();
         BoundsVersionHasIndependentPayloadAndStrictVariants();
+        PaletteVersionHasStrictZeroPointPayload();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

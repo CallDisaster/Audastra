@@ -57,7 +57,7 @@ Result<std::vector<std::byte>> ReadDirectoryTerrain(const WorkspaceSnapshot& sou
 } // namespace
 
 Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProject& project,
-    bool enforceWaterLimits, std::size_t maximumBytes) {
+    bool enforceWaterLimits, std::size_t maximumBytes, bool captureDoodads) {
     const auto fail = [](const char* code, const char* message) {
         return Result<TerrainWaterEditRequest>::Failure("Terrain.Water", code, message);
     };
@@ -105,6 +105,7 @@ Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProje
             request.sourcePath = snapshot.root;
             request.sourceSha256 = snapshot.aggregateSha256;
         }
+        if (!captureDoodads) return Result<TerrainWaterEditRequest>::Success(std::move(request));
         const auto size = project.mapEdits_->SnapshotByteSize(MapDataKind::Doodads);
         if (!size.Succeeded()) return {std::nullopt, size.diagnostics};
         if (*size.value > maximumBytes)
@@ -116,6 +117,7 @@ Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProje
             request.doodads = *document.value->Doodads();
         else if (member.state != MapDataState::Missing || !member.sources.empty())
             return fail("TERRAIN_WATER_DOODADS_UNAVAILABLE", "装饰物来源不完整或有歧义，不能按空装饰物处理水刷。");
+        request.doodadsCaptured = true;
         return Result<TerrainWaterEditRequest>::Success(std::move(request));
     } catch (const std::exception&) {
         return fail("TERRAIN_WATER_CAPTURE_ALLOCATION", "水刷来源快照无法完成分配，本次未修改地形。");
@@ -137,7 +139,7 @@ bool TerrainWaterEditRequestCurrent(const EditorProject& project, const TerrainW
 
 Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<const TerrainWaterEditRequest> request) {
     using Capture = Result<TerrainWaterEditCapture>;
-    if (!request || !request->terrain || !request->maximumBytes || request->maximumBytes > kMaximumBytes)
+    if (!request || !request->terrain || !request->doodadsCaptured || !request->maximumBytes || request->maximumBytes > kMaximumBytes)
         return Capture::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_INVALID", "水刷来源请求无效。");
     try {
         const auto path = VerifySourcePath(*request);

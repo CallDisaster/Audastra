@@ -576,6 +576,7 @@ private:
     };
     std::shared_ptr<const WaterBrushCommit> waterCommit_;
     bool waterCommitPending_ = false;
+    QPointer<QThread> terrainPaletteWorker_; // 资源读取、来源散列和槽候选仅在后台准备。
     std::vector<MapData::TerrainStrokePoint> strokePoints_;
     std::uint64_t terrainRenderSerial_ = 0;
     std::uint64_t viewportRevision_ = 0;

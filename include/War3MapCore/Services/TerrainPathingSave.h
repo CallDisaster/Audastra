@@ -22,6 +22,20 @@ struct TerrainReplayCandidate {
 // 仍由同一个TerrainSavePlan逐格验证旧WPM、安装输出和核对最终回读。
 class TerrainPathingSave {
 public:
+    // 既有槽替换仍调用Core同一命令；实际source、规则winner及当前DOO捕获成功才记录FTJ6。
+    // 调用方应在worker冻结来源和修订；此函数会读取来源与游戏表，不宜在GUI线程调用。
+    [[nodiscard]] static Result<MapData::TerrainStrokeResult> EditTextureSlot(const MapArchiveSession& source,
+        MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+        const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes = 64u * 1024u * 1024u);
+    [[nodiscard]] static Result<MapData::TerrainStrokeResult> EditTextureSlot(const WorkspaceSnapshot& source,
+        MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+        const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes = 64u * 1024u * 1024u);
+    [[nodiscard]] static Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(const MapArchiveSession& source,
+        const MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+        const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes = 64u * 1024u * 1024u);
+    [[nodiscard]] static Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(const WorkspaceSnapshot& source,
+        const MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+        const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes = 64u * 1024u * 1024u);
     // journal只持typed意图和身份；实际来源、资源、私有special谱系仍从owned replay重建。
     [[nodiscard]] static Result<MapData::TerrainStrokeJournal> CaptureJournal(const MapArchiveSession& source,
         const MapData::MapDataEditSession& edits);

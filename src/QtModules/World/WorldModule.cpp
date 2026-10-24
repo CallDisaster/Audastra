@@ -270,6 +270,8 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
 
 WorldModule::~WorldModule() {
     ++generation_;
+    // 候选只持有冻结数据；后台继续收尾并自清理，不能由QObject析构删除仍运行的QThread。
+    if (terrainPaletteWorker_) terrainPaletteWorker_->setParent(nullptr);
     // QWidget 会先删除子控件，再由 QObject 断开连接。视口清场景会同步发出坐标/
     // 状态信号，此时工具栏或属性 QLabel 可能已释放；先关闭模块级 UI 回调。
     if (page_) {

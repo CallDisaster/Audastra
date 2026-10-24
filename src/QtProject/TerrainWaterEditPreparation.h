@@ -19,6 +19,7 @@ struct TerrainWaterEditRequest {
     std::uint64_t sessionIdentity = 0, revision = 0, terrainSourceRevision = 0;
     std::uint64_t projectGeneration = 0, projectRevision = 0;
     bool enforceWaterLimits = true;
+    bool doodadsCaptured = false;
     std::size_t maximumBytes = 64u * 1024u * 1024u;
 };
 
@@ -29,7 +30,7 @@ struct TerrainWaterEditCapture {
 
 [[nodiscard]] Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(
     const EditorProject& project, bool enforceWaterLimits,
-    std::size_t maximumBytes = 64u * 1024u * 1024u);
+    std::size_t maximumBytes = 64u * 1024u * 1024u, bool captureDoodads = true);
 // 只比较已捕获身份，不在鼠标事件里重新打开、读取或散列整张地图。
 [[nodiscard]] bool TerrainWaterEditRequestCurrent(const EditorProject& project,
     const TerrainWaterEditRequest& request, bool enforceWaterLimits);

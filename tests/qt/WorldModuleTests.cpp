@@ -836,6 +836,10 @@ private slots:
     void TerrainWaterBrushDropsCancelledCommit_data();
     void TerrainWaterBrushDropsCancelledCommit();
     void TerrainTextureSlotUsesSharedTransaction();
+    void TerrainTextureSlotAppendNeedsNoGame();
+    void TerrainTextureSlotWorkerRejectsStale_data();
+    void TerrainTextureSlotWorkerRejectsStale();
+    void TerrainTextureSlotWorkerSurvivesModuleDestruction();
     void TerrainRampKeepsCellAndWholeStroke();
     void TerrainBoundaryMarksAndRestores_data();
     void TerrainBoundaryMarksAndRestores();
@@ -3861,7 +3865,77 @@ void WorldModuleTests::TerrainBrushUsesSharedTransactionAndUndo() {
     QCOMPARE(strength->value(), 0.5); // 切换到不同强度域时才应用平滑默认值。
 }
 
+namespace {
+std::vector<MapArchiveMember> TerrainPaletteWorldMembers() {
+    auto members = Tests::TerrainWaterMembers();
+    members[1].data = Tests::WaterText("ID;PWXL;N;E\nB;X4;Y4;D0\nC;X1;Y1;K\"tileID\"\n"
+        "C;X2;K\"walkable\"\nC;X3;K\"flyable\"\nC;X4;K\"buildable\"\n"
+        "C;X1;Y2;K\"Tg01\"\nC;X2;K1\nC;X3;K1\nC;X4;K1\n"
+        "C;X1;Y3;K\"Tg02\"\nC;X2;K1\nC;X3;K1\nC;X4;K1\n"
+        "C;X1;Y4;K\"Tg03\"\nC;X2;K1\nC;X3;K1\nC;X4;K1\nE\n");
+    QByteArray pathing("MP3W", 4); Append32(pathing, 0); Append32(pathing, 32); Append32(pathing, 32);
+    pathing.append(QByteArray(32 * 32, char(0x51)));
+    members.push_back({"war3map.wpm", Tests::WaterText(std::string_view(pathing.constData(), static_cast<std::size_t>(pathing.size())))});
+    return members;
+}
+void InstallTerrainPaletteWorldProject(QtProject::EditorProject& project, const std::filesystem::path& root, bool archive) {
+    const auto members = TerrainPaletteWorldMembers();
+    Tests::InstallTerrainWaterProject(project, root, archive, members);
+    if (!project.mapEdits_->AttachPathing(members.back().data).Succeeded()) throw std::runtime_error("attach palette fixture pathing");
+}
+void AcceptTerrainPaletteDialog(QWidget* page, const QString& rawcode) {
+    QTimer::singleShot(0, page, [rawcode] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(rawcode); dialog->accept();
+        }
+    });
+}
+} // namespace
+
 void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    InstallTerrainPaletteWorldProject(project, std::filesystem::path(directory.path().toStdWString()), false);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(900, 600); page->show();
+    QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{81});
+    auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
+    const auto original = *MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value;
+    bool accepted = false;
+    QTimer::singleShot(0, page, [&] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            dialog->setTextValue(QStringLiteral("Tg02")); accepted = true; dialog->accept();
+        }
+    });
+    replace->click(); QVERIFY(accepted);
+    QTRY_VERIFY(!page->property("terrainPalettePending").toBool());
+    QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("applied"));
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Tg02"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto exported = project.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(exported.Succeeded());
+    QVERIFY(exported.value->strokes.front().intent.palette.has_value());
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, original);
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Tg02"));
+    QTRY_VERIFY(page->findChild<QPushButton*>("worldTerrainToggle")->isEnabled());
+    const auto before = project.mapEdits_->Revision();
+    accepted = false;
+    bool externalChanged = false;
+    QTimer::singleShot(0, page, [&] {
+        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
+            externalChanged = project.mapEdits_->EditTerrainTextureSlot(MapData::TerrainTextureTable::Ground, 0, "Tg03").Succeeded();
+            dialog->setTextValue(QStringLiteral("Tg01")); accepted = true; dialog->accept();
+        }
+    });
+    replace->click(); QVERIFY(accepted && externalChanged);
+    QCOMPARE(project.mapEdits_->Revision(), before + 1);
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Tg03"));
+    QCOMPARE(project.mapDataUndoStack_->count(), 1); // 过期对话框不能覆盖外部编辑或增加撤销项。
+}
+
+void WorldModuleTests::TerrainTextureSlotAppendNeedsNoGame() {
     QTemporaryDir directory; QVERIFY(directory.isValid());
     const auto source = TerrainBytes(); QVERIFY(Write(directory.filePath("war3map.w3e"), source));
     QtProject::EditorProject project; project.projectRoot_ = directory.path().toStdWString();
@@ -3869,42 +3943,70 @@ void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
     project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*opened.value));
     project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(std::span<const MapArchiveMember>{}));
     project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
-    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(
-        reinterpret_cast<const std::byte*>(source.constData()), static_cast<std::size_t>(source.size()))).Succeeded());
+    QVERIFY(project.mapEdits_->AttachTerrain(std::span<const std::byte>(reinterpret_cast<const std::byte*>(source.constData()),
+        static_cast<std::size_t>(source.size()))).Succeeded());
     project.ResetEditTracking();
     BackendState state; activeBackend = &state;
-    WorldModule module(project, &backend);
-    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(900, 600); page->show();
-    QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
+    WorldModule module(project, &backend); auto* page = module.Widget(); state.viewport = module.Viewport();
+    page->resize(900, 600); page->show(); QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{6});
+    auto* append = page->findChild<QPushButton*>("worldTerrainAddTexture"); QVERIFY(append);
+    const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    const auto slots = project.mapEdits_->Terrain()->header.groundTilesets.size();
+    AcceptTerrainPaletteDialog(page, QStringLiteral("Tg02")); append->click();
+    QTRY_VERIFY(!page->property("terrainPalettePending").toBool());
+    QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("applied"));
+    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.size(), slots + 1);
+    QCOMPARE(project.mapDataUndoStack_->count(), 1); QVERIFY(project.war3GameRoot_.empty());
+    project.mapDataUndoStack_->undo(); QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+}
+
+void WorldModuleTests::TerrainTextureSlotWorkerRejectsStale_data() {
+    QTest::addColumn<int>("change");
+    QTest::newRow("edit-revision") << 0; QTest::newRow("saving") << 1;
+    QTest::newRow("session-replaced") << 2; QTest::newRow("source-suspected") << 3;
+}
+
+void WorldModuleTests::TerrainTextureSlotWorkerRejectsStale() {
+    QFETCH(int, change);
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    InstallTerrainPaletteWorldProject(project, std::filesystem::path(directory.path().toStdWString()), true);
+    BackendState state; activeBackend = &state;
+    WorldModule module(project, &backend); auto* page = module.Widget(); state.viewport = module.Viewport();
+    page->resize(900, 600); page->show(); QTRY_COMPARE(module.Viewport()->VertexCount(), std::size_t{81});
     auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
-    const auto original = *MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value;
-    bool accepted = false;
-    QTimer::singleShot(0, page, [&] {
-        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
-            dialog->setTextValue(QStringLiteral("Lgrs")); accepted = true; dialog->accept();
-        }
-    });
-    replace->click(); QVERIFY(accepted);
-    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lgrs"));
-    QCOMPARE(project.mapDataUndoStack_->count(), 1);
-    project.mapDataUndoStack_->undo();
-    QCOMPARE(*MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value, original);
-    project.mapDataUndoStack_->redo();
-    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lgrs"));
-    QTRY_VERIFY(page->findChild<QPushButton*>("worldTerrainToggle")->isEnabled());
-    const auto before = project.mapEdits_->Revision();
-    accepted = false;
-    bool externalChanged = false;
-    QTimer::singleShot(0, page, [&] {
-        if (auto* dialog = qobject_cast<QInputDialog*>(QApplication::activeModalWidget())) {
-            externalChanged = project.mapEdits_->EditTerrainTextureSlot(MapData::TerrainTextureTable::Ground, 0, "Lrok").Succeeded();
-            dialog->setTextValue(QStringLiteral("Ldrt")); accepted = true; dialog->accept();
-        }
-    });
-    replace->click(); QVERIFY(accepted && externalChanged);
-    QCOMPARE(project.mapEdits_->Revision(), before + 1);
-    QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Lrok"));
-    QCOMPARE(project.mapDataUndoStack_->count(), 1); // 过期对话框不能覆盖外部编辑或增加撤销项。
+    AcceptTerrainPaletteDialog(page, QStringLiteral("Tg02")); replace->click();
+    QVERIFY(page->property("terrainPalettePending").toBool());
+    if (change == 0) QVERIFY(project.mapEdits_->EditTerrainTextureSlot(MapData::TerrainTextureTable::Ground, 0, "Tg03").Succeeded());
+    if (change == 1) project.savingMap_ = true;
+    if (change == 2) {
+        auto fresh = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+        QVERIFY(fresh->AttachTerrain(TerrainPaletteWorldMembers().front().data).Succeeded());
+        project.mapEdits_ = std::move(fresh);
+    }
+    if (change == 3) project.sourceChangeSuspected_ = true;
+    const auto expected = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    QTRY_VERIFY(!page->property("terrainPalettePending").toBool());
+    QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("stale"));
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), expected);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0); project.savingMap_ = false;
+}
+
+void WorldModuleTests::TerrainTextureSlotWorkerSurvivesModuleDestruction() {
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    QtProject::EditorProject project;
+    InstallTerrainPaletteWorldProject(project, std::filesystem::path(directory.path().toStdWString()), true);
+    BackendState state; activeBackend = &state;
+    auto module = std::make_unique<WorldModule>(project, &backend); auto* page = module->Widget(); state.viewport = module->Viewport();
+    page->resize(900, 600); page->show(); QTRY_COMPARE(module->Viewport()->VertexCount(), std::size_t{81});
+    auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
+    AcceptTerrainPaletteDialog(page, QStringLiteral("Tg02")); replace->click();
+    QPointer<QThread> worker = module->findChild<QThread*>("worldTerrainPaletteWorker"); QVERIFY(worker);
+    const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
+    module.reset(); state.viewport = nullptr;
+    QTRY_VERIFY(worker.isNull());
+    QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
+    QCOMPARE(project.mapDataUndoStack_->count(), 0);
 }
 
 void WorldModuleTests::TerrainBoundaryMarksAndRestores_data() {

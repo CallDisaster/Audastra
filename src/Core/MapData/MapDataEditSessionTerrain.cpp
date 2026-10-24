@@ -478,8 +478,13 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
                 || !add(cost.retainedBytes, maximumBytes, chunk.after.capacity())) return fail();
         if (!bytes(command->pathingBefore, false) || !bytes(command->pathingAfter, false)
             || !bytes(command->restrictionBefore, false) || !bytes(command->restrictionAfter, false)) return fail();
-        if (command->terrainStroke && !add(cost.retainedBytes, maximumBytes,
-            command->terrainStroke->intent.points.capacity(), sizeof(TerrainStrokePoint))) return fail();
+        if (command->terrainStroke) {
+            const auto& stroke = *command->terrainStroke;
+            if (!add(cost.retainedBytes, maximumBytes, stroke.intent.points.capacity(), sizeof(TerrainStrokePoint))
+                || !add(cost.retainedBytes, maximumBytes, stroke.rulesSha256.capacity())) return fail();
+            if (stroke.intent.palette && (!add(cost.retainedBytes, maximumBytes, stroke.intent.palette->expectedRawcode.capacity())
+                || !add(cost.retainedBytes, maximumBytes, stroke.intent.palette->replacementRawcode.capacity()))) return fail();
+        }
         if (command->placements) {
             if (!add(cost.retainedBytes, maximumBytes, command->placements->capacity(), sizeof(PlacementRowLineage))) return fail();
             for (const auto& row : *command->placements)
@@ -739,6 +744,13 @@ std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() cons
             add(table->capacity(), sizeof(std::string));
             for (const auto& value : *table) add(value.capacity() + 1);
         }
+    if (command_->terrainStroke) {
+        add(command_->terrainStroke->rulesSha256.capacity() + 1);
+        if (command_->terrainStroke->intent.palette) {
+            add(command_->terrainStroke->intent.palette->expectedRawcode.capacity() + 1);
+            add(command_->terrainStroke->intent.palette->replacementRawcode.capacity() + 1);
+        }
+    }
     if (command_->placements) {
         add(sizeof(std::vector<PlacementRowLineage>) + 64);
         add(command_->placements->capacity(), sizeof(PlacementRowLineage));
@@ -814,21 +826,59 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrain(const TerrainBrush& 
     return ApplyPreparedTerrainEdit(*prepared.value);
 }
 
-Result<TerrainStrokeResult> MapDataEditSession::EditTerrainTextureSlot(TerrainTextureTable table,
-    std::uint32_t slot, const std::string& rawcode) {
-    if (!terrain_) return Result<TerrainStrokeResult>::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
+Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerrainTextureSlot(TerrainTextureTable table,
+    std::uint32_t slot, const std::string& rawcode, const TerrainPathingResources* resources) const {
+    using Output = Result<PreparedTerrainEdit>;
+    if (!terrain_) return Output::Failure("MapData.Edit", "MAP_TERRAIN_UNAVAILABLE", "地形不可编辑");
     auto next = std::make_shared<TerrainGridSnapshot>(*terrain_);
     auto result = ReplaceTerrainTextureSlot(*next, table, slot, rawcode);
-    if (!result.Succeeded() || !result.value || !result.value->headerChanged) return result;
+    if (!result.Succeeded() || !result.value) return {{}, result.diagnostics};
+    PreparedTerrainEdit plan;
+    plan.before_ = terrain_; plan.after_ = next; plan.sessionIdentity_ = sessionIdentity_;
+    plan.revision_ = revision_; plan.sourceRevision_ = terrainSourceRevision_; plan.changed_ = *result.value;
     Command command;
+    if (!result.value->headerChanged) {
+        plan.command_ = std::make_shared<const Command>(std::move(command));
+        return Output::Success(std::move(plan));
+    }
     command.headerBefore = terrain_->header;
     command.headerAfter = next->header;
-    if (const auto status = CommitCommand(std::move(command)); !status.Succeeded()) {
-        Result<TerrainStrokeResult> failed;
-        failed.diagnostics = status.diagnostics;
-        return failed;
+    if (resources) {
+        const auto& palette = table == TerrainTextureTable::Ground ? terrain_->header.groundTilesets : terrain_->header.cliffTilesets;
+        if (!terrainOriginal_ || slot >= palette.size()
+            || terrain_->header.groundTilesets.empty() || terrain_->header.groundTilesets.size() > 16
+            || terrain_->header.cliffTilesets.empty() || terrain_->header.cliffTilesets.size() > 15)
+            return Output::Failure("Terrain.Journal", "TERRAIN_PALETTE_JOURNAL_DOMAIN",
+                "可信贴图记录只支持既有槽替换；追加槽仍可作为普通工程草稿编辑。");
+        const auto bound = resources->VerifyWaterBrushInput(*terrainOriginal_, *next);
+        if (!bound.Succeeded()) return {{}, bound.diagnostics};
+        const auto index = Index(MapDataKind::Doodads);
+        DoodadPlacements doodads;
+        if (current_[index]) {
+            auto parsed = ParseDoodadPlacements(*current_[index]);
+            if (!parsed.Succeeded() || !parsed.value) return {{}, std::move(parsed.diagnostics)};
+            doodads = std::move(*parsed.value);
+        } else if (states_[index] != MapDataState::Missing)
+            return Output::Failure("Terrain.Journal", "TERRAIN_PALETTE_DOODADS_UNAVAILABLE", "贴图记录需要完整当前DOO或明确缺失身份。");
+        const auto objects = resources->VerifyWaterBrushDoodads(doodads,
+            original_[index] ? std::span<const std::byte>{*original_[index]} : std::span<const std::byte>{});
+        if (!objects.Succeeded()) return {{}, objects.diagnostics};
+        const auto digest = resources->WaterBrushDependencyFingerprint();
+        if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};
+        TerrainJournalStroke stroke;
+        stroke.intent.palette = TerrainPaletteEditIntent{table, slot, palette[slot], rawcode, 1};
+        stroke.rulesSha256 = *digest.value;
+        command.terrainStroke = std::move(stroke);
     }
-    return result;
+    plan.command_ = std::make_shared<const Command>(std::move(command));
+    return Output::Success(std::move(plan));
+}
+
+Result<TerrainStrokeResult> MapDataEditSession::EditTerrainTextureSlot(TerrainTextureTable table,
+    std::uint32_t slot, const std::string& rawcode, const TerrainPathingResources* resources) {
+    auto prepared = PrepareTerrainTextureSlot(table, slot, rawcode, resources);
+    if (!prepared.Succeeded() || !prepared.value) return {{}, prepared.diagnostics};
+    return ApplyPreparedTerrainEdit(*prepared.value);
 }
 
 bool MapDataEditSession::TerrainMatches(const Command& command, bool forward) const {

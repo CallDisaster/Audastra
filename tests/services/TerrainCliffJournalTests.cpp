@@ -1,6 +1,7 @@
 #include "TerrainCliffJournalTests.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
@@ -338,6 +339,113 @@ void NativeFollowChargesActualSamplesAndOptionalDigest() {
     }
     Require(costs[1] == costs[0] + 8 * 512, "one extra actual placement adds exactly one bounded before-and-after query charge");
 }
+
+std::vector<MapArchiveMember> PaletteGameMembers(bool changedRow = false) {
+    return {{"fixture.txt", Text("original palette journal resources")},
+        {"TerrainArt/Terrain.slk", Text(std::string("ID;PWXL;N;E\nB;X4;Y3;D0\n")
+            + "C;X1;Y1;K\"tileID\"\nC;X2;K\"walkable\"\nC;X3;K\"flyable\"\nC;X4;K\"buildable\"\n"
+              "C;X1;Y2;K\"Tg01\"\nC;X2;K1\nC;X3;K1\nC;X4;K1\n"
+              "C;X1;Y3;K\"Tg02\"\nC;X2;K1\nC;X3;K1\nC;X4;K" + (changedRow ? "0\nE\n" : "1\nE\n"))},
+        {"TerrainArt/CliffTypes.slk", Text("ID;PWXL;N;E\nB;X1;Y4;D0\nC;X1;Y1;K\"cliffID\"\n"
+            "C;X1;Y2;K\"Cl01\"\nC;X1;Y3;K\"Cl02\"\nC;X1;Y4;K\"Cl03\"\nE\n")}};
+}
+
+void PaletteJournalUsesActualOwnerAndOrderedWaterReplay() {
+    Fixture f(false);
+    std::erase_if(f.members, [](const auto& member) {
+        return member.name == "TerrainArt/Terrain.slk" || member.name == "TerrainArt/CliffTypes.slk";
+    });
+    Require(std::filesystem::remove(f.game / "war3.mpq"), "replace only owned synthetic game archive");
+    Take(WriteVerifiedArchive(f.game / "war3.mpq", PaletteGameMembers())); f.Reopen("palette-source.w3x");
+    const auto terrain = f.Member("war3map.w3e"), pathing = f.Member("war3map.wpm");
+    const auto sourceSha = f.source->SourceSha256();
+    Take(Services::TerrainPathingSave::EditTextureSlot(*f.source, *f.edits, TerrainTextureTable::Ground, 0, "Tg02", f.game));
+    const auto first = Take(f.edits->ExportTerrainStrokeJournal());
+    Require(first.strokes.size() == 1 && first.strokes[0].intent.palette && first.strokes[0].intent.points.empty()
+        && first.strokes[0].intent.palette->expectedRawcode == "Tg01" && first.strokes[0].rulesSha256.size() == 64,
+        "actual map plus game winning table creates a typed zero-point existing-slot record");
+    const auto revision = f.edits->Revision();
+    Take(Services::TerrainPathingSave::EditTextureSlot(*f.source, *f.edits, TerrainTextureTable::Ground, 0, "Tg02", f.game));
+    Require(f.edits->Revision() == revision && Take(f.edits->ExportTerrainStrokeJournal()).strokes.size() == 1,
+        "same-slot same-value replacement is a true no-op without duplicate history");
+    Require(!Services::TerrainPathingSave::EditTextureSlot(*f.source, *f.edits, TerrainTextureTable::Ground, 1, "Tg01", f.game).Succeeded(),
+        "typed service does not authorize append even when raw API can append a slot");
+    const auto rules = f.Rules();
+    TerrainWaterBrush water{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 0, 1,
+        Take(CaptureTerrainWaterStrokeAnchor(*f.edits->Terrain(), f.point, rules.WaterBrushRules()->maximumCliffLevel))};
+    const auto prepared = Take(f.edits->PrepareTerrainWaterEdit(rules, water, std::span(&f.point, 1), false));
+    Take(f.edits->ApplyPreparedTerrainEdit(prepared));
+    Take(Services::TerrainPathingSave::EditTextureSlot(*f.source, *f.edits, TerrainTextureTable::Cliff, 1, "Cl03", f.game));
+    const auto after = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto journal = Take(Services::TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+    const auto encoded = Take(EncodeTerrainStrokeJournal(journal));
+    Require(encoded[3] == std::byte{'6'} && journal.strokes.size() == 3 && journal.strokes[0].intent.palette
+        && journal.strokes[1].intent.waterBrush && journal.strokes[2].intent.palette,
+        "FTJ6 keeps ground replacement, real water brush and cliff replacement in exact order");
+    auto restored = Take(Services::TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        terrain, pathing, Take(DecodeTerrainStrokeJournal(encoded)), *f.edits, f.game));
+    Require(restored.receipts.size() == 3 && restored.waterOwners.size() == 3
+        && restored.session->MatchesTerrainJournalDraft(*f.edits), "owned ordered replay restores complete raw draft and all three actual owners");
+    for (int i = 0; i < 3; ++i) Require(restored.session->Undo(), "all three palette/water commands undo");
+    Require(Take(SerializeMapTerrain(*restored.session->Terrain())) == terrain, "mixed Undo restores original header and vertices exactly");
+    for (int i = 0; i < 3; ++i) Require(restored.session->Redo(), "all three palette/water commands redo");
+    Require(Take(SerializeMapTerrain(*restored.session->Terrain())) == after, "mixed Redo restores the entire output exactly");
+    auto wrongOld = journal; wrongOld.strokes[0].intent.palette->expectedRawcode = "Tg03";
+    Require(HasCode(Services::TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        terrain, pathing, wrongOld, *f.edits, f.game), "TERRAIN_JOURNAL_PALETTE_DRIFT"), "slot expected-old drift rejects before publication");
+    Require(std::filesystem::remove(f.game / "war3.mpq"), "change only owned synthetic table source");
+    Take(WriteVerifiedArchive(f.game / "war3.mpq", PaletteGameMembers(true)));
+    Require(f.source->SourceSha256() == sourceSha && HasCode(Services::TerrainPathingSave::RestoreJournal(*f.source,
+        MapDocument::FromMembers(f.members), terrain, pathing, journal, *f.edits, f.game), "TERRAIN_JOURNAL_RESOURCE_DRIFT"),
+        "changed winning game Terrain row fails closed without changing the actual map identity");
+    Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == after, "failed drift replay never mutates the active draft");
+}
+
+void PaletteDirectoryPreparationUsesFrozenRevision() {
+    Fixture f(false);
+    const auto rows = PaletteGameMembers();
+    for (const auto& member : rows) if (member.name != "fixture.txt") SetMember(f.members, member.name, member.data);
+    SetMember(f.members, "war3map.wts", Text("STRING 1\n{\n" + std::string(128u * 1024u, 'x') + "\n}\n"));
+    f.Reopen("palette-directory-base.w3x");
+    const auto directoryRoot = f.directory / "workspace";
+    Require(std::filesystem::create_directory(directoryRoot), "private directory palette source");
+    for (const auto& member : f.members) {
+        const auto path = directoryRoot / member.name; std::filesystem::create_directories(path.parent_path());
+        Require(IO::WriteFileBytes(path, member.data).Succeeded(), "write owned source member");
+    }
+    const auto directory = Take(DirectoryWorkspace::Open(directoryRoot));
+    const auto original = Take(MapDocument::FromDirectory(directory));
+    MapDataEditSession edits(original);
+    Require(edits.AttachTerrain(f.Member("war3map.w3e")).Succeeded()
+        && edits.AttachPathing(f.Member("war3map.wpm")).Succeeded(), "directory palette session has exact original inputs");
+    Require(!edits.FreezeForSave(64u * 1024u).Succeeded(), "the broad save snapshot includes unrelated large WTS");
+    Require(!edits.FreezeForTerrainTextureSlot(1).Succeeded(), "palette snapshot checks its minimum allocation before copying");
+    const auto frozen = Take(edits.FreezeForTerrainTextureSlot(64u * 1024u));
+    Require(frozen->Terrain() == edits.Terrain() && frozen->SessionIdentity() == edits.SessionIdentity(),
+        "palette snapshot shares the immutable W3E and keeps the exact public CAS identity");
+    const auto plan = Take(Services::TerrainPathingSave::PrepareTextureSlot(directory.Snapshot(), *frozen,
+        TerrainTextureTable::Ground, 0, "Tg02", f.game));
+    Require(!edits.IsDirty() && plan.HasChanges(), "directory preparation on the frozen revision does not edit live state");
+    Take(edits.ApplyPreparedTerrainEdit(plan));
+    Require(!edits.ApplyPreparedTerrainEdit(plan).Succeeded(), "the same frozen palette plan cannot revive after a revision change");
+    const auto journal = Take(Services::TerrainPathingSave::CaptureJournal(directory.Snapshot(), edits));
+    const auto restored = Take(Services::TerrainPathingSave::RestoreJournal(directory.Snapshot(), original,
+        f.Member("war3map.w3e"), f.Member("war3map.wpm"), journal, edits, f.game));
+    Require(restored.session->MatchesTerrainJournalDraft(edits) && restored.receipts.size() == 1,
+        "directory source restores via the identical actual-owner palette command");
+    const auto snapshot = Take(edits.FreezeForTerrainTextureSlot(64u * 1024u));
+    const auto stale = Take(Services::TerrainPathingSave::PrepareTextureSlot(directory.Snapshot(), *snapshot,
+        TerrainTextureTable::Ground, 0, "Tg01", f.game));
+    TerrainBrush raise; raise.kind = TerrainBrushKind::Raise; raise.radius = 0; raise.strength = 1;
+    Take(edits.EditTerrain(raise, std::span(&f.point, 1), false));
+    const auto after = Take(SerializeMapTerrain(*edits.Terrain()));
+    Require(!edits.ApplyPreparedTerrainEdit(stale).Succeeded() && Take(SerializeMapTerrain(*edits.Terrain())) == after,
+        "a late ordinary brush invalidates the pending palette without losing that successful edit");
+    const auto source = f.Member("war3map.w3e"); auto changed = source; changed.back() ^= std::byte{1};
+    Require(IO::WriteFileBytes(directoryRoot / "war3map.w3e", changed).Succeeded(), "mutate only original synthetic directory source");
+    Require(!Services::TerrainPathingSave::PrepareTextureSlot(directory.Snapshot(), edits,
+        TerrainTextureTable::Ground, 0, "Tg01", f.game).Succeeded(), "source drift cannot establish a new actual-owner palette command");
+}
 }
 
 void CheckTerrainCliffJournalContracts() {
@@ -347,5 +455,7 @@ void CheckTerrainCliffJournalContracts() {
     NativeWaterRecordsExistingCornerAndCompleteUndo();
     NativeCliffWithoutRuleDigestCannotBecomeLegacyJournal();
     NativeFollowChargesActualSamplesAndOptionalDigest();
+    PaletteJournalUsesActualOwnerAndOrderedWaterReplay();
+    PaletteDirectoryPreparationUsesFrozenRevision();
 }
 }

@@ -29,6 +29,78 @@ bool Neutral(const MapData::TerrainBrush& brush) {
         && brush.pathingRestrictions == other.pathingRestrictions;
 }
 
+bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke) {
+    if (!stroke.palette || stroke.bounds || !Neutral(stroke.brush) || !stroke.points.empty()
+        || stroke.waterBrush || stroke.followDoodads) return false;
+    const auto& palette = *stroke.palette;
+    const auto rawcode = [](std::string_view value) { return value.size() == 4
+        && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 32 && c <= 126; }); };
+    return palette.algorithm == 1 && (palette.table == MapData::TerrainTextureTable::Ground
+        || palette.table == MapData::TerrainTextureTable::Cliff)
+        && palette.slot < (palette.table == MapData::TerrainTextureTable::Ground ? 16u : 15u)
+        && rawcode(palette.expectedRawcode) && rawcode(palette.replacementRawcode)
+        && palette.expectedRawcode != palette.replacementRawcode;
+}
+
+template<class Source, class Reader>
+Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(const Source& source, const MapData::MapDataEditSession& edits,
+    MapData::TerrainTextureTable table, std::uint32_t slot, const std::string& rawcode,
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, Reader&& reader) {
+    using Output = Result<MapData::MapDataEditSession::PreparedTerrainEdit>;
+    const auto fail = [](const char* code, const char* message) { return Output::Failure("Terrain.Palette", code, message); };
+    if (!maximumBytes || maximumBytes > 64u * 1024u * 1024u)
+        return fail("TERRAIN_PALETTE_BUDGET", "贴图记录资源预算只能在64MiB内收紧且不能为零。");
+    const auto current = edits.Terrain(); const auto revision = edits.Revision();
+    if (!current) return fail("MAP_TERRAIN_UNAVAILABLE", "地形不可编辑。");
+    if (table != MapData::TerrainTextureTable::Ground && table != MapData::TerrainTextureTable::Cliff)
+        return fail("TERRAIN_TILESET_TABLE", "未知的地形贴图表。");
+    const auto& palette = table == MapData::TerrainTextureTable::Ground ? current->header.groundTilesets : current->header.cliffTilesets;
+    if (slot >= palette.size() || current->header.groundTilesets.empty() || current->header.groundTilesets.size() > 16
+        || current->header.cliffTilesets.empty() || current->header.cliffTilesets.size() > 15)
+        return fail("TERRAIN_PALETTE_JOURNAL_DOMAIN", "可信贴图记录只支持经典表的既有槽替换，不能追加、删除或重排。");
+    // 原公共命令需要完整网格候选；先给两份候选与当前DOO解析预收固定硬帽。
+    constexpr std::size_t candidateMaximum = 512u * 1024u * 1024u;
+    constexpr std::size_t candidateFixedBytes = 16u * 1024u; // 两套经典表头、短rawcode与命令对象。
+    if (current->vertices.size() > std::min((candidateMaximum - candidateFixedBytes) / 256, std::size_t{64} * 1024u * 1024u / 40))
+        return fail("TERRAIN_PALETTE_BUDGET", "贴图替换完整候选超过512MiB预算。");
+    // 同值仍经原Core验证；该入口当前会复制网格，必须先受候选硬帽约束。
+    if (palette[slot] == rawcode) return edits.PrepareTerrainTextureSlot(table, slot, rawcode);
+    const auto dooBytes = edits.SnapshotByteSize(MapDataKind::Doodads);
+    if (!dooBytes.Succeeded() || !dooBytes.value) return {{}, dooBytes.diagnostics};
+    if (*dooBytes.value > maximumBytes || *dooBytes.value > (candidateMaximum - candidateFixedBytes - current->vertices.size() * 256) / 32)
+        return fail("TERRAIN_PALETTE_BUDGET", "贴图替换当前DOO解析超过候选预算。");
+    auto prospective = *current;
+    const auto replaced = MapData::ReplaceTerrainTextureSlot(prospective, table, slot, rawcode);
+    if (!replaced.Succeeded() || !replaced.value) return {{}, replaced.diagnostics};
+    const std::array<std::string, 1> names{"war3map.w3e"};
+    ArchiveExactMemberLimits limits; limits.memberCount = 1; limits.memberBytes = limits.totalBytes = maximumBytes;
+    auto sourceMember = reader(names, limits);
+    if (!sourceMember.Succeeded() || !sourceMember.value) return {{}, sourceMember.diagnostics};
+    if (sourceMember.value->size() != 1 || !sourceMember.value->front().present)
+        return fail("TERRAIN_PALETTE_SOURCE_MISSING", "实际地图缺少唯一原始W3E。");
+    const auto originalMatches = edits.VerifyTerrainSourceBaseline(sourceMember.value->front().bytes);
+    if (!originalMatches.Succeeded()) return {{}, originalMatches.diagnostics};
+    auto original = MapData::ParseMapTerrain(sourceMember.value->front().bytes);
+    if (!original.Succeeded() || !original.value) return {{}, original.diagnostics};
+    auto doodads = edits.Snapshot(MapDataKind::Doodads, maximumBytes);
+    if (!doodads.Succeeded() || !doodads.value) return {{}, doodads.diagnostics};
+    if (!doodads.value->Doodads() && doodads.value->Member(MapDataKind::Doodads).state != MapDataState::Missing)
+        return fail("TERRAIN_PALETTE_DOODADS_UNAVAILABLE", "贴图表记录需要完整DOO或明确的缺失身份。");
+    const MapData::DoodadPlacements empty;
+    auto resources = TerrainPathingSave::CaptureWaterBrushRules(source, *original.value->Snapshot(), prospective,
+        doodads.value->Doodads() ? *doodads.value->Doodads() : empty, gameRoot, true, maximumBytes);
+    if (!resources.Succeeded() || !resources.value) return {{}, resources.diagnostics};
+    const auto checked = resources.value->VerifySourceInputs(source, maximumBytes);
+    if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    if (edits.Terrain() != current || edits.Revision() != revision)
+        return fail("TERRAIN_EDIT_STALE", "实际来源捕获期间地形修订已变化，贴图未修改。");
+    auto prepared = edits.PrepareTerrainTextureSlot(table, slot, rawcode, &*resources.value);
+    if (!prepared.Succeeded() || !prepared.value) return prepared;
+    const auto finalSource = resources.value->VerifySourceInputs(source, maximumBytes);
+    if (!finalSource.Succeeded()) return {{}, finalSource.diagnostics};
+    return prepared;
+}
+
 template<class Source>
 Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& source,
     MapData::MapDataEditSession& candidate, const MapData::TerrainGridSnapshot& sourceTerrain,
@@ -49,6 +121,10 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         return fail("TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.palette) {
+            if (!PaletteCommand(stroke)) return fail("TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换，不能携带笔刷、范围或采样点。");
+            continue;
+        }
         if (stroke.bounds) {
             const auto& r = stroke.bounds->playable;
             if (!Neutral(stroke.brush) || !stroke.points.empty() || stroke.followDoodads || stroke.waterBrush
@@ -74,6 +150,64 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const Source& sourc
         const auto beforeRevision = candidate.Revision();
         if (!candidate.Terrain()) return fail("TERRAIN_REPLAY_UNAVAILABLE", "重放候选缺少当前地形。");
         const TerrainEditBinding binding{document, candidate.SessionIdentity(), candidate.Revision(), candidate.TerrainSourceRevision()};
+        if (stroke.palette) {
+            const auto& intent = *stroke.palette;
+            const auto& table = intent.table == MapData::TerrainTextureTable::Ground
+                ? candidate.Terrain()->header.groundTilesets : candidate.Terrain()->header.cliffTilesets;
+            if (intent.slot >= table.size() || table[intent.slot] != intent.expectedRawcode)
+                return fail("TERRAIN_JOURNAL_PALETTE_DRIFT", "贴图槽已不存在或旧rawcode不同，未安装任何前缀。");
+            // prospective与Core命令各自持有一次完整候选；全部扫描、解析和摘要在分配前预收。
+            const auto vertices = candidate.Terrain()->vertices.size();
+            std::size_t peakBytes = 0;
+            const auto wire = candidate.SnapshotByteSize(MapDataKind::Doodads);
+            if (!wire.Succeeded() || !wire.value) return {{}, wire.diagnostics};
+            if (!reserve(peakBytes, limits.maximumCandidateBytes - historyBytes, 16u * 1024u)
+                || !reserve(work, limits.maximumWork, vertices, 40)
+                || !reserve(work, limits.maximumWork, *wire.value, 16)
+                || !reserve(peakBytes, limits.maximumCandidateBytes - historyBytes, vertices, 256)
+                || !reserve(peakBytes, limits.maximumCandidateBytes - historyBytes, *wire.value, 32))
+                return fail("TERRAIN_REPLAY_BUDGET", "贴图表候选、当前DOO或累计扫描超过重放预算。");
+            const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
+                std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
+            if (!remaining || *wire.value > remaining)
+                return fail("TERRAIN_REPLAY_BUDGET", "贴图表实际资源捕获额度不足。");
+            auto prospective = *candidate.Terrain();
+            const auto replaced = MapData::ReplaceTerrainTextureSlot(prospective, intent.table, intent.slot, intent.replacementRawcode);
+            if (!replaced.Succeeded() || !replaced.value) return {{}, replaced.diagnostics};
+            auto resources = [&]() -> Result<MapData::TerrainPathingResources> {
+                auto current = candidate.Snapshot(MapDataKind::Doodads, remaining);
+                if (!current.Succeeded() || !current.value) return {{}, current.diagnostics};
+                const auto& doodads = current.value->Doodads();
+                if (!doodads && current.value->Member(MapDataKind::Doodads).state != MapDataState::Missing)
+                    return Result<MapData::TerrainPathingResources>::Failure("Terrain.Replay", "TERRAIN_REPLAY_DOODADS_UNAVAILABLE", "贴图表记录不能把未知DOO当成空集合。");
+                const MapData::DoodadPlacements empty;
+                return TerrainPathingSave::CaptureWaterBrushRules(source, sourceTerrain, prospective,
+                    doodads ? *doodads : empty, gameRoot, true, remaining);
+            }();
+            if (!resources.Succeeded() || !resources.value) return {{}, resources.diagnostics};
+            const auto digestBytes = resources.value->WaterBrushDependencyBudgetBytes();
+            if (!digestBytes || digestBytes > limits.maximumCandidateBytes - historyBytes - peakBytes
+                || !reserve(work, limits.maximumWork, digestBytes, 6)
+                || !reserve(resourceBytes, limits.maximumResourceBytes, resources.value->CaptureBudgetBytes())
+                || !reserve(ownedResources, limits.maximumResourceBytes, resources.value->OwnedCapacityBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "贴图表完整依赖摘要或实际owner超过累计重放预算。");
+            const auto digest = resources.value->WaterBrushDependencyFingerprint();
+            if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};
+            if (journal && *digest.value != journal->strokes[strokeIndex].rulesSha256)
+                return fail("TERRAIN_JOURNAL_RESOURCE_DRIFT", "贴图表实际来源、规则winner或缺失项已变化，未安装任何前缀。");
+            auto plan = candidate.PrepareTerrainTextureSlot(intent.table, intent.slot, intent.replacementRawcode, &*resources.value);
+            if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
+            // 头部历史按真实保留容量收费，不将整张prospective复制进Undo，也不触碰special私有谱系。
+            if (!reserve(historyBytes, limits.maximumCandidateBytes, plan.value->RetainedCommandBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "贴图表历史超过累计重放预算。");
+            const auto applied = candidate.ApplyPreparedTerrainEdit(*plan.value);
+            if (!applied.Succeeded()) return {{}, applied.diagnostics};
+            owners.push_back(std::move(*resources.value));
+            if (candidate.Revision() != beforeRevision) {
+                if (receipts) receipts->push_back(candidate.LastEdit());
+            } else if (journal) return fail("TERRAIN_JOURNAL_NO_CHANGE", "贴图表记录没有形成真实命令，未安装任何前缀。");
+            ++strokeIndex; continue;
+        }
         if (stroke.bounds) {
             const auto remaining = std::min(MapData::TerrainSavePlanLimits{}.maximumBytes,
                 std::min(limits.maximumResourceBytes - resourceBytes, limits.maximumResourceBytes - ownedResources));
@@ -311,6 +445,10 @@ Result<TerrainReplayCandidate> CreateReplay(const Source& source, const MapDocum
         return Output::Failure("Terrain.Replay", "TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
     std::size_t points = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.palette) {
+            if (!PaletteCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换，不能携带笔刷、范围或采样点。");
+            continue;
+        }
         if (stroke.bounds) {
             const auto& r = stroke.bounds->playable;
             if (!Neutral(stroke.brush) || !stroke.points.empty() || stroke.followDoodads || stroke.waterBrush
@@ -501,6 +639,40 @@ Result<TerrainReplayCandidate> RestoreJournal(const Source& source, const MapDoc
     return candidate;
 }
 } // namespace
+
+Result<MapData::TerrainStrokeResult> TerrainPathingSave::EditTextureSlot(const MapArchiveSession& source,
+    MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+    const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    return Guard<MapData::TerrainStrokeResult>([&]() -> Result<MapData::TerrainStrokeResult> {
+        auto prepared = PrepareTextureSlot(source, edits, table, slot, rawcode, gameRoot, maximumBytes);
+        if (!prepared.Succeeded() || !prepared.value) return {{}, prepared.diagnostics};
+        return edits.ApplyPreparedTerrainEdit(*prepared.value);
+    });
+}
+
+Result<MapData::TerrainStrokeResult> TerrainPathingSave::EditTextureSlot(const WorkspaceSnapshot& source,
+    MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+    const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    return Guard<MapData::TerrainStrokeResult>([&]() -> Result<MapData::TerrainStrokeResult> {
+        auto prepared = PrepareTextureSlot(source, edits, table, slot, rawcode, gameRoot, maximumBytes);
+        if (!prepared.Succeeded() || !prepared.value) return {{}, prepared.diagnostics};
+        return edits.ApplyPreparedTerrainEdit(*prepared.value);
+    });
+}
+
+Result<MapData::MapDataEditSession::PreparedTerrainEdit> TerrainPathingSave::PrepareTextureSlot(const MapArchiveSession& source,
+    const MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+    const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    return Guard<MapData::MapDataEditSession::PreparedTerrainEdit>([&] { return Services::PrepareTextureSlot(source, edits, table, slot, rawcode, gameRoot, maximumBytes,
+        [&](auto names, const auto& limits) { return source.CaptureExactMembers(names, limits); }); });
+}
+
+Result<MapData::MapDataEditSession::PreparedTerrainEdit> TerrainPathingSave::PrepareTextureSlot(const WorkspaceSnapshot& source,
+    const MapData::MapDataEditSession& edits, MapData::TerrainTextureTable table, std::uint32_t slot,
+    const std::string& rawcode, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    return Guard<MapData::MapDataEditSession::PreparedTerrainEdit>([&] { return Services::PrepareTextureSlot(source, edits, table, slot, rawcode, gameRoot, maximumBytes,
+        [&](auto names, const auto& limits) { return MapData::TerrainPathingResources::ReadDirectoryMembers(source, names, limits); }); });
+}
 
 Result<MapData::TerrainStrokeJournal> TerrainPathingSave::CaptureJournal(const MapArchiveSession& source,
     const MapData::MapDataEditSession& edits) {

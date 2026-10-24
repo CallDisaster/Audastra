@@ -140,6 +140,9 @@ public:
     [[nodiscard]] std::shared_ptr<const MapDataEditSession> FreezeForSave() const;
     // 在分配前预收快照实际复制的成员/WPM/诊断，地形与私有special仍共享只读所有权。
     [[nodiscard]] Result<std::shared_ptr<const MapDataEditSession>> FreezeForSave(std::size_t maximumBytes) const;
+    // 贴图槽worker只保留共享地形及必要DOO/W3I；不复制其它原生成员、WPM或历史。
+    [[nodiscard]] Result<std::shared_ptr<const MapDataEditSession>> FreezeForTerrainTextureSlot(
+        std::size_t maximumBytes, bool includeDoodads = true) const;
     MapDataEditSession& operator=(const MapDataEditSession&) = delete;
 
     [[nodiscard]] Status EditSettings(const MapSettings& value);
@@ -233,7 +236,10 @@ public:
         std::span<const TerrainStrokePoint> points, bool followDoodads = true);
     // 贴图槽替换/追加也进入同一撤销、工程恢复和原生地图保存门。
     [[nodiscard]] Result<TerrainStrokeResult> EditTerrainTextureSlot(TerrainTextureTable table,
-        std::uint32_t slot, const std::string& rawcode);
+        std::uint32_t slot, const std::string& rawcode, const TerrainPathingResources* resources = nullptr);
+    // 与笔刷共用同一密封候选；worker可用冻结会话准备，前台只按原修订提交。
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainTextureSlot(TerrainTextureTable table,
+        std::uint32_t slot, const std::string& rawcode, const TerrainPathingResources* resources = nullptr) const;
     // 正式地图保存门：干地高度按原版六模式查询不变条件保留WPM；荒芜位与
     // WPM bit5逐格同步。涉水高度、材质通行属性与其它派生数据未知时仍拒绝。
     [[nodiscard]] Status VerifyTerrainPathingForSave() const;
@@ -363,6 +369,8 @@ private:
     [[nodiscard]] static std::size_t Index(MapDataKind kind) noexcept;
     struct SaveSnapshotTag {};
     MapDataEditSession(const MapDataEditSession& source, SaveSnapshotTag);
+    struct TextureSlotSnapshotTag {};
+    MapDataEditSession(const MapDataEditSession& source, TextureSlotSnapshotTag, bool includeDoodads);
 
     std::array<MapDataState, 7> states_{};
     std::array<std::string, 7> memberNames_{};
