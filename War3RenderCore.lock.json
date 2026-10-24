@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.1.19",
+  "version": "0.1.20",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "2e55ef4b4494bebbed162aa2753a145ec2917ae1",
+  "commit": "9baf7436ba48f56bd48f471551bb0cf5edbee578",
   "files": [
     {
       "path": ".gitattributes",
@@ -14,7 +14,7 @@
     },
     {
       "path": "CMakeLists.txt",
-      "sha256": "7c94c6050e8ec320f77c5102fd5054f227743509775f42328c51137f19bfd7d8"
+      "sha256": "ce048ce3e4fc8db0844c6566b094aa3ea64075d8a6d4e2691ffa2204bb86f1bb"
     },
     {
       "path": "COPYRIGHT.md",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "d3cd2f7aace778ab1c29a745198a9e530ab45c41d30b671c739869cfe0f044ed"
+      "sha256": "d541065ac855228f2d3680f24d6c76925a6995b4fc76a9dc492d38ffad980ffa"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -54,7 +54,7 @@
     },
     {
       "path": "docs/NO_CONTROLLER_STATIC_MODELS.md",
-      "sha256": "6e2a53d0721c0af5f42d90f31e07365181ad3edccd2384d52bef1d479876db31"
+      "sha256": "ac2db4655134cafee8c6e1b466c4384475a87efd110098f3951498d7b39a427a"
     },
     {
       "path": "docs/PARTICLE_MATERIAL_CONTRACT.md",
@@ -82,7 +82,7 @@
     },
     {
       "path": "include/War3MapCore/Render/MdxModel.h",
-      "sha256": "c77f384c02bab3f83a3bde726ec9c9284e84b90fbc5e4e375eec5709a9672e42"
+      "sha256": "53e2d7aae458ab91f5823cd57ee94d3831ece893e49b73721b157c802cf9efa6"
     },
     {
       "path": "include/War3MapCore/Render/MdxPose.h",
@@ -266,7 +266,7 @@
     },
     {
       "path": "src/Render/Assets/MdxGeosetRead.inl",
-      "sha256": "646802ed8691329eeea3aa6806a0474f3a265e97ad5c7a22ac6424a96eb3b727"
+      "sha256": "186428dc3595a89ede728084a89e0080f626d2dab7a4f0bd2047e7d457ab2d25"
     },
     {
       "path": "src/Render/Assets/MdxGeosetSample.inl",
@@ -278,7 +278,7 @@
     },
     {
       "path": "src/Render/Assets/MdxModel.cpp",
-      "sha256": "7fbaa1333fe0bdd64ce2f64b4d1335edde88a0933869d471728bb23fa7b8f7c5"
+      "sha256": "c47609e2616e3f4c68bc4456e4753d173273caf99aa4b10d646dbe81956311c9"
     },
     {
       "path": "src/Render/Assets/MdxNoControllerStatic.h",
@@ -306,11 +306,15 @@
     },
     {
       "path": "src/Render/Assets/MdxReadInternal.h",
-      "sha256": "13fd72146b4625d2407ce33e1809797bf7917168ec1e0a6894c1ea91f227b9ea"
+      "sha256": "1efdeca53469997dfb46c471b7448fb625adbedfcd56bd98eefb6879ab94dd2b"
     },
     {
       "path": "src/Render/Assets/MdxRigidStaticPreviewInternal.h",
       "sha256": "331e973df7b7ac791c1bf8de7dfc5c4d6a2807924afc39bedafe98e71c6d7452"
+    },
+    {
+      "path": "src/Render/Assets/MdxStaticParseBudget.h",
+      "sha256": "d0efa4332c8373de6ce5b95ed58202397c57fddd96a67691ee371b99e2483939"
     },
     {
       "path": "src/Render/Scene/ModelSceneData.h",
@@ -482,7 +486,7 @@
     },
     {
       "path": "tests/MdxNoControllerStaticTests.cpp",
-      "sha256": "6f0eb6e7b79d4bbf13334ea5c3730cde3918557c23393c284fda6341d336fe3e"
+      "sha256": "9d0f9e29c2cb67385b43768787f4d5360ba0fabbced2b1910b82b92468504b7b"
     },
     {
       "path": "tests/MdxTestModel.h",
@@ -498,11 +502,11 @@
     },
     {
       "path": "tests/RenderCoreAllocProbe.cpp",
-      "sha256": "07410f9d1d9bc8f74f75fd8e3988a71c3c3d4c1f0f196fee441dc870fcd4fef4"
+      "sha256": "f2065703b70b49bee064ff74606e7b71ebf6c0884a90fd0c9cf6b8a4b14ca935"
     },
     {
       "path": "tests/RenderCoreAllocProbe.h",
-      "sha256": "8b78b26ad82eebf25e273d07318fb9854c46462b503fafb88a21d61d228ecda2"
+      "sha256": "5fa44e87344cde6bf59b7fce1cb1c7911db61bf90d308eebc862cffc7268b4eb"
     },
     {
       "path": "tests/RenderCoreCompactTests.cpp",

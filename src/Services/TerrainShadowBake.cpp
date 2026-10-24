@@ -118,11 +118,13 @@ Result<std::shared_ptr<const TerrainShadowBake>> TerrainShadowBake::Capture(cons
             rayLimits.maximumPixels = std::min(rayLimits.maximumPixels, terrainLimits.maximumPixels);
             rayLimits.maximumSampleBytes = std::min(rayLimits.maximumSampleBytes, terrainLimits.maximumSampleBytes);
             rayLimits.maximumWork = std::min(rayLimits.maximumWork, limits.maximumWork - work);
-            // 几何缓存和单模型编译分别留出峰值；原字节已由来源owner计量，
-            // ParseMdx继续使用共享解析器固定硬上限，不保留第二份模型实现。
+            // 共享解析器先计量再展开，解析模型、单模型编译与局部/世界几何
+            // 分别预留，三者可同时驻留；来源owner已计入借用的原字节。
             const auto scratch = limits.maximumWorkingBytes - working;
-            rayLimits.maximumCompiledBytes = std::min(rayLimits.maximumCompiledBytes, scratch / 4);
-            rayLimits.maximumGeometryBytes = std::min(rayLimits.maximumGeometryBytes, scratch - rayLimits.maximumCompiledBytes);
+            rayLimits.maximumParsedBytes = std::min(rayLimits.maximumParsedBytes, scratch / 3);
+            rayLimits.maximumCompiledBytes = std::min(rayLimits.maximumCompiledBytes, (scratch - rayLimits.maximumParsedBytes) / 2);
+            rayLimits.maximumGeometryBytes = std::min(rayLimits.maximumGeometryBytes,
+                scratch - rayLimits.maximumParsedBytes - rayLimits.maximumCompiledBytes);
             const auto casterProjection = Take(MapData::ProjectFilteredStaticTerrainShadowCasters(
                 {receiver.width, receiver.height, receiver.receiverHeights, owner->light_->LightDirection()},
                 owner->casters_->Terrain().header.offset, models, instances, {(*bounds)[0], (*bounds)[1]}, rayLimits, cancellation));
