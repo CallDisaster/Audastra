@@ -50,6 +50,8 @@ Result<NewPlacementRecord> PreparePlacementCreation(const PlacementCreateRequest
     if (!std::isfinite(request.point.x) || !std::isfinite(request.point.y)
         || sample.point.x != request.point.x || sample.point.y != request.point.y || !std::isfinite(sample.groundHeight))
         return Failure("PLACEMENT_TERRAIN_BINDING", "新建坐标没有同一点的当前地形采样，不能猜测地高或边界。");
+    if (sample.groundHeightApproximate)
+        return Failure("PLACEMENT_TERRAIN_APPROXIMATE", "该坡道点只有近似地高，缺少实际Terrain.MaxHeight来源，未新建任何对象。");
     const double z = double(sample.groundHeight) + request.heightOffset;
     if (!std::isfinite(z) || std::abs(z) > 1e6 || std::abs(request.point.x) > 1e6 || std::abs(request.point.y) > 1e6)
         return Failure("PLACEMENT_COORDINATE_INVALID", "新建坐标超出有限世界坐标范围。");

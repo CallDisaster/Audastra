@@ -197,6 +197,30 @@ void FacadeQueryPreviewApplyAndUndo() {
     Expect(*IO::ReadFileBytes(fixture.source / "war3map.w3e").value == fixture.terrain, "query and edit never write the source file");
 }
 
+void FacadePointQueryPreservesApproximateHeightWarning() {
+    Fixture fixture;
+    const auto parsed = TerrainTake(ParseMapTerrain(fixture.terrain));
+    auto grid = *parsed.Snapshot();
+    grid.vertices[8 * 17 + 8].textureAndFlagsRaw |= 0x10;
+    const auto wire = TerrainTake(SerializeMapTerrain(grid));
+    Expect(fixture.edits.SetTerrain(wire).Succeeded(), "install explicit packed ramp fixture");
+    const auto revision = fixture.edits.Revision();
+    const auto query = InvokeTerrainEditTool("query_terrain_points",
+        {{"terrain_binding", State(fixture).value("terrain_binding")},
+         {"points", QJsonArray{QJsonObject{{"x", 0}, {"y", 0}}, QJsonObject{{"x", 0}, {"y", 0}}}}}, fixture.Host());
+    const auto points = query.value("points").toArray();
+    const auto diagnostics = query.value("diagnostics").toArray();
+    Expect(query.value("ok").toBool() && points.size() == 2
+        && points[0].toObject().value("ground_height_approximate").toBool()
+        && points[1].toObject().value("ground_height_approximate").toBool()
+        && diagnostics.size() == 1
+        && diagnostics[0].toObject().value("code") == "TERRAIN_HEIGHT_APPROXIMATE",
+        "shared MCP facade preserves per-point approximation and deduplicated source warning");
+    Expect(fixture.edits.Revision() == revision
+        && TerrainTake(SerializeMapTerrain(*fixture.edits.Terrain())) == wire,
+        "approximate point query cannot change raw terrain or history");
+}
+
 void FacadeRemoveWaterUsesTheOrdinaryTransaction() {
     Fixture fixture(true, true);
     const auto state = State(fixture);
@@ -960,6 +984,7 @@ int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     try {
         FacadeQueryPreviewApplyAndUndo();
+        FacadePointQueryPreservesApproximateHeightWarning();
         FacadeRemoveWaterUsesTheOrdinaryTransaction();
         FacadeRejectsUnknownTypesBoundsAndStaleSources();
         BoundsFacadeUsesActualResourcesCasAndSharedUndo();

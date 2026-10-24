@@ -339,7 +339,8 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
             const auto queried = QueryTerrainPoints(*context.session, context.document, binding, points);
             if (!queried.Succeeded() || !queried.value) return Failure(queried);
             QJsonArray samples; for (const auto& sample : *queried.value) samples.append(SampleJson(sample));
-            QJsonObject body{{"ok", true}, {"terrain_binding", bindingJson}, {"scope", Scope(context)}, {"points", samples}};
+            QJsonObject body{{"ok", true}, {"terrain_binding", bindingJson}, {"scope", Scope(context)}, {"points", samples},
+                {"diagnostics", DiagnosticsJson(queried.diagnostics).value("diagnostics")}};
             const auto budget = BodyBudget(body); if (!budget.Succeeded()) return Failure(budget);
             return Stamp(std::move(body), identity);
         }

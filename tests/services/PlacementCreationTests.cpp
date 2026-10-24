@@ -50,6 +50,11 @@ void RejectUnknownAndInvalidInputs() {
     Tests::ObjectCommandsFixture fixture; auto context = fixture.Context(ObjectType::Unit);
     auto items = fixture.Context(ObjectType::Item);
     PlacementCreateRequest valid; valid.rawcode = "u001"; valid.point = Sample().point;
+    auto approximate = Sample(); approximate.groundHeightApproximate = true;
+    const auto imprecise = PreparePlacementCreation(valid, context, approximate);
+    Require(!imprecise.Succeeded() && !imprecise.value && imprecise.diagnostics.size() == 1
+        && imprecise.diagnostics.front().code == "PLACEMENT_TERRAIN_APPROXIMATE",
+        "precise creation cannot consume an unbound approximate ramp height");
     auto reject = [&](PlacementCreateRequest request) {
         Require(!PreparePlacementCreation(request, context, Sample(), &items).Succeeded(), "bad request must fail");
     };

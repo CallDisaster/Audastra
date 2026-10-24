@@ -372,6 +372,18 @@ void CreationValidationRejectsWholeBatchBeforePublish() {
         .value("ok").toBool(), "合法前项加非法后项不能部分创建");
     auto wrongSha = f.Create(MapDataKind::Units, {valid}); wrongSha["expected_member_sha256"] = QString(64, '0');
     Require(Code(InvokePlacementTool("entities_create", wrongSha, f.host)) == "MAP_PLACEMENT_MEMBER_STALE", "创建仍绑定实际成员SHA");
+    auto approximateHost = f.host;
+    const auto exactSampler = f.host.terrainPoint;
+    unsigned pointReads = 0;
+    approximateHost.terrainPoint = [&](const TerrainStrokePoint& point) {
+        auto sampled = exactSampler(point);
+        if (++pointReads == 2 && sampled.Succeeded() && sampled.value)
+            sampled.value->groundHeightApproximate = true;
+        return sampled;
+    };
+    Require(Code(InvokePlacementTool("entities_create", f.Create(MapDataKind::Units, {valid, valid}), approximateHost))
+        == "PLACEMENT_TERRAIN_APPROXIMATE" && pointReads == 2,
+        "合法首项后的近似坡道地高必须拒绝整批创建");
     Require(f.attempts == 0 && f.publishes == 0 && f.session.Revision() == 0 && !f.session.CanUndo()
         && f.current->Units()->SerializeOriginal() == f.original->Units()->SerializeOriginal(), "所有失败零提交且原字节不变");
     auto missing = f.host; missing.objectContext = {};
