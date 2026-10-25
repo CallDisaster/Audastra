@@ -65,7 +65,8 @@ inline Bytes ShadowLiteral(int west = 0, int south = 0, int east = 32, int north
         const auto oldX = int(x) + west * 4, oldY = int(y) + south * 4;
         const bool overlap = oldX >= 0 && oldX < 128 && oldY >= 0 && oldY < 128;
         unsigned value = overlap ? raw[unsigned(oldX + oldY * 3) % raw.size()] : 0;
-        if (resized) value = (value & 1) ? 0xff : 0;
+        // 原版磁盘loader先将任何非零字节置为runtime bit0，writer再输出00/FF。
+        if (resized) value = value ? 0xff : 0;
         bytes.push_back(std::byte(value));
     }
     return bytes;
@@ -126,7 +127,7 @@ struct Fixture {
             {"UI/MiscData.txt", Text("[Terrain]\nMaxSlope=90\nMinHeight=-512\nMaxHeight=3328\n"
                 "[Water]\nDeepLevelPathing=128\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n")},
             {"UI/WorldEditData.txt", Text("[Terrain]\nMaxHeight=3328\nMinHeight=-512\n")},
-            {"Units/DestructableData.slk", Slk({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}})},
+            {"Units/DestructableData.slk", Slk({"destructableID", "code", "walkable", "pathTex"}, {{"Dst0", "Dst0", "0", "_"}})},
             {"Doodads/Doodads.slk", Slk({"doodID", "code"}, {{"Doo0", "Doo0"}})},
             {"Units/DestructableMetaData.slk", Slk({"ID", "field", "slk", "type", "repeat", "data", "index"},
                 {{"dwlk", "walkable", "DestructableData", "bool", "0", "0", "-1"}})}};
