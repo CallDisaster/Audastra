@@ -288,6 +288,23 @@ void DeletionFallsBackToActualGameAndNeverOldMapBytes() {
     }
 }
 
+void LastOrdinaryObjectAndNativeTableDeletionStayMapOnly() {
+    Fixture f;
+    f.members.push_back({"war3map.w3d", PathOverride(std::string(kOldPath))});
+    // 地图结构不是游戏资源；即便游戏MPQ含同名坏W3D，删除后也必须保持map missing。
+    Take(WriteVerifiedArchive(f.gameRoot / "war3patch.mpq",
+        std::vector<MapArchiveMember>{{"war3map.w3d", Text("not a map object table")}}));
+    f.Open(); f.Paint();
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    placements.doodads.clear(); Check(f.edits->EditDoodads(placements));
+    auto output = f.edits->Replacements(); const std::array<std::string, 1> removals{"war3map.w3d"};
+    auto plan = f.Plan(output, removals);
+    auto saved = f.Save(plan, output, Fixture::ExpectedPathing(true, 0, false), removals);
+    Require(Take(saved.ReadMember("war3map.doo")) == Take(placements.Serialize()), "last ordinary object is really absent from saved DOO");
+    Require(!saved.ReadMember("war3map.w3d").Succeeded(), "removed native map table is not replaced by a game member");
+    Require(Take(saved.ReadMember(std::string(kOldPath))) == Texture(4, false), "unconsumed original footprint asset stays byte exact");
+}
+
 void SharedBridgeTextureCannotChangeThroughStaticObject() {
     Fixture f;
     auto placed = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
@@ -299,6 +316,9 @@ void SharedBridgeTextureCannotChangeThroughStaticObject() {
     for (unsigned y = 14; y < 18; ++y) for (unsigned x = 14; x < 18; ++x) wpm[16 + y * 32 + x] = std::byte{0x15};
     f.Open(); f.Paint(); const auto unchangedOutput = f.edits->Replacements();
     auto unchanged = f.Plan(unchangedOutput); Check(unchanged.SaveGate());
+    auto expected = Fixture::ExpectedPathing(true, 4, false);
+    for (unsigned y = 14; y < 18; ++y) for (unsigned x = 14; x < 18; ++x) expected[16 + y * 32 + x] = std::byte{0x15};
+    f.Save(unchanged, unchangedOutput, expected);
     auto output = f.Final();
     const auto changed = TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, output);
     Require(!changed.Succeeded() || !changed.value || !changed.value->SaveGate().Succeeded(),
@@ -331,6 +351,7 @@ int main() {
         FinalDuplicateAndRemovalConflictsAreRejected();
         FinalViewMustContainTheFrozenSessionAndRemainImmutable();
         DeletionFallsBackToActualGameAndNeverOldMapBytes();
+        LastOrdinaryObjectAndNativeTableDeletionStayMapOnly();
         SharedBridgeTextureCannotChangeThroughStaticObject();
         DirectorySourcesUseTheSameFinalView();
         std::cout << "Terrain dual-stage pathing save cases passed\n";
