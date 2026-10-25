@@ -1,0 +1,11 @@
+{
+  "schema": "audastra.japi.module.v2",
+  "abi": 131072,
+  "name": "demo",
+  "version": "2.0.0",
+  "commands": [
+    {"name": "demo.add", "arguments": "ii", "result": "i", "domain": "sync"},
+    {"name": "demo.echo", "arguments": "s", "result": "s", "domain": "local"},
+    {"name": "demo.notify", "arguments": "s", "result": "v", "domain": "local"}
+  ]
+}

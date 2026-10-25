@@ -106,6 +106,8 @@ public:
 
     [[nodiscard]] std::size_t LiveCount() const noexcept;
     [[nodiscard]] bool Faulted() const noexcept { return faulted_; }
+    // 入口表、线程和故障状态；None 表示可以调用（游戏界面是否已建另由 Root 判断）。
+    [[nodiscard]] UiError Status() const noexcept { return Ready(); }
 
 private:
     enum class Owner : std::uint8_t { Library, Game };

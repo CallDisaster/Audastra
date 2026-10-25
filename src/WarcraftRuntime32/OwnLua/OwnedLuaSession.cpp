@@ -4,6 +4,7 @@
 #include "LuaHost.h"
 #include "LuaMailboxRuntime.h"
 #include "LuaMapArchive.h"
+#include "../Japi/GameSession.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 #include <array>
@@ -32,6 +33,7 @@ public:
     std::shared_ptr<GameNativeProvider> natives;
     std::unique_ptr<LuaHost> host;
     std::unique_ptr<LuaMailboxRuntime> mailbox;
+    std::unique_ptr<Japi::NativeSession> japi;
     NativeValue timer;
     bool stopped = false;
     unsigned executionDepth = 0;
@@ -161,10 +163,12 @@ public:
         return result;
     }
     void Reset() {
+        if (japi) japi->Reset();
         if (GetCurrentThreadId() == threadId.load() && host)
             Fatal("测试过程中重新登记了 native；本次 Lua 会话不跨地图或 VM 代际复用。");
     }
     void BeforeVmDestroy(std::uintptr_t destroying) {
+        if (japi) japi->BeforeVmDestroy(destroying);
         if (GetCurrentThreadId() != threadId.load()) return;
         if (!vm || !vm->IsMainVm(destroying)) return;
         if (executionDepth || callbackDepth) { Fatal("游戏在 Lua 执行期间销毁其所属 VM。"); return; }
@@ -197,12 +201,17 @@ bool InstallOwnedLuaSession(std::shared_ptr<GameImage127> image, OwnedLuaSession
     owned->config = std::move(config); owned->events = std::move(events);
     owned->archive = std::move(archive.archive); owned->types = std::move(types.types);
     auto* self = owned.get();
+    if (self->config.experimentalJapi)
+        self->japi = std::make_unique<Japi::NativeSession>([self](auto error) { self->events.fatal(error); });
     GameNativeHandlers handlers;
     handlers.reset = [self] { self->Reset(); };
     handlers.module = [self](const auto& context, auto module) { self->Module(context, module); };
     handlers.code = [self](auto vm, auto code, auto parameters) { return self->Code(vm, code, parameters); };
     handlers.beforeVmDestroy = [self](auto vm) { self->BeforeVmDestroy(vm); };
     handlers.failure = [self](auto message) { self->Fatal(message); };
+    if (self->japi) handlers.localizedString = [self](const auto& context, auto input) {
+        return Japi::DispatchGameString(*self->japi, context, input, self->config.japiModules);
+    };
     if (!InstallGameNativeObserver(std::move(image), std::move(handlers), error)) return false;
     owned.release();
     return true;

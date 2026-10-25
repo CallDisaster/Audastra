@@ -2,6 +2,7 @@
 #include "RuntimeFiles.h"
 #include "RuntimeLuaProbe.h"
 #include "OwnLua/OwnedLuaSession.h"
+#include "GameUi/GameUiModule.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <detours.h>
 #include <cstring>
@@ -55,6 +56,12 @@ void InitializeOwnedRuntime(HMODULE game) {
     OwnLua::OwnedLuaSessionConfig config;
     config.mapPath = owned.mapPath; config.mapSha256 = owned.mapSha256;
     config.nonce = owned.nonce; config.mailbox = mailbox; config.hotReload = owned.hotReload != 0;
+    config.experimentalJapi = AUD_JAPI_BRIDGE_EXPERIMENTAL != 0;
+    // 内置界面库：用同一份已核验的 Game.dll 映像解析入口，作为 audastraui 模块装进每个新 Host。
+    config.japiModules = [](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
+        return GameUi::InstallGameUiModule127(host, image.Base(),
+            [&image](GameUi::Address address, std::size_t bytes) { return image.Executable(address, bytes); });
+    };
     OwnLua::OwnedLuaSessionEvents events;
     events.observe = [&owned](const OwnLua::OwnedLuaObservation& state) {
         owned.mainThreadId = state.threadId; owned.nativeCount = state.nativeCount;

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include "NativeCodeRegistry.h"
@@ -34,6 +35,11 @@ public:
     [[nodiscard]] std::uintptr_t StringObject(std::uint32_t id) const noexcept;
     [[nodiscard]] std::optional<std::string> ReadString(std::uint32_t id) const;
     [[nodiscard]] static std::optional<std::string> ReadStringObject(std::uintptr_t object);
+    enum class StringProbe { Other, Matched, TooLong, Unreadable };
+    // 仅检查前缀；普通字符串不解码、不扫描尾部。buffer 为最大帧长 + 1 字节。
+    // TooLong 返回填满的 buffer，让协议层明确报告 LIMIT；Unreadable 不能转发。
+    [[nodiscard]] static StringProbe ReadPrefixedStringObject(std::uintptr_t object,
+        std::string_view prefix, std::span<char> buffer, std::size_t& size) noexcept;
     void ReleaseString(std::uint32_t id) const noexcept;
     [[nodiscard]] std::uintptr_t HandleObject(std::uint32_t id) const noexcept;
     [[nodiscard]] bool HandleAlive(std::uint32_t id, std::uintptr_t object) const noexcept;

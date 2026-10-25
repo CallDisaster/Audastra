@@ -7,8 +7,10 @@ if(WAR3MAPEDITOR_BUILD_TESTS)
     set(runtime_targets audastra-runtime-fixture-tests audastra-runtime-witness-tests
         audastra-own-lua-protocol-tests audastra-own-lua-host-tests audastra-own-lua-native-tests
         audastra-own-lua-archive-tests audastra-own-lua-callback-tests audastra-own-lua-type-tests
-        audastra-own-lua-code-tests audastra-own-lua-launch-tests audastra-game-ui-tests)
+        audastra-own-lua-code-tests audastra-own-lua-launch-tests audastra-game-ui-tests audastra-japi-runtime-tests
+        audastra-map-runtime-tests)
 endif()
+list(APPEND runtime_targets audastra-japi audastra-japi-loader audastra-map-runtime)
 ExternalProject_Add(audastra-runtime32
     SOURCE_DIR "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32"
     BINARY_DIR "${AUDASTRA_RUNTIME32_BINARY_DIR}"
@@ -22,4 +24,5 @@ ExternalProject_Add(audastra-runtime32
     INSTALL_COMMAND ""
     BUILD_BYPRODUCTS
         "${AUDASTRA_RUNTIME32_OUTPUT_DIR}/audastra-warcraft-launcher.exe"
-        "${AUDASTRA_RUNTIME32_OUTPUT_DIR}/audastra-warcraft-bootstrap.dll")
+        "${AUDASTRA_RUNTIME32_OUTPUT_DIR}/audastra-warcraft-bootstrap.dll"
+        "${AUDASTRA_RUNTIME32_OUTPUT_DIR}/warvk_runtime.dll")
