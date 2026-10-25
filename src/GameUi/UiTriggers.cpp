@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <map>
 #include <optional>
+#include <set>
 #include <unordered_map>
 
 namespace War3Map::GameUi {
@@ -274,13 +275,27 @@ private:
                 target = Ref(frames_[found->second], &info);
                 break;
             }
-            case UiAnchorTarget::GameArea:
-                if (anchor.targetId != kGameCodeRoot) {
-                    Error("框架 " + frame.id + " 锚在游戏界面区域 " + anchor.targetId + " 上，自然 T 暂时只能锚在整个游戏界面");
+            case UiAnchorTarget::GameArea: {
+                if (anchor.targetId == kGameCodeRoot) {
+                    target = Call("AudastraUIGameUI");
+                    break;
+                }
+                const auto area = CodeArea(anchor.targetId);
+                if (!area) {
+                    Error("框架 " + frame.id + " 锚在不存在的游戏界面区域 " + anchor.targetId + " 上");
                     continue;
                 }
-                target = Call("AudastraUIGameUI");
-                break;
+                // 游戏代码区域没有可取的框架句柄，按固定位置换成屏幕坐标。
+                if (fixedAreas_.insert(frame.id + "\n" + anchor.targetId).second) {
+                    warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_AREA_FIXED",
+                        "框架 " + frame.id + " 锚在游戏界面区域" + std::string(area->label) + "（" + anchor.targetId
+                            + "），按 1.27a 经典版里这块区域的固定位置换算成屏幕坐标；地图移动或隐藏这块区域时不跟随"));
+                }
+                out.push_back(Call("AudastraUISetAbsPoint", {Self(info), std::string(kAnchors[point]),
+                    Offset(FramePointX(area->rect, anchor.targetPoint) + anchor.x, dx, root),
+                    Offset(FramePointY(area->rect, anchor.targetPoint) + anchor.y, dy, root)}));
+                continue;
+            }
             }
             out.push_back(Call("AudastraUISetPoint", {Self(info), std::string(kAnchors[point]), target,
                 std::string(kAnchors[targetPoint]), Offset(anchor.x, dx, root), Offset(anchor.y, dy, root)}));
@@ -631,6 +646,25 @@ private:
         return "0";
     }
 
+    struct CodeAreaPlace {
+        std::string_view label;
+        FrameRect rect;
+    };
+
+    // 游戏代码区域在 1.27a 经典版里的固定矩形（GameCodeLayout 的数据，首次用到时排一次版）。
+    std::optional<CodeAreaPlace> CodeArea(const std::string& id) {
+        if (!areaTree_) {
+            areaTree_.emplace();
+            (void)areaTree_->AddGameCodeAreas();
+            (void)areaTree_->Layout();
+        }
+        const auto node = areaTree_->FindCodeArea(id);
+        const auto& areas = GameCodeAreas();
+        const auto found = std::find_if(areas.begin(), areas.end(), [&](const GameCodeArea& area) { return area.id == id; });
+        if (!node || found == areas.end()) return std::nullopt;
+        return CodeAreaPlace{found->label, areaTree_->Nodes()[*node].rect};
+    }
+
     const UiDescription& d_;
     const UiTriggerOptions& options_;
     std::string name_;
@@ -640,6 +674,8 @@ private:
     std::unordered_map<std::string, std::map<Property, std::vector<std::string>>> overrides_;
     std::vector<Diagnostic> errors_;
     std::vector<Diagnostic> warnings_;
+    std::optional<FrameTree> areaTree_;
+    std::set<std::string> fixedAreas_;  // 已提示过的“框架\n区域”
 };
 
 } // namespace

@@ -45,7 +45,8 @@ struct UiTriggerPlan {
     std::vector<std::string> variables;  // 生成的全局变量名（不带 udg_），按文本顺序
 };
 
-// 描述检查不通过时原样返回其诊断；生成不了的部分（例如锚在游戏代码区域、改字号却没有默认字体）一次全部列出并失败，不给部分结果。
+// 描述检查不通过时原样返回其诊断；生成不了的部分（例如改字号却没有默认字体）一次全部列出并失败，不给部分结果。
+// 锚在游戏代码区域（小地图、命令面板等，GameCodeLayout）时按 1.27a 经典版的固定位置换成屏幕坐标，并给出警告。
 // 成功时 diagnostics 里可能有警告（例如模板不在已读入的界面目录里）。
 [[nodiscard]] Result<UiTriggerPlan> GenerateUiTriggers(const UiDescription& description, const UiTriggerOptions& options = {});
 

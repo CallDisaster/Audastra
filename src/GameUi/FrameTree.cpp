@@ -26,22 +26,6 @@ int PointRow(FramePoint point) {
     return static_cast<int>(point) / 3;  // 0 上，1 中，2 下
 }
 
-float PointX(const FrameRect& rect, FramePoint point) {
-    switch (PointColumn(point)) {
-    case 0: return rect.left;
-    case 1: return (rect.left + rect.right) * 0.5f;
-    default: return rect.right;
-    }
-}
-
-float PointY(const FrameRect& rect, FramePoint point) {
-    switch (PointRow(point)) {
-    case 0: return rect.top;
-    case 1: return (rect.top + rect.bottom) * 0.5f;
-    default: return rect.bottom;
-    }
-}
-
 void UpsertAnchor(std::vector<FrameAnchor>& anchors, FrameAnchor anchor) {
     for (auto& existing : anchors) {
         if (existing.point == anchor.point) {
@@ -94,6 +78,22 @@ AxisResult SolveAxis(std::optional<float> low, std::optional<float> high, std::o
 }
 
 } // namespace
+
+float FramePointX(const FrameRect& rect, FramePoint point) noexcept {
+    switch (PointColumn(point)) {
+    case 0: return rect.left;
+    case 1: return (rect.left + rect.right) * 0.5f;
+    default: return rect.right;
+    }
+}
+
+float FramePointY(const FrameRect& rect, FramePoint point) noexcept {
+    switch (PointRow(point)) {
+    case 0: return rect.top;
+    case 1: return (rect.top + rect.bottom) * 0.5f;
+    default: return rect.bottom;
+    }
+}
 
 bool IsTextNode(const FrameNode& node) {
     if (node.kind == DefinitionKind::String) return true;
@@ -575,8 +575,8 @@ void FrameTree::Solve(std::uint32_t id, std::vector<std::uint8_t>& state, std::v
         if (relative.layout == LayoutState::Unplaced || relative.layout == LayoutState::Cycle) continue;
         anchor.relativeNode = *target;
         if (i < nodes_[id].anchors.size()) nodes_[id].anchors[i].relativeNode = *target;
-        const float x = PointX(relative.rect, anchor.relativePoint) + anchor.x;
-        const float y = PointY(relative.rect, anchor.relativePoint) + anchor.y;
+        const float x = FramePointX(relative.rect, anchor.relativePoint) + anchor.x;
+        const float y = FramePointY(relative.rect, anchor.relativePoint) + anchor.y;
         if (!firstPoint) firstPoint = anchor.point;
         switch (PointColumn(anchor.point)) {
         case 0: left = x; break;

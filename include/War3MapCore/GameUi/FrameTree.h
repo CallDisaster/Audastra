@@ -26,6 +26,10 @@ struct FrameRect {
     [[nodiscard]] float Height() const noexcept { return top - bottom; }
 };
 
+// 矩形上某个锚点（左上、中心……）的屏幕位置。
+[[nodiscard]] float FramePointX(const FrameRect& rect, FramePoint point) noexcept;
+[[nodiscard]] float FramePointY(const FrameRect& rect, FramePoint point) noexcept;
+
 inline constexpr std::uint32_t kScreenNode = 0;
 inline constexpr std::uint32_t kNoNode = 0xFFFFFFFFu;
 

@@ -234,16 +234,36 @@ void TestAppliedThroughSharedChain() {
 }
 
 void TestRefusalsAndTemplates() {
-    // 锚在游戏代码区域：每处都列出并整体失败。
+    // 锚在游戏代码区域：按 1.27a 的固定位置换成屏幕坐标，重复框架照样按下标平移；每处一条警告。
     UiDescription d = CastBar();
-    d.frames[0].anchors = {Anchor(FramePoint::Bottom, UiAnchorTarget::GameArea, FramePoint::Top, 0.0, 0.0, "Minimap")};
-    d.frames[1].anchors = {Anchor(FramePoint::Left, UiAnchorTarget::GameArea, FramePoint::Right, 0.0, 0.0, "CommandBar")};
+    d.frames[0].anchors = {Anchor(FramePoint::Bottom, UiAnchorTarget::GameArea, FramePoint::Top, 0.0, 0.01, "CommandBar")};
+    d.frames[1].anchors = {Anchor(FramePoint::BottomLeft, UiAnchorTarget::GameArea, FramePoint::TopLeft, 0.0, 0.0, "Minimap")};
     UiTriggerOptions withFont;
     withFont.defaultFont = "Fonts\\dfst-m3u.ttf";
-    const auto refused = GenerateUiTriggers(d, withFont);
+    const auto fixed = GenerateUiTriggers(d, withFont);
+    Require(fixed.Succeeded(), "锚在游戏代码区域：" + First(fixed.diagnostics));
+    Require(std::count_if(fixed.diagnostics.begin(), fixed.diagnostics.end(), [](const auto& item) {
+                return item.code == "AUI_TRIGGER_AREA_FIXED" && item.severity == DiagnosticSeverity::Warning
+                    && Contains(item.message, "1.27a");
+            }) == 2,
+        "锚在游戏代码区域的框架各提示一次：" + First(fixed.diagnostics));
+    // 命令面板右下角离屏幕右边 0.007375、离底 0.002，宽 0.1745、高 0.129：上边中点 (0.705375, 0.131)。
+    Require(Contains(fixed.value->featureText, "AudastraUISetAbsPoint(udg_AUI_cast_root, AudastraAnchorBottom, 0.705375, 0.141)"),
+        "命令面板上边中点再往上 0.01");
+    // 小地图左上角 (0.009375, 0.145)。
+    Require(Contains(fixed.value->featureText, "AudastraUISetAbsPoint(udg_AUI_cast_slot[GetForLoopIndexA()], AudastraAnchorBottomLeft, "
+                                               "OperatorReal(0.009375, OperatorAdd, OperatorReal(I2R(GetForLoopIndexA()), OperatorMultiply, 0.04)), 0.145)"),
+        "小地图左上角，重复按钮逐个右移");
+    Require(!Contains(fixed.value->featureText, "Minimap") && !Contains(fixed.value->featureText, "CommandBar"),
+        "不引用游戏代码区域的框架");
+
+    // 生成不了的部分每处都列出并整体失败：两个框架改了字号，却没有游戏默认字体的路径，不猜字体。
+    UiDescription twoFonts = CastBar();
+    twoFonts.frames[1].fontHeight = 0.02;
+    const auto refused = GenerateUiTriggers(twoFonts);
     Require(!refused.Succeeded() && refused.diagnostics.size() == 2
             && std::all_of(refused.diagnostics.begin(), refused.diagnostics.end(),
-                [](const auto& item) { return item.code == "AUI_TRIGGER_UNSUPPORTED"; }),
+                [](const auto& item) { return item.code == "AUI_TRIGGER_UNSUPPORTED" && Contains(item.message, "默认字体"); }),
         "不支持的部分全部列出：" + First(refused.diagnostics));
     // 描述本身不合法时返回描述检查的诊断。
     UiDescription nested = CastBar();
@@ -253,10 +273,6 @@ void TestRefusalsAndTemplates() {
     nested.frames[1].children = {inner};
     const auto invalid = GenerateUiTriggers(nested, withFont);
     Require(!invalid.Succeeded() && invalid.diagnostics.front().code == "AUI_REPEAT_NESTED", "嵌套重复由描述检查拒绝");
-
-    // 改了字号但没有默认字体路径时拒绝，不猜字体。
-    const auto noFont = GenerateUiTriggers(CastBar());
-    Require(!noFont.Succeeded() && Contains(First(noFont.diagnostics), "默认字体"), "缺默认字体时拒绝");
 
     // 基础模板文件可解析，并提供生成的触发器用到的全部模板与子框架。
     const auto fdf = ParseFdf(UiTemplateFdfText(), std::string(kUiTemplateFdfMember));
