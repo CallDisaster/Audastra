@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainPointQuery.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
+#include "War3MapCore/MapData/TerrainBlockEditing.h"
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/MapData/TerrainBoundsEditing.h"
 
@@ -84,6 +85,7 @@ public:
         // 水刷使用自己的完整锚点与随机序列，不能当成普通高度笔刷重放。
         [[nodiscard]] const TerrainWaterBrush* WaterBrush() const noexcept { return waterBrush_ ? &*waterBrush_ : nullptr; }
         [[nodiscard]] const TerrainWaterBrushResult* WaterResult() const noexcept { return waterResult_ ? &*waterResult_ : nullptr; }
+        [[nodiscard]] const TerrainBlockPasteIntent* BlockPasteIntent() const noexcept { return blockPaste_ ? &*blockPaste_ : nullptr; }
         // 水刷/原版悬崖来源检查、算法及事务准备的预算结算；其他笔刷为0，算法计数在WaterResult中。
         [[nodiscard]] std::size_t WaterPreparationWork() const noexcept { return waterPreparationWork_; }
         // 本笔已预收的临时候选/撤销/联动峰值；不能把已释放临时网格累计当成历史。
@@ -112,6 +114,7 @@ public:
         std::optional<bool> cliffEnforceWaterLimits_;
         TerrainCornerRampAlgorithm cornerRampAlgorithm_ = TerrainCornerRampAlgorithm::DryOnly;
         TerrainStraightRampAlgorithm straightRampAlgorithm_ = TerrainStraightRampAlgorithm::Independent;
+        std::optional<TerrainBlockPasteIntent> blockPaste_;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
         std::vector<TerrainStrokePoint> points_;
@@ -238,6 +241,9 @@ public:
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points, bool followDoodads = false,
         const TerrainWaterBrushLimits& limits = {},
         TerrainStraightRampAlgorithm algorithm = TerrainStraightRampAlgorithm::Independent) const;
+    [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainBlockPasteEdit(const TerrainPathingResources& resources,
+        const TerrainBlockPasteIntent& intent, bool followDoodads = false,
+        const TerrainWaterBrushLimits& limits = {}) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     // 输入实际native资源owner；不能用任意W3I覆写或自报规则授予范围保存资格。

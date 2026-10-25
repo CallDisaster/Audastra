@@ -992,7 +992,13 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
             return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
         }
         const auto count = command->terrainStroke->intent.points.size();
-        if ((!count && !command->terrainStroke->intent.palette) || count > 4096 - points) return fail("TERRAIN_JOURNAL_BUDGET");
+        if ((!count && !command->terrainStroke->intent.palette && !command->terrainStroke->intent.blockPaste)
+            || count > 4096 - points) return fail("TERRAIN_JOURNAL_BUDGET");
+        if (command->terrainStroke->intent.blockPaste) {
+            const auto bytes = command->terrainStroke->intent.blockPaste->expectedBlockSha256.capacity() + 1;
+            if (bytes > TerrainJournalMaximumBytes - frozenBytes) return fail("TERRAIN_JOURNAL_BUDGET");
+            frozenBytes += bytes;
+        }
         points += count; journal.strokes.push_back(*command->terrainStroke);
     }
     if (baselineLayers && !journal.strokes.empty()) {
