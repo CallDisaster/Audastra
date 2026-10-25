@@ -423,6 +423,9 @@ void CodeChecker::CheckFunction(const FunctionDecl& decl, const FunctionSymbol& 
         if (context_.functions.contains(local.name)) {
             Report(local.line, "JASS_REDECLARED", "局部变量名 " + Quote(local.name) + " 已被声明为函数");
         }
+        if (context_.types.Find(local.name) != kUnknownType) {
+            Report(local.line, "JASS_REDECLARED", "局部变量名 " + Quote(local.name) + " 已被声明为类型");
+        }
         if (flags_.shadow && context_.globals.contains(local.name)) {
             Report(local.line, "JASS_SHADOW", "局部变量 " + Quote(local.name) + " 与全局变量同名");
         }

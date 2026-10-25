@@ -351,11 +351,24 @@ void TestScriptLibrary() {
     std::sort(listed.begin(), listed.end());
     Require(defined == listed, "cfg 与函数库定义列出同一组函数");
 
+    // 注入文件 = JAPI 客户端库 + 界面库；这里只声明两者用到的原版类型与 native。
     constexpr std::string_view common =
-        "type agent extends handle\ntype trigger extends agent\n"
+        "type agent extends handle\ntype trigger extends agent\ntype timer extends agent\n"
+        "type triggeraction extends handle\n"
         "native R2SW takes real r, integer width, integer precision returns string\n"
         "native SubString takes string source, integer start, integer end returns string\n"
-        "native StringLength takes string s returns integer\n";
+        "native StringLength takes string s returns integer\n"
+        "native I2S takes integer i returns string\nnative S2I takes string s returns integer\n"
+        "native S2R takes string s returns real\nnative GetLocalizedString takes string source returns string\n"
+        "native CreateTrigger takes nothing returns trigger\nnative DestroyTrigger takes trigger whichTrigger returns nothing\n"
+        "native TriggerAddAction takes trigger whichTrigger, code actionFunc returns triggeraction\n"
+        "native TriggerExecute takes trigger whichTrigger returns nothing\n"
+        "native TriggerEvaluate takes trigger whichTrigger returns boolean\n"
+        "native IsTriggerEnabled takes trigger whichTrigger returns boolean\n"
+        "native CreateTimer takes nothing returns timer\nnative PauseTimer takes timer whichTimer returns nothing\n"
+        "native TimerStart takes timer whichTimer, real timeout, boolean periodic, code handlerFunc returns nothing\n";
+    Require(script.starts_with("library AudastraJapi\n") && script.find("library AudastraUI requires AudastraJapi") != std::string::npos,
+        "注入文件里 JAPI 客户端库在界面库前面");
     Jass::VJassOptions options;
     options.baseScripts = {Jass::JassSource{"common.j", common}};
     const auto translated = Jass::TranslateVJass(script, "AudastraUI.j", options);

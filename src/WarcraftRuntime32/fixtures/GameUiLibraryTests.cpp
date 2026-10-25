@@ -1,11 +1,17 @@
 #include "../GameUi/GameUiLibrary.h"
+#include "../GameUi/GameUiModule.h"
+
+#include "aj/Protocol.h"
 
 #include <windows.h>
 
 #include <array>
 #include <cstdarg>
 #include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -477,6 +483,144 @@ void FaultsAndThreads() {
     Check(ui.Faulted() && ui.SetText(text.handle, "x") == UiError::Faulted, "library stays disabled after a fault");
 }
 
+// 经 JAPI v2 宿主调用内置模块：线格式进、线格式出，和地图侧走同一条路。
+struct ModuleHost {
+    audastra::japi::Host host;
+    std::uint32_t epoch = 1;
+    std::uint32_t request = 0;
+    audastra::japi::Response Call(const std::string& command) {
+        return host.Dispatch("ajapi:2;" + std::to_string(epoch) + ";" + std::to_string(++request) + ";" + command);
+    }
+};
+
+void ModuleCalls() {
+    Reset();
+    ModuleHost m;
+    Check(InstallGameUiModule(m.host, Entries()) == AJ_OK, "built-in module installs through Host::Install");
+    Check(InstallGameUiModule(m.host, Entries()) == AJ_STATE, "same module name cannot be installed twice");
+    Check(m.Call("module.load;s:audastraui").status == AJ_OK, "map-side load finds the active built-in module");
+    Check(m.Call("module.load;s:other").status == AJ_UNSUPPORTED, "no loader: maps cannot pull other modules");
+    Check(m.Call("module.info;s:audastraui").value.text
+        == "audastraui|1.0.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
+
+    auto r = m.Call("audastraui.ready");
+    Check(r.status == AJ_OK && r.value.kind == AJ_BOOL && r.value.integer == 1, "ready with complete entries and game UI");
+    r = m.Call("audastraui.create;s:Text;d:0;i:3;i:7");
+    Check(r.status == AJ_OK && r.value.kind == AJ_HANDLE && r.value.integer > 0, "create returns a frame handle");
+    Check(Logged("create Text " + Hex(g_root->Self()) + " 0 3 7"), "create arguments reach the game function");
+    const auto text = r.value.integer;
+    const auto* textObject = g_frames.back().get();
+    const auto frame = "d:" + std::to_string(text);
+
+    Check(m.Call("audastraui.settext;" + frame + ";s:生命%3B%25").status == AJ_OK
+        && Logged("ttext " + Hex(textObject->Self()) + " 生命;%"), "text argument is decoded once");
+    Check(m.Call("audastraui.setcolor;" + frame + ";i:255;i:204;i:0;i:255").status == AJ_OK
+        && Logged("tcolor " + Hex(textObject->Self()) + " FFFFCC00"), "colour components packed as ARGB");
+    Check(m.Call("audastraui.setabspoint;" + frame + ";i:4;r:4.00000000e-1;r:3e-1").status == AJ_OK
+        && Logged("abs " + Hex(textObject->Self() + Layout127::ClassicLayout) + " 4 0.400 0.300 1"), "real arguments");
+    Check(m.Call("audastraui.setsize;" + frame + ";r:0.2;r:0.05").status == AJ_OK
+        && Logged("width " + Hex(textObject->Self() + Layout127::ClassicLayout) + " 0.200")
+        && Logged("height " + Hex(textObject->Self() + Layout127::ClassicLayout) + " 0.050"), "size sets width and height");
+    g_log.clear();
+    Check(m.Call("audastraui.setsize;" + frame + ";r:0.2;r:-1").status == AJ_ARGUMENT && g_log.empty(),
+        "invalid size changes nothing");
+
+    r = m.Call("audastraui.setcolor;" + frame + ";i:256;i:0;i:0;i:255");
+    const auto failed = m.request;
+    Check(r.status == AJ_ARGUMENT && r.value.kind == AJ_VOID, "colour component range checked");
+    Check(m.Call("audastraui.error;i:" + std::to_string(failed)).value.text == UiErrorText(UiError::BadArgument),
+        "error text belongs to the failed request");
+    Check(m.Call("audastraui.error;i:" + std::to_string(failed - 1)).value.text.empty(),
+        "other requests have no module error");
+    Check(m.Call("audastraui.settexture;" + frame + ";s:x.blp;b:0").status == AJ_UNSUPPORTED, "unsupported operation");
+    Check(m.Call("audastraui.find;s:Missing;i:0").status == AJ_ARGUMENT, "missing frame name");
+    const auto root = m.Call("audastraui.root").value.integer;
+    Check(m.Call("audastraui.destroy;d:" + std::to_string(root)).status == AJ_STATE, "game frames cannot be destroyed");
+    Check(m.Call("audastraui.settext;i:1;s:x").status == AJ_ARGUMENT, "host checks argument types against the contract");
+    Check(m.Call("audastraui.nothing").status == AJ_UNKNOWN, "unknown command");
+
+    // 鼠标移入、移出；点击依赖真实左键状态，由上面的 PointerEvents 覆盖。
+    r = m.Call("audastraui.create;s:Button;d:0;i:0;i:0");
+    const auto button = r.value.integer;
+    auto* buttonObject = g_frames.back().get();
+    Check(m.Call("audastraui.watch;d:" + std::to_string(button) + ";i:8").status == AJ_ARGUMENT, "watch mask range");
+    Check(m.Call("audastraui.watch;d:" + std::to_string(button) + ";i:3").status == AJ_OK, "watch enter and leave");
+    g_tables.hovered = buttonObject->Self();
+    r = m.Call("audastraui.poll");
+    Check(r.status == AJ_OK && r.value.integer == 1, "poll queues the enter event");
+    Check(m.Call("audastraui.event").value.text == std::to_string(button) + "|1", "event text is handle|kind");
+    Check(m.Call("audastraui.event").value.text.empty(), "queue drained");
+    g_tables.hovered = 0;
+    Check(m.Call("audastraui.poll").value.integer == 1 && m.Call("audastraui.event").value.text == std::to_string(button) + "|2",
+        "leave event");
+
+    // 新 VM 代际：旧模块走停止、销毁，新实例的句柄从头开始，旧句柄失效。
+    const auto reset = m.host.Reset(2);
+    Check(reset.status == AJ_OK && reset.applied && reset.stoppingModules == 0 && m.host.ModuleCount() == 0,
+        "host reset destroys the module");
+    m.epoch = 2;
+    m.request = 0;
+    Check(InstallGameUiModule(m.host, Entries()) == AJ_OK, "next VM installs a fresh module");
+    Check(m.Call("audastraui.settext;" + frame + ";s:x").status == AJ_ARGUMENT, "handles from the previous VM are invalid");
+}
+
+void ModuleUnavailable() {
+    ModuleHost m;
+    Check(InstallGameUiModule(m.host, GameUiEntryPoints{}, "Game.dll 版本不受支持") == AJ_OK, "incomplete entries still install");
+    auto r = m.Call("audastraui.ready");
+    Check(r.status == AJ_OK && r.value.integer == 0, "not ready without entries");
+    Check(m.Call("audastraui.error;i:" + std::to_string(m.request)).value.text == "Game.dll 版本不受支持",
+        "ready reports the resolve reason");
+    Check(m.Call("audastraui.create;s:Text;d:0;i:0;i:0").status == AJ_STATE, "calls refused while not ready");
+    Check(m.Call("audastraui.poll").status == AJ_STATE, "poll stops while not ready");
+    bool wrong = false;
+    std::thread other([&] { wrong = m.Call("audastraui.ready").status == AJ_THREAD; });
+    other.join();
+    Check(wrong, "host thread only");
+}
+
+// AudastraUI.j 里每个模块调用与契约一致：命令名、参数类型顺序、返回类型；契约里每条命令都被用到。
+void ScriptMatchesModule() {
+    std::ifstream stream(AUDASTRA_UI_SCRIPT, std::ios::binary);
+    const std::string script((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+    Check(!script.empty(), "read AudastraUI.j");
+    const auto contract = GameUiModuleContract();
+    std::map<std::string, const audastra::japi::CommandContract*> commands;
+    for (const auto& command : contract.commands) commands[command.name] = &command;
+    const std::pair<std::string_view, char> callers[] = {{"Run(\"", 'v'}, {"Frame(\"", 'd'},
+        {"AjCallBool(PREFIX + \"", 'b'}, {"AjCallText(PREFIX + \"", 's'}, {"AjCallInt(PREFIX + \"", 'i'},
+        {"AjCallHandle(PREFIX + \"", 'd'}, {"AjCallVoid(PREFIX + \"", 'v'}};
+    const std::pair<std::string_view, char> arguments[] = {{"AjArgHandle(", 'd'}, {"AjArgInt(", 'i'},
+        {"AjArgRealText(", 'r'}, {"AjArgReal(", 'r'}, {"AjArgText(", 's'}, {"AjArgBool(", 'b'}};
+    std::map<std::string, int> used;
+    for (const auto& [caller, result] : callers) {
+        for (auto at = script.find(caller); at != std::string::npos; at = script.find(caller, at + 1)) {
+            const auto nameStart = at + caller.size();
+            const auto nameEnd = script.find('"', nameStart);
+            const auto name = "audastraui." + script.substr(nameStart, nameEnd - nameStart);
+            std::string types;
+            int depth = 1;
+            for (auto i = nameEnd + 1; i < script.size() && depth > 0; ++i) {
+                if (script[i] == '(') ++depth;
+                else if (script[i] == ')') --depth;
+                for (const auto& [argument, type] : arguments) {
+                    if (script.compare(i, argument.size(), argument) == 0) {
+                        types += type;
+                        break;
+                    }
+                }
+            }
+            const auto found = commands.find(name);
+            Check(found != commands.end(), ("script calls a command the module lacks: " + name).c_str());
+            Check(found->second->arguments == types, ("argument types differ: " + name + " " + types).c_str());
+            Check(audastra::japi::TypeChar(found->second->resultKind) == result, ("result type differs: " + name).c_str());
+            ++used[name];
+        }
+    }
+    for (const auto& command : contract.commands)
+        Check(used.contains(command.name), ("module command unused by the script: " + command.name).c_str());
+}
+
 } // namespace
 
 int main() {
@@ -488,6 +632,9 @@ int main() {
         TocLoading();
         PointerEvents();
         FaultsAndThreads();
+        ModuleCalls();
+        ModuleUnavailable();
+        ScriptMatchesModule();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         for (const auto& line : g_log) std::cerr << "  " << line << "\n";

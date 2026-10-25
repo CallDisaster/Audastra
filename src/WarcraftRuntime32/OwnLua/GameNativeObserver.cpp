@@ -1,6 +1,7 @@
 #include "GameNativeObserver.h"
 #include "GameVm127.h"
 #include "LuaEntryCommand.h"
+#include "audastra_japi.h"
 
 #include <detours.h>
 #include <intrin.h>
@@ -14,6 +15,7 @@ using RegisterFunction = int(__fastcall*)(std::uintptr_t, const char*, const cha
 using InitializeFunction = void(__cdecl*)();
 using SupplementFunction = int(__cdecl*)();
 using CheatFunction = std::uint32_t(__cdecl*)(std::uintptr_t);
+using LocalizedStringFunction = std::uint32_t(__cdecl*)(std::uintptr_t);
 using RunFunction = int(__fastcall*)(std::uint32_t, std::uint32_t, std::uintptr_t, std::uint32_t*, int, int, int);
 using DestroyVmFunction = std::uintptr_t(__thiscall*)(std::uintptr_t);
 constexpr std::uintptr_t kRegisterRva = 0x7e3710, kInitializeRva = 0x1e9a50;
@@ -23,6 +25,7 @@ struct ThreadRegistration {
     std::shared_ptr<NativeRegistry> registry;
     std::uint64_t generation = 0;
     CheatFunction cheat = nullptr;
+    LocalizedStringFunction localizedString = nullptr;
 };
 struct Observer {
     std::shared_ptr<GameImage127> image;
@@ -81,6 +84,37 @@ std::uint32_t __cdecl ObserveCheat(std::uintptr_t stringObject) noexcept {
     } catch (...) { self->Fail("处理游戏 Lua 入口时发生异常。"); }
     return 0;
 }
+std::uint32_t __cdecl ObserveLocalizedString(std::uintptr_t stringObject) noexcept {
+    auto* self = observer.load();
+    if (!self) return 0;
+    try {
+        std::array<char, AJ_MAX_FRAME + 1> bytes{};
+        std::size_t size = 0;
+        const auto probe = GameVm127::ReadPrefixedStringObject(stringObject, "ajapi:", bytes, size);
+        if (probe == GameVm127::StringProbe::Unreadable) {
+            self->Fail("GetLocalizedString 无法安全读取 VM 字符串前缀。"); return 0;
+        }
+        ThreadRegistration current;
+        std::string failure;
+        {
+            std::lock_guard lock(self->mutex);
+            const auto found = self->threads.find(GetCurrentThreadId());
+            if (found != self->threads.end()) current = found->second;
+            if (probe != GameVm127::StringProbe::Other) {
+                if (self->failed || !current.registry || !current.registry->Ready() || !self->handlers.localizedString)
+                    failure = "JAPI 入口的 native 注册快照尚未就绪或已失效。";
+                else if (!current.registry->Seal()) failure = current.registry->Error();
+            }
+        }
+        if (!current.localizedString) { self->Fail("当前线程没有原版 GetLocalizedString 登记。"); return 0; }
+        // 非本协议（包括非 UTF-8 本地化键、null 和旧协议）原指针/原返回值直通。
+        if (probe == GameVm127::StringProbe::Other) return current.localizedString(stringObject);
+        if (!failure.empty()) { self->Fail(failure); return 0; }
+        // 超长输入只传最大帧长+1，SDK 回 LIMIT，不继续扫描游戏内存。
+        return self->handlers.localizedString({self->image, current.registry, current.generation, true},
+            std::string_view(bytes.data(), size));
+    } catch (...) { self->Fail("处理游戏 JAPI 字符串入口时发生异常。"); return 0; }
+}
 int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, const char* signature) noexcept {
     auto* self = observer.load();
     if (!self || !self->registerNative) return 0;
@@ -123,6 +157,13 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                             current.cheat = reinterpret_cast<CheatFunction>(function);
                             registered = reinterpret_cast<std::uintptr_t>(&ObserveCheat);
                         }
+                    } else if (self->handlers.localizedString && std::string_view(copiedName.data()) == "GetLocalizedString") {
+                        if (std::string_view(copiedSignature.data()) != "(S)S")
+                            failure = "GetLocalizedString 实际签名与字符串桥不符。";
+                        else {
+                            current.localizedString = reinterpret_cast<LocalizedStringFunction>(function);
+                            registered = reinterpret_cast<std::uintptr_t>(&ObserveLocalizedString);
+                        }
                     }
                 }
             }
@@ -158,7 +199,8 @@ void __cdecl ObserveInitialize() noexcept {
             const auto found = self->threads.find(GetCurrentThreadId());
             if (found != self->threads.end()) {
                 auto& current = found->second;
-                ready = !self->failed && current.cheat && current.registry && current.registry->CompleteStock();
+                ready = !self->failed && current.cheat && (!self->handlers.localizedString || current.localizedString)
+                    && current.registry && current.registry->CompleteStock();
             }
         }
         if (!ready) self->Fail("完整 native 初始化未产生有效的 Lua 入口登记。");

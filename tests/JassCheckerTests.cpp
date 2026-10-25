@@ -79,6 +79,12 @@ void TestDeclarations() {
         "原生函数须在函数之前");
     Expect("function A takes nothing returns nothing\n    local integer DoNothing = 0\nendfunction\n", 2, "JASS_REDECLARED",
         "局部变量与函数同名");
+    Expect("type event extends handle\nfunction A takes nothing returns nothing\n    local string event\nendfunction\n", 3,
+        "JASS_REDECLARED", "局部变量不能占用原版 event 类型名");
+    Expect("function A takes nothing returns nothing\n    local integer unit = 0\nendfunction\n", 2,
+        "JASS_REDECLARED", "局部变量不能占用基础脚本已声明的类型名");
+    Expect("type event extends handle\nfunction A takes nothing returns nothing\n    local string eventText = \"\"\nendfunction\n", 0,
+        "", "事件载荷使用不冲突的局部名称");
     Expect("function A takes integer p returns nothing\n    local integer p = 2\nendfunction\n", 0, "", "局部变量可以遮蔽参数");
     Expect("function A takes nothing returns nothing\n    local integer i = 0\n    local integer i = 1\nendfunction\n", 3,
         "JASS_REDECLARED", "局部变量重复");

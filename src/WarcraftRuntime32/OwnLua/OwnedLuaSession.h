@@ -4,6 +4,8 @@
 #include "War3MapCore/Runtime/LuaTestMailbox.h"
 #include <functional>
 
+namespace audastra::japi { class Host; }
+
 namespace Audastra::Runtime32::OwnLua {
 
 struct OwnedLuaSessionConfig {
@@ -12,6 +14,9 @@ struct OwnedLuaSessionConfig {
     std::string nonce;
     LuaTestMailbox* mailbox = nullptr;
     bool hotReload = false;
+    bool experimentalJapi = false; // 未通过真实游戏验收，默认不改派字符串 native。
+    // 运行时自带的 JAPI 模块（界面库等），每个新 VM 的 Host 建好后装入；只在 experimentalJapi 时使用。
+    std::function<std::int32_t(const GameImage127&, audastra::japi::Host&)> japiModules;
 };
 
 struct OwnedLuaObservation {

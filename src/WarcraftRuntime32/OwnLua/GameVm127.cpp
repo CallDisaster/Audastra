@@ -111,6 +111,24 @@ std::optional<std::string> GameVm127::ReadStringObject(std::uintptr_t object) {
     return buffer;
 }
 std::optional<std::string> GameVm127::ReadString(std::uint32_t id) const { return ReadStringObject(StringObject(id)); }
+GameVm127::StringProbe GameVm127::ReadPrefixedStringObject(std::uintptr_t object,
+    std::string_view prefix, std::span<char> buffer, std::size_t& size) noexcept {
+    size = 0;
+    if (prefix.empty() || buffer.size() <= prefix.size()) return StringProbe::Unreadable;
+    __try {
+        const auto linked = object ? Word(object + 8) : 0;
+        const auto* text = reinterpret_cast<const char*>(linked ? Word(linked + 0x1c) : 0);
+        if (!text) return StringProbe::Other; // 原版处理 null/空对象
+        for (std::size_t index = 0; index < prefix.size(); ++index)
+            if (text[index] != prefix[index]) return StringProbe::Other;
+        for (; size < buffer.size(); ++size) {
+            const auto value = text[size];
+            if (!value) return StringProbe::Matched;
+            buffer[size] = value;
+        }
+        return StringProbe::TooLong;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { size = 0; return StringProbe::Unreadable; }
+}
 void GameVm127::ReleaseString(std::uint32_t id) const noexcept {
     if (!id || !Alive()) return;
     __try {
