@@ -82,7 +82,7 @@ endforeach()
 
 add_executable(war3-map-core-tests CoreTests.cpp)
 add_executable(war3-map-terrain-stroke-journal-tests
-    TerrainStrokeJournalTests.cpp TerrainCliffPaletteAppendCases.h)
+    TerrainStrokeJournalTests.cpp TerrainCliffPaletteAppendCases.h TerrainHistoryJournalCases.h)
 target_link_libraries(war3-map-terrain-stroke-journal-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-map-terrain-stroke-journal-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-terrain-stroke-journal-tests PRIVATE /W4 /permissive- /utf-8)
@@ -411,7 +411,7 @@ target_compile_definitions(war3-map-terrain-tests PRIVATE NOMINMAX WIN32_LEAN_AN
 target_compile_options(war3-map-terrain-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME map-terrain COMMAND war3-map-terrain-tests)
 
-add_executable(war3-terrain-edit-inspection-tests TerrainEditInspectionTests.cpp)
+add_executable(war3-terrain-edit-inspection-tests TerrainEditInspectionTests.cpp TerrainSettingsCompatibilityCases.h)
 target_link_libraries(war3-terrain-edit-inspection-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-terrain-edit-inspection-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-terrain-edit-inspection-tests PRIVATE /W4 /permissive- /utf-8)

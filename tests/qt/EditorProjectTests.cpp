@@ -936,8 +936,8 @@ bool BindPreparedTerrainJournal(EditorProject& project, PreparedProjectOpen& can
     project.restoredFiles_ = std::move(candidate.extraction);
     project.mapEdits_ = std::move(candidate.mapDataEdits);
     project.terrainJournalWarning_ = candidate.terrainJournalWarning;
-    if (project.mapDataUndoStack_) for (auto& receipt : candidate.terrainReceipts)
-        project.mapDataUndoStack_->push(new MapDataEditCommand(project, std::move(receipt), "Restored water", "恢复工程水刷"));
+    if (!InstallRestoredMapDataHistory(project, std::move(candidate.terrainReceipts),
+        candidate.terrainCurrentIndex, candidate.terrainSavedIndex).Succeeded()) return false;
     project.lastProjectFingerprint_ = project.ProjectFingerprint();
     project.projectFilePath_ = candidate.sourcePath; project.projectFileSha256_ = candidate.sourceSha256;
     const auto scopes = project.CaptureEditScopes();
@@ -952,6 +952,10 @@ bool BindPreparedTerrainJournal(EditorProject& project, PreparedProjectOpen& can
 class EditorProjectTests final : public QObject {
     Q_OBJECT
 private slots:
+    void SavedTerrainHistoryProjectRoundtrip_data();
+    void SavedTerrainHistoryProjectRoundtrip();
+    void SavedTerrainHistoryStackInstallationNeverReplays();
+    void SavedTerrainHistoryUnsupportedBranchKeepsRaw();
     void IndependentProjectsDoNotShareEdits();
     void MapOnlyLibraryKeepsGlobalSettings();
     void MissingImportCannotProduceSavedFingerprint();
@@ -1116,6 +1120,7 @@ private:
 #include "TerrainStraightRampProjectCases.h"
 #include "TerrainConnectedRampProjectCases.h"
 #include "TerrainDualStagePathingProjectCases.h"
+#include "TerrainSavedHistoryProjectCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
     QTemporaryDir root; QVERIFY(root.isValid());
@@ -5384,12 +5389,14 @@ int main(int argc, char** argv) {
         if (!group.isEmpty()) return 2;
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
         if (group != "base" && group != "native-pathing" && group != "native-objects" && group != "derived" && group != "terrain-units"
-            && group != "terrain-palette" && group != "terrain-doodads" && group != "terrain-static-inputs") return 2;
+            && group != "terrain-palette" && group != "terrain-doodads" && group != "terrain-static-inputs"
+            && group != "terrain-history") return 2;
     }
     if (!group.isEmpty()) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
+            if (name.startsWith("SavedTerrainHistory")) return QStringLiteral("terrain-history");
             if (name.startsWith("DualStageStaticPathingWithoutTerrainNet")
                 || name.startsWith("DualStageUnrelatedEditsPreserveUnresolvedPathing"))
                 return QStringLiteral("terrain-static-inputs");

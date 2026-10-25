@@ -359,6 +359,8 @@ struct SessionFixture {
         Take(session.EditTerrain(brush, std::span(&point, 1), false));
     }
 };
+#include "TerrainHistoryJournalCases.h"
+
 void PaletteVersionHasStrictZeroPointPayload() {
     auto journal = Journal();
     TerrainJournalStroke palette;
@@ -586,6 +588,10 @@ int main() {
         CliffPaletteAppendUsesDistinctFTJ6AlgorithmAndBounds();
         RawCliffAppendUsesSharedUndoWithoutInventingResourceAuthority();
         LogicalQtReplayAndSavedBoundary(); OversizedUiStrokeAndOpaqueDraftRemainEditable();
+        HistoryLeaseBindsTheRealSessionRevisionAndOneSavedEpoch();
+        HistoryLinearStackKeepsCoreQtUndoRedoAndFullOldBaseline();
+        HistoryRejectsBrokenSavedBranchRawCommandsAndMovedAliases();
+        HistoryCodecRejectsTruncationIndicesOldVersionsAndTampering();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
