@@ -154,6 +154,8 @@ inline void RawDraftHasNoSaveAuthorityAndShadowIsCompared() {
     auto raw = fixture.FreshSession();
     Check(raw->SetSerialized(MapDataKind::Settings, fixture.edits->Snapshot().Member(MapDataKind::Settings).sources.front().data));
     Check(raw->SetTerrainResizeDraft(grid, wpm, draft));
+    Require(fixture.edits->HasTerrainTypedResizeState() && !raw->HasTerrainTypedResizeState(),
+        "typed resize state never comes from raw TRD1 installation");
     Require(fixture.edits->MatchesTerrainJournalDraft(*raw), "complete raw output can be compared without installing typed authority");
     Require(!raw->VerifyTerrainPathingForSave().Succeeded(), "TRD1 is raw inspection and never grants native-save authority");
     Require(!raw->VerifyTerrainCurrentStructureInput().Succeeded(), "raw TRD1 cannot create a trusted current resource view");
@@ -294,6 +296,95 @@ inline void CurrentResourcesSupportMixedHistoryAndActualSave() {
     Require(Wpm(fixture) == savedWpm && !fixture.edits->IsDirty(), "redo saved mixed history retains actual G1 generation and clean state");
 }
 
+inline void SavedResizeSuffixRestoresFromCurrentStructure() {
+    using War3Map::Services::TerrainSessionResources;
+    Fixture fixture;
+    Require(!fixture.edits->HasTerrainTypedResizeState(), "fresh physical source has no typed resize state");
+    fixture.PutMember("TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"},
+        {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}})); fixture.Seal();
+    Resize(fixture, Intent(-32, 0, 32, 32));
+    Require(fixture.edits->HasTerrainTypedResizeState() && fixture.edits->HasTerrainResizeChanges(),
+        "actual resize creates typed state and a net canvas change");
+    Require(fixture.edits->Undo() && fixture.edits->HasTerrainTypedResizeState()
+        && !fixture.edits->HasTerrainResizeChanges() && !fixture.edits->IsDirty(),
+        "clean original-shape Undo keeps typed source semantics separate from net dirty");
+    Require(fixture.edits->Redo(), "redo original resize before physical save station");
+    const auto historyLease = Take(fixture.edits->PrepareTerrainHistoryForSave());
+    auto output = fixture.edits->Replacements();
+    auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot, {}, output));
+    Check(plan.SaveGate()); Check(plan.InstallPathingOutput(*fixture.edits, output));
+    Check(plan.VerifyForSave(*fixture.edits, fixture.archive->SourceSha256(), output));
+    auto saved = Take(MapArchiveSession::Open(Take(fixture.archive->SaveCandidate(
+        fixture.directory / "resize-station-suffix.w3x", output)).path));
+    Check(plan.VerifyReadback(saved));
+    const auto savedDocument = MapDocument::FromArchive(saved);
+    const auto savedTerrain = Take(saved.ReadMember("war3map.w3e"));
+    const auto savedPathing = Take(saved.ReadMember("war3map.wpm"));
+    Check(plan.CommitSaved(*fixture.edits, savedDocument));
+    Check(fixture.edits->CommitTerrainHistorySave(historyLease));
+    fixture.archive = std::make_unique<MapArchiveSession>(std::move(saved));
+    Require(fixture.edits->HasTerrainTypedResizeState() && !fixture.edits->HasTerrainResizeChanges()
+        && !fixture.edits->IsDirty(), "actual saved canvas retains typed state while its net change is clean");
+    const auto station = Take(fixture.edits->FreezeForSave());
+    auto source = std::make_shared<MapArchiveSession>(Take(MapArchiveSession::Open(fixture.archive->SourcePath())));
+    const auto view = [&]() { return Take(TerrainSessionResources::Capture(source, *fixture.edits, fixture.gameRoot)); };
+    // 保存后宽高已经等于physical；先改高度再水刷，迫使重放区分typed current与净扩裁差异。
+    TerrainBrush height; height.kind = TerrainBrushKind::Raise; height.radius = 0; height.strength = 16;
+    const TerrainStrokePoint center{0, 0};
+    Take(fixture.edits->EditTerrain(height, std::span(&center, 1), false));
+    Require(fixture.edits->HasTerrainTypedResizeState() && !fixture.edits->HasTerrainResizeChanges(),
+        "height suffix changes current source without creating a new canvas difference");
+    {
+        auto current = view(); const auto resources = Take(current.CaptureWater(true));
+        const TerrainStrokePoint point{-512, -512};
+        const TerrainWaterBrush water{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 0, 7,
+            Take(CaptureTerrainWaterStrokeAnchor(*fixture.edits->Terrain(), point, resources.WaterBrushRules()->maximumCliffLevel))};
+        auto prepared = Take(fixture.edits->PrepareTerrainWaterEdit(resources, water, std::span(&point, 1), false));
+        Check(current.Verify(resources)); Take(fixture.edits->ApplyPreparedTerrainEdit(prepared));
+    }
+    {
+        auto current = view(); const auto resources = Take(current.CaptureNative(*fixture.edits->Terrain()));
+        TerrainBoundsEditIntent bounds; bounds.playable = {34, 2, 60, 28};
+        auto prepared = Take(fixture.edits->PrepareTerrainBoundsEdit(resources, bounds)); Check(current.Verify(resources));
+        Check(fixture.edits->ApplyPreparedTerrainBoundsEdit(prepared));
+    }
+    {
+        auto current = view(); auto next = *fixture.edits->Terrain();
+        Take(ReplaceTerrainTextureSlot(next, TerrainTextureTable::Ground, 0, "Tg02"));
+        const auto resources = Take(current.CaptureWater(next, true));
+        auto prepared = Take(fixture.edits->PrepareTerrainTextureSlot(TerrainTextureTable::Ground, 0, "Tg02", &resources));
+        Check(current.Verify(resources)); Take(fixture.edits->ApplyPreparedTerrainEdit(prepared));
+    }
+    const auto encoded = Take(EncodeTerrainStrokeJournal(Take(TerrainPathingSave::CaptureJournal(*fixture.archive, *fixture.edits))));
+    Require(encoded[3] == std::byte{'H'}, "saved resize plus actual native suffix uses FTJH");
+    const auto journal = Take(DecodeTerrainStrokeJournal(encoded));
+    Require(journal.history && journal.history->savedIndex == 1 && journal.history->currentIndex == 5
+        && journal.strokes.size() == 5, "FTJH preserves exact resize station and four suffix commands");
+    MapDataEditSession raw(savedDocument);
+    Check(raw.AttachTerrain(savedTerrain)); Check(raw.AttachPathing(savedPathing));
+    Check(raw.SetTerrainResizeDraft(Take(SerializeMapTerrain(*fixture.edits->Terrain())), Wpm(fixture),
+        Take(fixture.edits->ExportTerrainResizeDraft())));
+    Check(raw.SetSerialized(MapDataKind::Settings, fixture.edits->Snapshot().Member(MapDataKind::Settings).sources.front().data));
+    Require(!raw.HasTerrainTypedResizeState() && fixture.edits->MatchesTerrainJournalDraft(raw),
+        "cold expected output is a complete raw draft without typed resource authority");
+    auto restored = Take(TerrainPathingSave::RestoreJournal(*fixture.archive, savedDocument, savedTerrain,
+        savedPathing, journal, raw, fixture.gameRoot));
+    Require(restored.session->HasTerrainTypedResizeState() && !restored.session->HasTerrainResizeChanges()
+        && restored.currentIndex == 5 && restored.savedIndex == std::optional<std::size_t>(1)
+        && restored.receipts.size() == 5 && restored.session->MatchesTerrainJournalDraft(raw),
+        "cold actual-source replay reconstructs every native suffix and exact complete raw output");
+    for (std::size_t index = restored.receipts.size(); index > 1; --index)
+        Check(restored.session->Replay(restored.receipts[index - 1], false));
+    Require(!restored.session->IsDirty() && restored.session->MatchesTerrainJournalDraft(*station),
+        "cold suffix Undo returns to actual clean saved station");
+    Check(restored.session->Replay(restored.receipts.front(), false));
+    Require(Take(SerializeMapTerrain(*restored.session->Terrain())) == TerrainLiteral()
+        && Take(restored.session->TerrainResizeShadowDraft()).bytes == ShadowLiteral(),
+        "cold Undo across resize station retains original geometry and raw SHD");
+    for (const auto& receipt : restored.receipts) Check(restored.session->Replay(receipt, true));
+    Require(restored.session->MatchesTerrainJournalDraft(raw), "cold full Redo returns to exact native suffix output");
+}
+
 inline void TestTerrainResizeJournalCases() {
     ResizeCodecHasIndependentSignedWireAndDomain();
     HistoryShadowIsSeparateAndAuthenticated();
@@ -301,5 +392,6 @@ inline void TestTerrainResizeJournalCases() {
     RawDraftHasNoSaveAuthorityAndShadowIsCompared();
     SavedBakeIsUsedByFollowingResizeAndUndo();
     CurrentResourcesSupportMixedHistoryAndActualSave();
+    SavedResizeSuffixRestoresFromCurrentStructure();
 }
 } // namespace AudastraTest::TerrainResizeJournalCases
