@@ -269,7 +269,7 @@ std::vector<SpecialGeometry> SpecialGeometries(Inputs& inputs, const MapData::Te
     inputs.ReserveWorking(rows.size(), sizeof(void*) * 8);
     std::map<std::string_view, const Resources::TerrainTableRow*, decltype(less)> byId(less);
     for (const auto& row : rows) { tick(1); byId.emplace(row.id, &row); }
-    std::map<std::string, MapData::TerrainDoodadFootprint, decltype(less)> images(less);
+    std::map<std::string, MapData::TerrainDoodadFootprintImage, decltype(less)> images(less);
     std::vector<SpecialGeometry> result; result.reserve(placements.size());
     for (const auto& placement : placements) {
         tick(described.objects.size());
@@ -291,12 +291,14 @@ std::vector<SpecialGeometry> SpecialGeometries(Inputs& inputs, const MapData::Te
             const auto& file = inputs.Read(path);
             if (!file.present) Fail("TERRAIN_SHADOW_SPECIAL_FOOTPRINT_MISSING", "缺少特殊接收面的实际TGA占地。");
             tick(file.bytes.size());
-            // 特殊地形沿用type2零拷贝入口，不借普通对象的RLE/BLP扩展域。
-            auto decoded = Take(MapData::DecodeDoodadFootprintTga(file.bytes));
-            inputs.ReserveWorking(path.size() + sizeof(MapData::TerrainDoodadFootprint) + 8 * sizeof(void*));
-            image = images.emplace(path, decoded).first;
+            inputs.ReserveWorking(path.size() + sizeof(MapData::TerrainDoodadFootprintImage) + 8 * sizeof(void*));
+            // special与普通对象共用原版TGA loader；新增RLE像素在分配前计入同次额度。
+            // type2借Inputs的稳定源字节，type10由map节点持有解包owner。
+            auto decoded = Take(MapData::DecodeDoodadFootprintTgaBudgeted(file.bytes, inputs.AvailableWorkingBytes()));
+            inputs.ReserveWorking(decoded.decodedBytes); tick(decoded.decodedBytes);
+            image = images.emplace(path, std::move(decoded)).first;
         }
-        const auto& footprint = image->second;
+        const auto& footprint = image->second.footprint;
         tick((std::size_t(footprint.width) / 4 + 1) * (std::size_t(footprint.height) / 4 + 1) * 3);
         const std::array<MapData::TerrainSpecialDoodadPathingInput, 1> shapeInputs{{{&placement, footprint}}};
         const auto shapes = Take(MapData::DescribeTerrainSpecialDoodads(terrain, shapeInputs, maximumLevel,

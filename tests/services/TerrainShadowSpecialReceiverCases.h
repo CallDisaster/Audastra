@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../TerrainFootprintTgaFixtures.h"
+
 // 包含在receiver测试夹具与RampReceiverCases之后，由集成方登记调用。
 // 原创地图/表/TGA/MDX；完整receiver expected独立写像素矩形和F32常量。
 // 正式SHD保存验证属于集成回读，不冒充原版保存或SHD算法oracle。
@@ -57,7 +59,7 @@ void SetSpecials(Fixture& fixture, std::span<const SpecialDoodadPlacement> speci
     DoodadPlacements placements; placements.specialDoodads.assign(special.begin(), special.end());
     fixture.Set("war3map.doo", Take(placements.Serialize()));
 }
-void SetFlat(Fixture& fixture, bool overlap = false, bool bottomOrigin = false) {
+void SetFlat(Fixture& fixture, bool overlap = false, bool bottomOrigin = false, bool rleFootprint = false) {
     fixture.Erase("war3map.w3b"); fixture.Erase("war3map.w3d");
     fixture.terrain.header.width = fixture.terrain.header.height = 17;
     fixture.terrain.vertices.assign(17 * 17, {});
@@ -69,7 +71,9 @@ void SetFlat(Fixture& fixture, bool overlap = false, bool bottomOrigin = false) 
     fixture.Set("war3map.shd", Bytes(64 * 64, std::byte{0x7d}));
     fixture.Set("Units/DestructableData.slk", Text("ID;PWXL;N;E\nC;X1;Y1;K\"DestructableID\"\nE\n"));
     fixture.Set("Doodads/Doodads.slk", Table());
-    fixture.Set(std::string(kFootprint), Footprint(8, 4, bottomOrigin));
+    auto footprint = Footprint(8, 4, bottomOrigin);
+    if (rleFootprint) footprint = TerrainSaveTests::EncodeFootprintTgaRle(footprint);
+    fixture.Set(std::string(kFootprint), std::move(footprint));
     fixture.Set(std::string(kFirstModel), CenteredModel(64));
     fixture.Set(std::string(kSecondModel), CenteredModel(192));
     const std::array<SpecialDoodadPlacement, 2> special{{{"S001", 0, {11,11}}, {"S002", 0, {11,11}}}};
@@ -87,14 +91,14 @@ void RequireRectangle(const TerrainShadowReceiverGrid& grid, std::uint32_t heigh
             std::size_t(y) * 64 + x, "独立完整special非方矩形、末格及跨block锚点采样");
     }
 }
-void GeometryOrderAndFallback() {
+void GeometryOrderAndFallback(bool rleFootprint = false) {
     for (const bool bottomOrigin : {false, true}) {
-        Fixture fixture(true); SetFlat(fixture, false, bottomOrigin);
+        Fixture fixture(true); SetFlat(fixture, false, bottomOrigin, rleFootprint);
         const auto owner = Take(fixture.Capture());
         Require(owner->RecordCount() == 1, "平地special不得走ordinary早返回，也不能按覆盖格重复建record");
         RequireRectangle(Take(owner->Sample()), 0x42803333u); Check(owner->VerifySources(*fixture.source));
     }
-    Fixture overlap(true); SetFlat(overlap, true);
+    Fixture overlap(true); SetFlat(overlap, true, false, rleFootprint);
     const auto first = Take(overlap.Capture()); Require(first->RecordCount() == 2, "重叠special仍按原序保留两条record");
     RequireRectangle(Take(first->Sample()), 0x42803333u);
     const std::array<SpecialDoodadPlacement, 2> reversed{{{"S002", 0, {11,11}}, {"S001", 0, {11,11}}}};
@@ -119,14 +123,15 @@ void OrdinaryRecordsStayBeforeSpecial() {
     RequireF32At(grid.receiverHeights[28 * 64 + 36], 0x3dcccccdu, 28 * 64 + 36,
         "special锚点映射后仍须原序首包含，不能绕过在前普通坡道record");
 }
-void MinimumUsesFullFootprint() {
-    Fixture fixture(true); SetFlat(fixture);
+void MinimumUsesFullFootprint(bool rleFootprint = false, bool bottomOrigin = false) {
+    Fixture fixture(true); SetFlat(fixture, false, bottomOrigin, rleFootprint);
     fixture.terrain.vertices[11 * 17 + 11].cliffAndLayerRaw = 3;
     RefreshTerrainDerived(fixture.terrain, 0, 0, 17, 17);
     fixture.Set("war3map.w3e", Take(SerializeMapTerrain(fixture.terrain)));
-    auto footprint = Footprint();
+    auto footprint = Footprint(8, 4, bottomOrigin);
     // SW角alpha=128，其余顶点alpha=0；原版最低层在占地其它顶点，不是锚点3。
-    footprint[18 + (3 * 8) * 4 + 3] = std::byte{128};
+    footprint[18 + (bottomOrigin ? 0 : 3 * 8) * 4 + 3] = std::byte{128};
+    if (rleFootprint) footprint = TerrainSaveTests::EncodeFootprintTgaRle(footprint);
     fixture.Set(std::string(kFootprint), footprint);
     for (const auto shape : {"ABAA", "BAAA", "AABA"})
         fixture.Set("Doodads/Terrain/Fixture/Cliff/Fixture/Cliff" + std::string(shape) + "0.mdx", Model(0));
@@ -135,8 +140,8 @@ void MinimumUsesFullFootprint() {
     RequireF32At(grid.receiverHeights[44 * 64 + 44], 0x42803333u, 44 * 64 + 44,
         "special最低层须扫完整闭区间四角顶点，不能只取锚点或display高度");
 }
-void SourcesAndFormalSave() {
-    Fixture fixture(true); SetFlat(fixture);
+void SourcesAndFormalSave(bool rleFootprint = false) {
+    Fixture fixture(true); SetFlat(fixture, false, false, rleFootprint);
     const auto owner = Take(fixture.Capture()); const auto originalSha = Take(Sha256File(fixture.source->SourcePath()));
     const std::array<MemberReplacement, 1> changedModel{{{std::string(kFirstModel), CenteredModel(80)}}};
     Rejected(owner->VerifySources(*fixture.source, changedModel), "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
@@ -226,6 +231,27 @@ void Guards() {
     Require(Take(fixture.source->ReadMember("war3map.shd")) == Bytes(64 * 64, std::byte{0x7d}),
         "拒绝或取消不发布部分SHD，也不改源");
 }
+void RleGuards() {
+    Fixture fixture(true); SetFlat(fixture, false, false, true);
+    const auto measured = Take(fixture.Capture());
+    auto limits = TerrainShadowReceiverLimits{}; limits.maximumWork = measured->Work();
+    Require(Take(fixture.Capture({}, limits))->Work() == measured->Work(), "RLE接收面完整解包工作额度稳定");
+    --limits.maximumWork; Rejected(fixture.Capture({}, limits), "TERRAIN_SHADOW_RECEIVER_BUDGET");
+    limits = {}; limits.maximumWorkingBytes = measured->WorkingBytes() - 1;
+    Rejected(fixture.Capture({}, limits));
+    for (const auto kind : {0, 1, 2}) {
+        auto bytes = TerrainSaveTests::EncodeFootprintTgaRle(Footprint()); const char* code = nullptr;
+        switch (kind) {
+            case 0: bytes.pop_back(); code = "TERRAIN_UNIFORM_TGA_TRUNCATED"; break;
+            case 1: bytes[18] = std::byte{0xff}; code = "TERRAIN_DOODAD_TGA_RLE_OVERRUN"; break;
+            default: bytes.push_back(std::byte{0}); code = "TERRAIN_UNIFORM_TGA_TRAILING"; break;
+        }
+        fixture.Set(std::string(kFootprint), std::move(bytes)); fixture.Open();
+        Rejected(fixture.Capture(), code);
+        Require(Take(fixture.source->ReadMember("war3map.shd")) == Bytes(64 * 64, std::byte{0x7d}),
+            "坏RLE不发布部分SHD");
+    }
+}
 } // namespace SpecialReceiverCases
 void RunTerrainShadowSpecialReceiverCases() {
     SpecialReceiverCases::GeometryOrderAndFallback();
@@ -233,5 +259,10 @@ void RunTerrainShadowSpecialReceiverCases() {
     SpecialReceiverCases::MinimumUsesFullFootprint();
     SpecialReceiverCases::SourcesAndFormalSave();
     SpecialReceiverCases::Guards();
+    SpecialReceiverCases::GeometryOrderAndFallback(true);
+    SpecialReceiverCases::MinimumUsesFullFootprint(true);
+    SpecialReceiverCases::MinimumUsesFullFootprint(true, true);
+    SpecialReceiverCases::SourcesAndFormalSave(true);
+    SpecialReceiverCases::RleGuards();
 }
 } // namespace

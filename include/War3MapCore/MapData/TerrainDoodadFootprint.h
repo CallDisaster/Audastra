@@ -22,9 +22,9 @@ struct TerrainDoodadFootprint {
 // 与同色占地共用格式校验，允许1..256的矩形和不同像素。
 [[nodiscard]] Result<TerrainDoodadFootprint> DecodeDoodadFootprintTga(std::span<const std::byte> bytes);
 
-// 普通对象的有界扩展入口：type2仍零拷贝借用bytes，type10持有恰好decodedBytes的
+// 普通对象与特殊地形的有界入口：type2仍零拷贝借用bytes，type10持有恰好decodedBytes的
 // 解包像素。结果只能移动，移动后footprint的span仍有效；结果存活期间不得释放
-// decodedPixels，type2还须保持原bytes有效。特殊地形和旧同色入口仍只接受type2。
+// decodedPixels，type2还须保持原bytes有效。旧借用及同色入口仍只接受type2。
 struct TerrainDoodadFootprintImage {
     TerrainDoodadFootprint footprint;
     std::unique_ptr<std::byte[]> decodedPixels;

@@ -2,6 +2,7 @@
 #include "TerrainCliffJournalTests.h"
 #include "TerrainCornerRampServiceTests.h"
 #include "../TerrainCornerRampFixtures.h"
+#include "../TerrainFootprintTgaFixtures.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
@@ -72,7 +73,7 @@ struct Fixture {
     std::unique_ptr<MapDataEditSession> edits;
     TerrainStrokePoint point{2048, 2048};
 
-    explicit Fixture(bool variedProtection = false, bool withSpecials = false) {
+    explicit Fixture(bool variedProtection = false, bool withSpecials = false, bool rleFootprint = false) {
         static std::atomic<unsigned> next{0};
         root = std::filesystem::temp_directory_path() / ("Audastra-water-service-"
             + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + "-" + std::to_string(next++));
@@ -132,6 +133,7 @@ struct Fixture {
             Bytes texture(18 + 4 * 4 * 4);
             texture[2] = std::byte{2}; texture[12] = texture[14] = std::byte{4}; texture[16] = std::byte{32};
             texture[17] = std::byte{8};
+            if (rleFootprint) texture = TerrainSaveTests::EncodeFootprintTgaRle(texture);
             members.push_back({"PathTextures/replay-special.tga", std::move(texture)});
             members.push_back({"Units/DestructableData.slk", Slk({"destructableID", "code", "walkable"}, {{"Dst0", "Dst0", "0"}})});
             members.push_back({"Doodads/Doodads.slk", Slk({"doodID", "code", "pathTex", "category", "fixedRot"},
@@ -204,8 +206,8 @@ template<class Source> Result<TerrainReplayCandidate> ReplayFixture(const Fixtur
         f.members[0].data, f.members[1].data, strokes, f.game, limits);
 }
 
-void SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput() {
-    Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
+void SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput(bool rleFootprint = false) {
+    Fixture f(true, true, rleFootprint); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
     auto archiveResult = Take(ReplayFixture(f, *f.source, intents));
     auto directoryResult = Take(ReplayFixture(f, directory.Snapshot(), intents));
     const auto* archive = archiveResult.session.get(); auto* const workspace = directoryResult.session.get();
@@ -221,6 +223,9 @@ void SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput() {
     const auto archivePlan = Take(TerrainPathingSave::PrepareForSave(*f.source, *archive, f.game));
     auto replacements = archive->Replacements();
     Require(archivePlan.InstallPathingOutput(*archive, replacements).Succeeded(), "install independent archive native pathing");
+    const auto saved = Take(MapArchiveSession::Open(Take(f.source->SaveCandidate(f.root / "special-replay.w3x", replacements)).path));
+    Require(archivePlan.VerifyReadback(saved).Succeeded(), "special replay writes and independently reopens the full W3E/WPM/DOO output");
+    Require(Take(Sha256File(f.source->SourcePath())) == f.source->SourceSha256(), "special replay save keeps the source archive intact");
     for (const auto& name : {"war3map.w3e", "war3map.wpm", "war3map.doo", "war3mapUnits.doo"}) {
         const auto source = Take(f.source->ReadMember(name));
         const auto found = std::find_if(replacements.begin(), replacements.end(), [&](const auto& member) { return member.name == name; });
@@ -1014,9 +1019,9 @@ void DirectSaveUsesOrderedWaterAndOriginalScriptGate() {
     }
 }
 
-void DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow() {
+void DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow(bool rleFootprint = false) {
     for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
-        Fixture f(true, true); auto request = f.Request();
+        Fixture f(true, true, rleFootprint); auto request = f.Request();
         auto& stroke = request.terrainStrokes.front();
         stroke.waterBrush->kind = kind; stroke.followDoodads = false;
         TerrainStrokeIntent intent;
@@ -1042,8 +1047,8 @@ void DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow() {
     }
 }
 
-void ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift() {
-    Fixture f(true, true); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
+void ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift(bool rleFootprint = false) {
+    Fixture f(true, true, rleFootprint); const auto directory = Directory(f); const auto intents = OrderedIntents(f);
     auto replayed = Take(ReplayFixture(f, *f.source, intents));
     const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *replayed.session));
     const auto decoded = Take(DecodeTerrainStrokeJournal(Take(EncodeTerrainStrokeJournal(journal))));
@@ -1206,6 +1211,7 @@ void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
 }
 #include "TerrainRemoveWaterSaveCases.h"
 #include "TerrainSettingsSaveCases.h"
+#include "TerrainSpecialFootprintRleCases.h"
 } // namespace
 
 int main() {
@@ -1237,6 +1243,10 @@ int main() {
         RemoveWaterDirectSaveKeepsTheExistingScriptGate();
         KnownSettingsComposeWithNativeWaterAndRampSaveAndForwardRestore();
         StructuralSettingsStillRejectNativeTerrainSaveAndForwardRestore();
+        SharedReplayPreservesOrderSpecialDeletionAndCompleteDirectoryOutput(true);
+        DirectSaveAllowsSpecialWaterDeletionWithoutPlacementFollow(true);
+        ForwardJournalRestoresOwnedSpecialDeletionAndRejectsDrift(true);
+        SpecialRleCaptureKeepsBudgetsSourceIdentityAndFailureAtomicity();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

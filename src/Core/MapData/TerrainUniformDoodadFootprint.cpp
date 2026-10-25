@@ -111,7 +111,7 @@ Result<TerrainDoodadFootprintImage> DecodeFootprintTga(std::span<const std::byte
         || byte(7) != 0 || word(8) != 0 || word(10) != 0 || (depth != 24 && depth != 32)
         || (descriptor & 0xd0u) != 0 || (descriptor & 15u) != (depth == 32 ? 8u : 0u))
         return fail("TERRAIN_UNIFORM_TGA_FORMAT",
-            "通行贴图须为无ID和色表、原点坐标为零、左原点无交错的24位RGB或32位RGBA TGA；仅普通预算入口允许type10 RLE。");
+            "通行贴图须为无ID和色表、原点坐标为零、左原点无交错的24位RGB或32位RGBA TGA；仅有界解码入口允许type10 RLE。");
     const auto width = word(12), height = word(14);
     if (width == 0 || height == 0 || width > kMaximumSide || height > kMaximumSide)
         return fail("TERRAIN_UNIFORM_TGA_DIMENSIONS", "通行贴图的宽高必须分别为1至256像素。");

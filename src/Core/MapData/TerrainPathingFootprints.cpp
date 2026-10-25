@@ -213,7 +213,7 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
             objectWorkBytes_ += count * each;
         };
         struct Type { std::string path; };
-        struct Image { std::vector<std::byte> bytes; TerrainDoodadFootprint decoded; };
+        struct Image { std::vector<std::byte> bytes; TerrainDoodadFootprintImage decoded; };
         if (types.empty() || stage > 1 || terrain.header.width < 2 || terrain.header.height < 2
             || terrain.header.width > 2049 || terrain.header.height > 2049)
             Fail("TERRAIN_SPECIAL_LAYOUT", "特殊地形类型必须覆盖同次DOO的全部记录。");
@@ -243,8 +243,13 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
             [&](std::size_t index, bool present, std::vector<std::byte>&& bytes) {
                 if (!present) Fail("TERRAIN_NATIVE_FOOTPRINT_MISSING", "缺少特殊地形实际占地贴图：" + names[index]);
                 auto& image = images.at(names[index]);
-                image.decoded = Take(DecodeDoodadFootprintTga(bytes));
-                // 源字节额度已由CaptureResourceMembers预留，移入稳定map节点保活借用像素。
+                // special的5F2950也经4F0A10加载；复用同一有界TGA入口。
+                // 原成员已收费且仍存活，RLE新增像素必须先通过同次剩余额度。
+                reserve(0, 1);
+                image.decoded = Take(DecodeDoodadFootprintTgaBudgeted(bytes,
+                    capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_));
+                reserve(image.decoded.decodedBytes, 1);
+                // type2借原字节，type10借decoded内的owner；两者都保活到全部投影结束。
                 image.bytes = std::move(bytes);
             }));
         std::vector<TerrainSpecialDoodadPathingInput> inputs; inputs.reserve(placements.size());
@@ -252,7 +257,7 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
             const auto found = byRawcode.find(placement.rawcode);
             if (found == byRawcode.end()) Fail("TERRAIN_SPECIAL_LAYOUT", "特殊DOO有未解释的rawcode：" + placement.rawcode);
             inputs.push_back({&placement, found->second.path.empty() ? std::nullopt
-                : std::optional{images.at(found->second.path).decoded}});
+                : std::optional{images.at(found->second.path).decoded.footprint}});
         }
         if (waterBrushRules_ || resizeSpatial_) {
             const auto remaining = capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_;
