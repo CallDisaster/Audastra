@@ -77,6 +77,6 @@ void DoodadParentDisplayFieldsRemainTypedAndBounded() {
         auto variedScale = scaleKey; variedScale.variation = 1;
         Check(wrongIndex.AddModification({ObjectType::Doodad, "D001"}, variedScale, NativeValueType::Unreal, 2.f));
         fixture.SetNative(wrongIndex);
-        Rejected(fixture.Inspect({"C001"}), "TERRAIN_NATIVE_OBJECT_DOODAD_TYPE", "父显示标量不能借用非零变体");
+        Rejected(fixture.Inspect({"C001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "父显示标量不能借用非零变体");
     }
 }
