@@ -2,7 +2,9 @@
 
 #include "War3MapCore/Services/MapTestService.h"
 
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace War3Map::Services { class LuaTestMailboxSession; }
 
@@ -31,6 +33,8 @@ public:
     // 结束本次 Job 里的全部进程（只作用于本次启动的进程树，不枚举其他游戏）。已结束时直接成功；
     // 返回只代表已发出终止，终态仍由 IsActive/Cleanup 确认。
     [[nodiscard]] Status Stop();
+    // 本次 Job 里仍在运行的进程编号（找本次游戏窗口用）；已结束或无法查询时为空。
+    [[nodiscard]] std::vector<std::uint32_t> ProcessIds() const;
     // 仅原进程树终态后调用；在后台核对并清理本次短路径副本，返回启动终态诊断。
     [[nodiscard]] Status Cleanup();
 private:

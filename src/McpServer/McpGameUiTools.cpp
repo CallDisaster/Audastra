@@ -59,7 +59,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
-             "game_ui_description_triggers", "game_ui_cast_system", "game_ui_party_system"}) {
+             "game_ui_description_triggers", "game_ui_cast_system", "game_ui_party_system", "game_ui_talent_system"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read";
@@ -97,10 +97,12 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
         } else if (tool.name == "game_ui_description_create") {
             tool.description = "新建一份地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程。"
                 "preset 可选起始模板：castbar 读条条（数值 shown、progress、text、remaining，状态 channel、interrupt，"
-                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；省略为空白";
+                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
+                "tip_shown、tip_title、tip_text，数组 level、icon1..3、name1..3、picked1..3，事件 open、close、pick1..3、enter1..3、leave1..3，"
+                "与 game_ui_talent_system 的默认绑定对应）；省略为空白";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("label", QJsonObject{{"type", "string"}, {"maxLength", 256}});
-            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party"}}});
+            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party", "talents"}}});
             required.append("description");
         } else if (tool.name == "game_ui_description_edit") {
             tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："
@@ -167,6 +169,53 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
                 {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("frame");
+        } else if (tool.name == "game_ui_talent_system") {
+            tool.description = "生成统一天赋树的自然 T，整批写进触发器编辑器的“天赋系统”类别（同名触发器整体替换），走触发器撤销栈。"
+                "所有英雄共用一套界面与触发器：英雄达到某层的解锁等级（unlock_levels，默认 5、10、15…）就开放这一层，每层只能选一次、选定不可改，"
+                "已开放未选的层都可选。选择结果是同步数据：AUT_Picked[玩家编号×8+层] 为选中的列号（1 起），0 为未选，英雄技能触发器按它改变行为。"
+                "界面点击只在本机发生，用选择单位同步：开局为每个用户玩家建 层数×列数 个同步单位（sync_unit 类型，默认 hfoo，须可被选中，"
+                "透明、无敌、暂停、不占人口，放在地图左下角之外），点选项时把对应同步单位加进本机选择，“选择”触发器在所有玩家上校验后写入结果、"
+                "按登记学会技能，再运行 after_pick 触发器（须已在地图里，运行前设好 AUT_PickUnit、AUT_PickTier、AUT_PickOption）。"
+                "英雄绑定：开局已在地图上与之后进入地图的用户玩家英雄（不含幻象），类型已登记、该玩家还没有英雄时自动绑定；也可设 AUT_Unit 后运行“天赋 绑定 Talent_Bind”。"
+                "heroes 写进“天赋 登记 Talent_Register”触发器：每个英雄 unit（物编编号）与 talents（tier、option 从 1 起，name、text 说明、learn 学会的技能，"
+                "icon 为空时取 learn 技能的物编图标，disabled_icon 为空时按 BTN→DISBTN 推出）；地图里已有登记触发器时保留它、heroes 不写入"
+                "（结果 registration_kept 为 true），replace_registration 为 true 时按 heroes 重写。"
+                "frame 绑定一份已生成界面触发器的界面描述，只给 description 时按 talents 模板的编号绑定；单个字段写空字符串为不绑定。"
+                "level（字符串数组，格数即层数）与 columns（每列 icon、name 字符串数组，picked 布尔数组，pick 点击事件，enter、leave 移入移出事件，"
+                "事件框架须在重复层数次的框架里）决定层数与列数。需要 YDWE 的 GetLocalPlayer、RemoveLocation。preview 为 true 时只返回生成的功能写法，不改地图";
+            QJsonObject frameProperties;
+            for (const char* key : {"description", "shown", "entry_shown", "entry", "title", "points", "level", "open", "close", "tip_shown",
+                     "tip_title", "tip_text"})
+                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            QJsonObject columnProperties;
+            for (const char* key : {"icon", "name", "picked", "pick", "enter", "leave"})
+                columnProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            frameProperties.insert("columns", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 4},
+                {"items", QJsonObject{{"type", "object"}, {"properties", columnProperties},
+                    {"required", QJsonArray{"icon", "name", "picked", "pick"}}, {"additionalProperties", false}}}});
+            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
+                {"required", QJsonArray{"description"}}, {"additionalProperties", false}});
+            properties.insert("name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
+            properties.insert("unlock_levels", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 7},
+                {"items", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}}}});
+            properties.insert("sync_unit", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}});
+            properties.insert("players", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 24}});
+            properties.insert("after_pick", QJsonObject{{"type", "string"}, {"maxLength", 256}});
+            QJsonObject talentProperties{{"tier", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 7}}},
+                {"option", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 4}}},
+                {"name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
+                {"icon", QJsonObject{{"type", "string"}, {"maxLength", 260}}}, {"disabled_icon", QJsonObject{{"type", "string"}, {"maxLength", 260}}},
+                {"text", QJsonObject{{"type", "string"}, {"maxLength", 1024}}},
+                {"learn", QJsonObject{{"type", "string"}, {"maxLength", 4}}}};
+            QJsonObject heroProperties{{"unit", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}},
+                {"label", QJsonObject{{"type", "string"}, {"maxLength", 128}}},
+                {"talents", QJsonObject{{"type", "array"}, {"maxItems", 28}, {"items", QJsonObject{{"type", "object"}, {"properties", talentProperties},
+                    {"required", QJsonArray{"tier", "option", "name"}}, {"additionalProperties", false}}}}}};
+            properties.insert("heroes", QJsonObject{{"type", "array"}, {"maxItems", 64}, {"items", QJsonObject{{"type", "object"},
+                {"properties", heroProperties}, {"required", QJsonArray{"unit", "talents"}}, {"additionalProperties", false}}}});
+            properties.insert("replace_registration", QJsonObject{{"type", "boolean"}});
+            properties.insert("preview", QJsonObject{{"type", "boolean"}});
+            required.append("frame");
         } else if (tool.name == "game_ui_preview_set") {
             tool.description = "地图界面描述的预览：切换状态（空字符串为基础状态）、按 编号 或 编号[下标] 给数值（文字、数值或布尔），"
                 "之后的节点查询与绘图显示这组取值。整批检查，任何一项不合法都不改。只改预览，不改地图";
@@ -188,6 +237,63 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     return tools;
 }
 
+namespace {
+bool ValidText(const QJsonValue& value, qsizetype minimum, qsizetype maximum) {
+    return value.isString() && value.toString().size() >= minimum && value.toString().size() <= maximum && !value.toString().contains(QChar::Null);
+}
+
+// 天赋树的登记与选项（只在 game_ui_talent_system 里出现）。
+bool TalentArgumentsValid(const QJsonObject& args) {
+    if (args.contains("unlock_levels")) {
+        const QJsonArray levels = args.value("unlock_levels").toArray();
+        if (!args.value("unlock_levels").isArray() || levels.isEmpty() || levels.size() > 7
+            || !std::all_of(levels.begin(), levels.end(), [](const QJsonValue& item) { return ValidInteger(item, 1, 10000); }))
+            return false;
+    }
+    if (args.contains("sync_unit") && !ValidText(args.value("sync_unit"), 4, 4)) return false;
+    if (args.contains("players") && !ValidInteger(args.value("players"), 1, 24)) return false;
+    if (args.contains("name") && !ValidText(args.value("name"), 1, 32)) return false;
+    if (args.contains("after_pick") && !ValidText(args.value("after_pick"), 0, 256)) return false;
+    if (!args.contains("heroes")) return true;
+    const QJsonArray heroes = args.value("heroes").toArray();
+    if (!args.value("heroes").isArray() || heroes.size() > 64) return false;
+    const auto validTalent = [](const QJsonValue& item) {
+        const QJsonObject talent = item.toObject();
+        if (!item.isObject() || !talent.contains("tier") || !talent.contains("option") || !talent.contains("name")) return false;
+        for (auto it = talent.begin(); it != talent.end(); ++it) {
+            const auto key = it.key();
+            const bool ok = key == QLatin1String("tier") ? ValidInteger(it.value(), 1, 7)
+                : key == QLatin1String("option") ? ValidInteger(it.value(), 1, 4)
+                : key == QLatin1String("name") ? ValidText(it.value(), 1, 128)
+                : key == QLatin1String("icon") || key == QLatin1String("disabled_icon") ? ValidText(it.value(), 0, 260)
+                : key == QLatin1String("text") ? ValidText(it.value(), 0, 1024)
+                : key == QLatin1String("learn") ? ValidText(it.value(), 0, 4) && it.value().toString().size() != 1
+                    && it.value().toString().size() != 2 && it.value().toString().size() != 3
+                : false;
+            if (!ok) return false;
+        }
+        return true;
+    };
+    return std::all_of(heroes.begin(), heroes.end(), [&](const QJsonValue& item) {
+        const QJsonObject hero = item.toObject();
+        if (!item.isObject() || !hero.contains("unit") || !hero.contains("talents")) return false;
+        for (auto it = hero.begin(); it != hero.end(); ++it) {
+            if (it.key() == QLatin1String("unit")) {
+                if (!ValidText(it.value(), 4, 4)) return false;
+            } else if (it.key() == QLatin1String("label")) {
+                if (!ValidText(it.value(), 0, 128)) return false;
+            } else if (it.key() == QLatin1String("talents")) {
+                const QJsonArray talents = it.value().toArray();
+                if (!it.value().isArray() || talents.size() > 28 || !std::all_of(talents.begin(), talents.end(), validTalent)) return false;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+} // namespace
+
 QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const GameUiToolHost& host) {
     const auto definitions = GameUiToolDefinitions();
     const auto found = std::find_if(definitions.begin(), definitions.end(), [&](const auto& value) { return value.name == name; });
@@ -206,7 +312,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 不在可选范围内。");
     }
-    for (const auto* key : {"expansion", "show_hidden", "preview", "auto_heroes"}) {
+    for (const auto* key : {"expansion", "show_hidden", "preview", "auto_heroes", "replace_registration"}) {
         if (args.contains(key) && !args.value(key).isBool()) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是布尔值。");
     }
     if (args.contains("label") && (!args.value("label").isString() || args.value("label").toString().size() > 256))
@@ -286,7 +392,23 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         };
         for (auto it = binding.begin(); valid && it != binding.end(); ++it) {
             const auto property = bindingProperties.value(it.key()).toObject();
-            if (property.value("type").toString() == QLatin1String("array")) {
+            if (it.key() == QLatin1String("columns")) {
+                // 天赋树的每列绑定：对象，图标、名字、已选、点击必填，各项为编号。
+                const auto columnSchema = property.value("items").toObject();
+                const auto columnProperties = columnSchema.value("properties").toObject();
+                const auto columnRequired = columnSchema.value("required").toArray();
+                const QJsonArray columns = it.value().toArray();
+                valid = it.value().isArray() && !columns.isEmpty() && columns.size() <= property.value("maxItems").toInt()
+                    && std::all_of(columns.begin(), columns.end(), [&](const QJsonValue& item) {
+                           const QJsonObject column = item.toObject();
+                           if (!item.isObject()) return false;
+                           for (const auto& required : columnRequired)
+                               if (!column.contains(required.toString())) return false;
+                           for (auto field = column.begin(); field != column.end(); ++field)
+                               if (!columnProperties.contains(field.key()) || !validId(field.value(), 0)) return false;
+                           return true;
+                       });
+            } else if (property.value("type").toString() == QLatin1String("array")) {
                 const QJsonArray items = it.value().toArray();
                 valid = it.value().isArray() && items.size() <= property.value("maxItems").toInt()
                     && std::all_of(items.begin(), items.end(), [&](const QJsonValue& item) { return validId(item, 1); });
@@ -313,6 +435,9 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         if (!args.value("far_range").isDouble() || !std::isfinite(range) || range < 100.0 || range > 100000.0)
             return Failure("GAME_UI_ARGUMENT", "far_range 必须是 100 到 100000 的数值。");
     }
+    if (!TalentArgumentsValid(args)) return Failure("GAME_UI_ARGUMENT", "天赋树参数无效：unlock_levels 为 1 到 7 个 1..10000 的整数；sync_unit 为 4 字符物编编号；"
+        "players 为 1..24；name 为 1..32 字；after_pick 为不超过 256 字的触发器名；heroes 最多 64 个，每个有 4 字符 unit 与最多 28 项 talents，"
+        "每项 tier 1..7、option 1..4、name 1..128 字，learn 为空或 4 字符。");
     if (args.contains("values") && !ValidSimulationValues(args.value("values")))
         return Failure("GAME_UI_ARGUMENT", "values 最多 200 项；键为非空输入标识，值为文字、有限数值或布尔值。");
     if (!host.invoke) return Failure("GAME_UI_UNSUPPORTED", "此宿主没有界面工作区；请连接编辑器MCP端口。");

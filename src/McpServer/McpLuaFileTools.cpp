@@ -86,7 +86,19 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         {{"archive_paths", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", kMaxImportFiles},
             {"items", QJsonObject{{"type", "string"}, {"maxLength", 260}}}}},
             {"allow_referenced", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"archive_paths"});
-    add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）", ToolPermission::External, {}, {});
+    add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）。"
+        "JASS 地图可带 scenario：一段紧凑 T 动作，只编进测试副本，游戏开始 start_seconds 秒后运行一次；"
+        "在场景里摆单位、下命令、等待，用 Preload(文本) 记录一行，以“通过”“失败”开头的行计为断言；"
+        "结束时记录 reads 列出的全局变量（整数、实数、文字、布尔）。场景只用自然 T。用 map_test_result 读回结果", ToolPermission::External,
+        {{"scenario", QJsonObject{{"type", "string"}, {"maxLength", 65536}}},
+            {"reads", QJsonObject{{"type", "array"}, {"maxItems", 32}, {"items", QJsonObject{{"type", "string"}, {"maxLength", 160}}}}},
+            {"start_seconds", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"default", 1}}}}, {});
+    add("map_test_result", "读回本次测试场景写出的结果：记录行、断言通过/失败数、读取的变量、是否已开始与执行完"
+        "（游戏写入的资源路径只给 loaded_files 个数）；场景开始前每 2 秒给测试游戏发空格越过“按任意键继续”；"
+        "未执行完时在 wait_ms 内等待", ToolPermission::External,
+        {{"wait_ms", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"default", 30000}}}}, {});
+    add("map_test_capture", "截取本次测试游戏窗口的当前画面，存为 PNG 并返回路径与截取方式（窗口被遮挡也可，不能最小化；游戏没绘制出画面时失败并给原因）",
+        ToolPermission::External, {}, {});
     add("map_test_stop", "结束本次由编辑器启动的测试游戏（只结束这次启动的进程）", ToolPermission::External, {}, {});
     add("map_test_eval", "在运行中的测试游戏里执行一段紧凑 T 动作并读回全局变量（仅 Lua 地图且开热重载）；不改地图",
         ToolPermission::External,
@@ -104,7 +116,10 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
     else if (name == "imports_add") allowed << "files" << "replace_existing";
     else if (name == "imports_remove") allowed << "archive_paths" << "allow_referenced";
     else if (name == "map_test_eval") allowed << "actions" << "reads" << "wait_ms";
-    else if (name != "lua_files_list" && name != "map_test_start" && name != "map_test_stop") return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
+    else if (name == "map_test_start") allowed << "scenario" << "reads" << "start_seconds";
+    else if (name == "map_test_result") allowed << "wait_ms";
+    else if (name != "lua_files_list" && name != "map_test_stop" && name != "map_test_capture")
+        return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
     for (auto it = args.begin(); it != args.end(); ++it)
         if (!allowed.contains(it.key())) return Failure("LUA_FILE_ARGUMENT_INVALID", "不接受的参数：" + it.key().toStdString());
     const auto identity = args.value("project_identity");
@@ -117,10 +132,11 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         && ((args.contains("offset") && !ValidPageNumber(args.value("offset"), 0, kMaxLuaPageIndex))
             || (args.contains("limit") && !ValidPageNumber(args.value("limit"), 1, kMaxLuaPageLimit))))
         return Failure("LUA_FILE_ARGUMENT_INVALID", "offset 必须是0..2147483647的整数，limit 必须是1..256的整数。");
-    if (name == "map_test_eval") {
-        const auto actions = args.value("actions");
+    if (name == "map_test_eval" || (name == "map_test_start" && (args.contains("scenario") || args.contains("reads")))) {
+        const auto key = name == "map_test_eval" ? QStringLiteral("actions") : QStringLiteral("scenario");
+        const auto actions = args.value(key);
         if (!actions.isString() || actions.toString().isEmpty() || actions.toString().size() > 65536 || actions.toString().contains(QChar::Null))
-            return Failure("MAP_TEST_ARGUMENT_INVALID", "actions 必须是非空的紧凑 T 文本。");
+            return Failure("MAP_TEST_ARGUMENT_INVALID", key.toStdString() + " 必须是非空的紧凑 T 文本。");
         if (args.contains("reads")) {
             const auto reads = args.value("reads");
             if (!reads.isArray() || reads.toArray().size() > 32) return Failure("MAP_TEST_ARGUMENT_INVALID", "reads 必须是最多32项的数组。");
@@ -131,6 +147,13 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         if (args.contains("wait_ms") && !ValidPageNumber(args.value("wait_ms"), 0, 60000))
             return Failure("MAP_TEST_ARGUMENT_INVALID", "wait_ms 必须是0..60000的整数。");
     }
+    if (name == "map_test_start" && args.contains("start_seconds")) {
+        const auto start = args.value("start_seconds");
+        if (!start.isDouble() || start.toDouble() < 0.0 || start.toDouble() > 600.0 || !args.contains("scenario"))
+            return Failure("MAP_TEST_ARGUMENT_INVALID", "start_seconds 是 0..600 的秒数，只和 scenario 一起使用。");
+    }
+    if (name == "map_test_result" && args.contains("wait_ms") && !ValidPageNumber(args.value("wait_ms"), 0, 600000))
+        return Failure("MAP_TEST_ARGUMENT_INVALID", "wait_ms 必须是0..600000的整数。");
     if (name == "lua_file_write") {
         if (!args.value("text").isString() || args.value("text").toString().size() > kMaxLuaText || args.value("text").toString().contains(QChar::Null))
             return Failure("LUA_FILE_ARGUMENT_INVALID", "text 必须是不超过 2 MiB 的文本。");

@@ -5,9 +5,11 @@
 
 #include "War3MapCore/ObjectData/ObjectTypes.h"
 
+#include <QStandardItemModel>
 #include <QFile>
 #include <QLabel>
 #include <QString>
+#include <QStringList>
 
 #include <array>
 #include <filesystem>
@@ -19,6 +21,17 @@ namespace AppDetail {
 
 inline bool HasUiCatalogConfig(const std::filesystem::path& candidate) {
     return War3Map::QtProject::EditorProject::HasUiCatalogConfig(candidate);
+}
+
+// 诊断表从 first 行起某一级别（“错误”“警告”）的“代码 · 说明”，最多 24 条；说明保留编译器给出的来源与行号。
+inline QStringList DiagnosticLines(const War3Map::QtProject::EditorProject& project, int first, const QString& severity) {
+    QStringList lines;
+    const auto* model = project.diagnosticsModel_;
+    for (int row = first; row < model->rowCount() && lines.size() < 24; ++row) {
+        if (model->index(row, 0).data().toString() != severity) continue;
+        lines << (model->index(row, 2).data().toString() + " · " + model->index(row, 3).data().toString()).left(4096);
+    }
+    return lines;
 }
 
 inline std::filesystem::path NormalizeUiDataRoot(const std::filesystem::path& candidate) {

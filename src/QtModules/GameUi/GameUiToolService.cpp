@@ -1,6 +1,7 @@
 #include "GameUiToolService.h"
 
 #include "GameUiModule.h"
+#include "War3MapCore/GameUi/UiPresets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QBuffer>
@@ -448,6 +449,73 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         binding.insert("member_variable", generated->memberVariable);
         binding.insert("join_trigger", generated->joinTrigger);
         binding.insert("leave_trigger", generated->leaveTrigger);
+        binding.insert("registration_kept", generated->registrationKept);
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_talent_system")) {
+        using namespace TalentPreset;
+        const bool preview = args.value("preview").toBool();
+        const QJsonObject frame = args.value("frame").toObject();
+        // 省略的字段按 talents 模板的编号绑定，空字符串为不绑定。
+        const auto field = [&](const QJsonObject& from, const char* key, std::string_view preset) {
+            return from.contains(QLatin1String(key)) ? from.value(QLatin1String(key)).toString() : Text(std::string(preset));
+        };
+        GameUiModule::TalentSystemRequest request;
+        request.frame = frame.value("description").toString();
+        request.shown = field(frame, "shown", kShown);
+        request.entryShown = field(frame, "entry_shown", kEntryShown);
+        request.entry = field(frame, "entry", kEntry);
+        request.title = field(frame, "title", kTitle);
+        request.points = field(frame, "points", kPoints);
+        request.level = field(frame, "level", kLevel);
+        request.open = field(frame, "open", kOpen);
+        request.close = field(frame, "close", kClose);
+        request.tipShown = field(frame, "tip_shown", kTipShown);
+        request.tipTitle = field(frame, "tip_title", kTipTitle);
+        request.tipText = field(frame, "tip_text", kTipText);
+        if (frame.contains("columns")) {
+            for (const auto& value : frame.value("columns").toArray()) {
+                const QJsonObject column = value.toObject();
+                request.columns.append({column.value("icon").toString(), column.value("name").toString(), column.value("picked").toString(),
+                    column.value("pick").toString(), column.value("enter").toString(), column.value("leave").toString()});
+            }
+        } else {
+            for (std::size_t c = 0; c < kOptions; ++c) {
+                request.columns.append({Text(std::string(kIcons[c])), Text(std::string(kNames[c])), Text(std::string(kPicked[c])),
+                    Text(std::string(kPicks[c])), Text(std::string(kEnters[c])), Text(std::string(kLeaves[c]))});
+            }
+        }
+        if (args.contains("name")) request.name = args.value("name").toString();
+        for (const auto& level : args.value("unlock_levels").toArray()) request.unlockLevels.append(level.toInt());
+        if (args.contains("sync_unit")) request.syncUnitType = args.value("sync_unit").toString();
+        request.players = args.value("players").toInt(request.players);
+        request.afterPick = args.value("after_pick").toString();
+        for (const auto& value : args.value("heroes").toArray()) {
+            const QJsonObject hero = value.toObject();
+            GameUiModule::TalentSystemRequest::Hero row{hero.value("unit").toString(), hero.value("label").toString(), {}};
+            for (const auto& item : hero.value("talents").toArray()) {
+                const QJsonObject talent = item.toObject();
+                row.entries.append({talent.value("tier").toInt(), talent.value("option").toInt(), talent.value("name").toString(),
+                    talent.value("icon").toString(), talent.value("disabled_icon").toString(), talent.value("text").toString(),
+                    talent.value("learn").toString()});
+            }
+            request.heroes.append(std::move(row));
+        }
+        request.replaceRegistration = args.value("replace_registration").toBool();
+        QString error;
+        const auto generated = module->GenerateTalentSystem(request, preview, &error);
+        if (!generated) return Failure("GAME_UI_TALENT_SYSTEM", error);
+        binding.insert("applied", !preview);
+        binding.insert("category", Text(std::string(kTalentTriggerCategory)));
+        binding.insert("feature_text", generated->featureText);
+        binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
+        binding.insert("variables", QJsonArray::fromStringList(generated->variables));
+        binding.insert("tiers", static_cast<qint64>(generated->tiers));
+        binding.insert("options", static_cast<qint64>(generated->options));
+        binding.insert("picked_variable", generated->pickedVariable);
+        binding.insert("bind_trigger", generated->bindTrigger);
+        binding.insert("registration_trigger", generated->registrationTrigger);
         binding.insert("registration_kept", generated->registrationKept);
         return binding;
     }

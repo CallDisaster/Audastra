@@ -19,6 +19,7 @@
 #include "War3MapCore/ProjectStore.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
+#include "War3MapCore/Services/MapTestScenario.h"
 #include "War3MapCore/Services/TerrainMinimapSaveChoice.h"
 #include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 
@@ -437,6 +438,9 @@ public:
     std::optional<Services::LuaMapTargetRequest> luaMapTarget_;
     std::filesystem::path luaMapTargetSource_;
     std::uint64_t luaMapTargetGeneration_ = 0;
+    // 下一次测试副本保存要编进的测试场景（只进本次脚本生成用的触发器副本）；生成后记下结果文件与读取计划。
+    std::optional<Services::MapTestScenarioRequest> testScenario_;
+    std::optional<Services::MapTestScenarioPlan> testScenarioPlan_;
     std::unique_ptr<Trigger::UiCatalog> uiCatalog_;
     std::unique_ptr<Trigger::TriggerDocument> triggerDocument_;
     Trigger::GuiConversionSnapshots guiConversionSnapshots_;

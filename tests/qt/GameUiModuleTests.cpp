@@ -80,6 +80,7 @@ private slots:
     void GeneratesCastSystem();
     void CreatesFromPresets();
     void GeneratesPartySystem();
+    void GeneratesTalentSystem();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -818,8 +819,9 @@ void GameUiModuleTests::CreatesFromPresets() {
     // 新建界面菜单里的模板列表与 Core 的模板一致。
     auto* presets = page->findChild<QComboBox*>(QStringLiteral("gameUiNewDescriptionPreset"));
     QVERIFY(presets);
-    QCOMPARE(presets->count(), 3);
-    QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0);
+    QCOMPARE(presets->count(), 4);
+    QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0
+        && presets->findData(QStringLiteral("talents")) > 0);
     QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
     QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{10});
     QCOMPARE(module.Description(QStringLiteral("Party"))->events.size(), std::size_t{1});
@@ -909,6 +911,44 @@ void GameUiModuleTests::GeneratesPartySystem() {
     QVERIFY2(again, qPrintable(error));
     QVERIFY(again->registrationKept);
     QCOMPARE(again->triggers.size(), qsizetype{7});
+}
+
+// 天赋树：按模板新建界面并生成界面触发器后，天赋系统检查同步单位与英雄在物编里存在；没有物编时拒绝且不改地图。
+void GameUiModuleTests::GeneratesTalentSystem() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(page->findChild<QPushButton*>(QStringLiteral("gameUiTalentSystem")));
+    QString error;
+    Modules::GameUiModule::TalentSystemRequest request;
+    request.frame = QStringLiteral("Talents");
+    QVERIFY(!module.GenerateTalentSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("触发器")));
+
+    AudastraUiTest::Catalog files;
+    files.extras = {AudastraUiTest::SpellLayer(), AudastraUiTest::PartyLayer()};
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+
+    QVERIFY(!module.GenerateTalentSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Talents")));
+    QVERIFY2(module.CreateDescription(QStringLiteral("Talents"), {}, &error, QStringLiteral("talents")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Talents"))->label, std::string("天赋树"));
+    QVERIFY(!module.GenerateTalentSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Talents")));
+    QVERIFY2(module.GenerateDescriptionTriggers(QStringLiteral("Talents"), false, &error), qPrintable(error));
+    request.afterPick = QStringLiteral("没有的触发器");
+    QVERIFY(!module.GenerateTalentSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("没有的触发器")));
+    request.afterPick.clear();
+    const int undo = project.triggerUndoStack_->count();
+    QVERIFY(!module.GenerateTalentSystem(request, false, &error));
+    QVERIFY(error.contains(QStringLiteral("hfoo")));
+    QCOMPARE(project.triggerUndoStack_->count(), undo);
 }
 
 int main(int argc, char** argv) {

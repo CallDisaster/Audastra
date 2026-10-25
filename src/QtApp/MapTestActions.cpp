@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "AppHelpers.h"
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
 #include "TriggerModule.h"
@@ -106,12 +107,58 @@ QString MainWindow::StartMapTest(bool interactive) {
         cleanupUnstarted(false);
         return fail(tr("地图测试未启动"), tr("代码草稿未能提交，请查看触发器模块中的诊断。原图和当前编辑均保留。"));
     }
-    const bool snapshot = project_->HasUnsavedMapChanges() || project_->luaMapTarget_
+    const bool scenario = pendingMapTestScenario_.has_value();
+    const bool snapshot = scenario || project_->HasUnsavedMapChanges() || project_->luaMapTarget_
         || settingsModule_->HasPendingDraft() || soundsModule_->HasPendingDraft();
     auto input = project_->sourceArchivePath_;
+    std::optional<Services::MapTestScenarioPlan> scenarioPlan;
+    // 测试副本写在测试目录旁的“.input”目录：候选写出锁住目标的每一级祖先且不共享删除，与持有删除权限的
+    // 测试目录租约互斥。写完后单独冻结，准备阶段读完即按租约删除。
+    std::shared_ptr<Services::MapTestWorkspaceLease> inputLease;
+    const auto cleanupInput = [this, &inputLease] {
+        if (!inputLease) return;
+        const auto result = std::make_shared<War3Map::Status>();
+        auto* worker = QThread::create([files = std::move(inputLease), result] {
+            try {
+                *result = files->Cleanup(true);
+            } catch (...) {
+                *result = War3Map::Status::Failure("Map.Test", "MAP_TEST_CLEANUP_EXCEPTION", "测试副本目录清理失败，未确认内容已保留。");
+            }
+        });
+        connect(worker, &QThread::finished, this, [this, result] { project_->AddDiagnostics(result->diagnostics); });
+        connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+        worker->start(QThread::LowPriority);
+    };
     if (snapshot) {
-        input = std::filesystem::path(QDir(runDirectory).filePath(QStringLiteral("input.w3x")).toStdWString());
-        if (!RunMapSave(input, false, true, true, testHotReload)) { cleanupUnstarted(true); return tr("测试副本保存失败，请查看诊断。"); }
+        const auto inputDirectory = std::filesystem::path(testRoot.filePath(runName + QStringLiteral(".input")).toStdWString());
+        if (!std::filesystem::create_directory(inputDirectory, directoryError)) {
+            cleanupUnstarted(true);
+            return fail(tr("地图测试"), tr("无法创建测试副本目录：%1").arg(QString::fromStdWString(inputDirectory.wstring())));
+        }
+        input = inputDirectory / L"input.w3x";
+        project_->testScenario_ = pendingMapTestScenario_;
+        const auto firstDiagnostic = project_->diagnosticsModel_->rowCount();
+        const bool saved = RunMapSave(input, false, true, true, testHotReload);
+        scenarioPlan = std::move(project_->testScenarioPlan_);
+        project_->testScenario_.reset(); project_->testScenarioPlan_.reset();
+        auto frozen = Services::FreezeMapTestWorkspace(inputDirectory);
+        if (frozen.Succeeded() && frozen.value) inputLease = std::move(*frozen.value);
+        else project_->AddDiagnostics(frozen.diagnostics);
+        const auto failed = [&](const QString& summary) {
+            cleanupInput(); cleanupUnstarted(true);
+            const auto errors = AppDetail::DiagnosticLines(*project_, firstDiagnostic, tr("错误"));
+            return fail(tr("地图测试未启动"), errors.isEmpty() ? summary : summary + QLatin1Char('\n') + errors.join(QLatin1Char('\n')));
+        };
+        if (!saved || !inputLease) return failed(tr("测试副本保存失败："));
+        if (scenario && !scenarioPlan) return failed(tr("测试场景没有编进测试副本："));
+    }
+    // 场景结果由游戏写到游戏目录下；目录须先存在，上一轮的结果文件不留给本轮误读。
+    std::filesystem::path scenarioResult;
+    if (scenarioPlan) {
+        scenarioResult = std::filesystem::path(gameRoot.toStdWString()) / std::filesystem::path(scenarioPlan->resultFile);
+        std::error_code ignored;
+        std::filesystem::create_directories(scenarioResult.parent_path(), ignored);
+        std::filesystem::remove(scenarioResult, ignored);
     }
     Services::MapTestRequest request;
     request.inputMap = input;
@@ -178,6 +225,7 @@ QString MainWindow::StartMapTest(bool interactive) {
     loop.exec();
     worker->wait();
     dialog.hide();
+    cleanupInput();
     project_->AddDiagnostics(artifact.diagnostics);
     project_->AddDiagnostics(workspaceReady.diagnostics);
     project_->AddDiagnostics(launched.diagnostics);
@@ -191,6 +239,9 @@ QString MainWindow::StartMapTest(bool interactive) {
     }
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
+    mapTestRunName_ = runName; mapTestCaptures_ = 0;
+    mapTestScenario_.reset();
+    if (scenarioPlan) mapTestScenario_ = MapTestScenarioRun{std::move(*scenarioPlan), scenarioResult};
     if (launched.value->luaMailbox) {
         luaRuntimeMailbox_ = launched.value->luaMailbox;
         luaTestGeneration_ = project_->editRevision_.Generation();

@@ -545,7 +545,9 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     // 使用预放对象的GUI图将实际成员/分类依赖纳入同一保存任务。前缀只选择需要检查
     // 的候选，真正资格由sealed快照及共用resolver给出，不按名字猜对象存在。
     const bool objectChanges = std::any_of(objectDirty_.begin(), objectDirty_.end(), [](bool dirty) { return dirty; });
-    const bool hasChanges = triggerDirty_ || objectChanges || editsImports || (mapEdits_ && mapEdits_->IsDirty()) || luaMapTarget_;
+    // 带测试场景的测试副本也要重建脚本，场景只存在于本次生成用的触发器副本里。
+    const bool hasChanges = triggerDirty_ || objectChanges || editsImports || (mapEdits_ && mapEdits_->IsDirty()) || luaMapTarget_
+        || testScenario_;
     const auto objectNames = triggerDocument_ && hasChanges ? ActivePreplacedNames(*triggerDocument_)
         : Result<std::vector<std::string>>::Success({});
     AddDiagnostics(objectNames.diagnostics);

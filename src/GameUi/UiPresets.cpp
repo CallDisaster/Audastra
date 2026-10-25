@@ -165,10 +165,137 @@ UiDescription Party() {
     return d;
 }
 
+// 统一天赋树：技能栏上方右侧的入口按钮（有可选天赋时带个数），屏幕中间偏左的面板。
+// 面板每层一行：左侧解锁等级，右侧每列一个选项（图标 + 名字，已选时图标外有青色描边）；选项名字为空时整格不显示。
+// 鼠标移到选项上，面板右侧显示说明框。
+UiDescription Talents() {
+    using namespace TalentPreset;
+    const auto id = [](std::string_view value) { return std::string(value); };
+    UiDescription d;
+    d.values = {Value(id(kShown), "面板显示", UiValueType::Boolean, "false"), Value(id(kEntryShown), "入口显示", UiValueType::Boolean, "false"),
+        Value(id(kEntry), "入口文字", UiValueType::String, "天赋"), Value(id(kTitle), "标题", UiValueType::String, "天赋"),
+        Value(id(kPoints), "可选数", UiValueType::String, ""), Value(id(kLevel), "解锁等级", UiValueType::String, "", kTiers)};
+    for (std::size_t c = 0; c < kOptions; ++c) {
+        const std::string column = " " + std::to_string(c + 1);
+        d.values.push_back(Value(id(kIcons[c]), "图标" + column, UiValueType::String, "", kTiers));
+        d.values.push_back(Value(id(kNames[c]), "名字" + column, UiValueType::String, "", kTiers));
+        d.values.push_back(Value(id(kPicked[c]), "已选" + column, UiValueType::Boolean, "false", kTiers));
+    }
+    d.values.push_back(Value(id(kTipShown), "说明显示", UiValueType::Boolean, "false"));
+    d.values.push_back(Value(id(kTipTitle), "说明标题", UiValueType::String, ""));
+    d.values.push_back(Value(id(kTipText), "说明正文", UiValueType::String, ""));
+
+    UiFrame entry;
+    entry.id = "entry";
+    entry.label = "入口";
+    entry.type = UiFrameType::Button;
+    entry.texture = std::string(kTooltip);
+    entry.text = "{" + id(kEntry) + "}";
+    entry.width = 0.07;
+    entry.height = 0.026;
+    entry.anchors = {Anchor(FramePoint::BottomRight, UiAnchorTarget::Screen, std::nullopt, -0.006, 0.17)};
+    entry.visible.binding = Bind(id(kEntryShown));
+
+    UiFrame panel;
+    panel.id = "panel";
+    panel.label = "面板";
+    panel.type = UiFrameType::Backdrop;
+    panel.texture = std::string(kTooltip);
+    panel.width = 0.34;
+    panel.height = 0.36;
+    panel.anchors = {Anchor(FramePoint::Center, UiAnchorTarget::Screen, std::nullopt, -0.08, 0.04)};
+    panel.visible.binding = Bind(id(kShown));
+    UiFrame title = Text("title", "标题", "{" + id(kTitle) + "}", JustifyH::Left, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.014, -0.012), 0.2, 0.016);
+    UiFrame close;
+    close.id = "close";
+    close.label = "关闭";
+    close.type = UiFrameType::Button;
+    close.text = "×";
+    close.width = 0.022;
+    close.height = 0.022;
+    close.anchors = {Anchor(FramePoint::TopRight, UiAnchorTarget::Parent, std::nullopt, -0.008, -0.008)};
+
+    UiFrame row;
+    row.id = "row";
+    row.label = "层";
+    row.width = 0.312;
+    row.height = 0.054;
+    row.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.014, -0.036)};
+    row.repeat = UiRepeat{kTiers, 0.0, -0.058};
+    UiFrame level = Text("level", "解锁等级", "{" + id(kLevel) + "[]}", JustifyH::Left, Anchor(FramePoint::Left), 0.042, 0.03);
+    row.children = {std::move(level)};
+    for (std::size_t c = 0; c < kOptions; ++c) {
+        const std::string n = std::to_string(c + 1);
+        UiFrame cell;
+        cell.id = "cell" + n;
+        cell.label = "选项 " + n;
+        cell.width = 0.086;
+        cell.height = 0.05;
+        cell.anchors = {Anchor(FramePoint::Left, UiAnchorTarget::Parent, std::nullopt, 0.046 + 0.089 * static_cast<double>(c))};
+        cell.visible.binding = Bind(id(kNames[c]), true);
+        UiFrame ring;
+        ring.id = "ring" + n;
+        ring.label = "已选描边 " + n;
+        ring.type = UiFrameType::Backdrop;
+        ring.texture = TeamColor(2);
+        ring.width = 0.036;
+        ring.height = 0.036;
+        ring.anchors = {Anchor(FramePoint::Left)};
+        ring.visible.binding = Bind(id(kPicked[c]), true);
+        UiFrame art;
+        art.id = "art" + n;
+        art.label = "图标 " + n;
+        art.type = UiFrameType::Backdrop;
+        art.texture = "{" + id(kIcons[c]) + "[]}";
+        art.width = 0.032;
+        art.height = 0.032;
+        art.anchors = {Anchor(FramePoint::Left, UiAnchorTarget::Parent, std::nullopt, 0.002)};
+        UiFrame name = Text("label" + n, "名字 " + n, "{" + id(kNames[c]) + "[]}", JustifyH::Left,
+            Anchor(FramePoint::Left, UiAnchorTarget::Parent, std::nullopt, 0.038), 0.048, 0.044);
+        // 点击、移入、移出事件挂在盖满整格的无贴图按钮上。
+        UiFrame hit;
+        hit.id = "hit" + n;
+        hit.label = "点选 " + n;
+        hit.type = UiFrameType::Button;
+        hit.anchors = {Anchor(FramePoint::TopLeft), Anchor(FramePoint::BottomRight)};
+        cell.children = {std::move(ring), std::move(art), std::move(name), std::move(hit)};
+        row.children.push_back(std::move(cell));
+    }
+
+    UiFrame tip;
+    tip.id = "tip";
+    tip.label = "说明";
+    tip.type = UiFrameType::Backdrop;
+    tip.texture = std::string(kTooltip);
+    tip.width = 0.2;
+    tip.height = 0.13;
+    tip.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, FramePoint::TopRight, 0.004)};
+    tip.visible.binding = Bind(id(kTipShown));
+    UiFrame tipText = Text("tip_body", "说明正文", "{" + id(kTipText) + "}", JustifyH::Left,
+        Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.01, -0.03), 0.18, 0.09);
+    tipText.justifyV = JustifyV::Top;
+    tip.children = {Text("tip_head", "说明标题", "{" + id(kTipTitle) + "}", JustifyH::Left,
+                        Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.01, -0.01), 0.18, 0.016),
+        std::move(tipText)};
+
+    panel.children = {std::move(title),
+        Text("points", "可选数", "{" + id(kPoints) + "}", JustifyH::Right, Anchor(FramePoint::TopRight, UiAnchorTarget::Parent, std::nullopt, -0.036, -0.012), 0.08, 0.016),
+        std::move(close), std::move(row), std::move(tip)};
+    d.frames = {std::move(entry), std::move(panel)};
+    d.events = {UiEvent{id(kOpen), "entry", UiEventKind::Click}, UiEvent{id(kClose), "close", UiEventKind::Click}};
+    for (std::size_t c = 0; c < kOptions; ++c) {
+        const std::string hit = "hit" + std::to_string(c + 1);
+        d.events.push_back(UiEvent{id(kPicks[c]), hit, UiEventKind::Click});
+        d.events.push_back(UiEvent{id(kEnters[c]), hit, UiEventKind::Enter});
+        d.events.push_back(UiEvent{id(kLeaves[c]), hit, UiEventKind::Leave});
+    }
+    return d;
+}
+
 } // namespace
 
 const std::vector<UiPreset>& UiPresets() {
-    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}};
+    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}, {"talents", "天赋树"}};
     return presets;
 }
 
@@ -181,6 +308,9 @@ Result<UiDescription> NewUiDescriptionFromPreset(std::string_view preset, std::s
     } else if (preset == "party") {
         description = Party();
         name = "团队框架";
+    } else if (preset == "talents") {
+        description = Talents();
+        name = "天赋树";
     } else {
         Result<UiDescription> failure;
         failure.diagnostics.push_back(detail::MakeUiError("AUI_PRESET_UNKNOWN", "没有界面模板 " + std::string(preset)));

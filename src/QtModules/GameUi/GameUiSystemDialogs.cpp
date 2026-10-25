@@ -11,14 +11,17 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSpinBox>
 
 #include <algorithm>
 #include <initializer_list>
 
 // 绑定界面的系统窗口：“读条系统”选读条条界面及其数值与状态，“团队框架”选团队框架界面及其数组数值与点击事件，
-// 生成各自的触发器。两者都可直接按模板新建一份界面再绑定。读条的技能登记在触发器编辑器里改。
+// “天赋树”选按天赋树模板建的界面（按模板的编号绑定），生成各自的触发器。都可直接按模板新建一份界面再绑定。
+// 读条的技能登记与各英雄的天赋登记在触发器编辑器里改。
 namespace War3Map::Modules {
 namespace {
 
@@ -301,6 +304,76 @@ void GameUiModule::ShowPartySystemDialog() {
     }
     ReportAuthoring({});
     if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kPartyTriggerCategory)), 8000);
+}
+
+void GameUiModule::ShowTalentSystemDialog() {
+    SystemDialog ui(page_, "gameUiTalentDialog", tr("天赋树"));
+    auto* frame = ui.Combo("gameUiTalentFrame", tr("界面"));
+    FillDescriptions(frame, Descriptions(), {}, tr("新建天赋树"), "talents");
+    if (const int index = frame->findData(SelectedDescriptionId(tree_.get(), selected_)); index >= 0) frame->setCurrentIndex(index);
+    auto* name = new QLineEdit(QStringLiteral("天赋"), &ui.dialog);
+    name->setObjectName(QStringLiteral("gameUiTalentName"));
+    ui.form->addRow(tr("名字"), name);
+    auto* levels = new QLineEdit(QStringLiteral("5 10 15 20 25"), &ui.dialog);
+    levels->setObjectName(QStringLiteral("gameUiTalentLevels"));
+    ui.form->addRow(tr("解锁等级"), levels);
+    auto* syncUnit = ui.Combo("gameUiTalentSyncUnit", tr("同步单位"));
+    for (const auto& entry : QtApp::BuildObjectViewEntries(project_)) {
+        if (entry.kind == QLatin1String("unit")) syncUnit->addItem(QStringLiteral("%1  %2").arg(entry.name, entry.id), entry.id);
+    }
+    Prefer(syncUnit, {"hfoo"});
+    auto* players = new QSpinBox(&ui.dialog);
+    players->setObjectName(QStringLiteral("gameUiTalentPlayers"));
+    players->setRange(1, static_cast<int>(kTalentMaxPlayers));
+    players->setValue(12);
+    ui.form->addRow(tr("玩家数"), players);
+    auto* afterPick = ui.Combo("gameUiTalentAfterPick", tr("选定后运行"));
+    afterPick->addItem(tr("无"), QString());
+    if (project_.triggerDocument_) {
+        for (const auto& row : project_.triggerDocument_->triggers) {
+            if (row.name.text.find("Talent_") == std::string::npos) afterPick->addItem(Text(row.name.text), Text(row.name.text));
+        }
+    }
+    if (!ui.Run()) return;
+
+    using namespace TalentPreset;
+    TalentSystemRequest request;
+    request.name = name->text().trimmed();
+    for (const auto& part : levels->text().split(QLatin1Char(' '), Qt::SkipEmptyParts)) request.unlockLevels.append(part.toInt());
+    request.syncUnitType = syncUnit->currentData().toString();
+    request.players = players->value();
+    request.afterPick = afterPick->currentData().toString();
+    request.frame = frame->currentData().toString();
+    QString error;
+    if (request.frame.startsWith(QLatin1Char('+'))) {
+        const auto created = CreateFromPreset(QStringLiteral("talents"), &error);
+        if (!created) {
+            ReportAuthoring(error);
+            return;
+        }
+        request.frame = *created;
+    }
+    request.shown = Text(kShown);
+    request.entryShown = Text(kEntryShown);
+    request.entry = Text(kEntry);
+    request.title = Text(kTitle);
+    request.points = Text(kPoints);
+    request.level = Text(kLevel);
+    request.open = Text(kOpen);
+    request.close = Text(kClose);
+    request.tipShown = Text(kTipShown);
+    request.tipTitle = Text(kTipTitle);
+    request.tipText = Text(kTipText);
+    for (std::size_t c = 0; c < kOptions; ++c) {
+        request.columns.append({Text(kIcons[c]), Text(kNames[c]), Text(kPicked[c]), Text(kPicks[c]), Text(kEnters[c]), Text(kLeaves[c])});
+    }
+    const auto generated = GenerateTalentSystem(request, false, &error);
+    if (!generated) {
+        ReportAuthoring(error);
+        return;
+    }
+    ReportAuthoring({});
+    if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kTalentTriggerCategory)), 8000);
 }
 
 std::optional<QString> GameUiModule::CreateFromPreset(const QString& preset, QString* error) {

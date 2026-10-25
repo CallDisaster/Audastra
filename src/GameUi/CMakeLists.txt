@@ -17,6 +17,7 @@ add_library(War3MapGameUi STATIC
     ScriptSimulation.cpp
     ScriptUiApi.cpp
     ScriptValue.cpp
+    TalentTriggers.cpp
     UiBindingCheck.h
     UiDescription.cpp
     UiDescriptionCheck.cpp

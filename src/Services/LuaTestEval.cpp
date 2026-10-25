@@ -1,10 +1,9 @@
 #include "War3MapCore/Services/LuaTestEval.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/Runtime/LuaTestMailbox.h"
-#include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "TestTriggerCopy.h"
 
 #include <algorithm>
-#include <cctype>
 
 namespace War3Map::Script::lua { extern const std::string_view kLuaTriggerRuntimeSource; }
 
@@ -14,64 +13,21 @@ template<class T> Result<T> Fail(const char* code, std::string text) {
     return Result<T>::Failure("Lua.TestEval", code, std::move(text));
 }
 constexpr std::size_t kActionBytes = 64 * 1024;
-constexpr std::size_t kReads = 32;
-constexpr std::string_view kCategoryKey = "agent-eval/category", kTriggerKey = "agent-eval/trigger";
-
-bool Identifier(std::string_view text) {
-    return !text.empty() && text.size() <= 128 && !std::isdigit(static_cast<unsigned char>(text.front()))
-        && std::all_of(text.begin(), text.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; });
-}
 }
 
 Result<LuaTestEvalPlan> AddLuaTestEvalTrigger(Trigger::TriggerDocument& copy, const Trigger::UiCatalog& catalog,
     const LuaTestEvalRequest& request, const Trigger::MapObjectReferenceSnapshot* mapObjects) {
-    using namespace Trigger;
     if (request.actions.empty() || request.actions.size() > kActionBytes)
         return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_ACTIONS", "actions 须是 1..65536 字节的紧凑 T 文本。");
-    if (request.reads.size() > kReads) return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_READS", "reads 最多 32 项。");
+    const auto reads = detail::ResolveTestReads(copy, request.reads, "Lua.TestEval", "LUA_TEST_EVAL");
+    if (!reads.Succeeded() || !reads.value) return {std::nullopt, reads.diagnostics};
     LuaTestEvalPlan plan;
-    for (const auto& read : request.reads) {
-        std::string_view text = read;
-        if (text.starts_with("udg_")) text.remove_prefix(4);
-        std::string_view name = text, index;
-        if (const auto open = text.find('['); open != std::string_view::npos) {
-            if (!text.ends_with("]")) return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_READS", "读取项写法应为 名字 或 名字[下标]：" + read);
-            name = text.substr(0, open); index = text.substr(open + 1, text.size() - open - 2);
-            if (index.empty() || index.size() > 5 || !std::all_of(index.begin(), index.end(), [](char c) { return c >= '0' && c <= '9'; }))
-                return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_READS", "数组下标须是非负整数：" + read);
-        }
-        const auto variable = std::find_if(copy.variables.begin(), copy.variables.end(),
-            [&](const auto& row) { return row.name.text == name; });
-        if (!Identifier(name) || variable == copy.variables.end())
-            return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_READ_UNKNOWN", "没有全局变量 " + std::string(name) + "。");
-        if ((variable->isArray != 0) != !index.empty())
-            return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_READS", variable->isArray != 0 ? read + " 是数组，须写下标。" : read + " 不是数组，不能写下标。");
-        if (!index.empty() && std::stoi(std::string(index)) > variable->size)
-            return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_READS", read + " 的下标超出数组长度。");
-        plan.reads.emplace_back(read, "udg_" + std::string(name) + (index.empty() ? "" : "[" + std::string(index) + "]"));
-    }
-    const auto clash = [](const auto& rows, std::string_view name) {
-        return std::any_of(rows.begin(), rows.end(), [&](const auto& row) { return row.name.text == name; });
-    };
-    if (clash(copy.categories, kLuaTestEvalCategory) || clash(copy.triggers, kLuaTestEvalTrigger))
-        return Fail<LuaTestEvalPlan>("LUA_TEST_EVAL_NAME_TAKEN", "地图里已有名为 " + std::string(kLuaTestEvalTrigger) + " 的触发器或同名类别。");
-
-    const auto binding = CaptureTriggerGraphBinding(copy, catalog, mapObjects);
-    if (!binding.Succeeded() || !binding.value) return {std::nullopt, binding.diagnostics};
-    GraphParentExpectation categories{GraphParentKind::Categories, {}, {}, std::nullopt};
-    for (const auto& row : copy.categories) categories.orderedChildren.push_back({GraphRecordKind::Category, row.id, {}});
-    const GraphRecordRef category{GraphRecordKind::Category, 0, std::string(kCategoryKey)};
-    const GraphRecordRef trigger{GraphRecordKind::Trigger, 0, std::string(kTriggerKey)};
-    TriggerGraphEditBatch batch{*binding.value, {}};
-    batch.operations.emplace_back(GraphCreate{std::string(kCategoryKey), GraphCategoryValue{std::string(kLuaTestEvalCategory), false},
-        categories, std::nullopt});
-    batch.operations.emplace_back(GraphCreate{std::string(kTriggerKey),
-        GraphTriggerValue{std::string(kLuaTestEvalTrigger), {}, true, true, false, false},
-        GraphParentExpectation{GraphParentKind::CategoryTriggers, category, {}, std::nullopt}, std::nullopt});
-    batch.operations.emplace_back(GraphReplaceTriggerText{trigger, request.actions});
-    const auto applied = ApplyTriggerGraphEditBatch(copy, catalog, batch, {}, mapObjects);
-    if (!applied.Succeeded() || !applied.value) return {std::nullopt, applied.diagnostics};
-    plan.triggerId = applied.value->created.at(std::string(kTriggerKey)).id;
+    for (const auto& read : *reads.value)
+        plan.reads.emplace_back(read.request, "udg_" + read.name + (read.index.empty() ? "" : "[" + read.index + "]"));
+    const auto trigger = detail::AddTestTrigger(copy, catalog, kLuaTestEvalCategory, kLuaTestEvalTrigger, "agent-eval",
+        request.actions, "Lua.TestEval", "LUA_TEST_EVAL", mapObjects);
+    if (!trigger.Succeeded() || !trigger.value) return {std::nullopt, trigger.diagnostics};
+    plan.triggerId = *trigger.value;
     return Result<LuaTestEvalPlan>::Success(std::move(plan));
 }
 

@@ -228,6 +228,8 @@ private:
     // Agent 进游戏测试：map_test_start / map_test_stop / map_test_eval（MapTestAgentActions.cpp）。
     QJsonObject MapTestTool(const QString& name, const QJsonObject& arguments);
     QJsonObject MapTestSteps(const QJsonObject& arguments);
+    QJsonObject MapTestScenarioResult(const QJsonObject& arguments);
+    QJsonObject MapTestCapture();
     // 热重载与测试步骤共用：在后台对测试副本任务做脚本预检并生成 Lua 测试单元；thenInWorker 在同一后台线程接着执行。
     War3Map::Status RunLuaTestPreflight(War3Map::QtProject::MapSaveJob& task, const QString& label,
         const std::function<void()>& thenInWorker = {});
@@ -320,6 +322,15 @@ private:
     QAction* buildMapAction_ = nullptr;
     QAction* testMapAction_ = nullptr;
     std::shared_ptr<War3Map::Script::MapTestLaunchLease> mapTestLease_;
+    // 助手启动测试时带的场景：启动前交给工程编进测试副本；启动后记下结果文件，供 map_test_result 读回。
+    std::optional<War3Map::Services::MapTestScenarioRequest> pendingMapTestScenario_;
+    struct MapTestScenarioRun {
+        War3Map::Services::MapTestScenarioPlan plan;
+        std::filesystem::path resultPath;
+    };
+    std::optional<MapTestScenarioRun> mapTestScenario_;
+    QString mapTestRunName_;
+    int mapTestCaptures_ = 0;
     QAction* luaReloadAction_ = nullptr;
     QAction* luaAutoReloadAction_ = nullptr;
     std::optional<War3Map::Script::LuaTriggerUnit> luaTestGenerated_;

@@ -345,11 +345,11 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "feedback.draft", "feedback.list", "feedback.status",
         "game_ui_cast_system", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
         "game_ui_description_triggers",
-        "game_ui_nodes_query", "game_ui_party_system", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
+        "game_ui_nodes_query", "game_ui_party_system", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_talent_system", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
-        "map_settings_get", "map_settings_set", "map_test_eval", "map_test_start", "map_test_stop",
+        "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_apply_text", "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
         "objects_text",
@@ -361,7 +361,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{89});
+    QCOMPARE(expected.size(), qsizetype{92});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2131,6 +2131,13 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
     auto staleTest = f.Context(); staleTest.insert("expected_revision", "9999");
     QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", staleTest)), QString("LIVE_EDITOR_REVISION_CONFLICT"));
     QCOMPARE(launches, 2);
+    // 测试场景参数先校验再交给宿主：start_seconds 不能单独出现，scenario 带 reads 原样转交。
+    auto lonelyStart = f.Context(); lonelyStart.insert("start_seconds", 3);
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", lonelyStart)), QString("MAP_TEST_ARGUMENT_INVALID"));
+    auto scenario = f.Context(); scenario.insert("scenario", QStringLiteral("Preload(\"通过\")"));
+    scenario.insert("reads", QJsonArray{QStringLiteral("Count")}); scenario.insert("start_seconds", 2.5);
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", scenario)), QString("MAP_TEST_REJECTED"));
+    QCOMPARE(launches, 3);
 
     QtProject::AssetState ambiguous;
     ambiguous.edits.push_back({path, path}); ambiguous.edits.push_back({path, path});
@@ -2671,6 +2678,26 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     auto badIcons = buffs; badIcons["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"buff_icons", "buff1"}};
     QVERIFY(!f.tools->Invoke("game_ui_party_system", badIcons).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{8});
+    // 天赋树：只给界面编号即按模板绑定；层、列、登记与解锁等级的形状在到达宿主前检查。
+    auto talent = args; talent["preview"] = true; talent["frame"] = QJsonObject{{"description", "Talents"}};
+    talent["heroes"] = QJsonArray{QJsonObject{{"unit", "O000"},
+        {"talents", QJsonArray{QJsonObject{{"tier", 1}, {"option", 2}, {"name", "迅捷"}, {"learn", "A001"}}}}}};
+    talent["unlock_levels"] = QJsonArray{2, 4, 6, 8, 10};
+    QVERIFY(f.tools->Invoke("game_ui_talent_system", talent).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{9});
+    auto noFrame = talent; noFrame.remove("frame");
+    QVERIFY(!f.tools->Invoke("game_ui_talent_system", noFrame).value("ok").toBool());
+    auto badTier = talent;
+    badTier["heroes"] = QJsonArray{QJsonObject{{"unit", "O000"}, {"talents", QJsonArray{QJsonObject{{"tier", 8}, {"option", 1}, {"name", "x"}}}}}};
+    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badTier).value("ok").toBool());
+    auto badUnit = talent; badUnit["sync_unit"] = "hf";
+    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badUnit).value("ok").toBool());
+    auto badLevels = talent; badLevels["unlock_levels"] = QJsonArray{0};
+    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badLevels).value("ok").toBool());
+    auto badColumns = talent;
+    badColumns["frame"] = QJsonObject{{"description", "Talents"}, {"columns", QJsonArray{QJsonObject{{"icon", "icon1"}, {"name", "name1"}}}}};
+    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badColumns).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{9});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
@@ -2679,6 +2706,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_triggers"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_cast_system"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_party_system"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_talent_system"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }

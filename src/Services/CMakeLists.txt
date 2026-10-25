@@ -50,6 +50,8 @@ add_library(War3MapServices STATIC
     MapObjectReferenceSources.cpp
     ScriptMigrationPreflight.cpp
     LuaTestEval.cpp
+    MapTestScenario.cpp
+    TestTriggerCopy.cpp
     LuaTriggerCandidate.cpp
     LuaSourceQueries.cpp
     LuaCandidateProfile.cpp

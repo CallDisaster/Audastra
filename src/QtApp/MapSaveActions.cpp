@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "AppHelpers.h"
 #include "CampaignModule.h"
 
 #include "MapSaveJob.h"
@@ -31,17 +32,7 @@ using War3Map::QtProject::EditorProject;
 using War3Map::QtProject::MapSaveJob;
 
 namespace {
-QStringList SaveDiagnostics(const EditorProject& project, int first, const QString& severity) {
-    QStringList lines;
-    for (int row = first; row < project.diagnosticsModel_->rowCount() && lines.size() < 24; ++row) {
-        if (project.diagnosticsModel_->index(row, 0).data().toString() != severity) continue;
-        QString line = project.diagnosticsModel_->index(row, 2).data().toString() + " · "
-            + project.diagnosticsModel_->index(row, 3).data().toString();
-        // 说明中保留编译器已经给出的来源、行号/原文；不猜测别的阶段行号。
-        lines << line.left(4096);
-    }
-    return lines;
-}
+using AppDetail::DiagnosticLines;
 void SaveNotice(QMainWindow& window, bool interactive, bool success, const QString& summary, const QStringList& details,
     const QStringList& warnings = {}) {
     window.statusBar()->showMessage(summary); // 保留结果，不能一秒后悄然消失。
@@ -107,10 +98,12 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         }
     }
     const auto firstDiagnostic = project_->diagnosticsModel_->rowCount();
+    // 测试副本的结果由地图测试自己交代（界面弹说明，助手调用返回原因），这里只写状态栏。
+    const bool notify = background && !testSnapshot;
     const auto reportFailure = [&](const QString& summary, const MapSaveJob* job = nullptr) {
         ReportProgramSaveFailures(firstDiagnostic);
-        const auto errors = SaveDiagnostics(*project_, firstDiagnostic, tr("错误"));
-        const auto warnings = SaveDiagnostics(*project_, firstDiagnostic, tr("警告"));
+        const auto errors = DiagnosticLines(*project_, firstDiagnostic, tr("错误"));
+        const auto warnings = DiagnosticLines(*project_, firstDiagnostic, tr("警告"));
         QStringList details{tr("目标：%1").arg(QString::fromStdWString((inPlace ? project_->sourceArchivePath_ : target).wstring()))};
         if (job && !job->written.empty()) {
             details << tr("已写出文件但未完成当前编辑的提交：%1").arg(QString::fromStdWString(job->written.wstring()));
@@ -122,7 +115,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         const auto failureSummary = job && !job->written.empty()
             ? tr("文件已写出，但保存结果未被接受；当前编辑仍未保存")
             : errors.isEmpty() ? summary : tr("地图未保存：%1").arg(errors.back().section(QLatin1Char('\n'), 0, 0));
-        SaveNotice(*this, background, false, failureSummary, details, warnings);
+        SaveNotice(*this, notify, false, failureSummary, details, warnings);
     };
     if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve
         && minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Automatic) {
@@ -278,7 +271,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             .arg(static_cast<qulonglong>(job->inPlaceOptions.keepBackups)));
     const auto summary = (saved->inPlace ? tr("地图已保存 · %1 秒") : tr("地图已另存为 · %1 秒")).arg(saved->seconds, 0, 'f', 1);
     project_->AddDiagnostic(tr("信息"), tr("地图"), QStringLiteral("MAP_SAVE_COMPLETED"), details.join(QLatin1Char('\n')));
-    SaveNotice(*this, background, true, summary, details);
+    SaveNotice(*this, notify, true, summary, details);
     if ((luaReloadController_ || luaFileReload_) && luaAutoReloadAction_ && luaAutoReloadAction_->isChecked())
         QTimer::singleShot(0, this, [this] { (void)LuaTestReload(true); });
     return true;

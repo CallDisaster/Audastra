@@ -36,6 +36,7 @@ qt_add_executable(war3-map-editor WIN32
     MapSaveActions.cpp
     MapTestActions.cpp
     MapTestAgentActions.cpp
+    WindowFrameCapture.cpp WindowFrameCapture.h
     MapTestReloadActions.cpp
     MapTestLuaFileReload.cpp
     MapTestSettingsPage.cpp
@@ -128,7 +129,10 @@ target_link_libraries(war3-map-editor
         War3MapEditor::QtModuleGameUi
         Qt6::Core
         Qt6::Gui
-        Qt6::Widgets)
+        Qt6::Widgets
+        d3d11
+        dwmapi
+        runtimeobject)
 war3map_deploy_fonts(war3-map-editor)
 war3map_deploy_qt_runtime(war3-map-editor)
 add_dependencies(war3-map-editor war3-render-d3d11)

@@ -1,15 +1,27 @@
 #include "MainWindow.h"
 #include "MapSaveJob.h"
+#include "WindowFrameCapture.h"
 #include "War3MapCore/Script/MapTestToolchain.h"
 #include "War3MapCore/Services/LuaTestEval.h"
+#include "War3MapCore/Services/MapTestScenario.h"
+#include "../QtCommon/ApplicationPaths.h"
 
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFile>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QStringList>
 #include <QTimer>
+#include <QUuid>
+
+#include <Windows.h>
 
 #include <algorithm>
+#include <chrono>
+#include <future>
 #include <optional>
 
 // Agent 进游戏测试：map_test_start / map_test_stop / map_test_eval 的宿主实现。
@@ -41,15 +53,123 @@ const char* ResultName(Runtime32Result code) {
 void Pause(int milliseconds) {
     QEventLoop loop; QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit); loop.exec();
 }
+// 本次进程树里客户区最大的可见顶层窗口，即游戏窗口。
+HWND GameWindow(const std::vector<std::uint32_t>& processes) {
+    struct Search { const std::vector<std::uint32_t>* processes; HWND best = nullptr; LONG area = 0; } search{&processes};
+    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+        auto& found = *reinterpret_cast<Search*>(parameter);
+        DWORD process = 0; GetWindowThreadProcessId(window, &process);
+        if (!IsWindowVisible(window) || IsIconic(window)
+            || std::find(found.processes->begin(), found.processes->end(), process) == found.processes->end()) return TRUE;
+        RECT client{};
+        if (!GetClientRect(window, &client)) return TRUE;
+        const auto area = (client.right - client.left) * (client.bottom - client.top);
+        if (area > found.area) { found.area = area; found.best = window; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&search));
+    return search.best;
+}
+// 内部抽样全是同一颜色时视为没有取到画面：游戏还没绘制（显示器关闭时游戏不绘制）或绘制方式不受支持，
+// 都会交回纯白或纯黑。避开边缘，系统圆角处的像素不算。
+bool Uniform(const QImage& image) {
+    if (image.isNull()) return true;
+    const int margin = std::min({16, image.width() / 4, image.height() / 4});
+    const auto first = image.pixel(margin, margin);
+    for (int y = margin; y < image.height() - margin; y += 8)
+        for (int x = margin; x < image.width() - margin; x += 8)
+            if (image.pixel(x, y) != first) return false;
+    return true;
+}
+// 客户区中心与四角内侧都直接露在屏幕上，才能按屏幕位置拷贝。
+bool Unoccluded(HWND window, const RECT& client) {
+    for (const auto [x, y] : {std::pair{client.right / 2, client.bottom / 2}, std::pair{4L, 4L}, std::pair{client.right - 5, 4L},
+             std::pair{4L, client.bottom - 5}, std::pair{client.right - 5, client.bottom - 5}}) {
+        POINT point{x, y};
+        ClientToScreen(window, &point);
+        if (GetAncestor(WindowFromPoint(point), GA_ROOT) != window) return false;
+    }
+    return true;
+}
+struct GameCapture { QImage image; QString method; QStringList problems; };
+// 依次用系统图形捕获、窗口自绘、屏幕拷贝（仅窗口未被遮挡时）取一帧；都取不到时如实交回各自的原因。
+GameCapture CaptureWindow(HWND window) {
+    GameCapture capture;
+    RECT client{};
+    if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) {
+        capture.problems << QObject::tr("窗口客户区为空");
+        return capture;
+    }
+    auto pending = std::async(std::launch::async, [window] {
+        std::string error;
+        auto frame = War3Map::QtApp::CaptureWindowFrame(window, 3000, error);
+        return std::pair{std::move(frame), std::move(error)};
+    });
+    while (pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) Pause(15);
+    const auto [frame, error] = pending.get();
+    if (frame.width > 0) {
+        const QImage image(frame.bgra.data(), frame.width, frame.height, frame.width * 4, QImage::Format_RGB32);
+        capture.image = image.convertToFormat(QImage::Format_RGB888);
+        if (!Uniform(capture.image)) { capture.method = QStringLiteral("graphics_capture"); return capture; }
+        capture.problems << QObject::tr("图形捕获：画面是单一颜色，游戏可能还没绘制（显示器关闭或锁屏时游戏不绘制）");
+    } else {
+        capture.problems << QObject::tr("图形捕获：%1").arg(QString::fromStdString(error));
+    }
+
+    const int width = client.right, height = client.bottom;
+    HDC screen = GetDC(nullptr);
+    HDC memory = CreateCompatibleDC(screen);
+    HBITMAP bitmap = CreateCompatibleBitmap(screen, width, height);
+    const auto previous = SelectObject(memory, bitmap);
+    const auto grab = [&] {
+        SelectObject(memory, previous);
+        capture.image = QImage::fromHBITMAP(bitmap).convertToFormat(QImage::Format_RGB888);
+        SelectObject(memory, bitmap);
+    };
+    capture.image = {};
+    if (PrintWindow(window, memory, PW_CLIENTONLY | PW_RENDERFULLCONTENT)) grab();
+    if (!Uniform(capture.image)) {
+        capture.method = QStringLiteral("print_window");
+    } else {
+        capture.problems << QObject::tr("窗口自绘：画面是单一颜色");
+        capture.image = {};
+        POINT origin{0, 0}; ClientToScreen(window, &origin);
+        if (!Unoccluded(window, client)) capture.problems << QObject::tr("屏幕拷贝：游戏窗口被其他窗口遮挡");
+        else if (BitBlt(memory, 0, 0, width, height, screen, origin.x, origin.y, SRCCOPY)) grab();
+        if (!capture.image.isNull() && !Uniform(capture.image)) capture.method = QStringLiteral("screen_copy");
+        else capture.image = {};
+    }
+    SelectObject(memory, previous);
+    DeleteObject(bitmap); DeleteDC(memory); ReleaseDC(nullptr, screen);
+    return capture;
+}
 }
 
 QJsonObject MainWindow::MapTestTool(const QString& name, const QJsonObject& arguments) {
     if (name == QLatin1String("map_test_start")) {
+        pendingMapTestScenario_.reset();
+        if (arguments.contains("scenario")) {
+            if (project_->luaMapTarget_)
+                return Failure("MAP_TEST_SCENARIO_LUA", tr("Lua 地图请在启动后用 map_test_eval 执行步骤；测试场景用于 JASS 地图。"));
+            Services::MapTestScenarioRequest request;
+            request.actions = arguments.value("scenario").toString().toStdString();
+            for (const auto& read : arguments.value("reads").toArray()) request.reads.push_back(read.toString().toStdString());
+            request.startSeconds = arguments.value("start_seconds").toDouble(1.0);
+            request.resultFile = "Maps\\Audastra\\scenario-"
+                + QUuid::createUuid().toString(QUuid::Id128).left(16).toStdString() + ".txt";
+            pendingMapTestScenario_ = std::move(request);
+        }
         const auto rejected = StartMapTest(false);
+        pendingMapTestScenario_.reset();
         if (!rejected.isEmpty()) return Failure("MAP_TEST_REJECTED", rejected);
-        return {{"ok", true}, {"started", true}, {"game_verified", false},
+        QJsonObject result{{"ok", true}, {"started", true}, {"game_verified", false},
             {"steps_supported", static_cast<bool>(luaReloadController_)}};
+        if (mapTestScenario_)
+            result.insert("scenario", QJsonObject{{"result_file", QString::fromStdWString(mapTestScenario_->resultPath.wstring())},
+                {"reads", static_cast<int>(mapTestScenario_->plan.reads.size())}});
+        return result;
     }
+    if (name == QLatin1String("map_test_result")) return MapTestScenarioResult(arguments);
+    if (name == QLatin1String("map_test_capture")) return MapTestCapture();
     if (name == QLatin1String("map_test_stop")) {
         if (!mapTestLease_ || !mapTestLease_->IsActive())
             return {{"ok", true}, {"stopped", false}, {"message", tr("没有正在运行的测试游戏。")}};
@@ -58,6 +178,69 @@ QJsonObject MainWindow::MapTestTool(const QString& name, const QJsonObject& argu
         return {{"ok", true}, {"stopped", true}};
     }
     return MapTestSteps(arguments);
+}
+
+QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
+    if (!mapTestScenario_) return Failure("MAP_TEST_SCENARIO_NONE", tr("本次测试没有带测试场景；请用 map_test_start 的 scenario 启动。"));
+    const int wait = std::clamp(arguments.value("wait_ms").toInt(30000), 0, 600000);
+    QElapsedTimer clock; clock.start();
+    std::optional<Services::MapTestScenarioReport> report;
+    bool running = true;
+    qint64 lastKey = -10000;
+    for (;;) {
+        running = mapTestLease_ && mapTestLease_->IsActive();
+        QFile file(QString::fromStdWString(mapTestScenario_->resultPath.wstring()));
+        if (file.exists() && file.size() <= 4 * 1024 * 1024 && file.open(QIODevice::ReadOnly)) {
+            const auto bytes = file.readAll();
+            auto parsed = Services::ParseMapTestScenarioResult(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())),
+                mapTestScenario_->plan);
+            if (parsed.Succeeded() && parsed.value) report = std::move(*parsed.value);
+        }
+        if ((report && report->finished) || !running || clock.elapsed() >= wait) break;
+        // 载入完成后游戏可能停在“按任意键继续”：场景开始前每 2 秒给本局测试游戏发一次空格（载入中会被忽略）。
+        if ((!report || !report->started) && clock.elapsed() - lastKey >= 2000) {
+            lastKey = clock.elapsed();
+            if (const auto window = GameWindow(mapTestLease_->ProcessIds())) {
+                PostMessageW(window, WM_KEYDOWN, VK_SPACE, 0x00390001);
+                PostMessageW(window, WM_KEYUP, VK_SPACE, static_cast<LPARAM>(0xC0390001u));
+            }
+        }
+        Pause(250);
+    }
+    QJsonObject result{{"ok", true}, {"game_running", running},
+        {"result_file", QString::fromStdWString(mapTestScenario_->resultPath.wstring())}};
+    if (!report) {
+        result.insert("started", false); result.insert("finished", false); result.insert("written", false);
+        result.insert("message", running ? tr("场景还没有写出结果；游戏可能仍在载入或场景在等待。") : tr("游戏已退出，场景没有写出结果。"));
+        return result;
+    }
+    QJsonArray lines, reads;
+    for (const auto& line : report->lines) { if (lines.size() >= 400) break; lines.append(QString::fromStdString(line)); }
+    for (const auto& [read, value] : report->reads)
+        reads.append(QJsonObject{{"name", QString::fromStdString(read)}, {"value", QString::fromStdString(value)}});
+    result.insert("written", true); result.insert("started", report->started); result.insert("finished", report->finished);
+    result.insert("passed", static_cast<int>(report->passed)); result.insert("failed", static_cast<int>(report->failed));
+    result.insert("lines", lines); result.insert("reads", reads);
+    if (static_cast<int>(report->lines.size()) > lines.size()) result.insert("lines_total", static_cast<int>(report->lines.size()));
+    // 游戏在记录期间写入的资源路径只给个数，排查载入问题时可直接打开结果文件。
+    if (!report->files.empty()) result.insert("loaded_files", static_cast<int>(report->files.size()));
+    return result;
+}
+
+QJsonObject MainWindow::MapTestCapture() {
+    if (!mapTestLease_ || !mapTestLease_->IsActive()) return Failure("MAP_TEST_NOT_RUNNING", tr("没有正在运行的测试游戏。"));
+    const auto window = GameWindow(mapTestLease_->ProcessIds());
+    if (!window) return Failure("MAP_TEST_CAPTURE_WINDOW", tr("没有找到本次测试游戏的可见窗口（可能仍在启动或已最小化）。"));
+    const auto capture = CaptureWindow(window);
+    if (capture.image.isNull())
+        return Failure("MAP_TEST_CAPTURE_FAILED", tr("游戏窗口画面没有取到：%1。").arg(capture.problems.join(QStringLiteral("；"))));
+    const auto& image = capture.image;
+    const QDir root(QDir(War3Map::QtCommon::InstallationRoot()).filePath(QStringLiteral("test-captures/") + mapTestRunName_));
+    if (!QDir().mkpath(root.absolutePath())) return Failure("MAP_TEST_CAPTURE_FAILED", tr("无法创建截图目录。"));
+    const auto path = root.filePath(QStringLiteral("capture-%1.png").arg(++mapTestCaptures_, 3, 10, QLatin1Char('0')));
+    if (!image.save(path, "PNG")) return Failure("MAP_TEST_CAPTURE_FAILED", tr("截图没有写出。"));
+    return {{"ok", true}, {"path", QDir::toNativeSeparators(path)}, {"width", image.width()}, {"height", image.height()},
+        {"method", capture.method}};
 }
 
 QJsonObject MainWindow::MapTestSteps(const QJsonObject& arguments) {

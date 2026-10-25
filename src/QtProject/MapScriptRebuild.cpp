@@ -155,14 +155,30 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
             && job.archive->HasMember(ObjectData::NativeFileName(type))) continue;
         sources.editableInputs[index] = std::make_unique<ObjectData::LniObjectDocument>(*objectDocuments_[index]);
     }
+    testScenarioPlan_.reset();
+    if (testScenario_) {
+        // 测试场景只加进本次生成用的副本，必须真正重建脚本，不能沿用源脚本把场景丢掉。
+        auto request = std::move(*testScenario_);
+        testScenario_.reset();
+        if (!sources.triggers || !sources.catalog) {
+            AddDiagnostic(tr("错误"), tr("测试"), QStringLiteral("MAP_TEST_SCENARIO_INPUT"), tr("缺少已解析的触发器或函数目录，测试场景没有编入。"));
+            return ScriptRebuild::Failed;
+        }
+        const auto mapObjects = CaptureTriggerMapObjectReferences();
+        auto plan = Services::AddMapTestScenarioTrigger(*sources.triggers, *sources.catalog, request,
+            mapObjects.Succeeded() && mapObjects.value ? mapObjects.value->get() : nullptr);
+        AddDiagnostics(plan.diagnostics);
+        if (!plan.Succeeded() || !plan.value) return ScriptRebuild::Failed;
+        testScenarioPlan_ = std::move(*plan.value);
+    }
     sources.toolRoot = compilerDataRoot_.empty() ? activeUiDataRoot_ : compilerDataRoot_;
     sources.uiRoot = activeUiDataRoot_;
     sources.gameRoot = war3GameRoot_;
     if (job.archive) sources.scriptMember = Script::MapScriptMemberName(*job.archive);
     // 触发器和地图初始化有修改时必须真正重建；不能把 WTG 已保存冒充游戏脚本已更新。
-    sources.allowMissingToolchain = !triggerDirty_ && !(mapEdits_ && mapEdits_->IsDirty());
+    sources.allowMissingToolchain = !testScenarioPlan_ && !triggerDirty_ && !(mapEdits_ && mapEdits_->IsDirty());
 
-    job.preserveUnaffectedScript = true;
+    job.preserveUnaffectedScript = !testScenarioPlan_;
     auto prepared = Services::PrepareScriptSaveInputs(job, std::move(sources));
     AddDiagnostics(prepared.diagnostics);
     if (!prepared.Succeeded() || !prepared.value) return ScriptRebuild::Failed;

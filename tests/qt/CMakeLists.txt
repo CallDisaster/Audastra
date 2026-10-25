@@ -344,6 +344,8 @@ add_test(NAME qt-native-workbench COMMAND war3-map-native-workbench-tests -o -,t
 if(WIN32)
     target_link_libraries(war3-map-native-workbench-tests PRIVATE Psapi)
 endif()
+# 应用源文件里的测试游戏截图（WindowFrameCapture.cpp）用系统图形捕获。
+target_link_libraries(war3-map-native-workbench-tests PRIVATE d3d11 dwmapi runtimeobject)
 add_test(NAME qt-trigger-replace-main-host-real
     COMMAND war3-map-native-workbench-tests TriggerReplaceOwnedLargeMapMainHost256 -o -,txt)
 set_tests_properties(qt-trigger-replace-main-host-real PROPERTIES
@@ -376,7 +378,7 @@ target_link_libraries(war3-map-project-watch-tests PRIVATE
     War3MapEditor::Core War3MapEditor::ObjectData War3MapEditor::Trigger War3MapEditor::QtUiKit
     War3MapEditor::MapSizeAnalysis War3MapEditor::ObjectResourceAdapter
     War3MapEditor::QtAgent War3MapEditor::McpProtocol War3MapEditor::QtFeedback War3MapEditor::QtUpdate
-    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test)
+    Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Test d3d11 dwmapi runtimeobject)
 target_compile_definitions(war3-map-project-watch-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-project-watch-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-project-watch COMMAND war3-map-project-watch-tests)

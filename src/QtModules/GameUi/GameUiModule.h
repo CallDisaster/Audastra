@@ -4,6 +4,7 @@
 #include "Modules/EditorModule.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
 #include "War3MapCore/GameUi/PartyTriggers.h"
+#include "War3MapCore/GameUi/TalentTriggers.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 
@@ -174,6 +175,42 @@ public:
         bool registrationKept = false;
     };
     std::optional<PartySystemGeneration> GeneratePartySystem(const PartySystemRequest& request, bool preview, QString* error = nullptr);
+    // 统一天赋树（TalentTriggers.h）：整批写进“天赋系统”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器
+    // 须已生成；其余为界面的数值与事件编号，空为不绑定（shown、level 与每列的图标、名字、已选、点击必填）。需要 YDWE 的
+    // GetLocalPlayer 与 RemoveLocation。登记里选项的图标为空时取学会技能在物编里的图标；地图里已有登记触发器时保留它，
+    // heroes 不写入（registrationKept 为真），replaceRegistration 为真时按 heroes 重写。afterPick 为选定后运行的触发器，须已在地图里。
+    struct TalentSystemRequest {
+        struct Column {
+            QString icon, name, picked, pick, enter, leave;
+        };
+        struct Entry {
+            int tier = 1, option = 1;
+            QString name, icon, disabledIcon, text, learn;
+        };
+        struct Hero {
+            QString unitType, label;
+            QList<Entry> entries;
+        };
+        QString name = QStringLiteral("天赋");
+        QString frame;
+        QString shown, entryShown, entry, title, points, level, open, close, tipShown, tipTitle, tipText;
+        QList<Column> columns;
+        QList<int> unlockLevels;
+        QString syncUnitType = QStringLiteral("hfoo");
+        int players = 12;
+        QString afterPick;
+        QList<Hero> heroes;
+        bool replaceRegistration = false;
+    };
+    struct TalentSystemGeneration {
+        QString featureText;
+        QStringList triggers;
+        QStringList variables;
+        std::uint32_t tiers = 0, options = 0;
+        QString pickedVariable, bindTrigger, registrationTrigger;
+        bool registrationKept = false;
+    };
+    std::optional<TalentSystemGeneration> GenerateTalentSystem(const TalentSystemRequest& request, bool preview, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -219,6 +256,7 @@ private:
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
     void ShowCastSystemDialog();
     void ShowPartySystemDialog();
+    void ShowTalentSystemDialog();
     // 按模板新建一份界面描述（编号为模板名，重名时加序号）并生成它的界面触发器；返回新编号。
     std::optional<QString> CreateFromPreset(const QString& preset, QString* error);
     void UpdateAuthoringControls();
@@ -319,6 +357,7 @@ private:
     QPushButton* generateTriggersButton_ = nullptr;
     QPushButton* castSystemButton_ = nullptr;
     QPushButton* partySystemButton_ = nullptr;
+    QPushButton* talentSystemButton_ = nullptr;
 };
 
 } // namespace War3Map::Modules

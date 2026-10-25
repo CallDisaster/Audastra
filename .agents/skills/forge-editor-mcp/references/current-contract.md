@@ -43,7 +43,7 @@
 | 普通单位坐标 C4 | 原 entities_set_fields | Ready classic8/11 non-sloc行绝对native x/y/z；有限±1000000先double校验，原Undo/fieldEdits保存；sloc/Skin/Partial拒绝，三轴实图原保存回读通过 |
 | 自然 T 图 | query_trigger_graph、edit_trigger_graph | categories/variables/triggers/ecas/arguments/map_objects/trigger_text/feature_text/presets/function_examples；真实 ID、类型和 guard；insert_text / replace_trigger_text / patch_trigger_text 紧凑写法，apply_feature_text 功能写法；编辑器内 dry_run 预览差异 |
 | T 整图检查 | editor_check_trigger_graph（CLI trigger-check） | 同保存链生成整图并检查；可带批次只在私有副本上检查；诊断带 t（紧凑 T 行列） |
-| 进游戏测试 | map_test_start、map_test_eval、map_test_stop（编辑器端口） | eval 用紧凑 T 动作在运行中的测试游戏里执行并读回全局变量（reads），仅 Lua 地图且开热重载，JASS 地图返回 MAP_TEST_STEPS_UNSUPPORTED；stop 只结束本次启动的进程。不改地图 |
+| 进游戏测试 | map_test_start、map_test_eval、map_test_result、map_test_capture、map_test_stop（编辑器端口） | eval 用紧凑 T 动作在运行中的测试游戏里执行并读回全局变量（reads），仅 Lua 地图且开热重载，JASS 地图返回 MAP_TEST_STEPS_UNSUPPORTED；JASS 地图用 start 的 scenario（紧凑 T，只编进测试副本，开局后运行一次，Preload 记录行，“通过/失败”开头计断言），result 读回记录、断言数、reads 与 started/finished（游戏写入的资源路径只给 loaded_files 个数，场景开始前自动发空格越过“按任意键继续”）；capture 用系统图形捕获截游戏窗口为 PNG（窗口被遮挡也可，游戏没绘制出画面时失败并给原因，显示器关闭时游戏不绘制）；stop 只结束本次启动的进程。不改地图 |
 | 简单 T 编辑 | create_trigger、append_root_eca、append_argument_call、set_scalar_argument | 老式窄操作不代表完整图操作资格；直接值支持整数/实数/布尔/文本/自定义代码/物编对象编号（`A04W`），句柄类型须用变量或函数 |
 | 归档保存 | save_map_edit_candidate | 完整来源/工具/UI/overlay 输入，同一地图保存服务；保存后新身份 |
 | 展开目录导出 | export_map_candidate | 不要与归档保存工具混淆 |

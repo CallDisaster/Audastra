@@ -26,20 +26,6 @@ std::string State(std::string_view state, std::string_view unit) {
     return Call("GetUnitStateSwap", {std::string(state), std::string(unit)});
 }
 
-// 框架所在的重复框架（自身或最近的祖先）；框架不存在时 found 为假。
-const UiFrame* RepeatedOwner(const std::vector<UiFrame>& frames, std::string_view id, const UiFrame* group, bool& found) {
-    for (const auto& frame : frames) {
-        const UiFrame* owner = frame.repeat ? &frame : group;
-        if (frame.id == id) {
-            found = true;
-            return owner;
-        }
-        const UiFrame* inner = RepeatedOwner(frame.children, id, owner, found);
-        if (found) return inner;
-    }
-    return nullptr;
-}
-
 class Generator {
 public:
     explicit Generator(const PartySystemOptions& options) : o_(options), b_(options.frame) {}

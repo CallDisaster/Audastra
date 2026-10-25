@@ -176,6 +176,20 @@ Status MapTestLaunchLease::Stop() {
 #endif
 }
 
+std::vector<std::uint32_t> MapTestLaunchLease::ProcessIds() const {
+    std::vector<std::uint32_t> ids;
+#ifdef _WIN32
+    if (!impl_) return ids;
+    std::lock_guard lock(impl_->lifecycle);
+    if (impl_->finished || !impl_->job) return ids;
+    struct { JOBOBJECT_BASIC_PROCESS_ID_LIST list; ULONG_PTR more[255]; } buffer{};
+    if (!QueryInformationJobObject(impl_->job, JobObjectBasicProcessIdList, &buffer, sizeof(buffer), nullptr)) return ids;
+    for (DWORD index = 0; index < buffer.list.NumberOfProcessIdsInList && index < 256; ++index)
+        ids.push_back(static_cast<std::uint32_t>(buffer.list.ProcessIdList[index]));
+#endif
+    return ids;
+}
+
 Status MapTestLaunchLease::Cleanup() {
 #ifdef _WIN32
     if (IsActive()) return Status::Failure("Map.Test", "MAP_TEST_STILL_ACTIVE", "游戏进程树仍在运行或终态未确认，测试副本已保留。");

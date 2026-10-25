@@ -363,10 +363,24 @@ actions:
   - `reads` 是执行后要读的全局变量（可带 `udg_`，数组写下标），结果在 `reads` 里按顺序给出文本值；句柄类变量只能看到 Lua 的对象描述。
   - 游戏还在载入时会在 `wait_ms`（默认 10000，最多 60000）内等待就绪。超时且步骤尚未执行时会撤回；已经开始执行的不能撤回，回执会说明结果未知。
   - 回执的 `result` 为 `success` / `syntax_error` / `runtime_error` 等，`output` 是本次期间游戏里的其他打印。运行错误时前面的动作可能已经生效。
-  - 目前只支持脚本语言为 Lua、开启了热重载的地图（自有 Lua 运行时）；JASS 地图返回 `MAP_TEST_STEPS_UNSUPPORTED`。
+  - 目前只支持脚本语言为 Lua、开启了热重载的地图（自有 Lua 运行时）；JASS 地图返回 `MAP_TEST_STEPS_UNSUPPORTED`，改用下面的测试场景。
 - `map_test_stop`：结束本局测试游戏（只结束这次启动的进程）。
 
-测试步骤只改游戏里的状态，不改地图；要把逻辑写进地图仍用 `edit_trigger_graph`。
+JASS 地图用**测试场景**：启动时带一段紧凑 T 动作，只编进这次的测试副本，游戏开始后运行一次。
+
+```json
+{"scenario": "CreateNUnitsAtLoc(1, 'Oshd', Player00, GetRectCenter(GetPlayableMapRect()), 270.00)\nSetVariable(udg_Hero, GetLastCreatedUnit())\nTriggerSleepAction(2.00)\nPreload(\"通过: 英雄已创建\")",
+ "reads": ["Hero"], "start_seconds": 3}
+```
+
+- 在场景里摆单位、下命令、等待，用 `Preload("文本")` 记录一行；以“通过”“失败”开头的行计为断言。
+- 动作写完后，场景记下 `reads` 列出的全局变量，再写出结果文件。只能读整数、实数、文字、布尔变量；单位等句柄请在场景里用条件判断后记录“通过”或“失败”。
+- 场景只用自然 T，不能写自定义代码。
+- `map_test_result`：读回结果，返回记录行 `lines`、`passed` / `failed`、`reads`、`started`（游戏已载入、场景已开始）、`finished`（动作是否全部执行完）。游戏在记录期间写入的资源路径不放进 `lines`，只在 `loaded_files` 给个数。场景开始前编辑器每 2 秒给测试游戏发一次空格，越过载入后的“按任意键继续”。没写完时在 `wait_ms`（默认 30000，最多 600000）内等待；游戏退出了也会返回已有的部分。
+- `map_test_capture`：截取测试游戏窗口当前画面，存成 PNG 并返回路径，用于检查特效和界面。窗口被其他窗口挡住也能截，但不能最小化；显示器关闭或锁屏时游戏不绘制画面，这时返回失败和原因，不会交回空白图。
+- 地图自己在场景期间调用的预载也会出现在 `lines` 里，判断以“通过”“失败”开头的行为准。
+
+测试步骤和场景只改游戏里的状态，不改地图；要把逻辑写进地图仍用 `edit_trigger_graph`。
 
 ## 5. 结果应如何记录
 
