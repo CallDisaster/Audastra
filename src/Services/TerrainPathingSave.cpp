@@ -5,10 +5,13 @@
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <new>
+#include <utility>
 
 namespace War3Map::Services {
 namespace {
@@ -18,6 +21,110 @@ template<class T, class Function> Result<T> Guard(Function&& function) {
         return Result<T>::Failure("Terrain.PathingSave", "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象保存适配分配失败，未建立部分保存计划。");
     }
 }
+
+// 只借用本次冻结的最终成员。缺失与删除分开：删除直接返回map missing，
+// 后续game fallback仍由Core的实际资源捕获器完成，绝不读回被删除的旧成员。
+class FinalMemberOverlay {
+public:
+    static Result<FinalMemberOverlay> Prepare(std::span<const MemberReplacement> members,
+        std::span<const std::string> removals, std::size_t maximumBytes) {
+        using Output = Result<FinalMemberOverlay>;
+        const auto fail = [](const char* code, const char* message) { return Output::Failure("Terrain.PathingSave", code, message); };
+        if (!maximumBytes || maximumBytes > MapData::TerrainSavePlanLimits{}.maximumBytes
+            || members.size() > 4096 || removals.size() > 4096 - members.size())
+            return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终通行输入数量或捕获预算超过固定上限。");
+        FinalMemberOverlay result;
+        const auto count = members.size() + removals.size();
+        if (count > maximumBytes / sizeof(Entry)) return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终成员索引超过剩余预算。");
+        result.entries_.reserve(count);
+        result.metadataBytes_ = sizeof(result) + result.entries_.capacity() * sizeof(Entry) + 256;
+        if (result.metadataBytes_ >= maximumBytes) return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终成员索引没有剩余资源捕获预算。");
+        const auto append = [&](std::string_view name, const std::vector<std::byte>* bytes) -> Status {
+            if (name.size() > ArchiveExactMemberLimits{}.pathBytes)
+                return Status::Failure("Terrain.PathingSave", "TERRAIN_FINAL_INPUT_PATH", "最终通行输入路径超过1024字节。");
+            if (std::max(name.size(), std::string{}.capacity()) + 1 > maximumBytes - result.metadataBytes_)
+                return Status::Failure("Terrain.PathingSave", "TERRAIN_FINAL_INPUT_BUDGET", "最终成员名称超过剩余索引预算。");
+            auto key = Resources::CanonicalImportPath(name);
+            if (!key.Succeeded() || !key.value) return {std::move(key.diagnostics)};
+            if (key.value->capacity() + 1 > maximumBytes - result.metadataBytes_)
+                return Status::Failure("Terrain.PathingSave", "TERRAIN_FINAL_INPUT_BUDGET", "最终成员实际名称容量超过剩余索引预算。");
+            result.metadataBytes_ += key.value->capacity() + 1;
+            result.entries_.push_back({std::move(*key.value), bytes});
+            return Status::Ok();
+        };
+        for (const auto& member : members) {
+            auto status = append(member.name, &member.data);
+            if (!status.Succeeded()) return {{}, std::move(status.diagnostics)};
+        }
+        for (const auto& removed : removals) {
+            auto status = append(removed, nullptr);
+            if (!status.Succeeded()) return {{}, std::move(status.diagnostics)};
+        }
+        std::sort(result.entries_.begin(), result.entries_.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+        for (std::size_t i = 1; i < result.entries_.size(); ++i) if (result.entries_[i - 1].name == result.entries_[i].name)
+            return fail("TERRAIN_FINAL_INPUT_CONFLICT", "最终通行输入有重复路径或覆盖/删除冲突。");
+        if (result.metadataBytes_ >= maximumBytes) return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终通行输入没有剩余资源捕获预算。");
+        return Output::Success(std::move(result));
+    }
+
+    [[nodiscard]] std::size_t MetadataBytes() const noexcept { return metadataBytes_; }
+
+    Result<std::vector<ArchiveExactMember>> Read(const MapData::TerrainPathingResources::HeightSourceReader& source,
+        std::span<const std::string> names, const ArchiveExactMemberLimits& limits,
+        const std::vector<std::byte>* currentDoodads) const {
+        using Output = Result<std::vector<ArchiveExactMember>>;
+        const auto fail = [](const char* code, const char* message) { return Output::Failure("Terrain.PathingSave", code, message); };
+        const ArchiveExactMemberLimits hard;
+        if (names.size() > limits.memberCount || limits.memberCount > hard.memberCount
+            || limits.pathBytes > hard.pathBytes || limits.totalPathBytes > hard.totalPathBytes
+            || limits.memberBytes > hard.memberBytes || limits.totalBytes > hard.totalBytes)
+            return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终通行读取不能放宽成员、路径或累计读取上限。");
+        std::vector<ArchiveExactMember> result;
+        result.reserve(names.size());
+        std::size_t total = 0, pathBytes = 0;
+        for (const auto& name : names) {
+            if (name.size() > limits.pathBytes || name.size() > limits.totalPathBytes - pathBytes)
+                return fail("TERRAIN_FINAL_INPUT_PATH", "最终通行读取路径超过本次预算。");
+            pathBytes += name.size();
+            auto key = Resources::CanonicalImportPath(name);
+            if (!key.Succeeded() || !key.value) return {{}, std::move(key.diagnostics)};
+            const auto found = std::lower_bound(entries_.begin(), entries_.end(), *key.value,
+                [](const auto& entry, const auto& wanted) { return entry.name < wanted; });
+            ArchiveExactMember member{name, false, {}};
+            if (found != entries_.end() && found->name == *key.value) {
+                if (found->bytes) {
+                    if (found->bytes->size() > limits.memberBytes || found->bytes->size() > limits.totalBytes - total)
+                        return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终覆盖成员超过本次逐项或累计读取上限。");
+                    member.present = true; member.bytes = *found->bytes;
+                }
+            } else {
+                const std::array<std::string, 1> request{name};
+                auto single = limits; single.memberCount = 1; single.totalBytes -= total;
+                auto read = source(request, single);
+                if (!read.Succeeded() || !read.value) return {{}, std::move(read.diagnostics)};
+                if (read.value->size() != 1) return fail("TERRAIN_FINAL_INPUT_READ", "真实来源未返回唯一请求成员。");
+                auto actualKey = Resources::CanonicalImportPath(read.value->front().name);
+                if (!actualKey.Succeeded() || !actualKey.value || *actualKey.value != *key.value)
+                    return fail("TERRAIN_FINAL_INPUT_READ", "真实来源返回的成员与请求不一致。");
+                member = std::move(read.value->front());
+            }
+            if ((!member.present && !member.bytes.empty()) || member.bytes.size() > limits.memberBytes
+                || member.bytes.size() > limits.totalBytes - total)
+                return fail("TERRAIN_FINAL_INPUT_READ", "最终视图成员的存在性或累计读取量不一致。");
+            if (*key.value == "WAR3MAP.DOO" && currentDoodads
+                && (!member.present || member.bytes != *currentDoodads))
+                return fail("TERRAIN_FINAL_INPUT_SESSION_MISMATCH", "最终DOO遗漏或改变了本次冻结会话的摆放修改。");
+            total += member.bytes.size();
+            result.push_back(std::move(member));
+        }
+        return Output::Success(std::move(result));
+    }
+
+private:
+    struct Entry { std::string name; const std::vector<std::byte>* bytes = nullptr; };
+    std::vector<Entry> entries_;
+    std::size_t metadataBytes_ = 0;
+};
 
 bool Neutral(const MapData::TerrainBrush& brush) {
     const MapData::TerrainBrush other;
@@ -878,6 +985,22 @@ Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareForSave(const MapArc
     const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
     std::span<const std::string> finalRemovals) {
     return Guard<MapData::TerrainSavePlan>([&] {
+        if (!finalMembers.empty() || !finalRemovals.empty()) {
+            auto overlay = FinalMemberOverlay::Prepare(finalMembers, finalRemovals, limits.maximumBytes);
+            if (!overlay.Succeeded() || !overlay.value) return Result<MapData::TerrainSavePlan>{{}, std::move(overlay.diagnostics)};
+            auto bounded = limits; bounded.maximumBytes -= overlay.value->MetadataBytes();
+            const MapData::TerrainPathingResources::HeightSourceReader sourceReader = [&](auto names, const auto& readLimits) {
+                return source.CaptureExactMembers(names, readLimits);
+            };
+            const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
+                const MapData::TerrainPathingResources::HeightSourceReader finalReader = [&](auto names, const auto& readLimits) {
+                    return overlay.value->Read(sourceReader, names, readLimits, doodads);
+                };
+                return MapData::TerrainPathingResources::CaptureNativePairWithObjects(sourceReader, finalReader,
+                    before, after, gameRoot, maximumBytes, ObjectData::InspectNativeTerrainObjects);
+            };
+            return MapData::TerrainSavePlan::PrepareArchive(source, edits, bounded, &gameRoot, &capture, finalMembers, finalRemovals);
+        }
         const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
             return CaptureNative(source, before, after, gameRoot, maximumBytes, doodads);
         };
@@ -890,6 +1013,22 @@ Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareForSave(const Worksp
     const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
     std::span<const std::string> finalRemovals) {
     return Guard<MapData::TerrainSavePlan>([&] {
+        if (!finalMembers.empty() || !finalRemovals.empty()) {
+            auto overlay = FinalMemberOverlay::Prepare(finalMembers, finalRemovals, limits.maximumBytes);
+            if (!overlay.Succeeded() || !overlay.value) return Result<MapData::TerrainSavePlan>{{}, std::move(overlay.diagnostics)};
+            auto bounded = limits; bounded.maximumBytes -= overlay.value->MetadataBytes();
+            const MapData::TerrainPathingResources::HeightSourceReader sourceReader = [&](auto names, const auto& readLimits) {
+                return MapData::TerrainPathingResources::ReadDirectoryMembers(source, names, readLimits);
+            };
+            const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
+                const MapData::TerrainPathingResources::HeightSourceReader finalReader = [&](auto names, const auto& readLimits) {
+                    return overlay.value->Read(sourceReader, names, readLimits, doodads);
+                };
+                return MapData::TerrainPathingResources::CaptureNativePairWithObjects(sourceReader, finalReader,
+                    before, after, gameRoot, maximumBytes, ObjectData::InspectNativeTerrainObjects);
+            };
+            return MapData::TerrainSavePlan::PrepareWorkspace(source, edits, bounded, &gameRoot, &capture, finalMembers, finalRemovals);
+        }
         const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto& doodads, auto maximumBytes) {
             return CaptureNative(source, before, after, gameRoot, maximumBytes, doodads);
         };
