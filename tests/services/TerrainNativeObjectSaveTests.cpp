@@ -2548,6 +2548,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainDoodadColorSaveCases.h"
 #include "TerrainOrdinarySpecialSaveCases.h"
 #include "TerrainOrdinaryJournalSaveCases.h"
+#include "TerrainHistoryJournalSaveCases.h"
 #include "TerrainUnitsJournalSaveCases.h"
 #include "TerrainStartLocationsSaveCases.h"
 #include "TerrainBridgeOrdinarySaveCases.h"
@@ -2555,8 +2556,15 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainCliffPaletteAppendSaveCases.h"
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc > 1) {
+            if (argc != 2 || std::string_view(argv[1]) != "--history") return 2;
+            TerrainHistorySavedStationRestoresBothSidesAndFormalSaving();
+            TerrainHistorySavedStationRejectsEpochSourceAndRawTampering();
+            TerrainHistoryDirectoryRestoresPostStationSuffixAndRedo();
+            std::cout << "Saved terrain history service tests passed\n"; return 0;
+        }
         StandardDoodadsUseTheNormalSaveAndUndoChain();
         StandardDoodadsAllowActualCliffAndGroundPathingChanges();
         DoodadOriginalUsesTheNormalSaveAndUndoChain();

@@ -64,6 +64,8 @@ add_library(War3MapServices STATIC
     TerrainMinimapSaveFallback.cpp
     TerrainPathingRestrictionCandidate.cpp
     TerrainPathingSave.cpp
+    TerrainHistoryRestore.cpp
+    TerrainReplayInternal.h
     TerrainPathingFinalInputs.cpp
     TerrainEditService.cpp
     TerrainBoundsEditService.cpp)

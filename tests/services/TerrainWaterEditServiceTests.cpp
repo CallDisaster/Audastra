@@ -1,6 +1,7 @@
 #include "War3MapCore/Hash.h"
 #include "TerrainCliffJournalTests.h"
 #include "TerrainCornerRampServiceTests.h"
+#include "../TerrainCornerRampFixtures.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
@@ -1204,6 +1205,7 @@ void ForwardJournalPreservesSavedRestrictionOverlapAndUndo() {
     Require(!denied.Succeeded() && !denied.value && HasCode(denied, "TERRAIN_REPLAY_BUDGET"), "raw resident memory is precharged before replay or final comparison");
 }
 #include "TerrainRemoveWaterSaveCases.h"
+#include "TerrainSettingsSaveCases.h"
 } // namespace
 
 int main() {
@@ -1233,6 +1235,8 @@ int main() {
         RemoveWaterReplayAndNativeSaveKeepOldContributionsBound();
         RemoveWaterStillRequiresOldWaterRulesAndExplainedPathing();
         RemoveWaterDirectSaveKeepsTheExistingScriptGate();
+        KnownSettingsComposeWithNativeWaterAndRampSaveAndForwardRestore();
+        StructuralSettingsStillRejectNativeTerrainSaveAndForwardRestore();
         std::cout << "TerrainWaterEditServiceTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

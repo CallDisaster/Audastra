@@ -301,7 +301,8 @@ target_compile_options(audastra-terrain-block-paste-service-tests PRIVATE /W4 /p
 add_test(NAME services-terrain-block-paste COMMAND audastra-terrain-block-paste-service-tests)
 set_tests_properties(services-terrain-block-paste PROPERTIES TIMEOUT 60)
 
-add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp TerrainCornerRampServiceTests.cpp)
+add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp TerrainCornerRampServiceTests.cpp
+    TerrainSettingsSaveCases.h ../TerrainCornerRampFixtures.h)
 target_link_libraries(audastra-terrain-water-edit-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-water-edit-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-water-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
@@ -334,11 +335,12 @@ target_compile_options(audastra-native-destructable-pathing-tests PRIVATE /W4 /p
 add_test(NAME services-native-destructable-pathing COMMAND audastra-native-destructable-pathing-tests)
 
 add_executable(audastra-terrain-native-object-save-tests
-    TerrainNativeObjectSaveTests.cpp TerrainCliffPaletteAppendSaveCases.h)
+    TerrainNativeObjectSaveTests.cpp TerrainCliffPaletteAppendSaveCases.h TerrainHistoryJournalSaveCases.h)
 target_link_libraries(audastra-terrain-native-object-save-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-native-object-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-save-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-native-object-save COMMAND audastra-terrain-native-object-save-tests)
+add_test(NAME services-terrain-saved-history COMMAND audastra-terrain-native-object-save-tests --history)
 
 add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainFinalInputsRealCases.h TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
