@@ -138,15 +138,31 @@ void TestGeneratedText() {
     Require(plan.value->triggers == std::vector<std::string>{"读条 创建 cast_Create", "读条 更新 cast_Update",
         "读条 状态 打断 cast_State_interrupt", "读条 基础状态 cast_BaseState"}, "触发器名与顺序");
     Require(plan.value->variables == std::vector<std::string>{"AUI_cast_root", "AUI_cast_bar", "AUI_cast_label", "AUI_cast_slot",
-        "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast"}, "变量名与顺序");
+        "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast"},
+        "变量名与顺序");
     Require(Contains(text, "    AUI_cast_slot: AudastraFrame[3] = AudastraFrameNone\n"), "重复框架句柄是数组：\n" + text);
     Require(Contains(text, "    AUIV_cast_name: string = \"火球\"\n") && Contains(text, "    AUIV_cast_charges: integer[3] = 0\n"),
         "数值变量带初值：\n" + text);
 
-    // 运行库缺失时直接返回；先加载基础模板。
-    Require(Contains(text, "IfThenElseMultiple() {\n            if:\n                OperatorCompareBoolean(AudastraUIIsReady(), OperatorEqualENE, false)\n"
-                           "            then:\n                ReturnAction()\n"), "运行库检查：\n" + text);
-    Require(Contains(text, "AudastraUILoadToc(\"AudastraUI\\\\AudastraUI.toc\")"), "加载基础模板");
+    // 创建每 0.2 秒试一次：试满 150 次关掉自己；界面库不可用时等下一次；可用后关掉自己，先加载基础模板，建好记下。
+    const std::size_t create = text.find("TriggerRegisterTimerEventPeriodic(0.2)");
+    Require(create != std::string::npos, "创建按周期重试：\n" + text);
+    const std::string createBody = text.substr(create, text.find("\n触发器 ", create) - create);
+    const std::size_t attempt = createBody.find("SetVariable(udg_AUIA_cast, OperatorInt(udg_AUIA_cast, OperatorAdd, 1))");
+    const std::size_t limit = createBody.find("OperatorCompareInteger(udg_AUIA_cast, OperatorGreater, 150)\n"
+                                              "            then:\n                DisableTrigger(GetTriggeringTrigger())\n                ReturnAction()\n");
+    const std::size_t ready = createBody.find("OperatorCompareBoolean(AudastraUIIsReady(), OperatorEqualENE, false)\n"
+                                              "            then:\n                ReturnAction()\n");
+    const std::size_t once = createBody.find("        DisableTrigger(GetTriggeringTrigger())\n        AudastraUILoadToc(\"AudastraUI\\\\AudastraUI.toc\")");
+    const std::size_t created = createBody.find("SetVariable(udg_AUIC_cast, true)");
+    Require(attempt < limit && limit < ready && ready < once && once < created && created != std::string::npos, "创建的重试顺序：\n" + createBody);
+    // 更新、状态、回到基础状态在界面建好前直接返回。
+    std::size_t guards = 0;
+    for (std::size_t at = 0; (at = text.find("OperatorCompareBoolean(udg_AUIC_cast, OperatorEqualENE, false)\n"
+                                               "            then:\n                ReturnAction()\n", at)) != std::string::npos; ++at) {
+        ++guards;
+    }
+    Require(guards == 3, "更新与状态触发器等界面建好：\n" + text);
     // 进度条走 Simple 创建；文字锚在兄弟框架；重复按钮在循环里按下标创建、平移并监听。
     Require(Contains(text, "SetVariable(udg_AUI_cast_bar, AudastraUICreateSimpleFrame(\"AudastraBar\", udg_AUI_cast_root, "), "进度条创建");
     Require(Contains(text, "AudastraUISetPoint(udg_AUI_cast_label, AudastraAnchorBottom, udg_AUI_cast_bar, AudastraAnchorTop, 0, 0.004)"),

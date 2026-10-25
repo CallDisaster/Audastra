@@ -11,7 +11,7 @@ inline Catalog::Layer SpellLayer() {
     layer.name = "spell";
     layer.define =
         "[TriggerTypes]\n"
-        "unit=0,1,1,Unit\nplayer=0,1,1,Player\ntimer=0,1,1,Timer\ntrigger=0,1,1,Trigger\nlocation=0,1,1,Location\n"
+        "unit=0,1,1,Unit\nplayer=0,1,1,Player\ntimer=0,1,1,Timer\nlocation=0,1,1,Location\n"
         "abilcode=0,1,1,Ability,integer\nintegervar=1,0,0,IntegerVariable,integer\n"
         "playerunitevent=0,0,0,PlayerUnitEvent\nperiodicoption=0,0,0,Periodic,boolean\ntypename=0,0,0,TypeName\n"
         "executemode=0,0,0,ExecuteMode,boolean\n"
@@ -25,12 +25,11 @@ inline Catalog::Layer SpellLayer() {
         "typename07_unit=0,typename,unit,Unit\n"
         "tirggerexecute_notcondition=0,executemode,false,NoCondition\n"
         "OperatorSubtract=0,ArithmeticOperator,-,Subtract\nOperatorDivide=0,ArithmeticOperator,/,Divide\n"
-        "OperatorLess=0,ComparisonOperator,<,Less\nOperatorGreater=0,ComparisonOperator,>,Greater\n"
+        "OperatorLess=0,ComparisonOperator,<,Less\n"
         "OperatorGreaterEq=0,ComparisonOperator,>=,GreaterEq\n"
         "[TriggerTypeDefaults]\ntimer=CreateTimer()\n";
     layer.event =
-        "[TriggerRegisterAnyUnitEventBJ]\n[[.args]]\ntype=playerunitevent\n"
-        "[TriggerRegisterTimerEventPeriodic]\n[[.args]]\ntype=real\n";
+        "[TriggerRegisterAnyUnitEventBJ]\n[[.args]]\ntype=playerunitevent\n";
     layer.condition =
         "[OperatorCompareAbilityId]\nreturns=boolean\n[[.args]]\ntype=abilcode\n[[.args]]\ntype=EqualNotEqualOperator\n[[.args]]\ntype=abilcode\n"
         "[OperatorCompareUnit]\nreturns=boolean\n[[.args]]\ntype=unit\n[[.args]]\ntype=EqualNotEqualOperator\n[[.args]]\ntype=unit\n"

@@ -19,12 +19,13 @@ inline constexpr std::string_view kBaseDefine =
     "[TriggerTypes]\n"
     "boolean=0,1,1,Boolean,boolean\ninteger=0,1,1,Integer,integer\nreal=0,1,1,Real,real\nstring=0,1,1,String,string\n"
     "ComparisonOperator=0,0,0,Comparison\nEqualNotEqualOperator=0,0,0,EqualNotEqual\nArithmeticOperator=0,0,0,Arithmetic\n"
-    "scriptcode=0,0,0,Script,string\n"
+    "scriptcode=0,0,0,Script,string\ntrigger=0,1,1,Trigger\n"
     "[TriggerParams]\n"
     "OperatorEqual=0,ComparisonOperator,==,Equal\nOperatorNotEqual=0,ComparisonOperator,!=,NotEqual\n"
     "OperatorEqualENE=0,EqualNotEqualOperator,==,Equal\nOperatorNotEqualENE=0,EqualNotEqualOperator,!=,NotEqual\n"
-    "OperatorAdd=0,ArithmeticOperator,+,Add\nOperatorMultiply=0,ArithmeticOperator,*,Multiply\n";
-inline constexpr std::string_view kBaseEvent = "[TriggerRegisterTimerEventSingle]\n[[.args]]\ntype=real\n";
+    "OperatorAdd=0,ArithmeticOperator,+,Add\nOperatorMultiply=0,ArithmeticOperator,*,Multiply\n"
+    "OperatorGreater=0,ComparisonOperator,>,Greater\n";
+inline constexpr std::string_view kBaseEvent = "[TriggerRegisterTimerEventPeriodic]\n[[.args]]\ntype=real\n";
 inline constexpr std::string_view kBaseCondition =
     "[OperatorCompareBoolean]\nreturns=boolean\n[[.args]]\ntype=boolean\n[[.args]]\ntype=EqualNotEqualOperator\n[[.args]]\ntype=boolean\n"
     "[OperatorCompareInteger]\nreturns=boolean\n[[.args]]\ntype=integer\n[[.args]]\ntype=ComparisonOperator\n[[.args]]\ntype=integer\n"
@@ -32,9 +33,10 @@ inline constexpr std::string_view kBaseCondition =
     "[OperatorCompareString]\nreturns=boolean\n[[.args]]\ntype=string\n[[.args]]\ntype=EqualNotEqualOperator\n[[.args]]\ntype=string\n";
 inline constexpr std::string_view kBaseAction =
     "[IfThenElseMultiple]\n[ForLoopAMultiple]\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
-    "[SetVariable]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n[ReturnAction]\n[CommentString]\n[[.args]]\ntype=scriptcode\n";
+    "[SetVariable]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n[ReturnAction]\n[CommentString]\n[[.args]]\ntype=scriptcode\n"
+    "[DisableTrigger]\n[[.args]]\ntype=trigger\n";
 inline constexpr std::string_view kBaseCall =
-    "[GetForLoopIndexA]\nreturns=integer\n"
+    "[GetForLoopIndexA]\nreturns=integer\n[GetTriggeringTrigger]\nreturns=trigger\n"
     "[I2R]\nreturns=real\n[[.args]]\ntype=integer\n[I2S]\nreturns=string\n[[.args]]\ntype=integer\n"
     "[OperatorInt]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=integer\n"
     "[OperatorReal]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=real\n"
