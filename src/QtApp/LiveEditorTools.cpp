@@ -8,6 +8,7 @@
 #include "LiveObjectTools.h"
 #include "EditorProject.h"
 #include "TerrainWaterEditPreparation.h"
+#include "TerrainResizeEditPreparation.h"
 #include "ProjectLuaModules.h"
 #include "ObjectNames.h"
 #include "McpResources.h"
@@ -944,9 +945,12 @@ private:
             Mcp::TerrainEditToolHost host;
             std::optional<QtProject::TerrainWaterEditCapture> waterCapture;
             std::shared_ptr<const LiveBoundsPreparation> boundsCapture;
+            std::shared_ptr<const QtProject::TerrainResizeEditCapture> resizeCapture;
             bool boundsPublishing = false;
+            bool resizePublishing = false;
             const QPointer<EditorProject> boundsProject(&project_);
-            QScopedValueRollback<bool> boundsLease(busy_, busy_ || name == QStringLiteral("edit_terrain_bounds"));
+            QScopedValueRollback<bool> boundsLease(busy_, busy_ || name == QStringLiteral("edit_terrain_bounds")
+                || name == QStringLiteral("edit_terrain_resize"));
             host.identity = [this] { return State(); };
             host.context = context;
             host.prepareWater = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
@@ -1020,6 +1024,62 @@ private:
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "地形块准备期间来源或会话已经变化。");
                 return Services::PrepareTerrainBlockPasteEdit(*current.session, current.document, binding,
                     waterCapture->resources, intent, follow);
+            };
+            host.prepareResize = [this, &resizeCapture, boundsProject](const Mcp::TerrainEditToolContext& current,
+                const Services::TerrainEditBinding& binding, const MapData::TerrainResizeIntent& intent)
+                -> Result<Services::PreparedTerrainResizeEdit> {
+                if (!boundsProject || !ownerHandle_ || project_.mapEdits_.get() != current.session)
+                    return Result<Services::PreparedTerrainResizeEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "活动尺寸会话已经变化。");
+                const MapData::TerrainResizeLimits limits;
+                auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true, 64u * 1024u * 1024u, false);
+                if (!request.Succeeded()) return {{}, std::move(request.diagnostics)};
+                auto frozen = project_.mapEdits_->FreezeForSave(limits.maximumCandidateBytes);
+                if (!frozen.Succeeded()) return {{}, std::move(frozen.diagnostics)};
+                const auto owned = std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value));
+                auto captured = RunLiveBoundsWorker<Result<QtProject::TerrainResizeEditCapture>>([owned,
+                    frozen = std::move(*frozen.value), binding, intent, limits] {
+                    return QtProject::PrepareTerrainResizeEditCapture(owned, frozen, binding.document, intent, {}, limits);
+                });
+                if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
+                if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *owned, true))
+                    return Result<Services::PreparedTerrainResizeEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "尺寸后台准备期间来源或会话已经变化。");
+                resizeCapture = std::make_shared<const QtProject::TerrainResizeEditCapture>(std::move(*captured.value));
+                if (!resizeCapture->prepared)
+                    return Result<Services::PreparedTerrainResizeEdit>::Failure("QtApp.Live", "TERRAIN_RESIZE_CAPTURE_INVALID", "尺寸候选未完整准备。");
+                return Result<Services::PreparedTerrainResizeEdit>::Success(*resizeCapture->prepared);
+            };
+            host.verifyResize = [this, &resizeCapture, &resizePublishing, boundsProject] {
+                const auto capture = resizeCapture;
+                const auto current = [&] { return boundsProject && ownerHandle_ && capture && !project_.savingMap_
+                    && QtProject::TerrainWaterEditRequestCurrent(project_, *capture->request, true); };
+                if (!current()) return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "尺寸实际来源或会话已经变化。");
+                if (resizePublishing) return Status::Ok();
+                const auto checked = RunLiveBoundsWorker<Status>([capture] { return QtProject::VerifyTerrainResizeEditCapture(*capture); });
+                if (!checked.Succeeded()) return checked;
+                return current() ? Status::Ok() : Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "尺寸来源复核期间活动会话已经变化。");
+            };
+            host.applyResize = [this, &context, &host, &resizeCapture, &resizePublishing, boundsProject](const Services::PreparedTerrainResizeEdit& plan,
+                const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate) -> Status {
+                if (!boundsProject || !ownerHandle_ || !project_.mapEdits_ || !project_.mapDataUndoStack_ || !resizeCapture)
+                    return Status::Failure("QtApp.Live", "LIVE_EDITOR_UNDO_UNAVAILABLE", "尺寸会话或共用撤销栈不可用。");
+                const auto verified = host.verifyResize(); if (!verified.Succeeded()) return verified;
+                const auto current = context(); if (!current.Succeeded()) return {current.diagnostics};
+                QScopedValueRollback<bool> publishing(resizePublishing, true);
+                const auto before = project_.mapEdits_->Revision();
+                std::unique_ptr<QtProject::MapDataEditCommand> undo;
+                const auto applied = Services::ApplyTerrainResizeEdit(*project_.mapEdits_, current.value->document, plan,
+                    [&](const auto& receipt) {
+                        if (validate) { const auto accepted = validate(receipt); if (!accepted.Succeeded()) return accepted; }
+                        if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *resizeCapture->request, true))
+                            return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "尺寸发布前活动会话已经变化。");
+                        try { undo = std::make_unique<QtProject::MapDataEditCommand>(project_, receipt,
+                            QObject::tr("AI 地图尺寸"), "MCP 调整地图尺寸"); }
+                        catch (const std::exception&) { return Status::Failure("QtApp.Live", "LIVE_RESIZE_UNDO_FAILED", "无法准备共用撤销记录，尺寸未修改。"); }
+                        return Status::Ok();
+                    });
+                if (!applied.Succeeded() || project_.mapEdits_->Revision() == before) return applied;
+                (void)project_.ObserveMapDataEdit("MCP 调整地图尺寸"); project_.mapDataUndoStack_->push(undo.release());
+                if (ownerHandle_) emit owner_.Changed(); return applied;
             };
             host.prepareBounds = [this, &boundsCapture, boundsProject](const Mcp::TerrainEditToolContext& current,
                 const Services::TerrainEditBinding& binding, const MapData::TerrainBoundsEditIntent& intent)

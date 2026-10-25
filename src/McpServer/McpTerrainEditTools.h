@@ -3,6 +3,7 @@
 #include "McpServer.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
+#include "War3MapCore/Services/TerrainResizeEditService.h"
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
 
 #include <functional>
@@ -39,6 +40,11 @@ struct TerrainEditToolHost {
     std::function<Status()> verifyBounds;
     std::function<Status(const Services::PreparedTerrainBoundsEdit&,
         const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>&)> applyBounds;
+    std::function<Result<Services::PreparedTerrainResizeEdit>(const TerrainEditToolContext&,
+        const Services::TerrainEditBinding&, const MapData::TerrainResizeIntent&)> prepareResize;
+    std::function<Status()> verifyResize;
+    std::function<Status(const Services::PreparedTerrainResizeEdit&,
+        const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>&)> applyResize;
     // 准备水刷的实际owner由宿主保留到返回；提交前重新核来源和资源身份。
     std::function<Status()> verifyWater;
     std::function<Result<MapData::TerrainStrokeResult>(const Services::PreparedTerrainEdit&,

@@ -156,6 +156,14 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
         }
         QJsonArray mapDataRemovals;
         if (mapEdits_) {
+            // 尺寸raw胶囊保留不同形状的完整可逆草稿（含SHD），不授予正式地图保存资格。
+            // 与普通raw覆盖一样先收工程预算，不能随可选typed历史失败而丢失。
+            auto resizeDraft = mapEdits_->ExportTerrainResizeDraft();
+            if (!resizeDraft.Succeeded() || !resizeDraft.value) return fail(tr("地图尺寸草稿无法完整保存"));
+            if (!resizeDraft.value->empty()) {
+                if (!append("overlay/editor/terrain-resize.bin", std::move(*resizeDraft.value))) return fail(tr("工程超过容量限制"));
+                job->manifest_["terrainResizeDraft"] = 1;
+            }
             for (auto& member : mapEdits_->Replacements())
                 if (!append("overlay/map/" + member.name, std::move(member.data))) return fail(tr("工程超过容量限制"));
             for (const auto& name : mapEdits_->Removals()) mapDataRemovals.push_back(Text(name));

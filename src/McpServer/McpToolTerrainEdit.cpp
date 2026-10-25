@@ -12,6 +12,7 @@ void RegisterTerrainEditTools(McpServer& server) {
             if (!workspace) return error;
             TerrainEditToolHost host;
             std::optional<MapData::TerrainPathingResources> waterOwner;
+            std::optional<MapData::TerrainResizeResources> resizeOwner;
             host.identity = [&server, workspace] {
                 QJsonObject identity{{"project_identity", QString::fromStdString(server.DocumentId())},
                     {"revision", QString::fromStdString(workspace->ObjectRevision())},
@@ -27,6 +28,21 @@ void RegisterTerrainEditTools(McpServer& server) {
                     current.value->includesActiveTransactionOverlay, false});
             };
             host.apply = [workspace](const auto& plan, const auto& validate) { return workspace->ApplyTerrainPlan(plan, validate); };
+            host.prepareResize = [workspace, &resizeOwner](const TerrainEditToolContext& context, const auto& binding,
+                const MapData::TerrainResizeIntent& intent) -> Result<Services::PreparedTerrainResizeEdit> {
+                auto captured = workspace->CaptureTerrainResizeResources();
+                if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
+                resizeOwner = std::move(*captured.value);
+                return Services::PrepareTerrainResizeEdit(*context.session, context.document, binding, *resizeOwner, intent);
+            };
+            host.verifyResize = [workspace, &resizeOwner] {
+                return resizeOwner ? workspace->VerifyTerrainResizeResources(*resizeOwner)
+                    : Status::Failure("MCP", "TERRAIN_RESIZE_SOURCE_REQUIRED", "缺少本笔实际地图尺寸来源。");
+            };
+            host.applyResize = [](const auto&, const auto&) {
+                return Status::Failure("MCP", "TERRAIN_PATCH_RESIZE_SCRIPT_REQUIRED",
+                    "独立目录补丁没有地图尺寸与初始化脚本的完整保存链；请用save_map_edit_candidate的canvas_resize笔划保存地图。");
+            };
             host.prepareBounds = [workspace, &waterOwner](const TerrainEditToolContext& context, const auto& binding,
                 const MapData::TerrainBoundsEditIntent& intent) -> Result<Services::PreparedTerrainBoundsEdit> {
                 auto captured = workspace->CaptureTerrainBoundsResources();

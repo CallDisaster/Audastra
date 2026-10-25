@@ -214,7 +214,7 @@ void WorldModule::UpdateTerrainBoundsControls() {
         && terrain->header.height >= 2 && terrain->header.height <= 2049 && edits->HasTerrainPathing()
         && project_.mapDataUndoStack_ && !project_.savingMap_ && !project_.HasPendingAssetEdits()
         && !project_.sourceChangeSuspected_ && !project_.sourceChangeConfirmed_;
-    const bool busy = !terrainBoundsWorker_.isNull();
+    const bool busy = !terrainBoundsWorker_.isNull() || !terrainResizeWorker_.isNull();
     const bool current = available && terrainBoundsReadRequest_
         && QtProject::TerrainWaterEditRequestCurrent(project_, *terrainBoundsReadRequest_, true);
     bool valid = false;
@@ -236,7 +236,7 @@ void WorldModule::UpdateTerrainBoundsControls() {
 }
 
 void WorldModule::StartTerrainBoundsTask(bool apply) {
-    if (!terrainBoundsStatus_ || terrainBoundsWorker_ || project_.savingMap_ || !project_.mapDataUndoStack_
+    if (!terrainBoundsStatus_ || terrainBoundsWorker_ || terrainResizeWorker_ || project_.savingMap_ || !project_.mapDataUndoStack_
         || !project_.mapEdits_ || strokeBase_ || waterCommit_) return;
     UpdateTerrainBoundsControls();
     if (apply ? !terrainBoundsApply_->isEnabled() : !terrainBoundsRead_->isEnabled()) return;
