@@ -251,7 +251,7 @@ add_executable(audastra-terrain-shadow-receiver-tests TerrainShadowReceiverResou
 target_link_libraries(audastra-terrain-shadow-receiver-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-shadow-receiver-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-shadow-receiver-tests PRIVATE /W4 /permissive- /utf-8)
-foreach(receiver_group IN ITEMS ordered sources guards)
+foreach(receiver_group IN ITEMS ordered sources guards special)
     add_test(NAME services-terrain-shadow-receiver-${receiver_group}
         COMMAND audastra-terrain-shadow-receiver-tests ${receiver_group})
     set_tests_properties(services-terrain-shadow-receiver-${receiver_group} PROPERTIES TIMEOUT 60)
