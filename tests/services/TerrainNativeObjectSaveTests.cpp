@@ -2554,6 +2554,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainBridgeOrdinarySaveCases.h"
 #include "TerrainGroundPaletteAppendSaveCases.h"
 #include "TerrainCliffPaletteAppendSaveCases.h"
+#include "TerrainDoodadParentDisplaySaveCases.h"
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2576,6 +2577,7 @@ int main(int argc, char** argv) {
         MapAndGameMetadataWinnersRemainBound();
         DirectoryRecipePreservesReplayAndSourceChecks();
         UniformDoodadsSaveWaterGroundAndCliffs();
+        DoodadDisplayParentUsesTheFormalSaveAndUndoChain();
         StartupCategoryCUsesTheNormalSaveAndUndoChain();
         StartupCategoryCBudgetSourcesAndInheritanceStayBound();
         StartupCategoryCChoosesTheActualGridAndFreezesItsSources();

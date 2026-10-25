@@ -897,7 +897,11 @@ void DoodadOverridesUseBoundedStandardInheritance() {
             Check(document.AddOriginalObject("D001"));
             Modification(document, "D001", "Nm00", NativeValueType::String, std::string("parent name"));
             f.SetNative(document);
-            Rejected(f.Inspect({id}), "TERRAIN_NATIVE_OBJECT_INHERITANCE", "custom parent with any actual field override remains unsupported");
+            const auto withParentName = Take(f.Inspect({id}));
+            Require(withParentName.footprints.size() == parsed.footprints.size(),
+                "validated parent display fields do not change the child's footprint");
+            if (*path) Require(withParentName.footprints.front().pathTexture == path,
+                "parent display fields do not replace the child's actual path override");
         }
     }
     for (const auto* key : {"category", "fixedRot"}) {
@@ -1540,6 +1544,7 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
 }
 #include "NativeDoodadNonPathFieldCases.h"
 #include "TerrainEmptyParentCases.h"
+#include "TerrainDoodadParentDisplayCases.h"
 #include "TerrainBridgeNameCases.h"
 #include "NativeTerrainDependencyCases.h"
 } // namespace
@@ -1579,6 +1584,7 @@ int main() {
         SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules();
         DoodadRepeatedColorFieldsPreservePathing();
         EmptyOriginalParentsKeepExactStandardInheritance();
+        DoodadParentDisplayFieldsRemainTypedAndBounded();
         BridgeNameOverridesKeepExactPathing();
         RunNativeTerrainDependencyCases();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";

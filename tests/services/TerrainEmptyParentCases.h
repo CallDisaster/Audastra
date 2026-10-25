@@ -1,7 +1,7 @@
 #pragma once
 
 // 在NativeDestructablePathingTests.cpp的原创Fixture和CustomBridge之后包含。
-// 仅兼容同类别、完整classic v2且零字段的Original父记录，不推测有字段继承。
+// 空Original父沿既有兼容域；有字段时仅允许同源元数据完整验证的装饰物展示字段。
 
 void EmptyOriginalParentsKeepDoodadFields() {
     for (const bool nonempty : {false, true}) for (const unsigned childOverride : {0u, 1u, 2u}) {
@@ -106,8 +106,10 @@ void EmptyOriginalParentsStillRejectAnyRealParentField() {
         Modification(document, "D001", field == 0 ? "Dt00" : field == 1 ? "Nm00" : "ZZZ0",
             NativeValueType::String, field == 0 ? std::string("_") : std::string("parent"));
         fixture.SetNative(document);
-        Rejected(fixture.Inspect({"C001"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE",
-            "父相同占地值、纯显示字段和未知字段都不是空Original，不能借当前等价值放行");
+        if (field == 1) Require(Take(fixture.Inspect({"C001"})).footprints.empty(),
+            "完整验证的父名称字段不改变标准禁用占地");
+        else Rejected(fixture.Inspect({"C001"}), field == 0 ? "TERRAIN_NATIVE_OBJECT_INHERITANCE" : "TERRAIN_NATIVE_OBJECT_METADATA",
+            "父相同占地值和未知字段仍拒绝，不能借当前等价值放行");
     }
     for (const unsigned field : {0u, 1u, 2u, 3u}) {
         auto fixture = BridgeOriginalFixture(); auto document = CustomBridge();

@@ -59,6 +59,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
         // path借用同次解析的owner，实际有效F32/网格策略随类型存储；最终结果另拥有字符串。
         std::map<std::string_view, ResolvedDoodadFootprint, std::less<>> footprintPaths;
         std::map<std::string_view, std::string_view, std::less<>> specialPaths;
+        std::set<std::string_view, std::less<>> validatedDoodadParents;
         for (std::size_t row = 0; row < placedRawcodes.size() + specialRawcodes.size(); ++row) {
             const bool special = row >= placedRawcodes.size();
             const auto rawcode = special ? specialRawcodes[row - placedRawcodes.size()] : placedRawcodes[row];
@@ -75,11 +76,14 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
             if (special || standardDoodad || nativeDoodad) {
                 if (special && (standard || native))
                     Fail("TERRAIN_NATIVE_OBJECT_CLASS_AMBIGUOUS", "特殊地形记录不能按可破坏物解释：" + std::string(rawcode));
+                const ObjectRecord* nativeDoodadParent = nullptr;
                 if (nativeDoodad && nativeDoodad->parentRawcode) {
                     const auto& parent = *nativeDoodad->parentRawcode;
-                    if (standardDoodad || HasUnsupportedParentRecord(doodadIndex, parent) || destructableIndex.contains(parent)
+                    const auto parentRecord = doodadIndex.find(parent);
+                    nativeDoodadParent = parentRecord == doodadIndex.end() ? nullptr : parentRecord->second;
+                    if (standardDoodad || (nativeDoodadParent && nativeDoodadParent->parentRawcode) || destructableIndex.contains(parent)
                         || catalog.Find(ObjectType::Destructable, parent))
-                        Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "普通装饰物仅支持父无实际字段覆盖的一层标准继承：" + std::string(rawcode));
+                        Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "普通装饰物需要同类别的唯一一层标准父：" + std::string(rawcode));
                     standardDoodad = catalog.Find(ObjectType::Doodad, parent);
                 }
                 if (!standardDoodad)
@@ -101,6 +105,28 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                         options.sources = {{ObjectType::Doodad, "Doodads/DoodadMetaData.slk"}};
                         doodadSchema = Take(ObjectFieldSchema::Load(reader, options));
                         doodadEvidence = ValidateSchemaSource(cells, *doodadSchema, ObjectType::Doodad);
+                    }
+                    if (nativeDoodadParent && !nativeDoodadParent->modifications.empty()
+                        && !validatedDoodadParents.contains(standardDoodad->key.rawcode)) {
+                        // 只接受可完整解释的展示字段；不将父Original的覆盖合并到Custom。
+                        // 父含通行字段时即使值相同也保留旧拒绝，不能用等值猜继承。
+                        for (const auto& modification : nativeDoodadParent->modifications) {
+                            const auto* definition = doodadSchema->FindNative(ObjectType::Doodad, modification.key.fieldId);
+                            if (definition) {
+                                const auto field = Text::LowerAscii(definition->sourceField);
+                                if (field == "pathtex" || field == "category" || field == "fixedrot")
+                                    Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "装饰物标准父含通行字段覆盖，尚不能解释其继承：" + std::string(rawcode));
+                            }
+                        }
+                        const ObjectModification* parentCategory = nullptr;
+                        const ObjectModification* parentRotation = nullptr;
+                        EffectiveDoodadPath(*standardDoodad, *nativeDoodadParent, *doodads, *doodadSchema,
+                            value, doodadEvidence, parentCategory, parentRotation);
+                        constexpr auto parentWork = sizeof(std::string_view) * 4;
+                        if (parentWork > maximumWorkingBytes - work)
+                            Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "装饰物父字段验证缓存超过累计剩余预算。");
+                        work += parentWork;
+                        validatedDoodadParents.emplace(standardDoodad->key.rawcode);
                     }
                     value = EffectiveDoodadPath(*standardDoodad, *nativeDoodad, *doodads, *doodadSchema,
                         value, doodadEvidence, categoryOverride, rotationOverride);
