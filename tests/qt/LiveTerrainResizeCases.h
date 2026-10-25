@@ -1,10 +1,22 @@
 #pragma once
 
 #include "../support/TerrainResizeFixture.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 
 void LiveEditorToolsTests::ResizeToolsCaptureActualResourcesAndKeepOriginalUndo() {
     namespace R = AudastraTest::TerrainResize;
-    R::Fixture native(true); Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    R::Fixture native(true);
+    // 水刷完整读取56个实际startup输入；仅为本例提供原创文件，不给产品缺项补默认值。
+    for (const auto& profile : MapData::kClassicProfiles) {
+        if (std::none_of(native.members.begin(), native.members.end(),
+            [&](const auto& member) { return member.name == profile.path; }))
+            native.PutMember(profile.path, R::Text("[Synthetic]\nPresent=1\n"));
+    }
+    native.PutMember("UI/MiscData.txt", R::Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+        "[Water]\nDeepLevelPathing=192\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"));
+    native.PutMember("UI/WorldEditData.txt", R::Text("[Synthetic]\nPresent=1\n"));
+    native.Seal();
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     for (const auto& member : native.members)
         QVERIFY(WriteFile(f.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
     f.project.war3GameRoot_ = native.gameRoot;
