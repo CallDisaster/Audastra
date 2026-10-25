@@ -94,6 +94,12 @@ struct Fixture {
         Check(IO::WriteFileBytes(gameRoot / "WorldEditData.txt", Text(
             "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=480\n"
             "[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n")));
+        // 实际缺失查询必须先有可严格挂载的游戏资源层，不能把no-archives当absence。
+        // 仅含原创标记；使用扩展包名，保留各journal/Qt用例自行创建war3.mpq的空间。
+        const std::array<MapArchiveMember, 1> gameMembers{{
+            {"synthetic-resize-layer.txt", Text("Audastra resize fixture resource layer\n")}
+        }};
+        Take(WriteVerifiedArchive(gameRoot / "war3x.mpq", gameMembers));
         grid = *Take(ParseMapTerrain(TerrainLiteral())).Snapshot();
         settings.formatVersion = 25; settings.custom.emplace(); settings.tileset = 'L';
         settings.mapName = "Synthetic terrain canvas"; settings.author = "Audastra tests";
