@@ -10,6 +10,8 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "../support/TerrainBoundsFixture.h"
+#include "../TerrainBlockFixtures.h"
+#include "../TerrainConnectedRampFixtures.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -980,6 +982,7 @@ void ArchiveExportBindsPathingAndCompanionMembers() {
 
 #include "McpStraightRampEditCases.h"
 #include "McpTerrainBlockTransportCases.h"
+#include "McpTerrainWorkspaceBlockCases.h"
 
 } // namespace
 
@@ -992,6 +995,9 @@ int main(int argc, char** argv) {
         FacadeRejectsUnknownTypesBoundsAndStaleSources();
         StraightRampFacadeRequiresItsOwnCapturedOwner();
         TerrainBlockFacadeCapturesItsOwnSourceDigest();
+        RegisteredBlockHostPublishesCompleteTypedDirectoryAndColdReadback();
+        BlockDirectorySealRejectsUntypedOrConflictingEmptyCommands();
+        RegisteredConnectedHostKeepsItsAlgorithmThroughDirectoryReplay();
         BoundsFacadeUsesActualResourcesCasAndSharedUndo();
         CodecProvesSourceIntentAndNetBytes();
         FollowingPlacementsRequireExactSourceAndCompleteRecipe();
