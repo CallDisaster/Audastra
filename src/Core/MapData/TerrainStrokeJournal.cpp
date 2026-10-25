@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/MapData/TerrainRampEditing.h"
+#include "TerrainHistoryCodec.h"
 
 #include <algorithm>
 #include <bit>
@@ -184,10 +185,12 @@ template<class T> Result<T> Failed() {
 } // namespace
 
 Status ValidateTerrainStrokeJournal(const TerrainStrokeJournal& journal) {
+    if (journal.history) return detail::ValidateTerrainHistoryJournal(journal);
     return Valid(journal) ? Status::Ok() : Status{Failed<TerrainStrokeJournal>().diagnostics};
 }
 
 Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJournal& journal) {
+    if (journal.history) return detail::EncodeTerrainHistoryJournal(journal);
     if (!Valid(journal)) return Failed<std::vector<std::byte>>();
     try {
         Wire wire;
@@ -307,6 +310,9 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
 
 Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byte> bytes) {
     if (bytes.size() > TerrainJournalMaximumBytes) return Failed<TerrainStrokeJournal>();
+    if (bytes.size() >= 4 && bytes[0] == std::byte{'F'} && bytes[1] == std::byte{'T'}
+        && bytes[2] == std::byte{'J'} && bytes[3] == std::byte{'E'})
+        return detail::DecodeTerrainHistoryJournal(bytes);
     try {
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto magic = reader.Number(4);
