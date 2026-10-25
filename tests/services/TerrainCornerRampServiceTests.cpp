@@ -1,5 +1,6 @@
 #include "TerrainCornerRampServiceTests.h"
 #include "../TerrainCornerRampFixtures.h"
+#include "TerrainInnerCornerRampServiceCases.h"
 
 namespace War3Map::TerrainSaveTests {
 namespace {
@@ -92,5 +93,6 @@ void FormalSaveAsAndInPlaceRetainCompleteHistory() {
 
 void CheckTerrainCornerRampContracts() {
     FrozenServiceCandidateRestoresOneAtomicCommand(); FormalSaveAsAndInPlaceRetainCompleteHistory();
+    War3Map::TerrainInnerCornerRampServiceCases::Check();
 }
 } // namespace War3Map::TerrainSaveTests

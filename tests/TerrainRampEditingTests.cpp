@@ -276,6 +276,8 @@ void NativeCornerBlightOnlyUsesRampFinisher() {
 
 } // namespace
 
+#include "TerrainInnerCornerRampCases.h"
+
 int main() {
     try {
         FourDirectionsAndExactBytes(); WholeStrokeRejectsBeforeMutation();
@@ -283,6 +285,7 @@ int main() {
         NativeCornerFourDirectionsAndLiteralCompleteOutput(); NativeCornerUnsupportedDomainsRejectAtomically();
         NativeCornerBlightOnlyUsesRampFinisher();
         War3Map::TerrainConnectedStraightRampCases::Run();
+        War3Map::TerrainInnerCornerRampCases::Check();
         std::cout << "TerrainRampEditing: 10 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
