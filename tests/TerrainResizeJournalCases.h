@@ -325,7 +325,7 @@ inline void SavedResizeSuffixRestoresFromCurrentStructure() {
     fixture.archive = std::make_unique<MapArchiveSession>(std::move(saved));
     Require(fixture.edits->HasTerrainTypedResizeState() && !fixture.edits->HasTerrainResizeChanges()
         && !fixture.edits->IsDirty(), "actual saved canvas retains typed state while its net change is clean");
-    const auto station = Take(fixture.edits->FreezeForSave());
+    const auto station = Take(fixture.edits->FreezeForSave(TerrainJournalMaximumBytes));
     auto source = std::make_shared<MapArchiveSession>(Take(MapArchiveSession::Open(fixture.archive->SourcePath())));
     const auto view = [&]() { return Take(TerrainSessionResources::Capture(source, *fixture.edits, fixture.gameRoot)); };
     // 保存后宽高已经等于physical；先改高度再水刷，迫使重放区分typed current与净扩裁差异。
