@@ -255,6 +255,8 @@ private:
         text.fontPath = node.text->fontPath;
         text.fontHeight = node.text->fontHeight;
         text.color = node.text->color;
+        text.shadowColor = node.text->shadowColor;
+        text.shadowOffset = node.text->shadowOffset;
         text.rect = node.rect;
         text.sizeFromContent = node.layout == LayoutState::SizeFromContent;
         text.anchor = node.contentAnchor;

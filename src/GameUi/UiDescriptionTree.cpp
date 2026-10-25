@@ -2,6 +2,7 @@
 
 #include "UiBindingCheck.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
+#include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <algorithm>
 #include <charconv>
@@ -182,6 +183,8 @@ private:
             text.fontPath = frame.font;
             text.fontHeight = static_cast<float>(frame.fontHeight);
             for (std::size_t i = 0; i < 4; ++i) text.color[i] = static_cast<float>(frame.color[i]);
+            text.shadowColor = kUiTextShadowColor;
+            text.shadowOffset = kUiTextShadowOffset;
             text.justifyH = std::string(JustifyName(frame.justifyH));
             text.justifyV = std::string(JustifyName(frame.justifyV));
             node.text = std::move(text);

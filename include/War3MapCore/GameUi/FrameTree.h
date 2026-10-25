@@ -26,6 +26,10 @@ struct FrameRect {
     [[nodiscard]] float Height() const noexcept { return top - bottom; }
 };
 
+// 矩形上某个锚点（左上、中心……）的屏幕位置。
+[[nodiscard]] float FramePointX(const FrameRect& rect, FramePoint point) noexcept;
+[[nodiscard]] float FramePointY(const FrameRect& rect, FramePoint point) noexcept;
+
 inline constexpr std::uint32_t kScreenNode = 0;
 inline constexpr std::uint32_t kNoNode = 0xFFFFFFFFu;
 
@@ -65,6 +69,9 @@ struct TextInfo {
     std::string fontPath;
     float fontHeight = 0.0f;
     std::array<float, 4> color{1.0f, 1.0f, 1.0f, 1.0f};
+    // FontShadowColor / FontShadowOffset；透明度为 0 时不画阴影。偏移为屏幕单位，y 向上。
+    std::array<float, 4> shadowColor{0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 2> shadowOffset{0.0f, 0.0f};
     std::string justifyH;
     std::string justifyV;
 };

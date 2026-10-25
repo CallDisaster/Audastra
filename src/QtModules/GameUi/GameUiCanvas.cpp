@@ -265,19 +265,30 @@ void GameUiCanvas::PaintText(QPainter& painter, const QRectF& screen, const Fram
     if (showContent_ || !hits) {
         painter.save();
         painter.setFont(font);
-        double y = top + metrics.ascent();
-        for (const auto& line : lines) {
-            const double width = LineWidth(line, metrics);
-            double x = left;
-            if (draw.justifyH == JustifyH::Center) x = left + (right - left - width) / 2.0;
-            else if (draw.justifyH == JustifyH::Right) x = right - width;
-            for (const auto& segment : line) {
-                painter.setPen(segment.color);
-                painter.drawText(QPointF(x, y), segment.text);
-                x += metrics.horizontalAdvance(segment.text);
+        // 阴影整段用阴影色（不受 |c 颜色码影响），先画在下面。
+        const double scale = screen.height() / options.screenHeight;
+        const QPointF shadowShift(draw.shadowOffset[0] * scale, -draw.shadowOffset[1] * scale);
+        const bool shadow = draw.shadowColor[3] > 0.0f && !shadowShift.isNull();
+        const auto paintLines = [&](QPointF shift, const QColor* only) {
+            double y = top + metrics.ascent() + shift.y();
+            for (const auto& line : lines) {
+                const double width = LineWidth(line, metrics);
+                double x = left + shift.x();
+                if (draw.justifyH == JustifyH::Center) x += (right - left - width) / 2.0;
+                else if (draw.justifyH == JustifyH::Right) x += right - left - width;
+                for (const auto& segment : line) {
+                    painter.setPen(only ? *only : segment.color);
+                    painter.drawText(QPointF(x, y), segment.text);
+                    x += metrics.horizontalAdvance(segment.text);
+                }
+                y += lineHeight;
             }
-            y += lineHeight;
+        };
+        if (shadow) {
+            const QColor shadowColor = FromFloats(draw.shadowColor);
+            paintLines(shadowShift, &shadowColor);
         }
+        paintLines({}, nullptr);
         painter.restore();
     }
     if (hits) {

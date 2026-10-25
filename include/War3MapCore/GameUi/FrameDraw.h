@@ -36,6 +36,8 @@ struct TextDraw {
     std::string fontPath;
     float fontHeight = 0.0f;
     std::array<float, 4> color{1.0f, 1.0f, 1.0f, 1.0f};
+    std::array<float, 4> shadowColor{0.0f, 0.0f, 0.0f, 0.0f};  // 透明度为 0 时不画
+    std::array<float, 2> shadowOffset{0.0f, 0.0f};             // 屏幕单位，y 向上
     FrameRect rect;
     // 只有定位点时（SizeFromContent），文字以 anchor 指定的位置对齐到 rect 的同名点。
     bool sizeFromContent = false;

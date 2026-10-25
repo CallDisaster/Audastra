@@ -610,13 +610,18 @@ void GameUiModuleTests::GeneratesDescriptionTriggers() {
     project.triggerUndoStack_->undo();
     QVERIFY(!category());
 
-    // 描述不合法的部分（锚在游戏代码区域）整体拒绝，什么都不改。
+    // 锚在游戏代码区域：按固定位置换成屏幕坐标，结果带警告；预览什么都不改。
     QVERIFY2(module.EditDescription(QStringLiteral("Cast"),
                  QStringLiteral(R"([{"op":"set_frame","frame":"bar1","fields":{"anchors":[{"point":"center","to":"game:Minimap","toPoint":"center"}]}}])"),
                  {}, &error),
         qPrintable(error));
-    QVERIFY(!module.GenerateDescriptionTriggers(QStringLiteral("Cast"), false, &error));
-    QVERIFY(error.contains(QStringLiteral("Minimap")));
+    const auto fixed = module.GenerateDescriptionTriggers(QStringLiteral("Cast"), true, &error);
+    QVERIFY2(fixed, qPrintable(error));
+    QVERIFY(std::any_of(fixed->warnings.begin(), fixed->warnings.end(), [](const auto& warning) {
+        return warning.code == "AUI_TRIGGER_AREA_FIXED" && warning.message.find("Minimap") != std::string::npos;
+    }));
+    QVERIFY(fixed->featureText.contains(QStringLiteral("AudastraUISetAbsPoint(udg_AUI_Cast_bar1, AudastraAnchorCenter, ")));
+    QVERIFY(!fixed->featureText.contains(QStringLiteral("Minimap")));
     QVERIFY(!category() && project.triggerUndoStack_->index() == 0);
 }
 
