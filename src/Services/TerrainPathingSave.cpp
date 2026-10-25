@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
+#include "War3MapCore/Services/TerrainResizeEditService.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
@@ -85,7 +86,7 @@ bool Neutral(const MapData::TerrainBrush& brush) {
 }
 
 bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke) {
-    if (!stroke.palette || stroke.bounds || stroke.blockPaste || !Neutral(stroke.brush) || !stroke.points.empty()
+    if (!stroke.palette || stroke.bounds || stroke.resize || stroke.blockPaste || !Neutral(stroke.brush) || !stroke.points.empty()
         || stroke.waterBrush || stroke.followDoodads) return false;
     const auto& palette = *stroke.palette;
     const auto rawcode = [](std::string_view value) { return value.size() == 4
@@ -103,11 +104,19 @@ bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke) {
 }
 
 bool BlockCommand(const MapData::TerrainStrokeIntent& stroke) {
-    return stroke.blockPaste && !stroke.palette && !stroke.bounds && !stroke.waterBrush
+    return stroke.blockPaste && !stroke.palette && !stroke.bounds && !stroke.resize && !stroke.waterBrush
         && Neutral(stroke.brush) && stroke.points.empty()
         && stroke.cornerRampAlgorithm == MapData::TerrainCornerRampAlgorithm::DryOnly
         && stroke.straightRampAlgorithm == MapData::TerrainStraightRampAlgorithm::Independent
         && MapData::ValidateTerrainBlockPasteIntent(*stroke.blockPaste).Succeeded();
+}
+
+bool ResizeCommand(const MapData::TerrainStrokeIntent& stroke) {
+    return stroke.resize && !stroke.palette && !stroke.bounds && !stroke.blockPaste && !stroke.waterBrush
+        && Neutral(stroke.brush) && stroke.points.empty() && !stroke.followDoodads
+        && stroke.cornerRampAlgorithm == MapData::TerrainCornerRampAlgorithm::DryOnly
+        && stroke.straightRampAlgorithm == MapData::TerrainStraightRampAlgorithm::Independent
+        && MapData::ValidateTerrainResizeIntent(*stroke.resize).Succeeded();
 }
 
 Status ValidateJournalReplayAlignment(std::span<const MapData::TerrainStrokeIntent> strokes,
@@ -200,7 +209,8 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path&,
     Accounting& accounting, const std::string& sourceSha,
     const MapData::TerrainStrokeJournal* journal,
-    std::vector<MapData::MapDataEditSession::EditReceipt>* receipts) {
+    std::vector<MapData::MapDataEditSession::EditReceipt>* receipts,
+    std::vector<MapData::TerrainResizeResources>* resizeOwners) {
     using Output = Result<std::vector<MapData::TerrainPathingResources>>;
     // 工厂已将实际W3E逐字核对并Attach，并持有落笔前owner直到整个序列完成。
     const auto fail = [](const char* code, const char* message) { return Output::Failure("Terrain.Replay", code, message); };
@@ -221,14 +231,18 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             || journal->strokes[inputIndex].units.has_value() || journal->strokes[inputIndex].startLocations.has_value());
         ++inputIndex;
         if (ordinary) continue;
-        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.palette || stroke.blockPaste)
+        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
             && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::DryOnly)
             return fail("TERRAIN_REPLAY_CORNER_ALGORITHM", "非拐角命令不能携带拐角算法版本。");
-        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.palette || stroke.blockPaste)
+        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent)
             || (stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Connected))
             return fail("TERRAIN_REPLAY_STRAIGHT_ALGORITHM", "直坡算法版本未知，或非直坡命令携带连接算法。");
+        if (stroke.resize) {
+            if (!ResizeCommand(stroke)) return fail("TERRAIN_REPLAY_RESIZE_CONFLICT", "扩裁记录必须是独立typed命令，不能携带其它笔刷、移动或删除参数。");
+            continue;
+        }
         if (stroke.blockPaste) {
             if (!BlockCommand(stroke)) return fail("TERRAIN_REPLAY_BLOCK_CONFLICT", "地形块须为独立的有界绝对复制命令，不能混用笔刷、范围或其它算法。");
             continue;
@@ -251,6 +265,7 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             return fail("TERRAIN_REPLAY_BRUSH_CONFLICT", "浅/深水笔划不能同时携带普通笔刷参数。");
     }
     std::vector<MapData::TerrainPathingResources> owners;
+    std::vector<MapData::TerrainResizeResources> capturedResizeOwners;
     auto& resourceBytes = accounting.resourceBytes;
     auto& ownedResources = accounting.ownedResources;
     auto& work = accounting.work;
@@ -315,6 +330,36 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             if (candidate.Revision() == beforeRevision)
                 return fail("TERRAIN_JOURNAL_NO_CHANGE", "起点记录没有形成真实复合命令，未安装任何前缀。");
             if (receipts) receipts->push_back(candidate.LastEdit());
+            ++strokeIndex; continue;
+        } else if (stroke.resize) {
+            if (!source.resize || !source.verifyResize)
+                return fail("TERRAIN_RESIZE_SOURCE_REQUIRED", "重放缺少实际地图尺寸来源工厂。");
+            MapData::TerrainResizeLimits resizeLimits;
+            resizeLimits.maximumCandidateBytes = std::min({resizeLimits.maximumCandidateBytes,
+                limits.maximumCandidateBytes - historyBytes, limits.maximumResourceBytes - resourceBytes,
+                limits.maximumResourceBytes - ownedResources});
+            resizeLimits.maximumWork = std::min(resizeLimits.maximumWork, limits.maximumWork - work);
+            auto resources = source.resize(candidate, resizeLimits);
+            if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};
+            if (journal && resources.value->DependencyFingerprint() != journal->strokes[strokeIndex].rulesSha256)
+                return fail("TERRAIN_JOURNAL_RESOURCE_DRIFT", "扩裁实际profile、空间成员、SHD或规则来源已变化，未安装任何前缀。");
+            if (!reserve(resourceBytes, limits.maximumResourceBytes, resources.value->CaptureBudgetBytes())
+                || !reserve(ownedResources, limits.maximumResourceBytes, resources.value->OwnedCapacityBytes())
+                || !reserve(work, limits.maximumWork, resources.value->CaptureWork()))
+                return fail("TERRAIN_REPLAY_BUDGET", "扩裁来源owner累计捕获或保留量超过重放预算。");
+            auto plan = candidate.PrepareTerrainResizeEdit(*resources.value, *stroke.resize, resizeLimits);
+            if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+            if (!reserve(work, limits.maximumWork, plan.value->PreparationWork())
+                || !reserve(work, limits.maximumWork, plan.value->RetainedCommandBytes(), 2)
+                || plan.value->PreparationBytes() > limits.maximumCandidateBytes - historyBytes
+                || !reserve(historyBytes, limits.maximumCandidateBytes, plan.value->RetainedCommandBytes()))
+                return fail("TERRAIN_REPLAY_BUDGET", "扩裁完整命令、工作或累计历史超过重放预算。");
+            const auto applied = candidate.ApplyPreparedTerrainResizeEdit(*plan.value);
+            if (!applied.Succeeded()) return {{}, applied.diagnostics};
+            capturedResizeOwners.push_back(std::move(*resources.value));
+            if (candidate.Revision() != beforeRevision) {
+                if (receipts) receipts->push_back(candidate.LastEdit());
+            } else if (journal) return fail("TERRAIN_JOURNAL_NO_CHANGE", "扩裁记录未形成真实命令，未安装任何前缀。");
             ++strokeIndex; continue;
         } else if (stroke.palette) {
             const auto& intent = *stroke.palette;
@@ -550,6 +595,11 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
         const auto checked = source.verify(owner, MapData::TerrainSavePlanLimits{}.maximumBytes);
         if (!checked.Succeeded()) return {{}, checked.diagnostics};
     }
+    for (const auto& owner : capturedResizeOwners) {
+        const auto checked = source.verifyResize(owner, MapData::TerrainResizeLimits{});
+        if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    }
+    if (resizeOwners) for (auto& owner : capturedResizeOwners) resizeOwners->push_back(std::move(owner));
     return Output::Success(std::move(owners));
 }
 
@@ -622,14 +672,18 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
             || journal->strokes[inputIndex].units.has_value() || journal->strokes[inputIndex].startLocations.has_value());
         ++inputIndex;
         if (ordinary) continue;
-        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.palette || stroke.blockPaste)
+        if ((stroke.brush.kind != MapData::TerrainBrushKind::CornerRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
             && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::DryOnly)
             return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_CORNER_ALGORITHM", "非拐角命令不能携带拐角算法版本。");
-        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.palette || stroke.blockPaste)
+        if (((stroke.brush.kind != MapData::TerrainBrushKind::StraightRamp || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.palette || stroke.blockPaste)
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent)
             || (stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Independent
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Connected))
             return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_STRAIGHT_ALGORITHM", "直坡算法版本未知，或非直坡命令携带连接算法。");
+        if (stroke.resize) {
+            if (!ResizeCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_RESIZE_CONFLICT", "扩裁记录必须是独立typed命令，不能携带其它笔刷、移动或删除参数。");
+            continue;
+        }
         if (stroke.blockPaste) {
             if (!BlockCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BLOCK_CONFLICT", "地形块须为独立的有界绝对复制命令，不能混用笔刷、范围或其它算法。");
             continue;
@@ -719,17 +773,18 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
     }
     const auto baseline = candidate->Terrain();
     std::vector<MapData::MapDataEditSession::EditReceipt> receipts;
+    std::vector<MapData::TerrainResizeResources> resizeOwners;
     receipts.reserve(strokes.size());
     Accounting localAccounting;
     auto& budget = accounting ? *accounting : localAccounting;
     budget.limits = remainingLimits;
-    auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, budget, sha, journal, &receipts);
+    auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, budget, sha, journal, &receipts, &resizeOwners);
     if (!replayed.Succeeded() || !replayed.value) return {{}, replayed.diagnostics};
     auto finalSource = reader(names, sourceLimits);
     if (!finalSource.Succeeded() || !finalSource.value) return sourceReadFailure(std::move(finalSource.diagnostics));
     if (!SourceMatches(original, terrain, pathing, *finalSource.value)) return mismatch();
     const auto currentIndex = receipts.size();
-    return Output::Success({std::move(candidate), std::move(*replayed.value), std::move(receipts), currentIndex, 0});
+    return Output::Success({std::move(candidate), std::move(*replayed.value), std::move(receipts), currentIndex, 0, std::move(resizeOwners)});
 }
 
 } // namespace TerrainReplayDetail
@@ -744,7 +799,9 @@ TerrainReplayDetail::ResourceSource ReplaySource(const Source& source, const std
         [&](const auto& before, const auto& after, const auto* doodads, auto maximumBytes) {
             return TerrainPathingSave::CaptureNative(source, before, after, gameRoot, maximumBytes, doodads);
         },
-        [&](const auto& owner, auto maximumBytes) { return owner.VerifySourceInputs(source, maximumBytes); }
+        [&](const auto& owner, auto maximumBytes) { return owner.VerifySourceInputs(source, maximumBytes); },
+        [&](const auto& session, const auto& limits) { return TerrainResizeEditService::Capture(source, session, gameRoot, limits); },
+        [&](const auto& owner, const auto& limits) { return owner.VerifySourceInputs(source, limits); }
     };
 }
 

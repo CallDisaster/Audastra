@@ -2,6 +2,7 @@
 
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/MapData/TerrainResizeResources.h"
 
 #include <optional>
 
@@ -20,6 +21,7 @@ struct TerrainReplayCandidate {
     std::vector<MapData::MapDataEditSession::EditReceipt> receipts;
     std::size_t currentIndex = 0;
     std::optional<std::size_t> savedIndex = 0;
+    std::vector<MapData::TerrainResizeResources> resizeOwners;
 };
 
 // Qt、CLI和MCP共用的薄适配：Core捕获实际来源，ObjectData读取严格typed覆盖，

@@ -14,6 +14,9 @@ struct ResourceSource {
     std::function<Result<MapData::TerrainPathingResources>(const MapData::TerrainGridSnapshot&,
         const MapData::TerrainGridSnapshot&, const std::vector<std::byte>*, std::size_t)> native;
     std::function<Status(const MapData::TerrainPathingResources&, std::size_t)> verify;
+    std::function<Result<MapData::TerrainResizeResources>(const MapData::MapDataEditSession&,
+        const MapData::TerrainResizeLimits&)> resize;
+    std::function<Status(const MapData::TerrainResizeResources&, const MapData::TerrainResizeLimits&)> verifyResize;
 };
 
 struct Accounting {
@@ -39,7 +42,8 @@ struct DraftPreparation {
     std::size_t pathingBytes, std::span<const MapData::TerrainStrokeIntent> strokes,
     const std::filesystem::path& gameRoot, Accounting& accounting, const std::string& sourceSha,
     const MapData::TerrainStrokeJournal* journal,
-    std::vector<MapData::MapDataEditSession::EditReceipt>* receipts);
+    std::vector<MapData::MapDataEditSession::EditReceipt>* receipts,
+    std::vector<MapData::TerrainResizeResources>* resizeOwners = nullptr);
 [[nodiscard]] Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source,
     const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,

@@ -55,18 +55,19 @@ public:
 
     [[nodiscard]] std::size_t MetadataBytes() const noexcept { return metadataBytes_; }
 
-    // 历史结构只覆盖固定十项；借用冻结正文，非结构输入仍从当前实际来源读取。
+    // 历史结构覆盖固定十项与显式保存的SHD；借用冻结正文，非结构输入仍读真实来源。
     // 这是内部读取视图，不给raw字节授予任何保存或special谱系。
     static Result<FinalMemberOverlay> PrepareBaseline(std::span<const ArchiveExactMember> members,
-        std::size_t maximumBytes) {
+        std::size_t maximumBytes, const ArchiveExactMember* shadow = nullptr) {
         using Output = Result<FinalMemberOverlay>;
         if (members.size() != MapData::TerrainJournalMemberNames.size() || !maximumBytes
             || maximumBytes > MapData::TerrainSavePlanLimits{}.maximumBytes)
             return Output::Failure("Terrain.PathingSave", "TERRAIN_HISTORY_SOURCE_MISMATCH", "历史结构视图必须是固定十成员。");
         FinalMemberOverlay result;
-        if (members.size() > maximumBytes / sizeof(Entry))
+        const auto count = members.size() + (shadow ? 1u : 0u);
+        if (count > maximumBytes / sizeof(Entry))
             return Output::Failure("Terrain.PathingSave", "TERRAIN_REPLAY_BUDGET", "历史结构索引超过剩余预算。");
-        result.entries_.reserve(members.size());
+        result.entries_.reserve(count);
         result.metadataBytes_ = sizeof(result) + result.entries_.capacity() * sizeof(Entry) + 256;
         for (std::size_t i = 0; i < members.size(); ++i) {
             const auto& member = members[i];
@@ -79,6 +80,15 @@ public:
             if (key.value->capacity() + 1 > maximumBytes - std::min(maximumBytes, result.metadataBytes_))
                 return Output::Failure("Terrain.PathingSave", "TERRAIN_REPLAY_BUDGET", "历史规范路径索引超过重放预算。");
             result.entries_.push_back({std::move(*key.value), member.present ? &member.bytes : nullptr});
+            result.metadataBytes_ += result.entries_.back().name.capacity() + 1;
+        }
+        if (shadow) {
+            if (shadow->name != "war3map.shd" || (!shadow->present && !shadow->bytes.empty()))
+                return Output::Failure("Terrain.PathingSave", "TERRAIN_HISTORY_SOURCE_MISMATCH", "历史SHD名称或明确缺席状态不符。");
+            std::string key = "WAR3MAP.SHD";
+            if (key.capacity() + 1 > maximumBytes - std::min(maximumBytes, result.metadataBytes_))
+                return Output::Failure("Terrain.PathingSave", "TERRAIN_REPLAY_BUDGET", "历史SHD索引超过重放预算。");
+            result.entries_.push_back({std::move(key), shadow->present ? &shadow->bytes : nullptr});
             result.metadataBytes_ += result.entries_.back().name.capacity() + 1;
         }
         if (result.metadataBytes_ >= maximumBytes)

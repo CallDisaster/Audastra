@@ -98,6 +98,14 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
             || !Charge(remaining.maximumWork, member.bytes.size(), 4))
             return Failure("TERRAIN_REPLAY_BUDGET", "历史结构常驻、文档复制和来源核对超过恢复预算。");
     }
+    if (history.baselineShadow) {
+        const auto& shadow = *history.baselineShadow;
+        if (shadow.bytes.size() > MapData::TerrainJournalMaximumBytes - baselineBytes
+            || !Charge(remaining.maximumCandidateBytes, shadow.bytes.capacity(), 4)
+            || !Charge(remaining.maximumWork, shadow.bytes.size(), 4))
+            return Failure("TERRAIN_REPLAY_BUDGET", "历史SHD正文、当前保存站比较和来源核对超过恢复预算。");
+        baselineBytes += shadow.bytes.size();
+    }
     if (!Charge(remaining.maximumCandidateBytes, history.baselinePathingLayers.capacity(), 2)
         || !Charge(remaining.maximumWork, history.baselinePathingLayers.size(), 2)
         || !Charge(remaining.maximumCandidateBytes, journal.baselinePathingLayers.capacity(), 3)
@@ -158,11 +166,25 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         return Failure("TERRAIN_HISTORY_SOURCE_MISMATCH", "当前工程的原字节不属于实际物理地图。");
     const auto manifest = MatchManifest(journal, sourceSha, *actual.value);
     if (!manifest.Succeeded()) return {{}, manifest.diagnostics};
+    std::optional<ArchiveExactMember> physicalShadow;
+    const std::array<std::string, 1> shadowNames{"war3map.shd"};
+    if (history.baselineShadow) {
+        auto read = physicalReader(shadowNames, readLimits);
+        if (!read.Succeeded() || !read.value) return HistoryFailure(std::move(read.diagnostics));
+        if (read.value->size() != 1 || read.value->front().name != shadowNames.front()
+            || (!read.value->front().present && !read.value->front().bytes.empty()))
+            return Failure("TERRAIN_HISTORY_SOURCE_MISMATCH", "物理保存站SHD缺少精确存在性或完整成员。");
+        physicalShadow = std::move(read.value->front());
+        if (!Charge(remaining.maximumCandidateBytes, physicalShadow->bytes.capacity(), 3)
+            || !Charge(remaining.maximumWork, physicalShadow->bytes.size(), 4))
+            return Failure("TERRAIN_REPLAY_BUDGET", "实际保存站SHD的驻留和前后比较超过恢复预算。");
+    }
 
     auto baselineJournal = MapData::TerrainHistoryBaselineJournal(journal);
     if (!baselineJournal.Succeeded() || !baselineJournal.value) return HistoryFailure(std::move(baselineJournal.diagnostics));
     auto historicalView = FinalMemberOverlay::PrepareBaseline(history.baselineMembers,
-        std::min(MapData::TerrainSavePlanLimits{}.maximumBytes, remaining.maximumCandidateBytes));
+        std::min(MapData::TerrainSavePlanLimits{}.maximumBytes, remaining.maximumCandidateBytes),
+        history.baselineShadow ? &*history.baselineShadow : nullptr);
     if (!historicalView.Succeeded() || !historicalView.value) return HistoryFailure(std::move(historicalView.diagnostics));
     if (!Charge(remaining.maximumCandidateBytes, historicalView.value->MetadataBytes()))
         return Failure("TERRAIN_REPLAY_BUDGET", "历史读取索引超过剩余候选预算。");
@@ -185,7 +207,11 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
                 return MapData::TerrainPathingResources::CaptureInputs(reader, before, after,
                     gameRoot, maximumBytes, true, &validator, doodads);
             },
-            [reader](const auto& owner, auto maximumBytes) { return owner.VerifyReadbackMembers(reader, maximumBytes, true); }
+            [reader](const auto& owner, auto maximumBytes) { return owner.VerifyReadbackMembers(reader, maximumBytes, true); },
+            [&, reader](const auto& session, const auto& maximum) {
+                return MapData::TerrainResizeResources::CaptureInputs(reader, session, gameRoot, maximum);
+            },
+            [reader](const auto& owner, const auto& maximum) { return owner.VerifySourceInputs(reader, maximum); }
         };
     };
     auto historicalResources = resourcesFor(historicalReader);
@@ -213,6 +239,7 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         historicalReader, &prefix, &accounting);
     if (!candidate.Succeeded() || !candidate.value) return HistoryFailure(std::move(candidate.diagnostics));
     const auto prefixOwnerCount = candidate.value->waterOwners.size();
+    const auto prefixResizeOwnerCount = candidate.value->resizeOwners.size();
     std::shared_ptr<const MapData::TerrainPathingResources> stationResources;
     std::size_t epochRetainedBytes = 0;
 
@@ -239,6 +266,9 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         };
         const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after,
             const auto*, auto maximumBytes) {
+            if (edits.HasTerrainResizeChanges())
+                return MapData::TerrainPathingResources::CaptureNativeResizePairWithObjects(historicalReader, finalReader,
+                    before, after, gameRoot, maximumBytes, validator);
             return MapData::TerrainPathingResources::CaptureNativePairWithObjects(historicalReader, finalReader,
                 before, after, gameRoot, maximumBytes, validator);
         };
@@ -276,6 +306,14 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         const auto& stationPathing = wpmOutput == plan.value->Replacements().end() ? history.baselineMembers[1].bytes : wpmOutput->data;
         if (!TerrainReplayDetail::SourceMatches(station, *stationTerrain.value, stationPathing, *actual.value))
             return Failure("TERRAIN_HISTORY_STATION_MISMATCH", "真实typed重放与保存计划没有重现物理保存站的全部十成员及缺席状态。");
+        if (physicalShadow) {
+            const auto output = std::find_if(plan.value->Replacements().begin(), plan.value->Replacements().end(),
+                [](const auto& member) { return member.name == "war3map.shd"; });
+            const bool expectedPresent = output != plan.value->Replacements().end() || history.baselineShadow->present;
+            const auto& expectedBytes = output != plan.value->Replacements().end() ? output->data : history.baselineShadow->bytes;
+            if (physicalShadow->present != expectedPresent || physicalShadow->bytes != expectedBytes)
+                return Failure("TERRAIN_HISTORY_STATION_MISMATCH", "真实typed扩裁和保存计划未重现物理保存站SHD的全部字节或明确缺席状态。");
+        }
         const auto planBytes = plan.value->OwnedCapacityBytes();
         const auto leaseBudget = std::min({MapData::TerrainJournalMaximumBytes,
             accounting.limits.maximumCandidateBytes - accounting.historyBytes - planBytes,
@@ -305,7 +343,7 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         const auto savedTerrain = candidate.value->session->Terrain();
         auto replayed = TerrainReplayDetail::Replay(physicalResources, *candidate.value->session, *savedTerrain,
             pathing.size(), std::span(preparation.value->intents).subspan(savedIndex), gameRoot,
-            accounting, sourceSha, &suffix, &candidate.value->receipts);
+            accounting, sourceSha, &suffix, &candidate.value->receipts, &candidate.value->resizeOwners);
         if (!replayed.Succeeded() || !replayed.value) return HistoryFailure(std::move(replayed.diagnostics));
         for (auto& owner : *replayed.value) candidate.value->waterOwners.push_back(std::move(owner));
     }
@@ -345,6 +383,11 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         const auto checked = resourceSource.verify(candidate.value->waterOwners[i], MapData::TerrainSavePlanLimits{}.maximumBytes);
         if (!checked.Succeeded()) return HistoryFailure(checked.diagnostics);
     }
+    for (std::size_t i = 0; i < candidate.value->resizeOwners.size(); ++i) {
+        const auto& resourceSource = i < prefixResizeOwnerCount ? historicalResources : physicalResources;
+        const auto checked = resourceSource.verifyResize(candidate.value->resizeOwners[i], MapData::TerrainResizeLimits{});
+        if (!checked.Succeeded()) return HistoryFailure(checked.diagnostics);
+    }
     if (stationResources) {
         const auto& originalOwner = stationResources->nativeSourceResources_ ? *stationResources->nativeSourceResources_ : *stationResources;
         const auto oldChecked = originalOwner.VerifyReadbackMembers(historicalReader, MapData::TerrainSavePlanLimits{}.maximumBytes, true);
@@ -361,6 +404,13 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
     if (!finalManifest.Succeeded()) return {{}, finalManifest.diagnostics};
     if (!TerrainReplayDetail::SourceMatches(original, terrain, pathing, *finalActual.value))
         return Failure("TERRAIN_HISTORY_SOURCE_MISMATCH", "恢复期间实际来源发生变化，未安装任何前缀。");
+    if (physicalShadow) {
+        auto finalShadow = physicalReader(shadowNames, readLimits);
+        if (!finalShadow.Succeeded() || !finalShadow.value) return HistoryFailure(std::move(finalShadow.diagnostics));
+        if (finalShadow.value->size() != 1 || finalShadow.value->front().name != physicalShadow->name
+            || finalShadow.value->front().present != physicalShadow->present || finalShadow.value->front().bytes != physicalShadow->bytes)
+            return Failure("TERRAIN_HISTORY_SOURCE_MISMATCH", "恢复期间实际保存站SHD改变，未安装任何前缀。");
+    }
     return candidate;
 }
 
