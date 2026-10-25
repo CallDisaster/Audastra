@@ -1357,7 +1357,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
             std::cerr << "missing-minimap MMP stage=" << (rebuildMarkers ? "mixed-preserve" : "legacy-missing-only")
                       << " source_present=" << sourceMarkerIdentity.value->members[0].present
                       << " saved_present=" << (identity.value ? identity.value->members[0].present : false)
-                      << " saved_bytes=" << (identity.value ? identity.value->members[0].byteSize : 0)
+                      << " saved_bytes=" << (identity.value ? identity.value->members[0].byteSize.value_or(0) : 0)
                       << " read_succeeded=" << markers.Succeeded() << '\n';
             if (rebuildMarkers && markers.value) {
                 const auto firstNonzero = std::find_if(markers.value->begin(), markers.value->end(),
