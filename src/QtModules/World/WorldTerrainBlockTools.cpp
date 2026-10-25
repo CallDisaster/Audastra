@@ -6,6 +6,7 @@
 
 #include <QLabel>
 #include <QPushButton>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
