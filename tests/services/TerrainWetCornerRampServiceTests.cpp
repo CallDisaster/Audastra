@@ -19,7 +19,7 @@ void WetAlgorithmUsesActualRulesAndCompleteLiteralGrids() {
             f.doodads, rules.WaterSpecialShapes(), {}, TerrainCornerRampAlgorithm::DryOnly).Succeeded(),
             "old owned corner algorithm cannot acquire wet capability from an unchanged digest");
         const auto candidate = Take(PrepareTerrainCornerRampStroke(f.grid, *rules.WaterBrushRules(), brush,
-            std::span(&f.point, 1), f.doodads, rules.WaterSpecialShapes()));
+            std::span(&f.point, 1), f.doodads, rules.WaterSpecialShapes(), {}, TerrainCornerRampAlgorithm::WetTerrain));
         Require(Take(SerializeMapTerrain(candidate.terrain)) == f.TerrainLiteral(true)
             && Take(SerializeMapTerrain(f.grid)) == original && candidate.result.removedSpecialSourceRecords.empty(),
             "wet creation changes only literal R/strict blight fields, preserving source, water, B, L and special records");
@@ -41,7 +41,7 @@ void WetAlgorithmUsesActualRulesAndCompleteLiteralGrids() {
         }
         auto remove = CornerBrush(false);
         const auto removed = Take(PrepareTerrainCornerRampStroke(candidate.terrain, *rules.WaterBrushRules(), remove,
-            std::span(&f.point, 1), f.doodads, rules.WaterSpecialShapes()));
+            std::span(&f.point, 1), f.doodads, rules.WaterSpecialShapes(), {}, TerrainCornerRampAlgorithm::WetTerrain));
         // 移除是新的原版编辑，不能复活前笔已经清掉的Blight；Undo另核对准确原始数据。
         auto expectedRemoved = f.grid;
         if (blightAbove) expectedRemoved.vertices[12 * 33 + 12].textureAndFlagsRaw &= std::uint8_t(~0x20);
@@ -55,7 +55,8 @@ void WetSecondRingAndRejectedDomainsRemainAtomic() {
     const auto reject = [&](const TerrainGridSnapshot& source, const TerrainStrokePoint& point) {
         const auto before = Take(SerializeMapTerrain(source));
         Require(!PrepareTerrainCornerRampStroke(source, *rules.WaterBrushRules(), brush, std::span(&point, 1),
-            f.doodads, rules.WaterSpecialShapes()).Succeeded() && Take(SerializeMapTerrain(source)) == before,
+            f.doodads, rules.WaterSpecialShapes(), {}, TerrainCornerRampAlgorithm::WetTerrain).Succeeded()
+            && Take(SerializeMapTerrain(source)) == before,
             "unsupported wet second-ring/domain input rejects without writing any source prefix");
     };
     auto changed = f.grid; changed.vertices[19 * 33 + 19].textureAndFlagsRaw |= 0x10; reject(changed, f.point);
@@ -70,10 +71,11 @@ void WetSecondRingAndRejectedDomainsRemainAtomic() {
     reject(changed, {288, 288});
     auto special = f.doodads; special.specialDoodads.push_back({"Doo0", 0, {16, 16}});
     const std::array shapes{TerrainWaterSpecialDoodadShape{0, "Doo0", 0, {16, 16}, 16, 16, 17, 17, {0, 0, 0, 0}}};
-    Require(!PrepareTerrainCornerRampStroke(f.grid, *rules.WaterBrushRules(), brush, std::span(&f.point, 1), special, shapes).Succeeded(),
+    Require(!PrepareTerrainCornerRampStroke(f.grid, *rules.WaterBrushRules(), brush, std::span(&f.point, 1),
+        special, shapes, {}, TerrainCornerRampAlgorithm::WetTerrain).Succeeded(),
         "wet corner never deletes intersecting special models");
     const auto prepared = Take(PrepareTerrainCornerRampEdit(*f.edits, f.Document(), f.Binding(), rules, brush,
-        std::span(&f.point, 1), true));
+        std::span(&f.point, 1), true, {}, TerrainCornerRampAlgorithm::WetTerrain));
     Take(ApplyTerrainEdit(*f.edits, f.Document(), prepared)); f.CheckState(*f.edits, true);
     const auto digest = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
     auto noOpDomain = *f.edits->Terrain(); noOpDomain.vertices[19 * 33 + 19].textureAndFlagsRaw |= 0x10;
@@ -85,7 +87,7 @@ void WetTypedHistoryPreservesVersionsAndExactColdRecovery() {
     WetFixture f; const auto rules = f.Rules(); const auto brush = CornerBrush();
     const auto frozen = Take(f.edits->FreezeForSave(kBudget));
     const auto prepared = Take(PrepareTerrainCornerRampEdit(*frozen, f.Document(), f.Binding(), rules, brush,
-        std::span(&f.point, 1), true));
+        std::span(&f.point, 1), true, {}, TerrainCornerRampAlgorithm::WetTerrain));
     f.CheckState(*f.edits, false);
     Take(ApplyTerrainEdit(*f.edits, f.Document(), prepared)); f.CheckState(*f.edits, true);
     Require(!ApplyTerrainEdit(*f.edits, f.Document(), prepared).Succeeded(), "wet worker candidate is revision-CAS protected");
@@ -144,7 +146,8 @@ void WetFormalSaveAsAndInPlaceRetainUndoRedo() {
         const auto originalPath = f.source->SourcePath(); const auto originalSha = f.source->SourceSha256();
         const auto sessionIdentity = f.edits->SessionIdentity();
         Take(ApplyTerrainEdit(*f.edits, f.Document(), Take(PrepareTerrainCornerRampEdit(*f.edits,
-            f.Document(), f.Binding(), rules, brush, std::span(&f.point, 1), follow))));
+            f.Document(), f.Binding(), rules, brush, std::span(&f.point, 1), follow,
+            {}, TerrainCornerRampAlgorithm::WetTerrain))));
         const auto checkState = [&](bool created) {
             const auto snapshot = f.edits->Snapshot();
             Require(snapshot.Units() && snapshot.Doodads() && snapshot.Units()->units.size() == 3
