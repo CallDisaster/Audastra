@@ -386,7 +386,7 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportTerrainArchiveCandidate
     request.expectedTerrainSha256 = terrainState_->terrainFile.sha256;
     if (overlay->strokes.size() != 1 && std::any_of(overlay->strokes.begin(), overlay->strokes.end(),
             [](const auto& stroke) { return stroke.blockPaste.has_value(); }))
-        return Receipt::Failure("MCP", "MCP_TERRAIN_BLOCK_ARCHIVE_BATCH_UNSUPPORTED",
+        return Result<Receipt>::Failure("MCP", "MCP_TERRAIN_BLOCK_ARCHIVE_BATCH_UNSUPPORTED",
             "地图归档保存暂只接受一笔独立地形块命令；混合目录事务请导出目录候选，或重新打开候选后保存地图。");
     for (const auto& stroke : overlay->strokes) {
         // 普通保存请求只采用当前结构算法；不能把旧算法的目录历史静默升级。
@@ -394,7 +394,7 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportTerrainArchiveCandidate
                 && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::WetTerrain)
             || (stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Connected))
-            return Receipt::Failure("MCP", "MCP_TERRAIN_ARCHIVE_ALGORITHM_UNSUPPORTED",
+            return Result<Receipt>::Failure("MCP", "MCP_TERRAIN_ARCHIVE_ALGORITHM_UNSUPPORTED",
                 "地图保存入口不能完整表达当前目录历史的结构算法，请导出目录候选；未改写或升级旧命令。");
         Services::MapEditTerrainStroke saved;
         saved.brush = stroke.brush; saved.points = stroke.points;
