@@ -1317,12 +1317,62 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         preservedArchive.value->SourceSha256(), minimapNames);
     Require(preservedIdentity.Succeeded() && preservedIdentity.value
         && !preservedIdentity.value->members[0].present, "default save retains exact MapBLP absence");
-    const auto verifyPreservedMembers = [&](const MapArchiveSession& saved, bool scriptUnchanged = true) {
-        // 此样例只含一名普通步兵，没有矿点、商店或开始位置。正常保存独立重建
-        // MMP，与作者底图的Preserve策略无关；完整v0/count0必须是八个零字节。
+    const std::array<std::string, 1> markerNames{"war3map.mmp"};
+    const auto sourceMarkerIdentity = source.value->DescribeExactMemberIdentities(
+        source.value->SourceSha256(), markerNames);
+    const auto sourceUnits = source.value->ReadMember("war3mapUnits.doo");
+    Require(sourceMarkerIdentity.Succeeded() && sourceMarkerIdentity.value
+        && !sourceMarkerIdentity.value->members[0].present
+        && sourceUnits.Succeeded() && sourceUnits.value && *sourceUnits.value == *unitBytes.value,
+        "actual fixture has exactly the authored ordinary unit and proven source MMP absence");
+    const auto verifyPreservedMembers = [&](const MapArchiveSession& saved, TerrainMinimapSaveChoice choice,
+        const std::vector<Diagnostic>& diagnostics, bool scriptUnchanged = true) {
+        const auto finalSettings = saved.ReadMember("war3map.w3i"), finalUnits = saved.ReadMember("war3mapUnits.doo");
+        Require(finalSettings.Succeeded() && finalSettings.value && finalUnits.Succeeded() && finalUnits.value,
+            "read the actual final settings and complete unit collection for the MMP oracle");
+        const auto settings = MapData::MapSettings::Parse(*finalSettings.value);
+        const auto units = MapData::ParseUnitPlacements(*finalUnits.value);
+        Require(settings.Succeeded() && settings.value && settings.value->FullyParsed()
+            && settings.value->formatVersion == 25 && (settings.value->flags & 0x400u)
+            && settings.value->cameraMargins == std::array<std::int32_t, 4>{6, 6, 4, 8}
+            && settings.value->playableWidth == 52 && settings.value->playableHeight == 52
+            && settings.value->players.size() == 1 && settings.value->players[0].number == 0
+            && settings.value->players[0].startX == 0 && settings.value->players[0].startY == 0
+            && units.Succeeded() && units.value && units.value->units.size() == 1
+            && units.value->units[0].rawcode == "hfoo" && units.value->units[0].owner == 0
+            && units.value->units[0].position == std::array<float, 3>{128, 128, 0}
+            && *finalUnits.value == *unitBytes.value,
+            "actual final W3I retains the authored playable bounds and Units has no sloc, mine or shop");
+        // 玩家设置含起点坐标不等于Units中有sloc。正常Preserve独立重建空MMP；
+        // 旧missing-only只补MapBLP，不进入MMP工厂，必须保留来源的精确缺席。
+        const bool rebuildMarkers = choice == TerrainMinimapSaveChoice::Preserve;
+        const auto identity = saved.DescribeExactMemberIdentities(saved.SourceSha256(), markerNames);
         const auto markers = saved.ReadMember("war3map.mmp");
-        Require(markers.Succeeded() && markers.value && *markers.value == std::vector<std::byte>(8, std::byte{0}),
-            "ordinary-unit fixture rebuilds exact empty MMP while preserving the author's minimap choice");
+        const bool markerMatches = identity.Succeeded() && identity.value
+            && (rebuildMarkers
+                ? identity.value->members[0].present && markers.Succeeded() && markers.value
+                    && *markers.value == std::vector<std::byte>(8, std::byte{0})
+                : !identity.value->members[0].present);
+        if (!markerMatches) {
+            std::cerr << "missing-minimap MMP stage=" << (rebuildMarkers ? "mixed-preserve" : "legacy-missing-only")
+                      << " source_present=" << sourceMarkerIdentity.value->members[0].present
+                      << " saved_present=" << (identity.value ? identity.value->members[0].present : false)
+                      << " saved_bytes=" << (identity.value ? identity.value->members[0].byteSize : 0)
+                      << " read_succeeded=" << markers.Succeeded() << '\n';
+            if (rebuildMarkers && markers.value) {
+                const auto firstNonzero = std::find_if(markers.value->begin(), markers.value->end(),
+                    [](std::byte value) { return value != std::byte{0}; });
+                if (firstNonzero != markers.value->end())
+                    std::cerr << "missing-minimap MMP first_nonzero=" << (firstNonzero - markers.value->begin())
+                              << " value=" << std::to_integer<unsigned>(*firstNonzero) << '\n';
+            }
+            for (const auto& diagnostic : diagnostics)
+                if (diagnostic.code.starts_with("TERRAIN_MMP_") || diagnostic.code.starts_with("NATIVE_MMP_"))
+                    std::cerr << "missing-minimap MMP: " << diagnostic.code << ": " << diagnostic.message << '\n';
+        }
+        Require(markerMatches, rebuildMarkers
+            ? "normal Preserve save independently rebuilds the complete empty MMP for the actual ordinary-unit fixture"
+            : "legacy missing-only save preserves exact original MMP absence instead of running the normal marker factory");
         const auto identities = saved.DescribeExactMemberIdentities(saved.SourceSha256(), preservedNames);
         Require(identities.Succeeded() && identities.value, "independent exact old-member readback");
         for (std::size_t index = 0; index < preservedNames.size(); ++index) {
@@ -1333,7 +1383,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
                 ("SHD/WTG/WCT/JASS/DOO must retain original bytes or proven absence: " + preservedNames[index]).c_str());
         }
     };
-    verifyPreservedMembers(*preservedArchive.value, false);
+    verifyPreservedMembers(*preservedArchive.value, request.minimapChoice, preserved.diagnostics, false);
 
     request.fieldEdits.clear();
     request.minimapChoice = TerrainMinimapSaveChoice::Automatic;
@@ -1578,7 +1628,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         && receipt.rangePolicy == Render::TerrainMinimapRangePolicy::FullW3e
         && receipt.manifestSha256.size() == 64, "receipt binds encoded bytes and actual decoded mip0 separately");
     // 当前是顶视unlit ground-only策略；高度变化不要求改变输出像素，也不声称原版小地图等价。
-    verifyPreservedMembers(*candidate.value);
+    verifyPreservedMembers(*candidate.value, request.minimapChoice, generated.diagnostics);
     for (const auto& member : members) {
         if (member.name == "war3map.w3e" || member.name == "(listfile)") continue;
         const auto saved = candidate.value->ReadMember(member.name);
