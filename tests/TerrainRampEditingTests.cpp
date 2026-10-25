@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/TerrainNativePathing.h"
 #include "War3MapCore/MapDocument.h"
 #include "MapDataFixtures.h"
+#include "TerrainConnectedStraightRampCases.h"
 
 #include <algorithm>
 #include <iostream>
@@ -281,7 +282,8 @@ int main() {
         AdjacentStripsAndSampling(); SharedSessionUndoAndDoodadFollow();
         NativeCornerFourDirectionsAndLiteralCompleteOutput(); NativeCornerUnsupportedDomainsRejectAtomically();
         NativeCornerBlightOnlyUsesRampFinisher();
-        std::cout << "TerrainRampEditing: 7 scenario groups passed\n";
+        War3Map::TerrainConnectedStraightRampCases::Run();
+        std::cout << "TerrainRampEditing: 10 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "TerrainRampEditing: " << error.what() << '\n';

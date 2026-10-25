@@ -62,7 +62,7 @@ void ValidateVertex(const TerrainVertex& vertex, std::uint32_t x, std::uint32_t 
 
 struct GridPoint { std::uint32_t x, y; };
 
-// 两种公开命令共用字段算法，但保留各自语义与锚点；无水模式不伪造水刷种类。
+// 水刷、悬崖和坡道共用字段算法，但保留各自语义与锚点；无水模式不伪造水刷种类。
 struct StructuralBrush {
     TerrainBrushShape shape;
     std::uint32_t size;
@@ -75,6 +75,7 @@ struct StructuralBrush {
     std::optional<bool> cornerRamp;
     TerrainCornerRampAlgorithm cornerAlgorithm = TerrainCornerRampAlgorithm::DryOnly;
     bool straightRamp = false;
+    TerrainStraightRampAlgorithm straightAlgorithm = TerrainStraightRampAlgorithm::Independent;
 };
 
 std::optional<GridPoint> Snap(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
@@ -574,7 +575,7 @@ private:
         };
         TerrainCornerRampPlan plan; std::size_t selectedCount = 9;
         if (brush_.straightRamp) {
-            const auto planned = PlanTerrainStraightRamp(grid_, point);
+            const auto planned = PlanTerrainStraightRamp(grid_, point, brush_.straightAlgorithm);
             if (!planned.Succeeded() || !planned.value)
                 Reject(planned.diagnostics.empty() ? "TERRAIN_STRAIGHT_RAMP_STEP" : planned.diagnostics.front().code,
                     planned.diagnostics.empty() ? "无法规划一级直坡。" : planned.diagnostics.front().message);
@@ -594,46 +595,10 @@ private:
         if (high.CliffLevel() > rules_.maximumCliffLevel)
             reject("LEVEL", "坡道层级超过本次实际Terrain.MaxHeight规则。");
         auto blocks = NewBlocks();
-        // 5A8FD0：仅对实际R位变化点提交并按x外/y内Gather。
-        for (const auto index : selectedIndices) {
-            const auto x = index % width_, y = index / width_; auto next = Read(x, y);
-            if (next.IsRamp() == *brush_.cornerRamp) continue;
-            next.textureAndFlagsRaw = std::uint8_t(*brush_.cornerRamp
-                ? next.textureAndFlagsRaw | 0x10 : next.textureAndFlagsRaw & ~0x10);
-            Commit(x, y, next); Gather(blocks, x, y);
-        }
-        const bool changedRamp = !blocks.entries.empty();
-        // 无R位净变化仍须验收同一完整接受域，不能借no-op绕过邻坡/水/模型拒绝。
-        // 这些块仅供只读检查，不触发原版仅对实际变化块执行的荒芜结束器。
-        if (!changedRamp) for (const auto index : selectedIndices) Gather(blocks, index % width_, index / width_);
+        const bool connected = brush_.straightRamp && brush_.straightAlgorithm == TerrainStraightRampAlgorithm::Connected;
         const auto selected = [&](std::uint32_t x, std::uint32_t y) {
             return std::find(selectedIndices.begin(), selectedIndices.end(), std::uint32_t(Index(x, y))) != selectedIndices.end();
         };
-        // 接受域明确限完整dirty block及分类halo均为同一一级象限；任何
-        // 写后失败只丢弃owned候选，不修改来源或会话，不清水/删special/衰减地高。
-        EachBlock(blocks, [&](auto x, auto y) {
-            if (x < 2 || y < 2 || x + 2 >= width_ || y + 2 >= height_)
-                reject("NEIGHBORHOOD", "坡道实际脏块和分类halo必须完整在地图内。");
-            for (int ox = -2; ox <= 2; ++ox) for (int oy = -2; oy <= 2; ++oy) {
-                const auto nx = std::uint32_t(int(x) + ox), ny = std::uint32_t(int(y) + oy);
-                const auto& vertex = Read(nx, ny);
-                const int sx = (int(nx) - int(plan.highX)) * plan.directionX;
-                const int sy = (int(ny) - int(plan.highY)) * plan.directionY;
-                if ((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly && vertex.HasWater())
-                    || vertex.IsBoundary() || vertex.IsMapEdge()
-                    || vertex.groundHeightRaw != high.groundHeightRaw
-                    || vertex.CliffTextureIndex() != high.CliffTextureIndex()
-                    || vertex.CliffLevel() != high.CliffLevel() - ((sx > 0 || sy > 0) ? 1 : 0)
-                    || vertex.IsRamp() != (selected(nx, ny) && *brush_.cornerRamp))
-                    reject("DOMAIN", "坡道实际脏块及halo需等地高、同悬崖材质的一级台阶，不能相交其它旧坡道或旧算法不支持的水。");
-            }
-        });
-        for (const auto& shape : shapes_) {
-            Work();
-            if (shape.hasFootprint && !result_.processed.Empty() && shape.x0 < result_.processed.x1
-                && shape.x1 > result_.processed.x0 && shape.y0 < result_.processed.y1 && shape.y1 > result_.processed.y0)
-                reject("SPECIAL", "坡道实际处理域与特殊地形模型相交，当前不授予删除或改写资格。");
-        }
         constexpr std::array<std::string_view, 24> patterns{
             "HRAA","RHAA","AARH","AAHR","AHRA","ARHA","HAAR","RAAH",
             "HRAB","RHBA","BARH","ABHR","BHRA","ARHB","HBAR","RABH",
@@ -654,12 +619,79 @@ private:
         const auto matches = [&](const auto& corners) {
             return std::find(patterns.begin(), patterns.end(), std::string_view(corners.data(), corners.size())) != patterns.end();
         };
-        // 5A8F10：必须由live试写候选重新分类，不缓存编辑前标签。
-        eachCell([&](auto x, auto y) {
-            const auto corners = classifyCell(x, y); const auto sum = weight(corners);
-            if (sum && sum <= 1 && !matches(corners))
-                reject("INVALID", "原版坡道live地格合法性检查未通过，整笔未修改。");
-        });
+        const auto checkLiveCells = [&](bool before) {
+            // 5A8F10 / 5A8650：每次都从当前候选取完整R/S分类，不重用before标签。
+            eachCell([&](auto x, auto y) {
+                const auto corners = classifyCell(x, y); const auto sum = weight(corners);
+                if (sum && sum <= 1 && !matches(corners))
+                    reject(before ? "BEFORE_INVALID" : "INVALID", "原版坡道live地格合法性检查未通过，整笔未修改。");
+            });
+        };
+        const auto checkDomain = [&](bool before) {
+            // 原独立模式仍要求halo内只有本次三/九点。连接模式接受同纯直台阶的
+            // 完整三点条带；检查before和after，不以目标点合法替代旧邻坡的完整性。
+            EachBlock(blocks, [&](auto x, auto y) {
+                if (x < 2 || y < 2 || x + 2 >= width_ || y + 2 >= height_)
+                    reject("NEIGHBORHOOD", "坡道实际脏块和分类halo必须完整在地图内。");
+                for (int ox = -2; ox <= 2; ++ox) for (int oy = -2; oy <= 2; ++oy) {
+                    const auto nx = std::uint32_t(int(x) + ox), ny = std::uint32_t(int(y) + oy);
+                    const auto& vertex = Read(nx, ny);
+                    const int sx = (int(nx) - int(plan.highX)) * plan.directionX;
+                    const int sy = (int(ny) - int(plan.highY)) * plan.directionY;
+                    if ((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly && vertex.HasWater())
+                        || vertex.IsBoundary() || vertex.IsMapEdge()
+                        || vertex.groundHeightRaw != high.groundHeightRaw
+                        || vertex.CliffTextureIndex() != high.CliffTextureIndex()
+                        || vertex.CliffLevel() != high.CliffLevel() - ((sx > 0 || sy > 0) ? 1 : 0))
+                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、同悬崖材质的一级台阶，不能相交边界、其它方向或旧算法不支持的水。");
+                    if (!connected) {
+                        if (vertex.IsRamp() != (selected(nx, ny) && *brush_.cornerRamp))
+                            reject("DOMAIN", "独立坡道的实际脏块及halo不能相交其它旧坡道。");
+                        continue;
+                    }
+                    if (!before && selected(nx, ny) && vertex.IsRamp() != *brush_.cornerRamp)
+                        reject("REQUEST", "原版补角闭包未保留请求的完整目标条带，整笔未修改。");
+                    if (!vertex.IsRamp()) continue;
+                    const int normal = sx + sy;
+                    if (normal < 0 || normal > 2)
+                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "连接直坡的旧R位越出同一条三点法向条带。");
+                    const int tangent = -(int(nx) - int(plan.highX)) * plan.directionY
+                        + (int(ny) - int(plan.highY)) * plan.directionX;
+                    for (int step = 0; step < 3; ++step) {
+                        const int rx = int(plan.highX) + step * plan.directionX - tangent * plan.directionY;
+                        const int ry = int(plan.highY) + step * plan.directionY + tangent * plan.directionX;
+                        if (!Inside(rx, ry) || !Read(std::uint32_t(rx), std::uint32_t(ry)).IsRamp())
+                            reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "连接直坡的每条相邻旧坡道必须有完整三点R位。");
+                    }
+                }
+            });
+        };
+        if (connected) {
+            // 收集本次目标的完整候选域；无R净差也验证相同before/after合同。
+            for (const auto index : selectedIndices) Gather(blocks, index % width_, index / width_);
+            checkDomain(true); checkLiveCells(true);
+        }
+        bool changedRamp = false;
+        // 5A8FD0：仅对实际R位变化点提交并按x外/y内Gather。
+        for (const auto index : selectedIndices) {
+            const auto x = index % width_, y = index / width_; auto next = Read(x, y);
+            if (next.IsRamp() == *brush_.cornerRamp) continue;
+            next.textureAndFlagsRaw = std::uint8_t(*brush_.cornerRamp
+                ? next.textureAndFlagsRaw | 0x10 : next.textureAndFlagsRaw & ~0x10);
+            Commit(x, y, next); changedRamp = true;
+            if (!connected) Gather(blocks, x, y);
+        }
+        // 无R位净变化仍须验收同一完整接受域，不能借no-op绕过邻坡/水/模型拒绝。
+        // 这些块仅供只读检查，不触发原版仅对实际变化块执行的荒芜结束器。
+        if (!changedRamp && !connected) for (const auto index : selectedIndices) Gather(blocks, index % width_, index / width_);
+        checkDomain(false);
+        for (const auto& shape : shapes_) {
+            Work();
+            if (shape.hasFootprint && !result_.processed.Empty() && shape.x0 < result_.processed.x1
+                && shape.x1 > result_.processed.x0 && shape.y0 < result_.processed.y1 && shape.y1 > result_.processed.y0)
+                reject("SPECIAL", "坡道实际处理域与特殊地形模型相交，当前不授予删除或改写资格。");
+        }
+        checkLiveCells(false);
         // 5A8D10先完整扫描/去重，后统一置R；只接受闭包不越本次三/九个选点。
         std::array<std::uint32_t, 9> additions{}; std::size_t count = 0;
         eachCell([&](auto x, auto y) {
@@ -677,6 +709,7 @@ private:
             const auto x = additions[i] % width_, y = additions[i] / width_; auto next = Read(x, y);
             next.textureAndFlagsRaw |= 0x10; Commit(x, y, next);
         }
+        if (connected) { checkDomain(false); checkLiveCells(false); }
         if (changedRamp) CleanBlight(blocks); // 原ramp荒芜结束器；不执行普通cliff结束器。
     }
 };
@@ -941,16 +974,17 @@ Result<TerrainWaterStrokeCandidate> PrepareTerrainCornerRampStroke(const Terrain
 
 Result<TerrainWaterStrokeCandidate> PrepareTerrainStraightRampStroke(const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules,
     const TerrainBrush& brush, std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
-    std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits) {
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes, const TerrainWaterBrushLimits& limits,
+    TerrainStraightRampAlgorithm algorithm) {
     if (!IsCanonicalTerrainStraightRampBrush(brush) || points.size() != 1)
         return Result<TerrainWaterStrokeCandidate>::Failure(std::string(kSubsystem), "TERRAIN_STRAIGHT_RAMP_BRUSH",
             "一级直坡只支持单个canonical落点及创建/移除选项，不能组合其它笔刷字段。");
-    const auto plan = PlanTerrainStraightRamp(source, points.front());
+    const auto plan = PlanTerrainStraightRamp(source, points.front(), algorithm);
     if (!plan.Succeeded() || !plan.value) return {{}, plan.diagnostics};
     const auto& high = source.vertices[std::size_t(plan.value->highY) * source.header.width + plan.value->highX];
     return PrepareStructuralStroke(source, rules, {TerrainBrushShape::Circle, 1, high.CliffTextureIndex(), 0,
         {high.groundHeightRaw, 0, high.CliffLevel(), false}, {}, 0, TerrainWaterAlgorithm::NativeRamps,
-        brush.value, TerrainCornerRampAlgorithm::WetTerrain, true}, points, doodads, specialShapes, limits);
+        brush.value, TerrainCornerRampAlgorithm::WetTerrain, true, algorithm}, points, doodads, specialShapes, limits);
 }
 
 Result<TerrainWaterBrushResult> ApplyTerrainWaterStroke(TerrainGridSnapshot& terrain, const TerrainWaterLoadedRules& rules,

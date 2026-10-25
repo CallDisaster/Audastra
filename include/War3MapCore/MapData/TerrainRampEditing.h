@@ -26,12 +26,16 @@ struct TerrainRampPlan {
 [[nodiscard]] std::optional<TerrainStrokePoint> SnapTerrainStraightRampPoint(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
 [[nodiscard]] bool IsCanonicalTerrainStraightRampBrush(const TerrainBrush& brush) noexcept;
+// Connected仅扩展同一级纯直台阶完整三点条带的相邻形态；真实dirty域和
+// 原版live合法性/补角仍由owned stroke复核，preview本身不授予编辑资格。
 [[nodiscard]] Result<TerrainRampPlan> PlanTerrainStraightRamp(
-    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
+    const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
+    TerrainStraightRampAlgorithm algorithm = TerrainStraightRampAlgorithm::Independent);
 [[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainStraightRampStroke(
     const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainBrush& brush,
     std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
-    std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {});
+    std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {},
+    TerrainStraightRampAlgorithm algorithm = TerrainStraightRampAlgorithm::Independent);
 
 struct TerrainCornerRampPlan {
     // x外/y内，从高端向两个低端方向各延伸两格。

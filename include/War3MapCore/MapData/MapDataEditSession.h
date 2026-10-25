@@ -111,6 +111,7 @@ public:
         std::string waterRulesSha256_;
         std::optional<bool> cliffEnforceWaterLimits_;
         TerrainCornerRampAlgorithm cornerRampAlgorithm_ = TerrainCornerRampAlgorithm::DryOnly;
+        TerrainStraightRampAlgorithm straightRampAlgorithm_ = TerrainStraightRampAlgorithm::Independent;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
         std::vector<TerrainStrokePoint> points_;
@@ -235,7 +236,8 @@ public:
         TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::WetTerrain) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(const TerrainPathingResources& resources,
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points, bool followDoodads = false,
-        const TerrainWaterBrushLimits& limits = {}) const;
+        const TerrainWaterBrushLimits& limits = {},
+        TerrainStraightRampAlgorithm algorithm = TerrainStraightRampAlgorithm::Independent) const;
     [[nodiscard]] Result<TerrainStrokeResult> ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     // 输入实际native资源owner；不能用任意W3I覆写或自报规则授予范围保存资格。
@@ -362,7 +364,8 @@ private:
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStructuralEdit(const TerrainPathingResources& resources,
         const TerrainWaterBrush* water, const TerrainBrush* cliff, std::span<const TerrainStrokePoint> points,
         bool followDoodads, const TerrainWaterBrushLimits& limits,
-        TerrainCornerRampAlgorithm cornerAlgorithm = TerrainCornerRampAlgorithm::DryOnly) const;
+        TerrainCornerRampAlgorithm cornerAlgorithm = TerrainCornerRampAlgorithm::DryOnly,
+        TerrainStraightRampAlgorithm straightAlgorithm = TerrainStraightRampAlgorithm::Independent) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PreparePathingRestrictionEdit(const TerrainBrush& brush,
         std::span<const TerrainStrokePoint> points, bool followDoodads, bool inspectSaveGate) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCandidate(

@@ -183,7 +183,10 @@ bool IsCanonicalTerrainStraightRampBrush(const TerrainBrush& brush) noexcept {
     return IsCanonicalRampBrush(brush, TerrainBrushKind::StraightRamp);
 }
 
-Result<TerrainRampPlan> PlanTerrainStraightRamp(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point) {
+Result<TerrainRampPlan> PlanTerrainStraightRamp(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
+    TerrainStraightRampAlgorithm algorithm) {
+    if (algorithm != TerrainStraightRampAlgorithm::Independent && algorithm != TerrainStraightRampAlgorithm::Connected)
+        return Rejected("TERRAIN_STRAIGHT_RAMP_ALGORITHM", "直坡算法版本未知。");
     if (!Consistent(terrain) || terrain.header.version != 11 || terrain.header.width > 2049 || terrain.header.height > 2049)
         return Rejected("TERRAIN_STRAIGHT_RAMP_LAYOUT", "原版直坡需要完整的经典W3E v11网格。");
     for (std::size_t axis = 0; axis < 2; ++axis) {

@@ -52,6 +52,9 @@ enum class TerrainBrushShape { Circle, Square };
 // 旧FTJ4–7固定为干地算法；新命令显式记录湿地形算法，不能升级旧历史的接受域。
 enum class TerrainCornerRampAlgorithm : std::uint8_t { DryOnly = 1, WetTerrain = 2 };
 
+// FTJB 固定独立直坡；连接模式须由新意图显式选择，不能扩大旧历史的接受域。
+enum class TerrainStraightRampAlgorithm : std::uint8_t { Independent = 1, Connected = 2 };
+
 // 在拖动开始时由原始地形快照采样；预览与提交复用同一锚点。
 // 未提供时，兼容路径仍从笔划中第一个落图点采样。
 struct TerrainStrokeAnchor {
