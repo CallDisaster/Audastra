@@ -581,7 +581,7 @@ target_link_libraries(war3-map-object-field-tests PRIVATE War3MapEditor::QtProje
 # 工程层不创建主窗口，验证多工程隔离及失败快照不改变保存状态。
 qt_add_executable(war3-map-editor-project-tests EditorProjectTests.cpp TerrainCliffPaletteAppendProjectCases.h
     TerrainStraightRampProjectCases.h TerrainConnectedRampProjectCases.h TerrainDualStagePathingProjectCases.h
-    TerrainSavedHistoryProjectCases.h ../TerrainBlockFixtures.h
+    TerrainSavedHistoryProjectCases.h TerrainInnerCornerRampProjectCases.h ../TerrainInnerCornerRampFixtures.h ../TerrainBlockFixtures.h
     ../TerrainStraightRampFixtures.h ../TerrainConnectedRampFixtures.h)
 qt_add_executable(war3-map-lua-scripts-tests LuaScriptsTests.cpp)
 target_link_libraries(war3-map-lua-scripts-tests PRIVATE War3MapEditor::QtModuleTriggers War3MapEditor::QtModuleAssets War3MapEditor::QtProject War3MapEditor::QtUiKit Qt6::Test)
@@ -615,7 +615,7 @@ set_tests_properties(qt-editor-project PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA
     ATTACHED_FILES_ON_FAIL "${editor_project_log}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-foreach(editor_project_group IN ITEMS native-pathing native-objects derived terrain-units terrain-palette terrain-doodads terrain-static-inputs terrain-history)
+foreach(editor_project_group IN ITEMS native-pathing native-objects derived terrain-units terrain-palette terrain-doodads terrain-static-inputs terrain-history terrain-inner-corner)
     set(editor_project_group_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-${editor_project_group}-$<CONFIG>.qtest.txt")
     add_test(NAME qt-editor-project-${editor_project_group} COMMAND war3-map-editor-project-tests
         --case-group=${editor_project_group} -o -,txt -o "${editor_project_group_log},txt")

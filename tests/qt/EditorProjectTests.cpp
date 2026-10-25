@@ -996,6 +996,8 @@ private slots:
     void StartLocationsDescriptionsProjectColdRestore();
     void CornerRampProjectColdRestoreAndNativeSave_data();
     void CornerRampProjectColdRestoreAndNativeSave();
+    void InnerCornerRampProjectColdRestoreAndNativeSave_data();
+    void InnerCornerRampProjectColdRestoreAndNativeSave();
     void StraightRampProjectColdRestoreAndNativeSave_data();
     void StraightRampProjectColdRestoreAndNativeSave();
     void ConnectedRampProjectColdRestoreAndNativeSave_data();
@@ -1122,6 +1124,7 @@ private:
 #include "TerrainConnectedRampProjectCases.h"
 #include "TerrainDualStagePathingProjectCases.h"
 #include "TerrainSavedHistoryProjectCases.h"
+#include "TerrainInnerCornerRampProjectCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
     QTemporaryDir root; QVERIFY(root.isValid());
@@ -5059,7 +5062,8 @@ void EditorProjectTests::CornerRampProjectColdRestoreAndNativeSave() {
     const auto frozen = project.mapEdits_->FreezeForSave(TerrainCornerRampFixtures::kBudget);
     QVERIFY(frozen.Succeeded());
     MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::CornerRamp; brush.value = true;
-    const auto prepared = (*frozen.value)->PrepareTerrainCornerRampEdit(*rules.value, brush, std::span(&fixture.point, 1), true);
+    const auto prepared = (*frozen.value)->PrepareTerrainCornerRampEdit(*rules.value, brush,
+        std::span(&fixture.point, 1), true, {}, MapData::TerrainCornerRampAlgorithm::WetTerrain);
     QVERIFY2(prepared.Succeeded(), ReadDiagnosticText(prepared).c_str());
     QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(*prepared.value).Succeeded());
     QVERIFY(project.ObserveMapDataEdit("拐角坡道工程夹具"));
@@ -5397,6 +5401,7 @@ int main(int argc, char** argv) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
+            if (name.startsWith("InnerCornerRamp")) return QStringLiteral("terrain-inner-corner");
             if (name.startsWith("SavedTerrainHistory")) return QStringLiteral("terrain-history");
             if (name.startsWith("DualStageStaticPathingWithoutTerrainNet")
                 || name.startsWith("DualStageUnrelatedEditsPreserveUnresolvedPathing"))
