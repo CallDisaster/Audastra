@@ -506,7 +506,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         const auto* shadow = edits.TerrainHistoryShadow();
         if (!shadow) return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_RESIZE_SHADOW_SOURCE", "扩裁缺少同一typed阴影状态。");
         const auto& saved = edits.savedResizeState_;
-        if (!saved || shadow->present != saved->shadow.present
+        if (!saved || saved->shadow.name != "war3map.shd"
             || (saved->shadow.present && (!plan.members_[2].sourceSha256
                 || plan.members_[2].sourceSha256 != Take(Sha256(saved->shadow.bytes))))
             || (!saved->shadow.present && plan.members_[2].sourceState != TerrainSaveSourceState::Missing))
@@ -518,7 +518,18 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
                 (edits.terrain_->header.width - 1) * 4, (edits.terrain_->header.height - 1) * 4);
             if (!parsed.Succeeded()) return {{}, parsed.diagnostics};
             AddBytes(shadow->bytes.size(), total, limits);
-            setOutput(2, shadow->bytes, "按实际世界格迁移SHD，旧非零按原版load/write归一为FF；新增区域为零，未烘焙阴影。");
+            auto written = shadow->bytes;
+            // 热Undo保留旧磁盘原字；真正写盘仍遵守原版load/write的00/FF规则。
+            for (auto& value : written) if (value != std::byte{0}) value = std::byte{0xff};
+            setOutput(2, std::move(written), "按实际世界格迁移SHD，旧非零按原版load/write归一为FF；新增区域为零，未烘焙阴影。");
+        } else if (saved->shadow.present) {
+            // 来源身份与目标存在性分开核对。Undo可回到原图明确缺席的SHD，
+            // 不能因后来Bake创建过该成员，就把合法Undo误判成来源变化。
+            auto& member = plan.members_[2];
+            member.outputBytes.reset(); member.outputSha256.reset();
+            member.action = TerrainSaveMemberAction::WriteEdited;
+            member.reasonCode = "TERRAIN_SAVE_REMOVE_RESIZE_SHADOW";
+            member.reason = "按本会话typed扩裁撤销恢复SHD明确缺席；已核物理旧SHD原字，保存后独立确认成员不存在。";
         }
     }
     if (plan.RequiresNativeVerification()) {
@@ -749,15 +760,23 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
     if (!saveGate_.Succeeded()) return saveGate_;
     for (const auto& member : members_) {
         const auto key = Canonical(member.name);
-        for (const auto& removed : removals) {
-            if (Canonical(removed) == key)
-                return Reject("TERRAIN_SAVE_PLAN_REMOVAL", "地形保存计划不允许删除成员：" + member.name);
-        }
+        std::size_t removedCount = 0;
+        for (const auto& removed : removals) if (Canonical(removed) == key) ++removedCount;
+        const bool finalRemoval = member.action == TerrainSaveMemberAction::WriteEdited && !member.outputSha256;
+        if (removedCount && !finalRemoval)
+            return Reject("TERRAIN_SAVE_PLAN_REMOVAL", "地形保存计划不允许删除成员：" + member.name);
         const MemberReplacement* found = nullptr;
         for (const auto& replacement : replacements) {
             if (Canonical(replacement.name) != key) continue;
             if (found) return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "地形保存计划成员被重复覆盖：" + member.name);
             found = &replacement;
+        }
+        if (finalRemoval) {
+            if (removedCount > 1 || (removedCount && found))
+                return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "地形保存计划的删除与覆盖冲突：" + member.name);
+            if (removedCount != 1 || found)
+                return Reject("TERRAIN_SAVE_PLAN_OUTPUT_MISSING", "保存任务缺少计划中的地形删除：" + member.name);
+            continue;
         }
         if (!found) {
             if (member.action != TerrainSaveMemberAction::Preserve)

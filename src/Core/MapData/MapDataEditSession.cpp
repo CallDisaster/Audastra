@@ -764,6 +764,12 @@ std::vector<std::string> MapDataEditSession::Removals() const {
     std::vector<std::string> names;
     for (std::size_t i = 0; i < current_.size(); ++i)
         if (!current_[i] && original_[i]) names.push_back(memberNames_[i]);
+    // 显式Bake可让保存站新增SHD；撤回到真实旧absence时必须删除该派生成员。
+    // 只消费typed状态与实际保存基线，TRD1或普通资源删除不取得此资格。
+    const auto* shadow = resizeState_ ? TerrainHistoryShadow() : nullptr;
+    if (shadow && shadow->name == "war3map.shd" && !shadow->present
+        && savedResizeState_ && savedResizeState_->shadow.present)
+        names.push_back("war3map.shd");
     return names;
 }
 

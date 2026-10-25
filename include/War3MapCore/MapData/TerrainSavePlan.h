@@ -23,6 +23,7 @@ struct TerrainSaveMemberPlan {
     TerrainSaveSourceState sourceState = TerrainSaveSourceState::Unknown;
     std::optional<std::size_t> sourceBytes, outputBytes;
     std::optional<std::string> sourceSha256, outputSha256;
+    // WriteEdited且output身份为空表示本计划已核准的明确删除，不等于Preserve。
     TerrainSaveMemberAction action = TerrainSaveMemberAction::Preserve;
     std::string reasonCode, reason;
 };

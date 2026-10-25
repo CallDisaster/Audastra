@@ -211,11 +211,15 @@ Status PrepareTerrainShadowBake(MapSaveTask& task, const std::filesystem::path& 
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_SAVE_STAGE", "阴影只能在同次最终保存阶段计算一次。");
     if (task.sourceSha256 != task.archive->SourceSha256())
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_SOURCE_STALE", "阴影任务与冻结归档来源不同。");
+    const auto sameResizePlan = [&] {
+        return edits && edits->HasTerrainResizeChanges() && plan && plan->SaveGate().Succeeded()
+            && plan->SourceSha256() == task.sourceSha256
+            && plan->SessionIdentity() == edits->SessionIdentity() && plan->Revision() == edits->Revision()
+            && plan->TerrainSourceRevision() == edits->TerrainSourceRevision();
+    };
     std::optional<std::size_t> migratedShadow;
     for (std::size_t i = 0; i < task.replacements.size(); ++i) if (IsShadow(task.replacements[i].name)) {
-        if (migratedShadow || !edits || !edits->HasTerrainResizeChanges() || !plan || !plan->SaveGate().Succeeded()
-            || plan->SessionIdentity() != edits->SessionIdentity() || plan->Revision() != edits->Revision()
-            || plan->TerrainSourceRevision() != edits->TerrainSourceRevision())
+        if (migratedShadow || !sameResizePlan())
             return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "显式阴影与非同次typed扩裁的SHD写入冲突。");
         const auto& expected = plan->Members()[2];
         const auto sha = Sha256(task.replacements[i].data);
@@ -226,8 +230,18 @@ Status PrepareTerrainShadowBake(MapSaveTask& task, const std::filesystem::path& 
             return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "已有SHD不是当前保存计划逐字核过的扩裁迁移输出。");
         migratedShadow = i;
     }
-    if (std::any_of(task.removals.begin(), task.removals.end(), IsShadow))
-        return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "显式计算阴影不能和手动写入或删除SHD混用。");
+    std::optional<std::size_t> removedShadow;
+    for (std::size_t i = 0; i < task.removals.size(); ++i) if (IsShadow(task.removals[i])) {
+        if (removedShadow || migratedShadow || !sameResizePlan())
+            return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "显式计算阴影不能和手动写入或删除SHD混用。");
+        const auto& expected = plan->Members()[2];
+        if (expected.name != "war3map.shd" || expected.action != MapData::TerrainSaveMemberAction::WriteEdited
+            || expected.reasonCode != "TERRAIN_SAVE_REMOVE_RESIZE_SHADOW"
+            || expected.sourceState != MapData::TerrainSaveSourceState::Present
+            || expected.outputBytes || expected.outputSha256)
+            return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "已有SHD删除不是当前保存计划核准的typed撤销结果。");
+        removedShadow = i;
+    }
     auto captured = TerrainShadowBake::Capture(*task.archive, gameRoot, task.replacements, task.removals);
     if (!captured.Succeeded() || !captured.value) return {std::move(captured.diagnostics)};
     auto nextPlan = plan;
@@ -241,6 +255,9 @@ Status PrepareTerrainShadowBake(MapSaveTask& task, const std::filesystem::path& 
     MemberReplacement output{"war3map.shd", (*captured.value)->Bytes()};
     if (migratedShadow) task.replacements[*migratedShadow] = std::move(output);
     else task.replacements.push_back(std::move(output));
+    // 撤销恢复absence后仍可显式重算。只有完整捕获、admission和输出准备成功，
+    // 才用此次真实生成的present取代已核准的唯一typed删除；失败保留原任务。
+    if (removedShadow) task.removals.erase(task.removals.begin() + *removedShadow);
     task.terrainShadow = std::move(*captured.value); plan = std::move(nextPlan);
     return Status::Ok();
 }
