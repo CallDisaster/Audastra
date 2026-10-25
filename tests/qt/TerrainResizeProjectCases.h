@@ -32,7 +32,7 @@ void EditorProjectTests::ResizeProjectColdRestoreAndNativeSave() {
     const auto expectedShadow = R::ShadowLiteral(-32, -32, 32, 32, true);
     const auto originalShadow = R::ShadowLiteral();
     const auto shadowDifference = [](const R::Bytes& actual, const R::Bytes& expected) {
-        const auto common = std::min(actual.size(), expected.size());
+        const auto common = (std::min)(actual.size(), expected.size());
         std::size_t first = 0;
         while (first < common && actual[first] == expected[first]) ++first;
         auto text = QStringLiteral("SHD 字节不一致：实际长度=%1，预期长度=%2，首差异=%3")
