@@ -558,6 +558,7 @@ void DescriptiveSettingsSaveAlongsideTerrainWithoutChangingThePlayableArea() {
         settings.author = "Fixture author";
         settings.description = "A longer description accompanying the same terrain save";
         settings.recommendedPlayers = "2-4";
+        settings.environment.waterColor.red = 40;
         Check(f.edits->EditSettings(settings));
         if (rebuild) {
             TerrainBrush brush; brush.kind = TerrainBrushKind::Texture; brush.radius = 0; brush.groundTexture = "Tg02";
@@ -625,7 +626,7 @@ void DescriptiveSettingsSaveAlongsideTerrainWithoutChangingThePlayableArea() {
         change(altered);
         const std::optional<Bytes> after{Take(altered.Serialize())};
         Require(!ValidateTerrainSettingsPathingChange(before, after).Succeeded(),
-            "mixed terrain must reject every non-description settings change");
+            "mixed terrain rejects settings outside the explicitly supported independent fields");
     };
     refused([](auto& value) { ++value.saves; });
     refused([](auto& value) { ++value.editorVersion; });
@@ -634,7 +635,10 @@ void DescriptiveSettingsSaveAlongsideTerrainWithoutChangingThePlayableArea() {
     refused([](auto& value) { ++value.playableWidth; });
     refused([](auto& value) { value.flags ^= 0x400; });
     refused([](auto& value) { value.tileset = 'A'; });
-    refused([](auto& value) { value.environment.waterColor.red = 40; });
+    auto waterColor = sourceSettings; waterColor.environment.waterColor.red = 40;
+    Require(ValidateTerrainSettingsPathingChange(before, Take(waterColor.Serialize())).Succeeded(),
+        "known water color composes with terrain without changing native pathing");
+    refused([](auto& value) { value.loadingScreen.path = "unrecorded.mdx"; });
     refused([](auto& value) { value.players.emplace_back(); });
     refused([](auto& value) { value.custom->randomUnits.emplace_back(); });
     auto malformed = *before; malformed.push_back(std::byte{0x7f});
