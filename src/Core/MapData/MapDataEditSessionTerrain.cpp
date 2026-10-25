@@ -910,6 +910,19 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrainTextureSlot(TerrainTe
 }
 
 bool MapDataEditSession::TerrainMatches(const Command& command, bool forward) const {
+    if (command.fullTerrainAfter) {
+        const auto expected = forward ? command.fullTerrainBefore : command.fullTerrainAfter;
+        if (!terrain_ || !expected || !SameHeader(terrain_->header, expected->header)
+            || terrain_->vertices.size() != expected->vertices.size()) return false;
+        for (std::size_t i = 0; i < terrain_->vertices.size(); ++i) {
+            const auto& a = terrain_->vertices[i]; const auto& b = expected->vertices[i];
+            if (a.groundHeightRaw != b.groundHeightRaw || a.waterHeightAndFlagsRaw != b.waterHeightAndFlagsRaw
+                || a.textureAndFlagsRaw != b.textureAndFlagsRaw || a.variationRaw != b.variationRaw
+                || a.cliffAndLayerRaw != b.cliffAndLayerRaw || a.extendedTextureLayout != b.extendedTextureLayout
+                || a.textureFlagsExtensionRaw != b.textureFlagsExtensionRaw) return false;
+        }
+        return true;
+    }
     if (command.terrain.empty() && !command.headerAfter) return true;
     if (!terrain_) return false;
     if (command.headerAfter && !SameHeader(terrain_->header, forward ? *command.headerBefore : *command.headerAfter)) return false;
@@ -985,6 +998,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     const auto reject = [](const char* reason) {
         return Status::Failure("MapData.Edit", "MAP_TERRAIN_PATHING_UNVERIFIED", reason);
     };
+    if (resizeDraftState_) return reject("扩裁raw inspection不持有typed来源资格；必须从实际来源完整重放后才能保存。");
     // 即使可信范围已经保存且W3E/WPM无净差，也不能让随后raw设置或草稿覆写
     // 跳过密封geometry/MapEdge复核。
     if (boundsState_) {
@@ -998,9 +1012,12 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
     if (!pathingProtected_ || !originalPathingRestrictions_ || !pathingRestrictions_)
         return reject("通行修改缺少受保护来源和保存前后的独立意图，拒绝正式地图保存");
-    const auto layers = VerifyPathingRestrictionLayers(terrainOriginal_->header, *pathingOriginal_, *pathing,
-        *pathingProtected_, *originalPathingRestrictions_, restrictions ? *restrictions : *pathingRestrictions_);
-    if (!layers.Succeeded()) return layers;
+    const bool resize = resizeState_ && (!SameHeader(terrainOriginal_->header, terrain->header) || HasTerrainResizeChanges());
+    if (!resize) {
+        const auto layers = VerifyPathingRestrictionLayers(terrainOriginal_->header, *pathingOriginal_, *pathing,
+            *pathingProtected_, *originalPathingRestrictions_, restrictions ? *restrictions : *pathingRestrictions_);
+        if (!layers.Succeeded()) return layers;
+    }
     const auto checkPlacements = [&]() -> Status {
         const auto settings = VerifyTerrainSettingsForSave();
         if (!settings.Succeeded()) return settings;
@@ -1032,6 +1049,13 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
                     : VerifyUnitPlacementElevationOnly(before, after);
             });
     };
+    if (resize) {
+        if (!nativeRebuild || terrain != terrain_ || pathing != pathing_
+            || (restrictions && *restrictions != *pathingRestrictions_))
+            return reject("外矩形扩裁必须由同一会话的完整原版G0/G1保存链重建，不能保留或替换任意WPM。");
+        const auto shape = VerifyTerrainResizeForSave();
+        return shape.Succeeded() ? checkPlacements() : shape;
+    }
     if (specialDoodads_ != savedSpecialDoodads_ && !nativeRebuild)
         return reject("可信水刷改变了特殊模型集合，必须分别重算旧/新DOO的完整通行贡献。");
     if (HasTerrainBoundsChanges() && !nativeRebuild)

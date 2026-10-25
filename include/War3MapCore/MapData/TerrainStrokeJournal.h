@@ -53,6 +53,9 @@ struct TerrainJournalStroke {
 struct TerrainJournalHistory {
     std::vector<ArchiveExactMember> baselineMembers;
     std::vector<std::byte> baselinePathingLayers;
+    // FTJH才有的固定旧SHD envelope；明确absence也必须携带，旧FTJE解释不变。
+    // 仅在typed栈含resize时存在；它是历史重放输入，不是来源授权。
+    std::optional<ArchiveExactMember> baselineShadow;
     std::uint32_t savedIndex = 0, currentIndex = 0;
     // UI只冻结真实旧epoch别名；后台物化后清空。此字段不能编码或从wire恢复。
     std::shared_ptr<const MapDataEditSession> frozenBaseline;

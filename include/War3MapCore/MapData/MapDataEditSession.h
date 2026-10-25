@@ -9,6 +9,7 @@
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/MapData/TerrainBoundsEditing.h"
+#include "War3MapCore/MapData/TerrainResizeEditing.h"
 
 #include <array>
 #include <cstdint>
@@ -29,6 +30,7 @@ class TerrainSavePlan;
 class TerrainPathingResources;
 class TerrainNativeUnitsProof;
 class TerrainNativeDoodadsProof;
+class TerrainResizeResources;
 
 // 仅已提交的摆放操作提供完整行谱系；空目标表示删除，未被指向的新行表示新增。
 // 不能用rawcode、创建编号或坐标猜测映射。此值在EditReceipt中只读。
@@ -48,6 +50,7 @@ class MapDataEditSession {
     struct TerrainBoundsState;
     struct TerrainStartLocationsState;
     struct TerrainHistoryState;
+    struct TerrainResizeState;
     friend Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal);
 public:
     // 仅真实会话、真实修订能产生的可选历史冻结；不持reader、wire资格或旧私有地址。
@@ -159,6 +162,27 @@ public:
         std::array<float, 8> cameraBounds_{};
         std::size_t changedEdges_ = 0, preparationBytes_ = 0, preparationWork_ = 0;
     };
+    // 独立外矩形命令；完整网格与裁去材料由同一不可伪造候选保活。
+    class PreparedTerrainResizeEdit {
+    public:
+        [[nodiscard]] bool HasChanges() const noexcept { return static_cast<bool>(command_); }
+        [[nodiscard]] const TerrainResizeIntent& Intent() const noexcept { return intent_; }
+        [[nodiscard]] const TerrainHeader& BeforeHeader() const noexcept { return before_->header; }
+        [[nodiscard]] const TerrainHeader& AfterHeader() const noexcept { return after_->header; }
+        [[nodiscard]] std::shared_ptr<const TerrainGridSnapshot> TerrainPreview() const noexcept { return after_; }
+        [[nodiscard]] std::size_t PreparationBytes() const noexcept { return preparationBytes_; }
+        [[nodiscard]] std::size_t PreparationWork() const noexcept { return preparationWork_; }
+        [[nodiscard]] std::size_t RetainedCommandBytes() const noexcept;
+    private:
+        friend class MapDataEditSession;
+        PreparedTerrainResizeEdit() = default;
+        std::shared_ptr<const Command> command_;
+        std::shared_ptr<const TerrainGridSnapshot> before_, after_;
+        std::shared_ptr<const TerrainResizeState> beforeResize_;
+        std::uint64_t sessionIdentity_ = 0, revision_ = 0, sourceRevision_ = 0;
+        TerrainResizeIntent intent_;
+        std::size_t preparationBytes_ = 0, preparationWork_ = 0;
+    };
     explicit MapDataEditSession(const MapDocument& source);
     MapDataEditSession(const MapDataEditSession&) = delete; // 会话身份与回执地址不能被复制。
     // 只冻结真实会话的保存输入；不提供可编辑副本，不从持久化字节恢复私有事务身份。
@@ -234,7 +258,7 @@ public:
         std::size_t maximumBytes, std::size_t maximumWork);
     [[nodiscard]] Status ReplayTerrainJournalStartLocations(const TerrainStartLocationsJournalEdit& edit,
         std::size_t maximumBytes, std::size_t maximumWork);
-    [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges(); }
+    [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges() || HasTerrainResizeChanges(); }
     // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
     [[nodiscard]] std::string TerrainJournalStateFingerprint() const;
     [[nodiscard]] Result<PathingRestrictionPreview> QueryPathingRestrictions(std::size_t maximumCells = 4096) const;
@@ -277,6 +301,16 @@ public:
         std::size_t maximumWork = 64u * 1024u * 1024u) const;
     [[nodiscard]] Status ApplyPreparedTerrainBoundsEdit(const PreparedTerrainBoundsEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
+    [[nodiscard]] Result<PreparedTerrainResizeEdit> PrepareTerrainResizeEdit(const TerrainResizeResources& resources,
+        const TerrainResizeIntent& intent, const TerrainResizeLimits& limits = {}) const;
+    [[nodiscard]] Status ApplyPreparedTerrainResizeEdit(const PreparedTerrainResizeEdit& plan,
+        const std::function<Status(const EditReceipt&)>& prepublish = {});
+    [[nodiscard]] bool HasTerrainResizeChanges() const noexcept;
+    // 工程raw inspection专用；只存比较材料，不从TRD1安装typed扩裁或正式保存资格。
+    [[nodiscard]] Result<std::vector<std::byte>> ExportTerrainResizeDraft() const;
+    [[nodiscard]] Status SetTerrainResizeDraft(std::span<const std::byte> terrain,
+        std::span<const std::byte> pathing, std::span<const std::byte> encodedDraft);
+    [[nodiscard]] Result<ArchiveExactMember> TerrainResizeShadowDraft() const;
     [[nodiscard]] bool HasTerrainBoundsChanges() const noexcept;
     // 只接受密封范围状态和四说明字段的组合净差，其余W3I字节仍须完全一致。
     [[nodiscard]] Status VerifyTerrainSettingsForSave() const;
@@ -326,6 +360,7 @@ private:
     friend struct detail::TerrainInspectionAccess;
     friend struct detail::MapDataFieldEditingAccess;
     friend class TerrainPathingResources;
+    friend class TerrainResizeResources;
     struct TerrainBoundsState {
         std::array<float, 8> cameraBounds{};
         std::array<std::int32_t, 4> cameraMargins{};
@@ -350,6 +385,17 @@ private:
         [[nodiscard]] bool MatchesUnits(std::span<const std::byte>) const;
         [[nodiscard]] bool MatchesPlayers(const MapSettings&) const noexcept;
         void RestorePlayers(MapSettings&) const noexcept;
+    };
+    // 不同shape的历史基线必须随typed命令保活；物理来源仍留在terrainOriginal_/pathingOriginal_。
+    // 保存后Undo不能把新尺寸SHD/WPM误用到旧尺寸，也不从raw草稿恢复此资格。
+    struct TerrainResizeState {
+        TerrainHeader header;
+        std::shared_ptr<const TerrainGridSnapshot> geometry;
+        ArchiveExactMember shadow;
+        std::shared_ptr<const std::vector<std::byte>> historyPathing;
+        std::shared_ptr<const std::vector<std::byte>> protectedPathing;
+        std::shared_ptr<const std::vector<std::byte>> savedRestrictions;
+        std::string rulesSha256;
     };
     struct MemberChange {
         MapDataKind kind;
@@ -377,6 +423,9 @@ private:
         std::optional<TerrainBoundsEditIntent> boundsIntent;
         std::string boundsRulesSha256;
         std::shared_ptr<const TerrainStartLocationsState> startsBefore, startsAfter;
+        std::shared_ptr<const TerrainGridSnapshot> fullTerrainBefore, fullTerrainAfter;
+        std::shared_ptr<const TerrainResizeState> resizeBefore, resizeAfter;
+        std::shared_ptr<const TerrainResizeState> resizeDraftBefore, resizeDraftAfter;
     };
     struct TerrainHistoryState {
         std::shared_ptr<const MapDataEditSession> baseline;
@@ -447,6 +496,9 @@ private:
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
     void Restore(const Command& command, bool forward);
+    [[nodiscard]] const std::vector<std::byte>& TerrainHistoryPathing(const TerrainResizeState* shape = nullptr) const;
+    [[nodiscard]] std::shared_ptr<const std::vector<std::byte>> TerrainHistoryProtected(const TerrainResizeState* shape = nullptr) const;
+    [[nodiscard]] Status VerifyTerrainResizeForSave() const;
     // 先准备全部新基线，再无异常交换；供已回读的通行重建输出原子提交。
     void CommitSavedBaseline(const MapDocument& saved,
         std::optional<std::vector<std::byte>> pathing,
@@ -477,6 +529,8 @@ private:
     std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialDoodads_, savedSpecialDoodads_;
     std::shared_ptr<const TerrainBoundsState> boundsState_, savedBoundsState_;
     std::shared_ptr<const TerrainStartLocationsState> startLocations_, savedStartLocations_;
+    std::shared_ptr<const TerrainResizeState> resizeState_, savedResizeState_;
+    std::shared_ptr<const TerrainResizeState> resizeDraftState_;
     std::shared_ptr<const TerrainGridSnapshot> terrainOriginal_;
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;

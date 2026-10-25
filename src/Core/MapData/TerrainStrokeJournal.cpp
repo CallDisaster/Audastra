@@ -31,11 +31,11 @@ bool Rawcode(std::string_view value) {
 }
 bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
     if ((stroke.intent.brush.kind != TerrainBrushKind::CornerRamp || stroke.intent.waterBrush
-            || stroke.intent.bounds || stroke.intent.palette || stroke.intent.blockPaste || stroke.ordinaryDoodads || stroke.frozenDoodads
+            || stroke.intent.bounds || stroke.intent.palette || stroke.intent.blockPaste || stroke.intent.resize || stroke.ordinaryDoodads || stroke.frozenDoodads
             || stroke.units || stroke.frozenUnits || stroke.startLocations || stroke.frozenStartLocations)
         && stroke.intent.cornerRampAlgorithm != TerrainCornerRampAlgorithm::DryOnly) return false;
     if ((stroke.intent.brush.kind != TerrainBrushKind::StraightRamp || stroke.intent.waterBrush
-            || stroke.intent.bounds || stroke.intent.palette || stroke.intent.blockPaste || stroke.ordinaryDoodads || stroke.frozenDoodads
+            || stroke.intent.bounds || stroke.intent.palette || stroke.intent.blockPaste || stroke.intent.resize || stroke.ordinaryDoodads || stroke.frozenDoodads
             || stroke.units || stroke.frozenUnits || stroke.startLocations || stroke.frozenStartLocations)
         && stroke.intent.straightRampAlgorithm != TerrainStraightRampAlgorithm::Independent) return false;
     if (stroke.frozenDoodads || stroke.frozenUnits || stroke.frozenStartLocations
@@ -52,6 +52,10 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
             && !stroke.cliffEnforceWaterLimits && ValidateTerrainUnitsJournalEdit(*stroke.units).Succeeded();
     const auto& intent = stroke.intent;
     const auto& brush = intent.brush;
+    if (intent.resize)
+        return Neutral(brush) && intent.points.empty() && !intent.followDoodads && !intent.waterBrush
+            && !intent.bounds && !intent.palette && !intent.blockPaste && !stroke.cliffEnforceWaterLimits
+            && Sha(stroke.rulesSha256) && ValidateTerrainResizeIntent(*intent.resize).Succeeded();
     if (intent.blockPaste)
         return Neutral(brush) && intent.points.empty() && !intent.waterBrush && !intent.bounds && !intent.palette
             && !stroke.cliffEnforceWaterLimits && Sha(stroke.rulesSha256)
@@ -238,8 +242,10 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
                 && stroke.intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected; });
         const bool blocks = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.blockPaste.has_value(); });
+        const bool resizes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.resize.has_value(); });
         // FTJE由保存站history外层占用；新内角typed正文使用FTJF，不复用旧版本。
-        const unsigned version = nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
+        const unsigned version = resizes ? 16 : nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
             : cornerRamps ? 4 : nativeWater ? 3 : nativeCliffs ? 2 : 1;
         wire.Number(0x004a5446u | ((version >= 10 ? std::uint32_t('A') + version - 10 : std::uint32_t('0') + version) << 24), 4);
         wire.Text(journal.sourceSha256);
@@ -251,7 +257,13 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
         wire.Number(journal.strokes.size(), 4);
         for (const auto& stroke : journal.strokes) {
             if (version >= 5) {
-                wire.Number(stroke.intent.blockPaste ? 6 : stroke.startLocations ? 5 : stroke.units ? 4 : stroke.ordinaryDoodads ? 3 : stroke.intent.palette ? 2 : stroke.intent.bounds ? 1 : 0, 1);
+                wire.Number(stroke.intent.resize ? 7 : stroke.intent.blockPaste ? 6 : stroke.startLocations ? 5 : stroke.units ? 4 : stroke.ordinaryDoodads ? 3 : stroke.intent.palette ? 2 : stroke.intent.bounds ? 1 : 0, 1);
+                if (stroke.intent.resize) {
+                    const auto& resize = *stroke.intent.resize; const auto& r = resize.canvas;
+                    wire.Number(resize.algorithm, 1);
+                    for (const auto value : {r.west, r.south, r.east, r.north}) wire.Number(std::bit_cast<std::uint32_t>(value), 4);
+                    wire.Text(stroke.rulesSha256); continue;
+                }
                 if (stroke.intent.blockPaste) {
                     const auto& block = *stroke.intent.blockPaste; const auto& r = block.sourceCells;
                     wire.Number(block.algorithm, 1); wire.Number(r.x0, 4); wire.Number(r.y0, 4);
@@ -329,13 +341,13 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
 Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byte> bytes) {
     if (bytes.size() > TerrainJournalMaximumBytes) return Failed<TerrainStrokeJournal>();
     if (bytes.size() >= 4 && bytes[0] == std::byte{'F'} && bytes[1] == std::byte{'T'}
-        && bytes[2] == std::byte{'J'} && bytes[3] == std::byte{'E'})
+        && bytes[2] == std::byte{'J'} && (bytes[3] == std::byte{'E'} || bytes[3] == std::byte{'H'}))
         return detail::DecodeTerrainHistoryJournal(bytes);
     try {
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto magic = reader.Number(4);
         if ((magic & 0x00ffffffu) != 0x004a5446u
-            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F'
+            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F' && (magic >> 24) != 'G'
                 && ((magic >> 24) < '1' || (magic >> 24) > '9')))
             return Failed<TerrainStrokeJournal>();
         const auto version = (magic >> 24) >= 'A' ? static_cast<unsigned>((magic >> 24) - 'A') + 10u
@@ -359,7 +371,16 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             TerrainJournalStroke stroke; auto& intent = stroke.intent; auto& brush = intent.brush;
             if (hasVariants) {
                 const auto kind = reader.Number(1);
-                if (kind > (version >= 13 ? 6u : hasStarts ? 5u : hasUnits ? 4u : hasDoodads ? 3u : hasPalette ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
+                if (kind > (version >= 16 ? 7u : version >= 13 ? 6u : hasStarts ? 5u : hasUnits ? 4u : hasDoodads ? 3u : hasPalette ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
+                if (kind == 7) {
+                    TerrainResizeIntent resize; resize.algorithm = static_cast<std::uint8_t>(reader.Number(1));
+                    resize.canvas.west = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(reader.Number(4)));
+                    resize.canvas.south = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(reader.Number(4)));
+                    resize.canvas.east = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(reader.Number(4)));
+                    resize.canvas.north = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(reader.Number(4)));
+                    intent.resize = resize; stroke.rulesSha256 = reader.Text(64);
+                    journal.strokes.push_back(std::move(stroke)); continue;
+                }
                 if (kind == 6) {
                     TerrainBlockPasteIntent block; block.algorithm = static_cast<std::uint8_t>(reader.Number(1));
                     block.sourceCells.x0 = static_cast<std::uint32_t>(reader.Number(4));
@@ -509,6 +530,9 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         if (version == 15 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp
                 && stroke.intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners; }))
+            return Failed<TerrainStrokeJournal>();
+        if (version == 16 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.resize.has_value(); }))
             return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }
