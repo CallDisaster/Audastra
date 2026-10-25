@@ -2986,7 +2986,7 @@ void EditorProjectTests::WalkableDestructableOriginalWorkerRejectsBeforeWrite_da
             add(scenario, "TERRAIN_DOODAD_FIXED_ROTATION");
         add("rotation-ambiguous", "TERRAIN_DOODAD_ANGLE_AMBIGUOUS");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
+        add("pathing-resource-drift", "TERRAIN_NATIVE_PAIR_RULE_CHANGED");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -3110,7 +3110,7 @@ void EditorProjectTests::WalkableDestructableCustomWorkerRejectsBeforeWrite_data
         add("rotation-wire-real", "TERRAIN_NATIVE_OBJECT_BRIDGE_TYPE");
         add("rotation-above-domain", "TERRAIN_DOODAD_FIXED_ROTATION");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
+        add("pathing-resource-drift", "TERRAIN_NATIVE_PAIR_RULE_CHANGED");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -3287,7 +3287,7 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
         for (const auto* state : {"flags-zero", "flags-one", "flags-three", "flags-unknown", "dead", "damaged", "life-unknown"})
             add(state, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
-        add("pathing-resource-drift", "TERRAIN_PATHING_RESOURCE_CHANGED");
+        add("pathing-resource-drift", "TERRAIN_NATIVE_PAIR_RULE_CHANGED");
         add("source-drift", "SOURCE_CHANGED");
     }
 }
@@ -3563,6 +3563,20 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     members.push_back({"UI\\WorldEditData.txt", text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
     const auto oldMinimap = text("author minimap bytes must survive unsupported generation");
     if (existing) members.push_back({"war3mapMap.blp", oldMinimap});
+    if (special && !pathingPhase && injectResource) {
+        // 无关导入必须由实际表证明不在静态依赖闭包内，不能仅凭NewIcon名字放行。
+        // special仍真实存在，原小地图的能力不足保留路径继续由本测试覆盖。
+        members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable(
+            {"destructableID", "code", "walkable", "pathTex", "fixedRot"}, {{"Dst0", "Dst0", "0", "none", "0"}})});
+        members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(
+            {"doodID", "code", "pathTex", "category", "fixedRot"}, {{"SPC1", "SPC1", "none", "S", "0"}})});
+        members.push_back({"Units/DestructableMetaData.slk", NativeDoodadQtTable(
+            {"ID", "field", "slk", "type", "repeat", "data", "index"},
+            {{"bwal", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
+        members.push_back({"Doodads/DoodadMetaData.slk", NativeDoodadQtTable(
+            {"ID", "field", "slk", "type", "repeat", "data", "index"},
+            {{"dptx", "pathTex", "DoodadData", "pathingTexture", "0", "0", "0"}})});
+    }
     if (special) {
         MapData::DoodadPlacements doodads;
         MapData::SpecialDoodadPlacement placement; placement.rawcode = "SPC1";
@@ -4114,7 +4128,7 @@ void EditorProjectTests::DeclaredMissingMinimapWorkerFailureConsumesTask_data() 
     QTest::newRow("missing-w3i") << QString("missing-w3i") << QString("TERRAIN_ASSETS_W3I_MISSING");
     QTest::newRow("present-empty") << QString("present-empty") << QString("MINIMAP_SAVE_NOT_MISSING");
     QTest::newRow("no-height") << QString("no-height") << QString("MINIMAP_SAVE_DOMAIN");
-    QTest::newRow("height-gate") << QString("height-gate") << QString("MAP_TERRAIN_PATHING_UNVERIFIED");
+    QTest::newRow("height-gate") << QString("height-gate") << QString("TERRAIN_PATHING_PROPERTY_MISSING");
 }
 
 void EditorProjectTests::DeclaredMissingMinimapWorkerFailureConsumesTask() {
@@ -4125,7 +4139,8 @@ void EditorProjectTests::DeclaredMissingMinimapWorkerFailureConsumesTask() {
     else if (mode == "present-empty") members.push_back({"war3mapMap.blp", {}});
     else if (mode == "height-gate") {
         // R2 已按原版 dry-height 不变性替代旧156 raw幅度阈值。
-        // 负例改为真实不允许的水面邻域，仍要求完整拒绝且不产生归档。
+        // 负例含水而实际Water.slk没有LSha行，在准备通行时即拒绝；不能猜水规则。
+        // 仍要求完整拒绝且不产生归档。
         members[1].data[45 + (4 * 9 + 4) * 7 + 4] |= std::byte{0x40};
     }
     const auto source = std::filesystem::path(root.filePath("declared-worker-rejected-source.w3x").toStdWString());
@@ -4143,7 +4158,7 @@ void EditorProjectTests::DeclaredMissingMinimapWorkerFailureConsumesTask() {
         : Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
     EditorProject::RunMapSave(job);
     QVERIFY(job.executed && !job.succeeded && !job.nextSession && !job.terrainReadbackStatus && !job.minimapSave);
-    QVERIFY(HasReadDiagnostic(job, code.toStdString())); QVERIFY(!std::filesystem::exists(target));
+    QVERIFY2(HasReadDiagnostic(job, code.toStdString()), ReadDiagnosticText(job).c_str()); QVERIFY(!std::filesystem::exists(target));
     EditorProject::RunMapSave(job); QVERIFY(HasReadDiagnostic(job, "SAVE_TASK_ALREADY_EXECUTED"));
     QVERIFY(!project.CommitMapSave(job) && project.archiveSession_.get() == oldArchive && project.sourceArchivePath_ == source);
     QCOMPARE(project.HasUnsavedMapChanges(), dirty); QCOMPARE(project.editRevision_.Revision(), revision);

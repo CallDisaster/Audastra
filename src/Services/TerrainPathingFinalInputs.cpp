@@ -183,7 +183,9 @@ void Normalize(Description& description) {
 Description Describe(std::span<const std::string_view> ordinary, std::span<const std::string_view> special,
     std::span<const ArchiveExactMember> inputs, std::size_t& used, std::size_t maximum) {
     auto result = Take(ObjectData::InspectNativeTerrainDependencies(ordinary, special, inputs, maximum - used));
-    Charge(used, result.workBytes, maximum); Normalize(result); return result;
+    // Inspector在剩余额度内验证本阶段解析峰值；返回后catalog/schema已销毁。
+    // 后续两侧描述共存只保留实际返回容量，不能再次累加已释放的解析预留。
+    Charge(used, result.retainedBytes, maximum); Normalize(result); return result;
 }
 bool UnknownChanged(const Description& before, const Description& after) {
     std::size_t a = 0, b = 0;
@@ -378,8 +380,9 @@ template<class Build> Result<std::optional<MapData::TerrainSavePlan>> PrepareFin
         if (!probe.changed) return Output::Success(std::optional<MapData::TerrainSavePlan>{});
         if (!frozenEdits || !frozenEdits->Terrain() || !frozenEdits->HasTerrainPathing())
             Fail("TERRAIN_FINAL_BASELINE_MISSING", "实际静态通行依赖发生变化，需要宿主编辑前已附入真实W3E/WPM的冻结会话。");
-        auto remaining = limits; remaining.maximumBytes -= probe.used;
-        auto plan = Take(build(remaining, true));
+        // Probe内部的来源字节、表解析、描述与overlay均已销毁，没有owner逃逸。
+        // 它和正式G0/G1捕获分别受同一64MiB峰值限制，不将已释放工作跨阶段累计。
+        auto plan = Take(build(limits, true));
         if (!plan.SaveGate().Succeeded()) throw Failure{plan.SaveGate().diagnostics};
         return Output::Success(std::optional<MapData::TerrainSavePlan>(std::move(plan)));
     });

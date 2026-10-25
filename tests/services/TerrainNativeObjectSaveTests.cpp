@@ -2521,8 +2521,12 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
         const auto expectedCode = remove ? "TERRAIN_PATHING_RESOURCE_MISSING" : "TERRAIN_NATIVE_PAIR_RULE_CHANGED";
         Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), expectedCode),
             "actual static rule changes are refused during two-stage preparation with the precise diagnostic");
-        Require(!plan.InstallPathingOutput(*f.edits, output).Succeeded(),
-            "a refused rule change cannot install a partial pathing output");
+        const auto unchangedOutput = output;
+        Check(plan.InstallPathingOutput(*f.edits, output));
+        Require(output.size() == unchangedOutput.size()
+            && std::equal(output.begin(), output.end(), unchangedOutput.begin(), [](const auto& a, const auto& b) {
+                return a.name == b.name && a.data == b.data;
+            }), "install without a rebuilt pathing output is a no-op even when the save gate refused");
         Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output, removals).Succeeded(),
             "actual static pathing dependency replacement or removal is still refused");
         Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha && f.edits->IsDirty()
