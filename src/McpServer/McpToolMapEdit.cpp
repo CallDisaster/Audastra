@@ -675,7 +675,7 @@ QJsonObject TerrainStrokeSchema() {
     auto straightProperties = straight.value("properties").toObject();
     straightProperties["kind"] = QJsonObject{{"type", "string"}, {"const", "straight_ramp"}};
     straight["properties"] = straightProperties;
-    straight["description"] = "实际规则一级直坡，可含水；一个规范世界点，固定检查水位限制，不接受旧ramp的形状/半径参数。";
+    straight["description"] = "实际规则一级直坡，可含水并连接相邻完整直坡；一个规范世界点，固定检查水位限制，不接受旧ramp的形状/半径参数或客户端算法版本。";
     QJsonObject texture = shared;
     texture["kind"] = QJsonObject{{"type", "string"}, {"const", "texture"}};
     texture["ground_texture"] = QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}, {"pattern", "^[!-~]{4}$"}};
@@ -838,7 +838,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
         "悬崖层级与纯悬崖材质；cliff_level须显式给出size=1..8、cliff_texture=0..14、level_delta=-1..1和uint32 seed，"
         "水位限制固定启用。cliff_texture只改已有palette槽位，不接受层级、种子、锚点或规则，仍须完整通行重建资格。"
         "已有水位、浅/深水、一级直坡和拐角坡道；旧ramp须circle/radius=0并保持严格干地规则，"
-        "straight_ramp与corner_ramp只接受单个规范world落点，不自动吸附，水位限制固定启用；"
+        "straight_ramp可连接相邻完整一级直坡；与corner_ramp只接受单个规范world落点，不自动吸附，水位限制固定启用；"
         "坡道均须明确set_ramp布尔值，几何和实际规则仍由共用规划器核验。"
         "boundary通过显式value布尔值绘制或清除地形边界；playable_bounds通过整数半开地格矩形设置可玩范围。"
         "共用通行性门禁最终裁决。地物跟随和其他笔刷拒绝。工具/游戏根只读可信宿主环境变量；"
