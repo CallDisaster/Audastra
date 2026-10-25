@@ -2,6 +2,7 @@ add_library(War3MapObjectData STATIC
     LniObjectCodec.cpp
     NativeObjectCodec.cpp
     NativeDestructablePathing.cpp
+    NativeTerrainDependencies.cpp
     SkinObjectCatalog.cpp
     ObjectImport.cpp
     ObjectBatchEdit.cpp

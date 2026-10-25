@@ -997,6 +997,10 @@ private slots:
     void DualStageStaticPathingSaveRebase();
     void DualStageStaticPathingProjectColdRestore_data();
     void DualStageStaticPathingProjectColdRestore();
+    void DualStageStaticPathingWithoutTerrainNet_data();
+    void DualStageStaticPathingWithoutTerrainNet();
+    void DualStageUnrelatedEditsPreserveUnresolvedPathing_data();
+    void DualStageUnrelatedEditsPreserveUnresolvedPathing();
     void PlayableBoundsProjectColdRestoreAndNativeSave_data();
     void PlayableBoundsProjectColdRestoreAndNativeSave();
     void GeneratedObjectsSurviveCommitAndSecondSave();
@@ -1870,6 +1874,7 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     job->replacements = project.mapEdits_->Replacements(); job->removals = project.mapEdits_->Removals();
     job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
     job->terrainSavePlan = plan;
+    job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
     job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*declaration.value);
     const auto* task = job.get();
     job->beforePublish = [plan, task] { return plan->VerifyFrozenOutput(task->sourceSha256, task->replacements, task->removals); };
@@ -1956,6 +1961,7 @@ void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState() {
     erase->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*eraseDeclaration.value);
     erase->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
     erase->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*removedPlan.value));
+    erase->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
     const auto* eraseTask = erase.get();
     erase->beforePublish = [eraseTask] {
         return eraseTask->terrainSavePlan->VerifyFrozenOutput(eraseTask->sourceSha256, eraseTask->replacements, eraseTask->removals);
@@ -2002,6 +2008,7 @@ void EditorProjectTests::PlacementHeightAndSavedPathingWorkerRoundtrip() {
         job->replacements = project.mapEdits_->Replacements();
         job->pathingRestrictionDraft = std::make_shared<const std::vector<std::byte>>(*declaration.value);
         job->terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*plan.value));
+        job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave();
         job->preparedRevision = MapSaveRevisionBinding{project.editRevision_.Generation(), project.editRevision_.Revision(), project.editRevision_.Current()};
         const auto* task = job.get();
         job->beforePublish = [task] {
@@ -5352,12 +5359,15 @@ int main(int argc, char** argv) {
         if (!group.isEmpty()) return 2;
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
         if (group != "base" && group != "native-pathing" && group != "derived" && group != "terrain-units"
-            && group != "terrain-palette" && group != "terrain-doodads") return 2;
+            && group != "terrain-palette" && group != "terrain-doodads" && group != "terrain-static-inputs") return 2;
     }
     if (!group.isEmpty()) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
+            if (name.startsWith("DualStageStaticPathingWithoutTerrainNet")
+                || name.startsWith("DualStageUnrelatedEditsPreserveUnresolvedPathing"))
+                return QStringLiteral("terrain-static-inputs");
             if (name.startsWith("OrdinaryDoodadProject") || name.startsWith("OrdinaryWaterJournalProject"))
                 return QStringLiteral("terrain-doodads");
             if (name.startsWith("PaletteWaterProject") || name.startsWith("GroundPaletteAppendWaterProject"))

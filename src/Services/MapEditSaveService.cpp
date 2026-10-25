@@ -718,11 +718,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
         std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
 
-        // 地形笔划和Automatic小地图需要一个稳定的源地形会话。必须在任何
+        // 地形、静态占地和Automatic小地图共用稳定的源地形会话。必须在任何
         // settings/物编/摆放编辑前附加 W3E/WPM，否则最终派生阶段再附加
         // 会撞上 MapDataEditSession 的 AttachLate 门禁。笔划必须有完整来源；
-        // 仅Automatic的局部归档可以保持未附加，后续按真实成员决定是否跳过生成。
-        if (terrainRequest || request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+        // 无地形笔划的局部归档可以保持未附加；后续只有真实静态依赖改变
+        // 才要求完整基线。保留作者小地图也不能跳过占地通行派生。
+        if (terrainRequest || request.minimapChoice == TerrainMinimapSaveChoice::Automatic
+            || request.minimapChoice == TerrainMinimapSaveChoice::Preserve) {
             const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
             const auto members = source.CaptureExactMembers(names);
             if (!members.Succeeded() || !members.value) {
@@ -946,6 +948,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         {
             task.prepareFinalDerived = [&task, &finalEdits, &request, &terrainPlan, &minimapSave,
                 &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest](MapSaveTask&) mutable -> Status {
+                bool staticInputsUnchanged = false;
                 if (terrainRequest) {
                     auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, finalEdits, request.gameRoot,
                         {}, task.replacements, task.removals);
@@ -955,6 +958,23 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     if (!installed.Succeeded()) return installed;
                     const auto checked = terrainPlan->VerifyForSave(finalEdits, task.sourceSha256, task.replacements, task.removals);
                     if (!checked.Succeeded()) return checked;
+                } else {
+                    // 独立于W3E净变化与小地图策略，按实际静态通行依赖决定是否重建。
+                    auto prepared = TerrainPathingSave::PrepareFinalForSave(*task.archive, &finalEdits,
+                        request.gameRoot, {}, task.replacements, task.removals);
+                    if (!prepared.Succeeded()) return {std::move(prepared.diagnostics)};
+                    if (!prepared.value)
+                        return Status::Failure("Terrain.PathingSave", "TERRAIN_FINAL_PLAN_MISSING",
+                            "最终静态通行检查没有返回结果，当前编辑保留。");
+                    if (*prepared.value) {
+                        terrainPlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(**prepared.value));
+                        const auto installed = terrainPlan->InstallPathingOutput(finalEdits, task.replacements);
+                        if (!installed.Succeeded()) return installed;
+                        const auto checked = terrainPlan->VerifyForSave(finalEdits, task.sourceSha256, task.replacements, task.removals);
+                        if (!checked.Succeeded()) return checked;
+                    } else {
+                        staticInputsUnchanged = true;
+                    }
                 }
                 bool automaticRequired = true;
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
@@ -1012,14 +1032,23 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     if (!current.Succeeded()) return current;
                 }
                 auto previous = std::move(task.beforePublish);
-                if (terrainPlan || minimapPreserve) {
+                if (terrainPlan || minimapPreserve || staticInputsUnchanged) {
                     if (terrainPlan) {
                         const auto& notes = terrainPlan->Diagnostics();
                         task.diagnostics.insert(task.diagnostics.end(), notes.begin(), notes.end());
                     }
                     task.beforePublish = [taskPtr = &task, terrainPlan, minimapSave, minimapPreserve,
+                        staticInputsUnchanged, editsPtr = &finalEdits, gameRoot = request.gameRoot,
                         previous = std::move(previous)]() {
                         if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
+                        if (staticInputsUnchanged) {
+                            if (!taskPtr->archive)
+                                return Status::Failure("Terrain.PathingSave", "TERRAIN_FINAL_SOURCE_MISSING",
+                                    "写入前缺少实际静态通行来源，当前编辑保留。");
+                            const auto unchanged = TerrainPathingSave::VerifyUnchangedFinalInputs(*taskPtr->archive,
+                                editsPtr, gameRoot, {}, taskPtr->replacements, taskPtr->removals);
+                            if (!unchanged.Succeeded()) return unchanged;
+                        }
                         if (terrainPlan) {
                             if (!taskPtr->archive)
                                 return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_SOURCE_MISSING",

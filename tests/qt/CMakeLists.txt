@@ -610,7 +610,7 @@ set_tests_properties(qt-editor-project PROPERTIES TIMEOUT 30
     ATTACHED_FILES_ON_FAIL "${editor_project_log}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-foreach(editor_project_group IN ITEMS native-pathing derived terrain-units terrain-palette terrain-doodads)
+foreach(editor_project_group IN ITEMS native-pathing derived terrain-units terrain-palette terrain-doodads terrain-static-inputs)
     set(editor_project_group_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-${editor_project_group}-$<CONFIG>.qtest.txt")
     add_test(NAME qt-editor-project-${editor_project_group} COMMAND war3-map-editor-project-tests
         --case-group=${editor_project_group} -o -,txt -o "${editor_project_group_log},txt")

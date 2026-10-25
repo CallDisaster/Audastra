@@ -1,4 +1,5 @@
 #include "War3MapCore/ObjectData/NativeDestructablePathing.h"
+#include "War3MapCore/ObjectData/NativeTerrainDependencies.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 
 #include <algorithm>
@@ -1540,6 +1541,7 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
 #include "NativeDoodadNonPathFieldCases.h"
 #include "TerrainEmptyParentCases.h"
 #include "TerrainBridgeNameCases.h"
+#include "NativeTerrainDependencyCases.h"
 } // namespace
 
 int main() {
@@ -1578,6 +1580,7 @@ int main() {
         DoodadRepeatedColorFieldsPreservePathing();
         EmptyOriginalParentsKeepExactStandardInheritance();
         BridgeNameOverridesKeepExactPathing();
+        RunNativeTerrainDependencyCases();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
         return 0;
     } catch (const std::exception& error) {
