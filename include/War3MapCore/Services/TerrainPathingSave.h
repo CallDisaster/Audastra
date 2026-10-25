@@ -8,6 +8,8 @@
 
 namespace War3Map::Services {
 
+class TerrainSessionResources;
+
 struct TerrainReplayLimits {
     // 只能收紧。资源owner保留到最终复核；工作与历史按序列累计，候选另核临时峰值。
     std::size_t maximumResourceBytes = 128u * 1024u * 1024u;
@@ -22,6 +24,9 @@ struct TerrainReplayCandidate {
     std::size_t currentIndex = 0;
     std::optional<std::size_t> savedIndex = 0;
     std::vector<MapData::TerrainResizeResources> resizeOwners;
+    // 仅内部CreateReplay/History使用，与waterOwners逐项对应；公共工厂最终
+    // 复核后清空，不让借用历史读取视图的闭包越过本次恢复调用的生命周期。
+    std::vector<std::shared_ptr<const TerrainSessionResources>> sessionOwners;
 };
 
 // Qt、CLI和MCP共用的薄适配：Core捕获实际来源，ObjectData读取严格typed覆盖，

@@ -211,7 +211,10 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
             [&, reader](const auto& session, const auto& maximum) {
                 return MapData::TerrainResizeResources::CaptureInputs(reader, session, gameRoot, maximum);
             },
-            [reader](const auto& owner, const auto& maximum) { return owner.VerifySourceInputs(reader, maximum); }
+            [reader](const auto& owner, const auto& maximum) { return owner.VerifySourceInputs(reader, maximum); },
+            [&, reader](const auto& session, auto maximumBytes) {
+                return TerrainReplayDetail::ResourceSource::CaptureCurrent(reader, session, gameRoot, maximumBytes);
+            }
         };
     };
     auto historicalResources = resourcesFor(historicalReader);
@@ -343,7 +346,7 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         const auto savedTerrain = candidate.value->session->Terrain();
         auto replayed = TerrainReplayDetail::Replay(physicalResources, *candidate.value->session, *savedTerrain,
             pathing.size(), std::span(preparation.value->intents).subspan(savedIndex), gameRoot,
-            accounting, sourceSha, &suffix, &candidate.value->receipts, &candidate.value->resizeOwners);
+            accounting, sourceSha, &suffix, &candidate.value->receipts, &candidate.value->resizeOwners, &candidate.value->sessionOwners);
         if (!replayed.Succeeded() || !replayed.value) return HistoryFailure(std::move(replayed.diagnostics));
         for (auto& owner : *replayed.value) candidate.value->waterOwners.push_back(std::move(owner));
     }
@@ -380,7 +383,9 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
     }
     for (std::size_t i = 0; i < candidate.value->waterOwners.size(); ++i) {
         const auto& resourceSource = i < prefixOwnerCount ? historicalResources : physicalResources;
-        const auto checked = resourceSource.verify(candidate.value->waterOwners[i], MapData::TerrainSavePlanLimits{}.maximumBytes);
+        const auto checked = candidate.value->sessionOwners[i]
+            ? candidate.value->sessionOwners[i]->Verify(candidate.value->waterOwners[i], MapData::TerrainSavePlanLimits{}.maximumBytes)
+            : resourceSource.verify(candidate.value->waterOwners[i], MapData::TerrainSavePlanLimits{}.maximumBytes);
         if (!checked.Succeeded()) return HistoryFailure(checked.diagnostics);
     }
     for (std::size_t i = 0; i < candidate.value->resizeOwners.size(); ++i) {
@@ -411,6 +416,7 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
             || finalShadow.value->front().present != physicalShadow->present || finalShadow.value->front().bytes != physicalShadow->bytes)
             return Failure("TERRAIN_HISTORY_SOURCE_MISMATCH", "恢复期间实际保存站SHD改变，未安装任何前缀。");
     }
+    candidate.value->sessionOwners.clear();
     return candidate;
 }
 

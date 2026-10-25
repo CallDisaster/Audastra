@@ -143,4 +143,47 @@ inline void ResizeHistoryKeepsOldShadowAcrossPhysicalSaveStation() {
     }
 }
 
+inline void ResizeReplayComposesWithCurrentWaterCliffPaletteBoundsAndOrdinaryBrushes() {
+    for (unsigned scenario = 0; scenario < 5; ++scenario) {
+        Fixture fixture;
+        fixture.Member("TerrainArt/Terrain.slk") = Slk({"tileID", "walkable", "flyable", "buildable"},
+            {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "0"}});
+        fixture.Seal();
+        TerrainStrokeIntent expand; expand.resize = TerrainResizeIntent{1, {-32, -32, 32, 32}};
+        TerrainStrokeIntent second;
+        if (scenario == 0) {
+            second.waterBrush = TerrainWaterStrokeOptions{}; second.waterBrush->size = 1;
+            second.waterBrush->shape = TerrainBrushShape::Square; second.points = {{-1024, -1024}};
+        } else if (scenario == 1) {
+            second.brush.kind = TerrainBrushKind::CliffLevel; second.brush.size = 1;
+            second.brush.shape = TerrainBrushShape::Square; second.brush.levelDelta = 1; second.points = {{-1024, -1024}};
+        } else if (scenario == 2) {
+            second.palette = TerrainPaletteEditIntent{TerrainTextureTable::Ground, 0, "Tg01", "Tg02", 1};
+        } else if (scenario == 3) {
+            second.bounds = TerrainBoundsEditIntent{1, {34, 34, 60, 60}};
+        } else {
+            second.brush.kind = TerrainBrushKind::Raise; second.brush.size = 1;
+            second.brush.shape = TerrainBrushShape::Square; second.brush.strength = 32; second.points = {{-1024, -1024}};
+        }
+        const std::array strokes{expand, second};
+        auto replayed = Take(TerrainPathingSave::ReplayStrokes(*fixture.archive, MapDocument::FromMembers(fixture.members),
+            fixture.Member("war3map.w3e"), fixture.Member("war3map.wpm"), strokes, fixture.gameRoot));
+        Require(replayed.receipts.size() == 2 && replayed.session->Terrain()->header.width == 65,
+            "resize combines with water, native cliff, palette, playable bounds and ordinary editing on current canvas");
+        if (scenario != 4) Require(replayed.waterOwners.size() == 1 && replayed.sessionOwners.empty(),
+            "post-resize resources finish physical/current verification and release borrowed bridge before public return");
+        fixture.edits = std::move(replayed.session);
+        auto raw = RawDraft(fixture);
+        const auto journal = Take(DecodeTerrainStrokeJournal(Take(EncodeTerrainStrokeJournal(
+            Take(TerrainPathingSave::CaptureJournal(*fixture.archive, *fixture.edits))))));
+        auto restored = Take(TerrainPathingSave::RestoreJournal(*fixture.archive, MapDocument::FromMembers(fixture.members),
+            fixture.Member("war3map.w3e"), fixture.Member("war3map.wpm"), journal, *raw, fixture.gameRoot));
+        Require(restored.receipts.size() == 2 && restored.session->MatchesTerrainJournalDraft(*raw),
+            "cold mixed replay uses the same current shape and actual dependency identity as the live sequence");
+        for (std::size_t i = restored.receipts.size(); i > 0; --i) Check(restored.session->Replay(restored.receipts[i - 1], false));
+        Require(!restored.session->IsDirty() && Take(SerializeMapTerrain(*restored.session->Terrain())) == TerrainLiteral(),
+            "mixed typed Undo reaches original canvas with no lost edit before the resize");
+    }
+}
+
 } // namespace War3Map::TerrainResizeReplayTests

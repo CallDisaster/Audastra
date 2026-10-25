@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainSessionResources.h"
 
 // 仅Services实现使用。回调由同一来源工厂封闭构造，不暴露给协议或工程数据。
 namespace War3Map::Services::TerrainReplayDetail {
@@ -17,6 +18,11 @@ struct ResourceSource {
     std::function<Result<MapData::TerrainResizeResources>(const MapData::MapDataEditSession&,
         const MapData::TerrainResizeLimits&)> resize;
     std::function<Status(const MapData::TerrainResizeResources&, const MapData::TerrainResizeLimits&)> verifyResize;
+    std::function<Result<TerrainSessionResources>(const MapData::MapDataEditSession&, std::size_t)> current;
+
+    // 仅本内部结构可把真实工厂绑定的reader与冻结typed会话交给当前结构桥。
+    [[nodiscard]] static Result<TerrainSessionResources> CaptureCurrent(const MemberReader& reader,
+        const MapData::MapDataEditSession& session, const std::filesystem::path& gameRoot, std::size_t maximumBytes);
 };
 
 struct Accounting {
@@ -43,7 +49,8 @@ struct DraftPreparation {
     const std::filesystem::path& gameRoot, Accounting& accounting, const std::string& sourceSha,
     const MapData::TerrainStrokeJournal* journal,
     std::vector<MapData::MapDataEditSession::EditReceipt>* receipts,
-    std::vector<MapData::TerrainResizeResources>* resizeOwners = nullptr);
+    std::vector<MapData::TerrainResizeResources>* resizeOwners = nullptr,
+    std::vector<std::shared_ptr<const TerrainSessionResources>>* sessionOwners = nullptr);
 [[nodiscard]] Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source,
     const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
