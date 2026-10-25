@@ -475,6 +475,86 @@ void OversizedUiStrokeAndOpaqueDraftRemainEditable() {
     Require(raw.session.SetTerrain(Take(SerializeMapTerrain(altered))).Succeeded(), "legacy raw draft still accepted");
     Require(!raw.session.ExportTerrainStrokeJournal().Succeeded(), "raw draft cannot invent typed provenance");
 }
+void BlockPasteHasClosedFTJDVariantAndIndependentWire() {
+    auto journal = Journal(); journal.strokes.clear();
+    TerrainJournalStroke block;
+    block.intent.blockPaste = TerrainBlockPasteIntent{1, {4, 5, 8, 9}, {20, 21}, std::string(64, 'c')};
+    block.intent.followDoodads = true; block.rulesSha256.assign(64, 'd');
+    journal.strokes.push_back(block);
+    // FTJD独立字面：固定variant6，不调用产品writer产生其正文或长度。
+    Bytes literal;
+    const auto number = [&](std::uint64_t value, unsigned count) {
+        for (unsigned i = 0; i < count; ++i) literal.push_back(std::byte((value >> (i * 8)) & 255));
+    };
+    const auto text = [&](std::string_view value) {
+        number(value.size(), 4); for (const auto c : value) literal.push_back(std::byte(static_cast<unsigned char>(c)));
+    };
+    number(0x444a5446u, 4); text(std::string(64, 'a')); number(10, 1);
+    for (std::size_t i = 0; i < TerrainJournalMemberNames.size(); ++i) {
+        text(TerrainJournalMemberNames[i]); number(i < 2, 1); text(i < 2 ? std::string(64, 'b') : ""); number(i < 2 ? 4 : 0, 8);
+    }
+    number(0, 4); number(1, 4); number(6, 1); number(1, 1);
+    for (const auto value : {4u, 5u, 8u, 9u, 20u, 21u}) number(value, 4);
+    text(std::string(64, 'c')); number(1, 1); text(std::string(64, 'd'));
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    Require(wire == literal && EqualTerrainJournalIntent(Take(DecodeTerrainStrokeJournal(literal)).strokes[0].intent, block.intent),
+        "FTJD单块逐字匹配独立wire，follow和实际规则身份完整回读");
+    Require(Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(literal)))) == literal,
+        "FTJD严格规范往返不增加raw载荷或验证标志");
+    for (std::size_t end = 0; end < literal.size(); ++end)
+        Require(!DecodeTerrainStrokeJournal(std::span(literal).first(end)).Succeeded(), "FTJD每个截断都拒绝");
+    auto changed = literal; changed.push_back(std::byte{0});
+    Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "FTJD尾部未知扩展拒绝");
+    for (const char version : {'1', '5', 'A', 'B', 'C', 'E'}) {
+        changed = literal; changed[3] = std::byte(version);
+        Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "旧版本不能借variant6取得块命令，新未知版本也拒绝");
+    }
+    // variant+algorithm+6*u32+SHA长度/内容+bool+规则SHA，总163字节。
+    const auto offset = literal.size() - 163;
+    for (const auto algorithm : {0u, 2u, 255u}) {
+        changed = literal; changed[offset + 1] = std::byte(algorithm);
+        Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "未知块算法拒绝");
+    }
+    changed = literal; changed[offset + 94] = std::byte{2};
+    Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "FTJD follow必须为严格bool");
+    changed = Take(EncodeTerrainStrokeJournal(Journal())); changed[3] = std::byte{'D'};
+    Require(!DecodeTerrainStrokeJournal(changed).Succeeded(), "无块记录不能伪装成FTJD");
+    for (unsigned conflict = 0; conflict < 14; ++conflict) {
+        auto invalid = journal; auto& stroke = invalid.strokes.front(); auto& intent = stroke.intent;
+        if (conflict == 0) intent.brush.seed = 1;
+        if (conflict == 1) intent.points = {{0, 0}};
+        if (conflict == 2) intent.waterBrush = TerrainWaterStrokeOptions{};
+        if (conflict == 3) intent.bounds = TerrainBoundsEditIntent{};
+        if (conflict == 4) intent.palette = TerrainPaletteEditIntent{};
+        if (conflict == 5) intent.cornerRampAlgorithm = TerrainCornerRampAlgorithm::WetTerrain;
+        if (conflict == 6) intent.straightRampAlgorithm = TerrainStraightRampAlgorithm::Connected;
+        if (conflict == 7) stroke.cliffEnforceWaterLimits = true;
+        if (conflict == 8) stroke.rulesSha256.clear();
+        if (conflict == 9) intent.blockPaste->expectedBlockSha256[0] = 'A';
+        if (conflict == 10) intent.blockPaste->sourceCells.x1 = intent.blockPaste->sourceCells.x0;
+        if (conflict == 11) intent.blockPaste->sourceCells.x1 = intent.blockPaste->sourceCells.x0 + TerrainBlockMaximumSide + 1;
+        if (conflict == 12) intent.blockPaste->destinationVertex[0] = std::numeric_limits<std::uint32_t>::max();
+        if (conflict == 13) stroke.ordinaryDoodads = TerrainDoodadsJournalEdit{};
+        Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "块variant与其它字段不能混用，尺寸和摘要不能扩大或猜测");
+    }
+    auto mixed = journal; mixed.strokes.push_back(Journal().strokes.front());
+    TerrainJournalStroke straight; straight.intent.brush.kind = TerrainBrushKind::StraightRamp;
+    straight.intent.points = {{2080, 2080}}; straight.intent.straightRampAlgorithm = TerrainStraightRampAlgorithm::Connected;
+    straight.rulesSha256.assign(64, 'e'); mixed.strokes.push_back(straight);
+    mixed.strokes.push_back(block); mixed.strokes.back().intent.followDoodads = false;
+    const auto mixedWire = Take(EncodeTerrainStrokeJournal(mixed)); const auto decoded = Take(DecodeTerrainStrokeJournal(mixedWire));
+    Require(mixedWire[3] == std::byte{'D'} && decoded.strokes.size() == 4
+        && decoded.strokes[0].intent.blockPaste && decoded.strokes[1].intent.brush.kind == TerrainBrushKind::Raise
+        && decoded.strokes[2].intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected
+        && decoded.strokes[3].intent.blockPaste && !decoded.strokes[3].intent.followDoodads
+        && Take(EncodeTerrainStrokeJournal(decoded)) == mixedWire, "混合旧笔刷、连接直坡与块保留准确顺序和算法");
+    auto other = block.intent; other.blockPaste->destinationVertex[0]++;
+    Require(!EqualTerrainJournalIntent(other, block.intent), "相同源块的不同目标不能混过replay对齐");
+    other = block.intent; other.blockPaste->expectedBlockSha256[0] = 'e';
+    Require(!EqualTerrainJournalIntent(other, block.intent), "不同源块摘要不能混过replay对齐");
+    other = block.intent; other.blockPaste->sourceCells.y1++;
+    Require(!EqualTerrainJournalIntent(other, block.intent), "不同源范围不能混过replay对齐");
+}
 } // namespace
 
 int main() {
@@ -483,6 +563,7 @@ int main() {
         WaterAlgorithmVersionIsCanonicalAndLegacyBytesRemainExact();
         CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered();
         ConnectedStraightVersionIsExplicitAndLegacyBytesStayExact();
+        BlockPasteHasClosedFTJDVariantAndIndependentWire();
         BoundsVersionHasIndependentPayloadAndStrictVariants();
         PaletteVersionHasStrictZeroPointPayload();
         RemoveWaterUsesTheOrdinaryJournalOpcode();

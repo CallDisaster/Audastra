@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
 #include "War3MapCore/MapData/TerrainBoundsEditing.h"
+#include "War3MapCore/MapData/TerrainBlockEditing.h"
 
 namespace War3Map::MapData {
 
@@ -26,6 +27,8 @@ struct TerrainStrokeIntent {
     std::optional<TerrainBoundsEditIntent> bounds;
     // 独立无采样点命令；实际来源摘要由捕获资源owner生成。
     std::optional<TerrainPaletteEditIntent> palette;
+    // 独立绝对高度块命令；仅携源矩形、目标和内容摘要，重放从当时before读取实际源块。
+    std::optional<TerrainBlockPasteIntent> blockPaste;
     // 仅CornerRamp可取2；其余命令保持1。不是来源授权，仍须实际规则owner。
     TerrainCornerRampAlgorithm cornerRampAlgorithm = TerrainCornerRampAlgorithm::DryOnly;
     // FTJB及旧请求固定独立三点；Connected须显式记入新wire，不能扩展旧历史接受域。
