@@ -192,7 +192,8 @@ target_link_libraries(war3-map-TerrainBlockEditing-tests PRIVATE War3MapEditor::
 target_link_libraries(war3-map-TerrainEditing-tests PRIVATE War3MapEditor::Services)
 target_sources(war3-map-TerrainEditing-tests PRIVATE TerrainResizeCases.h support/TerrainResizeFixture.h)
 target_sources(war3-map-TerrainBlockEditing-tests PRIVATE TerrainBlockFixtures.h TerrainCornerRampFixtures.h)
-target_sources(war3-map-TerrainRampEditing-tests PRIVATE TerrainConnectedStraightRampCases.h)
+target_sources(war3-map-TerrainRampEditing-tests PRIVATE TerrainConnectedStraightRampCases.h
+    TerrainWetInnerCornerRampCases.h TerrainWetInnerCornerRampFixtures.h)
 target_link_libraries(war3-map-TerrainBoundaryNativeSave-tests PRIVATE War3MapEditor::Services)
 
 add_executable(war3-map-terrain-shadow-caster-tests TerrainShadowCasterTests.cpp)

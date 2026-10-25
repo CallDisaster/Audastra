@@ -1005,6 +1005,8 @@ private slots:
     void CornerRampProjectColdRestoreAndNativeSave();
     void InnerCornerRampProjectColdRestoreAndNativeSave_data();
     void InnerCornerRampProjectColdRestoreAndNativeSave();
+    void WetInnerCornerRampProjectColdRestoreAndNativeSave_data();
+    void WetInnerCornerRampProjectColdRestoreAndNativeSave();
     void StraightRampProjectColdRestoreAndNativeSave_data();
     void StraightRampProjectColdRestoreAndNativeSave();
     void ConnectedRampProjectColdRestoreAndNativeSave_data();
@@ -1134,6 +1136,7 @@ private:
 #include "TerrainDualStagePathingProjectCases.h"
 #include "TerrainSavedHistoryProjectCases.h"
 #include "TerrainInnerCornerRampProjectCases.h"
+#include "TerrainWetInnerCornerRampProjectCases.h"
 #include "TerrainResizeProjectCases.h"
 #include "TerrainPreResizeHistoryProjectCases.h"
 
@@ -5406,12 +5409,14 @@ int main(int argc, char** argv) {
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
         if (group != "base" && group != "native-pathing" && group != "native-objects" && group != "derived" && group != "terrain-units"
             && group != "terrain-palette" && group != "terrain-doodads" && group != "terrain-static-inputs"
-            && group != "terrain-history" && group != "terrain-inner-corner" && group != "terrain-resize") return 2;
+            && group != "terrain-history" && group != "terrain-inner-corner" && group != "terrain-wet-inner-corner"
+            && group != "terrain-resize") return 2;
     }
     if (!group.isEmpty()) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
         // 单组保留原30秒上限；不传分组参数时仍可直接运行完整套件。
         const auto groupOf = [](const QByteArray& name) {
+            if (name.startsWith("WetInnerCornerRamp")) return QStringLiteral("terrain-wet-inner-corner");
             if (name.startsWith("InnerCornerRamp")) return QStringLiteral("terrain-inner-corner");
             if (name.startsWith("SavedTerrainHistory")) return QStringLiteral("terrain-history");
             if (name.startsWith("ResizeProject")) return QStringLiteral("terrain-resize");

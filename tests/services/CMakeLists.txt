@@ -316,6 +316,7 @@ add_test(NAME services-terrain-resize-replay COMMAND audastra-terrain-resize-rep
 set_tests_properties(services-terrain-resize-replay PROPERTIES TIMEOUT 60)
 
 add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp TerrainCornerRampServiceTests.cpp TerrainInnerCornerRampServiceCases.h ../TerrainInnerCornerRampFixtures.h
+    TerrainWetInnerCornerRampServiceCases.h ../TerrainWetInnerCornerRampFixtures.h
     TerrainSettingsSaveCases.h ../TerrainCornerRampFixtures.h)
 target_link_libraries(audastra-terrain-water-edit-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-water-edit-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
