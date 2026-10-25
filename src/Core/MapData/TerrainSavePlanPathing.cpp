@@ -68,10 +68,23 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
         ? TerrainPathingResources::CaptureNative(*source, *edits.terrainOriginal_, *edits.terrain_, gameRoot, limits.maximumBytes - total)
         : TerrainPathingResources::CaptureNative(*workspace, *edits.terrainOriginal_, *edits.terrain_, gameRoot, limits.maximumBytes - total);
     if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
-    // 原版G0/G1仍消费同一范围规则；仅四个说明字段可在全文核对后形成不同输出。
-    // 资源owner保留旧来源身份，并另外冻结该次完整W3I供写前/写后精确核对。
-    const auto settings = captured.value->BindNativeSettingsOutput(edits);
+    // G0始终核会话真实旧W3I和窄域字段/范围事务。双阶段G1另外来自最终成员，
+    // 两者最终全文和可玩区必须相同，不能因切换owner而跳过原始字段门。
+    auto& resource = *captured.value;
+    auto& sourceResource = resource.nativeSourceResources_ ? *resource.nativeSourceResources_ : resource;
+    const auto settings = sourceResource.BindNativeSettingsOutput(edits);
     if (!settings.Succeeded()) return {{}, settings.diagnostics};
+    if (resource.nativeSourceResources_) {
+        const auto finalSettings = std::find_if(resource.dependencies_.begin(), resource.dependencies_.end(),
+            [](const auto& dependency) { return dependency.name == "war3map.w3i"; });
+        const auto& expectedBounds = sourceResource.nativeAfterBounds_ ? sourceResource.nativeAfterBounds_ : sourceResource.nativeBounds_;
+        if (finalSettings == resource.dependencies_.end() || !finalSettings->mapPresent
+            || !sourceResource.nativeSettingsOutputSha_ || finalSettings->sha256 != *sourceResource.nativeSettingsOutputSha_
+            || finalSettings->bytes != sourceResource.nativeSettingsOutputBytes_ || !expectedBounds || !resource.nativeBounds_
+            || resource.nativeBounds_->left != expectedBounds->left || resource.nativeBounds_->bottom != expectedBounds->bottom
+            || resource.nativeBounds_->right != expectedBounds->right || resource.nativeBounds_->top != expectedBounds->top)
+            return Output::Failure(kSubsystem, "TERRAIN_PATHING_RESOURCE_CHANGED", "最终W3I全文或可玩区不等于来源绑定的完整会话事务。");
+    }
     const auto reserve = [&](std::size_t bytes) {
         if (bytes > limits.maximumBytes - total) return false;
         total += bytes;
