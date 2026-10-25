@@ -9,6 +9,12 @@
 namespace {
 SavedHistoryQtBytes PreResizeHistoryQtState(const EditorProject& project) {
     auto result = SavedHistoryQtState(project);
+    // 此夹具没有限制笔刷；序列化仍须逐格验证P与saved/current S，
+    // 并把完整声明纳入冷热状态比较，不比较内部resize表示或对象地址。
+    const auto restrictions = project.mapEdits_->SerializePathingRestrictionDraft();
+    if (!restrictions.Succeeded() || !restrictions.value)
+        throw std::runtime_error("history pathing layers unavailable");
+    result["@pathing-restriction-draft"] = *restrictions.value;
     const auto shadow = project.mapEdits_->TerrainResizeShadowDraft();
     if (shadow.Succeeded() && shadow.value) {
         result["war3map.shd"] = shadow.value->present
@@ -67,6 +73,7 @@ void EditorProjectTests::SavedTerrainHistoryBeforeFirstResizeRoundtrip() {
     QCOMPARE(hotUndo.count(), 1); QCOMPARE(hotUndo.cleanIndex(), 1); QVERIFY(hotUndo.isClean());
     QVERIFY(!hot.mapEdits_->HasTerrainTypedResizeState());
     const auto station = PreResizeHistoryQtState(hot);
+    QCOMPARE(station.at("@pathing-restriction-draft"), std::optional(R::Bytes{}));
     const std::optional<R::Bytes> expectedShadow = shadow ? std::optional(R::ShadowLiteral()) : std::nullopt;
     QCOMPARE(station.at("war3map.shd"), expectedShadow);
     const auto savedArchive = MapArchiveSession::Open(target); QVERIFY(savedArchive.Succeeded());
