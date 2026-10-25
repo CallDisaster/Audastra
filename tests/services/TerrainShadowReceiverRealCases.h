@@ -62,16 +62,23 @@ void CheckRealShadowReceiverOrdinaryResave(const MapArchiveSession& shadowSaved,
         && Take(readback.ReadMember("war3map.w3i")) == expectedSettingsBytes,
         "ordinary save preserves the entire explicitly generated SHD and reads back the complete exact typed W3I edit");
     for (const auto& member : shadowSaved.Members()) {
-        if (Text::LowerAscii(member.name) == "war3map.w3i") continue;
+        const auto memberName = Text::LowerAscii(member.name);
+        if (memberName == "war3map.w3i" || memberName == "war3map.j"
+            || memberName == "scripts/war3map.j") continue;
         Require(Take(readback.ReadMember(member.name)) == member.data,
             "ordinary resave preserves every unrelated source member byte-for-byte");
     }
-    Require(receipt.scriptPreserved && receipt.appliedFieldEditCount == 1 && receipt.appliedStrokeCount == 0
+    const auto script = Take(readback.ReadMember(Script::MapScriptMemberName(readback)));
+    const std::string_view scriptText(reinterpret_cast<const char*>(script.data()), script.size());
+    Require(!receipt.scriptPreserved
+        && scriptText.find("Real terrain receiver ordinary resave") != std::string_view::npos,
+        "ordinary map-name save rebuilds initialization with the actual final map name");
+    Require(receipt.appliedFieldEditCount == 1 && receipt.appliedStrokeCount == 0
         && !receipt.generatedMissingMinimap && receipt.sourceSha256 == shadowSaved.SourceSha256()
         && receipt.candidateSha256 == readback.SourceSha256()
         && receipt.candidateSha256 == Take(Sha256File(receipt.candidate))
         && Take(Sha256File(shadowSaved.SourcePath())) == shadowSaved.SourceSha256(),
-        "ordinary save receipt binds the real source/candidate identities without changing source, script or minimap");
+        "ordinary save receipt binds the real source/candidate identities without changing source or minimap");
 }
 } // namespace
 
