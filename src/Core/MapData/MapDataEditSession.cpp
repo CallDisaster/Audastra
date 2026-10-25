@@ -750,6 +750,10 @@ std::vector<MapArchiveMember> MapDataEditSession::Replacements() const {
         if (bytes.Succeeded() && bytes.value) members.push_back({std::string(kTerrainMember), std::move(*bytes.value)});
     }
     if (pathing_ && pathing_ != pathingOriginal_) members.push_back({std::string(kPathingMember), *pathing_});
+    const auto resize = resizeState_ ? resizeState_ : resizeDraftState_;
+    if (resize && resize->shadow.name == "war3map.shd" && resize->shadow.present
+        && (!savedResizeState_ || !savedResizeState_->shadow.present || resize->shadow.bytes != savedResizeState_->shadow.bytes))
+        members.push_back({"war3map.shd", resize->shadow.bytes});
     return members;
 }
 
@@ -849,6 +853,19 @@ Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForS
         }
     }
     if ((pathingOriginal_ && !add(pathingOriginal_->capacity())) || (pathing_ && !add(pathing_->capacity()))) return fail();
+    // immutable扩裁材料虽不深拷贝，快照仍会延长其驻留，须受同一个显式预算约束。
+    for (const auto& resize : {resizeState_, savedResizeState_, resizeDraftState_}) if (resize) {
+        if (!add(1, sizeof(TerrainResizeState) + 128) || !text(resize->shadow.name) || !text(resize->rulesSha256)
+            || !add(resize->shadow.bytes.capacity())) return fail();
+        for (const auto& layer : {resize->historyPathing, resize->protectedPathing, resize->savedRestrictions})
+            if (layer && !add(layer->capacity())) return fail();
+        for (const auto* table : {&resize->header.groundTilesets, &resize->header.cliffTilesets}) {
+            if (!add(table->capacity(), sizeof(std::string))) return fail();
+            for (const auto& id : *table) if (!text(id)) return fail();
+        }
+        if (resize->geometry && (!add(resize->geometry->vertices.capacity(), sizeof(TerrainVertex))
+            || !add(resize->geometry->tiles.capacity(), sizeof(TerrainTile)))) return fail();
+    }
     try { return Output::Success(FreezeForSave()); }
     catch (const std::bad_alloc&) { return fail(); }
     catch (const std::length_error&) { return fail(); }

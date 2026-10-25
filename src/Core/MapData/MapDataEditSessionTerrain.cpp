@@ -443,10 +443,27 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
         return !value || (add(cost.retainedBytes, maximumBytes, sizeof(TerrainStartLocationsState) + 64)
             && add(cost.retainedBytes, maximumBytes, value->unitsSha256.capacity() + 1));
     };
+    const auto grid = [&](const auto& value, bool compare) {
+        if (!value) return true;
+        if (!add(cost.retainedBytes, maximumBytes, sizeof(TerrainGridSnapshot) + 64)
+            || !add(cost.retainedBytes, maximumBytes, value->vertices.capacity(), sizeof(TerrainVertex))
+            || !add(cost.retainedBytes, maximumBytes, value->tiles.capacity(), sizeof(TerrainTile))
+            || !header(value->header)) return false;
+        return !compare || add(cost.comparisonWork, maximumWork, value->vertices.size(), 8);
+    };
+    const auto resize = [&](const auto& value, bool compare) {
+        return !value || (add(cost.retainedBytes, maximumBytes, sizeof(TerrainResizeState) + 128)
+            && header(value->header) && grid(value->geometry, false)
+            && add(cost.retainedBytes, maximumBytes, value->shadow.name.capacity() + value->rulesSha256.capacity() + 2)
+            && add(cost.retainedBytes, maximumBytes, value->shadow.bytes.capacity())
+            && (!compare || add(cost.comparisonWork, maximumWork, value->shadow.bytes.size()))
+            && bytes(value->historyPathing, compare) && bytes(value->protectedPathing, compare) && bytes(value->savedRestrictions, compare));
+    };
     if (!add(cost.comparisonWork, maximumWork, 1024)
         || !special(specialDoodads_) || !special(savedSpecialDoodads_)
         || !bounds(boundsState_) || !bounds(savedBoundsState_)
-        || !starts(startLocations_) || !starts(savedStartLocations_)) return fail();
+        || !starts(startLocations_) || !starts(savedStartLocations_)
+        || !resize(resizeState_, true) || !resize(savedResizeState_, false) || !resize(resizeDraftState_, true)) return fail();
     for (std::size_t i = 0; i < original_.size(); ++i) {
         if (!bytes(original_[i]) || !bytes(current_[i])) return fail();
         if (preservedSources_[i]) {
@@ -476,6 +493,9 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
             || !special(command->specialBefore) || !special(command->specialAfter)
             || !bounds(command->boundsBefore) || !bounds(command->boundsAfter)
             || !starts(command->startsBefore) || !starts(command->startsAfter)
+            || !grid(command->fullTerrainBefore, false) || !grid(command->fullTerrainAfter, false)
+            || !resize(command->resizeBefore, false) || !resize(command->resizeAfter, false)
+            || !resize(command->resizeDraftBefore, false) || !resize(command->resizeDraftAfter, false)
             || !add(cost.retainedBytes, maximumBytes, command->boundsRulesSha256.capacity())
             || (command->headerBefore && !header(*command->headerBefore))
             || (command->headerAfter && !header(*command->headerAfter))) return fail();
@@ -511,6 +531,15 @@ bool MapDataEditSession::MatchesTerrainJournalDraft(const MapDataEditSession& ex
         || !equalLayer(pathingProtected_, expected.pathingProtected_)
         || !equalLayer(originalPathingRestrictions_, expected.originalPathingRestrictions_)
         || !equalLayer(pathingRestrictions_, expected.pathingRestrictions_)) return false;
+    const auto aResize = resizeState_ ? resizeState_ : resizeDraftState_;
+    const auto bResize = expected.resizeState_ ? expected.resizeState_ : expected.resizeDraftState_;
+    // raw工程只提供待核输出，不提供来源资格；仍逐字比较SHD及各shape映射层。
+    if (bool(aResize) != bool(bResize)) return false;
+    if (aResize && (aResize->shadow.name != bResize->shadow.name
+        || aResize->shadow.present != bResize->shadow.present || aResize->shadow.bytes != bResize->shadow.bytes
+        || !equalLayer(TerrainHistoryProtected(), expected.TerrainHistoryProtected())
+        || !equalLayer(TerrainHistorySavedRestrictions(), expected.TerrainHistorySavedRestrictions())
+        || TerrainHistoryPathing() != expected.TerrainHistoryPathing())) return false;
     for (std::size_t i = 0; i < preservedSources_.size(); ++i) {
         const auto& a = preservedSources_[i]; const auto& b = expected.preservedSources_[i];
         if (bool(a) != bool(b)) return false;
