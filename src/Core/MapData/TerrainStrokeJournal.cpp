@@ -30,11 +30,11 @@ bool Rawcode(std::string_view value) {
 }
 bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
     if ((stroke.intent.brush.kind != TerrainBrushKind::CornerRamp || stroke.intent.waterBrush
-            || stroke.intent.bounds || stroke.intent.palette || stroke.ordinaryDoodads || stroke.frozenDoodads
+            || stroke.intent.bounds || stroke.intent.palette || stroke.intent.blockPaste || stroke.ordinaryDoodads || stroke.frozenDoodads
             || stroke.units || stroke.frozenUnits || stroke.startLocations || stroke.frozenStartLocations)
         && stroke.intent.cornerRampAlgorithm != TerrainCornerRampAlgorithm::DryOnly) return false;
     if ((stroke.intent.brush.kind != TerrainBrushKind::StraightRamp || stroke.intent.waterBrush
-            || stroke.intent.bounds || stroke.intent.palette || stroke.ordinaryDoodads || stroke.frozenDoodads
+            || stroke.intent.bounds || stroke.intent.palette || stroke.intent.blockPaste || stroke.ordinaryDoodads || stroke.frozenDoodads
             || stroke.units || stroke.frozenUnits || stroke.startLocations || stroke.frozenStartLocations)
         && stroke.intent.straightRampAlgorithm != TerrainStraightRampAlgorithm::Independent) return false;
     if (stroke.frozenDoodads || stroke.frozenUnits || stroke.frozenStartLocations
@@ -51,6 +51,10 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
             && !stroke.cliffEnforceWaterLimits && ValidateTerrainUnitsJournalEdit(*stroke.units).Succeeded();
     const auto& intent = stroke.intent;
     const auto& brush = intent.brush;
+    if (intent.blockPaste)
+        return Neutral(brush) && intent.points.empty() && !intent.waterBrush && !intent.bounds && !intent.palette
+            && !stroke.cliffEnforceWaterLimits && Sha(stroke.rulesSha256)
+            && ValidateTerrainBlockPasteIntent(*intent.blockPaste).Succeeded();
     if (stroke.intent.bounds) {
         const auto& bounds = *stroke.intent.bounds; const auto& r = bounds.playable;
         return Neutral(brush) && intent.points.empty() && !intent.followDoodads && !intent.waterBrush && !intent.palette
@@ -212,7 +216,9 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
         const bool connectedStraights = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::StraightRamp
                 && stroke.intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected; });
-        const unsigned version = connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
+        const bool blocks = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.blockPaste.has_value(); });
+        const unsigned version = blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
             : cornerRamps ? 4 : nativeWater ? 3 : nativeCliffs ? 2 : 1;
         wire.Number(0x004a5446u | ((version >= 10 ? std::uint32_t('A') + version - 10 : std::uint32_t('0') + version) << 24), 4);
         wire.Text(journal.sourceSha256);
@@ -224,7 +230,15 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
         wire.Number(journal.strokes.size(), 4);
         for (const auto& stroke : journal.strokes) {
             if (version >= 5) {
-                wire.Number(stroke.startLocations ? 5 : stroke.units ? 4 : stroke.ordinaryDoodads ? 3 : stroke.intent.palette ? 2 : stroke.intent.bounds ? 1 : 0, 1);
+                wire.Number(stroke.intent.blockPaste ? 6 : stroke.startLocations ? 5 : stroke.units ? 4 : stroke.ordinaryDoodads ? 3 : stroke.intent.palette ? 2 : stroke.intent.bounds ? 1 : 0, 1);
+                if (stroke.intent.blockPaste) {
+                    const auto& block = *stroke.intent.blockPaste; const auto& r = block.sourceCells;
+                    wire.Number(block.algorithm, 1); wire.Number(r.x0, 4); wire.Number(r.y0, 4);
+                    wire.Number(r.x1, 4); wire.Number(r.y1, 4);
+                    wire.Number(block.destinationVertex[0], 4); wire.Number(block.destinationVertex[1], 4);
+                    wire.Text(block.expectedBlockSha256); wire.Number(stroke.intent.followDoodads, 1);
+                    wire.Text(stroke.rulesSha256); continue;
+                }
                 if (stroke.startLocations) {
                     for (const auto* value : {static_cast<const TerrainPlacementJournalDelta*>(&stroke.startLocations->units), &stroke.startLocations->settings}) {
                         wire.Text(value->beforeSha256); wire.Text(value->afterSha256);
@@ -297,7 +311,7 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto magic = reader.Number(4);
         if ((magic & 0x00ffffffu) != 0x004a5446u
-            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C'
+            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D'
                 && ((magic >> 24) < '1' || (magic >> 24) > '9')))
             return Failed<TerrainStrokeJournal>();
         const auto version = (magic >> 24) >= 'A' ? static_cast<unsigned>((magic >> 24) - 'A') + 10u
@@ -321,7 +335,19 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             TerrainJournalStroke stroke; auto& intent = stroke.intent; auto& brush = intent.brush;
             if (hasVariants) {
                 const auto kind = reader.Number(1);
-                if (kind > (hasStarts ? 5u : hasUnits ? 4u : hasDoodads ? 3u : hasPalette ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
+                if (kind > (version >= 13 ? 6u : hasStarts ? 5u : hasUnits ? 4u : hasDoodads ? 3u : hasPalette ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
+                if (kind == 6) {
+                    TerrainBlockPasteIntent block; block.algorithm = static_cast<std::uint8_t>(reader.Number(1));
+                    block.sourceCells.x0 = static_cast<std::uint32_t>(reader.Number(4));
+                    block.sourceCells.y0 = static_cast<std::uint32_t>(reader.Number(4));
+                    block.sourceCells.x1 = static_cast<std::uint32_t>(reader.Number(4));
+                    block.sourceCells.y1 = static_cast<std::uint32_t>(reader.Number(4));
+                    block.destinationVertex[0] = static_cast<std::uint32_t>(reader.Number(4));
+                    block.destinationVertex[1] = static_cast<std::uint32_t>(reader.Number(4));
+                    block.expectedBlockSha256 = reader.Text(64); intent.followDoodads = reader.Bool();
+                    intent.blockPaste = std::move(block); stroke.rulesSha256 = reader.Text(64);
+                    journal.strokes.push_back(std::move(stroke)); continue;
+                }
                 if (kind == 5) {
                     TerrainStartLocationsJournalEdit edit;
                     for (auto* value : {static_cast<TerrainPlacementJournalDelta*>(&edit.units), &edit.settings}) {
@@ -450,6 +476,9 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         if (version == 12 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::StraightRamp
                 && stroke.intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected; }))
+            return Failed<TerrainStrokeJournal>();
+        if (version == 13 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.blockPaste.has_value(); }))
             return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }
