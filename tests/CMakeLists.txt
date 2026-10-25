@@ -433,7 +433,7 @@ target_compile_options(war3-map-terrain-ramp-height-view-tests PRIVATE /W4 /perm
 add_test(NAME terrain-ramp-height-view COMMAND war3-map-terrain-ramp-height-view-tests)
 set_tests_properties(terrain-ramp-height-view PROPERTIES TIMEOUT 60)
 
-foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas BlpMipChain TerrainPicking TerrainInspection ViewRay TerrainGroundMesh TerrainMinimapCandidate TerrainMinimapPostprocess TerrainMinimapRepresentativeColor TerrainMinimapAssets ClassicMinimapCandidate ClassicMinimapTerrainRules ClassicMinimapObjectAssets ClassicMinimapObjectLayer WorldModelScene StaticModelTexsSampler TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel ClassicObjectTexture)
+foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas BlpMipChain TerrainPicking TerrainInspection ViewRay TerrainGroundMesh TerrainRowScan TerrainMinimapCandidate TerrainMinimapPostprocess TerrainMinimapRepresentativeColor TerrainMinimapAssets ClassicMinimapCandidate ClassicMinimapTerrainRules ClassicMinimapObjectAssets ClassicMinimapObjectLayer WorldModelScene StaticModelTexsSampler TerrainCliffs SceneLighting BuildingSplatPreview OwnedStaticModel ClassicObjectTexture)
     add_executable(war3-map-${render_part}-tests ${render_part}Tests.cpp)
     target_link_libraries(war3-map-${render_part}-tests PRIVATE War3MapEditor::RenderSupport)
     target_compile_definitions(war3-map-${render_part}-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)

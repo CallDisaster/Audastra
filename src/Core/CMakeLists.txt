@@ -47,6 +47,8 @@ add_library(War3MapCore STATIC
     MapData/MapDataEditSessionTerrainInternal.h
     MapData/PlacementEditing.cpp
     MapData/MapTerrain.cpp
+    MapData/MapTerrainDecode.h
+    MapData/TerrainVertexRows.cpp
     MapData/MapPathing.cpp
     MapData/MapMinimapMarkers.cpp
     MapData/NativeMinimapMarkers.cpp
