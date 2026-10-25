@@ -114,8 +114,12 @@ inline void CheckRealTerrainPathingCliSave(const MapArchiveSession& original,
         expected[pixel(targetX[type], 128)] |= bits[type];
         Require(Take(output.ReadMember("war3map.wpm")) == expected,
             "every actual saved WPM byte matches independent named-bit/single-pixel expectation");
-        Require(output.Members().size() == source.Members().size(),
-            "actual pathing-only CLI save preserves complete original named-member coverage");
+        const bool addsEmptyMarkers = !source.HasMember("war3map.mmp");
+        Require(output.Members().size() == source.Members().size() + (addsEmptyMarkers ? 1 : 0),
+            "actual pathing-only CLI save preserves original named-member coverage and only adds the generated MMP when absent");
+        if (addsEmptyMarkers)
+            Require(Take(output.ReadMember("war3map.mmp")) == std::vector<std::byte>(8, std::byte{0}),
+                "empty original unit placements produce the complete independent empty MMP version0/count0 literal");
         for (const auto& member : source.Members()) {
             Require(output.HasMember(member.name), "actual pathing-only CLI save retains every source member");
             if (member.name != "war3map.wpm")
