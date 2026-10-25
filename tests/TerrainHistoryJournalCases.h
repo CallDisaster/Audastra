@@ -96,6 +96,43 @@ void HistoryLinearStackKeepsCoreQtUndoRedoAndFullOldBaseline() {
         "new linear commands after a save share the first history window");
     Require(decoded.history->currentIndex == 1 && decoded.strokes.size() == 2
         && decoded.history->baselineMembers[0].bytes == f.terrainBytes, "later live edits cannot change the already frozen cold history");
+
+    // 来源P与本工程S可以重叠：保存与Undo不能把作者已有的限制撤掉。
+    SessionFixture source;
+    auto protectedPathing = source.pathing;
+    std::fill(protectedPathing.begin() + 16, protectedPathing.end(), std::byte{0x13});
+    MapDataEditSession restrictions(MapDocument::FromMembers({}));
+    Require(restrictions.AttachTerrain(source.terrainBytes).Succeeded()
+        && restrictions.AttachPathing(protectedPathing).Succeeded(), "attach independent authored P fixture");
+    TerrainBrush brush; brush.kind = TerrainBrushKind::PathingRestriction; brush.radius = 0;
+    brush.pathingRestrictions = 0x02; brush.value = true;
+    Take(restrictions.EditTerrain(brush, std::span(&source.point, 1), false));
+    Require(Take(restrictions.QueryPathingRestrictions()).totalCells == 1,
+        "overlapping intent remains a real command even when physical WPM bytes are unchanged");
+    const auto layeredLease = Take(restrictions.PrepareTerrainHistoryForSave());
+    Require(layeredLease.RetainedBytes() && layeredLease.RetainedBytes() <= layeredLease.PreparationBytes()
+        && layeredLease.PreparationBytes() <= TerrainJournalMaximumBytes,
+        "history lease reports its bounded retained and preparation capacities");
+    restrictions.CommitSaved(restrictions.Snapshot());
+    Require(restrictions.CommitTerrainHistorySave(layeredLease).Succeeded() && restrictions.Undo(),
+        "restriction-only command crosses the real saved station");
+    const auto undoneLayers = Take(DecodePathingRestrictionLayers(source.terrain, protectedPathing, protectedPathing,
+        Take(restrictions.SerializePathingRestrictionDraft())));
+    Require(std::all_of(undoneLayers.protectedSource.begin(), undoneLayers.protectedSource.end(),
+            [](auto value) { return value == std::byte{0x02}; })
+        && std::all_of(undoneLayers.intent.begin(), undoneLayers.intent.end(),
+            [](auto value) { return value == std::byte{0}; })
+        && std::count(undoneLayers.savedIntent.begin(), undoneLayers.savedIntent.end(), std::byte{0x02}) == 1,
+        "Undo withdraws only current S while authored P and saved S stay independently bound");
+    auto layered = Take(restrictions.ExportTerrainHistoryJournal());
+    Require(MaterializeTerrainJournalPlacements(layered).Succeeded()
+        && layered.history->baselinePathingLayers.empty() && !layered.baselinePathingLayers.empty()
+        && layered.history->currentIndex == 0 && layered.history->savedIndex == 1,
+        "saved APR3 and original empty APR stay distinct in the full history");
+    BindHistoryPhysicalAnchor(layered, source.terrainBytes, protectedPathing);
+    const auto layeredBytes = Take(EncodeTerrainStrokeJournal(layered));
+    Require(Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(layeredBytes)))) == layeredBytes,
+        "overlapping authored P and saved S keep exact canonical cold history bytes");
 }
 
 void HistoryRejectsBrokenSavedBranchRawCommandsAndMovedAliases() {
