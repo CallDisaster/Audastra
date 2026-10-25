@@ -409,7 +409,7 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
                 || (terrainSavedIndex && *terrainSavedIndex > terrainReceipts.size()))
                 return fail(QObject::tr("恢复的地形历史位置超出实际回执"));
             if (terrainReceipts.size() > 128) {
-                // 旧工程的前向记录可能超过Qt撤销上限，不能因此丢弃完整raw草稿。
+                // 恢复结果仍受Qt独立上限约束；能力不足不能丢弃完整raw草稿。
                 terrainReceipts.clear(); terrainCurrentIndex = 0; terrainSavedIndex.reset();
                 terrainJournalWarning = "草稿已完整保留；地形历史超过128条撤销预算，撤销和重做未恢复。";
             } else mapDataEdits = std::move(restored.value->session);
