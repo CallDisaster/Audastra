@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 
 namespace War3Map::Services { class TerrainPathingSave; class TerrainResizeEditService; class TerrainSessionResources; class TerrainHistorySave; }
 
@@ -90,6 +91,9 @@ public:
     [[nodiscard]] std::span<const TerrainWaterSpecialDoodadShape> WaterSpecialShapes() const noexcept { return waterSpecialShapes_; }
     [[nodiscard]] Status VerifyWaterBrushDoodads(const DoodadPlacements& doodads, std::span<const std::byte> source = {}) const;
     [[nodiscard]] bool EquivalentGround(std::string_view before, std::string_view after) const;
+    // 普通悬崖材质及0..2变体不参与原版地形通行计算；仍须绑定实际旧/新
+    // CliffTypes行。此查询不允许替换palette、几何、坡道或其它W3E标志。
+    [[nodiscard]] bool CapturedCliffMaterials(std::string_view before, std::string_view after) const;
     // 无坡道顶点的原版 D=0/1/2 和严格覆水状态都必须相等；不使用显示网格高度。
     [[nodiscard]] bool EquivalentWater(const TerrainVertex& before, const TerrainVertex& after) const;
     [[nodiscard]] Status VerifyFrozenOutput(std::span<const MemberReplacement> replacements,
@@ -213,6 +217,7 @@ private:
     std::vector<SpatialFootprint> spatialFootprints_;
     std::optional<Game::NativeDoodadCategoryDirectory> nativeCategoryDirectory_;
     std::map<std::string, std::array<bool, 3>, std::less<>> ground_;
+    std::set<std::string, std::less<>> cliffMaterials_;
     std::filesystem::path gameRoot_;
     std::uint8_t tileset_ = 0;
     std::size_t sourceBytes_ = 0;

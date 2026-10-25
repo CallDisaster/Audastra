@@ -1129,10 +1129,21 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         const bool cliffChanged = before.CliffLevel() != after.CliffLevel();
         const bool cliffVariationChanged = before.CliffVariation() != after.CliffVariation();
         const bool cliffTextureChanged = before.CliffTextureIndex() != after.CliffTextureIndex();
+        // 原版通行只消费地面材质、几何和水等字段，不消费普通悬崖材质/变体。
+        // 只有同一palette中的实际有效旧/新行可证明这条窄差分；混合level变化、
+        // 未知变体或哨兵仍走完整重建，其余字段与摆放继续逐项接受原有检查。
+        const auto cliffMaterial = [](const TerrainHeader& header, const TerrainVertex& vertex) -> std::string_view {
+            const auto slot = vertex.CliffTextureIndex();
+            return slot < 15 && slot < header.cliffTilesets.size() ? std::string_view(header.cliffTilesets[slot]) : std::string_view{};
+        };
+        const bool cliffMaterialInvariant = (cliffTextureChanged || cliffVariationChanged) && resources && !cliffChanged
+            && oldHeader.cliffTilesets == newHeader.cliffTilesets
+            && before.CliffVariation() <= 2 && after.CliffVariation() <= 2
+            && resources->CapturedCliffMaterials(cliffMaterial(oldHeader, before), cliffMaterial(newHeader, after));
         if ((waterChanged && ((!resources && !nativeRebuild) || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & protectedWaterFlags) != 0))
-            || (cliffVariationChanged && !nativeRebuild)
+            || (cliffVariationChanged && !nativeRebuild && !cliffMaterialInvariant)
             || (before.cliffAndLayerRaw != after.cliffAndLayerRaw && ((!resources && !nativeRebuild)
-                || (cliffTextureChanged && !nativeRebuild)))
+                || (cliffTextureChanged && !nativeRebuild && !cliffMaterialInvariant)))
             || ((before.textureAndFlagsRaw ^ after.textureAndFlagsRaw)
                 // Boundary仅在完整原版G0/G1路径放行；原WPM必须逐格解释，
                 // 新边界按所属地格SW记录重算，不能沿用“通行不变”的输出。
@@ -1169,7 +1180,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         if (oldGround != newGround && (!resources || !resources->EquivalentGround(oldGround, newGround)))
             return reject("旧/新地面贴图的实际 walkable、flyable、buildable 属性不同或缺少可信来源，不能保留原 WPM");
         invariantChanged = invariantChanged || before.variationRaw != after.variationRaw
-            || oldGround != newGround || waterChanged || cliffChanged;
+            || oldGround != newGround || waterChanged || cliffChanged || cliffTextureChanged;
         if (cliffChanged && (!SameCliffPathingFootprint(*terrainOriginal_, *terrain, index)
             || !resources->EquivalentWater(before, after)))
             return reject("悬崖修改改变了通行阻断轮廓或水深分类，或涉及坡道/边界；尚需重建通行性");

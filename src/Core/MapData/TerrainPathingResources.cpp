@@ -176,6 +176,7 @@ std::string_view Ground(const TerrainHeader& header, const TerrainVertex& vertex
 struct Needs {
     std::set<std::string, std::less<>> ground;
     bool water = false;
+    bool cliffMaterial = false;
 };
 Needs Required(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after) {
     Needs needs;
@@ -188,6 +189,8 @@ Needs Required(const TerrainGridSnapshot& before, const TerrainGridSnapshot& aft
     }
     for (std::size_t i = 0; i < before.vertices.size(); ++i) {
         const auto& a = before.vertices[i]; const auto& b = after.vertices[i];
+        needs.cliffMaterial |= a.CliffTextureIndex() != b.CliffTextureIndex()
+            || a.CliffVariation() != b.CliffVariation();
         const auto oldGround = Ground(before.header, a), newGround = Ground(after.header, b);
         if (oldGround != newGround) { needs.ground.emplace(oldGround); needs.ground.emplace(newGround); }
         if ((a.HasWater() || b.HasWater()) && (a.groundHeightRaw != b.groundHeightRaw
@@ -303,7 +306,7 @@ void RejectLooseInput(const std::filesystem::path& root, std::string_view name) 
 
 bool TerrainPathingResources::Needed(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after) {
     const auto needs = Required(before, after);
-    return !needs.ground.empty() || needs.water || before.header.groundTilesets != after.header.groundTilesets
+    return !needs.ground.empty() || needs.water || needs.cliffMaterial || before.header.groundTilesets != after.header.groundTilesets
         || before.header.usesCustomTileset != after.header.usesCustomTileset
         || (before.vertices.size() == after.vertices.size() && !std::equal(before.vertices.begin(), before.vertices.end(),
             after.vertices.begin(), [](const auto& a, const auto& b) { return a.CliffLevel() == b.CliffLevel(); }));
@@ -730,6 +733,24 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
         bool nativeOverrides = false;
         bool nativeRamp = false;
         std::vector<ArchiveExactMember> objectSources;
+        const auto captureCliffMaterials = [&] {
+            // 纯材质修改不重新解释未改变的对象层；实际旧/新材质行仍须绑定。
+            if (before.vertices.size() != after.vertices.size()) return;
+            for (std::size_t i = 0; i < before.vertices.size(); ++i) {
+                const auto& oldVertex = before.vertices[i]; const auto& newVertex = after.vertices[i];
+                const auto oldSlot = oldVertex.CliffTextureIndex(), newSlot = newVertex.CliffTextureIndex();
+                if (oldSlot == newSlot && oldVertex.CliffVariation() == newVertex.CliffVariation()) continue;
+                const bool oldKnown = oldSlot < 15 && oldSlot < before.header.cliffTilesets.size();
+                const bool newKnown = newSlot < 15 && newSlot < after.header.cliffTilesets.size();
+                if ((!oldKnown || !newKnown) && native && !IsNativeTerrainCliffSentinelTransition(before, after, i))
+                    Fail("TERRAIN_NATIVE_CLIFF_SLOT",
+                        "悬崖材质变化需要实际有效旧/新槽；15号哨兵仅由完整原版重建核实：顶点" + std::to_string(i));
+                // 轻量捕获不为非法槽补造行，也不提前截断既有哨兵重建流程；
+                // 保存门要求两侧有效，因此这一支只能继续转入完整native重建。
+                if (oldKnown) cliffs.insert(before.header.cliffTilesets[oldSlot]);
+                if (newKnown) cliffs.insert(after.header.cliffTilesets[newSlot]);
+            }
+        };
         if (native) {
             if (before.header.version != 11 || after.header.version != 11
                 || before.header.width != after.header.width || before.header.height != after.header.height
@@ -756,18 +777,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             for (const auto* grid : {&before, &after}) for (const auto& vertex : grid->vertices) {
                 nativeRamp = nativeRamp || vertex.IsRamp();
             }
-            for (std::size_t i = 0; i < before.vertices.size(); ++i) {
-                const auto oldSlot = before.vertices[i].CliffTextureIndex(), newSlot = after.vertices[i].CliffTextureIndex();
-                if (oldSlot == newSlot) continue;
-                const bool oldKnown = oldSlot < 15 && oldSlot < before.header.cliffTilesets.size();
-                const bool newKnown = newSlot < 15 && newSlot < after.header.cliffTilesets.size();
-                if ((!oldKnown || !newKnown) && !IsNativeTerrainCliffSentinelTransition(before, after, i))
-                    Fail("TERRAIN_NATIVE_CLIFF_SLOT", "悬崖槽变化需要实际有效槽，或已证明平坦安全的15号哨兵过渡：顶点" + std::to_string(i));
-                // 平坦15号哨兵没有材质行；只捕获实际有效一侧，不伪造旧/新资源。
-                // 哨兵侧的完整邻域仍由共享判定核实，G0/G1和旧WPM逐格比较不变。
-                if (oldKnown) cliffs.insert(before.header.cliffTilesets[oldSlot]);
-                if (newKnown) cliffs.insert(after.header.cliffTilesets[newSlot]);
-            }
+            captureCliffMaterials();
             const std::vector<std::string> metadata{"war3map.w3e", "war3map.w3i", "war3map.doo", "war3map.w3b"};
             ArchiveExactMemberLimits limits;
             limits.memberCount = metadata.size(); limits.memberBytes = limits.totalBytes = maximumBytes;
@@ -823,7 +833,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
             if (!doodads->doodads.empty() && !validator)
                 Fail(nativeOverrides ? "TERRAIN_NATIVE_OBJECT_OVERRIDE_UNSUPPORTED" : "TERRAIN_NATIVE_OBJECT_ADAPTER_REQUIRED",
                     "非空普通DOO需要严格对象解析适配，不能只凭可破坏物单表证明类别和静态贡献。");
-        }
+        } else captureCliffMaterials();
         std::optional<DoodadPlacements> editedDoodads;
         const DoodadPlacements* afterDoodads = doodads ? &*doodads : nullptr;
         if (native) {
@@ -899,6 +909,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 for (const auto& id : cliffs) if (std::none_of(table.Rows().begin(), table.Rows().end(),
                     [&](const auto& row) { return row.id == id; }))
                     Fail("TERRAIN_PATHING_PROPERTY_MISSING", "CliffTypes.slk缺少悬崖槽变化的实际行：" + id);
+                result.cliffMaterials_ = cliffs;
             } else {
                 auto text = std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
                 if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
@@ -1265,6 +1276,10 @@ bool TerrainPathingResources::EquivalentGround(std::string_view before, std::str
     return a != ground_.end() && b != ground_.end() && a->second == b->second;
 }
 
+bool TerrainPathingResources::CapturedCliffMaterials(std::string_view before, std::string_view after) const {
+    return !before.empty() && !after.empty() && cliffMaterials_.contains(before) && cliffMaterials_.contains(after);
+}
+
 bool TerrainPathingResources::EquivalentWater(const TerrainVertex& before, const TerrainVertex& after) const {
     if (before.HasWater() != after.HasWater()) return false;
     if (!before.HasWater()) return true;
@@ -1498,6 +1513,7 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
         for (const auto& type : *types) bytes += type.rawcode.capacity() + type.pathTexture.capacity() + 2;
     }
     for (const auto& [name, properties] : ground_) { (void)properties; bytes += name.capacity() + 1 + 128; }
+    for (const auto& name : cliffMaterials_) bytes += name.capacity() + 1 + 128;
     bytes += nativeGround_.capacity() * sizeof(TerrainNativeGroundRule) + nativeDoodads_.capacity()
         + nativeStaticAttributes_.capacity() + nativeSpecialAttributes_[0].capacity() + nativeSpecialAttributes_[1].capacity()
         + nativeAfterDoodads_.capacity() + waterBrushDoodadsSha_.capacity() + waterSpecialShapes_.capacity() * sizeof(TerrainWaterSpecialDoodadShape);
