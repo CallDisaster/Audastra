@@ -102,7 +102,7 @@ struct Fixture {
             {"TerrainArt\\Water.slk", Slk({"waterID"})}, {"Fixture\\Ground.blp", Atlas()}, {"Fixture\\Cliff.blp", Atlas()},
             {"UI\\MiscData.txt", Text("[Water]\nDeepLevelPathing=64\n")},
             {"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")}};
-        if (missingInvalidModel || ordinaryColor) {
+        if (missingInvalidModel || ordinaryColor || special) {
             members.push_back({"Doodads\\Doodads.slk", Slk({
                 "doodID|code|showInMM|useMMColor|MMRed|MMGreen|MMBlue|file|pathTex|numVar|category|fixedRot",
                 "D001|D001|1|1|220|40|10||none|1|S|0", "SPC1|SPC1|0|0|0|0|0||none|1|S|0"})});
