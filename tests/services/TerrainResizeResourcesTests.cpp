@@ -182,7 +182,8 @@ void FootprintQueryKeepsZeroBorderAndLiteralOrientation() {
 void SaveAndUndoKeepEveryActualMember(bool shadow) {
     Fixture fixture(true, shadow);
     const auto sourceSha = fixture.archive->SourceSha256(); const auto sourcePath = fixture.archive->SourcePath();
-    const auto save = [&](const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes& expectedShadow) {
+    const auto save = [&](const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes& expectedShadow,
+        const std::array<float, 4>& expectedMargins) {
         auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot));
         Check(plan.SaveGate());
         auto replacements = fixture.edits->Replacements(); const auto removals = fixture.edits->Removals();
@@ -193,25 +194,37 @@ void SaveAndUndoKeepEveryActualMember(bool shadow) {
         Check(plan.VerifyReadback(actual));
         Require(Take(actual.ReadMember("war3map.w3e")) == terrain && Take(actual.ReadMember("war3map.wpm")) == pathing,
             "actual save/reopen matches independent full W3E and WPM literals");
+        auto expectedSettings = fixture.settings; expectedSettings.cameraMargins = expectedMargins;
+        Require(Take(actual.ReadMember("war3map.w3i")) == Take(expectedSettings.Serialize()),
+            "actual W3I changes only the independently expected four relative canvas margins");
+        const auto savedDocument = MapDocument::FromArchive(actual);
+        const auto savedTerrain = Take(ParseMapTerrain(Take(actual.ReadMember("war3map.w3e")))).Snapshot();
+        const auto& savedSettings = savedDocument.Settings();
+        Require(savedSettings && savedTerrain
+            && double(savedTerrain->header.offset[0]) + savedSettings->cameraMargins[0] * 128.0 == -1920
+            && double(savedTerrain->header.offset[1]) + savedSettings->cameraMargins[2] * 128.0 == -1920
+            && double(savedTerrain->header.offset[0]) + (savedTerrain->header.width - 1 - savedSettings->cameraMargins[1]) * 128.0 == 1792
+            && double(savedTerrain->header.offset[1]) + (savedTerrain->header.height - 1 - savedSettings->cameraMargins[3]) * 128.0 == 1792,
+            "actual saved playable world rectangle is unchanged by expand, undo, redo and crop");
         const std::array<std::string, 1> names{"war3map.shd"}; const auto members = Take(actual.CaptureExactMembers(names));
         Require(members[0].present == shadow && members[0].bytes == expectedShadow, "SHD actual presence and complete migration bytes match; absence stays absence");
         for (const auto& member : fixture.members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm"
             && member.name != "war3map.w3i" && member.name != "war3map.shd")
             Require(Take(actual.ReadMember(member.name)) == member.data, "ordinary world objects, W3R/W3C, script, TGA and actual resources remain exact");
-        Check(plan.CommitSaved(*fixture.edits, MapDocument::FromArchive(actual)));
+        Check(plan.CommitSaved(*fixture.edits, savedDocument));
         Require(!fixture.edits->IsDirty(), "save commits all current layers and actual SHD as one new baseline");
         fixture.archive = std::make_unique<MapArchiveSession>(std::move(actual));
     };
     Apply(fixture, Expand());
     save("expanded.w3x", TerrainLiteral(-32, -32, 32, 32), PathingLiteral(-32, -32, 32, 32),
-        shadow ? ShadowLiteral(-32, -32, 32, 32, true) : Bytes{});
+        shadow ? ShadowLiteral(-32, -32, 32, 32, true) : Bytes{}, {33, 2, 33, 2});
     Require(fixture.edits->Undo(), "cross-save hot undo restores original shape");
-    save("undone.w3x", TerrainLiteral(), PathingLiteral(), shadow ? ShadowLiteral() : Bytes{});
+    save("undone.w3x", TerrainLiteral(), PathingLiteral(), shadow ? ShadowLiteral() : Bytes{}, {1, 2, 1, 2});
     Require(fixture.edits->Redo(), "cross-save hot redo restores expanded shape");
     save("redone.w3x", TerrainLiteral(-32, -32, 32, 32), PathingLiteral(-32, -32, 32, 32),
-        shadow ? ShadowLiteral(-32, -32, 32, 32, true) : Bytes{});
+        shadow ? ShadowLiteral(-32, -32, 32, 32, true) : Bytes{}, {33, 2, 33, 2});
     Apply(fixture, CropBack());
-    save("cropped.w3x", TerrainLiteral(), PathingLiteral(), shadow ? ShadowLiteral(0, 0, 32, 32, true) : Bytes{});
+    save("cropped.w3x", TerrainLiteral(), PathingLiteral(), shadow ? ShadowLiteral(0, 0, 32, 32, true) : Bytes{}, {1, 2, 1, 2});
     Require(Take(Sha256File(sourcePath)) == sourceSha, "all save-as and undo cases leave original synthetic source archive read-only");
 }
 
