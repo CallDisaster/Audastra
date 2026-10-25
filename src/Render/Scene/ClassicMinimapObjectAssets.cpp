@@ -450,8 +450,8 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
             // 分别保留并由 Current/FrozenOutput 的 revision + replacement 门核对；
             // 这里只拒绝任一侧无法由唯一classic parser完整读取的记录。
         }
-        if (!doodads.specialDoodads.empty())
-            Fail("CLASSIC_OBJECT_CAPTURE_SPECIAL_UNRESOLVED", "当前war3map.doo包含特殊装饰物记录；其是否进入原版0x08小地图层尚未由IDA确认，拒绝生成以免静默漏画。");
+        // 原版 special 尾段归地形环境表管理，不进入 0x08 普通对象色层。
+        // 完整 DOO 原字、special 记录、容量与来源身份仍参与捕获和保存复核。
         auto objectWorking = facts.estimatedPeakBytes;
         Charge(objectWorking, measuredSnapshotBytes);
         Charge(objectWorking, members[0].bytes.capacity()); Charge(objectWorking, members[1].bytes.capacity());

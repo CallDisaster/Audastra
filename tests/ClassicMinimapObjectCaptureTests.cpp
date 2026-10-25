@@ -114,6 +114,33 @@ std::vector<MapArchiveMember> Materials() {
         {"TerrainArt\\Water.slk", Slk({"waterID"})}, {"Fixture\\Ground.blp", Blp()}};
 }
 
+std::vector<MapArchiveMember> ObjectMaterials() {
+    return {{"Doodads\\Doodads.slk", Slk({
+            "doodID|code|showInMM|useMMColor|MMRed|MMGreen|MMBlue|file|pathTex|numVar",
+            "D001|D001|1|1|220|40|10|||1"})},
+        {"Units\\DestructableData.slk", Slk({"destructableID|code", "Dst0|Dst0"})},
+        {"Doodads\\DoodadMetaData.slk", Slk({"ID|field|slk|type|repeat|data|index",
+            "dptx|pathTex|DoodadData|pathingTexture|0|0|0"})},
+        {"Units\\DestructableMetaData.slk", Slk({"ID|field|slk|type|repeat|data|index",
+            "bwal|walkable|DestructableData|bool|0|0|-1"})},
+        {"UI\\WorldEditData.txt", Text("[WorldEditArt]\nInvalidModel=Fixture/Invalid.mdx\n")}};
+}
+
+Bytes DoodadBytes(bool ordinary, bool special, std::int32_t variation = 2) {
+    DoodadPlacements placements;
+    if (ordinary) {
+        DoodadPlacement placement; placement.rawcode = "D001"; placement.creationId = 1;
+        placement.position = {384, 384, 0}; placement.scale = {1, 1, 1}; placement.flags = 2;
+        placements.doodads.push_back(placement);
+    }
+    if (special) {
+        SpecialDoodadPlacement placement; placement.rawcode = "SPC1";
+        placement.variation = variation; placement.position = {3, 3};
+        placements.specialDoodads.push_back(placement);
+    }
+    return Take(placements.Serialize());
+}
+
 class Fixture {
 public:
     TempDirectory directory;
@@ -149,8 +176,10 @@ public:
         return MapDocument::FromMembers(std::move(members));
     }
 
-    MapArchiveSession Source(std::string_view name = "source.w3x", bool unlistedDoo = false, bool presentEmptyUnits = false) {
+    MapArchiveSession Source(std::string_view name = "source.w3x", bool unlistedDoo = false,
+        bool presentEmptyUnits = false, bool objectMaterials = false) {
         auto members = Materials();
+        if (objectMaterials) for (auto& member : ObjectMaterials()) members.push_back(std::move(member));
         members.push_back({"war3map.w3e", w3e}); members.push_back({"war3map.wpm", wpm});
         if (sourceUnits || presentEmptyUnits) members.push_back({"war3mapUnits.doo", sourceUnits.value_or(Bytes{})});
         if (sourceDoodads) members.push_back({"war3map.doo", *sourceDoodads});
@@ -321,6 +350,81 @@ void TestMovedFrom() {
     Require(candidate.raw.width == 8 && candidate.raw.height == 8, "move目标仍可消费sealed捕获");
 }
 
+void TestSpecialTailDoesNotEnterOrdinaryColorLayer() {
+    for (const bool ordinary : {false, true}) {
+        const auto plainBytes = DoodadBytes(ordinary, false), specialBytes = DoodadBytes(ordinary, true);
+        Fixture plain(MapDataFixtures::EmptyUnitsV8Sub11(), plainBytes,
+            MapDataFixtures::EmptyUnitsV8Sub11(), plainBytes);
+        Fixture special(MapDataFixtures::EmptyUnitsV8Sub11(), specialBytes,
+            MapDataFixtures::EmptyUnitsV8Sub11(), specialBytes);
+        auto plainSource = plain.Source("plain.w3x", false, false, ordinary);
+        auto specialSource = special.Source("special.w3x", false, false, ordinary);
+        auto plainAssets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(plain, plainSource), plainSource, plain.edits));
+        auto specialAssets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(special, specialSource), specialSource, special.edits));
+        const auto& fact = specialAssets.CapturedMembers()[1];
+        Require(fact.state == ClassicMinimapCapturedObjectState::Parsed && fact.parserFullyConsumed
+            && fact.ordinaryPlacements == (ordinary ? 1u : 0u) && fact.specialPlacements == 1
+            && fact.sourceSha256 == Take(Sha256(specialBytes)) && fact.currentSha256 == fact.sourceSha256,
+            "special-only也必须是完整Parsed事实，保留普通与特殊数量及原字身份");
+        Require(specialAssets.Doodads().specialDoodads.size() == 1
+            && specialAssets.Doodads().specialDoodads[0].position == std::array<std::int32_t, 2>{3, 3}
+            && specialAssets.Doodads().specialDoodads[0].variation == 2, "special原始地形坐标及变体不可丢失");
+        Require(specialAssets.ObjectLayer().styles.size() == (ordinary ? 1u : 0u)
+            && specialAssets.ObjectLayer().pixels.size() == (ordinary ? 1u : 0u)
+            && specialAssets.ObjectLayer().shownPlacements == (ordinary ? 1u : 0u),
+            "special不得转换为普通对象样式、像素或显示数量");
+        auto plainCandidate = Take(BuildClassicMinimapCandidate(plainAssets, FlatPostprocess()));
+        auto specialCandidate = Take(BuildClassicMinimapCandidate(specialAssets, FlatPostprocess()));
+        Require(plainCandidate.raw.rgba == specialCandidate.raw.rgba
+            && plainCandidate.preNoise.rgba == specialCandidate.preNoise.rgba
+            && plainCandidate.manifest.preNoiseRgbaSha256 == specialCandidate.manifest.preNoiseRgbaSha256,
+            "仅增加special尾段不得改变噪点前像素");
+        Require(plainAssets.IdentitySha256() != specialAssets.IdentitySha256(),
+            "special像素不变仍必须保留不同对象捕获身份");
+        if (ordinary) {
+            const auto at = (3u * 8u + 3u) * 4u;
+            Require(specialCandidate.raw.rgba[at] == std::byte{220}
+                && specialCandidate.raw.rgba[at + 1] == std::byte{40}, "普通对象仍真实覆盖地形颜色");
+        }
+        Require(VerifyClassicMinimapObjectAssetsCurrent(specialAssets, specialSource, special.edits, {}).Succeeded()
+            && VerifyClassicMinimapObjectAssetsFrozenOutput(specialAssets, specialSource, {}).Succeeded(),
+            "未改special正文时来源及最终列表通过原门");
+        if (ordinary) {
+            ClassicMinimapObjectAssetLimits limit; limit.maxPlacements = 1;
+            Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(special, specialSource), specialSource,
+                special.edits, limit), "PLACEMENT_RECORD_LIMIT");
+        }
+        const auto changedBytes = DoodadBytes(ordinary, true, 7);
+        const std::array<MemberReplacement, 1> changed{{{"war3map.doo", changedBytes}}};
+        Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(specialAssets, specialSource, changed).Succeeded(),
+            "special变体变化即使像素不变也必须拒绝过期最终正文");
+        const std::array<std::string, 1> removed{"war3map.doo"};
+        Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(specialAssets, specialSource, {}, removed).Succeeded(),
+            "未声明删除的special来源不得丢失");
+        auto edited = Take(ParseDoodadPlacements(changedBytes));
+        Require(special.edits.EditDoodads(edited).Succeeded(), "建立真实special编辑代际");
+        Require(!VerifyClassicMinimapObjectAssetsCurrent(specialAssets, specialSource, special.edits, {}).Succeeded(),
+            "special-only变体编辑仍使旧捕获过期");
+        auto currentAssets = Take(CaptureClassicMinimapObjectAssets(CaptureTerrain(special, specialSource), specialSource, special.edits));
+        Require(currentAssets.IdentitySha256() != specialAssets.IdentitySha256()
+            && currentAssets.CapturedMembers()[1].sourceSha256 == fact.sourceSha256
+            && currentAssets.CapturedMembers()[1].currentSha256 == Take(Sha256(changedBytes)),
+            "source/current合法分歧必须绑定完整special正文");
+        Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(currentAssets, specialSource, {}).Succeeded()
+            && VerifyClassicMinimapObjectAssetsFrozenOutput(currentAssets, specialSource, changed).Succeeded(),
+            "special编辑必须由本次实际replacement闭环");
+        const auto saved = Take(specialSource.SaveCandidate(special.directory.Path() / "special-current.w3x", changed));
+        auto readback = Take(MapArchiveSession::Open(saved.path));
+        Require(VerifyClassicMinimapObjectAssetsReadback(currentAssets, readback).Succeeded()
+            && Take(readback.ReadMember("war3map.doo")) == changedBytes, "special完整原字实际写出并独立回读");
+        const auto unexpected = Take(specialSource.SaveCandidate(special.directory.Path() / "source-drift.w3x", changed));
+        Require(IO::WriteFileBytes(specialSource.SourcePath(), Take(IO::ReadFileBytes(unexpected.path))).Succeeded(),
+            "只替换原创source验证整来源漂移");
+        Require(!VerifyClassicMinimapObjectAssetsFrozenOutput(currentAssets, specialSource, changed).Succeeded(),
+            "special来源原档漂移不得以像素不变放行");
+    }
+}
+
 void TestMeasuredLargeNestedUnitsAndNewCurrentMember() {
     UnitPlacements placements;
     placements.units.resize(4096);
@@ -357,6 +461,7 @@ int main() {
     try {
         TestRealParsedEmptyAndTypedPixels(); TestMissingAndMismatch(); TestZeroNonzeroStaleAndBudget(); TestMovedFrom();
         TestMeasuredLargeNestedUnitsAndNewCurrentMember();
+        TestSpecialTailDoesNotEnterOrdinaryColorLayer();
         std::cout << "ClassicMinimapObjectCaptureTests: real capture scenarios declared\n"; return 0;
     } catch (const std::exception& error) {
         std::cerr << "ClassicMinimapObjectCaptureTests: " << error.what() << '\n'; return 1;

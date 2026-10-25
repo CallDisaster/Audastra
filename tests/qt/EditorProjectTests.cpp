@@ -3563,13 +3563,15 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     members.push_back({"UI\\WorldEditData.txt", text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")});
     const auto oldMinimap = text("author minimap bytes must survive unsupported generation");
     if (existing) members.push_back({"war3mapMap.blp", oldMinimap});
-    if (special && !pathingPhase && injectResource) {
+    if (special) {
         // 无关导入必须由实际表证明不在静态依赖闭包内，不能仅凭NewIcon名字放行。
-        // special仍真实存在，原小地图的能力不足保留路径继续由本测试覆盖。
+        // special不进入普通小地图层；能力不足必须实际来自普通对象所需的InvalidModel配置缺失。
         members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable(
             {"destructableID", "code", "walkable", "pathTex", "fixedRot"}, {{"Dst0", "Dst0", "0", "none", "0"}})});
         members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(
-            {"doodID", "code", "pathTex", "category", "fixedRot"}, {{"SPC1", "SPC1", "none", "S", "0"}})});
+            {"doodID", "code", "pathTex", "category", "fixedRot", "showInMM", "useMMColor", "MMRed", "MMGreen", "MMBlue", "file", "numVar"},
+            {{"SPC1", "SPC1", "none", "S", "0", "0", "0", "0", "0", "0", "", "1"},
+                {"d001", "d001", "none", "S", "0", "1", "1", "220", "40", "10", "", "1"}})});
         members.push_back({"Units/DestructableMetaData.slk", NativeDoodadQtTable(
             {"ID", "field", "slk", "type", "repeat", "data", "index"},
             {{"bwal", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
@@ -3581,11 +3583,11 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
         MapData::DoodadPlacements doodads;
         MapData::SpecialDoodadPlacement placement; placement.rawcode = "SPC1";
         doodads.specialDoodads.push_back(placement);
+        MapData::DoodadPlacement tree;
+        tree.rawcode = "d001"; tree.creationId = 1; tree.flags = 2;
+        tree.position = {384, 512, 5}; tree.scale = {1, 1, 1};
+        doodads.doodads.push_back(tree);
         if (pathingPhase == 4) {
-            MapData::DoodadPlacement tree;
-            tree.rawcode = "d001"; tree.creationId = 1; tree.flags = 2;
-            tree.position = {384, 512, 5}; tree.scale = {1, 1, 1};
-            doodads.doodads.push_back(tree);
             MapData::UnitPlacements units;
             MapData::UnitPlacement unit;
             unit.rawcode = "u001"; unit.creationId = 2; unit.flags = 2;
@@ -3671,7 +3673,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QCOMPARE(project.mapEdits_->Revision(), revisionBeforeRun);
     QCOMPARE(project.mapEdits_->LastEdit().CommandIdentity(), commandBeforeRun);
     if (pathingPhase == 4 && injectResource) {
-        // 此夹具故意保留缺少通行字段的表和未解析特殊模型，不能把它用作
+        // 此夹具故意保留缺少通行字段的表，不能把它用作
         // 已完整解释旧WPM的混合保存正例。真实资源混合保存由独立专项覆盖。
         QVERIFY(!job->succeeded && HasReadDiagnostic(*job, "TERRAIN_PATHING_PROPERTY_MISSING"));
         QVERIFY(!job->minimapPreserve && !std::filesystem::exists(target));
@@ -3690,7 +3692,7 @@ void EditorProjectTests::AutomaticMinimapDefaultPrepareAndSaveCopy() {
     QVERIFY2(job->succeeded, job->diagnostics.empty() ? "default automatic save failed" : job->diagnostics.back().message.c_str());
     if (special) {
         QVERIFY(!job->minimapSave && job->minimapPreserve);
-        QVERIFY(HasReadDiagnostic(*job, "CLASSIC_OBJECT_CAPTURE_SPECIAL_UNRESOLVED"));
+        QVERIFY(HasReadDiagnostic(*job, "CLASSIC_OBJECT_LAYER_INVALID_MODEL_CONFIG_MISSING"));
         QVERIFY(HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
         QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
         QVERIFY(project.CommitMapSave(*job));
@@ -4142,6 +4144,11 @@ void EditorProjectTests::DeclaredMissingMinimapWorkerFailureConsumesTask() {
         // 负例含水而实际Water.slk没有LSha行，在准备通行时即拒绝；不能猜水规则。
         // 仍要求完整拒绝且不产生归档。
         members[1].data[45 + (4 * 9 + 4) * 7 + 4] |= std::byte{0x40};
+        // 原版通行先核真实来源DOO，缺失不等价于已解析的空对象集合。
+        // 提供原创合法空表，才能到达本负例有意缺失的Water行。
+        const auto emptyDoodads = MapData::DoodadPlacements{}.Serialize();
+        QVERIFY(emptyDoodads.Succeeded() && emptyDoodads.value);
+        members.push_back({"war3map.doo", *emptyDoodads.value});
     }
     const auto source = std::filesystem::path(root.filePath("declared-worker-rejected-source.w3x").toStdWString());
     const auto target = std::filesystem::path(root.filePath("declared-worker-rejected.w3x").toStdWString());

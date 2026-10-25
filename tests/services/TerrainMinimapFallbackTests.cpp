@@ -70,8 +70,8 @@ struct Fixture {
     MapArchiveSession archive;
     std::unique_ptr<MapDataEditSession> edits;
     bool hadMinimap;
-    explicit Fixture(bool special = false, bool minimap = true, bool tga = false,
-        MissingInput missing = MissingInput::None) : hadMinimap(minimap) {
+    explicit Fixture(bool missingInvalidModel = false, bool minimap = true, bool tga = false,
+        MissingInput missing = MissingInput::None, bool special = false, bool ordinaryColor = false) : hadMinimap(minimap) {
         static std::atomic<unsigned> sequence{0};
         directory = std::filesystem::temp_directory_path() / ("Audastra-minimap-fallback-"
             + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + "-" + std::to_string(sequence++));
@@ -90,6 +90,11 @@ struct Fixture {
         Put32(w3i, 64, 4); Put32(w3i, 68, 5); Put32(w3i, 72, 0x400); w3i[76] = std::byte{'L'};
         DoodadPlacements doodads;
         if (special) { SpecialDoodadPlacement placement; placement.rawcode = "SPC1"; doodads.specialDoodads.push_back(placement); }
+        if (missingInvalidModel || ordinaryColor) {
+            DoodadPlacement placement; placement.rawcode = "D001"; placement.creationId = 1;
+            placement.position = {384, 384, 0}; placement.scale = {1, 1, 1}; placement.flags = 2;
+            doodads.doodads.push_back(placement);
+        }
         doo = Take(doodads.Serialize());
         std::vector<MapArchiveMember> members{{"war3map.w3e", w3e}, {"war3map.wpm", wpm}, {"war3map.w3i", w3i},
             {"war3map.doo", doo}, {"TerrainArt\\Terrain.slk", Slk({"tileID|dir|file", "Tg01|Fixture|Ground"})},
@@ -97,6 +102,20 @@ struct Fixture {
             {"TerrainArt\\Water.slk", Slk({"waterID"})}, {"Fixture\\Ground.blp", Atlas()}, {"Fixture\\Cliff.blp", Atlas()},
             {"UI\\MiscData.txt", Text("[Water]\nDeepLevelPathing=64\n")},
             {"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n")}};
+        if (missingInvalidModel || ordinaryColor) {
+            members.push_back({"Doodads\\Doodads.slk", Slk({
+                "doodID|code|showInMM|useMMColor|MMRed|MMGreen|MMBlue|file|pathTex|numVar|category|fixedRot",
+                "D001|D001|1|1|220|40|10||none|1|S|0", "SPC1|SPC1|0|0|0|0|0||none|1|S|0"})});
+            members.push_back({"Units\\DestructableData.slk", Slk({
+                "destructableID|code|walkable|pathTex|fixedRot", "Dst0|Dst0|0|none|0"})});
+            members.push_back({"Doodads\\DoodadMetaData.slk", Slk({"ID|field|slk|type|repeat|data|index",
+                "dptx|pathTex|DoodadData|pathingTexture|0|0|0"})});
+            members.push_back({"Units\\DestructableMetaData.slk", Slk({"ID|field|slk|type|repeat|data|index",
+                "bwal|walkable|DestructableData|bool|0|0|-1"})});
+            if (ordinaryColor) for (auto& member : members) if (member.name == "UI\\WorldEditData.txt")
+                member.data = Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n"
+                    "[WorldEditArt]\nInvalidModel=Fixture/Invalid.mdx\n");
+        }
         for (auto& member : members) {
             if (missing == MissingInput::CameraMargins && member.name == "UI\\WorldEditData.txt")
                 member.data = Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\n");
@@ -121,16 +140,18 @@ struct Fixture {
     void Freeze(MapSaveTask& task, bool inPlace = false) {
         Require(task.FreezeArchive(archive).Succeeded(), "冻结真实来源"); task.inPlace = inPlace;
         task.target = inPlace ? archive.SourcePath() : directory / "saved.w3x";
+        if (inPlace) task.inPlaceOptions.backupDirectory = directory / "backups";
         // 新增资源触发自动重建，内容不改变原地形/DOO；所有资源均为原创。
         task.replacements.push_back({"Fixture\\Unused.blp", Text("new fixture resource")});
     }
 };
 void PreserveThroughActualSave(bool present, bool inPlace) {
     Fixture fixture(true, present); MapSaveTask task; fixture.Freeze(task, inPlace);
+    const auto sourceSha = Take(Sha256File(fixture.archive.SourcePath()));
     auto result = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {});
     Require(result.Succeeded() && result.value && !result.value->generated && result.value->preserved,
-        "真实特殊装饰物不支持时取得保留资格");
-    Require(HasCode(result.diagnostics, "CLASSIC_OBJECT_CAPTURE_SPECIAL_UNRESOLVED")
+        "普通对象的真实InvalidModel配置缺失时取得保留资格");
+    Require(HasCode(result.diagnostics, "CLASSIC_OBJECT_LAYER_INVALID_MODEL_CONFIG_MISSING")
         && HasCode(result.diagnostics, "MINIMAP_GENERATION_SKIPPED"), "保留原始原因并明确跳过生成");
     Require(std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
         [](const auto& diagnostic) { return diagnostic.severity == DiagnosticSeverity::Error; }), "降级后只有警告");
@@ -140,6 +161,10 @@ void PreserveThroughActualSave(bool present, bool inPlace) {
     task.beforePublish = [&] { return guard->VerifyFrozenOutput(task); };
     MapSaveService::Run(task);
     Require(task.succeeded && task.nextSession, "生成器不支持不阻断已通过检查的其它保存");
+    if (inPlace) {
+        Require(!task.backup.empty() && std::filesystem::exists(task.backup)
+            && Take(Sha256File(task.backup)) == sourceSha, "降级原地保存仍保留真实来源备份");
+    } else Require(Take(Sha256File(fixture.archive.SourcePath())) == sourceSha, "降级另存不改原创来源");
     const auto saved = Take(MapArchiveSession::Open(task.target));
     Require(guard->VerifyReadback(task, saved).Succeeded(), "保留小地图独立回读");
     Require(saved.HasMember("war3mapMap.blp") == present && !saved.HasMember("war3mapMap.tga"), "原来缺失仍不写");
@@ -224,6 +249,7 @@ void SourceStaleAndFinalMutationStillReject() {
     Fixture fixture(true); MapSaveTask task; fixture.Freeze(task);
     const auto result = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {}));
     const auto guard = result.preserved;
+    Require(guard && !result.generated, "真实InvalidModel缺配置必须取得保留guard再核安全拒绝");
     task.replacements.push_back({"war3mapMap.blp", Text("wrong regenerated minimap")});
     Require(!guard->VerifyFrozenOutput(task).Succeeded(), "最终列表悄悄改写原BLP必须拒绝"); task.replacements.pop_back();
     task.removals.push_back("war3mapMap.blp"); Require(!guard->VerifyFrozenOutput(task).Succeeded(), "删除原BLP必须拒绝"); task.removals.clear();
@@ -244,10 +270,39 @@ void SourceStaleAndFinalMutationStillReject() {
         Require(!failure.Succeeded() && !failure.value && HasCode(failure.diagnostics, code), "来源身份I/O未知异常不降级");
     }
 }
+
+void SpecialTailGeneratesAndSaves() {
+    for (const bool ordinary : {false, true}) {
+        // special不属于普通对象色层，但其原字仍必须随正式自动保存完整回读。
+        Fixture fixture(false, false, false, MissingInput::None, true, ordinary);
+        MapSaveTask task; fixture.Freeze(task);
+        const auto sourceSha = Take(Sha256File(fixture.archive.SourcePath()));
+        const auto result = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {}));
+        Require(result.generated && !result.preserved && result.generated->ClassicManifest(),
+            "special-only及普通加special均真实自动生成，不得只保留旧图");
+        const auto prepared = result.generated;
+        Require(prepared->ClassicManifest()->objectPixels == (ordinary ? 1u : 0u),
+            "special不得增加正式小地图普通对象像素数");
+        task.replacements.push_back(prepared->MinimapReplacement());
+        Require(prepared->VerifyCurrent(task, *fixture.edits, {}).Succeeded()
+            && prepared->VerifyFrozenOutput(task).Succeeded(), "special自动保存仍须来源与最终列表核验");
+        task.beforePublish = [&] { return prepared->VerifyFrozenOutput(task); };
+        MapSaveService::Run(task);
+        Require(task.succeeded && task.nextSession, "含special地图实际写出小地图及其它编辑");
+        const auto saved = Take(MapArchiveSession::Open(task.target));
+        Require(prepared->VerifyReadback(task, saved).Succeeded()
+            && Take(saved.ReadMember("war3mapMap.blp")) == prepared->MinimapReplacement().data
+            && Take(saved.ReadMember("war3map.doo")) == fixture.doo
+            && Take(saved.ReadMember("Fixture\\Unused.blp")) == Text("new fixture resource"),
+            "正式输出小地图、完整special原字及其它编辑独立回读");
+        Require(Take(Sha256File(fixture.archive.SourcePath())) == sourceSha, "special另存不修改原创来源");
+    }
+}
 } // namespace
 int main() {
     try {
         PreserveThroughActualSave(true, false); PreserveThroughActualSave(false, false); PreserveThroughActualSave(true, true);
-        MissingGenerationInputsPreserveActualSave(); BudgetAndTga(); SourceStaleAndFinalMutationStillReject(); return 0;
+        MissingGenerationInputsPreserveActualSave(); BudgetAndTga(); SourceStaleAndFinalMutationStillReject();
+        SpecialTailGeneratesAndSaves(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
