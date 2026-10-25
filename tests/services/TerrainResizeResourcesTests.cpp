@@ -47,6 +47,12 @@ void ActualStartupAndAtomicCas() {
     --captureLimits.maximumWork;
     Require(!TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot, captureLimits).Succeeded(),
         "capture rejects a budget one unit below its reported complete work");
+    Check(resources.VerifySourceInputs(*fixture.archive));
+    TerrainResizeLimits verifyLimits;
+    verifyLimits.maximumCandidateBytes = resources.CaptureBudgetBytes() - 1;
+    const auto limitedVerify = resources.VerifySourceInputs(*fixture.archive, verifyLimits);
+    Require(!limitedVerify.Succeeded() && HasCode(limitedVerify, "TERRAIN_RESIZE_BUDGET"),
+        "64MiB exact-read cap preserves the separate complete owner candidate budget");
     const auto before = fixture.edits->Revision();
     const auto prepared = Take(PrepareTerrainResizeEdit(*fixture.edits, Document(fixture), Binding(fixture), resources, Expand()));
     const auto refused = ApplyTerrainResizeEdit(*fixture.edits, Document(fixture), prepared, [](const auto&) {
@@ -128,17 +134,26 @@ void CropCannotClipAnyActualSpatialClass() {
 void ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent() {
     {
         Fixture fixture(true); MakeExpandedPhysicalFixture(fixture);
+        fixture.doodads.doodads[0].rawcode = "Doo0";
         fixture.doodads.doodads[0].position = {-2016, 0, 0};
         fixture.PutMember("war3map.doo", Take(fixture.doodads.Serialize()));
-        fixture.PutMember("Units/DestructableData.slk", Slk({"destructableID", "code", "walkable", "pathTex"},
-            {{"Dst0", "Dst0", "0", "PathTextures/zero-border.tga"}}));
+        fixture.PutMember("Doodads/Doodads.slk", Slk({"doodID", "code", "category", "fixedRot", "pathTex"},
+            {{"Doo0", "Doo0", "A", "-1", "PathTextures/zero-border.tga"}}));
         Bytes tga(18 + 16 * 16 * 3); tga[2] = std::byte{2}; tga[12] = tga[14] = std::byte{16};
         tga[16] = std::byte{24}; tga[17] = std::byte{32}; fixture.PutMember("PathTextures/zero-border.tga", std::move(tga));
         fixture.Seal();
         const auto resources = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
         const auto prepared = PrepareTerrainResizeEdit(*fixture.edits, Document(fixture), Binding(fixture), resources, CropBack());
+        if (!prepared.Succeeded() && !HasCode({prepared.diagnostics}, "TERRAIN_RESIZE_FOOTPRINT_CLIPPED"))
+            Check({prepared.diagnostics});
         Require(!prepared.Succeeded() && HasCode({prepared.diagnostics}, "TERRAIN_RESIZE_FOOTPRINT_CLIPPED"),
             "actual decoded zero-RGB footprint is not discarded by its empty OR mask");
+        fixture.EraseMember("PathTextures/zero-border.tga"); fixture.Seal();
+        const auto missing = TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot);
+        if (!missing.Succeeded() && !HasCode({missing.diagnostics}, "TERRAIN_NATIVE_FOOTPRINT_MISSING"))
+            Check({missing.diagnostics});
+        Require(!missing.Succeeded() && HasCode({missing.diagnostics}, "TERRAIN_NATIVE_FOOTPRINT_MISSING"),
+            "ordinary doodad zero-RGB extent comes from an actual decoded TGA, not a fabricated rectangle");
     }
     {
         Fixture fixture; MakeExpandedPhysicalFixture(fixture);
@@ -153,6 +168,28 @@ void ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent() {
         Require(!prepared.Succeeded() && HasCode({prepared.diagnostics}, "TERRAIN_RESIZE_SPECIAL_CLIPPED"),
             "empty special origin cannot be silently clipped");
     }
+}
+
+void NonWalkableDestructableKeepsProvenZeroContribution() {
+    Fixture fixture(true); MakeExpandedPhysicalFixture(fixture);
+    fixture.doodads.doodads[0].position = {-2016, 0, 0};
+    fixture.PutMember("war3map.doo", Take(fixture.doodads.Serialize()));
+    // 现有原版规则中，非walkable可破坏物不注册静态RGB层；pathTex单元格
+    // 不授予普通Doodad资格。故意不给这个名字实际贴图，不能靠猜测宽高裁图。
+    fixture.PutMember("Units/DestructableData.slk", Slk({"destructableID", "code", "walkable", "pathTex"},
+        {{"Dst0", "Dst0", "0", "PathTextures/unread-zero-contribution.tga"}}));
+    fixture.Seal();
+    const auto resources = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
+    const auto retained = PrepareTerrainResizeEdit(*fixture.edits, Document(fixture), Binding(fixture), resources, CropBack());
+    if (!retained.Succeeded()) Check({retained.diagnostics});
+    Require(retained.Succeeded(),
+        "actual nonwalkable destructable remains zero static contribution and keeps its in-bounds origin");
+    fixture.doodads.doodads[0].position[0] = -2112;
+    fixture.PutMember("war3map.doo", Take(fixture.doodads.Serialize())); fixture.Seal();
+    const auto outside = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
+    const auto clipped = PrepareTerrainResizeEdit(*fixture.edits, Document(fixture), Binding(fixture), outside, CropBack());
+    Require(!clipped.Succeeded() && HasCode({clipped.diagnostics}, "TERRAIN_RESIZE_SPATIAL_CLIPPED"),
+        "zero static contribution still cannot hide a nonwalkable destructable origin outside the canvas");
 }
 
 void FootprintQueryKeepsZeroBorderAndLiteralOrientation() {
@@ -258,6 +295,7 @@ int main() {
     try {
         ActualStartupAndAtomicCas(); ChangedPhysicalSpatialMembersAndRulesReject();
         CropCannotClipAnyActualSpatialClass(); ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent();
+        NonWalkableDestructableKeepsProvenZeroContribution();
         FootprintQueryKeepsZeroBorderAndLiteralOrientation();
         SaveAndUndoKeepEveryActualMember(true); SaveAndUndoKeepEveryActualMember(false);
         FinalSpatialOutputAndManualShadowConflictsReject();

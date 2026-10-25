@@ -290,7 +290,11 @@ Status TerrainResizeResources::VerifySourceInputs(const MemberReader& reader,
         }
         return Result<std::vector<ArchiveExactMember>>::Success(std::move(result));
     };
-    Check(state_->native->VerifyReadbackMembers(currentReader, limits.maximumCandidateBytes, true));
+    // 候选256MiB累计预算还包含网格、空间解析与保活owner；精确成员读取
+    // 仍只能收紧原有64MiB硬帽，不能把候选总额直接当作单次读取上限。
+    // 上方captureBytes/work核验继续约束整个owner，不因这次读取收紧而省略。
+    Check(state_->native->VerifyReadbackMembers(currentReader,
+        std::min(limits.maximumCandidateBytes, ArchiveExactMemberLimits{}.totalBytes), true));
     return Status::Ok();
 } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
 catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_RESIZE_BUDGET", "尺寸来源复核内存不足。"); }
