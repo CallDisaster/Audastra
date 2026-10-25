@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
+#include "War3MapCore/MapData/TerrainDoodadsJournal.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 
@@ -52,6 +53,17 @@ Result<TerrainPatch> TerrainPatchCodec::SealWithPlan(const MapDocument& original
             "Core普通重放入口不捕获水刷资源；须通过Services从实际来源逐笔重放，不能从DOO/W3E覆盖恢复特殊模型删除授权。");
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.blockPaste) {
+            TerrainStrokeIntent expected;
+            expected.blockPaste = stroke.blockPaste; expected.followDoodads = stroke.followDoodads;
+            // 仅Services已从实际来源严格重放的typed矩形可以没有采样点。
+            // 公开Core入口不能借block字段绕过普通笔刷或special来源门。
+            if (!trustedReplay || !EqualTerrainJournalIntent(stroke, expected)
+                || !ValidateTerrainBlockPasteIntent(*stroke.blockPaste).Succeeded())
+                return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_BLOCK_INVALID",
+                    "地形块补丁需要实际来源重放的独立矩形命令，不能夹带笔刷、原始载荷或其它变体。");
+            continue;
+        }
         if (stroke.points.empty() || stroke.points.size() > 4096 - pointCount)
             return Result<TerrainPatch>::Failure("Terrain.Patch", "TERRAIN_PATCH_POINT_BUDGET", "地形目录事务累计采样点超过 4096 或包含空笔划。");
         pointCount += stroke.points.size();
