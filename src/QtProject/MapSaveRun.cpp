@@ -350,7 +350,7 @@ void BindWorkerTerrainHistory(MapSaveJob& job) {
     if (!job.terrainHistorySaveLease) return;
     const auto warn = [&](std::string_view code) {
         job.terrainHistorySaveLease.reset();
-        job.terrainHistoryWarning = "草稿已完整保留；地图保存继续，但旧地形阴影未能绑定到历史保存站，跨保存点撤销的冷恢复不可用。";
+        job.terrainHistoryWarning = "当前编辑仍保留；地图保存继续，但旧地形阴影未能绑定到历史保存站，跨保存点撤销的冷恢复不可用。";
         if (!code.empty()) job.terrainHistoryWarning += "（" + std::string(code) + "）";
     };
     try {

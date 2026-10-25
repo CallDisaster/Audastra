@@ -1,5 +1,6 @@
 #include "../support/TerrainResizeFixture.h"
 #include "TerrainSessionResourcesCases.h"
+#include "TerrainHistorySourceShadowCases.h"
 
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
@@ -259,6 +260,7 @@ int main() {
         FootprintQueryKeepsZeroBorderAndLiteralOrientation();
         SaveAndUndoKeepEveryActualMember(true); SaveAndUndoKeepEveryActualMember(false);
         FinalSpatialOutputAndManualShadowConflictsReject();
-        AudastraTest::TerrainSessionResourcesCases::RunTerrainSessionResourcesCases(); return 0;
+        AudastraTest::TerrainSessionResourcesCases::RunTerrainSessionResourcesCases();
+        AudastraTest::TerrainHistorySourceShadowCases::RunTerrainHistorySourceShadowCases(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

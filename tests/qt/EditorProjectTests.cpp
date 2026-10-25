@@ -957,6 +957,10 @@ private slots:
     void SavedTerrainHistoryProjectRoundtrip();
     void SavedTerrainHistoryStackInstallationNeverReplays();
     void SavedTerrainHistoryUnsupportedBranchKeepsRaw();
+    void SavedTerrainHistoryBeforeFirstResizeRoundtrip_data();
+    void SavedTerrainHistoryBeforeFirstResizeRoundtrip();
+    void SavedTerrainHistoryBeforeFirstResizePreviousFailure();
+    void SavedTerrainHistoryBeforeFirstResizeBindingFailureKeepsMapSave();
     void IndependentProjectsDoNotShareEdits();
     void MapOnlyLibraryKeepsGlobalSettings();
     void MissingImportCannotProduceSavedFingerprint();
@@ -1128,6 +1132,7 @@ private:
 #include "TerrainSavedHistoryProjectCases.h"
 #include "TerrainInnerCornerRampProjectCases.h"
 #include "TerrainResizeProjectCases.h"
+#include "TerrainPreResizeHistoryProjectCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
     QTemporaryDir root; QVERIFY(root.isValid());
