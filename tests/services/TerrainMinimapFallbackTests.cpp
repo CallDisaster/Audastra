@@ -310,17 +310,19 @@ void BudgetAndTga() {
         && preflightBudget.value->preserved->VerifyFrozenOutput(earlyTask).Succeeded(), "调用者输入预算失败复用同一降级门");
 }
 void RowScanBudgetPreservesThroughActualSave() {
-    // 两阶段都从实际自动生成入口触发预算拒绝，不伪造生成器诊断。
+    // 来源捕获的累计工作与候选行扫描的工作/驻留从实际入口触发，
+    // 不伪造生成器诊断，也不把仅解码metadata的资产阶段当成行窗口。
     // 原BLP存在和缺失分别保存，不能把保留路径写成补空小地图。
-    for (const bool assetStage : {true, false}) for (const bool resident : {false, true})
-        for (const bool present : {false, true}) {
+    for (unsigned phase = 0; phase < 3; ++phase) for (const bool present : {false, true}) {
+            const bool assetStage = phase == 0, resident = phase == 2;
             Fixture fixture(false, present); MapSaveTask task; fixture.Freeze(task);
             const auto sourceSha = Take(Sha256File(fixture.archive.SourcePath()));
             TerrainMinimapSaveLimits limits;
             auto& scan = assetStage ? limits.assets.classicScan : limits.classic.terrainScan;
             if (resident) scan.maxResidentBytes = 64u * 1024u;
             else scan.maxWorkUnits = 1;
-            const auto expected = resident ? "TERRAIN_ROW_RESIDENT_BUDGET" : "TERRAIN_ROW_WORK_BUDGET";
+            const auto expected = assetStage ? "TERRAIN_ASSETS_BUDGET"
+                : resident ? "TERRAIN_ROW_RESIDENT_BUDGET" : "TERRAIN_ROW_WORK_BUDGET";
             const auto checked = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {}, limits);
             Require(checked.Succeeded() && checked.value && !checked.value->generated && checked.value->preserved
                 && HasCode(checked.diagnostics, expected) && HasCode(checked.diagnostics, "MINIMAP_GENERATION_SKIPPED"),
