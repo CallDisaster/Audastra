@@ -276,10 +276,19 @@ inline void RepeatedHistorySaveChecksActualShadow(bool sourceShadowPresent) {
         "changed station shadow never exports an FTJH that cannot reconstruct physical source");
 }
 
+inline void PrepareMixedWaterProfiles(Fixture& fixture) {
+    // 这两例实际调用水刷捕获；旧通用夹具MaxHeight=3328会派生28层，
+    // 超出经典笔刷0..14域。只在原创混合历史输入中提供完整、相互一致的规则。
+    fixture.PutMember("UI/MiscData.txt", Text("[Terrain]\nMaxSlope=90\nMinHeight=-512\nMaxHeight=1536\n"
+        "[Water]\nDeepLevelPathing=128\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"));
+    fixture.PutMember("UI/WorldEditData.txt", Text("[Terrain]\nMaxHeight=1536\nMinHeight=-512\n"));
+}
+
 inline void CurrentResourcesSupportMixedHistoryAndActualSave() {
     using War3Map::Services::TerrainSessionResources;
     Fixture fixture;
     PrepareSyntheticGameArchive(fixture);
+    PrepareMixedWaterProfiles(fixture);
     fixture.PutMember("TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"},
         {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}})); fixture.Seal();
     auto source = std::make_shared<MapArchiveSession>(Take(MapArchiveSession::Open(fixture.archive->SourcePath())));
@@ -367,6 +376,7 @@ inline void SavedResizeSuffixRestoresFromCurrentStructure() {
     using War3Map::Services::TerrainSessionResources;
     Fixture fixture;
     PrepareSyntheticGameArchive(fixture);
+    PrepareMixedWaterProfiles(fixture);
     Require(!fixture.edits->HasTerrainTypedResizeState(), "fresh physical source has no typed resize state");
     fixture.PutMember("TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"},
         {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}})); fixture.Seal();
