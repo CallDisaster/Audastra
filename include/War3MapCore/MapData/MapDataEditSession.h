@@ -380,6 +380,16 @@ private:
         [[nodiscard]] bool MatchesPlayers(const MapSettings&) const noexcept;
         void RestorePlayers(MapSettings&) const noexcept;
     };
+    // 不同shape的历史基线必须随typed命令保活；物理来源仍留在terrainOriginal_/pathingOriginal_。
+    // 保存后Undo不能把新尺寸SHD/WPM误用到旧尺寸，也不从raw草稿恢复此资格。
+    struct TerrainResizeState {
+        TerrainHeader header;
+        ArchiveExactMember shadow;
+        std::shared_ptr<const std::vector<std::byte>> historyPathing;
+        std::shared_ptr<const std::vector<std::byte>> protectedPathing;
+        std::shared_ptr<const std::vector<std::byte>> savedRestrictions;
+        std::string rulesSha256;
+    };
     struct MemberChange {
         MapDataKind kind;
         std::optional<std::vector<std::byte>> before;
@@ -406,6 +416,8 @@ private:
         std::optional<TerrainBoundsEditIntent> boundsIntent;
         std::string boundsRulesSha256;
         std::shared_ptr<const TerrainStartLocationsState> startsBefore, startsAfter;
+        std::shared_ptr<const TerrainGridSnapshot> fullTerrainBefore, fullTerrainAfter;
+        std::shared_ptr<const TerrainResizeState> resizeBefore, resizeAfter;
     };
     struct TerrainHistoryState {
         std::shared_ptr<const MapDataEditSession> baseline;
@@ -476,6 +488,8 @@ private:
     [[nodiscard]] Status DeserializeAndApply(MapDataKind kind, std::span<const std::byte> bytes,
         bool linkStartLocations);
     void Restore(const Command& command, bool forward);
+    [[nodiscard]] const std::vector<std::byte>& TerrainHistoryPathing(const TerrainResizeState* shape = nullptr) const;
+    [[nodiscard]] std::shared_ptr<const std::vector<std::byte>> TerrainHistoryProtected(const TerrainResizeState* shape = nullptr) const;
     // 先准备全部新基线，再无异常交换；供已回读的通行重建输出原子提交。
     void CommitSavedBaseline(const MapDocument& saved,
         std::optional<std::vector<std::byte>> pathing,
@@ -506,6 +520,7 @@ private:
     std::shared_ptr<const std::vector<SpecialDoodadPlacement>> specialDoodads_, savedSpecialDoodads_;
     std::shared_ptr<const TerrainBoundsState> boundsState_, savedBoundsState_;
     std::shared_ptr<const TerrainStartLocationsState> startLocations_, savedStartLocations_;
+    std::shared_ptr<const TerrainResizeState> resizeState_, savedResizeState_;
     std::shared_ptr<const TerrainGridSnapshot> terrainOriginal_;
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;
