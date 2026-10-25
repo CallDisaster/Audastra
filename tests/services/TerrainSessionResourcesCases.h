@@ -6,6 +6,8 @@
 #include "War3MapCore/Services/TerrainResizeEditService.h"
 #include "War3MapCore/Services/TerrainSessionResources.h"
 
+#include <limits>
+
 namespace AudastraTest::TerrainSessionResourcesCases {
 using namespace AudastraTest::TerrainResize;
 using namespace War3Map::Services;
@@ -84,6 +86,54 @@ inline std::filesystem::path WriteWorkspace(Fixture& fixture) {
         Check(IO::WriteFileBytes(path, member.data));
     }
     return root;
+}
+
+inline void SharedFrozenBudgetsIncludeRetainedRequestAndDirectory() {
+    constexpr std::size_t maximum = 64u * 1024u * 1024u;
+    constexpr std::size_t tight = 1024u * 1024u;
+    Fixture fixture; AddActualWaterInputs(fixture); Expand(fixture);
+    const auto revision = fixture.edits->Revision();
+    const auto terrain = fixture.edits->Terrain();
+    std::size_t copiedBytes = 0;
+    const auto frozen = Take(fixture.edits->FreezeForSave(maximum, &copiedBytes));
+    Require(copiedBytes > 0 && frozen->Terrain() == terrain && frozen->Revision() == revision,
+        "shared worker uses one genuine bounded frozen session and shared immutable current terrain");
+    const auto archive = Archive(fixture);
+    const auto shared = Take(TerrainSessionResources::Capture(archive, frozen, fixture.gameRoot, maximum));
+    const auto retained = Take(TerrainSessionResources::Capture(archive, frozen, fixture.gameRoot, maximum, copiedBytes));
+    Require(retained.OwnedCapacityBytes() >= shared.OwnedCapacityBytes() + copiedBytes,
+        "shared archive owner charges the actual frozen request deep copies in the same budget");
+    const auto water = Take(retained.CaptureWater(true)); Check(retained.Verify(water));
+    const auto tightArchive = Take(TerrainSessionResources::Capture(archive, frozen, fixture.gameRoot, tight, copiedBytes));
+    Require(tightArchive.OwnedCapacityBytes() < tight,
+        "valid shared archive capture works under a genuinely smaller explicit budget");
+    Require(!TerrainSessionResources::Capture(archive, frozen, fixture.gameRoot, 1, copiedBytes).Succeeded()
+        && !TerrainSessionResources::Capture(archive, frozen, fixture.gameRoot, retained.OwnedCapacityBytes(), copiedBytes).Succeeded(),
+        "shared archive entry rejects tiny budget and a cap consumed entirely by its retained owner");
+    const auto rejectBudget = [](const Result<TerrainSessionResources>& result, const char* message) {
+        Require(!result.Succeeded() && HasCode({result.diagnostics}, "TERRAIN_SESSION_RESOURCE_BUDGET"), message);
+    };
+    for (const auto extra : {maximum - 1, maximum, (std::numeric_limits<std::size_t>::max)()})
+        rejectBudget(TerrainSessionResources::Capture(archive, frozen, fixture.gameRoot, maximum, extra),
+            "archive request retention cannot consume the cap or wrap additionalOwnedBytes");
+
+    const auto root = WriteWorkspace(fixture);
+    const auto workspace = Take(DirectoryWorkspace::Open(root));
+    const auto directory = Take(TerrainSessionResources::Capture(workspace.Snapshot(), frozen, fixture.gameRoot, maximum, copiedBytes));
+    Require(directory.OwnedCapacityBytes() > retained.OwnedCapacityBytes(),
+        "shared directory closure retains and charges its real file listing in addition to frozen request bytes");
+    const auto tightDirectory = Take(TerrainSessionResources::Capture(workspace.Snapshot(), frozen, fixture.gameRoot, tight, copiedBytes));
+    Require(tightDirectory.OwnedCapacityBytes() < tight,
+        "shared directory entry reuses the genuine frozen session within a smaller cap");
+    Require(!TerrainSessionResources::Capture(workspace.Snapshot(), frozen, fixture.gameRoot, 1, copiedBytes).Succeeded()
+        && !TerrainSessionResources::Capture(workspace.Snapshot(), frozen, fixture.gameRoot, directory.OwnedCapacityBytes(), copiedBytes).Succeeded(),
+        "shared directory budget includes closure and request before current structures are materialized");
+    for (const auto extra : {maximum - 1, maximum, (std::numeric_limits<std::size_t>::max)()})
+        rejectBudget(TerrainSessionResources::Capture(workspace.Snapshot(), frozen, fixture.gameRoot, maximum, extra),
+            "directory and request retention cannot consume the cap or overflow their combined charge");
+    Require(fixture.edits->Revision() == revision && fixture.edits->Terrain() == terrain
+        && Take(SerializeMapTerrain(*terrain)) == TerrainLiteral(-32, -32, 32, 32),
+        "all shared capture budget rejections preserve the active session and exact expanded terrain");
 }
 
 inline void PhysicalChangesAndBudgetsStayFailClosed() {
@@ -173,6 +223,7 @@ inline void ResizeWaterBoundsSaveReadback() {
 
 inline void RunTerrainSessionResourcesCases() {
     ActualCurrentWaterAndBothNativeDoodadStages();
+    SharedFrozenBudgetsIncludeRetainedRequestAndDirectory();
     PhysicalChangesAndBudgetsStayFailClosed();
     ResizeWaterBoundsSaveReadback();
 }
