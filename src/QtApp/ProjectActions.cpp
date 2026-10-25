@@ -45,6 +45,7 @@
 #include <QSettings>
 #include <QPointer>
 #include <QScopeGuard>
+#include <QSignalBlocker>
 #include <QPushButton>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -126,7 +127,10 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
     const auto installedHistory = War3Map::QtProject::InstallRestoredMapDataHistory(*project_,
         std::move(candidate.terrainReceipts), candidate.terrainCurrentIndex, candidate.terrainSavedIndex);
     if (!installedHistory.Succeeded()) {
-        if (project_->mapDataUndoStack_) project_->mapDataUndoStack_->clear();
+        if (project_->mapDataUndoStack_) {
+            const QSignalBlocker historySignals(project_->mapDataUndoStack_);
+            project_->mapDataUndoStack_->clear();
+        }
         candidate.terrainJournalWarning = "草稿已完整保留；地形历史无法安装到撤销栈，撤销和重做未恢复。";
         project_->terrainJournalWarning_ = candidate.terrainJournalWarning;
         prepared.diagnostics.erase(std::remove_if(prepared.diagnostics.begin(), prepared.diagnostics.end(), [](const auto& diagnostic) {
@@ -179,6 +183,8 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
         project_->projectFileSha256_ = candidate.sourceSha256;
     }
     RefreshProjectWatch();
+    // 此时所有文档、导入、工程身份和编辑基线均已恢复，允许观察者读取最终状态。
+    War3Map::QtProject::NotifyRestoredMapDataHistoryState(*project_);
     UpdateStatusBar();
     for (const auto& diagnostic : prepared.diagnostics)
         AddDiagnostic(diagnostic.severity == DiagnosticSeverity::Warning ? tr("警告") : tr("信息"), tr("工程"),

@@ -84,4 +84,16 @@ Status InstallRestoredMapDataHistory(EditorProject& project,
     return Status::Ok();
 }
 
+void NotifyRestoredMapDataHistoryState(EditorProject& project) {
+    auto* stack = project.mapDataUndoStack_;
+    if (!stack) return;
+    // index观察者会同步读取工程；只能由完整恢复后的发布边界调用。
+    emit stack->indexChanged(stack->index());
+    emit stack->cleanChanged(stack->isClean());
+    emit stack->canUndoChanged(stack->canUndo());
+    emit stack->canRedoChanged(stack->canRedo());
+    emit stack->undoTextChanged(stack->undoText());
+    emit stack->redoTextChanged(stack->redoText());
+}
+
 } // namespace War3Map::QtProject

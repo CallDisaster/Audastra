@@ -3,6 +3,9 @@
 #include "../TerrainBlockFixtures.h"
 #include "../TerrainConnectedRampFixtures.h"
 
+#include <QAction>
+#include <QUndoGroup>
+
 #include <cctype>
 
 // 原创结构样例；真实地图写出/回读与工程冷恢复均走产品入口。
@@ -46,6 +49,7 @@ bool BindSavedHistoryQtProject(EditorProject& project, PreparedProjectOpen& cand
     const auto scopes = project.CaptureEditScopes(); if (!scopes) return false;
     project.editTrackingReady_ = project.editRevision_.Reset(*scopes, *scopes, original).Succeeded();
     project.editTrackingFailed_ = !project.editTrackingReady_; project.UpdateEditDirtyFlags();
+    if (project.editTrackingReady_) NotifyRestoredMapDataHistoryState(project);
     return project.editTrackingReady_;
 }
 }
@@ -67,6 +71,8 @@ void EditorProjectTests::SavedTerrainHistoryProjectRoundtrip() {
     const auto source = block ? blocks->source->SourcePath() : ramps->source->SourcePath();
     const auto game = block ? blocks->game : ramps->game;
     const auto root = block ? blocks->root : ramps->root;
+    QTemporaryDir projectOutput; QVERIFY(projectOutput.isValid());
+    const auto outputRoot = std::filesystem::path(projectOutput.path().toStdWString());
     EditorProject hot; QVERIFY(BindTerrainSaveProject(hot, source)); hot.war3GameRoot_ = game;
     QUndoStack hotUndo; hot.mapDataUndoStack_ = &hotUndo;
     const auto original = SavedHistoryQtState(hot);
@@ -121,7 +127,7 @@ void EditorProjectTests::SavedTerrainHistoryProjectRoundtrip() {
     hotUndo.setIndex(cursor);
     const auto expected = cursor == 0 ? zero : tail; QCOMPARE(SavedHistoryQtState(hot), expected);
     QCOMPARE(hot.mapEdits_->SerializePathingRestrictionDraft().value, stationRestrictions.value);
-    const auto forge = root / "history.forge";
+    const auto forge = outputRoot / "history.forge";
     const auto written = hot.SaveProjectToPath(forge); QVERIFY2(written.Succeeded(), ReadDiagnosticText(written).c_str());
     QVERIFY(!HasReadDiagnostic(written, "TERRAIN_JOURNAL_DRAFT_ONLY"));
     auto reopened = PrepareProjectOpen(forge, game); QVERIFY2(reopened.Succeeded(), ReadDiagnosticText(reopened).c_str());
@@ -137,7 +143,7 @@ void EditorProjectTests::SavedTerrainHistoryProjectRoundtrip() {
     coldUndo.setIndex(0); QCOMPARE(SavedHistoryQtState(cold), zero);
     QCOMPARE(cold.mapEdits_->SerializePathingRestrictionDraft().value, stationRestrictions.value);
     coldUndo.setIndex(2); QCOMPARE(SavedHistoryQtState(cold), tail);
-    auto finalJob = FreezeNativePathingQtJob(cold, root / "history-cold-saved.w3x"); QVERIFY(finalJob);
+    auto finalJob = FreezeNativePathingQtJob(cold, outputRoot / "history-cold-saved.w3x"); QVERIFY(finalJob);
     finalJob->terrainSessionSnapshot = cold.mapEdits_->FreezeForSave();
     InstallMapSaveDerivedPreparation(*finalJob); EditorProject::RunMapSave(*finalJob);
     QVERIFY2(finalJob->succeeded, ReadDiagnosticText(*finalJob).c_str()); QVERIFY(cold.CommitMapSave(*finalJob));
@@ -150,24 +156,58 @@ void EditorProjectTests::SavedTerrainHistoryStackInstallationNeverReplays() {
     const auto source = std::filesystem::path(root.filePath("stack.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, TerrainSaveMembers()).Succeeded());
     EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
+    const auto mapBaseline = project.editRevision_.Current();
     QVERIFY(RaiseTerrainSaveProject(project)); const auto first = project.mapEdits_->LastEdit();
     QVERIFY(RaiseTerrainSaveProject(project)); const auto second = project.mapEdits_->LastEdit();
     QVERIFY(project.mapEdits_->Replay(second, false).Succeeded());
     const auto before = SavedHistoryQtState(project); const auto revision = project.mapEdits_->Revision();
+    QUndoGroup group; group.addStack(project.mapDataUndoStack_); group.setActiveStack(project.mapDataUndoStack_);
+    auto* undoAction = group.createUndoAction(&group);
+    auto* redoAction = group.createRedoAction(&group);
+    QVERIFY(!undoAction->isEnabled() && !redoAction->isEnabled());
     QSignalSpy changed(project.mapDataUndoStack_, &QUndoStack::indexChanged);
+    QSignalSpy cleanChanged(project.mapDataUndoStack_, &QUndoStack::cleanChanged);
+    QSignalSpy canUndoChanged(project.mapDataUndoStack_, &QUndoStack::canUndoChanged);
+    QSignalSpy canRedoChanged(project.mapDataUndoStack_, &QUndoStack::canRedoChanged);
+    QSignalSpy undoTextChanged(project.mapDataUndoStack_, &QUndoStack::undoTextChanged);
+    QSignalSpy redoTextChanged(project.mapDataUndoStack_, &QUndoStack::redoTextChanged);
+    const auto counts = [&] { return std::array{changed.size(), cleanChanged.size(), canUndoChanged.size(),
+        canRedoChanged.size(), undoTextChanged.size(), redoTextChanged.size()}; };
+    const auto initialCounts = counts();
     QVERIFY(InstallRestoredMapDataHistory(project, {first, second}, 1, 2).Succeeded());
-    QCOMPARE(changed.size(), 0); QCOMPARE(project.mapEdits_->Revision(), revision);
+    QCOMPARE(counts(), initialCounts); QCOMPARE(project.mapEdits_->Revision(), revision);
     QCOMPARE(SavedHistoryQtState(project), before); QCOMPARE(project.mapDataUndoStack_->index(), 1);
     QCOMPARE(project.mapDataUndoStack_->cleanIndex(), 2);
-    project.mapDataUndoStack_->redo(); QCOMPARE(project.mapEdits_->Revision(), revision + 1);
-    project.mapDataUndoStack_->undo(); QCOMPARE(SavedHistoryQtState(project), before);
+    QVERIFY(!undoAction->isEnabled() && !redoAction->isEnabled());
+    // 与工程打开一致：完整来源和最终scope安装后，才允许index观察者同步读取工程。
+    const auto finalScopes = project.CaptureEditScopes(); QVERIFY(finalScopes);
+    QVERIFY(project.editRevision_.Reset(*finalScopes, *finalScopes, mapBaseline).Succeeded());
+    const auto editRevision = project.editRevision_.Revision(); bool observed = false;
+    QObject notificationObserver; // 先断开回调，再析构其捕获的局部状态或工程。
+    connect(project.mapDataUndoStack_, &QUndoStack::indexChanged, &notificationObserver, [&] {
+        observed = project.ObserveMapDataEdit("读取已完整恢复的地形历史");
+    });
+    NotifyRestoredMapDataHistoryState(project);
+    QVERIFY(observed); QCOMPARE(project.mapEdits_->Revision(), revision); QCOMPARE(project.editRevision_.Revision(), editRevision);
+    QCOMPARE(changed.size(), 1); QCOMPARE(changed[0][0].toInt(), 1);
+    QCOMPARE(cleanChanged.size(), 1); QCOMPARE(cleanChanged[0][0].toBool(), false);
+    QCOMPARE(canUndoChanged.size(), 1); QCOMPARE(canUndoChanged[0][0].toBool(), true);
+    QCOMPARE(canRedoChanged.size(), 1); QCOMPARE(canRedoChanged[0][0].toBool(), true);
+    QCOMPARE(undoTextChanged.size(), 1); QCOMPARE(undoTextChanged[0][0].toString(), project.mapDataUndoStack_->undoText());
+    QCOMPARE(redoTextChanged.size(), 1); QCOMPARE(redoTextChanged[0][0].toString(), project.mapDataUndoStack_->redoText());
+    QVERIFY(undoAction->isEnabled() && redoAction->isEnabled());
+    redoAction->trigger(); QCOMPARE(project.mapEdits_->Revision(), revision + 1);
+    undoAction->trigger(); QCOMPARE(SavedHistoryQtState(project), before);
     const auto unchanged = project.mapEdits_->Revision();
+    const auto rejectedCounts = counts();
     QVERIFY(!InstallRestoredMapDataHistory(project, {first, second}, 3, 2).Succeeded());
-    QCOMPARE(project.mapEdits_->Revision(), unchanged); QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QCOMPARE(counts(), rejectedCounts); QCOMPARE(project.mapEdits_->Revision(), unchanged); QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QVERIFY(undoAction->isEnabled() && redoAction->isEnabled());
 }
 
 void EditorProjectTests::SavedTerrainHistoryUnsupportedBranchKeepsRaw() {
     QTemporaryDir root; QVERIFY(root.isValid());
+    QTemporaryDir projectOutput; QVERIFY(projectOutput.isValid());
     const auto source = std::filesystem::path(root.filePath("branch.w3x").toStdWString());
     QVERIFY(WriteVerifiedArchive(source, TerrainSaveMembers()).Succeeded());
     EditorProject project; QVERIFY(BindTerrainSaveProject(project, source));
@@ -185,9 +225,10 @@ void EditorProjectTests::SavedTerrainHistoryUnsupportedBranchKeepsRaw() {
     project.mapDataUndoStack_->undo();
     QVERIFY(RaiseTerrainSaveProject(project, 30)); PushMapDataEdit(project, "Branch", "保存点前分支");
     const auto draft = SavedHistoryQtState(project);
-    const auto saved = project.SaveProjectToPath(std::filesystem::path(root.filePath("raw-branch.forge").toStdWString()));
+    const auto forge = std::filesystem::path(projectOutput.filePath("raw-branch.forge").toStdWString());
+    const auto saved = project.SaveProjectToPath(forge);
     QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str()); QVERIFY(HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY"));
-    auto opened = PrepareProjectOpen(std::filesystem::path(root.filePath("raw-branch.forge").toStdWString()));
+    auto opened = PrepareProjectOpen(forge);
     QVERIFY2(opened.Succeeded(), ReadDiagnosticText(opened).c_str());
     QVERIFY(!(*opened.value)->terrainJournalWarning.empty()); QVERIFY((*opened.value)->terrainReceipts.empty());
     EditorProject raw; QVERIFY(BindSavedHistoryQtProject(raw, **opened.value, {})); QCOMPARE(SavedHistoryQtState(raw), draft);

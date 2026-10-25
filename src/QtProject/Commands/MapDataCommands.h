@@ -46,4 +46,8 @@ void PushMapDataEdit(EditorProject& project, const QString& text, const std::str
     std::vector<MapData::MapDataEditSession::EditReceipt> receipts,
     std::size_t currentIndex, std::optional<std::size_t> savedIndex);
 
+// 安装本身保持静默；调用方完成全部文档、导入和修订基线恢复后，再发布一次最终栈状态。
+// 仅通知界面和观察者，不重放命令、不修改Core修订；调用方已有的信号屏蔽仍受尊重。
+void NotifyRestoredMapDataHistoryState(EditorProject& project);
+
 } // namespace War3Map::QtProject
