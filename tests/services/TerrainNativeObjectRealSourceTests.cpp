@@ -3,6 +3,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/MapData/TerrainUniformDoodadFootprint.h"
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
@@ -464,6 +465,8 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
 }
 
 enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary };
+#include "TerrainFinalInputsRealCases.h"
+
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game,
     RealSaveGroup group) {
     OwnedDirectory directory;
@@ -591,6 +594,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         Require(!original.HasMember(uniformPath), "uniform fixture must capture the actual game-winning TGA");
         std::cout << "uniform_path=" << uniformPath << " winner=" << uniformSource.archiveName
             << " bytes=" << uniformSource.bytes.size() << " sha256=" << Take(Sha256(uniformSource.bytes)) << '\n';
+        RealFinalStaticInputsUseActualCatalog(original, directory.path, game, catalog, schema, uniformRawcode, uniformPath);
         for (const auto& object : catalog.Entries()) {
             if (object.key.type != ObjectType::Doodad || object.Field("category") != "C"
                 || catalog.Find(ObjectType::Destructable, object.key.rawcode)) continue;
