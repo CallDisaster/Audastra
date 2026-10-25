@@ -65,7 +65,9 @@ void WorldModuleTests::TerrainBlockPasteFreezesSourceAndUsesSharedUndo() {
     QtProject::EditorProject project; InstallBlockWorldProject(project, fixture);
     const auto original = TerrainCornerRampFixtures::Take(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
     const auto sourceSha = Sha256File(fixture.source->SourcePath()); QVERIFY(sourceSha.Succeeded());
-    BackendState state; activeBackend = &state; WorldModule module(project, &backend);
+    BackendState state; activeBackend = &state;
+    auto overlayBackend = backend; overlayBackend.setOverlayLines = BoundaryOverlay;
+    WorldModule module(project, &overlayBackend);
     auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
     page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{1089});
     auto* select = page->findChild<QPushButton*>("worldTerrainBlockSelect");
@@ -101,6 +103,8 @@ void WorldModuleTests::TerrainBlockPasteFreezesSourceAndUsesSharedUndo() {
     QCOMPARE(TerrainCornerRampFixtures::Take(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
     project.mapDataUndoStack_->redo();
     QCOMPARE(TerrainCornerRampFixtures::Take(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), copied);
+    // 撤销/重做会异步重建地面；恢复框选状态不代表当前修订已提交给视口。
+    QTRY_VERIFY(module.ViewportForTools() == viewport);
     QTRY_VERIFY(viewport->TerrainBlockSelection());
     paste->click(); QTRY_VERIFY(resources->property("ready").toBool());
     viewport->PlaceRequested(3073, 2561, false);
@@ -138,6 +142,8 @@ void WorldModuleTests::TerrainBlockPasteRejectsChangedSourceAndPendingCas() {
     QVERIFY(project.mapEdits_->EditTerrain(external, std::span(&source, 1), false).Succeeded());
     QVERIFY(project.ObserveMapDataEdit("external source edit"));
     QtProject::PushMapDataEdit(project, "external source edit", "external source edit");
+    // 保留的框选状态可能来自上一张已完成地面，须等当前地形重建结束再发起粘贴。
+    QTRY_VERIFY(module.ViewportForTools() == viewport);
     QTRY_VERIFY(viewport->TerrainBlockSelection());
     paste->click(); QTRY_VERIFY(resources->property("ready").toBool());
     const auto sourceChanged = TerrainCornerRampFixtures::Take(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
