@@ -33,6 +33,7 @@ EditorProject::EditorProject()
     assetUndoStack_->setUndoLimit(128);
     projectWatch_->setObjectName("projectSourceWatcher");
     InitializeDiagnostics();
+    (void)ReloadInstalledMapRuntimeCatalog();
     InstallProjectObjectCatalogInvalidation(*this);
     const auto changed = [this](const QString&) {
         // 回调中不散列或重载大地图。最终保存仍执行完整来源验证。

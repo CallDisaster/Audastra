@@ -1,4 +1,7 @@
 #include "War3MapCore/Services/MapRuntimePackage.h"
+#include "War3MapCore/Services/MapRuntimeCatalog.h"
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "MapRuntimeJson.h"
 #include <nlohmann/json.hpp>
@@ -61,6 +64,79 @@ bool PlainPath(const std::filesystem::path& path) {
     }
     return true;
 }
+bool LocalRoot(const std::filesystem::path& root) {
+    const auto drive = root.root_name().wstring();
+    return root.is_absolute() && root == root.lexically_normal()
+        && drive.size() == 2 && drive[1] == L':'
+        && ((drive[0] >= L'A' && drive[0] <= L'Z') || (drive[0] >= L'a' && drive[0] <= L'z'))
+        && PlainPath(root) && (GetFileAttributesW(root.c_str()) & FILE_ATTRIBUTE_DIRECTORY);
+}
+}
+
+Result<std::vector<MapRuntimePackageSource>> LoadInstalledMapRuntimeSources(
+    const std::filesystem::path& installationRoot) {
+    using Output = Result<std::vector<MapRuntimePackageSource>>;
+    const auto fail = [] { return Output::Failure("MapRuntime", "RUNTIME_CATALOG_INVALID",
+        "安装侧运行库目录无效或不可读取；未采用地图提供的路径或自动选择其他包。"); };
+    if (!LocalRoot(installationRoot)) return fail();
+    const auto directory = installationRoot / "runtime";
+    const auto directoryAttributes = GetFileAttributesW(directory.c_str());
+    if (directoryAttributes == INVALID_FILE_ATTRIBUTES) {
+        const auto error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? Output::Success({}) : fail();
+    }
+    if (!(directoryAttributes & FILE_ATTRIBUTE_DIRECTORY) || !PlainPath(directory)) return fail();
+    const auto catalog = directory / "catalog.json";
+    const auto attributes = GetFileAttributesW(catalog.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const auto error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND ? Output::Success({}) : fail();
+    }
+    if (!PlainPath(catalog)) return fail();
+    const auto first = IO::ReadFileBytes(catalog, 32 * 1024);
+    if (!first.Succeeded()) return fail();
+    const auto identity = Sha256(*first.value);
+    if (!identity.Succeeded()) return fail();
+    const auto frozen = ReadVerifiedFile(catalog, *identity.value, 32 * 1024);
+    if (!frozen.Succeeded() || !PlainPath(catalog)) return fail();
+    try {
+        const auto json = detail::ParseRuntimeJson(*frozen.value, 32 * 1024);
+        if (!Keys(json, {"schema", "packages"}) || !json.at("schema").is_number_unsigned()
+            || json.at("schema") != 1 || !json.at("packages").is_array()
+            || json.at("packages").size() > 16) return fail();
+        std::set<std::string> directories, identities;
+        std::vector<MapRuntimePackageSource> sources;
+        for (const auto& item : json.at("packages")) {
+            if (!Keys(item, {"directory", "manifestSha256", "publicDistributionApproved"})) return fail();
+            const auto name = item.at("directory").get<std::string>();
+            const auto digest = item.at("manifestSha256").get<std::string>();
+            if (!Identifier(name) || !SafePath(name) || !Digest(digest)
+                || !item.at("publicDistributionApproved").is_boolean()
+                || !directories.insert(name).second || !identities.insert(digest).second) return fail();
+            sources.push_back({directory / "packages" / name, digest, item.at("publicDistributionApproved").get<bool>()});
+        }
+        return Output::Success(std::move(sources));
+    } catch (const std::exception&) { return fail(); }
+}
+
+Result<std::vector<MapRuntimePackageInfo>> QueryMapRuntimePackages(std::span<const MapRuntimePackageSource> sources) {
+    using Output = Result<std::vector<MapRuntimePackageInfo>>;
+    if (sources.size() > 16) return Output::Failure("MapRuntime", "RUNTIME_CATALOG_INVALID", "运行库包目录超过16项预算。");
+    std::set<std::string> identities;
+    for (const auto& source : sources) if (!Digest(source.manifestSha256) || !identities.insert(source.manifestSha256).second)
+        return Output::Failure("MapRuntime", "RUNTIME_PACKAGE_CONFLICT", "可信目录存在无效或重复包身份。");
+    std::vector<MapRuntimePackageInfo> result;
+    for (const auto& source : sources) {
+        MapRuntimePackageInfo info; info.packageSha256 = source.manifestSha256;
+        const auto package = MapRuntimePackage::Capture(source, MapRuntimeSavePurpose::InternalValidation);
+        if (package.Succeeded()) {
+            const auto& value = **package.value;
+            info.id = value.Id(); info.version = value.Version(); info.payloadSha256 = value.PayloadSha256();
+            info.internalOnly = value.InternalOnly(); info.available = true;
+        } else info.diagnostics = package.diagnostics;
+        result.push_back(std::move(info));
+    }
+    return Output::Success(std::move(result));
 }
 
 Result<MapRuntimeSettings> ParseMapRuntimeSettings(std::span<const std::byte> bytes) {
@@ -104,11 +180,8 @@ Result<std::shared_ptr<const MapRuntimePackage>> MapRuntimePackage::Capture(
     if (purpose != MapRuntimeSavePurpose::Normal && purpose != MapRuntimeSavePurpose::InternalValidation
         && purpose != MapRuntimeSavePurpose::TestRun)
         return fail("RUNTIME_SAVE_PURPOSE_INVALID", "未知保存用途不能授予内部包使用资格。");
-    const auto drive = source.root.root_name().wstring();
-    if (!source.root.is_absolute() || source.root != source.root.lexically_normal() || !Digest(source.manifestSha256)
-        || drive.size() != 2 || drive[1] != L':'
-        || !((drive[0] >= L'A' && drive[0] <= L'Z') || (drive[0] >= L'a' && drive[0] <= L'z'))
-        || !PlainPath(source.root)) return fail("RUNTIME_PACKAGE_SOURCE_INVALID", "可信包须使用本机盘符普通目录和已批准的清单SHA-256，不接受设备、网络或重解析路径。");
+    if (!LocalRoot(source.root) || !Digest(source.manifestSha256))
+        return fail("RUNTIME_PACKAGE_SOURCE_INVALID", "可信包须使用本机盘符普通目录和已批准的清单SHA-256，不接受设备、网络或重解析路径。");
     const auto manifest = source.root / "manifest.json";
     if (!PlainPath(manifest)) return fail("RUNTIME_PACKAGE_MISSING", "运行库包缺少普通manifest.json。");
     const auto captured = ReadVerifiedFile(manifest, source.manifestSha256, 64 * 1024);

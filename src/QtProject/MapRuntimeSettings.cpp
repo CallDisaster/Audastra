@@ -1,5 +1,6 @@
 #include "EditorProject.h"
 #include "PendingImportPayload.h"
+#include "../QtCommon/ApplicationPaths.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Workspace.h"
 
@@ -53,6 +54,34 @@ Result<Settings> ReadSettings(const EditorProject& project) {
 
 Result<Services::MapRuntimeSettings> EditorProject::QueryMapRuntimeSettings() const { return ReadSettings(*this); }
 
+Status EditorProject::ReloadInstalledMapRuntimeCatalog() {
+    if (savingMap_) return Status::Failure("MapRuntime", "RUNTIME_CATALOG_BUSY", "保存期间不能重新载入运行库安装目录。");
+    const auto loaded = Services::LoadInstalledMapRuntimeSources(
+        std::filesystem::path(QtCommon::InstallationRoot().toStdWString()).lexically_normal());
+    runtimeCatalogDiagnostics_ = loaded.diagnostics;
+    runtimePackageSources_ = loaded.Succeeded() ? *loaded.value : std::vector<Services::MapRuntimePackageSource>{};
+    return {runtimeCatalogDiagnostics_};
+}
+
+Result<EditorProject::MapRuntimeState> EditorProject::QueryMapRuntimeState() const {
+    using Output = Result<MapRuntimeState>;
+    if (!editTrackingReady_ || editTrackingFailed_ || sourceChangeSuspected_ || sourceChangeConfirmed_)
+        return Output::Failure("MapRuntime", "RUNTIME_REVISION_STALE", "工程修订或来源尚未核实，不能返回可用于启用的旧状态。");
+    if (!runtimeCatalogDiagnostics_.empty()) return {{},runtimeCatalogDiagnostics_};
+    MapRuntimeState state; state.generation = editRevision_.Generation(); state.revision = editRevision_.Revision();
+    const auto settings = ReadSettings(*this);
+    if (!settings.Succeeded()) return {{},settings.diagnostics};
+    const auto packages = Services::QueryMapRuntimePackages(runtimePackageSources_);
+    if (!packages.Succeeded()) return {{},packages.diagnostics};
+    state.settings = *settings.value; state.packages = *packages.value;
+    state.approved = !state.settings.packageSha256.empty()
+        && state.settings.mode != Services::MapRuntimeMode::Disabled
+        && runtimeApprovedPackageSha256_ == state.settings.packageSha256;
+    if (state.generation != editRevision_.Generation() || state.revision != editRevision_.Revision())
+        return Output::Failure("MapRuntime", "RUNTIME_REVISION_STALE", "查询运行库时工程修订已变化。");
+    return Output::Success(std::move(state));
+}
+
 Status EditorProject::PrepareMapRuntimeSettings(AssetState& state, const Settings& settings,
     std::uint64_t expectedGeneration, std::uint64_t expectedRevision) const {
     if (!editTrackingReady_ || editTrackingFailed_ || sourceChangeSuspected_ || sourceChangeConfirmed_
@@ -63,6 +92,7 @@ Status EditorProject::PrepareMapRuntimeSettings(AssetState& state, const Setting
     const auto bytes = Services::SerializeMapRuntimeSettings(settings);
     if (!bytes.Succeeded()) return {bytes.diagnostics};
     if (settings.mode != Services::MapRuntimeMode::Disabled) {
+        if (!runtimeCatalogDiagnostics_.empty()) return {runtimeCatalogDiagnostics_};
         if (settings.packageSha256.empty())
             return Status::Failure("MapRuntime","RUNTIME_CONSENT_REQUIRED","明确启用必须选择已列出的可信包身份。");
         const Services::MapRuntimePackageSource* source = nullptr;

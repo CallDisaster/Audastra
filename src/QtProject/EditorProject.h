@@ -21,6 +21,7 @@
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
 #include "War3MapCore/Services/MapTestScenario.h"
 #include "War3MapCore/Services/MapRuntimePackage.h"
+#include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Services/TerrainMinimapSaveChoice.h"
 #include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 
@@ -336,7 +337,16 @@ public:
     // 只准备候选，不发布、不入栈；供触发器与其资源在同一事务中提交。
     [[nodiscard]] QString PrepareImportPayloads(AssetState& state, std::vector<ImportPayload>& payloads,
         bool replaceExisting) const;
+    struct MapRuntimeState {
+        Services::MapRuntimeSettings settings;
+        std::uint64_t generation = 0, revision = 0;
+        bool approved = false;
+        std::vector<Services::MapRuntimePackageInfo> packages;
+    };
     [[nodiscard]] Result<Services::MapRuntimeSettings> QueryMapRuntimeSettings() const;
+    [[nodiscard]] Result<MapRuntimeState> QueryMapRuntimeState() const;
+    // 仅本机安装配置；无地图/Agent路径参数。重新载入不改变地图设置或批准。
+    [[nodiscard]] Status ReloadInstalledMapRuntimeCatalog();
     // 只准备关联事务候选；UI与Agent须传入刚查询的修订及已列出的可信包身份。
     [[nodiscard]] Status PrepareMapRuntimeSettings(AssetState& state, const Services::MapRuntimeSettings& settings,
         std::uint64_t expectedGeneration, std::uint64_t expectedRevision) const;
@@ -443,6 +453,7 @@ public:
     std::filesystem::path compilerDataRoot_;
     // 仅宿主安装配置注入；不从地图或Agent参数解析本机路径/分发许可。
     std::vector<Services::MapRuntimePackageSource> runtimePackageSources_;
+    std::vector<Diagnostic> runtimeCatalogDiagnostics_;
     std::string runtimeApprovedPackageSha256_;
     // 一般来源档案的owned逐文件声明；保存时进入同一Capture/Verify/Replay，不授予读取资格。
     std::vector<Script::ScriptProfileSourceEncoding> scriptSourceEncodings_;

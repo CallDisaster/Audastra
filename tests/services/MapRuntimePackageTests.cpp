@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapRuntimePackage.h"
+#include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Services/MapSaveService.h"
@@ -103,6 +104,57 @@ void Settings() {
         "{\"schema\":1,\"mode\":\"automatic\",\"packageSha256\":\"\",\"path\":\"payload\"}"})
         Require(Code(ParseMapRuntimeSettings(Bytes(text)), "RUNTIME_SETTINGS_INVALID"), "invalid settings rejected");
     Require(Code(ParseMapRuntimeSettings(Bytes(std::string(4097, ' '))), "RUNTIME_SETTINGS_INVALID"), "settings bounded");
+}
+void Catalog() {
+    Fixture f;
+    Require(LoadInstalledMapRuntimeSources(f.root).value->empty(), "absent installed catalog is empty");
+    const auto directory = f.root / "runtime";
+    Require(std::filesystem::create_directory(directory), "create synthetic runtime directory");
+    const auto catalog = directory / "catalog.json";
+    const auto save = [&](const nlohmann::json& value) {
+        Require(IO::WriteFileBytes(catalog,Bytes(value.dump())).Succeeded(), "write synthetic installed catalog");
+    };
+    nlohmann::json json{{"schema",1},{"packages",nlohmann::json::array({{
+        {"directory","test-1"},{"manifestSha256",f.source.manifestSha256},{"publicDistributionApproved",false}}})}};
+    save(json);
+    const auto loaded = LoadInstalledMapRuntimeSources(f.root);
+    Require(loaded.Succeeded() && loaded.value->size() == 1, "installed catalog accepted");
+    const auto& source = loaded.value->front();
+    Require(source.root == directory / "packages" / "test-1" && !source.publicDistributionApproved,
+        "fixed relative installed root and independent public permission");
+    const auto missing = QueryMapRuntimePackages(*loaded.value);
+    Require(missing.Succeeded() && !missing.value->front().available && !missing.value->front().diagnostics.empty(),
+        "missing installed package is visible, not silently replaced");
+    Require(std::filesystem::create_directories(source.root), "create installed fixture package");
+    for (const auto* name : {"boot.blob","payload.blob","notice.blob","client.j","manifest.json"})
+        Require(std::filesystem::copy_file(f.root / name,source.root / name), "copy original non-AI fixture bytes");
+    const auto packages = QueryMapRuntimePackages(*loaded.value);
+    Require(packages.Succeeded() && packages.value->front().available && packages.value->front().internalOnly
+        && packages.value->front().id == "test-package" && packages.value->front().version == "1.0.0"
+        && packages.value->front().packageSha256 == f.source.manifestSha256,
+        "path-free metadata names exactly the verified installed package");
+    Require(Code(MapRuntimePackage::Capture(source,MapRuntimeSavePurpose::Normal),"RUNTIME_DISTRIBUTION_NOT_APPROVED"),
+        "catalog query does not grant normal distribution");
+    Require(IO::WriteFileBytes(source.root / "payload.blob",Bytes("changed")).Succeeded(), "mutate synthetic package");
+    const auto changed = QueryMapRuntimePackages(*loaded.value);
+    Require(changed.Succeeded() && !changed.value->front().available
+        && Code(changed.value->front(),"RUNTIME_HASH_MISMATCH"), "catalog exposes source drift without content");
+    Require(Code(QueryMapRuntimePackages(std::vector<MapRuntimePackageSource>{source,source}),"RUNTIME_PACKAGE_CONFLICT"),
+        "duplicate package identity rejected before captures");
+    Require(Code(QueryMapRuntimePackages(std::vector<MapRuntimePackageSource>(17,source)),"RUNTIME_CATALOG_INVALID"),
+        "catalog query is bounded");
+    for (const auto& name : {"../escape","absolute/path","c:/package","CON","test-1."}) {
+        auto bad = json; bad["packages"][0]["directory"] = name; save(bad);
+        Require(Code(LoadInstalledMapRuntimeSources(f.root),"RUNTIME_CATALOG_INVALID"), "invalid installed directory rejected");
+    }
+    auto bad = json; bad["packages"].push_back(bad["packages"][0]); save(bad);
+    Require(Code(LoadInstalledMapRuntimeSources(f.root),"RUNTIME_CATALOG_INVALID"), "duplicate installed package rejected");
+    bad = json; bad["path"] = "map-provided"; save(bad);
+    Require(Code(LoadInstalledMapRuntimeSources(f.root),"RUNTIME_CATALOG_INVALID"), "unknown catalog keys rejected");
+    Require(IO::WriteFileBytes(catalog,Bytes("{\"schema\":1,\"schema\":1,\"packages\":[]}")).Succeeded(), "write duplicate catalog key");
+    Require(Code(LoadInstalledMapRuntimeSources(f.root),"RUNTIME_CATALOG_INVALID"), "duplicate catalog key rejected");
+    Require(IO::WriteFileBytes(catalog,Bytes(std::string(32769,' '))).Succeeded(), "write oversized catalog");
+    Require(Code(LoadInstalledMapRuntimeSources(f.root),"RUNTIME_CATALOG_INVALID"), "installed catalog read is bounded");
 }
 void Package() {
     Fixture f;
@@ -369,7 +421,7 @@ void LuaPolicy() {
 }
 }
 int main() {
-    try { Settings(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); LuaPolicy(); }
+    try { Settings(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); LuaPolicy(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "runtime settings and package tests passed\n";
 }

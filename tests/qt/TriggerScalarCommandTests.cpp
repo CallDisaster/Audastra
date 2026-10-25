@@ -503,11 +503,18 @@ void TriggerScalarCommandTests::RuntimeConsentSharesGraphRevisionAndUndo() {
     Fixture f; QVERIFY2(f.Initialize(),qPrintable(f.error));
     const auto package = f.RuntimePackage(); f.project->runtimePackageSources_ = {package};
     const auto generation = f.project->editRevision_.Generation(), revision = f.project->editRevision_.Revision();
+    const auto initial = f.project->QueryMapRuntimeState();
+    QVERIFY(initial.Succeeded()); QVERIFY(!initial.value->approved);
+    QCOMPARE(initial.value->packages.size(),std::size_t(1));
+    QVERIFY(initial.value->packages.front().available); QVERIFY(initial.value->packages.front().internalOnly);
+    QCOMPARE(initial.value->generation,generation); QCOMPARE(initial.value->revision,revision);
+    QCOMPARE(f.project->editRevision_.Revision(),revision); QVERIFY(f.project->CaptureAssets().imports.empty());
     const Services::MapRuntimeSettings settings{Services::MapRuntimeMode::Automatic,package.manifestSha256};
     const auto edited = PublishTriggerGraphOperationsWithAssets(*f.project,f.Batch(1).operations,QStringLiteral("Enable runtime"),
         [&](AssetState& state) { return f.project->PrepareMapRuntimeSettings(state,settings,generation,revision); });
     QVERIFY(edited.Succeeded()); QCOMPARE(f.project->runtimeApprovedPackageSha256_,package.manifestSha256);
     QCOMPARE(f.project->QueryMapRuntimeSettings().value,std::optional(settings));
+    QVERIFY(f.project->QueryMapRuntimeState().value->approved);
     QCOMPARE(f.project->editRevision_.Revision(),revision + 1);
     QCOMPARE(f.project->editRevision_.Current().at("runtime/approval"),package.manifestSha256);
     QCOMPARE(f.project->triggerUndoStack_->count(),1); QCOMPARE(f.project->AssetUndoStack()->count(),0);
@@ -518,6 +525,7 @@ void TriggerScalarCommandTests::RuntimeConsentSharesGraphRevisionAndUndo() {
     QVERIFY(f.project->ObserveEditState("verify consent transaction"));
     f.project->ResetEditTracking(); QVERIFY(f.project->runtimeApprovedPackageSha256_.empty());
     QCOMPARE(f.project->QueryMapRuntimeSettings().value,std::optional(settings));
+    QVERIFY(!f.project->QueryMapRuntimeState().value->approved);
     QVERIFY(f.SourcesUnchanged());
 }
 
@@ -530,6 +538,15 @@ void TriggerScalarCommandTests::RuntimeConsentRejectsMissingPackageAndStaleRevis
     const auto missing = f.project->PrepareMapRuntimeSettings(state,settings,generation,revision);
     QVERIFY(!missing.Succeeded()); QCOMPARE(missing.diagnostics.front().code,std::string("RUNTIME_PACKAGE_MISSING"));
     QVERIFY(state == f.project->CaptureAssets()); f.project->runtimePackageSources_ = {package};
+    f.project->runtimePackageSources_.push_back(package);
+    const auto duplicate = f.project->QueryMapRuntimeState();
+    QVERIFY(!duplicate.Succeeded()); QCOMPARE(duplicate.diagnostics.front().code,std::string("RUNTIME_PACKAGE_CONFLICT"));
+    f.project->runtimePackageSources_.pop_back();
+    f.project->runtimeCatalogDiagnostics_ = Status::Failure("test","RUNTIME_CATALOG_INVALID","invalid").diagnostics;
+    const auto invalidCatalog = f.project->QueryMapRuntimeState();
+    QVERIFY(!invalidCatalog.Succeeded()); QCOMPARE(invalidCatalog.diagnostics.front().code,std::string("RUNTIME_CATALOG_INVALID"));
+    QVERIFY(!f.project->PrepareMapRuntimeSettings(state,settings,generation,revision).Succeeded());
+    f.project->runtimeCatalogDiagnostics_.clear();
     const auto stale = f.project->PrepareMapRuntimeSettings(state,settings,generation,revision + 1);
     QVERIFY(!stale.Succeeded()); QCOMPARE(stale.diagnostics.front().code,std::string("RUNTIME_REVISION_STALE"));
     QVERIFY(state == f.project->CaptureAssets());
