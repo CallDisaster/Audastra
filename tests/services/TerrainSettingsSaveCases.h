@@ -66,8 +66,12 @@ std::unique_ptr<MapDataEditSession> TerrainSettingsRawDraft(const FixtureType& f
         else Require(member.name == "war3map.w3e", "settings test does not silently omit another raw member");
     }
     Require(fixture.edits->Removals().empty(), "settings fixture does not omit raw removals");
-    Require(raw->SetTerrainAndPathingDraft(Take(SerializeMapTerrain(*fixture.edits->Terrain())), pathing,
-        Take(fixture.edits->SerializePathingRestrictionDraft())).Succeeded(), "raw terrain draft retains complete W3E/WPM and restriction layers");
+    const auto terrain = Take(SerializeMapTerrain(*fixture.edits->Terrain()));
+    const auto layers = Take(fixture.edits->SerializePathingRestrictionDraft());
+    // 规范空P/S不含APR载荷；只有实际附加层才走声明式Draft入口。
+    const auto restored = layers.empty() ? raw->SetTerrainAndPathing(terrain, pathing)
+        : raw->SetTerrainAndPathingDraft(terrain, pathing, layers);
+    Require(restored.Succeeded(), "raw terrain draft retains complete W3E/WPM and restriction layers");
     Require(raw->MatchesTerrainJournalDraft(*fixture.edits), "raw draft exactly matches all final members and pathing layers");
     return raw;
 }
