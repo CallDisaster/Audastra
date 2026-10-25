@@ -5,6 +5,7 @@
 #include "War3MapCore/MapData/PathingRestrictionEditing.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
 #include "War3MapCore/Services/TerrainShadowBake.h"
+#include "War3MapCore/Services/TerrainSessionResources.h"
 
 namespace AudastraTest::TerrainResizeJournalCases {
 using namespace TerrainResize;
@@ -207,11 +208,98 @@ inline void SavedBakeIsUsedByFollowingResizeAndUndo() {
         "undo across saved shape restores exact original disk SHD");
 }
 
+inline void CurrentResourcesSupportMixedHistoryAndActualSave() {
+    using War3Map::Services::TerrainSessionResources;
+    Fixture fixture;
+    fixture.PutMember("TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"},
+        {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}})); fixture.Seal();
+    auto source = std::make_shared<MapArchiveSession>(Take(MapArchiveSession::Open(fixture.archive->SourcePath())));
+    struct State { Bytes terrain, pathing, settings, shadow; std::uint64_t restrictions; };
+    const auto state = [&]() {
+        const auto shadow = fixture.edits->TerrainResizeShadowDraft();
+        return State{Take(SerializeMapTerrain(*fixture.edits->Terrain())), Wpm(fixture),
+            fixture.edits->Snapshot().Member(MapDataKind::Settings).sources.front().data,
+            shadow.Succeeded() && shadow.value ? shadow.value->bytes : fixture.Member("war3map.shd"),
+            Take(fixture.edits->QueryPathingRestrictions()).totalCells};
+    };
+    const auto matches = [&](const State& expected, bool comparePathing = true) {
+        const auto actual = state();
+        Require(actual.terrain == expected.terrain && actual.settings == expected.settings && actual.shadow == expected.shadow
+            && actual.restrictions == expected.restrictions && (!comparePathing || actual.pathing == expected.pathing),
+            "mixed resize history restores all raw geometry/settings/shadow and restriction intent");
+    };
+    const auto view = [&]() { return Take(TerrainSessionResources::Capture(source, *fixture.edits, fixture.gameRoot)); };
+    std::vector<State> states; states.push_back(state());
+    Resize(fixture, Intent(-32, 0, 32, 32)); states.push_back(state());
+    TerrainBrush height; height.kind = TerrainBrushKind::Raise; height.radius = 0; height.strength = 16;
+    const TerrainStrokePoint center{0, 0};
+    Take(fixture.edits->EditTerrain(height, std::span(&center, 1), false)); states.push_back(state());
+    TerrainBrush blight; blight.kind = TerrainBrushKind::Blight; blight.radius = 0;
+    const TerrainStrokePoint blightPoint{-256, 256};
+    Take(fixture.edits->EditTerrain(blight, std::span(&blightPoint, 1), false)); states.push_back(state());
+    Restriction(fixture, {-512, 0}); states.push_back(state());
+    {
+        auto current = view(); const auto resources = Take(current.CaptureNative(*fixture.edits->Terrain()));
+        TerrainBoundsEditIntent bounds; bounds.playable = {34, 2, 60, 28};
+        auto prepared = Take(fixture.edits->PrepareTerrainBoundsEdit(resources, bounds)); Check(current.Verify(resources));
+        Check(fixture.edits->ApplyPreparedTerrainBoundsEdit(prepared)); states.push_back(state());
+    }
+    {
+        auto current = view(); auto next = *fixture.edits->Terrain();
+        Take(ReplaceTerrainTextureSlot(next, TerrainTextureTable::Ground, 0, "Tg02"));
+        const auto resources = Take(current.CaptureWater(next, true));
+        auto prepared = Take(fixture.edits->PrepareTerrainTextureSlot(TerrainTextureTable::Ground, 0, "Tg02", &resources));
+        Check(current.Verify(resources)); Take(fixture.edits->ApplyPreparedTerrainEdit(prepared)); states.push_back(state());
+    }
+    {
+        auto current = view(); const auto resources = Take(current.CaptureWater(true));
+        const TerrainStrokePoint point{-512, -512};
+        const TerrainWaterBrush water{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 1, 0, 7,
+            Take(CaptureTerrainWaterStrokeAnchor(*fixture.edits->Terrain(), point, resources.WaterBrushRules()->maximumCliffLevel))};
+        auto prepared = Take(fixture.edits->PrepareTerrainWaterEdit(resources, water, std::span(&point, 1), false));
+        Check(current.Verify(resources)); Take(fixture.edits->ApplyPreparedTerrainEdit(prepared)); states.push_back(state());
+    }
+    {
+        auto current = view(); const auto resources = Take(current.CaptureWater(true));
+        TerrainBrush cliff; cliff.kind = TerrainBrushKind::CliffLevel; cliff.size = 1; cliff.cliffTexture = 0; cliff.levelDelta = 1;
+        const TerrainStrokePoint point{512, 512};
+        auto prepared = Take(fixture.edits->PrepareTerrainCliffEdit(resources, cliff, std::span(&point, 1), false));
+        Check(current.Verify(resources)); Take(fixture.edits->ApplyPreparedTerrainEdit(prepared)); states.push_back(state());
+    }
+    for (std::size_t index = states.size() - 1; index > 0; --index) {
+        Require(fixture.edits->Undo(), "mixed history undo succeeds"); matches(states[index - 1]);
+    }
+    Require(!fixture.edits->IsDirty(), "undo all mixed typed operations restores physical clean state");
+    for (std::size_t index = 1; index < states.size(); ++index) {
+        Require(fixture.edits->Redo(), "mixed history redo succeeds"); matches(states[index]);
+    }
+    auto output = fixture.edits->Replacements();
+    auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot, {}, output));
+    Check(plan.SaveGate()); Check(plan.InstallPathingOutput(*fixture.edits, output));
+    Check(plan.VerifyForSave(*fixture.edits, fixture.archive->SourceSha256(), output));
+    auto saved = Take(MapArchiveSession::Open(Take(fixture.archive->SaveCandidate(fixture.directory / "mixed-resize.w3x", output)).path));
+    Check(plan.VerifyReadback(saved));
+    Require(Take(saved.ReadMember("war3map.w3e")) == states.back().terrain
+        && Take(saved.ReadMember("war3map.w3i")) == states.back().settings
+        && Take(saved.ReadMember("war3map.shd")) == states.back().shadow,
+        "actual archive save and readback preserve complete mixed geometry/settings/shadow");
+    Check(plan.CommitSaved(*fixture.edits, MapDocument::FromArchive(saved)));
+    fixture.archive = std::make_unique<MapArchiveSession>(std::move(saved));
+    const auto savedWpm = Wpm(fixture);
+    Require(!fixture.edits->IsDirty(), "actual mixed save establishes a clean baseline");
+    for (std::size_t index = states.size() - 1; index > 0; --index) Require(fixture.edits->Undo(), "saved mixed history undo succeeds");
+    matches(states.front());
+    for (std::size_t index = 1; index < states.size(); ++index) Require(fixture.edits->Redo(), "saved mixed history redo succeeds");
+    matches(states.back(), false);
+    Require(Wpm(fixture) == savedWpm && !fixture.edits->IsDirty(), "redo saved mixed history retains actual G1 generation and clean state");
+}
+
 inline void TestTerrainResizeJournalCases() {
     ResizeCodecHasIndependentSignedWireAndDomain();
     HistoryShadowIsSeparateAndAuthenticated();
     CroppedPathingCannotResurrectAtSameShape();
     RawDraftHasNoSaveAuthorityAndShadowIsCompared();
     SavedBakeIsUsedByFollowingResizeAndUndo();
+    CurrentResourcesSupportMixedHistoryAndActualSave();
 }
 } // namespace AudastraTest::TerrainResizeJournalCases
