@@ -20,6 +20,7 @@
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
 #include "War3MapCore/Services/MapTestScenario.h"
+#include "War3MapCore/Services/MapRuntimePackage.h"
 #include "War3MapCore/Services/TerrainMinimapSaveChoice.h"
 #include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 
@@ -114,6 +115,8 @@ struct AssetEntry {
 struct AssetState {
     std::vector<PendingImport> imports;
     std::vector<AssetEdit> edits;
+    // 本工程的作者批准，不从地图内设置自动继承。
+    std::string runtimeApprovedPackageSha256;
     [[nodiscard]] bool operator==(const AssetState&) const = default;
 };
 
@@ -330,6 +333,13 @@ public:
     };
     [[nodiscard]] QString AddImportPayloads(std::vector<ImportPayload>& payloads, bool replaceExisting,
         const QString& label);
+    // 只准备候选，不发布、不入栈；供触发器与其资源在同一事务中提交。
+    [[nodiscard]] QString PrepareImportPayloads(AssetState& state, std::vector<ImportPayload>& payloads,
+        bool replaceExisting) const;
+    [[nodiscard]] Result<Services::MapRuntimeSettings> QueryMapRuntimeSettings() const;
+    // 只准备关联事务候选；UI与Agent须传入刚查询的修订及已列出的可信包身份。
+    [[nodiscard]] Status PrepareMapRuntimeSettings(AssetState& state, const Services::MapRuntimeSettings& settings,
+        std::uint64_t expectedGeneration, std::uint64_t expectedRevision) const;
     // 资源路径编辑（AssetEdits.cpp）：改名 / 移动 / 删除地图已有成员或待导入文件。
     // 返回空字符串表示成功，否则为不能修改的原因（非法路径、重名、编辑器管理的文件）。
     [[nodiscard]] QString MoveAsset(const QString& from, const QString& to);
@@ -431,6 +441,9 @@ public:
     std::filesystem::path activeUiDataRoot_;
     // 工程内嵌定义用于编辑；地图脚本依赖本机实际编译器头文件。
     std::filesystem::path compilerDataRoot_;
+    // 仅宿主安装配置注入；不从地图或Agent参数解析本机路径/分发许可。
+    std::vector<Services::MapRuntimePackageSource> runtimePackageSources_;
+    std::string runtimeApprovedPackageSha256_;
     // 一般来源档案的owned逐文件声明；保存时进入同一Capture/Verify/Replay，不授予读取资格。
     std::vector<Script::ScriptProfileSourceEncoding> scriptSourceEncodings_;
     std::vector<Script::ScriptProfileIncludeAccess> scriptSourceIncludeAccess_;

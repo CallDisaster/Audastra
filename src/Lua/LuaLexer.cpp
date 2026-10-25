@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <string>
+#include <stdexcept>
 
 namespace War3Map::Lua::Detail {
 namespace {
@@ -23,9 +24,9 @@ bool IsKeyword(std::string_view text) {
     return std::find(keywords.begin(), keywords.end(), text) != keywords.end();
 }
 
-std::vector<Token> Tokenize(std::string_view source, bool comments) {
+std::vector<Token> Tokenize(std::string_view source, bool comments, std::size_t maxTokens) {
     std::vector<Token> tokens;
-    tokens.reserve(source.size() / 4 + 1);
+    tokens.reserve(std::min(source.size() / 4 + 1, maxTokens));
     std::size_t at = 0;
     std::uint32_t line = 1;
     const auto countLines = [&](std::size_t from, std::size_t to) {
@@ -38,7 +39,10 @@ std::vector<Token> Tokenize(std::string_view source, bool comments) {
         Token token;
         token.kind = kind; token.begin = static_cast<std::uint32_t>(begin); token.end = static_cast<std::uint32_t>(end);
         token.line = line; token.unterminated = unterminated;
-        if (kind != TokenKind::Comment || comments) tokens.push_back(token);
+        if (kind != TokenKind::Comment || comments) {
+            if (tokens.size() >= maxTokens) throw std::length_error("Lua token budget");
+            tokens.push_back(token);
+        }
         countLines(begin, end);
     };
     const auto longEnd = [&](std::size_t open, std::size_t level, bool& unterminated) {
@@ -138,6 +142,7 @@ std::vector<Token> Tokenize(std::string_view source, bool comments) {
     }
     Token end;
     end.kind = TokenKind::End; end.begin = end.end = static_cast<std::uint32_t>(source.size()); end.line = line;
+    if (tokens.size() >= maxTokens) throw std::length_error("Lua token budget");
     tokens.push_back(end);
     return tokens;
 }

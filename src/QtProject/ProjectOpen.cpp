@@ -521,6 +521,17 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
     candidate->terrainSavedIndex = terrainSavedIndex;
     candidate->terrainJournalWarning = terrainJournalWarning;
     candidate->assetEdits = std::move(assetEdits);
+    if (manifest.contains("runtimeApproval")) {
+        if (!manifest["runtimeApproval"].isObject()) return fail(QObject::tr("运行库工程批准记录格式错误"));
+        const auto approval = manifest["runtimeApproval"].toObject();
+        const auto identity = approval["packageSha256"].toString().toStdString();
+        const auto sourceIdentity = baseline ? baseline->SourceSha256() : workspace->Snapshot().aggregateSha256;
+        if (approval.size() != 3 || approval["schema"] != QJsonValue(1)
+            || !approval["sourceSha256"].isString() || approval["sourceSha256"].toString().toStdString() != sourceIdentity
+            || identity.size() != 64 || identity.find_first_not_of("0123456789abcdef") != std::string::npos)
+            return fail(QObject::tr("运行库工程批准不完整或绑定了另一份地图基线；未从地图声明继承批准"));
+        candidate->runtimeApprovedPackageSha256 = identity;
+    }
     auto result = PreparedResult::Success(std::move(candidate));
     if (terrainJournal && terrainJournalWarning.empty()) {
         Diagnostic info;

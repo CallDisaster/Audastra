@@ -22,12 +22,14 @@ public:
     std::uint64_t epoch = 7;
     std::uintptr_t mainVm = 0x1000;
     bool alive = true;
+    bool matchesCurrent = true;
     unsigned returned = 0, invalidations = 0;
     int failAllocation = 0;
     std::function<void()> duringReturn;
     std::map<std::uint32_t, std::string> strings;
     std::uint64_t Generation() const noexcept override { return alive ? epoch : 0; }
     bool IsMainVm(std::uintptr_t vm) const noexcept override { return vm == mainVm; }
+    bool MatchesCurrentMainVm() const noexcept override { return matchesCurrent; }
     std::optional<std::uint32_t> ReturnString(std::string_view text) override {
         if (duringReturn) duringReturn();
         if (failAllocation == 1) return {};
@@ -171,6 +173,27 @@ void Lifetimes() {
     }
     Check(!vm->alive, "session destruction invalidates external VM lease");
 }
+void NativeInitializationBoundary() {
+    Fixture f;
+    Check(!f.session.VmIdentityChanged(), "unattached native initialization is not a map reset");
+    f.Reply("ajapi:2;0;1;host.hello");
+    for (unsigned i = 0; i < 8; ++i)
+        Check(!f.session.VmIdentityChanged(), "same-map native reinitialization preserves the connected Host");
+    Check(f.Reply("ajapi:2;7;2;host.version").status == AJ_OK && f.attaches == 1,
+        "native notifications do not consume epoch or reconnect");
+    f.vm->alive = false;
+    Check(!f.session.VmIdentityChanged(), "a failed VM lease alone cannot masquerade as a new map");
+    f.vm->matchesCurrent = false;
+    bool otherChanged = true;
+    std::thread other([&] { otherChanged = f.session.VmIdentityChanged(); }); other.join();
+    Check(!otherChanged, "another thread cannot infer the owner VM lifecycle");
+    Check(f.session.VmIdentityChanged(), "actual main VM identity change requires reset");
+    f.session.Reset();
+    Check(!f.session.VmIdentityChanged(), "duplicate native notifications after teardown are harmless");
+    f.vm = std::make_shared<FakeVm>(); f.vm->epoch = 8;
+    Check(f.Reply("ajapi:2;0;1;host.hello").epoch == 8 && f.attaches == 2,
+        "actual next map establishes one fresh epoch");
+}
 void FailClosed() {
     for (const auto generation : {std::uint64_t{0}, std::uint64_t{INT32_MAX} + 1}) {
         Fixture f;
@@ -291,7 +314,7 @@ void ProbeBounds() {
 }
 int main() {
     try {
-        ReplyObservation(); BasicCalls(); BuiltinModules(); Lifetimes(); FailClosed(); ProbeBounds();
+        ReplyObservation(); BasicCalls(); BuiltinModules(); Lifetimes(); NativeInitializationBoundary(); FailClosed(); ProbeBounds();
         std::cout << "JAPI runtime adapter: " << checks << " checks passed; 20 fake-VM cycles; no game launched\n";
         return 0;
     } catch (const std::exception& error) {

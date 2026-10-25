@@ -18,11 +18,12 @@ import unittest
 
 
 UI_FUNCTIONS = ("Connect", "Check", "AudastraUIIsReady", "AudastraUILastError")
-JAPI_FUNCTIONS = ("AjInitialize", "AjModuleLoad")
+JAPI_FUNCTIONS = ("AjInitialize", "AjModuleLoad", "AjFail")
 UI_GLOBALS = ("PREFIX", "connectStatus", "failedStatus", "failedRequest")
-JAPI_GLOBALS = ("AjReady", "AjLastStatus", "AjNextRequest", "AjCapabilities", "AjLastInteger")
+JAPI_GLOBALS = ("AjReady", "AjLastStatus", "AjNextRequest", "AjCapabilities", "AjLastInteger",
+                "AjExpectedRuntimeIdentity", "AjLastText", "AjLastKind", "AjLastReal")
 STUB_FUNCTIONS = ("AjRequest", "AjCallVoid", "AjCallBool", "AjCallText", "AjArgText", "AjArgInt", "I2S")
-TYPES = {"boolean": "False", "integer": "0", "string": '""'}
+TYPES = {"boolean": "False", "integer": "0", "string": '""', "real": "0.0"}
 
 
 def without_comment(line: str) -> str:
@@ -52,7 +53,7 @@ def expression(text: str, names: set[str], calls: set[str]) -> str:
     for node in ast.walk(tree):
         if not isinstance(node, allowed):
             raise ValueError(f"unsupported expression: {text}")
-        if isinstance(node, ast.Constant) and type(node.value) not in (str, int, bool):
+        if isinstance(node, ast.Constant) and type(node.value) not in (str, int, bool, float):
             raise ValueError(f"unsupported literal: {text}")
         if isinstance(node, ast.Name) and node.id not in names | calls | {"true", "false"}:
             raise ValueError(f"unknown identifier {node.id}")
@@ -86,13 +87,13 @@ def initial_globals(source: str, names: tuple[str, ...]) -> dict[str, object]:
     result = {}
     for name in names:
         declarations = re.findall(
-            rf"^\s*(?:private\s+)?(?:constant\s+)?(integer|boolean|string)\s+{name}\s*=\s*(.+)$",
+            rf"^\s*(?:private\s+)?(?:constant\s+)?(integer|boolean|string|real)\s+{name}\s*=\s*(.+)$",
             source, re.MULTILINE)
         if len(declarations) != 1:
             raise ValueError(f"expected exactly one initialized global {name}")
         kind, raw = declarations[0]
         value = ast.literal_eval(expression(without_comment(raw), set(), set()))
-        expected = {"integer": int, "boolean": bool, "string": str}[kind]
+        expected = {"integer": int, "boolean": bool, "string": str, "real": float}[kind]
         if type(value) is not expected:
             raise ValueError(f"wrong global initializer type for {name}")
         result[name] = value
@@ -172,18 +173,21 @@ def translate_function(source: str, name: str, globals_: set[str]) -> str:
 class Transport:
     """Deterministic request outcomes; no native bridge or protocol parsing."""
 
-    def __init__(self, state: dict, *, hello=(), modules=(), ready=(), errors=(), hello_default=0):
+    def __init__(self, state: dict, *, hello=(), modules=(), ready=(), errors=(), hello_default=0,
+                 identities=(), identity_default=(0, "")):
         self.state = state
         self.outcomes = {"host.hello": deque(hello), "module.load": deque(modules),
-                         "audastraui.ready": deque(ready), "audastraui.error": deque(errors)}
+                         "audastraui.ready": deque(ready), "audastraui.error": deque(errors),
+                         "host.runtimeidentity": deque(identities)}
         self.defaults = {"host.hello": hello_default, "module.load": 0,
-                         "audastraui.ready": (0, True), "audastraui.error": (0, "")}
+                         "audastraui.ready": (0, True), "audastraui.error": (0, ""),
+                         "host.runtimeidentity": identity_default}
         self.calls: list[tuple[str, str, str]] = []
         self.text = ""
 
     def request(self, command: str, arguments: str, expected_kind: str) -> bool:
         expected = {"host.hello": ("", "i"), "module.load": (";s:audastraui", "v"),
-                    "audastraui.ready": ("", "b")}
+                    "audastraui.ready": ("", "b"), "host.runtimeidentity": ("", "s")}
         if command == "audastraui.error":
             if not re.fullmatch(r";i:[0-9]+", arguments) or expected_kind != "s":
                 raise AssertionError("unexpected error-query arguments")
@@ -197,6 +201,7 @@ class Transport:
         self.state["AjLastStatus"] = status
         self.state["AjLastInteger"] = int(value) if status == 0 and expected_kind in ("i", "b") else 0
         self.text = value if status == 0 and expected_kind == "s" else ""
+        self.state["AjLastText"] = self.text
         return status == 0
 
     def call_bool(self, command: str, arguments: str) -> bool:
@@ -242,6 +247,34 @@ class ConnectTests(unittest.TestCase):
         self.assertEqual(transport.count("module.load"), 1)
         self.assertEqual(state["AjLastStatus"], 0)
         self.assertEqual(state["connectStatus"], 0)
+
+    def test_matching_identity_is_required_and_then_cached(self):
+        state, transport = self.make(identity_default=(0, "a" * 64))
+        state["AjExpectedRuntimeIdentity"] = "a" * 64
+        self.assertTrue(state["AudastraUIIsReady"]())
+        self.assertTrue(state["AudastraUIIsReady"]())
+        self.assertEqual(transport.count("host.runtimeidentity"), 1)
+        self.assertEqual(transport.count("module.load"), 1)
+        self.assertTrue(state["AjReady"])
+
+    def test_wrong_or_missing_identity_never_loads_ui(self):
+        for identity in ((0, "b" * 64), (0, ""), (16, "")):
+            with self.subTest(identity=identity):
+                state, transport = self.make(identity_default=identity)
+                state["AjExpectedRuntimeIdentity"] = "a" * 64
+                self.assertEqual([state["AudastraUIIsReady"]() for _ in range(150)], [False] * 150)
+                self.assertFalse(state["AjReady"])
+                self.assertEqual(transport.count("module.load"), 0)
+                self.assertEqual(transport.count("host.runtimeidentity"), 150)
+                self.assertEqual(state["AjLastStatus"], 14 if identity[0] == 0 else identity[0])
+
+    def test_identity_failure_can_recover_at_attempt_150(self):
+        state, transport = self.make(identities=[(0, "b" * 64)] * 149 + [(0, "a" * 64)])
+        state["AjExpectedRuntimeIdentity"] = "a" * 64
+        self.assertEqual([state["AudastraUIIsReady"]() for _ in range(150)], [False] * 149 + [True])
+        self.assertEqual(transport.count("host.hello"), 150)
+        self.assertEqual(transport.count("module.load"), 1)
+        self.assertTrue(state["AjReady"])
 
     def test_attempt_150_can_still_recover(self):
         state, transport = self.make(hello=([16] * 149 + [0]))

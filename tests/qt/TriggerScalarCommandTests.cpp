@@ -1,5 +1,8 @@
 // 原创小型 CPU/Qt 撤销链夹具；不加载原图、游戏或原版编辑器。
 #include "EditorProject.h"
+#include "ProjectOpen.h"
+#include "ProjectSaveJob.h"
+#include "War3MapCore/MapArchiveSession.h"
 #include "TriggerCommands.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -10,6 +13,9 @@
 #include <QDir>
 #include <QFile>
 #include <QSettings>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -25,6 +31,9 @@ using namespace War3Map;
 using namespace War3Map::Trigger;
 using War3Map::QtProject::EditorProject;
 using War3Map::QtProject::TriggerGraphSnapshotUndoCommand;
+using War3Map::QtProject::AssetState;
+using War3Map::QtProject::PublishTriggerGraphOperationsWithAssets;
+using War3Map::QtProject::PrepareProjectOpen;
 
 namespace {
 struct Wire {
@@ -140,6 +149,25 @@ struct Fixture {
         return Take(Sha256File(root / "source/map/war3map.wtg")) == sourceWtgSha
             && Take(Sha256File(root / "source/map/war3map.wct")) == sourceWctSha;
     }
+    Services::MapRuntimePackageSource RuntimePackage() {
+        using namespace Services;
+        const auto packageRoot = root / "runtime-package";
+        QJsonArray files;
+        const auto add = [&](const char* path, const char* member, const char* role, const char* text) {
+            Write(packageRoot / path, text);
+            const auto sha = Take(Sha256File(packageRoot / path));
+            files.append(QJsonObject{{"path",path},{"member",member},{"role",role},
+                {"size",static_cast<qint64>(std::string_view(text).size())},{"sha256",QString::fromStdString(sha)}});
+        };
+        add("boot.blob","warvk_loader_raw.ai","bootstrap","original opaque boot fixture");
+        add("payload.blob","warvk_runtime.blp","payload","original opaque payload fixture");
+        add("notice.txt","audastra/runtime/licenses/fixture.txt","notice","original source notice");
+        add("client.j","","client","original synthetic client");
+        const QJsonObject manifest{{"schema",1},{"id","original-test"},{"version","1.0.0"},{"abi",0x20000},
+            {"scope","internal"},{"gameSha256","e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"},{"files",files}};
+        Write(packageRoot / "manifest.json",QJsonDocument(manifest).toJson(QJsonDocument::Compact).toStdString());
+        return {packageRoot,Take(Sha256File(packageRoot / "manifest.json")),false};
+    }
 };
 } // namespace
 
@@ -156,6 +184,14 @@ private slots:
     void ScalarUiNoticeIsScopedSingleConsumerAndActualIndexBound();
     void ScalarUiNoticeRejectsMacroAndNestedGenericNotification();
     void ScalarUiScopeSurvivesOwnerDeletionAfterPublication();
+    void GraphAndAssetsPublishInOneRevisionAndUndo();
+    void GraphAndAssetsPreparationFailureChangesNeither();
+    void GraphAndAssetsRejectStaleUndo();
+    void GraphAndAssetsRejectFailedObservation();
+    void AssetOnlyGraphTransactionAndImmutablePayload();
+    void RuntimeConsentSharesGraphRevisionAndUndo();
+    void RuntimeConsentRejectsMissingPackageAndStaleRevision();
+    void RuntimeConsentSurvivesProjectSaveAndBindsSource();
 };
 
 void TriggerScalarCommandTests::Actual256OneUndoPreservesGbBytesAndUnselectedFields() {
@@ -371,6 +407,169 @@ void TriggerScalarCommandTests::ScalarUiScopeSurvivesOwnerDeletionAfterPublicati
     });
     // 独立持有 command，避免在 QUndoStack::push 内删除正在执行的所属 stack。
     command->redo(); QVERIFY(sawPublication); QVERIFY(*published); QVERIFY(!f.project); QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::GraphAndAssetsPublishInOneRevisionAndUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto revision = f.project->editRevision_.Revision();
+    const auto bytes = std::make_shared<const std::vector<std::byte>>(4, std::byte{42});
+    bool signalsConsistent = true;
+    connect(f.project.get(), &EditorProject::TriggerDocumentChanged, f.project.get(), [&] {
+        const auto actual = f.project->CaptureEditScopes();
+        signalsConsistent = signalsConsistent && actual && *actual == f.project->editRevision_.Current();
+    });
+    const auto edited = War3Map::QtProject::PublishTriggerGraphOperationsWithAssets(*f.project,
+        f.Batch(1).operations, QStringLiteral("Graph and resources"), [&](auto& state) {
+            std::vector<EditorProject::ImportPayload> payloads{{"audastra/runtime/settings.json", bytes}};
+            const auto problem = f.project->PrepareImportPayloads(state, payloads, false);
+            return problem.isEmpty() ? Status::Ok() : Status::Failure("test", "PREPARE_FAILED", problem.toStdString());
+        });
+    QVERIFY(edited.Succeeded()); QVERIFY(!f.OriginalBytes());
+    QCOMPARE(f.project->CaptureAssets().imports.size(), std::size_t{1});
+    QCOMPARE(f.project->triggerUndoStack_->count(), 1); QCOMPARE(f.project->AssetUndoStack()->count(), 0);
+    QCOMPARE(f.project->editRevision_.Revision(), revision + 1); QVERIFY(signalsConsistent);
+    f.project->triggerUndoStack_->undo(); QVERIFY(f.OriginalBytes()); QVERIFY(f.project->CaptureAssets().imports.empty());
+    QCOMPARE(f.project->editRevision_.Revision(), revision + 2); QVERIFY(signalsConsistent);
+    f.project->triggerUndoStack_->redo(); QVERIFY(!f.OriginalBytes());
+    QCOMPARE(f.project->CaptureAssets().imports.size(), std::size_t{1});
+    QCOMPARE(f.project->editRevision_.Revision(), revision + 3); QVERIFY(signalsConsistent); QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::GraphAndAssetsPreparationFailureChangesNeither() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto revision = f.project->editRevision_.Revision();
+    const auto edited = War3Map::QtProject::PublishTriggerGraphOperationsWithAssets(*f.project,
+        f.Batch(1).operations, QStringLiteral("Cancelled consent"), [&](auto& state) {
+            state.imports.push_back({"audastra/runtime/settings.json", {}, 1,
+                std::make_shared<const std::vector<std::byte>>(1, std::byte{1})});
+            return Status::Failure("test", "CANCELLED", "author cancelled");
+        });
+    QVERIFY(!edited.Succeeded()); QVERIFY(f.OriginalBytes()); QVERIFY(f.project->CaptureAssets().imports.empty());
+    QCOMPARE(f.project->triggerUndoStack_->count(), 0); QCOMPARE(f.project->AssetUndoStack()->count(), 0);
+    QCOMPARE(f.project->editRevision_.Revision(), revision); QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::GraphAndAssetsRejectStaleUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto edited = War3Map::QtProject::PublishTriggerGraphOperationsWithAssets(*f.project,
+        f.Batch(1).operations, QStringLiteral("Bound resources"), [](auto& state) {
+            state.imports.push_back({"owned.txt", {}, 1, std::make_shared<const std::vector<std::byte>>(1, std::byte{1})});
+            return Status::Ok();
+        });
+    QVERIFY(edited.Succeeded()); const auto after = f.Pair();
+    auto assets = f.project->CaptureAssets(); assets.imports.front().archivePath = "changed.txt";
+    f.project->PublishAssetState(assets);
+    const auto revision = f.project->editRevision_.Revision();
+    f.project->triggerUndoStack_->undo();
+    QVERIFY(f.Pair().wtg == after.wtg); QVERIFY(f.project->CaptureAssets() == assets);
+    QCOMPARE(f.project->editRevision_.Revision(), revision); QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::GraphAndAssetsRejectFailedObservation() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto revision = f.project->editRevision_.Revision();
+    const auto edited = War3Map::QtProject::PublishTriggerGraphOperationsWithAssets(*f.project,
+        f.Batch(1).operations, QStringLiteral("Invalid resource fingerprint"), [](auto& state) {
+            // 长度与正文不符，实际来源捕获应拒绝；不降低保存校验来接受候选。
+            state.imports.push_back({"broken.txt", {}, 100, std::make_shared<const std::vector<std::byte>>(1, std::byte{1})});
+            return Status::Ok();
+        });
+    QVERIFY(!edited.Succeeded()); QVERIFY(f.OriginalBytes()); QVERIFY(f.project->CaptureAssets().imports.empty());
+    QCOMPARE(f.project->editRevision_.Revision(), revision); QCOMPARE(f.project->triggerUndoStack_->count(), 0);
+    QVERIFY(!f.project->editTrackingFailed_); QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::AssetOnlyGraphTransactionAndImmutablePayload() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    auto bytes = std::make_shared<std::vector<std::byte>>(1, std::byte{12});
+    const auto revision = f.project->editRevision_.Revision();
+    const auto edited = War3Map::QtProject::PublishTriggerGraphOperationsWithAssets(*f.project,
+        {}, QStringLiteral("Settings without graph delta"), [&](auto& state) {
+            std::vector<EditorProject::ImportPayload> payloads{{"settings.txt", bytes}};
+            const auto problem = f.project->PrepareImportPayloads(state, payloads, false);
+            return problem.isEmpty() ? Status::Ok() : Status::Failure("test", "PREPARE_FAILED", problem.toStdString());
+        });
+    QVERIFY(edited.Succeeded()); bytes->front() = std::byte{55};
+    QVERIFY(f.OriginalBytes()); QCOMPARE(f.project->triggerUndoStack_->count(), 1);
+    QVERIFY(f.project->CaptureAssets().imports.front().ownedPayload->front() == std::byte{12});
+    QCOMPARE(f.project->editRevision_.Revision(), revision + 1);
+    f.project->triggerUndoStack_->undo(); QVERIFY(f.project->CaptureAssets().imports.empty());
+    f.project->triggerUndoStack_->redo();
+    QVERIFY(f.project->CaptureAssets().imports.front().ownedPayload->front() == std::byte{12});
+    QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::RuntimeConsentSharesGraphRevisionAndUndo() {
+    Fixture f; QVERIFY2(f.Initialize(),qPrintable(f.error));
+    const auto package = f.RuntimePackage(); f.project->runtimePackageSources_ = {package};
+    const auto generation = f.project->editRevision_.Generation(), revision = f.project->editRevision_.Revision();
+    const Services::MapRuntimeSettings settings{Services::MapRuntimeMode::Automatic,package.manifestSha256};
+    const auto edited = PublishTriggerGraphOperationsWithAssets(*f.project,f.Batch(1).operations,QStringLiteral("Enable runtime"),
+        [&](AssetState& state) { return f.project->PrepareMapRuntimeSettings(state,settings,generation,revision); });
+    QVERIFY(edited.Succeeded()); QCOMPARE(f.project->runtimeApprovedPackageSha256_,package.manifestSha256);
+    QCOMPARE(f.project->QueryMapRuntimeSettings().value,std::optional(settings));
+    QCOMPARE(f.project->editRevision_.Revision(),revision + 1);
+    QCOMPARE(f.project->editRevision_.Current().at("runtime/approval"),package.manifestSha256);
+    QCOMPARE(f.project->triggerUndoStack_->count(),1); QCOMPARE(f.project->AssetUndoStack()->count(),0);
+    f.project->triggerUndoStack_->undo(); QVERIFY(f.OriginalBytes()); QVERIFY(f.project->runtimeApprovedPackageSha256_.empty());
+    QVERIFY(f.project->QueryMapRuntimeSettings().value->packageSha256.empty());
+    f.project->triggerUndoStack_->redo(); QVERIFY(!f.OriginalBytes());
+    QCOMPARE(f.project->runtimeApprovedPackageSha256_,package.manifestSha256);
+    QVERIFY(f.project->ObserveEditState("verify consent transaction"));
+    f.project->ResetEditTracking(); QVERIFY(f.project->runtimeApprovedPackageSha256_.empty());
+    QCOMPARE(f.project->QueryMapRuntimeSettings().value,std::optional(settings));
+    QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::RuntimeConsentRejectsMissingPackageAndStaleRevision() {
+    Fixture f; QVERIFY2(f.Initialize(),qPrintable(f.error));
+    const auto package = f.RuntimePackage();
+    const auto generation = f.project->editRevision_.Generation(), revision = f.project->editRevision_.Revision();
+    auto state = f.project->CaptureAssets();
+    const Services::MapRuntimeSettings settings{Services::MapRuntimeMode::Enabled,package.manifestSha256};
+    const auto missing = f.project->PrepareMapRuntimeSettings(state,settings,generation,revision);
+    QVERIFY(!missing.Succeeded()); QCOMPARE(missing.diagnostics.front().code,std::string("RUNTIME_PACKAGE_MISSING"));
+    QVERIFY(state == f.project->CaptureAssets()); f.project->runtimePackageSources_ = {package};
+    const auto stale = f.project->PrepareMapRuntimeSettings(state,settings,generation,revision + 1);
+    QVERIFY(!stale.Succeeded()); QCOMPARE(stale.diagnostics.front().code,std::string("RUNTIME_REVISION_STALE"));
+    QVERIFY(state == f.project->CaptureAssets());
+    const auto edited = PublishTriggerGraphOperationsWithAssets(*f.project,{},QStringLiteral("Enable with no graph delta"),
+        [&](AssetState& candidate) { return f.project->PrepareMapRuntimeSettings(candidate,settings,generation,revision); });
+    QVERIFY(edited.Succeeded()); QVERIFY(f.OriginalBytes());
+    const auto current = f.project->editRevision_.Revision();
+    const auto disabled = PublishTriggerGraphOperationsWithAssets(*f.project,{},QStringLiteral("Disable"),
+        [&](AssetState& candidate) { return f.project->PrepareMapRuntimeSettings(candidate,{Services::MapRuntimeMode::Disabled,{}},generation,current); });
+    QVERIFY(disabled.Succeeded()); QVERIFY(f.project->runtimeApprovedPackageSha256_.empty());
+    f.project->triggerUndoStack_->undo(); QCOMPARE(f.project->runtimeApprovedPackageSha256_,package.manifestSha256);
+    f.project->triggerUndoStack_->undo(); QVERIFY(f.project->runtimeApprovedPackageSha256_.empty());
+    QVERIFY(f.project->CaptureAssets().imports.empty()); QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::RuntimeConsentSurvivesProjectSaveAndBindsSource() {
+    Fixture f; QVERIFY2(f.Initialize(),qPrintable(f.error));
+    const auto package = f.RuntimePackage(); f.project->runtimePackageSources_ = {package};
+    const auto edited = PublishTriggerGraphOperationsWithAssets(*f.project,{},QStringLiteral("Enable"),[&](AssetState& state) {
+        return f.project->PrepareMapRuntimeSettings(state,{Services::MapRuntimeMode::Automatic,package.manifestSha256},
+            f.project->editRevision_.Generation(),f.project->editRevision_.Revision());
+    });
+    QVERIFY(edited.Succeeded());
+    const auto prepared = f.project->PrepareProjectSave(f.root / "runtime.forge");
+    QVERIFY(prepared.Succeeded()); auto& job = **prepared.value;
+    EditorProject::RunProjectSave(job); QVERIFY(job.Outcome().Succeeded());
+    QVERIFY(f.project->CommitProjectSave(job).Succeeded());
+    const auto reopened = PrepareProjectOpen(job.Target());
+    QVERIFY(reopened.Succeeded()); QCOMPARE((*reopened.value)->runtimeApprovedPackageSha256,package.manifestSha256);
+    const auto archive = MapArchiveSession::Open(job.Target()); QVERIFY(archive.Succeeded());
+    std::vector<MapArchiveMember> members(archive.value->Members().begin(),archive.value->Members().end());
+    for (auto& member : members) if (member.name == "project.json") {
+        auto json = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char*>(member.data.data()),static_cast<qsizetype>(member.data.size()))).object();
+        auto approval = json["runtimeApproval"].toObject(); approval["sourceSha256"] = QString(64,'f'); json["runtimeApproval"] = approval;
+        const auto bytes = QJsonDocument(json).toJson(QJsonDocument::Compact);
+        member.data.assign(reinterpret_cast<const std::byte*>(bytes.data()),reinterpret_cast<const std::byte*>(bytes.data() + bytes.size()));
+    }
+    const auto wrong = f.root / "wrong-source.forge";
+    QVERIFY(WriteVerifiedArchive(wrong,members).Succeeded()); QVERIFY(!PrepareProjectOpen(wrong).Succeeded());
+    QVERIFY(f.SourcesUnchanged());
 }
 
 int main(int argc, char** argv) {

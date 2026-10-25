@@ -480,7 +480,8 @@ Status ValidateFrameworkIncludes(const ScriptFrameworkInputs& inputs, const Scri
 }
 
 Result<std::string> InjectScriptFramework(std::string_view script, const ScriptFrameworkInputs& inputs,
-    std::vector<std::filesystem::path>& injected, Jass::SourceLexicalView* lexicalView) {
+    std::vector<std::filesystem::path>& injected, Jass::SourceLexicalView* lexicalView,
+    std::vector<std::string>* sourceSha256) {
     auto valid = ValidateFrameworkSourceEncoding(script, inputs.profile.mainSourceDirectory / "war3map.j", inputs.profile.mainEncoding,
         FrameworkDirectivePolicy(inputs));
     if (!valid.Succeeded()) return Failed<std::string>(valid);
@@ -527,6 +528,7 @@ Result<std::string> InjectScriptFramework(std::string_view script, const ScriptF
     std::string output(script);
     auto view = std::move(*mainView.value);
     std::vector<std::filesystem::path> paths;
+    std::vector<std::string> hashes;
     std::vector<Diagnostic> diagnostics;
     if (output.size() > 8u * 1024u * 1024u - 2)
         return Result<std::string>::Failure("Script.Framework", "SCRIPT_FRAMEWORK_INJECTION_BUDGET", "主文超过8MiB捕获预算。");
@@ -540,11 +542,17 @@ Result<std::string> InjectScriptFramework(std::string_view script, const ScriptF
         if (!selectedView.Succeeded()) return {{}, std::move(selectedView.diagnostics)};
         diagnostics.insert(diagnostics.end(), selectedView.diagnostics.begin(), selectedView.diagnostics.end());
         const auto base = static_cast<std::uint32_t>(output.size() + 2);
+        if (sourceSha256) {
+            const auto hash = Sha256(file->bytes);
+            if (!hash.Succeeded()) return {{}, hash.diagnostics};
+            hashes.push_back(*hash.value);
+        }
         output += "\r\n"; output.append(text); paths.push_back(file->binding.path);
         view.text += "\r\n"; view.text += selectedView.value->text;
         for (auto span : selectedView.value->opaque) { span.offset += base; view.opaque.push_back(std::move(span)); }
     }
     injected.insert(injected.end(), paths.begin(), paths.end());
+    if (sourceSha256) sourceSha256->insert(sourceSha256->end(), hashes.begin(), hashes.end());
     if (lexicalView) *lexicalView = std::move(view);
     auto result = Result<std::string>::Success(std::move(output));
     result.diagnostics = std::move(diagnostics); return result;

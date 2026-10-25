@@ -13,6 +13,7 @@
 #include "War3MapCore/Script/ScriptSaveBundle.h"
 #include "LuaMapSaveTarget.h"
 #include "MapSaveScriptPreservation.h"
+#include "MapRuntimeSave.h"
 
 #include <algorithm>
 #include <exception>
@@ -197,6 +198,7 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
         : Script::PrepareScriptSaveBundle(*result.pipeline, frozen.scriptMember);
     Append(task.diagnostics, prepared.diagnostics);
     if (!prepared.Succeeded() || !prepared.value) return;
+    if (result.pipeline) task.scriptInjectedSourceSha256 = result.pipeline->injectedSourceSha256;
     struct OriginalNativeView { bool present; std::span<const std::byte> bytes; };
     const auto originalNative = [&](std::string_view name) -> Result<OriginalNativeView> {
         if (result.slkSources) {
@@ -297,6 +299,11 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
         mergedEditable[index] = std::make_unique<ObjectData::LniObjectDocument>(std::move(*mergedLni.value));
     }
     if (!frozen.luaTarget && !prepared.value->members.empty()) {
+        if (request.toolchain.mapRuntimeBoot) {
+            const auto used = Script::UsesMapRuntime(*result.FinalScript());
+            if (!used.Succeeded()) { Append(task.diagnostics, used.diagnostics); return; }
+            if (*used.value) task.preserveUnaffectedScript = false;
+        }
         // 改动不影响脚本时沿用作者原脚本：本机函数库版本不同会让重建结果与原图不同。
         if (auto original = ScriptPreservation::UnaffectedSourceScript(
                 task, request, result, prepared.value->members, frozen.scriptMember)) {
@@ -412,6 +419,9 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             }
         }
         if (RejectUnsupportedMapFormat(task)) return;
+        const auto runtimePrepared = PrepareMapRuntimeSave(task);
+        Append(task.diagnostics, runtimePrepared.diagnostics);
+        if (!runtimePrepared.Succeeded()) return;
         const auto verifyObjects = [&]() {
             if (!task.mapObjectReferences) return true;
             const auto current = CaptureArchiveMapObjectReferences(*task.archive, task.mapObjectReferenceGameRoot,
@@ -425,6 +435,9 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
         if (!verifyObjects()) return;
         RebuildScript(task, progress);
         if (HasError(task.diagnostics)) return;
+        const auto runtimeFinalized = FinalizeMapRuntimeSave(task);
+        Append(task.diagnostics, runtimeFinalized.diagnostics);
+        if (!runtimeFinalized.Succeeded()) return;
         if (task.prepareFinalDerived) {
             // 消费回调，避免它的借用在任务结束后继续保留，也不能重复调用。
             auto prepare = std::move(task.prepareFinalDerived);
@@ -473,6 +486,9 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             }
             return true;
         };
+        const auto runtimeVerified = VerifyMapRuntimeSave(task);
+        Append(task.diagnostics, runtimeVerified.diagnostics);
+        if (!runtimeVerified.Succeeded()) return;
 
         if (preflight) {
             Report(progress, "archive-preflight");

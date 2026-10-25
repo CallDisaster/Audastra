@@ -1,0 +1,6 @@
+EXPORTS
+    WarVKRuntimeOwnerV1
+    WarVKAIInit
+    SetOwnerFixtureState
+    ProbeOwnerFixture
+    OwnerFixtureInstallCount

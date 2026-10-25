@@ -275,8 +275,16 @@ void TestInject(const std::filesystem::path& root) {
     const auto table = ScanInjectTable({jass}, true, diagnostics);
     Require(table.entries.size() == 3, "1.24 table must contain general + new names");
     std::vector<std::filesystem::path> injected;
-    const auto script = InjectCode("call FooCall()\r\n", table, diagnostics, &injected);
+    std::vector<std::string> hashes;
+    const auto script = InjectCode("call FooCall()\r\n", table, diagnostics, &injected, &hashes);
     Require(injected.size() == 1 && script == "call FooCall()\r\nlibrary Foo\r\nendlibrary\r\n", "inject must append the used file");
+    const std::string originalBytes = "library Foo\r\nendlibrary";
+    Require(hashes.size() == 1 && hashes.front() == *Sha256(std::as_bytes(std::span(originalBytes))).value,
+        "injection provenance hashes exact consumed bytes including original line endings");
+    WriteText(jass / "lib" / "Foo.j", "modified after injection");
+    Require(hashes.front() != *Sha256File(jass / "lib" / "Foo.j").value,
+        "later file reads cannot rewrite the provenance of already injected bytes");
+    WriteText(jass / "lib" / "Foo.j", originalBytes);
     Require(InjectCode("call OldOnly()", table, diagnostics) == "call OldOnly()", "old-only names are not used for 1.24");
     const auto both = InjectCode("NewOnly BarCall", table, diagnostics, &injected);
     Require(both.find("library Foo") != std::string::npos && both.find("library Bar") != std::string::npos, "each used file is appended");
@@ -305,6 +313,46 @@ void TestInject(const std::filesystem::path& root) {
     Require(injected.size() == 2 && multiple.find("library LeakMonitor requires XGJAPI") != std::string::npos
         && multiple.find("library Bar") != std::string::npos, "multiple identifiers inject each referenced file once");
     Require(diagnostics.empty(), "inject reported unexpected diagnostics");
+}
+
+void TestRuntimePipeline(const std::filesystem::path& root) {
+    const auto tool = root / "tool", jass = tool / "ui" / "client" / "jass";
+    WriteText(tool / "compiler" / "include" / "WaveForce.i", "// original synthetic include\n");
+    WriteText(tool / "compiler" / "jass" / "24" / "common.j",
+        "type player extends handle\nglobals\nconstant integer PLAYER_NEUTRAL_AGGRESSIVE = 12\nendglobals\n"
+        "native Player takes integer id returns player\nnative StartCampaignAI takes player p, string name returns nothing\n");
+    WriteText(tool / "compiler" / "jass" / "24" / "blizzard.j", "// original synthetic base\n");
+    const std::string client = "library AudastraJapi\nglobals\nstring AjExpectedRuntimeIdentity = \"\"\nendglobals\n"
+        "function AjInitialize takes nothing returns boolean\nreturn true\nendfunction\nendlibrary\n";
+    WriteText(jass / "Client.cfg", "AjInitialize\n"); WriteText(jass / "Client.j", client);
+    const auto hash = Sha256(std::as_bytes(std::span(client)));
+    const auto layout = ResolveScriptToolchainLayout({tool,24,127});
+    Require(layout.Succeeded() && hash.Succeeded(), "runtime pipeline has a real synthetic source layout");
+    ToolchainOptions options; options.toolRoot = tool; options.jassDirs = {jass}; options.workDir = root / "compiled";
+    options.actualVersionMacro = 127; options.layout = std::make_shared<const ScriptToolchainLayout>(*layout.value);
+    auto& boot = options.mapRuntimeBoot.emplace(); boot.onlyIfUsed = true; boot.payloadSha256 = std::string(64, 'a');
+    unsigned validated = 0;
+    boot.verifyScriptInputs = [&](std::span<const std::string> hashes) {
+        ++validated;
+        if (hashes.size() == 1 && hashes.front() == *hash.value) return Status::Ok();
+        return Status::Failure("fixture", "RUNTIME_SCRIPT_INPUT_MISMATCH", "original client hash differs");
+    };
+    const auto generated = "function main takes nothing returns nothing\ncall AjInitialize()\nendfunction\n";
+    const auto compiled = CompileMapScript(generated, options, {});
+    if (!compiled.Succeeded()) for (const auto& d : compiled.diagnostics) std::cerr << d.code << ": " << d.message << '\n';
+    Require(compiled.Succeeded() && compiled.syntaxChecked && validated == 1
+        && VerifyMapRuntimeBoot(compiled.script, true).Succeeded()
+        && VerifyMapRuntimeIdentity(compiled.script, std::string(64,'a')).Succeeded(),
+        "real injection, vJass translation, managed first boot, identity binding and strict JASS check agree");
+    WriteText(jass / "Client.j", client + "// a different library release\n");
+    options.workDir = root / "stale-client";
+    const auto stale = CompileMapScript(generated, options, {});
+    Require(!stale.Succeeded() && stale.script.empty() && HasCode(stale.diagnostics,"RUNTIME_SCRIPT_INPUT_MISMATCH"),
+        "same names with stale injected bytes cannot produce a successful compiled script");
+    options.workDir = root / "unused"; validated = 0;
+    const auto unused = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
+    Require(unused.Succeeded() && validated == 0 && unused.injectedSourceSha256.empty()
+        && VerifyMapRuntimeBoot(unused.script, false).Succeeded(), "unused maps neither inject nor authorize a runtime package");
 }
 
 // UI 根选 YDWE 根或其 ui 目录都能找到 compiler/；没有 ui/config 标记的目录不向上查找。
@@ -1209,6 +1257,15 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto injected = CompileMapScript("function main takes nothing returns nothing\ncall InjectedCall()\nendfunction\n", options, {});
     Require(injected.Succeeded() && injected.syntaxChecked && injected.script.find("function InjectedCall") != std::string::npos,
         "owned exact injection reaches existing vJass ordering and strict final check");
+    Require(injected.injectedSourceSha256.size() == 1,
+        "framework pipeline returns exact owned injection provenance");
+    {
+        std::vector<std::filesystem::path> actualPaths;
+        std::vector<std::string> actualHashes;
+        const auto actual = InjectScriptFramework("call InjectedCall()\n", *captured.value, actualPaths, nullptr, &actualHashes);
+        Require(actual.Succeeded() && actualHashes == injected.injectedSourceSha256,
+            "framework injection and completed pipeline agree on consumed source identity");
+    }
     std::vector<std::filesystem::path> paths;
     const std::string ignored = "// InjectedCall\nglobals\nstring s=\"InjectedCall\"\nendglobals\ncall InjectedCallSuffix()\n";
     auto untouched = InjectScriptFramework(ignored, *captured.value, paths);
@@ -1951,6 +2008,7 @@ int main() {
         TestTemplateImports(root / "imports");
         TestAbilityOrderTables(root / "order-tables");
         TestInject(root / "inject");
+        TestRuntimePipeline(root / "runtime");
         TestToolRoot(root / "tools");
         TestToolchainLayouts(root / "layouts");
         TestFrameworkPipeline(root / "framework");

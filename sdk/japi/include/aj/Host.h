@@ -44,6 +44,8 @@ struct HostOptions {
     // finishes. A suspended/yielded function must never be reported as completed.
     std::function<bool(std::string_view)> execute;
     bool synchronousCallbacksVerified = false;
+    // Set only by a verified embedding adapter, never by a map request.
+    std::string runtimeIdentity;
 };
 struct ResetResult {
     int32_t status = AJ_OK;

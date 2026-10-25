@@ -9,6 +9,7 @@ public:
     explicit GameStringVm(std::shared_ptr<OwnLua::GameVm127> vm) : vm_(std::move(vm)) {}
     std::uint64_t Generation() const noexcept override { return vm_->Generation(); }
     bool IsMainVm(std::uintptr_t vm) const noexcept override { return vm_->IsMainVm(vm); }
+    bool MatchesCurrentMainVm() const noexcept override { return vm_->MatchesCurrentMainVm(); }
     std::optional<std::uint32_t> ReturnString(std::string_view text) override {
         // 与现有 provider 的 native string 返回 ABI 对称：输入 object，返回带引用 ID。
         // 此引用转交原版 VM；不能像 Lua 读取 native 返回值后那样在这里 ReleaseString。

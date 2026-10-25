@@ -44,7 +44,8 @@ void MergeDeclaredIncludeAccess(ScriptToolchainProfile& profile, std::vector<Scr
 // 只追加owned的所选J；完整标识符匹配，字符串、注释、rawcode不触发。
 [[nodiscard]] Result<std::string> InjectScriptFramework(
     std::string_view script, const ScriptFrameworkInputs& inputs,
-    std::vector<std::filesystem::path>& injected, Jass::SourceLexicalView* lexicalView = nullptr);
+    std::vector<std::filesystem::path>& injected, Jass::SourceLexicalView* lexicalView = nullptr,
+    std::vector<std::string>* sourceSha256 = nullptr);
 
 // 参与的单来源编码由档案声明；GBK非ASCII混合阶段当前明确拒绝，不猜测或转码。
 [[nodiscard]] Status ValidateFrameworkSourceEncoding(std::string_view text,

@@ -68,6 +68,7 @@ std::optional<EditScopeSnapshot> EditorProject::CaptureEditScopes() const {
     for (std::size_t i = 0; i < assetEdits_.size(); ++i) {
         scopes["assets/" + std::to_string(i)] = assetEdits_[i].from.toStdString() + ">" + assetEdits_[i].to.toStdString();
     }
+    if (!runtimeApprovedPackageSha256_.empty()) scopes["runtime/approval"] = runtimeApprovedPackageSha256_;
     const auto mapScopes = CaptureMapEditScopes();
     if (!mapScopes) return {};
     scopes.insert(mapScopes->begin(), mapScopes->end());
@@ -137,6 +138,7 @@ std::string EditorProject::ProjectFingerprint(std::span<const std::string> impor
         add("asset:" + edit.from.toStdString());
         add(edit.to.toStdString());
     }
+    if (!runtimeApprovedPackageSha256_.empty()) add("runtime-approval:" + runtimeApprovedPackageSha256_);
     if (mapEdits_) {
         const auto journal = mapEdits_->TerrainJournalStateFingerprint();
         if (journal.empty()) return {};

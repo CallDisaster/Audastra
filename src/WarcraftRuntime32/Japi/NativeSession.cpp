@@ -13,8 +13,8 @@ struct Depth {
 };
 }
 NativeSession::NativeSession(std::function<void(std::string_view)> fatal,
-    std::function<void(std::string_view, std::string_view)> reply)
-    : fatal_(std::move(fatal)), reply_(std::move(reply)) {
+    std::function<void(std::string_view, std::string_view)> reply, std::string runtimeIdentity)
+    : fatal_(std::move(fatal)), reply_(std::move(reply)), runtimeIdentity_(std::move(runtimeIdentity)) {
     if (!fatal_) throw std::invalid_argument("JAPI session requires a fatal handler");
 }
 NativeSession::~NativeSession() { if (vm_) vm_->Invalidate(); }
@@ -53,6 +53,7 @@ std::optional<std::uint32_t> NativeSession::Dispatch(std::uint64_t generation,
             generation_ = generation;
             audastra::japi::HostOptions options;
             options.initialEpoch = static_cast<std::uint32_t>(generation);
+            options.runtimeIdentity = runtimeIdentity_;
             // 基础桥不授予加载器，不提供脚本执行器；同步能力保持默认关闭。
             host_ = std::make_unique<audastra::japi::Host>(std::move(options));
             if (opened.install) {
@@ -97,5 +98,9 @@ void NativeSession::BeforeVmDestroy(std::uintptr_t vm) {
     std::lock_guard lock(mutex_);
     if (thread_ != std::this_thread::get_id() || !vm_ || !vm_->IsMainVm(vm)) return;
     Stop();
+}
+bool NativeSession::VmIdentityChanged() {
+    std::lock_guard lock(mutex_);
+    return thread_ == std::this_thread::get_id() && vm_ && !vm_->MatchesCurrentMainVm();
 }
 }

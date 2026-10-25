@@ -88,8 +88,15 @@ int EditorProject::AddImportFiles(AssetState& state, const QStringList& diskPath
 
 QString EditorProject::AddImportPayloads(std::vector<ImportPayload>& payloads, bool replaceExisting,
     const QString& label) {
+    return RecordAssetEdit(label, [&](AssetState& state) {
+        return PrepareImportPayloads(state, payloads, replaceExisting);
+    });
+}
+
+QString EditorProject::PrepareImportPayloads(AssetState& state, std::vector<ImportPayload>& payloads,
+    bool replaceExisting) const {
     if (payloads.empty()) return tr("没有要导入的文件。");
-    const auto entries = AssetEntries();
+    const auto entries = AssetEntries(state);
     QSet<QString> requested;
     for (auto& payload : payloads) {
         if (const auto problem = CheckAssetPath(payload.archivePath); !problem.isEmpty())
@@ -114,21 +121,22 @@ QString EditorProject::AddImportPayloads(std::vector<ImportPayload>& payloads, b
         if (payload.replaced && !replaceExisting)
             return payload.archivePath + tr("：地图里已有该文件；确认覆盖时请明确要求替换。");
     }
-    return RecordAssetEdit(label, [&](AssetState& state) -> QString {
-        for (const auto& payload : payloads) {
-            PendingImport entry;
-            entry.archivePath = payload.archivePath;
-            entry.size = static_cast<qint64>(payload.bytes->size());
-            entry.ownedPayload = payload.bytes;
-            const auto key = AssetKey(entry.archivePath);
-            const auto previous = std::find_if(state.imports.begin(), state.imports.end(),
-                [&](const PendingImport& value) { return AssetKey(value.archivePath) == key; });
-            if (previous == state.imports.end()) state.imports.push_back(std::move(entry));
-            else *previous = std::move(entry);
-            std::erase_if(state.edits, [&](const AssetEdit& edit) { return edit.to.isEmpty() && AssetKey(edit.from) == key; });
-        }
-        return {};
-    });
+    // 完整验证后才修改候选；复制正文，避免调用方的可变别名改变撤销快照。
+    auto candidate = state;
+    for (const auto& payload : payloads) {
+        PendingImport entry;
+        entry.archivePath = payload.archivePath;
+        entry.size = static_cast<qint64>(payload.bytes->size());
+        entry.ownedPayload = std::make_shared<const std::vector<std::byte>>(*payload.bytes);
+        const auto key = AssetKey(entry.archivePath);
+        const auto previous = std::find_if(candidate.imports.begin(), candidate.imports.end(),
+            [&](const PendingImport& value) { return AssetKey(value.archivePath) == key; });
+        if (previous == candidate.imports.end()) candidate.imports.push_back(std::move(entry));
+        else *previous = std::move(entry);
+        std::erase_if(candidate.edits, [&](const AssetEdit& edit) { return edit.to.isEmpty() && AssetKey(edit.from) == key; });
+    }
+    state = std::move(candidate);
+    return {};
 }
 
 void EditorProject::RemoveImports(std::vector<int> rows) {

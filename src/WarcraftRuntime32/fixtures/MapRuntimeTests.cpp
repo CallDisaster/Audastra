@@ -27,9 +27,12 @@ void Contract(HMODULE module) {
     const auto& exports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
     Check(exports.VirtualAddress && exports.Size, "export table exists");
     const auto* table = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + exports.VirtualAddress);
-    Check(table->NumberOfNames == 1, "only one named public entry");
+    Check(table->NumberOfNames == 2, "only initialization and read-only owner query are exported");
     const auto* names = reinterpret_cast<const DWORD*>(base + table->AddressOfNames);
-    Check(std::string_view(reinterpret_cast<const char*>(base + names[0])) == "WarVKAIInit", "undecorated export");
+    std::set<std::string> exported;
+    for (DWORD index = 0; index < table->NumberOfNames; ++index)
+        exported.emplace(reinterpret_cast<const char*>(base + names[index]));
+    Check(exported == std::set<std::string>{"WarVKAIInit","WarVKRuntimeOwnerV1"}, "exact undecorated exports");
     const auto& imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     Check(imports.VirtualAddress && imports.Size, "import table exists");
     const std::set<std::string> system{"kernel32.dll", "user32.dll", "advapi32.dll", "bcrypt.dll",

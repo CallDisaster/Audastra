@@ -216,6 +216,16 @@ void LifecycleTests() {
         Check(h.Unload("test") == AJ_BUSY && h.Pump() == AJ_BUSY && throwing->destroys == 1, "failed destroy never retried or unloaded");
     }
 }
+void RuntimeIdentity() {
+    Host absent; Client old{absent};
+    Check(old.Call("host.runtimeidentity").status == AJ_STATE, "host without verified runtime identity cannot claim a package");
+    HostOptions options; options.runtimeIdentity = std::string(64, 'a');
+    Host verified(options); Client current{verified};
+    auto identity = current.Call("host.runtimeidentity");
+    Check(identity.status == AJ_OK && identity.value.kind == AJ_TEXT && identity.value.text == options.runtimeIdentity,
+        "read-only identity is supplied by embedding adapter");
+    Check(current.Call("host.runtimeidentity", ";s:replacement").status == AJ_ARGUMENT, "map cannot replace runtime identity");
+}
 void ConcurrentEvents() {
     HostOptions o; o.queueCapacity = 256;
     Host h(o); Client c{h}; auto f = std::make_shared<Fixture>();
@@ -234,4 +244,4 @@ void ConcurrentEvents() {
     Check(h.Close() == AJ_OK, "close clears pending event queue");
 }
 }
-void HostTests() { BasicTests(); EventTests(); LifecycleTests(); ConcurrentEvents(); }
+void HostTests() { BasicTests(); EventTests(); LifecycleTests(); RuntimeIdentity(); ConcurrentEvents(); }

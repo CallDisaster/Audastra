@@ -25,6 +25,8 @@ public:
     GameVm127(const GameVm127&) = delete;
     GameVm127& operator=(const GameVm127&) = delete;
     [[nodiscard]] bool Alive() const noexcept;
+    // 只比较真实主VM身份；会话故障失效不等同于一次地图切换。
+    [[nodiscard]] bool MatchesCurrentMainVm() const noexcept;
     [[nodiscard]] std::uint64_t Generation() const noexcept;
     // 会话所有者必须在地图卸载入口、异常或来源变化时调用，绝不能跨局复用。
     void Invalidate() noexcept;

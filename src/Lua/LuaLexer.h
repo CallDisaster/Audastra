@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,7 +25,9 @@ struct Token {
 };
 
 // 末尾总有一个 End 记号；comments 为 false 时不输出注释记号。
-[[nodiscard]] std::vector<Token> Tokenize(std::string_view source, bool comments = false);
+// 达到显式记号预算时抛出 length_error，不返回部分词法结果。
+[[nodiscard]] std::vector<Token> Tokenize(std::string_view source, bool comments = false,
+    std::size_t maxTokens = (std::numeric_limits<std::size_t>::max)());
 
 // 字符串记号的内容（去掉引号，只处理常见转义）；长字符串去掉括号。
 [[nodiscard]] std::string StringValue(std::string_view token);

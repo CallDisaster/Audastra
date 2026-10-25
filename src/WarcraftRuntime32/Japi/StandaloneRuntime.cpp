@@ -1,4 +1,5 @@
 #include "GameSession.h"
+#include "ProcessOwner.h"
 #include "../OwnLua/GameVm127.h"
 #include "../GameUi/GameUiModule.h"
 #include "../RuntimeFiles.h"
@@ -62,6 +63,7 @@ struct Runtime {
     std::uint64_t epoch = 1;
     unsigned depth = 0;
     bool failed = false;
+    std::string identity;
 
     void Fail(std::string_view message) {
         failed = true;
@@ -82,6 +84,7 @@ struct Runtime {
 };
 std::atomic<Runtime*> runtime{nullptr};
 std::mutex installLock;
+std::atomic<int> ownerState{0};
 
 void TraceReply(std::string_view input, std::string_view output) {
     audastra::japi::Request request;
@@ -111,7 +114,7 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
         if (!self->thread) self->thread = thread;
         if (self->thread != thread) { self->Fail("owned request on wrong thread"); return 0; }
         if (!self->session) self->session = std::make_unique<NativeSession>(
-            [self](auto error) { self->Fail(error); }, &TraceReply);
+            [self](auto error) { self->Fail(error); }, &TraceReply, self->identity);
         struct Depth { unsigned& value; ~Depth() { --value; } } depth{self->depth};
         ++self->depth;
         const std::string_view input(bytes.data(), count);
@@ -138,7 +141,9 @@ void __cdecl InitializeHook() noexcept {
     if (!self || !self->initialize) return;
     try {
         std::lock_guard guard(self->lock);
-        if (self->thread == GetCurrentThreadId()) self->Reset();
+        // native登记也可能来自同局的其他VM；仅线程相同不足以认定换图。
+        // 主VM销毁由独立接点处理，此处只补获真实身份已变化的情况。
+        if (self->session && self->session->VmIdentityChanged()) self->Reset();
     } catch (...) { self->Fail("native reset exception"); }
     self->initialize();
 }
@@ -176,8 +181,7 @@ LONG OpenThreads(Threads& opened) {
     } while (Thread32Next(snapshot.value, &entry));
     return GetLastError() == ERROR_NO_MORE_FILES ? NO_ERROR : GetLastError();
 }
-int Start() {
-    std::lock_guard install(installLock);
+int Install(std::string_view identity) {
     if (auto* current = runtime.load()) {
         std::lock_guard guard(current->lock);
         Trace("initialize-repeat");
@@ -195,6 +199,7 @@ int Start() {
         Trace("hook-sites-changed: refusing existing hooks/unsupported image"); return AJ_POLICY;
     }
     auto owned = std::make_unique<Runtime>();
+    owned->identity = identity;
     owned->image = std::move(opened.image);
     owned->localized = reinterpret_cast<Localized>(image.Base() + kLocalized);
     owned->initialize = reinterpret_cast<Initialize>(image.Base() + kInitialize);
@@ -228,8 +233,15 @@ int Start() {
         Trace("hook-install-failed win32=" + std::to_string(status)); return AJ_BACKEND;
     }
     owned.release(); // 钩子与会话为进程级拥有；不在 DllMain 卸载/析构。
+    ownerState.store(1);
     Trace("initialize-ready: awaiting first JASS request; builtin=audastraui");
     return AJ_OK;
+}
+int Start() {
+    std::string error;
+    const auto result = InitializeProcessRuntime(reinterpret_cast<const void*>(&Start), installLock, &Install, error);
+    if (!error.empty()) Trace("owner-rejected: " + error);
+    return result;
 }
 }
 }
@@ -237,4 +249,8 @@ int Start() {
 extern "C" __declspec(dllexport) int __cdecl WarVKAIInit(void) {
     try { return Audastra::Runtime32::Japi::Start(); }
     catch (...) { OutputDebugStringA("[AudastraJapi] initialize-exception\n"); return AJ_INTERNAL; }
+}
+
+extern "C" __declspec(dllexport) int __cdecl WarVKRuntimeOwnerV1(void) {
+    return Audastra::Runtime32::Japi::ownerState.load();
 }

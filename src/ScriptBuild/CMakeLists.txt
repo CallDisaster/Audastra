@@ -53,6 +53,7 @@ add_library(War3MapScriptBuild STATIC
     MapInitializationPlan.cpp
     MapObjects.cpp
     MapScriptBuild.cpp
+    MapRuntimeBoot.cpp
     MapPlayers.cpp
     MapScript.cpp
     GuiTriggerRecovery.cpp

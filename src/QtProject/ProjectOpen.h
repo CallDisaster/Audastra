@@ -32,6 +32,7 @@ struct PreparedProjectOpen {
     std::unique_ptr<Trigger::UiCatalog> catalog;
     std::vector<PendingImport> imports;
     std::vector<AssetEdit> assetEdits;
+    std::string runtimeApprovedPackageSha256;
     std::unique_ptr<MapData::MapDataEditSession> mapDataEdits;
     std::vector<MapData::MapDataEditSession::EditReceipt> terrainReceipts;
     std::size_t terrainCurrentIndex = 0;

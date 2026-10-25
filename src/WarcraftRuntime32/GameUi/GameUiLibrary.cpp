@@ -1,4 +1,6 @@
 #include "GameUiLibrary.h"
+#include <atomic>
+#include <limits>
 
 #include <windows.h>
 
@@ -8,7 +10,6 @@ namespace Audastra::Runtime32::GameUi {
 namespace {
 
 constexpr std::size_t kMaxSlots = 0xFFFF;
-constexpr std::uint16_t kMaxGeneration = 0x7FFF;
 constexpr std::size_t kMaxEvents = 256;
 constexpr int kMaxDepth = 64;
 constexpr int kTableCapacity = 0xFFFF;
@@ -113,7 +114,7 @@ UiError GameUiLibrary::Run(Call&& call) {
 }
 
 FrameHandle GameUiLibrary::HandleOf(std::size_t index) const noexcept {
-    return static_cast<FrameHandle>((static_cast<std::uint32_t>(slots_[index].generation) << 16) | index);
+    return slots_[index].token;
 }
 
 bool GameUiLibrary::Classify(Address object, Address& vtable, FrameFamily& family) const noexcept {
@@ -150,15 +151,13 @@ bool GameUiLibrary::IsAncestorOrSelf(Address ancestor, Address object) const noe
 void GameUiLibrary::Kill(std::size_t index) noexcept {
     auto& slot = slots_[index];
     byObject_.erase(slot.object);
+    byToken_.erase(slot.token);
+    slot.token = 0;
     slot.live = false;
     slot.object = slot.vtable = 0;
     slot.watch = 0;
     slot.hovered = slot.armed = false;
-    // 代数用尽的槽不再复用，保证旧句柄永远不会指向新框架。
-    if (slot.generation < kMaxGeneration) {
-        ++slot.generation;
-        free_.push_back(static_cast<std::uint16_t>(index));
-    }
+    free_.push_back(static_cast<std::uint16_t>(index));
 }
 
 UiCreated GameUiLibrary::Adopt(Address object, Owner owner) {
@@ -171,6 +170,13 @@ UiCreated GameUiLibrary::Adopt(Address object, Owner owner) {
     Address vtable = 0;
     FrameFamily family{};
     if (!Classify(object, vtable, family)) return {0, UiError::StaleFrame};
+    // 由进程拥有者保活的代码分配单调身份；新模块实例不能重新发出上一图的整数。
+    // 达到正JASS整数上限后永久拒绝，不回绕或回收token。
+    static std::atomic<std::uint64_t> nextToken{1};
+    auto token = nextToken.load(std::memory_order_relaxed);
+    do {
+        if (token > static_cast<std::uint64_t>(std::numeric_limits<FrameHandle>::max())) return {0, UiError::TableFull};
+    } while (!nextToken.compare_exchange_weak(token, token + 1, std::memory_order_relaxed));
     std::size_t index = 0;
     if (!free_.empty()) {
         index = free_.back();
@@ -181,26 +187,26 @@ UiCreated GameUiLibrary::Adopt(Address object, Owner owner) {
         slots_.emplace_back();
     }
     auto& slot = slots_[index];
+    slot.token = static_cast<FrameHandle>(token);
     slot.object = object;
     slot.vtable = vtable;
     slot.family = family;
     slot.owner = owner;
     slot.live = true;
     byObject_[object] = static_cast<std::uint16_t>(index);
+    byToken_[slot.token] = static_cast<std::uint16_t>(index);
     return {HandleOf(index), UiError::None};
 }
 
 GameUiLibrary::Slot* GameUiLibrary::Resolve(FrameHandle handle, UiError& error) {
     error = Ready();
     if (error != UiError::None) return nullptr;
-    const auto raw = static_cast<std::uint32_t>(handle);
-    const auto index = raw & 0xFFFF;
-    const auto generation = raw >> 16;
-    if (handle <= 0 || !index || index >= slots_.size() || !slots_[index].live
-        || slots_[index].generation != generation) {
+    const auto found = byToken_.find(handle);
+    if (handle <= 0 || found == byToken_.end()) {
         error = UiError::BadHandle;
         return nullptr;
     }
+    const auto index = found->second;
     auto& slot = slots_[index];
     Address vtable = 0;
     if (!ReadWord(slot.object, vtable) || vtable != slot.vtable) {

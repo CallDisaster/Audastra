@@ -13,6 +13,7 @@ public:
     virtual ~StringVm() = default;
     virtual std::uint64_t Generation() const noexcept = 0; // 失效时返回 0
     virtual bool IsMainVm(std::uintptr_t vm) const noexcept = 0;
+    virtual bool MatchesCurrentMainVm() const noexcept = 0;
     // 成功返回的非零 ID 带一个引用，直接转交 JASS native 返回槽；此处不能再 release。
     virtual std::optional<std::uint32_t> ReturnString(std::string_view text) = 0;
     // 只失效身份，不访问游戏内存；允许故障线程调用。
@@ -32,12 +33,13 @@ public:
     // 只能禁用本代际并记录错误，不能擅自结束玩家进程。
     // reply 只用于观测已成功交给 VM 的响应；异常不会改变已执行命令的结果。
     explicit NativeSession(std::function<void(std::string_view)> fatal,
-        std::function<void(std::string_view, std::string_view)> reply = {});
+        std::function<void(std::string_view, std::string_view)> reply = {}, std::string runtimeIdentity = {});
     ~NativeSession();
     // nullopt = 不属于本协议；0 = 已消费但 VM 故障，绝不回落原版解释器。
     std::optional<std::uint32_t> Dispatch(std::uint64_t generation, std::string_view input, const Attach& attach);
     void Reset();
     void BeforeVmDestroy(std::uintptr_t vm);
+    [[nodiscard]] bool VmIdentityChanged();
 private:
     void Fail(std::string_view error);
     void Stop();
@@ -50,5 +52,6 @@ private:
     std::unique_ptr<audastra::japi::Host> host_;
     unsigned depth_ = 0;
     bool failed_ = false;
+    std::string runtimeIdentity_;
 };
 }

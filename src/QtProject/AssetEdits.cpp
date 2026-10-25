@@ -254,7 +254,7 @@ QStringList EditorProject::MissingDisabledIcons() const {
 }
 
 AssetState EditorProject::CaptureAssets() const {
-    return {pendingImports_, assetEdits_};
+    return {pendingImports_, assetEdits_, runtimeApprovedPackageSha256_};
 }
 
 void EditorProject::RestoreAssets(const AssetState& state) {
@@ -264,6 +264,7 @@ void EditorProject::RestoreAssets(const AssetState& state) {
 void EditorProject::PublishAssetState(AssetState state) {
     pendingImports_.swap(state.imports);
     assetEdits_.swap(state.edits);
+    runtimeApprovedPackageSha256_.swap(state.runtimeApprovedPackageSha256);
     NotifyImportsChanged(true);
 }
 

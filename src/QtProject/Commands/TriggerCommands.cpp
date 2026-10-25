@@ -556,6 +556,32 @@ void PasteEcaUndoCommand::redo() {
 
 namespace War3Map::QtProject {
 
+struct TriggerGraphSnapshotUndoCommand::AssetStorage {
+    AssetState before, after;
+    const MapArchiveSession* archive = nullptr;
+    const DirectoryWorkspace* directory = nullptr;
+    std::filesystem::path sourcePath, projectPath;
+};
+
+Status TriggerGraphSnapshotUndoCommand::PrepareAssets(const std::function<Status(AssetState&)>& prepare) {
+    if (!prepare || !project_ || !snapshot_ || scalarReceipt_ || assets_ || *firstPublication_ || !Ready())
+        return Status::Failure("QtProject.Trigger", "TRIGGER_ASSET_PREPARE_INVALID", "关联资源只能在完整图首次发布前准备一次。");
+    try {
+        auto storage = std::make_shared<AssetStorage>();
+        storage->before = project_->CaptureAssets(); storage->after = storage->before;
+        storage->archive = project_->archiveSession_.get(); storage->directory = project_->directorySnapshot_.get();
+        storage->sourcePath = project_->sourceArchivePath_; storage->projectPath = project_->projectFilePath_;
+        const auto ready = prepare(storage->after);
+        if (!ready.Succeeded()) return ready;
+        if (!project_ || !Ready() || project_->CaptureAssets() != storage->before)
+            return Status::Failure("QtProject.Trigger", "TRIGGER_ASSET_SOURCE_STALE", "准备期间工程或资源已变化，未发布关联事务。");
+        if (storage->before != storage->after) assets_ = std::move(storage);
+        return Status::Ok();
+    } catch (...) {
+        return Status::Failure("QtProject.Trigger", "TRIGGER_ASSET_PREPARE_FAILED", "无法准备完整关联资源；未发布触发器或资源。");
+    }
+}
+
 TriggerGraphSnapshotUndoCommand::TriggerGraphSnapshotUndoCommand(EditorProject& project,
     Trigger::TriggerDocument before, Trigger::TriggerDocument after,
     QString label, QUndoCommand* parent)
@@ -599,6 +625,12 @@ bool TriggerGraphSnapshotUndoCommand::CanApply(bool forward) const {
     if (!project_ || !document_ || project_->triggerDocument_.get() != document_ || !catalog_
         || project_->uiCatalog_.get() != catalog_ || project_->editRevision_.Generation() != generation_
         || project_->sourceChangeSuspected_ || project_->sourceChangeConfirmed_) return false;
+    if (assets_) {
+        const auto& expected = forward ? assets_->before : assets_->after;
+        if (project_->archiveSession_.get() != assets_->archive || project_->directorySnapshot_.get() != assets_->directory
+            || project_->sourceArchivePath_ != assets_->sourcePath || project_->projectFilePath_ != assets_->projectPath
+            || project_->CaptureAssets() != expected) return false;
+    }
     // 不在 Ready→push→redo 重复全图扫描；这里不提供正文/原值资格证明。
     // ReplayTriggerGraphScalarEdit 在最终同步 Apply 中验证真实方向身份并原子重放。
     if (scalarReceipt_) {
@@ -652,8 +684,12 @@ void TriggerGraphSnapshotUndoCommand::Apply(bool forward) {
     auto& storage = *snapshot_;
     // 一般图路径保持先复制、再 noexcept 发布；文档地址供旧命令继续借用。
     std::optional<Trigger::TriggerDocument> replacement;
+    std::optional<AssetState> assetCandidate;
     Trigger::TriggerDocument* candidate = forward && !*firstPublication_ && storage.preparedFirst ? &*storage.preparedFirst : nullptr;
-    try { if (!candidate) { replacement.emplace(forward ? storage.after : storage.before); candidate = &*replacement; } }
+    try {
+        if (!candidate) { replacement.emplace(forward ? storage.after : storage.before); candidate = &*replacement; }
+        if (assets_) assetCandidate.emplace(forward ? assets_->after : assets_->before);
+    }
     catch (...) {
         project_->AddDiagnostic(QObject::tr("错误"), QObject::tr("触发器"),
             QStringLiteral("TRIGGER_GRAPH_UNDO_PREPARE_FAILED"), QObject::tr("无法准备完整事务快照；当前图未改动。"));
@@ -662,15 +698,50 @@ void TriggerGraphSnapshotUndoCommand::Apply(bool forward) {
     }
     static_assert(std::is_nothrow_swappable_v<Trigger::TriggerDocument>);
     std::swap(*document_, *candidate);
+    if (assetCandidate) {
+        project_->pendingImports_.swap(assetCandidate->imports);
+        project_->assetEdits_.swap(assetCandidate->edits);
+        project_->runtimeApprovedPackageSha256_.swap(assetCandidate->runtimeApprovedPackageSha256);
+        // 未发信号的暂存段：完整捕获并观察同一份图/资源。失败时两侧一并回滚。
+        bool observed = false;
+        try {
+            if (project_->editTrackingReady_ && !project_->editTrackingFailed_) {
+                auto scopes = project_->CaptureEditScopes();
+                if (scopes) observed = project_->editRevision_.Observe(std::move(*scopes), "修改触发器及关联资源",
+                    forward ? EditOperation::Redo : EditOperation::Undo).Succeeded();
+            }
+        } catch (...) {}
+        if (!observed) {
+            project_->pendingImports_.swap(assetCandidate->imports);
+            project_->assetEdits_.swap(assetCandidate->edits);
+            project_->runtimeApprovedPackageSha256_.swap(assetCandidate->runtimeApprovedPackageSha256);
+            std::swap(*document_, *candidate);
+            setObsolete(true);
+            project_->AddDiagnostic(QObject::tr("错误"), QObject::tr("触发器"),
+                QStringLiteral("TRIGGER_ASSET_OBSERVE_FAILED"), QObject::tr("关联事务修订核验失败；触发器和资源均保持原状。"));
+            return;
+        }
+    }
     for (auto& snapshot : storage.changedSnapshots) project_->guiConversionSnapshots_.Swap(snapshot);
     storage.preparedFirst.reset();
     if (forward) *firstPublication_ = true;
+    if (assetCandidate) {
+        const QPointer<EditorProject> project(project_);
+        project->knownTriggerFingerprint_.reset();
+        project->UpdateEditDirtyFlags();
+        emit project->TriggerDocumentChanged();
+        if (project) emit project->ImportsChanged();
+        if (project) emit project->ImportsEdited();
+        return;
+    }
     project_->ObserveTriggerEdit();
     emit project_->TriggerDocumentChanged();
 }
 
-Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperations(EditorProject& project,
-    std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel, const std::function<Status()>& beforePublish) {
+namespace {
+Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
+    std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel,
+    const std::function<Status()>& beforePublish, const std::function<Status(AssetState&)>& prepareAssets) {
     using Receipt = Trigger::TriggerGraphEditReceipt;
     constexpr const char* kSubsystem = "QtProject.Trigger";
     const auto failed = [](std::vector<Diagnostic> diagnostics) {
@@ -693,7 +764,10 @@ Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperations(EditorPro
         batch.operations = std::move(operations);
         before.emplace(*project.triggerDocument_);
         candidate.emplace(*before);
-        edited = Trigger::ApplyTriggerGraphEditBatch(*candidate, *project.uiCatalog_, batch, {}, objects);
+        if (batch.operations.empty() && prepareAssets) {
+            Receipt unchanged; unchanged.before = *binding.value; unchanged.after = *binding.value;
+            edited = Result<Receipt>::Success(std::move(unchanged));
+        } else edited = Trigger::ApplyTriggerGraphEditBatch(*candidate, *project.uiCatalog_, batch, {}, objects);
     } catch (...) {
         return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PREPARE_FAILED", "无法准备完整触发器事务；当前文档未改动。");
     }
@@ -701,20 +775,40 @@ Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperations(EditorPro
     if (beforePublish) {
         if (const Status ready = beforePublish(); !ready.Succeeded()) return failed(ready.diagnostics);
     }
-    if (edited.value->before.currentWtgSha256 == edited.value->after.currentWtgSha256
-        && edited.value->before.currentWctSha256 == edited.value->after.currentWctSha256) return edited;
+    const bool graphUnchanged = edited.value->before.currentWtgSha256 == edited.value->after.currentWtgSha256
+        && edited.value->before.currentWctSha256 == edited.value->after.currentWctSha256;
+    if (graphUnchanged && !prepareAssets) return edited;
     std::unique_ptr<TriggerGraphSnapshotUndoCommand> command;
     try {
         command = std::make_unique<TriggerGraphSnapshotUndoCommand>(project, std::move(*before), std::move(*candidate), undoLabel);
+        if (prepareAssets) {
+            const auto prepared = command->PrepareAssets(prepareAssets);
+            if (!prepared.Succeeded()) return failed(prepared.diagnostics);
+        }
     } catch (...) {
         return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PREPARE_FAILED", "无法准备完整触发器事务；当前文档未改动。");
     }
+    if (graphUnchanged && !command->HasAssetChanges()) return edited;
     if (!command->Ready())
         return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_UNDO_SOURCE_STALE", "来源、会话或函数目录已变化；未发布。");
     const auto published = command->FirstPublication();
     project.triggerUndoStack_->push(command.release());
     if (!*published) return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PUBLISH_FAILED", "完整事务未能发布。");
     return edited;
+}
+} // namespace
+
+Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperations(EditorProject& project,
+    std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel, const std::function<Status()>& beforePublish) {
+    return PublishGraph(project, std::move(operations), undoLabel, beforePublish, {});
+}
+
+Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperationsWithAssets(EditorProject& project,
+    std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel,
+    const std::function<Status(AssetState&)>& prepareAssets) {
+    if (!prepareAssets) return Result<Trigger::TriggerGraphEditReceipt>::Failure("QtProject.Trigger",
+        "TRIGGER_ASSET_PREPARE_INVALID", "关联资源事务缺少候选准备器。");
+    return PublishGraph(project, std::move(operations), undoLabel, {}, prepareAssets);
 }
 
 } // namespace War3Map::QtProject

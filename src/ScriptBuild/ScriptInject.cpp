@@ -1,6 +1,7 @@
 #include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Text/TextUtil.h"
+#include "War3MapCore/Hash.h"
 #include "../Jass/JassLexer.h"
 #include "../Jass/JassCheckBudget.h"
 
@@ -84,7 +85,7 @@ InjectTable ScanInjectTable(const std::vector<std::filesystem::path>& jassDirs, 
 }
 
 std::string InjectCode(std::string script, const InjectTable& table, std::vector<Diagnostic>& diagnostics,
-    std::vector<std::filesystem::path>* injected) {
+    std::vector<std::filesystem::path>* injected, std::vector<std::string>* sourceSha256) {
     // 只扫描原始脚本（不递归扫描追加内容），与 YDWE 一致。
     std::set<std::filesystem::path> files;
     // 使用共用 JASS/vJass 词法器跳过注释、字符串和 rawcode，按完整标识符匹配。
@@ -102,6 +103,14 @@ std::string InjectCode(std::string script, const InjectTable& table, std::vector
         if (!text) {
             diagnostics.push_back({DiagnosticSeverity::Error, "Script.Inject", "INJECT_FILE_UNREADABLE", "无法读取注入文件：" + file.string(), {}});
             continue;
+        }
+        if (sourceSha256) {
+            const auto hash = Sha256(std::as_bytes(std::span(text->data(), text->size())));
+            if (!hash.Succeeded()) {
+                diagnostics.insert(diagnostics.end(), hash.diagnostics.begin(), hash.diagnostics.end());
+                continue;
+            }
+            sourceSha256->push_back(*hash.value);
         }
         script += *text;
         script += "\r\n";

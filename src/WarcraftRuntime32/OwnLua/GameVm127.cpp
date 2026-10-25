@@ -69,10 +69,15 @@ GameVm127::OpenResult GameVm127::OpenAtScriptEntry(std::shared_ptr<GameImage127>
 bool GameVm127::Alive() const noexcept {
     const auto& self = *impl_;
     if (GetCurrentThreadId() != self.thread || !self.active.load()) return false;
-    const auto current = Identity(self.base);
-    const bool same = current.game == self.identity.game && current.state == self.identity.state && current.vm == self.identity.vm;
+    const bool same = MatchesCurrentMainVm();
     if (!same) self.active = false; // 一旦变化即失效，即使内存地址稍后被复用也不能恢复。
     return same;
+}
+bool GameVm127::MatchesCurrentMainVm() const noexcept {
+    const auto& self = *impl_;
+    if (GetCurrentThreadId() != self.thread) return false;
+    const auto current = Identity(self.base);
+    return current.game == self.identity.game && current.state == self.identity.state && current.vm == self.identity.vm;
 }
 std::uint64_t GameVm127::Generation() const noexcept { return Alive() ? impl_->generation : 0; }
 void GameVm127::Invalidate() noexcept { impl_->active = false; }

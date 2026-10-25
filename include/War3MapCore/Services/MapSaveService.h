@@ -7,6 +7,7 @@
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
 #include "War3MapCore/Script/MapScriptBuild.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
+#include "War3MapCore/Services/MapRuntimePackage.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Trigger/MapObjectReferences.h"
@@ -28,6 +29,7 @@ namespace War3Map::Services {
 class ObjectTransactionSnapshot;
 class TerrainMinimapMarkers;
 class TerrainShadowBake;
+struct MapRuntimeSaveState;
 
 inline constexpr std::size_t kMapSaveObjectTypeCount = 7;
 
@@ -86,6 +88,11 @@ struct MapSaveTask {
     bool requireGeneratedNativeByteEquality = false;
     // 宿主保存的是作者已有地图时开启：改动不影响脚本就沿用源脚本。新建地图的种子脚本只是占位，不能开启。
     bool preserveUnaffectedScript = false;
+    std::vector<MapRuntimePackageSource> runtimePackageSources;
+    // 可信宿主从本工程的明确批准事务冻结；地图自带设置不能为自己授予启用资格。
+    std::string runtimeApprovedPackageSha256;
+    MapRuntimeSavePurpose runtimePurpose = MapRuntimeSavePurpose::Normal;
+    std::shared_ptr<MapRuntimeSaveState> runtimeState;
     // 窄物编事务只允许模板重现这些封印候选；其余类别继续和源成员逐字节一致。
     std::vector<std::shared_ptr<const ObjectTransactionSnapshot>> objectTransactions;
     std::optional<MapSaveScriptSnapshot> script;
@@ -112,6 +119,7 @@ struct MapSaveTask {
     bool executed = false;
     bool succeeded = false;
     bool scriptRebuilt = false;
+    std::vector<std::string> scriptInjectedSourceSha256;
     // 已重建并核对：本次改动不影响脚本，写出的是源地图原脚本（scriptRebuilt 同时为真）。
     bool scriptPreserved = false;
     double scriptSeconds = 0;

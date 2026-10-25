@@ -31,6 +31,8 @@ add_library(War3MapServices STATIC
     ObjectTransactionSnapshot.cpp
     ObjectTransactionSaveGuards.cpp
     MapSaveService.cpp
+    MapRuntimePackage.cpp
+    MapRuntimeSave.cpp
     MapSaveScriptPreservation.cpp
     LuaTestReloadController.cpp
     MapCreateService.cpp
@@ -77,6 +79,7 @@ add_library(War3MapServices STATIC
     TerrainSessionResources.cpp)
 add_library(War3MapEditor::Services ALIAS War3MapServices)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3MapTrigger War3MapEditor::UiLibrary War3MapEditor::ScriptBuild)
+target_link_libraries(War3MapServices PRIVATE audastra-json)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::RenderSupport)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::Lua)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::RuntimeLuaApi)

@@ -295,6 +295,7 @@ private:
 
 namespace War3Map::QtProject {
 class EditorProject;
+struct AssetState;
 
 // GUI 与 MCP 共用事务撤销；一般图保持整图快照，标量批量持有 Core 密封收据。
 // 两种存储都在首次 redo 真正发布；标量 Ready 只做会话门，Core 在 Apply 严核整图。
@@ -307,6 +308,8 @@ public:
         Trigger::TriggerGraphScalarEditReceipt receipt,
         QString label, QUndoCommand* parent = nullptr);
     [[nodiscard]] bool Ready() const;
+    [[nodiscard]] Status PrepareAssets(const std::function<Status(AssetState&)>& prepare);
+    [[nodiscard]] bool HasAssetChanges() const noexcept { return bool(assets_); }
     [[nodiscard]] std::shared_ptr<const bool> FirstPublication() const { return firstPublication_; }
     void undo() override { Apply(false); }
     void redo() override { Apply(true); }
@@ -328,6 +331,8 @@ private:
     // 标量模式不构造 SnapshotStorage，也不拥有任何完整图候选。
     std::optional<SnapshotStorage> snapshot_;
     std::optional<Trigger::TriggerGraphScalarEditReceipt> scalarReceipt_;
+    struct AssetStorage;
+    std::shared_ptr<AssetStorage> assets_;
     std::shared_ptr<bool> firstPublication_ = std::make_shared<bool>(false);
     [[nodiscard]] bool CanApply(bool forward) const;
 };
@@ -338,4 +343,9 @@ private:
 [[nodiscard]] Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperations(EditorProject& project,
     std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel,
     const std::function<Status()>& beforePublish = {});
+
+// 资源候选与触发器作为一条命令提交/撤销；prepare 不得修改工程或开启嵌套事件循环。
+[[nodiscard]] Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperationsWithAssets(EditorProject& project,
+    std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel,
+    const std::function<Status(AssetState&)>& prepareAssets);
 } // namespace War3Map::QtProject

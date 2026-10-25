@@ -6,6 +6,7 @@ globals
     integer AjNextRequest = 0
     integer AjCapabilities = 0
     boolean AjReady = false
+    string AjExpectedRuntimeIdentity = ""
     integer AjLastStatus = 8
     string AjLastKind = "v"
     integer AjLastInteger = 0
@@ -377,6 +378,16 @@ function AjInitialize takes nothing returns boolean
     endif
     set AjCapabilities = AjLastInteger
     set AjReady = true
+    if AjExpectedRuntimeIdentity != "" then
+        if not AjRequest("host.runtimeidentity", "", "s") then
+            set AjReady = false
+            return false
+        endif
+        if AjLastText != AjExpectedRuntimeIdentity then
+            set AjReady = false
+            return AjFail(14)
+        endif
+    endif
     return true
 endfunction
 

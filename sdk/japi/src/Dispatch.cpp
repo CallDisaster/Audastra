@@ -28,6 +28,10 @@ Response Host::Impl::Control(const Request& r) {
             | (loader ? 16 : 0));
     }
     if (name == "host.version") return Args(r, "") ? Text("2.0.0") : Error(AJ_ARGUMENT);
+    if (name == "host.runtimeidentity") {
+        if (!Args(r, "")) return Error(AJ_ARGUMENT);
+        return options.runtimeIdentity.empty() ? Error(AJ_STATE) : Text(options.runtimeIdentity);
+    }
     if (name == "host.bind") return Args(r, "s") ? Error(Bind(r.arguments[0].text)) : Error(AJ_ARGUMENT);
     if (name == "host.pump") return Args(r, "") ? Error(Pump()) : Error(AJ_ARGUMENT);
     if (name == "host.event") {

@@ -86,6 +86,15 @@ std::optional<std::vector<std::byte>> UnaffectedSourceScript(const MapSaveTask& 
     if (!task.preserveUnaffectedScript || !task.archive || request.luaTarget || !built.pipeline || built.luaPipeline || built.classicLuaBundle)
         return std::nullopt;
     const auto& pipeline = *built.pipeline;
+    // 启动和客户端身份属于构建语义；仅有历史按需批准、实际无依赖时仍可保留作者脚本。
+    if (request.toolchain.mapRuntimeBoot) {
+        const auto& boot = *request.toolchain.mapRuntimeBoot;
+        if (boot.ownsExisting || (boot.enabled && !boot.onlyIfUsed)) return std::nullopt;
+        if (boot.enabled) {
+            const auto usage = Script::AnalyzeMapRuntimeUsage(pipeline.script);
+            if (!usage.Succeeded() || usage.value->required) return std::nullopt;
+        }
+    }
     // 模板生成物编或导入文件时这些产物也要写入，不能只沿用脚本。
     if (!pipeline.objectMembers.empty() || !pipeline.templateImports.empty()) return std::nullopt;
     if (prepared.size() != 1 || !SameName(prepared.front().name, scriptMember)) return std::nullopt;

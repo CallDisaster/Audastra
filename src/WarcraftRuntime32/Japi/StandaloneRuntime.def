@@ -1,3 +1,4 @@
 LIBRARY warvk_runtime
 EXPORTS
     WarVKAIInit
+    WarVKRuntimeOwnerV1

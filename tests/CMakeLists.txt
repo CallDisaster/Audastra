@@ -648,6 +648,17 @@ target_compile_options(war3-map-project-search-tests PRIVATE /W4 /permissive- /u
 add_test(NAME services-project-search COMMAND war3-map-project-search-tests)
 set_tests_properties(services-project-search PROPERTIES TIMEOUT 60)
 
+add_executable(war3-map-runtime-package-tests services/MapRuntimePackageTests.cpp)
+add_executable(war3-map-runtime-boot-tests MapRuntimeBootTests.cpp)
+target_link_libraries(war3-map-runtime-boot-tests PRIVATE War3MapEditor::ScriptBuild)
+target_compile_options(war3-map-runtime-boot-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-map-runtime-boot COMMAND war3-map-runtime-boot-tests)
+target_link_libraries(war3-map-runtime-package-tests PRIVATE War3MapEditor::Services audastra-json)
+target_compile_definitions(war3-map-runtime-package-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-runtime-package-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-map-runtime-package COMMAND war3-map-runtime-package-tests)
+set_tests_properties(services-map-runtime-package PROPERTIES TIMEOUT 120)
+
 add_executable(war3-map-terrain-minimap-save-tests services/TerrainMinimapSaveTests.cpp)
 target_link_libraries(war3-map-terrain-minimap-save-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-terrain-minimap-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

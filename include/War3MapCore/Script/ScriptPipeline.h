@@ -6,6 +6,7 @@
 #include "War3MapCore/Jass/JassChecker.h"
 #include "War3MapCore/Script/ScriptToolchainLayout.h"
 #include "War3MapCore/Script/ScriptBaseInputs.h"
+#include "War3MapCore/Script/MapRuntimeBoot.h"
 #include "War3MapCore/Types.h"
 
 #include <chrono>
@@ -55,7 +56,7 @@ void AppendMissingIncludeHints(std::vector<Diagnostic>& diagnostics, std::size_t
 
 // 返回注入后的脚本；追加的文件按路径排序，每个文件后补 CRLF。
 [[nodiscard]] std::string InjectCode(std::string script, const InjectTable& table, std::vector<Diagnostic>& diagnostics,
-    std::vector<std::filesystem::path>* injected = nullptr);
+    std::vector<std::filesystem::path>* injected = nullptr, std::vector<std::string>* sourceSha256 = nullptr);
 
 struct ScriptInjectionSources;
 // 代码编辑器只读检查使用同一完整标识符匹配与所选来源，全文由捕获服务拥有。
@@ -138,6 +139,7 @@ struct ToolchainOptions {
     bool scriptInjection = true;
     bool debug = false;
     bool optimize = false;
+    std::optional<MapRuntimeBootPlan> mapRuntimeBoot;
     ScriptEngine preprocessor = ScriptEngine::Builtin; // 外部为 Wave
     ScriptEngine vjass = ScriptEngine::Builtin;        // 外部为 jasshelper；内置不支持时自动改用外部
     ScriptEngine checker = ScriptEngine::Builtin;      // 外部为 pjass（仅在内置 vJass 翻译成功时使用；jasshelper 自带 pjass）
@@ -174,6 +176,7 @@ struct PipelineResult {
     std::shared_ptr<const ScriptPreprocessSources> frameworkPreprocessSources;
     std::shared_ptr<const Jass::IdentifierRewriteResult> frameworkIdentifierReport;
     std::string frameworkProfileSha256;
+    std::vector<std::string> injectedSourceSha256; // 实际注入原字节，不是编译后重读的磁盘身份。
 
     [[nodiscard]] bool Succeeded() const noexcept;
 };

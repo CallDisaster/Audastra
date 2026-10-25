@@ -116,7 +116,7 @@ private:
         Address vtable = 0;
         FrameFamily family = FrameFamily::Classic;
         Owner owner = Owner::Game;
-        std::uint16_t generation = 1;
+        FrameHandle token = 0;
         std::uint8_t watch = 0;
         bool live = false;
         bool hovered = false;     // 上次轮询时鼠标在它或它的子框架上
@@ -142,6 +142,7 @@ private:
     std::vector<Slot> slots_;            // 下标 0 不用
     std::vector<std::uint16_t> free_;
     std::unordered_map<Address, std::uint16_t> byObject_;
+    std::unordered_map<FrameHandle, std::uint16_t> byToken_;
     std::vector<UiFrameEvent> events_;
 };
 

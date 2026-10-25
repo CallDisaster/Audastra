@@ -290,6 +290,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         return fail(tr("SAVE_REVISION_CHANGED"), tr("准备保存时编辑修订发生变化，地图保存已中止。"));
     }
     auto job = std::make_unique<MapSaveJob>();
+    job->runtimePackageSources = runtimePackageSources_;
+    job->runtimeApprovedPackageSha256 = runtimeApprovedPackageSha256_;
     job->target = target;
     job->inPlace = inPlace;
     // 正常保存将自动小地图策略冻结给worker；内容预检只重建通行，
@@ -545,9 +547,15 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     // 使用预放对象的GUI图将实际成员/分类依赖纳入同一保存任务。前缀只选择需要检查
     // 的候选，真正资格由sealed快照及共用resolver给出，不按名字猜对象存在。
     const bool objectChanges = std::any_of(objectDirty_.begin(), objectDirty_.end(), [](bool dirty) { return dirty; });
-    // 带测试场景的测试副本也要重建脚本，场景只存在于本次生成用的触发器副本里。
-    const bool hasChanges = triggerDirty_ || objectChanges || editsImports || (mapEdits_ && mapEdits_->IsDirty()) || luaMapTarget_
-        || testScenario_;
+    const auto savedRuntime = editRevision_.Baseline(EditSaveTarget::Map);
+    const auto runtimeApproval = [](const EditScopeSnapshot& scopes) {
+        const auto found = scopes.find("runtime/approval");
+        return found == scopes.end() ? std::string{} : found->second;
+    };
+    const bool runtimeChanged = !savedRuntime || runtimeApproval(savedRuntime->scopes) != runtimeApproval(frozenScopes);
+    // 带测试场景的副本和运行库批准变化都需要重建本次脚本。
+    const bool hasChanges = triggerDirty_ || objectChanges || editsImports || runtimeChanged || (mapEdits_ && mapEdits_->IsDirty())
+        || luaMapTarget_ || testScenario_;
     const auto objectNames = triggerDocument_ && hasChanges ? ActivePreplacedNames(*triggerDocument_)
         : Result<std::vector<std::string>>::Success({});
     AddDiagnostics(objectNames.diagnostics);

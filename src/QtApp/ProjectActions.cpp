@@ -168,6 +168,7 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
     }
     project_->pendingImports_ = std::move(imports);
     project_->assetEdits_ = std::move(candidate.assetEdits);
+    project_->runtimeApprovedPackageSha256_ = std::move(candidate.runtimeApprovedPackageSha256);
     objectsModule_->UpdateObjectReferenceEntries(); objectsModule_->ShowObjectType(0); project_->NotifyImportsChanged(); UpdateExportAvailability(); UpdateStatusBar();
     const bool recoveryProject = candidate.recovery;
     project_->lastProjectFingerprint_ = recoveryProject ? std::string{} : ProjectFingerprint();

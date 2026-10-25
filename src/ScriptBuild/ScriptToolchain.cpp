@@ -640,7 +640,7 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         std::vector<std::filesystem::path> injected;
         std::size_t entries = 0;
         if (options.frameworkInputs) {
-            auto owned = InjectScriptFramework(script, *options.frameworkInputs, injected, &frameworkView);
+            auto owned = InjectScriptFramework(script, *options.frameworkInputs, injected, &frameworkView, &result.injectedSourceSha256);
             for (auto& diagnostic : owned.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
             if (!owned.Succeeded()) { stage.exitCode = 1; return result; }
             entries = options.frameworkInputs->injection.choices.size();
@@ -648,7 +648,7 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         } else {
             const auto table = ScanInjectTable(options.jassDirs, options.warcraftVersion == 24, result.diagnostics);
             entries = table.entries.size();
-            script = InjectCode(std::move(script), table, result.diagnostics, &injected);
+            script = InjectCode(std::move(script), table, result.diagnostics, &injected, &result.injectedSourceSha256);
         }
         stage.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started);
         stage.log = std::to_string(entries) + " 个注入函数，追加 " + std::to_string(injected.size()) + " 个文件";
@@ -854,6 +854,18 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
             return result;
         }
         result.script = std::move(*output);
+        if (options.mapRuntimeBoot) {
+            auto plan = *options.mapRuntimeBoot; plan.injectedSourceSha256 = result.injectedSourceSha256;
+            auto boot = ApplyMapRuntimeBoot(result.script, plan);
+            result.diagnostics.insert(result.diagnostics.end(), boot.diagnostics.begin(), boot.diagnostics.end());
+            if (!boot.Succeeded()) { result.script.clear(); return result; }
+            result.script = std::move(*boot.value);
+            if (!WriteFile(dir / "6_vjass.j", result.script)) { Fail(result, "WORKDIR_WRITE", "无法写出运行库启动阶段脚本。"); return result; }
+            if (!scripts) scripts = ReadGameScripts(result, options);
+            if (!scripts || !RunBuiltinCheck(result, options, *scripts, result.script)) { result.script.clear(); return result; }
+            const auto checked = RunPjass(result, options, dir / "6_vjass.j", true);
+            if (!checked || !*checked) { result.script.clear(); return result; }
+        }
         if (options.frameworkInputs) {
             if (!scripts) scripts = ReadGameScripts(result, options);
             if (!scripts || !RunBuiltinCheck(result, options, *scripts, result.script)) {
@@ -864,6 +876,14 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         result.checkedBy = "jasshelper / pjass";
         VerifyLayout(result, options);
         return result;
+    }
+    if (options.mapRuntimeBoot) {
+        auto plan = *options.mapRuntimeBoot; plan.injectedSourceSha256 = result.injectedSourceSha256;
+        auto boot = ApplyMapRuntimeBoot(finalScript, plan);
+        result.diagnostics.insert(result.diagnostics.end(), boot.diagnostics.begin(), boot.diagnostics.end());
+        if (!boot.Succeeded()) return result;
+        finalScript = std::move(*boot.value);
+        if (!WriteFile(dir / "6_vjass.j", finalScript)) { Fail(result, "WORKDIR_WRITE", "无法写出运行库启动阶段脚本。"); return result; }
     }
     if (options.checker == ScriptEngine::Builtin) {
         const bool passed = RunBuiltinCheck(result, options, *scripts, finalScript);

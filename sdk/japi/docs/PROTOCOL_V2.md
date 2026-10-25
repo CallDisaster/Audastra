@@ -76,6 +76,7 @@ domain=0（local）或 1（sync）。LOCAL／ASYNC 事件处理期间，以及 l
 |---|---|---|---|
 | `host.hello` | 无，epoch=0 | INT | 当前能力位，响应头提供 epoch；不改变会话 |
 | `host.version` | 无 | TEXT | `2.0.0` |
+| `host.runtimeidentity` | 无 | TEXT | 适配器核实的运行库内容身份；未配置则STATE，不从地图参数赋值 |
 | `host.bind` | `s:function` | VOID | 注册 dispatcher 并做事件零握手；同名幂等，异名拒绝 |
 | `host.pump` | 无 | VOID | 显式安全点；有未派完事件／未停止模块时返回 BUSY |
 | `host.event` | 无 | TEXT | 仅 dispatcher 内可读一次当前事件；第二次返回空串 |
@@ -90,6 +91,8 @@ domain=0（local）或 1（sync）。LOCAL／ASYNC 事件处理期间，以及 l
 | `module.stats` | `s:name` | TEXT | `instance|state|queued|rejected|delivered|failed|cancelled` |
 
 能力位：1=基本调用，2=事件队列，4=已有 VM 执行器，8=执行器已获同步资格，16=已配置模块加载器。4／8 反映适配器配置，不等于 dispatcher 已通过握手。发送同步事件还要求绑定成功。只有字符串调用能力也可以使用基本模块命令。
+
+`host.runtimeidentity` 是可选的只读适配器属性，不改变ABI或上述能力位。独立地图运行库返回实际DLL文件内容的小写SHA-256；未提供此属性的通用Host返回STATE，旧实现可能返回未知命令。地图保存流程将锁定载荷身份绑定到JASS全局 `AjExpectedRuntimeIdentity`。该值非空时，`AjInitialize` 在hello后必须取得相同身份才保留ready；查询失败保持其错误，身份不同返回POLICY（14），均不进入UI模块加载。空值保持通用SDK的旧握手语义，不属于受管地图安装路径。它是部署/兼容性核验，不是签名、加密或反破解机制。
 
 没有 `lastError`：每条响应携带自身状态；C++ `Diagnostic()` 是宿主线程上的补充日志文本，不是 JASS 的错误关联机制。没有地图可调用的 VM reset；地图不能自行更换宿主 epoch。
 

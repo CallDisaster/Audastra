@@ -561,6 +561,9 @@ void ModuleCalls() {
     m.epoch = 2;
     m.request = 0;
     Check(InstallGameUiModule(m.host, Entries()) == AJ_OK, "next VM installs a fresh module");
+    const auto nextFrame = m.Call("audastraui.create;s:Text;d:0;i:0;i:0");
+    Check(nextFrame.status == AJ_OK && nextFrame.value.integer > 0, "next VM creates a live frame");
+    Check("d:" + std::to_string(nextFrame.value.integer) != frame, "new module cannot reissue a previous VM token");
     Check(m.Call("audastraui.settext;" + frame + ";s:x").status == AJ_ARGUMENT, "handles from the previous VM are invalid");
 }
 

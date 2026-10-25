@@ -236,6 +236,9 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
         QJsonArray assetEdits;
         for (const auto& edit : assetEdits_) assetEdits.push_back(QJsonObject{{"from", edit.from}, {"to", edit.to}});
         job->manifest_["assetEdits"] = assetEdits;
+        if (!runtimeApprovedPackageSha256_.empty())
+            job->manifest_["runtimeApproval"] = QJsonObject{{"schema",1},{"packageSha256",Text(runtimeApprovedPackageSha256_)},
+                {"sourceSha256",Text(job->sourceSha256_)}};
         QJsonArray edits;
         for (auto* stack : objectUndoStacks_)
             if (stack) for (int i = 0; i < stack->index(); ++i) edits.push_back(stack->text(i));
