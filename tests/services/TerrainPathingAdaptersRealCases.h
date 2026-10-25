@@ -2,9 +2,14 @@
 
 #include "../../src/Cli/MapEditSaveCommand.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/Image/TextureImage.h"
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include <array>
 #include <filesystem>
@@ -47,6 +52,55 @@ inline Invocation Invoke(std::vector<std::wstring> arguments) {
     }
 }
 inline std::wstring Ascii(std::string_view value) { return {value.begin(), value.end()}; }
+inline std::vector<std::byte> ExpectedStartMarkers(const MapArchiveSession& source,
+    const MapData::TerrainGridSnapshot& terrain, const std::filesystem::path& game) {
+    const auto settings = Take(MapData::MapSettings::Parse(Take(source.ReadMember("war3map.w3i"))));
+    const auto units = Take(MapData::ParseUnitPlacements(Take(source.ReadMember("war3mapUnits.doo"))));
+    Require(settings.FullyParsed() && settings.formatVersion == 25 && (settings.flags & 0x400u)
+        && settings.cameraMargins == std::array<std::int32_t, 4>{6, 6, 4, 8}
+        && settings.playableWidth == 52 && settings.playableHeight == 52
+        && terrain.header.offset == std::array<float, 2>{-4096, -4096},
+        "independent MMP oracle requires the complete actual authored W3I playable rectangle and terrain origin");
+    Require(units.units.size() == 1 && units.units[0].rawcode == "sloc" && units.units[0].owner == 0
+        && units.units[0].position == std::array<float, 3>{0, 0, 0}
+        && settings.players.size() == 1 && settings.players[0].number == 0
+        && settings.players[0].startX == 0 && settings.players[0].startY == 0,
+        "actual original placements contain exactly the authored player0 start marker, not an empty unit collection");
+    auto mounted = Take(Game::GameDataSource::MountStrict(game, terrain.header.mainTileset));
+    const auto skins = Take(mounted.ReadFileBoundedWithSource("UI/war3skins.txt", 2u * 1024u * 1024u));
+    Require(!skins.archiveName.empty(), "start-marker color uses an actual winning game startup profile");
+    std::string_view text(reinterpret_cast<const char*>(skins.bytes.data()), skins.bytes.size());
+    if (text.starts_with("\xef\xbb\xbf")) text.remove_prefix(3);
+    std::string prefix; unsigned definitions = 0;
+    Text::VisitProfileFields(text, [&](std::string_view section, std::string_view key, std::string_view value) {
+        if (section == "default" && key == "teamcolor") { prefix = value; ++definitions; }
+    });
+    Require(definitions == 1 && !prefix.empty(), "actual startup TeamColor prefix is explicit and unambiguous");
+    const auto tga = prefix + "00.tga", blp = prefix + "00.blp";
+    Require(!source.HasMember(tga) && !source.HasMember(blp),
+        "authored pathing fixture has no hidden map-layer override of the actual startup team-color image");
+    const auto path = mounted.HasFile(tga) ? tga : blp;
+    const auto colorSource = Take(mounted.ReadFileBoundedWithSource(path, 2u * 1024u * 1024u));
+    Require(!colorSource.archiveName.empty(), "start-marker color image has an actual winning game container");
+    const auto image = Take(Image::DecodeTexture(path, colorSource.bytes, 1024u * 1024u));
+    Require(image.Valid() && !image.rgba.empty() && image.rgba.size() % 4 == 0,
+        "actual startup team-color image is complete RGBA data");
+    std::uint64_t red = 0, green = 0, blue = 0;
+    for (std::size_t pixel = 0; pixel < image.rgba.size(); pixel += 4) {
+        red += std::to_integer<unsigned>(image.rgba[pixel]);
+        green += std::to_integer<unsigned>(image.rgba[pixel + 1]);
+        blue += std::to_integer<unsigned>(image.rgba[pixel + 2]);
+    }
+    // 独立wire字面值：版本0、1条、type2。已核原图世界可玩区为
+    // [-3328,-3584,3328,3072]，起点(0,0)映射x=128、y=256-trunc(3584/6656*256)=119。
+    // 不调用正式MMP生成器、frame、坐标投影或颜色平均函数造expected。
+    std::vector<std::byte> expected;
+    for (const auto value : {0u, 1u, 2u, 128u, 119u})
+        for (unsigned shift = 0; shift < 32; shift += 8) expected.push_back(std::byte((value >> shift) & 255));
+    const auto count = image.rgba.size() / 4;
+    expected.insert(expected.end(), {std::byte(blue / count), std::byte(green / count), std::byte(red / count), std::byte{255}});
+    return expected;
+}
 } // namespace PathingAdaptersRealDetail
 
 // 使用现有真实资源/工具链原创地图。直接调用产品CLI解析入口，不把参数门禁当成存图证明。
@@ -86,6 +140,7 @@ inline void CheckRealTerrainPathingCliSave(const MapArchiveSession& original,
     const std::array replacements{MemberReplacement{"war3map.wpm", sourceWpm}};
     const auto source = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "source.w3x", replacements)).path));
     const auto sourceSha = source.SourceSha256(), terrainSha = Take(Sha256(terrainBytes));
+    const auto expectedMarkers = ExpectedStartMarkers(source, before, game);
     const auto arguments = [&](const std::filesystem::path& target) {
         return std::vector<std::wstring>{L"war3-map-cli", L"map-edit-save", source.SourcePath().wstring(),
             Ascii(sourceSha), Ascii(terrainSha), tool.wstring(), game.wstring(), target.wstring()};
@@ -114,15 +169,14 @@ inline void CheckRealTerrainPathingCliSave(const MapArchiveSession& original,
         expected[pixel(targetX[type], 128)] |= bits[type];
         Require(Take(output.ReadMember("war3map.wpm")) == expected,
             "every actual saved WPM byte matches independent named-bit/single-pixel expectation");
-        const bool addsEmptyMarkers = !source.HasMember("war3map.mmp");
-        Require(output.Members().size() == source.Members().size() + (addsEmptyMarkers ? 1 : 0),
+        const bool addsMarkers = !source.HasMember("war3map.mmp");
+        Require(output.Members().size() == source.Members().size() + (addsMarkers ? 1 : 0),
             "actual pathing-only CLI save preserves original named-member coverage and only adds the generated MMP when absent");
-        if (addsEmptyMarkers)
-            Require(Take(output.ReadMember("war3map.mmp")) == std::vector<std::byte>(8, std::byte{0}),
-                "empty original unit placements produce the complete independent empty MMP version0/count0 literal");
+        Require(Take(output.ReadMember("war3map.mmp")) == expectedMarkers,
+            "actual default sloc produces the complete independent MMP type/position/startup-color expectation");
         for (const auto& member : source.Members()) {
             Require(output.HasMember(member.name), "actual pathing-only CLI save retains every source member");
-            if (member.name != "war3map.wpm")
+            if (member.name != "war3map.wpm" && member.name != "war3map.mmp")
                 Require(Take(output.ReadMember(member.name)) == Take(source.ReadMember(member.name)),
                     "actual pathing-only CLI save preserves complete terrain/script/placement/shadow/minimap bytes");
         }
