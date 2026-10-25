@@ -11,7 +11,8 @@ bool ValidSha(std::string_view value);
 Status ValidateFieldOperations(std::span<const MapEditFieldOperation> operations);
 Status ValidatePlacementOperation(const MapEditPlacementOperation& operation);
 Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes);
+Status AdvanceTerrainPointFrame(MapData::TerrainHeader& terrain, const MapData::TerrainResizeIntent& resize);
 Result<std::vector<MapData::TerrainStrokePoint>> WorldPoints(
-    const MapEditTerrainStroke& stroke, const MapData::TerrainGridSnapshot& terrain);
+    const MapEditTerrainStroke& stroke, const MapData::TerrainHeader& terrain);
 
 } // namespace War3Map::Services::MapEditValidation

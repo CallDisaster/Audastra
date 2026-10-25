@@ -213,26 +213,47 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     return Status::Ok();
 }
 
+Status AdvanceTerrainPointFrame(MapData::TerrainHeader& terrain, const MapData::TerrainResizeIntent& resize) {
+    const auto valid = MapData::ValidateTerrainResizeIntent(resize);
+    if (!valid.Succeeded()) return valid;
+    const auto& r = resize.canvas;
+    const auto width = std::int64_t(r.east) - r.west, height = std::int64_t(r.north) - r.south;
+    const double left = terrain.offset[0] + double(r.west) * 128;
+    const double bottom = terrain.offset[1] + double(r.south) * 128;
+    const double right = left + double(width) * 128, top = bottom + double(height) * 128;
+    for (const auto value : {double(terrain.offset[0]), double(terrain.offset[1]), left, bottom, right, top}) {
+        if (!std::isfinite(value) || std::abs(value) > 16777216 || std::fmod(value, 128.0) != 0)
+            return Status::Failure("Terrain.Resize", "TERRAIN_RESIZE_COORDINATE",
+                "扩裁需要128对齐且可精确表示的经典世界坐标。");
+    }
+    // 这里只维护后续输入点的坐标系，不复制网格、捕获资源或授予扩裁资格。
+    // 真实尺寸规则、重叠、可玩区、摆放与预算仍由唯一的有序Replay检查。
+    terrain.width = static_cast<std::uint32_t>(width) + 1;
+    terrain.height = static_cast<std::uint32_t>(height) + 1;
+    terrain.offset = {static_cast<float>(left), static_cast<float>(bottom)};
+    return Status::Ok();
+}
+
 Result<std::vector<MapData::TerrainStrokePoint>> WorldPoints(
-    const MapEditTerrainStroke& stroke, const MapData::TerrainGridSnapshot& terrain) {
+    const MapEditTerrainStroke& stroke, const MapData::TerrainHeader& terrain) {
     std::vector<MapData::TerrainStrokePoint> points;
     points.reserve(stroke.points.size());
-    const double minX = terrain.header.offset[0], minY = terrain.header.offset[1];
-    const double maxX = minX + (static_cast<double>(terrain.header.width) - 1.0) * 128.0;
-    const double maxY = minY + (static_cast<double>(terrain.header.height) - 1.0) * 128.0;
+    const double minX = terrain.offset[0], minY = terrain.offset[1];
+    const double maxX = minX + (static_cast<double>(terrain.width) - 1.0) * 128.0;
+    const double maxY = minY + (static_cast<double>(terrain.height) - 1.0) * 128.0;
     for (const auto& point : stroke.points) {
         if (stroke.pointSpace == MapEditPointSpace::TerrainVertex) {
-            if (point.x < 0 || point.y < 0 || point.x >= terrain.header.width
-                || point.y >= terrain.header.height || std::trunc(point.x) != point.x
+            if (point.x < 0 || point.y < 0 || point.x >= terrain.width
+                || point.y >= terrain.height || std::trunc(point.x) != point.x
                 || std::trunc(point.y) != point.y) {
                 return Result<std::vector<MapData::TerrainStrokePoint>>::Failure(
-                    "MapEdit.Save", "SAVE_VERTEX_BOUNDS", "笔划点必须是源 W3E 范围内的整数顶点坐标。");
+                    "MapEdit.Save", "SAVE_VERTEX_BOUNDS", "笔划点必须是当前笔划前 W3E 范围内的整数顶点坐标。");
             }
             points.push_back({minX + point.x * 128.0, minY + point.y * 128.0});
         } else {
             if (point.x < minX || point.x > maxX || point.y < minY || point.y > maxY) {
                 return Result<std::vector<MapData::TerrainStrokePoint>>::Failure(
-                    "MapEdit.Save", "SAVE_STROKE_POINT_BOUNDS", "世界坐标笔划点超出源 W3E 地形范围。");
+                    "MapEdit.Save", "SAVE_STROKE_POINT_BOUNDS", "世界坐标笔划点超出当前笔划前 W3E 地形范围。");
             }
             points.push_back(point);
         }

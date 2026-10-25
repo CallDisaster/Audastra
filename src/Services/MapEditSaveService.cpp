@@ -792,7 +792,16 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             if (!grid) return Fail("SAVE_TERRAIN_UNAVAILABLE", "源 W3E 无法建立地形编辑快照。");
             std::vector<MapData::TerrainStrokeIntent> intents;
             intents.reserve(request.terrainStrokes.size());
+            auto pointFrame = grid->header;
             for (const auto& stroke : request.terrainStrokes) {
+                if (stroke.resize) {
+                    const auto advanced = AdvanceTerrainPointFrame(pointFrame, *stroke.resize);
+                    if (!advanced.Succeeded()) return Forward(advanced.diagnostics);
+                    MapData::TerrainStrokeIntent intent;
+                    intent.resize = stroke.resize;
+                    intents.push_back(std::move(intent));
+                    continue;
+                }
                 if (stroke.blockPaste) {
                     auto block = *stroke.blockPaste;
                     const auto actual = MapData::CaptureTerrainBlockFingerprint(*grid, block.sourceCells);
@@ -811,7 +820,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 if (stroke.bounds) {
                     intents.push_back({{}, {}, false, {}, stroke.bounds}); continue;
                 }
-                const auto points = WorldPoints(stroke, *grid);
+                const auto points = WorldPoints(stroke, pointFrame);
                 if (!points.Succeeded() || !points.value) return Forward(points.diagnostics);
                 intents.push_back({stroke.brush, *points.value, stroke.followDoodads, stroke.waterBrush, {}});
                 // 新保存请求显式采用当前结构算法；旧typed历史只从自身版本恢复，
@@ -832,15 +841,25 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             // 输出，再将有类型的说明表装入同一会话；物编仍交最终通行来源门核对。
             auto companionMembers = std::move(replacements);
             replacements = terrainReplay->Replacements();
-            if (replacements.empty() || replacements.size() > 5 || !terrainReplay->Removals().empty())
-                return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务生成了空替换、过多成员或删除成员。");
-            std::array<bool, 5> seen{};
+            const bool ownedResize = terrainReplay->HasTerrainTypedResizeState() && terrainReplay->HasTerrainResizeChanges();
+            const auto removals = terrainReplay->Removals();
+            if ((replacements.empty() && removals.empty()) || replacements.size() > 6
+                || (!removals.empty() && (!ownedResize || removals.size() != 1 || removals.front() != "war3map.shd")))
+                return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务没有变更、生成过多成员或未经授权的删除成员。");
+            if (!removals.empty()) {
+                const auto shadow = terrainReplay->TerrainResizeShadowDraft();
+                if (!shadow.Succeeded() || !shadow.value || shadow.value->name != "war3map.shd"
+                    || shadow.value->present || !shadow.value->bytes.empty())
+                    return Fail("SAVE_EDIT_SCOPE_INVALID", "只有typed扩裁恢复的明确阴影缺席可以删除SHD成员。");
+            }
+            std::array<bool, 6> seen{};
             for (const auto& member : replacements) {
                 const std::size_t index = member.name == "war3map.w3e" ? 0
                     : member.name == "war3map.wpm" ? 1
                     : member.name == "war3map.doo" ? 2
                     : member.name == "war3mapUnits.doo" ? 3
-                    : member.name == "war3map.w3i" && terrainReplay->HasTerrainBoundsChanges() ? 4 : 5;
+                    : member.name == "war3map.w3i" && (terrainReplay->HasTerrainBoundsChanges() || ownedResize) ? 4
+                    : member.name == "war3map.shd" && ownedResize && removals.empty() ? 5 : 6;
                 if (index >= seen.size() || seen[index]) {
                     return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务生成了未获允许或重复的地图成员：" + member.name);
                 }
@@ -848,13 +867,14 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             }
             const bool restrictionOnly = seen[1] && !seen[2] && !seen[3]
                 && std::all_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
-                    [](const auto& stroke) { return !stroke.blockPaste && !stroke.bounds && !stroke.waterBrush
+                    [](const auto& stroke) { return !stroke.blockPaste && !stroke.bounds && !stroke.resize && !stroke.waterBrush
                         && stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
             // 部分来源W3E的MapEdge已恰好匹配新矩形；真实范围仍可仅改变W3I并重建native G0/G1。
-            const bool ownedBounds = seen[4] && terrainReplay->HasTerrainBoundsChanges();
-            if (!seen[0] && !restrictionOnly && !ownedBounds)
+            const bool ownedGeometry = ownedResize || (seen[4] && terrainReplay->HasTerrainBoundsChanges());
+            if (!seen[0] && !restrictionOnly && !ownedGeometry)
                 return Fail("SAVE_EDIT_SCOPE_INVALID", "地形事务缺少 W3E 替换，且不属于仅修改 WPM 的通行限制笔划。");
-            if ((seen[3] || (seen[2] && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+            // 扩裁只迁移特殊地形记录的格索引；普通对象仍须原世界坐标，实际来源由领域命令复核。
+            if ((seen[3] || (seen[2] && !ownedResize && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
                     [](const auto& stroke) { return stroke.waterBrush.has_value(); })))
                 && std::none_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
                     [](const auto& stroke) { return stroke.followDoodads; })) {
@@ -882,7 +902,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     const auto parsed = MapData::ParseMapFieldTable(kind, member.data);
                     if (!parsed.Succeeded() || !parsed.value) return Forward(parsed.diagnostics);
                     const auto committed = [&] {
-                        if (kind != MapDataKind::Settings || !terrainReplay->HasTerrainBoundsChanges())
+                        if (kind != MapDataKind::Settings || (!terrainReplay->HasTerrainBoundsChanges()
+                            && !terrainReplay->HasTerrainResizeChanges()))
                             return CommitTable(*terrainReplay, *parsed.value, kind);
                         // 说明候选已独立核过源SHA/字段前值。只取四说明字段，
                         // 几何继续来自密封范围命令，不能被源几何回写覆盖。
@@ -956,10 +977,11 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (!frozen.Succeeded()) return Forward(frozen.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), fieldDiagnostics.begin(), fieldDiagnostics.end());
         task.replacements = std::move(replacements);
+        if (terrainReplay) task.removals = terrainReplay->Removals();
         const auto script = PrepareScript(task, source, request, editedMembers, triggerReceipt, transactionReceipt);
         if (!script.Succeeded()) return Forward(script.diagnostics);
         // 范围是游戏初始化输入。最终W3I须走现有ScriptSaveBundle依赖，不能沿用旧SetCameraBounds。
-        if (finalEdits.HasTerrainBoundsChanges()) task.preserveUnaffectedScript = false;
+        if (finalEdits.HasTerrainBoundsChanges() || finalEdits.HasTerrainResizeChanges()) task.preserveUnaffectedScript = false;
 
         // 小地图/地形派生必须在最终脚本和模板替换完成后准备，避免其原字
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
