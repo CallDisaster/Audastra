@@ -85,6 +85,11 @@ public:
     // 后台执行只消费冻结身份，不借用活跃编辑会话；应在最终成员列表形成后、发布前调用。
     [[nodiscard]] Status VerifyFrozenOutput(std::string_view sourceSha256,
         std::span<const MemberReplacement> replacements, std::span<const std::string> removals = {}) const;
+    // 仅写前复核真实G0；不能对原地保存后的新归档调用，也不以G1输出代替旧来源。
+    [[nodiscard]] Status VerifySourceInputs(const MapArchiveSession& source,
+        const TerrainSavePlanLimits& limits = {}) const;
+    [[nodiscard]] Status VerifySourceInputs(const WorkspaceSnapshot& source,
+        const TerrainSavePlanLimits& limits = {}) const;
     // 按明确名字独立回读五个成员的存在性和原字身份，包括未列在 listfile 中的成员。
     // limits仍是五成员累计读取字节帽，默认64MiB保持旧行为；共享保存单元可显式
     // 收紧并在其外层预收3×读取容量及固定散列/元数据工作。不表示native验证。

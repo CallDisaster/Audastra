@@ -374,15 +374,26 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             }
         }
         if (mixedProof && plan.RebuiltPathing()) {
-            // mode3只包含terrain(1)+static DOO(2)。七类物编仍精确冻结最终输出；
-            // W3B/W3D等实际静态依赖另由资源owner拒绝未重新解释的覆盖。
+            // 七类物编精确冻结最终输出。W3B/W3D删除也由实际G1重新解释后冻结；
+            // 原source状态保留，写前/写后分别核旧存在和新缺失，不能伪改基线。
             for (auto& member : plan.invariantMembers_) {
                 if (std::find(kInvariantNames.begin() + 3, kInvariantNames.end(), member.name) == kInvariantNames.end()) continue;
+                std::size_t replacements = 0, removals = 0;
                 for (const auto& replacement : finalMembers) if (Canonical(replacement.name) == member.name) {
+                    if (++replacements != 1)
+                        return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_DUPLICATE", "最终物编被重复覆盖：" + member.name);
                     AddBytes(replacement.data.size(), total, limits);
                     member.outputBytes = replacement.data.size();
                     member.outputSha256 = Take(Sha256(replacement.data));
                     if (member.outputSha256 != member.sourceSha256) member.action = TerrainSaveMemberAction::WriteEdited;
+                }
+                for (const auto& removed : finalRemovals) if (Canonical(removed) == member.name) ++removals;
+                if (removals > 1 || (removals && replacements))
+                    return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_DUPLICATE", "最终物编的删除与覆盖冲突：" + member.name);
+                if (removals && (member.name == "war3map.w3b" || member.name == "war3map.w3d")
+                    && plan.pathingResources_ && plan.pathingResources_->nativeSourceResources_) {
+                    member.outputBytes.reset(); member.outputSha256.reset();
+                    member.action = TerrainSaveMemberAction::WriteEdited;
                 }
             }
         }
@@ -643,6 +654,32 @@ Status TerrainSavePlan::VerifyForSave(const MapDataEditSession& edits, std::stri
     return VerifyFrozenOutput(sourceSha256, replacements, removals);
 }
 
+Status TerrainSavePlan::VerifySourceInputs(const MapArchiveSession& source, const TerrainSavePlanLimits& limits) const {
+    if (limits.maximumBytes > TerrainSavePlanLimits{}.maximumBytes)
+        return Reject("TERRAIN_SAVE_PLAN_BUDGET", "地形写前来源复核只能收紧64MiB预算。");
+    if (source.SourceSha256() != sourceSha256_)
+        return Reject("TERRAIN_SAVE_PLAN_SOURCE_MISMATCH", "写前归档不是地形计划冻结的真实旧来源。");
+    if (!saveGate_.Succeeded()) return saveGate_;
+    const auto current = source.VerifySourceUnchanged();
+    if (!current.Succeeded()) return current;
+    return pathingResources_ ? pathingResources_->VerifySourceInputs(source, limits.maximumBytes) : Status::Ok();
+}
+
+Status TerrainSavePlan::VerifySourceInputs(const WorkspaceSnapshot& source, const TerrainSavePlanLimits& limits) const {
+    if (limits.maximumBytes > TerrainSavePlanLimits{}.maximumBytes)
+        return Reject("TERRAIN_SAVE_PLAN_BUDGET", "地形写前来源复核只能收紧64MiB预算。");
+    if (source.aggregateSha256 != sourceSha256_)
+        return Reject("TERRAIN_SAVE_PLAN_SOURCE_MISMATCH", "写前工作区不是地形计划冻结的真实旧来源。");
+    if (!saveGate_.Succeeded()) return saveGate_;
+    // 仅snapshot字符串不能证明当前磁盘；整体身份与实际旧资源分别核对。
+    // 无资源owner的旧保留域不伪称已验证原生规则。
+    const auto workspace = DirectoryWorkspace::Open(source.root);
+    if (!workspace.Succeeded() || !workspace.value) return {workspace.diagnostics};
+    if (workspace.value->Snapshot().aggregateSha256 != sourceSha256_)
+        return Reject("TERRAIN_SAVE_PLAN_SOURCE_MISMATCH", "写前工作区内容已改变，请重新准备地形保存计划。");
+    return pathingResources_ ? pathingResources_->VerifySourceInputs(source, limits.maximumBytes) : Status::Ok();
+}
+
 Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
     std::span<const MemberReplacement> replacements, std::span<const std::string> removals) const {
     if (sourceSha256 != sourceSha256_)
@@ -676,8 +713,18 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
                 if (actual) return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "地形通行不变依赖被重复覆盖：" + member.name);
                 actual = &replacement;
             }
-            for (const auto& removed : removals) if (Canonical(removed) == key && member.sourceState != TerrainSaveSourceState::Missing)
-                return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "地形通行不变保存不能同时删除范围、摆放或物编来源：" + member.name);
+            std::size_t removedCount = 0;
+            for (const auto& removed : removals) if (Canonical(removed) == key) ++removedCount;
+            const bool finalRemoval = member.action == TerrainSaveMemberAction::WriteEdited && !member.outputSha256;
+            if (removedCount > 1 || (removedCount && actual))
+                return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "地形依赖的删除与覆盖冲突：" + member.name);
+            if (removedCount && !finalRemoval && member.sourceState != TerrainSaveSourceState::Missing)
+                return Reject("TERRAIN_SAVE_PLAN_INVARIANT_CHANGED", "地形保存不能删除未经G1冻结的范围、摆放或物编来源：" + member.name);
+            if (finalRemoval) {
+                if (removedCount != 1 || actual)
+                    return Reject("TERRAIN_SAVE_PLAN_OUTPUT_MISSING", "保存任务遗漏了已冻结的物编删除：" + member.name);
+                continue;
+            }
             if (actual) {
                 const auto matched = MatchBytes(member, actual->data, true);
                 if (!matched.Succeeded()) return matched;

@@ -9,6 +9,7 @@
 #include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 #include "War3MapCore/MapData/PlacementElevationInvariant.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
+#include "War3MapCore/MapData/TerrainClassicDoodads.h"
 #include "War3MapCore/MapData/TerrainBoundsEditing.h"
 #include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "War3MapCore/Resources/TerrainTable.h"
@@ -16,6 +17,7 @@
 #include "War3MapCore/VerifiedFile.h"
 
 #include <algorithm>
+#include <bit>
 #include <charconv>
 #include <cmath>
 #include <limits>
@@ -120,7 +122,8 @@ bool SameOrdinaryDoodadWire(std::span<const std::byte> before, const DoodadPlace
 }
 bool SameWalkableDoodadWire(std::span<const std::byte> before, const DoodadPlacements& original,
     std::span<const std::byte> after, const DoodadPlacements& current,
-    std::span<const TerrainNativeDoodadPathingType> sortedTypes) {
+    std::span<const TerrainNativeDoodadPathingType> sortedTypes,
+    std::span<const TerrainNativeDoodadPathingType> changedTypes = {}) {
     if (original.recordLayout != PlacementRecordLayout::Classic || current.recordLayout != PlacementRecordLayout::Classic
         || !IsClassicPlacementVersion(original.version, original.subversion)
         || original.version != current.version || original.subversion != current.subversion
@@ -148,11 +151,13 @@ bool SameWalkableDoodadWire(std::span<const std::byte> before, const DoodadPlace
                 stage.parsed->version, stage.parsed->subversion, limits));
             const auto wire = stage.bytes.subspan(stage.offset, projected.byteLength);
             stage.offset += projected.byteLength;
-            const auto type = std::lower_bound(sortedTypes.begin(), sortedTypes.end(), row.rawcode,
-                [](const auto& value, const auto& rawcode) { return value.rawcode < rawcode; });
-            if (type != sortedTypes.end() && type->rawcode == row.rawcode
-                && type->contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression)
-                return wire;
+            const auto walkable = [&](auto types) {
+                const auto type = std::lower_bound(types.begin(), types.end(), row.rawcode,
+                    [](const auto& value, const auto& rawcode) { return value.rawcode < rawcode; });
+                return type != types.end() && type->rawcode == row.rawcode
+                    && type->contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression;
+            };
+            if (walkable(sortedTypes) || walkable(changedTypes)) return wire;
         }
         if (stage.offset != stage.end)
             Fail("TERRAIN_NATIVE_FOOTPRINT_LAYOUT", "普通DOO原字边界与完整经典解析不一致。");
@@ -341,6 +346,154 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativeWithObject
     }, before, after, gameRoot, maximumBytes, true, &validator, currentDoodads);
 }
 
+Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithObjects(
+    const MemberReader& sourceReader, const MemberReader& finalReader,
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator) {
+    return Guard<TerrainPathingResources>([&] {
+        if (!sourceReader || !finalReader || !validator)
+            Fail("TERRAIN_NATIVE_PAIR_SOURCE", "双阶段通行需要同次真实来源、最终成员视图和严格对象适配。");
+        // G0仍捕获完整旧/新palette和水规则需求，但只用其Before生成旧WPM。
+        // 最终overlay绝不参与G0来源核对，也不替换旧依赖SHA。
+        auto original = Take(CaptureInputs(sourceReader, before, after, gameRoot, maximumBytes, true, &validator, nullptr, true));
+        if (original.CaptureBudgetBytes() >= maximumBytes)
+            Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "旧通行来源未给最终阶段留下预算。");
+        auto result = Take(CaptureInputs(finalReader, after, after, gameRoot,
+            maximumBytes - original.CaptureBudgetBytes(), true, &validator));
+        const auto reserve = [&](std::size_t count, std::size_t each = 1) {
+            const auto old = original.CaptureBudgetBytes(), next = result.CaptureBudgetBytes();
+            if (!each || old > maximumBytes || next > maximumBytes - old
+                || count > (maximumBytes - old - next) / each)
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "双阶段来源、分类和交叉核对超过同一次保存剩余预算。");
+            result.objectWorkBytes_ += count * each;
+        };
+        reserve(1, sizeof(TerrainPathingResources) + 128); // shared owner及控制块。
+        const auto equalType = [](const auto& a, const auto& b) {
+            return a.rawcode == b.rawcode && a.pathTexture == b.pathTexture && a.gridPolicy == b.gridPolicy
+                && a.contribution == b.contribution && a.fixedRotationDegrees.has_value() == b.fixedRotationDegrees.has_value()
+                && (!a.fixedRotationDegrees || std::bit_cast<std::uint32_t>(*a.fixedRotationDegrees)
+                    == std::bit_cast<std::uint32_t>(*b.fixedRotationDegrees));
+        };
+        const auto findType = [](const auto& types, std::string_view rawcode) -> const TerrainNativeDoodadPathingType* {
+            const auto found = std::lower_bound(types.begin(), types.end(), rawcode,
+                [](const auto& type, auto id) { return type.rawcode < id; });
+            return found != types.end() && found->rawcode == rawcode ? &*found : nullptr;
+        };
+        bool walkable = false;
+        for (const auto* stage : {&original, &result}) for (const auto& type : stage->nativeObjectTypes_) {
+            if (type.contribution != TerrainNativeFootprintContribution::WalkableTerrainSuppression) continue;
+            walkable = true;
+            const auto* counterpart = findType(stage == &original ? result.nativeObjectTypes_ : original.nativeObjectTypes_, type.rawcode);
+            if (!counterpart || !equalType(type, *counterpart))
+                Fail("TERRAIN_NATIVE_PAIR_BRIDGE_CHANGED", "同次静态资源保存不开放桥类别、占地或姿态修改：" + type.rawcode);
+        }
+        for (const auto& type : original.nativeSpecialTypes_) {
+            const auto* counterpart = findType(result.nativeSpecialTypes_, type.rawcode);
+            if (counterpart && !equalType(type, *counterpart))
+                Fail("TERRAIN_NATIVE_PAIR_SPECIAL_CHANGED", "同次静态资源保存不开放特殊地形对象的规则修改：" + type.rawcode);
+        }
+        const bool sameSpecialSet = original.nativeSpecialTypes_.size() == result.nativeSpecialTypes_.size()
+            && std::equal(original.nativeSpecialTypes_.begin(), original.nativeSpecialTypes_.end(), result.nativeSpecialTypes_.begin(),
+                [](const auto& a, const auto& b) { return a.rawcode == b.rawcode; });
+        if (walkable && original.nativeDoodads_ != result.nativeDoodads_) {
+            const auto working = Take(TerrainClassicDoodadsWorkingBytes(original.nativeDoodads_.size(),
+                result.nativeDoodads_.size(), maximumBytes - original.CaptureBudgetBytes() - result.CaptureBudgetBytes()));
+            reserve(working);
+            const auto oldDoodads = Take(ReadTerrainClassicDoodadsRoundtrip(original.nativeDoodads_));
+            const auto newDoodads = Take(ReadTerrainClassicDoodadsRoundtrip(result.nativeDoodads_));
+            if (!SameWalkableDoodadWire(original.nativeDoodads_, oldDoodads, result.nativeDoodads_, newDoodads,
+                original.nativeObjectTypes_, result.nativeObjectTypes_))
+                Fail("TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED", "双阶段桥的完整DOO原字及相对顺序必须保持不变。");
+        }
+
+        // 只放行普通静态RGB的实际贴图依赖；桥/special共享同路径时仍冻结该依赖。
+        // path已由两阶段占地捕获器严格验证，这里只构造原版TGA优先/BLP回退的身份键。
+        const auto typeCount = original.nativeObjectTypes_.size() + result.nativeObjectTypes_.size()
+            + original.nativeSpecialTypes_.size() + result.nativeSpecialTypes_.size();
+        reserve(typeCount, 4 * (sizeof(std::string) + 260));
+        std::vector<std::string> mutablePaths, fixedPaths;
+        mutablePaths.reserve(typeCount * 2); fixedPaths.reserve(typeCount * 2);
+        const auto paths = [&](const auto& type, bool fixed) {
+            if (type.pathTexture.empty()) return;
+            auto path = Canonical(type.pathTexture);
+            if (path.ends_with(".blp")) path.replace(path.size() - 4, 4, ".tga");
+            auto& target = fixed ? fixedPaths : mutablePaths;
+            target.push_back(path); path.replace(path.size() - 4, 4, ".blp"); target.push_back(std::move(path));
+        };
+        for (const auto* stage : {&original, &result}) {
+            for (const auto& type : stage->nativeObjectTypes_)
+                paths(type, type.contribution != TerrainNativeFootprintContribution::StaticRgbAttributes);
+            for (const auto& type : stage->nativeSpecialTypes_) paths(type, true);
+        }
+        std::sort(mutablePaths.begin(), mutablePaths.end()); std::sort(fixedPaths.begin(), fixedPaths.end());
+        const auto mutableDependency = [&](std::string_view name) {
+            if (name == "war3map.w3e" || name == "war3map.w3i" || name == "war3map.doo") return true;
+            // 特殊集合变化仍交原水刷谱系授权；失去实例的类型不能因G1未列出
+            // 而放宽其定义身份，所以该窄域冻结两份物编表，正常水刷不受影响。
+            if ((name == "war3map.w3b" || name == "war3map.w3d") && sameSpecialSet) return true;
+            return std::binary_search(mutablePaths.begin(), mutablePaths.end(), name)
+                && !std::binary_search(fixedPaths.begin(), fixedPaths.end(), name);
+        };
+        const auto index = [&](const TerrainPathingResources& owner) {
+            reserve(owner.dependencies_.size(), sizeof(const Dependency*));
+            std::vector<const Dependency*> values; values.reserve(owner.dependencies_.size());
+            for (const auto& dependency : owner.dependencies_) values.push_back(&dependency);
+            std::sort(values.begin(), values.end(), [](const auto* a, const auto* b) { return a->name < b->name; });
+            return values;
+        };
+        const auto findDependency = [](const auto& values, std::string_view name) -> const Dependency* {
+            const auto found = std::lower_bound(values.begin(), values.end(), name,
+                [](const auto* dependency, auto key) { return dependency->name < key; });
+            return found != values.end() && (*found)->name == name ? *found : nullptr;
+        };
+        const auto supplement = [&](TerrainPathingResources& target, const TerrainPathingResources& other, const MemberReader& reader) {
+            const auto known = index(target);
+            reserve(other.dependencies_.size(), 2 * (sizeof(std::string) + 1025));
+            std::vector<std::string> names, mapNames;
+            names.reserve(other.dependencies_.size()); mapNames.reserve(other.dependencies_.size());
+            for (const auto& dependency : other.dependencies_)
+                if (!findDependency(known, dependency.name))
+                    (dependency.mapOnly ? mapNames : names).push_back(dependency.name);
+            target.capturedMaximumBytes_ = maximumBytes - (&target == &original
+                ? result.CaptureBudgetBytes() : original.CaptureBudgetBytes());
+            if (!mapNames.empty()) {
+                // W3D等地图结构不能走game fallback；补捕也保留它原本的map-only身份。
+                ArchiveExactMemberLimits limits; limits.memberCount = mapNames.size();
+                limits.memberBytes = limits.totalBytes = target.capturedMaximumBytes_ - target.CaptureBudgetBytes();
+                auto members = Take(reader(mapNames, limits));
+                if (members.size() != mapNames.size())
+                    Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "双阶段地图结构补捕未返回完整成员集合。");
+                for (std::size_t i = 0; i < members.size(); ++i) {
+                    const auto& member = members[i];
+                    if (Canonical(member.name) != mapNames[i] || (!member.present && !member.bytes.empty())
+                        || member.bytes.size() > target.capturedMaximumBytes_ - target.CaptureBudgetBytes())
+                        Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "双阶段地图结构补捕来源或累计预算不匹配。");
+                    target.sourceBytes_ += member.bytes.size();
+                    target.dependencies_.push_back({mapNames[i], Take(Sha256(member.bytes)), {}, member.bytes.size(), member.present, true, false});
+                }
+            }
+            if (names.empty()) return;
+            const auto status = target.CaptureResourceMembers(reader, names, 0, [](std::size_t, bool, std::vector<std::byte>&&) {});
+            if (!status.Succeeded()) throw Failure{status.diagnostics};
+        };
+        // 一方未消费的旧水/悬崖规则仍要核最终身份；新阶段多用的固定表也查真实旧来源。
+        supplement(result, original, finalReader); supplement(original, result, sourceReader);
+        const auto finalIndex = index(result);
+        for (const auto& dependency : original.dependencies_) {
+            if (mutableDependency(dependency.name)) continue;
+            const auto* other = findDependency(finalIndex, dependency.name);
+            if (!other || dependency.sha256 != other->sha256 || dependency.bytes != other->bytes
+                || dependency.mapPresent != other->mapPresent || dependency.mapOnly != other->mapOnly
+                || dependency.gameArchive != other->gameArchive || dependency.gameAbsent != other->gameAbsent)
+                Fail("TERRAIN_NATIVE_PAIR_RULE_CHANGED", "双阶段固定规则、桥或特殊占地来源已改变：" + dependency.name);
+        }
+        reserve(0);
+        result.capturedMaximumBytes_ = maximumBytes;
+        result.nativeSourceResources_ = std::make_shared<TerrainPathingResources>(std::move(original));
+        return result;
+    });
+}
+
 Result<TerrainPathingResources> TerrainPathingResources::CaptureWaterBrushRules(const MapArchiveSession& source,
     const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
     const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes) {
@@ -519,7 +672,7 @@ Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reade
 Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const MemberReader& reader,
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
     const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
-    const NativeObjectValidator* validator, const std::vector<std::byte>* currentDoodads) {
+    const NativeObjectValidator* validator, const std::vector<std::byte>* currentDoodads, bool sourceObjectsOnly) {
     return Guard<TerrainPathingResources>([&] {
         TerrainPathingResources result;
         result.tileset_ = before.header.mainTileset;
@@ -793,12 +946,18 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                         doodads->specialDoodads, objectPathing.specialFootprints, maximumLevel, 0);
                     if (!captured.Succeeded()) throw Failure{captured.diagnostics};
                 }
-                if (!afterDoodads->specialDoodads.empty()) {
+                // Pair的G0只消费Before；不能把将被合法水刷移除的旧special硬套到新地形。
+                // 新阶段由独立G1以真实final DOO和W3E完整捕获，不跳过其来源或形状门。
+                if (!sourceObjectsOnly && !afterDoodads->specialDoodads.empty()) {
                     const auto captured = result.CaptureSpecialFootprints(reader, after,
                         afterDoodads->specialDoodads, objectPathing.specialFootprints, maximumLevel, 1);
                     if (!captured.Succeeded()) throw Failure{captured.diagnostics};
                 }
             }
+            result.nativeObjectTypes_ = std::move(objectPathing.footprints);
+            result.nativeSpecialTypes_ = std::move(objectPathing.specialFootprints);
+            std::sort(result.nativeSpecialTypes_.begin(), result.nativeSpecialTypes_.end(),
+                [](const auto& a, const auto& b) { return a.rawcode < b.rawcode; });
         }
         // 必须在严格物编工作预留赋值之后捕获；有special时复用其同一M，
         // 无special也不能把缺省0当配置值。配置依赖与容器预留均保留在owner中。
@@ -1080,7 +1239,7 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
     return Guard<std::vector<std::byte>>([&] {
         const auto wire = TerrainWire(terrain, maximumBytes);
         const auto sha = Take(Sha256(wire));
-        if (nativeDoodads_ != nativeAfterDoodads_ || nativeAfterBounds_)
+        if (nativeSourceResources_ || nativeDoodads_ != nativeAfterDoodads_ || nativeAfterBounds_)
             Fail("TERRAIN_NATIVE_STAGE_REQUIRED", "DOO或世界范围发生变化，须显式选择旧或新阶段。");
         return Take(GenerateNative(terrain, sha == nativeTerrainSha_[0] ? TerrainNativeStage::Before : TerrainNativeStage::After, maximumBytes));
     });
@@ -1089,6 +1248,8 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
 Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const TerrainGridSnapshot& terrain,
     TerrainNativeStage stage, std::size_t maximumBytes) const {
     return Guard<std::vector<std::byte>>([&] {
+        if (nativeSourceResources_ && stage == TerrainNativeStage::Before)
+            return Take(nativeSourceResources_->GenerateNative(terrain, TerrainNativeStage::Before, maximumBytes));
         const auto index = stage == TerrainNativeStage::Before ? 0u : 1u;
         if (!nativeBounds_ || (stage != TerrainNativeStage::Before && stage != TerrainNativeStage::After))
             Fail("TERRAIN_NATIVE_INPUT_UNAVAILABLE", "未捕获完整原版阶段输入。");
@@ -1121,6 +1282,24 @@ Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplace
                 if (replacement) Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "通行输入被重复覆盖：" + dependency.name);
                 replacement = &member;
             }
+            if (nativeSourceResources_) {
+                // G1读过最终overlay不能代替写出列表：新增、替换或删除都必须仍在。
+                // 两owner均补捕获全部依赖，旧存在性来自实际source，不能由G1猜测。
+                const auto old = std::find_if(nativeSourceResources_->dependencies_.begin(), nativeSourceResources_->dependencies_.end(),
+                    [&](const auto& value) { return value.name == dependency.name; });
+                if (old == nativeSourceResources_->dependencies_.end())
+                    Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终依赖没有实际旧来源身份：" + dependency.name);
+                std::size_t removedCount = 0;
+                for (const auto& removed : removals) if (Canonical(removed) == dependency.name) ++removedCount;
+                if (removedCount > 1 || (removedCount && replacement))
+                    Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终依赖的替换和删除冲突：" + dependency.name);
+                if (dependency.mapPresent) {
+                    if (removedCount || (!replacement && (!old->mapPresent || old->bytes != dependency.bytes || old->sha256 != dependency.sha256)))
+                        Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终列表遗漏或删除了G1的实际地图输入：" + dependency.name);
+                } else if (replacement || (old->mapPresent && removedCount != 1)) {
+                    Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "最终列表没有精确实现G1的地图缺失状态：" + dependency.name);
+                }
+            }
             for (const auto& removed : removals) if (Canonical(removed) == dependency.name && dependency.mapPresent)
                 Fail("TERRAIN_PATHING_RESOURCE_CHANGED", "通行不变保存不能同时删除生效输入：" + dependency.name);
             if (nativeBounds_ && dependency.name == "war3map.w3e") {
@@ -1149,6 +1328,13 @@ Status TerrainPathingResources::VerifyFrozenOutput(std::span<const MemberReplace
             }
             if (dependency.mapPresent) remaining -= dependency.bytes;
         }
+        if (nativeSourceResources_) {
+            const auto sourceGame = nativeSourceResources_->VerifyGameDependencies(remaining);
+            if (!sourceGame.Succeeded()) throw Failure{sourceGame.diagnostics};
+            if (nativeSourceResources_->SourceBytes() > remaining)
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "双阶段游戏来源复核超过剩余预算。");
+            remaining -= nativeSourceResources_->SourceBytes();
+        }
         const auto game = VerifyGameDependencies(remaining);
         if (!game.Succeeded()) throw Failure{game.diagnostics};
         return true;
@@ -1167,10 +1353,12 @@ Status TerrainPathingResources::VerifyReadback(const WorkspaceSnapshot& saved, s
 }
 
 Status TerrainPathingResources::VerifySourceInputs(const MapArchiveSession& source, std::size_t maximumBytes) const {
+    if (nativeSourceResources_) return nativeSourceResources_->VerifySourceInputs(source, maximumBytes);
     return VerifyReadbackMembers([&](auto names, const auto& limits) { return source.CaptureExactMembers(names, limits); }, maximumBytes, true);
 }
 
 Status TerrainPathingResources::VerifySourceInputs(const WorkspaceSnapshot& source, std::size_t maximumBytes) const {
+    if (nativeSourceResources_) return nativeSourceResources_->VerifySourceInputs(source, maximumBytes);
     return VerifyReadbackMembers([&](auto names, const auto& limits) {
         return Guard<std::vector<ArchiveExactMember>>([&] { return DirectoryMembers(source, names, limits); });
     }, maximumBytes, true);
@@ -1261,6 +1449,11 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
         + (gameRoot_.native().capacity() + 1) * sizeof(std::filesystem::path::value_type);
     for (const auto& value : dependencies_)
         bytes += value.name.capacity() + value.sha256.capacity() + value.gameArchive.capacity() + 3;
+    if (nativeSourceResources_) bytes += nativeSourceResources_->OwnedCapacityBytes() + 128;
+    for (const auto* types : {&nativeObjectTypes_, &nativeSpecialTypes_}) {
+        bytes += types->capacity() * sizeof(TerrainNativeDoodadPathingType);
+        for (const auto& type : *types) bytes += type.rawcode.capacity() + type.pathTexture.capacity() + 2;
+    }
     for (const auto& [name, properties] : ground_) { (void)properties; bytes += name.capacity() + 1 + 128; }
     bytes += nativeGround_.capacity() * sizeof(TerrainNativeGroundRule) + nativeDoodads_.capacity()
         + nativeStaticAttributes_.capacity() + nativeSpecialAttributes_[0].capacity() + nativeSpecialAttributes_[1].capacity()
