@@ -100,9 +100,16 @@ void HistoryRejectsBrokenSavedBranchRawCommandsAndMovedAliases() {
     SessionFixture redo; redo.Raise(); redo.Raise(32); Require(redo.session.Undo(), "first-save redo fixture");
     Require(HasHistoryCode(redo.session.PrepareTerrainHistoryForSave(), "TERRAIN_HISTORY_SAVE_REDO"),
         "pre-existing old-epoch redo at the first save is explicit rather than rehashing its original rules");
+    Require(redo.session.Undo()
+        && HasHistoryCode(redo.session.PrepareTerrainHistoryForSave(), "TERRAIN_HISTORY_SAVE_REDO"),
+        "an entirely undone old-epoch redo stack is not silently called absent history");
     SessionFixture f; f.Raise(); const auto first = f.session.LastEdit(); f.Raise(32); const auto second = f.session.LastEdit();
     const auto lease = Take(f.session.PrepareTerrainHistoryForSave());
     f.session.CommitSaved(f.session.Snapshot()); Require(f.session.CommitTerrainHistorySave(lease).Succeeded(), "save branch fixture");
+    Require(f.session.Replay(second, false).Succeeded() && f.session.Replay(first, false).Succeeded()
+        && HasHistoryCode(f.session.PrepareTerrainHistoryForSave(), "TERRAIN_HISTORY_EPOCH_LIMIT"),
+        "saving after undo to zero is an explicit second epoch, never optional missing history");
+    Require(f.session.Replay(first, true).Succeeded() && f.session.Replay(second, true).Succeeded(), "return to saved branch before branch test");
     Require(f.session.Replay(second, false).Succeeded(), "undo to branch ancestor");
     f.Raise(48);
     const auto terrain = Take(SerializeMapTerrain(*f.session.Terrain()));

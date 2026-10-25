@@ -115,13 +115,18 @@ Status ValidateTerrainHistoryJournal(const TerrainStrokeJournal& journal) {
     if (!HistoryShape(journal) || !Sha(journal.sourceSha256)) return {InvalidHistory<TerrainStrokeJournal>().diagnostics};
     try {
         // 两层manifest分别验证：外层必须遵守原物理锚域，不能借history放宽旧variant。
-        TerrainStrokeJournal physical;
-        physical.sourceSha256 = journal.sourceSha256; physical.members = journal.members;
-        physical.baselinePathingLayers = journal.baselinePathingLayers; physical.strokes = journal.strokes;
-        const auto valid = ValidateTerrainStrokeJournal(physical);
+        const auto valid = ValidateTerrainJournalParts(journal.sourceSha256, journal.members,
+            journal.baselinePathingLayers, journal.strokes);
         if (!valid.Succeeded()) return valid;
-        const auto baseline = TerrainHistoryBaselineJournal(journal);
-        return baseline.Succeeded() && baseline.value ? Status::Ok() : Status{baseline.diagnostics};
+        // 这里只验证旧manifest形状、presence和typed域。raw SHA及结构digest在
+        // 后续已预收的BaselineJournal/Decode中生成，不在小预算恢复预检时复制正文。
+        std::array<TerrainJournalMember, TerrainJournalMemberNames.size()> baseline;
+        constexpr std::string_view placeholder = "0000000000000000000000000000000000000000000000000000000000000000";
+        for (std::size_t i = 0; i < baseline.size(); ++i) {
+            const auto& member = journal.history->baselineMembers[i];
+            baseline[i] = {member.name, member.present, member.present ? std::string(placeholder) : std::string{}, member.bytes.size()};
+        }
+        return ValidateTerrainJournalParts(placeholder, baseline, journal.history->baselinePathingLayers, journal.strokes);
     } catch (const std::bad_alloc&) { return {InvalidHistory<TerrainStrokeJournal>().diagnostics}; }
       catch (const std::length_error&) { return {InvalidHistory<TerrainStrokeJournal>().diagnostics}; }
 }

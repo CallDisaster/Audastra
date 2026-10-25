@@ -80,7 +80,7 @@ Result<MapDataEditSession::TerrainHistorySaveLease> MapDataEditSession::PrepareT
         return fail("TERRAIN_HISTORY_BUDGET", "历史冻结预算只能在64MiB内收紧且不能为零。");
     auto line = CaptureTerrainHistoryLine(maximumBytes);
     if (!line.Succeeded() || !line.value) return {{}, line.diagnostics};
-    if (line.value->commands.empty() || !line.value->currentIndex)
+    if (line.value->commands.empty())
         return fail("TERRAIN_HISTORY_NOT_AVAILABLE", "保存站之前没有可恢复的typed命令。");
     if (!terrainHistoryEpoch_ && line.value->currentIndex != line.value->commands.size())
         return fail("TERRAIN_HISTORY_SAVE_REDO", "草稿已保留；首次保存前已有旧epoch的Redo命令，本版未把它重绑定为新来源笔划。");
