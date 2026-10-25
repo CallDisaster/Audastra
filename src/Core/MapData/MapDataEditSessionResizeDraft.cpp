@@ -40,10 +40,6 @@ struct ResizeDraftReader {
         const auto data = Data(maximum); return {reinterpret_cast<const char*>(data.data()), data.size()};
     }
 };
-bool SameShape(const TerrainHeader& a, const TerrainHeader& b) {
-    return a.width == b.width && a.height == b.height && a.version == b.version
-        && std::bit_cast<std::array<std::uint32_t, 2>>(a.offset) == std::bit_cast<std::array<std::uint32_t, 2>>(b.offset);
-}
 template<class T> Result<T> DraftFailure(const char* message) {
     return Result<T>::Failure("Terrain.Resize", "TERRAIN_RESIZE_DRAFT_INVALID", message);
 }
@@ -64,7 +60,7 @@ Result<std::vector<std::byte>> MapDataEditSession::ExportTerrainResizeDraft() co
         return DraftFailure<std::vector<std::byte>>("扩裁草稿缺少完整物理来源或同shape分层。");
     const auto& baseline = TerrainHistoryPathing();
     const auto p = TerrainHistoryProtected();
-    const auto& savedS = SameShape(terrain_->header, terrainOriginal_->header) ? originalPathingRestrictions_ : state->savedRestrictions;
+    const auto savedS = TerrainHistorySavedRestrictions();
     if (!p || !savedS) return DraftFailure<std::vector<std::byte>>("扩裁草稿缺少真实保存前后分层。");
     const auto layers = VerifyPathingRestrictionLayers(terrain_->header, baseline, *pathing_, *p, *savedS, *pathingRestrictions_);
     if (!layers.Succeeded()) return {{}, layers.diagnostics};
@@ -99,6 +95,17 @@ Status MapDataEditSession::SetTerrainResizeDraft(std::span<const std::byte> terr
         || terrain.size() > Maximum / 4 || pathing.size() > Maximum / 4
         || encoded.size() > Maximum - terrain.size() * 2 - pathing.size() * 2)
         return fail("扩裁raw inspection只能在原始地形来源上安装，且完整输入须在64MiB内。");
+    // 原始writer、当前网格解码、路径复制和四层wire解包的峰值共同计量。
+    std::size_t retained = 8192;
+    const auto reserve = [&](std::size_t count, std::size_t unit = 1) {
+        if (count > (Maximum - retained) / unit) return false;
+        retained += count * unit; return true;
+    };
+    if (!reserve(encoded.size(), 2) || !reserve(pathing.size(), 3)
+        || !reserve(terrainOriginal_->vertices.size(), 14)
+        || !reserve(terrainOriginal_->vertices.capacity(), sizeof(TerrainVertex))
+        || !reserve(terrainOriginal_->tiles.capacity(), sizeof(TerrainTile)))
+        return fail("扩裁raw来源、wire与路径复制的累计驻留超过64MiB。");
     ResizeDraftReader reader{encoded};
     if (reader.Number() != 0x31445254u) return fail("扩裁草稿版本不是TRD1。");
     auto old = SerializeMapTerrain(*terrainOriginal_);
@@ -108,13 +115,16 @@ Status MapDataEditSession::SetTerrainResizeDraft(std::span<const std::byte> terr
         if (!sha.Succeeded() || !sha.value) return {sha.diagnostics};
         if (expected != *sha.value) return fail("扩裁草稿的物理来源或当前W3E/WPM全文身份不一致。");
     }
-    auto grid = ParseMapTerrain(terrain);
+    TerrainReadLimits terrainLimits;
+    terrainLimits.maxDecodedBytes = Maximum - retained;
+    auto grid = ParseMapTerrain(terrain, terrainLimits);
     if (!grid.Succeeded() || !grid.value || grid.value->Snapshot()->header.version != 11)
         return fail("扩裁raw地形不是完整经典W3E。");
     auto checked = ParseMapPathing(pathing, &grid.value->Snapshot()->header);
     if (!checked.Succeeded()) return {checked.diagnostics};
     const auto baseline = reader.Data(), p = reader.Data(), savedS = reader.Data(), currentS = reader.Data();
     auto state = std::make_shared<TerrainResizeState>();
+    state->identity = std::make_shared<const std::uint8_t>(0);
     state->header = grid.value->Snapshot()->header; state->geometry = grid.value->Snapshot();
     state->shadow.name = reader.Text(64);
     const auto present = reader.Number(); const auto shadow = reader.Data();
@@ -128,6 +138,7 @@ Status MapDataEditSession::SetTerrainResizeDraft(std::span<const std::byte> terr
     state->protectedPathing = std::make_shared<const std::vector<std::byte>>(p.begin(), p.end());
     state->savedRestrictions = std::make_shared<const std::vector<std::byte>>(savedS.begin(), savedS.end());
     auto before = std::make_shared<TerrainResizeState>();
+    before->identity = std::make_shared<const std::uint8_t>(0);
     before->header = terrain_->header; before->geometry = terrain_;
     before->historyPathing = std::make_shared<const std::vector<std::byte>>(*pathingOriginal_);
     before->protectedPathing = pathingProtected_; before->savedRestrictions = originalPathingRestrictions_;

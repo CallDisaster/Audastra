@@ -46,8 +46,8 @@ std::vector<std::byte> MoveWpm(std::span<const std::byte> old, std::uint32_t old
 
 const std::vector<std::byte>& MapDataEditSession::TerrainHistoryPathing(const TerrainResizeState* shape) const {
     const auto* target = shape ? shape : resizeState_ ? resizeState_.get() : resizeDraftState_.get();
-    const auto* header = target ? &target->header : terrain_ ? &terrain_->header : nullptr;
-    if (header && terrainOriginal_ && pathingOriginal_ && SameShape(*header, terrainOriginal_->header)) return *pathingOriginal_;
+    if (target && target->identity && savedResizeState_ && target->identity == savedResizeState_->identity && pathingOriginal_)
+        return *pathingOriginal_;
     if (target && target->historyPathing) return *target->historyPathing;
     if (!pathingOriginal_) throw std::logic_error("terrain pathing history baseline missing");
     return *pathingOriginal_;
@@ -55,13 +55,20 @@ const std::vector<std::byte>& MapDataEditSession::TerrainHistoryPathing(const Te
 
 std::shared_ptr<const std::vector<std::byte>> MapDataEditSession::TerrainHistoryProtected(const TerrainResizeState* shape) const {
     const auto* target = shape ? shape : resizeState_ ? resizeState_.get() : resizeDraftState_.get();
-    if (target && savedResizeState_ && SameShape(target->header, savedResizeState_->header))
+    if (target && target->identity && savedResizeState_ && target->identity == savedResizeState_->identity)
         return savedResizeState_->protectedPathing;
     return target ? target->protectedPathing : pathingProtected_;
 }
 
+std::shared_ptr<const std::vector<std::byte>> MapDataEditSession::TerrainHistorySavedRestrictions(const TerrainResizeState* shape) const {
+    const auto* target = shape ? shape : resizeState_ ? resizeState_.get() : resizeDraftState_.get();
+    if (target && target->identity && savedResizeState_ && target->identity == savedResizeState_->identity)
+        return originalPathingRestrictions_;
+    return target ? target->savedRestrictions : originalPathingRestrictions_;
+}
+
 bool MapDataEditSession::HasTerrainResizeChanges() const noexcept {
-    return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || !SameShape(resizeState_->header, savedResizeState_->header)
+    return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || resizeState_->identity != savedResizeState_->identity
         || resizeState_->shadow.present != savedResizeState_->shadow.present || resizeState_->shadow.bytes != savedResizeState_->shadow.bytes));
 }
 
@@ -112,18 +119,21 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
     auto before = resizeState_ ? resizeState_ : std::make_shared<TerrainResizeState>();
     if (!resizeState_) {
         auto initial = std::make_shared<TerrainResizeState>();
+        initial->identity = std::make_shared<const std::uint8_t>(0);
         initial->header = terrain_->header; initial->geometry = terrain_; initial->shadow = shadow;
         initial->historyPathing = std::make_shared<const std::vector<std::byte>>(historyWpm);
         initial->protectedPathing = pathingProtected_; initial->savedRestrictions = originalPathingRestrictions_;
         initial->rulesSha256 = resources.DependencyFingerprint(); before = std::move(initial);
     }
     auto after = std::make_shared<TerrainResizeState>();
+    after->identity = std::make_shared<const std::uint8_t>(0);
     after->header = prepared.after_->header; after->geometry = prepared.after_; after->shadow.name = "war3map.shd"; after->shadow.present = shadow.present;
     if (shadow.present) after->shadow.bytes = MoveCells(shadow.bytes, oldWidth, oldHeight, newWidth, newHeight, r, true);
     after->historyPathing = std::make_shared<const std::vector<std::byte>>(MoveWpm(historyWpm, oldWidth, oldHeight, newWidth, newHeight, r));
     after->protectedPathing = std::make_shared<const std::vector<std::byte>>(MoveCells(*pathingProtected_, oldWidth, oldHeight, newWidth, newHeight, r));
-    const auto& savedS = resizeState_ && !SameShape(terrain_->header, terrainOriginal_->header)
-        ? *resizeState_->savedRestrictions : *originalPathingRestrictions_;
+    const auto savedRestrictions = TerrainHistorySavedRestrictions();
+    if (!savedRestrictions) return fail("TERRAIN_RESIZE_PATHING_SHAPE", "扩裁前savedS历史层缺失。");
+    const auto& savedS = *savedRestrictions;
     if (savedS.size() != oldCells) return fail("TERRAIN_RESIZE_PATHING_SHAPE", "扩裁前savedS历史层尺寸不匹配。");
     after->savedRestrictions = std::make_shared<const std::vector<std::byte>>(MoveCells(savedS, oldWidth, oldHeight, newWidth, newHeight, r));
     after->rulesSha256 = resources.DependencyFingerprint();
@@ -182,8 +192,7 @@ Status MapDataEditSession::VerifyTerrainResizeForSave() const {
         return fail("TERRAIN_RESIZE_SHADOW_SHAPE", "当前typed阴影的明确存在状态或长度与新形状不符。");
     const auto p = TerrainHistoryProtected();
     const auto& base = TerrainHistoryPathing();
-    const auto& savedS = SameShape(terrain_->header, terrainOriginal_->header)
-        ? originalPathingRestrictions_ : resizeState_->savedRestrictions;
+    const auto savedS = TerrainHistorySavedRestrictions();
     if (!p || !savedS || !pathingRestrictions_)
         return fail("TERRAIN_RESIZE_PATHING_SHAPE", "不同尺寸的受保护通行来源或意图层缺失。");
     const auto layers = VerifyPathingRestrictionLayers(terrain_->header, base, *pathing_, *p, *savedS, *pathingRestrictions_);

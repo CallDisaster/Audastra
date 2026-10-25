@@ -10,11 +10,10 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PreparePathi
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "通行限制需要唯一且可解析的源 W3E/WPM。");
     if (terrain_->header.version != 11)
         return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_TERRAIN_READ_ONLY", "新版地形只读，不能编辑关联通行限制。");
-    const auto shape = resizeState_ ? resizeState_ : resizeDraftState_;
     const auto& baseline = TerrainHistoryPathing();
-    const auto& savedS = baseline.size() == pathingOriginal_->size() && terrainOriginal_
-        && terrain_->header.width == terrainOriginal_->header.width && terrain_->header.height == terrainOriginal_->header.height
-        && terrain_->header.offset == terrainOriginal_->header.offset ? originalPathingRestrictions_ : shape->savedRestrictions;
+    const auto savedS = TerrainHistorySavedRestrictions();
+    if (!savedS || !pathingRestrictions_ || !TerrainHistoryProtected())
+        return Result<PreparedTerrainEdit>::Failure("MapData.Edit", "MAP_PATHING_UNAVAILABLE", "当前扩裁状态缺少同来源的完整通行分层。");
     auto result = ApplyPathingRestrictionStroke(terrain_->header, baseline, *pathing_,
         *TerrainHistoryProtected(), *savedS, *pathingRestrictions_, brush, points);
     if (!result.Succeeded() || !result.value) return {{}, std::move(result.diagnostics)};
@@ -48,10 +47,8 @@ Result<std::vector<std::byte>> MapDataEditSession::SerializePathingRestrictionDr
         return Result<std::vector<std::byte>>::Failure("MapData.Edit", "PATHING_DRAFT_SOURCE_MISSING", "通行限制草稿没有完整来源。");
     const auto shape = resizeState_ ? resizeState_ : resizeDraftState_;
     if (shape) {
-        const bool same = terrain_->header.width == terrainOriginal_->header.width && terrain_->header.height == terrainOriginal_->header.height
-            && terrain_->header.offset == terrainOriginal_->header.offset;
         return EncodePathingRestrictionDraft(*terrain_, TerrainHistoryPathing(), *pathing_, *TerrainHistoryProtected(),
-            *(same ? originalPathingRestrictions_ : shape->savedRestrictions), *pathingRestrictions_);
+            *TerrainHistorySavedRestrictions(), *pathingRestrictions_);
     }
     return EncodePathingRestrictionDraft(*terrainOriginal_, *pathingOriginal_, *pathing_,
         *pathingProtected_, *originalPathingRestrictions_, *pathingRestrictions_);
