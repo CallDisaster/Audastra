@@ -99,7 +99,7 @@ void PrepareBoundsTask(const Request& request, const MapData::MapDataEditSession
     const auto source = VerifyBoundsSource(request);
     if (!source.Succeeded()) { result.status = source; return; }
     Result<MapData::TerrainPathingResources> owner;
-    if (frozen.HasTerrainResizeChanges()) {
+    if (frozen.HasTerrainTypedResizeState()) {
         auto view = request.archive
             ? Services::TerrainSessionResources::Capture(request.archive, request.structureSnapshot, request.gameRoot,
                 request.maximumBytes, request.structureRetainedBytes)

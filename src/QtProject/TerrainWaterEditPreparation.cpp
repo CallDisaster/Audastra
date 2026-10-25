@@ -130,7 +130,7 @@ Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProje
             request.sourcePath = snapshot.root;
             request.sourceSha256 = snapshot.aggregateSha256;
         }
-        if (captureDoodads && project.mapEdits_->HasTerrainResizeChanges()) {
+        if (captureDoodads && project.mapEdits_->HasTerrainTypedResizeState()) {
             const auto retained = RequestOwnedBytes(request);
             if (!retained) return fail("TERRAIN_WATER_CAPTURE_BUDGET", "请求与目录来源的实际容量超过当前结构预算。");
             request.structureRetainedBytes = *retained;

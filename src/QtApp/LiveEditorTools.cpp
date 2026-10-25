@@ -116,7 +116,7 @@ Result<LiveBoundsPreparation> PrepareLiveBounds(
     using Output = Result<LiveBoundsPreparation>;
     auto verified = VerifyLiveBoundsResources(*request);
     if (!verified.Succeeded()) return {{}, verified.diagnostics};
-    if (frozen->HasTerrainResizeChanges()) {
+    if (frozen->HasTerrainTypedResizeState()) {
         auto view = request->archive
             ? Services::TerrainSessionResources::Capture(request->archive, frozen, request->gameRoot,
                 request->maximumBytes, request->structureRetainedBytes)
