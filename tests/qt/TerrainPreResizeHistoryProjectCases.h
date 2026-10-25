@@ -44,6 +44,9 @@ void EditorProjectTests::SavedTerrainHistoryBeforeFirstResizeRoundtrip_data() {
 void EditorProjectTests::SavedTerrainHistoryBeforeFirstResizeRoundtrip() {
     namespace R = AudastraTest::TerrainResize;
     QFETCH(bool, shadow); QFETCH(bool, inPlace); QFETCH(int, cursor);
+    QTemporaryDir outputs; QVERIFY(outputs.isValid());
+    const auto outputRoot = std::filesystem::path(outputs.path().toStdWString());
+    const auto mapRoot = outputRoot / "maps"; QVERIFY(std::filesystem::create_directory(mapRoot));
     R::Fixture fixture(false, shadow); const auto source = fixture.archive->SourcePath();
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     const std::array<MapArchiveMember, 1> gameMembers{{{"fixture.txt", R::Text("original pre-resize history resources")}}};
@@ -52,14 +55,14 @@ void EditorProjectTests::SavedTerrainHistoryBeforeFirstResizeRoundtrip() {
     QUndoStack hotUndo; hot.mapDataUndoStack_ = &hotUndo;
     QVERIFY(RaiseTerrainSaveProject(hot)); PushMapDataEdit(hot, "Raise", "首次保存前升高");
     QVERIFY(!hot.mapEdits_->HasTerrainTypedResizeState());
-    const auto target = inPlace ? source : fixture.directory / "ordinary-saved.w3x";
+    const auto target = inPlace ? source : mapRoot / "ordinary-saved.w3x";
     auto job = FreezeNativePathingQtJob(hot, target); QVERIFY(job);
     const auto lease = hot.mapEdits_->PrepareTerrainHistoryForSave();
     QVERIFY2(lease.Succeeded(), ReadDiagnosticText(lease).c_str());
     QVERIFY(Services::TerrainHistorySave::NeedsSourceShadowBinding(*lease.value));
     job->terrainHistorySaveLease = *lease.value;
     job->terrainSessionSnapshot = hot.mapEdits_->FreezeForSave();
-    job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = fixture.directory / "backups";
+    job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = mapRoot / "backups";
     bool previousCalled = false;
     job->prepareFinalDerived = [&](Services::MapSaveTask&) {
         previousCalled = true; return Status::Ok();
@@ -101,7 +104,7 @@ void EditorProjectTests::SavedTerrainHistoryBeforeFirstResizeRoundtrip() {
         ? std::optional(R::ShadowLiteral(-32, -32, 32, 32, true)) : std::nullopt);
     hotUndo.setIndex(cursor); const auto expected = cursor == 0 ? zero : expanded;
     QCOMPARE(PreResizeHistoryQtState(hot), expected);
-    const auto forge = fixture.directory / "before-first-resize.forge";
+    const auto forge = outputRoot / "before-first-resize.forge";
     const auto written = hot.SaveProjectToPath(forge); QVERIFY2(written.Succeeded(), ReadDiagnosticText(written).c_str());
     QVERIFY(!HasReadDiagnostic(written, "TERRAIN_JOURNAL_DRAFT_ONLY"));
     auto reopened = PrepareProjectOpen(forge, fixture.gameRoot);
@@ -188,6 +191,9 @@ void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip_d
 void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip() {
     namespace R = AudastraTest::TerrainResize;
     QFETCH(bool, shadow); QFETCH(bool, inPlace);
+    QTemporaryDir outputs; QVERIFY(outputs.isValid());
+    const auto outputRoot = std::filesystem::path(outputs.path().toStdWString());
+    const auto mapRoot = outputRoot / "maps"; QVERIFY(std::filesystem::create_directory(mapRoot));
     R::Fixture fixture(false, shadow); const auto source = fixture.archive->SourcePath();
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     const std::array<MapArchiveMember, 1> gameMembers{{{"fixture.txt", R::Text("original double cold history resources")}}};
@@ -195,13 +201,13 @@ void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip()
     EditorProject hot; QVERIFY(BindTerrainSaveProject(hot, source)); hot.war3GameRoot_ = fixture.gameRoot;
     QUndoStack hotUndo; hot.mapDataUndoStack_ = &hotUndo;
     QVERIFY(RaiseTerrainSaveProject(hot)); PushMapDataEdit(hot, "Raise", "首次冷开前已保存高程");
-    const auto target = inPlace ? source : fixture.directory / "ordinary-station.w3x";
+    const auto target = inPlace ? source : mapRoot / "ordinary-station.w3x";
     auto job = FreezeNativePathingQtJob(hot, target); QVERIFY(job);
     const auto lease = hot.mapEdits_->PrepareTerrainHistoryForSave();
     QVERIFY2(lease.Succeeded(), ReadDiagnosticText(lease).c_str());
     job->terrainHistorySaveLease = *lease.value;
     job->terrainSessionSnapshot = hot.mapEdits_->FreezeForSave();
-    job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = fixture.directory / "backups";
+    job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = mapRoot / "backups";
     InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
     QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str()); QVERIFY(hot.CommitMapSave(*job));
     QVERIFY2(hot.terrainJournalWarning_.empty(), hot.terrainJournalWarning_.c_str());
@@ -215,7 +221,7 @@ void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip()
 
     // 第一次工程关开时尚无resize命令；旧SHD必须已经是受来源约束的历史
     // 材料，不能等以后的resize发生后再从新物理保存站倒推旧事实。
-    const auto firstForge = fixture.directory / "ordinary-station.forge";
+    const auto firstForge = outputRoot / "ordinary-station.forge";
     const auto firstWritten = hot.SaveProjectToPath(firstForge);
     QVERIFY2(firstWritten.Succeeded(), ReadDiagnosticText(firstWritten).c_str());
     QVERIFY(!HasReadDiagnostic(firstWritten, "TERRAIN_JOURNAL_DRAFT_ONLY"));
@@ -243,7 +249,7 @@ void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip()
         ? std::optional(R::ShadowLiteral(-32, -32, 32, 32, true)) : std::nullopt);
     const int cursor = inPlace ? 0 : 2; firstUndo.setIndex(cursor);
     const auto expected = cursor == 0 ? zero : expanded;
-    const auto secondForge = fixture.directory / "cold-first-resize.forge";
+    const auto secondForge = outputRoot / "cold-first-resize.forge";
     const auto secondWritten = firstCold.SaveProjectToPath(secondForge);
     QVERIFY2(secondWritten.Succeeded(), ReadDiagnosticText(secondWritten).c_str());
     QVERIFY(!HasReadDiagnostic(secondWritten, "TERRAIN_JOURNAL_DRAFT_ONLY"));
@@ -267,6 +273,9 @@ void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip()
 
 void EditorProjectTests::SavedTerrainHistoryOrdinaryBakeDropsUnreplayableEpoch() {
     namespace R = AudastraTest::TerrainResize;
+    QTemporaryDir outputs; QVERIFY(outputs.isValid());
+    const auto outputRoot = std::filesystem::path(outputs.path().toStdWString());
+    const auto mapRoot = outputRoot / "maps"; QVERIFY(std::filesystem::create_directory(mapRoot));
     R::Fixture fixture; const auto source = fixture.archive->SourcePath();
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     const std::array<MapArchiveMember, 1> gameMembers{{{"fixture.txt", R::Text("original ordinary bake history resources")}}};
@@ -279,7 +288,7 @@ void EditorProjectTests::SavedTerrainHistoryOrdinaryBakeDropsUnreplayableEpoch()
     QVERIFY(!project.mapEdits_->HasTerrainTypedResizeState());
     const auto expectedTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain());
     QVERIFY(expectedTerrain.Succeeded());
-    const auto target = fixture.directory / "ordinary-bake-saved.w3x";
+    const auto target = mapRoot / "ordinary-bake-saved.w3x";
     auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job);
     const auto lease = project.mapEdits_->PrepareTerrainHistoryForSave();
     QVERIFY2(lease.Succeeded(), ReadDiagnosticText(lease).c_str());
@@ -296,7 +305,7 @@ void EditorProjectTests::SavedTerrainHistoryOrdinaryBakeDropsUnreplayableEpoch()
     QCOMPARE(actual.value->ReadMember("war3map.shd").value, std::optional(actualShadow));
     QVERIFY(project.CommitMapSave(*job)); QVERIFY(!project.HasUnsavedMapChanges());
     QVERIFY(!project.terrainJournalWarning_.empty());
-    const auto forge = fixture.directory / "ordinary-bake.forge";
+    const auto forge = outputRoot / "ordinary-bake.forge";
     const auto written = project.SaveProjectToPath(forge); QVERIFY2(written.Succeeded(), ReadDiagnosticText(written).c_str());
     auto reopened = PrepareProjectOpen(forge, fixture.gameRoot);
     QVERIFY2(reopened.Succeeded(), ReadDiagnosticText(reopened).c_str());

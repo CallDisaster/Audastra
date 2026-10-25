@@ -12,6 +12,9 @@ void EditorProjectTests::ResizeProjectColdRestoreAndNativeSave_data() {
 void EditorProjectTests::ResizeProjectColdRestoreAndNativeSave() {
     namespace R = AudastraTest::TerrainResize;
     QFETCH(bool, inPlace);
+    QTemporaryDir outputs; QVERIFY(outputs.isValid());
+    const auto outputRoot = std::filesystem::path(outputs.path().toStdWString());
+    const auto mapRoot = outputRoot / "maps"; QVERIFY(std::filesystem::create_directory(mapRoot));
     R::Fixture fixture(true); const auto source = fixture.archive->SourcePath();
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     const std::array<MapArchiveMember, 1> gameMembers{{{"fixture.txt", R::Text("owned resize resources")}}};
@@ -31,7 +34,7 @@ void EditorProjectTests::ResizeProjectColdRestoreAndNativeSave() {
     const auto finalDraft = TerrainJournalDraftBytes(*project.mapEdits_);
     const auto capsule = project.mapEdits_->ExportTerrainResizeDraft();
     QVERIFY(capsule.Succeeded() && !capsule.value->empty());
-    const auto forge = fixture.directory / "resize.forge";
+    const auto forge = outputRoot / "resize.forge";
     const auto saved = project.SaveProjectToPath(forge); QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
     QCOMPARE(Sha256File(source).value, sourceSha.value);
     auto opened = PrepareProjectOpen(forge, fixture.gameRoot);
@@ -48,7 +51,7 @@ void EditorProjectTests::ResizeProjectColdRestoreAndNativeSave() {
     QCOMPARE(restored.mapEdits_->Snapshot().Settings()->Serialize().value, fixture.settings.Serialize().value);
     QVERIFY(!restored.mapEdits_->IsDirty());
     undo.redo(); QCOMPARE(TerrainJournalDraftBytes(*restored.mapEdits_), finalDraft);
-    const auto forgeAs = fixture.directory / "resize-copy.forge";
+    const auto forgeAs = outputRoot / "resize-copy.forge";
     const auto copied = restored.SaveProjectToPath(forgeAs); QVERIFY2(copied.Succeeded(), ReadDiagnosticText(copied).c_str());
     auto reopened = PrepareProjectOpen(forgeAs, fixture.gameRoot);
     QVERIFY2(reopened.Succeeded(), ReadDiagnosticText(reopened).c_str());
@@ -61,11 +64,11 @@ void EditorProjectTests::ResizeProjectColdRestoreAndNativeSave() {
         if (state == 1) undo.undo();
         if (state == 2) undo.redo();
         const bool expanded = state != 1;
-        const auto target = inPlace ? source : fixture.directory / ("resize-saved-" + std::to_string(state) + ".w3x");
+        const auto target = inPlace ? source : mapRoot / ("resize-saved-" + std::to_string(state) + ".w3x");
         const auto beforeSha = restored.archiveSession_->SourceSha256();
         auto job = FreezeNativePathingQtJob(restored, target); QVERIFY(job && job->terrainDerivationRequired);
         job->terrainSessionSnapshot = restored.mapEdits_->FreezeForSave(); job->minimapGameRoot = fixture.gameRoot;
-        job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = fixture.directory / "backups";
+        job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = mapRoot / "backups";
         InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
         QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
         QVERIFY(job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
@@ -88,7 +91,7 @@ void EditorProjectTests::ResizeProjectColdRestoreAndNativeSave() {
         else QCOMPARE(Sha256File(source).value, sourceSha.value);
         // 保存后再写工程并冷开，完整raw尺寸、通行及SHD必须保留；旧物理epoch
         // 的历史若不能恢复资格须诚实降级，不能把阴影覆盖静默丢弃。
-        const auto epochForge = fixture.directory / ("resize-epoch-" + std::to_string(state) + ".forge");
+        const auto epochForge = outputRoot / ("resize-epoch-" + std::to_string(state) + ".forge");
         const auto epochSaved = restored.SaveProjectToPath(epochForge);
         QVERIFY2(epochSaved.Succeeded(), ReadDiagnosticText(epochSaved).c_str());
         auto epoch = PrepareProjectOpen(epochForge, fixture.gameRoot);

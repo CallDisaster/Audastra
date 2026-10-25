@@ -1,6 +1,7 @@
 #include "MapEditSaveValidation.h"
 #include "War3MapCore/MapData/PathingRestrictionEditing.h"
 #include "War3MapCore/MapData/TerrainRampEditing.h"
+#include "War3MapCore/MapData/TerrainResizeEditing.h"
 
 #include <algorithm>
 #include <cmath>
@@ -108,9 +109,21 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     }
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.resize) {
+            if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty()
+                || stroke.pointSpace != MapEditPointSpace::World || stroke.followDoodads
+                || stroke.waterBrush || stroke.bounds || stroke.blockPaste || stroke.resize->algorithm != 1)
+                return Status::Failure("MapEdit.Save", "SAVE_STROKE_RESIZE_INVALID",
+                    "地图扩裁只接受独立的有符号整数地格半开矩形；不能混入笔刷、采样点、水刷、可玩范围或块复制。");
+            const auto valid = MapData::ValidateTerrainResizeIntent(*stroke.resize);
+            if (!valid.Succeeded()) return valid;
+            // 实际尺寸、内容裁切与来源资格仍由同一有序会话的准备器检查。
+            // 扩裁本身没有采样点，不能用虚构点绕过普通笔刷的非空点数门。
+            continue;
+        }
         if (stroke.blockPaste) {
             if (strokes.size() != 1 || !NeutralTerrainBrush(stroke.brush) || !stroke.points.empty()
-                || stroke.pointSpace != MapEditPointSpace::World || stroke.waterBrush || stroke.bounds
+                || stroke.pointSpace != MapEditPointSpace::World || stroke.waterBrush || stroke.bounds || stroke.resize
                 || stroke.blockPaste->algorithm != 1
                 || (!stroke.blockPaste->expectedBlockSha256.empty() && !ValidSha(stroke.blockPaste->expectedBlockSha256)))
                 return Status::Failure("MapEdit.Save", "SAVE_TERRAIN_BLOCK_REQUEST_INVALID",
@@ -122,7 +135,7 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
         if (stroke.bounds) {
             const auto& r = stroke.bounds->playable;
             if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty() || stroke.pointSpace != MapEditPointSpace::World
-                || stroke.followDoodads || stroke.waterBrush || stroke.bounds->algorithm != 1
+                || stroke.followDoodads || stroke.waterBrush || stroke.resize || stroke.bounds->algorithm != 1
                 || r.west >= r.east || r.south >= r.north || r.east > 2048 || r.north > 2048)
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_BOUNDS_INVALID",
                     "可玩区只接受独立的整数地格半开矩形；不搬移对象、不改变地图尺寸、不接受客户端规则。");

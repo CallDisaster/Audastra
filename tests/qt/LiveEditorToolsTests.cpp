@@ -110,14 +110,19 @@ QJsonObject CameraFields(const char* name) {
 // 原创、经 WTG/WCT 序列化与解析建立 seal 的小样例；不读取作者地图。
 // 外部 UI 与源目录分别冻结，便于区分定义变化与地图来源变化。
 struct Fixture {
-    QTemporaryDir source, ui, outputs;
+    // 目录来源会观察父目录，以发现整个source被替换。隔离这层父目录，
+    // 防止后台准备事件循环把系统Temp下其他任务的文件变动当作本夹具变化。
+    QTemporaryDir sandbox;
+    QTemporaryDir source{sandbox.filePath("source-XXXXXX")};
+    QTemporaryDir ui{sandbox.filePath("ui-XXXXXX")};
+    QTemporaryDir outputs{sandbox.filePath("outputs-XXXXXX")};
     EditorProject project;
     std::unique_ptr<LiveEditorTools> tools;
     QString error;
     StableId trigger = 0;
 
     bool Initialize(bool selectedLayers = false) {
-        if (!source.isValid() || !ui.isValid() || !outputs.isValid()) return Fail("temporary directories");
+        if (!sandbox.isValid() || !source.isValid() || !ui.isValid() || !outputs.isValid()) return Fail("temporary directories");
         const auto uiRoot = ui.filePath("ui");
         if (!WriteFile(uiRoot + "/config", "base\n") ||
             !WriteFile(uiRoot + "/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n[TriggerParams]\n") ||
@@ -356,7 +361,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{88});
+    QCOMPARE(expected.size(), qsizetype{89});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;

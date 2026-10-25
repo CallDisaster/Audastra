@@ -4,12 +4,14 @@
 #include "McpTerrain.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Workspace.h"
+#include "../../src/Services/MapEditSaveValidation.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 
+#include <array>
 #include <bit>
 #include <fstream>
 #include <iostream>
