@@ -3,6 +3,8 @@
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 
+#include <optional>
+
 namespace War3Map::Services {
 
 struct TerrainReplayLimits {
@@ -74,6 +76,27 @@ public:
         const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
         const MapData::TerrainSavePlanLimits& limits = {},
         std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
+    // 所有保存入口在最终成员冻结后调用，独立于小地图保留策略。没有地形净差时，
+    // 只按真实source/final静态通行依赖决定是否重建；nullopt表示本次已证无相关变化。
+    // 不创建临时编辑会话；相关变化必须提供原宿主已附入真实W3E/WPM的冻结会话。
+    [[nodiscard]] static Result<std::optional<MapData::TerrainSavePlan>> PrepareFinalForSave(
+        const MapArchiveSession& source, const MapData::MapDataEditSession* frozenEdits,
+        const std::filesystem::path& gameRoot, const MapData::TerrainSavePlanLimits& limits = {},
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
+    [[nodiscard]] static Result<std::optional<MapData::TerrainSavePlan>> PrepareFinalForSave(
+        const WorkspaceSnapshot& source, const MapData::MapDataEditSession* frozenEdits,
+        const std::filesystem::path& gameRoot, const MapData::TerrainSavePlanLimits& limits = {},
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
+    // nullopt的写前复核：用同一实际来源重新检查最终列表。出现相关差就拒绝，
+    // 不在写前临时重建；后续MMP/MapBLP/SHD的独立派生输出不会改变静态通行依赖。
+    [[nodiscard]] static Status VerifyUnchangedFinalInputs(const MapArchiveSession& source,
+        const MapData::MapDataEditSession* frozenEdits, const std::filesystem::path& gameRoot,
+        const MapData::TerrainSavePlanLimits& limits = {},
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
+    [[nodiscard]] static Status VerifyUnchangedFinalInputs(const WorkspaceSnapshot& source,
+        const MapData::MapDataEditSession* frozenEdits, const std::filesystem::path& gameRoot,
+        const MapData::TerrainSavePlanLimits& limits = {},
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
     [[nodiscard]] static Result<MapData::TerrainPathingResources> CaptureNative(const MapArchiveSession& source,
         const MapData::TerrainGridSnapshot& before, const MapData::TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, const std::vector<std::byte>* currentDoodads = nullptr);
@@ -92,6 +115,17 @@ public:
         std::span<const std::byte> terrain, std::span<const std::byte> pathing,
         const WorkspaceSnapshot& source, const MapData::MapDataEditSession& current,
         std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot = {});
+
+private:
+    // 仅本类实际source/final探测结果能进入此分支；外部接口不接收相关性布尔。
+    [[nodiscard]] static Result<MapData::TerrainSavePlan> PrepareWithDependencyDelta(const MapArchiveSession& source,
+        const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
+        const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
+        std::span<const std::string> finalRemovals, bool nativeDependenciesChanged);
+    [[nodiscard]] static Result<MapData::TerrainSavePlan> PrepareWithDependencyDelta(const WorkspaceSnapshot& source,
+        const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
+        const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
+        std::span<const std::string> finalRemovals, bool nativeDependenciesChanged);
 };
 
 } // namespace War3Map::Services
