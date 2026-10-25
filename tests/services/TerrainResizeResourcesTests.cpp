@@ -183,7 +183,7 @@ void SaveAndUndoKeepEveryActualMember(bool shadow) {
     Fixture fixture(true, shadow);
     const auto sourceSha = fixture.archive->SourceSha256(); const auto sourcePath = fixture.archive->SourcePath();
     const auto save = [&](const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes& expectedShadow,
-        const std::array<float, 4>& expectedMargins) {
+        const std::array<std::int32_t, 4>& expectedMargins) {
         auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot));
         Check(plan.SaveGate());
         auto replacements = fixture.edits->Replacements(); const auto removals = fixture.edits->Removals();
