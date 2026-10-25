@@ -27,6 +27,9 @@ void StraightRampUsesItsOwnWorldPointCommand() {
     }
     auto incomplete = base(); incomplete.pop_back();
     Rejected(Invoke(incomplete), "requires world x, world y");
+    auto privateVersion = base();
+    privateVersion.insert(privateVersion.end(), {L"--straight-ramp-algorithm", L"1"});
+    Rejected(Invoke(privateVersion), "unknown map-edit-save option");
 
     auto mixed = base();
     mixed.insert(mixed.end(), {L"--corner-ramp", L"-992", L"-928", L"false"});

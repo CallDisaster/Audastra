@@ -14,7 +14,8 @@ void StraightRampFacadeRequiresItsOwnCapturedOwner() {
     };
     rejected(InvokeTerrainEditTool("edit_terrain_stroke", request, fixture.Host()),
         "TERRAIN_STRAIGHT_RAMP_HOST_UNAVAILABLE");
-    for (const char* field : {"size", "shape", "radius", "anchor", "strength", "seed", "enforce_water_limits"}) {
+    for (const char* field : {"size", "shape", "radius", "anchor", "strength", "seed", "enforce_water_limits",
+            "algorithm", "straight_ramp_algorithm", "loaded_rules", "source_identity"}) {
         auto invalid = request; auto brush = invalid.value("brush").toObject();
         brush[field] = 1; invalid["brush"] = brush;
         rejected(InvokeTerrainEditTool("edit_terrain_stroke", invalid, fixture.Host()), "TERRAIN_ARGUMENT_UNKNOWN");
@@ -27,7 +28,8 @@ void StraightRampFacadeRequiresItsOwnCapturedOwner() {
         return Result<PreparedTerrainEdit>::Failure("Test", "WRONG_CORNER_ROUTE", "不得把直坡分派到角坡。");
     };
     host.prepareStraightRamp = [&](const auto& context, const auto& binding, const TerrainBrush& brush,
-                                  std::span<const TerrainStrokePoint> worldPoints, bool follow) {
+                                  std::span<const TerrainStrokePoint> worldPoints, bool follow,
+                                  TerrainStraightRampAlgorithm algorithm) {
         ++prepares;
         const TerrainBrush neutral;
         Expect(context.session == &fixture.edits && binding.terrainRevision == fixture.edits.Revision()
@@ -35,7 +37,8 @@ void StraightRampFacadeRequiresItsOwnCapturedOwner() {
             && brush.shape == neutral.shape && brush.radius == neutral.radius
             && brush.strength == neutral.strength && brush.groundTexture.empty()
             && !brush.size && !brush.anchor && !brush.variation
-            && worldPoints.size() == 1 && worldPoints[0].x == -992 && worldPoints[0].y == -928 && !follow,
+            && worldPoints.size() == 1 && worldPoints[0].x == -992 && worldPoints[0].y == -928 && !follow
+            && algorithm == TerrainStraightRampAlgorithm::Connected,
             "straight host receives exact canonical request and defaults without synthesizing ordinary brush fields");
         return Result<PreparedTerrainEdit>::Failure("Test", "STRAIGHT_CAPTURE_SENTINEL", "实际资源捕获由宿主负责。");
     };

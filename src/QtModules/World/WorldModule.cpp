@@ -1250,7 +1250,8 @@ void WorldModule::StartTerrainRender() {
                     const auto& brush = request.brush;
                     if (brush.kind == MapData::TerrainBrushKind::StraightRamp)
                         return MapData::PrepareTerrainStraightRampStroke(*request.source, rules, brush, request.points,
-                            capture.request->doodads, capture.resources.WaterSpecialShapes());
+                            capture.request->doodads, capture.resources.WaterSpecialShapes(), {},
+                            MapData::TerrainStraightRampAlgorithm::Connected);
                     if (brush.kind == MapData::TerrainBrushKind::CornerRamp)
                         return MapData::PrepareTerrainCornerRampStroke(*request.source, rules, brush, request.points,
                             capture.request->doodads, capture.resources.WaterSpecialShapes());

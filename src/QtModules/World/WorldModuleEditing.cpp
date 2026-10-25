@@ -829,7 +829,8 @@ void WorldModule::StartTerrainStroke(double x, double y) {
             : MapData::SnapTerrainCornerRampPoint(*source, {x, y});
         Status plan;
         if (!point) plan = Status::Failure("Terrain.Ramp", "TERRAIN_RAMP_OUTSIDE", "落点超出地图。");
-        else if (straightRamp) plan.diagnostics = MapData::PlanTerrainStraightRamp(*source, *point).diagnostics;
+        else if (straightRamp) plan.diagnostics = MapData::PlanTerrainStraightRamp(
+            *source, *point, MapData::TerrainStraightRampAlgorithm::Connected).diagnostics;
         else plan.diagnostics = MapData::PlanTerrainCornerRamp(*source, *point).diagnostics;
         if (!plan.Succeeded()) {
             selectionStatus_->setText(tr("不能创建或移除坡道：%1").arg(WorldDiagnosticText(plan.diagnostics))); return;
@@ -1046,7 +1047,8 @@ void WorldModule::StartWaterBrushCommit() {
             timer.restart();
             const auto& brush = std::get<MapData::TerrainBrush>(request->brush);
             *cornerPlan = brush.kind == MapData::TerrainBrushKind::StraightRamp
-                ? request->frozen->PrepareTerrainStraightRampEdit(request->capture->resources, brush, request->points, true)
+                ? request->frozen->PrepareTerrainStraightRampEdit(request->capture->resources, brush, request->points, true,
+                    {}, MapData::TerrainStraightRampAlgorithm::Connected)
                 : request->frozen->PrepareTerrainCornerRampEdit(request->capture->resources, brush, request->points, true);
             *prepareElapsed = timer.elapsed();
             // 候选计算期间来源也可能变化；发布前重验实际归档，GUI只做修订CAS。

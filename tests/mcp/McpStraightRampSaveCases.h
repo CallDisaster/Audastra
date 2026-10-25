@@ -28,7 +28,8 @@ void TestStraightRampSaveTransport() {
     invalid = stroke; invalid["points"] = QJsonArray{QJsonObject{{"x", -992}, {"y", -928}},
         QJsonObject{{"x", -928}, {"y", -928}}};
     Code(call(invalid), "MCP_MAP_EDIT_TERRAIN_POINTS_INVALID");
-    for (const char* field : {"shape", "radius", "size", "strength", "anchor", "seed", "loaded_rules", "enforce_water_limits"}) {
+    for (const char* field : {"shape", "radius", "size", "strength", "anchor", "seed", "loaded_rules", "enforce_water_limits",
+            "algorithm", "straight_ramp_algorithm", "source_identity"}) {
         invalid = stroke; invalid[field] = 1;
         Code(call(invalid), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
     }
