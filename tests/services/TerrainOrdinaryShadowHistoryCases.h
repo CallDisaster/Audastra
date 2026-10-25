@@ -14,7 +14,7 @@ inline void Number(Bytes& output, std::uint64_t value, unsigned count = 4) {
 inline void Payload(Bytes& output, std::span<const std::byte> value) {
     Number(output, value.size()); output.insert(output.end(), value.begin(), value.end());
 }
-inline void String(Bytes& output, std::string_view value) { Payload(output, Text(value)); }
+inline void String(Bytes& output, std::string_view value) { Payload(output, AudastraTest::TerrainBounds::Text(value)); }
 
 inline TerrainStrokeJournal CodecFixture(char version) {
     TerrainStrokeJournal journal; journal.sourceSha256.assign(64, 'a');
@@ -56,7 +56,7 @@ inline Bytes ExpectedEnvelope(const TerrainStrokeJournal& journal, char version)
     }
     typed.sourceSha256 = Take(Sha256(identity));
     const auto child = Take(EncodeTerrainStrokeJournal(typed));
-    Bytes output = Text(std::string("FTJ") + version); String(output, journal.sourceSha256);
+    Bytes output = AudastraTest::TerrainBounds::Text(std::string("FTJ") + version); String(output, journal.sourceSha256);
     Number(output, journal.members.size(), 1);
     for (const auto& member : journal.members) {
         String(output, member.name); Number(output, member.present, 1); String(output, member.sha256); Number(output, member.bytes, 8);

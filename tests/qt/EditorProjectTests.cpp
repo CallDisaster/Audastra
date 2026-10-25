@@ -961,6 +961,9 @@ private slots:
     void SavedTerrainHistoryBeforeFirstResizeRoundtrip();
     void SavedTerrainHistoryBeforeFirstResizePreviousFailure();
     void SavedTerrainHistoryBeforeFirstResizeBindingFailureKeepsMapSave();
+    void SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip_data();
+    void SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip();
+    void SavedTerrainHistoryOrdinaryBakeDropsUnreplayableEpoch();
     void IndependentProjectsDoNotShareEdits();
     void MapOnlyLibraryKeepsGlobalSettings();
     void MissingImportCannotProduceSavedFingerprint();
