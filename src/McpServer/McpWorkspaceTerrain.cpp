@@ -391,7 +391,7 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportTerrainArchiveCandidate
     for (const auto& stroke : overlay->strokes) {
         // 普通保存请求只采用当前结构算法；不能把旧算法的目录历史静默升级。
         if ((stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp
-                && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::WetTerrain)
+                && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::NativeCorners)
             || (stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp
                 && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Connected))
             return Result<Receipt>::Failure("MCP", "MCP_TERRAIN_ARCHIVE_ALGORITHM_UNSUPPORTED",
