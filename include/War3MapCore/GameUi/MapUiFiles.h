@@ -26,7 +26,7 @@ struct TocLoadCall {
     std::uint32_t line = 0;
 };
 
-// 脚本中加载 toc 的函数名（DzAPI、1.31+ 原生与 MemHack）。
+// 脚本中加载 toc 的函数名（DzAPI、1.31+ 原生、MemHack 与 AudastraUI 函数库）。
 [[nodiscard]] const std::vector<std::string_view>& TocLoadFunctions();
 
 // 按脚本语言分词后查找加载 toc 的调用；注释与字符串里的同名文字不算。

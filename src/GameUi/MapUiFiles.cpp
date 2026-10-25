@@ -73,7 +73,7 @@ std::vector<TocLoadCall> FindLuaCalls(const MapScriptText& script) {
 } // namespace
 
 const std::vector<std::string_view>& TocLoadFunctions() {
-    static const std::vector<std::string_view> functions{"DzLoadToc", "BlzLoadTOCFile", "MHFrame_LoadTOC"};
+    static const std::vector<std::string_view> functions{"DzLoadToc", "BlzLoadTOCFile", "MHFrame_LoadTOC", "AudastraUILoadToc"};
     return functions;
 }
 
