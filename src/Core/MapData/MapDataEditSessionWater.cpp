@@ -80,9 +80,12 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         used += count * element;
         return true;
     };
+    const auto resizeValidation = MeasureTerrainResizeResourceValidation(limits.maximumCandidateBytes, limits.maximumWork);
+    if (!resizeValidation.Succeeded() || !resizeValidation.value) return {{}, resizeValidation.diagnostics};
+    if (!reserve(work, limits.maximumWork, *resizeValidation.value, 1)) return budgetFailure();
     // VerifyWaterBrushInput顺序释放两份canonical序列化缓冲，不与候选并存；
     // 仍须先按本笔上限限制其输入大小，不能借较大的资源捕获预算绕过本笔预算。
-    for (const auto* grid : {terrainOriginal_.get(), terrain_.get()}) {
+    for (const auto* grid : {resizeState_ ? terrain_.get() : terrainOriginal_.get(), terrain_.get()}) {
         std::size_t identityBytes = 37;
         if (identityBytes > limits.maximumCandidateBytes
             || !reserve(identityBytes, limits.maximumCandidateBytes, grid->vertices.size(), 7)
@@ -106,7 +109,13 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     }
 
     try {
-        const auto bound = resources.VerifyWaterBrushInput(*terrainOriginal_, *terrain_);
+        // typed扩裁之后，资源服务另核物理来源并从私有当前结构视图捕获规则。
+        // 仅可信扩裁可选current/current；普通raw恢复仍走原有physical/current门。
+        if (resizeState_) {
+            const auto shape = VerifyTerrainResizeForSave();
+            if (!shape.Succeeded()) return {{}, shape.diagnostics};
+        }
+        const auto bound = resources.VerifyWaterBrushInput(resizeState_ ? *terrain_ : *terrainOriginal_, *terrain_);
         if (!bound.Succeeded()) return {{}, bound.diagnostics};
         DoodadPlacements doodads;
         if (current_[doodadIndex]) {
@@ -114,7 +123,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (!parsed.Succeeded() || !parsed.value) return {{}, std::move(parsed.diagnostics)};
             doodads = std::move(*parsed.value);
         }
-        const auto objectBound = resources.VerifyWaterBrushDoodads(doodads, original_[doodadIndex] ? std::span<const std::byte>{*original_[doodadIndex]} : std::span<const std::byte>{});
+        const auto& objectSource = resizeState_ ? current_[doodadIndex] : original_[doodadIndex];
+        const auto objectBound = resources.VerifyWaterBrushDoodads(doodads,
+            objectSource ? std::span<const std::byte>{*objectSource} : std::span<const std::byte>{});
         if (!objectBound.Succeeded()) return {{}, objectBound.diagnostics};
         if (current_[doodadIndex] && original_[doodadIndex]) {
             // 规则owner已经绑定当前完整DOO。落笔只消费特殊模型形状及其私有谱系；

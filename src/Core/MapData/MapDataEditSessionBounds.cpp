@@ -172,15 +172,23 @@ Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::Prepar
     };
     const auto vertices = terrain_->vertices.size();
     const auto digestBytes = resources.TerrainBoundsDependencyBudgetBytes();
-    if (!digestBytes || vertices > maximumWork / 16
-        || digestBytes > (maximumWork - vertices * 16) / 3)
+    const auto resizeValidation = MeasureTerrainResizeResourceValidation(maximumBytes, maximumWork);
+    if (!resizeValidation.Succeeded() || !resizeValidation.value) return {{}, resizeValidation.diagnostics};
+    const auto validationWork = *resizeValidation.value;
+    if (!digestBytes || vertices > (maximumWork - validationWork) / 16
+        || digestBytes > (maximumWork - validationWork - vertices * 16) / 3)
         return fail("TERRAIN_BOUNDS_BUDGET", "范围规则摘要或累计工作超过本次预算。");
     if (!reserve(vertices, 3 * sizeof(TerrainVertex) + 28)
         || !reserve(terrain_->tiles.size(), 3 * sizeof(TerrainTile))
         || !reserve(oldSettings->size(), 8) || !reserve(currentSettings->size(), 8)
         || !reserve((vertices + 7) / 8, 4) || !reserve(digestBytes, 2))
         return fail("TERRAIN_BOUNDS_BUDGET", "范围候选、撤销或逐顶点检查超出本次预算。");
-    const auto input = resources.VerifyTerrainBoundsInput(*terrainOriginal_, *terrain_, *oldSettings);
+    if (resizeState_) {
+        const auto shape = VerifyTerrainResizeForSave();
+        if (!shape.Succeeded()) return {{}, shape.diagnostics};
+    }
+    const auto input = resources.VerifyTerrainBoundsInput(resizeState_ ? *terrain_ : *terrainOriginal_, *terrain_,
+        resizeState_ ? *currentSettings : *oldSettings);
     if (!input.Succeeded()) return {{}, input.diagnostics};
     const auto invariant = VerifyTerrainSettingsForSave();
     if (!invariant.Succeeded()) return {{}, invariant.diagnostics};
@@ -206,7 +214,7 @@ Result<MapDataEditSession::PreparedTerrainBoundsEdit> MapDataEditSession::Prepar
     prepared.sessionIdentity_ = sessionIdentity_; prepared.revision_ = revision_; prepared.sourceRevision_ = terrainSourceRevision_;
     prepared.intent_ = intent; prepared.cameraBounds_ = projected.value->cameraBounds;
     prepared.changedEdges_ = *edges.value; prepared.preparationBytes_ = cost;
-    prepared.preparationWork_ = vertices * 16 + digestBytes * 3;
+    prepared.preparationWork_ = validationWork + vertices * 16 + digestBytes * 3;
     if (beforeState->Equivalent(*afterState)) return Output::Success(std::move(prepared));
     const TerrainStrokeResult changed{0, 0, next->header.width, next->header.height};
     auto candidate = PrepareTerrainCandidate(next, changed, {}, false, false, false, false);

@@ -44,9 +44,12 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
         used += count * element; return true;
     };
     std::size_t work = 0, peak = 0;
+    const auto resizeValidation = MeasureTerrainResizeResourceValidation(limits.maximumCandidateBytes, limits.maximumWork);
+    if (!resizeValidation.Succeeded() || !resizeValidation.value) return {{}, resizeValidation.diagnostics};
+    if (!reserve(work, limits.maximumWork, *resizeValidation.value)) return budgetFailure();
     // 同一实际owner校验原始和当前canonical来源；两份序列化顺序释放，
     // 不与后续owned候选相加成虚假的驻留峰值。
-    for (const auto* grid : {terrainOriginal_.get(), terrain_.get()}) {
+    for (const auto* grid : {resizeState_ ? terrain_.get() : terrainOriginal_.get(), terrain_.get()}) {
         std::size_t bytes = 37;
         if (!reserve(bytes, limits.maximumCandidateBytes, grid->vertices.size(), 7)
             || !reserve(bytes, limits.maximumCandidateBytes,
@@ -75,7 +78,11 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     peak = std::max(peak, parseBytes);
     if (liveBytes >= limits.maximumCandidateBytes || work >= limits.maximumWork) return budgetFailure();
     try {
-        const auto sourceBound = resources.VerifyWaterBrushInput(*terrainOriginal_, *terrain_);
+        if (resizeState_) {
+            const auto shape = VerifyTerrainResizeForSave();
+            if (!shape.Succeeded()) return {{}, shape.diagnostics};
+        }
+        const auto sourceBound = resources.VerifyWaterBrushInput(resizeState_ ? *terrain_ : *terrainOriginal_, *terrain_);
         if (!sourceBound.Succeeded()) return {{}, sourceBound.diagnostics};
         DoodadPlacements doodads;
         if (current_[doodadIndex]) {
@@ -83,8 +90,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             if (!parsed.Succeeded() || !parsed.value) return {{}, std::move(parsed.diagnostics)};
             doodads = std::move(*parsed.value);
         }
-        const auto objectBound = resources.VerifyWaterBrushDoodads(doodads, original_[doodadIndex]
-            ? std::span<const std::byte>{*original_[doodadIndex]} : std::span<const std::byte>{});
+        const auto& objectSource = resizeState_ ? current_[doodadIndex] : original_[doodadIndex];
+        const auto objectBound = resources.VerifyWaterBrushDoodads(doodads,
+            objectSource ? std::span<const std::byte>{*objectSource} : std::span<const std::byte>{});
         if (!objectBound.Succeeded()) return {{}, objectBound.diagnostics};
         if (current_[doodadIndex] && original_[doodadIndex]) {
             const auto provenance = VerifyTerrainSpecialDoodadChange(*original_[doodadIndex], *current_[doodadIndex]);

@@ -832,7 +832,8 @@ Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForT
     catch (const std::length_error&) { return fail(); }
 }
 
-Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForSave(std::size_t maximumBytes) const {
+Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForSave(std::size_t maximumBytes,
+    std::size_t* copiedBytes) const {
     using Output = Result<std::shared_ptr<const MapDataEditSession>>;
     const auto fail = [] { return Output::Failure("MapData.Edit", "MAP_SAVE_SNAPSHOT_BUDGET", "冻结会话的原生成员、WPM或诊断复制超过显式预算。"); };
     std::size_t bytes = 0;
@@ -856,6 +857,7 @@ Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForS
         }
     }
     if ((pathingOriginal_ && !add(pathingOriginal_->capacity())) || (pathing_ && !add(pathing_->capacity()))) return fail();
+    const auto copiedCharge = bytes;
     // immutable扩裁材料虽不深拷贝，快照仍会延长其驻留，须受同一个显式预算约束。
     for (const auto& resize : {resizeState_, savedResizeState_, resizeDraftState_}) if (resize) {
         if (!add(1, sizeof(TerrainResizeState) + 128) || !text(resize->shadow.name) || !text(resize->rulesSha256)
@@ -869,7 +871,11 @@ Result<std::shared_ptr<const MapDataEditSession>> MapDataEditSession::FreezeForS
         if (resize->geometry && (!add(resize->geometry->vertices.capacity(), sizeof(TerrainVertex))
             || !add(resize->geometry->tiles.capacity(), sizeof(TerrainTile)))) return fail();
     }
-    try { return Output::Success(FreezeForSave()); }
+    try {
+        auto frozen = FreezeForSave();
+        if (copiedBytes) *copiedBytes = copiedCharge;
+        return Output::Success(std::move(frozen));
+    }
     catch (const std::bad_alloc&) { return fail(); }
     catch (const std::length_error&) { return fail(); }
 }

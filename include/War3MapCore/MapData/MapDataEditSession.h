@@ -188,7 +188,9 @@ public:
     // 只冻结真实会话的保存输入；不提供可编辑副本，不从持久化字节恢复私有事务身份。
     [[nodiscard]] std::shared_ptr<const MapDataEditSession> FreezeForSave() const;
     // 在分配前预收快照实际复制的成员/WPM/诊断，地形与私有special仍共享只读所有权。
-    [[nodiscard]] Result<std::shared_ptr<const MapDataEditSession>> FreezeForSave(std::size_t maximumBytes) const;
+    // copiedBytes仅成功后回填深复制的预收费；共享材料仍受本帽约束，不重复算作复制。
+    [[nodiscard]] Result<std::shared_ptr<const MapDataEditSession>> FreezeForSave(std::size_t maximumBytes,
+        std::size_t* copiedBytes = nullptr) const;
     // 贴图槽worker只保留共享地形及必要DOO/W3I；不复制其它原生成员、WPM或历史。
     [[nodiscard]] Result<std::shared_ptr<const MapDataEditSession>> FreezeForTerrainTextureSlot(
         std::size_t maximumBytes, bool includeDoodads = true) const;
@@ -327,6 +329,9 @@ public:
     // 正式地图保存门：干地高度按原版六模式查询不变条件保留WPM；荒芜位与
     // WPM bit5逐格同步。涉水高度、材质通行属性与其它派生数据未知时仍拒绝。
     [[nodiscard]] Status VerifyTerrainPathingForSave() const;
+    // 仅供实际资源服务构造当前结构视图；typed扩裁核完整私有几何/分层，
+    // 不授予保存资格，也不替代服务对原物理成员的独立复核。
+    [[nodiscard]] Status VerifyTerrainCurrentStructureInput() const;
     // 只核对附入会话的原始 W3E 与外部冻结来源，不读取其它地图成员。
     [[nodiscard]] Status VerifyTerrainSourceBaseline(std::span<const std::byte> sourceBytes) const;
     [[nodiscard]] EditReceipt LastEdit() const;
@@ -506,6 +511,8 @@ private:
     [[nodiscard]] std::shared_ptr<const std::vector<std::byte>> TerrainHistorySavedRestrictions(const TerrainResizeState* shape = nullptr) const;
     [[nodiscard]] const ArchiveExactMember* TerrainHistoryShadow(const TerrainResizeState* shape = nullptr) const noexcept;
     [[nodiscard]] Status VerifyTerrainResizeRawInput() const;
+    [[nodiscard]] Result<std::size_t> MeasureTerrainResizeResourceValidation(
+        std::size_t maximumBytes, std::size_t maximumWork) const;
     [[nodiscard]] Status VerifyTerrainResizeForSave() const;
     // 先准备全部新基线，再无异常交换；供已回读的通行重建输出原子提交。
     void CommitSavedBaseline(const MapDocument& saved,

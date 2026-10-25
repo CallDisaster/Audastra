@@ -907,7 +907,11 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             || terrain_->header.cliffTilesets.empty() || terrain_->header.cliffTilesets.size() > 15)
             return Output::Failure("Terrain.Journal", "TERRAIN_PALETTE_JOURNAL_DOMAIN",
                 "可信贴图记录只支持既有槽替换、16槽以内的地面表尾追加或15槽以内的悬崖表尾追加。");
-        const auto bound = resources->VerifyWaterBrushInput(*terrainOriginal_, *next);
+        if (resizeState_) {
+            const auto shape = VerifyTerrainResizeForSave();
+            if (!shape.Succeeded()) return {{}, shape.diagnostics};
+        }
+        const auto bound = resources->VerifyWaterBrushInput(resizeState_ ? *terrain_ : *terrainOriginal_, *next);
         if (!bound.Succeeded()) return {{}, bound.diagnostics};
         const auto index = Index(MapDataKind::Doodads);
         DoodadPlacements doodads;
@@ -917,8 +921,9 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             doodads = std::move(*parsed.value);
         } else if (states_[index] != MapDataState::Missing)
             return Output::Failure("Terrain.Journal", "TERRAIN_PALETTE_DOODADS_UNAVAILABLE", "贴图记录需要完整当前DOO或明确缺失身份。");
+        const auto& objectSource = resizeState_ ? current_[index] : original_[index];
         const auto objects = resources->VerifyWaterBrushDoodads(doodads,
-            original_[index] ? std::span<const std::byte>{*original_[index]} : std::span<const std::byte>{});
+            objectSource ? std::span<const std::byte>{*objectSource} : std::span<const std::byte>{});
         if (!objects.Succeeded()) return {{}, objects.diagnostics};
         const auto digest = resources->WaterBrushDependencyFingerprint();
         if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};

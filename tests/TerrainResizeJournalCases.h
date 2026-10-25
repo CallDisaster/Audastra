@@ -155,6 +155,7 @@ inline void RawDraftHasNoSaveAuthorityAndShadowIsCompared() {
     Check(raw->SetTerrainResizeDraft(grid, wpm, draft));
     Require(fixture.edits->MatchesTerrainJournalDraft(*raw), "complete raw output can be compared without installing typed authority");
     Require(!raw->VerifyTerrainPathingForSave().Succeeded(), "TRD1 is raw inspection and never grants native-save authority");
+    Require(!raw->VerifyTerrainCurrentStructureInput().Succeeded(), "raw TRD1 cannot create a trusted current resource view");
     Require(raw->Undo() && !raw->HasTerrainResizeChanges() && Take(raw->ExportTerrainResizeDraft()).empty(),
         "raw inspection undo detaches the draft instead of inventing unknown source shadow");
     Require(!raw->TerrainResizeShadowDraft().Succeeded(), "detached raw baseline reports no shadow draft");

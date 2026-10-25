@@ -112,6 +112,9 @@ inline void AtomicResizeAndHistory() {
         && !fixture.edits->CanUndo() && fixture.edits->Replacements().empty(), "rejected callback publishes no partial member or history");
     Check(fixture.edits->ApplyPreparedTerrainResizeEdit(prepared));
     Require(Grid(*fixture.edits) == TerrainLiteral(-32, 0, 32, 32), "atomic resize publishes full independent geometry");
+    Check(fixture.edits->VerifyTerrainCurrentStructureInput());
+    Require(!fixture.edits->VerifyTerrainPathingForSave().Succeeded(),
+        "current structure capture is distinct from a native-save authorization");
     const auto shadow = Take(fixture.edits->TerrainResizeShadowDraft());
     Require(shadow.present && shadow.bytes == ShadowLiteral(-32, 0, 32, 32, true),
         "SHD nonzero disk bytes become FF, new outside cells are zero");
@@ -159,6 +162,13 @@ inline void AbsentShadowAndBudgetCancellation() {
     Require(!fixture.edits->MeasureTerrainJournalDraft(measured.retainedBytes - 1, 64u * 1024u * 1024u).Succeeded(),
         "retained resize budget can be tightened by caller");
     Require(!fixture.edits->FreezeForSave(1024).Succeeded(), "freeze cannot evade retained resize material budget");
+    std::size_t copiedBytes = 0;
+    const auto frozen = Take(fixture.edits->FreezeForSave(64u * 1024u * 1024u, &copiedBytes));
+    Require(copiedBytes > 0 && copiedBytes < measured.retainedBytes && frozen->MatchesTerrainJournalDraft(*fixture.edits),
+        "bounded freeze returns actual copied charge without charging shared resize grids as copies");
+    const auto copied = copiedBytes;
+    Require(!fixture.edits->FreezeForSave(1024, &copiedBytes).Succeeded() && copiedBytes == copied,
+        "failed freeze never publishes a copied-byte receipt");
 }
 
 inline void ResizeCannotLaunderRawUnknownFields() {

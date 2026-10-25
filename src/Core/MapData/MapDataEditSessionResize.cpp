@@ -79,6 +79,35 @@ bool MapDataEditSession::HasTerrainResizeChanges() const noexcept {
     return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || resizeState_->identity != savedResizeState_->identity));
 }
 
+Status MapDataEditSession::VerifyTerrainCurrentStructureInput() const {
+    return resizeState_ ? VerifyTerrainResizeForSave() : VerifyTerrainPathingForSave();
+}
+
+Result<std::size_t> MapDataEditSession::MeasureTerrainResizeResourceValidation(
+    std::size_t maximumBytes, std::size_t maximumWork) const {
+    using Output = Result<std::size_t>;
+    if (!resizeState_) return Output::Success(0);
+    const auto fail = [] { return Output::Failure("Terrain.Resize", "TERRAIN_RESIZE_BUDGET",
+        "扩裁当前结构的私有几何、通行分层和设置验证超过本笔预算。"); };
+    if (!terrain_ || !terrainOriginal_ || !pathing_) return fail();
+    std::size_t bytes = 0, work = 0;
+    const auto add = [](std::size_t& used, std::size_t limit, std::size_t count, std::size_t unit) {
+        if (used > limit || (unit && count > (limit - used) / unit)) return false;
+        used += count * unit; return true;
+    };
+    // RawInput逐顶点一次、当前/原始Bounds各一次，分层逐通行格一次。
+    if (!add(bytes, maximumBytes, 8192, 1)
+        || !add(work, maximumWork, terrain_->vertices.size(), 2)
+        || !add(work, maximumWork, terrainOriginal_->vertices.size(), 1)
+        || !add(work, maximumWork, pathing_->size(), 1)) return fail();
+    const auto index = Index(MapDataKind::Settings);
+    for (const auto* raw : {&original_[index], &current_[index]}) {
+        if (!*raw || !add(bytes, maximumBytes, (*raw)->size(), 8)
+            || !add(work, maximumWork, (*raw)->size(), 8)) return fail();
+    }
+    return Output::Success(work);
+}
+
 Status MapDataEditSession::VerifyTerrainResizeRawInput() const {
     const auto fail = [](const char* message) { return Status::Failure("Terrain.Resize", "TERRAIN_RESIZE_RAW_INPUT", message); };
     if (!terrain_ || !terrainOriginal_) return fail("扩裁缺少完整原始及当前地形。");
