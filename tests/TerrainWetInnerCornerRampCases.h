@@ -231,7 +231,7 @@ inline void RejectsUnsafeDomainsAndBudgetsAtomically() {
         {}, {}, static_cast<TerrainCornerRampAlgorithm>(5)), "TERRAIN_CORNER_RAMP_ALGORITHM");
     auto special = doodads; special.specialDoodads.push_back({"Spc0", 0, {8, 8}});
     const auto specialBefore = Take(special.Serialize());
-    const std::array shapes{TerrainWaterSpecialDoodadShape{0, "Spc0", 0, {8, 8}, 8, 8, 9, 9, {0, 0, 0, 0}}};
+    const std::array shapes{TerrainWaterSpecialDoodadShape{0, "Spc0", 0, {8, 8}, 8, 8, 9, 9, {0, 1, 1, 1}}};
     Rejected(PrepareTerrainCornerRampStroke(clean, W::Rules(), C::Brush(), std::span(&point, 1), special, shapes),
         "TERRAIN_CORNER_RAMP_SPECIAL");
     Require(Take(SerializeMapTerrain(clean)) == W::TerrainLiteral(false) && Take(special.Serialize()) == specialBefore,
