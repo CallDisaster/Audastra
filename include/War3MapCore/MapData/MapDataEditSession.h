@@ -392,6 +392,8 @@ private:
         // 同尺寸/原点不代表同一内容：裁去后再扩回的P/S不能从物理旧基线复活。
         // 保存只复制该不可变身份，Undo仍可识别真正属于保存站的历史状态。
         std::shared_ptr<const std::uint8_t> identity;
+        // raw安装的Undo前态只保存原WPM/P/S；它没有读取SHD，不能对外冒充一个阴影草稿。
+        bool rawBaselineOnly = false;
         TerrainHeader header;
         std::shared_ptr<const TerrainGridSnapshot> geometry;
         ArchiveExactMember shadow;

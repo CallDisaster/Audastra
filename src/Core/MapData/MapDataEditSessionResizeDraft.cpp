@@ -140,6 +140,7 @@ Status MapDataEditSession::SetTerrainResizeDraft(std::span<const std::byte> terr
     state->savedRestrictions = std::make_shared<const std::vector<std::byte>>(savedS.begin(), savedS.end());
     auto before = std::make_shared<TerrainResizeState>();
     before->identity = std::make_shared<const std::uint8_t>(0);
+    before->rawBaselineOnly = true;
     before->header = terrain_->header; before->geometry = terrain_;
     before->historyPathing = std::make_shared<const std::vector<std::byte>>(*pathingOriginal_);
     before->protectedPathing = pathingProtected_; before->savedRestrictions = originalPathingRestrictions_;

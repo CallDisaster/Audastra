@@ -231,8 +231,8 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
         pathingProtected_ = TerrainHistoryProtected(resizeState_.get());
     }
     if (command->resizeDraftAfter) {
-        resizeDraftState_ = command->resizeDraftAfter;
-        pathingProtected_ = resizeDraftState_->protectedPathing;
+        pathingProtected_ = command->resizeDraftAfter->protectedPathing;
+        resizeDraftState_ = command->resizeDraftAfter->rawBaselineOnly ? nullptr : command->resizeDraftAfter;
     }
     if (command->boundsAfter) {
         if (!savedBoundsState_) savedBoundsState_ = command->boundsBefore;
@@ -706,7 +706,10 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
         current_[Index(command.changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
     if (targetResize) { resizeState_ = targetResize; pathingProtected_ = TerrainHistoryProtected(targetResize.get()); }
-    if (targetDraft) { resizeDraftState_ = targetDraft; pathingProtected_ = targetDraft->protectedPathing; }
+    if (targetDraft) {
+        pathingProtected_ = targetDraft->protectedPathing;
+        resizeDraftState_ = targetDraft->rawBaselineOnly ? nullptr : targetDraft;
+    }
     if (command.specialAfter) specialDoodads_ = forward ? command.specialAfter : command.specialBefore;
     if (command.boundsAfter) boundsState_ = forward ? command.boundsAfter : command.boundsBefore;
     if (command.startsAfter) startLocations_ = forward ? command.startsAfter : command.startsBefore;
@@ -735,7 +738,7 @@ bool MapDataEditSession::Redo() {
 }
 
 bool MapDataEditSession::IsDirty() const noexcept {
-    return current_ != original_ || TerrainDirty() || pathing_ != pathingOriginal_
+    return current_ != original_ || TerrainDirty() || HasTerrainResizeChanges() || pathing_ != pathingOriginal_
         || (pathingRestrictions_ != originalPathingRestrictions_ && pathingRestrictions_ && originalPathingRestrictions_
             && *pathingRestrictions_ != *originalPathingRestrictions_);
 }

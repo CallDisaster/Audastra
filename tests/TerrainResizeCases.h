@@ -194,11 +194,28 @@ inline void ResizeCannotLaunderRawUnknownFields() {
     Require(moved.groundHeightRaw == 8256, "legitimate known-bit height edit survives exact nearest-edge resize");
 }
 
+inline void ShadowOnlyResizeRemainsDirty() {
+    Fixture fixture;
+    const auto originalGrid = Grid(*fixture.edits), originalWpm = fixture.Member("war3map.wpm");
+    Resize(fixture, Intent(-32, 0, 32, 32)); Resize(fixture, Intent(32, 0, 64, 32));
+    Require(Grid(*fixture.edits) == originalGrid && Wpm(*fixture.edits, originalWpm) == originalWpm,
+        "expand then crop can restore all W3E and WPM bytes");
+    Require(fixture.edits->IsDirty() && fixture.edits->HasTerrainResizeChanges(),
+        "normalized shadow remains an unsaved edit even when W3E and WPM match source");
+    const auto replacements = fixture.edits->Replacements();
+    const auto shadow = std::find_if(replacements.begin(), replacements.end(), [](const auto& item) { return item.name == "war3map.shd"; });
+    Require(shadow != replacements.end() && shadow->data == ShadowLiteral(0, 0, 32, 32, true),
+        "SHD-only net change is included in ordinary replacements");
+    Require(fixture.edits->Undo() && fixture.edits->Undo() && !fixture.edits->IsDirty(),
+        "undo to genuine physical identity restores raw shadow and clean state");
+}
+
 inline void TestTerrainResizeGeometryCases() {
     GeometryDirectionsAndLiteralBytes();
     GeometryRejectsInvalidDomainsAndBudgets();
     AtomicResizeAndHistory();
     AbsentShadowAndBudgetCancellation();
     ResizeCannotLaunderRawUnknownFields();
+    ShadowOnlyResizeRemainsDirty();
 }
 } // namespace AudastraTest::TerrainResizeCases

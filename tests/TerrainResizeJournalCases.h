@@ -155,6 +155,10 @@ inline void RawDraftHasNoSaveAuthorityAndShadowIsCompared() {
     Check(raw->SetTerrainResizeDraft(grid, wpm, draft));
     Require(fixture.edits->MatchesTerrainJournalDraft(*raw), "complete raw output can be compared without installing typed authority");
     Require(!raw->VerifyTerrainPathingForSave().Succeeded(), "TRD1 is raw inspection and never grants native-save authority");
+    Require(raw->Undo() && !raw->HasTerrainResizeChanges() && Take(raw->ExportTerrainResizeDraft()).empty(),
+        "raw inspection undo detaches the draft instead of inventing unknown source shadow");
+    Require(!raw->TerrainResizeShadowDraft().Succeeded(), "detached raw baseline reports no shadow draft");
+    Require(raw->Redo() && fixture.edits->MatchesTerrainJournalDraft(*raw), "raw inspection redo restores exact current output");
     auto changed = draft; changed.back() ^= std::byte{0xff};
     auto differentShadow = fixture.FreshSession();
     Check(differentShadow->SetSerialized(MapDataKind::Settings, fixture.edits->Snapshot().Member(MapDataKind::Settings).sources.front().data));
