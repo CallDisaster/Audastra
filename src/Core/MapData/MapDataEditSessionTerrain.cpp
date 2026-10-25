@@ -910,6 +910,19 @@ Result<TerrainStrokeResult> MapDataEditSession::EditTerrainTextureSlot(TerrainTe
 }
 
 bool MapDataEditSession::TerrainMatches(const Command& command, bool forward) const {
+    if (command.fullTerrainAfter) {
+        const auto expected = forward ? command.fullTerrainBefore : command.fullTerrainAfter;
+        if (!terrain_ || !expected || !SameHeader(terrain_->header, expected->header)
+            || terrain_->vertices.size() != expected->vertices.size()) return false;
+        for (std::size_t i = 0; i < terrain_->vertices.size(); ++i) {
+            const auto& a = terrain_->vertices[i]; const auto& b = expected->vertices[i];
+            if (a.groundHeightRaw != b.groundHeightRaw || a.waterHeightAndFlagsRaw != b.waterHeightAndFlagsRaw
+                || a.textureAndFlagsRaw != b.textureAndFlagsRaw || a.variationRaw != b.variationRaw
+                || a.cliffAndLayerRaw != b.cliffAndLayerRaw || a.extendedTextureLayout != b.extendedTextureLayout
+                || a.textureFlagsExtensionRaw != b.textureFlagsExtensionRaw) return false;
+        }
+        return true;
+    }
     if (command.terrain.empty() && !command.headerAfter) return true;
     if (!terrain_) return false;
     if (command.headerAfter && !SameHeader(terrain_->header, forward ? *command.headerBefore : *command.headerAfter)) return false;
