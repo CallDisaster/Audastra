@@ -73,8 +73,8 @@ void EditorProjectTests::InnerCornerRampProjectColdRestoreAndNativeSave() {
         const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded());
         QCOMPARE(actual.value->ReadMember("war3map.w3e").value, std::optional(fixture.TerrainLiteral(created)));
         QCOMPARE(actual.value->ReadMember("war3map.wpm").value, std::optional(S::Fixture::PathingLiteral(created)));
-        QCOMPARE(actual.value->ReadMember("war3mapUnits.doo").value, fixture.UnitsLiteral(false).Serialize().value);
-        QCOMPARE(actual.value->ReadMember("war3map.doo").value, fixture.DoodadsLiteral(false).Serialize().value);
+        QCOMPARE(actual.value->ReadMember("war3mapUnits.doo").value, fixture.units.Serialize().value);
+        QCOMPARE(actual.value->ReadMember("war3map.doo").value, fixture.doodads.Serialize().value);
         QCOMPARE(actual.value->ReadMember("war3map.j").value, originalScript.value);
         QVERIFY(restored.CommitMapSave(*job));
         QCOMPARE(restored.mapEdits_->SessionIdentity(), identity);

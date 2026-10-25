@@ -137,7 +137,7 @@ Result<std::vector<std::byte>> EncodeTerrainHistoryJournal(const TerrainStrokeJo
     const auto valid = ValidateTerrainHistoryJournal(journal);
     if (!valid.Succeeded()) return {{}, valid.diagnostics};
     try {
-        // typed正文始终调用原FTJ1-D codec；FTJE只封装保存站和旧结构输入，不复制笔刷解析器。
+        // typed正文始终调用共用FTJ codec；FTJE只封装保存站和旧结构输入，不复制笔刷解析器。
         auto baseline = TerrainHistoryBaselineJournal(journal);
         if (!baseline.Succeeded() || !baseline.value) return {{}, baseline.diagnostics};
         auto typed = EncodeTerrainStrokeJournal(*baseline.value);

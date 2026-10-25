@@ -5395,7 +5395,7 @@ int main(int argc, char** argv) {
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
         if (group != "base" && group != "native-pathing" && group != "native-objects" && group != "derived" && group != "terrain-units"
             && group != "terrain-palette" && group != "terrain-doodads" && group != "terrain-static-inputs"
-            && group != "terrain-history") return 2;
+            && group != "terrain-history" && group != "terrain-inner-corner") return 2;
     }
     if (!group.isEmpty()) {
         // 按实际Qt槽自动分区，新增测试默认进入base，不能因手写函数清单漏跑。
