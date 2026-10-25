@@ -307,6 +307,8 @@ public:
         const TerrainResizeIntent& intent, const TerrainResizeLimits& limits = {}) const;
     [[nodiscard]] Status ApplyPreparedTerrainResizeEdit(const PreparedTerrainResizeEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
+    // 保存或撤销回原尺寸后仍保留typed谱系；资源捕获不能用净dirty判断是否取当前结构。
+    [[nodiscard]] bool HasTerrainTypedResizeState() const noexcept;
     [[nodiscard]] bool HasTerrainResizeChanges() const noexcept;
     // 工程raw inspection专用；只存比较材料，不从TRD1安装typed扩裁或正式保存资格。
     [[nodiscard]] Result<std::vector<std::byte>> ExportTerrainResizeDraft() const;

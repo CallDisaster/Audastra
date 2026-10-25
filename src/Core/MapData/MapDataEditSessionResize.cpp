@@ -75,6 +75,10 @@ const ArchiveExactMember* MapDataEditSession::TerrainHistoryShadow(const Terrain
     return target ? &target->shadow : nullptr;
 }
 
+bool MapDataEditSession::HasTerrainTypedResizeState() const noexcept {
+    return bool(resizeState_);
+}
+
 bool MapDataEditSession::HasTerrainResizeChanges() const noexcept {
     return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || resizeState_->identity != savedResizeState_->identity));
 }
