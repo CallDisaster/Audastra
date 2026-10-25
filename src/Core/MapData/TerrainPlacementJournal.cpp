@@ -6,8 +6,18 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
     constexpr auto maximum = TerrainJournalMaximumBytes;
     const auto fail = [] { return Status::Failure("Terrain.Journal", "TERRAIN_JOURNAL_BUDGET",
         "摆放记录的冻结快照、完整codec、累计扫描或中段载荷超过工程预算，raw草稿仍可保留。"); };
+    const auto history = MaterializeTerrainJournalHistory(journal);
+    if (!history.Succeeded()) return history;
     if (journal.strokes.size() > 128 || journal.baselinePathingLayers.size() > maximum - 128u * 1024u) return fail();
     std::size_t available = maximum - 128u * 1024u - journal.baselinePathingLayers.size();
+    if (journal.history) {
+        if (journal.history->baselinePathingLayers.size() > available) return fail();
+        available -= journal.history->baselinePathingLayers.size();
+        for (const auto& member : journal.history->baselineMembers) {
+            if (member.bytes.size() > available) return fail();
+            available -= member.bytes.size();
+        }
+    }
     std::size_t frozenBytes = 0, remainingWork = maximum;
     // 所有尺寸和累计work先收齐；两类记录共用同一个原有总额度，不加倍预算。
     const auto chargeFrozen = [&](const auto& frozen, const auto& measure) {

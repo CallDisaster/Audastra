@@ -47,7 +47,20 @@ class MapDataEditSession {
     struct Command;
     struct TerrainBoundsState;
     struct TerrainStartLocationsState;
+    struct TerrainHistoryState;
+    friend Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal);
 public:
+    // 仅真实会话、真实修订能产生的可选历史冻结；不持reader、wire资格或旧私有地址。
+    class TerrainHistorySaveLease {
+    public:
+        TerrainHistorySaveLease() = default;
+    private:
+        friend class MapDataEditSession;
+        std::shared_ptr<const TerrainHistoryState> state_;
+        std::shared_ptr<const TerrainHistoryState> previousEpoch_;
+        std::shared_ptr<const MapDataEditSession> checkpoint_;
+        std::uint64_t sessionIdentity_ = 0, revision_ = 0, sourceRevision_ = 0;
+    };
     // 不可变事务回执供外层统一撤销栈使用；包含所有联动成员，不重新推导逆操作。
     class EditReceipt {
     public:
@@ -193,6 +206,12 @@ public:
     // 只导出真实命令的基线后前向前缀。来源成员身份由Services从实际来源补齐；
     // 返回值本身不授予special谱系，恢复必须经owned replay工厂。
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournal() const;
+    [[nodiscard]] Result<TerrainHistorySaveLease> PrepareTerrainHistoryForSave(
+        std::size_t maximumBytes = TerrainJournalMaximumBytes) const;
+    // 仅真实保存回读/CAS及CommitSaved成功之后安装；失败不能反向否定已完成的地图保存。
+    [[nodiscard]] Status CommitTerrainHistorySave(const TerrainHistorySaveLease& prepared);
+    [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainHistoryJournal(
+        std::size_t maximumBytes = TerrainJournalMaximumBytes) const;
     [[nodiscard]] Status VerifyTerrainJournalBaseline(std::span<const ArchiveExactMember> actual) const;
     struct TerrainJournalDraftCost { std::size_t retainedBytes = 0, comparisonWork = 0; };
     // 不复制raw成员/APR；先量驻留和比较成本，再由Services从整个恢复预算预收。
@@ -356,6 +375,21 @@ private:
         std::string boundsRulesSha256;
         std::shared_ptr<const TerrainStartLocationsState> startsBefore, startsAfter;
     };
+    struct TerrainHistoryState {
+        std::shared_ptr<const MapDataEditSession> baseline;
+        std::vector<std::shared_ptr<const Command>> savedCommands;
+        std::size_t savedIndex = 0, retainedBytes = 0;
+        std::uint64_t savedSourceRevision = 0;
+    };
+    struct TerrainHistoryLine {
+        std::vector<std::shared_ptr<const Command>> commands;
+        std::size_t currentIndex = 0;
+    };
+    [[nodiscard]] Result<TerrainHistoryLine> CaptureTerrainHistoryLine(std::size_t maximumBytes) const;
+    [[nodiscard]] std::string TerrainHistoryStateFingerprint() const;
+    [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainJournalCommands(
+        std::span<const std::shared_ptr<const Command>> commands, bool baselineLayers) const;
+    [[nodiscard]] Result<std::vector<ArchiveExactMember>> TerrainHistoryBaselineMembers(std::size_t maximumBytes) const;
     [[nodiscard]] Status Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized);
     [[nodiscard]] Status Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,
         std::vector<MemberChange>& changes, bool ownedBounds = false) const;
@@ -429,6 +463,7 @@ private:
     std::vector<std::shared_ptr<const Command>> history_;
     // 真保存边界的历史前缀身份。Qt Replay追加inverse，不能只比较cursor数字。
     std::shared_ptr<const Command> terrainJournalSavedBoundary_;
+    std::shared_ptr<const TerrainHistoryState> terrainHistoryEpoch_;
     std::size_t terrainJournalSavedCursor_ = 0;
     std::size_t cursor_ = 0;
     std::uint64_t revision_ = 0;
