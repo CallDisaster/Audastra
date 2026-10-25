@@ -10,6 +10,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 
 namespace War3Map::Services { class TerrainPathingSave; }
 
@@ -100,9 +101,13 @@ public:
     // 所有地图依赖均核对原始SHA/存在性，游戏winner/absence及预算与回读共用。
     [[nodiscard]] Status VerifySourceInputs(const MapArchiveSession& source, std::size_t maximumBytes) const;
     [[nodiscard]] Status VerifySourceInputs(const WorkspaceSnapshot& source, std::size_t maximumBytes) const;
-    [[nodiscard]] std::size_t SourceBytes() const noexcept { return sourceBytes_; }
+    [[nodiscard]] std::size_t SourceBytes() const noexcept {
+        return sourceBytes_ + (nativeSourceResources_ ? nativeSourceResources_->SourceBytes() : 0);
+    }
     // 原字节读取、严格物编解析与启动类别目录的累计工作预留；保存计划还需计入输出缓冲。
-    [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept { return sourceBytes_ + objectWorkBytes_; }
+    [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept {
+        return sourceBytes_ + objectWorkBytes_ + (nativeSourceResources_ ? nativeSourceResources_->CaptureBudgetBytes() : 0);
+    }
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
     [[nodiscard]] const std::array<float, 4>* NativeCameraMargins() const noexcept {
         return nativeCameraMargins_ ? &*nativeCameraMargins_ : nullptr;
@@ -132,10 +137,18 @@ private:
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator, const std::vector<std::byte>* currentDoodads = nullptr);
     using MemberReader = HeightSourceReader;
+    // 仅可信Services最终保存工厂可建立双阶段；旧来源与最终overlay分别捕获，
+    // 不能由外部SHA、mask或资格布尔授权。返回体持G1，内部owner持真实G0。
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureNativePairWithObjects(
+        const MemberReader& sourceReader, const MemberReader& finalReader,
+        const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes,
+        const NativeObjectValidator& validator);
     [[nodiscard]] static Result<TerrainPathingResources> CaptureInputs(const MemberReader& reader,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
-        const NativeObjectValidator* validator = nullptr, const std::vector<std::byte>* currentDoodads = nullptr);
+        const NativeObjectValidator* validator = nullptr, const std::vector<std::byte>* currentDoodads = nullptr,
+        bool sourceObjectsOnly = false);
     [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushInputs(const MemberReader& reader,
         const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
         const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
@@ -167,6 +180,9 @@ private:
         bool gameAbsent = false;
     };
     std::vector<Dependency> dependencies_;
+    std::shared_ptr<TerrainPathingResources> nativeSourceResources_;
+    // 沿用同次严格validator已预收的输出，不从最终通行mask倒推对象类别。
+    std::vector<TerrainNativeDoodadPathingType> nativeObjectTypes_, nativeSpecialTypes_;
     std::optional<Game::NativeDoodadCategoryDirectory> nativeCategoryDirectory_;
     std::map<std::string, std::array<bool, 3>, std::less<>> ground_;
     std::filesystem::path gameRoot_;

@@ -64,6 +64,8 @@ public:
         const WorkspaceSnapshot& source, const MapDocument& original,
         std::span<const std::byte> terrain, std::span<const std::byte> pathing, std::span<const MapData::TerrainStrokeIntent> strokes,
         const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits = {});
+    // 有最终成员时分别从真实source解释旧WPM、从canonical最终覆盖视图重建新WPM。
+    // 删除在地图层明确缺失后才回退游戏；重复/覆盖删除冲突拒绝。最终列表须完整包含会话W3E/DOO修改。
     [[nodiscard]] static Result<MapData::TerrainSavePlan> PrepareForSave(const MapArchiveSession& source,
         const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
         const MapData::TerrainSavePlanLimits& limits = {},
