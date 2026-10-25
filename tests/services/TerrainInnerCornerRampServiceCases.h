@@ -82,8 +82,16 @@ inline void FormalSaveAsAndInPlacePreserveUndo() {
         Fixture f; const auto originalSha = f.source->SourceSha256();
         const auto sessionIdentity = f.edits->SessionIdentity();
         Take(ApplyTerrainEdit(*f.edits, f.Document(), Prepare(f)));
+        std::size_t saveIndex = 0;
         const auto save = [&](bool created, const char* target) {
             f.CheckState(*f.edits, created);
+            const auto historyLease = f.edits->PrepareTerrainHistoryForSave();
+            const auto epochLimited = [](const auto& result) {
+                return !result.Succeeded() && !result.value && std::any_of(result.diagnostics.begin(),
+                    result.diagnostics.end(), [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_HISTORY_EPOCH_LIMIT"; });
+            };
+            Require(saveIndex == 0 ? historyLease.Succeeded() && historyLease.value.has_value() : epochLimited(historyLease),
+                "only the first edited save freezes a real history station; a second epoch remains explicitly unavailable");
             const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
             Require(plan.SaveGate().Succeeded(), "inner formal save requires full actual native G0/G1 comparison");
             MapSaveTask task; Require(task.FreezeArchive(*f.source).Succeeded(), "inner save freezes exact physical source archive");
@@ -110,14 +118,27 @@ inline void FormalSaveAsAndInPlacePreserveUndo() {
             Require(plan.CommitSaved(*f.edits, MapDocument::FromArchive(actual)).Succeeded() && !f.edits->IsDirty()
                 && f.edits->SessionIdentity() == sessionIdentity && f.edits->Revision() == revision
                 && f.edits->TerrainSourceRevision() == sourceRevision + 1, "inner normal save rebases same history and advances only physical source revision");
+            if (saveIndex == 0)
+                Require(f.edits->CommitTerrainHistorySave(*historyLease.value).Succeeded(),
+                    "first real map-save readback installs its same-revision history lease");
             f.source = std::make_unique<MapArchiveSession>(std::move(actual));
-            const auto savedJournal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
-            const auto savedWire = Take(EncodeTerrainStrokeJournal(savedJournal));
-            Require(savedJournal.history && savedWire[3] == std::byte{'E'}
-                && savedJournal.strokes.size() == 1
-                && savedJournal.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners
-                && Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(savedWire)))) == savedWire,
-                "saved-history FTJE nests new typed F without repurposing existing E envelope");
+            const auto captured = TerrainPathingSave::CaptureJournal(*f.source, *f.edits);
+            if (saveIndex == 0) {
+                const auto savedJournal = Take(captured);
+                const auto savedWire = Take(EncodeTerrainStrokeJournal(savedJournal));
+                const auto decoded = Take(DecodeTerrainStrokeJournal(savedWire));
+                const auto typedWire = Take(EncodeTerrainStrokeJournal(Take(TerrainHistoryBaselineJournal(decoded))));
+                Require(savedJournal.history && savedWire[3] == std::byte{'E'} && typedWire[3] == std::byte{'F'}
+                    && decoded.history && decoded.history->currentIndex == 1 && decoded.history->savedIndex == 1
+                    && decoded.strokes.size() == 1
+                    && decoded.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners
+                    && Take(EncodeTerrainStrokeJournal(decoded)) == savedWire,
+                    "first saved-history FTJE cold-decodes canonical typed F and its actual clean station");
+            } else {
+                Require(epochLimited(captured) && epochLimited(f.edits->ExportTerrainHistoryJournal()),
+                    "second and third real saves preserve hot Undo/Redo but never forge a single-station cold history");
+            }
+            ++saveIndex;
         };
         save(true, "inner-created.w3x");
         Require(f.edits->Undo() && !f.edits->CanUndo(), "inner single Undo survives real save"); save(false, "inner-undone.w3x");
