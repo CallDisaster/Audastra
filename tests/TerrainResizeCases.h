@@ -21,6 +21,17 @@ inline Bytes Wpm(const MapDataEditSession& edits, const Bytes& original) {
     return original;
 }
 inline Bytes Grid(const MapDataEditSession& edits) { return Take(SerializeMapTerrain(*edits.Terrain())); }
+inline Bytes ExpandedThenCroppedTerrainLiteral(const TerrainCanvasRectangle& expansion) {
+    auto bytes = TerrainLiteral();
+    // 扩后再裁是新的编辑，不是Undo：原末行/末列成为地格时会写MapEdge，
+    // 再回到terminal顶点时保留该raw位。独立预期仍逐字比较完整经典W3E。
+    constexpr std::size_t headerBytes = 45, vertexBytes = 7, width = 33;
+    for (unsigned y = 0; y < width; ++y) for (unsigned x = 0; x < width; ++x) {
+        if ((x == 32 || y == 32) && int(x) < expansion.east && int(y) < expansion.north)
+            bytes[headerBytes + (y * width + x) * vertexBytes + 3] |= std::byte{0x40};
+    }
+    return bytes;
+}
 inline void Resize(Fixture& fixture, const TerrainResizeIntent& intent) {
     const auto owner = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
     const auto prepared = Take(fixture.edits->PrepareTerrainResizeEdit(owner, intent));
@@ -46,7 +57,8 @@ inline void GeometryDirectionsAndLiteralBytes() {
             "playable dimensions do not grow with canvas");
         const auto crop = Intent(-rectangle.west, -rectangle.south, 32 - rectangle.west, 32 - rectangle.south);
         const auto restored = Take(ProjectTerrainResizeGeometry(projected.terrain, projected.settings, Margins, Rules(), crop));
-        Require(Take(SerializeMapTerrain(restored.terrain)) == TerrainLiteral(), "cropping added border restores original full W3E");
+        Require(Take(SerializeMapTerrain(restored.terrain)) == ExpandedThenCroppedTerrainLiteral(rectangle),
+            "new reverse crop matches full independent W3E including retained terminal MapEdge bits");
         Require(restored.settings.cameraMargins == settings.cameraMargins, "crop restores original relative margins");
         Require(projected.preparationBytes > fixture.grid.vertices.size() * sizeof(TerrainVertex)
             && projected.preparationWork > projected.terrain.vertices.size(), "complete preparation cost includes retained input and work");

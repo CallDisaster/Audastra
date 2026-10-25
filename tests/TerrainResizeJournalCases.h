@@ -96,6 +96,12 @@ inline void HistoryShadowIsSeparateAndAuthenticated() {
 }
 
 inline TerrainResizeIntent Intent(int west, int south, int east, int north) { return {1, {west, south, east, north}}; }
+inline void PrepareSyntheticGameArchive(const Fixture& fixture) {
+    // 仅本组实际native/Bake用例需要游戏层的明确缺席证据；原创空资源包
+    // 让严格挂载和缺失查询真实运行，不向共享Fixture添加同名包。
+    const std::vector<MapArchiveMember> members{{"synthetic-marker.txt", Text("Audastra journal fixture\n")}};
+    Take(WriteVerifiedArchive(fixture.gameRoot / "war3.mpq", members));
+}
 inline void Resize(Fixture& fixture, const TerrainResizeIntent& intent) {
     auto resources = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
     Check(fixture.edits->ApplyPreparedTerrainResizeEdit(Take(fixture.edits->PrepareTerrainResizeEdit(resources, intent))));
@@ -115,6 +121,7 @@ inline void CoreSnapshotBaseline(Fixture& fixture) {
 }
 inline void CroppedPathingCannotResurrectAtSameShape() {
     Fixture fixture;
+    PrepareSyntheticGameArchive(fixture);
     // 原西侧第八列记录来源P=不可走；另在相同列声明本工程S，并建立保存站。
     auto& source = fixture.Member("war3map.wpm");
     const std::size_t cell = 8 + 64 * 128;
@@ -179,6 +186,7 @@ inline void RawDraftHasNoSaveAuthorityAndShadowIsCompared() {
 
 inline void SavedBakeIsUsedByFollowingResizeAndUndo() {
     Fixture fixture;
+    PrepareSyntheticGameArchive(fixture);
     Check(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", Text(
         "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=480\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"
         "[Light]\nDirection=3,0,-4\n")));
@@ -217,6 +225,7 @@ inline void SavedBakeIsUsedByFollowingResizeAndUndo() {
 
 inline void RepeatedHistorySaveChecksActualShadow(bool sourceShadowPresent) {
     Fixture fixture(false, sourceShadowPresent);
+    PrepareSyntheticGameArchive(fixture);
     Check(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", Text(
         "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=480\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"
         "[Light]\nDirection=3,0,-4\n")));
@@ -260,6 +269,7 @@ inline void RepeatedHistorySaveChecksActualShadow(bool sourceShadowPresent) {
 inline void CurrentResourcesSupportMixedHistoryAndActualSave() {
     using War3Map::Services::TerrainSessionResources;
     Fixture fixture;
+    PrepareSyntheticGameArchive(fixture);
     fixture.PutMember("TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"},
         {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}})); fixture.Seal();
     auto source = std::make_shared<MapArchiveSession>(Take(MapArchiveSession::Open(fixture.archive->SourcePath())));
@@ -346,6 +356,7 @@ inline void CurrentResourcesSupportMixedHistoryAndActualSave() {
 inline void SavedResizeSuffixRestoresFromCurrentStructure() {
     using War3Map::Services::TerrainSessionResources;
     Fixture fixture;
+    PrepareSyntheticGameArchive(fixture);
     Require(!fixture.edits->HasTerrainTypedResizeState(), "fresh physical source has no typed resize state");
     fixture.PutMember("TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"},
         {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}})); fixture.Seal();
