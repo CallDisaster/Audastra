@@ -22,6 +22,7 @@
 #include "TerrainShadowRealTests.h"
 #include "TerrainCategoryDirectoryRealTests.h"
 #include "TerrainInnerCornerRampRealCases.h"
+#include "TerrainWetInnerCornerRampRealCases.h"
 #include "TerrainPathingAdaptersRealCases.h"
 #include "TerrainResizeAdaptersRealCases.h"
 #include "TerrainUnitPlacementRealTests.h"
@@ -468,7 +469,7 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
     }
 }
 
-enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary, PathingAdapters, CanvasResize };
+enum class RealSaveGroup { Objects, ExistingRamps, WetInnerCorners, Shadows, UnitPlacements, Boundary, PathingAdapters, CanvasResize };
 #include "TerrainFinalInputsRealCases.h"
 
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game,
@@ -490,6 +491,10 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         const auto created = Take(CreateMapCandidate(create));
         Require(created.scriptRebuilt, "original map has a real-toolchain checked script");
         auto original = Take(MapArchiveSession::Open(created.path));
+        if (group == RealSaveGroup::WetInnerCorners) {
+            TerrainSaveTests::CheckRealWetInnerCornerRampSave(original, directory.path, tool, game);
+            return;
+        }
         if (group == RealSaveGroup::ExistingRamps) {
             TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealExistingRampWaterSave(original, directory.path, tool, game);
@@ -816,12 +821,13 @@ int main(int argc, char** argv) {
     try {
         RealSaveGroup group = RealSaveGroup::Objects;
         if (argc == 2 && std::string_view(argv[1]) == "--existing-ramps") group = RealSaveGroup::ExistingRamps;
+        else if (argc == 2 && std::string_view(argv[1]) == "--wet-inner-corners") group = RealSaveGroup::WetInnerCorners;
         else if (argc == 2 && std::string_view(argv[1]) == "--shadows") group = RealSaveGroup::Shadows;
         else if (argc == 2 && std::string_view(argv[1]) == "--unit-placement") group = RealSaveGroup::UnitPlacements;
         else if (argc == 2 && std::string_view(argv[1]) == "--boundary") group = RealSaveGroup::Boundary;
         else if (argc == 2 && std::string_view(argv[1]) == "--pathing-adapters") group = RealSaveGroup::PathingAdapters;
         else if (argc == 2 && std::string_view(argv[1]) == "--canvas-resize") group = RealSaveGroup::CanvasResize;
-        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows, --unit-placement, --boundary, --pathing-adapters or --canvas-resize");
+        else Require(argc == 1, "expected no arguments, --existing-ramps, --wet-inner-corners, --shadows, --unit-placement, --boundary, --pathing-adapters or --canvas-resize");
         const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
         const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
         if (tool.empty() || game.empty()) {

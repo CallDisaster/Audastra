@@ -32,7 +32,7 @@ struct TerrainStrokeIntent {
     std::optional<TerrainBlockPasteIntent> blockPaste;
     // FTJG独立外矩形扩裁；相对当笔before，不能夹带普通笔刷或raw网格。
     std::optional<TerrainResizeIntent> resize;
-    // 仅CornerRamp可取2；其余命令保持1。不是来源授权，仍须实际规则owner。
+    // 仅CornerRamp可选版本化算法；其余命令保持1。不是来源授权，仍须实际规则owner。
     TerrainCornerRampAlgorithm cornerRampAlgorithm = TerrainCornerRampAlgorithm::DryOnly;
     // FTJB及旧请求固定独立三点；Connected须显式记入新wire，不能扩展旧历史接受域。
     TerrainStraightRampAlgorithm straightRampAlgorithm = TerrainStraightRampAlgorithm::Independent;

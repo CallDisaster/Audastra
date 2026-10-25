@@ -361,7 +361,7 @@ add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainFinalInputsRealCases.h TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
     TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp
     TerrainUnitPlacementRealTests.cpp TerrainCliffTransportSaveTests.cpp TerrainBoundaryRealTests.cpp TerrainRemoveWaterRealTests.cpp
-    TerrainBlockSaveRealTests.cpp TerrainBlockSaveRealTests.h TerrainInnerCornerRampRealCases.h TerrainPathingAdaptersRealCases.h TerrainResizeAdaptersRealCases.h
+    TerrainBlockSaveRealTests.cpp TerrainBlockSaveRealTests.h TerrainInnerCornerRampRealCases.h TerrainWetInnerCornerRampRealCases.h TerrainPathingAdaptersRealCases.h TerrainResizeAdaptersRealCases.h
     "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
 target_include_directories(audastra-terrain-native-object-real-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Cli")
 target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services audastra-json)
@@ -370,12 +370,14 @@ target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /pe
 add_test(NAME services-terrain-native-object-real COMMAND audastra-terrain-native-object-real-tests)
 set_tests_properties(services-terrain-native-object-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 add_test(NAME services-terrain-existing-ramp-real COMMAND audastra-terrain-native-object-real-tests --existing-ramps)
+add_test(NAME services-terrain-wet-inner-corner-real COMMAND audastra-terrain-native-object-real-tests --wet-inner-corners)
 add_test(NAME services-terrain-shadow-real COMMAND audastra-terrain-native-object-real-tests --shadows)
 add_test(NAME services-terrain-units-real COMMAND audastra-terrain-native-object-real-tests --unit-placement)
 add_test(NAME services-terrain-boundary-real COMMAND audastra-terrain-native-object-real-tests --boundary)
 add_test(NAME services-terrain-pathing-adapters-real COMMAND audastra-terrain-native-object-real-tests --pathing-adapters)
 add_test(NAME services-terrain-resize-real COMMAND audastra-terrain-native-object-real-tests --canvas-resize)
 set_tests_properties(services-terrain-existing-ramp-real services-terrain-shadow-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+set_tests_properties(services-terrain-wet-inner-corner-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_tests_properties(services-terrain-units-real services-terrain-boundary-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_tests_properties(services-terrain-pathing-adapters-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_tests_properties(services-terrain-resize-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
