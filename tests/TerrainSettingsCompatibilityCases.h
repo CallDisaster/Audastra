@@ -1,6 +1,15 @@
 #pragma once
 
 // 在TerrainEditInspectionTests.cpp的匿名命名空间末尾包含；全部为原创W3I字节。
+std::vector<MapArchiveMember> TerrainSettingsCompatibilityMembers() {
+    auto members = Members();
+    auto settings = Take(MapSettings::Parse(members[4].data));
+    // 此小样例不提供WTS；用真实内联文字，避免把缺失字符串表误作字段兼容失败。
+    settings.description = "Original description";
+    members[4].data = Take(settings.Serialize());
+    return members;
+}
+
 MapSettings CompatibleTerrainSettings(const MapSettings& original) {
     auto settings = original;
     settings.mapName = "Edited terrain"; settings.author = "Test author";
@@ -18,7 +27,7 @@ MapSettings CompatibleTerrainSettings(const MapSettings& original) {
 }
 
 void TerrainSettingsKnownFieldsComposeAndRestoreWithoutGeometry() {
-    const auto members = Members();
+    const auto members = TerrainSettingsCompatibilityMembers();
     const auto original = Take(MapSettings::Parse(members[4].data));
     const auto settings = CompatibleTerrainSettings(original);
     const auto wire = Take(settings.Serialize());
@@ -41,7 +50,7 @@ void TerrainSettingsKnownFieldsComposeAndRestoreWithoutGeometry() {
 }
 
 void TerrainSettingsRejectStructuralAndUnknownChangesAtomically() {
-    const auto members = Members(); const auto original = Take(MapSettings::Parse(members[4].data));
+    const auto members = TerrainSettingsCompatibilityMembers(); const auto original = Take(MapSettings::Parse(members[4].data));
     for (unsigned field = 0; field < 20; ++field) {
         auto settings = CompatibleTerrainSettings(original);
         switch (field) {
@@ -80,7 +89,9 @@ void TerrainSettingsRejectStructuralAndUnknownChangesAtomically() {
     auto tailed = members[4].data; tailed.push_back(std::byte{0x7f});
     Require(!ValidateTerrainSettingsPathingChange(members[4].data, tailed).Succeeded(), "unknown tail is not normalized away");
     auto nonfinite = members[4].data;
-    const auto fog = MapDataFixtures::FullMapSettingsV25().offsets.at("fog");
+    const auto originalFixture = MapDataFixtures::FullMapSettingsV25();
+    const auto fog = originalFixture.offsets.at("fog")
+        + members[4].data.size() - originalFixture.bytes.size();
     const std::uint32_t infinity = 0x7f800000u;
     std::memcpy(nonfinite.data() + fog, &infinity, sizeof(infinity));
     Require(!ValidateTerrainSettingsPathingChange(members[4].data, nonfinite).Succeeded(), "nonfinite fog cannot pass complete parse");

@@ -46,8 +46,12 @@ void StartLocationsCommandsPreservePrivateProofAndUndo() {
     const auto frozenSave = hot.FreezeForSave();
     Require(frozenSave->VerifyTerrainSettingsForSave().Succeeded(), "save worker snapshot keeps private start ownership");
     auto settings = *hot.Snapshot().Settings(); settings.players[1].race = 4;
+    Require(hot.EditSettings(settings).Succeeded() && hot.VerifyTerrainSettingsForSave().Succeeded(),
+        "known player race composes with a real linked start without changing the start proof");
+    Require(hot.Undo(), "undo known race while retaining the real start command");
+    settings = *hot.Snapshot().Settings(); settings.players[1].flags ^= 2;
     Require(hot.EditSettings(settings).Succeeded() && !hot.VerifyTerrainSettingsForSave().Succeeded(),
-        "real sloc proof cannot authorize unrelated player settings");
+        "real sloc proof cannot authorize unrecorded player flags");
     Require(hot.Undo() && hot.VerifyTerrainSettingsForSave().Succeeded(), "rejecting player change preserves previous source state");
     auto noBudget = Take(hot.ExportTerrainStrokeJournal());
     Require(noBudget.strokes[0].frozenStartLocations.has_value(), "compound remains first ordered record before ordinary Units");
