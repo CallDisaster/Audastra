@@ -818,6 +818,7 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
             }
             if (plan.brush_.kind == TerrainBrushKind::StraightRamp) {
                 stroke.rulesSha256 = plan.waterRulesSha256_;
+                stroke.intent.straightRampAlgorithm = plan.straightRampAlgorithm_;
                 expressible = expressible && plan.points_.size() == 1 && plan.waterResult_ && !stroke.rulesSha256.empty();
             }
             if (plan.brush_.anchor) {
