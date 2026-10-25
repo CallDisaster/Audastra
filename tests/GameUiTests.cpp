@@ -499,6 +499,15 @@ void TestMapTocs() {
         "function A takes nothing returns nothing\n    call MHFrame_LoadTOC(\"ui\\\\mh.toc\")\nendfunction\n"};
     const auto memHackCalls = FindTocLoadCalls(memHack);
     Require(memHackCalls.size() == 1 && memHackCalls[0].path == "ui\\mh.toc", "MemHack toc loader");
+    // AudastraUI 函数库：库里的函数定义不算调用，生成的触发器里的调用算。
+    const MapScriptText audastra{"war3map.j", ScriptLanguage::Jass,
+        "function AudastraUILoadToc takes string path returns nothing\nendfunction\n"
+        "function Create takes nothing returns nothing\n    call AudastraUILoadToc(\"AudastraUI\\\\AudastraUI.toc\")\nendfunction\n"};
+    const auto audastraCalls = FindTocLoadCalls(audastra);
+    Require(audastraCalls.size() == 1 && audastraCalls[0].path == "AudastraUI\\AudastraUI.toc" && audastraCalls[0].line == 4,
+        "AudastraUI toc loader");
+    Require(!HasCode(PlanMapTocs({"AudastraUI\\AudastraUI.toc"}, {audastra}).diagnostics, "GAMEUI_MAP_TOC_UNREFERENCED"),
+        "toc loaded by generated triggers is referenced");
 }
 
 const ScriptUiCallGroup* CallGroup(const ScriptFramePlan& plan, std::string_view function) {
