@@ -218,6 +218,74 @@ void CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered() {
         && Take(EncodeTerrainStrokeJournal(decoded)) == wire, "FTJ4 preserves ordered corner/create remove, both water algorithms and native cliff");
 }
 
+void ConnectedStraightVersionIsExplicitAndLegacyBytesStayExact() {
+    auto journal = Journal(); auto& straight = journal.strokes.front();
+    straight.intent.brush = {}; straight.intent.brush.kind = TerrainBrushKind::StraightRamp;
+    straight.intent.points = {{2080, 2080}}; straight.rulesSha256.assign(64, 'd');
+    const auto legacy = Take(EncodeTerrainStrokeJournal(journal));
+    Require(legacy[3] == std::byte{'B'}
+        && Take(DecodeTerrainStrokeJournal(legacy)).strokes.front().intent.straightRampAlgorithm
+            == TerrainStraightRampAlgorithm::Independent,
+        "legacy FTJB remains the independent three-point algorithm");
+    const auto independent = straight;
+    straight.intent.straightRampAlgorithm = TerrainStraightRampAlgorithm::Connected;
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    // 独立单点FTJB的kind后正是shape；FTJC只在这里增加明确的算法字节。
+    const auto kindOffset = legacy.size() - 123;
+    Require(legacy[kindOffset] == std::byte{15} && legacy[kindOffset + 1] == std::byte{0},
+        "literal one-point FTJB offset identifies kind15 and circle shape");
+    auto literal = legacy; literal[3] = std::byte{'C'};
+    literal.insert(literal.begin() + kindOffset + 1, std::byte{2});
+    Require(wire == literal, "FTJC adds exactly one explicit connected algorithm byte after kind15");
+    const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+    Require(decoded.strokes.front().intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected
+        && Take(EncodeTerrainStrokeJournal(decoded)) == wire
+        && Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(legacy)))) == legacy,
+        "connected and old independent records retain exact canonical bytes");
+    Require(!EqualTerrainJournalIntent(independent.intent, straight.intent),
+        "private replay alignment includes the straight algorithm instead of accepting matching points alone");
+    for (std::size_t size = 0; size < wire.size(); ++size)
+        Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every FTJC truncation rejects");
+    for (const unsigned algorithm : {0u, 1u, 3u, 255u}) {
+        auto invalid = wire; invalid[kindOffset + 1] = std::byte(algorithm);
+        Require(!DecodeTerrainStrokeJournal(invalid).Succeeded(),
+            "unknown algorithms and FTJC without a connected record reject instead of falling back");
+    }
+    for (const char version : {'1', '4', '8', '9', 'A', 'B', 'D', ':'}) {
+        auto disguised = wire; disguised[3] = std::byte(version);
+        Require(!DecodeTerrainStrokeJournal(disguised).Succeeded(), "new algorithm cannot borrow an old or unknown magic");
+    }
+    auto extra = wire; extra.push_back(std::byte{0});
+    Require(!DecodeTerrainStrokeJournal(extra).Succeeded(), "connected wire rejects trailing unknown bytes");
+    auto invalid = journal;
+    invalid.strokes.front().intent.straightRampAlgorithm = static_cast<TerrainStraightRampAlgorithm>(3);
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "unknown live straight algorithm cannot be encoded");
+    for (const auto kind : {TerrainBrushKind::Raise, TerrainBrushKind::CornerRamp, TerrainBrushKind::Ramp}) {
+        invalid = journal; invalid.strokes.front().intent.brush.kind = kind;
+        Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "unrelated opcodes cannot carry a connected algorithm");
+    }
+    invalid = journal; invalid.strokes.front().intent.waterBrush.emplace();
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "connected straight cannot be hidden in a water variant");
+    invalid = journal; invalid.strokes.front().intent.cornerRampAlgorithm = TerrainCornerRampAlgorithm::WetTerrain;
+    Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "connected straight cannot carry the corner algorithm");
+    auto remove = straight; remove.intent.brush.value = false;
+    journal.strokes.push_back(independent); journal.strokes.push_back(remove);
+    TerrainJournalStroke corner; corner.intent.brush.kind = TerrainBrushKind::CornerRamp;
+    corner.intent.cornerRampAlgorithm = TerrainCornerRampAlgorithm::WetTerrain;
+    corner.intent.points = {{1056, 1056}}; corner.rulesSha256.assign(64, 'e'); journal.strokes.push_back(corner);
+    journal.strokes.push_back(Journal().strokes.front());
+    const auto mixed = Take(EncodeTerrainStrokeJournal(journal));
+    const auto restored = Take(DecodeTerrainStrokeJournal(mixed));
+    Require(restored.strokes.size() == 5
+        && restored.strokes[0].intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected
+        && restored.strokes[1].intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Independent
+        && !restored.strokes[2].intent.brush.value
+        && restored.strokes[3].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::WetTerrain
+        && restored.strokes[4].intent.brush.kind == TerrainBrushKind::Raise
+        && Take(EncodeTerrainStrokeJournal(restored)) == mixed,
+        "mixed FTJC preserves exact independent/connected/create/remove/corner/ordinary order");
+}
+
 void BoundsVersionHasIndependentPayloadAndStrictVariants() {
     auto journal = Journal(); TerrainJournalStroke bounds;
     bounds.intent.bounds = TerrainBoundsEditIntent{{1, 2, 17, 14}}; bounds.rulesSha256.assign(64, 'c');
@@ -414,6 +482,7 @@ int main() {
         StrictCodecRoundtripAndMalformedInputs(); NativeCliffVersionAndOptionsRemainExplicit();
         WaterAlgorithmVersionIsCanonicalAndLegacyBytesRemainExact();
         CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered();
+        ConnectedStraightVersionIsExplicitAndLegacyBytesStayExact();
         BoundsVersionHasIndependentPayloadAndStrictVariants();
         PaletteVersionHasStrictZeroPointPayload();
         RemoveWaterUsesTheOrdinaryJournalOpcode();

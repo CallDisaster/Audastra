@@ -38,6 +38,7 @@ struct TerrainJournalStroke {
     // FTJ4沿用FTJ3正文布局，新增独立CornerRamp=13，必需单点/实际规则与完整DOO摘要。
     // FTJ8沿用FTJ7变体，在CornerRamp的kind后写algorithm字节；旧FTJ4–7固定algorithm1。
     // FTJB新增StraightRamp=15固定v1三点模式；旧Ramp与FTJ1–A不能升级为含水直坡。
+    // FTJC在每个StraightRamp的kind后记录独立/连接算法；仅含Connected时选择新版本。
     // 实际水刷/原版悬崖规则owner的依赖摘要；旧普通笔刷为空。不是来源授权。
     std::string rulesSha256;
     // 仅新原版CliffLevel；与digest成对。FTJ1旧悬崖保持旧算法，不能静默升级。

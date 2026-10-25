@@ -26,7 +26,8 @@ bool EqualTerrainJournalIntent(const TerrainStrokeIntent& a, const TerrainStroke
         || x.cliffTexture != y.cliffTexture || x.levelDelta != y.levelDelta || x.value != y.value || x.strength != y.strength
         || x.seed != y.seed || x.anchor || y.anchor || x.size != y.size || x.variation != y.variation
         || x.randomizeVariation != y.randomizeVariation || x.waterHeight != y.waterHeight || x.pathingRestrictions != y.pathingRestrictions
-        || a.followDoodads != b.followDoodads || a.cornerRampAlgorithm != b.cornerRampAlgorithm || a.points.size() != b.points.size()
+        || a.followDoodads != b.followDoodads || a.cornerRampAlgorithm != b.cornerRampAlgorithm
+        || a.straightRampAlgorithm != b.straightRampAlgorithm || a.points.size() != b.points.size()
         || a.waterBrush.has_value() != b.waterBrush.has_value() || a.bounds.has_value() != b.bounds.has_value()
         || a.palette.has_value() != b.palette.has_value()) return false;
     for (std::size_t i = 0; i < a.points.size(); ++i)
