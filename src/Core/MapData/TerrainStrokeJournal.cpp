@@ -341,7 +341,7 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
 Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byte> bytes) {
     if (bytes.size() > TerrainJournalMaximumBytes) return Failed<TerrainStrokeJournal>();
     if (bytes.size() >= 4 && bytes[0] == std::byte{'F'} && bytes[1] == std::byte{'T'}
-        && bytes[2] == std::byte{'J'} && (bytes[3] == std::byte{'E'} || bytes[3] == std::byte{'H'}))
+        && bytes[2] == std::byte{'J'} && (bytes[3] == std::byte{'E'} || bytes[3] == std::byte{'H'} || bytes[3] == std::byte{'I'}))
         return detail::DecodeTerrainHistoryJournal(bytes);
     try {
         Reader reader{bytes}; TerrainStrokeJournal journal;

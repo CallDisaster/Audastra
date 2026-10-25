@@ -9,6 +9,14 @@
 namespace War3Map::MapData {
 namespace {
 constexpr std::size_t FixedAllowance = 128u * 1024u;
+constexpr std::uint32_t HistoryE = 0x454a5446u, HistoryH = 0x484a5446u, HistoryI = 0x494a5446u;
+bool HasResize(const TerrainStrokeJournal& journal) {
+    return std::any_of(journal.strokes.begin(), journal.strokes.end(),
+        [](const auto& stroke) { return stroke.intent.resize.has_value(); });
+}
+std::uint32_t HistoryMagic(const TerrainStrokeJournal& journal) {
+    return journal.history->baselineShadow ? (HasResize(journal) ? HistoryH : HistoryI) : HistoryE;
+}
 template<class T> Result<T> InvalidHistory() {
     return Result<T>::Failure("Terrain.History", "TERRAIN_HISTORY_INVALID",
         "FTJE一座保存站记录的版本、结构、索引、历史成员或累计预算无效，未恢复任何命令。");
@@ -53,9 +61,7 @@ struct HistoryReader {
 bool HistoryShape(const TerrainStrokeJournal& journal) {
     if (!journal.history) return false;
     const auto& history = *journal.history;
-    const bool resizes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
-        [](const auto& stroke) { return stroke.intent.resize.has_value(); });
-    if (history.baselineShadow.has_value() != resizes) return false;
+    if (HasResize(journal) && !history.baselineShadow) return false;
     if (history.frozenBaseline || history.frozenSourceShadow || history.frozenRetainedBytes || !history.savedIndex
         || history.savedIndex > journal.strokes.size() || history.currentIndex > journal.strokes.size()
         || history.baselineMembers.size() != TerrainJournalMemberNames.size()
@@ -99,7 +105,9 @@ Result<TerrainStrokeJournal> TerrainHistoryBaselineJournal(const TerrainStrokeJo
         baseline.strokes = journal.strokes;
         baseline.baselinePathingLayers = journal.history->baselinePathingLayers;
         HistoryWire identity;
-        identity.Text(journal.history->baselineShadow ? "FTJH-historical-structure-v1" : "FTJE-historical-structure-v1");
+        const auto magic = HistoryMagic(journal);
+        identity.Text(magic == HistoryH ? "FTJH-historical-structure-v1"
+            : magic == HistoryI ? "FTJI-historical-structure-v1" : "FTJE-historical-structure-v1");
         for (const auto& member : journal.history->baselineMembers) {
             TerrainJournalMember manifest;
             manifest.name = member.name; manifest.present = member.present; manifest.bytes = member.bytes.size();
@@ -159,7 +167,7 @@ Result<std::vector<std::byte>> EncodeTerrainHistoryJournal(const TerrainStrokeJo
         auto typed = EncodeTerrainStrokeJournal(*baseline.value);
         if (!typed.Succeeded() || !typed.value) return {{}, typed.diagnostics};
         HistoryWire wire;
-        wire.Number(journal.history->baselineShadow ? 0x484a5446u : 0x454a5446u, 4); wire.Text(journal.sourceSha256);
+        wire.Number(HistoryMagic(journal), 4); wire.Text(journal.sourceSha256);
         wire.Number(journal.members.size(), 1);
         for (const auto& member : journal.members) {
             wire.Text(member.name); wire.Number(member.present, 1); wire.Text(member.sha256); wire.Number(member.bytes, 8);
@@ -187,7 +195,7 @@ Result<TerrainStrokeJournal> DecodeTerrainHistoryJournal(std::span<const std::by
     try {
         HistoryReader reader{bytes}; TerrainStrokeJournal journal; TerrainJournalHistory history;
         const auto magic = reader.Number(4);
-        if (magic != 0x454a5446u && magic != 0x484a5446u) return InvalidHistory<TerrainStrokeJournal>();
+        if (magic != HistoryE && magic != HistoryH && magic != HistoryI) return InvalidHistory<TerrainStrokeJournal>();
         journal.sourceSha256 = reader.Text(64);
         if (reader.Number(1) != TerrainJournalMemberNames.size()) return InvalidHistory<TerrainStrokeJournal>();
         for (const auto name : TerrainJournalMemberNames) {
@@ -208,17 +216,20 @@ Result<TerrainStrokeJournal> DecodeTerrainHistoryJournal(std::span<const std::by
             if (!member.present && !payload.empty()) return InvalidHistory<TerrainStrokeJournal>();
             member.bytes.assign(payload.begin(), payload.end()); history.baselineMembers.push_back(std::move(member));
         }
-        if (magic == 0x484a5446u) {
+        if (magic != HistoryE) {
             ArchiveExactMember shadow;
             shadow.name = reader.Text(64); shadow.present = reader.Bool(); const auto payload = reader.Bytes(TerrainJournalMaximumBytes);
             if (shadow.name != "war3map.shd" || (!shadow.present && !payload.empty())) return InvalidHistory<TerrainStrokeJournal>();
             shadow.bytes.assign(payload.begin(), payload.end()); history.baselineShadow = std::move(shadow);
         }
         const auto typedBytes = reader.Bytes(TerrainJournalMaximumBytes);
-        if (reader.cursor != bytes.size() || typedBytes.size() < 4 || typedBytes[3] == std::byte{'E'} || typedBytes[3] == std::byte{'H'})
+        if (reader.cursor != bytes.size() || typedBytes.size() < 4 || typedBytes[3] == std::byte{'E'}
+            || typedBytes[3] == std::byte{'H'} || typedBytes[3] == std::byte{'I'})
             return InvalidHistory<TerrainStrokeJournal>(); // 禁止嵌套history/递归预算。
         auto typed = DecodeTerrainStrokeJournal(typedBytes);
         if (!typed.Succeeded() || !typed.value || typed.value->history) return InvalidHistory<TerrainStrokeJournal>();
+        // E/H保留旧语义；I只为尚无resize的真实旧保存站补SHD，不能改magic扩大旧版本。
+        if (HasResize(*typed.value) != (magic == HistoryH)) return InvalidHistory<TerrainStrokeJournal>();
         history.baselinePathingLayers = typed.value->baselinePathingLayers;
         journal.strokes = typed.value->strokes;
         journal.history = std::move(history);

@@ -268,7 +268,8 @@ Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal) {
             return Status::Failure("Terrain.History", "TERRAIN_HISTORY_BUDGET", "历史完整十成员超过工程预算。");
         used += member.bytes.size();
     }
-    if (std::any_of(journal.strokes.begin(), journal.strokes.end(), [](const auto& stroke) { return stroke.intent.resize.has_value(); })) {
+    if (history.frozenSourceShadow || std::any_of(journal.strokes.begin(), journal.strokes.end(),
+        [](const auto& stroke) { return stroke.intent.resize.has_value(); })) {
         const auto* shadow = history.frozenSourceShadow ? &history.frozenSourceShadow->member_
             : baseline.savedResizeState_ ? &baseline.savedResizeState_->shadow : nullptr;
         if (!shadow || shadow->bytes.size() > TerrainJournalMaximumBytes - used)
