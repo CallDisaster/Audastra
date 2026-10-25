@@ -3,6 +3,7 @@
 #include "McpServer.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
+#include "War3MapCore/MapData/TerrainBlockEditing.h"
 
 #include <functional>
 
@@ -33,6 +34,8 @@ struct TerrainEditToolHost {
         std::span<const MapData::TerrainStrokePoint>, bool, MapData::TerrainStraightRampAlgorithm)> prepareStraightRamp;
     std::function<Result<Services::PreparedTerrainBoundsEdit>(const TerrainEditToolContext&,
         const Services::TerrainEditBinding&, const MapData::TerrainBoundsEditIntent&)> prepareBounds;
+    std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
+        const Services::TerrainEditBinding&, const MapData::TerrainBlockPasteIntent&, bool)> prepareBlock;
     std::function<Status()> verifyBounds;
     std::function<Status(const Services::PreparedTerrainBoundsEdit&,
         const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>&)> applyBounds;

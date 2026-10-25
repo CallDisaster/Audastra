@@ -466,6 +466,23 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!operation) return Invalid(error);
             request.fieldEdits.push_back(std::move(*operation));
             index += 8;
+        } else if (flag == L"--terrain-copy") {
+            if (index + 6 >= argc) return Invalid("--terrain-copy requires source x/y, width/height, destination x/y cell indices");
+            if (!request.terrainStrokes.empty()) return Invalid("--terrain-copy must be the only terrain command");
+            std::array<std::uint32_t, 6> values{};
+            for (std::size_t item = 0; item < values.size(); ++item) {
+                const auto value = ParseNumber<std::uint32_t>(argv[index + 1 + static_cast<int>(item)]);
+                if (!value || *value > 2048) return Invalid("--terrain-copy indices must be integers within 0..2048");
+                values[item] = *value;
+            }
+            if (!values[2] || !values[3] || values[2] > MapData::TerrainBlockMaximumSide || values[3] > MapData::TerrainBlockMaximumSide
+                || values[0] + values[2] > 2048 || values[1] + values[3] > 2048
+                || values[4] + values[2] > 2048 || values[5] + values[3] > 2048)
+                return Invalid("--terrain-copy requires nonempty source and destination cell rectangles within 0..2048, at most 256 cells per side");
+            Services::MapEditTerrainStroke copy;
+            copy.blockPaste = MapData::TerrainBlockPasteIntent{1,
+                {values[0], values[1], values[0] + values[2], values[1] + values[3]}, {values[4], values[5]}, {}};
+            request.terrainStrokes.push_back(std::move(copy)); index += 7;
         } else if (flag == L"--terrain-bounds") {
             if (index + 4 >= argc) return Invalid("--terrain-bounds requires west south east north cell indices");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain strokes are allowed");
@@ -546,6 +563,9 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         if (request.triggerEdits && request.triggerEdits->operations.size() > Trigger::kMaxTriggerEditOperations)
             return Invalid("at most 256 trigger operations are allowed");
     }
+    if (request.terrainStrokes.size() != 1 && std::any_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+            [](const auto& command) { return command.blockPaste.has_value(); }))
+        return Invalid("--terrain-copy must be the only terrain command");
     if ((!copySources.empty() || copyOffset) && (!copySources.size() || !copyOffset || rotation))
         return Invalid("group copy requires --copy-source and --copy-offset and cannot mix with --rotate");
     if (rotation) request.placementEdit = std::move(*rotation);

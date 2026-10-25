@@ -1008,6 +1008,19 @@ private:
                 return Services::PrepareTerrainStraightRampEdit(*current.session, current.document, binding,
                     waterCapture->resources, brush, points, follow, {}, algorithm);
             };
+            host.prepareBlock = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+                const MapData::TerrainBlockPasteIntent& intent, bool follow) -> Result<Services::PreparedTerrainEdit> {
+                auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
+                if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
+                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                    std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
+                if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
+                waterCapture = std::move(*loaded.value);
+                if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, true))
+                    return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "地形块准备期间来源或会话已经变化。");
+                return Services::PrepareTerrainBlockPasteEdit(*current.session, current.document, binding,
+                    waterCapture->resources, intent, follow);
+            };
             host.prepareBounds = [this, &boundsCapture, boundsProject](const Mcp::TerrainEditToolContext& current,
                 const Services::TerrainEditBinding& binding, const MapData::TerrainBoundsEditIntent& intent)
                 -> Result<Services::PreparedTerrainBoundsEdit> {

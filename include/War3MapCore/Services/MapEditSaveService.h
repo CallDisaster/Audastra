@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "War3MapCore/MapData/TerrainWaterBrush.h"
+#include "War3MapCore/MapData/TerrainBlockEditing.h"
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
@@ -41,6 +42,8 @@ struct MapEditTerrainStroke {
     std::optional<MapData::TerrainWaterStrokeOptions> waterBrush;
     // 独立同尺寸可玩区命令：整数地格半开矩形；无points/普通笔刷/水选项。
     std::optional<MapData::TerrainBoundsEditIntent> bounds;
+    // 同图绝对原始值复制；来源摘要仅由保存服务在绑定会话中捕获，不接受任意字节。
+    std::optional<MapData::TerrainBlockPasteIntent> blockPaste;
 };
 
 // 地图数据字段修改：类别 / 行 / 字段寻址（字段目录见 MapData/MapFields.h），绑定成员 SHA、

@@ -197,6 +197,23 @@ QWidget* WorldModule::BuildTerrainPage() {
     auto* column = new QVBoxLayout(terrainPalette_);
     column->setContentsMargins(12, 12, 12, 14); column->setSpacing(8);
 
+    column->addWidget(SectionLabel(tr("地形块"), terrainPalette_));
+    auto* blockTools = new QHBoxLayout;
+    terrainBlockSelect_ = new QPushButton(tr("框选地形"), terrainPalette_);
+    terrainBlockCopy_ = new QPushButton(tr("复制"), terrainPalette_);
+    terrainBlockPaste_ = new QPushButton(tr("粘贴"), terrainPalette_);
+    terrainBlockSelect_->setObjectName(QStringLiteral("worldTerrainBlockSelect"));
+    terrainBlockCopy_->setObjectName(QStringLiteral("worldTerrainBlockCopy"));
+    terrainBlockPaste_->setObjectName(QStringLiteral("worldTerrainBlockPaste"));
+    blockTools->addWidget(terrainBlockSelect_); blockTools->addWidget(terrainBlockCopy_); blockTools->addWidget(terrainBlockPaste_);
+    column->addLayout(blockTools);
+    terrainBlockStatus_ = new QLabel(tr("同图复制 · 绝对高度；源块变化须重新复制"), terrainPalette_);
+    terrainBlockStatus_->setObjectName(QStringLiteral("worldTerrainBlockStatus"));
+    terrainBlockStatus_->setWordWrap(true); column->addWidget(terrainBlockStatus_);
+    connect(terrainBlockSelect_, &QPushButton::clicked, this, &WorldModule::StartTerrainBlockSelection);
+    connect(terrainBlockCopy_, &QPushButton::clicked, this, &WorldModule::CopyTerrainBlock);
+    connect(terrainBlockPaste_, &QPushButton::clicked, this, &WorldModule::StartTerrainBlockPaste);
+
     // 笔刷种类：地形剖面图标网格
     column->addWidget(SectionLabel(tr("笔刷"), terrainPalette_));
     auto* kinds = new QGridLayout;

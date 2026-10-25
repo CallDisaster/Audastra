@@ -159,6 +159,8 @@ public:
     void SetBrushMode(bool enabled);
     [[nodiscard]] bool BrushMode() const noexcept { return brushMode_; }
     [[nodiscard]] bool StrokeActive() const noexcept { return strokeActive_; }
+    void SetTerrainBlockSelection(bool enabled);
+    [[nodiscard]] bool TerrainBlockSelection() const noexcept { return terrainBlockSelection_; }
     void ResetCamera();
     // Camera() 是当前请求状态；完成帧实际使用的相机只以 CaptureCompletedFrame 回执为准。
     [[nodiscard]] War3RenderCameraV2 Camera() const noexcept { return camera_; }
@@ -203,6 +205,9 @@ signals:
     // 独立原创方块命中直接交真实摆放身份，绝不伪造主场景renderedInstance。
     void BugPlaceholderClicked(const War3Map::MapData::PlacementId& owner, int modifiers);
     void InstancesBoxSelected(const QVector<int>& instances, int modifiers);
+    // 两个端点均来自同一实际完成帧的地面拾取，不依赖实例中心或模型目录。
+    void TerrainBlockSelected(double x0, double y0, double x1, double y1);
+    void TerrainBlockSelectionCancelled();
     // 未点中实例时单击处的地面点（供区域、镜头点选）。
     void GroundClicked(double x, double y, int modifiers);
     void PlaceRequested(double x, double y, bool snap);
@@ -303,6 +308,7 @@ private:
     void FinishClick(QPointF point, Qt::KeyboardModifiers modifiers);
     void FinishPlacement(QPointF point, bool snap, std::uint64_t serial, std::uint64_t cameraSerial, unsigned attempt);
     void FinishSelectionBox(QPointF point);
+    void FinishTerrainBlockSelection(QPointF point);
     bool DeferSelection(QPointF point, Qt::KeyboardModifiers modifiers, bool box);
     bool SubmitOverlay();
     void UpdateSelectionOutline(QPointF point);
@@ -433,6 +439,7 @@ private:
     Qt::KeyboardModifiers selectionModifiers_ = Qt::NoModifier;
     Qt::KeyboardModifiers hoverModifiers_ = Qt::NoModifier;
     bool placing_ = false;
+    bool terrainBlockSelection_ = false;
     bool placementHoverActive_ = false;
     bool brushMode_ = false;
     bool strokeActive_ = false;
