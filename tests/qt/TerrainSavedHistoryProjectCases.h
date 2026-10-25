@@ -103,10 +103,24 @@ void EditorProjectTests::SavedTerrainHistoryProjectRoundtrip() {
     QVERIFY(hotUndo.isClean()); QCOMPARE(hotUndo.cleanIndex(), 1);
     QCOMPARE(hot.archiveSession_->ReadMember("war3map.j").value, originalScript.value);
     const auto station = SavedHistoryQtState(hot);
+    const auto nativeStationPathing = block ? B::PathingLiteral(true)
+        : C::ConnectedPathingLiteral(C::SurfaceCase::DeepEquality, true);
+    QVERIFY(station.at("war3map.wpm")); QCOMPARE(*station.at("war3map.wpm"), nativeStationPathing);
+    auto zero = original;
+    QVERIFY(zero.at("war3map.wpm")); auto& zeroPathing = *zero.at("war3map.wpm");
+    QCOMPARE(zeroPathing.size(), nativeStationPathing.size());
+    // 两份原创夹具没有通行笔刷，savedS/currentS均为0；保存后的P是station原生低三位。
+    // 跨站Undo恢复旧荒芜，自动地形位和不可撤回P继续来自独立字面station，不退回旧G0。
+    for (std::size_t index = 16; index < zeroPathing.size(); ++index)
+        zeroPathing[index] = (nativeStationPathing[index] & std::byte{0xdf}) | (zeroPathing[index] & std::byte{0x20});
+    const auto stationRestrictions = hot.mapEdits_->SerializePathingRestrictionDraft();
+    QVERIFY2(stationRestrictions.Succeeded(), ReadDiagnosticText(stationRestrictions).c_str());
+    QVERIFY(stationRestrictions.value->empty());
     QVERIFY(RaiseTerrainSaveProject(hot)); PushMapDataEdit(hot, "Raise", "保存站后线性升高");
     const auto tail = SavedHistoryQtState(hot); QCOMPARE(hotUndo.count(), 2);
     hotUndo.setIndex(cursor);
-    const auto expected = cursor == 0 ? original : tail; QCOMPARE(SavedHistoryQtState(hot), expected);
+    const auto expected = cursor == 0 ? zero : tail; QCOMPARE(SavedHistoryQtState(hot), expected);
+    QCOMPARE(hot.mapEdits_->SerializePathingRestrictionDraft().value, stationRestrictions.value);
     const auto forge = root / "history.forge";
     const auto written = hot.SaveProjectToPath(forge); QVERIFY2(written.Succeeded(), ReadDiagnosticText(written).c_str());
     QVERIFY(!HasReadDiagnostic(written, "TERRAIN_JOURNAL_DRAFT_ONLY"));
@@ -120,7 +134,8 @@ void EditorProjectTests::SavedTerrainHistoryProjectRoundtrip() {
     QCOMPARE(cold.mapEdits_->Revision(), revision); QCOMPARE(coldUndo.index(), cursor); QCOMPARE(coldUndo.cleanIndex(), 1);
     QCOMPARE(SavedHistoryQtState(cold), expected);
     coldUndo.setIndex(1); QCOMPARE(SavedHistoryQtState(cold), station); QVERIFY(coldUndo.isClean());
-    coldUndo.setIndex(0); QCOMPARE(SavedHistoryQtState(cold), original);
+    coldUndo.setIndex(0); QCOMPARE(SavedHistoryQtState(cold), zero);
+    QCOMPARE(cold.mapEdits_->SerializePathingRestrictionDraft().value, stationRestrictions.value);
     coldUndo.setIndex(2); QCOMPARE(SavedHistoryQtState(cold), tail);
     auto finalJob = FreezeNativePathingQtJob(cold, root / "history-cold-saved.w3x"); QVERIFY(finalJob);
     finalJob->terrainSessionSnapshot = cold.mapEdits_->FreezeForSave();
