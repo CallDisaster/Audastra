@@ -288,6 +288,50 @@ void EditorProjectTests::DualStageStaticPathingProjectColdRestore_data() {
     DualStageStaticPathingSaveRebase_data();
 }
 
+void EditorProjectTests::DualStageStaticPathingWithoutTerrainNet_data() {
+    DualStageStaticPathingSaveRebase_data();
+}
+
+void EditorProjectTests::DualStageStaticPathingWithoutTerrainNet() {
+    QFETCH(bool, objectOverride);
+    QTemporaryDir root; QVERIFY(root.isValid()); QVERIFY(QDir(root.path()).mkpath("source"));
+    const auto source = std::filesystem::path(root.filePath("source/map.w3x").toStdWString());
+    const auto game = std::filesystem::path(root.filePath("game").toStdWString());
+    QVERIFY(std::filesystem::create_directory(game));
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", TerrainJournalWaterGameMembers()).Succeeded());
+    const auto members = DualStageQt::SourceMembers(); QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QUndoStack terrainUndo, assetsUndo;
+    project.mapDataUndoStack_ = &terrainUndo; project.assetUndoStack_ = &assetsUndo;
+    QVERIFY(DualStageQt::Bind(project, source, game)); QVERIFY(DualStageQt::Edit(project, objectOverride));
+    QCOMPARE(terrainUndo.count(), 1); QCOMPARE(assetsUndo.count(), 1);
+    terrainUndo.undo();
+    // 用户可撤销最后一笔地形，但尚未保存的真实占地图/物编修改仍必须参与G0/G1。
+    QVERIFY(!MapData::TerrainSavePlan::HasTerrainChanges(*project.mapEdits_));
+    QCOMPARE(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()).value,
+        std::optional(DualStageQt::Member(members, "war3map.w3e")));
+    QVERIFY(project.HasUnsavedMapChanges() && project.HasPendingAssetEdits());
+    QCOMPARE(project.objectDirty_[DualStageQt::kDoodadIndex], objectOverride);
+    const auto target = std::filesystem::path(root.filePath("saved-without-terrain-net.w3x").toStdWString());
+    auto job = DualStageQt::Freeze(project, target); QVERIFY(job);
+    job->minimapChoice = Services::TerrainMinimapSaveChoice::Automatic;
+    EditorProject::RunMapSave(*job); QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+    // 作者TGA须保留，不能让“不重建小地图”同时跳过静态通行派生。
+    const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded() && actual.value);
+    QCOMPARE(actual.value->ReadMember("war3mapMap.tga").value,
+        std::optional(DualStageQt::Member(members, "war3mapMap.tga")));
+    QCOMPARE(actual.value->ReadMember("war3map.w3e").value,
+        std::optional(DualStageQt::Member(members, "war3map.w3e")));
+    QCOMPARE(actual.value->ReadMember("war3map.wpm").value,
+        std::optional(DualStageQt::ExpectedPathing(members, false)));
+    DualStageQt::VerifyOutput(*actual.value, members, objectOverride, false);
+    QVERIFY(project.HasUnsavedMapChanges() && project.HasPendingAssetEdits());
+    QVERIFY(project.CommitMapSave(*job)); QVERIFY(!project.HasUnsavedMapChanges());
+    QVERIFY(project.pendingImports_.empty()); QCOMPARE(assetsUndo.count(), 0);
+    QCOMPARE(terrainUndo.count(), 1); QCOMPARE(terrainUndo.index(), 0);
+    QCOMPARE(Sha256File(source).value, sourceSha.value); terrainUndo.clear();
+}
+
 void EditorProjectTests::DualStageStaticPathingProjectColdRestore() {
     QFETCH(bool, objectOverride);
     QTemporaryDir root, projectOutput; QVERIFY(root.isValid() && projectOutput.isValid());
