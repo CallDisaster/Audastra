@@ -99,7 +99,7 @@ private:
     const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
     const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
     bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {},
-    MapData::TerrainCornerRampAlgorithm algorithm = MapData::TerrainCornerRampAlgorithm::WetTerrain);
+    MapData::TerrainCornerRampAlgorithm algorithm = MapData::TerrainCornerRampAlgorithm::NativeCorners);
 // 新直坡保留旧Ramp语义，实际规则/来源、单点、预算、提交与拐角共用。
 [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(
     const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,

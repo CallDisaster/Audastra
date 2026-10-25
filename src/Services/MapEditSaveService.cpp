@@ -817,7 +817,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 // 新保存请求显式采用当前结构算法；旧typed历史只从自身版本恢复，
                 // 不经过这个入口，也不能被新算法重新解释。
                 if (!stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp)
-                    intents.back().cornerRampAlgorithm = MapData::TerrainCornerRampAlgorithm::WetTerrain;
+                    intents.back().cornerRampAlgorithm = MapData::TerrainCornerRampAlgorithm::NativeCorners;
                 if (!stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp)
                     intents.back().straightRampAlgorithm = MapData::TerrainStraightRampAlgorithm::Connected;
             }

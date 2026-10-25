@@ -42,15 +42,16 @@ enum class TerrainBrushKind {
     Ramp,         // 一级干地直坡：整段三点创建/移除，value 决定是否创建，不使用尺寸或形状
     Boundary,     // 边界标志：仅修改 W3E 0x80；保留外缘与 WPM，原生保存仍须通过派生数据门
     PathingRestriction, // WPM 附加限制草稿：仅由 MapDataEditSession 应用，不改变 W3E
-    CornerRamp,   // 一级九点外角；单点canonical输入，须走实际规则的独立结构事务。
+    CornerRamp,   // 一级九点纯内角/外角；单点canonical输入，须走实际规则的独立结构事务。
     RemoveWater,  // 移除水面：仅清 HasWater，保留地高、水原始高度与其它原始字段。
     StraightRamp, // 一级三点直坡，单点实际规则事务；支持含水，保留旧Ramp与旧历史语义。
 };
 
 enum class TerrainBrushShape { Circle, Square };
 
-// 旧FTJ4–7固定为干地算法；新命令显式记录湿地形算法，不能升级旧历史的接受域。
-enum class TerrainCornerRampAlgorithm : std::uint8_t { DryOnly = 1, WetTerrain = 2 };
+// 旧FTJ4–7固定为干地算法；新命令显式记录算法，不能升级旧历史的接受域。
+// 1/2永久保留旧高端外角语义；3按原版选点符号处理受限一级干内角/纯外角。
+enum class TerrainCornerRampAlgorithm : std::uint8_t { DryOnly = 1, WetTerrain = 2, NativeCorners = 3 };
 
 // FTJB 固定独立直坡；连接模式须由新意图显式选择，不能扩大旧历史的接受域。
 enum class TerrainStraightRampAlgorithm : std::uint8_t { Independent = 1, Connected = 2 };
