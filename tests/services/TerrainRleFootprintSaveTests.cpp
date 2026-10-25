@@ -165,15 +165,17 @@ void OrdinaryRleUsesTheNormalSaveIdentityAndReadback() {
     }
 }
 
-void SpecialFootprintsKeepTheType2OnlyDomain() {
+// 特殊地形对象与普通装饰物共用有界 RLE 解码（TerrainSpecialFootprintRleCases.h 覆盖保存与预算阴例）。
+void SpecialFootprintsShareTheBoundedRleDecoder() {
     Fixture f(true,true);
     auto placements=Take(ParseDoodadPlacements(f.Member("war3map.doo")));
     placements.doodads.clear(); placements.specialDoodads.push_back({"Doo0",0,{3,3}});
     f.Member("war3map.doo")=Take(placements.Serialize()); f.Open();
-    const auto refused=TerrainPathingSave::CaptureNative(*f.source,f.original,f.original,f.game,kBudget);
-    Require(!refused.Succeeded() && !refused.value && HasCode(refused,"TERRAIN_UNIFORM_TGA_FORMAT"),
-        "ordinary RLE support does not expand special terrain footprint decoding");
-    Require(!std::filesystem::exists(f.root/"candidate.w3x"),"unsupported special RLE publishes no candidate");
+    const auto captured=TerrainPathingSave::CaptureNative(*f.source,f.original,f.original,f.game,kBudget);
+    const std::string message = "special terrain footprints decode the same bounded RLE TGA: "
+        + (captured.diagnostics.empty() ? std::string() : captured.diagnostics.front().code);
+    Require(captured.Succeeded() && captured.value, message.c_str());
+    Require(!std::filesystem::exists(f.root/"candidate.w3x"),"capturing special RLE publishes no candidate");
 }
 
 Bytes BlpTexture(bool transparent) {
@@ -245,7 +247,7 @@ void BlpFallbackKeepsTgaAbsenceAndExactWinner() {
 int main(int argc, char** argv) {
     try {
         if (argc == 2 && std::string_view(argv[1]) == "--blp") BlpFallbackKeepsTgaAbsenceAndExactWinner();
-        else if (argc == 1) { OrdinaryRleUsesTheNormalSaveIdentityAndReadback(); SpecialFootprintsKeepTheType2OnlyDomain(); }
+        else if (argc == 1) { OrdinaryRleUsesTheNormalSaveIdentityAndReadback(); SpecialFootprintsShareTheBoundedRleDecoder(); }
         else throw std::runtime_error("unknown footprint save test group");
         std::cout<<"Ordinary footprint save contracts passed\n"; return 0;
     } catch (const std::exception& exception) { std::cerr<<exception.what()<<'\n'; return 1; }
