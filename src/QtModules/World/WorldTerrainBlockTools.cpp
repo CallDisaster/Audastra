@@ -1,6 +1,7 @@
 #include "WorldModule.h"
 #include "WorldViewport.h"
 #include "EditorProject.h"
+#include "Widgets/ElidedLabel.h"
 #include "War3MapCore/Render/EditorOverlay.h"
 
 #include <QLabel>
