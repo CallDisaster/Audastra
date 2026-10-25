@@ -243,6 +243,38 @@ std::optional<Services::MapEditTerrainStroke> ParseStroke(wchar_t** argv, int in
     return stroke;
 }
 
+// 通行笔刷按32单位WPM格取落点；尺寸1..8与界面/实时工具保持同一足迹。
+std::optional<Services::MapEditTerrainStroke> ParsePathingStroke(
+    wchar_t** argv, int index, std::string& error) {
+    const std::wstring_view blockedType(argv[index + 1]), shape(argv[index + 2]);
+    const auto x = ParseNumber<double>(argv[index + 3]);
+    const auto y = ParseNumber<double>(argv[index + 4]);
+    const auto size = ParseNumber<std::uint32_t>(argv[index + 5]);
+    const std::wstring_view value(argv[index + 6]);
+    constexpr double maximumCoordinate = 16777216;
+    if (!x || !y || !std::isfinite(*x) || !std::isfinite(*y)
+        || std::abs(*x) > maximumCoordinate || std::abs(*y) > maximumCoordinate
+        || !size || *size < 1 || *size > 8
+        || (value != L"true" && value != L"false")) {
+        error = "--pathing-stroke requires finite world x/y within +/-16777216, size 1..8, and true or false";
+        return std::nullopt;
+    }
+    Services::MapEditTerrainStroke stroke;
+    stroke.pointSpace = Services::MapEditPointSpace::World;
+    stroke.brush.kind = MapData::TerrainBrushKind::PathingRestriction;
+    if (blockedType == L"walk") stroke.brush.pathingRestrictions = 0x02;
+    else if (blockedType == L"fly") stroke.brush.pathingRestrictions = 0x04;
+    else if (blockedType == L"build") stroke.brush.pathingRestrictions = 0x08;
+    else { error = "--pathing-stroke blocked type must be walk, fly, or build"; return std::nullopt; }
+    if (shape == L"circle") stroke.brush.shape = MapData::TerrainBrushShape::Circle;
+    else if (shape == L"square") stroke.brush.shape = MapData::TerrainBrushShape::Square;
+    else { error = "--pathing-stroke shape must be circle or square"; return std::nullopt; }
+    stroke.brush.size = *size;
+    stroke.brush.value = value == L"true";
+    stroke.points.push_back({*x, *y});
+    return stroke;
+}
+
 // 实际规则坡道使用世界坐标，保留默认笔刷字段；规范点由共用Core检查，不在CLI吸附。
 std::optional<Services::MapEditTerrainStroke> ParseNativeRamp(
     wchar_t** argv, int index, bool straight, std::string& error) {
@@ -500,6 +532,14 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!stroke) return Invalid(error);
             request.terrainStrokes.push_back(std::move(*stroke));
             index += 5;
+        } else if (flag == L"--pathing-stroke") {
+            if (index + 6 >= argc)
+                return Invalid("--pathing-stroke requires blocked type, shape, world x/y, size, and true or false");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");
+            auto stroke = ParsePathingStroke(argv, index, error);
+            if (!stroke) return Invalid(error);
+            request.terrainStrokes.push_back(std::move(*stroke));
+            index += 7;
         } else if (flag == L"--stroke") {
             if (index + 6 >= argc) return Invalid("--stroke requires six arguments");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 ordered strokes are allowed");

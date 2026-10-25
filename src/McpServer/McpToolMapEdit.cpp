@@ -157,6 +157,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     }
     const bool blight = kind.toString() == "blight";
     const bool boundary = kind.toString() == "boundary";
+    const bool pathing = kind.toString() == "pathing_restriction";
     const bool ramp = kind.toString() == "ramp";
     const bool corner = kind.toString() == "corner_ramp";
     const bool straight = kind.toString() == "straight_ramp";
@@ -170,6 +171,7 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     MapData::TerrainWaterStrokeOptions waterOptions;
     if (blight) stroke.brush.kind = MapData::TerrainBrushKind::Blight;
     else if (boundary) stroke.brush.kind = MapData::TerrainBrushKind::Boundary;
+    else if (pathing) stroke.brush.kind = MapData::TerrainBrushKind::PathingRestriction;
     else if (ramp) stroke.brush.kind = MapData::TerrainBrushKind::Ramp;
     else if (corner) stroke.brush.kind = MapData::TerrainBrushKind::CornerRamp;
     else if (straight) stroke.brush.kind = MapData::TerrainBrushKind::StraightRamp;
@@ -185,11 +187,14 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         ? MapData::TerrainWaterBrushKind::Shallow : MapData::TerrainWaterBrushKind::Deep;
     else {
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_UNSUPPORTED",
-            "当前接受 raise/lower/smooth/blight/boundary/ramp/corner_ramp/straight_ramp/texture/cliff_level/cliff_texture/water_height/remove_water/shallow_water/deep_water；通行性仍由同一保存服务核验。");
+            "当前接受 raise/lower/smooth/blight/boundary/pathing_restriction/ramp/corner_ramp/straight_ramp/texture/cliff_level/cliff_texture/water_height/remove_water/shallow_water/deep_water；通行性仍由同一保存服务核验。");
         return std::nullopt;
     }
     if (!OnlyFields(object, nativeRamp
             ? std::initializer_list<std::string_view>{"kind", "point_space", "points", "follow_doodads", "set_ramp"}
+            : pathing
+            ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "size",
+                  "points", "follow_doodads", "blocked_type", "value"}
             : newWater
             ? std::initializer_list<std::string_view>{"kind", "shape", "point_space", "size", "cliff_texture",
                   "seed", "enforce_water_limits", "points", "follow_doodads"}
@@ -271,6 +276,14 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         waterOptions.randomSeed = static_cast<std::uint32_t>(seed);
         waterOptions.enforceWaterLimits = enforce.toBool();
         stroke.waterBrush = waterOptions;
+    } else if (pathing) {
+        const auto size = Integer(object, "size", error);
+        if (!size) return std::nullopt;
+        if (*size < 1 || *size > 8) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_PATHING_INVALID", "通行笔刷须显式指定整数 size=1..8，与界面按32单位通行格取同一足迹。");
+            return std::nullopt;
+        }
+        stroke.brush.size = static_cast<std::uint32_t>(*size);
     } else if (cliffBrush) {
         const auto size = Integer(object, "size", error);
         if (!size) return std::nullopt;
@@ -313,7 +326,22 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         return std::nullopt;
     }
     stroke.followDoodads = false;
-    if (boundary) {
+    if (pathing) {
+        const auto blockedType = object.value("blocked_type");
+        const auto value = object.value("value");
+        if (!blockedType.isString() || !value.isBool()) {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_PATHING_INVALID", "通行笔刷须显式指定 blocked_type=walk/fly/build 与 value 布尔值。");
+            return std::nullopt;
+        }
+        if (blockedType.toString() == "walk") stroke.brush.pathingRestrictions = 0x02;
+        else if (blockedType.toString() == "fly") stroke.brush.pathingRestrictions = 0x04;
+        else if (blockedType.toString() == "build") stroke.brush.pathingRestrictions = 0x08;
+        else {
+            error = Failure("MCP_MAP_EDIT_TERRAIN_PATHING_INVALID", "blocked_type 只接受 walk、fly 或 build；不接受原始通行位。");
+            return std::nullopt;
+        }
+        stroke.brush.value = value.toBool();
+    } else if (boundary) {
         const auto value = object.value("value");
         if (!value.isBool()) {
             error = Failure("MCP_MAP_EDIT_TERRAIN_BOUNDARY_INVALID", "边界笔刷必须显式指定 value 布尔值。");
@@ -681,6 +709,15 @@ QJsonObject TerrainStrokeSchema() {
     QJsonObject boundary = shared;
     boundary["kind"] = QJsonObject{{"type", "string"}, {"const", "boundary"}};
     boundary["value"] = QJsonObject{{"type", "boolean"}};
+    QJsonObject pathing = shared;
+    pathing.remove("radius");
+    pathing["kind"] = QJsonObject{{"type", "string"}, {"const", "pathing_restriction"}};
+    pathing["size"] = QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 8}};
+    pathing["blocked_type"] = QJsonObject{{"type", "string"}, {"enum", QJsonArray{"walk", "fly", "build"}}};
+    pathing["value"] = QJsonObject{{"type", "boolean"}};
+    auto pathingSchema = BasicSchema(pathing,
+        {"kind", "shape", "point_space", "size", "points", "follow_doodads", "blocked_type", "value"});
+    pathingSchema["description"] = "按32单位通行格绘制walk/fly/build限制；size=1..8与实时工具同语义。value=false仅撤回本次保存序列新增的限制，源图限制保留；不接受原始位、radius或客户端规则。";
     QJsonObject ramp = shared;
     ramp["kind"] = QJsonObject{{"type", "string"}, {"const", "ramp"}};
     ramp["shape"] = QJsonObject{{"type", "string"}, {"const", "circle"}};
@@ -740,7 +777,7 @@ QJsonObject TerrainStrokeSchema() {
     blockCopy["description"] = "同图绝对原始值复制，包括东/北顶点，不旋转缩放；必须是唯一地形命令，源摘要由服务捕获。拒绝坡道、边界、MapEdge和特殊装饰物，悬崖与水沿实际规则。";
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired), BasicSchema(boundary, boundaryRequired),
-        BasicSchema(ramp, rampRequired), corner, straight, bounds, blockCopy,
+        BasicSchema(ramp, rampRequired), corner, straight, bounds, blockCopy, pathingSchema,
         BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired), removalSchema,
         BasicSchema(cliff, {"kind", "shape", "point_space", "size", "cliff_texture", "level_delta", "seed", "points", "follow_doodads"}),
         BasicSchema(cliffTexture, {"kind", "shape", "point_space", "size", "cliff_texture", "points", "follow_doodads"}),
@@ -869,6 +906,8 @@ void RegisterMapEditSaveTool(McpServer& server) {
         "straight_ramp可连接相邻完整一级直坡；与corner_ramp只接受单个规范world落点，不自动吸附，水位限制固定启用；"
         "坡道均须明确set_ramp布尔值，几何和实际规则仍由共用规划器核验。"
         "boundary通过显式value布尔值绘制或清除地形边界；playable_bounds通过整数半开地格矩形设置可玩范围。"
+        "pathing_restriction须给出blocked_type=walk/fly/build、size=1..8与value布尔值，按32单位通行格取足迹；"
+        "value=false仅撤回本次序列新增限制，原图限制始终保留，不能用原始通行位绕过。"
         "共用通行性门禁最终裁决。地物跟随和其他笔刷拒绝。工具/游戏根只读可信宿主环境变量；"
         "可选 ui_root 明确指定独立 UI 元数据绝对目录，仍提交到同一保存服务，不推断或回退工具/UI 来源。"
         "携带 transaction_id/expected_revision 时保存已经 preview/validate 的完整 GUI 事务，"
