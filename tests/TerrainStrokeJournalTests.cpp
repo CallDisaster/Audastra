@@ -2,6 +2,7 @@
 #include "War3MapCore/MapData/TerrainClassicDoodads.h"
 #include "War3MapCore/MapData/TerrainStartLocations.h"
 #include "War3MapCore/Hash.h"
+#include "TerrainResizeJournalCases.h"
 
 #include <algorithm>
 #include <iostream>
@@ -592,6 +593,7 @@ int main() {
         HistoryLinearStackKeepsCoreQtUndoRedoAndFullOldBaseline();
         HistoryRejectsBrokenSavedBranchRawCommandsAndMovedAliases();
         HistoryCodecRejectsTruncationIndicesOldVersionsAndTampering();
+        AudastraTest::TerrainResizeJournalCases::TestTerrainResizeJournalCases();
         std::cout << "TerrainStrokeJournalTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/Services/TerrainSessionResources.h"
 
 #include "War3MapCore/MapData/TerrainPathingResources.h"
 
@@ -15,6 +16,7 @@ struct TerrainWaterEditRequest {
     std::shared_ptr<const MapArchiveSession> archive;
     std::optional<WorkspaceSnapshot> directory;
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain;
+    std::shared_ptr<const MapData::MapDataEditSession> structureSnapshot;
     MapData::DoodadPlacements doodads;
     std::uint64_t sessionIdentity = 0, revision = 0, terrainSourceRevision = 0;
     std::uint64_t projectGeneration = 0, projectRevision = 0;
@@ -26,6 +28,7 @@ struct TerrainWaterEditRequest {
 struct TerrainWaterEditCapture {
     std::shared_ptr<const TerrainWaterEditRequest> request;
     MapData::TerrainPathingResources resources;
+    std::optional<Services::TerrainSessionResources> structureResources;
 };
 
 [[nodiscard]] Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(

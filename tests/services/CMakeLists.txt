@@ -301,6 +301,20 @@ target_compile_options(audastra-terrain-block-paste-service-tests PRIVATE /W4 /p
 add_test(NAME services-terrain-block-paste COMMAND audastra-terrain-block-paste-service-tests)
 set_tests_properties(services-terrain-block-paste PROPERTIES TIMEOUT 60)
 
+add_executable(audastra-terrain-resize-resources-tests TerrainResizeResourcesTests.cpp ../support/TerrainResizeFixture.h)
+target_link_libraries(audastra-terrain-resize-resources-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-resize-resources-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-resize-resources-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-resize-resources COMMAND audastra-terrain-resize-resources-tests)
+set_tests_properties(services-terrain-resize-resources PROPERTIES TIMEOUT 60)
+
+add_executable(audastra-terrain-resize-replay-tests TerrainResizeReplayTests.cpp TerrainResizeReplayCases.h ../support/TerrainResizeFixture.h)
+target_link_libraries(audastra-terrain-resize-replay-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-resize-replay-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-resize-replay-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-resize-replay COMMAND audastra-terrain-resize-replay-tests)
+set_tests_properties(services-terrain-resize-replay PROPERTIES TIMEOUT 60)
+
 add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp TerrainCornerRampServiceTests.cpp TerrainInnerCornerRampServiceCases.h ../TerrainInnerCornerRampFixtures.h
     TerrainSettingsSaveCases.h ../TerrainCornerRampFixtures.h)
 target_link_libraries(audastra-terrain-water-edit-service-tests PRIVATE War3MapEditor::Services)
@@ -346,7 +360,7 @@ add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainFinalInputsRealCases.h TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
     TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp
     TerrainUnitPlacementRealTests.cpp TerrainCliffTransportSaveTests.cpp TerrainBoundaryRealTests.cpp TerrainRemoveWaterRealTests.cpp
-    TerrainBlockSaveRealTests.cpp TerrainBlockSaveRealTests.h TerrainInnerCornerRampRealCases.h TerrainPathingAdaptersRealCases.h
+    TerrainBlockSaveRealTests.cpp TerrainBlockSaveRealTests.h TerrainInnerCornerRampRealCases.h TerrainPathingAdaptersRealCases.h TerrainResizeAdaptersRealCases.h
     "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
 target_include_directories(audastra-terrain-native-object-real-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Cli")
 target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services audastra-json)
@@ -359,9 +373,11 @@ add_test(NAME services-terrain-shadow-real COMMAND audastra-terrain-native-objec
 add_test(NAME services-terrain-units-real COMMAND audastra-terrain-native-object-real-tests --unit-placement)
 add_test(NAME services-terrain-boundary-real COMMAND audastra-terrain-native-object-real-tests --boundary)
 add_test(NAME services-terrain-pathing-adapters-real COMMAND audastra-terrain-native-object-real-tests --pathing-adapters)
+add_test(NAME services-terrain-resize-real COMMAND audastra-terrain-native-object-real-tests --canvas-resize)
 set_tests_properties(services-terrain-existing-ramp-real services-terrain-shadow-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_tests_properties(services-terrain-units-real services-terrain-boundary-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_tests_properties(services-terrain-pathing-adapters-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+set_tests_properties(services-terrain-resize-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 
 add_executable(audastra-terrain-cliff-palette-real-tests TerrainCliffPaletteRealTests.cpp)
 target_link_libraries(audastra-terrain-cliff-palette-real-tests PRIVATE War3MapEditor::Services)

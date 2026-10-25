@@ -109,6 +109,11 @@ Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProje
             request.sourcePath = snapshot.root;
             request.sourceSha256 = snapshot.aggregateSha256;
         }
+        if (captureDoodads && project.mapEdits_->HasTerrainResizeChanges()) {
+            auto frozen = project.mapEdits_->FreezeForSave(maximumBytes);
+            if (!frozen.Succeeded() || !frozen.value) return {{}, std::move(frozen.diagnostics)};
+            request.structureSnapshot = std::move(*frozen.value);
+        }
         if (!captureDoodads) return Result<TerrainWaterEditRequest>::Success(std::move(request));
         const auto size = project.mapEdits_->SnapshotByteSize(MapDataKind::Doodads);
         if (!size.Succeeded()) return {std::nullopt, size.diagnostics};
@@ -148,6 +153,17 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
     try {
         const auto path = VerifyTerrainWaterEditRequestSourcePath(*request);
         if (!path.Succeeded()) return {std::nullopt, path.diagnostics};
+        if (request->structureSnapshot) {
+            auto view = request->archive
+                ? Services::TerrainSessionResources::Capture(request->archive, request->structureSnapshot, request->gameRoot, request->maximumBytes)
+                : Services::TerrainSessionResources::Capture(*request->directory, *request->structureSnapshot, request->gameRoot, request->maximumBytes);
+            if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
+            auto resources = view.value->CaptureWater(request->enforceWaterLimits, request->maximumBytes);
+            if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};
+            const auto verified = view.value->Verify(*resources.value, request->maximumBytes);
+            if (!verified.Succeeded()) return {{}, verified.diagnostics};
+            return Capture::Success({std::move(request), std::move(*resources.value), std::move(*view.value)});
+        }
         const auto archive = request->archive;
         Result<std::vector<std::byte>> bytes;
         if (!request->archivePath.empty()) {
@@ -191,6 +207,7 @@ Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture) {
         const auto& request = *capture.request;
         const auto path = VerifyTerrainWaterEditRequestSourcePath(request);
         if (!path.Succeeded()) return path;
+        if (capture.structureResources) return capture.structureResources->Verify(capture.resources, request.maximumBytes);
         if (request.archive) return capture.resources.VerifySourceInputs(*request.archive, request.maximumBytes);
         if (request.directory) return capture.resources.VerifySourceInputs(*request.directory, request.maximumBytes);
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_REQUIRED", "水刷缺少真实来源。");

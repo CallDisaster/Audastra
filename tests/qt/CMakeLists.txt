@@ -132,7 +132,7 @@ add_test(NAME qt-mcp-agent-transport COMMAND war3-map-mcp-agent-transport-tests)
 set_tests_properties(qt-mcp-agent-transport PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp TerrainBlockLiveCases.h ../TerrainBlockFixtures.h
+qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp TerrainBlockLiveCases.h LiveTerrainResizeCases.h ../support/TerrainResizeFixture.h ../TerrainBlockFixtures.h
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.cpp"
@@ -495,7 +495,7 @@ qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp WorldCliffPal
     TerrainStraightRampWorldCases.h TerrainConnectedRampWorldCases.h TerrainBlockWorldCases.h
     ../TerrainStraightRampFixtures.h ../TerrainConnectedRampFixtures.h ../TerrainBlockFixtures.h)
 
-qt_add_executable(audastra-world-terrain-bounds-tests WorldTerrainBoundsTests.cpp)
+qt_add_executable(audastra-world-terrain-bounds-tests WorldTerrainBoundsTests.cpp WorldTerrainResizeCases.h ../support/TerrainResizeFixture.h)
 target_link_libraries(audastra-world-terrain-bounds-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
 target_compile_definitions(audastra-world-terrain-bounds-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-world-terrain-bounds-tests PRIVATE /W4 /permissive- /utf-8)
@@ -581,7 +581,7 @@ target_link_libraries(war3-map-object-field-tests PRIVATE War3MapEditor::QtProje
 # 工程层不创建主窗口，验证多工程隔离及失败快照不改变保存状态。
 qt_add_executable(war3-map-editor-project-tests EditorProjectTests.cpp TerrainCliffPaletteAppendProjectCases.h
     TerrainStraightRampProjectCases.h TerrainConnectedRampProjectCases.h TerrainDualStagePathingProjectCases.h
-    TerrainSavedHistoryProjectCases.h TerrainInnerCornerRampProjectCases.h ../TerrainInnerCornerRampFixtures.h ../TerrainBlockFixtures.h
+    TerrainSavedHistoryProjectCases.h TerrainInnerCornerRampProjectCases.h TerrainResizeProjectCases.h ../support/TerrainResizeFixture.h ../TerrainInnerCornerRampFixtures.h ../TerrainBlockFixtures.h
     ../TerrainStraightRampFixtures.h ../TerrainConnectedRampFixtures.h)
 qt_add_executable(war3-map-lua-scripts-tests LuaScriptsTests.cpp)
 target_link_libraries(war3-map-lua-scripts-tests PRIVATE War3MapEditor::QtModuleTriggers War3MapEditor::QtModuleAssets War3MapEditor::QtProject War3MapEditor::QtUiKit Qt6::Test)
@@ -615,7 +615,7 @@ set_tests_properties(qt-editor-project PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA
     ATTACHED_FILES_ON_FAIL "${editor_project_log}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-foreach(editor_project_group IN ITEMS native-pathing native-objects derived terrain-units terrain-palette terrain-doodads terrain-static-inputs terrain-history terrain-inner-corner)
+foreach(editor_project_group IN ITEMS native-pathing native-objects derived terrain-units terrain-palette terrain-doodads terrain-static-inputs terrain-history terrain-inner-corner terrain-resize)
     set(editor_project_group_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-${editor_project_group}-$<CONFIG>.qtest.txt")
     add_test(NAME qt-editor-project-${editor_project_group} COMMAND war3-map-editor-project-tests
         --case-group=${editor_project_group} -o -,txt -o "${editor_project_group_log},txt")

@@ -30,7 +30,7 @@ target_compile_options(war3-map-cli-terrain-query-tests PRIVATE /W4 /permissive-
 add_test(NAME cli-terrain-query COMMAND war3-map-cli-terrain-query-tests)
 set_tests_properties(cli-terrain-query PROPERTIES TIMEOUT 60)
 
-add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp CliStraightRampCases.h CliTerrainBlockCases.h CliTerrainPathingCases.h
+add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp CliStraightRampCases.h CliTerrainBlockCases.h CliTerrainPathingCases.h CliTerrainResizeCases.h
     "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
 target_include_directories(war3-map-cli-map-edit-save-tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Cli" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -82,8 +82,8 @@ endforeach()
 
 add_executable(war3-map-core-tests CoreTests.cpp)
 add_executable(war3-map-terrain-stroke-journal-tests
-    TerrainStrokeJournalTests.cpp TerrainCliffPaletteAppendCases.h TerrainHistoryJournalCases.h)
-target_link_libraries(war3-map-terrain-stroke-journal-tests PRIVATE War3MapEditor::Core)
+    TerrainStrokeJournalTests.cpp TerrainCliffPaletteAppendCases.h TerrainHistoryJournalCases.h TerrainResizeJournalCases.h support/TerrainResizeFixture.h)
+target_link_libraries(war3-map-terrain-stroke-journal-tests PRIVATE War3MapEditor::Core War3MapEditor::Services)
 target_compile_definitions(war3-map-terrain-stroke-journal-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-terrain-stroke-journal-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME core-terrain-stroke-journal COMMAND war3-map-terrain-stroke-journal-tests)
@@ -189,6 +189,8 @@ endforeach()
 
 target_link_libraries(war3-map-TerrainBoundsSession-tests PRIVATE War3MapEditor::Services)
 target_link_libraries(war3-map-TerrainBlockEditing-tests PRIVATE War3MapEditor::Services)
+target_link_libraries(war3-map-TerrainEditing-tests PRIVATE War3MapEditor::Services)
+target_sources(war3-map-TerrainEditing-tests PRIVATE TerrainResizeCases.h support/TerrainResizeFixture.h)
 target_sources(war3-map-TerrainBlockEditing-tests PRIVATE TerrainBlockFixtures.h TerrainCornerRampFixtures.h)
 target_sources(war3-map-TerrainRampEditing-tests PRIVATE TerrainConnectedStraightRampCases.h)
 target_link_libraries(war3-map-TerrainBoundaryNativeSave-tests PRIVATE War3MapEditor::Services)

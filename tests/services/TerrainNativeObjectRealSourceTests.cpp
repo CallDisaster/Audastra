@@ -23,6 +23,7 @@
 #include "TerrainCategoryDirectoryRealTests.h"
 #include "TerrainInnerCornerRampRealCases.h"
 #include "TerrainPathingAdaptersRealCases.h"
+#include "TerrainResizeAdaptersRealCases.h"
 #include "TerrainUnitPlacementRealTests.h"
 #include "TerrainCliffTransportSaveTests.h"
 #include "TerrainBoundaryRealTests.h"
@@ -467,7 +468,7 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
     }
 }
 
-enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary, PathingAdapters };
+enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary, PathingAdapters, CanvasResize };
 #include "TerrainFinalInputsRealCases.h"
 
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game,
@@ -514,6 +515,10 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         }
         if (group == RealSaveGroup::PathingAdapters) {
             TerrainSaveTests::CheckRealTerrainPathingCliSave(original, directory.path, tool, game);
+            return;
+        }
+        if (group == RealSaveGroup::CanvasResize) {
+            TerrainSaveTests::CheckRealCanvasResizeSave(original, directory.path, tool, game);
             return;
         }
         const auto sourceScript = Take(original.ReadMember("war3map.j"));
@@ -815,7 +820,8 @@ int main(int argc, char** argv) {
         else if (argc == 2 && std::string_view(argv[1]) == "--unit-placement") group = RealSaveGroup::UnitPlacements;
         else if (argc == 2 && std::string_view(argv[1]) == "--boundary") group = RealSaveGroup::Boundary;
         else if (argc == 2 && std::string_view(argv[1]) == "--pathing-adapters") group = RealSaveGroup::PathingAdapters;
-        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows, --unit-placement, --boundary or --pathing-adapters");
+        else if (argc == 2 && std::string_view(argv[1]) == "--canvas-resize") group = RealSaveGroup::CanvasResize;
+        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows, --unit-placement, --boundary, --pathing-adapters or --canvas-resize");
         const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
         const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
         if (tool.empty() || game.empty()) {

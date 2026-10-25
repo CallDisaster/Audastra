@@ -30,7 +30,7 @@ add_test(NAME mcp-map-object-references COMMAND war3-map-mcp-object-reference-te
 
 if(TARGET War3MapMcpProtocol)
     add_executable(audastra-mcp-terrain-edit-tests McpTerrainEditToolsTests.cpp McpStraightRampEditCases.h
-        McpTerrainBlockTransportCases.h McpTerrainWorkspaceBlockCases.h
+        McpTerrainBlockTransportCases.h McpTerrainWorkspaceBlockCases.h TerrainResizeToolCases.h
         ../TerrainBlockFixtures.h ../TerrainConnectedRampFixtures.h)
     target_link_libraries(audastra-mcp-terrain-edit-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(audastra-mcp-terrain-edit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -116,7 +116,7 @@ if(TARGET War3MapMcpProtocol)
     add_test(NAME mcp-object-tools COMMAND war3-map-mcp-object-tools-tests)
     set_tests_properties(mcp-object-tools PROPERTIES ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-    add_executable(war3-map-mcp-terrain-tests McpTerrainTests.cpp McpStraightRampSaveCases.h McpTerrainBlockSaveCases.h McpTerrainPathingSaveCases.h)
+    add_executable(war3-map-mcp-terrain-tests McpTerrainTests.cpp McpStraightRampSaveCases.h McpTerrainBlockSaveCases.h McpTerrainPathingSaveCases.h TerrainResizeSaveCases.h)
     target_link_libraries(war3-map-mcp-terrain-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(war3-map-mcp-terrain-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
     target_compile_options(war3-map-mcp-terrain-tests PRIVATE /W4 /permissive- /utf-8)

@@ -68,7 +68,10 @@ add_library(War3MapServices STATIC
     TerrainReplayInternal.h
     TerrainPathingFinalInputs.cpp
     TerrainEditService.cpp
-    TerrainBoundsEditService.cpp)
+    TerrainBoundsEditService.cpp
+    TerrainResizeEditService.cpp
+    TerrainResizeResources.cpp
+    TerrainSessionResources.cpp)
 add_library(War3MapEditor::Services ALIAS War3MapServices)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3MapTrigger War3MapEditor::UiLibrary War3MapEditor::ScriptBuild)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::RenderSupport)

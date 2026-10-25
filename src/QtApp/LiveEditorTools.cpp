@@ -71,6 +71,7 @@ struct LiveBoundsPreparation {
     std::shared_ptr<const QtProject::TerrainWaterEditRequest> request;
     MapData::TerrainPathingResources resources;
     Services::PreparedTerrainBoundsEdit prepared;
+    std::optional<Services::TerrainSessionResources> structureResources;
 };
 
 template<class Output, class Work> Output RunLiveBoundsWorker(Work work) {
@@ -115,6 +116,19 @@ Result<LiveBoundsPreparation> PrepareLiveBounds(
     using Output = Result<LiveBoundsPreparation>;
     auto verified = VerifyLiveBoundsResources(*request);
     if (!verified.Succeeded()) return {{}, verified.diagnostics};
+    if (frozen->HasTerrainResizeChanges()) {
+        auto view = request->archive
+            ? Services::TerrainSessionResources::Capture(request->archive, frozen, request->gameRoot, request->maximumBytes)
+            : Services::TerrainSessionResources::Capture(*request->directory, *frozen, request->gameRoot, request->maximumBytes);
+        if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
+        auto resources = view.value->CaptureNative(*frozen->Terrain(), nullptr, request->maximumBytes);
+        if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};
+        auto prepared = Services::PrepareTerrainBoundsEdit(*frozen, binding.document, binding, *resources.value, intent);
+        if (!prepared.Succeeded() || !prepared.value) return {{}, std::move(prepared.diagnostics)};
+        verified = view.value->Verify(*resources.value, request->maximumBytes);
+        if (!verified.Succeeded()) return {{}, verified.diagnostics};
+        return Output::Success({std::move(request), std::move(*resources.value), std::move(*prepared.value), std::move(*view.value)});
+    }
     Result<std::vector<std::byte>> bytes;
     if (request->archive) {
         const std::array<std::string, 1> names{"war3map.w3e"};
@@ -1110,6 +1124,11 @@ private:
                 // 不能让事件循环替换正在提交的unique_ptr会话。
                 if (boundsPublishing) return Status::Ok();
                 const auto checked = RunLiveBoundsWorker<Status>([capture] {
+                    if (capture->structureResources) {
+                        const auto path = VerifyLiveBoundsResources(*capture->request);
+                        return path.Succeeded() ? capture->structureResources->Verify(capture->resources,
+                            capture->request->maximumBytes) : path;
+                    }
                     return VerifyLiveBoundsResources(*capture->request, &capture->resources);
                 });
                 if (!checked.Succeeded()) return checked;

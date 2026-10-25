@@ -87,6 +87,7 @@ struct BoundsResult {
     Rectangle current;
     std::array<float, 4> margins{};
     std::optional<MapData::TerrainPathingResources> owner;
+    std::optional<Services::TerrainSessionResources> structureResources;
     std::optional<Services::PreparedTerrainBoundsEdit> prepared;
     std::string rulesSha;
     qint64 milliseconds = 0;
@@ -97,6 +98,15 @@ void PrepareBoundsTask(const Request& request, const MapData::MapDataEditSession
     const std::optional<Rectangle>& intent, const std::string& expectedRulesSha, BoundsResult& result) {
     const auto source = VerifyBoundsSource(request);
     if (!source.Succeeded()) { result.status = source; return; }
+    Result<MapData::TerrainPathingResources> owner;
+    if (frozen.HasTerrainResizeChanges()) {
+        auto view = request.archive
+            ? Services::TerrainSessionResources::Capture(request.archive, frozen, request.gameRoot, request.maximumBytes)
+            : Services::TerrainSessionResources::Capture(*request.directory, frozen, request.gameRoot, request.maximumBytes);
+        if (!view.Succeeded() || !view.value) { result.status.diagnostics = std::move(view.diagnostics); return; }
+        owner = view.value->CaptureNative(*frozen.Terrain(), nullptr, request.maximumBytes);
+        result.structureResources.emplace(std::move(*view.value));
+    } else {
     auto bytes = ReadBoundsSourceTerrain(request);
     if (!bytes.Succeeded()) { result.status.diagnostics = std::move(bytes.diagnostics); return; }
     auto terrain = MapData::ParseMapTerrain(*bytes.value);
@@ -109,11 +119,12 @@ void PrepareBoundsTask(const Request& request, const MapData::MapDataEditSession
     else if (member.state != MapDataState::Missing || !member.sources.empty()) {
         result.status = BoundsFailure("WORLD_BOUNDS_DOODADS_UNAVAILABLE", "装饰物来源不完整，范围未修改。"); return;
     }
-    auto owner = request.archive
+    owner = request.archive
         ? Services::TerrainPathingSave::CaptureNative(*request.archive, *terrain.value->Snapshot(), *request.terrain,
             request.gameRoot, request.maximumBytes, currentDoodads)
         : Services::TerrainPathingSave::CaptureNative(*request.directory, *terrain.value->Snapshot(), *request.terrain,
             request.gameRoot, request.maximumBytes, currentDoodads);
+    }
     if (!owner.Succeeded()) { result.status.diagnostics = std::move(owner.diagnostics); return; }
     if (!owner.value->NativeCameraMargins()) {
         result.status = BoundsFailure("WORLD_BOUNDS_RULES_UNAVAILABLE", "无法读取游戏镜头边距，范围未修改。"); return;
@@ -154,7 +165,8 @@ void PrepareBoundsTask(const Request& request, const MapData::MapDataEditSession
         result.current = {static_cast<std::uint32_t>(values[0]), static_cast<std::uint32_t>(values[1]),
             static_cast<std::uint32_t>(values[2]), static_cast<std::uint32_t>(values[3])};
     }
-    result.status = VerifyBoundsSource(request, &*owner.value);
+    result.status = result.structureResources ? result.structureResources->Verify(*owner.value, request.maximumBytes)
+        : VerifyBoundsSource(request, &*owner.value);
     if (result.status.Succeeded()) result.owner.emplace(std::move(*owner.value));
 }
 } // namespace

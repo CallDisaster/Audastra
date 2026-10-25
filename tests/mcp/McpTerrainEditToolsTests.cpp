@@ -170,9 +170,10 @@ QJsonObject WaterStroke(const QJsonObject& state, bool deep, bool dryRun = true)
 void FacadeQueryPreviewApplyAndUndo() {
     Fixture fixture;
     const auto definitions = TerrainEditToolDefinitions();
-    Expect(definitions.size() == 5 && definitions[0].permission == ToolPermission::Query
+    Expect(definitions.size() == 6 && definitions[0].permission == ToolPermission::Query
         && definitions[1].permission == ToolPermission::Query && definitions[2].permission == ToolPermission::Edit
-        && definitions[3].permission == ToolPermission::Edit && definitions[4].permission == ToolPermission::Edit,
+        && definitions[3].permission == ToolPermission::Edit && definitions[4].permission == ToolPermission::Edit
+        && definitions[5].permission == ToolPermission::Edit,
         "tool schemas distinguish bounded reads and edits");
     const auto state = State(fixture);
     Expect(state.value("ok").toBool() && state.value("pathing_available").toBool(), "state returns real source binding");
@@ -983,6 +984,7 @@ void ArchiveExportBindsPathingAndCompanionMembers() {
 #include "McpStraightRampEditCases.h"
 #include "McpTerrainBlockTransportCases.h"
 #include "McpTerrainWorkspaceBlockCases.h"
+#include "TerrainResizeToolCases.h"
 
 } // namespace
 
@@ -999,6 +1001,7 @@ int main(int argc, char** argv) {
         BlockDirectorySealRejectsUntypedOrConflictingEmptyCommands();
         RegisteredConnectedHostKeepsItsAlgorithmThroughDirectoryReplay();
         BoundsFacadeUsesActualResourcesCasAndSharedUndo();
+        ResizeToolRequiresBoundSourcesAndStrictIntent();
         CodecProvesSourceIntentAndNetBytes();
         FollowingPlacementsRequireExactSourceAndCompleteRecipe();
         SealedTerrainUsesExistingDirectoryTransaction();

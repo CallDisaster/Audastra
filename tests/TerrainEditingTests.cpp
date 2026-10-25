@@ -1,6 +1,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
 #include "MapDataFixtures.h"
+#include "TerrainResizeCases.h"
 
 #include <bit>
 #include <cmath>
@@ -526,7 +527,8 @@ int main() {
         TextureSlotsAreUndoable();
         BoundaryDraftPreservesRawFieldsAndRestores();
         SessionUnitsFollowAndStandability();
-        std::cout << "TerrainEditing: 14 scenario groups passed\n";
+        AudastraTest::TerrainResizeCases::TestTerrainResizeGeometryCases();
+        std::cout << "TerrainEditing: brush and canvas resize scenario groups passed\n";
         return 0;
     } catch (const std::exception& exception) {
         std::cerr << "TerrainEditing: " << exception.what() << '\n';

@@ -309,6 +309,7 @@ void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
 #include "CliStraightRampCases.h"
 #include "CliTerrainBlockCases.h"
 #include "CliTerrainPathingCases.h"
+#include "CliTerrainResizeCases.h"
 
 } // namespace
 
@@ -327,6 +328,7 @@ int main() {
         TerrainBlockCopyUsesBoundedTypedCommand();
         PathingRestrictionUsesTypedSharedSave();
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
+        TerrainResizeUsesSignedBeforeCanvasEdges();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

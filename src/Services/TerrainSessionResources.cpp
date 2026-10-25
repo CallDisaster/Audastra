@@ -203,6 +203,10 @@ Result<Resources> TerrainSessionResources::CaptureNative(const MapData::TerrainG
 
 Status TerrainSessionResources::Verify(const Resources& resources, std::size_t maximumBytes) const {
     maximumBytes = std::min(maximumBytes, state_->maximumBytes);
+    const auto resourceBytes = resources.OwnedCapacityBytes();
+    if (resourceBytes >= maximumBytes)
+        return Failure("TERRAIN_SESSION_RESOURCE_BUDGET", "规则owner与来源复核的同时驻留超过当前结构预算。");
+    maximumBytes -= resourceBytes;
     const auto physical = state_->VerifyPhysical(maximumBytes);
     if (!physical.Succeeded()) return physical;
     return resources.VerifyReadbackMembers([state = state_](auto names, const auto& limits) {

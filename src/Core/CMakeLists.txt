@@ -36,6 +36,8 @@ add_library(War3MapCore STATIC
     MapData/MapFields.cpp
     MapData/MapDataEditSessionTerrain.cpp
     MapData/MapDataEditSessionBounds.cpp
+    MapData/MapDataEditSessionResize.cpp
+    MapData/MapDataEditSessionResizeDraft.cpp
     MapData/MapDataEditSessionStartLocations.cpp
     MapData/MapDataEditSessionWater.cpp
     MapData/MapDataEditSessionTerrainBlock.cpp
@@ -52,6 +54,7 @@ add_library(War3MapCore STATIC
     MapData/MapShadow.cpp
     MapData/TerrainEditing.cpp
     MapData/TerrainBoundsEditing.cpp
+    MapData/TerrainResizeEditing.cpp
     MapData/TerrainBlockEditing.cpp
     MapData/PathingRestrictionEditing.cpp
     MapData/PathingSavePolicy.cpp

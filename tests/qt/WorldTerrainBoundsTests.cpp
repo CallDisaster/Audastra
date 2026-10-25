@@ -80,6 +80,9 @@ private slots:
     void RejectsActualDirectorySourceDrift();
     void RejectsGameResourceWinnerDrift();
     void RejectsNonIntegerCurrentBounds();
+    void ResizeControlsUseActualRulesAndSingleUndo();
+    void ResizePreviewRejectsClippedContentAndKeepsDraft();
+    void ResizeDropsLateResultOnMapSwitch();
 };
 
 void WorldTerrainBoundsTests::ControlsRequireCompleteSession() {
@@ -245,6 +248,8 @@ void WorldTerrainBoundsTests::RejectsGameResourceWinnerDrift() {
     c.Set(2, 3, 30, 29); c.apply->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
     QCOMPARE(c.Outcome(), QStringLiteral("applied")); QCOMPARE(project.mapDataUndoStack_->count(), 1);
 }
+
+#include "WorldTerrainResizeCases.h"
 
 QTEST_MAIN(WorldTerrainBoundsTests)
 #include "WorldTerrainBoundsTests.moc"

@@ -314,6 +314,7 @@ private slots:
     void BoundsToolsCaptureActualResourcesAndKeepOriginalUndo();
     void BoundsPreparationRejectsConcurrentRevision();
     void TerrainBlockToolsUseCapturedResourcesCasAndOriginalUndo();
+    void ResizeToolsCaptureActualResourcesAndKeepOriginalUndo();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
@@ -332,7 +333,7 @@ private slots:
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const QStringList expected{"auxiliary_copy", "auxiliary_create", "auxiliary_delete", "auxiliary_update",
-        "code.check", "create_campaign", "edit_campaign", "edit_terrain_block", "edit_terrain_bounds", "edit_terrain_stroke", "editor_check_trigger_graph",
+        "code.check", "create_campaign", "edit_campaign", "edit_terrain_block", "edit_terrain_bounds", "edit_terrain_resize", "edit_terrain_stroke", "editor_check_trigger_graph",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
@@ -2678,6 +2679,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
 }
 
 #include "TerrainBlockLiveCases.h"
+#include "LiveTerrainResizeCases.h"
 
 QTEST_GUILESS_MAIN(LiveEditorToolsTests)
 #include "LiveEditorToolsTests.moc"
