@@ -462,11 +462,20 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithOb
             for (const auto& dependency : other.dependencies_)
                 if (!findDependency(known, dependency.name))
                     (dependency.mapOnly ? mapNames : names).push_back(dependency.name);
+            if (mapNames.empty() && names.empty()) return;
             reserve(0);
             target.capturedMaximumBytes_ = maximumBytes - comparisonWork - (&target == &original
                 ? result.RetainedBudgetBytes() : original.RetainedBudgetBytes());
+            // 补捕不再运行对象codec/catalog。其阶段只与两个仍活owner及交叉
+            // 索引共存；保留旧解析峰值作最终上界，但不能让它再次占用临时额度。
+            struct RestoreStageWork {
+                std::size_t& work;
+                std::size_t prior;
+                ~RestoreStageWork() { work = prior; }
+            } restore{target.objectWorkBytes_, target.objectWorkBytes_};
+            target.objectWorkBytes_ = target.OwnedCapacityBytes();
             if (target.CaptureBudgetBytes() > target.capturedMaximumBytes_)
-                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "双阶段补捕无法在剩余阶段预算内完成。");
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "双阶段补捕没有足够的常驻与临时容量。");
             if (!mapNames.empty()) {
                 // W3D等地图结构不能走game fallback；补捕也保留它原本的map-only身份。
                 ArchiveExactMemberLimits limits; limits.memberCount = mapNames.size();
@@ -483,9 +492,13 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithOb
                     target.dependencies_.push_back({mapNames[i], Take(Sha256(member.bytes)), {}, member.bytes.size(), member.present, true, false});
                 }
             }
-            if (names.empty()) return;
-            const auto status = target.CaptureResourceMembers(reader, names, 0, [](std::size_t, bool, std::vector<std::byte>&&) {});
-            if (!status.Succeeded()) throw Failure{status.diagnostics};
+            if (!names.empty()) {
+                const auto status = target.CaptureResourceMembers(reader, names, 0, [](std::size_t, bool, std::vector<std::byte>&&) {});
+                if (!status.Succeeded()) throw Failure{status.diagnostics};
+            }
+            const auto otherRetained = &target == &original ? result.RetainedBudgetBytes() : original.RetainedBudgetBytes();
+            capturePeak = std::max(capturePeak, comparisonWork + otherRetained + target.CaptureBudgetBytes());
+            reserve(0);
         };
         // 一方未消费的旧水/悬崖规则仍要核最终身份；新阶段多用的固定表也查真实旧来源。
         supplement(result, original, finalReader); supplement(original, result, sourceReader);
