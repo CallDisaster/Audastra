@@ -141,10 +141,11 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const MapArchiveSession&
 Result<TerrainSavePlan> TerrainSavePlan::PrepareArchive(const MapArchiveSession& source,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot,
     const NativeResourceCapture* nativeCapture, std::span<const MemberReplacement> finalMembers,
-    std::span<const std::string> finalRemovals) {
+    std::span<const std::string> finalRemovals, bool nativeDependenciesChanged) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
+        plan.nativeDependenciesChanged_ = nativeDependenciesChanged;
         plan.sourceSha256_ = source.SourceSha256();
         ArchiveExactMemberLimits captureLimits;
         captureLimits.memberCount = kNames.size() + kInvariantNames.size();
@@ -194,10 +195,11 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareForSave(const WorkspaceSnapshot&
 Result<TerrainSavePlan> TerrainSavePlan::PrepareWorkspace(const WorkspaceSnapshot& source,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, const std::filesystem::path* gameRoot,
     const NativeResourceCapture* nativeCapture, std::span<const MemberReplacement> finalMembers,
-    std::span<const std::string> finalRemovals) {
+    std::span<const std::string> finalRemovals, bool nativeDependenciesChanged) {
     return Guard([&]() {
         CheckLimits(limits);
         TerrainSavePlan plan;
+        plan.nativeDependenciesChanged_ = nativeDependenciesChanged;
         plan.sourceSha256_ = source.aggregateSha256;
         std::size_t total = 0;
         for (std::size_t index = 0; index < kNames.size(); ++index) {
@@ -286,7 +288,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             && plan.invariantMembers_[known - kInvariantNames.begin()].sourceState == TerrainSaveSourceState::Present)
             mixedProof = true;
     }
-    mixedProof = mixedProof && plan.terrainChanged_;
+    mixedProof = (mixedProof && plan.terrainChanged_) || plan.nativeDependenciesChanged_;
     plan.saveGate_ = edits.VerifyTerrainPathingForSave();
     if (plan.saveGate_.Succeeded() && !edits.TerrainDirty() && edits.pathing_ != edits.pathingOriginal_) {
         const bool savedIntent = std::any_of(edits.originalPathingRestrictions_->begin(),
@@ -425,7 +427,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         AddBytes(edits.pathing_->size(), total, limits);
         setOutput(1, *edits.pathing_, "写出来源绑定的本工程通行限制与对应荒芜变化；原有限制、重叠限制和其它位保持，不作通用通行重建。");
     }
-    if (plan.terrainChanged_) {
+    if (plan.RequiresNativeVerification()) {
         constexpr std::array<std::string_view, 3> descriptions{
             "阴影没有重建，地形变化后的阴影外观仍需原版验证。",
             "小地图标记没有重建，标记内容与位置仍需原版验证。",

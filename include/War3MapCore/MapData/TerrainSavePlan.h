@@ -76,7 +76,7 @@ public:
     // worker拥有独立会话，因此这里逐字核对来源、当前W3E/WPM和完整限制意图。
     [[nodiscard]] Status CommitSaved(MapDataEditSession& edits, const MapDocument& saved) const;
     [[nodiscard]] const std::vector<Diagnostic>& Diagnostics() const noexcept { return diagnostics_; }
-    [[nodiscard]] bool RequiresNativeVerification() const noexcept { return terrainChanged_; }
+    [[nodiscard]] bool RequiresNativeVerification() const noexcept { return terrainChanged_ || nativeDependenciesChanged_; }
 
     // 准备阶段检查原会话、修订和来源。最终列表可包含其它领域成员，但五个地形成员
     // 必须精确符合本计划，不能在脚本模板、导入或删除阶段夹带派生数据覆盖。
@@ -109,11 +109,13 @@ private:
     [[nodiscard]] static Result<TerrainSavePlan> PrepareArchive(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
         const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr,
-        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {},
+        bool nativeDependenciesChanged = false);
     [[nodiscard]] static Result<TerrainSavePlan> PrepareWorkspace(const WorkspaceSnapshot& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
         const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr,
-        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {});
+        std::span<const MemberReplacement> finalMembers = {}, std::span<const std::string> finalRemovals = {},
+        bool nativeDependenciesChanged = false);
     [[nodiscard]] Status VerifyMissingMinimapEligibility(const MapDataEditSession& edits) const;
     [[nodiscard]] Status AdmitMissingMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     // 正常保存的自动小地图重建：仍受同一正式地形保存门和会话绑定约束，
@@ -134,6 +136,8 @@ private:
     std::string sourceSha256_;
     std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
     bool terrainChanged_ = false;
+    // 仅Services可信工厂在实际source/final依赖比较后设置；不伪造笔刷或W3E净差。
+    bool nativeDependenciesChanged_ = false;
     bool pathingInvariant_ = false;
     std::shared_ptr<const TerrainPathingResources> pathingResources_;
     std::vector<std::byte> nativePathingProtected_;
