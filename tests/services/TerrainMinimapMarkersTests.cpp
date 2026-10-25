@@ -541,6 +541,7 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
         }), "最后来源与输出门不得降级成自动能力警告");
     }
 }
+#include "TerrainMinimapMarkerObjectCases.h"
 }
 
 int main() {
@@ -552,6 +553,7 @@ int main() {
         OrdinarySaveRebuildsMarkersWithoutMapBlpOrTerrainPlan(); AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits();
         PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate(); PlanBudgetPreservesOriginalOutputWithoutPartialInstall();
         AdapterConflictsAndFrozenSourceRemainHardFailures(); BeforePublishCannotChangeMarkersOrConsumedDependencies();
+        MinimapMarkerObjectCoverageCases();
         std::cout << "Terrain MMP actual capture tests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

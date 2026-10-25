@@ -238,6 +238,9 @@ std::unique_ptr<NativeObjectDocument> Native(Context& context, std::string_view 
     if (!native || !native->IsStructurallySafe()
         || (native->Version() != 2 && !(type == ObjectType::Unit && native->Version() == 1)))
         Fail("TERRAIN_MMP_OBJECT_LAYOUT", "MMP只解释完整经典v2及已支持的单位v1原生物编：" + std::string(name));
+    if (std::any_of(parsed.diagnostics.begin(), parsed.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "native-object-id-duplicate" || diagnostic.code == "native-modification-duplicate";
+    })) Fail("TERRAIN_MMP_OBJECT_LAYOUT", "MMP不从重复对象或字段地址中猜测获胜记录：" + std::string(name));
     parsed.document.release();
     return std::unique_ptr<NativeObjectDocument>(native);
 }
@@ -272,9 +275,20 @@ public:
     }
     std::optional<std::int32_t> Type(const UnitPlacement& placement) {
         if (placement.rawcode == "sloc") return std::nullopt;
-        if (!data_.rows.contains(placement.rawcode) && !Record(units_.get(), ObjectType::Unit, placement.rawcode)) {
-            if (!items_) items_ = ReadTable(context_, "Units/ItemData.slk");
-            if (items_->rows.contains(placement.rawcode)) return std::nullopt;
+        if (!items_) {
+            items_ = ReadTable(context_, "Units/ItemData.slk");
+            nativeItems_ = Native(context_, "war3map.w3t", ObjectType::Item);
+        }
+        const auto* item = Record(nativeItems_.get(), ObjectType::Item, placement.rawcode);
+        const bool isUnit = data_.rows.contains(placement.rawcode) || Record(units_.get(), ObjectType::Unit, placement.rawcode);
+        const bool isItem = items_->rows.contains(placement.rawcode) || item;
+        if (isUnit && isItem)
+            Fail("TERRAIN_MMP_OBJECT_TYPE", "MMP摆放ID同时属于单位与物品，不能猜测类型：" + placement.rawcode);
+        if (isItem) {
+            ValidateItem(placement.rawcode, item);
+            return std::nullopt; // 单位DOO中存储的物品不生成单位建筑图标。
+        }
+        if (!isUnit) {
             Fail("TERRAIN_MMP_OBJECT_UNKNOWN", "MMP对象既无标准单位/物品定义也无已支持的原生单位父项：" + placement.rawcode);
         }
         const auto building = Integer(Effective(placement.rawcode, "isbldg", "UnitBalance", balance_), placement.rawcode);
@@ -296,8 +310,9 @@ private:
     Context& context_;
     Table data_, balance_, ui_, abilities_, abilityData_, metadata_;
     std::optional<Table> items_;
-    std::unique_ptr<NativeObjectDocument> units_, nativeAbilities_;
+    std::unique_ptr<NativeObjectDocument> units_, nativeAbilities_, nativeItems_;
     std::optional<ObjectFieldSchema> schema_;
+    std::set<std::string, std::less<>> verifiedUnitParents_;
 
     static std::int32_t Integer(std::string_view text, std::string_view object) {
         std::int32_t value = 0;
@@ -308,6 +323,19 @@ private:
     }
     const ObjectRecord* Record(const NativeObjectDocument* document, ObjectType type, std::string_view id) const {
         return document ? document->FindObject({type, std::string(id)}) : nullptr;
+    }
+    void ValidateItem(std::string_view rawcode, const ObjectRecord* record) const {
+        auto parent = rawcode;
+        if (record && record->parentRawcode) {
+            parent = *record->parentRawcode;
+            const auto* parentRecord = Record(nativeItems_.get(), ObjectType::Item, parent);
+            if (items_->rows.contains(rawcode) || (parentRecord && parentRecord->parentRawcode))
+                Fail("TERRAIN_MMP_INHERITANCE", "MMP物品需要唯一标准父，不解释自定义链或标准ID冲突。");
+        }
+        if (data_.rows.contains(parent) || Record(units_.get(), ObjectType::Unit, parent))
+            Fail("TERRAIN_MMP_OBJECT_TYPE", "MMP物品的标准父同时命中单位定义。");
+        if (!items_->rows.contains(parent))
+            Fail("TERRAIN_MMP_OBJECT_UNKNOWN", "MMP物品缺少实际标准父定义：" + std::string(rawcode));
     }
     const ObjectFieldDefinition& Field(std::string_view key, std::string_view table) const {
         if (!schema_) Fail("TERRAIN_MMP_METADATA", "原生单位覆盖缺少同次实际元数据。");
@@ -336,14 +364,37 @@ private:
             Fail("TERRAIN_MMP_METADATA", "MMP覆盖尚不解释对象选择器。");
         return *found;
     }
+    void ValidateUnitParent(const ObjectRecord& parent) {
+        if (verifiedUnitParents_.contains(parent.key.rawcode)) return;
+        Charge(context_.workingBytes, parent.modifications.size(), context_.limits.maximumWorkingBytes,
+            sizeof(ObjectModification));
+        Charge(context_.workingBytes, parent.key.rawcode.size() + 6 * sizeof(void*), context_.limits.maximumWorkingBytes);
+        for (const auto& modification : parent.modifications) {
+            const auto* definition = schema_ ? schema_->FindNative(ObjectType::Unit, modification.key.fieldId) : nullptr;
+            if (!definition) Fail("TERRAIN_MMP_METADATA", "MMP标准父覆盖包含没有实际元数据的字段。");
+            const auto& field = Field(definition->sourceField, definition->sourceTable);
+            if (field.fieldId != modification.key.fieldId || modification.valueWasOpaque
+                || modification.key.level.value_or(0) || modification.key.dataIndex.value_or(0)
+                || modification.key.variation.value_or(0) || !field.nativeValueType
+                || units_->ModificationValueType(parent.key, modification.key) != field.nativeValueType)
+                Fail("TERRAIN_MMP_OBJECT_TYPE", "MMP标准父覆盖没有唯一标量地址或实际wire类型不符。");
+        }
+        verifiedUnitParents_.insert(parent.key.rawcode);
+    }
     std::string Effective(std::string_view rawcode, std::string_view key, std::string_view table,
-        const Table& base) const {
+        const Table& base) {
         const auto* record = Record(units_.get(), ObjectType::Unit, rawcode);
         std::string_view parent = rawcode;
         if (record && record->parentRawcode) {
             parent = *record->parentRawcode;
-            if (Record(units_.get(), ObjectType::Unit, parent))
-                Fail("TERRAIN_MMP_INHERITANCE", "MMP暂不猜测有父覆盖或多层自定义单位的字段继承。");
+            const auto* parentRecord = Record(units_.get(), ObjectType::Unit, parent);
+            if (data_.rows.contains(rawcode) || (parentRecord && parentRecord->parentRawcode))
+                Fail("TERRAIN_MMP_INHERITANCE", "MMP单位需要唯一标准父，不解释多层自定义或标准ID冲突。");
+            if (items_->rows.contains(parent) || Record(nativeItems_.get(), ObjectType::Item, parent))
+                Fail("TERRAIN_MMP_OBJECT_TYPE", "MMP单位标准父同时属于物品。");
+            if (parentRecord) ValidateUnitParent(*parentRecord);
+            // 4FF800/500F70的catalog虚表使用5170C0/516FE0：只查原child覆盖，
+            // parent仅供最终标准SLK回退。直接摆放parent时才读取它自己的Original。
         }
         if (!data_.rows.contains(parent))
             Fail("TERRAIN_MMP_OBJECT_UNKNOWN", "MMP单位没有唯一标准定义：" + std::string(rawcode));
@@ -377,7 +428,7 @@ private:
         if (!value) return key == "isbldg" || key == "nbmmIcon" ? "0" : "";
         return *value;
     }
-    bool GoldMine(std::string_view rawcode) const {
+    bool GoldMine(std::string_view rawcode) {
         const auto list = Effective(rawcode, "abilList", "UnitAbilities", abilities_);
         if (list.size() > 127) Fail("TERRAIN_MMP_ABILITY_LIST", "MMP能力列表超过原版128字节getter的已支持无截断域。");
         // 500F70传给Storm504的真实分隔字符集，'_'也是空能力哨兵。
@@ -528,7 +579,7 @@ Captured CaptureMarkers(const MapArchiveSession& source, const std::filesystem::
     if (ordinary) {
         const std::vector<std::string> semantic{"UI/UnitEditorData.txt", "Units/UnitData.slk", "Units/UnitBalance.slk",
             "Units/UnitUI.slk", "Units/UnitAbilities.slk", "Units/AbilityData.slk", "Units/UnitMetaData.slk",
-            "Units/ItemData.slk", "war3map.w3u", "war3map.w3a"};
+            "Units/ItemData.slk", "war3map.w3u", "war3map.w3a", "war3map.w3t"};
         context.Phase(semantic);
         UnitSemantics semantics(context);
         for (const auto& unit : placements.units)
