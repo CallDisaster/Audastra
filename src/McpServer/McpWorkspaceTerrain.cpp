@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
+#include "War3MapCore/MapData/TerrainDoodadsJournal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -83,6 +84,16 @@ Status StrokeBudget(const std::vector<MapData::TerrainStrokeIntent>& strokes) {
     if (strokes.size() > 128) return Status::Failure("MCP", "TERRAIN_PATCH_STROKE_BUDGET", "目录事务最多累计 128 笔地形命令。");
     std::size_t points = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.blockPaste) {
+            // 无采样点只属于这个明确的typed变体；其余字段及实际源块仍由
+            // 共用ReplayStrokes逐项核验，不把空点升级为任意原字节命令。
+            MapData::TerrainStrokeIntent expected;
+            expected.blockPaste = stroke.blockPaste; expected.followDoodads = stroke.followDoodads;
+            if (!MapData::EqualTerrainJournalIntent(stroke, expected)
+                || !MapData::ValidateTerrainBlockPasteIntent(*stroke.blockPaste).Succeeded())
+                return Status::Failure("MCP", "TERRAIN_PATCH_BLOCK_INVALID", "地形块目录事务需要有效的独立矩形与实际源块摘要。");
+            continue;
+        }
         if (stroke.points.empty() || stroke.points.size() > 4096 - points)
             return Status::Failure("MCP", "TERRAIN_PATCH_POINT_BUDGET", "目录事务累计采样点超过 4096 或包含空笔划。");
         points += stroke.points.size();
@@ -289,8 +300,17 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     }
     auto overlay = activeEdit_->terrain;
     auto strokes = overlay->strokes;
-    strokes.push_back({plan.Plan().Brush(), {plan.Plan().Points().begin(), plan.Plan().Points().end()},
-        plan.Plan().FollowDoodads(), plan.WaterOptions()});
+    MapData::TerrainStrokeIntent intent;
+    intent.followDoodads = plan.Plan().FollowDoodads();
+    if (const auto* block = plan.Plan().BlockPasteIntent()) intent.blockPaste = *block;
+    else {
+        intent.brush = plan.Plan().Brush();
+        intent.points.assign(plan.Plan().Points().begin(), plan.Plan().Points().end());
+        intent.waterBrush = plan.WaterOptions();
+        intent.cornerRampAlgorithm = plan.Plan().CornerRampAlgorithm();
+        intent.straightRampAlgorithm = plan.Plan().StraightRampAlgorithm();
+    }
+    strokes.push_back(std::move(intent));
     const auto budget = StrokeBudget(strokes);
     if (!budget.Succeeded()) return Failed<Receipt>(budget);
     auto candidate = Replay(*initialMapData_, *terrainState_, strokes, mapDataSource_->Snapshot(), gameRoot_);
@@ -364,8 +384,24 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportTerrainArchiveCandidate
     const auto source = MatchArchiveSource(request, mapDataSource_->Snapshot(), *initialMapData_);
     if (!source.Succeeded()) return Failed<Receipt>(source);
     request.expectedTerrainSha256 = terrainState_->terrainFile.sha256;
-    for (const auto& stroke : overlay->strokes)
-        request.terrainStrokes.push_back({stroke.brush, stroke.points, Services::MapEditPointSpace::World, stroke.followDoodads, stroke.waterBrush});
+    if (overlay->strokes.size() != 1 && std::any_of(overlay->strokes.begin(), overlay->strokes.end(),
+            [](const auto& stroke) { return stroke.blockPaste.has_value(); }))
+        return Receipt::Failure("MCP", "MCP_TERRAIN_BLOCK_ARCHIVE_BATCH_UNSUPPORTED",
+            "地图归档保存暂只接受一笔独立地形块命令；混合目录事务请导出目录候选，或重新打开候选后保存地图。");
+    for (const auto& stroke : overlay->strokes) {
+        // 普通保存请求只采用当前结构算法；不能把旧算法的目录历史静默升级。
+        if ((stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp
+                && stroke.cornerRampAlgorithm != MapData::TerrainCornerRampAlgorithm::WetTerrain)
+            || (stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp
+                && stroke.straightRampAlgorithm != MapData::TerrainStraightRampAlgorithm::Connected))
+            return Receipt::Failure("MCP", "MCP_TERRAIN_ARCHIVE_ALGORITHM_UNSUPPORTED",
+                "地图保存入口不能完整表达当前目录历史的结构算法，请导出目录候选；未改写或升级旧命令。");
+        Services::MapEditTerrainStroke saved;
+        saved.brush = stroke.brush; saved.points = stroke.points;
+        saved.followDoodads = stroke.followDoodads; saved.waterBrush = stroke.waterBrush;
+        saved.blockPaste = stroke.blockPaste;
+        request.terrainStrokes.push_back(std::move(saved));
+    }
     request.beforePublish = guard;
     return Services::SaveMapEditCandidate(request);
 }
