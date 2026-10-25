@@ -217,11 +217,133 @@ void FormalSaveAsAndInPlaceRetainUndoRedo() {
         if (!inPlace) Require(Take(Sha256File(originalPath)) == originalSha, "SaveAs leaves original source archive unchanged");
     }
 }
+
+Bytes ConnectedDryPathingLiteral(std::initializer_list<unsigned> rampRows) {
+    auto bytes = PathingLiteral(false);
+    const auto rowHasRamp = [&](unsigned y) {
+        return std::find(rampRows.begin(), rampRows.end(), y) != rampRows.end();
+    };
+    // 原创纯直墙：完整相邻R行之间开放墙格；低侧仅单R端部有肩。
+    // 字面逐格展开完整WPM，保留作者11位，不从产品投影/分类器生成expected。
+    for (unsigned y = 0; y < 128; ++y) for (unsigned x = 0; x < 128; ++x) {
+        const auto cx = x / 4, cy = y / 4;
+        const bool a = rowHasRamp(cy), b = rowHasRamp(cy + 1);
+        const bool blocked = (cx == 16 && !(a && b)) || (cx == 17 && a != b);
+        bytes[16 + y * 128 + x] = blocked ? std::byte{0xdb} : std::byte{0x51};
+    }
+    return bytes;
+}
+
+void ConnectedHistoryReplayAndFormalSaveKeepIndependentSemantics() {
+    StraightFixture f;
+    for (auto& vertex : f.grid.vertices) vertex.textureAndFlagsRaw = 0;
+    RefreshTerrainDerived(f.grid, 0, 0, 33, 33);
+    f.members[0].data = Take(SerializeMapTerrain(f.grid)); f.members[1].data = ConnectedDryPathingLiteral({});
+    f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(
+        f.root / "connected-source.w3x", f.members)).path)));
+    f.edits = f.FreshSession();
+    const auto sourcePath = f.source->SourcePath(); const auto sourceSha = f.source->SourceSha256();
+    const TerrainStrokePoint adjacent{f.point.x, f.point.y + 128};
+    const auto literal = [&](bool second) {
+        auto grid = f.grid;
+        for (const unsigned row : {16u, 17u}) if (row == 16 || second)
+            for (unsigned x = 16; x <= 18; ++x) grid.vertices[row * 33 + x].textureAndFlagsRaw |= 0x10;
+        return Take(SerializeMapTerrain(grid));
+    };
+    const auto first = Take(PrepareTerrainStraightRampEdit(*f.edits, f.Document(), f.Binding(), f.Rules(),
+        StraightBrush(), std::span(&f.point, 1), false));
+    Take(ApplyTerrainEdit(*f.edits, f.Document(), first));
+    Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == literal(false), "first independent strip matches exact raw literal");
+    const auto beforeSecond = f.edits->Revision();
+    Require(!PrepareTerrainStraightRampEdit(*f.edits, f.Document(), f.Binding(), f.Rules(),
+        StraightBrush(), std::span(&adjacent, 1), false).Succeeded()
+        && f.edits->Revision() == beforeSecond,
+        "default and FTJB independent algorithm still reject adjoining old R records");
+    const auto connected = Take(PrepareTerrainStraightRampEdit(*f.edits, f.Document(), f.Binding(), f.Rules(),
+        StraightBrush(), std::span(&adjacent, 1), false, {}, TerrainStraightRampAlgorithm::Connected));
+    Require(connected.Plan().WaterPreparationWork() > 0 && connected.Plan().WaterPreparationBytes() > 0,
+        "connected preparation retains actual rule and transaction work/memory accounting");
+    Require(!ApplyTerrainEdit(*f.edits, f.Document(), connected, [](const auto&) {
+        return Status::Failure("test", "REJECT_CONNECTED_PREPUBLISH", "prepublish rejection");
+    }).Succeeded() && f.edits->Revision() == beforeSecond
+        && Take(SerializeMapTerrain(*f.edits->Terrain())) == literal(false),
+        "prepublish refusal cannot publish a connected prefix or consume revision");
+    Take(ApplyTerrainEdit(*f.edits, f.Document(), connected));
+    Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == literal(true)
+        && !ApplyTerrainEdit(*f.edits, f.Document(), connected).Succeeded(),
+        "connected adds exactly one adjacent row and its sealed candidate cannot be reused");
+    const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    Require(wire[3] == std::byte{'C'} && journal.strokes.size() == 2
+        && journal.strokes[0].intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Independent
+        && journal.strokes[1].intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected,
+        "actual mixed independent/connected history uses FTJC without relabelling the first receipt");
+    const auto restored = Take(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members),
+        f.members[0].data, f.members[1].data, Take(DecodeTerrainStrokeJournal(wire)), *f.edits, f.game));
+    Require(restored.receipts.size() == 2 && restored.waterOwners.size() == 2
+        && restored.session->MatchesTerrainJournalDraft(*f.edits)
+        && Take(SerializeMapTerrain(*restored.session->Terrain())) == literal(true),
+        "cold restore executes both algorithms with actual source owners and the complete expected draft");
+    Require(restored.session->Replay(restored.receipts[1], false).Succeeded()
+        && Take(SerializeMapTerrain(*restored.session->Terrain())) == literal(false)
+        && restored.session->Replay(restored.receipts[1], true).Succeeded()
+        && Take(SerializeMapTerrain(*restored.session->Terrain())) == literal(true),
+        "restored connected receipt undoes only its own adjacent row and redoes it exactly");
+    auto downgraded = journal; downgraded.strokes[1].intent.straightRampAlgorithm = TerrainStraightRampAlgorithm::Independent;
+    Require(Take(EncodeTerrainStrokeJournal(downgraded))[3] == std::byte{'B'}
+        && !TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
+            f.members[1].data, downgraded, *f.edits, f.game).Succeeded(),
+        "downgrading a connected history to old independent semantics cannot restore the expected draft");
+    auto drifted = journal; drifted.strokes[1].rulesSha256.assign(64, 'f');
+    Require(!TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
+        f.members[1].data, drifted, *f.edits, f.game).Succeeded(), "second connected rule drift cannot install a replay prefix");
+    auto invalid = journal.strokes[1].intent; invalid.brush.kind = TerrainBrushKind::Raise;
+    const std::array invalidIntents{invalid};
+    Require(!TerrainPathingSave::ReplayStrokes(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
+        f.members[1].data, invalidIntents, f.game).Succeeded(), "public replay refuses connected metadata on an unrelated brush");
+    TerrainWaterBrushLimits tight; tight.maximumCandidateBytes = 1;
+    Require(!PrepareTerrainStraightRampEdit(*f.edits, f.Document(), f.Binding(), f.Rules(),
+        StraightBrush(false), std::span(&adjacent, 1), false, tight, TerrainStraightRampAlgorithm::Connected).Succeeded(),
+        "connected cannot borrow missing candidate memory from its resource owner");
+    const auto removal = Take(PrepareTerrainStraightRampEdit(*f.edits, f.Document(), f.Binding(), f.Rules(),
+        StraightBrush(false), std::span(&adjacent, 1), false, {}, TerrainStraightRampAlgorithm::Connected));
+    Take(ApplyTerrainEdit(*f.edits, f.Document(), removal));
+    Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == literal(false)
+        && f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == literal(true),
+        "connected removal preserves the neighbouring independent row, with an exact single Undo");
+    const auto save = [&](bool second, const char* name) {
+        const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
+        Require(plan.SaveGate().Succeeded(), "connected formal save must pass the same native G0/G1 gate");
+        MapSaveTask task; Require(task.FreezeArchive(*f.source).Succeeded(), "connected formal save freezes actual source");
+        task.target = f.root / name; task.replacements = f.edits->Replacements(); task.removals = f.edits->Removals();
+        Require(plan.InstallPathingOutput(*f.edits, task.replacements).Succeeded(), "connected installs the verified complete WPM");
+        task.beforePublish = [&] { return plan.VerifyForSave(*f.edits, task.sourceSha256, task.replacements, task.removals); };
+        MapSaveService::Run(task);
+        Require(task.executed && task.succeeded && task.nextSession, "connected formal save publishes and reopens the archive");
+        auto readback = Take(MapArchiveSession::Open(task.written));
+        Require(plan.VerifyReadback(readback).Succeeded()
+            && Take(readback.ReadMember("war3map.w3e")) == literal(second)
+            && Take(readback.ReadMember("war3map.wpm")) == (second ? ConnectedDryPathingLiteral({16, 17}) : ConnectedDryPathingLiteral({16}))
+            && Take(readback.ReadMember("war3mapUnits.doo")) == f.members[3].data
+            && Take(readback.ReadMember("war3map.doo")) == f.members[4].data,
+            "connected save reads every W3E/WPM byte against literals and preserves both complete placement streams");
+        for (const auto& member : f.members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm")
+            Require(Take(readback.ReadMember(member.name)) == member.data, "connected preserves all unrelated authored members");
+        Require(plan.CommitSaved(*f.edits, MapDocument::FromArchive(readback)).Succeeded() && !f.edits->IsDirty(),
+            "connected saved baseline retains the same source-aware history");
+        f.source = std::make_unique<MapArchiveSession>(std::move(readback));
+    };
+    save(true, "connected-created.w3x");
+    Require(f.edits->Undo(), "connected Undo remains available after SaveAs"); save(false, "connected-undone.w3x");
+    Require(f.edits->Redo(), "connected Redo remains available after saved Undo"); save(true, "connected-redone.w3x");
+    Require(Take(Sha256File(sourcePath)) == sourceSha, "all connected SaveAs and replay operations preserve the original source archive");
+}
 } // namespace
 
 void CheckTerrainStraightRampContracts() {
     CompleteLiteralGridsAndThresholds(); FourDirectionsAndDryCompatibility(); RejectedDomainsAndBudgetsAreAtomic();
     SourceBoundHistoryAndColdRecovery(); FormalSaveAsAndInPlaceRetainUndoRedo();
+    ConnectedHistoryReplayAndFormalSaveKeepIndependentSemantics();
 }
 } // namespace War3Map::TerrainStraightRampTests
 

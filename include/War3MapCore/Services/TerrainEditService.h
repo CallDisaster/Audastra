@@ -61,7 +61,7 @@ private:
     friend Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
         const MapData::TerrainBrush&, std::span<const MapData::TerrainStrokePoint>, bool,
-        const MapData::TerrainWaterBrushLimits&);
+        const MapData::TerrainWaterBrushLimits&, MapData::TerrainStraightRampAlgorithm);
 };
 
 // 宿主在同一串行临界区提供实际文档身份；服务不读盘、不替宿主猜来源或修订。
@@ -102,7 +102,8 @@ private:
     const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
     const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
-    bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {});
+    bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {},
+    MapData::TerrainStraightRampAlgorithm algorithm = MapData::TerrainStraightRampAlgorithm::Independent);
 [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(
     MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const PreparedTerrainEdit& prepared,
