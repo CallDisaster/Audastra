@@ -96,7 +96,7 @@ bool MainWindow::SaveEditorProjectToPath(const std::filesystem::path& target, bo
     const bool draftOnly = std::any_of(written.diagnostics.begin(), written.diagnostics.end(), [](const auto& diagnostic) {
         return diagnostic.code == "TERRAIN_JOURNAL_DRAFT_ONLY";
     });
-    statusBar()->showMessage(draftOnly ? tr("工程草稿已保存 · 水刷来源未恢复")
+    statusBar()->showMessage(draftOnly ? tr("工程草稿已保存 · 地形历史或来源未恢复")
         : recovery ? tr("已保存恢复点") : tr("工程已保存 · %1").arg(Path(target.filename())), draftOnly ? 15000 : 5000);
     return true;
 }
