@@ -21,6 +21,8 @@
 #include "TerrainPlayableBoundsRealTests.h"
 #include "TerrainShadowRealTests.h"
 #include "TerrainCategoryDirectoryRealTests.h"
+#include "TerrainInnerCornerRampRealCases.h"
+#include "TerrainPathingAdaptersRealCases.h"
 #include "TerrainUnitPlacementRealTests.h"
 #include "TerrainCliffTransportSaveTests.h"
 #include "TerrainBoundaryRealTests.h"
@@ -465,7 +467,7 @@ void FixedRotationUsesPublicSave(const MapArchiveSession& original, const std::f
     }
 }
 
-enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary };
+enum class RealSaveGroup { Objects, ExistingRamps, Shadows, UnitPlacements, Boundary, PathingAdapters };
 #include "TerrainFinalInputsRealCases.h"
 
 void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const std::filesystem::path& game,
@@ -491,6 +493,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             TerrainSaveTests::CheckRealExistingRampCliffSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealExistingRampWaterSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealCornerRampSave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealInnerCornerRampSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealStraightRampSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealConnectedStraightRampSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealPlayableBoundsSave(original, directory.path, tool, game);
@@ -507,6 +510,10 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         if (group == RealSaveGroup::Boundary) {
             TerrainSaveTests::CheckRealTerrainBoundarySave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealTerrainBlockSave(original, directory.path, tool, game);
+            return;
+        }
+        if (group == RealSaveGroup::PathingAdapters) {
+            TerrainSaveTests::CheckRealTerrainPathingCliSave(original, directory.path, tool, game);
             return;
         }
         const auto sourceScript = Take(original.ReadMember("war3map.j"));
@@ -807,7 +814,8 @@ int main(int argc, char** argv) {
         else if (argc == 2 && std::string_view(argv[1]) == "--shadows") group = RealSaveGroup::Shadows;
         else if (argc == 2 && std::string_view(argv[1]) == "--unit-placement") group = RealSaveGroup::UnitPlacements;
         else if (argc == 2 && std::string_view(argv[1]) == "--boundary") group = RealSaveGroup::Boundary;
-        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows, --unit-placement or --boundary");
+        else if (argc == 2 && std::string_view(argv[1]) == "--pathing-adapters") group = RealSaveGroup::PathingAdapters;
+        else Require(argc == 1, "expected no arguments, --existing-ramps, --shadows, --unit-placement, --boundary or --pathing-adapters");
         const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
         const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
         if (tool.empty() || game.empty()) {

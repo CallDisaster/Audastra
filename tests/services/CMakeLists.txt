@@ -346,8 +346,10 @@ add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainFinalInputsRealCases.h TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
     TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp
     TerrainUnitPlacementRealTests.cpp TerrainCliffTransportSaveTests.cpp TerrainBoundaryRealTests.cpp TerrainRemoveWaterRealTests.cpp
-    TerrainBlockSaveRealTests.cpp TerrainBlockSaveRealTests.h)
-target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services)
+    TerrainBlockSaveRealTests.cpp TerrainBlockSaveRealTests.h TerrainInnerCornerRampRealCases.h TerrainPathingAdaptersRealCases.h
+    "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
+target_include_directories(audastra-terrain-native-object-real-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Cli")
+target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services audastra-json)
 target_compile_definitions(audastra-terrain-native-object-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-native-object-real COMMAND audastra-terrain-native-object-real-tests)
@@ -356,8 +358,10 @@ add_test(NAME services-terrain-existing-ramp-real COMMAND audastra-terrain-nativ
 add_test(NAME services-terrain-shadow-real COMMAND audastra-terrain-native-object-real-tests --shadows)
 add_test(NAME services-terrain-units-real COMMAND audastra-terrain-native-object-real-tests --unit-placement)
 add_test(NAME services-terrain-boundary-real COMMAND audastra-terrain-native-object-real-tests --boundary)
+add_test(NAME services-terrain-pathing-adapters-real COMMAND audastra-terrain-native-object-real-tests --pathing-adapters)
 set_tests_properties(services-terrain-existing-ramp-real services-terrain-shadow-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 set_tests_properties(services-terrain-units-real services-terrain-boundary-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
+set_tests_properties(services-terrain-pathing-adapters-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 
 add_executable(audastra-terrain-cliff-palette-real-tests TerrainCliffPaletteRealTests.cpp)
 target_link_libraries(audastra-terrain-cliff-palette-real-tests PRIVATE War3MapEditor::Services)
