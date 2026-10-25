@@ -313,6 +313,13 @@ Result<NativeTerrainDependencyDescription> InspectNativeTerrainDependencies(
             return std::tie(a.special, a.rawcode) < std::tie(b.special, b.rawcode);
         });
         result.workBytes = inputs.work;
+        result.retainedBytes = sizeof(result) + result.objects.capacity() * sizeof(NativeTerrainDependencyType);
+        for (const auto& object : result.objects)
+            result.retainedBytes += object.rawcode.capacity() + object.parentRawcode.capacity()
+                + object.pathTexture.capacity() + object.category.capacity() + object.unknownFieldsSha256.capacity() + 5;
+        if (result.retainedBytes > maximumWorkingBytes)
+            Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "通行依赖返回正文超过本阶段预算。");
+        result.workBytes = std::max(result.workBytes, result.retainedBytes);
         return Output::Success(std::move(result));
     } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) { return Output::Failure("Terrain.NativeObjects", "TERRAIN_NATIVE_OBJECT_BUDGET", "通行依赖分配失败。"); }
