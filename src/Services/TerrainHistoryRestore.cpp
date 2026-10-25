@@ -169,8 +169,17 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
     if (!manifest.Succeeded()) return {{}, manifest.diagnostics};
     std::optional<ArchiveExactMember> physicalShadow;
     const std::array<std::string, 1> shadowNames{"war3map.shd"};
+    auto shadowReadLimits = readLimits;
+    shadowReadLimits.memberCount = shadowNames.size();
     if (history.baselineShadow) {
-        auto read = physicalReader(shadowNames, readLimits);
+        // 十成员已占用读取、驻留和比较预算，SHD必须用扣费后的余额读前限额。
+        // 最终回读复用此帽；零余额直接拒绝，不能交给reader解释为默认上限。
+        shadowReadLimits.memberBytes = shadowReadLimits.totalBytes = std::min({readLimits.memberBytes,
+            readLimits.totalBytes, remaining.maximumResourceBytes,
+            remaining.maximumCandidateBytes / 3, remaining.maximumWork / 4});
+        if (!shadowReadLimits.totalBytes)
+            return Failure("TERRAIN_REPLAY_BUDGET", "实际保存站SHD读取没有剩余预算。");
+        auto read = physicalReader(shadowNames, shadowReadLimits);
         if (!read.Succeeded() || !read.value) return HistoryFailure(std::move(read.diagnostics));
         if (read.value->size() != 1 || read.value->front().name != shadowNames.front()
             || (!read.value->front().present && !read.value->front().bytes.empty()))
@@ -417,7 +426,7 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
     if (!TerrainReplayDetail::SourceMatches(original, terrain, pathing, *finalActual.value))
         return Failure("TERRAIN_HISTORY_SOURCE_MISMATCH", "恢复期间实际来源发生变化，未安装任何前缀。");
     if (physicalShadow) {
-        auto finalShadow = physicalReader(shadowNames, readLimits);
+        auto finalShadow = physicalReader(shadowNames, shadowReadLimits);
         if (!finalShadow.Succeeded() || !finalShadow.value) return HistoryFailure(std::move(finalShadow.diagnostics));
         if (finalShadow.value->size() != 1 || finalShadow.value->front().name != physicalShadow->name
             || finalShadow.value->front().present != physicalShadow->present || finalShadow.value->front().bytes != physicalShadow->bytes)
