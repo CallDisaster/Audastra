@@ -14,8 +14,8 @@ void TestTerrainResizeSaveTransport() {
         auto invalid = resize; invalid.remove(field); Code(call(invalid), "MCP_INTEGER_REQUIRED");
         invalid = resize; invalid[field] = 1.5; Code(call(invalid), "MCP_INTEGER_INVALID");
         invalid = resize; invalid[field] = "32"; Code(call(invalid), "MCP_INTEGER_REQUIRED");
-        invalid = resize; invalid[field] = 2147483648.0; Code(call(invalid), "MCP_MAP_EDIT_RESIZE_INVALID");
-        invalid = resize; invalid[field] = -2147483649.0; Code(call(invalid), "MCP_MAP_EDIT_RESIZE_INVALID");
+        invalid = resize; invalid[field] = 2147483648.0; Code(call(invalid), "MCP_INTEGER_INVALID");
+        invalid = resize; invalid[field] = -2147483649.0; Code(call(invalid), "MCP_INTEGER_INVALID");
     }
     for (const char* field : {"raw", "algorithm", "rules", "rules_sha256", "verified", "move_objects", "clip", "points", "follow_doodads"}) {
         auto invalid = resize; invalid[field] = true; Code(call(invalid), "MCP_MAP_EDIT_FIELD_UNSUPPORTED");
