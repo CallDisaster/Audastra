@@ -116,7 +116,7 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
         && water.size >= 1 && water.size <= 8 && water.cliffTexture < 15
         && (water.algorithm == TerrainWaterAlgorithm::LegacyFlat || water.algorithm == TerrainWaterAlgorithm::NativeRamps);
 }
-bool Valid(const TerrainStrokeJournal& journal) {
+template<class Journal> bool Valid(const Journal& journal) {
     if (!Sha(journal.sourceSha256) || journal.members.size() != TerrainJournalMemberNames.size()
         || journal.strokes.empty() || journal.strokes.size() > 128
         || journal.baselinePathingLayers.size() > TerrainJournalMaximumBytes - 128 * 1024) return false;
@@ -183,6 +183,19 @@ template<class T> Result<T> Failed() {
     return Result<T>::Failure("Terrain.Journal", "TERRAIN_JOURNAL_INVALID", "地形前向记录版本、结构、来源身份或累计预算无效，未恢复任何命令。");
 }
 } // namespace
+
+Status detail::ValidateTerrainJournalParts(std::string_view sourceSha256,
+    std::span<const TerrainJournalMember> members, std::span<const std::byte> baselinePathingLayers,
+    std::span<const TerrainJournalStroke> strokes) {
+    struct View {
+        std::string_view sourceSha256;
+        std::span<const TerrainJournalMember> members;
+        std::span<const std::byte> baselinePathingLayers;
+        std::span<const TerrainJournalStroke> strokes;
+    };
+    return Valid(View{sourceSha256, members, baselinePathingLayers, strokes})
+        ? Status::Ok() : Status{Failed<TerrainStrokeJournal>().diagnostics};
+}
 
 Status ValidateTerrainStrokeJournal(const TerrainStrokeJournal& journal) {
     if (journal.history) return detail::ValidateTerrainHistoryJournal(journal);
