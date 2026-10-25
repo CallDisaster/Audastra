@@ -5380,7 +5380,7 @@ int main(int argc, char** argv) {
         if (!arguments[index].startsWith("--case-group=")) { ++index; continue; }
         if (!group.isEmpty()) return 2;
         group = arguments.takeAt(index).mid(qsizetype(sizeof("--case-group=") - 1));
-        if (group != "base" && group != "native-pathing" && group != "derived" && group != "terrain-units"
+        if (group != "base" && group != "native-pathing" && group != "native-objects" && group != "derived" && group != "terrain-units"
             && group != "terrain-palette" && group != "terrain-doodads" && group != "terrain-static-inputs") return 2;
     }
     if (!group.isEmpty()) {
@@ -5399,8 +5399,9 @@ int main(int argc, char** argv) {
                 return QStringLiteral("terrain-units");
             for (const auto* prefix : {"TerrainShadow", "AutomaticMinimap", "MissingMinimap", "DeclaredMissingMinimap"})
                 if (name.startsWith(prefix)) return QStringLiteral("derived");
-            for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "NativePathing",
-                    "PlacementHeight", "PathingIntent", "LegacyPathing", "NativeObjectCatalog", "StraightRamp", "DualStage"})
+            for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "PlacementHeight", "NativeObjectCatalog"})
+                if (name.startsWith(prefix)) return QStringLiteral("native-objects");
+            for (const auto* prefix : {"NativePathing", "PathingIntent", "LegacyPathing", "StraightRamp", "DualStage"})
                 if (name.startsWith(prefix)) return QStringLiteral("native-pathing");
             return QStringLiteral("base");
         };
