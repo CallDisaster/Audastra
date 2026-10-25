@@ -160,6 +160,8 @@ Result<TerrainSessionResources> TerrainSessionResources::Capture(const Workspace
 
 Result<TerrainSessionResources> TerrainSessionResources::Capture(const WorkspaceSnapshot& source,
     const MapData::MapDataEditSession& session, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    if (!maximumBytes || maximumBytes > HardBytes)
+        return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_BUDGET", "当前结构捕获预算只能在64MiB内收紧。"));
     std::size_t copiedBytes = 0;
     auto frozen = session.FreezeForSave(maximumBytes, &copiedBytes);
     if (!frozen.Succeeded() || !frozen.value) return {{}, std::move(frozen.diagnostics)};
@@ -168,10 +170,11 @@ Result<TerrainSessionResources> TerrainSessionResources::Capture(const Workspace
 
 Result<TerrainSessionResources> TerrainSessionResources::Capture(std::shared_ptr<const MapArchiveSession> source,
     const MapData::MapDataEditSession& session, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    if (!source || !maximumBytes || maximumBytes > HardBytes)
+        return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_BUDGET", "当前结构捕获需要真实归档和64MiB内的预算。"));
     std::size_t copiedBytes = 0;
     auto frozen = session.FreezeForSave(maximumBytes, &copiedBytes);
     if (!frozen.Succeeded() || !frozen.value) return {{}, std::move(frozen.diagnostics)};
-    if (!source) return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_INPUT", "当前结构资源缺少实际地图归档。"));
     return CaptureInputs([source = std::move(source)](auto names, const auto& limits) {
         return source->CaptureExactMembers(names, limits);
     }, std::move(*frozen.value), gameRoot, maximumBytes, copiedBytes);
