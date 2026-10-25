@@ -183,6 +183,7 @@ inline void SavedBakeIsUsedByFollowingResizeAndUndo() {
         "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=480\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"
         "[Light]\nDirection=3,0,-4\n")));
     Resize(fixture, Intent(-32, 0, 32, 32));
+    const auto historyLease = Take(fixture.edits->PrepareTerrainHistoryForSave());
     auto output = fixture.edits->Replacements();
     auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot, {}, output));
     Check(plan.SaveGate()); Check(plan.InstallPathingOutput(*fixture.edits, output));
@@ -196,6 +197,10 @@ inline void SavedBakeIsUsedByFollowingResizeAndUndo() {
     auto saved = Take(MapArchiveSession::Open(Take(fixture.archive->SaveCandidate(fixture.directory / "resized-baked.w3x", output)).path));
     Check(plan.VerifyReadback(saved)); Check(bake->VerifyReadback(saved));
     Check(plan.CommitSaved(*fixture.edits, MapDocument::FromArchive(saved)));
+    Require(HasCode(fixture.edits->CommitTerrainHistorySave(historyLease), "TERRAIN_HISTORY_EPOCH_LIMIT"),
+        "first actual Bake save cannot install an unreproducible migration-only history station");
+    Require(HasCode({fixture.edits->ExportTerrainHistoryJournal().diagnostics}, "TERRAIN_HISTORY_NOT_AVAILABLE"),
+        "rejected optional first history leaves no invalid FTJH epoch");
     fixture.archive = std::make_unique<MapArchiveSession>(std::move(saved));
     const auto written = Take(fixture.archive->ReadMember("war3map.shd"));
     Require(Take(fixture.edits->TerrainResizeShadowDraft()).bytes == written && !fixture.edits->IsDirty(),
@@ -208,6 +213,48 @@ inline void SavedBakeIsUsedByFollowingResizeAndUndo() {
         "undo following resize restores actual saved bake");
     Require(fixture.edits->Undo() && Take(fixture.edits->TerrainResizeShadowDraft()).bytes == ShadowLiteral(),
         "undo across saved shape restores exact original disk SHD");
+}
+
+inline void RepeatedHistorySaveChecksActualShadow(bool sourceShadowPresent) {
+    Fixture fixture(false, sourceShadowPresent);
+    Check(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", Text(
+        "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=480\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"
+        "[Light]\nDirection=3,0,-4\n")));
+    Resize(fixture, Intent(-32, 0, 32, 32));
+    const auto save = [&](bool bakeShadow, unsigned ordinal) {
+        const auto lease = Take(fixture.edits->PrepareTerrainHistoryForSave());
+        const auto expectedShadow = Take(fixture.edits->TerrainResizeShadowDraft());
+        auto output = fixture.edits->Replacements();
+        auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot, {}, output));
+        Check(plan.SaveGate()); Check(plan.InstallPathingOutput(*fixture.edits, output));
+        if (bakeShadow) {
+            const auto bake = Take(War3Map::Services::TerrainShadowBake::Capture(*fixture.archive, fixture.gameRoot, output));
+            Require(bake->Bytes() != expectedShadow.bytes, "synthetic actual Bake differs from migrated source shadow");
+            Check(bake->AdmitToPlan(plan, *fixture.edits));
+            std::erase_if(output, [](const auto& item) { return item.name == "war3map.shd"; });
+            output.push_back({"war3map.shd", bake->Bytes()});
+        }
+        Check(plan.VerifyForSave(*fixture.edits, fixture.archive->SourceSha256(), output));
+        auto saved = Take(MapArchiveSession::Open(Take(fixture.archive->SaveCandidate(fixture.directory
+            / ("resize-repeat-" + std::to_string(ordinal) + ".w3x"), output)).path));
+        Check(plan.VerifyReadback(saved));
+        const std::array<std::string, 1> shadowNames{"war3map.shd"};
+        const auto writtenShadow = Take(saved.CaptureExactMembers(shadowNames)).front();
+        const bool sameShadow = writtenShadow.present == expectedShadow.present && writtenShadow.bytes == expectedShadow.bytes;
+        Require(bakeShadow ? !sameShadow : sameShadow,
+            "independent actual archive readback establishes whether saved shadow is the same");
+        Check(plan.CommitSaved(*fixture.edits, MapDocument::FromArchive(saved)));
+        const auto installed = fixture.edits->CommitTerrainHistorySave(lease);
+        Require(bakeShadow ? HasCode(installed, "TERRAIN_HISTORY_EPOCH_LIMIT") : installed.Succeeded(),
+            "same shadow supports first and repeated history save, changed actual shadow only rejects optional history");
+        const auto effectiveShadow = Take(fixture.edits->TerrainResizeShadowDraft());
+        Require(!fixture.edits->IsDirty() && effectiveShadow.present == writtenShadow.present && effectiveShadow.bytes == writtenShadow.bytes,
+            "optional history refusal preserves successful map save and its actual shadow baseline");
+        fixture.archive = std::make_unique<MapArchiveSession>(std::move(saved));
+    };
+    save(false, 0); save(false, 1); save(true, 2);
+    Require(HasCode({fixture.edits->ExportTerrainHistoryJournal().diagnostics}, "TERRAIN_HISTORY_EPOCH_LIMIT"),
+        "changed station shadow never exports an FTJH that cannot reconstruct physical source");
 }
 
 inline void CurrentResourcesSupportMixedHistoryAndActualSave() {
@@ -391,6 +438,8 @@ inline void TestTerrainResizeJournalCases() {
     CroppedPathingCannotResurrectAtSameShape();
     RawDraftHasNoSaveAuthorityAndShadowIsCompared();
     SavedBakeIsUsedByFollowingResizeAndUndo();
+    RepeatedHistorySaveChecksActualShadow(true);
+    RepeatedHistorySaveChecksActualShadow(false);
     CurrentResourcesSupportMixedHistoryAndActualSave();
     SavedResizeSuffixRestoresFromCurrentStructure();
 }

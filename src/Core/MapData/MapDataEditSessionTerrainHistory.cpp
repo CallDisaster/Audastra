@@ -129,6 +129,15 @@ Status MapDataEditSession::CommitTerrainHistorySave(const TerrainHistorySaveLeas
         || original_ != lease.checkpoint_->current_
         || originalPathingRestrictions_ != lease.checkpoint_->pathingRestrictions_)
         return fail("TERRAIN_HISTORY_LEASE_STALE");
+    if (resizeState_ || lease.checkpoint_->resizeState_) {
+        const auto* expectedShadow = lease.checkpoint_->TerrainHistoryShadow();
+        const auto* actualShadow = TerrainHistoryShadow();
+        // typed历史能重放扩裁迁移，不能凭保存成功推造另一次显式Bake。
+        // 首次和重复保存都须能重现实际SHD；不相同只停用可选冷历史，地图已保存。
+        if (!expectedShadow || !actualShadow || expectedShadow->name != actualShadow->name
+            || expectedShadow->present != actualShadow->present || expectedShadow->bytes != actualShadow->bytes)
+            return fail("TERRAIN_HISTORY_EPOCH_LIMIT");
+    }
     if (lease.previousEpoch_) {
         const auto sameLayer = [](const auto& a, const auto& b) { return bool(a) == bool(b) && (!a || *a == *b); };
         // 未编辑的重复保存只有真实读回基线完全相同才能保留原station；
