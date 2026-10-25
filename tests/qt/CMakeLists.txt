@@ -611,7 +611,7 @@ target_compile_options(war3-map-editor-project-tests PRIVATE /W4 /permissive- /u
 set(editor_project_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-$<CONFIG>.qtest.txt")
 add_test(NAME qt-editor-project COMMAND war3-map-editor-project-tests
     --case-group=base -o -,txt -o "${editor_project_log},txt")
-set_tests_properties(qt-editor-project PROPERTIES TIMEOUT 30
+set_tests_properties(qt-editor-project PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ATTACHED_FILES_ON_FAIL "${editor_project_log}"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
@@ -619,7 +619,7 @@ foreach(editor_project_group IN ITEMS native-pathing native-objects derived terr
     set(editor_project_group_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-${editor_project_group}-$<CONFIG>.qtest.txt")
     add_test(NAME qt-editor-project-${editor_project_group} COMMAND war3-map-editor-project-tests
         --case-group=${editor_project_group} -o -,txt -o "${editor_project_group_log},txt")
-    set_tests_properties(qt-editor-project-${editor_project_group} PROPERTIES TIMEOUT 30
+    set_tests_properties(qt-editor-project-${editor_project_group} PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         ATTACHED_FILES_ON_FAIL "${editor_project_group_log}"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endforeach()

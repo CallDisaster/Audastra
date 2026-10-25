@@ -35,6 +35,7 @@
 #include "../support/TerrainBoundsFixture.h"
 
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -5366,7 +5367,7 @@ void EditorProjectTests::OwnedLuaProjectRecoveryPreservesPayloadRoleAndMapGate()
 }
 
 int main(int argc, char** argv) {
-    QCoreApplication application(argc, argv);
+    QGuiApplication application(argc, argv);
     QTemporaryDir settingsRoot;
     if (!settingsRoot.isValid()) return 2;
     // 保存链读取真正的设置；本夹具的设置和备份均归临时根所有，不能碰作者配置。
