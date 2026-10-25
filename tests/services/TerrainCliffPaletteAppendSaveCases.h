@@ -75,17 +75,19 @@ void CliffAppendJournalCombinesGroundWaterAndSavedUndo() {
             && recovered.session->MatchesTerrainJournalDraft(*raw), "mixed redo restores exact complete resource scope");
         f.edits = std::move(recovered.session);
         f.SaveExpected("cliff-ground-water-final.w3x", terrains[3], OrdinarySpecialExpectedPathing(f, true, false), &doodads[3], true);
+        // 第三步只追加未被顶点引用的地面槽；保存后的撤销/重做可凭实际表保留WPM。
+        // 悬崖槽和水刷仍必须各自通过完整原版G0/G1重建。
         for (unsigned step = 3; step > 0; --step) {
             Require(f.edits->Undo(), "each header/water command remains undoable after native save");
             const bool water = step - 1 >= (appendFirst ? 2u : 1u);
             const auto name = "cliff-ground-water-undo-" + std::to_string(step) + ".w3x";
-            f.SaveExpected(name.c_str(), terrains[step - 1], OrdinarySpecialExpectedPathing(f, water, false), &doodads[step - 1], true);
+            f.SaveExpected(name.c_str(), terrains[step - 1], OrdinarySpecialExpectedPathing(f, water, false), &doodads[step - 1], true, step != 3);
         }
         for (unsigned step = 1; step <= 3; ++step) {
             Require(f.edits->Redo(), "saved tail retraction keeps exact redo rather than arbitrary table deletion");
             const bool water = step >= (appendFirst ? 2u : 1u);
             const auto name = "cliff-ground-water-redo-" + std::to_string(step) + ".w3x";
-            f.SaveExpected(name.c_str(), terrains[step], OrdinarySpecialExpectedPathing(f, water, false), &doodads[step], true);
+            f.SaveExpected(name.c_str(), terrains[step], OrdinarySpecialExpectedPathing(f, water, false), &doodads[step], true, step != 3);
         }
     }
 }
