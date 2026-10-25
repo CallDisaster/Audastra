@@ -2,6 +2,7 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
 #include "War3MapCore/Services/TerrainShadowBake.h"
+#include "War3MapCore/Services/TerrainHistorySave.h"
 #include "MapSaveJob.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -345,6 +346,28 @@ Status PrepareWorkerDerived(MapSaveJob& job) {
     return status;
 }
 
+void BindWorkerTerrainHistory(MapSaveJob& job) {
+    if (!job.terrainHistorySaveLease) return;
+    const auto warn = [&](std::string_view code) {
+        job.terrainHistorySaveLease.reset();
+        job.terrainHistoryWarning = "草稿已完整保留；地图保存继续，但旧地形阴影未能绑定到历史保存站，跨保存点撤销的冷恢复不可用。";
+        if (!code.empty()) job.terrainHistoryWarning += "（" + std::string(code) + "）";
+    };
+    try {
+        if (!job.archive) { warn("TERRAIN_HISTORY_SOURCE_MISSING"); return; }
+        // 此刻仍是写入前的真实旧归档；不得从最终覆盖列表或保存后新来源
+        // 补造旧SHD。helper保留已绑定的最早epoch，不重复读取最新SHD。
+        auto bound = Services::TerrainHistorySave::BindSourceShadow(*job.archive, *job.terrainHistorySaveLease);
+        if (!bound.Succeeded() || !bound.value) {
+            warn(bound.diagnostics.empty() ? std::string_view{} : bound.diagnostics.front().code);
+            return;
+        }
+        job.terrainHistorySaveLease = std::move(*bound.value);
+    } catch (...) {
+        warn("TERRAIN_HISTORY_SOURCE_BIND_EXCEPTION");
+    }
+}
+
 } // namespace
 
 void InstallMapSaveDerivedPreparation(MapSaveJob& job) {
@@ -352,6 +375,7 @@ void InstallMapSaveDerivedPreparation(MapSaveJob& job) {
     job.derivedPreparationInstalled = true;
     job.prepareFinalDerived = [&job, previous = std::move(job.prepareFinalDerived)](Services::MapSaveTask& task) -> Status {
         if (previous) { const auto checked = previous(task); if (!checked.Succeeded()) return checked; }
+        BindWorkerTerrainHistory(job);
         try {
             job.Report(job.rebuildTerrainShadow ? EditorProject::tr("正在更新地形通行、小地图与阴影…")
                 : EditorProject::tr("正在更新地形通行与小地图…"));
