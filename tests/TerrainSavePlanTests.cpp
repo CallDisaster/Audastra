@@ -470,6 +470,8 @@ void ArchiveCaptureFailuresAreAtomicAndKeepHistory() {
         "stale-source refusal does not restore or write the source or consume history");
 }
 
+#include "TerrainDualStagePathingCases.h"
+
 } // namespace
 
 int main() {
@@ -486,6 +488,7 @@ int main() {
         UnlistedMembersAreFrozenAndReadBack();
         ExactMissingAndRequiredMembersDoNotDependOnListfile();
         ArchiveCaptureFailuresAreAtomicAndKeepHistory();
+        RunTerrainDualStageSourceIdentityCases();
         std::cout << "Terrain save plan tests passed\n";
         return 0;
     } catch (const std::exception& error) {

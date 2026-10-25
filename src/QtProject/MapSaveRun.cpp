@@ -269,6 +269,13 @@ Status PrepareWorkerDerived(MapSaveJob& job) {
     if (job.terrainSavePlan) {
         job.beforePublish = [&job, previous = std::move(job.beforePublish)] {
             if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
+            if (!job.archive)
+                return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_SOURCE_MISSING",
+                    "写入前缺少本次地形计划的原始地图来源，当前编辑保留。");
+            // 旧通行只能由真实旧来源解释；最终覆盖及回读另由新资源核对。
+            // 此处位于原位替换之前，不能移到写回后的提交阶段。
+            const auto source = job.terrainSavePlan->VerifySourceInputs(*job.archive);
+            if (!source.Succeeded()) return source;
             return job.terrainSavePlan->VerifyFrozenOutput(job.sourceSha256, job.replacements, job.removals);
         };
     }

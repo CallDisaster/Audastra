@@ -312,6 +312,12 @@ target_compile_definitions(audastra-terrain-straight-ramp-service-tests PRIVATE 
 target_compile_options(audastra-terrain-straight-ramp-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-straight-ramp COMMAND audastra-terrain-straight-ramp-service-tests)
 
+add_executable(audastra-terrain-dual-stage-pathing-save-tests TerrainDualStagePathingSaveTests.cpp)
+target_link_libraries(audastra-terrain-dual-stage-pathing-save-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-dual-stage-pathing-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-dual-stage-pathing-save-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-dual-stage-pathing-save COMMAND audastra-terrain-dual-stage-pathing-save-tests)
+
 add_executable(audastra-native-destructable-pathing-tests
     NativeDestructablePathingTests.cpp TerrainEmptyParentCases.h TerrainBridgeNameCases.h)
 target_link_libraries(audastra-native-destructable-pathing-tests PRIVATE War3MapEditor::Services)

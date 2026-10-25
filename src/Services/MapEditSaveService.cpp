@@ -1020,6 +1020,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     task.beforePublish = [taskPtr = &task, terrainPlan, minimapSave, minimapPreserve,
                         previous = std::move(previous)]() {
                         if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
+                        if (terrainPlan) {
+                            if (!taskPtr->archive)
+                                return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_SOURCE_MISSING",
+                                    "写入前缺少本次地形计划的原始地图来源，当前编辑保留。");
+                            const auto source = terrainPlan->VerifySourceInputs(*taskPtr->archive);
+                            if (!source.Succeeded()) return source;
+                        }
                         const auto checked = minimapSave ? minimapSave->VerifyFrozenOutput(*taskPtr)
                             : terrainPlan ? terrainPlan->VerifyFrozenOutput(taskPtr->sourceSha256, taskPtr->replacements, taskPtr->removals)
                             : Status::Ok();
