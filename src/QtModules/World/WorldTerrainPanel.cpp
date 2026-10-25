@@ -250,6 +250,8 @@ QWidget* WorldModule::BuildTerrainPage() {
             button->setToolTip(tr("移除水面，保留地形高度和原始水高；保存时重新核对通行性与小地图。"));
         if (kind == MapData::TerrainBrushKind::StraightRamp)
             button->setToolTip(tr("单击创建或移除一级直坡，支持干地、含水地形和连接相邻完整直坡；拖动不扩大范围。"));
+        if (kind == MapData::TerrainBrushKind::CornerRamp)
+            button->setToolTip(tr("单击创建或移除一级外角或干地内角坡道；含水内角、多级台阶和不规则交汇会拒绝。"));
         button->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
         button->setMinimumHeight(52);
