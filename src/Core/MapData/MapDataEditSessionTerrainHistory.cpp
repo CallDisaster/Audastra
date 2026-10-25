@@ -1,6 +1,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/PathingRestrictionEditing.h"
 #include "War3MapCore/Hash.h"
+#include "TerrainHistorySourceShadow.h"
 
 #include <algorithm>
 #include <cctype>
@@ -102,6 +103,7 @@ Result<MapDataEditSession::TerrainHistorySaveLease> MapDataEditSession::PrepareT
         if (!snapshot.Succeeded() || !snapshot.value) return fail("TERRAIN_HISTORY_BUDGET", "冻结旧epoch的原生成员超过历史预算。");
         auto state = std::make_shared<TerrainHistoryState>();
         state->baseline = terrainHistoryEpoch_ ? terrainHistoryEpoch_->baseline : *snapshot.value;
+        state->sourceShadow = terrainHistoryEpoch_ ? terrainHistoryEpoch_->sourceShadow : nullptr;
         state->savedIndex = line.value->currentIndex;
         state->savedCommands.assign(line.value->commands.begin(), line.value->commands.begin() + state->savedIndex);
         state->retainedBytes = terrainHistoryEpoch_ ? terrainHistoryEpoch_->retainedBytes : cost.value->retainedBytes * 2 + overhead;
@@ -175,6 +177,7 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainHistoryJournal(std
     history.savedIndex = static_cast<std::uint32_t>(epoch.savedIndex);
     history.currentIndex = static_cast<std::uint32_t>(line.value->currentIndex);
     history.frozenBaseline = epoch.baseline;
+    history.frozenSourceShadow = epoch.sourceShadow;
     history.frozenRetainedBytes = epoch.retainedBytes;
     journal.value->history = std::move(history);
     return journal;
@@ -244,7 +247,7 @@ Result<std::vector<ArchiveExactMember>> MapDataEditSession::TerrainHistoryBaseli
 Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal) {
     if (!journal.history) return Status::Ok();
     auto& history = *journal.history;
-    if (!history.frozenBaseline) return history.frozenRetainedBytes ? Status::Failure("Terrain.History",
+    if (!history.frozenBaseline) return history.frozenRetainedBytes || history.frozenSourceShadow ? Status::Failure("Terrain.History",
         "TERRAIN_HISTORY_INVALID", "没有冻结旧epoch却携带内存资格字段。") : Status::Ok();
     if (!history.baselineMembers.empty() || !history.baselinePathingLayers.empty() || history.baselineShadow || !history.frozenRetainedBytes
         || history.frozenRetainedBytes > TerrainJournalMaximumBytes)
@@ -266,14 +269,16 @@ Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal) {
         used += member.bytes.size();
     }
     if (std::any_of(journal.strokes.begin(), journal.strokes.end(), [](const auto& stroke) { return stroke.intent.resize.has_value(); })) {
-        if (!baseline.savedResizeState_ || baseline.savedResizeState_->shadow.bytes.size() > TerrainJournalMaximumBytes - used)
+        const auto* shadow = history.frozenSourceShadow ? &history.frozenSourceShadow->member_
+            : baseline.savedResizeState_ ? &baseline.savedResizeState_->shadow : nullptr;
+        if (!shadow || shadow->bytes.size() > TerrainJournalMaximumBytes - used)
             return Status::Failure("Terrain.History", "TERRAIN_HISTORY_INVALID", "扩裁历史缺少真实旧SHD或明确缺失状态。");
-        history.baselineShadow = baseline.savedResizeState_->shadow;
+        history.baselineShadow = *shadow;
         used += history.baselineShadow->bytes.size();
     }
     history.baselineMembers = std::move(*members.value);
     history.baselinePathingLayers = std::move(*layers.value);
-    history.frozenBaseline.reset(); history.frozenRetainedBytes = 0;
+    history.frozenBaseline.reset(); history.frozenSourceShadow.reset(); history.frozenRetainedBytes = 0;
     return Status::Ok();
 }
 } // namespace War3Map::MapData

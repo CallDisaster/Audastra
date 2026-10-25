@@ -56,7 +56,7 @@ bool HistoryShape(const TerrainStrokeJournal& journal) {
     const bool resizes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
         [](const auto& stroke) { return stroke.intent.resize.has_value(); });
     if (history.baselineShadow.has_value() != resizes) return false;
-    if (history.frozenBaseline || history.frozenRetainedBytes || !history.savedIndex
+    if (history.frozenBaseline || history.frozenSourceShadow || history.frozenRetainedBytes || !history.savedIndex
         || history.savedIndex > journal.strokes.size() || history.currentIndex > journal.strokes.size()
         || history.baselineMembers.size() != TerrainJournalMemberNames.size()
         || journal.strokes.empty() || journal.strokes.size() > 128) return false;

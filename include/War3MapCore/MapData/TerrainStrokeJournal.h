@@ -11,6 +11,7 @@
 
 namespace War3Map::MapData {
 class MapDataEditSession;
+class TerrainHistorySourceShadow;
 
 inline constexpr std::array<std::string_view, 10> TerrainJournalMemberNames{
     "war3map.w3e", "war3map.wpm", "war3map.w3i", "table/w3i.ini",
@@ -59,6 +60,8 @@ struct TerrainJournalHistory {
     std::uint32_t savedIndex = 0, currentIndex = 0;
     // UI只冻结真实旧epoch别名；后台物化后清空。此字段不能编码或从wire恢复。
     std::shared_ptr<const MapDataEditSession> frozenBaseline;
+    // 首次普通保存前捕获的旧SHD，opaque且仅内存；后续resize不能改用新物理SHD。
+    std::shared_ptr<const TerrainHistorySourceShadow> frozenSourceShadow;
     std::size_t frozenRetainedBytes = 0; // 仅内存预算，不持久化、不授予资格。
 };
 struct TerrainStrokeJournal {

@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace War3Map::Services { class AuxiliaryEditing; }
+namespace War3Map::Services { class AuxiliaryEditing; class TerrainHistorySave; }
 
 namespace War3Map::MapData {
 namespace detail { struct PlacementEditingAccess; struct TerrainInspectionAccess; struct MapDataFieldEditingAccess; }
@@ -61,6 +61,11 @@ public:
         [[nodiscard]] std::size_t PreparationBytes() const noexcept { return preparationBytes_; }
     private:
         friend class MapDataEditSession;
+        friend class Services::TerrainHistorySave;
+        [[nodiscard]] bool NeedsSourceShadowBinding() const noexcept;
+        [[nodiscard]] Result<std::size_t> SourceShadowReadBudget(std::size_t maximumBytes) const;
+        [[nodiscard]] Result<TerrainHistorySaveLease> BindSourceShadow(
+            std::vector<ArchiveExactMember> source, std::size_t maximumBytes) const;
         std::shared_ptr<const TerrainHistoryState> state_;
         std::shared_ptr<const TerrainHistoryState> previousEpoch_;
         std::shared_ptr<const MapDataEditSession> checkpoint_;
@@ -444,6 +449,7 @@ private:
     };
     struct TerrainHistoryState {
         std::shared_ptr<const MapDataEditSession> baseline;
+        std::shared_ptr<const TerrainHistorySourceShadow> sourceShadow;
         std::vector<std::shared_ptr<const Command>> savedCommands;
         std::size_t savedIndex = 0, retainedBytes = 0;
         std::uint64_t savedSourceRevision = 0;

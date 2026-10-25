@@ -13,6 +13,10 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
     if (journal.history) {
         if (journal.history->baselinePathingLayers.size() > available) return fail();
         available -= journal.history->baselinePathingLayers.size();
+        if (journal.history->baselineShadow) {
+            if (journal.history->baselineShadow->bytes.size() > available) return fail();
+            available -= journal.history->baselineShadow->bytes.size();
+        }
         for (const auto& member : journal.history->baselineMembers) {
             if (member.bytes.size() > available) return fail();
             available -= member.bytes.size();

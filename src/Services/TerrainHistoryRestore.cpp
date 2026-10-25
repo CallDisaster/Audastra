@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainHistorySave.h"
 #include "TerrainPathingFinalOverlay.h"
 #include "TerrainReplayInternal.h"
 
@@ -327,6 +328,12 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
         // 同一后缀账本；不能只在取得大克隆之后才检查它的容量。
         auto lease = edits.PrepareTerrainHistoryForSave(leaseBudget);
         if (!lease.Succeeded() || !lease.value) return HistoryFailure(std::move(lease.diagnostics));
+        // 旧保存站按同一已核历史reader冻结，不能等恢复后resize再借当前物理SHD。
+        // 仅FTJH确实携带旧SHD时补绑定；旧FTJE缺席材料不伪装为absence。
+        if (history.baselineShadow && TerrainHistorySave::NeedsSourceShadowBinding(*lease.value)) {
+            lease = TerrainHistorySave::BindSourceShadow(historicalReader, *lease.value, leaseBudget);
+            if (!lease.Succeeded() || !lease.value) return HistoryFailure(std::move(lease.diagnostics));
+        }
         if (lease.value->PreparationBytes() > leaseBudget || lease.value->RetainedBytes() > leaseBudget)
             return Failure("TERRAIN_REPLAY_BUDGET", "保存站epoch冻结计量超过事先收紧的恢复预算。");
         epochRetainedBytes = lease.value->RetainedBytes();
