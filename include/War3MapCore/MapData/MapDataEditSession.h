@@ -332,6 +332,9 @@ public:
     // 仅供实际资源服务构造当前结构视图；typed扩裁核完整私有几何/分层，
     // 不授予保存资格，也不替代服务对原物理成员的独立复核。
     [[nodiscard]] Status VerifyTerrainCurrentStructureInput() const;
+    // 实际资源owner先预收自身驻留，再把剩余预算交给本入口；typed验证在扫描前计量。
+    [[nodiscard]] Status VerifyTerrainCurrentStructureInput(std::size_t maximumBytes,
+        std::size_t maximumWork = TerrainLevelPropagationMaximumWork) const;
     // 只核对附入会话的原始 W3E 与外部冻结来源，不读取其它地图成员。
     [[nodiscard]] Status VerifyTerrainSourceBaseline(std::span<const std::byte> sourceBytes) const;
     [[nodiscard]] EditReceipt LastEdit() const;

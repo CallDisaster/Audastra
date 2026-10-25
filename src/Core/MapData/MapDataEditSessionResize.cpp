@@ -83,6 +83,16 @@ Status MapDataEditSession::VerifyTerrainCurrentStructureInput() const {
     return resizeState_ ? VerifyTerrainResizeForSave() : VerifyTerrainPathingForSave();
 }
 
+Status MapDataEditSession::VerifyTerrainCurrentStructureInput(std::size_t maximumBytes,
+    std::size_t maximumWork) const {
+    const TerrainResizeLimits hard;
+    if (!maximumBytes || maximumBytes > hard.maximumCandidateBytes || !maximumWork || maximumWork > hard.maximumWork)
+        return Status::Failure("Terrain.Resize", "TERRAIN_RESIZE_LIMITS", "当前结构验证预算只能收紧非零硬上限。");
+    const auto measured = MeasureTerrainResizeResourceValidation(maximumBytes, maximumWork);
+    if (!measured.Succeeded()) return {measured.diagnostics};
+    return VerifyTerrainCurrentStructureInput();
+}
+
 Result<std::size_t> MapDataEditSession::MeasureTerrainResizeResourceValidation(
     std::size_t maximumBytes, std::size_t maximumWork) const {
     using Output = Result<std::size_t>;

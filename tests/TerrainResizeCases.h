@@ -177,6 +177,15 @@ inline void AbsentShadowAndBudgetCancellation() {
     const auto copied = copiedBytes;
     Require(!fixture.edits->FreezeForSave(1024, &copiedBytes).Succeeded() && copiedBytes == copied,
         "failed freeze never publishes a copied-byte receipt");
+    Check(frozen->VerifyTerrainCurrentStructureInput(64u * 1024u * 1024u));
+    const auto tinyBytes = frozen->VerifyTerrainCurrentStructureInput(1);
+    const auto tinyWork = frozen->VerifyTerrainCurrentStructureInput(64u * 1024u * 1024u, 1);
+    Require(!tinyBytes.Succeeded() && HasCode(tinyBytes, "TERRAIN_RESIZE_BUDGET")
+        && !tinyWork.Succeeded() && HasCode(tinyWork, "TERRAIN_RESIZE_BUDGET"),
+        "shared frozen current structure checks its own validation budget before scanning typed state");
+    Require(!frozen->VerifyTerrainCurrentStructureInput(0).Succeeded()
+        && !frozen->VerifyTerrainCurrentStructureInput(64u * 1024u * 1024u, TerrainLevelPropagationMaximumWork + 1).Succeeded(),
+        "bounded current structure verification cannot disable or enlarge hard limits");
 }
 
 inline void ResizeCannotLaunderRawUnknownFields() {
@@ -189,6 +198,11 @@ inline void ResizeCannotLaunderRawUnknownFields() {
         else changed.vertices[changed.header.width + 1].groundHeightRaw ^= 0x4000u;
         Check(fixture.edits->SetTerrain(Take(SerializeMapTerrain(changed))));
         const auto revision = fixture.edits->Revision(); const auto before = fixture.edits->Terrain();
+        if (afterResize) {
+            const auto budgetFirst = fixture.edits->VerifyTerrainCurrentStructureInput(1);
+            Require(!budgetFirst.Succeeded() && HasCode(budgetFirst, "TERRAIN_RESIZE_BUDGET"),
+                "insufficient budget wins before a full invalid typed/raw verification");
+        }
         const auto owner = TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot);
         // 主地形改变可能已在实际资源读取时拒绝；能捕获的未知raw位必须在Core准备门拒绝。
         if (owner.Succeeded() && owner.value) {
