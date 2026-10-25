@@ -160,7 +160,7 @@ inline void ResizeReplayComposesWithCurrentWaterCliffPaletteBoundsAndOrdinaryBru
         } else if (scenario == 2) {
             second.palette = TerrainPaletteEditIntent{TerrainTextureTable::Ground, 0, "Tg01", "Tg02", 1};
         } else if (scenario == 3) {
-            second.bounds = TerrainBoundsEditIntent{1, {34, 34, 60, 60}};
+            second.bounds = TerrainBoundsEditIntent{{34, 34, 60, 60}, 1};
         } else {
             second.brush.kind = TerrainBrushKind::Raise; second.brush.size = 1;
             second.brush.shape = TerrainBrushShape::Square; second.brush.strength = 32; second.points = {{-1024, -1024}};
