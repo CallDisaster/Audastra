@@ -55,6 +55,7 @@ add_library(War3MapCore STATIC
     MapData/TerrainEditing.cpp
     MapData/TerrainBoundsEditing.cpp
     MapData/TerrainResizeEditing.cpp
+    MapData/TerrainResizeResources.cpp
     MapData/TerrainBlockEditing.cpp
     MapData/PathingRestrictionEditing.cpp
     MapData/PathingSavePolicy.cpp
