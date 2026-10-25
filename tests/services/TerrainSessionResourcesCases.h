@@ -24,11 +24,11 @@ inline TerrainEditBinding Binding(const Fixture& fixture) {
 inline void AddActualWaterInputs(Fixture& fixture) {
     for (const auto& profile : kClassicProfiles) {
         if (std::none_of(fixture.members.begin(), fixture.members.end(), [&](const auto& member) { return member.name == profile.path; }))
-            fixture.PutMember(profile.path, Text("[Synthetic]\nPresent=1\n"));
+            fixture.PutMember(profile.path, AudastraTest::TerrainBounds::Text("[Synthetic]\nPresent=1\n"));
     }
-    fixture.PutMember("UI/MiscData.txt", Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+    fixture.PutMember("UI/MiscData.txt", AudastraTest::TerrainBounds::Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
         "[Water]\nDeepLevelPathing=192\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"));
-    fixture.PutMember("UI/WorldEditData.txt", Text("[Synthetic]\nPresent=1\n"));
+    fixture.PutMember("UI/WorldEditData.txt", AudastraTest::TerrainBounds::Text("[Synthetic]\nPresent=1\n"));
     fixture.Seal();
 }
 
@@ -143,7 +143,7 @@ inline void PhysicalChangesAndBudgetsStayFailClosed() {
         const auto workspace = Take(DirectoryWorkspace::Open(root));
         const auto owner = Take(TerrainSessionResources::Capture(workspace.Snapshot(), *fixture.edits, fixture.gameRoot));
         const auto water = Take(owner.CaptureWater(true)); Check(owner.Verify(water));
-        Check(IO::WriteFileBytes(root / name, Text("changed physical source, not current overlay")));
+        Check(IO::WriteFileBytes(root / name, AudastraTest::TerrainBounds::Text("changed physical source, not current overlay")));
         Require(!owner.Verify(water).Succeeded() && !owner.CaptureNative(*fixture.edits->Terrain()).Succeeded(),
             "physical spatial members and absent-to-present fixed inputs are rechecked despite current structural overlay");
     }

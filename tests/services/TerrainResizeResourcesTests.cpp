@@ -28,7 +28,7 @@ void Apply(Fixture& fixture, const TerrainResizeIntent& intent) {
 
 void ActualStartupAndAtomicCas() {
     Fixture fixture(true);
-    Check(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", Text(
+    Check(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", AudastraTest::TerrainBounds::Text(
         "[WorldEditMisc]\nMinimumMapSize=32\nMinimumMapSize=64\nMaximumMapSize=480\n"
         "[CameraMargins]\nLeft=1\nLeft=9\nRight=2\nBottom=1\nTop=2\n")));
     auto resources = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
@@ -85,7 +85,7 @@ void ChangedPhysicalSpatialMembersAndRulesReject() {
     }
     Fixture fixture;
     const auto resources = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
-    Check(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", Text(
+    Check(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", AudastraTest::TerrainBounds::Text(
         "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=448\n"
         "[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n")));
     Require(!resources.VerifySources(*fixture.archive, *fixture.edits).Succeeded(), "changed actual startup winner is not a valid old owner");
@@ -242,7 +242,7 @@ void FinalSpatialOutputAndManualShadowConflictsReject() {
             [](const auto& a, const auto& b) { return a.name == b.name && a.data == b.data; }), "conflicting SHD cannot partially install WPM");
     Check(plan.InstallPathingOutput(*fixture.edits, original));
     for (const auto name : {"war3map.w3r", "war3map.w3c"}) {
-        conflict = original; conflict.push_back({name, Text("other bytes")});
+        conflict = original; conflict.push_back({name, AudastraTest::TerrainBounds::Text("other bytes")});
         Require(!plan.VerifyFrozenOutput(fixture.archive->SourceSha256(), conflict).Succeeded(), "frozen output rejects swapped actual W3R/W3C");
     }
     conflict = original;
