@@ -1,6 +1,6 @@
 #pragma once
 
-#include "War3MapCore/Text/TextUtil.h"
+#include "War3MapCore/Resources/ImportTable.h"
 
 // 包含于TerrainShadowReceiverResourcesTests.cpp的夹具/帮助函数之后；由集成方登记调用。
 // 全部地图、模型和表均为原创。expected来自下述独立地形/像素字面值，
@@ -63,10 +63,16 @@ void FourDirectionsAndAnchorIdentity() {
         std::vector<std::string> actualModels;
         for (const auto& dependency : owner->Dependencies())
             if (dependency.source == TerrainShadowCasterSource::Map
-                && dependency.name.starts_with("doodads/terrain/authoredramp/")
-                && dependency.name.ends_with(".mdx")) actualModels.push_back(dependency.name);
-        std::vector<std::string> expected{Text::LowerAscii(RampPath(item.first)), Text::LowerAscii(RampPath(item.second))};
+                && dependency.name.starts_with("DOODADS\\TERRAIN\\AUTHOREDRAMP\\")
+                && dependency.name.ends_with(".MDX")) actualModels.push_back(dependency.name);
+        std::vector<std::string> expected{Take(Resources::CanonicalImportPath(RampPath(item.first))),
+            Take(Resources::CanonicalImportPath(RampPath(item.second)))};
         std::sort(expected.begin(), expected.end());
+        if (actualModels != expected) {
+            std::cout << "ramp_dependency_direction=" << item.dx << ',' << item.dy << '\n';
+            for (const auto& path : actualModels) std::cout << "actual_ramp_model=" << path << '\n';
+            for (const auto& path : expected) std::cout << "expected_ramp_model=" << path << '\n';
+        }
         Require(actualModels == expected, "实际anchor方向、R改L、ramp字段和重复目录必须精确，不能改用cliff或alternate");
         const auto grid = Take(owner->Sample());
         const auto sample = std::size_t(item.modelY * 4) * 64 + item.modelX * 4;
@@ -126,7 +132,8 @@ void BlockOwnershipAndHighestLayerSlot() {
     highest.Set(selected, Model(80)); highest.Open();
     const auto owner = Take(highest.Capture());
     Require(std::any_of(owner->Dependencies().begin(), owner->Dependencies().end(), [&](const auto& dependency) {
-        return dependency.name == Text::LowerAscii(selected) && dependency.source == TerrainShadowCasterSource::Map;
+        return dependency.name == Take(Resources::CanonicalImportPath(selected))
+            && dependency.source == TerrainShadowCasterSource::Map;
     }), "ramp槽不能取首个非15顶点；须取实际五格最高层首顶点的槽");
     const auto grid = Take(owner->Sample());
     RequireF32At(grid.receiverHeights[28 * 64 + 24], 0x42a03333u, 28 * 64 + 24,
