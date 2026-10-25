@@ -57,6 +57,18 @@ inline void FourDirectionsCreateRemoveAndExactStreams() {
             {}, {}, TerrainCornerRampAlgorithm::NativeCorners));
         Require(!Take(PlanTerrainCornerRamp(outer, point, TerrainCornerRampAlgorithm::NativeCorners)).inner
             && Take(SerializeMapTerrain(oldOuter.terrain)) == Take(SerializeMapTerrain(newOuter.terrain)), "new algorithm retains old outer output in all four directions");
+        // 内角干域限制不应收窄已取证的外角水域；同时覆盖九点内与实际halo内的水标志。
+        auto wetOuter = outer;
+        wetOuter.vertices[std::size_t(8 + dy) * 17 + 8 + dx].textureAndFlagsRaw |= 0x40;
+        wetOuter.vertices[std::size_t(8 - 4 * dy) * 17 + 8 - 4 * dx].textureAndFlagsRaw |= 0x40;
+        RefreshTerrainDerived(wetOuter, 0, 0, 17, 17);
+        const auto oldWetOuter = Take(PrepareTerrainCornerRampStroke(wetOuter, Rules(), Brush(), std::span(&point, 1), doodads,
+            {}, {}, TerrainCornerRampAlgorithm::WetTerrain));
+        const auto newWetOuter = Take(PrepareTerrainCornerRampStroke(wetOuter, Rules(), Brush(), std::span(&point, 1), doodads,
+            {}, {}, TerrainCornerRampAlgorithm::NativeCorners));
+        Require(!Take(PlanTerrainCornerRamp(wetOuter, point, TerrainCornerRampAlgorithm::NativeCorners)).inner
+            && Take(SerializeMapTerrain(oldWetOuter.terrain)) == Take(SerializeMapTerrain(newWetOuter.terrain)),
+            "new inner dry-domain guard preserves complete proven wet outer output in every direction");
     }
 }
 
@@ -75,11 +87,24 @@ inline void RejectsHaloNeighborsBudgetAndInvalidInputs() {
     source = Grid(); source.vertices[4 * 17 + 4].textureAndFlagsRaw |= 0x80; reject(source);
     source = Grid(); source.vertices[4 * 17 + 4].waterHeightAndFlagsRaw |= 0x4000; reject(source);
     source = Grid(); source.vertices[4 * 17 + 4].waterHeightAndFlagsRaw |= 0x8000; reject(source);
+    // 即使水面低于地面，HasWater本身也越过本批内角干域，不能借看不见的水通过。
+    for (unsigned y = 7; y <= 9; ++y) for (unsigned x = 7; x <= 9; ++x) {
+        source = Grid(); source.vertices[y * 17 + x].textureAndFlagsRaw |= 0x40;
+        Require(!PlanTerrainCornerRamp(source, point, TerrainCornerRampAlgorithm::NativeCorners).Succeeded(),
+            "each selected inner vertex with HasWater rejects already during geometry planning");
+        reject(source);
+    }
+    source = Grid(); source.vertices[4 * 17 + 4].textureAndFlagsRaw |= 0x40;
+    Require(PlanTerrainCornerRamp(source, point, TerrainCornerRampAlgorithm::NativeCorners).Succeeded(),
+        "dry inner nine-point preview alone grants no halo permission");
+    reject(source);
     source = Grid(); TerrainWaterBrushLimits limits; limits.maximumCandidateBytes = 1; reject(source, limits);
     limits = {}; limits.maximumWork = 1; reject(source, limits);
     limits = {}; limits.maximumPoints = 0; reject(source, limits);
     auto complete = Take(PrepareTerrainCornerRampStroke(Grid(), Rules(), Brush(), std::span(&point, 1), doodads,
         {}, {}, TerrainCornerRampAlgorithm::NativeCorners)).terrain;
+    auto wetComplete = complete; wetComplete.vertices[4 * 17 + 4].textureAndFlagsRaw |= 0x40;
+    reject(wetComplete); // 完整九点noop仍须检查实际halo水标志。
     complete.vertices[4 * 17 + 4].textureAndFlagsRaw |= 0x10; reject(complete);
     for (const auto invalid : {TerrainStrokePoint{1024, 1056}, TerrainStrokePoint{1088, 1056},
         TerrainStrokePoint{std::numeric_limits<double>::infinity(), 1056}, TerrainStrokePoint{32, 32}})
