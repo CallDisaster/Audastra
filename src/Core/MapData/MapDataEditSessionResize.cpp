@@ -1,6 +1,7 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainResizeResources.h"
 #include "War3MapCore/Hash.h"
+#include "TerrainPaletteEditInternal.h"
 
 #include <algorithm>
 #include <bit>
@@ -78,6 +79,29 @@ bool MapDataEditSession::HasTerrainResizeChanges() const noexcept {
     return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || resizeState_->identity != savedResizeState_->identity));
 }
 
+Status MapDataEditSession::VerifyTerrainResizeRawInput() const {
+    const auto fail = [](const char* message) { return Status::Failure("Terrain.Resize", "TERRAIN_RESIZE_RAW_INPUT", message); };
+    if (!terrain_ || !terrainOriginal_) return fail("扩裁缺少完整原始及当前地形。");
+    const auto& current = terrain_->header; const auto& physical = terrainOriginal_->header;
+    if (current.version != 11 || physical.version != 11 || current.mainTileset != physical.mainTileset
+        || current.groundTilesets.empty() || current.groundTilesets.size() > 16
+        || (current.cliffTilesets != physical.cliffTilesets
+            && !TerrainPaletteEditDetail::SupportsCliffTableDelta(physical.cliffTilesets, current.cliffTilesets)))
+        return fail("扩裁不能把未支持的主地形、布局或悬崖表变化封存为可信几何。");
+    const auto before = resizeState_ ? resizeState_->geometry : terrainOriginal_;
+    if (!before || !SameShape(before->header, current) || before->vertices.size() != terrain_->vertices.size())
+        return fail("扩裁前网格不属于已有typed形状或真实原始形状。");
+    for (std::size_t i = 0; i < before->vertices.size(); ++i) {
+        const auto& a = before->vertices[i]; const auto& b = terrain_->vertices[i];
+        if (a.extendedTextureLayout || b.extendedTextureLayout || a.textureFlagsExtensionRaw != b.textureFlagsExtensionRaw
+            || ((a.waterHeightAndFlagsRaw ^ b.waterHeightAndFlagsRaw) & 0x8000u)
+            || ((a.groundHeightRaw ^ b.groundHeightRaw) & 0xc000u)
+            || (a.groundHeightRaw != b.groundHeightRaw && ((a.groundHeightRaw | b.groundHeightRaw) & 0xc000u)))
+            return fail("扩裁前raw覆盖改变了未知顶点字段；不能借最近边缘复制取得保存资格。");
+    }
+    return Status::Ok();
+}
+
 Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::PrepareTerrainResizeEdit(
     const TerrainResizeResources& resources, const TerrainResizeIntent& intent, const TerrainResizeLimits& limits) const try {
     using Output = Result<PreparedTerrainResizeEdit>;
@@ -88,6 +112,10 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
     if (resizeDraftState_ || !terrain_ || !terrainOriginal_ || !pathing_ || !pathingOriginal_ || !pathingProtected_ || !pathingRestrictions_
         || !originalPathingRestrictions_ || !rawSettings || !specialDoodads_)
         return fail("TERRAIN_RESIZE_SOURCE_UNAVAILABLE", "扩裁需要完整地形、通行、限制层、设置和特殊摆放来源。");
+    if (terrain_->vertices.size() > limits.maximumWork)
+        return fail("TERRAIN_RESIZE_BUDGET", "扩裁前未知字段复核超过工作预算。");
+    const auto rawInput = VerifyTerrainResizeRawInput();
+    if (!rawInput.Succeeded()) return {{}, rawInput.diagnostics};
     auto settings = MapSettings::Parse(*rawSettings);
     if (!settings.Succeeded() || !settings.value) return {{}, settings.diagnostics};
     const auto originalSettingsGate = VerifyTerrainSettingsForSave();
@@ -109,11 +137,13 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
         if (bytes > limits.maximumCandidateBytes || (element && count > (limits.maximumCandidateBytes - bytes) / element)) return false;
         bytes += count * element; return true;
     };
-    if (oldCells > (limits.maximumWork - work) / 4 || newCells > (limits.maximumWork - work - oldCells * 4) / 5
+    if (terrain_->vertices.size() > limits.maximumWork - work
+        || oldCells > (limits.maximumWork - work - terrain_->vertices.size()) / 4
+        || newCells > (limits.maximumWork - work - terrain_->vertices.size() - oldCells * 4) / 5
         || !reserve(resources.CaptureBudgetBytes()) || !reserve(oldCells, 5) || !reserve(newCells, 7)
         || !reserve(rawSettings->size(), 8) || !reserve(specialDoodads_->size(), sizeof(SpecialDoodadPlacement) * 4))
         return fail("TERRAIN_RESIZE_BUDGET", "扩裁的规则、网格、通行分层、阴影和撤销累计超过预算。");
-    work += oldCells * 4 + newCells * 5;
+    work += terrain_->vertices.size() + oldCells * 4 + newCells * 5;
     PreparedTerrainResizeEdit prepared;
     prepared.before_ = terrain_; prepared.beforeResize_ = resizeState_;
     prepared.after_ = std::make_shared<const TerrainGridSnapshot>(std::move(projected.value->terrain));
@@ -192,6 +222,8 @@ Status MapDataEditSession::VerifyTerrainResizeForSave() const {
         || !SameShape(resizeState_->geometry->header, terrain_->header)
         || resizeState_->geometry->vertices.size() != terrain_->vertices.size())
         return fail("TERRAIN_RESIZE_PROVENANCE_REQUIRED", "尺寸或原点变化没有完整typed扩裁状态；raw草稿不能取得正式保存资格。");
+    const auto rawInput = VerifyTerrainResizeRawInput();
+    if (!rawInput.Succeeded()) return rawInput;
     const auto cells = std::size_t(terrain_->header.width - 1) * (terrain_->header.height - 1) * 16;
     const auto* shadow = TerrainHistoryShadow();
     if (!shadow || shadow->name != "war3map.shd" || (shadow->present ? shadow->bytes.size() != cells : !shadow->bytes.empty()))
@@ -203,14 +235,6 @@ Status MapDataEditSession::VerifyTerrainResizeForSave() const {
         return fail("TERRAIN_RESIZE_PATHING_SHAPE", "不同尺寸的受保护通行来源或意图层缺失。");
     const auto layers = VerifyPathingRestrictionLayers(terrain_->header, base, *pathing_, *p, *savedS, *pathingRestrictions_);
     if (!layers.Succeeded()) return layers;
-    for (std::size_t i = 0; i < terrain_->vertices.size(); ++i) {
-        const auto& before = resizeState_->geometry->vertices[i]; const auto& after = terrain_->vertices[i];
-        if (before.extendedTextureLayout || after.extendedTextureLayout
-            || before.textureFlagsExtensionRaw != after.textureFlagsExtensionRaw
-            || ((before.groundHeightRaw ^ after.groundHeightRaw) & 0xc000u)
-            || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0x8000u))
-            return fail("TERRAIN_RESIZE_UNKNOWN_FIELDS", "扩裁后的编辑改变了原封保留的未知高度或顶点字段。");
-    }
     return VerifyTerrainSettingsForSave();
 }
 

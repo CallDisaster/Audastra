@@ -161,10 +161,44 @@ inline void AbsentShadowAndBudgetCancellation() {
     Require(!fixture.edits->FreezeForSave(1024).Succeeded(), "freeze cannot evade retained resize material budget");
 }
 
+inline void ResizeCannotLaunderRawUnknownFields() {
+    const auto rejected = [](unsigned mutation, bool afterResize) {
+        Fixture fixture;
+        if (afterResize) Resize(fixture, Intent(-32, 0, 32, 32));
+        auto changed = *fixture.edits->Terrain();
+        if (mutation == 0) changed.header.mainTileset = 'A';
+        else if (mutation == 1) changed.vertices[changed.header.width + 1].waterHeightAndFlagsRaw ^= 0x8000u;
+        else changed.vertices[changed.header.width + 1].groundHeightRaw ^= 0x4000u;
+        Check(fixture.edits->SetTerrain(Take(SerializeMapTerrain(changed))));
+        const auto revision = fixture.edits->Revision(); const auto before = fixture.edits->Terrain();
+        const auto owner = TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot);
+        // 主地形改变可能已在实际资源读取时拒绝；能捕获的未知raw位必须在Core准备门拒绝。
+        if (owner.Succeeded() && owner.value) {
+            const auto prepared = fixture.edits->PrepareTerrainResizeEdit(*owner.value, Intent(0, -32,
+                int(changed.header.width - 1), int(changed.header.height - 1)));
+            Require(!prepared.Succeeded() && HasCode({prepared.diagnostics}, "TERRAIN_RESIZE_RAW_INPUT"),
+                "raw unknown fields never become trusted through a later resize");
+        } else Require(!owner.Succeeded(), "unavailable actual source must not create a resize owner");
+        Require(fixture.edits->Revision() == revision && fixture.edits->Terrain() == before,
+            "failed raw resize leaves current draft and history revision unchanged");
+    };
+    for (unsigned mutation = 0; mutation < 3; ++mutation) {
+        rejected(mutation, false); rejected(mutation, true);
+    }
+    Fixture legitimate;
+    TerrainBrush height; height.kind = TerrainBrushKind::Raise; height.radius = 0; height.strength = 16;
+    const TerrainStrokePoint center{0, 0};
+    Take(legitimate.edits->EditTerrain(height, std::span(&center, 1), false));
+    Resize(legitimate, Intent(-32, 0, 32, 32));
+    const auto& moved = legitimate.edits->Terrain()->vertices[16 * 65 + 48];
+    Require(moved.groundHeightRaw == 8256, "legitimate known-bit height edit survives exact nearest-edge resize");
+}
+
 inline void TestTerrainResizeGeometryCases() {
     GeometryDirectionsAndLiteralBytes();
     GeometryRejectsInvalidDomainsAndBudgets();
     AtomicResizeAndHistory();
     AbsentShadowAndBudgetCancellation();
+    ResizeCannotLaunderRawUnknownFields();
 }
 } // namespace AudastraTest::TerrainResizeCases
