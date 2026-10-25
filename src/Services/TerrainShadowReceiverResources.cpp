@@ -3,6 +3,9 @@
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainDoodadFootprint.h"
+#include "War3MapCore/MapData/TerrainSpecialDoodadPathing.h"
+#include "War3MapCore/ObjectData/NativeTerrainDependencies.h"
 #include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Render/MdxTerrainReceiver.h"
 #include "War3MapCore/Resources/ImportTable.h"
@@ -12,6 +15,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <charconv>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -181,7 +185,7 @@ private:
     std::map<std::string, ArchiveExactMember, std::less<>> files_;
 };
 
-std::vector<Resources::TerrainTableRow> CliffRows(Inputs& inputs) {
+std::vector<Resources::TerrainTableRow> TableRows(Inputs& inputs, std::string_view path, std::string_view id) {
     Resources::ResourceResolver resolver;
     Resources::ResourceSource source;
     source.id = "shadow-receiver-final-view"; source.layer = Resources::ResourceLayer::Other; source.priority = 1;
@@ -214,8 +218,113 @@ std::vector<Resources::TerrainTableRow> CliffRows(Inputs& inputs) {
         return Result<std::vector<std::byte>>::Success(bytes);
     };
     Check(resolver.AddSource(std::move(source)));
-    auto table = Take(Resources::CaptureTerrainTable(resolver, "TerrainArt/CliffTypes.slk", "cliffid"));
+    auto table = Take(Resources::CaptureTerrainTable(resolver, path, id));
     return table.Rows();
+}
+
+struct SpecialGeometry {
+    std::uint32_t x = 0, y = 0, width = 0, height = 0; // 实际pathTex像素，不是显示模型包围盒
+    std::uint8_t minimum = 0;
+    std::string model;
+};
+std::vector<SpecialGeometry> SpecialGeometries(Inputs& inputs, const MapData::TerrainGridSnapshot& terrain,
+    std::span<const MapData::SpecialDoodadPlacement> placements, std::uint8_t maximumLevel,
+    std::size_t& work, const TerrainShadowReceiverLimits& limits, std::stop_token cancellation) {
+    const auto tick = [&](std::size_t count) { Cancel(cancellation); Charge(work, count, limits.maximumWork); };
+    // 共用物编依赖描述读取实际pathTex；不在阴影服务另造SLK继承或元数据规则。
+    constexpr std::array<std::string_view, 6> names{"war3map.w3b", "war3map.w3d", "Units/DestructableData.slk",
+        "Doodads/Doodads.slk", "Units/DestructableMetaData.slk", "Doodads/DoodadMetaData.slk"};
+    std::array<ArchiveExactMember, names.size()> sources;
+    inputs.ReserveWorking(sources.size(), sizeof(ArchiveExactMember) + 260);
+    constexpr std::array<std::byte, 12> emptyNative{std::byte{2}};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        const auto& source = inputs.Read(names[i]);
+        if (i < 2 && source.present && (source.bytes.size() != emptyNative.size()
+            || !std::equal(source.bytes.begin(), source.bytes.end(), emptyNative.begin())))
+            Fail("TERRAIN_SHADOW_SPECIAL_NATIVE_UNSUPPORTED", "特殊阴影接收面尚不接受非空或未知格式的原生物编覆盖。");
+        if ((i == 2 || i == 3) && !source.present)
+            Fail("TERRAIN_SHADOW_SPECIAL_GEOMETRY", "特殊阴影接收面缺少实际对象表，未猜测模型或占地。");
+        inputs.ReserveWorking(source.bytes.size()); tick(source.bytes.size()); sources[i] = source;
+    }
+    inputs.ReserveWorking(placements.size(), sizeof(std::string_view) + sizeof(SpecialGeometry) + 260);
+    std::vector<std::string_view> rawcodes; rawcodes.reserve(placements.size());
+    for (const auto& placement : placements) {
+        tick(1);
+        if (placement.variation != 0)
+            Fail("TERRAIN_SHADOW_SPECIAL_VARIATION", "特殊阴影接收面仅接受已闭合的零变体记录。");
+        rawcodes.push_back(placement.rawcode);
+    }
+    // 排序和索引比较逐次收费，不能让大批重复rawcode或长路径绕过work/取消门。
+    auto less = [&](std::string_view a, std::string_view b) {
+        tick(std::min(a.size(), b.size()) + 1); return a < b;
+    };
+    std::sort(rawcodes.begin(), rawcodes.end(), less);
+    rawcodes.erase(std::unique(rawcodes.begin(), rawcodes.end(), [&](std::string_view a, std::string_view b) {
+        tick(std::min(a.size(), b.size()) + 1); return a == b;
+    }), rawcodes.end());
+    const auto described = Take(ObjectData::InspectNativeTerrainDependencies({}, rawcodes, sources,
+        std::min<std::size_t>(inputs.AvailableWorkingBytes(), 64u * 1024u * 1024u)));
+    inputs.ReserveWorking(described.workBytes);
+    const auto rows = TableRows(inputs, "Doodads/Doodads.slk", "doodid");
+    inputs.ReserveWorking(rows.size(), sizeof(void*) * 8);
+    std::map<std::string_view, const Resources::TerrainTableRow*, decltype(less)> byId(less);
+    for (const auto& row : rows) { tick(1); byId.emplace(row.id, &row); }
+    std::map<std::string, MapData::TerrainDoodadFootprint, decltype(less)> images(less);
+    std::vector<SpecialGeometry> result; result.reserve(placements.size());
+    for (const auto& placement : placements) {
+        tick(described.objects.size());
+        const auto type = std::find_if(described.objects.begin(), described.objects.end(), [&](const auto& value) {
+            return value.special && value.rawcode == placement.rawcode;
+        });
+        const auto row = byId.find(placement.rawcode);
+        if (type == described.objects.end() || row == byId.end() || !type->parentRawcode.empty()
+            || !type->unknownFieldsSha256.empty() || type->pathTexture.empty())
+            Fail("TERRAIN_SHADOW_SPECIAL_OBJECT", "特殊阴影接收面需要唯一标准对象及明确启用的实际pathTex。");
+        // 本批只接受原首选TGA声明；不将BLP、坏TGA或未知后缀改成一份猜测图像。
+        if (type->pathTexture.size() >= 260)
+            Fail("TERRAIN_SHADOW_SPECIAL_PATH", "特殊占地路径超出原版有界容量。");
+        const auto path = Canonical(type->pathTexture);
+        if (!path.ends_with(".TGA"))
+            Fail("TERRAIN_SHADOW_SPECIAL_PATH", "特殊阴影接收面仅接受明确的原首选TGA路径。");
+        auto image = images.find(path);
+        if (image == images.end()) {
+            const auto& file = inputs.Read(path);
+            if (!file.present) Fail("TERRAIN_SHADOW_SPECIAL_FOOTPRINT_MISSING", "缺少特殊接收面的实际TGA占地。");
+            tick(file.bytes.size());
+            // 特殊地形沿用type2零拷贝入口，不借普通对象的RLE/BLP扩展域。
+            auto decoded = Take(MapData::DecodeDoodadFootprintTga(file.bytes));
+            inputs.ReserveWorking(path.size() + sizeof(MapData::TerrainDoodadFootprint) + 8 * sizeof(void*));
+            image = images.emplace(path, decoded).first;
+        }
+        const auto& footprint = image->second;
+        tick((std::size_t(footprint.width) / 4 + 1) * (std::size_t(footprint.height) / 4 + 1) * 3);
+        const std::array<MapData::TerrainSpecialDoodadPathingInput, 1> shapeInputs{{{&placement, footprint}}};
+        const auto shapes = Take(MapData::DescribeTerrainSpecialDoodads(terrain, shapeInputs, maximumLevel,
+            inputs.AvailableWorkingBytes()));
+        const auto& shape = shapes.front();
+        inputs.ReserveWorking(sizeof(MapData::TerrainWaterSpecialDoodadShape) + shape.rawcode.capacity()
+            + shape.relativeCliffLevels.capacity() + 32);
+        const auto field = [&](std::string_view key) -> std::string_view {
+            const auto found = row->second->fields.find(key);
+            if (found == row->second->fields.end())
+                Fail("TERRAIN_SHADOW_SPECIAL_FIELD", "特殊模型缺少实际file/numVar字段。");
+            return found->second;
+        };
+        const auto file = field("file"), number = field("numvar");
+        unsigned variations = 0;
+        const auto parsed = std::from_chars(number.data(), number.data() + number.size(), variations);
+        if (parsed.ec != std::errc{} || parsed.ptr != number.data() + number.size() || variations < 1 || variations > 10
+            || file.empty() || file == "_" || file.size() >= 256 || file.find('.') != std::string_view::npos)
+            Fail("TERRAIN_SHADOW_SPECIAL_MODEL_PATH", "特殊模型仅接受实际无扩展名file、numVar1..10的已闭合域。");
+        std::string model(file); if (variations > 1) model.push_back('0');
+        const auto base = Canonical(model);
+        // 5F29B0的末端是最后地格，Describe的x1/y1则是末端顶点。
+        std::uint8_t minimum = maximumLevel;
+        for (auto y = shape.y0; y <= shape.y1; ++y) for (auto x = shape.x0; x <= shape.x1; ++x)
+            minimum = std::min(minimum, terrain.vertices[std::size_t(y) * terrain.header.width + x].CliffLevel());
+        result.push_back({shape.x0, shape.y0, footprint.width, footprint.height, minimum, base + ".MDX"});
+    }
+    return result;
 }
 
 void ValidateModel(std::span<const std::byte> bytes, Inputs& inputs) {
@@ -266,6 +375,9 @@ struct TerrainShadowReceiverResources::State {
     std::vector<std::vector<std::size_t>> blocks;
     std::vector<RampVertex> rampVertices;
     std::vector<std::uint8_t> modelCells;
+    // 零表示普通格；其余是首覆盖special的锚点地格线性下标+1。
+    // 57F790先映射锚点block，再按全部原序records选首包含项，不能直取special模型。
+    std::vector<std::uint32_t> specialAnchors;
     std::size_t sourceBytes = 0, working = 0, work = 0;
     bool ordinary = true;
 
@@ -320,7 +432,7 @@ struct TerrainShadowReceiverResources::State {
             + (rampVertices.empty() ? 0.0 : rampVertices[index].heightOffset));
     }
     void Transform(Record& record, std::uint8_t minimum, Inputs& inputs, std::stop_token cancellation,
-        int shiftX = 0, int shiftY = 0) {
+        int shiftX = 0, int shiftY = 0, float preX = 0, float preY = 0) {
         const auto& terrain = casters->Terrain();
         const float degrees = static_cast<float>(static_cast<double>(std::bit_cast<float>(0x40490fdbu))
             * std::bit_cast<float>(0x3bb60b61u));
@@ -338,10 +450,16 @@ struct TerrainShadowReceiverResources::State {
             auto& output = record.positions.emplace_back(); output.reserve(geoset.positions.size());
             for (const auto& point : geoset.positions) {
                 Tick(8, cancellation);
+                auto local = point;
+                if (preX != 0 || preY != 0) {
+                    // 5F3050在原局部positions加半占地偏移，各自落F32，之后才57EAD0。
+                    local[0] = static_cast<float>(static_cast<double>(point[0]) + preX);
+                    local[1] = static_cast<float>(static_cast<double>(point[1]) + preY);
+                }
                 // 73D830：T*R，平移不再旋转；每坐标在变形前落一次F32。
-                Vec3 world{static_cast<float>(static_cast<double>(point[1]) * -sine + static_cast<double>(point[0]) * cosine + tx),
-                    static_cast<float>(static_cast<double>(point[0]) * sine + static_cast<double>(point[1]) * cosine + ty),
-                    static_cast<float>(static_cast<double>(point[2]) + tz)};
+                Vec3 world{static_cast<float>(static_cast<double>(local[1]) * -sine + static_cast<double>(local[0]) * cosine + tx),
+                    static_cast<float>(static_cast<double>(local[0]) * sine + static_cast<double>(local[1]) * cosine + ty),
+                    static_cast<float>(static_cast<double>(local[2]) + tz)};
                 const double fx = (static_cast<double>(world[0]) - terrain.header.offset[0]) / 128.0;
                 const double fy = (static_cast<double>(world[1]) - terrain.header.offset[1]) / 128.0;
                 if (!std::isfinite(fx) || !std::isfinite(fy) || std::trunc(fx) < 0 || std::trunc(fy) < 0
@@ -417,8 +535,8 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
             || terrain.header.width > 2049 || terrain.header.height > 2049
             || terrain.vertices.size() != static_cast<std::size_t>(terrain.header.width) * terrain.header.height)
             Fail("TERRAIN_SHADOW_TERRAIN", "接收面需要完整经典W3E原始顶点。");
-        if (!state->casters->SpecialDoodads().empty())
-            Fail("TERRAIN_SHADOW_SPECIAL_GEOMETRY", "特殊装饰物接收面尚未接通，原阴影保留。");
+        const bool hasSpecials = !state->casters->SpecialDoodads().empty();
+        if (hasSpecials) state->ordinary = false;
         const auto firstLevel = terrain.vertices.front().CliffLevel();
         for (const auto& vertex : terrain.vertices) {
             state->Tick(1, cancellation);
@@ -455,6 +573,8 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
             Fail("TERRAIN_SHADOW_RECEIVER_PROFILE", "实际MaxHeight派生的悬崖上限不在0..14支持域。");
         state->lightFingerprint = light.DependencyFingerprint();
         Inputs inputs(source, state->gameRoot, terrain.header.mainTileset, replacements, removals, limits, cancellation);
+        const auto specials = hasSpecials ? SpecialGeometries(inputs, terrain, state->casters->SpecialDoodads(),
+            std::uint8_t(maximumLevel), state->work, limits, cancellation) : std::vector<SpecialGeometry>{};
         const bool hasRamps = std::any_of(terrain.vertices.begin(), terrain.vertices.end(),
             [](const auto& vertex) { return vertex.IsRamp(); });
         if (hasRamps) {
@@ -478,18 +598,54 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
                 state->rampVertices[index] = {value.corner, value.heightOffset};
             }
         }
-        const auto rows = CliffRows(inputs);
+        const auto rows = TableRows(inputs, "TerrainArt/CliffTypes.slk", "cliffid");
         const auto width = terrain.header.width - 1, height = terrain.header.height - 1, blockWidth = (width + 3) / 4;
         Charge(inputs.working, static_cast<std::size_t>(width) * height, limits.maximumWorkingBytes);
         state->modelCells.resize(static_cast<std::size_t>(width) * height);
+        if (hasSpecials) {
+            Charge(inputs.working, static_cast<std::size_t>(width) * height, limits.maximumWorkingBytes, sizeof(std::uint32_t));
+            state->specialAnchors.resize(static_cast<std::size_t>(width) * height);
+            for (const auto& special : specials)
+                for (auto x = special.x; x < special.x + special.width / 4; ++x)
+                    for (auto y = special.y; y < special.y + special.height / 4; ++y) {
+                        state->Tick(1, cancellation);
+                        const auto index = static_cast<std::size_t>(y) * width + x;
+                        if (!state->specialAnchors[index]) {
+                            state->specialAnchors[index] = special.y * width + special.x + 1;
+                            state->modelCells[index] = 1;
+                        }
+                    }
+        }
         Charge(inputs.working, static_cast<std::size_t>(blockWidth) * ((height + 3) / 4), limits.maximumWorkingBytes,
             sizeof(std::vector<std::size_t>));
         state->blocks.resize(static_cast<std::size_t>(blockWidth) * ((height + 3) / 4));
         std::map<std::string, std::vector<std::string>, std::less<>> variants;
         std::map<std::string, std::size_t, std::less<>> modelIndices;
+        const auto modelIndex = [&](const std::string& path) {
+            auto model = modelIndices.find(path);
+            if (model != modelIndices.end()) return model->second;
+            if (state->models.size() >= limits.maximumModels)
+                Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "接收面唯一模型数超过预算。");
+            const auto& bytes = inputs.Read(path).bytes;
+            ValidateModel(bytes, inputs);
+            auto raw = Take(Render::ReadMdxTerrainReceiverSource(bytes,
+                std::min<std::size_t>(128u * 1024u * 1024u, limits.maximumWorkingBytes - inputs.working)));
+            for (const auto& geoset : raw.Geosets()) {
+                if (geoset.positions.empty() && !geoset.groups.empty())
+                    Fail("TERRAIN_SHADOW_RECEIVER_GROUP", "零顶点GEOS的原版group指针资格尚未闭合。");
+                for (const auto& group : geoset.groups)
+                    if (group.NativeTopology() == 3 && group.indexCount % 3)
+                        Fail("TERRAIN_SHADOW_RECEIVER_GROUP", "原版list组计数不是完整三角形，拒绝越界求交。");
+            }
+            Charge(inputs.working, raw.ChargedResidentBytes(), limits.maximumWorkingBytes);
+            Charge(inputs.working, path.size() + sizeof(State::Model), limits.maximumWorkingBytes, 2);
+            const auto index = state->models.size(); state->models.push_back({path, std::move(raw)});
+            modelIndices.emplace(path, index); return index;
+        };
         // 每block的原记录顺序为x外/y内；不合批，不按材质重排。
         for (std::uint32_t x = 0; x < width; ++x) for (std::uint32_t y = 0; y < height; ++y) {
             state->Tick(4, cancellation);
+            if (hasSpecials && state->specialAnchors[static_cast<std::size_t>(y) * width + x]) continue;
             const auto corners = Corners(terrain, x, y);
             std::array<std::uint8_t, 4> levels{};
             for (std::size_t i = 0; i < 4; ++i) levels[i] = terrain.vertices[corners[i]].CliffLevel();
@@ -555,32 +711,30 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
                 found = variants.emplace(prefix, std::move(paths)).first;
             }
             const auto& path = found->second[variation % found->second.size()];
-            auto model = modelIndices.find(path);
-            if (model == modelIndices.end()) {
-                if (state->models.size() >= limits.maximumModels)
-                    Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "悬崖接收面唯一模型数超过预算。");
-                const auto& bytes = inputs.Read(path).bytes;
-                ValidateModel(bytes, inputs);
-                auto raw = Take(Render::ReadMdxTerrainReceiverSource(bytes,
-                    std::min<std::size_t>(128u * 1024u * 1024u, limits.maximumWorkingBytes - inputs.working)));
-                for (const auto& geoset : raw.Geosets()) {
-                    if (geoset.positions.empty() && !geoset.groups.empty())
-                        Fail("TERRAIN_SHADOW_RECEIVER_GROUP", "零顶点GEOS的原版group指针资格尚未闭合。");
-                    for (const auto& group : geoset.groups)
-                        if (group.NativeTopology() == 3 && group.indexCount % 3)
-                            Fail("TERRAIN_SHADOW_RECEIVER_GROUP", "原版list组计数不是完整三角形，拒绝越界求交。");
-                }
-                Charge(inputs.working, raw.ChargedResidentBytes(), limits.maximumWorkingBytes);
-                Charge(inputs.working, path.size() + sizeof(State::Model), limits.maximumWorkingBytes, 2);
-                const auto index = state->models.size(); state->models.push_back({path, std::move(raw)});
-                model = modelIndices.emplace(path, index).first;
-            }
             if (state->records.size() >= limits.maximumRecords)
                 Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "悬崖接收面记录数超过预算。");
             Charge(inputs.working, 1, limits.maximumWorkingBytes, 2 * sizeof(State::Record) + 2 * sizeof(std::size_t));
-            State::Record record{x, y, int(x) + (ramp ? ramp->endX : 0), int(y) + (ramp ? ramp->endY : 0), model->second, {}};
+            State::Record record{x, y, int(x) + (ramp ? ramp->endX : 0), int(y) + (ramp ? ramp->endY : 0), modelIndex(path), {}};
             state->Transform(record, minimum, inputs, cancellation, ramp ? ramp->shiftX : 0, ramp ? ramp->shiftY : 0);
             state->blocks[static_cast<std::size_t>(y / 4) * blockWidth + x / 4].push_back(state->records.size());
+            state->records.push_back(std::move(record));
+        }
+        // 5F2FD0：按原special登记序追加到其锚点block；不向占地覆盖的其它block复制。
+        for (const auto& special : specials) {
+            state->Tick(1, cancellation);
+            auto mdl = special.model; mdl.replace(mdl.size() - 4, 4, ".MDL");
+            if (inputs.Read(mdl).present)
+                Fail("TERRAIN_SHADOW_RECEIVER_MDL_UNSUPPORTED", "实际最高层特殊MDL尚未解析，未改读低层MDX。");
+            if (!inputs.Read(special.model).present)
+                Fail("TERRAIN_SHADOW_SPECIAL_MODEL_MISSING", "缺少特殊接收面的实际模型，未使用预览替代品。");
+            if (state->records.size() >= limits.maximumRecords)
+                Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "特殊接收面记录数超过预算。");
+            Charge(inputs.working, 1, limits.maximumWorkingBytes, 2 * sizeof(State::Record) + 2 * sizeof(std::size_t));
+            State::Record record{special.x, special.y, int(special.x + special.width / 4 - 1),
+                int(special.y + special.height / 4 - 1), modelIndex(special.model), {}};
+            state->Transform(record, special.minimum, inputs, cancellation, 0, 0,
+                -static_cast<float>(special.height) * 16.0f, static_cast<float>(special.width) * 16.0f);
+            state->blocks[static_cast<std::size_t>(special.y / 4) * blockWidth + special.x / 4].push_back(state->records.size());
             state->records.push_back(std::move(record));
         }
         inputs.Verify();
@@ -658,7 +812,12 @@ Result<MapData::TerrainShadowReceiverGrid> TerrainShadowReceiverResources::Sampl
         for (std::uint32_t py = 0; py < height; ++py) for (std::uint32_t px = 0; px < width; ++px) {
             tick();
             const auto x = px / 4, y = py / 4;
-            const auto block = static_cast<std::size_t>(y / 4) * blockWidth + x / 4;
+            auto queryX = x, queryY = y;
+            if (!state_->specialAnchors.empty()) {
+                const auto anchor = state_->specialAnchors[static_cast<std::size_t>(y) * tileWidth + x];
+                if (anchor) { queryX = (anchor - 1) % tileWidth; queryY = (anchor - 1) / tileWidth; }
+            }
+            const auto block = static_cast<std::size_t>(queryY / 4) * blockWidth + queryX / 4;
             const auto& records = state_->blocks[block];
             const Vec3 location{static_cast<float>(terrain.header.offset[0] + px * 32.0 + 16.0),
                 static_cast<float>(terrain.header.offset[1] + py * 32.0 + 16.0), 0};
@@ -666,12 +825,12 @@ Result<MapData::TerrainShadowReceiverGrid> TerrainShadowReceiverResources::Sampl
             double sampled = 0;
             if (isModel) {
                 const State::Record* selected = nullptr;
-                // 57F790只查当前block，以首个有符号闭区间包含当前格的record为准。
+                // 57F790先做special锚点映射，再查该block首包含record；世界射线XY不变。
                 for (const auto index : records) {
                     tick();
                     const auto& record = state_->records[index];
-                    if (int(x) >= std::min(int(record.x), record.endX) && int(x) <= std::max(int(record.x), record.endX)
-                        && int(y) >= std::min(int(record.y), record.endY) && int(y) <= std::max(int(record.y), record.endY)) {
+                    if (int(queryX) >= std::min(int(record.x), record.endX) && int(queryX) <= std::max(int(record.x), record.endX)
+                        && int(queryY) >= std::min(int(record.y), record.endY) && int(queryY) <= std::max(int(record.y), record.endY)) {
                         selected = &record; break;
                     }
                 }
