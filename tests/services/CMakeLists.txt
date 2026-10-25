@@ -334,7 +334,7 @@ target_compile_options(audastra-terrain-native-object-save-tests PRIVATE /W4 /pe
 add_test(NAME services-terrain-native-object-save COMMAND audastra-terrain-native-object-save-tests)
 
 add_executable(audastra-terrain-native-object-real-tests
-    TerrainNativeObjectRealSourceTests.cpp TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
+    TerrainNativeObjectRealSourceTests.cpp TerrainFinalInputsRealCases.h TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
     TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp
     TerrainUnitPlacementRealTests.cpp TerrainCliffTransportSaveTests.cpp TerrainBoundaryRealTests.cpp TerrainRemoveWaterRealTests.cpp)
 target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapEditor::Services)
