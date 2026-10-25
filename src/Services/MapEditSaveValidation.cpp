@@ -9,6 +9,18 @@
 
 namespace War3Map::Services::MapEditValidation {
 
+namespace {
+bool NeutralTerrainBrush(const MapData::TerrainBrush& brush) {
+    const MapData::TerrainBrush neutral;
+    return brush.kind == neutral.kind && brush.shape == neutral.shape && brush.radius == neutral.radius
+        && brush.groundTexture == neutral.groundTexture && brush.cliffTexture == neutral.cliffTexture
+        && brush.levelDelta == neutral.levelDelta && brush.value == neutral.value
+        && brush.strength == neutral.strength && brush.seed == neutral.seed && !brush.anchor
+        && !brush.size && !brush.variation && brush.randomizeVariation == neutral.randomizeVariation
+        && brush.waterHeight == neutral.waterHeight && brush.pathingRestrictions == neutral.pathingRestrictions;
+}
+}
+
 constexpr std::size_t kMaximumStrokes = 128;
 constexpr std::size_t kMaximumPointsPerStroke = 4096;
 constexpr std::size_t kMaximumTotalPoints = 4096;
@@ -96,16 +108,20 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     }
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.blockPaste) {
+            if (strokes.size() != 1 || !NeutralTerrainBrush(stroke.brush) || !stroke.points.empty()
+                || stroke.pointSpace != MapEditPointSpace::World || stroke.waterBrush || stroke.bounds
+                || stroke.blockPaste->algorithm != 1
+                || (!stroke.blockPaste->expectedBlockSha256.empty() && !ValidSha(stroke.blockPaste->expectedBlockSha256)))
+                return Status::Failure("MapEdit.Save", "SAVE_TERRAIN_BLOCK_REQUEST_INVALID",
+                    "地形块复制需要一个独立矩形命令，不能同时指定笔刷、采样点、水刷或可玩范围。摘要省略时由服务从实际源块捕获。");
+            // 矩形、目标坐标及累计预算由共用块捕获/准备器在读取实际W3E后检查，
+            // 不在协议层另写一份几何规则，更不把空摘要当作已核对来源。
+            continue;
+        }
         if (stroke.bounds) {
-            const auto& brush = stroke.brush; const MapData::TerrainBrush neutral;
             const auto& r = stroke.bounds->playable;
-            if (brush.kind != neutral.kind || brush.shape != neutral.shape || brush.radius != neutral.radius
-                || brush.groundTexture != neutral.groundTexture || brush.cliffTexture != neutral.cliffTexture
-                || brush.levelDelta != neutral.levelDelta || brush.value != neutral.value
-                || brush.strength != neutral.strength || brush.seed != neutral.seed || brush.anchor
-                || brush.size || brush.variation || brush.randomizeVariation != neutral.randomizeVariation
-                || brush.waterHeight != neutral.waterHeight || brush.pathingRestrictions != neutral.pathingRestrictions
-                || !stroke.points.empty() || stroke.pointSpace != MapEditPointSpace::World
+            if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty() || stroke.pointSpace != MapEditPointSpace::World
                 || stroke.followDoodads || stroke.waterBrush || stroke.bounds->algorithm != 1
                 || r.west >= r.east || r.south >= r.north || r.east > 2048 || r.north > 2048)
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_BOUNDS_INVALID",
@@ -113,14 +129,7 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
             continue;
         }
         if (stroke.waterBrush) {
-            const auto& brush = stroke.brush;
-            const MapData::TerrainBrush neutral;
-            if (brush.kind != neutral.kind || brush.shape != neutral.shape || brush.radius != neutral.radius
-                || brush.groundTexture != neutral.groundTexture || brush.cliffTexture != neutral.cliffTexture
-                || brush.levelDelta != neutral.levelDelta || brush.value != neutral.value
-                || brush.strength != neutral.strength || brush.seed != neutral.seed || brush.anchor
-                || brush.size || brush.variation || brush.randomizeVariation != neutral.randomizeVariation
-                || brush.waterHeight != neutral.waterHeight || brush.pathingRestrictions != neutral.pathingRestrictions)
+            if (!NeutralTerrainBrush(stroke.brush))
                 return Status::Failure("MapEdit.Save", "SAVE_STROKE_BRUSH_CONFLICT", "浅/深水笔划不能同时指定普通地形笔刷参数。");
             const auto& water = *stroke.waterBrush;
             if ((water.kind != MapData::TerrainWaterBrushKind::Shallow && water.kind != MapData::TerrainWaterBrushKind::Deep)

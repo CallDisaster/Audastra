@@ -793,6 +793,21 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             std::vector<MapData::TerrainStrokeIntent> intents;
             intents.reserve(request.terrainStrokes.size());
             for (const auto& stroke : request.terrainStrokes) {
+                if (stroke.blockPaste) {
+                    auto block = *stroke.blockPaste;
+                    const auto actual = MapData::CaptureTerrainBlockFingerprint(*grid, block.sourceCells);
+                    if (!actual.Succeeded() || !actual.value) return Forward(actual.diagnostics);
+                    if (!block.expectedBlockSha256.empty() && block.expectedBlockSha256 != *actual.value)
+                        return Fail("TERRAIN_BLOCK_SOURCE_CHANGED", "复制的源地形块已经改变，请重新复制后再粘贴。");
+                    block.expectedBlockSha256 = *actual.value;
+                    const auto valid = MapData::ValidateTerrainBlockPasteIntent(block);
+                    if (!valid.Succeeded()) return Forward(valid.diagnostics);
+                    MapData::TerrainStrokeIntent intent;
+                    intent.blockPaste = std::move(block);
+                    intent.followDoodads = stroke.followDoodads;
+                    intents.push_back(std::move(intent));
+                    continue;
+                }
                 if (stroke.bounds) {
                     intents.push_back({{}, {}, false, {}, stroke.bounds}); continue;
                 }
@@ -833,7 +848,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             }
             const bool restrictionOnly = seen[1] && !seen[2] && !seen[3]
                 && std::all_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
-                    [](const auto& stroke) { return !stroke.bounds && !stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
+                    [](const auto& stroke) { return !stroke.blockPaste && !stroke.bounds && !stroke.waterBrush
+                        && stroke.brush.kind == MapData::TerrainBrushKind::PathingRestriction; });
             // 部分来源W3E的MapEdge已恰好匹配新矩形；真实范围仍可仅改变W3I并重建native G0/G1。
             const bool ownedBounds = seen[4] && terrainReplay->HasTerrainBoundsChanges();
             if (!seen[0] && !restrictionOnly && !ownedBounds)

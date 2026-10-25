@@ -2626,10 +2626,12 @@ void TestMapCreationRejectsUnboundedOrExistingInputs() {
 }
 
 #include "TerrainStraightRampHostCases.h"
+#include "TerrainBlockSaveHostCases.h"
 
 int main() {
     try {
         War3Map::Tests::TerrainStraightRampHostValidation();
+        War3Map::Tests::TerrainBlockSaveHostValidation();
         TestFrozenSourceAndVerifiedCandidate();
         TestClassicV1CommonMapSaveAndTemplateBoundary();
         TestOptionalRealClassicV1MapSave();
