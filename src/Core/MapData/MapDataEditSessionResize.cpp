@@ -29,7 +29,8 @@ std::vector<std::byte> MoveCells(std::span<const std::byte> old, std::uint32_t o
             const auto sx = std::int64_t(x) + west;
             if (sx < 0 || sx >= oldWidth) continue;
             const auto value = old[std::size_t(sy) * oldWidth + sx];
-            output[std::size_t(y) * newWidth + x] = shadow ? ((value & std::byte{1}) == std::byte{0} ? std::byte{0} : std::byte{0xff}) : value;
+            // 磁盘非零在原版load时先成为runtime bit0；writer再把该位写为FF。
+            output[std::size_t(y) * newWidth + x] = shadow ? (value == std::byte{0} ? std::byte{0} : std::byte{0xff}) : value;
         }
     }
     return output;
