@@ -1,12 +1,19 @@
 #include "TerrainShadowRealTests.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/MapFields.h"
+#include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainShadowResources.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainShadowReceiverResources.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
@@ -39,6 +46,8 @@ void Check(const Status& status) {
     throw std::runtime_error(message);
 }
 } // namespace
+
+#include "TerrainShadowReceiverRealCases.h"
 
 void CheckRealTerrainShadowSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
@@ -204,5 +213,6 @@ void CheckRealTerrainShadowSave(const MapArchiveSession& original,
         << " shd_bytes=" << absentShadow.size() << " shd_sha256=" << Take(Sha256(absentShadow))
         << " wpm_absent=true map_blp_absent=true map_tga_absent=true minimap_capability_warning=true"
         << " expected_shadow_is_literal=true source_unchanged=true native_oracle=false native_editor_verified=false game_verified=false\n";
+    CheckRealTerrainShadowReceiversSave(original, directory, tool, game);
 }
 } // namespace War3Map::TerrainSaveTests
