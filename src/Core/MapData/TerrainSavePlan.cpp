@@ -685,41 +685,6 @@ Status TerrainSavePlan::AdmitGeneratedShadow(const MapDataEditSession& edits, st
     catch (const std::length_error&) { return Reject("TERRAIN_SHADOW_ALLOCATION", "阴影输出容量异常，未返回完整保存计划。"); }
 }
 
-std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {
-    std::size_t bytes = sizeof(*this);
-    const auto add = [&](std::size_t value) {
-        bytes = value > std::numeric_limits<std::size_t>::max() - bytes
-            ? std::numeric_limits<std::size_t>::max() : bytes + value;
-    };
-    const auto text = [&](const std::string& value) { add(value.capacity()); add(1); };
-    text(sourceSha256_);
-    text(pathingDraftSha256_); text(pathingIntentSha256_);
-    add(nativePathingProtected_.capacity());
-    if (pathingResources_) add(pathingResources_->OwnedCapacityBytes());
-    for (const auto& member : members_) {
-        text(member.name); text(member.reasonCode); text(member.reason);
-        if (member.sourceSha256) text(*member.sourceSha256);
-        if (member.outputSha256) text(*member.outputSha256);
-    }
-    for (const auto& member : invariantMembers_) {
-        text(member.name); text(member.reasonCode); text(member.reason);
-        if (member.sourceSha256) text(*member.sourceSha256);
-        if (member.outputSha256) text(*member.outputSha256);
-    }
-    add(replacements_.capacity() * sizeof(MemberReplacement));
-    for (const auto& member : replacements_) { text(member.name); add(member.data.capacity()); }
-    add((diagnostics_.capacity() + saveGate_.diagnostics.capacity()) * sizeof(Diagnostic));
-    for (const auto* diagnostics : {&diagnostics_, &saveGate_.diagnostics})
-        for (const auto& diagnostic : *diagnostics) {
-            text(diagnostic.subsystem); text(diagnostic.code); text(diagnostic.message);
-            if (diagnostic.origin) {
-                add((diagnostic.origin->source.native().capacity() + 1) * sizeof(std::filesystem::path::value_type));
-                text(diagnostic.origin->fingerprint);
-            }
-        }
-    return bytes;
-}
-
 Status TerrainSavePlan::VerifyForSave(const MapDataEditSession& edits, std::string_view sourceSha256,
     std::span<const MemberReplacement> replacements, std::span<const std::string> removals) const {
     if (edits.SessionIdentity() != sessionIdentity_ || edits.Revision() != revision_

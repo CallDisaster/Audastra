@@ -132,7 +132,6 @@ private:
     [[nodiscard]] Status AdmitGeneratedMinimap(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     [[nodiscard]] Status AdmitGeneratedMarkers(const MapDataEditSession& edits, std::vector<std::byte> generatedBytes);
     [[nodiscard]] Status AdmitGeneratedShadow(const MapDataEditSession& edits, std::span<const std::byte> generatedBytes);
-    [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
     [[nodiscard]] static Result<TerrainSavePlan> Complete(TerrainSavePlan plan,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t sourceBytes,
         const MapArchiveSession* source = nullptr, const std::filesystem::path* gameRoot = nullptr,
