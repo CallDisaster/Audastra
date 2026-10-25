@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/TerrainNativePathing.h"
 #include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Render/MdxTerrainReceiver.h"
 #include "War3MapCore/Resources/ImportTable.h"
@@ -51,6 +52,27 @@ float RawHeight(const MapData::TerrainVertex& vertex) {
 }
 float GroundHeight(const MapData::TerrainVertex& vertex) {
     return static_cast<float>(static_cast<double>(RawHeight(vertex)) + 128.0 * (vertex.CliffLevel() - 2));
+}
+
+// 5A85D0只用首四字符建立anchor；5A8650还接受alternate，但不另建record。
+// 后四数分别是5A8A30的平移格偏移和5A8810的有符号record末端偏移。
+struct RampPattern { std::string_view anchor, alternate; int shiftX, shiftY, endX, endY; };
+constexpr std::array<RampPattern, 16> kRampPatterns{{
+    {"HRAA","RLAA",0,0,1,0}, {"RHAA","LRAA",-1,0,-1,0},
+    {"AARH","AALR",0,0,1,0}, {"AAHR","AARL",-1,0,-1,0},
+    {"AHRA","ARLA",0,-1,0,-1}, {"ARHA","ALRA",0,0,0,1},
+    {"HAAR","RAAL",0,-1,0,-1}, {"RAAH","LAAR",0,0,0,1},
+    {"HRAB","RLAA",0,0,1,0}, {"RHBA","LRAA",-1,0,-1,0},
+    {"BARH","AALR",0,0,1,0}, {"ABHR","AARL",-1,0,-1,0},
+    {"BHRA","ARLA",0,-1,0,-1}, {"ARHB","ALRA",0,0,0,1},
+    {"HBAR","RAAL",0,-1,0,-1}, {"RABH","LAAR",0,0,0,1}
+}};
+const RampPattern* MatchRamp(const std::array<char, 4>& corners, bool alternate) {
+    const std::string_view key(corners.data(), corners.size());
+    const auto found = std::find_if(kRampPatterns.begin(), kRampPatterns.end(), [&](const auto& pattern) {
+        return key == pattern.anchor || (alternate && key == pattern.alternate);
+    });
+    return found == kRampPatterns.end() ? nullptr : &*found;
 }
 
 // 与caster共用MapArchiveSession、GameDataSource及只读来源租约。这里只捕获
@@ -229,9 +251,11 @@ struct TerrainShadowReceiverResources::State {
     struct Model { std::string path; Render::MdxTerrainReceiverSource source; };
     struct Record {
         std::uint32_t x = 0, y = 0;
+        std::int32_t endX = 0, endY = 0;
         std::size_t model = 0;
         std::vector<std::vector<Vec3>> positions; // GEOS和VRTX顺序，group索引借用Model
     };
+    struct RampVertex { char corner = 'A'; float heightOffset = 0; };
     std::shared_ptr<const TerrainShadowCasterResources> casters;
     std::string sourceSha, lightFingerprint;
     std::filesystem::path gameRoot;
@@ -240,6 +264,8 @@ struct TerrainShadowReceiverResources::State {
     std::vector<Model> models;
     std::vector<Record> records;
     std::vector<std::vector<std::size_t>> blocks;
+    std::vector<RampVertex> rampVertices;
+    std::vector<std::uint8_t> modelCells;
     std::size_t sourceBytes = 0, working = 0, work = 0;
     bool ordinary = true;
 
@@ -283,15 +309,26 @@ struct TerrainShadowReceiverResources::State {
     void Tick(std::size_t count, std::stop_token cancellation) {
         Cancel(cancellation); Charge(work, count, limits.maximumWork);
     }
-    void Transform(Record& record, std::uint8_t minimum, Inputs& inputs, std::stop_token cancellation) {
+    std::array<char, 4> RampCorners(std::uint32_t x, std::uint32_t y) const {
+        if (rampVertices.empty()) return {'A', 'A', 'A', 'A'};
+        const auto indices = Corners(casters->Terrain(), x, y);
+        return {rampVertices[indices[2]].corner, rampVertices[indices[3]].corner,
+            rampVertices[indices[1]].corner, rampVertices[indices[0]].corner};
+    }
+    float Height(std::size_t index) const {
+        return static_cast<float>(static_cast<double>(GroundHeight(casters->Terrain().vertices[index]))
+            + (rampVertices.empty() ? 0.0 : rampVertices[index].heightOffset));
+    }
+    void Transform(Record& record, std::uint8_t minimum, Inputs& inputs, std::stop_token cancellation,
+        int shiftX = 0, int shiftY = 0) {
         const auto& terrain = casters->Terrain();
         const float degrees = static_cast<float>(static_cast<double>(std::bit_cast<float>(0x40490fdbu))
             * std::bit_cast<float>(0x3bb60b61u));
         const float angle = static_cast<float>(static_cast<double>(degrees) * -90.0);
         const float cosine = static_cast<float>(std::cos(static_cast<double>(angle)));
         const float sine = static_cast<float>(std::sin(static_cast<double>(angle)));
-        const double tx = static_cast<double>(terrain.header.offset[0]) + record.x * 128.0;
-        const double ty = static_cast<double>(terrain.header.offset[1]) + record.y * 128.0;
+        const double tx = static_cast<double>(terrain.header.offset[0]) + (static_cast<double>(record.x) + shiftX) * 128.0;
+        const double ty = static_cast<double>(terrain.header.offset[1]) + (static_cast<double>(record.y) + shiftY) * 128.0;
         const double tz = minimum * 128.0 - 256.0;
         const auto geosets = models[record.model].source.Geosets();
         Charge(inputs.working, geosets.size(), limits.maximumWorkingBytes, sizeof(std::vector<Vec3>));
@@ -385,7 +422,7 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
         const auto firstLevel = terrain.vertices.front().CliffLevel();
         for (const auto& vertex : terrain.vertices) {
             state->Tick(1, cancellation);
-            if (vertex.IsRamp()) Fail("TERRAIN_SHADOW_RAMP_GEOMETRY", "坡道接收面的anchor与模型尚未接通，原阴影保留。");
+            if (vertex.IsRamp()) state->ordinary = false;
             if (vertex.CliffLevel() != firstLevel) state->ordinary = false;
         }
         if (state->ordinary)
@@ -418,8 +455,33 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
             Fail("TERRAIN_SHADOW_RECEIVER_PROFILE", "实际MaxHeight派生的悬崖上限不在0..14支持域。");
         state->lightFingerprint = light.DependencyFingerprint();
         Inputs inputs(source, state->gameRoot, terrain.header.mainTileset, replacements, removals, limits, cancellation);
+        const bool hasRamps = std::any_of(terrain.vertices.begin(), terrain.vertices.end(),
+            [](const auto& vertex) { return vertex.IsRamp(); });
+        if (hasRamps) {
+            Charge(inputs.working, terrain.vertices.size(), limits.maximumWorkingBytes, sizeof(State::RampVertex));
+            state->rampVertices.resize(terrain.vertices.size());
+            for (std::uint32_t y = 0; y < terrain.header.height; ++y) for (std::uint32_t x = 0; x < terrain.header.width; ++x) {
+                // 远离原R位的角不会参与任何R/S格或模型名，不为它重复查询第二圈。
+                state->Tick(9, cancellation); bool adjacent = false;
+                for (int dx = -1; dx <= 1; ++dx) for (int dy = -1; dy <= 1; ++dy) {
+                    const int nx = int(x) + dx, ny = int(y) + dy;
+                    if (nx >= 0 && ny >= 0 && nx < int(terrain.header.width) && ny < int(terrain.header.height)
+                        && terrain.vertices[std::size_t(ny) * terrain.header.width + nx].IsRamp()) adjacent = true;
+                }
+                if (!adjacent) continue;
+                // 共用查询包含固定两圈验证、九点完整分类及S高度，先收其有限工作上界。
+                state->Tick(1024, cancellation);
+                const auto value = Take(MapData::QueryNativeTerrainRamp(terrain, std::uint8_t(maximumLevel), x, y));
+                const auto index = std::size_t(y) * terrain.header.width + x;
+                if (terrain.vertices[index].IsRamp() && (value.corner == '!' || !value.belongsToRampCell))
+                    Fail("TERRAIN_SHADOW_RAMP_GEOMETRY", "孤立或未闭合的原始坡道位不能构造普通接收面，原阴影保留。");
+                state->rampVertices[index] = {value.corner, value.heightOffset};
+            }
+        }
         const auto rows = CliffRows(inputs);
         const auto width = terrain.header.width - 1, height = terrain.header.height - 1, blockWidth = (width + 3) / 4;
+        Charge(inputs.working, static_cast<std::size_t>(width) * height, limits.maximumWorkingBytes);
+        state->modelCells.resize(static_cast<std::size_t>(width) * height);
         Charge(inputs.working, static_cast<std::size_t>(blockWidth) * ((height + 3) / 4), limits.maximumWorkingBytes,
             sizeof(std::vector<std::size_t>));
         state->blocks.resize(static_cast<std::size_t>(blockWidth) * ((height + 3) / 4));
@@ -433,24 +495,52 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
             for (std::size_t i = 0; i < 4; ++i) levels[i] = terrain.vertices[corners[i]].CliffLevel();
             const auto minimum = *std::min_element(levels.begin(), levels.end());
             auto maximum = *std::max_element(levels.begin(), levels.end());
-            if (maximum == minimum) continue;
-            maximum = std::min<unsigned>(maximum, minimum + 2);
-            if (maximum > maximumLevel) continue; // 原版不构造该record，模型路径高度为0
-            for (auto& level : levels) level = static_cast<std::uint8_t>(std::min<unsigned>(level, maximum) - minimum);
-            const auto [slot, variation] = CliffSlot(terrain, x, y);
+            const auto labels = state->RampCorners(x, y);
+            unsigned weight = 0;
+            for (const auto label : labels) weight += label == 'R' ? 1u : label == 'S' ? 2u : 0u;
+            const auto* ramp = weight && weight <= 1 ? MatchRamp(labels, false) : nullptr;
+            // 57E210：有R/S时仅模式匹配才走模型，不回退异层判断。
+            state->modelCells[static_cast<std::size_t>(y) * width + x] = weight
+                ? MatchRamp(labels, true) != nullptr : maximum != minimum;
+            if (weight ? !ramp : maximum == minimum) continue;
+            auto [slot, variation] = CliffSlot(terrain, x, y);
+            if (ramp) {
+                // 5A86D0：本格/东/西/北/南，只扫描含R/S的格；严格最高层首顶点胜出。
+                int highest = -1; slot = 15; variation = 0;
+                for (const auto delta : {std::array{0,0}, std::array{1,0}, std::array{-1,0}, std::array{0,1}, std::array{0,-1}}) {
+                    state->Tick(8, cancellation);
+                    const int nx = int(x) + delta[0], ny = int(y) + delta[1];
+                    if (nx < 0 || ny < 0 || nx >= int(width) || ny >= int(height)) continue;
+                    const auto around = state->RampCorners(std::uint32_t(nx), std::uint32_t(ny));
+                    if (std::none_of(around.begin(), around.end(), [](char c) { return c == 'R' || c == 'S'; })) continue;
+                    for (const auto i : Corners(terrain, std::uint32_t(nx), std::uint32_t(ny))) {
+                        const auto& vertex = terrain.vertices[i];
+                        if (vertex.CliffLevel() > highest) { highest = vertex.CliffLevel(); slot = vertex.CliffTextureIndex(); }
+                    }
+                }
+                if (slot == 15) slot = 0;
+            } else {
+                maximum = std::min<unsigned>(maximum, minimum + 2);
+                if (maximum > maximumLevel) continue; // 原版不构造该record，模型路径高度为0
+                for (auto& level : levels) level = static_cast<std::uint8_t>(std::min<unsigned>(level, maximum) - minimum);
+            }
             if (slot >= terrain.header.cliffTilesets.size())
                 Fail("TERRAIN_SHADOW_RECEIVER_CLIFF_SLOT", "实际悬崖槽超出W3E调色板。");
             const auto& id = terrain.header.cliffTilesets[slot];
             const auto row = std::find_if(rows.begin(), rows.end(), [&](const auto& item) { return item.id == id; });
-            if (row == rows.end() || !row->fields.contains("cliffmodeldir"))
+            const auto field = ramp ? "rampmodeldir" : "cliffmodeldir";
+            if (row == rows.end() || !row->fields.contains(field) || row->fields.at(field).empty())
                 Fail("TERRAIN_SHADOW_RECEIVER_CLIFF_ROW", "实际CliffTypes缺少唯一模型目录：" + id);
             std::string shape;
-            for (const auto corner : {2u, 3u, 1u, 0u}) shape.push_back(static_cast<char>('A' + levels[corner]));
-            const auto prefix = Canonical("Doodads/Terrain/" + row->fields.at("cliffmodeldir") + shape);
+            if (ramp) for (const auto label : labels) shape.push_back(label == 'R' ? 'L' : label);
+            else for (const auto corner : {2u, 3u, 1u, 0u}) shape.push_back(static_cast<char>('A' + levels[corner]));
+            // 50A480/50A4D0先把真实目录写成%s\%s，再由cliff/ramp追加形状。
+            const auto& directory = row->fields.at(field);
+            const auto prefix = Canonical("Doodads/Terrain/" + directory + "/" + directory + shape);
             auto found = variants.find(prefix);
             if (found == variants.end()) {
                 std::vector<std::string> paths;
-                for (unsigned variationIndex = 0; variationIndex < 4; ++variationIndex) {
+                for (unsigned variationIndex = 0; variationIndex < (ramp ? 1u : 4u); ++variationIndex) {
                     state->Tick(1, cancellation);
                     const auto base = prefix + std::to_string(variationIndex);
                     const auto& mdl = inputs.Read(base + ".mdl");
@@ -488,7 +578,8 @@ Result<std::shared_ptr<const TerrainShadowReceiverResources>> TerrainShadowRecei
             if (state->records.size() >= limits.maximumRecords)
                 Fail("TERRAIN_SHADOW_RECEIVER_BUDGET", "悬崖接收面记录数超过预算。");
             Charge(inputs.working, 1, limits.maximumWorkingBytes, 2 * sizeof(State::Record) + 2 * sizeof(std::size_t));
-            State::Record record{x, y, model->second, {}}; state->Transform(record, minimum, inputs, cancellation);
+            State::Record record{x, y, int(x) + (ramp ? ramp->endX : 0), int(y) + (ramp ? ramp->endY : 0), model->second, {}};
+            state->Transform(record, minimum, inputs, cancellation, ramp ? ramp->shiftX : 0, ramp ? ramp->shiftY : 0);
             state->blocks[static_cast<std::size_t>(y / 4) * blockWidth + x / 4].push_back(state->records.size());
             state->records.push_back(std::move(record));
         }
@@ -562,7 +653,7 @@ Result<MapData::TerrainShadowReceiverGrid> TerrainShadowReceiverResources::Sampl
         const auto tileWidth = terrain.header.width - 1, tileHeight = terrain.header.height - 1, blockWidth = (tileWidth + 3) / 4;
         const auto point = [&](std::size_t index) {
             return Vec3{static_cast<float>(terrain.header.offset[0] + (index % terrain.header.width) * 128.0),
-                static_cast<float>(terrain.header.offset[1] + (index / terrain.header.width) * 128.0), GroundHeight(terrain.vertices[index])};
+                static_cast<float>(terrain.header.offset[1] + (index / terrain.header.width) * 128.0), state_->Height(index)};
         };
         for (std::uint32_t py = 0; py < height; ++py) for (std::uint32_t px = 0; px < width; ++px) {
             tick();
@@ -571,18 +662,18 @@ Result<MapData::TerrainShadowReceiverGrid> TerrainShadowReceiverResources::Sampl
             const auto& records = state_->blocks[block];
             const Vec3 location{static_cast<float>(terrain.header.offset[0] + px * 32.0 + 16.0),
                 static_cast<float>(terrain.header.offset[1] + py * 32.0 + 16.0), 0};
-            const auto corners = Corners(terrain, x, y);
-            const auto level = terrain.vertices[corners[0]].CliffLevel();
-            const bool isModel = std::any_of(corners.begin() + 1, corners.end(),
-                [&](auto index) { return terrain.vertices[index].CliffLevel() != level; });
+            const bool isModel = state_->modelCells[static_cast<std::size_t>(y) * tileWidth + x] != 0;
             double sampled = 0;
             if (isModel) {
                 const State::Record* selected = nullptr;
-                // 原版57F790取首个包含当前格的record；首批普通cliff均为单格。
+                // 57F790只查当前block，以首个有符号闭区间包含当前格的record为准。
                 for (const auto index : records) {
                     tick();
                     const auto& record = state_->records[index];
-                    if (record.x == x && record.y == y) { selected = &record; break; }
+                    if (int(x) >= std::min(int(record.x), record.endX) && int(x) <= std::max(int(record.x), record.endX)
+                        && int(y) >= std::min(int(record.y), record.endY) && int(y) <= std::max(int(record.y), record.endY)) {
+                        selected = &record; break;
+                    }
                 }
                 if (selected) {
                     const auto result = modelRay(*selected, {location[0], location[1], 2560.0f}, {0, 0, -1});
@@ -590,7 +681,7 @@ Result<MapData::TerrainShadowReceiverGrid> TerrainShadowReceiverResources::Sampl
                     else {
                         // 原像素中心分数均为奇数/8，最近顶点不存在正好半格的舍入歧义。
                         const auto nx = (px + 2) / 4, ny = (py + 2) / 4;
-                        sampled = GroundHeight(terrain.vertices[static_cast<std::size_t>(ny) * terrain.header.width + nx]);
+                        sampled = state_->Height(static_cast<std::size_t>(ny) * terrain.header.width + nx);
                     }
                 }
             } else {
