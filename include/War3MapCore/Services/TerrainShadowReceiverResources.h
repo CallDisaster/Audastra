@@ -14,9 +14,9 @@ struct TerrainShadowReceiverLimits {
     std::size_t maximumRecords = 65536, maximumModels = 4096;
 };
 
-// 显式计算阴影的真实接收面。普通面仍走既有采样；普通异层悬崖使用
-// 原GEOS/group次序、实际模型变体和逐顶点起伏，不借显示mesh或旧SHD。
-// 首批明确拒绝R/S、special DOO、未知模型控制器及复杂面上的投影DOO。
+// 显式计算阴影的真实接收面。普通面仍走既有采样；普通异层悬崖和坡道使用
+// 原GEOS/group次序、实际模型变体、坡道anchor及逐顶点起伏，不借显示mesh或旧SHD。
+// 明确拒绝未闭合坡道、special DOO、未知模型控制器及复杂面上的投影DOO。
 // 普通保存不捕获本对象，因此本能力边界不阻止普通保存地图。
 class TerrainShadowReceiverResources {
 public:
