@@ -118,6 +118,28 @@ void RejectBrokenAndOverBudget() {
     Require(!BuildClassicMinimapObjectLayer(withoutConfig).Succeeded(), "缺少InvalidModel配置不得猜测模型路径");
 }
 
+// 模型字节读到但解析器不能解释：只报告一个可保留原图的能力错误，不残留 MDX_* error。
+void UnparseableModelIsUnsupported() {
+    auto catalog = Catalog();
+    const std::vector<MapData::DoodadPlacement> placements{Placement("AUTO")};
+    Bytes truncated = Text("MDLXVERS"); truncated.resize(12); truncated[8] = std::byte{4};
+    for (const auto& model : {Text("not a model"), truncated}) {
+        Resources::ResourceResolver resolver; Resources::ResourceSource source;
+        source.id = "fixture"; source.layer = Resources::ResourceLayer::MapImport; source.priority = 1;
+        source.probe = [](std::string_view name) { return Result<Resources::ResourceProbe>::Success(
+            Resources::ResourceProbe{Resources::ResourceProbeState::Found, std::string(name)}); };
+        source.read = [model](std::string_view) { return Result<Bytes>::Success(model); };
+        Require(resolver.AddSource(std::move(source)).Succeeded(), "register model fixture");
+        const auto result = BuildClassicMinimapObjectLayer(Input(catalog, resolver, placements));
+        Require(!result.Succeeded() && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.code == "CLASSIC_MINIMAP_OBJECT_MODEL_UNSUPPORTED"; }),
+            "解析不了的对象模型报告能力不足，不伪造取色");
+        Require(std::none_of(result.diagnostics.begin(), result.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::Error && diagnostic.code.starts_with("MDX_"); }),
+            "原始解析错误并入能力诊断的说明，不再单独作为 error");
+    }
+}
+
 void MissingIsDistinctFromParentAndTypeFailures() {
     auto catalog = Catalog(); auto resources = Resources();
     std::vector<MapData::DoodadPlacement> placements{Placement("NOPE")};
@@ -163,6 +185,6 @@ void MissingIsDistinctFromParentAndTypeFailures() {
 
 int main() {
     try { FixedFieldsAndOrder(); FootprintQuarterTurns(); RejectBrokenAndOverBudget();
-        MissingIsDistinctFromParentAndTypeFailures(); return 0; }
+        UnparseableModelIsUnsupported(); MissingIsDistinctFromParentAndTypeFailures(); return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

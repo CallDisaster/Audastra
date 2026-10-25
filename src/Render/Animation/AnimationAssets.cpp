@@ -2,6 +2,7 @@
 #include "AnimationPrem.h"
 #include "AnimationParticles.h"
 #include "AnimationVisibility.h"
+#include "War3MapCore/Render/MdxParseFailure.h"
 #include <algorithm>
 #include <cmath>
 #include <cctype>
@@ -27,14 +28,6 @@ bool MissingResource(std::span<const Diagnostic> diagnostics) {
     return OnlyErrors(diagnostics, [](std::string_view code) {
         return code == "RESOURCE_NOT_FOUND" || code == "file-not-found" || code == "WORLD_ASSET_MISSING" ||
             code == "missing" || code == "MISSING";
-    });
-}
-bool ModelParseFailure(std::span<const Diagnostic> diagnostics) {
-    return OnlyErrors(diagnostics, [](std::string_view code) {
-        return code == "MDX_MAGIC" || code == "MDX_VERSION_UNSUPPORTED" || code == "MDX_TRUNCATED" ||
-            code == "MDX_SIZE_INVALID" || code == "MDX_TAG_MISMATCH" || code == "MDX_VALUE_INVALID" ||
-            code == "MDX_NUMBER_INVALID" || code == "MDX_REFERENCE_INVALID" ||
-            code == "MDX_COLLISION_TYPE_UNSUPPORTED" || code == "MDX_GEOA_INTERPOLATION_UNSUPPORTED";
     });
 }
 std::string FirstError(std::span<const Diagnostic> diagnostics) {
@@ -433,7 +426,7 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
                         }
                     }
                     if (!cachedParsed && !parsed.Succeeded()) {
-                        if (!limits.retainUnsupportedStatic || !ModelParseFailure(parsed.diagnostics))
+                        if (!limits.retainUnsupportedStatic || !IsMdxParseFailure(parsed.diagnostics))
                             return {std::nullopt, std::move(parsed.diagnostics)};
                         asset.unavailableCode = FirstError(parsed.diagnostics);
                     } else {

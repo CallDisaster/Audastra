@@ -1,6 +1,7 @@
 #include "War3MapCore/Render/ClassicMinimapObjectLayer.h"
 
 #include "War3MapCore/Render/MdxModel.h"
+#include "War3MapCore/Render/MdxParseFailure.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Resources/ClassicObjectTexture.h"
 
@@ -152,7 +153,13 @@ Result<std::array<std::uint8_t, 4>> ModelColor(const ClassicMinimapObjectStyle& 
     CaptureDependency(*modelBytes.value, output);
     auto model = ParseMdx(modelBytes.value->bytes);
     if (!model.Succeeded() || !model.value) {
-        return {std::nullopt, std::move(model.diagnostics)};
+        // 字节已按来源读到，只是解析器不能解释；无法得到原版取色，交由保存端保留原小地图。
+        if (!IsMdxParseFailure(model.diagnostics)) return {std::nullopt, std::move(model.diagnostics)};
+        std::string reason;
+        for (const auto& diagnostic : model.diagnostics)
+            if (diagnostic.severity == DiagnosticSeverity::Error) { reason = diagnostic.code + "：" + diagnostic.message; break; }
+        return Result<std::array<std::uint8_t, 4>>::Failure(kSubsystem, "CLASSIC_MINIMAP_OBJECT_MODEL_UNSUPPORTED",
+            "对象模型 " + style.modelPath + " 无法解析，不能确定小地图取色：" + reason);
     }
     std::uint64_t channels[3]{}; std::uint64_t count = 0;
     for (const auto& material : model.value->materials) for (const auto& layer : material.layers) {

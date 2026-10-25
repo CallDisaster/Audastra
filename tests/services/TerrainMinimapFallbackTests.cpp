@@ -63,7 +63,7 @@ Bytes Atlas() {
     }
     return bytes;
 }
-enum class MissingInput { None, GroundTexture, CameraMargins, DeepLevelPathing, ObjectDefinition };
+enum class MissingInput { None, GroundTexture, CameraMargins, DeepLevelPathing, ObjectDefinition, UnparseableModel };
 struct Fixture {
     std::filesystem::path directory;
     Bytes w3e, wpm, w3i, doo, originalMinimap = Text("author minimap bytes must stay exact");
@@ -116,6 +116,12 @@ struct Fixture {
             if (ordinaryColor) for (auto& member : members) if (member.name == "UI\\WorldEditData.txt")
                 member.data = Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n"
                     "[WorldEditArt]\nInvalidModel=Fixture/Invalid.mdx\n");
+            if (missing == MissingInput::UnparseableModel) {
+                for (auto& member : members) if (member.name == "Doodads\\Doodads.slk") member.data = Slk({
+                    "doodID|code|showInMM|useMMColor|MMRed|MMGreen|MMBlue|file|pathTex|numVar|category|fixedRot",
+                    "D001|D001|1|0|0|0|0|Fixture\\Broken|none|1|S|0", "SPC1|SPC1|0|0|0|0|0||none|1|S|0"});
+                members.push_back({"Fixture\\Broken.mdx", Text("not a model")});
+            }
         }
         for (auto& member : members) {
             if (missing == MissingInput::CameraMargins && member.name == "UI\\WorldEditData.txt")
@@ -271,6 +277,35 @@ void MissingObjectDefinitionPreservesActualSave() {
     }
 }
 
+// 对象模型读到但解析不了：按能力不足保留原小地图，其它合法编辑照常写出。
+void UnparseableObjectModelPreservesActualSave() {
+    for (const bool inPlace : {false, true}) {
+        Fixture fixture(false, true, false, MissingInput::UnparseableModel, false, true);
+        const auto sourceSha = fixture.archive.SourceSha256();
+        MapSaveTask task; fixture.Freeze(task, inPlace);
+        const auto checked = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {});
+        Require(checked.Succeeded() && checked.value && HasCode(checked.diagnostics, "CLASSIC_MINIMAP_OBJECT_MODEL_UNSUPPORTED")
+            && HasCode(checked.diagnostics, "MINIMAP_GENERATION_SKIPPED")
+            && std::none_of(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.severity == DiagnosticSeverity::Error;
+            }), "解析不了的对象模型降级为警告并保留原因");
+        const auto guard = checked.value->preserved;
+        Require(!checked.value->generated && guard, "不伪造取色，只保留原小地图");
+        task.diagnostics = checked.diagnostics;
+        task.beforePublish = [&] { return guard->VerifyFrozenOutput(task); };
+        MapSaveService::Run(task);
+        Require(task.executed && task.succeeded && task.nextSession, "模型解析不了时其它合法成员实际保存");
+        const auto saved = Take(MapArchiveSession::Open(task.written));
+        Require(guard->VerifyReadback(task, saved).Succeeded()
+            && Take(saved.ReadMember("war3mapMap.blp")) == fixture.originalMinimap
+            && Take(saved.ReadMember("Fixture\\Broken.mdx")) == Text("not a model")
+            && Take(saved.ReadMember("Fixture\\Unused.blp")) == Text("new fixture resource"),
+            "原小地图与原模型逐字保留，新增资源写出");
+        if (inPlace) Require(!task.backup.empty() && Take(Sha256File(task.backup)) == sourceSha, "原地保存保留完整源备份");
+        else Require(Take(Sha256File(fixture.archive.SourcePath())) == sourceSha, "另存为保持源归档只读");
+    }
+}
+
 void AmbiguousOrDamagedObjectSourcesDoNotPreserve() {
     for (const bool malformed : {false, true}) {
         Fixture fixture(false, true, false, MissingInput::None, false, true);
@@ -413,7 +448,8 @@ int main() {
         PreserveThroughActualSave(true, false); PreserveThroughActualSave(false, false); PreserveThroughActualSave(true, true);
         MissingGenerationInputsPreserveActualSave(); BudgetAndTga(); SourceStaleAndFinalMutationStillReject();
         RowScanBudgetPreservesThroughActualSave();
-        MissingObjectDefinitionPreservesActualSave(); AmbiguousOrDamagedObjectSourcesDoNotPreserve();
+        MissingObjectDefinitionPreservesActualSave(); UnparseableObjectModelPreservesActualSave();
+        AmbiguousOrDamagedObjectSourcesDoNotPreserve();
         SpecialTailGeneratesAndSaves(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
