@@ -135,9 +135,9 @@ Bytes CliffTable(std::string_view prefix = "Fixture/Cliff") {
     return Text("ID;PWXL;N;E\nC;X1;Y1;K\"cliffID\"\nC;X2;Y1;K\"cliffModelDir\"\n"
         "C;X1;Y2;K\"C001\"\nC;X2;Y2;K\"" + std::string(prefix) + "\"\nE\n");
 }
-constexpr std::string_view kZero = "Doodads/Terrain/Fixture/CliffABBA0.mdx";
-constexpr std::string_view kOne = "Doodads/Terrain/Fixture/CliffABBA1.mdx";
-constexpr std::string_view kTwo = "Doodads/Terrain/Fixture/CliffABBA2.mdx";
+constexpr std::string_view kZero = "Doodads/Terrain/Fixture/Cliff/Fixture/CliffABBA0.mdx";
+constexpr std::string_view kOne = "Doodads/Terrain/Fixture/Cliff/Fixture/CliffABBA1.mdx";
+constexpr std::string_view kTwo = "Doodads/Terrain/Fixture/Cliff/Fixture/CliffABBA2.mdx";
 
 struct Fixture {
     std::filesystem::path root, game;
@@ -331,7 +331,7 @@ void FrozenSources() {
     auto saved = Take(fixture.source->SaveCandidate(fixture.root / "added-variant.w3x", added));
     Check(next->VerifyReadback(Take(MapArchiveSession::Open(saved.path))));
     Rejected(next->VerifyReadback(*fixture.source), "TERRAIN_SHADOW_RECEIVER_READBACK_STALE");
-    const std::array<MemberReplacement, 1> mdl{{{"Doodads/Terrain/Fixture/CliffABBA0.mdl", Text("authored mdl sentinel")}}};
+    const std::array<MemberReplacement, 1> mdl{{{"Doodads/Terrain/Fixture/Cliff/Fixture/CliffABBA0.mdl", Text("authored mdl sentinel")}}};
     Rejected(fixture.Capture(mdl), "TERRAIN_SHADOW_RECEIVER_MDL_UNSUPPORTED");
     Rejected(owner->VerifySources(*fixture.source, mdl), "TERRAIN_SHADOW_RECEIVER_DEPENDENCY_STALE");
     const std::array<MemberReplacement, 1> model{{{std::string(kOne), Model(97)}}};
