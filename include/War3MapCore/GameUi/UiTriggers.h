@@ -4,6 +4,7 @@
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/Types.h"
 
+#include <array>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -23,6 +24,9 @@ inline constexpr std::string_view kUiTriggerCategory = "AudastraUI";
 // 生成的触发器依赖的基础模板；两份文件随生成一起导入地图。
 inline constexpr std::string_view kUiTemplateTocMember = "AudastraUI\\AudastraUI.toc";
 inline constexpr std::string_view kUiTemplateFdfMember = "AudastraUI\\AudastraUI.fdf";
+// 基础模板文字（AudastraText、按钮文字）的阴影，同游戏自带模板的写法；界面描述的预览照此绘制。
+inline constexpr std::array<float, 4> kUiTextShadowColor{0.0f, 0.0f, 0.0f, 0.9f};
+inline constexpr std::array<float, 2> kUiTextShadowOffset{0.001f, -0.001f};
 inline constexpr double kUiConnectSeconds = 0.2;
 inline constexpr int kUiConnectAttempts = 150;
 

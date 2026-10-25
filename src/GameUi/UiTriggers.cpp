@@ -677,6 +677,8 @@ std::string UiTemplateFdfText() {
         "    FrameFont \"MasterFont\", 0.011, \"\",\r\n"
         "    FontJustificationH JUSTIFYCENTER,\r\n"
         "    FontJustificationV JUSTIFYMIDDLE,\r\n"
+        "    FontShadowColor 0.0 0.0 0.0 0.9,\r\n"
+        "    FontShadowOffset 0.001 -0.001,\r\n"
         "}\r\n"
         "\r\n"
         "Frame \"SIMPLESTATUSBAR\" \"AudastraBar\" {\r\n"
@@ -714,6 +716,8 @@ std::string UiTemplateFdfText() {
         "        FrameFont \"MasterFont\", 0.011, \"\",\r\n"
         "        FontJustificationH JUSTIFYCENTER,\r\n"
         "        FontJustificationV JUSTIFYMIDDLE,\r\n"
+        "        FontShadowColor 0.0 0.0 0.0 0.9,\r\n"
+        "        FontShadowOffset 0.001 -0.001,\r\n"
         "    }\r\n"
         "}\r\n";
     return std::string(text);

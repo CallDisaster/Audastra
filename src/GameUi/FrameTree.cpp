@@ -361,6 +361,14 @@ void FrameTree::ResolveResources(BuildContext& context, FrameNode& node) {
                 for (std::size_t i = 0; i < 4 && i < property.values.size(); ++i) {
                     if (const auto value = PropertyNumber(property, i)) text.color[i] = *value;
                 }
+            } else if (PropertyIs(property, "fontshadowcolor")) {
+                for (std::size_t i = 0; i < 4 && i < property.values.size(); ++i) {
+                    if (const auto value = PropertyNumber(property, i)) text.shadowColor[i] = *value;
+                }
+            } else if (PropertyIs(property, "fontshadowoffset")) {
+                for (std::size_t i = 0; i < 2 && i < property.values.size(); ++i) {
+                    if (const auto value = PropertyNumber(property, i)) text.shadowOffset[i] = *value;
+                }
             } else if (PropertyIs(property, "fontjustificationh") && !property.values.empty()) {
                 text.justifyH = property.values[0].text;
             } else if (PropertyIs(property, "fontjustificationv") && !property.values.empty()) {

@@ -65,6 +65,9 @@ struct TextInfo {
     std::string fontPath;
     float fontHeight = 0.0f;
     std::array<float, 4> color{1.0f, 1.0f, 1.0f, 1.0f};
+    // FontShadowColor / FontShadowOffset；透明度为 0 时不画阴影。偏移为屏幕单位，y 向上。
+    std::array<float, 4> shadowColor{0.0f, 0.0f, 0.0f, 0.0f};
+    std::array<float, 2> shadowOffset{0.0f, 0.0f};
     std::string justifyH;
     std::string justifyV;
 };

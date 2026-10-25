@@ -1,6 +1,7 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "War3MapCore/GameUi/UiTriggers.h"
 #include "GameUiTestSupport.h"
 
 #include <cmath>
@@ -174,6 +175,11 @@ void TestTree() {
     Require(Near(fill.rect.left, 0.302f) && Near(fill.rect.right, 0.498f) && Near(fill.rect.bottom, 0.182f), "fill rect");
     const FrameNode& label = NodeNamed(tree, "label");
     Require(label.text && label.text->text == "火球术  1.5" && label.layout == LayoutState::SizeFromContent, "label text");
+    // 预览按基础模板文字的阴影画；模板里写的是同一组值。
+    Require(label.text->shadowColor == kUiTextShadowColor && label.text->shadowOffset == kUiTextShadowOffset, "label shadow");
+    Require(UiTemplateFdfText().find("    FontShadowColor 0.0 0.0 0.0 0.9,\r\n    FontShadowOffset 0.001 -0.001,\r\n") != std::string::npos
+            && kUiTextShadowColor[3] == 0.9f && kUiTextShadowOffset[0] == 0.001f && kUiTextShadowOffset[1] == -0.001f,
+        "template shadow matches preview shadow");
 
     const FrameDrawList list = BuildDrawList(tree);
     const FrameDrawCommand* fillDraw = nullptr;

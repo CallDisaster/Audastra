@@ -124,7 +124,8 @@ UiDescription Party() {
     slot.texture = std::string(kTooltip);
     slot.width = 0.12;
     slot.height = 0.04;
-    slot.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Screen, std::nullopt, 0.01, -0.13)};
+    // 让开左上角的英雄头像栏（右边缘约 0.041）。
+    slot.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Screen, std::nullopt, 0.05, -0.13)};
     slot.visible.binding = Bind(id(kShown), true);
     slot.repeat = UiRepeat{kSlots, 0.0, -0.044};
     UiFrame hp = Bar("hp", "生命", 6, id(kHealth), true, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.005, -0.016), 0.11, 0.012);

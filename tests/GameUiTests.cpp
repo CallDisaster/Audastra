@@ -315,7 +315,8 @@ void TestDrawList() {
     const std::string text =
         "Frame \"SIMPLEFRAME\" \"Panel\" {\n"
         "    Width 0.4, Height 0.2,\n"
-        "    String \"PanelLabel\" { Text \"Hi\", Font \"F.ttf\", 0.01, FontJustificationH JUSTIFYLEFT, }\n"
+        "    String \"PanelLabel\" { Text \"Hi\", Font \"F.ttf\", 0.01, FontJustificationH JUSTIFYLEFT,\n"
+        "        FontShadowColor 0.0 0.0 0.0 0.9, FontShadowOffset 0.002 -0.002, }\n"
         "    Layer \"OVERLAY\" { Texture \"PanelTop\" { File \"Top.blp\", AlphaMode \"ADD\", } }\n"
         "    Layer \"BACKGROUND\" { Texture \"PanelBack\" { File \"Back.blp\", TexCoord 0.1, 0.9, 0.2, 0.8, } }\n"
         "    Frame \"BACKDROP\" \"PanelBox\" {\n"
@@ -356,6 +357,8 @@ void TestDrawList() {
     Require(list.commands[1].kind == DrawKind::Text && label.text == "Hi" && label.justifyH == JustifyH::Left &&
             label.justifyV == JustifyV::Middle && !label.sizeFromContent,
         "text command with justification");
+    Require(Near(label.shadowColor[3], 0.9f) && Near(label.shadowOffset[0], 0.002f) && Near(label.shadowOffset[1], -0.002f),
+        "text shadow color and offset");
 
     const ImageDraw& background = list.commands[3].image;
     Require(nodeOf(3) == "PanelBox" && background.repeat && Near(background.rect.left, 0.01f) &&
