@@ -356,16 +356,23 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithOb
         // G0仍捕获完整旧/新palette和水规则需求，但只用其Before生成旧WPM。
         // 最终overlay绝不参与G0来源核对，也不替换旧依赖SHA。
         auto original = Take(CaptureInputs(sourceReader, before, after, gameRoot, maximumBytes, true, &validator, nullptr, true));
-        if (original.CaptureBudgetBytes() >= maximumBytes)
+        const auto originalRetained = original.RetainedBudgetBytes();
+        if (originalRetained >= maximumBytes)
             Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "旧通行来源未给最终阶段留下预算。");
+        // G0的catalog/schema/codec已经析构；G1仍须在相同64MiB内预收完整
+        // 解析额度，同时扣掉G0实际仍持有的来源与owner，不能把两个峰值相加。
         auto result = Take(CaptureInputs(finalReader, after, after, gameRoot,
-            maximumBytes - original.CaptureBudgetBytes(), true, &validator));
+            maximumBytes - originalRetained, true, &validator));
+        auto capturePeak = std::max(original.CaptureBudgetBytes(), originalRetained + result.CaptureBudgetBytes());
+        std::size_t comparisonWork = 0;
         const auto reserve = [&](std::size_t count, std::size_t each = 1) {
-            const auto old = original.CaptureBudgetBytes(), next = result.CaptureBudgetBytes();
+            const auto old = original.RetainedBudgetBytes(), next = result.RetainedBudgetBytes();
             if (!each || old > maximumBytes || next > maximumBytes - old
-                || count > (maximumBytes - old - next) / each)
+                || comparisonWork > maximumBytes - old - next
+                || count > (maximumBytes - old - next - comparisonWork) / each)
                 Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "双阶段来源、分类和交叉核对超过同一次保存剩余预算。");
-            result.objectWorkBytes_ += count * each;
+            comparisonWork += count * each;
+            capturePeak = std::max(capturePeak, old + next + comparisonWork);
         };
         reserve(1, sizeof(TerrainPathingResources) + 128); // shared owner及控制块。
         const auto equalType = [](const auto& a, const auto& b) {
@@ -397,7 +404,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithOb
                 [](const auto& a, const auto& b) { return a.rawcode == b.rawcode; });
         if (walkable && original.nativeDoodads_ != result.nativeDoodads_) {
             const auto working = Take(TerrainClassicDoodadsWorkingBytes(original.nativeDoodads_.size(),
-                result.nativeDoodads_.size(), maximumBytes - original.CaptureBudgetBytes() - result.CaptureBudgetBytes()));
+                result.nativeDoodads_.size(), maximumBytes - original.RetainedBudgetBytes()
+                    - result.RetainedBudgetBytes() - comparisonWork));
             reserve(working);
             const auto oldDoodads = Take(ReadTerrainClassicDoodadsRoundtrip(original.nativeDoodads_));
             const auto newDoodads = Take(ReadTerrainClassicDoodadsRoundtrip(result.nativeDoodads_));
@@ -454,8 +462,11 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithOb
             for (const auto& dependency : other.dependencies_)
                 if (!findDependency(known, dependency.name))
                     (dependency.mapOnly ? mapNames : names).push_back(dependency.name);
-            target.capturedMaximumBytes_ = maximumBytes - (&target == &original
-                ? result.CaptureBudgetBytes() : original.CaptureBudgetBytes());
+            reserve(0);
+            target.capturedMaximumBytes_ = maximumBytes - comparisonWork - (&target == &original
+                ? result.RetainedBudgetBytes() : original.RetainedBudgetBytes());
+            if (target.CaptureBudgetBytes() > target.capturedMaximumBytes_)
+                Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "双阶段补捕无法在剩余阶段预算内完成。");
             if (!mapNames.empty()) {
                 // W3D等地图结构不能走game fallback；补捕也保留它原本的map-only身份。
                 ArchiveExactMemberLimits limits; limits.memberCount = mapNames.size();
@@ -490,6 +501,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithOb
         reserve(0);
         result.capturedMaximumBytes_ = maximumBytes;
         result.nativeSourceResources_ = std::make_shared<TerrainPathingResources>(std::move(original));
+        result.pairCapturePeakBytes_ = capturePeak;
         return result;
     });
 }

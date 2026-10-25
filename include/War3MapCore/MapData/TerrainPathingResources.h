@@ -104,10 +104,14 @@ public:
     [[nodiscard]] std::size_t SourceBytes() const noexcept {
         return sourceBytes_ + (nativeSourceResources_ ? nativeSourceResources_->SourceBytes() : 0);
     }
-    // 原字节读取、严格物编解析与启动类别目录的累计工作预留；保存计划还需计入输出缓冲。
+    // 单阶段仍按来源读取、解析和分类的完整保守额度校验。双阶段取各阶段
+    // 峰值，并扣除另一侧真实仍活owner；已释放的codec/catalog不能重复累加。
+    // 保存计划仍需另计快照、通行生成和输出缓冲。
     [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept {
-        return sourceBytes_ + objectWorkBytes_ + (nativeSourceResources_ ? nativeSourceResources_->CaptureBudgetBytes() : 0);
+        return pairCapturePeakBytes_.value_or(sourceBytes_ + objectWorkBytes_);
     }
+    // 跨阶段保留来源读取账与实际owner容量；不含已经退出的物编解析临时预留。
+    [[nodiscard]] std::size_t RetainedBudgetBytes() const noexcept { return SourceBytes() + OwnedCapacityBytes(); }
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
     [[nodiscard]] const std::array<float, 4>* NativeCameraMargins() const noexcept {
         return nativeCameraMargins_ ? &*nativeCameraMargins_ : nullptr;
@@ -189,6 +193,7 @@ private:
     std::uint8_t tileset_ = 0;
     std::size_t sourceBytes_ = 0;
     std::size_t objectWorkBytes_ = 0;
+    std::optional<std::size_t> pairCapturePeakBytes_;
     std::size_t capturedMaximumBytes_ = 0;
     std::vector<TerrainNativeGroundRule> nativeGround_;
     std::optional<TerrainNativeWaterRules> waterRules_;

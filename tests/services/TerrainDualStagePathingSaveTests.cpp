@@ -209,6 +209,23 @@ void ActualStaticTextureAndNativeOverridesSaveTogether() {
     }
 }
 
+void CompletedParserScratchStillHasAStrictStageBoundary() {
+    Fixture fixture;
+    const auto owner = Take(TerrainPathingSave::CaptureNative(*fixture.archive,
+        fixture.original, fixture.original, fixture.gameRoot, 64u * 1024u * 1024u));
+    Require(owner.RetainedBudgetBytes() >= owner.OwnedCapacityBytes()
+        && owner.RetainedBudgetBytes() < owner.CaptureBudgetBytes(),
+        "完成解析后常驻owner与来源账小于完整单阶段解析峰值");
+    Take(TerrainPathingSave::CaptureNative(*fixture.archive, fixture.original, fixture.original,
+        fixture.gameRoot, owner.CaptureBudgetBytes()));
+    Require(!TerrainPathingSave::CaptureNative(*fixture.archive, fixture.original, fixture.original,
+        fixture.gameRoot, owner.CaptureBudgetBytes() - 1).Succeeded(),
+        "释放阶段scratch不放宽单阶段精确预算边界");
+    Require(!TerrainPathingSave::CaptureNative(*fixture.archive, fixture.original, fixture.original,
+        fixture.gameRoot, owner.RetainedBudgetBytes()).Succeeded(),
+        "只给常驻owner额度不足以跳过本阶段完整codec解析预留");
+}
+
 void NewResourcesCannotExplainAnInvalidOldSource() {
     Fixture f;
     // 仅新紫色8格资源才解释得通的旧WPM；旧绿色4格来源必须先被G0拒绝。
@@ -346,6 +363,7 @@ void DirectorySourcesUseTheSameFinalView() {
 
 int main() {
     try {
+        CompletedParserScratchStillHasAStrictStageBoundary();
         ActualStaticTextureAndNativeOverridesSaveTogether();
         NewResourcesCannotExplainAnInvalidOldSource();
         NonWalkableDestructableOverridesRemainDynamic();

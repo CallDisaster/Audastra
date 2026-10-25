@@ -33,7 +33,10 @@ struct NativeTerrainDependencyType {
 };
 
 struct NativeTerrainDependencyDescription {
+    // 同一次解析的保守峰值预留；catalog/schema/codec退出后不能跨阶段累加。
     std::size_t workBytes = 0;
+    // 返回后仍存活的描述正文容量，供调用方与另一侧描述共同计费。
+    std::size_t retainedBytes = 0;
     std::vector<NativeTerrainDependencyType> objects;
 };
 

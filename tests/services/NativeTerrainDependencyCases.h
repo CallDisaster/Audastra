@@ -129,9 +129,13 @@ void NativeDependencyBudgetAndMetadataRemainBounded() {
     Modification(document, "D001", "Dt00", NativeValueType::String, std::string("PathTextures\\Changed.tga"));
     fixture.SetNative(document);
     const auto result = Take(DependencyDescription(fixture, {"D001"}));
+    Require(result.retainedBytes > sizeof(result) && result.retainedBytes < result.workBytes,
+        "返回描述只保留正文容量，不把已经释放的catalog/codec解析峰值当作常驻正文");
     Require(result.workBytes && Take(DependencyDescription(fixture, {"D001"}, {}, result.workBytes)).workBytes == result.workBytes,
         "只读probe精确累计预算可复用");
     Rejected(DependencyDescription(fixture, {"D001"}, {}, result.workBytes - 1), "TERRAIN_NATIVE_OBJECT_BUDGET", "probe预算不能超支一字节");
+    Rejected(DependencyDescription(fixture, {"D001"}, {}, result.retainedBytes), "TERRAIN_NATIVE_OBJECT_BUDGET",
+        "常驻描述预算不能冒充单阶段完整解析预算");
     fixture.doodadMetadata.push_back({{"ID", "Bad0"}, {"field", "pathTex"}, {"slk", ""}, {"type", "string"}});
     fixture.Tables();
     Rejected(DependencyDescription(fixture, {"D001"}), "TERRAIN_NATIVE_OBJECT_METADATA", "原始metadata被丢弃的pathTex别名仍拒绝");
