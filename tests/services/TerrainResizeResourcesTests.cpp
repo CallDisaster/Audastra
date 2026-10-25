@@ -150,11 +150,23 @@ void ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent() {
         Require(!prepared.Succeeded() && HasCode({prepared.diagnostics}, "TERRAIN_RESIZE_FOOTPRINT_CLIPPED"),
             "actual decoded zero-RGB footprint is not discarded by its empty OR mask");
         fixture.EraseMember("PathTextures/zero-border.tga"); fixture.Seal();
+        const auto sourceSha = fixture.archive->SourceSha256();
+        const auto revision = fixture.edits->Revision();
+        const auto terrain = fixture.edits->Terrain();
         const auto missing = TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot);
-        if (!missing.Succeeded() && !HasCode({missing.diagnostics}, "TERRAIN_NATIVE_FOOTPRINT_MISSING"))
+        // TGA缺席后，BLP为必需回退成员；严格游戏读取器在调用visitor前
+        // 原样返回Game.DataSource/file-not-found，不会改写成对象层诊断。
+        const bool missingBlp = std::any_of(missing.diagnostics.begin(), missing.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.subsystem == "Game.DataSource" && diagnostic.code == "file-not-found"
+                && diagnostic.message.find("pathtextures/zero-border.blp") != std::string::npos;
+        });
+        if (!missing.Succeeded() && !missingBlp)
             Check({missing.diagnostics});
-        Require(!missing.Succeeded() && HasCode({missing.diagnostics}, "TERRAIN_NATIVE_FOOTPRINT_MISSING"),
+        Require(!missing.Succeeded() && !missing.value && missingBlp,
             "ordinary doodad zero-RGB extent comes from an actual decoded TGA, not a fabricated rectangle");
+        Require(Take(Sha256File(fixture.archive->SourcePath())) == sourceSha
+            && fixture.edits->Revision() == revision && fixture.edits->Terrain() == terrain && !fixture.edits->CanUndo(),
+            "missing required footprint returns no owner and leaves the physical source and current session unchanged");
     }
     {
         Fixture fixture; MakeExpandedPhysicalFixture(fixture);

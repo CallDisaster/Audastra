@@ -2,6 +2,7 @@
 
 #include "../support/TerrainResizeFixture.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
 
@@ -146,6 +147,15 @@ inline void ResizeHistoryKeepsOldShadowAcrossPhysicalSaveStation() {
 inline void ResizeReplayComposesWithCurrentWaterCliffPaletteBoundsAndOrdinaryBrushes() {
     for (unsigned scenario = 0; scenario < 5; ++scenario) {
         Fixture fixture;
+        // 本组走真实水规则捕获；只给这些原创场景补齐全部启动profile，
+        // 1536派生经典14层上限，不改共享fixture或放宽产品的0..14校验。
+        for (const auto& profile : kClassicProfiles) {
+            if (std::none_of(fixture.members.begin(), fixture.members.end(), [&](const auto& member) { return member.name == profile.path; }))
+                fixture.PutMember(profile.path, Text("[Synthetic]\nPresent=1\n"));
+        }
+        fixture.PutMember("UI/MiscData.txt", Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+            "[Water]\nDeepLevelPathing=192\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n"));
+        fixture.PutMember("UI/WorldEditData.txt", Text("[Synthetic]\nPresent=1\n"));
         fixture.Member("TerrainArt/Terrain.slk") = Slk({"tileID", "walkable", "flyable", "buildable"},
             {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "0"}});
         fixture.Seal();
