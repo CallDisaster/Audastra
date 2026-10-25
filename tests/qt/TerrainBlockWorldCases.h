@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../TerrainBlockFixtures.h"
+#include "Commands/MapDataCommands.h"
 
 void WorldModuleTests::TerrainBlockSelectionUsesCompletedGroundWithoutModels() {
     BackendState state; activeBackend = &state;
