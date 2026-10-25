@@ -306,6 +306,11 @@ public:
     [[nodiscard]] Status ApplyPreparedTerrainResizeEdit(const PreparedTerrainResizeEdit& plan,
         const std::function<Status(const EditReceipt&)>& prepublish = {});
     [[nodiscard]] bool HasTerrainResizeChanges() const noexcept;
+    // 工程raw inspection专用；只存比较材料，不从TRD1安装typed扩裁或正式保存资格。
+    [[nodiscard]] Result<std::vector<std::byte>> ExportTerrainResizeDraft() const;
+    [[nodiscard]] Status SetTerrainResizeDraft(std::span<const std::byte> terrain,
+        std::span<const std::byte> pathing, std::span<const std::byte> encodedDraft);
+    [[nodiscard]] Result<ArchiveExactMember> TerrainResizeShadowDraft() const;
     [[nodiscard]] bool HasTerrainBoundsChanges() const noexcept;
     // 只接受密封范围状态和四说明字段的组合净差，其余W3I字节仍须完全一致。
     [[nodiscard]] Status VerifyTerrainSettingsForSave() const;
@@ -355,6 +360,7 @@ private:
     friend struct detail::TerrainInspectionAccess;
     friend struct detail::MapDataFieldEditingAccess;
     friend class TerrainPathingResources;
+    friend class TerrainResizeResources;
     struct TerrainBoundsState {
         std::array<float, 8> cameraBounds{};
         std::array<std::int32_t, 4> cameraMargins{};
@@ -384,6 +390,7 @@ private:
     // 保存后Undo不能把新尺寸SHD/WPM误用到旧尺寸，也不从raw草稿恢复此资格。
     struct TerrainResizeState {
         TerrainHeader header;
+        std::shared_ptr<const TerrainGridSnapshot> geometry;
         ArchiveExactMember shadow;
         std::shared_ptr<const std::vector<std::byte>> historyPathing;
         std::shared_ptr<const std::vector<std::byte>> protectedPathing;
@@ -418,6 +425,7 @@ private:
         std::shared_ptr<const TerrainStartLocationsState> startsBefore, startsAfter;
         std::shared_ptr<const TerrainGridSnapshot> fullTerrainBefore, fullTerrainAfter;
         std::shared_ptr<const TerrainResizeState> resizeBefore, resizeAfter;
+        std::shared_ptr<const TerrainResizeState> resizeDraftBefore, resizeDraftAfter;
     };
     struct TerrainHistoryState {
         std::shared_ptr<const MapDataEditSession> baseline;
@@ -490,6 +498,7 @@ private:
     void Restore(const Command& command, bool forward);
     [[nodiscard]] const std::vector<std::byte>& TerrainHistoryPathing(const TerrainResizeState* shape = nullptr) const;
     [[nodiscard]] std::shared_ptr<const std::vector<std::byte>> TerrainHistoryProtected(const TerrainResizeState* shape = nullptr) const;
+    [[nodiscard]] Status VerifyTerrainResizeForSave() const;
     // 先准备全部新基线，再无异常交换；供已回读的通行重建输出原子提交。
     void CommitSavedBaseline(const MapDocument& saved,
         std::optional<std::vector<std::byte>> pathing,
@@ -521,6 +530,7 @@ private:
     std::shared_ptr<const TerrainBoundsState> boundsState_, savedBoundsState_;
     std::shared_ptr<const TerrainStartLocationsState> startLocations_, savedStartLocations_;
     std::shared_ptr<const TerrainResizeState> resizeState_, savedResizeState_;
+    std::shared_ptr<const TerrainResizeState> resizeDraftState_;
     std::shared_ptr<const TerrainGridSnapshot> terrainOriginal_;
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;

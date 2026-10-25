@@ -178,7 +178,8 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
         || (value.startsBefore && value.startsBefore != startLocations_))
         return Status::Failure("MapData.Edit", "TERRAIN_START_STATE_STALE", "起点联动事务来源已变，未提交任何成员。");
     if (bool(value.fullTerrainBefore) != bool(value.fullTerrainAfter) || bool(value.resizeBefore) != bool(value.resizeAfter)
-        || bool(value.fullTerrainAfter) != bool(value.resizeAfter)
+        || bool(value.fullTerrainAfter) != (bool(value.resizeAfter) || bool(value.resizeDraftAfter))
+        || (value.resizeAfter && value.resizeDraftAfter)
         || (value.resizeBefore && resizeState_ && value.resizeBefore != resizeState_)
         || (value.fullTerrainBefore && !TerrainMatches(value, true)))
         return Status::Failure("MapData.Edit", "TERRAIN_RESIZE_STALE", "扩裁完整形状、通行或阴影来源已改变，未提交任何成员。");
@@ -228,6 +229,10 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
         if (!savedResizeState_) savedResizeState_ = command->resizeBefore;
         resizeState_ = command->resizeAfter;
         pathingProtected_ = TerrainHistoryProtected(resizeState_.get());
+    }
+    if (command->resizeDraftAfter) {
+        resizeDraftState_ = command->resizeDraftAfter;
+        pathingProtected_ = resizeDraftState_->protectedPathing;
     }
     if (command->boundsAfter) {
         if (!savedBoundsState_) savedBoundsState_ = command->boundsBefore;
@@ -627,6 +632,8 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
     command.fullTerrainAfter = forward ? source.fullTerrainAfter : source.fullTerrainBefore;
     command.resizeBefore = forward ? source.resizeBefore : source.resizeAfter;
     command.resizeAfter = forward ? source.resizeAfter : source.resizeBefore;
+    command.resizeDraftBefore = forward ? source.resizeDraftBefore : source.resizeDraftAfter;
+    command.resizeDraftAfter = forward ? source.resizeDraftAfter : source.resizeDraftBefore;
     command.boundsIntent = source.boundsIntent; command.boundsRulesSha256 = source.boundsRulesSha256;
     command.logicalForward = source.logicalForward == forward; command.placements = source.placements;
     for (const auto& change : source.changes) {
@@ -653,13 +660,15 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
             ? (forward ? source.restrictionBefore : source.restrictionAfter) : pathingRestrictions_;
         const auto& targetIntent = source.restrictionAfter
             ? (forward ? source.restrictionAfter : source.restrictionBefore) : pathingRestrictions_;
-        const auto expectedProtected = TerrainHistoryProtected(command.resizeBefore.get());
-        const auto targetProtected = TerrainHistoryProtected(command.resizeAfter.get());
+        const auto expectedShape = command.resizeBefore ? command.resizeBefore : command.resizeDraftBefore;
+        const auto targetShape = command.resizeAfter ? command.resizeAfter : command.resizeDraftAfter;
+        const auto expectedProtected = TerrainHistoryProtected(expectedShape.get());
+        const auto targetProtected = TerrainHistoryProtected(targetShape.get());
         if (!pathing_ || !expectedProtected || !targetProtected
-            || !HistoryPathingMatches(*pathing_, *expected, *expectedProtected, TerrainHistoryPathing(command.resizeBefore.get()), *expectedIntent))
+            || !HistoryPathingMatches(*pathing_, *expected, *expectedProtected, TerrainHistoryPathing(expectedShape.get()), *expectedIntent))
             return Status::Failure("MapData.Edit", "MAP_EDIT_STALE", "事务涉及的通行性已由其他操作修改；未覆盖新内容");
         command.pathingBefore = *pathing_;
-        command.pathingAfter = HistoryPathing(*target, *targetProtected, TerrainHistoryPathing(command.resizeAfter.get()), *targetIntent);
+        command.pathingAfter = HistoryPathing(*target, *targetProtected, TerrainHistoryPathing(targetShape.get()), *targetIntent);
     }
     if (source.restrictionAfter) {
         const auto& expected = forward ? source.restrictionBefore : source.restrictionAfter;
@@ -688,13 +697,16 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
     std::optional<std::vector<std::byte>> nextPathing;
     auto nextRestrictions = forward ? command.restrictionAfter : command.restrictionBefore;
     const auto targetResize = forward ? command.resizeAfter : command.resizeBefore;
+    const auto targetDraft = forward ? command.resizeDraftAfter : command.resizeDraftBefore;
+    const auto targetShape = targetResize ? targetResize : targetDraft;
     if (command.pathingAfter) nextPathing = HistoryPathing(
-        *(forward ? command.pathingAfter : command.pathingBefore), *TerrainHistoryProtected(targetResize.get()), TerrainHistoryPathing(targetResize.get()),
+        *(forward ? command.pathingAfter : command.pathingBefore), *TerrainHistoryProtected(targetShape.get()), TerrainHistoryPathing(targetShape.get()),
         *(nextRestrictions ? nextRestrictions : pathingRestrictions_));
     for (std::size_t i = 0; i < command.changes.size(); ++i)
         current_[Index(command.changes[i].kind)].swap(next[i]);
     terrain_ = std::move(nextTerrain);
     if (targetResize) { resizeState_ = targetResize; pathingProtected_ = TerrainHistoryProtected(targetResize.get()); }
+    if (targetDraft) { resizeDraftState_ = targetDraft; pathingProtected_ = targetDraft->protectedPathing; }
     if (command.specialAfter) specialDoodads_ = forward ? command.specialAfter : command.specialBefore;
     if (command.boundsAfter) boundsState_ = forward ? command.boundsAfter : command.boundsBefore;
     if (command.startsAfter) startLocations_ = forward ? command.startsAfter : command.startsBefore;
@@ -756,6 +768,7 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
       boundsState_(source.boundsState_), savedBoundsState_(source.savedBoundsState_),
       startLocations_(source.startLocations_), savedStartLocations_(source.savedStartLocations_),
       resizeState_(source.resizeState_), savedResizeState_(source.savedResizeState_),
+      resizeDraftState_(source.resizeDraftState_),
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_), pathingOriginal_(source.pathingOriginal_),
       pathing_(source.pathing_), pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
       originalPathingRestrictions_(source.originalPathingRestrictions_) {}
@@ -771,6 +784,7 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, Texture
       savedSpecialDoodads_(source.savedSpecialDoodads_), boundsState_(source.boundsState_), savedBoundsState_(source.savedBoundsState_),
       startLocations_(source.startLocations_), savedStartLocations_(source.savedStartLocations_),
       resizeState_(source.resizeState_), savedResizeState_(source.savedResizeState_),
+      resizeDraftState_(source.resizeDraftState_),
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_) {
     if (!includeDoodads) return;
     for (const auto kind : {MapDataKind::Doodads, MapDataKind::Settings}) {
@@ -855,6 +869,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     if (resizeState_) {
         auto updated = std::make_shared<TerrainResizeState>(*resizeState_);
         updated->header = terrain_->header;
+        updated->geometry = terrain_;
         updated->historyPathing = std::make_shared<const std::vector<std::byte>>(*pathing);
         updated->protectedPathing = protectedPathing; updated->savedRestrictions = pathingRestrictions_;
         savedResize = std::move(updated);

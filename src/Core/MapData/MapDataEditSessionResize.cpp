@@ -29,7 +29,7 @@ std::vector<std::byte> MoveCells(std::span<const std::byte> old, std::uint32_t o
             const auto sx = std::int64_t(x) + west;
             if (sx < 0 || sx >= oldWidth) continue;
             const auto value = old[std::size_t(sy) * oldWidth + sx];
-            output[std::size_t(y) * newWidth + x] = shadow ? (value == std::byte{0} ? std::byte{0} : std::byte{0xff}) : value;
+            output[std::size_t(y) * newWidth + x] = shadow ? ((value & std::byte{1}) == std::byte{0} ? std::byte{0} : std::byte{0xff}) : value;
         }
     }
     return output;
@@ -44,7 +44,7 @@ std::vector<std::byte> MoveWpm(std::span<const std::byte> old, std::uint32_t old
 }
 
 const std::vector<std::byte>& MapDataEditSession::TerrainHistoryPathing(const TerrainResizeState* shape) const {
-    const auto* target = shape ? shape : resizeState_.get();
+    const auto* target = shape ? shape : resizeState_ ? resizeState_.get() : resizeDraftState_.get();
     const auto* header = target ? &target->header : terrain_ ? &terrain_->header : nullptr;
     if (header && terrainOriginal_ && pathingOriginal_ && SameShape(*header, terrainOriginal_->header)) return *pathingOriginal_;
     if (target && target->historyPathing) return *target->historyPathing;
@@ -53,15 +53,15 @@ const std::vector<std::byte>& MapDataEditSession::TerrainHistoryPathing(const Te
 }
 
 std::shared_ptr<const std::vector<std::byte>> MapDataEditSession::TerrainHistoryProtected(const TerrainResizeState* shape) const {
-    const auto* target = shape ? shape : resizeState_.get();
+    const auto* target = shape ? shape : resizeState_ ? resizeState_.get() : resizeDraftState_.get();
     if (target && savedResizeState_ && SameShape(target->header, savedResizeState_->header))
         return savedResizeState_->protectedPathing;
     return target ? target->protectedPathing : pathingProtected_;
 }
 
 bool MapDataEditSession::HasTerrainResizeChanges() const noexcept {
-    return resizeState_ && (!savedResizeState_ || !SameShape(resizeState_->header, savedResizeState_->header)
-        || resizeState_->shadow.present != savedResizeState_->shadow.present || resizeState_->shadow.bytes != savedResizeState_->shadow.bytes);
+    return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || !SameShape(resizeState_->header, savedResizeState_->header)
+        || resizeState_->shadow.present != savedResizeState_->shadow.present || resizeState_->shadow.bytes != savedResizeState_->shadow.bytes));
 }
 
 Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::PrepareTerrainResizeEdit(
@@ -71,7 +71,7 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
     const auto verified = resources.VerifyInput(*this, intent, limits.maximumCandidateBytes, limits.maximumWork);
     if (!verified.Succeeded()) return {{}, verified.diagnostics};
     const auto& rawSettings = current_[Index(MapDataKind::Settings)];
-    if (!terrain_ || !terrainOriginal_ || !pathing_ || !pathingOriginal_ || !pathingProtected_ || !pathingRestrictions_
+    if (resizeDraftState_ || !terrain_ || !terrainOriginal_ || !pathing_ || !pathingOriginal_ || !pathingProtected_ || !pathingRestrictions_
         || !originalPathingRestrictions_ || !rawSettings || !specialDoodads_)
         return fail("TERRAIN_RESIZE_SOURCE_UNAVAILABLE", "扩裁需要完整地形、通行、限制层、设置和特殊摆放来源。");
     auto settings = MapSettings::Parse(*rawSettings);
@@ -111,13 +111,13 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
     auto before = resizeState_ ? resizeState_ : std::make_shared<TerrainResizeState>();
     if (!resizeState_) {
         auto initial = std::make_shared<TerrainResizeState>();
-        initial->header = terrain_->header; initial->shadow = shadow;
+        initial->header = terrain_->header; initial->geometry = terrain_; initial->shadow = shadow;
         initial->historyPathing = std::make_shared<const std::vector<std::byte>>(historyWpm);
         initial->protectedPathing = pathingProtected_; initial->savedRestrictions = originalPathingRestrictions_;
         initial->rulesSha256 = resources.DependencyFingerprint(); before = std::move(initial);
     }
     auto after = std::make_shared<TerrainResizeState>();
-    after->header = prepared.after_->header; after->shadow.name = "war3map.shd"; after->shadow.present = shadow.present;
+    after->header = prepared.after_->header; after->geometry = prepared.after_; after->shadow.name = "war3map.shd"; after->shadow.present = shadow.present;
     if (shadow.present) after->shadow.bytes = MoveCells(shadow.bytes, oldWidth, oldHeight, newWidth, newHeight, r, true);
     after->historyPathing = std::make_shared<const std::vector<std::byte>>(MoveWpm(historyWpm, oldWidth, oldHeight, newWidth, newHeight, r));
     after->protectedPathing = std::make_shared<const std::vector<std::byte>>(MoveCells(*pathingProtected_, oldWidth, oldHeight, newWidth, newHeight, r));
@@ -165,6 +165,37 @@ Status MapDataEditSession::ApplyPreparedTerrainResizeEdit(const PreparedTerrainR
         || prepared.sourceRevision_ != terrainSourceRevision_ || prepared.before_ != terrain_ || prepared.beforeResize_ != resizeState_)
         return Status::Failure("Terrain.Resize", "TERRAIN_RESIZE_STALE", "扩裁候选的会话、修订、来源或当前形状已改变，未提交任何内容。");
     return prepared.command_ ? CommitCommand(*prepared.command_, prepublish) : Status::Ok();
+}
+
+Status MapDataEditSession::VerifyTerrainResizeForSave() const {
+    const auto fail = [](const char* code, const char* message) { return Status::Failure("Terrain.Resize", code, message); };
+    if (!resizeState_ || !savedResizeState_ || !terrain_ || !terrainOriginal_ || !pathing_ || !pathingOriginal_
+        || !resizeState_->geometry || !SameShape(resizeState_->header, terrain_->header)
+        || !SameShape(savedResizeState_->header, terrainOriginal_->header)
+        || !SameShape(resizeState_->geometry->header, terrain_->header)
+        || resizeState_->geometry->vertices.size() != terrain_->vertices.size())
+        return fail("TERRAIN_RESIZE_PROVENANCE_REQUIRED", "尺寸或原点变化没有完整typed扩裁状态；raw草稿不能取得正式保存资格。");
+    const auto cells = std::size_t(terrain_->header.width - 1) * (terrain_->header.height - 1) * 16;
+    if (resizeState_->shadow.name != "war3map.shd" || (resizeState_->shadow.present
+        ? resizeState_->shadow.bytes.size() != cells : !resizeState_->shadow.bytes.empty()))
+        return fail("TERRAIN_RESIZE_SHADOW_SHAPE", "当前typed阴影的明确存在状态或长度与新形状不符。");
+    const auto p = TerrainHistoryProtected();
+    const auto& base = TerrainHistoryPathing();
+    const auto& savedS = SameShape(terrain_->header, terrainOriginal_->header)
+        ? originalPathingRestrictions_ : resizeState_->savedRestrictions;
+    if (!p || !savedS || !pathingRestrictions_)
+        return fail("TERRAIN_RESIZE_PATHING_SHAPE", "不同尺寸的受保护通行来源或意图层缺失。");
+    const auto layers = VerifyPathingRestrictionLayers(terrain_->header, base, *pathing_, *p, *savedS, *pathingRestrictions_);
+    if (!layers.Succeeded()) return layers;
+    for (std::size_t i = 0; i < terrain_->vertices.size(); ++i) {
+        const auto& before = resizeState_->geometry->vertices[i]; const auto& after = terrain_->vertices[i];
+        if (before.extendedTextureLayout || after.extendedTextureLayout
+            || before.textureFlagsExtensionRaw != after.textureFlagsExtensionRaw
+            || ((before.groundHeightRaw ^ after.groundHeightRaw) & 0xc000u)
+            || ((before.waterHeightAndFlagsRaw ^ after.waterHeightAndFlagsRaw) & 0x8000u))
+            return fail("TERRAIN_RESIZE_UNKNOWN_FIELDS", "扩裁后的编辑改变了原封保留的未知高度或顶点字段。");
+    }
+    return VerifyTerrainSettingsForSave();
 }
 
 std::size_t MapDataEditSession::PreparedTerrainResizeEdit::RetainedCommandBytes() const noexcept {
