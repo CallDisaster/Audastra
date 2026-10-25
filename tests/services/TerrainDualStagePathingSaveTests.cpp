@@ -341,6 +341,7 @@ void DirectorySourcesUseTheSameFinalView() {
         "directory final view produces the same complete independent WPM");
     Check(workspace.VerifyUnchanged());
 }
+#include "TerrainFinalDependenciesSaveCases.h"
 }
 
 int main() {
@@ -354,6 +355,7 @@ int main() {
         LastOrdinaryObjectAndNativeTableDeletionStayMapOnly();
         SharedBridgeTextureCannotChangeThroughStaticObject();
         DirectorySourcesUseTheSameFinalView();
+        FinalDependencyCases();
         std::cout << "Terrain dual-stage pathing save cases passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
