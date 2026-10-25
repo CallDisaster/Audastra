@@ -2,6 +2,7 @@
 #include "TerrainSessionResourcesCases.h"
 #include "TerrainHistorySourceShadowCases.h"
 #include "TerrainOrdinaryShadowHistoryCases.h"
+#include "TerrainHistoryShadowReadBudgetCases.h"
 
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
@@ -301,6 +302,7 @@ int main() {
         FinalSpatialOutputAndManualShadowConflictsReject();
         AudastraTest::TerrainSessionResourcesCases::RunTerrainSessionResourcesCases();
         AudastraTest::TerrainHistorySourceShadowCases::RunTerrainHistorySourceShadowCases();
-        AudastraTest::TerrainOrdinaryShadowHistoryCases::RunTerrainOrdinaryShadowHistoryCases(); return 0;
+        AudastraTest::TerrainOrdinaryShadowHistoryCases::RunTerrainOrdinaryShadowHistoryCases();
+        AudastraTest::TerrainHistoryShadowReadBudgetCases::RunTerrainHistoryShadowReadBudgetCases(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
