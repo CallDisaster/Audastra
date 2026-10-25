@@ -210,6 +210,7 @@ void VerifyOutput(const MapArchiveSession& archive, const std::vector<MapArchive
     QCOMPARE(archive.ReadMember(std::string(path)).value, std::optional(Texture(true)));
     if (objectOverride) QCOMPARE(archive.ReadMember(std::string(kOldTexture)).value, std::optional(Texture(false)));
     const auto native = archive.ReadMember("war3map.w3d"); QVERIFY(native.Succeeded() && native.value);
+    if (!objectOverride) QCOMPARE(native.value, std::optional(Member(originals, "war3map.w3d")));
     auto parsed = ObjectData::NativeObjectCodec(kDoodad).Parse(*native.value); QVERIFY(parsed.Succeeded());
     const auto* document = dynamic_cast<const ObjectData::NativeObjectDocument*>(parsed.document.get()); QVERIFY(document);
     const auto* object = document->FindObject({kDoodad, "Doo0"}); QVERIFY(object);
@@ -217,8 +218,10 @@ void VerifyOutput(const MapArchiveSession& archive, const std::vector<MapArchive
         [](const auto& modification) { return modification.key.fieldId == "dptx"; });
     QVERIFY(field != object->modifications.end()); QCOMPARE(std::get<std::string>(field->value), std::string(path));
     const auto imp = archive.ReadMember("war3map.imp"); QVERIFY(imp.Succeeded() && imp.value);
+    if (!objectOverride) QCOMPARE(imp.value, std::optional(Member(originals, "war3map.imp")));
     const auto imports = Resources::ImportTable::Parse(*imp.value); QVERIFY(imports.Succeeded() && imports.value);
     QCOMPARE(imports.value->Entries().size(), objectOverride ? std::size_t{2} : std::size_t{1});
+    QCOMPARE(archive.ReadMember("war3map.mmp").value, std::optional(Bytes(8, std::byte{0})));
     for (const auto& member : originals) {
         if (member.name == "war3map.w3e" || member.name == "war3map.wpm" || member.name == "war3map.w3d"
             || member.name == "war3map.imp" || member.name == "war3map.mmp" || member.name == kOldTexture) continue;
