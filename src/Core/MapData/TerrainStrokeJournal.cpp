@@ -33,6 +33,10 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
             || stroke.intent.bounds || stroke.intent.palette || stroke.ordinaryDoodads || stroke.frozenDoodads
             || stroke.units || stroke.frozenUnits || stroke.startLocations || stroke.frozenStartLocations)
         && stroke.intent.cornerRampAlgorithm != TerrainCornerRampAlgorithm::DryOnly) return false;
+    if ((stroke.intent.brush.kind != TerrainBrushKind::StraightRamp || stroke.intent.waterBrush
+            || stroke.intent.bounds || stroke.intent.palette || stroke.ordinaryDoodads || stroke.frozenDoodads
+            || stroke.units || stroke.frozenUnits || stroke.startLocations || stroke.frozenStartLocations)
+        && stroke.intent.straightRampAlgorithm != TerrainStraightRampAlgorithm::Independent) return false;
     if (stroke.frozenDoodads || stroke.frozenUnits || stroke.frozenStartLocations
         || unsigned(stroke.ordinaryDoodads.has_value()) + unsigned(stroke.units.has_value())
             + unsigned(stroke.startLocations.has_value()) > 1) return false;
@@ -94,6 +98,8 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
             && Sha(stroke.rulesSha256) && !stroke.cliffEnforceWaterLimits;
     if (!intent.waterBrush && brush.kind == TerrainBrushKind::StraightRamp)
         return intent.points.size() == 1 && IsCanonicalTerrainStraightRampBrush(brush)
+            && (intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Independent
+                || intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected)
             && Sha(stroke.rulesSha256) && !stroke.cliffEnforceWaterLimits;
     if (!intent.waterBrush) return (stroke.rulesSha256.empty() && !stroke.cliffEnforceWaterLimits)
         || (brush.kind == TerrainBrushKind::CliffLevel && stroke.cliffEnforceWaterLimits.has_value() && Sha(stroke.rulesSha256));
@@ -203,7 +209,10 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
             [](const auto& stroke) { return stroke.startLocations.has_value(); });
         const bool straightRamps = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::StraightRamp; });
-        const unsigned version = straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
+        const bool connectedStraights = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::StraightRamp
+                && stroke.intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected; });
+        const unsigned version = connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
             : cornerRamps ? 4 : nativeWater ? 3 : nativeCliffs ? 2 : 1;
         wire.Number(0x004a5446u | ((version >= 10 ? std::uint32_t('A') + version - 10 : std::uint32_t('0') + version) << 24), 4);
         wire.Text(journal.sourceSha256);
@@ -250,6 +259,8 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
             wire.Number(static_cast<unsigned>(brush.kind), 1);
             if (version >= 8 && brush.kind == TerrainBrushKind::CornerRamp)
                 wire.Number(static_cast<unsigned>(intent.cornerRampAlgorithm), 1);
+            if (version >= 12 && brush.kind == TerrainBrushKind::StraightRamp)
+                wire.Number(static_cast<unsigned>(intent.straightRampAlgorithm), 1);
             wire.Number(static_cast<unsigned>(brush.shape), 1);
             wire.Number(brush.radius, 4); wire.Text(brush.groundTexture); wire.Number(brush.cliffTexture, 1);
             wire.Number(static_cast<std::uint32_t>(brush.levelDelta), 4); wire.Number(brush.value, 1);
@@ -286,7 +297,8 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto magic = reader.Number(4);
         if ((magic & 0x00ffffffu) != 0x004a5446u
-            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && ((magic >> 24) < '1' || (magic >> 24) > '9')))
+            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C'
+                && ((magic >> 24) < '1' || (magic >> 24) > '9')))
             return Failed<TerrainStrokeJournal>();
         const auto version = (magic >> 24) >= 'A' ? static_cast<unsigned>((magic >> 24) - 'A') + 10u
             : static_cast<unsigned>((magic >> 24) - '0');
@@ -361,6 +373,9 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             brush.kind = static_cast<TerrainBrushKind>(reader.Number(1));
             if (brush.kind == TerrainBrushKind::StraightRamp && version < 11)
                 return Failed<TerrainStrokeJournal>();
+            if (brush.kind == TerrainBrushKind::StraightRamp)
+                intent.straightRampAlgorithm = version >= 12
+                    ? static_cast<TerrainStraightRampAlgorithm>(reader.Number(1)) : TerrainStraightRampAlgorithm::Independent;
             if (brush.kind == TerrainBrushKind::CornerRamp) {
                 if (!hasCorner)
                     return Failed<TerrainStrokeJournal>();
@@ -431,6 +446,10 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             return Failed<TerrainStrokeJournal>();
         if (version == 11 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::StraightRamp; }))
+            return Failed<TerrainStrokeJournal>();
+        if (version == 12 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::StraightRamp
+                && stroke.intent.straightRampAlgorithm == TerrainStraightRampAlgorithm::Connected; }))
             return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }
