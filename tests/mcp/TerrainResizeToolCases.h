@@ -8,7 +8,7 @@ void ResizeToolRequiresBoundSourcesAndStrictIntent() {
         {"terrain_binding", state.value("terrain_binding")}, {"west", -32}, {"south", -32}, {"east", 32}, {"north", 32}, {"dry_run", true}};
     const auto code = [&](const QJsonObject& arguments) {
         const auto diagnostics = InvokeTerrainEditTool("edit_terrain_resize", arguments, host).value("diagnostics").toArray();
-        return diagnostics.isEmpty() ? QString{} : diagnostics.front().toObject().value("code").toString();
+        return diagnostics.isEmpty() ? QString{} : diagnostics.at(0).toObject().value("code").toString();
     };
     Expect(code(request) == "TERRAIN_RESIZE_HOST_UNAVAILABLE", "resize without actual rule owner is unavailable rather than successful");
     auto invalid = request; invalid["expected_revision"] = "999";
