@@ -16,7 +16,7 @@ constexpr std::size_t kMaximumBytes = 64u * 1024u * 1024u;
 
 bool IsTerrainDoodadsJournalPlaceholder(const TerrainStrokeIntent& intent) noexcept {
     const TerrainStrokeIntent neutral;
-    return !intent.palette && !intent.bounds && !intent.waterBrush && !intent.blockPaste && !intent.followDoodads
+    return !intent.palette && !intent.bounds && !intent.waterBrush && !intent.blockPaste && !intent.resize && !intent.followDoodads
         && intent.points.empty() && EqualTerrainJournalIntent(intent, neutral);
 }
 
@@ -29,7 +29,8 @@ bool EqualTerrainJournalIntent(const TerrainStrokeIntent& a, const TerrainStroke
         || a.followDoodads != b.followDoodads || a.cornerRampAlgorithm != b.cornerRampAlgorithm
         || a.straightRampAlgorithm != b.straightRampAlgorithm || a.points.size() != b.points.size()
         || a.waterBrush.has_value() != b.waterBrush.has_value() || a.bounds.has_value() != b.bounds.has_value()
-        || a.palette.has_value() != b.palette.has_value() || a.blockPaste.has_value() != b.blockPaste.has_value()) return false;
+        || a.palette.has_value() != b.palette.has_value() || a.blockPaste.has_value() != b.blockPaste.has_value()
+        || a.resize != b.resize) return false;
     for (std::size_t i = 0; i < a.points.size(); ++i)
         if (a.points[i].x != b.points[i].x || a.points[i].y != b.points[i].y) return false;
     if (a.waterBrush) {

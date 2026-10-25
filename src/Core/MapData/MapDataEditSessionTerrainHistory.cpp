@@ -237,7 +237,7 @@ Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal) {
     auto& history = *journal.history;
     if (!history.frozenBaseline) return history.frozenRetainedBytes ? Status::Failure("Terrain.History",
         "TERRAIN_HISTORY_INVALID", "没有冻结旧epoch却携带内存资格字段。") : Status::Ok();
-    if (!history.baselineMembers.empty() || !history.baselinePathingLayers.empty() || !history.frozenRetainedBytes
+    if (!history.baselineMembers.empty() || !history.baselinePathingLayers.empty() || history.baselineShadow || !history.frozenRetainedBytes
         || history.frozenRetainedBytes > TerrainJournalMaximumBytes)
         return Status::Failure("Terrain.History", "TERRAIN_HISTORY_INVALID", "冻结旧epoch与wire材料不能混用。");
     const auto& baseline = *history.frozenBaseline;
@@ -245,8 +245,9 @@ Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal) {
         return Status::Failure("Terrain.History", "TERRAIN_HISTORY_INVALID", "冻结旧epoch缺少真实地形和P/savedS。");
     auto members = baseline.TerrainHistoryBaselineMembers(TerrainJournalMaximumBytes);
     if (!members.Succeeded() || !members.value) return {members.diagnostics};
+    const auto baselineP = baseline.savedResizeState_ ? baseline.savedResizeState_->protectedPathing : baseline.pathingProtected_;
     auto layers = EncodePathingRestrictionDraft(*baseline.terrainOriginal_, *baseline.pathingOriginal_, *baseline.pathingOriginal_,
-        *baseline.pathingProtected_, *baseline.originalPathingRestrictions_, *baseline.originalPathingRestrictions_);
+        *baselineP, *baseline.originalPathingRestrictions_, *baseline.originalPathingRestrictions_);
     if (!layers.Succeeded() || !layers.value) return {layers.diagnostics};
     std::size_t used = 128u * 1024u + layers.value->size() + journal.baselinePathingLayers.size();
     if (used > TerrainJournalMaximumBytes) return Status::Failure("Terrain.History", "TERRAIN_HISTORY_BUDGET", "历史两层P超过工程预算。");
@@ -254,6 +255,12 @@ Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal) {
         if (member.bytes.size() > TerrainJournalMaximumBytes - used)
             return Status::Failure("Terrain.History", "TERRAIN_HISTORY_BUDGET", "历史完整十成员超过工程预算。");
         used += member.bytes.size();
+    }
+    if (std::any_of(journal.strokes.begin(), journal.strokes.end(), [](const auto& stroke) { return stroke.intent.resize.has_value(); })) {
+        if (!baseline.savedResizeState_ || baseline.savedResizeState_->shadow.bytes.size() > TerrainJournalMaximumBytes - used)
+            return Status::Failure("Terrain.History", "TERRAIN_HISTORY_INVALID", "扩裁历史缺少真实旧SHD或明确缺失状态。");
+        history.baselineShadow = baseline.savedResizeState_->shadow;
+        used += history.baselineShadow->bytes.size();
     }
     history.baselineMembers = std::move(*members.value);
     history.baselinePathingLayers = std::move(*layers.value);

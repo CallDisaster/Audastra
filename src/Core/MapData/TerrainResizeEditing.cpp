@@ -73,7 +73,8 @@ Result<TerrainResizeGeometry> ProjectTerrainResizeGeometry(const TerrainGridSnap
             return ResizeFailure<TerrainResizeGeometry>("TERRAIN_RESIZE_PLAYABLE_ALIGNMENT", "当前实际可玩范围不能精确投影到新整数地格边距。");
     const std::size_t vertices = std::size_t(width + 1) * (height + 1), tiles = std::size_t(width) * height;
     // 先收齐完整候选及原网格保活材料，不在分配之后才检查预算。
-    const std::size_t work = source.vertices.size() + vertices * 2 + tiles * 2;
+    // 原网格验证、逐点搬移、MapEdge、Refresh的顶点/包围盒、writer验证与写出各自计量。
+    std::size_t work = source.vertices.size() * 2 + vertices * 8 + tiles * 3;
     std::size_t bytes = 8192;
     const auto add = [&](std::size_t count, std::size_t size) {
         if (count > (limits.maximumCandidateBytes - bytes) / size) return false;
@@ -81,15 +82,58 @@ Result<TerrainResizeGeometry> ProjectTerrainResizeGeometry(const TerrainGridSnap
     };
     if (bytes > limits.maximumCandidateBytes || work > limits.maximumWork
         || !add(source.vertices.capacity(), sizeof(TerrainVertex)) || !add(source.tiles.capacity(), sizeof(TerrainTile))
-        || !add(vertices, sizeof(TerrainVertex)) || !add(tiles, sizeof(TerrainTile)))
+        || !add(vertices, sizeof(TerrainVertex)) || !add(tiles, sizeof(TerrainTile))
+        || !add(vertices, 14)) // writer完整W3E及vector增长峰值，不借固定allowance隐藏。
         return ResizeFailure<TerrainResizeGeometry>("TERRAIN_RESIZE_BUDGET", "完整扩裁候选和可逆材料超过预算，未修改会话。");
+    // 不先Serialize再量预算。逐项计实际header/settings驻留、候选深拷贝与writer最坏增长；
+    // 来源中可变长自定义表也计容量，不能用一个固定8192代替。
+    const auto record = [&](std::size_t count, std::size_t size) {
+        if (work > limits.maximumWork || count > limits.maximumWork - work) return false;
+        work += count; return add(count, size);
+    };
+    const auto text = [&](const std::string& value, std::size_t copies) { return add(value.capacity() + 1, copies); };
+    bool settingsBudget = add(1, sizeof(MapSettings) * 6);
+    for (const auto* table : {&old.groundTilesets, &old.cliffTilesets}) {
+        if (table->size() > 256 || !record(table->capacity(), sizeof(std::string) * 3)) settingsBudget = false;
+        if (!settingsBudget) break;
+        for (const auto& id : *table) if (!text(id, 3)) { settingsBudget = false; break; }
+    }
+    for (const auto* value : {&settings.mapName, &settings.author, &settings.description, &settings.recommendedPlayers,
+        &settings.loadingScreen.path, &settings.loadingScreen.text, &settings.loadingScreen.title, &settings.loadingScreen.subtitle,
+        &settings.prologueScreen.path, &settings.prologueScreen.text, &settings.prologueScreen.title, &settings.prologueScreen.subtitle,
+        &settings.environment.soundEnvironment}) if (!text(*value, 6)) settingsBudget = false;
+    if (!add(settings.OriginalBytes().capacity(), 3) || !add(settings.UnknownTail().capacity(), 3)
+        || !record(settings.players.capacity(), sizeof(MapPlayerSettings) * 6)
+        || !record(settings.forces.capacity(), sizeof(MapForceSettings) * 6)) settingsBudget = false;
+    if (settingsBudget) {
+        for (const auto& player : settings.players) if (!text(player.name, 6)) { settingsBudget = false; break; }
+        for (const auto& force : settings.forces) if (!text(force.name, 6)) { settingsBudget = false; break; }
+    }
+    if (settingsBudget && settings.custom) {
+        const auto& custom = *settings.custom;
+        settingsBudget = record(custom.upgrades.capacity(), sizeof(MapUpgradeAvailability) * 6)
+            && record(custom.techRestrictions.capacity(), sizeof(MapTechRestriction) * 6)
+            && record(custom.randomUnits.capacity(), sizeof(MapRandomUnitTable) * 6)
+            && record(custom.randomItems.capacity(), sizeof(MapRandomItemTable) * 6);
+        if (settingsBudget) for (const auto& table : custom.randomUnits) {
+            if (!text(table.name, 6) || !record(table.columnTypes.capacity(), sizeof(std::int32_t) * 6)
+                || !record(table.rows.capacity(), sizeof(MapRandomUnitRow) * 6)) { settingsBudget = false; break; }
+            for (const auto& row : table.rows) if (!record(row.ids.capacity(), sizeof(SettingsRawcode) * 6)) { settingsBudget = false; break; }
+            if (!settingsBudget) break;
+        }
+        if (settingsBudget) for (const auto& table : custom.randomItems) {
+            if (!text(table.name, 6) || !record(table.sets.capacity(), sizeof(std::vector<MapRandomItem>) * 6)) { settingsBudget = false; break; }
+            for (const auto& set : table.sets) if (!record(set.capacity(), sizeof(MapRandomItem) * 6)) { settingsBudget = false; break; }
+            if (!settingsBudget) break;
+        }
+    }
+    if (!settingsBudget)
+        return ResizeFailure<TerrainResizeGeometry>("TERRAIN_RESIZE_BUDGET", "实际贴图表、地图设置深拷贝或writer峰值超过扩裁预算。");
     for (const auto& vertex : source.vertices) if (vertex.extendedTextureLayout)
         return ResizeFailure<TerrainResizeGeometry>("TERRAIN_RESIZE_LAYOUT", "经典扩裁不能混入扩展顶点布局。");
     try {
         const auto serializedSettings = settings.Serialize();
         if (!serializedSettings.Succeeded() || !serializedSettings.value) return {{}, serializedSettings.diagnostics};
-        if (!add(serializedSettings.value->size(), 3))
-            return ResizeFailure<TerrainResizeGeometry>("TERRAIN_RESIZE_BUDGET", "地图设置及其可逆副本超过扩裁预算。");
         TerrainResizeGeometry output;
         output.terrain.header = old;
         output.terrain.header.width = width + 1; output.terrain.header.height = height + 1;

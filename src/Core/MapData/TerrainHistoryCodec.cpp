@@ -53,6 +53,9 @@ struct HistoryReader {
 bool HistoryShape(const TerrainStrokeJournal& journal) {
     if (!journal.history) return false;
     const auto& history = *journal.history;
+    const bool resizes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+        [](const auto& stroke) { return stroke.intent.resize.has_value(); });
+    if (history.baselineShadow.has_value() != resizes) return false;
     if (history.frozenBaseline || history.frozenRetainedBytes || !history.savedIndex
         || history.savedIndex > journal.strokes.size() || history.currentIndex > journal.strokes.size()
         || history.baselineMembers.size() != TerrainJournalMemberNames.size()
@@ -63,6 +66,11 @@ bool HistoryShape(const TerrainStrokeJournal& journal) {
         // 有已保存S时必须带APR3，由Services的同一分层解码器及保存站再完整验证。
         if (layers->size() > remaining) return false;
         remaining -= layers->size();
+    }
+    if (history.baselineShadow) {
+        const auto& shadow = *history.baselineShadow;
+        if (shadow.name != "war3map.shd" || (!shadow.present && !shadow.bytes.empty()) || shadow.bytes.size() > remaining) return false;
+        remaining -= shadow.bytes.size();
     }
     for (std::size_t i = 0; i < history.baselineMembers.size(); ++i) {
         const auto& member = history.baselineMembers[i];
@@ -91,7 +99,7 @@ Result<TerrainStrokeJournal> TerrainHistoryBaselineJournal(const TerrainStrokeJo
         baseline.strokes = journal.strokes;
         baseline.baselinePathingLayers = journal.history->baselinePathingLayers;
         HistoryWire identity;
-        identity.Text("FTJE-historical-structure-v1");
+        identity.Text(journal.history->baselineShadow ? "FTJH-historical-structure-v1" : "FTJE-historical-structure-v1");
         for (const auto& member : journal.history->baselineMembers) {
             TerrainJournalMember manifest;
             manifest.name = member.name; manifest.present = member.present; manifest.bytes = member.bytes.size();
@@ -102,6 +110,14 @@ Result<TerrainStrokeJournal> TerrainHistoryBaselineJournal(const TerrainStrokeJo
             identity.Text(manifest.name); identity.Number(manifest.present, 1);
             identity.Text(manifest.sha256); identity.Number(manifest.bytes, 8);
             baseline.members.push_back(std::move(manifest));
+        }
+        if (journal.history->baselineShadow) {
+            const auto& shadow = *journal.history->baselineShadow;
+            identity.Text(shadow.name); identity.Number(shadow.present, 1); identity.Number(shadow.bytes.size(), 8);
+            if (shadow.present) {
+                auto hash = Sha256(shadow.bytes); if (!hash.Succeeded() || !hash.value) return {{}, hash.diagnostics};
+                identity.Text(*hash.value);
+            } else identity.Text({});
         }
         auto digest = Sha256(identity.data); if (!digest.Succeeded() || !digest.value) return {{}, digest.diagnostics};
         baseline.sourceSha256 = std::move(*digest.value);
@@ -143,7 +159,7 @@ Result<std::vector<std::byte>> EncodeTerrainHistoryJournal(const TerrainStrokeJo
         auto typed = EncodeTerrainStrokeJournal(*baseline.value);
         if (!typed.Succeeded() || !typed.value) return {{}, typed.diagnostics};
         HistoryWire wire;
-        wire.Number(0x454a5446u, 4); wire.Text(journal.sourceSha256);
+        wire.Number(journal.history->baselineShadow ? 0x484a5446u : 0x454a5446u, 4); wire.Text(journal.sourceSha256);
         wire.Number(journal.members.size(), 1);
         for (const auto& member : journal.members) {
             wire.Text(member.name); wire.Number(member.present, 1); wire.Text(member.sha256); wire.Number(member.bytes, 8);
@@ -154,6 +170,10 @@ Result<std::vector<std::byte>> EncodeTerrainHistoryJournal(const TerrainStrokeJo
         wire.Number(history.baselineMembers.size(), 1);
         for (const auto& member : history.baselineMembers) {
             wire.Text(member.name); wire.Number(member.present, 1); wire.Bytes(member.bytes);
+        }
+        if (history.baselineShadow) {
+            const auto& shadow = *history.baselineShadow;
+            wire.Text(shadow.name); wire.Number(shadow.present, 1); wire.Bytes(shadow.bytes);
         }
         // oldP已在原typed内，只有一份wire；外层数据字段保持显式，便于Services预算。
         wire.Bytes(*typed.value);
@@ -166,7 +186,8 @@ Result<TerrainStrokeJournal> DecodeTerrainHistoryJournal(std::span<const std::by
     if (bytes.size() > TerrainJournalMaximumBytes) return InvalidHistory<TerrainStrokeJournal>();
     try {
         HistoryReader reader{bytes}; TerrainStrokeJournal journal; TerrainJournalHistory history;
-        if (reader.Number(4) != 0x454a5446u) return InvalidHistory<TerrainStrokeJournal>();
+        const auto magic = reader.Number(4);
+        if (magic != 0x454a5446u && magic != 0x484a5446u) return InvalidHistory<TerrainStrokeJournal>();
         journal.sourceSha256 = reader.Text(64);
         if (reader.Number(1) != TerrainJournalMemberNames.size()) return InvalidHistory<TerrainStrokeJournal>();
         for (const auto name : TerrainJournalMemberNames) {
@@ -187,8 +208,14 @@ Result<TerrainStrokeJournal> DecodeTerrainHistoryJournal(std::span<const std::by
             if (!member.present && !payload.empty()) return InvalidHistory<TerrainStrokeJournal>();
             member.bytes.assign(payload.begin(), payload.end()); history.baselineMembers.push_back(std::move(member));
         }
+        if (magic == 0x484a5446u) {
+            ArchiveExactMember shadow;
+            shadow.name = reader.Text(64); shadow.present = reader.Bool(); const auto payload = reader.Bytes(TerrainJournalMaximumBytes);
+            if (shadow.name != "war3map.shd" || (!shadow.present && !payload.empty())) return InvalidHistory<TerrainStrokeJournal>();
+            shadow.bytes.assign(payload.begin(), payload.end()); history.baselineShadow = std::move(shadow);
+        }
         const auto typedBytes = reader.Bytes(TerrainJournalMaximumBytes);
-        if (reader.cursor != bytes.size() || typedBytes.size() < 4 || typedBytes[3] == std::byte{'E'})
+        if (reader.cursor != bytes.size() || typedBytes.size() < 4 || typedBytes[3] == std::byte{'E'} || typedBytes[3] == std::byte{'H'})
             return InvalidHistory<TerrainStrokeJournal>(); // 禁止嵌套history/递归预算。
         auto typed = DecodeTerrainStrokeJournal(typedBytes);
         if (!typed.Succeeded() || !typed.value || typed.value->history) return InvalidHistory<TerrainStrokeJournal>();

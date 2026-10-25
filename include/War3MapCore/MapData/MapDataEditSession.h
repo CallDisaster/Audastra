@@ -258,7 +258,7 @@ public:
         std::size_t maximumBytes, std::size_t maximumWork);
     [[nodiscard]] Status ReplayTerrainJournalStartLocations(const TerrainStartLocationsJournalEdit& edit,
         std::size_t maximumBytes, std::size_t maximumWork);
-    [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges(); }
+    [[nodiscard]] bool RequiresTerrainStrokeJournal() const noexcept { return specialDoodads_ != savedSpecialDoodads_ || HasTerrainBoundsChanges() || HasTerrainResizeChanges(); }
     // 工程CAS专用：包含可表达状态及完整typed前缀，不读取外部来源。
     [[nodiscard]] std::string TerrainJournalStateFingerprint() const;
     [[nodiscard]] Result<PathingRestrictionPreview> QueryPathingRestrictions(std::size_t maximumCells = 4096) const;
