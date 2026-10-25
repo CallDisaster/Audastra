@@ -502,11 +502,13 @@ private:
     [[nodiscard]] const std::vector<std::byte>& TerrainHistoryPathing(const TerrainResizeState* shape = nullptr) const;
     [[nodiscard]] std::shared_ptr<const std::vector<std::byte>> TerrainHistoryProtected(const TerrainResizeState* shape = nullptr) const;
     [[nodiscard]] std::shared_ptr<const std::vector<std::byte>> TerrainHistorySavedRestrictions(const TerrainResizeState* shape = nullptr) const;
+    [[nodiscard]] const ArchiveExactMember* TerrainHistoryShadow(const TerrainResizeState* shape = nullptr) const noexcept;
     [[nodiscard]] Status VerifyTerrainResizeForSave() const;
     // 先准备全部新基线，再无异常交换；供已回读的通行重建输出原子提交。
     void CommitSavedBaseline(const MapDocument& saved,
         std::optional<std::vector<std::byte>> pathing,
-        std::shared_ptr<const std::vector<std::byte>> protectedPathing);
+        std::shared_ptr<const std::vector<std::byte>> protectedPathing,
+        std::optional<ArchiveExactMember> writtenShadow = {});
     [[nodiscard]] static std::size_t Index(MapDataKind kind) noexcept;
     struct SaveSnapshotTag {};
     MapDataEditSession(const MapDataEditSession& source, SaveSnapshotTag);

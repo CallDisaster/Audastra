@@ -48,7 +48,7 @@ template<class T> Result<T> DraftFailure(const char* message) {
 Result<ArchiveExactMember> MapDataEditSession::TerrainResizeShadowDraft() const {
     const auto state = resizeState_ ? resizeState_ : resizeDraftState_;
     if (!state) return DraftFailure<ArchiveExactMember>("当前会话没有扩裁阴影草稿。");
-    return Result<ArchiveExactMember>::Success(state->shadow);
+    return Result<ArchiveExactMember>::Success(*TerrainHistoryShadow());
 }
 
 Result<std::vector<std::byte>> MapDataEditSession::ExportTerrainResizeDraft() const try {
@@ -61,7 +61,8 @@ Result<std::vector<std::byte>> MapDataEditSession::ExportTerrainResizeDraft() co
     const auto& baseline = TerrainHistoryPathing();
     const auto p = TerrainHistoryProtected();
     const auto savedS = TerrainHistorySavedRestrictions();
-    if (!p || !savedS) return DraftFailure<std::vector<std::byte>>("扩裁草稿缺少真实保存前后分层。");
+    const auto* shadow = TerrainHistoryShadow();
+    if (!p || !savedS || !shadow) return DraftFailure<std::vector<std::byte>>("扩裁草稿缺少真实保存前后分层。");
     const auto layers = VerifyPathingRestrictionLayers(terrain_->header, baseline, *pathing_, *p, *savedS, *pathingRestrictions_);
     if (!layers.Succeeded()) return {{}, layers.diagnostics};
     // 两次完整writer及wire增长与四层向量同时存在，逐项预收后才序列化。
@@ -71,7 +72,7 @@ Result<std::vector<std::byte>> MapDataEditSession::ExportTerrainResizeDraft() co
     };
     if (!reserve(terrainOriginal_->vertices.size() + terrain_->vertices.size(), 16)
         || !reserve(baseline.size(), 3) || !reserve(p->size() + savedS->size() + pathingRestrictions_->size(), 3)
-        || !reserve(state->shadow.bytes.size(), 3))
+        || !reserve(shadow->bytes.size(), 3))
         return DraftFailure<std::vector<std::byte>>("扩裁草稿完整wire峰值超过64MiB。");
     auto old = SerializeMapTerrain(*terrainOriginal_), current = SerializeMapTerrain(*terrain_);
     if (!old.Succeeded() || !old.value) return {{}, old.diagnostics};
@@ -82,7 +83,7 @@ Result<std::vector<std::byte>> MapDataEditSession::ExportTerrainResizeDraft() co
         auto sha = Sha256(value); if (!sha.Succeeded() || !sha.value) return {{}, sha.diagnostics}; wire.Text(*sha.value);
     }
     wire.Data(baseline); wire.Data(*p); wire.Data(*savedS); wire.Data(*pathingRestrictions_);
-    wire.Text("war3map.shd"); wire.Number(state->shadow.present ? 1 : 0); wire.Data(state->shadow.bytes);
+    wire.Text("war3map.shd"); wire.Number(shadow->present ? 1 : 0); wire.Data(shadow->bytes);
     return Output::Success(std::move(wire.bytes));
 } catch (const std::bad_alloc&) { return DraftFailure<std::vector<std::byte>>("扩裁草稿内存不足。"); }
   catch (const std::length_error&) { return DraftFailure<std::vector<std::byte>>("扩裁草稿容量超过预算。"); }
