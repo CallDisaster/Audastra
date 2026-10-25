@@ -24,6 +24,7 @@
 #include "TerrainUnitPlacementRealTests.h"
 #include "TerrainCliffTransportSaveTests.h"
 #include "TerrainBoundaryRealTests.h"
+#include "TerrainBlockSaveRealTests.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -505,6 +506,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
         }
         if (group == RealSaveGroup::Boundary) {
             TerrainSaveTests::CheckRealTerrainBoundarySave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealTerrainBlockSave(original, directory.path, tool, game);
             return;
         }
         const auto sourceScript = Take(original.ReadMember("war3map.j"));
