@@ -35,6 +35,15 @@ void ActualStartupAndAtomicCas() {
         && resources.DimensionRules().sideStep == 32 && resources.DimensionRules().maximumArea == 256u * 256u
         && resources.CameraMargins() == std::array<float, 4>{1, 2, 1, 2}, "actual append-first startup rules and explicit expansion product area");
     Require(resources.SourceShadow().present && resources.SourceShadow().bytes == ShadowLiteral(), "physical raw SHD is retained, including 02 and 80");
+    Require(resources.CaptureWork() >= fixture.edits->Terrain()->vertices.size()
+        && resources.CaptureWork() != resources.OwnedCapacityBytes(), "capture reports its actual work independently of owned memory capacity");
+    TerrainResizeLimits captureLimits;
+    captureLimits.maximumWork = resources.CaptureWork();
+    Require(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot, captureLimits).Succeeded(),
+        "capture succeeds at its reported complete work budget");
+    --captureLimits.maximumWork;
+    Require(!TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot, captureLimits).Succeeded(),
+        "capture rejects a budget one unit below its reported complete work");
     const auto before = fixture.edits->Revision();
     const auto prepared = Take(PrepareTerrainResizeEdit(*fixture.edits, Document(fixture), Binding(fixture), resources, Expand()));
     const auto refused = ApplyTerrainResizeEdit(*fixture.edits, Document(fixture), prepared, [](const auto&) {

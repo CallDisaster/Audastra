@@ -120,6 +120,7 @@ std::span<const TerrainWaterSpecialDoodadShape> TerrainResizeResources::SpecialS
 const std::string& TerrainResizeResources::DependencyFingerprint() const noexcept { return state_->fingerprint; }
 std::size_t TerrainResizeResources::CaptureBudgetBytes() const noexcept { return state_ ? state_->captureBytes : 0; }
 std::size_t TerrainResizeResources::OwnedCapacityBytes() const noexcept { return state_ ? state_->ownedBytes : 0; }
+std::size_t TerrainResizeResources::CaptureWork() const noexcept { return state_ ? state_->work : 0; }
 
 Result<TerrainResizeResources> TerrainResizeResources::CaptureInputs(const MemberReader& reader,
     const MapDataEditSession& session, const std::filesystem::path& gameRoot, const TerrainResizeLimits& limits) try {

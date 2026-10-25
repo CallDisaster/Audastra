@@ -27,6 +27,9 @@ public:
     [[nodiscard]] const std::string& DependencyFingerprint() const noexcept;
     [[nodiscard]] std::size_t CaptureBudgetBytes() const noexcept;
     [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
+    // 捕获时实际累计的工作计数。批量重放须累计每个owner的计数，
+    // 不能用内存容量代替，也不能让每笔单独享用整批工作上限。
+    [[nodiscard]] std::size_t CaptureWork() const noexcept;
     // 同一session/修订/原始W3E与当前W3E、完整空间成员逐项绑定；按intent的
     // 新外矩形核查实际位置/覆盖，不移动、裁短或删除普通对象、区域、镜头和起点。
     [[nodiscard]] Status VerifyInput(const MapDataEditSession& session,
