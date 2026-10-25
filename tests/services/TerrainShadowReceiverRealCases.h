@@ -7,7 +7,9 @@ void CheckRealShadowReceiverDependencies(const TerrainShadowReceiverResources& r
     const auto facts = receiver.Dependencies();
     bool table = false, model = false, lowerRamp = false, upperRamp = false;
     for (const auto& fact : facts) {
-        const auto path = Text::LowerAscii(fact.name);
+        // owner按CanonicalImportPath保留大写反斜杠身份；本地分类视图统一分隔符。
+        auto path = Text::LowerAscii(fact.name);
+        std::replace(path.begin(), path.end(), '\\', '/');
         const bool cliffTable = path == "terrainart/clifftypes.slk";
         const bool terrainModel = path.starts_with("doodads/terrain/")
             && (path.ends_with(".mdx") || path.ends_with(".mdl"));
