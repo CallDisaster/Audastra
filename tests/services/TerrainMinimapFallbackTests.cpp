@@ -63,7 +63,7 @@ Bytes Atlas() {
     }
     return bytes;
 }
-enum class MissingInput { None, GroundTexture, CameraMargins, DeepLevelPathing };
+enum class MissingInput { None, GroundTexture, CameraMargins, DeepLevelPathing, ObjectDefinition };
 struct Fixture {
     std::filesystem::path directory;
     Bytes w3e, wpm, w3i, doo, originalMinimap = Text("author minimap bytes must stay exact");
@@ -91,7 +91,8 @@ struct Fixture {
         DoodadPlacements doodads;
         if (special) { SpecialDoodadPlacement placement; placement.rawcode = "SPC1"; doodads.specialDoodads.push_back(placement); }
         if (missingInvalidModel || ordinaryColor) {
-            DoodadPlacement placement; placement.rawcode = "D001"; placement.creationId = 1;
+            DoodadPlacement placement; placement.rawcode = missing == MissingInput::ObjectDefinition ? "ZZZ1" : "D001";
+            placement.creationId = 1;
             placement.position = {384, 384, 0}; placement.scale = {1, 1, 1}; placement.flags = 2;
             doodads.doodads.push_back(placement);
         }
@@ -225,6 +226,69 @@ void MissingGenerationInputsPreserveActualSave() {
         }
     }
 }
+
+void MissingObjectDefinitionPreservesActualSave() {
+    for (const bool present : {false, true}) for (const bool inPlace : {false, true}) {
+        // 配置、目录和真实普通DOO均完整；只让该rawcode在两个目录与原生覆盖里都不存在。
+        Fixture fixture(false, present, false, MissingInput::ObjectDefinition, true, true);
+        const auto sourceSha = fixture.archive.SourceSha256();
+        auto settings = Take(MapSettings::Parse(fixture.w3i)); settings.mapName = "saved fixture edit";
+        Require(fixture.edits->EditSettings(settings).Succeeded(), "建立合法的实际地图名称编辑");
+        const auto expectedSettings = Take(settings.Serialize());
+        MapSaveTask task; fixture.Freeze(task, inPlace);
+        const auto changes = fixture.edits->Replacements();
+        task.replacements.insert(task.replacements.end(), changes.begin(), changes.end());
+        const auto checked = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {});
+        Require(checked.Succeeded() && checked.value && HasCode(checked.diagnostics, "CLASSIC_MINIMAP_OBJECT_MISSING")
+            && !HasCode(checked.diagnostics, "CLASSIC_MINIMAP_OBJECT_UNKNOWN")
+            && HasCode(checked.diagnostics, "MINIMAP_GENERATION_SKIPPED")
+            && std::none_of(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.severity == DiagnosticSeverity::Error;
+            }), "实际降级保留准确原因和显式warning，不残留error");
+        const auto& result = *checked.value;
+        Require(!result.generated && result.preserved, "缺对象定义不伪造颜色，只保留原小地图");
+        task.diagnostics = checked.diagnostics;
+        const auto guard = result.preserved;
+        Require(guard->VerifyCurrent(task, *fixture.edits).Succeeded(), "缺定义回退仍绑定实际会话修订和小地图来源");
+        task.beforePublish = [&] { return guard->VerifyFrozenOutput(task); };
+        MapSaveService::Run(task);
+        Require(task.executed && task.succeeded && task.nextSession, "缺对象定义时合法设置与资源导入实际保存");
+        const auto saved = Take(MapArchiveSession::Open(task.written));
+        Require(guard->VerifyReadback(task, saved).Succeeded()
+            && saved.HasMember("war3mapMap.blp") == present && !saved.HasMember("war3mapMap.tga"),
+            "保留小地图存在性或缺失性由独立输出回读确认");
+        if (present) Require(Take(saved.ReadMember("war3mapMap.blp")) == fixture.originalMinimap,
+            "已有作者BLP小地图逐字保留");
+        Require(Take(saved.ReadMember("war3map.w3i")) == expectedSettings
+            && Take(saved.ReadMember("Fixture\\Unused.blp")) == Text("new fixture resource")
+            && Take(saved.ReadMember("war3map.w3e")) == fixture.w3e
+            && Take(saved.ReadMember("war3map.wpm")) == fixture.wpm
+            && Take(saved.ReadMember("war3map.doo")) == fixture.doo,
+            "合法名称编辑和新增资源真实写出，完整地形/通行/含special摆放不受回退改变");
+        if (inPlace) Require(!task.backup.empty() && Take(Sha256File(task.backup)) == sourceSha,
+            "能力回退的原地保存仍保留完整源归档备份");
+        else Require(Take(Sha256File(fixture.archive.SourcePath())) == sourceSha, "另存为保持实际源归档只读");
+    }
+}
+
+void AmbiguousOrDamagedObjectSourcesDoNotPreserve() {
+    for (const bool malformed : {false, true}) {
+        Fixture fixture(false, true, false, MissingInput::None, false, true);
+        MapSaveTask task; fixture.Freeze(task);
+        if (malformed) task.replacements.push_back({"Doodads\\Doodads.slk", Text("broken present table")});
+        else task.replacements.push_back({"Units\\DestructableData.slk", Slk({
+            "destructableID|code|walkable|pathTex|fixedRot", "D001|D001|0|none|0"})});
+        const auto result = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {});
+        Require(!result.Succeeded() && !result.value && !HasCode(result.diagnostics, "MINIMAP_GENERATION_SKIPPED")
+            && !HasCode(result.diagnostics, "CLASSIC_MINIMAP_OBJECT_MISSING") && !std::filesystem::exists(task.target),
+            "实际损坏目录或跨类型歧义不能借Missing取得保留资格，不发布任何目标");
+        if (!malformed) Require(HasCode(result.diagnostics, "CLASSIC_MINIMAP_OBJECT_UNKNOWN"),
+            "跨类型同名仍报告拒绝降级的UNKNOWN");
+        Require(Take(Sha256File(fixture.archive.SourcePath())) == fixture.archive.SourceSha256(),
+            "实际失败保持原创源归档逐字不变");
+    }
+}
+
 void BudgetAndTga() {
     Fixture fixture; MapSaveTask task; fixture.Freeze(task);
     TerrainMinimapSaveLimits limits; limits.maxWorkingBytes = 1;
@@ -264,11 +328,17 @@ void SourceStaleAndFinalMutationStillReject() {
     Require(!stale.Succeeded() && !stale.value && HasCode(stale.diagnostics, "CLASSIC_OBJECT_CAPTURE_STALE"), "stale错误原样拒绝");
     for (const auto* code : {"MAP_SOURCE_UNSAFE", "CLASSIC_OBJECT_CAPTURE_SOURCE_STALE", "MINIMAP_SAVE_SOURCE",
             "TERRAIN_ASSETS_IDENTITY", "TERRAIN_ASSETS_W3I_CURRENT", "MINIMAP_SAVE_AUTOMATIC_EXCEPTION",
-            "TERRAIN_ASSETS_W3I_LAYOUT", "CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "FILE_READ_FAILED"}) {
+            "TERRAIN_ASSETS_W3I_LAYOUT", "CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "FILE_READ_FAILED",
+            "CLASSIC_MINIMAP_OBJECT_UNKNOWN"}) {
         const auto failure = TerrainMinimapSave::PreserveUnsupportedAutomatic(task, *fixture.edits,
             Status::Failure("fixture", code, "不能降级的错误").diagnostics);
         Require(!failure.Succeeded() && !failure.value && HasCode(failure.diagnostics, code), "来源身份I/O未知异常不降级");
     }
+    auto mixed = Status::Failure("fixture", "CLASSIC_MINIMAP_OBJECT_MISSING", "实际能力缺失").diagnostics;
+    mixed.push_back(Status::Failure("fixture", "FILE_READ_FAILED", "同时存在真实I/O失败").diagnostics.front());
+    const auto mixedFailure = TerrainMinimapSave::PreserveUnsupportedAutomatic(task, *fixture.edits, std::move(mixed));
+    Require(!mixedFailure.Succeeded() && !mixedFailure.value && HasCode(mixedFailure.diagnostics, "FILE_READ_FAILED"),
+        "能力缺失不能掩盖同批I/O错误，只有所有error均可降级时才允许保留");
 }
 
 void SpecialTailGeneratesAndSaves() {
@@ -303,6 +373,7 @@ int main() {
     try {
         PreserveThroughActualSave(true, false); PreserveThroughActualSave(false, false); PreserveThroughActualSave(true, true);
         MissingGenerationInputsPreserveActualSave(); BudgetAndTga(); SourceStaleAndFinalMutationStillReject();
+        MissingObjectDefinitionPreservesActualSave(); AmbiguousOrDamagedObjectSourcesDoNotPreserve();
         SpecialTailGeneratesAndSaves(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

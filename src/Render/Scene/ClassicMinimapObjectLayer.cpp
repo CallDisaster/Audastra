@@ -59,7 +59,8 @@ void AddDiagnostic(ClassicMinimapObjectLayer& output, const char* code, std::str
 }
 
 std::optional<ObjectData::StandardObjectEntry> FindObject(const ClassicMinimapObjectLayerInput& input,
-    std::string_view rawcode, ObjectData::ObjectType& type) {
+    std::string_view rawcode, ObjectData::ObjectType& type, bool& missing) {
+    missing = false;
     const ObjectData::NativeObjectDocument* overrides = nullptr;
     const ObjectData::ObjectRecord* record = nullptr;
     const ObjectData::StandardObjectEntry* standard = nullptr;
@@ -72,7 +73,9 @@ std::optional<ObjectData::StandardObjectEntry> FindObject(const ClassicMinimapOb
             type = candidate; overrides = document; record = found; standard = catalogEntry;
         }
     }
-    if (!record && !standard) return std::nullopt;
+    // 只有两种实际目录及其原生覆盖均查无此rawcode才属于取色能力缺失。
+    // 下方的父链、类型歧义与opaque字段仍返回未知，不能借此取得保存回退资格。
+    if (!record && !standard) { missing = true; return std::nullopt; }
     std::vector<const ObjectData::ObjectRecord*> chain;
     std::set<std::string> visited;
     auto current = record;
@@ -228,8 +231,11 @@ Result<ClassicMinimapObjectLayer> BuildClassicMinimapObjectLayer(
     for (std::size_t index = 0; index < input.placements.size(); ++index) {
         const auto& placement = input.placements[index];
         ObjectData::ObjectType type = ObjectData::ObjectType::Doodad;
-        const auto entry = FindObject(input, placement.rawcode, type);
-        if (!entry) return Fail("CLASSIC_MINIMAP_OBJECT_UNKNOWN", "对象rawcode在同源物编目录中不存在或父链/类型有歧义。");
+        bool missing = false;
+        const auto entry = FindObject(input, placement.rawcode, type, missing);
+        if (!entry) return missing
+            ? Fail("CLASSIC_MINIMAP_OBJECT_MISSING", "对象rawcode在同源的装饰物、可破坏物目录及原生覆盖中均不存在，暂不能为其生成小地图。")
+            : Fail("CLASSIC_MINIMAP_OBJECT_UNKNOWN", "对象父链、类型或小地图字段有歧义，不能确定有效取色内容。");
         const auto show = Boolean(entry->Field("showinmm"));
         if (!show || !*show) { ++output.omittedPlacements; continue; }
         ClassicMinimapObjectStyle style;

@@ -1,5 +1,6 @@
 #include "War3MapCore/Render/ClassicMinimapObjectLayer.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -116,9 +117,52 @@ void RejectBrokenAndOverBudget() {
     withoutConfig.invalidModelPath.reset();
     Require(!BuildClassicMinimapObjectLayer(withoutConfig).Succeeded(), "缺少InvalidModel配置不得猜测模型路径");
 }
+
+void MissingIsDistinctFromParentAndTypeFailures() {
+    auto catalog = Catalog(); auto resources = Resources();
+    std::vector<MapData::DoodadPlacement> placements{Placement("NOPE")};
+    const auto rejected = [&](const auto& result, std::string_view code) {
+        Require(!result.Succeeded() && !result.value && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
+            [&](const auto& diagnostic) { return diagnostic.code == code; }),
+            "小地图对象查找必须保留缺定义与不可信内容的准确错误类别");
+    };
+    rejected(BuildClassicMinimapObjectLayer(Input(catalog, resources, placements)), "CLASSIC_MINIMAP_OBJECT_MISSING");
+
+    auto overrides = Take(ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Doodad));
+    Require(overrides.AddCustomObject("C001", "TEST").Succeeded(), "建立实际已知父对象的自定义覆盖");
+    placements.front().rawcode = "C001";
+    auto input = Input(catalog, resources, placements); input.doodadOverrides = &overrides;
+    Require(Take(BuildClassicMinimapObjectLayer(input)).pixels.front().color == std::array<std::uint8_t, 4>{10, 20, 30, 255},
+        "仅存在于原生覆盖中的合法自定义对象不会被误判Missing");
+    Require(overrides.AddCustomObject("C002", "NONE").Succeeded(), "建立实际缺父覆盖");
+    placements.front().rawcode = "C002";
+    rejected(BuildClassicMinimapObjectLayer(input), "CLASSIC_MINIMAP_OBJECT_UNKNOWN");
+    Require(overrides.AddOriginalObject("VOID").Succeeded(), "建立没有目录基类的Original覆盖");
+    placements.front().rawcode = "VOID";
+    rejected(BuildClassicMinimapObjectLayer(input), "CLASSIC_MINIMAP_OBJECT_UNKNOWN");
+
+    auto cycle = Take(ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Doodad));
+    Require(cycle.AddCustomObject("C001", "C002").Succeeded() && cycle.AddCustomObject("C002", "C001").Succeeded(),
+        "建立两个实际覆盖构成的循环父链");
+    input.doodadOverrides = &cycle; placements.front().rawcode = "C001";
+    rejected(BuildClassicMinimapObjectLayer(input), "CLASSIC_MINIMAP_OBJECT_UNKNOWN");
+
+    auto longChain = Take(ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Doodad));
+    for (unsigned i = 0; i < 33; ++i)
+        Require(longChain.AddCustomObject("C" + std::to_string(100 + i),
+            i == 32 ? "TEST" : "C" + std::to_string(101 + i)).Succeeded(), "建立实际超深父链");
+    input.doodadOverrides = &longChain; placements.front().rawcode = "C100";
+    rejected(BuildClassicMinimapObjectLayer(input), "CLASSIC_MINIMAP_OBJECT_UNKNOWN");
+
+    auto destructables = Take(ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Destructable));
+    Require(destructables.AddOriginalObject("TEST").Succeeded(), "建立跨类型同名对象");
+    input.doodadOverrides = nullptr; input.destructableOverrides = &destructables; placements.front().rawcode = "TEST";
+    rejected(BuildClassicMinimapObjectLayer(input), "CLASSIC_MINIMAP_OBJECT_UNKNOWN");
+}
 }
 
 int main() {
-    try { FixedFieldsAndOrder(); FootprintQuarterTurns(); RejectBrokenAndOverBudget(); return 0; }
+    try { FixedFieldsAndOrder(); FootprintQuarterTurns(); RejectBrokenAndOverBudget();
+        MissingIsDistinctFromParentAndTypeFailures(); return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
