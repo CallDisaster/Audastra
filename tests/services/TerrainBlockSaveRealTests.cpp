@@ -40,11 +40,18 @@ void CheckRealTerrainBlockSave(const MapArchiveSession& original, const std::fil
             && vertex.CliffLevel() == 2 && vertex.groundHeightRaw <= 16000,
             "block fixture is dry playable interior without cliffs or unknown flags");
         vertex.groundHeightRaw = static_cast<std::uint16_t>(vertex.groundHeightRaw + 7 * (1 + x + y * 5));
-        vertex.variationRaw = static_cast<std::uint8_t>((vertex.variationRaw & 0xf0) | ((x + y) % 4));
+        vertex.variationRaw = static_cast<std::uint8_t>((vertex.variationRaw & 0xe0) | ((x + y) % 4));
     }
     RefreshTerrainDerived(before, 16, 16, 21, 21);
     const auto sourceTerrain = Take(SerializeMapTerrain(before));
-    const std::array replacements{MemberReplacement{"war3map.w3e", sourceTerrain}};
+    auto sourcePathing = Take(original.ReadMember("war3map.wpm"));
+    Require(sourcePathing.size() == 16 + 256 * 256, "real block fixture has complete classic pathing pixels");
+    sourcePathing[16 + 170 * 256 + 170] |= std::byte{0x11};
+    std::vector<std::byte> sourceShadow(256 * 256);
+    for (std::size_t pixel = 0; pixel < sourceShadow.size(); ++pixel)
+        sourceShadow[pixel] = std::byte((pixel * 37 + pixel / 256) & 255);
+    const std::array replacements{MemberReplacement{"war3map.w3e", sourceTerrain},
+        MemberReplacement{"war3map.wpm", sourcePathing}, MemberReplacement{"war3map.shd", sourceShadow}};
     const auto source = Take(MapArchiveSession::Open(Take(original.SaveCandidate(scenario / "source.w3x", replacements)).path));
     auto expected = before;
     for (unsigned y = 0; y <= 4; ++y) for (unsigned x = 0; x <= 4; ++x)
