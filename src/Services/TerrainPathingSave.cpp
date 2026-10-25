@@ -171,6 +171,23 @@ Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(cons
     auto prospective = *current;
     const auto replaced = MapData::ReplaceTerrainTextureSlot(prospective, table, slot, rawcode);
     if (!replaced.Succeeded() || !replaced.value) return {{}, replaced.diagnostics};
+    if (edits.HasTerrainResizeChanges()) {
+        // 一般捕获器仍坚持旧shape；可信扩裁仅经封闭当前视图捕获，
+        // 两次Verify都独立复核物理地图，不能让current输出替代原始来源。
+        auto view = TerrainReplayDetail::ResourceSource::CaptureCurrent(reader, edits, gameRoot, maximumBytes);
+        if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
+        auto resources = view.value->CaptureWater(prospective, true, maximumBytes);
+        if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};
+        const auto checked = view.value->Verify(*resources.value, maximumBytes);
+        if (!checked.Succeeded()) return {{}, checked.diagnostics};
+        if (edits.Terrain() != current || edits.Revision() != revision)
+            return fail("TERRAIN_EDIT_STALE", "当前尺寸资源捕获期间地形修订已变化，贴图未修改。");
+        auto prepared = edits.PrepareTerrainTextureSlot(table, slot, rawcode, &*resources.value);
+        if (!prepared.Succeeded() || !prepared.value) return prepared;
+        const auto finalSource = view.value->Verify(*resources.value, maximumBytes);
+        if (!finalSource.Succeeded()) return {{}, finalSource.diagnostics};
+        return prepared;
+    }
     const std::array<std::string, 1> names{"war3map.w3e"};
     ArchiveExactMemberLimits limits; limits.memberCount = 1; limits.memberBytes = limits.totalBytes = maximumBytes;
     auto sourceMember = reader(names, limits);

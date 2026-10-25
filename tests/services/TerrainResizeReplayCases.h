@@ -172,6 +172,13 @@ inline void ResizeReplayComposesWithCurrentWaterCliffPaletteBoundsAndOrdinaryBru
             "resize combines with water, native cliff, palette, playable bounds and ordinary editing on current canvas");
         if (scenario != 4) Require(replayed.waterOwners.size() == 1 && replayed.sessionOwners.empty(),
             "post-resize resources finish physical/current verification and release borrowed bridge before public return");
+        if (scenario == 2) {
+            Apply(fixture);
+            const auto changed = Take(TerrainPathingSave::EditTextureSlot(*fixture.archive, *fixture.edits,
+                TerrainTextureTable::Ground, 0, "Tg02", fixture.gameRoot));
+            Require(changed.headerChanged && replayed.session->MatchesTerrainJournalDraft(*fixture.edits),
+                "live palette entry and replay share the same typed current bridge after resize");
+        }
         fixture.edits = std::move(replayed.session);
         auto raw = RawDraft(fixture);
         const auto journal = Take(DecodeTerrainStrokeJournal(Take(EncodeTerrainStrokeJournal(
