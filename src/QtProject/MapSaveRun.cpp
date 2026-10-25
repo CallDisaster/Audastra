@@ -381,7 +381,15 @@ void InstallMapSaveDerivedPreparation(MapSaveJob& job) {
                 : EditorProject::tr("正在更新地形通行与小地图…"));
         } catch (...) {}
         try {
-            return PrepareWorkerDerived(job);
+            auto derived = PrepareWorkerDerived(job);
+            if (derived.Succeeded() && job.terrainHistorySaveLease && job.terrainShadow
+                && (!job.terrainSessionSnapshot || !job.terrainSessionSnapshot->HasTerrainTypedResizeState())) {
+                // 普通地形历史没有可重放的Bake命令，不能把旧SHD绑定冒充
+                // 本次已重算的保存站。只消费实际成功owner，不凭请求开关降级。
+                job.terrainHistorySaveLease.reset();
+                job.terrainHistoryWarning = "地图已按请求重算阴影；这次普通保存包含尚不能重放的阴影计算，未保留跨保存点冷撤销历史，当前编辑和地图保存不受影响。";
+            }
+            return derived;
         } catch (...) {
             return Status::Failure("TerrainMinimapSave.Qt", "MINIMAP_SAVE_WORKER_EXCEPTION",
                 "worker准备地形派生时发生异常，本次任务已终止；未接受保存结果，当前编辑和原图保留。");

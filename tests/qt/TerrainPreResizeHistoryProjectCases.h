@@ -176,3 +176,134 @@ void EditorProjectTests::SavedTerrainHistoryBeforeFirstResizeBindingFailureKeeps
     QVERIFY(!project.terrainJournalWarning_.empty());
     QCOMPARE(Sha256File(source).value, sourceSha.value);
 }
+
+void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip_data() {
+    QTest::addColumn<bool>("shadow"); QTest::addColumn<bool>("inPlace");
+    QTest::newRow("present-shadow-save-as") << true << false;
+    QTest::newRow("present-shadow-in-place") << true << true;
+    QTest::newRow("absent-shadow-save-as") << false << false;
+    QTest::newRow("absent-shadow-in-place") << false << true;
+}
+
+void EditorProjectTests::SavedTerrainHistoryColdOpenBeforeFirstResizeRoundtrip() {
+    namespace R = AudastraTest::TerrainResize;
+    QFETCH(bool, shadow); QFETCH(bool, inPlace);
+    R::Fixture fixture(false, shadow); const auto source = fixture.archive->SourcePath();
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    const std::array<MapArchiveMember, 1> gameMembers{{{"fixture.txt", R::Text("original double cold history resources")}}};
+    QVERIFY(WriteVerifiedArchive(fixture.gameRoot / "war3.mpq", gameMembers).Succeeded());
+    EditorProject hot; QVERIFY(BindTerrainSaveProject(hot, source)); hot.war3GameRoot_ = fixture.gameRoot;
+    QUndoStack hotUndo; hot.mapDataUndoStack_ = &hotUndo;
+    QVERIFY(RaiseTerrainSaveProject(hot)); PushMapDataEdit(hot, "Raise", "首次冷开前已保存高程");
+    const auto target = inPlace ? source : fixture.directory / "ordinary-station.w3x";
+    auto job = FreezeNativePathingQtJob(hot, target); QVERIFY(job);
+    const auto lease = hot.mapEdits_->PrepareTerrainHistoryForSave();
+    QVERIFY2(lease.Succeeded(), ReadDiagnosticText(lease).c_str());
+    job->terrainHistorySaveLease = *lease.value;
+    job->terrainSessionSnapshot = hot.mapEdits_->FreezeForSave();
+    job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = fixture.directory / "backups";
+    InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str()); QVERIFY(hot.CommitMapSave(*job));
+    QVERIFY2(hot.terrainJournalWarning_.empty(), hot.terrainJournalWarning_.c_str());
+    QVERIFY(!hot.mapEdits_->HasTerrainResizeChanges()); const auto station = PreResizeHistoryQtState(hot);
+    const std::optional<R::Bytes> expectedShadow = shadow ? std::optional(R::ShadowLiteral()) : std::nullopt;
+    QCOMPARE(station.at("war3map.shd"), expectedShadow);
+    hotUndo.undo(); const auto zero = PreResizeHistoryQtState(hot);
+    QCOMPARE(zero.at("war3map.w3e"), std::optional(R::TerrainLiteral()));
+    hotUndo.redo(); QCOMPARE(PreResizeHistoryQtState(hot), station); QVERIFY(hotUndo.isClean());
+    const auto stationSha = Sha256File(target); QVERIFY(stationSha.Succeeded());
+
+    // 第一次工程关开时尚无resize命令；旧SHD必须已经是受来源约束的历史
+    // 材料，不能等以后的resize发生后再从新物理保存站倒推旧事实。
+    const auto firstForge = fixture.directory / "ordinary-station.forge";
+    const auto firstWritten = hot.SaveProjectToPath(firstForge);
+    QVERIFY2(firstWritten.Succeeded(), ReadDiagnosticText(firstWritten).c_str());
+    QVERIFY(!HasReadDiagnostic(firstWritten, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    auto firstOpen = PrepareProjectOpen(firstForge, fixture.gameRoot);
+    QVERIFY2(firstOpen.Succeeded(), ReadDiagnosticText(firstOpen).c_str());
+    QCOMPARE((*firstOpen.value)->terrainReceipts.size(), std::size_t{1});
+    QCOMPARE((*firstOpen.value)->terrainCurrentIndex, std::size_t{1});
+    QCOMPARE((*firstOpen.value)->terrainSavedIndex, std::optional<std::size_t>{1});
+    EditorProject firstCold; QUndoStack firstUndo; firstCold.mapDataUndoStack_ = &firstUndo;
+    QVERIFY(BindSavedHistoryQtProject(firstCold, **firstOpen.value, fixture.gameRoot));
+    QCOMPARE(PreResizeHistoryQtState(firstCold), station); QVERIFY(firstUndo.isClean());
+    QVERIFY(!firstCold.mapEdits_->HasTerrainResizeChanges());
+    firstUndo.undo(); QCOMPARE(PreResizeHistoryQtState(firstCold), zero);
+    firstUndo.redo(); QCOMPARE(PreResizeHistoryQtState(firstCold), station); QVERIFY(firstUndo.isClean());
+
+    auto resources = Services::TerrainResizeEditService::Capture(*firstCold.archiveSession_, *firstCold.mapEdits_, fixture.gameRoot);
+    QVERIFY2(resources.Succeeded(), ReadDiagnosticText(resources).c_str());
+    const auto resize = firstCold.mapEdits_->PrepareTerrainResizeEdit(*resources.value, {1, {-32, -32, 32, 32}});
+    QVERIFY2(resize.Succeeded(), ReadDiagnosticText(resize).c_str());
+    QVERIFY(firstCold.mapEdits_->ApplyPreparedTerrainResizeEdit(*resize.value).Succeeded());
+    QVERIFY(firstCold.ObserveMapDataEdit("首次冷开后扩图")); PushMapDataEdit(firstCold, "Resize canvas", "首次冷开后扩图");
+    QCOMPARE(firstUndo.count(), 2); const auto expanded = PreResizeHistoryQtState(firstCold);
+    QCOMPARE(firstCold.mapEdits_->Terrain()->header.width, std::uint32_t{65});
+    QCOMPARE(expanded.at("war3map.shd"), shadow
+        ? std::optional(R::ShadowLiteral(-32, -32, 32, 32, true)) : std::nullopt);
+    const int cursor = inPlace ? 0 : 2; firstUndo.setIndex(cursor);
+    const auto expected = cursor == 0 ? zero : expanded;
+    const auto secondForge = fixture.directory / "cold-first-resize.forge";
+    const auto secondWritten = firstCold.SaveProjectToPath(secondForge);
+    QVERIFY2(secondWritten.Succeeded(), ReadDiagnosticText(secondWritten).c_str());
+    QVERIFY(!HasReadDiagnostic(secondWritten, "TERRAIN_JOURNAL_DRAFT_ONLY"));
+    auto secondOpen = PrepareProjectOpen(secondForge, fixture.gameRoot);
+    QVERIFY2(secondOpen.Succeeded(), ReadDiagnosticText(secondOpen).c_str());
+    QCOMPARE((*secondOpen.value)->terrainReceipts.size(), std::size_t{2});
+    QCOMPARE((*secondOpen.value)->terrainCurrentIndex, std::size_t(cursor));
+    QCOMPARE((*secondOpen.value)->terrainSavedIndex, std::optional<std::size_t>{1});
+    EditorProject secondCold; QUndoStack secondUndo; secondCold.mapDataUndoStack_ = &secondUndo;
+    QVERIFY(BindSavedHistoryQtProject(secondCold, **secondOpen.value, fixture.gameRoot));
+    QCOMPARE(secondUndo.count(), 2); QCOMPARE(secondUndo.index(), cursor); QCOMPARE(secondUndo.cleanIndex(), 1);
+    QCOMPARE(PreResizeHistoryQtState(secondCold), expected);
+    secondUndo.setIndex(0); QCOMPARE(PreResizeHistoryQtState(secondCold), zero);
+    secondUndo.setIndex(1); QCOMPARE(PreResizeHistoryQtState(secondCold), station); QVERIFY(secondUndo.isClean());
+    secondUndo.setIndex(2); QCOMPARE(PreResizeHistoryQtState(secondCold), expanded);
+    secondUndo.undo(); QCOMPARE(PreResizeHistoryQtState(secondCold), station); QVERIFY(secondUndo.isClean());
+    QCOMPARE(Sha256File(target).value, stationSha.value);
+    if (inPlace) QCOMPARE(Sha256File(job->backup).value, sourceSha.value);
+    else QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
+
+void EditorProjectTests::SavedTerrainHistoryOrdinaryBakeDropsUnreplayableEpoch() {
+    namespace R = AudastraTest::TerrainResize;
+    R::Fixture fixture; const auto source = fixture.archive->SourcePath();
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    const std::array<MapArchiveMember, 1> gameMembers{{{"fixture.txt", R::Text("original ordinary bake history resources")}}};
+    QVERIFY(WriteVerifiedArchive(fixture.gameRoot / "war3.mpq", gameMembers).Succeeded());
+    QVERIFY(IO::WriteFileBytes(fixture.gameRoot / "WorldEditData.txt", R::Text(
+        "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=480\n"
+        "[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n[Light]\nDirection=3,0,-4\n")).Succeeded());
+    EditorProject project; QVERIFY(BindTerrainSaveProject(project, source)); project.war3GameRoot_ = fixture.gameRoot;
+    QVERIFY(RaiseTerrainSaveProject(project)); PushMapDataEdit(project, "Raise", "普通高程与本次计算阴影");
+    QVERIFY(!project.mapEdits_->HasTerrainTypedResizeState());
+    const auto expectedTerrain = MapData::SerializeMapTerrain(*project.mapEdits_->Terrain());
+    QVERIFY(expectedTerrain.Succeeded());
+    const auto target = fixture.directory / "ordinary-bake-saved.w3x";
+    auto job = FreezeNativePathingQtJob(project, target); QVERIFY(job);
+    const auto lease = project.mapEdits_->PrepareTerrainHistoryForSave();
+    QVERIFY2(lease.Succeeded(), ReadDiagnosticText(lease).c_str());
+    job->terrainHistorySaveLease = *lease.value;
+    job->terrainSessionSnapshot = project.mapEdits_->FreezeForSave(); job->rebuildTerrainShadow = true;
+    InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
+    QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+    QVERIFY(job->terrainShadow); QVERIFY(!job->terrainHistorySaveLease); QVERIFY(!job->terrainHistoryWarning.empty());
+    QVERIFY(job->terrainHistoryWarning.find("尚不能重放的阴影计算") != std::string::npos);
+    QVERIFY(job->terrainShadow->Bytes() != R::ShadowLiteral());
+    const auto actualShadow = job->terrainShadow->Bytes();
+    const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded());
+    QCOMPARE(actual.value->ReadMember("war3map.w3e").value, expectedTerrain.value);
+    QCOMPARE(actual.value->ReadMember("war3map.shd").value, std::optional(actualShadow));
+    QVERIFY(project.CommitMapSave(*job)); QVERIFY(!project.HasUnsavedMapChanges());
+    QVERIFY(!project.terrainJournalWarning_.empty());
+    const auto forge = fixture.directory / "ordinary-bake.forge";
+    const auto written = project.SaveProjectToPath(forge); QVERIFY2(written.Succeeded(), ReadDiagnosticText(written).c_str());
+    auto reopened = PrepareProjectOpen(forge, fixture.gameRoot);
+    QVERIFY2(reopened.Succeeded(), ReadDiagnosticText(reopened).c_str());
+    QVERIFY((*reopened.value)->terrainReceipts.empty());
+    EditorProject cold; QUndoStack coldUndo; cold.mapDataUndoStack_ = &coldUndo;
+    QVERIFY(BindSavedHistoryQtProject(cold, **reopened.value, fixture.gameRoot));
+    QCOMPARE(PreResizeHistoryQtState(cold).at("war3map.w3e"), expectedTerrain.value);
+    QCOMPARE(PreResizeHistoryQtState(cold).at("war3map.shd"), std::optional(actualShadow));
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
+}
