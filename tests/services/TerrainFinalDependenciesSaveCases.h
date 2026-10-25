@@ -160,7 +160,7 @@ void ActualWinnersAndBaselineRequirementsArePreserved() {
     Require(!absentBaseline.Succeeded() && HasCode(absentBaseline, "TERRAIN_FINAL_BASELINE_MISSING"),
         "relevant resource changes cannot create a different hidden edit-session identity");
     const auto tiny = TerrainPathingSave::PrepareFinalForSave(*f.archive, f.edits.get(), f.gameRoot, {2048}, output);
-    Require(!tiny.Succeeded(), "probe and native reconstruction do not each receive a fresh full budget");
+    Require(!tiny.Succeeded(), "a narrowed budget still bounds actual dependency-probe and reconstruction stage peaks");
     auto bad = output; bad.push_back({"PATHTEXTURES\\DUAL-STAGE-ORIGINAL.TGA", Texture(4, false)});
     Require(!TerrainPathingSave::PrepareFinalForSave(*f.archive, f.edits.get(), f.gameRoot, {}, bad).Succeeded(),
         "canonical duplicates still reject before acquiring a plan");
