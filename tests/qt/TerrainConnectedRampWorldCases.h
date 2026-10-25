@@ -23,12 +23,17 @@ void WorldModuleTests::TerrainConnectedRampUsesFrozenPreviewAndUndo() {
     viewport->TerrainStrokeMoved(-4096, -4096); viewport->TerrainStrokeFinished();
     QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
     fixture.CheckState(*project.mapEdits_, true);
-    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    // 完成帧先恢复开关，规则捕获随后异步完成；下一笔必须等真实笔刷就绪。
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked()
+        && status->property("ready").toBool() && viewport->BrushMode());
     project.mapDataUndoStack_->undo(); fixture.CheckState(*project.mapEdits_, false);
-    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked()
+        && status->property("ready").toBool() && viewport->BrushMode());
     project.mapDataUndoStack_->redo(); fixture.CheckState(*project.mapEdits_, true);
-    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked());
+    QTRY_VERIFY(toggle->isEnabled() && toggle->isChecked()
+        && status->property("ready").toBool() && viewport->BrushMode());
     auto* remove = page->findChild<QPushButton*>("worldTerrainRampMode1"); QVERIFY(remove); remove->click();
+    QVERIFY(remove->isChecked());
     viewport->TerrainStrokeStarted(fixture.point.x, fixture.point.y); viewport->TerrainStrokeFinished();
     QTRY_COMPARE(project.mapDataUndoStack_->count(), 2);
     fixture.CheckState(*project.mapEdits_, false);
