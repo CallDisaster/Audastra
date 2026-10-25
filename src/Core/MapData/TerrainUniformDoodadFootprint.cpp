@@ -242,16 +242,12 @@ Result<TerrainUniformDoodadFootprint> DecodeUniformDoodadFootprintTga(std::span<
 }
 
 namespace {
-Status ValidatePlacement(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+Status ValidatePlacementGeometry(const TerrainHeader& terrain,
     const DoodadPlacement& placement, std::uint8_t snapCells) {
     const auto fail = [](const char* code, const char* message) { return Status::Failure(kSubsystem, code, message); };
     if (terrain.version != 11 || terrain.width < 2 || terrain.height < 2
         || terrain.width > 2049 || terrain.height > 2049)
         return fail("TERRAIN_UNIFORM_GRID_SHAPE", "同色占地需要完整经典v11地形和有效顶点尺寸。");
-    const auto columns = static_cast<std::size_t>(terrain.width - 1) * 4;
-    const auto rows = static_cast<std::size_t>(terrain.height - 1) * 4;
-    if (staticAttributes.size() != columns * rows)
-        return fail("TERRAIN_UNIFORM_GRID_SHAPE", "静态对象通行层长度与完整地形通行网格不符。");
     if (!SupportedFloatEnvironment())
         return fail("TERRAIN_UNIFORM_FLOAT_ENVIRONMENT", "当前线程的浮点模式不支持占地精确吸附，需要默认舍入且保留渐进下溢。");
     for (std::size_t axis = 0; axis < 2; ++axis) {
@@ -271,6 +267,62 @@ Status ValidatePlacement(std::span<std::uint8_t> staticAttributes, const Terrain
     if (snapCells != 2 && snapCells != 4)
         return fail("TERRAIN_UNIFORM_SNAP_CELLS", "同色占地吸附网格只能使用实际类别确定的2格或4格。");
     return Status::Ok();
+}
+
+Status ValidatePlacement(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
+    const DoodadPlacement& placement, std::uint8_t snapCells) {
+    const auto valid = ValidatePlacementGeometry(terrain, placement, snapCells);
+    if (!valid.Succeeded()) return valid;
+    if (staticAttributes.size() != std::size_t{terrain.width - 1} * 4 * (terrain.height - 1) * 4)
+        return Status::Failure(kSubsystem, "TERRAIN_UNIFORM_GRID_SHAPE", "静态对象通行层长度与完整地形通行网格不符。");
+    return Status::Ok();
+}
+
+struct FootprintProjection {
+    std::int64_t x0 = 0, y0 = 0;
+    std::uint32_t width = 0, height = 0;
+    unsigned drawTurn = 0;
+};
+
+Result<FootprintProjection> ProjectFootprint(const TerrainHeader& terrain, const DoodadPlacement& placement,
+    const TerrainDoodadFootprint& footprint, std::uint8_t snapCells, std::optional<float> fixedRotationDegrees) {
+    using Output = Result<FootprintProjection>;
+    const auto fail = [](const char* code, const char* message) { return Output::Failure(kSubsystem, code, message); };
+    if (footprint.width == 0 || footprint.height == 0 || footprint.width > kMaximumSide || footprint.height > kMaximumSide
+        || (footprint.pixelBytes != 3 && footprint.pixelBytes != 4)
+        || footprint.pixels.size() != std::size_t{footprint.width} * footprint.height * footprint.pixelBytes)
+        return fail("TERRAIN_DOODAD_FOOTPRINT", "占地像素视图与尺寸或格式不符。");
+    const auto valid = ValidatePlacementGeometry(terrain, placement, snapCells);
+    if (!valid.Succeeded()) return {{}, valid.diagnostics};
+    FootprintProjection output;
+    std::uint32_t snapWidth = footprint.width, snapHeight = footprint.height;
+    output.width = footprint.width; output.height = footprint.height;
+    if (!(footprint.uniform && footprint.width == footprint.height)) {
+        if (!fixedRotationDegrees || !std::isfinite(*fixedRotationDegrees)
+            || *fixedRotationDegrees < -360 || *fixedRotationDegrees > 360)
+            return fail("TERRAIN_DOODAD_FIXED_ROTATION", "图案或矩形占地需要实际、有限且处于[-360,360]的fixedRot字段。");
+        const auto snapTurn = QuarterTurn(placement.rotation);
+        if (!snapTurn) return fail("TERRAIN_DOODAD_ANGLE_AMBIGUOUS", "占地旋转靠近原版四方向取整边界，无法唯一确定。");
+        auto drawTurn = snapTurn;
+        if (*fixedRotationDegrees >= 0) {
+            const double angle = static_cast<double>(*fixedRotationDegrees) * kRadiansPerDegree;
+            const auto lower = QuarterTurn(static_cast<float>(OutwardFloat(angle, false)));
+            const auto upper = QuarterTurn(static_cast<float>(OutwardFloat(angle, true)));
+            if (!lower || lower != upper)
+                return fail("TERRAIN_DOODAD_ANGLE_AMBIGUOUS", "fixedRot旋转靠近原版四方向取整边界，无法唯一确定。");
+            drawTurn = lower;
+        }
+        snapWidth = *snapTurn % 2 ? footprint.width : footprint.height;
+        snapHeight = *snapTurn % 2 ? footprint.height : footprint.width;
+        output.width = *drawTurn % 2 ? footprint.width : footprint.height;
+        output.height = *drawTurn % 2 ? footprint.height : footprint.width;
+        output.drawTurn = *drawTurn;
+    }
+    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], snapWidth, snapCells, false, output.width);
+    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], snapHeight, snapCells, true, output.height);
+    if (!x0 || !y0) return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "占地坐标靠近原版吸附边界，无法唯一确定。");
+    output.x0 = *x0; output.y0 = *y0;
+    return Output::Success(output);
 }
 
 struct UniformRectangle {
@@ -345,6 +397,15 @@ Status AddGridInvariantUniformDoodadFootprint(std::span<std::uint8_t> staticAttr
     return Status::Ok();
 }
 
+Result<std::array<std::int64_t, 4>> QueryDoodadFootprintRectangle(const TerrainHeader& terrain,
+    const DoodadPlacement& placement, const TerrainDoodadFootprint& footprint, std::uint8_t snapCells,
+    std::optional<float> fixedRotationDegrees) {
+    auto projected = ProjectFootprint(terrain, placement, footprint, snapCells, fixedRotationDegrees);
+    if (!projected.Succeeded() || !projected.value) return {{}, std::move(projected.diagnostics)};
+    const auto& p = *projected.value;
+    return Result<std::array<std::int64_t, 4>>::Success({p.x0, p.y0, p.x0 + p.width, p.y0 + p.height});
+}
+
 Status AddDoodadFootprint(std::span<std::uint8_t> staticAttributes, const TerrainHeader& terrain,
     const DoodadPlacement& placement, const TerrainDoodadFootprint& footprint, std::uint8_t snapCells,
     std::optional<float> fixedRotationDegrees, TerrainNativeFootprintContribution contribution) {
@@ -361,39 +422,20 @@ Status AddDoodadFootprint(std::span<std::uint8_t> staticAttributes, const Terrai
             {footprint.width, footprint.uniformAttributes}, snapCells, contribution);
     auto valid = ValidatePlacement(staticAttributes, terrain, placement, snapCells);
     if (!valid.Succeeded()) return valid;
-    if (!fixedRotationDegrees || !std::isfinite(*fixedRotationDegrees)
-        || *fixedRotationDegrees < -360 || *fixedRotationDegrees > 360)
-        return fail("TERRAIN_DOODAD_FIXED_ROTATION", "图案或矩形占地需要实际、有限且处于[-360,360]的fixedRot字段。");
-    const auto snapTurn = QuarterTurn(placement.rotation);
-    if (!snapTurn)
-        return fail("TERRAIN_DOODAD_ANGLE_AMBIGUOUS", "占地旋转靠近原版四方向取整边界，无法唯一确定。");
-    auto drawTurn = snapTurn;
-    if (*fixedRotationDegrees >= 0) {
-        const double angle = static_cast<double>(*fixedRotationDegrees) * kRadiansPerDegree;
-        const auto lower = QuarterTurn(static_cast<float>(OutwardFloat(angle, false)));
-        const auto upper = QuarterTurn(static_cast<float>(OutwardFloat(angle, true)));
-        if (!lower || lower != upper)
-            return fail("TERRAIN_DOODAD_ANGLE_AMBIGUOUS", "fixedRot旋转靠近原版四方向取整边界，无法唯一确定。");
-        drawTurn = lower;
-    }
-    const auto snapWidth = *snapTurn % 2 ? footprint.width : footprint.height;
-    const auto snapHeight = *snapTurn % 2 ? footprint.height : footprint.width;
-    const auto width = *drawTurn % 2 ? footprint.width : footprint.height;
-    const auto height = *drawTurn % 2 ? footprint.height : footprint.width;
-    const auto x0 = ProjectAxis(placement.position[0], terrain.offset[0], snapWidth, snapCells, false, width);
-    const auto y0 = ProjectAxis(placement.position[1], terrain.offset[1], snapHeight, snapCells, true, height);
-    if (!x0 || !y0)
-        return fail("TERRAIN_UNIFORM_SNAP_AMBIGUOUS", "占地坐标靠近原版吸附边界，无法唯一确定。");
+    const auto projected = ProjectFootprint(terrain, placement, footprint, snapCells, fixedRotationDegrees);
+    if (!projected.Succeeded() || !projected.value) return {projected.diagnostics};
+    const auto& p = *projected.value;
+    const auto width = p.width, height = p.height, drawTurn = p.drawTurn;
     const auto columns = static_cast<std::size_t>(terrain.width - 1) * 4;
     const auto rows = static_cast<std::size_t>(terrain.height - 1) * 4;
-    const auto lastX = std::min<std::int64_t>(columns, *x0 + width);
-    const auto lastY = std::min<std::int64_t>(rows, *y0 + height);
+    const auto lastX = std::min<std::int64_t>(columns, p.x0 + width);
+    const auto lastY = std::min<std::int64_t>(rows, p.y0 + height);
     // 四档索引访问原图；裁剪只改变目标范围，不重新排列贴图原点。
-    for (auto y = std::max<std::int64_t>(0, *y0); y < lastY; ++y) {
-        for (auto x = std::max<std::int64_t>(0, *x0); x < lastX; ++x) {
-            const auto dx = static_cast<std::uint32_t>(x - *x0), dy = static_cast<std::uint32_t>(y - *y0);
+    for (auto y = std::max<std::int64_t>(0, p.y0); y < lastY; ++y) {
+        for (auto x = std::max<std::int64_t>(0, p.x0); x < lastX; ++x) {
+            const auto dx = static_cast<std::uint32_t>(x - p.x0), dy = static_cast<std::uint32_t>(y - p.y0);
             std::uint32_t source = 0;
-            switch (*drawTurn) {
+            switch (drawTurn) {
             case 0: source = dy + dx * height; break;
             case 1: source = width - 1 - dx + dy * width; break;
             case 2: source = width * height - dx * height - dy - 1; break;

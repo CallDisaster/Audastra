@@ -11,7 +11,7 @@
 #include <string_view>
 #include <vector>
 
-namespace War3Map::MapData { class TerrainShadowResources; }
+namespace War3Map::MapData { class TerrainShadowResources; class TerrainResizeResources; }
 
 namespace War3Map::Game {
 
@@ -34,6 +34,7 @@ public:
 
 private:
     friend class MapData::TerrainShadowResources;
+    friend class MapData::TerrainResizeResources;
     NativeDoodadCategoryDirectory() = default;
     // SHD仅观察本owner同次实际读取的完整profile字节；不另造来源或类别资格。
     using ProfileVisitor = std::function<Status(std::string_view, std::span<const std::byte>)>;
