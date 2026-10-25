@@ -59,7 +59,9 @@ bool HistoryShape(const TerrainStrokeJournal& journal) {
         || journal.strokes.empty() || journal.strokes.size() > 128) return false;
     std::size_t remaining = TerrainJournalMaximumBytes - FixedAllowance;
     for (const auto* layers : {&history.baselinePathingLayers, &journal.baselinePathingLayers}) {
-        if (layers->empty() || layers->size() > remaining) return false;
+        // 空APR是原codec对savedS/currentS均零的规范表示；P由实际WPM恢复。
+        // 有已保存S时必须带APR3，由Services的同一分层解码器及保存站再完整验证。
+        if (layers->size() > remaining) return false;
         remaining -= layers->size();
     }
     for (std::size_t i = 0; i < history.baselineMembers.size(); ++i) {

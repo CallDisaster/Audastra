@@ -68,6 +68,8 @@ void HistoryLinearStackKeepsCoreQtUndoRedoAndFullOldBaseline() {
         && std::all_of(journal.history->baselineMembers.begin() + 2, journal.history->baselineMembers.end(), [](const auto& member) {
             return !member.present && member.bytes.empty();
         }), "history keeps exact old source bytes and absence, never the saved final terrain as its origin");
+    Require(journal.baselinePathingLayers.empty() && journal.history->baselinePathingLayers.empty(),
+        "empty APR remains the canonical no-saved-intent encoding for both history epochs");
     BindHistoryPhysicalAnchor(journal, savedTerrain, f.pathing);
     const auto bytes = Take(EncodeTerrainStrokeJournal(journal));
     const auto decoded = Take(DecodeTerrainStrokeJournal(bytes));

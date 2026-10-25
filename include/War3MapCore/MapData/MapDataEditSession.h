@@ -54,12 +54,15 @@ public:
     class TerrainHistorySaveLease {
     public:
         TerrainHistorySaveLease() = default;
+        [[nodiscard]] std::size_t RetainedBytes() const noexcept { return retainedBytes_; }
+        [[nodiscard]] std::size_t PreparationBytes() const noexcept { return preparationBytes_; }
     private:
         friend class MapDataEditSession;
         std::shared_ptr<const TerrainHistoryState> state_;
         std::shared_ptr<const TerrainHistoryState> previousEpoch_;
         std::shared_ptr<const MapDataEditSession> checkpoint_;
         std::uint64_t sessionIdentity_ = 0, revision_ = 0, sourceRevision_ = 0;
+        std::size_t retainedBytes_ = 0, preparationBytes_ = 0;
     };
     // 不可变事务回执供外层统一撤销栈使用；包含所有联动成员，不重新推导逆操作。
     class EditReceipt {

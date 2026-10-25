@@ -108,6 +108,9 @@ Result<MapDataEditSession::TerrainHistorySaveLease> MapDataEditSession::PrepareT
         state->savedSourceRevision = terrainSourceRevision_ + 1;
         TerrainHistorySaveLease lease; lease.state_ = std::move(state);
         lease.checkpoint_ = std::move(*snapshot.value); lease.previousEpoch_ = terrainHistoryEpoch_;
+        lease.retainedBytes_ = lease.state_->retainedBytes;
+        lease.preparationBytes_ = cost.value->retainedBytes * 2 + overhead
+            + (terrainHistoryEpoch_ ? terrainHistoryEpoch_->retainedBytes : 0);
         lease.sessionIdentity_ = sessionIdentity_; lease.revision_ = revision_; lease.sourceRevision_ = terrainSourceRevision_;
         return Output::Success(std::move(lease));
     } catch (const std::bad_alloc&) { return fail("TERRAIN_HISTORY_BUDGET", "冻结历史分配失败，地图仍可正常保存。"); }
