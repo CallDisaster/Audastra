@@ -54,6 +54,27 @@ void LiveEditorToolsTests::ResizeToolsCaptureActualResourcesAndKeepOriginalUndo(
     const auto unchanged = f.tools->Invoke("edit_terrain_resize", again);
     QVERIFY2(unchanged.value("ok").toBool(), qPrintable(Explain(unchanged)));
     QVERIFY(!unchanged.value("applied").toBool()); QCOMPARE(undo->count(), 1);
+    // 实际live宿主的后续请求，不用Replay或预制resource owner代替current捕获。
+    const auto expandedContext = f.Context();
+    auto water = f.Context();
+    water["terrain_binding"] = f.tools->Invoke("get_terrain_edit_state", {}).value("terrain_binding");
+    water["dry_run"] = true;
+    water["brush"] = QJsonObject{{"kind", "shallow_water"}, {"shape", "square"}, {"size", 1},
+        {"cliff_texture", 0}, {"seed", 17}, {"enforce_water_limits", true}};
+    water["points"] = QJsonArray{QJsonObject{{"x", -1024}, {"y", -1024}}};
+    const auto waterPreview = f.tools->Invoke("edit_terrain_stroke", water);
+    QVERIFY2(waterPreview.value("ok").toBool(), qPrintable(Explain(waterPreview)));
+    QVERIFY(waterPreview.value("changes").toObject().value("has_changes").toBool());
+    QVERIFY(!waterPreview.value("applied").toBool() && !waterPreview.value("map_saved").toBool());
+    auto bounds = f.Context();
+    bounds["terrain_binding"] = f.tools->Invoke("get_terrain_edit_state", {}).value("terrain_binding");
+    bounds["dry_run"] = true; bounds["west"] = 34; bounds["south"] = 34; bounds["east"] = 60; bounds["north"] = 60;
+    const auto boundsPreview = f.tools->Invoke("edit_terrain_bounds", bounds);
+    QVERIFY2(boundsPreview.value("ok").toBool(), qPrintable(Explain(boundsPreview)));
+    QVERIFY(boundsPreview.value("changes").toObject().value("has_changes").toBool());
+    QVERIFY(!boundsPreview.value("applied").toBool() && !boundsPreview.value("map_saved").toBool());
+    QCOMPARE(f.Context(), expandedContext); QCOMPARE(terrainBytes(), R::TerrainLiteral(-32, -32, 32, 32));
+    QCOMPARE(undo->count(), 1); QCOMPARE(f.project.mapEdits_.get(), session); QCOMPARE(reloads.count(), 0);
     // 没有伪造来源信号；实际startup winner变化须由下一次捕获/复核发现。
     QVERIFY(IO::WriteFileBytes(native.gameRoot / "WorldEditData.txt", R::Text(
         "[WorldEditMisc]\nMinimumMapSize=32\nMaximumMapSize=256\n[CameraMargins]\nLeft=1\nRight=2\nBottom=1\nTop=2\n")).Succeeded());

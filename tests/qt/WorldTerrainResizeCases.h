@@ -83,6 +83,21 @@ void WorldTerrainBoundsTests::ResizeControlsUseActualRulesAndSingleUndo() {
     project.mapDataUndoStack_->undo(); QCOMPARE(ResizeWorldCases::Terrain(project), beforeTerrain);
     QCOMPARE(R::Take(project.MapEdits()->Snapshot().Settings()->Serialize()), beforeSettings);
     project.mapDataUndoStack_->redo(); QCOMPARE(ResizeWorldCases::Terrain(project), R::TerrainLiteral(-32, -32, 32, 32));
+    // 走世界页真实范围按钮；扩边后必须读取当前65×65顶点，不能回用磁盘33×33。
+    Controls bounds(module.Widget());
+    bounds.read->click(); QTRY_VERIFY_WITH_TIMEOUT(!bounds.Busy(), 15000);
+    QVERIFY2(bounds.Ready(), qPrintable(bounds.status->text()));
+    QCOMPARE(bounds.west->value(), 33); QCOMPARE(bounds.south->value(), 33);
+    QCOMPARE(bounds.east->value(), 62); QCOMPARE(bounds.north->value(), 62);
+    bounds.Set(34, 34, 60, 60); QVERIFY(bounds.apply->isEnabled()); bounds.apply->click();
+    QTRY_VERIFY_WITH_TIMEOUT(!bounds.Busy(), 15000);
+    QVERIFY2(bounds.Outcome() == QStringLiteral("applied"), qPrintable(bounds.status->text()));
+    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QCOMPARE(project.MapEdits()->Terrain()->header.width, std::uint32_t{65});
+    QCOMPARE(project.MapEdits()->Snapshot().Settings()->playableWidth, 26);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(ResizeWorldCases::Terrain(project), R::TerrainLiteral(-32, -32, 32, 32));
+    QCOMPARE(R::Take(project.MapEdits()->Snapshot().Settings()->Serialize()), R::Take(expected.Serialize()));
     QCOMPARE(R::Take(Sha256File(fixture.archive->SourcePath())), sourceSha);
 }
 
