@@ -36,6 +36,11 @@ public:
         const TerrainResizeLimits& limits = {}) const;
     [[nodiscard]] Status VerifySources(const WorkspaceSnapshot& source, const MapDataEditSession& session,
         const TerrainResizeLimits& limits = {}) const;
+    // 序列重放结束时复核捕获时的实际来源；编辑CAS仍由VerifyInput独立检查。
+    [[nodiscard]] Status VerifySourceInputs(const MapArchiveSession& source,
+        const TerrainResizeLimits& limits = {}) const;
+    [[nodiscard]] Status VerifySourceInputs(const WorkspaceSnapshot& source,
+        const TerrainResizeLimits& limits = {}) const;
 
 private:
     struct State;
@@ -47,6 +52,7 @@ private:
         const TerrainResizeLimits& limits);
     [[nodiscard]] Status VerifySources(const MemberReader& reader, const MapDataEditSession& session,
         const TerrainResizeLimits& limits) const;
+    [[nodiscard]] Status VerifySourceInputs(const MemberReader& reader, const TerrainResizeLimits& limits) const;
     std::shared_ptr<const State> state_;
     friend class Services::TerrainResizeEditService;
     friend class Services::TerrainPathingSave;

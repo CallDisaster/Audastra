@@ -325,11 +325,18 @@ catch (const std::bad_alloc&) { return Status::Failure(kSubsystem, "TERRAIN_RESI
 catch (const std::length_error&) { return Status::Failure(kSubsystem, "TERRAIN_RESIZE_BUDGET", "尺寸空间预检容量超限。"); }
 
 Status TerrainResizeResources::VerifySources(const MemberReader& reader, const MapDataEditSession& session,
-    const TerrainResizeLimits& limits) const try {
-    Limits(limits);
+    const TerrainResizeLimits& limits) const {
     if (!state_ || !state_->startup || !state_->native || session.SessionIdentity() != state_->session
         || session.Revision() != state_->revision || session.TerrainSourceRevision() != state_->sourceRevision || session.Terrain() != state_->terrain)
-        Fail("TERRAIN_EDIT_STALE", "尺寸来源复核的会话修订已变化。");
+        return Status::Failure(kSubsystem, "TERRAIN_EDIT_STALE", "尺寸来源复核的会话修订已变化。");
+    return VerifySourceInputs(reader, limits);
+}
+
+Status TerrainResizeResources::VerifySourceInputs(const MemberReader& reader,
+    const TerrainResizeLimits& limits) const try {
+    Limits(limits);
+    if (!state_ || !state_->startup || !state_->native)
+        Fail("TERRAIN_EDIT_STALE", "尺寸来源复核缺少完整捕获状态。");
     if (state_->captureBytes > limits.maximumCandidateBytes || state_->work > limits.maximumWork)
         Fail("TERRAIN_RESIZE_BUDGET", "尺寸来源复核超过完整预算。");
     Check(state_->startup->VerifySources(limits.maximumCandidateBytes));
@@ -375,6 +382,13 @@ Status TerrainResizeResources::VerifySources(const MapArchiveSession& source, co
 Status TerrainResizeResources::VerifySources(const WorkspaceSnapshot& source, const MapDataEditSession& session,
     const TerrainResizeLimits& limits) const {
     return VerifySources([&](auto names, const auto& readLimits) { return TerrainPathingResources::ReadDirectoryMembers(source, names, readLimits); }, session, limits);
+}
+
+Status TerrainResizeResources::VerifySourceInputs(const MapArchiveSession& source, const TerrainResizeLimits& limits) const {
+    return VerifySourceInputs([&](auto names, const auto& readLimits) { return source.CaptureExactMembers(names, readLimits); }, limits);
+}
+Status TerrainResizeResources::VerifySourceInputs(const WorkspaceSnapshot& source, const TerrainResizeLimits& limits) const {
+    return VerifySourceInputs([&](auto names, const auto& readLimits) { return TerrainPathingResources::ReadDirectoryMembers(source, names, readLimits); }, limits);
 }
 
 } // namespace War3Map::MapData
