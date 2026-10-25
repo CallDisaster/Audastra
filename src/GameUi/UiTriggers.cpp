@@ -69,17 +69,26 @@ public:
             }
         }
 
+        // 运行库接通前反复试；界面库可用后关掉自己再建，试满次数也关掉。
+        const std::string attempts = "udg_" + UiAttemptVariableName(d_.id);
+        const std::string disable = Call("DisableTrigger", {Call("GetTriggeringTrigger")});
         Lines create = Header();
+        create.push_back(Set(attempts, Int(attempts, "OperatorAdd", "1")));
+        Append(create, If({CompareInt(attempts, "OperatorGreater", std::to_string(kUiConnectAttempts))},
+            {disable, Call("ReturnAction")}));
         Append(create, If({Call("OperatorCompareBoolean", {Call("AudastraUIIsReady"), "OperatorEqualENE", "false"})},
             {Call("ReturnAction")}));
+        create.push_back(disable);
         create.push_back(Call("AudastraUILoadToc", {Quote(kUiTemplateTocMember)}));
         for (const auto& toc : options_.tocFiles) create.push_back(Call("AudastraUILoadToc", {Quote(toc)}));
         Append(create, Grouped([&](const FrameInfo& info) { return Creation(info); }));
         Append(create, Grouped([&](const FrameInfo& info) { return Properties(info); }));
+        create.push_back(Set("udg_" + UiCreatedVariableName(d_.id), "true"));
         const Lines update = Grouped([&](const FrameInfo& info) { return Updates(info); });
         Append(create, update);
 
         Lines refresh = Header();
+        Append(refresh, UntilCreated());
         Append(refresh, update);
 
         if (!errors_.empty()) {
@@ -98,11 +107,13 @@ public:
         }
         for (const auto& value : d_.values) variable(UiValueVariableName(d_.id, value.id), ValueType(value.type), value.size, Initial(value));
         if (!d_.states.empty()) variable(UiStateVariableName(d_.id), "string", 0, "\"\"");
+        variable(UiCreatedVariableName(d_.id), "boolean", 0, "false");
+        variable(UiAttemptVariableName(d_.id), "integer", 0, "0");
 
         auto trigger = [&](const std::string& name, const Lines& events, const Lines& actions) { text.Trigger(name, events, actions); };
         // 触发器的脚本名只保留 ASCII 字母数字，中文全变成下划线；名字末尾的 ASCII 编号保证脚本名不重。
         auto named = [&](std::string_view role, const std::string& key) { return UiTriggerName(d_, role, key); };
-        trigger(named("创建", "Create"), {Call("TriggerRegisterTimerEventSingle", {"0"})}, create);
+        trigger(named("创建", "Create"), {Call("TriggerRegisterTimerEventPeriodic", {Real(kUiConnectSeconds)})}, create);
         trigger(named("更新", "Update"), {}, refresh);
         for (const auto& state : d_.states) trigger(UiStateTriggerName(d_, state), {}, State(state));
         if (!d_.states.empty()) trigger(named("基础状态", "BaseState"), {}, BaseState(update));
@@ -154,6 +165,12 @@ private:
 
     Lines Header() const {
         return {Call("CommentString", {Quote("由界面 " + name_ + "（" + d_.id + "）生成，重新生成会覆盖本触发器")})};
+    }
+
+    // 界面建好前不调用界面库：框架句柄还是空的，运行库也可能还没接通。
+    Lines UntilCreated() const {
+        return If({Call("OperatorCompareBoolean", {"udg_" + UiCreatedVariableName(d_.id), "OperatorEqualENE", "false"})},
+            {Call("ReturnAction")});
     }
 
     // 框架变量在 from 所在上下文里的写法：同一重复组取当前下标，别的重复组取第一个实例。
@@ -524,6 +541,7 @@ private:
 
     Lines State(const UiState& state) {
         Lines out = Header();
+        Append(out, UntilCreated());
         out.push_back(Call("SetVariable", {"udg_" + UiStateVariableName(d_.id), Quote(state.id)}));
         for (const auto& entry : state.overrides) {
             const FrameInfo* info = Find(entry.frame);
@@ -552,6 +570,7 @@ private:
     // 回到基础状态：被覆盖过的属性恢复成描述里的固定值；绑定数值的属性由随后的更新块刷新。
     Lines BaseState(const Lines& update) {
         Lines out = Header();
+        Append(out, UntilCreated());
         out.push_back(Call("SetVariable", {"udg_" + UiStateVariableName(d_.id), Quote("")}));
         for (const auto& info : frames_) {
             const auto found = overrides_.find(info.frame->id);
@@ -710,6 +729,14 @@ std::string UiValueVariableName(std::string_view description, std::string_view v
 
 std::string UiStateVariableName(std::string_view description) {
     return "AUIS_" + std::string(description);
+}
+
+std::string UiCreatedVariableName(std::string_view description) {
+    return "AUIC_" + std::string(description);
+}
+
+std::string UiAttemptVariableName(std::string_view description) {
+    return "AUIA_" + std::string(description);
 }
 
 std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key) {

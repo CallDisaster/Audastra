@@ -10,7 +10,10 @@
 
 // 界面描述生成自然 T：一段功能写法（Trigger/TriggerFeatureText.h），写进触发器编辑器的 AudastraUI 类别。
 // 触发器体是普通事件/条件/动作树，调用 AudastraUI 函数库（assets/ui-library/AudastraUI）的动作与调用，作者可读可改。
-// 生成的触发器：创建（地图开始 0 秒）、更新（按数值变量刷新绑定的属性）、每个状态一个、回到基础状态一个。
+// 生成的触发器：创建、更新（按数值变量刷新绑定的属性）、每个状态一个、回到基础状态一个。
+// 游戏里的运行库要在地图开始后一段时间才接通，所以“创建”每 kUiConnectSeconds 秒试一次“界面库可用”，
+// 可用后建好界面并关闭自己，试满 kUiConnectAttempts 次仍不可用就停下（地图照常运行，界面不出现）；
+// 更新与状态触发器在界面建好前直接返回，不提前调用界面库。
 // 触发器名为“<界面名> <用途> <界面编号>_<Create|Update|State_状态编号|BaseState>”，例如“读条 更新 cast_Update”；
 // 末尾的 ASCII 部分让脚本名 gg_trg_ 互不相同（中文在脚本名里都成下划线）。
 // 框架句柄存在全局变量里；界面事件按“界面编号.事件编号”关联，作者自己的触发器用“界面事件”接收。
@@ -20,6 +23,8 @@ inline constexpr std::string_view kUiTriggerCategory = "AudastraUI";
 // 生成的触发器依赖的基础模板；两份文件随生成一起导入地图。
 inline constexpr std::string_view kUiTemplateTocMember = "AudastraUI\\AudastraUI.toc";
 inline constexpr std::string_view kUiTemplateFdfMember = "AudastraUI\\AudastraUI.fdf";
+inline constexpr double kUiConnectSeconds = 0.2;
+inline constexpr int kUiConnectAttempts = 150;
 
 struct UiTriggerOptions {
     // 判断“模板”框架是不是 Simple 类（决定用哪条创建）；为空或找不到模板时按普通框架创建并给出警告。
@@ -43,10 +48,13 @@ struct UiTriggerPlan {
 [[nodiscard]] std::string UiTemplateTocText();
 [[nodiscard]] std::string UiTemplateFdfText();
 
-// 变量名（不带 udg_）：框架 AUI_<界面>_<框架>，数值 AUIV_<界面>_<数值>，当前状态 AUIS_<界面>。
+// 变量名（不带 udg_）：框架 AUI_<界面>_<框架>，数值 AUIV_<界面>_<数值>，当前状态 AUIS_<界面>，
+// 界面已建好 AUIC_<界面>，“创建”已试的次数 AUIA_<界面>。
 [[nodiscard]] std::string UiFrameVariableName(std::string_view description, std::string_view frame);
 [[nodiscard]] std::string UiValueVariableName(std::string_view description, std::string_view value);
 [[nodiscard]] std::string UiStateVariableName(std::string_view description);
+[[nodiscard]] std::string UiCreatedVariableName(std::string_view description);
+[[nodiscard]] std::string UiAttemptVariableName(std::string_view description);
 // 生成的触发器名：<界面名> <用途> <界面编号>_<键>；界面名为显示名（不可用时为编号）。
 // 用途与键：创建/Create、更新/Update、“状态 <状态名>”/State_<状态编号>、基础状态/BaseState。
 [[nodiscard]] std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key);
