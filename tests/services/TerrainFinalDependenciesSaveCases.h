@@ -180,6 +180,123 @@ void UnsupportedPathDeclarationsOnlyGateTouchedCandidates() {
         "a touched basename TGA candidate reaches the full explicit unsupported-format gate");
 }
 
+void UnknownSpecialImportsCannotGuessMissingDependencySources() {
+    Fixture f;
+    auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
+    placements.doodads.clear();
+    SpecialDoodadPlacement special; special.rawcode = "SPC1";
+    placements.specialDoodads.push_back(special);
+    f.Member("war3map.doo") = Take(placements.Serialize());
+    // 不提供任何catalog/metadata，也不借合成gameRoot兜底；任意文件名都不能证明
+    // 自己不被未知SPC1引用。小地图生成能力不足和通行来源无法确定是两件事。
+    std::erase_if(f.members, [](const auto& member) {
+        return member.name == "Units/DestructableData.slk" || member.name == "Doodads/Doodads.slk"
+            || member.name == "Units/DestructableMetaData.slk" || member.name == "Doodads/DoodadMetaData.slk";
+    });
+    f.gameRoot.clear(); f.Open();
+    auto settings = Take(MapSettings::Parse(f.Member("war3map.w3i")));
+    settings.mapName = "Owned unsaved draft with unknown special";
+    Check(f.edits->EditSettings(settings));
+    Require(f.edits->IsDirty() && f.edits->CanUndo(), "fixture has a real unsaved edit before failed import preparation");
+    const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+    const auto revision = f.edits->Revision(), sourceRevision = f.edits->TerrainSourceRevision();
+    const auto draft = f.edits->Replacements();
+    const auto sameMembers = [](const auto& before, const auto& after) {
+        return before.size() == after.size() && std::equal(before.begin(), before.end(), after.begin(),
+            [](const auto& a, const auto& b) { return a.name == b.name && a.data == b.data; });
+    };
+    for (const auto* name : {"Fixture/NewIcon.blp", "PathTextures/unknown-special.tga", "Fixture/opaque-resource.bin"}) {
+        auto output = draft; output.push_back({name, Text("owned new resource, not a proven dependency role")});
+        const auto prepared = TerrainPathingSave::PrepareFinalForSave(*f.archive, f.edits.get(), {}, {}, output);
+        Require(!prepared.Succeeded() && !prepared.value && HasCode(prepared, "root-not-directory"),
+            "missing actual catalog and game root reject arbitrary resources regardless of an icon-like name");
+        const auto guarded = TerrainPathingSave::VerifyUnchangedFinalInputs(*f.archive, f.edits.get(), {}, {}, output);
+        Require(!guarded.Succeeded() && HasCode(guarded, "root-not-directory"),
+            "write-time null-plan probe cannot turn missing dependency sources into unchanged inputs");
+
+        Services::MapSaveTask task; Check(task.FreezeArchive(*f.archive));
+        task.target = f.root / ("unknown-special-refused-" + std::to_string(f.sequence++) + ".w3x");
+        task.replacements = output;
+        task.beforePublish = [&] { return TerrainPathingSave::VerifyUnchangedFinalInputs(*f.archive,
+            f.edits.get(), {}, {}, task.replacements, task.removals); };
+        Services::MapSaveService::Run(task);
+        Require(task.executed && !task.succeeded && !task.nextSession && task.written.empty()
+            && !std::filesystem::exists(task.target) && HasCode(task, "root-not-directory"),
+            "formal writer rejects before publishing a target or next source session");
+        Require(sameMembers(output, task.replacements) && sameMembers(draft, f.edits->Replacements())
+            && f.edits->Revision() == revision && f.edits->TerrainSourceRevision() == sourceRevision
+            && f.edits->IsDirty() && f.edits->CanUndo() && !f.edits->CanRedo(),
+            "source rejection preserves the complete pending output, unsaved draft and undo state");
+        Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha,
+            "unknown special import rejection leaves the actual source archive byte exact");
+    }
+}
+
+Bytes LargeSyntheticStaticTable(bool doodads, std::size_t minimumBytes) {
+    // 每个cell小于4096字节，行数远低于4096；合法未摆放行扩大真实catalog解析量，
+    // 不用无效尾字节或一个超长字段绕过SLK格式限制。
+    std::string wire = "ID;PWXL;N;E\n";
+    const auto append = [&](const std::vector<std::string>& cells, std::size_t row) {
+        for (std::size_t column = 0; column < cells.size(); ++column)
+            wire += "C;X" + std::to_string(column + 1) + ";Y" + std::to_string(row)
+                + ";K\"" + cells[column] + "\"\n";
+    };
+    if (doodads) {
+        append({"doodID", "code", "pathTex", "category", "fixedRot", "ownedPadding"}, 1);
+        append({"Doo0", "Doo0", std::string(kOldPath), "E", "0", "owned placed row"}, 2);
+    } else {
+        append({"destructableID", "code", "walkable", "pathTex", "fixedRot", "ownedPadding"}, 1);
+        append({"Dst0", "Dst0", "0", std::string(kOldPath), "0", "owned unplaced row"}, 2);
+    }
+    const std::string padding(3800, doodads ? 'd' : 'b');
+    for (unsigned i = 0; wire.size() + 2 < minimumBytes; ++i) {
+        Require(i < 1000, "large synthetic SLK stays inside bounded unique four-byte rawcodes");
+        std::string id{doodads ? "P000" : "Q000"};
+        id[1] = static_cast<char>('0' + i / 100);
+        id[2] = static_cast<char>('0' + (i / 10) % 10);
+        id[3] = static_cast<char>('0' + i % 10);
+        if (doodads) append({id, id, "none", "E", "0", padding}, i + 3);
+        else append({id, id, "0", "none", "0", padding}, i + 3);
+    }
+    return Text(wire + "E\n");
+}
+
+void SequentialDependencyParserPeaksDoNotConsumeLaterStages() {
+    for (unsigned variant = 0; variant != 3; ++variant) {
+        Fixture f;
+        f.Member("Doodads/Doodads.slk") = LargeSyntheticStaticTable(true, 400000);
+        f.Member("Units/DestructableData.slk") = LargeSyntheticStaticTable(false, 210000);
+        Require(f.Member("Doodads/Doodads.slk").size() >= 400000
+            && f.Member("Doodads/Doodads.slk").size() < 405000
+            && f.Member("Units/DestructableData.slk").size() >= 210000
+            && f.Member("Units/DestructableData.slk").size() < 215000,
+            "fixture uses actual roughly 400KB and 210KB valid original SLK input bytes");
+        f.Open();
+        const bool terrain = variant == 2, nativeOverride = variant == 1;
+        if (terrain) f.Paint();
+        auto output = f.Final(nativeOverride);
+        const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+        const auto revision = f.edits->Revision(), sourceRevision = f.edits->TerrainSourceRevision();
+        const auto originalDoodadTable = f.Member("Doodads/Doodads.slk");
+        const auto originalDestructableTable = f.Member("Units/DestructableData.slk");
+        // 默认64MiB不扩帽。每次实际parser峰值仍要预收；释放后的probe/Describe、
+        // G0和G1临时量不能作为仍驻留的字节继续扣后续阶段。
+        auto prepared = Take(TerrainPathingSave::PrepareFinalForSave(*f.archive, f.edits.get(), f.gameRoot, {}, output));
+        Require(prepared.has_value() && prepared->RebuiltPathing(),
+            "actual footprint, native W3D and terrain combinations all fit sequential bounded parser peaks");
+        auto saved = f.Save(*prepared, output, Fixture::ExpectedPathing(terrain, 8, true));
+        Require(Take(saved.ReadMember("Doodads/Doodads.slk")) == originalDoodadTable
+            && Take(saved.ReadMember("Units/DestructableData.slk")) == originalDestructableTable,
+            "full formal readback preserves both complete large synthetic standard tables");
+        Require(Take(saved.ReadMember("war3map.wpm")) != f.Member("war3map.wpm")
+            && Take(Sha256File(f.archive->SourcePath())) == sourceSha
+            && f.edits->Revision() == revision && f.edits->TerrainSourceRevision() == sourceRevision,
+            "large-input save writes the changed full WPM without mutating source or the live draft");
+        if (nativeOverride) Require(Take(saved.ReadMember("war3map.w3d")) == PathOverride(std::string(kNewPath)),
+            "actual native pathTex override survives the complete saved archive");
+    }
+}
+
 void DirectoryFinalDependenciesUseTheSameFactory() {
     Fixture f; const auto directory = f.root / "final-dependencies-workspace";
     Require(std::filesystem::create_directory(directory), "create owned final dependency directory source");
@@ -208,5 +325,7 @@ void FinalDependencyCases() {
     NulloptIsReprobedAgainstTheActualFinalList();
     ActualWinnersAndBaselineRequirementsArePreserved();
     UnsupportedPathDeclarationsOnlyGateTouchedCandidates();
+    UnknownSpecialImportsCannotGuessMissingDependencySources();
+    SequentialDependencyParserPeaksDoNotConsumeLaterStages();
     DirectoryFinalDependenciesUseTheSameFactory();
 }
