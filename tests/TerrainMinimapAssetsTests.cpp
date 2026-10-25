@@ -9,6 +9,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Render/ClassicMinimapObjectAssets.h"
 #include "../src/Core/Mpq/MpqCrypt.h"
+#include "fixtures/TinyJpegFixture.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -1063,12 +1064,18 @@ void TestFinalSettingsCaptureUsesActualCurrentOutput() {
     }), "当前和最终相等不能掩盖会话原W3I与真实来源不同");
 }
 
+#include "TerrainMinimapAssetsCurrentCases.h"
+
 } // namespace
 
 int main() {
     try {
         TestClassicPlayableCaptureAndDependencyReadback();
         TestFinalSettingsCaptureUsesActualCurrentOutput();
+        TestCurrentEncodedClosureAndTighterBudgets();
+        TestCurrentFinalTerrainAndEncodedMipChanges();
+        TestCurrentWinnerLayersAndSettingsOutput();
+        TestCurrentPreservesCapturedWarnings();
         TestActualMapWinnerAndOriginalMips(); TestGameFallbackAndWinnerChange(); TestSameGamePathChangedMember();
         TestFinalTerrainResourceOverlayWinsAndIsBound();
         TestFinalTerrainResourceRemovalUsesActualGameAndReadback();

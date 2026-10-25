@@ -66,6 +66,21 @@ void ValidateLimits(const TerrainMinimapAssetCaptureLimits& limits) {
         Fail("TERRAIN_ASSETS_LIMITS", "捕获预算必须有界且只能收紧既有硬上限。");
 }
 
+bool SameCaptureLimits(const TerrainMinimapAssetCaptureLimits& requested,
+    const TerrainMinimapAssetCaptureLimits& captured) {
+    const auto& t = requested.tables; const auto& oldT = captured.tables;
+    const auto& a = requested.atlas; const auto& oldA = captured.atlas;
+    return requested.maxSourceBytes == captured.maxSourceBytes
+        && requested.maxCurrentW3eBytes == captured.maxCurrentW3eBytes && requested.maxTiles == captured.maxTiles
+        && requested.maxRetainedAtlasCapacityBytes == captured.maxRetainedAtlasCapacityBytes
+        && t.maxTableBytes == oldT.maxTableBytes && t.maxRows == oldT.maxRows
+        && t.maxCells == oldT.maxCells && t.maxCellBytes == oldT.maxCellBytes
+        && a.maxInputBytes == oldA.maxInputBytes && a.maxDimension == oldA.maxDimension
+        && a.maxRgbaBytes == oldA.maxRgbaBytes && a.maxRetainedRgbaBytes == oldA.maxRetainedRgbaBytes
+        && a.maxTotalMipPixels == oldA.maxTotalMipPixels && a.maxWorkingBytes == oldA.maxWorkingBytes
+        && a.maxJpegSegments == oldA.maxJpegSegments && a.maxJpegScans == oldA.maxJpegScans;
+}
+
 std::filesystem::path GameRoot(const std::filesystem::path& root) {
     if (root.empty()) return {};
     if (root.native().size() > 32767) Fail("TERRAIN_ASSETS_GAME_ROOT", "游戏来源路径超过Windows有界路径长度。");
@@ -451,11 +466,12 @@ void VerifyCurrentTerrainBytes(const TerrainMinimapAssetSnapshot& snapshot) {
         Fail("TERRAIN_ASSETS_FINAL_SNAPSHOT", "冻结当前W3E正文与真实捕获身份不同。");
 }
 
-void VerifyFinalBytes(const TerrainMinimapAssetSnapshot& snapshot, const FinalMembers& selected) {
+void VerifyFinalBytes(const TerrainMinimapAssetSnapshot& snapshot, const FinalMembers& selected,
+    bool liveTerrain = false) {
     const auto& binding = snapshot.Binding();
     VerifyCurrentTerrainBytes(snapshot);
     for (const auto& [path, member] : selected) {
-        if (!member.dependency && !member.replacement && binding.originalTerrainSha256 != binding.currentTerrainSha256)
+        if (!liveTerrain && !member.dependency && !member.replacement && binding.originalTerrainSha256 != binding.currentTerrainSha256)
             Fail("TERRAIN_ASSETS_FINAL_W3E_MISSING", "最终列表缺少冻结的已编辑W3E输出。");
         if (member.dependency && member.dependency->winner.layer == Resources::ResourceLayer::SessionOverride
             && !member.replacement)
@@ -488,7 +504,8 @@ bool SameWinner(const TerrainMinimapAssetDependency& a, const TerrainMinimapAsse
         && a.mapMemberPresent == b.mapMemberPresent && a.encodedBytes == b.encodedBytes && a.encodedSha256 == b.encodedSha256;
 }
 
-void VerifyDependencyPhase(CaptureContext& context, const TerrainMinimapAssetSnapshot& snapshot, bool atlas, bool savedMap = false) {
+void VerifyDependencyPhase(CaptureContext& context, const TerrainMinimapAssetSnapshot& snapshot, bool atlas,
+    bool savedMap = false, bool exactCurrentWinner = false) {
     std::vector<std::string> names;
     for (const auto& dependency : snapshot.Dependencies())
         if ((dependency.kind == TerrainMinimapDependencyKind::Atlas) == atlas) names.push_back(dependency.winner.canonicalPath);
@@ -500,11 +517,38 @@ void VerifyDependencyPhase(CaptureContext& context, const TerrainMinimapAssetSna
         if (context.mapMembers.at(context.mapIndices.at(path)).present != expected.mapMemberPresent)
             Fail("TERRAIN_ASSETS_FINAL_WINNER", "源地图存在性改变了小地图依赖winner：" + path);
         const auto resource = Take(context.resolver.Read(path));
+        const auto& actual = context.dependencies.at(context.dependencyIndices.at(path));
         if (resource.bytes.size() != expected.encodedBytes
-            || !SameWinner(context.dependencies.at(context.dependencyIndices.at(path)), expected,
+            || !SameWinner(actual, expected,
                 savedMap ? std::string_view(context.source.SourceSha256()) : std::string_view{}))
             Fail("TERRAIN_ASSETS_FINAL_DEPENDENCY", "实际来源容器、winner或编码正文已改变：" + path);
+        // Current仍保持捕获时的来源层；同字atlas新增overlay也不能冒充旧map winner。
+        // W3I捕获只把实际改变的最终正文标为overlay，同字显式回写仍是原map语义。
+        if (exactCurrentWinner && actual.winner.layer != expected.winner.layer
+            && expected.kind != TerrainMinimapDependencyKind::Settings)
+            Fail("TERRAIN_ASSETS_STALE", "当前资源来源层不同于捕获时的winner：" + path);
     }
+    Check(context.guard.Verify());
+}
+
+void VerifyEncodedSources(const TerrainMinimapAssetSnapshot& snapshot, const MapArchiveSession& source,
+    const TerrainMinimapAssetCaptureLimits& limits, std::span<const MemberReplacement> replacements,
+    std::span<const std::string> removals, std::size_t hashedBytes, bool exactCurrentWinner = false) {
+    TerrainMinimapAssetCaptureFacts facts;
+    facts.cumulativeSourceBytes = hashedBytes;
+    std::vector<TerrainMinimapAssetDependency> dependencies;
+    const auto& binding = snapshot.Binding();
+    CaptureContext context{source, limits, facts, dependencies, binding.gameRoot, binding.mainTileset,
+        replacements, removals, true};
+    Check(context.guard.Watch(source.SourcePath()));
+    context.Phase({"war3map.w3e"}, binding.originalTerrainBytes, TerrainMinimapDependencyKind::Table);
+    const auto& original = context.mapMembers.front();
+    if (!original.present || original.bytes.size() != binding.originalTerrainBytes
+        || Take(Sha256(original.bytes)) != binding.originalTerrainSha256)
+        Fail("TERRAIN_ASSETS_FINAL_SOURCE", "实际源W3E与冻结原版身份不同。");
+    Check(context.guard.Verify());
+    VerifyDependencyPhase(context, snapshot, false, false, exactCurrentWinner);
+    VerifyDependencyPhase(context, snapshot, true, false, exactCurrentWinner);
     Check(context.guard.Verify());
 }
 
@@ -521,6 +565,7 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
             && rangePolicy != TerrainMinimapRangePolicy::ClassicPlayable)
             Fail("TERRAIN_ASSETS_RANGE_POLICY", "未知的小地图范围政策。");
         TerrainMinimapAssetSnapshot result;
+        result.captureLimits_ = limits;
         result.input_.rangePolicy = rangePolicy;
         auto& binding = result.binding_; auto& facts = result.facts_;
         binding.archiveSha256 = source.SourceSha256(); binding.sessionIdentity = edits.SessionIdentity();
@@ -752,6 +797,7 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         if (!Current(source, edits, binding) || edits.Terrain() != terrain)
             Fail("TERRAIN_ASSETS_STALE", "捕获期间实际会话、修订或地形来源已变化。");
         result.identitySha256_ = SnapshotIdentity(result);
+        result.captureDiagnostics_ = diagnostics;
         auto success = Result<TerrainMinimapAssetSnapshot>::Success(std::move(result)); success.diagnostics = std::move(diagnostics); return success;
     } catch (Failure& failure) {
         return {std::nullopt, std::move(failure.diagnostics)};
@@ -767,15 +813,52 @@ Status VerifyTerrainMinimapAssetsCurrent(const TerrainMinimapAssetSnapshot& snap
     const TerrainMinimapAssetCaptureLimits& limits, std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals) {
     try {
+        ValidateLimits(limits);
         if (!Current(source, edits, snapshot.Binding()) || GameRoot(gameRoot) != snapshot.Binding().gameRoot)
             return Status::Failure(kSubsystem, "TERRAIN_ASSETS_STALE", "资源快照不属于当前来源或编辑修订。");
-        auto current = CaptureTerrainMinimapAssets(source, edits, gameRoot, limits, snapshot.Input().rangePolicy,
-            replacements, removals);
-        if (!current.Succeeded()) return {std::move(current.diagnostics)};
-        if (current.value->IdentitySha256() != snapshot.IdentitySha256())
-            return Status::Failure(kSubsystem, "TERRAIN_ASSETS_STALE", "实际winner、编码字节或解码mip身份已变化。");
-        return {std::move(current.diagnostics)};
+        if (SnapshotIdentity(snapshot) != snapshot.IdentitySha256())
+            Fail("TERRAIN_ASSETS_FINAL_SNAPSHOT", "当前复核需要原工厂冻结的真实快照身份。");
+        const auto selected = SelectFinalMembers(snapshot, replacements, removals);
+        const auto recapture = [&]() -> Status {
+            auto current = CaptureTerrainMinimapAssets(source, edits, gameRoot, limits, snapshot.Input().rangePolicy,
+                replacements, removals);
+            if (!current.Succeeded()) return {std::move(current.diagnostics)};
+            if (current.value->IdentitySha256() != snapshot.IdentitySha256())
+                return Status::Failure(kSubsystem, "TERRAIN_ASSETS_STALE", "实际winner、编码字节或解码mip身份已变化。");
+            // 原重捕获从live会话取W3E，不消费列表中的W3E；补核显式提供的输出。
+            // 单独沿原current-W3E字节帽预收，避免在收紧预算失败前散列任意载荷。
+            for (const auto& [path, member] : selected) if (!member.dependency && member.replacement) {
+                const auto& bytes = member.replacement->data;
+                if (bytes.size() > limits.maxCurrentW3eBytes)
+                    Fail("TERRAIN_ASSETS_BUDGET", "当前W3E输出超过本次字节预算。");
+                if (bytes.size() != snapshot.Input().currentW3e.size()
+                    || Take(Sha256(bytes)) != snapshot.Binding().currentTerrainSha256)
+                    Fail("TERRAIN_ASSETS_FINAL_BYTES", "最终W3E正文不属于当前地形修订。");
+            }
+            return {std::move(current.diagnostics)};
+        };
+        // 限额会决定可验证的原始mip前缀；任一变化均走原检查，不凭RGBA反推工作峰值。
+        if (!SameCaptureLimits(limits, snapshot.captureLimits_)) return recapture();
+        std::size_t hashedBytes = 0;
+        try { hashedBytes = PrechargeFinal(snapshot, selected, limits); }
+        catch (Failure& failure) {
+            // 原捕获的计费不含额外冻结输出散列；精确预算边界继续用原有路径，不能误拒绝。
+            if (failure.diagnostics.size() == 1 && failure.diagnostics.front().code == "TERRAIN_ASSETS_BUDGET")
+                return recapture();
+            throw;
+        }
+        // Current也可用于尚未形成写盘列表的预览；已提供的W3E仍须精确匹配当前修订。
+        VerifyFinalBytes(snapshot, selected, true);
+        VerifyEncodedSources(snapshot, source, limits, replacements, removals, hashedBytes, true);
+        if (!Current(source, edits, snapshot.Binding()) || GameRoot(gameRoot) != snapshot.Binding().gameRoot)
+            Fail("TERRAIN_ASSETS_STALE", "当前依赖复核期间编辑来源或修订已改变。");
+        return {snapshot.captureDiagnostics_};
     } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) {
+        return Status::Failure(kSubsystem, "TERRAIN_ASSETS_ALLOCATION", "当前依赖核验分配失败，不返回部分通过。");
+    } catch (const std::length_error&) {
+        return Status::Failure(kSubsystem, "TERRAIN_ASSETS_ALLOCATION", "当前依赖核验超出容器容量，不返回部分通过。");
+    }
 }
 
 Status VerifyTerrainMinimapAssetsFrozenOutput(const TerrainMinimapAssetSnapshot& snapshot, const MapArchiveSession& source,
@@ -789,21 +872,7 @@ Status VerifyTerrainMinimapAssetsFrozenOutput(const TerrainMinimapAssetSnapshot&
         const auto selected = SelectFinalMembers(snapshot, replacements, removals);
         const auto hashedBytes = PrechargeFinal(snapshot, selected, limits);
         VerifyFinalBytes(snapshot, selected);
-        TerrainMinimapAssetCaptureFacts facts;
-        facts.cumulativeSourceBytes = hashedBytes;
-        std::vector<TerrainMinimapAssetDependency> dependencies;
-        CaptureContext context{source, limits, facts, dependencies, binding.gameRoot, binding.mainTileset,
-            replacements, removals, true};
-        Check(context.guard.Watch(source.SourcePath()));
-        context.Phase({"war3map.w3e"}, binding.originalTerrainBytes, TerrainMinimapDependencyKind::Table);
-        const auto& original = context.mapMembers.front();
-        if (!original.present || original.bytes.size() != binding.originalTerrainBytes
-            || Take(Sha256(original.bytes)) != binding.originalTerrainSha256)
-            Fail("TERRAIN_ASSETS_FINAL_SOURCE", "实际源W3E与冻结原版身份不同。");
-        Check(context.guard.Verify());
-        VerifyDependencyPhase(context, snapshot, false);
-        VerifyDependencyPhase(context, snapshot, true);
-        Check(context.guard.Verify());
+        VerifyEncodedSources(snapshot, source, limits, replacements, removals, hashedBytes);
         return Status::Ok();
     } catch (Failure& failure) { return {std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) {

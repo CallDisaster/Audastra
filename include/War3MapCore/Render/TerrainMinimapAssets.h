@@ -108,14 +108,22 @@ private:
     std::vector<TerrainMinimapTableFacts> tables_;
     std::vector<TerrainMinimapGroundAsset> ground_;
     TerrainMinimapAssetCaptureFacts facts_;
+    // 仅工厂写入：同限额复核可复用已完成的格式/解码检查；限额变化时重新验证。
+    TerrainMinimapAssetCaptureLimits captureLimits_;
+    std::vector<Diagnostic> captureDiagnostics_; // 同字快路保留原解码警告，不静默丢失。
     std::string identitySha256_;
     friend Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(
         const MapArchiveSession&, const MapData::MapDataEditSession&, const std::filesystem::path&,
         const TerrainMinimapAssetCaptureLimits&, TerrainMinimapRangePolicy,
         std::span<const MemberReplacement>, std::span<const std::string>);
+    friend Status VerifyTerrainMinimapAssetsCurrent(const TerrainMinimapAssetSnapshot&,
+        const MapArchiveSession&, const MapData::MapDataEditSession&, const std::filesystem::path&,
+        const TerrainMinimapAssetCaptureLimits&, std::span<const MemberReplacement>, std::span<const std::string>);
 };
 
-// 有界重新捕获并核对来源配置/修订和显式依赖；不以同像素或同W3E SHA复活旧会话。
+// 同限额核对来源、修订、最终成员和实际编码winner原字，复用工厂已完成的格式/解码检查；
+// 任一限额变化时重新捕获，不能凭旧解码结果绕过新的表/atlas/JPEG预算或mip前缀。
+// 不以同像素或同W3E SHA复活旧会话。
 // 临时来源guard在每次捕获返回时释放，不证明全核心MPQ字节/实体fileID或未读成员恒定。
 // 复核仍要求调用者排除 edits 写入；没有长期来源租约或正式保存授权含义。
 [[nodiscard]] Status VerifyTerrainMinimapAssetsCurrent(const TerrainMinimapAssetSnapshot& snapshot,
