@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/MapData/TerrainStrokeJournal.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
 #include <algorithm>
@@ -53,6 +54,38 @@ public:
     }
 
     [[nodiscard]] std::size_t MetadataBytes() const noexcept { return metadataBytes_; }
+
+    // 历史结构只覆盖固定十项；借用冻结正文，非结构输入仍从当前实际来源读取。
+    // 这是内部读取视图，不给raw字节授予任何保存或special谱系。
+    static Result<FinalMemberOverlay> PrepareBaseline(std::span<const ArchiveExactMember> members,
+        std::size_t maximumBytes) {
+        using Output = Result<FinalMemberOverlay>;
+        if (members.size() != MapData::TerrainJournalMemberNames.size() || !maximumBytes
+            || maximumBytes > MapData::TerrainSavePlanLimits{}.maximumBytes)
+            return Output::Failure("Terrain.PathingSave", "TERRAIN_HISTORY_SOURCE_MISMATCH", "历史结构视图必须是固定十成员。");
+        FinalMemberOverlay result;
+        if (members.size() > maximumBytes / sizeof(Entry))
+            return Output::Failure("Terrain.PathingSave", "TERRAIN_REPLAY_BUDGET", "历史结构索引超过剩余预算。");
+        result.entries_.reserve(members.size());
+        result.metadataBytes_ = sizeof(result) + result.entries_.capacity() * sizeof(Entry) + 256;
+        for (std::size_t i = 0; i < members.size(); ++i) {
+            const auto& member = members[i];
+            if (member.name != MapData::TerrainJournalMemberNames[i] || (!member.present && !member.bytes.empty()))
+                return Output::Failure("Terrain.PathingSave", "TERRAIN_HISTORY_SOURCE_MISMATCH", "历史结构名称、顺序或缺席状态不符。");
+            if (member.name.capacity() + 1 > maximumBytes - std::min(maximumBytes, result.metadataBytes_))
+                return Output::Failure("Terrain.PathingSave", "TERRAIN_REPLAY_BUDGET", "历史结构索引超过重放预算。");
+            auto key = Resources::CanonicalImportPath(member.name);
+            if (!key.Succeeded() || !key.value) return {{}, std::move(key.diagnostics)};
+            if (key.value->capacity() + 1 > maximumBytes - std::min(maximumBytes, result.metadataBytes_))
+                return Output::Failure("Terrain.PathingSave", "TERRAIN_REPLAY_BUDGET", "历史规范路径索引超过重放预算。");
+            result.entries_.push_back({std::move(*key.value), member.present ? &member.bytes : nullptr});
+            result.metadataBytes_ += result.entries_.back().name.capacity() + 1;
+        }
+        if (result.metadataBytes_ >= maximumBytes)
+            return Output::Failure("Terrain.PathingSave", "TERRAIN_REPLAY_BUDGET", "历史结构索引未给资源读取留下预算。");
+        std::sort(result.entries_.begin(), result.entries_.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+        return Output::Success(std::move(result));
+    }
 
     Result<std::vector<ArchiveExactMember>> Read(const MapData::TerrainPathingResources::HeightSourceReader& source,
         std::span<const std::string> names, const ArchiveExactMemberLimits& limits,

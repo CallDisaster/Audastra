@@ -242,6 +242,78 @@ Result<TerrainSavePlan> TerrainSavePlan::PrepareWorkspace(const WorkspaceSnapsho
     });
 }
 
+Result<TerrainSavePlan> TerrainSavePlan::PrepareHistory(const MapDataEditSession& edits,
+    const std::string& structuralSha, const TerrainPathingResources::HeightSourceReader& historyReader,
+    const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits,
+    const NativeResourceCapture& nativeCapture) {
+    return Guard([&]() {
+        CheckLimits(limits);
+        if (!historyReader || !nativeCapture)
+            return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_HISTORY_PLAN_SOURCE",
+                "历史保存站必须由同一次封闭结构读取器和真实资源捕获建立。");
+        TerrainSavePlan plan;
+        plan.sourceSha256_ = structuralSha;
+        const auto names = ExactNames();
+        ArchiveExactMemberLimits captureLimits;
+        captureLimits.memberCount = names.size();
+        captureLimits.memberBytes = captureLimits.totalBytes = limits.maximumBytes;
+        auto captured = Take(historyReader(names, captureLimits));
+        if (captured.size() != names.size())
+            return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_HISTORY_PLAN_SOURCE",
+                "历史保存站读取未返回完整的结构、派生成员与实际资源来源。");
+        std::size_t total = 0;
+        for (std::size_t index = 0; index < captured.size(); ++index) {
+            const auto& input = captured[index];
+            if (Canonical(input.name) != Canonical(names[index]) || (!input.present && !input.bytes.empty()))
+                return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_HISTORY_PLAN_SOURCE",
+                    "历史保存站成员名称、顺序或缺失状态不符。");
+            auto& member = index < kNames.size() ? plan.members_[index] : plan.invariantMembers_[index - kNames.size()];
+            member.name = names[index];
+            member.sourceState = input.present ? TerrainSaveSourceState::Present : TerrainSaveSourceState::Missing;
+            if (input.present) {
+                AddBytes(input.bytes.size(), total, limits);
+                member.sourceBytes = input.bytes.size();
+                member.sourceSha256 = Take(Sha256(input.bytes));
+            }
+        }
+        // 释放精确读取副本后才执行常规候选阶段；结构身份仍由上面逐字摘要固定。
+        captured.clear();
+        return Complete(std::move(plan), edits, limits, total, nullptr, &gameRoot, nullptr, &nativeCapture);
+    });
+}
+
+std::size_t TerrainSavePlan::OwnedCapacityBytes() const noexcept {
+    std::size_t bytes = sizeof(*this) + 256;
+    const auto add = [&](std::size_t count, std::size_t element = 1) {
+        const auto maximum = std::numeric_limits<std::size_t>::max();
+        bytes = element && count > (maximum - bytes) / element ? maximum : bytes + count * element;
+    };
+    const auto text = [&](const std::string& value) { add(value.capacity() + 1); };
+    text(sourceSha256_); text(pathingDraftSha256_); text(pathingIntentSha256_);
+    add(nativePathingProtected_.capacity());
+    if (pathingResources_) add(pathingResources_->OwnedCapacityBytes());
+    const auto memberBytes = [&](const TerrainSaveMemberPlan& member) {
+        text(member.name); text(member.reasonCode); text(member.reason);
+        if (member.sourceSha256) text(*member.sourceSha256);
+        if (member.outputSha256) text(*member.outputSha256);
+    };
+    for (const auto& member : members_) memberBytes(member);
+    for (const auto& member : invariantMembers_) memberBytes(member);
+    add(replacements_.capacity(), sizeof(MemberReplacement));
+    for (const auto& member : replacements_) { text(member.name); add(member.data.capacity()); }
+    for (const auto* diagnostics : {&saveGate_.diagnostics, &diagnostics_}) {
+        add(diagnostics->capacity(), sizeof(Diagnostic));
+        for (const auto& diagnostic : *diagnostics) {
+            text(diagnostic.subsystem); text(diagnostic.code); text(diagnostic.message);
+            if (diagnostic.origin) {
+                add(diagnostic.origin->source.native().capacity() + 1, sizeof(std::filesystem::path::value_type));
+                text(diagnostic.origin->fingerprint);
+            }
+        }
+    }
+    return bytes;
+}
+
 Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     const MapDataEditSession& edits, const TerrainSavePlanLimits& limits, std::size_t total,
     const MapArchiveSession* sourceArchive, const std::filesystem::path* gameRoot, const WorkspaceSnapshot* workspace,
@@ -316,7 +388,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], plan.pathingResources_.get());
     }
     std::optional<std::vector<std::byte>> rebuiltPathing;
-    if ((!plan.saveGate_.Succeeded() || mixedProof) && gameRoot && (sourceArchive || workspace)) {
+    if ((!plan.saveGate_.Succeeded() || mixedProof) && gameRoot && (sourceArchive || workspace || nativeCapture)) {
         auto rebuilt = plan.RebuildPathing(edits, sourceArchive, workspace, *gameRoot, limits, total, nativeCapture);
         if (!rebuilt.Succeeded() || !rebuilt.value) {
             plan.saveGate_ = rebuilt.diagnostics.empty()

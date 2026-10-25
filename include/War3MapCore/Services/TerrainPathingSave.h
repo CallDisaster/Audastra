@@ -18,6 +18,8 @@ struct TerrainReplayCandidate {
     std::unique_ptr<MapData::MapDataEditSession> session;
     std::vector<MapData::TerrainPathingResources> waterOwners;
     std::vector<MapData::MapDataEditSession::EditReceipt> receipts;
+    std::size_t currentIndex = 0;
+    std::optional<std::size_t> savedIndex = 0;
 };
 
 // Qt、CLI和MCP共用的薄适配：Core捕获实际来源，ObjectData读取严格typed覆盖，
@@ -117,6 +119,13 @@ public:
         std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot = {});
 
 private:
+    using HistoryMemberReader = std::function<Result<std::vector<ArchiveExactMember>>(
+        std::span<const std::string>, const ArchiveExactMemberLimits&)>;
+    [[nodiscard]] static Result<TerrainReplayCandidate> RestoreHistoryJournal(
+        const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
+        const MapData::TerrainStrokeJournal& journal, const MapData::MapDataEditSession& expectedDraft,
+        const std::filesystem::path& gameRoot, const TerrainReplayLimits& limits,
+        const std::string& sourceSha, const HistoryMemberReader& physicalReader);
     // 仅本类实际source/final探测结果能进入此分支；外部接口不接收相关性布尔。
     [[nodiscard]] static Result<MapData::TerrainSavePlan> PrepareWithDependencyDelta(const MapArchiveSession& source,
         const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,

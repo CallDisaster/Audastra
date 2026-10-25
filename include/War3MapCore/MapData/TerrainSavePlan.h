@@ -106,6 +106,15 @@ private:
     using NativeResourceCapture = std::function<Result<TerrainPathingResources>(
         const TerrainGridSnapshot&, const TerrainGridSnapshot&, const std::vector<std::byte>*, std::size_t)>;
     TerrainSavePlan() = default;
+    // 仅可信恢复工厂核计划/epoch克隆共存峰值；共享owner保守重复计，溢出饱和。
+    [[nodiscard]] std::size_t OwnedCapacityBytes() const noexcept;
+    // 仅可信Services冷恢复工厂：历史固定结构与当前真实资源分开捕获。
+    // 结果仍须对实际保存站逐成员/absence/P复核，不能用结构摘要冒充归档身份。
+    [[nodiscard]] static Result<TerrainSavePlan> PrepareHistory(
+        const MapDataEditSession& edits, const std::string& structuralSha,
+        const TerrainPathingResources::HeightSourceReader& historyReader,
+        const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits,
+        const NativeResourceCapture& nativeCapture);
     [[nodiscard]] static Result<TerrainSavePlan> PrepareArchive(const MapArchiveSession& source,
         const MapDataEditSession& edits, const TerrainSavePlanLimits& limits,
         const std::filesystem::path* gameRoot, const NativeResourceCapture* nativeCapture = nullptr,
