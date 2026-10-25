@@ -101,29 +101,31 @@ void PrepareBoundsTask(const Request& request, const MapData::MapDataEditSession
     Result<MapData::TerrainPathingResources> owner;
     if (frozen.HasTerrainResizeChanges()) {
         auto view = request.archive
-            ? Services::TerrainSessionResources::Capture(request.archive, frozen, request.gameRoot, request.maximumBytes)
-            : Services::TerrainSessionResources::Capture(*request.directory, frozen, request.gameRoot, request.maximumBytes);
+            ? Services::TerrainSessionResources::Capture(request.archive, request.structureSnapshot, request.gameRoot,
+                request.maximumBytes, request.structureRetainedBytes)
+            : Services::TerrainSessionResources::Capture(*request.directory, request.structureSnapshot, request.gameRoot,
+                request.maximumBytes, request.structureRetainedBytes);
         if (!view.Succeeded() || !view.value) { result.status.diagnostics = std::move(view.diagnostics); return; }
         owner = view.value->CaptureNative(*frozen.Terrain(), nullptr, request.maximumBytes);
         result.structureResources.emplace(std::move(*view.value));
     } else {
-    auto bytes = ReadBoundsSourceTerrain(request);
-    if (!bytes.Succeeded()) { result.status.diagnostics = std::move(bytes.diagnostics); return; }
-    auto terrain = MapData::ParseMapTerrain(*bytes.value);
-    if (!terrain.Succeeded()) { result.status.diagnostics = std::move(terrain.diagnostics); return; }
-    auto doodads = frozen.Snapshot(MapDataKind::Doodads, request.maximumBytes);
-    if (!doodads.Succeeded()) { result.status.diagnostics = std::move(doodads.diagnostics); return; }
-    const auto& member = doodads.value->Member(MapDataKind::Doodads);
-    const std::vector<std::byte>* currentDoodads = nullptr;
-    if (member.state == MapDataState::Ready && member.sources.size() == 1) currentDoodads = &member.sources.front().data;
-    else if (member.state != MapDataState::Missing || !member.sources.empty()) {
-        result.status = BoundsFailure("WORLD_BOUNDS_DOODADS_UNAVAILABLE", "装饰物来源不完整，范围未修改。"); return;
-    }
-    owner = request.archive
-        ? Services::TerrainPathingSave::CaptureNative(*request.archive, *terrain.value->Snapshot(), *request.terrain,
-            request.gameRoot, request.maximumBytes, currentDoodads)
-        : Services::TerrainPathingSave::CaptureNative(*request.directory, *terrain.value->Snapshot(), *request.terrain,
-            request.gameRoot, request.maximumBytes, currentDoodads);
+        auto bytes = ReadBoundsSourceTerrain(request);
+        if (!bytes.Succeeded()) { result.status.diagnostics = std::move(bytes.diagnostics); return; }
+        auto terrain = MapData::ParseMapTerrain(*bytes.value);
+        if (!terrain.Succeeded()) { result.status.diagnostics = std::move(terrain.diagnostics); return; }
+        auto doodads = frozen.Snapshot(MapDataKind::Doodads, request.maximumBytes);
+        if (!doodads.Succeeded()) { result.status.diagnostics = std::move(doodads.diagnostics); return; }
+        const auto& member = doodads.value->Member(MapDataKind::Doodads);
+        const std::vector<std::byte>* currentDoodads = nullptr;
+        if (member.state == MapDataState::Ready && member.sources.size() == 1) currentDoodads = &member.sources.front().data;
+        else if (member.state != MapDataState::Missing || !member.sources.empty()) {
+            result.status = BoundsFailure("WORLD_BOUNDS_DOODADS_UNAVAILABLE", "装饰物来源不完整，范围未修改。"); return;
+        }
+        owner = request.archive
+            ? Services::TerrainPathingSave::CaptureNative(*request.archive, *terrain.value->Snapshot(), *request.terrain,
+                request.gameRoot, request.maximumBytes, currentDoodads)
+            : Services::TerrainPathingSave::CaptureNative(*request.directory, *terrain.value->Snapshot(), *request.terrain,
+                request.gameRoot, request.maximumBytes, currentDoodads);
     }
     if (!owner.Succeeded()) { result.status.diagnostics = std::move(owner.diagnostics); return; }
     if (!owner.value->NativeCameraMargins()) {
@@ -258,7 +260,9 @@ void WorldModule::StartTerrainBoundsTask(bool apply) {
         static_cast<std::uint32_t>(terrainBoundsFields_[3]->value())};
     QElapsedTimer captureTimer; captureTimer.start();
     auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true, kSourceBytes);
-    auto frozen = project_.mapEdits_->FreezeForSave(kCandidateBytes);
+    auto frozen = request.Succeeded() && request.value->structureSnapshot
+        ? Result<std::shared_ptr<const MapData::MapDataEditSession>>::Success(request.value->structureSnapshot)
+        : project_.mapEdits_->FreezeForSave(kCandidateBytes);
     terrainBoundsStatus_->setProperty("freezeMilliseconds", captureTimer.elapsed());
     if (!request.Succeeded() || !frozen.Succeeded()) {
         const auto& diagnostics = !request.Succeeded() ? request.diagnostics : frozen.diagnostics;

@@ -15,7 +15,11 @@ public:
         std::size_t maximumBytes = 64u * 1024u * 1024u);
     [[nodiscard]] static Result<TerrainSessionResources> Capture(std::shared_ptr<const MapArchiveSession> source,
         std::shared_ptr<const MapData::MapDataEditSession> session, const std::filesystem::path& gameRoot,
-        std::size_t maximumBytes = 64u * 1024u * 1024u);
+        std::size_t maximumBytes = 64u * 1024u * 1024u, std::size_t additionalOwnedBytes = 0);
+    // worker复用GUI已冻结会话；additionalOwnedBytes计入请求仍保留的深复制与目录清单。
+    [[nodiscard]] static Result<TerrainSessionResources> Capture(const WorkspaceSnapshot& source,
+        std::shared_ptr<const MapData::MapDataEditSession> session, const std::filesystem::path& gameRoot,
+        std::size_t maximumBytes = 64u * 1024u * 1024u, std::size_t additionalOwnedBytes = 0);
     [[nodiscard]] static Result<TerrainSessionResources> Capture(std::shared_ptr<const MapArchiveSession> source,
         const MapData::MapDataEditSession& session, const std::filesystem::path& gameRoot,
         std::size_t maximumBytes = 64u * 1024u * 1024u);

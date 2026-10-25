@@ -13,6 +13,27 @@ namespace War3Map::QtProject {
 namespace {
 constexpr std::size_t kMaximumBytes = 64u * 1024u * 1024u;
 
+std::optional<std::size_t> RequestOwnedBytes(const TerrainWaterEditRequest& request) {
+    std::size_t bytes = 0;
+    const auto add = [&](std::size_t count, std::size_t unit = 1) {
+        if (count > (request.maximumBytes - bytes) / unit) return false;
+        bytes += count * unit; return true;
+    };
+    const auto path = [&](const auto& value) {
+        return add(value.native().capacity() + 1, sizeof(std::filesystem::path::value_type));
+    };
+    if (!add(sizeof(TerrainWaterEditRequest) + 1024) || !path(request.projectRoot) || !path(request.archivePath)
+        || !path(request.sourcePath) || !path(request.gameRoot) || !add(request.sourceSha256.capacity() + 1)) return {};
+    if (request.directory) {
+        const auto& directory = *request.directory;
+        if (!path(directory.root) || !add(directory.aggregateSha256.capacity() + 1)
+            || !add(directory.files.capacity(), sizeof(WorkspaceFile))) return {};
+        for (const auto& file : directory.files)
+            if (!path(file.relativePath) || !add(file.sha256.capacity() + 1)) return {};
+    }
+    return bytes;
+}
+
 bool SameSource(const EditorProject& project, const TerrainWaterEditRequest& request) {
     if (project.projectRoot_ != request.projectRoot || project.war3GameRoot_ != request.gameRoot
         || project.sourceArchivePath_ != request.archivePath) return false;
@@ -110,9 +131,19 @@ Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProje
             request.sourceSha256 = snapshot.aggregateSha256;
         }
         if (captureDoodads && project.mapEdits_->HasTerrainResizeChanges()) {
-            auto frozen = project.mapEdits_->FreezeForSave(maximumBytes);
+            const auto retained = RequestOwnedBytes(request);
+            if (!retained) return fail("TERRAIN_WATER_CAPTURE_BUDGET", "请求与目录来源的实际容量超过当前结构预算。");
+            request.structureRetainedBytes = *retained;
+            if (request.structureRetainedBytes >= maximumBytes)
+                return fail("TERRAIN_WATER_CAPTURE_BUDGET", "目录清单未留下当前结构冻结预算。");
+            std::size_t copiedBytes = 0;
+            auto frozen = project.mapEdits_->FreezeForSave(maximumBytes - request.structureRetainedBytes, &copiedBytes);
             if (!frozen.Succeeded() || !frozen.value) return {{}, std::move(frozen.diagnostics)};
             request.structureSnapshot = std::move(*frozen.value);
+            request.structureRetainedBytes += copiedBytes;
+            // 当前结构桥统一读取DOO，避免同一请求额外复制整份装饰物。
+            request.doodadsCaptured = true;
+            return Result<TerrainWaterEditRequest>::Success(std::move(request));
         }
         if (!captureDoodads) return Result<TerrainWaterEditRequest>::Success(std::move(request));
         const auto size = project.mapEdits_->SnapshotByteSize(MapDataKind::Doodads);
@@ -155,8 +186,10 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
         if (!path.Succeeded()) return {std::nullopt, path.diagnostics};
         if (request->structureSnapshot) {
             auto view = request->archive
-                ? Services::TerrainSessionResources::Capture(request->archive, request->structureSnapshot, request->gameRoot, request->maximumBytes)
-                : Services::TerrainSessionResources::Capture(*request->directory, *request->structureSnapshot, request->gameRoot, request->maximumBytes);
+                ? Services::TerrainSessionResources::Capture(request->archive, request->structureSnapshot, request->gameRoot,
+                    request->maximumBytes, request->structureRetainedBytes)
+                : Services::TerrainSessionResources::Capture(*request->directory, request->structureSnapshot, request->gameRoot,
+                    request->maximumBytes, request->structureRetainedBytes);
             if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
             auto resources = view.value->CaptureWater(request->enforceWaterLimits, request->maximumBytes);
             if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};

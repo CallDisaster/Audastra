@@ -53,8 +53,6 @@ Result<TerrainSessionResources> TerrainSessionResources::CaptureInputs(const Mem
     using Output = Result<TerrainSessionResources>;
     if (!session || !session->Terrain() || !reader || !maximumBytes || maximumBytes > HardBytes)
         return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_INPUT", "当前结构资源需要实际来源、冻结会话和有界预算。"));
-    const auto gate = session->VerifyTerrainCurrentStructureInput();
-    if (!gate.Succeeded()) return {{}, gate.diagnostics};
     auto state = std::make_shared<State>(); state->physical = reader;
     state->session = std::move(session); state->gameRoot = gameRoot; state->maximumBytes = maximumBytes;
     if (additionalOwnedBytes >= maximumBytes)
@@ -63,6 +61,8 @@ Result<TerrainSessionResources> TerrainSessionResources::CaptureInputs(const Mem
         + state->gameRoot.native().capacity() * sizeof(std::filesystem::path::value_type);
     if (state->ownedBytes >= maximumBytes)
         return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_BUDGET", "当前结构元数据超过捕获预算。"));
+    const auto gate = state->session->VerifyTerrainCurrentStructureInput(maximumBytes - state->ownedBytes);
+    if (!gate.Succeeded()) return {{}, gate.diagnostics};
     {
         const std::array<std::string, 1> name{"war3map.w3e"};
         ArchiveExactMemberLimits limits;
@@ -128,15 +128,16 @@ Result<TerrainSessionResources> TerrainSessionResources::CaptureInputs(const Mem
 
 Result<TerrainSessionResources> TerrainSessionResources::Capture(std::shared_ptr<const MapArchiveSession> source,
     std::shared_ptr<const MapData::MapDataEditSession> session, const std::filesystem::path& gameRoot,
-    std::size_t maximumBytes) {
+    std::size_t maximumBytes, std::size_t additionalOwnedBytes) {
     if (!source) return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_INPUT", "当前结构资源缺少实际地图归档。"));
     return CaptureInputs([source = std::move(source)](auto names, const auto& limits) {
         return source->CaptureExactMembers(names, limits);
-    }, std::move(session), gameRoot, maximumBytes);
+    }, std::move(session), gameRoot, maximumBytes, additionalOwnedBytes);
 }
 
 Result<TerrainSessionResources> TerrainSessionResources::Capture(const WorkspaceSnapshot& source,
-    const MapData::MapDataEditSession& session, const std::filesystem::path& gameRoot, std::size_t maximumBytes) try {
+    std::shared_ptr<const MapData::MapDataEditSession> session, const std::filesystem::path& gameRoot,
+    std::size_t maximumBytes, std::size_t additionalOwnedBytes) try {
     if (!maximumBytes || maximumBytes > HardBytes || source.files.capacity() > maximumBytes / sizeof(WorkspaceFile))
         return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_BUDGET", "目录来源清单超过当前结构捕获预算。"));
     std::size_t retained = sizeof(WorkspaceSnapshot) + source.files.capacity() * sizeof(WorkspaceFile)
@@ -148,15 +149,21 @@ Result<TerrainSessionResources> TerrainSessionResources::Capture(const Workspace
             return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_BUDGET", "目录来源名称超过当前结构捕获预算。"));
         retained += size;
     }
+    if (additionalOwnedBytes >= maximumBytes || retained >= maximumBytes - additionalOwnedBytes)
+        return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_BUDGET", "目录与请求同时驻留超过当前结构预算。"));
+    return CaptureInputs([source](auto names, const auto& limits) {
+        return Resources::ReadDirectoryMembers(source, names, limits, true);
+    }, std::move(session), gameRoot, maximumBytes, retained + additionalOwnedBytes);
+} catch (const std::exception&) {
+    return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_CAPTURE", "当前目录结构来源快照无法保留。"));
+}
+
+Result<TerrainSessionResources> TerrainSessionResources::Capture(const WorkspaceSnapshot& source,
+    const MapData::MapDataEditSession& session, const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
     std::size_t copiedBytes = 0;
     auto frozen = session.FreezeForSave(maximumBytes, &copiedBytes);
     if (!frozen.Succeeded() || !frozen.value) return {{}, std::move(frozen.diagnostics)};
-    return CaptureInputs([source](auto names, const auto& limits) {
-        return Resources::ReadDirectoryMembers(source, names, limits, true);
-    }, std::move(*frozen.value), gameRoot, maximumBytes,
-        retained > maximumBytes || copiedBytes > maximumBytes - retained ? maximumBytes : retained + copiedBytes);
-} catch (const std::exception&) {
-    return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_CAPTURE", "当前目录结构来源快照无法保留。"));
+    return Capture(source, std::move(*frozen.value), gameRoot, maximumBytes, copiedBytes);
 }
 
 Result<TerrainSessionResources> TerrainSessionResources::Capture(std::shared_ptr<const MapArchiveSession> source,

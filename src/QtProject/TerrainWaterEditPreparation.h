@@ -17,6 +17,7 @@ struct TerrainWaterEditRequest {
     std::optional<WorkspaceSnapshot> directory;
     std::shared_ptr<const MapData::TerrainGridSnapshot> terrain;
     std::shared_ptr<const MapData::MapDataEditSession> structureSnapshot;
+    std::size_t structureRetainedBytes = 0;
     MapData::DoodadPlacements doodads;
     std::uint64_t sessionIdentity = 0, revision = 0, terrainSourceRevision = 0;
     std::uint64_t projectGeneration = 0, projectRevision = 0;

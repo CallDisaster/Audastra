@@ -118,8 +118,10 @@ Result<LiveBoundsPreparation> PrepareLiveBounds(
     if (!verified.Succeeded()) return {{}, verified.diagnostics};
     if (frozen->HasTerrainResizeChanges()) {
         auto view = request->archive
-            ? Services::TerrainSessionResources::Capture(request->archive, frozen, request->gameRoot, request->maximumBytes)
-            : Services::TerrainSessionResources::Capture(*request->directory, *frozen, request->gameRoot, request->maximumBytes);
+            ? Services::TerrainSessionResources::Capture(request->archive, frozen, request->gameRoot,
+                request->maximumBytes, request->structureRetainedBytes)
+            : Services::TerrainSessionResources::Capture(*request->directory, frozen, request->gameRoot,
+                request->maximumBytes, request->structureRetainedBytes);
         if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
         auto resources = view.value->CaptureNative(*frozen->Terrain(), nullptr, request->maximumBytes);
         if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};
@@ -1102,7 +1104,9 @@ private:
                     return Result<Services::PreparedTerrainBoundsEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "活动范围会话已经变化。");
                 auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
                 if (!request.Succeeded()) return {{}, std::move(request.diagnostics)};
-                auto frozen = project_.mapEdits_->FreezeForSave(512u * 1024u * 1024u);
+                auto frozen = request.value->structureSnapshot
+                    ? Result<std::shared_ptr<const MapData::MapDataEditSession>>::Success(request.value->structureSnapshot)
+                    : project_.mapEdits_->FreezeForSave(512u * 1024u * 1024u);
                 if (!frozen.Succeeded()) return {{}, std::move(frozen.diagnostics)};
                 const auto owned = std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value));
                 auto loaded = RunLiveBoundsWorker<Result<LiveBoundsPreparation>>([owned,

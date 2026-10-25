@@ -1,4 +1,5 @@
 #include "../support/TerrainResizeFixture.h"
+#include "TerrainSessionResourcesCases.h"
 
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
@@ -257,6 +258,7 @@ int main() {
         CropCannotClipAnyActualSpatialClass(); ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent();
         FootprintQueryKeepsZeroBorderAndLiteralOrientation();
         SaveAndUndoKeepEveryActualMember(true); SaveAndUndoKeepEveryActualMember(false);
-        FinalSpatialOutputAndManualShadowConflictsReject(); return 0;
+        FinalSpatialOutputAndManualShadowConflictsReject();
+        AudastraTest::TerrainSessionResourcesCases::RunTerrainSessionResourcesCases(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
