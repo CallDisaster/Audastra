@@ -309,6 +309,42 @@ void BudgetAndTga() {
     Require(preflightBudget.Succeeded() && preflightBudget.value && preflightBudget.value->preserved
         && preflightBudget.value->preserved->VerifyFrozenOutput(earlyTask).Succeeded(), "调用者输入预算失败复用同一降级门");
 }
+void RowScanBudgetPreservesThroughActualSave() {
+    // 两阶段都从实际自动生成入口触发预算拒绝，不伪造生成器诊断。
+    // 原BLP存在和缺失分别保存，不能把保留路径写成补空小地图。
+    for (const bool assetStage : {true, false}) for (const bool resident : {false, true})
+        for (const bool present : {false, true}) {
+            Fixture fixture(false, present); MapSaveTask task; fixture.Freeze(task);
+            const auto sourceSha = Take(Sha256File(fixture.archive.SourcePath()));
+            TerrainMinimapSaveLimits limits;
+            auto& scan = assetStage ? limits.assets.classicScan : limits.classic.terrainScan;
+            if (resident) scan.maxResidentBytes = 64u * 1024u;
+            else scan.maxWorkUnits = 1;
+            const auto expected = resident ? "TERRAIN_ROW_RESIDENT_BUDGET" : "TERRAIN_ROW_WORK_BUDGET";
+            const auto checked = TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {}, limits);
+            Require(checked.Succeeded() && checked.value && !checked.value->generated && checked.value->preserved
+                && HasCode(checked.diagnostics, expected) && HasCode(checked.diagnostics, "MINIMAP_GENERATION_SKIPPED"),
+                "实际捕获和候选行扫描超预算都警告并保护原小地图");
+            Require(std::none_of(checked.diagnostics.begin(), checked.diagnostics.end(),
+                [](const auto& item) { return item.severity == DiagnosticSeverity::Error; }), "行预算保留结果没有残留error");
+            const auto guard = checked.value->preserved;
+            Require(guard->VerifyCurrent(task, *fixture.edits).Succeeded(), "行预算保留资格绑定当前真实修订");
+            task.diagnostics = checked.diagnostics;
+            task.beforePublish = [&] { return guard->VerifyFrozenOutput(task); };
+            MapSaveService::Run(task);
+            Require(task.succeeded && task.nextSession && guard->VerifyReadback(task, *task.nextSession).Succeeded(),
+                "行预算不足时其它合法修改实际保存并独立回读");
+            Require(task.nextSession->HasMember("war3mapMap.blp") == present
+                && !task.nextSession->HasMember("war3mapMap.tga"), "行预算回退保持原小地图存在性");
+            if (present) Require(Take(task.nextSession->ReadMember("war3mapMap.blp")) == fixture.originalMinimap,
+                "行预算回退完整保留原BLP字节");
+            Require(Take(task.nextSession->ReadMember("Fixture\\Unused.blp")) == Text("new fixture resource")
+                && Take(task.nextSession->ReadMember("war3map.w3e")) == fixture.w3e
+                && Take(task.nextSession->ReadMember("war3map.doo")) == fixture.doo
+                && Take(Sha256File(fixture.archive.SourcePath())) == sourceSha,
+                "行预算回退不丢其它修改且来源及原地形摆放原字不变");
+        }
+}
 void SourceStaleAndFinalMutationStillReject() {
     Fixture fixture(true); MapSaveTask task; fixture.Freeze(task);
     const auto result = Take(TerrainMinimapSave::PrepareAutomaticOrPreserve(task, *fixture.edits, {}));
@@ -329,7 +365,8 @@ void SourceStaleAndFinalMutationStillReject() {
     for (const auto* code : {"MAP_SOURCE_UNSAFE", "CLASSIC_OBJECT_CAPTURE_SOURCE_STALE", "MINIMAP_SAVE_SOURCE",
             "TERRAIN_ASSETS_IDENTITY", "TERRAIN_ASSETS_W3I_CURRENT", "MINIMAP_SAVE_AUTOMATIC_EXCEPTION",
             "TERRAIN_ASSETS_W3I_LAYOUT", "CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "FILE_READ_FAILED",
-            "CLASSIC_MINIMAP_OBJECT_UNKNOWN"}) {
+            "CLASSIC_MINIMAP_OBJECT_UNKNOWN", "TERRAIN_ROW_LIMITS", "TERRAIN_ROW_SOURCE",
+            "TERRAIN_ROW_INCOMPLETE", "TERRAIN_ROW_ALLOCATION"}) {
         const auto failure = TerrainMinimapSave::PreserveUnsupportedAutomatic(task, *fixture.edits,
             Status::Failure("fixture", code, "不能降级的错误").diagnostics);
         Require(!failure.Succeeded() && !failure.value && HasCode(failure.diagnostics, code), "来源身份I/O未知异常不降级");
@@ -373,6 +410,7 @@ int main() {
     try {
         PreserveThroughActualSave(true, false); PreserveThroughActualSave(false, false); PreserveThroughActualSave(true, true);
         MissingGenerationInputsPreserveActualSave(); BudgetAndTga(); SourceStaleAndFinalMutationStillReject();
+        RowScanBudgetPreservesThroughActualSave();
         MissingObjectDefinitionPreservesActualSave(); AmbiguousOrDamagedObjectSourcesDoNotPreserve();
         SpecialTailGeneratesAndSaves(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
