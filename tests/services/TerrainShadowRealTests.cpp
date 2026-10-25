@@ -9,6 +9,7 @@
 #include "War3MapCore/MapData/MapShadow.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainShadowResources.h"
+#include "War3MapCore/Script/MapScriptBuild.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
