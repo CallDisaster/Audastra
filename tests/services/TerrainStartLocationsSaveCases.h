@@ -51,11 +51,22 @@ void StartLocationsJournalRequiresCompletePrivateReplayAndFinalRaw() {
         Require(!restore(wrong).Succeeded(), "source Units binding cannot be replaced by a valid final output");
         Services::TerrainReplayLimits tiny; tiny.maximumCandidateBytes = 1;
         Require(!restore(journal, tiny).Succeeded(), "aggregate allocation failure installs no prefix");
-        auto forged = *raw->Snapshot().Settings(); forged.players[0].controller = forged.players[0].controller == 1 ? 2 : 1;
+        auto compatible = *raw->Snapshot().Settings();
+        compatible.players[0].controller = compatible.players[0].controller == 1 ? 2 : 1;
+        const auto compatibleWire = Take(compatible.Serialize());
+        Check(raw->SetSerialized(MapDataKind::Settings, compatibleWire));
+        auto withController = Take(restore(journal));
+        Require(withController.receipts.size() == 3 && withController.session->MatchesTerrainJournalDraft(*raw)
+            && Take(withController.session->Snapshot().Settings()->Serialize()) == compatibleWire
+            && withController.session->VerifyTerrainSettingsForSave().Succeeded(),
+            "known controller restores as a separate real transaction after the complete recorded start");
+        const auto controllerPlan = Take(TerrainPathingSave::PrepareForSave(*f.archive, *withController.session, f.gameRoot));
+        Check(controllerPlan.SaveGate());
+        auto forged = compatible; forged.players[0].flags ^= 2;
         Check(raw->SetSerialized(MapDataKind::Settings, Take(forged.Serialize())));
         const auto mismatch = restore(journal);
         Require(!mismatch.Succeeded() && !mismatch.value && HasCode(mismatch, "TERRAIN_JOURNAL_OUTPUT_MISMATCH"),
-            "final raw settings outside recorded start and four descriptions remain rejected");
+            "unrecorded player flags cannot borrow the supported controller and start recovery");
         Require(f.edits->Revision() == 2 && Take(Sha256File(f.archive->SourcePath())) == sourceSha,
             "all private recovery failures preserve active session and original archive");
     }
