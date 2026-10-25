@@ -405,10 +405,14 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
             terrainReceipts = std::move(restored.value->receipts);
             terrainCurrentIndex = restored.value->currentIndex;
             terrainSavedIndex = restored.value->savedIndex;
-            if (terrainReceipts.size() > 128 || terrainCurrentIndex > terrainReceipts.size()
+            if (terrainCurrentIndex > terrainReceipts.size()
                 || (terrainSavedIndex && *terrainSavedIndex > terrainReceipts.size()))
-                return fail(QObject::tr("恢复的地形历史位置超出实际回执或128条撤销预算"));
-            mapDataEdits = std::move(restored.value->session);
+                return fail(QObject::tr("恢复的地形历史位置超出实际回执"));
+            if (terrainReceipts.size() > 128) {
+                // 旧工程的前向记录可能超过Qt撤销上限，不能因此丢弃完整raw草稿。
+                terrainReceipts.clear(); terrainCurrentIndex = 0; terrainSavedIndex.reset();
+                terrainJournalWarning = "草稿已完整保留；地形历史超过128条撤销预算，撤销和重做未恢复。";
+            } else mapDataEdits = std::move(restored.value->session);
         } else {
             const bool invalid = std::any_of(restored.diagnostics.begin(), restored.diagnostics.end(), [](const auto& diagnostic) {
                 return diagnostic.code == "TERRAIN_JOURNAL_INVALID" || diagnostic.code == "TERRAIN_JOURNAL_BASELINE_MISMATCH"
