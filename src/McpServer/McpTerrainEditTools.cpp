@@ -8,6 +8,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 
 namespace War3Map::Mcp {
 namespace {
@@ -261,6 +262,15 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
     bounds.insert("dry_run", QJsonObject{{"type", "boolean"}});
     add("edit_terrain_bounds", "预览或提交同尺寸可玩区域与游戏镜头边界。west/south/east/north为整数地格半开矩形；不缩放地图、不搬对象，不接受客户端CameraMargins或规则。宿主从实际来源捕获原版规则并复核；提交沿共用Undo，不自行保存。独立目录宿主只预览；实际地图写出须用save_map_edit_candidate的playable_bounds命令，连同最终W3I重建镜头初始化脚本。",
         bounds, {"project_identity", "expected_revision", "terrain_binding", "west", "south", "east", "north", "dry_run"}, ToolPermission::Edit);
+    auto block = identity; block.insert("terrain_binding", binding);
+    for (const char* index : {"source_x", "source_y", "width", "height", "destination_x", "destination_y"}) {
+        const bool extent = std::string_view(index) == "width" || std::string_view(index) == "height";
+        block.insert(index, IntegerSchema(extent ? 1 : 0, extent ? MapData::TerrainBlockMaximumSide : 2048));
+    }
+    block.insert("dry_run", QJsonObject{{"type", "boolean"}});
+    block.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
+    add("edit_terrain_block", "预览或提交同图地形块复制。整数地格半开源矩形包括东/北顶点，绝对复制原始值，不旋转缩放；服务在同一CAS中捕获真实源块摘要并在准备时复核，重叠时先冻结源。拒绝坡道、边界、MapEdge和特殊装饰物，普通悬崖与水使用实际规则。提交沿原事务与Undo，不自行保存，不接受原始字节或客户端规则。",
+        block, {"project_identity", "expected_revision", "terrain_binding", "source_x", "source_y", "width", "height", "destination_x", "destination_y", "dry_run"}, ToolPermission::Edit);
     auto edit = identity; edit.insert("terrain_binding", binding); edit.insert("points", points(4096)); edit.insert("brush", brush);
     edit.insert("dry_run", QJsonObject{{"type", "boolean"}}); edit.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
     add("edit_terrain_stroke", "使用界面同一Core命令预览或提交一笔1..4096点地形。必须显式dry_run，提交沿原Undo/活动事务，不自行保存；默认尺寸1、圆形、装饰物不跟随。ramp仅一级干地直坡；straight_ramp使用实际规则处理一级直台阶、可含水并连接相邻完整直坡，规范单点及kind/value限制与corner_ramp相同，算法版本由宿主固定；corner_ramp仅一级九点外角，可含水，每笔恰好一个世界点，两轴各为offset+128*n+32或offset+128*n+96，不自动吸附，brush只接受kind/value，固定检查水位限制，由实际资源Service核对完整修改块和分类邻域。water_height只调已有水面；remove_water只清水面标志，保留地高、原始水高和全部摆放，接受shape/size，不需要水刷规则，正式保存仍须完整重建通行性。shallow_water/deep_water须显式给出kind/shape/size/cliff_texture/seed/enforce_water_limits六项，由宿主捕获实际资源；boundary只改边界标志。pathing_restriction按32单位WPM格工作，必须指定blocked_type=walk/fly/build；value=false只撤回本工程新增限制，源限制全部保留。未知派生规则保持原生保存门关闭，独立宿主不可提交尚未通过保存门的笔划；越界和旧修订整笔拒绝。", edit,
@@ -333,6 +343,46 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
             };
             const auto applied = host.applyBounds(*prepared.value, validate);
             if (!applied.Succeeded()) return Failure(applied);
+            body["applied"] = true; body["query_state_again"] = true;
+            return Stamp(std::move(body), Identity(host));
+        }
+        if (name == "edit_terrain_block") {
+            const auto sx = static_cast<std::uint32_t>(Number(arguments, "source_x", 0, 2048, true));
+            const auto sy = static_cast<std::uint32_t>(Number(arguments, "source_y", 0, 2048, true));
+            const auto width = static_cast<std::uint32_t>(Number(arguments, "width", 1, MapData::TerrainBlockMaximumSide, true));
+            const auto height = static_cast<std::uint32_t>(Number(arguments, "height", 1, MapData::TerrainBlockMaximumSide, true));
+            const auto dx = static_cast<std::uint32_t>(Number(arguments, "destination_x", 0, 2048, true));
+            const auto dy = static_cast<std::uint32_t>(Number(arguments, "destination_y", 0, 2048, true));
+            if (sx + width > 2048 || sy + height > 2048 || dx + width > 2048 || dy + height > 2048)
+                return Failure("TERRAIN_BLOCK_RECTANGLE", "源和目标需要0..2048内非空整数地格半开矩形。");
+            if (!host.prepareBlock || !host.verifyWater)
+                return Failure("TERRAIN_BLOCK_HOST_UNAVAILABLE", "宿主未接入地形块实际规则捕获和提交前来源复核。");
+            const MapData::TerrainCellRect rect{sx, sy, sx + width, sy + height};
+            const auto fingerprint = Services::CaptureTerrainBlockFingerprint(*context.session, context.document, binding, rect);
+            if (!fingerprint.Succeeded() || !fingerprint.value) return Failure(fingerprint);
+            const MapData::TerrainBlockPasteIntent intent{1, rect, {dx, dy}, *fingerprint.value};
+            const auto prepared = host.prepareBlock(context, binding, intent, Boolean(arguments, "follow_doodads", false));
+            if (!prepared.Succeeded() || !prepared.value) return Failure(prepared);
+            const auto verified = host.verifyWater(); if (!verified.Succeeded()) return Failure(verified);
+            const bool dryRun = Boolean(arguments, "dry_run", true);
+            QJsonObject body{{"ok", true}, {"dry_run", dryRun}, {"applied", false}, {"binding_before", bindingJson},
+                {"source_block_sha256", QString::fromStdString(*fingerprint.value)}, {"scope", Scope(context)},
+                {"changes", ChangedJson(prepared.value->Plan())},
+                {"terrain_pathing_gate", GateJson(prepared.value->Plan().TerrainPathingGate())}, {"map_saved", false}};
+            const auto budget = BodyBudget(body); if (!budget.Succeeded()) return Failure(budget);
+            if (dryRun || !prepared.value->Plan().HasChanges()) return Stamp(std::move(body), identity);
+            if (!host.apply) return Failure("TERRAIN_EDIT_UNSUPPORTED", "宿主尚未接通同一事务的地形块提交。");
+            const auto validate = [&](const MapDataEditSession::EditReceipt& receipt) -> Status {
+                const auto resources = host.verifyWater(); if (!resources.Succeeded()) return resources;
+                if (Identity(host) != identity || receipt.SessionIdentity() != context.session->SessionIdentity()
+                    || receipt.BeforeRevision() != binding.terrainRevision)
+                    return Status::Failure("MCP.Terrain", "TERRAIN_EDIT_STALE", "地形块提交前工程或来源修订已变化。");
+                body["edit_receipt"] = QJsonObject{{"command_identity", QString::number(receipt.CommandIdentity())},
+                    {"before_revision", QString::number(receipt.BeforeRevision())}, {"after_revision", QString::number(receipt.AfterRevision())}};
+                return BodyBudget(body);
+            };
+            const auto applied = host.apply(*prepared.value, validate);
+            if (!applied.Succeeded() || !applied.value) return Failure(applied);
             body["applied"] = true; body["query_state_again"] = true;
             return Stamp(std::move(body), Identity(host));
         }

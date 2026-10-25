@@ -121,6 +121,26 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_INVALID", "地形笔刷 kind 必须是已支持的字符串。");
         return std::nullopt;
     }
+    if (kind.toString() == "block_copy") {
+        if (!OnlyFields(object, {"kind", "source_x", "source_y", "width", "height", "destination_x", "destination_y"}, error))
+            return std::nullopt;
+        const auto sx = Integer(object, "source_x", error), sy = Integer(object, "source_y", error),
+            width = Integer(object, "width", error), height = Integer(object, "height", error),
+            dx = Integer(object, "destination_x", error), dy = Integer(object, "destination_y", error);
+        if (!sx || !sy || !width || !height || !dx || !dy) return std::nullopt;
+        if (*sx < 0 || *sy < 0 || *width < 1 || *height < 1 || *dx < 0 || *dy < 0
+            || *sx > 2048 || *sy > 2048 || *width > MapData::TerrainBlockMaximumSide || *height > MapData::TerrainBlockMaximumSide || *dx > 2048 || *dy > 2048
+            || *sx + *width > 2048 || *sy + *height > 2048 || *dx + *width > 2048 || *dy + *height > 2048) {
+            error = Failure("MCP_MAP_EDIT_BLOCK_INVALID", "地形复制需要0..2048内非空源/目标地格半开矩形，每边不超过256地格。");
+            return std::nullopt;
+        }
+        Services::MapEditTerrainStroke result;
+        result.blockPaste = MapData::TerrainBlockPasteIntent{1,
+            {static_cast<std::uint32_t>(*sx), static_cast<std::uint32_t>(*sy),
+                static_cast<std::uint32_t>(*sx + *width), static_cast<std::uint32_t>(*sy + *height)},
+            {static_cast<std::uint32_t>(*dx), static_cast<std::uint32_t>(*dy)}, {}};
+        return result;
+    }
     if (kind.toString() == "playable_bounds") {
         if (!OnlyFields(object, {"kind", "west", "south", "east", "north"}, error)) return std::nullopt;
         const auto west = Integer(object, "west", error), south = Integer(object, "south", error),
@@ -710,9 +730,17 @@ QJsonObject TerrainStrokeSchema() {
     textureRequired.append("ground_texture"); waterRequired.append("water_height");
     auto removalSchema = BasicSchema(removeWater, required);
     removalSchema["description"] = "移除水面且保留地形高度、原始水高及所有摆放；不接受高度、种子或悬崖参数，保存仍须核对原水规则并重建通行性。";
+    QJsonObject blockCopyProperties{{"kind", QJsonObject{{"type", "string"}, {"const", "block_copy"}}}};
+    for (const char* index : {"source_x", "source_y", "width", "height", "destination_x", "destination_y"}) {
+        const bool extent = std::string_view(index) == "width" || std::string_view(index) == "height";
+        blockCopyProperties.insert(index, QJsonObject{{"type", "integer"}, {"minimum", extent ? 1 : 0},
+            {"maximum", extent ? static_cast<int>(MapData::TerrainBlockMaximumSide) : 2048}});
+    }
+    auto blockCopy = BasicSchema(blockCopyProperties, {"kind", "source_x", "source_y", "width", "height", "destination_x", "destination_y"});
+    blockCopy["description"] = "同图绝对原始值复制，包括东/北顶点，不旋转缩放；必须是唯一地形命令，源摘要由服务捕获。拒绝坡道、边界、MapEdge和特殊装饰物，悬崖与水沿实际规则。";
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired), BasicSchema(boundary, boundaryRequired),
-        BasicSchema(ramp, rampRequired), corner, straight, bounds,
+        BasicSchema(ramp, rampRequired), corner, straight, bounds, blockCopy,
         BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired), removalSchema,
         BasicSchema(cliff, {"kind", "shape", "point_space", "size", "cliff_texture", "level_delta", "seed", "points", "follow_doodads"}),
         BasicSchema(cliffTexture, {"kind", "shape", "point_space", "size", "cliff_texture", "points", "follow_doodads"}),
@@ -1019,6 +1047,9 @@ void RegisterMapEditSaveTool(McpServer& server) {
                 totalPoints += stroke->points.size();
                 request.terrainStrokes.push_back(std::move(*stroke));
             }
+            if (request.terrainStrokes.size() != 1 && std::any_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
+                    [](const auto& command) { return command.blockPaste.has_value(); }))
+                return Failure("MCP_MAP_EDIT_BLOCK_ORDER", "block_copy必须是唯一地形命令；不与其他笔刷或可玩区命令混用。");
         }
         if (!ReadEffectiveLayers(parameters, request.effectiveLayers, error)) return error;
         const auto saved = workspaceRequest

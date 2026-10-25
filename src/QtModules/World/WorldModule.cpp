@@ -259,6 +259,7 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
     connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::ObjectDocumentsReplaced, this, &WorldModule::Refresh);
     connect(&project_, &QtProject::EditorProject::SourceStateChanged, this, [this] {
+        StopTerrainBlockTool(true);
         CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
         InvalidateTerrainBoundsControls();
     });
@@ -466,6 +467,7 @@ void WorldModule::Refresh() {
     // 关闭视口笔刷会同步发出取消信号；切图时先清本笔，不能重新排队旧地图快照。
     strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
     waterCommit_.reset(); waterCommitPending_ = false;
+    StopTerrainBlockTool(true);
     InvalidateWaterBrushCapture();
     resumeBrushAfterRender_ = false;
     if (terrainToggle_ && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
@@ -1020,6 +1022,7 @@ void WorldModule::RefreshPlacements() {
 
 void WorldModule::RefreshMapEdits() {
     if (!page_ || !viewport_) return;
+    if (terrainBlockClipboard_ && !TerrainBlockClipboardCurrent()) StopTerrainBlockTool(true);
     InvalidateTerrainBoundsControls();
     InvalidateWaterBrushCapture();
     RefreshAssetBrowser();
@@ -1048,7 +1051,7 @@ void WorldModule::RefreshMapEdits() {
 }
 
 bool WorldModule::StructuralBrushEnforceWaterLimits() const {
-    return CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp
+    return terrainBlockPasting_ || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp
         || CurrentBrushKind() == MapData::TerrainBrushKind::StraightRamp
         || (terrainEnforceWaterLimits_ && terrainEnforceWaterLimits_->isChecked());
 }
@@ -1378,6 +1381,7 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
     }
     if (placementsDirty_) RefreshPlacements();
     if (!preview && !waterFrameOnly) QueueWaterBrushCapture();
+    if (!preview && !waterFrameOnly && terrainBlockSelecting_) viewport_->SetTerrainBlockSelection(true);
     return true;
 }
 

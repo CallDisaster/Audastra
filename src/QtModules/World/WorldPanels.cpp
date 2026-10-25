@@ -457,6 +457,7 @@ void WorldModule::ConnectEditing() {
     connect(showRegions_, &QPushButton::toggled, this, &WorldModule::UpdateOverlay);
     connect(showCameras_, &QPushButton::toggled, this, &WorldModule::UpdateOverlay);
     connect(selectTool_, &QPushButton::clicked, this, [this] {
+        StopTerrainBlockTool();
         StopPlacing();
         terrainToggle_->setChecked(false);
         // 松手核验期间按钮已暂时取消勾选，不能只依赖toggled(false)取消事务。
@@ -466,6 +467,7 @@ void WorldModule::ConnectEditing() {
     });
     connect(placeToggle_, &QPushButton::toggled, this, [this](bool shown) {
         if (shown) {
+            StopTerrainBlockTool();
             if (terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
             CancelTerrainStroke();
             resumeBrushAfterRender_ = false;
@@ -474,6 +476,7 @@ void WorldModule::ConnectEditing() {
         if (shown) { RefreshAssetBrowser(); if (assetDock_) { assetDock_->show(); assetDock_->raise(); } assetBrowser_->setFocus(); }
     });
     connect(terrainToggle_, &QPushButton::toggled, this, [this](bool shown) {
+        if (shown && (terrainBlockSelecting_ || terrainBlockPasting_)) StopTerrainBlockTool();
         if (shown && placeToggle_->isChecked()) placeToggle_->setChecked(false);
         viewport_->SetBrushMode(shown && (!NeedsStructuralBrushRules() || WaterBrushCaptureCurrent()));
         if (shown) { StopPlacing(); ClearSelection(); RefreshTerrainPalette(); UpdateOverlay(); }
@@ -485,6 +488,7 @@ void WorldModule::ConnectEditing() {
     });
     connect(terrainKinds_, &QButtonGroup::idToggled, this, [this](int, bool on) {
         if (!on) return;
+        StopTerrainBlockTool();
         CancelTerrainStroke();
         UpdateTerrainBrushControls();
         UpdateToolHint();
@@ -515,11 +519,17 @@ void WorldModule::ConnectEditing() {
                 : keys.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add : Services::SelectionMode::Replace);
         });
     connect(viewport_, &WorldViewport::InstancesBoxSelected, this, &WorldModule::SelectBox);
+    connect(viewport_, &WorldViewport::TerrainBlockSelected, this, &WorldModule::SelectTerrainBlock);
+    connect(viewport_, &WorldViewport::TerrainBlockSelectionCancelled, this, [this] { StopTerrainBlockTool(); UpdateToolState(); });
     connect(viewport_, &WorldViewport::GroundClicked, this, &WorldModule::SelectGround);
-    connect(viewport_, &WorldViewport::PlaceRequested, this, &WorldModule::PlaceAt);
+    connect(viewport_, &WorldViewport::PlaceRequested, this, [this](double x, double y, bool snap) {
+        if (terrainBlockPasting_) PasteTerrainBlock(x, y); else PlaceAt(x, y, snap);
+    });
     connect(viewport_, &WorldViewport::PlacementHovered, this, &WorldModule::PreviewAt);
     connect(viewport_, &WorldViewport::PlacementHoverLost, this, &WorldModule::HidePreview);
-    connect(viewport_, &WorldViewport::PlacingCancelled, this, &WorldModule::StopPlacing);
+    connect(viewport_, &WorldViewport::PlacingCancelled, this, [this] {
+        if (terrainBlockPasting_) { StopTerrainBlockTool(); UpdateToolState(); } else StopPlacing();
+    });
     connect(viewport_, &WorldViewport::MoveStarted, this, &WorldModule::StartDrag);
     connect(viewport_, &WorldViewport::MoveDragged, this, &WorldModule::DragSelection);
     connect(viewport_, &WorldViewport::MoveFinished, this, &WorldModule::FinishDrag);
@@ -529,8 +539,12 @@ void WorldModule::ConnectEditing() {
     connect(viewport_, &WorldViewport::RotateFinished, this, &WorldModule::FinishDrag);
     connect(viewport_, &WorldViewport::RotateCancelled, this, &WorldModule::CancelDrag);
     connect(viewport_, &WorldViewport::DeleteRequested, this, &WorldModule::DeleteSelection);
-    connect(viewport_, &WorldViewport::CopyRequested, this, &WorldModule::CopySelection);
-    connect(viewport_, &WorldViewport::PasteRequested, this, &WorldModule::StartPaste);
+    connect(viewport_, &WorldViewport::CopyRequested, this, [this] {
+        if (terrainBlockSelecting_ || terrainBlockPasting_) CopyTerrainBlock(); else CopySelection();
+    });
+    connect(viewport_, &WorldViewport::PasteRequested, this, [this] {
+        if (terrainBlockSelecting_ || terrainBlockPasting_) StartTerrainBlockPaste(); else StartPaste();
+    });
     connect(viewport_, &WorldViewport::DuplicateRequested, this, &WorldModule::DuplicateSelection);
     connect(viewport_, &WorldViewport::SelectAllRequested, this, &WorldModule::SelectAllWorldObjects);
     connect(viewport_, &WorldViewport::NudgeRequested, this, &WorldModule::NudgeSelection);
@@ -608,6 +622,7 @@ void WorldModule::ConnectEditing() {
 // ── 工具状态 ──
 
 void WorldModule::ActivatePlacementTool() {
+    StopTerrainBlockTool();
     resumeBrushAfterRender_ = false;
     if (terrainToggle_ && terrainToggle_->isChecked()) terrainToggle_->setChecked(false);
     if (viewport_) {
@@ -624,7 +639,7 @@ void WorldModule::ActivatePlacementTool() {
 
 WorldModule::Tool WorldModule::CurrentTool() const {
     if (placeToggle_ && placeToggle_->isChecked()) return Tool::Place;
-    if (terrainToggle_ && (terrainToggle_->isChecked() || resumeBrushAfterRender_)) return Tool::Terrain;
+    if (terrainBlockSelecting_ || terrainBlockPasting_ || (terrainToggle_ && (terrainToggle_->isChecked() || resumeBrushAfterRender_))) return Tool::Terrain;
     return Tool::Select;
 }
 
@@ -657,6 +672,10 @@ void WorldModule::UpdateToolState() {
 
 void WorldModule::UpdateToolHint() {
     if (!selectionStatus_ || !toolSubtitle_) return;
+    if (terrainBlockSelecting_ || terrainBlockPasting_) {
+        toolSubtitle_->setText(terrainBlockPasting_ ? tr("地形块粘贴 · 绝对高度") : tr("拖动框选地形 · Ctrl+C / Ctrl+V"));
+        return;
+    }
     if (pasting_) {
         toolSubtitle_->setText(tr("整组粘贴 · %1 个摆放").arg(clipboard_.size()));
         selectionStatus_->clear();

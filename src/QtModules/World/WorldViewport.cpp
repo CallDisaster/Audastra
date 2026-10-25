@@ -670,6 +670,7 @@ void WorldViewport::SetSelectedInstance(std::optional<std::uint32_t> instance) {
 void WorldViewport::SetPlacing(bool placing) {
     if (placing_ == placing) return;
     placing_ = placing;
+    if (placing) terrainBlockSelection_ = false;
     placementHoverActive_ = placing && hoverCoordinate_.has_value();
     hoverView_.reset();
     if (placing_) ScheduleHover();
@@ -857,7 +858,16 @@ void WorldViewport::SetBrushMode(bool enabled) {
     CancelTerrainStroke();
     CancelMove();
     brushMode_ = enabled;
-    if (enabled) { placing_ = false; selectedInstance_.reset(); }
+    if (enabled) { placing_ = false; terrainBlockSelection_ = false; selectedInstance_.reset(); }
+}
+
+void WorldViewport::SetTerrainBlockSelection(bool enabled) {
+    if (terrainBlockSelection_ == enabled && !placing_) return;
+    CancelTerrainStroke(); CancelMove();
+    terrainBlockSelection_ = enabled;
+    selectionBox_ = false; dragButton_ = Qt::NoButton; dragging_ = false; pressView_.reset();
+    ClearSelectionOutline();
+    if (enabled) { brushMode_ = false; SetPlacing(false); selectedInstance_.reset(); }
 }
 
 void WorldViewport::CancelTerrainStroke() {
@@ -1111,7 +1121,7 @@ void WorldViewport::mousePressEvent(QMouseEvent* event) {
             const auto frame = ReadPickingFrame();
             if (frame.Succeeded()) {
                 pressView_ = frame.value->identity; pressRevision_ = revision_;
-                if (!brushMode_ && !placing_ && animationScene_) {
+                if (!brushMode_ && !placing_ && !terrainBlockSelection_ && animationScene_) {
                     const auto policy = ReadModelPickPolicy();
                     if (!policy.Succeeded()) { ClearCoordinates(PickDiagnostic(policy.diagnostics)); event->accept(); return; }
                     pressModelPolicy_ = *policy.value;
@@ -1125,7 +1135,7 @@ void WorldViewport::mousePressEvent(QMouseEvent* event) {
                         dragging_ = true;
                         emit TerrainStrokeStarted(picked.value->hit->position[0], picked.value->hit->position[1]);
                     } else ClearCoordinates(picked.Succeeded() ? tr("鼠标处未命中地形") : PickDiagnostic(picked.diagnostics));
-                } else if (dragButton_ == Qt::LeftButton &&
+                } else if (!terrainBlockSelection_ && dragButton_ == Qt::LeftButton &&
                     !(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)))
                     BeginMove(pressPosition_, *frame.value, event->modifiers().testFlag(Qt::AltModifier));
             } else ClearCoordinates(PickDiagnostic(frame.diagnostics), false, placing_);
@@ -1222,7 +1232,8 @@ void WorldViewport::mouseReleaseEvent(QMouseEvent* event) {
         if (selectionBox_) {
             selectionBox_ = false;
             ClearSelectionOutline();
-            FinishSelectionBox(event->position());
+            if (terrainBlockSelection_) FinishTerrainBlockSelection(event->position());
+            else FinishSelectionBox(event->position());
             dragButton_ = Qt::NoButton; dragging_ = false; pressView_.reset();
             ScheduleHover(); event->accept(); return;
         }
@@ -1254,7 +1265,8 @@ void WorldViewport::mouseReleaseEvent(QMouseEvent* event) {
         const auto displacement = event->position() - pressPosition_;
         if (dragButton_ == Qt::LeftButton && !brushMode_ && !dragging_ &&
             std::abs(displacement.x()) + std::abs(displacement.y()) < QApplication::startDragDistance()) {
-            if (placing_) FinishPlacement(event->position(), event->modifiers().testFlag(Qt::ControlModifier),
+            if (terrainBlockSelection_) FinishTerrainBlockSelection(event->position());
+            else if (placing_) FinishPlacement(event->position(), event->modifiers().testFlag(Qt::ControlModifier),
                 selectionGestureSerial_, pressCameraSerial_, 0);
             else FinishClick(event->position(), event->modifiers());
         }

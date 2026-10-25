@@ -3,6 +3,7 @@
 
 #include "Modules/EditorModule.h"
 #include "War3MapCore/MapData/MapTerrain.h"
+#include "War3MapCore/MapData/TerrainBlockEditing.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
 #include "War3MapCore/ObjectData/ObjectTypes.h"
 #include "War3MapCore/Render/WorldModelScene.h"
@@ -218,7 +219,7 @@ private:
     [[nodiscard]] MapData::TerrainBrushKind CurrentBrushKind() const;
     [[nodiscard]] std::optional<MapData::TerrainWaterBrushKind> CurrentWaterBrushKind() const;
     [[nodiscard]] bool NeedsStructuralBrushRules() const {
-        return CurrentWaterBrushKind().has_value() || CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel
+        return terrainBlockPasting_ || CurrentWaterBrushKind().has_value() || CurrentBrushKind() == MapData::TerrainBrushKind::CliffLevel
             || CurrentBrushKind() == MapData::TerrainBrushKind::CornerRamp
             || CurrentBrushKind() == MapData::TerrainBrushKind::StraightRamp;
     }
@@ -250,6 +251,15 @@ private:
     void StartTerrainStroke(double x, double y);
     void ExtendTerrainStroke(double x, double y);
     void FinishTerrainStroke();
+    void StartTerrainBlockSelection();
+    void SelectTerrainBlock(double x0, double y0, double x1, double y1);
+    void CopyTerrainBlock();
+    void StartTerrainBlockPaste();
+    void PasteTerrainBlock(double x, double y);
+    void HoverTerrainBlock(double x, double y);
+    void StopTerrainBlockTool(bool clearClipboard = false);
+    [[nodiscard]] bool TerrainBlockClipboardCurrent() const;
+    void AppendTerrainBlockOverlay(std::vector<War3RenderOverlayLineV2>& lines) const;
     void StartWaterBrushCommit();
     void PublishTerrainStrokeResult(Result<MapData::TerrainStrokeResult> edited,
         std::shared_ptr<const MapData::TerrainGridSnapshot> beforeTerrain, std::uint64_t beforeRevision,
@@ -377,6 +387,10 @@ private:
     QWidget* terrainWaterBrushSection_ = nullptr;
     QCheckBox* terrainEnforceWaterLimits_ = nullptr;
     QLabel* terrainWaterBrushStatus_ = nullptr;
+    QPushButton* terrainBlockSelect_ = nullptr;
+    QPushButton* terrainBlockCopy_ = nullptr;
+    QPushButton* terrainBlockPaste_ = nullptr;
+    QLabel* terrainBlockStatus_ = nullptr;
     QWidget* terrainRampSection_ = nullptr;
     QButtonGroup* terrainRampModes_ = nullptr;
     QWidget* terrainBlightSection_ = nullptr;
@@ -532,6 +546,17 @@ private:
     std::uint64_t clipboardRevision_ = 0;
     std::uint64_t clipboardSession_ = 0;
     std::uint64_t clipboardPresentationCatalogRevision_ = 0;
+    struct TerrainBlockClipboard {
+        MapData::TerrainCellRect cells;
+        std::string fingerprint;
+        QString mapKey;
+        std::uint64_t session = 0, sourceRevision = 0;
+        MapData::TerrainHeader header;
+    };
+    std::optional<TerrainBlockClipboard> terrainBlockClipboard_;
+    std::optional<MapData::TerrainCellRect> terrainBlockSelection_;
+    std::optional<std::array<std::uint32_t, 2>> terrainBlockDestination_;
+    bool terrainBlockSelecting_ = false, terrainBlockPasting_ = false;
     std::array<float, 3> clipboardAnchor_{};
     std::optional<std::array<float, 3>> previewHover_;
     std::vector<Render::ModelInstanceRequest> previewRequests_;
@@ -572,7 +597,7 @@ private:
     bool waterCapturePending_ = false;
     struct WaterBrushCommit {
         std::shared_ptr<const QtProject::TerrainWaterEditCapture> capture;
-        std::variant<MapData::TerrainWaterBrush, MapData::TerrainBrush> brush;
+        std::variant<MapData::TerrainWaterBrush, MapData::TerrainBrush, MapData::TerrainBlockPasteIntent> brush;
         std::vector<MapData::TerrainStrokePoint> points;
         bool resumeBrush = false;
         std::shared_ptr<const MapData::MapDataEditSession> frozen;

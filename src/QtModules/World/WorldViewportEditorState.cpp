@@ -35,7 +35,13 @@ void WorldViewport::keyPressEvent(QKeyEvent* event) {
         if (event->key() == Qt::Key_C) { emit CopyRequested(); event->accept(); return; }
         if (event->key() == Qt::Key_V) { emit PasteRequested(); event->accept(); return; }
     }
-    const bool idle = !brushMode_ && !placing_ && !strokeActive_ && !moving_ && !selectionBox_ && dragButton_ == Qt::NoButton;
+    if (terrainBlockSelection_ && event->key() == Qt::Key_Escape) {
+        SetTerrainBlockSelection(false); emit TerrainBlockSelectionCancelled(); event->accept(); return;
+    }
+    if (terrainBlockSelection_ && (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace)) {
+        event->accept(); return;
+    }
+    const bool idle = !terrainBlockSelection_ && !brushMode_ && !placing_ && !strokeActive_ && !moving_ && !selectionBox_ && dragButton_ == Qt::NoButton;
     if (idle && !event->modifiers().testFlag(Qt::AltModifier)) {
         if (event->modifiers().testFlag(Qt::ControlModifier)) {
             if (event->key() == Qt::Key_D) { emit DuplicateRequested(); event->accept(); return; }

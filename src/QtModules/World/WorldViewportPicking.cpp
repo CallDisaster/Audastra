@@ -630,4 +630,19 @@ void WorldViewport::FinishSelectionBox(QPointF point) {
     emit InstancesBoxSelected(selected, static_cast<int>(selectionModifiers_));
 }
 
+void WorldViewport::FinishTerrainBlockSelection(QPointF point) {
+    if (!terrainBlockSelection_ || !pressView_ || pressRevision_ != revision_ || pressCameraSerial_ != cameraSerial_) return;
+    const auto frame = ReadPickingFrame();
+    if (!frame.Succeeded() || !SameView(*pressView_, frame.value->identity)) {
+        ClearCoordinates(tr("地面完成帧已变化，本次地形选区已取消")); return;
+    }
+    const auto start = PickAt(pressPosition_, *frame.value, nullptr, true);
+    const auto finish = PickAt(point, *frame.value, nullptr, true);
+    if (!start.Succeeded() || !finish.Succeeded() || !start.value->hit || !finish.value->hit) {
+        ClearCoordinates(tr("选区两个端点都必须命中已显示的地面")); return;
+    }
+    emit TerrainBlockSelected(start.value->hit->position[0], start.value->hit->position[1],
+        finish.value->hit->position[0], finish.value->hit->position[1]);
+}
+
 } // namespace War3Map::Modules
