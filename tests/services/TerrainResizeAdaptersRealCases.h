@@ -140,7 +140,8 @@ inline void CheckRealCanvasResizeSave(const MapArchiveSession& original, const s
         std::vector<std::wstring> args{L"AudastraCli", L"map-edit-save", source.SourcePath().wstring(),
             std::wstring(source.SourceSha256().begin(), source.SourceSha256().end()), std::wstring(terrainSha.begin(), terrainSha.end()),
             tool.wstring(), game.wstring(), target.wstring(), L"--terrain-resize",
-            expanded ? L"-32" : L"32", expanded ? L"-32" : L"32", L"64", L"64"};
+            // 第二笔相对扩展后的西南角；[32,32,96,96]才恢复原64×64地格。
+            expanded ? L"-32" : L"32", expanded ? L"-32" : L"32", expanded ? L"64" : L"96", expanded ? L"64" : L"96"};
         const auto invoked = R::Invoke(std::move(args));
         if (invoked.exit) throw std::runtime_error("real canvas CLI save failed: " + invoked.diagnostics);
         auto saved = R::Take(MapArchiveSession::Open(target));
