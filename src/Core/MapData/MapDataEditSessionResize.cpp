@@ -67,9 +67,15 @@ std::shared_ptr<const std::vector<std::byte>> MapDataEditSession::TerrainHistory
     return target ? target->savedRestrictions : originalPathingRestrictions_;
 }
 
+const ArchiveExactMember* MapDataEditSession::TerrainHistoryShadow(const TerrainResizeState* shape) const noexcept {
+    const auto* target = shape ? shape : resizeState_ ? resizeState_.get() : resizeDraftState_.get();
+    if (target && target->identity && savedResizeState_ && target->identity == savedResizeState_->identity)
+        return &savedResizeState_->shadow;
+    return target ? &target->shadow : nullptr;
+}
+
 bool MapDataEditSession::HasTerrainResizeChanges() const noexcept {
-    return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || resizeState_->identity != savedResizeState_->identity
-        || resizeState_->shadow.present != savedResizeState_->shadow.present || resizeState_->shadow.bytes != savedResizeState_->shadow.bytes));
+    return bool(resizeDraftState_) || (resizeState_ && (!savedResizeState_ || resizeState_->identity != savedResizeState_->identity));
 }
 
 Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::PrepareTerrainResizeEdit(
@@ -95,7 +101,7 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
     if (pathing_->size() != oldCells + 16 || historyWpm.size() != oldCells + 16
         || pathingProtected_->size() != oldCells || pathingRestrictions_->size() != oldCells)
         return fail("TERRAIN_RESIZE_PATHING_SHAPE", "当前WPM和分层意图不属于扩裁前尺寸。");
-    const auto& shadow = resizeState_ ? resizeState_->shadow : resources.SourceShadow();
+    const auto& shadow = resizeState_ ? *TerrainHistoryShadow() : resources.SourceShadow();
     if (shadow.name != "war3map.shd" || (shadow.present ? shadow.bytes.size() != oldCells : !shadow.bytes.empty()))
         return fail("TERRAIN_RESIZE_SHADOW_SHAPE", "真实SHD来源或当前typed阴影状态与扩裁前尺寸不一致。");
     std::size_t bytes = projected.value->preparationBytes, work = projected.value->preparationWork;
@@ -187,8 +193,8 @@ Status MapDataEditSession::VerifyTerrainResizeForSave() const {
         || resizeState_->geometry->vertices.size() != terrain_->vertices.size())
         return fail("TERRAIN_RESIZE_PROVENANCE_REQUIRED", "尺寸或原点变化没有完整typed扩裁状态；raw草稿不能取得正式保存资格。");
     const auto cells = std::size_t(terrain_->header.width - 1) * (terrain_->header.height - 1) * 16;
-    if (resizeState_->shadow.name != "war3map.shd" || (resizeState_->shadow.present
-        ? resizeState_->shadow.bytes.size() != cells : !resizeState_->shadow.bytes.empty()))
+    const auto* shadow = TerrainHistoryShadow();
+    if (!shadow || shadow->name != "war3map.shd" || (shadow->present ? shadow->bytes.size() != cells : !shadow->bytes.empty()))
         return fail("TERRAIN_RESIZE_SHADOW_SHAPE", "当前typed阴影的明确存在状态或长度与新形状不符。");
     const auto p = TerrainHistoryProtected();
     const auto& base = TerrainHistoryPathing();

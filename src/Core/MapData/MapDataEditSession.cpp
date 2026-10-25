@@ -750,10 +750,10 @@ std::vector<MapArchiveMember> MapDataEditSession::Replacements() const {
         if (bytes.Succeeded() && bytes.value) members.push_back({std::string(kTerrainMember), std::move(*bytes.value)});
     }
     if (pathing_ && pathing_ != pathingOriginal_) members.push_back({std::string(kPathingMember), *pathing_});
-    const auto resize = resizeState_ ? resizeState_ : resizeDraftState_;
-    if (resize && resize->shadow.name == "war3map.shd" && resize->shadow.present
-        && (!savedResizeState_ || !savedResizeState_->shadow.present || resize->shadow.bytes != savedResizeState_->shadow.bytes))
-        members.push_back({"war3map.shd", resize->shadow.bytes});
+    const auto* shadow = TerrainHistoryShadow();
+    if (shadow && shadow->name == "war3map.shd" && shadow->present
+        && (!savedResizeState_ || !savedResizeState_->shadow.present || shadow->bytes != savedResizeState_->shadow.bytes))
+        members.push_back({"war3map.shd", shadow->bytes});
     return members;
 }
 
@@ -877,7 +877,8 @@ void MapDataEditSession::CommitSaved(const MapDocument& saved) {
 
 void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     std::optional<std::vector<std::byte>> pathing,
-    std::shared_ptr<const std::vector<std::byte>> protectedPathing) {
+    std::shared_ptr<const std::vector<std::byte>> protectedPathing,
+    std::optional<ArchiveExactMember> writtenShadow) {
     // 所有复制在交换前完成，分配失败时连来源代际也保持不变。
     auto original = current_;
     const auto savedBoundary = cursor_ ? history_[cursor_ - 1] : std::shared_ptr<const Command>{};
@@ -887,6 +888,8 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
         auto updated = std::make_shared<TerrainResizeState>(*resizeState_);
         updated->header = terrain_->header;
         updated->geometry = terrain_;
+        if (writtenShadow) updated->shadow = std::move(*writtenShadow);
+        else if (const auto* shadow = TerrainHistoryShadow()) updated->shadow = *shadow;
         updated->historyPathing = std::make_shared<const std::vector<std::byte>>(*pathing);
         updated->protectedPathing = protectedPathing; updated->savedRestrictions = pathingRestrictions_;
         savedResize = std::move(updated);

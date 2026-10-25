@@ -535,8 +535,9 @@ bool MapDataEditSession::MatchesTerrainJournalDraft(const MapDataEditSession& ex
     const auto bResize = expected.resizeState_ ? expected.resizeState_ : expected.resizeDraftState_;
     // raw工程只提供待核输出，不提供来源资格；仍逐字比较SHD及各shape映射层。
     if (bool(aResize) != bool(bResize)) return false;
-    if (aResize && (aResize->shadow.name != bResize->shadow.name
-        || aResize->shadow.present != bResize->shadow.present || aResize->shadow.bytes != bResize->shadow.bytes
+    const auto* aShadow = TerrainHistoryShadow(); const auto* bShadow = expected.TerrainHistoryShadow();
+    if (aResize && (!aShadow || !bShadow || aShadow->name != bShadow->name
+        || aShadow->present != bShadow->present || aShadow->bytes != bShadow->bytes
         || !equalLayer(TerrainHistoryProtected(), expected.TerrainHistoryProtected())
         || !equalLayer(TerrainHistorySavedRestrictions(), expected.TerrainHistorySavedRestrictions())
         || TerrainHistoryPathing() != expected.TerrainHistoryPathing())) return false;
