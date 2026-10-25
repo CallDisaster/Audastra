@@ -7,7 +7,10 @@
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <iostream>
+#include <iterator>
 
 namespace {
 using namespace AudastraTest::TerrainResize;
@@ -235,8 +238,10 @@ void FootprintQueryKeepsZeroBorderAndLiteralOrientation() {
 void SaveAndUndoKeepEveryActualMember(bool shadow) {
     Fixture fixture(true, shadow);
     const auto sourceSha = fixture.archive->SourceSha256(); const auto sourcePath = fixture.archive->SourcePath();
+    unsigned saveOrdinal = 0;
     const auto save = [&](const char* name, const Bytes& terrain, const Bytes& pathing, const Bytes& expectedShadow,
         const std::array<std::int32_t, 4>& expectedMargins) {
+        ++saveOrdinal;
         auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot));
         Check(plan.SaveGate());
         auto replacements = fixture.edits->Replacements(); const auto removals = fixture.edits->Removals();
@@ -260,6 +265,22 @@ void SaveAndUndoKeepEveryActualMember(bool shadow) {
             && double(savedTerrain->header.offset[1]) + (savedTerrain->header.height - 1 - savedSettings->cameraMargins[3]) * 128.0 == 1792,
             "actual saved playable world rectangle is unchanged by expand, undo, redo and crop");
         const std::array<std::string, 1> names{"war3map.shd"}; const auto members = Take(actual.CaptureExactMembers(names));
+        if (members[0].present != shadow || members[0].bytes != expectedShadow) {
+            const auto& actualShadow = members[0].bytes;
+            std::cerr << "phase=shadow-readback saveOrdinal=" << saveOrdinal << " file=" << name
+                << " shadow=" << shadow << " expectedPresent=" << shadow << " actualPresent=" << members[0].present
+                << " expectedBytes=" << expectedShadow.size() << " actualBytes=" << actualShadow.size();
+            const auto mismatch = std::mismatch(expectedShadow.begin(), expectedShadow.end(), actualShadow.begin(), actualShadow.end());
+            if (mismatch.first != expectedShadow.end() || mismatch.second != actualShadow.end()) {
+                std::cerr << " firstDiff=" << std::distance(expectedShadow.begin(), mismatch.first) << " expectedByte=";
+                if (mismatch.first != expectedShadow.end()) std::cerr << std::to_integer<unsigned>(*mismatch.first);
+                else std::cerr << "<end>";
+                std::cerr << " actualByte=";
+                if (mismatch.second != actualShadow.end()) std::cerr << std::to_integer<unsigned>(*mismatch.second);
+                else std::cerr << "<end>";
+            } else std::cerr << " firstDiff=none";
+            std::cerr << '\n';
+        }
         Require(members[0].present == shadow && members[0].bytes == expectedShadow, "SHD actual presence and complete migration bytes match; absence stays absence");
         for (const auto& member : fixture.members) if (member.name != "war3map.w3e" && member.name != "war3map.wpm"
             && member.name != "war3map.w3i" && member.name != "war3map.shd")
@@ -272,7 +293,11 @@ void SaveAndUndoKeepEveryActualMember(bool shadow) {
     save("expanded.w3x", TerrainLiteral(-32, -32, 32, 32), PathingLiteral(-32, -32, 32, 32),
         shadow ? ShadowLiteral(-32, -32, 32, 32, true) : Bytes{}, {33, 2, 33, 2});
     Require(fixture.edits->Undo(), "cross-save hot undo restores original shape");
-    save("undone.w3x", TerrainLiteral(), PathingLiteral(), shadow ? ShadowLiteral() : Bytes{}, {1, 2, 1, 2});
+    const auto undoneShadow = Take(fixture.edits->TerrainResizeShadowDraft());
+    Require(undoneShadow.present == shadow && undoneShadow.bytes == (shadow ? ShadowLiteral() : Bytes{}),
+        "cross-save hot undo retains the original raw shadow bytes or physical absence before writing");
+    // 热Undo保留原字；跨保存站的实际resize写盘仍遵守原版非零转FF规则。
+    save("undone.w3x", TerrainLiteral(), PathingLiteral(), shadow ? ShadowLiteral(0, 0, 32, 32, true) : Bytes{}, {1, 2, 1, 2});
     Require(fixture.edits->Redo(), "cross-save hot redo restores expanded shape");
     save("redone.w3x", TerrainLiteral(-32, -32, 32, 32), PathingLiteral(-32, -32, 32, 32),
         shadow ? ShadowLiteral(-32, -32, 32, 32, true) : Bytes{}, {33, 2, 33, 2});
@@ -305,16 +330,55 @@ void FinalSpatialOutputAndManualShadowConflictsReject() {
 } // namespace
 
 int main() {
-    try {
-        ActualStartupAndAtomicCas(); ChangedPhysicalSpatialMembersAndRulesReject();
-        CropCannotClipAnyActualSpatialClass(); ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent();
-        NonWalkableDestructableKeepsProvenZeroContribution();
-        FootprintQueryKeepsZeroBorderAndLiteralOrientation();
-        SaveAndUndoKeepEveryActualMember(true); SaveAndUndoKeepEveryActualMember(false);
-        FinalSpatialOutputAndManualShadowConflictsReject();
-        AudastraTest::TerrainSessionResourcesCases::RunTerrainSessionResourcesCases();
-        AudastraTest::TerrainHistorySourceShadowCases::RunTerrainHistorySourceShadowCases();
-        AudastraTest::TerrainOrdinaryShadowHistoryCases::RunTerrainOrdinaryShadowHistoryCases();
-        AudastraTest::TerrainHistoryShadowReadBudgetCases::RunTerrainHistoryShadowReadBudgetCases(); return 0;
-    } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    unsigned passed = 0, failed = 0;
+    const auto run = [&](const char* name, auto test) {
+        try {
+            test();
+            ++passed;
+            std::cout << "[PASS] " << name << '\n';
+        } catch (const std::exception& error) {
+            ++failed;
+            std::cerr << "[FAIL] " << name << ": " << error.what() << '\n';
+        } catch (...) {
+            ++failed;
+            std::cerr << "[FAIL] " << name << ": non-standard exception\n";
+        }
+    };
+    run("ActualStartupAndAtomicCas", ActualStartupAndAtomicCas);
+    run("ChangedPhysicalSpatialMembersAndRulesReject", ChangedPhysicalSpatialMembersAndRulesReject);
+    run("CropCannotClipAnyActualSpatialClass", CropCannotClipAnyActualSpatialClass);
+    run("ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent", ActualZeroRgbFootprintAndEmptySpecialStillHaveExtent);
+    run("NonWalkableDestructableKeepsProvenZeroContribution", NonWalkableDestructableKeepsProvenZeroContribution);
+    run("FootprintQueryKeepsZeroBorderAndLiteralOrientation", FootprintQueryKeepsZeroBorderAndLiteralOrientation);
+    run("SaveAndUndoKeepEveryActualMember(true)", [] { SaveAndUndoKeepEveryActualMember(true); });
+    run("SaveAndUndoKeepEveryActualMember(false)", [] { SaveAndUndoKeepEveryActualMember(false); });
+    run("FinalSpatialOutputAndManualShadowConflictsReject", FinalSpatialOutputAndManualShadowConflictsReject);
+    run("TerrainSessionResources::ActualCurrentWaterAndBothNativeDoodadStages",
+        AudastraTest::TerrainSessionResourcesCases::ActualCurrentWaterAndBothNativeDoodadStages);
+    run("TerrainSessionResources::SharedFrozenBudgetsIncludeRetainedRequestAndDirectory",
+        AudastraTest::TerrainSessionResourcesCases::SharedFrozenBudgetsIncludeRetainedRequestAndDirectory);
+    run("TerrainSessionResources::PhysicalChangesAndBudgetsStayFailClosed",
+        AudastraTest::TerrainSessionResourcesCases::PhysicalChangesAndBudgetsStayFailClosed);
+    run("TerrainSessionResources::SavedResizeUsesCurrentPaletteResources",
+        AudastraTest::TerrainSessionResourcesCases::SavedResizeUsesCurrentPaletteResources);
+    run("TerrainSessionResources::ResizeWaterBoundsSaveReadback",
+        AudastraTest::TerrainSessionResourcesCases::ResizeWaterBoundsSaveReadback);
+    run("TerrainHistorySourceShadow::ActualArchiveAndDirectoryBindingAreImmutableAndBudgeted",
+        AudastraTest::TerrainHistorySourceShadowCases::ActualArchiveAndDirectoryBindingAreImmutableAndBudgeted);
+    run("TerrainHistorySourceShadow::SourceDriftCorruptionAndIoNeverBecomeMissing",
+        AudastraTest::TerrainHistorySourceShadowCases::SourceDriftCorruptionAndIoNeverBecomeMissing);
+    run("TerrainHistorySourceShadow::RepeatedCleanSaveInheritsTheOldBindingWithoutReadingNewSource",
+        AudastraTest::TerrainHistorySourceShadowCases::RepeatedCleanSaveInheritsTheOldBindingWithoutReadingNewSource);
+    run("TerrainHistorySourceShadow::OrdinarySaveThenFirstResizeRestoresAndRecapturesColdHistory",
+        AudastraTest::TerrainHistorySourceShadowCases::OrdinarySaveThenFirstResizeRestoresAndRecapturesColdHistory);
+    run("TerrainOrdinaryShadowHistory::LegacyEnvelopesAndNewVersionDomainsAreStrict",
+        AudastraTest::TerrainOrdinaryShadowHistoryCases::LegacyEnvelopesAndNewVersionDomainsAreStrict);
+    run("TerrainOrdinaryShadowHistory::OrdinaryProjectColdOpenBeforeFirstResizeRetainsTheOldShadow",
+        AudastraTest::TerrainOrdinaryShadowHistoryCases::OrdinaryProjectColdOpenBeforeFirstResizeRetainsTheOldShadow);
+    run("TerrainOrdinaryShadowHistory::LegacyOrdinaryHistoryDoesNotAcquireMissingShadowMaterial",
+        AudastraTest::TerrainOrdinaryShadowHistoryCases::LegacyOrdinaryHistoryDoesNotAcquireMissingShadowMaterial);
+    run("TerrainHistoryShadowReadBudget::PhysicalShadowIsBoundedBeforeReadingAfterTheTenMembers",
+        AudastraTest::TerrainHistoryShadowReadBudgetCases::PhysicalShadowIsBoundedBeforeReadingAfterTheTenMembers);
+    std::cout << "TerrainResizeResources cases: " << passed << " passed, " << failed << " failed\n";
+    return failed ? 1 : 0;
 }
