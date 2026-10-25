@@ -81,42 +81,59 @@ public:
             return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终通行读取不能放宽成员、路径或累计读取上限。");
         std::vector<ArchiveExactMember> result;
         result.reserve(names.size());
-        std::size_t total = 0, pathBytes = 0;
+        std::vector<std::string> keys, fallbackNames;
+        std::vector<std::size_t> fallbackIndices;
+        keys.reserve(names.size()); fallbackNames.reserve(names.size()); fallbackIndices.reserve(names.size());
+        std::size_t total = 0, pathBytes = 0, overlayPathBytes = 0;
         for (const auto& name : names) {
             if (name.size() > limits.pathBytes || name.size() > limits.totalPathBytes - pathBytes)
                 return fail("TERRAIN_FINAL_INPUT_PATH", "最终通行读取路径超过本次预算。");
             pathBytes += name.size();
             auto key = Resources::CanonicalImportPath(name);
             if (!key.Succeeded() || !key.value) return {{}, std::move(key.diagnostics)};
+            if (std::find(keys.begin(), keys.end(), *key.value) != keys.end())
+                return fail("TERRAIN_FINAL_INPUT_READ", "最终通行请求包含重复的规范成员路径。");
             const auto found = std::lower_bound(entries_.begin(), entries_.end(), *key.value,
                 [](const auto& entry, const auto& wanted) { return entry.name < wanted; });
             ArchiveExactMember member{name, false, {}};
             if (found != entries_.end() && found->name == *key.value) {
+                overlayPathBytes += name.size();
                 if (found->bytes) {
                     if (found->bytes->size() > limits.memberBytes || found->bytes->size() > limits.totalBytes - total)
                         return fail("TERRAIN_FINAL_INPUT_BUDGET", "最终覆盖成员超过本次逐项或累计读取上限。");
                     member.present = true; member.bytes = *found->bytes;
+                    total += member.bytes.size();
                 }
             } else {
-                const std::array<std::string, 1> request{name};
-                auto single = limits; single.memberCount = 1; single.totalBytes -= total;
-                auto read = source(request, single);
-                if (!read.Succeeded() || !read.value) return {{}, std::move(read.diagnostics)};
-                if (read.value->size() != 1) return fail("TERRAIN_FINAL_INPUT_READ", "真实来源未返回唯一请求成员。");
-                auto actualKey = Resources::CanonicalImportPath(read.value->front().name);
-                if (!actualKey.Succeeded() || !actualKey.value || *actualKey.value != *key.value)
-                    return fail("TERRAIN_FINAL_INPUT_READ", "真实来源返回的成员与请求不一致。");
-                member = std::move(read.value->front());
+                fallbackIndices.push_back(result.size()); fallbackNames.push_back(name);
             }
-            if ((!member.present && !member.bytes.empty()) || member.bytes.size() > limits.memberBytes
-                || member.bytes.size() > limits.totalBytes - total)
-                return fail("TERRAIN_FINAL_INPUT_READ", "最终视图成员的存在性或累计读取量不一致。");
-            if (*key.value == "WAR3MAP.DOO" && currentDoodads
-                && (!member.present || member.bytes != *currentDoodads))
-                return fail("TERRAIN_FINAL_INPUT_SESSION_MISMATCH", "最终DOO遗漏或改变了本次冻结会话的摆放修改。");
-            total += member.bytes.size();
+            keys.push_back(std::move(*key.value));
             result.push_back(std::move(member));
         }
+        if (!fallbackNames.empty()) {
+            // 同一批真实来源只建立一次读取租约；大图不能每个未覆盖资源都重新散列整张归档。
+            auto fallbackLimits = limits; fallbackLimits.memberCount = fallbackNames.size();
+            fallbackLimits.totalBytes -= total; fallbackLimits.totalPathBytes -= overlayPathBytes;
+            auto read = source(fallbackNames, fallbackLimits);
+            if (!read.Succeeded() || !read.value) return {{}, std::move(read.diagnostics)};
+            if (read.value->size() != fallbackNames.size())
+                return fail("TERRAIN_FINAL_INPUT_READ", "真实来源返回的成员数与本批唯一请求不一致。");
+            for (std::size_t i = 0; i < fallbackIndices.size(); ++i) {
+                const auto index = fallbackIndices[i]; auto& member = (*read.value)[i];
+                auto actualKey = Resources::CanonicalImportPath(member.name);
+                if (!actualKey.Succeeded() || !actualKey.value || *actualKey.value != keys[index])
+                    return fail("TERRAIN_FINAL_INPUT_READ", "真实来源成员重复、顺序或名称与本批请求不一致。");
+                if ((!member.present && !member.bytes.empty()) || member.bytes.size() > limits.memberBytes
+                    || member.bytes.size() > limits.totalBytes - total)
+                    return fail("TERRAIN_FINAL_INPUT_READ", "真实来源成员的存在性或累计读取量不一致。");
+                total += member.bytes.size();
+                result[index].present = member.present; result[index].bytes = std::move(member.bytes);
+            }
+        }
+        for (std::size_t i = 0; i < result.size(); ++i)
+            if (keys[i] == "WAR3MAP.DOO" && currentDoodads
+                && (!result[i].present || result[i].bytes != *currentDoodads))
+                return fail("TERRAIN_FINAL_INPUT_SESSION_MISMATCH", "最终DOO遗漏或改变了本次冻结会话的摆放修改。");
         return Output::Success(std::move(result));
     }
 
