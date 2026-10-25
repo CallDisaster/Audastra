@@ -12,7 +12,7 @@
 #include <map>
 #include <memory>
 
-namespace War3Map::Services { class TerrainPathingSave; class TerrainResizeEditService; class TerrainSessionResources; }
+namespace War3Map::Services { class TerrainPathingSave; class TerrainResizeEditService; class TerrainSessionResources; class TerrainHistorySave; }
 
 namespace War3Map::MapData {
 class MapDataEditSession;
@@ -128,6 +128,7 @@ private:
     friend class Services::TerrainPathingSave;
     friend class Services::TerrainResizeEditService;
     friend class Services::TerrainSessionResources;
+    friend class Services::TerrainHistorySave;
     friend class TerrainSavePlan;
     TerrainPathingResources() = default;
     // 仅内部保存计划可把会话完整W3I的窄域说明修改绑定到最终身份。
