@@ -201,7 +201,7 @@ void SessionSourceCasBudgetAndSingleHistory() {
     auto otherGrid = f.grid; ++otherGrid.vertices[30 * 33 + 30].variationRaw;
     auto otherMembers = f.members; otherMembers[0].data = Take(SerializeMapTerrain(otherGrid));
     auto otherSource = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(f.root / "other-source.w3x", otherMembers)).path));
-    const auto foreignOwner = Take(TerrainPathingResources::CaptureWaterBrushRules(otherSource,
+    const auto foreignOwner = Take(TerrainPathingSave::CaptureWaterBrushRules(otherSource,
         otherGrid, *f.edits->Terrain(), f.doodads, f.game, true, kBudget));
     Require(!f.edits->PrepareTerrainBlockPasteEdit(foreignOwner, intent).Succeeded(),
         "same current input cannot substitute for the actual original source identity");

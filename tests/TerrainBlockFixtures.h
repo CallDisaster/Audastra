@@ -66,7 +66,7 @@ struct BlockFixture : Fixture {
         for (auto& member : members) {
             if (member.name == "TerrainArt/Terrain.slk") member.data = Slk({"tileID", "walkable", "flyable", "buildable"},
                 {{"Tg01", "1", "1", "1"}, {"Tg02", "0", "1", "0"}});
-            if (member.name == "UI/MiscData.txt") member.data = Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
+            if (member.name == "UI/MiscData.txt") member.data = TerrainCornerRampFixtures::Text("[Terrain]\nMaxSlope=90\nMinHeight=-256\nMaxHeight=1536\n"
                 "[Water]\nDeepLevelPathing=64\n[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n");
         }
         source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
