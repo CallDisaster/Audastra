@@ -214,6 +214,13 @@ endforeach()
 target_link_libraries(war3-map-MapBackupInspection-tests PRIVATE audastra-json)
 set_tests_properties(core-map-backup-reparse PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(war3-map-terrain-cliff-material-invariant-tests TerrainCliffMaterialInvariantTests.cpp)
+target_link_libraries(war3-map-terrain-cliff-material-invariant-tests PRIVATE War3MapEditor::Core)
+target_compile_definitions(war3-map-terrain-cliff-material-invariant-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-terrain-cliff-material-invariant-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME core-terrain-cliff-material-invariant COMMAND war3-map-terrain-cliff-material-invariant-tests)
+set_tests_properties(core-terrain-cliff-material-invariant PROPERTIES TIMEOUT 60)
+
 add_executable(war3-map-map-size-analysis-tests MapSizeAnalysisTests.cpp)
 target_link_libraries(war3-map-map-size-analysis-tests PRIVATE War3MapEditor::MapSizeAnalysis)
 target_compile_definitions(war3-map-map-size-analysis-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
