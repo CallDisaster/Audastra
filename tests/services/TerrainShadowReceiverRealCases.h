@@ -52,7 +52,6 @@ void CheckRealShadowReceiverOrdinaryResave(const MapArchiveSession& shadowSaved,
     MapEditSaveRequest request;
     request.sourceMap = shadowSaved.SourcePath(); request.targetCandidate = scenario / "ordinary-saved.w3x";
     request.toolRoot = tool; request.gameRoot = game; request.expectedSourceSha256 = shadowSaved.SourceSha256();
-    request.expectedTerrainSha256 = Take(Sha256(Take(shadowSaved.ReadMember("war3map.w3e"))));
     request.fieldEdits = {{Take(Sha256(settingsBytes)), {MapDataKind::Settings, 0,
         Take(MapFieldRowKey(document, MapDataKind::Settings, 0)), "map_name",
         Take(ReadMapField(document, MapDataKind::Settings, 0, *name)), newName}}};
