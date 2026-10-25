@@ -62,10 +62,19 @@ void CheckRealShadowReceiverOrdinaryResave(const MapArchiveSession& shadowSaved,
     Require(std::equal(rereadShadow.begin(), rereadShadow.end(), shadowBytes.begin(), shadowBytes.end())
         && Take(readback.ReadMember("war3map.w3i")) == expectedSettingsBytes,
         "ordinary save preserves the entire explicitly generated SHD and reads back the complete exact typed W3I edit");
+    Require(receipt.generatedMissingMinimap.has_value(),
+        "ordinary settings save exercises the default automatic minimap policy");
+    const auto minimap = Take(readback.ReadMember("war3mapMap.blp"));
+    const auto decodedMinimap = Take(Image::DecodeBlp(minimap));
+    Require(minimap.size() == receipt.generatedMissingMinimap->encodedBlpBytes
+        && Take(Sha256(minimap)) == receipt.generatedMissingMinimap->encodedBlpSha256
+        && receipt.generatedMissingMinimap->encodedMipCount == 1
+        && decodedMinimap.Valid() && decodedMinimap.width == 256 && decodedMinimap.height == 256,
+        "automatic minimap is a complete decodable single-mip image bound to the actual receipt");
     for (const auto& member : shadowSaved.Members()) {
         const auto memberName = Text::LowerAscii(member.name);
         if (memberName == "war3map.w3i" || memberName == "war3map.j"
-            || memberName == "scripts/war3map.j") continue;
+            || memberName == "scripts/war3map.j" || memberName == "war3mapmap.blp") continue;
         Require(Take(readback.ReadMember(member.name)) == member.data,
             "ordinary resave preserves every unrelated source member byte-for-byte");
     }
@@ -75,11 +84,11 @@ void CheckRealShadowReceiverOrdinaryResave(const MapArchiveSession& shadowSaved,
         && scriptText.find("Real terrain receiver ordinary resave") != std::string_view::npos,
         "ordinary map-name save rebuilds initialization with the actual final map name");
     Require(receipt.appliedFieldEditCount == 1 && receipt.appliedStrokeCount == 0
-        && !receipt.generatedMissingMinimap && receipt.sourceSha256 == shadowSaved.SourceSha256()
+        && receipt.sourceSha256 == shadowSaved.SourceSha256()
         && receipt.candidateSha256 == readback.SourceSha256()
         && receipt.candidateSha256 == Take(Sha256File(receipt.candidate))
         && Take(Sha256File(shadowSaved.SourcePath())) == shadowSaved.SourceSha256(),
-        "ordinary save receipt binds the real source/candidate identities without changing source or minimap");
+        "ordinary save receipt binds the real source/candidate identities without changing the source archive");
 }
 } // namespace
 

@@ -1,6 +1,7 @@
 #include "TerrainShadowRealTests.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
