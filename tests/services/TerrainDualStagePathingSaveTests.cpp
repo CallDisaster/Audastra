@@ -226,6 +226,37 @@ void CompletedParserScratchStillHasAStrictStageBoundary() {
         "只给常驻owner额度不足以跳过本阶段完整codec解析预留");
 }
 
+void PairCaptureUsesAReusableExactBudgetWithBothDependencySets() {
+    for (const bool nativeOverride : {false, true}) {
+        Fixture fixture; fixture.Paint();
+        const auto output = fixture.Final(nativeOverride);
+        const auto revision = fixture.edits->Revision();
+        const auto sourceSha = Take(Sha256File(fixture.archive->SourcePath()));
+        const auto prepare = [&](std::size_t budget) {
+            return TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits,
+                fixture.gameRoot, {budget}, output);
+        };
+        const auto accepted = [](const auto& result) {
+            return result.Succeeded() && result.value && result.value->SaveGate().Succeeded();
+        };
+        // 公开保存工厂不暴露内部pair owner。寻找其精确可用输入额度，再以同一
+        // 额度重建和真实回读；第二分支同时包含G0旧路径与G1新路径的补捕并集。
+        std::size_t lower = 1, upper = kBudget;
+        Require(accepted(prepare(upper)), "owned pair fixture fits the unchanged bounded save budget");
+        while (lower < upper) {
+            const auto middle = lower + (upper - lower) / 2;
+            if (accepted(prepare(middle))) upper = middle;
+            else lower = middle + 1;
+        }
+        auto exact = Take(prepare(upper)); Check(exact.SaveGate());
+        Require(upper > 1 && !accepted(prepare(upper - 1)), "pair exact budget rejects one byte less without authorizing a save");
+        Require(fixture.edits->Revision() == revision
+            && Take(Sha256File(fixture.archive->SourcePath())) == sourceSha,
+            "successful and failed budget probes preserve session and physical source");
+        fixture.Save(exact, output, Fixture::ExpectedPathing(true, 8, true));
+    }
+}
+
 void NewResourcesCannotExplainAnInvalidOldSource() {
     Fixture f;
     // 仅新紫色8格资源才解释得通的旧WPM；旧绿色4格来源必须先被G0拒绝。
@@ -364,6 +395,7 @@ void DirectorySourcesUseTheSameFinalView() {
 int main() {
     try {
         CompletedParserScratchStillHasAStrictStageBoundary();
+        PairCaptureUsesAReusableExactBudgetWithBothDependencySets();
         ActualStaticTextureAndNativeOverridesSaveTogether();
         NewResourcesCannotExplainAnInvalidOldSource();
         NonWalkableDestructableOverridesRemainDynamic();
