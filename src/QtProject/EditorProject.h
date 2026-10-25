@@ -298,6 +298,10 @@ public:
     [[nodiscard]] std::optional<MapCopySaveResult> SaveMapInPlace();
     // 是否有尚未写入地图的修改（触发器、物编、资源）。
     [[nodiscard]] bool HasUnsavedMapChanges() const;
+    // 只标记后台尚未提交的地形操作；不增加文档修订，也不进入撤销或保存历史。
+    // token仅由界面线程持有；提交、失败或取消后销毁，嵌套操作分别释放。
+    [[nodiscard]] std::unique_ptr<QObject> BeginPendingTerrainCommit();
+    [[nodiscard]] bool HasPendingTerrainCommit() const noexcept { return !pendingTerrainCommits_.empty(); }
     // 游戏脚本重建（MapScriptRebuild.cpp）：按当前触发器与编辑后的物编生成整图脚本，经注入 / Wave / 模板 /
     // jasshelper + pjass 检查。准备阶段在界面线程决定工具链是否可用（不可用返回 Skipped），执行阶段在任务里运行。
     enum class ScriptRebuild { Rebuilt, Skipped, Failed };
@@ -375,6 +379,7 @@ public:
     [[nodiscard]] bool IsEditTrackingUiBaselineCurrent(std::uint64_t generation, std::uint64_t revision) const;
 
 signals:
+    void PendingTerrainCommitStateChanged(bool pending);
     void ObjectDocumentsAboutToReplace();
     void ObjectDocumentsReplaced();
     void ObjectCatalogAboutToChange();
@@ -497,6 +502,7 @@ public:
     QTimer* uiLibraryDebounce_ = nullptr;
 
 private:
+    std::set<const QObject*> pendingTerrainCommits_;
     // 只在成功打开/保存提交时捕获一次，不在修改面板刷新时复制整份文档。
     void CaptureContentChangesBaseline();
     std::array<std::unique_ptr<ObjectData::LniObjectDocument>, kObjectTypeCount> changeObjectBaselines_;

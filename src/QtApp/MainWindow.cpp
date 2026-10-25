@@ -440,7 +440,16 @@ void MainWindow::UpdateWindowTitle() {
         .arg(dirty ? QStringLiteral("● ") : QString(), QString::fromStdWString(path.filename().wstring())));
 }
 
+bool MainWindow::CheckPendingTerrainCommit(const QString& action) {
+    if (!project_->HasPendingTerrainCommit()) return true;
+    const auto message = tr("地形操作正在核对并提交，请完成或取消后再%1；本次尚未保存或切换。").arg(action);
+    AddDiagnostic(tr("警告"), tr("地形"), tr("TERRAIN_COMMIT_PENDING"), message);
+    statusBar()->showMessage(message, 10000);
+    return false;
+}
+
 bool MainWindow::ConfirmDiscardPendingEdits(const QString& action, bool allowDiscard) {
+    if (!CheckPendingTerrainCommit(action)) return false;
     // 提交失败的代码仍参加保存 / 放弃提示，用户可明确放弃，无须被无效草稿困住。
     (void)triggersModule_->CommitPendingEdits();
     const bool settingsDraft = settingsModule_->HasPendingDraft();

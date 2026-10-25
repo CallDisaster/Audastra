@@ -211,6 +211,7 @@ QWidget* WorldModule::BuildTerrainBoundsControls(QWidget* parent) {
 
 void WorldModule::InvalidateTerrainBoundsControls() {
     ++terrainBoundsSerial_;
+    terrainBoundsCommitToken_.reset();
     terrainBoundsReadRequest_.reset();
     terrainBoundsRulesSha_.clear();
     if (terrainBoundsStatus_) {
@@ -283,11 +284,16 @@ void WorldModule::StartTerrainBoundsTask(bool apply) {
         result->milliseconds = timer.elapsed();
     });
     terrainBoundsWorker_ = thread;
+    if (apply) terrainBoundsCommitToken_ = project_.BeginPendingTerrainCommit();
     terrainBoundsStatus_->setProperty("outcome", "pending");
     UpdateTerrainBoundsControls();
     terrainBoundsStatus_->setText(apply ? tr("正在准备并核对范围…") : tr("正在读取当前范围…"));
     connect(thread, &QThread::finished, this, [this, thread, ownedRequest, intent, result, serial, generation] {
-        if (terrainBoundsWorker_ == thread) terrainBoundsWorker_ = nullptr;
+        std::unique_ptr<QObject> pendingCommit;
+        if (terrainBoundsWorker_ == thread) {
+            terrainBoundsWorker_ = nullptr;
+            pendingCommit = std::move(terrainBoundsCommitToken_);
+        }
         if (!page_ || serial != terrainBoundsSerial_ || generation != generation_) {
             UpdateTerrainBoundsControls(); return;
         }

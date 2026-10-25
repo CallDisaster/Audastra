@@ -464,6 +464,7 @@ private:
     QPointer<QThread> worker_;
     QPointer<QThread> modelWorker_;
     QPointer<QThread> terrainBoundsWorker_;
+    std::unique_ptr<QObject> terrainBoundsCommitToken_;
     QWidget* terrainBoundsSection_ = nullptr;
     std::array<QSpinBox*, 4> terrainBoundsFields_{}; // 西、南、东、北；地格半开矩形。
     QPushButton* terrainBoundsRead_ = nullptr;
@@ -474,6 +475,7 @@ private:
     std::string terrainBoundsRulesSha_;
     std::uint64_t terrainBoundsSerial_ = 0;
     QPointer<QThread> terrainResizeWorker_;
+    std::unique_ptr<QObject> terrainResizeCommitToken_;
     std::array<QSpinBox*, 4> terrainResizeFields_{};
     QPushButton* terrainResizeRead_ = nullptr;
     QPushButton* terrainResizePreview_ = nullptr;
@@ -620,8 +622,10 @@ private:
         std::shared_ptr<const MapData::MapDataEditSession> frozen;
     };
     std::shared_ptr<const WaterBrushCommit> waterCommit_;
+    std::unique_ptr<QObject> waterCommitToken_;
     bool waterCommitPending_ = false;
     QPointer<QThread> terrainPaletteWorker_; // 资源读取、来源散列和槽候选仅在后台准备。
+    std::unique_ptr<QObject> terrainPaletteCommitToken_;
     std::vector<MapData::TerrainStrokePoint> strokePoints_;
     std::uint64_t terrainRenderSerial_ = 0;
     std::uint64_t viewportRevision_ = 0;

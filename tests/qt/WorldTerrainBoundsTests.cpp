@@ -93,6 +93,7 @@ void WorldTerrainBoundsTests::ControlsRequireCompleteSession() {
     F::Fixture fixture; Install(project, fixture, true); project.MapDocumentChanged();
     QVERIFY(c.read->isEnabled()); QVERIFY(!c.west->isEnabled()); QVERIFY(!c.apply->isEnabled());
     c.read->click(); QVERIFY(c.Busy()); QVERIFY(!c.apply->isEnabled());
+    QVERIFY(!project.HasPendingTerrainCommit());
     // 点击只冻结输入；同一GUI事件中，尚未产生编辑或撤销项。
     QCOMPARE(project.MapEdits()->Revision(), std::uint64_t{0}); QCOMPARE(project.mapDataUndoStack_->count(), 0);
     bool eventLoopResponsive = false;
@@ -122,9 +123,14 @@ void WorldTerrainBoundsTests::AppliesOneTransactionAndUndo() {
     const auto beforeDoodads = F::Take(project.MapEdits()->Snapshot().Doodads()->Serialize());
     c.read->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000); QVERIFY2(c.Ready(), qPrintable(c.status->text()));
     c.Set(2, 3, 30, 29); QVERIFY(c.apply->isEnabled()); c.apply->click();
+    QVERIFY(project.HasPendingTerrainCommit());
+    bool guardedUndo = false;
+    const auto pendingObserver = connect(project.mapDataUndoStack_, &QUndoStack::indexChanged, &module,
+        [&] { guardedUndo = project.HasPendingTerrainCommit(); });
     QCOMPARE(Terrain(project), beforeTerrain); QCOMPARE(project.mapDataUndoStack_->count(), 0);
     QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
     QCOMPARE(c.Outcome(), QStringLiteral("applied")); QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    disconnect(pendingObserver); QVERIFY(guardedUndo); QVERIFY(!project.HasPendingTerrainCommit());
     const auto settings = *project.MapEdits()->Snapshot().Settings();
     QCOMPARE(settings.playableWidth, 28); QCOMPARE(settings.playableHeight, 26);
     const std::array<std::int32_t, 4> margins{2, 2, 3, 3}; QVERIFY(settings.cameraMargins == margins);
@@ -144,6 +150,7 @@ void WorldTerrainBoundsTests::AppliesOneTransactionAndUndo() {
     QCOMPARE(c.west->value(), 2); QCOMPARE(c.north->value(), 29);
     c.apply->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
     QVERIFY2(c.Outcome() == QStringLiteral("unchanged"), qPrintable(c.status->text()));
+    QVERIFY(!project.HasPendingTerrainCommit());
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
     QVERIFY2(c.Ready(), qPrintable(c.status->text()));
     // 当前W3E已与磁盘来源不同；第二个真实命令仍从原source和当前草稿分别捕获，

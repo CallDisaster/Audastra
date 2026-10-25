@@ -78,6 +78,7 @@ QString ChangedMembers(const MapSaveJob& job) {
 
 bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload,
     War3Map::Services::TerrainMinimapSaveChoice minimapChoice, bool rebuildTerrainShadow) {
+    if (!CheckPendingTerrainCommit(testSnapshot ? tr("测试地图") : tr("保存地图"))) return false;
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
     if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
     if (rebuildTerrainShadow && (testSnapshot || testHotReload
@@ -285,6 +286,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
 
 void MainWindow::SaveMapInPlace() {
     if (CurrentModule() == "campaign" && campaignModule_->Session()) { (void)campaignModule_->Save(); return; }
+    if (!CheckPendingTerrainCommit(tr("保存地图"))) return;
     if (project_->archiveSession_ == nullptr) {
         // 从展开目录打开时没有地图归档，Ctrl+S 保存工程。
         if (!project_->projectRoot_.empty()) SaveEditorProject();
@@ -318,6 +320,7 @@ bool MainWindow::SaveAsMapArchive(War3Map::Services::TerrainMinimapSaveChoice mi
             && minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Automatic) return false;
         return campaignModule_->Save(true);
     }
+    if (!CheckPendingTerrainCommit(tr("另存地图"))) return false;
     // 先完成路径选择；取消时不读取、回灌或修改任何会话文档。
     // 恢复副本不提示临时目录；放在作者原图旁边，文件名加“恢复”避免与原图重名（另存为不覆盖已有文件）。
     auto suggested = project_->sourceArchivePath_;

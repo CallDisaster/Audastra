@@ -33,6 +33,9 @@ QString AbsoluteName(const std::filesystem::path& path) {
 Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
     const std::filesystem::path& target, bool recovery,
     std::optional<std::string> expectedRecoveryTargetSha256, std::shared_ptr<ProjectSaveControl> control) {
+    if (HasPendingTerrainCommit())
+        return Result<std::unique_ptr<ProjectSaveJob>>::Failure("工程", "TERRAIN_COMMIT_PENDING",
+            "地形操作正在核对并提交，请完成或取消后再保存工程；尚未冻结恢复内容。");
     const auto fail = [](const QString& message) {
         return Result<std::unique_ptr<ProjectSaveJob>>::Failure("工程", "PROJECT_SAVE_FAILED", message.toStdString());
     };

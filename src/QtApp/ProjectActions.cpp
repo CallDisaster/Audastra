@@ -76,6 +76,7 @@ std::string MainWindow::ProjectFingerprint() const {
 }
 
 bool MainWindow::SaveEditorProjectToPath(const std::filesystem::path& target, bool recovery) {
+    if (!CheckPendingTerrainCommit(tr("保存工程"))) return false;
     if (target.empty() || project_->projectRoot_.empty()) return false;
     if (settingsModule_->HasPendingDraft() && !settingsModule_->ApplyDraft()) return false;
     if (soundsModule_->HasPendingDraft() && !soundsModule_->ApplyPendingDraft()) return false;
@@ -196,6 +197,7 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
 }
 
 void MainWindow::SaveEditorProject() {
+    if (!CheckPendingTerrainCommit(tr("保存工程"))) return;
     if (!project_->projectFilePath_.empty()) {
         (void)SaveEditorProjectToPath(project_->projectFilePath_);
         return;
@@ -204,6 +206,7 @@ void MainWindow::SaveEditorProject() {
 }
 
 void MainWindow::SaveEditorProjectAs() {
+    if (!CheckPendingTerrainCommit(tr("另存工程"))) return;
     const auto suggested = QDir(QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)).filePath(
         "Audastra-" + QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss-zzz") + ".forge");
     const auto path = QFileDialog::getSaveFileName(this, tr("另存编辑工程"), suggested, tr("Audastra 工程 (*.forge)"));
@@ -232,8 +235,8 @@ void MainWindow::ApplyRecoveryPreferences(const War3Map::Agent::RecoveryPreferen
 }
 void MainWindow::WriteRecovery() {
     if (!autoRecoveryEnabled_ || writingRecovery_ || project_->projectRoot_.empty()) return;
-    if (project_->savingMap_) {
-        project_->recoveryTimer_->start(); // 保存地图期间不写恢复点，稍后重试
+    if (project_->savingMap_ || project_->HasPendingTerrainCommit()) {
+        project_->recoveryTimer_->start(); // 保存或待提交地形期间不写恢复点，稍后重试
         return;
     }
     // 提交待应用草稿会同步触发编辑通知；恢复本身不排重复的下一份快照。

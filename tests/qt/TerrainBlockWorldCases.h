@@ -86,7 +86,9 @@ void WorldModuleTests::TerrainBlockPasteFreezesSourceAndUsesSharedUndo() {
     QCOMPARE(project.mapDataUndoStack_->count(), 0);
     QCOMPARE(TerrainCornerRampFixtures::Take(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
     viewport->PlaceRequested(2561, 2561, false);
+    QVERIFY(project.HasPendingTerrainCommit());
     QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
+    QVERIFY(!project.HasPendingTerrainCommit());
     const auto copied = TerrainCornerRampFixtures::Take(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
     QVERIFY(copied != original);
     const auto& before = fixture.grid; const auto& after = *project.mapEdits_->Terrain();

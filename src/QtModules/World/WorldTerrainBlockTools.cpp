@@ -148,6 +148,7 @@ void WorldModule::PasteTerrainBlock(double x, double y) {
     terrainBlockSelecting_ = true;
     if (terrainToggle_) terrainToggle_->setEnabled(false);
     waterCommit_ = std::make_shared<WaterBrushCommit>(WaterBrushCommit{capture, intent, {}, false, std::move(*frozen.value)});
+    waterCommitToken_ = project_.BeginPendingTerrainCommit();
     waterCommitPending_ = true; ++terrainRenderSerial_; pendingTerrainRender_.reset();
     terrainBlockStatus_->setText(tr("正在准备地形块；源区域已变化时会拒绝，可重新复制"));
     selectionStatus_->setText(tr("正在核验并准备地形块…"));

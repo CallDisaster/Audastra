@@ -74,6 +74,7 @@ QWidget* WorldModule::BuildTerrainResizeControls(QWidget* parent) {
 
 void WorldModule::InvalidateTerrainResizeControls() {
     ++terrainResizeSerial_; terrainResizeReadRequest_.reset(); terrainResizeChecked_.reset(); terrainResizeRulesSha_.clear();
+    terrainResizeCommitToken_.reset();
     if (terrainResizeStatus_) {
         terrainResizeStatus_->setProperty("outcome", "stale");
         terrainResizeStatus_->setText(tr("地图或修订已变化，请重新读取当前尺寸。"));
@@ -137,10 +138,15 @@ void WorldModule::StartTerrainResizeTask(TerrainResizeAction action) {
         *result = QtProject::PrepareTerrainResizeEditCapture(owned, frozen, ResizeDocument(*owned), intent, expectedRules, limits);
     });
     terrainResizeWorker_ = thread; terrainResizeStatus_->setProperty("outcome", "pending");
+    if (action == TerrainResizeAction::Apply) terrainResizeCommitToken_ = project_.BeginPendingTerrainCommit();
     UpdateTerrainResizeControls(); UpdateTerrainBoundsControls();
     terrainResizeStatus_->setText(action == TerrainResizeAction::Read ? tr("正在读取实际尺寸规则与内容…") : tr("正在检查尺寸、内容占地和派生来源…"));
     connect(thread, &QThread::finished, this, [this, thread, owned, intent, result, serial, generation, action] {
-        if (terrainResizeWorker_ == thread) terrainResizeWorker_ = nullptr;
+        std::unique_ptr<QObject> pendingCommit;
+        if (terrainResizeWorker_ == thread) {
+            terrainResizeWorker_ = nullptr;
+            pendingCommit = std::move(terrainResizeCommitToken_);
+        }
         UpdateTerrainBoundsControls();
         if (!page_ || serial != terrainResizeSerial_ || generation != generation_) { UpdateTerrainResizeControls(); return; }
         const auto current = [&] { return !project_.savingMap_ && project_.mapDataUndoStack_ && project_.mapEdits_

@@ -310,6 +310,7 @@ private:
         const QString& code,
         const QString& message);
     void ResetProjectState();
+    [[nodiscard]] bool CheckPendingTerrainCommit(const QString& action);
     [[nodiscard]] bool ConfirmDiscardPendingEdits(const QString& action, bool allowDiscard = true);
 
     QLineEdit* globalSearch_ = nullptr;

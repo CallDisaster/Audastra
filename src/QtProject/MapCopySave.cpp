@@ -193,6 +193,8 @@ std::filesystem::path EditorProject::AuthorMapPath() const {
 }
 
 bool EditorProject::HasUnsavedMapChanges() const {
+    // 待提交操作也不能让测试入口误用旧地图；它仍不冒充已提交的修订。
+    if (HasPendingTerrainCommit()) return true;
     // 标题/退出使用同一可信Map修订；相同raw字节仍可能有待保存的可撤销前缀。
     // 不能在Ctrl+S入口将其误判为空而使脏状态永远无法提交。
     if (editTrackingReady_ && !editTrackingFailed_ && editRevision_.IsDirty(EditSaveTarget::Map)) return true;
@@ -216,6 +218,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         AddDiagnostic(tr("错误"), tr("地图"), code, message);
         return std::unique_ptr<MapSaveJob>{};
     };
+    if (HasPendingTerrainCommit())
+        return fail(tr("TERRAIN_COMMIT_PENDING"), tr("地形操作正在核对并提交，请完成或取消后再保存地图；尚未冻结保存内容。"));
     const bool explicitMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
         || minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
     const bool automaticMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::Automatic;

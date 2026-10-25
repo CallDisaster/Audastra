@@ -3639,7 +3639,16 @@ void WorldModuleTests::TerrainWaterBrushUsesFrozenPrefixAndSharedUndo() {
         QCOMPARE(status->property("captureCount").toULongLong(), captures);
         Mouse(*viewport, QEvent::MouseButtonRelease, releasePoint, Qt::LeftButton, Qt::NoButton);
         QCOMPARE(finished.count(), stroke + 1); QCOMPARE(cancelled.count(), 0);
+        QVERIFY(project.HasPendingTerrainCommit());
+        const auto pendingRevision = project.mapEdits_->Revision();
+        bool guardedUndo = false;
+        const auto pendingObserver = connect(project.mapDataUndoStack_, &QUndoStack::indexChanged, page,
+            [&] { guardedUndo = project.HasPendingTerrainCommit(); });
         QTRY_COMPARE(project.mapDataUndoStack_->count(), stroke + 1);
+        disconnect(pendingObserver);
+        QVERIFY(guardedUndo);
+        QVERIFY(!project.HasPendingTerrainCommit());
+        QVERIFY(project.mapEdits_->Revision() > pendingRevision);
         saved[stroke + 1] = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
         QCOMPARE(saved[stroke + 1], Tests::WaterTake(MapData::SerializeMapTerrain(expected.terrain)));
         QVERIFY(saved[stroke + 1] != saved[stroke]);
@@ -3736,6 +3745,7 @@ void WorldModuleTests::TerrainWaterBrushRejectsChangedGameResources() {
     // 没有地图来源通知，Session和project修订也没变；实际游戏规则仍必须重新核对。
     viewport->TerrainStrokeStarted(384, 384); viewport->TerrainStrokeFinished();
     QTRY_VERIFY(status->property("verifyMilliseconds").isValid());
+    QVERIFY(!project.HasPendingTerrainCommit());
     QCOMPARE(project.mapDataUndoStack_->count(), 0);
     QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
     QTRY_VERIFY(toggle->isEnabled());
@@ -3774,6 +3784,7 @@ void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
     // 预览已完成，松手启动后台复核；在允许回调执行前取消或切图。
     viewport->TerrainStrokeFinished();
     QVERIFY(!toggle->isEnabled());
+    QVERIFY(project.HasPendingTerrainCommit());
     QVERIFY(!module.PrepareNavigationLeave());
     if (mode == 0) {
         // 同步走真实键盘入口；不让QTest配置的键盘延迟先派发后台finished。
@@ -3796,6 +3807,7 @@ void WorldModuleTests::TerrainWaterBrushDropsCancelledCommit() {
     QVERIFY(!toggle->isChecked());
     QCOMPARE(place->isChecked(), mode == 2);
     QVERIFY(module.PrepareNavigationLeave());
+    QVERIFY(!project.HasPendingTerrainCommit());
 }
 
 void WorldModuleTests::TerrainRemoveWaterUsesOrdinaryStrokeAndUndo() {
@@ -4107,10 +4119,15 @@ void WorldModuleTests::TerrainTextureSlotUsesSharedTransaction() {
         }
     });
     replace->click(); QVERIFY(accepted);
+    QVERIFY(project.HasPendingTerrainCommit());
+    bool guardedUndo = false;
+    const auto pendingObserver = connect(project.mapDataUndoStack_, &QUndoStack::indexChanged, page,
+        [&] { guardedUndo = project.HasPendingTerrainCommit(); });
     QTRY_VERIFY(!page->property("terrainPalettePending").toBool());
     QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("applied"));
     QCOMPARE(project.mapEdits_->Terrain()->header.groundTilesets.front(), std::string("Tg02"));
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    disconnect(pendingObserver); QVERIFY(guardedUndo); QVERIFY(!project.HasPendingTerrainCommit());
     const auto exported = project.mapEdits_->ExportTerrainStrokeJournal(); QVERIFY(exported.Succeeded());
     QVERIFY(exported.value); QVERIFY(!exported.value->strokes.empty());
     QVERIFY(exported.value->strokes.front().intent.palette.has_value());
@@ -4176,6 +4193,7 @@ void WorldModuleTests::TerrainTextureSlotWorkerRejectsStale() {
     auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
     AcceptTerrainPaletteDialog(page, QStringLiteral("Tg02")); replace->click();
     QVERIFY(page->property("terrainPalettePending").toBool());
+    QVERIFY(project.HasPendingTerrainCommit());
     if (change == 0) QVERIFY(project.mapEdits_->EditTerrainTextureSlot(MapData::TerrainTextureTable::Ground, 0, "Tg03").Succeeded());
     if (change == 1) project.savingMap_ = true;
     if (change == 2) {
@@ -4187,6 +4205,7 @@ void WorldModuleTests::TerrainTextureSlotWorkerRejectsStale() {
     const auto expected = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
     QTRY_VERIFY(!page->property("terrainPalettePending").toBool());
     QCOMPARE(page->property("terrainPaletteOutcome").toString(), QStringLiteral("stale"));
+    QVERIFY(!project.HasPendingTerrainCommit());
     QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), expected);
     QCOMPARE(project.mapDataUndoStack_->count(), 0); project.savingMap_ = false;
 }
@@ -4201,8 +4220,10 @@ void WorldModuleTests::TerrainTextureSlotWorkerSurvivesModuleDestruction() {
     auto* replace = page->findChild<QPushButton*>("worldTerrainReplaceTexture"); QVERIFY(replace);
     AcceptTerrainPaletteDialog(page, QStringLiteral("Tg02")); replace->click();
     QPointer<QThread> worker = module->findChild<QThread*>("worldTerrainPaletteWorker"); QVERIFY(worker);
+    QVERIFY(project.HasPendingTerrainCommit());
     const auto original = Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain()));
     module.reset(); state.viewport = nullptr;
+    QVERIFY(!project.HasPendingTerrainCommit());
     QTRY_VERIFY(worker.isNull());
     QCOMPARE(Tests::WaterTake(MapData::SerializeMapTerrain(*project.mapEdits_->Terrain())), original);
     QCOMPARE(project.mapDataUndoStack_->count(), 0);

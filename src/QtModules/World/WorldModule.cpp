@@ -469,6 +469,7 @@ void WorldModule::Refresh() {
     // 关闭视口笔刷会同步发出取消信号；切图时先清本笔，不能重新排队旧地图快照。
     strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
     waterCommit_.reset(); waterCommitPending_ = false;
+    waterCommitToken_.reset(); terrainPaletteCommitToken_.reset();
     StopTerrainBlockTool(true);
     InvalidateWaterBrushCapture();
     resumeBrushAfterRender_ = false;

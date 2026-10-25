@@ -1024,6 +1024,7 @@ void WorldModule::FinishTerrainStroke() {
         // toggled(false)同步调用Cancel；先关控件，再发布pending事务，避免自行取消。
         terrainToggle_->setChecked(false); terrainToggle_->setEnabled(false);
         waterCommit_ = std::move(commit); waterCommitPending_ = true;
+        waterCommitToken_ = project_.BeginPendingTerrainCommit();
         terrainWaterBrushStatus_->setText(tr("正在核对本笔地形规则…"));
         StartTerrainRender(); return;
     }
@@ -1067,6 +1068,8 @@ void WorldModule::StartWaterBrushCommit() {
         if (reloadQueued_) { Refresh(); return; }
         if (!page_ || generation != generation_) return;
         if (waterCommit_ != request) { StartTerrainRender(); return; }
+        // 只接管本次事务的token；一直保留到Apply、观察修订及撤销入栈全部完成。
+        auto pendingCommit = std::move(waterCommitToken_);
         waterCommit_.reset();
         terrainWaterBrushStatus_->setProperty("verifyMilliseconds", *elapsed);
         const bool block = std::holds_alternative<MapData::TerrainBlockPasteIntent>(request->brush);
@@ -1242,6 +1245,7 @@ void WorldModule::ResolveStrandedUnits(std::shared_ptr<const MapData::TerrainGri
 void WorldModule::CancelTerrainStroke() {
     const bool pendingWater = waterCommit_ != nullptr;
     waterCommit_.reset(); waterCommitPending_ = false;
+    waterCommitToken_.reset();
     if (!strokeBase_ && !pendingWater) return;
     strokeBase_.reset(); strokePoints_.clear(); strokeWaterBrush_.reset(); strokeWaterCapture_.reset();
     if (strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction) {
@@ -1318,11 +1322,16 @@ void WorldModule::EditTerrainTextureSlot(bool cliff, bool append) {
     });
     thread->setObjectName(QStringLiteral("worldTerrainPaletteWorker")); thread->setParent(this);
     terrainPaletteWorker_ = thread;
+    terrainPaletteCommitToken_ = project_.BeginPendingTerrainCommit();
     page_->setProperty("terrainPalettePending", true); page_->setProperty("terrainPaletteOutcome", "pending");
     selectionStatus_->setText(tr("正在读取并核对贴图槽来源…"));
     connect(thread, &QThread::finished, this, [this, thread, ownedRequest, prepared, generation, append, before, source,
         sessionIdentity, projectGeneration, projectRevision, root, archivePath] {
-        if (terrainPaletteWorker_ == thread) terrainPaletteWorker_ = nullptr;
+        std::unique_ptr<QObject> pendingCommit;
+        if (terrainPaletteWorker_ == thread) {
+            terrainPaletteWorker_ = nullptr;
+            pendingCommit = std::move(terrainPaletteCommitToken_);
+        }
         if (!page_ || generation != generation_) return;
         page_->setProperty("terrainPalettePending", false);
         const auto current = [&] {

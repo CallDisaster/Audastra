@@ -54,13 +54,14 @@ void WorldTerrainBoundsTests::ResizeControlsUseActualRulesAndSingleUndo() {
     const auto sourceSha = R::Take(Sha256File(fixture.archive->SourcePath()));
     QVERIFY(c.read->isEnabled()); QVERIFY(!c.preview->isEnabled()); QVERIFY(!c.apply->isEnabled());
     c.read->click(); QVERIFY(c.Busy());
+    QVERIFY(!project.HasPendingTerrainCommit());
     QCOMPARE(project.mapDataUndoStack_->count(), 0);
     QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000); QVERIFY2(c.Ready(), qPrintable(c.status->text()));
     QCOMPARE(c.west->value(), 0); QCOMPARE(c.south->value(), 0);
     QCOMPARE(c.east->value(), 32); QCOMPARE(c.north->value(), 32);
     c.Set(-1, 0, 32, 32); QVERIFY(!c.preview->isEnabled());
     c.Set(-32, -32, 32, 32); QVERIFY(c.preview->isEnabled()); QVERIFY(!c.apply->isEnabled());
-    c.preview->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
+    c.preview->click(); QVERIFY(!project.HasPendingTerrainCommit()); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
     QVERIFY2(c.Outcome() == QStringLiteral("previewed"), qPrintable(c.status->text()));
     QCOMPARE(ResizeWorldCases::Terrain(project), beforeTerrain);
     QCOMPARE(project.mapDataUndoStack_->count(), 0); QVERIFY(c.apply->isEnabled());
@@ -69,9 +70,14 @@ void WorldTerrainBoundsTests::ResizeControlsUseActualRulesAndSingleUndo() {
     c.Set(-32, -32, 32, 32); QVERIFY(!c.apply->isEnabled());
     c.preview->click(); QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000); QVERIFY(c.apply->isEnabled());
     c.apply->click(); QCOMPARE(project.mapDataUndoStack_->count(), 0);
+    QVERIFY(project.HasPendingTerrainCommit());
+    bool guardedUndo = false;
+    const auto pendingObserver = connect(project.mapDataUndoStack_, &QUndoStack::indexChanged, &module,
+        [&] { guardedUndo = project.HasPendingTerrainCommit(); });
     QTRY_VERIFY_WITH_TIMEOUT(!c.Busy(), 15000);
     QVERIFY2(c.Outcome() == QStringLiteral("applied"), qPrintable(c.status->text()));
     QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    disconnect(pendingObserver); QVERIFY(guardedUndo); QVERIFY(!project.HasPendingTerrainCommit());
     QCOMPARE(ResizeWorldCases::Terrain(project), R::TerrainLiteral(-32, -32, 32, 32));
     const auto shadow = project.MapEdits()->TerrainResizeShadowDraft();
     QVERIFY(shadow.Succeeded() && shadow.value->present);

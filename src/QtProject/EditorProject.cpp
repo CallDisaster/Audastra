@@ -67,6 +67,18 @@ EditorProject::~EditorProject() {
     disconnect(projectWatch_, nullptr, this, nullptr);
 }
 
+std::unique_ptr<QObject> EditorProject::BeginPendingTerrainCommit() {
+    auto token = std::make_unique<QObject>();
+    const bool wasPending = HasPendingTerrainCommit();
+    pendingTerrainCommits_.insert(token.get());
+    connect(token.get(), &QObject::destroyed, this, [this](QObject* completed) {
+        if (pendingTerrainCommits_.erase(completed) != 0 && !HasPendingTerrainCommit())
+            emit PendingTerrainCommitStateChanged(false);
+    });
+    if (!wasPending) emit PendingTerrainCommitStateChanged(true);
+    return token;
+}
+
 void EditorProject::ReplaceTriggerDocument(std::unique_ptr<Trigger::TriggerDocument> document) {
     emit TriggerDocumentAboutToChange();
     guiConversionSnapshots_.Clear();

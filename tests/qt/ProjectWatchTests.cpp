@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 #include "ObjectModule.h"
+#include "MapSaveJob.h"
+#include "ProjectSaveJob.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
@@ -8,13 +10,19 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFileDialog>
 #include <QFileSystemWatcher>
 #include <QLabel>
 #include <QPushButton>
 #include <QSettings>
+#include <QSignalSpy>
+#include <QStatusBar>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QToolBar>
+#include <QTimer>
+
+#include <algorithm>
 
 const char* kWar3MapBuildStamp = "project-watch-integration-test";
 
@@ -47,7 +55,82 @@ private slots:
     void RecoveryNoticeRespectsStartupModeAndPreservesSnapshot();
     void InvalidRecoveryPreservesOpenSession();
     void WatchBudgetIsVisibleAndResetClearsObservation();
+    void PendingTerrainCommitProtectsSaveCloseAndSwitch();
+    void PendingTerrainCommitTokensDoNotChangeRevision();
 };
+
+void ProjectWatchTests::PendingTerrainCommitTokensDoNotChangeRevision() {
+    auto project = std::make_unique<War3Map::QtProject::EditorProject>();
+    const auto generation = project->editRevision_.Generation();
+    const auto revision = project->editRevision_.Revision();
+    QSignalSpy changed(project.get(), &War3Map::QtProject::EditorProject::PendingTerrainCommitStateChanged);
+    auto first = project->BeginPendingTerrainCommit();
+    auto second = project->BeginPendingTerrainCommit();
+    QVERIFY(project->HasPendingTerrainCommit());
+    QCOMPARE(changed.count(), 1); QCOMPARE(changed.front().front().toBool(), true);
+    first.reset(); QVERIFY(project->HasPendingTerrainCommit()); QCOMPARE(changed.count(), 1);
+    second.reset(); QVERIFY(!project->HasPendingTerrainCommit());
+    QCOMPARE(changed.count(), 2); QCOMPARE(changed.back().front().toBool(), false);
+    QCOMPARE(project->editRevision_.Generation(), generation);
+    QCOMPARE(project->editRevision_.Revision(), revision);
+    // 窗口/工程先析构时，独立token也不得回调已销毁的工程。
+    first = project->BeginPendingTerrainCommit(); project.reset(); first.reset();
+}
+
+void ProjectWatchTests::PendingTerrainCommitProtectsSaveCloseAndSwitch() {
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto root = fixture.filePath("workspace"), other = fixture.filePath("other");
+    QVERIFY(Write(root + "/table/unit.ini", kUnit)); QVERIFY(Write(other + "/table/unit.ini", kUnit));
+    MainWindow window(MainWindow::StartupMode::HeadlessProbe);
+    QVERIFY(window.OpenWorkspacePath(NativePath(root)));
+    const auto source = window.project_->projectRoot_;
+    const auto generation = window.project_->editRevision_.Generation();
+    const auto revision = window.project_->editRevision_.Revision();
+    const auto target = NativePath(fixture.filePath("pending.forge"));
+    auto pending = window.project_->BeginPendingTerrainCommit();
+    QVERIFY(window.project_->HasUnsavedMapChanges());
+    QVERIFY(!window.project_->PrepareMapSave(NativePath(fixture.filePath("pending.w3x")), false));
+    const auto prepared = window.project_->PrepareProjectSave(target, false);
+    QVERIFY(!prepared.Succeeded() && !prepared.value);
+    QVERIFY(std::any_of(prepared.diagnostics.begin(), prepared.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_COMMIT_PENDING";
+    }));
+    QVERIFY(!window.SaveEditorProjectToPath(target));
+    QVERIFY(!window.SaveMapArchiveToPath(NativePath(fixture.filePath("pending.w3x"))));
+    window.SaveMapInPlace();
+    QVERIFY(window.statusBar()->currentMessage().contains(QString::fromUtf8("地形操作正在核对并提交")));
+    // 若入口回归，及时关闭多余对话框并明确失败，避免把本测试变成等待用户输入。
+    bool openedDialog = false;
+    QTimer dialogCloser;
+    connect(&dialogCloser, &QTimer::timeout, &window, [&] {
+        for (auto* widget : QApplication::topLevelWidgets()) if (auto* dialog = qobject_cast<QFileDialog*>(widget)) {
+            if (dialog->isVisible()) { openedDialog = true; dialog->reject(); }
+        }
+    });
+    dialogCloser.start(1);
+    window.SaveEditorProjectAs();
+    QVERIFY(!window.SaveAsMapArchive());
+    dialogCloser.stop(); QVERIFY(!openedDialog);
+    window.WriteRecovery();
+    QVERIFY(!window.writingRecovery_);
+    QVERIFY(window.project_->recoveryTimer_->isActive());
+    window.project_->recoveryTimer_->stop();
+    QVERIFY(!window.ConfirmDiscardPendingEdits(QString::fromUtf8("关闭")));
+    QVERIFY(!window.close());
+    QVERIFY(!window.OpenWorkspacePath(NativePath(other)));
+    QCOMPARE(window.project_->projectRoot_, source);
+    QCOMPARE(window.project_->editRevision_.Generation(), generation);
+    QCOMPARE(window.project_->editRevision_.Revision(), revision);
+    QVERIFY(!QFileInfo::exists(QString::fromStdWString(target.wstring())));
+    QVERIFY(!QFileInfo::exists(fixture.filePath("pending.w3x")));
+    pending.reset();
+    QVERIFY(!window.project_->HasPendingTerrainCommit());
+    QVERIFY(window.SaveEditorProjectToPath(target));
+    QVERIFY(QFileInfo::exists(QString::fromStdWString(target.wstring())));
+    QVERIFY(window.ConfirmDiscardPendingEdits(QString::fromUtf8("关闭")));
+    QVERIFY(window.OpenWorkspacePath(NativePath(other)));
+    QCOMPARE(window.project_->projectRoot_, NativePath(other));
+}
 
 void ProjectWatchTests::DirectoryEventsDoNotDiscardEdits() {
     QTemporaryDir fixture;
