@@ -1280,8 +1280,8 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
             "missing-only height save preserves its script and receipts only the real terrain operation");
         verifyHeightOutput(saved, receipt, baselineTerrain);
     };
-    const std::array<std::string, 6> preservedNames{
-        "war3map.shd", "war3map.mmp", "war3map.wtg", "war3map.wct", "war3map.j", "war3map.doo"};
+    const std::array<std::string, 5> preservedNames{
+        "war3map.shd", "war3map.wtg", "war3map.wct", "war3map.j", "war3map.doo"};
     const auto originalIdentities = source.value->DescribeExactMemberIdentities(source.value->SourceSha256(), preservedNames);
     Require(originalIdentities.Succeeded() && originalIdentities.value, "freeze exact original member identities and absence");
     MapEditSaveRequest request;
@@ -1318,6 +1318,11 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(preservedIdentity.Succeeded() && preservedIdentity.value
         && !preservedIdentity.value->members[0].present, "default save retains exact MapBLP absence");
     const auto verifyPreservedMembers = [&](const MapArchiveSession& saved, bool scriptUnchanged = true) {
+        // 此样例只含一名普通步兵，没有矿点、商店或开始位置。正常保存独立重建
+        // MMP，与作者底图的Preserve策略无关；完整v0/count0必须是八个零字节。
+        const auto markers = saved.ReadMember("war3map.mmp");
+        Require(markers.Succeeded() && markers.value && *markers.value == std::vector<std::byte>(8, std::byte{0}),
+            "ordinary-unit fixture rebuilds exact empty MMP while preserving the author's minimap choice");
         const auto identities = saved.DescribeExactMemberIdentities(saved.SourceSha256(), preservedNames);
         Require(identities.Succeeded() && identities.value, "independent exact old-member readback");
         for (std::size_t index = 0; index < preservedNames.size(); ++index) {
@@ -1325,7 +1330,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
             const auto& before = originalIdentities.value->members[index];
             const auto& after = identities.value->members[index];
             Require(before.present == after.present && before.byteSize == after.byteSize && before.sha256 == after.sha256,
-                "SHD/MMP/WTG/WCT/JASS/DOO must retain original bytes or proven absence");
+                ("SHD/WTG/WCT/JASS/DOO must retain original bytes or proven absence: " + preservedNames[index]).c_str());
         }
     };
     verifyPreservedMembers(*preservedArchive.value, false);
@@ -1400,8 +1405,9 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     Require(copySaved.Succeeded() && copySaved.value,
         "默认Automatic只做单位复制必须不再命中MAP_TERRAIN_ATTACH_LATE");
 
-    // 原创特殊装饰物尚不受小地图生成器支持；仅改单位生命的正常保存
-    // 必须保留作者小地图（或其准确缺失），不能因生成器能力不足拒绝整次保存。
+    // 特殊地形装饰物不绘入普通对象色层，其存在不再导致能力回退。
+    // 同时加入实际目录不存在的普通对象，验证真正无法取色时仍保留原图，
+    // 并让单位生命值修改正常写出，不依赖special旧拒绝来制造回退。
     for (const bool existingMinimap : {false, true}) {
         auto specialMembers = members;
         MapData::DoodadPlacements specialLayer;
@@ -1410,6 +1416,12 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
             placement.rawcode = "SPC1"; placement.position = {index, 1};
             specialLayer.specialDoodads.push_back(placement);
         }
+        MapData::DoodadPlacement unknownObject;
+        unknownObject.rawcode = "ZZZ1";
+        unknownObject.position = {128.0f, 128.0f, 0.0f};
+        unknownObject.scale = {1.0f, 1.0f, 1.0f};
+        unknownObject.creationId = 1;
+        specialLayer.doodads.push_back(unknownObject);
         const auto specialDoo = specialLayer.Serialize();
         auto specialUnits = unitLayer;
         specialUnits.units.front().hitPoints = 0;
@@ -1455,7 +1467,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
         if (!specialSaved.Succeeded()) for (const auto& note : specialSaved.diagnostics)
             std::cerr << "special doodad Automatic save: " << note.code << ": " << note.message << '\n';
         Require(specialSaved.Succeeded() && specialSaved.value && !specialSaved.value->generatedMissingMinimap,
-            "unsupported special doodad minimap must not block ordinary unit field save");
+            "unsupported ordinary minimap object alongside special terrain must not block unit field save");
         Require(std::any_of(specialSaved.diagnostics.begin(), specialSaved.diagnostics.end(), [](const auto& diagnostic) {
             return diagnostic.severity == DiagnosticSeverity::Warning && diagnostic.code == "MINIMAP_GENERATION_SKIPPED";
         }), "special doodad save must report the minimap generation skip as a warning");
