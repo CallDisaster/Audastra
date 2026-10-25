@@ -39,7 +39,7 @@
 
 撤销扩裁会恢复修改前阴影文件的存在状态：原来没有 `war3map.shd`，撤销并保存后仍没有该成员；重新执行扩裁也不会凭空创建阴影。原有阴影在内存撤销时保留原始字节，写入地图时按原版规则把非零阴影值统一写为 `FF`。显式重新计算阴影是一次保存动作，不会被伪装成扩裁命令的一部分。
 
-命令行 `map-edit-save` 可追加 `--terrain-resize west south east north`。MCP 正常地图保存的 `terrain_strokes` 使用 `kind:"canvas_resize"` 和这四条边；实时编辑使用 `edit_terrain_resize`，回传当前地形绑定，并可先 `dry_run`。这些入口从实际游戏和地图资源取得规则，不接受调用方提供最终成员字节或来源认证。上述保存回读与工程恢复仍需分别进行原版编辑器重开及游戏验证。
+命令行 `map-edit-save` 可追加 `--terrain-resize west south east north`；四条边须为有符号整数，新宽为 `east-west`，新高为 `north-south`。它与其它地形命令按参数顺序执行，每次扩裁都以该命令执行前的西南角为基准，共用最多128条地形命令的限制。MCP 正常地图保存的 `terrain_strokes` 使用 `kind:"canvas_resize"` 和这四条边；实时编辑使用 `edit_terrain_resize`，回传当前地形绑定，并可先 `dry_run`。这些入口从实际游戏和地图资源取得规则，不接受调用方提供最终成员字节或来源认证。`get_terrain_edit_state` 返回的 `width`、`height` 是顶点数，目前不返回扩裁的实际资源尺寸上限；新尺寸是否可用须由预览检查确认，不能把当前地图尺寸当作扩裁限制。上述保存回读与工程恢复仍需分别进行原版编辑器重开及游戏验证。
 
 命令行的正常 `map-edit-save` 可追加 `--terrain-bounds west south east north`，与其它地形操作按参数顺序执行。MCP 的正常地图保存可在 `terrain_strokes` 中使用 `{"kind":"playable_bounds","west":1,"south":1,"east":9,"north":7}`；四项须为整数，不接受点数组、客户端规则或搬动对象选项。编辑器内的 `edit_terrain_bounds` 使用当前会话绑定，可先 `dry_run` 预览；独立目录补丁不重建游戏脚本，因此不会将这项修改伪装为已完成地图保存。
 
