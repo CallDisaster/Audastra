@@ -88,6 +88,12 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
         reserve(types.size(), perType);
         // vector按至多双倍容量计费；重复实例仍必须完整参与，不能只按rawcode计一次。
         reserve(placements.size() + (afterPlacements ? afterPlacements->size() : 0), 2 * sizeof(Instance));
+        if (resizeSpatial_) {
+            // resize只捕获一个当前完整阶段；所有普通记录的实际完整占地逐一保留。
+            if (afterPlacements) Fail("TERRAIN_RESIZE_SOURCE", "尺寸空间捕获不能混入不同的普通对象阶段。");
+            reserve(placements.size(), 2 * (sizeof(SpatialFootprint) + 8));
+            spatialFootprints_.reserve(placements.size());
+        }
         const auto width = std::size_t{header.width - 1} * 4;
         const auto height = std::size_t{header.height - 1} * 4;
         reserve(width, height);
@@ -161,6 +167,9 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                 for (const auto& instance : instances) {
                     const auto snapCells = instance.type->gridPolicy == TerrainDoodadGridPolicy::StartupCategoryC
                         ? nativeCategoryDirectory_->CategoryCSnapCells() : std::uint8_t{2};
+                    if (resizeSpatial_) spatialFootprints_.push_back({instance.placement->rawcode,
+                        instance.placement->creationId, Take(QueryDoodadFootprintRectangle(header,
+                            *instance.placement, footprint, snapCells, instance.type->fixedRotationDegrees))});
                     auto& attributes = instance.after ? *nativeAfterStaticAttributes_ : nativeStaticAttributes_;
                     auto status = AddDoodadFootprint(attributes, header,
                         *instance.placement, footprint, snapCells, instance.type->fixedRotationDegrees,
@@ -245,12 +254,13 @@ Status TerrainPathingResources::CaptureSpecialFootprints(const MemberReader& rea
             inputs.push_back({&placement, found->second.path.empty() ? std::nullopt
                 : std::optional{images.at(found->second.path).decoded}});
         }
-        if (waterBrushRules_) {
+        if (waterBrushRules_ || resizeSpatial_) {
             const auto remaining = capturedMaximumBytes_ - sourceBytes_ - objectWorkBytes_;
             waterSpecialShapes_ = Take(DescribeTerrainSpecialDoodads(terrain, inputs, maximumCliffLevel, remaining));
             reserve(waterSpecialShapes_.capacity(), sizeof(TerrainWaterSpecialDoodadShape));
             for (const auto& shape : waterSpecialShapes_) reserve(shape.relativeCliffLevels.capacity() + shape.rawcode.capacity() + 1, 1);
-        } else {
+        }
+        if (!waterBrushRules_) {
             nativeSpecialAttributes_[stage] = Take(BuildTerrainSpecialDoodadPathing(terrain, terrain, inputs, maximumCliffLevel, capturedMaximumBytes_));
             reserve(nativeSpecialAttributes_[stage].capacity() - width * height, 1);
             nativeSpecialCount_[stage] = placements.size();

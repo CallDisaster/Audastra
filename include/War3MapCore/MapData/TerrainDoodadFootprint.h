@@ -43,6 +43,13 @@ struct TerrainDoodadFootprintImage {
 [[nodiscard]] Result<TerrainDoodadFootprintImage> DecodeDoodadFootprintBlpBudgeted(
     std::span<const std::byte> bytes, std::size_t maximumWorkingBytes);
 
+// 与Add共用同一吸附/四方向投影，返回未裁剪的通行格半开框[x0,y0,x1,y1]。
+// 不分配完整通行层，不把零RGB边缘忽略；来源和对象类型仍须实际owner证明。
+[[nodiscard]] Result<std::array<std::int64_t, 4>> QueryDoodadFootprintRectangle(
+    const TerrainHeader& terrain, const DoodadPlacement& placement,
+    const TerrainDoodadFootprint& footprint, std::uint8_t snapCells,
+    std::optional<float> fixedRotationDegrees);
+
 // fixedRotationDegrees必须来自实际生效fixedRot字段；负值表示不强制角度。
 // 缺失字段只允许旋转不影响结果的同色正方形。先按wire角度吸附，之后才按
 // fixedRot决定像素方向；不能用最终角度反推此前的XY吸附。临界角度/坐标拒绝。

@@ -12,7 +12,7 @@
 #include <map>
 #include <memory>
 
-namespace War3Map::Services { class TerrainPathingSave; }
+namespace War3Map::Services { class TerrainPathingSave; class TerrainResizeEditService; }
 
 namespace War3Map::MapData {
 class MapDataEditSession;
@@ -124,7 +124,9 @@ public:
         std::size_t maximumBytes = 1024u * 1024u) const;
 
 private:
+    friend class TerrainResizeResources;
     friend class Services::TerrainPathingSave;
+    friend class Services::TerrainResizeEditService;
     friend class TerrainSavePlan;
     TerrainPathingResources() = default;
     // 仅内部保存计划可把会话完整W3I的窄域说明修改绑定到最终身份。
@@ -152,7 +154,7 @@ private:
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
         const NativeObjectValidator* validator = nullptr, const std::vector<std::byte>* currentDoodads = nullptr,
-        bool sourceObjectsOnly = false);
+        bool sourceObjectsOnly = false, bool resizeSpatial = false);
     [[nodiscard]] static Result<TerrainPathingResources> CaptureWaterBrushInputs(const MemberReader& reader,
         const TerrainGridSnapshot& sourceTerrain, const TerrainGridSnapshot& currentTerrain,
         const std::filesystem::path& gameRoot, bool enforceWaterLimits, std::size_t maximumBytes);
@@ -187,6 +189,13 @@ private:
     std::shared_ptr<TerrainPathingResources> nativeSourceResources_;
     // 沿用同次严格validator已预收的输出，不从最终通行mask倒推对象类别。
     std::vector<TerrainNativeDoodadPathingType> nativeObjectTypes_, nativeSpecialTypes_;
+    struct SpatialFootprint {
+        std::string rawcode;
+        std::int32_t creationId = 0;
+        std::array<std::int64_t, 4> rectangle{};
+    };
+    bool resizeSpatial_ = false;
+    std::vector<SpatialFootprint> spatialFootprints_;
     std::optional<Game::NativeDoodadCategoryDirectory> nativeCategoryDirectory_;
     std::map<std::string, std::array<bool, 3>, std::less<>> ground_;
     std::filesystem::path gameRoot_;
