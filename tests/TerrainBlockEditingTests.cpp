@@ -115,9 +115,13 @@ void HashIdentityAndAllRejectedDomainsStayAtomic() {
     auto seam = f.grid; seam.vertices[21 * 33 + 21].cliffAndLayerRaw = 0;
     Require(HasCode(PrepareTerrainBlockPasteStroke(seam, rules, intent), "TERRAIN_BLOCK_CLIFF_SEAM"),
         "an invalid target before seam cannot be repaired silently by the paste");
-    seam = f.grid; seam.vertices[21 * 33 + 20].cliffAndLayerRaw = 1;
+    seam = f.grid;
+    seam.vertices[5 * 33 + 4].cliffAndLayerRaw = 3;
+    seam.vertices[21 * 33 + 19].cliffAndLayerRaw = 1;
+    auto seamIntent = intent;
+    seamIntent.expectedBlockSha256 = Take(CaptureTerrainBlockFingerprint(seam, f.sourceCells));
     const auto seamBefore = Take(SerializeMapTerrain(seam));
-    Require(HasCode(PrepareTerrainBlockPasteStroke(seam, rules, intent), "TERRAIN_BLOCK_CLIFF_SEAM")
+    Require(HasCode(PrepareTerrainBlockPasteStroke(seam, rules, seamIntent), "TERRAIN_BLOCK_CLIFF_SEAM")
         && Take(SerializeMapTerrain(seam)) == seamBefore, "new multi-level seam refuses without clamping or propagating target outside raw");
     auto flat = f.grid;
     for (auto& vertex : flat.vertices) vertex.cliffAndLayerRaw = 0xf2;
