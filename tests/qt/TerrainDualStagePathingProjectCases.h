@@ -50,6 +50,9 @@ std::vector<MapArchiveMember> SourceMembers() {
     }
     members.push_back({"war3mapUnits.doo", Tests::WaterTake(MapData::UnitPlacements{}.Serialize())});
     members.push_back({"Units/DestructableData.slk", NativeDoodadQtTable({"destructableID"}, {{"Dst0"}})});
+    members.push_back({"Units/DestructableMetaData.slk", NativeDoodadQtTable(
+        {"ID", "field", "slk", "type", "repeat", "data", "index"},
+        {{"p001", "walkable", "DestructableData", "bool", "0", "0", "-1"}})});
     members.push_back({"Doodads/Doodads.slk", NativeDoodadQtTable(
         {"doodID", "code", "pathTex", "category", "fixedRot"},
         {{"Doo0", "Doo0", std::string(kOldTexture), "E", "270"}})});
@@ -248,8 +251,10 @@ void EditorProjectTests::DualStageStaticPathingSaveRebase() {
     QVERIFY(WriteVerifiedArchive(game / "war3.mpq", TerrainJournalWaterGameMembers()).Succeeded());
     const auto members = DualStageQt::SourceMembers(); QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
-    EditorProject project; QUndoStack terrainUndo, assetsUndo;
-    project.mapDataUndoStack_ = &terrainUndo; project.assetUndoStack_ = &assetsUndo;
+    // 工程析构会显式释放资源撤销栈；沿用它持有的栈，断言早退也不能留下栈地址。
+    EditorProject project;
+    auto& terrainUndo = *project.mapDataUndoStack_;
+    auto& assetsUndo = *project.assetUndoStack_;
     QVERIFY(DualStageQt::Bind(project, source, game)); QVERIFY(DualStageQt::Edit(project, objectOverride));
     QCOMPARE(terrainUndo.count(), 1); QCOMPARE(assetsUndo.count(), 1);
     const auto session = project.mapEdits_->SessionIdentity();
@@ -327,8 +332,9 @@ void EditorProjectTests::DualStageStaticPathingWithoutTerrainNet() {
     }
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
-    EditorProject project; QUndoStack terrainUndo, assetsUndo;
-    project.mapDataUndoStack_ = &terrainUndo; project.assetUndoStack_ = &assetsUndo;
+    EditorProject project;
+    auto& terrainUndo = *project.mapDataUndoStack_;
+    auto& assetsUndo = *project.assetUndoStack_;
     QVERIFY(DualStageQt::Bind(project, source, game)); QVERIFY(DualStageQt::Edit(project, objectOverride));
     QCOMPARE(terrainUndo.count(), 1); QCOMPARE(assetsUndo.count(), 1);
     terrainUndo.undo();
@@ -417,8 +423,9 @@ void EditorProjectTests::DualStageStaticPathingProjectColdRestore() {
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     const auto forge = std::filesystem::path(projectOutput.filePath("dual-stage.forge").toStdWString());
     {
-        EditorProject hot; QUndoStack terrainUndo, assetsUndo;
-        hot.mapDataUndoStack_ = &terrainUndo; hot.assetUndoStack_ = &assetsUndo;
+        EditorProject hot;
+        auto& terrainUndo = *hot.mapDataUndoStack_;
+        auto& assetsUndo = *hot.assetUndoStack_;
         QVERIFY(DualStageQt::Bind(hot, source, game)); QVERIFY(DualStageQt::Edit(hot, objectOverride));
         const auto saved = hot.SaveProjectToPath(forge); QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
         QVERIFY(!HasReadDiagnostic(saved, "TERRAIN_JOURNAL_DRAFT_ONLY"));
@@ -434,8 +441,8 @@ void EditorProjectTests::DualStageStaticPathingProjectColdRestore() {
     QVERIFY((*opened.value)->objects[DualStageQt::kDoodadIndex]);
     const auto again = std::filesystem::path(projectOutput.filePath("dual-stage-again.forge").toStdWString());
     {
-        EditorProject cold; QUndoStack terrainUndo, assetsUndo;
-        cold.mapDataUndoStack_ = &terrainUndo; cold.assetUndoStack_ = &assetsUndo;
+        EditorProject cold;
+        auto& terrainUndo = *cold.mapDataUndoStack_;
         QVERIFY(DualStageQt::Restore(cold, **opened.value, game));
         QCOMPARE(terrainUndo.count(), 1); QVERIFY(cold.terrainJournalWarning_.empty());
         QCOMPARE(cold.pendingImports_.size(), std::size_t{1});
@@ -451,8 +458,8 @@ void EditorProjectTests::DualStageStaticPathingProjectColdRestore() {
     }
     auto reopened = PrepareProjectOpen(again, game); QVERIFY2(reopened.Succeeded(), ReadDiagnosticText(reopened).c_str());
     QVERIFY(HasReadDiagnostic(reopened, "TERRAIN_JOURNAL_RESTORED"));
-    EditorProject restored; QUndoStack terrainUndo, assetsUndo;
-    restored.mapDataUndoStack_ = &terrainUndo; restored.assetUndoStack_ = &assetsUndo;
+    EditorProject restored;
+    auto& terrainUndo = *restored.mapDataUndoStack_;
     QVERIFY(DualStageQt::Restore(restored, **reopened.value, game));
     const auto target = std::filesystem::path(root.filePath("cold-saved.w3x").toStdWString());
     auto job = DualStageQt::Freeze(restored, target); QVERIFY(job && job->terrainDerivationRequired);
@@ -495,7 +502,8 @@ void EditorProjectTests::DualStageUnrelatedEditsPreserveUnresolvedPathing() {
     }
     QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
-    EditorProject project; QUndoStack assetsUndo; project.assetUndoStack_ = &assetsUndo;
+    EditorProject project;
+    auto& assetsUndo = *project.assetUndoStack_;
     QVERIFY(DualStageQt::Bind(project, source, game));
     const std::string iconName = "Textures/unrelated-icon.blp";
     const auto icon = Tests::WaterText("unrelated owned icon bytes");
