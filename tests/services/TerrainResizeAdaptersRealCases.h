@@ -3,6 +3,7 @@
 #include "../../src/Cli/MapEditSaveCommand.h"
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/Text/SlkCells.h"
@@ -159,6 +160,98 @@ inline void CheckRealCanvasResizeSave(const MapArchiveSession& original, const s
         std::cout << "canvas-resize-cli-real expanded=" << expanded << " source_sha=" << source.SourceSha256()
             << " output_sha=" << saved.SourceSha256() << '\n';
         source = std::move(saved);
+    }
+
+    // 组合场景复用原始来源与上面的独立literal，另写产物，不改变扩展/裁回验收叶。
+    const auto base = R::Take(MapArchiveSession::Open(initialSource));
+    const auto arguments = [&](const std::filesystem::path& target) {
+        const auto terrainSha = R::Take(Sha256(R::Take(base.ReadMember("war3map.w3e"))));
+        return std::vector<std::wstring>{L"AudastraCli", L"map-edit-save", base.SourcePath().wstring(),
+            std::wstring(initialSha.begin(), initialSha.end()), std::wstring(terrainSha.begin(), terrainSha.end()),
+            tool.wstring(), game.wstring(), target.wstring(), L"--terrain-resize", L"-32", L"-32", L"64", L"64"};
+    };
+    const auto checkSharedOutputs = [&](const MapArchiveSession& saved) {
+        R::Require(R::Take(saved.ReadMember("war3map.wpm")) == R::Pathing(seedWpm, ground, true),
+            "composed resize independently preserves full world-positioned WPM including authored bits");
+        R::Require(R::Take(saved.ReadMember("war3map.shd")) == R::Shadow(seedShadow, true),
+            "composed resize independently rebases the complete SHD and writes native 00/FF");
+        for (const auto* name : {"war3mapUnits.doo", "war3map.doo", "war3map.w3r", "war3map.w3c", "war3map.wtg", "war3map.wct"})
+            if (base.HasMember(name)) R::Require(R::Take(saved.ReadMember(name)) == R::Take(base.ReadMember(name)),
+                "composed resize preserves complete ordinary spatial and trigger members");
+        R::Require(R::Take(Sha256File(initialSource)) == initialSha
+            && R::Take(Sha256File(original.SourcePath())) == original.SourceSha256(),
+            "composed real CLI saves preserve both original source archives");
+    };
+    auto expandedSettings = settings;
+    expandedSettings.cameraMargins = {38, 6, 36, 8};
+    {
+        const auto target = scenario / "expanded-with-name.w3x";
+        auto args = arguments(target);
+        const auto document = MapDocument::FromArchive(base);
+        const auto* field = MapData::FindMapField(MapDataKind::Settings, "map_name");
+        R::Require(field != nullptr, "real resize composition uses the published map-name field");
+        const auto row = R::Take(MapData::MapFieldRowKey(document, MapDataKind::Settings, 0));
+        const auto memberSha = R::Take(Sha256(R::Take(base.ReadMember("war3map.w3i"))));
+        const auto before = MapData::FormatMapFieldRaw(R::Take(MapData::ReadMapField(document, MapDataKind::Settings, 0, *field)));
+        args.insert(args.end(), {L"--field", L"settings", L"0", std::wstring(row.begin(), row.end()),
+            std::wstring(memberSha.begin(), memberSha.end()), L"map_name", std::wstring(before.begin(), before.end()),
+            L"Resize with settings"});
+        const auto invoked = R::Invoke(std::move(args));
+        if (invoked.exit) throw std::runtime_error("real resize plus settings CLI save failed: " + invoked.diagnostics);
+        const auto saved = R::Take(MapArchiveSession::Open(target));
+        const auto terrainBytes = R::Take(saved.ReadMember("war3map.w3e"));
+        R::Require(terrainBytes == R::Terrain(originalTerrain, true),
+            "map-name composition cannot replace resized geometry with the original source W3E");
+        const auto geometry = R::Take(MapData::ParseMapTerrain(terrainBytes));
+        const auto finalSettingsBytes = R::Take(saved.ReadMember("war3map.w3i"));
+        const auto finalSettings = R::Take(MapData::MapSettings::Parse(finalSettingsBytes));
+        auto expectedSettings = expandedSettings; expectedSettings.mapName = "Resize with settings";
+        // W3E/WPM/SHD预期独立；完整W3I比较复用Settings writer，以下再直接核typed字段。
+        R::Require(finalSettingsBytes == R::Take(expectedSettings.Serialize())
+            && geometry.Snapshot()->header.width == 97 && geometry.Snapshot()->header.height == 97
+            && geometry.Snapshot()->header.offset == std::array<float, 2>{-8192, -8192}
+            && finalSettings.FullyParsed() && finalSettings.formatVersion == 25
+            && finalSettings.mapName == "Resize with settings" && (finalSettings.flags & 0x400u)
+            && finalSettings.cameraMargins == std::array<std::int32_t, 4>{38, 6, 36, 8}
+            && finalSettings.playableWidth == 52 && finalSettings.playableHeight == 52
+            && finalSettings.cameraBounds == settings.cameraBounds,
+            "actual combined W3I retains complete expanded margins, playable area and the edited name");
+        const auto script = R::Take(saved.ReadMember("war3map.j"));
+        R::Require(std::string_view(reinterpret_cast<const char*>(script.data()), script.size())
+                .find("call SetMapName( \"Resize with settings\" )") != std::string_view::npos,
+            "combined resize rebuilds the checked initializer using the final map name");
+        checkSharedOutputs(saved);
+        R::Require(invoked.output.find("candidate_sha256=" + saved.SourceSha256()) != std::string::npos
+            && invoked.output.find("applied_strokes=1") != std::string::npos
+            && invoked.output.find("applied_field_edits=1") != std::string::npos,
+            "combined CLI receipt binds the reopened resize and settings output");
+    }
+    {
+        const auto target = scenario / "expanded-then-current-frame-raise.w3x";
+        auto args = arguments(target);
+        args.insert(args.end(), {L"--stroke", L"raise", L"circle", L"48", L"48", L"0", L"1",
+            L"--stroke", L"raise", L"circle", L"80", L"80", L"0", L"2"});
+        const auto invoked = R::Invoke(std::move(args));
+        if (invoked.exit) throw std::runtime_error("real resize then current-frame raise CLI save failed: " + invoked.diagnostics);
+        const auto saved = R::Take(MapArchiveSession::Open(target));
+        auto expectedTerrain = R::Terrain(originalTerrain, true);
+        // 扩展后原点为(-8192,-8192)，48对应世界-2048；误用旧原点会落到80。
+        // 80又大于旧网格最大索引64，但位于新可玩区内，不能被旧尺寸提前拒绝。
+        const auto first = 69 + (48u * 97u + 48u) * 7u, second = 69 + (80u * 97u + 80u) * 7u;
+        R::Require(expectedTerrain.at(first) == std::byte{0} && expectedTerrain.at(first + 1) == std::byte{0x20}
+            && expectedTerrain.at(second) == std::byte{0} && expectedTerrain.at(second + 1) == std::byte{0x20},
+            "independent current-frame height literals start at the actual raw height 8192");
+        expectedTerrain[first] = std::byte{4}; expectedTerrain[second] = std::byte{8};
+        R::Require(R::Take(saved.ReadMember("war3map.w3e")) == expectedTerrain,
+            "complete real W3E changes only raw heights at the two requested current-frame vertices");
+        R::Require(R::Take(saved.ReadMember("war3map.w3i")) == R::Take(expandedSettings.Serialize())
+            && R::Take(saved.ReadMember("war3map.j")) == originalScript,
+            "current-frame height composition preserves expanded W3I and identical playable-world initializer");
+        checkSharedOutputs(saved);
+        R::Require(invoked.output.find("candidate_sha256=" + saved.SourceSha256()) != std::string::npos
+            && invoked.output.find("applied_strokes=3") != std::string::npos
+            && invoked.output.find("applied_field_edits=0") != std::string::npos,
+            "current-frame CLI receipt binds one resize and both ordered vertex raises");
     }
 }
 } // namespace War3Map::TerrainSaveTests
