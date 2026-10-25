@@ -282,6 +282,8 @@ void NativePlayableRectangleUsesW3iAndClamps() {
     RequireRejected(BuildClassicMinimapCandidate(input), "CLASSIC_MINIMAP_PLAYABLE_EMPTY");
 }
 
+#include "ClassicMinimapStreamingCases.h"
+
 } // namespace
 
 int main() {
@@ -294,6 +296,8 @@ int main() {
         PostprocessRandomSourceMustBeExplicit();
         ClassicWaterDepthAndBoundaryOrdering();
         NativePlayableRectangleUsesW3iAndClamps();
+        StreamingLargePlayableAndBudgets();
+        StreamingStableNoiseAndSmallGoldenOutput();
         std::cout << "Classic minimap candidate tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -70,9 +70,11 @@ bool Text(std::string_view value, std::size_t maximum, bool required = true) {
 }
 
 void ValidateLimits(const ClassicMinimapCandidateLimits& limits) {
+    const auto scan = MapData::ValidateTerrainRowScanLimits(limits.terrainScan);
+    if (!scan.Succeeded()) Fail("CLASSIC_MINIMAP_LIMITS", "Classic行扫描预算只能收紧非零硬上限。");
     if (!limits.maxWorkingBytes || limits.maxWorkingBytes > kHardWorkingBytes || !limits.maxW3eBytes
-        || limits.maxW3eBytes > 4u * 1024u * 1024u || !limits.maxTiles
-        || limits.maxTiles > 65536 || !limits.maxRawRgbaBytes || limits.maxRawRgbaBytes > 64u * 1024u * 1024u
+        || limits.maxW3eBytes > 4u * 1024u * 1024u || !limits.maxTiles || limits.maxTiles > 65536
+        || !limits.maxRawRgbaBytes || limits.maxRawRgbaBytes > 64u * 1024u * 1024u
         || !limits.maxBlpBytes || limits.maxBlpBytes > 1024u * 1024u || !limits.maxSourceTextBytes
         || limits.maxSourceTextBytes > 64u * 1024u)
         Fail("CLASSIC_MINIMAP_LIMITS", "候选预算只能在非零硬上限内收紧。");
@@ -194,8 +196,8 @@ void SetRgba(Image::DecodedImage& image, std::size_t pixel, const std::array<std
 }
 
 std::array<std::uint32_t, 4> PlayableRectangle(const TerrainMinimapInput& input,
-    const MapData::TerrainGridSnapshot& grid) {
-    const auto width = grid.header.width - 1, height = grid.header.height - 1;
+    const MapData::TerrainHeader& header) {
+    const auto width = header.width - 1, height = header.height - 1;
     if (input.rangePolicy == TerrainMinimapRangePolicy::FullW3e) return {0, 0, width, height};
     if (input.rangePolicy != TerrainMinimapRangePolicy::ClassicPlayable)
         Fail("CLASSIC_MINIMAP_PLAYABLE_RECT_UNRESOLVED", "Classic保存不消费旧的声明裁剪候选政策。");
@@ -204,7 +206,8 @@ std::array<std::uint32_t, 4> PlayableRectangle(const TerrainMinimapInput& input,
     const auto settings = Take(MapData::MapSettings::Parse(*input.sourceW3i));
     std::optional<std::array<double, 4>> margins;
     if (input.classicColors && input.classicColors->cameraMarginsConfigured) margins = input.classicColors->cameraMargins;
-    auto rectangle = MapData::NativeMinimapPlayableRectangle(grid, settings, margins);
+    MapData::TerrainGridSnapshot extent; extent.header = header;
+    auto rectangle = MapData::NativeMinimapPlayableRectangle(extent, settings, margins);
     if (!rectangle.Succeeded() || !rectangle.value) {
         if (rectangle.diagnostics.empty()) Fail("CLASSIC_MINIMAP_CAMERA_BOUNDS", "原版可玩区没有返回结果。");
         const auto& diagnostic = rectangle.diagnostics.front();
@@ -246,7 +249,7 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
         if (input.terrain.currentW3e.size() > limits.maxW3eBytes)
             Fail("CLASSIC_MINIMAP_W3E_BUDGET", "当前W3E超过Classic候选读取上限。");
         std::size_t reserveExtra = kFixedReserve;
-        AddMul(reserveExtra, limits.maxTiles, 8); // 两份原图：输出与postprocess调用输入
+        Add(reserveExtra, limits.terrainScan.maxResidentBytes); // 格式元数据与最多七行的解码窗口
         Add(reserveExtra, 4u * 256u * 256u * 4u); // 两内容pingpong及两个256画布
         Add(reserveExtra, 16u * 1024u * 1024u); Add(reserveExtra, limits.maxBlpBytes);
         if (input.terrain.sourceW3i) {
@@ -261,47 +264,27 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
         const auto terrainSha = Take(Sha256(input.terrain.currentW3e));
         if (terrainSha != input.terrain.binding.terrainSha256)
             Fail("CLASSIC_MINIMAP_TERRAIN_STALE", "当前W3E字节与绑定terrain SHA不同。");
-        MapData::TerrainReadLimits read;
-        read.maxBytes = input.terrain.currentW3e.size();
-        read.maxTiles = limits.maxTiles;
-        read.maxDecodedBytes = limits.maxWorkingBytes - retained - reserveExtra;
-        const auto parsed = Take(MapData::ParseMapTerrain(input.terrain.currentW3e, read));
-        const auto grid = parsed.Snapshot();
-        if (!grid || grid->header.version != 11 || grid->header.width < 2 || grid->header.height < 2
-            || grid->header.groundTilesets.empty() || grid->header.groundTilesets.size() > 16)
-            Fail("CLASSIC_MINIMAP_TERRAIN", "FullW3e候选只接受有界classic v11地面网格。");
-        const auto tileWidth = grid->header.width - 1, tileHeight = grid->header.height - 1;
-        const auto rectangle = PlayableRectangle(input.terrain, *grid);
+        auto scanLimits = limits.terrainScan;
+        scanLimits.maxInputBytes = (std::min)(scanLimits.maxInputBytes, limits.maxW3eBytes);
+        const auto source = Take(MapData::OpenTerrainRowSource(input.terrain.currentW3e, scanLimits));
+        const auto& header = source.Header();
+        if (header.version != 11 || header.groundTilesets.empty() || header.groundTilesets.size() > 16)
+            Fail("CLASSIC_MINIMAP_TERRAIN", "Classic候选只接受有界classic v11地面网格。");
+        const auto tileWidth = header.width - 1, tileHeight = header.height - 1;
+        const auto rectangle = PlayableRectangle(input.terrain, header);
         const auto imageWidth = rectangle[2] - rectangle[0], imageHeight = rectangle[3] - rectangle[1];
-        if (tileHeight && tileWidth > std::numeric_limits<std::size_t>::max() / tileHeight)
-            Fail("CLASSIC_MINIMAP_SIZE_OVERFLOW", "W3E tile数量乘法溢出。");
-        const auto tileCount = static_cast<std::size_t>(tileWidth) * tileHeight;
-        if (tileCount > limits.maxTiles || tileCount > limits.maxRawRgbaBytes / 4)
-            Fail("CLASSIC_MINIMAP_BUDGET", "逐格原图超过候选预算。");
-        if (grid->header.height && grid->header.width > std::numeric_limits<std::size_t>::max() / grid->header.height)
-            Fail("CLASSIC_MINIMAP_SIZE_OVERFLOW", "W3E vertex数量乘法溢出。");
-        const auto vertexCount = static_cast<std::size_t>(grid->header.width) * grid->header.height;
-        if (grid->tiles.size() != tileCount || grid->vertices.size() != vertexCount)
-            Fail("CLASSIC_MINIMAP_TERRAIN", "W3E解析网格尺寸与声明头不一致。");
-        // 统一候选口径：冻结输入、W3E解析副本、逐格RGBA、两个256画布、JPEG工作区/输出
-        // 必须在同一硬帽内；子组件仍会按自身实际capacity再次拒绝，而不会扩大此帽。
-        auto peak = retained;
-        Add(peak, sizeof(MapData::MapTerrain)); Add(peak, sizeof(MapData::TerrainGridSnapshot));
-        AddMul(peak, grid->vertices.capacity(), sizeof(MapData::TerrainVertex));
-        AddMul(peak, grid->tiles.capacity(), sizeof(MapData::TerrainTile));
-        for (const auto* table : {&grid->header.groundTilesets, &grid->header.cliffTilesets}) {
-            AddMul(peak, table->capacity(), sizeof(std::string));
-            for (const auto& rawcode : *table) AddTextCaps(peak, rawcode);
-        }
-        Add(peak, parsed.OriginalBytes().capacity());
-        AddMul(peak, tileCount, 4); // postprocess调用输入的独立原图copy
-        AddMul(peak, tileCount, 4);
-        Add(peak, 2u * 256u * 256u * 4u);
-        Add(peak, std::min<std::size_t>(16u * 1024u * 1024u, limits.maxWorkingBytes));
-        Add(peak, limits.maxBlpBytes);
-        Add(peak, sizeof(ClassicMinimapCandidate));
-        if (peak > limits.maxWorkingBytes) Fail("CLASSIC_MINIMAP_BUDGET", "解析、逐格图、后处理与JPEG峰值超过候选预算。");
-        if (input.terrain.groundAtlases.size() != grid->header.groundTilesets.size())
+        const auto tileCount = source.TileCount();
+        if (input.terrain.rangePolicy == TerrainMinimapRangePolicy::FullW3e && tileCount > limits.maxTiles)
+            Fail("TERRAIN_TILE_LIMIT", "旧FullW3e候选仍受完整tile总量预算限制。");
+        const auto rawPixels = static_cast<std::size_t>(imageWidth) * imageHeight;
+        if (rawPixels > limits.maxRawRgbaBytes / 4)
+            Fail("CLASSIC_MINIMAP_BUDGET", "可玩区逐格原图超过独立RGBA输出预算。");
+        // 输入原字已计入retained；扫描不复制原字或完整网格。两份逐格RGBA、统一后处理、
+        // JPEG和最多七行窗口仍在同一帽内，不把各行当成一份全新预算。
+        AddMul(reserveExtra, rawPixels, 8);
+        if (reserveExtra > limits.maxWorkingBytes - retained)
+            Fail("CLASSIC_MINIMAP_BUDGET", "行窗口、逐格图、后处理与JPEG的累计驻留预留超过预算。");
+        if (input.terrain.groundAtlases.size() != header.groundTilesets.size())
             Fail("CLASSIC_MINIMAP_ATLAS", "ground atlas必须与W3E ground tileset按槽位同序。");
         std::vector<std::array<std::uint8_t, 4>> colors;
         colors.reserve(input.terrain.groundAtlases.size());
@@ -323,59 +306,66 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
         output.manifest.sourceTiles = tileCount; output.manifest.sourceRectangle = rectangle;
         output.raw.width = imageWidth; output.raw.height = imageHeight;
         output.raw.rgba.resize(static_cast<std::size_t>(imageWidth) * imageHeight * 4);
-        for (std::uint32_t y = rectangle[1]; y < rectangle[3]; ++y) for (std::uint32_t x = rectangle[0]; x < rectangle[2]; ++x) {
-            const auto tileIndex = static_cast<std::size_t>(y) * tileWidth + x;
-            const auto& corners = grid->tiles[tileIndex].vertices;
-            if (corners[0] >= grid->vertices.size() || corners[1] >= grid->vertices.size()
-                || corners[2] >= grid->vertices.size() || corners[3] >= grid->vertices.size())
-                Fail("CLASSIC_MINIMAP_TERRAIN", "W3E tile角点索引越界。");
-            const auto& sw = grid->vertices[corners[0]];
-            const auto& se = grid->vertices[corners[1]];
-            const auto& nw = grid->vertices[corners[2]];
-            const auto& ne = grid->vertices[corners[3]];
-            for (const auto* corner : {&sw, &se, &nw, &ne}) {
-                if (corner->HasWater() && (!input.terrain.classicColors || !input.terrain.classicColors->waterConfigured))
-                    Fail("CLASSIC_MINIMAP_WATER", "实际tile含水标志，但没有捕获水色/深水阈值。");
-                if (corner->UnknownWaterFlags() || corner->UnknownTextureFlags())
-                    Fail("CLASSIC_MINIMAP_UNKNOWN_FLAGS", "实际tile含未解释的W3E标志。");
-                if (!input.terrain.classicColors && (corner->IsRamp() || corner->CliffLevel() != sw.CliffLevel()))
-                    Fail("CLASSIC_MINIMAP_CLIFF_UNRESOLVED", "实际tile含悬崖/坡道邻域，悬崖例外条件未解析。");
-            }
-            if (sw.IsBlight()) output.manifest.ignoredBlightSeen = true;
-            if (sw.GroundVariation()) output.manifest.ignoredVariationSeen = true;
-            const auto index = sw.GroundTextureIndex();
-            auto color = index < colors.size() ? colors[index] : std::array<std::uint8_t, 4>{0, 0, 0, 255};
-            if (input.terrain.classicColors) {
-                const auto& classic = *input.terrain.classicColors;
-                if (const auto cliff = Take(ClassicMinimapCliffTextureAt(*grid, x, y))) {
-                    if (*cliff >= classic.cliffColors.size() || classic.cliffColors[*cliff][3] != 255)
-                        Fail("CLASSIC_MINIMAP_CLIFF_COLOR", "实际悬崖类型缺少冻结的代表色。");
-                    color = classic.cliffColors[*cliff]; ++output.manifest.cliffTiles;
-                }
-                if (sw.HasWater()) {
-                    if (!std::isfinite(classic.deepLevelPathing) || classic.deepLevelPathing < 0
-                        || !std::isfinite(classic.waterHeightOffset))
-                        Fail("CLASSIC_MINIMAP_WATER_CONFIG", "水色配置的高度或深度无效。");
-                    const auto surface = static_cast<double>(sw.waterBaseHeight) + classic.waterHeightOffset;
-                    const auto height = Take(ClassicMinimapGroundHeightAt(*grid, x, y));
-                    if (height <= surface) {
-                        Mix(color, classic.waterColor);
-                        if (height <= surface - classic.deepLevelPathing) {
-                            Mix(color, classic.waterColor); ++output.manifest.deepWaterTiles;
-                        } else ++output.manifest.shallowWaterTiles;
+        output.manifest.terrainScan = Take(MapData::ScanTerrainRows(source,
+            [&](const MapData::TerrainGridSnapshot& grid, std::uint32_t firstRow, std::uint32_t y,
+                MapData::TerrainRowScanBudget& budget) -> Status {
+                if (y < rectangle[1] || y >= rectangle[3]) return Status::Ok();
+                // 现有cliff/ramp规则的最坏邻点读取少于1024次/像素，查询前预收保守上界。
+                // 所有行与解码/移位共用budget；不靠输入裁剪或换行复活已用预算。
+                auto charged = budget.ChargeConsumerWork(static_cast<std::size_t>(imageWidth) * 1024u);
+                if (!charged.Succeeded()) return charged;
+                const auto localY = y - firstRow;
+                for (std::uint32_t x = rectangle[0]; x < rectangle[2]; ++x) {
+                    const auto swIndex = static_cast<std::size_t>(localY) * header.width + x;
+                    const auto& sw = grid.vertices[swIndex];
+                    const auto& se = grid.vertices[swIndex + 1];
+                    const auto& nw = grid.vertices[swIndex + header.width];
+                    const auto& ne = grid.vertices[swIndex + header.width + 1];
+                    for (const auto* corner : {&sw, &se, &nw, &ne}) {
+                        if (corner->HasWater() && (!input.terrain.classicColors || !input.terrain.classicColors->waterConfigured))
+                            Fail("CLASSIC_MINIMAP_WATER", "实际tile含水标志，但没有捕获水色/深水阈值。");
+                        if (corner->UnknownWaterFlags() || corner->UnknownTextureFlags())
+                            Fail("CLASSIC_MINIMAP_UNKNOWN_FLAGS", "实际tile含未解释的W3E标志。");
+                        if (!input.terrain.classicColors && (corner->IsRamp() || corner->CliffLevel() != sw.CliffLevel()))
+                            Fail("CLASSIC_MINIMAP_CLIFF_UNRESOLVED", "实际tile含悬崖/坡道邻域，悬崖例外条件未解析。");
                     }
+                    if (sw.IsBlight()) output.manifest.ignoredBlightSeen = true;
+                    if (sw.GroundVariation()) output.manifest.ignoredVariationSeen = true;
+                    const auto index = sw.GroundTextureIndex();
+                    auto color = index < colors.size() ? colors[index] : std::array<std::uint8_t, 4>{0, 0, 0, 255};
+                    if (input.terrain.classicColors) {
+                        const auto& classic = *input.terrain.classicColors;
+                        if (const auto cliff = Take(ClassicMinimapCliffTextureAt(grid, x, localY))) {
+                            if (*cliff >= classic.cliffColors.size() || classic.cliffColors[*cliff][3] != 255)
+                                Fail("CLASSIC_MINIMAP_CLIFF_COLOR", "实际悬崖类型缺少冻结的代表色。");
+                            color = classic.cliffColors[*cliff]; ++output.manifest.cliffTiles;
+                        }
+                        if (sw.HasWater()) {
+                            if (!std::isfinite(classic.deepLevelPathing) || classic.deepLevelPathing < 0
+                                || !std::isfinite(classic.waterHeightOffset))
+                                Fail("CLASSIC_MINIMAP_WATER_CONFIG", "水色配置的高度或深度无效。");
+                            const auto surface = static_cast<double>(sw.waterBaseHeight) + classic.waterHeightOffset;
+                            const auto height = Take(ClassicMinimapGroundHeightAt(grid, x, localY));
+                            if (height <= surface) {
+                                Mix(color, classic.waterColor);
+                                if (height <= surface - classic.deepLevelPathing) {
+                                    Mix(color, classic.waterColor); ++output.manifest.deepWaterTiles;
+                                } else ++output.manifest.shallowWaterTiles;
+                            }
+                        }
+                    } else if (index >= colors.size()) {
+                        Fail("CLASSIC_MINIMAP_GROUND", "实际SW地面槽超出冻结atlas目录。");
+                    }
+                    // W3E 的 Boundary 与 MapEdge 都进入 +12 的 0xC0 外缘语义，均使用已知 A230 黑混合。
+                    const bool boundary = sw.IsBoundary() || sw.IsMapEdge();
+                    if (boundary) ++output.manifest.boundaryTiles;
+                    if (boundary) Mix(color, {0, 0, 0, 230});
+                    color[3] = 255;
+                    const auto pixel = static_cast<std::size_t>(y - rectangle[1]) * imageWidth + x - rectangle[0];
+                    SetRgba(output.raw, pixel, color);
                 }
-            } else if (index >= colors.size()) {
-                Fail("CLASSIC_MINIMAP_GROUND", "实际SW地面槽超出冻结atlas目录。");
-            }
-            // W3E 的 Boundary 与 MapEdge 都进入 +12 的 0xC0 外缘语义，均使用已知 A230 黑混合。
-            const bool boundary = sw.IsBoundary() || sw.IsMapEdge();
-            if (boundary) ++output.manifest.boundaryTiles;
-            if (boundary) Mix(color, {0, 0, 0, 230});
-            color[3] = 255;
-            const auto pixel = static_cast<std::size_t>(y - rectangle[1]) * imageWidth + x - rectangle[0];
-            SetRgba(output.raw, pixel, color);
-        }
+                return Status::Ok();
+            }));
         if (input.captured) {
             for (const auto& pixel : input.captured->ObjectLayer().pixels) {
                 if (pixel.x < rectangle[0] || pixel.x >= rectangle[2] || pixel.y < rectangle[1] || pixel.y >= rectangle[3]) continue;

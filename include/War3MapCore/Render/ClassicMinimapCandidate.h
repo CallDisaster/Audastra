@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Image/BlpJpegEncode.h"
+#include "War3MapCore/MapData/TerrainRowScan.h"
 #include "War3MapCore/Render/TerrainMinimapCandidate.h"
 #include "War3MapCore/Render/TerrainMinimapPostprocess.h"
 #include "War3MapCore/Render/TerrainMinimapRepresentativeColor.h"
@@ -52,10 +53,11 @@ struct ClassicMinimapCandidateLimits {
     // 不含allocator元数据、shared_ptr控制块、CNG/provider内部系统内存或进程RSS。
     std::size_t maxWorkingBytes = 128u * 1024u * 1024u;
     std::size_t maxW3eBytes = 4u * 1024u * 1024u;
-    std::size_t maxTiles = 65536;
+    std::size_t maxTiles = 65536; // 旧FullW3e caller候选仍使用此总量帽；ClassicPlayable使用下列独立账。
     std::size_t maxRawRgbaBytes = 64u * 1024u * 1024u;
     std::size_t maxBlpBytes = 1024u * 1024u;
     std::size_t maxSourceTextBytes = 64u * 1024u;
+    MapData::TerrainRowScanLimits terrainScan;
 };
 
 struct ClassicMinimapManifest {
@@ -78,6 +80,7 @@ struct ClassicMinimapManifest {
     std::string noiseSamplesSha256;
     std::uint32_t sourceWidth = 0, sourceHeight = 0;
     std::size_t sourceTiles = 0;
+    MapData::TerrainRowScanFacts terrainScan; // 完整输入、累计访问及最多七行真实驻留账。
     std::array<std::uint32_t, 4> sourceRectangle{};
     std::size_t boundaryTiles = 0;
     std::size_t cliffTiles = 0, shallowWaterTiles = 0, deepWaterTiles = 0, objectPixels = 0;

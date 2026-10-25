@@ -53,6 +53,7 @@ void Add(std::size_t& used, std::size_t bytes, std::size_t maximum) {
 }
 
 void ValidateLimits(const TerrainMinimapAssetCaptureLimits& limits) {
+    Check(MapData::ValidateTerrainRowScanLimits(limits.classicScan));
     const auto& t = limits.tables; const auto& a = limits.atlas;
     if (!limits.maxSourceBytes || limits.maxSourceBytes > kHard.maxSourceBytes || !limits.maxCurrentW3eBytes
         || limits.maxCurrentW3eBytes > kHard.maxCurrentW3eBytes || !limits.maxTiles || limits.maxTiles > kHard.maxTiles
@@ -72,6 +73,7 @@ bool SameCaptureLimits(const TerrainMinimapAssetCaptureLimits& requested,
     const auto& a = requested.atlas; const auto& oldA = captured.atlas;
     return requested.maxSourceBytes == captured.maxSourceBytes
         && requested.maxCurrentW3eBytes == captured.maxCurrentW3eBytes && requested.maxTiles == captured.maxTiles
+        && requested.classicScan == captured.classicScan
         && requested.maxRetainedAtlasCapacityBytes == captured.maxRetainedAtlasCapacityBytes
         && t.maxTableBytes == oldT.maxTableBytes && t.maxRows == oldT.maxRows
         && t.maxCells == oldT.maxCells && t.maxCellBytes == oldT.maxCellBytes
@@ -573,8 +575,18 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         auto terrain = edits.Terrain();
         if (!terrain || terrain->header.version != 11 || terrain->header.groundTilesets.empty() || terrain->header.groundTilesets.size() > 16)
             Fail("TERRAIN_ASSETS_TERRAIN", "捕获需要真实编辑会话的classic v11与1..16个地面材质槽。");
-        if (terrain->tiles.size() > limits.maxTiles || terrain->vertices.size() > 2 * limits.maxTiles + 2)
+        if (rangePolicy != TerrainMinimapRangePolicy::ClassicPlayable
+            && (terrain->tiles.size() > limits.maxTiles || terrain->vertices.size() > 2 * limits.maxTiles + 2))
             Fail("TERRAIN_ASSETS_BUDGET", "当前地形超过捕获网格预算。");
+        if (rangePolicy == TerrainMinimapRangePolicy::ClassicPlayable) {
+            const auto& scan = limits.classicScan;
+            // 当前会话已经拥有完整网格；这里只借用它并冻结原字，不再解析第二份网格。
+            // 全图水标志扫描与四角悬崖扫描预收同一累计上界，不按材质/行重新领预算。
+            if (terrain->vertices.size() > scan.maxVertexDecodes || terrain->tiles.size() > scan.maxTileAnchors
+                || terrain->vertices.size() > scan.maxWorkUnits
+                || terrain->tiles.size() > (scan.maxWorkUnits - terrain->vertices.size()) / 4)
+                Fail("TERRAIN_ASSETS_BUDGET", "Classic完整输入与累计地形查询超过行扫描预算。");
+        }
         binding.mainTileset = terrain->header.mainTileset;
         {
             // 此处只取得真实基线关系。SaveGate可失败，不能因此授予/改变正式保存资格。
@@ -606,6 +618,8 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
         const auto serializedBytes = 37 + (terrain->header.groundTilesets.size() + terrain->header.cliffTilesets.size()) * 4
             + terrain->vertices.size() * 7;
         if (serializedBytes > limits.maxCurrentW3eBytes) Fail("TERRAIN_ASSETS_BUDGET", "当前W3E序列化前字节估算超过捕获预算。");
+        if (rangePolicy == TerrainMinimapRangePolicy::ClassicPlayable && serializedBytes > limits.classicScan.maxInputBytes)
+            Fail("TERRAIN_ASSETS_BUDGET", "Classic当前W3E超过独立行扫描输入字节预算。");
         result.input_.currentW3e = Take(MapData::SerializeMapTerrain(*terrain));
         if (result.input_.currentW3e.size() > limits.maxCurrentW3eBytes) Fail("TERRAIN_ASSETS_BUDGET", "当前W3E超过捕获字节预算。");
         binding.currentTerrainSha256 = Take(Sha256(result.input_.currentW3e));

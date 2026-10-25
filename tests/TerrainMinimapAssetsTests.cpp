@@ -97,9 +97,10 @@ Bytes CreateW3e() {
     }
     return bytes;
 }
-MapDocument SettingsDocument(const std::optional<Bytes>& bytes) {
-    if (!bytes) return MapDocument::FromMembers({});
-    const std::vector<MapArchiveMember> members{{"war3map.w3i", *bytes}};
+MapDocument SettingsDocument(const std::optional<Bytes>& bytes, const std::optional<Bytes>& doodads = {}) {
+    std::vector<MapArchiveMember> members;
+    if (bytes) members.push_back({"war3map.w3i", *bytes});
+    if (doodads) members.push_back({"war3map.doo", *doodads});
     return MapDocument::FromMembers(members);
 }
 Bytes Slk(const std::vector<std::string>& headers, const std::vector<std::vector<std::string>>& rows = {}) {
@@ -191,17 +192,18 @@ Bytes UnlistedArchive(std::vector<MapArchiveMember> members, bool badTexture = f
 struct Fixture {
     TempDirectory directory;
     Bytes w3e, wpm;
-    std::optional<Bytes> w3i;
+    std::optional<Bytes> w3i, doodads;
     MapDataEditSession edits;
-    Fixture(bool duplicatePath = false, std::optional<Bytes> settings = {}, bool standardCreate = false)
-        : w3i(std::move(settings)), edits(SettingsDocument(w3i)) {
+    Fixture(bool duplicatePath = false, std::optional<Bytes> settings = {}, bool standardCreate = false,
+        std::uint32_t dimension = 9, std::optional<Bytes> placements = {})
+        : w3i(std::move(settings)), doodads(std::move(placements)), edits(SettingsDocument(w3i, doodads)) {
         TerrainGridSnapshot terrain;
-        terrain.header.width = terrain.header.height = 9; terrain.header.mainTileset = 'L';
+        terrain.header.width = terrain.header.height = dimension; terrain.header.mainTileset = 'L';
         terrain.header.groundTilesets = duplicatePath ? std::vector<std::string>{"Tg01", "Tg02"} : std::vector<std::string>{"Tg01"};
-        terrain.header.cliffTilesets = {"CLdi"}; terrain.vertices.resize(81);
+        terrain.header.cliffTilesets = {"CLdi"}; terrain.vertices.resize(static_cast<std::size_t>(dimension) * dimension);
         for (auto& v : terrain.vertices) { v.groundHeightRaw = 8192; v.waterHeightAndFlagsRaw = 8192; v.cliffAndLayerRaw = 2; }
-        RefreshTerrainDerived(terrain, 0, 0, 9, 9); w3e = standardCreate ? CreateW3e() : Take(SerializeMapTerrain(terrain));
-        const auto pathingSize = standardCreate ? 256u : 32u;
+        RefreshTerrainDerived(terrain, 0, 0, dimension, dimension); w3e = standardCreate ? CreateW3e() : Take(SerializeMapTerrain(terrain));
+        const auto pathingSize = standardCreate ? 256u : 4u * (dimension - 1);
         wpm = Text("MP3W"); wpm.resize(16 + pathingSize * pathingSize); Put32(wpm, 8, pathingSize); Put32(wpm, 12, pathingSize);
         if (standardCreate) for (unsigned y = 0; y < 256; ++y) for (unsigned x = 0; x < 256; ++x)
             wpm[16 + y * 256 + x] = x < 24 || x >= 232 || y < 16 || y >= 224 ? std::byte{0xce} : std::byte{0x40};
@@ -210,6 +212,7 @@ struct Fixture {
     MapArchiveSession Source(std::string_view name = "source.w3x", std::vector<MapArchiveMember> resources = Materials()) {
         resources.push_back({"war3map.w3e", w3e}); resources.push_back({"war3map.wpm", wpm});
         if (w3i) resources.push_back({"war3map.w3i", *w3i});
+        if (doodads) resources.push_back({"war3map.doo", *doodads});
         const auto path = directory.Path() / name;
         Take(WriteVerifiedArchive(path, resources)); return Take(MapArchiveSession::Open(path));
     }
@@ -1065,12 +1068,14 @@ void TestFinalSettingsCaptureUsesActualCurrentOutput() {
 }
 
 #include "TerrainMinimapAssetsCurrentCases.h"
+#include "TerrainMinimapAssetsStreamingCases.h"
 
 } // namespace
 
 int main() {
     try {
         TestClassicPlayableCaptureAndDependencyReadback();
+        TestLargeClassicCaptureAndTypedObjectOrder();
         TestFinalSettingsCaptureUsesActualCurrentOutput();
         TestCurrentEncodedClosureAndTighterBudgets();
         TestCurrentFinalTerrainAndEncodedMipChanges();

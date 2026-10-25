@@ -2,6 +2,7 @@
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapData/TerrainRowScan.h"
 #include "War3MapCore/Render/TerrainMinimapCandidate.h"
 #include "War3MapCore/Resources/TerrainTable.h"
 
@@ -12,10 +13,11 @@ struct TerrainMinimapAssetCaptureLimits {
     // 不计重复散列的整归档字节，也不计 GameDataSource 挂载的 MPQ/嵌套包缓冲。
     std::size_t maxSourceBytes = 64 * 1024 * 1024;
     std::size_t maxCurrentW3eBytes = 4 * 1024 * 1024;
-    std::size_t maxTiles = 65536;
+    std::size_t maxTiles = 65536; // 旧FullW3e/声明边距候选的完整网格帽。
     std::size_t maxRetainedAtlasCapacityBytes = 64 * 1024 * 1024;
     Resources::TerrainTableLimits tables;
     TerrainAtlasLimits atlas;
+    MapData::TerrainRowScanLimits classicScan; // 正式Classic另按原字、累计工作及行驻留计费。
 };
 
 struct TerrainMinimapAssetBinding {
