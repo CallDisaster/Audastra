@@ -289,6 +289,8 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
     }
     std::vector<std::byte> journalSourceTerrain, journalSourcePathing;
     std::vector<MapData::MapDataEditSession::EditReceipt> terrainReceipts;
+    std::size_t terrainCurrentIndex = 0;
+    std::optional<std::size_t> terrainSavedIndex;
     auto mapDataEdits = std::make_unique<MapData::MapDataEditSession>(*dataDocument);
     {
         // 地形基线与覆盖：基线读取或解析失败时，存在地形覆盖的工程不能恢复。
@@ -401,12 +403,24 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         if (restored.Succeeded() && restored.value) {
             // 工厂已复核全部owners及来源；保持同一堆对象，真实回执中的session地址不变。
             terrainReceipts = std::move(restored.value->receipts);
-            mapDataEdits = std::move(restored.value->session);
+            terrainCurrentIndex = restored.value->currentIndex;
+            terrainSavedIndex = restored.value->savedIndex;
+            if (terrainCurrentIndex > terrainReceipts.size()
+                || (terrainSavedIndex && *terrainSavedIndex > terrainReceipts.size()))
+                return fail(QObject::tr("恢复的地形历史位置超出实际回执"));
+            if (terrainReceipts.size() > 128) {
+                // 旧工程的前向记录可能超过Qt撤销上限，不能因此丢弃完整raw草稿。
+                terrainReceipts.clear(); terrainCurrentIndex = 0; terrainSavedIndex.reset();
+                terrainJournalWarning = "草稿已完整保留；地形历史超过128条撤销预算，撤销和重做未恢复。";
+            } else mapDataEdits = std::move(restored.value->session);
         } else {
             const bool invalid = std::any_of(restored.diagnostics.begin(), restored.diagnostics.end(), [](const auto& diagnostic) {
                 return diagnostic.code == "TERRAIN_JOURNAL_INVALID" || diagnostic.code == "TERRAIN_JOURNAL_BASELINE_MISMATCH"
                     || diagnostic.code == "TERRAIN_REPLAY_SOURCE_MISMATCH" || diagnostic.code == "TERRAIN_REPLAY_SOURCE_READ_FAILED"
-                    || diagnostic.code == "TERRAIN_JOURNAL_OUTPUT_MISMATCH";
+                    || diagnostic.code == "TERRAIN_JOURNAL_OUTPUT_MISMATCH"
+                    || diagnostic.code == "TERRAIN_HISTORY_SOURCE_MISMATCH"
+                    || diagnostic.code == "TERRAIN_HISTORY_STATION_MISMATCH"
+                    || diagnostic.code == "TERRAIN_HISTORY_REPLAY_FAILED";
             });
             if (invalid) return {{}, restored.diagnostics};
             if (baseline) {
@@ -455,6 +469,8 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
     candidate->imports = std::move(imports);
     candidate->mapDataEdits = std::move(mapDataEdits);
     candidate->terrainReceipts = std::move(terrainReceipts);
+    candidate->terrainCurrentIndex = terrainCurrentIndex;
+    candidate->terrainSavedIndex = terrainSavedIndex;
     candidate->terrainJournalWarning = terrainJournalWarning;
     candidate->assetEdits = std::move(assetEdits);
     auto result = PreparedResult::Success(std::move(candidate));
@@ -462,7 +478,9 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
         Diagnostic info;
         info.severity = DiagnosticSeverity::Info; info.subsystem = "Terrain.Journal";
         info.code = "TERRAIN_JOURNAL_RESTORED";
-        info.message = "前向笔划已从实际来源重放并核对完整草稿，可撤销本次恢复的地形前缀。地图保存仍须通过原生派生与回读检查。";
+        info.message = terrainJournal->history
+            ? "地形历史已从实际来源重放并核对保存站、撤销位置和完整草稿，可继续撤销及重做。地图保存仍须通过原生派生与回读检查。"
+            : "前向笔划已从实际来源重放并核对完整草稿，可撤销本次恢复的地形前缀。地图保存仍须通过原生派生与回读检查。";
         result.diagnostics.push_back(std::move(info));
     }
     if (!terrainJournalWarning.empty()) {

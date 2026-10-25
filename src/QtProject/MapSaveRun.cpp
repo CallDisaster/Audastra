@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <exception>
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 
 // 地图保存的执行与提交阶段。执行阶段只读任务里的输入（可在工作线程运行，期间工程不得修改）；
@@ -528,6 +529,23 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
                 QString::fromUtf8(diagnostic.code), QString::fromUtf8(diagnostic.message));
         emit MapDocumentChanged();
     } else LoadMapDocument(true);
+    if (job.terrainHistorySaveLease && mapEdits_) {
+        try {
+            const auto history = mapEdits_->CommitTerrainHistorySave(*job.terrainHistorySaveLease);
+            if (!history.Succeeded()) {
+                job.terrainHistoryWarning = "草稿已完整保留；地图已保存，但地形历史保存站安装失败，跨保存点撤销的冷恢复不可用。";
+                if (!history.diagnostics.empty()) job.terrainHistoryWarning += "（" + history.diagnostics.front().code + "）";
+            }
+        } catch (const std::exception&) {
+            job.terrainHistoryWarning = "草稿已完整保留；地图已保存，但地形历史保存站安装超出可用预算，跨保存点撤销的冷恢复不可用。";
+        }
+    }
+    if (!job.terrainHistoryWarning.empty()) {
+        if (terrainJournalWarning_.empty()) terrainJournalWarning_ = job.terrainHistoryWarning;
+        auto warning = Status::Failure("Terrain.History", "TERRAIN_HISTORY_DRAFT_ONLY", job.terrainHistoryWarning);
+        for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
+        AddDiagnostics(warning.diagnostics);
+    }
     restoredTriggerOverlay_ = false;
     triggerDirty_ = false;
     objectDirty_.fill(false);
@@ -535,6 +553,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     assetEdits_.clear();
     NotifyImportsChanged();
     if (triggerUndoStack_) triggerUndoStack_->setClean();
+    if (mapDataUndoStack_) mapDataUndoStack_->setClean();
     for (auto* stack : objectUndoStacks_) {
         if (stack) stack->setClean();
     }

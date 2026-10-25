@@ -17,6 +17,7 @@
 #include <QUndoStack>
 
 #include <exception>
+#include <algorithm>
 
 namespace War3Map::QtProject {
 namespace {
@@ -168,7 +169,12 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
             }
             std::string journalWarning = terrainJournalWarning_;
             try {
-                auto prefix = mapEdits_->ExportTerrainStrokeJournal();
+                auto prefix = mapEdits_->ExportTerrainHistoryJournal();
+                const bool noHistory = !prefix.Succeeded() && !prefix.diagnostics.empty()
+                    && std::all_of(prefix.diagnostics.begin(), prefix.diagnostics.end(), [](const auto& diagnostic) {
+                        return diagnostic.code == "TERRAIN_HISTORY_NOT_AVAILABLE";
+                    });
+                if (noHistory) prefix = mapEdits_->ExportTerrainStrokeJournal();
                 if (prefix.Succeeded() && prefix.value && !prefix.value->strokes.empty()) {
                     // 不在UI线程做全图SHA/MPQ/目录读取。只冻结有界前缀和无历史基线，
                     // worker借本job来源租约补实际member身份，绝不访问活动会话。

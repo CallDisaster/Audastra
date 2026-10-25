@@ -316,6 +316,19 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         } catch (const std::length_error&) {
             return fail(tr("MAP_SAVE_SNAPSHOT_ALLOCATION"), tr("地图编辑快照超出可分配容量，当前编辑保留。"));
         }
+        try {
+            auto history = mapEdits_->PrepareTerrainHistoryForSave();
+            if (history.Succeeded() && history.value) {
+                job->terrainHistorySaveLease = std::move(*history.value);
+            } else if (history.diagnostics.empty() || !std::all_of(history.diagnostics.begin(), history.diagnostics.end(), [](const auto& diagnostic) {
+                return diagnostic.code == "TERRAIN_HISTORY_NOT_AVAILABLE";
+            })) {
+                job->terrainHistoryWarning = "草稿已完整保留；当前地形历史不能绑定到一座保存站，跨保存点撤销的冷恢复不可用。";
+                if (!history.diagnostics.empty()) job->terrainHistoryWarning += "（" + history.diagnostics.front().code + "）";
+            }
+        } catch (const std::exception&) {
+            job->terrainHistoryWarning = "草稿已完整保留；地形历史冻结超出可用预算，跨保存点撤销的冷恢复不可用。";
+        }
     }
     job->triggerChanges = triggerDirty_;
     auto& replacements = job->replacements;

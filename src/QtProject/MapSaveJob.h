@@ -1,6 +1,7 @@
 #pragma once
 
 #include "EditorProject.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Services/MapSaveService.h"
 
 #include <QString>
@@ -45,6 +46,10 @@ struct MapSaveJob final : Services::MapSaveTask {
     bool rebuildTerrainShadow = false;
     // 来自前台真实Session的只读快照；私有special身份不能由worker的SetSerialized重建。
     std::shared_ptr<const MapData::MapDataEditSession> terrainSessionSnapshot;
+    // 真正写地图前冻结旧保存站；成功回读和前台CAS后才交回原会话安装。
+    // 该可选冷历史失败不会使已经保存成功的地图反向报失败。
+    std::optional<MapData::MapDataEditSession::TerrainHistorySaveLease> terrainHistorySaveLease;
+    std::string terrainHistoryWarning;
     bool derivedPreparationInstalled = false;
     // 与本次来源和编辑修订一同冻结；worker 不从 WPM 差分反推本工程限制。
     std::shared_ptr<const std::vector<std::byte>> pathingRestrictionDraft;
