@@ -697,9 +697,10 @@ Status TerrainPathingResources::CaptureResourceMembers(const MemberReader& reade
 Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const MemberReader& reader,
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
     const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
-    const NativeObjectValidator* validator, const std::vector<std::byte>* currentDoodads, bool sourceObjectsOnly) {
+    const NativeObjectValidator* validator, const std::vector<std::byte>* currentDoodads, bool sourceObjectsOnly, bool resizeSpatial) {
     return Guard<TerrainPathingResources>([&] {
         TerrainPathingResources result;
+        result.resizeSpatial_ = resizeSpatial;
         result.tileset_ = before.header.mainTileset;
         result.capturedMaximumBytes_ = maximumBytes;
         if (!gameRoot.empty()) {
@@ -1474,6 +1475,8 @@ std::size_t TerrainPathingResources::OwnedCapacityBytes() const noexcept {
         + (gameRoot_.native().capacity() + 1) * sizeof(std::filesystem::path::value_type);
     for (const auto& value : dependencies_)
         bytes += value.name.capacity() + value.sha256.capacity() + value.gameArchive.capacity() + 3;
+    bytes += spatialFootprints_.capacity() * sizeof(SpatialFootprint);
+    for (const auto& footprint : spatialFootprints_) bytes += footprint.rawcode.capacity() + 1;
     if (nativeSourceResources_) bytes += nativeSourceResources_->OwnedCapacityBytes() + 128;
     for (const auto* types : {&nativeObjectTypes_, &nativeSpecialTypes_}) {
         bytes += types->capacity() * sizeof(TerrainNativeDoodadPathingType);
