@@ -123,9 +123,19 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
     project_->restoredFiles_ = std::move(candidate.extraction); // 会话结束后自动回收提取目录。
     project_->mapEdits_ = std::move(candidate.mapDataEdits);
     project_->terrainJournalWarning_ = candidate.terrainJournalWarning;
-    if (project_->mapDataUndoStack_) for (auto& receipt : candidate.terrainReceipts)
-        project_->mapDataUndoStack_->push(new War3Map::QtProject::MapDataEditCommand(*project_, std::move(receipt),
-            tr("恢复的地形笔划"), "恢复工程地形前向笔划"));
+    const auto installedHistory = War3Map::QtProject::InstallRestoredMapDataHistory(*project_,
+        std::move(candidate.terrainReceipts), candidate.terrainCurrentIndex, candidate.terrainSavedIndex);
+    if (!installedHistory.Succeeded()) {
+        if (project_->mapDataUndoStack_) project_->mapDataUndoStack_->clear();
+        candidate.terrainJournalWarning = "草稿已完整保留；地形历史无法安装到撤销栈，撤销和重做未恢复。";
+        project_->terrainJournalWarning_ = candidate.terrainJournalWarning;
+        prepared.diagnostics.erase(std::remove_if(prepared.diagnostics.begin(), prepared.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_JOURNAL_RESTORED";
+        }), prepared.diagnostics.end());
+        auto warnings = installedHistory.diagnostics;
+        for (auto& diagnostic : warnings) diagnostic.severity = DiagnosticSeverity::Warning;
+        prepared.diagnostics.insert(prepared.diagnostics.end(), warnings.begin(), warnings.end());
+    }
     objectsModule_->DetachDocuments();
     for (int i = 0; i < 7; ++i) {
         if (!objects[i]) continue;
