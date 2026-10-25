@@ -491,6 +491,7 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
             TerrainSaveTests::CheckRealExistingRampWaterSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealCornerRampSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealStraightRampSave(original, directory.path, tool, game);
+            TerrainSaveTests::CheckRealConnectedStraightRampSave(original, directory.path, tool, game);
             TerrainSaveTests::CheckRealPlayableBoundsSave(original, directory.path, tool, game);
             return;
         }

@@ -491,7 +491,9 @@ add_test(NAME qt-terrain-water-edit COMMAND audastra-terrain-water-edit-tests)
 set_tests_properties(qt-terrain-water-edit PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp WorldCliffPaletteAppendCases.h TerrainStraightRampWorldCases.h ../TerrainStraightRampFixtures.h)
+qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp WorldCliffPaletteAppendCases.h
+    TerrainStraightRampWorldCases.h TerrainConnectedRampWorldCases.h
+    ../TerrainStraightRampFixtures.h ../TerrainConnectedRampFixtures.h)
 
 qt_add_executable(audastra-world-terrain-bounds-tests WorldTerrainBoundsTests.cpp)
 target_link_libraries(audastra-world-terrain-bounds-tests PRIVATE War3MapEditor::QtModuleWorld Qt6::Test)
@@ -577,7 +579,9 @@ target_link_libraries(war3-map-icon-resource-layer-tests PRIVATE War3MapEditor::
 target_link_libraries(war3-map-object-field-tests PRIVATE War3MapEditor::QtProject War3MapEditor::QtModuleObjects)
 
 # 工程层不创建主窗口，验证多工程隔离及失败快照不改变保存状态。
-qt_add_executable(war3-map-editor-project-tests EditorProjectTests.cpp TerrainCliffPaletteAppendProjectCases.h TerrainStraightRampProjectCases.h TerrainDualStagePathingProjectCases.h ../TerrainStraightRampFixtures.h)
+qt_add_executable(war3-map-editor-project-tests EditorProjectTests.cpp TerrainCliffPaletteAppendProjectCases.h
+    TerrainStraightRampProjectCases.h TerrainConnectedRampProjectCases.h TerrainDualStagePathingProjectCases.h
+    ../TerrainStraightRampFixtures.h ../TerrainConnectedRampFixtures.h)
 qt_add_executable(war3-map-lua-scripts-tests LuaScriptsTests.cpp)
 target_link_libraries(war3-map-lua-scripts-tests PRIVATE War3MapEditor::QtModuleTriggers War3MapEditor::QtModuleAssets War3MapEditor::QtProject War3MapEditor::QtUiKit Qt6::Test)
 target_compile_options(war3-map-lua-scripts-tests PRIVATE /W4 /permissive- /utf-8)

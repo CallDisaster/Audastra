@@ -993,6 +993,8 @@ private slots:
     void CornerRampProjectColdRestoreAndNativeSave();
     void StraightRampProjectColdRestoreAndNativeSave_data();
     void StraightRampProjectColdRestoreAndNativeSave();
+    void ConnectedRampProjectColdRestoreAndNativeSave_data();
+    void ConnectedRampProjectColdRestoreAndNativeSave();
     void DualStageStaticPathingSaveRebase_data();
     void DualStageStaticPathingSaveRebase();
     void DualStageStaticPathingProjectColdRestore_data();
@@ -1112,6 +1114,7 @@ private:
 #include "TerrainCliffPaletteAppendProjectCases.h"
 #include "EditorProjectRemoveWaterCases.h"
 #include "TerrainStraightRampProjectCases.h"
+#include "TerrainConnectedRampProjectCases.h"
 #include "TerrainDualStagePathingProjectCases.h"
 
 void EditorProjectTests::UnlistedTerrainReadPreservesNamedInventory() {
@@ -5401,7 +5404,7 @@ int main(int argc, char** argv) {
                 if (name.startsWith(prefix)) return QStringLiteral("derived");
             for (const auto* prefix : {"CGrid", "EffectiveDoodad", "FixedRotation", "Walkable", "PlacementHeight", "NativeObjectCatalog"})
                 if (name.startsWith(prefix)) return QStringLiteral("native-objects");
-            for (const auto* prefix : {"NativePathing", "PathingIntent", "LegacyPathing", "StraightRamp", "DualStage"})
+            for (const auto* prefix : {"NativePathing", "PathingIntent", "LegacyPathing", "StraightRamp", "ConnectedRamp", "DualStage"})
                 if (name.startsWith(prefix)) return QStringLiteral("native-pathing");
             return QStringLiteral("base");
         };

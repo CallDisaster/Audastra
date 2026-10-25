@@ -799,10 +799,12 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 const auto points = WorldPoints(stroke, *grid);
                 if (!points.Succeeded() || !points.value) return Forward(points.diagnostics);
                 intents.push_back({stroke.brush, *points.value, stroke.followDoodads, stroke.waterBrush, {}});
-                // 只有角坡携带其版本算法；StraightRamp 保持中性字段，由新 kind 的固定版本重放。
-                // 旧typed历史只从自身版本恢复，不走此入口。
+                // 新保存请求显式采用当前结构算法；旧typed历史只从自身版本恢复，
+                // 不经过这个入口，也不能被新算法重新解释。
                 if (!stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::CornerRamp)
                     intents.back().cornerRampAlgorithm = MapData::TerrainCornerRampAlgorithm::WetTerrain;
+                if (!stroke.waterBrush && stroke.brush.kind == MapData::TerrainBrushKind::StraightRamp)
+                    intents.back().straightRampAlgorithm = MapData::TerrainStraightRampAlgorithm::Connected;
             }
             auto replayed = TerrainPathingSave::ReplayStrokes(source, map, *terrainBytes.value, *pathingBytes.value, intents, request.gameRoot);
             if (!replayed.Succeeded() || !replayed.value) return Forward(replayed.diagnostics);

@@ -96,8 +96,9 @@ void RealFinalStaticInputsUseActualCatalog(const MapArchiveSession& original,
             const TerrainStrokePoint point{before.header.offset[0] + 16 * 128, before.header.offset[1] + 16 * 128};
             Take(edits.EditTerrain(brush, std::span(&point, 1), false));
         }
-        Require(edits.TerrainDirty() == terrainAndTexture, "texture and object cases have no artificial terrain edit");
         const auto expectedTerrain = Take(SerializeMapTerrain(*edits.Terrain()));
+        Require(edits.IsDirty() == terrainAndTexture && (expectedTerrain != terrainBytes) == terrainAndTexture,
+            "texture and object cases have no artificial terrain edit");
         auto output = edits.Replacements();
         if (objectOnly) output.push_back({"war3map.w3d", newW3d});
         else output.push_back({originalPath, newTexture});
