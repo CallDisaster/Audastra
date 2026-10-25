@@ -10,12 +10,19 @@ inline Bytes ConnectedPathingLiteral(SurfaceCase surface, bool created) {
     // 北侧已有三点R，创建南侧条带后中间地格含两个R，打开直墙与低侧通道。
     // 两端各留一个R的肩格仍阻断。已有水顶点的严格阈值沿用独立水深字面表。
     for (unsigned y = 60; y < 72; ++y) for (unsigned x = 64; x < 72; ++x) {
-        if (x >= 66 && x < 70 && y >= 62 && y < 66) continue;
         const unsigned cx = x / 4, cy = y / 4;
         const bool blocked = created
             ? (cx == 16 && cy != 16) || (cx == 17 && (cy == 15 || cy == 17))
             : cx == 16 || (cx == 17 && (cy == 16 || cy == 17));
-        expected[16 + y * 128 + x] = blocked ? std::byte{0xdb} : std::byte{0x51};
+        auto pixel = blocked ? std::byte{0xdb} : std::byte{0x51};
+        if (x >= 66 && x < 70 && y >= 62 && y < 66) {
+            unsigned depth = 2;
+            if (surface == SurfaceCase::BelowSurface) depth = created ? 0 : 1;
+            else if (created && surface != SurfaceCase::DeepEquality) depth = 1;
+            if (depth == 2) pixel = std::byte{0x1b};
+            else if (depth == 1 && !blocked) pixel = std::byte{0x59};
+        }
+        expected[16 + y * 128 + x] = pixel;
     }
     return expected;
 }
