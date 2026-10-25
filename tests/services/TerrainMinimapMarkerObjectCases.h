@@ -146,9 +146,10 @@ Bytes ParentMetadata(bool duplicate = false) {
         {"p002", "race", "UnitData", "unitRace", "0", "0", "-1"},
         {"p003", "nbmmIcon", "UnitUI", "bool", "0", "0", "-1"},
         {"p004", "abilList", "UnitAbilities", "abilityList", "0", "0", "-1"},
-        {"p005", "HP", "UnitBalance", "int", "0", "0", "-1"}};
+        {"p005", "HP", "UnitBalance", "int", "0", "0", "-1"},
+        {"p007", "Name", "Profile", "string", "0", "0", "0", "S001"}};
     if (duplicate) rows.push_back({"p006", "HP", "UnitBalance", "int", "0", "0", "-1"});
-    return Slk({"ID", "field", "slk", "type", "repeat", "data", "index"}, rows);
+    return Slk({"ID", "field", "slk", "type", "repeat", "data", "index", "useSpecific"}, rows);
 }
 NativeObjectDocument ParentUnitDocument() {
     auto units = Take(NativeObjectDocument::CreateEmpty(ObjectType::Unit));
@@ -182,25 +183,43 @@ void StandardParentOriginalDoesNotPolluteCustomFallback() {
         else low = limits.maximumWorkingBytes + 1;
     }
     limits.maximumWorkingBytes = low;
-    Require(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, output, {}, limits).Succeeded(), "同父缓存计入精确工作预算");
+    Require(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, output, {}, limits).Succeeded(), "完整物编来源和实际读取字段计入精确工作预算");
     --limits.maximumWorkingBytes;
     Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, output, {}, limits));
 }
-void ParentOriginalStillRequiresUnambiguousMetadataAndWire() {
+void IgnoredParentFieldsKeepActualChildAndParentGates() {
     Fixture fixture; fixture.Member("Units/UnitMetaData.slk") = ParentMetadata();
-    fixture.units.units[1].rawcode = "New1"; fixture.UpdateUnits();
+    // 两个直接父摆放都改成child；owner0也会读取isbldg，不能用它证明父字段未访问。
+    fixture.units.units[1].rawcode = "New1"; fixture.units.units[4].rawcode = "New2"; fixture.UpdateUnits();
+    const auto expected = ExpectedObjectMarkers({{1, 128, 128}, {0, 0, 192}});
+    const auto requireIgnored = [&](const NativeObjectDocument& units) {
+        const std::vector<MemberReplacement> output{{"war3map.w3u", Take(NativeObjectCodec(ObjectType::Unit).Serialize(units))}};
+        Require(fixture.Capture(output)->Bytes() == expected, "不被child读取的父Profile、selector或元数据未知但字节边界明确的字段不能阻断MMP");
+    };
     const auto reject = [&](NativeObjectDocument units, std::string_view code) {
         const std::vector<MemberReplacement> output{{"war3map.w3u", Take(NativeObjectCodec(ObjectType::Unit).Serialize(units))}};
         Rejected(TerrainMinimapMarkers::Capture(*fixture.source, fixture.game, output), code);
     };
     auto unknown = ParentUnitDocument();
     Check(unknown.AddModification({ObjectType::Unit, "S001"}, {"what"}, NativeValueType::Int32, std::int32_t{1}));
-    reject(std::move(unknown), "TERRAIN_MMP_METADATA");
-    auto wrongWire = Take(NativeObjectDocument::CreateEmpty(ObjectType::Unit));
-    Check(wrongWire.AddOriginalObject("S001")); Check(wrongWire.AddCustomObject("New1", "S001"));
-    Check(wrongWire.AddModification({ObjectType::Unit, "S001"}, {"p005"}, NativeValueType::Real, 1.0f));
-    reject(std::move(wrongWire), "TERRAIN_MMP_OBJECT_TYPE");
+    Check(unknown.AddModification({ObjectType::Unit, "S001"}, {"p007"}, NativeValueType::String, std::string{"ignored profile"}));
+    requireIgnored(unknown);
+    auto wrongParentWire = Take(NativeObjectDocument::CreateEmpty(ObjectType::Unit));
+    Check(wrongParentWire.AddOriginalObject("S001"));
+    Check(wrongParentWire.AddCustomObject("New1", "S001")); Check(wrongParentWire.AddCustomObject("New2", "S001"));
+    Check(wrongParentWire.AddModification({ObjectType::Unit, "S001"}, {"p001"}, NativeValueType::Real, 1.0f));
+    requireIgnored(wrongParentWire); // wire边界已知，但这个父值没有被getter访问。
+    auto wrongChildWire = ParentUnitDocument();
+    Check(wrongChildWire.AddModification({ObjectType::Unit, "New1"}, {"p001"}, NativeValueType::Real, 1.0f));
+    reject(std::move(wrongChildWire), "TERRAIN_MMP_OBJECT_TYPE");
+    fixture.units.units[1].rawcode = "S001"; fixture.UpdateUnits();
+    reject(wrongParentWire, "TERRAIN_MMP_OBJECT_TYPE");
+    fixture.units.units[1].rawcode = "New1"; fixture.UpdateUnits();
     fixture.Member("Units/UnitMetaData.slk") = ParentMetadata(true); fixture.Open();
+    requireIgnored(unknown); // 父HP的重复metadata地址没有成为child实际字段。
+    fixture.Member("Units/UnitMetaData.slk") = Slk({"ID", "field", "slk", "type", "repeat", "data", "index"},
+        {{"p001", "isbldg", "UnitBalance", "bool", "0", "0", "-1"},
+         {"p008", "isbldg", "UnitBalance", "bool", "0", "0", "-1"}}); fixture.Open();
     reject(ParentUnitDocument(), "TERRAIN_MMP_METADATA");
     fixture.Member("Units/UnitMetaData.slk") = ParentMetadata(); fixture.Open();
     auto chain = Take(NativeObjectDocument::CreateEmpty(ObjectType::Unit));
@@ -214,10 +233,19 @@ void ParentOriginalStillRequiresUnambiguousMetadataAndWire() {
     rejectWire(ItemIdentityWire({}, {{"New1", "No??"}}), "TERRAIN_MMP_OBJECT_UNKNOWN");
     rejectWire(ItemIdentityWire({}, {{"New1", "New1"}}), "TERRAIN_MMP_INHERITANCE");
     rejectWire(ItemIdentityWire({"New1"}, {{"New1", "S001"}}), "TERRAIN_MMP_OBJECT_LAYOUT");
+    auto unknownWire = Take(NativeObjectCodec(ObjectType::Unit).Serialize(ParentUnitDocument()));
+    // v2头8字节、首个Original头12字节；首字段ID之后是实际wire类型。
+    unknownWire[24] = std::byte{0x7f};
+    rejectWire(std::move(unknownWire), "native-value-type-unsupported");
+    auto duplicateField = Take(NativeObjectCodec(ObjectType::Unit).Serialize(ParentUnitDocument()));
+    const Bytes firstField(duplicateField.begin() + 20, duplicateField.begin() + 36);
+    duplicateField.insert(duplicateField.begin() + 36, firstField.begin(), firstField.end());
+    duplicateField[16] = std::byte{6}; // 五条父覆盖加一条完全重复的Int32字段。
+    rejectWire(std::move(duplicateField), "TERRAIN_MMP_OBJECT_LAYOUT");
 }
 void MinimapMarkerObjectCoverageCases() {
     CustomItemsAndParentOriginalsSaveWithoutUnitIcons(); ItemIdentityAmbiguityAndUnknownParentsReject();
     ItemSourcesBindEvenWhenMarkerBytesDoNotChange(); FinalItemDependencyChangesCannotPublishOrBecomeWarnings();
     UnknownItemParentPreservesMarkersAndUnrelatedSave(); StandardParentOriginalDoesNotPolluteCustomFallback();
-    ParentOriginalStillRequiresUnambiguousMetadataAndWire();
+    IgnoredParentFieldsKeepActualChildAndParentGates();
 }

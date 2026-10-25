@@ -312,7 +312,6 @@ private:
     std::optional<Table> items_;
     std::unique_ptr<NativeObjectDocument> units_, nativeAbilities_, nativeItems_;
     std::optional<ObjectFieldSchema> schema_;
-    std::set<std::string, std::less<>> verifiedUnitParents_;
 
     static std::int32_t Integer(std::string_view text, std::string_view object) {
         std::int32_t value = 0;
@@ -364,25 +363,8 @@ private:
             Fail("TERRAIN_MMP_METADATA", "MMP覆盖尚不解释对象选择器。");
         return *found;
     }
-    void ValidateUnitParent(const ObjectRecord& parent) {
-        if (verifiedUnitParents_.contains(parent.key.rawcode)) return;
-        Charge(context_.workingBytes, parent.modifications.size(), context_.limits.maximumWorkingBytes,
-            sizeof(ObjectModification));
-        Charge(context_.workingBytes, parent.key.rawcode.size() + 6 * sizeof(void*), context_.limits.maximumWorkingBytes);
-        for (const auto& modification : parent.modifications) {
-            const auto* definition = schema_ ? schema_->FindNative(ObjectType::Unit, modification.key.fieldId) : nullptr;
-            if (!definition) Fail("TERRAIN_MMP_METADATA", "MMP标准父覆盖包含没有实际元数据的字段。");
-            const auto& field = Field(definition->sourceField, definition->sourceTable);
-            if (field.fieldId != modification.key.fieldId || modification.valueWasOpaque
-                || modification.key.level.value_or(0) || modification.key.dataIndex.value_or(0)
-                || modification.key.variation.value_or(0) || !field.nativeValueType
-                || units_->ModificationValueType(parent.key, modification.key) != field.nativeValueType)
-                Fail("TERRAIN_MMP_OBJECT_TYPE", "MMP标准父覆盖没有唯一标量地址或实际wire类型不符。");
-        }
-        verifiedUnitParents_.insert(parent.key.rawcode);
-    }
     std::string Effective(std::string_view rawcode, std::string_view key, std::string_view table,
-        const Table& base) {
+        const Table& base) const {
         const auto* record = Record(units_.get(), ObjectType::Unit, rawcode);
         std::string_view parent = rawcode;
         if (record && record->parentRawcode) {
@@ -392,7 +374,6 @@ private:
                 Fail("TERRAIN_MMP_INHERITANCE", "MMP单位需要唯一标准父，不解释多层自定义或标准ID冲突。");
             if (items_->rows.contains(parent) || Record(nativeItems_.get(), ObjectType::Item, parent))
                 Fail("TERRAIN_MMP_OBJECT_TYPE", "MMP单位标准父同时属于物品。");
-            if (parentRecord) ValidateUnitParent(*parentRecord);
             // 4FF800/500F70的catalog虚表使用5170C0/516FE0：只查原child覆盖，
             // parent仅供最终标准SLK回退。直接摆放parent时才读取它自己的Original。
         }
@@ -428,7 +409,7 @@ private:
         if (!value) return key == "isbldg" || key == "nbmmIcon" ? "0" : "";
         return *value;
     }
-    bool GoldMine(std::string_view rawcode) {
+    bool GoldMine(std::string_view rawcode) const {
         const auto list = Effective(rawcode, "abilList", "UnitAbilities", abilities_);
         if (list.size() > 127) Fail("TERRAIN_MMP_ABILITY_LIST", "MMP能力列表超过原版128字节getter的已支持无截断域。");
         // 500F70传给Storm504的真实分隔字符集，'_'也是空能力哨兵。
