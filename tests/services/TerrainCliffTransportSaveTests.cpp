@@ -134,10 +134,12 @@ void CheckRealCliffTextureSave(const MapArchiveSession& original,
     const auto reject = [&](MapEditSaveRequest invalid, const char* code) {
         const auto sourceSha = Take(Sha256File(invalid.sourceMap));
         const auto result = SaveMapEditCandidate(invalid);
-        Require(!result.Succeeded() && !result.value, "invalid pure cliff texture candidate must fail");
+        const auto label = invalid.targetCandidate.filename().string();
+        if (result.Succeeded() || result.value)
+            throw std::runtime_error("pure cliff texture negative " + label + " must reject with " + code);
         if (std::none_of(result.diagnostics.begin(), result.diagnostics.end(),
             [&](const auto& diagnostic) { return diagnostic.code == code; })) {
-            std::string message = std::string("pure cliff texture expected ") + code + ":\n";
+            std::string message = "pure cliff texture negative " + label + " expected " + code + ":\n";
             for (const auto& item : result.diagnostics) message += item.code + ": " + item.message + "\n";
             throw std::runtime_error(message);
         }
@@ -166,11 +168,49 @@ void CheckRealCliffTextureSave(const MapArchiveSession& original,
     auto wrongPathing = sourcePathing; wrongPathing[16 + 32 * 4 * 256 + 32 * 4] ^= std::byte{0x02};
     const auto mismatched = Take(MapArchiveSession::Open(Take(source.SaveCandidate(scenario / "unexplained-wpm.w3x",
         std::array<MemberReplacement, 1>{{{"war3map.wpm", wrongPathing}}})).path));
-    invalid = request; invalid.sourceMap = mismatched.SourcePath(); invalid.expectedSourceSha256 = mismatched.SourceSha256();
-    invalid.targetCandidate = scenario / "unexplained-wpm-must-not-exist.w3x";
+    // 实际旧/新CliffTypes行与不变几何能证明纯材质不影响通行；历史WPM限制应逐字保留，
+    // 不能仅因它不等于完整原生重算而拒绝本次不涉及通行的保存。
+    auto preserved = request; preserved.sourceMap = mismatched.SourcePath();
+    preserved.expectedSourceSha256 = mismatched.SourceSha256();
+    preserved.targetCandidate = scenario / "preserved-custom-wpm.w3x";
+    const std::array<MemberReplacement, 2> preservedMembers{{{"war3map.w3e", afterBytes}, {"war3map.wpm", wrongPathing}}};
+    const auto preservedMarkers = Take(TerrainMinimapMarkers::Capture(mismatched, game, preservedMembers));
+    const auto preservedSave = Take(SaveMapEditCandidate(preserved));
+    const auto preservedReadback = Take(MapArchiveSession::Open(preservedSave.candidate));
+    Require(Take(preservedReadback.ReadMember("war3map.w3e")) == afterBytes
+        && Take(preservedReadback.ReadMember("war3map.wpm")) == wrongPathing,
+        "verified pure cliff material change preserves all authored WPM bytes and exact independent W3E");
+    Require(Take(preservedReadback.ReadMember("war3map.mmp")) == preservedMarkers->Bytes()
+        && preservedMarkers->VerifyReadback(preservedReadback).Succeeded(),
+        "preserved custom WPM save generates exact MMP bound to its actual source");
+    for (const auto& member : mismatched.Members()) {
+        const auto name = Text::LowerAscii(member.name);
+        if (name == "war3map.w3e" || name == "war3map.wpm" || name == "war3mapmap.blp" || name == "war3map.mmp") continue;
+        Require(Take(preservedReadback.ReadMember(member.name)) == member.data,
+            "pure cliff material change with custom WPM preserves every unrelated member");
+    }
+
+    // 同一来源若再修改远处的边界，必须回到完整G0/G1并解释旧WPM；
+    // 纯材质证明不能替该通行变化放行。独立构造Boundary的单点原始字段预期。
+    auto boundaryAfter = after;
+    auto& boundaryVertex = boundaryAfter.vertices[48 * 65 + 48];
+    Require(!boundaryVertex.IsBoundary(), "boundary negative starts from an ordinary interior vertex");
+    boundaryVertex.textureAndFlagsRaw |= std::uint8_t{0x80};
+    const auto boundaryResources = Take(TerrainPathingSave::CaptureNative(mismatched, before, boundaryAfter, game, kBytes));
+    Require(Take(boundaryResources.GenerateNative(before, kBytes)) == oldNative
+        && Take(boundaryResources.GenerateNative(boundaryAfter, kBytes)) != oldNative,
+        "actual native rules prove the added boundary changes pathing while the source geometry is unchanged");
+    MapEditTerrainStroke boundary;
+    boundary.pointSpace = MapEditPointSpace::TerrainVertex; boundary.points = {{48, 48}};
+    boundary.brush.kind = TerrainBrushKind::Boundary; boundary.brush.shape = TerrainBrushShape::Square;
+    boundary.brush.size = 1; boundary.brush.value = true;
+    invalid = preserved; invalid.terrainStrokes.push_back(boundary);
+    invalid.targetCandidate = scenario / "unexplained-wpm-boundary-must-not-exist.w3x";
     reject(std::move(invalid), "TERRAIN_PATHING_SOURCE_UNEXPLAINED");
     Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256()
-        && Take(Sha256File(original.SourcePath())) == original.SourceSha256(), "pure cliff tests preserve both input maps");
+        && Take(Sha256File(original.SourcePath())) == original.SourceSha256()
+        && Take(Sha256File(mismatched.SourcePath())) == mismatched.SourceSha256(),
+        "pure cliff tests preserve all three input maps");
     std::cout << "cliff_texture_actual_table winner=" << table.archiveName << " sha256=" << Take(Sha256(table.bytes))
         << " old=" << oldId << " new=" << *alternate << " source_sha256=" << source.SourceSha256()
         << " candidate_sha256=" << readback.SourceSha256() << '\n';
