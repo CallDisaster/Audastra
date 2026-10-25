@@ -897,6 +897,16 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
         }
     }
     if (active.size() > 128) return fail("TERRAIN_JOURNAL_BUDGET");
+    return ExportTerrainJournalCommands(active, baselineLayers);
+}
+
+Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainJournalCommands(
+    std::span<const std::shared_ptr<const Command>> active, bool baselineLayers) const {
+    using Output = Result<TerrainStrokeJournal>;
+    const auto fail = [](const char* code) {
+        return Output::Failure("Terrain.Journal", code, "草稿已保留；当前历史含无法完整重放的命令或超过历史预算。");
+    };
+    if (active.size() > 128) return fail("TERRAIN_JOURNAL_BUDGET");
     TerrainStrokeJournal journal;
     std::size_t points = 0, frozenBytes = 0;
     for (const auto& command : active) {
@@ -1047,8 +1057,9 @@ Status MapDataEditSession::VerifyTerrainJournalBaseline(std::span<const ArchiveE
 std::string MapDataEditSession::TerrainJournalStateFingerprint() const {
     // 原始来源和P/savedS/S已有独立scope；CAS这里只编码有界typed前缀，
     // 不为每次Observe重复构造最大64MiB的APR和journal副本。
-    auto journal = ExportTerrainStrokeJournalInternal(false);
     const std::string required = RequiresTerrainStrokeJournal() ? "required:" : "optional:";
+    if (terrainHistoryEpoch_) return required + TerrainHistoryStateFingerprint();
+    auto journal = ExportTerrainStrokeJournalInternal(false);
     if (!journal.Succeeded() || !journal.value)
         return required + (journal.diagnostics.empty() ? "unavailable" : journal.diagnostics.front().code);
     if (journal.value->strokes.empty()) return required + "empty";

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/TerrainStrokeIntent.h"
 #include "War3MapCore/MapData/TerrainDoodadsJournal.h"
 #include "War3MapCore/MapData/TerrainUnitsJournal.h"
@@ -9,6 +10,7 @@
 #include <string_view>
 
 namespace War3Map::MapData {
+class MapDataEditSession;
 
 inline constexpr std::array<std::string_view, 10> TerrainJournalMemberNames{
     "war3map.w3e", "war3map.wpm", "war3map.w3i", "table/w3i.ini",
@@ -46,16 +48,30 @@ struct TerrainJournalStroke {
     // 仅新原版CliffLevel；与digest成对。FTJ1旧悬崖保持旧算法，不能静默升级。
     std::optional<bool> cliffEnforceWaterLimits;
 };
+// FTJE只承载一座真实保存站的线性历史。旧结构字节只是重放输入，
+// 当前物理来源身份仍在外层members；不能从这些字节安装私有命令或保存资格。
+struct TerrainJournalHistory {
+    std::vector<ArchiveExactMember> baselineMembers;
+    std::vector<std::byte> baselinePathingLayers;
+    std::uint32_t savedIndex = 0, currentIndex = 0;
+    // UI只冻结真实旧epoch别名；后台物化后清空。此字段不能编码或从wire恢复。
+    std::shared_ptr<const MapDataEditSession> frozenBaseline;
+    std::size_t frozenRetainedBytes = 0; // 仅内存预算，不持久化、不授予资格。
+};
 struct TerrainStrokeJournal {
     std::string sourceSha256;
     std::vector<TerrainJournalMember> members;
     std::vector<std::byte> baselinePathingLayers;
     std::vector<TerrainJournalStroke> strokes;
+    std::optional<TerrainJournalHistory> history;
 };
 
 [[nodiscard]] Status ValidateTerrainStrokeJournal(const TerrainStrokeJournal& journal);
 // Services后台补来源身份后调用；累计预收codec/扫描/中段容量，成功后释放全部冻结别名。
 [[nodiscard]] Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal);
+[[nodiscard]] Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal);
+// 返回旧结构manifest/结构摘要/oldP及原typed栈，明确不是实际归档身份或恢复授权。
+[[nodiscard]] Result<TerrainStrokeJournal> TerrainHistoryBaselineJournal(const TerrainStrokeJournal& journal);
 [[nodiscard]] Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJournal& journal);
 [[nodiscard]] Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byte> bytes);
 
