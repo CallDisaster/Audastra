@@ -164,6 +164,23 @@ Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(const MapData::MapDat
     return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
 }
 
+Result<std::string> CaptureTerrainBlockFingerprint(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected,
+    const MapData::TerrainCellRect& sourceCells, const MapData::TerrainWaterBrushLimits& limits) {
+    if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
+    return MapData::CaptureTerrainBlockFingerprint(*session.Terrain(), sourceCells, limits);
+}
+
+Result<PreparedTerrainEdit> PrepareTerrainBlockPasteEdit(const MapData::MapDataEditSession& session,
+    const MapDataQueryBinding& document, const TerrainEditBinding& expected,
+    const MapData::TerrainPathingResources& resources, const MapData::TerrainBlockPasteIntent& intent,
+    bool followDoodads, const MapData::TerrainWaterBrushLimits& limits) {
+    if (const auto checked = CheckExpected(session, document, expected); !checked.Succeeded()) return {{}, checked.diagnostics};
+    auto plan = session.PrepareTerrainBlockPasteEdit(resources, intent, followDoodads, limits);
+    if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+    return Result<PreparedTerrainEdit>::Success(PreparedTerrainEdit(expected, std::move(*plan.value)));
+}
+
 Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(MapData::MapDataEditSession& session,
     const MapDataQueryBinding& document, const PreparedTerrainEdit& prepared,
     const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& prepublish) {

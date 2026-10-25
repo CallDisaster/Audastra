@@ -62,6 +62,9 @@ private:
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
         const MapData::TerrainBrush&, std::span<const MapData::TerrainStrokePoint>, bool,
         const MapData::TerrainWaterBrushLimits&, MapData::TerrainStraightRampAlgorithm);
+    friend Result<PreparedTerrainEdit> PrepareTerrainBlockPasteEdit(const MapData::MapDataEditSession&,
+        const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
+        const MapData::TerrainBlockPasteIntent&, bool, const MapData::TerrainWaterBrushLimits&);
 };
 
 // 宿主在同一串行临界区提供实际文档身份；服务不读盘、不替宿主猜来源或修订。
@@ -104,6 +107,17 @@ private:
     const MapData::TerrainBrush& brush, std::span<const MapData::TerrainStrokePoint> points,
     bool followDoodads = false, const MapData::TerrainWaterBrushLimits& limits = {},
     MapData::TerrainStraightRampAlgorithm algorithm = MapData::TerrainStraightRampAlgorithm::Independent);
+// 复制只读取同一CAS快照的实际矩形。摘要不是来源授权；粘贴仍核实际owner和完整源/目标域。
+[[nodiscard]] Result<std::string> CaptureTerrainBlockFingerprint(
+    const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
+    const TerrainEditBinding& expected, const MapData::TerrainCellRect& sourceCells,
+    const MapData::TerrainWaterBrushLimits& limits = {});
+// 绝对高度原字段复制；源块已改变、换图或目标修订漂移均不提交任何前缀。
+[[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainBlockPasteEdit(
+    const MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
+    const TerrainEditBinding& expected, const MapData::TerrainPathingResources& resources,
+    const MapData::TerrainBlockPasteIntent& intent, bool followDoodads = false,
+    const MapData::TerrainWaterBrushLimits& limits = {});
 [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainEdit(
     MapData::MapDataEditSession& session, const MapDataQueryBinding& document,
     const PreparedTerrainEdit& prepared,

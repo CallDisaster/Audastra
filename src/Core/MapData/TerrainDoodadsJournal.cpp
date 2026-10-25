@@ -16,7 +16,7 @@ constexpr std::size_t kMaximumBytes = 64u * 1024u * 1024u;
 
 bool IsTerrainDoodadsJournalPlaceholder(const TerrainStrokeIntent& intent) noexcept {
     const TerrainStrokeIntent neutral;
-    return !intent.palette && !intent.bounds && !intent.waterBrush && !intent.followDoodads
+    return !intent.palette && !intent.bounds && !intent.waterBrush && !intent.blockPaste && !intent.followDoodads
         && intent.points.empty() && EqualTerrainJournalIntent(intent, neutral);
 }
 
@@ -29,7 +29,7 @@ bool EqualTerrainJournalIntent(const TerrainStrokeIntent& a, const TerrainStroke
         || a.followDoodads != b.followDoodads || a.cornerRampAlgorithm != b.cornerRampAlgorithm
         || a.straightRampAlgorithm != b.straightRampAlgorithm || a.points.size() != b.points.size()
         || a.waterBrush.has_value() != b.waterBrush.has_value() || a.bounds.has_value() != b.bounds.has_value()
-        || a.palette.has_value() != b.palette.has_value()) return false;
+        || a.palette.has_value() != b.palette.has_value() || a.blockPaste.has_value() != b.blockPaste.has_value()) return false;
     for (std::size_t i = 0; i < a.points.size(); ++i)
         if (a.points[i].x != b.points[i].x || a.points[i].y != b.points[i].y) return false;
     if (a.waterBrush) {
@@ -46,6 +46,12 @@ bool EqualTerrainJournalIntent(const TerrainStrokeIntent& a, const TerrainStroke
         const auto& p = *a.palette; const auto& q = *b.palette;
         if (p.algorithm != q.algorithm || p.table != q.table || p.slot != q.slot
             || p.expectedRawcode != q.expectedRawcode || p.replacementRawcode != q.replacementRawcode) return false;
+    }
+    if (a.blockPaste) {
+        const auto& p = *a.blockPaste; const auto& q = *b.blockPaste;
+        if (p.algorithm != q.algorithm || p.sourceCells.x0 != q.sourceCells.x0 || p.sourceCells.y0 != q.sourceCells.y0
+            || p.sourceCells.x1 != q.sourceCells.x1 || p.sourceCells.y1 != q.sourceCells.y1
+            || p.destinationVertex != q.destinationVertex || p.expectedBlockSha256 != q.expectedBlockSha256) return false;
     }
     return true;
 }
