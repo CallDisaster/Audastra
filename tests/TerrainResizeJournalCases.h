@@ -237,6 +237,8 @@ inline void RepeatedHistorySaveChecksActualShadow(bool sourceShadowPresent) {
         auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot, {}, output));
         Check(plan.SaveGate()); Check(plan.InstallPathingOutput(*fixture.edits, output));
         if (bakeShadow) {
+            Require(!fixture.edits->IsDirty() && !plan.RebuiltPathing(),
+                "repeated explicit Bake exercises a clean typed session without WPM rebuild");
             const auto bake = Take(War3Map::Services::TerrainShadowBake::Capture(*fixture.archive, fixture.gameRoot, output));
             Require(bake->Bytes() != expectedShadow.bytes, "synthetic actual Bake differs from migrated source shadow");
             Check(bake->AdmitToPlan(plan, *fixture.edits));
@@ -253,9 +255,17 @@ inline void RepeatedHistorySaveChecksActualShadow(bool sourceShadowPresent) {
         Require(bakeShadow ? !sameShadow : sameShadow,
             "independent actual archive readback establishes whether saved shadow is the same");
         Check(plan.CommitSaved(*fixture.edits, MapDocument::FromArchive(saved)));
+        const auto adoptedShadow = Take(fixture.edits->TerrainResizeShadowDraft());
+        Require(!fixture.edits->IsDirty() && adoptedShadow.present == writtenShadow.present && adoptedShadow.bytes == writtenShadow.bytes,
+            "successful map save installs actual SHD before optional history checks, including clean-session Bake");
         const auto installed = fixture.edits->CommitTerrainHistorySave(lease);
+        std::string context = "same shadow supports first and repeated history save, changed actual shadow only rejects optional history"
+            "; sourceShadow=" + std::string(sourceShadowPresent ? "present" : "absent")
+            + "; save=" + std::to_string(ordinal) + "; bake=" + (bakeShadow ? "true" : "false")
+            + "; installed=" + (installed.Succeeded() ? "true" : "false");
+        for (const auto& diagnostic : installed.diagnostics) context += "\n" + diagnostic.code + ": " + diagnostic.message;
         Require(bakeShadow ? HasCode(installed, "TERRAIN_HISTORY_EPOCH_LIMIT") : installed.Succeeded(),
-            "same shadow supports first and repeated history save, changed actual shadow only rejects optional history");
+            context.c_str());
         const auto effectiveShadow = Take(fixture.edits->TerrainResizeShadowDraft());
         Require(!fixture.edits->IsDirty() && effectiveShadow.present == writtenShadow.present && effectiveShadow.bytes == writtenShadow.bytes,
             "optional history refusal preserves successful map save and its actual shadow baseline");

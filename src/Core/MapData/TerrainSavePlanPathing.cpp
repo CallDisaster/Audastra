@@ -282,12 +282,30 @@ Status TerrainSavePlan::InstallPathingOutput(const MapDataEditSession& edits,
 
 Status TerrainSavePlan::CommitSaved(MapDataEditSession& edits, const MapDocument& saved) const {
     if (!saveGate_.Succeeded()) return saveGate_;
+    const auto commitBaseline = [&](std::optional<std::vector<std::byte>> pathing,
+        std::shared_ptr<const std::vector<std::byte>> protectedPathing) -> Status {
+        std::optional<ArchiveExactMember> shadow;
+        if (edits.resizeState_) {
+            const auto written = std::find_if(replacements_.begin(), replacements_.end(),
+                [](const auto& value) { return value.name == "war3map.shd"; });
+            if (written != replacements_.end()) {
+                if (sessionIdentity_ != edits.SessionIdentity() || revision_ != edits.Revision()
+                    || terrainSourceRevision_ != edits.TerrainSourceRevision())
+                    return Reject("TERRAIN_PATHING_COMMIT_STALE", "提交实际写出阴影时原会话、修订或地形来源已改变。");
+                shadow = ArchiveExactMember{"war3map.shd", true, written->data};
+            } else if (const auto* currentShadow = edits.TerrainHistoryShadow()) shadow = *currentShadow;
+            else return Reject("TERRAIN_RESIZE_SHADOW_SOURCE", "提交扩裁基线前缺少真实写出阴影或明确absence。");
+        }
+        // 显式Bake也可能发生在WPM没有净变化的重复保存里。两条提交路径
+        // 都安装同一计划已核过的SHD，不能用是否重建WPM决定阴影基线。
+        edits.CommitSavedBaseline(saved, std::move(pathing), std::move(protectedPathing), std::move(shadow));
+        return Status::Ok();
+    };
     if (!RebuiltPathing()) {
-        try { edits.CommitSaved(saved); }
+        try { return commitBaseline(edits.pathing_, edits.pathingProtected_); }
         catch (const std::bad_alloc&) {
             return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "准备保存基线失败，原编辑状态保留。");
         }
-        return Status::Ok();
     }
     if (!edits.terrainOriginal_ || !edits.terrain_ || !edits.pathingOriginal_ || !edits.pathing_
         || !edits.pathingRestrictions_ || !SameSha(*edits.pathingOriginal_, members_[1].sourceSha256)
@@ -318,19 +336,10 @@ Status TerrainSavePlan::CommitSaved(MapDataEditSession& edits, const MapDocument
     try {
         auto protectedSource = std::make_shared<const std::vector<std::byte>>(nativePathingProtected_);
         std::optional<std::vector<std::byte>> pathing(output->data);
-        std::optional<ArchiveExactMember> shadow;
-        if (edits.resizeState_) {
-            const auto written = std::find_if(replacements_.begin(), replacements_.end(),
-                [](const auto& value) { return value.name == "war3map.shd"; });
-            if (written != replacements_.end()) shadow = ArchiveExactMember{"war3map.shd", true, written->data};
-            else if (const auto* currentShadow = edits.TerrainHistoryShadow()) shadow = *currentShadow;
-            else return Reject("TERRAIN_RESIZE_SHADOW_SOURCE", "提交扩裁基线前缺少真实写出阴影或明确absence。");
-        }
-        edits.CommitSavedBaseline(saved, std::move(pathing), std::move(protectedSource), std::move(shadow));
+        return commitBaseline(std::move(pathing), std::move(protectedSource));
     } catch (const std::bad_alloc&) {
         return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "准备新通行基线失败，原编辑状态保留。");
     }
-    return Status::Ok();
 }
 
 } // namespace War3Map::MapData
