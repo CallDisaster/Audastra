@@ -220,7 +220,9 @@ void VerifyOutput(const MapArchiveSession& archive, const std::vector<MapArchive
     const auto imp = archive.ReadMember("war3map.imp"); QVERIFY(imp.Succeeded() && imp.value);
     if (!objectOverride) QCOMPARE(imp.value, std::optional(Member(originals, "war3map.imp")));
     const auto imports = Resources::ImportTable::Parse(*imp.value); QVERIFY(imports.Succeeded() && imports.value);
-    QCOMPARE(imports.value->Entries().size(), objectOverride ? std::size_t{2} : std::size_t{1});
+    const auto originalImports = Resources::ImportTable::Parse(Member(originals, "war3map.imp"));
+    QVERIFY(originalImports.Succeeded() && originalImports.value);
+    QCOMPARE(imports.value->Entries().size(), originalImports.value->Entries().size() + (objectOverride ? 1u : 0u));
     QCOMPARE(archive.ReadMember("war3map.mmp").value, std::optional(Bytes(8, std::byte{0})));
     for (const auto& member : originals) {
         if (member.name == "war3map.w3e" || member.name == "war3map.wpm" || member.name == "war3map.w3d"
@@ -289,17 +291,41 @@ void EditorProjectTests::DualStageStaticPathingProjectColdRestore_data() {
 }
 
 void EditorProjectTests::DualStageStaticPathingWithoutTerrainNet_data() {
-    DualStageStaticPathingSaveRebase_data();
+    QTest::addColumn<bool>("objectOverride");
+    QTest::addColumn<int>("minimapPolicy"); // 0作者TGA，1登记的作者BLP，2显式保留。
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("same-path-author-tga") << false << 0 << QStringLiteral("success");
+    QTest::newRow("native-path-author-tga") << true << 0 << QStringLiteral("success");
+    QTest::newRow("same-path-imported-author-blp") << false << 1 << QStringLiteral("success");
+    QTest::newRow("native-path-explicit-preserve") << true << 2 << QStringLiteral("success");
+    QTest::newRow("native-path-publish-failure") << true << 0 << QStringLiteral("publish-failure");
+    QTest::newRow("same-path-late-import") << false << 0 << QStringLiteral("late-import");
+    QTest::newRow("native-path-late-object") << true << 0 << QStringLiteral("late-object");
 }
 
 void EditorProjectTests::DualStageStaticPathingWithoutTerrainNet() {
-    QFETCH(bool, objectOverride);
+    QFETCH(bool, objectOverride); QFETCH(int, minimapPolicy); QFETCH(QString, mode);
     QTemporaryDir root; QVERIFY(root.isValid()); QVERIFY(QDir(root.path()).mkpath("source"));
     const auto source = std::filesystem::path(root.filePath("source/map.w3x").toStdWString());
     const auto game = std::filesystem::path(root.filePath("game").toStdWString());
     QVERIFY(std::filesystem::create_directory(game));
     QVERIFY(WriteVerifiedArchive(game / "war3.mpq", TerrainJournalWaterGameMembers()).Succeeded());
-    const auto members = DualStageQt::SourceMembers(); QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    auto members = DualStageQt::SourceMembers();
+    const std::string minimap = minimapPolicy == 1 ? "war3mapMap.blp" : "war3mapMap.tga";
+    if (minimapPolicy == 1) {
+        for (auto& member : members) {
+            if (member.name == "war3mapMap.tga") {
+                member.name = minimap; member.data = Tests::WaterText("authored dual-stage BLP stays unchanged");
+            }
+            if (member.name == "war3map.imp") {
+                auto imports = Resources::ImportTable::Parse(member.data); QVERIFY(imports.Succeeded() && imports.value);
+                QVERIFY(imports.value->Upsert(minimap).Succeeded());
+                auto encoded = imports.value->Serialize(); QVERIFY(encoded.Succeeded() && encoded.value);
+                member.data = std::move(*encoded.value);
+            }
+        }
+    }
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
     const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
     EditorProject project; QUndoStack terrainUndo, assetsUndo;
     project.mapDataUndoStack_ = &terrainUndo; project.assetUndoStack_ = &assetsUndo;
@@ -312,20 +338,67 @@ void EditorProjectTests::DualStageStaticPathingWithoutTerrainNet() {
         std::optional(DualStageQt::Member(members, "war3map.w3e")));
     QVERIFY(project.HasUnsavedMapChanges() && project.HasPendingAssetEdits());
     QCOMPARE(project.objectDirty_[DualStageQt::kDoodadIndex], objectOverride);
+    const auto fingerprint = project.ProjectFingerprint(); QVERIFY(!fingerprint.empty());
+    const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
+    const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
+    const auto* archiveBefore = project.archiveSession_.get();
     const auto target = std::filesystem::path(root.filePath("saved-without-terrain-net.w3x").toStdWString());
     auto job = DualStageQt::Freeze(project, target); QVERIFY(job);
-    job->minimapChoice = Services::TerrainMinimapSaveChoice::Automatic;
-    EditorProject::RunMapSave(*job); QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+    job->minimapChoice = minimapPolicy == 2 ? Services::TerrainMinimapSaveChoice::Preserve
+        : Services::TerrainMinimapSaveChoice::Automatic;
+    if (mode == "publish-failure") job->beforePublish = [] {
+        return Status::Failure("Test", "DUAL_STAGE_PUBLISH_REFUSED", "原创发布失败夹具");
+    };
+    EditorProject::RunMapSave(*job);
+    if (mode == "publish-failure") {
+        QVERIFY(!job->succeeded && !project.CommitMapSave(*job));
+        QVERIFY2(HasReadDiagnostic(*job, "DUAL_STAGE_PUBLISH_REFUSED"), ReadDiagnosticText(*job).c_str());
+        QVERIFY(!std::filesystem::exists(target));
+        QCOMPARE(project.ProjectFingerprint(), fingerprint);
+        QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision);
+        QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+        QCOMPARE(project.archiveSession_.get(), archiveBefore);
+        QVERIFY(project.HasUnsavedMapChanges() && project.HasPendingAssetEdits());
+        QCOMPARE(assetsUndo.count(), 1); QCOMPARE(terrainUndo.index(), 0);
+        QCOMPARE(Sha256File(source).value, sourceSha.value); terrainUndo.clear(); return;
+    }
+    QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
     // 作者TGA须保留，不能让“不重建小地图”同时跳过静态通行派生。
     const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded() && actual.value);
-    QCOMPARE(actual.value->ReadMember("war3mapMap.tga").value,
-        std::optional(DualStageQt::Member(members, "war3mapMap.tga")));
+    QCOMPARE(actual.value->ReadMember(minimap).value, std::optional(DualStageQt::Member(members, minimap)));
     QCOMPARE(actual.value->ReadMember("war3map.w3e").value,
         std::optional(DualStageQt::Member(members, "war3map.w3e")));
     QCOMPARE(actual.value->ReadMember("war3map.wpm").value,
         std::optional(DualStageQt::ExpectedPathing(members, false)));
     DualStageQt::VerifyOutput(*actual.value, members, objectOverride, false);
     QVERIFY(project.HasUnsavedMapChanges() && project.HasPendingAssetEdits());
+    if (mode == "late-import") {
+        std::vector<EditorProject::ImportPayload> late{{QStringLiteral("Docs/late-import.txt"),
+            std::make_shared<const DualStageQt::Bytes>(Tests::WaterText("late owned import"))}};
+        QVERIFY(project.AddImportPayloads(late, false, "保存后晚到的资源修改").isEmpty());
+    } else if (mode == "late-object") {
+        const auto* object = project.objectDocuments_[DualStageQt::kDoodadIndex]->FindObject({DualStageQt::kDoodad, "Doo0"});
+        QVERIFY(object);
+        const auto field = std::find_if(object->modifications.begin(), object->modifications.end(),
+            [](const auto& modification) { return modification.key.fieldId == "dptx"; });
+        QVERIFY(field != object->modifications.end());
+        QVERIFY(project.objectDocuments_[DualStageQt::kDoodadIndex]->SetModification({DualStageQt::kDoodad, "Doo0"},
+            field->key, std::string(DualStageQt::kOldTexture)).Succeeded());
+        project.ObserveObjectEdit(int(DualStageQt::kDoodadIndex));
+    }
+    if (mode == "late-import" || mode == "late-object") {
+        const auto lateFingerprint = project.ProjectFingerprint(); QVERIFY(!lateFingerprint.empty() && lateFingerprint != fingerprint);
+        QVERIFY(!project.CommitMapSave(*job));
+        QVERIFY(ModelHasCode(*project.diagnosticsModel_, QStringLiteral("SAVE_REVISION_CHANGED")));
+        QCOMPARE(project.ProjectFingerprint(), lateFingerprint);
+        QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision);
+        QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+        QCOMPARE(project.archiveSession_.get(), archiveBefore);
+        QVERIFY(project.HasUnsavedMapChanges() && project.HasPendingAssetEdits());
+        QCOMPARE(Sha256File(source).value, sourceSha.value); terrainUndo.clear(); return;
+    }
+    QVERIFY(job->terrainSavePlan && job->terrainSavePlan->RebuiltPathing());
+    QVERIFY(job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
     QVERIFY(project.CommitMapSave(*job)); QVERIFY(!project.HasUnsavedMapChanges());
     QVERIFY(project.pendingImports_.empty()); QCOMPARE(assetsUndo.count(), 0);
     QCOMPARE(terrainUndo.count(), 1); QCOMPARE(terrainUndo.index(), 0);
@@ -390,4 +463,106 @@ void EditorProjectTests::DualStageStaticPathingProjectColdRestore() {
     QVERIFY(restored.CommitMapSave(*job)); QVERIFY(!restored.HasUnsavedMapChanges());
     QCOMPARE(terrainUndo.count(), 1); QCOMPARE(terrainUndo.index(), 1);
     QCOMPARE(Sha256File(source).value, sourceSha.value); terrainUndo.clear();
+}
+
+void EditorProjectTests::DualStageUnrelatedEditsPreserveUnresolvedPathing_data() {
+    QTest::addColumn<bool>("unitHealth");
+    QTest::addColumn<bool>("lateStaticInput");
+    QTest::newRow("unrelated-icon-keeps-unresolved-source-wpm") << false << false;
+    QTest::newRow("unit-health-keeps-unresolved-source-wpm") << true << false;
+    QTest::newRow("unchanged-proof-rechecks-late-static-input") << false << true;
+}
+
+void EditorProjectTests::DualStageUnrelatedEditsPreserveUnresolvedPathing() {
+    QFETCH(bool, unitHealth); QFETCH(bool, lateStaticInput);
+    QTemporaryDir root; QVERIFY(root.isValid()); QVERIFY(QDir(root.path()).mkpath("source"));
+    const auto source = std::filesystem::path(root.filePath("source/map.w3x").toStdWString());
+    const auto game = std::filesystem::path(root.filePath("game").toStdWString());
+    QVERIFY(std::filesystem::create_directory(game));
+    QVERIFY(WriteVerifiedArchive(game / "war3.mpq", TerrainJournalWaterGameMembers()).Succeeded());
+    auto members = DualStageQt::SourceMembers();
+    for (auto& member : members) if (member.name == DualStageQt::kOldTexture)
+        member.data = Tests::WaterText("legacy footprint outside current decoder support");
+    constexpr auto unitType = ObjectData::ObjectType::Unit;
+    constexpr auto unitIndex = static_cast<std::size_t>(unitType);
+    if (unitHealth) {
+        auto units = ObjectData::NativeObjectDocument::CreateEmpty(unitType); QVERIFY(units.Succeeded() && units.value);
+        QVERIFY(units.value->AddOriginalObject("hfoo").Succeeded());
+        QVERIFY(units.value->AddModification({unitType, "hfoo"}, {"uhpm"},
+            ObjectData::NativeValueType::Int32, std::int32_t{0}).Succeeded());
+        auto encoded = ObjectData::NativeObjectCodec(unitType).Serialize(*units.value); QVERIFY(encoded.Succeeded() && encoded.value);
+        members.push_back({"war3map.w3u", std::move(*encoded.value)});
+    }
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    const auto sourceSha = Sha256File(source); QVERIFY(sourceSha.Succeeded());
+    EditorProject project; QUndoStack assetsUndo; project.assetUndoStack_ = &assetsUndo;
+    QVERIFY(DualStageQt::Bind(project, source, game));
+    const std::string iconName = "Textures/unrelated-icon.blp";
+    const auto icon = Tests::WaterText("unrelated owned icon bytes");
+    if (unitHealth) {
+        const auto nativeBytes = project.archiveSession_->ReadMember("war3map.w3u"); QVERIFY(nativeBytes.Succeeded() && nativeBytes.value);
+        auto parsed = ObjectData::NativeObjectCodec(unitType).Parse(*nativeBytes.value); QVERIFY(parsed.Succeeded());
+        const auto* native = dynamic_cast<const ObjectData::NativeObjectDocument*>(parsed.document.get()); QVERIFY(native);
+        auto text = ObjectData::ConvertNativeObjectDataToLni(unitType, *nativeBytes.value); QVERIFY(text.Succeeded() && text.value);
+        auto editable = ObjectData::LniObjectCodec(unitType).Parse(*text.value); QVERIFY(editable.Succeeded());
+        auto* lni = dynamic_cast<ObjectData::LniObjectDocument*>(editable.document.get()); QVERIFY(lni);
+        project.nativeObjectDocuments_[unitIndex] = std::make_unique<ObjectData::NativeObjectDocument>(*native);
+        project.objectDocuments_[unitIndex].reset(static_cast<ObjectData::LniObjectDocument*>(editable.document.release()));
+        project.ResetEditTracking(); QVERIFY(project.editTrackingReady_ && !project.editTrackingFailed_);
+        const auto* object = project.objectDocuments_[unitIndex]->FindObject({unitType, "hfoo"}); QVERIFY(object);
+        const auto field = std::find_if(object->modifications.begin(), object->modifications.end(),
+            [](const auto& modification) { return modification.key.fieldId == "uhpm"; });
+        QVERIFY(field != object->modifications.end());
+        QVERIFY(project.objectDocuments_[unitIndex]->SetModification({unitType, "hfoo"}, field->key, std::int32_t{1}).Succeeded());
+        project.ObserveObjectEdit(int(unitIndex));
+    } else {
+        std::vector<EditorProject::ImportPayload> payloads{{QString::fromStdString(iconName),
+            std::make_shared<const DualStageQt::Bytes>(icon)}};
+        QVERIFY(project.AddImportPayloads(payloads, false, "导入无关图标").isEmpty());
+    }
+    QVERIFY(!MapData::TerrainSavePlan::HasTerrainChanges(*project.mapEdits_));
+    QVERIFY(project.HasUnsavedMapChanges());
+    const auto fingerprint = project.ProjectFingerprint(); QVERIFY(!fingerprint.empty());
+    const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map); QVERIFY(baseline);
+    const auto sourceRevision = project.mapEdits_->TerrainSourceRevision();
+    const auto* archiveBefore = project.archiveSession_.get();
+    const auto target = std::filesystem::path(root.filePath("unrelated-saved.w3x").toStdWString());
+    auto job = DualStageQt::Freeze(project, target); QVERIFY(job);
+    job->minimapChoice = Services::TerrainMinimapSaveChoice::Automatic;
+    if (lateStaticInput) {
+        auto* task = job.get();
+        job->beforePublish = [task] {
+            // 工厂先见到真正无关的图标；发布回调才注入静态变化，不能借nullopt免核。
+            task->replacements.push_back({std::string(DualStageQt::kOldTexture), DualStageQt::Texture(true)});
+            return Status::Ok();
+        };
+    }
+    EditorProject::RunMapSave(*job);
+    if (lateStaticInput) {
+        QVERIFY(!job->succeeded && !project.CommitMapSave(*job));
+        QVERIFY2(HasReadDiagnostic(*job, "TERRAIN_FINAL_INPUTS_CHANGED"), ReadDiagnosticText(*job).c_str());
+        QVERIFY(!std::filesystem::exists(target));
+        QCOMPARE(project.ProjectFingerprint(), fingerprint); QVERIFY(project.HasUnsavedMapChanges());
+        QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
+        QCOMPARE(project.mapEdits_->TerrainSourceRevision(), sourceRevision);
+        QCOMPARE(project.archiveSession_.get(), archiveBefore);
+        QCOMPARE(project.pendingImports_.size(), std::size_t{1}); QCOMPARE(assetsUndo.count(), 1);
+        QCOMPARE(Sha256File(source).value, sourceSha.value); return;
+    }
+    QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
+    QVERIFY(!job->terrainSavePlan || !job->terrainSavePlan->RebuiltPathing());
+    const auto actual = MapArchiveSession::Open(target); QVERIFY(actual.Succeeded() && actual.value);
+    for (const auto name : {"war3map.wpm", "war3map.w3e", "war3mapMap.tga"})
+        QCOMPARE(actual.value->ReadMember(name).value, std::optional(DualStageQt::Member(members, name)));
+    if (unitHealth) {
+        const auto changed = actual.value->ReadMember("war3map.w3u"); QVERIFY(changed.Succeeded() && changed.value);
+        auto parsed = ObjectData::NativeObjectCodec(unitType).Parse(*changed.value); QVERIFY(parsed.Succeeded());
+        const auto* native = dynamic_cast<const ObjectData::NativeObjectDocument*>(parsed.document.get()); QVERIFY(native);
+        const auto* object = native->FindObject({unitType, "hfoo"}); QVERIFY(object);
+        const auto field = std::find_if(object->modifications.begin(), object->modifications.end(),
+            [](const auto& modification) { return modification.key.fieldId == "uhpm"; });
+        QVERIFY(field != object->modifications.end()); QCOMPARE(std::get<std::int32_t>(field->value), std::int32_t{1});
+    } else QCOMPARE(actual.value->ReadMember(iconName).value, std::optional(icon));
+    QVERIFY(project.CommitMapSave(*job)); QVERIFY(!project.HasUnsavedMapChanges());
+    QCOMPARE(Sha256File(source).value, sourceSha.value);
 }

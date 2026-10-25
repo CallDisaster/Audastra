@@ -58,48 +58,11 @@ Status InstallPreservedMinimap(MapSaveJob& job, const MapData::MapDataEditSessio
     return Status::Ok();
 }
 
-Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData::MapDataEditSession>& edits,
-    bool& terrainPrepared) {
+Status RestoreWorkerTerrainSession(MapSaveJob& job,
+    std::shared_ptr<const MapData::MapDataEditSession>& edits) {
     const auto reject = [](const char* code, const char* message) {
         return Status::Failure("TerrainMinimapSave.Qt", code, message);
     };
-    const bool automatic = job.minimapChoice == Services::TerrainMinimapSaveChoice::Automatic;
-    const bool preserve = job.minimapChoice == Services::TerrainMinimapSaveChoice::Preserve;
-    const bool explicitGeneration = job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
-        || job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
-    if (!automatic && !preserve && !explicitGeneration)
-        return reject("MINIMAP_SAVE_CHOICE", "未知的单次地形小地图保存选项。");
-    if (job.rebuildTerrainShadow && explicitGeneration)
-        return reject("TERRAIN_SHADOW_MINIMAP_CONFLICT", "显式计算阴影不能与旧的单独补建小地图选项混用。");
-    terrainPrepared = !job.terrainDerivationRequired;
-    const auto prepareMarkersAndShadow = [&](const MapData::MapDataEditSession* currentEdits) {
-        const auto markers = Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, currentEdits, job.terrainSavePlan);
-        if (!markers.Succeeded() || !job.rebuildTerrainShadow) return markers;
-        return Services::PrepareTerrainShadowBake(job, job.minimapGameRoot, currentEdits, job.terrainSavePlan);
-    };
-    if (automatic) {
-        const auto required = Services::TerrainMinimapSave::RequiresAutomaticGeneration(job);
-        if (!required.Succeeded() || !required.value) return {required.diagnostics};
-        if (!*required.value && !job.terrainDerivationRequired) {
-            // 无地形任务且无需生成小地图时，不为普通物编/导入保存强制附入地形。
-            // 有地形变化则必须继续，即使来源是TGA或作者导入的BLP。
-            auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot);
-            if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
-            job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
-            const auto installed = InstallPreservedMinimap(job, *edits, std::move(*prepared.value));
-            if (!installed.Succeeded()) return installed;
-            if (!job.minimapPreserve) job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
-            return prepareMarkersAndShadow(nullptr);
-        }
-    }
-    if (preserve && !job.terrainDerivationRequired)
-        return prepareMarkersAndShadow(nullptr);
-    if (!job.archive || (explicitGeneration && (job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
-        || !job.removals.empty() || std::count_if(job.replacements.begin(), job.replacements.end(), [](const auto& member) {
-            return MinimapMemberName(member.name) == "war3map.w3e";
-        }) != 1)))
-        return reject("MINIMAP_SAVE_DOMAIN", "worker补建只接受真实独立另存任务与唯一高度W3E，拒绝测试副本或混合领域。");
-
     if (job.terrainSessionSnapshot) {
         edits = job.terrainSessionSnapshot;
         if (job.pathingRestrictionDraft) {
@@ -190,7 +153,107 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
             }
         edits = std::move(restoredSession);
     }
-    if (job.terrainDerivationRequired || (automatic && !job.terrainSavePlan)) {
+    return Status::Ok();
+}
+
+Status PrepareWorkerFinalPathing(MapSaveJob& job,
+    const std::shared_ptr<const MapData::MapDataEditSession>& frozenEdits) {
+    if (!job.archive)
+        return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_SOURCE_MISSING",
+            "准备最终通行输入时缺少本次冻结地图来源，当前编辑保留。");
+    auto prepared = Services::TerrainPathingSave::PrepareFinalForSave(*job.archive, frozenEdits.get(),
+        job.minimapGameRoot, {}, job.replacements, job.removals);
+    if (!prepared.Succeeded()) return {std::move(prepared.diagnostics)};
+    if (!prepared.value)
+        return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_RESULT_MISSING",
+            "最终通行输入检查没有返回完整结果，当前编辑保留。");
+    if (*prepared.value) {
+        if (!frozenEdits)
+            return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_BASELINE_MISSING",
+                "通行重建缺少本次真实编辑会话快照，当前编辑保留。");
+        auto& plan = **prepared.value;
+        const auto installed = plan.InstallPathingOutput(*frozenEdits, job.replacements);
+        if (!installed.Succeeded()) return installed;
+        const auto verified = plan.VerifyForSave(*frozenEdits, job.sourceSha256, job.replacements, job.removals);
+        if (!verified.Succeeded()) return verified;
+        job.terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(plan));
+        const auto& diagnostics = job.terrainSavePlan->Diagnostics();
+        job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
+    } else {
+        if (job.terrainDerivationRequired)
+            return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_BASELINE_MISSING",
+                "地形修改没有取得对应的最终通行计划，当前编辑保留。");
+        // 无关物编/导入没有重建资格；写前仍须按真实来源和最终列表重查，不能裸放行。
+        job.beforePublish = [&job, frozenEdits, previous = std::move(job.beforePublish)] {
+            if (previous) { const auto checked = previous(); if (!checked.Succeeded()) return checked; }
+            if (!job.archive)
+                return Status::Failure("Terrain.SavePlan", "TERRAIN_SAVE_PLAN_SOURCE_MISSING",
+                    "写入前缺少本次冻结地图来源，当前编辑保留。");
+            return Services::TerrainPathingSave::VerifyUnchangedFinalInputs(*job.archive, frozenEdits.get(),
+                job.minimapGameRoot, {}, job.replacements, job.removals);
+        };
+    }
+    job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+    return Status::Ok();
+}
+
+Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData::MapDataEditSession>& edits,
+    bool& pathingPrepared) {
+    const auto reject = [](const char* code, const char* message) {
+        return Status::Failure("TerrainMinimapSave.Qt", code, message);
+    };
+    const bool automatic = job.minimapChoice == Services::TerrainMinimapSaveChoice::Automatic;
+    const bool preserve = job.minimapChoice == Services::TerrainMinimapSaveChoice::Preserve;
+    const bool explicitGeneration = job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
+        || job.minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
+    if (!automatic && !preserve && !explicitGeneration)
+        return reject("MINIMAP_SAVE_CHOICE", "未知的单次地形小地图保存选项。");
+    if (job.rebuildTerrainShadow && explicitGeneration)
+        return reject("TERRAIN_SHADOW_MINIMAP_CONFLICT", "显式计算阴影不能与旧的单独补建小地图选项混用。");
+    if (!job.archive)
+        return reject("TERRAIN_SAVE_PLAN_SOURCE_MISSING", "worker缺少本次冻结地图来源，当前编辑保留。");
+    // 先核最终静态依赖，不能让作者小地图的保留策略决定是否更新WPM。
+    const bool haveSession = job.terrainSessionSnapshot || job.terrainDerivationRequired
+        || job.terrainSavePlan || explicitGeneration;
+    if (haveSession) {
+        const auto restored = RestoreWorkerTerrainSession(job, edits);
+        if (!restored.Succeeded()) return restored;
+    }
+    const auto finalPathing = PrepareWorkerFinalPathing(job, haveSession ? edits : nullptr);
+    if (!finalPathing.Succeeded()) return finalPathing;
+    pathingPrepared = true;
+    const auto prepareMarkersAndShadow = [&](const MapData::MapDataEditSession* currentEdits) {
+        const auto markers = Services::PrepareTerrainMinimapMarkers(job, job.minimapGameRoot, currentEdits, job.terrainSavePlan);
+        if (!markers.Succeeded() || !job.rebuildTerrainShadow) return markers;
+        return Services::PrepareTerrainShadowBake(job, job.minimapGameRoot, currentEdits, job.terrainSavePlan);
+    };
+    if (automatic) {
+        const auto required = Services::TerrainMinimapSave::RequiresAutomaticGeneration(job);
+        if (!required.Succeeded() || !required.value) return {required.diagnostics};
+        if (!*required.value && !job.terrainDerivationRequired) {
+            // 静态通行已独立核对；无关物编/导入不额外取得地形能力门。
+            auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot);
+            if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
+            job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+            const auto installed = InstallPreservedMinimap(job, *edits, std::move(*prepared.value));
+            if (!installed.Succeeded()) return installed;
+            if (!job.minimapPreserve) job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
+            return prepareMarkersAndShadow(job.terrainSavePlan ? edits.get() : nullptr);
+        }
+    }
+    if (preserve && !job.terrainDerivationRequired)
+        return prepareMarkersAndShadow(job.terrainSavePlan ? edits.get() : nullptr);
+    if (!job.archive || (explicitGeneration && (job.inPlace || job.testCopyOnly || job.triggerChanges || !job.objectTransactions.empty()
+        || !job.removals.empty() || std::count_if(job.replacements.begin(), job.replacements.end(), [](const auto& member) {
+            return MinimapMemberName(member.name) == "war3map.w3e";
+        }) != 1)))
+        return reject("MINIMAP_SAVE_DOMAIN", "worker补建只接受真实独立另存任务与唯一高度W3E，拒绝测试副本或混合领域。");
+
+    if (!haveSession) {
+        const auto restored = RestoreWorkerTerrainSession(job, edits);
+        if (!restored.Succeeded()) return restored;
+    }
+    if (!job.terrainSavePlan && (job.terrainDerivationRequired || automatic)) {
         auto prepared = Services::TerrainPathingSave::PrepareForSave(*job.archive, *edits, job.minimapGameRoot,
             {}, job.replacements, job.removals);
         if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
@@ -201,7 +264,6 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
         job.terrainSavePlan = std::make_shared<const MapData::TerrainSavePlan>(std::move(*prepared.value));
         const auto& diagnostics = job.terrainSavePlan->Diagnostics();
         job.diagnostics.insert(job.diagnostics.end(), diagnostics.begin(), diagnostics.end());
-        terrainPrepared = true;
     }
     if (automatic || preserve) {
         const auto markers = prepareMarkersAndShadow(edits.get());
@@ -253,13 +315,13 @@ Status PrepareWorkerDerived(MapSaveJob& job) {
     // 该临时会话只绑定本次 worker；编辑器代际仍由 Commit 的原门禁核对。
     std::shared_ptr<const MapData::MapDataEditSession> edits =
         std::make_shared<MapData::MapDataEditSession>(MapDocument::FromMembers({}));
-    bool terrainPrepared = false;
-    auto status = PrepareWorkerDerivedInputs(job, edits, terrainPrepared);
+    bool pathingPrepared = false;
+    auto status = PrepareWorkerDerivedInputs(job, edits, pathingPrepared);
     if (!status.Succeeded()) {
         if (job.rebuildTerrainShadow && !job.terrainShadow) return status;
-        // 小地图能力不足可以保留；所需地形输入/计划没有通过时绝不能借此降级。
+        // 小地图能力不足可以保留；静态依赖/通行计划没有通过时绝不能借此降级。
         if (job.minimapChoice != Services::TerrainMinimapSaveChoice::Automatic
-            || (job.terrainDerivationRequired && !terrainPrepared)) return status;
+            || !pathingPrepared) return status;
         auto preserved = Services::TerrainMinimapSave::PreserveUnsupportedAutomatic(job, *edits, std::move(status.diagnostics));
         if (!preserved.Succeeded() || !preserved.value) return {std::move(preserved.diagnostics)};
         const auto installed = InstallPreservedMinimap(job, *edits, std::move(*preserved.value));

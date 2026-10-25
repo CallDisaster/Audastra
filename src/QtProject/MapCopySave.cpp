@@ -30,7 +30,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <new>
 #include <set>
+#include <stdexcept>
 
 // 地图保存的准备阶段（界面线程）：以源归档快照为基础，序列化本次修改的成员、编辑导入清单，
 // 决定是否重建游戏脚本，生成保存任务。执行与提交见 MapSaveRun.cpp。
@@ -304,6 +306,17 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         AddDiagnostics(frozenArchive.diagnostics);
         return nullptr;
     }
+    if (mapEdits_) {
+        // 打开时已附入真实W3E/WPM。净地形不变的物编/导入也需要同一会话事实，
+        // 是否重建由最终worker的实际依赖差异决定；冻结本身不检查占地能力。
+        // 沿用现有单次快照（不复制Undo历史），不为无关修改新增64MiB能力门。
+        try { job->terrainSessionSnapshot = mapEdits_->FreezeForSave(); }
+        catch (const std::bad_alloc&) {
+            return fail(tr("MAP_SAVE_SNAPSHOT_ALLOCATION"), tr("无法冻结本次地图编辑快照，当前编辑保留。"));
+        } catch (const std::length_error&) {
+            return fail(tr("MAP_SAVE_SNAPSHOT_ALLOCATION"), tr("地图编辑快照超出可分配容量，当前编辑保留。"));
+        }
+    }
     job->triggerChanges = triggerDirty_;
     auto& replacements = job->replacements;
     const auto replaceMember = [&replacements](const std::string& name, std::vector<std::byte> bytes) {
@@ -320,7 +333,6 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     std::vector<MapArchiveMember> auxiliarySaveMembers;
     if (mapEdits_ && mapEdits_->IsDirty()) {
         job->terrainDerivationRequired = !explicitMinimap && MapData::TerrainSavePlan::HasTerrainChanges(*mapEdits_);
-        if (job->terrainDerivationRequired) job->terrainSessionSnapshot = mapEdits_->FreezeForSave();
         // 原始成员与APR完整意图随任务冻结；worker在脚本/模板最终列表形成后
         // 才建立地形计划。这里只准备输入，不把尚未执行的通行门标记为通过。
         auto restrictions = mapEdits_->SerializePathingRestrictionDraft();
