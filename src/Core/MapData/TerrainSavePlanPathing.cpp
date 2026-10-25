@@ -61,7 +61,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
         edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], nullptr, nullptr, nullptr, true,
         unitsProof ? &*unitsProof : nullptr, doodadsProof ? &*doodadsProof : nullptr);
     if (!shape.Succeeded()) return {{}, shape.diagnostics};
-    if ((!source && !workspace) || total > limits.maximumBytes)
+    if ((!source && !workspace && !nativeCapture) || total > limits.maximumBytes)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SOURCE", "通行重建缺少唯一来源或剩余预算。");
     auto captured = nativeCapture ? (*nativeCapture)(*edits.terrainOriginal_, *edits.terrain_,
         currentDoodads ? &*currentDoodads : nullptr, limits.maximumBytes - total) : source
