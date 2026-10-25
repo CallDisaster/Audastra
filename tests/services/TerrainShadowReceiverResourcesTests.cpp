@@ -476,11 +476,16 @@ void BoundedSourceAndReadbackVerification() {
 }
 } // namespace
 
+#include "TerrainShadowRampReceiverCases.h"
+
 int main(int argc, char** argv) {
     try {
         const std::string_view group = argc > 1 ? argv[1] : "all";
         Require(group == "ordered" || group == "sources" || group == "guards" || group == "all", "未知测试分组");
-        if (group == "ordered" || group == "all") { OrderedAndSaved(); CompleteCliffBakeUsesProductionSaveAndGuards(); }
+        if (group == "ordered" || group == "all") {
+            OrderedAndSaved(); CompleteCliffBakeUsesProductionSaveAndGuards();
+            RunTerrainShadowRampReceiverCases();
+        }
         if (group == "sources" || group == "all") { FrozenSources(); ActualGameRootCannotBeMixedWithAnotherCasterOwner(); }
         if (group == "guards" || group == "all") { GuardsAndOrdinary(); BoundedSourceAndReadbackVerification(); }
         std::cout << "terrain shadow receiver " << group << " passed\n"; return 0;
