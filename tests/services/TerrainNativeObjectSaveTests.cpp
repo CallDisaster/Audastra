@@ -2508,15 +2508,27 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
     }
     for (const bool remove : {false, true}) {
         Fixture f; f.Paint();
+        const auto sourceSha = Take(Sha256File(f.archive->SourcePath()));
+        const auto revision = f.edits->Revision();
+        const auto terrainDraft = Take(SerializeMapTerrain(*f.edits->Terrain()));
         auto output = f.edits->Replacements();
         std::vector<std::string> removals;
         if (remove) removals.push_back("TerrainArt/Terrain.slk");
         else output.push_back({"TerrainArt/Terrain.slk",
             Slk({"tileID", "walkable", "flyable", "buildable"}, {{"Tg01", "0", "1", "1"}})});
         const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, output, removals));
-        Check(plan.SaveGate()); Check(plan.InstallPathingOutput(*f.edits, output));
+        // 双阶段捕获在准备时就拒绝固定表变化；删表且没有游戏来源时不能猜回退值。
+        const auto expectedCode = remove ? "TERRAIN_PATHING_RESOURCE_MISSING" : "TERRAIN_NATIVE_PAIR_RULE_CHANGED";
+        Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), expectedCode),
+            "actual static rule changes are refused during two-stage preparation with the precise diagnostic");
+        Require(!plan.InstallPathingOutput(*f.edits, output).Succeeded(),
+            "a refused rule change cannot install a partial pathing output");
         Require(!plan.VerifyForSave(*f.edits, f.archive->SourceSha256(), output, removals).Succeeded(),
             "actual static pathing dependency replacement or removal is still refused");
+        Require(Take(Sha256File(f.archive->SourcePath())) == sourceSha && f.edits->IsDirty()
+            && f.edits->Revision() == revision && f.edits->CanUndo() && !f.edits->CanRedo()
+            && Take(SerializeMapTerrain(*f.edits->Terrain())) == terrainDraft,
+            "dependency refusal preserves the source archive, unsaved draft and undo state");
         Require(!std::filesystem::exists(f.root / "refused.w3x"), "dependency refusal does not publish partial output");
     }
     {
