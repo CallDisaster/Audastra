@@ -584,8 +584,9 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         if (PrepareScriptRebuild(*job) == ScriptRebuild::Failed) {
             return fail(tr("REPACK_SCRIPT_REJECTED"), tr("无法准备游戏脚本重建，已中止保存；详见构建诊断。"));
         }
-        // 范围命令的最终W3I同时决定游戏相机初始化，不能沿用旧脚本。
-        if (mapEdits_ && mapEdits_->HasTerrainBoundsChanges()) job->preserveUnaffectedScript = false;
+        // 最终W3I与外矩形共同决定游戏初始化，范围或尺寸命令不能沿用旧脚本。
+        if (mapEdits_ && (mapEdits_->HasTerrainBoundsChanges() || mapEdits_->HasTerrainResizeChanges()))
+            job->preserveUnaffectedScript = false;
     }
     if (!ObserveEditState("冻结地图保存输入")) {
         return fail(tr("SAVE_REVISION_UNAVAILABLE"), tr("无法复核冻结后的编辑修订，地图保存已中止。"));

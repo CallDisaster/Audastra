@@ -292,6 +292,12 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
     std::size_t terrainCurrentIndex = 0;
     std::optional<std::size_t> terrainSavedIndex;
     auto mapDataEdits = std::make_unique<MapData::MapDataEditSession>(*dataDocument);
+    const bool resizeDraft = archive.HasMember("overlay/editor/terrain-resize.bin");
+    if (resizeDraft != manifest.contains("terrainResizeDraft")
+        || (resizeDraft && (!manifest["terrainResizeDraft"].isDouble() || manifest["terrainResizeDraft"].toDouble() != 1)))
+        return fail(QObject::tr("地图尺寸草稿声明缺失或版本不受支持"));
+    if (!resizeDraft && archive.HasMember("overlay/map/war3map.shd"))
+        return fail(QObject::tr("工程阴影覆盖没有对应的地图尺寸草稿，不能忽略或猜测来源"));
     {
         // 地形基线与覆盖：基线读取或解析失败时，存在地形覆盖的工程不能恢复。
         auto terrain = baseline
@@ -344,7 +350,7 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
                     && manifest["pathingRestrictions"].toDouble() != 3)
                 || (manifest["pathingRestrictions"].toDouble() == 1 && !pathingOverlay) || !pathingAttached)))
             return fail(QObject::tr("工程附加通行限制声明缺失、版本未知或没有对应 WPM 覆盖"));
-        if (terrainOverlay || pathingOverlay || restrictionDraft) {
+        if (terrainOverlay || pathingOverlay || restrictionDraft || resizeDraft) {
             auto nextTerrain = terrainOverlay ? archive.ReadMember("overlay/map/war3map.w3e") : std::move(terrain);
             auto nextPathing = pathingOverlay ? archive.ReadMember("overlay/map/war3map.wpm") : std::move(pathing);
             if (!attached || !nextTerrain.Succeeded() || !nextTerrain.value)
@@ -359,18 +365,60 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
                 if (restrictionDraft && (draft.value->size() < 4
                     || std::to_integer<unsigned>((*draft.value)[3]) != manifest["pathingRestrictions"].toDouble()))
                     return fail(QObject::tr("工程附加通行限制声明版本与清单不一致"));
-                const auto restored = restrictionDraft
+                Status restored;
+                if (resizeDraft) {
+                    const auto payload = archive.ReadMember("overlay/editor/terrain-resize.bin");
+                    if (!payload.Succeeded() || !payload.value) return fail(QObject::tr("地图尺寸完整草稿无法读取"));
+                    restored = mapDataEdits->SetTerrainResizeDraft(*nextTerrain.value, *nextPathing.value, *payload.value);
+                    if (restored.Succeeded()) {
+                        const auto actualRestrictions = mapDataEdits->SerializePathingRestrictionDraft();
+                        if (!actualRestrictions.Succeeded() || actualRestrictions.value != draft.value)
+                            return fail(QObject::tr("地图尺寸草稿与独立附加通行限制声明不一致"));
+                    }
+                } else restored = restrictionDraft
                     ? mapDataEdits->SetTerrainAndPathingDraft(*nextTerrain.value, *nextPathing.value, *draft.value)
                     : mapDataEdits->SetTerrainAndPathing(*nextTerrain.value, *nextPathing.value);
                 if (!restored.Succeeded())
                     return fail(QObject::tr("工程地形与通行性覆盖无法作为同一事务安全恢复"));
             } else {
-                if (pathingOverlay) return fail(QObject::tr("工程通行性覆盖无法安全恢复：源 WPM 缺失、模糊或未能解析"));
+                if (pathingOverlay || resizeDraft) return fail(QObject::tr("工程通行性覆盖无法安全恢复：源 WPM 缺失、模糊或未能解析"));
                 // 允许恢复未获 WPM 证据的地形草稿；正式地图保存仍须通过通行性门禁。
                 if (!mapDataEdits->SetTerrain(*nextTerrain.value).Succeeded())
                     return fail(QObject::tr("工程地形覆盖无法安全恢复"));
             }
         }
+    }
+    if (resizeDraft) {
+        const auto shadow = mapDataEdits->TerrainResizeShadowDraft();
+        if (!shadow.Succeeded() || !shadow.value) return fail(QObject::tr("地图尺寸草稿缺少完整阴影来源"));
+        bool present = archive.HasMember("overlay/map/war3map.shd");
+        std::vector<std::byte> bytes;
+        if (present) {
+            auto read = archive.ReadMember("overlay/map/war3map.shd");
+            if (!read.Succeeded() || !read.value) return fail(QObject::tr("工程阴影覆盖无法读取"));
+            bytes = std::move(*read.value);
+        } else if (baseline) {
+            const std::array<std::string, 1> names{"war3map.shd"};
+            auto members = baseline->CaptureExactMembers(names);
+            if (!members.Succeeded() || !members.value || members.value->size() != 1)
+                return fail(QObject::tr("工程原始阴影来源无法精确读取"));
+            present = members.value->front().present; bytes = std::move(members.value->front().bytes);
+        } else {
+            std::size_t matches = 0;
+            for (const auto& file : workspace->Snapshot().files) {
+                const auto name = QString::fromStdWString(file.relativePath.generic_wstring()).toCaseFolded();
+                if (name == QStringLiteral("war3map.shd") || name == QStringLiteral("map/war3map.shd")) ++matches;
+            }
+            if (matches > 1) return fail(QObject::tr("工程目录阴影来源有冲突"));
+            present = matches == 1;
+            if (present) {
+                auto read = EditorProject::ReadWorkspaceMember(*workspace, "war3map.shd");
+                if (!read.Succeeded() || !read.value) return fail(QObject::tr("工程目录阴影来源无法读取"));
+                bytes = std::move(*read.value);
+            }
+        }
+        if (present != shadow.value->present || bytes != shadow.value->bytes)
+            return fail(QObject::tr("地图尺寸胶囊与实际工程阴影覆盖不一致"));
     }
     constexpr std::array<std::string_view, 7> nativeDataNames{
         "war3map.w3i", "war3mapUnits.doo", "war3map.doo", "war3map.w3r",

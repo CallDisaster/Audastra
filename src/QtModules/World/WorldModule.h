@@ -22,6 +22,7 @@
 #include "WorldInstanceTiming.h"
 #include "RenderPluginFailure.h"
 #include "TerrainWaterEditPreparation.h"
+#include "War3MapCore/MapData/TerrainResizeEditing.h"
 
 #include <QObject>
 #include <QPointer>
@@ -232,6 +233,11 @@ private:
     void UpdateTerrainBoundsControls();
     void InvalidateTerrainBoundsControls();
     void StartTerrainBoundsTask(bool apply);
+    enum class TerrainResizeAction { Read, Preview, Apply };
+    [[nodiscard]] QWidget* BuildTerrainResizeControls(QWidget* parent);
+    void UpdateTerrainResizeControls();
+    void InvalidateTerrainResizeControls();
+    void StartTerrainResizeTask(TerrainResizeAction action);
     // UI标识不进入Core普通笔刷枚举；浅水/深水只调用独立水刷事务。
     static constexpr int kShallowWaterBrushId = 1000, kDeepWaterBrushId = 1001;
     [[nodiscard]] QString TerrainName(const std::string& raw, const std::string& rawcode) const;
@@ -467,6 +473,17 @@ private:
     std::array<float, 4> terrainBoundsMargins_{};
     std::string terrainBoundsRulesSha_;
     std::uint64_t terrainBoundsSerial_ = 0;
+    QPointer<QThread> terrainResizeWorker_;
+    std::array<QSpinBox*, 4> terrainResizeFields_{};
+    QPushButton* terrainResizeRead_ = nullptr;
+    QPushButton* terrainResizePreview_ = nullptr;
+    QPushButton* terrainResizeApply_ = nullptr;
+    QLabel* terrainResizeStatus_ = nullptr;
+    std::shared_ptr<const QtProject::TerrainWaterEditRequest> terrainResizeReadRequest_;
+    MapData::TerrainResizeDimensionRules terrainResizeDimensions_;
+    std::optional<MapData::TerrainCanvasRectangle> terrainResizeChecked_;
+    std::string terrainResizeRulesSha_;
+    std::uint64_t terrainResizeSerial_ = 0;
     WorldSelectionPresenter* selectionPresenter_ = nullptr;
     WorldBuildingSplatPresenter* buildingSplatPresenter_ = nullptr;
     WorldModelBugPlaceholderPresenter* bugPlaceholderPresenter_ = nullptr;

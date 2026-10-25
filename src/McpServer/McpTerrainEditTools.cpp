@@ -262,6 +262,12 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
     bounds.insert("dry_run", QJsonObject{{"type", "boolean"}});
     add("edit_terrain_bounds", "预览或提交同尺寸可玩区域与游戏镜头边界。west/south/east/north为整数地格半开矩形；不缩放地图、不搬对象，不接受客户端CameraMargins或规则。宿主从实际来源捕获原版规则并复核；提交沿共用Undo，不自行保存。独立目录宿主只预览；实际地图写出须用save_map_edit_candidate的playable_bounds命令，连同最终W3I重建镜头初始化脚本。",
         bounds, {"project_identity", "expected_revision", "terrain_binding", "west", "south", "east", "north", "dry_run"}, ToolPermission::Edit);
+    auto resize = identity; resize.insert("terrain_binding", binding);
+    for (const char* edge : {"west", "south", "east", "north"})
+        resize.insert(edge, IntegerSchema(std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max()));
+    resize.insert("dry_run", QJsonObject{{"type", "boolean"}});
+    add("edit_terrain_resize", "预览或提交地图外矩形扩裁。west/south/east/north是相对本笔前地图西南角的有符号整数地格半开矩形；扩西/南为负。固定保留原可玩世界范围和全部内容世界坐标；裁及对象、区域、镜头、起点、特殊装饰物或来源未知时拒绝。只接受真实来源和修订绑定，不接受规则、原始字节、移动或删除开关。提交沿共用Undo，不自行保存。独立目录仅预览；实际写地图使用save_map_edit_candidate的canvas_resize笔划重建脚本和派生成员。",
+        resize, {"project_identity", "expected_revision", "terrain_binding", "west", "south", "east", "north", "dry_run"}, ToolPermission::Edit);
     auto block = identity; block.insert("terrain_binding", binding);
     for (const char* index : {"source_x", "source_y", "width", "height", "destination_x", "destination_y"}) {
         const bool extent = std::string_view(index) == "width" || std::string_view(index) == "height";
@@ -311,6 +317,42 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
         }
         if (!arguments.value("terrain_binding").isObject() || arguments.value("terrain_binding").toObject() != bindingJson)
             return Failure("TERRAIN_EDIT_STALE", "地形来源或修订已变化；请精确回传最新 terrain_binding。");
+        if (name == "edit_terrain_resize") {
+            const auto edge = [&](const char* key) { return static_cast<std::int32_t>(Number(arguments, key,
+                std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max(), true)); };
+            const TerrainResizeIntent intent{1, {edge("west"), edge("south"), edge("east"), edge("north")}};
+            const bool dryRun = Boolean(arguments, "dry_run", true);
+            const auto valid = ValidateTerrainResizeIntent(intent); if (!valid.Succeeded()) return Failure(valid);
+            if (!host.prepareResize || !host.verifyResize)
+                return Failure("TERRAIN_RESIZE_HOST_UNAVAILABLE", "宿主未接入地图尺寸的实际来源准备与复核。");
+            const auto prepared = host.prepareResize(context, binding, intent);
+            if (!prepared.Succeeded() || !prepared.value) return Failure(prepared);
+            const auto verified = host.verifyResize(); if (!verified.Succeeded()) return Failure(verified);
+            const auto& plan = prepared.value->Plan();
+            const auto& before = plan.BeforeHeader(); const auto& after = plan.AfterHeader();
+            QJsonObject body{{"ok", true}, {"dry_run", dryRun}, {"applied", false}, {"binding_before", bindingJson},
+                {"scope", Scope(context)}, {"map_saved", false}, {"native_save_required", true},
+                {"changes", QJsonObject{{"has_changes", plan.HasChanges()},
+                    {"before_cells", QJsonArray{static_cast<double>(before.width - 1), static_cast<double>(before.height - 1)}},
+                    {"after_cells", QJsonArray{static_cast<double>(after.width - 1), static_cast<double>(after.height - 1)}},
+                    {"after_offset", QJsonArray{after.offset[0], after.offset[1]}},
+                    {"preserve_playable", true}, {"preserve_world_positions", true}}}};
+            const auto responseBudget = BodyBudget(body); if (!responseBudget.Succeeded()) return Failure(responseBudget);
+            if (dryRun || !plan.HasChanges()) return Stamp(std::move(body), identity);
+            if (!host.applyResize) return Failure("TERRAIN_RESIZE_EDIT_UNSUPPORTED", "宿主未接通尺寸命令的共用撤销提交。");
+            const auto validate = [&](const MapDataEditSession::EditReceipt& receipt) -> Status {
+                const auto resources = host.verifyResize(); if (!resources.Succeeded()) return resources;
+                if (Identity(host) != identity || receipt.SessionIdentity() != context.session->SessionIdentity()
+                    || receipt.BeforeRevision() != binding.terrainRevision)
+                    return Status::Failure("MCP.Terrain", "TERRAIN_EDIT_STALE", "尺寸提交前工程、实际来源或修订已变化。");
+                body["edit_receipt"] = QJsonObject{{"command_identity", QString::number(receipt.CommandIdentity())},
+                    {"before_revision", QString::number(receipt.BeforeRevision())}, {"after_revision", QString::number(receipt.AfterRevision())}};
+                return BodyBudget(body);
+            };
+            const auto applied = host.applyResize(*prepared.value, validate); if (!applied.Succeeded()) return Failure(applied);
+            body["applied"] = true; body["query_state_again"] = true;
+            return Stamp(std::move(body), Identity(host));
+        }
         if (name == "edit_terrain_bounds") {
             TerrainBoundsEditIntent intent{{static_cast<std::uint32_t>(Number(arguments, "west", 0, 2048, true)),
                 static_cast<std::uint32_t>(Number(arguments, "south", 0, 2048, true)),

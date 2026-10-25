@@ -8,6 +8,7 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/MapData/TerrainPathingResources.h"
+#include "War3MapCore/MapData/TerrainResizeResources.h"
 #include "War3MapCore/Services/ObjectCommands.h"
 #include "War3MapCore/Services/AuxiliaryTransaction.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -122,6 +123,8 @@ public:
         std::uint64_t documentGeneration);
     [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainWaterResources(bool enforceWaterLimits);
     [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainBoundsResources();
+    [[nodiscard]] Result<MapData::TerrainResizeResources> CaptureTerrainResizeResources();
+    [[nodiscard]] Status VerifyTerrainResizeResources(const MapData::TerrainResizeResources& owner) const;
     [[nodiscard]] Status VerifyTerrainWaterResources(const MapData::TerrainPathingResources& owner) const;
     [[nodiscard]] Result<MapData::TerrainStrokeResult> ApplyTerrainPlan(
         const Services::PreparedTerrainEdit& plan,

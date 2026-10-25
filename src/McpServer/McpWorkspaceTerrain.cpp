@@ -1,5 +1,6 @@
 #include "McpWorkspace.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainResizeEditService.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapData/TerrainPatchCodec.h"
@@ -245,6 +246,22 @@ Result<MapData::TerrainPathingResources> McpWorkspace::CaptureTerrainBoundsResou
         return Output::Failure("MCP", "TERRAIN_BOUNDS_DOODADS_UNAVAILABLE", "范围编辑需要唯一完整DOO来源。");
     return Services::TerrainPathingSave::CaptureNative(mapDataSource_->Snapshot(), *original.value->Snapshot(),
         *overlay->edits.Terrain(), gameRoot_, MapData::TerrainSavePlanLimits{}.maximumBytes, &member.sources.front().data);
+}
+
+Result<MapData::TerrainResizeResources> McpWorkspace::CaptureTerrainResizeResources() {
+    const auto captured = CaptureTerrainSources();
+    if (!captured.Succeeded()) return Failed<MapData::TerrainResizeResources>(captured);
+    const auto& overlay = activeEdit_ ? activeEdit_->terrain : terrainState_->committed;
+    if (!overlay || !mapDataSource_)
+        return Result<MapData::TerrainResizeResources>::Failure("MCP", "TERRAIN_RESIZE_SOURCE_REQUIRED", "地图尺寸需要当前真实地形会话。");
+    return Services::TerrainResizeEditService::Capture(mapDataSource_->Snapshot(), overlay->edits, gameRoot_);
+}
+
+Status McpWorkspace::VerifyTerrainResizeResources(const MapData::TerrainResizeResources& owner) const {
+    const auto& overlay = activeEdit_ ? activeEdit_->terrain : terrainState_ ? terrainState_->committed : nullptr;
+    if (!overlay || !mapDataSource_)
+        return Status::Failure("MCP", "TERRAIN_RESIZE_SOURCE_REQUIRED", "地图尺寸实际目录来源或会话已失效。");
+    return owner.VerifySources(mapDataSource_->Snapshot(), overlay->edits);
 }
 
 bool McpWorkspace::HasTerrainOverlay() const noexcept {

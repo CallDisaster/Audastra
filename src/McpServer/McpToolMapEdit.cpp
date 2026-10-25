@@ -141,6 +141,24 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
             {static_cast<std::uint32_t>(*dx), static_cast<std::uint32_t>(*dy)}, {}};
         return result;
     }
+    if (kind.toString() == "canvas_resize") {
+        if (!OnlyFields(object, {"kind", "west", "south", "east", "north"}, error)) return std::nullopt;
+        const auto west = Integer(object, "west", error), south = Integer(object, "south", error),
+            east = Integer(object, "east", error), north = Integer(object, "north", error);
+        if (!west || !south || !east || !north) return std::nullopt;
+        const auto inDomain = [](std::int64_t value) {
+            return value >= std::numeric_limits<std::int32_t>::min() && value <= std::numeric_limits<std::int32_t>::max();
+        };
+        if (!inDomain(*west) || !inDomain(*south) || !inDomain(*east) || !inDomain(*north)
+            || *west >= *east || *south >= *north) {
+            error = Failure("MCP_MAP_EDIT_RESIZE_INVALID", "地图尺寸需要相对当前西南角的非空有符号32位整数地格半开矩形；实际尺寸限制由来源规则校验。");
+            return std::nullopt;
+        }
+        Services::MapEditTerrainStroke result;
+        result.resize = MapData::TerrainResizeIntent{1, {static_cast<std::int32_t>(*west), static_cast<std::int32_t>(*south),
+            static_cast<std::int32_t>(*east), static_cast<std::int32_t>(*north)}};
+        return result;
+    }
     if (kind.toString() == "playable_bounds") {
         if (!OnlyFields(object, {"kind", "west", "south", "east", "north"}, error)) return std::nullopt;
         const auto west = Integer(object, "west", error), south = Integer(object, "south", error),
@@ -685,6 +703,11 @@ QJsonObject TriggerEditsSchema() {
 
 QJsonObject TerrainStrokeSchema() {
     const QJsonObject cell{{"type", "integer"}, {"minimum", 0}, {"maximum", 2048}};
+    const QJsonObject signedCell{{"type", "integer"}, {"minimum", -2147483648.0}, {"maximum", 2147483647.0}};
+    auto resize = BasicSchema({{"kind", QJsonObject{{"type", "string"}, {"const", "canvas_resize"}}},
+        {"west", signedCell}, {"south", signedCell}, {"east", signedCell}, {"north", signedCell}},
+        {"kind", "west", "south", "east", "north"});
+    resize["description"] = "改变地图外矩形；四边相对本笔之前地图西南角，单位地格，东/北不包含。保留原可玩区和所有世界位置；裁及内容、来源不全或规则不支持时整笔拒绝，不接受移动/删除对象或客户端规则。";
     const auto bounds = BasicSchema({{"kind", QJsonObject{{"type", "string"}, {"const", "playable_bounds"}}},
         {"west", cell}, {"south", cell}, {"east", cell}, {"north", cell}}, {"kind", "west", "south", "east", "north"});
     const QJsonObject pointSchema = BasicSchema({{"x", FloatSchema()}, {"y", FloatSchema()}},
@@ -777,7 +800,7 @@ QJsonObject TerrainStrokeSchema() {
     blockCopy["description"] = "同图绝对原始值复制，包括东/北顶点，不旋转缩放；必须是唯一地形命令，源摘要由服务捕获。拒绝坡道、边界、MapEdge和特殊装饰物，悬崖与水沿实际规则。";
     return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired), BasicSchema(boundary, boundaryRequired),
-        BasicSchema(ramp, rampRequired), corner, straight, bounds, blockCopy, pathingSchema,
+        BasicSchema(ramp, rampRequired), corner, straight, bounds, resize, blockCopy, pathingSchema,
         BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired), removalSchema,
         BasicSchema(cliff, {"kind", "shape", "point_space", "size", "cliff_texture", "level_delta", "seed", "points", "follow_doodads"}),
         BasicSchema(cliffTexture, {"kind", "shape", "point_space", "size", "cliff_texture", "points", "follow_doodads"}),
@@ -906,6 +929,8 @@ void RegisterMapEditSaveTool(McpServer& server) {
         "straight_ramp可连接相邻完整一级直坡；与corner_ramp只接受单个规范world落点，不自动吸附，水位限制固定启用；"
         "坡道均须明确set_ramp布尔值，几何和实际规则仍由共用规划器核验。"
         "boundary通过显式value布尔值绘制或清除地形边界；playable_bounds通过整数半开地格矩形设置可玩范围。"
+        "canvas_resize用相对本笔前地图西南角的有符号整数半开地格矩形扩裁外边，固定保留原可玩区和对象世界位置；"
+        "裁及内容或来源不完整整笔拒绝，不提供移动或删除选项。"
         "pathing_restriction须给出blocked_type=walk/fly/build、size=1..8与value布尔值，按32单位通行格取足迹；"
         "value=false仅撤回本次序列新增限制，原图限制始终保留，不能用原始通行位绕过。"
         "共用通行性门禁最终裁决。地物跟随和其他笔刷拒绝。工具/游戏根只读可信宿主环境变量；"

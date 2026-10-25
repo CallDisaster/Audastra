@@ -515,6 +515,16 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             copy.blockPaste = MapData::TerrainBlockPasteIntent{1,
                 {values[0], values[1], values[0] + values[2], values[1] + values[3]}, {values[4], values[5]}, {}};
             request.terrainStrokes.push_back(std::move(copy)); index += 7;
+        } else if (flag == L"--terrain-resize") {
+            if (index + 4 >= argc) return Invalid("--terrain-resize requires west south east north relative cell edges");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain strokes are allowed");
+            const auto west = ParseNumber<std::int32_t>(argv[index + 1]), south = ParseNumber<std::int32_t>(argv[index + 2]),
+                east = ParseNumber<std::int32_t>(argv[index + 3]), north = ParseNumber<std::int32_t>(argv[index + 4]);
+            if (!west || !south || !east || !north || *west >= *east || *south >= *north)
+                return Invalid("--terrain-resize needs a nonempty signed integer half-open cell rectangle relative to the current southwest corner");
+            Services::MapEditTerrainStroke resize;
+            resize.resize = MapData::TerrainResizeIntent{1, {*west, *south, *east, *north}};
+            request.terrainStrokes.push_back(std::move(resize)); index += 5;
         } else if (flag == L"--terrain-bounds") {
             if (index + 4 >= argc) return Invalid("--terrain-bounds requires west south east north cell indices");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain strokes are allowed");

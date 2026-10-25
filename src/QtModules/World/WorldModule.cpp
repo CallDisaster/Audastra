@@ -262,6 +262,7 @@ WorldModule::WorldModule(QtProject::EditorProject& project, const War3RenderPlug
         StopTerrainBlockTool(true);
         CancelTerrainStroke(); InvalidateWaterBrushCapture(); QueueWaterBrushCapture();
         InvalidateTerrainBoundsControls();
+        InvalidateTerrainResizeControls();
     });
     for (auto* stack : project_.objectUndoStacks_)
         if (stack) connect(stack, &QUndoStack::indexChanged, this, &WorldModule::Refresh);
@@ -447,6 +448,7 @@ WorldViewport* WorldModule::ViewportForTools() const {
 
 void WorldModule::Refresh() {
     InvalidateTerrainBoundsControls();
+    InvalidateTerrainResizeControls();
     ++selectionCatalogRevision_;
     if (premPresenter_) premPresenter_->Clear();
     if (animation_) animation_->Clear();
@@ -1025,6 +1027,7 @@ void WorldModule::RefreshMapEdits() {
     if (terrainBlockClipboard_ && !TerrainBlockClipboardCurrent()) StopTerrainBlockTool(true);
     InvalidateTerrainBoundsControls();
     InvalidateWaterBrushCapture();
+    InvalidateTerrainResizeControls();
     RefreshAssetBrowser();
     // push() 的首次 redo 不改动地图，只同步发出 indexChanged；最终地形已经在 FinishTerrainStroke
     // 排队。此时按钮为防止对旧完成帧下笔而暂时取消勾选，不能把它解释为用户退出笔刷。
