@@ -8,7 +8,7 @@
 #include <functional>
 #include <memory>
 
-namespace War3Map::Services { class TerrainResizeEditService; }
+namespace War3Map::Services { class TerrainResizeEditService; class TerrainPathingSave; }
 
 namespace War3Map::MapData {
 
@@ -49,6 +49,7 @@ private:
         const TerrainResizeLimits& limits) const;
     std::shared_ptr<const State> state_;
     friend class Services::TerrainResizeEditService;
+    friend class Services::TerrainPathingSave;
 };
 
 } // namespace War3Map::MapData

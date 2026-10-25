@@ -211,8 +211,22 @@ Status PrepareTerrainShadowBake(MapSaveTask& task, const std::filesystem::path& 
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_SAVE_STAGE", "阴影只能在同次最终保存阶段计算一次。");
     if (task.sourceSha256 != task.archive->SourceSha256())
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_SOURCE_STALE", "阴影任务与冻结归档来源不同。");
-    if (std::any_of(task.replacements.begin(), task.replacements.end(), [](const auto& item) { return IsShadow(item.name); })
-        || std::any_of(task.removals.begin(), task.removals.end(), IsShadow))
+    std::optional<std::size_t> migratedShadow;
+    for (std::size_t i = 0; i < task.replacements.size(); ++i) if (IsShadow(task.replacements[i].name)) {
+        if (migratedShadow || !edits || !edits->HasTerrainResizeChanges() || !plan || !plan->SaveGate().Succeeded()
+            || plan->SessionIdentity() != edits->SessionIdentity() || plan->Revision() != edits->Revision()
+            || plan->TerrainSourceRevision() != edits->TerrainSourceRevision())
+            return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "显式阴影与非同次typed扩裁的SHD写入冲突。");
+        const auto& expected = plan->Members()[2];
+        const auto sha = Sha256(task.replacements[i].data);
+        if (!sha.Succeeded() || !sha.value) return {sha.diagnostics};
+        if (expected.action != MapData::TerrainSaveMemberAction::WriteEdited
+            || expected.reasonCode != "TERRAIN_SAVE_WRITE_VERIFIED_EDIT" || expected.outputBytes != task.replacements[i].data.size()
+            || expected.outputSha256 != *sha.value)
+            return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "已有SHD不是当前保存计划逐字核过的扩裁迁移输出。");
+        migratedShadow = i;
+    }
+    if (std::any_of(task.removals.begin(), task.removals.end(), IsShadow))
         return Status::Failure(kSubsystem, "TERRAIN_SHADOW_OUTPUT_CONFLICT", "显式计算阴影不能和手动写入或删除SHD混用。");
     auto captured = TerrainShadowBake::Capture(*task.archive, gameRoot, task.replacements, task.removals);
     if (!captured.Succeeded() || !captured.value) return {std::move(captured.diagnostics)};
@@ -224,7 +238,9 @@ Status PrepareTerrainShadowBake(MapSaveTask& task, const std::filesystem::path& 
         if (!admitted.Succeeded()) return admitted;
         nextPlan = std::move(candidate);
     }
-    task.replacements.push_back({"war3map.shd", (*captured.value)->Bytes()});
+    MemberReplacement output{"war3map.shd", (*captured.value)->Bytes()};
+    if (migratedShadow) task.replacements[*migratedShadow] = std::move(output);
+    else task.replacements.push_back(std::move(output));
     task.terrainShadow = std::move(*captured.value); plan = std::move(nextPlan);
     return Status::Ok();
 }

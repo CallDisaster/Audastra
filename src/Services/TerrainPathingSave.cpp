@@ -26,6 +26,54 @@ template<class T, class Function> Result<T> Guard(Function&& function) {
 
 using TerrainPathingFinalDetail::FinalMemberOverlay;
 
+struct ResizeFinalSessionMembers {
+    std::vector<MemberReplacement> members;
+    std::size_t preparationBytes = 0;
+};
+
+// 只建立当前typed会话的读取视图；真实物理G0仍从source读取，资格由Core保存门核。
+Result<ResizeFinalSessionMembers> CaptureResizeFinalMembers(const MapData::MapDataEditSession& edits,
+    const FinalMemberOverlay& finalOverlay, std::size_t maximumBytes) {
+    using Output = Result<ResizeFinalSessionMembers>;
+    const auto fail = [](const char* message) { return Output::Failure("Terrain.PathingSave", "TERRAIN_RESIZE_FINAL_INPUT", message); };
+    const auto current = edits.Terrain();
+    if (!current || current->header.version != 11 || maximumBytes < 4096)
+        return fail("扩裁最终成员需要完整经典W3E和有界预算。");
+    ResizeFinalSessionMembers result;
+    result.preparationBytes = 4096;
+    const auto reserve = [&](std::size_t bytes, std::size_t multiple) {
+        if (bytes > (maximumBytes - result.preparationBytes) / multiple) return false;
+        result.preparationBytes += bytes * multiple; return true;
+    };
+    const auto tables = current->header.groundTilesets.size() + current->header.cliffTilesets.size();
+    const auto header = 37 + tables * 4;
+    if (current->vertices.size() > (maximumBytes - std::min(maximumBytes, header)) / 7
+        || !reserve(header + current->vertices.size() * 7, 3)) return fail("扩裁最终W3E复制与身份工作超过预算。");
+    auto terrain = MapData::SerializeMapTerrain(*current);
+    if (!terrain.Succeeded() || !terrain.value) return {{}, std::move(terrain.diagnostics)};
+    result.members.push_back({"war3map.w3e", std::move(*terrain.value)});
+    for (const auto kind : {MapDataKind::Settings, MapDataKind::Doodads}) {
+        const auto size = edits.SnapshotByteSize(kind);
+        if (!size.Succeeded() || !size.value) return {{}, size.diagnostics};
+        // 完整摆放parser、W3I上下文与最终常驻wire一并预收，不能先解析再看预算。
+        if (!reserve(*size.value, 32)) return fail("扩裁完整设置/摆放视图超过保存预算。");
+        auto document = edits.Snapshot(kind, *size.value);
+        if (!document.Succeeded() || !document.value) return {{}, std::move(document.diagnostics)};
+        const auto& member = document.value->Member(kind);
+        if (member.state != MapDataState::Ready || member.sources.size() != 1)
+            return fail("扩裁最终设置与DOO必须是完整唯一的原生成员。");
+        result.members.push_back({member.memberName, member.sources.front().data});
+    }
+    for (const auto& member : result.members) {
+        auto key = Resources::CanonicalImportPath(member.name);
+        if (!key.Succeeded() || !key.value) return {{}, std::move(key.diagnostics)};
+        if (const auto* supplied = finalOverlay.Find(*key.value); supplied
+            && (!supplied->bytes || *supplied->bytes != member.data))
+            return fail("最终覆盖列表改变或删除了本次typed扩裁W3E/W3I/DOO，不能以当前视图掩盖冲突。");
+    }
+    return Output::Success(std::move(result));
+}
+
 bool Neutral(const MapData::TerrainBrush& brush) {
     const MapData::TerrainBrush other;
     return brush.kind == other.kind && brush.shape == other.shape && brush.radius == other.radius
@@ -992,6 +1040,30 @@ Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareWithDependencyDelta(
     const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
     std::span<const std::string> finalRemovals, bool nativeDependenciesChanged) {
     return Guard<MapData::TerrainSavePlan>([&] {
+        if (edits.HasTerrainResizeChanges()) {
+            auto overlay = FinalMemberOverlay::Prepare(finalMembers, finalRemovals, limits.maximumBytes);
+            if (!overlay.Succeeded() || !overlay.value) return Result<MapData::TerrainSavePlan>{{}, std::move(overlay.diagnostics)};
+            auto current = CaptureResizeFinalMembers(edits, *overlay.value, limits.maximumBytes - overlay.value->MetadataBytes());
+            if (!current.Succeeded() || !current.value) return Result<MapData::TerrainSavePlan>{{}, std::move(current.diagnostics)};
+            const auto remaining = limits.maximumBytes - overlay.value->MetadataBytes() - current.value->preparationBytes;
+            auto sessionView = FinalMemberOverlay::Prepare(current.value->members, {}, remaining);
+            if (!sessionView.Succeeded() || !sessionView.value) return Result<MapData::TerrainSavePlan>{{}, std::move(sessionView.diagnostics)};
+            auto bounded = limits; bounded.maximumBytes = remaining - sessionView.value->MetadataBytes();
+            const MapData::TerrainPathingResources::HeightSourceReader sourceReader = [&](auto names, const auto& readLimits) {
+                return source.CaptureExactMembers(names, readLimits);
+            };
+            const MapData::TerrainPathingResources::HeightSourceReader suppliedReader = [&](auto names, const auto& readLimits) {
+                return overlay.value->Read(sourceReader, names, readLimits, nullptr);
+            };
+            const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto* doodads, auto maximumBytes) {
+                const MapData::TerrainPathingResources::HeightSourceReader finalReader = [&](auto names, const auto& readLimits) {
+                    return sessionView.value->Read(suppliedReader, names, readLimits, doodads);
+                };
+                return MapData::TerrainPathingResources::CaptureNativeResizePairWithObjects(sourceReader, finalReader,
+                    before, after, gameRoot, maximumBytes, ObjectData::InspectNativeTerrainObjects);
+            };
+            return MapData::TerrainSavePlan::PrepareArchive(source, edits, bounded, &gameRoot, &capture, finalMembers, finalRemovals, nativeDependenciesChanged);
+        }
         if (!finalMembers.empty() || !finalRemovals.empty()) {
             auto overlay = FinalMemberOverlay::Prepare(finalMembers, finalRemovals, limits.maximumBytes);
             if (!overlay.Succeeded() || !overlay.value) return Result<MapData::TerrainSavePlan>{{}, std::move(overlay.diagnostics)};
@@ -1027,6 +1099,30 @@ Result<MapData::TerrainSavePlan> TerrainPathingSave::PrepareWithDependencyDelta(
     const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
     std::span<const std::string> finalRemovals, bool nativeDependenciesChanged) {
     return Guard<MapData::TerrainSavePlan>([&] {
+        if (edits.HasTerrainResizeChanges()) {
+            auto overlay = FinalMemberOverlay::Prepare(finalMembers, finalRemovals, limits.maximumBytes);
+            if (!overlay.Succeeded() || !overlay.value) return Result<MapData::TerrainSavePlan>{{}, std::move(overlay.diagnostics)};
+            auto current = CaptureResizeFinalMembers(edits, *overlay.value, limits.maximumBytes - overlay.value->MetadataBytes());
+            if (!current.Succeeded() || !current.value) return Result<MapData::TerrainSavePlan>{{}, std::move(current.diagnostics)};
+            const auto remaining = limits.maximumBytes - overlay.value->MetadataBytes() - current.value->preparationBytes;
+            auto sessionView = FinalMemberOverlay::Prepare(current.value->members, {}, remaining);
+            if (!sessionView.Succeeded() || !sessionView.value) return Result<MapData::TerrainSavePlan>{{}, std::move(sessionView.diagnostics)};
+            auto bounded = limits; bounded.maximumBytes = remaining - sessionView.value->MetadataBytes();
+            const MapData::TerrainPathingResources::HeightSourceReader sourceReader = [&](auto names, const auto& readLimits) {
+                return MapData::TerrainPathingResources::ReadDirectoryMembers(source, names, readLimits);
+            };
+            const MapData::TerrainPathingResources::HeightSourceReader suppliedReader = [&](auto names, const auto& readLimits) {
+                return overlay.value->Read(sourceReader, names, readLimits, nullptr);
+            };
+            const MapData::TerrainSavePlan::NativeResourceCapture capture = [&](const auto& before, const auto& after, const auto* doodads, auto maximumBytes) {
+                const MapData::TerrainPathingResources::HeightSourceReader finalReader = [&](auto names, const auto& readLimits) {
+                    return sessionView.value->Read(suppliedReader, names, readLimits, doodads);
+                };
+                return MapData::TerrainPathingResources::CaptureNativeResizePairWithObjects(sourceReader, finalReader,
+                    before, after, gameRoot, maximumBytes, ObjectData::InspectNativeTerrainObjects);
+            };
+            return MapData::TerrainSavePlan::PrepareWorkspace(source, edits, bounded, &gameRoot, &capture, finalMembers, finalRemovals, nativeDependenciesChanged);
+        }
         if (!finalMembers.empty() || !finalRemovals.empty()) {
             auto overlay = FinalMemberOverlay::Prepare(finalMembers, finalRemovals, limits.maximumBytes);
             if (!overlay.Succeeded() || !overlay.value) return Result<MapData::TerrainSavePlan>{{}, std::move(overlay.diagnostics)};

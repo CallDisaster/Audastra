@@ -90,13 +90,24 @@ Result<std::string> TerrainPathingResources::TerrainBoundsDependencyFingerprint(
     return Result<std::string>::Failure("Terrain.Journal", "TERRAIN_BOUNDS_BUDGET", "范围规则摘要容量超限。");
 }
 
-Status TerrainPathingResources::BindNativeSettingsOutput(const MapDataEditSession& edits) try {
+Status TerrainPathingResources::BindNativeSettingsOutput(const MapDataEditSession& edits) {
+    return BindNativeSettingsOutputImpl(edits, false);
+}
+
+Status TerrainPathingResources::BindNativeResizeSettingsOutput(const MapDataEditSession& edits) {
+    const auto proof = edits.VerifyTerrainResizeForSave();
+    if (!proof.Succeeded()) return proof;
+    return BindNativeSettingsOutputImpl(edits, true);
+}
+
+Status TerrainPathingResources::BindNativeSettingsOutputImpl(const MapDataEditSession& edits, bool resize) try {
     const auto index = MapDataEditSession::Index(MapDataKind::Settings);
     const auto& source = edits.original_[index];
     const auto& output = edits.current_[index];
     if (!source || !output || !edits.terrainOriginal_ || !edits.terrain_)
         return Refuse("TERRAIN_PATHING_RESOURCE_CHANGED", "最终W3I缺少完整会话来源。");
-    const auto input = VerifyTerrainBoundsInput(*edits.terrainOriginal_, *edits.terrain_, *source);
+    const auto input = VerifyTerrainBoundsInput(*edits.terrainOriginal_,
+        resize ? *edits.terrainOriginal_ : *edits.terrain_, *source);
     if (!input.Succeeded()) return input;
     if (output->size() > capturedMaximumBytes_)
         return Refuse("TERRAIN_PATHING_RESOURCE_BUDGET", "最终W3I身份超过本次捕获预算。");

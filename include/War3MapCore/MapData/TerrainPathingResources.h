@@ -132,6 +132,8 @@ private:
     // 仅内部保存计划可把会话完整W3I的窄域说明修改绑定到最终身份。
     // 原始依赖仍保留真实来源SHA；外部不能自报最终SHA或验证布尔。
     [[nodiscard]] Status BindNativeSettingsOutput(const MapDataEditSession& edits);
+    [[nodiscard]] Status BindNativeResizeSettingsOutput(const MapDataEditSession& edits);
+    [[nodiscard]] Status BindNativeSettingsOutputImpl(const MapDataEditSession& edits, bool resize);
     // 只有Services可信适配器可提供解析器；输入只能是同一次实际捕获的字节。
     // 成功值仅描述同次实际来源中的对象语义及解析预留，不是外部资格布尔。
     using NativeObjectValidator = std::function<Result<TerrainNativeObjectPathing>(
@@ -150,6 +152,17 @@ private:
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes,
         const NativeObjectValidator& validator);
+    // 扩裁的两阶段分别解析各自真实shape；不放宽旧同shape捕获入口。
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureNativeResizePairWithObjects(
+        const MemberReader& sourceReader, const MemberReader& finalReader,
+        const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes,
+        const NativeObjectValidator& validator);
+    [[nodiscard]] static Result<TerrainPathingResources> CaptureNativePairImpl(
+        const MemberReader& sourceReader, const MemberReader& finalReader,
+        const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+        const std::filesystem::path& gameRoot, std::size_t maximumBytes,
+        const NativeObjectValidator& validator, bool resize);
     [[nodiscard]] static Result<TerrainPathingResources> CaptureInputs(const MemberReader& reader,
         const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
         const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,

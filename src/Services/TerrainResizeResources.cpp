@@ -347,6 +347,7 @@ Status TerrainResizeResources::VerifySources(const MemberReader& reader, const M
     const MemberReader currentReader = [&](auto requested, const auto& readLimits) -> Result<std::vector<ArchiveExactMember>> {
         auto result = Take(reader(requested, readLimits));
         if (result.size() != requested.size()) Fail("TERRAIN_RESIZE_SOURCE_CHANGED", "尺寸复核来源返回不完整。");
+        std::size_t total = 0;
         for (std::size_t i = 0; i < requested.size(); ++i) {
             if (Key(requested[i]) == "war3map.w3e") result[i] = {requested[i], true, Take(SerializeMapTerrain(*state_->terrain))};
             for (std::size_t k = 0; k < kSpatialKinds.size(); ++k) if (Key(requested[i]) == Key(state_->current[k].name)) {
@@ -354,6 +355,10 @@ Status TerrainResizeResources::VerifySources(const MemberReader& reader, const M
                 result[i] = {requested[i], state_->current[k].present,
                     state_->current[k].present ? member.sources.front().data : std::vector<std::byte>{}};
             }
+            if ((!result[i].present && !result[i].bytes.empty()) || result[i].bytes.size() > readLimits.memberBytes
+                || total > readLimits.totalBytes || result[i].bytes.size() > readLimits.totalBytes - total)
+                Fail("TERRAIN_RESIZE_BUDGET", "尺寸复核当前覆盖的逐项或累计读取量超过本次限制。");
+            total += result[i].bytes.size();
         }
         return Result<std::vector<ArchiveExactMember>>::Success(std::move(result));
     };

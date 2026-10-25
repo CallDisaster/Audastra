@@ -141,6 +141,8 @@ private:
         const MapArchiveSession* source, const WorkspaceSnapshot* workspace,
         const std::filesystem::path& gameRoot, const TerrainSavePlanLimits& limits, std::size_t& bytes,
         const NativeResourceCapture* nativeCapture);
+    [[nodiscard]] Result<std::vector<std::byte>> RebuildResizePathing(const MapDataEditSession& edits,
+        const TerrainSavePlanLimits& limits, std::size_t& bytes, const NativeResourceCapture* nativeCapture);
     std::string sourceSha256_;
     std::uint64_t sessionIdentity_ = 0, revision_ = 0, terrainSourceRevision_ = 0;
     bool terrainChanged_ = false;
@@ -153,7 +155,8 @@ private:
     std::array<TerrainSaveMemberPlan, 5> members_;
     // 通行不变时冻结W3I、两DOO、七类native物编；普通DOO只允许已核对的Z变化。
     // 源身份与输出身份分别保存，最终列表与回读不能漏掉Z更新或夹带占地/范围变化。
-    std::array<TerrainSaveMemberPlan, 10> invariantMembers_;
+    // 原十项索引保持；末两项冻结空间来源及absence，不能在扩裁发布时换入不同区域/镜头。
+    std::array<TerrainSaveMemberPlan, 12> invariantMembers_;
     std::vector<MemberReplacement> replacements_;
     Status saveGate_;
     std::vector<Diagnostic> diagnostics_;

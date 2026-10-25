@@ -19,9 +19,9 @@ namespace {
 
 constexpr std::array<std::string_view, 5> kNames{
     "war3map.w3e", "war3map.wpm", "war3map.shd", "war3map.mmp", "war3mapMap.blp"};
-constexpr std::array<std::string_view, 10> kInvariantNames{
+constexpr std::array<std::string_view, 12> kInvariantNames{
     "war3map.w3i", "war3mapUnits.doo", "war3map.doo", "war3map.w3u", "war3map.w3t",
-    "war3map.w3b", "war3map.w3d", "war3map.w3a", "war3map.w3h", "war3map.w3q"};
+    "war3map.w3b", "war3map.w3d", "war3map.w3a", "war3map.w3h", "war3map.w3q", "war3map.w3r", "war3map.w3c"};
 constexpr std::string_view kSubsystem = "Terrain.SavePlan";
 
 std::vector<std::string> ExactNames() {
@@ -121,7 +121,7 @@ template<class Function> Result<TerrainSavePlan> Guard(Function&& function) {
 
 bool TerrainSavePlan::HasTerrainChanges(const MapDataEditSession& edits) noexcept {
     return edits.TerrainDirty() || edits.pathing_ != edits.pathingOriginal_
-        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges()
+        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges() || edits.HasTerrainResizeChanges()
         // 已附入地形的会话即使撤回最后一笔W3E，也不能漏掉仍未保存的普通摆放。
         // 这里只要求保存门介入；仅Z不变域仍可沿旧门，其余必须取得完整G0/G1。
         || (edits.terrain_ && edits.pathing_ && edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)]
@@ -378,7 +378,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
                 ? Reject("TERRAIN_SAVE_PLAN_PATHING_PROOF", "未取得完整的通行限制来源验证结果。")
                 : Status{proof.diagnostics};
     }
-    if (!plan.saveGate_.Succeeded() && sourceArchive && gameRoot
+    if (!edits.HasTerrainResizeChanges() && !plan.saveGate_.Succeeded() && sourceArchive && gameRoot
         && TerrainPathingResources::Needed(*edits.terrainOriginal_, *edits.terrain_)) {
         auto resources = Take(TerrainPathingResources::Capture(*sourceArchive, *edits.terrainOriginal_, *edits.terrain_,
             *gameRoot, limits.maximumBytes - total));
@@ -388,7 +388,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], plan.pathingResources_.get());
     }
     std::optional<std::vector<std::byte>> rebuiltPathing;
-    if ((!plan.saveGate_.Succeeded() || mixedProof) && gameRoot && (sourceArchive || workspace || nativeCapture)) {
+    if ((!plan.saveGate_.Succeeded() || mixedProof || edits.HasTerrainResizeChanges()) && gameRoot && (sourceArchive || workspace || nativeCapture)) {
         auto rebuilt = plan.RebuildPathing(edits, sourceArchive, workspace, *gameRoot, limits, total, nativeCapture);
         if (!rebuilt.Succeeded() || !rebuilt.value) {
             plan.saveGate_ = rebuilt.diagnostics.empty()
@@ -402,7 +402,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     if (mixedProof && !plan.RebuiltPathing() && plan.saveGate_.Succeeded())
         plan.saveGate_ = Reject("TERRAIN_SAVE_MIXED_INPUTS_UNVERIFIED", "混合物编或导入修改需要完整原通行重现与实际依赖检查，当前未取得完整结果。");
     plan.pathingInvariant_ = plan.RebuiltPathing() || mixedProof
-        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges();
+        || edits.specialDoodads_ != edits.savedSpecialDoodads_ || edits.HasTerrainBoundsChanges() || edits.HasTerrainResizeChanges();
     plan.pathingInvariant_ = plan.pathingInvariant_ || edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.cliffTilesets != edits.terrainOriginal_->header.cliffTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
@@ -425,10 +425,11 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             member.outputBytes = member.sourceBytes;
             member.outputSha256 = member.sourceSha256;
         }
-        constexpr std::array<MapDataKind, 3> kinds{MapDataKind::Settings, MapDataKind::Units, MapDataKind::Doodads};
+        constexpr std::array<MapDataKind, 5> kinds{MapDataKind::Settings, MapDataKind::Units, MapDataKind::Doodads,
+            MapDataKind::Regions, MapDataKind::Cameras};
         for (std::size_t index = 0; index < kinds.size(); ++index) {
             const auto& originalBytes = edits.original_[MapDataEditSession::Index(kinds[index])];
-            auto& source = plan.invariantMembers_[index];
+            auto& source = plan.invariantMembers_[index < 3 ? index : index + 7];
             if ((source.sourceState == TerrainSaveSourceState::Present) != originalBytes.has_value())
                 return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_SOURCE",
                     "地形通行不变的范围/摆放会话基线与真实来源成员存在性不同：" + source.name);
@@ -437,13 +438,15 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             if (currentBytes != originalBytes) {
                 // 保存门核对两DOO仅Z及W3I四个说明字段的窄域；这里先核真实
                 // 原字节，再冻结该次确切输出，不允许后台省略或二次改写。
-                if (!currentBytes || !originalBytes)
+                if ((!currentBytes || !originalBytes) && index < 3)
                     return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_INVARIANT_CHANGED",
                         "范围或摆放成员存在性改变，无法保持原通行：" + source.name);
                 if (index == 0) RequireStatus(edits.VerifyTerrainSettingsForSave());
-                AddBytes(currentBytes->size(), total, limits);
-                source.outputBytes = currentBytes->size();
-                source.outputSha256 = Take(Sha256(*currentBytes));
+                if (currentBytes) {
+                    AddBytes(currentBytes->size(), total, limits);
+                    source.outputBytes = currentBytes->size();
+                    source.outputSha256 = Take(Sha256(*currentBytes));
+                } else { source.outputBytes.reset(); source.outputSha256.reset(); }
                 source.action = TerrainSaveMemberAction::WriteEdited;
             }
         }
@@ -451,7 +454,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             // 七类物编精确冻结最终输出。W3B/W3D删除也由实际G1重新解释后冻结；
             // 原source状态保留，写前/写后分别核旧存在和新缺失，不能伪改基线。
             for (auto& member : plan.invariantMembers_) {
-                if (std::find(kInvariantNames.begin() + 3, kInvariantNames.end(), member.name) == kInvariantNames.end()) continue;
+                if (std::find(kInvariantNames.begin() + 3, kInvariantNames.begin() + 10, member.name) == kInvariantNames.begin() + 10) continue;
                 std::size_t replacements = 0, removals = 0;
                 for (const auto& replacement : finalMembers) if (Canonical(replacement.name) == member.name) {
                     if (++replacements != 1)
@@ -499,6 +502,25 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
         AddBytes(edits.pathing_->size(), total, limits);
         setOutput(1, *edits.pathing_, "写出来源绑定的本工程通行限制与对应荒芜变化；原有限制、重叠限制和其它位保持，不作通用通行重建。");
     }
+    if (edits.HasTerrainResizeChanges() && plan.saveGate_.Succeeded()) {
+        const auto* shadow = edits.TerrainHistoryShadow();
+        if (!shadow) return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_RESIZE_SHADOW_SOURCE", "扩裁缺少同一typed阴影状态。");
+        const auto& saved = edits.savedResizeState_;
+        if (!saved || shadow->present != saved->shadow.present
+            || (saved->shadow.present && (!plan.members_[2].sourceSha256
+                || plan.members_[2].sourceSha256 != Take(Sha256(saved->shadow.bytes))))
+            || (!saved->shadow.present && plan.members_[2].sourceState != TerrainSaveSourceState::Missing))
+            return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_RESIZE_SHADOW_SOURCE",
+                "扩裁SHD物理旧存在性或原字身份与typed保存基线不同。");
+        if (shadow->present) {
+            AddBytes(shadow->bytes.size(), total, limits); // parser独立逐字强度副本。
+            const auto parsed = ParseMapShadow(shadow->bytes,
+                (edits.terrain_->header.width - 1) * 4, (edits.terrain_->header.height - 1) * 4);
+            if (!parsed.Succeeded()) return {{}, parsed.diagnostics};
+            AddBytes(shadow->bytes.size(), total, limits);
+            setOutput(2, shadow->bytes, "按实际世界格迁移SHD，旧非零按原版load/write归一为FF；新增区域为零，未烘焙阴影。");
+        }
+    }
     if (plan.RequiresNativeVerification()) {
         constexpr std::array<std::string_view, 3> descriptions{
             "阴影没有重建，地形变化后的阴影外观仍需原版验证。",
@@ -508,6 +530,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             "TERRAIN_SAVE_SHADOW_NOT_REBUILT", "TERRAIN_SAVE_MARKERS_NOT_REBUILT", "TERRAIN_SAVE_MINIMAP_NOT_REBUILT"};
         for (std::size_t index = 2; index < plan.members_.size(); ++index) {
             auto& member = plan.members_[index];
+            if (index == 2 && member.action == TerrainSaveMemberAction::WriteEdited) continue;
             member.reasonCode = codes[index - 2];
             const auto state = member.sourceState == TerrainSaveSourceState::Present ? "原样保留；"
                 : member.sourceState == TerrainSaveSourceState::Missing ? "源图缺少此成员，本次不新建；"

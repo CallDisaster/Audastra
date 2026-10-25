@@ -61,6 +61,8 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
         edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], nullptr, nullptr, nullptr, true,
         unitsProof ? &*unitsProof : nullptr, doodadsProof ? &*doodadsProof : nullptr);
     if (!shape.Succeeded()) return {{}, shape.diagnostics};
+    // 扩裁仍先消费同一套完整摆放证明；不能把typed形状证明当作任意DOO/Units授权。
+    if (edits.HasTerrainResizeChanges()) return RebuildResizePathing(edits, limits, total, nativeCapture);
     if ((!source && !workspace && !nativeCapture) || total > limits.maximumBytes)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SOURCE", "通行重建缺少唯一来源或剩余预算。");
     auto captured = nativeCapture ? (*nativeCapture)(*edits.terrainOriginal_, *edits.terrain_,
@@ -138,6 +140,80 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     return Output::Success(std::move(output));
 }
 
+Result<std::vector<std::byte>> TerrainSavePlan::RebuildResizePathing(const MapDataEditSession& edits,
+    const TerrainSavePlanLimits& limits, std::size_t& total, const NativeResourceCapture* nativeCapture) {
+    using Output = Result<std::vector<std::byte>>;
+    const auto proof = edits.VerifyTerrainResizeForSave();
+    if (!proof.Succeeded()) return {{}, proof.diagnostics};
+    if (!nativeCapture || total >= limits.maximumBytes)
+        return Output::Failure(kSubsystem, "TERRAIN_RESIZE_NATIVE_SOURCE", "扩裁保存需要可信Services分别捕获物理旧来源与完整最终成员。");
+    const auto& doodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
+    auto captured = (*nativeCapture)(*edits.terrainOriginal_, *edits.terrain_,
+        doodads ? &*doodads : nullptr, limits.maximumBytes - total);
+    if (!captured.Succeeded() || !captured.value) return {{}, std::move(captured.diagnostics)};
+    auto& resources = *captured.value;
+    if (!resources.nativeSourceResources_)
+        return Output::Failure(kSubsystem, "TERRAIN_RESIZE_NATIVE_SOURCE", "扩裁保存缺少独立G0，不能使用最终覆盖结果解释物理旧WPM。");
+    auto& originalResources = *resources.nativeSourceResources_;
+    const auto settings = originalResources.BindNativeResizeSettingsOutput(edits);
+    if (!settings.Succeeded()) return {{}, settings.diagnostics};
+    const auto finalSettings = std::find_if(resources.dependencies_.begin(), resources.dependencies_.end(),
+        [](const auto& dependency) { return dependency.name == "war3map.w3i"; });
+    const auto& expectedBounds = originalResources.nativeAfterBounds_ ? originalResources.nativeAfterBounds_ : originalResources.nativeBounds_;
+    if (finalSettings == resources.dependencies_.end() || !finalSettings->mapPresent
+        || !originalResources.nativeSettingsOutputSha_ || finalSettings->sha256 != *originalResources.nativeSettingsOutputSha_
+        || finalSettings->bytes != originalResources.nativeSettingsOutputBytes_ || !expectedBounds || !resources.nativeBounds_
+        || resources.nativeBounds_->left != expectedBounds->left || resources.nativeBounds_->bottom != expectedBounds->bottom
+        || resources.nativeBounds_->right != expectedBounds->right || resources.nativeBounds_->top != expectedBounds->top)
+        return Output::Failure(kSubsystem, "TERRAIN_PATHING_RESOURCE_CHANGED", "扩裁最终W3I或可玩区不是typed会话完整输出。");
+    const auto reserve = [&](std::size_t count) {
+        if (total > limits.maximumBytes || count > limits.maximumBytes - total) return false;
+        total += count; return true;
+    };
+    if (!reserve(resources.CaptureBudgetBytes()))
+        return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "扩裁G0/G1实际资源超过保存预算。");
+    const auto& oldWpm = *edits.pathingOriginal_;
+    const auto& savedIntent = *edits.originalPathingRestrictions_;
+    const auto& currentWpm = *edits.pathing_;
+    const auto& intent = *edits.pathingRestrictions_;
+    const auto oldCells = oldWpm.size() - 16, newCells = currentWpm.size() - 16;
+    {
+        auto generated = resources.GenerateNative(*edits.terrainOriginal_, TerrainNativeStage::Before, limits.maximumBytes - total);
+        if (!generated.Succeeded() || !generated.value) return {{}, std::move(generated.diagnostics)};
+        if (generated.value->size() != oldCells || savedIntent.size() != oldCells)
+            return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "扩裁G0与物理旧WPM或savedS不属于同一形状。");
+        if (!reserve(generated.value->size()))
+            return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "扩裁旧通行核对超过保存预算。");
+        const auto width = (edits.terrainOriginal_->header.width - 1) * 4;
+        for (std::size_t i = 0; i < oldCells; ++i) {
+            if ((oldWpm[i + 16] & std::byte{0xee}) != ((*generated.value)[i] | savedIntent[i]))
+                return Output::Failure(kSubsystem, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
+                    "扩裁物理源通行格(" + std::to_string(i % width) + "," + std::to_string(i / width)
+                    + ")不能由真实旧规则及保存意图重现；保留源图。");
+        }
+    }
+    auto generated = resources.GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
+    if (!generated.Succeeded() || !generated.value) return {{}, std::move(generated.diagnostics)};
+    if (generated.value->size() != newCells || intent.size() != newCells)
+        return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "扩裁G1与新WPM或当前意图不属于同一形状。");
+    if (!reserve(generated.value->size()) || !reserve(newCells) || !reserve(currentWpm.size()))
+        return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "扩裁新通行输出及保存基线超过预算。");
+    // typed命令已按世界格迁移header、0x11、P、savedS和S；先核完整分层后才消费。
+    // 禁止按当前数组索引读取不同shape的物理旧WPM。
+    std::vector<std::byte> output(currentWpm), protectedSource(newCells);
+    for (std::size_t i = 0; i < newCells; ++i) {
+        output[i + 16] = (currentWpm[i + 16] & std::byte{0x11}) | (*generated.value)[i] | intent[i];
+        protectedSource[i] = (*generated.value)[i] & std::byte{kPathingRestrictionBits};
+    }
+    auto draftSha = Sha256(currentWpm), intentSha = Sha256(intent);
+    if (!draftSha.Succeeded() || !draftSha.value) return {{}, std::move(draftSha.diagnostics)};
+    if (!intentSha.Succeeded() || !intentSha.value) return {{}, std::move(intentSha.diagnostics)};
+    pathingDraftSha256_ = std::move(*draftSha.value); pathingIntentSha256_ = std::move(*intentSha.value);
+    nativePathingProtected_ = std::move(protectedSource);
+    pathingResources_ = std::make_shared<const TerrainPathingResources>(std::move(resources));
+    return Output::Success(std::move(output));
+}
+
 Status TerrainSavePlan::InstallPathingOutput(const MapDataEditSession& edits,
     std::vector<MemberReplacement>& replacements) const {
     if (!RebuiltPathing()) return Status::Ok();
@@ -162,11 +238,42 @@ Status TerrainSavePlan::InstallPathingOutput(const MapDataEditSession& edits,
     }
     if (existing == replacements.end() && edits.pathing_ != edits.pathingOriginal_)
         return Reject("TERRAIN_PATHING_REBUILD_CONFLICT", "最终列表遗漏当前通行修改，不能以重建掩盖遗漏。");
-    // 分配在发布前完成，失败时保留调用者原列表。
+    const MemberReplacement* shadowOutput = nullptr;
+    std::size_t shadowIndex = replacements.size();
+    if (edits.HasTerrainResizeChanges()) {
+        const auto shadow = std::find_if(replacements_.begin(), replacements_.end(),
+            [](const auto& value) { return value.name == "war3map.shd"; });
+        if (shadow != replacements_.end()) {
+            shadowOutput = &*shadow;
+            const auto* draft = edits.TerrainHistoryShadow();
+            if (!draft || !draft->present)
+                return Reject("TERRAIN_RESIZE_SHADOW_SHAPE", "扩裁阴影输出缺少同一typed草稿。");
+            for (std::size_t i = 0; i < replacements.size(); ++i) {
+                const auto key = Resources::CanonicalImportPath(replacements[i].name);
+                if (!key.Succeeded() || !key.value) return {key.diagnostics};
+                if (*key.value != "WAR3MAP.SHD") continue;
+                if (shadowIndex != replacements.size() || replacements[i].data != draft->bytes)
+                    return Reject("TERRAIN_RESIZE_SHADOW_CONFLICT", "最终列表含重复或非typed迁移的SHD，未安装任何派生输出。");
+                shadowIndex = i;
+            }
+        }
+    }
+    const auto pathingIndex = existing == replacements.end() ? replacements.size()
+        : static_cast<std::size_t>(existing - replacements.begin());
+    const auto originalSize = replacements.size();
+    // 所有正文复制和vector扩容在赋值前完成；其后仅noexcept move，WPM/SHD一起发布。
     try {
         MemberReplacement next = *output;
-        if (existing == replacements.end()) replacements.push_back(std::move(next));
-        else *existing = std::move(next);
+        std::optional<MemberReplacement> shadow;
+        if (shadowOutput) shadow = *shadowOutput;
+        replacements.reserve(originalSize + (pathingIndex == originalSize ? 1 : 0)
+            + (shadow && shadowIndex == originalSize ? 1 : 0));
+        if (pathingIndex == originalSize) replacements.push_back(std::move(next));
+        else replacements[pathingIndex] = std::move(next);
+        if (shadow) {
+            if (shadowIndex == originalSize) replacements.push_back(std::move(*shadow));
+            else replacements[shadowIndex] = std::move(*shadow);
+        }
     } catch (const std::bad_alloc&) {
         return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "准备通行替换失败，未改变保存列表。");
     }
@@ -211,7 +318,15 @@ Status TerrainSavePlan::CommitSaved(MapDataEditSession& edits, const MapDocument
     try {
         auto protectedSource = std::make_shared<const std::vector<std::byte>>(nativePathingProtected_);
         std::optional<std::vector<std::byte>> pathing(output->data);
-        edits.CommitSavedBaseline(saved, std::move(pathing), std::move(protectedSource));
+        std::optional<ArchiveExactMember> shadow;
+        if (edits.resizeState_) {
+            const auto written = std::find_if(replacements_.begin(), replacements_.end(),
+                [](const auto& value) { return value.name == "war3map.shd"; });
+            if (written != replacements_.end()) shadow = ArchiveExactMember{"war3map.shd", true, written->data};
+            else if (const auto* currentShadow = edits.TerrainHistoryShadow()) shadow = *currentShadow;
+            else return Reject("TERRAIN_RESIZE_SHADOW_SOURCE", "提交扩裁基线前缺少真实写出阴影或明确absence。");
+        }
+        edits.CommitSavedBaseline(saved, std::move(pathing), std::move(protectedSource), std::move(shadow));
     } catch (const std::bad_alloc&) {
         return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "准备新通行基线失败，原编辑状态保留。");
     }

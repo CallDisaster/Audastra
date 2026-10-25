@@ -350,12 +350,27 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairWithOb
     const MemberReader& sourceReader, const MemberReader& finalReader,
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
     const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator) {
+    return CaptureNativePairImpl(sourceReader, finalReader, before, after, gameRoot, maximumBytes, validator, false);
+}
+
+Result<TerrainPathingResources> TerrainPathingResources::CaptureNativeResizePairWithObjects(
+    const MemberReader& sourceReader, const MemberReader& finalReader,
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator) {
+    return CaptureNativePairImpl(sourceReader, finalReader, before, after, gameRoot, maximumBytes, validator, true);
+}
+
+Result<TerrainPathingResources> TerrainPathingResources::CaptureNativePairImpl(
+    const MemberReader& sourceReader, const MemberReader& finalReader,
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, const NativeObjectValidator& validator, bool resize) {
     return Guard<TerrainPathingResources>([&] {
         if (!sourceReader || !finalReader || !validator)
             Fail("TERRAIN_NATIVE_PAIR_SOURCE", "双阶段通行需要同次真实来源、最终成员视图和严格对象适配。");
         // G0仍捕获完整旧/新palette和水规则需求，但只用其Before生成旧WPM。
         // 最终overlay绝不参与G0来源核对，也不替换旧依赖SHA。
-        auto original = Take(CaptureInputs(sourceReader, before, after, gameRoot, maximumBytes, true, &validator, nullptr, true));
+        auto original = Take(CaptureInputs(sourceReader, before, resize ? before : after,
+            gameRoot, maximumBytes, true, &validator, nullptr, true));
         const auto originalRetained = original.RetainedBudgetBytes();
         if (originalRetained >= maximumBytes)
             Fail("TERRAIN_PATHING_RESOURCE_BUDGET", "旧通行来源未给最终阶段留下预算。");
