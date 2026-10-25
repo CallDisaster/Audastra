@@ -171,8 +171,9 @@ Result<MapData::MapDataEditSession::PreparedTerrainEdit> PrepareTextureSlot(cons
     auto prospective = *current;
     const auto replaced = MapData::ReplaceTerrainTextureSlot(prospective, table, slot, rawcode);
     if (!replaced.Succeeded() || !replaced.value) return {{}, replaced.diagnostics};
-    if (edits.HasTerrainResizeChanges()) {
+    if (edits.HasTerrainTypedResizeState()) {
         // 一般捕获器仍坚持旧shape；可信扩裁仅经封闭当前视图捕获，
+        // 保存站之后状态仍在，后续命令也须核当前全文而非只看扩裁净差。
         // 两次Verify都独立复核物理地图，不能让current输出替代原始来源。
         auto view = TerrainReplayDetail::ResourceSource::CaptureCurrent(reader, edits, gameRoot, maximumBytes);
         if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
@@ -309,7 +310,8 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
         const TerrainEditBinding binding{document, candidate.SessionIdentity(), candidate.Revision(), candidate.TerrainSourceRevision()};
         std::shared_ptr<const TerrainSessionResources> currentSource;
         const auto captureCurrent = [&](std::size_t maximumBytes) -> Status {
-            if (!candidate.HasTerrainResizeChanges()) return Status::Ok();
+            // 保存站会清除扩裁dirty，但不会移除后续命令所依赖的typed当前结构。
+            if (!candidate.HasTerrainTypedResizeState()) return Status::Ok();
             if (!source.current)
                 return Status::Failure("Terrain.Replay", "TERRAIN_RESIZE_SOURCE_REQUIRED", "扩裁后重放缺少实际来源绑定的当前结构工厂。");
             maximumBytes = std::min(maximumBytes, (limits.maximumWork - work) / 2);

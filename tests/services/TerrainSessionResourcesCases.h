@@ -169,6 +169,59 @@ inline void PhysicalChangesAndBudgetsStayFailClosed() {
     }
 }
 
+inline void SavedResizeUsesCurrentPaletteResources() {
+    for (const bool directorySource : {false, true}) {
+        Fixture fixture; AddActualWaterInputs(fixture);
+        fixture.PutMember("TerrainArt/Terrain.slk", Slk({"tileID", "walkable", "flyable", "buildable"},
+            {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}}));
+        fixture.Seal(); Expand(fixture);
+        const auto originalPath = fixture.archive->SourcePath();
+        const auto originalSha = fixture.archive->SourceSha256();
+        {
+            const auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.archive, *fixture.edits, fixture.gameRoot));
+            Check(plan.SaveGate()); auto output = fixture.edits->Replacements(); const auto removals = fixture.edits->Removals();
+            Check(plan.InstallPathingOutput(*fixture.edits, output));
+            Check(plan.VerifyForSave(*fixture.edits, originalSha, output, removals));
+            Check(plan.VerifySourceInputs(*fixture.archive));
+            auto saved = Take(MapArchiveSession::Open(Take(fixture.archive->SaveCandidate(
+                fixture.directory / "expanded-current-source.w3x", output, removals)).path));
+            Check(plan.VerifyReadback(saved)); Check(plan.CommitSaved(*fixture.edits, MapDocument::FromArchive(saved)));
+            fixture.archive = std::make_unique<MapArchiveSession>(std::move(saved));
+        }
+        Require(!fixture.edits->IsDirty() && !fixture.edits->HasTerrainResizeChanges()
+            && fixture.edits->HasTerrainTypedResizeState(),
+            "actual saved resize keeps trusted current structure while its net resize difference is clean");
+        const auto savedSha = fixture.archive->SourceSha256();
+        {
+            const auto owner = Current(fixture); const auto water = Take(owner.CaptureWater(true));
+            TerrainWaterStrokeOptions options; options.kind = TerrainWaterBrushKind::Shallow;
+            options.shape = TerrainBrushShape::Square; options.size = 3; options.randomSeed = 17;
+            const TerrainStrokePoint point{-512, -512};
+            const auto prepared = Take(PrepareTerrainWaterEdit(*fixture.edits, Document(fixture), Binding(fixture), water,
+                options, std::span(&point, 1), false));
+            Check(owner.Verify(water)); Take(ApplyTerrainEdit(*fixture.edits, Document(fixture), prepared));
+        }
+        if (directorySource) {
+            const auto root = WriteWorkspace(fixture);
+            for (const auto name : {"war3map.w3e", "war3map.wpm", "war3map.w3i", "war3map.shd"})
+                Check(IO::WriteFileBytes(root / name, Take(fixture.archive->ReadMember(name))));
+            const auto workspace = Take(DirectoryWorkspace::Open(root));
+            Take(TerrainPathingSave::EditTextureSlot(workspace.Snapshot(), *fixture.edits,
+                TerrainTextureTable::Ground, 1, "Tg02", fixture.gameRoot));
+        } else {
+            Take(TerrainPathingSave::EditTextureSlot(*fixture.archive, *fixture.edits,
+                TerrainTextureTable::Ground, 1, "Tg02", fixture.gameRoot));
+        }
+        Require(fixture.edits->Terrain()->header.groundTilesets == std::vector<std::string>{"Tg01", "Tg02"}
+            && fixture.edits->Terrain()->vertices[44 * 65 + 44].HasWater()
+            && fixture.edits->HasTerrainTypedResizeState() && !fixture.edits->HasTerrainResizeChanges(),
+            "archive and directory palette services after save bind full current water edits, not clean physical terrain");
+        Require(Take(Sha256File(originalPath)) == originalSha
+            && Take(Sha256File(fixture.archive->SourcePath())) == savedSha,
+            "post-save water and palette edits leave both original and actual saved physical sources read-only");
+    }
+}
+
 inline void ResizeWaterBoundsSaveReadback() {
     for (const auto kind : {TerrainWaterBrushKind::Shallow, TerrainWaterBrushKind::Deep}) {
         Fixture fixture(true); AddActualWaterInputs(fixture); const auto sourceSha = fixture.archive->SourceSha256();
@@ -225,6 +278,7 @@ inline void RunTerrainSessionResourcesCases() {
     ActualCurrentWaterAndBothNativeDoodadStages();
     SharedFrozenBudgetsIncludeRetainedRequestAndDirectory();
     PhysicalChangesAndBudgetsStayFailClosed();
+    SavedResizeUsesCurrentPaletteResources();
     ResizeWaterBoundsSaveReadback();
 }
 } // namespace AudastraTest::TerrainSessionResourcesCases
