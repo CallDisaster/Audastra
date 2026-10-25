@@ -208,7 +208,8 @@ void SessionSourceCasBudgetAndSingleHistory() {
     for (const auto kind : {MapDataKind::Doodads, MapDataKind::Units}) {
         auto brokenMembers = f.members;
         for (auto& member : brokenMembers)
-            if (member.name == (kind == MapDataKind::Doodads ? "war3map.doo" : "war3mapUnits.doo")) member.data = Text("broken placement payload");
+            if (member.name == (kind == MapDataKind::Doodads ? "war3map.doo" : "war3mapUnits.doo"))
+                member.data = TerrainCornerRampFixtures::Text("broken placement payload");
         MapDataEditSession broken(MapDocument::FromMembers(brokenMembers));
         Require(broken.AttachTerrain(f.members[0].data).Succeeded() && broken.AttachPathing(f.members[1].data).Succeeded(),
             "synthetic unreadable placement session retains known terrain/pathing");
