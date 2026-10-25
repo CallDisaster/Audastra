@@ -86,6 +86,9 @@ public:
         [[nodiscard]] const TerrainWaterBrush* WaterBrush() const noexcept { return waterBrush_ ? &*waterBrush_ : nullptr; }
         [[nodiscard]] const TerrainWaterBrushResult* WaterResult() const noexcept { return waterResult_ ? &*waterResult_ : nullptr; }
         [[nodiscard]] const TerrainBlockPasteIntent* BlockPasteIntent() const noexcept { return blockPaste_ ? &*blockPaste_ : nullptr; }
+        // 协议宿主须保留本次实际准备的算法，不能按当前默认值重建历史。
+        [[nodiscard]] TerrainCornerRampAlgorithm CornerRampAlgorithm() const noexcept { return cornerRampAlgorithm_; }
+        [[nodiscard]] TerrainStraightRampAlgorithm StraightRampAlgorithm() const noexcept { return straightRampAlgorithm_; }
         // 水刷/原版悬崖来源检查、算法及事务准备的预算结算；其他笔刷为0，算法计数在WaterResult中。
         [[nodiscard]] std::size_t WaterPreparationWork() const noexcept { return waterPreparationWork_; }
         // 本笔已预收的临时候选/撤销/联动峰值；不能把已释放临时网格累计当成历史。

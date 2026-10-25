@@ -313,6 +313,7 @@ private slots:
     void WaterToolsCaptureActualResourcesAndKeepOriginalUndo();
     void BoundsToolsCaptureActualResourcesAndKeepOriginalUndo();
     void BoundsPreparationRejectsConcurrentRevision();
+    void TerrainBlockToolsUseCapturedResourcesCasAndOriginalUndo();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
@@ -331,7 +332,7 @@ private slots:
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const QStringList expected{"auxiliary_copy", "auxiliary_create", "auxiliary_delete", "auxiliary_update",
-        "code.check", "create_campaign", "edit_campaign", "edit_terrain_bounds", "edit_terrain_stroke", "editor_check_trigger_graph",
+        "code.check", "create_campaign", "edit_campaign", "edit_terrain_block", "edit_terrain_bounds", "edit_terrain_stroke", "editor_check_trigger_graph",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
@@ -354,7 +355,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{87});
+    QCOMPARE(expected.size(), qsizetype{88});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2675,6 +2676,8 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }
+
+#include "TerrainBlockLiveCases.h"
 
 QTEST_GUILESS_MAIN(LiveEditorToolsTests)
 #include "LiveEditorToolsTests.moc"

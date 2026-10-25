@@ -30,7 +30,7 @@ target_compile_options(war3-map-cli-terrain-query-tests PRIVATE /W4 /permissive-
 add_test(NAME cli-terrain-query COMMAND war3-map-cli-terrain-query-tests)
 set_tests_properties(cli-terrain-query PROPERTIES TIMEOUT 60)
 
-add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp CliStraightRampCases.h
+add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp CliStraightRampCases.h CliTerrainBlockCases.h
     "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
 target_include_directories(war3-map-cli-map-edit-save-tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Cli" "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -179,7 +179,7 @@ add_custom_command(
         "$<TARGET_FILE_DIR:war3-map-core-tests>")
 add_test(NAME core-foundation COMMAND war3-map-core-tests)
 
-foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainBoundsEditing TerrainBoundsSession TerrainRampEditing TerrainCliffEditing TerrainSavePlan TerrainPathingResources TerrainNativePathing TerrainNativeSave TerrainUnitPlacementNativeSave TerrainBoundaryNativeSave TerrainCliffPaletteNativeSave TerrainUniformDoodadFootprint TerrainDoodadFootprint TerrainBlpFootprint TerrainWaterBrush TerrainWaterBrushResources TerrainWaterSession TerrainDerivedCodec NativeMinimapMarkers TerrainShadowRebuild TerrainShadowResources PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
+foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession MapBackupInspection ProjectStore EditRevision VerifiedFile ImportTable ResourceResolver MapDocument MapDataEditSession MapDataFieldEditing MapDataPlacementEditing PlacementEditing PlacementCreateDelete PlacementElevationInvariant TerrainPlacementElevationSave TerrainEditing TerrainBoundsEditing TerrainBoundsSession TerrainBlockEditing TerrainRampEditing TerrainCliffEditing TerrainSavePlan TerrainPathingResources TerrainNativePathing TerrainNativeSave TerrainUnitPlacementNativeSave TerrainBoundaryNativeSave TerrainCliffPaletteNativeSave TerrainUniformDoodadFootprint TerrainDoodadFootprint TerrainBlpFootprint TerrainWaterBrush TerrainWaterBrushResources TerrainWaterSession TerrainDerivedCodec NativeMinimapMarkers TerrainShadowRebuild TerrainShadowResources PathingRestrictionEditing PathingSavePolicy MapSettings LniMapSettings MapPlacements MapAuxiliary CoreTextIo WorldEditStrings BlpImage BlpOpaqueQuantize BlpJpegEncode)
     add_executable(war3-map-${service_test}-tests ${service_test}Tests.cpp)
     target_link_libraries(war3-map-${service_test}-tests PRIVATE War3MapEditor::Core)
     target_compile_definitions(war3-map-${service_test}-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -188,6 +188,8 @@ foreach(service_test IN ITEMS NativeDoodadCategoryDirectory MapArchiveSession Ma
 endforeach()
 
 target_link_libraries(war3-map-TerrainBoundsSession-tests PRIVATE War3MapEditor::Services)
+target_link_libraries(war3-map-TerrainBlockEditing-tests PRIVATE War3MapEditor::Services)
+target_sources(war3-map-TerrainBlockEditing-tests PRIVATE TerrainBlockFixtures.h TerrainCornerRampFixtures.h)
 target_sources(war3-map-TerrainRampEditing-tests PRIVATE TerrainConnectedStraightRampCases.h)
 target_link_libraries(war3-map-TerrainBoundaryNativeSave-tests PRIVATE War3MapEditor::Services)
 

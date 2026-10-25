@@ -216,7 +216,7 @@ target_compile_options(war3-map-object-resource-query-tests PRIVATE /W4 /permiss
 add_test(NAME services-object-resource-query COMMAND war3-map-object-resource-query-tests)
 set_tests_properties(services-object-resource-query PROPERTIES TIMEOUT 60)
 
-add_executable(war3-map-save-service-tests MapSaveServiceTests.cpp TerrainStraightRampHostCases.h)
+add_executable(war3-map-save-service-tests MapSaveServiceTests.cpp TerrainStraightRampHostCases.h TerrainBlockSaveHostCases.h)
 target_link_libraries(war3-map-save-service-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-save-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-save-service-tests PRIVATE /W4 /permissive- /utf-8)
@@ -293,6 +293,13 @@ target_link_libraries(audastra-terrain-edit-service-tests PRIVATE War3MapEditor:
 target_compile_definitions(audastra-terrain-edit-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-edit-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-edit COMMAND audastra-terrain-edit-service-tests)
+
+add_executable(audastra-terrain-block-paste-service-tests TerrainBlockPasteServiceTests.cpp)
+target_link_libraries(audastra-terrain-block-paste-service-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-block-paste-service-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-block-paste-service-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-block-paste COMMAND audastra-terrain-block-paste-service-tests)
+set_tests_properties(services-terrain-block-paste PROPERTIES TIMEOUT 60)
 
 add_executable(audastra-terrain-water-edit-service-tests TerrainWaterEditServiceTests.cpp TerrainCliffJournalTests.cpp TerrainCornerRampServiceTests.cpp)
 target_link_libraries(audastra-terrain-water-edit-service-tests PRIVATE War3MapEditor::Services)

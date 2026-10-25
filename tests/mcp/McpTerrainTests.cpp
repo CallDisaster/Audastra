@@ -773,6 +773,7 @@ void TestNativeWaterSaveTransport() {
 }
 
 #include "McpStraightRampSaveCases.h"
+#include "McpTerrainBlockSaveCases.h"
 
 } // namespace
 
@@ -811,6 +812,7 @@ int main(int argc, char** argv) {
         TestBoundarySaveTransport();
         TestCornerRampSaveTransport();
         TestStraightRampSaveTransport();
+        TestTerrainBlockSaveTransport();
         TestPlayableBoundsSaveTransport();
         TestTypedReadAndSourcePreservation();
         TestStaleBindingsAndLifetime();

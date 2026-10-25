@@ -858,6 +858,10 @@ private slots:
     void TerrainStraightRampRejectsStaleStroke();
     void TerrainConnectedRampUsesFrozenPreviewAndUndo();
     void TerrainConnectedRampRejectsStaleStroke();
+    void TerrainBlockSelectionUsesCompletedGroundWithoutModels();
+    void TerrainBlockPasteFreezesSourceAndUsesSharedUndo();
+    void TerrainBlockPasteRejectsChangedSourceAndPendingCas();
+    void TerrainBlockCancellationKeepsClipboardAndReloadClearsIt();
     void TerrainBoundaryMarksAndRestores_data();
     void TerrainBoundaryMarksAndRestores();
     void TerrainPathingUsesCellsAndPreservesSource_data();
@@ -5392,6 +5396,7 @@ void WorldModuleTests::ShadowRelationMemoTracksAttachGenerationsAndSessionIdenti
 
 #include "TerrainStraightRampWorldCases.h"
 #include "TerrainConnectedRampWorldCases.h"
+#include "TerrainBlockWorldCases.h"
 
 int main(int argc, char** argv) {
     if (qEnvironmentVariable("FORGE_H1_CAPTURE_DIR").isEmpty()) qputenv("QT_QPA_PLATFORM", "offscreen");

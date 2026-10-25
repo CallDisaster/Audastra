@@ -79,6 +79,14 @@ void RegisterTerrainEditTools(McpServer& server) {
                 return Services::PrepareTerrainStraightRampEdit(*context.session, context.document, binding,
                     *waterOwner, brush, points, follow, {}, algorithm);
             };
+            host.prepareBlock = [workspace, &waterOwner](const TerrainEditToolContext& context, const auto& binding,
+                const MapData::TerrainBlockPasteIntent& intent, bool follow) -> Result<Services::PreparedTerrainEdit> {
+                auto captured = workspace->CaptureTerrainWaterResources(true);
+                if (!captured.Succeeded() || !captured.value) return {{}, captured.diagnostics};
+                waterOwner = std::move(*captured.value);
+                return Services::PrepareTerrainBlockPasteEdit(*context.session, context.document, binding,
+                    *waterOwner, intent, follow);
+            };
             return InvokeTerrainEditTool(name, arguments, host);
         };
         server.RegisterTool(std::move(definition));

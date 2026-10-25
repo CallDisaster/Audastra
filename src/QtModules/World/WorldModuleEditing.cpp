@@ -717,6 +717,7 @@ void WorldModule::StartPlacementPreview() {
 }
 
 void WorldModule::PreviewAt(double x, double y, double z, bool snap) {
+    if (terrainBlockPasting_) { HoverTerrainBlock(x, y); return; }
     if (!placing_ && !pasting_) return;
     if (snap && terrain_) {
         x = Snap(x); y = Snap(y);
@@ -729,6 +730,7 @@ void WorldModule::PreviewAt(double x, double y, double z, bool snap) {
 }
 
 void WorldModule::HidePreview() {
+    if (terrainBlockPasting_) { terrainBlockDestination_.reset(); UpdateOverlay(); return; }
     previewHover_.reset();
     UpdatePlacementPreview(); UpdateOverlay();
 }
@@ -1045,11 +1047,15 @@ void WorldModule::StartWaterBrushCommit() {
         *elapsed = timer.elapsed();
         if (request->frozen && status->Succeeded()) {
             timer.restart();
-            const auto& brush = std::get<MapData::TerrainBrush>(request->brush);
-            *cornerPlan = brush.kind == MapData::TerrainBrushKind::StraightRamp
+            if (const auto* block = std::get_if<MapData::TerrainBlockPasteIntent>(&request->brush))
+                *cornerPlan = request->frozen->PrepareTerrainBlockPasteEdit(request->capture->resources, *block, true);
+            else {
+                const auto& brush = std::get<MapData::TerrainBrush>(request->brush);
+                *cornerPlan = brush.kind == MapData::TerrainBrushKind::StraightRamp
                 ? request->frozen->PrepareTerrainStraightRampEdit(request->capture->resources, brush, request->points, true,
                     {}, MapData::TerrainStraightRampAlgorithm::Connected)
                 : request->frozen->PrepareTerrainCornerRampEdit(request->capture->resources, brush, request->points, true);
+            }
             *prepareElapsed = timer.elapsed();
             // 候选计算期间来源也可能变化；发布前重验实际归档，GUI只做修订CAS。
             if (cornerPlan->Succeeded()) *status = QtProject::VerifyTerrainWaterEditResources(*request->capture);
@@ -1063,8 +1069,9 @@ void WorldModule::StartWaterBrushCommit() {
         if (waterCommit_ != request) { StartTerrainRender(); return; }
         waterCommit_.reset();
         terrainWaterBrushStatus_->setProperty("verifyMilliseconds", *elapsed);
+        const bool block = std::holds_alternative<MapData::TerrainBlockPasteIntent>(request->brush);
         const bool current = QtProject::TerrainWaterEditRequestCurrent(project_, *request->capture->request,
-            StructuralBrushEnforceWaterLimits());
+            block || StructuralBrushEnforceWaterLimits());
         Result<MapData::TerrainStrokeResult> edited;
         if (!current) edited.diagnostics = Status::Failure("Terrain.Water", "TERRAIN_WATER_COMMIT_STALE",
             "水刷等待核验时地图或资源修订已变化，本笔未提交。").diagnostics;
@@ -1080,15 +1087,27 @@ void WorldModule::StartWaterBrushCommit() {
             auto plan = std::visit([&](const auto& brush) {
                 if constexpr (std::is_same_v<std::decay_t<decltype(brush)>, MapData::TerrainWaterBrush>)
                     return project_.mapEdits_->PrepareTerrainWaterEdit(request->capture->resources, brush, request->points, true);
-                else return project_.mapEdits_->PrepareTerrainCliffEdit(request->capture->resources, brush, request->points, true);
+                else if constexpr (std::is_same_v<std::decay_t<decltype(brush)>, MapData::TerrainBrush>)
+                    return project_.mapEdits_->PrepareTerrainCliffEdit(request->capture->resources, brush, request->points, true);
+                else return project_.mapEdits_->PrepareTerrainBlockPasteEdit(request->capture->resources, brush, true);
             }, request->brush);
             terrainWaterBrushStatus_->setProperty("prepareMilliseconds", timer.elapsed());
             if (plan.Succeeded()) edited = project_.mapEdits_->ApplyPreparedTerrainEdit(*plan.value);
             else edited.diagnostics = std::move(plan.diagnostics);
         }
         if (!status->Succeeded() || !current) InvalidateWaterBrushCapture();
+        if (block) {
+            if (!status->Succeeded() || !TerrainBlockClipboardCurrent()) {
+                terrainBlockClipboard_.reset(); terrainBlockSelection_.reset();
+            }
+            terrainBlockSelecting_ = true;
+            terrainBlockStatus_->setText(edited.Succeeded()
+                ? tr("地形块已准备并提交；可再次粘贴。源块变化须重新复制。")
+                : tr("地形块未粘贴：%1").arg(WorldDiagnosticText(edited.diagnostics)));
+        }
         PublishTerrainStrokeResult(std::move(edited), request->capture->request->terrain,
             request->capture->request->revision, false, true, current && status->Succeeded() && request->resumeBrush);
+        if (block) UpdateToolState();
         StartTerrainRender();
         UpdateWaterFrameControl();
     });
@@ -1354,6 +1373,7 @@ void WorldModule::UpdateOverlay() {
     if (!viewport_) return;
     Render::OverlayLines lines;
     AppendStartLocationOverlay(lines);
+    AppendTerrainBlockOverlay(lines);
     const auto* terrain = terrain_.get();
     const auto* region = SelectedRegion();
     const auto* camera = SelectedCamera();
@@ -1407,12 +1427,12 @@ void WorldModule::UpdateOverlay() {
         lines.push_back({{point[0], point[1] - 16.0f, z}, {point[0], point[1] + 16.0f, z},
             {kCameraColor[0], kCameraColor[1], kCameraColor[2]}});
     }
-    if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::Boundary)
+    if (!terrainBlockSelecting_ && !terrainBlockPasting_ && CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::Boundary)
         AppendTerrainBoundaryOverlay(lines);
-    if (CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::PathingRestriction)
+    if (!terrainBlockSelecting_ && !terrainBlockPasting_ && CurrentTool() == Tool::Terrain && CurrentBrushKind() == MapData::TerrainBrushKind::PathingRestriction)
         AppendPathingRestrictionOverlay(lines);
     // 笔刷落点：吸附到最近顶点，按实际作用范围画出（半径外半格为边界）。
-    if (brushCursor_ && terrain && CurrentTool() == Tool::Terrain) {
+    if (!terrainBlockSelecting_ && !terrainBlockPasting_ && brushCursor_ && terrain && CurrentTool() == Tool::Terrain) {
         MapData::TerrainBrush brush;
         brush.kind = CurrentBrushKind();
         const bool corner = brush.kind == MapData::TerrainBrushKind::CornerRamp;

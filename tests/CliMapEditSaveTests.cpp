@@ -307,6 +307,7 @@ void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
 }
 
 #include "CliStraightRampCases.h"
+#include "CliTerrainBlockCases.h"
 
 } // namespace
 
@@ -322,6 +323,7 @@ int main() {
         BoundaryUsesStrictBooleanAndSharedOrderedSave();
         CornerRampUsesOneWorldPointAndStrictBoolean();
         StraightRampUsesItsOwnWorldPointCommand();
+        TerrainBlockCopyUsesBoundedTypedCommand();
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
