@@ -135,21 +135,34 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
     const TerrainResizeResources& resources, const TerrainResizeIntent& intent, const TerrainResizeLimits& limits) const try {
     using Output = Result<PreparedTerrainResizeEdit>;
     const auto fail = [](const char* code, const char* message) { return Output::Failure("Terrain.Resize", code, message); };
+    const TerrainResizeLimits hard;
+    if (!limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes
+        || !limits.maximumWork || limits.maximumWork > hard.maximumWork)
+        return fail("TERRAIN_RESIZE_LIMITS", "扩裁预算只能收紧硬上限，不能为零。");
     const auto verified = resources.VerifyInput(*this, intent, limits.maximumCandidateBytes, limits.maximumWork);
     if (!verified.Succeeded()) return {{}, verified.diagnostics};
     const auto& rawSettings = current_[Index(MapDataKind::Settings)];
     if (resizeDraftState_ || !terrain_ || !terrainOriginal_ || !pathing_ || !pathingOriginal_ || !pathingProtected_ || !pathingRestrictions_
         || !originalPathingRestrictions_ || !rawSettings || !specialDoodads_)
         return fail("TERRAIN_RESIZE_SOURCE_UNAVAILABLE", "扩裁需要完整地形、通行、限制层、设置和特殊摆放来源。");
-    if (terrain_->vertices.size() > limits.maximumWork)
-        return fail("TERRAIN_RESIZE_BUDGET", "扩裁前未知字段复核超过工作预算。");
+    // CaptureWork为捕获自身的顶点和空间wire解析；第二份是逐项空间预检的保守上界。
+    // wire记录长度大于对应点/占地数量，不能让owner和几何各自独占一份完整预算。
+    const auto ownerWork = resources.CaptureWork();
+    if (ownerWork > limits.maximumWork / 2
+        || terrain_->vertices.size() >= limits.maximumWork - ownerWork * 2
+        || resources.CaptureBudgetBytes() >= limits.maximumCandidateBytes)
+        return fail("TERRAIN_RESIZE_BUDGET", "扩裁来源、空间预检和未知字段复核累计超过预算。");
+    const auto inputWork = ownerWork * 2 + terrain_->vertices.size();
     const auto rawInput = VerifyTerrainResizeRawInput();
     if (!rawInput.Succeeded()) return {{}, rawInput.diagnostics};
     auto settings = MapSettings::Parse(*rawSettings);
     if (!settings.Succeeded() || !settings.value) return {{}, settings.diagnostics};
     const auto originalSettingsGate = VerifyTerrainSettingsForSave();
     if (!originalSettingsGate.Succeeded()) return {{}, originalSettingsGate.diagnostics};
-    auto projected = ProjectTerrainResizeGeometry(*terrain_, *settings.value, resources.CameraMargins(), resources.DimensionRules(), intent, limits);
+    auto geometryLimits = limits;
+    geometryLimits.maximumWork -= inputWork;
+    geometryLimits.maximumCandidateBytes -= resources.CaptureBudgetBytes();
+    auto projected = ProjectTerrainResizeGeometry(*terrain_, *settings.value, resources.CameraMargins(), resources.DimensionRules(), intent, geometryLimits);
     if (!projected.Succeeded() || !projected.value) return {{}, projected.diagnostics};
     const auto oldWidth = (terrain_->header.width - 1) * 4, oldHeight = (terrain_->header.height - 1) * 4;
     const auto newWidth = (projected.value->terrain.header.width - 1) * 4, newHeight = (projected.value->terrain.header.height - 1) * 4;
@@ -161,18 +174,17 @@ Result<MapDataEditSession::PreparedTerrainResizeEdit> MapDataEditSession::Prepar
     const auto& shadow = resizeState_ ? *TerrainHistoryShadow() : resources.SourceShadow();
     if (shadow.name != "war3map.shd" || (shadow.present ? shadow.bytes.size() != oldCells : !shadow.bytes.empty()))
         return fail("TERRAIN_RESIZE_SHADOW_SHAPE", "真实SHD来源或当前typed阴影状态与扩裁前尺寸不一致。");
-    std::size_t bytes = projected.value->preparationBytes, work = projected.value->preparationWork;
+    std::size_t bytes = projected.value->preparationBytes, work = inputWork + projected.value->preparationWork;
     const auto reserve = [&](std::size_t count, std::size_t element = 1) {
         if (bytes > limits.maximumCandidateBytes || (element && count > (limits.maximumCandidateBytes - bytes) / element)) return false;
         bytes += count * element; return true;
     };
-    if (terrain_->vertices.size() > limits.maximumWork - work
-        || oldCells > (limits.maximumWork - work - terrain_->vertices.size()) / 4
-        || newCells > (limits.maximumWork - work - terrain_->vertices.size() - oldCells * 4) / 5
+    if (oldCells > (limits.maximumWork - work) / 4
+        || newCells > (limits.maximumWork - work - oldCells * 4) / 5
         || !reserve(resources.CaptureBudgetBytes()) || !reserve(oldCells, 5) || !reserve(newCells, 7)
         || !reserve(rawSettings->size(), 8) || !reserve(specialDoodads_->size(), sizeof(SpecialDoodadPlacement) * 4))
         return fail("TERRAIN_RESIZE_BUDGET", "扩裁的规则、网格、通行分层、阴影和撤销累计超过预算。");
-    work += terrain_->vertices.size() + oldCells * 4 + newCells * 5;
+    work += oldCells * 4 + newCells * 5;
     PreparedTerrainResizeEdit prepared;
     prepared.before_ = terrain_; prepared.beforeResize_ = resizeState_;
     prepared.after_ = std::make_shared<const TerrainGridSnapshot>(std::move(projected.value->terrain));

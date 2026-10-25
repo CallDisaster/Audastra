@@ -102,6 +102,14 @@ inline void AtomicResizeAndHistory() {
     const auto originalUnits = fixture.Member("war3mapUnits.doo"), originalDoodads = fixture.Member("war3map.doo");
     const auto sourceTerrain = fixture.edits->Terrain();
     const auto owner = Take(TerrainResizeEditService::Capture(*fixture.archive, *fixture.edits, fixture.gameRoot));
+    TerrainResizeLimits sourceOnly;
+    sourceOnly.maximumWork = owner.CaptureWork() * 2 + sourceTerrain->vertices.size();
+    const auto tooLittleWork = fixture.edits->PrepareTerrainResizeEdit(owner, Intent(-32, 0, 32, 32), sourceOnly);
+    Require(!tooLittleWork.Succeeded() && HasCode({tooLittleWork.diagnostics}, "TERRAIN_RESIZE_BUDGET"),
+        "owner and geometry consume one aggregate work budget before candidate allocation");
+    sourceOnly = {}; sourceOnly.maximumCandidateBytes = owner.CaptureBudgetBytes();
+    Require(!fixture.edits->PrepareTerrainResizeEdit(owner, Intent(-32, 0, 32, 32), sourceOnly).Succeeded(),
+        "owner cannot leave zero candidate memory and still allocate geometry");
     const auto prepared = Take(fixture.edits->PrepareTerrainResizeEdit(owner, Intent(-32, 0, 32, 32)));
     Require(prepared.RetainedCommandBytes() > 0, "resize retains full reversible material");
     const auto revision = fixture.edits->Revision();
