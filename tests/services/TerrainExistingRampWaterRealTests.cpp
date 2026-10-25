@@ -178,7 +178,7 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
 }
 static void CheckRealPointRampSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
-    const std::filesystem::path& game, bool straight) {
+    const std::filesystem::path& game, bool straight, bool connected = false) {
     const auto originalTerrain = *Take(ParseMapTerrain(Take(original.ReadMember("war3map.w3e")))).Snapshot();
     Require(originalTerrain.header.width == 65 && originalTerrain.header.height == 65,
         "corner ramp uses the playable original 64-cell map");
@@ -193,7 +193,8 @@ static void CheckRealPointRampSave(const MapArchiveSession& original,
     for (const bool wet : {false, true}) for (const int dx : {-1, 1}) for (const int dy : {-1, 1}) {
         const int nx = straight ? (dx < 0 ? dy : 0) : dx;
         const int ny = straight ? (dx > 0 ? dy : 0) : dy;
-        const auto prefix = straight ? (wet ? "playable-wet-straight-ramp-" : "playable-straight-ramp-")
+        const auto prefix = connected ? (wet ? "playable-wet-connected-straight-ramp-" : "playable-connected-straight-ramp-")
+            : straight ? (wet ? "playable-wet-straight-ramp-" : "playable-straight-ramp-")
             : (wet ? "playable-wet-corner-ramp-" : "playable-corner-ramp-");
         const auto scenario = directory / (std::string(prefix)
             + (dx > 0 ? "east-" : "west-") + (dy > 0 ? "north" : "south"));
@@ -221,6 +222,8 @@ static void CheckRealPointRampSave(const MapArchiveSession& original,
                 vertex.textureAndFlagsRaw |= 0x40;
             }
         }
+        if (connected) for (int step = 0; step < 3; ++step)
+            before.vertices[std::size_t(32 + nx + step * ny) * 65 + 32 - ny + step * nx].textureAndFlagsRaw |= 0x10;
         RefreshTerrainDerived(before, 0, 0, 65, 65);
         auto after = before;
         if (straight) for (int step = 0; step < 3; ++step)
@@ -254,7 +257,8 @@ static void CheckRealPointRampSave(const MapArchiveSession& original,
             brush.value = create;
             const auto candidate = Take(straight
                 ? PrepareTerrainStraightRampStroke(currentTerrain, *rules.WaterBrushRules(), brush,
-                    std::span(&point, 1), doodads, rules.WaterSpecialShapes())
+                    std::span(&point, 1), doodads, rules.WaterSpecialShapes(), {},
+                    connected ? TerrainStraightRampAlgorithm::Connected : TerrainStraightRampAlgorithm::Independent)
                 : PrepareTerrainCornerRampStroke(currentTerrain, *rules.WaterBrushRules(), brush,
                     std::span(&point, 1), doodads, rules.WaterSpecialShapes()));
             const auto& expectedTerrain = create ? afterBytes : beforeBytes;
@@ -279,7 +283,8 @@ static void CheckRealPointRampSave(const MapArchiveSession& original,
             }
             Require(Take(Sha256File(current.SourcePath())) == current.SourceSha256()
                 && Take(Sha256File(original.SourcePath())) == original.SourceSha256(), "corner keeps every source immutable");
-            std::cout << (straight ? "playable_straight_ramp_save_passed wet=" : "playable_corner_ramp_save_passed wet=")
+            std::cout << (connected ? "playable_connected_straight_ramp_save_passed wet="
+                : straight ? "playable_straight_ramp_save_passed wet=" : "playable_corner_ramp_save_passed wet=")
                 << wet << " dx=" << dx << " dy=" << dy << " normal_x=" << nx << " normal_y=" << ny << " create=" << create
                 << " source_sha256=" << current.SourceSha256() << " candidate_sha256=" << saved.candidateSha256
                 << " w3e_sha256=" << Take(Sha256(expectedTerrain)) << " wpm_sha256=" << Take(Sha256(create ? expectedWpm : originalWpm))
@@ -298,5 +303,10 @@ void CheckRealStraightRampSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game) {
     CheckRealPointRampSave(original, directory, tool, game, true);
+}
+void CheckRealConnectedStraightRampSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game) {
+    CheckRealPointRampSave(original, directory, tool, game, true, true);
 }
 } // namespace War3Map::TerrainSaveTests

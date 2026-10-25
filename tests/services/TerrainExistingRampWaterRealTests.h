@@ -16,4 +16,7 @@ void CheckRealCornerRampSave(const MapArchiveSession& original,
 void CheckRealStraightRampSave(const MapArchiveSession& original,
     const std::filesystem::path& directory, const std::filesystem::path& tool,
     const std::filesystem::path& game);
+void CheckRealConnectedStraightRampSave(const MapArchiveSession& original,
+    const std::filesystem::path& directory, const std::filesystem::path& tool,
+    const std::filesystem::path& game);
 }
