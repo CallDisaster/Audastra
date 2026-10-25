@@ -500,7 +500,7 @@ Result<ArchiveSaveResult> WriteArchiveWithGuard(
         FileHandle output(CreateFileW(temporary.c_str(), GENERIC_READ | GENERIC_WRITE | DELETE, 0,
             nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!output.Valid()) return Result<ArchiveSaveResult>::Failure(
-            "MapArchiveSession", "TEMP_CREATE_FAILED", "无法独占创建临时候选。");
+            "MapArchiveSession", "TEMP_CREATE_FAILED", "无法独占创建临时候选（Windows 错误 " + std::to_string(GetLastError()) + "）。");
         output.RemoveOnClose();
         auto actualTemporary = FinalPath(output.Get());
         if (!actualTemporary.Succeeded() || !SamePath(actualTemporary.value->parent_path(), parent)) {
