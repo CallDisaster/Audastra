@@ -126,7 +126,7 @@ void WetTypedHistoryPreservesVersionsAndExactColdRecovery() {
         "FTJ8 explicitly preserves mixed corner algorithms and intent identity");
     Require(!TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
         f.members[1].data, legacy, *f.edits, f.game).Succeeded(), "old wet record cannot gain algorithm2 from matching final bytes");
-    legacy.strokes[0].intent.cornerRampAlgorithm = static_cast<TerrainCornerRampAlgorithm>(4);
+    legacy.strokes[0].intent.cornerRampAlgorithm = static_cast<TerrainCornerRampAlgorithm>(255);
     Require(!EncodeTerrainStrokeJournal(legacy).Succeeded(), "unknown corner algorithm cannot be persisted");
     auto changedRules = journal; changedRules.strokes[0].rulesSha256.assign(64, 'f');
     Require(!TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,

@@ -52,7 +52,7 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
         return Result<TerrainCornerRampPlan>::Failure("MapTerrain.Edit", code, text);
     };
     if (algorithm != TerrainCornerRampAlgorithm::DryOnly && algorithm != TerrainCornerRampAlgorithm::WetTerrain
-        && algorithm != TerrainCornerRampAlgorithm::NativeCorners)
+        && algorithm != TerrainCornerRampAlgorithm::NativeCorners && algorithm != TerrainCornerRampAlgorithm::NativeWetCorners)
         return fail("TERRAIN_CORNER_RAMP_ALGORITHM", "拐角坡道算法版本未知。");
     if (!Consistent(terrain) || terrain.header.version != 11 || terrain.header.width > 2049 || terrain.header.height > 2049)
         return fail("TERRAIN_CORNER_RAMP_LAYOUT", "拐角坡道需要完整的经典W3E v11网格。");
@@ -71,7 +71,7 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
     int dx = u - cellX == 0.25 ? 1 : -1, dy = v - cellY == 0.25 ? 1 : -1;
     int hx = cellX + (dx < 0), hy = cellY + (dy < 0);
     bool inner = false;
-    if (algorithm == TerrainCornerRampAlgorithm::NativeCorners) {
+    if (algorithm == TerrainCornerRampAlgorithm::NativeCorners || algorithm == TerrainCornerRampAlgorithm::NativeWetCorners) {
         const auto level = [&](int x, int y) { return int(terrain.vertices[std::size_t(y) * header.width + x].CliffLevel()); };
         const int reference = level(hx, hy);
         // 5A8FD0以光标四分区的参考角求两轴/对角差。内角是参考低端、
@@ -96,11 +96,12 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
         const auto index = std::uint32_t((hy + y * dy) * int(header.width) + hx + x * dx);
         const auto& vertex = terrain.vertices[index];
         if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw || vertex.UnknownWaterFlags()
-            || ((algorithm == TerrainCornerRampAlgorithm::DryOnly || inner) && vertex.HasWater())
+            || ((algorithm == TerrainCornerRampAlgorithm::DryOnly
+                || (inner && algorithm != TerrainCornerRampAlgorithm::NativeWetCorners)) && vertex.HasWater())
             || vertex.IsBoundary() || vertex.IsMapEdge() || vertex.groundHeightRaw > 0x3fff
             || vertex.groundHeightRaw != high.groundHeightRaw
             || vertex.CliffLevel() != high.CliffLevel() - ((inner ? x && y : x || y) ? 1 : 0))
-            return fail("TERRAIN_CORNER_RAMP_STEP", "拐角坡道需要等原始地高的一级纯内角或外角，不能含边界、未知位、内角水或旧算法不支持的水。");
+            return fail("TERRAIN_CORNER_RAMP_STEP", "拐角坡道需要等原始地高的一级纯内角或外角，不能含边界、未知位或旧算法不支持的水。");
         plan.vertexIndices[std::size_t(x * 3 + y)] = index; rampCount += vertex.IsRamp();
     }
     if (rampCount != 0 && rampCount != 9)

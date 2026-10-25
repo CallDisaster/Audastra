@@ -292,7 +292,7 @@ public:
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainCornerRampEdit(const TerrainPathingResources& resources,
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
         bool followDoodads = true, const TerrainWaterBrushLimits& limits = {},
-        TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeCorners) const;
+        TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeWetCorners) const;
     [[nodiscard]] Result<PreparedTerrainEdit> PrepareTerrainStraightRampEdit(const TerrainPathingResources& resources,
         const TerrainBrush& brush, std::span<const TerrainStrokePoint> points, bool followDoodads = false,
         const TerrainWaterBrushLimits& limits = {},

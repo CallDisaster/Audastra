@@ -39,7 +39,7 @@ struct TerrainRampPlan {
 
 struct TerrainCornerRampPlan {
     // x外/y内，从原版选出的高端起点向两个低端方向各延伸两格。
-    // 外角九点为1高8低；干内角从对侧高端出发，九点为5高4低。
+    // 外角九点为1高8低；内角从对侧高端出发，九点为5高4低。
     std::array<std::uint32_t, 9> vertexIndices{};
     std::uint32_t highX = 0, highY = 0;
     int directionX = 0, directionY = 0;
@@ -55,14 +55,14 @@ struct TerrainCornerRampPlan {
 // live合法性和补角闭包由下面的owned事务核对，预览不授予提交资格。
 [[nodiscard]] Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
-    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeCorners);
+    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeWetCorners);
 // 新模式只接受默认brush的kind/value替换，拒绝未取证的paint/size组合。
 [[nodiscard]] bool IsCanonicalTerrainCornerRampBrush(const TerrainBrush& brush) noexcept;
 [[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainCornerRampStroke(
     const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainBrush& brush,
     std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
     std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {},
-    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeCorners);
+    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeWetCorners);
 
 // 基于原始层级与 ramp 位计算中点高度偏移。无可识别的插值时返回空。
 // 渲染抬升与原始地形采样共用；已经抬升的显示副本不能再次累加。

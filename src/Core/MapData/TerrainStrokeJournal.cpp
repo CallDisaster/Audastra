@@ -104,7 +104,8 @@ bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
         return intent.points.size() == 1 && IsCanonicalTerrainCornerRampBrush(brush)
             && (intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::DryOnly
                 || intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::WetTerrain
-                || intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners)
+                || intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners
+                || intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners)
             && Sha(stroke.rulesSha256) && !stroke.cliffEnforceWaterLimits;
     if (!intent.waterBrush && brush.kind == TerrainBrushKind::StraightRamp)
         return intent.points.size() == 1 && IsCanonicalTerrainStraightRampBrush(brush)
@@ -225,6 +226,9 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
         const bool nativeCorners = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp
                 && stroke.intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners; });
+        const bool nativeWetCorners = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp
+                && stroke.intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners; });
         const bool bounds = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.bounds.has_value(); });
         const bool palettes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
@@ -244,8 +248,8 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
             [](const auto& stroke) { return stroke.intent.blockPaste.has_value(); });
         const bool resizes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.resize.has_value(); });
-        // FTJE由保存站history外层占用；新内角typed正文使用FTJF，不复用旧版本。
-        const unsigned version = resizes ? 16 : nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
+        // FTJE/H/I由保存站history外层占用；含水内角typed正文独立使用FTJJ。
+        const unsigned version = nativeWetCorners ? 19 : resizes ? 16 : nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
             : cornerRamps ? 4 : nativeWater ? 3 : nativeCliffs ? 2 : 1;
         wire.Number(0x004a5446u | ((version >= 10 ? std::uint32_t('A') + version - 10 : std::uint32_t('0') + version) << 24), 4);
         wire.Text(journal.sourceSha256);
@@ -347,7 +351,7 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto magic = reader.Number(4);
         if ((magic & 0x00ffffffu) != 0x004a5446u
-            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F' && (magic >> 24) != 'G'
+            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F' && (magic >> 24) != 'G' && (magic >> 24) != 'J'
                 && ((magic >> 24) < '1' || (magic >> 24) > '9')))
             return Failed<TerrainStrokeJournal>();
         const auto version = (magic >> 24) >= 'A' ? static_cast<unsigned>((magic >> 24) - 'A') + 10u
@@ -455,6 +459,8 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
                     ? static_cast<TerrainCornerRampAlgorithm>(reader.Number(1)) : TerrainCornerRampAlgorithm::DryOnly;
                 if (intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners && version < 15)
                     return Failed<TerrainStrokeJournal>();
+                if (intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners && version < 19)
+                    return Failed<TerrainStrokeJournal>();
             }
             brush.shape = static_cast<TerrainBrushShape>(reader.Number(1));
             brush.radius = static_cast<std::uint32_t>(reader.Number(4)); brush.groundTexture = reader.Text(4);
@@ -533,6 +539,10 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             return Failed<TerrainStrokeJournal>();
         if (version == 16 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.resize.has_value(); }))
+            return Failed<TerrainStrokeJournal>();
+        if (version == 19 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp
+                && stroke.intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners; }))
             return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }

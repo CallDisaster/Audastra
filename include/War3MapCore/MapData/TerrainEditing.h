@@ -50,8 +50,8 @@ enum class TerrainBrushKind {
 enum class TerrainBrushShape { Circle, Square };
 
 // 旧FTJ4–7固定为干地算法；新命令显式记录算法，不能升级旧历史的接受域。
-// 1/2永久保留旧高端外角语义；3按原版选点符号处理受限一级干内角/纯外角。
-enum class TerrainCornerRampAlgorithm : std::uint8_t { DryOnly = 1, WetTerrain = 2, NativeCorners = 3 };
+// 1/2保留旧高端外角语义；3处理受限一级干内角/纯外角；4允许同纯内角及halo含水。
+enum class TerrainCornerRampAlgorithm : std::uint8_t { DryOnly = 1, WetTerrain = 2, NativeCorners = 3, NativeWetCorners = 4 };
 
 // FTJB 固定独立直坡；连接模式须由新意图显式选择，不能扩大旧历史的接受域。
 enum class TerrainStraightRampAlgorithm : std::uint8_t { Independent = 1, Connected = 2 };

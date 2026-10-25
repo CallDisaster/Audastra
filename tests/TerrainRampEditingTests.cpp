@@ -277,6 +277,7 @@ void NativeCornerBlightOnlyUsesRampFinisher() {
 } // namespace
 
 #include "TerrainInnerCornerRampCases.h"
+#include "TerrainWetInnerCornerRampCases.h"
 
 int main() {
     try {
@@ -286,7 +287,8 @@ int main() {
         NativeCornerBlightOnlyUsesRampFinisher();
         War3Map::TerrainConnectedStraightRampCases::Run();
         War3Map::TerrainInnerCornerRampCases::Check();
-        std::cout << "TerrainRampEditing: 10 scenario groups passed\n";
+        War3Map::TerrainWetInnerCornerRampCases::Check();
+        std::cout << "TerrainRampEditing: 11 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "TerrainRampEditing: " << error.what() << '\n';

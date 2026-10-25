@@ -639,12 +639,13 @@ private:
                     const int sx = (int(nx) - int(plan.highX)) * plan.directionX;
                     const int sy = (int(ny) - int(plan.highY)) * plan.directionY;
                     const bool lower = plan.inner ? sx > 0 && sy > 0 : sx > 0 || sy > 0;
-                    if (((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly || plan.inner) && vertex.HasWater())
+                    if (((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly
+                            || (plan.inner && brush_.cornerAlgorithm != TerrainCornerRampAlgorithm::NativeWetCorners)) && vertex.HasWater())
                         || vertex.IsBoundary() || vertex.IsMapEdge()
                         || vertex.groundHeightRaw != high.groundHeightRaw
                         || vertex.CliffTextureIndex() != high.CliffTextureIndex()
                         || vertex.CliffLevel() != high.CliffLevel() - (lower ? 1 : 0))
-                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、同悬崖材质的一级纯台阶或纯拐角，不能相交边界、其它方向、内角水或旧算法不支持的水。");
+                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、同悬崖材质的一级纯台阶或纯拐角，不能相交边界、其它方向或旧算法不支持的水。");
                     if (!connected) {
                         if (vertex.IsRamp() != (selected(nx, ny) && *brush_.cornerRamp))
                             reject("DOMAIN", "独立坡道的实际脏块及halo不能相交其它旧坡道。");
@@ -710,7 +711,8 @@ private:
             const auto x = additions[i] % width_, y = additions[i] / width_; auto next = Read(x, y);
             next.textureAndFlagsRaw |= 0x10; Commit(x, y, next);
         }
-        if (connected || brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::NativeCorners) {
+        if (connected || brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::NativeCorners
+            || brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners) {
             // 新内角同样验证补角后的完整请求；移除不能被闭包重新补R后假报成功。
             // 旧1/2算法保持原检查顺序，typed历史不会被新合同重新解释。
             checkDomain(false); checkLiveCells(false);
