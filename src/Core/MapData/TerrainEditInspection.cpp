@@ -233,12 +233,36 @@ Status ValidateTerrainSettingsSourceBaseline(const MapDataEditSession& edits,
     }
 }
 
+void CopyTerrainPathingIndependentSettings(MapSettings& target, const MapSettings& source) {
+    target.mapName = source.mapName;
+    target.author = source.author;
+    target.description = source.description;
+    target.recommendedPlayers = source.recommendedPlayers;
+    target.flags = (target.flags & ~kMapFlagTerrainFog) | (source.flags & kMapFlagTerrainFog);
+    target.environment.fogStyle = source.environment.fogStyle;
+    target.environment.fogStart = source.environment.fogStart;
+    target.environment.fogEnd = source.environment.fogEnd;
+    target.environment.fogDensity = source.environment.fogDensity;
+    target.environment.fogColor = source.environment.fogColor;
+    target.environment.weather = source.environment.weather;
+    target.environment.soundEnvironment = source.environment.soundEnvironment;
+    target.environment.lightEnvironment = source.environment.lightEnvironment;
+    target.environment.waterColor = source.environment.waterColor;
+    for (std::size_t i = 0; i < std::min(target.players.size(), source.players.size()); ++i) {
+        target.players[i].name = source.players[i].name;
+        target.players[i].controller = source.players[i].controller;
+        target.players[i].race = source.players[i].race;
+    }
+    for (std::size_t i = 0; i < std::min(target.forces.size(), source.forces.size()); ++i)
+        target.forces[i].name = source.forces[i].name;
+}
+
 Status ValidateTerrainSettingsPathingChange(const std::optional<std::vector<std::byte>>& before,
     const std::optional<std::vector<std::byte>>& after) {
     if (before == after) return Status::Ok();
     const auto reject = [] {
         return Status::Failure("MapData.Edit", "TERRAIN_SETTINGS_PATHING_CHANGED",
-            "地形同次保存仅允许修改地图名称、作者、说明和建议人数；范围及其它设置请分开保存。");
+            "地形同次保存支持地图说明、环境、玩家名称/控制者/种族及势力名称；范围、起点、玩家结构和其它设置须使用各自的类型化操作。");
     };
     // 先限制实际输入，再解析两份可变长设置。此门不扩大通常设置保存的容量。
     constexpr std::size_t maximumBytes = 1024u * 1024u;
@@ -252,12 +276,21 @@ Status ValidateTerrainSettingsPathingChange(const std::optional<std::vector<std:
         const auto originalWire = original.value->Serialize(), currentWire = current.value->Serialize();
         if (!originalWire.Succeeded() || !originalWire.value || *originalWire.value != *before
             || !currentWire.Succeeded() || !currentWire.value || *currentWire.value != *after) return reject();
-        // 从当前完整结构只替回四个说明字段，再与来源全文比较；不列举可能遗漏的
-        // 通行字段，也不容许未知数据、浮点bit变化或其它字段被规范化后静默通过。
-        current.value->mapName = original.value->mapName;
-        current.value->author = original.value->author;
-        current.value->description = original.value->description;
-        current.value->recommendedPlayers = original.value->recommendedPlayers;
+        if (current.value->players.size() != original.value->players.size()
+            || current.value->forces.size() != original.value->forces.size()) return reject();
+        const auto fogStyle = current.value->environment.fogStyle;
+        const bool enabledFog = (current.value->flags & kMapFlagTerrainFog)
+            && !(original.value->flags & kMapFlagTerrainFog);
+        if ((fogStyle != original.value->environment.fogStyle || enabledFog)
+            && (fogStyle < 0 || fogStyle > 2)) return reject();
+        for (std::size_t i = 0; i < current.value->players.size(); ++i) {
+            const auto& old = original.value->players[i];
+            const auto& next = current.value->players[i];
+            if ((next.controller != old.controller && !KnownPlayerController(next.controller))
+                || (next.race != old.race && !KnownPlayerRace(next.race))) return reject();
+        }
+        // 只替回明确列出的字段后与来源全文比较；不规范化几何、起点、未知位或尾部。
+        CopyTerrainPathingIndependentSettings(*current.value, *original.value);
         const auto normalized = current.value->Serialize();
         return normalized.Succeeded() && normalized.value && *normalized.value == *before
             ? Status::Ok() : reject();

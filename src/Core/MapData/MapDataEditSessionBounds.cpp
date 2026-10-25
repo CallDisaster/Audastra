@@ -131,15 +131,12 @@ Status MapDataEditSession::RestoreTerrainJournalDescriptions(const MapDataEditSe
         || !settings.value->FullyParsed() || !descriptions.value->FullyParsed()
         || settings.value->formatVersion != 25 || descriptions.value->formatVersion != 25)
         return Refuse("TERRAIN_JOURNAL_OUTPUT_MISMATCH", "工程说明合并需要完整经典W3I。");
-    settings.value->mapName = descriptions.value->mapName;
-    settings.value->author = descriptions.value->author;
-    settings.value->description = descriptions.value->description;
-    settings.value->recommendedPlayers = descriptions.value->recommendedPlayers;
+    CopyTerrainPathingIndependentSettings(*settings.value, *descriptions.value);
     auto output = settings.value->Serialize();
     if (!output.Succeeded() || !output.value) return {output.diagnostics};
     // 比较整个目标，禁止raw geometry或任何未记录字段混入这个窄域桥。
     if (*output.value != *raw)
-        return Refuse("TERRAIN_JOURNAL_OUTPUT_MISMATCH", "工程W3I包含前向记录和四说明字段之外的变化，未安装候选。");
+        return Refuse("TERRAIN_JOURNAL_OUTPUT_MISMATCH", "工程W3I包含前向记录和已支持说明/环境/玩家字段之外的变化，未安装候选。");
     const auto checked = ValidateTerrainSettingsPathingChange(current, output.value);
     if (!checked.Succeeded()) return checked;
     std::vector<MemberChange> changes;

@@ -218,7 +218,7 @@ public:
     [[nodiscard]] Result<TerrainJournalDraftCost> MeasureTerrainJournalDraft(
         std::size_t maximumBytes, std::size_t maximumWork) const;
     [[nodiscard]] bool MatchesTerrainJournalDraft(const MapDataEditSession& expected) const noexcept;
-    // 前向恢复完成后只合并raw草稿的四说明字段；不接受草稿中的范围/其它设置。
+    // 类型化恢复后只合并raw草稿中已知不改变通行的说明/环境/玩家字段；几何仍须类型化命令。
     // 宿主仍须以MatchesTerrainJournalDraft逐字比较全部输出后才能安装候选。
     [[nodiscard]] Status RestoreTerrainJournalDescriptions(const MapDataEditSession& expected,
         std::size_t maximumBytes, std::size_t maximumWork);

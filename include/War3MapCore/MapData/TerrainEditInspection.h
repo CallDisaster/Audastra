@@ -10,6 +10,7 @@
 namespace War3Map::MapData {
 
 class MapDataEditSession;
+struct MapSettings;
 
 // 只借用给定原字节，与当前会话绑定的 W3I 原始基线比较；不读归档、不解析、不授予来源资格。
 // exists=false 时 bytes 必须为空；实际空成员与缺失不同。当前编辑字节须由调用方另行核对。
@@ -17,8 +18,12 @@ class MapDataEditSession;
 [[nodiscard]] Status ValidateTerrainSettingsSourceBaseline(
     const MapDataEditSession& edits, bool exists, std::span<const std::byte> bytes);
 
-// 地形与地图说明同次保存的窄域：完整、可精确往返的经典W3I v25只可改变
-// 名称、作者、说明和建议人数。可玩范围、玩家、环境及其余字段须逐字不变。
+// 只复制已知不改变地形通行的字段，不解析、不授予保存或恢复资格。
+// 玩家/势力数与编号、起点和其它结构仍由调用方的完整字节比较核验。
+void CopyTerrainPathingIndependentSettings(MapSettings& target, const MapSettings& source);
+
+// 地形同次保存的窄域：完整、可精确往返的经典W3I v25可改变说明、已知环境、
+// 同数量同编号玩家的名称/控制者/种族及势力名称。几何、起点和其它字段逐字不变。
 // 相同原字（包括同为缺失）不解析；不同原字的两成员各限1MiB，未知尾部拒绝。
 [[nodiscard]] Status ValidateTerrainSettingsPathingChange(
     const std::optional<std::vector<std::byte>>& before,

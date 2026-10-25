@@ -595,6 +595,8 @@ void ExactCaptureDoesNotDependOnListfile() {
     Require(!capture.Members()[1].original && !capture.Members()[2].original, "other exact names are proven missing");
 }
 
+#include "TerrainSettingsCompatibilityCases.h"
+
 } // namespace
 
 int main() {
@@ -610,7 +612,9 @@ int main() {
         AggregateBudgetsAndIdentityUseFinalOwnedBytes();
         ChangedOrReplacedSourceIsRejectedAndSnapshotOwnsData();
         ExactCaptureDoesNotDependOnListfile();
-        std::cout << "terrain-edit-inspection: 11 scenario groups passed\n";
+        TerrainSettingsKnownFieldsComposeAndRestoreWithoutGeometry();
+        TerrainSettingsRejectStructuralAndUnknownChangesAtomically();
+        std::cout << "terrain-edit-inspection: 13 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "terrain-edit-inspection: " << error.what() << '\n';
