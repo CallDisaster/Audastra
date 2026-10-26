@@ -199,6 +199,65 @@ void TestGeneratedText() {
     Require(Contains(text, "AudastraUIShow(udg_AUI_cast_root, udg_AUIV_cast_shown)"), "显示绑定到布尔数值");
 }
 
+// 预览里没写贴图的部分是透明的：游戏里不能留下没设贴图的 BACKDROP（会画成绿块）。
+void TestUntexturedFrames() {
+    UiDescription d;
+    d.id = "plain";
+    d.label = "无贴图";
+    UiFrame panel;
+    panel.id = "panel";
+    panel.type = UiFrameType::Backdrop;
+    panel.anchors = {Anchor(FramePoint::Center, UiAnchorTarget::Screen, FramePoint::Center)};
+    panel.width = 0.2;
+    panel.height = 0.1;
+    UiFrame pick;
+    pick.id = "pick";
+    pick.type = UiFrameType::Button;
+    pick.anchors = {Anchor(FramePoint::Center, UiAnchorTarget::Parent, FramePoint::Center)};
+    pick.text = "选择";
+    UiFrame icon;
+    icon.id = "icon";
+    icon.type = UiFrameType::Button;
+    icon.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, FramePoint::TopLeft)};
+    icon.texture = "ReplaceableTextures\\CommandButtons\\BTNHeal";
+    UiFrame bar;
+    bar.id = "bar";
+    bar.type = UiFrameType::Bar;
+    bar.anchors = {Anchor(FramePoint::Bottom, UiAnchorTarget::Parent, FramePoint::Bottom)};
+    bar.width = 0.18;
+    bar.height = 0.01;
+    UiFrame tinted = bar;
+    tinted.id = "tinted";
+    tinted.texture = "ReplaceableTextures\\TeamColor\\TeamColor00";
+    panel.children = {pick, icon, bar, tinted};
+    d.frames = {panel};
+
+    const auto plan = GenerateUiTriggers(d, {});
+    Require(plan.Succeeded(), "无贴图描述生成：" + First(plan.diagnostics));
+    const std::string& text = plan.value->featureText;
+    Require(Contains(text, "SetVariable(udg_AUI_plain_panel, AudastraUICreateFrame(\"AudastraPanel\", "), "没贴图的底板建成普通框架：\n" + text);
+    Require(Contains(text, "SetVariable(udg_AUI_plain_pick, AudastraUICreateFrame(\"AudastraClickButton\", ")
+            && Contains(text, "AudastraUISetText(AudastraUIFindFrame(\"AudastraClickButtonText\", "),
+        "没贴图的按钮是透明点击层，文字在它自己的子框架上：\n" + text);
+    Require(Contains(text, "SetVariable(udg_AUI_plain_icon, AudastraUICreateFrame(\"AudastraButton\", ")
+            && Contains(text, "AudastraUISetTexture(AudastraUIFindFrame(\"AudastraButtonBackdrop\", ")
+            && Contains(text, "AudastraUISetTexture(AudastraUIFindFrame(\"AudastraButtonPushed\", ")
+            && Contains(text, "\"ReplaceableTextures\\\\CommandButtons\\\\BTNHeal.blp\""),
+        "有贴图没写按下贴图时按下也用同一张：\n" + text);
+    Require(Contains(text, "SetVariable(udg_AUI_plain_bar, AudastraUICreateFrame(\"AudastraBarClear\", ")
+            && Contains(text, "AudastraUIShow(AudastraUIFindFrame(\"AudastraBarClearFill\", "),
+        "没有底图和填充贴图的进度条不画底层，填充藏起来：\n" + text);
+    Require(Contains(text, "AudastraUISetTexture(AudastraUIFindFrame(\"AudastraBarClearFill\", ")
+            && !Contains(text, "AudastraUICreateFrame(\"AudastraBar\", "),
+        "有填充贴图的进度条仍然不画底层：\n" + text);
+
+    // 状态里会换贴图的按钮保留底图子框架。
+    d.states = {UiState{"lit", "点亮", {UiStateOverride{"pick", "UI\\Widgets\\Glues\\GlueScreen-Button1-BackdropBackground", std::nullopt, std::nullopt, std::nullopt}}}};
+    const auto lit = GenerateUiTriggers(d, {});
+    Require(lit.Succeeded() && Contains(lit.value->featureText, "SetVariable(udg_AUI_plain_pick, AudastraUICreateFrame(\"AudastraButton\", "),
+        "状态里有贴图的按钮用带底图的模板：\n" + (lit.Succeeded() ? lit.value->featureText : First(lit.diagnostics)));
+}
+
 void TestAppliedThroughSharedChain() {
     Fixture f;
     UiTriggerOptions options;
@@ -291,7 +350,8 @@ void TestRefusalsAndTemplates() {
     Require(fdf.Succeeded(), "基础模板解析：" + First(fdf.diagnostics));
     FrameLibrary library;
     library.AddParsed(*fdf.value, "map");
-    for (const auto* name : {"AudastraPanel", "AudastraBackdrop", "AudastraText", "AudastraBar", "AudastraButton"}) {
+    for (const auto* name : {"AudastraPanel", "AudastraBackdrop", "AudastraText", "AudastraBar", "AudastraBarClear", "AudastraButton",
+             "AudastraClickButton"}) {
         Require(library.FindTemplate(name).has_value(), std::string("基础模板 ") + name);
     }
     Require(ParseToc(UiTemplateTocText()) == std::vector<std::string>{std::string(kUiTemplateFdfMember)}, "基础 toc 列出基础 fdf");
@@ -428,6 +488,7 @@ int main() {
     SetConsoleOutputCP(CP_UTF8);
     try {
         TestGeneratedText();
+        TestUntexturedFrames();
         TestAppliedThroughSharedChain();
         TestRefusalsAndTemplates();
         TestScriptLibrary();

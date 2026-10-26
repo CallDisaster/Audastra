@@ -196,7 +196,22 @@ private:
 
     // 文字所在的框架：按钮的文字在模板里的子框架上。
     [[nodiscard]] std::string TextTarget(const FrameInfo& info) const {
-        return info.frame->type == UiFrameType::Button ? Child(info, "AudastraButtonText") : Self(info);
+        if (info.frame->type != UiFrameType::Button) return Self(info);
+        return Child(info, ClickButton(info) ? "AudastraClickButtonText" : "AudastraButtonText");
+    }
+
+    // 编辑器预览里没写贴图的部分是透明的；游戏里没设贴图的 BACKDROP 画成绿块。
+    // 所以从头到尾都不会有贴图的框架改用不带底图的模板：底板建成普通框架，按钮建成透明点击层，进度条底层不画底图。
+    [[nodiscard]] bool HasTexture(const FrameInfo& info) const {
+        if (!info.frame->texture.empty() || !info.frame->pushed.empty()) return true;
+        const auto found = overrides_.find(info.frame->id);
+        return found != overrides_.end() && found->second.contains(Property::Texture);
+    }
+    [[nodiscard]] bool ClickButton(const FrameInfo& info) const {
+        return info.frame->type == UiFrameType::Button && !HasTexture(info);
+    }
+    [[nodiscard]] bool ClearBar(const FrameInfo& info) const {
+        return info.frame->type == UiFrameType::Bar && info.frame->background.empty();
     }
 
     [[nodiscard]] bool IsSimpleTemplate(const UiFrame& frame) {
@@ -243,10 +258,10 @@ private:
         };
         switch (frame.type) {
         case UiFrameType::Panel: created = classic("AudastraPanel"); break;
-        case UiFrameType::Backdrop: created = classic("AudastraBackdrop"); break;
+        case UiFrameType::Backdrop: created = classic(HasTexture(info) ? "AudastraBackdrop" : "AudastraPanel"); break;
         case UiFrameType::Text: created = classic("AudastraText"); break;
-        case UiFrameType::Button: created = classic("AudastraButton"); break;
-        case UiFrameType::Bar: created = classic("AudastraBar"); break;
+        case UiFrameType::Button: created = classic(ClickButton(info) ? "AudastraClickButton" : "AudastraButton"); break;
+        case UiFrameType::Bar: created = classic(ClearBar(info) ? "AudastraBarClear" : "AudastraBar"); break;
         case UiFrameType::Template:
             created = info.simple ? Call("AudastraUICreateSimpleFrame", {Quote(frame.templateName), parent, Context(info)})
                                   : classic(frame.templateName);
@@ -257,7 +272,9 @@ private:
 
     // 进度条用两层普通框架：框架本身是底图，子框架 AudastraBarFill 是填充，靠左对齐，按比例改宽度。
     // 不用 SIMPLESTATUSBAR：Simple 框架画在所有普通框架下面，放进普通面板会被盖住。
-    [[nodiscard]] std::string BarFill(const FrameInfo& info) const { return Child(info, "AudastraBarFill"); }
+    [[nodiscard]] std::string BarFill(const FrameInfo& info) const {
+        return Child(info, ClearBar(info) ? "AudastraBarClearFill" : "AudastraBarFill");
+    }
 
     [[nodiscard]] std::optional<double> BarWidth(const FrameInfo& info) {
         if (info.frame->width) return *info.frame->width;
@@ -373,22 +390,26 @@ private:
         return false;
     }
 
-    // 改贴图：按钮常态贴图在子框架上。expression 为贴图路径的表达式。
-    std::optional<std::string> TextureCall(const FrameInfo& info, const std::string& expression) {
+    // 改贴图：按钮常态贴图在子框架上；没写按下贴图时按下也用同一张，否则按住时露出没有贴图的按下底图。
+    // expression 为贴图路径的表达式。
+    std::optional<Lines> TextureCall(const FrameInfo& info, const std::string& expression) {
         switch (info.frame->type) {
         case UiFrameType::Backdrop:
-            return Call("AudastraUISetTexture", {Self(info), expression, "false"});
+            return Lines{Call("AudastraUISetTexture", {Self(info), expression, "false"})};
         case UiFrameType::Bar:
-            return Call("AudastraUISetTexture", {BarFill(info), expression, "false"});
-        case UiFrameType::Button:
-            return Call("AudastraUISetTexture", {Child(info, "AudastraButtonBackdrop"), expression, "false"});
+            return Lines{Call("AudastraUISetTexture", {BarFill(info), expression, "false"})};
+        case UiFrameType::Button: {
+            Lines out{Call("AudastraUISetTexture", {Child(info, "AudastraButtonBackdrop"), expression, "false"})};
+            if (info.frame->pushed.empty()) out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraButtonPushed"), expression, "false"}));
+            return out;
+        }
         default:
             Error("框架 " + info.frame->id + " 是 " + std::string(UiFrameTypeName(info.frame->type)) + "，没有贴图");
             return std::nullopt;
         }
     }
     // 游戏按完整文件名找贴图，没写扩展名时与预览一样补 .blp，否则游戏里显示成绿块。
-    std::optional<std::string> Texture(const FrameInfo& info, const std::string& path) {
+    std::optional<Lines> Texture(const FrameInfo& info, const std::string& path) {
         return TextureCall(info, Quote(EnsureTextureExtension(path)));
     }
     // 取值模板拼出的贴图：以固定文字结尾且没有扩展名时补 .blp；以取值结尾时由取值给出完整路径。
@@ -400,7 +421,7 @@ private:
     void FixedTexture(const FrameInfo& info, Lines& out) {
         const std::string& texture = info.frame->texture;
         if (texture.empty() || HasReferences(texture)) return;
-        if (auto line = Texture(info, texture)) out.push_back(*line);
+        if (auto lines = Texture(info, texture)) Append(out, *lines);
     }
 
     Lines Properties(const FrameInfo& info) {
@@ -425,6 +446,8 @@ private:
                 out.push_back(Call("AudastraUISetPoint", {fill, anchor, Self(info), anchor, "0", "0"}));
             }
             FixedTexture(info, out);
+            // 填充从头到尾都没有贴图时预览里看不见，游戏里也藏起来，不画成绿条。
+            if (!HasTexture(info)) out.push_back(Call("AudastraUIShow", {fill, "false"}));
             if (!frame.background.empty()) {
                 out.push_back(Call("AudastraUISetTexture", {Self(info), Quote(EnsureTextureExtension(frame.background)), "false"}));
             }
@@ -436,7 +459,7 @@ private:
         case UiFrameType::Button:
             FixedTexture(info, out);
             if (!frame.pushed.empty()) {
-                out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraButtonPushed"), Quote(frame.pushed), "false"}));
+                out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraButtonPushed"), Quote(EnsureTextureExtension(frame.pushed)), "false"}));
             }
             [[fallthrough]];
         case UiFrameType::Text:
@@ -583,7 +606,7 @@ private:
         }
         if (!frame.texture.empty() && HasReferences(frame.texture)) {
             if (auto expression = TextExpression(info, TextureTemplate(frame.texture))) {
-                if (auto line = TextureCall(info, *expression)) Append(out, Guarded(info, Property::Texture, {*line}));
+                if (auto lines = TextureCall(info, *expression)) Append(out, Guarded(info, Property::Texture, *lines));
             }
         }
         if (frame.type == UiFrameType::Bar && frame.value.binding) {
@@ -619,7 +642,7 @@ private:
             if (!info) continue;
             Lines statements;
             if (entry.texture) {
-                if (auto line = Texture(*info, *entry.texture)) statements.push_back(*line);
+                if (auto lines = Texture(*info, *entry.texture)) Append(statements, *lines);
             }
             if (entry.text) {
                 if (info->frame->type != UiFrameType::Text && info->frame->type != UiFrameType::Button) {
@@ -655,7 +678,7 @@ private:
                         warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_TEXTURE_RESTORE",
                             "框架 " + frame.id + " 原本没有贴图，回到基础状态时保留状态设的贴图"));
                     } else if (!HasReferences(frame.texture)) {
-                        if (auto line = Texture(info, frame.texture)) statements.push_back(*line);
+                        if (auto lines = Texture(info, frame.texture)) Append(statements, *lines);
                     }
                     break;
                 case Property::Text:
@@ -784,6 +807,15 @@ std::string UiTemplateFdfText() {
         "    }\r\n"
         "}\r\n"
         "\r\n"
+        "// 没有底图的进度条：底层是不画东西的普通框架。\r\n"
+        "Frame \"FRAME\" \"AudastraBarClear\" {\r\n"
+        "    Width 0.1,\r\n"
+        "    Height 0.012,\r\n"
+        "    Frame \"BACKDROP\" \"AudastraBarClearFill\" {\r\n"
+        "        SetAllPoints,\r\n"
+        "    }\r\n"
+        "}\r\n"
+        "\r\n"
         "Frame \"GLUETEXTBUTTON\" \"AudastraButton\" {\r\n"
         "    Width 0.1,\r\n"
         "    Height 0.03,\r\n"
@@ -805,6 +837,29 @@ std::string UiTemplateFdfText() {
         "    }\r\n"
         "    ButtonText \"AudastraButtonText\",\r\n"
         "    Frame \"TEXT\" \"AudastraButtonText\" {\r\n"
+        "        DecorateFileNames,\r\n"
+        "        FrameFont \"MasterFont\", 0.011, \"\",\r\n"
+        "        FontJustificationH JUSTIFYCENTER,\r\n"
+        "        FontJustificationV JUSTIFYMIDDLE,\r\n"
+        "        FontShadowColor 0.0 0.0 0.0 0.9,\r\n"
+        "        FontShadowOffset 0.001 -0.001,\r\n"
+        "    }\r\n"
+        "}\r\n"
+        "\r\n"
+        "// 没有贴图的按钮：透明点击层，只留鼠标悬停高亮和文字。\r\n"
+        "Frame \"GLUETEXTBUTTON\" \"AudastraClickButton\" {\r\n"
+        "    Width 0.1,\r\n"
+        "    Height 0.03,\r\n"
+        "    ControlStyle \"AUTOTRACK|HIGHLIGHTONMOUSEOVER\",\r\n"
+        "    ControlMouseOverHighlight \"AudastraClickButtonHighlight\",\r\n"
+        "    Frame \"HIGHLIGHT\" \"AudastraClickButtonHighlight\" {\r\n"
+        "        DecorateFileNames,\r\n"
+        "        HighlightType \"FILETEXTURE\",\r\n"
+        "        HighlightAlphaFile \"EscMenuButtonMouseOverHighlight\",\r\n"
+        "        HighlightAlphaMode \"ADD\",\r\n"
+        "    }\r\n"
+        "    ButtonText \"AudastraClickButtonText\",\r\n"
+        "    Frame \"TEXT\" \"AudastraClickButtonText\" {\r\n"
         "        DecorateFileNames,\r\n"
         "        FrameFont \"MasterFont\", 0.011, \"\",\r\n"
         "        FontJustificationH JUSTIFYCENTER,\r\n"
