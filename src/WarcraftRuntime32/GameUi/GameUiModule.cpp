@@ -49,9 +49,10 @@ struct Instance {
         Instance* self = nullptr;
         Handler handler = nullptr;
         std::uint32_t arguments = 0;
+        const char* entry = nullptr;
     };
 
-    Instance(const GameUiEntryPoints& entryPoints, std::string reason);
+    Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver observer);
 
     // 失败的请求号与原因留给 audastraui.error；状态码只说明大类。
     std::int32_t Record(const AjCall& call, UiError error) noexcept {
@@ -62,6 +63,7 @@ struct Instance {
     }
 
     GameUiEntryPoints entries;
+    UiFaultObserver observer = nullptr;
     std::string unavailable;
     std::optional<GameUiLibrary> ui;   // start 时在游戏线程建
     std::deque<UiFrameEvent> events;
@@ -235,6 +237,12 @@ std::int32_t AJ_CALL Invoke(void* user, const AjCall* call, const AjArg* args, s
     const auto* binding = static_cast<const Instance::Binding*>(user);
     if (!binding || !binding->self || !binding->self->ui || !call || !out) return AJ_STATE;
     if (count != binding->arguments || (count && !args)) return AJ_ARGUMENT;
+    auto& ui = *binding->self->ui;
+    ui.SetDiagnosticContext(call->epoch, call->request, binding->entry);
+    struct ClearContext {
+        GameUiLibrary& ui;
+        ~ClearContext() { ui.SetDiagnosticContext(0, 0, nullptr); }
+    } clear{ui};
     try {
         return binding->handler(*binding->self, *call, args, *out);
     } catch (...) {
@@ -244,7 +252,7 @@ std::int32_t AJ_CALL Invoke(void* user, const AjCall* call, const AjArg* args, s
 
 std::int32_t AJ_CALL Start(void* user) {
     auto& self = *static_cast<Instance*>(user);
-    self.ui.emplace(self.entries);
+    self.ui.emplace(self.entries, self.observer);
     return AJ_OK;
 }
 
@@ -271,12 +279,12 @@ std::int32_t AJ_CALL Init(const AjHost* host, const AjModule** out) {
     return AJ_OK;
 }
 
-Instance::Instance(const GameUiEntryPoints& entryPoints, std::string reason)
-    : entries(entryPoints), unavailable(std::move(reason)) {
+Instance::Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver faultObserver)
+    : entries(entryPoints), observer(faultObserver), unavailable(std::move(reason)) {
     bindings.reserve(std::size(kCommands));
     commands.reserve(std::size(kCommands));
     for (const auto& spec : kCommands)
-        bindings.push_back({this, spec.handler, static_cast<std::uint32_t>(std::strlen(spec.arguments))});
+        bindings.push_back({this, spec.handler, static_cast<std::uint32_t>(std::strlen(spec.arguments)), spec.name});
     for (std::size_t index = 0; index < std::size(kCommands); ++index) {
         const auto& spec = kCommands[index];
         commands.push_back({spec.name, spec.arguments, spec.result, AJ_LOCAL_COMMAND, &Invoke, &bindings[index]});
@@ -293,19 +301,20 @@ ModuleContract GameUiModuleContract() {
     return contract;
 }
 
-std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, std::string unavailable) {
-    auto instance = std::make_shared<Instance>(entries, std::move(unavailable));
+std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, std::string unavailable, UiFaultObserver observer) {
+    auto instance = std::make_shared<Instance>(entries, std::move(unavailable), observer);
     t_installing = instance.get();
     const auto status = host.Install({&Init, instance, GameUiModuleContract()});
     t_installing = nullptr;
     return status;
 }
 
-std::int32_t InstallGameUiModule127(Host& host, Address base, const std::function<bool(Address, std::size_t)>& executable) {
+std::int32_t InstallGameUiModule127(Host& host, Address base, const std::function<bool(Address, std::size_t)>& executable,
+    UiFaultObserver observer) {
     GameUiEntryPoints entries;
     std::string error;
     if (!ResolveGameUiEntryPoints127(base, executable, entries, error)) entries = {};
-    return InstallGameUiModule(host, entries, std::move(error));
+    return InstallGameUiModule(host, entries, std::move(error), observer);
 }
 
 } // namespace Audastra::Runtime32::GameUi

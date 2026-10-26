@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameUiAbi127.h"
+#include "GameUiLibrary.h"
 
 #include "aj/Host.h"
 
@@ -23,10 +24,10 @@ inline constexpr std::string_view kGameUiModuleVersion = "1.0.0";
 // 必须在宿主所属的游戏线程调用。入口不完整时照样装入：ready 为假，
 // audastraui.error 报 unavailable 给出的原因，不假装界面可用。
 [[nodiscard]] std::int32_t InstallGameUiModule(audastra::japi::Host& host, const GameUiEntryPoints& entries,
-    std::string unavailable = {});
+    std::string unavailable = {}, UiFaultObserver observer = nullptr);
 
 // 按已核验的 Game.dll 基址解析 1.27a 入口后装入。
 [[nodiscard]] std::int32_t InstallGameUiModule127(audastra::japi::Host& host, Address base,
-    const std::function<bool(Address, std::size_t)>& executable);
+    const std::function<bool(Address, std::size_t)>& executable, UiFaultObserver observer = nullptr);
 
 } // namespace Audastra::Runtime32::GameUi

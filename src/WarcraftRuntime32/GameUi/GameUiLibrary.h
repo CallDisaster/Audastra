@@ -55,10 +55,22 @@ struct UiCreated {
     UiError error = UiError::None;
 };
 
+// 仅宿主诊断使用；不穿过JAPI ABI，不含地图参数或内存内容。
+struct UiFault {
+    std::uint32_t code = 0;
+    Address address = 0;
+    std::uint32_t epoch = 0;
+    std::uint32_t request = 0;
+    const char* entry = nullptr;
+};
+using UiFaultObserver = void (*)(const UiFault&) noexcept;
+
 class GameUiLibrary {
 public:
     // entries 必须完整（ResolveGameUiEntryPoints127 的结果或测试替身）；缺项时所有操作返回 NotReady。
-    explicit GameUiLibrary(const GameUiEntryPoints& entries) noexcept;
+    explicit GameUiLibrary(const GameUiEntryPoints& entries, UiFaultObserver observer = nullptr) noexcept;
+    void SetDiagnosticContext(std::uint32_t epoch, std::uint32_t request, const char* entry) noexcept;
+    [[nodiscard]] const UiFault& LastFault() const noexcept { return lastFault_; }
 
     // 地图开始或结束时调用：游戏会自己销毁全部界面，这里作废全部句柄和事件。
     void ResetSession() noexcept;
@@ -135,6 +147,9 @@ private:
     template <class Call> [[nodiscard]] UiError Run(Call&& call);
 
     GameUiEntryPoints entries_;
+    UiFaultObserver observer_ = nullptr;
+    UiFault callContext_{};
+    UiFault lastFault_{};
     bool complete_ = false;
     bool faulted_ = false;
     bool buttonDown_ = false;

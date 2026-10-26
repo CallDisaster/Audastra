@@ -35,12 +35,19 @@ bool WriteWord(Address at, Address value) noexcept {
 }
 
 // 调用游戏函数；出现结构化异常时返回 false，由上层停用界面库。
+int CaptureFault(EXCEPTION_POINTERS* information, UiFault& fault) noexcept {
+    if (information && information->ExceptionRecord) {
+        fault.code = information->ExceptionRecord->ExceptionCode;
+        fault.address = reinterpret_cast<Address>(information->ExceptionRecord->ExceptionAddress);
+    }
+    return EXCEPTION_EXECUTE_HANDLER;
+}
 template <class Call>
-bool Guarded(Call& call) noexcept {
+bool Guarded(Call& call, UiFault& fault) noexcept {
     __try {
         call();
         return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    } __except (CaptureFault(GetExceptionInformation(), fault)) {
         return false;
     }
 }
@@ -84,9 +91,15 @@ std::string_view UiErrorText(UiError error) noexcept {
     return "未知错误";
 }
 
-GameUiLibrary::GameUiLibrary(const GameUiEntryPoints& entries) noexcept
-    : entries_(entries), complete_(Complete(entries)), thread_(GetCurrentThreadId()) {
+GameUiLibrary::GameUiLibrary(const GameUiEntryPoints& entries, UiFaultObserver observer) noexcept
+    : entries_(entries), observer_(observer), complete_(Complete(entries)), thread_(GetCurrentThreadId()) {
     slots_.resize(1);
+}
+
+void GameUiLibrary::SetDiagnosticContext(std::uint32_t epoch, std::uint32_t request, const char* entry) noexcept {
+    callContext_.epoch = epoch;
+    callContext_.request = request;
+    callContext_.entry = entry;
 }
 
 void GameUiLibrary::ResetSession() noexcept {
@@ -106,8 +119,11 @@ UiError GameUiLibrary::Ready() const noexcept {
 
 template <class Call>
 UiError GameUiLibrary::Run(Call&& call) {
-    if (!Guarded(call)) {
+    auto fault = callContext_;
+    if (!Guarded(call, fault)) {
         faulted_ = true;
+        lastFault_ = fault;
+        if (observer_) observer_(lastFault_);
         return UiError::Faulted;
     }
     return UiError::None;

@@ -27,6 +27,9 @@ void Check(bool value, const char* message) {
 }
 
 std::vector<std::string> g_log;
+UiFault g_fault{};
+unsigned g_faultCount = 0;
+void ObserveFault(const UiFault& fault) noexcept { g_fault = fault; ++g_faultCount; }
 void Log(const char* format, ...) {
     char text[256]{};
     va_list args;
@@ -473,14 +476,21 @@ void PointerEvents() {
 
 void FaultsAndThreads() {
     Reset();
-    GameUiLibrary ui(Entries());
+    g_fault = {}; g_faultCount = 0;
+    GameUiLibrary ui(Entries(), &ObserveFault);
     const auto text = ui.Create("Text", 0, 0, 0);
     bool wrong = false;
     std::thread other([&] { wrong = ui.SetText(text.handle, "x") == UiError::WrongThread; });
     other.join();
     Check(wrong, "calls from another thread are refused");
+    ui.SetDiagnosticContext(9, 42, "audastraui.create");
     Check(ui.Create("Crash", 0, 0, 0).error == UiError::Faulted, "game function fault is caught");
+    Check(g_faultCount == 1 && g_fault.code == EXCEPTION_ACCESS_VIOLATION && g_fault.address != 0
+        && g_fault.epoch == 9 && g_fault.request == 42 && std::string_view(g_fault.entry) == "audastraui.create",
+        "SEH diagnostics retain original code, instruction, request and fixed entry name");
+    Check(ui.LastFault().address == g_fault.address, "last fault retained outside the SEH filter");
     Check(ui.Faulted() && ui.SetText(text.handle, "x") == UiError::Faulted, "library stays disabled after a fault");
+    Check(g_faultCount == 1, "subsequent rejected calls do not duplicate the original exception");
 }
 
 // 经 JAPI v2 宿主调用内置模块：线格式进、线格式出，和地图侧走同一条路。
@@ -492,6 +502,16 @@ struct ModuleHost {
         return host.Dispatch("ajapi:2;" + std::to_string(epoch) + ";" + std::to_string(++request) + ";" + command);
     }
 };
+
+void ModuleFaultDiagnostics() {
+    Reset(); g_fault = {}; g_faultCount = 0;
+    ModuleHost m;
+    Check(InstallGameUiModule(m.host, Entries(), {}, &ObserveFault) == AJ_OK, "diagnostic observer installs without ABI changes");
+    Check(m.Call("module.load;s:audastraui").status == AJ_OK, "load observed module");
+    Check(m.Call("audastraui.create;s:Crash;d:0;i:0;i:0").status == AJ_INTERNAL, "observed fault keeps original wire status");
+    Check(g_faultCount == 1 && g_fault.epoch == m.epoch && g_fault.request == m.request
+        && std::string_view(g_fault.entry) == "audastraui.create", "module binds actual call identity to SEH diagnostics");
+}
 
 void ModuleCalls() {
     Reset();
@@ -635,6 +655,7 @@ int main() {
         TocLoading();
         PointerEvents();
         FaultsAndThreads();
+        ModuleFaultDiagnostics();
         ModuleCalls();
         ModuleUnavailable();
         ScriptMatchesModule();

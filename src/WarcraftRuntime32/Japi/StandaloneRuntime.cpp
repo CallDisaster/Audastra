@@ -7,6 +7,7 @@
 #include <tlhelp32.h>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <mutex>
 #include <vector>
 
@@ -21,12 +22,13 @@ using DestroyVm = std::uintptr_t(__thiscall*)(std::uintptr_t);
 constexpr std::uintptr_t kLocalized = 0x1e31d0;
 constexpr std::uintptr_t kInitialize = 0x1e9a50, kDestroyVm = 0x7dd070;
 
-void Trace(std::string_view message) noexcept {
+void Trace(std::string_view message, bool fault = false) noexcept {
     try {
         static std::mutex lock;
         static HANDLE file = INVALID_HANDLE_VALUE;
         static bool attempted = false;
         static unsigned lines = 0;
+        static unsigned faults = 0;
         std::lock_guard guard(lock);
         if (!attempted) {
             attempted = true;
@@ -39,8 +41,9 @@ void Trace(std::string_view message) noexcept {
                     CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
             }
         }
-        if (lines >= 2048) return; // 不无限记录地图调用，不输出作者参数/内存地址。
-        ++lines;
+        // 故障保留独立预算，普通轮询刷满后也能记录；两者都不无限增长。
+        if (fault ? faults >= 64 : lines >= 2048) return;
+        if (fault) ++faults; else ++lines;
         const std::string text = "[AudastraJapi] pid=" + std::to_string(GetCurrentProcessId())
             + " tid=" + std::to_string(GetCurrentThreadId()) + " " + std::string(message.substr(0, 768)) + "\n";
         OutputDebugStringA(text.c_str());
@@ -86,6 +89,22 @@ std::atomic<Runtime*> runtime{nullptr};
 std::mutex installLock;
 std::atomic<int> ownerState{0};
 
+void TraceUiFault(const GameUi::UiFault& fault) noexcept {
+    try {
+        auto* self = runtime.load();
+        char code[16]{};
+        std::snprintf(code, sizeof(code), "0x%08X", fault.code);
+        std::string location = "outside_verified_game";
+        if (self && self->image && self->image->Executable(fault.address, 1)) {
+            char offset[24]{};
+            std::snprintf(offset, sizeof(offset), "0x%08X", static_cast<unsigned>(fault.address - self->image->Base()));
+            location = offset;
+        }
+        Trace("ui-fault epoch=" + std::to_string(fault.epoch) + " request=" + std::to_string(fault.request)
+            + " entry=" + (fault.entry ? fault.entry : "internal") + " code=" + code + " game_rva=" + location, true);
+    } catch (...) { Trace("ui-fault diagnostic-failure", true); }
+}
+
 void TraceReply(std::string_view input, std::string_view output) {
     audastra::japi::Request request;
     audastra::japi::Response reply;
@@ -122,7 +141,7 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
             auto attached = AttachGameStringVm(self->image, self->epoch,
                 [](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),
-                        [&image](auto address, auto size) { return image.Executable(address, size); });
+                        [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault);
                     Trace("builtin-install audastraui status=" + std::to_string(status));
                     return status;
                 });
