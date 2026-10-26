@@ -130,8 +130,9 @@ std::string TriggerDirectoryEditor::ScriptName(std::string_view name) {
 const TriggerRecord* TriggerDirectoryEditor::FindScriptNameConflict(
     const TriggerDocument& document, std::string_view name, StableId self) {
     const std::string wanted = ScriptName(name);
+    // 注释条目（WTG isComment）不生成 gg_trg_ 变量，不参与脚本名冲突。
     for (const auto& trigger : document.triggers) {
-        if (trigger.id != self && ScriptName(trigger.name.text) == wanted) return &trigger;
+        if (trigger.id != self && trigger.type == 0 && ScriptName(trigger.name.text) == wanted) return &trigger;
     }
     return nullptr;
 }
@@ -155,6 +156,9 @@ Status TriggerDirectoryEditor::ValidateTriggerName(
                 "已有名为“" + std::string(trimmed) + "”的触发器。");
         }
     }
+    const auto renamed = std::find_if(document.triggers.begin(), document.triggers.end(),
+        [self](const TriggerRecord& trigger) { return self != 0 && trigger.id == self; });
+    if (renamed != document.triggers.end() && renamed->type != 0) return Status::Ok(); // 注释条目改名只查同名
     if (const auto* conflict = FindScriptNameConflict(document, trimmed, self)) {
         return Status::Failure(kDomain, "TRIGGER_SCRIPT_NAME_DUPLICATE",
             "“" + std::string(trimmed) + "”与触发器“" + conflict->name.text + "”在脚本中的名称相同（gg_trg_" +

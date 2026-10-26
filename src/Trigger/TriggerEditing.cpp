@@ -1326,7 +1326,9 @@ Status TriggerDocumentEditor::RenameTrigger(
         return Status::Failure(
             "Trigger.Edit", "TRIGGER_MISSING", "找不到目标触发器。");
     }
-    if (const auto* conflict = TriggerDirectoryEditor::FindScriptNameConflict(document, name, triggerId)) {
+    // 注释条目不生成脚本变量，改名不受脚本名冲突限制。
+    const auto* conflict = trigger->type == 0 ? TriggerDirectoryEditor::FindScriptNameConflict(document, name, triggerId) : nullptr;
+    if (conflict) {
         return Status::Failure("Trigger.Edit", "TRIGGER_SCRIPT_NAME_DUPLICATE",
             "新名称与“" + conflict->name.text + "”在脚本中的名称相同（gg_trg_" + TriggerDirectoryEditor::ScriptName(name) + "）。");
     }

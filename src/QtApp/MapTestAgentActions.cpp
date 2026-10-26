@@ -203,15 +203,16 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
                 mapTestScenario_->plan);
             if (parsed.Succeeded() && parsed.value) report = std::move(*parsed.value);
         }
-        if ((report && report->finished) || !running || clock.elapsed() >= wait) break;
         // 载入完成后游戏可能停在“按任意键继续”：场景开始前每 2 秒给本局测试游戏发一次空格（载入中会被忽略）。
-        if ((!report || !report->started) && clock.elapsed() - lastKey >= 2000) {
+        // 先发再判断是否返回，wait_ms 为 0 的轮询也能越过这一步。
+        if (running && (!report || !report->started) && clock.elapsed() - lastKey >= 2000) {
             lastKey = clock.elapsed();
             if (const auto window = GameWindow(*mapTestLease_)) {
                 PostMessageW(window, WM_KEYDOWN, VK_SPACE, 0x00390001);
                 PostMessageW(window, WM_KEYUP, VK_SPACE, static_cast<LPARAM>(0xC0390001u));
             }
         }
+        if ((report && report->finished) || !running || clock.elapsed() >= wait) break;
         Pause(250);
     }
     QJsonObject result{{"ok", true}, {"game_running", running},

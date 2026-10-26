@@ -80,6 +80,16 @@ void TestTriggerDirectory(const UiCatalog& catalog, std::span<const std::byte> w
     Check(!TriggerDocumentEditor::RenameTrigger(document, Named(document, "Normal").id, "测试乙").Succeeded(),
         "rename into a colliding script name accepted");
     Check(Directory::UniqueTriggerName(document, "测试") == "测试 001", "unique name keeps first free number");
+    // 注释条目不生成脚本变量：注释改成等长中文名、新触发器与注释等长都不算撞名；同名照样拒绝。
+    auto note = TriggerDocumentEditor::AddTrigger(document, first, "小Y");
+    Check(note.Succeeded(), "comment fixture");
+    TriggerDocumentEditor::FindTrigger(document, *note.value)->type = 1;
+    Check(Directory::ValidateTriggerName(document, "测试乙", *note.value).Succeeded(), "comment rename must not hit script-name collision");
+    Check(!Directory::ValidateTriggerName(document, "测试甲", *note.value).Succeeded(), "comment rename still refuses an existing name");
+    Check(TriggerDocumentEditor::RenameTrigger(document, *note.value, "测试乙").Succeeded(), "comment may share a trigger's script name");
+    Check(TriggerDocumentEditor::RenameTrigger(document, *note.value, "沃金").Succeeded(), "comment renamed");
+    Check(Directory::ValidateTriggerName(document, "英雄").Succeeded(), "new trigger may share a comment's script name");
+    Check(TriggerDocumentEditor::RemoveTrigger(document, *note.value).Succeeded(), "comment cleanup failed");
     Check(TriggerDocumentEditor::RemoveTrigger(document, *chinese.value).Succeeded(), "cleanup failed");
     Check(Same(Encode(codec, document, catalog), pristine), "script-name checks must leave the document unchanged");
 
