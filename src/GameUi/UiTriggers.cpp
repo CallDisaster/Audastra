@@ -1,5 +1,6 @@
 #include "War3MapCore/GameUi/UiTriggers.h"
 
+#include "War3MapCore/GameUi/FrameTree.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "FeatureTextWriter.h"
 #include "UiDescriptionText.h"
@@ -386,7 +387,14 @@ private:
             return std::nullopt;
         }
     }
-    std::optional<std::string> Texture(const FrameInfo& info, const std::string& path) { return TextureCall(info, Quote(path)); }
+    // 游戏按完整文件名找贴图，没写扩展名时与预览一样补 .blp，否则游戏里显示成绿块。
+    std::optional<std::string> Texture(const FrameInfo& info, const std::string& path) {
+        return TextureCall(info, Quote(EnsureTextureExtension(path)));
+    }
+    // 取值模板拼出的贴图：以固定文字结尾且没有扩展名时补 .blp；以取值结尾时由取值给出完整路径。
+    static std::string TextureTemplate(const std::string& path) {
+        return !path.empty() && path.back() == '}' ? path : EnsureTextureExtension(path);
+    }
 
     // 创建时设的固定贴图；写了取值模板的贴图由更新块设。
     void FixedTexture(const FrameInfo& info, Lines& out) {
@@ -418,7 +426,7 @@ private:
             }
             FixedTexture(info, out);
             if (!frame.background.empty()) {
-                out.push_back(Call("AudastraUISetTexture", {Self(info), Quote(frame.background), "false"}));
+                out.push_back(Call("AudastraUISetTexture", {Self(info), Quote(EnsureTextureExtension(frame.background)), "false"}));
             }
             if (!frame.value.binding) {
                 if (auto line = BarValue(info, frame.value.literal)) out.push_back(*line);
@@ -574,7 +582,7 @@ private:
             }
         }
         if (!frame.texture.empty() && HasReferences(frame.texture)) {
-            if (auto expression = TextExpression(info, frame.texture)) {
+            if (auto expression = TextExpression(info, TextureTemplate(frame.texture))) {
                 if (auto line = TextureCall(info, *expression)) Append(out, Guarded(info, Property::Texture, {*line}));
             }
         }

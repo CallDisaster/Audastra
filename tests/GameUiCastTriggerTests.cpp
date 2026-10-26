@@ -149,6 +149,11 @@ void TestBarBinding() {
         UiState{"channel", "引导", {}}};
     const auto ui = GenerateUiTriggers(bar);
     Require(ui.Succeeded(), "界面触发器：" + First(ui.diagnostics));
+    // 游戏按完整文件名找贴图：没写扩展名的固定贴图和状态贴图都补 .blp，否则游戏里是绿块。
+    Require(Contains(ui.value->featureText, "\"UI\\\\Widgets\\\\ToolTips\\\\Human\\\\human-tooltip-background.blp\"")
+            && Contains(ui.value->featureText, "\"ReplaceableTextures\\\\TeamColor\\\\TeamColor00.blp\"")
+            && !Contains(ui.value->featureText, "human-tooltip-background\""),
+        "贴图补扩展名");
     Require(f.Apply(kUiTriggerCategory, ui.value->featureText).Succeeded(), "写进界面触发器");
 
     CastSystemOptions options = TwoAbilities();
