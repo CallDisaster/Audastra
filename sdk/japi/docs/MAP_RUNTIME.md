@@ -206,9 +206,9 @@ e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a
 
 ### 内置界面的父框架与故障诊断
 
-`AudastraUICreateSimpleFrame` 的父参数为 `0` 或 `AudastraUIGameUI()` 返回的根句柄时，运行库使用游戏的默认 Simple 根。根句柄是经过核验的别名，不会把 GameUI 对象指针直接交给 Simple 构造函数。其他父框架必须属于 Simple 家族；普通 Backdrop、普通 Frame、Texture 和 FontString 不能作为 Simple 的父框架。普通框架创建也不能以 Texture 或 FontString 为父框架。
+`AudastraUICreateSimpleFrame` 的父参数为 `0` 或 `AudastraUIGameUI()` 返回的根句柄时，运行库使用游戏的默认 Simple 根。根句柄是经过核验的别名，不会把 GameUI 对象指针直接交给 Simple 构造函数。其他父框架必须属于 Simple 家族；普通 Backdrop、普通 Frame、Texture 和 FontString 不能作为 Simple 的父框架。普通框架创建的父框架必须属于普通家族，不能使用 Simple、Texture 或 FontString 父框架。
 
-`AudastraUISetParent` 只支持 Simple 父框架；父子关系不能形成循环，检查深度最多 64 层。父家族不受支持时返回 `AJ_UNSUPPORTED`，循环或超过深度限制返回 `AJ_ARGUMENT`。用失败请求号查询 `audastraui.error` 可取得具体原因。这些拒绝发生在调用游戏函数之前，界面库保持可用；不要把收到一次参数错误理解为运行库需要重新加载。创建时的父子关系和锚点关系是两个独立参数，跨家族定位仍按各自布局对象处理。
+`AudastraUISetParent` 要求父子属于同一家族（普通或 Simple），Texture 和 FontString 不支持改父级；父子关系不能形成循环，检查深度最多 64 层。父家族不受支持时返回 `AJ_UNSUPPORTED`，循环或超过深度限制返回 `AJ_ARGUMENT`。用失败请求号查询 `audastraui.error` 可取得具体原因。这些拒绝发生在调用游戏函数之前，界面库保持可用；不要把收到一次参数错误理解为运行库需要重新加载。创建时的父子关系和锚点关系是两个独立参数，跨家族定位仍按各自布局对象处理。
 
 游戏函数发生结构化异常时，运行库保留 `ui-fault` 日志，包含 epoch、请求号、固定入口名、异常代码和已核验 Game.dll 范围内的相对偏移。范围外的位置标为 `outside_verified_game`；日志不输出绝对地址或地图参数。此时界面库会停止后续游戏函数调用，避免在可能已损坏的界面状态上继续操作。普通调用日志与故障日志各有独立的行数上限。
 

@@ -391,9 +391,9 @@ void VisibilityAndContent() {
     Check(ui.SetLevel(bar.handle, 2) == UiError::None, "simple level");
 
     const auto simple = ui.CreateSimple("Simple", 0, 0);
-    Check(ui.SetParent(text.handle, simple.handle) == UiError::None, "classic frame under simple parent");
+    Check(ui.SetParent(text.handle, simple.handle) == UiError::UnsupportedParent, "classic frame cannot use simple parent layout");
     Check(ui.SetParent(bar.handle, simple.handle) == UiError::None, "simple frame under simple parent");
-    Check(ui.SetParent(text.handle, backdrop.handle) == UiError::UnsupportedParent, "classic parent not offered");
+    Check(ui.SetParent(text.handle, backdrop.handle) == UiError::None, "classic frame can use classic parent");
 }
 
 void ParentValidation() {
@@ -419,6 +419,10 @@ void ParentValidation() {
         "simple region cannot own a simple frame");
     Check(ui.Create("Text", region.handle, 0, 0).error == UiError::UnsupportedParent,
         "region cannot own a classic frame");
+    Check(ui.Create("Text", simple.handle, 0, 0).error == UiError::UnsupportedParent,
+        "simple family cannot own a classic frame");
+    Check(ui.SetParent(backdrop.handle, simple.handle) == UiError::UnsupportedParent,
+        "classic reparenting to simple rejected before engine");
     Check(ui.SetParent(simple.handle, backdrop.handle) == UiError::UnsupportedParent,
         "reparenting to classic family rejected before engine");
     Check(ui.SetParent(simple.handle, simple.handle) == UiError::ParentCycle, "self parenting rejected");

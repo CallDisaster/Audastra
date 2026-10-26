@@ -87,7 +87,7 @@ std::string_view UiErrorText(UiError error) noexcept {
     case UiError::TableFull: return "框架句柄已用完";
     case UiError::NotOwned: return "游戏自带的框架不能删除";
     case UiError::Faulted: return "游戏界面函数出错，界面库已停用";
-    case UiError::UnsupportedParent: return "父框架家族不支持此操作；Simple创建只能使用默认根或Simple父，改父级只能使用Simple父";
+    case UiError::UnsupportedParent: return "父框架家族不支持此操作；普通框架与Simple框架不能混用父级，Texture和FontString不能作为父级";
     case UiError::ParentCycle: return "父框架关系形成循环或超过64层";
     }
     return "未知错误";
@@ -281,7 +281,7 @@ UiCreated GameUiLibrary::Create(std::string_view templateName, FrameHandle paren
     UiError error{};
     const auto* owner = Resolve(parent, error);
     if (!owner) return {0, error};
-    if (owner->family == FrameFamily::Region) return {0, UiError::UnsupportedParent};
+    if (owner->family != FrameFamily::Classic) return {0, UiError::UnsupportedParent};
     const std::string text(templateName);
     Address created = 0;
     const auto parentObject = owner->object;
@@ -455,8 +455,8 @@ UiError GameUiLibrary::SetParent(FrameHandle frame, FrameHandle parent) {
     const auto family = slot->family;
     const auto* target = Resolve(parent, error);
     if (!target) return error;
-    // 游戏的两个改父级函数都要求新父级是 Simple 框架。
-    if (target->family != FrameFamily::Simple) return UiError::UnsupportedParent;
+    // 两种父级各有独立链表布局，不能把一种对象直接交给另一种的改父级入口。
+    if (family == FrameFamily::Region || target->family != family) return UiError::UnsupportedParent;
     const auto parentObject = target->object;
     Address ancestor = parentObject;
     for (int depth = 0; ancestor && depth < kMaxDepth; ++depth) {
