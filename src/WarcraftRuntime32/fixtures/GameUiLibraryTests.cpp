@@ -633,6 +633,9 @@ void ModuleCalls() {
     Check(m.Call("audastraui.poll").value.integer == 1 && m.Call("audastraui.event").value.text == std::to_string(button) + "|2",
         "leave event");
 
+    g_tables.hovered = buttonObject->Self();
+    Check(m.Call("audastraui.poll").value.integer == 1, "old module has a queued event when VM teardown begins");
+
     // 新 VM 代际：旧模块走停止、销毁，新实例的句柄从头开始，旧句柄失效。
     const auto reset = m.host.Reset(2);
     Check(reset.status == AJ_OK && reset.applied && reset.stoppingModules == 0 && m.host.ModuleCount() == 0,
@@ -642,6 +645,7 @@ void ModuleCalls() {
     Check(InstallGameUiModule(m.host, Entries()) == AJ_OK, "next VM installs a fresh module");
     const auto nextFrame = m.Call("audastraui.create;s:Text;d:0;i:0;i:0");
     Check(nextFrame.status == AJ_OK && nextFrame.value.integer > 0, "next VM creates a live frame");
+    Check(m.Call("audastraui.event").value.text.empty(), "previous module queued event cannot cross the VM boundary");
     Check("d:" + std::to_string(nextFrame.value.integer) != frame, "new module cannot reissue a previous VM token");
     Check(m.Call("audastraui.settext;" + frame + ";s:x").status == AJ_ARGUMENT, "handles from the previous VM are invalid");
 }
