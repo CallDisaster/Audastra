@@ -147,7 +147,8 @@ void Preparation() {
     Require(Code(SaveMapEditCandidate(independent), "RUNTIME_CONSENT_REQUIRED") && !std::filesystem::exists(independent.targetCandidate),
         "runtime-only independent save reaches the common consent gate before compiling or writing");
     const auto bin = f.root / "bin"; Require(std::filesystem::create_directory(bin), "portable root fixture");
-    Require(InstallationRootFromExecutableDirectory(bin) == f.root, "portable bin uses adjacent release manifest");
+    // 临时目录可能带 8.3 短名（ADMINI~1），安装根按展开后的路径返回。
+    Require(InstallationRootFromExecutableDirectory(bin) == std::filesystem::canonical(f.root), "portable bin uses adjacent release manifest");
     Require(!CurrentInstallationRoot().empty(), "current executable installation root does not use request paths");
 }
 void Settings() {

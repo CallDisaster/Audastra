@@ -200,7 +200,8 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
         return Fail("RUNTIME_LUA_UNSUPPORTED", "本图需要本原生运行库，当前仅支持经典1.27a JASS；普通无依赖Lua地图不受此限制。");
     if (!required && !state.previousIdentity.empty() && used.value->unresolvedDynamicCalls)
         return Fail("RUNTIME_USAGE_UNCERTAIN", "主脚本仍有动态执行入口，不能凭静态未检出移除已有运行库；请先明确依赖。");
-    if (!required && used.value->unresolvedDynamicCalls)
+    // 只对写了运行库设置的地图提示：没有设置的普通地图本来就不会带运行库，动态执行入口又很常见。
+    if (!required && used.value->unresolvedDynamicCalls && state.settingsBytes)
         task.diagnostics.push_back({DiagnosticSeverity::Warning,"MapRuntime","RUNTIME_USAGE_PARTIAL",
             "运行库静态检测未发现确定依赖，但有动态执行入口；未自动加入运行库，需要时请明确启用。"});
     if (required && state.settings.mode == MapRuntimeMode::Disabled) return Fail("RUNTIME_DISABLED_WITH_DEPENDENCIES", "地图仍调用界面/JAPI函数；请调整依赖或重新启用运行库。");

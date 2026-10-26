@@ -11,6 +11,8 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QUndoStack>
+
+#include <algorithm>
 #include <Windows.h>
 #include <algorithm>
 #include <filesystem>
@@ -142,8 +144,16 @@ void OwnedImportsWinAndKeepAnimationProvenance() {
     Import(project, QStringLiteral("New.bin"), added);
     const auto sources = Capture(project), repeated = Capture(project);
     const auto& replaced = Entry(sources, "Fixture.bin"); const auto& created = Entry(sources, "New.bin");
-    Require(replaced.ownedPayload == replacement, "capture preserves owned replacement owner; actual owner_equal="
-        + std::to_string(replaced.ownedPayload == replacement));
+    // 导入时工程复制一份正文（调用方可能还握着可变别名）；抓取时共用工程那一份，不再复制。
+    const auto projectOwner = [&](QStringView path) {
+        const auto imports = project.CaptureAssets().imports;
+        const auto found = std::find_if(imports.begin(), imports.end(), [&](const auto& row) { return row.archivePath == path; });
+        Require(found != imports.end(), "project keeps the pending import");
+        Require(*found->ownedPayload == *(path == u"New.bin" ? added : replacement), "project import keeps the imported bytes");
+        return found->ownedPayload;
+    };
+    Require(replaced.ownedPayload == projectOwner(u"Fixture.bin"), "capture preserves owned replacement owner; actual owner_equal="
+        + std::to_string(replaced.ownedPayload == projectOwner(u"Fixture.bin")));
     Require(replaced.archivePath == "Fixture.bin", "capture preserves owned replacement archive path; actual='"
         + replaced.archivePath + "', expected='Fixture.bin'");
     Require(replaced.diskPath.empty(), "capture preserves owned replacement without disk path; actual='"
@@ -154,7 +164,7 @@ void OwnedImportsWinAndKeepAnimationProvenance() {
         + std::to_string(replaced.ambiguous));
     Require(replaced.ownedPayloadVersion != 0, "capture assigns a controlled owned version; actual version="
         + std::to_string(replaced.ownedPayloadVersion));
-    Require(created.ownedPayload == added && created.archivePath.empty() && created.diskPath.empty(), "new import has no old archive or disk path");
+    Require(created.ownedPayload == projectOwner(u"New.bin") && created.archivePath.empty() && created.diskPath.empty(), "new import has no old archive or disk path");
     Require(SameWorldTerrainSources(sources, repeated), "same live immutable owners reuse captured versions");
     auto opened = WorldResourceReader::Open(sources); Require(opened.Succeeded(), "open owned resources");
     for (const auto& [path, expected] : std::vector<std::pair<std::string, std::shared_ptr<const std::vector<std::byte>>>>{
