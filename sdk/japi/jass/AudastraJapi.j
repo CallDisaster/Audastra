@@ -218,10 +218,12 @@ endfunction
 function AjArgReal takes real value returns string
     local integer exponent = 0
     local string sign = ""
-    if value - value != 0.0 then
+    local string mantissa
+    // 经典VM的实数相等有容差，不能用==0把很小的非零值抹掉，也不能用减法!=0判有限数。
+    if not (value >= 0.0 or value <= 0.0) then
         return ";r:invalid"
     endif
-    if value == 0.0 then
+    if value >= 0.0 and value <= 0.0 then
         return ";r:0"
     endif
     if value < 0.0 then
@@ -238,7 +240,12 @@ function AjArgReal takes real value returns string
         set value = value * 10.0
         set exponent = exponent - 1
     endloop
-    return ";r:" + sign + R2SW(value, 0, 8) + "e" + I2S(exponent)
+    set mantissa = R2SW(value, 0, 8)
+    // 归一化有界；无穷仍会得到非数值文字，不能进入线格式。
+    if not AjRealSyntax(mantissa) then
+        return ";r:invalid"
+    endif
+    return ";r:" + sign + mantissa + "e" + I2S(exponent)
 endfunction
 
 // Handles host scientific notation without assuming S2R accepts an exponent.
