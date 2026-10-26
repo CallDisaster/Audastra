@@ -11,6 +11,7 @@ using namespace Jass::detail;
 using Tokens = std::vector<Token>;
 constexpr std::string_view kBootstrap = "warvk_loader_raw.ai";
 constexpr std::string_view kCall = "call StartCampaignAI(Player(PLAYER_NEUTRAL_AGGRESSIVE), \"warvk_loader_raw.ai\")";
+constexpr std::string_view kTestDiagnostic = "AjStartTestDiagnostics";
 struct Layout {
     Tokens tokens;
     std::size_t first = 0, mainEnd = 0, count = 0, boot = 0, bootEnd = 0;
@@ -195,6 +196,56 @@ Status VerifyMapRuntimeIdentity(std::string_view script, std::string_view payloa
     return Status::Ok();
 }
 
+namespace {
+struct TestDiagnosticLayout { std::size_t begin = 0, end = 0, bootEnd = 0; bool declared = false; };
+Result<TestDiagnosticLayout> InspectTestDiagnostic(std::string_view script) {
+    using Output = Result<TestDiagnosticLayout>;
+    auto lexed = Lex(script);
+    if (!lexed.Succeeded()) { Output failed; failed.diagnostics = lexed.diagnostics; return failed; }
+    const auto& tokens = *lexed.value;
+    TestDiagnosticLayout result;
+    bool main = false;
+    std::size_t declarations = 0;
+    for (std::size_t i = 0; i + 1 < tokens.size(); ++i) {
+        if (i + 2 < tokens.size() && tokens[i].Is(Keyword::Function) && tokens[i + 1].text == "main" && tokens[i + 2].Is(Keyword::Takes)) main = true;
+        if (tokens[i].Is(Keyword::EndFunction)) main = false;
+        if (tokens[i].text == "StartCampaignAI" && main) {
+            for (std::size_t j = i + 1; j < tokens.size() && !tokens[j].EndsLine(); ++j)
+                if (tokens[j].kind == TokenKind::String && StringLiteralValue(tokens[j].text) == kBootstrap) {
+                    if (j + 2 < tokens.size() && tokens[j + 1].IsOperator(")") && tokens[j + 2].EndsLine()) result.bootEnd = j + 1;
+                }
+        }
+        if (tokens[i].text != kTestDiagnostic) continue;
+        if (i && tokens[i - 1].Is(Keyword::Function) && tokens[i + 1].Is(Keyword::Takes)) {
+            if (main || ++declarations != 1 || i + 5 >= tokens.size()
+                || tokens[i + 2].text != "nothing" || !tokens[i + 3].Is(Keyword::Returns)
+                || tokens[i + 4].text != "nothing" || !tokens[i + 5].EndsLine())
+                return Output::Failure("MapRuntime", "RUNTIME_TEST_CLIENT_MISSING", "配套客户端的测试诊断入口声明不唯一或不完整。");
+            result.declared = true;
+            continue;
+        }
+        if (!main || result.end || !result.bootEnd || i != result.bootEnd + 3 || !tokens[i - 1].Is(Keyword::Call)
+            || i + 3 >= tokens.size() || !tokens[i + 1].IsOperator("(") || !tokens[i + 2].IsOperator(")")
+            || !tokens[i + 3].EndsLine())
+            return Output::Failure("MapRuntime", "RUNTIME_TEST_BOOT_INVALID", "测试诊断只允许在受管启动下一句唯一调用，不能接管其他引用。");
+        result.begin = tokens[i - 1].offset;
+        result.end = tokens[i + 2].offset + tokens[i + 2].text.size();
+    }
+    if (result.bootEnd) result.bootEnd = tokens[result.bootEnd].offset + tokens[result.bootEnd].text.size();
+    return Output::Success(result);
+}
+}
+
+Status VerifyMapRuntimeTestDiagnostics(std::string_view script, bool enabled) {
+    const auto layout = InspectTestDiagnostic(script);
+    if (!layout.Succeeded()) return {layout.diagnostics};
+    if (enabled && !layout.value->declared)
+        return Status::Failure("MapRuntime", "RUNTIME_TEST_CLIENT_MISSING", "测试运行需要包含诊断入口的新配套客户端，请更新可信包及函数库。");
+    if (enabled != (layout.value->end != 0))
+        return Status::Failure("MapRuntime", "RUNTIME_TEST_BOOT_INVALID", "最终脚本的测试提示与保存用途不一致，未向正式玩家带入测试调用。");
+    return Status::Ok();
+}
+
 Result<std::string> ApplyMapRuntimeBoot(std::string_view script, const MapRuntimeBootPlan& plan) {
     if (plan.onlyIfUsed) {
         const auto used = AnalyzeMapRuntimeUsage(script);
@@ -234,6 +285,12 @@ Result<std::string> ApplyMapRuntimeBoot(std::string_view script, const MapRuntim
     if (layout.count && (!plan.ownsExisting || layout.boot != layout.first))
         return Result<std::string>::Failure("MapRuntime", "RUNTIME_BOOT_INVALID", "发现手工启动或受管启动被移动；未接管、重排或删除作者代码。");
     std::string result(script);
+    const auto diagnostic = InspectTestDiagnostic(script);
+    if (!diagnostic.Succeeded()) { Result<std::string> failed; failed.diagnostics = diagnostic.diagnostics; return failed; }
+    if (diagnostic.value->end && !plan.ownsExisting)
+        return Result<std::string>::Failure("MapRuntime", "RUNTIME_TEST_BOOT_INVALID", "已有测试诊断调用没有受管所有权，未接管作者代码。");
+    if (diagnostic.value->end && (!plan.enabled || !plan.testRunDiagnostics))
+        result.erase(diagnostic.value->begin, diagnostic.value->end - diagnostic.value->begin);
     if (plan.enabled && !layout.count) {
         auto begin = static_cast<std::size_t>(tokens[layout.first].offset);
         while (begin && script[begin - 1] != '\r' && script[begin - 1] != '\n') --begin;
@@ -248,6 +305,15 @@ Result<std::string> ApplyMapRuntimeBoot(std::string_view script, const MapRuntim
     }
     const auto verified = VerifyMapRuntimeBoot(result, plan.enabled);
     if (!verified.Succeeded()) { Result<std::string> failed; failed.diagnostics = verified.diagnostics; return failed; }
+    if (plan.enabled && plan.testRunDiagnostics && !diagnostic.value->end) {
+        const auto next = InspectTestDiagnostic(result);
+        if (!next.Succeeded()) { Result<std::string> failed; failed.diagnostics = next.diagnostics; return failed; }
+        if (!next.value->declared || !next.value->bootEnd)
+            return Result<std::string>::Failure("MapRuntime", "RUNTIME_TEST_CLIENT_MISSING", "测试运行需要包含诊断入口的新配套客户端，请更新可信包及函数库。");
+        result.insert(next.value->bootEnd, "\r\n    call AjStartTestDiagnostics()");
+    }
+    const auto diagnosticCheck = VerifyMapRuntimeTestDiagnostics(result, plan.enabled && plan.testRunDiagnostics);
+    if (!diagnosticCheck.Succeeded()) { Result<std::string> failed; failed.diagnostics = diagnosticCheck.diagnostics; return failed; }
     return Result<std::string>::Success(std::move(result));
 }
 } // namespace War3Map::Script

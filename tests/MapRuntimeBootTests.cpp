@@ -84,6 +84,36 @@ void Identity() {
     plan.payloadSha256 = "not-a-hash";
     Require(!ApplyMapRuntimeBoot(source, plan).Succeeded(), "invalid identity rejected");
 }
+void TestDiagnostics() {
+    const std::string source = "function AjStartTestDiagnostics takes nothing returns nothing\nendfunction\n" + std::string(original);
+    MapRuntimeBootPlan plan; plan.testRunDiagnostics = true;
+    const auto installed = ApplyMapRuntimeBoot(source, plan);
+    Require(installed.Succeeded() && VerifyMapRuntimeTestDiagnostics(*installed.value, true).Succeeded(), "test copy schedules a single diagnostic after the first AI boot");
+    Require(!VerifyMapRuntimeTestDiagnostics(*installed.value, false).Succeeded(), "formal final check refuses a test call");
+    Require(!ApplyMapRuntimeBoot(*installed.value, plan).Succeeded(), "manual diagnostic and boot not adopted");
+    plan.ownsExisting = true;
+    Require(ApplyMapRuntimeBoot(*installed.value, plan).value == installed.value, "test save is idempotent");
+    plan.testRunDiagnostics = false;
+    const auto formal = ApplyMapRuntimeBoot(*installed.value, plan);
+    Require(formal.Succeeded() && VerifyMapRuntimeTestDiagnostics(*formal.value, false).Succeeded(), "normal save removes test scheduling");
+    plan.testRunDiagnostics = true;
+    Require(ApplyMapRuntimeBoot(*formal.value, plan).Succeeded(), "formal to test switching restores one call");
+    plan.enabled = false;
+    const auto disabled = ApplyMapRuntimeBoot(*installed.value, plan);
+    Require(disabled.Succeeded() && VerifyMapRuntimeBoot(*disabled.value, false).Succeeded()
+        && VerifyMapRuntimeTestDiagnostics(*disabled.value, false).Succeeded(), "uninstall removes both boot and test call");
+    plan.enabled = true; plan.ownsExisting = false;
+    Require(!ApplyMapRuntimeBoot(original, plan).Succeeded(), "old SDK without diagnostics is refused for TestRun");
+    auto moved = *installed.value;
+    const auto begin = moved.find("call AjStartTestDiagnostics()");
+    moved.erase(begin, std::string("call AjStartTestDiagnostics()").size());
+    moved.insert(moved.rfind("endfunction"), "call AjStartTestDiagnostics()\n");
+    plan.ownsExisting = true;
+    Require(!ApplyMapRuntimeBoot(moved, plan).Succeeded(), "moved diagnostic is not silently reordered");
+    auto duplicated = *installed.value;
+    duplicated.insert(duplicated.rfind("endfunction"), "call AjStartTestDiagnostics()\n");
+    Require(!ApplyMapRuntimeBoot(duplicated, plan).Succeeded(), "duplicate diagnostic is not silently deleted");
+}
 void LuaUsage() {
     const auto analyze = [](std::string_view source) { return AnalyzeMapRuntimeUsage(source, MapRuntimeScriptLanguage::Lua); };
     const auto plain = analyze("-- AjInitialize()\nlocal t = {text = [[AudastraUIAvailable()]]}\nfunction main() print(t.text) end\n");
@@ -101,6 +131,6 @@ void LuaUsage() {
 }
 }
 int main() {
-    try { Boot(); Identity(); LuaUsage(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    try { Boot(); Identity(); TestDiagnostics(); LuaUsage(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "map runtime boot tests passed\n";
 }

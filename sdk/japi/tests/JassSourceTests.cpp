@@ -13,6 +13,8 @@ type agent extends handle
 type trigger extends agent
 type triggeraction extends handle
 type event extends agent
+type player extends agent
+type timer extends agent
 native StringLength takes string s returns integer
 native SubString takes string s, integer a, integer b returns string
 native I2S takes integer n returns string
@@ -24,6 +26,12 @@ native CreateTrigger takes nothing returns trigger
 native DestroyTrigger takes trigger t returns nothing
 native TriggerAddAction takes trigger t, code c returns triggeraction
 native TriggerExecute takes trigger t returns nothing
+native CreateTimer takes nothing returns timer
+native TimerStart takes timer t, real period, boolean repeating, code callback returns nothing
+native PauseTimer takes timer t returns nothing
+native DestroyTimer takes timer t returns nothing
+native GetLocalPlayer takes nothing returns player
+native DisplayTimedTextToPlayer takes player p, real x, real y, real duration, string text returns nothing
 )";
     std::vector<std::string> contents;
     for (int i = 1; i < argc; ++i) {

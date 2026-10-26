@@ -86,6 +86,7 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
         && task.runtimePurpose != MapRuntimeSavePurpose::TestRun)
         return Fail("RUNTIME_SAVE_PURPOSE_INVALID", "未知保存用途不能授予内部包使用资格。");
     auto state = std::make_shared<MapRuntimeSaveState>();
+    state->purpose = task.runtimePurpose;
     state->approvedPackageSha256 = task.runtimeApprovedPackageSha256;
     auto settings = FinalMember(task, kMapRuntimeSettingsMember);
     if (!settings.Succeeded()) return {settings.diagnostics};
@@ -152,6 +153,7 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
     }
     if (task.script && !task.script->luaTarget && (approved || !state->previousIdentity.empty())) {
         auto& boot = task.script->toolchain.mapRuntimeBoot.emplace();
+        boot.testRunDiagnostics = task.runtimePurpose == MapRuntimeSavePurpose::TestRun;
         boot.enabled = approved; boot.ownsExisting = !state->previousIdentity.empty();
         boot.onlyIfUsed = approved && state->settings.mode == MapRuntimeMode::Automatic;
         boot.resolvePayloadIdentity = [state, sources = task.runtimePackageSources, purpose = task.runtimePurpose]() -> Result<std::string> {
@@ -214,6 +216,8 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
     if (!*script.value || state.scriptMember.ends_with(".lua")) return Fail("RUNTIME_LUA_UNSUPPORTED", "运行库需要完整经典1.27a JASS主脚本。");
     const auto boot = Script::VerifyMapRuntimeBoot(Text(**script.value), required);
     if (!boot.Succeeded()) return boot;
+    const auto diagnostic = Script::VerifyMapRuntimeTestDiagnostics(Text(**script.value), required && state.purpose == MapRuntimeSavePurpose::TestRun);
+    if (!diagnostic.Succeeded()) return diagnostic;
     const auto scriptHash = Sha256(**script.value);
     if (!scriptHash.Succeeded()) return {scriptHash.diagnostics};
     state.scriptSha256 = *scriptHash.value;
@@ -306,6 +310,8 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
 Status VerifyMapRuntimeSave(const MapSaveTask& task) {
     if (!task.runtimeState) return Fail("RUNTIME_PLAN_MISSING", "保存缺少运行库策略快照。");
     const auto& state = *task.runtimeState;
+    if (task.runtimePurpose != state.purpose)
+        return Fail("RUNTIME_SOURCE_CHANGED", "运行库保存用途在准备之后变化，未发布旧策略产物。");
     if (task.runtimeApprovedPackageSha256 != state.approvedPackageSha256)
         return Fail("RUNTIME_SOURCE_CHANGED", "运行库批准在保存期间改变，未发布旧授权快照。");
     const auto settings = FinalMember(task, kMapRuntimeSettingsMember);
@@ -329,6 +335,8 @@ Status VerifyMapRuntimeSave(const MapSaveTask& task) {
     if (!hash.Succeeded() || *hash.value != state.scriptSha256) return Fail("RUNTIME_SOURCE_CHANGED", "主脚本在运行库终检之后变化。");
     const auto boot = Script::VerifyMapRuntimeBoot(Text(**script.value), state.active);
     if (!boot.Succeeded() || !state.active) return boot;
+    const auto diagnostic = Script::VerifyMapRuntimeTestDiagnostics(Text(**script.value), state.purpose == MapRuntimeSavePurpose::TestRun);
+    if (!diagnostic.Succeeded()) return diagnostic;
     return Script::VerifyMapRuntimeIdentity(Text(**script.value), state.package->PayloadSha256());
 }
 }

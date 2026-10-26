@@ -323,7 +323,8 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
         "native Player takes integer id returns player\nnative StartCampaignAI takes player p, string name returns nothing\n");
     WriteText(tool / "compiler" / "jass" / "24" / "blizzard.j", "// original synthetic base\n");
     const std::string client = "library AudastraJapi\nglobals\nstring AjExpectedRuntimeIdentity = \"\"\nendglobals\n"
-        "function AjInitialize takes nothing returns boolean\nreturn true\nendfunction\nendlibrary\n";
+        "function AjInitialize takes nothing returns boolean\nreturn true\nendfunction\n"
+        "function AjStartTestDiagnostics takes nothing returns nothing\nendfunction\nendlibrary\n";
     WriteText(jass / "Client.cfg", "AjInitialize\n"); WriteText(jass / "Client.j", client);
     const auto hash = Sha256(std::as_bytes(std::span(client)));
     const auto layout = ResolveScriptToolchainLayout({tool,24,127});
@@ -344,6 +345,12 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
         && VerifyMapRuntimeBoot(compiled.script, true).Succeeded()
         && VerifyMapRuntimeIdentity(compiled.script, std::string(64,'a')).Succeeded(),
         "real injection, vJass translation, managed first boot, identity binding and strict JASS check agree");
+    boot.testRunDiagnostics = true; options.workDir = root / "test-diagnostics";
+    const auto diagnostic = CompileMapScript(generated, options, {});
+    Require(diagnostic.Succeeded() && diagnostic.syntaxChecked
+        && VerifyMapRuntimeTestDiagnostics(diagnostic.script, true).Succeeded(),
+        "TestRun diagnostic scheduling survives real translation and strict JASS checking");
+    boot.testRunDiagnostics = false;
     WriteText(jass / "Client.j", client + "// a different library release\n");
     options.workDir = root / "stale-client";
     const auto stale = CompileMapScript(generated, options, {});

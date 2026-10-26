@@ -25,6 +25,9 @@ globals
     string array AjListenerModules
     string array AjListenerTypes
     trigger array AjListenerTriggers
+    boolean AjTestDiagnosticStarted = false
+    integer AjTestDiagnosticAttempts = 0
+    timer AjTestDiagnosticTimer = null
 endglobals
 
 function AjFail takes integer status returns boolean
@@ -397,6 +400,38 @@ function AjInitialize takes nothing returns boolean
         endif
     endif
     return true
+endfunction
+
+// 仅由测试运行保存产物显式启动；普通地图不会安排此计时器。
+function AjStopTestDiagnostics takes nothing returns nothing
+    if AjTestDiagnosticTimer == null then
+        return
+    endif
+    call PauseTimer(AjTestDiagnosticTimer)
+    call DestroyTimer(AjTestDiagnosticTimer)
+    set AjTestDiagnosticTimer = null
+endfunction
+
+function AjPollTestDiagnostics takes nothing returns nothing
+    if AjTestDiagnosticTimer == null then
+        return
+    endif
+    set AjTestDiagnosticAttempts = AjTestDiagnosticAttempts + 1
+    if AjInitialize() then
+        call AjStopTestDiagnostics()
+    elseif AjTestDiagnosticAttempts >= 150 then
+        call DisplayTimedTextToPlayer(GetLocalPlayer(), 0.0, 0.0, 12.0, "Audastra：运行库30秒内未能握手，界面扩展可能不可用（状态 " + I2S(AjLastStatus) + "）。")
+        call AjStopTestDiagnostics()
+    endif
+endfunction
+
+function AjStartTestDiagnostics takes nothing returns nothing
+    if AjTestDiagnosticStarted then
+        return
+    endif
+    set AjTestDiagnosticStarted = true
+    set AjTestDiagnosticTimer = CreateTimer()
+    call TimerStart(AjTestDiagnosticTimer, 0.2, true, function AjPollTestDiagnostics)
 endfunction
 
 function AjCallInt takes string command, string arguments returns integer

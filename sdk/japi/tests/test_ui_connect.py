@@ -56,7 +56,7 @@ def expression(text: str, names: set[str], calls: set[str]) -> str:
             raise ValueError(f"unsupported expression: {text}")
         if isinstance(node, ast.Constant) and type(node.value) not in (str, int, bool, float):
             raise ValueError(f"unsupported literal: {text}")
-        if isinstance(node, ast.Name) and node.id not in names | calls | {"true", "false"}:
+        if isinstance(node, ast.Name) and node.id not in names | calls | {"true", "false", "null"}:
             raise ValueError(f"unknown identifier {node.id}")
         if isinstance(node, ast.Call) and (
                 not isinstance(node.func, ast.Name) or node.func.id not in calls or node.keywords):
@@ -64,8 +64,8 @@ def expression(text: str, names: set[str], calls: set[str]) -> str:
 
     class Booleans(ast.NodeTransformer):
         def visit_Name(self, node: ast.Name) -> ast.AST:
-            if node.id in ("true", "false"):
-                return ast.copy_location(ast.Constant(node.id == "true"), node)
+            if node.id in ("true", "false", "null"):
+                return ast.copy_location(ast.Constant(None if node.id == "null" else node.id == "true"), node)
             return node
 
     return ast.unparse(ast.fix_missing_locations(Booleans().visit(tree)))
@@ -88,13 +88,13 @@ def initial_globals(source: str, names: tuple[str, ...]) -> dict[str, object]:
     result = {}
     for name in names:
         declarations = re.findall(
-            rf"^\s*(?:private\s+)?(?:constant\s+)?(integer|boolean|string|real)\s+{name}\s*=\s*(.+)$",
+            rf"^\s*(?:private\s+)?(?:constant\s+)?(integer|boolean|string|real|timer)\s+{name}\s*=\s*(.+)$",
             source, re.MULTILINE)
         if len(declarations) != 1:
             raise ValueError(f"expected exactly one initialized global {name}")
         kind, raw = declarations[0]
         value = ast.literal_eval(expression(without_comment(raw), set(), set()))
-        expected = {"integer": int, "boolean": bool, "string": str, "real": float}[kind]
+        expected = {"integer": int, "boolean": bool, "string": str, "real": float, "timer": type(None)}[kind]
         if type(value) is not expected:
             raise ValueError(f"wrong global initializer type for {name}")
         result[name] = value
@@ -104,7 +104,7 @@ def initial_globals(source: str, names: tuple[str, ...]) -> dict[str, object]:
 def translate_function(source: str, name: str, globals_: set[str], extra_calls=()) -> str:
     header, lines = extract_function(source, name)
     declaration = re.fullmatch(
-        rf"(?:private\s+)?function\s+{name}\s+takes\s+(.+)\s+returns\s+(boolean|string|integer)", header)
+        rf"(?:private\s+)?function\s+{name}\s+takes\s+(.+)\s+returns\s+(boolean|string|integer|nothing)", header)
     if not declaration:
         raise ValueError(f"unsupported function declaration: {header}")
     arguments = []
@@ -170,6 +170,13 @@ def translate_function(source: str, name: str, globals_: set[str], extra_calls=(
             if not branches or branches[-1] != "loop":
                 raise ValueError(f"unexpected endloop in {name}")
             branches.pop()
+        elif line == "return":
+            emit("return")
+        elif line.startswith("call "):
+            call = re.sub(r"\bfunction\s+([A-Za-z][A-Za-z0-9_]*)", r"\1", line[5:])
+            if not isinstance(ast.parse(call, mode="eval").body, ast.Call):
+                raise ValueError(f"unsupported call statement: {line}")
+            emit(expr(call))
         elif line.startswith("return "):
             emit("return " + expr(line[7:]))
         elif line.startswith("set "):
@@ -391,7 +398,7 @@ class ConnectTests(unittest.TestCase):
     def test_unsupported_statements_are_rejected(self):
         source = self.ui_source.replace("return connectStatus == 0", "call UnsupportedNative()\nreturn connectStatus == 0", 1)
         self.assertNotEqual(source, self.ui_source)
-        with self.assertRaisesRegex(ValueError, "unsupported statement"):
+        with self.assertRaisesRegex(ValueError, "unsupported (statement|call)"):
             runtime(source, self.japi_source)
 
 
@@ -442,6 +449,78 @@ class RealSyntaxTests(unittest.TestCase):
             self.assertEqual(self.state["AjCanonicalInt"](ch), ch in "0123456789", repr(ch))
 
 
+class DiagnosticTests(unittest.TestCase):
+    ui_source = ""
+    japi_source = ""
+
+    def make(self, **outcomes):
+        state, transport = runtime(self.ui_source, self.japi_source, **outcomes)
+        globals_ = set(initial_globals(self.japi_source, JAPI_GLOBALS))
+        diagnostics = initial_globals(self.japi_source, ("AjTestDiagnosticStarted", "AjTestDiagnosticAttempts", "AjTestDiagnosticTimer"))
+        state.update(diagnostics)
+        globals_.update(diagnostics)
+        starts, stops, messages = [], [], []
+        state.update({"CreateTimer": lambda: 1,
+                      "TimerStart": lambda timer, period, repeating, callback: starts.append((timer, period, repeating, callback)),
+                      "PauseTimer": lambda timer: stops.append(("pause", timer)),
+                      "DestroyTimer": lambda timer: stops.append(("destroy", timer)),
+                      "GetLocalPlayer": lambda: 0,
+                      "DisplayTimedTextToPlayer": lambda player, x, y, seconds, text: messages.append((player, seconds, text))})
+        names = ("AjStopTestDiagnostics", "AjPollTestDiagnostics", "AjStartTestDiagnostics", "CreateTimer", "TimerStart",
+                 "PauseTimer", "DestroyTimer", "GetLocalPlayer", "DisplayTimedTextToPlayer")
+        for name in names[:3]:
+            source = translate_function(self.japi_source, name, globals_, names)
+            exec(compile(source, f"<translated {name}>", "exec"), state)
+        return state, transport, starts, stops, messages
+
+    def test_formal_client_does_not_schedule_or_display(self):
+        _, transport, starts, stops, messages = self.make(hello_default=16)
+        self.assertEqual((transport.calls, starts, stops, messages), ([], [], [], []))
+
+    def test_150_failures_display_once_and_destroy(self):
+        state, transport, starts, stops, messages = self.make(hello_default=16)
+        state["AjStartTestDiagnostics"]()
+        state["AjStartTestDiagnostics"]()
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0][:3], (1, 0.2, True))
+        callback = starts[0][3]
+        for _ in range(149):
+            callback()
+        self.assertEqual((stops, messages), ([], []))
+        callback()
+        self.assertEqual(transport.count("host.hello"), 150)
+        self.assertEqual(stops, [("pause", 1), ("destroy", 1)])
+        self.assertEqual(len(messages), 1)
+        self.assertIn("16", messages[0][2])
+        self.assertIsNone(state["AjTestDiagnosticTimer"])
+        state["AjStartTestDiagnostics"]()
+        self.assertEqual(len(starts), 1)
+        callback()
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(stops, [("pause", 1), ("destroy", 1)])
+
+    def test_success_at_first_or_last_attempt_is_silent(self):
+        for attempt in (1, 150):
+            with self.subTest(attempt=attempt):
+                state, transport, starts, stops, messages = self.make(hello=[16]*(attempt-1)+[0])
+                state["AjStartTestDiagnostics"]()
+                for _ in range(attempt):
+                    starts[0][3]()
+                self.assertEqual(transport.count("host.hello"), attempt)
+                self.assertEqual(stops, [("pause", 1), ("destroy", 1)])
+                self.assertEqual(messages, [])
+
+    def test_identity_mismatch_is_a_bounded_failure(self):
+        state, _, starts, stops, messages = self.make(identity_default=(0, "b"*64))
+        state["AjExpectedRuntimeIdentity"] = "a"*64
+        state["AjStartTestDiagnostics"]()
+        for _ in range(150):
+            starts[0][3]()
+        self.assertEqual(len(messages), 1)
+        self.assertIn("14", messages[0][2])
+        self.assertEqual(stops, [("pause", 1), ("destroy", 1)])
+
+
 def read_jass(path: Path) -> str:
     # Check before and after resolution so a .j symlink cannot redirect to .ai.
     if path.suffix.lower() != ".j":
@@ -462,10 +541,13 @@ def main() -> int:
         ConnectTests.ui_source = read_jass(args.ui)
         ConnectTests.japi_source = read_jass(args.japi)
         RealSyntaxTests.japi_source = ConnectTests.japi_source
+        DiagnosticTests.ui_source = ConnectTests.ui_source
+        DiagnosticTests.japi_source = ConnectTests.japi_source
     except (OSError, ValueError) as error:
         parser.error(str(error))
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(ConnectTests)
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(RealSyntaxTests))
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(DiagnosticTests))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
 

@@ -261,6 +261,62 @@ void PackageNegativeBoundaries() {
     f.manifest["schema"] = 1.0; f.Save();
     Require(Code(MapRuntimePackage::Capture(f.source, MapRuntimeSavePurpose::TestRun), "RUNTIME_PACKAGE_INVALID"), "floating schema rejected");
 }
+void DiagnosticSaveRoundTrip() {
+    Fixture f;
+    // 仅原创合成包声明公开资格，以覆盖Normal与TestRun切换；不涉及真实内部载荷发布。
+    f.manifest["scope"] = "public"; f.Save(); f.source.publicDistributionApproved = true;
+    const auto settings = SerializeMapRuntimeSettings({MapRuntimeMode::Enabled, f.source.manifestSha256});
+    const std::string clean = "globals\nstring AjExpectedRuntimeIdentity = \"\"\nendglobals\n"
+        "function AjStartTestDiagnostics takes nothing returns nothing\nendfunction\n"
+        "function main takes nothing returns nothing\ncall AjInitialize()\nendfunction\n";
+    const auto source = f.root / "diagnostic-source.w3x";
+    Require(WriteVerifiedArchive(source, std::vector<MapArchiveMember>{{"war3map.j",Bytes(clean)},
+        {std::string(kMapRuntimeSettingsMember),*settings.value},{"unmanaged.bin",Bytes("retained")}}).Succeeded(), "write diagnostic save fixture");
+    auto baseline = MapArchiveSession::Open(source); Require(baseline.Succeeded(), "open diagnostic fixture");
+    unsigned sequence = 0;
+    for (const auto purpose : {MapRuntimeSavePurpose::TestRun, MapRuntimeSavePurpose::TestRun,
+        MapRuntimeSavePurpose::Normal, MapRuntimeSavePurpose::TestRun, MapRuntimeSavePurpose::InternalValidation}) {
+        Script::MapRuntimeBootPlan boot;
+        boot.payloadSha256 = *Sha256(Bytes("opaque synthetic payload bytes")).value;
+        boot.testRunDiagnostics = purpose == MapRuntimeSavePurpose::TestRun;
+        const auto built = Script::ApplyMapRuntimeBoot(clean, boot); Require(built.Succeeded(), "build diagnostic purpose fixture");
+        MapSaveTask task; Require(task.FreezeArchive(*baseline.value).Succeeded(), "freeze diagnostic purpose");
+        task.target = f.root / ("diagnostic-" + std::to_string(++sequence) + ".w3x");
+        task.runtimePurpose = purpose; task.testCopyOnly = purpose != MapRuntimeSavePurpose::Normal;
+        task.runtimePackageSources = {f.source}; task.runtimeApprovedPackageSha256 = f.source.manifestSha256;
+        // 测保存终检/独立回读；这里不把原创合成脚本当真实编译证明。
+        task.replacements.push_back({"war3map.j",Bytes(*built.value)}); task.scriptRebuilt = true;
+        task.scriptInjectedSourceSha256 = {*Sha256(Bytes("original synthetic client source bytes")).value};
+        MapSaveService::Run(task);
+        if (!task.succeeded) for (const auto& d : task.diagnostics) std::cerr << d.code << ": " << d.message << '\n';
+        Require(task.succeeded, "test/normal/repeated shared save succeeds with matching final script");
+        baseline = MapArchiveSession::Open(task.target); Require(baseline.Succeeded(), "independent diagnostic reopen");
+        const auto bytes = baseline.value->ReadMember("war3map.j"); Require(bytes.Succeeded(), "read only diagnostic JASS member");
+        const std::string script(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
+        Require(Script::VerifyMapRuntimeTestDiagnostics(script, boot.testRunDiagnostics).Succeeded(), "saved diagnostic matches exact purpose");
+        Require(baseline.value->ReadMember("unmanaged.bin").value == Bytes("retained"), "diagnostic policy preserves unrelated data");
+    }
+    MapSaveTask changed; Require(changed.FreezeArchive(*baseline.value).Succeeded(), "freeze purpose mutation");
+    changed.target = f.root / "purpose-mutated.w3x"; changed.runtimePackageSources = {f.source};
+    changed.runtimeApprovedPackageSha256 = f.source.manifestSha256;
+    changed.prepareFinalDerived = [](MapSaveTask& task) { task.runtimePurpose = MapRuntimeSavePurpose::TestRun; return Status::Ok(); };
+    MapSaveService::Run(changed);
+    Require(!changed.succeeded && Code(changed,"RUNTIME_SOURCE_CHANGED") && !std::filesystem::exists(changed.target), "late save purpose mutation cannot publish");
+    const auto testArchive = MapArchiveSession::Open(f.root / "diagnostic-4.w3x"); Require(testArchive.Succeeded(), "reopen actual test copy to disable");
+    const auto testBytes = testArchive.value->ReadMember("war3map.j"); Require(testBytes.Succeeded(), "read test-copy script only");
+    std::string noBusinessCall(reinterpret_cast<const char*>(testBytes.value->data()), testBytes.value->size());
+    const auto business = noBusinessCall.find("call AjInitialize()"); Require(business != std::string::npos, "locate original fixture business call");
+    noBusinessCall.replace(business, std::string("call AjInitialize()").size(), "call Marker()");
+    Script::MapRuntimeBootPlan removal; removal.enabled = false; removal.ownsExisting = true;
+    const auto stripped = Script::ApplyMapRuntimeBoot(noBusinessCall, removal); Require(stripped.Succeeded(), "remove owned test scheduling with boot");
+    MapSaveTask disabled; Require(disabled.FreezeArchive(*testArchive.value).Succeeded(), "freeze disable from TestRun");
+    disabled.target = f.root / "diagnostic-disabled.w3x"; disabled.runtimePackageSources = {f.source};
+    disabled.replacements = {{"war3map.j",Bytes(*stripped.value)},
+        {std::string(kMapRuntimeSettingsMember),*SerializeMapRuntimeSettings({MapRuntimeMode::Disabled,f.source.manifestSha256}).value}};
+    disabled.scriptRebuilt = true; MapSaveService::Run(disabled);
+    Require(disabled.succeeded && !disabled.nextSession->HasMember(kMapRuntimeInstallationMember)
+        && !disabled.nextSession->HasMember("warvk_runtime.blp"), "disable removes runtime members and test scheduling in the same save");
+}
 void SaveRoundTrip() {
     Fixture f;
     const auto settings = SerializeMapRuntimeSettings({MapRuntimeMode::Automatic, f.source.manifestSha256});
@@ -316,6 +372,8 @@ void SaveRoundTrip() {
         MapSaveService::Run(scoped);
         if (purpose == MapRuntimeSavePurpose::Normal)
             Require(!scoped.succeeded && !std::filesystem::exists(scoped.target), "test marker does not grant ordinary save distribution approval");
+        else if (purpose == MapRuntimeSavePurpose::TestRun)
+            Require(!scoped.succeeded && Code(scoped, "RUNTIME_TEST_CLIENT_MISSING"), "old final script cannot silently bypass new test diagnostics");
         else
             Require(scoped.succeeded, "explicit test purposes package internal runtime into new copies");
     }
@@ -511,7 +569,7 @@ void LuaPolicy() {
 }
 }
 int main() {
-    try { Settings(); Preparation(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); LuaPolicy(); }
+    try { Settings(); Preparation(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); DiagnosticSaveRoundTrip(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); LuaPolicy(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "runtime settings and package tests passed\n";
 }

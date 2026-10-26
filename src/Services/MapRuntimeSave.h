@@ -16,6 +16,7 @@ struct MapRuntimeSaveState {
     std::string scriptSha256;
     std::vector<std::string> removedMembers;
     bool active = false;
+    MapRuntimeSavePurpose purpose = MapRuntimeSavePurpose::Normal;
 };
 [[nodiscard]] Status PrepareMapRuntimeSave(MapSaveTask& task);
 [[nodiscard]] Status FinalizeMapRuntimeSave(MapSaveTask& task);
