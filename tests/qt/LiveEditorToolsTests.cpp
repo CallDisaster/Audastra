@@ -7,6 +7,7 @@
 #include "McpObjectTools.h"
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
+#include "McpMapRuntimeTools.h"
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
 #include "McpPlacementTools.h"
@@ -289,6 +290,7 @@ class LiveEditorToolsTests final : public QObject {
     Q_OBJECT
 private slots:
     void OnlyLiveToolsAndActualCatalogAreExposed();
+    void RuntimeToolsRequireExplicitConsentAndShareUndo();
     void CampaignToolsShareSchemasAndPolicy();
     void BatchKeepsDocumentAndExistingUndoCommands();
     void StaleAndInvalidBatchesAreAtomic();
@@ -349,7 +351,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
-        "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
+        "map_runtime_query", "map_runtime_set", "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_apply_text", "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
         "objects_text",
@@ -361,7 +363,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{92});
+    QCOMPARE(expected.size(), qsizetype{94});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2713,6 +2715,76 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
 
 #include "TerrainBlockLiveCases.h"
 #include "LiveTerrainResizeCases.h"
+void LiveEditorToolsTests::RuntimeToolsRequireExplicitConsentAndShareUndo() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto initial = f.tools->Invoke("map_runtime_query", {});
+    QVERIFY2(initial.value("ok").toBool(), qPrintable(Explain(initial)));
+    QVERIFY(!initial.value("approved").toBool()); QVERIFY(initial.value("packages").toArray().isEmpty());
+    const auto oldRevision = f.project.editRevision_.Revision();
+    const auto original = f.Fingerprint();
+    const auto make = [&](const QJsonObject& query, const char* mode) {
+        return QJsonObject{{"project_identity", query.value("project_identity")},
+            {"expected_revision", query.value("revision")}, {"mode", mode}};
+    };
+    auto enable = make(initial, "enabled"); enable.insert("package_sha256", QString(64, 'a'));
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_runtime_set", enable)), QString("RUNTIME_CONSENT_REQUIRED"));
+    enable.insert("approve_native_runtime", true);
+    QCOMPARE(ErrorCode(Mcp::InvokeMapRuntimeTool("map_runtime_set", enable, {})), QString("RUNTIME_LIVE_HOST_REQUIRED"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_runtime_set", enable)), QString("RUNTIME_PACKAGE_MISSING"));
+    auto injected = enable; injected.insert("package_path", "untrusted");
+    QVERIFY(!Mcp::InvokeMapRuntimeTool("map_runtime_set", injected, {}).value("ok").toBool());
+    auto invalid = enable; invalid.insert("expected_revision", "18446744073709551616");
+    QCOMPARE(ErrorCode(Mcp::InvokeMapRuntimeTool("map_runtime_set", invalid, {})), QString("RUNTIME_ARGUMENT_INVALID"));
+    for (const auto revision : {"01", "1\n", "-1", "1.0"}) {
+        invalid = enable; invalid.insert("expected_revision", revision);
+        QCOMPARE(ErrorCode(Mcp::InvokeMapRuntimeTool("map_runtime_set", invalid, {})), QString("RUNTIME_ARGUMENT_INVALID"));
+    }
+    invalid = enable; invalid.insert("package_sha256", QString(64, 'a') + "\n");
+    QCOMPARE(ErrorCode(Mcp::InvokeMapRuntimeTool("map_runtime_set", invalid, {})), QString("RUNTIME_ARGUMENT_INVALID"));
+    QCOMPARE(f.project.editRevision_.Revision(), oldRevision); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+
+    const auto root = std::filesystem::path(f.outputs.filePath("runtime-package").toStdWString());
+    QJsonArray files;
+    const auto add = [&](const char* path, const char* member, const char* role, const QByteArray& bytes) {
+        QVERIFY(WriteFile(QString::fromStdWString((root / path).wstring()), bytes));
+        const auto sha = Sha256File(root / path); QVERIFY(sha.Succeeded());
+        files.append(QJsonObject{{"path", path}, {"member", member}, {"role", role}, {"size", bytes.size()},
+            {"sha256", QString::fromStdString(*sha.value)}});
+    };
+    add("boot.blob", "warvk_loader_raw.ai", "bootstrap", "original opaque fixture");
+    add("payload.blob", "warvk_runtime.blp", "payload", "original payload fixture");
+    add("notice.txt", "audastra/runtime/licenses/fixture.txt", "notice", "original notice fixture");
+    add("client.j", "", "client", "original synthetic client");
+    const QJsonObject manifest{{"schema", 1}, {"id", "original-test"}, {"version", "1.0.0"}, {"abi", 0x20000},
+        {"scope", "internal"}, {"gameSha256", "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"}, {"files", files}};
+    QVERIFY(WriteFile(QString::fromStdWString((root / "manifest.json").wstring()), QJsonDocument(manifest).toJson(QJsonDocument::Compact)));
+    const auto identity = Sha256File(root / "manifest.json"); QVERIFY(identity.Succeeded());
+    f.project.runtimePackageSources_ = {{root, *identity.value, false}};
+    const auto available = f.tools->Invoke("map_runtime_query", {}); QVERIFY(available.value("ok").toBool());
+    QVERIFY(!available.value("approved").toBool());
+    const auto package = available.value("packages").toArray().first().toObject();
+    QVERIFY(package.value("internal_only").toBool()); QVERIFY(package.value("available").toBool());
+    QVERIFY(!package.contains("root")); QVERIFY(!package.contains("path"));
+    enable.insert("package_sha256", QString::fromStdString(*identity.value));
+    const auto enabled = f.tools->Invoke("map_runtime_set", enable);
+    QVERIFY2(enabled.value("ok").toBool(), qPrintable(Explain(enabled))); QVERIFY(enabled.value("approved").toBool());
+    QCOMPARE(f.project.editRevision_.Revision(), oldRevision + 1); QCOMPARE(f.project.triggerUndoStack_->count(), 1);
+    QCOMPARE(f.Fingerprint(), original);
+    QVERIFY(!f.tools->Invoke("map_runtime_set", enable).value("ok").toBool());
+    QCOMPARE(f.project.triggerUndoStack_->count(), 1);
+    auto disable = make(enabled, "disabled");
+    const auto disabled = f.tools->Invoke("map_runtime_set", disable);
+    QVERIFY(disabled.value("ok").toBool()); QVERIFY(!disabled.value("approved").toBool());
+    f.project.triggerUndoStack_->undo();
+    QVERIFY(f.tools->Invoke("map_runtime_query", {}).value("approved").toBool());
+    f.project.triggerUndoStack_->undo();
+    QVERIFY(!f.tools->Invoke("map_runtime_query", {}).value("approved").toBool());
+    QVERIFY(f.project.CaptureAssets().imports.empty());
+    Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
+    QVERIFY(!Names(f.tools->Tools()).contains("map_runtime_set")); QVERIFY(Names(f.tools->Tools()).contains("map_runtime_query"));
+    const auto denied = f.tools->Invoke("map_runtime_set", make(f.tools->Invoke("editor_state", {}), "disabled"));
+    QVERIFY(!denied.value("ok").toBool());
+}
 
 QTEST_GUILESS_MAIN(LiveEditorToolsTests)
 #include "LiveEditorToolsTests.moc"

@@ -401,6 +401,15 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             Error(task, "SAVE_TARGET_INVALID", "地图保存目标路径为空。");
             return;
         }
+        if (task.runtimePurpose == MapRuntimeSavePurpose::InternalValidation || task.runtimePurpose == MapRuntimeSavePurpose::TestRun) {
+            std::error_code existsError;
+            const bool exists = !task.target.empty() && std::filesystem::exists(task.target, existsError);
+            if (!task.testCopyOnly || task.inPlace || exists || existsError
+                || (!task.target.empty() && task.target.lexically_normal() == task.sourcePath.lexically_normal())) {
+                Error(task, "RUNTIME_INTERNAL_COPY_REQUIRED", "测试运行或内部验收只允许独立且不存在的新副本路径；无目标预检不能用作写回授权。");
+                return;
+            }
+        }
         if (task.script && task.script->luaTestOptions.testHotReload) {
             std::error_code equivalentError;
             const bool same = !task.target.empty()

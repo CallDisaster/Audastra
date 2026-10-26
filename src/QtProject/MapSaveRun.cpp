@@ -433,6 +433,11 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
 
 std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     AddDiagnostics(job.diagnostics);
+    if (job.testCopyOnly || job.runtimePurpose != Services::MapRuntimeSavePurpose::Normal) {
+        AddDiagnostic(tr("错误"), tr("地图"), tr("SAVE_TEST_COPY_COMMIT_REJECTED"),
+            tr("测试/验收副本不能作为正式保存提交；当前源地图、编辑基线与撤销历史保持不变。"));
+        return std::nullopt;
+    }
 
     const auto rejectStaleCommit = [this, &job](const QString& code, const QString& reason)
         -> std::optional<MapCopySaveResult> {

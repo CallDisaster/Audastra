@@ -241,6 +241,30 @@ void SaveRoundTrip() {
     Require(second.succeeded, "repeat save reuses exact managed members");
     Require(second.nextSession->ReadMember("war3map.imp").value == first.nextSession->ReadMember("war3map.imp").value,
         "repeat save does not duplicate imports");
+    for (const auto purpose : {MapRuntimeSavePurpose::Normal, MapRuntimeSavePurpose::TestRun, MapRuntimeSavePurpose::InternalValidation}) {
+        MapSaveTask scoped;
+        Require(scoped.FreezeArchive(*first.nextSession).Succeeded(), "freeze purpose fixture");
+        scoped.target = f.root / ("purpose-" + std::to_string(static_cast<int>(purpose)) + ".w3x");
+        scoped.runtimePurpose = purpose; scoped.testCopyOnly = true;
+        scoped.runtimePackageSources = {f.source}; scoped.runtimeApprovedPackageSha256 = f.source.manifestSha256;
+        MapSaveService::Run(scoped);
+        if (purpose == MapRuntimeSavePurpose::Normal)
+            Require(!scoped.succeeded && !std::filesystem::exists(scoped.target), "test marker does not grant ordinary save distribution approval");
+        else
+            Require(scoped.succeeded, "explicit test purposes package internal runtime into new copies");
+    }
+    MapSaveTask validationPreflight;
+    Require(validationPreflight.FreezeArchive(*first.nextSession).Succeeded(), "freeze targetless test preflight");
+    validationPreflight.runtimePurpose = MapRuntimeSavePurpose::InternalValidation; validationPreflight.testCopyOnly = true;
+    validationPreflight.runtimePackageSources = {f.source}; validationPreflight.runtimeApprovedPackageSha256 = f.source.manifestSha256;
+    Require(MapSaveService::Preflight(validationPreflight).Succeeded() && validationPreflight.written.empty(),
+        "targetless internal preflight validates without publishing");
+    MapSaveTask overwrite;
+    Require(overwrite.FreezeArchive(*first.nextSession).Succeeded(), "freeze test overwrite rejection");
+    overwrite.target = source; overwrite.runtimePurpose = MapRuntimeSavePurpose::TestRun; overwrite.testCopyOnly = true;
+    MapSaveService::Run(overwrite);
+    Require(!overwrite.succeeded && Code(overwrite, "RUNTIME_INTERNAL_COPY_REQUIRED")
+        && *Sha256File(source).value == opened.value->SourceSha256(), "test scope cannot overwrite any existing map");
     MapSaveTask staleIdentity;
     Require(staleIdentity.FreezeArchive(*first.nextSession).Succeeded(), "freeze wrong identity fixture");
     staleIdentity.target = f.root / "stale-identity.w3x"; staleIdentity.runtimePurpose = MapRuntimeSavePurpose::InternalValidation;

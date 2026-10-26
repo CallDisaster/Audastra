@@ -145,20 +145,33 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         return false;
     }
     const auto sourceBeforeSave = project_->sourceArchivePath_;
-    auto job = project_->PrepareMapSave(target, inPlace, minimapChoice);
+    if (testHotReload && !testSnapshot) {
+        project_->AddDiagnostic(tr("错误"), tr("测试"), tr("LUA_TEST_SAVE_REQUIRED"),
+            tr("热重载必须使用测试快照，不能作为正式保存执行。"));
+        reportFailure(tr("测试用途不支持")); return false;
+    }
+    if ((testSnapshot || testHotReload) && inPlace) {
+        project_->AddDiagnostic(tr("错误"), tr("测试"), tr("RUNTIME_INTERNAL_COPY_REQUIRED"),
+            tr("测试运行必须生成独立副本，不能写回当前地图。"));
+        reportFailure(tr("测试副本路径不支持")); return false;
+    }
+    auto job = testSnapshot || testHotReload ? project_->PrepareMapTestCopy(target)
+        : project_->PrepareMapSave(target, inPlace, minimapChoice);
     if (!job) {
         UpdateEditDirtyFlags();
         reportFailure(tr("地图未保存：保存准备未通过"));
         return false;
     }
     job->rebuildTerrainShadow = rebuildTerrainShadow;
+    // 小地图策略尚未由worker执行；测试调用方明确要求保留时沿用该策略。
+    if (testSnapshot && minimapChoice == War3Map::Services::TerrainMinimapSaveChoice::Preserve)
+        job->minimapChoice = minimapChoice;
     if (testHotReload) {
         if (!job->script || !job->script->luaTarget) {
             project_->AddDiagnostic(tr("错误"), tr("测试"), QStringLiteral("LUA_RELOAD_PROFILE_REQUIRED"),
                 tr("热重载需要当前地图明确的 Lua 保存档案，请先选择档案再测试。"));
             return false;
         }
-        job->testCopyOnly = true;
         job->script->luaTestOptions.testHotReload = true;
     }
     project_->savingMap_ = true;

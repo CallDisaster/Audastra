@@ -207,19 +207,31 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSave(const std::filesystem:
     return PrepareMapSaveImpl(outputPath, inPlace, false, minimapChoice);
 }
 
-std::unique_ptr<MapSaveJob> EditorProject::PrepareMapPreflight() {
-    return PrepareMapSaveImpl({}, false, true);
+std::unique_ptr<MapSaveJob> EditorProject::PrepareMapTestCopy(const std::filesystem::path& target,
+    Services::MapRuntimeSavePurpose purpose) {
+    if (purpose == Services::MapRuntimeSavePurpose::Normal) {
+        AddDiagnostic(tr("错误"), tr("地图"), tr("RUNTIME_SAVE_PURPOSE_INVALID"), tr("测试副本必须明确选择测试运行或内部验收用途。"));
+        return nullptr;
+    }
+    return PrepareMapSaveImpl(target, false, false, Services::TerrainMinimapSaveChoice::Automatic, purpose);
+}
+
+std::unique_ptr<MapSaveJob> EditorProject::PrepareMapPreflight(Services::MapRuntimeSavePurpose purpose) {
+    return PrepareMapSaveImpl({}, false, true, Services::TerrainMinimapSaveChoice::Automatic, purpose);
 }
 
 std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     const std::filesystem::path& outputPath, bool inPlace, bool contentOnly,
-    Services::TerrainMinimapSaveChoice minimapChoice) {
+    Services::TerrainMinimapSaveChoice minimapChoice, Services::MapRuntimeSavePurpose purpose) {
     const auto fail = [this](const QString& code, const QString& message) {
         AddDiagnostic(tr("错误"), tr("地图"), code, message);
         return std::unique_ptr<MapSaveJob>{};
     };
     if (HasPendingTerrainCommit())
         return fail(tr("TERRAIN_COMMIT_PENDING"), tr("地形操作正在核对并提交，请完成或取消后再保存地图；尚未冻结保存内容。"));
+    if (purpose != Services::MapRuntimeSavePurpose::Normal && purpose != Services::MapRuntimeSavePurpose::TestRun
+        && purpose != Services::MapRuntimeSavePurpose::InternalValidation)
+        return fail(tr("RUNTIME_SAVE_PURPOSE_INVALID"), tr("未知保存用途不能授予内部包使用资格。"));
     const bool explicitMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingGroundOnly
         || minimapChoice == Services::TerrainMinimapSaveChoice::GenerateMissingDeclaredGroundOnly;
     const bool automaticMinimap = minimapChoice == Services::TerrainMinimapSaveChoice::Automatic;
@@ -272,6 +284,12 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     const auto target = contentOnly ? std::filesystem::path{} : inPlace ? sourceArchivePath_
         : std::filesystem::absolute(outputPath, pathError).lexically_normal();
     if (pathError) return fail(tr("REPACK_TARGET_INVALID"), tr("无法解析输出路径。"));
+    if (purpose != Services::MapRuntimeSavePurpose::Normal && !contentOnly) {
+        std::error_code existsError;
+        const bool exists = std::filesystem::exists(target, existsError);
+        if (inPlace || target == sourceArchivePath_.lexically_normal() || exists || existsError)
+            return fail(tr("RUNTIME_INTERNAL_COPY_REQUIRED"), tr("测试运行或内部验收必须使用独立且不存在的新副本路径，不能写回或覆盖地图。"));
+    }
     if (!archiveSession_) {
         return fail(tr("REPACK_SOURCE_SNAPSHOT_MISSING"), tr("源归档未能完整建立快照，不能保存不完整副本。"));
     }
@@ -290,6 +308,8 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         return fail(tr("SAVE_REVISION_CHANGED"), tr("准备保存时编辑修订发生变化，地图保存已中止。"));
     }
     auto job = std::make_unique<MapSaveJob>();
+    job->runtimePurpose = purpose;
+    job->testCopyOnly = purpose != Services::MapRuntimeSavePurpose::Normal;
     job->runtimePackageSources = runtimePackageSources_;
     job->runtimeApprovedPackageSha256 = runtimeApprovedPackageSha256_;
     job->target = target;

@@ -35,6 +35,7 @@ if(TARGET Qt6::Core)
         McpVariableTools.cpp
         McpToolVariables.cpp
         McpMapDataTools.cpp
+        McpMapRuntimeTools.cpp McpMapRuntimeTools.h
         McpAuxiliaryTools.cpp McpAuxiliaryTools.h McpToolAuxiliary.cpp
         McpProductTools.cpp
         McpCodeCheckTools.cpp

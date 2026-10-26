@@ -2,6 +2,7 @@
 #include "EditorProject.h"
 #include "ProjectOpen.h"
 #include "ProjectSaveJob.h"
+#include "MapSaveJob.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "TriggerCommands.h"
 #include "War3MapCore/Hash.h"
@@ -192,6 +193,7 @@ private slots:
     void RuntimeConsentSharesGraphRevisionAndUndo();
     void RuntimeConsentRejectsMissingPackageAndStaleRevision();
     void RuntimeConsentSurvivesProjectSaveAndBindsSource();
+    void RuntimeTestPurposeFrozenBeforeSaveAndCannotCommit();
 };
 
 void TriggerScalarCommandTests::Actual256OneUndoPreservesGbBytesAndUnselectedFields() {
@@ -587,6 +589,46 @@ void TriggerScalarCommandTests::RuntimeConsentSurvivesProjectSaveAndBindsSource(
     const auto wrong = f.root / "wrong-source.forge";
     QVERIFY(WriteVerifiedArchive(wrong,members).Succeeded()); QVERIFY(!PrepareProjectOpen(wrong).Succeeded());
     QVERIFY(f.SourcesUnchanged());
+}
+
+void TriggerScalarCommandTests::RuntimeTestPurposeFrozenBeforeSaveAndCannotCommit() {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    const auto source = f.root / "original.w3x";
+    const std::string sourceScript = "function main takes nothing returns nothing\nendfunction\n";
+    const auto script = std::as_bytes(std::span(sourceScript));
+    const std::vector<MapArchiveMember> members{{"war3map.wtg", f.original.wtg}, {"war3map.wct", f.original.wct},
+        {"war3map.j", {script.begin(), script.end()}}};
+    QVERIFY(WriteVerifiedArchive(source, members).Succeeded());
+    f.project->sourceArchivePath_ = source;
+    f.project->archiveSession_ = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(source)));
+    f.project->directorySnapshot_.reset(); f.project->ResetEditTracking();
+    const auto generation = f.project->editRevision_.Generation(), revision = f.project->editRevision_.Revision();
+    const auto sourceSha = Take(Sha256File(source));
+    const auto normalPath = f.root / "normal.w3x";
+    auto normal = f.project->PrepareMapSave(normalPath, false); QVERIFY(normal);
+    QCOMPARE(normal->runtimePurpose, Services::MapRuntimeSavePurpose::Normal); QVERIFY(!normal->testCopyOnly);
+    QVERIFY(!f.project->PrepareMapTestCopy(f.root / "bad-purpose.w3x", Services::MapRuntimeSavePurpose::Normal));
+    QVERIFY(!f.project->PrepareMapTestCopy(f.root / "unknown-purpose.w3x", static_cast<Services::MapRuntimeSavePurpose>(99)));
+    QVERIFY(!f.project->PrepareMapTestCopy(source));
+    for (const auto purpose : {Services::MapRuntimeSavePurpose::TestRun, Services::MapRuntimeSavePurpose::InternalValidation}) {
+        const auto target = f.root / (purpose == Services::MapRuntimeSavePurpose::TestRun ? "test.w3x" : "validation.w3x");
+        auto preflight = f.project->PrepareMapPreflight(purpose); QVERIFY(preflight);
+        QVERIFY(preflight->target.empty()); QVERIFY(preflight->testCopyOnly); QCOMPARE(preflight->runtimePurpose, purpose);
+        QVERIFY(Services::MapSaveService::Preflight(*preflight).Succeeded()); QVERIFY(!std::filesystem::exists(target));
+        auto copy = f.project->PrepareMapTestCopy(target, purpose); QVERIFY(copy);
+        QCOMPARE(copy->runtimePurpose, purpose); QVERIFY(copy->testCopyOnly); QVERIFY(!copy->inPlace);
+        EditorProject::RunMapSave(*copy); QVERIFY(copy->succeeded); QVERIFY(copy->nextSession);
+        QVERIFY(!f.project->CommitMapSave(*copy));
+        QCOMPARE(f.project->sourceArchivePath_, source);
+        QCOMPARE(f.project->editRevision_.Generation(), generation); QCOMPARE(f.project->editRevision_.Revision(), revision);
+        QCOMPARE(f.project->triggerUndoStack_->count(), 0); QCOMPARE(Take(Sha256File(source)), sourceSha);
+        QVERIFY(!f.project->PrepareMapTestCopy(target, purpose));
+    }
+    auto failed = f.project->PrepareMapTestCopy(f.root / "cancelled.w3x"); QVERIFY(failed);
+    failed->beforePublish = [] { return Status::Failure("test", "CANCELLED_FIXTURE", "cancelled"); };
+    EditorProject::RunMapSave(*failed); QVERIFY(!failed->succeeded); QVERIFY(!std::filesystem::exists(failed->target));
+    QCOMPARE(f.project->editRevision_.Revision(), revision); QCOMPARE(Take(Sha256File(source)), sourceSha);
+    QVERIFY(!std::filesystem::exists(normalPath));
 }
 
 int main(int argc, char** argv) {

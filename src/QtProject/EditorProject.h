@@ -287,9 +287,13 @@ public:
     // inPlace 为真时写回打开的地图（原图移入备份目录），target 被忽略。
     [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapSave(const std::filesystem::path& target, bool inPlace,
         Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Automatic);
+    // 独立测试/验收副本，不允许 CommitMapSave 切换工程基线；用途在脚本准备前冻结。
+    [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapTestCopy(const std::filesystem::path& target,
+        Services::MapRuntimeSavePurpose purpose = Services::MapRuntimeSavePurpose::TestRun);
     [[nodiscard]] Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>> CaptureTriggerMapObjectReferences() const;
     // 同一冻结准备路径，无输出目标；正式预检仍可在专属临时目录构建脚本。
-    [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapPreflight();
+    [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapPreflight(
+        Services::MapRuntimeSavePurpose purpose = Services::MapRuntimeSavePurpose::Normal);
     // 精确当前绑定由宿主复核；经共用逆计划作为一次普通地图数据编辑入栈。
     [[nodiscard]] Status RevertProjectChange(const Services::ProjectChangeRow& row,
         const Services::MapDataQueryBinding& currentBinding);
@@ -580,7 +584,8 @@ private:
     std::shared_ptr<const detail::TriggerUiBaseline> editTrackingUiBaseline_;
     [[nodiscard]] std::unique_ptr<MapSaveJob> PrepareMapSaveImpl(
         const std::filesystem::path& target, bool inPlace, bool contentOnly,
-        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Automatic);
+        Services::TerrainMinimapSaveChoice minimapChoice = Services::TerrainMinimapSaveChoice::Automatic,
+        Services::MapRuntimeSavePurpose purpose = Services::MapRuntimeSavePurpose::Normal);
     [[nodiscard]] std::optional<std::string> CaptureTriggerFingerprint() const;
 };
 

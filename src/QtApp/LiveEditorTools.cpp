@@ -17,6 +17,7 @@
 #include "McpObjectTools.h"
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
+#include "McpMapRuntimeTools.h"
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
 #include "LiveObjectResourceTools.h"
@@ -1520,7 +1521,58 @@ private:
         server_.RegisterTool(std::move(tool));
     }
 
+    QJsonObject RuntimeTool(const QString& name, const QJsonObject& arguments) {
+        const bool write = name == QStringLiteral("map_runtime_set");
+        return Mcp::InvokeMapRuntimeTool(name, arguments, {[&](const QString&, const QJsonObject&) {
+            const auto query = [&]() -> QJsonObject {
+                const auto state = project_.QueryMapRuntimeState();
+                if (!state.Succeeded()) return Mcp::Failure(state);
+                auto result = State();
+                const auto mode = state.value->settings.mode;
+                result.insert("mode", mode == Services::MapRuntimeMode::Automatic ? "automatic"
+                    : mode == Services::MapRuntimeMode::Enabled ? "enabled" : "disabled");
+                result.insert("package_sha256", QString::fromStdString(state.value->settings.packageSha256));
+                result.insert("approved", state.value->approved);
+                QJsonArray packages;
+                for (const auto& package : state.value->packages) {
+                    const auto diagnostics = Mcp::Failure(Status{package.diagnostics}).value("diagnostics");
+                    packages.append(QJsonObject{{"package_sha256", QString::fromStdString(package.packageSha256)},
+                        {"id", QString::fromStdString(package.id)}, {"version", QString::fromStdString(package.version)},
+                        {"payload_sha256", QString::fromStdString(package.payloadSha256)}, {"internal_only", package.internalOnly},
+                        {"available", package.available}, {"diagnostics", diagnostics}});
+                }
+                result.insert("packages", packages);
+                return result;
+            };
+            if (write) return Write(arguments, true, [&]() -> QJsonObject {
+                const auto mode = arguments.value("mode").toString();
+                const Services::MapRuntimeSettings settings{mode == "automatic" ? Services::MapRuntimeMode::Automatic
+                    : mode == "enabled" ? Services::MapRuntimeMode::Enabled : Services::MapRuntimeMode::Disabled,
+                    arguments.value("package_sha256").toString().toStdString()};
+                const auto edited = QtProject::PublishTriggerGraphOperationsWithAssets(project_, {}, QObject::tr("设置地图运行库"),
+                    [&](QtProject::AssetState& state) { return project_.PrepareMapRuntimeSettings(state, settings,
+                        project_.editRevision_.Generation(), project_.editRevision_.Revision()); });
+                if (!edited.Succeeded()) return Mcp::Failure(edited);
+                return query();
+            });
+            if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+            auto bound = arguments;
+            if (!bound.contains("project_identity") && !bound.contains("expected_revision")) {
+                const auto state = State(); bound.insert("project_identity", state.value("project_identity"));
+                bound.insert("expected_revision", state.value("revision"));
+            }
+            const auto checked = CheckContext(bound, false, true);
+            return checked.value("ok").toBool() ? query() : checked;
+        }});
+    }
+
     void RegisterTools() {
+        for (auto definition : Mcp::MapRuntimeToolDefinitions()) {
+            const auto name = definition.name;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name](const QJsonObject& args) { return RuntimeTool(name, args); },
+                definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::WorldViewportToolDefinitions()) {
             const auto name = definition.name;
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
