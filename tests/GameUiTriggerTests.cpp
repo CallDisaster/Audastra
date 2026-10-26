@@ -500,7 +500,7 @@ void TestScriptLibrary() {
 
     // 注入文件 = JAPI 客户端库 + 界面库；这里只声明两者用到的原版类型与 native。
     constexpr std::string_view common =
-        "type agent extends handle\ntype trigger extends agent\ntype timer extends agent\n"
+        "type agent extends handle\ntype trigger extends agent\ntype timer extends agent\ntype player extends agent\n"
         "type triggeraction extends handle\n"
         "native R2SW takes real r, integer width, integer precision returns string\n"
         "native SubString takes string source, integer start, integer end returns string\n"
@@ -513,7 +513,9 @@ void TestScriptLibrary() {
         "native TriggerEvaluate takes trigger whichTrigger returns boolean\n"
         "native IsTriggerEnabled takes trigger whichTrigger returns boolean\n"
         "native CreateTimer takes nothing returns timer\nnative PauseTimer takes timer whichTimer returns nothing\n"
-        "native TimerStart takes timer whichTimer, real timeout, boolean periodic, code handlerFunc returns nothing\n";
+        "native TimerStart takes timer whichTimer, real timeout, boolean periodic, code handlerFunc returns nothing\n"
+        "native DestroyTimer takes timer whichTimer returns nothing\nnative GetLocalPlayer takes nothing returns player\n"
+        "native DisplayTimedTextToPlayer takes player toPlayer, real x, real y, real duration, string message returns nothing\n";
     Require(script.starts_with("library AudastraJapi\n") && script.find("library AudastraUI requires AudastraJapi") != std::string::npos,
         "注入文件里 JAPI 客户端库在界面库前面");
     Jass::VJassOptions options;
