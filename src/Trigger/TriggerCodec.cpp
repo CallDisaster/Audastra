@@ -16,6 +16,7 @@
 #include <cstring>
 #include <limits>
 #include <memory_resource>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -138,6 +139,67 @@ std::pair<std::string, TextEncoding> DecodeRawText(std::span<const std::byte> ra
 RawText MakeRawText(std::span<const std::byte> raw) {
     const auto [text, encoding] = DecodeRawText(raw);
     return RawText{text, encoding, ByteVector(raw.begin(), raw.end())};
+}
+
+std::optional<std::string> DecodeGb18030(std::span<const std::byte> raw) {
+    try {
+        return WideToUtf8(BytesToWide(raw, 54936, MB_ERR_INVALID_CHARS));
+    } catch (const std::runtime_error&) {
+        return std::nullopt;
+    }
+}
+
+bool HasNonAscii(std::span<const std::byte> raw) {
+    return std::any_of(raw.begin(), raw.end(), [](std::byte value) { return std::to_integer<unsigned char>(value) >= 0x80; });
+}
+
+template <class Visit>
+void ForEachText(TriggerDocument& document, Visit&& visit) {
+    for (auto& row : document.categories) visit(row.name);
+    for (auto& row : document.variables) { visit(row.name); visit(row.typeName); visit(row.value); }
+    for (auto& row : document.triggers) { visit(row.name); visit(row.description); visit(row.customText); }
+    for (auto& row : document.ecaNodes) visit(row.name);
+    for (auto& row : document.argumentNodes) visit(row.value);
+    visit(document.wct.customComment);
+    visit(document.wct.customCode);
+}
+
+bool IsCjk(std::uint32_t codepoint) {
+    return (codepoint >= 0x3000 && codepoint <= 0x9FFF) || (codepoint >= 0xF900 && codepoint <= 0xFAFF)
+        || (codepoint >= 0xFF00 && codepoint <= 0xFFEF) || (codepoint >= 0x20000 && codepoint <= 0x2FFFF);
+}
+
+// 非 ASCII 字符里有几个是汉字（含中文标点、全角），以及非 ASCII 字符总数。
+std::pair<std::size_t, std::size_t> CjkCount(std::string_view text) {
+    std::size_t cjk = 0, other = 0;
+    for (std::size_t offset = 0; offset < text.size();) {
+        const auto scalar = Text::Detail::ReadUtf8Scalar(text, offset);
+        if (!scalar.Valid() || scalar.bytes == 0) break;
+        if (scalar.codepoint >= 0x80) (IsCjk(scalar.codepoint) ? cjk : other) += 1;
+        offset += scalar.bytes;
+    }
+    return {cjk, cjk + other};
+}
+
+// 中文原版 WE 按 GBK 存文字，短的 GBK 文字可能恰好也是合法 UTF-8（“远”D4 B6 读成亚美尼亚字母 U+0536），逐段先试 UTF-8 会认错字。
+// 本编辑器写的文件里 GBK 和 UTF-8 本就混用，整份没有“只能按 UTF-8 读”的段也不能证明是 GBK（“火球”的 UTF-8 也能按 GBK 读）。
+// 所以只在文件里确有 GBK 段时，把按 UTF-8 读一个汉字都没有、按 GB18030 读全是汉字的段改按 GB18030 读。
+void ResolveAmbiguousGb18030(TriggerDocument& document) {
+    bool gb18030 = false;
+    ForEachText(document, [&](const RawText& value) {
+        gb18030 = gb18030 || (value.encoding == TextEncoding::Gb18030 && HasNonAscii(value.originalBytes));
+    });
+    if (!gb18030) return;
+    ForEachText(document, [](RawText& value) {
+        if (value.encoding != TextEncoding::Utf8 || !HasNonAscii(value.originalBytes)) return;
+        if (CjkCount(value.text).first != 0) return;
+        auto decoded = DecodeGb18030(value.originalBytes);
+        if (!decoded) return;
+        const auto [cjk, total] = CjkCount(*decoded);
+        if (total == 0 || cjk != total) return;
+        value.text = std::move(*decoded);
+        value.encoding = TextEncoding::Gb18030;
+    });
 }
 
 bool IsUnchangedUtf8Original(const RawText& value) noexcept {
@@ -608,6 +670,11 @@ Result<std::vector<std::byte>> RawText::ToBytes() const {
             if (decoded == text) {
                 return Result<ByteVector>::Success(originalBytes);
             }
+            // 按整份证据改判成 GB18030 的段（见 ResolveAmbiguousGb18030）。
+            if (encoding == TextEncoding::Gb18030) {
+                if (const auto gb18030 = DecodeGb18030(originalBytes); gb18030 && *gb18030 == text)
+                    return Result<ByteVector>::Success(originalBytes);
+            }
         }
         const std::wstring wide = BytesToWide(
             std::span<const std::byte>(
@@ -672,6 +739,7 @@ Result<TriggerDocument> WtgWctCodec::Parse(
     try {
         ParsedWct parsedWct = ParseWct(wct);
         TriggerDocument document = Detail::DecodeClassicWtg(wtg, catalog, parsedWct.slots, parsedWct.header);
+        ResolveAmbiguousGb18030(document);
         auto sourceSeal = std::make_shared<TriggerDocument::SourceSeal>();
         const auto wtgHash = Sha256(wtg);
         const auto wctHash = Sha256(wct);

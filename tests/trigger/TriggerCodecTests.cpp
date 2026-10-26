@@ -157,13 +157,14 @@ std::filesystem::path CreateFixtureRoot() {
     return root;
 }
 
-ByteVector MakeWtg() {
+ByteVector MakeWtg(std::string_view category = "Category", std::string_view first = "Normal",
+    std::string_view second = "Legacy") {
     BinaryWriter writer;
     writer.Ascii("WTG!");
     writer.I32(7);
     writer.I32(1);
     writer.I32(1);
-    writer.CString("Category");
+    writer.CString(category);
     writer.I32(0);
     writer.I32(2);
     writer.I32(0);
@@ -190,8 +191,8 @@ ByteVector MakeWtg() {
         }
         writer.I32(0);
     };
-    writeTrigger("Normal", "DoNothing");
-    writeTrigger("Legacy", "LibraryAction");
+    writeTrigger(first, "DoNothing");
+    writeTrigger(second, "LibraryAction");
     return writer.Take();
 }
 
@@ -599,6 +600,35 @@ void TestTriggerCodec(const UiCatalog& catalog) {
         "scoped validation accepted a missing trigger");
     Expect(HasDiagnostic(codec.ValidateTrigger(noSeal, catalog, firstId), "wtg.source-seal.missing"),
         "scoped validation accepted a document without a trusted seal");
+}
+
+// 原版中文 WE 按 GBK 存文字。“远”的 GBK 字节 D4 B6 也是合法 UTF-8（U+0536）。
+void TestAmbiguousGb18030(const UiCatalog& catalog) {
+    WtgWctCodec codec;
+    const std::string farText = "\xD4\xB6";          // GBK“远”，同时是 UTF-8 的 U+0536
+    const std::string deadText = "\xCB\xC0\xCD\xF6"; // GBK“死亡”，不是合法 UTF-8
+    const ByteVector gbkWtg = MakeWtg(deadText, farText, "Legacy");
+    auto gbk = codec.Parse(gbkWtg, MakeWct(), catalog);
+    Expect(gbk.Succeeded(), "GBK WTG did not parse");
+    Expect(gbk.value->categories.front().name.text == "\xE6\xAD\xBB\xE4\xBA\xA1", "GBK-only text was not read as GB18030");
+    Expect(gbk.value->triggers.front().name.text == "\xE8\xBF\x9C", "ambiguous text in a GBK file was read as UTF-8");
+    Expect(gbk.value->triggers.front().name.encoding == War3Map::Trigger::TextEncoding::Gb18030, "ambiguous text kept the UTF-8 encoding");
+    const auto gbkOut = codec.Serialize(*gbk.value, catalog);
+    Expect(gbkOut.Succeeded() && Equal(gbkOut.value->wtg, gbkWtg), "GBK WTG with ambiguous text is not byte-identical");
+
+    // 本编辑器写的文件 GBK 与 UTF-8 混用：UTF-8 的“火球”也能按 GBK 读，但按 UTF-8 读本来就是汉字，不改判。
+    const std::string fireball = "\xE7\x81\xAB\xE7\x90\x83";
+    const ByteVector mixedWtg = MakeWtg(deadText, fireball, farText);
+    auto mixed = codec.Parse(mixedWtg, MakeWct(), catalog);
+    Expect(mixed.Succeeded(), "mixed WTG did not parse");
+    Expect(mixed.value->triggers.front().name.text == fireball, "UTF-8 Chinese text that is also valid GBK was re-read as GBK");
+    Expect(mixed.value->triggers.back().name.text == "\xE8\xBF\x9C", "ambiguous GBK text in a mixed file was read as UTF-8");
+    const auto mixedOut = codec.Serialize(*mixed.value, catalog);
+    Expect(mixedOut.Succeeded() && Equal(mixedOut.value->wtg, mixedWtg), "mixed WTG is not byte-identical");
+
+    // 没有 GBK 段的 UTF-8 文件不改判。
+    auto utf8 = codec.Parse(MakeWtg("AB\xE8\xBF\x9C", farText, "Legacy"), MakeWct(), catalog);
+    Expect(utf8.Succeeded() && utf8.value->triggers.front().name.text == "\xD4\xB6", "UTF-8 file without GBK text was re-read");
 }
 
 void TestLibraryNodesEditable(const UiCatalog& catalog) {
@@ -1948,6 +1978,7 @@ int wmain(int argc, wchar_t** argv) {
         TestUiCatalog(*loaded.value);
         TestNaturalLanguagePresentation(*loaded.value);
         TestTriggerCodec(*loaded.value);
+        TestAmbiguousGb18030(*loaded.value);
         TestWtgSource(*loaded.value, MakeWtg(), MakeWct());
         TestLibraryNodesEditable(*loaded.value);
         TestTriggerEditingAndUndo(*loaded.value);
