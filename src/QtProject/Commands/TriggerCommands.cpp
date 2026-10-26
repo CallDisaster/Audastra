@@ -811,4 +811,13 @@ Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperationsWithAssets
     return PublishGraph(project, std::move(operations), undoLabel, {}, prepareAssets);
 }
 
+Result<Trigger::TriggerGraphEditReceipt> PublishMapRuntimeSettings(EditorProject& project,
+    const Services::MapRuntimeSettings& settings, const QString& undoLabel) {
+    const auto generation = project.editRevision_.Generation();
+    const auto revision = project.editRevision_.Revision();
+    return PublishTriggerGraphOperationsWithAssets(project, {}, undoLabel, [&](AssetState& state) {
+        return project.PrepareMapRuntimeSettings(state, settings, generation, revision);
+    });
+}
+
 } // namespace War3Map::QtProject

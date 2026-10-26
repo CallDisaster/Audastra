@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "Modules/ModuleHost.h"
 #include "ObjectViewEntries.h"
+#include "TriggerCommands.h"
 #include "War3MapCore/GameUi/UiPresets.h"
 
 #include <QCheckBox>
@@ -11,8 +12,10 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QInputDialog>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
 
@@ -164,6 +167,7 @@ void GameUiModule::ShowCastSystemDialog() {
     }
     ReportAuthoring({});
     if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kCastTriggerCategory)), 8000);
+    if (!request.bar.isEmpty()) OfferMapRuntime();
 }
 
 void GameUiModule::ShowPartySystemDialog() {
@@ -304,6 +308,7 @@ void GameUiModule::ShowPartySystemDialog() {
     }
     ReportAuthoring({});
     if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kPartyTriggerCategory)), 8000);
+    OfferMapRuntime();
 }
 
 void GameUiModule::ShowTalentSystemDialog() {
@@ -374,6 +379,57 @@ void GameUiModule::ShowTalentSystemDialog() {
     }
     ReportAuthoring({});
     if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kTalentTriggerCategory)), 8000);
+    OfferMapRuntime();
+}
+
+void GameUiModule::OfferMapRuntime() {
+    const auto generation = project_.editRevision_.Generation();
+    if (runtimeOfferDeclined_ == generation) return;
+    const auto requirement = QueryRuntimeRequirement();
+    if (requirement.approved) return;
+    const auto report = [this](const char* code, const QString& message) {
+        authoringDiagnostics_.push_back(Diagnostic{DiagnosticSeverity::Warning, "GameUi", code, message.toStdString(), std::nullopt});
+        UpdateProblems();
+    };
+    if (!requirement.problem.isEmpty()) return report("AUI_RUNTIME_STATE", requirement.problem);
+    std::vector<const Services::MapRuntimePackageInfo*> usable;
+    for (const auto& package : requirement.packages) {
+        if (package.available) usable.push_back(&package);
+    }
+    if (usable.empty()) {
+        return report("AUI_RUNTIME_MISSING", tr("界面触发器要用 Audastra 运行库，本机没有安装可用的运行库包，测试运行和保存会拒绝"));
+    }
+    const auto label = [](const Services::MapRuntimePackageInfo& package) { return Text(package.id) + QLatin1Char(' ') + Text(package.version); };
+    // 地图里已锁定的包优先；有多个可选时让作者挑。
+    const auto locked = std::find_if(usable.begin(), usable.end(),
+        [&](const auto* package) { return package->packageSha256 == requirement.settings.packageSha256; });
+    const Services::MapRuntimePackageInfo* chosen = locked != usable.end() ? *locked : usable.front();
+    if (locked == usable.end() && usable.size() > 1) {
+        QStringList items;
+        for (const auto* package : usable) items.append(label(*package));
+        bool picked = false;
+        const auto item = QInputDialog::getItem(page_, tr("启用运行库"), tr("运行库包"), items, 0, false, &picked);
+        if (!picked) {
+            runtimeOfferDeclined_ = generation;
+            return;
+        }
+        chosen = usable[static_cast<std::size_t>(std::max<qsizetype>(0, items.indexOf(item)))];
+    }
+    QString text = tr("界面触发器要用 Audastra 运行库：地图会带上原生代码（DLL），只支持经典版 1.27a。\n\n包：%1\nDLL：%2")
+                       .arg(label(*chosen), Text(chosen->payloadSha256).left(16));
+    if (chosen->internalOnly) text += tr("\n\n这个包只能用于测试运行和内部验收副本，正常保存会拒绝。");
+    text += tr("\n\n为本图启用？");
+    if (QMessageBox::question(page_, tr("启用运行库"), text) != QMessageBox::Yes) {
+        runtimeOfferDeclined_ = generation;
+        return;
+    }
+    const auto mode = requirement.settings.mode == Services::MapRuntimeMode::Disabled ? Services::MapRuntimeMode::Automatic
+                                                                                      : requirement.settings.mode;
+    const auto applied = QtProject::PublishMapRuntimeSettings(project_, {mode, chosen->packageSha256}, tr("启用地图运行库"));
+    if (!applied.Succeeded()) {
+        return report("AUI_RUNTIME_ENABLE", applied.diagnostics.empty() ? tr("启用运行库失败") : Text(applied.diagnostics.front().message));
+    }
+    if (host_) host_->ShowStatusMessage(tr("已为本图启用运行库 %1").arg(label(*chosen)), 8000);
 }
 
 std::optional<QString> GameUiModule::CreateFromPreset(const QString& preset, QString* error) {

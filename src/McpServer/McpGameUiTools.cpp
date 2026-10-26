@@ -120,7 +120,8 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             tool.description = "由地图界面描述生成自然 T：框架、数值与状态的全局变量，以及创建（每 0.2 秒试到界面库可用，最多 30 秒）、更新（按数值刷新绑定的属性，界面建好前不执行）、"
                 "每个状态、回到基础状态的触发器，整批写进触发器编辑器的 AudastraUI 类别（同名触发器整体替换），走触发器撤销栈；"
                 "生成的触发器用到的基础模板 AudastraUI\\AudastraUI.toc/.fdf 随同放进待保存修改。需要函数库已启用 AudastraUI。"
-                "preview 为 true 时只返回生成的功能写法，不改地图。生成不了的部分全部列出并整体拒绝";
+                "preview 为 true 时只返回生成的功能写法，不改地图。生成不了的部分全部列出并整体拒绝。"
+                "写入后 runtime 给出本工程是否已批准运行库及本机可用包；未批准时测试运行和保存会拒绝，须经作者同意后用 map_runtime_set 启用";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("description");

@@ -1567,9 +1567,7 @@ private:
                 const Services::MapRuntimeSettings settings{mode == "automatic" ? Services::MapRuntimeMode::Automatic
                     : mode == "enabled" ? Services::MapRuntimeMode::Enabled : Services::MapRuntimeMode::Disabled,
                     arguments.value("package_sha256").toString().toStdString()};
-                const auto edited = QtProject::PublishTriggerGraphOperationsWithAssets(project_, {}, QObject::tr("设置地图运行库"),
-                    [&](QtProject::AssetState& state) { return project_.PrepareMapRuntimeSettings(state, settings,
-                        project_.editRevision_.Generation(), project_.editRevision_.Revision()); });
+                const auto edited = QtProject::PublishMapRuntimeSettings(project_, settings, QObject::tr("设置地图运行库"));
                 if (!edited.Succeeded()) return Mcp::Failure(edited);
                 return query();
             });

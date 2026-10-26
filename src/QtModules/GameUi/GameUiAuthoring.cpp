@@ -359,6 +359,7 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
         if (host_) {
             host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(std::string(kUiTriggerCategory))), 8000);
         }
+        OfferMapRuntime();
     });
     castSystemButton_ = new QPushButton(tr("读条系统"), toolbar);
     castSystemButton_->setObjectName(QStringLiteral("gameUiCastSystem"));

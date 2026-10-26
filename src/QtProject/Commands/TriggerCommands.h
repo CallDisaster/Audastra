@@ -293,6 +293,10 @@ private:
     bool firstRedo_ = true;
 };
 
+namespace War3Map::Services {
+struct MapRuntimeSettings;
+}
+
 namespace War3Map::QtProject {
 class EditorProject;
 struct AssetState;
@@ -348,4 +352,8 @@ private:
 [[nodiscard]] Result<Trigger::TriggerGraphEditReceipt> PublishTriggerGraphOperationsWithAssets(EditorProject& project,
     std::vector<Trigger::GraphEditOperation> operations, const QString& undoLabel,
     const std::function<Status(AssetState&)>& prepareAssets);
+
+// 地图运行库设置与本工程批准作为一条撤销命令提交；界面确认与 Agent 工具共用。批准须来自作者。
+[[nodiscard]] Result<Trigger::TriggerGraphEditReceipt> PublishMapRuntimeSettings(EditorProject& project,
+    const Services::MapRuntimeSettings& settings, const QString& undoLabel);
 } // namespace War3Map::QtProject

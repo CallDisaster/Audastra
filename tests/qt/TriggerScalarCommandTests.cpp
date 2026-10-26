@@ -191,6 +191,7 @@ private slots:
     void GraphAndAssetsRejectFailedObservation();
     void AssetOnlyGraphTransactionAndImmutablePayload();
     void RuntimeConsentSharesGraphRevisionAndUndo();
+    void RuntimeSettingsPublishAsOneUndo();
     void RuntimeConsentRejectsMissingPackageAndStaleRevision();
     void RuntimeConsentSurvivesProjectSaveAndBindsSource();
     void RuntimeTestPurposeFrozenBeforeSaveAndCannotCommit();
@@ -529,6 +530,24 @@ void TriggerScalarCommandTests::RuntimeConsentSharesGraphRevisionAndUndo() {
     QCOMPARE(f.project->QueryMapRuntimeSettings().value,std::optional(settings));
     QVERIFY(!f.project->QueryMapRuntimeState().value->approved);
     QVERIFY(f.SourcesUnchanged());
+}
+
+// 界面确认与 Agent 共用的运行库提交：只改设置与批准，作为一条撤销命令；不在可信目录的包整体拒绝。
+void TriggerScalarCommandTests::RuntimeSettingsPublishAsOneUndo() {
+    Fixture f; QVERIFY2(f.Initialize(),qPrintable(f.error));
+    const auto package = f.RuntimePackage(); f.project->runtimePackageSources_ = {package};
+    const auto revision = f.project->editRevision_.Revision();
+    const Services::MapRuntimeSettings stranger{Services::MapRuntimeMode::Automatic,std::string(64,'a')};
+    QVERIFY(!PublishMapRuntimeSettings(*f.project,stranger,QStringLiteral("Enable runtime")).Succeeded());
+    QCOMPARE(f.project->triggerUndoStack_->count(),0); QCOMPARE(f.project->editRevision_.Revision(),revision);
+    const Services::MapRuntimeSettings settings{Services::MapRuntimeMode::Automatic,package.manifestSha256};
+    const auto enabled = PublishMapRuntimeSettings(*f.project,settings,QStringLiteral("Enable runtime"));
+    QVERIFY(enabled.Succeeded()); QVERIFY(f.project->QueryMapRuntimeState().value->approved);
+    QCOMPARE(f.project->QueryMapRuntimeSettings().value,std::optional(settings));
+    QCOMPARE(f.project->editRevision_.Revision(),revision + 1); QCOMPARE(f.project->triggerUndoStack_->count(),1);
+    QVERIFY(f.OriginalBytes());
+    f.project->triggerUndoStack_->undo(); QVERIFY(!f.project->QueryMapRuntimeState().value->approved);
+    QVERIFY(f.project->CaptureAssets().imports.empty());
 }
 
 void TriggerScalarCommandTests::RuntimeConsentRejectsMissingPackageAndStaleRevision() {

@@ -106,6 +106,19 @@ std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescription
     return result;
 }
 
+GameUiModule::RuntimeRequirement GameUiModule::QueryRuntimeRequirement() const {
+    RuntimeRequirement result;
+    const auto state = project_.QueryMapRuntimeState();
+    if (!state.Succeeded()) {
+        result.problem = FirstMessage(state.diagnostics);
+        return result;
+    }
+    result.approved = state.value->approved;
+    result.settings = state.value->settings;
+    result.packages = state.value->packages;
+    return result;
+}
+
 std::optional<GameUiModule::CastSystemGeneration> GameUiModule::GenerateCastSystem(const CastSystemRequest& request, bool preview,
     QString* error) {
     const auto fail = [error](const QString& message) -> std::optional<CastSystemGeneration> {

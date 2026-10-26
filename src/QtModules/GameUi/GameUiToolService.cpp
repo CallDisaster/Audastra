@@ -86,6 +86,20 @@ const char* ValueTypeName(SimulationValueType type) {
     }
 }
 
+// 生成的界面触发器要用原生运行库：本工程是否已批准、本机可用的包。批准须经作者同意后用 map_runtime_set。
+QJsonObject RuntimeJson(const GameUiModule& module) {
+    const auto requirement = module.QueryRuntimeRequirement();
+    QJsonArray packages;
+    for (const auto& package : requirement.packages) {
+        if (!package.available) continue;
+        packages.append(QJsonObject{{"package_sha256", Text(package.packageSha256)}, {"id", Text(package.id)},
+            {"version", Text(package.version)}, {"internal_only", package.internalOnly}});
+    }
+    QJsonObject result{{"approved", requirement.approved}, {"packages", packages}};
+    if (!requirement.problem.isEmpty()) result.insert("problem", requirement.problem);
+    return result;
+}
+
 QJsonObject SimulationJson(const GameUiModule& module) {
     QJsonObject json{{"function", module.SimulationFunction()}};
     const SimulationResult* result = module.Simulation();
@@ -379,6 +393,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const auto generated = module->GenerateDescriptionTriggers(args.value("description").toString(), preview, &error);
         if (!generated) return Failure("GAME_UI_TRIGGERS", error);
         binding.insert("applied", !preview);
+        if (!preview) binding.insert("runtime", RuntimeJson(*module));
         binding.insert("category", Text(std::string(kUiTriggerCategory)));
         binding.insert("feature_text", generated->featureText);
         binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
@@ -412,6 +427,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const auto generated = module->GenerateCastSystem(request, preview, &error);
         if (!generated) return Failure("GAME_UI_CAST_SYSTEM", error);
         binding.insert("applied", !preview);
+        if (!preview) binding.insert("runtime", RuntimeJson(*module));
         binding.insert("category", Text(std::string(kCastTriggerCategory)));
         binding.insert("feature_text", generated->featureText);
         binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
@@ -441,6 +457,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const auto generated = module->GeneratePartySystem(request, preview, &error);
         if (!generated) return Failure("GAME_UI_PARTY_SYSTEM", error);
         binding.insert("applied", !preview);
+        if (!preview) binding.insert("runtime", RuntimeJson(*module));
         binding.insert("category", Text(std::string(kPartyTriggerCategory)));
         binding.insert("feature_text", generated->featureText);
         binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
@@ -507,6 +524,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const auto generated = module->GenerateTalentSystem(request, preview, &error);
         if (!generated) return Failure("GAME_UI_TALENT_SYSTEM", error);
         binding.insert("applied", !preview);
+        if (!preview) binding.insert("runtime", RuntimeJson(*module));
         binding.insert("category", Text(std::string(kTalentTriggerCategory)));
         binding.insert("feature_text", generated->featureText);
         binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));

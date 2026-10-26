@@ -7,6 +7,8 @@
 #include "War3MapCore/GameUi/TalentTriggers.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
+#include "War3MapCore/Services/MapRuntimeCatalog.h"
+#include "War3MapCore/Services/MapRuntimePackage.h"
 
 #include <QHash>
 #include <QImage>
@@ -138,6 +140,15 @@ public:
         std::vector<Diagnostic> warnings;
     };
     std::optional<TriggerGeneration> GenerateDescriptionTriggers(const QString& id, bool preview, QString* error = nullptr);
+    // 生成的界面触发器要用原生运行库。按规格在首次生成时由作者确认，保存时不再问：approved 为本工程已批准，
+    // packages 为本机可信目录里的包。界面在生成后询问；Agent 拿到结果后须经作者同意再用 map_runtime_set 启用。
+    struct RuntimeRequirement {
+        bool approved = false;
+        Services::MapRuntimeSettings settings;
+        std::vector<Services::MapRuntimePackageInfo> packages;
+        QString problem;  // 查询失败的原因
+    };
+    [[nodiscard]] RuntimeRequirement QueryRuntimeRequirement() const;
     // 读条系统（CastTriggers.h）：整批写进触发器编辑器的“读条系统”类别，走触发器撤销栈。地图里已有登记触发器时保留它，
     // abilities 不写入（registrationKept 为真）。bar 为绑定的界面描述编号，其界面触发器须已生成；空为不绑定。
     // 需要 YDWE 的“运行触发器（带参数）”。preview 为真时只给出生成结果，不改地图。
@@ -272,6 +283,8 @@ private:
     [[nodiscard]] QList<std::pair<QString, QString>> PropertyChoices(const QString& key) const;
     [[nodiscard]] bool PropertyFreeText(const QString& key) const;
     void ReportAuthoring(const QString& error);
+    // 生成成功后：本工程还没批准运行库时问作者一次，没有可用包时在问题列表里说明。
+    void OfferMapRuntime();
     void OnItemChanged(QTreeWidgetItem* item, int column);
     [[nodiscard]] QString NodeKey(std::uint32_t node) const;
 
@@ -351,6 +364,7 @@ private:
 
     bool stagingOwnImport_ = false;  // 自己放入描述文件引发的导入变化：已就地更新，不整体重读
     std::vector<Diagnostic> authoringDiagnostics_;
+    std::optional<std::uint64_t> runtimeOfferDeclined_;  // 作者拒绝启用运行库时的工程代号：同一工程不再追问
     QToolButton* newDescriptionButton_ = nullptr;
     QToolButton* addFrameButton_ = nullptr;
     QPushButton* removeFrameButton_ = nullptr;
