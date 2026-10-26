@@ -16,12 +16,15 @@
 #include <optional>
 #include <set>
 #include <unordered_map>
+#include <utility>
 
 namespace War3Map::GameUi {
 namespace {
 
 constexpr double kTemplateFontHeight = 0.011;
 constexpr std::string_view kLoopIndex = "GetForLoopIndexA()";
+// 一个线程里最多放的界面库调用数。实测一次执行发到一百五十个左右就被指令上限掐断，约留一半余量。
+constexpr std::size_t kThreadRequests = 80;
 
 constexpr std::array<std::string_view, 9> kAnchors{"AudastraAnchorTopLeft", "AudastraAnchorTop",
     "AudastraAnchorTopRight", "AudastraAnchorLeft", "AudastraAnchorCenter", "AudastraAnchorRight",
@@ -84,10 +87,18 @@ public:
         create.push_back(disable);
         create.push_back(Call("AudastraUILoadToc", {Quote(kUiTemplateTocMember)}));
         for (const auto& toc : options_.tocFiles) create.push_back(Call("AudastraUILoadToc", {Quote(toc)}));
-        Append(create, Grouped([&](const FrameInfo& info) { return Creation(info); }));
-        Append(create, Grouped([&](const FrameInfo& info) { return Properties(info); }));
+        const auto creation = Segments([&](const FrameInfo& info) { return Creation(info); });
+        const auto properties = Segments([&](const FrameInfo& info) { return Properties(info); });
+        const auto updates = Segments([&](const FrameInfo& info) { return Updates(info); });
+        // 创建连同首次刷新放得进一次执行就照旧写在一个触发器里；否则建框架、布局、刷新都分块，各开线程运行。
+        const bool split = Requests(creation) + Requests(properties) + Requests(updates) > kThreadRequests;
+        const auto phase = [&](const std::vector<Segment>& segments, std::string_view role, std::string_view key) {
+            return split ? Threaded(segments, role, key) : Inline(segments);
+        };
+        Append(create, phase(creation, "建框架", "Build"));
+        Append(create, phase(properties, "布局", "Layout"));
         create.push_back(Set("udg_" + UiCreatedVariableName(d_.id), "true"));
-        const Lines update = Grouped([&](const FrameInfo& info) { return Updates(info); });
+        const Lines update = phase(updates, "刷新", "Refresh");
         Append(create, update);
 
         Lines refresh = Header();
@@ -118,6 +129,11 @@ public:
         auto named = [&](std::string_view role, const std::string& key) { return UiTriggerName(d_, role, key); };
         trigger(named("创建", "Create"), {Call("TriggerRegisterTimerEventPeriodic", {Real(kUiConnectSeconds)})}, create);
         trigger(named("更新", "Update"), {}, refresh);
+        for (auto& [chunkName, body] : chunks_) {
+            Lines actions = Header();
+            Append(actions, body);
+            trigger(chunkName, {}, actions);
+        }
         for (const auto& state : d_.states) trigger(UiStateTriggerName(d_, state), {}, State(state));
         if (!d_.states.empty()) trigger(named("基础状态", "BaseState"), {}, BaseState(update));
         plan.featureText = text.Text();
@@ -147,22 +163,102 @@ private:
         return info.group ? frames_[*info.group].frame->repeat->count : 0;
     }
 
-    // 按重复分组输出：同一重复框架及其子框架的语句放进同一个循环。
+    // 按重复分组：同一重复框架及其子框架是一段，放进同一个循环（count 为实例数）；其余框架各自一段。
+    struct Segment {
+        std::vector<Lines> frames;  // 每个框架的语句，切块时不拆开
+        std::uint32_t count = 0;
+    };
+
     template <class Build>
-    Lines Grouped(Build&& build) {
-        Lines out;
+    std::vector<Segment> Segments(Build&& build) {
+        std::vector<Segment> out;
         for (std::size_t i = 0; i < frames_.size();) {
             const auto& info = frames_[i];
+            Segment segment;
             if (!info.group) {
-                Append(out, build(info));
+                segment.frames.push_back(build(info));
                 ++i;
+            } else {
+                const auto group = *info.group;
+                segment.count = GroupSize(frames_[group]);
+                for (; i < frames_.size() && frames_[i].group == group; ++i) segment.frames.push_back(build(frames_[i]));
+            }
+            out.push_back(std::move(segment));
+        }
+        return out;
+    }
+
+    static Lines Inline(const std::vector<Segment>& segments) {
+        Lines out;
+        for (const auto& segment : segments) {
+            Lines body;
+            for (const auto& lines : segment.frames) Append(body, lines);
+            if (body.empty()) continue;
+            Append(out, segment.count ? Loop(segment.count, body) : body);
+        }
+        return out;
+    }
+
+    // 每个界面库调用在 JASS 里都要拼请求串、逐字符解析回应，一次执行的指令上限只够一百多个调用。
+    static std::size_t Requests(const Lines& lines) {
+        std::size_t count = 0;
+        for (const auto& line : lines)
+            for (auto at = line.find("AudastraUI"); at != std::string::npos; at = line.find("AudastraUI", at + 1)) ++count;
+        return count;
+    }
+    static std::size_t Requests(const std::vector<Segment>& segments) {
+        std::size_t total = 0;
+        for (const auto& segment : segments) {
+            std::size_t body = 0;
+            for (const auto& lines : segment.frames) body += Requests(lines);
+            total += body * std::max<std::uint32_t>(segment.count, 1);
+        }
+        return total;
+    }
+
+    // 切成若干个各不超过预算的触发器，用“运行触发器”各开一个线程；重复框架每个实例各运行一次，
+    // 被运行的触发器里照常用循环整数 A 取当前实例。
+    Lines Threaded(const std::vector<Segment>& segments, std::string_view role, std::string_view key) {
+        Lines out, pending;
+        std::size_t pendingRequests = 0;
+        std::size_t number = 0;
+        const auto chunk = [&](Lines body) {
+            ++number;
+            const auto name = UiTriggerName(d_, std::string(role) + " " + std::to_string(number), std::string(key) + std::to_string(number));
+            chunks_.emplace_back(name, std::move(body));
+            return Call("ConditionalTriggerExecute", {TriggerRef(name)});
+        };
+        const auto flush = [&] {
+            if (pending.empty()) return;
+            out.push_back(chunk(std::exchange(pending, {})));
+            pendingRequests = 0;
+        };
+        for (const auto& segment : segments) {
+            if (!segment.count) {
+                for (const auto& lines : segment.frames) {
+                    const auto requests = Requests(lines);
+                    if (pendingRequests + requests > kThreadRequests) flush();
+                    Append(pending, lines);
+                    pendingRequests += requests;
+                }
                 continue;
             }
-            Lines body;
-            const auto group = *info.group;
-            for (; i < frames_.size() && frames_[i].group == group; ++i) Append(body, build(frames_[i]));
-            if (!body.empty()) Append(out, Loop(GroupSize(frames_[group]), body));
+            flush();
+            Lines calls, body;
+            std::size_t bodyRequests = 0;
+            for (const auto& lines : segment.frames) {
+                const auto requests = Requests(lines);
+                if (!body.empty() && bodyRequests + requests > kThreadRequests) {
+                    calls.push_back(chunk(std::exchange(body, {})));
+                    bodyRequests = 0;
+                }
+                Append(body, lines);
+                bodyRequests += requests;
+            }
+            if (!body.empty()) calls.push_back(chunk(std::move(body)));
+            if (!calls.empty()) Append(out, Loop(segment.count, calls));
         }
+        flush();
         return out;
     }
 
@@ -758,6 +854,7 @@ private:
     std::optional<FrameTree> areaTree_;
     std::set<std::string> fixedAreas_;  // 已提示过的“框架\n区域”
     std::set<std::string> widthless_;   // 已报过没写宽度的进度条
+    std::vector<std::pair<std::string, Lines>> chunks_;  // 分块运行的触发器：名字和动作
 };
 
 } // namespace

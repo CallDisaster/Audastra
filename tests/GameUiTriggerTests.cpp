@@ -258,6 +258,49 @@ void TestUntexturedFrames() {
         "状态里有贴图的按钮用带底图的模板：\n" + (lit.Succeeded() ? lit.value->featureText : First(lit.diagnostics)));
 }
 
+// 一次执行的指令上限只够一百多个界面库调用：调用多时按块分开运行，重复框架每个实例单独运行。
+void TestThreadedCreation() {
+    UiDescription d;
+    d.id = "many";
+    d.label = "多格";
+    UiFrame slot;
+    slot.id = "slot";
+    slot.type = UiFrameType::Backdrop;
+    slot.texture = "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background";
+    slot.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Screen, FramePoint::TopLeft)};
+    slot.width = 0.12;
+    slot.height = 0.04;
+    slot.repeat = UiRepeat{5, 0.0, -0.044};
+    for (int i = 0; i < 10; ++i) {
+        UiFrame label;
+        label.id = "label" + std::to_string(i);
+        label.type = UiFrameType::Text;
+        label.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, FramePoint::TopLeft)};
+        label.text = "名字";
+        slot.children.push_back(label);
+    }
+    d.frames = {slot};
+
+    const auto plan = GenerateUiTriggers(d, {});
+    Require(plan.Succeeded(), "多格描述生成：" + First(plan.diagnostics));
+    const auto& triggers = plan.value->triggers;
+    const auto build = UiTriggerName(d, "建框架 1", "Build1");
+    const auto layout = UiTriggerName(d, "布局 1", "Layout1");
+    Require(std::find(triggers.begin(), triggers.end(), build) != triggers.end()
+            && std::find(triggers.begin(), triggers.end(), layout) != triggers.end(),
+        "调用多时建框架和布局分块：\n" + plan.value->featureText);
+    const std::string& text = plan.value->featureText;
+    Require(Contains(text, "ConditionalTriggerExecute(`" + build + "`)") && Contains(text, "ConditionalTriggerExecute(`" + layout + "`)"),
+        "创建触发器按格运行分块：\n" + text);
+
+    d.frames.front().repeat.reset();
+    d.frames.front().children.resize(2);
+    const auto small = GenerateUiTriggers(d, {});
+    Require(small.Succeeded() && !Contains(small.value->featureText, "_Build1")
+            && !Contains(small.value->featureText, "ConditionalTriggerExecute"),
+        "调用少时照旧写在一个创建触发器里：\n" + (small.Succeeded() ? small.value->featureText : First(small.diagnostics)));
+}
+
 void TestAppliedThroughSharedChain() {
     Fixture f;
     UiTriggerOptions options;
@@ -301,7 +344,7 @@ void TestAppliedThroughSharedChain() {
         [](const auto& row) { return row.name.text == kUiTriggerCategory; });
     Require(readback != parsed.value->categories.end(), "读回的类别");
     const auto final = RenderFeatureText(*parsed.value, f.catalog, readback->categoryId);
-    Require(final.Succeeded() && *final.value == *exported.value, "编码往返后导出不变");
+    Require(final.Succeeded() && *final.value == *exported.value, "编码往返后导出不变：\n" + (final.Succeeded() ? *final.value : First(final.diagnostics)));
 }
 
 void TestRefusalsAndTemplates() {
@@ -489,6 +532,7 @@ int main() {
     try {
         TestGeneratedText();
         TestUntexturedFrames();
+        TestThreadedCreation();
         TestAppliedThroughSharedChain();
         TestRefusalsAndTemplates();
         TestScriptLibrary();
