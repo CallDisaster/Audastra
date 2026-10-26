@@ -247,7 +247,11 @@ private:
         if (request.bytes.size() != completeBytes) { Reject(socket, deadline, request, 400); return; }
         request.done = true;
         deadline.stop();
-        Dispatch(socket, request);
+        // 等游戏结果、等检查这类工具会在处理中转嵌套事件循环，客户端在这期间断开时连接会被删除。先让套接字的
+        // 读信号处理完再分发：在它自己的信号里被删会让 Qt 回到已释放的对象上。
+        QMetaObject::invokeMethod(&owner_, [this, alive = QPointer<QTcpSocket>(&socket), copy = request] {
+            if (alive) Dispatch(*alive, copy);
+        }, Qt::QueuedConnection);
     }
 
     void Dispatch(QTcpSocket& socket, const Request& request) {
@@ -279,7 +283,7 @@ private:
             parsed->params.value("protocolVersion") == QStringLiteral("2024-11-05")) {
             Reply(socket, 400); return;
         }
-        // 等游戏结果、等检查这类工具会在处理中转嵌套事件循环；客户端在这期间断开时连接会被删除，处理完不能再写回应。
+        // 工具处理期间客户端断开时连接已被删除，处理完不能再写回应。
         const QPointer<QTcpSocket> alive(&socket);
         const auto response = dispatcher_.HandleMessage(body);
         if (!alive) return;
