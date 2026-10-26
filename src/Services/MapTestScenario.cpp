@@ -88,9 +88,11 @@ std::string PreloadText(std::string_view content) {
     return text;
 }
 
-// 记录期间游戏把载入的资源路径也写成预载行：不含空白、带目录分隔、以 2–4 位扩展名结尾的 ASCII 行按资源路径归类。
+// 记录期间游戏把载入的资源路径也写成预载行：带目录分隔、以 2–4 位扩展名结尾的可打印 ASCII 行按资源路径归类
+// （文件名可以有空格，如 war3mapImported\Voljin Missile.mdx）。
 bool LoadedFilePath(std::string_view text) {
-    if (!std::all_of(text.begin(), text.end(), [](char c) { return c > ' ' && c < 0x7f; })) return false;
+    if (text.empty() || text.front() == ' ') return false;
+    if (!std::all_of(text.begin(), text.end(), [](char c) { return c >= ' ' && c < 0x7f; })) return false;
     const auto slash = text.find_last_of("\\/"), dot = text.find_last_of('.');
     if (slash == std::string_view::npos || dot == std::string_view::npos || dot < slash || dot + 3 > text.size() || dot + 5 < text.size())
         return false;

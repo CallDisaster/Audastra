@@ -71,6 +71,8 @@ QString MainWindow::StartMapTest(bool interactive) {
     luaFileReload_ = false; luaFileQueue_.clear(); luaFileBaseline_.clear();
     luaRuntimeDiagnosticSequence_ = 0; luaReloadLastStatus_.clear();
     if (luaReloadPoll_) luaReloadPoll_->stop();
+    // 新一轮测试开始后，上一轮的场景结果不再作数；这一轮没启动成功时读结果也不会拿到旧结果。
+    mapTestScenario_.reset();
     const auto gameRoot = settings.value(QStringLiteral("war3/gameRoot")).toString();
     const auto runtimeRoot = settings.value(QStringLiteral("mapTest/runtimeRoot")).toString().trimmed();
     const auto runtimeYdweRoot = settings.value(QStringLiteral("ui/dataRoot")).toString().trimmed();
@@ -240,7 +242,6 @@ QString MainWindow::StartMapTest(bool interactive) {
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
     mapTestRunName_ = runName; mapTestCaptures_ = 0;
-    mapTestScenario_.reset();
     if (scenarioPlan) mapTestScenario_ = MapTestScenarioRun{std::move(*scenarioPlan), scenarioResult};
     if (launched.value->luaMailbox) {
         luaRuntimeMailbox_ = launched.value->luaMailbox;

@@ -697,6 +697,16 @@ void TestFeatureText() {
     const auto reexported = RenderFeatureText(f.doc, f.catalog, category->categoryId);
     Require(reexported.Succeeded() && *reexported.value == *exported.value, "feature text round-trips");
 
+    // 前面的触发器可以引用同一功能里后面才写的新触发器。
+    auto forward = f.Batch(); forward.operations.emplace_back(GraphApplyFeatureText{"Feature",
+        "触发器 Feature Caller:\n    actions:\n        AddTriggerEvent(`Feature Callee`, TriggerRegisterUnitEvent(GetTriggerUnit()))\n"
+        "触发器 Feature Callee:\n    actions:\n        StoreInteger(1)\n", {}});
+    const auto linked = ApplyTriggerGraphEditBatch(f.doc, f.catalog, forward);
+    Require(linked.Succeeded(), (std::string("forward trigger reference resolves: ")
+        + (linked.Succeeded() ? "" : linked.diagnostics.front().message)).c_str());
+    const auto caller = std::find_if(f.doc.triggers.begin(), f.doc.triggers.end(), [](const auto& row) { return row.name.text == "Feature Caller"; });
+    Require(caller != f.doc.triggers.end() && caller->ecas.size() == 1, "caller body written after both triggers exist");
+
     // 已有变量只可改初值；改类型与未知函数一次列出，各带行号；整批不落地。
     const auto before = WtgWctCodec{}.Serialize(f.doc, f.catalog);
     const std::string broken =

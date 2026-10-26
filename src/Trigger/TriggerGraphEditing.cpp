@@ -758,6 +758,8 @@ struct Editor {
             if (Find(doc.triggers, *id.value)->categoryId != categoryId)
                 return Fail("TRIGGER_FEATURE_ANCHOR_INVALID", "after 指定的触发器不在类别“" + op.category + "”里。");
         }
+        // 先建好（或找到）全部触发器再写触发器体：同一功能里的触发器互相运行时，前面的也能引用后面的。
+        std::vector<std::optional<GraphRecordRef>> bodies(feature.value->triggers.size());
         for (std::size_t index = 0; index < feature.value->triggers.size(); ++index) {
             const auto& trigger = feature.value->triggers[index];
             const auto what = "触发器 " + trigger.name;
@@ -785,7 +787,11 @@ struct Editor {
                     || !collect(set(ref, GraphField::InitiallyOn, trigger.initiallyOn), trigger.line, what)
                     || !collect(set(ref, GraphField::RunOnInit, trigger.runOnInit), trigger.line, what)) continue;
             }
-            collect(Apply(GraphReplaceTriggerText{ref, trigger.body}), trigger.line, what);
+            bodies[index] = ref;
+        }
+        for (std::size_t index = 0; index < feature.value->triggers.size(); ++index) {
+            const auto& trigger = feature.value->triggers[index];
+            if (bodies[index]) collect(Apply(GraphReplaceTriggerText{*bodies[index], trigger.body}), trigger.line, "触发器 " + trigger.name);
         }
         if (!errors.empty()) return {std::move(errors)};
         return Status::Ok();

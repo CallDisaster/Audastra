@@ -133,6 +133,7 @@ void ParsesGameOutput() {
     const std::string text = "function PreloadFiles takes nothing returns nothing\r\n\r\n\tcall PreloadStart()\r\n"
         "\tcall Preload( \"通过: 记录\" )\r\n\tcall Preload( \"war3mapImported\\\\x.mdx \"q\"\" )\r\n"
         "\tcall Preload( \"Units\\\\Orc\\\\KotoBeast\\\\KodoDrum1.wav\" )\r\n"
+        "\tcall Preload( \"war3mapImported\\\\Voljin Missile.mdx\" )\r\n"
         "\tcall Preload( \"失败: 数值 3\" )\r\n\tcall Preload( \"@audastra-read 0 7\" )\r\n"
         "\tcall Preload( \"@audastra-read 1 false\" )\r\n\tcall Preload( \"@audastra-read 9 x\" )\r\n"
         "\tcall Preload( \"@audastra-started\" )\r\n\tcall Preload( \"@audastra-done\" )\r\n\tcall PreloadEnd( 0.0 )\r\n\r\nendfunction\r\n";
@@ -141,7 +142,8 @@ void ParsesGameOutput() {
     const auto& report = *parsed.value;
     Require(report.started && report.finished && report.passed == 1 && report.failed == 1, "assert counts, started and done markers");
     Require(report.lines.size() == 3 && report.lines[1] == "war3mapImported\\x.mdx \"q\"", "record lines kept in order, backslashes unescaped");
-    Require(report.files.size() == 1 && report.files[0] == "Units\\Orc\\KotoBeast\\KodoDrum1.wav", "loaded resource paths kept apart");
+    Require(report.files.size() == 2 && report.files[0] == "Units\\Orc\\KotoBeast\\KodoDrum1.wav"
+        && report.files[1] == "war3mapImported\\Voljin Missile.mdx", "loaded resource paths, spaces included, kept apart");
     Require(report.reads.size() == 2 && report.reads[0].first == "Count" && report.reads[0].second == "7"
         && report.reads[1].second == "false", "reads by plan index; unknown index ignored");
     const auto partial = Services::ParseMapTestScenarioResult("\tcall Preload( \"通过: 一半\" )\n", plan);
