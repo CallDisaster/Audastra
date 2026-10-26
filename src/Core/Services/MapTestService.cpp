@@ -220,12 +220,15 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
     plan.gameMapCopy = copied;
     plan.useOwnedLuaRuntime = artifact.useOwnedLuaRuntime;
     plan.enableLuaHotReload = artifact.enableLuaHotReload;
+    plan.hiddenDesktop = artifact.hiddenDesktop;
     const auto gameSha = Sha256File(plan.executable), moduleSha = Sha256File(game / L"Game.dll");
     if (!gameSha.Succeeded() || !moduleSha.Succeeded())
         return Fail<MapTestLaunchPlan>("MAP_TEST_GAME_IDENTITY", "无法核对所选游戏启动文件的身份。");
     plan.gameExecutableSha256 = *gameSha.value;
     plan.gameModuleSha256 = *moduleSha.value;
     plan.arguments = {L"-window", L"-loadfile", relative.wstring()};
+    // 看不见的后台测试不出声。
+    if (artifact.hiddenDesktop) plan.arguments.insert(plan.arguments.begin() + 1, L"-nosound");
     if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty()) {
         if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree)
             return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_LAYOUT", "扩展运行时目录布局无效，未启动游戏。");

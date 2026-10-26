@@ -53,10 +53,11 @@ const char* ResultName(Runtime32Result code) {
 void Pause(int milliseconds) {
     QEventLoop loop; QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit); loop.exec();
 }
-// 本次进程树里客户区最大的可见顶层窗口，即游戏窗口。
-HWND GameWindow(const std::vector<std::uint32_t>& processes) {
+// 本次进程树里客户区最大的可见顶层窗口，即游戏窗口；后台测试在它的不可见桌面上找。
+HWND GameWindow(const War3Map::Script::MapTestLaunchLease& lease) {
+    const auto processes = lease.ProcessIds();
     struct Search { const std::vector<std::uint32_t>* processes; HWND best = nullptr; LONG area = 0; } search{&processes};
-    EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+    const auto visit = [](HWND window, LPARAM parameter) -> BOOL {
         auto& found = *reinterpret_cast<Search*>(parameter);
         DWORD process = 0; GetWindowThreadProcessId(window, &process);
         if (!IsWindowVisible(window) || IsIconic(window)
@@ -66,7 +67,9 @@ HWND GameWindow(const std::vector<std::uint32_t>& processes) {
         const auto area = (client.right - client.left) * (client.bottom - client.top);
         if (area > found.area) { found.area = area; found.best = window; }
         return TRUE;
-    }, reinterpret_cast<LPARAM>(&search));
+    };
+    if (const auto desktop = static_cast<HDESK>(lease.HiddenDesktop())) EnumDesktopWindows(desktop, visit, reinterpret_cast<LPARAM>(&search));
+    else EnumWindows(visit, reinterpret_cast<LPARAM>(&search));
     return search.best;
 }
 // 内部抽样全是同一颜色时视为没有取到画面：游戏还没绘制（显示器关闭时游戏不绘制）或绘制方式不受支持，
@@ -92,7 +95,8 @@ bool Unoccluded(HWND window, const RECT& client) {
 }
 struct GameCapture { QImage image; QString method; QStringList problems; };
 // 依次用系统图形捕获、窗口自绘、屏幕拷贝（仅窗口未被遮挡时）取一帧；都取不到时如实交回各自的原因。
-GameCapture CaptureWindow(HWND window) {
+// 后台测试的窗口不在屏幕上，不做屏幕拷贝。
+GameCapture CaptureWindow(HWND window, bool hidden) {
     GameCapture capture;
     RECT client{};
     if (!GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0) {
@@ -133,7 +137,8 @@ GameCapture CaptureWindow(HWND window) {
         capture.problems << QObject::tr("窗口自绘：画面是单一颜色");
         capture.image = {};
         POINT origin{0, 0}; ClientToScreen(window, &origin);
-        if (!Unoccluded(window, client)) capture.problems << QObject::tr("屏幕拷贝：游戏窗口被其他窗口遮挡");
+        if (hidden) capture.problems << QObject::tr("后台测试的游戏不在屏幕上，要看画面请用 visible: true 重新启动测试");
+        else if (!Unoccluded(window, client)) capture.problems << QObject::tr("屏幕拷贝：游戏窗口被其他窗口遮挡");
         else if (BitBlt(memory, 0, 0, width, height, screen, origin.x, origin.y, SRCCOPY)) grab();
         if (!capture.image.isNull() && !Uniform(capture.image)) capture.method = QStringLiteral("screen_copy");
         else capture.image = {};
@@ -158,11 +163,13 @@ QJsonObject MainWindow::MapTestTool(const QString& name, const QJsonObject& argu
                 + QUuid::createUuid().toString(QUuid::Id128).left(16).toStdString() + ".txt";
             pendingMapTestScenario_ = std::move(request);
         }
-        const auto rejected = StartMapTest(false);
+        // 默认开在看不见的独立桌面上，不打扰正在用电脑的人；visible 才在屏幕上显示（要截画面时用）。
+        const bool visible = arguments.value("visible").toBool(false);
+        const auto rejected = StartMapTest(false, !visible);
         pendingMapTestScenario_.reset();
         if (!rejected.isEmpty()) return Failure("MAP_TEST_REJECTED", rejected);
         QJsonObject result{{"ok", true}, {"started", true}, {"game_verified", false},
-            {"steps_supported", static_cast<bool>(luaReloadController_)}};
+            {"steps_supported", static_cast<bool>(luaReloadController_)}, {"visible", visible}};
         if (mapTestScenario_)
             result.insert("scenario", QJsonObject{{"result_file", QString::fromStdWString(mapTestScenario_->resultPath.wstring())},
                 {"reads", static_cast<int>(mapTestScenario_->plan.reads.size())}});
@@ -200,7 +207,7 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
         // 载入完成后游戏可能停在“按任意键继续”：场景开始前每 2 秒给本局测试游戏发一次空格（载入中会被忽略）。
         if ((!report || !report->started) && clock.elapsed() - lastKey >= 2000) {
             lastKey = clock.elapsed();
-            if (const auto window = GameWindow(mapTestLease_->ProcessIds())) {
+            if (const auto window = GameWindow(*mapTestLease_)) {
                 PostMessageW(window, WM_KEYDOWN, VK_SPACE, 0x00390001);
                 PostMessageW(window, WM_KEYUP, VK_SPACE, static_cast<LPARAM>(0xC0390001u));
             }
@@ -229,9 +236,9 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
 
 QJsonObject MainWindow::MapTestCapture() {
     if (!mapTestLease_ || !mapTestLease_->IsActive()) return Failure("MAP_TEST_NOT_RUNNING", tr("没有正在运行的测试游戏。"));
-    const auto window = GameWindow(mapTestLease_->ProcessIds());
+    const auto window = GameWindow(*mapTestLease_);
     if (!window) return Failure("MAP_TEST_CAPTURE_WINDOW", tr("没有找到本次测试游戏的可见窗口（可能仍在启动或已最小化）。"));
-    const auto capture = CaptureWindow(window);
+    const auto capture = CaptureWindow(window, mapTestLease_->HiddenDesktop() != nullptr);
     if (capture.image.isNull())
         return Failure("MAP_TEST_CAPTURE_FAILED", tr("游戏窗口画面没有取到：%1。").arg(capture.problems.join(QStringLiteral("；"))));
     const auto& image = capture.image;

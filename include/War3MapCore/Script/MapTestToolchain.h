@@ -35,6 +35,8 @@ public:
     [[nodiscard]] Status Stop();
     // 本次 Job 里仍在运行的进程编号（找本次游戏窗口用）；已结束或无法查询时为空。
     [[nodiscard]] std::vector<std::uint32_t> ProcessIds() const;
+    // 游戏所在的不可见桌面句柄（HDESK，找窗口用）；游戏开在用户桌面上时为空。
+    [[nodiscard]] void* HiddenDesktop() const noexcept;
     // 仅原进程树终态后调用；在后台核对并清理本次短路径副本，返回启动终态诊断。
     [[nodiscard]] Status Cleanup();
 private:

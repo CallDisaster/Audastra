@@ -56,6 +56,8 @@ struct MapTestArtifact {
     bool enableLuaHotReload = false;
     MapTestLuaEngine handwrittenLuaEngine = MapTestLuaEngine::Owned;
     bool handwrittenLuaHotReload = true;
+    // 游戏开在用户看不见的独立桌面上：不弹出、不抢焦点、不接收键鼠（Agent 测试默认）。
+    bool hiddenDesktop = false;
 };
 
 struct MapTestSlkRequest {
@@ -97,6 +99,8 @@ struct MapTestLaunchPlan {
     // 与启动器、Game.dll一同持有到进程终态，防止预检后替换注入库。
     std::filesystem::path runtimeBootstrap;
     std::string runtimeBootstrapSha256;
+    // 启动入口及其子进程放在本轮新建的不可见桌面上。
+    bool hiddenDesktop = false;
 };
 
 // 核验所选游戏和本轮短路径复制目标；不启动进程、不写安装配置或注册表。

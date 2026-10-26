@@ -224,7 +224,7 @@ private:
     void SaveMapInPlace();
     void TestMap();
     // 启动单人测试；成功返回空串，否则返回原因。interactive 为 false 时不弹窗（供助手调用）。
-    QString StartMapTest(bool interactive);
+    QString StartMapTest(bool interactive, bool hiddenDesktop = false);
     // Agent 进游戏测试：map_test_start / map_test_stop / map_test_eval（MapTestAgentActions.cpp）。
     QJsonObject MapTestTool(const QString& name, const QJsonObject& arguments);
     QJsonObject MapTestSteps(const QJsonObject& arguments);

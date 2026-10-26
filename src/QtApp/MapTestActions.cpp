@@ -48,7 +48,7 @@ QString TestStage(std::string_view stage) {
 
 void MainWindow::TestMap() { (void)StartMapTest(true); }
 
-QString MainWindow::StartMapTest(bool interactive) {
+QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     // 界面启动时弹出说明；助手调用时只返回原因，不出现需要点击的窗口。
     const auto fail = [this, interactive](const QString& title, const QString& text, bool warning = true) {
         if (interactive) {
@@ -59,7 +59,15 @@ QString MainWindow::StartMapTest(bool interactive) {
     };
     const auto busy = [this](const QString& text) { ShowStatusMessage(text); return text; };
     if (project_->savingMap_) return tr("保存或测试准备正在进行，请稍后再试。");
-    if (mapTestLease_ && mapTestLease_->IsActive()) return busy(tr("上一轮测试游戏仍在运行，请先退出游戏再测试。"));
+    if (mapTestLease_ && mapTestLease_->IsActive()) {
+        if (!mapTestLease_->HiddenDesktop()) return busy(tr("上一轮测试游戏仍在运行，请先退出游戏再测试。"));
+        // 后台测试看不见，用户没法自己退出：点“测试”时问一下是否结束它。
+        if (!interactive) return busy(tr("上一轮后台测试仍在运行，请先用 map_test_stop 结束。"));
+        if (QMessageBox::question(this, tr("地图测试"), tr("Agent 的后台测试还在运行（不显示在屏幕上）。结束它，再开始本次测试？"))
+            != QMessageBox::Yes) return tr("后台测试仍在运行。");
+        if (const auto stopped = mapTestLease_->Stop(); !stopped.Succeeded()) return busy(tr("后台测试没能结束，请稍后再试。"));
+        return busy(tr("已结束后台测试，请再点一次“测试”。"));
+    }
     if (!project_->archiveSession_ || project_->sourceArchivePath_.empty()) return busy(tr("请先打开一张地图，再运行测试。"));
     QSettings settings;
     const bool ownedLua = project_->luaMapTarget_
@@ -210,6 +218,7 @@ QString MainWindow::StartMapTest(bool interactive) {
             update("freeze");
             workspaceReady = (*workspace.value)->Refresh();
             if (artifact.Succeeded() && workspaceReady.Succeeded()) {
+                artifact.value->hiddenDesktop = hiddenDesktop;
                 launched = Script::LaunchMapTest(*artifact.value, update);
             }
         } catch (const std::exception&) {

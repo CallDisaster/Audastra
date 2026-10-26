@@ -79,9 +79,16 @@ void CopyAndPlanKeepSource() {
         && plan.value->gameExecutableSha256 == plan.value->executableSha256
         && plan.value->gameModuleSha256 == *Sha256File(f.game / "Game.dll").value, "game executable and module identities are bound");
     RequireShortGameCopy(*plan.value, f, L".w3x");
+    Require(!plan.value->hiddenDesktop, "ordinary test opens on the user's desktop");
     const auto repeated = BuildMapTestLaunchPlan(*artifact.value);
     Require(repeated.Succeeded() && repeated.value->gameMapCopy == plan.value->gameMapCopy,
         "same frozen task rebuilds a stable preflight-only launch plan");
+    auto hidden = *artifact.value; hidden.hiddenDesktop = true;
+    const auto background = BuildMapTestLaunchPlan(hidden);
+    Require(background.Succeeded() && background.value->hiddenDesktop && background.value->arguments.size() == 4
+        && background.value->arguments[0] == L"-window" && background.value->arguments[1] == L"-nosound"
+        && background.value->arguments[2] == L"-loadfile" && background.value->arguments[3] == plan.value->arguments[2],
+        "background test runs on the hidden desktop without sound");
     const auto secondArtifact = PrepareMapTest(f.Request("prepared-second")); Require(secondArtifact.Succeeded(), "prepare second independent task");
     const auto second = BuildMapTestLaunchPlan(*secondArtifact.value);
     Require(second.Succeeded() && second.value->gameMapCopy != plan.value->gameMapCopy, "separate frozen tasks have distinct short-copy directories");

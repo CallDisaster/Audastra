@@ -41,6 +41,7 @@ struct MapTestLaunchLease::Impl {
     std::vector<HANDLE> protectedDirectories;
     std::vector<HANDLE> protectedFiles;
     std::filesystem::path gameImage;
+    HDESK desktop = nullptr; // 后台测试的不可见桌面；进程都退出后随本记录关闭。
     FILETIME launcherCreated{};
     struct Child { HANDLE handle; DWORD id; FILETIME created; bool gameIdentity = false; bool exited = false; };
     std::vector<Child> children;
@@ -141,6 +142,7 @@ struct MapTestLaunchLease::Impl {
         CloseObserved();
         for (auto handle : protectedDirectories) CloseHandle(handle);
         for (auto handle : protectedFiles) CloseHandle(handle);
+        if (desktop) CloseDesktop(desktop);
     }
 #endif
 };
@@ -188,6 +190,14 @@ std::vector<std::uint32_t> MapTestLaunchLease::ProcessIds() const {
         ids.push_back(static_cast<std::uint32_t>(buffer.list.ProcessIdList[index]));
 #endif
     return ids;
+}
+
+void* MapTestLaunchLease::HiddenDesktop() const noexcept {
+#ifdef _WIN32
+    return impl_ ? impl_->desktop : nullptr;
+#else
+    return nullptr;
+#endif
 }
 
 Status MapTestLaunchLease::Cleanup() {
@@ -412,9 +422,32 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     } attributes;
     if (!attributes.Initialize(inheritedMailbox ? reinterpret_cast<HANDLE>(static_cast<std::uintptr_t>(inheritedMailbox->Value())) : nullptr))
         return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_LAUNCH_ATTRIBUTES", "无法为游戏进程设置独立桌面应用的启动语义。");
+    // 后台测试：新建一个看不见的桌面，启动入口和它启动的游戏都在那里，不切换用户桌面、不抢前台、不收键鼠。
+    // 建不成时直接失败，不退回用户桌面。
+    std::wstring desktopPath;
+    if (plan.hiddenDesktop) {
+        std::array<wchar_t, 64> station{}; DWORD needed = 0;
+        if (!GetUserObjectInformationW(GetProcessWindowStation(), UOI_NAME, station.data(), static_cast<DWORD>(sizeof(station)), &needed)
+            || CompareStringOrdinal(station.data(), -1, L"WinSta0", -1, TRUE) != CSTR_EQUAL)
+            return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_HIDDEN_DESKTOP", "当前会话不能建立后台测试桌面，测试尚未启动。");
+        const auto name = L"AudastraMapTest_" + suffix.substr(0, 12) + L"_" + std::to_wstring(GetTickCount64());
+        // CreateDesktopW 放在短命线程里调用，界面线程所属的桌面不变。
+        DWORD desktopError = 0;
+        std::thread([&] {
+            SetLastError(0);
+            rawState->desktop = CreateDesktopW(name.c_str(), nullptr, nullptr, 0,
+                DESKTOP_READOBJECTS | DESKTOP_CREATEWINDOW | DESKTOP_ENUMERATE | DESKTOP_WRITEOBJECTS, nullptr);
+            desktopError = GetLastError();
+        }).join();
+        if (!rawState->desktop || desktopError == ERROR_ALREADY_EXISTS)
+            return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_HIDDEN_DESKTOP",
+                "无法建立后台测试桌面（Win32=" + std::to_string(desktopError) + "），测试尚未启动。");
+        desktopPath = std::wstring(station.data()) + L"\\" + name;
+    }
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = attributes.value ? sizeof(startup) : sizeof(STARTUPINFOW);
     startup.lpAttributeList = attributes.value;
+    if (!desktopPath.empty()) startup.StartupInfo.lpDesktop = desktopPath.data();
     PROCESS_INFORMATION process{};
     BOOL created = FALSE;
     DWORD creationError = 0;

@@ -21,6 +21,7 @@
 #include "War3MapCore/CompatibilityProfile.h"
 #include "War3MapCore/EditorSession.h"
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/Script/MapTestToolchain.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -223,6 +224,8 @@ MainWindow::~MainWindow() {
     delete updateClient_;
     updateClient_ = nullptr;
     StopAgentWorkspace();
+    // 后台测试的游戏看不见，编辑器关闭时一并结束；用户桌面上的测试游戏照常留着。
+    if (mapTestLease_ && mapTestLease_->HiddenDesktop() && mapTestLease_->IsActive()) (void)mapTestLease_->Stop();
     if (worldFrameRecorder_) worldFrameRecorder_->Stop(tr("窗口关闭"));
     // UndoStack 析构会 clear 并发射 indexChanged；先停通知再释放其引用的视图/文档。
     for (auto* stack : project_->objectUndoStacks_) {
