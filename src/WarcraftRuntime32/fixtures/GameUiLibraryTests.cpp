@@ -393,7 +393,45 @@ void VisibilityAndContent() {
     const auto simple = ui.CreateSimple("Simple", 0, 0);
     Check(ui.SetParent(text.handle, simple.handle) == UiError::None, "classic frame under simple parent");
     Check(ui.SetParent(bar.handle, simple.handle) == UiError::None, "simple frame under simple parent");
-    Check(ui.SetParent(text.handle, backdrop.handle) == UiError::Unsupported, "classic parent not offered");
+    Check(ui.SetParent(text.handle, backdrop.handle) == UiError::UnsupportedParent, "classic parent not offered");
+}
+
+void ParentValidation() {
+    Reset();
+    GameUiLibrary ui(Entries());
+    const auto root = ui.Root();
+    const auto backdrop = ui.Create("Backdrop", root.handle, 0, 0);
+    const auto simple = ui.CreateSimple("Simple", 0, 11);
+    auto* simpleObject = g_frames.back().get();
+    g_log.clear();
+    Check(ui.CreateSimple("Bar", root.handle, 968002000).error == UiError::None,
+        "verified GameUI token is an alias for default simple root");
+    Check(Logged("createsimple Bar 00000000 968002000"), "GameUI address never reaches simple constructor");
+    Check(ui.CreateSimple("Bar", simple.handle, 0).error == UiError::None
+        && Logged("createsimple Bar " + Hex(simpleObject->Self()) + " 0"), "simple parent remains unchanged");
+    auto* regionObject = NewFrame(vtTexture, simpleObject->Self(), Layout127::RegionParent);
+    g_named = regionObject;
+    const auto region = ui.Find("Named", 0);
+    g_log.clear();
+    Check(ui.CreateSimple("Bar", backdrop.handle, 0).error == UiError::UnsupportedParent,
+        "classic backdrop cannot own a simple frame");
+    Check(ui.CreateSimple("Simple", region.handle, 0).error == UiError::UnsupportedParent,
+        "simple region cannot own a simple frame");
+    Check(ui.Create("Text", region.handle, 0, 0).error == UiError::UnsupportedParent,
+        "region cannot own a classic frame");
+    Check(ui.SetParent(simple.handle, backdrop.handle) == UiError::UnsupportedParent,
+        "reparenting to classic family rejected before engine");
+    Check(ui.SetParent(simple.handle, simple.handle) == UiError::ParentCycle, "self parenting rejected");
+    Check(g_log.empty() && !ui.Faulted(), "invalid parents never call the engine or disable UI");
+    const auto child = ui.CreateSimple("Simple", simple.handle, 0);
+    g_log.clear();
+    Check(ui.SetParent(simple.handle, child.handle) == UiError::ParentCycle,
+        "reparenting to a descendant rejected before engine");
+    Check(g_log.empty() && ui.SetWidth(backdrop.handle, 0.3f) == UiError::None,
+        "valid UI calls still work after parent refusal");
+    ui.ResetSession();
+    Check(ui.CreateSimple("Simple", root.handle, 0).error == UiError::BadHandle,
+        "root alias does not survive a session reset");
 }
 
 void LifetimeAndHandles() {
@@ -511,6 +549,23 @@ void ModuleFaultDiagnostics() {
     Check(m.Call("audastraui.create;s:Crash;d:0;i:0;i:0").status == AJ_INTERNAL, "observed fault keeps original wire status");
     Check(g_faultCount == 1 && g_fault.epoch == m.epoch && g_fault.request == m.request
         && std::string_view(g_fault.entry) == "audastraui.create", "module binds actual call identity to SEH diagnostics");
+}
+
+void ModuleParentValidation() {
+    Reset();
+    ModuleHost m;
+    Check(InstallGameUiModule(m.host, Entries()) == AJ_OK, "install parent validation module");
+    const auto root = m.Call("audastraui.root").value.integer;
+    const auto backdrop = m.Call("audastraui.create;s:Backdrop;d:0;i:0;i:0").value.integer;
+    g_log.clear();
+    const auto refused = m.Call("audastraui.createsimple;s:Bar;d:" + std::to_string(backdrop) + ";i:0");
+    const auto failed = m.request;
+    Check(refused.status == AJ_UNSUPPORTED && g_log.empty(), "bad parent is a supported wire refusal, not an engine fault");
+    Check(m.Call("audastraui.error;i:" + std::to_string(failed)).value.text == UiErrorText(UiError::UnsupportedParent),
+        "wire diagnostic identifies unsupported parent family for the failed request");
+    Check(m.Call("audastraui.ready").value.integer == 1, "UI remains available after parent refusal");
+    Check(m.Call("audastraui.createsimple;s:Bar;d:" + std::to_string(root) + ";i:0").status == AJ_OK,
+        "wire GameUI root alias can create a simple frame after refusal");
 }
 
 void ModuleCalls() {
@@ -651,11 +706,13 @@ int main() {
         IncompleteTable();
         CreateAndLayout();
         VisibilityAndContent();
+        ParentValidation();
         LifetimeAndHandles();
         TocLoading();
         PointerEvents();
         FaultsAndThreads();
         ModuleFaultDiagnostics();
+        ModuleParentValidation();
         ModuleCalls();
         ModuleUnavailable();
         ScriptMatchesModule();

@@ -87,6 +87,8 @@ std::string_view UiErrorText(UiError error) noexcept {
     case UiError::TableFull: return "框架句柄已用完";
     case UiError::NotOwned: return "游戏自带的框架不能删除";
     case UiError::Faulted: return "游戏界面函数出错，界面库已停用";
+    case UiError::UnsupportedParent: return "父框架家族不支持此操作；Simple创建只能使用默认根或Simple父，改父级只能使用Simple父";
+    case UiError::ParentCycle: return "父框架关系形成循环或超过64层";
     }
     return "未知错误";
 }
@@ -108,6 +110,7 @@ void GameUiLibrary::ResetSession() noexcept {
     }
     events_.clear();
     buttonDown_ = false;
+    gameRoot_ = 0;
 }
 
 UiError GameUiLibrary::Ready() const noexcept {
@@ -238,7 +241,9 @@ UiCreated GameUiLibrary::Root() {
     Address root = 0;
     if (Run([&] { root = entries_.getGameUi(0, 0); }) != UiError::None) return {0, UiError::Faulted};
     if (!root) return {0, UiError::NotReady};
-    return Adopt(root, Owner::Game);
+    const auto adopted = Adopt(root, Owner::Game);
+    if (adopted.error == UiError::None) gameRoot_ = root;
+    return adopted;
 }
 
 UiCreated GameUiLibrary::World() {
@@ -276,6 +281,7 @@ UiCreated GameUiLibrary::Create(std::string_view templateName, FrameHandle paren
     UiError error{};
     const auto* owner = Resolve(parent, error);
     if (!owner) return {0, error};
+    if (owner->family == FrameFamily::Region) return {0, UiError::UnsupportedParent};
     const std::string text(templateName);
     Address created = 0;
     const auto parentObject = owner->object;
@@ -292,7 +298,11 @@ UiCreated GameUiLibrary::CreateSimple(std::string_view templateName, FrameHandle
         UiError error{};
         const auto* owner = Resolve(parent, error);
         if (!owner) return {0, error};
-        parentObject = owner->object;
+        // GameUI不是CSimpleFrame。仅这个已由Root核验的token可作为默认根别名，不能把任意Classic静默改根。
+        if (owner->object != gameRoot_) {
+            if (owner->family != FrameFamily::Simple) return {0, UiError::UnsupportedParent};
+            parentObject = owner->object;
+        }
     }
     const std::string text(templateName);
     Address created = 0;
@@ -446,8 +456,14 @@ UiError GameUiLibrary::SetParent(FrameHandle frame, FrameHandle parent) {
     const auto* target = Resolve(parent, error);
     if (!target) return error;
     // 游戏的两个改父级函数都要求新父级是 Simple 框架。
-    if (target->family != FrameFamily::Simple || object == target->object) return UiError::Unsupported;
+    if (target->family != FrameFamily::Simple) return UiError::UnsupportedParent;
     const auto parentObject = target->object;
+    Address ancestor = parentObject;
+    for (int depth = 0; ancestor && depth < kMaxDepth; ++depth) {
+        if (ancestor == object) return UiError::ParentCycle;
+        ancestor = ParentOf(ancestor);
+    }
+    if (ancestor) return UiError::ParentCycle;
     if (family == FrameFamily::Classic) return Run([&] { entries_.layerSetParent(object, 0, parentObject, 1, 0); });
     if (family == FrameFamily::Simple) return Run([&] { entries_.simpleSetParent(object, 0, parentObject); });
     return UiError::Unsupported;

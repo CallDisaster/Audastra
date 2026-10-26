@@ -24,6 +24,8 @@ enum class UiError : std::uint8_t {
     TableFull,
     NotOwned,      // 游戏自己的框架不能由地图删除
     Faulted,       // 游戏函数出现异常，界面库已停用
+    UnsupportedParent,
+    ParentCycle,
 };
 
 [[nodiscard]] std::string_view UiErrorText(UiError error) noexcept;
@@ -78,7 +80,7 @@ public:
     [[nodiscard]] UiCreated Root();
     [[nodiscard]] UiCreated World();
     [[nodiscard]] UiCreated Find(std::string_view name, int context);
-    // 按 fdf 模板创建；parent 为 0 时挂在游戏界面根下。
+    // 普通模板：parent为0时挂GameUI。Simple模板：0或GameUI根token表示游戏的默认Simple根，其他父必须是Simple。
     [[nodiscard]] UiCreated Create(std::string_view templateName, FrameHandle parent, int level, int context);
     [[nodiscard]] UiCreated CreateSimple(std::string_view templateName, FrameHandle parent, int context);
     [[nodiscard]] UiError LoadToc(std::string_view path);
@@ -150,6 +152,7 @@ private:
     UiFaultObserver observer_ = nullptr;
     UiFault callContext_{};
     UiFault lastFault_{};
+    Address gameRoot_ = 0;
     bool complete_ = false;
     bool faulted_ = false;
     bool buttonDown_ = false;

@@ -204,6 +204,14 @@ e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a
 
 如果地图已运行，但握手超时、无入口日志且模块快照中无 runtime，定位边界是**尚未观察到黑盒加载器到本 DLL 的控制权交接**。这不证明黑盒内部哪一步失败。先核对实际导入名、整体摘要、最终 `main` 唯一调用和游戏映像，再请提供方给出不含实现细节的分阶段诊断；不通过分析 `.ai` 越过边界。出现 `initialize-ready` 后仍超时，则继续检查 `vm-attach` 和地图侧请求，不能再统称为“DLL 没加载”。
 
+### 内置界面的父框架与故障诊断
+
+`AudastraUICreateSimpleFrame` 的父参数为 `0` 或 `AudastraUIGameUI()` 返回的根句柄时，运行库使用游戏的默认 Simple 根。根句柄是经过核验的别名，不会把 GameUI 对象指针直接交给 Simple 构造函数。其他父框架必须属于 Simple 家族；普通 Backdrop、普通 Frame、Texture 和 FontString 不能作为 Simple 的父框架。普通框架创建也不能以 Texture 或 FontString 为父框架。
+
+`AudastraUISetParent` 只支持 Simple 父框架；父子关系不能形成循环，检查深度最多 64 层。父家族不受支持时返回 `AJ_UNSUPPORTED`，循环或超过深度限制返回 `AJ_ARGUMENT`。用失败请求号查询 `audastraui.error` 可取得具体原因。这些拒绝发生在调用游戏函数之前，界面库保持可用；不要把收到一次参数错误理解为运行库需要重新加载。创建时的父子关系和锚点关系是两个独立参数，跨家族定位仍按各自布局对象处理。
+
+游戏函数发生结构化异常时，运行库保留 `ui-fault` 日志，包含 epoch、请求号、固定入口名、异常代码和已核验 Game.dll 范围内的相对偏移。范围外的位置标为 `outside_verified_game`；日志不输出绝对地址或地图参数。此时界面库会停止后续游戏函数调用，避免在可能已损坏的界面状态上继续操作。普通调用日志与故障日志各有独立的行数上限。
+
 ## 5. 原创验收样例
 
 打包器负责唯一的 main 首句 AI 调用；[`MapRuntimeSmoke.j`](../sample/MapRuntimeSmoke.j) 依次测试握手、UI 装入与就绪、普通本地化、字符串保留、TriggerExecute 和计时器调用、TOC、20 次 UI 创建／定位／尺寸／文字／显示／销毁、销毁后句柄拒绝。完整成功标记是地图消息 `JAPI MAP PASS: loader + DLL + hello + UI + timer/trigger + stale handles`，同时应有对应 DLL 日志及实际可见 UI。不要仅凭界面上的短 `JAPI MAP PASS` 标签验收：样例先设置标签，随后才执行最终 JASS 断言；失败会另外显示具体阶段。

@@ -35,8 +35,10 @@ std::int32_t StatusOf(UiError error) noexcept {
     case UiError::BadHandle:
     case UiError::NotFound:
     case UiError::BadArgument: return AJ_ARGUMENT;
+    case UiError::ParentCycle: return AJ_ARGUMENT;
     case UiError::StaleFrame: return AJ_STALE;
     case UiError::Unsupported: return AJ_UNSUPPORTED;
+    case UiError::UnsupportedParent: return AJ_UNSUPPORTED;
     case UiError::TableFull: return AJ_LIMIT;
     case UiError::NotOwned: return AJ_STATE;
     case UiError::Faulted: return AJ_INTERNAL;
