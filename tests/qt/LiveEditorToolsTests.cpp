@@ -675,6 +675,16 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_UNAVAILABLE"));
     f.tools->SetSaveHandler([](const std::filesystem::path&, bool) { return false; });
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_REJECTED"));
+    // 保存链写进诊断表的错误随拒绝一起返回。
+    f.tools->SetSaveHandler([&f](const std::filesystem::path&, bool) {
+        f.project.AddDiagnostic(QStringLiteral("警告"), QStringLiteral("地图"), QStringLiteral("SAVE_SAMPLE_NOTE"), QStringLiteral("示例提示"));
+        f.project.AddDiagnostic(QStringLiteral("错误"), QStringLiteral("地图"), QStringLiteral("SAVE_SAMPLE_REASON"), QStringLiteral("示例原因"));
+        return false;
+    });
+    const auto explained = f.tools->Invoke("editor_save_map", request);
+    const auto reasons = explained.value("diagnostics").toArray();
+    QVERIFY2(reasons.size() == 2 && reasons[1].toObject().value("code").toString() == QStringLiteral("SAVE_SAMPLE_REASON")
+            && reasons[1].toObject().value("message").toString() == QStringLiteral("示例原因"), qPrintable(Explain(explained)));
     f.tools->SetSaveHandler([](const std::filesystem::path&, bool) { return true; });
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_OUTPUT_MISSING"));
     int calls = 0; QJsonObject nested;

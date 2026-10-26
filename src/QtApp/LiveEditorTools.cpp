@@ -50,6 +50,7 @@
 #include <QPointer>
 #include <QScopedValueRollback>
 #include <QSet>
+#include <QStandardItemModel>
 #include <QThread>
 #include <QUndoCommand>
 #include <QUndoStack>
@@ -1234,8 +1235,19 @@ private:
                 if (!original.Succeeded()) return Mcp::Failure(original);
                 previous = QJsonObject{{"path", QString::fromStdWString(path.wstring())}, {"sha256", QString::fromStdString(*original.value)}};
             }
+            const int firstDiagnostic = project_.diagnosticsModel_ ? project_.diagnosticsModel_->rowCount() : 0;
             const bool succeeded = validation ? validationSave_(path) : save_(path, inPlace);
-            if (!succeeded) return Mcp::Failure("LIVE_EDITOR_SAVE_REJECTED", "原地图保存服务拒绝写出；查看编辑器诊断。");
+            if (!succeeded) {
+                // 保存链写进诊断表的错误一并带回，Agent 不用看界面也知道原因。
+                Status rejected = Status::Failure("MCP", "LIVE_EDITOR_SAVE_REJECTED", "原地图保存服务拒绝写出。");
+                const auto* model = project_.diagnosticsModel_;
+                for (int row = firstDiagnostic; model && row < model->rowCount() && rejected.diagnostics.size() <= 16; ++row) {
+                    if (model->index(row, 0).data().toString() != QStringLiteral("错误")) continue;
+                    rejected.diagnostics.push_back({DiagnosticSeverity::Error, model->index(row, 1).data().toString().toStdString(),
+                        model->index(row, 2).data().toString().toStdString(), model->index(row, 3).data().toString().left(4096).toStdString(), std::nullopt});
+                }
+                return Mcp::Failure(rejected);
+            }
             const auto sha = Sha256File(path);
             if (!sha.Succeeded()) return Mcp::Failure("LIVE_EDITOR_SAVE_OUTPUT_MISSING", "宿主报告成功，但无法读取输出身份。");
             SyncIdentity();
