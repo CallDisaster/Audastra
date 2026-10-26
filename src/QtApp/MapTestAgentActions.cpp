@@ -190,24 +190,27 @@ QJsonObject MainWindow::MapTestTool(const QString& name, const QJsonObject& argu
 QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
     if (!mapTestScenario_) return Failure("MAP_TEST_SCENARIO_NONE", tr("本次测试没有带测试场景；请用 map_test_start 的 scenario 启动。"));
     const int wait = std::clamp(arguments.value("wait_ms").toInt(30000), 0, 600000);
+    // 等待期间照常处理事件，别的请求可能结束或重开测试：只看开始等待时的这一局。
+    const auto scenario = *mapTestScenario_;
+    const auto lease = mapTestLease_;
     QElapsedTimer clock; clock.start();
     std::optional<Services::MapTestScenarioReport> report;
     bool running = true;
     qint64 lastKey = -10000;
     for (;;) {
-        running = mapTestLease_ && mapTestLease_->IsActive();
-        QFile file(QString::fromStdWString(mapTestScenario_->resultPath.wstring()));
+        running = lease && lease->IsActive();
+        QFile file(QString::fromStdWString(scenario.resultPath.wstring()));
         if (file.exists() && file.size() <= 4 * 1024 * 1024 && file.open(QIODevice::ReadOnly)) {
             const auto bytes = file.readAll();
             auto parsed = Services::ParseMapTestScenarioResult(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())),
-                mapTestScenario_->plan);
+                scenario.plan);
             if (parsed.Succeeded() && parsed.value) report = std::move(*parsed.value);
         }
         // 载入完成后游戏可能停在“按任意键继续”：场景开始前每 2 秒给本局测试游戏发一次空格（载入中会被忽略）。
         // 先发再判断是否返回，wait_ms 为 0 的轮询也能越过这一步。
         if (running && (!report || !report->started) && clock.elapsed() - lastKey >= 2000) {
             lastKey = clock.elapsed();
-            if (const auto window = GameWindow(*mapTestLease_)) {
+            if (const auto window = GameWindow(*lease)) {
                 PostMessageW(window, WM_KEYDOWN, VK_SPACE, 0x00390001);
                 PostMessageW(window, WM_KEYUP, VK_SPACE, static_cast<LPARAM>(0xC0390001u));
             }
@@ -216,7 +219,7 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
         Pause(250);
     }
     QJsonObject result{{"ok", true}, {"game_running", running},
-        {"result_file", QString::fromStdWString(mapTestScenario_->resultPath.wstring())}};
+        {"result_file", QString::fromStdWString(scenario.resultPath.wstring())}};
     if (!report) {
         result.insert("started", false); result.insert("finished", false); result.insert("written", false);
         result.insert("message", running ? tr("场景还没有写出结果；游戏可能仍在载入或场景在等待。") : tr("游戏已退出，场景没有写出结果。"));

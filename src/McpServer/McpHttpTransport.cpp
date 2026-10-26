@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QHostAddress>
 #include <QJsonDocument>
+#include <QPointer>
 #include <QSet>
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -278,15 +279,18 @@ private:
             parsed->params.value("protocolVersion") == QStringLiteral("2024-11-05")) {
             Reply(socket, 400); return;
         }
+        // 等游戏结果、等检查这类工具会在处理中转嵌套事件循环；客户端在这期间断开时连接会被删除，处理完不能再写回应。
+        const QPointer<QTcpSocket> alive(&socket);
         const auto response = dispatcher_.HandleMessage(body);
-        if (!response) { Reply(socket, 202); return; }
+        if (!alive) return;
+        if (!response) { Reply(*alive, 202); return; }
         const auto serialized = SerializeResponse(*response);
         if (serialized.size() > options_.maxResponseBytes) {
-            Reply(socket, 200, SerializeResponse(JsonRpcResponse::Error(response->id,
+            Reply(*alive, 200, SerializeResponse(JsonRpcResponse::Error(response->id,
                 JsonRpcResponse::kInternalError, QStringLiteral("MCP 响应超过网络预算；缩小查询范围。"))));
             return;
         }
-        Reply(socket, 200, serialized);
+        Reply(*alive, 200, serialized);
     }
 
     McpServer& dispatcher_;

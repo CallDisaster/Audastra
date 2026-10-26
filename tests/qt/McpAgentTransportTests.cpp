@@ -104,6 +104,7 @@ private slots:
     void HttpPostsRequestsAndAcceptsNotifications();
     void HttpValidatesTokenOriginAndProtocol();
     void HttpHasBudgetsAndStopsCleanly();
+    void HttpSurvivesClientLeavingDuringSlowTool();
 };
 
 void McpAgentTransportTests::CachedToolCannotBypassPolicy() {
@@ -315,6 +316,43 @@ void McpAgentTransportTests::HttpHasBudgetsAndStopsCleanly() {
     options.bearerToken = "short";
     QVERIFY(!transport.Start(options, &error));
     QVERIFY(!error.contains("short"));
+}
+
+// 等游戏结果这类工具会在处理中转嵌套事件循环；客户端在这期间断开，处理完后不能再往已删除的连接写回应。
+void McpAgentTransportTests::HttpSurvivesClientLeavingDuringSlowTool() {
+    McpServer server;
+    int slowCalls = 0, quickCalls = 0;
+    auto slow = DummyTool("slow", ToolPermission::Query, slowCalls);
+    slow.handler = [&slowCalls](const QJsonObject&) -> QJsonValue {
+        ++slowCalls;
+        for (int round = 0; round < 12; ++round) {
+            QEventLoop loop; QTimer::singleShot(50, &loop, &QEventLoop::quit); loop.exec();
+        }
+        return QJsonObject{{"ok", true}};
+    };
+    server.RegisterTool(std::move(slow));
+    server.RegisterTool(DummyTool("quick", ToolPermission::Query, quickCalls));
+    McpHttpTransport transport(server);
+    McpHttpOptions options; options.port = 0; options.bearerToken = kToken;
+    QVERIFY(transport.Start(options));
+    const auto port = transport.Port();
+    {
+        QTcpSocket client;
+        QEventLoop loop;
+        QObject::connect(&client, &QTcpSocket::connected, &loop, [&] {
+            client.write(HttpRequest(port, Rpc("tools/call", {{"name", "slow"}, {"arguments", QJsonObject{}}})));
+            client.flush();
+            QTimer::singleShot(150, &loop, [&] { client.abort(); });
+            QTimer::singleShot(1200, &loop, &QEventLoop::quit);
+        });
+        client.connectToHost(QHostAddress::LocalHost, port);
+        loop.exec();
+    }
+    QCOMPARE(slowCalls, 1);
+    QTest::qWait(100);
+    const auto response = RawExchange(port, HttpRequest(port, Rpc("tools/call", {{"name", "quick"}, {"arguments", QJsonObject{}}})));
+    QVERIFY(response.startsWith("HTTP/1.1 200"));
+    QCOMPARE(quickCalls, 1);
 }
 
 QTEST_GUILESS_MAIN(McpAgentTransportTests)
