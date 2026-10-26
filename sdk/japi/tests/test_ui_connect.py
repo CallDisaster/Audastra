@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise the real UI connection functions against a controlled transport.
+"""Exercise UI connection and scalar grammar source with controlled natives.
 
 Only the small JASS subset used by these functions is translated. Unsupported
-syntax is an error, not silently ignored. This is not a JASS VM, protocol parser
-test, or game-runtime acceptance test; request/response transport is substituted.
+syntax is an error, not silently ignored. This is not a JASS VM or game-runtime
+acceptance test; native calls and request/response transport are substituted.
 No AI files are opened, and no directories are enumerated.
 """
 
@@ -14,6 +14,7 @@ import ast
 from collections import deque
 from pathlib import Path
 import re
+import random
 import unittest
 
 
@@ -100,10 +101,10 @@ def initial_globals(source: str, names: tuple[str, ...]) -> dict[str, object]:
     return result
 
 
-def translate_function(source: str, name: str, globals_: set[str]) -> str:
+def translate_function(source: str, name: str, globals_: set[str], extra_calls=()) -> str:
     header, lines = extract_function(source, name)
     declaration = re.fullmatch(
-        rf"(?:private\s+)?function\s+{name}\s+takes\s+(.+)\s+returns\s+(boolean|string)", header)
+        rf"(?:private\s+)?function\s+{name}\s+takes\s+(.+)\s+returns\s+(boolean|string|integer)", header)
     if not declaration:
         raise ValueError(f"unsupported function declaration: {header}")
     arguments = []
@@ -114,9 +115,11 @@ def translate_function(source: str, name: str, globals_: set[str]) -> str:
                 raise ValueError(f"unsupported parameter: {part}")
             arguments.append(match[2])
     local_names = set(arguments)
-    callable_names = set(UI_FUNCTIONS + JAPI_FUNCTIONS + STUB_FUNCTIONS)
-    output = [f"def {name}({', '.join(arguments)}):", "    global " + ", ".join(sorted(globals_))]
-    branches: list[bool] = []
+    callable_names = set(UI_FUNCTIONS + JAPI_FUNCTIONS + STUB_FUNCTIONS) | set(extra_calls)
+    output = [f"def {name}({', '.join(arguments)}):"]
+    if globals_:
+        output.append("    global " + ", ".join(sorted(globals_)))
+    branches: list[str] = []
     statements_started = False
 
     def emit(text: str) -> None:
@@ -139,22 +142,33 @@ def translate_function(source: str, name: str, globals_: set[str]) -> str:
         statements_started = True
         if line.startswith("if ") and line.endswith(" then"):
             emit("if " + expr(line[3:-5]) + ":")
-            branches.append(False)
+            branches.append("if")
         elif line.startswith("elseif ") and line.endswith(" then"):
-            if not branches or branches[-1]:
+            if not branches or branches[-1] != "if":
                 raise ValueError(f"unexpected elseif in {name}")
             branches.pop()
             emit("elif " + expr(line[7:-5]) + ":")
-            branches.append(False)
+            branches.append("if")
         elif line == "else":
-            if not branches or branches[-1]:
+            if not branches or branches[-1] != "if":
                 raise ValueError(f"unexpected else in {name}")
             branches.pop()
             emit("else:")
-            branches.append(True)
+            branches.append("else")
         elif line == "endif":
-            if not branches:
+            if not branches or branches[-1] not in ("if", "else"):
                 raise ValueError(f"unexpected endif in {name}")
+            branches.pop()
+        elif line == "loop":
+            emit("while True:")
+            branches.append("loop")
+        elif line.startswith("exitwhen "):
+            if "loop" not in branches:
+                raise ValueError(f"exitwhen outside loop in {name}")
+            emit("if " + expr(line[9:]) + ": break")
+        elif line == "endloop":
+            if not branches or branches[-1] != "loop":
+                raise ValueError(f"unexpected endloop in {name}")
             branches.pop()
         elif line.startswith("return "):
             emit("return " + expr(line[7:]))
@@ -381,6 +395,53 @@ class ConnectTests(unittest.TestCase):
             runtime(source, self.japi_source)
 
 
+class RealSyntaxTests(unittest.TestCase):
+    """Execute the actual source grammar with substituted string/integer natives.
+
+    These are ASCII grammar checks, not VM performance or R2SW precision proof.
+    The single-character canonical roundtrip is also exercised by a game probe.
+    """
+    japi_source = ""
+
+    def setUp(self):
+        def s2i(text):
+            match = re.match(r"\s*[+-]?[0-9]+", text)
+            return int(match[0]) if match else 0
+
+        self.state = {"__builtins__": {}, "StringLength": len, "SubString": lambda s, a, b: s[max(a, 0):max(b, 0)],
+                      "S2I": s2i, "I2S": str}
+        names = ("AjCanonicalInt", "AjFind", "AjRealSyntax", "StringLength", "SubString", "S2I", "I2S")
+        for name in names[:3]:
+            code = translate_function(self.japi_source, name, set(), names)
+            exec(compile(code, f"<translated {name}>", "exec"), self.state)
+
+    @staticmethod
+    def reference(text):
+        if not 1 <= len(text) <= 32:
+            return False
+        match = re.fullmatch(r"-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE]([+-]?[0-9]{1,2}))?", text)
+        return match is not None and (match[1] is None or -46 <= int(match[1]) <= 46)
+
+    def test_decimal_and_exponent_boundaries(self):
+        samples = ("0", "-0", "01", ".5", "-.5", "1.", "1e46", "1e-46", "1E+46", "1e00",
+                   "1e47", "1e-47", "1e046", "1e+", "1..0", ".", "-", "+1", " 1", "1 ",
+                   "nan", "inf", "1;0", "١", "１", "1e١", "0" * 32, "0" * 33, "")
+        for text in samples:
+            with self.subTest(text=text):
+                self.assertEqual(self.state["AjRealSyntax"](text), self.reference(text))
+
+    def test_differential_grammar(self):
+        random_ = random.Random(270528)
+        for _ in range(4000):
+            text = "".join(random_.choices("0123456789eE+-.; x", k=random_.randrange(34)))
+            self.assertEqual(self.state["AjRealSyntax"](text), self.reference(text), repr(text))
+
+    def test_every_single_character_byte(self):
+        for value in range(256):
+            ch = chr(value)
+            self.assertEqual(self.state["AjCanonicalInt"](ch), ch in "0123456789", repr(ch))
+
+
 def read_jass(path: Path) -> str:
     # Check before and after resolution so a .j symlink cannot redirect to .ai.
     if path.suffix.lower() != ".j":
@@ -400,9 +461,11 @@ def main() -> int:
     try:
         ConnectTests.ui_source = read_jass(args.ui)
         ConnectTests.japi_source = read_jass(args.japi)
+        RealSyntaxTests.japi_source = ConnectTests.japi_source
     except (OSError, ValueError) as error:
         parser.error(str(error))
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(ConnectTests)
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(RealSyntaxTests))
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
 

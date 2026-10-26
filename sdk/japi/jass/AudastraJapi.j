@@ -94,7 +94,8 @@ function AjRealSyntax takes string text returns boolean
     loop
         exitwhen i >= n
         set ch = SubString(text, i, i + 1)
-        exitwhen AjFind("0123456789", ch, 0) < 0
+        // 单字符规范整数只能是ASCII数字，避免每一位再扫描十字符表。
+        exitwhen not AjCanonicalInt(ch)
         set digits = digits + 1
         set i = i + 1
     endloop
@@ -103,7 +104,7 @@ function AjRealSyntax takes string text returns boolean
         loop
             exitwhen i >= n
             set ch = SubString(text, i, i + 1)
-            exitwhen AjFind("0123456789", ch, 0) < 0
+            exitwhen not AjCanonicalInt(ch)
             set digits = digits + 1
             set i = i + 1
         endloop
@@ -123,7 +124,7 @@ function AjRealSyntax takes string text returns boolean
         loop
             exitwhen i >= n
             set ch = SubString(text, i, i + 1)
-            exitwhen AjFind("0123456789", ch, 0) < 0
+            exitwhen not AjCanonicalInt(ch)
             set digits = digits + 1
             set i = i + 1
         endloop
