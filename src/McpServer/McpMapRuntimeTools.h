@@ -1,5 +1,6 @@
 #pragma once
 #include "McpServer.h"
+#include "War3MapCore/Services/MapRuntimePreparation.h"
 #include <functional>
 #include <vector>
 
@@ -12,4 +13,6 @@ struct MapRuntimeToolHost {
 [[nodiscard]] QJsonObject InvokeMapRuntimeTool(const QString& name, const QJsonObject& arguments,
     const MapRuntimeToolHost& host);
 void RegisterMapRuntimeTools(McpServer& server);
+[[nodiscard]] QJsonObject MapRuntimeSaveProperties();
+[[nodiscard]] Result<Services::MapRuntimeSaveOptions> DecodeMapRuntimeSaveOptions(const QJsonObject& arguments);
 } // namespace War3Map::Mcp

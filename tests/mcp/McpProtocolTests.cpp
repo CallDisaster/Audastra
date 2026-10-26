@@ -5,7 +5,10 @@
 #include "McpToolInternal.h"
 #include "McpMapDataTools.h"
 #include "McpLuaFileTools.h"
+#include "McpMapRuntimeTools.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapArchiveSession.h"
+#include <QScopeGuard>
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
@@ -77,7 +80,7 @@ void TestToolSurface() {
             "feedback.draft", "feedback.list", "feedback.status", "update.status",
             "lua_test_hot_reload", "lua_test_reload_result",
             "lua_files_list", "lua_file_read", "lua_file_write", "map_test_start",
-            "object_resource_state", "object_resource_query", "object_resource_inspect"}) {
+            "object_resource_state", "object_resource_query", "object_resource_inspect", "query_map_runtime", "map_runtime_query", "map_runtime_set"}) {
         Expect(names.contains(required), "required safe MCP tool is missing");
     }
     for (const QJsonValue& value : tools) {
@@ -1150,6 +1153,45 @@ void TestProjectSearchImportInputBudgets() {
 
 int main() {
     try {
+        using namespace War3Map;
+        {
+            QTemporaryDir root; Expect(root.isValid(), "independent runtime MCP temp root");
+            const auto source = std::filesystem::path(root.filePath("source.w3x").toStdWString());
+            const std::string text = "function main takes nothing returns nothing\nendfunction\n";
+            const auto bytes = std::as_bytes(std::span(text.data(), text.size()));
+            Expect(WriteVerifiedArchive(source, std::vector<MapArchiveMember>{{"war3map.j", {bytes.begin(), bytes.end()}}}).Succeeded(), "write original runtime-only MCP fixture");
+            const auto sha = Sha256File(source); Expect(sha.Succeeded(), "runtime-only MCP source identity");
+            const auto beforeTool = qgetenv("FORGE_MCP_YDWE_ROOT"), beforeGame = qgetenv("FORGE_MCP_WAR3_ROOT");
+            const auto restore = qScopeGuard([&] {
+                if (beforeTool.isNull()) qunsetenv("FORGE_MCP_YDWE_ROOT"); else qputenv("FORGE_MCP_YDWE_ROOT", beforeTool);
+                if (beforeGame.isNull()) qunsetenv("FORGE_MCP_WAR3_ROOT"); else qputenv("FORGE_MCP_WAR3_ROOT", beforeGame);
+            });
+            qputenv("FORGE_MCP_YDWE_ROOT", root.path().toUtf8()); qputenv("FORGE_MCP_WAR3_ROOT", root.path().toUtf8());
+            Mcp::McpServer server; Mcp::RegisterAllTools(server);
+            const auto output = root.filePath("denied.w3x");
+            const QJsonObject arguments{{"source_map_path", QString::fromStdWString(source.wstring())}, {"output_path", output},
+                {"expected_source_sha256", QString::fromStdString(*sha.value)}, {"runtime_purpose", "internal_validation"},
+                {"runtime", QJsonObject{{"mode", "enabled"}, {"package_sha256", QString(64, 'a')}}}};
+            const auto response = server.HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+                {"params", QJsonObject{{"name", "save_map_edit_candidate"}, {"arguments", arguments}}}}).toJson(QJsonDocument::Compact));
+            Expect(response && !response->error, "runtime-only MCP request reaches domain handler");
+            const auto content = response->result.toObject().value("content").toArray();
+            Expect(!content.isEmpty(), "runtime-only MCP diagnostics body");
+            const auto body = QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object();
+            Expect(body.value("diagnostics").toArray()[0].toObject().value("code") == "RUNTIME_CONSENT_REQUIRED"
+                && !std::filesystem::exists(std::filesystem::path(output.toStdWString())),
+                "runtime-only independent MCP must not fall through to terrain SHA parsing or write an unapproved map");
+        }
+        const QJsonObject runtime{{"runtime", QJsonObject{{"mode", "enabled"}, {"package_sha256", QString(64, 'a')}, {"approve_native_runtime", true}}},
+            {"runtime_purpose", "internal_validation"}};
+        const auto decodedRuntime = Mcp::DecodeMapRuntimeSaveOptions(runtime);
+        Expect(decodedRuntime.Succeeded() && decodedRuntime.value->decision->approveNativeRuntime
+            && decodedRuntime.value->purpose == Services::MapRuntimeSavePurpose::InternalValidation, "decode independent runtime approval and purpose");
+        auto injectedRuntime = runtime; auto object = runtime.value("runtime").toObject(); object.insert("root", "untrusted");
+        injectedRuntime["runtime"] = object;
+        Expect(!Mcp::DecodeMapRuntimeSaveOptions(injectedRuntime).Succeeded(), "independent runtime cannot accept a package path");
+        injectedRuntime = runtime; injectedRuntime["runtime_purpose"] = "public_release";
+        Expect(!Mcp::DecodeMapRuntimeSaveOptions(injectedRuntime).Succeeded(), "unknown purpose cannot grant distribution approval");
         TestToolSurface();
         TestLuaListPagingProtocol();
         TestArchiveMemberIdentities();

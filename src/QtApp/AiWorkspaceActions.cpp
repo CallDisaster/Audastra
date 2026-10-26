@@ -279,6 +279,10 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     state->tools->SetSaveHandler([this](const std::filesystem::path& path, bool inPlace) {
         return RunMapSave(path, inPlace, true);
     });
+    state->tools->SetValidationSaveHandler([this](const std::filesystem::path& path) {
+        return RunMapSave(path, false, true, true, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic,
+            false, War3Map::Services::MapRuntimeSavePurpose::InternalValidation);
+    });
     state->tools->SetLuaTestHandler([this](bool submit) { return LuaTestReload(submit); });
     state->tools->SetMapTestHandler([this](const QString& name, const QJsonObject& arguments) { return MapTestTool(name, arguments); });
     const QPointer<War3Map::Modules::WorldModule> world(worldModule_);

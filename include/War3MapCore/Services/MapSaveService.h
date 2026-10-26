@@ -89,6 +89,7 @@ struct MapSaveTask {
     // 宿主保存的是作者已有地图时开启：改动不影响脚本就沿用源脚本。新建地图的种子脚本只是占位，不能开启。
     bool preserveUnaffectedScript = false;
     std::vector<MapRuntimePackageSource> runtimePackageSources;
+    std::vector<Diagnostic> runtimeCatalogDiagnostics;
     // 可信宿主从本工程的明确批准事务冻结；地图自带设置不能为自己授予启用资格。
     std::string runtimeApprovedPackageSha256;
     MapRuntimeSavePurpose runtimePurpose = MapRuntimeSavePurpose::Normal;

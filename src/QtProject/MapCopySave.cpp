@@ -311,6 +311,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     job->runtimePurpose = purpose;
     job->testCopyOnly = purpose != Services::MapRuntimeSavePurpose::Normal;
     job->runtimePackageSources = runtimePackageSources_;
+    job->runtimeCatalogDiagnostics = runtimeCatalogDiagnostics_;
     job->runtimeApprovedPackageSha256 = runtimeApprovedPackageSha256_;
     job->target = target;
     job->inPlace = inPlace;

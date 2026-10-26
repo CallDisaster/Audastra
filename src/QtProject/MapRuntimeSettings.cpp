@@ -3,6 +3,7 @@
 #include "../QtCommon/ApplicationPaths.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Workspace.h"
+#include "War3MapCore/Services/MapRuntimePreparation.h"
 
 namespace War3Map::QtProject {
 namespace {
@@ -29,12 +30,7 @@ Result<Settings> ReadSettings(const EditorProject& project) {
         return bytes.Succeeded() ? Services::ParseMapRuntimeSettings(*bytes.value) : Result<Settings>{{},bytes.diagnostics};
     }
     if (project.archiveSession_) {
-        ArchiveExactMemberLimits limits; limits.memberCount = 1; limits.memberBytes = limits.totalBytes = 4096;
-        const auto captured = project.archiveSession_->CaptureExactMembers(
-            std::vector<std::string>{std::string(Services::kMapRuntimeSettingsMember)},limits);
-        if (!captured.Succeeded()) return {{},captured.diagnostics};
-        return captured.value->front().present ? Services::ParseMapRuntimeSettings(captured.value->front().bytes)
-            : Result<Settings>::Success({});
+        return Services::ReadMapRuntimeSettings(*project.archiveSession_);
     }
     if (project.directorySnapshot_) {
         const auto& snapshot = project.directorySnapshot_->Snapshot();
@@ -91,20 +87,9 @@ Status EditorProject::PrepareMapRuntimeSettings(AssetState& state, const Setting
     if (!previous.Succeeded()) return {previous.diagnostics};
     const auto bytes = Services::SerializeMapRuntimeSettings(settings);
     if (!bytes.Succeeded()) return {bytes.diagnostics};
-    if (settings.mode != Services::MapRuntimeMode::Disabled) {
-        if (!runtimeCatalogDiagnostics_.empty()) return {runtimeCatalogDiagnostics_};
-        if (settings.packageSha256.empty())
-            return Status::Failure("MapRuntime","RUNTIME_CONSENT_REQUIRED","明确启用必须选择已列出的可信包身份。");
-        const Services::MapRuntimePackageSource* source = nullptr;
-        for (const auto& item : runtimePackageSources_) if (item.manifestSha256 == settings.packageSha256) {
-            if (source) return Status::Failure("MapRuntime","RUNTIME_PACKAGE_CONFLICT","可信目录存在重复包身份。");
-            source = &item;
-        }
-        if (!source) return Status::Failure("MapRuntime","RUNTIME_PACKAGE_MISSING","本机缺少所选可信包；未采用地图提供的路径或最新版。");
-        // 允许确认内部包身份，但保存用途和独立副本限制仍由共用保存服务核实。
-        const auto captured = Services::MapRuntimePackage::Capture(*source,Services::MapRuntimeSavePurpose::InternalValidation);
-        if (!captured.Succeeded()) return {captured.diagnostics};
-    }
+    const auto validated = Services::ValidateMapRuntimeDecision({settings, settings.mode != Services::MapRuntimeMode::Disabled},
+        runtimePackageSources_, runtimeCatalogDiagnostics_);
+    if (!validated.Succeeded()) return validated;
     auto candidate = state;
     if (*previous.value != settings) {
         std::vector<ImportPayload> payloads{{QString::fromUtf8(Services::kMapRuntimeSettingsMember),

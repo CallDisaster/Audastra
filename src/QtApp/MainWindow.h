@@ -140,7 +140,8 @@ public:
     bool RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot = false,
         bool testHotReload = false,
         War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic,
-        bool rebuildTerrainShadow = false);
+        bool rebuildTerrainShadow = false,
+        War3Map::Services::MapRuntimeSavePurpose runtimePurpose = War3Map::Services::MapRuntimeSavePurpose::Normal);
     bool SaveEditorProjectToPath(const std::filesystem::path& outputPath, bool recovery = false);
     bool OpenEditorProjectPath(const std::filesystem::path& path);
 
@@ -151,6 +152,8 @@ public:
     [[nodiscard]] QStringList LoadedStateSummary() const;
     // 无界面验收：做一组真实触发器编辑后另存到 outputPath（AcceptanceProbe.cpp）。
     bool ProbeEditAndSave(const std::filesystem::path& outputPath, QStringList& log);
+    bool ProbeRuntimeSave(const std::filesystem::path& outputPath, const QString& packageSha256,
+        const QString& expectedSourceSha256, QStringList& log);
     bool ProbeMapDataEditAndSave(const std::filesystem::path& outputPath, QStringList& log,
         bool projectOnly = false);
     // 七类物编各改一个自定义对象后另存并回读核对（AcceptanceObjectProbe.cpp）。

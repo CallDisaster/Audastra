@@ -4,6 +4,7 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Services/MapScriptTargetSelection.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
+#include "War3MapCore/ApplicationPaths.h"
 
 #include <algorithm>
 #include <charconv>
@@ -381,6 +382,8 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     std::optional<std::array<float, 3>> copyOffset;
     std::optional<Services::MapEditPlacementRotation> rotation;
     std::size_t retainedTriggerTextBytes = 0;
+    std::optional<std::string> runtimeMode, runtimePackage;
+    bool approveRuntime = false, purposeSpecified = false;
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
@@ -388,6 +391,18 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (request.rebuildTerrainShadow) return Invalid("--rebuild-shadows may appear only once");
             request.rebuildTerrainShadow = true;
             ++index;
+        } else if (flag == L"--runtime-mode" || flag == L"--runtime-package") {
+            auto& value = flag == L"--runtime-mode" ? runtimeMode : runtimePackage;
+            if (index + 1 >= argc || value) return Invalid("runtime mode/package requires one value and cannot be repeated");
+            value = Utf8Argument(argv[index + 1]); index += 2;
+        } else if (flag == L"--approve-native-runtime") {
+            if (approveRuntime) return Invalid("native runtime approval cannot be repeated");
+            approveRuntime = true; ++index;
+        } else if (flag == L"--runtime-purpose") {
+            if (index + 1 >= argc || purposeSpecified) return Invalid("runtime purpose requires one value and cannot be repeated");
+            const auto purpose = Services::ParseMapRuntimeSavePurpose(Utf8Argument(argv[index + 1]));
+            if (!purpose) return Invalid("runtime purpose must be normal, internal_validation or test_run");
+            request.runtime.purpose = *purpose; purposeSpecified = true; index += 2;
         } else if (flag == L"--ui-root") {
             if (index + 1 >= argc || argv[index + 1][0] == L'\0' || !request.uiRoot.empty())
                 return Invalid("--ui-root requires one nonempty UI data root");
@@ -620,13 +635,26 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         return Invalid("group copy requires --copy-source and --copy-offset and cannot mix with --rotate");
     if (rotation) request.placementEdit = std::move(*rotation);
     else if (copyOffset) request.placementEdit = Services::MapEditPlacementCopy{std::move(copySources), *copyOffset};
+    if (runtimeMode || runtimePackage || approveRuntime) {
+        if (!runtimeMode || (*runtimeMode != "automatic" && *runtimeMode != "enabled" && *runtimeMode != "disabled"))
+            return Invalid("runtime settings require automatic, enabled or disabled mode");
+        request.runtime.decision = Services::MapRuntimeDecision{{*runtimeMode == "automatic" ? Services::MapRuntimeMode::Automatic
+            : *runtimeMode == "enabled" ? Services::MapRuntimeMode::Enabled : Services::MapRuntimeMode::Disabled,
+            runtimePackage.value_or("")}, approveRuntime};
+    }
+    const auto runtimeSources = Services::LoadInstalledMapRuntimeSources(CurrentInstallationRoot());
+    if (runtimeSources.Succeeded()) request.runtimePackageSources = *runtimeSources.value;
+    else request.runtimeCatalogDiagnostics = runtimeSources.diagnostics;
     if (request.terrainStrokes.empty() && request.fieldEdits.empty()
-        && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits && !request.rebuildTerrainShadow)
+        && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits
+        && !request.rebuildTerrainShadow && !request.runtime.decision)
         return Invalid("at least one bounded edit operation is required");
     auto saved = Services::SaveMapEditCandidate(request);
     PrintDiagnostics(saved.diagnostics);
     if (!saved.Succeeded() || !saved.value) return 1;
     const auto& receipt = *saved.value;
+    std::cout << "runtime_purpose=" << Services::MapRuntimeSavePurposeName(receipt.runtimePurpose)
+        << "\nruntime_packaged=" << (receipt.runtimePackaged ? "true" : "false") << '\n';
     std::cout << "candidate=" << Utf8Argument(receipt.candidate.wstring())
               << "\nsource_sha256=" << receipt.sourceSha256
               << "\ncandidate_sha256=" << receipt.candidateSha256

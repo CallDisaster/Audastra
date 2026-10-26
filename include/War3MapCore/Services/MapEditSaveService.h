@@ -7,6 +7,7 @@
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
 #include "War3MapCore/MapData/TerrainResizeEditing.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/MapRuntimePreparation.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Trigger/TriggerEditBatch.h"
@@ -95,6 +96,10 @@ struct MapEditSaveRequest {
     std::optional<LuaMapTargetRequest> luaTarget;
     std::string expectedSourceSha256;
     std::string expectedTerrainSha256;
+    MapRuntimeSaveOptions runtime;
+    // 仅宿主从固定安装根冻结，不从CLI/MCP请求反序列化包路径或分发许可。
+    std::vector<MapRuntimePackageSource> runtimePackageSources;
+    std::vector<Diagnostic> runtimeCatalogDiagnostics;
     // 显式层序供 Agent/工程宿主传入；省略只允许证明 config 默认层序完全一致。
     std::optional<std::vector<std::string>> effectiveLayers;
     std::vector<MapEditTerrainStroke> terrainStrokes;
@@ -154,6 +159,8 @@ struct MapEditSaveReceipt {
     bool scriptPreserved = false;
     // 仅完成同一保存任务的生成和独立回读后出现；不表示原版编辑器或游戏已验证。
     std::optional<MapEditMinimapReceipt> generatedMissingMinimap;
+    MapRuntimeSavePurpose runtimePurpose = MapRuntimeSavePurpose::Normal;
+    bool runtimePackaged = false;
 };
 
 // 接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

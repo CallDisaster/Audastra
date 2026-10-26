@@ -5,6 +5,7 @@ configure_file(
     @ONLY)
 
 add_library(War3MapCore STATIC
+    ApplicationPaths.cpp
     Campaign/CampaignInfo.cpp
     CapabilityRegistry.cpp
     MapArchiveInPlace.cpp

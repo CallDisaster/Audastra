@@ -23,7 +23,7 @@
 
 包位于 `runtime/packages/validation-1/`；其中 `manifest.json` 必须与安装者锁定的摘要相符，包内文件仍须逐项核验。目录名只接受受限小写标识，不接受绝对路径、穿越、设备名、重解析路径、重复项或未知字段。损坏配置返回 `RUNTIME_CATALOG_INVALID`，不当成“没有依赖”。安装目录配置是宿主信任输入，不是签名或沙箱；地图、工程和Agent参数不能增加包来源或分发许可。现有raw内部包不能因为该布尔字段设为true就变成公开包。
 
-`LoadInstalledMapRuntimeSources` 和 `QueryMapRuntimePackages` 为共用查询；后者只返回包身份、版本、DLL身份、内部范围、可读取状态及诊断，不返回目录或黑盒内容。“可读取”不是游戏可运行或公开分发的证明。Qt工程的 `QueryMapRuntimeState` 另附当前generation/revision、地图设置与本工程明确批准状态；地图自带包身份不会自动使批准为true。查询不修改工程；启用仍须使用同一图/资源修订事务，保存仍有独立用途与发布前核验。CLI显式设置、实际包交付及实机共存尚待完成。
+`LoadInstalledMapRuntimeSources` 和 `QueryMapRuntimePackages` 为共用查询；后者只返回包身份、版本、DLL身份、内部范围、可读取状态及诊断，不返回目录或黑盒内容。“可读取”不是游戏可运行或公开分发的证明。Qt工程的 `QueryMapRuntimeState` 另附当前generation/revision、地图设置与本工程明确批准状态；地图自带包身份不会自动使批准为true。查询不修改工程；启用仍须使用同一图/资源修订事务，保存仍有独立用途与发布前核验。CLI和独立保存入口已接同一准备服务，真实包与验收候选按版本分别登记；实机共存仍待完成。
 
 ### 测试副本与活动地图工具（开发接口）
 
@@ -34,7 +34,26 @@
 - `map_runtime_query`：返回当前策略、锁定包身份、本工程批准状态及可信包列表；不自动批准或选择最新版。可不带身份查询，也可携带 `project_identity` 和十进制字符串 `expected_revision` 核对旧结果。
 - `map_runtime_set`：必须携带上述工程与修订身份及 `mode`（`automatic`、`enabled`、`disabled`）。非关闭模式还必须传查询返回的 `package_sha256`，并在作者已明确授权后传 `approve_native_runtime: true`。关闭时不得同时选择包或授予批准。设置与本工程批准使用同一可撤销事务，不修改作者触发器代码，不保存地图，不启动游戏。
 
-工具不接受本机包路径、任意文件内容或分发许可字段；权限关闭或修订过期时拒绝，失败不提交部分设置。独立 stdio 没有活动工程的批准事务，返回 `RUNTIME_LIVE_HOST_REQUIRED`，须连接实际打开该地图的编辑器端口。MCP 接线和离线测试不等于正常保存候选、原版编辑器重开或游戏验证。
+工具不接受本机包路径、任意文件内容或分发许可字段；权限关闭或修订过期时拒绝，失败不提交部分设置。独立 stdio 的上述活动工程设置工具返回 `RUNTIME_LIVE_HOST_REQUIRED`；独立归档查询和保存使用下面的入口。MCP 接线和离线测试不等于原版编辑器重开或游戏验证。
+
+### CLI和独立归档保存
+
+`war3-map-cli map-runtime-query <map> <source-sha256>` 与独立MCP的 `query_map_runtime`（`source_map_path`、`expected_source_sha256`）返回归档设置及安装包元数据。不包含活动工程overlay，也不把地图声明当成批准：查询中的 `approved` 总是false。源SHA已变化时拒绝旧查询。
+
+CLI `map-edit-save` 可附以下选项，也可只提交一项运行库决定而不做其他地图编辑：
+
+```text
+--runtime-mode automatic|enabled|disabled
+--runtime-package <查询返回的64位小写SHA-256>
+--approve-native-runtime
+--runtime-purpose normal|internal_validation|test_run
+```
+
+非关闭模式须明确批准及固定包身份；关闭时不传包和批准。用途默认normal，内部包仍只能进入独立、全新的内部验收/测试副本。示例中的包身份须来自当前安装目录，不能用占位SHA执行。
+
+独立MCP `save_map_edit_candidate` 使用同一Core服务，参数为 `runtime: {mode, package_sha256, approve_native_runtime}` 和 `runtime_purpose`。决定可独立提交，或伴随原来的一项有界领域编辑；不会把两种普通领域编辑合并放行。包路径与分发许可只由宿主固定安装目录提供，不接受请求字段。批准与当前源地图SHA绑定在同一次保存任务内，不从归档自动继承；失败不写部分设置/成员。两入口回执均区分实际 `runtime_packaged` 与保存用途，不报告游戏通过。
+
+活动编辑器的 `editor_save_map` 可显式传 `runtime_purpose: "internal_validation"`，只允许新的非原地路径。宿主仍调用MainWindow共用保存处理器，输出不会切换工程基线；不传该字段仍是普通保存。内部验收探针 `--probe-runtime-save <new-map>` 配合 `--open-map`、`--runtime-source-sha256` 和 `--runtime-package-sha256`，在专用无界面编辑器进程中复用同一批准事务和保存处理器；它不改作者触发器，不替代可见UI、原版编辑器或游戏验收。
 
 **状态（2026-10-25）：固定 raw 候选已在经典 1.27a 专用沙箱完成 AI → 本方 DLL → JAPI 握手 → 内置 UI 的实机环路，并完成同一进程内重新开始同一地图一次；该结果在两次独立运行中复现。尚未取得发布资格。** 两进程各自首次进图和重开后都完成 20 次 UI 生命周期断言，DLL 日志分别建立新的 VM epoch；其中一次退出菜单也观察到 VM reset。不能把两次独立运行累计为同一进程连续重开两次。跨不同地图、返回菜单后重新选图进入、连续两次重开、多人环境和作者地图发布流程仍未验收。
 
@@ -220,4 +239,4 @@ audastra-japi-map-fixture "<原创seed.w3x>" "<seed-sha256>" "<专用游戏目�
 
 只用专用游戏安装及原创地图副本启动普通 `war3.exe -window -loadfile "<相对地图路径>"`。进图成功后检查屏幕断言与 DLL 日志，再逐项验证同进程重新开始、返回菜单后重新选图、跨不同地图的 epoch、旧句柄失效、模块复用和无崩溃；不能把其中一种操作代替全部换图场景。目前已通过的是同一地图首次进入及同进程重新开始一次，退出菜单观察到 reset，尚未回菜单后重新进入。首次进图未成功握手时，不记录后续 UI 或换图为通过。
 
-原型目前没有把这一黑盒导入动作自动接入作者地图保存／发布流程。完整协议、错误码和事件模型仍见 [PROTOCOL_V2.md](PROTOCOL_V2.md)；默认关闭的启动器路径见 [RUNTIME_BRIDGE.md](RUNTIME_BRIDGE.md)。
+上述固定样例打包器不是作者地图的保存出口；编辑器保存接线及内部用途门禁见本文开头的开发接口说明。共用保存成功也不授予公开发布或游戏运行资格。完整协议、错误码和事件模型仍见 [PROTOCOL_V2.md](PROTOCOL_V2.md)；默认关闭的启动器路径见 [RUNTIME_BRIDGE.md](RUNTIME_BRIDGE.md)。

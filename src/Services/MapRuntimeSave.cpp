@@ -70,6 +70,7 @@ Status Set(MapSaveTask& task, MemberReplacement member) {
 }
 Result<std::shared_ptr<const MapRuntimePackage>> Package(const MapSaveTask& task, std::string_view identity,
     std::optional<MapRuntimeSavePurpose> purpose = {}) {
+    if (!task.runtimeCatalogDiagnostics.empty()) return {{}, task.runtimeCatalogDiagnostics};
     const MapRuntimePackageSource* selected = nullptr;
     for (const auto& source : task.runtimePackageSources) if (source.manifestSha256 == identity) {
         if (selected) return Result<std::shared_ptr<const MapRuntimePackage>>::Failure("MapRuntime", "RUNTIME_PACKAGE_CONFLICT", "可信包目录存在重复内容身份。");
@@ -229,6 +230,11 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
         if (!item.Succeeded()) { existenceStatus.diagnostics = item.diagnostics; return false; }
         return item.value->has_value();
     };
+    if (state.settingsBytes) {
+        const auto registered = table.Upsert(std::string(kMapRuntimeSettingsMember), exists);
+        if (!registered.Succeeded()) return registered;
+        if (!existenceStatus.Succeeded()) return existenceStatus;
+    }
     if (required) {
         auto package = Package(task, state.settings.packageSha256);
         if (!package.Succeeded()) return {package.diagnostics};

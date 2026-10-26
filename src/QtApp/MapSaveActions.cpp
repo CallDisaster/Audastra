@@ -68,12 +68,16 @@ QString ChangedMembers(const MapSaveJob& job) {
 }
 
 bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload,
-    War3Map::Services::TerrainMinimapSaveChoice minimapChoice, bool rebuildTerrainShadow) {
+    War3Map::Services::TerrainMinimapSaveChoice minimapChoice, bool rebuildTerrainShadow,
+    War3Map::Services::MapRuntimeSavePurpose runtimePurpose) {
     if (!CheckPendingTerrainCommit(testSnapshot ? tr("测试地图") : tr("保存地图"))) return false;
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
     if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
     if (rebuildTerrainShadow && (testSnapshot || testHotReload
         || (CurrentModule() == "campaign" && campaignModule_->Session()))) return false;
+    if (runtimePurpose != War3Map::Services::MapRuntimeSavePurpose::Normal
+        && (!testSnapshot || (runtimePurpose != War3Map::Services::MapRuntimeSavePurpose::InternalValidation
+            && runtimePurpose != War3Map::Services::MapRuntimeSavePurpose::TestRun))) return false;
     if (project_->savingMap_) return false;
     if (writingRecovery_ && recoveryWorker_) {
         // 恢复 Store 持有来源保护句柄，Ctrl+S 要等它释放后才可替换原图。
@@ -155,7 +159,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             tr("测试运行必须生成独立副本，不能写回当前地图。"));
         reportFailure(tr("测试副本路径不支持")); return false;
     }
-    auto job = testSnapshot || testHotReload ? project_->PrepareMapTestCopy(target)
+    auto job = testSnapshot || testHotReload ? project_->PrepareMapTestCopy(target,
+        runtimePurpose == War3Map::Services::MapRuntimeSavePurpose::Normal ? War3Map::Services::MapRuntimeSavePurpose::TestRun : runtimePurpose)
         : project_->PrepareMapSave(target, inPlace, minimapChoice);
     if (!job) {
         UpdateEditDirtyFlags();

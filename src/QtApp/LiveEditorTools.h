@@ -37,6 +37,7 @@ public:
     ~LiveEditorTools() override;
     [[nodiscard]] Mcp::McpServer& Server() noexcept;
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler);
+    void SetValidationSaveHandler(std::function<bool(const std::filesystem::path&)> handler);
     void SetBeforeWrite(std::function<bool()> handler);
     void SetLuaTestHandler(std::function<QJsonObject(bool submit)> handler);
     // map_test_start / map_test_stop / map_test_eval：参数已校验，返回工具结果。

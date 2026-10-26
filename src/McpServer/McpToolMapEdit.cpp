@@ -1,4 +1,6 @@
 #include "McpToolInternal.h"
+#include "McpMapRuntimeTools.h"
+#include "War3MapCore/ApplicationPaths.h"
 
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
@@ -968,18 +970,21 @@ void RegisterMapEditSaveTool(McpServer& server) {
     }, {"source_map_path", "output_path", "expected_source_sha256"});
     const auto envelopeProperties = BasicSchema({}, {"transaction_id", "expected_revision"}).value("properties").toObject();
     auto saveProperties = tool.inputSchema.value("properties").toObject();
+    const auto runtimeProperties = MapRuntimeSaveProperties();
+    for (auto it = runtimeProperties.begin(); it != runtimeProperties.end(); ++it) saveProperties.insert(it.key(), it.value());
     saveProperties.insert("transaction_id", envelopeProperties.value("transaction_id"));
     saveProperties.insert("expected_revision", envelopeProperties.value("expected_revision"));
     tool.inputSchema["properties"] = saveProperties;
-    tool.inputSchema["oneOf"] = QJsonArray{
+    tool.inputSchema["anyOf"] = QJsonArray{
         QJsonObject{{"required", QJsonArray{"field_edits"}}},
         QJsonObject{{"required", QJsonArray{"trigger_edits"}}},
         QJsonObject{{"required", QJsonArray{"transaction_id", "expected_revision"}}},
-        QJsonObject{{"required", QJsonArray{"expected_terrain_sha256", "terrain_strokes"}}}};
+        QJsonObject{{"required", QJsonArray{"expected_terrain_sha256", "terrain_strokes"}}},
+        QJsonObject{{"required", QJsonArray{"runtime"}}}};
     tool.handler = [&server](const QJsonObject& parameters) -> QJsonValue {
         QJsonObject error;
         if (!OnlyFields(parameters, {"source_map_path", "output_path", "expected_source_sha256",
-            "ui_root", "source_encodings", "include_access", "script_target", "effective_layers", "field_edits", "trigger_edits", "expected_terrain_sha256", "terrain_strokes", "transaction_id", "expected_revision"}, error)) return error;
+            "ui_root", "source_encodings", "include_access", "script_target", "effective_layers", "field_edits", "trigger_edits", "expected_terrain_sha256", "terrain_strokes", "transaction_id", "expected_revision", "runtime", "runtime_purpose"}, error)) return error;
         const bool workspaceRequest = parameters.contains("transaction_id") || parameters.contains("expected_revision");
         std::optional<std::pair<TransactionId, ProjectRevision>> envelope;
         McpWorkspace* workspace = nullptr;
@@ -1004,8 +1009,9 @@ void RegisterMapEditSaveTool(McpServer& server) {
         const bool terrainRequest = parameters.contains("terrain_strokes") ||
             parameters.contains("expected_terrain_sha256");
         const bool triggerRequest = parameters.contains("trigger_edits");
-        if (static_cast<int>(fieldRequest) + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest)
-                + static_cast<int>(workspaceRequest) != 1)
+        const int domainCount = static_cast<int>(fieldRequest) + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest)
+                + static_cast<int>(workspaceRequest);
+        if (domainCount != 1 && !(domainCount == 0 && parameters.contains("runtime")))
             return Failure("MCP_MAP_EDIT_OPERATION_SCOPE_INVALID", "一次请求只能提供字段、地形或触发器其中一种领域批次。");
         std::error_code pathError;
         const auto targetStatus = std::filesystem::symlink_status(*output.value, pathError);
@@ -1023,6 +1029,12 @@ void RegisterMapEditSaveTool(McpServer& server) {
         request.toolRoot = *toolRoot.value;
         request.gameRoot = *gameRoot.value;
         request.expectedSourceSha256 = *sourceSha;
+        const auto runtime = DecodeMapRuntimeSaveOptions(parameters);
+        if (!runtime.Succeeded()) return Failure(runtime);
+        request.runtime = *runtime.value;
+        const auto runtimeSources = Services::LoadInstalledMapRuntimeSources(CurrentInstallationRoot());
+        if (runtimeSources.Succeeded()) request.runtimePackageSources = *runtimeSources.value;
+        else request.runtimeCatalogDiagnostics = runtimeSources.diagnostics;
         if (parameters.contains("script_target")) {
             const auto target = parameters.value("script_target");
             if (!target.isString() || (target.toString() != "source" && target.toString() != "configured_lua"))
@@ -1093,7 +1105,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
             auto batch = ParseTriggerEdits(parameters.value("trigger_edits").toObject(), error);
             if (!batch) return error;
             request.triggerEdits = std::move(*batch);
-        } else if (!workspaceRequest) {
+        } else if (!workspaceRequest && terrainRequest) {
             const auto terrainSha = RequiredSha(parameters, "expected_terrain_sha256", error);
             if (!terrainSha) return error;
             request.expectedTerrainSha256 = *terrainSha;
@@ -1140,6 +1152,8 @@ void RegisterMapEditSaveTool(McpServer& server) {
             {"member_count", static_cast<qint64>(receipt.memberCount)},
             {"script_seconds", receipt.scriptSeconds}, {"script_rebuilt", true},
             {"script_preserved", receipt.scriptPreserved},
+            {"runtime_purpose", QString::fromUtf8(Services::MapRuntimeSavePurposeName(receipt.runtimePurpose))},
+            {"runtime_packaged", receipt.runtimePackaged},
             {"applied_field_edit_count", static_cast<qint64>(receipt.appliedFieldEditCount)},
             {"applied_placement_count", static_cast<qint64>(receipt.appliedPlacementCount)},
             {"applied_terrain_stroke_count", static_cast<qint64>(receipt.appliedStrokeCount)},

@@ -1,5 +1,8 @@
 #include "War3MapCore/Services/MapRuntimePackage.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
+#include "War3MapCore/Services/MapRuntimePreparation.h"
+#include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Services/MapSaveService.h"
@@ -91,6 +94,61 @@ void WriteHiddenArchive(const std::filesystem::path& path, std::vector<MapArchiv
     crypt.EncryptBlock(bytes.data() + hashPos,hashCount * 16,crypt.HashString("(hash table)",Mpq::MpqCrypt::HashType::FileKey));
     crypt.EncryptBlock(bytes.data() + blockPos,members.size() * 16,crypt.HashString("(block table)",Mpq::MpqCrypt::HashType::FileKey));
     Require(IO::WriteFileBytes(path,bytes).Succeeded(), "write original hidden-member fixture");
+}
+void Preparation() {
+    Fixture f;
+    const std::vector<MapRuntimePackageSource> sources{f.source};
+    const MapRuntimeSettings selected{MapRuntimeMode::Enabled, f.source.manifestSha256};
+    Require(Code(ValidateMapRuntimeDecision({selected, false}, sources), "RUNTIME_CONSENT_REQUIRED"), "source declaration cannot grant consent");
+    Require(Code(ValidateMapRuntimeDecision({selected, true}, {}), "RUNTIME_PACKAGE_MISSING"), "consent cannot invent installed sources");
+    Require(ValidateMapRuntimeDecision({selected, true}, sources).Succeeded(), "explicit decision validates internal package without granting normal distribution");
+    const auto source = f.root / "decision-source.w3x";
+    Require(WriteVerifiedArchive(source, std::vector<MapArchiveMember>{{"war3map.j", Bytes("function main takes nothing returns nothing\nendfunction\n")}}).Succeeded(), "original decision archive");
+    const auto archive = MapArchiveSession::Open(source); Require(archive.Succeeded(), "open decision source");
+    const auto query = QueryMapRuntimeArchiveState(source, archive.value->SourceSha256(), sources);
+    Require(query.Succeeded() && query.value->settings.packageSha256.empty() && query.value->packages.size() == 1, "source-bound path-free query");
+    const auto json = nlohmann::json::parse(SerializeMapRuntimeArchiveState(*query.value));
+    Require(json["approved"] == false && !json["packages"][0].contains("root"), "independent query never returns authorization or host paths");
+    Require(Code(QueryMapRuntimeArchiveState(source, std::string(64, 'f'), sources), "RUNTIME_SOURCE_STALE"), "old source identity rejected");
+    for (const auto purpose : {MapRuntimeSavePurpose::Normal, MapRuntimeSavePurpose::InternalValidation, MapRuntimeSavePurpose::TestRun}) {
+        MapSaveTask task; Require(task.FreezeArchive(*archive.value).Succeeded(), "freeze decision source");
+        MapRuntimeSaveOptions options{{MapRuntimeDecision{selected, false}}, purpose};
+        Require(Code(PrepareMapRuntimeInputs(task, options, sources), "RUNTIME_CONSENT_REQUIRED")
+            && task.replacements.empty() && task.runtimeApprovedPackageSha256.empty(), "failed approval leaves task intact");
+        options.decision->approveNativeRuntime = true;
+        Require(PrepareMapRuntimeInputs(task, options, sources).Succeeded() && task.runtimePurpose == purpose
+            && task.testCopyOnly == (purpose != MapRuntimeSavePurpose::Normal)
+            && task.runtimeApprovedPackageSha256 == f.source.manifestSha256, "freeze purpose, settings and consent before script preparation");
+        Require(task.replacements.size() == 1 && ParseMapRuntimeSettings(task.replacements[0].data).value == selected,
+            "settings use canonical shared member and codec");
+    }
+    const auto configuredSource = f.root / "configured-source.w3x";
+    Require(WriteVerifiedArchive(configuredSource, std::vector<MapArchiveMember>{{std::string(kMapRuntimeSettingsMember),
+        *SerializeMapRuntimeSettings(selected).value}}).Succeeded(), "original configured decision archive");
+    const auto configured = MapArchiveSession::Open(configuredSource); Require(configured.Succeeded(), "open configured decision source");
+    for (const auto* conflictSource : {&*archive.value, &*configured.value}) {
+        for (const auto name : {"audastra/runtime/settings.json", "AUDAsTRA\\RUNTIME\\SETTINGS.JSON"}) {
+            for (const bool remove : {false, true}) {
+                MapSaveTask conflict; Require(conflict.FreezeArchive(*conflictSource).Succeeded(), "freeze settings conflict source");
+                if (remove) conflict.removals.push_back(name);
+                else conflict.replacements.push_back({name, Bytes("unrelated domain replacement")});
+                const auto replacements = conflict.replacements.size();
+                const auto removals = conflict.removals.size();
+                Require(Code(PrepareMapRuntimeInputs(conflict, {{MapRuntimeDecision{selected, true}}, MapRuntimeSavePurpose::InternalValidation}, sources),
+                    "RUNTIME_SETTINGS_CONFLICT") && conflict.replacements.size() == replacements && conflict.removals.size() == removals
+                    && conflict.runtimeApprovedPackageSha256.empty(), "settings alias conflict rejected before task mutation");
+            }
+        }
+    }
+    MapEditSaveRequest independent; independent.sourceMap = source; independent.targetCandidate = f.root / "not-written.w3x";
+    independent.toolRoot = independent.gameRoot = f.root; independent.expectedSourceSha256 = archive.value->SourceSha256();
+    independent.minimapChoice = TerrainMinimapSaveChoice::Preserve;
+    independent.runtime.decision = MapRuntimeDecision{selected, false}; independent.runtimePackageSources = sources;
+    Require(Code(SaveMapEditCandidate(independent), "RUNTIME_CONSENT_REQUIRED") && !std::filesystem::exists(independent.targetCandidate),
+        "runtime-only independent save reaches the common consent gate before compiling or writing");
+    const auto bin = f.root / "bin"; Require(std::filesystem::create_directory(bin), "portable root fixture");
+    Require(InstallationRootFromExecutableDirectory(bin) == f.root, "portable bin uses adjacent release manifest");
+    Require(!CurrentInstallationRoot().empty(), "current executable installation root does not use request paths");
 }
 void Settings() {
     MapRuntimeSettings initial;
@@ -231,6 +289,13 @@ void SaveRoundTrip() {
     const auto payload = first.nextSession->ReadMember("warvk_runtime.blp");
     Require(payload.Succeeded() && *payload.value == Bytes("opaque synthetic payload bytes"), "payload readback byte equality");
     Require(first.nextSession->HasMember(kMapRuntimeInstallationMember), "managed installation receipt written");
+    const auto installedImportBytes = first.nextSession->ReadMember("war3map.imp");
+    Require(installedImportBytes.Succeeded(), "installed import table exists");
+    const auto installedImports = Resources::ImportTable::Parse(*installedImportBytes.value);
+    const auto settingsKey = Resources::CanonicalImportPath(kMapRuntimeSettingsMember);
+    Require(installedImports.Succeeded() && std::any_of(installedImports.value->Entries().begin(), installedImports.value->Entries().end(),
+        [&](const auto& entry) { const auto key = Resources::CanonicalImportPath(entry.path);
+            return key.Succeeded() && key.value == settingsKey.value; }), "standalone and UI save register the same shared settings member");
     Require(*Sha256File(source).value == opened.value->SourceSha256(), "source archive unchanged");
     MapSaveTask second;
     Require(second.FreezeArchive(*first.nextSession).Succeeded(), "freeze repeated save");
@@ -445,7 +510,7 @@ void LuaPolicy() {
 }
 }
 int main() {
-    try { Settings(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); LuaPolicy(); }
+    try { Settings(); Preparation(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); LuaPolicy(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "runtime settings and package tests passed\n";
 }

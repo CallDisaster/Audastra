@@ -123,6 +123,8 @@ struct Fixture {
     StableId trigger = 0;
 
     bool Initialize(bool selectedLayers = false) {
+        // 原创夹具不继承开发安装目录里的真实包；每项运行库测试自行提供合成来源。
+        project.runtimePackageSources_.clear(); project.runtimeCatalogDiagnostics_.clear();
         if (!sandbox.isValid() || !source.isValid() || !ui.isValid() || !outputs.isValid()) return Fail("temporary directories");
         const auto uiRoot = ui.filePath("ui");
         if (!WriteFile(uiRoot + "/config", "base\n") ||
@@ -703,6 +705,19 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_PATH"));
     QCOMPARE(calls, 1); QCOMPARE(f.Fingerprint(), original);
     QVERIFY(f.project.directorySnapshot_->VerifyUnchanged().Succeeded());
+    auto validation = f.Context(); validation.insert("path", f.outputs.filePath("validation.w3x"));
+    validation.insert("runtime_purpose", "internal_validation");
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", validation)), QStringLiteral("LIVE_EDITOR_SAVE_UNAVAILABLE"));
+    int validationCalls = 0;
+    f.tools->SetValidationSaveHandler([&](const std::filesystem::path& path) {
+        ++validationCalls; return WriteFile(QString::fromStdWString(path.wstring()), "synthetic validation host output, not an archive");
+    });
+    auto invalidPurpose = validation; invalidPurpose.insert("in_place", true);
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", invalidPurpose)), QStringLiteral("RUNTIME_INTERNAL_COPY_REQUIRED"));
+    const auto copied = f.tools->Invoke("editor_save_map", validation);
+    QVERIFY2(copied.value("ok").toBool(), qPrintable(Explain(copied)));
+    QVERIFY(!copied.value("project_baseline_changed").toBool()); QCOMPARE(validationCalls, 1); QCOMPARE(calls, 1);
+    QCOMPARE(f.Fingerprint(), original); QVERIFY(f.project.directorySnapshot_->VerifyUnchanged().Succeeded());
 }
 
 void LiveEditorToolsTests::ActivityReportsRealRecordsAndBoundedExamples() {

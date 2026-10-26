@@ -632,6 +632,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             return Fail("SAVE_TERRAIN_FIELD_SCOPE_INVALID", "地形笔划只能与地图名称、作者、说明和建议人数的字段操作合并。");
         const bool shadowOnly = request.rebuildTerrainShadow && !fieldRequest && !placementRequest
             && !terrainRequest && !triggerRequest && !objectRequest && !auxiliaryRequest;
+        const int domainCount = static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
+            + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest)
+            + static_cast<int>(auxiliaryRequest) - static_cast<int>(objectRequest && request.triggerTransaction != nullptr);
+        const bool runtimeOnly = domainCount == 0 && request.runtime.decision.has_value() && !request.rebuildTerrainShadow;
         if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic
             && request.minimapChoice != TerrainMinimapSaveChoice::Preserve
             && request.minimapChoice != TerrainMinimapSaveChoice::GenerateMissingGroundOnly
@@ -649,20 +653,18 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             return Fail("SAVE_SOURCE_COMPANION_WITHOUT_OBJECTS", "未变化的触发器配对封印只能伴随非空物编保存事务。");
         if (request.sourceMap.empty() || request.targetCandidate.empty() || request.toolRoot.empty()
             || request.gameRoot.empty() || !ValidSha(request.expectedSourceSha256)
-            || ((terrainRequest || (!fieldRequest && !placementRequest && !triggerRequest && !objectRequest && !auxiliaryRequest))
+            || ((terrainRequest || shadowOnly || (domainCount == 0 && !runtimeOnly))
                 ? !ValidSha(request.expectedTerrainSha256)
                 : !request.expectedTerrainSha256.empty())) {
             return Fail("SAVE_REQUEST_INVALID", "地图路径、数据根、源 SHA 和当前操作所需的成员 SHA 必须有效。");
         }
-        if (static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
-            + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest) + static_cast<int>(auxiliaryRequest)
-            - static_cast<int>(objectRequest && request.triggerTransaction != nullptr)
-            - static_cast<int>(terrainCompanion) - static_cast<int>(terrainUnitPlacementCompanion) != (shadowOnly ? 0 : 1))
+        if (domainCount - static_cast<int>(terrainCompanion) - static_cast<int>(terrainUnitPlacementCompanion)
+            != ((shadowOnly || runtimeOnly) ? 0 : 1))
             return Fail("SAVE_OPERATION_SCOPE_INVALID", "一次保存只能提交一个领域操作、同源触发器与物编事务，或地形及一种受支持的说明、物编或单位摆放修改。");
         const auto bounded = shadowOnly ? Status::Ok() : fieldRequest ? ValidateFieldOperations(request.fieldEdits)
             : placementRequest ? ValidatePlacementOperation(request.placementEdit)
             : request.triggerEdits ? Trigger::ValidateTriggerEditBatch(*request.triggerEdits)
-            : (request.triggerTransaction || objectRequest || auxiliaryRequest) ? Status::Ok()
+            : (request.triggerTransaction || objectRequest || auxiliaryRequest || runtimeOnly) ? Status::Ok()
                                          : ValidateStrokes(request.terrainStrokes);
         if (!bounded.Succeeded()) return Forward(bounded.diagnostics);
         if (terrainCompanion || terrainUnitPlacementCompanion) {
@@ -978,6 +980,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         task.diagnostics.insert(task.diagnostics.end(), fieldDiagnostics.begin(), fieldDiagnostics.end());
         task.replacements = std::move(replacements);
         if (terrainReplay) task.removals = terrainReplay->Removals();
+        const auto runtime = PrepareMapRuntimeInputs(task, request.runtime, request.runtimePackageSources, request.runtimeCatalogDiagnostics);
+        if (!runtime.Succeeded()) return Forward(runtime.diagnostics);
         const auto script = PrepareScript(task, source, request, editedMembers, triggerReceipt, transactionReceipt);
         if (!script.Succeeded()) return Forward(script.diagnostics);
         // 范围是游戏初始化输入。最终W3I须走现有ScriptSaveBundle依赖，不能沿用旧SetCameraBounds。
@@ -1160,6 +1164,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         result.value->appliedObjectTransactionCount = request.objectTransactions.size();
         result.value->appliedAuxiliaryCommandCount = auxiliaryRequest ? request.auxiliaryTransaction->Commands().size() : 0;
         result.value->scriptPreserved = task.scriptPreserved;
+        result.value->runtimePurpose = task.runtimePurpose;
+        result.value->runtimePackaged = task.nextSession->HasMember(kMapRuntimeInstallationMember);
         if (minimapSave) {
             const auto& manifest = minimapSave->Manifest();
             const auto& mip0 = minimapSave->DecodedMip0();

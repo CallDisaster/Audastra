@@ -66,7 +66,8 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         || arguments.contains(QStringLiteral("--capture-ui-expected-dpr")))) return 1;
     const bool requireLoadedWorkspace =
         arguments.contains(QStringLiteral("--require-loaded-workspace"));
-    const bool headlessProbe = exitAfterOpen || requireLoadedWorkspace || captureUiRequested;
+    const bool runtimeSaveProbe = arguments.contains(QStringLiteral("--probe-runtime-save"));
+    const bool headlessProbe = exitAfterOpen || requireLoadedWorkspace || captureUiRequested || runtimeSaveProbe;
     if (healthRequested && headlessProbe) return 1;
     const auto worldOption = arguments.indexOf(QStringLiteral("--probe-world"));
     const auto worldTimeoutOption = arguments.indexOf(QStringLiteral("--probe-world-ready-timeout"));
@@ -194,6 +195,21 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         const auto projectSave = pathOption(u"--probe-project-save");
         const auto projectWithData = pathOption(u"--probe-map-data-project");
         const auto objectCopy = pathOption(u"--probe-object-save");
+        if (runtimeSaveProbe) {
+            if (arguments.count(QStringLiteral("--probe-runtime-save")) != 1 || archive.empty() || captureUiRequested || worldOption >= 0
+                || !saveCopy.empty() || saveInPlace || !mapDataCopy.empty() || !projectSave.empty() || !projectWithData.empty() || !objectCopy.empty()) return 1;
+            const auto textOption = [&](const QString& name) { const auto index = arguments.indexOf(name);
+                return arguments.count(name) == 1 && index + 1 < arguments.size() ? arguments[index + 1] : QString{}; };
+            const auto package = textOption(QStringLiteral("--runtime-package-sha256"));
+            const auto source = textOption(QStringLiteral("--runtime-source-sha256"));
+            if (!QRegularExpression(QStringLiteral("^[0-9a-f]{64}$")).match(package).hasMatch()
+                || !QRegularExpression(QStringLiteral("^[0-9a-f]{64}$")).match(source).hasMatch()) return 1;
+            QStringList log;
+            const bool saved = probeWindow.ProbeRuntimeSave(pathOption(u"--probe-runtime-save"), package, source, log);
+            QTextStream out(stdout); out.setEncoding(QStringConverter::Utf8);
+            for (const auto& line : log) out << line << '\n';
+            return saved ? 0 : 4;
+        }
         if (!objectCopy.empty() && (!saveCopy.empty() || saveInPlace || !mapDataCopy.empty() || !projectSave.empty()
             || !projectWithData.empty())) return 1;
         if (!objectCopy.empty()) {

@@ -9,6 +9,9 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Script/MapScriptBuild.h"
+#include "Commands/TriggerCommands.h"
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/Script/MapRuntimeBoot.h"
 
 #include <QStandardItemModel>
 #include <QRegularExpression>
@@ -18,6 +21,55 @@
 
 // 无界面验收探针：对已打开的地图做一组真实的触发器编辑，再走与界面相同的另存路径
 // （含游戏脚本重建与 jasshelper / pjass 语法检查）。只写到调用方给出的输出路径。
+bool MainWindow::ProbeRuntimeSave(const std::filesystem::path& outputPath, const QString& packageSha256,
+    const QString& expectedSourceSha256, QStringList& log) {
+    using namespace War3Map;
+    const auto extension = QString::fromStdWString(outputPath.extension().wstring()).toLower();
+    if (startupMode_ != StartupMode::HeadlessProbe || !outputPath.is_absolute()
+        || (extension != ".w3x" && extension != ".w3m") || !project_->archiveSession_
+        || expectedSourceSha256.toStdString() != project_->archiveSession_->SourceSha256()) return false;
+    const auto state = project_->QueryMapRuntimeState();
+    if (!state.Succeeded()) { for (const auto& item : state.diagnostics) log << QString::fromStdString(item.code + ": " + item.message); return false; }
+    const auto sourcePath = project_->sourceArchivePath_;
+    const auto sourceSha = project_->archiveSession_->SourceSha256();
+    const auto approved = QtProject::PublishTriggerGraphOperationsWithAssets(*project_, {}, tr("批准内部验收运行库"),
+        [&](QtProject::AssetState& assets) { return project_->PrepareMapRuntimeSettings(assets,
+            {Services::MapRuntimeMode::Automatic, packageSha256.toStdString()}, state.value->generation, state.value->revision); });
+    if (!approved.Succeeded()) { for (const auto& item : approved.diagnostics) log << QString::fromStdString(item.code + ": " + item.message); return false; }
+    const auto revision = project_->editRevision_.Revision();
+    const auto before = project_->diagnosticsModel_->rowCount();
+    const bool saved = RunMapSave(outputPath, false, false, true, false, Services::TerrainMinimapSaveChoice::Automatic,
+        false, Services::MapRuntimeSavePurpose::InternalValidation);
+    for (int row = before; row < project_->diagnosticsModel_->rowCount(); ++row) {
+        QStringList cells;
+        for (int column = 0; column < project_->diagnosticsModel_->columnCount(); ++column)
+            cells << project_->diagnosticsModel_->item(row, column)->text();
+        log << cells.join(QStringLiteral(" | ")).left(800);
+    }
+    const auto currentSource = Sha256File(sourcePath);
+    if (!saved || !currentSource.Succeeded() || *currentSource.value != sourceSha
+        || project_->sourceArchivePath_ != sourcePath || project_->editRevision_.Revision() != revision) return false;
+    const auto candidate = MapArchiveSession::Open(outputPath);
+    if (!candidate.Succeeded() || !candidate.value->HasMember(Services::kMapRuntimeInstallationMember)) return false;
+    const auto package = std::find_if(state.value->packages.begin(), state.value->packages.end(),
+        [&](const auto& item) { return item.packageSha256 == packageSha256.toStdString(); });
+    if (package == state.value->packages.end() || !package->available) return false;
+    const auto scriptName = Script::MapScriptMemberName(*candidate.value);
+    if (!scriptName.ends_with(".j")) return false;
+    const auto script = candidate.value->ReadMember(scriptName);
+    if (!script.Succeeded()) return false;
+    const std::string_view scriptText(reinterpret_cast<const char*>(script.value->data()), script.value->size());
+    if (!Script::VerifyMapRuntimeBoot(scriptText, true).Succeeded()
+        || !Script::VerifyMapRuntimeIdentity(scriptText, package->payloadSha256).Succeeded()) return false;
+    log << QStringLiteral("runtime-save: saved=true purpose=internal_validation baseline_changed=false")
+        << QStringLiteral("runtime-save: source_sha256=%1").arg(QString::fromStdString(sourceSha))
+        << QStringLiteral("runtime-save: candidate_sha256=%1").arg(QString::fromStdString(candidate.value->SourceSha256()))
+        << QStringLiteral("runtime-save: package_sha256=%1").arg(packageSha256)
+        << QStringLiteral("runtime-save: main_boot_verified=true payload_identity_verified=true")
+        << QStringLiteral("runtime-save: original_editor_validated=false game_validated=false");
+    return true;
+}
+
 bool MainWindow::ProbeEditAndSave(const std::filesystem::path& outputPath, QStringList& log) {
     using namespace War3Map::Trigger;
     auto* document = project_->triggerDocument_.get();

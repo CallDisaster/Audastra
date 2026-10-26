@@ -389,6 +389,7 @@ public:
 
     Mcp::McpServer& Server() noexcept { return server_; }
     void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { save_ = std::move(handler); }
+    void SetValidationSaveHandler(std::function<bool(const std::filesystem::path&)> handler) { validationSave_ = std::move(handler); }
     void SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { luaTest_ = std::move(handler); }
     void SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { mapTest_ = std::move(handler); }
     void SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {
@@ -1204,8 +1205,12 @@ private:
 
     QJsonObject Save(const QJsonObject& arguments) {
         return Write(arguments, false, [&] {
-            if (!save_) return Mcp::Failure("LIVE_EDITOR_SAVE_UNAVAILABLE", "宿主尚未接通原地图保存服务。");
+            const auto purpose = arguments.value("runtime_purpose").toString("normal");
+            if (purpose != "normal" && purpose != "internal_validation") return Mcp::Failure("RUNTIME_SAVE_PURPOSE_INVALID", "活动保存只支持normal或internal_validation。");
+            const bool validation = purpose == "internal_validation";
+            if (validation ? !validationSave_ : !save_) return Mcp::Failure("LIVE_EDITOR_SAVE_UNAVAILABLE", "宿主尚未接通相应用途的原地图保存服务。");
             const bool inPlace = arguments.value("in_place").toBool(false);
+            if (validation && inPlace) return Mcp::Failure("RUNTIME_INTERNAL_COPY_REQUIRED", "内部验收只允许独立新副本，不能写回地图。");
             const auto pathText = arguments.value("path").toString();
             if (pathText.contains(QChar::Null)) return Mcp::Failure("LIVE_EDITOR_SAVE_PATH", "保存路径不能包含 NUL。");
             auto path = std::filesystem::path(pathText.toStdWString());
@@ -1229,7 +1234,7 @@ private:
                 if (!original.Succeeded()) return Mcp::Failure(original);
                 previous = QJsonObject{{"path", QString::fromStdWString(path.wstring())}, {"sha256", QString::fromStdString(*original.value)}};
             }
-            const bool succeeded = save_(path, inPlace);
+            const bool succeeded = validation ? validationSave_(path) : save_(path, inPlace);
             if (!succeeded) return Mcp::Failure("LIVE_EDITOR_SAVE_REJECTED", "原地图保存服务拒绝写出；查看编辑器诊断。");
             const auto sha = Sha256File(path);
             if (!sha.Succeeded()) return Mcp::Failure("LIVE_EDITOR_SAVE_OUTPUT_MISSING", "宿主报告成功，但无法读取输出身份。");
@@ -1239,6 +1244,7 @@ private:
             const QJsonObject item{{"kind", "file"}, {"object_id", ""}, {"title", QString::fromStdWString(path.filename().wstring())},
                 {"target", QString::fromStdWString(path.wstring())}, {"before", previous}, {"after", output}};
             return QJsonObject{{"ok", true}, {"saved", true}, {"in_place", inPlace},
+                {"runtime_purpose", purpose}, {"project_baseline_changed", !validation},
                 {"path", QString::fromStdWString(path.wstring())}, {"sha256", QString::fromStdString(*sha.value)},
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"save_evidence", "host-common-save-handler"}, {"game_verified", false},
@@ -1787,6 +1793,7 @@ private:
                 Mcp::ToolPermission::Query, checkSchema, [this](const QJsonObject& arguments) { return CheckTriggers(arguments); });
         }
         auto save = IdentityProperties(); save.insert("path", StringSchema()); save.insert("in_place", QJsonObject{{"type", "boolean"}, {"default", false}});
+        save.insert("runtime_purpose", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"normal", "internal_validation"}}, {"default", "normal"}});
         AddTool("editor_save_map", "通过原编辑器地图保存服务写回或另存", Mcp::ToolPermission::Save,
             Schema(save, {"project_identity", "expected_revision"}), [this](const QJsonObject& arguments) { return Save(arguments); });
         auto catalog = IdentityProperties();
@@ -1803,6 +1810,7 @@ private:
     QPointer<LiveEditorTools> ownerHandle_;
     Mcp::McpServer server_;
     std::function<bool(const std::filesystem::path&, bool)> save_;
+    std::function<bool(const std::filesystem::path&)> validationSave_;
     std::function<bool()> beforeWrite_;
     std::function<QJsonObject(bool)> luaTest_;
     std::function<QJsonObject(const QString&, const QJsonObject&)> mapTest_;
@@ -1832,6 +1840,7 @@ LiveEditorTools::LiveEditorTools(QtProject::EditorProject& project, QObject* par
 LiveEditorTools::~LiveEditorTools() = default;
 Mcp::McpServer& LiveEditorTools::Server() noexcept { return impl_->Server(); }
 void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
+void LiveEditorTools::SetValidationSaveHandler(std::function<bool(const std::filesystem::path&)> handler) { impl_->SetValidationSaveHandler(std::move(handler)); }
 void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { impl_->SetLuaTestHandler(std::move(handler)); }
 void LiveEditorTools::SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { impl_->SetMapTestHandler(std::move(handler)); }
 void LiveEditorTools::SetWorldViewportHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) {

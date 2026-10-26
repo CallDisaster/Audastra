@@ -32,6 +32,7 @@ add_library(War3MapServices STATIC
     ObjectTransactionSaveGuards.cpp
     MapSaveService.cpp
     MapRuntimePackage.cpp
+    MapRuntimePreparation.cpp
     MapRuntimeSave.cpp
     MapSaveScriptPreservation.cpp
     LuaTestReloadController.cpp
