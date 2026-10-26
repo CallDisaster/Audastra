@@ -50,6 +50,7 @@ struct FrameInfo {
     std::optional<std::size_t> parent;
     std::size_t ordinal = 0;              // 树序，从 1 起
     std::optional<std::size_t> group;     // 所属重复框架（重复的根自己也算）
+    bool simple = false;                  // 按 Simple 框架创建（目录里是 SIMPLE* 类型的模板）
 };
 
 class Generator {
@@ -136,7 +137,7 @@ private:
         const std::size_t index = frames_.size();
         // 描述检查已拒绝嵌套重复。
         if (frame.repeat) group = index;
-        frames_.push_back(FrameInfo{&frame, parent, index + 1, group});
+        frames_.push_back(FrameInfo{&frame, parent, index + 1, group, frame.type == UiFrameType::Template && IsSimpleTemplate(frame)});
         byId_[frame.id] = index;
         for (const auto& child : frame.children) Collect(child, index, group);
     }
@@ -216,7 +217,25 @@ private:
 
     Lines Creation(const FrameInfo& info) {
         const UiFrame& frame = *info.frame;
-        const std::string parent = info.parent ? Ref(frames_[*info.parent], &info) : Call("AudastraUIGameUI");
+        std::string parent = info.parent ? Ref(frames_[*info.parent], &info) : Call("AudastraUIGameUI");
+        // 游戏只允许 Simple 框架挂在 Simple 框架下，挂到普通框架下会在游戏里出错。
+        if (info.simple && info.parent && !frames_[*info.parent].simple) {
+            warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_SIMPLE_PARENT",
+                "框架 " + frame.id + " 的模板 " + frame.templateName + " 是 Simple 框架，父框架 " + frames_[*info.parent].frame->id
+                    + " 是普通框架，游戏不允许这样挂，改挂在游戏界面根上：位置仍按锚点跟着父框架，但画在所有普通框架下面，父框架隐藏时也不跟着隐藏"));
+            parent = Call("AudastraUIGameUI");
+        }
+        // 反过来普通框架挂在 Simple 框架下也会让游戏出错：改挂到最近的普通祖先，没有时挂游戏界面根。
+        if (!info.simple && info.parent && frames_[*info.parent].simple) {
+            auto ancestor = frames_[*info.parent].parent;
+            while (ancestor && frames_[*ancestor].simple) ancestor = frames_[*ancestor].parent;
+            const std::string target = ancestor ? "普通框架 " + frames_[*ancestor].frame->id : std::string("游戏界面根");
+            warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_CLASSIC_UNDER_SIMPLE",
+                "框架 " + frame.id + " 是普通框架，父框架 " + frames_[*info.parent].frame->id + " 的模板 "
+                    + frames_[*info.parent].frame->templateName + " 是 Simple 框架，游戏不允许这样挂，改挂在" + target
+                    + "上：位置仍按锚点跟着父框架，父框架隐藏时也不跟着隐藏"));
+            parent = ancestor ? Ref(frames_[*ancestor], &info) : Call("AudastraUIGameUI");
+        }
         std::string created;
         auto classic = [&](std::string_view name) {
             return Call("AudastraUICreateFrame", {Quote(name), parent, "0", Context(info)});
@@ -226,16 +245,36 @@ private:
         case UiFrameType::Backdrop: created = classic("AudastraBackdrop"); break;
         case UiFrameType::Text: created = classic("AudastraText"); break;
         case UiFrameType::Button: created = classic("AudastraButton"); break;
-        case UiFrameType::Bar:
-            created = Call("AudastraUICreateSimpleFrame", {Quote("AudastraBar"), parent, Context(info)});
-            break;
+        case UiFrameType::Bar: created = classic("AudastraBar"); break;
         case UiFrameType::Template:
-            created = IsSimpleTemplate(frame)
-                ? Call("AudastraUICreateSimpleFrame", {Quote(frame.templateName), parent, Context(info)})
-                : classic(frame.templateName);
+            created = info.simple ? Call("AudastraUICreateSimpleFrame", {Quote(frame.templateName), parent, Context(info)})
+                                  : classic(frame.templateName);
             break;
         }
         return {Call("SetVariable", {Self(info), created})};
+    }
+
+    // 进度条用两层普通框架：框架本身是底图，子框架 AudastraBarFill 是填充，靠左对齐，按比例改宽度。
+    // 不用 SIMPLESTATUSBAR：Simple 框架画在所有普通框架下面，放进普通面板会被盖住。
+    [[nodiscard]] std::string BarFill(const FrameInfo& info) const { return Child(info, "AudastraBarFill"); }
+
+    [[nodiscard]] std::optional<double> BarWidth(const FrameInfo& info) {
+        if (info.frame->width) return *info.frame->width;
+        if (widthless_.insert(info.frame->id).second) Error("进度条 " + info.frame->id + " 没写宽度：填充按宽度显示进度，需要固定宽度");
+        return std::nullopt;
+    }
+
+    std::optional<std::string> BarValue(const FrameInfo& info, double ratio) {
+        const auto width = BarWidth(info);
+        if (!width) return std::nullopt;
+        return Call("AudastraUISetWidth", {BarFill(info), Real(std::clamp(ratio, 0.0, 1.0) * *width)});
+    }
+
+    std::optional<std::string> BarValue(const FrameInfo& info, const std::string& ratio) {
+        const auto width = BarWidth(info);
+        if (!width) return std::nullopt;
+        const std::string clamped = Call("RMaxBJ", {"0", Call("RMinBJ", {"1", ratio})});
+        return Call("AudastraUISetWidth", {BarFill(info), Call("OperatorReal", {clamped, "OperatorMultiply", Real(*width)})});
     }
 
     // 锚点偏移；重复的根按实例下标整体平移。
@@ -337,8 +376,9 @@ private:
     std::optional<std::string> TextureCall(const FrameInfo& info, const std::string& expression) {
         switch (info.frame->type) {
         case UiFrameType::Backdrop:
-        case UiFrameType::Bar:
             return Call("AudastraUISetTexture", {Self(info), expression, "false"});
+        case UiFrameType::Bar:
+            return Call("AudastraUISetTexture", {BarFill(info), expression, "false"});
         case UiFrameType::Button:
             return Call("AudastraUISetTexture", {Child(info, "AudastraButtonBackdrop"), expression, "false"});
         default:
@@ -369,14 +409,22 @@ private:
         case UiFrameType::Backdrop:
             FixedTexture(info, out);
             break;
-        case UiFrameType::Bar:
-            out.push_back(Call("AudastraUISetLimits", {Self(info), "0", "1"}));
+        case UiFrameType::Bar: {
+            const std::string fill = BarFill(info);
+            out.push_back(Call("AudastraUIClearPoints", {fill}));
+            for (const auto point : {FramePoint::TopLeft, FramePoint::BottomLeft}) {
+                const std::string anchor(kAnchors[static_cast<std::size_t>(point)]);
+                out.push_back(Call("AudastraUISetPoint", {fill, anchor, Self(info), anchor, "0", "0"}));
+            }
             FixedTexture(info, out);
             if (!frame.background.empty()) {
-                out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraBarBackground"), Quote(frame.background), "false"}));
+                out.push_back(Call("AudastraUISetTexture", {Self(info), Quote(frame.background), "false"}));
             }
-            if (!frame.value.binding) out.push_back(Call("AudastraUISetValue", {Self(info), Real(frame.value.literal)}));
+            if (!frame.value.binding) {
+                if (auto line = BarValue(info, frame.value.literal)) out.push_back(*line);
+            }
             break;
+        }
         case UiFrameType::Button:
             FixedTexture(info, out);
             if (!frame.pushed.empty()) {
@@ -532,7 +580,7 @@ private:
         }
         if (frame.type == UiFrameType::Bar && frame.value.binding) {
             if (auto number = NumberExpression(info, *frame.value.binding)) {
-                Append(out, Guarded(info, Property::Value, {Call("AudastraUISetValue", {Self(info), *number})}));
+                if (auto line = BarValue(info, *number)) Append(out, Guarded(info, Property::Value, {*line}));
             }
         }
         if (frame.visible.binding) Append(out, Guarded(info, Property::Visible, FlagStatements(info, *frame.visible.binding)));
@@ -575,7 +623,7 @@ private:
             if (entry.visible) statements.push_back(Call("AudastraUIShow", {Self(*info), *entry.visible ? "true" : "false"}));
             if (entry.value) {
                 if (info->frame->type != UiFrameType::Bar) Error("状态 " + state.id + " 给框架 " + entry.frame + " 改数值，它不是进度条");
-                else statements.push_back(Call("AudastraUISetValue", {Self(*info), Real(*entry.value)}));
+                else if (auto line = BarValue(*info, *entry.value)) statements.push_back(*line);
             }
             Append(out, ForAll(*info, statements));
         }
@@ -611,7 +659,9 @@ private:
                     if (!frame.visible.binding) statements.push_back(Call("AudastraUIShow", {Self(info), frame.visible.literal ? "true" : "false"}));
                     break;
                 case Property::Value:
-                    if (!frame.value.binding) statements.push_back(Call("AudastraUISetValue", {Self(info), Real(frame.value.literal)}));
+                    if (!frame.value.binding) {
+                        if (auto line = BarValue(info, frame.value.literal)) statements.push_back(*line);
+                    }
                     break;
                 }
             }
@@ -676,6 +726,7 @@ private:
     std::vector<Diagnostic> warnings_;
     std::optional<FrameTree> areaTree_;
     std::set<std::string> fixedAreas_;  // 已提示过的“框架\n区域”
+    std::set<std::string> widthless_;   // 已报过没写宽度的进度条
 };
 
 } // namespace
@@ -717,13 +768,11 @@ std::string UiTemplateFdfText() {
         "    FontShadowOffset 0.001 -0.001,\r\n"
         "}\r\n"
         "\r\n"
-        "Frame \"SIMPLESTATUSBAR\" \"AudastraBar\" {\r\n"
+        "Frame \"BACKDROP\" \"AudastraBar\" {\r\n"
         "    Width 0.1,\r\n"
         "    Height 0.012,\r\n"
-        "    Layer \"BACKGROUND\" {\r\n"
-        "        Texture \"AudastraBarBackground\" {\r\n"
-        "            SetAllPoints,\r\n"
-        "        }\r\n"
+        "    Frame \"BACKDROP\" \"AudastraBarFill\" {\r\n"
+        "        SetAllPoints,\r\n"
         "    }\r\n"
         "}\r\n"
         "\r\n"

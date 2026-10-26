@@ -357,7 +357,7 @@ Result<PreparedLuaAuthorCode> CaptureNativeLuaAuthorCode(std::span<const std::by
             if (!trigger.enabled) continue;
             if (trigger.name.text.size() > kNameBytes)
                 Reject("LUA_AUTHOR_NAME_BUDGET", "Lua 触发器脚本名称超过 4096 字节预算。", trigger.origin);
-            const auto suffix = Trigger::TriggerDirectoryEditor::ScriptName(trigger.name.text);
+            const auto suffix = Trigger::TriggerDirectoryEditor::ScriptName(trigger.name);
             LuaAuthorTriggerCode block{trigger.id, trigger.customText.text, "gg_trg_" + suffix, "InitTrig_" + suffix};
             if (guiNames.contains(block.variable))
                 Reject("LUA_AUTHOR_DECLARATION_CONFLICT", "Lua 作者触发器变量与活动 GUI 的生成变量冲突。", trigger.origin);

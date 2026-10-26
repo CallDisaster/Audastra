@@ -43,7 +43,22 @@ BundledUiLibraryCheck Locate(const std::filesystem::path& uiDataRoot) {
         return check;
     }
     check.target = uiRoot / std::string(kBundledUiLibrary);  // ASCII 包名
+    // 安装根：<根>/ui 或旧版 <根>/share/mpq 的上层，且已有 jass 目录。
+    std::filesystem::path toolRoot;
+    if (uiRoot.filename() == "ui") toolRoot = uiRoot.parent_path();
+    else if (uiRoot.filename() == "mpq" && uiRoot.parent_path().filename() == "share") toolRoot = uiRoot.parent_path().parent_path();
+    if (!toolRoot.empty() && std::filesystem::is_directory(toolRoot / "jass", error))
+        check.injectionTarget = toolRoot / "jass" / std::string(kBundledUiLibrary);
     return check;
+}
+
+// 包内文件写到哪些位置：包目录一份；jass/ 下的注入文件在安装根 jass/<包名> 再一份。
+std::vector<QString> Destinations(const BundledUiLibraryCheck& check, const QString& relative) {
+    std::vector<QString> out{QDir(QString::fromStdWString(check.target.wstring())).filePath(relative)};
+    const QString jass = QStringLiteral("jass/");
+    if (!check.injectionTarget.empty() && relative.startsWith(jass))
+        out.push_back(QDir(QString::fromStdWString(check.injectionTarget.wstring())).filePath(relative.mid(jass.size())));
+    return out;
 }
 
 QString Native(const std::filesystem::path& path) { return QDir::toNativeSeparators(QString::fromStdWString(path.wstring())); }
@@ -64,12 +79,13 @@ BundledUiLibraryCheck CheckBundledUiLibrary(const std::filesystem::path& uiDataR
         return check;
     }
     check.state = BundledUiLibraryState::Same;
-    const QDir target(QString::fromStdWString(check.target.wstring()));
     for (const auto& [relative, bytes] : files) {
-        QFile file(target.filePath(relative));
-        if (!file.open(QIODevice::ReadOnly) || file.readAll() != bytes) {
-            check.state = BundledUiLibraryState::Different;
-            break;
+        for (const QString& path : Destinations(check, relative)) {
+            QFile file(path);
+            if (!file.open(QIODevice::ReadOnly) || file.readAll() != bytes) {
+                check.state = BundledUiLibraryState::Different;
+                return check;
+            }
         }
     }
     return check;
@@ -79,13 +95,13 @@ QString InstallBundledUiLibrary(const std::filesystem::path& uiDataRoot) {
     const auto check = CheckBundledUiLibrary(uiDataRoot);
     if (!check.error.isEmpty()) return check.error;
     if (check.state == BundledUiLibraryState::Same) return {};
-    const QDir target(QString::fromStdWString(check.target.wstring()));
     for (const auto& [relative, bytes] : BundledFiles()) {
-        const QString path = target.filePath(relative);
-        if (!QDir().mkpath(QFileInfo(path).absolutePath())) return QObject::tr("无法创建目录：%1").arg(QDir::toNativeSeparators(QFileInfo(path).absolutePath()));
-        QSaveFile file(path);
-        if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
-            return QObject::tr("无法写入 %1：%2").arg(QDir::toNativeSeparators(path), file.errorString());
+        for (const QString& path : Destinations(check, relative)) {
+            if (!QDir().mkpath(QFileInfo(path).absolutePath())) return QObject::tr("无法创建目录：%1").arg(QDir::toNativeSeparators(QFileInfo(path).absolutePath()));
+            QSaveFile file(path);
+            if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())
+                return QObject::tr("无法写入 %1：%2").arg(QDir::toNativeSeparators(path), file.errorString());
+        }
     }
     return CheckBundledUiLibrary(uiDataRoot).state == BundledUiLibraryState::Same ? QString()
         : QObject::tr("写入后核对不一致：%1").arg(Native(check.target));

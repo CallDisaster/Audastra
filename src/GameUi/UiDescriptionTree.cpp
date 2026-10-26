@@ -175,6 +175,7 @@ private:
         if (!frame.background.empty()) node.background = Texture(frame.background);
         if (frame.type == UiFrameType::Bar) {
             node.fill = static_cast<float>(change && change->value ? *change->value : Number(frame.value, instance));
+            node.fillStretch = true;
         }
         if (frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) {
             TextInfo text;

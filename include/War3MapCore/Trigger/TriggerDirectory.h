@@ -41,6 +41,18 @@ public:
     // 触发器在脚本中的标识符（gg_trg_ 之后的部分，WE 规则）：去掉结尾空格，非 [A-Za-z0-9_] 的每个字节
     // 换成 '_'，以 '_' 结尾时补 'u'。中文名只按字节数区分，因此不同名称可能得到相同标识符。
     [[nodiscard]] static std::string ScriptName(std::string_view name);
+    // WE 按名字在 WTG 里实际存储的字节换算（规则同上）：GBK 存的汉字一个换两个 '_'，UTF-8 存的换三个。
+    // 名字无法按原编码写出时退回按 UTF-8 文字换算。
+    [[nodiscard]] static std::string ScriptName(const RawText& name);
+    // 触发器的脚本全局变量名，也是 WE 写进 WTG 触发器类型参数的值：WE 生成脚本时把参数值原样写出，不再换算。
+    [[nodiscard]] static std::string TriggerSymbol(const RawText& name);
+    // value 是否引用该触发器：WE 写法（TriggerSymbol），以及本编辑器旧版本写过的按 UTF-8 文字换算、
+    // 直接写原名两种形式。旧形式在 WE 里生成不出对应声明，只为读取和迁移保留。
+    [[nodiscard]] static bool IsTriggerSymbolOf(std::string_view value, const RawText& triggerName);
+    // 参数值指向的触发器（不含注释条目）：先按 WE 写法匹配，没有时再认旧形式；同一层有多个匹配时返回
+    // nullptr 并置 ambiguous。
+    [[nodiscard]] static const TriggerRecord* FindTriggerBySymbol(
+        const TriggerDocument& document, std::string_view value, bool* ambiguous = nullptr);
     // 返回脚本名与 name 相同的其他触发器；没有冲突时返回 nullptr。
     [[nodiscard]] static const TriggerRecord* FindScriptNameConflict(
         const TriggerDocument& document, std::string_view name, StableId self = 0);

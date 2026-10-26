@@ -118,6 +118,8 @@ struct FrameNode {
     bool hidden = false;
     // 进度条：texture 按比例从左向右裁剪（0..1，与游戏状态条一致），background 整块画在下面。
     std::optional<float> fill;
+    // 填充按宽度显示进度（界面描述的进度条在游戏里是普通框架改宽度）：贴图跟着压缩，不裁剪。
+    bool fillStretch = false;
     std::optional<TextureInfo> background;
 };
 

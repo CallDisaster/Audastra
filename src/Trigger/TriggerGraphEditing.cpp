@@ -494,9 +494,11 @@ struct Editor {
             auto removed = TriggerDocumentEditor::RemoveEcaSubtree(doc, *id.value); return {std::move(removed.diagnostics)};
         }
         if (HasOpaqueCode()) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "不透明代码仍可能引用声明，通用删除未获得完整引用资格。");
-        const auto symbol = op.target.kind == GraphRecordKind::Variable ? "udg_" + name : "gg_trg_" + TriggerDirectoryEditor::ScriptName(name);
-        for (const auto& arg : doc.argumentNodes) if (arg.type == 1 && (arg.value.text == symbol
-                || (op.target.kind == GraphRecordKind::Variable && arg.value.text == name)))
+        const bool variable = op.target.kind == GraphRecordKind::Variable;
+        const auto* trigger = variable ? nullptr : Find(doc.triggers, *id.value);
+        for (const auto& arg : doc.argumentNodes) if (arg.type == 1 && (variable
+                ? arg.value.text == "udg_" + name || arg.value.text == name
+                : TriggerDirectoryEditor::IsTriggerSymbolOf(arg.value.text, trigger->name)))
             return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "声明仍有 typed 参数引用，须先在同批次移除或改绑它们。");
         if (op.target.kind == GraphRecordKind::Variable) return TriggerDocumentEditor::RemoveVariable(doc, name);
         if (Find(doc.triggers, *id.value)->customTextFlag) return Fail("TRIGGER_GRAPH_CUSTOM_READ_ONLY", "不能删除既有自定义代码槽。");

@@ -24,7 +24,7 @@ Result<VariableReference> ResolveVariableReference(const TriggerDocument& docume
     for (const auto& trigger : document.triggers) {
         // 与生成器一致：注释与禁用的T不声明生成全局；初始关闭仍是实际生成的trigger。
         if (trigger.type != 0 || trigger.enabled == 0
-            || name != "gg_trg_" + TriggerDirectoryEditor::ScriptName(trigger.name.text)) continue;
+            || !TriggerDirectoryEditor::IsTriggerSymbolOf(name, trigger.name)) continue;
         if (selected) return ambiguous();
         selected = VariableReference{VariableReferenceKind::GeneratedTrigger, "trigger", false, false, {}};
     }

@@ -121,9 +121,14 @@ std::vector<Row> ObjectRows(const QtProject::EditorProject& project, ObjectType 
     return rows;
 }
 
-// 与共用触发器编译器相同的脚本符号，包含中文/标点字节规则。
-std::string TriggerToken(const std::string& name) {
-    return "gg_trg_" + Trigger::TriggerDirectoryEditor::ScriptName(name);
+// 与共用触发器编译器相同的脚本符号（按名字存储字节换算），以及旧版本编辑器写过的按 UTF-8 文字换算、
+// 原名两种形式，都算引用。
+std::vector<std::string> TriggerTokens(const Trigger::RawText& name) {
+    std::vector<std::string> tokens{Trigger::TriggerDirectoryEditor::TriggerSymbol(name)};
+    for (auto legacy : {"gg_trg_" + Trigger::TriggerDirectoryEditor::ScriptName(name.text), "gg_trg_" + name.text}) {
+        if (std::find(tokens.begin(), tokens.end(), legacy) == tokens.end()) tokens.push_back(std::move(legacy));
+    }
+    return tokens;
 }
 
 std::vector<Row> TriggerRows(const QtProject::EditorProject& project) {
@@ -158,7 +163,7 @@ std::vector<Row> TriggerRows(const QtProject::EditorProject& project) {
         } else {
             row.subtitle = Tr("启用");
         }
-        const std::vector<std::string> tokens{TriggerToken(trigger.name.text)};
+        const auto tokens = TriggerTokens(trigger.name);
         row.outgoingOwner = Services::TriggerOwnerId(trigger.id);
         row.usages = index.UsagesOf(tokens, row.outgoingOwner);
         row.cells = {row.title, category, row.subtitle, QString::number(events), QString::number(actions),

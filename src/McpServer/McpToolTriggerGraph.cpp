@@ -691,7 +691,7 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
             // 与实际脚本生成器共用名称规则，不能让 Agent 按中文字数猜符号。
             // 这是当前名称的编码事实，不是脚本已经生成或运行的证明。
             row.insert("name_derived_trigger_symbol", record.type == 1 ? QJsonValue(QJsonValue::Null)
-                : QJsonValue(QString::fromStdString("gg_trg_" + TriggerDirectoryEditor::ScriptName(record.name.text))));
+                : QJsonValue(QString::fromStdString(TriggerDirectoryEditor::TriggerSymbol(record.name))));
             row.insert("script_symbol_state", record.type == 1 ? "comment-no-runtime-symbol" : "name-derived");
         } else if (table == "ecas") {
             const auto& record = document.ecaNodes[index];

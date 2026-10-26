@@ -1257,8 +1257,9 @@ void TestAtomicRename(const std::filesystem::path& fixture) {
         && document.argumentNodes[array].value.text == "Values", "array declaration and reference renamed");
     const auto renamedTrigger = TriggerDocumentEditor::RenameTriggerAtomic(document, *catalog.value, *trigger.value, "战斗入口");
     Expect(renamedTrigger.Succeeded() && renamedTrigger.value->changedArgumentIds.size() == 2
-        && document.argumentNodes[rawTrigger].value.text == "gg_trg_战斗入口"
-        && document.argumentNodes[encodedTrigger].value.text == "gg_trg_战斗入口", "actual shared Chinese symbol encoding resolves both forms");
+        && document.argumentNodes[rawTrigger].value.text == "gg_trg_" + TriggerDirectoryEditor::ScriptName("战斗入口")
+        && document.argumentNodes[encodedTrigger].value.text == "gg_trg_" + TriggerDirectoryEditor::ScriptName("战斗入口"),
+        "raw and converted references both become the WE symbol of the new name");
     Expect(document.argumentNodes[string].value.text == "udg_Counter gg_trg_技能响应"
         && document.argumentNodes[rawcode].value.text == "C001"
         && document.argumentNodes[preplaced].value.text == "gg_unit_Counter_0001", "string/rawcode/other generated domain preserved");

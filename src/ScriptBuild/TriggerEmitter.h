@@ -16,6 +16,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace War3Map::Script::detail {
@@ -198,6 +199,13 @@ private:
     ScriptText& out_;
     std::vector<Diagnostic>& diagnostics_;
     std::unordered_map<std::string, const Trigger::VariableRecord*> variables_;
+    // 触发器参数值 → 脚本全局名：WE 写法映射到自身，旧版本编辑器写过的形式映射到同一个触发器的 WE 写法。
+    struct TriggerSymbolTarget {
+        std::string symbol;
+        bool legacy = false;  // 旧形式：WE 原样写出时生成不出对应声明
+    };
+    std::unordered_map<std::string, TriggerSymbolTarget> triggerSymbols_;
+    mutable std::unordered_set<std::string> legacyWarned_;
 
     const Trigger::TriggerRecord* trigger_ = nullptr;
     LocvarState locvar_;

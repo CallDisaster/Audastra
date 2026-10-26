@@ -122,6 +122,8 @@ void UiLibraryDialog::InstallBundled() {
     }
     const QString target = QDir::toNativeSeparators(QString::fromStdWString(check.target.wstring()));
     QString question = tr("把编辑器自带的 %1 函数库写入\n%2\n不修改 config。").arg(Text(QtProject::kBundledUiLibrary), target);
+    if (!check.injectionTarget.empty())
+        question += tr("\n注入代码另写一份到\n%1").arg(QDir::toNativeSeparators(QString::fromStdWString(check.injectionTarget.wstring())));
     if (check.state == QtProject::BundledUiLibraryState::Different) question += tr("\n目录里同名的文件会被替换。");
     if (QMessageBox::question(this, tr("函数库"), question, QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes) return;
     if (const QString error = QtProject::InstallBundledUiLibrary(dataRoot); !error.isEmpty()) {

@@ -57,10 +57,6 @@ QString ObjectName(const QtProject::EditorProject& project, ObjectType type, con
     return recorded || standard ? shown.name : QString{};
 }
 
-std::string TriggerToken(const std::string& name) {
-    return "gg_trg_" + Trigger::TriggerDirectoryEditor::ScriptName(name);
-}
-
 } // namespace
 
 QString UsageOwnerLabel(const QtProject::EditorProject& project, const Usage& usage) {
@@ -138,11 +134,9 @@ std::optional<ResolvedToken> ResolveToken(const QtProject::EditorProject& projec
     const auto resolved = ResolveProjectName(project, token);
     if (resolved.state == Services::NameResolutionState::Ambiguous) return std::nullopt;
     if (const auto* document = project.triggerDocument_.get()) {
-        for (const auto& trigger : document->triggers) {
-            if (TriggerToken(trigger.name.text) == token) {
-                return ResolvedToken{Tr("触发器"), U8(trigger.name.text),
-                    {"triggers", "trigger", QString::number(trigger.id), {}}};
-            }
+        if (const auto* trigger = Trigger::TriggerDirectoryEditor::FindTriggerBySymbol(*document, token)) {
+            return ResolvedToken{Tr("触发器"), U8(trigger->name.text),
+                {"triggers", "trigger", QString::number(trigger->id), {}}};
         }
         for (const auto& variable : document->variables) {
             if (variable.name.text == token || "udg_" + variable.name.text == token) {

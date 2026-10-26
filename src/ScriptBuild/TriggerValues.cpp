@@ -38,6 +38,15 @@ std::string TriggerEmitter::ArgValue(const Eca& eca, std::size_t index) const {
 }
 
 std::string TriggerEmitter::VariableName(std::string_view value) const {
+    if (const auto found = triggerSymbols_.find(std::string(value)); found != triggerSymbols_.end()) {
+        // 每个触发器各报一次：要改正的是引用所在的触发器。
+        const std::string key = (trigger_ ? std::to_string(trigger_->id) : std::string()) + '\n' + found->first;
+        if (found->second.legacy && legacyWarned_.insert(key).second) {
+            Warn("TRIGGER_SYMBOL_LEGACY", "触发器引用 " + found->first + " 是旧版本编辑器的写法，本编辑器照常生成为 "
+                + found->second.symbol + "；但 WE/YDWE 打开后保存会生成不出对应声明。把这个触发器的自然 T 原样写回一次即可改正。");
+        }
+        return found->second.symbol;
+    }
     for (const auto& generated : kGenerated) {
         if (value.rfind(generated.prefix, 0) == 0) {
             return generated.convert

@@ -127,6 +127,46 @@ std::string TriggerDirectoryEditor::ScriptName(std::string_view name) {
     return Text::ObjectScriptName(name);
 }
 
+std::string TriggerDirectoryEditor::ScriptName(const RawText& name) {
+    const auto bytes = name.ToBytes();
+    if (!bytes.Succeeded()) return ScriptName(name.text);
+    return ScriptName(std::string_view(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size()));
+}
+
+std::string TriggerDirectoryEditor::TriggerSymbol(const RawText& name) {
+    return "gg_trg_" + ScriptName(name);
+}
+
+bool TriggerDirectoryEditor::IsTriggerSymbolOf(std::string_view value, const RawText& triggerName) {
+    constexpr std::string_view prefix = "gg_trg_";
+    if (!value.starts_with(prefix)) return false;
+    return value == TriggerSymbol(triggerName) || ScriptName(value.substr(prefix.size())) == ScriptName(triggerName.text);
+}
+
+const TriggerRecord* TriggerDirectoryEditor::FindTriggerBySymbol(
+    const TriggerDocument& document, std::string_view value, bool* ambiguous) {
+    if (ambiguous) *ambiguous = false;
+    constexpr std::string_view prefix = "gg_trg_";
+    if (!value.starts_with(prefix)) return nullptr;
+    // 先认 WE 写法；不同编码下 WE 写法和旧形式可能撞成同一串，此时以 WE 写法为准。
+    for (const bool exact : {true, false}) {
+        const TriggerRecord* found = nullptr;
+        for (const auto& trigger : document.triggers) {
+            if (trigger.type != 0) continue;
+            const bool match = exact ? value == TriggerSymbol(trigger.name)
+                                     : ScriptName(value.substr(prefix.size())) == ScriptName(trigger.name.text);
+            if (!match) continue;
+            if (found) {
+                if (ambiguous) *ambiguous = true;
+                return nullptr;
+            }
+            found = &trigger;
+        }
+        if (found) return found;
+    }
+    return nullptr;
+}
+
 const TriggerRecord* TriggerDirectoryEditor::FindScriptNameConflict(
     const TriggerDocument& document, std::string_view name, StableId self) {
     const std::string wanted = ScriptName(name);

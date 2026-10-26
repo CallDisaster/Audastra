@@ -4,6 +4,7 @@
 #include "ScriptNames.h"
 #include "YDTriggerStorage.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include <algorithm>
@@ -207,7 +208,7 @@ class Parser {
 public:
     Parser(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog, const Trigger::TriggerRecord& record)
         : document_(document), catalog_(catalog), types_(catalog), record_(record) {
-        const auto conv = ConvertObjectName(record.name.text);
+        const auto conv = Trigger::TriggerDirectoryEditor::ScriptName(record.name);
         prefix_ = "Trig_" + conv; triggerVar_ = "gg_trg_" + conv; init_ = "InitTrig_" + conv;
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Event)) events_[ScriptNameOf(*definition)].push_back(definition);
         for (const auto* definition : catalog.Definitions(UiDefinitionKind::Condition)) conditions_[ScriptNameOf(*definition)].push_back(definition);
@@ -610,9 +611,9 @@ private:
             if (found == variables_.end()) return std::nullopt;
             arg.value = name.substr(4); type = found->second->typeName.text; array = found->second->isArray != 0;
         } else if (name.starts_with("gg_trg_")) {
-            for (const auto& record : document_.triggers)
-                if ("gg_trg_" + ConvertObjectName(record.name.text) == name) { arg.value = "gg_trg_" + record.name.text; break; }
-            if (arg.value.empty()) return std::nullopt;
+            const auto* record = Trigger::TriggerDirectoryEditor::FindTriggerBySymbol(document_, name);
+            if (record == nullptr) return std::nullopt;
+            arg.value = Trigger::TriggerDirectoryEditor::TriggerSymbol(record->name);
             type = "trigger";
         } else {
             static constexpr std::pair<std::string_view, std::string_view> kGenerated[] = {

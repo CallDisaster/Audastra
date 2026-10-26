@@ -667,7 +667,7 @@ Result<TriggerCodeEditPlan> TriggerCodeEditor::PrepareNewCustom(const TriggerDoc
         auto& record = probe.triggers.back(); record.customTextFlag = 1;
         std::string skeleton;
         if (input.empty()) {
-            const auto suffix = TriggerDirectoryEditor::ScriptName(record.name.text);
+            const auto suffix = TriggerDirectoryEditor::ScriptName(record.name);
             skeleton = "function InitTrig_" + suffix + " takes nothing returns nothing\n"
                 "    set gg_trg_" + suffix + " = CreateTrigger()\nendfunction\n";
             input = skeleton;

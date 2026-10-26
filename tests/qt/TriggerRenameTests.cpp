@@ -147,7 +147,9 @@ struct Fixture {
     }
     bool ReferencesEqual(std::string_view name) const {
         const auto& args = project.triggerDocument_->argumentNodes;
-        return std::count_if(args.begin(), args.end(), [&](const auto& a) { return a.type == 1 && a.value.text == "gg_trg_" + std::string(name); }) == 2;
+        // 引用存 WE 写法：按名字换算后的脚本全局名。
+        const auto symbol = "gg_trg_" + TriggerDirectoryEditor::ScriptName(name);
+        return std::count_if(args.begin(), args.end(), [&](const auto& a) { return a.type == 1 && a.value.text == symbol; }) == 2;
     }
     QJsonObject RenameRequest(QString name) const {
         const auto state = tools->Invoke("editor_state", {});

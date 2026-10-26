@@ -758,7 +758,8 @@ void TestPatchAndDiff() {
         "line diff of the changed trigger");
     Require(DiffTriggerTexts(f.doc, f.doc, f.catalog).empty(), "no diff for identical documents");
 }
-// 触发器参数可直接写触发器显示名：解析成脚本生成名，导出时再写回显示名。
+// 触发器参数可直接写触发器显示名：与 WE 一样存按名字存储字节换算后的 gg_trg_ 全局名（WE 生成脚本时原样写出参数值），
+// 导出时再写回显示名；旧版本写下的按 UTF-8 文字换算、直接写原名两种形式照样认作同一触发器。
 void TestTriggerNames() {
     Fixture f;
     const auto other = TriggerDocumentEditor::AddTrigger(f.doc, f.doc.categories[0].categoryId, "9-1 Spell Hit");
@@ -771,9 +772,41 @@ void TestTriggerNames() {
     Require(written.Succeeded(), written.Succeeded() ? "" : written.diagnostics.front().message.c_str());
     const auto stored = std::find_if(f.doc.argumentNodes.begin(), f.doc.argumentNodes.end(),
         [](const auto& argument) { return argument.type == 1 && argument.value.text.starts_with("gg_trg_"); });
-    Require(stored != f.doc.argumentNodes.end() && stored->value.text == "gg_trg_9_1_Spell_Hit", "display name stored as the generated symbol");
+    Require(stored != f.doc.argumentNodes.end() && stored->value.text == "gg_trg_9_1_Spell_Hit", "display name stored as the WE symbol");
     const auto text = RenderTriggerText(f.doc, f.catalog, trigger.id);
     Require(text.Succeeded() && text.value->find("AddTriggerEvent(`9-1 Spell Hit`, ") != std::string::npos, "exported with the display name");
+    const auto storedId = stored->id;
+    auto legacy = std::find_if(f.doc.argumentNodes.begin(), f.doc.argumentNodes.end(), [&](const auto& argument) { return argument.id == storedId; });
+    legacy->value.text = "gg_trg_9-1 Spell Hit";
+    const auto legacyText = RenderTriggerText(f.doc, f.catalog, trigger.id);
+    Require(legacyText.Succeeded() && legacyText.value->find("AddTriggerEvent(`9-1 Spell Hit`, ") != std::string::npos,
+        "a raw name from older saves still shows the display name");
+    const auto& spell = std::find_if(f.doc.triggers.begin(), f.doc.triggers.end(), [](const auto& row) { return row.name.text == "9-1 Spell Hit"; })->name;
+    Require(TriggerDirectoryEditor::IsTriggerSymbolOf("gg_trg_9-1 Spell Hit", spell)
+            && TriggerDirectoryEditor::IsTriggerSymbolOf("gg_trg_9_1_Spell_Hit", spell)
+            && !TriggerDirectoryEditor::IsTriggerSymbolOf("gg_trg_9_1_Spell", spell)
+            && !TriggerDirectoryEditor::IsTriggerSymbolOf("udg_9-1 Spell Hit", spell),
+        "the WE symbol and both legacy forms match the same trigger, other names do not");
+
+    // GBK 存的中文名按 GBK 字节换算：一个汉字两个 '_'；按 UTF-8 文字换算的旧形式（三个）仍能认出。
+    Require(TriggerDocumentEditor::AddTrigger(f.doc, f.doc.categories[0].categoryId, "效果 Bolt").Succeeded(), "chinese trigger fixture");
+    auto& bolt = std::find_if(f.doc.triggers.begin(), f.doc.triggers.end(), [](const auto& row) { return row.name.text == "效果 Bolt"; })->name;
+    bolt.encoding = TextEncoding::Gb18030;
+    bolt.originalBytes.clear();
+    const RawText boltName = bolt;  // 下面的批量编辑会整体替换文档，不能再用指向旧记录的引用
+    Require(TriggerDirectoryEditor::TriggerSymbol(boltName) == "gg_trg______Bolt", "GBK name converts per stored byte");
+    auto gbk = f.Batch();
+    gbk.operations.emplace_back(GraphReplaceTriggerText{trigger,
+        "AddTriggerEvent(`效果 Bolt`, TriggerRegisterUnitEvent(GetTriggerUnit()))"});
+    const auto gbkWritten = ApplyTriggerGraphEditBatch(f.doc, f.catalog, gbk);
+    Require(gbkWritten.Succeeded(), gbkWritten.Succeeded() ? "" : gbkWritten.diagnostics.front().message.c_str());
+    Require(std::any_of(f.doc.argumentNodes.begin(), f.doc.argumentNodes.end(),
+                [](const auto& argument) { return argument.type == 1 && argument.value.text == "gg_trg______Bolt"; }),
+        "chinese display name stored as the GBK-byte symbol");
+    Require(TriggerDirectoryEditor::IsTriggerSymbolOf("gg_trg________Bolt", boltName)
+            && TriggerDirectoryEditor::FindTriggerBySymbol(f.doc, "gg_trg________Bolt") != nullptr,
+        "the UTF-8 converted legacy form still resolves");
+
     auto missing = f.Batch();
     missing.operations.emplace_back(GraphReplaceTriggerText{trigger, "AddTriggerEvent(`No Such`, TriggerRegisterUnitEvent(GetTriggerUnit()))"});
     const auto refused = ApplyTriggerGraphEditBatch(f.doc, f.catalog, missing);

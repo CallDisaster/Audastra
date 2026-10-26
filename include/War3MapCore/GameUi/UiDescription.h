@@ -71,7 +71,7 @@ enum class UiFrameType : std::uint8_t {
     Panel,     // 容器（游戏 FRAME）
     Backdrop,  // 背景图（BACKDROP）
     Text,      // 文字（TEXT）
-    Bar,       // 进度条（SIMPLESTATUSBAR）：底图 + 按比例裁剪的填充
+    Bar,       // 进度条：底图 + 按比例改宽度的填充（两层普通 BACKDROP）
     Button,    // 按钮（GLUETEXTBUTTON）：常态/按下贴图 + 文字，可发点击事件
     Template,  // 游戏或地图界面文件里的模板
 };

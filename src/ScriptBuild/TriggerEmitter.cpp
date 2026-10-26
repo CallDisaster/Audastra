@@ -3,6 +3,7 @@
 #include "ScriptNames.h"
 
 #include "War3MapCore/Script/MapScript.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -82,6 +83,15 @@ TriggerEmitter::TriggerEmitter(const Trigger::TriggerDocument& document, const T
       nullSafeHandleSet_(nullSafeHandleSet) {
     if (&types_.Catalog() != &catalog_) throw std::invalid_argument("共享类型目录与当前函数库不一致。");
     for (const auto& variable : document_.variables) variables_.emplace(variable.name.text, &variable);
+    for (const auto& trigger : document_.triggers) {
+        if (trigger.type == 0) triggerSymbols_.emplace(TriggerVariable(trigger), TriggerSymbolTarget{TriggerVariable(trigger), false});
+    }
+    // 旧形式只在不和任何 WE 写法撞名时才认。
+    for (const auto& trigger : document_.triggers) {
+        if (trigger.type != 0) continue;
+        triggerSymbols_.emplace("gg_trg_" + ConvertObjectName(trigger.name.text), TriggerSymbolTarget{TriggerVariable(trigger), true});
+        triggerSymbols_.emplace("gg_trg_" + trigger.name.text, TriggerSymbolTarget{TriggerVariable(trigger), true});
+    }
 }
 
 const EcaNode& TriggerEmitter::EcaAt(std::uint32_t index) const { return document_.ecaNodes.at(index); }
@@ -212,11 +222,11 @@ void TriggerEmitter::Warn(std::string code, std::string message) const {
 }
 
 std::string TriggerEmitter::TriggerVariable(const Trigger::TriggerRecord& trigger) const {
-    return "gg_trg_" + ConvertObjectName(trigger.name.text);
+    return Trigger::TriggerDirectoryEditor::TriggerSymbol(trigger.name);
 }
 
 std::string TriggerEmitter::InitTriggerName(const Trigger::TriggerRecord& trigger) const {
-    return "InitTrig_" + ConvertObjectName(trigger.name.text);
+    return "InitTrig_" + Trigger::TriggerDirectoryEditor::ScriptName(trigger.name);
 }
 
 bool TriggerEmitter::HasDisableRegister(const Trigger::TriggerRecord& trigger) const {
@@ -429,7 +439,7 @@ void TriggerEmitter::EmitGuiTrigger(const Trigger::TriggerRecord& trigger) {
     saveLoadTypes_.clear();
     const ScriptOwner saved = out_.Owner();
     out_.SetOwner({trigger.id, 0});
-    const std::string name = "Trig_" + ConvertObjectName(trigger.name.text);
+    const std::string name = "Trig_" + Trigger::TriggerDirectoryEditor::ScriptName(trigger.name);
     PutTriggerExterns(trigger, name);
     PutTriggerInit(trigger, name);
     out_.SetOwner(saved);

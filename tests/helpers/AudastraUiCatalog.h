@@ -40,7 +40,9 @@ inline constexpr std::string_view kBaseCall =
     "[I2R]\nreturns=real\n[[.args]]\ntype=integer\n[I2S]\nreturns=string\n[[.args]]\ntype=integer\n"
     "[OperatorInt]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=integer\n"
     "[OperatorReal]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=real\n"
-    "[OperatorString]\nreturns=string\n[[.args]]\ntype=string\n[[.args]]\ntype=string\n";
+    "[OperatorString]\nreturns=string\n[[.args]]\ntype=string\n[[.args]]\ntype=string\n"
+    "[RMinBJ]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=real\n"
+    "[RMaxBJ]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=real\n";
 
 inline std::filesystem::path PackageDirectory() { return std::filesystem::path(AUDASTRA_UI_LIBRARY_DIR) / "AudastraUI"; }
 

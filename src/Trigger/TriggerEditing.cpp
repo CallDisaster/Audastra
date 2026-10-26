@@ -593,11 +593,9 @@ RenameResult RenameCommentMetadata(TriggerDocument& document, TriggerRecord& tri
         return RenameResult::Failure("Trigger.Edit", "TRIGGER_RENAME_METADATA_AUDIT_INVALID",
             "说明记录没有运行时声明，不接受冗余的符号代码审计。");
     }
-    const auto suffix = TriggerDirectoryEditor::ScriptName(receipt.oldName);
     for (const auto& argument : document.argumentNodes) {
-        if (argument.type != 1 || !argument.value.text.starts_with("gg_trg_")) continue;
-        const auto target = std::string_view(argument.value.text).substr(7);
-        if (target == receipt.oldName || TriggerDirectoryEditor::ScriptName(target) == suffix) {
+        if (argument.type != 1) continue;
+        if (TriggerDirectoryEditor::IsTriggerSymbolOf(argument.value.text, trigger.name)) {
             return RenameResult::Failure("Trigger.Edit", "TRIGGER_RENAME_METADATA_REFERENCE",
                 "说明记录被触发器变量参数 " + std::to_string(argument.id)
                     + " 引用，不能假设它具有运行时声明或静默改写该引用。");
@@ -1358,8 +1356,11 @@ Result<AtomicRenameReceipt> TriggerDocumentEditor::RenameTriggerAtomic(
     if (trigger->type == 1) {
         return RenameCommentMetadata(document, *trigger, std::move(receipt), codeAudits);
     }
-    receipt.oldSymbol = "gg_trg_" + TriggerDirectoryEditor::ScriptName(receipt.oldName);
-    receipt.newSymbol = "gg_trg_" + TriggerDirectoryEditor::ScriptName(receipt.newName);
+    // 新名按原名的编码写出，脚本名也按写出的字节换算，与 WE 重新生成的声明一致。
+    auto renamed = EditedText(trigger->name, receipt.newName);
+    if (!renamed.Succeeded()) return RenameFailure(std::move(renamed.diagnostics));
+    receipt.oldSymbol = TriggerDirectoryEditor::TriggerSymbol(trigger->name);
+    receipt.newSymbol = TriggerDirectoryEditor::TriggerSymbol(*renamed.value);
     if (receipt.oldName == receipt.newName) return RenameResult::Success(std::move(receipt));
     if (RuntimeScriptNameConflict(document, receipt.oldName, triggerId))
         return RenameResult::Failure("Trigger.Edit", "TRIGGER_RENAME_SOURCE_AMBIGUOUS",
@@ -1367,11 +1368,10 @@ Result<AtomicRenameReceipt> TriggerDocumentEditor::RenameTriggerAtomic(
     if (RuntimeScriptNameConflict(document, receipt.newName, triggerId))
         return RenameResult::Failure("Trigger.Edit", "TRIGGER_SCRIPT_NAME_DUPLICATE", "新触发器名的生成符号已存在。");
     std::vector<ArgumentNode*> references;
-    const std::string referenceValue = "gg_trg_" + receipt.newName;
+    // 引用改写成 WE 写法；旧版本编辑器写过的形式也一并改正。
+    const std::string referenceValue = receipt.newSymbol;
     for (auto& argument : document.argumentNodes) {
-        if (argument.type != 1 || !argument.value.text.starts_with("gg_trg_")) continue;
-        const auto suffix = std::string_view(argument.value.text).substr(7);
-        if ("gg_trg_" + TriggerDirectoryEditor::ScriptName(suffix) != receipt.oldSymbol) continue;
+        if (argument.type != 1 || !TriggerDirectoryEditor::IsTriggerSymbolOf(argument.value.text, trigger->name)) continue;
         if (argument.callEca)
             return RenameResult::Failure("Trigger.Edit", "TRIGGER_RENAME_REFERENCE_AMBIGUOUS",
                 "触发器变量参数同时挂接函数，不能当作确定的直接引用改名。");

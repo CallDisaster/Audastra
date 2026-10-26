@@ -163,8 +163,20 @@ void TestGeneratedText() {
         ++guards;
     }
     Require(guards == 3, "更新与状态触发器等界面建好：\n" + text);
-    // 进度条走 Simple 创建；文字锚在兄弟框架；重复按钮在循环里按下标创建、平移并监听。
-    Require(Contains(text, "SetVariable(udg_AUI_cast_bar, AudastraUICreateSimpleFrame(\"AudastraBar\", udg_AUI_cast_root, "), "进度条创建");
+    // 进度条是两层普通框架：本身画底图，填充子框架靠左、按比例改宽度；文字锚在兄弟框架；重复按钮在循环里按下标创建、平移并监听。
+    Require(Contains(text, "SetVariable(udg_AUI_cast_bar, AudastraUICreateFrame(\"AudastraBar\", udg_AUI_cast_root, 0, ")
+            && !Contains(text, "AudastraUICreateSimpleFrame") && !Contains(text, "AudastraUISetValue"),
+        "进度条按普通框架创建：\n" + text);
+    Require(Contains(text, "AudastraUIClearPoints(AudastraUIFindFrame(\"AudastraBarFill\", ")
+            && Contains(text, "), AudastraAnchorTopLeft, udg_AUI_cast_bar, AudastraAnchorTopLeft, 0, 0)")
+            && Contains(text, "), AudastraAnchorBottomLeft, udg_AUI_cast_bar, AudastraAnchorBottomLeft, 0, 0)"),
+        "填充靠左对齐：\n" + text);
+    Require(Contains(text, "AudastraUISetTexture(udg_AUI_cast_bar, \"UI\\\\Feedback\\\\XPBar\\\\human-xpbar-border.blp\", false)")
+            && Contains(text, "), \"UI\\\\Feedback\\\\XPBar\\\\human-bigbar-fill-red.blp\", false)"),
+        "底图在进度条上，状态换的填充贴图在填充上：\n" + text);
+    Require(Contains(text, "AudastraUISetWidth(AudastraUIFindFrame(\"AudastraBarFill\", ")
+            && Contains(text, "), OperatorReal(RMaxBJ(0, RMinBJ(1, udg_AUIV_cast_progress)), OperatorMultiply, 0.28))"),
+        "进度按比例改填充宽度，比例夹在 0..1：\n" + text);
     Require(Contains(text, "AudastraUISetPoint(udg_AUI_cast_label, AudastraAnchorBottom, udg_AUI_cast_bar, AudastraAnchorTop, 0, 0.004)"),
         "相对锚点：\n" + text);
     Require(Contains(text, "AudastraUISetAbsPoint(udg_AUI_cast_root, AudastraAnchorBottom, 0.4, 0.12)"), "屏幕锚点换算成屏幕坐标");
@@ -314,6 +326,38 @@ void TestRefusalsAndTemplates() {
         "模板创建方式：\n" + text);
     Require(plan.diagnostics.size() == 1 && plan.diagnostics.front().code == "AUI_TRIGGER_TEMPLATE_UNKNOWN", "缺模板只警告一次");
     Require(plan.value->triggers.size() == 2, "无状态时只有创建与更新");
+
+    // Simple 模板不能挂在普通框架下：改挂游戏界面根并警告；它的普通子框架也不能挂它，改挂最近的普通祖先。
+    UiDescription nestedSimple;
+    nestedSimple.id = "nest";
+    UiFrame panel;
+    panel.id = "panel";
+    panel.type = UiFrameType::Panel;
+    UiFrame simpleInner = a;
+    simpleInner.id = "inner";
+    UiFrame classicChild = b;
+    classicChild.id = "classicChild";
+    simpleInner.children = {classicChild};
+    panel.children = {simpleInner};
+    nestedSimple.frames = {panel};
+    const auto nestedPlan = GenerateUiTriggers(nestedSimple, options);
+    Require(nestedPlan.Succeeded(), "Simple 模板在普通框架下：" + First(nestedPlan.diagnostics));
+    Require(Contains(nestedPlan.value->featureText, "SetVariable(udg_AUI_nest_inner, AudastraUICreateSimpleFrame(\"MapSimple\", AudastraUIGameUI(), ")
+            && Contains(nestedPlan.value->featureText, "AudastraUICreateFrame(\"MapBackdrop\", udg_AUI_nest_panel, 0, ")
+            && !Contains(nestedPlan.value->featureText, ", udg_AUI_nest_inner, 0, "),
+        "Simple 模板挂游戏界面根，它的普通子框架挂回普通祖先：\n" + nestedPlan.value->featureText);
+    Require(nestedPlan.diagnostics.size() == 2 && nestedPlan.diagnostics[0].code == "AUI_TRIGGER_SIMPLE_PARENT"
+            && Contains(nestedPlan.diagnostics[0].message, "panel") && nestedPlan.diagnostics[1].code == "AUI_TRIGGER_CLASSIC_UNDER_SIMPLE"
+            && Contains(nestedPlan.diagnostics[1].message, "classicChild") && Contains(nestedPlan.diagnostics[1].message, "普通框架 panel"),
+        "两处改挂都要警告：" + First(nestedPlan.diagnostics));
+
+    // 进度条按宽度显示进度，没写宽度时拒绝生成。
+    UiDescription noWidth = CastBar();
+    noWidth.frames[0].children[0].width.reset();
+    const auto widthless = GenerateUiTriggers(noWidth, withFont);
+    Require(!widthless.Succeeded() && std::count_if(widthless.diagnostics.begin(), widthless.diagnostics.end(),
+                [](const auto& item) { return item.code == "AUI_TRIGGER_UNSUPPORTED" && Contains(item.message, "宽度"); }) == 1,
+        "进度条没写宽度只报一次：" + First(widthless.diagnostics));
 }
 
 // 脚本部分与函数库定义一一对应：cfg 列出全部函数，.j 的参数个数与类型同定义（事件前补触发器），

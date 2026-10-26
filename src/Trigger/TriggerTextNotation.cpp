@@ -520,8 +520,9 @@ private:
         for (std::size_t i = 0; i < presets.size() && i < 8; ++i) hint += (i ? "、" : "") + presets[i].name;
         return hint + (presets.size() > 8 ? " 等 " + std::to_string(presets.size()) + " 个。" : "。");
     }
-    // 触发器、区域、镜头、声音参数可直接写显示名，按脚本生成器的命名规则换成 gg_ 全局；
-    // 区域/镜头/声音是否真实存在由图编辑的预放对象校验决定。nullopt：类型不适用；空串：已报错。
+    // 触发器、区域、镜头、声音参数可直接写显示名。触发器与 WE 一致存按名字存储字节换算后的 gg_trg_ 全局名：
+    // WE 生成脚本时把参数值原样写出，只有这样才和它生成的声明一致；区域/镜头/声音按脚本生成器的命名规则换成
+    // gg_ 全局，是否真实存在由图编辑的预放对象校验决定。nullopt：类型不适用；空串：已报错。
     std::optional<std::string> NamedObjectSymbol(const std::string& name, const std::string& type, const Position& at) {
         if (type == "trigger") {
             std::vector<const TriggerRecord*> found;
@@ -532,7 +533,7 @@ private:
                     : "有多个名为“" + name + "”的触发器，请写 gg_trg_ 生成名。");
                 return std::string{};
             }
-            return "gg_trg_" + TriggerDirectoryEditor::ScriptName(name);
+            return TriggerDirectoryEditor::TriggerSymbol(found.front()->name);
         }
         if (type == "rect") return "gg_rct_" + TriggerDirectoryEditor::ScriptName(name);
         if (type == "camerasetup") return "gg_cam_" + TriggerDirectoryEditor::ScriptName(name);
@@ -693,12 +694,7 @@ private:
     std::optional<std::string> DisplayName(const std::string& symbol, const std::string& expected) const {
         std::string name;
         if (expected == "trigger" && symbol.starts_with("gg_trg_")) {
-            const TriggerRecord* found = nullptr;
-            for (const auto& trigger : document_.triggers) {
-                if (trigger.type != 0 || "gg_trg_" + TriggerDirectoryEditor::ScriptName(trigger.name.text) != symbol) continue;
-                if (found) return std::nullopt;
-                found = &trigger;
-            }
+            const auto* found = TriggerDirectoryEditor::FindTriggerBySymbol(document_, symbol);
             if (!found || std::count_if(document_.triggers.begin(), document_.triggers.end(),
                     [&](const TriggerRecord& trigger) { return trigger.type == 0 && trigger.name.text == found->name.text; }) != 1)
                 return std::nullopt;

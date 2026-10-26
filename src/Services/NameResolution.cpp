@@ -4,6 +4,7 @@
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/Trigger/MapObjectReferences.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
@@ -279,8 +280,16 @@ NameResolution ResolveName(const NameResolutionContext& context, std::string_vie
     }
     std::vector<std::string> matches;
     if (value.starts_with("gg_trg_")) {
-        if (context.triggers) for (const auto& trigger : context.triggers->triggers)
-            if (value == "gg_trg_" + Text::ObjectScriptName(trigger.name.text)) matches.push_back(trigger.name.text);
+        if (context.triggers) {
+            using Trigger::TriggerDirectoryEditor;
+            bool ambiguous = false;
+            if (const auto* found = TriggerDirectoryEditor::FindTriggerBySymbol(*context.triggers, value, &ambiguous)) {
+                matches.push_back(found->name.text);
+            } else if (ambiguous) {
+                for (const auto& trigger : context.triggers->triggers)
+                    if (trigger.type == 0 && TriggerDirectoryEditor::IsTriggerSymbolOf(value, trigger.name)) matches.push_back(trigger.name.text);
+            }
+        }
         return MatchedNames(rawValue, std::move(matches), "触发器标识没有对应定义");
     }
     if (value.starts_with("udg_") || uiType == "variable") {

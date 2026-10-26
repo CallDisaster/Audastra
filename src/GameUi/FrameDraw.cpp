@@ -145,12 +145,12 @@ private:
         }
     }
 
-    // 状态条填充：矩形与贴图横向按同一比例裁剪，贴图不被压缩。
+    // 状态条填充：矩形与贴图横向按同一比例裁剪，贴图不被压缩；按宽度显示进度的只缩矩形。
     void PushFill(const FrameNode& node) {
         const float fill = std::clamp(node.fill.value_or(1.0f), 0.0f, 1.0f);
         if (fill <= 0.0f) return;
         TextureInfo texture = *node.texture;
-        texture.texCoord[1] = texture.texCoord[0] + (texture.texCoord[1] - texture.texCoord[0]) * fill;
+        if (!node.fillStretch) texture.texCoord[1] = texture.texCoord[0] + (texture.texCoord[1] - texture.texCoord[0]) * fill;
         FrameRect rect = node.rect;
         rect.right = rect.left + rect.Width() * fill;
         PushImage(node.id, MakeImage(texture, rect));

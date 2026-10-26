@@ -186,8 +186,9 @@ void TestTree() {
     for (const auto& command : list.commands) {
         if (command.node == fill.id) fillDraw = &command;
     }
-    Require(fillDraw && Near(fillDraw->image.rect.right, 0.4f) && Near(fillDraw->image.uv[1].u, 0.5f),
-        "fill cropped with texture coordinates");
+    // 游戏里描述的进度条改填充宽度，贴图跟着压缩；预览同样只缩矩形，不裁贴图。
+    Require(fillDraw && Near(fillDraw->image.rect.right, 0.4f) && Near(fillDraw->image.uv[1].u, 1.0f),
+        "fill narrows its rect and keeps the whole texture");
     Require(fillDraw->image.path == "ReplaceableTextures\\TeamColor\\TeamColor04.blp", "fill texture");
 
     // 打断状态：贴图、进度与文字被覆盖。

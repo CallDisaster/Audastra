@@ -602,7 +602,7 @@ public:
             }
             for (const auto& trigger : c_.document->triggers) {
                 if (!Text(trigger.name.text)) return Invalid(); writer_.Number(trigger.id); writer_.Number(trigger.enabled); writer_.Number(trigger.type);
-                if (trigger.type == 0 && trigger.enabled) ++names["gg_trg_" + Trigger::TriggerDirectoryEditor::ScriptName(trigger.name.text)];
+                if (trigger.type == 0 && trigger.enabled) ++names[Trigger::TriggerDirectoryEditor::TriggerSymbol(trigger.name)];
             }
             for (const auto& variable : c_.document->variables) {
                 if (variable.isArray != 0 || variable.name.text.empty() || names[variable.name.text] != 1 || names["udg_" + variable.name.text] != 1
