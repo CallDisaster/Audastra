@@ -45,7 +45,7 @@ target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt
 target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game audastra-game-ui bcrypt dwmapi)
 # 自有界面库：调用 1.27a 自己的界面函数；作为内置 JAPI 模块 audastraui 由 bootstrap 装进每个新 Host。
 add_library(audastra-game-ui STATIC GameUi/GameUiAbi127.cpp GameUi/GameUiLibrary.cpp GameUi/GameUiModule.cpp
-    GameUi/GameInput127.cpp)
+    GameUi/GameInput127.cpp GameUi/GameUiDataPlane.cpp)
 target_link_libraries(audastra-game-ui PUBLIC audastra-japi)
 add_library(audastra-map-runtime SHARED Japi/StandaloneRuntime.cpp Japi/ProcessOwner.cpp Japi/StandaloneRuntime.def)
 target_link_libraries(audastra-map-runtime PRIVATE audastra-own-lua-game audastra-game-ui audastra-detours bcrypt)

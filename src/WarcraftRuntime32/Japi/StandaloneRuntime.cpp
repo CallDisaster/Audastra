@@ -17,10 +17,16 @@ namespace {
 using Localized = std::uint32_t(__cdecl*)(std::uintptr_t);
 using Initialize = void(__cdecl*)();
 using DestroyVm = std::uintptr_t(__thiscall*)(std::uintptr_t);
+using SaveReal = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, const float*);
+using SaveStr = std::int32_t(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::uintptr_t);
+using SaveBoolean = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::int32_t);
 // 原版同 SHA 的 stock 登记第24项：GetLocalizedString (S)S，登记调用 RVA 1e9c30。
 // 只读核验来自本项目原有 stock 登记扫描器；不是引导器实现中的地址。
 constexpr std::uintptr_t kLocalized = 0x1e31d0;
 constexpr std::uintptr_t kInitialize = 0x1e9a50, kDestroyVm = 0x7dd070;
+// 来自固定映像的 stock native 登记与对应实现；real 是指针，string 是 VM object。
+constexpr std::uintptr_t kSaveReal = 0x1f3a10, kSaveStr = 0x1f3af0, kSaveBoolean = 0x1f3570;
+constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
 
 void Trace(std::string_view message, bool fault = false) noexcept {
     try {
@@ -59,9 +65,14 @@ struct Runtime {
     Localized localized = nullptr;
     Initialize initialize = nullptr;
     DestroyVm destroyVm = nullptr;
+    SaveReal saveReal = nullptr;
+    SaveStr saveStr = nullptr;
+    SaveBoolean saveBoolean = nullptr;
+    bool dataHooks = false;
     std::recursive_mutex lock;
     std::unique_ptr<NativeSession> session;
     std::shared_ptr<StringVm> vm;
+    std::shared_ptr<GameUi::GameUiDataPlane> data;
     DWORD thread = 0;
     std::uint64_t epoch = 1;
     unsigned depth = 0;
@@ -74,12 +85,13 @@ struct Runtime {
         Trace("failure: " + std::string(message));
     }
     void Reset() {
+        if (data) data->Stop();
         if (depth) {
             if (session) session->Reset(); // 失效而不析构正在调用的 Host。
             Fail("VM reset during active JAPI call"); return;
         }
         if (session) session->Reset();
-        session.reset(); vm.reset(); thread = 0;
+        session.reset(); data.reset(); vm.reset(); thread = 0;
         if (++epoch > INT32_MAX) { Fail("epoch exhausted"); return; }
         failed = false;
         Trace("vm-reset epoch=" + std::to_string(epoch));
@@ -139,9 +151,16 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
         const std::string_view input(bytes.data(), count);
         const auto result = self->session->Dispatch(self->epoch, input, [self] {
             auto attached = AttachGameStringVm(self->image, self->epoch,
-                [](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
+                [self](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
+                    if (self->dataHooks) {
+                        const std::weak_ptr<StringVm> vm = self->vm;
+                        GameUi::GameUiDataContext context{
+                            reinterpret_cast<GameUi::FnResolveUiTable>(image.Base() + kResolveTable),
+                            [vm] { const auto current = vm.lock(); return current && current->Generation() && current->MatchesCurrentMainVm(); }};
+                        self->data = std::make_shared<GameUi::GameUiDataPlane>(std::move(context), &TraceUiFault);
+                    }
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),
-                        [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault);
+                        [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault, self->data);
                     Trace("builtin-install audastraui status=" + std::to_string(status));
                     return status;
                 });
@@ -154,6 +173,41 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
         std::lock_guard guard(self->lock);
         self->Fail("native dispatch exception"); return 0;
     }
+}
+template<class Write>
+GameUi::UiDataWrite WriteData(Runtime& self, Write&& write) {
+    // 与字符串入口共用串行/活动深度，写入中发生 VM 清理时只失效，不销毁在栈上的消费者。
+    std::lock_guard guard(self.lock);
+    const auto data = self.data;
+    if (!data) return {};
+    struct Depth { unsigned& value; ~Depth() { --value; } } depth{self.depth};
+    ++self.depth;
+    return write(*data);
+}
+void __cdecl SaveRealHook(std::int32_t table, std::int32_t parent, std::int32_t child, const float* value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveReal) return;
+    try {
+        if (WriteData(*self, [&](auto& data) { return data.SaveReal(table, parent, child, value); }).intercepted) return;
+        self->saveReal(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); }
+}
+std::int32_t __cdecl SaveStrHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::uintptr_t value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveStr) return 0;
+    try {
+        const auto result = WriteData(*self, [&](auto& data) { return data.SaveStr(table, parent, child, value); });
+        if (result.intercepted) return result.applied ? 1 : 0;
+        return self->saveStr(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); return 0; }
+}
+void __cdecl SaveBooleanHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveBoolean) return;
+    try {
+        if (WriteData(*self, [&](auto& data) { return data.SaveBoolean(table, parent, child, value); }).intercepted) return;
+        self->saveBoolean(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); }
 }
 void __cdecl InitializeHook() noexcept {
     auto* self = runtime.load();
@@ -223,6 +277,16 @@ int Install(std::string_view identity) {
     owned->localized = reinterpret_cast<Localized>(image.Base() + kLocalized);
     owned->initialize = reinterpret_cast<Initialize>(image.Base() + kInitialize);
     owned->destroyVm = reinterpret_cast<DestroyVm>(image.Base() + kDestroyVm);
+    constexpr unsigned char saveScalar[]{0x55, 0x8b, 0xec, 0x8b, 0x4d, 0x08, 0x56};
+    constexpr unsigned char saveString[]{0x55, 0x8b, 0xec, 0x8b, 0x4d, 0x08, 0x57};
+    constexpr unsigned char resolveTable[]{0x55, 0x8b, 0xec, 0x6a, 0xff};
+    owned->dataHooks = image.Matches(kSaveReal, saveScalar) && image.Matches(kSaveBoolean, saveScalar)
+        && image.Matches(kSaveStr, saveString) && image.Matches(kResolveTable, resolveTable);
+    if (owned->dataHooks) {
+        owned->saveReal = reinterpret_cast<SaveReal>(image.Base() + kSaveReal);
+        owned->saveStr = reinterpret_cast<SaveStr>(image.Base() + kSaveStr);
+        owned->saveBoolean = reinterpret_cast<SaveBoolean>(image.Base() + kSaveBoolean);
+    } else Trace("data-plane unavailable: native sites changed; preserving original natives");
     Threads threads;
     threads.handles.reserve(256);
     auto status = OpenThreads(threads);
@@ -239,6 +303,9 @@ int Install(std::string_view identity) {
     status = DetourAttach(reinterpret_cast<PVOID*>(&owned->localized), LocalizedHook);
     if (status == NO_ERROR) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->initialize), InitializeHook);
     if (status == NO_ERROR) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->destroyVm), DestroyVmHook);
+    if (status == NO_ERROR && owned->dataHooks) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->saveReal), SaveRealHook);
+    if (status == NO_ERROR && owned->dataHooks) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->saveStr), SaveStrHook);
+    if (status == NO_ERROR && owned->dataHooks) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->saveBoolean), SaveBooleanHook);
     if (status == NO_ERROR) {
         for (const auto thread : threads.handles) {
             status = DetourUpdateThread(thread);
@@ -253,7 +320,7 @@ int Install(std::string_view identity) {
     }
     owned.release(); // 钩子与会话为进程级拥有；不在 DllMain 卸载/析构。
     ownerState.store(1);
-    Trace("initialize-ready: awaiting first JASS request; builtin=audastraui");
+    Trace(std::string("initialize-ready: awaiting first JASS request; builtin=audastraui; data-plane=") + (runtime.load()->dataHooks ? "1" : "0"));
     return AJ_OK;
 }
 int Start() {

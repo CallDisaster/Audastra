@@ -13,6 +13,7 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -28,6 +29,9 @@ void Check(bool value, const char* message) {
 
 std::vector<std::string> g_log;
 UiFault g_fault{};
+GameUiDataPlane* g_nestedData = nullptr;
+FrameHandle g_nestedFrame = 0;
+bool g_nestedWrite = false;
 unsigned g_faultCount = 0;
 void ObserveFault(const UiFault& fault) noexcept { g_fault = fault; ++g_faultCount; }
 void Log(const char* format, ...) {
@@ -148,7 +152,11 @@ int __fastcall RegionColor(Address self, int, const std::uint32_t* argb) { Log("
 int __fastcall BackdropTexture(Address self, int, const char* path, int zero, int tile, Address none, int update) {
     Log("btex %s %s %d %d %s %d", Hex(self).c_str(), path, zero, tile, Hex(none).c_str(), update); return 1;
 }
-int __fastcall TextText(Address self, int, const char* text) { Log("ttext %s %s", Hex(self).c_str(), text); return 1; }
+int __fastcall TextText(Address self, int, const char* text) {
+    Log("ttext %s %s", Hex(self).c_str(), text);
+    if (g_nestedData) g_nestedWrite = g_nestedData->SaveBoolean(1234, g_nestedFrame, 5, 0).applied;
+    return 1;
+}
 int __fastcall TextColor(Address self, int, const std::uint32_t* argb) { Log("tcolor %s %08X", Hex(self).c_str(), *argb); return 1; }
 int __fastcall TextAlignH(Address self, int, int value) { Log("talignh %s %d", Hex(self).c_str(), value); return 1; }
 int __fastcall TextAlignV(Address self, int, int value) { Log("talignv %s %d", Hex(self).c_str(), value); return 1; }
@@ -580,7 +588,7 @@ void ModuleCalls() {
     Check(m.Call("module.load;s:audastraui").status == AJ_OK, "map-side load finds the active built-in module");
     Check(m.Call("module.load;s:other").status == AJ_UNSUPPORTED, "no loader: maps cannot pull other modules");
     Check(m.Call("module.info;s:audastraui").value.text
-        == "audastraui|1.1.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
+        == "audastraui|1.2.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
 
     auto r = m.Call("audastraui.ready");
     Check(r.status == AJ_OK && r.value.kind == AJ_BOOL && r.value.integer == 1, "ready with complete entries and game UI");
@@ -671,6 +679,127 @@ void ModuleUnavailable() {
     Check(wrong, "host thread only");
 }
 
+std::array<Address, 12> g_tableWords{};
+Address g_tableObject = reinterpret_cast<Address>(g_tableWords.data());
+bool g_raiseTable = false;
+unsigned g_tableResolves = 0;
+Address __fastcall ResolveTable(std::uint32_t handle) {
+    ++g_tableResolves;
+    if (g_raiseTable) RaiseException(0xE050DA7A, 0, 0, nullptr);
+    return handle == 1234 || handle == 5678 ? g_tableObject : 0;
+}
+struct VmText {
+    std::array<Address, 10> object{}, linked{};
+    explicit VmText(const char* text) {
+        object[2] = reinterpret_cast<Address>(linked.data());
+        linked[7] = reinterpret_cast<Address>(text);
+    }
+    Address Self() { return reinterpret_cast<Address>(object.data()); }
+};
+
+void DataPlane() {
+    Reset(); g_raiseTable = false; g_tableObject = reinterpret_cast<Address>(g_tableWords.data()); g_tableResolves = 0;
+    bool alive = true;
+    GameUiLibrary ui(Entries());
+    GameUiDataPlane data({&ResolveTable, [&] { return alive; }}, &ObserveFault);
+    data.Attach(ui);
+    const auto text = ui.Create("Text", 0, 0, 0).handle;
+    auto* textObject = g_frames.back().get();
+    const auto backdrop = ui.Create("Backdrop", 0, 0, 0).handle;
+    const auto bar = ui.CreateSimple("Bar", 0, 0).handle;
+    const float width = 0.25f;
+    Check(!data.SaveReal(1234, text, 2, reinterpret_cast<const float*>(1)).intercepted
+        && g_tableResolves == 0 && data.Errors() == "0|", "unbound tables do not read values or emit diagnostics");
+    Check(data.Bind(0, 1, 1) == AJ_ARGUMENT && data.Bind(9999, 1, 2) == AJ_ARGUMENT, "null and non-table handles rejected");
+    Check(data.Bind(1234, 1, 3) == AJ_OK && data.Bind(1234, 1, 4) == AJ_OK, "same valid private table binds idempotently");
+    Check(data.Bind(5678, 1, 5) == AJ_STATE && data.Bind(1234, 2, 6) == AJ_STALE, "binding cannot replace table or epoch");
+    const auto resolves = g_tableResolves;
+    Check(!data.SaveReal(5678, text, 2, reinterpret_cast<const float*>(1)).intercepted
+        && g_tableResolves == resolves && data.Errors() == "0|", "another table remains original-native work");
+    g_log.clear();
+    Check(data.SaveReal(1234, text, 2, &width).applied && ui.SetWidth(text, 0.5f) == UiError::None
+        && data.SaveBoolean(1234, text, 5, 0).applied, "typed and string paths share immediate UI operations");
+    Check(g_log.size() == 3 && g_log[0].starts_with("width ") && g_log[0].ends_with("0.250")
+        && g_log[1].ends_with("0.500") && g_log[2].starts_with("hide "), "cross-path call order preserved");
+    VmText message("生命;%"), texture("x.blp"), empty("");
+    Check(data.SaveStr(1234, text, 3, message.Self()).applied
+        && Logged("ttext " + Hex(textObject->Self()) + " 生命;%"), "VM string copied once without wire escaping");
+    Check(data.SaveStr(1234, text, 3, empty.Self()).applied, "empty text retains string-command semantics");
+    Check(data.SaveStr(1234, backdrop, 4, texture.Self()).applied, "texture uses existing API with tile false");
+    Check(data.SaveReal(1234, bar, 1, &width).applied && data.Errors() == "0|", "status bar value takes finite float pointer");
+    const auto bad = [&](UiDataWrite write) { Check(write.intercepted && !write.applied, "bad owned write consumed without applying"); };
+    g_log.clear();
+    bad(data.SaveReal(1234, text, 3, &width));
+    bad(data.SaveStr(1234, text, 2, message.Self()));
+    bad(data.SaveBoolean(1234, text, 1, 1));
+    bad(data.SaveBoolean(1234, text, 5, 2));
+    bad(data.SaveReal(1234, text, 2, nullptr));
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    bad(data.SaveReal(1234, bar, 1, &nan));
+    bad(data.SaveStr(1234, text, 3, 1));
+    VmText control("a\nb"), invalid("\xff");
+    // 长字符串对象另持有稳定存储；不使用临时 std::string 的指针。
+    const std::string longStorage(385, 'x'); VmText tooLong(longStorage.c_str());
+    bad(data.SaveStr(1234, text, 3, control.Self()));
+    bad(data.SaveStr(1234, text, 3, invalid.Self()));
+    bad(data.SaveStr(1234, text, 3, tooLong.Self()));
+    const std::string escapedStorage(129, ';'); VmText overEncoded(escapedStorage.c_str());
+    bad(data.SaveStr(1234, text, 3, overEncoded.Self()));
+    Check(data.Errors().starts_with("11|") && g_log.empty(), "malformed writes have bounded counter and no game mutation");
+    bad(data.SaveStr(1234, backdrop, 3, message.Self()));
+    Check(data.Errors() == "12|" + std::string(UiErrorText(UiError::Unsupported)), "UI failure keeps same operation reason");
+    UiDataWrite threaded;
+    std::thread other([&] { threaded = data.SaveBoolean(1234, text, 5, 1); }); other.join();
+    bad(threaded);
+    Check(data.Errors().starts_with("13|"), "wrong thread write consumed and counted");
+    g_nestedData = &data; g_nestedFrame = text; g_nestedWrite = true;
+    Check(data.SaveStr(1234, text, 3, message.Self()).applied && !g_nestedWrite, "synchronous nested write rejected without replay");
+    g_nestedData = nullptr;
+    Check(data.Errors().starts_with("14|"), "nested failure counted once");
+    ++g_tableWords[3]; bad(data.SaveBoolean(1234, text, 5, 1)); --g_tableWords[3];
+    Check(data.Errors().starts_with("15|"), "reused table address with changed weak identity cannot touch UI");
+    GameUiDataPlane stale({&ResolveTable, [&] { return alive; }}); stale.Attach(ui);
+    Check(stale.Bind(1234, 1, 1) == AJ_OK, "bind stale-session control");
+    alive = false; bad(stale.SaveBoolean(1234, text, 5, 1)); alive = true;
+    Check(!stale.Owns(1234) && stale.Bind(1234, 1, 2) == AJ_STALE && stale.Errors().starts_with("1|"),
+        "VM identity loss clears table permanently even if an address later reappears");
+    Check(ui.Destroy(text) == UiError::None, "remove frame");
+    bad(data.SaveBoolean(1234, text, 5, 1));
+    Check(data.Errors().starts_with("16|"), "destroyed frame token refused by shared resolver");
+    g_faultCount = 0; g_raiseTable = true;
+    bad(data.SaveBoolean(1234, backdrop, 5, 1)); g_raiseTable = false;
+    Check(g_faultCount == 1 && g_fault.code == 0xE050DA7A && g_fault.epoch == 1 && g_fault.request == 0,
+        "native table SEH keeps code and session, no synthetic request");
+    bad(data.SaveBoolean(1234, backdrop, 5, 1));
+    Check(g_faultCount == 1 && !ui.Faulted() && ui.SetWidth(backdrop, width) == UiError::None,
+        "data fault is not retried and drawing stays available");
+    data.Stop();
+    Check(!data.Owns(1234) && !data.SaveBoolean(1234, backdrop, 5, 1).intercepted
+        && data.Bind(1234, 1, 99) == AJ_STALE, "stopped table unbound before UI destruction");
+    GameUiDataPlane next({&ResolveTable, [&] { return alive; }}); next.Attach(ui);
+    Check(next.Errors() == "0|" && next.Bind(1234, 2, 1) == AJ_OK, "new VM binds from fresh state");
+    bad(next.SaveBoolean(1234, text, 5, 1));
+    Check(next.Errors().starts_with("1|"), "old frame token cannot be reused after rebind");
+}
+
+void DataPlaneModule() {
+    Reset(); g_raiseTable = false; g_tableObject = reinterpret_cast<Address>(g_tableWords.data());
+    ModuleHost unavailable;
+    Check(InstallGameUiModule(unavailable.host, Entries()) == AJ_OK, "drawing-only module installs");
+    Check(unavailable.Call("audastraui.bindtable;i:1234").status == AJ_UNSUPPORTED
+        && unavailable.Call("audastraui.ready").value.integer == 1, "missing data hooks preserves drawing capability");
+    ModuleHost m;
+    auto data = std::make_shared<GameUiDataPlane>(GameUiDataContext{&ResolveTable, [] { return true; }});
+    Check(InstallGameUiModule(m.host, Entries(), {}, nullptr, {}, data) == AJ_OK, "install module with native data capability");
+    Check(m.Call("audastraui.bindtable;i:1234").status == AJ_OK && m.Call("audastraui.dataerrors").value.text == "0|", "wire bind and diagnostics contracts");
+    const auto frame = m.Call("audastraui.create;s:Text;d:0;i:0;i:0").value.integer;
+    Check(data->SaveBoolean(1234, frame, 5, 1).applied, "module attaches data consumer to same UI library");
+    Check(m.Call("audastraui.bindtable;i:5678").status == AJ_STATE, "conflicting bind reports normal module status");
+    const auto failed = m.request;
+    Check(!m.Call("audastraui.error;i:" + std::to_string(failed)).value.text.empty(), "binding reason uses failed-request error channel");
+    Check(m.host.Reset(2).applied && !data->Owns(1234), "host stop clears table before module destruction");
+}
+
 // AudastraUI.j 里每个模块调用与契约一致：命令名、参数类型顺序、返回类型；契约里每条命令都被用到。
 void ScriptMatchesModule() {
     std::ifstream stream(AUDASTRA_UI_SCRIPT, std::ios::binary);
@@ -714,9 +843,9 @@ void ScriptMatchesModule() {
     }
     for (const auto& command : contract.commands) {
         // 输入是1.1的可选能力，旧版绘制包装仍可完整使用1.0命令。
-        if (command.name == "audastraui.clickunit" && !used.contains(command.name)) {
-            Check(command.arguments == "i" && command.resultKind == AJ_INT && command.domain == AJ_LOCAL_COMMAND,
-                "optional input command keeps its declared contract with an older wrapper");
+        if (command.name == "audastraui.dataerrors" && !used.contains(command.name)) {
+            Check(command.arguments.empty() && command.resultKind == AJ_TEXT && command.domain == AJ_LOCAL_COMMAND,
+                "optional diagnostics command keeps its contract with an older wrapper");
             continue;
         }
         Check(used.contains(command.name), ("module command unused by the script: " + command.name).c_str());
@@ -739,6 +868,8 @@ int main() {
         ModuleParentValidation();
         ModuleCalls();
         ModuleUnavailable();
+        DataPlane();
+        DataPlaneModule();
         ScriptMatchesModule();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
