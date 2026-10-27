@@ -132,6 +132,18 @@ void TestSoundChannels() {
     Require(channels[1].id == 2 && !channels[1].supports3d && channels[1].name == "WESTRING_CHANNEL_MISSING"
         && channels[1].nameKey == "WESTRING_CHANNEL_MISSING", "unresolved key kept as name");
     Require(War3Map::Game::ParseSoundChannels("[TileSets]\nA=1,x\n", &strings).empty(), "no section yields no channels");
+
+    // EAX 表：按表头找列，保留表中顺序；空值行与重复标签不猜测。
+    strings.AddEntry("WESTRING_EAX_A", "甲效果");
+    const std::string slk = "ID;PWXL;N;E\nC;X1;Y1;K\"EAXLabel\"\nC;X2;K\"DisplayText\"\nC;X3;K\"EffectsLevel\"\n"
+        "C;X1;Y2;K\"FirstEAX\"\nC;X2;K\"WESTRING_EAX_A\"\nC;X3;K0\n"
+        "C;X1;Y3;K\"SecondEAX\"\nC;X2;K\"WESTRING_EAX_MISSING\"\n"
+        "C;X1;Y4;K\"\"\nC;X2;K\"WESTRING_EAX_A\"\n"
+        "C;X1;Y5;K\"TwiceEAX\"\nC;X2;K\"WESTRING_EAX_A\"\nC;X1;Y6;K\"TwiceEAX\"\nC;X2;K\"WESTRING_EAX_A\"\nE\n";
+    const auto eax = War3Map::Game::ParseSoundEaxSettings(slk, &strings);
+    Require(eax.size() == 2 && eax[0].label == "FirstEAX" && eax[0].name == "甲效果"
+        && eax[1].label == "SecondEAX" && eax[1].name == "WESTRING_EAX_MISSING", "EAX rows by header with names");
+    Require(War3Map::Game::ParseSoundEaxSettings("ID;PWXL\nC;X1;Y1;K\"Other\"\nE\n", &strings).empty(), "missing headers");
 }
 
 } // namespace

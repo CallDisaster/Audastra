@@ -160,12 +160,14 @@ void SoundModuleTests::NavigationRejectsStaleRevisionAndIdenticalDefinitions() {
 
 void SoundModuleTests::ChannelChoiceUsesGameNamesAndWritesThroughField() {
     QtProject::EditorProject project;
-    // 原创通道表（游戏里来自 WorldEditData）：编号 0、5 有名称；按缓存身份注入，不挂载游戏。
+    // 原创通道/EAX 表（游戏里来自 WorldEditData 与 EAXDefs.slk）；按缓存身份注入，不挂载游戏。
     project.worldEditStrings_ = std::make_shared<const Game::WorldEditStrings>();
     project.worldEditStringsToolRoot_ = project.UiToolRoot();
     project.worldEditStringsGameRoot_ = project.war3GameRoot_;
-    project.soundChannels_ = std::make_shared<const std::vector<Game::SoundChannel>>(std::vector<Game::SoundChannel>{
-        {0, true, "KEY_GENERAL", "一般"}, {5, true, "KEY_COMBAT", "战斗"}});
+    Game::SoundTables tables;
+    tables.channels = {{0, true, "KEY_GENERAL", "一般"}, {5, true, "KEY_COMBAT", "战斗"}};
+    tables.eaxSettings = {{"DefaultEAXON", "KEY_EAX_DEFAULT", "默认的"}, {"SpellsEAX", "KEY_EAX_SPELLS", "魔法"}};
+    project.soundTables_ = std::make_shared<const Game::SoundTables>(std::move(tables));
     QVERIFY(SetDocument(project, true));
     Modules::SoundsModule module(project);
     auto* page = module.Widget();
@@ -188,6 +190,18 @@ void SoundModuleTests::ChannelChoiceUsesGameNamesAndWritesThroughField() {
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().channel, 0);
     QCOMPARE(choice->currentText(), QStringLiteral("一般"));
 
+    // EAX 同样按名称选择，写回原值。
+    auto* eax = page->findChild<QComboBox*>("soundEaxChoice");
+    auto* eaxField = page->findChild<QLineEdit*>("soundField_eaxSetting");
+    QVERIFY(eax && eaxField && eaxField->isHidden());
+    QCOMPARE(eax->currentText(), QStringLiteral("默认的"));
+    eax->setCurrentIndex(1);
+    emit eax->activated(1);
+    QCOMPARE(eaxField->text(), QStringLiteral("SpellsEAX"));
+    QVERIFY(module.ApplyPendingDraft());
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().eaxSetting, std::string("SpellsEAX"));
+    project.mapDataUndoStack_->undo();
+
     // 表外编号原样列出，不改成别的通道；“默认”按钮对应首项。
     channel->setText(QStringLiteral("9"));
     QCOMPARE(choice->currentText(), QStringLiteral("9"));
@@ -197,6 +211,7 @@ void SoundModuleTests::ChannelChoiceUsesGameNamesAndWritesThroughField() {
     module.DiscardPendingDraft();
     project.mapDataUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().channel, 5);
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().eaxSetting, std::string("DefaultEAXON"));
 }
 
 void SoundModuleTests::NavigationRejectsPerDefinitionAndAggregateByteBudgets() {

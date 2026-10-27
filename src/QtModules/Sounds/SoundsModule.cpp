@@ -336,7 +336,7 @@ SoundsModule::SoundsModule(QtProject::EditorProject& project) : project_(project
     });
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] { RebuildResources(); });
     // 游戏目录或数据根变化后通道名随字符串表重读。
-    connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &SoundsModule::SyncChannelChoice);
+    connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &SoundsModule::SyncFieldChoices);
     if (auto* stack = UndoStack())
         connect(stack, &QUndoStack::indexChanged, this, [this] { Refresh(); });
 }
@@ -403,7 +403,7 @@ void SoundsModule::BuildPage() {
     showRawValues_ = new QCheckBox(tr("显示原始字段"), definitions);
     showRawValues_->setObjectName("soundRawValues");
     heading->addWidget(showRawValues_);
-    connect(showRawValues_, &QCheckBox::toggled, this, [this] { RebuildDefinitions(); SyncChannelChoice(); });
+    connect(showRawValues_, &QCheckBox::toggled, this, [this] { RebuildDefinitions(); SyncFieldChoices(); });
     auto* duplicate = new QPushButton(tr("复制定义"), definitions);
     duplicate->setObjectName("soundDuplicateDefinition");
     heading->addWidget(duplicate);
@@ -449,23 +449,20 @@ void SoundsModule::BuildPage() {
         fields_.push_back(editor);
         if (i < 3) {
             defaultButtons_.push_back(nullptr);
-            normalForm->addRow(tr(kLabels[i]), editor);
+            if (kFields[i] == "eaxSetting") {
+                auto* row = new QWidget(inspector);
+                auto* layout = new QHBoxLayout(row);
+                layout->setContentsMargins(0, 0, 0, 0);
+                eaxChoice_ = AttachChoice(row, layout, editor, "soundEaxChoice");
+                layout->addWidget(editor, 1);
+                normalForm->addRow(tr(kLabels[i]), row);
+            } else normalForm->addRow(tr(kLabels[i]), editor);
         } else {
             auto* row = new QWidget(inspector);
             auto* layout = new QHBoxLayout(row);
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSpacing(4);
-            if (kFields[i] == "channel") {
-                // 通道按原版名称选择；隐藏的文本框仍是提交和“默认”的同一入口。
-                channelChoice_ = new QComboBox(row);
-                channelChoice_->setObjectName("soundChannelChoice");
-                layout->addWidget(channelChoice_, 1);
-                editor->hide();
-                connect(channelChoice_, &QComboBox::activated, editor, [this, editor](int index) {
-                    editor->setText(channelChoice_->itemData(index).toString());
-                });
-                connect(editor, &QLineEdit::textChanged, this, &SoundsModule::SyncChannelChoice);
-            }
+            if (kFields[i] == "channel") channelChoice_ = AttachChoice(row, layout, editor, "soundChannelChoice");
             layout->addWidget(editor, 1);
             auto* useDefault = new QToolButton(row);
             useDefault->setText(tr("默认"));
@@ -780,30 +777,49 @@ void SoundsModule::RebuildResources() {
         : tr("匹配 %1 项").arg(totalMatches));
 }
 
-void SoundsModule::SyncChannelChoice() {
-    if (!channelChoice_) return;
-    const auto at = std::find(kFields.begin(), kFields.end(), std::string_view("channel"));
-    const auto* editor = fields_[static_cast<std::size_t>(at - kFields.begin())];
-    const QSignalBlocker blocker(channelChoice_);
-    channelChoice_->clear();
-    channelChoice_->addItem(tr("默认"), tr("默认"));
+QComboBox* SoundsModule::AttachChoice(QWidget* row, QHBoxLayout* layout, QLineEdit* editor, const char* name) {
+    // 按原版名称选择；隐藏的文本框仍是草稿、提交和“默认”的同一入口。
+    auto* box = new QComboBox(row);
+    box->setObjectName(QString::fromLatin1(name));
+    layout->addWidget(box, 1);
+    editor->hide();
+    connect(box, &QComboBox::activated, editor, [box, editor](int index) { editor->setText(box->itemData(index).toString()); });
+    connect(editor, &QLineEdit::textChanged, this, &SoundsModule::SyncFieldChoices);
+    return box;
+}
+
+void SoundsModule::SyncFieldChoices() {
+    const auto tables = project_.CurrentSoundTables();
     const bool raw = showRawValues_ && showRawValues_->isChecked();
-    if (const auto channels = project_.CurrentSoundChannels()) {
-        for (const auto& channel : *channels) {
-            const QString id = QString::number(channel.id);
-            channelChoice_->addItem(raw ? id : QString::fromStdString(channel.name), id);
-            channelChoice_->setItemData(channelChoice_->count() - 1, id, Qt::ToolTipRole);
+    const auto fill = [&](QComboBox* box, std::string_view field, const std::vector<std::pair<QString, QString>>& choices,
+        bool withDefault) {
+        if (!box) return;
+        const auto* editor = fields_[static_cast<std::size_t>(std::find(kFields.begin(), kFields.end(), field) - kFields.begin())];
+        const QSignalBlocker blocker(box);
+        box->clear();
+        if (withDefault) box->addItem(tr("默认"), tr("默认"));
+        for (const auto& [value, name] : choices) {
+            box->addItem(raw ? value : name, value);
+            box->setItemData(box->count() - 1, value, Qt::ToolTipRole);
         }
+        const QString text = editor->text();
+        int index = withDefault && IsDefaultInput(text.trimmed().toStdString()) ? 0 : box->findData(withDefault ? text.trimmed() : text);
+        if (index < 0 && !text.isEmpty()) {
+            // 原版表里没有的值原样列出，不改成别的选项。
+            box->addItem(text, text);
+            index = box->count() - 1;
+        }
+        box->setCurrentIndex(index);
+        box->setEnabled(editor->isEnabled() && !editor->isReadOnly());
+    };
+    std::vector<std::pair<QString, QString>> channels, eax;
+    if (tables) {
+        for (const auto& channel : tables->channels) channels.emplace_back(QString::number(channel.id), QString::fromStdString(channel.name));
+        for (const auto& setting : tables->eaxSettings)
+            eax.emplace_back(QString::fromStdString(setting.label), QString::fromStdString(setting.name));
     }
-    const QString text = editor->text().trimmed();
-    int index = IsDefaultInput(text.toStdString()) ? 0 : channelChoice_->findData(text);
-    if (index < 0 && !text.isEmpty()) {
-        // 原版表里没有的编号原样列出，不改成别的通道。
-        channelChoice_->addItem(text, text);
-        index = channelChoice_->count() - 1;
-    }
-    channelChoice_->setCurrentIndex(index);
-    channelChoice_->setEnabled(editor->isEnabled() && !editor->isReadOnly());
+    fill(channelChoice_, "channel", channels, true);
+    fill(eaxChoice_, "eaxSetting", eax, false);
 }
 
 void SoundsModule::LoadInspector() {
@@ -855,7 +871,7 @@ void SoundsModule::LoadInspector() {
     }
     spatial_->setEnabled(enabled && sounds->entries[static_cast<std::size_t>(selectedDefinition_)].Is3D());
     apply_->setEnabled(false);
-    SyncChannelChoice();
+    SyncFieldChoices();
     loading_ = false;
 }
 

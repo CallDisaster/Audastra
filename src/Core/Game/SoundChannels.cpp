@@ -1,10 +1,12 @@
 #include "War3MapCore/Game/SoundChannels.h"
 
 #include "War3MapCore/Game/WorldEditStrings.h"
+#include "War3MapCore/Text/SlkCells.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
 #include <charconv>
+#include <map>
 
 namespace War3Map::Game {
 
@@ -37,6 +39,37 @@ std::vector<SoundChannel> ParseSoundChannels(std::string_view worldEditData, con
         if (!duplicated) unique.push_back(std::move(channels[i]));
     }
     return unique;
+}
+
+std::vector<SoundEaxSetting> ParseSoundEaxSettings(std::string_view eaxDefs, const WorldEditStrings* strings) {
+    if (eaxDefs.starts_with("\xEF\xBB\xBF")) eaxDefs.remove_prefix(3);
+    std::vector<SoundEaxSetting> settings;
+    const auto cells = Text::ParseSlkCells(eaxDefs, Text::SlkCellMode::CatalogStrict);
+    if (!cells.Succeeded() || !cells.value) return settings;
+    const auto headers = cells.value->find(1);
+    if (headers == cells.value->end()) return settings;
+    int labelColumn = 0, textColumn = 0;
+    for (const auto& [column, value] : headers->second) {
+        if (value == "EAXLabel") labelColumn = column;
+        else if (value == "DisplayText") textColumn = column;
+    }
+    if (labelColumn == 0 || textColumn == 0) return settings;
+    std::map<std::string, int> counts;
+    for (const auto& [rowIndex, row] : *cells.value) {
+        if (rowIndex == 1) continue;
+        const auto label = row.find(labelColumn);
+        const auto text = row.find(textColumn);
+        if (label == row.end() || text == row.end()) continue;
+        SoundEaxSetting setting;
+        setting.label = std::string(Text::TrimCWhitespace(label->second));
+        setting.nameKey = std::string(Text::TrimCWhitespace(text->second));
+        if (setting.label.empty() || setting.nameKey.empty()) continue;
+        setting.name = strings ? strings->Resolve(setting.nameKey) : setting.nameKey;
+        ++counts[setting.label];
+        settings.push_back(std::move(setting));
+    }
+    std::erase_if(settings, [&](const auto& setting) { return counts[setting.label] > 1; });
+    return settings;
 }
 
 } // namespace War3Map::Game

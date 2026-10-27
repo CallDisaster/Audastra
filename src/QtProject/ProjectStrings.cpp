@@ -30,23 +30,26 @@ std::shared_ptr<const Game::WorldEditStrings> EditorProject::CurrentWorldEditStr
     }
     sources.game = game ? &*game : nullptr;
     worldEditStrings_ = std::make_shared<const Game::WorldEditStrings>(Game::LoadWorldEditStrings(sources));
-    // 声音通道名随同一次游戏挂载读取，名称用刚载入的字符串表；读不到时为空表，界面只显示编号。
-    std::vector<Game::SoundChannel> channels;
+    // 声音通道与 EAX 名称随同一次游戏挂载读取，名称用刚载入的字符串表；读不到时为空表，界面只显示原值。
+    Game::SoundTables tables;
     if (game) {
-        const auto data = game->ReadFile("UI\\WorldEditData.txt");
-        if (data.Succeeded() && data.value && data.value->size() <= 2u * 1024u * 1024u)
-            channels = Game::ParseSoundChannels(std::string_view(reinterpret_cast<const char*>(data.value->data()), data.value->size()),
-                worldEditStrings_.get());
+        const auto text = [&](const char* path) -> std::optional<std::string> {
+            const auto data = game->ReadFile(path);
+            if (!data.Succeeded() || !data.value || data.value->size() > 2u * 1024u * 1024u) return std::nullopt;
+            return std::string(reinterpret_cast<const char*>(data.value->data()), data.value->size());
+        };
+        if (const auto data = text("UI\\WorldEditData.txt")) tables.channels = Game::ParseSoundChannels(*data, worldEditStrings_.get());
+        if (const auto data = text("UI\\SoundInfo\\EAXDefs.slk")) tables.eaxSettings = Game::ParseSoundEaxSettings(*data, worldEditStrings_.get());
     }
-    soundChannels_ = std::make_shared<const std::vector<Game::SoundChannel>>(std::move(channels));
+    soundTables_ = std::make_shared<const Game::SoundTables>(std::move(tables));
     worldEditStringsToolRoot_ = toolRoot;
     worldEditStringsGameRoot_ = war3GameRoot_;
     return worldEditStrings_;
 }
 
-std::shared_ptr<const std::vector<Game::SoundChannel>> EditorProject::CurrentSoundChannels() {
+std::shared_ptr<const Game::SoundTables> EditorProject::CurrentSoundTables() {
     CurrentWorldEditStrings();
-    return soundChannels_;
+    return soundTables_;
 }
 
 void EditorProject::ApplyWorldEditStrings(Trigger::UiCatalog& catalog) {

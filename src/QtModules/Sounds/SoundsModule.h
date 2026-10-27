@@ -22,6 +22,7 @@ class QBuffer;
 class QCheckBox;
 class QComboBox;
 class QGroupBox;
+class QHBoxLayout;
 class QLabel;
 class QLineEdit;
 class QMediaPlayer;
@@ -80,8 +81,9 @@ private:
     [[nodiscard]] std::vector<ResourceRow> ResourceCatalogRows() const;
     void RebuildDefinitions();
     void LoadInspector();
-    // 通道下拉框跟随隐藏的通道文本框（提交与“默认”仍走该文本框）。
-    void SyncChannelChoice();
+    // 通道与 EAX 下拉框跟随隐藏的文本框（草稿、提交与“默认”仍走该文本框）。
+    QComboBox* AttachChoice(QWidget* row, QHBoxLayout* layout, QLineEdit* editor, const char* name);
+    void SyncFieldChoices();
     void SetDraftChanged();
     [[nodiscard]] Status ApplyInspector();
     [[nodiscard]] Status CommitFields(std::size_t row,
@@ -111,6 +113,7 @@ private:
     std::optional<MapData::SoundsDocument> visibleSounds_;
     std::vector<QLineEdit*> fields_;
     QComboBox* channelChoice_ = nullptr;
+    QComboBox* eaxChoice_ = nullptr;
     std::vector<QToolButton*> defaultButtons_;
     std::vector<QCheckBox*> flags_;
     SoundPreviewPlayer* previewPlayer_ = nullptr;
