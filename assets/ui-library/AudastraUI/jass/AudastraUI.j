@@ -267,6 +267,10 @@ library AudastraUI requires AudastraJapi
         set eventCount = eventCount + 1
     endfunction
 
+    // 界面模拟计时器到期：只在编辑器的界面模拟里发生，编辑器执行到这里时记下订阅；游戏里什么都不做。
+    function AudastraUIRegisterSimulationTimer takes trigger whichTrigger, string description, string timerId returns nothing
+    endfunction
+
     // 参数先拷到局部：触发器动作里删框架或改监听会重排监听表。
     private function Fire takes integer frame, integer kind, string key, integer index returns nothing
         local integer i = 0

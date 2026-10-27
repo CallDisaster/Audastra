@@ -5,3 +5,13 @@ comment = "事件名写“界面编号.事件编号”，由“监听界面事�
 category = TC_AudastraUI
 [[.args]]
 type = string
+
+[AudastraUIRegisterSimulationTimer]
+title = "界面模拟计时器到期"
+description = "界面 ${界面} 的模拟计时器 ${计时器} 到期"
+comment = "只在编辑器的界面模拟里发生，游戏里不会发生。界面和计时器写编号。"
+category = TC_AudastraUI
+[[.args]]
+type = string
+[[.args]]
+type = string
