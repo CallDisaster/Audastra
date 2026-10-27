@@ -62,7 +62,6 @@ private:
     [[nodiscard]] std::string Var(std::string_view name) const { return source_.Var(name); }
     [[nodiscard]] std::string V(std::string_view name) const { return source_.V(name); }
     // 该玩家的目标。
-    [[nodiscard]] std::string Mine(std::string_view player) const { return source_.Mine(player); }
     [[nodiscard]] std::string Name(std::string_view role, std::string_view roleKey) const {
         return TargetTriggerName(o_.name, o_.key, role, roleKey);
     }
@@ -113,34 +112,37 @@ private:
     void Variables() {
         source_.Variables(text_);
         text_.Variable(Var("P"), "integer", std::nullopt, "0");
-        text_.Variable(Var("Self"), "unit");
+        text_.Variable(Var("Me"), "integer", std::nullopt, "0");
         if (!b_.select.empty()) text_.Variable(Var("ClickResult"), "integer", std::nullopt, "0");
         display_->Variables(text_);
     }
 
+    // 本机玩家的当前单位。本机部分只记玩家编号（整数），不把单位赋给变量，各玩家的句柄引用计数保持一致。
+    [[nodiscard]] std::string Self() const { return source_.At(V("Me")); }
+
     Lines Refresh() const {
         Lines out = source_.Cleanup(V("P"));
         out.push_back(Call("CommentString", {Quote("以下只改本机界面")}));
-        out.push_back(Set(V("Self"), Mine("GetLocalPlayer()")));
+        out.push_back(Set(V("Me"), Call("GetConvertedPlayerId", {"GetLocalPlayer()"})));
         const auto at = [&](const std::string& id) { return Value(id); };
         Lines shown{Set(at(b_.shown), "true")};
-        Append(shown, display_->Fill(V("Self"), at));
+        Append(shown, display_->Fill(Self(), at));
         if (!b_.level.empty()) {
-            Append(shown, If({IsTrue(Call("IsUnitType", {V("Self"), "UnitTypeHero"}))}, {Set(at(b_.level), Call("GetHeroLevel", {V("Self")}))},
-                {Set(at(b_.level), Call("GetUnitLevel", {V("Self")}))}));
+            Append(shown, If({IsTrue(Call("IsUnitType", {Self(), "UnitTypeHero"}))}, {Set(at(b_.level), Call("GetHeroLevel", {Self()}))},
+                {Set(at(b_.level), Call("GetUnitLevel", {Self()}))}));
         }
-        Append(out, If({Call("OperatorCompareUnit", {V("Self"), "OperatorNotEqualENE", "UnitNull"})}, shown, {Set(at(b_.shown), "false")}));
+        Append(out, If({Call("OperatorCompareUnit", {Self(), "OperatorNotEqualENE", "UnitNull"})}, shown, {Set(at(b_.shown), "false")}));
         out.push_back(Call("ConditionalTriggerExecute", {TriggerRef(UiTriggerName(d(), "更新", "Update"))}));
         return out;
     }
 
     // 本机举着单位目标技能时把点击交给游戏作为目标（结果大于 0），否则（含运行库不支持）只改本机的选择。
     Lines Select() const {
-        Lines click{Set(V("ClickResult"), Call("AudastraUIClickUnit", {V("Self")}))};
-        Append(click, If({CompareInt(V("ClickResult"), "OperatorLessEq", "0")}, {Call("SelectUnitForPlayerSingle", {V("Self"), "GetLocalPlayer()"})}));
+        Lines click{Set(V("ClickResult"), Call("AudastraUIClickUnit", {Self()}))};
+        Append(click, If({CompareInt(V("ClickResult"), "OperatorLessEq", "0")}, {Call("SelectUnitForPlayerSingle", {Self(), "GetLocalPlayer()"})}));
         Lines out{Call("CommentString", {Quote("界面点击只在本机发生：举着单位目标技能时作为目标交给游戏，否则只改本机的选择")}),
-            Set(V("Self"), Mine("GetLocalPlayer()"))};
-        Append(out, If({Call("OperatorCompareUnit", {V("Self"), "OperatorNotEqualENE", "UnitNull"})}, click));
+            Set(V("Me"), Call("GetConvertedPlayerId", {"GetLocalPlayer()"}))};
+        Append(out, If({Call("OperatorCompareUnit", {Self(), "OperatorNotEqualENE", "UnitNull"})}, click));
         return out;
     }
 

@@ -101,19 +101,20 @@ void TestGeneratedText() {
              "TriggerRegisterPlayerSelectionEventBJ(Player00, SelDeselOptionDesel)",
              "SetVariable(udg_AUF_Target_Unit[GetConvertedPlayerId(GetTriggerPlayer())], GetTriggerUnit())",
              "OperatorCompareUnit(udg_AUF_Target_Unit[GetConvertedPlayerId(GetTriggerPlayer())], OperatorEqualENE, GetTriggerUnit())",
-             "SetVariable(udg_AUF_Target_Self, udg_AUF_Target_Unit[GetConvertedPlayerId(GetLocalPlayer())])",
+             "SetVariable(udg_AUF_Target_Me, GetConvertedPlayerId(GetLocalPlayer()))",
              "SetVariable(udg_AUIV_target_shown, true)", "SetVariable(udg_AUIV_target_shown, false)",
-             "SetVariable(udg_AUIV_target_hp_now, GetUnitStateSwap(UnitStateLife, udg_AUF_Target_Self))",
-             "SetVariable(udg_AUIV_target_level, GetHeroLevel(udg_AUF_Target_Self))", "SetVariable(udg_AUIV_target_level, GetUnitLevel(udg_AUF_Target_Self))",
-             "GetHeroProperName(udg_AUF_Target_Self)", "UnitHasBuffBJ(udg_AUF_Target_Self, udg_AUF_Target_BuffCode[udg_AUF_Target_BuffI])",
+             "SetVariable(udg_AUIV_target_hp_now, GetUnitStateSwap(UnitStateLife, udg_AUF_Target_Unit[udg_AUF_Target_Me]))",
+             "SetVariable(udg_AUIV_target_level, GetHeroLevel(udg_AUF_Target_Unit[udg_AUF_Target_Me]))", "SetVariable(udg_AUIV_target_level, GetUnitLevel(udg_AUF_Target_Unit[udg_AUF_Target_Me]))",
+             "GetHeroProperName(udg_AUF_Target_Unit[udg_AUF_Target_Me])", "UnitHasBuffBJ(udg_AUF_Target_Unit[udg_AUF_Target_Me], udg_AUF_Target_BuffCode[udg_AUF_Target_BuffI])",
              "SetVariable(udg_AUIV_target_buff6, udg_AUF_Target_BuffHit[6])",
              "SetVariable(udg_AUIV_target_portrait, udg_AUF_Target_TypeIcon[udg_AUF_Target_TypeI])",
-             "SetVariable(udg_AUF_Target_ClickResult, AudastraUIClickUnit(udg_AUF_Target_Self))",
-             "SelectUnitForPlayerSingle(udg_AUF_Target_Self, GetLocalPlayer())", "AudastraUITriggerRegisterEvent(\"target.select\")",
+             "SetVariable(udg_AUF_Target_ClickResult, AudastraUIClickUnit(udg_AUF_Target_Unit[udg_AUF_Target_Me]))",
+             "SelectUnitForPlayerSingle(udg_AUF_Target_Unit[udg_AUF_Target_Me], GetLocalPlayer())", "AudastraUITriggerRegisterEvent(\"target.select\")",
              "ConditionalTriggerExecute(`目标 更新 target_Update`)"}) {
         Require(Contains(text, part), std::string("生成文本缺少：") + part + "\n" + text);
     }
     Require(!Contains(text, "Player12"), "默认只记 12 个玩家");
+    Require(!Contains(text, "_Self"), "本机部分不把单位赋给变量");
 
     // 焦点：设定触发器读单位与玩家变量；两份系统的键不同，变量与触发器互不相同。
     TargetSystemOptions focus = FullBinding(d);
@@ -169,9 +170,9 @@ void TestAppliedAndCompiled() {
 
     const std::string script = f.Script();
     for (const char* part : {"_Target_Pick, Player(0), true)", "_Target_Unpick, Player(11), false)",
-             "set udg_AUF_Target_Self = udg_AUF_Target_Unit[GetConvertedPlayerId(GetLocalPlayer())]",
+             "set udg_AUF_Target_Me = GetConvertedPlayerId(GetLocalPlayer())",
              "set udg_AUF_Focus_Unit[GetConvertedPlayerId(udg_AUF_Focus_Player)] = udg_AUF_Focus_Member",
-             "set udg_AUF_Target_ClickResult = AudastraUIClickUnit(udg_AUF_Target_Self)"}) {
+             "set udg_AUF_Target_ClickResult = AudastraUIClickUnit(udg_AUF_Target_Unit[udg_AUF_Target_Me])"}) {
         Require(Contains(script, part), std::string("脚本缺少：") + part + "\n" + script);
     }
     // 本机有游戏脚本时用真实的 common.j 与 Blizzard.j 检查整图脚本（界面触发器与目标、焦点一起）。
