@@ -6,6 +6,7 @@
 #include "War3MapCore/GameUi/CastTriggers.h"
 #include "War3MapCore/GameUi/PartyTriggers.h"
 #include "War3MapCore/GameUi/TalentTriggers.h"
+#include "War3MapCore/GameUi/TargetTriggers.h"
 #include "War3MapCore/GameUi/UiSkin.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -14,7 +15,7 @@
 #include <algorithm>
 #include <cstring>
 
-// 界面描述、读条系统与团队框架 → 自然 T：生成文本由 Core（UiTriggers、CastTriggers、PartyTriggers）给出，这里补上工作区里才有的输入
+// 界面描述、读条系统、团队框架与目标框架 → 自然 T：生成文本由 Core（UiTriggers、CastTriggers、PartyTriggers、TargetTriggers）给出，这里补上工作区里才有的输入
 // （界面目录、皮肤字体、地图界面目录、已有的触发器），经共用的触发器事务写进各自的类别，界面触发器的基础模板放进地图。
 namespace War3Map::Modules {
 namespace {
@@ -39,6 +40,29 @@ bool UsesMapTemplate(const std::vector<UiFrame>& frames, const FrameLibrary& lib
         }
         return UsesMapTemplate(frame.children, library);
     });
+}
+
+bool HasTrigger(const std::vector<Trigger::TriggerRecord>& triggers, const std::string& name) {
+    return std::any_of(triggers.begin(), triggers.end(), [&](const Trigger::TriggerRecord& row) { return row.name.text == name; });
+}
+
+// 登记的增减益与头像的图标取自物编（地图覆盖与原版目录）；取不到时返回原因。
+std::optional<QString> ResolveBuffIcons(const QtProject::EditorProject& project, const QStringList& codes, std::vector<UnitBuff>& out) {
+    for (const auto& code : codes) {
+        const auto icon = ResolveProjectObjectPresentation(project, ObjectData::ObjectKey{ObjectData::ObjectType::Buff, code.toStdString()}).iconPath;
+        if (icon.isEmpty()) return GameUiModule::tr("增减益 %1 在物编里没有图标").arg(code);
+        out.push_back(UnitBuff{code.toStdString(), icon.toStdString()});
+    }
+    return std::nullopt;
+}
+
+std::optional<QString> ResolvePortraitIcons(const QtProject::EditorProject& project, const QStringList& codes, std::vector<UnitPortrait>& out) {
+    for (const auto& code : codes) {
+        const auto icon = ResolveProjectObjectPresentation(project, ObjectData::ObjectKey{ObjectData::ObjectType::Unit, code.toStdString()}).iconPath;
+        if (icon.isEmpty()) return GameUiModule::tr("单位 %1 在物编里没有图标").arg(code);
+        out.push_back(UnitPortrait{code.toStdString(), icon.toStdString()});
+    }
+    return std::nullopt;
 }
 
 std::shared_ptr<const std::vector<std::byte>> Bytes(const std::string& text) {
@@ -195,28 +219,15 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
     options.nameSource = request.nameSource;
     options.farRange = request.farRange;
     options.autoHeroes = request.autoHeroes;
-    const bool kept = !request.buffIcons.isEmpty() && std::any_of(triggers.begin(), triggers.end(), [&](const Trigger::TriggerRecord& row) {
-        return row.name.text == PartyTriggerName(options.name, "登记", "Register");
-    });
+    const bool kept = !request.buffIcons.isEmpty() && HasTrigger(triggers, PartyTriggerName(options.name, "登记", "Register"));
     options.includeRegistration = !kept;
-    // 登记的图标取自物编（地图覆盖与原版目录）。
     if (!kept) {
-        for (const auto& code : request.buffs) {
-            const auto icon = ResolveProjectObjectPresentation(project_, ObjectData::ObjectKey{ObjectData::ObjectType::Buff, code.toStdString()}).iconPath;
-            if (icon.isEmpty()) return fail(tr("增减益 %1 在物编里没有图标").arg(code));
-            options.buffs.push_back(PartyBuff{code.toStdString(), icon.toStdString()});
-        }
+        if (const auto problem = ResolveBuffIcons(project_, request.buffs, options.buffs)) return fail(*problem);
     }
-    const bool portraitKept = !request.portrait.isEmpty() && std::any_of(triggers.begin(), triggers.end(), [&](const Trigger::TriggerRecord& row) {
-        return row.name.text == PartyTriggerName(options.name, "头像", "Portrait");
-    });
+    const bool portraitKept = !request.portrait.isEmpty() && HasTrigger(triggers, PartyTriggerName(options.name, "头像", "Portrait"));
     options.includePortraitRegistration = !portraitKept;
     if (!portraitKept) {
-        for (const auto& code : request.portraits) {
-            const auto icon = ResolveProjectObjectPresentation(project_, ObjectData::ObjectKey{ObjectData::ObjectType::Unit, code.toStdString()}).iconPath;
-            if (icon.isEmpty()) return fail(tr("单位 %1 在物编里没有图标").arg(code));
-            options.portraits.push_back(PartyPortrait{code.toStdString(), icon.toStdString()});
-        }
+        if (const auto problem = ResolvePortraitIcons(project_, request.portraits, options.portraits)) return fail(*problem);
     }
     auto plan = GameUi::GeneratePartySystem(options);
     if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
@@ -235,6 +246,74 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kPartyTriggerCategory), plan.value->featureText, {}, std::nullopt});
     const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("生成团队框架"));
+    if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
+    return result;
+}
+
+std::optional<GameUiModule::TargetSystemGeneration> GameUiModule::GenerateTargetSystem(const TargetSystemRequest& request, bool preview,
+    QString* error) {
+    const auto fail = [error](const QString& message) -> std::optional<TargetSystemGeneration> {
+        if (error) *error = message;
+        return std::nullopt;
+    };
+    if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
+    if (!project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Call, "GetLocalPlayer"))
+        return fail(tr("触发器函数库里没有 YDWE 的“本地玩家”，目标框架的本机界面要用它"));
+    if (!request.select.isEmpty() && !project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Call, "AudastraUIClickUnit"))
+        return fail(tr("函数库里的 AudastraUI 是旧版，缺少“点击单位”，目标框架的点选要用它；在函数库里重新安装 AudastraUI"));
+    if (!definitions_) return fail(tr("界面定义仍在读取"));
+    const UiDescription* description = Description(request.frame);
+    if (!description) return fail(tr("地图里没有界面描述 %1").arg(request.frame));
+    const auto& triggers = project_.triggerDocument_->triggers;
+    if (!HasTrigger(triggers, UiTriggerName(*description, "更新", "Update"))) return fail(tr("先为界面 %1 生成触发器").arg(request.frame));
+
+    TargetSystemOptions options;
+    options.name = request.systemName.toStdString();
+    options.key = request.key.toStdString();
+    options.source = request.source;
+    options.nameSource = request.nameSource;
+    options.players = request.players < 0 ? 0u : static_cast<std::uint32_t>(request.players);
+    TargetFrameBinding& b = options.frame;
+    b.description = description;
+    b.shown = request.shown.toStdString();
+    b.health = request.health.toStdString();
+    b.mana = request.mana.toStdString();
+    b.healthNow = request.healthNow.toStdString();
+    b.healthMax = request.healthMax.toStdString();
+    b.manaNow = request.manaNow.toStdString();
+    b.manaMax = request.manaMax.toStdString();
+    b.name = request.name.toStdString();
+    b.level = request.level.toStdString();
+    b.dead = request.dead.toStdString();
+    b.portrait = request.portrait.toStdString();
+    b.select = request.select.toStdString();
+    for (const auto& icon : request.buffIcons) b.buffIcons.push_back(icon.toStdString());
+    const bool kept = !request.buffIcons.isEmpty() && HasTrigger(triggers, TargetTriggerName(options.name, options.key, "登记", "Register"));
+    options.includeRegistration = !kept;
+    if (!kept) {
+        if (const auto problem = ResolveBuffIcons(project_, request.buffs, options.buffs)) return fail(*problem);
+    }
+    const bool portraitKept = !request.portrait.isEmpty() && HasTrigger(triggers, TargetTriggerName(options.name, options.key, "头像", "Portrait"));
+    options.includePortraitRegistration = !portraitKept;
+    if (!portraitKept) {
+        if (const auto problem = ResolvePortraitIcons(project_, request.portraits, options.portraits)) return fail(*problem);
+    }
+    auto plan = GameUi::GenerateTargetSystem(options);
+    if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
+
+    TargetSystemGeneration result;
+    result.featureText = Text(plan.value->featureText);
+    for (const auto& name : plan.value->triggers) result.triggers.append(Text(name));
+    for (const auto& name : plan.value->variables) result.variables.append(Text(name));
+    result.setTrigger = Text(plan.value->setTrigger);
+    result.memberVariable = Text(plan.value->memberVariable);
+    result.playerVariable = Text(plan.value->playerVariable);
+    result.registrationKept = kept;
+    result.portraitKept = portraitKept;
+    if (preview) return result;
+    std::vector<Trigger::GraphEditOperation> operations;
+    operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kTargetTriggerCategory), plan.value->featureText, {}, std::nullopt});
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("生成目标框架"));
     if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
     return result;
 }

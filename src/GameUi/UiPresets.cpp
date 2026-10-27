@@ -180,6 +180,79 @@ UiDescription Party() {
     return d;
 }
 
+// 目标框架：屏幕上方偏右（让开昼夜钟与资源栏）一个框，左边头像，右边名字与等级、血条（绿，条上右侧是“当前/最大”生命）、
+// 蓝条（蓝）；死亡时血条上显示“死亡”、不显示生命数字。框下方一排增减益图标，图标数值为空时不显示。点框架发 select 事件。
+UiDescription Target() {
+    using namespace TargetPreset;
+    const auto id = [](std::string_view value) { return std::string(value); };
+    UiDescription d;
+    d.values = {Value(id(kShown), "显示", UiValueType::Boolean, "false"), Value(id(kHealth), "生命", UiValueType::Real, "1"),
+        Value(id(kMana), "法力", UiValueType::Real, "1"), Value(id(kHealthNow), "当前生命", UiValueType::Real, "0"),
+        Value(id(kHealthMax), "最大生命", UiValueType::Real, "0"), Value(id(kName), "名字", UiValueType::String, ""),
+        Value(id(kLevel), "等级", UiValueType::Integer, "0"), Value(id(kDead), "死亡", UiValueType::Boolean, "false"),
+        Value(id(kPortrait), "头像", UiValueType::String, "")};
+    for (std::size_t i = 0; i < kBuffs.size(); ++i) {
+        d.values.push_back(Value(id(kBuffs[i]), "增减益 " + std::to_string(i + 1), UiValueType::String, ""));
+    }
+    UiFrame panel;
+    panel.id = "panel";
+    panel.label = "目标";
+    panel.type = UiFrameType::Backdrop;
+    panel.texture = std::string(kTooltip);
+    panel.width = 0.2;
+    panel.height = 0.05;
+    panel.anchors = {Anchor(FramePoint::Top, UiAnchorTarget::Screen, std::nullopt, 0.17, -0.035)};
+    panel.visible.binding = Bind(id(kShown));
+    UiFrame portrait;
+    portrait.id = "portrait";
+    portrait.label = "头像";
+    portrait.type = UiFrameType::Backdrop;
+    portrait.texture = "{" + id(kPortrait) + "}";
+    portrait.width = 0.042;
+    portrait.height = 0.042;
+    portrait.anchors = {Anchor(FramePoint::Left, UiAnchorTarget::Parent, std::nullopt, 0.004)};
+    portrait.visible.binding = Bind(id(kPortrait));
+    UiFrame hp = Bar("hp", "生命", 6, id(kHealth), false, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.05, -0.018), 0.145, 0.014);
+    UiFrame dead = Text("dead", "死亡", "死亡", JustifyH::Center, Anchor(FramePoint::Center), 0.145, 0.014);
+    dead.visible.binding = Bind(id(kDead));
+    UiFrame life = Text("life", "生命数字", "{" + id(kHealthNow) + ":0}/{" + id(kHealthMax) + ":0}", JustifyH::Right,
+        Anchor(FramePoint::Right, UiAnchorTarget::Parent, std::nullopt, -0.003), 0.13, 0.014);
+    life.visible.binding = Bind(id(kDead));
+    life.visible.binding->invert = true;
+    hp.children = {std::move(dead), std::move(life)};
+    panel.children = {std::move(portrait),
+        Text("name", "名字", "{" + id(kName) + "}", JustifyH::Left, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.05, -0.004),
+            0.1, 0.012),
+        Text("level", "等级", "{" + id(kLevel) + "}", JustifyH::Right, Anchor(FramePoint::TopRight, UiAnchorTarget::Parent, std::nullopt, -0.005, -0.004),
+            0.04, 0.012),
+        std::move(hp),
+        Bar("mp", "法力", 1, id(kMana), false, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.05, -0.035), 0.145, 0.008)};
+    // 点击事件只能挂在按钮上：一个无贴图的按钮盖满整个框。
+    UiFrame pick;
+    pick.id = "pick";
+    pick.label = "点选";
+    pick.type = UiFrameType::Button;
+    pick.anchors = {Anchor(FramePoint::TopLeft), Anchor(FramePoint::BottomRight)};
+    panel.children.push_back(std::move(pick));
+    for (std::size_t i = 0; i < kBuffs.size(); ++i) {
+        UiFrame icon;
+        icon.id = "icon" + std::to_string(i + 1);
+        icon.label = "增减益 " + std::to_string(i + 1);
+        icon.type = UiFrameType::Backdrop;
+        icon.texture = "{" + id(kBuffs[i]) + "}";
+        icon.width = 0.018;
+        icon.height = 0.018;
+        icon.anchors = {i == 0 ? Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, FramePoint::BottomLeft, 0.0, -0.002)
+                               : Anchor(FramePoint::Left, UiAnchorTarget::Frame, FramePoint::Right, 0.002)};
+        if (i > 0) icon.anchors.front().targetId = "icon" + std::to_string(i);
+        icon.visible.binding = Bind(id(kBuffs[i]));
+        panel.children.push_back(std::move(icon));
+    }
+    d.frames = {std::move(panel)};
+    d.events = {UiEvent{id(kSelect), "pick", UiEventKind::Click}};
+    return d;
+}
+
 // 统一天赋树：技能栏上方右侧的入口按钮（有可选天赋时带个数），屏幕中间偏左的面板。
 // 面板每层一行：左侧解锁等级，右侧每列一个选项（图标 + 名字，已选时图标外有青色描边）；选项名字为空时整格不显示。
 // 鼠标移到选项上，面板右侧显示说明框。
@@ -310,7 +383,7 @@ UiDescription Talents() {
 } // namespace
 
 const std::vector<UiPreset>& UiPresets() {
-    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}, {"talents", "天赋树"}};
+    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}, {"target", "目标框架"}, {"talents", "天赋树"}};
     return presets;
 }
 
@@ -323,6 +396,9 @@ Result<UiDescription> NewUiDescriptionFromPreset(std::string_view preset, std::s
     } else if (preset == "party") {
         description = Party();
         name = "团队框架";
+    } else if (preset == "target") {
+        description = Target();
+        name = "目标框架";
     } else if (preset == "talents") {
         description = Talents();
         name = "天赋树";

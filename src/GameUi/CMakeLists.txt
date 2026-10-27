@@ -11,6 +11,7 @@ add_library(War3MapGameUi STATIC
     GameCodeLayout.cpp
     MapUiFiles.cpp
     PartyTriggers.cpp
+    TargetTriggers.cpp
     ScriptFrames.cpp
     ScriptFrameTree.cpp
     ScriptObjectCalls.cpp

@@ -2,6 +2,7 @@
 
 #include "FeatureTextWriter.h"
 #include "UiBindingCheck.h"
+#include "UnitDisplayLines.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <cmath>
@@ -22,8 +23,10 @@ std::string At(std::string_view name, std::string_view index) { return V(name) +
 std::string SameUnit(std::string_view a, std::string_view b) {
     return Call("OperatorCompareUnit", {std::string(a), "OperatorEqualENE", std::string(b)});
 }
-std::string State(std::string_view state, std::string_view unit) {
-    return Call("GetUnitStateSwap", {std::string(state), std::string(unit)});
+std::string State(std::string_view state, std::string_view unit) { return UnitDisplayLines::State(state, unit); }
+
+UnitDisplayFields DisplayFields(const PartyFrameBinding& b) {
+    return UnitDisplayFields{b.health, b.mana, b.healthNow, b.healthMax, b.manaNow, b.manaMax, b.name, b.dead, b.portrait, b.buffIcons};
 }
 
 class Generator {
@@ -38,8 +41,9 @@ public:
             return failure;
         }
         Variables();
-        if (Buffs() && o_.includeRegistration) text_.Trigger(Name("登记", "Register"), {}, Registration(), {}, "init");
-        if (Portraits() && o_.includePortraitRegistration) text_.Trigger(Name("头像", "Portrait"), {}, PortraitRegistration(), {}, "init");
+        if (Buffs() && o_.includeRegistration) text_.Trigger(Name("登记", "Register"), {}, display_->BuffRegistration(), {}, "init");
+        if (Portraits() && o_.includePortraitRegistration)
+            text_.Trigger(Name("头像", "Portrait"), {}, display_->PortraitRegistration(), {}, "init");
         // 被运行的触发器写在前面。
         text_.Trigger(Name("加入", "Join"), {}, Join());
         text_.Trigger(Name("移出", "Leave"), {}, Leave());
@@ -98,66 +102,17 @@ private:
             return;
         }
         slots_ = shown->size;
+        display_.emplace("AUP", "AUP", d(), DisplayFields(b_), slots_, o_.nameSource, o_.buffs, o_.portraits);
+        display_->Check(errors_);
         const auto value = [&](const std::string& id, UiValueType type, const char* what) {
             if (id.empty()) return;
             if (const auto problem = CheckValueBinding(d(), id, type, slots_, what)) Error("AUP_FRAME_INVALID", *problem);
         };
-        value(b_.health, UiValueType::Real, "实数");
-        value(b_.mana, UiValueType::Real, "实数");
-        value(b_.healthNow, UiValueType::Real, "实数");
-        value(b_.healthMax, UiValueType::Real, "实数");
-        value(b_.manaNow, UiValueType::Real, "实数");
-        value(b_.manaMax, UiValueType::Real, "实数");
-        value(b_.portrait, UiValueType::String, "字符串");
-        value(b_.name, UiValueType::String, "字符串");
-        value(b_.dead, UiValueType::Boolean, "布尔");
         value(b_.outOfRange, UiValueType::Boolean, "布尔");
         if (!b_.outOfRange.empty() && (!std::isfinite(o_.farRange) || o_.farRange < 100.0 || o_.farRange > 100000.0)) {
             Error("AUP_OPTION_INVALID", "过远距离应在 100 到 100000 之间");
         }
         if (!b_.select.empty()) CheckSelect();
-        CheckBuffs();
-        CheckPortraits();
-    }
-
-    void CheckPortraits() {
-        if (!Portraits()) {
-            if (!o_.portraits.empty()) Error("AUP_OPTION_INVALID", "登记了头像，但没有绑定头像数值");
-            return;
-        }
-        if (o_.portraits.size() > 256) Error("AUP_PORTRAIT_INVALID", "最多登记 256 个头像");
-        for (std::size_t i = 0; i < o_.portraits.size(); ++i) {
-            const PartyPortrait& portrait = o_.portraits[i];
-            const std::string at = "第 " + std::to_string(i + 1) + " 个头像（" + portrait.unit + "）：";
-            if (!ValidRawcode(portrait.unit)) Error("AUP_PORTRAIT_INVALID", at + "单位类型应为 4 个字符");
-            if (!UsableLabel(portrait.icon)) Error("AUP_PORTRAIT_INVALID", at + "需要图标路径");
-            for (std::size_t j = 0; j < i; ++j) {
-                if (o_.portraits[j].unit == portrait.unit) Error("AUP_PORTRAIT_INVALID", at + "已在第 " + std::to_string(j + 1) + " 个登记");
-            }
-        }
-    }
-
-    void CheckBuffs() {
-        for (std::size_t i = 0; i < b_.buffIcons.size(); ++i) {
-            if (const auto problem = CheckValueBinding(d(), b_.buffIcons[i], UiValueType::String, slots_, "字符串")) Error("AUP_FRAME_INVALID", *problem);
-            for (std::size_t j = 0; j < i; ++j) {
-                if (b_.buffIcons[j] == b_.buffIcons[i]) Error("AUP_FRAME_INVALID", "图标数值 " + b_.buffIcons[i] + " 绑定了两次");
-            }
-        }
-        if (!Buffs()) {
-            if (!o_.buffs.empty()) Error("AUP_OPTION_INVALID", "登记了增减益，但没有绑定图标数值");
-            return;
-        }
-        if (o_.buffs.size() > 64) Error("AUP_BUFF_INVALID", "最多登记 64 个增减益");
-        for (std::size_t i = 0; i < o_.buffs.size(); ++i) {
-            const PartyBuff& buff = o_.buffs[i];
-            const std::string at = "第 " + std::to_string(i + 1) + " 个增减益（" + buff.buff + "）：";
-            if (!ValidRawcode(buff.buff)) Error("AUP_BUFF_INVALID", at + "增减益码应为 4 个字符");
-            if (!UsableLabel(buff.icon)) Error("AUP_BUFF_INVALID", at + "需要图标路径");
-            for (std::size_t j = 0; j < i; ++j) {
-                if (o_.buffs[j].buff == buff.buff) Error("AUP_BUFF_INVALID", at + "已在第 " + std::to_string(j + 1) + " 个登记");
-            }
-        }
     }
 
     void CheckSelect() {
@@ -199,42 +154,7 @@ private:
             var("Click", "integer", false, "0");
             var("ClickResult", "integer", false, "0");
         }
-        if (Buffs()) {
-            var("BuffCount", "integer", false, "0");
-            var("BuffCode", "buffcode", true);
-            var("BuffIcon", "string", true);
-            var("BuffHit", "string", true);
-            var("BuffN", "integer", false, "0");
-            var("BuffI", "integer", false, "0");
-        }
-        if (Portraits()) {
-            var("TypeCount", "integer", false, "0");
-            var("TypeCode", "unitcode", true);
-            var("TypeIcon", "string", true);
-            var("TypeI", "integer", false, "0");
-        }
-    }
-
-    Lines Registration() const {
-        Lines out{Call("CommentString", {Quote("每个增减益一组：增减益、图标路径；每格按这里的顺序显示队员身上有的增减益")}),
-            Set(V("BuffCount"), std::to_string(o_.buffs.size()))};
-        for (std::size_t i = 0; i < o_.buffs.size(); ++i) {
-            const std::string index = std::to_string(i + 1);
-            out.push_back(Set(At("BuffCode", index), "'" + o_.buffs[i].buff + "'"));
-            out.push_back(Set(At("BuffIcon", index), Quote(o_.buffs[i].icon)));
-        }
-        return out;
-    }
-
-    Lines PortraitRegistration() const {
-        Lines out{Call("CommentString", {Quote("每种单位一组：单位类型、头像图标路径；没登记的单位头像为空")}),
-            Set(V("TypeCount"), std::to_string(o_.portraits.size()))};
-        for (std::size_t i = 0; i < o_.portraits.size(); ++i) {
-            const std::string index = std::to_string(i + 1);
-            out.push_back(Set(At("TypeCode", index), "'" + o_.portraits[i].unit + "'"));
-            out.push_back(Set(At("TypeIcon", index), Quote(o_.portraits[i].icon)));
-        }
-        return out;
+        display_->Variables(text_);
     }
 
     // AUP_Member 在名单里的格子 → AUP_Found（不在为 0）。
@@ -274,12 +194,6 @@ private:
             {RunTrigger("加入", "Join")});
     }
 
-    // 比例 = 当前 ÷ 最大；最大为 0 时为 0。
-    Lines Ratio(const std::string& target, std::string_view current, std::string_view maximum, const std::string& unit) const {
-        return If({CompareReal(State(maximum, unit), "OperatorGreater", "0")},
-            {Set(target, Arith(State(current, unit), "OperatorDivide", State(maximum, unit)))}, {Set(target, "0")});
-    }
-
     Lines Refresh() const {
         const std::string unit = At("Unit", V("I"));
         // 已移除的单位最大生命为 0。移出后这一轮跳过下一格，下一轮再处理。
@@ -302,27 +216,7 @@ private:
         const std::string cell = Int(V("I"), "OperatorSubtract", "1");
         const auto at = [&](const std::string& id) { return Value(id) + "[" + cell + "]"; };
         Lines filled{Set(at(b_.shown), "true")};
-        if (!b_.health.empty()) Append(filled, Ratio(at(b_.health), "UnitStateLife", "UnitStateMaxLife", unit));
-        if (!b_.mana.empty()) Append(filled, Ratio(at(b_.mana), "UnitStateMana", "UnitStateMaxMana", unit));
-        if (!b_.healthNow.empty()) filled.push_back(Set(at(b_.healthNow), State("UnitStateLife", unit)));
-        if (!b_.healthMax.empty()) filled.push_back(Set(at(b_.healthMax), State("UnitStateMaxLife", unit)));
-        if (!b_.manaNow.empty()) filled.push_back(Set(at(b_.manaNow), State("UnitStateMana", unit)));
-        if (!b_.manaMax.empty()) filled.push_back(Set(at(b_.manaMax), State("UnitStateMaxMana", unit)));
-        if (Portraits()) {
-            filled.push_back(Set(at(b_.portrait), Quote("")));
-            Append(filled, ForLoopVar(V("TypeI"), "1", V("TypeCount"),
-                If({Call("OperatorCompareUnitCode", {Call("GetUnitTypeId", {unit}), "OperatorEqualENE", At("TypeCode", V("TypeI"))})},
-                    {Set(at(b_.portrait), At("TypeIcon", V("TypeI")))})));
-        }
-        if (!b_.name.empty()) {
-            if (o_.nameSource == PartyNameSource::Player) {
-                filled.push_back(Set(at(b_.name), Call("GetPlayerName", {Call("GetOwningPlayer", {unit})})));
-            } else {
-                Append(filled, If({IsTrue(Call("IsUnitType", {unit, "UnitTypeHero"}))}, {Set(at(b_.name), Call("GetHeroProperName", {unit}))},
-                    {Set(at(b_.name), Call("GetUnitName", {unit}))}));
-            }
-        }
-        if (!b_.dead.empty()) filled.push_back(Set(at(b_.dead), Call("IsUnitDeadBJ", {unit})));
+        Append(filled, display_->Fill(unit, at));
         if (!b_.outOfRange.empty()) {
             filled.push_back(Set(V("DX"), Arith(At("X", V("I")), "OperatorSubtract", At("X", V("Self")))));
             filled.push_back(Set(V("DY"), Arith(At("Y", V("I")), "OperatorSubtract", At("Y", V("Self")))));
@@ -331,24 +225,9 @@ private:
             Append(filled, If({CompareInt(V("Self"), "OperatorGreater", "0"), CompareReal(distance, "OperatorGreater", Real(o_.farRange * o_.farRange))},
                 {Set(at(b_.outOfRange), "true")}));
         }
-        if (Buffs()) Append(filled, BuffIcons(unit, at));
         Append(out, ForLoopVar(V("I"), "1", std::to_string(slots_),
             If({CompareInt(V("I"), "OperatorLessEq", V("Count"))}, filled, {Set(at(b_.shown), "false")})));
         out.push_back(Call("ConditionalTriggerExecute", {TriggerRef(UiTriggerName(d(), "更新", "Update"))}));
-        return out;
-    }
-
-    // 按登记顺序收集队员身上的增减益图标，填进各图标数值，多出的为空。
-    template <typename CellRef>
-    Lines BuffIcons(const std::string& unit, const CellRef& at) const {
-        const std::string slots = std::to_string(b_.buffIcons.size());
-        Lines out;
-        for (std::size_t k = 1; k <= b_.buffIcons.size(); ++k) out.push_back(Set(At("BuffHit", std::to_string(k)), Quote("")));
-        out.push_back(Set(V("BuffN"), "0"));
-        Append(out, ForLoopVar(V("BuffI"), "1", V("BuffCount"),
-            If({CompareInt(V("BuffN"), "OperatorLess", slots), IsTrue(Call("UnitHasBuffBJ", {unit, At("BuffCode", V("BuffI"))}))},
-                {Set(V("BuffN"), Int(V("BuffN"), "OperatorAdd", "1")), Set(At("BuffHit", V("BuffN")), At("BuffIcon", V("BuffI")))})));
-        for (std::size_t k = 0; k < b_.buffIcons.size(); ++k) out.push_back(Set(at(b_.buffIcons[k]), At("BuffHit", std::to_string(k + 1))));
         return out;
     }
 
@@ -366,6 +245,7 @@ private:
     const PartySystemOptions& o_;
     const PartyFrameBinding& b_;
     std::uint32_t slots_ = 0;
+    std::optional<UnitDisplayLines> display_;
     FeatureTextBuilder text_;
     std::vector<Diagnostic> errors_;
 };

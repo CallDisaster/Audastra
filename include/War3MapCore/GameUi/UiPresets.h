@@ -48,6 +48,21 @@ inline constexpr std::string_view kSelect = "select";
 inline constexpr std::array<std::string_view, 4> kBuffs{"buff1", "buff2", "buff3", "buff4"};  // 增减益图标路径（文字）
 } // namespace PartyPreset
 
+// target 模板（目标框架）的数值与事件编号（绑定目标框架系统用）。数值都是单值；点框架发 select 事件。
+namespace TargetPreset {
+inline constexpr std::string_view kShown = "shown";
+inline constexpr std::string_view kHealth = "hp";
+inline constexpr std::string_view kMana = "mp";
+inline constexpr std::string_view kHealthNow = "hp_now";
+inline constexpr std::string_view kHealthMax = "hp_max";
+inline constexpr std::string_view kName = "name";
+inline constexpr std::string_view kLevel = "level";
+inline constexpr std::string_view kDead = "dead";
+inline constexpr std::string_view kPortrait = "portrait";
+inline constexpr std::string_view kSelect = "select";
+inline constexpr std::array<std::string_view, 6> kBuffs{"buff1", "buff2", "buff3", "buff4", "buff5", "buff6"};  // 增减益图标路径（文字）
+} // namespace TargetPreset
+
 // talents 模板（统一天赋树）的数值与事件编号（绑定天赋系统用）。每层一行（重复框架），行内每列一个选项；
 // 每列的图标、名字、已选为数组，格数为层数；点击、移入、移出事件按行号区分层。
 namespace TalentPreset {

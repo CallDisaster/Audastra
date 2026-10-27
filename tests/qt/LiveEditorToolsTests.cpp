@@ -349,7 +349,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "feedback.draft", "feedback.list", "feedback.status",
         "game_ui_cast_system", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
         "game_ui_description_triggers",
-        "game_ui_nodes_query", "game_ui_party_system", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_talent_system", "game_ui_view_read", "game_ui_view_set",
+        "game_ui_nodes_query", "game_ui_party_system", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_talent_system", "game_ui_target_system", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
@@ -365,7 +365,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{94});
+    QCOMPARE(expected.size(), qsizetype{95});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2729,6 +2729,21 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     badColumns["frame"] = QJsonObject{{"description", "Talents"}, {"columns", QJsonArray{QJsonObject{{"icon", "icon1"}, {"name", "name1"}}}}};
     QVERIFY(!f.tools->Invoke("game_ui_talent_system", badColumns).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{9});
+    // 目标框架：来源、键、玩家数与绑定的形状在到达宿主前检查。
+    auto target = args; target["preview"] = true; target["source"] = "focus"; target["key"] = "Focus"; target["players"] = 4;
+    target["frame"] = QJsonObject{{"description", "Target"}, {"shown", "shown"}, {"level", "level"}, {"select", "select"}};
+    target["portraits"] = QJsonArray{"Hpal"};
+    QVERIFY(f.tools->Invoke("game_ui_target_system", target).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{10});
+    auto badTargetSource = target; badTargetSource["source"] = "mouse";
+    QVERIFY(!f.tools->Invoke("game_ui_target_system", badTargetSource).value("ok").toBool());
+    auto badPlayers = target; badPlayers["players"] = 13;
+    QVERIFY(!f.tools->Invoke("game_ui_target_system", badPlayers).value("ok").toBool());
+    auto badTargetKey = target; badTargetKey["frame"] = QJsonObject{{"description", "Target"}, {"shown", "shown"}, {"far", "far"}};
+    QVERIFY(!f.tools->Invoke("game_ui_target_system", badTargetKey).value("ok").toBool());
+    auto badPortrait = target; badPortrait["portraits"] = QJsonArray{"Hp"};
+    QVERIFY(!f.tools->Invoke("game_ui_target_system", badPortrait).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{10});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
@@ -2738,6 +2753,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_cast_system"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_party_system"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_talent_system"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_target_system"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }

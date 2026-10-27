@@ -5,6 +5,7 @@
 #include "War3MapCore/GameUi/CastTriggers.h"
 #include "War3MapCore/GameUi/PartyTriggers.h"
 #include "War3MapCore/GameUi/TalentTriggers.h"
+#include "War3MapCore/GameUi/TargetTriggers.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
@@ -177,7 +178,7 @@ public:
         QStringList buffIcons;
         QStringList buffs;
         QStringList portraits;
-        GameUi::PartyNameSource nameSource = GameUi::PartyNameSource::Player;
+        GameUi::UnitNameSource nameSource = GameUi::UnitNameSource::Player;
         double farRange = 1200.0;
         bool autoHeroes = true;
     };
@@ -191,6 +192,31 @@ public:
         bool portraitKept = false;
     };
     std::optional<PartySystemGeneration> GeneratePartySystem(const PartySystemRequest& request, bool preview, QString* error = nullptr);
+    // 目标框架（TargetTriggers.h）：整批写进“目标框架”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器须已生成；
+    // 其余为界面的数值（单值）与事件编号，空为不绑定（shown 必填）。需要 YDWE 的 GetLocalPlayer；绑定点选时还要 AudastraUI 的
+    // AudastraUIClickUnit。增减益与头像的图标取自物编；地图里已有同名登记或头像触发器时保留它（registrationKept、portraitKept 为真）。
+    // systemName 与 key 区分同图的多份（例如目标与焦点）。preview 为真时只给出生成结果，不改地图。
+    struct TargetSystemRequest {
+        QString frame;
+        QString systemName = QStringLiteral("目标");
+        QString key = QStringLiteral("Target");
+        GameUi::TargetSource source = GameUi::TargetSource::Selection;
+        QString shown, health, mana, healthNow, healthMax, manaNow, manaMax, name, level, dead, portrait, select;
+        QStringList buffIcons;
+        QStringList buffs;
+        QStringList portraits;
+        GameUi::UnitNameSource nameSource = GameUi::UnitNameSource::Unit;
+        int players = static_cast<int>(GameUi::kTargetMaxPlayers);
+    };
+    struct TargetSystemGeneration {
+        QString featureText;
+        QStringList triggers;
+        QStringList variables;
+        QString setTrigger, memberVariable, playerVariable;
+        bool registrationKept = false;
+        bool portraitKept = false;
+    };
+    std::optional<TargetSystemGeneration> GenerateTargetSystem(const TargetSystemRequest& request, bool preview, QString* error = nullptr);
     // 统一天赋树（TalentTriggers.h）：整批写进“天赋系统”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器
     // 须已生成；其余为界面的数值与事件编号，空为不绑定（shown、level 与每列的图标、名字、已选、点击必填）。需要 YDWE 的
     // GetLocalPlayer 与 RemoveLocation。登记里选项的图标为空时取学会技能在物编里的图标；地图里已有登记触发器时保留它，
@@ -272,6 +298,7 @@ private:
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
     void ShowCastSystemDialog();
     void ShowPartySystemDialog();
+    void ShowTargetSystemDialog();
     void ShowTalentSystemDialog();
     // 按模板新建一份界面描述（编号为模板名，重名时加序号）并生成它的界面触发器；返回新编号。
     std::optional<QString> CreateFromPreset(const QString& preset, QString* error);
@@ -376,6 +403,7 @@ private:
     QPushButton* generateTriggersButton_ = nullptr;
     QPushButton* castSystemButton_ = nullptr;
     QPushButton* partySystemButton_ = nullptr;
+    QPushButton* targetSystemButton_ = nullptr;
     QPushButton* talentSystemButton_ = nullptr;
 };
 

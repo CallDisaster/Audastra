@@ -108,7 +108,7 @@ void TestGeneratedText() {
     // 只绑显示与名字、不自动加入：没有坐标、选中与英雄触发器；名字取单位名。
     PartySystemOptions minimal;
     minimal.autoHeroes = false;
-    minimal.nameSource = PartyNameSource::Unit;
+    minimal.nameSource = UnitNameSource::Unit;
     minimal.frame = PartyFrameBinding{&d, "shown", {}, {}, "name", {}, {}, {}};
     const auto small = GeneratePartySystem(minimal);
     Require(small.Succeeded() && small.value->triggers.size() == 3, "最小绑定只有加入、移出、刷新：" + First(small.diagnostics));
@@ -156,11 +156,11 @@ void TestBuffs() {
     const UiDescription d = PartyDescription();
     PartySystemOptions options = FullBinding(d);
     for (const auto id : PartyPreset::kBuffs) options.frame.buffIcons.emplace_back(id);
-    options.buffs = {PartyBuff{"B000", "ReplaceableTextures\\CommandButtons\\BTNHeal"}, PartyBuff{"B001", "ReplaceableTextures\\CommandButtons\\BTNSlow"}};
+    options.buffs = {UnitBuff{"B000", "ReplaceableTextures\\CommandButtons\\BTNHeal"}, UnitBuff{"B001", "ReplaceableTextures\\CommandButtons\\BTNSlow"}};
 
     PartySystemOptions bad = options;
-    bad.buffs.push_back(PartyBuff{"B0", ""});
-    bad.buffs.push_back(PartyBuff{"B000", "x"});
+    bad.buffs.push_back(UnitBuff{"B0", ""});
+    bad.buffs.push_back(UnitBuff{"B000", "x"});
     bad.frame.buffIcons.push_back("buff1");
     const auto refused = GeneratePartySystem(bad);
     Require(!refused.Succeeded() && refused.diagnostics.size() == 4, "增减益码、图标、重复登记、重复绑定一起报：" + First(refused.diagnostics));
@@ -214,13 +214,13 @@ void TestNumbersAndPortraits() {
     options.frame.healthNow = std::string(kHealthNow);
     options.frame.healthMax = std::string(kHealthMax);
     options.frame.portrait = std::string(kPortrait);
-    options.portraits = {PartyPortrait{"Hpal", "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin"},
-        PartyPortrait{"H000", "ReplaceableTextures\\CommandButtons\\BTNJaina"}};
+    options.portraits = {UnitPortrait{"Hpal", "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin"},
+        UnitPortrait{"H000", "ReplaceableTextures\\CommandButtons\\BTNJaina"}};
 
     PartySystemOptions bad = options;
     bad.frame.healthNow = std::string(kName);
-    bad.portraits.push_back(PartyPortrait{"Hp", ""});
-    bad.portraits.push_back(PartyPortrait{"Hpal", "x"});
+    bad.portraits.push_back(UnitPortrait{"Hp", ""});
+    bad.portraits.push_back(UnitPortrait{"Hpal", "x"});
     const auto refused = GeneratePartySystem(bad);
     Require(!refused.Succeeded() && refused.diagnostics.size() == 4, "数字类型、单位类型、图标、重复登记一起报：" + First(refused.diagnostics));
     Require(Has(refused.diagnostics, "AUP_PORTRAIT_INVALID"), "头像诊断");

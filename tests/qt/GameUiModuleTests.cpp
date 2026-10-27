@@ -4,6 +4,8 @@
 #include "GameUiCanvas.h"
 #include "GameUiModule.h"
 #include "PartyLayer.h"
+#include "TalentLayer.h"
+#include "TargetLayer.h"
 #include "War3MapCore/GameUi/UiPresets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
@@ -80,6 +82,7 @@ private slots:
     void GeneratesCastSystem();
     void CreatesFromPresets();
     void GeneratesPartySystem();
+    void GeneratesTargetSystem();
     void GeneratesTalentSystem();
 };
 
@@ -819,7 +822,7 @@ void GameUiModuleTests::CreatesFromPresets() {
     // 新建界面菜单里的模板列表与 Core 的模板一致。
     auto* presets = page->findChild<QComboBox*>(QStringLiteral("gameUiNewDescriptionPreset"));
     QVERIFY(presets);
-    QCOMPARE(presets->count(), 4);
+    QCOMPARE(presets->count(), 5);
     QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0
         && presets->findData(QStringLiteral("talents")) > 0);
     QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
@@ -929,6 +932,80 @@ void GameUiModuleTests::GeneratesPartySystem() {
     QVERIFY2(keptPortraits, qPrintable(error));
     QVERIFY(keptPortraits->portraitKept && keptPortraits->registrationKept);
     QVERIFY(!keptPortraits->triggers.contains(QStringLiteral("团队 头像 Party_Portrait")));
+}
+
+// 目标框架：按模板新建界面并生成界面触发器后生成；目标与焦点两份并存，各自一次撤销；头像图标取不到时拒绝且不改地图。
+void GameUiModuleTests::GeneratesTargetSystem() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(page->findChild<QPushButton*>(QStringLiteral("gameUiTargetSystem")));
+    QString error;
+    using namespace GameUi::TargetPreset;
+    const auto id = [](std::string_view value) { return QString::fromLatin1(value.data(), static_cast<qsizetype>(value.size())); };
+    Modules::GameUiModule::TargetSystemRequest request;
+    request.frame = QStringLiteral("Target");
+    request.shown = id(kShown);
+    QVERIFY(!module.GenerateTargetSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("触发器")));
+
+    AudastraUiTest::Catalog files;
+    files.extras = {AudastraUiTest::SpellLayer(), AudastraUiTest::PartyLayer(), AudastraUiTest::TalentLayer(), AudastraUiTest::TargetLayer()};
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto count = [&project] {
+        const auto& doc = *project.triggerDocument_;
+        const auto category = std::find_if(doc.categories.begin(), doc.categories.end(),
+            [](const auto& row) { return row.name.text == GameUi::kTargetTriggerCategory; });
+        if (category == doc.categories.end()) return -1;
+        return static_cast<int>(std::count_if(doc.triggers.begin(), doc.triggers.end(),
+            [&](const auto& row) { return row.categoryId == category->categoryId; }));
+    };
+
+    QVERIFY2(module.CreateDescription(QStringLiteral("Target"), QStringLiteral("目标"), &error, QStringLiteral("target")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Target"))->values.size(), std::size_t{15});
+    QVERIFY(!module.GenerateTargetSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Target")));
+    QVERIFY2(module.GenerateDescriptionTriggers(QStringLiteral("Target"), false, &error), qPrintable(error));
+    request.health = id(kHealth);
+    request.healthNow = id(kHealthNow);
+    request.healthMax = id(kHealthMax);
+    request.name = id(kName);
+    request.level = id(kLevel);
+    request.dead = id(kDead);
+    request.select = id(kSelect);
+
+    const auto preview = module.GenerateTargetSystem(request, true, &error);
+    QVERIFY2(preview, qPrintable(error));
+    QCOMPARE(preview->triggers.size(), qsizetype{4});
+    QVERIFY(preview->setTrigger.isEmpty());
+    QCOMPARE(count(), -1);
+    const int undo = project.triggerUndoStack_->count();
+    QVERIFY2(module.GenerateTargetSystem(request, false, &error), qPrintable(error));
+    QCOMPARE(count(), 4);
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 1);
+
+    // 焦点：另一份系统写进同一类别，与目标并存。
+    request.systemName = QStringLiteral("焦点");
+    request.key = QStringLiteral("Focus");
+    request.source = GameUi::TargetSource::Focus;
+    const auto focus = module.GenerateTargetSystem(request, false, &error);
+    QVERIFY2(focus, qPrintable(error));
+    QCOMPARE(focus->setTrigger, QStringLiteral("焦点 设定 Focus_Set"));
+    QCOMPARE(focus->memberVariable, QStringLiteral("AUF_Focus_Member"));
+    QCOMPARE(count(), 7);
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 2);
+
+    // 头像：单位图标取自物编，取不到时拒绝且不改地图。
+    request.portrait = id(kPortrait);
+    request.portraits = {QStringLiteral("Hxxx")};
+    QVERIFY(!module.GenerateTargetSystem(request, false, &error));
+    QVERIFY(error.contains(QStringLiteral("Hxxx")));
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 2);
 }
 
 // 天赋树：按模板新建界面并生成界面触发器后，天赋系统检查同步单位与英雄在物编里存在；没有物编时拒绝且不改地图。

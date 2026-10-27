@@ -456,7 +456,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         for (const auto& icon : frame.value("buff_icons").toArray()) request.buffIcons.append(icon.toString());
         for (const auto& buff : args.value("buffs").toArray()) request.buffs.append(buff.toString());
         for (const auto& unit : args.value("portraits").toArray()) request.portraits.append(unit.toString());
-        if (args.value("name_source").toString() == QLatin1String("unit")) request.nameSource = PartyNameSource::Unit;
+        if (args.value("name_source").toString() == QLatin1String("unit")) request.nameSource = UnitNameSource::Unit;
         request.farRange = args.value("far_range").toDouble(request.farRange);
         request.autoHeroes = args.value("auto_heroes").toBool(true);
         QString error;
@@ -472,6 +472,51 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         binding.insert("member_variable", generated->memberVariable);
         binding.insert("join_trigger", generated->joinTrigger);
         binding.insert("leave_trigger", generated->leaveTrigger);
+        binding.insert("registration_kept", generated->registrationKept);
+        binding.insert("portrait_kept", generated->portraitKept);
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_target_system")) {
+        const bool preview = args.value("preview").toBool();
+        const QJsonObject frame = args.value("frame").toObject();
+        GameUiModule::TargetSystemRequest request;
+        request.frame = frame.value("description").toString();
+        request.shown = frame.value("shown").toString();
+        request.health = frame.value("health").toString();
+        request.mana = frame.value("mana").toString();
+        request.healthNow = frame.value("health_now").toString();
+        request.healthMax = frame.value("health_max").toString();
+        request.manaNow = frame.value("mana_now").toString();
+        request.manaMax = frame.value("mana_max").toString();
+        request.name = frame.value("name").toString();
+        request.level = frame.value("level").toString();
+        request.dead = frame.value("dead").toString();
+        request.portrait = frame.value("portrait").toString();
+        request.select = frame.value("select").toString();
+        for (const auto& icon : frame.value("buff_icons").toArray()) request.buffIcons.append(icon.toString());
+        for (const auto& buff : args.value("buffs").toArray()) request.buffs.append(buff.toString());
+        for (const auto& unit : args.value("portraits").toArray()) request.portraits.append(unit.toString());
+        if (args.value("source").toString() == QLatin1String("focus")) request.source = TargetSource::Focus;
+        if (args.value("name_source").toString() == QLatin1String("player")) request.nameSource = UnitNameSource::Player;
+        const bool focus = request.source == TargetSource::Focus;
+        request.systemName = args.value("name").toString(focus ? QStringLiteral("焦点") : QStringLiteral("目标"));
+        request.key = args.value("key").toString(focus ? QStringLiteral("Focus") : QStringLiteral("Target"));
+        request.players = args.value("players").toInt(request.players);
+        QString error;
+        const auto generated = module->GenerateTargetSystem(request, preview, &error);
+        if (!generated) return Failure("GAME_UI_TARGET_SYSTEM", error);
+        binding.insert("applied", !preview);
+        if (!preview) binding.insert("runtime", RuntimeJson(*module));
+        binding.insert("category", Text(std::string(kTargetTriggerCategory)));
+        binding.insert("feature_text", generated->featureText);
+        binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
+        binding.insert("variables", QJsonArray::fromStringList(generated->variables));
+        if (focus) {
+            binding.insert("set_trigger", generated->setTrigger);
+            binding.insert("member_variable", generated->memberVariable);
+            binding.insert("player_variable", generated->playerVariable);
+        }
         binding.insert("registration_kept", generated->registrationKept);
         binding.insert("portrait_kept", generated->portraitKept);
         return binding;

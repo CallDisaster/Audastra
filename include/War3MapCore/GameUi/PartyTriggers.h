@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/GameUi/UiDescription.h"
+#include "War3MapCore/GameUi/UnitDisplay.h"
 #include "War3MapCore/Types.h"
 
 #include <cstdint>
@@ -23,11 +24,6 @@ namespace War3Map::GameUi {
 inline constexpr std::string_view kPartyTriggerCategory = "团队框架";
 inline constexpr double kPartyRefreshSeconds = 0.1;
 
-enum class PartyNameSource : std::uint8_t {
-    Player,  // 所属玩家的名字
-    Unit,    // 英雄用英雄名，其他单位用单位名
-};
-
 // 绑定团队框架界面：数值都是数组，格数相同，即队伍上限。shown 必填，其余可空。
 struct PartyFrameBinding {
     const UiDescription* description = nullptr;
@@ -46,27 +42,15 @@ struct PartyFrameBinding {
     std::string portrait;    // 文字：队员单位类型的头像图标路径，没登记时为空
 };
 
-// 登记的增减益：增减益码与图标路径。
-struct PartyBuff {
-    std::string buff;
-    std::string icon;
-};
-
-// 登记的头像：单位类型与头像图标路径。
-struct PartyPortrait {
-    std::string unit;
-    std::string icon;
-};
-
 struct PartySystemOptions {
     std::string name = "团队";  // 触发器名前缀与说明里的显示名
     PartyFrameBinding frame;
-    PartyNameSource nameSource = PartyNameSource::Player;
+    UnitNameSource nameSource = UnitNameSource::Player;
     double farRange = 1200.0;  // 绑定 outOfRange 时用，100..100000
     bool autoHeroes = true;
-    std::vector<PartyBuff> buffs;     // 写进“登记”触发器，最多 64 个
-    bool includeRegistration = true;  // 地图里已有登记触发器时为假：不生成它，保留作者的登记
-    std::vector<PartyPortrait> portraits;     // 写进“头像”触发器，最多 256 个
+    std::vector<UnitBuff> buffs;          // 写进“登记”触发器，最多 64 个
+    bool includeRegistration = true;      // 地图里已有登记触发器时为假：不生成它，保留作者的登记
+    std::vector<UnitPortrait> portraits;  // 写进“头像”触发器，最多 256 个
     bool includePortraitRegistration = true;  // 地图里已有头像触发器时为假：不生成它，保留作者的头像表
 };
 

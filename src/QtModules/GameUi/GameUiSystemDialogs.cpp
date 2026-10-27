@@ -23,7 +23,7 @@
 #include <initializer_list>
 
 // 绑定界面的系统窗口：“读条系统”选读条条界面及其数值与状态，“团队框架”选团队框架界面及其数组数值与点击事件，
-// “天赋树”选按天赋树模板建的界面（按模板的编号绑定），生成各自的触发器。都可直接按模板新建一份界面再绑定。
+// “目标框架”选目标框架界面及其单值数值与点击事件，“天赋树”选按天赋树模板建的界面（按模板的编号绑定），生成各自的触发器。都可直接按模板新建一份界面再绑定。
 // 读条的技能登记与各英雄的天赋登记在触发器编辑器里改。
 namespace War3Map::Modules {
 namespace {
@@ -65,6 +65,39 @@ void FillStates(QComboBox* box, const UiDescription* description, std::initializ
     Prefer(box, preferred);
 }
 
+// 格数相同的字符串数值列为可勾选的图标数值，编号以 buff、icon 开头的默认勾选。
+void FillIconValues(QListWidget* list, const UiDescription* description, std::uint32_t size) {
+    list->clear();
+    if (!description) return;
+    for (const auto& value : description->values) {
+        if (value.type != UiValueType::String || value.size != size) continue;
+        auto* item = new QListWidgetItem(Labeled(value.label, value.id), list);
+        item->setData(Qt::UserRole, Text(value.id));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        const bool icon = value.id.starts_with("buff") || value.id.starts_with("icon");
+        item->setCheckState(icon ? Qt::Checked : Qt::Unchecked);
+    }
+}
+
+QStringList CheckedValues(const QListWidget* list) {
+    QStringList ids;
+    for (int i = 0; i < list->count(); ++i) {
+        if (list->item(i)->checkState() == Qt::Checked) ids.append(list->item(i)->data(Qt::UserRole).toString());
+    }
+    return ids;
+}
+
+// 点击事件列表，前面一项“无”。
+void FillClickEvents(QComboBox* box, const UiDescription* description) {
+    box->clear();
+    box->addItem(QObject::tr("无"), QString());
+    if (!description) return;
+    for (const auto& event : description->events) {
+        if (event.kind == UiEventKind::Click) box->addItem(Labeled(event.frame, event.id), Text(event.id));
+    }
+    Prefer(box, {"select", "click", "pick"});
+}
+
 // 列出地图界面描述，末尾加一项“按模板新建”（数据为 +模板编号）。
 void FillDescriptions(QComboBox* box, const std::vector<GameUiDescriptionFile>& files, const QString& none, const QString& createLabel,
     std::string_view preset) {
@@ -89,6 +122,31 @@ struct SystemDialog {
         box->setMinimumWidth(220);
         form->addRow(label, box);
         return box;
+    }
+
+    // 物编目录里某一类对象的有序选择列表（增减益、头像单位）。
+    QtApp::OrderedObjectListWidget* ObjectList(const QtProject::EditorProject& project, const char* name, const QString& label,
+        const QString& kind) {
+        auto* list = new QtApp::OrderedObjectListWidget(project.iconProvider_.get(), &dialog);
+        list->setObjectName(QLatin1String(name));
+        QVector<QtApp::ObjectViewEntry> entries;
+        for (auto& entry : QtApp::BuildObjectViewEntries(project)) {
+            if (entry.kind == kind) entries.push_back(std::move(entry));
+        }
+        list->SetEntries(entries);
+        list->SetKindFilter(kind);
+        list->SetInlineCatalogEnabled(true);
+        form->addRow(label, list);
+        return list;
+    }
+
+    // 可勾选的增减益图标数值，勾选的按列表顺序显示。
+    QListWidget* IconValues(const char* name, const QString& label) {
+        auto* list = new QListWidget(&dialog);
+        list->setObjectName(QLatin1String(name));
+        list->setMaximumHeight(96);
+        form->addRow(label, list);
+        return list;
     }
 
     bool Run() {
@@ -186,8 +244,8 @@ void GameUiModule::ShowPartySystemDialog() {
     auto* outOfRange = ui.Combo("gameUiPartyOutOfRange", tr("过远"));
     auto* select = ui.Combo("gameUiPartySelect", tr("点选"));
     auto* nameSource = ui.Combo("gameUiPartyNameSource", tr("名字来源"));
-    nameSource->addItem(tr("玩家名"), static_cast<int>(PartyNameSource::Player));
-    nameSource->addItem(tr("英雄名或单位名"), static_cast<int>(PartyNameSource::Unit));
+    nameSource->addItem(tr("玩家名"), static_cast<int>(UnitNameSource::Player));
+    nameSource->addItem(tr("英雄名或单位名"), static_cast<int>(UnitNameSource::Unit));
     auto* range = new QDoubleSpinBox(&ui.dialog);
     range->setObjectName(QStringLiteral("gameUiPartyRange"));
     range->setRange(100.0, 100000.0);
@@ -199,32 +257,10 @@ void GameUiModule::ShowPartySystemDialog() {
     autoHeroes->setObjectName(QStringLiteral("gameUiPartyAutoHeroes"));
     autoHeroes->setChecked(true);
     ui.form->addRow(QString(), autoHeroes);
-    // 增减益：勾选的图标数值按列表顺序显示；要显示的增减益从物编目录选，有序。
-    auto* buffIcons = new QListWidget(&ui.dialog);
-    buffIcons->setObjectName(QStringLiteral("gameUiPartyBuffIcons"));
-    buffIcons->setMaximumHeight(96);
-    ui.form->addRow(tr("增减益图标"), buffIcons);
-    auto* buffs = new QtApp::OrderedObjectListWidget(project_.iconProvider_.get(), &ui.dialog);
-    buffs->setObjectName(QStringLiteral("gameUiPartyBuffs"));
-    QVector<QtApp::ObjectViewEntry> buffEntries;
-    for (auto& entry : QtApp::BuildObjectViewEntries(project_)) {
-        if (entry.kind == QLatin1String("buff")) buffEntries.push_back(std::move(entry));
-    }
-    buffs->SetEntries(buffEntries);
-    buffs->SetKindFilter(QStringLiteral("buff"));
-    buffs->SetInlineCatalogEnabled(true);
-    ui.form->addRow(tr("增减益"), buffs);
-    // 头像：登记的单位类型按物编图标显示，没登记的队员头像为空。
-    auto* portraits = new QtApp::OrderedObjectListWidget(project_.iconProvider_.get(), &ui.dialog);
-    portraits->setObjectName(QStringLiteral("gameUiPartyPortraits"));
-    QVector<QtApp::ObjectViewEntry> unitEntries;
-    for (auto& entry : QtApp::BuildObjectViewEntries(project_)) {
-        if (entry.kind == QLatin1String("unit")) unitEntries.push_back(std::move(entry));
-    }
-    portraits->SetEntries(unitEntries);
-    portraits->SetKindFilter(QStringLiteral("unit"));
-    portraits->SetInlineCatalogEnabled(true);
-    ui.form->addRow(tr("头像单位"), portraits);
+    // 增减益与头像：要显示的增减益、登记头像的单位类型从物编目录选，有序；没登记的队员头像为空。
+    auto* buffIcons = ui.IconValues("gameUiPartyBuffIcons", tr("增减益图标"));
+    auto* buffs = ui.ObjectList(project_, "gameUiPartyBuffs", tr("增减益"), QStringLiteral("buff"));
+    auto* portraits = ui.ObjectList(project_, "gameUiPartyPortraits", tr("头像单位"), QStringLiteral("unit"));
 
     FillDescriptions(frame, Descriptions(), {}, tr("新建团队框架"), "party");
     // 其余数值按“显示”数组的格数筛选。
@@ -247,25 +283,8 @@ void GameUiModule::ShowPartySystemDialog() {
         FillValues(name, cells, UiValueType::String, size, true, {"name", "label"});
         FillValues(dead, cells, UiValueType::Boolean, size, true, {"dead"});
         FillValues(outOfRange, cells, UiValueType::Boolean, size, true, {"far", "range", "outofrange"});
-        buffIcons->clear();
-        if (cells) {
-            for (const auto& value : cells->values) {
-                if (value.type != UiValueType::String || value.size != size) continue;
-                auto* item = new QListWidgetItem(Labeled(value.label, value.id), buffIcons);
-                item->setData(Qt::UserRole, Text(value.id));
-                item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-                const bool icon = value.id.starts_with("buff") || value.id.starts_with("icon");
-                item->setCheckState(icon ? Qt::Checked : Qt::Unchecked);
-            }
-        }
-        select->clear();
-        select->addItem(tr("无"), QString());
-        if (cells) {
-            for (const auto& event : cells->events) {
-                if (event.kind == UiEventKind::Click) select->addItem(Labeled(event.frame, event.id), Text(event.id));
-            }
-            Prefer(select, {"select", "click", "pick"});
-        }
+        FillIconValues(buffIcons, cells, size);
+        FillClickEvents(select, cells);
     };
     const auto refill = [&, this] {
         const UiDescription* description = Description(frame->currentData().toString());
@@ -290,7 +309,7 @@ void GameUiModule::ShowPartySystemDialog() {
 
     PartySystemRequest request;
     request.frame = frame->currentData().toString();
-    request.nameSource = static_cast<PartyNameSource>(nameSource->currentData().toInt());
+    request.nameSource = static_cast<UnitNameSource>(nameSource->currentData().toInt());
     request.farRange = range->value();
     request.autoHeroes = autoHeroes->isChecked();
     request.buffs = buffs->Ids();
@@ -328,9 +347,7 @@ void GameUiModule::ShowPartySystemDialog() {
         request.manaNow = manaNow->currentData().toString();
         request.manaMax = manaMax->currentData().toString();
         request.portrait = portrait->currentData().toString();
-        for (int i = 0; i < buffIcons->count(); ++i) {
-            if (buffIcons->item(i)->checkState() == Qt::Checked) request.buffIcons.append(buffIcons->item(i)->data(Qt::UserRole).toString());
-        }
+        request.buffIcons = CheckedValues(buffIcons);
     }
     const auto generated = GeneratePartySystem(request, false, &error);
     if (!generated) {
@@ -339,6 +356,129 @@ void GameUiModule::ShowPartySystemDialog() {
     }
     ReportAuthoring({});
     if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kPartyTriggerCategory)), 8000);
+    OfferMapRuntime();
+}
+
+void GameUiModule::ShowTargetSystemDialog() {
+    SystemDialog ui(page_, "gameUiTargetDialog", tr("目标框架"));
+    auto* frame = ui.Combo("gameUiTargetFrame", tr("界面"));
+    auto* source = ui.Combo("gameUiTargetSource", tr("来源"));
+    source->addItem(tr("选中的单位"), static_cast<int>(TargetSource::Selection));
+    source->addItem(tr("焦点（触发器设定）"), static_cast<int>(TargetSource::Focus));
+    auto* systemName = new QLineEdit(tr("目标"), &ui.dialog);
+    systemName->setObjectName(QStringLiteral("gameUiTargetSystemName"));
+    ui.form->addRow(tr("系统名"), systemName);
+    auto* key = new QLineEdit(QStringLiteral("Target"), &ui.dialog);
+    key->setObjectName(QStringLiteral("gameUiTargetKey"));
+    ui.form->addRow(tr("键"), key);
+    // 换来源时，没改过的系统名与键跟着换成该来源的默认值。
+    connect(source, &QComboBox::currentIndexChanged, &ui.dialog, [=] {
+        const bool focus = source->currentData().toInt() == static_cast<int>(TargetSource::Focus);
+        if (systemName->text() == tr("目标") || systemName->text() == tr("焦点")) systemName->setText(focus ? tr("焦点") : tr("目标"));
+        if (key->text() == QLatin1String("Target") || key->text() == QLatin1String("Focus"))
+            key->setText(focus ? QStringLiteral("Focus") : QStringLiteral("Target"));
+    });
+    auto* shown = ui.Combo("gameUiTargetShown", tr("显示"));
+    auto* health = ui.Combo("gameUiTargetHealth", tr("生命"));
+    auto* mana = ui.Combo("gameUiTargetMana", tr("法力"));
+    auto* healthNow = ui.Combo("gameUiTargetHealthNow", tr("当前生命"));
+    auto* healthMax = ui.Combo("gameUiTargetHealthMax", tr("最大生命"));
+    auto* manaNow = ui.Combo("gameUiTargetManaNow", tr("当前法力"));
+    auto* manaMax = ui.Combo("gameUiTargetManaMax", tr("最大法力"));
+    auto* name = ui.Combo("gameUiTargetName", tr("名字"));
+    auto* level = ui.Combo("gameUiTargetLevel", tr("等级"));
+    auto* dead = ui.Combo("gameUiTargetDead", tr("死亡"));
+    auto* portrait = ui.Combo("gameUiTargetPortrait", tr("头像"));
+    auto* select = ui.Combo("gameUiTargetSelect", tr("点选"));
+    auto* nameSource = ui.Combo("gameUiTargetNameSource", tr("名字来源"));
+    nameSource->addItem(tr("英雄名或单位名"), static_cast<int>(UnitNameSource::Unit));
+    nameSource->addItem(tr("玩家名"), static_cast<int>(UnitNameSource::Player));
+    auto* players = new QSpinBox(&ui.dialog);
+    players->setObjectName(QStringLiteral("gameUiTargetPlayers"));
+    players->setRange(1, static_cast<int>(kTargetMaxPlayers));
+    players->setValue(static_cast<int>(kTargetMaxPlayers));
+    ui.form->addRow(tr("玩家数"), players);
+    auto* buffIcons = ui.IconValues("gameUiTargetBuffIcons", tr("增减益图标"));
+    auto* buffs = ui.ObjectList(project_, "gameUiTargetBuffs", tr("增减益"), QStringLiteral("buff"));
+    auto* portraits = ui.ObjectList(project_, "gameUiTargetPortraits", tr("头像单位"), QStringLiteral("unit"));
+
+    FillDescriptions(frame, Descriptions(), {}, tr("新建目标框架"), "target");
+    const auto refill = [&, this] {
+        const UiDescription* description = Description(frame->currentData().toString());
+        FillValues(shown, description, UiValueType::Boolean, 0, false, {"shown", "visible", "show"});
+        FillValues(health, description, UiValueType::Real, 0, true, {"hp", "health", "life"});
+        FillValues(mana, description, UiValueType::Real, 0, true, {"mp", "mana"});
+        FillValues(healthNow, description, UiValueType::Real, 0, true, {"hp_now", "health_now", "life_now"});
+        FillValues(healthMax, description, UiValueType::Real, 0, true, {"hp_max", "health_max", "life_max"});
+        FillValues(manaNow, description, UiValueType::Real, 0, true, {"mp_now", "mana_now"});
+        FillValues(manaMax, description, UiValueType::Real, 0, true, {"mp_max", "mana_max"});
+        FillValues(name, description, UiValueType::String, 0, true, {"name", "label"});
+        FillValues(level, description, UiValueType::Integer, 0, true, {"level"});
+        FillValues(dead, description, UiValueType::Boolean, 0, true, {"dead"});
+        FillValues(portrait, description, UiValueType::String, 0, true, {"portrait", "avatar"});
+        FillIconValues(buffIcons, description, 0);
+        FillClickEvents(select, description);
+        for (QWidget* box : std::initializer_list<QWidget*>{shown, health, mana, healthNow, healthMax, manaNow, manaMax, name, level, dead, portrait,
+                 select, buffIcons}) {
+            box->setEnabled(description != nullptr);
+        }
+    };
+    connect(frame, &QComboBox::currentIndexChanged, &ui.dialog, refill);
+    if (const int index = frame->findData(SelectedDescriptionId(tree_.get(), selected_)); index >= 0) frame->setCurrentIndex(index);
+    refill();
+    if (!ui.Run()) return;
+
+    TargetSystemRequest request;
+    request.frame = frame->currentData().toString();
+    request.systemName = systemName->text().trimmed();
+    request.key = key->text().trimmed();
+    request.source = static_cast<TargetSource>(source->currentData().toInt());
+    request.nameSource = static_cast<UnitNameSource>(nameSource->currentData().toInt());
+    request.players = players->value();
+    request.buffs = buffs->Ids();
+    request.portraits = portraits->Ids();
+    QString error;
+    if (request.frame.startsWith(QLatin1Char('+'))) {
+        const auto created = CreateFromPreset(QStringLiteral("target"), &error);
+        if (!created) {
+            ReportAuthoring(error);
+            return;
+        }
+        using namespace TargetPreset;
+        request.frame = *created;
+        request.shown = Text(kShown);
+        request.health = Text(kHealth);
+        request.mana = Text(kMana);
+        request.healthNow = Text(kHealthNow);
+        request.healthMax = Text(kHealthMax);
+        request.name = Text(kName);
+        request.level = Text(kLevel);
+        request.dead = Text(kDead);
+        request.portrait = Text(kPortrait);
+        request.select = Text(kSelect);
+        for (const auto icon : kBuffs) request.buffIcons.append(Text(icon));
+    } else {
+        request.shown = shown->currentData().toString();
+        request.health = health->currentData().toString();
+        request.mana = mana->currentData().toString();
+        request.healthNow = healthNow->currentData().toString();
+        request.healthMax = healthMax->currentData().toString();
+        request.manaNow = manaNow->currentData().toString();
+        request.manaMax = manaMax->currentData().toString();
+        request.name = name->currentData().toString();
+        request.level = level->currentData().toString();
+        request.dead = dead->currentData().toString();
+        request.portrait = portrait->currentData().toString();
+        request.select = select->currentData().toString();
+        request.buffIcons = CheckedValues(buffIcons);
+    }
+    const auto generated = GenerateTargetSystem(request, false, &error);
+    if (!generated) {
+        ReportAuthoring(error);
+        return;
+    }
+    ReportAuthoring({});
+    if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kTargetTriggerCategory)), 8000);
     OfferMapRuntime();
 }
 
