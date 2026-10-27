@@ -953,7 +953,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         // 原版通行生成在最终脚本完成后执行；此时还未取得最终替换列表，
         // 不把“须重建通行”提前当成不能保存。其它领域仍走原保存门。
         const auto& finalEdits = terrainReplay ? *terrainReplay : edits;
-        const auto pathingGate = terrainRequest ? Status::Ok() : finalEdits.VerifyTerrainPathingForSave();
+        // 摆放请求也可能改变静态占地；由脚本完成后的最终旧/新资源重建核对。
+        // 不能先用“原通行不变、只改Z”的窄门拒绝已通过类型事务的普通DOO增删。
+        const auto pathingGate = terrainRequest || placementRequest
+            ? Status::Ok() : finalEdits.VerifyTerrainPathingForSave();
         if (!pathingGate.Succeeded()) return Forward(pathingGate.diagnostics);
 
         MapSaveTask task;

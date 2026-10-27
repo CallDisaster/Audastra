@@ -222,6 +222,16 @@ target_compile_definitions(war3-map-save-service-tests PRIVATE NOMINMAX UNICODE 
 target_compile_options(war3-map-save-service-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-map-save COMMAND war3-map-save-service-tests)
 
+add_executable(audastra-map-edit-doodad-pathing-tests MapEditDoodadPathingTests.cpp)
+target_link_libraries(audastra-map-edit-doodad-pathing-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-map-edit-doodad-pathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-map-edit-doodad-pathing-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-map-edit-doodad-pathing COMMAND audastra-map-edit-doodad-pathing-tests empty)
+add_test(NAME services-map-edit-doodad-pathing-footprint COMMAND audastra-map-edit-doodad-pathing-tests footprint)
+add_test(NAME services-map-edit-doodad-pathing-corrupt COMMAND audastra-map-edit-doodad-pathing-tests corrupt)
+set_tests_properties(services-map-edit-doodad-pathing services-map-edit-doodad-pathing-footprint
+    services-map-edit-doodad-pathing-corrupt PROPERTIES TIMEOUT 90)
+
 add_executable(audastra-terrain-rle-footprint-save-tests TerrainRleFootprintSaveTests.cpp)
 target_link_libraries(audastra-terrain-rle-footprint-save-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-rle-footprint-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
