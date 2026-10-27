@@ -1892,10 +1892,10 @@ void TestWritableLoopGeneration(const std::filesystem::path& root) {
 
 void TestGenerate(const std::filesystem::path& root) {
     WriteText(root / "ui" / "config", "base\r\n");
-    WriteText(root / "ui" / "base" / "define.txt", "[TriggerTypes]\r\ninteger=0,1,1,整数,integer\r\n");
+    WriteText(root / "ui" / "base" / "define.txt", "[TriggerTypes]\r\ninteger=0,1,1,整数,integer\r\ntrigger=0,1,1,触发器,trigger\r\n");
     WriteText(root / "ui" / "base" / "event.txt", "[TimerEvent]\r\nscript_name=TriggerRegisterTimerEvent\r\n[[.args]]\r\ntype=real\r\n");
     WriteText(root / "ui" / "base" / "condition.txt", "[AndMultiple]\r\nreturns=boolean\r\n");
-    WriteText(root / "ui" / "base" / "action.txt", "[DoNothing]\r\n");
+    WriteText(root / "ui" / "base" / "action.txt", "[DoNothing]\r\n[TriggerExecute]\r\n[[.args]]\r\ntype=trigger\r\n");
     WriteText(root / "ui" / "base" / "call.txt", "[GetLastCreated]\r\nreturns=unit\r\nscript_name=GetLastCreatedUnit\r\n");
     auto catalog = Trigger::UiCatalog::Load(root);
     Require(catalog.Succeeded(), "synthetic catalog did not load");
@@ -1972,6 +1972,20 @@ void TestGenerate(const std::filesystem::path& root) {
     Require(nonAscii.Succeeded() && nonAscii.text.find("gg_trg_______u") != std::string::npos
         && nonAscii.text.find("function InitTrig_______u takes nothing returns nothing") != std::string::npos,
         "UTF-8 Chinese trigger name must use the observed byte-wise WE/YDWE symbol rule");
+    // 旧版本编辑器写的引用（gg_trg_ 加原样中文名）照常生成为 WE 写法，并提示改正。
+    {
+        auto legacyDocument = document;
+        const auto run = Trigger::TriggerDocumentEditor::AppendRootEca(legacyDocument, *catalog.value, *hello.value,
+            Trigger::UiDefinitionKind::Action, "TriggerExecute");
+        Require(run.Succeeded(), "legacy reference action");
+        const auto* eca = Trigger::TriggerDocumentEditor::FindEca(legacyDocument, run.value->rootEcaId);
+        auto& argument = legacyDocument.argumentNodes[eca->arguments.front()];
+        argument.type = 1; argument.value = Trigger::RawText{"gg_trg_技能"};
+        auto legacyInputs = inputs; legacyInputs.triggers = &legacyDocument;
+        const auto legacy = GenerateMapScript(legacyInputs);
+        Require(legacy.Succeeded() && legacy.text.find("call TriggerExecute(gg_trg_______u)") != std::string::npos
+            && HasCode(legacy.diagnostics, "TRIGGER_SYMBOL_LEGACY"), "legacy trigger reference emits the WE symbol with a warning");
+    }
 
     // 独立切换 TFT 地形雾、物品分类、水色位，防止不相关的地图选项改变生成脚本。
     MapData::MapSettings settings;

@@ -205,6 +205,8 @@ private:
     void DeleteCategory(std::int32_t categoryId);
     void PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std::int32_t categoryId, StableId afterTriggerId);
     void SetTriggerFlags(StableId triggerId, bool enabled, bool initiallyOn, const QString& label);
+    // 把触发器里旧版本编辑器写法的触发器引用改成 WE 写法（LegacyTriggerReferences.h），一条撤销命令。
+    void FixLegacyTriggerReferences(StableId triggerId);
     void PushDirectoryChange(Trigger::TriggerDirectoryLayout before, const QString& label);
     void ApplyRename(const TriggerDirectoryItem& item, const std::string& name);
     // 这些触发器（gg_trg_ 名称）在它们之外的引用：最多渲染 8 行，total 为总数。

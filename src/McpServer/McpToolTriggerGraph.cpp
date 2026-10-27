@@ -1,6 +1,7 @@
 #include "McpToolInternal.h"
 #include "McpTriggerGraphJson.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/LegacyTriggerReferences.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerFeatureText.h"
@@ -475,6 +476,34 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
         return {{"ok", true}, {"schema_version", 1}, {"table", "outline"}, {"categories", rows},
             {"trigger_count", QString::number(listed)}};
     }
+    if (table == "legacy_trigger_references") {
+        // 旧版本编辑器写法的触发器引用；operations 连同 binding 可直接交给编辑工具改正（与界面右键改正同一组修改）。
+        Object(request, {"table"}, {"schema_version", "trigger_id"});
+        const auto only = request.contains("trigger_id") ? std::optional<StableId>(Id(request, "trigger_id")) : std::nullopt;
+        const auto binding = CaptureTriggerGraphBinding(document, catalog, mapObjects);
+        if (!binding.Succeeded()) return Failure(binding);
+        auto references = FindLegacyTriggerReferences(document, only);
+        const bool truncated = references.size() > 128;
+        if (truncated) references.resize(128);
+        const auto scalar = [](const GraphFieldValue& value) {
+            const auto& item = std::get<GraphScalarValue>(value);
+            return QJsonObject{{"kind", item.kind}, {"value", QString::fromStdString(item.value)}};
+        };
+        QJsonArray rows, operations;
+        for (const auto& reference : references) {
+            rows.append(QJsonObject{{"argument", RefJson(GraphRecordKind::Argument, reference.argumentId)},
+                {"trigger", RefJson(GraphRecordKind::Trigger, reference.ownerTriggerId)},
+                {"target", RefJson(GraphRecordKind::Trigger, reference.targetTriggerId)},
+                {"value", QString::fromStdString(reference.value)}, {"symbol", QString::fromStdString(reference.symbol)}});
+        }
+        for (const auto& operation : LegacyTriggerReferenceFixes(references)) {
+            const auto& set = std::get<GraphSet>(operation);
+            operations.append(QJsonObject{{"op", "set"}, {"target", RefJson(set.target.kind, set.target.id)},
+                {"field", "argument_scalar"}, {"expected", scalar(set.expected)}, {"value", scalar(set.value)}});
+        }
+        return {{"ok", true}, {"schema_version", 1}, {"binding", BindingJson(*binding.value)}, {"table", "legacy_trigger_references"},
+            {"references", rows}, {"operations", operations}, {"truncated", truncated}};
+    }
     if (table == "presets") {
         // 函数库预设（固定选项），可按参数类型筛选；写紧凑 T 时直接写预设名。
         Object(request, {"table"}, {"schema_version", "type", "start", "limit"});
@@ -918,7 +947,7 @@ QJsonObject GraphQueryProperties() {
     const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
     return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
-            "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline"}}}},
+            "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline", "legacy_trigger_references"}}}},
         {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
         {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},

@@ -26,6 +26,14 @@ endif()
 add_test(NAME trigger-scalar-replacement-guards COMMAND war3-map-trigger-scalar-guard-tests)
 set_tests_properties(trigger-scalar-replacement-guards PROPERTIES TIMEOUT 60)
 
+add_executable(war3-map-legacy-trigger-reference-tests LegacyTriggerReferenceTests.cpp)
+target_link_libraries(war3-map-legacy-trigger-reference-tests PRIVATE War3MapTrigger)
+if(MSVC)
+    target_compile_options(war3-map-legacy-trigger-reference-tests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME trigger-legacy-references COMMAND war3-map-legacy-trigger-reference-tests)
+set_tests_properties(trigger-legacy-references PROPERTIES TIMEOUT 60)
+
 # U4: compact scalar receipt shares the existing graph editing validation.
 add_executable(war3-map-trigger-scalar-replay-tests TriggerGraphScalarReplayTests.cpp)
 target_link_libraries(war3-map-trigger-scalar-replay-tests PRIVATE War3MapTrigger)

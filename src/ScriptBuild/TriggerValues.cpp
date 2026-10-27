@@ -43,7 +43,7 @@ std::string TriggerEmitter::VariableName(std::string_view value) const {
         const std::string key = (trigger_ ? std::to_string(trigger_->id) : std::string()) + '\n' + found->first;
         if (found->second.legacy && legacyWarned_.insert(key).second) {
             Warn("TRIGGER_SYMBOL_LEGACY", "触发器引用 " + found->first + " 是旧版本编辑器的写法，本编辑器照常生成为 "
-                + found->second.symbol + "；但 WE/YDWE 打开后保存会生成不出对应声明。把这个触发器的自然 T 原样写回一次即可改正。");
+                + found->second.symbol + "；但 WE/YDWE 打开后保存会生成不出对应声明。在触发器的右键菜单选“改正旧版触发器引用”，或把它的自然 T 原样写回一次即可改正。");
         }
         return found->second.symbol;
     }

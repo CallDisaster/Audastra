@@ -6,6 +6,7 @@
 #include "TriggerModels.h"
 
 #include "War3MapCore/Services/ProjectReferenceIndex.h"
+#include "War3MapCore/Trigger/LegacyTriggerReferences.h"
 #include "War3MapCore/Trigger/TriggerPresentation.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
@@ -595,6 +596,24 @@ void TriggerModule::SetTriggerFlags(StableId triggerId, bool enabled, bool initi
     after.enabled = enabled ? 1 : 0;
     after.initiallyClosed = initiallyOn ? 0 : 1;
     project_.triggerUndoStack_->push(new EditTriggerPropertiesUndoCommand(document, triggerId, before, after, label));
+    RefreshExplorer();
+    PopulateProperties(CurrentTrigger());
+}
+
+void TriggerModule::FixLegacyTriggerReferences(StableId triggerId) {
+    if (!CommitPendingEdits()) return;
+    const auto* document = project_.triggerDocument_.get();
+    if (document == nullptr) return;
+    const auto references = Trigger::FindLegacyTriggerReferences(*document, triggerId);
+    if (references.empty()) return;
+    const auto fixed = QtProject::PublishTriggerGraphOperations(project_, Trigger::LegacyTriggerReferenceFixes(references),
+        tr("改正旧版触发器引用"));
+    if (!fixed.Succeeded()) {
+        project_.AddDiagnostics(fixed.diagnostics);
+        ShowStatus(tr("未改正：%1").arg(FirstMessage(fixed.diagnostics, tr("参数校验失败"))), 10000);
+        return;
+    }
+    ShowStatus(tr("已改正 %1 处旧版触发器引用").arg(references.size()), 8000);
     RefreshExplorer();
     PopulateProperties(CurrentTrigger());
 }

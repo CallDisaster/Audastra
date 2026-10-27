@@ -6,6 +6,7 @@
 #include "TriggerModels.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
+#include "War3MapCore/Trigger/LegacyTriggerReferences.h"
 
 #include <QAction>
 #include <QCheckBox>
@@ -131,6 +132,12 @@ void TriggerModule::ShowTreeContextMenu(const QPoint& pos) {
         QAction* references = add("lucide/search", tr("查看引用（物体管理）"));
         references->setEnabled(host_ != nullptr);
         bind(references, [this, triggerId]() { host_->Navigate({"manager", "trigger", QString::number(triggerId), {}}); });
+        if (const auto legacy = Trigger::FindLegacyTriggerReferences(*document, triggerId); !legacy.empty()) {
+            QAction* fix = add("lucide/check", tr("改正旧版触发器引用（%1 处）").arg(legacy.size()));
+            fix->setObjectName("triggerFixLegacyReferencesAction");
+            fix->setToolTip(ScriptRebuildNotice());
+            bind(fix, [this, triggerId]() { FixLegacyTriggerReferences(triggerId); });
+        }
         bind(add("lucide/trash-2", tr("删除触发器"), QKeySequence::Delete), [this, item]() { DeleteDirectoryItem(*item); });
     }
     QAction* chosen = menu.exec(explorerView_->viewport()->mapToGlobal(pos));

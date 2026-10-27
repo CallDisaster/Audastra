@@ -3,6 +3,7 @@
 #include "ScriptNames.h"
 
 #include "War3MapCore/Script/MapScript.h"
+#include "War3MapCore/Trigger/LegacyTriggerReferences.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 
 #include <algorithm>
@@ -86,11 +87,11 @@ TriggerEmitter::TriggerEmitter(const Trigger::TriggerDocument& document, const T
     for (const auto& trigger : document_.triggers) {
         if (trigger.type == 0) triggerSymbols_.emplace(TriggerVariable(trigger), TriggerSymbolTarget{TriggerVariable(trigger), false});
     }
-    // 旧形式只在不和任何 WE 写法撞名时才认。
-    for (const auto& trigger : document_.triggers) {
-        if (trigger.type != 0) continue;
-        triggerSymbols_.emplace("gg_trg_" + ConvertObjectName(trigger.name.text), TriggerSymbolTarget{TriggerVariable(trigger), true});
-        triggerSymbols_.emplace("gg_trg_" + trigger.name.text, TriggerSymbolTarget{TriggerVariable(trigger), true});
+    // 旧形式只在不和任何 WE 写法撞名时才认；对上多个触发器时取文档里第一个。
+    for (const auto& [symbol, targets] : Trigger::LegacyTriggerSymbols(document_)) {
+        const auto trigger = std::find_if(document_.triggers.begin(), document_.triggers.end(),
+            [&](const Trigger::TriggerRecord& row) { return row.id == targets.front(); });
+        triggerSymbols_.emplace(symbol, TriggerSymbolTarget{TriggerVariable(*trigger), true});
     }
 }
 

@@ -566,6 +566,10 @@ void LiveEditorToolsTests::BindingTokenReplacesIdentityFields() {
     const auto none = f.tools->Invoke("editor_query_trigger_graph",
         QJsonObject{{"binding_token", next}, {"table", "outline"}, {"match", "没有这样的名字"}});
     QVERIFY(none.value("ok").toBool() && none.value("categories").toArray().isEmpty());
+    const auto legacy = f.tools->Invoke("editor_query_trigger_graph", QJsonObject{{"binding_token", next}, {"table", "legacy_trigger_references"}});
+    QVERIFY2(legacy.value("ok").toBool(), qPrintable(Explain(legacy)));
+    QVERIFY(legacy.value("references").toArray().isEmpty() && legacy.value("operations").toArray().isEmpty());
+    QVERIFY(legacy.value("binding").isObject() && !legacy.value("truncated").toBool());
 }
 
 void LiveEditorToolsTests::StaleAndInvalidBatchesAreAtomic() {
