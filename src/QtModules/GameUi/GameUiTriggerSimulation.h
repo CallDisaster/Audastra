@@ -32,6 +32,7 @@ struct GameUiTriggerSimulation {
     std::set<std::string, std::less<>> finished;     // 已到期的一次性计时器
     // 拦截的界面触发器（脚本变量名）→ 运行到时切换的状态；空为“创建”“更新”，只读回数值。
     std::map<std::string, std::optional<std::string>, std::less<>> intercepted;
+    std::map<std::string, std::string, std::less<>> names;  // 触发器脚本变量名 → 触发器编辑器里的名字
     std::vector<Diagnostic> diagnostics;
     std::shared_ptr<Services::CodeCheckProjectCache> cache = std::make_shared<Services::CodeCheckProjectCache>();
     QTimer clock;

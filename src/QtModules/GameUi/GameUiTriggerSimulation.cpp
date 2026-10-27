@@ -82,6 +82,19 @@ Diagnostic Problem(DiagnosticSeverity severity, const char* code, const QString&
     return Diagnostic{severity, "GameUi", code, message.toStdString(), std::nullopt};
 }
 
+// 问题里的“触发器 gg_trg_…”换成作者在触发器编辑器里看到的名字。
+Diagnostic Named(const GameUiTriggerSimulation& sim, Diagnostic diagnostic) {
+    const std::string lead = "触发器 ";
+    const std::size_t start = diagnostic.message.find(lead + "gg_trg_");
+    if (start == std::string::npos) return diagnostic;
+    const std::size_t from = start + lead.size();
+    const std::size_t end = diagnostic.message.find("：", from);
+    if (end == std::string::npos) return diagnostic;
+    const auto name = sim.names.find(std::string_view(diagnostic.message).substr(from, end - from));
+    if (name != sim.names.end()) diagnostic.message.replace(from - 1, end - from + 1, "“" + name->second + "”");
+    return diagnostic;
+}
+
 } // namespace
 
 bool GameUiModule::StartTriggerSimulation(const QString& id, QString* error) {
@@ -189,6 +202,8 @@ std::vector<std::string> GameUiModule::PlanTriggerSimulation(const UiDescription
     // 生成的界面触发器在模拟里不执行（它们调游戏的界面函数）：“创建”“更新”只读回数值，状态触发器切换预览状态。
     auto& sim = *triggerSim_;
     sim.intercepted.clear();
+    sim.names.clear();
+    for (const auto& record : document.triggers) sim.names[Trigger::TriggerDirectoryEditor::TriggerSymbol(record.name)] = record.name.text;
     const auto intercept = [&](const std::string& name, std::optional<std::string> state) {
         for (const auto& record : document.triggers) {
             if (record.name.text == name) sim.intercepted[Trigger::TriggerDirectoryEditor::TriggerSymbol(record.name)] = state;
@@ -354,7 +369,7 @@ void GameUiModule::AdvanceTriggerSimulation(std::optional<double> until) {
             sim.finished.insert(next->id);
         }
         intercepted.insert(intercepted.end(), run.intercepted.begin(), run.intercepted.end());
-        for (auto& diagnostic : run.diagnostics) AddProblem(sim.diagnostics, std::move(diagnostic));
+        for (auto& diagnostic : run.diagnostics) AddProblem(sim.diagnostics, Named(sim, std::move(diagnostic)));
         if (!run.completed) {
             stopped = true;
             break;

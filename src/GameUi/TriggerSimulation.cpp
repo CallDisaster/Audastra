@@ -5,11 +5,13 @@
 #include "../Jass/JassParser.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <map>
 #include <random>
 #include <unordered_map>
@@ -34,6 +36,13 @@ constexpr std::size_t kMaxSteps = 1000000;  // 一次执行（初始化时为一
 constexpr std::size_t kMaxDepth = 64;       // 调用深度
 constexpr std::int32_t kMaxArrayIndex = 32767;
 
+// JASS 实数是 32 位浮点：每个实数值都舍入到单精度，累加误差与比较结果和游戏一致。
+double Single(double value) {
+    if (std::isfinite(value) && std::fabs(value) > std::numeric_limits<float>::max())
+        return std::copysign(std::numeric_limits<double>::infinity(), value);
+    return static_cast<float>(value);
+}
+
 struct Value {
     enum class Kind : std::uint8_t { Null, Integer, Real, Boolean, String, Handle, Code } kind = Kind::Null;
     std::int32_t integer = 0;
@@ -43,7 +52,7 @@ struct Value {
     std::uint32_t handle = 0;  // Handle 编号
 
     static Value Int(std::int32_t value) { Value v; v.kind = Kind::Integer; v.integer = value; return v; }
-    static Value Float(double value) { Value v; v.kind = Kind::Real; v.real = value; return v; }
+    static Value Float(double value) { Value v; v.kind = Kind::Real; v.real = Single(value); return v; }
     static Value Bool(bool value) { Value v; v.kind = Kind::Boolean; v.boolean = value; return v; }
     static Value Str(std::string value) { Value v; v.kind = Kind::String; v.text = std::move(value); return v; }
     static Value Object(std::uint32_t id) { Value v; v.kind = Kind::Handle; v.handle = id; return v; }
@@ -75,6 +84,15 @@ struct Location {
     std::string file;
     std::uint32_t line = 0;
 };
+
+// 游戏自带的脚本（common.j、Blizzard.j），作者看不到。
+bool LibraryScript(std::string_view path) {
+    const std::size_t slash = path.find_last_of("/\\");
+    if (slash != std::string_view::npos) path.remove_prefix(slash + 1);
+    std::string name(path);
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return name == "common.j" || name == "blizzard.j";
+}
 
 // 停下一次执行：带上调用位置的诊断。
 struct Stop {
@@ -144,7 +162,15 @@ struct SimulatedTrigger {
 std::optional<std::string> TextOf(const Value& value) {
     switch (value.kind) {
     case Value::Kind::Integer: return std::to_string(value.integer);
-    case Value::Kind::Real: return detail::FormatUiNumber(value.real);
+    case Value::Kind::Real: {
+        // 单精度的最短写法（0.6999999），不写它的双精度展开。
+        const auto single = static_cast<float>(value.real);
+        if (single == 0.0f || !std::isfinite(single)) return std::string("0");
+        std::array<char, 32> buffer{};
+        const auto [end, error] = std::to_chars(buffer.data(), buffer.data() + buffer.size(), single);
+        if (error != std::errc{}) return detail::FormatUiNumber(value.real);
+        return std::string(buffer.data(), end);
+    }
     case Value::Kind::Boolean: return value.boolean ? "true" : "false";
     case Value::Kind::String: return value.text;
     default: return std::nullopt;
@@ -207,7 +233,7 @@ public:
         if (function == state_.functions.end() || !function->second.decl->params.empty()) return;
         const FunctionBody& body = state_.Body(name);
         if (!body.errors.empty()) return;
-        Enter(name, function->second.file, body, {});
+        Enter(name, function->second.file, body, {}, {});
         const std::size_t depth = frames_.size();
         for (const std::int32_t statement : body.statements) {
             steps_ = 0;
@@ -272,6 +298,7 @@ public:
 private:
     struct Frame {
         std::size_t file = 0;
+        Location caller;  // 调用这个函数的位置
         const SyntaxPool* pool = nullptr;
         std::unordered_map<std::string, Variable> locals;
         std::optional<Value> returned;
@@ -282,9 +309,22 @@ private:
         return !trigger.variable.empty() && state_.intercepted.contains(trigger.variable);
     }
 
+    // 停在游戏自带脚本里时，位置报作者脚本里最近的那次调用，库里的位置写在后面；执行触发器时写出是哪个触发器。
     Diagnostic Error(const Location& where, const char* code, const std::string& message) const {
-        const std::string at = where.file.empty() ? std::string() : where.file + ":" + std::to_string(where.line) + "：";
-        return Diagnostic{DiagnosticSeverity::Error, kSubsystem, std::string("AUI_SIM_") + code, at + message, std::nullopt};
+        Location at = where;
+        std::string inside;
+        if (LibraryScript(where.file)) {
+            for (auto frame = frames_.rbegin(); frame != frames_.rend(); ++frame) {
+                if (frame->caller.file.empty() || LibraryScript(frame->caller.file)) continue;
+                inside = "（在 " + where.file + ":" + std::to_string(where.line) + "）";
+                at = frame->caller;
+                break;
+            }
+        }
+        std::string text = at.file.empty() ? std::string() : at.file + ":" + std::to_string(at.line) + "：";
+        const auto trigger = current_ == 0 ? state_.triggers.end() : state_.triggers.find(current_);
+        if (trigger != state_.triggers.end() && !trigger->second.variable.empty()) text += "触发器 " + trigger->second.variable + "：";
+        return Diagnostic{DiagnosticSeverity::Error, kSubsystem, std::string("AUI_SIM_") + code, text + message + inside, std::nullopt};
     }
 
     Location Here(std::uint32_t line) const {
@@ -299,10 +339,11 @@ private:
         }
     }
 
-    void Enter(const std::string& name, std::size_t file, const FunctionBody& body, std::vector<Value> arguments) {
+    void Enter(const std::string& name, std::size_t file, const FunctionBody& body, std::vector<Value> arguments, Location caller) {
         const FunctionDecl& decl = *state_.functions.at(name).decl;
         Frame frame;
         frame.file = file;
+        frame.caller = std::move(caller);
         frame.pool = &body.pool;
         for (std::size_t i = 0; i < arguments.size(); ++i) {
             Variable parameter;
@@ -544,7 +585,7 @@ std::optional<Value> Run::Call(const std::string& name, std::vector<Value> argum
     if (arguments.size() != decl.params.size()) throw Stop{Error(where, "ARGUMENT", name + " 参数个数不符")};
     const FunctionBody& body = state_.Body(name);
     if (!body.errors.empty()) throw Stop{Error(where, "SYNTAX", name + " 有语法错误")};
-    Enter(name, function->second.file, body, std::move(arguments));
+    Enter(name, function->second.file, body, std::move(arguments), where);
     (void)Block(body.statements);
     std::optional<Value> returned = std::move(frames_.back().returned);
     frames_.pop_back();

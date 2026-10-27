@@ -67,6 +67,10 @@ function ConditionalTriggerExecute takes trigger trig returns nothing
     endif
 endfunction
 
+function KillTriggerUnitBJ takes nothing returns nothing
+    call KillUnit(GetTriggerUnit())
+endfunction
+
 function ModuloInteger takes integer dividend, integer divisor returns integer
     local integer modulus = dividend - (dividend / divisor) * divisor
     if (modulus < 0) then
@@ -146,7 +150,7 @@ function InitTrig_Hud_Update takes nothing returns nothing
 endfunction
 
 function Trig_Bad_Actions takes nothing returns nothing
-    call KillUnit(GetTriggerUnit())
+    call KillTriggerUnitBJ()
 endfunction
 
 function InitTrig_Bad takes nothing returns nothing
@@ -172,6 +176,37 @@ function InitCustomTriggers takes nothing returns nothing
     call InitTrig_Hud_Update()
     call InitTrig_Bad()
     call InitTrig_Spin()
+endfunction
+)";
+
+// 每跳减 0.1：游戏里实数为单精度，第 7 跳就低于 0.3，第 10 跳到 0 以下（双精度要晚一跳）。
+const char* const kDrain = R"(
+globals
+    real udg_hp = 1
+    real udg_third = 0
+    boolean udg_low = false
+    boolean udg_empty = false
+    trigger gg_trg_Drain = null
+endglobals
+
+function AudastraUIRegisterSimulationTimer takes trigger t, string description, string timer returns nothing
+endfunction
+
+function Trig_Drain_Actions takes nothing returns nothing
+    set udg_hp = udg_hp - 0.1
+    set udg_low = udg_hp < 0.3
+    set udg_empty = udg_hp <= 0
+    set udg_third = 1.0 / 3.0
+endfunction
+
+function InitTrig_Drain takes nothing returns nothing
+    set gg_trg_Drain = CreateTrigger()
+    call AudastraUIRegisterSimulationTimer(gg_trg_Drain, "Hp", "tick")
+    call TriggerAddAction(gg_trg_Drain, function Trig_Drain_Actions)
+endfunction
+
+function InitCustomTriggers takes nothing returns nothing
+    call InitTrig_Drain()
 endfunction
 )";
 
@@ -244,10 +279,13 @@ void TestStops() {
     TriggerSimulator& simulator = *prepared.value;
     (void)simulator.Initialize();
     const auto bad = simulator.Fire("Hud", "slow");
+    // 停在 Blizzard.j 里：位置报作者脚本里调用它的那一行和触发器，库里的位置写在后面。
     Check(!bad.completed && HasCode(bad.diagnostics, "AUI_SIM_UNSUPPORTED") &&
               bad.diagnostics[0].message.find("GetTriggerUnit") != std::string::npos &&
-              bad.diagnostics[0].message.find("war3map.j:") != std::string::npos,
-        "unsupported game function reported: " + Messages(bad.diagnostics));
+              bad.diagnostics[0].message.starts_with("war3map.j:") &&
+              bad.diagnostics[0].message.find("触发器 gg_trg_Bad：") != std::string::npos &&
+              bad.diagnostics[0].message.find("（在 Blizzard.j:") != std::string::npos,
+        "unsupported game function reported at the author's call: " + Messages(bad.diagnostics));
     const auto spin = simulator.Fire("Hud", "spin");
     Check(!spin.completed && HasCode(spin.diagnostics, "AUI_SIM_STEPS"), "endless loop stopped");
     // 没拦截“更新”时，它里面的游戏函数照样停下，但前面的赋值保留。
@@ -259,6 +297,30 @@ void TestStops() {
     Check(!broken.Succeeded() && HasCode(broken.diagnostics, "AUI_SIM_SYNTAX"), "syntax errors fail preparation");
 }
 
+// 实数按单精度运算与读回。
+void TestSinglePrecision() {
+    auto prepared = TriggerSimulator::Prepare(Scripts(kDrain));
+    Check(prepared.Succeeded(), "prepare drain: " + Messages(prepared.diagnostics));
+    TriggerSimulator& simulator = *prepared.value;
+    Check(simulator.Initialize().completed, "drain initializes");
+    const auto fire = [&simulator](int times) {
+        for (int i = 0; i < times; ++i) Check(simulator.Fire("Hp", "tick").completed, "drain tick runs");
+    };
+    fire(3);
+    Check(Value(simulator, "udg_hp") == "0.6999999", "single precision readback: " + Value(simulator, "udg_hp"));
+    Check(Value(simulator, "udg_third") == "0.33333334", "single precision division: " + Value(simulator, "udg_third"));
+    fire(3);
+    Check(Value(simulator, "udg_low") == "false", "six ticks stay above 0.3");
+    fire(1);
+    Check(Value(simulator, "udg_low") == "true", "seventh tick drops below 0.3 as in the game");
+    fire(2);
+    Check(Value(simulator, "udg_empty") == "false", "nine ticks stay above 0");
+    fire(1);
+    Check(Value(simulator, "udg_empty") == "true" && Value(simulator, "udg_hp") == "-7.4505806e-08",
+        "tenth tick reaches 0 or below as in the game: " + Value(simulator, "udg_hp"));
+    Check(simulator.SetGlobal("udg_hp", std::nullopt, "0.1") && Value(simulator, "udg_hp") == "0.1", "set real keeps short text");
+}
+
 } // namespace
 
 int main() {
@@ -266,6 +328,7 @@ int main() {
         TestInitialize();
         TestFire();
         TestStops();
+        TestSinglePrecision();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;
