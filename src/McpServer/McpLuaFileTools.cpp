@@ -140,7 +140,8 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
         const auto key = name == "map_test_eval" ? QStringLiteral("actions") : QStringLiteral("scenario");
         const auto actions = args.value(key);
         if (!actions.isString() || actions.toString().isEmpty() || actions.toString().size() > 65536 || actions.toString().contains(QChar::Null))
-            return Failure("MAP_TEST_ARGUMENT_INVALID", key.toStdString() + " 必须是非空的紧凑 T 文本。");
+            return Failure("MAP_TEST_ARGUMENT_INVALID", key.toStdString() + " 必须是 1..65536 字符、不含空字符的紧凑 T 文本；当前 "
+                + QString::number(actions.isString() ? actions.toString().size() : 0).toStdString() + " 字符。");
         if (args.contains("reads")) {
             const auto reads = args.value("reads");
             if (!reads.isArray() || reads.toArray().size() > 32) return Failure("MAP_TEST_ARGUMENT_INVALID", "reads 必须是最多32项的数组。");

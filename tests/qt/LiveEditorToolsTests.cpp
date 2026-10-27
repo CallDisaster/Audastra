@@ -2169,6 +2169,12 @@ void LiveEditorToolsTests::LuaFileToolsShareAssetUndoAndRejectStaleText() {
     scenario.insert("reads", QJsonArray{QStringLiteral("Count")}); scenario.insert("start_seconds", 2.5);
     QCOMPARE(ErrorCode(f.tools->Invoke("map_test_start", scenario)), QString("MAP_TEST_REJECTED"));
     QCOMPARE(launches, 3);
+    // 超长场景直接说出上限和当前长度，不转交宿主。
+    auto oversized = f.Context(); oversized.insert("scenario", QString(65537, QLatin1Char('x')));
+    const auto tooLong = f.tools->Invoke("map_test_start", oversized);
+    QCOMPARE(ErrorCode(tooLong), QString("MAP_TEST_ARGUMENT_INVALID"));
+    QVERIFY(tooLong.value("diagnostics").toArray()[0].toObject().value("message").toString().contains("当前 65537 字符"));
+    QCOMPARE(launches, 3);
 
     QtProject::AssetState ambiguous;
     ambiguous.edits.push_back({path, path}); ambiguous.edits.push_back({path, path});
@@ -2442,6 +2448,12 @@ void LiveEditorToolsTests::ResourceToolsUseActualAsyncSourceAndRejectStaleResult
     QCOMPARE(result.value("bytes").toString(), QString("21"));
     QCOMPARE(result.value("width").toInt(), 1); QCOMPARE(result.value("height").toInt(), 1);
     QCOMPARE(f.Fingerprint(), fingerprint); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+    // 查过另一个资源后，先读完的结果仍直接取回，不会被挤掉重新排队。
+    auto other = inspect; other["value"] = "resource/missing.tga";
+    QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", other)), QString("OBJECT_RESOURCE_INSPECT_PENDING"));
+    QTRY_VERIFY_WITH_TIMEOUT(ErrorCode(f.tools->Invoke("object_resource_inspect", other)) != "OBJECT_RESOURCE_INSPECT_PENDING", 3000);
+    QVERIFY2((result = f.tools->Invoke("object_resource_inspect", inspect)).value("ok").toBool(), qPrintable(Explain(result)));
+    QCOMPARE(result.value("bytes").toString(), QString("21"));
 
     QVERIFY(f.tools->Invoke("editor_edit_trigger_graph", f.DescriptionRequest()).value("ok").toBool());
     QCOMPARE(ErrorCode(f.tools->Invoke("object_resource_inspect", inspect)), QString("OBJECT_RESOURCE_STALE"));

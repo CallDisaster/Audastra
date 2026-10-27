@@ -32,20 +32,22 @@ LiveObjectResourceTools::CatalogResult LiveObjectResourceTools::Load(const Modul
 Result<Services::ObjectResourceInfo> LiveObjectResourceTools::Inspect(const Modules::ObjectResourcePickerServices& services,
     std::string_view value, Services::ObjectResourceKind kind) {
     using Return = Result<Services::ObjectResourceInfo>;
-    if (inspected_ && inspectedValue_ == value && inspectedKind_ == kind) return *inspected_;
+    auto key = std::pair{kind, std::string(value)};
+    if (const auto found = inspected_.find(key); found != inspected_.end()) return found->second;
     if (!services.inspect) return Return::Failure("Object.Resource", "OBJECT_RESOURCE_INSPECT_UNAVAILABLE", "来源读取接口未接通。");
     if (!inspectWorker_) {
-        inspected_.reset(); inspectedValue_ = std::string(value); inspectedKind_ = kind;
         auto result = std::make_shared<Return>();
-        auto* worker = QThread::create([inspect = services.inspect, ownedValue = inspectedValue_, kind, result] {
+        auto* worker = QThread::create([inspect = services.inspect, ownedValue = key.second, kind, result] {
             try { *result = inspect(ownedValue, kind); }
             catch (const std::exception& error) { *result = Return::Failure("Object.Resource", "OBJECT_RESOURCE_INSPECT_FAILED", error.what()); }
         });
         inspectWorker_ = worker;
-        connect(worker, &QThread::finished, this, [this, worker, result, revision = services.revision] {
+        connect(worker, &QThread::finished, this, [this, worker, result, key = std::move(key), revision = services.revision] {
             if (inspectWorker_ != worker) return;
             inspectWorker_ = nullptr;
-            if (revision_ == revision) inspected_ = std::move(*result);
+            if (revision_ != revision) return;
+            if (inspected_.size() >= 256) inspected_.clear();
+            inspected_.insert_or_assign(key, std::move(*result));
         });
         connect(worker, &QThread::finished, worker, &QObject::deleteLater); worker->start();
     }
@@ -59,7 +61,7 @@ QJsonObject LiveObjectResourceTools::Invoke(const QString& name, const QJsonObje
     if (services.revision.empty() || !services.isCurrent || !services.isCurrent())
         return Mcp::Failure("OBJECT_RESOURCE_HOST_MISSING", "活动工程没有可信资源来源。");
     if (revision_ != services.revision) {
-        revision_ = services.revision; catalogs_ = {}; inspected_.reset();
+        revision_ = services.revision; catalogs_ = {}; inspected_.clear();
         // 老任务仅持有冻结输入，完成后丢弃。每来源同时只保留一个后台任务。
     }
     Mcp::ObjectResourceToolHost host;
