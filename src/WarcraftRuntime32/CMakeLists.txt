@@ -44,7 +44,8 @@ target_compile_definitions(audastra-warcraft-bootstrap PRIVATE
 target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)
 target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game audastra-game-ui bcrypt dwmapi)
 # 自有界面库：调用 1.27a 自己的界面函数；作为内置 JAPI 模块 audastraui 由 bootstrap 装进每个新 Host。
-add_library(audastra-game-ui STATIC GameUi/GameUiAbi127.cpp GameUi/GameUiLibrary.cpp GameUi/GameUiModule.cpp)
+add_library(audastra-game-ui STATIC GameUi/GameUiAbi127.cpp GameUi/GameUiLibrary.cpp GameUi/GameUiModule.cpp
+    GameUi/GameInput127.cpp)
 target_link_libraries(audastra-game-ui PUBLIC audastra-japi)
 add_library(audastra-map-runtime SHARED Japi/StandaloneRuntime.cpp Japi/ProcessOwner.cpp Japi/StandaloneRuntime.def)
 target_link_libraries(audastra-map-runtime PRIVATE audastra-own-lua-game audastra-game-ui audastra-detours bcrypt)
@@ -177,6 +178,12 @@ if(BUILD_TESTING)
     target_compile_options(audastra-game-ui-tests PRIVATE /utf-8 /W4 /permissive-)
     add_test(NAME audastra-game-ui COMMAND audastra-game-ui-tests)
     set_tests_properties(audastra-game-ui PROPERTIES TIMEOUT 30)
+    add_executable(audastra-game-input-tests fixtures/GameInput127Tests.cpp)
+    target_link_libraries(audastra-game-input-tests PRIVATE audastra-game-ui)
+    target_compile_definitions(audastra-game-input-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-game-input-tests PRIVATE /utf-8 /W4 /permissive-)
+    add_test(NAME audastra-game-input COMMAND audastra-game-input-tests)
+    set_tests_properties(audastra-game-input PROPERTIES TIMEOUT 30)
     add_executable(audastra-own-lua-launch-tests fixtures/OwnLuaLaunchTests.cpp)
     add_dependencies(audastra-own-lua-launch-tests audastra-warcraft-launcher audastra-warcraft-bootstrap
         audastra-runtime-fixture-war3 audastra-runtime-fixture-game)

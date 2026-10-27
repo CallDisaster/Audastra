@@ -580,10 +580,16 @@ void ModuleCalls() {
     Check(m.Call("module.load;s:audastraui").status == AJ_OK, "map-side load finds the active built-in module");
     Check(m.Call("module.load;s:other").status == AJ_UNSUPPORTED, "no loader: maps cannot pull other modules");
     Check(m.Call("module.info;s:audastraui").value.text
-        == "audastraui|1.0.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
+        == "audastraui|1.1.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
 
     auto r = m.Call("audastraui.ready");
     Check(r.status == AJ_OK && r.value.kind == AJ_BOOL && r.value.integer == 1, "ready with complete entries and game UI");
+    Check(m.Call("audastraui.clickunit;i:1234").status == AJ_UNSUPPORTED, "drawing does not imply input capability");
+    const auto inputFailure = m.request;
+    Check(m.Call("audastraui.error;i:" + std::to_string(inputFailure)).value.text.find("单位目标输入") != std::string::npos,
+        "input capability failure explains its own request");
+    Check(m.Call("audastraui.clickunit;d:1234").status == AJ_ARGUMENT, "frame tokens cannot masquerade as unit arguments");
+    Check(m.Call("audastraui.ready").value.integer == 1, "missing input capability leaves drawing available");
     r = m.Call("audastraui.create;s:Text;d:0;i:3;i:7");
     Check(r.status == AJ_OK && r.value.kind == AJ_HANDLE && r.value.integer > 0, "create returns a frame handle");
     Check(Logged("create Text " + Hex(g_root->Self()) + " 0 3 7"), "create arguments reach the game function");
@@ -706,8 +712,15 @@ void ScriptMatchesModule() {
             ++used[name];
         }
     }
-    for (const auto& command : contract.commands)
+    for (const auto& command : contract.commands) {
+        // 输入是1.1的可选能力，旧版绘制包装仍可完整使用1.0命令。
+        if (command.name == "audastraui.clickunit" && !used.contains(command.name)) {
+            Check(command.arguments == "i" && command.resultKind == AJ_INT && command.domain == AJ_LOCAL_COMMAND,
+                "optional input command keeps its declared contract with an older wrapper");
+            continue;
+        }
         Check(used.contains(command.name), ("module command unused by the script: " + command.name).c_str());
+    }
 }
 
 } // namespace

@@ -1,4 +1,5 @@
 #include "GameUiLibrary.h"
+#include "GameUiMemory.h"
 #include <atomic>
 #include <limits>
 
@@ -14,16 +15,7 @@ constexpr std::size_t kMaxEvents = 256;
 constexpr int kMaxDepth = 64;
 constexpr int kTableCapacity = 0xFFFF;
 
-// 读游戏内存时对象可能已被游戏释放；读失败只当作“没有”，不让异常越过界面库。
-bool ReadWord(Address at, Address& value) noexcept {
-    if (!at) return false;
-    __try {
-        value = *reinterpret_cast<const Address*>(at);
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
-}
+using Detail::ReadWord;
 
 bool WriteWord(Address at, Address value) noexcept {
     __try {
