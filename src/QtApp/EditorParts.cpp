@@ -58,6 +58,7 @@ EditorParts::EditorParts(bool persistentSettings)
         QCoreApplication::translate("EditorParts", "AI"), "lucide/shield", key(Qt::Key_8), pending));
     worldModule_ = Add(modules_, std::make_unique<War3Map::Modules::WorldModule>(*project_));
     gameUiModule_ = Add(modules_, std::make_unique<War3Map::Modules::GameUiModule>(*project_));
+    gameUiModule_->SetResourcePickerFactory(War3Map::QtApp::MakeObjectResourcePickerFactory(*project_));
 }
 
 EditorParts::~EditorParts() = default;

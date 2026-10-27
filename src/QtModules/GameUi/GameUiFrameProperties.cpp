@@ -2,16 +2,26 @@
 
 #include "GameUiAuthoringJson.h"
 #include "GameUiChoice.h"
+#include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/ScriptFrames.h"
 
 #include <QCheckBox>
+#include <QGuiApplication>
+#include <QHBoxLayout>
+#include <QHeaderView>
 #include <QColor>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMenu>
+#include <QPixmap>
+#include <QScreen>
+#include <QShortcut>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <array>
@@ -19,7 +29,8 @@
 #include <set>
 
 // 界面工作区属性树里“编辑”一组：描述框架可直接改的字段（尺寸、贴图、文字、字体、颜色、对齐、进度、显示、
-// 锚点、重复）。选择类字段用列表选取，改动整批经 UiDescriptionEdit 检查后放进待保存修改。
+// 锚点、重复）。选择类字段用列表选取，贴图用资源选择器，改动整批经 UiDescriptionEdit 检查后放进待保存修改。
+// 右键“设置界面”的卡片用同一套字段与修改。
 namespace War3Map::Modules {
 namespace {
 
@@ -28,6 +39,7 @@ using namespace War3Map::GameUi;
 QString Text(std::string_view text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
 constexpr int kFieldRole = Qt::UserRole + 40;
+constexpr int kTextureRole = Qt::UserRole + 41;  // 贴图字段：双击打开资源选择器
 
 double Round4(double value) { return std::round(value * 10000.0) / 10000.0; }
 
@@ -120,11 +132,23 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame)
     }
     editable(group, tr("宽"), QStringLiteral("width"), number(frame.width));
     editable(group, tr("高"), QStringLiteral("height"), number(frame.height));
+    // 贴图：有资源选择器时双击打开它（自定义页可写路径或 {编号} 模板），行首显示已读到的贴图。
+    const auto texture = [&](const QString& label, const QString& key, const std::string& value) {
+        auto* item = editable(group, label, key, Text(value));
+        if (resourcePickerFactory_) {
+            item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+            item->setData(1, kTextureRole, true);
+        }
+        const auto found = textures_.constFind(GameUiAssetKey(Text(EnsureTextureExtension(value))));
+        if (found != textures_.constEnd() && !found->isNull()) {
+            item->setData(1, Qt::DecorationRole, QPixmap::fromImage(found->scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        }
+    };
     const bool image = frame.type == UiFrameType::Backdrop || frame.type == UiFrameType::Bar || frame.type == UiFrameType::Button;
     const bool text = frame.type == UiFrameType::Text || frame.type == UiFrameType::Button;
-    if (image) editable(group, tr("贴图"), QStringLiteral("texture"), Text(frame.texture));
-    if (frame.type == UiFrameType::Bar) editable(group, tr("底图"), QStringLiteral("background"), Text(frame.background));
-    if (frame.type == UiFrameType::Button) editable(group, tr("按下贴图"), QStringLiteral("pushed"), Text(frame.pushed));
+    if (image) texture(tr("贴图"), QStringLiteral("texture"), frame.texture);
+    if (frame.type == UiFrameType::Bar) texture(tr("底图"), QStringLiteral("background"), frame.background);
+    if (frame.type == UiFrameType::Button) texture(tr("按下贴图"), QStringLiteral("pushed"), frame.pushed);
     if (text) {
         editable(group, tr("文字"), QStringLiteral("text"), Text(frame.text));
         editable(group, tr("字体"), QStringLiteral("font"), Text(frame.font));
@@ -408,25 +432,32 @@ bool GameUiModule::RemoveDescriptionAnchor(int index, QString* error) {
     return EditDescription(id, CompactEdits({edit}), tr("界面 %1：%2 删除锚点 %3").arg(id, Text(frame->id)).arg(index + 1), error);
 }
 
-void GameUiModule::InstallPropertyEditors() {
+void GameUiModule::InstallPropertyEditors(QTreeWidget* tree) {
     const auto key = [](const QModelIndex& index) { return index.data(kFieldRole).toString(); };
-    properties_->setItemDelegateForColumn(1, new GameUiChoiceDelegate(
-        [this, key](const QModelIndex& index) { return PropertyChoices(key(index)); }, properties_,
+    tree->setItemDelegateForColumn(1, new GameUiChoiceDelegate(
+        [this, key](const QModelIndex& index) { return PropertyChoices(key(index)); }, tree,
         [this, key](const QModelIndex& index) { return PropertyFreeText(key(index)); }));
-    properties_->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(properties_, &QTreeWidget::customContextMenuRequested, this, &GameUiModule::ShowPropertyMenu);
-    connect(properties_, &QTreeWidget::itemChanged, this, &GameUiModule::OnPropertyEdited);
+    tree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(tree, &QTreeWidget::customContextMenuRequested, this, [this, tree](const QPoint& position) { ShowPropertyMenu(tree, position); });
+    connect(tree, &QTreeWidget::itemChanged, this, &GameUiModule::OnPropertyEdited);
+    connect(tree, &QTreeWidget::itemDoubleClicked, this, [this, tree](QTreeWidgetItem* item, int) {
+        if (item && item->data(1, kTextureRole).toBool()) OpenTexturePicker(tree, item);
+    });
 }
 
-void GameUiModule::ShowPropertyMenu(const QPoint& position) {
-    if (!properties_ || !SelectedDescriptionFrame()) return;
-    QMenu menu(properties_);
+void GameUiModule::ShowPropertyMenu(QTreeWidget* tree, const QPoint& position) {
+    if (!tree || !SelectedDescriptionFrame()) return;
+    QMenu menu(tree);
+    QTreeWidgetItem* item = tree->itemAt(position);
+    if (item && item->data(1, kTextureRole).toBool()) {
+        menu.addAction(tr("选择贴图…"), this, [this, tree, item] { OpenTexturePicker(tree, item); });
+        menu.addSeparator();
+    }
     menu.addAction(tr("添加锚点"), this, [this] {
         QString error;
         if (!AddDescriptionAnchor(&error)) ReportAuthoring(error);
     });
     // 点在锚点组或其下的行上时可删该锚点。
-    QTreeWidgetItem* item = properties_->itemAt(position);
     QString prefix;
     for (QTreeWidgetItem* at = item; at && prefix.isEmpty(); at = at->parent()) {
         const QString key = at->data(0, kFieldRole).toString();
@@ -442,7 +473,124 @@ void GameUiModule::ShowPropertyMenu(const QPoint& position) {
             });
         });
     }
-    menu.exec(properties_->viewport()->mapToGlobal(position));
+    menu.exec(tree->viewport()->mapToGlobal(position));
+}
+
+// 贴图选择：物编的资源选择器，打开即按目录浏览游戏文件；应用时作为一次框架修改写入。
+void GameUiModule::OpenTexturePicker(QTreeWidget* tree, QTreeWidgetItem* item) {
+    QString id;
+    const UiFrame* frame = SelectedDescriptionFrame(&id);
+    if (!tree || !item || !frame || !resourcePickerFactory_ || !page_) return;
+    const QString key = item->data(1, kFieldRole).toString();
+    const QString frameId = Text(frame->id);
+    const QString label = item->text(0);
+    auto* picker = new ObjectResourcePicker(Services::ObjectResourceField{Services::ObjectResourceKind::Texture, false, true},
+        item->text(1), resourcePickerFactory_(), page_);
+    picker->setObjectName(QStringLiteral("gameUiTexturePicker"));
+    picker->BrowseGameFiles();
+    const QPointer<GameUiModule> self(this);
+    picker->SetCommit([self, id, frameId, key, label](const QString& value) {
+        if (!self) return false;
+        const QString path = value.trimmed();
+        const QJsonObject edit{{"op", "set_frame"}, {"frame", frameId},
+            {"fields", QJsonObject{{key, path.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(path)}}}};
+        QString error;
+        if (self->EditDescription(id, CompactEdits({edit}), tr("界面 %1：改 %2 的 %3").arg(id, frameId, label), &error)) return true;
+        self->ReportAuthoring(error);
+        return false;
+    });
+    // 放在这一行右侧，放不下时放到属性表左侧；受屏幕工作区约束。
+    const QRect row = tree->visualItemRect(item);
+    QPoint origin = tree->viewport()->mapToGlobal(QPoint(row.right(), row.top()));
+    if (const QScreen* screen = tree->screen()) {
+        const QRect available = screen->availableGeometry();
+        if (origin.x() + picker->width() > available.right()) origin.setX(tree->mapToGlobal(QPoint(0, 0)).x() - picker->width());
+        origin.setX(std::clamp(origin.x(), available.left(), std::max(available.left(), available.right() - picker->width())));
+        origin.setY(std::clamp(origin.y(), available.top(), std::max(available.top(), available.bottom() - picker->height())));
+    }
+    picker->move(origin);
+    picker->show();
+    picker->raise();
+}
+
+QPointer<QWidget> GameUiModule::OpenFrameSettings(std::uint32_t node, const QPoint& global) {
+    if (!tree_ || !page_ || node >= tree_->Nodes().size() || !tree_->Nodes()[node].uiFrame || tree_->Nodes()[node].uiFrame->frame.empty()) {
+        return nullptr;
+    }
+    SelectNode(node);
+    if (!settingsCard_) {
+        auto* card = new QFrame(page_, Qt::Tool | Qt::FramelessWindowHint);
+        card->setObjectName(QStringLiteral("gameUiFrameSettings"));
+        card->setAttribute(Qt::WA_DeleteOnClose);
+        card->setFrameShape(QFrame::StyledPanel);
+        auto* layout = new QVBoxLayout(card);
+        layout->setContentsMargins(8, 6, 8, 8);
+        layout->setSpacing(6);
+        auto* header = new QHBoxLayout;
+        auto* title = new QLabel(card);
+        title->setObjectName(QStringLiteral("gameUiFrameSettingsTitle"));
+        QFont bold = title->font();
+        bold.setBold(true);
+        title->setFont(bold);
+        auto* close = new QToolButton(card);
+        close->setText(QStringLiteral("×"));
+        close->setAutoRaise(true);
+        connect(close, &QToolButton::clicked, card, &QWidget::close);
+        header->addWidget(title, 1);
+        header->addWidget(close);
+        layout->addLayout(header);
+        auto* fields = new QTreeWidget(card);
+        fields->setObjectName(QStringLiteral("gameUiFrameSettingsFields"));
+        fields->setColumnCount(2);
+        fields->setHeaderLabels({tr("属性"), tr("值")});
+        fields->header()->setSectionResizeMode(QHeaderView::Interactive);
+        fields->header()->resizeSection(0, 110);
+        fields->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed | QAbstractItemView::SelectedClicked);
+        layout->addWidget(fields, 1);
+        InstallPropertyEditors(fields);
+        auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), card);
+        connect(escape, &QShortcut::activated, card, &QWidget::close);
+        card->resize(360, 440);
+        settingsCard_ = card;
+        settingsFields_ = fields;
+        settingsTitle_ = title;
+    }
+    RefreshFrameSettings();
+    if (!settingsCard_) return nullptr;
+    // 放在右键位置右侧，受屏幕工作区约束。
+    QPoint origin = global + QPoint(12, 0);
+    if (const QScreen* screen = QGuiApplication::screenAt(global)) {
+        const QRect available = screen->availableGeometry();
+        const QSize size = settingsCard_->size();
+        origin.setX(std::clamp(origin.x(), available.left(), std::max(available.left(), available.right() - size.width())));
+        origin.setY(std::clamp(origin.y(), available.top(), std::max(available.top(), available.bottom() - size.height())));
+    }
+    settingsCard_->move(origin);
+    settingsCard_->show();
+    settingsCard_->raise();
+    return settingsCard_.data();
+}
+
+// 卡片跟随选择：换选另一个描述框架时显示它，选中的不是描述框架时关闭。
+void GameUiModule::RefreshFrameSettings() {
+    if (!settingsCard_ || !settingsFields_ || !settingsTitle_) return;
+    QString id;
+    const UiFrame* frame = SelectedDescriptionFrame(&id);
+    if (!frame) {
+        settingsCard_->close();
+        return;
+    }
+    QString kind = Text(UiFrameTypeName(frame->type));
+    for (const auto& candidate : UiFrameKinds()) {
+        if (candidate.type != frame->type) continue;
+        kind = Text(candidate.label);
+        break;
+    }
+    const QString name = frame->label.empty() ? Text(frame->id) : QStringLiteral("%1 · %2").arg(Text(frame->label), Text(frame->id));
+    settingsTitle_->setText(QStringLiteral("%1  %2").arg(kind, name));
+    const QSignalBlocker block(settingsFields_.data());  // 填表不算编辑
+    settingsFields_->clear();
+    AddEditableRows(settingsFields_->invisibleRootItem(), *frame);
 }
 
 } // namespace War3Map::Modules

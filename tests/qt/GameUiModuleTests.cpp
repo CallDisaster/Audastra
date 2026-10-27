@@ -83,6 +83,7 @@ private slots:
     void GeneratesDescriptionTriggers();
     void FramePropertiesEditLayoutAndText();
     void KindPickerCreatesTypedFrames();
+    void FrameSettingsCardAndTexturePicker();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -831,6 +832,63 @@ void GameUiModuleTests::KindPickerCreatesTypedFrames() {
     QVERIFY2(module.EditDescription(QStringLiteral("Hud"), QString::fromUtf8(QJsonDocument(edits).toJson(QJsonDocument::Compact)), {}, &error),
         qPrintable(error));
     QVERIFY(FindUiFrame(*description(), "hp"));
+}
+
+void GameUiModuleTests::FrameSettingsCardAndTexturePicker() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error), qPrintable(error));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("bar"), &error), QStringLiteral("bar1"));
+    QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("text"), &error), QStringLiteral("text1"));
+    const auto frame = [&module](const char* id) { return FindUiFrame(*module.Description(QStringLiteral("Hud")), id); };
+    const auto field = [](QTreeWidget* tree, const QString& label) -> QTreeWidgetItem* {
+        for (QTreeWidgetItemIterator it(tree); *it; ++it) {
+            if ((*it)->text(0) == label && (*it)->data(1, Qt::UserRole + 40).isValid()) return *it;
+        }
+        return nullptr;
+    };
+
+    // 设置卡片：只对描述框架打开；与属性表同一套字段，改动走同一修改。
+    QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
+    QVERIFY(!module.OpenFrameSettings(module.SelectedNode(), QPoint(10, 10)));
+    QVERIFY(module.SelectFrame(QStringLiteral("bar1")));
+    QPointer<QWidget> card = module.OpenFrameSettings(module.SelectedNode(), QPoint(10, 10));
+    QVERIFY(card && card->isVisible());
+    auto* fields = card->findChild<QTreeWidget*>(QStringLiteral("gameUiFrameSettingsFields"));
+    QVERIFY(fields && field(fields, QStringLiteral("底图")));
+    QVERIFY(card->findChild<QLabel*>(QStringLiteral("gameUiFrameSettingsTitle"))->text().contains(QStringLiteral("进度条")));
+    field(fields, QStringLiteral("宽"))->setText(1, QStringLiteral("0.25"));
+    QCoreApplication::processEvents();
+    QCOMPARE(frame("bar1")->width, std::optional<double>(0.25));
+    // 没有资源选择器时贴图照旧手写。
+    QVERIFY(field(fields, QStringLiteral("贴图"))->flags() & Qt::ItemIsEditable);
+    // 卡片跟随选择：换选另一个描述框架时显示它，选中描述根节点时关闭。
+    QVERIFY(module.SelectFrame(QStringLiteral("text1")));
+    QVERIFY(card && card->findChild<QLabel*>(QStringLiteral("gameUiFrameSettingsTitle"))->text().contains(QStringLiteral("text1")));
+    QVERIFY(!field(fields, QStringLiteral("贴图")));
+    QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QVERIFY(!card);
+
+    // 有资源选择器时：贴图双击打开选择器，应用后作为一次修改写入。
+    module.SetResourcePickerFactory([] { return Modules::ObjectResourcePickerServices{}; });
+    QVERIFY(module.SelectFrame(QStringLiteral("bar1")));
+    auto* properties = page->findChild<QTreeWidget*>(QStringLiteral("gameUiProperties"));
+    QTreeWidgetItem* texture = field(properties, QStringLiteral("贴图"));
+    QVERIFY(texture && !(texture->flags() & Qt::ItemIsEditable));
+    emit properties->itemDoubleClicked(texture, 1);
+    auto* picker = page->findChild<Modules::ObjectResourcePicker*>(QStringLiteral("gameUiTexturePicker"));
+    QVERIFY(picker && picker->isVisible());
+    auto* path = picker->findChild<QLineEdit*>(QStringLiteral("resourcePath"));
+    QVERIFY(path);
+    QCOMPARE(path->text(), QStringLiteral("ReplaceableTextures\\TeamColor\\TeamColor06"));
+    path->setText(QStringLiteral("ReplaceableTextures\\TeamColor\\TeamColor00"));
+    emit path->returnPressed();
+    QCOMPARE(frame("bar1")->texture, std::string("ReplaceableTextures\\TeamColor\\TeamColor00"));
 }
 
 int main(int argc, char** argv) {

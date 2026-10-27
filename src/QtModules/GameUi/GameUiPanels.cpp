@@ -318,7 +318,7 @@ void GameUiModule::BuildPage() {
         if (!MoveDescriptionFrame(node, dx, dy, &error)) ReportAuthoring(error);
     });
     connect(rawFields_, &QCheckBox::toggled, this, &GameUiModule::UpdateProperties);
-    InstallPropertyEditors();
+    InstallPropertyEditors(properties_);
     // Delete 删除所选的描述框架（节点树与画布上都可用）。
     for (QWidget* target : std::initializer_list<QWidget*>{nodes_, canvas_}) {
         auto* remove = new QAction(target);
@@ -441,6 +441,7 @@ void GameUiModule::SelectNode(std::uint32_t node) {
 void GameUiModule::UpdateProperties() {
     UpdateDescriptionPanel();
     UpdateAuthoringControls();
+    RefreshFrameSettings();
     if (!properties_) return;
     const QSignalBlocker block(properties_);  // 填表不算编辑
     properties_->clear();

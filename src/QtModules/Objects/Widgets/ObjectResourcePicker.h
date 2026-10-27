@@ -46,6 +46,8 @@ public:
     // Apply 返回 false 时保留草稿并显示原因；唯一写入路径由原字段命令提供。
     void SetCommit(std::function<bool(const QString&)> commit);
     [[nodiscard]] QString Value() const;
+    // 打开后直接按目录浏览游戏文件（界面贴图这类没有物体字段可参照的资源）。
+    void BrowseGameFiles();
 signals:
     void ValueCommitted(const QString& value);
 private:

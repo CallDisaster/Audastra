@@ -141,6 +141,7 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
 }
 ObjectResourcePicker::~ObjectResourcePicker() { alive_->store(false); ++request_; }
 void ObjectResourcePicker::SetCommit(std::function<bool(const QString&)> commit) { commit_ = std::move(commit); }
+void ObjectResourcePicker::BrowseGameFiles() { browse_->setCurrentIndex(1); }
 QString ObjectResourcePicker::Value() const {
     if (!selected_) return path_->text();
     QStringList values;

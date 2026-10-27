@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QPointer>
 #include <QTabWidget>
 #include <QTextStream>
 #include <QWidget>
@@ -44,7 +45,7 @@ int main(int argc, char** argv) {
         out << "usage: audastra-game-ui-capture <war3-root> <out-dir> [--map MAP] [--race R] [--classic] [--frame NAME]... "
                "[--only NAME]... [--select NAME] [--bounds] [--names] [--simulate FUNC] [--set KEY=VALUE]... "
                "[--import ARCHIVE_PATH=FILE]... [--ui-new ID]... [--ui-add ID:KIND[@X,Y]]... [--ui-state ID=STATE] [--ui-set ID:KEY=VALUE]... "
-               "[--show-hidden] [--ui-tab N] [--kind-picker KIND]\n";
+               "[--show-hidden] [--ui-tab N] [--kind-picker KIND] [--frame-settings FRAME]\n";
         return 2;
     }
     War3Map::UiKit::ApplyApplicationFont(War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory()));
@@ -101,6 +102,7 @@ int main(int argc, char** argv) {
     QString simulate;
     int uiTab = -1;
     QString kindPicker;
+    QString frameSettings;
     std::map<std::string, std::string> simulationValues;
     for (qsizetype i = 3; i < arguments.size(); ++i) {
         const QString& argument = arguments[i];
@@ -136,6 +138,7 @@ int main(int argc, char** argv) {
                 out << "bad --ui-add " << spec << ' ' << error << '\n';
         }
         else if (argument == QLatin1String("--kind-picker") && hasValue) kindPicker = arguments[++i];
+        else if (argument == QLatin1String("--frame-settings") && hasValue) frameSettings = arguments[++i];
         else if ((argument == QLatin1String("--ui-state") || argument == QLatin1String("--ui-set")) && hasValue) {
             // --ui-state 界面=状态；--ui-set 界面:数值键=值
             const QString spec = arguments[++i];
@@ -198,6 +201,15 @@ int main(int argc, char** argv) {
         QApplication::processEvents();
         pickerSaved = pickerSaved && picker->grab().save(output.filePath(QStringLiteral("kind-picker.png")));
         if (!pickerSaved) out << "kind picker capture failed: " << kindPicker << '\n';
+    }
+    // --frame-settings 框架：打开右键“设置界面”的卡片并单独截图。
+    if (!frameSettings.isEmpty()) {
+        QPointer<QWidget> card = module.SelectFrame(frameSettings) ? module.OpenFrameSettings(module.SelectedNode(), QPoint(0, 0)) : nullptr;
+        QApplication::processEvents();
+        if (!card || !card->grab().save(output.filePath(QStringLiteral("frame-settings.png")))) {
+            out << "frame settings capture failed: " << frameSettings << '\n';
+            pickerSaved = false;
+        }
     }
     out << "nodes=" << (module.Tree() ? module.Tree()->Nodes().size() : 0) << " commands=" << module.DrawList().commands.size()
         << " saved=" << (pageSaved && canvasSaved && pickerSaved) << '\n';

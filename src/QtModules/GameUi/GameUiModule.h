@@ -7,6 +7,7 @@
 #include "War3MapCore/GameUi/UiSkin.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Services/MapRuntimePackage.h"
+#include "Widgets/ObjectResourcePicker.h"
 
 #include <QHash>
 #include <QImage>
@@ -31,6 +32,7 @@
 
 class QCheckBox;
 class QComboBox;
+class QFrame;
 class QJsonArray;
 class QLabel;
 class QLineEdit;
@@ -138,6 +140,11 @@ public:
     // 右键创建：打开类型选取，放进 node 所在的描述框架（不在描述里时为所选或第一份描述的顶层）；
     // 没有描述时返回空。at 为新框架中心。
     QPointer<QWidget> OpenKindPicker(std::uint32_t node, std::optional<QPointF> at, const QPoint& global);
+    // 右键“设置界面”：选中该描述框架并在 global 旁打开设置卡片（与右侧“编辑”同一套字段与检查），卡片跟随选择，
+    // 选中的不是描述框架时关闭。不是描述框架时返回空。
+    QPointer<QWidget> OpenFrameSettings(std::uint32_t node, const QPoint& global);
+    // 贴图字段用物编同一个资源选择器（游戏文件、导入文件、自定义路径，带预览）；没有时贴图字段直接手写。
+    void SetResourcePickerFactory(ObjectResourcePickerFactory factory) { resourcePickerFactory_ = std::move(factory); }
     bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
     // 给所选描述框架加一个锚点（取第一个没用过的对齐点）、删去第 index 个锚点。
     bool AddDescriptionAnchor(QString* error = nullptr);
@@ -214,11 +221,13 @@ private:
     [[nodiscard]] GameUi::UiSkin MakeSkin() const;
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
-    // 属性树“编辑”一组（GameUiFrameProperties.cpp）。
-    void InstallPropertyEditors();
+    // 属性树“编辑”一组与设置卡片（GameUiFrameProperties.cpp）：两处用同一套字段、选择器与修改。
+    void InstallPropertyEditors(QTreeWidget* tree);
     void AddEditableRows(QTreeWidgetItem* group, const GameUi::UiFrame& frame);
     void OnPropertyEdited(QTreeWidgetItem* item, int column);
-    void ShowPropertyMenu(const QPoint& position);
+    void ShowPropertyMenu(QTreeWidget* tree, const QPoint& position);
+    void OpenTexturePicker(QTreeWidget* tree, QTreeWidgetItem* item);
+    void RefreshFrameSettings();
     [[nodiscard]] const GameUi::UiFrame* SelectedDescriptionFrame(QString* descriptionId = nullptr) const;
     // 选择类字段的可选项（显示文字、取值）；不是选择类字段时为空。
     [[nodiscard]] QList<std::pair<QString, QString>> PropertyChoices(const QString& key) const;
@@ -311,6 +320,10 @@ private:
     QToolButton* addFrameButton_ = nullptr;
     QPushButton* removeFrameButton_ = nullptr;
     QPushButton* generateTriggersButton_ = nullptr;
+    ObjectResourcePickerFactory resourcePickerFactory_;
+    QPointer<QFrame> settingsCard_;
+    QPointer<QTreeWidget> settingsFields_;
+    QPointer<QLabel> settingsTitle_;
 };
 
 } // namespace War3Map::Modules

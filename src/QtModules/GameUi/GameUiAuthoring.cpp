@@ -243,6 +243,7 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
     AddNewDescriptionForm(menu.addMenu(tr("新建界面描述")));
     if (isFrame) {
         menu.addSeparator();
+        menu.addAction(tr("设置界面…"), this, [this, node, global] { (void)OpenFrameSettings(node, global); });
         menu.addAction(tr("删除"), this, [this] {
             QString error;
             if (!RemoveSelectedDescriptionFrame(&error) && !error.isEmpty()) ReportAuthoring(error);
