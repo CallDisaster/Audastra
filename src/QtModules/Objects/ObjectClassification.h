@@ -28,6 +28,11 @@ using ClassificationLookup = std::function<std::string(std::string_view slk, std
 [[nodiscard]] QStringList Classify(ObjectData::ObjectType type, const std::string& rawcode, const ClassificationLookup& lookup);
 [[nodiscard]] QStringList ClassifyStandard(const ObjectData::StandardObjectEntry& entry);
 [[nodiscard]] QStringList ClassifyCustom(const ObjectInheritanceChain& chain, ObjectData::ObjectType type, const std::string& rawcode);
+// 自定义对象的分类字段：自身与地图父链的修改优先，再回落到原版基础对象。
+[[nodiscard]] ClassificationLookup CustomLookup(const ObjectInheritanceChain& chain);
+// 装饰物/可破坏物的类别字段（原版 category 列，地图物编原生字段 dcat / bcat），用于取原版类别图标；
+// 其他类别返回空串。
+[[nodiscard]] std::string CategoryCode(ObjectData::ObjectType type, const ClassificationLookup& lookup);
 
 // 文件夹排序：按原版固定顺序（人族、兽族、…；对战、战役；单位、建筑、英雄、特殊）。未知的排在后面。
 // depth 为文件夹在根下的层级（0 起）。

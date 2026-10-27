@@ -194,6 +194,7 @@ void ObjectTreeBrowser::Rebuild() {
             item->setData(object->id, kIdRole);
             item->setData(object->custom, kCustomRole);
             item->setData(object->iconPath, kIconPathRole);
+            if (!object->fallbackIcon.isNull()) item->setIcon(object->fallbackIcon);
             item->setData(object->name + QLatin1Char(' ') + object->id, kSearchRole);
             item->setToolTip(object->tooltip.isEmpty() ? QStringLiteral("%1 (%2)").arg(object->name, object->id)
                                                        : QStringLiteral("%1 (%2)\n%3").arg(object->name, object->id, object->tooltip));

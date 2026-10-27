@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/ObjectData/ObjectCategoryArt.h"
 
 #include <QHash>
 #include <QIcon>
@@ -8,6 +9,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -78,6 +80,11 @@ public:
     };
     [[nodiscard]] QIcon IconForEditor(EditorIcon icon);
 
+    // 装饰物/可破坏物的类别图标（UI\WorldEditData.txt 的 [DoodadCategories]/[DestructibleCategories]）。
+    // 原版目录给没有自身图标的条目显示所在类别的图标；category 为物体的类别字段。只取游戏数据，
+    // 没有对应类别或图标时返回空 QIcon。
+    [[nodiscard]] QIcon IconForObjectCategory(War3Map::ObjectData::ObjectType type, const std::string& category);
+
     // 分类 id（TC_XXX）→ QIcon。未知分类返回空 QIcon。
     [[nodiscard]] QIcon IconForCategory(const QString& categoryId);
 
@@ -102,6 +109,8 @@ private:
     // layer 非空时，其他来源都未命中再查该层目录（分类图标相对层目录的写法）。
     [[nodiscard]] QIcon IconForTexture(const QString& texturePath, const QString& layer);
     [[nodiscard]] std::vector<std::byte> ReadTexture(const QString& key, const QString& layer) const;
+    // 只从游戏数据解码编辑器界面图标；16 像素点阵图另备最近邻放大的 2 倍图。
+    [[nodiscard]] QIcon GameUiIcon(const QString& texturePath);
 
     std::unique_ptr<War3Map::Game::GameDataSource> source_;
     std::unique_ptr<War3Map::Mpq::MpqArchive> mapArchive_;
@@ -113,6 +122,7 @@ private:
     QHash<QString, QString> categoryToTexture_; // TC_xxx → 纹理路径
     QHash<QString, QString> functionToCategory_; // 函数名 → TC_xxx
     QHash<QString, QString> categoryLayer_;      // TC_xxx → 提供该分类的 UI 层（游戏基线为空）
+    std::optional<std::vector<War3Map::ObjectData::ObjectCategoryArt>> objectCategories_; // 首次使用时读取
 };
 
 } // namespace War3Map::QtApp

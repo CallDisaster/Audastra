@@ -1,4 +1,5 @@
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
+#include "War3MapCore/ObjectData/ObjectCategoryArt.h"
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Game/WorldEditStrings.h"
 #include "War3MapCore/Image/BlpImage.h"
@@ -101,6 +102,23 @@ void Synthetic() {
     Check(!StandardObjectCatalog::Load(reader, options).Succeeded(), "bounded source size");
 }
 
+void CategoryArt() {
+    // 原创的分类段写法：段名不分大小写，类别码转大写，同码以后写的为准，无关段忽略。
+    const auto categories = ParseObjectCategoryArt(
+        "[WorldEditArt]\nX=WESTRING_SKIP,Skip\n"
+        "[doodadcategories]\r\nq=WESTRING_Q,Textures\\Q\r\n// note\r\nR=WESTRING_R\n"
+        "[DestructibleCategories]\nK=WESTRING_K, Textures\\K \nk=WESTRING_K2,Textures\\K2\nbad line\n");
+    Check(categories.size() == 3, "category art keeps two doodad and one destructible entry");
+    const auto* q = FindObjectCategoryArt(categories, ObjectType::Doodad, "q");
+    Check(q && q->nameKey == "WESTRING_Q" && q->texture == "Textures\\Q", "doodad category resolves by first letter");
+    const auto* r = FindObjectCategoryArt(categories, ObjectType::Doodad, "R");
+    Check(r && r->nameKey == "WESTRING_R" && r->texture.empty(), "category without texture keeps empty texture");
+    const auto* k = FindObjectCategoryArt(categories, ObjectType::Destructable, " kind ");
+    Check(k && k->nameKey == "WESTRING_K2" && k->texture == "Textures\\K2", "later duplicate code wins");
+    Check(!FindObjectCategoryArt(categories, ObjectType::Destructable, "Q"), "categories stay within their own section");
+    Check(!FindObjectCategoryArt(categories, ObjectType::Doodad, ""), "empty category has no art");
+}
+
 void RealGame(const std::filesystem::path& root) {
     auto source = Game::GameDataSource::Mount(root);
     Check(source.Succeeded(), "mount local game read-only");
@@ -158,6 +176,7 @@ void RealGame(const std::filesystem::path& root) {
 
 int wmain(int argc, wchar_t* argv[]) {
     Synthetic();
+    CategoryArt();
     if (argc == 3 && std::wstring_view(argv[1]) == L"--game-root") RealGame(argv[2]);
     std::cout << "standard-object-catalog failures=" << failures << '\n';
     return failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

@@ -61,6 +61,7 @@ bool IconProvider::SetGameRoot(const std::filesystem::path& war3Root) {
     iconCache_.clear();
     categoryToTexture_.clear();
     functionToCategory_.clear();
+    objectCategories_.reset();
     // 以游戏自带的 UI\TriggerData.txt 为权威来源。
     LoadFromGameTriggerData();
     return true;
@@ -274,16 +275,33 @@ QIcon IconProvider::IconForEditor(EditorIcon icon) {
         "Editor-TriggerGroup", "Editor-TriggerGroup-Open", "Editor-TriggerEvent", "Editor-TriggerCondition",
         "Editor-TriggerAction", "Editor-TriggerFunction", "Editor-TriggerFunctionDisabled",
     };
-    const QString key = QStringLiteral("editor:%1").arg(static_cast<int>(icon));
+    return GameUiIcon(QStringLiteral("ReplaceableTextures\\WorldEditUI\\") + QString::fromLatin1(kPaths[static_cast<int>(icon)]));
+}
+
+QIcon IconProvider::IconForObjectCategory(War3Map::ObjectData::ObjectType type, const std::string& category) {
+    if (!objectCategories_) {
+        objectCategories_.emplace();
+        if (source_ != nullptr) {
+            const auto data = source_->ReadFile("UI\\WorldEditData.txt");
+            if (data.Succeeded() && data.value.has_value())
+                *objectCategories_ = War3Map::ObjectData::ParseObjectCategoryArt(
+                    std::string_view(reinterpret_cast<const char*>(data.value->data()), data.value->size()));
+        }
+    }
+    const auto* art = War3Map::ObjectData::FindObjectCategoryArt(*objectCategories_, type, category);
+    return art == nullptr || art->texture.empty() ? QIcon{} : GameUiIcon(QString::fromStdString(art->texture));
+}
+
+QIcon IconProvider::GameUiIcon(const QString& texturePath) {
+    // 与 IconForTexture 相同的归一化（反斜杠、小写）；编辑器界面图标只取原版游戏数据，地图不能替换。
+    const QString normalized = NormalizeTexturePath(texturePath);
+    const QString key = QStringLiteral("editor-ui:") + normalized;
     if (const auto cached = iconCache_.find(key); cached != iconCache_.end()) {
         return cached.value();
     }
     QIcon result;
-    if (source_ != nullptr) {
-        // 与 IconForTexture 相同的归一化（反斜杠、小写）；编辑器界面图标只取原版游戏数据，地图不能替换。
-        const std::string path = NormalizeTexturePath(
-            QStringLiteral("ReplaceableTextures\\WorldEditUI\\") + QString::fromLatin1(kPaths[static_cast<int>(icon)])).toStdString();
-        auto blp = source_->ReadFile(path);
+    if (source_ != nullptr && !normalized.isEmpty()) {
+        auto blp = source_->ReadFile(normalized.toStdString());
         Result<War3Map::Image::DecodedImage> decoded;
         if (blp.Succeeded() && blp.value) decoded = War3Map::Image::DecodeBlp(*blp.value);
         if (decoded.Succeeded() && decoded.value && decoded.value->Valid()) {

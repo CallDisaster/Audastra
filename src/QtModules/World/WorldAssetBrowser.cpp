@@ -269,7 +269,7 @@ void WorldAssetBrowser::RefreshFilters() {
     if (kind == QLatin1String("unit")) append({"人族", "兽族", "不死族", "暗夜精灵族", "中立 - 娜迦", "中立敌对", "中立被动"});
     else if (kind == QLatin1String("item")) append({"永久的", "可充的", "力量提升", "人造物品", "可购买的", "战役", "混杂的", "未知"});
     else if (kind == QLatin1String("doodad")) append({"道具", "建筑", "水", "悬崖/地形", "环境", "电影", "其他"});
-    else append({"树/可破坏", "路径阻断器", "桥/斜坡", "其他"});
+    else append({"桥/斜坡", "路径阻断器", "树/可破坏", "其他"});
     group_->addItem(tr("分类未确认"), tr("分类未确认"));
 }
 void WorldAssetBrowser::Reload() {
@@ -326,7 +326,12 @@ void WorldAssetBrowser::LoadBatch(std::uint64_t generation) {
         item->setData(Qt::UserRole, row.entry.id);
         if (row.mapObject) item->setForeground(QColor(0xd5, 0x98, 0xd7));
         if (!row.entry.available) item->setForeground(palette().brush(QPalette::Disabled, QPalette::Text));
-        if (icons_) item->setIcon(icons_->IconForTexture(row.entry.iconPath));
+        if (icons_) {
+            // 装饰物/可破坏物没有自身图标，与原版一样显示类别图标。
+            QIcon icon = icons_->IconForTexture(row.entry.iconPath);
+            if (icon.isNull()) icon = icons_->IconForObjectCategory(row.object.type, row.classification.category);
+            item->setIcon(icon);
+        }
         UpdateItemLayout(*item);
         objects_.push_back(std::move(row));
     }

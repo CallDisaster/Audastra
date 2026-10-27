@@ -36,6 +36,7 @@ ObjectViewClassification ClassificationForChain(const ObjectInheritanceChain& ch
     // ClassifyCustom 已是物编的共用分类入口。使用已确认的原版父对象身份，
     // 避免自定义 rawcode 的大小写错误地改变英雄类别。
     result.folders = Modules::ObjectDetail::ClassifyCustom(chain, type, chain.standardBase->key.rawcode);
+    result.category = Modules::ObjectDetail::CategoryCode(type, Modules::ObjectDetail::CustomLookup(chain));
     if (type == ObjectData::ObjectType::Unit) result.hero = chain.standardBase->category == "hero";
     return result;
 }
@@ -262,6 +263,7 @@ ObjectViewClassification ResolveObjectViewClassification(const QtProject::Editor
         ObjectViewClassification result;
         result.folders = Modules::ObjectDetail::ClassifyStandard(*standard);
         if (object.type == ObjectData::ObjectType::Unit) result.hero = standard->category == "hero";
+        else result.category = standard->category;
         return result;
     }
     return {{QObject::tr("分类未确认")}, std::nullopt, QObject::tr("对象的物编类别尚未确认")};

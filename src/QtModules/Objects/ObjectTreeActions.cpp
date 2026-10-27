@@ -39,6 +39,10 @@ void ObjectModule::RebuildObjectTree() {
         if (entry.kind == kind) mapEntries.insert(entry.id, &entry);
     }
     std::vector<ObjectTreeBrowser::Object> objects;
+    // 与原版目录一样，没有自身图标的装饰物/可破坏物显示所在类别的图标。
+    const auto categoryIcon = [&](const std::string& category) {
+        return showRawFields_->isChecked() ? QIcon{} : project_->iconProvider_->IconForObjectCategory(type, category);
+    };
     if (catalog != nullptr) {
         for (const auto& entry : catalog->Entries()) {
             if (entry.key.type != type) continue;
@@ -50,6 +54,7 @@ void ObjectModule::RebuildObjectTree() {
             object.name = showRawFields_->isChecked() ? object.id : shown != nullptr ? shown->name : U8(entry.displayName);
             object.iconPath = showRawFields_->isChecked() ? QString{} : shown != nullptr ? shown->iconPath : U8(entry.iconPath);
             object.folders = ClassifyStandard(entry);
+            object.fallbackIcon = categoryIcon(entry.category);
             if (object.modified) object.tooltip = tr("已修改 %1 个字段").arg(record->modifications.size());
             objects.push_back(std::move(object));
         }
@@ -67,6 +72,7 @@ void ObjectModule::RebuildObjectTree() {
             object.iconPath = showRawFields_->isChecked() ? QString{} : shown != nullptr ? shown->iconPath : presentation.iconPath;
             const auto chain = ResolveObjectInheritance(*document, record.key, catalog);
             object.folders = ClassifyCustom(chain, type, record.key.rawcode);
+            object.fallbackIcon = categoryIcon(CategoryCode(type, CustomLookup(chain)));
             object.tooltip = record.parentRawcode ? tr("基于 %1").arg(U8(*record.parentRawcode)) : tr("找不到基础对象");
             if (shown) object.tooltip += QLatin1Char('\n') + shown->details.join(QLatin1Char('\n'));
             else if (!presentation.issue.isEmpty()) object.tooltip += QLatin1Char('\n') + presentation.issue;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QIcon>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -37,6 +38,7 @@ public:
         bool custom = false;   // 放在“自定义”根下
         bool modified = false; // 标准物体被地图修改过
         QString tooltip;
+        QIcon fallbackIcon;    // 没有自身图标时显示（装饰物/可破坏物的类别图标）
     };
 
     explicit ObjectTreeBrowser(IconProvider* icons, QWidget* parent = nullptr);

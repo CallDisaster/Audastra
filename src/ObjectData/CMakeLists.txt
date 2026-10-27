@@ -7,6 +7,7 @@ add_library(War3MapObjectData STATIC
     ObjectImport.cpp
     ObjectBatchEdit.cpp
     ObjectTypes.cpp
+    ObjectCategoryArt.cpp
     ObjectFieldSchema.cpp
     ObjectReferenceIndex.cpp
     StandardObjectCatalog.cpp

@@ -15,6 +15,7 @@ struct ObjectViewClassification {
     QStringList folders;
     std::optional<bool> hero;
     QString issue;
+    std::string category; // 装饰物/可破坏物的类别字段，取原版类别图标用
 };
 [[nodiscard]] ObjectViewClassification ResolveObjectViewClassification(
     const QtProject::EditorProject& project, const ObjectData::ObjectKey& object);

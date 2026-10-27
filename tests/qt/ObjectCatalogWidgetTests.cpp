@@ -349,6 +349,15 @@ void ObjectCatalogWidgetTests::ClassificationFollowsWorldEditor() {
     QCOMPARE(Classify(ObjectType::Item, "I000", lookup({{"icla", "Charged"}})), QStringList{"可充的"});
     QCOMPARE(Classify(ObjectType::Ability, "AIat", lookup({{"item", "1"}})), QStringList{"物品"});
     QCOMPARE(Classify(ObjectType::Doodad, "LTlt", lookup({{"category", "E"}})), QStringList{"环境"});
+    // 类别图标用的类别字段：地图物编原生字段优先于原版列。
+    using War3Map::Modules::ObjectDetail::CategoryCode;
+    QCOMPARE(CategoryCode(ObjectType::Destructable, lookup({{"category", "D"}, {"bcat", "B"}})), std::string("B"));
+    QCOMPARE(CategoryCode(ObjectType::Doodad, lookup({{"category", "O"}})), std::string("O"));
+    QVERIFY(CategoryCode(ObjectType::Unit, lookup({{"category", "O"}})).empty());
+    // 可破坏物文件夹与原版目录同序：桥/斜坡、路径阻断器、树/可破坏。
+    using War3Map::Modules::ObjectDetail::FolderRank;
+    QVERIFY(FolderRank(QStringLiteral("桥/斜坡"), 0) < FolderRank(QStringLiteral("路径阻断器"), 0));
+    QVERIFY(FolderRank(QStringLiteral("路径阻断器"), 0) < FolderRank(QStringLiteral("树/可破坏"), 0));
     QCOMPARE(War3Map::Modules::ObjectDetail::RootLabel(ObjectType::Unit, true), QStringLiteral("自定义单位"));
 }
 
@@ -406,6 +415,37 @@ void ObjectCatalogWidgetTests::ObjectTreeGroupsCountsAndSelects() {
     tree.SetSearchText(QStringLiteral("hbar"));
     QCOMPARE(model->rowCount(), 1);
     QCOMPARE(model->index(0, 0).data().toString(), QStringLiteral("标准单位 (3)"));
+
+    // 没有自身图标的可破坏物显示所在类别的图标；有图标路径但读不到时同样回落。
+    QPixmap category(16, 16);
+    category.fill(Qt::darkGreen);
+    std::vector<Object> destructibles{
+        {"LTlt", "树", {}, {"树/可破坏"}, false, false, {}, QIcon(category)},
+        {"LTe1", "门", "Missing\\Icon.blp", {"树/可破坏"}, false, false, {}, QIcon(category)},
+        {"YTpb", "阻断器", {}, {"路径阻断器"}, false, false, {}, {}},
+    };
+    tree.SetSearchText({});
+    tree.SetObjects("destructable", "标准可破坏物", "自定义可破坏物", destructibles);
+    const QModelIndex standard = model->index(0, 0);
+    QCOMPARE(model->index(0, 0, standard).data().toString(), QStringLiteral("路径阻断器 (1)"));
+    const QModelIndex trees = model->index(1, 0, standard);
+    QCOMPARE(trees.data().toString(), QStringLiteral("树/可破坏 (2)"));
+    for (int row = 0; row < 2; ++row) {
+        const auto icon = model->index(row, 0, trees).data(Qt::DecorationRole).value<QIcon>();
+        QVERIFY(!icon.isNull());
+    }
+    QVERIFY(model->index(0, 0, model->index(0, 0, standard)).data(Qt::DecorationRole).value<QIcon>().isNull());
+
+    // 本机游戏数据：原版类别表给出树、桥和装饰物道具的图标。
+    const QString gameRoot = qEnvironmentVariable("AUDASTRA_TEST_GAME_ROOT");
+    if (gameRoot.isEmpty()) return;
+    IconProvider provider;
+    QVERIFY(provider.SetGameRoot(gameRoot.toStdWString()));
+    using War3Map::ObjectData::ObjectType;
+    QVERIFY(!provider.IconForObjectCategory(ObjectType::Destructable, "D").isNull());
+    QVERIFY(!provider.IconForObjectCategory(ObjectType::Destructable, "B").isNull());
+    QVERIFY(!provider.IconForObjectCategory(ObjectType::Doodad, "O").isNull());
+    QVERIFY(provider.IconForObjectCategory(ObjectType::Destructable, "Q").isNull());
 }
 
 int main(int argc, char** argv) {

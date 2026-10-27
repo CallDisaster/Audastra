@@ -127,7 +127,17 @@ QStringList ClassifyStandard(const ObjectData::StandardObjectEntry& entry) {
 }
 
 QStringList ClassifyCustom(const ObjectInheritanceChain& chain, ObjectType type, const std::string& rawcode) {
-    return Classify(type, rawcode, [&chain](std::string_view slk, std::string_view native) {
+    return Classify(type, rawcode, CustomLookup(chain));
+}
+
+std::string CategoryCode(ObjectType type, const ClassificationLookup& get) {
+    if (type == ObjectType::Doodad) return get("category", "dcat");
+    if (type == ObjectType::Destructable) return get("category", "bcat");
+    return {};
+}
+
+ClassificationLookup CustomLookup(const ObjectInheritanceChain& chain) {
+    return [&chain](std::string_view slk, std::string_view native) {
         // 自身与地图父链上的修改优先（原生字段 ID；LNI 文档也可能用 SLK 名）。
         for (const auto* record : chain.records) {
             for (const auto& modification : record->modifications) {
@@ -140,7 +150,7 @@ QStringList ClassifyCustom(const ObjectInheritanceChain& chain, ObjectType type,
             if (found != chain.standardBase->fields.end()) return found->second;
         }
         return std::string{};
-    });
+    };
 }
 
 int FolderRank(const QString& label, int depth) {
@@ -155,7 +165,8 @@ int FolderRank(const QString& label, int depth) {
         Tr("魔法效果"), Tr("效果"),
         Tr("永久的"), Tr("可充的"), Tr("力量提升"), Tr("人造物品"), Tr("可购买的"), Tr("混杂的"),
         Tr("道具"), Tr("水"), Tr("悬崖/地形"), Tr("环境"), Tr("电影"),
-        Tr("树/可破坏"), Tr("路径阻断器"), Tr("桥/斜坡"),
+        // 可破坏物与原版目录同序：桥/斜坡、路径阻断器、树/可破坏。
+        Tr("桥/斜坡"), Tr("路径阻断器"), Tr("树/可破坏"),
     };
     const int index = static_cast<int>(kOrder.indexOf(label));
     return index < 0 ? 1000 : index;
