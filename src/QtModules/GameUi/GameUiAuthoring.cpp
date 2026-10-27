@@ -351,18 +351,17 @@ void GameUiModule::AddNewDescriptionForm(QMenu* menu) {
 }
 
 QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
-    newDescriptionButton_ = new QToolButton(toolbar);
+    // 与同排的删除、生成触发器同为按钮外观；带菜单的按钮给下拉箭头单独留位。
+    newDescriptionButton_ = new QPushButton(tr("新建界面"), toolbar);
     newDescriptionButton_->setObjectName(QStringLiteral("gameUiNewDescription"));
-    newDescriptionButton_->setText(tr("新建界面"));
-    newDescriptionButton_->setPopupMode(QToolButton::InstantPopup);
+    newDescriptionButton_->setProperty("menuButton", true);
     auto* createMenu = new QMenu(newDescriptionButton_);
     AddNewDescriptionForm(createMenu);
     newDescriptionButton_->setMenu(createMenu);
 
-    addFrameButton_ = new QToolButton(toolbar);
+    addFrameButton_ = new QPushButton(tr("添加"), toolbar);
     addFrameButton_->setObjectName(QStringLiteral("gameUiAddFrame"));
-    addFrameButton_->setText(tr("添加"));
-    addFrameButton_->setPopupMode(QToolButton::InstantPopup);
+    addFrameButton_->setProperty("menuButton", true);
     auto* addMenu = new QMenu(addFrameButton_);
     for (const auto& kind : UiFrameKinds()) {
         if (kind.type == UiFrameType::Template) continue;

@@ -366,8 +366,8 @@ private:
     bool stagingOwnImport_ = false;  // 自己放入描述文件引发的导入变化：已就地更新，不整体重读
     std::vector<Diagnostic> authoringDiagnostics_;
     std::optional<std::uint64_t> runtimeOfferDeclined_;  // 作者拒绝启用运行库时的工程代号：同一工程不再追问
-    QToolButton* newDescriptionButton_ = nullptr;
-    QToolButton* addFrameButton_ = nullptr;
+    QPushButton* newDescriptionButton_ = nullptr;
+    QPushButton* addFrameButton_ = nullptr;
     QPushButton* removeFrameButton_ = nullptr;
     QPushButton* generateTriggersButton_ = nullptr;
     ObjectResourcePickerFactory resourcePickerFactory_;

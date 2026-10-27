@@ -83,6 +83,11 @@ QToolButton::menu-button:pressed, QToolButton::menu-button:open { background: @s
 QToolButton::menu-button:disabled { background: @panel; border-left-color: @line; }
 QToolButton::menu-arrow { width: 8px; height: 8px; }
 QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: right center; width: 8px; height: 8px; }
+/* 带菜单的按钮：右侧留出箭头位置，箭头与边框保持间距。 */
+QPushButton[menuButton="true"] { padding-left: 10px; padding-right: 22px; }
+QPushButton[menuButton="true"]::menu-indicator {
+    subcontrol-origin: padding; subcontrol-position: right center; right: 9px; width: 8px; height: 8px;
+}
 QPushButton#primaryButton, QPushButton#accentButton { background: @selection; color: @accent; border-color: @accentLine; }
 QPushButton#primaryButton:hover, QPushButton#accentButton:hover { border-color: @accent; }
 QPushButton#primaryButton:disabled, QPushButton#accentButton:disabled { color: @disabled; background: @panel; border-color: @line; }
