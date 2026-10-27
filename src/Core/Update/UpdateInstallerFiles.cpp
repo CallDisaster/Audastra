@@ -392,10 +392,15 @@ Status RenameOwnedRoot(const std::filesystem::path& from, const std::filesystem:
     rename->ReplaceIfExists = FALSE; rename->RootDirectory = nullptr;
     rename->FileNameLength = static_cast<DWORD>(name.size() * sizeof(wchar_t));
     std::copy(name.begin(), name.end(), rename->FileName);
-    if (!SetFileInformationByHandle(handle.Get(), FileRenameInfo, rename, static_cast<DWORD>(buffer.size()))) {
+    // 刚写入的程序文件可能被杀毒软件等短暂打开，目录改名会得到拒绝访问或共享冲突；等一小会儿再试（总计约 2 秒），
+    // 仍失败才报错。只等待，不结束任何进程。
+    for (DWORD attempt = 1, wait = 25;; ++attempt, wait = std::min<DWORD>(wait * 2, 400)) {
+        if (SetFileInformationByHandle(handle.Get(), FileRenameInfo, rename, static_cast<DWORD>(buffer.size()))) break;
         const auto error = GetLastError();
-        return Failure("UPDATE_DIRECTORY_RENAME_FAILED", "同卷目录改名失败（Windows 错误 "
-            + std::to_string(error) + "）；保留已有目录以便恢复。");
+        if (attempt >= 8 || (error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION))
+            return Failure("UPDATE_DIRECTORY_RENAME_FAILED", "同卷目录改名失败（Windows 错误 "
+                + std::to_string(error) + "）；保留已有目录以便恢复。");
+        Sleep(wait);
     }
     return CheckOpenedPath(handle.Get(), *destination.value, true);
 }
