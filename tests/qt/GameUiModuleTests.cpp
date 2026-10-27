@@ -1,4 +1,5 @@
 #include "AudastraUiCatalog.h"
+#include "ActionBarLayer.h"
 #include "CastSpellLayer.h"
 #include "MeterLayer.h"
 #include "EditorProject.h"
@@ -85,6 +86,7 @@ private slots:
     void GeneratesPartySystem();
     void GeneratesTargetSystem();
     void GeneratesMeterSystem();
+    void GeneratesActionBarSystem();
     void GeneratesTalentSystem();
 };
 
@@ -824,7 +826,7 @@ void GameUiModuleTests::CreatesFromPresets() {
     // 新建界面菜单里的模板列表与 Core 的模板一致。
     auto* presets = page->findChild<QComboBox*>(QStringLiteral("gameUiNewDescriptionPreset"));
     QVERIFY(presets);
-    QCOMPARE(presets->count(), 6);
+    QCOMPARE(presets->count(), 7);
     QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0
         && presets->findData(QStringLiteral("talents")) > 0);
     QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
@@ -1091,6 +1093,89 @@ void GameUiModuleTests::GeneratesMeterSystem() {
     QCOMPARE(project.triggerUndoStack_->count(), undo + 2);
     project.triggerUndoStack_->undo();
     QCOMPARE(count(), 3);
+}
+
+// 技能栏：没有 YDWE 技能属性时拒绝（关掉技能状态可以生成）；按模板新建界面并生成界面触发器后，生成写进“技能栏”类别并可撤销；
+// 登记的技能在物编里没有图标时拒绝且不改地图；地图里已有登记触发器时保留它。
+void GameUiModuleTests::GeneratesActionBarSystem() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(page->findChild<QPushButton*>(QStringLiteral("gameUiActionBarSystem")));
+    QString error;
+    using namespace GameUi::ActionBarPreset;
+    const auto id = [](std::string_view value) { return QString::fromLatin1(value.data(), static_cast<qsizetype>(value.size())); };
+    Modules::GameUiModule::ActionBarSystemRequest request;
+    request.frame = QStringLiteral("Bar");
+    request.shown = id(kShown);
+    QVERIFY(!module.GenerateActionBarSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("触发器")));
+
+    const auto load = [&project](bool japi) {
+        AudastraUiTest::Catalog files;
+        files.extras = {AudastraUiTest::SpellLayer(), AudastraUiTest::PartyLayer(), AudastraUiTest::TalentLayer(), AudastraUiTest::TargetLayer(),
+            AudastraUiTest::ActionBarLayer()};
+        if (japi) files.extras.push_back(AudastraUiTest::YdweAbilityStateLayer());
+        const auto loaded = files.Load();
+        QVERIFY2(loaded.empty(), loaded.c_str());
+        project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+        project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    };
+    // 函数库里没有 YDWE 的技能属性。
+    load(false);
+    QVERIFY(!module.GenerateActionBarSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("技能属性")));
+
+    load(true);
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto count = [&project] {
+        const auto& doc = *project.triggerDocument_;
+        const auto category = std::find_if(doc.categories.begin(), doc.categories.end(),
+            [](const auto& row) { return row.name.text == GameUi::kActionBarTriggerCategory; });
+        if (category == doc.categories.end()) return -1;
+        return static_cast<int>(std::count_if(doc.triggers.begin(), doc.triggers.end(),
+            [&](const auto& row) { return row.categoryId == category->categoryId; }));
+    };
+    QVERIFY2(module.CreateDescription(QStringLiteral("Bar"), QStringLiteral("技能栏"), &error, QStringLiteral("actionbar")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Bar"))->values.size(), std::size_t{7});
+    QVERIFY(!module.GenerateActionBarSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Bar")));
+    QVERIFY2(module.GenerateDescriptionTriggers(QStringLiteral("Bar"), false, &error), qPrintable(error));
+    request.barShown = id(kBarShown);
+    request.icon = id(kIcon);
+    request.hotkey = id(kKey);
+    request.cooldown = id(kCooldown);
+    request.cooldownText = id(kCooldownText);
+    request.noMana = id(kNoMana);
+    request.use = id(kUse);
+
+    // 登记的技能取不到物编图标时拒绝，不改地图。
+    auto unknown = request;
+    unknown.entries = {{QStringLiteral("Hpal"), 1, QStringLiteral("Zzzz"), {}}};
+    QVERIFY(!module.GenerateActionBarSystem(unknown, false, &error));
+    QVERIFY(error.contains(QStringLiteral("Zzzz")));
+    QCOMPARE(count(), -1);
+
+    const auto preview = module.GenerateActionBarSystem(request, true, &error);
+    QVERIFY2(preview, qPrintable(error));
+    QCOMPARE(preview->triggers.size(), qsizetype{5});
+    QCOMPARE(preview->slotCount, std::uint32_t{kSlots});
+    QCOMPARE(preview->registrationTrigger, QStringLiteral("技能栏 登记 Bar_Register"));
+    QVERIFY(!preview->registrationKept);
+    QCOMPARE(count(), -1);
+    const int undo = project.triggerUndoStack_->count();
+    QVERIFY2(module.GenerateActionBarSystem(request, false, &error), qPrintable(error));
+    QCOMPARE(count(), 5);
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 1);
+
+    // 再次生成时保留地图里已有的登记（登记的格不再写入，也就不查图标）。
+    const auto again = module.GenerateActionBarSystem(unknown, true, &error);
+    QVERIFY2(again, qPrintable(error));
+    QVERIFY(again->registrationKept);
+    QVERIFY(!again->featureText.contains(QStringLiteral("登记 Bar_Register")));
+    project.triggerUndoStack_->undo();
+    QCOMPARE(count(), -1);
 }
 
 // 天赋树：按模板新建界面并生成界面触发器后，天赋系统检查同步单位与英雄在物编里存在；没有物编时拒绝且不改地图。

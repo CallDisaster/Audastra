@@ -59,7 +59,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
-             "game_ui_description_triggers", "game_ui_cast_system", "game_ui_party_system", "game_ui_target_system", "game_ui_meter_system", "game_ui_talent_system"}) {
+             "game_ui_description_triggers", "game_ui_cast_system", "game_ui_party_system", "game_ui_target_system", "game_ui_meter_system", "game_ui_action_bar_system", "game_ui_talent_system"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read";
@@ -97,12 +97,12 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
         } else if (tool.name == "game_ui_description_create") {
             tool.description = "新建一份地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程。"
                 "preset 可选起始模板：castbar 读条条（数值 shown、progress、text、remaining，状态 channel、interrupt，"
-                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、hp_now、hp_max、portrait、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；target 目标框架（单值数值 shown、hp、mp、hp_now、hp_max、name、level、dead、portrait、buff1..buff6，点击事件 select，与 game_ui_target_system 的绑定对应）；meter 伤害统计（8 行，数组数值 shown、name、amount、amount_text、share、percent、rate、color，单值 total、time，与 game_ui_meter_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
+                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、hp_now、hp_max、portrait、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；target 目标框架（单值数值 shown、hp、mp、hp_now、hp_max、name、level、dead、portrait、buff1..buff6，点击事件 select，与 game_ui_target_system 的绑定对应）；meter 伤害统计（8 行，数组数值 shown、name、amount、amount_text、share、percent、rate、color，单值 total、time，与 game_ui_meter_system 的绑定对应）；actionbar 技能栏（12 格两行，数组数值 shown、icon、key、cooldown、cooldown_text、no_mana，单值 bar_shown，点击事件 use，与 game_ui_action_bar_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
                 "tip_shown、tip_title、tip_text，数组 level、icon1..3、name1..3、picked1..3，事件 open、close、pick1..3、enter1..3、leave1..3，"
                 "与 game_ui_talent_system 的默认绑定对应）；省略为空白";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("label", QJsonObject{{"type", "string"}, {"maxLength", 256}});
-            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party", "target", "meter", "talents"}}});
+            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party", "target", "meter", "actionbar", "talents"}}});
             required.append("description");
         } else if (tool.name == "game_ui_description_edit") {
             tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："
@@ -226,6 +226,37 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("key", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 24}});
             properties.insert("players", IntegerSchema(1, 12));
             properties.insert("enemies_only", QJsonObject{{"type", "boolean"}});
+            properties.insert("preview", QJsonObject{{"type", "boolean"}});
+            required.append("frame");
+        } else if (tool.name == "game_ui_action_bar_system") {
+            tool.description = "生成技能栏的自然 T，整批写进触发器编辑器的“技能栏”类别（同名触发器整体替换），走触发器撤销栈：每个玩家一个当前单位"
+                "（同步数据），source 为 selection（默认）时跟玩家选中的单位，为 focus 时设好 AUA_<键>_Member（单位）与 AUA_<键>_Player（玩家）后运行"
+                "“<名字> 设定 <键>_Set”（例如玩家的英雄）。每 0.1 秒按“<名字> 登记 <键>_Register”里该单位类型的技能表把每格的显示、图标、热键、等级"
+                "写进界面数组数值；ability_state 为 true（默认）时再用 YDWE 的技能属性（JAPI）读剩余冷却与法力消耗，写进冷却比例（0..1）、冷却文字"
+                "（10 秒内一位小数，就绪为空）与法力不足，然后运行该界面的“更新”触发器。点击事件（本机）：选中的就是当前单位时按下这一格的热键"
+                "（ForceUIKeyBJ，同玩家在命令面板按键，选目标、冷却、法力由游戏判断），否则先选中当前单位。frame 绑定一份已生成界面触发器的界面描述："
+                "shown（布尔数组，格数即格数，1..24）必填；icon、hotkey、cooldown_text（字符串数组）、level（整数数组）、cooldown（实数数组）、"
+                "no_mana（布尔数组）可空，格数须与 shown 相同；bar_shown 为布尔单值；use 为点击事件，事件框架须在重复格数次的框架里。actionbar 模板"
+                "对应 bar_shown、shown、icon、key、cooldown、cooldown_text、no_mana、use。slots 写进登记：每项 unit（单位类型）、slot（第几格，1 起）、"
+                "ability（技能），hotkey 为空时取物编里技能的热键（要和游戏里一致），图标取自物编；地图里已有登记触发器时保留它、slots 不写入"
+                "（registration_kept）。name 与 key（ASCII 标识符，默认 技能栏/Bar）区分同图的多份；players 为记录的玩家数（1..12，默认 12）。"
+                "需要 YDWE 的 GetLocalPlayer，ability_state 为 true 时还要 YDWEGetUnitAbilityState；preview 为 true 时只返回生成的功能写法，不改地图";
+            QJsonObject frameProperties;
+            for (const char* key : {"description", "bar_shown", "shown", "icon", "hotkey", "level", "cooldown", "cooldown_text", "no_mana", "use"})
+                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
+                {"required", QJsonArray{"description", "shown"}}, {"additionalProperties", false}});
+            properties.insert("source", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"selection", "focus"}}});
+            properties.insert("name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
+            properties.insert("key", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 24}});
+            properties.insert("players", IntegerSchema(1, 12));
+            properties.insert("ability_state", QJsonObject{{"type", "boolean"}});
+            const QJsonObject code{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}};
+            properties.insert("slots", QJsonObject{{"type", "array"}, {"maxItems", 256},
+                {"items", QJsonObject{{"type", "object"},
+                    {"properties", QJsonObject{{"unit", code}, {"slot", IntegerSchema(1, 24)}, {"ability", code},
+                        {"hotkey", QJsonObject{{"type", "string"}, {"maxLength", 8}}}}},
+                    {"required", QJsonArray{"unit", "slot", "ability"}}, {"additionalProperties", false}}}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("frame");
         } else if (tool.name == "game_ui_talent_system") {
@@ -371,7 +402,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 不在可选范围内。");
     }
-    for (const auto* key : {"expansion", "show_hidden", "preview", "auto_heroes", "replace_registration", "enemies_only"}) {
+    for (const auto* key : {"expansion", "show_hidden", "preview", "auto_heroes", "replace_registration", "enemies_only", "ability_state"}) {
         if (args.contains(key) && !args.value(key).isBool()) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是布尔值。");
     }
     if (args.contains("label") && (!args.value("label").isString() || args.value("label").toString().size() > 256))
@@ -495,6 +526,24 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
             return item.isString() && item.toString().size() == 4 && !item.toString().contains(QChar::Null);
         });
         if (!valid) return Failure("GAME_UI_ARGUMENT", "portraits 最多 256 项，每项为 4 字符单位类型。");
+    }
+    if (args.contains("slots")) {
+        const QJsonArray entries = args.value("slots").toArray();
+        const auto code = [](const QJsonValue& item) { return item.isString() && item.toString().size() == 4 && !item.toString().contains(QChar::Null); };
+        const bool valid = args.value("slots").isArray() && entries.size() <= 256 && std::all_of(entries.begin(), entries.end(), [&](const QJsonValue& item) {
+            const QJsonObject slot = item.toObject();
+            if (!item.isObject() || !slot.contains("unit") || !slot.contains("slot") || !slot.contains("ability")) return false;
+            for (auto it = slot.begin(); it != slot.end(); ++it) {
+                const auto key = it.key();
+                const bool ok = key == QLatin1String("unit") || key == QLatin1String("ability") ? code(it.value())
+                    : key == QLatin1String("slot") ? ValidInteger(it.value(), 1, 24)
+                    : key == QLatin1String("hotkey") ? ValidText(it.value(), 0, 8)
+                    : false;
+                if (!ok) return false;
+            }
+            return true;
+        });
+        if (!valid) return Failure("GAME_UI_ARGUMENT", "slots 最多 256 项，每项有 4 字符 unit 与 ability、1..24 的 slot，hotkey 不超过 8 字。");
     }
     if (args.contains("key")) {
         const QString key = args.value("key").toString();

@@ -82,6 +82,10 @@ struct ObjectInheritanceChain {
     const War3Map::ObjectData::NativeObjectDocument& document,
     const War3Map::ObjectData::ObjectKey& object,
     const War3Map::ObjectData::StandardObjectCatalog* catalog);
+// 当前工程里对象的父链：地图覆盖（LNI，没有时原生文档）里有该对象时从它起，否则只有原版目录的基础。
+[[nodiscard]] ObjectInheritanceChain ResolveProjectObjectInheritance(
+    const War3Map::QtProject::EditorProject& project,
+    const War3Map::ObjectData::ObjectKey& object);
 // 父链上字段的有效值：从选中对象向父对象找第一个覆盖（字段 ID 不区分大小写，可给 LNI 名与原生 ID 多个别名），
 // 都没有覆盖时取原版目录。链不完整时只返回链上已有的覆盖，不回退原版。
 [[nodiscard]] std::optional<std::string> ObjectFieldValue(const ObjectInheritanceChain& chain,

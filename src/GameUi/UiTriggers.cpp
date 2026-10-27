@@ -419,11 +419,19 @@ private:
         return Call("AudastraUIPushWidth", {BarFill(info), Call("OperatorReal", {clamped, "OperatorMultiply", Real(*width)})});
     }
 
-    // 锚点偏移；重复的根按实例下标整体平移。
-    [[nodiscard]] std::string Offset(double base, double step, bool shifted) const {
-        if (!shifted || step == 0.0) return Real(base);
-        const std::string moved = Call("OperatorReal", {Call("I2R", {std::string(kLoopIndex)}), "OperatorMultiply", Real(step)});
-        return base == 0.0 ? moved : Call("OperatorReal", {Real(base), "OperatorAdd", moved});
+    // 锚点偏移；重复的根按实例下标整体平移：不换行时下标乘间距，换行时列号、行号分别乘各自的间距。
+    [[nodiscard]] static std::string Offset(double base, double step, bool shifted, std::uint32_t columns = 0, double rowStep = 0.0) {
+        if (!shifted) return Real(base);
+        const std::string index(kLoopIndex);
+        const std::string count = std::to_string(columns);
+        const auto moved = [](const std::string& times, double by) {
+            return Call("OperatorReal", {Call("I2R", {times}), "OperatorMultiply", Real(by)});
+        };
+        std::string sum = base == 0.0 ? std::string() : Real(base);
+        const auto add = [&sum](const std::string& term) { sum = sum.empty() ? term : Call("OperatorReal", {sum, "OperatorAdd", term}); };
+        if (step != 0.0) add(moved(columns ? Call("ModuloInteger", {index, count}) : index, step));
+        if (columns && rowStep != 0.0) add(moved(Call("OperatorInt", {index, "OperatorDivide", count}), rowStep));
+        return sum.empty() ? Real(0.0) : sum;
     }
 
     Lines Anchors(const FrameInfo& info) {
@@ -434,6 +442,9 @@ private:
         const bool root = info.group && frames_[*info.group].frame == &frame;
         const double dx = root ? frame.repeat->dx : 0.0;
         const double dy = root ? frame.repeat->dy : 0.0;
+        const std::uint32_t columns = root ? frame.repeat->columns : 0;
+        const double rowDx = root ? frame.repeat->rowDx : 0.0;
+        const double rowDy = root ? frame.repeat->rowDy : 0.0;
         for (const auto& anchor : frame.anchors) {
             const auto point = static_cast<std::size_t>(anchor.point);
             const auto targetPoint = static_cast<std::size_t>(anchor.targetPoint);
@@ -444,8 +455,8 @@ private:
                 break;
             case UiAnchorTarget::Screen:
                 out.push_back(Call("AudastraUISetAbsPoint", {Self(info), std::string(kAnchors[point]),
-                    Offset(kScreenPoints[targetPoint][0] + anchor.x, dx, root),
-                    Offset(kScreenPoints[targetPoint][1] + anchor.y, dy, root)}));
+                    Offset(kScreenPoints[targetPoint][0] + anchor.x, dx, root, columns, rowDx),
+                    Offset(kScreenPoints[targetPoint][1] + anchor.y, dy, root, columns, rowDy)}));
                 continue;
             case UiAnchorTarget::Frame: {
                 const auto found = byId_.find(anchor.targetId);
@@ -473,13 +484,13 @@ private:
                             + "），按 1.27a 经典版里这块区域的固定位置换算成屏幕坐标；地图移动或隐藏这块区域时不跟随"));
                 }
                 out.push_back(Call("AudastraUISetAbsPoint", {Self(info), std::string(kAnchors[point]),
-                    Offset(FramePointX(area->rect, anchor.targetPoint) + anchor.x, dx, root),
-                    Offset(FramePointY(area->rect, anchor.targetPoint) + anchor.y, dy, root)}));
+                    Offset(FramePointX(area->rect, anchor.targetPoint) + anchor.x, dx, root, columns, rowDx),
+                    Offset(FramePointY(area->rect, anchor.targetPoint) + anchor.y, dy, root, columns, rowDy)}));
                 continue;
             }
             }
             out.push_back(Call("AudastraUISetPoint", {Self(info), std::string(kAnchors[point]), target,
-                std::string(kAnchors[targetPoint]), Offset(anchor.x, dx, root), Offset(anchor.y, dy, root)}));
+                std::string(kAnchors[targetPoint]), Offset(anchor.x, dx, root, columns, rowDx), Offset(anchor.y, dy, root, columns, rowDy)}));
         }
         return out;
     }

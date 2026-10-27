@@ -556,6 +556,50 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         return binding;
     }
 
+    if (name == QLatin1String("game_ui_action_bar_system")) {
+        const bool preview = args.value("preview").toBool();
+        const QJsonObject frame = args.value("frame").toObject();
+        GameUiModule::ActionBarSystemRequest request;
+        request.frame = frame.value("description").toString();
+        request.barShown = frame.value("bar_shown").toString();
+        request.shown = frame.value("shown").toString();
+        request.icon = frame.value("icon").toString();
+        request.hotkey = frame.value("hotkey").toString();
+        request.level = frame.value("level").toString();
+        request.cooldown = frame.value("cooldown").toString();
+        request.cooldownText = frame.value("cooldown_text").toString();
+        request.noMana = frame.value("no_mana").toString();
+        request.use = frame.value("use").toString();
+        for (const auto& item : args.value("slots").toArray()) {
+            const QJsonObject slot = item.toObject();
+            request.entries.push_back({slot.value("unit").toString(), slot.value("slot").toInt(), slot.value("ability").toString(),
+                slot.value("hotkey").toString()});
+        }
+        if (args.value("source").toString() == QLatin1String("focus")) request.source = TargetSource::Focus;
+        request.systemName = args.value("name").toString(request.systemName);
+        request.key = args.value("key").toString(request.key);
+        request.players = args.value("players").toInt(request.players);
+        request.abilityState = args.value("ability_state").toBool(true);
+        QString error;
+        const auto generated = module->GenerateActionBarSystem(request, preview, &error);
+        if (!generated) return Failure("GAME_UI_ACTION_BAR_SYSTEM", error);
+        binding.insert("applied", !preview);
+        if (!preview) binding.insert("runtime", RuntimeJson(*module));
+        binding.insert("category", Text(std::string(kActionBarTriggerCategory)));
+        binding.insert("feature_text", generated->featureText);
+        binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
+        binding.insert("variables", QJsonArray::fromStringList(generated->variables));
+        binding.insert("slots", static_cast<qint64>(generated->slotCount));
+        binding.insert("registration_trigger", generated->registrationTrigger);
+        if (request.source == TargetSource::Focus) {
+            binding.insert("set_trigger", generated->setTrigger);
+            binding.insert("member_variable", generated->memberVariable);
+            binding.insert("player_variable", generated->playerVariable);
+        }
+        binding.insert("registration_kept", generated->registrationKept);
+        return binding;
+    }
+
     if (name == QLatin1String("game_ui_talent_system")) {
         using namespace TalentPreset;
         const bool preview = args.value("preview").toBool();

@@ -293,6 +293,37 @@ void TestTextureTemplate() {
     Require(HasMessage(bad, "missing"), "texture template references must exist");
 }
 
+// 重复换行：每行 columns 个，列号乘 dx/dy、行号乘 rowDx/rowDy；往返保留，每行个数须为正整数。
+void TestRepeatWrap() {
+    const UiDescription description = Parse(R"({
+  "format": "audastra.ui", "version": 1, "id": "Bar",
+  "frames": [
+    {"id": "slot", "type": "backdrop", "repeat": {"count": 5, "dx": 0.04, "columns": 2, "rowDx": 0.01, "rowDy": -0.05},
+     "anchors": [{"point": "TOPLEFT", "to": "screen", "toPoint": "BOTTOMLEFT", "x": 0.1, "y": 0.2}],
+     "width": 0.03, "height": 0.03, "texture": "Slot"}
+  ]
+})");
+    const FrameLibrary library;
+    FrameTree tree;
+    std::vector<Diagnostic> diagnostics;
+    (void)AddUiDescription(tree, library, nullptr, description, {}, diagnostics);
+    (void)tree.Layout();
+    const FrameNode& second = NodeNamed(tree, "slot#1");
+    const FrameNode& fourth = NodeNamed(tree, "slot#3");
+    const FrameNode& fifth = NodeNamed(tree, "slot#4");
+    Require(Near(second.rect.left, 0.14f) && Near(second.rect.top, 0.2f), "second column of the first row");
+    Require(Near(fourth.rect.left, 0.15f) && Near(fourth.rect.top, 0.15f), "second column of the second row");
+    Require(Near(fifth.rect.left, 0.12f) && Near(fifth.rect.top, 0.1f), "third row starts at the first column");
+    const auto shift = RepeatShift(FindUiFrame(description, "slot")->repeat.value(), 3);
+    Require(std::abs(shift.first - 0.05) < 1e-9 && std::abs(shift.second + 0.05) < 1e-9, "shift helper");
+    const auto again = ParseUiDescription(SerializeUiDescription(description));
+    Require(again.value && FindUiFrame(*again.value, "slot")->repeat == FindUiFrame(description, "slot")->repeat, "wrap round trip");
+
+    const auto bad = Errors(R"({"format": "audastra.ui", "version": 1, "id": "Bad",
+  "frames": [{"id": "b", "type": "backdrop", "anchors": [{"point": "CENTER"}], "repeat": {"count": 3, "columns": 0}}]})");
+    Require(HasMessage(bad, "columns"), "columns must be positive");
+}
+
 void TestGameArea() {
     const UiDescription description = Parse(R"({
   "format": "audastra.ui", "version": 1, "id": "Hint",
@@ -387,6 +418,7 @@ int main() {
         TestTree();
         TestRepeat();
         TestTextureTemplate();
+        TestRepeatWrap();
         TestGameArea();
         TestEdits();
     } catch (const std::exception& error) {

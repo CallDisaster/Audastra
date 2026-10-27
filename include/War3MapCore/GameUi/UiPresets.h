@@ -80,6 +80,21 @@ inline constexpr std::string_view kTotal = "total";
 inline constexpr std::string_view kTime = "time";
 } // namespace MeterPreset
 
+// actionbar 模板（技能栏）的数值与事件编号（绑定技能栏系统用）。两行各 kColumns 格（重复框架换行），每格的数值是数组，格数为 kSlots；
+// 点击事件按实例下标对应格。
+namespace ActionBarPreset {
+inline constexpr std::uint32_t kSlots = 12;
+inline constexpr std::uint32_t kColumns = 6;
+inline constexpr std::string_view kBarShown = "bar_shown";
+inline constexpr std::string_view kShown = "shown";
+inline constexpr std::string_view kIcon = "icon";
+inline constexpr std::string_view kKey = "key";
+inline constexpr std::string_view kCooldown = "cooldown";
+inline constexpr std::string_view kCooldownText = "cooldown_text";
+inline constexpr std::string_view kNoMana = "no_mana";
+inline constexpr std::string_view kUse = "use";
+} // namespace ActionBarPreset
+
 // talents 模板（统一天赋树）的数值与事件编号（绑定天赋系统用）。每层一行（重复框架），行内每列一个选项；
 // 每列的图标、名字、已选为数组，格数为层数；点击、移入、移出事件按行号区分层。
 namespace TalentPreset {

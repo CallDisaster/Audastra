@@ -24,7 +24,6 @@ inline Catalog::Layer SpellLayer() {
         "typename01_integer=0,typename,integer,Integer\ntypename02_real=0,typename,real,Real\n"
         "typename07_unit=0,typename,unit,Unit\n"
         "tirggerexecute_notcondition=0,executemode,false,NoCondition\n"
-        "OperatorSubtract=0,ArithmeticOperator,-,Subtract\nOperatorDivide=0,ArithmeticOperator,/,Divide\n"
         "OperatorLess=0,ComparisonOperator,<,Less\n"
         "OperatorGreaterEq=0,ComparisonOperator,>=,GreaterEq\n"
         "[TriggerTypeDefaults]\ntimer=CreateTimer()\n";

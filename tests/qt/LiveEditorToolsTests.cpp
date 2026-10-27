@@ -347,7 +347,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
-        "game_ui_cast_system", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
+        "game_ui_action_bar_system", "game_ui_cast_system", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
         "game_ui_description_triggers", "game_ui_meter_system",
         "game_ui_nodes_query", "game_ui_party_system", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_talent_system", "game_ui_target_system", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
@@ -365,7 +365,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{96});
+    QCOMPARE(expected.size(), qsizetype{97});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2758,6 +2758,25 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     auto noMeterShown = meter; noMeterShown["frame"] = QJsonObject{{"description", "Meter"}};
     QVERIFY(!f.tools->Invoke("game_ui_meter_system", noMeterShown).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{11});
+    // 技能栏：来源、技能状态、登记的格与绑定的形状在到达宿主前检查。
+    auto bar = args; bar["preview"] = true; bar["source"] = "focus"; bar["ability_state"] = false; bar["players"] = 4;
+    bar["frame"] = QJsonObject{{"description", "Bar"}, {"shown", "shown"}, {"hotkey", "key"}, {"use", "use"}};
+    bar["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 1}, {"ability", "AHhb"}}, QJsonObject{{"unit", "Hpal"}, {"slot", 2}, {"ability", "AHds"}, {"hotkey", "D"}}};
+    QVERIFY(f.tools->Invoke("game_ui_action_bar_system", bar).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{12});
+    auto badBarSource = bar; badBarSource["source"] = "hero";
+    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badBarSource).value("ok").toBool());
+    auto badState = bar; badState["ability_state"] = 1;
+    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badState).value("ok").toBool());
+    auto badSlot = bar; badSlot["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 25}, {"ability", "AHhb"}}};
+    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badSlot).value("ok").toBool());
+    auto badBarAbility = bar; badBarAbility["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 1}, {"ability", "AH"}}};
+    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badBarAbility).value("ok").toBool());
+    auto extraSlot = bar; extraSlot["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 1}, {"ability", "AHhb"}, {"icon", "x"}}};
+    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", extraSlot).value("ok").toBool());
+    auto badBarFrame = bar; badBarFrame["frame"] = QJsonObject{{"description", "Bar"}, {"shown", "shown"}, {"key", "key"}};
+    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badBarFrame).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{12});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
@@ -2769,6 +2788,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_talent_system"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_target_system"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_meter_system"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_action_bar_system"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }

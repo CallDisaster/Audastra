@@ -90,7 +90,24 @@ inline bool CheckWithGameScripts(const SystemFixture& f, const std::string& scri
     const std::string blizzard = read("Blizzard.j");
 
     using War3Map::Trigger::UiDefinitionKind;
-    const auto jassType = [](const std::string& type) { return type.starts_with("Audastra") ? std::string("integer") : type; };
+    // 签名里的触发器类型换成 JASS 类型：Audastra 句柄为整数，其余按 TriggerTypes 第五列的基础类型（abilcode → integer）。
+    const auto jassType = [&f](const std::string& type) {
+        if (type.starts_with("Audastra")) return std::string("integer");
+        const auto* definition = f.catalog.Find(UiDefinitionKind::Define, type, "TriggerTypes");
+        if (definition == nullptr || definition->revisions.empty()) return type;
+        for (const auto& [key, value] : definition->Active().fields) {
+            if (key != "value") continue;
+            std::size_t start = 0;
+            for (int field = 0; field < 4 && start != std::string::npos; ++field) {
+                start = value.find(',', start);
+                if (start != std::string::npos) ++start;
+            }
+            if (start == std::string::npos) return type;
+            const std::string base = value.substr(start, value.find(',', start) - start);
+            return base.empty() ? type : base;
+        }
+        return type;
+    };
     const auto fallback = [](const std::string& type) -> std::string {
         if (type == "integer") return "0";
         if (type == "real") return "0.0";

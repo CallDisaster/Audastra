@@ -210,8 +210,9 @@ private:
         // 这一步不再添加节点，引用一直有效。
         FrameNode& node = tree_.MutableNode(placed.node);
         node.anchors.clear();  // 描述的锚点取代模板自带的锚点
-        const float shiftX = placed.repeatRoot ? static_cast<float>(frame.repeat->dx * *placed.instance) : 0.0f;
-        const float shiftY = placed.repeatRoot ? static_cast<float>(frame.repeat->dy * *placed.instance) : 0.0f;
+        const auto shift = placed.repeatRoot ? RepeatShift(*frame.repeat, *placed.instance) : std::pair{0.0, 0.0};
+        const auto shiftX = static_cast<float>(shift.first);
+        const auto shiftY = static_cast<float>(shift.second);
         for (const auto& anchor : frame.anchors) {
             FrameAnchor resolved{anchor.point, {}, anchor.targetPoint, static_cast<float>(anchor.x) + shiftX,
                 static_cast<float>(anchor.y) + shiftY};

@@ -3,6 +3,7 @@
 #include "FeatureTextWriter.h"
 #include "UiBindingCheck.h"
 #include "UnitDisplayLines.h"
+#include "UnitSourceLines.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 // 目标框架的自然 T。每个玩家的目标在 AUF_<键>_Unit[玩家编号]（1 起）。刷新先做所有玩家相同的同步部分（清掉已移除的单位），
@@ -14,15 +15,14 @@ using namespace detail;
 
 constexpr std::size_t kMaxKeyLength = 24;
 
-std::string PlayerConstant(std::uint32_t index) { return std::string("Player") + (index < 10 ? "0" : "") + std::to_string(index); }
-
 UnitDisplayFields DisplayFields(const TargetFrameBinding& b) {
     return UnitDisplayFields{b.health, b.mana, b.healthNow, b.healthMax, b.manaNow, b.manaMax, b.name, b.dead, b.portrait, b.buffIcons};
 }
 
 class Generator {
 public:
-    explicit Generator(const TargetSystemOptions& options) : o_(options), b_(options.frame) {}
+    explicit Generator(const TargetSystemOptions& options)
+        : o_(options), b_(options.frame), source_("AUF_" + options.key, options.source, options.players) {}
 
     Result<TargetSystemPlan> Run() {
         Check();
@@ -35,15 +35,7 @@ public:
         if (display_->Buffs() && o_.includeRegistration) text_.Trigger(Name("登记", "Register"), {}, display_->BuffRegistration(), {}, "init");
         if (display_->Portraits() && o_.includePortraitRegistration)
             text_.Trigger(Name("头像", "Portrait"), {}, display_->PortraitRegistration(), {}, "init");
-        if (o_.source == TargetSource::Selection) {
-            text_.Trigger(Name("选择", "Pick"), SelectionEvents("SelDeselOptionSel"), {Set(Mine("GetTriggerPlayer()"), "GetTriggerUnit()")});
-            text_.Trigger(Name("取消选择", "Unpick"), SelectionEvents("SelDeselOptionDesel"),
-                If({SameUnit(Mine("GetTriggerPlayer()"), "GetTriggerUnit()")}, {Set(Mine("GetTriggerPlayer()"), "UnitNull")}));
-        } else {
-            text_.Trigger(Name("设定", "Set"), {},
-                {Call("CommentString", {Quote("先把单位设给 " + Var("Member") + "、玩家设给 " + Var("Player") + "；单位为空时清除该玩家的焦点")}),
-                    Set(Mine(V("Player")), V("Member"))});
-        }
+        source_.Triggers(text_, [this](std::string_view role, std::string_view roleKey) { return Name(role, roleKey); });
         text_.Trigger(Name("刷新", "Refresh"), {Call("TriggerRegisterTimerEventPeriodic", {Real(kTargetRefreshSeconds)})}, Refresh());
         if (!b_.select.empty()) {
             text_.Trigger(Name("选中", "Select"), {Call("AudastraUITriggerRegisterEvent", {Quote(UiEventKey(d().id, b_.select))})}, Select());
@@ -67,25 +59,14 @@ private:
     [[nodiscard]] const UiDescription& d() const { return *b_.description; }
     void Error(const char* code, const std::string& message) { errors_.push_back(Note(DiagnosticSeverity::Error, code, message)); }
 
-    [[nodiscard]] std::string Var(std::string_view name) const { return "AUF_" + o_.key + "_" + std::string(name); }
-    [[nodiscard]] std::string V(std::string_view name) const { return "udg_" + Var(name); }
+    [[nodiscard]] std::string Var(std::string_view name) const { return source_.Var(name); }
+    [[nodiscard]] std::string V(std::string_view name) const { return source_.V(name); }
     // 该玩家的目标。
-    [[nodiscard]] std::string Mine(std::string_view player) const {
-        return V("Unit") + "[" + Call("GetConvertedPlayerId", {std::string(player)}) + "]";
-    }
+    [[nodiscard]] std::string Mine(std::string_view player) const { return source_.Mine(player); }
     [[nodiscard]] std::string Name(std::string_view role, std::string_view roleKey) const {
         return TargetTriggerName(o_.name, o_.key, role, roleKey);
     }
     [[nodiscard]] std::string Value(const std::string& id) const { return "udg_" + UiValueVariableName(d().id, id); }
-    [[nodiscard]] static std::string SameUnit(std::string_view a, std::string_view b) {
-        return Call("OperatorCompareUnit", {std::string(a), "OperatorEqualENE", std::string(b)});
-    }
-
-    [[nodiscard]] Lines SelectionEvents(std::string_view option) const {
-        Lines events;
-        for (std::uint32_t p = 0; p < o_.players; ++p) events.push_back(Call("TriggerRegisterPlayerSelectionEventBJ", {PlayerConstant(p), std::string(option)}));
-        return events;
-    }
 
     void Check() {
         if (!UsableLabel(o_.name)) Error("AUF_OPTION_INVALID", "目标框架的名字不能为空，也不能含双引号或控制字符");
@@ -130,11 +111,7 @@ private:
     }
 
     void Variables() {
-        text_.Variable(Var("Unit"), "unit", 0);
-        if (o_.source == TargetSource::Focus) {
-            text_.Variable(Var("Member"), "unit");
-            text_.Variable(Var("Player"), "player");
-        }
+        source_.Variables(text_);
         text_.Variable(Var("P"), "integer", std::nullopt, "0");
         text_.Variable(Var("Self"), "unit");
         if (!b_.select.empty()) text_.Variable(Var("ClickResult"), "integer", std::nullopt, "0");
@@ -142,12 +119,7 @@ private:
     }
 
     Lines Refresh() const {
-        const std::string unit = V("Unit") + "[" + V("P") + "]";
-        // 已移除的单位最大生命为 0。
-        Lines out = ForLoopVar(V("P"), "1", std::to_string(o_.players),
-            If({Call("OperatorCompareUnit", {unit, "OperatorNotEqualENE", "UnitNull"}),
-                   CompareReal(UnitDisplayLines::State("UnitStateMaxLife", unit), "OperatorLessEq", "0")},
-                {Set(unit, "UnitNull")}));
+        Lines out = source_.Cleanup(V("P"));
         out.push_back(Call("CommentString", {Quote("以下只改本机界面")}));
         out.push_back(Set(V("Self"), Mine("GetLocalPlayer()")));
         const auto at = [&](const std::string& id) { return Value(id); };
@@ -174,6 +146,7 @@ private:
 
     const TargetSystemOptions& o_;
     const TargetFrameBinding& b_;
+    UnitSourceLines source_;
     std::optional<UnitDisplayLines> display_;
     FeatureTextBuilder text_;
     std::vector<Diagnostic> errors_;

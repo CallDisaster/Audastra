@@ -146,6 +146,13 @@ target_compile_definitions(war3-map-game-ui-meter-tests PRIVATE NOMINMAX UNICODE
 target_include_directories(war3-map-game-ui-meter-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/helpers")
 target_compile_options(war3-map-game-ui-meter-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME core-game-ui-meter COMMAND war3-map-game-ui-meter-tests)
+add_executable(war3-map-game-ui-actionbar-tests GameUiActionBarTriggerTests.cpp)
+target_link_libraries(war3-map-game-ui-actionbar-tests PRIVATE War3MapEditor::GameUi War3MapEditor::Trigger War3MapEditor::ScriptBuild)
+target_compile_definitions(war3-map-game-ui-actionbar-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN
+    AUDASTRA_UI_LIBRARY_DIR="${PROJECT_SOURCE_DIR}/assets/ui-library")
+target_include_directories(war3-map-game-ui-actionbar-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/helpers")
+target_compile_options(war3-map-game-ui-actionbar-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME core-game-ui-actionbar COMMAND war3-map-game-ui-actionbar-tests)
 add_executable(war3-map-game-ui-talent-tests GameUiTalentTriggerTests.cpp)
 target_link_libraries(war3-map-game-ui-talent-tests PRIVATE War3MapEditor::GameUi War3MapEditor::Trigger War3MapEditor::ScriptBuild)
 target_compile_definitions(war3-map-game-ui-talent-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN

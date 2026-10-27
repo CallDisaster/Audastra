@@ -178,14 +178,7 @@ std::optional<double> ObjectMaximum(const QtProject::EditorProject& project, con
     std::initializer_list<std::string_view> fields) {
     // 英雄运行上限还包含属性和等级；不能把基础字段冒充已知最大值。
     if (QtApp::ResolveObjectViewClassification(project, key).hero != false) return std::nullopt;
-    const auto index = static_cast<std::size_t>(key.type);
-    ObjectInheritanceChain chain;
-    if (const auto* lni = project.objectDocuments_[index].get(); lni && lni->FindObject(key))
-        chain = ResolveObjectInheritance(*lni, key, project.standardCatalog_.get());
-    else if (!project.objectDocuments_[index] && project.nativeObjectDocuments_[index]
-        && project.nativeObjectDocuments_[index]->FindObject(key))
-        chain = ResolveNativeObjectInheritance(*project.nativeObjectDocuments_[index], key, project.standardCatalog_.get());
-    else chain.standardBase = project.standardCatalog_ ? project.standardCatalog_->Find(key.type, key.rawcode) : nullptr;
+    const auto chain = ResolveProjectObjectInheritance(project, key);
     if (!chain.IsComplete()) return std::nullopt;
     const auto value = ObjectFieldValue(chain, fields);
     bool ok = false;

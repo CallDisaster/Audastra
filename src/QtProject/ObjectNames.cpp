@@ -266,6 +266,19 @@ ObjectInheritanceChain ResolveNativeObjectInheritance(const War3Map::ObjectData:
     return ResolveInheritanceImpl(document, object, catalog);
 }
 
+ObjectInheritanceChain ResolveProjectObjectInheritance(const War3Map::QtProject::EditorProject& project,
+    const War3Map::ObjectData::ObjectKey& object) {
+    const auto index = static_cast<std::size_t>(object.type);
+    const auto* catalog = project.standardCatalog_.get();
+    if (const auto* lni = project.objectDocuments_[index].get(); lni && lni->FindObject(object))
+        return ResolveObjectInheritance(*lni, object, catalog);
+    if (!project.objectDocuments_[index] && project.nativeObjectDocuments_[index] && project.nativeObjectDocuments_[index]->FindObject(object))
+        return ResolveNativeObjectInheritance(*project.nativeObjectDocuments_[index], object, catalog);
+    ObjectInheritanceChain chain;
+    chain.standardBase = catalog ? catalog->Find(object.type, object.rawcode) : nullptr;
+    return chain;
+}
+
 std::optional<std::string> ObjectFieldValue(const ObjectInheritanceChain& chain,
     std::initializer_list<std::string_view> fieldIds) {
     const auto matches = [&](std::string field) {

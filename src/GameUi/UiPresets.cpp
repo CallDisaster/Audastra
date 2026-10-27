@@ -309,6 +309,74 @@ UiDescription Meter() {
     return d;
 }
 
+// 技能栏：屏幕下方居中、原版控制台上方，两行各 6 格。每格是图标，冷却中盖一层随剩余冷却缩短的暗色并显示秒数，
+// 左上角是热键，法力不够时底边一条蓝色；盖满整格的无贴图按钮发点击事件。
+UiDescription ActionBar() {
+    using namespace ActionBarPreset;
+    const auto id = [](std::string_view value) { return std::string(value); };
+    const auto cell = [&](std::string_view value) { return "{" + id(value) + "[]}"; };
+    constexpr double kSize = 0.036;
+    constexpr double kStep = 0.04;
+    UiDescription d;
+    d.values = {Value(id(kBarShown), "技能栏显示", UiValueType::Boolean, "false"), Value(id(kShown), "显示", UiValueType::Boolean, "false", kSlots),
+        Value(id(kIcon), "图标", UiValueType::String, "", kSlots), Value(id(kKey), "热键", UiValueType::String, "", kSlots),
+        Value(id(kCooldown), "冷却比例", UiValueType::Real, "0", kSlots), Value(id(kCooldownText), "冷却文字", UiValueType::String, "", kSlots),
+        Value(id(kNoMana), "法力不足", UiValueType::Boolean, "false", kSlots)};
+    UiFrame bar;
+    bar.id = "bar";
+    bar.label = "技能栏";
+    bar.width = kStep * kColumns - (kStep - kSize);
+    bar.height = kStep * ((kSlots + kColumns - 1) / kColumns) - (kStep - kSize);
+    bar.anchors = {Anchor(FramePoint::Bottom, UiAnchorTarget::Screen, std::nullopt, 0.0, 0.16)};
+    bar.visible.binding = Bind(id(kBarShown));
+
+    UiFrame slot;
+    slot.id = "slot";
+    slot.label = "格";
+    slot.width = kSize;
+    slot.height = kSize;
+    slot.anchors = {Anchor(FramePoint::TopLeft)};
+    slot.repeat = UiRepeat{kSlots, kStep, 0.0, kColumns, 0.0, -kStep};
+    slot.visible.binding = Bind(id(kShown), true);
+    UiFrame art;
+    art.id = "art";
+    art.label = "图标";
+    art.type = UiFrameType::Backdrop;
+    art.texture = cell(kIcon);
+    art.anchors = {Anchor(FramePoint::TopLeft), Anchor(FramePoint::BottomRight)};
+    UiFrame cooldown;
+    cooldown.id = "cd";
+    cooldown.label = "冷却";
+    cooldown.type = UiFrameType::Bar;
+    cooldown.texture = std::string(kTooltip);
+    cooldown.value.binding = Bind(id(kCooldown), true);
+    cooldown.anchors = {Anchor(FramePoint::Left)};
+    cooldown.width = kSize;
+    cooldown.height = kSize;
+    UiFrame mana;
+    mana.id = "mana";
+    mana.label = "法力不足";
+    mana.type = UiFrameType::Backdrop;
+    mana.texture = TeamColor(1);
+    mana.height = 0.004;
+    mana.anchors = {Anchor(FramePoint::BottomLeft), Anchor(FramePoint::BottomRight)};
+    mana.visible.binding = Bind(id(kNoMana), true);
+    // 字号用模板默认值：改字号要游戏默认字体的路径，没有游戏目录时生成不了界面触发器。
+    UiFrame seconds = Text("cd_text", "冷却秒数", cell(kCooldownText), JustifyH::Center, Anchor(FramePoint::Center), kSize, 0.02);
+    UiFrame key = Text("key", "热键", cell(kKey), JustifyH::Left, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.002, -0.001), 0.03, 0.014);
+    key.color = {1.0, 0.86, 0.4, 1.0};
+    UiFrame hit;
+    hit.id = "hit";
+    hit.label = "点选";
+    hit.type = UiFrameType::Button;
+    hit.anchors = {Anchor(FramePoint::TopLeft), Anchor(FramePoint::BottomRight)};
+    slot.children = {std::move(art), std::move(cooldown), std::move(mana), std::move(seconds), std::move(key), std::move(hit)};
+    bar.children = {std::move(slot)};
+    d.frames = {std::move(bar)};
+    d.events = {UiEvent{id(kUse), "hit", UiEventKind::Click}};
+    return d;
+}
+
 // 统一天赋树：技能栏上方右侧的入口按钮（有可选天赋时带个数），屏幕中间偏左的面板。
 // 面板每层一行：左侧解锁等级，右侧每列一个选项（图标 + 名字，已选时图标外有青色描边）；选项名字为空时整格不显示。
 // 鼠标移到选项上，面板右侧显示说明框。
@@ -439,7 +507,8 @@ UiDescription Talents() {
 } // namespace
 
 const std::vector<UiPreset>& UiPresets() {
-    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}, {"target", "目标框架"}, {"meter", "伤害统计"}, {"talents", "天赋树"}};
+    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}, {"target", "目标框架"}, {"meter", "伤害统计"}, {"actionbar", "技能栏"},
+        {"talents", "天赋树"}};
     return presets;
 }
 
@@ -458,6 +527,9 @@ Result<UiDescription> NewUiDescriptionFromPreset(std::string_view preset, std::s
     } else if (preset == "meter") {
         description = Meter();
         name = "伤害统计";
+    } else if (preset == "actionbar") {
+        description = ActionBar();
+        name = "技能栏";
     } else if (preset == "talents") {
         description = Talents();
         name = "天赋树";

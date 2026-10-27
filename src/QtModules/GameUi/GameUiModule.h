@@ -3,6 +3,7 @@
 #include "GameUiSources.h"
 #include "Modules/EditorModule.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
+#include "War3MapCore/GameUi/ActionBarTriggers.h"
 #include "War3MapCore/GameUi/MeterTriggers.h"
 #include "War3MapCore/GameUi/PartyTriggers.h"
 #include "War3MapCore/GameUi/TalentTriggers.h"
@@ -237,6 +238,36 @@ public:
         QString resetTrigger, amountVariable;
     };
     std::optional<MeterSystemGeneration> GenerateMeterSystem(const MeterSystemRequest& request, bool preview, QString* error = nullptr);
+    // 技能栏（ActionBarTriggers.h）：整批写进“技能栏”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器须已生成；
+    // shown 为布尔数组（格数就是格数），icon、hotkey、level、cooldown、cooldownText、noMana 为同样格数的数组，barShown 为单值，
+    // use 为点击事件，空为不绑定。entries 为登记的格：单位类型、第几格（1 起）、技能、热键（空时取物编里技能的热键），图标取自物编；
+    // 地图里已有登记触发器时保留它，entries 不写入（registrationKept 为真）。abilityState 为真时要 YDWE 的技能属性（JAPI）。
+    // systemName 与 key 区分同图的多份。preview 为真时只给出生成结果，不改地图。
+    struct ActionBarSystemRequest {
+        struct Entry {
+            QString unit;
+            int slot = 1;
+            QString ability;
+            QString hotkey;
+        };
+        QString frame;
+        QString systemName = QStringLiteral("技能栏");
+        QString key = QStringLiteral("Bar");
+        GameUi::TargetSource source = GameUi::TargetSource::Selection;
+        QString barShown, shown, icon, hotkey, level, cooldown, cooldownText, noMana, use;
+        std::vector<Entry> entries;
+        int players = static_cast<int>(GameUi::kActionBarMaxPlayers);
+        bool abilityState = true;
+    };
+    struct ActionBarSystemGeneration {
+        QString featureText;
+        QStringList triggers;
+        QStringList variables;
+        std::uint32_t slotCount = 0;
+        QString registrationTrigger, setTrigger, memberVariable, playerVariable;
+        bool registrationKept = false;
+    };
+    std::optional<ActionBarSystemGeneration> GenerateActionBarSystem(const ActionBarSystemRequest& request, bool preview, QString* error = nullptr);
     // 统一天赋树（TalentTriggers.h）：整批写进“天赋系统”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器
     // 须已生成；其余为界面的数值与事件编号，空为不绑定（shown、level 与每列的图标、名字、已选、点击必填）。需要 YDWE 的
     // GetLocalPlayer 与 RemoveLocation。登记里选项的图标为空时取学会技能在物编里的图标；地图里已有登记触发器时保留它，
@@ -320,6 +351,7 @@ private:
     void ShowPartySystemDialog();
     void ShowTargetSystemDialog();
     void ShowMeterSystemDialog();
+    void ShowActionBarSystemDialog();
     void ShowTalentSystemDialog();
     // 按模板新建一份界面描述（编号为模板名，重名时加序号）并生成它的界面触发器；返回新编号。
     std::optional<QString> CreateFromPreset(const QString& preset, QString* error);
@@ -426,6 +458,7 @@ private:
     QPushButton* partySystemButton_ = nullptr;
     QPushButton* targetSystemButton_ = nullptr;
     QPushButton* meterSystemButton_ = nullptr;
+    QPushButton* actionBarSystemButton_ = nullptr;
     QPushButton* talentSystemButton_ = nullptr;
 };
 

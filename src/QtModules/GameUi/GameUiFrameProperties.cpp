@@ -171,6 +171,9 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame)
     if (frame.repeat) {
         editable(repeat, tr("横向间距"), QStringLiteral("repeat:dx"), QString::number(frame.repeat->dx));
         editable(repeat, tr("纵向间距"), QStringLiteral("repeat:dy"), QString::number(frame.repeat->dy));
+        editable(repeat, tr("每行个数"), QStringLiteral("repeat:columns"), frame.repeat->columns ? QString::number(frame.repeat->columns) : QString());
+        editable(repeat, tr("换行横向"), QStringLiteral("repeat:rowDx"), QString::number(frame.repeat->rowDx));
+        editable(repeat, tr("换行纵向"), QStringLiteral("repeat:rowDy"), QString::number(frame.repeat->rowDy));
     }
 }
 
@@ -307,6 +310,19 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
             }
         } else if (repeat.isEmpty()) {
             error = tr("先填写重复次数");
+        } else if (part == QLatin1String("columns")) {
+            // 空为不换行。
+            bool ok = false;
+            const int columns = text.toInt(&ok);
+            if (text.isEmpty()) {
+                repeat.remove(QStringLiteral("columns"));
+                fields.insert(QStringLiteral("repeat"), repeat);
+            } else if (!ok || columns < 1) {
+                error = tr("每行个数应为正整数，空为不换行");
+            } else {
+                repeat.insert(QStringLiteral("columns"), columns);
+                fields.insert(QStringLiteral("repeat"), repeat);
+            }
         } else {
             double number = 0.0;
             if (parseNumber(item->text(0), &number)) {

@@ -24,6 +24,7 @@ inline constexpr std::string_view kBaseDefine =
     "OperatorEqual=0,ComparisonOperator,==,Equal\nOperatorNotEqual=0,ComparisonOperator,!=,NotEqual\n"
     "OperatorEqualENE=0,EqualNotEqualOperator,==,Equal\nOperatorNotEqualENE=0,EqualNotEqualOperator,!=,NotEqual\n"
     "OperatorAdd=0,ArithmeticOperator,+,Add\nOperatorMultiply=0,ArithmeticOperator,*,Multiply\n"
+    "OperatorSubtract=0,ArithmeticOperator,-,Subtract\nOperatorDivide=0,ArithmeticOperator,/,Divide\n"
     "OperatorGreater=0,ComparisonOperator,>,Greater\n";
 inline constexpr std::string_view kBaseEvent = "[TriggerRegisterTimerEventPeriodic]\n[[.args]]\ntype=real\n";
 inline constexpr std::string_view kBaseCondition =
@@ -41,6 +42,7 @@ inline constexpr std::string_view kBaseCall =
     "[OperatorInt]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=integer\n"
     "[OperatorReal]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=real\n"
     "[OperatorString]\nreturns=string\n[[.args]]\ntype=string\n[[.args]]\ntype=string\n"
+    "[ModuloInteger]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
     "[RMinBJ]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=real\n"
     "[RMaxBJ]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=real\n";
 

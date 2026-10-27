@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // 自有界面描述（audastra.ui）：框架树、数值、状态与事件。作为导入文件存进地图（AudastraUI\<编号>.json），
@@ -91,11 +92,21 @@ struct UiAnchor {
 
 struct UiRepeat {
     std::uint32_t count = 1;
-    double dx = 0.0;  // 第 i 个实例的锚点整体偏移 (i×dx, i×dy)
+    double dx = 0.0;  // 一行里第 i 个实例的锚点整体偏移 (i×dx, i×dy)
     double dy = 0.0;
+    std::uint32_t columns = 0;  // 每行实例数，0 为不换行；第 r 行再整体偏移 (r×rowDx, r×rowDy)
+    double rowDx = 0.0;
+    double rowDy = 0.0;
 
     friend bool operator==(const UiRepeat&, const UiRepeat&) = default;
 };
+
+// 第 instance 个实例（0 起）的锚点整体偏移。
+[[nodiscard]] inline std::pair<double, double> RepeatShift(const UiRepeat& repeat, std::uint32_t instance) {
+    const std::uint32_t column = repeat.columns ? instance % repeat.columns : instance;
+    const std::uint32_t row = repeat.columns ? instance / repeat.columns : 0;
+    return {column * repeat.dx + row * repeat.rowDx, column * repeat.dy + row * repeat.rowDy};
+}
 
 struct UiFrame {
     std::string id;

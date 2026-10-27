@@ -307,11 +307,14 @@ void ReadFrame(Reader& reader, const Json& json, const std::string& path, std::s
     }
     if (const Json* repeat = reader.Field(json, "repeat", path, false)) {
         const std::string at = path + "/repeat";
-        if (reader.Object(*repeat, at, {"count", "dx", "dy"})) {
+        if (reader.Object(*repeat, at, {"count", "dx", "dy", "columns", "rowDx", "rowDy"})) {
             UiRepeat item;
             item.count = reader.Count(*repeat, "count", at, true, 1, kMaxRepeat).value_or(1);
             item.dx = reader.Number(*repeat, "dx", at, false, -2.0, 2.0).value_or(0.0);
             item.dy = reader.Number(*repeat, "dy", at, false, -2.0, 2.0).value_or(0.0);
+            item.columns = reader.Count(*repeat, "columns", at, false, 1, kMaxRepeat).value_or(0);
+            item.rowDx = reader.Number(*repeat, "rowDx", at, false, -2.0, 2.0).value_or(0.0);
+            item.rowDy = reader.Number(*repeat, "rowDy", at, false, -2.0, 2.0).value_or(0.0);
             frame.repeat = item;
         }
     }
@@ -415,6 +418,9 @@ OrderedJson FrameJson(const UiFrame& frame) {
         repeat["count"] = frame.repeat->count;
         if (frame.repeat->dx != 0.0) repeat["dx"] = Num(frame.repeat->dx);
         if (frame.repeat->dy != 0.0) repeat["dy"] = Num(frame.repeat->dy);
+        if (frame.repeat->columns != 0) repeat["columns"] = frame.repeat->columns;
+        if (frame.repeat->rowDx != 0.0) repeat["rowDx"] = Num(frame.repeat->rowDx);
+        if (frame.repeat->rowDy != 0.0) repeat["rowDy"] = Num(frame.repeat->rowDy);
         json["repeat"] = std::move(repeat);
     }
     if (!frame.children.empty()) {

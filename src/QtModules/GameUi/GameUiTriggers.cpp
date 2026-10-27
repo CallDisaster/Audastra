@@ -15,7 +15,7 @@
 #include <algorithm>
 #include <cstring>
 
-// 界面描述、读条系统、团队框架与目标框架 → 自然 T：生成文本由 Core（UiTriggers、CastTriggers、PartyTriggers、TargetTriggers）给出，这里补上工作区里才有的输入
+// 界面描述、读条系统、团队框架、目标框架、伤害统计、技能栏与天赋树 → 自然 T：生成文本由 Core（UiTriggers 与各系统的 *Triggers）给出，这里补上工作区里才有的输入
 // （界面目录、皮肤字体、地图界面目录、已有的触发器），经共用的触发器事务写进各自的类别，界面触发器的基础模板放进地图。
 namespace War3Map::Modules {
 namespace {
@@ -364,6 +364,75 @@ std::optional<GameUiModule::MeterSystemGeneration> GameUiModule::GenerateMeterSy
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kMeterTriggerCategory), plan.value->featureText, {}, std::nullopt});
     const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("生成伤害统计"));
+    if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
+    return result;
+}
+
+std::optional<GameUiModule::ActionBarSystemGeneration> GameUiModule::GenerateActionBarSystem(const ActionBarSystemRequest& request,
+    bool preview, QString* error) {
+    const auto fail = [error](const QString& message) -> std::optional<ActionBarSystemGeneration> {
+        if (error) *error = message;
+        return std::nullopt;
+    };
+    if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
+    if (!project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Call, "GetLocalPlayer"))
+        return fail(tr("触发器函数库里没有 YDWE 的“本地玩家”，技能栏的本机界面要用它"));
+    if (request.abilityState && !project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Call, "YDWEGetUnitAbilityState"))
+        return fail(tr("触发器函数库里没有 YDWE 的“技能属性 [JAPI]”，技能栏的冷却与法力要用它；不显示冷却时关掉技能状态"));
+    if (!definitions_) return fail(tr("界面定义仍在读取"));
+    const UiDescription* description = Description(request.frame);
+    if (!description) return fail(tr("地图里没有界面描述 %1").arg(request.frame));
+    const auto& triggers = project_.triggerDocument_->triggers;
+    if (!HasTrigger(triggers, UiTriggerName(*description, "更新", "Update"))) return fail(tr("先为界面 %1 生成触发器").arg(request.frame));
+
+    ActionBarSystemOptions options;
+    options.name = request.systemName.toStdString();
+    options.key = request.key.toStdString();
+    options.source = request.source;
+    options.players = request.players < 0 ? 0u : static_cast<std::uint32_t>(request.players);
+    options.abilityState = request.abilityState;
+    ActionBarFrameBinding& b = options.frame;
+    b.description = description;
+    b.barShown = request.barShown.toStdString();
+    b.shown = request.shown.toStdString();
+    b.icon = request.icon.toStdString();
+    b.key = request.hotkey.toStdString();
+    b.level = request.level.toStdString();
+    b.cooldown = request.cooldown.toStdString();
+    b.cooldownText = request.cooldownText.toStdString();
+    b.noMana = request.noMana.toStdString();
+    b.use = request.use.toStdString();
+    const bool kept = HasTrigger(triggers, TargetTriggerName(options.name, options.key, "登记", "Register"));
+    options.includeRegistration = !kept;
+    if (!kept) {
+        // 图标取自物编；热键没给时取物编里技能的热键（点格子按下它，要和游戏里的一致）。
+        for (const auto& slot : request.entries) {
+            const ObjectData::ObjectKey ability{ObjectData::ObjectType::Ability, slot.ability.toStdString()};
+            const auto icon = ResolveProjectObjectPresentation(project_, ability).iconPath;
+            if (icon.isEmpty()) return fail(tr("技能 %1 在物编里没有图标").arg(slot.ability));
+            std::string hotkey = slot.hotkey.toStdString();
+            if (slot.hotkey.isEmpty()) hotkey = ObjectFieldValue(ResolveProjectObjectInheritance(project_, ability), {"ahky", "hotkey"}).value_or("");
+            options.entries.push_back(ActionBarEntry{slot.unit.toStdString(), slot.slot < 0 ? 0u : static_cast<std::uint32_t>(slot.slot),
+                slot.ability.toStdString(), icon.toStdString(), hotkey});
+        }
+    }
+    auto plan = GameUi::GenerateActionBarSystem(options);
+    if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
+
+    ActionBarSystemGeneration result;
+    result.featureText = Text(plan.value->featureText);
+    for (const auto& name : plan.value->triggers) result.triggers.append(Text(name));
+    for (const auto& name : plan.value->variables) result.variables.append(Text(name));
+    result.slotCount = plan.value->slotCount;
+    result.registrationTrigger = Text(plan.value->registrationTrigger);
+    result.setTrigger = Text(plan.value->setTrigger);
+    result.memberVariable = Text(plan.value->memberVariable);
+    result.playerVariable = Text(plan.value->playerVariable);
+    result.registrationKept = kept;
+    if (preview) return result;
+    std::vector<Trigger::GraphEditOperation> operations;
+    operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kActionBarTriggerCategory), plan.value->featureText, {}, std::nullopt});
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("生成技能栏"));
     if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
     return result;
 }

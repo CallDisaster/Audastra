@@ -373,12 +373,15 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     meterSystemButton_ = new QPushButton(tr("伤害统计"), toolbar);
     meterSystemButton_->setObjectName(QStringLiteral("gameUiMeterSystem"));
     connect(meterSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowMeterSystemDialog);
+    actionBarSystemButton_ = new QPushButton(tr("技能栏"), toolbar);
+    actionBarSystemButton_->setObjectName(QStringLiteral("gameUiActionBarSystem"));
+    connect(actionBarSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowActionBarSystemDialog);
     talentSystemButton_ = new QPushButton(tr("天赋树"), toolbar);
     talentSystemButton_->setObjectName(QStringLiteral("gameUiTalentSystem"));
     connect(talentSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowTalentSystemDialog);
     UpdateAuthoringControls();
     return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_, castSystemButton_, partySystemButton_,
-        targetSystemButton_, meterSystemButton_, talentSystemButton_};
+        targetSystemButton_, meterSystemButton_, actionBarSystemButton_, talentSystemButton_};
 }
 
 void GameUiModule::UpdateAuthoringControls() {

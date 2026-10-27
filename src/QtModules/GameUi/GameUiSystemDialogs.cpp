@@ -23,7 +23,7 @@
 #include <initializer_list>
 
 // 绑定界面的系统窗口：“读条系统”选读条条界面及其数值与状态，“团队框架”选团队框架界面及其数组数值与点击事件，
-// “目标框架”选目标框架界面及其单值数值与点击事件，“天赋树”选按天赋树模板建的界面（按模板的编号绑定），生成各自的触发器。都可直接按模板新建一份界面再绑定。
+// “目标框架”选目标框架界面及其单值数值与点击事件，“伤害统计”“技能栏”选数组数值（技能栏另选单位类型与按格顺序的技能），“天赋树”选按天赋树模板建的界面（按模板的编号绑定），生成各自的触发器。都可直接按模板新建一份界面再绑定。
 // 读条的技能登记与各英雄的天赋登记在触发器编辑器里改。
 namespace War3Map::Modules {
 namespace {
@@ -596,6 +596,132 @@ void GameUiModule::ShowMeterSystemDialog() {
     }
     ReportAuthoring({});
     if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kMeterTriggerCategory)), 8000);
+    OfferMapRuntime();
+}
+
+void GameUiModule::ShowActionBarSystemDialog() {
+    SystemDialog ui(page_, "gameUiActionBarDialog", tr("技能栏"));
+    auto* frame = ui.Combo("gameUiActionBarFrame", tr("界面"));
+    auto* source = ui.Combo("gameUiActionBarSource", tr("单位"));
+    source->addItem(tr("选中的单位"), static_cast<int>(TargetSource::Selection));
+    source->addItem(tr("触发器设定（例如玩家的英雄）"), static_cast<int>(TargetSource::Focus));
+    auto* systemName = new QLineEdit(tr("技能栏"), &ui.dialog);
+    systemName->setObjectName(QStringLiteral("gameUiActionBarSystemName"));
+    ui.form->addRow(tr("系统名"), systemName);
+    auto* key = new QLineEdit(QStringLiteral("Bar"), &ui.dialog);
+    key->setObjectName(QStringLiteral("gameUiActionBarKey"));
+    ui.form->addRow(tr("键"), key);
+    auto* barShown = ui.Combo("gameUiActionBarBarShown", tr("技能栏显示"));
+    auto* shown = ui.Combo("gameUiActionBarShown", tr("显示"));
+    auto* icon = ui.Combo("gameUiActionBarIcon", tr("图标"));
+    auto* hotkey = ui.Combo("gameUiActionBarHotkey", tr("热键"));
+    auto* level = ui.Combo("gameUiActionBarLevel", tr("等级"));
+    auto* cooldown = ui.Combo("gameUiActionBarCooldown", tr("冷却比例"));
+    auto* cooldownText = ui.Combo("gameUiActionBarCooldownText", tr("冷却文字"));
+    auto* noMana = ui.Combo("gameUiActionBarNoMana", tr("法力不足"));
+    auto* use = ui.Combo("gameUiActionBarUse", tr("点选"));
+    auto* players = new QSpinBox(&ui.dialog);
+    players->setObjectName(QStringLiteral("gameUiActionBarPlayers"));
+    players->setRange(1, static_cast<int>(kActionBarMaxPlayers));
+    players->setValue(static_cast<int>(kActionBarMaxPlayers));
+    ui.form->addRow(tr("玩家数"), players);
+    auto* abilityState = new QCheckBox(tr("显示冷却与法力不足（YDWE 技能属性）"), &ui.dialog);
+    abilityState->setObjectName(QStringLiteral("gameUiActionBarAbilityState"));
+    abilityState->setChecked(true);
+    ui.form->addRow(QString(), abilityState);
+    auto* units = ui.ObjectList(project_, "gameUiActionBarUnits", tr("单位类型"), QStringLiteral("unit"));
+    auto* abilities = ui.ObjectList(project_, "gameUiActionBarAbilities", tr("技能（按格的顺序）"), QStringLiteral("ability"));
+
+    FillDescriptions(frame, Descriptions(), {}, tr("新建技能栏"), "actionbar");
+    // 每格的数值按“显示”数组的格数筛选；技能栏显示是单值。
+    const auto refillSlots = [&, this] {
+        const UiDescription* description = Description(frame->currentData().toString());
+        std::uint32_t size = 0;
+        if (description) {
+            for (const auto& value : description->values) {
+                if (Text(value.id) == shown->currentData().toString()) size = value.size;
+            }
+        }
+        const UiDescription* cells = size ? description : nullptr;
+        FillValues(icon, cells, UiValueType::String, size, true, {"icon", "art"});
+        FillValues(hotkey, cells, UiValueType::String, size, true, {"key", "hotkey"});
+        FillValues(level, cells, UiValueType::Integer, size, true, {"level"});
+        FillValues(cooldown, cells, UiValueType::Real, size, true, {"cooldown", "cd"});
+        FillValues(cooldownText, cells, UiValueType::String, size, true, {"cooldown_text", "cd_text"});
+        FillValues(noMana, cells, UiValueType::Boolean, size, true, {"no_mana", "nomana"});
+    };
+    const auto refill = [&, this] {
+        const UiDescription* description = Description(frame->currentData().toString());
+        shown->clear();
+        if (description) {
+            for (const auto& value : description->values) {
+                if (value.type == UiValueType::Boolean && value.size > 0 && value.size <= kActionBarMaxSlots) shown->addItem(Labeled(value.label, value.id), Text(value.id));
+            }
+            Prefer(shown, {"shown", "visible", "show"});
+        }
+        FillValues(barShown, description, UiValueType::Boolean, 0, true, {"bar_shown", "visible"});
+        FillClickEvents(use, description);
+        Prefer(use, {"use", "cast", "click"});
+        refillSlots();
+        for (QWidget* box : std::initializer_list<QWidget*>{barShown, shown, icon, hotkey, level, cooldown, cooldownText, noMana, use}) {
+            box->setEnabled(description != nullptr);
+        }
+    };
+    connect(frame, &QComboBox::currentIndexChanged, &ui.dialog, refill);
+    connect(shown, &QComboBox::currentIndexChanged, &ui.dialog, refillSlots);
+    if (const int index = frame->findData(SelectedDescriptionId(tree_.get(), selected_)); index >= 0) frame->setCurrentIndex(index);
+    refill();
+    if (!ui.Run()) return;
+
+    ActionBarSystemRequest request;
+    request.frame = frame->currentData().toString();
+    request.systemName = systemName->text().trimmed();
+    request.key = key->text().trimmed();
+    request.source = static_cast<TargetSource>(source->currentData().toInt());
+    request.players = players->value();
+    request.abilityState = abilityState->isChecked();
+    // 每种单位类型都按技能列表的顺序占第 1、2…格。
+    const QStringList abilityIds = abilities->Ids();
+    for (const auto& unit : units->Ids()) {
+        for (qsizetype i = 0; i < abilityIds.size(); ++i) request.entries.push_back({unit, static_cast<int>(i + 1), abilityIds[i], {}});
+    }
+    QString error;
+    if (request.frame.startsWith(QLatin1Char('+'))) {
+        const auto created = CreateFromPreset(QStringLiteral("actionbar"), &error);
+        if (!created) {
+            ReportAuthoring(error);
+            return;
+        }
+        using namespace ActionBarPreset;
+        request.frame = *created;
+        request.barShown = Text(kBarShown);
+        request.shown = Text(kShown);
+        request.icon = Text(kIcon);
+        request.hotkey = Text(kKey);
+        if (request.abilityState) {
+            request.cooldown = Text(kCooldown);
+            request.cooldownText = Text(kCooldownText);
+            request.noMana = Text(kNoMana);
+        }
+        request.use = Text(kUse);
+    } else {
+        request.barShown = barShown->currentData().toString();
+        request.shown = shown->currentData().toString();
+        request.icon = icon->currentData().toString();
+        request.hotkey = hotkey->currentData().toString();
+        request.level = level->currentData().toString();
+        request.cooldown = cooldown->currentData().toString();
+        request.cooldownText = cooldownText->currentData().toString();
+        request.noMana = noMana->currentData().toString();
+        request.use = use->currentData().toString();
+    }
+    const auto generated = GenerateActionBarSystem(request, false, &error);
+    if (!generated) {
+        ReportAuthoring(error);
+        return;
+    }
+    ReportAuthoring({});
+    if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kActionBarTriggerCategory)), 8000);
     OfferMapRuntime();
 }
 
