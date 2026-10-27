@@ -6,7 +6,9 @@
 #include "EditorProject.h"
 #include "ProjectObjectCatalog.h"
 #include "Modules/ModuleHost.h"
+#include "LevelAutofillDialog.h"
 #include "ObjectModels.h"
+#include "ObjectModelsDetail.h"
 #include "ObjectNames.h"
 #include "ObjectColourPreviewSource.h"
 #include "ObjectViewEntries.h"
@@ -467,6 +469,36 @@ void ObjectModule::UpdateObjectFieldControls() {
     undoObjectEdit_->setEnabled(map && stack && stack->canUndo());
     redoObjectEdit_->setEnabled(map && stack && stack->canRedo());
     resetObjectField_->setEnabled(map && objectFieldModel_->CanReset(objectFieldView_->currentIndex().row()));
+}
+
+void ObjectModule::ShowObjectFieldContextMenu(const QPoint& pos) {
+    const QModelIndex index = objectFieldView_->indexAt(pos);
+    if (!index.isValid()) return;
+    objectFieldView_->setCurrentIndex(index);
+    QMenu menu(objectFieldView_);
+    auto* autofill = menu.addAction(tr("自动填充等级…"));
+    autofill->setEnabled(objectFieldModel_->LevelAutofillKindAt(index.row()).has_value());
+    auto* reset = menu.addAction(tr("重置字段"));
+    reset->setEnabled(objectFieldModel_->CanReset(index.row()));
+    const auto* chosen = menu.exec(objectFieldView_->viewport()->mapToGlobal(pos));
+    if (chosen == autofill) AutofillObjectFieldLevels(index.row());
+    else if (chosen == reset) objectFieldModel_->ResetField(index.row());
+    UpdateObjectFieldControls();
+}
+
+void ObjectModule::AutofillObjectFieldLevels(int row) {
+    const auto kind = objectFieldModel_->LevelAutofillKindAt(row);
+    const auto levels = objectFieldModel_->LevelValuesOf(row);
+    const auto* definition = objectFieldModel_->DefinitionAt(row);
+    if (!kind || levels.empty() || !definition) return;
+    const QString name = ObjectFieldLabel(definition, showRawFields_->isChecked());
+    LevelAutofillDialog dialog(name, *kind, ::ObjectModelsDetail::IsMultilineTextField(definition, objectFieldModel_->EditorValueAt(row)),
+        levels, [this, row, definition, name](const LevelAutofillDialog::Values& values) {
+            // 表单打开期间字段表可能因来源变化重建；行号不再指向同一字段时不写。
+            if (objectFieldModel_->DefinitionAt(row) != definition) return tr("字段列表已变化，请重新打开自动填充。");
+            return objectFieldModel_->SetLevelValues(row, values, tr("自动填充 %1").arg(name));
+        }, objectFieldView_->window());
+    dialog.exec();
 }
 
 } // namespace War3Map::Modules

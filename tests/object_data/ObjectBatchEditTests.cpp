@@ -1,4 +1,5 @@
 #include "War3MapCore/ObjectData/ObjectBatchEdit.h"
+#include "War3MapCore/ObjectData/LevelAutofill.h"
 
 #include <array>
 #include <iostream>
@@ -50,12 +51,35 @@ void AtomicBatch() {
     Require(source->DocumentFingerprint() == fingerprint, "all failed batches leave source unchanged");
 }
 
+// 自动填充等级：上一级×因素 + 等级×因素 + 固定值；整数出现小数时报错不取整；文本替换等级记号。
+void LevelAutofillSequences() {
+    LevelAutofill damage;
+    damage.startLevel = 2; damage.endLevel = 4; damage.base = 100; damage.previousFactor = 1; damage.levelFactor = 10; damage.constant = 5;
+    const auto integers = ComputeLevelAutofill(damage, LevelAutofillKind::Integer);
+    Require(integers.Succeeded() && integers.value->size() == 3, "integer sequence");
+    Require((*integers.value)[0].level == 2 && (*integers.value)[0].text == "100", "start level keeps base");
+    Require((*integers.value)[1].text == "135" && (*integers.value)[2].text == "180", "previous + level + constant");
+    auto scaled = damage; scaled.previousFactor = 1.5; scaled.levelFactor = 0; scaled.constant = 0; scaled.base = 3;
+    const auto fraction = ComputeLevelAutofill(scaled, LevelAutofillKind::Integer);
+    Require(!fraction.Succeeded() && fraction.diagnostics.front().code == "AUTOFILL_INTEGER_FRACTION", "integer fraction rejected");
+    const auto reals = ComputeLevelAutofill(scaled, LevelAutofillKind::Real);
+    Require(reals.Succeeded() && (*reals.value)[1].text == "4.5" && (*reals.value)[2].text == "6.75", "real sequence");
+    LevelAutofill text; text.startLevel = 1; text.endLevel = 3; text.baseText = "L#: #0"; text.levelToken = "#";
+    const auto texts = ComputeLevelAutofill(text, LevelAutofillKind::Text);
+    Require(texts.Succeeded() && (*texts.value)[2].text == "L3: 30", "level token replaced everywhere");
+    auto backwards = damage; backwards.startLevel = 5;
+    Require(!ComputeLevelAutofill(backwards, LevelAutofillKind::Integer).Succeeded(), "start after end rejected");
+    auto huge = damage; huge.previousFactor = 1e10; huge.endLevel = 40;
+    Require(!ComputeLevelAutofill(huge, LevelAutofillKind::Integer).Succeeded(), "integer overflow rejected");
+}
+
 } // namespace
 
 int main() {
     try {
         AtomicBatch();
-        std::cout << "ObjectBatchEdit: atomic multi-object edit passed\n";
+        LevelAutofillSequences();
+        std::cout << "ObjectBatchEdit: atomic multi-object edit and level autofill passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

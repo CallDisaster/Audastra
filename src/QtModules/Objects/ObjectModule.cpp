@@ -487,6 +487,9 @@ void ObjectModule::BuildPage() {
     objectListView_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(objectListView_, &QTableView::customContextMenuRequested,
         this, &ObjectModule::ShowObjectListContextMenu);
+    objectFieldView_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(objectFieldView_, &QTableView::customContextMenuRequested,
+        this, &ObjectModule::ShowObjectFieldContextMenu);
     objectListModel_->SetPresentationResolver([this](const ObjectRecord& record) {
         if (showRawFields_->isChecked()) return std::make_pair(U8(record.key.rawcode), QIcon{});
         for (const auto& entry : objectViewEntries_) {

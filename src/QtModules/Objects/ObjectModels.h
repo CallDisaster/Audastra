@@ -2,6 +2,7 @@
 
 #include "ObjectNames.h"
 #include "Widgets/WarcraftTextPreview.h"
+#include "War3MapCore/ObjectData/LevelAutofill.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
@@ -83,6 +84,13 @@ public:
     [[nodiscard]] const War3Map::ObjectData::ObjectFieldDefinition* DefinitionAt(int row) const;
     [[nodiscard]] std::optional<War3Map::ObjectData::Value> EditorValueAt(int row) const;
 
+    // 自动填充等级：同一字段（字段编号、数据列、变体相同）在当前对象上的各等级，不受搜索/分类过滤影响。
+    // 不是多等级字段或字段不能按数值/文本填充时无类型。
+    [[nodiscard]] std::optional<War3Map::ObjectData::LevelAutofillKind> LevelAutofillKindAt(int row) const;
+    [[nodiscard]] std::vector<std::pair<std::uint32_t, QString>> LevelValuesOf(int row) const;
+    // 一次撤销写入多个等级；任一等级只读、缺失或值不符合字段类型与范围时整批不写，返回原因（成功为空）。
+    QString SetLevelValues(int row, const std::vector<std::pair<std::uint32_t, QString>>& values, const QString& label);
+
     // 获取指定模型行对应的修改记录（过滤模式下自动映射）。
     [[nodiscard]] const War3Map::ObjectData::ObjectModification* ModificationAt(
         int row) const;
@@ -113,6 +121,9 @@ private:
     void RebuildRows();
     void CommitSnapshot(War3Map::ObjectData::LniObjectDocument next, const QString& label);
     [[nodiscard]] const FieldRow* RowAt(int row) const;
+    [[nodiscard]] std::vector<std::size_t> LevelFamily(const FieldRow& field) const;
+    // 编辑文本按字段元数据转换并检查最小/最大值；setData 与多等级写入共用。
+    [[nodiscard]] std::optional<War3Map::ObjectData::Value> ConvertedValue(const FieldRow& field, const QVariant& input) const;
 
     War3Map::ObjectData::LniObjectDocument* document_ = nullptr;
     std::optional<War3Map::ObjectData::ObjectKey> object_;

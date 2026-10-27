@@ -375,6 +375,91 @@ void ObjectFieldModel::CommitSnapshot(LniObjectDocument next, const QString& lab
     else apply(next);
 }
 
+std::optional<Value> ObjectFieldModel::ConvertedValue(const FieldRow& field, const QVariant& input) const {
+    auto converted = field.definition ? SchemaValue(field.definition, input) : ConvertEditedValue(field.effective.value, input);
+    if (!converted) return std::nullopt;
+    if (field.definition && (std::holds_alternative<std::int32_t>(*converted) || std::holds_alternative<float>(*converted))) {
+        const double numeric = std::holds_alternative<float>(*converted) ? std::get<float>(*converted) : std::get<std::int32_t>(*converted);
+        bool valid = false;
+        const double minimum = ToQString(field.definition->minimum).toDouble(&valid);
+        if (valid && numeric < minimum) return std::nullopt;
+        const double maximum = ToQString(field.definition->maximum).toDouble(&valid);
+        if (valid && numeric > maximum) return std::nullopt;
+    }
+    // 既有bool文档保留值类型；native bool是整数。
+    if (std::holds_alternative<bool>(field.effective.value) && IsBoolean(field.definition))
+        converted = Value{std::get<std::int32_t>(*converted) != 0};
+    return converted;
+}
+
+std::vector<std::size_t> ObjectFieldModel::LevelFamily(const FieldRow& field) const {
+    std::vector<std::size_t> family;
+    const auto& key = field.canonicalKey;
+    if (!key.level || *key.level == 0) return family;
+    for (std::size_t i = 0; i < rows_.size(); ++i) {
+        const auto& other = rows_[i].canonicalKey;
+        if (other.fieldId == key.fieldId && other.dataIndex == key.dataIndex && other.variation == key.variation
+            && other.level && *other.level > 0) family.push_back(i);
+    }
+    std::stable_sort(family.begin(), family.end(), [this](std::size_t left, std::size_t right) {
+        return *rows_[left].canonicalKey.level < *rows_[right].canonicalKey.level;
+    });
+    return family;
+}
+
+std::optional<LevelAutofillKind> ObjectFieldModel::LevelAutofillKindAt(int row) const {
+    const auto* field = RowAt(row);
+    if (!field || !field->editable || !field->definition || !field->definition->nativeValueType) return std::nullopt;
+    const auto* definition = field->definition;
+    if (IsBoolean(definition) || definition->isList || !definition->referenceTypes.empty() || !definition->choices.empty())
+        return std::nullopt;
+    if (LevelFamily(*field).empty()) return std::nullopt;
+    switch (*definition->nativeValueType) {
+    case NativeValueType::Int32: return LevelAutofillKind::Integer;
+    case NativeValueType::Real:
+    case NativeValueType::Unreal: return LevelAutofillKind::Real;
+    case NativeValueType::String: return LevelAutofillKind::Text;
+    }
+    return std::nullopt;
+}
+
+std::vector<std::pair<std::uint32_t, QString>> ObjectFieldModel::LevelValuesOf(int row) const {
+    std::vector<std::pair<std::uint32_t, QString>> values;
+    if (const auto* field = RowAt(row)) {
+        for (const auto member : LevelFamily(*field))
+            values.emplace_back(*rows_[member].canonicalKey.level, ToQString(ValueToDisplayString(rows_[member].effective.value)));
+    }
+    return values;
+}
+
+QString ObjectFieldModel::SetLevelValues(int row, const std::vector<std::pair<std::uint32_t, QString>>& values, const QString& label) {
+    if (writeGate_ && !writeGate_()) return tr("物编目录校验未通过，未写入；原因见问题列表。");
+    const auto* field = RowAt(row);
+    if (!field || !document_ || !object_) return tr("没有选中字段。");
+    const auto family = LevelFamily(*field);
+    LniObjectDocument next = *document_;
+    bool changed = false;
+    for (const auto& [level, text] : values) {
+        const auto member = std::find_if(family.begin(), family.end(), [&](std::size_t index) {
+            return *rows_[index].canonicalKey.level == level;
+        });
+        if (member == family.end()) return tr("当前对象没有第 %1 级。").arg(level);
+        const FieldRow& target = rows_[*member];
+        if (!target.editable) return tr("第 %1 级只读：%2").arg(level).arg(target.reason.isEmpty() ? tr("不可编辑") : target.reason);
+        const auto converted = ConvertedValue(target, text);
+        if (!converted) return tr("第 %1 级的值 %2 不符合字段类型或取值范围。").arg(level).arg(text);
+        if (ValueToDisplayString(*converted) == ValueToDisplayString(target.effective.value)) continue;
+        const auto status = next.SetModification(*object_, target.effective.key, *converted);
+        if (!status.Succeeded()) {
+            return tr("第 %1 级写入失败：%2").arg(level)
+                .arg(status.diagnostics.empty() ? tr("未知原因") : ToQString(status.diagnostics.front().message));
+        }
+        changed = true;
+    }
+    if (changed) CommitSnapshot(std::move(next), label);
+    return {};
+}
+
 bool ObjectFieldModel::setData(const QModelIndex& index, const QVariant& input, int role) {
     if (role == Qt::EditRole && writeGate_ && !writeGate_()) return false;
     const auto* field = RowAt(index.row());
@@ -393,19 +478,8 @@ bool ObjectFieldModel::setData(const QModelIndex& index, const QVariant& input, 
         if (!field->definition->isList && ids.size() > 1) return false;
         value = ids.join(QChar(','));
     }
-    auto converted = field->definition ? SchemaValue(field->definition, value) : ConvertEditedValue(field->effective.value, value);
+    const auto converted = ConvertedValue(*field, value);
     if (!converted) return false;
-    if (field->definition && (std::holds_alternative<std::int32_t>(*converted) || std::holds_alternative<float>(*converted))) {
-        const double numeric = std::holds_alternative<float>(*converted) ? std::get<float>(*converted) : std::get<std::int32_t>(*converted);
-        bool valid = false;
-        const double minimum = ToQString(field->definition->minimum).toDouble(&valid);
-        if (valid && numeric < minimum) return false;
-        const double maximum = ToQString(field->definition->maximum).toDouble(&valid);
-        if (valid && numeric > maximum) return false;
-    }
-    // 既有bool文档保留值类型；native bool是整数。
-    if (std::holds_alternative<bool>(field->effective.value) && IsBoolean(field->definition))
-        converted = Value{std::get<std::int32_t>(*converted) != 0};
     if (ValueToDisplayString(*converted) == ValueToDisplayString(field->effective.value)) return true;
     LniObjectDocument next = *document_;
     const auto status = next.SetModification(*object_, field->effective.key, *converted);

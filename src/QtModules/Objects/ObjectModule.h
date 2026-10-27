@@ -104,6 +104,8 @@ private:
     void RefreshObjectFieldPresentation();
     void RebuildObjectFieldCategories();
     void UpdateObjectFieldControls();
+    void ShowObjectFieldContextMenu(const QPoint& pos);
+    void AutofillObjectFieldLevels(int row);
     // 原版风格目录树（ObjectTreeActions.cpp）
     void RebuildObjectTree();
     void OnObjectTreeSelected(const QString& id, bool custom);

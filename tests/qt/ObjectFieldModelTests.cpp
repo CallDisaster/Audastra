@@ -1,5 +1,7 @@
 #include "ObjectModels.h"
+#include "LevelAutofillDialog.h"
 #include "ObjectColourPreviewSource.h"
+#include "Theme/ThemeManager.h"
 #include "EditorProject.h"
 #include "Widgets/WarcraftTextPreview.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -15,7 +17,9 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QLabel>
 #include <QTableView>
+#include <QTableWidget>
 #include <QSpinBox>
 #include <QTest>
 #include <QTextEdit>
@@ -131,6 +135,7 @@ private slots:
     void InvalidParentChainsStayReadOnly();
     void InvalidInheritedValuesStayReadOnly();
     void NearParentValueShadowsFarParentAmbiguity();
+    void LevelAutofillWritesAllLevelsAsOneUndo();
 };
 
 void ObjectFieldModelTests::EffectiveInheritedFieldsCreateOverlaysAndUndo() {
@@ -841,6 +846,95 @@ void ObjectFieldModelTests::NearParentValueShadowsFarParentAmbiguity() {
     const auto source = Serialize(*document);
     QVERIFY(source.find("HP=500\nuhpm=550\n") != std::string::npos);
     QVERIFY(source.find("[H001]\n_parent=\"H000\"\nuhpm=600\n") != std::string::npos);
+}
+
+// 自动填充等级：预览按原版公式算出各级，确定后一次撤销写入；无效值整批拒绝，表单保留并显示原因。
+void ObjectFieldModelTests::LevelAutofillWritesAllLevelsAsOneUndo() {
+    Fixture fixture;
+    QVERIFY(fixture.valid);
+    auto document = Parse(ObjectType::Ability, "[A000]\n_parent=\"AHbz\"\n");
+    QVERIFY(document);
+    const ObjectKey object{ObjectType::Ability, "A000"};
+    ObjectFieldModel model;
+    QUndoStack undo;
+    model.SetUndoStack(&undo);
+    model.SetContext(&fixture.catalog, &fixture.schema);
+    model.SetDocument(document.get(), &object);
+    const auto original = Serialize(*document);
+    const int damage = FindRow(model, "Hbz1", 2);
+    QVERIFY(damage >= 0);
+    QCOMPARE(model.LevelAutofillKindAt(damage), std::optional{LevelAutofillKind::Real});
+    QCOMPARE(model.LevelAutofillKindAt(FindRow(model, "atp1", 1)), std::optional{LevelAutofillKind::Text});
+    const auto levels = model.LevelValuesOf(damage);
+    QCOMPARE(levels.size(), std::size_t{2});
+    QCOMPARE(levels[0].second, QStringLiteral("75.5"));
+    QCOMPARE(levels[1].second, QStringLiteral("100.25"));
+
+    // 模型整批拒绝：缺少的等级或无法转换的值都不留下半批修改与撤销项。
+    QVERIFY(!model.SetLevelValues(damage, {{1, QStringLiteral("1")}, {7, QStringLiteral("2")}}, QStringLiteral("x")).isEmpty());
+    QVERIFY(!model.SetLevelValues(damage, {{1, QStringLiteral("1")}, {2, QStringLiteral("abc")}}, QStringLiteral("x")).isEmpty());
+    QCOMPARE(undo.count(), 0);
+    QCOMPARE(Serialize(*document), original);
+
+    LevelAutofillDialog dialog(QStringLiteral("暴风雪伤害"), LevelAutofillKind::Real, false, levels,
+        [&](const LevelAutofillDialog::Values& values) {
+            return model.SetLevelValues(FindRow(model, "Hbz1", 2), values, QStringLiteral("自动填充 暴风雪伤害"));
+        });
+    auto* base = dialog.findChild<QLineEdit*>(QStringLiteral("autofillBase"));
+    auto* previous = dialog.findChild<QLineEdit*>(QStringLiteral("autofillPreviousFactor"));
+    auto* constant = dialog.findChild<QLineEdit*>(QStringLiteral("autofillConstant"));
+    auto* table = dialog.findChild<QTableWidget*>(QStringLiteral("autofillPreview"));
+    auto* problem = dialog.findChild<QLabel*>(QStringLiteral("formProblem"));
+    auto* ok = dialog.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok);
+    QVERIFY(base && previous && constant && table && problem && ok);
+    QCOMPARE(base->text(), QStringLiteral("75.5")); // 跟随开始等级的现值
+    previous->setText(QStringLiteral("x"));
+    emit previous->textEdited(previous->text());
+    QVERIFY(!ok->isEnabled());
+    QVERIFY(!problem->isHidden() && problem->text().contains(QStringLiteral("上一个值因素")));
+    base->setText(QStringLiteral("10"));
+    emit base->textEdited(base->text());
+    previous->setText(QStringLiteral("2"));
+    emit previous->textEdited(previous->text());
+    constant->setText(QStringLiteral("1"));
+    emit constant->textEdited(constant->text());
+    QVERIFY(ok->isEnabled() && problem->isHidden());
+    QCOMPARE(table->rowCount(), 2);
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("75.5"));
+    QCOMPARE(table->item(0, 2)->text(), QStringLiteral("10"));
+    QCOMPARE(table->item(1, 2)->text(), QStringLiteral("21"));
+    if (const auto directory = qEnvironmentVariable("AUDASTRA_FORM_CAPTURE_DIR"); !directory.isEmpty()) {
+        War3Map::UiKit::ThemeManager theme;
+        theme.ApplyTheme(QStringLiteral("graphite"));
+        dialog.resize(dialog.sizeHint());
+        dialog.grab().save(directory + QStringLiteral("/level-autofill.png"));
+    }
+    ok->click();
+    QCOMPARE(dialog.result(), int(QDialog::Accepted));
+    QCOMPARE(undo.count(), 1);
+    QCOMPARE(model.index(FindRow(model, "Hbz1", 1), 3).data().toString(), QStringLiteral("10"));
+    QCOMPARE(model.index(FindRow(model, "Hbz1", 2), 3).data().toString(), QStringLiteral("21"));
+    undo.undo();
+    QCOMPARE(Serialize(*document), original);
+
+    // 文本字段：等级记号逐级替换。
+    const int tip = FindRow(model, "atp1", 1);
+    LevelAutofillDialog text(QStringLiteral("提示"), LevelAutofillKind::Text, false, model.LevelValuesOf(tip),
+        [&](const LevelAutofillDialog::Values& values) { return model.SetLevelValues(FindRow(model, "atp1", 1), values, QStringLiteral("t")); });
+    auto* baseText = text.findChild<QLineEdit*>(QStringLiteral("autofillBaseText"));
+    auto* token = text.findChild<QLineEdit*>(QStringLiteral("autofillLevelToken"));
+    QVERIFY(baseText && token);
+    QCOMPARE(baseText->text(), QStringLiteral("第一等级,含逗号"));
+    baseText->setText(QStringLiteral("第#级"));
+    emit baseText->textEdited(baseText->text());
+    token->setText(QStringLiteral("#"));
+    emit token->textEdited(token->text());
+    text.findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+    QCOMPARE(text.result(), int(QDialog::Accepted));
+    QCOMPARE(model.index(FindRow(model, "atp1", 2), 3).data().toString(), QStringLiteral("第2级"));
+    undo.undo();
+    QCOMPARE(Serialize(*document), original);
+    undo.clear();
 }
 
 QTEST_MAIN(ObjectFieldModelTests)
