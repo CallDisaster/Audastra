@@ -163,6 +163,12 @@ std::optional<ScriptValue> ApplyBinary(Operator op, const ScriptValue& left, con
     }
     if (left.kind != Kind::Number || right.kind != Kind::Number) return std::nullopt;
     const bool integer = left.integer && right.integer;
+    if (integer && (op == Operator::Plus || op == Operator::Minus || op == Operator::Multiply)) {
+        const auto a = static_cast<std::int64_t>(left.number);
+        const auto b = static_cast<std::int64_t>(right.number);
+        const std::int64_t value = op == Operator::Plus ? a + b : op == Operator::Minus ? a - b : a * b;
+        return ScriptValue::Number(static_cast<std::int32_t>(static_cast<std::uint32_t>(value)), true);
+    }
     switch (op) {
     case Operator::Plus: return ScriptValue::Number(left.number + right.number, integer);
     case Operator::Minus: return ScriptValue::Number(left.number - right.number, integer);

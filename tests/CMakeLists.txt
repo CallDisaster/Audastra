@@ -111,6 +111,11 @@ target_link_libraries(war3-map-game-ui-description-tests PRIVATE War3MapEditor::
 target_compile_definitions(war3-map-game-ui-description-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-game-ui-description-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME core-game-ui-description COMMAND war3-map-game-ui-description-tests)
+add_executable(war3-map-game-ui-trigger-simulation-tests GameUiTriggerSimulationTests.cpp)
+target_link_libraries(war3-map-game-ui-trigger-simulation-tests PRIVATE War3MapEditor::GameUi)
+target_compile_definitions(war3-map-game-ui-trigger-simulation-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-game-ui-trigger-simulation-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME core-game-ui-trigger-simulation COMMAND war3-map-game-ui-trigger-simulation-tests)
 add_executable(war3-map-game-ui-trigger-tests GameUiTriggerTests.cpp)
 target_link_libraries(war3-map-game-ui-trigger-tests PRIVATE War3MapEditor::GameUi War3MapEditor::Trigger War3MapEditor::Jass)
 target_compile_definitions(war3-map-game-ui-trigger-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN
