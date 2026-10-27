@@ -51,6 +51,7 @@ qt_add_library(War3MapQtProject STATIC
     LuaMapTargetProject.cpp
     ProjectMapData.cpp
     ProjectAuxiliaryEdits.cpp ProjectAuxiliaryEdits.h
+    ProjectMapCustomSettings.cpp ProjectMapCustomSettings.h
     TerrainWaterEditPreparation.cpp TerrainWaterEditPreparation.h
     TerrainResizeEditPreparation.cpp TerrainResizeEditPreparation.h
     TerrainTextureSlotEditPreparation.cpp TerrainTextureSlotEditPreparation.h

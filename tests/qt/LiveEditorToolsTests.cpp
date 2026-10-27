@@ -8,6 +8,8 @@
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpMapCustomSettingsTools.h"
+#include "MapSettingsModule.h"
+#include "Theme/ThemeManager.h"
 #include "../support/MapCustomSettingsFixture.h"
 #include "McpMapRuntimeTools.h"
 #include "McpImportTools.h"
@@ -40,12 +42,22 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Workspace.h"
 
+#include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLabel>
+#include <QListWidget>
+#include <QPushButton>
 #include <QSignalSpy>
+#include <QSpinBox>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
@@ -330,6 +342,7 @@ private slots:
     void TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo();
     void TextureSlotPreparationRejectsConcurrentRevision();
     void CustomSettingsShareOriginalUndoAndRejectStaleCas();
+    void SettingsPageEditsTechnologyThroughSharedService();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
@@ -2793,5 +2806,5 @@ void LiveEditorToolsTests::RuntimeToolsRequireExplicitConsentAndShareUndo() {
     QVERIFY(!denied.value("ok").toBool());
 }
 
-QTEST_GUILESS_MAIN(LiveEditorToolsTests)
+QTEST_MAIN(LiveEditorToolsTests)
 #include "LiveEditorToolsTests.moc"

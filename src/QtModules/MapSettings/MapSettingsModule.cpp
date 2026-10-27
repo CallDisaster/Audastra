@@ -1,5 +1,6 @@
 #include "MapSettingsModule.h"
 #include "MapPlayerEnumDelegate.h"
+#include "MapTechPage.h"
 #include "../NavigationBookmarkDetail.h"
 
 #include "EditorProject.h"
@@ -458,6 +459,7 @@ void MapSettingsModule::BuildForms() {
     }
     players_ = nullptr;
     forces_ = nullptr;
+    techPage_ = nullptr;
     mapFlagFields_.clear();
     loadingBackground_ = nullptr;
     gameDataSet_ = nullptr;
@@ -641,15 +643,26 @@ void MapSettingsModule::BuildForms() {
     AddTextField(screen, tr("序章正文"), "prologueScreen.text", draft_->prologueScreen.text, true);
 
     auto* tech = addForm(tr("科技与随机表"));
-    const auto* custom = draft_->custom ? &*draft_->custom : nullptr;
-    const QString status = custom
-        ? tr("科技可用性 %1 · 科技限制 %2 · 随机单位表 %3 · 随机物品表 %4")
-              .arg(custom->upgrades.size()).arg(custom->techRestrictions.size())
-              .arg(custom->randomUnits.size()).arg(custom->randomItems.size())
-        : tr("原地图未提供自定义表");
-    auto* techStatus = new QLabel(status + tr(" · 只读"), page_);
-    techStatus->setWordWrap(true);
-    tech->addRow(techStatus);
+    if (draft_->custom) {
+        // 科技行经共用自定义设置服务逐条提交（各一个撤销记录），与上方草稿的“应用”分开；草稿未应用时不接受。
+        QString readOnly;
+        const auto* session = project_.MapEdits();
+        const auto allowed = session ? Services::MapCustomSettingsEditing::WriteQualification(session->Snapshot())
+            : Status::Failure("Map.CustomSettings", "SETTINGS_DOCUMENT_REQUIRED", tr("当前没有打开地图。").toStdString());
+        if (!allowed.Succeeded()) readOnly = QString::fromStdString(allowed.diagnostics.front().message);
+        else if (!draft_->custom->randomUnits.empty() || !draft_->custom->randomItems.empty())
+            readOnly = tr("地图含随机单位/物品表，其初始化尚未接通，科技设置暂只能查看。");
+        techPage_ = new MapTechPage(project_, *draft_, rawFields_ && rawFields_->isChecked(), readOnly,
+            MapTechPage::ProjectCommit(project_, this,
+                [this] { return pending_ ? tr("先应用或放弃上方未应用的地图设置修改。") : QString{}; },
+                [this](const QString& problem) { SetMessage(problem, true); }),
+            tech->parentWidget());
+        tech->addRow(techPage_);
+    } else {
+        auto* techStatus = new QLabel(tr("原地图未提供自定义表 · 只读"), page_);
+        techStatus->setWordWrap(true);
+        tech->addRow(techStatus);
+    }
 
     UpdateLabels();
     sections_->setCurrentRow(std::clamp(pendingSection_, 0, pages_->count() - 1));
@@ -669,6 +682,7 @@ void MapSettingsModule::UpdateLabels() {
         ? QStringList{"number", "name", "controller", "race", "flags", "startX", "startY", "allyLowPriorityMask", "allyHighPriorityMask"}
         : QStringList{tr("序号"), tr("名称"), tr("控制类型"), tr("种族"), tr("选项"), tr("起点 X"), tr("起点 Y"), tr("低优先盟友"), tr("高优先盟友")});
     if (players_) players_->viewport()->update();  // 控制类型/种族列随原始字段开关切换数字与名称
+    if (techPage_) techPage_->SetRaw(raw);
     if (forces_) forces_->setHorizontalHeaderLabels(raw
         ? QStringList{"name", "playerMask", "flags"}
         : QStringList{tr("名称"), tr("玩家集合"), tr("联盟选项")});

@@ -1,5 +1,6 @@
 qt_add_library(War3MapQtModuleMapSettings STATIC
-    MapSettingsModule.cpp MapSettingsLayout.cpp MapPlayerEnumDelegate.cpp MapSettingsModule.h MapPlayerEnumDelegate.h)
+    MapSettingsModule.cpp MapSettingsLayout.cpp MapPlayerEnumDelegate.cpp MapSettingsModule.h MapPlayerEnumDelegate.h
+    MapTechPage.cpp MapTechPage.h)
 add_library(War3MapEditor::QtModuleMapSettings ALIAS War3MapQtModuleMapSettings)
 target_include_directories(War3MapQtModuleMapSettings PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(War3MapQtModuleMapSettings PUBLIC

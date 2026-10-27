@@ -27,6 +27,7 @@ class QTableWidget;
 namespace War3Map::QtProject { class EditorProject; }
 
 namespace War3Map::Modules {
+class MapTechPage;
 
 // 经典 W3I v25 的地图设置工作区。页面仅持有草稿；应用时经 MapDataEditSession
 // 检查并写入成员覆盖，Shell 的撤销入口使用工程共用的地图数据撤销栈。
@@ -115,6 +116,7 @@ private:
     std::vector<FlagField> mapFlagFields_;
     QTableWidget* players_ = nullptr;
     QTableWidget* forces_ = nullptr;
+    QPointer<MapTechPage> techPage_;
     std::optional<MapData::MapSettings> draft_;
     std::vector<TextField> textFields_;
     std::vector<FieldLabel> labels_;
