@@ -7,6 +7,8 @@
 #include "McpObjectTools.h"
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
+#include "McpMapCustomSettingsTools.h"
+#include "../support/MapCustomSettingsFixture.h"
 #include "McpMapRuntimeTools.h"
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
@@ -327,6 +329,7 @@ private slots:
     void ResizeToolsCaptureActualResourcesAndKeepOriginalUndo();
     void TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo();
     void TextureSlotPreparationRejectsConcurrentRevision();
+    void CustomSettingsShareOriginalUndoAndRejectStaleCas();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
@@ -356,7 +359,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
-        "map_runtime_query", "map_runtime_set", "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
+        "map_custom_settings_edit", "map_custom_settings_get", "map_runtime_query", "map_runtime_set", "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_apply_text", "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
         "objects_text",
@@ -368,7 +371,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{93});
+    QCOMPARE(expected.size(), qsizetype{95});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2718,6 +2721,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
 #include "TerrainBlockLiveCases.h"
 #include "LiveTerrainResizeCases.h"
 #include "LiveTerrainTextureSlotCases.h"
+#include "LiveMapCustomSettingsCases.h"
 void LiveEditorToolsTests::RuntimeToolsRequireExplicitConsentAndShareUndo() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const auto initial = f.tools->Invoke("map_runtime_query", {});

@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace War3Map::Services { class AuxiliaryEditing; class TerrainHistorySave; }
+namespace War3Map::Services { class AuxiliaryEditing; class TerrainHistorySave; class MapCustomSettingsEditing; }
 
 namespace War3Map::MapData {
 namespace detail { struct PlacementEditingAccess; struct TerrainInspectionAccess; struct MapDataFieldEditingAccess; }
@@ -46,6 +46,7 @@ class MapDataEditSession {
     friend class TerrainSavePlan;
     friend class TerrainNativeDoodadsProof;
     friend class Services::AuxiliaryEditing;
+    friend class Services::MapCustomSettingsEditing;
     struct Command;
     struct TerrainBoundsState;
     struct TerrainStartLocationsState;

@@ -18,6 +18,9 @@
 #include "McpObjectTools.h"
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
+#include "McpMapCustomSettingsTools.h"
+#include "ProjectObjectCatalog.h"
+#include "War3MapCore/Services/MapCustomSettingsSources.h"
 #include "McpMapRuntimeTools.h"
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
@@ -896,6 +899,55 @@ private:
         return invoke();
     }
 
+    QJsonObject CustomSettingsTool(const QString& name, const QJsonObject& arguments, bool write) {
+        const auto invoke = [&] {
+            Mcp::MapCustomSettingsToolHost host;
+            host.identity = [this] { auto identity = State(); identity.insert("dirty", project_.HasUnsavedMapChanges()); return identity; };
+            host.context = [this] { return VisibleMapDataContext(); };
+            host.validation = [this]() -> Result<Services::MapCustomSettingsValidation> {
+                auto names = Services::MapCustomSettingsInputNames(); if (!names.Succeeded()) return {{}, names.diagnostics};
+                auto captured = QtProject::CaptureProjectObjectCatalogSources(project_, *names.value);
+                if (!captured.Succeeded()) return {{}, captured.diagnostics};
+                auto input = captured.value->Sources();
+                for (const auto& replacement : input.replacements) if (ObjectData::ObjectTypeFromNativeFileName(replacement.name))
+                    return Result<Services::MapCustomSettingsValidation>::Failure("Map.CustomSettings", "SETTINGS_OBJECT_IMPORT_PENDING", "原生物编导入尚未进入当前编辑文档，请先完成导入后重新查询。");
+                for (const auto& removal : input.removals) if (ObjectData::ObjectTypeFromNativeFileName(removal))
+                    return Result<Services::MapCustomSettingsValidation>::Failure("Map.CustomSettings", "SETTINGS_OBJECT_IMPORT_PENDING", "原生物编删除尚未进入当前编辑文档，请先完成保存后重新查询。");
+                Services::MapCustomSettingsObjectOverlay overlay;
+                for (std::size_t i = 0; i < overlay.size(); ++i) if (project_.objectDocuments_[i])
+                    overlay[i] = std::make_shared<const ObjectData::LniObjectDocument>(*project_.objectDocuments_[i]);
+                auto validation = Services::CaptureMapCustomSettingsValidation(input, std::move(overlay));
+                if (!validation.Succeeded()) return validation;
+                const auto generation = project_.editRevision_.Generation(), revision = project_.editRevision_.Revision();
+                const auto gameRoot = project_.war3GameRoot_;
+                QPointer<QtProject::EditorProject> project(&project_);
+                auto previous = std::move(validation.value->verify);
+                validation.value->verify = [project, generation, revision, gameRoot, previous] {
+                    if (!project || project->editRevision_.Generation() != generation || project->editRevision_.Revision() != revision || project->war3GameRoot_ != gameRoot)
+                        return Status::Failure("Map.CustomSettings", "SETTINGS_PROJECT_STALE", "工程物编或资源修订已变化。");
+                    return previous ? previous() : Status::Ok();
+                };
+                return validation;
+            };
+            host.apply = [this](const Services::PreparedMapCustomSettingsEdit& plan, const Services::MapCustomSettingsValidation& validation,
+                const Mcp::MapDataPrepublishValidator& validate) -> Result<MapData::MapDataEditSession::EditReceipt> {
+                if (!project_.mapEdits_ || !project_.mapDataUndoStack_) return Result<MapData::MapDataEditSession::EditReceipt>::Failure("Map.CustomSettings", "SETTINGS_UNDO_UNAVAILABLE", "当前地图没有共用撤销会话。");
+                const auto applied = Services::MapCustomSettingsEditing::Apply(*project_.mapEdits_, plan, validation,
+                    [&](const auto& before, const auto& after, const auto& receipt) { return validate ? validate(before, after, receipt, {}) : Status::Ok(); });
+                if (!applied.Succeeded()) return {{}, applied.diagnostics};
+                const auto receipt = project_.mapEdits_->LastEdit();
+                QtProject::PushMapDataEdit(project_, QObject::tr("AI 修改地图科技"), "MCP 修改地图科技设置");
+                (void)project_.ObserveMapDataEdit("MCP 修改地图科技设置"); emit project_.MapDocumentChanged();
+                return Result<MapData::MapDataEditSession::EditReceipt>::Success(receipt);
+            };
+            return Mcp::InvokeMapCustomSettingsTool(name, arguments, host);
+        };
+        if (write) return Write(arguments, false, invoke);
+        if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+        const auto checked = CheckContext(arguments, false, true); if (!checked.value("ok").toBool()) return checked;
+        return invoke();
+    }
+
     QJsonObject PlacementTool(const QString& name, const QJsonObject& arguments) {
         const auto invoke = [&] {
             Mcp::PlacementToolHost host;
@@ -1751,6 +1803,11 @@ private:
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
                 [this, name, write](const QJsonObject& arguments) { return MapDataTool(name, arguments, write); },
                 definition.maxRequestIdBytes);
+        }
+        for (auto definition : Mcp::MapCustomSettingsToolDefinitions()) {
+            const auto name = definition.name; const bool write = definition.permission == Mcp::ToolPermission::Edit;
+            AddTool(name, definition.description, definition.permission, definition.inputSchema,
+                [this, name, write](const QJsonObject& arguments) { return CustomSettingsTool(name, arguments, write); }, definition.maxRequestIdBytes);
         }
         for (auto definition : Mcp::PlacementToolDefinitions()) {
             const auto name = definition.name;

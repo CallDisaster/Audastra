@@ -1,4 +1,5 @@
 #include "MapEditSaveCommand.h"
+#include "War3MapCore/IO/FileBytes.h"
 
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
@@ -387,7 +388,14 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
-        if (flag == L"--rebuild-shadows") {
+        if (flag == L"--settings-custom-edit-file") {
+            if (index + 1 >= argc || request.settingsCustomEdits) return Invalid("custom settings requires one JSON file and cannot repeat");
+            const auto bytes = IO::ReadFileBytes(argv[index + 1], 1024 * 1024);
+            if (!bytes.Succeeded()) { PrintDiagnostics(bytes.diagnostics); return 1; }
+            auto parsed = Services::ParseMapCustomSettingsEdit({reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size()});
+            if (!parsed.Succeeded()) { PrintDiagnostics(parsed.diagnostics); return 1; }
+            request.settingsCustomEdits = std::move(*parsed.value); index += 2;
+        } else if (flag == L"--rebuild-shadows") {
             if (request.rebuildTerrainShadow) return Invalid("--rebuild-shadows may appear only once");
             request.rebuildTerrainShadow = true;
             ++index;
@@ -661,7 +669,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     else request.runtimeCatalogDiagnostics = runtimeSources.diagnostics;
     if (request.terrainStrokes.empty() && request.fieldEdits.empty()
         && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits
-        && !request.rebuildTerrainShadow && !request.runtime.decision)
+        && !request.rebuildTerrainShadow && !request.runtime.decision && !request.settingsCustomEdits)
         return Invalid("at least one bounded edit operation is required");
     auto saved = Services::SaveMapEditCandidate(request);
     PrintDiagnostics(saved.diagnostics);
@@ -678,6 +686,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
               << "\nmember_count=" << receipt.memberCount
               << "\napplied_strokes=" << receipt.appliedStrokeCount
               << "\napplied_field_edits=" << receipt.appliedFieldEditCount
+              << "\napplied_settings_custom_edits=" << receipt.appliedSettingsCustomEditCount
               << "\napplied_placements=" << receipt.appliedPlacementCount
               << "\nedited_member_count=" << receipt.editedMembers.size();
     for (std::size_t index = 0; index < receipt.editedMembers.size(); ++index) {

@@ -29,6 +29,7 @@ target_sources(war3-map-cli PRIVATE ResourceCheckCommand.cpp ResourceCheckComman
 target_sources(war3-map-cli PRIVATE GameExtractCommand.cpp GameExtractCommand.h)
 target_sources(war3-map-cli PRIVATE GameUiCommand.cpp GameUiCommand.h)
 target_sources(war3-map-cli PRIVATE MapRuntimeCommand.cpp MapRuntimeCommand.h)
+target_sources(war3-map-cli PRIVATE MapCustomSettingsCommand.cpp MapCustomSettingsCommand.h)
 target_link_libraries(war3-map-cli PRIVATE audastra-json)
 target_compile_definitions(war3-map-cli PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-cli PRIVATE /W4 /permissive- /utf-8)

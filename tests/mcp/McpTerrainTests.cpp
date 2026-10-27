@@ -1,4 +1,5 @@
 #include "McpServer.h"
+#include "../support/MapCustomSettingsFixture.h"
 #include "McpTools.h"
 #include "McpWorkspace.h"
 #include "McpTerrain.h"
@@ -783,6 +784,7 @@ void TestNativeWaterSaveTransport() {
 
 } // namespace
 
+#include "MapCustomSettingsSaveCases.h"
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     try {
@@ -810,6 +812,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         Expect(arguments.size() == 1, "usage: test executable [--write-fixture <new-or-empty-directory>]");
+        TestCustomSettingsSaveAndQuery();
         TestNormalSaveTextureAndWaterSchema();
         TestNativeWaterSaveTransport();
         TestRemoveWaterSaveTransport();

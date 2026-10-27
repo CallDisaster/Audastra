@@ -15,6 +15,7 @@
 #include "UiLibraryCommand.h"
 #include "MapDataRoundtripCommand.h"
 #include "MapDataQueryCommand.h"
+#include "MapCustomSettingsCommand.h"
 #include "TerrainQueryCommand.h"
 #include "TerrainBlightSaveCommand.h"
 #include "MapEditSaveCommand.h"
@@ -92,6 +93,7 @@ void PrintUsage() {
         << "war3-map-cli resource-check <map-archive> <war3-root>\n"
         << "war3-map-cli name-query <map-archive> <source-sha256> <ui-root-or-dash> <game-root-or-dash> <raw-value> <ui-type>\n"
         << "war3-map-cli map-data-query <map-archive> <source-sha256> <settings|units|doodads|regions|cameras|sounds|strings> <start-index> <limit-1..128>\n"
+        << "war3-map-cli map-settings-custom-query <map-archive> <source-sha256> [query-json-file]\n"
         << "war3-map-cli imports-query <archive-or-directory> --expected-source-sha256 <sha256> [--query <text>] [--limit <1..128>] [--expected-inventory-sha256 <sha256> --cursor <token>]\n"
         << "war3-map-cli imports-get <archive-or-directory> --expected-source-sha256 <sha256> --expected-inventory-sha256 <sha256> --import-id <id>\n"
         << "war3-map-cli map-data-roundtrip <map-archive>\n"
@@ -422,6 +424,7 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"wct-source-chunk" && argc == 7) {
         return RunWctSourceChunk(argv[2], Utf8Argument(argv[3]), Utf8Argument(argv[4]), Utf8Argument(argv[5]), Utf8Argument(argv[6]));
     }
+    if (command == L"map-settings-custom-query") return RunMapCustomSettingsQuery(argc, argv);
     if (command == L"map-data-query" && argc == 7) {
         return RunMapDataQuery(argv[2], Utf8Argument(argv[3]), Utf8Argument(argv[4]),
             Utf8Argument(argv[5]), Utf8Argument(argv[6]));

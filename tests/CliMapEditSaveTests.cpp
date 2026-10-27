@@ -1,7 +1,9 @@
 #include "MapEditSaveCommand.h"
+#include "MapCustomSettingsCommand.h"
 #include "../src/Services/MapEditSaveValidation.h"
 #include "support/TerrainResizeFixture.h"
 #include "support/TerrainTextureSlotSaveFixture.h"
+#include "support/MapCustomSettingsFixture.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 
 #include <iostream>
@@ -23,14 +25,14 @@ struct Invocation {
     std::string output, error;
 };
 
-Invocation Invoke(std::vector<std::wstring> arguments) {
+Invocation Invoke(std::vector<std::wstring> arguments, int (*run)(int, wchar_t**) = RunMapEditSave) {
     std::vector<wchar_t*> argv;
     for (auto& argument : arguments) argv.push_back(argument.data());
     std::ostringstream output, error;
     auto* previousOutput = std::cout.rdbuf(output.rdbuf());
     auto* previousError = std::cerr.rdbuf(error.rdbuf());
     try {
-        const auto exitCode = RunMapEditSave(static_cast<int>(argv.size()), argv.data());
+        const auto exitCode = run(static_cast<int>(argv.size()), argv.data());
         std::cout.rdbuf(previousOutput);
         std::cerr.rdbuf(previousError);
         return {exitCode, output.str(), error.str()};
@@ -318,6 +320,31 @@ void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
 
 } // namespace
 
+namespace {
+void CustomSettingsUseSharedSave() {
+    namespace C = AudastraTest::CustomSettings;
+    C::Fixture fixture; auto direct = fixture.Request("direct-tech"); direct.settingsCustomEdits = fixture.AppendUpgrade();
+    std::vector<std::wstring> queryArgs{L"war3-map-cli", L"map-settings-custom-query", fixture.source.path.wstring(), std::wstring(fixture.source.sha256.begin(), fixture.source.sha256.end())};
+    const auto query = Invoke(queryArgs, RunMapCustomSettingsQuery);
+    Require(query.exitCode == 0 && query.output.find("\"native_v25_writable\":true") != std::string::npos, "CLI independent custom query reads actual native source");
+    queryArgs[3].assign(64, L'a'); Require(Invoke(queryArgs, RunMapCustomSettingsQuery).exitCode != 0, "CLI query rejects stale source SHA");
+    C::Take(War3Map::Services::SaveMapEditCandidate(direct));
+    const auto json = fixture.base.root / "commands.json";
+    const auto request = *direct.settingsCustomEdits;
+    C::Write(json, "{\"expected_member_sha256\":\"" + request.expectedMemberSha256 + "\",\"operations\":[{\"section\":\"upgrades\",\"op\":\"append\",\"expected_count\":0,\"value\":{\"player_mask\":1,\"id_hex\":\"52303031\",\"level\":1,\"availability\":2}}]}");
+    const auto target = fixture.base.root / "cli-tech.w3x";
+    std::vector<std::wstring> args{L"war3-map-cli", L"map-edit-save", fixture.source.path.wstring(),
+        std::wstring(fixture.source.sha256.begin(), fixture.source.sha256.end()), L"-", fixture.base.inputs.tool.wstring(), fixture.base.inputs.game.wstring(), target.wstring(),
+        L"--settings-custom-edit-file", json.wstring()};
+    const auto result = Invoke(args); if (result.exitCode != 0) throw std::runtime_error(result.error);
+    auto actual = C::Take(War3Map::MapArchiveSession::Open(target)); auto expected = C::Take(War3Map::MapArchiveSession::Open(direct.targetCandidate));
+    for (const auto* member : {"war3map.w3i", "war3map.j", "war3map.w3e", "war3map.wpm", "unchanged.bin"})
+        Require(C::Take(actual.ReadMember(member)) == C::Take(expected.ReadMember(member)), "CLI custom settings and common save agree");
+    args[7] = (fixture.base.root / "cli-no-prefix.w3x").wstring();
+    C::Write(json, "{\"expected_member_sha256\":\"" + request.expectedMemberSha256 + "\",\"operations\":[{\"section\":\"upgrades\",\"op\":\"append\",\"expected_count\":1,\"value\":{\"player_mask\":1,\"id_hex\":\"52303031\",\"level\":1,\"availability\":2}}]}");
+    Require(Invoke(args).exitCode != 0 && !std::filesystem::exists(fixture.base.root / "cli-no-prefix.w3x"), "CLI stale CAS does not publish");
+}
+}
 int main() {
     try {
         LegacyMinimapSwitchesAreRemoved();
@@ -335,6 +362,7 @@ int main() {
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
         TerrainResizeUsesSignedBeforeCanvasEdges();
         TerrainTextureSlotsUseSharedOrderedSave();
+        CustomSettingsUseSharedSave();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

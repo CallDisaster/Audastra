@@ -1,6 +1,7 @@
 #include "McpToolInternal.h"
 #include "McpMapRuntimeTools.h"
 #include "McpTerrainTextureSlotCommand.h"
+#include "McpMapCustomSettingsTools.h"
 #include "War3MapCore/ApplicationPaths.h"
 
 #include "War3MapCore/MapData/MapFields.h"
@@ -976,6 +977,8 @@ void RegisterMapEditSaveTool(McpServer& server) {
             {"items", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 256}}}}},
         {"field_edits", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 32},
             {"items", FieldEditSchema()}}},
+        {"expected_settings_sha256", ShaSchema()},
+        {"settings_custom_edits", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 128}, {"items", MapCustomSettingsOperationSchema()}}},
         {"terrain_strokes", QJsonObject{{"type", "array"}, {"minItems", 1},
             {"maxItems", 128}, {"items", TerrainStrokeSchema()}}},
     }, {"source_map_path", "output_path", "expected_source_sha256"});
@@ -988,6 +991,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
     tool.inputSchema["properties"] = saveProperties;
     tool.inputSchema["anyOf"] = QJsonArray{
         QJsonObject{{"required", QJsonArray{"field_edits"}}},
+        QJsonObject{{"required", QJsonArray{"expected_settings_sha256", "settings_custom_edits"}}},
         QJsonObject{{"required", QJsonArray{"trigger_edits"}}},
         QJsonObject{{"required", QJsonArray{"transaction_id", "expected_revision"}}},
         QJsonObject{{"required", QJsonArray{"expected_terrain_sha256", "terrain_strokes"}}},
@@ -995,7 +999,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
     tool.handler = [&server](const QJsonObject& parameters) -> QJsonValue {
         QJsonObject error;
         if (!OnlyFields(parameters, {"source_map_path", "output_path", "expected_source_sha256",
-            "ui_root", "source_encodings", "include_access", "script_target", "effective_layers", "field_edits", "trigger_edits", "expected_terrain_sha256", "terrain_strokes", "transaction_id", "expected_revision", "runtime", "runtime_purpose"}, error)) return error;
+            "ui_root", "source_encodings", "include_access", "script_target", "effective_layers", "field_edits", "trigger_edits", "expected_terrain_sha256", "terrain_strokes", "transaction_id", "expected_revision", "runtime", "runtime_purpose", "expected_settings_sha256", "settings_custom_edits"}, error)) return error;
         const bool workspaceRequest = parameters.contains("transaction_id") || parameters.contains("expected_revision");
         std::optional<std::pair<TransactionId, ProjectRevision>> envelope;
         McpWorkspace* workspace = nullptr;
@@ -1017,11 +1021,12 @@ void RegisterMapEditSaveTool(McpServer& server) {
         const auto sourceSha = RequiredSha(parameters, "expected_source_sha256", error);
         if (!sourceSha) return error;
         const bool fieldRequest = parameters.contains("field_edits");
+        const bool customRequest = parameters.contains("settings_custom_edits") || parameters.contains("expected_settings_sha256");
         const bool terrainRequest = parameters.contains("terrain_strokes") ||
             parameters.contains("expected_terrain_sha256");
         const bool triggerRequest = parameters.contains("trigger_edits");
         const int domainCount = static_cast<int>(fieldRequest) + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest)
-                + static_cast<int>(workspaceRequest);
+                + static_cast<int>(workspaceRequest) + static_cast<int>(customRequest);
         if (domainCount != 1 && !(domainCount == 0 && parameters.contains("runtime")))
             return Failure("MCP_MAP_EDIT_OPERATION_SCOPE_INVALID", "一次请求只能提供字段、地形或触发器其中一种领域批次。");
         std::error_code pathError;
@@ -1101,7 +1106,12 @@ void RegisterMapEditSaveTool(McpServer& server) {
                 return Failure("MCP_UI_ROOT_INVALID", "ui_root 必须是可访问的 UI 元数据绝对目录。");
             request.uiRoot = *uiRoot.value;
         }
-        if (fieldRequest) {
+        if (customRequest) {
+            const QJsonObject edit{{"expected_member_sha256", parameters.value("expected_settings_sha256")}, {"operations", parameters.value("settings_custom_edits")}};
+            auto parsed = Services::ParseMapCustomSettingsEdit(QJsonDocument(edit).toJson(QJsonDocument::Compact).toStdString());
+            if (!parsed.Succeeded()) return Failure(parsed);
+            request.settingsCustomEdits = std::move(*parsed.value);
+        } else if (fieldRequest) {
             const auto edits = parameters.value("field_edits");
             if (!edits.isArray() || edits.toArray().isEmpty() || edits.toArray().size() > 32)
                 return Failure("MCP_MAP_EDIT_FIELD_EDITS_INVALID", "field_edits 必须包含 1..32 项字段修改。");
@@ -1166,6 +1176,7 @@ void RegisterMapEditSaveTool(McpServer& server) {
             {"runtime_purpose", QString::fromUtf8(Services::MapRuntimeSavePurposeName(receipt.runtimePurpose))},
             {"runtime_packaged", receipt.runtimePackaged},
             {"applied_field_edit_count", static_cast<qint64>(receipt.appliedFieldEditCount)},
+            {"applied_settings_custom_edit_count", static_cast<qint64>(receipt.appliedSettingsCustomEditCount)},
             {"applied_placement_count", static_cast<qint64>(receipt.appliedPlacementCount)},
             {"applied_terrain_stroke_count", static_cast<qint64>(receipt.appliedStrokeCount)},
             {"effective_layers", layers}, {"native_editor_verified", false},

@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/Services/MapCustomSettingsEditing.h"
 
 #include "War3MapCore/MapData/MapFields.h"
 #include "War3MapCore/MapData/PlacementEditing.h"
@@ -110,6 +111,7 @@ struct MapEditSaveRequest {
     // 原版独立“计算阴影”操作；普通保存沿用已有SHD。
     bool rebuildTerrainShadow = false;
     std::vector<MapEditFieldOperation> fieldEdits;
+    std::optional<MapCustomSettingsEditRequest> settingsCustomEdits;
     MapEditPlacementOperation placementEdit;
     // 一个领域批次与地图 SHA 同时绑定，不能提供任意 WTG/WCT/脚本成员字节。
     std::optional<Trigger::TriggerEditBatch> triggerEdits;
@@ -163,6 +165,7 @@ struct MapEditSaveReceipt {
     std::optional<MapEditMinimapReceipt> generatedMissingMinimap;
     MapRuntimeSavePurpose runtimePurpose = MapRuntimeSavePurpose::Normal;
     bool runtimePackaged = false;
+    std::size_t appliedSettingsCustomEditCount = 0;
 };
 
 // 接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

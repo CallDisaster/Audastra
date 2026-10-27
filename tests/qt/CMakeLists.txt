@@ -146,6 +146,7 @@ target_compile_options(war3-map-live-editor-tools-tests PRIVATE /W4 /permissive-
 war3map_deploy_qt_runtime(war3-map-live-editor-tools-tests)
 add_test(NAME qt-live-editor-tools COMMAND war3-map-live-editor-tools-tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/qt-live-editor-tools-$<CONFIG>.qtest.txt" -txt)
+target_sources(war3-map-live-editor-tools-tests PRIVATE LiveMapCustomSettingsCases.h ../support/MapCustomSettingsFixture.h)
 set_tests_properties(qt-live-editor-tools PROPERTIES TIMEOUT 60
     ATTACHED_FILES_ON_FAIL "${CMAKE_CURRENT_BINARY_DIR}/qt-live-editor-tools-$<CONFIG>.qtest.txt"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")

@@ -5,6 +5,7 @@
 #include "McpVariableTools.h"
 #include "McpMapDataTools.h"
 #include "McpMapRuntimeTools.h"
+#include "McpMapCustomSettingsTools.h"
 #include "McpPlacementTools.h"
 #include "McpAuxiliaryTools.h"
 #include "McpProductTools.h"
@@ -45,6 +46,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterObjectTools(server);
     RegisterVariableTools(server);
     RegisterMapDataTools(server);
+    RegisterMapCustomSettingsTools(server);
     RegisterMapRuntimeTools(server);
     RegisterPlacementTools(server);
     RegisterAuxiliaryTools(server);

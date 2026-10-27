@@ -14,6 +14,7 @@
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Services/AuxiliaryTransaction.h"
+#include "War3MapCore/Services/MapCustomSettingsSources.h"
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/UiLibrary/UiLibrary.h"
@@ -610,15 +611,16 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
     bool written = false;
     try {
         const bool fieldRequest = !request.fieldEdits.empty();
+        const bool customRequest = request.settingsCustomEdits.has_value();
         const bool placementRequest = !std::holds_alternative<std::monostate>(request.placementEdit);
         const bool terrainRequest = !request.terrainStrokes.empty();
         const bool triggerRequest = request.triggerEdits.has_value() || request.triggerTransaction != nullptr;
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
         const bool terrainCompanion = terrainRequest && (fieldRequest || objectRequest)
-            && !placementRequest && !triggerRequest && !auxiliaryRequest;
+            && !placementRequest && !triggerRequest && !auxiliaryRequest && !customRequest;
         const bool terrainUnitPlacementCompanion = terrainRequest && placementRequest
-            && !fieldRequest && !objectRequest && !triggerRequest && !auxiliaryRequest
+            && !fieldRequest && !objectRequest && !triggerRequest && !auxiliaryRequest && !customRequest
             && UnitsOnlyPlacementOperation(request.placementEdit);
         if (terrainUnitPlacementCompanion && std::any_of(request.terrainStrokes.begin(), request.terrainStrokes.end(),
             [](const auto& stroke) { return stroke.followDoodads; }))
@@ -631,10 +633,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             }))
             return Fail("SAVE_TERRAIN_FIELD_SCOPE_INVALID", "地形笔划只能与地图名称、作者、说明和建议人数的字段操作合并。");
         const bool shadowOnly = request.rebuildTerrainShadow && !fieldRequest && !placementRequest
-            && !terrainRequest && !triggerRequest && !objectRequest && !auxiliaryRequest;
+            && !terrainRequest && !triggerRequest && !objectRequest && !auxiliaryRequest && !customRequest;
         const int domainCount = static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
             + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest)
-            + static_cast<int>(auxiliaryRequest) - static_cast<int>(objectRequest && request.triggerTransaction != nullptr);
+            + static_cast<int>(auxiliaryRequest) + static_cast<int>(customRequest) - static_cast<int>(objectRequest && request.triggerTransaction != nullptr);
         const bool runtimeOnly = domainCount == 0 && request.runtime.decision.has_value() && !request.rebuildTerrainShadow;
         if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic
             && request.minimapChoice != TerrainMinimapSaveChoice::Preserve
@@ -664,7 +666,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const auto bounded = shadowOnly ? Status::Ok() : fieldRequest ? ValidateFieldOperations(request.fieldEdits)
             : placementRequest ? ValidatePlacementOperation(request.placementEdit)
             : request.triggerEdits ? Trigger::ValidateTriggerEditBatch(*request.triggerEdits)
-            : (request.triggerTransaction || objectRequest || auxiliaryRequest || runtimeOnly) ? Status::Ok()
+            : (request.triggerTransaction || objectRequest || auxiliaryRequest || runtimeOnly || customRequest) ? Status::Ok()
                                          : ValidateStrokes(request.terrainStrokes);
         if (!bounded.Succeeded()) return Forward(bounded.diagnostics);
         if (terrainCompanion || terrainUnitPlacementCompanion) {
@@ -750,7 +752,23 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     "源图准确缺少WPM；仅计算阴影时不补写通行文件，自动小地图暂不生成。"});
             }
         }
-        if (fieldRequest) {
+        std::optional<MapCustomSettingsValidation> customValidation;
+        if (customRequest) {
+            ObjectCatalogSources inputs; inputs.archive = &source; inputs.gameRoot = request.gameRoot;
+            auto captured = CaptureMapCustomSettingsValidation(inputs);
+            if (!captured.Succeeded()) return Forward(captured.diagnostics);
+            customValidation = std::move(*captured.value);
+            auto plan = MapCustomSettingsEditing::Prepare(std::make_shared<const MapDocument>(map), *request.settingsCustomEdits, *customValidation);
+            if (!plan.Succeeded()) return Forward(plan.diagnostics);
+            auto applied = MapCustomSettingsEditing::Apply(edits, *plan.value, *customValidation);
+            if (!applied.Succeeded()) return Forward(applied.diagnostics);
+            if (!plan.value->HasChanges()) return Fail("SAVE_NO_CHANGES", "自定义设置批次没有实际变化，不写空候选。");
+            replacements.push_back({"war3map.w3i", plan.value->After().Member(MapDataKind::Settings).sources.front().data});
+            auto after = MapCustomSettingsEditing::MemberIdentity(plan.value->After());
+            if (!after.Succeeded()) return Forward(after.diagnostics);
+            editedMembers.push_back({"war3map.w3i", request.settingsCustomEdits->expectedMemberSha256, *after.value});
+            fieldDiagnostics = plan.value->Diagnostics();
+        } else if (fieldRequest) {
             const auto applied = ApplyFieldEdits(request, map, edits, replacements, editedMembers);
             if (!applied.Succeeded()) return Forward(applied.diagnostics);
             fieldDiagnostics = applied.diagnostics;
@@ -967,6 +985,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
 
         MapSaveTask task;
         task.beforePublish = request.beforePublish;
+        if (customValidation) task.beforePublish = [validation = *customValidation, previous = std::move(task.beforePublish)] {
+            if (previous) { auto status = previous(); if (!status.Succeeded()) return status; }
+            return validation.verify ? validation.verify() : Status::Ok();
+        };
         if (!waterRuleResources.empty()) {
             // 每个owner都绑定原始W3E与本笔当前草稿；只向原始归档复核来源，
             // 不把编辑后的输出当成水刷来源。最终WPM另由下方Native保存计划证明。
@@ -1145,14 +1167,14 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             if (!readback.Succeeded()) return Forward(readback.diagnostics);
         }
         // 保存服务已回读归档；再核对配对成员确实对应本次语义候选，不能只凭编译器 exit 0。
-        if (triggerRequest || objectRequest || auxiliaryRequest) {
+        if (triggerRequest || objectRequest || auxiliaryRequest || customRequest) {
             for (const auto& member : editedMembers) {
                 const auto bytes = task.nextSession->ReadMember(member.name);
                 if (!bytes.Succeeded() || !bytes.value) return Forward(bytes.diagnostics);
                 const auto sha = Sha256(*bytes.value);
                 if (!sha.Succeeded() || !sha.value) return Forward(sha.diagnostics);
                 if (*sha.value != member.savedSha256)
-                    return Fail(auxiliaryRequest ? "SAVE_AUXILIARY_READBACK_MISMATCH" : objectRequest ? "SAVE_OBJECT_READBACK_MISMATCH" : "SAVE_TRIGGER_PAIR_READBACK_MISMATCH",
+                    return Fail(customRequest ? "SAVE_CUSTOM_SETTINGS_READBACK_MISMATCH" : auxiliaryRequest ? "SAVE_AUXILIARY_READBACK_MISMATCH" : objectRequest ? "SAVE_OBJECT_READBACK_MISMATCH" : "SAVE_TRIGGER_PAIR_READBACK_MISMATCH",
                         "候选已写出，但领域成员回读与本次冻结候选不一致：" + member.name);
             }
         }
@@ -1172,6 +1194,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         FinalizeScriptWorkspace(task);
         result.value->appliedObjectTransactionCount = request.objectTransactions.size();
         result.value->appliedAuxiliaryCommandCount = auxiliaryRequest ? request.auxiliaryTransaction->Commands().size() : 0;
+        result.value->appliedSettingsCustomEditCount = customRequest ? request.settingsCustomEdits->operations.size() : 0;
         result.value->scriptPreserved = task.scriptPreserved;
         result.value->runtimePurpose = task.runtimePurpose;
         result.value->runtimePackaged = task.nextSession->HasMember(kMapRuntimeInstallationMember);

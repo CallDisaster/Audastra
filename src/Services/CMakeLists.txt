@@ -19,6 +19,10 @@ add_library(War3MapServices STATIC
     PlacementCreation.cpp
     ProjectReferenceIndex.cpp
     AuxiliaryEditing.cpp
+    MapCustomSettingsEditing.cpp
+    MapCustomSettingsJson.cpp
+    MapCustomSettingsSources.cpp
+    MapCustomSettingsQuery.cpp
     AuxiliaryTransaction.cpp
     ObjectDeletionAssessment.cpp
     ObjectCommands.cpp
