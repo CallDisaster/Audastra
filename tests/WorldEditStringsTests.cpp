@@ -1,3 +1,4 @@
+#include "War3MapCore/Game/SoundChannels.h"
 #include "War3MapCore/Game/WorldEditStringLoader.h"
 #include "War3MapCore/Game/WorldEditStrings.h"
 
@@ -117,6 +118,22 @@ void TestDecoding() {
     Require(War3Map::Game::DecodeGameText(gb) == "单位", "GB18030 text converted to UTF-8");
 }
 
+// 声音通道表：编号排序、3D 标记、名称经字符串表解析；格式不符与重复编号不猜测。
+void TestSoundChannels() {
+    WorldEditStrings strings;
+    strings.AddEntry("WESTRING_CHANNEL_A", "通道甲");
+    const std::string data = "\xEF\xBB\xBF[Other]\n00=1,WESTRING_CHANNEL_A\n[SoundChannels]\n"
+        "02=0,WESTRING_CHANNEL_MISSING\n00=1,WESTRING_CHANNEL_A\n"
+        "x1=1,WESTRING_BAD_ID\n-3=1,WESTRING_NEGATIVE\n04=2,WESTRING_BAD_FLAG\n05=1\n"
+        "06=1,WESTRING_TWICE\n6=0,WESTRING_TWICE_AGAIN\n";
+    const auto channels = War3Map::Game::ParseSoundChannels(data, &strings);
+    Require(channels.size() == 2, "only well-formed unique channel rows kept");
+    Require(channels[0].id == 0 && channels[0].supports3d && channels[0].name == "通道甲", "name resolved via strings");
+    Require(channels[1].id == 2 && !channels[1].supports3d && channels[1].name == "WESTRING_CHANNEL_MISSING"
+        && channels[1].nameKey == "WESTRING_CHANNEL_MISSING", "unresolved key kept as name");
+    Require(War3Map::Game::ParseSoundChannels("[TileSets]\nA=1,x\n", &strings).empty(), "no section yields no channels");
+}
+
 } // namespace
 
 int main() {
@@ -124,7 +141,8 @@ int main() {
         TestParsingAndPriority();
         TestOverlayDiscoveryAndFallback();
         TestDecoding();
-        std::cout << "WorldEditStrings: 3 scenarios passed\n";
+        TestSoundChannels();
+        std::cout << "WorldEditStrings: 4 scenarios passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

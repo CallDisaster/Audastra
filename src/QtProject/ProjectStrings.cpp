@@ -1,6 +1,7 @@
 #include "EditorProject.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/Game/SoundChannels.h"
 #include "War3MapCore/Game/WorldEditStringLoader.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
@@ -29,9 +30,23 @@ std::shared_ptr<const Game::WorldEditStrings> EditorProject::CurrentWorldEditStr
     }
     sources.game = game ? &*game : nullptr;
     worldEditStrings_ = std::make_shared<const Game::WorldEditStrings>(Game::LoadWorldEditStrings(sources));
+    // 声音通道名随同一次游戏挂载读取，名称用刚载入的字符串表；读不到时为空表，界面只显示编号。
+    std::vector<Game::SoundChannel> channels;
+    if (game) {
+        const auto data = game->ReadFile("UI\\WorldEditData.txt");
+        if (data.Succeeded() && data.value && data.value->size() <= 2u * 1024u * 1024u)
+            channels = Game::ParseSoundChannels(std::string_view(reinterpret_cast<const char*>(data.value->data()), data.value->size()),
+                worldEditStrings_.get());
+    }
+    soundChannels_ = std::make_shared<const std::vector<Game::SoundChannel>>(std::move(channels));
     worldEditStringsToolRoot_ = toolRoot;
     worldEditStringsGameRoot_ = war3GameRoot_;
     return worldEditStrings_;
+}
+
+std::shared_ptr<const std::vector<Game::SoundChannel>> EditorProject::CurrentSoundChannels() {
+    CurrentWorldEditStrings();
+    return soundChannels_;
 }
 
 void EditorProject::ApplyWorldEditStrings(Trigger::UiCatalog& catalog) {

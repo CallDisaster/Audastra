@@ -7,6 +7,7 @@
 #include "Commands/MapDataCommands.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/Game/SoundChannels.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
@@ -39,6 +40,7 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QComboBox>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -333,6 +335,8 @@ SoundsModule::SoundsModule(QtProject::EditorProject& project) : project_(project
         Refresh(true);
     });
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] { RebuildResources(); });
+    // 游戏目录或数据根变化后通道名随字符串表重读。
+    connect(&project_, &QtProject::EditorProject::WorldEditStringsChanged, this, &SoundsModule::SyncChannelChoice);
     if (auto* stack = UndoStack())
         connect(stack, &QUndoStack::indexChanged, this, [this] { Refresh(); });
 }
@@ -399,7 +403,7 @@ void SoundsModule::BuildPage() {
     showRawValues_ = new QCheckBox(tr("显示原始字段"), definitions);
     showRawValues_->setObjectName("soundRawValues");
     heading->addWidget(showRawValues_);
-    connect(showRawValues_, &QCheckBox::toggled, this, [this] { RebuildDefinitions(); });
+    connect(showRawValues_, &QCheckBox::toggled, this, [this] { RebuildDefinitions(); SyncChannelChoice(); });
     auto* duplicate = new QPushButton(tr("复制定义"), definitions);
     duplicate->setObjectName("soundDuplicateDefinition");
     heading->addWidget(duplicate);
@@ -451,6 +455,17 @@ void SoundsModule::BuildPage() {
             auto* layout = new QHBoxLayout(row);
             layout->setContentsMargins(0, 0, 0, 0);
             layout->setSpacing(4);
+            if (kFields[i] == "channel") {
+                // 通道按原版名称选择；隐藏的文本框仍是提交和“默认”的同一入口。
+                channelChoice_ = new QComboBox(row);
+                channelChoice_->setObjectName("soundChannelChoice");
+                layout->addWidget(channelChoice_, 1);
+                editor->hide();
+                connect(channelChoice_, &QComboBox::activated, editor, [this, editor](int index) {
+                    editor->setText(channelChoice_->itemData(index).toString());
+                });
+                connect(editor, &QLineEdit::textChanged, this, &SoundsModule::SyncChannelChoice);
+            }
             layout->addWidget(editor, 1);
             auto* useDefault = new QToolButton(row);
             useDefault->setText(tr("默认"));
@@ -765,6 +780,32 @@ void SoundsModule::RebuildResources() {
         : tr("匹配 %1 项").arg(totalMatches));
 }
 
+void SoundsModule::SyncChannelChoice() {
+    if (!channelChoice_) return;
+    const auto at = std::find(kFields.begin(), kFields.end(), std::string_view("channel"));
+    const auto* editor = fields_[static_cast<std::size_t>(at - kFields.begin())];
+    const QSignalBlocker blocker(channelChoice_);
+    channelChoice_->clear();
+    channelChoice_->addItem(tr("默认"), tr("默认"));
+    const bool raw = showRawValues_ && showRawValues_->isChecked();
+    if (const auto channels = project_.CurrentSoundChannels()) {
+        for (const auto& channel : *channels) {
+            const QString id = QString::number(channel.id);
+            channelChoice_->addItem(raw ? id : QString::fromStdString(channel.name), id);
+            channelChoice_->setItemData(channelChoice_->count() - 1, id, Qt::ToolTipRole);
+        }
+    }
+    const QString text = editor->text().trimmed();
+    int index = IsDefaultInput(text.toStdString()) ? 0 : channelChoice_->findData(text);
+    if (index < 0 && !text.isEmpty()) {
+        // 原版表里没有的编号原样列出，不改成别的通道。
+        channelChoice_->addItem(text, text);
+        index = channelChoice_->count() - 1;
+    }
+    channelChoice_->setCurrentIndex(index);
+    channelChoice_->setEnabled(editor->isEnabled() && !editor->isReadOnly());
+}
+
 void SoundsModule::LoadInspector() {
     if (!page_) return;
     loading_ = true;
@@ -814,6 +855,7 @@ void SoundsModule::LoadInspector() {
     }
     spatial_->setEnabled(enabled && sounds->entries[static_cast<std::size_t>(selectedDefinition_)].Is3D());
     apply_->setEnabled(false);
+    SyncChannelChoice();
     loading_ = false;
 }
 

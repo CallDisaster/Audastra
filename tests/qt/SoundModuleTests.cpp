@@ -2,6 +2,8 @@
 #include "EditorProject.h"
 #include "Fonts/FontLoader.h"
 
+#include "War3MapCore/Game/SoundChannels.h"
+#include "War3MapCore/Game/WorldEditStrings.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "War3MapCore/MapDocument.h"
@@ -10,6 +12,7 @@
 #include <QApplication>
 #include <QAbstractItemDelegate>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QFile>
 #include <QFontMetrics>
 #include <QGroupBox>
@@ -100,6 +103,7 @@ private slots:
     void NavigationUsesDefinitionIdentityAndBlocksDraft();
     void NavigationRejectsStaleRevisionAndIdenticalDefinitions();
     void NavigationRejectsPerDefinitionAndAggregateByteBudgets();
+    void ChannelChoiceUsesGameNamesAndWritesThroughField();
 };
 
 void SoundModuleTests::NavigationUsesDefinitionIdentityAndBlocksDraft() {
@@ -152,6 +156,47 @@ void SoundModuleTests::NavigationRejectsStaleRevisionAndIdenticalDefinitions() {
         std::vector<MapArchiveMember>{{"war3map.w3s", *duplicates.value}}));
     project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_); emit project.MapDocumentChanged();
     QVERIFY(!module.CaptureNavigationBookmark().has_value());
+}
+
+void SoundModuleTests::ChannelChoiceUsesGameNamesAndWritesThroughField() {
+    QtProject::EditorProject project;
+    // 原创通道表（游戏里来自 WorldEditData）：编号 0、5 有名称；按缓存身份注入，不挂载游戏。
+    project.worldEditStrings_ = std::make_shared<const Game::WorldEditStrings>();
+    project.worldEditStringsToolRoot_ = project.UiToolRoot();
+    project.worldEditStringsGameRoot_ = project.war3GameRoot_;
+    project.soundChannels_ = std::make_shared<const std::vector<Game::SoundChannel>>(std::vector<Game::SoundChannel>{
+        {0, true, "KEY_GENERAL", "一般"}, {5, true, "KEY_COMBAT", "战斗"}});
+    QVERIFY(SetDocument(project, true));
+    Modules::SoundsModule module(project);
+    auto* page = module.Widget();
+    auto* choice = page->findChild<QComboBox*>("soundChannelChoice");
+    auto* channel = page->findChild<QLineEdit*>("soundField_channel");
+    auto* raw = page->findChild<QCheckBox*>("soundRawValues");
+    QVERIFY(choice && channel && raw);
+    QVERIFY(channel->isHidden() && choice->isEnabled());
+    QCOMPARE(choice->count(), 3);
+    QCOMPARE(choice->currentText(), QStringLiteral("战斗"));
+    raw->setChecked(true);
+    QCOMPARE(choice->currentText(), QStringLiteral("5"));
+    raw->setChecked(false);
+
+    // 选择写进同一个通道字段，提交仍走原来的草稿与撤销。
+    choice->setCurrentIndex(1);
+    emit choice->activated(1);
+    QCOMPARE(channel->text(), QStringLiteral("0"));
+    QVERIFY(module.ApplyPendingDraft());
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().channel, 0);
+    QCOMPARE(choice->currentText(), QStringLiteral("一般"));
+
+    // 表外编号原样列出，不改成别的通道；“默认”按钮对应首项。
+    channel->setText(QStringLiteral("9"));
+    QCOMPARE(choice->currentText(), QStringLiteral("9"));
+    QCOMPARE(choice->currentData().toString(), QStringLiteral("9"));
+    page->findChild<QToolButton*>("soundDefault_channel")->click();
+    QCOMPARE(choice->currentIndex(), 0);
+    module.DiscardPendingDraft();
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.front().channel, 5);
 }
 
 void SoundModuleTests::NavigationRejectsPerDefinitionAndAggregateByteBudgets() {

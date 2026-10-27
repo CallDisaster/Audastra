@@ -64,6 +64,7 @@ class StandardObjectCatalog;
 
 namespace Game {
 class WorldEditStrings;
+struct SoundChannel;
 } // namespace Game
 
 namespace Trigger {
@@ -224,6 +225,8 @@ public:
     // 显示文本字符串表（ProjectStrings.cpp）：YDWE 覆盖层 → 游戏 MPQ → 英文原版，触发器与物编共用。
     // 数据根或游戏目录变化后重新载入；只影响显示，不改变保存与脚本生成。
     [[nodiscard]] std::shared_ptr<const Game::WorldEditStrings> CurrentWorldEditStrings();
+    // 原版声音通道（编号、能否 3D、显示名），与字符串表同时载入、同时失效；声音编辑器与 Agent 共用。
+    [[nodiscard]] std::shared_ptr<const std::vector<Game::SoundChannel>> CurrentSoundChannels();
     // 缓存首次查询时订阅真实命令栈，覆盖Undo后新Push复用相同index/count的分支。
     [[nodiscard]] std::uint64_t ContentCacheEpoch() const;
     // 只冻结当前语义结构并按修订缓存；磁盘、基础库与预处理在后台检查入口读取。
@@ -521,6 +524,7 @@ public:
     std::shared_ptr<const Game::WorldEditStrings> worldEditStrings_;
     std::filesystem::path worldEditStringsToolRoot_; // 载入字符串表时的数据根与游戏目录
     std::filesystem::path worldEditStringsGameRoot_;
+    std::shared_ptr<const std::vector<Game::SoundChannel>> soundChannels_;
 
     // 触发器未就绪时给界面显示的原因；成功载入后为空。
     QString triggerStatus_;

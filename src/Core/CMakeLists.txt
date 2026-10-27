@@ -102,6 +102,7 @@ add_library(War3MapCore STATIC
     EditorSession.cpp
     Game/GameDataSource.cpp
     Game/NativeDoodadCategoryDirectory.cpp
+    Game/SoundChannels.cpp
     Game/WorldEditStringLoader.cpp
     Game/WorldEditStrings.cpp
     Hash.cpp

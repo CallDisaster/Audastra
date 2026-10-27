@@ -20,6 +20,7 @@
 class QAudioOutput;
 class QBuffer;
 class QCheckBox;
+class QComboBox;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
@@ -79,6 +80,8 @@ private:
     [[nodiscard]] std::vector<ResourceRow> ResourceCatalogRows() const;
     void RebuildDefinitions();
     void LoadInspector();
+    // 通道下拉框跟随隐藏的通道文本框（提交与“默认”仍走该文本框）。
+    void SyncChannelChoice();
     void SetDraftChanged();
     [[nodiscard]] Status ApplyInspector();
     [[nodiscard]] Status CommitFields(std::size_t row,
@@ -107,6 +110,7 @@ private:
     std::vector<ResourceRow> gameDirectoryRows_;
     std::optional<MapData::SoundsDocument> visibleSounds_;
     std::vector<QLineEdit*> fields_;
+    QComboBox* channelChoice_ = nullptr;
     std::vector<QToolButton*> defaultButtons_;
     std::vector<QCheckBox*> flags_;
     SoundPreviewPlayer* previewPlayer_ = nullptr;
