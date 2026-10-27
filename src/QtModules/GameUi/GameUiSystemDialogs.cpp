@@ -482,6 +482,123 @@ void GameUiModule::ShowTargetSystemDialog() {
     OfferMapRuntime();
 }
 
+void GameUiModule::ShowMeterSystemDialog() {
+    SystemDialog ui(page_, "gameUiMeterDialog", tr("伤害统计"));
+    auto* frame = ui.Combo("gameUiMeterFrame", tr("界面"));
+    auto* systemName = new QLineEdit(tr("伤害"), &ui.dialog);
+    systemName->setObjectName(QStringLiteral("gameUiMeterSystemName"));
+    ui.form->addRow(tr("系统名"), systemName);
+    auto* key = new QLineEdit(QStringLiteral("Damage"), &ui.dialog);
+    key->setObjectName(QStringLiteral("gameUiMeterKey"));
+    ui.form->addRow(tr("键"), key);
+    auto* shown = ui.Combo("gameUiMeterShown", tr("显示"));
+    auto* name = ui.Combo("gameUiMeterName", tr("名字"));
+    auto* amount = ui.Combo("gameUiMeterAmount", tr("伤害"));
+    auto* amountText = ui.Combo("gameUiMeterAmountText", tr("伤害文字"));
+    auto* share = ui.Combo("gameUiMeterShare", tr("比例"));
+    auto* percent = ui.Combo("gameUiMeterPercent", tr("占比"));
+    auto* rate = ui.Combo("gameUiMeterRate", tr("每秒伤害"));
+    auto* color = ui.Combo("gameUiMeterColor", tr("颜色"));
+    auto* total = ui.Combo("gameUiMeterTotal", tr("总伤害"));
+    auto* time = ui.Combo("gameUiMeterTime", tr("秒数"));
+    auto* players = new QSpinBox(&ui.dialog);
+    players->setObjectName(QStringLiteral("gameUiMeterPlayers"));
+    players->setRange(1, static_cast<int>(kMeterMaxPlayers));
+    players->setValue(static_cast<int>(kMeterMaxPlayers));
+    ui.form->addRow(tr("玩家数"), players);
+    auto* enemiesOnly = new QCheckBox(tr("只记打敌人的伤害"), &ui.dialog);
+    enemiesOnly->setObjectName(QStringLiteral("gameUiMeterEnemiesOnly"));
+    enemiesOnly->setChecked(true);
+    ui.form->addRow(QString(), enemiesOnly);
+
+    FillDescriptions(frame, Descriptions(), {}, tr("新建伤害统计"), "meter");
+    // 每行的数值按“显示”数组的格数筛选；总伤害与秒数是单值。
+    const auto refillRows = [&, this] {
+        const UiDescription* description = Description(frame->currentData().toString());
+        std::uint32_t size = 0;
+        if (description) {
+            for (const auto& value : description->values) {
+                if (Text(value.id) == shown->currentData().toString()) size = value.size;
+            }
+        }
+        const UiDescription* rows = size ? description : nullptr;
+        FillValues(name, rows, UiValueType::String, size, true, {"name", "label"});
+        FillValues(amount, rows, UiValueType::Real, size, true, {"amount", "damage"});
+        FillValues(amountText, rows, UiValueType::String, size, true, {"amount_text", "damage_text"});
+        FillValues(share, rows, UiValueType::Real, size, true, {"share", "ratio"});
+        FillValues(percent, rows, UiValueType::Real, size, true, {"percent"});
+        FillValues(rate, rows, UiValueType::Real, size, true, {"rate", "dps"});
+        FillValues(color, rows, UiValueType::String, size, true, {"color", "colour"});
+        FillValues(total, description, UiValueType::Real, 0, true, {"total"});
+        FillValues(time, description, UiValueType::Real, 0, true, {"time", "seconds"});
+    };
+    const auto refill = [&, this] {
+        const UiDescription* description = Description(frame->currentData().toString());
+        shown->clear();
+        if (description) {
+            for (const auto& value : description->values) {
+                if (value.type == UiValueType::Boolean && value.size > 0 && value.size <= kMeterMaxRows) shown->addItem(Labeled(value.label, value.id), Text(value.id));
+            }
+            Prefer(shown, {"shown", "visible", "show"});
+        }
+        refillRows();
+        for (QWidget* box : std::initializer_list<QWidget*>{shown, name, amount, amountText, share, percent, rate, color, total, time}) {
+            box->setEnabled(description != nullptr);
+        }
+    };
+    connect(frame, &QComboBox::currentIndexChanged, &ui.dialog, refill);
+    connect(shown, &QComboBox::currentIndexChanged, &ui.dialog, refillRows);
+    if (const int index = frame->findData(SelectedDescriptionId(tree_.get(), selected_)); index >= 0) frame->setCurrentIndex(index);
+    refill();
+    if (!ui.Run()) return;
+
+    MeterSystemRequest request;
+    request.frame = frame->currentData().toString();
+    request.systemName = systemName->text().trimmed();
+    request.key = key->text().trimmed();
+    request.players = players->value();
+    request.enemiesOnly = enemiesOnly->isChecked();
+    QString error;
+    if (request.frame.startsWith(QLatin1Char('+'))) {
+        const auto created = CreateFromPreset(QStringLiteral("meter"), &error);
+        if (!created) {
+            ReportAuthoring(error);
+            return;
+        }
+        using namespace MeterPreset;
+        request.frame = *created;
+        request.shown = Text(kShown);
+        request.name = Text(kName);
+        request.amount = Text(kAmount);
+        request.amountText = Text(kAmountText);
+        request.share = Text(kShare);
+        request.percent = Text(kPercent);
+        request.rate = Text(kRate);
+        request.color = Text(kColor);
+        request.total = Text(kTotal);
+        request.time = Text(kTime);
+    } else {
+        request.shown = shown->currentData().toString();
+        request.name = name->currentData().toString();
+        request.amount = amount->currentData().toString();
+        request.amountText = amountText->currentData().toString();
+        request.share = share->currentData().toString();
+        request.percent = percent->currentData().toString();
+        request.rate = rate->currentData().toString();
+        request.color = color->currentData().toString();
+        request.total = total->currentData().toString();
+        request.time = time->currentData().toString();
+    }
+    const auto generated = GenerateMeterSystem(request, false, &error);
+    if (!generated) {
+        ReportAuthoring(error);
+        return;
+    }
+    ReportAuthoring({});
+    if (host_) host_->ShowStatusMessage(tr("已生成 %1 个触发器到 %2 类别").arg(generated->triggers.size()).arg(Text(kMeterTriggerCategory)), 8000);
+    OfferMapRuntime();
+}
+
 void GameUiModule::ShowTalentSystemDialog() {
     SystemDialog ui(page_, "gameUiTalentDialog", tr("天赋树"));
     auto* frame = ui.Combo("gameUiTalentFrame", tr("界面"));

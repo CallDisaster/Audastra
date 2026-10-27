@@ -59,7 +59,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
-             "game_ui_description_triggers", "game_ui_cast_system", "game_ui_party_system", "game_ui_target_system", "game_ui_talent_system"}) {
+             "game_ui_description_triggers", "game_ui_cast_system", "game_ui_party_system", "game_ui_target_system", "game_ui_meter_system", "game_ui_talent_system"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read";
@@ -97,12 +97,12 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
         } else if (tool.name == "game_ui_description_create") {
             tool.description = "新建一份地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程。"
                 "preset 可选起始模板：castbar 读条条（数值 shown、progress、text、remaining，状态 channel、interrupt，"
-                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、hp_now、hp_max、portrait、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；target 目标框架（单值数值 shown、hp、mp、hp_now、hp_max、name、level、dead、portrait、buff1..buff6，点击事件 select，与 game_ui_target_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
+                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、hp_now、hp_max、portrait、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；target 目标框架（单值数值 shown、hp、mp、hp_now、hp_max、name、level、dead、portrait、buff1..buff6，点击事件 select，与 game_ui_target_system 的绑定对应）；meter 伤害统计（8 行，数组数值 shown、name、amount、amount_text、share、percent、rate、color，单值 total、time，与 game_ui_meter_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
                 "tip_shown、tip_title、tip_text，数组 level、icon1..3、name1..3、picked1..3，事件 open、close、pick1..3、enter1..3、leave1..3，"
                 "与 game_ui_talent_system 的默认绑定对应）；省略为空白";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("label", QJsonObject{{"type", "string"}, {"maxLength", 256}});
-            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party", "target", "talents"}}});
+            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party", "target", "meter", "talents"}}});
             required.append("description");
         } else if (tool.name == "game_ui_description_edit") {
             tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："
@@ -205,6 +205,27 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
                 {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
             properties.insert("portraits", QJsonObject{{"type", "array"}, {"maxItems", 256},
                 {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
+            properties.insert("preview", QJsonObject{{"type", "boolean"}});
+            required.append("frame");
+        } else if (tool.name == "game_ui_meter_system") {
+            tool.description = "生成伤害统计的自然 T，整批写进触发器编辑器的“伤害统计”类别（同名触发器整体替换），走触发器撤销栈：用 YDWE 的任意单位"
+                "伤害事件把伤害累计到伤害来源单位的所有者（同步数据，召唤物算在主人头上），enemies_only 默认 true 只记打敌人的伤害；每 0.5 秒按伤害"
+                "从高到低把前几名写进界面数组数值并运行该界面的“更新”触发器。秒数从清零后第一次记到伤害开始；运行“<名字> 清零 <键>_Reset”触发器"
+                "把伤害与秒数清零（例如首领战开始时）。frame 绑定一份已生成界面触发器的界面描述：shown（布尔数组，格数即行数，1..12）必填；"
+                "name、amount_text、color（字符串数组）、amount、share（0..1，占第一名）、percent（0..100，占全部）、rate（每秒伤害）（实数数组）"
+                "可空，格数须与 shown 相同；total（全部伤害）、time（秒数）为实数单值，可空。amount_text 一万以上写作“1.2万”；color 为按玩家编号的"
+                "队伍颜色贴图（地图改过玩家颜色时不跟着变）。meter 模板对应 shown、name、amount、amount_text、share、percent、rate、color、total、time。"
+                "原版没有治疗事件，不统计治疗。name 与 key（ASCII 标识符，默认 伤害/Damage）区分同图的多份；players 为统计的玩家数（1..12，默认 12）。"
+                "需要 YDWE 的任意单位伤害事件；preview 为 true 时只返回生成的功能写法，不改地图";
+            QJsonObject frameProperties;
+            for (const char* key : {"description", "shown", "name", "amount", "amount_text", "share", "percent", "rate", "color", "total", "time"})
+                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
+                {"required", QJsonArray{"description", "shown"}}, {"additionalProperties", false}});
+            properties.insert("name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
+            properties.insert("key", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 24}});
+            properties.insert("players", IntegerSchema(1, 12));
+            properties.insert("enemies_only", QJsonObject{{"type", "boolean"}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("frame");
         } else if (tool.name == "game_ui_talent_system") {
@@ -350,7 +371,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 不在可选范围内。");
     }
-    for (const auto* key : {"expansion", "show_hidden", "preview", "auto_heroes", "replace_registration"}) {
+    for (const auto* key : {"expansion", "show_hidden", "preview", "auto_heroes", "replace_registration", "enemies_only"}) {
         if (args.contains(key) && !args.value(key).isBool()) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是布尔值。");
     }
     if (args.contains("label") && (!args.value("label").isString() || args.value("label").toString().size() > 256))

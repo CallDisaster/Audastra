@@ -318,6 +318,56 @@ std::optional<GameUiModule::TargetSystemGeneration> GameUiModule::GenerateTarget
     return result;
 }
 
+std::optional<GameUiModule::MeterSystemGeneration> GameUiModule::GenerateMeterSystem(const MeterSystemRequest& request, bool preview,
+    QString* error) {
+    const auto fail = [error](const QString& message) -> std::optional<MeterSystemGeneration> {
+        if (error) *error = message;
+        return std::nullopt;
+    };
+    if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
+    if (!project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Event, "YDWESyStemAnyUnitDamagedRegistTrigger"))
+        return fail(tr("触发器函数库里没有 YDWE 的“任意单位伤害事件”，伤害统计要用它"));
+    if (!definitions_) return fail(tr("界面定义仍在读取"));
+    const UiDescription* description = Description(request.frame);
+    if (!description) return fail(tr("地图里没有界面描述 %1").arg(request.frame));
+    if (!HasTrigger(project_.triggerDocument_->triggers, UiTriggerName(*description, "更新", "Update")))
+        return fail(tr("先为界面 %1 生成触发器").arg(request.frame));
+
+    MeterSystemOptions options;
+    options.name = request.systemName.toStdString();
+    options.key = request.key.toStdString();
+    options.players = request.players < 0 ? 0u : static_cast<std::uint32_t>(request.players);
+    options.enemiesOnly = request.enemiesOnly;
+    MeterFrameBinding& b = options.frame;
+    b.description = description;
+    b.shown = request.shown.toStdString();
+    b.name = request.name.toStdString();
+    b.amount = request.amount.toStdString();
+    b.amountText = request.amountText.toStdString();
+    b.share = request.share.toStdString();
+    b.percent = request.percent.toStdString();
+    b.rate = request.rate.toStdString();
+    b.color = request.color.toStdString();
+    b.total = request.total.toStdString();
+    b.time = request.time.toStdString();
+    auto plan = GameUi::GenerateMeterSystem(options);
+    if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
+
+    MeterSystemGeneration result;
+    result.featureText = Text(plan.value->featureText);
+    for (const auto& name : plan.value->triggers) result.triggers.append(Text(name));
+    for (const auto& name : plan.value->variables) result.variables.append(Text(name));
+    result.rows = plan.value->rows;
+    result.resetTrigger = Text(plan.value->resetTrigger);
+    result.amountVariable = Text(plan.value->amountVariable);
+    if (preview) return result;
+    std::vector<Trigger::GraphEditOperation> operations;
+    operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kMeterTriggerCategory), plan.value->featureText, {}, std::nullopt});
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("生成伤害统计"));
+    if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
+    return result;
+}
+
 std::optional<GameUiModule::TalentSystemGeneration> GameUiModule::GenerateTalentSystem(const TalentSystemRequest& request, bool preview,
     QString* error) {
     const auto fail = [error](const QString& message) -> std::optional<TalentSystemGeneration> {

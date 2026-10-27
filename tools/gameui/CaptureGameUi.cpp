@@ -41,7 +41,7 @@ int main(int argc, char** argv) {
     if (arguments.size() < 3) {
         out << "usage: audastra-game-ui-capture <war3-root> <out-dir> [--map MAP] [--race R] [--classic] [--frame NAME]... "
                "[--only NAME]... [--select NAME] [--bounds] [--names] [--simulate FUNC] [--set KEY=VALUE]... "
-               "[--import ARCHIVE_PATH=FILE]... [--ui-state ID=STATE] [--ui-set ID:KEY=VALUE]... [--show-hidden] [--ui-tab N]\n";
+               "[--import ARCHIVE_PATH=FILE]... [--ui-preset ID=PRESET]... [--ui-state ID=STATE] [--ui-set ID:KEY=VALUE]... [--show-hidden] [--ui-tab N]\n";
         return 2;
     }
     War3Map::UiKit::ApplyApplicationFont(War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory()));
@@ -111,6 +111,14 @@ int main(int argc, char** argv) {
         else if (argument == QLatin1String("--import") && hasValue) ++i;
         else if (argument == QLatin1String("--show-hidden")) module.SetShowHidden(true);
         else if (argument == QLatin1String("--ui-tab") && hasValue) uiTab = arguments[++i].toInt();
+        else if (argument == QLatin1String("--ui-preset") && hasValue) {
+            // --ui-preset 界面=模板：本次会话里按起始模板新建一份界面描述（不写地图）；要放在给它设值的 --ui-set 之前。
+            const QString spec = arguments[++i];
+            const qsizetype equals = spec.indexOf(QLatin1Char('='));
+            QString error;
+            if (equals <= 0 || !module.CreateDescription(spec.left(equals), {}, &error, spec.mid(equals + 1)))
+                out << "bad --ui-preset " << spec << ' ' << error << '\n';
+        }
         else if ((argument == QLatin1String("--ui-state") || argument == QLatin1String("--ui-set")) && hasValue) {
             // --ui-state 界面=状态；--ui-set 界面:数值键=值
             const QString spec = arguments[++i];

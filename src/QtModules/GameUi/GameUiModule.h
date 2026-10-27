@@ -3,6 +3,7 @@
 #include "GameUiSources.h"
 #include "Modules/EditorModule.h"
 #include "War3MapCore/GameUi/CastTriggers.h"
+#include "War3MapCore/GameUi/MeterTriggers.h"
 #include "War3MapCore/GameUi/PartyTriggers.h"
 #include "War3MapCore/GameUi/TalentTriggers.h"
 #include "War3MapCore/GameUi/TargetTriggers.h"
@@ -217,6 +218,25 @@ public:
         bool portraitKept = false;
     };
     std::optional<TargetSystemGeneration> GenerateTargetSystem(const TargetSystemRequest& request, bool preview, QString* error = nullptr);
+    // 伤害统计（MeterTriggers.h）：整批写进“伤害统计”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器须已生成；
+    // shown 为布尔数组（格数就是行数），其余为同样格数的数组，total、time 为单值，空为不绑定。需要 YDWE 的“任意单位伤害事件”。
+    // systemName 与 key 区分同图的多份。preview 为真时只给出生成结果，不改地图。
+    struct MeterSystemRequest {
+        QString frame;
+        QString systemName = QStringLiteral("伤害");
+        QString key = QStringLiteral("Damage");
+        QString shown, name, amount, amountText, share, percent, rate, color, total, time;
+        int players = static_cast<int>(GameUi::kMeterMaxPlayers);
+        bool enemiesOnly = true;
+    };
+    struct MeterSystemGeneration {
+        QString featureText;
+        QStringList triggers;
+        QStringList variables;
+        std::uint32_t rows = 0;
+        QString resetTrigger, amountVariable;
+    };
+    std::optional<MeterSystemGeneration> GenerateMeterSystem(const MeterSystemRequest& request, bool preview, QString* error = nullptr);
     // 统一天赋树（TalentTriggers.h）：整批写进“天赋系统”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器
     // 须已生成；其余为界面的数值与事件编号，空为不绑定（shown、level 与每列的图标、名字、已选、点击必填）。需要 YDWE 的
     // GetLocalPlayer 与 RemoveLocation。登记里选项的图标为空时取学会技能在物编里的图标；地图里已有登记触发器时保留它，
@@ -299,6 +319,7 @@ private:
     void ShowCastSystemDialog();
     void ShowPartySystemDialog();
     void ShowTargetSystemDialog();
+    void ShowMeterSystemDialog();
     void ShowTalentSystemDialog();
     // 按模板新建一份界面描述（编号为模板名，重名时加序号）并生成它的界面触发器；返回新编号。
     std::optional<QString> CreateFromPreset(const QString& preset, QString* error);
@@ -404,6 +425,7 @@ private:
     QPushButton* castSystemButton_ = nullptr;
     QPushButton* partySystemButton_ = nullptr;
     QPushButton* targetSystemButton_ = nullptr;
+    QPushButton* meterSystemButton_ = nullptr;
     QPushButton* talentSystemButton_ = nullptr;
 };
 

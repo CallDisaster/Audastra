@@ -1,5 +1,6 @@
 #include "AudastraUiCatalog.h"
 #include "CastSpellLayer.h"
+#include "MeterLayer.h"
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
 #include "GameUiModule.h"
@@ -83,6 +84,7 @@ private slots:
     void CreatesFromPresets();
     void GeneratesPartySystem();
     void GeneratesTargetSystem();
+    void GeneratesMeterSystem();
     void GeneratesTalentSystem();
 };
 
@@ -822,7 +824,7 @@ void GameUiModuleTests::CreatesFromPresets() {
     // 新建界面菜单里的模板列表与 Core 的模板一致。
     auto* presets = page->findChild<QComboBox*>(QStringLiteral("gameUiNewDescriptionPreset"));
     QVERIFY(presets);
-    QCOMPARE(presets->count(), 5);
+    QCOMPARE(presets->count(), 6);
     QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0
         && presets->findData(QStringLiteral("talents")) > 0);
     QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
@@ -1006,6 +1008,89 @@ void GameUiModuleTests::GeneratesTargetSystem() {
     QVERIFY(!module.GenerateTargetSystem(request, false, &error));
     QVERIFY(error.contains(QStringLiteral("Hxxx")));
     QCOMPARE(project.triggerUndoStack_->count(), undo + 2);
+}
+
+// 伤害统计：没有 YDWE 伤害事件时拒绝；按模板新建界面并生成界面触发器后，生成写进“伤害统计”类别并可撤销，另一键的第二份并存。
+void GameUiModuleTests::GeneratesMeterSystem() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(page->findChild<QPushButton*>(QStringLiteral("gameUiMeterSystem")));
+    QString error;
+    using namespace GameUi::MeterPreset;
+    const auto id = [](std::string_view value) { return QString::fromLatin1(value.data(), static_cast<qsizetype>(value.size())); };
+    Modules::GameUiModule::MeterSystemRequest request;
+    request.frame = QStringLiteral("Meter");
+    request.shown = id(kShown);
+    QVERIFY(!module.GenerateMeterSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("触发器")));
+
+    // 函数库里没有 YDWE 的伤害事件。
+    {
+        AudastraUiTest::Catalog files;
+        files.extras = {AudastraUiTest::SpellLayer(), AudastraUiTest::PartyLayer(), AudastraUiTest::TalentLayer(), AudastraUiTest::MeterLayer()};
+        const auto loaded = files.Load();
+        QVERIFY2(loaded.empty(), loaded.c_str());
+        project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+        project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+        QVERIFY(!module.GenerateMeterSystem(request, true, &error));
+        QVERIFY(error.contains(QStringLiteral("伤害事件")));
+    }
+
+    AudastraUiTest::Catalog files;
+    files.extras = {AudastraUiTest::SpellLayer(), AudastraUiTest::PartyLayer(), AudastraUiTest::TalentLayer(), AudastraUiTest::MeterLayer(),
+        AudastraUiTest::YdweDamageLayer()};
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto count = [&project] {
+        const auto& doc = *project.triggerDocument_;
+        const auto category = std::find_if(doc.categories.begin(), doc.categories.end(),
+            [](const auto& row) { return row.name.text == GameUi::kMeterTriggerCategory; });
+        if (category == doc.categories.end()) return -1;
+        return static_cast<int>(std::count_if(doc.triggers.begin(), doc.triggers.end(),
+            [&](const auto& row) { return row.categoryId == category->categoryId; }));
+    };
+
+    QVERIFY2(module.CreateDescription(QStringLiteral("Meter"), QStringLiteral("伤害统计"), &error, QStringLiteral("meter")), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("Meter"))->values.size(), std::size_t{10});
+    QVERIFY(!module.GenerateMeterSystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Meter")));
+    QVERIFY2(module.GenerateDescriptionTriggers(QStringLiteral("Meter"), false, &error), qPrintable(error));
+    request.name = id(kName);
+    request.amountText = id(kAmountText);
+    request.share = id(kShare);
+    request.rate = id(kRate);
+    request.color = id(kColor);
+    request.time = id(kTime);
+
+    const auto preview = module.GenerateMeterSystem(request, true, &error);
+    QVERIFY2(preview, qPrintable(error));
+    QCOMPARE(preview->triggers.size(), qsizetype{3});
+    QCOMPARE(preview->rows, std::uint32_t{kRows});
+    QCOMPARE(preview->resetTrigger, QStringLiteral("伤害 清零 Damage_Reset"));
+    QCOMPARE(count(), -1);
+    const int undo = project.triggerUndoStack_->count();
+    QVERIFY2(module.GenerateMeterSystem(request, false, &error), qPrintable(error));
+    QCOMPARE(count(), 3);
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 1);
+
+    // 另一键的第二份（例如首领战）写进同一类别，与第一份并存；绑定格数不对时拒绝且不改地图。
+    request.systemName = QStringLiteral("首领");
+    request.key = QStringLiteral("Boss");
+    request.enemiesOnly = false;
+    QVERIFY2(module.GenerateMeterSystem(request, false, &error), qPrintable(error));
+    QCOMPARE(count(), 6);
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 2);
+    request.amount = id(kTotal);
+    QVERIFY(!module.GenerateMeterSystem(request, false, &error));
+    QVERIFY(error.contains(QStringLiteral("total")));
+    QCOMPARE(project.triggerUndoStack_->count(), undo + 2);
+    project.triggerUndoStack_->undo();
+    QCOMPARE(count(), 3);
 }
 
 // 天赋树：按模板新建界面并生成界面触发器后，天赋系统检查同步单位与英雄在物编里存在；没有物编时拒绝且不改地图。

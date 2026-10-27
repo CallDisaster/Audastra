@@ -102,7 +102,8 @@ inline bool CheckWithGameScripts(const SystemFixture& f, const std::string& scri
     for (const auto kind : {UiDefinitionKind::Event, UiDefinitionKind::Action, UiDefinitionKind::Call}) {
         for (const auto* definition : f.catalog.Definitions(kind)) {
             const auto& active = definition->Active();
-            if (active.layer != "AudastraUI") continue;
+            // 函数库注入的函数（AudastraUI、合成层里名字以 ydwe 开头的 YDWE 函数）不在游戏脚本里，写成桩。
+            if (active.layer != "AudastraUI" && !active.layer.starts_with("ydwe")) continue;
             std::string parameters;
             std::size_t index = 0;
             if (kind == UiDefinitionKind::Event) parameters = "trigger p" + std::to_string(index++);

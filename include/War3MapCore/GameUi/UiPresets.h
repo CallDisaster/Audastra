@@ -19,6 +19,8 @@ struct UiPreset {
 
 // castbar：读条条（显示、进度、技能名、剩余秒数；引导、打断两个状态）。
 // party：团队框架（5 格，每格名字、血条、蓝条、死亡与过远标记、右侧 4 个增减益图标，按数组取值；点格子发 select 事件）。
+// target：目标框架（头像、名字、等级、血条与“当前/最大”生命、蓝条、下方 6 个增减益图标，都是单值；点框架发 select 事件）。
+// meter：伤害统计（右侧 8 行，每行队伍颜色条按占第一名的比例、玩家名、伤害与每秒伤害；标题右侧是秒数）。
 // talents：统一天赋树（技能栏上方的入口按钮，中间偏左的面板：5 层 × 3 选项，已选描边、不可选变灰，悬停在右侧显示说明）。
 [[nodiscard]] const std::vector<UiPreset>& UiPresets();
 
@@ -62,6 +64,21 @@ inline constexpr std::string_view kPortrait = "portrait";
 inline constexpr std::string_view kSelect = "select";
 inline constexpr std::array<std::string_view, 6> kBuffs{"buff1", "buff2", "buff3", "buff4", "buff5", "buff6"};  // 增减益图标路径（文字）
 } // namespace TargetPreset
+
+// meter 模板（伤害统计）的数值编号（绑定伤害统计系统用）。每行的数值是数组，格数为 kRows；总量与秒数是单值。
+namespace MeterPreset {
+inline constexpr std::uint32_t kRows = 8;
+inline constexpr std::string_view kShown = "shown";
+inline constexpr std::string_view kName = "name";
+inline constexpr std::string_view kAmount = "amount";
+inline constexpr std::string_view kAmountText = "amount_text";
+inline constexpr std::string_view kShare = "share";
+inline constexpr std::string_view kPercent = "percent";
+inline constexpr std::string_view kRate = "rate";
+inline constexpr std::string_view kColor = "color";
+inline constexpr std::string_view kTotal = "total";
+inline constexpr std::string_view kTime = "time";
+} // namespace MeterPreset
 
 // talents 模板（统一天赋树）的数值与事件编号（绑定天赋系统用）。每层一行（重复框架），行内每列一个选项；
 // 每列的图标、名字、已选为数组，格数为层数；点击、移入、移出事件按行号区分层。

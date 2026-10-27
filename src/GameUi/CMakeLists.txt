@@ -12,6 +12,7 @@ add_library(War3MapGameUi STATIC
     MapUiFiles.cpp
     PartyTriggers.cpp
     TargetTriggers.cpp
+    MeterTriggers.cpp
     ScriptFrames.cpp
     ScriptFrameTree.cpp
     ScriptObjectCalls.cpp

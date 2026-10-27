@@ -522,6 +522,40 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         return binding;
     }
 
+    if (name == QLatin1String("game_ui_meter_system")) {
+        const bool preview = args.value("preview").toBool();
+        const QJsonObject frame = args.value("frame").toObject();
+        GameUiModule::MeterSystemRequest request;
+        request.frame = frame.value("description").toString();
+        request.shown = frame.value("shown").toString();
+        request.name = frame.value("name").toString();
+        request.amount = frame.value("amount").toString();
+        request.amountText = frame.value("amount_text").toString();
+        request.share = frame.value("share").toString();
+        request.percent = frame.value("percent").toString();
+        request.rate = frame.value("rate").toString();
+        request.color = frame.value("color").toString();
+        request.total = frame.value("total").toString();
+        request.time = frame.value("time").toString();
+        request.systemName = args.value("name").toString(request.systemName);
+        request.key = args.value("key").toString(request.key);
+        request.players = args.value("players").toInt(request.players);
+        request.enemiesOnly = args.value("enemies_only").toBool(true);
+        QString error;
+        const auto generated = module->GenerateMeterSystem(request, preview, &error);
+        if (!generated) return Failure("GAME_UI_METER_SYSTEM", error);
+        binding.insert("applied", !preview);
+        if (!preview) binding.insert("runtime", RuntimeJson(*module));
+        binding.insert("category", Text(std::string(kMeterTriggerCategory)));
+        binding.insert("feature_text", generated->featureText);
+        binding.insert("triggers", QJsonArray::fromStringList(generated->triggers));
+        binding.insert("variables", QJsonArray::fromStringList(generated->variables));
+        binding.insert("rows", static_cast<qint64>(generated->rows));
+        binding.insert("reset_trigger", generated->resetTrigger);
+        binding.insert("amount_variable", generated->amountVariable);
+        return binding;
+    }
+
     if (name == QLatin1String("game_ui_talent_system")) {
         using namespace TalentPreset;
         const bool preview = args.value("preview").toBool();

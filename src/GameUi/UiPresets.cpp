@@ -253,6 +253,62 @@ UiDescription Target() {
     return d;
 }
 
+// 伤害统计：屏幕右侧（天赋入口上方）一个框，标题行右侧是秒数；下面每行一条队伍颜色条，长度按占第一名的比例，
+// 条上左边玩家名、右边“伤害（每秒伤害/秒）”。有人造成伤害后才显示，没排上的行隐藏。
+UiDescription Meter() {
+    using namespace MeterPreset;
+    const auto id = [](std::string_view value) { return std::string(value); };
+    // 伤害、百分比、每秒伤害、总量、秒数不是 0..1 的比例。
+    const auto number = [&](std::string_view value, std::string label, std::uint32_t size) {
+        UiValue v = Value(id(value), std::move(label), UiValueType::Real, "0", size);
+        v.min.reset();
+        v.max.reset();
+        return v;
+    };
+    UiDescription d;
+    d.values = {Value(id(kShown), "显示", UiValueType::Boolean, "false", kRows), Value(id(kName), "名字", UiValueType::String, "", kRows),
+        number(kAmount, "伤害", kRows), Value(id(kAmountText), "伤害文字", UiValueType::String, "", kRows),
+        Value(id(kShare), "比例", UiValueType::Real, "0", kRows), number(kPercent, "占比", kRows), number(kRate, "每秒伤害", kRows),
+        Value(id(kColor), "颜色", UiValueType::String, "", kRows), number(kTotal, "总伤害", 0), number(kTime, "秒数", 0)};
+    UiFrame panel;
+    panel.id = "panel";
+    panel.label = "伤害统计";
+    panel.type = UiFrameType::Backdrop;
+    panel.texture = std::string(kTooltip);
+    panel.width = 0.21;
+    panel.height = 0.026 + 0.016 * kRows;
+    panel.anchors = {Anchor(FramePoint::BottomRight, UiAnchorTarget::Screen, std::nullopt, -0.006, 0.2)};
+    UiBinding first = Bind(id(kShown));
+    first.index = 0;
+    panel.visible.binding = first;
+    UiFrame row;
+    row.id = "row";
+    row.label = "行";
+    row.width = 0.198;
+    row.height = 0.014;
+    row.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.006, -0.022)};
+    row.repeat = UiRepeat{kRows, 0.0, -0.016};
+    row.visible.binding = Bind(id(kShown), true);
+    UiFrame bar;
+    bar.id = "bar";
+    bar.label = "比例";
+    bar.type = UiFrameType::Bar;
+    bar.texture = "{" + id(kColor) + "[]}";
+    bar.value.binding = Bind(id(kShare), true);
+    bar.anchors = {Anchor(FramePoint::Left)};
+    bar.width = 0.198;
+    bar.height = 0.014;
+    row.children = {std::move(bar),
+        Text("name", "名字", "{" + id(kName) + "[]}", JustifyH::Left, Anchor(FramePoint::Left, UiAnchorTarget::Parent, std::nullopt, 0.004), 0.09, 0.014),
+        Text("amount", "伤害", "{" + id(kAmountText) + "[]}（{" + id(kRate) + "[]:0}/秒）", JustifyH::Right,
+            Anchor(FramePoint::Right, UiAnchorTarget::Parent, std::nullopt, -0.004), 0.11, 0.014)};
+    panel.children = {Text("title", "标题", "伤害统计", JustifyH::Left, Anchor(FramePoint::TopLeft, UiAnchorTarget::Parent, std::nullopt, 0.008, -0.005), 0.12, 0.014),
+        Text("time", "秒数", "{" + id(kTime) + ":0} 秒", JustifyH::Right, Anchor(FramePoint::TopRight, UiAnchorTarget::Parent, std::nullopt, -0.008, -0.005), 0.07, 0.014),
+        std::move(row)};
+    d.frames = {std::move(panel)};
+    return d;
+}
+
 // 统一天赋树：技能栏上方右侧的入口按钮（有可选天赋时带个数），屏幕中间偏左的面板。
 // 面板每层一行：左侧解锁等级，右侧每列一个选项（图标 + 名字，已选时图标外有青色描边）；选项名字为空时整格不显示。
 // 鼠标移到选项上，面板右侧显示说明框。
@@ -383,7 +439,7 @@ UiDescription Talents() {
 } // namespace
 
 const std::vector<UiPreset>& UiPresets() {
-    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}, {"target", "目标框架"}, {"talents", "天赋树"}};
+    static const std::vector<UiPreset> presets{{"castbar", "读条条"}, {"party", "团队框架"}, {"target", "目标框架"}, {"meter", "伤害统计"}, {"talents", "天赋树"}};
     return presets;
 }
 
@@ -399,6 +455,9 @@ Result<UiDescription> NewUiDescriptionFromPreset(std::string_view preset, std::s
     } else if (preset == "target") {
         description = Target();
         name = "目标框架";
+    } else if (preset == "meter") {
+        description = Meter();
+        name = "伤害统计";
     } else if (preset == "talents") {
         description = Talents();
         name = "天赋树";
