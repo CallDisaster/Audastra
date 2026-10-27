@@ -1,5 +1,6 @@
 #include "McpToolInternal.h"
 #include "McpMapRuntimeTools.h"
+#include "McpTerrainTextureSlotCommand.h"
 #include "War3MapCore/ApplicationPaths.h"
 
 #include "War3MapCore/MapData/MapFields.h"
@@ -122,6 +123,12 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
     if (!kind.isString()) {
         error = Failure("MCP_MAP_EDIT_TERRAIN_KIND_INVALID", "地形笔刷 kind 必须是已支持的字符串。");
         return std::nullopt;
+    }
+    if (kind.toString() == "texture_slot_replace" || kind.toString() == "texture_slot_append") {
+        const auto command = ParseTerrainTextureSlotCommand(object, error);
+        if (!command) return {};
+        Services::MapEditTerrainStroke result; result.textureSlot = *command;
+        return result;
     }
     if (kind.toString() == "block_copy") {
         if (!OnlyFields(object, {"kind", "source_x", "source_y", "width", "height", "destination_x", "destination_y"}, error))
@@ -800,14 +807,16 @@ QJsonObject TerrainStrokeSchema() {
     }
     auto blockCopy = BasicSchema(blockCopyProperties, {"kind", "source_x", "source_y", "width", "height", "destination_x", "destination_y"});
     blockCopy["description"] = "同图绝对原始值复制，包括东/北顶点，不旋转缩放；必须是唯一地形命令，源摘要由服务捕获。拒绝坡道、边界、MapEdge和特殊装饰物，悬崖与水沿实际规则。";
-    return {{"oneOf", QJsonArray{BasicSchema(height, heightRequired),
+    QJsonArray variants{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired), BasicSchema(boundary, boundaryRequired),
         BasicSchema(ramp, rampRequired), corner, straight, bounds, resize, blockCopy, pathingSchema,
         BasicSchema(texture, textureRequired), BasicSchema(water, waterRequired), removalSchema,
         BasicSchema(cliff, {"kind", "shape", "point_space", "size", "cliff_texture", "level_delta", "seed", "points", "follow_doodads"}),
         BasicSchema(cliffTexture, {"kind", "shape", "point_space", "size", "cliff_texture", "points", "follow_doodads"}),
         BasicSchema(newWater, {"kind", "shape", "point_space", "size", "cliff_texture", "seed",
-            "enforce_water_limits", "points", "follow_doodads"})}}};
+            "enforce_water_limits", "points", "follow_doodads"})};
+    for (const auto& schema : TerrainTextureSlotCommandSchemas()) variants.append(schema);
+    return {{"oneOf", variants}};
 }
 
 bool ReadEffectiveLayers(const QJsonObject& parameters, std::optional<std::vector<std::string>>& layers, QJsonObject& error) {
@@ -932,6 +941,8 @@ void RegisterMapEditSaveTool(McpServer& server) {
         "坡道均须明确set_ramp布尔值，几何和实际规则仍由共用规划器核验。"
         "boundary通过显式value布尔值绘制或清除地形边界；playable_bounds通过整数半开地格矩形设置可玩范围。"
         "canvas_resize用相对本笔前地图西南角的有符号整数半开地格矩形扩裁外边，固定保留原可玩区和对象世界位置；"
+        "texture_slot_replace/texture_slot_append操作贴图表，槽号从0起，地面最多16槽、悬崖最多15槽；"
+        "逐条核对旧rawcode或当前表长；任何命令失败时整批不保存。"
         "裁及内容或来源不完整整笔拒绝，不提供移动或删除选项。"
         "pathing_restriction须给出blocked_type=walk/fly/build、size=1..8与value布尔值，按32单位通行格取足迹；"
         "value=false仅撤回本次序列新增限制，原图限制始终保留，不能用原始通行位绕过。"

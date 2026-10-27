@@ -125,6 +125,7 @@ void PrintUsage() {
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --field <kind> <row> <row-key> <member-sha256> <field-id> <expected-raw> <new-value> [--field ...] [--layer <id> ...]\n"
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --copy-source <units|doodads> <row> <row-key> <member-sha256> [--copy-source ...] --copy-offset <dx> <dy> <dz> [--layer <id> ...]\n"
         << "war3-map-cli map-edit-save <source-map> <source-sha256> - <ydwe-root> <war3-root> <new-candidate.w3x> --rotate <units|doodads> <row> <row-key> <member-sha256> <degrees> [--layer <id> ...]\n"
+        << "  map-edit-save --terrain-slot-replace <ground|cliff> <slot> <expected-old> <new>; --terrain-slot-append <ground|cliff> <expected-count> <new>. Slots are zero-based, ground <=16, cliff <=15. Compare old rawcode/count at each ordered command; any failure saves no batch.\n"
         << "war3-map-cli map-field-catalog\n"
         << "war3-map-cli map-trigger-text <source-map> <source-sha256> <ui-root> <global|trigger> <trigger-id-or-0> <utf8-offset> <limit-4..65536> [--catalog-sha256 <sha>] [--layer <id> ...]\n"
         << "  map-edit-save --ui-root <ui-data-root> binds a separate UI catalog; compiler root and its safety checks stay unchanged.\n"

@@ -47,6 +47,7 @@ add_library(War3MapServices STATIC
     LuaMapSaveTarget.cpp
     MapEditSaveService.cpp
     MapEditSaveValidation.cpp
+    TerrainTextureSlotCommand.cpp
     MapDataQuery.cpp
     ImportInventoryQuery.cpp
     MapObjectReferenceCapture.cpp

@@ -513,6 +513,20 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             if (!operation) return Invalid(error);
             request.fieldEdits.push_back(std::move(*operation));
             index += 8;
+        } else if (flag == L"--terrain-slot-replace" || flag == L"--terrain-slot-append") {
+            const bool append = flag == L"--terrain-slot-append";
+            const int count = append ? 3 : 4;
+            if (index + count >= argc) return Invalid("terrain slot command requires table, zero-based slot/expected-count, and rawcode(s)");
+            if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain commands are allowed");
+            const auto table = Services::ParseTerrainTextureTable(Utf8Argument(argv[index + 1]));
+            const auto slot = ParseNumber<std::uint32_t>(argv[index + 2]);
+            if (!table.Succeeded() || !table.value || !slot) return Invalid("terrain slot needs ground|cliff and an unsigned integer slot/expected-count");
+            Services::TerrainTextureSlotCommand command{append ? Services::TerrainTextureSlotOperation::Append : Services::TerrainTextureSlotOperation::Replace,
+                *table.value, *slot, append ? std::string{} : Utf8Argument(argv[index + 3]), Utf8Argument(argv[index + count])};
+            const auto normalized = Services::NormalizeTerrainTextureSlotCommand(command);
+            if (!normalized.Succeeded()) return Invalid(normalized.diagnostics.front().message);
+            Services::MapEditTerrainStroke stroke; stroke.textureSlot = std::move(command);
+            request.terrainStrokes.push_back(std::move(stroke)); index += count + 1;
         } else if (flag == L"--terrain-copy") {
             if (index + 6 >= argc) return Invalid("--terrain-copy requires source x/y, width/height, destination x/y cell indices");
             if (!request.terrainStrokes.empty()) return Invalid("--terrain-copy must be the only terrain command");

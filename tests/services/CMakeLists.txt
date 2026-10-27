@@ -223,6 +223,12 @@ target_compile_options(war3-map-save-service-tests PRIVATE /W4 /permissive- /utf
 add_test(NAME services-map-save COMMAND war3-map-save-service-tests)
 
 add_executable(audastra-map-edit-doodad-pathing-tests MapEditDoodadPathingTests.cpp)
+add_executable(audastra-terrain-texture-slot-command-tests TerrainTextureSlotCommandTests.cpp)
+target_link_libraries(audastra-terrain-texture-slot-command-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-texture-slot-command-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-texture-slot-command-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-texture-slot-command COMMAND audastra-terrain-texture-slot-command-tests)
+set_tests_properties(services-terrain-texture-slot-command PROPERTIES TIMEOUT 180)
 target_link_libraries(audastra-map-edit-doodad-pathing-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-map-edit-doodad-pathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-map-edit-doodad-pathing-tests PRIVATE /W4 /permissive- /utf-8)

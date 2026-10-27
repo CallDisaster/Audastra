@@ -5,6 +5,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Workspace.h"
 #include "../../src/Services/MapEditSaveValidation.h"
+#include "../support/TerrainTextureSlotSaveFixture.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -778,6 +779,7 @@ void TestNativeWaterSaveTransport() {
 #include "McpTerrainBlockSaveCases.h"
 #include "McpTerrainPathingSaveCases.h"
 #include "TerrainResizeSaveCases.h"
+#include "TerrainTextureSlotSaveCases.h"
 
 } // namespace
 
@@ -820,6 +822,7 @@ int main(int argc, char** argv) {
         TestTerrainBlockSaveTransport();
         TestPlayableBoundsSaveTransport();
         TestTerrainResizeSaveTransport();
+        TestTextureSlotSaveTransport();
         TestTypedReadAndSourcePreservation();
         TestStaleBindingsAndLifetime();
         TestTransactionsAndFailures();

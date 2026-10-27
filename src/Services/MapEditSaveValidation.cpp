@@ -109,6 +109,14 @@ Status ValidateStrokes(std::span<const MapEditTerrainStroke> strokes) {
     }
     std::size_t pointCount = 0;
     for (const auto& stroke : strokes) {
+        if (stroke.textureSlot) {
+            if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty() || stroke.pointSpace != MapEditPointSpace::World
+                || stroke.followDoodads || stroke.waterBrush || stroke.bounds || stroke.resize || stroke.blockPaste)
+                return Status::Failure("MapEdit.Save", "SAVE_TEXTURE_SLOT_CONFLICT", "贴图槽命令不能携带笔刷、采样点、跟随或其它结构命令。");
+            const auto normalized = NormalizeTerrainTextureSlotCommand(*stroke.textureSlot);
+            if (!normalized.Succeeded()) return {normalized.diagnostics};
+            continue;
+        }
         if (stroke.resize) {
             if (!NeutralTerrainBrush(stroke.brush) || !stroke.points.empty()
                 || stroke.pointSpace != MapEditPointSpace::World || stroke.followDoodads

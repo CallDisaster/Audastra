@@ -1,6 +1,7 @@
 #include "MapEditSaveCommand.h"
 #include "../src/Services/MapEditSaveValidation.h"
 #include "support/TerrainResizeFixture.h"
+#include "support/TerrainTextureSlotSaveFixture.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 
 #include <iostream>
@@ -313,6 +314,7 @@ void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
 #include "CliTerrainBlockCases.h"
 #include "CliTerrainPathingCases.h"
 #include "CliTerrainResizeCases.h"
+#include "CliTerrainTextureSlotCases.h"
 
 } // namespace
 
@@ -332,6 +334,7 @@ int main() {
         PathingRestrictionUsesTypedSharedSave();
         BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit();
         TerrainResizeUsesSignedBeforeCanvasEdges();
+        TerrainTextureSlotsUseSharedOrderedSave();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

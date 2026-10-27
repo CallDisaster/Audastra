@@ -9,6 +9,7 @@
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/MapRuntimePreparation.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/Services/TerrainTextureSlotCommand.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Trigger/TriggerEditBatch.h"
 #include "War3MapCore/Trigger/TriggerTransactionSnapshot.h"
@@ -48,6 +49,7 @@ struct MapEditTerrainStroke {
     std::optional<MapData::TerrainResizeIntent> resize;
     // 同图绝对原始值复制；来源摘要仅由保存服务在绑定会话中捕获，不接受任意字节。
     std::optional<MapData::TerrainBlockPasteIntent> blockPaste;
+    std::optional<TerrainTextureSlotCommand> textureSlot;
 };
 
 // 地图数据字段修改：类别 / 行 / 字段寻址（字段目录见 MapData/MapFields.h），绑定成员 SHA、

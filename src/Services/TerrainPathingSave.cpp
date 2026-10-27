@@ -7,6 +7,7 @@
 #include "War3MapCore/Services/TerrainEditService.h"
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
+#include "War3MapCore/Services/TerrainTextureSlotCommand.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
@@ -85,22 +86,18 @@ bool Neutral(const MapData::TerrainBrush& brush) {
         && brush.pathingRestrictions == other.pathingRestrictions;
 }
 
-bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke) {
+TerrainTextureSlotCommand TextureSlotCommand(const MapData::TerrainPaletteEditIntent& intent) {
+    return {intent.algorithm == 1 ? TerrainTextureSlotOperation::Replace : TerrainTextureSlotOperation::Append,
+        intent.table, intent.slot, intent.expectedRawcode, intent.replacementRawcode};
+}
+
+bool PaletteCommand(const MapData::TerrainStrokeIntent& stroke, bool allowNoOp) {
     if (!stroke.palette || stroke.bounds || stroke.resize || stroke.blockPaste || !Neutral(stroke.brush) || !stroke.points.empty()
         || stroke.waterBrush || stroke.followDoodads) return false;
     const auto& palette = *stroke.palette;
-    const auto rawcode = [](std::string_view value) { return value.size() == 4
-        && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 32 && c <= 126; }); };
-    return (palette.table == MapData::TerrainTextureTable::Ground
-        || palette.table == MapData::TerrainTextureTable::Cliff)
-        && palette.slot < (palette.table == MapData::TerrainTextureTable::Ground ? 16u : 15u)
-        && rawcode(palette.replacementRawcode)
-        && ((palette.algorithm == 1 && rawcode(palette.expectedRawcode)
-                && palette.expectedRawcode != palette.replacementRawcode)
-            || (palette.algorithm == 2 && palette.table == MapData::TerrainTextureTable::Ground
-                && palette.slot > 0 && palette.expectedRawcode.empty())
-            || (palette.algorithm == 3 && palette.table == MapData::TerrainTextureTable::Cliff
-                && palette.slot > 0 && palette.expectedRawcode.empty()));
+    const auto normalized = NormalizeTerrainTextureSlotCommand(TextureSlotCommand(palette));
+    return normalized.Succeeded() && normalized.value && normalized.value->algorithm == palette.algorithm
+        && (allowNoOp || palette.expectedRawcode != palette.replacementRawcode);
 }
 
 bool BlockCommand(const MapData::TerrainStrokeIntent& stroke) {
@@ -275,7 +272,7 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             continue;
         }
         if (stroke.palette) {
-            if (!PaletteCommand(stroke)) return fail("TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换或Ground表尾追加，不能携带笔刷、范围或采样点。");
+            if (!PaletteCommand(stroke, !journal)) return fail("TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表命令需要独立的替换或追加，不能携带笔刷、范围或采样点。");
             continue;
         }
         if (stroke.bounds) {
@@ -407,11 +404,8 @@ Result<std::vector<MapData::TerrainPathingResources>> Replay(const ResourceSourc
             ++strokeIndex; continue;
         } else if (stroke.palette) {
             const auto& intent = *stroke.palette;
-            const auto& table = intent.table == MapData::TerrainTextureTable::Ground
-                ? candidate.Terrain()->header.groundTilesets : candidate.Terrain()->header.cliffTilesets;
-            if ((intent.algorithm == 2 || intent.algorithm == 3) ? intent.slot != table.size()
-                : intent.slot >= table.size() || table[intent.slot] != intent.expectedRawcode)
-                return fail("TERRAIN_JOURNAL_PALETTE_DRIFT", "贴图槽已不存在或旧rawcode不同，未安装任何前缀。");
+            const auto checked = NormalizeTerrainTextureSlotCommand(TextureSlotCommand(intent), &candidate.Terrain()->header);
+            if (!checked.Succeeded()) return {{}, checked.diagnostics};
             // prospective与Core命令各自持有一次完整候选；全部扫描、解析和摘要在分配前预收。
             const auto vertices = candidate.Terrain()->vertices.size();
             std::size_t peakBytes = 0;
@@ -750,7 +744,7 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
             continue;
         }
         if (stroke.palette) {
-            if (!PaletteCommand(stroke)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表记录仅接受既有槽替换或Ground表尾追加，不能携带笔刷、范围或采样点。");
+            if (!PaletteCommand(stroke, !journal)) return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_PALETTE_CONFLICT", "贴图表命令需要独立的替换或追加，不能携带笔刷、范围或采样点。");
             continue;
         }
         if (stroke.bounds) {

@@ -49,6 +49,7 @@ if(TARGET Qt6::Core)
         McpToolTerrain.cpp
         McpToolModelAnimation.cpp
         McpToolMapEdit.cpp
+        McpTerrainTextureSlotCommand.cpp McpTerrainTextureSlotCommand.h
         McpToolTriggerGraph.cpp
         McpToolMapCreate.cpp
         McpToolCampaign.cpp

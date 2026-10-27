@@ -796,6 +796,12 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             intents.reserve(request.terrainStrokes.size());
             auto pointFrame = grid->header;
             for (const auto& stroke : request.terrainStrokes) {
+                if (stroke.textureSlot) {
+                    const auto normalized = NormalizeTerrainTextureSlotCommand(*stroke.textureSlot);
+                    if (!normalized.Succeeded()) return Forward(normalized.diagnostics);
+                    MapData::TerrainStrokeIntent intent; intent.palette = *normalized.value;
+                    intents.push_back(std::move(intent)); continue;
+                }
                 if (stroke.resize) {
                     const auto advanced = AdvanceTerrainPointFrame(pointFrame, *stroke.resize);
                     if (!advanced.Succeeded()) return Forward(advanced.diagnostics);

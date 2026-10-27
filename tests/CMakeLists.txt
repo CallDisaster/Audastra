@@ -30,7 +30,7 @@ target_compile_options(war3-map-cli-terrain-query-tests PRIVATE /W4 /permissive-
 add_test(NAME cli-terrain-query COMMAND war3-map-cli-terrain-query-tests)
 set_tests_properties(cli-terrain-query PROPERTIES TIMEOUT 60)
 
-add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp CliStraightRampCases.h CliTerrainBlockCases.h CliTerrainPathingCases.h CliTerrainResizeCases.h
+add_executable(war3-map-cli-map-edit-save-tests CliMapEditSaveTests.cpp CliStraightRampCases.h CliTerrainBlockCases.h CliTerrainPathingCases.h CliTerrainResizeCases.h CliTerrainTextureSlotCases.h support/TerrainTextureSlotSaveFixture.h
     "${PROJECT_SOURCE_DIR}/src/Cli/MapEditSaveCommand.cpp")
 target_include_directories(war3-map-cli-map-edit-save-tests PRIVATE
     "${PROJECT_SOURCE_DIR}/src/Cli" "${CMAKE_CURRENT_SOURCE_DIR}")

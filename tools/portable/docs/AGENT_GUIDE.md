@@ -382,6 +382,17 @@ JASS 地图用**测试场景**：启动时带一段紧凑 T 动作，只编进�
 
 测试步骤和场景只改游戏里的状态，不改地图；要把逻辑写进地图仍用 `edit_trigger_graph`。
 
+地形贴图槽可在 `save_map_edit_candidate.terrain_strokes` 的有序命令中替换或追加：
+
+```json
+{"kind":"texture_slot_replace","table":"ground","slot":0,"expected_rawcode":"Ldrt","rawcode":"Agrs"}
+{"kind":"texture_slot_append","table":"cliff","expected_count":2,"rawcode":"CAgr"}
+```
+
+先用地形快照查询当前槽表。槽号从 0 起，地面最多 16 槽、悬崖最多 15 槽；替换比对执行到该条时的旧 rawcode，追加比对当时的表长，只能加在表尾。可以与普通笔刷混排，合计最多 128 条，地形复制仍必须是唯一命令。资源缺失、重复项、旧值或表长不匹配都会使整批不保存；同值替换没有变化，整批没有变化时不生成空候选。不能提交资源路径、摘要或算法来替代实际资源核验。
+
+CLI 使用同一保存链：`map-edit-save ... --terrain-slot-replace ground 0 Ldrt Agrs` 或 `--terrain-slot-append cliff 2 CAgr`，仍须绑定源地图 SHA、W3E SHA 和新候选路径。
+
 ## 5. 结果应如何记录
 
 保留源/候选路径与 SHA、包内源码身份、请求的绑定/raw、新值、退出码/业务 ok、原始诊断和重开结果。候选存在时换新路径，不覆盖源图或已有证据。
