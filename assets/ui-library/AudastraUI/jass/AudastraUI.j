@@ -65,9 +65,10 @@ library AudastraUI requires AudastraJapi
         set failedRequest = 0
     endfunction
 
-    // 第一次推送时绑定数据面。旧版运行库没有这项能力（未知命令 6、不支持 12）就一直走字符串请求，其他失败下次再试。
+    // 第一次推送时绑定数据面。不在游戏线程（9）、重入（11）下次再试；其他失败（旧版运行库未知命令 6、不支持 12、
+    // 表无效 5、已绑别的表 8 等）本局一直走字符串请求，不在每次刷新时重试。
     private function Bound takes nothing returns boolean
-        if dataStatus != 0 and dataStatus != 6 and dataStatus != 12 then
+        if dataStatus == -1 or dataStatus == 9 or dataStatus == 11 then
             if not Connect() then
                 return false
             endif
@@ -119,6 +120,35 @@ library AudastraUI requires AudastraJapi
         return ready
     endfunction
 
+    // 数据面刷新的累计错误：运行库只计数并记最近原因（“计数|原因”），不逐次报错。没走数据面或没出错时为空。
+    function AudastraUIDataErrors takes nothing returns string
+        local string text
+        local integer length
+        local integer i = 0
+        if dataStatus != 0 then
+            return ""
+        endif
+        set text = AjCallText(PREFIX + "dataerrors", "")
+        if AjLastStatus != 0 then
+            return ""
+        endif
+        set length = StringLength(text)
+        loop
+            exitwhen i >= length or SubString(text, i, i + 1) == "|"
+            set i = i + 1
+        endloop
+        if i == 0 or i >= length then
+            return "AudastraUI 数据面错误无法识别：" + text
+        endif
+        if SubString(text, 0, i) == "0" then
+            return ""
+        endif
+        if i + 1 == length then
+            return "AudastraUI 数据面刷新失败 " + SubString(text, 0, i) + " 次"
+        endif
+        return "AudastraUI 数据面刷新失败 " + SubString(text, 0, i) + " 次，最近一次：" + SubString(text, i + 1, length)
+    endfunction
+
     function AudastraUILastError takes nothing returns string
         local string text
         // 读取连接错误不能触发重试，否则刚发生的失败可能被恢复成功覆盖。
@@ -126,7 +156,7 @@ library AudastraUI requires AudastraJapi
             return "AudastraUI 运行库未连接（JAPI 状态 " + I2S(connectStatus) + "）"
         endif
         if failedStatus == 0 then
-            return ""
+            return AudastraUIDataErrors()
         endif
         set text = AjCallText(PREFIX + "error", AjArgInt(failedRequest))
         if AjLastStatus == 0 and text != "" then

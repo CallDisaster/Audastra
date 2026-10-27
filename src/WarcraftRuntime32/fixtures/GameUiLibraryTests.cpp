@@ -698,7 +698,8 @@ void ScriptMatchesModule() {
             }
             const auto found = commands.find(name);
             // 后加的命令：旧运行库回“未知命令”时脚本有退路（点格照常选中、刷新退回字符串请求），模块里有时照样核类型。
-            if (found == commands.end() && (name == "audastraui.clickunit" || name == "audastraui.bindtable")) continue;
+            if (found == commands.end() && (name == "audastraui.clickunit" || name == "audastraui.bindtable" ||
+                                               name == "audastraui.dataerrors")) continue;
             Check(found != commands.end(), ("script calls a command the module lacks: " + name).c_str());
             Check(found->second->arguments == types, ("argument types differ: " + name + " " + types).c_str());
             Check(audastra::japi::TypeChar(found->second->resultKind) == result, ("result type differs: " + name).c_str());

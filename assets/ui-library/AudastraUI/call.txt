@@ -12,6 +12,13 @@ comment = ""
 category = TC_AudastraUI
 returns = string
 
+[AudastraUIDataErrors]
+title = "界面库刷新错误"
+description = "AudastraUI 刷新累计错误"
+comment = "走数据面的刷新函数出错时运行库只计数、记最近原因；没出错为空。"
+category = TC_AudastraUI
+returns = string
+
 [AudastraUIGameUI]
 title = "游戏界面"
 description = "游戏界面"
