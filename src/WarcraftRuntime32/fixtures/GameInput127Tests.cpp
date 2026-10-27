@@ -31,10 +31,11 @@ Address __fastcall Resolve(std::uint32_t handle) {
 }
 std::uint32_t __fastcall RuntimeType(Address value) {
     Check(value == unit.Self(), "type query receives resolved object");
-    return unitClass ? InputRva127::UnitRuntimeType : 42;
+    // 独立记录的CUnit类型槽返回值；较宽的父类标签不能冒充单位。
+    return unitClass ? 0x2B773375 : 0x2B773373;
 }
 int __fastcall Derived(std::uint32_t actual, std::uint32_t expected) {
-    Check(expected == InputRva127::UnitRuntimeType, "unit class is required");
+    Check(expected == 0x2B773375, "CUnit class discriminator matches the fixed-image type slot");
     return actual == expected;
 }
 int __fastcall Submit(Address self, int zero, Address object, int button, Address event) {

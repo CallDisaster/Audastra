@@ -22,7 +22,7 @@ inline constexpr std::uint32_t SelectMode = 0x214;
 inline constexpr std::uint32_t ReleaseFlags = 0x14;
 inline constexpr std::uint32_t RuntimeTypeSlot = 0x1C;
 inline constexpr std::uint32_t UnitTypeId = 0x30;
-inline constexpr std::uint32_t UnitRuntimeType = 0x2B773373;
+inline constexpr std::uint32_t UnitRuntimeType = 0x2B773375;
 } // namespace InputRva127
 
 using FnResolveInputAgent = Address(__fastcall*)(std::uint32_t handle);
