@@ -5,8 +5,11 @@
 extern "C" int StartFakeGame() {
     auto* shared = Audastra::Runtime32::OpenChannel();
     if (!shared) return 43;
+    // 裸模式不加载任何扩展插件；其余模式要求两个插件都真正初始化。
+    const bool bare = shared->runtimeMode == Audastra::Runtime32::RuntimeMode::Bare;
     const auto success = shared->hookInstalled && shared->gameObserved && shared->runtimeInitialized
-        && shared->fixturePluginBits == 3 && shared->modules[4].initializeCalled && shared->modules[5].initializeCalled;
+        && (bare ? shared->fixturePluginBits == 0 && !shared->modules[4].initializeCalled && !shared->modules[5].initializeCalled
+            : shared->fixturePluginBits == 3 && shared->modules[4].initializeCalled && shared->modules[5].initializeCalled);
     if (success && shared->probeEnabled) {
         if (!shared->probeWriteGuardInstalled || !shared->probeObserverInstalled) return 61;
         const std::wstring command(GetCommandLineW());

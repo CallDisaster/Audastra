@@ -3,6 +3,7 @@
 #include "RuntimeLuaProbe.h"
 #include "OwnLua/OwnedLuaSession.h"
 #include "GameUi/GameUiModule.h"
+#include "GameTest/BackgroundPlay127.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <detours.h>
 #include <cstring>
@@ -81,6 +82,14 @@ void InitializeOwnedRuntime(HMODULE game) {
     InterlockedExchange(&owned.observerInstalled, 1);
     InterlockedExchange(&evidence->runtimeInitialized, 1);
 }
+// 后台运行钩子与运行库模式无关：在 Game.dll 入口执行前装好，装不上就结束这次测试，不让游戏在后台停住。
+void InstallBackgroundPlay(HMODULE game) {
+    auto image = OwnLua::GameImage127::Open(game);
+    if (!image.image) Fail("background-play-game-identity", ERROR_BAD_EXE_FORMAT);
+    std::string error;
+    if (!GameTest::InstallBackgroundPlay127(*image.image, error)) Fail("background-play-install", ERROR_INVALID_DATA);
+    InterlockedExchange(&evidence->backgroundPlayInstalled, 1);
+}
 void InitializeRuntime() {
     if (!InstallLuaProbeWriteGuard(evidence)) Fail("lua-probe-write-guard-install", ERROR_ACCESS_DENIED);
     for (std::size_t index = 0; index < kModules.size(); ++index) {
@@ -148,7 +157,9 @@ void ObserveModule(HMODULE loaded, bool requestedGame) {
         strcpy_s(game.actualSha256, sha.c_str());
         InterlockedExchange(&game.loaded, 1);
         InterlockedExchange(&evidence->gameObserved, 1);
+        if (evidence->backgroundPlay) InstallBackgroundPlay(loaded);
         if (evidence->runtimeMode == RuntimeMode::OwnedLua) InitializeOwnedRuntime(loaded);
+        else if (evidence->runtimeMode == RuntimeMode::Bare) InterlockedExchange(&evidence->runtimeInitialized, 1);
         else InitializeRuntime();
     } catch (...) { Fail("runtime-cpp-exception", ERROR_UNHANDLED_EXCEPTION); }
 }

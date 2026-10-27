@@ -457,7 +457,11 @@ struct RunReceipt {
         json += ",\"gameObserved\":" + std::string(flag(evidence && evidence->gameObserved));
         json += ",\"runtimeInitialized\":" + std::string(flag(evidence && evidence->runtimeInitialized));
         json += ",\"runtimeLayout\":" + Json(evidence && evidence->runtimeLayout == RuntimeLayout::YdweTree ? "ydwe-tree" : "flat");
-        json += ",\"runtimeMode\":" + Json(evidence && evidence->runtimeMode == RuntimeMode::OwnedLua ? "owned-lua" : "external-ydwe");
+        const auto modeName = !evidence ? "external-ydwe" : evidence->runtimeMode == RuntimeMode::OwnedLua ? "owned-lua"
+            : evidence->runtimeMode == RuntimeMode::Bare ? "bare" : "external-ydwe";
+        json += ",\"runtimeMode\":" + Json(modeName);
+        json += ",\"backgroundPlay\":" + std::string(flag(evidence && evidence->backgroundPlay));
+        json += ",\"backgroundPlayInstalled\":" + std::string(flag(evidence && evidence->backgroundPlayInstalled));
         if (evidence && evidence->runtimeMode == RuntimeMode::OwnedLua) {
             const auto& owned = evidence->ownedLua;
             json += ",\"ownedLua\":{\"mapSha256\":" + Json(owned.mapSha256) + ",\"nonce\":" + Json(owned.nonce);
@@ -540,13 +544,17 @@ struct RunReceipt {
     }
 };
 int Run(int argc, wchar_t** argv) {
-    if (argc < 11 || argc % 2 != 1) { std::fputs("Required: --game --map --runtime --bootstrap --receipt [--runtime-layout flat|ydwe-tree]\n", stderr); return 64; }
+    if (argc < 11 || argc % 2 != 1) {
+        std::fputs("Required: --game --map --runtime --bootstrap --receipt [--runtime-layout flat|ydwe-tree]"
+            " | --runtime-mode bare (no --runtime) [--background-play enabled] [--game-nosound enabled]\n", stderr);
+        return 64;
+    }
     std::filesystem::path game, runtime, bootstrap, receiptPath;
     std::wstring map;
     RuntimeLayout layout = RuntimeLayout::Flat;
     bool layoutSpecified = false;
     RuntimeMode mode = RuntimeMode::ExternalYdwe;
-    bool modeSpecified = false, hotReload = false;
+    bool modeSpecified = false, hotReload = false, backgroundPlay = false, noSound = false;
     std::wstring ownedMapSha, ownedNonce, ownedMailboxHandle, ownedWindowPolicy;
     DWORD ownedTimeout = 0;
     std::wstring probeNonce, expectedProbeMapSha, desktop, probeRenderer;
@@ -572,8 +580,18 @@ int Run(int argc, wchar_t** argv) {
         else if (key == L"--runtime-mode" && !modeSpecified) {
             const std::wstring value(argv[index + 1]);
             if (value == L"owned-lua") mode = RuntimeMode::OwnedLua;
+            else if (value == L"bare") mode = RuntimeMode::Bare;
             else if (value != L"external-ydwe") return 64;
             modeSpecified = true;
+        }
+        // 两个开关都只接受显式 enabled；省略即关闭，缺省命令与行为不变。
+        else if (key == L"--background-play" && !backgroundPlay) {
+            if (std::wstring_view(argv[index + 1]) != L"enabled") return 64;
+            backgroundPlay = true;
+        }
+        else if (key == L"--game-nosound" && !noSound) {
+            if (std::wstring_view(argv[index + 1]) != L"enabled") return 64;
+            noSound = true;
         }
         else if (key == L"--lua-map-sha256" && ownedMapSha.empty()) ownedMapSha = argv[index + 1];
         else if (key == L"--lua-session-nonce" && ownedNonce.empty()) ownedNonce = argv[index + 1];
@@ -631,8 +649,11 @@ int Run(int argc, wchar_t** argv) {
         else return 64;
     }
     const bool owned = mode == RuntimeMode::OwnedLua;
-    if (!PlainPath(game) || (!owned && !PlainPath(runtime)) || !PlainPath(bootstrap) || !PlainPath(receiptPath)
+    const bool bare = mode == RuntimeMode::Bare;
+    if (!PlainPath(game) || (!owned && !bare && !PlainPath(runtime)) || !PlainPath(bootstrap) || !PlainPath(receiptPath)
         || !SafeMap(map) || !EqualPath(game.filename().wstring(), L"war3.exe")) return 64;
+    // 裸模式不加载任何扩展运行库，也不承担探针。
+    if (bare && (!runtime.empty() || layoutSpecified || !probeNonce.empty())) return 64;
     const bool probe = !probeNonce.empty();
     const auto lowercaseHex = [](const std::wstring& value, std::size_t length) {
         return value.size() == length && std::all_of(value.begin(), value.end(), [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); });
@@ -727,6 +748,7 @@ int Run(int argc, wchar_t** argv) {
     wcscpy_s(shared->runtimeRoot, runtime.c_str());
     shared->runtimeLayout = layout;
     shared->runtimeMode = mode;
+    shared->backgroundPlay = backgroundPlay ? 1 : 0;
     if (owned) {
         wcscpy_s(shared->ownedLua.mapPath, (game.parent_path() / map).c_str());
         strcpy_s(shared->ownedLua.mapSha256, Utf8(ownedMapSha).c_str());
@@ -759,7 +781,7 @@ int Run(int argc, wchar_t** argv) {
     if (gameDllSha.empty()) return fail("game-dll-sha", ERROR_CRC);
     strcpy_s(shared->gameModule.expectedSha256, gameDllSha.c_str());
     std::vector<std::unique_ptr<Handle>> runtimeFiles;
-    for (std::size_t index = 0; !owned && index < kModules.size(); ++index) {
+    for (std::size_t index = 0; !owned && !bare && index < kModules.size(); ++index) {
         auto file = std::make_unique<Handle>(OpenLockedFile(runtime / ModuleRelativePath(layout, index)));
         if (file->value == INVALID_HANDLE_VALUE || !IsX86Image(file->value)) return fail("runtime-preflight", ERROR_BAD_EXE_FORMAT);
         const auto sha = Sha256(file->value);
@@ -773,6 +795,7 @@ int Run(int argc, wchar_t** argv) {
     if (!attributes.Initialize(mapping.value, owned ? luaMapping.value : nullptr)) return fail("channel-handle-whitelist");
     auto environment = ChildEnvironment(mapping.value, (probe || owned) ? (game.parent_path() / map).parent_path() : std::filesystem::path{});
     result.gameArgv = {game.wstring(), L"-window"};
+    if (noSound) result.gameArgv.push_back(L"-nosound");
     if (!probeRenderer.empty()) result.gameArgv.push_back(L"-opengl");
     result.gameArgv.push_back(L"-loadfile"); result.gameArgv.push_back(map);
     // 唯一向量既形成实际 CreateProcessW 命令，也进入回执；缺省命令字节形态保持不变。
@@ -814,7 +837,8 @@ int Run(int argc, wchar_t** argv) {
         windowDiagnostics.CaptureFirstIfDue();
         MemoryBarrier();
         if (shared->failed) return abort("bootstrap-reported-failure", shared->errorWin32);
-        if (shared->hookInstalled && shared->gameObserved && shared->runtimeInitialized) break;
+        if (shared->hookInstalled && shared->gameObserved && shared->runtimeInitialized
+            && (!backgroundPlay || shared->backgroundPlayInstalled)) break;
         const auto terminal = WaitForSingleObject(target.value, 50);
         if (terminal == WAIT_OBJECT_0) break;
         if (terminal != WAIT_TIMEOUT) return abort("game-initialization-wait");
@@ -857,7 +881,8 @@ int Run(int argc, wchar_t** argv) {
     }
     if (WaitForSingleObject(target.value, INFINITE) != WAIT_OBJECT_0 || !GetExitCodeProcess(target.value, &result.gameExit)) return fail("game-terminal-query");
     MemoryBarrier();
-    if (shared->failed || !shared->hookInstalled || !shared->gameObserved || !shared->runtimeInitialized) {
+    if (shared->failed || !shared->hookInstalled || !shared->gameObserved || !shared->runtimeInitialized
+        || (backgroundPlay && !shared->backgroundPlayInstalled)) {
         if (!shared->failed) { result.stage = "runtime-initialization-unconfirmed"; result.error = ERROR_INVALID_DATA; }
         result.bridgeExit = kRuntimeFailure;
     } else if (owned && (!shared->ownedLua.modules || shared->ownedLua.errors)) {

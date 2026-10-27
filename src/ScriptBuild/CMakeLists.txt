@@ -32,6 +32,7 @@ target_compile_definitions(audastra-lua53-sandbox PRIVATE _CRT_SECURE_NO_WARNING
 add_library(War3MapScriptBuild STATIC
     ExternalProcess.cpp
     MapTestSlk.cpp
+    GameScreenshot127.cpp
     MapTestLaunch.cpp
     MapTestRuntime.cpp
     LuaTemplateSandbox.cpp

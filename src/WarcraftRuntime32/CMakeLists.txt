@@ -35,7 +35,8 @@ option(AUD_JAPI_BRIDGE_EXPERIMENTAL "Opt in to unqualified JAPI string bridge in
 
 add_executable(audastra-warcraft-launcher Launcher.cpp)
 target_include_directories(audastra-warcraft-launcher PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
-add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h)
+add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h
+    GameTest/BackgroundPlay127.cpp)
 target_compile_definitions(audastra-warcraft-bootstrap PRIVATE
     AUD_JAPI_BRIDGE_EXPERIMENTAL=$<BOOL:${AUD_JAPI_BRIDGE_EXPERIMENTAL}>)
 target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)

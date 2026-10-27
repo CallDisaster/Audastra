@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <future>
 #include <optional>
 
@@ -52,25 +53,6 @@ const char* ResultName(Runtime32Result code) {
 // 在界面线程等待，期间照常处理事件（游戏是独立进程）。
 void Pause(int milliseconds) {
     QEventLoop loop; QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit); loop.exec();
-}
-// 本次进程树里客户区最大的可见顶层窗口，即游戏窗口；后台测试在它的不可见桌面上找。
-HWND GameWindow(const War3Map::Script::MapTestLaunchLease& lease) {
-    const auto processes = lease.ProcessIds();
-    struct Search { const std::vector<std::uint32_t>* processes; HWND best = nullptr; LONG area = 0; } search{&processes};
-    const auto visit = [](HWND window, LPARAM parameter) -> BOOL {
-        auto& found = *reinterpret_cast<Search*>(parameter);
-        DWORD process = 0; GetWindowThreadProcessId(window, &process);
-        if (!IsWindowVisible(window) || IsIconic(window)
-            || std::find(found.processes->begin(), found.processes->end(), process) == found.processes->end()) return TRUE;
-        RECT client{};
-        if (!GetClientRect(window, &client)) return TRUE;
-        const auto area = (client.right - client.left) * (client.bottom - client.top);
-        if (area > found.area) { found.area = area; found.best = window; }
-        return TRUE;
-    };
-    if (const auto desktop = static_cast<HDESK>(lease.HiddenDesktop())) EnumDesktopWindows(desktop, visit, reinterpret_cast<LPARAM>(&search));
-    else EnumWindows(visit, reinterpret_cast<LPARAM>(&search));
-    return search.best;
 }
 // 内部抽样全是同一颜色时视为没有取到画面：游戏还没绘制（显示器关闭时游戏不绘制）或绘制方式不受支持，
 // 都会交回纯白或纯黑。避开边缘，系统圆角处的像素不算。
@@ -210,10 +192,7 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
         // 先发再判断是否返回，wait_ms 为 0 的轮询也能越过这一步。
         if (running && (!report || !report->started) && clock.elapsed() - lastKey >= 2000) {
             lastKey = clock.elapsed();
-            if (const auto window = GameWindow(*lease)) {
-                PostMessageW(window, WM_KEYDOWN, VK_SPACE, 0x00390001);
-                PostMessageW(window, WM_KEYUP, VK_SPACE, static_cast<LPARAM>(0xC0390001u));
-            }
+            (void)lease->PressSpace();
         }
         if ((report && report->finished) || !running || clock.elapsed() >= wait) break;
         Pause(250);
@@ -240,18 +219,42 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
 
 QJsonObject MainWindow::MapTestCapture() {
     if (!mapTestLease_ || !mapTestLease_->IsActive()) return Failure("MAP_TEST_NOT_RUNNING", tr("没有正在运行的测试游戏。"));
-    const auto window = GameWindow(*mapTestLease_);
-    if (!window) return Failure("MAP_TEST_CAPTURE_WINDOW", tr("没有找到本次测试游戏的可见窗口（可能仍在启动或已最小化）。"));
-    const auto capture = CaptureWindow(window, mapTestLease_->HiddenDesktop() != nullptr);
-    if (capture.image.isNull())
-        return Failure("MAP_TEST_CAPTURE_FAILED", tr("游戏窗口画面没有取到：%1。").arg(capture.problems.join(QStringLiteral("；"))));
-    const auto& image = capture.image;
+    QImage image;
+    QString method;
+    QStringList problems;
+    // 先让 1.27a 游戏自己截图：取自游戏后台缓冲，窗口被遮挡或不在前台也能截。
+    // 看不见的桌面上原版 D3D9/OpenGL 建不起设备、一帧都不画，那里不请求。
+    const bool hidden = mapTestLease_->HiddenDesktop() != nullptr;
+    const auto shot = hidden ? War3Map::Result<std::filesystem::path>{} : mapTestLease_->RequestGameScreenshot(4000);
+    if (shot.Succeeded() && shot.value) {
+        image = QImage(QString::fromStdWString(shot.value->wstring()), "TGA").convertToFormat(QImage::Format_RGB888);
+        // 这张 TGA 是本次请求让游戏新写的，读完即删，不留在游戏目录。
+        std::error_code ignored;
+        std::filesystem::remove(*shot.value, ignored);
+        if (!image.isNull()) method = QStringLiteral("game_screenshot");
+        else problems << tr("游戏截图：图片无法读取");
+    } else if (!shot.diagnostics.empty()) {
+        problems << tr("游戏截图：%1").arg(QString::fromStdString(shot.diagnostics.back().message));
+    }
+    if (image.isNull()) {
+        const auto window = static_cast<HWND>(mapTestLease_->GameWindow());
+        if (!window) {
+            problems << tr("没有找到本次测试游戏的可见窗口（可能仍在启动或已最小化）");
+            return Failure("MAP_TEST_CAPTURE_WINDOW", tr("游戏画面没有取到：%1。").arg(problems.join(QStringLiteral("；"))));
+        }
+        auto capture = CaptureWindow(window, hidden);
+        problems << capture.problems;
+        if (capture.image.isNull())
+            return Failure("MAP_TEST_CAPTURE_FAILED", tr("游戏画面没有取到：%1。").arg(problems.join(QStringLiteral("；"))));
+        image = std::move(capture.image);
+        method = capture.method;
+    }
     const QDir root(QDir(War3Map::QtCommon::InstallationRoot()).filePath(QStringLiteral("test-captures/") + mapTestRunName_));
     if (!QDir().mkpath(root.absolutePath())) return Failure("MAP_TEST_CAPTURE_FAILED", tr("无法创建截图目录。"));
     const auto path = root.filePath(QStringLiteral("capture-%1.png").arg(++mapTestCaptures_, 3, 10, QLatin1Char('0')));
     if (!image.save(path, "PNG")) return Failure("MAP_TEST_CAPTURE_FAILED", tr("截图没有写出。"));
     return {{"ok", true}, {"path", QDir::toNativeSeparators(path)}, {"width", image.width()}, {"height", image.height()},
-        {"method", capture.method}};
+        {"method", method}};
 }
 
 QJsonObject MainWindow::MapTestSteps(const QJsonObject& arguments) {

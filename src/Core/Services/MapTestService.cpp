@@ -226,22 +226,25 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
         return Fail<MapTestLaunchPlan>("MAP_TEST_GAME_IDENTITY", "无法核对所选游戏启动文件的身份。");
     plan.gameExecutableSha256 = *gameSha.value;
     plan.gameModuleSha256 = *moduleSha.value;
+    plan.backgroundPlay = artifact.backgroundPlay && plan.gameModuleSha256 == kMapTestGame127ModuleSha256;
     plan.arguments = {L"-window", L"-loadfile", relative.wstring()};
     // 看不见的后台测试不出声。
     if (artifact.hiddenDesktop) plan.arguments.insert(plan.arguments.begin() + 1, L"-nosound");
-    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty()) {
+    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || plan.backgroundPlay) {
+        // 裸模式：地图不需要扩展运行库，只为后台运行钩子经过启动器。
+        const bool bare = !artifact.useOwnedLuaRuntime && artifact.runtimeRoot.empty();
         if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree)
             return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_LAYOUT", "扩展运行时目录布局无效，未启动游戏。");
         if (!artifact.runtimeBridge.is_absolute() || !artifact.runtimeBootstrap.is_absolute()
-            || (!artifact.useOwnedLuaRuntime && (!artifact.runtimeRoot.is_absolute()
+            || (!artifact.useOwnedLuaRuntime && !bare && (!artifact.runtimeRoot.is_absolute()
                 || !OrdinaryAncestors(artifact.runtimeRoot) || !std::filesystem::is_directory(artifact.runtimeRoot, ec) || ec)))
             return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_PATH", "扩展运行时必须使用独立的绝对目录。");
         for (const auto& file : {artifact.runtimeBridge, artifact.runtimeBootstrap})
             if (!OrdinaryAncestors(file) || !std::filesystem::is_regular_file(file, ec) || ec)
                 return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_HELPER", "Audastra独立测试启动组件缺失，请使用完整安装包。");
         plan.executable = artifact.runtimeBridge;
-        plan.runtimeRoot = artifact.useOwnedLuaRuntime ? std::filesystem::path{} : artifact.runtimeRoot;
-        plan.runtimeLayout = artifact.useOwnedLuaRuntime ? MapTestRuntimeLayout::Flat : artifact.runtimeLayout;
+        plan.runtimeRoot = artifact.useOwnedLuaRuntime || bare ? std::filesystem::path{} : artifact.runtimeRoot;
+        plan.runtimeLayout = artifact.useOwnedLuaRuntime || bare ? MapTestRuntimeLayout::Flat : artifact.runtimeLayout;
         plan.runtimeBootstrap = artifact.runtimeBootstrap;
         const auto bootstrapSha = Sha256File(plan.runtimeBootstrap);
         if (!bootstrapSha.Succeeded()) return {std::nullopt, bootstrapSha.diagnostics};
@@ -260,13 +263,18 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
             // 启动器只接受显式 enabled；省略选项才是其关闭合同。
             if (artifact.enableLuaHotReload)
                 plan.arguments.insert(plan.arguments.end(), {L"--lua-hot-reload", L"enabled"});
+        } else if (bare) {
+            plan.arguments.insert(plan.arguments.end(), {L"--runtime-mode", L"bare"});
         } else {
             plan.arguments.insert(plan.arguments.end(), {L"--runtime", artifact.runtimeRoot.wstring()});
         }
-        if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout == MapTestRuntimeLayout::YdweTree) {
+        if (!artifact.useOwnedLuaRuntime && !bare && artifact.runtimeLayout == MapTestRuntimeLayout::YdweTree) {
             plan.arguments.push_back(L"--runtime-layout");
             plan.arguments.push_back(L"ydwe-tree");
         }
+        if (plan.backgroundPlay) plan.arguments.insert(plan.arguments.end(), {L"--background-play", L"enabled"});
+        // 经启动器时游戏命令行由启动器生成，后台测试的静音也要显式传过去。
+        if (artifact.hiddenDesktop) plan.arguments.insert(plan.arguments.end(), {L"--game-nosound", L"enabled"});
     }
     const auto executableSha = Sha256File(plan.executable);
     if (!executableSha.Succeeded()) { Result<MapTestLaunchPlan> result; result.diagnostics = executableSha.diagnostics; return result; }

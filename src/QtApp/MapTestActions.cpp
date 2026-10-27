@@ -219,6 +219,8 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
             workspaceReady = (*workspace.value)->Refresh();
             if (artifact.Succeeded() && workspaceReady.Succeeded()) {
                 artifact.value->hiddenDesktop = hiddenDesktop;
+                // 助手发起的测试没人看着窗口：失焦不暂停、后台不降速。
+                artifact.value->backgroundPlay = !interactive;
                 launched = Script::LaunchMapTest(*artifact.value, update);
             }
         } catch (const std::exception&) {

@@ -282,6 +282,78 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     CleanupOwned(base, work, ownedFiles, layout);
     std::cout << "PASS " << name << " (receipt in owned task directory)\n";
 }
+// 裸模式：不加载扩展运行库，只装测试钩子。原创 Game.dll 不是 1.27a，后台运行钩子必须拒绝安装。
+void BareCase(const std::filesystem::path& base, const std::filesystem::path& launcher,
+    const std::filesystem::path& bootstrap, const std::filesystem::path& fakeWar3,
+    const std::filesystem::path& fakeGame, const char* name, bool backgroundPlay) {
+    const auto work = base / std::wstring(name, name + std::strlen(name));
+    Require(std::filesystem::create_directory(work), "unique bare case directory");
+    std::vector<std::pair<std::filesystem::path, std::string>> ownedFiles;
+    const auto remember = [&](const std::filesystem::path& path) { ownedFiles.emplace_back(path, FileHash(path)); };
+    std::filesystem::create_directory(work / L"runtime");
+    std::filesystem::create_directories(work / L"Maps" / L"Test");
+    std::filesystem::copy_file(fakeWar3, work / L"war3.exe");
+    remember(work / L"war3.exe");
+    std::filesystem::copy_file(fakeGame, work / L"Game.dll");
+    remember(work / L"Game.dll");
+    const std::wstring relative = L"Maps\\Test\\smoke.w3x";
+    std::ofstream(work / relative, std::ios::binary) << "original-fixture-no-warcraft-map";
+    remember(work / relative);
+    const auto receipt = work / L"receipt.json";
+    const auto prefix = Quote(launcher.wstring()) + L" --game " + Quote((work / L"war3.exe").wstring())
+        + L" --map " + Quote(relative) + L" --bootstrap " + Quote(bootstrap.wstring()) + L" --receipt " + Quote(receipt.wstring())
+        + L" --runtime-mode bare";
+    const auto run = [&](std::wstring command, DWORD timeout) {
+        Handle job(CreateJobObjectW(nullptr, nullptr));
+        Require(job.value != nullptr, "bare fixture job");
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        Require(SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits)) != FALSE, "bare fixture job limits");
+        STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        Require(CreateProcessW(launcher.c_str(), command.data(), nullptr, nullptr, FALSE,
+            CREATE_SUSPENDED | CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, work.c_str(), &startup, &process) != FALSE, "bare launcher create");
+        Handle child(process.hProcess), thread(process.hThread);
+        if (!AssignProcessToJobObject(job.value, child.value)) {
+            TerminateProcess(child.value, 1); WaitForSingleObject(child.value, 5000); throw std::runtime_error("bare fixture job assign");
+        }
+        Require(ResumeThread(thread.value) != static_cast<DWORD>(-1), "bare fixture resume");
+        Require(WaitForSingleObject(child.value, timeout) == WAIT_OBJECT_0, "bare fixture terminal timeout");
+        DWORD exit = STILL_ACTIVE;
+        Require(GetExitCodeProcess(child.value, &exit) != FALSE, "bare fixture exit");
+        ReleaseTerminalProcessHandles(child, thread);
+        (void)WaitOwnedJobEmpty(job.value);
+        return exit;
+    };
+    // 裸模式不接受扩展运行库目录或布局；参数错误不建回执。
+    Require(run(prefix + L" --runtime " + Quote((work / L"runtime").wstring()), 5000) == 64 && !std::filesystem::exists(receipt),
+        "bare mode rejects an extension runtime directory");
+    Require(run(prefix + L" --runtime-layout flat", 5000) == 64 && !std::filesystem::exists(receipt), "bare mode rejects a runtime layout");
+    Require(run(prefix + L" --background-play on", 5000) == 64 && !std::filesystem::exists(receipt), "background play accepts only explicit enabled");
+    auto command = prefix + L" --game-nosound enabled";
+    if (backgroundPlay) command += L" --background-play enabled";
+    const auto exit = run(command, 22000);
+    const auto text = Read(receipt);
+    Require(text.find("\"runtimeMode\":\"bare\"") != std::string::npos, "receipt reports bare mode");
+    Require(text.find("\"gameRuntimeVerified\":false") != std::string::npos, "bare fixture cannot claim gameplay");
+    Require(text.find("\"fixturePluginBits\":0") != std::string::npos, "bare mode loads no extension runtime");
+    Require(text.find("\"-window\",\"-nosound\",\"-loadfile\"") != std::string::npos, "explicit nosound reaches the exact game argv");
+    if (!backgroundPlay) {
+        Require(exit == 0, "bare launcher exit");
+        Require(text.find("\"runtimeInitialized\":true") != std::string::npos && text.find("\"gameObserved\":true") != std::string::npos,
+            "bare mode still observes Game.dll before reporting ready");
+        Require(text.find("\"backgroundPlay\":false") != std::string::npos && text.find("\"backgroundPlayInstalled\":false") != std::string::npos,
+            "background play stays off unless requested");
+    } else {
+        Require(exit != 0, "background play on a non-1.27a Game.dll must fail");
+        Require(text.find("background-play-game-identity") != std::string::npos, "identity mismatch is reported at its own stage");
+        Require(text.find("\"backgroundPlay\":true") != std::string::npos && text.find("\"backgroundPlayInstalled\":false") != std::string::npos,
+            "no false background play success");
+        Require(text.find("\"runtimeInitialized\":false") != std::string::npos, "failed hook keeps the runtime unconfirmed");
+    }
+    CleanupOwned(base, work, ownedFiles, RuntimeLayout::Flat);
+    std::cout << "PASS " << name << " (receipt in owned task directory)\n";
+}
 void ProbeCase(const std::filesystem::path& base, const std::filesystem::path& launcher,
     const std::filesystem::path& bootstrap, const std::filesystem::path& fakeWar3,
     const std::filesystem::path& fakeGame, const std::filesystem::path& fakeRuntime, const wchar_t* flavor,
@@ -477,6 +549,8 @@ int wmain(int argc, wchar_t** argv) {
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-hook-and-initialize", true, false, false, false, {}, true, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-plugin", false, true, false, false, {}, false, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-initialize", false, false, true, false, {}, false, RuntimeLayout::YdweTree);
+        BareCase(base, launcher, bootstrap, war3, game, "bare-mode", false);
+        BareCase(base, launcher, bootstrap, war3, game, "bare-background-play-identity", true);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-valid", true);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-sandbox", true);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-redirect", true);

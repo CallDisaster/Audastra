@@ -37,6 +37,14 @@ public:
     [[nodiscard]] std::vector<std::uint32_t> ProcessIds() const;
     // 游戏所在的不可见桌面句柄（HDESK，找窗口用）；游戏开在用户桌面上时为空。
     [[nodiscard]] void* HiddenDesktop() const noexcept;
+    // 本次进程树里客户区最大的可见顶层窗口（HWND），即游戏窗口；后台测试在它的不可见桌面上找。没找到时为空。
+    [[nodiscard]] void* GameWindow() const;
+    // 给游戏窗口发一次空格，越过载入后的“按任意键继续”（载入中会被忽略）。没找到窗口时返回 false。
+    [[nodiscard]] bool PressSpace() const;
+    // 让本次测试的 1.27a 游戏用自己的截图功能存一张画面（取自游戏后台缓冲，屏幕关闭、锁屏、
+    // 不可见桌面都能截）。返回游戏写在 <游戏目录>\Screenshots 下的新 TGA，调用方读完后删除。
+    // 不是 1.27a、游戏已结束，或限时内没画出新帧（最小化、暂停）时失败，不留下待截请求。
+    [[nodiscard]] Result<std::filesystem::path> RequestGameScreenshot(std::uint32_t timeoutMs = 5000) const;
     // 仅原进程树终态后调用；在后台核对并清理本次短路径副本，返回启动终态诊断。
     [[nodiscard]] Status Cleanup();
 private:

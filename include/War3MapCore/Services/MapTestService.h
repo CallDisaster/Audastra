@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace War3Map::Services {
@@ -13,6 +14,8 @@ enum class MapTestRuntimeLayout { Flat, YdweTree };
 // Owned：Audastra 自带 Lua，可热重载；地图还需要原版没有的扩展接口时改用 YDWE 引擎并提示。
 // Ydwe：始终使用本机 YDWE 的 Lua 引擎（不能热重载）。
 enum class MapTestLuaEngine { Owned, Ydwe };
+// 经典 1.27a 的 Game.dll；后台运行钩子只认这一版本。
+inline constexpr std::string_view kMapTestGame127ModuleSha256 = "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a";
 
 // 既有 UI 设置可指向安装根、ui 或 share/mpq；仅归一这两个已知子目录，不搜索其他父目录。
 [[nodiscard]] std::filesystem::path MapTestYdweInstallRoot(const std::filesystem::path& configuredUiRoot);
@@ -58,6 +61,8 @@ struct MapTestArtifact {
     bool handwrittenLuaHotReload = true;
     // 游戏开在用户看不见的独立桌面上：不弹出、不抢焦点、不接收键鼠（Agent 测试默认）。
     bool hiddenDesktop = false;
+    // 无人值守测试：失焦不暂停、后台不降速。只在 1.27a 上生效，其他版本照常启动。
+    bool backgroundPlay = false;
 };
 
 struct MapTestSlkRequest {
@@ -101,6 +106,8 @@ struct MapTestLaunchPlan {
     std::string runtimeBootstrapSha256;
     // 启动入口及其子进程放在本轮新建的不可见桌面上。
     bool hiddenDesktop = false;
+    // 启动器在游戏入口前挂上失焦不暂停与后台不降速；Game.dll 已核对为 1.27a。
+    bool backgroundPlay = false;
 };
 
 // 核验所选游戏和本轮短路径复制目标；不启动进程、不写安装配置或注册表。

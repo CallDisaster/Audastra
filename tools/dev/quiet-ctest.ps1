@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory)][string]$BuildDirectory,
     [Parameter(Mandatory)][string]$Log,
-    [string]$Regex = ''
+    [string]$Regex = '',
+    [string]$Exclude = ''
 )
 $ErrorActionPreference = 'Stop'
 $Log = [IO.Path]::GetFullPath($Log)
@@ -25,6 +26,7 @@ try {
     $arguments = @('--test-dir', $build, '-C', 'Release', '-j', '1', '--no-tests=error', '--timeout', '900', '--output-on-failure',
         '--test-output-size-passed', '1048576', '--output-junit', "$Log.xml")
     if ($Regex) { $arguments += @('-R', $Regex) }
+    if ($Exclude) { $arguments += @('-E', $Exclude) }
     $launched = $true
     & $ctest @arguments *> $Log
     $actualExit = $LASTEXITCODE
@@ -32,7 +34,7 @@ try {
     $env:QT_QPA_PLATFORM = $previousPlatform
     [void][ForgeQuietRuntimeNative]::SetErrorMode($previousMode)
     [ordered]@{ started_utc=$started.ToString('o'); ended_utc=[DateTime]::UtcNow.ToString('o');
-        actual_exit=$actualExit; regex=$Regex; log=[IO.Path]::GetFullPath($Log);
+        actual_exit=$actualExit; regex=$Regex; exclude=$Exclude; log=[IO.Path]::GetFullPath($Log);
         launch_attempted=$launched; preflight_log=[IO.Path]::GetFullPath("$Log.preflight.log");
         xml=[IO.Path]::GetFullPath("$Log.xml") } |
         ConvertTo-Json | Set-Content -LiteralPath "$Log.receipt.json" -Encoding utf8

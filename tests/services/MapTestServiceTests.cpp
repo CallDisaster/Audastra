@@ -89,6 +89,11 @@ void CopyAndPlanKeepSource() {
         && background.value->arguments[0] == L"-window" && background.value->arguments[1] == L"-nosound"
         && background.value->arguments[2] == L"-loadfile" && background.value->arguments[3] == plan.value->arguments[2],
         "background test runs on the hidden desktop without sound");
+    hidden.backgroundPlay = true;
+    const auto unverified = BuildMapTestLaunchPlan(hidden);
+    Require(unverified.Succeeded() && !unverified.value->backgroundPlay
+        && std::filesystem::equivalent(unverified.value->executable, f.game / "war3.exe") && unverified.value->arguments == background.value->arguments,
+        "background play stays off for a Game.dll that is not the verified 1.27a module");
     const auto secondArtifact = PrepareMapTest(f.Request("prepared-second")); Require(secondArtifact.Succeeded(), "prepare second independent task");
     const auto second = BuildMapTestLaunchPlan(*secondArtifact.value);
     Require(second.Succeeded() && second.value->gameMapCopy != plan.value->gameMapCopy, "separate frozen tasks have distinct short-copy directories");

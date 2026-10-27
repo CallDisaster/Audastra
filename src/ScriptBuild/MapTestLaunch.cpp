@@ -1,6 +1,7 @@
 #include "War3MapCore/Script/MapTestToolchain.h"
 
 #include "ExternalProcess.h"
+#include "GameScreenshot127.h"
 #include "MapTestLaunchInternal.h"
 #include "../Core/Services/LuaTestMailboxSessionInternal.h"
 #include "War3MapCore/Hash.h"
@@ -10,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <array>
 #include <mutex>
@@ -197,6 +199,84 @@ void* MapTestLaunchLease::HiddenDesktop() const noexcept {
     return impl_ ? impl_->desktop : nullptr;
 #else
     return nullptr;
+#endif
+}
+
+void* MapTestLaunchLease::GameWindow() const {
+#ifdef _WIN32
+    const auto processes = ProcessIds();
+    struct Search { const std::vector<std::uint32_t>* processes; HWND best = nullptr; LONG area = 0; } search{&processes};
+    const auto visit = [](HWND window, LPARAM parameter) -> BOOL {
+        auto& found = *reinterpret_cast<Search*>(parameter);
+        DWORD process = 0; GetWindowThreadProcessId(window, &process);
+        if (!IsWindowVisible(window) || IsIconic(window)
+            || std::find(found.processes->begin(), found.processes->end(), process) == found.processes->end()) return TRUE;
+        RECT client{};
+        if (!GetClientRect(window, &client)) return TRUE;
+        const auto area = (client.right - client.left) * (client.bottom - client.top);
+        if (area > found.area) { found.area = area; found.best = window; }
+        return TRUE;
+    };
+    if (processes.empty()) return nullptr;
+    if (const auto desktop = static_cast<HDESK>(HiddenDesktop())) EnumDesktopWindows(desktop, visit, reinterpret_cast<LPARAM>(&search));
+    else EnumWindows(visit, reinterpret_cast<LPARAM>(&search));
+    return search.best;
+#else
+    return nullptr;
+#endif
+}
+
+bool MapTestLaunchLease::PressSpace() const {
+#ifdef _WIN32
+    const auto window = static_cast<HWND>(GameWindow());
+    if (!window) return false;
+    PostMessageW(window, WM_KEYDOWN, VK_SPACE, 0x00390001);
+    PostMessageW(window, WM_KEYUP, VK_SPACE, static_cast<LPARAM>(0xC0390001u));
+    return true;
+#else
+    return false;
+#endif
+}
+
+Result<std::filesystem::path> MapTestLaunchLease::RequestGameScreenshot(std::uint32_t timeoutMs) const {
+    const auto fail = [](const char* code, std::string message) {
+        return Result<std::filesystem::path>::Failure("Map.Test", code, std::move(message));
+    };
+#ifdef _WIN32
+    if (!impl_) return fail("MAP_TEST_SCREENSHOT_ENDED", "测试启动记录无效。");
+    HANDLE process = nullptr;
+    {
+        std::lock_guard stateLock(impl_->lifecycle);
+        if (impl_->finished || !impl_->job) return fail("MAP_TEST_SCREENSHOT_ENDED", "本次测试已经结束。");
+        // 经启动器时游戏是 Job 里捕获的子进程；直接启动时游戏就是原入口进程。
+        DWORD id = 0; FILETIME created{};
+        {
+            std::lock_guard lock(impl_->mutex);
+            for (const auto& child : impl_->children) {
+                if (!child.gameIdentity || !child.handle || WaitForSingleObject(child.handle, 0) != WAIT_TIMEOUT) continue;
+                if (id) return fail("MAP_TEST_SCREENSHOT_AMBIGUOUS", "本次测试有多个游戏进程，无法确定截哪一个。");
+                id = child.id; created = child.created;
+            }
+        }
+        if (!id && impl_->launcher && WaitForSingleObject(impl_->launcher, 0) == WAIT_TIMEOUT
+            && Impl::ImageMatches(impl_->launcher, impl_->gameImage)) {
+            id = impl_->launcherId.load(); created = impl_->launcherCreated;
+        }
+        if (!id) return fail("MAP_TEST_SCREENSHOT_NO_GAME", "本次测试的游戏进程还没启动或已经退出。");
+        // 按编号重开后核对创建时间、Job 归属和映像路径，不会截到复用编号的其他进程。
+        process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | SYNCHRONIZE, FALSE, id);
+        FILETIME actual{}, exited{}, kernel{}, user{}; BOOL belongs = FALSE;
+        if (!process || !GetProcessTimes(process, &actual, &exited, &kernel, &user) || CompareFileTime(&actual, &created) != 0
+            || !IsProcessInJob(process, impl_->job, &belongs) || !belongs || !Impl::ImageMatches(process, impl_->gameImage)) {
+            if (process) CloseHandle(process);
+            return fail("MAP_TEST_SCREENSHOT_NO_GAME", "无法确认本次测试的游戏进程身份。");
+        }
+    }
+    struct Owned { HANDLE value; ~Owned() { CloseHandle(value); } } owned{process};
+    return detail::RequestGame127Screenshot(process, impl_->gameImage.parent_path(), timeoutMs);
+#else
+    (void)timeoutMs;
+    return fail("MAP_TEST_SCREENSHOT_UNSUPPORTED", "当前平台不支持游戏截图。");
 #endif
 }
 

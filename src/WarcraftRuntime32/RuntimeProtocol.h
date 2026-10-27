@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 6;
+inline constexpr std::uint32_t kVersion = 7;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -19,9 +19,10 @@ inline constexpr std::size_t kNonfatalBlockedPathCapacity = 4;
 inline constexpr std::array<const wchar_t*, 6> kModules = {
     L"ydbase.dll", L"lua53.dll", L"ydwar3.dll", L"yd_loader.dll", L"yd_jass_api.dll", L"yd_lua_engine.dll"};
 enum class RuntimeLayout : std::uint32_t { Flat = 0, YdweTree = 1 };
-enum class RuntimeMode : std::uint32_t { ExternalYdwe = 0, OwnedLua = 1 };
+// Bare：不加载扩展运行库，只装测试钩子（如后台运行）。
+enum class RuntimeMode : std::uint32_t { ExternalYdwe = 0, OwnedLua = 1, Bare = 2 };
 inline bool ValidMode(RuntimeMode mode) {
-    return mode == RuntimeMode::ExternalYdwe || mode == RuntimeMode::OwnedLua;
+    return mode == RuntimeMode::ExternalYdwe || mode == RuntimeMode::OwnedLua || mode == RuntimeMode::Bare;
 }
 inline bool ValidLayout(RuntimeLayout layout) {
     return layout == RuntimeLayout::Flat || layout == RuntimeLayout::YdweTree;
@@ -76,6 +77,9 @@ struct SharedEvidence {
     LONG gameObserved = 0;
     LONG runtimeInitialized = 0;
     LONG failed = 0;
+    // 测试会话要求游戏失焦后照常运行；bootstrap 核对 1.27a 后安装钩子并置 Installed。
+    LONG backgroundPlay = 0;
+    LONG backgroundPlayInstalled = 0;
     DWORD errorWin32 = 0;
     char errorStage[96]{};
     // 原创无窗口fixture只用于证明跨进程Initialize确实执行；生产插件不写此字段。

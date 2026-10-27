@@ -21,6 +21,7 @@ namespace Services = War3Map::Services;
 namespace Script = War3Map::Script;
 
 struct Reload { double after = 0; std::string module; std::filesystem::path file; bool sent = false; std::uint32_t sequence = 0; };
+struct Shot { double after = 0; std::filesystem::path output; bool done = false; };
 
 std::string Utf8(const wchar_t* value) {
     const auto text = std::filesystem::path(value).u8string();
@@ -37,8 +38,9 @@ int RunMapTest(int argc, wchar_t** argv) {
     std::filesystem::path ydwe;
     double seconds = 60;
     auto engine = Services::MapTestLuaEngine::Owned;
-    bool hotReload = true, stopAfter = false;
+    bool hotReload = true, stopAfter = false, hidden = false, backgroundPlay = false, pressSpace = false;
     std::vector<Reload> reloads;
+    std::vector<Shot> shots;
     for (int index = 5; index < argc; ++index) {
         const std::wstring option = argv[index];
         if (option == L"--ydwe" && index + 1 < argc) ydwe = argv[++index];
@@ -49,6 +51,14 @@ int RunMapTest(int argc, wchar_t** argv) {
             engine = value == L"ydwe" ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned;
         } else if (option == L"--no-hot-reload") hotReload = false;
         else if (option == L"--stop") stopAfter = true;
+        else if (option == L"--hidden") hidden = true;
+        else if (option == L"--background-play") backgroundPlay = true;
+        // 每 2 秒给游戏发一次空格，越过载入后的“按任意键继续”。
+        else if (option == L"--press-space") pressSpace = true;
+        // --screenshot-after 秒 输出.tga：让游戏自己截一张图，移到给定路径。
+        else if (option == L"--screenshot-after" && index + 2 < argc) {
+            shots.push_back({std::stod(argv[index + 1]), argv[index + 2]}); index += 2;
+        }
         else if (option == L"--reload-after" && index + 3 < argc) {
             Reload reload;
             reload.after = std::stod(argv[index + 1]); reload.module = Utf8(argv[index + 2]); reload.file = argv[index + 3];
@@ -80,6 +90,8 @@ int RunMapTest(int argc, wchar_t** argv) {
     if (!artifact.Succeeded() || !artifact.value) return 1;
     const auto refreshed = (*workspace.value)->Refresh();
     if (!refreshed.Succeeded()) { Print(refreshed.diagnostics); return 1; }
+    artifact.value->hiddenDesktop = hidden;
+    artifact.value->backgroundPlay = backgroundPlay;
     auto launched = Script::LaunchMapTest(*artifact.value, progress);
     Print(launched.diagnostics);
     if (!launched.Succeeded() || !launched.value) { (void)(*workspace.value)->Cleanup(true); return 1; }
@@ -92,7 +104,19 @@ int RunMapTest(int argc, wchar_t** argv) {
     const auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); };
     std::uint32_t lastDiagnostic = 0;
     std::string lastState;
+    double lastSpace = -2;
     while (elapsed() < seconds && receipt.lease && receipt.lease->IsActive()) {
+        if (pressSpace && elapsed() - lastSpace >= 2) { lastSpace = elapsed(); (void)receipt.lease->PressSpace(); }
+        for (auto& shot : shots) {
+            if (shot.done || elapsed() < shot.after) continue;
+            shot.done = true;
+            const auto taken = receipt.lease->RequestGameScreenshot(5000);
+            Print(taken.diagnostics);
+            std::error_code moved;
+            if (taken.Succeeded() && taken.value) std::filesystem::rename(*taken.value, shot.output, moved);
+            std::cout << "[" << elapsed() << "s] screenshot=" << (taken.Succeeded() && !moved ? "true" : "false")
+                << " output=" << shot.output.string() << std::endl;
+        }
         if (receipt.luaMailbox) {
             const auto query = Services::QueryLuaTestReload(*receipt.luaMailbox);
             if (query.Succeeded() && query.value) {
