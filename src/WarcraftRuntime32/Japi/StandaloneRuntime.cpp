@@ -71,6 +71,7 @@ struct Runtime {
     SaveStr saveStr = nullptr;
     SaveBoolean saveBoolean = nullptr;
     bool dataHooks = false;
+    std::atomic<std::int32_t> boundTable{0};
     std::recursive_mutex lock;
     std::unique_ptr<NativeSession> session;
     std::shared_ptr<StringVm> vm;
@@ -87,6 +88,7 @@ struct Runtime {
         Trace("failure: " + std::string(message));
     }
     void Reset() {
+        boundTable.store(0, std::memory_order_release);
         if (data) data->Stop();
         if (depth) {
             if (session) session->Reset(); // 失效而不析构正在调用的 Host。
@@ -171,7 +173,7 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                         const std::weak_ptr<StringVm> vm = self->vm;
                         GameUi::GameUiDataContext context{
                             reinterpret_cast<GameUi::FnResolveUiTable>(image.Base() + kResolveTable),
-                            [vm] { const auto current = vm.lock(); return current && current->Generation() && current->MatchesCurrentMainVm(); }};
+                            [vm] { const auto current = vm.lock(); return current && current->Generation() && current->MatchesCurrentMainVm(); }, &self->boundTable};
                         self->data = std::make_shared<GameUi::GameUiDataPlane>(std::move(context), &TraceUiFault);
                     }
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),
@@ -202,6 +204,9 @@ GameUi::UiDataWrite WriteData(Runtime& self, Write&& write) {
 void __cdecl SaveRealHook(std::int32_t table, std::int32_t parent, std::int32_t child, const float* value) noexcept {
     auto* self = runtime.load();
     if (!self || !self->saveReal) return;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) {
+        self->saveReal(table, parent, child, value); return;
+    }
     try {
         if (WriteData(*self, [&](auto& data) { return data.SaveReal(table, parent, child, value); }).intercepted) return;
         self->saveReal(table, parent, child, value);
@@ -210,6 +215,7 @@ void __cdecl SaveRealHook(std::int32_t table, std::int32_t parent, std::int32_t 
 std::int32_t __cdecl SaveStrHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::uintptr_t value) noexcept {
     auto* self = runtime.load();
     if (!self || !self->saveStr) return 0;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) return self->saveStr(table, parent, child, value);
     try {
         const auto result = WriteData(*self, [&](auto& data) { return data.SaveStr(table, parent, child, value); });
         if (result.intercepted) return result.applied ? 1 : 0;
@@ -219,6 +225,9 @@ std::int32_t __cdecl SaveStrHook(std::int32_t table, std::int32_t parent, std::i
 void __cdecl SaveBooleanHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) noexcept {
     auto* self = runtime.load();
     if (!self || !self->saveBoolean) return;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) {
+        self->saveBoolean(table, parent, child, value); return;
+    }
     try {
         if (WriteData(*self, [&](auto& data) { return data.SaveBoolean(table, parent, child, value); }).intercepted) return;
         self->saveBoolean(table, parent, child, value);

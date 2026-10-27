@@ -700,8 +700,9 @@ struct VmText {
 void DataPlane() {
     Reset(); g_raiseTable = false; g_tableObject = reinterpret_cast<Address>(g_tableWords.data()); g_tableResolves = 0;
     bool alive = true;
+    std::atomic<std::int32_t> gate{0};
     GameUiLibrary ui(Entries());
-    GameUiDataPlane data({&ResolveTable, [&] { return alive; }}, &ObserveFault);
+    GameUiDataPlane data({&ResolveTable, [&] { return alive; }, &gate}, &ObserveFault);
     data.Attach(ui);
     const auto text = ui.Create("Text", 0, 0, 0).handle;
     auto* textObject = g_frames.back().get();
@@ -712,6 +713,7 @@ void DataPlane() {
         && g_tableResolves == 0 && data.Errors() == "0|", "unbound tables do not read values or emit diagnostics");
     Check(data.Bind(0, 1, 1) == AJ_ARGUMENT && data.Bind(9999, 1, 2) == AJ_ARGUMENT, "null and non-table handles rejected");
     Check(data.Bind(1234, 1, 3) == AJ_OK && data.Bind(1234, 1, 4) == AJ_OK, "same valid private table binds idempotently");
+    Check(gate.load() == 1234, "successful bind publishes only the table hint for the native fast path");
     Check(data.Bind(5678, 1, 5) == AJ_STATE && data.Bind(1234, 2, 6) == AJ_STALE, "binding cannot replace table or epoch");
     const auto resolves = g_tableResolves;
     Check(!data.SaveReal(5678, text, 2, reinterpret_cast<const float*>(1)).intercepted
@@ -725,6 +727,7 @@ void DataPlane() {
     Check(data.SaveStr(1234, text, 3, message.Self()).applied
         && Logged("ttext " + Hex(textObject->Self()) + " 生命;%"), "VM string copied once without wire escaping");
     Check(data.SaveStr(1234, text, 3, empty.Self()).applied, "empty text retains string-command semantics");
+    Check(data.SaveStr(1234, text, 3, 0).applied, "null VM string clears text like the old AjArgText path");
     Check(data.SaveStr(1234, backdrop, 4, texture.Self()).applied, "texture uses existing API with tile false");
     Check(data.SaveReal(1234, bar, 1, &width).applied && data.Errors() == "0|", "status bar value takes finite float pointer");
     const auto bad = [&](UiDataWrite write) { Check(write.intercepted && !write.applied, "bad owned write consumed without applying"); };
@@ -774,12 +777,18 @@ void DataPlane() {
     Check(g_faultCount == 1 && !ui.Faulted() && ui.SetWidth(backdrop, width) == UiError::None,
         "data fault is not retried and drawing stays available");
     data.Stop();
+    Check(gate.load() == 0, "Stop clears the native fast-path hint before destroying the consumer");
     Check(!data.Owns(1234) && !data.SaveBoolean(1234, backdrop, 5, 1).intercepted
         && data.Bind(1234, 1, 99) == AJ_STALE, "stopped table unbound before UI destruction");
     GameUiDataPlane next({&ResolveTable, [&] { return alive; }}); next.Attach(ui);
     Check(next.Errors() == "0|" && next.Bind(1234, 2, 1) == AJ_OK, "new VM binds from fresh state");
     bad(next.SaveBoolean(1234, text, 5, 1));
     Check(next.Errors().starts_with("1|"), "old frame token cannot be reused after rebind");
+    GameUiDataPlane nullTexture({&ResolveTable, [&] { return alive; }}); nullTexture.Attach(ui);
+    Check(nullTexture.Bind(1234, 2, 2) == AJ_OK && !nullTexture.SaveStr(1234, backdrop, 4, 0).applied
+        && nullTexture.Errors().starts_with("1|"), "null texture retains empty-path refusal");
+    gate.store(5678); data.Stop();
+    Check(gate.load() == 5678, "repeated stop on an old consumer cannot clear a newer binding");
 }
 
 void DataPlaneModule() {

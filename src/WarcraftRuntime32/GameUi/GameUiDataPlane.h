@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameUiLibrary.h"
+#include <atomic>
 #include <functional>
 #include <string>
 
@@ -11,6 +12,8 @@ using FnResolveUiTable = Address(__fastcall*)(std::uint32_t handle);
 struct GameUiDataContext {
     FnResolveUiTable resolveTable = nullptr;
     std::function<bool()> currentVm;
+    // 仅为原版 native 的无锁否定快路；命中后仍在宿主锁内完整校验。
+    std::atomic<std::int32_t>* boundTable = nullptr;
 };
 struct UiDataWrite {
     bool intercepted = false;

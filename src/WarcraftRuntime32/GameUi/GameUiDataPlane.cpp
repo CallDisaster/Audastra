@@ -21,6 +21,7 @@ template<class Call> bool Guard(Call& call, UiFault& fault) noexcept {
 }
 bool CopyString(Address object, std::array<char, AJ_MAX_INPUT_TEXT + 1>& bytes, std::size_t& size) noexcept {
     size = 0;
+    if (!object) { bytes[0] = 0; return true; }
     __try {
         const auto linked = object ? *reinterpret_cast<const Address*>(object + 8) : 0;
         const auto* text = linked ? *reinterpret_cast<const char* const*>(linked + 0x1c) : nullptr;
@@ -43,6 +44,8 @@ GameUiDataPlane::GameUiDataPlane(GameUiDataContext context, UiFaultObserver obse
 
 void GameUiDataPlane::Attach(GameUiLibrary& ui) noexcept { if (!stopped_ && !ui_) ui_ = &ui; }
 void GameUiDataPlane::Stop() noexcept {
+    if (stopped_) return;
+    if (context_.boundTable && table_) context_.boundTable->store(0, std::memory_order_release);
     stopped_ = true;
     ui_ = nullptr;
     table_ = 0;
@@ -86,6 +89,7 @@ std::int32_t GameUiDataPlane::Bind(std::int32_t table, std::uint32_t epoch, std:
         if (table_ && (table_ != table || tableObject_ != object || tableKeyA_ != keyA || tableKeyB_ != keyB))
             return fail(AJ_STATE, "此会话已绑定另一张私有表");
         table_ = table; tableObject_ = object; tableKeyA_ = keyA; tableKeyB_ = keyB;
+        if (context_.boundTable) context_.boundTable->store(table, std::memory_order_release);
         return AJ_OK;
     } catch (...) { return fail(AJ_INTERNAL, "界面数据面绑定失败"); }
 }
