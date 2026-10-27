@@ -6,6 +6,7 @@
 #include <span>
 
 namespace War3Map::Services {
+struct TerrainTextureSlotCommand;
 
 // 文档修订和地形会话修订一起绑定。换图、其他领域编辑、撤销重做都会使旧请求失效。
 struct TerrainEditBinding {
@@ -43,6 +44,9 @@ private:
     TerrainEditBinding binding_;
     MapData::MapDataEditSession::PreparedTerrainEdit plan_;
     std::optional<MapData::TerrainWaterStrokeOptions> waterOptions_;
+    friend Result<PreparedTerrainEdit> PrepareTerrainTextureSlotEdit(const MapData::MapDataEditSession&,
+        const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainPathingResources&,
+        const TerrainTextureSlotCommand&);
     friend Result<PreparedTerrainEdit> PrepareTerrainEdit(const MapData::MapDataEditSession&,
         const MapDataQueryBinding&, const TerrainEditBinding&, const MapData::TerrainBrush&,
         std::span<const MapData::TerrainStrokePoint>, bool, std::size_t);

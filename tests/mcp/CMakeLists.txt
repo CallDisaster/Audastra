@@ -30,7 +30,7 @@ add_test(NAME mcp-map-object-references COMMAND war3-map-mcp-object-reference-te
 
 if(TARGET War3MapMcpProtocol)
     add_executable(audastra-mcp-terrain-edit-tests McpTerrainEditToolsTests.cpp McpStraightRampEditCases.h
-        McpTerrainBlockTransportCases.h McpTerrainWorkspaceBlockCases.h TerrainResizeToolCases.h
+        McpTerrainBlockTransportCases.h McpTerrainWorkspaceBlockCases.h TerrainResizeToolCases.h TerrainTextureSlotEditCases.h
         ../TerrainBlockFixtures.h ../TerrainConnectedRampFixtures.h)
     target_link_libraries(audastra-mcp-terrain-edit-tests PRIVATE War3MapEditor::McpProtocol)
     target_compile_definitions(audastra-mcp-terrain-edit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

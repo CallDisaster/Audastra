@@ -121,7 +121,8 @@ public:
         const Services::PreparedAuxiliaryEdit& plan, const MapData::MapDataPublishValidator& prepublish = {});
     [[nodiscard]] Result<McpWorkspaceTerrainContext> TerrainContext(std::string documentId,
         std::uint64_t documentGeneration);
-    [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainWaterResources(bool enforceWaterLimits);
+    [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainWaterResources(bool enforceWaterLimits,
+        const MapData::TerrainGridSnapshot* prospective = nullptr);
     [[nodiscard]] Result<MapData::TerrainPathingResources> CaptureTerrainBoundsResources();
     [[nodiscard]] Result<MapData::TerrainResizeResources> CaptureTerrainResizeResources();
     [[nodiscard]] Status VerifyTerrainResizeResources(const MapData::TerrainResizeResources& owner) const;

@@ -393,6 +393,20 @@ JASS 地图用**测试场景**：启动时带一段紧凑 T 动作，只编进�
 
 CLI 使用同一保存链：`map-edit-save ... --terrain-slot-replace ground 0 Ldrt Agrs` 或 `--terrain-slot-append cliff 2 CAgr`，仍须绑定源地图 SHA、W3E SHA 和新候选路径。
 
+活动地图使用 `edit_terrain_texture_slot`：先调用 `get_terrain_edit_state` 取得当前两张槽表与 `terrain_binding`，再回传工程身份、修订和同一命令：
+
+```json
+{
+  "project_identity":"<当前工程身份>",
+  "expected_revision":"<当前工程修订>",
+  "terrain_binding":{"document_id":"...","document_generation":"...","revision":"...","source_sha256":"...","session_identity":"...","terrain_revision":"...","terrain_source_revision":"..."},
+  "command":{"kind":"texture_slot_append","table":"ground","expected_count":6,"rawcode":"Adrt"},
+  "dry_run":true
+}
+```
+
+`dry_run` 必填。预览会核对真实来源与新槽资源，不改工程修订或撤销栈；提交改为 `false`，仍重新核对全部身份和资源，沿共用撤销栈发布。回执包含实际前后表、槽号、是否变化、dirty 和新身份；`map_saved:false` 表示还须正常保存。撤销、重做或其他编辑后重新查询身份。独立目录宿主仅支持此工具的预览，写地图候选继续用上面的独立保存批次；失败时不返回可保存的部分结果。
+
 ## 5. 结果应如何记录
 
 保留源/候选路径与 SHA、包内源码身份、请求的绑定/raw、新值、退出码/业务 ok、原始诊断和重开结果。候选存在时换新路径，不覆盖源图或已有证据。

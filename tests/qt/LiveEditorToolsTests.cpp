@@ -28,6 +28,7 @@
 #include "../MapDataFixtures.h"
 #include "../MapDataSpatialFixtures.h"
 #include "../TerrainCornerRampFixtures.h"
+#include "../support/TerrainTextureSlotSaveFixture.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -324,6 +325,8 @@ private slots:
     void BoundsPreparationRejectsConcurrentRevision();
     void TerrainBlockToolsUseCapturedResourcesCasAndOriginalUndo();
     void ResizeToolsCaptureActualResourcesAndKeepOriginalUndo();
+    void TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo();
+    void TextureSlotPreparationRejectsConcurrentRevision();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
@@ -342,7 +345,7 @@ private slots:
 void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const QStringList expected{"auxiliary_copy", "auxiliary_create", "auxiliary_delete", "auxiliary_update",
-        "code.check", "create_campaign", "edit_campaign", "edit_terrain_block", "edit_terrain_bounds", "edit_terrain_resize", "edit_terrain_stroke", "editor_check_trigger_graph",
+        "code.check", "create_campaign", "edit_campaign", "edit_terrain_block", "edit_terrain_bounds", "edit_terrain_resize", "edit_terrain_stroke", "edit_terrain_texture_slot", "editor_check_trigger_graph",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
@@ -365,7 +368,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{92});
+    QCOMPARE(expected.size(), qsizetype{93});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2714,6 +2717,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
 
 #include "TerrainBlockLiveCases.h"
 #include "LiveTerrainResizeCases.h"
+#include "LiveTerrainTextureSlotCases.h"
 void LiveEditorToolsTests::RuntimeToolsRequireExplicitConsentAndShareUndo() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const auto initial = f.tools->Invoke("map_runtime_query", {});

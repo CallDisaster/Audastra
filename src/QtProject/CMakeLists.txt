@@ -53,6 +53,7 @@ qt_add_library(War3MapQtProject STATIC
     ProjectAuxiliaryEdits.cpp ProjectAuxiliaryEdits.h
     TerrainWaterEditPreparation.cpp TerrainWaterEditPreparation.h
     TerrainResizeEditPreparation.cpp TerrainResizeEditPreparation.h
+    TerrainTextureSlotEditPreparation.cpp TerrainTextureSlotEditPreparation.h
     ProjectChanges.cpp
     ProjectQuerySources.cpp
     ProjectSummary.cpp

@@ -200,7 +200,8 @@ Status McpWorkspace::SeedTerrainOverlay(ActiveEdit& edit) {
     return published;
 }
 
-Result<MapData::TerrainPathingResources> McpWorkspace::CaptureTerrainWaterResources(bool enforceWaterLimits) {
+Result<MapData::TerrainPathingResources> McpWorkspace::CaptureTerrainWaterResources(bool enforceWaterLimits,
+    const MapData::TerrainGridSnapshot* prospective) {
     using Output = Result<MapData::TerrainPathingResources>;
     const auto captured = CaptureTerrainSources();
     if (!captured.Succeeded()) return Failed<MapData::TerrainPathingResources>(captured);
@@ -216,7 +217,7 @@ Result<MapData::TerrainPathingResources> McpWorkspace::CaptureTerrainWaterResour
         return Output::Failure("MCP", "TERRAIN_WATER_DOODADS_UNAVAILABLE", "未知DOO不能作为空集合准备水刷。");
     const MapData::DoodadPlacements empty;
     return Services::TerrainPathingSave::CaptureWaterBrushRules(mapDataSource_->Snapshot(),
-        *original.value->Snapshot(), *overlay->edits.Terrain(), doodads ? *doodads : empty,
+        *original.value->Snapshot(), prospective ? *prospective : *overlay->edits.Terrain(), doodads ? *doodads : empty,
         gameRoot_, enforceWaterLimits, MapData::TerrainSavePlanLimits{}.maximumBytes);
 }
 

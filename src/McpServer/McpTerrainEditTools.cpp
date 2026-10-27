@@ -1,6 +1,7 @@
 #include "McpTerrainEditTools.h"
 #include "McpMapDataJson.h"
 #include "McpToolInternal.h"
+#include "McpTerrainTextureSlotCommand.h"
 
 #include <QJsonDocument>
 
@@ -255,6 +256,11 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
         definitions.push_back(std::move(definition));
     };
     add("get_terrain_edit_state", "读取当前地形会话、尺寸、贴图表与地形/WPM保存资格。返回明确来源和编辑修订，不能将这道保存门当作整图保存或游戏验证。", identity, {}, ToolPermission::Query);
+    auto textureSlot = identity; textureSlot.insert("terrain_binding", binding);
+    textureSlot.insert("command", QJsonObject{{"oneOf", TerrainTextureSlotCommandSchemas()}});
+    textureSlot.insert("dry_run", QJsonObject{{"type", "boolean"}});
+    add("edit_terrain_texture_slot", "预览或提交活动地图的地面/悬崖贴图槽替换或表尾追加。槽号从0起，地面最多16槽、悬崖最多15槽；替换核旧rawcode、追加核执行到本条时的表长。dry_run必填，true不改修订或撤销栈。实际资源、重复项和工程/地形身份全部核对；失败时整笔不发布，独立批次失败时整批不保存。活动地图提交沿共用Undo，本工具不保存地图；独立目录宿主仅预览，地图候选请用save_map_edit_candidate。先用get_terrain_edit_state查询两表与绑定。",
+        textureSlot, {"project_identity", "expected_revision", "terrain_binding", "command", "dry_run"}, ToolPermission::Edit);
     auto query = identity; query.insert("terrain_binding", binding); query.insert("points", points(256));
     add("query_terrain_points", "按原terrain_binding查询1..256个世界坐标的地高、最近原顶点、贴图、悬崖和静态WPM原始通行位。缺WPM、超出WPM半开边界分别报告；不等同游戏动态寻路。", query, {"terrain_binding", "points"}, ToolPermission::Query);
     auto bounds = identity; bounds.insert("terrain_binding", binding);
@@ -317,6 +323,55 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
         }
         if (!arguments.value("terrain_binding").isObject() || arguments.value("terrain_binding").toObject() != bindingJson)
             return Failure("TERRAIN_EDIT_STALE", "地形来源或修订已变化；请精确回传最新 terrain_binding。");
+        if (name == "edit_terrain_texture_slot") {
+            if (!context.session->Terrain()) return Failure("TERRAIN_EDIT_UNAVAILABLE", "当前会话没有完整地形。");
+            if (!arguments.value("command").isObject()) return Failure("TERRAIN_ARGUMENT_TYPE", "贴图槽command必须是对象。");
+            QJsonObject error;
+            const auto command = ParseTerrainTextureSlotCommand(arguments.value("command").toObject(), error);
+            if (!command) return error;
+            const bool dryRun = Boolean(arguments, "dry_run", true);
+            const auto normalized = NormalizeTerrainTextureSlotCommand(*command, &context.session->Terrain()->header);
+            if (!normalized.Succeeded()) return Failure(normalized);
+            if (!host.prepareTextureSlot || !host.verifyWater)
+                return Failure("TERRAIN_TEXTURE_SLOT_HOST_UNAVAILABLE", "宿主未接通贴图槽实际资源准备与复核。");
+            const auto prepared = host.prepareTextureSlot(context, binding, *command);
+            if (!prepared.Succeeded() || !prepared.value) return Failure(prepared);
+            const auto verified = host.verifyWater(); if (!verified.Succeeded()) return Failure(verified);
+            const auto& plan = prepared.value->Plan();
+            if (!plan.TerrainPreview()) return Failure("TERRAIN_TEXTURE_SLOT_HOST_UNAVAILABLE", "宿主没有返回完整贴图候选。");
+            const auto& before = context.session->Terrain()->header;
+            const auto& after = plan.TerrainPreview()->header;
+            const auto tableJson = [&](const MapData::TerrainHeader& header) {
+                QJsonArray values;
+                const auto& table = command->table == TerrainTextureTable::Ground ? header.groundTilesets : header.cliffTilesets;
+                for (const auto& rawcode : table) values.append(Rawcode(rawcode));
+                return values;
+            };
+            QJsonObject body{{"ok", true}, {"dry_run", dryRun}, {"applied", false}, {"map_saved", false},
+                {"binding_before", bindingJson}, {"scope", Scope(context)}, {"changes", ChangedJson(plan)},
+                {"table", command->table == TerrainTextureTable::Ground ? "ground" : "cliff"}, {"slot", static_cast<int>(command->slot)},
+                {"before_table", tableJson(before)}, {"after_table", tableJson(after)}, {"dirty_after", context.session->IsDirty()},
+                {"terrain_pathing_gate", GateJson(plan.TerrainPathingGate())}};
+            const auto budget = BodyBudget(body); if (!budget.Succeeded()) return Failure(budget);
+            if (dryRun || !plan.HasChanges()) return Stamp(std::move(body), identity);
+            if (!host.apply) return Failure("TERRAIN_EDIT_UNSUPPORTED", "宿主尚未接通贴图槽的共用撤销提交。");
+            const auto validate = [&](const MapDataEditSession::EditReceipt& receipt) -> Status {
+                const auto resources = host.verifyWater(); if (!resources.Succeeded()) return resources;
+                if (Identity(host) != identity || receipt.SessionIdentity() != context.session->SessionIdentity()
+                    || receipt.BeforeRevision() != binding.terrainRevision)
+                    return Status::Failure("MCP.Terrain", "TERRAIN_EDIT_STALE", "贴图槽提交前工程、资源或会话已经变化。");
+                body["edit_receipt"] = QJsonObject{{"command_identity", QString::number(receipt.CommandIdentity())},
+                    {"before_revision", QString::number(receipt.BeforeRevision())}, {"after_revision", QString::number(receipt.AfterRevision())}};
+                return BodyBudget(body);
+            };
+            const auto applied = host.apply(*prepared.value, validate);
+            if (!applied.Succeeded() || !applied.value) return Failure(applied);
+            body["applied"] = true; body["query_state_again"] = true; body["dirty_after"] = context.session->IsDirty();
+            const auto current = host.context();
+            if (current.Succeeded() && current.value && current.value->session)
+                body["terrain_binding_after"] = TerrainEditBindingJson(Binding(*current.value));
+            return Stamp(std::move(body), Identity(host));
+        }
         if (name == "edit_terrain_resize") {
             const auto edge = [&](const char* key) { return static_cast<std::int32_t>(Number(arguments, key,
                 std::numeric_limits<std::int32_t>::min(), std::numeric_limits<std::int32_t>::max(), true)); };

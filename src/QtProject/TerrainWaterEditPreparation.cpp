@@ -177,11 +177,13 @@ bool TerrainWaterEditRequestCurrent(const EditorProject& project, const TerrainW
         && project.editRevision_.Revision() == request.projectRevision && SameSource(project, request);
 }
 
-Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<const TerrainWaterEditRequest> request) {
+Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<const TerrainWaterEditRequest> request,
+    std::shared_ptr<const MapData::TerrainGridSnapshot> prospective) {
     using Capture = Result<TerrainWaterEditCapture>;
     if (!request || !request->terrain || !request->doodadsCaptured || !request->maximumBytes || request->maximumBytes > kMaximumBytes)
         return Capture::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_INVALID", "水刷来源请求无效。");
     try {
+        const auto target = prospective ? std::move(prospective) : request->terrain;
         const auto path = VerifyTerrainWaterEditRequestSourcePath(*request);
         if (!path.Succeeded()) return {std::nullopt, path.diagnostics};
         if (request->structureSnapshot) {
@@ -191,7 +193,7 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
                 : Services::TerrainSessionResources::Capture(*request->directory, request->structureSnapshot, request->gameRoot,
                     request->maximumBytes, request->structureRetainedBytes);
             if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
-            auto resources = view.value->CaptureWater(request->enforceWaterLimits, request->maximumBytes);
+            auto resources = view.value->CaptureWater(*target, request->enforceWaterLimits, request->maximumBytes);
             if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};
             const auto verified = view.value->Verify(*resources.value, request->maximumBytes);
             if (!verified.Succeeded()) return {{}, verified.diagnostics};
@@ -218,11 +220,11 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
         if (!terrain.Succeeded()) return {std::nullopt, std::move(terrain.diagnostics)};
         auto resources = archive
             ? Services::TerrainPathingSave::CaptureWaterBrushRules(*archive, *terrain.value->Snapshot(),
-                *request->terrain, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes)
+                *target, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes)
             : Services::TerrainPathingSave::CaptureWaterBrushRules(*request->directory, *terrain.value->Snapshot(),
-                *request->terrain, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes);
+                *target, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes);
         if (!resources.Succeeded()) return {std::nullopt, std::move(resources.diagnostics)};
-        const auto input = resources.value->VerifyWaterBrushInput(*terrain.value->Snapshot(), *request->terrain);
+        const auto input = resources.value->VerifyWaterBrushInput(*terrain.value->Snapshot(), *target);
         if (!input.Succeeded()) return {std::nullopt, input.diagnostics};
         const auto verified = archive ? resources.value->VerifySourceInputs(*archive, request->maximumBytes)
                                       : resources.value->VerifySourceInputs(*request->directory, request->maximumBytes);

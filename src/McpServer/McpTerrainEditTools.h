@@ -5,6 +5,7 @@
 #include "War3MapCore/Services/TerrainBoundsEditService.h"
 #include "War3MapCore/Services/TerrainResizeEditService.h"
 #include "War3MapCore/MapData/TerrainBlockEditing.h"
+#include "War3MapCore/Services/TerrainTextureSlotEditService.h"
 
 #include <functional>
 
@@ -37,6 +38,8 @@ struct TerrainEditToolHost {
         const Services::TerrainEditBinding&, const MapData::TerrainBoundsEditIntent&)> prepareBounds;
     std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
         const Services::TerrainEditBinding&, const MapData::TerrainBlockPasteIntent&, bool)> prepareBlock;
+    std::function<Result<Services::PreparedTerrainEdit>(const TerrainEditToolContext&,
+        const Services::TerrainEditBinding&, const Services::TerrainTextureSlotCommand&)> prepareTextureSlot;
     std::function<Status()> verifyBounds;
     std::function<Status(const Services::PreparedTerrainBoundsEdit&,
         const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>&)> applyBounds;

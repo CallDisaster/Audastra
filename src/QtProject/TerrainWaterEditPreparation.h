@@ -42,7 +42,8 @@ struct TerrainWaterEditCapture {
 [[nodiscard]] Status VerifyTerrainWaterEditRequestSourcePath(const TerrainWaterEditRequest& request);
 // 后台入口：归档和目录使用同一个Core规则捕获，不读取渲染缓存或注册表。
 [[nodiscard]] Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(
-    std::shared_ptr<const TerrainWaterEditRequest> request);
+    std::shared_ptr<const TerrainWaterEditRequest> request,
+    std::shared_ptr<const MapData::TerrainGridSnapshot> prospective = {});
 // 每笔松手时在后台复核实际map/game winner、缺失项与loose覆盖，再回GUI提交。
 [[nodiscard]] Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture);
 } // namespace War3Map::QtProject

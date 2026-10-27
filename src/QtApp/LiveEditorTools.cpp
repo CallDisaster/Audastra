@@ -9,6 +9,7 @@
 #include "EditorProject.h"
 #include "TerrainWaterEditPreparation.h"
 #include "TerrainResizeEditPreparation.h"
+#include "TerrainTextureSlotEditPreparation.h"
 #include "ProjectLuaModules.h"
 #include "ObjectNames.h"
 #include "McpResources.h"
@@ -969,9 +970,29 @@ private:
             bool resizePublishing = false;
             const QPointer<EditorProject> boundsProject(&project_);
             QScopedValueRollback<bool> boundsLease(busy_, busy_ || name == QStringLiteral("edit_terrain_bounds")
-                || name == QStringLiteral("edit_terrain_resize"));
+                || name == QStringLiteral("edit_terrain_resize") || name == QStringLiteral("edit_terrain_texture_slot"));
             host.identity = [this] { return State(); };
             host.context = context;
+            host.prepareTextureSlot = [this, &waterCapture, boundsProject](const Mcp::TerrainEditToolContext& current,
+                const Services::TerrainEditBinding& binding, const Services::TerrainTextureSlotCommand& command)
+                -> Result<Services::PreparedTerrainEdit> {
+                if (!boundsProject || !ownerHandle_ || project_.mapEdits_.get() != current.session)
+                    return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "活动贴图槽会话已变化。");
+                auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
+                if (!request.Succeeded()) return {{}, std::move(request.diagnostics)};
+                auto frozen = project_.mapEdits_->FreezeForTerrainTextureSlot(64u * 1024u * 1024u);
+                if (!frozen.Succeeded()) return {{}, std::move(frozen.diagnostics)};
+                const auto owned = std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value));
+                auto captured = RunLiveBoundsWorker<Result<QtProject::TerrainTextureSlotEditCapture>>([owned,
+                    frozen = std::move(*frozen.value), binding, command] {
+                    return QtProject::PrepareTerrainTextureSlotEditCapture(owned, frozen, binding, command);
+                });
+                if (!captured.Succeeded()) return {{}, std::move(captured.diagnostics)};
+                if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *owned, true))
+                    return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "贴图槽后台准备期间工程或会话已变化。");
+                waterCapture = std::move(captured.value->resources);
+                return Result<Services::PreparedTerrainEdit>::Success(std::move(captured.value->prepared));
+            };
             host.prepareWater = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
                 const auto& options, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
                 auto request = QtProject::CaptureTerrainWaterEditRequest(project_, options.enforceWaterLimits);

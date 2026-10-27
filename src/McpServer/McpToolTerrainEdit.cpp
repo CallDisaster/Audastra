@@ -27,7 +27,23 @@ void RegisterTerrainEditTools(McpServer& server) {
                 return Result<TerrainEditToolContext>::Success({current.value->session, current.value->document,
                     current.value->includesActiveTransactionOverlay, false});
             };
-            host.apply = [workspace](const auto& plan, const auto& validate) { return workspace->ApplyTerrainPlan(plan, validate); };
+            host.apply = [workspace, name](const auto& plan, const auto& validate) {
+                if (name == "edit_terrain_texture_slot")
+                    return Result<MapData::TerrainStrokeResult>::Failure("MCP", "TERRAIN_TEXTURE_SLOT_ACTIVE_MAP_REQUIRED",
+                        "独立目录宿主仅预览贴图槽；地图候选请用save_map_edit_candidate的贴图槽命令。");
+                return workspace->ApplyTerrainPlan(plan, validate);
+            };
+            host.prepareTextureSlot = [workspace, &waterOwner](const TerrainEditToolContext& context, const auto& binding,
+                const Services::TerrainTextureSlotCommand& command) -> Result<Services::PreparedTerrainEdit> {
+                const auto valid = Services::ValidateTerrainEditBinding(*context.session, context.document, binding);
+                if (!valid.Succeeded()) return {{}, valid.diagnostics};
+                const auto preview = Services::PreviewTerrainTextureSlotCommand(*context.session, command);
+                if (!preview.Succeeded()) return {{}, preview.diagnostics};
+                auto captured = workspace->CaptureTerrainWaterResources(true, preview.value->get());
+                if (!captured.Succeeded()) return {{}, captured.diagnostics};
+                waterOwner = std::move(*captured.value);
+                return Services::PrepareTerrainTextureSlotEdit(*context.session, context.document, binding, *waterOwner, command);
+            };
             host.prepareResize = [workspace, &resizeOwner](const TerrainEditToolContext& context, const auto& binding,
                 const MapData::TerrainResizeIntent& intent) -> Result<Services::PreparedTerrainResizeEdit> {
                 auto captured = workspace->CaptureTerrainResizeResources();

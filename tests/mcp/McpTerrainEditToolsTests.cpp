@@ -12,6 +12,7 @@
 #include "../support/TerrainBoundsFixture.h"
 #include "../TerrainBlockFixtures.h"
 #include "../TerrainConnectedRampFixtures.h"
+#include "../support/TerrainTextureSlotSaveFixture.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
@@ -170,10 +171,10 @@ QJsonObject WaterStroke(const QJsonObject& state, bool deep, bool dryRun = true)
 void FacadeQueryPreviewApplyAndUndo() {
     Fixture fixture;
     const auto definitions = TerrainEditToolDefinitions();
-    Expect(definitions.size() == 6 && definitions[0].permission == ToolPermission::Query
-        && definitions[1].permission == ToolPermission::Query && definitions[2].permission == ToolPermission::Edit
-        && definitions[3].permission == ToolPermission::Edit && definitions[4].permission == ToolPermission::Edit
-        && definitions[5].permission == ToolPermission::Edit,
+    Expect(definitions.size() == 7 && std::all_of(definitions.begin(), definitions.end(), [](const auto& definition) {
+        return definition.permission == (definition.name == "get_terrain_edit_state" || definition.name == "query_terrain_points"
+            ? ToolPermission::Query : ToolPermission::Edit);
+    }),
         "tool schemas distinguish bounded reads and edits");
     const auto state = State(fixture);
     Expect(state.value("ok").toBool() && state.value("pathing_available").toBool(), "state returns real source binding");
@@ -985,6 +986,7 @@ void ArchiveExportBindsPathingAndCompanionMembers() {
 #include "McpTerrainBlockTransportCases.h"
 #include "McpTerrainWorkspaceBlockCases.h"
 #include "TerrainResizeToolCases.h"
+#include "TerrainTextureSlotEditCases.h"
 
 } // namespace
 
@@ -1002,6 +1004,8 @@ int main(int argc, char** argv) {
         RegisteredConnectedHostKeepsItsAlgorithmThroughDirectoryReplay();
         BoundsFacadeUsesActualResourcesCasAndSharedUndo();
         ResizeToolRequiresBoundSourcesAndStrictIntent();
+        TextureSlotFacadeUsesRealOwnersAndAtomicPublication();
+        RegisteredTextureSlotHostPreviewsAndRoutesSavesExplicitly();
         CodecProvesSourceIntentAndNetBytes();
         FollowingPlacementsRequireExactSourceAndCompleteRecipe();
         SealedTerrainUsesExistingDirectoryTransaction();

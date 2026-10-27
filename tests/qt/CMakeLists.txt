@@ -132,7 +132,7 @@ add_test(NAME qt-mcp-agent-transport COMMAND war3-map-mcp-agent-transport-tests)
 set_tests_properties(qt-mcp-agent-transport PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp TerrainBlockLiveCases.h LiveTerrainResizeCases.h ../support/TerrainResizeFixture.h ../TerrainBlockFixtures.h
+qt_add_executable(war3-map-live-editor-tools-tests LiveEditorToolsTests.cpp TerrainBlockLiveCases.h LiveTerrainResizeCases.h LiveTerrainTextureSlotCases.h ../support/TerrainResizeFixture.h ../TerrainBlockFixtures.h ../support/TerrainTextureSlotSaveFixture.h
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveEditorAuxiliaryTools.h"
     "${PROJECT_SOURCE_DIR}/src/QtApp/LiveObjectTools.cpp"
