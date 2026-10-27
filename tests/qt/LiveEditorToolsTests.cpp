@@ -61,6 +61,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QUndoStack>
 
 #include <algorithm>
@@ -343,6 +344,7 @@ private slots:
     void TextureSlotPreparationRejectsConcurrentRevision();
     void CustomSettingsShareOriginalUndoAndRejectStaleCas();
     void SettingsPageEditsTechnologyThroughSharedService();
+    void SettingsPageListsRandomTablesReadOnly();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();

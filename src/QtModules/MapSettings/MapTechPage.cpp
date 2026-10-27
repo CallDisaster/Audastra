@@ -24,6 +24,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTimer>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 
 namespace War3Map::Modules {
@@ -207,7 +208,7 @@ QTableWidget* MakeTable(const QString& name, int columns, QWidget* parent) {
     table->horizontalHeader()->setStretchLastSection(true);
     table->setShowGrid(false);
     table->setIconSize(QSize(20, 20));
-    table->setMinimumHeight(180);
+    table->setMinimumHeight(130);
     return table;
 }
 
@@ -245,12 +246,29 @@ MapTechPage::MapTechPage(QtProject::EditorProject& project, const MapData::MapSe
     header(tr("科技限制"), "techRestrictions", Section::TechRestrictions, deleteRestriction_);
     restrictions_ = MakeTable(QStringLiteral("techRestrictions"), 2, this);
     layout->addWidget(restrictions_, 1);
-    const auto& custom = *settings_.custom;
-    auto* random = new QLabel(tr("随机单位表 %1 · 随机物品表 %2 · 只读")
-        .arg(custom.randomUnits.size()).arg(custom.randomItems.size()) + (editable_ ? QString{} : QStringLiteral("\n") + readOnly));
-    random->setWordWrap(true);
-    random->setObjectName(QStringLiteral("paneHint"));
-    layout->addWidget(random);
+    auto* randomHeader = new QHBoxLayout;
+    auto* randomTitle = new QLabel(tr("随机表"));
+    randomTitle->setObjectName(QStringLiteral("sectionTitle"));
+    randomHeader->addWidget(randomTitle);
+    randomHeader->addStretch(1);
+    auto* randomState = new QLabel(tr("只读"));
+    randomState->setObjectName(QStringLiteral("paneHint"));
+    randomHeader->addWidget(randomState);
+    layout->addLayout(randomHeader);
+    random_ = new QTreeWidget(this);
+    random_->setObjectName(QStringLiteral("techRandomTables"));
+    random_->setIconSize(QSize(20, 20));
+    random_->setUniformRowHeights(true);
+    random_->setMinimumHeight(240);
+    random_->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    layout->addWidget(random_, 2);
+    if (!editable_) {
+        // 只读原因放在页顶，先于各表看到。
+        auto* reason = new QLabel(readOnly);
+        reason->setWordWrap(true);
+        reason->setObjectName(QStringLiteral("techReadOnlyReason"));
+        layout->insertWidget(0, reason);
+    }
     problem_ = new QLabel;
     problem_->setObjectName(QStringLiteral("formProblem"));
     problem_->setWordWrap(true);
@@ -333,6 +351,76 @@ void MapTechPage::Fill() {
     upgrades_->setColumnWidth(1, 56);
     upgrades_->setColumnWidth(2, 80);
     restrictions_->setColumnWidth(0, 260);
+    FillRandom();
+}
+
+void MapTechPage::FillRandom() {
+    const auto& custom = *settings_.custom;
+    std::optional<MapDocument> snapshot;
+    const auto tableName = [&](const std::string& name, std::int32_t number) {
+        QString text = QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()));
+        if (name.starts_with("TRIGSTR_")) {
+            if (!snapshot && project_.MapEdits()) snapshot.emplace(project_.MapEdits()->Snapshot());
+            const auto resolved = snapshot ? snapshot->ResolveString(name) : Result<std::string>{};
+            if (resolved.Succeeded() && resolved.value) text = QString::fromStdString(*resolved.value);
+        } else if (text.toUtf8().toStdString() != name) text = tr("[名称无法解码]");
+        return raw_ ? QStringLiteral("%1 · %2").arg(number).arg(text) : tr("%1（编号 %2）").arg(text).arg(number);
+    };
+    const auto setObject = [this](QTreeWidgetItem* item, int column, const MapData::SettingsRawcode& id) {
+        if (id == MapData::SettingsRawcode{}) {
+            item->setText(column, raw_ ? QStringLiteral("none") : tr("无"));
+            return;
+        }
+        const QString raw = RawText(id);
+        // Y?I?/Y?U?/Y?B? 是按等级/类别随机的占位，不是实际对象。
+        if (raw.size() == 4 && raw.at(0) == QChar('Y') && (raw.at(2) == QChar('I') || raw.at(2) == QChar('U') || raw.at(2) == QChar('B'))) {
+            item->setText(column, raw);
+            item->setToolTip(column, tr("按等级/类别随机的占位"));
+            return;
+        }
+        QIcon icon;
+        QString tooltip;
+        item->setText(column, ObjectText(id, &icon, &tooltip));
+        item->setIcon(column, icon);
+        item->setToolTip(column, tooltip);
+    };
+    const auto typeName = [this](std::int32_t type) {
+        if (raw_) return QString::number(type);
+        return type == 0 ? tr("单位") : type == 1 ? tr("建筑") : type == 2 ? tr("物品") : tr("未知 %1").arg(type);
+    };
+    random_->clear();
+    int columns = 1;
+    for (const auto& table : custom.randomUnits) columns = std::max(columns, static_cast<int>(table.columnTypes.size()));
+    QStringList headers{raw_ ? QStringLiteral("table / chance") : tr("表 / 概率")};
+    for (int column = 1; column <= columns; ++column) headers.append(raw_ ? QStringLiteral("id%1").arg(column) : tr("对象 %1").arg(column));
+    random_->setColumnCount(columns + 1);
+    random_->setHeaderLabels(headers);
+    auto* units = new QTreeWidgetItem(random_, {tr("随机单位组（%1）").arg(custom.randomUnits.size())});
+    for (const auto& table : custom.randomUnits) {
+        auto* group = new QTreeWidgetItem(units, {tableName(table.name, table.number)});
+        for (std::size_t column = 0; column < table.columnTypes.size(); ++column) {
+            group->setText(static_cast<int>(column) + 1, typeName(table.columnTypes[column]));
+            group->setForeground(static_cast<int>(column) + 1, random_->palette().brush(QPalette::PlaceholderText));
+        }
+        for (const auto& row : table.rows) {
+            auto* item = new QTreeWidgetItem(group, {QStringLiteral("%1%").arg(row.chance)});
+            for (std::size_t column = 0; column < row.ids.size(); ++column) setObject(item, static_cast<int>(column) + 1, row.ids[column]);
+        }
+    }
+    auto* items = new QTreeWidgetItem(random_, {tr("随机物品表（%1）").arg(custom.randomItems.size())});
+    for (const auto& table : custom.randomItems) {
+        auto* group = new QTreeWidgetItem(items, {tableName(table.name, table.number)});
+        for (std::size_t set = 0; set < table.sets.size(); ++set) {
+            auto* node = new QTreeWidgetItem(group, {tr("物品组 %1").arg(set + 1)});
+            for (const auto& entry : table.sets[set]) {
+                auto* item = new QTreeWidgetItem(node, {QStringLiteral("%1%").arg(entry.chance)});
+                setObject(item, 1, entry.id);
+            }
+        }
+    }
+    random_->expandToDepth(1);
+    random_->setColumnWidth(0, 220);
+    for (int column = 1; column <= columns; ++column) random_->setColumnWidth(column, 200);
 }
 
 void MapTechPage::EditRow(Section section, int row) {

@@ -130,3 +130,64 @@ void LiveEditorToolsTests::SettingsPageEditsTechnologyThroughSharedService() {
     QCOMPARE(fixture.project.mapDataUndoStack_->count(), pendingUndo);
     QVERIFY(page()->findChild<QLabel*>(QStringLiteral("formProblem"))->text().contains(QStringLiteral("未应用")));
 }
+
+// 含随机表的地图：随机表按组只读列出（名称、列类型、概率、对象），初始化接通前科技表也只读。
+void LiveEditorToolsTests::SettingsPageListsRandomTablesReadOnly() {
+    namespace C = AudastraTest::CustomSettings;
+    C::Fixture native; Fixture fixture; QVERIFY2(fixture.Initialize(), qPrintable(fixture.error));
+    for (auto member : native.members) {
+        if (member.name == "war3map.w3i") {
+            auto settings = *MapDocument::FromMembers(native.members).Settings();
+            MapData::MapRandomUnitTable units;
+            units.number = 3; units.name = "Camp"; units.columnTypes = {0, 1};
+            units.rows.push_back({60, {C::Raw("u001"), C::Raw("b001")}});
+            units.rows.push_back({40, {C::Raw("u001"), MapData::SettingsRawcode{}}});
+            settings.custom->randomUnits.push_back(units);
+            MapData::MapRandomItemTable items;
+            items.number = 0; items.name = "Drops"; items.sets = {{{30, C::Raw("i001")}, {70, MapData::SettingsRawcode{}}}};
+            settings.custom->randomItems.push_back(items);
+            auto bytes = settings.Serialize(); QVERIFY(bytes.Succeeded());
+            member.data = *bytes.value;
+        }
+        if (member.name == "war3map.w3i" || member.name.ends_with(".doo") || member.name.ends_with(".slk") || member.name.starts_with("UI/"))
+            QVERIFY(WriteFile(fixture.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
+    }
+    fixture.project.war3GameRoot_ = native.base.inputs.game;
+    auto directory = DirectoryWorkspace::Open(fixture.project.projectRoot_); QVERIFY(directory.Succeeded());
+    fixture.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    fixture.project.LoadMapDocument(); fixture.project.ResetEditTracking();
+    War3Map::Modules::MapSettingsModule module(fixture.project);
+    auto* page = module.Widget()->findChild<QWidget*>(QStringLiteral("mapTechPage"));
+    QVERIFY(page);
+    QVERIFY(page->findChild<QPushButton*>(QStringLiteral("techUpgradesAdd"))->isHidden());
+    auto* tree = page->findChild<QTreeWidget*>(QStringLiteral("techRandomTables"));
+    QVERIFY(tree && tree->topLevelItemCount() == 2);
+    auto* units = tree->topLevelItem(0);
+    QCOMPARE(units->childCount(), 1);
+    auto* camp = units->child(0);
+    QVERIFY(camp->text(0).contains(QStringLiteral("Camp")) && camp->text(0).contains(QStringLiteral("3")));
+    QCOMPARE(camp->text(1), QStringLiteral("单位"));
+    QCOMPARE(camp->text(2), QStringLiteral("建筑"));
+    QCOMPARE(camp->childCount(), 2);
+    QCOMPARE(camp->child(0)->text(0), QStringLiteral("60%"));
+    QCOMPARE(camp->child(0)->toolTip(1), QStringLiteral("u001"));
+    QCOMPARE(camp->child(1)->text(2), QStringLiteral("无"));
+    auto* drops = tree->topLevelItem(1)->child(0);
+    QVERIFY(drops->text(0).contains(QStringLiteral("Drops")));
+    QCOMPARE(drops->child(0)->childCount(), 2);
+    QCOMPARE(drops->child(0)->child(0)->toolTip(1), QStringLiteral("i001"));
+    QCOMPARE(drops->child(0)->child(1)->text(0), QStringLiteral("70%"));
+    if (const auto directory = qEnvironmentVariable("AUDASTRA_FORM_CAPTURE_DIR"); !directory.isEmpty()) {
+        War3Map::UiKit::ThemeManager theme;
+        theme.ApplyTheme(QStringLiteral("graphite"));
+        auto* widget = module.Widget();
+        widget->resize(1100, 760);
+        widget->show();
+        auto* sections = widget->findChild<QListWidget*>();
+        sections->setCurrentItem(sections->findItems(QStringLiteral("科技与随机表"), Qt::MatchExactly).front());
+        tree->expandAll();
+        QTest::qWait(100);
+        widget->grab().save(directory + QStringLiteral("/tech-random.png"));
+        widget->hide();
+    }
+}

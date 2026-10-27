@@ -6,11 +6,12 @@
 class QLabel;
 class QPushButton;
 class QTableWidget;
+class QTreeWidget;
 namespace War3Map::QtProject { class EditorProject; }
 
 namespace War3Map::Modules {
 // 地图设置“科技与随机表”页：升级可用性与科技限制按行列出（对象头像+名称，玩家，等级，状态），
-// 添加/修改/删除各是一条带 CAS 的共用服务命令。随机表在初始化接通前只显示摘要。
+// 添加/修改/删除各是一条带 CAS 的共用服务命令。随机表在初始化接通前只读列出（组、概率、对象）。
 class MapTechPage final : public QWidget {
 public:
     // 返回空表示命令已准备好并将提交；否则为原因，调用方保留表单。
@@ -27,6 +28,7 @@ public:
 
 private:
     void Fill();
+    void FillRandom();
     void EditRow(War3Map::Services::MapCustomSettingsSection section, int row);
     void DeleteRow(War3Map::Services::MapCustomSettingsSection section);
     [[nodiscard]] QString PlayersText(std::uint32_t mask) const;
@@ -39,6 +41,7 @@ private:
     Commit commit_;
     QTableWidget* upgrades_ = nullptr;
     QTableWidget* restrictions_ = nullptr;
+    QTreeWidget* random_ = nullptr;
     QPushButton* deleteUpgrade_ = nullptr;
     QPushButton* deleteRestriction_ = nullptr;
     QLabel* problem_ = nullptr;
