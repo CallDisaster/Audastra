@@ -119,3 +119,12 @@ description = "触发的界面事件名"
 comment = ""
 category = TC_AudastraUI
 returns = string
+
+[AudastraUIClickUnit]
+title = "点击单位（举着目标技能时作为目标）"
+description = "点击单位 ${单位}"
+comment = "团队框架点队员用：本机举着要选单位目标的技能或物品时，把这次点击交给游戏作为目标。返回 0 普通选择、没处理；1 已作为目标交给游戏；2 目标不合法；3 其他输入状态、没处理；负数为运行库不可用或不支持。"
+category = TC_AudastraUI
+returns = integer
+[[.args]]
+type = unit

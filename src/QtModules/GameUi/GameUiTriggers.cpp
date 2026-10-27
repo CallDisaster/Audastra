@@ -170,6 +170,8 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
     const bool local = !request.outOfRange.isEmpty() || !request.select.isEmpty();
     if (local && !project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Call, "GetLocalPlayer"))
         return fail(tr("触发器函数库里没有 YDWE 的“本地玩家”，团队框架的过远与点选要用它"));
+    if (!request.select.isEmpty() && !project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Call, "AudastraUIClickUnit"))
+        return fail(tr("函数库里的 AudastraUI 是旧版，缺少“点击单位”，团队框架的点选要用它；在函数库里重新安装 AudastraUI"));
     if (!request.outOfRange.isEmpty() && !project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Action, "RemoveLocation"))
         return fail(tr("触发器函数库里没有 YDWE 的“清除点”，团队框架算过远要用它"));
     if (!definitions_) return fail(tr("界面定义仍在读取"));

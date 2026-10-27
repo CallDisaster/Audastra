@@ -511,6 +511,7 @@ void TestScriptLibrary() {
     // 注入文件 = JAPI 客户端库 + 界面库；这里只声明两者用到的原版类型与 native。
     constexpr std::string_view common =
         "type agent extends handle\ntype trigger extends agent\ntype timer extends agent\ntype player extends agent\n"
+        "type widget extends agent\ntype unit extends widget\n"
         "type triggeraction extends handle\n"
         "native R2SW takes real r, integer width, integer precision returns string\n"
         "native SubString takes string source, integer start, integer end returns string\n"

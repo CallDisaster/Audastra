@@ -433,4 +433,15 @@ library AudastraUI requires AudastraJapi
         endif
     endfunction
 
+    // ── 单位 ──
+
+    // 点团队框架里的队员：本机正举着要选单位目标的技能或物品时，把这次点击交给游戏作为目标（等同在世界里点这个单位），
+    // 由游戏校验目标、提示错误、退出选目标并下达指令。返回 0 普通选择、没处理；1 已作为目标交给游戏；2 目标不合法、
+    // 游戏已提示；3 其他输入状态（点目标、建造、菜单等）、没处理；负数为运行库不可用或不支持，AudastraUILastError 说明原因。
+    // 运行库还没有这项能力，目前总是返回 -1（不支持）。
+    function AudastraUIClickUnit takes unit whichUnit returns integer
+        call Refuse(12)
+        return -1
+    endfunction
+
 endlibrary

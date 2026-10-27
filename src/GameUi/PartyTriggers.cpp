@@ -195,7 +195,10 @@ private:
             var("DX", "real", false, "0");
             var("DY", "real", false, "0");
         }
-        if (!b_.select.empty()) var("Click", "integer", false, "0");
+        if (!b_.select.empty()) {
+            var("Click", "integer", false, "0");
+            var("ClickResult", "integer", false, "0");
+        }
         if (Buffs()) {
             var("BuffCount", "integer", false, "0");
             var("BuffCode", "buffcode", true);
@@ -349,11 +352,14 @@ private:
         return out;
     }
 
+    // 本机举着单位目标技能时把点击交给游戏作为目标（结果大于 0），否则（含运行库不支持）只改本机的选择。
     Lines Select() const {
-        Lines out{Call("CommentString", {Quote("界面点击只在本机发生；这里只改本机的选择")}),
+        Lines out{Call("CommentString", {Quote("界面点击只在本机发生：举着单位目标技能时作为目标交给游戏，否则只改本机的选择")}),
             Set(V("Click"), Int("AudastraUIGetTriggerIndex()", "OperatorAdd", "1"))};
-        Append(out, If({CompareInt(V("Click"), "OperatorGreaterEq", "1"), CompareInt(V("Click"), "OperatorLessEq", V("Count"))},
+        Lines click{Set(V("ClickResult"), Call("AudastraUIClickUnit", {At("Unit", V("Click"))}))};
+        Append(click, If({CompareInt(V("ClickResult"), "OperatorLessEq", "0")},
             {Call("SelectUnitForPlayerSingle", {At("Unit", V("Click")), "GetLocalPlayer()"})}));
+        Append(out, If({CompareInt(V("Click"), "OperatorGreaterEq", "1"), CompareInt(V("Click"), "OperatorLessEq", V("Count"))}, click));
         return out;
     }
 

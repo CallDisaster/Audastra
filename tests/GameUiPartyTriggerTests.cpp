@@ -98,6 +98,8 @@ void TestGeneratedText() {
              "GetUnitStateSwap(UnitStateMaxMana, udg_AUP_Unit[udg_AUP_I])", "GetPlayerName(GetOwningPlayer(udg_AUP_Unit[udg_AUP_I]))",
              "OperatorComparePlayer(GetOwningPlayer(udg_AUP_Unit[udg_AUP_I]), OperatorEqualENE, GetLocalPlayer())", "1440000",
              "AudastraUITriggerRegisterEvent(\"party.select\")", "SelectUnitForPlayerSingle(udg_AUP_Unit[udg_AUP_Click], GetLocalPlayer())",
+             "SetVariable(udg_AUP_ClickResult, AudastraUIClickUnit(udg_AUP_Unit[udg_AUP_Click]))",
+             "OperatorCompareInteger(udg_AUP_ClickResult, OperatorLessEq, 0)",
              "ConditionalTriggerExecute(`队伍 更新 party_Update`)"}) {
         Require(Contains(text, part), std::string("生成文本缺少：") + part + "\n" + text);
     }
@@ -143,6 +145,7 @@ void TestAppliedAndCompiled() {
     const std::string script = f.Script();
     for (const char* part : {"call ForGroupBJ(GetUnitsInRectAll(GetPlayableMapRect())", "exitwhen udg_AUP_I > 5",
              "call SelectUnitForPlayerSingle(udg_AUP_Unit[udg_AUP_Click], GetLocalPlayer())", "call RemoveLocation(udg_AUP_Point)",
+             "set udg_AUP_ClickResult = AudastraUIClickUnit(udg_AUP_Unit[udg_AUP_Click])", "if ((udg_AUP_ClickResult <= 0)) then",
              "set udg_AUIV_party_hp[(udg_AUP_I - 1)]", "call TriggerRegisterEnterRectSimple(", "IsUnitIllusionBJ(udg_AUP_Member)"}) {
         Require(Contains(script, part), std::string("脚本缺少：") + part);
     }

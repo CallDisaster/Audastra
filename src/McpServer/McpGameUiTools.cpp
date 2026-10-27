@@ -148,7 +148,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
         } else if (tool.name == "game_ui_party_system") {
             tool.description = "生成团队框架的自然 T，整批写进触发器编辑器的“团队框架”类别（同名触发器整体替换），走触发器撤销栈：队员名单"
                 "（设 AUP_Member 后运行“团队 加入/移出”触发器；auto_heroes 默认 true，自动加入正在游戏的用户玩家的英雄，不含幻象，单位被移除后自动移出），"
-                "每 0.1 秒把每格的显示、生命与法力比例、名字、死亡、过远写进界面数组数值并运行该界面的“更新”触发器；点击事件选中该队员（只改本机选择）。"
+                "每 0.1 秒把每格的显示、生命与法力比例、名字、死亡、过远写进界面数组数值并运行该界面的“更新”触发器；点击事件：本机举着单位目标技能或物品时用 AudastraUIClickUnit 把点击交给游戏作为目标，否则选中该队员（只改本机选择）。"
                 "frame 绑定一份已生成界面触发器的界面描述：shown（布尔数组，格数即队伍上限）必填；health、mana（实数数组）、name（字符串数组）、"
                 "dead、out_of_range（布尔数组）可空，格数须与 shown 相同；select 为点击事件编号，事件框架须在重复次数等于格数的重复框架里。"
                 "health_now、health_max、mana_now、mana_max（实数数组）为生命、法力的当前与最大值，界面文字可写 {hp_now[]:0}/{hp_max[]:0}。"
