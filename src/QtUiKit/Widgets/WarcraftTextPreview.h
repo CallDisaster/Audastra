@@ -35,6 +35,8 @@ public:
     void Bind(QLineEdit* editor, const QString& sourceExplanation = {}, bool sourceAvailable = true,
         WarcraftTextSourceResolver resolver = {});
     void Refresh();
+    // 开启后正文没有颜色/换行等格式标记时收起“预览”标题和渲染框，只留插入按钮；有标记或状态提示时照常显示。
+    void SetCollapsePlain(bool collapse);
     // 接收已确认的用户取色；只插入当前草稿，一次原编辑框 undo，不提交字段。
     [[nodiscard]] bool InsertColour(const QColor& colour);
     [[nodiscard]] bool InsertReset();
@@ -59,6 +61,8 @@ private:
     QTimer* timer_ = nullptr;
     QTextEdit* preview_ = nullptr;
     QLabel* status_ = nullptr;
+    QLabel* title_ = nullptr;
+    bool collapsePlain_ = false;
     QLabel* source_ = nullptr;
     QPushButton* colour_ = nullptr;
     QPushButton* reset_ = nullptr;

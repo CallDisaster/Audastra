@@ -111,6 +111,14 @@ void MapSettingsModuleTests::WarcraftPreviewUsesCurrentWtsAndExistingApplyUndo()
     };
     auto* author = getAuthor(); auto* preview = getPreview(); QVERIFY(author && preview);
     QCOMPARE(preview->Preview()->toPlainText(), QStringLiteral("原作者\n与描述"));
+    // 一页多个字段：含颜色/换行标记时显示渲染框，纯文字时收起，插入标记后再出现。
+    QVERIFY(!preview->Preview()->isHidden());
+    author->setText(QStringLiteral("纯文字作者")); preview->Refresh();
+    QVERIFY(preview->Preview()->isHidden());
+    author->setCursorPosition(static_cast<int>(author->text().size())); QVERIFY(preview->InsertNewline());
+    QVERIFY(!preview->Preview()->isHidden());
+    module.DiscardDraft();
+    author = getAuthor(); preview = getPreview(); QVERIFY(author && preview);
     const auto originalSettings = project.MapEdits()->Snapshot().Settings()->Serialize().value;
     const auto originalStrings = project.MapEdits()->Snapshot().Member(MapDataKind::Strings).sources.front().data;
     author->setCursorPosition(static_cast<int>(author->text().size())); QVERIFY(preview->InsertColour(Qt::red));

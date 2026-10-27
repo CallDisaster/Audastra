@@ -54,9 +54,9 @@ WarcraftTextPreview::WarcraftTextPreview(QWidget* parent) : QWidget(parent) {
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(4);
     auto* tools = new QHBoxLayout;
-    auto* title = new QLabel(tr("预览"), this);
-    title->setTextFormat(Qt::PlainText);
-    tools->addWidget(title);
+    title_ = new QLabel(tr("预览"), this);
+    title_->setTextFormat(Qt::PlainText);
+    tools->addWidget(title_);
     tools->addStretch();
     colour_ = new QPushButton(tr("颜色…"), this);
     colour_->setToolTip(tr("取色后仅在当前草稿插入 |cffRRGGBB"));
@@ -246,6 +246,11 @@ void WarcraftTextPreview::Refresh() {
         preview_->document()->setUndoRedoEnabled(false);
         preview_->moveCursor(QTextCursor::Start);
         rendered_ = true;
+        const bool plain = parsed.Complete() && parsed.diagnostics.empty() && !parsed.omittedDiagnostics
+            && parsed.plainText == std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size()))
+            && std::none_of(parsed.runs.begin(), parsed.runs.end(), [](const auto& run) { return run.argb.has_value(); });
+        preview_->setVisible(!collapsePlain_ || !plain);
+        title_->setVisible(preview_->isVisibleTo(this));
         if (parsed.state == Text::WarcraftTextState::Truncated)
             status_->setText(tr("预览已截断"));
         else if (!parsed.Complete()) status_->setText(tr("预览未完成"));
@@ -256,6 +261,15 @@ void WarcraftTextPreview::Refresh() {
         if (lifetime && lifetime->generation_ == startingGeneration)
             stale(tr("预览失败"));
     }
+}
+
+void WarcraftTextPreview::SetCollapsePlain(bool collapse) {
+    collapsePlain_ = collapse;
+    if (!collapse) {
+        preview_->setVisible(true);
+        title_->setVisible(true);
+    }
+    Refresh();
 }
 
 bool WarcraftTextPreview::Insert(const QString& text) {

@@ -421,6 +421,7 @@ void MapSettingsModule::AddTextField(QFormLayout* form, const QString& label, co
         const QString sourceText = reference.isEmpty() ? QString() : tr("来自 %1").arg(reference);
         if (auto* box = qobject_cast<QPlainTextEdit*>(editor)) preview->Bind(box, sourceText, sourceAvailable);
         else if (auto* box = qobject_cast<QLineEdit*>(editor)) preview->Bind(box, sourceText, sourceAvailable);
+        preview->SetCollapsePlain(true); // 一页多个字段：纯文字不重复显示预览框
         layout->addWidget(preview);
         form->addRow(caption, field);
     } else form->addRow(caption, editor);
