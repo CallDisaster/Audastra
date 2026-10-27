@@ -138,8 +138,18 @@ void TestGeneratedText() {
     Require(plan.value->triggers == std::vector<std::string>{"读条 创建 cast_Create", "读条 更新 cast_Update",
         "读条 状态 打断 cast_State_interrupt", "读条 基础状态 cast_BaseState"}, "触发器名与顺序");
     Require(plan.value->variables == std::vector<std::string>{"AUI_cast_root", "AUI_cast_bar", "AUI_cast_label", "AUI_cast_slot",
-        "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast"},
-        "变量名与顺序");
+        "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast",
+        "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_text"}, "变量名与顺序");
+    // 刷新只发变化的值：先和上次发的比，变了才记下并发出去；回到基础状态时状态改过的属性重新发。
+    Require(Contains(text, "    AUIL_cast_slot_text: string[3] = \"AUI:unsent\"\n")
+            && Contains(text, "OperatorCompareString(" ) && Contains(text, "OperatorNotEqualENE, udg_AUIL_cast_label_text)")
+            && Contains(text, "AudastraUISetText(udg_AUI_cast_label, udg_AUIL_cast_label_text)")
+            && Contains(text, "AudastraUISetText(AudastraUIFindFrame(\"AudastraButtonText\", ")
+            && Contains(text, "OperatorNotEqual, udg_AUIL_cast_bar_value)")
+            && Contains(text, "SetVariable(udg_AUIL_cast_bar_value, udg_AUIV_cast_progress)"), "刷新先比较上次发的值：\n" + text);
+    const std::size_t base = text.find("读条 基础状态 cast_BaseState");
+    Require(base != std::string::npos && text.find("SetVariable(udg_AUIL_cast_label_text, \"AUI:unsent\")", base) != std::string::npos,
+        "回到基础状态时重发状态改过的文字：\n" + text);
     Require(Contains(text, "    AUI_cast_slot: AudastraFrame[3] = AudastraFrameNone\n"), "重复框架句柄是数组：\n" + text);
     Require(Contains(text, "    AUIV_cast_name: string = \"火球\"\n") && Contains(text, "    AUIV_cast_charges: integer[3] = 0\n"),
         "数值变量带初值：\n" + text);
@@ -175,7 +185,7 @@ void TestGeneratedText() {
             && Contains(text, "), \"UI\\\\Feedback\\\\XPBar\\\\human-bigbar-fill-red.blp\", false)"),
         "底图在进度条上，状态换的填充贴图在填充上：\n" + text);
     Require(Contains(text, "AudastraUISetWidth(AudastraUIFindFrame(\"AudastraBarFill\", ")
-            && Contains(text, "), OperatorReal(RMaxBJ(0, RMinBJ(1, udg_AUIV_cast_progress)), OperatorMultiply, 0.28))"),
+            && Contains(text, "), OperatorReal(RMaxBJ(0, RMinBJ(1, udg_AUIL_cast_bar_value)), OperatorMultiply, 0.28))"),
         "进度按比例改填充宽度，比例夹在 0..1：\n" + text);
     Require(Contains(text, "AudastraUISetPoint(udg_AUI_cast_label, AudastraAnchorBottom, udg_AUI_cast_bar, AudastraAnchorTop, 0, 0.004)"),
         "相对锚点：\n" + text);

@@ -123,6 +123,7 @@ public:
         if (!d_.states.empty()) variable(UiStateVariableName(d_.id), "string", 0, "\"\"");
         variable(UiCreatedVariableName(d_.id), "boolean", 0, "false");
         variable(UiAttemptVariableName(d_.id), "integer", 0, "0");
+        for (const auto& sent : sent_) variable(sent.variable, sent.type, sent.size, sent.initial);
 
         auto trigger = [&](const std::string& name, const Lines& events, const Lines& actions) { text.Trigger(name, events, actions); };
         // 触发器的脚本名只保留 ASCII 字母数字，中文全变成下划线；名字末尾的 ASCII 编号保证脚本名不重。
@@ -692,22 +693,72 @@ private:
         return If(conditions, statements);
     }
 
+    // 上次发给游戏的绑定值：取值没变就不再发。界面库每次请求都很贵，团队框架每 0.1 秒把所有框架重发一遍
+    // 会占满游戏主线程。显示/隐藏只是一次调用，不记。
+    struct Sent {
+        std::string variable, type, initial;
+        std::uint32_t size = 0;
+    };
+    static constexpr std::string_view kUnsent = "AUI:unsent";
+    static constexpr double kUnsentNumber = -1.0e9;
+
+    [[nodiscard]] static std::string_view PropertyKey(Property property) {
+        switch (property) {
+        case Property::Texture: return "texture";
+        case Property::Text: return "text";
+        case Property::Visible: return "visible";
+        case Property::Value: return "value";
+        }
+        return "value";
+    }
+    [[nodiscard]] std::string SentRef(const FrameInfo& info, Property property) const {
+        const std::string name = "udg_" + UiSentVariableName(d_.id, info.frame->id, PropertyKey(property));
+        return info.group ? name + "[" + std::string(kLoopIndex) + "]" : name;
+    }
+    // statements 用 SentRef 取刚记下的值，取值表达式只在变化时多算一次。贴图取值为空时不发：游戏找不到空路径会报错，
+    // 空贴图的框架由显示绑定隐藏，之后取回原值也不用重发。
+    Lines Changed(const FrameInfo& info, Property property, std::string_view type, const std::string& key, const Lines& statements) {
+        if (statements.empty()) return statements;
+        const auto name = UiSentVariableName(d_.id, info.frame->id, PropertyKey(property));
+        if (std::none_of(sent_.begin(), sent_.end(), [&](const Sent& sent) { return sent.variable == name; })) {
+            sent_.push_back({name, std::string(type), type == "real" ? Real(kUnsentNumber) : Quote(kUnsent), GroupSize(info)});
+        }
+        const std::string sent = SentRef(info, property);
+        const std::string differs = type == "real" ? Call("OperatorCompareReal", {key, "OperatorNotEqual", sent})
+                                                   : Call("OperatorCompareString", {key, "OperatorNotEqualENE", sent});
+        Lines body{Set(sent, key)};
+        Append(body, statements);
+        if (property == Property::Texture) return If({differs, Call("OperatorCompareString", {key, "OperatorNotEqualENE", Quote("")})}, body);
+        return If({differs}, body);
+    }
+    // 状态改过的属性回到基础状态时要重发，即使绑定的取值没变。
+    void Unsend(const FrameInfo& info, Property property, Lines& statements) const {
+        const auto name = UiSentVariableName(d_.id, info.frame->id, PropertyKey(property));
+        const auto found = std::find_if(sent_.begin(), sent_.end(), [&](const Sent& sent) { return sent.variable == name; });
+        if (found != sent_.end()) statements.push_back(Set(SentRef(info, property), found->initial));
+    }
+
     Lines Updates(const FrameInfo& info) {
         const UiFrame& frame = *info.frame;
         Lines out;
         if ((frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) && HasReferences(frame.text)) {
             if (auto text = TextExpression(info, frame.text)) {
-                Append(out, Guarded(info, Property::Text, {Call("AudastraUISetText", {TextTarget(info), *text})}));
+                Append(out, Guarded(info, Property::Text, Changed(info, Property::Text, "string", *text,
+                    {Call("AudastraUISetText", {TextTarget(info), SentRef(info, Property::Text)})})));
             }
         }
         if (!frame.texture.empty() && HasReferences(frame.texture)) {
             if (auto expression = TextExpression(info, TextureTemplate(frame.texture))) {
-                if (auto lines = TextureCall(info, *expression)) Append(out, Guarded(info, Property::Texture, *lines));
+                if (auto lines = TextureCall(info, SentRef(info, Property::Texture))) {
+                    Append(out, Guarded(info, Property::Texture, Changed(info, Property::Texture, "string", *expression, *lines)));
+                }
             }
         }
         if (frame.type == UiFrameType::Bar && frame.value.binding) {
             if (auto number = NumberExpression(info, *frame.value.binding)) {
-                if (auto line = BarValue(info, *number)) Append(out, Guarded(info, Property::Value, {*line}));
+                if (auto line = BarValue(info, SentRef(info, Property::Value))) {
+                    Append(out, Guarded(info, Property::Value, Changed(info, Property::Value, "real", *number, {*line})));
+                }
             }
         }
         if (frame.visible.binding) Append(out, Guarded(info, Property::Visible, FlagStatements(info, *frame.visible.binding)));
@@ -770,6 +821,7 @@ private:
             for (const auto& [property, states] : found->second) {
                 switch (property) {
                 case Property::Texture:
+                    Unsend(info, property, statements);
                     if (frame.texture.empty()) {
                         warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_TEXTURE_RESTORE",
                             "框架 " + frame.id + " 原本没有贴图，回到基础状态时保留状态设的贴图"));
@@ -778,6 +830,7 @@ private:
                     }
                     break;
                 case Property::Text:
+                    Unsend(info, property, statements);
                     if (!HasReferences(frame.text)) {
                         if (auto text = TextExpression(info, frame.text)) statements.push_back(Call("AudastraUISetText", {TextTarget(info), *text}));
                     }
@@ -786,6 +839,7 @@ private:
                     if (!frame.visible.binding) statements.push_back(Call("AudastraUIShow", {Self(info), frame.visible.literal ? "true" : "false"}));
                     break;
                 case Property::Value:
+                    Unsend(info, property, statements);
                     if (!frame.value.binding) {
                         if (auto line = BarValue(info, frame.value.literal)) statements.push_back(*line);
                     }
@@ -855,6 +909,7 @@ private:
     std::set<std::string> fixedAreas_;  // 已提示过的“框架\n区域”
     std::set<std::string> widthless_;   // 已报过没写宽度的进度条
     std::vector<std::pair<std::string, Lines>> chunks_;  // 分块运行的触发器：名字和动作
+    std::vector<Sent> sent_;
 };
 
 } // namespace
@@ -986,6 +1041,10 @@ std::string UiCreatedVariableName(std::string_view description) {
 
 std::string UiAttemptVariableName(std::string_view description) {
     return "AUIA_" + std::string(description);
+}
+
+std::string UiSentVariableName(std::string_view description, std::string_view frame, std::string_view property) {
+    return "AUIL_" + std::string(description) + "_" + std::string(frame) + "_" + std::string(property);
 }
 
 std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key) {
