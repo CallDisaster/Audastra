@@ -158,7 +158,7 @@ Result<MapBackupMigration> MigrateMapBackups(const std::filesystem::path& from,
         return Fail<MapBackupMigration>("BACKUP_MIGRATION_OPTIONS_INVALID", "备份迁移需要绝对目录和有限的条目、字节、保留数量及期限。");
     auto result = Result<MapBackupMigration>::Success(MapBackupMigration{});
     Migration migration{options, result};
-    if (from.lexically_normal() == to.lexically_normal()) return result;
+    if (from.lexically_normal() == to.lexically_normal()) { result.value->sameDirectory = true; return result; }
     if (!migration.Allow()) return result;
     try {
         FileHandle sourceRoot(INVALID_HANDLE_VALUE), sourceIndexRoot(INVALID_HANDLE_VALUE);
@@ -182,7 +182,7 @@ Result<MapBackupMigration> MigrateMapBackups(const std::filesystem::path& from,
         if (error || !OpenDirectory(to, targetRoot, targetInfo, target)) {
             migration.Warn("BACKUP_MIGRATION_TARGET_UNAVAILABLE", "新备份目录不可用，旧备份保留。"); return result;
         }
-        if (SameObject(sourceInfo, targetInfo)) return result;
+        if (SameObject(sourceInfo, targetInfo)) { result.value->sameDirectory = true; return result; }
         std::filesystem::create_directories(WindowsApiPath(target / L".forge-backup-owners"), error);
         if (error || !OpenDirectory(target / L".forge-backup-owners", targetIndexRoot, targetIndexInfo, targetIndex)) {
             migration.Warn("BACKUP_MIGRATION_TARGET_UNAVAILABLE", "新备份归属索引不可用。"); return result;

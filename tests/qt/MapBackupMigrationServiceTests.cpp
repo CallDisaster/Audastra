@@ -65,6 +65,7 @@ private slots:
         QTest::newRow("pruned") << 3 << QStringLiteral("按保留数量删除了 1 份旧备份");
         QTest::newRow("unknown-empty") << 4 << QStringLiteral("旧备份迁移未完成，原文件保留\n旧备份目录不可确认");
         QTest::newRow("combined") << 5 << QStringLiteral("已把 1 份备份移到新目录，2 份没有移动：新目录已有同名的不同文件，按保留数量删除了 1 份旧备份");
+        QTest::newRow("directory-alias") << 6 << QStringLiteral("备份目录未改变");
     }
     void ReportUsesOnlyNonzeroCountsAndPreservesFailures() {
         QFETCH(int, kind); QFETCH(QString, expected);
@@ -74,6 +75,7 @@ private slots:
             if (kind == 2 || kind == 5) { report.skipped = 2; report.diagnostics << QStringLiteral("新目录已有同名的不同文件"); }
             if (kind == 3 || kind == 5) report.pruned = 1;
             if (kind == 4) { report.complete = false; report.diagnostics << QStringLiteral("旧备份目录不可确认"); }
+            if (kind == 6) report.sameDirectory = true;
             return report;
         });
         service.Submit({"A", "B", 0, {}});

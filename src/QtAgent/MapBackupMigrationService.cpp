@@ -16,11 +16,13 @@ MapBackupMigrationReport Run(const MapBackupMigrationRequest& request, std::stop
     if (result.value) {
         report.moved = result.value->moved; report.skipped = result.value->skipped;
         report.pruned = result.value->pruned; report.complete = result.value->complete;
+        report.sameDirectory = result.value->sameDirectory;
     }
     for (const auto& diagnostic : result.diagnostics) report.diagnostics << QString::fromStdString(diagnostic.message);
     return report;
 }
 QString Report(const MapBackupMigrationReport& result) {
+    if (result.hasResult && result.sameDirectory) return QObject::tr("备份目录未改变");
     QStringList parts;
     qsizetype first = 0;
     if (result.moved) parts << QObject::tr("已把 %1 份备份移到新目录").arg(result.moved);

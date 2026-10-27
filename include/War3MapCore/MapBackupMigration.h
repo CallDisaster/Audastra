@@ -19,6 +19,7 @@ struct MapBackupMigration {
     std::size_t examinedEntries = 0;
     std::uint64_t bytesRead = 0; // 包含失败/取消操作的保守预留，不是成功读取量。
     bool complete = true; // false包括跳过、取消、预算或清理未完成；细节在diagnostics。
+    bool sameDirectory = false; // 规范路径或原生目录身份相同；不是“目录没有备份”。
 };
 
 // 仅迁移owner索引、原生文件身份和完整SHA均能核验的备份，不打开原地图。

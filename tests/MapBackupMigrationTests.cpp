@@ -1,6 +1,8 @@
 #include "War3MapCore/MapBackupMigration.h"
 #include "War3MapCore/Hash.h"
 #include <Windows.h>
+#include <algorithm>
+#include <cwctype>
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
@@ -75,7 +77,13 @@ void SuccessAndOwnership() {
 void EmptyAndSameDirectory() {
     Fixture f;
     auto r = MigrateMapBackups(f.old, f.old / L".", f.Options()); Good(r);
-    Require(r.value->moved == 0 && std::filesystem::exists(f.backup), "same normalized path no-op");
+    Require(r.value->moved == 0 && r.value->sameDirectory && std::filesystem::exists(f.backup), "same normalized path no-op");
+    auto alias = f.old.wstring();
+    std::transform(alias.begin(), alias.end(), alias.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towupper(c)); });
+    if (std::filesystem::exists(alias)) {
+        r = MigrateMapBackups(f.old, alias, f.Options()); Good(r);
+        Require(r.value->sameDirectory && r.value->moved == 0 && std::filesystem::exists(f.backup), "same native directory via case alias is not an empty directory");
+    }
     r = MigrateMapBackups(f.root / L"missing", f.target, f.Options()); Good(r);
     Require(!std::filesystem::exists(f.target), "missing source does not create destination");
     r = MigrateMapBackups(f.old, f.target, f.Options()); Good(r);

@@ -26,6 +26,7 @@ struct MapBackupMigrationDispatch {
 struct MapBackupMigrationReport {
     std::size_t moved = 0, skipped = 0, pruned = 0;
     bool hasResult = true, complete = true;
+    bool sameDirectory = false;
     QStringList diagnostics;
 };
 
