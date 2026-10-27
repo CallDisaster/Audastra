@@ -297,6 +297,12 @@ target_link_libraries(war3-map-application-settings-commit-tests PRIVATE War3Map
 target_compile_options(war3-map-application-settings-commit-tests PRIVATE /W4 /permissive- /utf-8)
 war3map_deploy_qt_runtime(war3-map-application-settings-commit-tests)
 add_test(NAME qt-application-settings-commit COMMAND war3-map-application-settings-commit-tests)
+qt_add_executable(war3-map-backup-migration-service-tests MapBackupMigrationServiceTests.cpp)
+target_link_libraries(war3-map-backup-migration-service-tests PRIVATE War3MapEditor::QtAgent Qt6::Test)
+target_compile_options(war3-map-backup-migration-service-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-backup-migration-service COMMAND war3-map-backup-migration-service-tests)
+set_tests_properties(qt-backup-migration-service PROPERTIES TIMEOUT 30
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 set_tests_properties(qt-application-settings-commit PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
@@ -761,6 +767,7 @@ target_include_directories(war3-map-test-settings-tests PRIVATE "${PROJECT_SOURC
 target_link_libraries(war3-map-test-settings-tests PRIVATE War3MapEditor::QtAgent War3MapEditor::Core Qt6::Test)
 target_compile_options(war3-map-test-settings-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-map-test-settings COMMAND war3-map-test-settings-tests)
+war3map_deploy_fonts(war3-map-test-settings-tests)
 set_tests_properties(qt-map-test-settings PROPERTIES TIMEOUT 45
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 

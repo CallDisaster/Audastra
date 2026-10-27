@@ -2,6 +2,11 @@
 #include "../../src/QtCommon/MapBackupPaths.h"
 #include "../../src/QtProject/MapSavePreferences.h"
 #include "War3MapCore/Hash.h"
+#include "AgentSettingsStore.h"
+#include "ApplicationSettingsTransfer.h"
+#include "MapBackupMigrationService.h"
+#include "Fonts/FontLoader.h"
+#include "Theme/ThemeManager.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -98,6 +103,7 @@ private slots:
     void LegacyInspectionSelectionDoesNotRewritePreferences();
     void LegacyInspectionCallbackCanDestroyPage();
     void LegacyChooserOwnerCanDisappear();
+    void AppliedDirectoryChangeMigratesAndReports();
 
 private:
     QTemporaryDir settingsRoot_;
@@ -116,6 +122,10 @@ void MapTestSettingsTests::initTestCase() {
     QSettings::setDefaultFormat(QSettings::IniFormat);
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settingsRoot_.path());
     QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, settingsRoot_.path());
+    if (!qEnvironmentVariableIsEmpty("AUD_SETTINGS_CAPTURE_DIR")) {
+        War3Map::UiKit::ThemeManager theme; theme.ApplyTheme(QStringLiteral("graphite"));
+        War3Map::UiKit::ApplyApplicationFont(War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory()));
+    }
 }
 
 void MapTestSettingsTests::cleanupTestCase() {
@@ -493,6 +503,44 @@ void MapTestSettingsTests::LegacyChooserOwnerCanDisappear() {
     browse->click();
     QVERIFY(dialogObserved); QVERIFY(page.isNull()); QCOMPARE(requested, 0);
     QCOMPARE(StoredBytes(), beforeBytes);
+}
+
+void MapTestSettingsTests::AppliedDirectoryChangeMigratesAndReports() {
+    using namespace War3Map;
+    using namespace War3Map::Agent;
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const auto data = directory.filePath(QStringLiteral("generic-data"));
+    const auto old = QtCommon::ResolveMapBackupDirectory({}, data); QVERIFY(old.Succeeded());
+    const auto source = std::filesystem::path(directory.filePath(QStringLiteral("original.w3x")).toStdWString());
+    const auto created = WriteVerifiedArchive(source, std::vector<MapArchiveMember>{{"authored.bin", {std::byte{'a'}}}}); QVERIFY(created.Succeeded());
+    const auto session = MapArchiveSession::Open(source); QVERIFY(session.Succeeded());
+    InPlaceSaveOptions options; options.backupDirectory = std::filesystem::path(old.value->toStdWString());
+    const auto saved = session.value->SaveInPlace({}, {}, options); QVERIFY(saved.Succeeded());
+    MapTestSettingsPage page(directory.path(), data);
+    const auto to = directory.filePath(QStringLiteral("new-backups"));
+    auto* edit = page.findChild<QLineEdit*>(QStringLiteral("mapBackupDirectory")); QVERIFY(edit); edit->setText(to);
+    QVERIFY(page.Validate());
+    AgentSettingsStore store(directory.filePath(QStringLiteral("agent.json")));
+    AgentSettings agent;
+    QSettings preferences;
+    MapBackupMigrationDispatch migration; migration.genericDataRoot = data;
+    QVERIFY(ApplicationSettingsCommit::Commit(preferences, store, agent, {}, nullptr, {}, page.Preferences(), migration));
+    auto* service = MapBackupMigrationService::Application(); QVERIFY(service);
+    auto* status = page.findChild<QLabel*>(QStringLiteral("mapLegacyBackupInspection")); QVERIFY(status);
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("已迁移地图备份 1 份")), 5000);
+    QVERIFY(!service->Busy());
+    QVERIFY(!std::filesystem::exists(saved.value->backup));
+    QVERIFY(std::filesystem::exists(std::filesystem::path(to.toStdWString()) / saved.value->backup.filename()));
+    // 使用同一规则解析的显式默认目录不应启动第二次迁移。
+    std::size_t additional = 0; migration.submit = [&](auto) { ++additional; };
+    ApplicationServicePreferences same; same.mapBackupDirectory = to + QStringLiteral("/.");
+    QVERIFY(ApplicationSettingsCommit::Commit(preferences, store, agent, {}, nullptr, {}, same, migration));
+    QCOMPARE(additional, std::size_t{0});
+    const auto captureRoot = qEnvironmentVariable("AUD_SETTINGS_CAPTURE_DIR");
+    if (!captureRoot.isEmpty()) {
+        QVERIFY(QDir().mkpath(captureRoot)); page.resize(720, 620); page.show(); QTest::qWait(30);
+        QVERIFY(page.grab().save(QDir(captureRoot).filePath(QStringLiteral("backup-migration-result.png"))));
+    }
 }
 
 QTEST_MAIN(MapTestSettingsTests)

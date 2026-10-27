@@ -5,6 +5,7 @@ add_library(War3MapQtAgent STATIC
     AgentSettingsStore.cpp
     ApplicationSettingsTransfer.cpp
     ApplicationSettingsCommit.cpp
+    MapBackupMigrationService.cpp MapBackupMigrationService.h
     RecoveryPreferences.h
     CredentialStore.cpp
     ProviderCatalog.cpp

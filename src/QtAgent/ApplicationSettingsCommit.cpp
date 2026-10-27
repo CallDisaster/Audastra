@@ -3,6 +3,7 @@
 #include "AgentSettingsStore.h"
 #include "ApplicationSettingsTransfer.h"
 #include "War3MapCore/Update/SemanticVersion.h"
+#include "../QtCommon/MapBackupPaths.h"
 
 #include <QFile>
 #include <QDir>
@@ -128,7 +129,8 @@ QStringList Restore(QSettings& preferences, std::vector<KeyChange>& keys, const 
 
 bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettingsStore& store,
     const AgentSettings& settings, const ApplicationPreferences& application, QString* error,
-    const ApplicationSettingsSync& synchronize, const ApplicationServicePreferences& services) {
+    const ApplicationSettingsSync& synchronize, const ApplicationServicePreferences& services,
+    const MapBackupMigrationDispatch& migration) {
     if (error) error->clear();
     QString diagnostic;
     // 与对话框一致：普通AI配置不套迁移提供商URL限制，偏好仅复用便携白名单校验。
@@ -167,6 +169,21 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
     if (!Sync(preferences, ApplicationSettingsSyncStage::Preflight, synchronize, &diagnostic)
         || !preferences.isWritable() || !preferences.isAtomicSyncRequired())
         return Fail(error, diagnostic.isEmpty() ? QStringLiteral("应用设置不可写，或已关闭原子同步；未开始提交。") : diagnostic);
+
+    std::optional<MapBackupMigrationRequest> moveBackups;
+    if (services.mapBackupDirectory) {
+        const auto dataRoot = migration.genericDataRoot.value_or(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
+        const auto from = QtCommon::ResolveMapBackupDirectory(preferences.value(QStringLiteral("mapSave/backupDirectory")).toString(), dataRoot);
+        const auto to = QtCommon::ResolveMapBackupDirectory(*services.mapBackupDirectory, dataRoot);
+        if (!to.Succeeded()) return Fail(error, QString::fromStdString(to.diagnostics.front().message));
+        if (!from.Succeeded() || *from.value != *to.value) {
+            bool validLimit = false;
+            const auto previousLimit = preferences.value(QStringLiteral("mapSave/backupLimit"), 10).toInt(&validLimit);
+            const auto keep = services.mapBackupLimit.value_or(validLimit && previousLimit >= 0 && previousLimit <= 1000 ? previousLimit : 10);
+            moveBackups = MapBackupMigrationRequest{from.value.value_or(QString{}), *to.value, static_cast<std::size_t>(keep), {}};
+            if (!from.Succeeded()) moveBackups->unavailableReason = QString::fromStdString(from.diagnostics.front().message);
+        }
+    }
 
     std::vector<KeyChange> keys{
         {QStringLiteral("war3/gameRoot"), {}, application.gameRoot},
@@ -218,6 +235,14 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
     // 原Save禁用direct-write fallback：失败不发布新JSON，Dialog可以安全清理新凭据。
     // 这是唯一最终提交点。成功之后不能再因其他存储的并发变化返回false、删除新ref。
     if (!store.Save(settings, &diagnostic)) return failed(diagnostic);
+    // 设置最终提交以后才发起迁移；后台失败不能伪装成设置事务失败并清理新凭据。
+    if (moveBackups) {
+        try {
+            if (migration.submit) migration.submit(std::move(*moveBackups));
+            else if (!MapBackupMigrationService::Post(std::move(*moveBackups)))
+                qWarning("Map backup migration not scheduled: application event loop unavailable");
+        } catch (...) { qWarning("Map backup migration not scheduled after settings commit"); }
+    }
     return true;
 }
 

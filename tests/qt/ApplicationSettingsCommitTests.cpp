@@ -596,6 +596,10 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     services.mapBackupLimit = 0;
     services.mapTestRuntimeRoot = directory.filePath(QStringLiteral("runtime"));
     services.mapTestSlk = true;
+    std::vector<MapBackupMigrationRequest> requests;
+    MapBackupMigrationDispatch migration;
+    migration.genericDataRoot = directory.filePath(QStringLiteral("generic-data"));
+    migration.submit = [&](MapBackupMigrationRequest request) { requests.push_back(std::move(request)); };
     QString error;
     const auto failFinal = [](QSettings& current, ApplicationSettingsSyncStage stage, QString* diagnostic) {
         if (!Synchronize(current, stage, diagnostic)) return false;
@@ -603,7 +607,7 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
         if (diagnostic) *diagnostic = QStringLiteral("模拟地图测试设置同步后的失败");
         return false;
     };
-    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, failFinal, services));
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, failFinal, services, migration));
     QCOMPARE(Read(preferences.fileName()), originalIni);
     QCOMPARE(Read(store.FilePath()), originalJson);
     QVERIFY(!preferences.contains(QStringLiteral("mapTest/slkEnabled")));
@@ -612,11 +616,11 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     QCOMPARE(preferences.value(QStringLiteral("mapTest/ydweRoot")).toString(), legacyYdwe);
     QCOMPARE(preferences.value(QStringLiteral("mapSave/backupLimit")).toInt(), 27);
     services.mapBackupLimit = 1001;
-    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services));
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration));
     QCOMPARE(Read(preferences.fileName()), originalIni);
     services.mapBackupLimit = 0;
     services.mapBackupDirectory = QStringLiteral("relative/backups");
-    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services));
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration));
     QCOMPARE(Read(preferences.fileName()), originalIni);
     services.mapBackupDirectory = directory.filePath(QStringLiteral("new-backups"));
     for (auto* path : {&services.mapTestRuntimeRoot}) {
@@ -625,13 +629,18 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
             directory.filePath(QStringLiteral("control")) + QChar(char16_t(0x1f))};
         for (const auto& invalid : invalidDirectories) {
             *path = invalid;
-            QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services));
+            QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration));
             QCOMPARE(Read(preferences.fileName()), originalIni);
             QCOMPARE(Read(store.FilePath()), originalJson);
         }
         *path = valid;
     }
-    QVERIFY2(ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services), qPrintable(error));
+    QVERIFY(requests.empty());
+    QVERIFY2(ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration), qPrintable(error));
+    QCOMPARE(requests.size(), std::size_t{1});
+    QCOMPARE(requests.front().from, QDir(*migration.genericDataRoot).filePath(QStringLiteral("Audastra/backups")));
+    QCOMPARE(requests.front().to, *services.mapBackupDirectory);
+    QCOMPARE(requests.front().keepBackups, std::size_t{0});
     QCOMPARE(preferences.value(QStringLiteral("mapSave/backupDirectory")).toString(), *services.mapBackupDirectory);
     QCOMPARE(preferences.value(QStringLiteral("mapSave/backupLimit")).toInt(), 0);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/slkToolRoot")).toString(), originalSlkTool);
@@ -644,12 +653,13 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     QVERIFY(!Read(store.FilePath()).contains("mapTest/"));
     services.mapTestRuntimeRoot = QString();
     services.mapTestSlk = false;
-    QVERIFY2(ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services), qPrintable(error));
+    QVERIFY2(ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration), qPrintable(error));
     QCOMPARE(preferences.value(QStringLiteral("mapTest/slkToolRoot")).toString(), originalSlkTool);
     QVERIFY(preferences.value(QStringLiteral("mapTest/runtimeRoot")).toString().isEmpty());
     QVERIFY(!preferences.value(QStringLiteral("mapTest/slkEnabled")).toBool());
     QCOMPARE(preferences.value(QStringLiteral("mapTest/ydweRoot")).toString(), legacyYdwe);
 }
+
 
 
 void ApplicationSettingsCommitTests::recoveryPreferencesCommitOrRollback() {

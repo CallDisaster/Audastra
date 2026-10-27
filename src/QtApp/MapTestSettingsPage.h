@@ -28,6 +28,9 @@ public:
     void SetLegacyBackupDirectoryRequestedHandler(std::function<void(QString)> handler);
 
 private:
+    QString legacyBackupInspectionText_;
+    QString backupMigrationText_;
+    bool backupMigrationBusy_ = false;
     QString genericDataRoot_;
     QLineEdit* backupDirectory_ = nullptr;
     QSpinBox* backupLimit_ = nullptr;

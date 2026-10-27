@@ -1,6 +1,7 @@
 #include "MapTestSettingsPage.h"
 #include "../QtCommon/LocalConsentPreference.h"
 #include "../QtCommon/MapBackupPaths.h"
+#include "MapBackupMigrationService.h"
 
 #include <QCheckBox>
 #include <QDir>
@@ -138,6 +139,16 @@ MapTestSettingsPage::MapTestSettingsPage(
     legacyBackupInspection_ = Note(QString(), backupGroup);
     legacyBackupInspection_->setObjectName(QStringLiteral("mapLegacyBackupInspection"));
     backupForm->addRow(legacyBackupInspection_);
+    if (auto* migration = Agent::MapBackupMigrationService::Application()) {
+        backupMigrationText_ = migration->Text();
+        backupMigrationBusy_ = migration->Busy();
+        legacyBackupInspection_->setText(backupMigrationText_);
+        connect(migration, &Agent::MapBackupMigrationService::StatusChanged, this, [this](const QString& text, bool busy) {
+            backupMigrationText_ = text;
+            backupMigrationBusy_ = busy;
+            legacyBackupInspection_->setText(text.isEmpty() ? legacyBackupInspectionText_ : text);
+        });
+    }
     legacyBackupBrowse_ = new QPushButton(tr("检查旧版目录…"), backupGroup);
     legacyBackupBrowse_->setObjectName(QStringLiteral("mapLegacyBackupDirectoryBrowse"));
     legacyBackupBrowse_->setAutoDefault(false);
@@ -176,10 +187,15 @@ bool MapTestSettingsPage::Validate(QString* error) const {
 }
 
 void MapTestSettingsPage::SetLegacyBackupInspectionText(const QString& text) {
-    legacyBackupInspection_->setText(text);
+    legacyBackupInspectionText_ = text;
+    if (backupMigrationText_.isEmpty()) legacyBackupInspection_->setText(text);
 }
 
 void MapTestSettingsPage::SetLegacyBackupInspectionBusy(bool busy) {
+    if (busy && !backupMigrationBusy_) {
+        backupMigrationText_.clear();
+        legacyBackupInspection_->setText(legacyBackupInspectionText_);
+    }
     legacyBackupInspectionBusy_ = busy;
     legacyBackupBrowse_->setEnabled(!busy && static_cast<bool>(legacyBackupDirectoryRequested_));
 }

@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "CampaignModule.h"
 #include "LegacyMapBackupCheck.h"
+#include "MapBackupMigrationService.h"
 #include "../QtCommon/ApplicationPaths.h"
 #include "RecoveryPreferences.h"
 #include "WorldFrameRecorder.h"
@@ -189,6 +190,10 @@ MainWindow::MainWindow(StartupMode startupMode, QWidget* parent, const QString& 
 
     // 启动探针只读取命令行指定工作区，不接触用户持久化设置或 Warcraft 安装目录。
     if (startupMode_ == StartupMode::Normal) {
+        if (auto* migration = War3Map::Agent::MapBackupMigrationService::Application()) {
+            connect(migration, &War3Map::Agent::MapBackupMigrationService::StatusChanged, this,
+                [this](const QString& text, bool) { ShowStatusMessage(text); });
+        }
         legacyMapBackupCheck_ = new War3Map::QtProject::LegacyMapBackupCheck(
             War3Map::QtCommon::InstallationRoot(), this);
         // 目录与大备份 SHA 的只读核验均在后台；启动探针不碰本机历史位置。

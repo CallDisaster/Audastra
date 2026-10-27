@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include "MapBackupMigrationService.h"
 
 #include <functional>
 #include <optional>
@@ -44,7 +45,8 @@ public:
     [[nodiscard]] static bool Commit(QSettings& preferences, const AgentSettingsStore& store,
         const AgentSettings& settings, const ApplicationPreferences& application,
         QString* error = nullptr, const ApplicationSettingsSync& synchronize = {},
-        const ApplicationServicePreferences& services = {});
+        const ApplicationServicePreferences& services = {},
+        const MapBackupMigrationDispatch& migration = {});
 };
 
 } // namespace War3Map::Agent
