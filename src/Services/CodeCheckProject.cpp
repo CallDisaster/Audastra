@@ -3,6 +3,7 @@
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Script/ReadOnlyScriptSource.h"
@@ -441,7 +442,7 @@ std::optional<std::string> PrepareContext(CodeCheckProjectCache::Impl& owned,
 CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
     CodeCheckRequest& request, const Trigger::TriggerDocument& document, std::optional<StableId> requiredAuthor,
     bool executeTemplates, const std::function<CodeCheckResult(std::string)>& fallback, std::stop_token cancel,
-    Clock::time_point deadline, Script::MapScriptResult* generatedOut) {
+    Clock::time_point deadline, Script::MapScriptResult* generatedOut, std::string* expandedOut = nullptr) {
     Script::MapScriptInputs inputs;
     inputs.triggers = &document; inputs.catalog = snapshot->catalog.get(); inputs.queries = Script::BuildObjectQueries(owned.objects);
     Script::AttachSoundQueries(inputs.queries, owned.game ? &*owned.game : nullptr, &*owned.archive);
@@ -567,6 +568,14 @@ CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std:
     request.context.complete = true; request.jass.returnBug = owned.bases->allowReturnBug;
     request.language = CodeLanguage::VJass; // 整图依赖也可能含库；统一展开后仍交给同一JASS检查器。
     request.preprocessed = true;
+    if (expandedOut) {
+        // 只要展开后的整图（界面模拟）：不做检查。
+        *expandedOut = std::move(request.source.text);
+        CodeCheckResult expanded;
+        expanded.generation = request.generation; expanded.contextBinding = request.context.binding;
+        expanded.completed = true; expanded.contextComplete = true; expanded.reason = templateNote;
+        return expanded;
+    }
     auto result = CheckCode(request, cancel);
     if (!templateNote.empty()) result.reason += (result.reason.empty() ? "" : " ") + templateNote;
     std::size_t externalBytes = 0;
@@ -762,4 +771,50 @@ CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjec
         return failed;
     }
 }
+Result<ProjectJassScript> BuildProjectJassScript(const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
+    CodeCheckProjectCache& cache, std::shared_ptr<const Trigger::TriggerDocument> document, std::stop_token cancel) {
+    CodeCheckRequest request;
+    request.language = CodeLanguage::Jass; request.source = {"Map/generated.j", {}};
+    request.context.binding = snapshot ? snapshot->binding : "unbound";
+    request.debug = snapshot && snapshot->debug;
+    request.jass.cancel = cancel; request.lua.cancel = cancel;
+    const auto deadline = Clock::now() + std::chrono::seconds(60);
+    request.jass.deadline = deadline; request.lua.deadline = deadline;
+    const auto failed = [](std::string reason) {
+        return Result<ProjectJassScript>::Failure("Code.Check", "SCRIPT_BUILD_CONTEXT_INCOMPLETE", "整图脚本生成不了：" + std::move(reason));
+    };
+    try {
+        if (!snapshot || !snapshot->catalog || !document) return failed("工程没有完整的冻结触发器来源。");
+        std::lock_guard lock(cache.impl_->mutex);
+        auto& owned = *cache.impl_;
+        if (auto reason = PrepareContext(owned, snapshot, request, cancel, deadline)) return failed(std::move(*reason));
+        std::string expanded;
+        const auto incomplete = [](std::string reason) {
+            CodeCheckResult result;
+            result.reason = std::move(reason);
+            return result;
+        };
+        const auto built = CheckGeneratedMap(owned, snapshot, request, *document, std::nullopt, true, incomplete, cancel, deadline,
+            nullptr, &expanded);
+        if (!built.contextComplete) return failed(built.reason);
+        ProjectJassScript script;
+        script.common = BytesText(owned.bases->common.bytes);
+        script.blizzard = BytesText(owned.bases->blizzard.bytes);
+        // 与检查、保存相同的 vJass 翻译。
+        Jass::VJassOptions vjass;
+        vjass.baseScripts = {{"common.j", script.common}, {"blizzard.j", script.blizzard}};
+        vjass.check = request.jass; vjass.debug = request.debug;
+        auto translated = Jass::TranslateVJass(expanded, "war3map.j", vjass);
+        if (!translated.Succeeded()) {
+            return failed(translated.unsupported.empty() ? Reason(translated.diagnostics, "vJass 翻译没有通过。") : translated.unsupported);
+        }
+        script.map = std::move(translated.text);
+        auto result = Result<ProjectJassScript>::Success(std::move(script));
+        if (!built.reason.empty()) result.diagnostics.push_back({DiagnosticSeverity::Info, "Code.Check", "SCRIPT_BUILD_NOTE", built.reason});
+        return result;
+    } catch (const std::exception&) {
+        return failed(cancel.stop_requested() ? "已取消。" : "未能完整执行或超过时间预算。");
+    }
+}
+
 } // namespace War3Map::Services

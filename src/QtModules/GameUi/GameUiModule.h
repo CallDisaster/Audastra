@@ -50,9 +50,12 @@ class QVBoxLayout;
 class QWidget;
 
 namespace War3Map::QtProject { class EditorProject; }
+namespace War3Map::Trigger { class TriggerDocument; }
 namespace War3Map::UiKit { class ProblemList; }
 namespace War3Map::Modules {
 class GameUiCanvas;
+struct GameUiTriggerSimulation;
+struct GameUiTriggerSimulationJob;
 
 // 屏幕单位矩形换算为指定画面高度下的像素矩形（左上为原点），画面宽 = 高 × 宽高比。
 [[nodiscard]] QRect GameUiPixelRect(const GameUi::FrameRect& rect, const GameUi::FrameTreeOptions& options, double aspect,
@@ -171,6 +174,28 @@ public:
         QString problem;  // 查询失败的原因
     };
     [[nodiscard]] RuntimeRequirement QueryRuntimeRequirement() const;
+    // 界面模拟（GameUiTriggerSimulation.cpp）：界面 id 的模拟计时器按周期到期，执行作者用“界面模拟计时器到期”订阅它的触发器，
+    // 再把这份界面的数值与状态变量读回预览。第一次开始或单步时在后台按当前触发器（含未保存的修改）生成整图脚本并初始化，
+    // 之后全局量保留；改了触发器要重置。触发器停下时暂停，位置在问题列表里。不能开始时给出原因。
+    struct TriggerSimulationStatus {
+        QString description;  // 正在模拟的界面；空为没有
+        bool preparing = false;
+        bool running = false;
+        bool ready = false;  // 脚本已生成并初始化
+        double time = 0.0;   // 模拟经过的秒数
+        std::uint32_t fired = 0;
+        std::vector<std::pair<std::string, std::string>> subscriptions;  // （界面编号, 计时器编号）
+    };
+    bool StartTriggerSimulation(const QString& id, QString* error = nullptr);
+    void PauseTriggerSimulation();
+    // 推进到下一个计时器到期；还没准备好时先准备，准备好后推进。
+    bool StepTriggerSimulation(const QString& id, QString* error = nullptr);
+    // 停止并丢掉生成的脚本；预览回到起始值与基础状态。
+    void ResetTriggerSimulation();
+    [[nodiscard]] TriggerSimulationStatus TriggerSimulationState() const;
+    [[nodiscard]] const std::vector<Diagnostic>& TriggerSimulationProblems() const;
+    // 测试使用：以给定脚本代替后台生成，同步准备好界面 id 的模拟（拦截、初始化与起始值同正常流程）。
+    bool PrepareTriggerSimulationForTesting(const QString& id, std::vector<GameUi::MapScriptText> scripts, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -180,6 +205,7 @@ public:
 signals:
     void SceneChanged();
     void AssetsChanged();
+    void TriggerSimulationChanged();
 
 private:
     void BuildPage();
@@ -207,6 +233,23 @@ private:
     void UpdateDescriptionData(const GameUi::UiDescription& description);
     void SyncDescriptionStateRow(const GameUi::UiDescription& description, bool refill);
     void FillStateOverrides();
+    void BuildTriggerSimulationPage(QTabWidget* tabs);
+    // refill 为真时重填计时器与起始值表格，否则只更新按钮与状态。
+    void UpdateTriggerSimulationPage(bool refill = false);
+    bool BeginTriggerSimulation(const QString& id, QString* error);
+    bool PrepareTriggerSimulation(const QString& id, QString* error);
+    // 要拦截的界面触发器（脚本变量名），同时记下各自的动作。
+    std::vector<std::string> PlanTriggerSimulation(const GameUi::UiDescription& description, const Trigger::TriggerDocument& document);
+    void FinishTriggerSimulation(std::uint64_t generation, GameUiTriggerSimulationJob& job);
+    // 推进到 until（空为下一个到期的那一刻），执行到期的计时器后读回数值。
+    void AdvanceTriggerSimulation(std::optional<double> until);
+    void ApplyTriggerSimulationValues(const std::vector<std::string>& intercepted);
+    // 停止并丢掉生成的脚本，不动预览；返回原来模拟的界面编号。
+    QString StopTriggerSimulation();
+    // 预览设为模拟起始值与基础状态。
+    void ShowSimulationStart(const QString& id);
+    // 改面板所示描述的 simulation 段后整体写回（set_simulation）。
+    void ChangeSimulation(const std::function<bool(QJsonObject&, QString*)>& change, const QString& what);
     // 改面板所示描述的一个列表（values、states、events，或 set＝所选状态的覆盖）后整组写回；change 返回 false 时不改，
     // 带原因时报告并恢复表格。
     void ChangeDescriptionList(const QString& list, const std::function<bool(QJsonArray&, QString*)>& change,
@@ -312,6 +355,13 @@ private:
     QWidget* overridePage_ = nullptr;
     QTableWidget* eventTable_ = nullptr;
     int stateRow_ = 0;  // 状态页所选状态
+    std::unique_ptr<GameUiTriggerSimulation> triggerSim_;
+    QPushButton* simRun_ = nullptr;
+    QPushButton* simStep_ = nullptr;
+    QPushButton* simReset_ = nullptr;
+    QLabel* simStatus_ = nullptr;
+    QTableWidget* simTimers_ = nullptr;
+    QTableWidget* simStarts_ = nullptr;
 
     bool stagingOwnImport_ = false;  // 自己放入描述文件引发的导入变化：已就地更新，不整体重读
     std::vector<Diagnostic> authoringDiagnostics_;

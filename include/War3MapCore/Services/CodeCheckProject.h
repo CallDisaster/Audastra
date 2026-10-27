@@ -48,6 +48,13 @@ struct CodeCheckProjectSnapshot {
     bool debug = false;
 };
 
+// 编辑器里执行触发器用（界面模拟）的整图：实际基础库与翻译后的整图 JASS（见 BuildProjectJassScript）。
+struct ProjectJassScript {
+    std::string common;
+    std::string blizzard;
+    std::string map;
+};
+
 // 一个代码视图拥有一份缓存；后台持有内部互斥量，同一缓存不并行运行。
 // 缓存按整个snapshot对象及binding换代，不让草稿借用旧修订的基础库/物编/框架来源。
 class CodeCheckProjectCache final {
@@ -64,6 +71,8 @@ private:
         std::uint64_t, std::stop_token, CodeCheckLuaSources);
     friend CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjectSnapshot>&,
         CodeCheckProjectCache&, std::shared_ptr<const Trigger::TriggerDocument>, std::uint64_t, std::stop_token);
+    friend Result<ProjectJassScript> BuildProjectJassScript(const std::shared_ptr<const CodeCheckProjectSnapshot>&,
+        CodeCheckProjectCache&, std::shared_ptr<const Trigger::TriggerDocument>, std::stop_token);
 };
 
 [[nodiscard]] std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLanguage language = CodeLanguage::Jass);
@@ -83,6 +92,10 @@ private:
     CodeCheckProjectCache& cache, std::shared_ptr<const Trigger::TriggerDocument> document,
     std::uint64_t generation, std::stop_token cancel = {});
 
+// 界面模拟用：与 CheckProjectTriggers 同一条生产整图链（生成 → 注入/预处理 → 模板）展开，再经同一 vJass 翻译。
+// 不检查、不写地图、不执行代码；上下文不完整或翻译不了时给出原因。
+[[nodiscard]] Result<ProjectJassScript> BuildProjectJassScript(const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
+    CodeCheckProjectCache& cache, std::shared_ptr<const Trigger::TriggerDocument> document, std::stop_token cancel = {});
 // 独立Lua文本使用与工程代码块相同的只读本机运行库捕获，不接收外部伪造库存事实。
 // 不把文本加入地图/执行代码，不授予全图上下文或保存发布资格。lua 与 CheckProjectCode 相同。
 [[nodiscard]] CodeCheckResult CheckProjectLuaSource(

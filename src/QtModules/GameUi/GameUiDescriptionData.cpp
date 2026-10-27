@@ -2,20 +2,16 @@
 
 #include "GameUiAuthoringJson.h"
 #include "GameUiChoice.h"
+#include "GameUiTables.h"
 
-#include <QAbstractItemView>
 #include <QComboBox>
-#include <QHBoxLayout>
-#include <QHeaderView>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QPushButton>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTimer>
-#include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
@@ -27,15 +23,11 @@ namespace War3Map::Modules {
 namespace {
 
 using namespace War3Map::GameUi;
+using namespace GameUiTables;
 
 QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
 constexpr int kChoiceRole = kGameUiChoiceRole;
-
-struct Column {
-    const char* key;
-    const char* label;
-};
 
 constexpr Column kValueColumns[] = {{"id", QT_TR_NOOP("编号")}, {"label", QT_TR_NOOP("显示名")}, {"type", QT_TR_NOOP("类型")},
     {"size", QT_TR_NOOP("格数")}, {"default", QT_TR_NOOP("默认值")}, {"min", QT_TR_NOOP("最小")}, {"max", QT_TR_NOOP("最大")}};
@@ -46,84 +38,14 @@ constexpr Column kEventColumns[] = {{"id", QT_TR_NOOP("编号")}, {"frame", QT_T
 
 using Options = GameUiOptions;
 
-template <std::size_t N>
-QString ColumnKey(const Column (&columns)[N], int column) {
-    return column >= 0 && column < static_cast<int>(N) ? QLatin1String(columns[column].key) : QString();
-}
-
-template <std::size_t N>
-QString ColumnLabel(const Column (&columns)[N], int column) {
-    return column >= 0 && column < static_cast<int>(N) ? QObject::tr(columns[column].label) : QString();
-}
-
-template <std::size_t N>
-void SetHeaders(QTableWidget* table, const Column (&columns)[N], bool raw) {
-    QStringList labels;
-    for (const auto& column : columns) labels.push_back(raw ? QLatin1String(column.key) : QObject::tr(column.label));
-    table->setHorizontalHeaderLabels(labels);
-}
-
-template <std::size_t N>
-QTableWidget* MakeTable(QWidget* parent, const char* name, const Column (&columns)[N]) {
-    auto* table = new QTableWidget(0, static_cast<int>(N), parent);
-    table->setObjectName(QLatin1String(name));
-    table->verticalHeader()->setVisible(false);
-    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
-    table->horizontalHeader()->setStretchLastSection(true);
-    table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table->setSelectionMode(QAbstractItemView::SingleSelection);
-    table->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked |
-        QAbstractItemView::EditKeyPressed | QAbstractItemView::AnyKeyPressed);
-    SetHeaders(table, columns, false);
-    return table;
-}
-
 void SetChoices(QTableWidget* table, int column, std::function<Options()> options) {
     table->setItemDelegateForColumn(column,
         new GameUiChoiceDelegate([options = std::move(options)](const QModelIndex&) { return options(); }, table));
 }
 
-QPushButton* Button(QWidget* parent, const char* name, const QString& text) {
-    auto* button = new QPushButton(text, parent);
-    button->setObjectName(QLatin1String(name));
-    return button;
-}
-
-// 表格页：上方一行按钮，下方表格。
-QWidget* TablePage(QWidget* parent, QTableWidget* table, std::initializer_list<QPushButton*> buttons) {
-    auto* page = new QWidget(parent);
-    auto* layout = new QVBoxLayout(page);
-    layout->setContentsMargins(0, 4, 0, 0);
-    layout->setSpacing(4);
-    auto* row = new QHBoxLayout;
-    for (auto* button : buttons) {
-        button->setParent(page);
-        row->addWidget(button);
-    }
-    row->addStretch(1);
-    layout->addLayout(row);
-    table->setParent(page);
-    layout->addWidget(table, 1);
-    return page;
-}
-
-QTableWidgetItem* Cell(const QString& text, bool editable = true) {
-    auto* item = new QTableWidgetItem(text);
-    if (!editable) item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-    if (!text.isEmpty()) item->setToolTip(text);
-    return item;
-}
-
 QTableWidgetItem* ChoiceCell(const Options& options, const QString& value) {
     auto* item = Cell(GameUiChoiceLabel(options, value));
     item->setData(kChoiceRole, value);
-    return item;
-}
-
-QTableWidgetItem* CheckCell(bool checked) {
-    auto* item = new QTableWidgetItem;
-    item->setFlags((item->flags() | Qt::ItemIsUserCheckable) & ~Qt::ItemIsEditable);
-    item->setCheckState(checked ? Qt::Checked : Qt::Unchecked);
     return item;
 }
 
@@ -134,15 +56,6 @@ QString CellValue(const QTableWidgetItem* item) {
 }
 
 QString Number(double value) { return QString::number(value, 'g', 15); }
-
-// 列宽按内容，过长的（贴图路径等）收在上限内，悬停看全文。
-void FitColumns(QTableWidget* table) {
-    table->resizeColumnsToContents();
-    table->resizeRowsToContents();
-    for (int column = 0; column < table->columnCount(); ++column) {
-        table->setColumnWidth(column, std::min(table->columnWidth(column), 180));
-    }
-}
 
 Options ValueTypes(bool raw) {
     const auto label = [raw](const char* name, const QString& text) { return raw ? QString::fromLatin1(name) : text; };
@@ -457,6 +370,8 @@ void GameUiModule::BuildDescriptionData(QTabWidget* tabs) {
             AtRow(item->row(), [key, text](QJsonObject& object, QString* error) { return PutField(object, key, text, false, error); }),
             tr("改事件的%1").arg(ColumnLabel(kEventColumns, item->column())));
     });
+
+    BuildTriggerSimulationPage(tabs);
 }
 
 void GameUiModule::UpdateDescriptionData(const UiDescription& description) {
@@ -517,6 +432,7 @@ void GameUiModule::UpdateDescriptionData(const UiDescription& description) {
         }
         FitColumns(eventTable_);
     }
+    UpdateTriggerSimulationPage(true);
 }
 
 // 预览切到某个状态时，状态页选中它并列出它的覆盖；基础状态时保持原选择。

@@ -137,6 +137,14 @@ int main(int argc, char** argv) {
             if (colon <= 0 || module.CreateDescriptionFrame(kind, spec.left(colon), {}, position, {}, &error).isEmpty())
                 out << "bad --ui-add " << spec << ' ' << error << '\n';
         }
+        else if (argument == QLatin1String("--ui-edit") && hasValue) {
+            // --ui-edit 界面:编辑JSON：按 UiDescriptionEdit 的写法改描述（数值、状态、模拟等）。
+            const QString spec = arguments[++i];
+            const qsizetype colon = spec.indexOf(QLatin1Char(':'));
+            QString error;
+            if (colon <= 0 || !module.EditDescription(spec.left(colon), spec.mid(colon + 1), {}, &error))
+                out << "bad --ui-edit " << spec << ' ' << error << '\n';
+        }
         else if (argument == QLatin1String("--kind-picker") && hasValue) kindPicker = arguments[++i];
         else if (argument == QLatin1String("--frame-settings") && hasValue) frameSettings = arguments[++i];
         else if ((argument == QLatin1String("--ui-state") || argument == QLatin1String("--ui-set")) && hasValue) {

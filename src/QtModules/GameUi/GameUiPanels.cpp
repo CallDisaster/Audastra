@@ -629,6 +629,8 @@ std::vector<Diagnostic> GameUiModule::Problems() const {
     problems.insert(problems.end(), simulationDiagnostics_.begin(), simulationDiagnostics_.end());
     if (simulation_) problems.insert(problems.end(), simulation_->diagnostics.begin(), simulation_->diagnostics.end());
     problems.insert(problems.end(), authoringDiagnostics_.begin(), authoringDiagnostics_.end());
+    const auto& simulated = TriggerSimulationProblems();
+    problems.insert(problems.end(), simulated.begin(), simulated.end());
     if (const ScriptFramePlan* plan = ScriptFrames(); plan && roots_.contains(QString::fromLatin1(kScriptRoot.data(),
             static_cast<qsizetype>(kScriptRoot.size())), Qt::CaseInsensitive)) {
         const auto calls = ScriptCallDiagnostics(*plan);

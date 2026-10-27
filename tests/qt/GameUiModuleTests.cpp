@@ -6,6 +6,8 @@
 #include "GameUiToolService.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
+#include "War3MapCore/Script/MapScript.h"
+#include "War3MapCore/Trigger/TriggerGraphEditing.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -17,6 +19,7 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QStandardItemModel>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QTest>
 #include <QTreeWidget>
@@ -84,6 +87,7 @@ private slots:
     void FramePropertiesEditLayoutAndText();
     void KindPickerCreatesTypedFrames();
     void FrameSettingsCardAndTexturePicker();
+    void TriggerSimulationRunsAuthorTriggers();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -889,6 +893,144 @@ void GameUiModuleTests::FrameSettingsCardAndTexturePicker() {
     path->setText(QStringLiteral("ReplaceableTextures\\TeamColor\\TeamColor00"));
     emit path->returnPressed();
     QCOMPARE(frame("bar1")->texture, std::string("ReplaceableTextures\\TeamColor\\TeamColor00"));
+}
+
+// 界面模拟：作者的触发器订阅模拟计时器，每次到期扣血、低于 0.3 时运行“状态 低”；生成的“更新”“状态”触发器被拦截，
+// 数值与状态读回预览。脚本用生产整图生成器从同一份触发器文档生成（模拟工程里的后台生成，换成测试给定的基础库）。
+void GameUiModuleTests::TriggerSimulationRunsAuthorTriggers() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hp"), QStringLiteral("血条"), &error), qPrintable(error));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("bar"), &error), QStringLiteral("bar1"));
+    QVERIFY2(module.EditDescription(QStringLiteral("Hp"), QStringLiteral(R"([
+        {"op":"set_values","values":[{"id":"hp","type":"real","min":0,"max":1,"default":1}]},
+        {"op":"set_states","states":[{"id":"low","label":"低"}]}])"), {}, &error), qPrintable(error));
+
+    // 没有模拟计时器时明确拒绝。
+    QVERIFY(!module.StepTriggerSimulation(QStringLiteral("Hp"), &error));
+    QVERIFY(error.contains(QStringLiteral("模拟计时器")));
+    QVERIFY2(module.EditDescription(QStringLiteral("Hp"), QStringLiteral(R"([
+        {"op":"set_simulation","simulation":{"timers":[{"id":"tick","period":0.5}],"values":{"hp":1}}}])"), {}, &error),
+        qPrintable(error));
+
+    AudastraUiTest::Catalog files;
+    files.extras = {{"simtest", "", "", "", "[ConditionalTriggerExecute]\n[[.args]]\ntype=trigger\n", ""}};
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto generated = module.GenerateDescriptionTriggers(QStringLiteral("Hp"), false, &error);
+    QVERIFY2(generated, qPrintable(error));
+    const auto low = std::find_if(generated->triggers.begin(), generated->triggers.end(),
+        [](const QString& name) { return name.endsWith(QStringLiteral("Hp_State_low")); });
+    QVERIFY(low != generated->triggers.end());
+
+    const std::string author = "触发器 模拟 扣血 Sim_Drain:\n"
+        "    events:\n"
+        "        AudastraUIRegisterSimulationTimer(\"Hp\", \"tick\")\n"
+        "    actions:\n"
+        "        SetVariable(udg_AUIV_Hp_hp, OperatorReal(udg_AUIV_Hp_hp, OperatorSubtract, 0.25))\n"
+        "        IfThenElseMultiple() {\n"
+        "            if:\n"
+        "                OperatorCompareReal(0.3, OperatorGreater, udg_AUIV_Hp_hp)\n"
+        "            then:\n"
+        "                ConditionalTriggerExecute(`" + low->toStdString() + "`)\n"
+        "        }\n"
+        "        ConditionalTriggerExecute(`血条 更新 Hp_Update`)\n";
+    const auto binding = Trigger::CaptureTriggerGraphBinding(*project.triggerDocument_, *project.uiCatalog_);
+    QVERIFY(binding.Succeeded());
+    Trigger::TriggerGraphEditBatch batch{*binding.value, {}};
+    batch.operations.emplace_back(Trigger::GraphApplyFeatureText{"模拟", author, {}, std::nullopt});
+    const auto applied = Trigger::ApplyTriggerGraphEditBatch(*project.triggerDocument_, *project.uiCatalog_, batch);
+    QVERIFY2(applied.Succeeded(), applied.diagnostics.empty() ? "" : applied.diagnostics.front().message.c_str());
+
+    Script::MapScriptInputs inputs;
+    inputs.triggers = project.triggerDocument_.get();
+    inputs.catalog = project.uiCatalog_.get();
+    const auto map = Script::GenerateMapScript(inputs);
+    QVERIFY2(map.Succeeded(), map.diagnostics.empty() ? "" : map.diagnostics.front().message.c_str());
+    std::string plain;  // 去掉 YDWE 预处理行（行号不变）
+    for (std::size_t start = 0; start < map.text.size();) {
+        const std::size_t end = std::min(map.text.find('\n', start), map.text.size());
+        const std::string_view line(map.text.data() + start, end - start);
+        if (!line.starts_with("#")) plain += line;
+        plain += '\n';
+        start = end + 1;
+    }
+    const std::string common = "type agent extends handle\ntype event extends agent\ntype trigger extends agent\n"
+        "type triggeraction extends handle\ntype triggercondition extends agent\ntype boolexpr extends agent\n"
+        "type conditionfunc extends boolexpr\n"
+        "native CreateTrigger takes nothing returns trigger\n"
+        "native TriggerAddAction takes trigger whichTrigger, code actionFunc returns triggeraction\n"
+        "native TriggerAddCondition takes trigger whichTrigger, boolexpr condition returns triggercondition\n"
+        "native Condition takes code func returns conditionfunc\n"
+        "native TriggerEvaluate takes trigger whichTrigger returns boolean\n"
+        "native TriggerExecute takes trigger whichTrigger returns nothing\n"
+        "native TriggerRegisterTimerEvent takes trigger whichTrigger, real timeout, boolean periodic returns event\n";
+    const std::string blizzard = "function TriggerRegisterTimerEventPeriodic takes trigger trig, real timeout returns event\n"
+        "    return TriggerRegisterTimerEvent(trig, timeout, true)\nendfunction\n"
+        "function ConditionalTriggerExecute takes trigger trig returns nothing\n"
+        "    if TriggerEvaluate(trig) then\n        call TriggerExecute(trig)\n    endif\nendfunction\n";
+    std::vector<MapScriptText> scripts{{"common.j", ScriptLanguage::Jass, common}, {"blizzard.j", ScriptLanguage::Jass, blizzard},
+        {"war3map.j", ScriptLanguage::Jass, plain}};
+    QVERIFY2(module.PrepareTriggerSimulationForTesting(QStringLiteral("Hp"), scripts, &error), qPrintable(error));
+
+    const auto codes = [&module] {
+        QStringList list;
+        for (const auto& problem : module.TriggerSimulationProblems()) list.push_back(QString::fromStdString(problem.code));
+        return list;
+    };
+    auto status = module.TriggerSimulationState();
+    QVERIFY(status.ready && !status.running && status.description == QStringLiteral("Hp"));
+    QVERIFY(std::find(status.subscriptions.begin(), status.subscriptions.end(), std::pair<std::string, std::string>{"Hp", "tick"}) !=
+        status.subscriptions.end());
+    QVERIFY2(!codes().contains(QStringLiteral("AUI_SIM_NO_SUBSCRIBER")) && !codes().contains(QStringLiteral("AUI_SIM_NOT_GENERATED")),
+        qPrintable(codes().join(',')));
+    const auto preview = [&module] { return module.DescriptionPreview(QStringLiteral("Hp")); };
+    QCOMPARE(QString::fromStdString(preview().values.at("hp")), QStringLiteral("1"));
+
+    QVERIFY2(module.StepTriggerSimulation(QStringLiteral("Hp"), &error), qPrintable(error));
+    status = module.TriggerSimulationState();
+    QCOMPARE(status.fired, 1u);
+    QCOMPARE(status.time, 0.5);
+    QCOMPARE(QString::fromStdString(preview().values.at("hp")), QStringLiteral("0.75"));
+    QVERIFY(preview().state.empty());
+    QVERIFY(module.StepTriggerSimulation(QStringLiteral("Hp")) && module.StepTriggerSimulation(QStringLiteral("Hp")));
+    QCOMPARE(QString::fromStdString(preview().values.at("hp")), QStringLiteral("0.25"));
+    QCOMPARE(QString::fromStdString(preview().state), QStringLiteral("low"));
+    QVERIFY2(std::none_of(module.TriggerSimulationProblems().begin(), module.TriggerSimulationProblems().end(),
+                 [](const Diagnostic& problem) { return problem.severity == DiagnosticSeverity::Error; }),
+        qPrintable(codes().join(',')));
+
+    // “模拟”页：计时器与订阅数、起始值。
+    auto* timers = page->findChild<QTableWidget*>(QStringLiteral("gameUiSimulationTimers"));
+    auto* starts = page->findChild<QTableWidget*>(QStringLiteral("gameUiSimulationValues"));
+    QVERIFY(timers && starts);
+    QCOMPARE(timers->rowCount(), 1);
+    QCOMPARE(timers->item(0, 0)->text(), QStringLiteral("tick"));
+    QCOMPARE(timers->item(0, 4)->text(), QStringLiteral("1"));
+    QCOMPARE(starts->rowCount(), 1);
+    QCOMPARE(starts->item(0, 1)->text(), QStringLiteral("1"));
+    auto* statusLabel = page->findChild<QLabel*>(QStringLiteral("gameUiSimulationStatus"));
+    QVERIFY(statusLabel && statusLabel->text().contains(QStringLiteral("3")));
+
+    // 运行：时钟推进，按周期到期。
+    QVERIFY2(module.StartTriggerSimulation(QStringLiteral("Hp"), &error), qPrintable(error));
+    QVERIFY(module.TriggerSimulationState().running);
+    QTRY_VERIFY_WITH_TIMEOUT(module.TriggerSimulationState().fired >= 4, 5000);
+    module.PauseTriggerSimulation();
+    QVERIFY(!module.TriggerSimulationState().running);
+
+    // 重置：丢掉脚本，预览回到起始值与基础状态。
+    module.ResetTriggerSimulation();
+    status = module.TriggerSimulationState();
+    QVERIFY(!status.ready && status.description.isEmpty() && status.fired == 0);
+    QCOMPARE(QString::fromStdString(preview().values.at("hp")), QStringLiteral("1"));
+    QVERIFY(preview().state.empty());
 }
 
 int main(int argc, char** argv) {

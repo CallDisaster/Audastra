@@ -1,5 +1,7 @@
 #include "GameUiModule.h"
 
+#include "GameUiTriggerSimulation.h"
+
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
@@ -63,6 +65,7 @@ QRect GameUiPixelRect(const FrameRect& rect, const FrameTreeOptions& options, do
 }
 
 GameUiModule::GameUiModule(QtProject::EditorProject& project) : project_(project), roots_(kDefaultRoots) {
+    triggerSim_ = std::make_unique<GameUiTriggerSimulation>();
     connect(&project_, &QtProject::EditorProject::MapDocumentChanged, this, &GameUiModule::ScheduleReload);
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
         if (!stagingOwnImport_) ScheduleReload();
@@ -143,6 +146,7 @@ void GameUiModule::ApplyDefinitions(GameUiDefinitions definitions) {
     loadDiagnostics_ = definitions.diagnostics;
     // 脚本可能已变化：之前的模拟不再对应，停止。
     ResetSimulation();
+    StopTriggerSimulation();
     definitions_ = std::move(definitions);
     // 预览数值按描述编号保留（重新读取后接着看），已不存在的描述丢弃。
     for (auto it = descriptionStates_.begin(); it != descriptionStates_.end();) {
