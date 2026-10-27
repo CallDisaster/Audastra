@@ -75,6 +75,7 @@ enum class UiFrameType : std::uint8_t {
     Bar,       // 进度条：底图 + 按比例改宽度的填充（两层普通 BACKDROP）
     Button,    // 按钮（GLUETEXTBUTTON）：常态/按下贴图 + 文字，可发点击事件
     Template,  // 游戏或地图界面文件里的模板
+    Model,     // 模型（MODEL）：显示一个模型或特效
 };
 
 enum class UiAnchorTarget : std::uint8_t { Parent, Screen, Frame, GameArea };
@@ -119,6 +120,7 @@ struct UiFrame {
     std::string texture;     // Backdrop 背景、Bar 填充、Button 常态；可写文字模板（如 {icon[]}）按数值换贴图
     std::string background;  // Bar 底图
     std::string pushed;      // Button 按下
+    std::string model;       // Model 模型路径；可写文字模板（如 {fx}）按数值换模型
     std::string text;        // Text / Button 文字模板：{编号}、{编号:小数位}、{编号[]}；{{ }} 为花括号本身
     std::string font;        // 空为游戏默认字体
     double fontHeight = 0.011;
@@ -140,6 +142,7 @@ struct UiStateOverride {
     std::optional<std::string> text;
     std::optional<bool> visible;
     std::optional<double> value;
+    std::optional<std::string> model;
 
     friend bool operator==(const UiStateOverride&, const UiStateOverride&) = default;
 };

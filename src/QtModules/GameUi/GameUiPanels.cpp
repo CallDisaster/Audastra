@@ -100,6 +100,7 @@ QString UiTypeText(UiFrameType type) {
     case UiFrameType::Bar: return QObject::tr("进度条");
     case UiFrameType::Button: return QObject::tr("按钮");
     case UiFrameType::Template: return QObject::tr("模板");
+    case UiFrameType::Model: return QObject::tr("模型");
     default: return QObject::tr("容器");
     }
 }

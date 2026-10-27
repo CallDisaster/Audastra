@@ -33,7 +33,7 @@ constexpr Column kValueColumns[] = {{"id", QT_TR_NOOP("编号")}, {"label", QT_T
     {"size", QT_TR_NOOP("格数")}, {"default", QT_TR_NOOP("默认值")}, {"min", QT_TR_NOOP("最小")}, {"max", QT_TR_NOOP("最大")}};
 constexpr Column kStateColumns[] = {{"id", QT_TR_NOOP("编号")}, {"label", QT_TR_NOOP("显示名")}, {"set", QT_TR_NOOP("覆盖")}};
 constexpr Column kOverrideColumns[] = {{"frame", QT_TR_NOOP("框架")}, {"texture", QT_TR_NOOP("贴图")}, {"text", QT_TR_NOOP("文字")},
-    {"visible", QT_TR_NOOP("显示")}, {"value", QT_TR_NOOP("进度")}};
+    {"visible", QT_TR_NOOP("显示")}, {"value", QT_TR_NOOP("进度")}, {"model", QT_TR_NOOP("模型")}};
 constexpr Column kEventColumns[] = {{"id", QT_TR_NOOP("编号")}, {"frame", QT_TR_NOOP("框架")}, {"on", QT_TR_NOOP("触发")}};
 
 using Options = GameUiOptions;
@@ -318,6 +318,7 @@ void GameUiModule::BuildDescriptionData(QTabWidget* tabs) {
         case UiFrameType::Bar: entry.insert("value", 1); break;
         case UiFrameType::Backdrop:
         case UiFrameType::Button: entry.insert("texture", Text(frame->texture)); break;
+        case UiFrameType::Model: entry.insert("model", Text(frame->model)); break;
         default: entry.insert("visible", true); break;
         }
         ChangeDescriptionList(QStringLiteral("set"), [entry](QJsonArray& items, QString*) {
@@ -470,6 +471,7 @@ void GameUiModule::FillStateOverrides() {
         overrideTable_->setItem(row, 3, ChoiceCell(visibility,
             entry.visible ? (*entry.visible ? QStringLiteral("true") : QStringLiteral("false")) : QString()));
         overrideTable_->setItem(row, 4, Cell(entry.value ? Number(*entry.value) : QString()));
+        overrideTable_->setItem(row, 5, Cell(entry.model ? Text(*entry.model) : QString()));
     }
     FitColumns(overrideTable_);
 }

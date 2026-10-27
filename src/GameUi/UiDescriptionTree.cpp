@@ -21,6 +21,7 @@ std::string_view FrameTypeOf(UiFrameType type) {
     case UiFrameType::Text: return "TEXT";
     case UiFrameType::Bar: return "SIMPLESTATUSBAR";
     case UiFrameType::Button: return "GLUETEXTBUTTON";
+    case UiFrameType::Model: return "MODEL";
     default: return "FRAME";
     }
 }
@@ -172,6 +173,9 @@ private:
         const std::string texture = change && change->texture ? *change->texture : FormatUiText(description_, state_, frame.texture, instance);
         if (!texture.empty()) node.texture = Texture(texture);
         if (!frame.background.empty()) node.background = Texture(frame.background);
+        if (frame.type == UiFrameType::Model) {
+            node.model = change && change->model ? *change->model : FormatUiText(description_, state_, frame.model, instance);
+        }
         if (frame.type == UiFrameType::Bar) {
             node.fill = static_cast<float>(change && change->value ? *change->value : Number(frame.value, instance));
             node.fillStretch = true;

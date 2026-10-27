@@ -283,6 +283,7 @@ private:
             if (frame.contains("visible")) rebind(frame["visible"]);
             retemplate(frame, "text");
             retemplate(frame, "texture");
+            retemplate(frame, "model");
         });
         if (document_.contains("states") && document_["states"].is_array()) {
             for (auto& state : document_["states"]) {

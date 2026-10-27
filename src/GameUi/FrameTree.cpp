@@ -100,12 +100,20 @@ bool IsTextNode(const FrameNode& node) {
     return node.kind == DefinitionKind::Frame && Text::LowerAscii(node.frameType) == "text";
 }
 
-std::string EnsureTextureExtension(std::string path) {
+namespace {
+
+std::string EnsureExtension(std::string path, std::string_view extension) {
     const std::size_t slash = path.find_last_of("\\/");
     const std::size_t dot = path.find_last_of('.');
-    if (!path.empty() && (dot == std::string::npos || (slash != std::string::npos && dot < slash))) path += ".blp";
+    if (!path.empty() && (dot == std::string::npos || (slash != std::string::npos && dot < slash))) path += extension;
     return path;
 }
+
+} // namespace
+
+std::string EnsureTextureExtension(std::string path) { return EnsureExtension(std::move(path), ".blp"); }
+
+std::string EnsureModelExtension(std::string path) { return EnsureExtension(std::move(path), ".mdx"); }
 
 struct FrameTree::BuildContext {
     const FrameLibrary& library;

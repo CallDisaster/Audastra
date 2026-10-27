@@ -47,7 +47,7 @@ std::uint32_t Hash(std::string_view text) {
     return hash;
 }
 
-enum class Property : std::uint8_t { Texture, Text, Visible, Value };
+enum class Property : std::uint8_t { Texture, Text, Visible, Value, Model };
 
 struct FrameInfo {
     const UiFrame* frame = nullptr;
@@ -72,6 +72,7 @@ public:
                 if (entry.text) overrides_[entry.frame][Property::Text].push_back(state.id);
                 if (entry.visible) overrides_[entry.frame][Property::Visible].push_back(state.id);
                 if (entry.value) overrides_[entry.frame][Property::Value].push_back(state.id);
+                if (entry.model) overrides_[entry.frame][Property::Model].push_back(state.id);
             }
         }
 
@@ -382,6 +383,7 @@ private:
         case UiFrameType::Text: created = classic("AudastraText"); break;
         case UiFrameType::Button: created = classic(ClickButton(info) ? "AudastraClickButton" : "AudastraButton"); break;
         case UiFrameType::Bar: created = classic(ClearBar(info) ? "AudastraBarClear" : "AudastraBar"); break;
+        case UiFrameType::Model: created = classic("AudastraModel"); break;
         case UiFrameType::Template:
             created = info.simple ? Call("AudastraUICreateSimpleFrame", {Quote(frame.templateName), parent, Context(info)})
                                   : classic(frame.templateName);
@@ -555,6 +557,17 @@ private:
         return !path.empty() && path.back() == '}' ? path : EnsureTextureExtension(path);
     }
 
+    // 改模型（模型类型参数为 0）。游戏按完整文件名找模型，没写扩展名时补 .mdx。
+    [[nodiscard]] Lines ModelCall(const FrameInfo& info, const std::string& expression) const {
+        return Lines{Call("AudastraUISetModel", {Self(info), expression, "0"})};
+    }
+    [[nodiscard]] Lines Model(const FrameInfo& info, const std::string& path) const {
+        return ModelCall(info, Quote(EnsureModelExtension(path)));
+    }
+    static std::string ModelTemplate(const std::string& path) {
+        return !path.empty() && path.back() == '}' ? path : EnsureModelExtension(path);
+    }
+
     // 创建时设的固定贴图；写了取值模板的贴图由更新块设。
     void FixedTexture(const FrameInfo& info, Lines& out) {
         const std::string& texture = info.frame->texture;
@@ -605,6 +618,9 @@ private:
             if (!frame.text.empty() && !HasReferences(frame.text)) {
                 if (auto text = TextExpression(info, frame.text)) out.push_back(Call("AudastraUISetText", {TextTarget(info), *text}));
             }
+            break;
+        case UiFrameType::Model:
+            if (!frame.model.empty() && !HasReferences(frame.model)) Append(out, Model(info, frame.model));
             break;
         case UiFrameType::Panel:
         case UiFrameType::Template:
@@ -757,6 +773,7 @@ private:
         case Property::Text: return "text";
         case Property::Visible: return "visible";
         case Property::Value: return "value";
+        case Property::Model: return "model";
         }
         return "value";
     }
@@ -777,7 +794,9 @@ private:
                                                    : Call("OperatorCompareString", {key, "OperatorNotEqualENE", sent});
         Lines body{Set(sent, key)};
         Append(body, statements);
-        if (property == Property::Texture) return If({differs, Call("OperatorCompareString", {key, "OperatorNotEqualENE", Quote("")})}, body);
+        if (property == Property::Texture || property == Property::Model) {
+            return If({differs, Call("OperatorCompareString", {key, "OperatorNotEqualENE", Quote("")})}, body);
+        }
         return If({differs}, body);
     }
     // 状态改过的属性回到基础状态时要重发，即使绑定的取值没变。
@@ -801,6 +820,12 @@ private:
                 if (auto lines = TextureCall(info, SentRef(info, Property::Texture), true)) {
                     Append(out, Guarded(info, Property::Texture, Changed(info, Property::Texture, "string", *expression, *lines)));
                 }
+            }
+        }
+        if (frame.type == UiFrameType::Model && HasReferences(frame.model)) {
+            if (auto expression = TextExpression(info, ModelTemplate(frame.model))) {
+                Append(out, Guarded(info, Property::Model, Changed(info, Property::Model, "string", *expression,
+                    ModelCall(info, SentRef(info, Property::Model)))));
             }
         }
         if (frame.type == UiFrameType::Bar && frame.value.binding) {
@@ -852,6 +877,10 @@ private:
                 if (info->frame->type != UiFrameType::Bar) Error("状态 " + state.id + " 给框架 " + entry.frame + " 改数值，它不是进度条");
                 else if (auto line = BarValue(*info, *entry.value)) statements.push_back(*line);
             }
+            if (entry.model) {
+                if (info->frame->type != UiFrameType::Model) Error("状态 " + state.id + " 给框架 " + entry.frame + " 改模型，它不是模型框架");
+                else Append(statements, Model(*info, *entry.model));
+            }
             Append(out, ForAll(*info, statements));
         }
         return out;
@@ -892,6 +921,15 @@ private:
                     Unsend(info, property, statements);
                     if (!frame.value.binding) {
                         if (auto line = BarValue(info, frame.value.literal)) statements.push_back(*line);
+                    }
+                    break;
+                case Property::Model:
+                    Unsend(info, property, statements);
+                    if (frame.model.empty()) {
+                        warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_MODEL_RESTORE",
+                            "框架 " + frame.id + " 原本没有模型，回到基础状态时保留状态设的模型"));
+                    } else if (!HasReferences(frame.model)) {
+                        Append(statements, Model(info, frame.model));
                     }
                     break;
                 }
@@ -990,6 +1028,9 @@ std::string UiTemplateFdfText() {
         "}\r\n"
         "\r\n"
         "Frame \"BACKDROP\" \"AudastraBackdrop\" {\r\n"
+        "}\r\n"
+        "\r\n"
+        "Frame \"MODEL\" \"AudastraModel\" {\r\n"
         "}\r\n"
         "\r\n"
         "Frame \"TEXT\" \"AudastraText\" {\r\n"

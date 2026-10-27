@@ -211,7 +211,7 @@ QJsonArray StringArray(const QStringList& values, int limit) {
 
 // 可新建的界面类型（与右键“创建界面”同一份）：作用、用法、可换项与默认框架，add_frame 可照默认框架写。
 QJsonArray FrameKindsJson() {
-    static constexpr std::string_view kSlotKinds[] = {"texture", "icon", "text", "number", "flag"};
+    static constexpr std::string_view kSlotKinds[] = {"texture", "icon", "model", "text", "number", "flag"};
     QJsonArray kinds;
     for (const auto& kind : UiFrameKinds()) {
         QJsonArray swappable;

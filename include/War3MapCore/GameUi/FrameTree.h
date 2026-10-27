@@ -121,6 +121,8 @@ struct FrameNode {
     // 填充按宽度显示进度（界面描述的进度条在游戏里是普通框架改宽度）：贴图跟着压缩，不裁剪。
     bool fillStretch = false;
     std::optional<TextureInfo> background;
+    // 界面描述的模型框架：模型路径（预览不画模型，只标出名字）。
+    std::string model;
 };
 
 // String 与 TEXT 框架：没有尺寸时由文字内容决定大小。
@@ -128,6 +130,8 @@ struct FrameNode {
 
 // 贴图路径没有扩展名时补 .blp（与游戏读取一致）。
 [[nodiscard]] std::string EnsureTextureExtension(std::string path);
+// 模型路径没有扩展名时补 .mdx。
+[[nodiscard]] std::string EnsureModelExtension(std::string path);
 
 struct FrameTreeOptions {
     std::string race = "Human";

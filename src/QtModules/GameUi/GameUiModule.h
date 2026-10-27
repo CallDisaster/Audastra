@@ -269,7 +269,7 @@ private:
     void AddEditableRows(QTreeWidgetItem* group, const GameUi::UiFrame& frame);
     void OnPropertyEdited(QTreeWidgetItem* item, int column);
     void ShowPropertyMenu(QTreeWidget* tree, const QPoint& position);
-    void OpenTexturePicker(QTreeWidget* tree, QTreeWidgetItem* item);
+    void OpenResourcePicker(QTreeWidget* tree, QTreeWidgetItem* item);
     void RefreshFrameSettings();
     [[nodiscard]] const GameUi::UiFrame* SelectedDescriptionFrame(QString* descriptionId = nullptr) const;
     // 选择类字段的可选项（显示文字、取值）；不是选择类字段时为空。

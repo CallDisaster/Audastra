@@ -142,7 +142,28 @@ private:
             // 界面描述的按钮只有常态贴图与文字；游戏界面文件里的按钮由子框架绘制。
             if (node.texture) PushImage(node.id, MakeImage(*node.texture, node.rect));
             PushText(node);
+        } else if (node.uiFrame && type == "model") {
+            PushModelName(node);
         }
+    }
+
+    // 界面描述的模型框架：预览不画模型，在框架中间标出模型文件名。
+    void PushModelName(const FrameNode& node) {
+        std::string_view name = node.model;
+        if (const std::size_t slash = name.find_last_of("\\/"); slash != std::string_view::npos) name.remove_prefix(slash + 1);
+        if (const std::size_t dot = name.find_last_of('.'); dot != std::string_view::npos) name = name.substr(0, dot);
+        if (name.empty()) return;
+        FrameDrawCommand command;
+        command.node = node.id;
+        command.kind = DrawKind::Text;
+        TextDraw& text = command.text;
+        text.text = "模型 " + std::string(name);
+        text.fontHeight = 0.009f;
+        text.color = {0.62f, 0.86f, 0.74f, 0.9f};
+        text.shadowColor = {0.0f, 0.0f, 0.0f, 0.9f};
+        text.shadowOffset = {0.0008f, -0.0008f};
+        text.rect = node.rect;
+        list_.commands.push_back(std::move(command));
     }
 
     // 状态条填充：矩形与贴图横向按同一比例裁剪，贴图不被压缩；按宽度显示进度的只缩矩形。

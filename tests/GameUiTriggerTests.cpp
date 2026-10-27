@@ -281,6 +281,57 @@ void TestUntexturedFrames() {
         "状态里有贴图的按钮用带底图的模板：\n" + (lit.Succeeded() ? lit.value->featureText : First(lit.diagnostics)));
 }
 
+// 模型框架：建成 MODEL 模板并设模型（没写扩展名补 .mdx）；取值模板的模型在更新块按变化设；状态换模型、回到基础状态换回。
+void TestModelFrames() {
+    UiDescription d;
+    d.id = "fx";
+    d.label = "特效";
+    UiValue kind;
+    kind.id = "aura";
+    kind.type = UiValueType::String;
+    kind.defaultValue = "Holy";
+    d.values = {kind};
+    UiFrame glow;
+    glow.id = "glow";
+    glow.type = UiFrameType::Model;
+    glow.anchors = {Anchor(FramePoint::Center, UiAnchorTarget::Screen, FramePoint::Center)};
+    glow.width = 0.06;
+    glow.height = 0.06;
+    glow.model = "Abilities\\Spells\\Other\\TalkToMe\\TalkToMe";
+    UiFrame aura = glow;
+    aura.id = "aura";
+    aura.model = "UI\\Feedback\\{aura}";
+    d.frames = {glow, aura};
+    UiStateOverride alarm;
+    alarm.frame = "glow";
+    alarm.model = "Abilities\\Spells\\Human\\Thunderclap\\ThunderClapCaster.mdx";
+    d.states = {UiState{"alarm", "警报", {alarm}}};
+
+    const auto plan = GenerateUiTriggers(d, {});
+    Require(plan.Succeeded(), "模型描述生成：" + First(plan.diagnostics));
+    const std::string& text = plan.value->featureText;
+    Require(Contains(text, "SetVariable(udg_AUI_fx_glow, AudastraUICreateFrame(\"AudastraModel\", ")
+            && Contains(text, "AudastraUISetModel(udg_AUI_fx_glow, \"Abilities\\\\Spells\\\\Other\\\\TalkToMe\\\\TalkToMe.mdx\", 0)"),
+        "固定模型创建时设，补 .mdx：\n" + text);
+    Require(Contains(text, "AudastraUISetModel(udg_AUI_fx_aura, udg_AUIL_fx_aura_model, 0)")
+            && Contains(text, "OperatorNotEqualENE, udg_AUIL_fx_aura_model)"),
+        "取值模板的模型在更新块按变化设：\n" + text);
+    Require(Contains(text, "AudastraUISetModel(udg_AUI_fx_glow, \"Abilities\\\\Spells\\\\Human\\\\Thunderclap\\\\ThunderClapCaster.mdx\", 0)"),
+        "状态换模型：\n" + text);
+    Require(Contains(UiTemplateFdfText(), "Frame \"MODEL\" \"AudastraModel\""), "基础模板里有模型框架");
+
+    // 生成的自然 T 走共用写入链：“设置模型”动作可识别、可往返。
+    Fixture f;
+    const auto applied = f.Apply(text);
+    Require(applied.Succeeded(), "模型触发器写进触发器文档：" + First(applied.diagnostics) + "\n" + text);
+
+    // 模型只给模型框架。
+    UiDescription wrong = d;
+    wrong.states[0].overrides[0].frame = "glow";
+    wrong.frames[0].type = UiFrameType::Backdrop;
+    Require(!GenerateUiTriggers(wrong, {}).Succeeded(), "给背景写模型拒绝");
+}
+
 // 一次执行的指令上限只够一百多个界面库调用：调用多时按块分开运行，重复框架每个实例单独运行。
 void TestThreadedCreation() {
     UiDescription d;
@@ -567,6 +618,7 @@ int main() {
         TestAppliedThroughSharedChain();
         TestRefusalsAndTemplates();
         TestScriptLibrary();
+        TestModelFrames();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

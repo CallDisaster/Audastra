@@ -4,6 +4,7 @@
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "GameUiTestSupport.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -293,6 +294,55 @@ void TestTextureTemplate() {
     Require(HasMessage(bad, "missing"), "texture template references must exist");
 }
 
+// 模型框架：往返保留模型与状态里的模型；预览节点为 MODEL，按取值换模型，画面上标出模型名；改数值编号同步模型模板；
+// 模型只给模型框架。
+void TestModel() {
+    const UiDescription description = Parse(R"({
+  "format": "audastra.ui", "version": 1, "id": "Fx",
+  "values": [{"id": "fx", "type": "string", "default": "Holy"}],
+  "frames": [
+    {"id": "glow", "type": "model", "anchors": [{"point": "CENTER", "to": "screen"}], "width": 0.06, "height": 0.06,
+     "model": "Abilities\\Spells\\{fx}\\Glow.mdx"}
+  ],
+  "states": [{"id": "off", "set": [{"frame": "glow", "model": "UI\\Feedback\\Off.mdx"}]}]
+})");
+    Require(FindUiFrame(description, "glow")->model == "Abilities\\Spells\\{fx}\\Glow.mdx", "model field read");
+    Require(description.states[0].overrides[0].model == std::string("UI\\Feedback\\Off.mdx"), "state model read");
+    const auto again = ParseUiDescription(SerializeUiDescription(description), "again.json");
+    Require(again.value && *again.value == description, "model round trip");
+
+    UiInstanceState state;
+    state.values["fx"] = "Human";
+    const FrameLibrary library;
+    FrameTree tree;
+    std::vector<Diagnostic> diagnostics;
+    (void)AddUiDescription(tree, library, nullptr, description, state, diagnostics);
+    const FrameNode& node = NodeNamed(tree, "glow");
+    Require(node.frameType == "MODEL" && node.model == "Abilities\\Spells\\Human\\Glow.mdx", ("model follows the value: " + node.model).c_str());
+    (void)tree.Layout();
+    const auto drawn = BuildDrawList(tree);
+    Require(std::any_of(drawn.commands.begin(), drawn.commands.end(),
+                [](const FrameDrawCommand& command) { return command.kind == DrawKind::Text && command.text.text == "模型 Glow"; }),
+        "preview names the model");
+    state.state = "off";
+    FrameTree off;
+    (void)AddUiDescription(off, library, nullptr, description, state, diagnostics);
+    Require(NodeNamed(off, "glow").model == "UI\\Feedback\\Off.mdx", "state switches the model");
+
+    const auto renamed = ApplyUiEdits(description, R"([{"op": "rename_value", "from": "fx", "to": "school"}])");
+    Require(renamed.value && FindUiFrame(*renamed.value, "glow")->model == "Abilities\\Spells\\{school}\\Glow.mdx",
+        "renaming a value updates model templates");
+
+    const auto onBackdrop = Errors(R"({"format": "audastra.ui", "version": 1, "id": "Bad",
+  "frames": [{"id": "b", "type": "backdrop", "anchors": [{"point": "CENTER"}], "model": "x.mdx"}]})");
+    Require(HasMessage(onBackdrop, "model"), "only model frames take a model");
+    const auto stateOnText = Errors(R"({"format": "audastra.ui", "version": 1, "id": "Bad",
+  "frames": [{"id": "t", "type": "text", "anchors": [{"point": "CENTER"}], "text": "a"}],
+  "states": [{"id": "s", "set": [{"frame": "t", "model": "x.mdx"}]}]})");
+    Require(HasMessage(stateOnText, "模型"), "states change models only on model frames");
+    Require(EnsureModelExtension("A\\B") == "A\\B.mdx" && EnsureModelExtension("A\\B.mdl") == "A\\B.mdl", "model extension");
+}
+
 // 重复换行：每行 columns 个，列号乘 dx/dy、行号乘 rowDx/rowDy；往返保留，每行个数须为正整数。
 void TestRepeatWrap() {
     const UiDescription description = Parse(R"({
@@ -474,6 +524,7 @@ int main() {
         TestGameArea();
         TestEdits();
         TestSimulation();
+        TestModel();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;

@@ -20,7 +20,7 @@ using OrderedJson = nlohmann::ordered_json;
 using namespace detail;  // 上限常量
 
 
-constexpr std::array<std::string_view, 6> kFrameTypes{"panel", "backdrop", "text", "bar", "button", "template"};
+constexpr std::array<std::string_view, 7> kFrameTypes{"panel", "backdrop", "text", "bar", "button", "template", "model"};
 constexpr std::array<std::string_view, 4> kValueTypes{"real", "integer", "boolean", "string"};
 constexpr std::array<std::string_view, 3> kEventKinds{"click", "enter", "leave"};
 constexpr std::array<std::string_view, 3> kJustifyH{"left", "center", "right"};
@@ -244,7 +244,7 @@ void ReadFrame(Reader& reader, const Json& json, const std::string& path, std::s
         return;
     }
     if (!reader.Object(json, path,
-            {"id", "label", "type", "template", "anchors", "width", "height", "texture", "background", "pushed", "text",
+            {"id", "label", "type", "template", "anchors", "width", "height", "texture", "background", "pushed", "model", "text",
                 "font", "fontHeight", "color", "justifyH", "justifyV", "value", "visible", "repeat", "children"})) {
         return;
     }
@@ -283,6 +283,7 @@ void ReadFrame(Reader& reader, const Json& json, const std::string& path, std::s
     frame.texture = reader.String(json, "texture", path, false, kMaxPathBytes).value_or("");
     frame.background = reader.String(json, "background", path, false, kMaxPathBytes).value_or("");
     frame.pushed = reader.String(json, "pushed", path, false, kMaxPathBytes).value_or("");
+    frame.model = reader.String(json, "model", path, false, kMaxPathBytes).value_or("");
     frame.text = reader.String(json, "text", path, false).value_or("");
     frame.font = reader.String(json, "font", path, false, kMaxPathBytes).value_or("");
     frame.fontHeight = reader.Number(json, "fontHeight", path, false, 0.001, 0.1).value_or(frame.fontHeight);
@@ -335,13 +336,14 @@ void ReadState(Reader& reader, const Json& json, const std::string& path, std::v
         for (std::size_t i = 0; i < set->size(); ++i) {
             const Json& item = (*set)[i];
             const std::string at = path + "/set/" + std::to_string(i);
-            if (!reader.Object(item, at, {"frame", "texture", "text", "visible", "value"})) continue;
+            if (!reader.Object(item, at, {"frame", "texture", "text", "visible", "value", "model"})) continue;
             UiStateOverride entry;
             entry.frame = reader.String(item, "frame", at, true).value_or("");
             entry.texture = reader.String(item, "texture", at, false, kMaxPathBytes);
             entry.text = reader.String(item, "text", at, false);
             entry.visible = reader.Bool(item, "visible", at, false);
             entry.value = reader.Number(item, "value", at, false, -1.0e6, 1.0e6);
+            entry.model = reader.String(item, "model", at, false, kMaxPathBytes);
             state.overrides.push_back(std::move(entry));
         }
     }
@@ -453,6 +455,7 @@ OrderedJson FrameJson(const UiFrame& frame) {
     if (!frame.texture.empty()) json["texture"] = frame.texture;
     if (!frame.background.empty()) json["background"] = frame.background;
     if (!frame.pushed.empty()) json["pushed"] = frame.pushed;
+    if (!frame.model.empty()) json["model"] = frame.model;
     if (!frame.text.empty()) json["text"] = frame.text;
     if (!frame.font.empty()) json["font"] = frame.font;
     const bool textType = frame.type == UiFrameType::Text || frame.type == UiFrameType::Button;
@@ -620,6 +623,7 @@ std::string SerializeUiDescription(const UiDescription& description) {
                 if (entry.text) change["text"] = *entry.text;
                 if (entry.visible) change["visible"] = *entry.visible;
                 if (entry.value) change["value"] = Num(*entry.value);
+                if (entry.model) change["model"] = *entry.model;
                 set.push_back(std::move(change));
             }
             if (!set.empty()) item["set"] = std::move(set);

@@ -893,6 +893,20 @@ void GameUiModuleTests::FrameSettingsCardAndTexturePicker() {
     path->setText(QStringLiteral("ReplaceableTextures\\TeamColor\\TeamColor00"));
     emit path->returnPressed();
     QCOMPARE(frame("bar1")->texture, std::string("ReplaceableTextures\\TeamColor\\TeamColor00"));
+
+    // 模型框架的“模型”一栏打开选模型的资源选择器。
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("model"), &error), QStringLiteral("model1"));
+    QVERIFY(module.SelectFrame(QStringLiteral("model1")));
+    QTreeWidgetItem* model = field(properties, QStringLiteral("模型"));
+    QVERIFY(model && !(model->flags() & Qt::ItemIsEditable) && !field(properties, QStringLiteral("贴图")));
+    emit properties->itemDoubleClicked(model, 1);
+    auto* modelPicker = page->findChild<Modules::ObjectResourcePicker*>(QStringLiteral("gameUiModelPicker"));
+    QVERIFY(modelPicker && modelPicker->isVisible());
+    auto* modelPath = modelPicker->findChild<QLineEdit*>(QStringLiteral("resourcePath"));
+    QVERIFY(modelPath);
+    modelPath->setText(QStringLiteral("Abilities\\Spells\\Human\\Thunderclap\\ThunderClapCaster.mdx"));
+    emit modelPath->returnPressed();
+    QCOMPARE(frame("model1")->model, std::string("Abilities\\Spells\\Human\\Thunderclap\\ThunderClapCaster.mdx"));
 }
 
 // 界面模拟：作者的触发器订阅模拟计时器，每次到期扣血、低于 0.3 时运行“状态 低”；生成的“更新”“状态”触发器被拦截，

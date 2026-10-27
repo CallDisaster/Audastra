@@ -13,6 +13,7 @@ namespace War3Map::GameUi {
 enum class UiFrameSlotKind : std::uint8_t {
     Texture,  // 贴图路径（可写文字模板按数值换图）
     Icon,     // 图标贴图（命令按钮图标一类）
+    Model,    // 模型路径（可写文字模板按数值换模型）
     Text,     // 文字模板
     Number,   // 数值或取值
     Flag,     // 显示开关或取值

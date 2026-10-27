@@ -105,7 +105,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
                 "set_description{label}；add_frame{parent?,index?,frame}；set_frame{frame,fields}（null 删除字段，改 id 同步引用）；"
                 "move_frame{frame,parent,index?}；remove_frame{frame}；rename_value{from,to}（同步框架取值、文字与贴图模板）；set_values{values}、set_states{states}、set_events{events}（整体替换）；"
                 "set_simulation{simulation:{timers:[{id,label,period,repeat}],values:{编号或编号[下标]:起始值}}}（编辑器模拟用，游戏不读）。"
-                "框架与字段按 audastra.ui 写法（新框架可照 game_ui_view_read 的 frame_kinds[].frame 默认外观写）：type 为 panel/backdrop/text/bar/button/template，anchors 为 {point,to,toPoint,x,y}，"
+                "框架与字段按 audastra.ui 写法（新框架可照 game_ui_view_read 的 frame_kinds[].frame 默认外观写）：type 为 panel/backdrop/text/bar/button/template/model（model 写 model 模型路径，可写 {编号} 按数值换模型），anchors 为 {point,to,toPoint,x,y}，"
                 "to 为 parent、screen、框架编号或 game:区域标识；value/visible 可写 编号、编号[] 或 编号[下标]（visible 取文字数值时非空为显示），"
                 "文字可写 {编号:小数位}，贴图也可写 {编号} 按数值换图。"
                 "结果作为导入文件进入待保存修改";

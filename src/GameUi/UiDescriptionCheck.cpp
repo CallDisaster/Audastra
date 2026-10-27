@@ -185,6 +185,7 @@ private:
         only(imageType, !frame.texture.empty(), "texture");
         only(frame.type == UiFrameType::Bar, !frame.background.empty(), "background");
         only(frame.type == UiFrameType::Button, !frame.pushed.empty(), "pushed");
+        only(frame.type == UiFrameType::Model, !frame.model.empty(), "model");
         only(textType, !frame.text.empty(), "text");
         only(textType, !frame.font.empty(), "font");
         only(frame.type == UiFrameType::Bar, frame.value.binding || frame.value.literal != 1.0, "value");
@@ -209,6 +210,7 @@ private:
         if (frame.visible.binding) CheckBinding(*frame.visible.binding, info, path + "/visible", true);
         if (!frame.text.empty()) CheckText(frame.text, info, path + "/text");
         if (!frame.texture.empty()) CheckText(frame.texture, info, path + "/texture");
+        if (!frame.model.empty()) CheckText(frame.model, info, path + "/model");
     }
 
     void CheckStates() {
@@ -237,6 +239,7 @@ private:
                     else CheckText(*entry.text, found->second, at + "/text");
                 }
                 if (entry.value && type != UiFrameType::Bar) Error(at + "/value", "AUI_FIELD_UNKNOWN", "只有进度条有进度");
+                if (entry.model && type != UiFrameType::Model) Error(at + "/model", "AUI_FIELD_UNKNOWN", "只有模型框架有模型");
             }
         }
     }

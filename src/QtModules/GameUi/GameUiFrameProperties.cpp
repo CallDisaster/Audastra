@@ -39,7 +39,7 @@ using namespace War3Map::GameUi;
 QString Text(std::string_view text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
 constexpr int kFieldRole = Qt::UserRole + 40;
-constexpr int kTextureRole = Qt::UserRole + 41;  // 贴图字段：双击打开资源选择器
+constexpr int kResourceRole = Qt::UserRole + 41;  // 贴图、模型字段：双击打开资源选择器；值为资源类型加 1
 
 double Round4(double value) { return std::round(value * 10000.0) / 10000.0; }
 
@@ -132,13 +132,17 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame)
     }
     editable(group, tr("宽"), QStringLiteral("width"), number(frame.width));
     editable(group, tr("高"), QStringLiteral("height"), number(frame.height));
-    // 贴图：有资源选择器时双击打开它（自定义页可写路径或 {编号} 模板），行首显示已读到的贴图。
-    const auto texture = [&](const QString& label, const QString& key, const std::string& value) {
+    // 贴图与模型：有资源选择器时双击打开它（自定义页可写路径或 {编号} 模板）；贴图行首显示已读到的贴图。
+    const auto resource = [&](const QString& label, const QString& key, const std::string& value, Services::ObjectResourceKind kind) {
         auto* item = editable(group, label, key, Text(value));
         if (resourcePickerFactory_) {
             item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-            item->setData(1, kTextureRole, true);
+            item->setData(1, kResourceRole, static_cast<int>(kind) + 1);
         }
+        return item;
+    };
+    const auto texture = [&](const QString& label, const QString& key, const std::string& value) {
+        auto* item = resource(label, key, value, Services::ObjectResourceKind::Texture);
         const auto found = textures_.constFind(GameUiAssetKey(Text(EnsureTextureExtension(value))));
         if (found != textures_.constEnd() && !found->isNull()) {
             item->setData(1, Qt::DecorationRole, QPixmap::fromImage(found->scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
@@ -149,6 +153,7 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame)
     if (image) texture(tr("贴图"), QStringLiteral("texture"), frame.texture);
     if (frame.type == UiFrameType::Bar) texture(tr("底图"), QStringLiteral("background"), frame.background);
     if (frame.type == UiFrameType::Button) texture(tr("按下贴图"), QStringLiteral("pushed"), frame.pushed);
+    if (frame.type == UiFrameType::Model) resource(tr("模型"), QStringLiteral("model"), frame.model, Services::ObjectResourceKind::Model);
     if (text) {
         editable(group, tr("文字"), QStringLiteral("text"), Text(frame.text));
         editable(group, tr("字体"), QStringLiteral("font"), Text(frame.font));
@@ -441,7 +446,7 @@ void GameUiModule::InstallPropertyEditors(QTreeWidget* tree) {
     connect(tree, &QTreeWidget::customContextMenuRequested, this, [this, tree](const QPoint& position) { ShowPropertyMenu(tree, position); });
     connect(tree, &QTreeWidget::itemChanged, this, &GameUiModule::OnPropertyEdited);
     connect(tree, &QTreeWidget::itemDoubleClicked, this, [this, tree](QTreeWidgetItem* item, int) {
-        if (item && item->data(1, kTextureRole).toBool()) OpenTexturePicker(tree, item);
+        if (item && item->data(1, kResourceRole).toInt() > 0) OpenResourcePicker(tree, item);
     });
 }
 
@@ -449,8 +454,9 @@ void GameUiModule::ShowPropertyMenu(QTreeWidget* tree, const QPoint& position) {
     if (!tree || !SelectedDescriptionFrame()) return;
     QMenu menu(tree);
     QTreeWidgetItem* item = tree->itemAt(position);
-    if (item && item->data(1, kTextureRole).toBool()) {
-        menu.addAction(tr("选择贴图…"), this, [this, tree, item] { OpenTexturePicker(tree, item); });
+    if (item && item->data(1, kResourceRole).toInt() > 0) {
+        const bool model = item->data(1, kResourceRole).toInt() == static_cast<int>(Services::ObjectResourceKind::Model) + 1;
+        menu.addAction(model ? tr("选择模型…") : tr("选择贴图…"), this, [this, tree, item] { OpenResourcePicker(tree, item); });
         menu.addSeparator();
     }
     menu.addAction(tr("添加锚点"), this, [this] {
@@ -476,17 +482,17 @@ void GameUiModule::ShowPropertyMenu(QTreeWidget* tree, const QPoint& position) {
     menu.exec(tree->viewport()->mapToGlobal(position));
 }
 
-// 贴图选择：物编的资源选择器，打开即按目录浏览游戏文件；应用时作为一次框架修改写入。
-void GameUiModule::OpenTexturePicker(QTreeWidget* tree, QTreeWidgetItem* item) {
+// 贴图、模型选择：物编的资源选择器，打开即按目录浏览游戏文件；应用时作为一次框架修改写入。
+void GameUiModule::OpenResourcePicker(QTreeWidget* tree, QTreeWidgetItem* item) {
     QString id;
     const UiFrame* frame = SelectedDescriptionFrame(&id);
     if (!tree || !item || !frame || !resourcePickerFactory_ || !page_) return;
     const QString key = item->data(1, kFieldRole).toString();
     const QString frameId = Text(frame->id);
     const QString label = item->text(0);
-    auto* picker = new ObjectResourcePicker(Services::ObjectResourceField{Services::ObjectResourceKind::Texture, false, true},
-        item->text(1), resourcePickerFactory_(), page_);
-    picker->setObjectName(QStringLiteral("gameUiTexturePicker"));
+    const auto kind = static_cast<Services::ObjectResourceKind>(item->data(1, kResourceRole).toInt() - 1);
+    auto* picker = new ObjectResourcePicker(Services::ObjectResourceField{kind, false, true}, item->text(1), resourcePickerFactory_(), page_);
+    picker->setObjectName(kind == Services::ObjectResourceKind::Model ? QStringLiteral("gameUiModelPicker") : QStringLiteral("gameUiTexturePicker"));
     picker->BrowseGameFiles();
     const QPointer<GameUiModule> self(this);
     picker->SetCommit([self, id, frameId, key, label](const QString& value) {
