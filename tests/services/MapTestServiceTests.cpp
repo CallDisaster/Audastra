@@ -85,15 +85,19 @@ void CopyAndPlanKeepSource() {
         "same frozen task rebuilds a stable preflight-only launch plan");
     auto hidden = *artifact.value; hidden.hiddenDesktop = true;
     const auto background = BuildMapTestLaunchPlan(hidden);
-    Require(background.Succeeded() && background.value->hiddenDesktop && background.value->arguments.size() == 4
-        && background.value->arguments[0] == L"-window" && background.value->arguments[1] == L"-nosound"
-        && background.value->arguments[2] == L"-loadfile" && background.value->arguments[3] == plan.value->arguments[2],
-        "background test runs on the hidden desktop without sound");
+    // 1.27a 不认 -nosound，带上它 -loadfile 就失效；直接启动的命令行必须与普通测试完全相同。
+    Require(background.Succeeded() && background.value->hiddenDesktop && background.value->arguments == plan.value->arguments,
+        "background test runs on the hidden desktop with the ordinary game argv");
     hidden.backgroundPlay = true;
     const auto unverified = BuildMapTestLaunchPlan(hidden);
     Require(unverified.Succeeded() && !unverified.value->backgroundPlay
         && std::filesystem::equivalent(unverified.value->executable, f.game / "war3.exe") && unverified.value->arguments == background.value->arguments,
         "background play stays off for a Game.dll that is not the verified 1.27a module");
+    hidden.cloakedWindow = true;
+    const auto uncloaked = BuildMapTestLaunchPlan(hidden);
+    Require(uncloaked.Succeeded() && !uncloaked.value->cloakedWindow && uncloaked.value->hiddenDesktop
+        && uncloaked.value->arguments == background.value->arguments,
+        "without background play a cloak request falls back to the hidden desktop");
     const auto secondArtifact = PrepareMapTest(f.Request("prepared-second")); Require(secondArtifact.Succeeded(), "prepare second independent task");
     const auto second = BuildMapTestLaunchPlan(*secondArtifact.value);
     Require(second.Succeeded() && second.value->gameMapCopy != plan.value->gameMapCopy, "separate frozen tasks have distinct short-copy directories");

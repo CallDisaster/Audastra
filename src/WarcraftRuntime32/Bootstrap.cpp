@@ -4,6 +4,8 @@
 #include "OwnLua/OwnedLuaSession.h"
 #include "GameUi/GameUiModule.h"
 #include "GameTest/BackgroundPlay127.h"
+#include "GameTest/CloakedWindow.h"
+#include "GameTest/MutedSound.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <detours.h>
 #include <cstring>
@@ -90,6 +92,18 @@ void InstallBackgroundPlay(HMODULE game) {
     if (!GameTest::InstallBackgroundPlay127(*image.image, error)) Fail("background-play-install", ERROR_INVALID_DATA);
     InterlockedExchange(&evidence->backgroundPlayInstalled, 1);
 }
+// 窗口隐身要在游戏建窗口之前装好；装不上就结束这次测试，不让窗口露在用户桌面上。
+void InstallCloakedWindow() {
+    std::string error;
+    if (!GameTest::InstallCloakedWindow(&evidence->cloakedWindows, error)) Fail("cloak-window-install", ERROR_INVALID_DATA);
+    InterlockedExchange(&evidence->cloakWindowInstalled, 1);
+}
+// 静音要在游戏初始化声音之前装好；装不上就结束这次测试，不让测试游戏出声。
+void InstallMutedSound() {
+    std::string error;
+    if (!GameTest::InstallMutedSound(error)) Fail("mute-sound-install", ERROR_PROC_NOT_FOUND);
+    InterlockedExchange(&evidence->muteSoundInstalled, 1);
+}
 void InitializeRuntime() {
     if (!InstallLuaProbeWriteGuard(evidence)) Fail("lua-probe-write-guard-install", ERROR_ACCESS_DENIED);
     for (std::size_t index = 0; index < kModules.size(); ++index) {
@@ -157,6 +171,8 @@ void ObserveModule(HMODULE loaded, bool requestedGame) {
         strcpy_s(game.actualSha256, sha.c_str());
         InterlockedExchange(&game.loaded, 1);
         InterlockedExchange(&evidence->gameObserved, 1);
+        if (evidence->cloakWindow) InstallCloakedWindow();
+        if (evidence->muteSound) InstallMutedSound();
         if (evidence->backgroundPlay) InstallBackgroundPlay(loaded);
         if (evidence->runtimeMode == RuntimeMode::OwnedLua) InitializeOwnedRuntime(loaded);
         else if (evidence->runtimeMode == RuntimeMode::Bare) InterlockedExchange(&evidence->runtimeInitialized, 1);

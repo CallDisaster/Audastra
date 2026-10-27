@@ -227,9 +227,11 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
     plan.gameExecutableSha256 = *gameSha.value;
     plan.gameModuleSha256 = *moduleSha.value;
     plan.backgroundPlay = artifact.backgroundPlay && plan.gameModuleSha256 == kMapTestGame127ModuleSha256;
+    // 隐身窗口留在用户桌面上照常绘制；没有后台运行时窗口失焦会停住，只能退回不可见桌面。
+    plan.cloakedWindow = artifact.cloakedWindow && plan.backgroundPlay;
+    if (plan.cloakedWindow) plan.hiddenDesktop = false;
+    const bool silent = artifact.hiddenDesktop || plan.cloakedWindow;
     plan.arguments = {L"-window", L"-loadfile", relative.wstring()};
-    // 看不见的后台测试不出声。
-    if (artifact.hiddenDesktop) plan.arguments.insert(plan.arguments.begin() + 1, L"-nosound");
     if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || plan.backgroundPlay) {
         // 裸模式：地图不需要扩展运行库，只为后台运行钩子经过启动器。
         const bool bare = !artifact.useOwnedLuaRuntime && artifact.runtimeRoot.empty();
@@ -273,8 +275,10 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
             plan.arguments.push_back(L"ydwe-tree");
         }
         if (plan.backgroundPlay) plan.arguments.insert(plan.arguments.end(), {L"--background-play", L"enabled"});
-        // 经启动器时游戏命令行由启动器生成，后台测试的静音也要显式传过去。
-        if (artifact.hiddenDesktop) plan.arguments.insert(plan.arguments.end(), {L"--game-nosound", L"enabled"});
+        if (plan.cloakedWindow) plan.arguments.insert(plan.arguments.end(), {L"--window-cloak", L"enabled"});
+        // 看不见的后台测试不出声。经典 1.27a 不认 -nosound（会连带丢掉 -loadfile），
+        // 静音只能经启动器在游戏进程内完成；直接启动的不可见桌面测试无法静音。
+        if (silent) plan.arguments.insert(plan.arguments.end(), {L"--game-nosound", L"enabled"});
     }
     const auto executableSha = Sha256File(plan.executable);
     if (!executableSha.Succeeded()) { Result<MapTestLaunchPlan> result; result.diagnostics = executableSha.diagnostics; return result; }

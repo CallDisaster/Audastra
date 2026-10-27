@@ -36,11 +36,13 @@ option(AUD_JAPI_BRIDGE_EXPERIMENTAL "Opt in to unqualified JAPI string bridge in
 add_executable(audastra-warcraft-launcher Launcher.cpp)
 target_include_directories(audastra-warcraft-launcher PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
 add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h
-    GameTest/BackgroundPlay127.cpp)
+    GameTest/BackgroundPlay127.cpp
+    GameTest/CloakedWindow.cpp
+    GameTest/MutedSound.cpp)
 target_compile_definitions(audastra-warcraft-bootstrap PRIVATE
     AUD_JAPI_BRIDGE_EXPERIMENTAL=$<BOOL:${AUD_JAPI_BRIDGE_EXPERIMENTAL}>)
 target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)
-target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game audastra-game-ui bcrypt)
+target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game audastra-game-ui bcrypt dwmapi)
 # 自有界面库：调用 1.27a 自己的界面函数；作为内置 JAPI 模块 audastraui 由 bootstrap 装进每个新 Host。
 add_library(audastra-game-ui STATIC GameUi/GameUiAbi127.cpp GameUi/GameUiLibrary.cpp GameUi/GameUiModule.cpp)
 target_link_libraries(audastra-game-ui PUBLIC audastra-japi)
@@ -124,8 +126,12 @@ if(BUILD_TESTING)
     set_tests_properties(audastra-own-lua-protocol PROPERTIES TIMEOUT 30)
     add_executable(audastra-runtime-fixture-war3 fixtures/FakeWar3.cpp)
     set_target_properties(audastra-runtime-fixture-war3 PROPERTIES OUTPUT_NAME war3 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
+    target_link_libraries(audastra-runtime-fixture-war3 PRIVATE dwmapi)
     add_library(audastra-runtime-fixture-game SHARED fixtures/FakeGame.cpp fixtures/FakeGame.def)
     set_target_properties(audastra-runtime-fixture-game PROPERTIES OUTPUT_NAME Game RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
+    # 原创 Miles 替身，与假 Game.dll 同目录；测试按 war3 替身旁的 Mss32.dll 找它。
+    add_library(audastra-runtime-fixture-miles SHARED fixtures/FakeMiles.cpp)
+    set_target_properties(audastra-runtime-fixture-miles PROPERTIES OUTPUT_NAME Mss32 RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fixtures")
     add_executable(audastra-map-runtime-tests fixtures/MapRuntimeTests.cpp)
     target_link_libraries(audastra-map-runtime-tests PRIVATE audastra-japi)
     target_compile_definitions(audastra-map-runtime-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
@@ -152,7 +158,7 @@ if(BUILD_TESTING)
     endforeach()
     add_executable(audastra-runtime-fixture-tests fixtures/RuntimeTests.cpp)
     add_dependencies(audastra-runtime-fixture-tests audastra-warcraft-launcher audastra-warcraft-bootstrap
-        audastra-runtime-fixture-war3 audastra-runtime-fixture-game audastra-runtime-fixture-ydbase
+        audastra-runtime-fixture-war3 audastra-runtime-fixture-game audastra-runtime-fixture-miles audastra-runtime-fixture-ydbase
         audastra-runtime-fixture-lua53 audastra-runtime-fixture-ydwar3 audastra-runtime-fixture-yd_loader
         audastra-runtime-fixture-yd_jass_api audastra-runtime-fixture-yd_lua_engine)
     target_compile_definitions(audastra-runtime-fixture-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)

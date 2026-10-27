@@ -87,7 +87,8 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
             {"items", QJsonObject{{"type", "string"}, {"maxLength", 260}}}}},
             {"allow_referenced", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {"archive_paths"});
     add("map_test_start", "用当前编辑内容启动单人测试（与界面“测试”相同，独立副本，不改原图）。"
-        "默认开在看不见的独立桌面上（不弹出、不抢焦点、不出声，截不到画面）；visible 为 true 才在屏幕上显示，要截图时用。"
+        "默认看不见：1.27a 上游戏窗口留在桌面上隐身照常绘制（不弹出、不抢焦点、不收键鼠、不出声），能用 map_test_capture 截图；"
+        "其他版本开在不可见的独立桌面上，截不到画面。visible 为 true 才在屏幕上显示。"
         "JASS 地图可带 scenario：一段紧凑 T 动作，只编进测试副本，游戏开始 start_seconds 秒后运行一次；"
         "在场景里摆单位、下命令、等待，用 Preload(文本) 记录一行，以“通过”“失败”开头的行计为断言；"
         "结束时记录 reads 列出的全局变量（整数、实数、文字、布尔）。场景只用自然 T。用 map_test_result 读回结果", ToolPermission::External,
@@ -99,7 +100,8 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         "（游戏写入的资源路径只给 loaded_files 个数）；场景开始前每 2 秒给测试游戏发空格越过“按任意键继续”；"
         "未执行完时在 wait_ms 内等待", ToolPermission::External,
         {{"wait_ms", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"default", 30000}}}}, {});
-    add("map_test_capture", "截取本次测试游戏窗口的当前画面，存为 PNG 并返回路径与截取方式（窗口被遮挡也可，不能最小化；游戏没绘制出画面时失败并给原因）",
+    add("map_test_capture", "截取本次测试游戏的当前画面，存为 PNG 并返回路径与截取方式。1.27a 由游戏自己截图（看不见的测试也能截）；"
+        "其他版本截窗口，只对 visible 测试有效（窗口被遮挡也可，不能最小化；游戏没绘制出画面时失败并给原因）",
         ToolPermission::External, {}, {});
     add("map_test_stop", "结束本次由编辑器启动的测试游戏（只结束这次启动的进程）", ToolPermission::External, {}, {});
     add("map_test_eval", "在运行中的测试游戏里执行一段紧凑 T 动作并读回全局变量（仅 Lua 地图且开热重载）；不改地图",

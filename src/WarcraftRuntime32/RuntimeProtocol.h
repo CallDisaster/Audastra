@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 7;
+inline constexpr std::uint32_t kVersion = 8;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -80,6 +80,13 @@ struct SharedEvidence {
     // 测试会话要求游戏失焦后照常运行；bootstrap 核对 1.27a 后安装钩子并置 Installed。
     LONG backgroundPlay = 0;
     LONG backgroundPlayInstalled = 0;
+    // 测试窗口隐身：留在用户桌面上照常绘制，但看不见、不进任务栏、不激活。
+    LONG cloakWindow = 0;
+    LONG cloakWindowInstalled = 0;
+    LONG cloakedWindows = 0;
+    // 测试静音：1.27a 不认 -nosound，改由 bootstrap 让 Miles 打不开声卡。
+    LONG muteSound = 0;
+    LONG muteSoundInstalled = 0;
     DWORD errorWin32 = 0;
     char errorStage[96]{};
     // 原创无窗口fixture只用于证明跨进程Initialize确实执行；生产插件不写此字段。

@@ -44,6 +44,7 @@ struct MapTestLaunchLease::Impl {
     std::vector<HANDLE> protectedFiles;
     std::filesystem::path gameImage;
     HDESK desktop = nullptr; // 后台测试的不可见桌面；进程都退出后随本记录关闭。
+    bool cloaked = false; // 游戏窗口在用户桌面上隐身。
     FILETIME launcherCreated{};
     struct Child { HANDLE handle; DWORD id; FILETIME created; bool gameIdentity = false; bool exited = false; };
     std::vector<Child> children;
@@ -199,6 +200,14 @@ void* MapTestLaunchLease::HiddenDesktop() const noexcept {
     return impl_ ? impl_->desktop : nullptr;
 #else
     return nullptr;
+#endif
+}
+
+bool MapTestLaunchLease::Unseen() const noexcept {
+#ifdef _WIN32
+    return impl_ && (impl_->desktop || impl_->cloaked);
+#else
+    return false;
 #endif
 }
 
@@ -453,6 +462,7 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
         return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_LAUNCH_JOB", "无法建立Job进程生命周期回执，测试尚未启动。");
     state->monitor = std::thread([raw = state.get()] { raw->Observe(); });
     // 所有拥有者分配在CreateProcess之前完成，内存不足不能留下已恢复却无lease的游戏。
+    state->cloaked = plan.cloakedWindow;
     auto* rawState = state.get();
     auto lease = std::shared_ptr<MapTestLaunchLease>(new MapTestLaunchLease(std::move(state)));
     std::shared_ptr<Services::LuaTestMailboxSession> mailbox;

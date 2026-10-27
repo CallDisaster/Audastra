@@ -145,7 +145,7 @@ QJsonObject MainWindow::MapTestTool(const QString& name, const QJsonObject& argu
                 + QUuid::createUuid().toString(QUuid::Id128).left(16).toStdString() + ".txt";
             pendingMapTestScenario_ = std::move(request);
         }
-        // 默认开在看不见的独立桌面上，不打扰正在用电脑的人；visible 才在屏幕上显示（要截画面时用）。
+        // 默认看不见，不打扰正在用电脑的人（1.27a 隐身窗口，其他版本不可见桌面）；visible 才在屏幕上显示。
         const bool visible = arguments.value("visible").toBool(false);
         const auto rejected = StartMapTest(false, !visible);
         pendingMapTestScenario_.reset();

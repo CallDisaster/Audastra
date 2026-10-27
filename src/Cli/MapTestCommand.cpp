@@ -38,7 +38,7 @@ int RunMapTest(int argc, wchar_t** argv) {
     std::filesystem::path ydwe;
     double seconds = 60;
     auto engine = Services::MapTestLuaEngine::Owned;
-    bool hotReload = true, stopAfter = false, hidden = false, backgroundPlay = false, pressSpace = false;
+    bool hotReload = true, stopAfter = false, hidden = false, backgroundPlay = false, pressSpace = false, cloaked = false;
     std::vector<Reload> reloads;
     std::vector<Shot> shots;
     for (int index = 5; index < argc; ++index) {
@@ -53,6 +53,8 @@ int RunMapTest(int argc, wchar_t** argv) {
         else if (option == L"--stop") stopAfter = true;
         else if (option == L"--hidden") hidden = true;
         else if (option == L"--background-play") backgroundPlay = true;
+        // 看不见但照常绘制（需要后台运行可用，否则退回 --hidden 的不可见桌面）。
+        else if (option == L"--cloaked") { cloaked = true; hidden = true; }
         // 每 2 秒给游戏发一次空格，越过载入后的“按任意键继续”。
         else if (option == L"--press-space") pressSpace = true;
         // --screenshot-after 秒 输出.tga：让游戏自己截一张图，移到给定路径。
@@ -92,6 +94,7 @@ int RunMapTest(int argc, wchar_t** argv) {
     if (!refreshed.Succeeded()) { Print(refreshed.diagnostics); return 1; }
     artifact.value->hiddenDesktop = hidden;
     artifact.value->backgroundPlay = backgroundPlay;
+    artifact.value->cloakedWindow = cloaked;
     auto launched = Script::LaunchMapTest(*artifact.value, progress);
     Print(launched.diagnostics);
     if (!launched.Succeeded() || !launched.value) { (void)(*workspace.value)->Cleanup(true); return 1; }
@@ -112,10 +115,13 @@ int RunMapTest(int argc, wchar_t** argv) {
             shot.done = true;
             const auto taken = receipt.lease->RequestGameScreenshot(5000);
             Print(taken.diagnostics);
-            std::error_code moved;
-            if (taken.Succeeded() && taken.value) std::filesystem::rename(*taken.value, shot.output, moved);
-            std::cout << "[" << elapsed() << "s] screenshot=" << (taken.Succeeded() && !moved ? "true" : "false")
-                << " output=" << shot.output.string() << std::endl;
+            std::error_code copied, ignored;
+            // 游戏目录和输出可能不在同一个盘：先复制，复制成功再删游戏写的那张。
+            const bool saved = taken.Succeeded() && taken.value
+                && std::filesystem::copy_file(*taken.value, shot.output, std::filesystem::copy_options::overwrite_existing, copied);
+            if (saved) std::filesystem::remove(*taken.value, ignored);
+            std::cout << "[" << elapsed() << "s] screenshot=" << (saved ? "true" : "false") << " output=" << shot.output.string()
+                << (copied ? " copy_error=" + copied.message() : std::string{}) << std::endl;
         }
         if (receipt.luaMailbox) {
             const auto query = Services::QueryLuaTestReload(*receipt.luaMailbox);

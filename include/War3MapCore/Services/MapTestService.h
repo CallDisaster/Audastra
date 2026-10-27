@@ -63,6 +63,9 @@ struct MapTestArtifact {
     bool hiddenDesktop = false;
     // 无人值守测试：失焦不暂停、后台不降速。只在 1.27a 上生效，其他版本照常启动。
     bool backgroundPlay = false;
+    // 看不见但照常绘制：游戏留在用户桌面上，窗口隐身、不进任务栏、不激活，能截图。
+    // 需要后台运行可用（1.27a）；否则仍按 hiddenDesktop 开在不可见桌面上（原版在那里不绘制）。
+    bool cloakedWindow = false;
 };
 
 struct MapTestSlkRequest {
@@ -108,6 +111,8 @@ struct MapTestLaunchPlan {
     bool hiddenDesktop = false;
     // 启动器在游戏入口前挂上失焦不暂停与后台不降速；Game.dll 已核对为 1.27a。
     bool backgroundPlay = false;
+    // 启动器在游戏建窗口前挂上窗口隐身；这时不再建不可见桌面。
+    bool cloakedWindow = false;
 };
 
 // 核验所选游戏和本轮短路径复制目标；不启动进程、不写安装配置或注册表。

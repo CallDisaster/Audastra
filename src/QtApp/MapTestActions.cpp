@@ -60,7 +60,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     const auto busy = [this](const QString& text) { ShowStatusMessage(text); return text; };
     if (project_->savingMap_) return tr("保存或测试准备正在进行，请稍后再试。");
     if (mapTestLease_ && mapTestLease_->IsActive()) {
-        if (!mapTestLease_->HiddenDesktop()) return busy(tr("上一轮测试游戏仍在运行，请先退出游戏再测试。"));
+        if (!mapTestLease_->Unseen()) return busy(tr("上一轮测试游戏仍在运行，请先退出游戏再测试。"));
         // 后台测试看不见，用户没法自己退出：点“测试”时问一下是否结束它。
         if (!interactive) return busy(tr("上一轮后台测试仍在运行，请先用 map_test_stop 结束。"));
         if (QMessageBox::question(this, tr("地图测试"), tr("Agent 的后台测试还在运行（不显示在屏幕上）。结束它，再开始本次测试？"))
@@ -221,6 +221,8 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
                 artifact.value->hiddenDesktop = hiddenDesktop;
                 // 助手发起的测试没人看着窗口：失焦不暂停、后台不降速。
                 artifact.value->backgroundPlay = !interactive;
+                // 看不见的测试优先用隐身窗口（1.27a 上照常绘制、能截图），否则开在不可见桌面上。
+                artifact.value->cloakedWindow = hiddenDesktop;
                 launched = Script::LaunchMapTest(*artifact.value, update);
             }
         } catch (const std::exception&) {

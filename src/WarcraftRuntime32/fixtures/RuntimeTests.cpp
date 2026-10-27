@@ -282,10 +282,13 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     CleanupOwned(base, work, ownedFiles, layout);
     std::cout << "PASS " << name << " (receipt in owned task directory)\n";
 }
-// 裸模式：不加载扩展运行库，只装测试钩子。原创 Game.dll 不是 1.27a，后台运行钩子必须拒绝安装。
+// 裸模式：不加载扩展运行库，只装测试钩子。原创 Game.dll 不是 1.27a，后台运行钩子必须拒绝安装；
+// 窗口隐身与游戏版本无关，原创游戏建的顶层窗口必须被隐身、不进任务栏、不激活。
+// 静音同样与版本无关：要求静音时 Miles 替身打开声卡必须失败，没要求时必须照常成功。
+enum class BareHook { None, BackgroundPlay, WindowCloak };
 void BareCase(const std::filesystem::path& base, const std::filesystem::path& launcher,
     const std::filesystem::path& bootstrap, const std::filesystem::path& fakeWar3,
-    const std::filesystem::path& fakeGame, const char* name, bool backgroundPlay) {
+    const std::filesystem::path& fakeGame, const char* name, BareHook hook) {
     const auto work = base / std::wstring(name, name + std::strlen(name));
     Require(std::filesystem::create_directory(work), "unique bare case directory");
     std::vector<std::pair<std::filesystem::path, std::string>> ownedFiles;
@@ -296,7 +299,9 @@ void BareCase(const std::filesystem::path& base, const std::filesystem::path& la
     remember(work / L"war3.exe");
     std::filesystem::copy_file(fakeGame, work / L"Game.dll");
     remember(work / L"Game.dll");
-    const std::wstring relative = L"Maps\\Test\\smoke.w3x";
+    std::filesystem::copy_file(fakeWar3.parent_path() / L"Mss32.dll", work / L"Mss32.dll");
+    remember(work / L"Mss32.dll");
+    const std::wstring relative = hook == BareHook::WindowCloak ? L"Maps\\Test\\cloak.w3x" : L"Maps\\Test\\smoke.w3x";
     std::ofstream(work / relative, std::ios::binary) << "original-fixture-no-warcraft-map";
     remember(work / relative);
     const auto receipt = work / L"receipt.json";
@@ -330,20 +335,34 @@ void BareCase(const std::filesystem::path& base, const std::filesystem::path& la
         "bare mode rejects an extension runtime directory");
     Require(run(prefix + L" --runtime-layout flat", 5000) == 64 && !std::filesystem::exists(receipt), "bare mode rejects a runtime layout");
     Require(run(prefix + L" --background-play on", 5000) == 64 && !std::filesystem::exists(receipt), "background play accepts only explicit enabled");
-    auto command = prefix + L" --game-nosound enabled";
-    if (backgroundPlay) command += L" --background-play enabled";
+    Require(run(prefix + L" --game-nosound on", 5000) == 64 && !std::filesystem::exists(receipt), "nosound accepts only explicit enabled");
+    // 静音不走游戏命令行（1.27a 不认 -nosound，会连带丢掉 -loadfile），由 bootstrap 让 Miles 替身打不开声卡。
+    const bool muted = hook != BareHook::None;
+    auto command = prefix;
+    if (muted) command += L" --game-nosound enabled";
+    if (hook == BareHook::BackgroundPlay) command += L" --background-play enabled";
+    if (hook == BareHook::WindowCloak) command += L" --window-cloak enabled";
     const auto exit = run(command, 22000);
     const auto text = Read(receipt);
     Require(text.find("\"runtimeMode\":\"bare\"") != std::string::npos, "receipt reports bare mode");
     Require(text.find("\"gameRuntimeVerified\":false") != std::string::npos, "bare fixture cannot claim gameplay");
     Require(text.find("\"fixturePluginBits\":0") != std::string::npos, "bare mode loads no extension runtime");
-    Require(text.find("\"-window\",\"-nosound\",\"-loadfile\"") != std::string::npos, "explicit nosound reaches the exact game argv");
-    if (!backgroundPlay) {
-        Require(exit == 0, "bare launcher exit");
+    Require(text.find("\"-window\",\"-loadfile\"") != std::string::npos && text.find("-nosound") == std::string::npos,
+        "the game argv never carries -nosound");
+    if (hook != BareHook::BackgroundPlay) {
+        Require(exit == 0, "bare launcher exit (the fake game checked the sound driver state itself)");
+        Require(text.find(muted ? "\"gameNoSound\":true,\"gameNoSoundInstalled\":true" : "\"gameNoSound\":false,\"gameNoSoundInstalled\":false")
+            != std::string::npos, "mute is installed exactly when requested");
         Require(text.find("\"runtimeInitialized\":true") != std::string::npos && text.find("\"gameObserved\":true") != std::string::npos,
             "bare mode still observes Game.dll before reporting ready");
         Require(text.find("\"backgroundPlay\":false") != std::string::npos && text.find("\"backgroundPlayInstalled\":false") != std::string::npos,
             "background play stays off unless requested");
+        if (hook == BareHook::WindowCloak)
+            Require(text.find("\"windowCloak\":true") != std::string::npos && text.find("\"windowCloakInstalled\":true") != std::string::npos
+                && text.find("\"cloakedWindows\":1") != std::string::npos, "the game's top-level window was cloaked before it showed");
+        else
+            Require(text.find("\"windowCloak\":false") != std::string::npos && text.find("\"cloakedWindows\":0") != std::string::npos,
+                "window cloak stays off unless requested");
     } else {
         Require(exit != 0, "background play on a non-1.27a Game.dll must fail");
         Require(text.find("background-play-game-identity") != std::string::npos, "identity mismatch is reported at its own stage");
@@ -549,8 +568,9 @@ int wmain(int argc, wchar_t** argv) {
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-hook-and-initialize", true, false, false, false, {}, true, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-plugin", false, true, false, false, {}, false, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-initialize", false, false, true, false, {}, false, RuntimeLayout::YdweTree);
-        BareCase(base, launcher, bootstrap, war3, game, "bare-mode", false);
-        BareCase(base, launcher, bootstrap, war3, game, "bare-background-play-identity", true);
+        BareCase(base, launcher, bootstrap, war3, game, "bare-mode", BareHook::None);
+        BareCase(base, launcher, bootstrap, war3, game, "bare-background-play-identity", BareHook::BackgroundPlay);
+        BareCase(base, launcher, bootstrap, war3, game, "bare-window-cloak", BareHook::WindowCloak);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-valid", true);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-sandbox", true);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-redirect", true);

@@ -37,6 +37,8 @@ public:
     [[nodiscard]] std::vector<std::uint32_t> ProcessIds() const;
     // 游戏所在的不可见桌面句柄（HDESK，找窗口用）；游戏开在用户桌面上时为空。
     [[nodiscard]] void* HiddenDesktop() const noexcept;
+    // 本次测试不显示在屏幕上（不可见桌面或隐身窗口）：用户无法自己退出，由编辑器负责结束。
+    [[nodiscard]] bool Unseen() const noexcept;
     // 本次进程树里客户区最大的可见顶层窗口（HWND），即游戏窗口；后台测试在它的不可见桌面上找。没找到时为空。
     [[nodiscard]] void* GameWindow() const;
     // 给游戏窗口发一次空格，越过载入后的“按任意键继续”（载入中会被忽略）。没找到窗口时返回 false。
