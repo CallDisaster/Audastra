@@ -132,6 +132,14 @@ void TriggerEmitter::LocalSearch(Children children, bool searchHash, long block)
         case Gui::YDWEExecuteTriggerMultiple:
             LocalDeclare(kInteger, "ydl", "triggerstep");
             LocalDeclare(kTrigger, "ydl", "trigger");
+            // 参数区的赋值写进被调触发器的页，不算本函数的局部变量；但赋值右边读取的局部变量属于本函数，
+            // 只在这里读局部变量的触发器（例如只把参数转交给别的触发器）也要开本次执行的帧，否则读到空值。
+            if (searchHash) {
+                for (const auto param : eca.children) {
+                    const auto& child = EcaAt(param);
+                    if (Enabled(child) && Block(child) == 0) LocalSearchVar(child, true);
+                }
+            }
             LocalSearch(eca.children, false, 0);
             break;
         case Gui::YDWERegisterTriggerMultiple:

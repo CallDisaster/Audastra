@@ -84,8 +84,8 @@ Fixture MakeFixture(const std::filesystem::path& root) {
     WriteText(result.ui / "config", "probe\n");
     WriteText(result.ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n"
         "typename=1,0,0,Type,string\nstring=0,1,1,String,string\nscriptcode=1,0,0,Code,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
-        "frame=0,1,1,Frame,integer\nprobegroup=0,1,1,Group,handle\nplayer=0,1,1,Player,player\n"
-        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename39_frame=0,typename,39,Frame\ntypename91_probegroup=0,typename,91,Group\nProbeTop =0,integer,1,Top\nPlayer00=0,player,Player(0),Player 1\n");
+        "frame=0,1,1,Frame,integer\nprobegroup=0,1,1,Group,handle\nplayer=0,1,1,Player,player\nboolean=0,1,1,Boolean,boolean\n"
+        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename39_frame=0,typename,39,Frame\ntypename91_probegroup=0,typename,91,Group\nProbeTop =0,integer,1,Top\nPlayer00=0,player,Player(0),Player 1\nProbeNoCheck=0,boolean,false,No check\n");
     WriteText(result.ui / "probe/call.txt",
         "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n");
     WriteText(result.ui / "probe/action.txt",
@@ -96,6 +96,7 @@ Fixture MakeFixture(const std::filesystem::path& root) {
         "[RecordInteger]\n[[.args]]\ntype=integer\n"
         "[DzFrameSetScriptMultiple]\n[[.args]]\ntype=player\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[DzTriggerRegisterKeyEventMultiple]\n[[.args]]\ntype=player\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
+        "[YDWEExecuteTriggerMultiple]\n[[.args]]\ntype=integer\n[[.args]]\ntype=boolean\n"
         "[ProbePlain]\n[[.args]]\ntype=integer\n"
         "[ProbeCodeFirst]\n[[.args]]\ntype=integer\n"
         "[ProbeAmbiguous]\n[[.args]]\ntype=integer\n");
@@ -325,6 +326,30 @@ void Run(const std::filesystem::path& root) {
     std::size_t notes = 0;
     for (const auto& diagnostic : scoped.diagnostics) notes += diagnostic.code == "callback-local-scope" ? 1 : 0;
     Require(notes == 1, "only the deferred callback warns about separate locals: " + Details(scoped.diagnostics));
+
+    // 运行触发器（多项）的参数区：赋值写进被调触发器的页，右边读取的局部变量却属于本函数。
+    // 只在参数区读局部变量的触发器（只把参数转交给别的触发器）也要开本次执行的帧，不能读第 2 页没人写过的步号。
+    GraphArgumentValue readScore;
+    {
+        auto call = std::make_shared<GraphEcaValue>();
+        call->function = "YDWEGetAnyTypeLocalVariable"; call->kind = UiDefinitionKind::Call;
+        call->arguments = {Scalar(0, "typename01_integer"), Scalar(3, "score")};
+        readScore.call = call;
+    }
+    auto forward = MakeDocument(*catalog.value, {Action("YDWEExecuteTriggerMultiple", {Scalar(3, "7"), Scalar(0, "ProbeNoCheck")},
+        {Child(Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename01_integer"), Scalar(3, "total"), readScore}))})});
+    MapScriptInputs forwardInputs; forwardInputs.catalog = &*catalog.value; forwardInputs.triggers = &forward;
+    const auto forwarded = GenerateMapScript(forwardInputs);
+    Require(forwarded.Succeeded(), "forwarding generation: " + Details(forwarded.diagnostics));
+    const auto forwardBegin = forwarded.text.find("function Trig_CallbackActions takes");
+    Require(forwardBegin != std::string::npos, "forwarding actions function:\n" + forwarded.text);
+    const auto forwardMain = forwarded.text.substr(forwardBegin, forwarded.text.find("endfunction", forwardBegin) - forwardBegin);
+    Require(forwardMain.find("local integer ydl_localvar_step") != std::string::npos
+        && forwardMain.find("*ydl_localvar_step, 0x") != std::string::npos && forwardMain.find("0xECE825E7)") == std::string::npos,
+        "a trigger that only reads locals inside execute parameters opens its own frame and reads it: " + forwardMain);
+    Require(forwardMain.find("call SaveInteger(YDLOC, ydl_triggerstep, 0x") != std::string::npos
+        && forwardMain.find("call TriggerExecute(ydl_trigger)") != std::string::npos,
+        "the parameter is still written to the callee page before executing: " + forwardMain);
 
     // 函数库扩展的局部变量类型（序号超出内置 38 种）：类型名取自预设，按 TriggerTypes 声明的基础类型存取。
     auto framed = MakeDocument(*catalog.value, {Action("YDWESetAnyTypeLocalVariable",
