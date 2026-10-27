@@ -145,6 +145,27 @@ private slots:
         QVERIFY(WorldDiagnosticPlacementMatches(owners[0], 0, wrongHost, state, nullptr));
         QVERIFY(!WorldDiagnosticPlacementMatches(owners[1], 0, wrongHost, state, nullptr));
     }
+    // 物体管理的放置引用：完整身份吻合才选中并定位；创建编号或序号不符、格式错误都拒绝，不猜替代实例。
+    void RevealPlacementSelectsExactIdentityOnly() {
+        QtProject::EditorProject project; QVERIFY(InstallCatalog(project));
+        MapData::UnitPlacements units;
+        for (const auto rawcode : {"hfoo", "hkee"}) {
+            auto unit = std::get<MapData::UnitPlacement>(MakeNewPlacement(ObjectData::ObjectType::Unit, rawcode, 0,
+                {static_cast<float>(units.units.size()) * 256, 64, 0}));
+            unit.creationId = static_cast<std::int32_t>(units.units.size() + 200); units.units.push_back(std::move(unit));
+        }
+        const auto encoded = units.Serialize(); QVERIFY(encoded.Succeeded());
+        project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(
+            std::vector<MapArchiveMember>{{"war3mapUnits.doo", *encoded.value}}));
+        project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+        WorldModule module(project); (void)module.Widget();
+        const auto keep = QString::fromLatin1(QByteArray("hkee").toHex());
+        QVERIFY(!module.Reveal({"world", "placement", QStringLiteral("units:1:999:%1").arg(keep), {}}));
+        QVERIFY(!module.Reveal({"world", "placement", QStringLiteral("units:0:201:%1").arg(keep), {}}));
+        QVERIFY(!module.Reveal({"world", "placement", QStringLiteral("units:1:201:zz"), {}}));
+        QVERIFY(!module.Reveal({"world", "placement", QStringLiteral("doodads:1:201:%1").arg(keep), {}}));
+        QVERIFY(module.Reveal({"world", "placement", QStringLiteral("units:1:201:%1").arg(keep), {}}));
+    }
     void UnboundModuleCannotPublishRealSourceCapture() {
         QtProject::EditorProject project; WorldModule module(project);
         QVERIFY(!module.ModelDiagnosticsReady());

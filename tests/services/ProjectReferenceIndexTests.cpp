@@ -1,4 +1,6 @@
 #include "War3MapCore/Services/ProjectReferenceIndex.h"
+#include "War3MapCore/MapData/MapPlacements.h"
+#include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 
 #include <iostream>
@@ -132,11 +134,35 @@ void TestTriggerAndObjectReferences() {
     Expect(!index.Coverage().empty(), "coverage is reported");
 }
 
+// 放置引用带建索引时的完整实例身份，世界页据此选中；序号错位时身份不再吻合。
+void TestPlacementIdentity() {
+    MapData::UnitPlacements units;
+    for (const auto& [rawcode, creation] : {std::pair{"hfoo", 11}, std::pair{"hkni", 12}}) {
+        MapData::UnitPlacement unit;
+        unit.rawcode = rawcode;
+        unit.creationId = creation;
+        units.units.push_back(unit);
+    }
+    const auto bytes = units.Serialize();
+    Expect(bytes.Succeeded() && bytes.value.has_value(), "synthetic units placement serializes");
+    const auto map = MapDocument::FromMembers(std::vector<MapArchiveMember>{{"war3mapUnits.doo", *bytes.value}});
+    Expect(map.Units().has_value(), "synthetic units placement parses");
+    ProjectReferenceInputs inputs;
+    inputs.map = &map;
+    const auto index = ProjectReferenceIndex::Build(inputs);
+    const auto knight = index.UsagesOf(std::vector<std::string>{"hkni"});
+    Expect(knight.size() == 1 && knight[0]->module == UsageModule::World && knight[0]->placement, "placed unit usage");
+    const auto& placement = *knight[0]->placement;
+    Expect(!placement.doodads && placement.index == 1 && placement.rawcode == "hkni" && placement.creationId == 12,
+        "placement identity matches the indexed record");
+}
+
 } // namespace
 
 int main() {
     try {
         TestTriggerAndObjectReferences();
+        TestPlacementIdentity();
         std::cout << "ProjectReferenceIndex tests passed\n";
         return 0;
     } catch (const std::exception& error) {

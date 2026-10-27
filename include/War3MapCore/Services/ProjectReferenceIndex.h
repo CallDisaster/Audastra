@@ -49,6 +49,15 @@ struct Usage {
     // 物编字段 ID / 放置实例序号 / 变量初值等补充信息。
     std::string detail;
     std::optional<std::size_t> placementIndex;
+    // 放置实例在建索引时的完整身份（文件、序号、类型码、创建编号），世界页按它选中；
+    // 实例之后被删除或序号错位时身份不再吻合，由世界页拒绝而不是选到别的实例。特殊装饰物没有可编辑身份，为空。
+    struct Placement {
+        bool doodads = false; // war3map.doo；否则 war3mapUnits.doo
+        std::uint32_t index = 0;
+        std::string rawcode;
+        std::int32_t creationId = 0;
+    };
+    std::optional<Placement> placement;
     std::optional<ObjectData::ObjectKey> ownerObject;
     // 所在触发器或语句已禁用：引用仍存在，但不会生成代码。
     bool disabled = false;

@@ -727,11 +727,7 @@ void WorldModule::OpenModelDiagnostics() {
             || current.document != expected.document || current.catalogRevision != expected.catalogRevision
             || std::max<std::uint64_t>(1, project_.editRevision_.Generation()) != expected.document.generation
             || (project_.mapEdits_ ? project_.mapEdits_->Revision() : 0) != expected.document.revision) return false;
-        const auto document = CurrentDocument(); if (!document) return false;
-        const auto found = MapData::FindPlacement(*document, owner); if (!found.Succeeded()) return false;
-        const std::array<Services::WorldObjectId, 1> selected{owner};
-        if (!SelectObjects(selected, Services::SelectionMode::Replace)) return false;
-        FlyTo(found.value->position[0], found.value->position[1], std::nullopt); return true;
+        return FocusPlacement(owner);
     });
     modelDiagnosticsDialog_->show(); modelDiagnosticsDialog_->raise();
 }

@@ -1390,8 +1390,33 @@ bool WorldModule::PresentTerrainRender(WorldTerrainLoaded& loaded, bool preview,
 }
 
 bool WorldModule::Reveal(const Shell::NavigationTarget& target) {
-    if (target.module != "world" || (!target.kind.isEmpty() && target.kind != "terrain")) return false;
+    if (target.module != "world") return false;
+    if (target.kind == QStringLiteral("placement")) {
+        // 物体管理等处的放置引用：文件:序号:创建编号:类型码十六进制。
+        const auto parts = target.id.split(QLatin1Char(':'));
+        bool indexOk = false, creationOk = false;
+        if (parts.size() != 4 || (parts[0] != QStringLiteral("units") && parts[0] != QStringLiteral("doodads"))) return false;
+        MapData::PlacementId id;
+        id.file = parts[0] == QStringLiteral("units") ? MapData::PlacementFile::Units : MapData::PlacementFile::Doodads;
+        id.index = parts[1].toUInt(&indexOk);
+        id.creationId = parts[2].toInt(&creationOk);
+        const auto rawcode = QByteArray::fromHex(parts[3].toLatin1());
+        if (!indexOk || !creationOk || rawcode.isEmpty() || rawcode.toHex() != parts[3].toLatin1()) return false;
+        id.rawcode.assign(rawcode.constData(), static_cast<std::size_t>(rawcode.size()));
+        (void)Widget();
+        return FocusPlacement(id);
+    }
+    if (!target.kind.isEmpty() && target.kind != "terrain") return false;
     (void)Widget();
+    return true;
+}
+
+bool WorldModule::FocusPlacement(const MapData::PlacementId& id) {
+    const auto document = CurrentDocument(); if (!document) return false;
+    const auto found = MapData::FindPlacement(*document, id); if (!found.Succeeded()) return false;
+    const std::array<Services::WorldObjectId, 1> selected{id};
+    if (!SelectObjects(selected, Services::SelectionMode::Replace)) return false;
+    FlyTo(found.value->position[0], found.value->position[1], std::nullopt);
     return true;
 }
 

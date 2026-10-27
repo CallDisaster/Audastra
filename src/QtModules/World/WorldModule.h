@@ -212,6 +212,8 @@ private:
     void DuplicateSelection();
     void RefreshAssetBrowser();
     void FlyTo(double x, double y, std::optional<double> distance);
+    // 选中一个摆放实例并飞到它；身份与当前文档不吻合（已删除、序号错位）时拒绝，不猜替代对象。
+    bool FocusPlacement(const MapData::PlacementId& id);
     void UpdateBrushCursor(std::optional<std::array<double, 2>> point);
     void RefreshTerrainPalette();
     void RefreshTerrainSwatches();

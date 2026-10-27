@@ -125,7 +125,13 @@ std::optional<Shell::NavigationTarget> UsageTarget(const QtProject::EditorProjec
     case UsageModule::Variables:
         return Shell::NavigationTarget{"variables", "variable", U8(usage.owner), {}};
     case UsageModule::World:
-        return std::nullopt;   // 世界编辑器尚未接通
+        // 世界页按完整放置身份选中；类型码用十六进制保留原字节。
+        if (!usage.placement) return std::nullopt;
+        return Shell::NavigationTarget{"world", "placement", QStringLiteral("%1:%2:%3:%4")
+            .arg(usage.placement->doodads ? QStringLiteral("doodads") : QStringLiteral("units"))
+            .arg(usage.placement->index).arg(usage.placement->creationId)
+            .arg(QString::fromLatin1(QByteArray(usage.placement->rawcode.data(),
+                static_cast<qsizetype>(usage.placement->rawcode.size())).toHex())), {}};
     }
     return std::nullopt;
 }

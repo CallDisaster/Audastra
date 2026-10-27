@@ -33,6 +33,32 @@ const char* PlacementDetail(IndexedReferenceOrigin origin) {
     }
 }
 
+std::optional<Usage::Placement> PlacementOf(const MapDocument* map, IndexedReferenceOrigin origin,
+    std::optional<std::size_t> index) {
+    if (map == nullptr || !index || *index > UINT32_MAX) return std::nullopt;
+    const auto at = static_cast<std::uint32_t>(*index);
+    switch (origin) {
+    case IndexedReferenceOrigin::PlacedUnitOrItem:
+    case IndexedReferenceOrigin::PlacedAbility:
+    case IndexedReferenceOrigin::PlacedInventoryItem:
+    case IndexedReferenceOrigin::PlacedDropItem:
+    case IndexedReferenceOrigin::RandomUnitChoice:
+        if (map->Units() && *index < map->Units()->units.size()) {
+            const auto& unit = map->Units()->units[*index];
+            return Usage::Placement{false, at, unit.rawcode, unit.creationId};
+        }
+        return std::nullopt;
+    case IndexedReferenceOrigin::PlacedDoodadOrDestructable:
+        if (map->Doodads() && *index < map->Doodads()->doodads.size()) {
+            const auto& doodad = map->Doodads()->doodads[*index];
+            return Usage::Placement{true, at, doodad.rawcode, doodad.creationId};
+        }
+        return std::nullopt;
+    default:
+        return std::nullopt;
+    }
+}
+
 // 触发器语句遍历：参数（含嵌套调用与数组下标）中的记号与被调用函数归到所在语句。
 class TriggerWalker {
 public:
@@ -161,6 +187,7 @@ ProjectReferenceIndex ProjectReferenceIndex::Build(const ProjectReferenceInputs&
             usage.place = UsagePlace::Placement;
             usage.detail = PlacementDetail(reference.origin);
             usage.placementIndex = reference.placementIndex;
+            usage.placement = PlacementOf(inputs.map, reference.origin, reference.placementIndex);
         }
         index.Link(index.Add(std::move(usage)), reference.rawcode);
     }
