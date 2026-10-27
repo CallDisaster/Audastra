@@ -14,6 +14,10 @@ library AudastraUI requires AudastraJapi
         private integer connectStatus = -1
         private integer failedStatus = 0
         private integer failedRequest = 0
+        // 界面数据面：高频刷新写进这张表，运行库在游戏线程里直接改框架，不拼请求串。
+        // -1 还没绑定；0 已绑定；其他为上次绑定失败的 JAPI 状态。
+        private hashtable dataTable = null
+        private integer dataStatus = -1
         private timer pollTimer = null
         // 监听表：框架 + 事件类型 → 事件名、序号（同一框架同一类型只留最后一次）。
         private integer watchCount = 0
@@ -59,6 +63,21 @@ library AudastraUI requires AudastraJapi
     private function Refuse takes integer status returns nothing
         set failedStatus = status
         set failedRequest = 0
+    endfunction
+
+    // 第一次推送时绑定数据面。旧版运行库没有这项能力（未知命令 6、不支持 12）就一直走字符串请求，其他失败下次再试。
+    private function Bound takes nothing returns boolean
+        if dataStatus != 0 and dataStatus != 6 and dataStatus != 12 then
+            if not Connect() then
+                return false
+            endif
+            if dataTable == null then
+                set dataTable = InitHashtable()
+            endif
+            call AjCallVoid(PREFIX + "bindtable", AjArgInt(GetHandleId(dataTable)))
+            set dataStatus = AjLastStatus
+        endif
+        return dataStatus == 0
     endfunction
 
     private function Run takes string command, string arguments returns boolean
@@ -430,6 +449,51 @@ library AudastraUI requires AudastraJapi
     function AudastraUIDestroy takes integer frame returns nothing
         if Run("destroy", AjArgHandle(frame)) then
             call ForgetFrame(frame)
+        endif
+    endfunction
+
+    // ── 高频刷新 ──
+
+    // 每帧都可能变的值（血条宽度、数字、增减益图标、显示）用这一组：运行库支持数据面时只写一次表，
+    // 由运行库在游戏线程里按同样的语义改框架；不支持时同对应的设置函数。走数据面时单次写入的错误不记进
+    // AudastraUILastError。
+    function AudastraUIPushValue takes integer frame, real value returns nothing
+        if Bound() then
+            call SaveReal(dataTable, frame, 1, value)
+        else
+            call AudastraUISetValue(frame, value)
+        endif
+    endfunction
+
+    function AudastraUIPushWidth takes integer frame, real width returns nothing
+        if Bound() then
+            call SaveReal(dataTable, frame, 2, width)
+        else
+            call AudastraUISetWidth(frame, width)
+        endif
+    endfunction
+
+    function AudastraUIPushText takes integer frame, string text returns nothing
+        if Bound() then
+            call SaveStr(dataTable, frame, 3, text)
+        else
+            call AudastraUISetText(frame, text)
+        endif
+    endfunction
+
+    function AudastraUIPushTexture takes integer frame, string path returns nothing
+        if Bound() then
+            call SaveStr(dataTable, frame, 4, path)
+        else
+            call AudastraUISetTexture(frame, path, false)
+        endif
+    endfunction
+
+    function AudastraUIPushShown takes integer frame, boolean show returns nothing
+        if Bound() then
+            call SaveBoolean(dataTable, frame, 5, show)
+        else
+            call AudastraUIShow(frame, show)
         endif
     endfunction
 

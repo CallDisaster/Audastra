@@ -137,14 +137,14 @@ void TestGeneratedText() {
 
     Require(plan.value->triggers == std::vector<std::string>{"读条 创建 cast_Create", "读条 更新 cast_Update",
         "读条 状态 打断 cast_State_interrupt", "读条 基础状态 cast_BaseState"}, "触发器名与顺序");
-    Require(plan.value->variables == std::vector<std::string>{"AUI_cast_root", "AUI_cast_bar", "AUI_cast_label", "AUI_cast_slot",
-        "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast",
+    Require(plan.value->variables == std::vector<std::string>{"AUI_cast_root", "AUI_cast_bar", "AUIK_cast_bar_fill", "AUI_cast_label",
+        "AUI_cast_slot", "AUIK_cast_slot_text", "AUIK_cast_slot_backdrop", "AUIK_cast_slot_pushed", "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast",
         "AUIL_cast_root_visible", "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_text"}, "变量名与顺序");
     // 刷新只发变化的值：先和上次发的比，变了才记下并发出去；回到基础状态时状态改过的属性重新发。
     Require(Contains(text, "    AUIL_cast_slot_text: string[3] = \"AUI:unsent\"\n")
             && Contains(text, "OperatorCompareString(" ) && Contains(text, "OperatorNotEqualENE, udg_AUIL_cast_label_text)")
-            && Contains(text, "AudastraUISetText(udg_AUI_cast_label, udg_AUIL_cast_label_text)")
-            && Contains(text, "AudastraUISetText(AudastraUIFindFrame(\"AudastraButtonText\", ")
+            && Contains(text, "AudastraUIPushText(udg_AUI_cast_label, udg_AUIL_cast_label_text)")
+            && Contains(text, "AudastraUIPushText(udg_AUIK_cast_slot_text[GetForLoopIndexA()], udg_AUIL_cast_slot_text[GetForLoopIndexA()])")
             && Contains(text, "OperatorNotEqual, udg_AUIL_cast_bar_value)")
             && Contains(text, "SetVariable(udg_AUIL_cast_bar_value, udg_AUIV_cast_progress)"), "刷新先比较上次发的值：\n" + text);
     const std::size_t base = text.find("读条 基础状态 cast_BaseState");
@@ -177,15 +177,18 @@ void TestGeneratedText() {
     Require(Contains(text, "SetVariable(udg_AUI_cast_bar, AudastraUICreateFrame(\"AudastraBar\", udg_AUI_cast_root, 0, ")
             && !Contains(text, "AudastraUICreateSimpleFrame") && !Contains(text, "AudastraUISetValue"),
         "进度条按普通框架创建：\n" + text);
-    Require(Contains(text, "AudastraUIClearPoints(AudastraUIFindFrame(\"AudastraBarFill\", ")
-            && Contains(text, "), AudastraAnchorTopLeft, udg_AUI_cast_bar, AudastraAnchorTopLeft, 0, 0)")
-            && Contains(text, "), AudastraAnchorBottomLeft, udg_AUI_cast_bar, AudastraAnchorBottomLeft, 0, 0)"),
+    // 模板子框架创建时找一次记进变量，之后都用变量。
+    Require(Contains(text, "SetVariable(udg_AUIK_cast_bar_fill, AudastraUIFindFrame(\"AudastraBarFill\", ")
+            && Contains(text, "SetVariable(udg_AUIK_cast_slot_text[GetForLoopIndexA()], AudastraUIFindFrame(\"AudastraButtonText\", OperatorInt(")
+            && Contains(text, "    AUIK_cast_slot_text: AudastraFrame[3] = AudastraFrameNone\n"), "子框架记进变量：\n" + text);
+    Require(Contains(text, "AudastraUIClearPoints(udg_AUIK_cast_bar_fill)")
+            && Contains(text, "AudastraUISetPoint(udg_AUIK_cast_bar_fill, AudastraAnchorTopLeft, udg_AUI_cast_bar, AudastraAnchorTopLeft, 0, 0)")
+            && Contains(text, "AudastraUISetPoint(udg_AUIK_cast_bar_fill, AudastraAnchorBottomLeft, udg_AUI_cast_bar, AudastraAnchorBottomLeft, 0, 0)"),
         "填充靠左对齐：\n" + text);
     Require(Contains(text, "AudastraUISetTexture(udg_AUI_cast_bar, \"UI\\\\Feedback\\\\XPBar\\\\human-xpbar-border.blp\", false)")
-            && Contains(text, "), \"UI\\\\Feedback\\\\XPBar\\\\human-bigbar-fill-red.blp\", false)"),
+            && Contains(text, "AudastraUISetTexture(udg_AUIK_cast_bar_fill, \"UI\\\\Feedback\\\\XPBar\\\\human-bigbar-fill-red.blp\", false)"),
         "底图在进度条上，状态换的填充贴图在填充上：\n" + text);
-    Require(Contains(text, "AudastraUISetWidth(AudastraUIFindFrame(\"AudastraBarFill\", ")
-            && Contains(text, "), OperatorReal(RMaxBJ(0, RMinBJ(1, udg_AUIL_cast_bar_value)), OperatorMultiply, 0.28))"),
+    Require(Contains(text, "AudastraUIPushWidth(udg_AUIK_cast_bar_fill, OperatorReal(RMaxBJ(0, RMinBJ(1, udg_AUIL_cast_bar_value)), OperatorMultiply, 0.28))"),
         "进度按比例改填充宽度，比例夹在 0..1：\n" + text);
     Require(Contains(text, "AudastraUISetPoint(udg_AUI_cast_label, AudastraAnchorBottom, udg_AUI_cast_bar, AudastraAnchorTop, 0, 0.004)"),
         "相对锚点：\n" + text);
@@ -200,8 +203,8 @@ void TestGeneratedText() {
         && Contains(text, "AudastraUISetColor(udg_AUI_cast_label, 255, 204, 0, 255)")
         && Contains(text, "AudastraUISetTextAlign(udg_AUI_cast_label, AudastraJustifyLeft, AudastraJustifyMiddle)"), "文字样式：\n" + text);
     // 按钮文字在模板子框架上，按实例取自己的格。
-    Require(Contains(text, "AudastraUISetText(AudastraUIFindFrame(\"AudastraButtonText\", OperatorInt(")
-        && Contains(text, "I2S(udg_AUIV_cast_charges[GetForLoopIndexA()])"), "按钮文字绑定：\n" + text);
+    Require(Contains(text, "SetVariable(udg_AUIL_cast_slot_text[GetForLoopIndexA()], I2S(udg_AUIV_cast_charges[GetForLoopIndexA()]))"),
+        "按钮文字绑定：\n" + text);
     // 有状态覆盖的属性只在当前状态不覆盖时刷新。
     Require(Contains(text, "OperatorCompareString(udg_AUIS_cast, OperatorNotEqualENE, \"interrupt\")"), "状态守卫：\n" + text);
     Require(Contains(text, "OperatorString(OperatorString(udg_AUIV_cast_name, \" \"), AudastraUIFormatReal(udg_AUIV_cast_progress, 1))"),
@@ -211,9 +214,9 @@ void TestGeneratedText() {
             && Contains(text, "OperatorCompareBoolean(udg_AUIV_cast_shown, OperatorEqualENE, true)")
             && Contains(text, "OperatorCompareInteger(udg_AUIL_cast_root_visible, OperatorNotEqual, 1)")
             && Contains(text, "SetVariable(udg_AUIL_cast_root_visible, 1)")
-            && Contains(text, "AudastraUIShow(udg_AUI_cast_root, true)")
+            && Contains(text, "AudastraUIPushShown(udg_AUI_cast_root, true)")
             && Contains(text, "SetVariable(udg_AUIL_cast_root_visible, 0)")
-            && Contains(text, "AudastraUIShow(udg_AUI_cast_root, false)"), "显示绑定到布尔数值，变化时才发：\n" + text);
+            && Contains(text, "AudastraUIPushShown(udg_AUI_cast_root, false)"), "显示绑定到布尔数值，变化时才发：\n" + text);
 }
 
 // 预览里没写贴图的部分是透明的：游戏里不能留下没设贴图的 BACKDROP（会画成绿块）。
@@ -254,17 +257,20 @@ void TestUntexturedFrames() {
     const std::string& text = plan.value->featureText;
     Require(Contains(text, "SetVariable(udg_AUI_plain_panel, AudastraUICreateFrame(\"AudastraPanel\", "), "没贴图的底板建成普通框架：\n" + text);
     Require(Contains(text, "SetVariable(udg_AUI_plain_pick, AudastraUICreateFrame(\"AudastraClickButton\", ")
-            && Contains(text, "AudastraUISetText(AudastraUIFindFrame(\"AudastraClickButtonText\", "),
+            && Contains(text, "SetVariable(udg_AUIK_plain_pick_text, AudastraUIFindFrame(\"AudastraClickButtonText\", ")
+            && Contains(text, "AudastraUISetText(udg_AUIK_plain_pick_text, \"选择\")")
+            && !Contains(text, "udg_AUIK_plain_pick_backdrop"),
         "没贴图的按钮是透明点击层，文字在它自己的子框架上：\n" + text);
     Require(Contains(text, "SetVariable(udg_AUI_plain_icon, AudastraUICreateFrame(\"AudastraButton\", ")
-            && Contains(text, "AudastraUISetTexture(AudastraUIFindFrame(\"AudastraButtonBackdrop\", ")
-            && Contains(text, "AudastraUISetTexture(AudastraUIFindFrame(\"AudastraButtonPushed\", ")
+            && Contains(text, "AudastraUISetTexture(udg_AUIK_plain_icon_backdrop, ")
+            && Contains(text, "AudastraUISetTexture(udg_AUIK_plain_icon_pushed, ")
             && Contains(text, "\"ReplaceableTextures\\\\CommandButtons\\\\BTNHeal.blp\""),
         "有贴图没写按下贴图时按下也用同一张：\n" + text);
     Require(Contains(text, "SetVariable(udg_AUI_plain_bar, AudastraUICreateFrame(\"AudastraBarClear\", ")
-            && Contains(text, "AudastraUIShow(AudastraUIFindFrame(\"AudastraBarClearFill\", "),
+            && Contains(text, "SetVariable(udg_AUIK_plain_bar_fill, AudastraUIFindFrame(\"AudastraBarClearFill\", ")
+            && Contains(text, "AudastraUIShow(udg_AUIK_plain_bar_fill, false)"),
         "没有底图和填充贴图的进度条不画底层，填充藏起来：\n" + text);
-    Require(Contains(text, "AudastraUISetTexture(AudastraUIFindFrame(\"AudastraBarClearFill\", ")
+    Require(Contains(text, "AudastraUISetTexture(udg_AUIK_plain_tinted_fill, ")
             && !Contains(text, "AudastraUICreateFrame(\"AudastraBar\", "),
         "有填充贴图的进度条仍然不画底层：\n" + text);
 
@@ -521,6 +527,10 @@ void TestScriptLibrary() {
         "type widget extends agent\ntype unit extends widget\n"
         "type triggeraction extends handle\n"
         "native GetHandleId takes handle h returns integer\n"
+        "type hashtable extends agent\nnative InitHashtable takes nothing returns hashtable\n"
+        "native SaveReal takes hashtable table, integer parentKey, integer childKey, real value returns nothing\n"
+        "native SaveStr takes hashtable table, integer parentKey, integer childKey, string value returns boolean\n"
+        "native SaveBoolean takes hashtable table, integer parentKey, integer childKey, boolean value returns nothing\n"
         "native R2SW takes real r, integer width, integer precision returns string\n"
         "native SubString takes string source, integer start, integer end returns string\n"
         "native StringLength takes string s returns integer\n"

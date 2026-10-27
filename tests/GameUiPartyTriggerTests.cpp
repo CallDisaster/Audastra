@@ -190,7 +190,7 @@ void TestBuffs() {
     const auto ui = GenerateUiTriggers(d);
     Require(ui.Succeeded(), "界面触发器：" + First(ui.diagnostics));
     Require(Contains(ui.value->featureText, "SetVariable(udg_AUIL_party_icon1_texture[GetForLoopIndexA()], udg_AUIV_party_buff1[GetForLoopIndexA()])")
-            && Contains(ui.value->featureText, "AudastraUISetTexture(udg_AUI_party_icon1[GetForLoopIndexA()], udg_AUIL_party_icon1_texture[GetForLoopIndexA()]"),
+            && Contains(ui.value->featureText, "AudastraUIPushTexture(udg_AUI_party_icon1[GetForLoopIndexA()], udg_AUIL_party_icon1_texture[GetForLoopIndexA()])"),
         "图标贴图在更新里按数值设置，没变就不重发");
     Require(Contains(ui.value->featureText, "OperatorCompareString(udg_AUIV_party_buff1[GetForLoopIndexA()], OperatorNotEqualENE, \"\")"),
         "图标数值为空时隐藏");

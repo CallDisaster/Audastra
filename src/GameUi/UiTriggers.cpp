@@ -118,6 +118,9 @@ public:
         };
         for (const auto& info : frames_) {
             variable(UiFrameVariableName(d_.id, info.frame->id), "AudastraFrame", GroupSize(info), "AudastraFrameNone");
+            for (const auto& child : Children(info)) {
+                variable(UiChildVariableName(d_.id, info.frame->id, child.key), "AudastraFrame", GroupSize(info), "AudastraFrameNone");
+            }
         }
         for (const auto& value : d_.values) variable(UiValueVariableName(d_.id, value.id), ValueType(value.type), value.size, Initial(value));
         if (!d_.states.empty()) variable(UiStateVariableName(d_.id), "string", 0, "\"\"");
@@ -287,7 +290,27 @@ private:
         return info.group ? Call("OperatorInt", {base, "OperatorAdd", std::string(kLoopIndex)}) : base;
     }
 
+    // 模板里的子框架（进度条填充、按钮文字与底图）创建时按名字找一次记进变量，刷新时不再每次去找。
+    struct ChildFrame {
+        std::string_view name, key;
+    };
+    [[nodiscard]] std::vector<ChildFrame> Children(const FrameInfo& info) const {
+        switch (info.frame->type) {
+        case UiFrameType::Bar:
+            return {{ClearBar(info) ? "AudastraBarClearFill" : "AudastraBarFill", "fill"}};
+        case UiFrameType::Button:
+            if (ClickButton(info)) return {{"AudastraClickButtonText", "text"}};
+            return {{"AudastraButtonText", "text"}, {"AudastraButtonBackdrop", "backdrop"}, {"AudastraButtonPushed", "pushed"}};
+        default:
+            return {};
+        }
+    }
     [[nodiscard]] std::string Child(const FrameInfo& info, std::string_view name) const {
+        for (const auto& child : Children(info)) {
+            if (child.name != name) continue;
+            const std::string variable = "udg_" + UiChildVariableName(d_.id, info.frame->id, child.key);
+            return info.group ? variable + "[" + std::string(kLoopIndex) + "]" : variable;
+        }
         return Call("AudastraUIFindFrame", {Quote(name), Context(info)});
     }
 
@@ -364,7 +387,11 @@ private:
                                   : classic(frame.templateName);
             break;
         }
-        return {Call("SetVariable", {Self(info), created})};
+        Lines out{Call("SetVariable", {Self(info), created})};
+        for (const auto& child : Children(info)) {
+            out.push_back(Call("SetVariable", {Child(info, child.name), Call("AudastraUIFindFrame", {Quote(child.name), Context(info)})}));
+        }
+        return out;
     }
 
     // 进度条用两层普通框架：框架本身是底图，子框架 AudastraBarFill 是填充，靠左对齐，按比例改宽度。
@@ -389,7 +416,7 @@ private:
         const auto width = BarWidth(info);
         if (!width) return std::nullopt;
         const std::string clamped = Call("RMaxBJ", {"0", Call("RMinBJ", {"1", ratio})});
-        return Call("AudastraUISetWidth", {BarFill(info), Call("OperatorReal", {clamped, "OperatorMultiply", Real(*width)})});
+        return Call("AudastraUIPushWidth", {BarFill(info), Call("OperatorReal", {clamped, "OperatorMultiply", Real(*width)})});
     }
 
     // 锚点偏移；重复的根按实例下标整体平移。
@@ -488,16 +515,19 @@ private:
     }
 
     // 改贴图：按钮常态贴图在子框架上；没写按下贴图时按下也用同一张，否则按住时露出没有贴图的按下底图。
-    // expression 为贴图路径的表达式。
-    std::optional<Lines> TextureCall(const FrameInfo& info, const std::string& expression) {
+    // expression 为贴图路径的表达式；push 为刷新块用的“刷新贴图”。
+    std::optional<Lines> TextureCall(const FrameInfo& info, const std::string& expression, bool push = false) {
+        const auto set = [&](const std::string& target) {
+            return push ? Call("AudastraUIPushTexture", {target, expression}) : Call("AudastraUISetTexture", {target, expression, "false"});
+        };
         switch (info.frame->type) {
         case UiFrameType::Backdrop:
-            return Lines{Call("AudastraUISetTexture", {Self(info), expression, "false"})};
+            return Lines{set(Self(info))};
         case UiFrameType::Bar:
-            return Lines{Call("AudastraUISetTexture", {BarFill(info), expression, "false"})};
+            return Lines{set(BarFill(info))};
         case UiFrameType::Button: {
-            Lines out{Call("AudastraUISetTexture", {Child(info, "AudastraButtonBackdrop"), expression, "false"})};
-            if (info.frame->pushed.empty()) out.push_back(Call("AudastraUISetTexture", {Child(info, "AudastraButtonPushed"), expression, "false"}));
+            Lines out{set(Child(info, "AudastraButtonBackdrop"))};
+            if (info.frame->pushed.empty()) out.push_back(set(Child(info, "AudastraButtonPushed")));
             return out;
         }
         default:
@@ -682,7 +712,7 @@ private:
         auto show = [&](bool shown) {
             const std::string flag = shown ? "1" : "0";
             return If({Call("OperatorCompareInteger", {sent, "OperatorNotEqual", flag})},
-                {Set(sent, flag), Call("AudastraUIShow", {self, shown ? "true" : "false"})});
+                {Set(sent, flag), Call("AudastraUIPushShown", {self, shown ? "true" : "false"})});
         };
         return If({condition}, show(!binding.invert), show(binding.invert));
     }
@@ -752,12 +782,12 @@ private:
         if ((frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) && HasReferences(frame.text)) {
             if (auto text = TextExpression(info, frame.text)) {
                 Append(out, Guarded(info, Property::Text, Changed(info, Property::Text, "string", *text,
-                    {Call("AudastraUISetText", {TextTarget(info), SentRef(info, Property::Text)})})));
+                    {Call("AudastraUIPushText", {TextTarget(info), SentRef(info, Property::Text)})})));
             }
         }
         if (!frame.texture.empty() && HasReferences(frame.texture)) {
             if (auto expression = TextExpression(info, TextureTemplate(frame.texture))) {
-                if (auto lines = TextureCall(info, SentRef(info, Property::Texture))) {
+                if (auto lines = TextureCall(info, SentRef(info, Property::Texture), true)) {
                     Append(out, Guarded(info, Property::Texture, Changed(info, Property::Texture, "string", *expression, *lines)));
                 }
             }
@@ -1054,6 +1084,10 @@ std::string UiAttemptVariableName(std::string_view description) {
 
 std::string UiSentVariableName(std::string_view description, std::string_view frame, std::string_view property) {
     return "AUIL_" + std::string(description) + "_" + std::string(frame) + "_" + std::string(property);
+}
+
+std::string UiChildVariableName(std::string_view description, std::string_view frame, std::string_view child) {
+    return "AUIK_" + std::string(description) + "_" + std::string(frame) + "_" + std::string(child);
 }
 
 std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key) {

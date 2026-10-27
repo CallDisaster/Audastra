@@ -54,13 +54,15 @@ struct UiTriggerPlan {
 [[nodiscard]] std::string UiTemplateFdfText();
 
 // 变量名（不带 udg_）：框架 AUI_<界面>_<框架>，数值 AUIV_<界面>_<数值>，当前状态 AUIS_<界面>，
-// 界面已建好 AUIC_<界面>，“创建”已试的次数 AUIA_<界面>，上次发给游戏的绑定值 AUIL_<界面>_<框架>_<属性>。
+// 界面已建好 AUIC_<界面>，“创建”已试的次数 AUIA_<界面>，上次发给游戏的绑定值 AUIL_<界面>_<框架>_<属性>，
+// 创建时记下的模板子框架 AUIK_<界面>_<框架>_<子框架>（进度条填充 fill、按钮文字 text、底图 backdrop、按下底图 pushed）。
 [[nodiscard]] std::string UiFrameVariableName(std::string_view description, std::string_view frame);
 [[nodiscard]] std::string UiValueVariableName(std::string_view description, std::string_view value);
 [[nodiscard]] std::string UiStateVariableName(std::string_view description);
 [[nodiscard]] std::string UiCreatedVariableName(std::string_view description);
 [[nodiscard]] std::string UiAttemptVariableName(std::string_view description);
 [[nodiscard]] std::string UiSentVariableName(std::string_view description, std::string_view frame, std::string_view property);
+[[nodiscard]] std::string UiChildVariableName(std::string_view description, std::string_view frame, std::string_view child);
 // 生成的触发器名：<界面名> <用途> <界面编号>_<键>；界面名为显示名（不可用时为编号）。
 // 用途与键：创建/Create、更新/Update、“状态 <状态名>”/State_<状态编号>、基础状态/BaseState。
 [[nodiscard]] std::string UiTriggerName(const UiDescription& description, std::string_view role, std::string_view key);

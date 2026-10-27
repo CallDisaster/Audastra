@@ -286,6 +286,60 @@ category = TC_AudastraUI
 [[.args]]
 type = AudastraFrame
 
+[AudastraUIPushValue]
+title = "刷新数值"
+description = "刷新 ${框架} 的数值为 ${数值}"
+comment = "同“设置数值”，开销更小，用于反复刷新的值。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "0"
+
+[AudastraUIPushWidth]
+title = "刷新宽度"
+description = "刷新 ${框架} 的宽 ${宽}"
+comment = "同“设置宽度”，开销更小，用于反复刷新的血条、读条填充。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = real
+default = "0.1"
+
+[AudastraUIPushText]
+title = "刷新文字"
+description = "刷新 ${框架} 的文字为 ${文字}"
+comment = "同“设置文字”，开销更小，用于反复刷新的文字。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = string
+default = ""
+
+[AudastraUIPushTexture]
+title = "刷新贴图"
+description = "刷新 ${框架} 的贴图为 ${路径}"
+comment = "同“设置贴图”（不平铺），开销更小，用于反复刷新的图标。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = string
+
+[AudastraUIPushShown]
+title = "刷新显示"
+description = "刷新 ${框架} 显示：${显示}"
+comment = "同“显示/隐藏框架”，开销更小，只影响本机画面。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = boolean
+default = "true"
+
 [AudastraUIWatchFrame]
 title = "监听界面事件"
 description = "监听 ${框架} 的 ${事件}，事件名 ${事件名}，序号 ${序号}"
