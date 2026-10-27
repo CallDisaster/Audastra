@@ -7,6 +7,7 @@
 #include <tlhelp32.h>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -28,13 +29,14 @@ constexpr std::uintptr_t kInitialize = 0x1e9a50, kDestroyVm = 0x7dd070;
 constexpr std::uintptr_t kSaveReal = 0x1f3a10, kSaveStr = 0x1f3af0, kSaveBoolean = 0x1f3570;
 constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
 
-void Trace(std::string_view message, bool fault = false) noexcept {
+void Trace(std::string_view message, bool fault = false, bool counter = false) noexcept {
     try {
         static std::mutex lock;
         static HANDLE file = INVALID_HANDLE_VALUE;
         static bool attempted = false;
         static unsigned lines = 0;
         static unsigned faults = 0;
+        static unsigned counters = 0;
         std::lock_guard guard(lock);
         if (!attempted) {
             attempted = true;
@@ -48,8 +50,8 @@ void Trace(std::string_view message, bool fault = false) noexcept {
             }
         }
         // 故障保留独立预算，普通轮询刷满后也能记录；两者都不无限增长。
-        if (fault ? faults >= 64 : lines >= 2048) return;
-        if (fault) ++faults; else ++lines;
+        if (counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
+        if (counter) ++counters; else if (fault) ++faults; else ++lines;
         const std::string text = "[AudastraJapi] pid=" + std::to_string(GetCurrentProcessId())
             + " tid=" + std::to_string(GetCurrentThreadId()) + " " + std::string(message.substr(0, 768)) + "\n";
         OutputDebugStringA(text.c_str());
@@ -128,6 +130,19 @@ void TraceReply(std::string_view input, std::string_view output) {
     // 只记录布尔结果与句柄是否存在；不记录作者文字、实际句柄或请求参数。
     if (reply.value.kind == AJ_BOOL) message += " bool=" + std::to_string(reply.value.integer);
     if (reply.value.kind == AJ_HANDLE) message += reply.value.integer ? " handle=nonzero" : " handle=zero";
+    if (request.command == "audastraui.dataerrors") {
+        // 只记录自有计数，不记录作者文字/资源路径；独立预算不会挤掉真正的异常日志。
+        std::uint32_t count = 0;
+        const auto separator = reply.value.text.find('|');
+        bool valid = reply.status == AJ_OK && reply.value.kind == AJ_TEXT && separator != std::string::npos && separator > 0;
+        if (valid) {
+            const auto begin = reply.value.text.data();
+            const auto parsed = std::from_chars(begin, begin + separator, count);
+            valid = parsed.ec == std::errc{} && parsed.ptr == begin + separator && count <= INT32_MAX;
+        }
+        Trace("ui-data-errors epoch=" + std::to_string(reply.epoch) + " request=" + std::to_string(reply.id)
+            + " status=" + std::to_string(reply.status) + (valid ? " count=" + std::to_string(count) : " count=unavailable"), false, true);
+    }
     Trace(message);
 }
 std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
