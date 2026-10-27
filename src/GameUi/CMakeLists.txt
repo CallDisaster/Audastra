@@ -2,7 +2,6 @@
 # 以及自有界面描述 audastra.ui）。不依赖 Qt；
 # 编辑器与命令行共用。分析地图脚本时复用 JASS / Lua 的词法与语法分析。
 add_library(War3MapGameUi STATIC
-    CastTriggers.cpp
     FeatureTextWriter.h
     FrameDefinitionParser.cpp
     FrameDraw.cpp
@@ -10,24 +9,17 @@ add_library(War3MapGameUi STATIC
     FrameTree.cpp
     GameCodeLayout.cpp
     MapUiFiles.cpp
-    PartyTriggers.cpp
-    TargetTriggers.cpp
-    MeterTriggers.cpp
-    ActionBarTriggers.cpp
     ScriptFrames.cpp
     ScriptFrameTree.cpp
     ScriptObjectCalls.cpp
     ScriptSimulation.cpp
     ScriptUiApi.cpp
     ScriptValue.cpp
-    TalentTriggers.cpp
-    UiBindingCheck.h
     UiDescription.cpp
     UiDescriptionCheck.cpp
     UiDescriptionEdit.cpp
     UiDescriptionText.cpp
     UiDescriptionTree.cpp
-    UiPresets.cpp
     UiSkin.cpp
     UiTriggers.cpp)
 add_library(War3MapEditor::GameUi ALIAS War3MapGameUi)

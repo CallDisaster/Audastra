@@ -1,0 +1,554 @@
+{
+  "format": "audastra.ui",
+  "version": 1,
+  "id": "talents",
+  "label": "天赋树",
+  "values": [
+    {
+      "id": "shown",
+      "label": "面板显示",
+      "type": "boolean"
+    },
+    {
+      "id": "entry_shown",
+      "label": "入口显示",
+      "type": "boolean"
+    },
+    {
+      "id": "entry",
+      "label": "入口文字",
+      "type": "string",
+      "default": "天赋"
+    },
+    {
+      "id": "title",
+      "label": "标题",
+      "type": "string",
+      "default": "天赋"
+    },
+    {
+      "id": "points",
+      "label": "可选数",
+      "type": "string"
+    },
+    {
+      "id": "level",
+      "label": "解锁等级",
+      "type": "string",
+      "size": 5
+    },
+    {
+      "id": "icon1",
+      "label": "图标 1",
+      "type": "string",
+      "size": 5
+    },
+    {
+      "id": "name1",
+      "label": "名字 1",
+      "type": "string",
+      "size": 5
+    },
+    {
+      "id": "picked1",
+      "label": "已选 1",
+      "type": "boolean",
+      "size": 5
+    },
+    {
+      "id": "icon2",
+      "label": "图标 2",
+      "type": "string",
+      "size": 5
+    },
+    {
+      "id": "name2",
+      "label": "名字 2",
+      "type": "string",
+      "size": 5
+    },
+    {
+      "id": "picked2",
+      "label": "已选 2",
+      "type": "boolean",
+      "size": 5
+    },
+    {
+      "id": "icon3",
+      "label": "图标 3",
+      "type": "string",
+      "size": 5
+    },
+    {
+      "id": "name3",
+      "label": "名字 3",
+      "type": "string",
+      "size": 5
+    },
+    {
+      "id": "picked3",
+      "label": "已选 3",
+      "type": "boolean",
+      "size": 5
+    },
+    {
+      "id": "tip_shown",
+      "label": "说明显示",
+      "type": "boolean"
+    },
+    {
+      "id": "tip_title",
+      "label": "说明标题",
+      "type": "string"
+    },
+    {
+      "id": "tip_text",
+      "label": "说明正文",
+      "type": "string"
+    }
+  ],
+  "frames": [
+    {
+      "id": "entry",
+      "label": "入口",
+      "type": "button",
+      "anchors": [
+        {
+          "point": "BOTTOMRIGHT",
+          "to": "screen",
+          "x": -0.006,
+          "y": 0.17
+        }
+      ],
+      "width": 0.07,
+      "height": 0.026,
+      "texture": "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background",
+      "text": "{entry}",
+      "visible": "entry_shown"
+    },
+    {
+      "id": "panel",
+      "label": "面板",
+      "type": "backdrop",
+      "anchors": [
+        {
+          "point": "CENTER",
+          "to": "screen",
+          "x": -0.08,
+          "y": 0.04
+        }
+      ],
+      "width": 0.34,
+      "height": 0.36,
+      "texture": "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background",
+      "visible": "shown",
+      "children": [
+        {
+          "id": "title",
+          "label": "标题",
+          "type": "text",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "x": 0.014,
+              "y": -0.012
+            }
+          ],
+          "width": 0.2,
+          "height": 0.016,
+          "text": "{title}",
+          "justifyH": "left"
+        },
+        {
+          "id": "points",
+          "label": "可选数",
+          "type": "text",
+          "anchors": [
+            {
+              "point": "TOPRIGHT",
+              "x": -0.036,
+              "y": -0.012
+            }
+          ],
+          "width": 0.08,
+          "height": 0.016,
+          "text": "{points}",
+          "justifyH": "right"
+        },
+        {
+          "id": "close",
+          "label": "关闭",
+          "type": "button",
+          "anchors": [
+            {
+              "point": "TOPRIGHT",
+              "x": -0.008,
+              "y": -0.008
+            }
+          ],
+          "width": 0.022,
+          "height": 0.022,
+          "text": "×"
+        },
+        {
+          "id": "row",
+          "label": "层",
+          "type": "panel",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "x": 0.014,
+              "y": -0.036
+            }
+          ],
+          "width": 0.312,
+          "height": 0.054,
+          "repeat": {
+            "count": 5,
+            "dy": -0.058
+          },
+          "children": [
+            {
+              "id": "level",
+              "label": "解锁等级",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "LEFT"
+                }
+              ],
+              "width": 0.042,
+              "height": 0.03,
+              "text": "{level[]}",
+              "justifyH": "left"
+            },
+            {
+              "id": "cell1",
+              "label": "选项 1",
+              "type": "panel",
+              "anchors": [
+                {
+                  "point": "LEFT",
+                  "x": 0.046
+                }
+              ],
+              "width": 0.086,
+              "height": 0.05,
+              "visible": "name1[]",
+              "children": [
+                {
+                  "id": "ring1",
+                  "label": "已选描边 1",
+                  "type": "backdrop",
+                  "anchors": [
+                    {
+                      "point": "LEFT"
+                    }
+                  ],
+                  "width": 0.036,
+                  "height": 0.036,
+                  "texture": "ReplaceableTextures\\TeamColor\\TeamColor02",
+                  "visible": "picked1[]"
+                },
+                {
+                  "id": "art1",
+                  "label": "图标 1",
+                  "type": "backdrop",
+                  "anchors": [
+                    {
+                      "point": "LEFT",
+                      "x": 0.002
+                    }
+                  ],
+                  "width": 0.032,
+                  "height": 0.032,
+                  "texture": "{icon1[]}"
+                },
+                {
+                  "id": "label1",
+                  "label": "名字 1",
+                  "type": "text",
+                  "anchors": [
+                    {
+                      "point": "LEFT",
+                      "x": 0.038
+                    }
+                  ],
+                  "width": 0.048,
+                  "height": 0.044,
+                  "text": "{name1[]}",
+                  "justifyH": "left"
+                },
+                {
+                  "id": "hit1",
+                  "label": "点选 1",
+                  "type": "button",
+                  "anchors": [
+                    {
+                      "point": "TOPLEFT"
+                    },
+                    {
+                      "point": "BOTTOMRIGHT"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "cell2",
+              "label": "选项 2",
+              "type": "panel",
+              "anchors": [
+                {
+                  "point": "LEFT",
+                  "x": 0.135
+                }
+              ],
+              "width": 0.086,
+              "height": 0.05,
+              "visible": "name2[]",
+              "children": [
+                {
+                  "id": "ring2",
+                  "label": "已选描边 2",
+                  "type": "backdrop",
+                  "anchors": [
+                    {
+                      "point": "LEFT"
+                    }
+                  ],
+                  "width": 0.036,
+                  "height": 0.036,
+                  "texture": "ReplaceableTextures\\TeamColor\\TeamColor02",
+                  "visible": "picked2[]"
+                },
+                {
+                  "id": "art2",
+                  "label": "图标 2",
+                  "type": "backdrop",
+                  "anchors": [
+                    {
+                      "point": "LEFT",
+                      "x": 0.002
+                    }
+                  ],
+                  "width": 0.032,
+                  "height": 0.032,
+                  "texture": "{icon2[]}"
+                },
+                {
+                  "id": "label2",
+                  "label": "名字 2",
+                  "type": "text",
+                  "anchors": [
+                    {
+                      "point": "LEFT",
+                      "x": 0.038
+                    }
+                  ],
+                  "width": 0.048,
+                  "height": 0.044,
+                  "text": "{name2[]}",
+                  "justifyH": "left"
+                },
+                {
+                  "id": "hit2",
+                  "label": "点选 2",
+                  "type": "button",
+                  "anchors": [
+                    {
+                      "point": "TOPLEFT"
+                    },
+                    {
+                      "point": "BOTTOMRIGHT"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "cell3",
+              "label": "选项 3",
+              "type": "panel",
+              "anchors": [
+                {
+                  "point": "LEFT",
+                  "x": 0.22399999999999998
+                }
+              ],
+              "width": 0.086,
+              "height": 0.05,
+              "visible": "name3[]",
+              "children": [
+                {
+                  "id": "ring3",
+                  "label": "已选描边 3",
+                  "type": "backdrop",
+                  "anchors": [
+                    {
+                      "point": "LEFT"
+                    }
+                  ],
+                  "width": 0.036,
+                  "height": 0.036,
+                  "texture": "ReplaceableTextures\\TeamColor\\TeamColor02",
+                  "visible": "picked3[]"
+                },
+                {
+                  "id": "art3",
+                  "label": "图标 3",
+                  "type": "backdrop",
+                  "anchors": [
+                    {
+                      "point": "LEFT",
+                      "x": 0.002
+                    }
+                  ],
+                  "width": 0.032,
+                  "height": 0.032,
+                  "texture": "{icon3[]}"
+                },
+                {
+                  "id": "label3",
+                  "label": "名字 3",
+                  "type": "text",
+                  "anchors": [
+                    {
+                      "point": "LEFT",
+                      "x": 0.038
+                    }
+                  ],
+                  "width": 0.048,
+                  "height": 0.044,
+                  "text": "{name3[]}",
+                  "justifyH": "left"
+                },
+                {
+                  "id": "hit3",
+                  "label": "点选 3",
+                  "type": "button",
+                  "anchors": [
+                    {
+                      "point": "TOPLEFT"
+                    },
+                    {
+                      "point": "BOTTOMRIGHT"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "tip",
+          "label": "说明",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "toPoint": "TOPRIGHT",
+              "x": 0.004
+            }
+          ],
+          "width": 0.2,
+          "height": 0.13,
+          "texture": "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background",
+          "visible": "tip_shown",
+          "children": [
+            {
+              "id": "tip_head",
+              "label": "说明标题",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "TOPLEFT",
+                  "x": 0.01,
+                  "y": -0.01
+                }
+              ],
+              "width": 0.18,
+              "height": 0.016,
+              "text": "{tip_title}",
+              "justifyH": "left"
+            },
+            {
+              "id": "tip_body",
+              "label": "说明正文",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "TOPLEFT",
+                  "x": 0.01,
+                  "y": -0.03
+                }
+              ],
+              "width": 0.18,
+              "height": 0.09,
+              "text": "{tip_text}",
+              "justifyH": "left",
+              "justifyV": "top"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "open",
+      "frame": "entry",
+      "on": "click"
+    },
+    {
+      "id": "close",
+      "frame": "close",
+      "on": "click"
+    },
+    {
+      "id": "pick1",
+      "frame": "hit1",
+      "on": "click"
+    },
+    {
+      "id": "enter1",
+      "frame": "hit1",
+      "on": "enter"
+    },
+    {
+      "id": "leave1",
+      "frame": "hit1",
+      "on": "leave"
+    },
+    {
+      "id": "pick2",
+      "frame": "hit2",
+      "on": "click"
+    },
+    {
+      "id": "enter2",
+      "frame": "hit2",
+      "on": "enter"
+    },
+    {
+      "id": "leave2",
+      "frame": "hit2",
+      "on": "leave"
+    },
+    {
+      "id": "pick3",
+      "frame": "hit3",
+      "on": "click"
+    },
+    {
+      "id": "enter3",
+      "frame": "hit3",
+      "on": "enter"
+    },
+    {
+      "id": "leave3",
+      "frame": "hit3",
+      "on": "leave"
+    }
+  ]
+}

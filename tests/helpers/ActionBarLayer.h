@@ -2,7 +2,7 @@
 
 #include "AudastraUiCatalog.h"
 
-// 技能栏测试的合成签名层：选中判断、按热键、技能等级（原版 TriggerData），以及 YDWE 的技能属性（JAPI，层名以 ydwe 开头，
+// 技能栏示例测试的合成签名层：选中判断、按热键、技能等级（原版 TriggerData），以及 YDWE 的技能属性（JAPI，层名以 ydwe 开头，
 // 按游戏脚本检查时写成桩）。放在 SpellLayer、PartyLayer、TalentLayer、TargetLayer 之后（单位、技能码、单位类型、选择事件、
 // 法力等取自前几层）。
 namespace AudastraUiTest {

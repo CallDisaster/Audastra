@@ -1,0 +1,118 @@
+变量:
+    AUM_Damage_Amount: real[] = 0
+    AUM_Damage_Picked: boolean[] = false
+    AUM_Damage_Source: unit
+    AUM_Damage_P: integer = 0
+    AUM_Damage_R: integer = 0
+    AUM_Damage_Best: integer = 0
+    AUM_Damage_Total: real = 0
+    AUM_Damage_Top: real = 0
+    AUM_Damage_Time: real = 0
+    AUM_Damage_Running: boolean = false
+触发器 伤害 记录 Damage_Record:
+    events:
+        YDWESyStemAnyUnitDamagedRegistTrigger()
+    actions:
+        CommentString("伤害来源单位的所有者记为造成伤害的玩家")
+        SetVariable(udg_AUM_Damage_Source, GetEventDamageSource())
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareReal(GetEventDamage(), OperatorGreater, 0)
+                OperatorCompareUnit(udg_AUM_Damage_Source, OperatorNotEqualENE, UnitNull)
+                OperatorCompareBoolean(IsUnitEnemy(GetTriggerUnit(), GetOwningPlayer(udg_AUM_Damage_Source)), OperatorEqualENE, true)
+                OperatorCompareInteger(GetConvertedPlayerId(GetOwningPlayer(udg_AUM_Damage_Source)), OperatorLessEq, 12)
+            then:
+                SetVariable(udg_AUM_Damage_P, GetConvertedPlayerId(GetOwningPlayer(udg_AUM_Damage_Source)))
+                SetVariable(udg_AUM_Damage_Amount[udg_AUM_Damage_P], OperatorReal(udg_AUM_Damage_Amount[udg_AUM_Damage_P], OperatorAdd, GetEventDamage()))
+                SetVariable(udg_AUM_Damage_Running, true)
+        }
+触发器 伤害 刷新 Damage_Refresh:
+    events:
+        TriggerRegisterTimerEventPeriodic(0.5)
+    actions:
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareBoolean(udg_AUM_Damage_Running, OperatorEqualENE, true)
+            then:
+                SetVariable(udg_AUM_Damage_Time, OperatorReal(udg_AUM_Damage_Time, OperatorAdd, 0.5))
+        }
+        SetVariable(udg_AUM_Damage_Total, 0)
+        ForLoopVarMultiple(udg_AUM_Damage_P, 1, 12) {
+            actions:
+                SetVariable(udg_AUM_Damage_Picked[udg_AUM_Damage_P], false)
+                SetVariable(udg_AUM_Damage_Total, OperatorReal(udg_AUM_Damage_Total, OperatorAdd, udg_AUM_Damage_Amount[udg_AUM_Damage_P]))
+        }
+        ForLoopVarMultiple(udg_AUM_Damage_R, 1, 8) {
+            actions:
+                SetVariable(udg_AUM_Damage_Best, 0)
+                ForLoopVarMultiple(udg_AUM_Damage_P, 1, 12) {
+                    actions:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareBoolean(udg_AUM_Damage_Picked[udg_AUM_Damage_P], OperatorEqualENE, false)
+                                OperatorCompareReal(udg_AUM_Damage_Amount[udg_AUM_Damage_P], OperatorGreater, 0)
+                            then:
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareInteger(udg_AUM_Damage_Best, OperatorEqual, 0)
+                                    then:
+                                        SetVariable(udg_AUM_Damage_Best, udg_AUM_Damage_P)
+                                    else:
+                                        IfThenElseMultiple() {
+                                            if:
+                                                OperatorCompareReal(udg_AUM_Damage_Amount[udg_AUM_Damage_P], OperatorGreater, udg_AUM_Damage_Amount[udg_AUM_Damage_Best])
+                                            then:
+                                                SetVariable(udg_AUM_Damage_Best, udg_AUM_Damage_P)
+                                        }
+                                }
+                        }
+                }
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUM_Damage_Best, OperatorGreater, 0)
+                    then:
+                        SetVariable(udg_AUM_Damage_Picked[udg_AUM_Damage_Best], true)
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUM_Damage_R, OperatorEqual, 1)
+                            then:
+                                SetVariable(udg_AUM_Damage_Top, udg_AUM_Damage_Amount[udg_AUM_Damage_Best])
+                        }
+                        SetVariable(udg_AUIV_meter_shown[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], true)
+                        SetVariable(udg_AUIV_meter_name[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], GetPlayerName(ConvertedPlayer(udg_AUM_Damage_Best)))
+                        SetVariable(udg_AUIV_meter_amount[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], udg_AUM_Damage_Amount[udg_AUM_Damage_Best])
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareReal(udg_AUM_Damage_Amount[udg_AUM_Damage_Best], OperatorGreaterEq, 10000)
+                            then:
+                                SetVariable(udg_AUIV_meter_amount_text[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], OperatorString(AudastraUIFormatReal(OperatorReal(udg_AUM_Damage_Amount[udg_AUM_Damage_Best], OperatorDivide, 10000), 1), "万"))
+                            else:
+                                SetVariable(udg_AUIV_meter_amount_text[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], AudastraUIFormatReal(udg_AUM_Damage_Amount[udg_AUM_Damage_Best], 0))
+                        }
+                        SetVariable(udg_AUIV_meter_share[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], OperatorReal(udg_AUM_Damage_Amount[udg_AUM_Damage_Best], OperatorDivide, udg_AUM_Damage_Top))
+                        SetVariable(udg_AUIV_meter_percent[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], OperatorReal(OperatorReal(udg_AUM_Damage_Amount[udg_AUM_Damage_Best], OperatorDivide, udg_AUM_Damage_Total), OperatorMultiply, 100))
+                        SetVariable(udg_AUIV_meter_rate[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], OperatorReal(udg_AUM_Damage_Amount[udg_AUM_Damage_Best], OperatorDivide, RMaxBJ(udg_AUM_Damage_Time, 1)))
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUM_Damage_Best, OperatorLessEq, 10)
+                            then:
+                                SetVariable(udg_AUIV_meter_color[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], OperatorString(OperatorString("ReplaceableTextures\\TeamColor\\TeamColor", OperatorString("0", I2S(OperatorInt(udg_AUM_Damage_Best, OperatorSubtract, 1)))), ".blp"))
+                            else:
+                                SetVariable(udg_AUIV_meter_color[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], OperatorString(OperatorString("ReplaceableTextures\\TeamColor\\TeamColor", I2S(OperatorInt(udg_AUM_Damage_Best, OperatorSubtract, 1))), ".blp"))
+                        }
+                    else:
+                        SetVariable(udg_AUIV_meter_shown[OperatorInt(udg_AUM_Damage_R, OperatorSubtract, 1)], false)
+                }
+        }
+        SetVariable(udg_AUIV_meter_total, udg_AUM_Damage_Total)
+        SetVariable(udg_AUIV_meter_time, udg_AUM_Damage_Time)
+        ConditionalTriggerExecute(`伤害统计 更新 meter_Update`)
+触发器 伤害 清零 Damage_Reset:
+    actions:
+        CommentString("把所有玩家的伤害与秒数清零；秒数从清零后第一次记到伤害开始")
+        ForLoopVarMultiple(udg_AUM_Damage_P, 1, 12) {
+            actions:
+                SetVariable(udg_AUM_Damage_Amount[udg_AUM_Damage_P], 0)
+        }
+        SetVariable(udg_AUM_Damage_Running, false)
+        SetVariable(udg_AUM_Damage_Time, 0)

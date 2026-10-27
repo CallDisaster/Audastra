@@ -59,7 +59,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
-             "game_ui_description_triggers", "game_ui_cast_system", "game_ui_party_system", "game_ui_target_system", "game_ui_meter_system", "game_ui_action_bar_system", "game_ui_talent_system"}) {
+             "game_ui_description_triggers"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read";
@@ -95,14 +95,9 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             required.append("description");
         } else if (tool.name == "game_ui_description_create") {
-            tool.description = "新建一份地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程。"
-                "preset 可选起始模板：castbar 读条条（数值 shown、progress、text、remaining，状态 channel、interrupt，"
-                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、hp_now、hp_max、portrait、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；target 目标框架（单值数值 shown、hp、mp、hp_now、hp_max、name、level、dead、portrait、buff1..buff6，点击事件 select，与 game_ui_target_system 的绑定对应）；meter 伤害统计（8 行，数组数值 shown、name、amount、amount_text、share、percent、rate、color，单值 total、time，与 game_ui_meter_system 的绑定对应）；actionbar 技能栏（12 格两行，数组数值 shown、icon、key、cooldown、cooldown_text、no_mana，单值 bar_shown，点击事件 use，与 game_ui_action_bar_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
-                "tip_shown、tip_title、tip_text，数组 level、icon1..3、name1..3、picked1..3，事件 open、close、pick1..3、enter1..3、leave1..3，"
-                "与 game_ui_talent_system 的默认绑定对应）；省略为空白";
+            tool.description = "新建一份空白的地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("label", QJsonObject{{"type", "string"}, {"maxLength", 256}});
-            properties.insert("preset", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"castbar", "party", "target", "meter", "actionbar", "talents"}}});
             required.append("description");
         } else if (tool.name == "game_ui_description_edit") {
             tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："
@@ -125,187 +120,6 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("description");
-        } else if (tool.name == "game_ui_cast_system") {
-            tool.description = "生成读条系统的自然 T，整批写进触发器编辑器的“读条系统”类别，走触发器撤销栈：登记（技能、读条秒数、引导秒数、"
-                "跳间隔、效果触发器）、按施法事件记录每个施法者、引导每跳与打断判定，并在完成、每跳、打断时用 YDWE 运行触发器参数块"
-                "运行效果触发器，参数名：施法单位、目标单位、目标X、目标Y、技能、等级、阶段（1 完成 2 每跳 3 打断）、跳数。"
-                "地图里已有登记触发器时保留它，abilities 不写入（结果 registration_kept 为 true）。"
-                "bar 绑定一份已生成界面触发器的界面描述作读条条：visible（布尔）与 progress（实数）必填，text（字符串）、remaining（实数）、"
-                "channel 与 interrupted（状态）可空。需要 YDWE 函数库。preview 为 true 时只返回生成的功能写法，不改地图";
-            properties.insert("abilities", QJsonObject{{"type", "array"}, {"maxItems", 64}, {"items", QJsonObject{{"type", "object"},
-                {"properties", QJsonObject{{"ability", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}},
-                    {"cast", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 3600}}},
-                    {"channel", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 3600}}},
-                    {"tick", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 3600}}},
-                    {"effect", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 256}}}}},
-                {"required", QJsonArray{"ability", "effect"}}, {"additionalProperties", false}}}});
-            QJsonObject barProperties;
-            for (const char* key : {"description", "visible", "progress", "text", "remaining", "channel", "interrupted"})
-                barProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
-            properties.insert("bar", QJsonObject{{"type", "object"}, {"properties", barProperties},
-                {"required", QJsonArray{"description", "visible", "progress"}}, {"additionalProperties", false}});
-            properties.insert("preview", QJsonObject{{"type", "boolean"}});
-        } else if (tool.name == "game_ui_party_system") {
-            tool.description = "生成团队框架的自然 T，整批写进触发器编辑器的“团队框架”类别（同名触发器整体替换），走触发器撤销栈：队员名单"
-                "（设 AUP_Member 后运行“团队 加入/移出”触发器；auto_heroes 默认 true，自动加入正在游戏的用户玩家的英雄，不含幻象，单位被移除后自动移出），"
-                "每 0.1 秒把每格的显示、生命与法力比例、名字、死亡、过远写进界面数组数值并运行该界面的“更新”触发器；点击事件：本机举着单位目标技能或物品时用 AudastraUIClickUnit 把点击交给游戏作为目标，否则选中该队员（只改本机选择）。"
-                "frame 绑定一份已生成界面触发器的界面描述：shown（布尔数组，格数即队伍上限）必填；health、mana（实数数组）、name（字符串数组）、"
-                "dead、out_of_range（布尔数组）可空，格数须与 shown 相同；select 为点击事件编号，事件框架须在重复次数等于格数的重复框架里。"
-                "health_now、health_max、mana_now、mana_max（实数数组）为生命、法力的当前与最大值，界面文字可写 {hp_now[]:0}/{hp_max[]:0}。"
-                "party 模板对应 shown、hp、mp、name、dead、far、select、hp_now、hp_max、portrait。name_source：player 玩家名（默认）或 unit 英雄名/单位名；"
-                "far_range 为过远距离（默认 1200）。过远与点选需要 YDWE 的 GetLocalPlayer、RemoveLocation。"
-                "frame.buff_icons 为增减益图标数值（字符串数组，按显示顺序，party 模板为 buff1..buff4）；buffs 为要显示的增减益码，"
-                "写进“团队 登记 Party_Register”触发器，图标取自物编；地图里已有登记触发器时保留它，buffs 不写入（结果 registration_kept 为 true）。"
-                "frame.portrait 为头像图标数值（字符串数组）；portraits 为登记头像的单位类型，写进“团队 头像 Party_Portrait”触发器，"
-                "图标取自物编，没登记的单位头像为空；地图里已有头像触发器时保留它，portraits 不写入（结果 portrait_kept 为 true）。"
-                "preview 为 true 时只返回生成的功能写法，不改地图";
-            QJsonObject frameProperties;
-            for (const char* key : {"description", "shown", "health", "mana", "name", "dead", "out_of_range", "select", "health_now", "health_max",
-                     "mana_now", "mana_max", "portrait"})
-                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
-            frameProperties.insert("buff_icons", QJsonObject{{"type", "array"}, {"maxItems", 16},
-                {"items", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}}}});
-            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
-                {"required", QJsonArray{"description", "shown"}}, {"additionalProperties", false}});
-            properties.insert("name_source", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"player", "unit"}}});
-            properties.insert("far_range", QJsonObject{{"type", "number"}, {"minimum", 100}, {"maximum", 100000}});
-            properties.insert("auto_heroes", QJsonObject{{"type", "boolean"}});
-            properties.insert("buffs", QJsonObject{{"type", "array"}, {"maxItems", 64},
-                {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
-            properties.insert("portraits", QJsonObject{{"type", "array"}, {"maxItems", 256},
-                {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
-            properties.insert("preview", QJsonObject{{"type", "boolean"}});
-            required.append("frame");
-        } else if (tool.name == "game_ui_target_system") {
-            tool.description = "生成目标框架的自然 T，整批写进触发器编辑器的“目标框架”类别（同名触发器整体替换），走触发器撤销栈：每个玩家记一个目标"
-                "（同步数据）。source 为 selection（默认）时玩家选中单位就记下、取消选择时清掉；为 focus 时设好 AUF_<键>_Member（单位）与 AUF_<键>_Player"
-                "（玩家）后运行“<名字> 设定 <键>_Set”触发器（单位为空时清除）。单位被移除后自动清除。每 0.1 秒把本机玩家目标的显示、生命与法力比例、"
-                "当前与最大生命和法力、名字、等级、死亡、头像、增减益写进界面数值并运行该界面的“更新”触发器；点击事件：本机举着单位目标技能或物品时用 "
-                "AudastraUIClickUnit 把点击交给游戏作为目标，否则选中目标（只改本机选择）。frame 绑定一份已生成界面触发器的界面描述，数值都是单值："
-                "shown（布尔）必填；health、mana、health_now、health_max、mana_now、mana_max（实数）、name、portrait（字符串）、level（整数）、"
-                "dead（布尔）可空；select 为点击事件编号，事件框架不能在重复框架里。target 模板对应 shown、hp、mp、hp_now、hp_max、name、level、dead、"
-                "portrait、buff1..buff6、select。name 与 key（ASCII 标识符，默认 目标/Target，focus 时 焦点/Focus）区分同图的多份；players 为记录目标的"
-                "玩家数（1..12，默认 12）；name_source：unit 英雄名/单位名（默认）或 player 玩家名。frame.buff_icons、buffs、frame.portrait、portraits "
-                "同 game_ui_party_system，写进“<名字> 登记 <键>_Register”“<名字> 头像 <键>_Portrait”，已有时保留（registration_kept、portrait_kept）。"
-                "需要 YDWE 的 GetLocalPlayer；preview 为 true 时只返回生成的功能写法，不改地图";
-            QJsonObject frameProperties;
-            for (const char* key : {"description", "shown", "health", "mana", "health_now", "health_max", "mana_now", "mana_max", "name", "level", "dead",
-                     "portrait", "select"})
-                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
-            frameProperties.insert("buff_icons", QJsonObject{{"type", "array"}, {"maxItems", 16},
-                {"items", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}}}});
-            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
-                {"required", QJsonArray{"description", "shown"}}, {"additionalProperties", false}});
-            properties.insert("source", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"selection", "focus"}}});
-            properties.insert("name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
-            properties.insert("key", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 24}});
-            properties.insert("players", IntegerSchema(1, 12));
-            properties.insert("name_source", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"unit", "player"}}});
-            properties.insert("buffs", QJsonObject{{"type", "array"}, {"maxItems", 64},
-                {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
-            properties.insert("portraits", QJsonObject{{"type", "array"}, {"maxItems", 256},
-                {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
-            properties.insert("preview", QJsonObject{{"type", "boolean"}});
-            required.append("frame");
-        } else if (tool.name == "game_ui_meter_system") {
-            tool.description = "生成伤害统计的自然 T，整批写进触发器编辑器的“伤害统计”类别（同名触发器整体替换），走触发器撤销栈：用 YDWE 的任意单位"
-                "伤害事件把伤害累计到伤害来源单位的所有者（同步数据，召唤物算在主人头上），enemies_only 默认 true 只记打敌人的伤害；每 0.5 秒按伤害"
-                "从高到低把前几名写进界面数组数值并运行该界面的“更新”触发器。秒数从清零后第一次记到伤害开始；运行“<名字> 清零 <键>_Reset”触发器"
-                "把伤害与秒数清零（例如首领战开始时）。frame 绑定一份已生成界面触发器的界面描述：shown（布尔数组，格数即行数，1..12）必填；"
-                "name、amount_text、color（字符串数组）、amount、share（0..1，占第一名）、percent（0..100，占全部）、rate（每秒伤害）（实数数组）"
-                "可空，格数须与 shown 相同；total（全部伤害）、time（秒数）为实数单值，可空。amount_text 一万以上写作“1.2万”；color 为按玩家编号的"
-                "队伍颜色贴图（地图改过玩家颜色时不跟着变）。meter 模板对应 shown、name、amount、amount_text、share、percent、rate、color、total、time。"
-                "原版没有治疗事件，不统计治疗。name 与 key（ASCII 标识符，默认 伤害/Damage）区分同图的多份；players 为统计的玩家数（1..12，默认 12）。"
-                "需要 YDWE 的任意单位伤害事件；preview 为 true 时只返回生成的功能写法，不改地图";
-            QJsonObject frameProperties;
-            for (const char* key : {"description", "shown", "name", "amount", "amount_text", "share", "percent", "rate", "color", "total", "time"})
-                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
-            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
-                {"required", QJsonArray{"description", "shown"}}, {"additionalProperties", false}});
-            properties.insert("name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
-            properties.insert("key", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 24}});
-            properties.insert("players", IntegerSchema(1, 12));
-            properties.insert("enemies_only", QJsonObject{{"type", "boolean"}});
-            properties.insert("preview", QJsonObject{{"type", "boolean"}});
-            required.append("frame");
-        } else if (tool.name == "game_ui_action_bar_system") {
-            tool.description = "生成技能栏的自然 T，整批写进触发器编辑器的“技能栏”类别（同名触发器整体替换），走触发器撤销栈：每个玩家一个当前单位"
-                "（同步数据），source 为 selection（默认）时跟玩家选中的单位，为 focus 时设好 AUA_<键>_Member（单位）与 AUA_<键>_Player（玩家）后运行"
-                "“<名字> 设定 <键>_Set”（例如玩家的英雄）。每 0.1 秒按“<名字> 登记 <键>_Register”里该单位类型的技能表把每格的显示、图标、热键、等级"
-                "写进界面数组数值；ability_state 为 true（默认）时再用 YDWE 的技能属性（JAPI）读剩余冷却与法力消耗，写进冷却比例（0..1）、冷却文字"
-                "（10 秒内一位小数，就绪为空）与法力不足，然后运行该界面的“更新”触发器。点击事件（本机）：选中的就是当前单位时按下这一格的热键"
-                "（ForceUIKeyBJ，同玩家在命令面板按键，选目标、冷却、法力由游戏判断），否则先选中当前单位。frame 绑定一份已生成界面触发器的界面描述："
-                "shown（布尔数组，格数即格数，1..24）必填；icon、hotkey、cooldown_text（字符串数组）、level（整数数组）、cooldown（实数数组）、"
-                "no_mana（布尔数组）可空，格数须与 shown 相同；bar_shown 为布尔单值；use 为点击事件，事件框架须在重复格数次的框架里。actionbar 模板"
-                "对应 bar_shown、shown、icon、key、cooldown、cooldown_text、no_mana、use。slots 写进登记：每项 unit（单位类型）、slot（第几格，1 起）、"
-                "ability（技能），hotkey 为空时取物编里技能的热键（要和游戏里一致），图标取自物编；地图里已有登记触发器时保留它、slots 不写入"
-                "（registration_kept）。name 与 key（ASCII 标识符，默认 技能栏/Bar）区分同图的多份；players 为记录的玩家数（1..12，默认 12）。"
-                "需要 YDWE 的 GetLocalPlayer，ability_state 为 true 时还要 YDWEGetUnitAbilityState；preview 为 true 时只返回生成的功能写法，不改地图";
-            QJsonObject frameProperties;
-            for (const char* key : {"description", "bar_shown", "shown", "icon", "hotkey", "level", "cooldown", "cooldown_text", "no_mana", "use"})
-                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
-            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
-                {"required", QJsonArray{"description", "shown"}}, {"additionalProperties", false}});
-            properties.insert("source", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"selection", "focus"}}});
-            properties.insert("name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
-            properties.insert("key", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 24}});
-            properties.insert("players", IntegerSchema(1, 12));
-            properties.insert("ability_state", QJsonObject{{"type", "boolean"}});
-            const QJsonObject code{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}};
-            properties.insert("slots", QJsonObject{{"type", "array"}, {"maxItems", 256},
-                {"items", QJsonObject{{"type", "object"},
-                    {"properties", QJsonObject{{"unit", code}, {"slot", IntegerSchema(1, 24)}, {"ability", code},
-                        {"hotkey", QJsonObject{{"type", "string"}, {"maxLength", 8}}}}},
-                    {"required", QJsonArray{"unit", "slot", "ability"}}, {"additionalProperties", false}}}});
-            properties.insert("preview", QJsonObject{{"type", "boolean"}});
-            required.append("frame");
-        } else if (tool.name == "game_ui_talent_system") {
-            tool.description = "生成统一天赋树的自然 T，整批写进触发器编辑器的“天赋系统”类别（同名触发器整体替换），走触发器撤销栈。"
-                "所有英雄共用一套界面与触发器：英雄达到某层的解锁等级（unlock_levels，默认 5、10、15…）就开放这一层，每层只能选一次、选定不可改，"
-                "已开放未选的层都可选。选择结果是同步数据：AUT_Picked[玩家编号×8+层] 为选中的列号（1 起），0 为未选，英雄技能触发器按它改变行为。"
-                "界面点击只在本机发生，用选择单位同步：开局为每个用户玩家建 层数×列数 个同步单位（sync_unit 类型，默认 hfoo，须可被选中，"
-                "透明、无敌、暂停、不占人口，放在地图左下角之外），点选项时把对应同步单位加进本机选择，“选择”触发器在所有玩家上校验后写入结果、"
-                "按登记学会技能，再运行 after_pick 触发器（须已在地图里，运行前设好 AUT_PickUnit、AUT_PickTier、AUT_PickOption）。"
-                "英雄绑定：开局已在地图上与之后进入地图的用户玩家英雄（不含幻象），类型已登记、该玩家还没有英雄时自动绑定；也可设 AUT_Unit 后运行“天赋 绑定 Talent_Bind”。"
-                "heroes 写进“天赋 登记 Talent_Register”触发器：每个英雄 unit（物编编号）与 talents（tier、option 从 1 起，name、text 说明、learn 学会的技能，"
-                "icon 为空时取 learn 技能的物编图标，disabled_icon 为空时按 BTN→DISBTN 推出）；地图里已有登记触发器时保留它、heroes 不写入"
-                "（结果 registration_kept 为 true），replace_registration 为 true 时按 heroes 重写。"
-                "frame 绑定一份已生成界面触发器的界面描述，只给 description 时按 talents 模板的编号绑定；单个字段写空字符串为不绑定。"
-                "level（字符串数组，格数即层数）与 columns（每列 icon、name 字符串数组，picked 布尔数组，pick 点击事件，enter、leave 移入移出事件，"
-                "事件框架须在重复层数次的框架里）决定层数与列数。需要 YDWE 的 GetLocalPlayer、RemoveLocation。preview 为 true 时只返回生成的功能写法，不改地图";
-            QJsonObject frameProperties;
-            for (const char* key : {"description", "shown", "entry_shown", "entry", "title", "points", "level", "open", "close", "tip_shown",
-                     "tip_title", "tip_text"})
-                frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
-            QJsonObject columnProperties;
-            for (const char* key : {"icon", "name", "picked", "pick", "enter", "leave"})
-                columnProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
-            frameProperties.insert("columns", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 4},
-                {"items", QJsonObject{{"type", "object"}, {"properties", columnProperties},
-                    {"required", QJsonArray{"icon", "name", "picked", "pick"}}, {"additionalProperties", false}}}});
-            properties.insert("frame", QJsonObject{{"type", "object"}, {"properties", frameProperties},
-                {"required", QJsonArray{"description"}}, {"additionalProperties", false}});
-            properties.insert("name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
-            properties.insert("unlock_levels", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 7},
-                {"items", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 10000}}}});
-            properties.insert("sync_unit", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}});
-            properties.insert("players", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 24}});
-            properties.insert("after_pick", QJsonObject{{"type", "string"}, {"maxLength", 256}});
-            QJsonObject talentProperties{{"tier", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 7}}},
-                {"option", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 4}}},
-                {"name", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
-                {"icon", QJsonObject{{"type", "string"}, {"maxLength", 260}}}, {"disabled_icon", QJsonObject{{"type", "string"}, {"maxLength", 260}}},
-                {"text", QJsonObject{{"type", "string"}, {"maxLength", 1024}}},
-                {"learn", QJsonObject{{"type", "string"}, {"maxLength", 4}}}};
-            QJsonObject heroProperties{{"unit", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}},
-                {"label", QJsonObject{{"type", "string"}, {"maxLength", 128}}},
-                {"talents", QJsonObject{{"type", "array"}, {"maxItems", 28}, {"items", QJsonObject{{"type", "object"}, {"properties", talentProperties},
-                    {"required", QJsonArray{"tier", "option", "name"}}, {"additionalProperties", false}}}}}};
-            properties.insert("heroes", QJsonObject{{"type", "array"}, {"maxItems", 64}, {"items", QJsonObject{{"type", "object"},
-                {"properties", heroProperties}, {"required", QJsonArray{"unit", "talents"}}, {"additionalProperties", false}}}});
-            properties.insert("replace_registration", QJsonObject{{"type", "boolean"}});
-            properties.insert("preview", QJsonObject{{"type", "boolean"}});
-            required.append("frame");
         } else if (tool.name == "game_ui_preview_set") {
             tool.description = "地图界面描述的预览：切换状态（空字符串为基础状态）、按 编号 或 编号[下标] 给数值（文字、数值或布尔），"
                 "之后的节点查询与绘图显示这组取值。整批检查，任何一项不合法都不改。只改预览，不改地图";
@@ -327,63 +141,6 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     return tools;
 }
 
-namespace {
-bool ValidText(const QJsonValue& value, qsizetype minimum, qsizetype maximum) {
-    return value.isString() && value.toString().size() >= minimum && value.toString().size() <= maximum && !value.toString().contains(QChar::Null);
-}
-
-// 天赋树的登记与选项（只在 game_ui_talent_system 里出现）。
-bool TalentArgumentsValid(const QJsonObject& args) {
-    if (args.contains("unlock_levels")) {
-        const QJsonArray levels = args.value("unlock_levels").toArray();
-        if (!args.value("unlock_levels").isArray() || levels.isEmpty() || levels.size() > 7
-            || !std::all_of(levels.begin(), levels.end(), [](const QJsonValue& item) { return ValidInteger(item, 1, 10000); }))
-            return false;
-    }
-    if (args.contains("sync_unit") && !ValidText(args.value("sync_unit"), 4, 4)) return false;
-    if (args.contains("players") && !ValidInteger(args.value("players"), 1, 24)) return false;
-    if (args.contains("name") && !ValidText(args.value("name"), 1, 32)) return false;
-    if (args.contains("after_pick") && !ValidText(args.value("after_pick"), 0, 256)) return false;
-    if (!args.contains("heroes")) return true;
-    const QJsonArray heroes = args.value("heroes").toArray();
-    if (!args.value("heroes").isArray() || heroes.size() > 64) return false;
-    const auto validTalent = [](const QJsonValue& item) {
-        const QJsonObject talent = item.toObject();
-        if (!item.isObject() || !talent.contains("tier") || !talent.contains("option") || !talent.contains("name")) return false;
-        for (auto it = talent.begin(); it != talent.end(); ++it) {
-            const auto key = it.key();
-            const bool ok = key == QLatin1String("tier") ? ValidInteger(it.value(), 1, 7)
-                : key == QLatin1String("option") ? ValidInteger(it.value(), 1, 4)
-                : key == QLatin1String("name") ? ValidText(it.value(), 1, 128)
-                : key == QLatin1String("icon") || key == QLatin1String("disabled_icon") ? ValidText(it.value(), 0, 260)
-                : key == QLatin1String("text") ? ValidText(it.value(), 0, 1024)
-                : key == QLatin1String("learn") ? ValidText(it.value(), 0, 4) && it.value().toString().size() != 1
-                    && it.value().toString().size() != 2 && it.value().toString().size() != 3
-                : false;
-            if (!ok) return false;
-        }
-        return true;
-    };
-    return std::all_of(heroes.begin(), heroes.end(), [&](const QJsonValue& item) {
-        const QJsonObject hero = item.toObject();
-        if (!item.isObject() || !hero.contains("unit") || !hero.contains("talents")) return false;
-        for (auto it = hero.begin(); it != hero.end(); ++it) {
-            if (it.key() == QLatin1String("unit")) {
-                if (!ValidText(it.value(), 4, 4)) return false;
-            } else if (it.key() == QLatin1String("label")) {
-                if (!ValidText(it.value(), 0, 128)) return false;
-            } else if (it.key() == QLatin1String("talents")) {
-                const QJsonArray talents = it.value().toArray();
-                if (!it.value().isArray() || talents.size() > 28 || !std::all_of(talents.begin(), talents.end(), validTalent)) return false;
-            } else {
-                return false;
-            }
-        }
-        return true;
-    });
-}
-} // namespace
-
 QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const GameUiToolHost& host) {
     const auto definitions = GameUiToolDefinitions();
     const auto found = std::find_if(definitions.begin(), definitions.end(), [&](const auto& value) { return value.name == name; });
@@ -397,12 +154,12 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
     if (!identity.isString() || identity.toString().isEmpty() || identity.toString().size() > 128 || identity.toString().contains(QChar::Null)
         || !ParseUnsignedId(args, "expected_revision", true).Succeeded())
         return Failure("GAME_UI_ARGUMENT", "工程身份或修订无效。");
-    for (const auto* key : {"race", "aspect", "preset", "name_source", "source"}) {
+    for (const auto* key : {"race", "aspect"}) {
         if (!args.contains(key)) continue;
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 不在可选范围内。");
     }
-    for (const auto* key : {"expansion", "show_hidden", "preview", "auto_heroes", "replace_registration", "enemies_only", "ability_state"}) {
+    for (const auto* key : {"expansion", "show_hidden", "preview"}) {
         if (args.contains(key) && !args.value(key).isBool()) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是布尔值。");
     }
     if (args.contains("label") && (!args.value("label").isString() || args.value("label").toString().size() > 256))
@@ -432,7 +189,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         if (!value.isString() || value.toString().size() > kMaxNameLength || value.toString().contains(QChar::Null))
             return Failure("GAME_UI_ARGUMENT", "name_contains 无效。");
     }
-    for (const auto& key : {QStringLiteral("offset"), QStringLiteral("limit"), QStringLiteral("width"), QStringLiteral("height"), QStringLiteral("players")}) {
+    for (const auto& key : {QStringLiteral("offset"), QStringLiteral("limit"), QStringLiteral("width"), QStringLiteral("height")}) {
         if (!args.contains(key)) continue;
         const auto schema = properties.value(key).toObject();
         if (!ValidInteger(args.value(key), schema.value("minimum").toInt(), schema.value("maximum").toInt()))
@@ -443,122 +200,6 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         if (!value.isString() || value.toString().size() > kMaxFunctionLength || value.toString().contains(QChar::Null))
             return Failure("GAME_UI_ARGUMENT", "function 必须是不超过 256 字的函数名。");
     }
-    if (args.contains("abilities")) {
-        const auto value = args.value("abilities");
-        const QJsonArray abilities = value.toArray();
-        const auto validAbility = [](const QJsonValue& item) {
-            if (!item.isObject()) return false;
-            const QJsonObject ability = item.toObject();
-            for (auto it = ability.begin(); it != ability.end(); ++it) {
-                if (it.key() == QLatin1String("ability") || it.key() == QLatin1String("effect")) {
-                    const QString text = it.value().toString();
-                    if (!it.value().isString() || text.contains(QChar::Null)
-                        || (it.key() == QLatin1String("ability") ? text.size() != 4 : text.isEmpty() || text.size() > 256)) return false;
-                } else if (it.key() == QLatin1String("cast") || it.key() == QLatin1String("channel") || it.key() == QLatin1String("tick")) {
-                    const double number = it.value().toDouble(-1.0);
-                    if (!it.value().isDouble() || !std::isfinite(number) || number < 0.0 || number > 3600.0) return false;
-                } else {
-                    return false;
-                }
-            }
-            return ability.contains("ability") && ability.contains("effect");
-        };
-        if (!value.isArray() || abilities.size() > 64 || !std::all_of(abilities.begin(), abilities.end(), validAbility))
-            return Failure("GAME_UI_ARGUMENT", "abilities 最多 64 项；每项有 4 字符 ability、非空 effect，秒数为 0 到 3600 的数值。");
-    }
-    // 绑定对象（读条条 bar、团队框架 frame）：必填项齐全，各项为编号。
-    for (const auto* key : {"bar", "frame"}) {
-        if (!args.contains(key)) continue;
-        const auto value = args.value(key);
-        const QJsonObject binding = value.toObject();
-        const auto schema = properties.value(key).toObject();
-        const auto bindingProperties = schema.value("properties").toObject();
-        const auto requiredKeys = schema.value("required").toArray();
-        bool valid = value.isObject()
-            && std::all_of(requiredKeys.begin(), requiredKeys.end(), [&](const QJsonValue& item) { return binding.contains(item.toString()); });
-        const auto validId = [](const QJsonValue& item, qsizetype minimum) {
-            return item.isString() && item.toString().size() >= minimum && item.toString().size() <= kMaxUiIdLength
-                && !item.toString().contains(QChar::Null);
-        };
-        for (auto it = binding.begin(); valid && it != binding.end(); ++it) {
-            const auto property = bindingProperties.value(it.key()).toObject();
-            if (it.key() == QLatin1String("columns")) {
-                // 天赋树的每列绑定：对象，图标、名字、已选、点击必填，各项为编号。
-                const auto columnSchema = property.value("items").toObject();
-                const auto columnProperties = columnSchema.value("properties").toObject();
-                const auto columnRequired = columnSchema.value("required").toArray();
-                const QJsonArray columns = it.value().toArray();
-                valid = it.value().isArray() && !columns.isEmpty() && columns.size() <= property.value("maxItems").toInt()
-                    && std::all_of(columns.begin(), columns.end(), [&](const QJsonValue& item) {
-                           const QJsonObject column = item.toObject();
-                           if (!item.isObject()) return false;
-                           for (const auto& required : columnRequired)
-                               if (!column.contains(required.toString())) return false;
-                           for (auto field = column.begin(); field != column.end(); ++field)
-                               if (!columnProperties.contains(field.key()) || !validId(field.value(), 0)) return false;
-                           return true;
-                       });
-            } else if (property.value("type").toString() == QLatin1String("array")) {
-                const QJsonArray items = it.value().toArray();
-                valid = it.value().isArray() && items.size() <= property.value("maxItems").toInt()
-                    && std::all_of(items.begin(), items.end(), [&](const QJsonValue& item) { return validId(item, 1); });
-            } else {
-                valid = bindingProperties.contains(it.key()) && validId(it.value(), 0);
-            }
-        }
-        if (!valid) {
-            QStringList names;
-            for (const auto& item : requiredKeys) names.append(item.toString());
-            return Failure("GAME_UI_ARGUMENT", std::string(key) + " 需要 " + names.join(QStringLiteral("、")).toStdString()
-                + "，各项为不超过 64 字的编号。");
-        }
-    }
-    if (args.contains("buffs")) {
-        const QJsonArray buffs = args.value("buffs").toArray();
-        const bool valid = args.value("buffs").isArray() && buffs.size() <= 64 && std::all_of(buffs.begin(), buffs.end(), [](const QJsonValue& item) {
-            return item.isString() && item.toString().size() == 4 && !item.toString().contains(QChar::Null);
-        });
-        if (!valid) return Failure("GAME_UI_ARGUMENT", "buffs 最多 64 项，每项为 4 字符增减益码。");
-    }
-    if (args.contains("portraits")) {
-        const QJsonArray units = args.value("portraits").toArray();
-        const bool valid = args.value("portraits").isArray() && units.size() <= 256 && std::all_of(units.begin(), units.end(), [](const QJsonValue& item) {
-            return item.isString() && item.toString().size() == 4 && !item.toString().contains(QChar::Null);
-        });
-        if (!valid) return Failure("GAME_UI_ARGUMENT", "portraits 最多 256 项，每项为 4 字符单位类型。");
-    }
-    if (args.contains("slots")) {
-        const QJsonArray entries = args.value("slots").toArray();
-        const auto code = [](const QJsonValue& item) { return item.isString() && item.toString().size() == 4 && !item.toString().contains(QChar::Null); };
-        const bool valid = args.value("slots").isArray() && entries.size() <= 256 && std::all_of(entries.begin(), entries.end(), [&](const QJsonValue& item) {
-            const QJsonObject slot = item.toObject();
-            if (!item.isObject() || !slot.contains("unit") || !slot.contains("slot") || !slot.contains("ability")) return false;
-            for (auto it = slot.begin(); it != slot.end(); ++it) {
-                const auto key = it.key();
-                const bool ok = key == QLatin1String("unit") || key == QLatin1String("ability") ? code(it.value())
-                    : key == QLatin1String("slot") ? ValidInteger(it.value(), 1, 24)
-                    : key == QLatin1String("hotkey") ? ValidText(it.value(), 0, 8)
-                    : false;
-                if (!ok) return false;
-            }
-            return true;
-        });
-        if (!valid) return Failure("GAME_UI_ARGUMENT", "slots 最多 256 项，每项有 4 字符 unit 与 ability、1..24 的 slot，hotkey 不超过 8 字。");
-    }
-    if (args.contains("key")) {
-        const QString key = args.value("key").toString();
-        const bool valid = args.value("key").isString() && !key.isEmpty() && key.size() <= 24 && (key.front().isLetter() || key.front() == QLatin1Char('_'))
-            && std::all_of(key.begin(), key.end(), [](QChar c) { return c.unicode() < 0x80 && (c.isLetterOrNumber() || c == QLatin1Char('_')); });
-        if (!valid) return Failure("GAME_UI_ARGUMENT", "key 必须是字母或下划线开头、最长 24 的 ASCII 标识符。");
-    }
-    if (args.contains("far_range")) {
-        const double range = args.value("far_range").toDouble(-1.0);
-        if (!args.value("far_range").isDouble() || !std::isfinite(range) || range < 100.0 || range > 100000.0)
-            return Failure("GAME_UI_ARGUMENT", "far_range 必须是 100 到 100000 的数值。");
-    }
-    if (!TalentArgumentsValid(args)) return Failure("GAME_UI_ARGUMENT", "天赋树参数无效：unlock_levels 为 1 到 7 个 1..10000 的整数；sync_unit 为 4 字符物编编号；"
-        "players 为 1..24；name 为 1..32 字；after_pick 为不超过 256 字的触发器名；heroes 最多 64 个，每个有 4 字符 unit 与最多 28 项 talents，"
-        "每项 tier 1..7、option 1..4、name 1..128 字，learn 为空或 4 字符。");
     if (args.contains("values") && !ValidSimulationValues(args.value("values")))
         return Failure("GAME_UI_ARGUMENT", "values 最多 200 项；键为非空输入标识，值为文字、有限数值或布尔值。");
     if (!host.invoke) return Failure("GAME_UI_UNSUPPORTED", "此宿主没有界面工作区；请连接编辑器MCP端口。");

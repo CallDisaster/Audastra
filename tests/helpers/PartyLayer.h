@@ -2,8 +2,8 @@
 
 #include "AudastraUiCatalog.h"
 
-// 团队框架测试的合成签名层：单位属性、单位分类与单位类型、玩家控制者与状态、可用地图区域与单位组、选择单位等函数。
-// 名字、参数类型与预设照原版 TriggerData；放在读条测试的 SpellLayer 之后（单位、玩家、点、计时器类型取自那一层）。
+// 团队框架示例测试的合成签名层：单位属性、单位分类与单位类型、玩家控制者与状态、可用地图区域与单位组、选择单位等函数。
+// 名字、参数类型与预设照原版 TriggerData；放在读条示例的 SpellLayer 之后（单位、玩家、点、计时器类型取自那一层）。
 namespace AudastraUiTest {
 
 inline Catalog::Layer PartyLayer() {

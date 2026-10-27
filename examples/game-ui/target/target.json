@@ -1,0 +1,351 @@
+{
+  "format": "audastra.ui",
+  "version": 1,
+  "id": "target",
+  "label": "目标框架",
+  "values": [
+    {
+      "id": "shown",
+      "label": "显示",
+      "type": "boolean"
+    },
+    {
+      "id": "hp",
+      "label": "生命",
+      "type": "real",
+      "default": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "mp",
+      "label": "法力",
+      "type": "real",
+      "default": 1,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "hp_now",
+      "label": "当前生命",
+      "type": "real",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "hp_max",
+      "label": "最大生命",
+      "type": "real",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "name",
+      "label": "名字",
+      "type": "string"
+    },
+    {
+      "id": "level",
+      "label": "等级",
+      "type": "integer"
+    },
+    {
+      "id": "dead",
+      "label": "死亡",
+      "type": "boolean"
+    },
+    {
+      "id": "portrait",
+      "label": "头像",
+      "type": "string"
+    },
+    {
+      "id": "buff1",
+      "label": "增减益 1",
+      "type": "string"
+    },
+    {
+      "id": "buff2",
+      "label": "增减益 2",
+      "type": "string"
+    },
+    {
+      "id": "buff3",
+      "label": "增减益 3",
+      "type": "string"
+    },
+    {
+      "id": "buff4",
+      "label": "增减益 4",
+      "type": "string"
+    },
+    {
+      "id": "buff5",
+      "label": "增减益 5",
+      "type": "string"
+    },
+    {
+      "id": "buff6",
+      "label": "增减益 6",
+      "type": "string"
+    }
+  ],
+  "frames": [
+    {
+      "id": "panel",
+      "label": "目标",
+      "type": "backdrop",
+      "anchors": [
+        {
+          "point": "TOP",
+          "to": "screen",
+          "x": 0.17,
+          "y": -0.035
+        }
+      ],
+      "width": 0.2,
+      "height": 0.05,
+      "texture": "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background",
+      "visible": "shown",
+      "children": [
+        {
+          "id": "portrait",
+          "label": "头像",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "LEFT",
+              "x": 0.004
+            }
+          ],
+          "width": 0.042,
+          "height": 0.042,
+          "texture": "{portrait}",
+          "visible": "portrait"
+        },
+        {
+          "id": "name",
+          "label": "名字",
+          "type": "text",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "x": 0.05,
+              "y": -0.004
+            }
+          ],
+          "width": 0.1,
+          "height": 0.012,
+          "text": "{name}",
+          "justifyH": "left"
+        },
+        {
+          "id": "level",
+          "label": "等级",
+          "type": "text",
+          "anchors": [
+            {
+              "point": "TOPRIGHT",
+              "x": -0.005,
+              "y": -0.004
+            }
+          ],
+          "width": 0.04,
+          "height": 0.012,
+          "text": "{level}",
+          "justifyH": "right"
+        },
+        {
+          "id": "hp",
+          "label": "生命",
+          "type": "bar",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "x": 0.05,
+              "y": -0.018
+            }
+          ],
+          "width": 0.145,
+          "height": 0.014,
+          "texture": "ReplaceableTextures\\TeamColor\\TeamColor06",
+          "background": "ReplaceableTextures\\TeamColor\\TeamColor08",
+          "value": "hp",
+          "children": [
+            {
+              "id": "dead",
+              "label": "死亡",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "CENTER"
+                }
+              ],
+              "width": 0.145,
+              "height": 0.014,
+              "text": "死亡",
+              "visible": "dead"
+            },
+            {
+              "id": "life",
+              "label": "生命数字",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "RIGHT",
+                  "x": -0.003
+                }
+              ],
+              "width": 0.13,
+              "height": 0.014,
+              "text": "{hp_now:0}/{hp_max:0}",
+              "justifyH": "right",
+              "visible": {
+                "value": "dead",
+                "invert": true
+              }
+            }
+          ]
+        },
+        {
+          "id": "mp",
+          "label": "法力",
+          "type": "bar",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "x": 0.05,
+              "y": -0.035
+            }
+          ],
+          "width": 0.145,
+          "height": 0.008,
+          "texture": "ReplaceableTextures\\TeamColor\\TeamColor01",
+          "background": "ReplaceableTextures\\TeamColor\\TeamColor08",
+          "value": "mp"
+        },
+        {
+          "id": "pick",
+          "label": "点选",
+          "type": "button",
+          "anchors": [
+            {
+              "point": "TOPLEFT"
+            },
+            {
+              "point": "BOTTOMRIGHT"
+            }
+          ]
+        },
+        {
+          "id": "icon1",
+          "label": "增减益 1",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "toPoint": "BOTTOMLEFT",
+              "y": -0.002
+            }
+          ],
+          "width": 0.018,
+          "height": 0.018,
+          "texture": "{buff1}",
+          "visible": "buff1"
+        },
+        {
+          "id": "icon2",
+          "label": "增减益 2",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "LEFT",
+              "to": "icon1",
+              "toPoint": "RIGHT",
+              "x": 0.002
+            }
+          ],
+          "width": 0.018,
+          "height": 0.018,
+          "texture": "{buff2}",
+          "visible": "buff2"
+        },
+        {
+          "id": "icon3",
+          "label": "增减益 3",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "LEFT",
+              "to": "icon2",
+              "toPoint": "RIGHT",
+              "x": 0.002
+            }
+          ],
+          "width": 0.018,
+          "height": 0.018,
+          "texture": "{buff3}",
+          "visible": "buff3"
+        },
+        {
+          "id": "icon4",
+          "label": "增减益 4",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "LEFT",
+              "to": "icon3",
+              "toPoint": "RIGHT",
+              "x": 0.002
+            }
+          ],
+          "width": 0.018,
+          "height": 0.018,
+          "texture": "{buff4}",
+          "visible": "buff4"
+        },
+        {
+          "id": "icon5",
+          "label": "增减益 5",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "LEFT",
+              "to": "icon4",
+              "toPoint": "RIGHT",
+              "x": 0.002
+            }
+          ],
+          "width": 0.018,
+          "height": 0.018,
+          "texture": "{buff5}",
+          "visible": "buff5"
+        },
+        {
+          "id": "icon6",
+          "label": "增减益 6",
+          "type": "backdrop",
+          "anchors": [
+            {
+              "point": "LEFT",
+              "to": "icon5",
+              "toPoint": "RIGHT",
+              "x": 0.002
+            }
+          ],
+          "width": 0.018,
+          "height": 0.018,
+          "texture": "{buff6}",
+          "visible": "buff6"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "select",
+      "frame": "pick",
+      "on": "click"
+    }
+  ]
+}

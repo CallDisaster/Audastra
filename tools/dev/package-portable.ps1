@@ -101,6 +101,9 @@ foreach ($notice in @('NOTICE.md', 'THIRD_PARTY_NOTICES.md', 'COMMERCIAL-LICENSE
     Copy-Item -LiteralPath "$repo/$notice" -Destination $licenses
 }
 Copy-Item -Path "$repo/tools/portable/*" -Destination $output -Recurse
+# 界面示例（描述与触发器文本）供作者和助手参考，不在编辑器里。
+New-Item -ItemType Directory -Force -Path "$output/examples" | Out-Null
+Copy-Item -LiteralPath "$repo/examples/game-ui" -Destination "$output/examples" -Recurse
 if (Test-Path -LiteralPath "$repo/.agents/skills" -PathType Container) {
     Copy-Item -LiteralPath "$repo/.agents/skills" -Destination "$bin/skills" -Recurse
 }

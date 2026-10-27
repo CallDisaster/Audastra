@@ -2,7 +2,7 @@
 
 #include "AudastraUiCatalog.h"
 
-// 读条系统测试共用的合成签名层：施法事件、单位与计时器函数、YDWE 运行触发器参数块（参数类型按 TriggerData 写法，
+// 读条示例测试的合成签名层：施法事件、单位与计时器函数、YDWE 运行触发器参数块（参数类型按 TriggerData 写法，
 // 名字与预设取自真实地图里用过的写法）。
 namespace AudastraUiTest {
 

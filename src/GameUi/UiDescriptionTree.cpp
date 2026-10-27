@@ -1,6 +1,5 @@
 #include "War3MapCore/GameUi/UiDescription.h"
 
-#include "UiBindingCheck.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
@@ -112,7 +111,7 @@ private:
     bool Flag(const UiFlag& flag, std::optional<std::uint32_t> instance) const {
         if (!flag.binding) return flag.literal;
         const auto text = BoundText(*flag.binding, instance);
-        const UiValue* spec = detail::FindValue(description_, flag.binding->value);
+        const UiValue* spec = FindUiValue(description_, flag.binding->value);
         bool on = false;
         if (text && spec && spec->type == UiValueType::String) {
             on = !text->empty();

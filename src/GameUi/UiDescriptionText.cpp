@@ -97,12 +97,6 @@ std::string FormatUiNumber(double value) {
 
 namespace {
 
-const UiValue* FindValue(const UiDescription& description, std::string_view id) {
-    for (const auto& value : description.values) {
-        if (value.id == id) return &value;
-    }
-    return nullptr;
-}
 
 std::string FixedDecimals(double value, int decimals) {
     std::array<char, 64> buffer{};
@@ -125,7 +119,7 @@ std::string ShortDecimals(double value) {
 
 std::optional<std::string> UiValueText(const UiDescription& description, const UiInstanceState& state, std::string_view id,
     std::optional<std::uint32_t> index) {
-    const UiValue* value = FindValue(description, id);
+    const UiValue* value = FindUiValue(description, id);
     if (!value) return std::nullopt;
     if ((value->size == 0) != !index.has_value()) return std::nullopt;
     if (index && *index >= value->size) return std::nullopt;
@@ -151,7 +145,7 @@ std::string FormatUiText(const UiDescription& description, const UiInstanceState
         if (reference.perInstance && !instance) continue;
         const auto value = UiValueText(description, state, reference.id, index);
         if (!value) continue;
-        const UiValue* spec = FindValue(description, reference.id);
+        const UiValue* spec = FindUiValue(description, reference.id);
         if (spec->type == UiValueType::Real) {
             double number = 0.0;
             std::from_chars(value->data(), value->data() + value->size(), number);

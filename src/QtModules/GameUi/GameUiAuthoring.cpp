@@ -5,10 +5,8 @@
 #include "GameUiCanvas.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
-#include "War3MapCore/GameUi/UiPresets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
-#include <QComboBox>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -127,9 +125,8 @@ bool GameUiModule::StageDescription(UiDescription description, bool create, cons
     return true;
 }
 
-bool GameUiModule::CreateDescription(const QString& id, const QString& label, QString* error, const QString& preset) {
-    auto created = preset.isEmpty() ? NewUiDescription(id.toStdString(), label.toStdString())
-                                    : NewUiDescriptionFromPreset(preset.toStdString(), id.toStdString(), label.toStdString());
+bool GameUiModule::CreateDescription(const QString& id, const QString& label, QString* error) {
+    auto created = NewUiDescription(id.toStdString(), label.toStdString());
     if (!created.value) {
         if (error) *error = FirstMessage(created.diagnostics);
         return false;
@@ -252,12 +249,7 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     auto* labelEdit = new QLineEdit(form);
     labelEdit->setObjectName(QStringLiteral("gameUiNewDescriptionLabel"));
     labelEdit->setPlaceholderText(tr("显示名"));
-    auto* presetBox = new QComboBox(form);
-    presetBox->setObjectName(QStringLiteral("gameUiNewDescriptionPreset"));
-    presetBox->addItem(tr("空白"), QString());
-    for (const auto& preset : UiPresets()) presetBox->addItem(Text(std::string(preset.label)), Text(std::string(preset.id)));
     auto* create = new QPushButton(tr("创建"), form);
-    formLayout->addWidget(presetBox);
     formLayout->addWidget(idEdit);
     formLayout->addWidget(labelEdit);
     formLayout->addWidget(create);
@@ -265,9 +257,9 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     formAction->setDefaultWidget(form);
     createMenu->addAction(formAction);
     newDescriptionButton_->setMenu(createMenu);
-    const auto submit = [this, idEdit, labelEdit, presetBox, createMenu] {
+    const auto submit = [this, idEdit, labelEdit, createMenu] {
         QString error;
-        if (CreateDescription(idEdit->text().trimmed(), labelEdit->text().trimmed(), &error, presetBox->currentData().toString())) {
+        if (CreateDescription(idEdit->text().trimmed(), labelEdit->text().trimmed(), &error)) {
             idEdit->clear();
             labelEdit->clear();
             createMenu->close();
@@ -361,27 +353,8 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
         }
         OfferMapRuntime();
     });
-    castSystemButton_ = new QPushButton(tr("读条系统"), toolbar);
-    castSystemButton_->setObjectName(QStringLiteral("gameUiCastSystem"));
-    connect(castSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowCastSystemDialog);
-    partySystemButton_ = new QPushButton(tr("团队框架"), toolbar);
-    partySystemButton_->setObjectName(QStringLiteral("gameUiPartySystem"));
-    connect(partySystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowPartySystemDialog);
-    targetSystemButton_ = new QPushButton(tr("目标框架"), toolbar);
-    targetSystemButton_->setObjectName(QStringLiteral("gameUiTargetSystem"));
-    connect(targetSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowTargetSystemDialog);
-    meterSystemButton_ = new QPushButton(tr("伤害统计"), toolbar);
-    meterSystemButton_->setObjectName(QStringLiteral("gameUiMeterSystem"));
-    connect(meterSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowMeterSystemDialog);
-    actionBarSystemButton_ = new QPushButton(tr("技能栏"), toolbar);
-    actionBarSystemButton_->setObjectName(QStringLiteral("gameUiActionBarSystem"));
-    connect(actionBarSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowActionBarSystemDialog);
-    talentSystemButton_ = new QPushButton(tr("天赋树"), toolbar);
-    talentSystemButton_->setObjectName(QStringLiteral("gameUiTalentSystem"));
-    connect(talentSystemButton_, &QPushButton::clicked, this, &GameUiModule::ShowTalentSystemDialog);
     UpdateAuthoringControls();
-    return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_, castSystemButton_, partySystemButton_,
-        targetSystemButton_, meterSystemButton_, actionBarSystemButton_, talentSystemButton_};
+    return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_};
 }
 
 void GameUiModule::UpdateAuthoringControls() {

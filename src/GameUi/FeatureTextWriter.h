@@ -14,7 +14,7 @@
 #include <vector>
 
 // 生成自然 T 的共用写法：紧凑 T 语句（Trigger/TriggerTextNotation.h）与功能写法（Trigger/TriggerFeatureText.h）。
-// 界面触发器与读条系统等生成器共用；只拼文本，是否合法由写入触发器编辑器时的目录检查决定。
+// 界面触发器生成用；只拼文本，是否合法由写入触发器编辑器时的目录检查决定。
 namespace War3Map::GameUi::detail {
 
 using Lines = std::vector<std::string>;

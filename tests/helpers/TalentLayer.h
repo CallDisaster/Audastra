@@ -2,7 +2,7 @@
 
 #include "AudastraUiCatalog.h"
 
-// 天赋系统测试的合成签名层：玩家选择单位事件、建单位与单位属性、英雄等级、选择增减、学技能等函数。
+// 天赋树示例测试的合成签名层：玩家选择单位事件、建单位与单位属性、英雄等级、选择增减、学技能等函数。
 // 名字、参数类型与预设照原版 TriggerData；放在 SpellLayer、PartyLayer 之后（单位、单位类型、玩家、点、区域、技能类型取自那两层）。
 namespace AudastraUiTest {
 

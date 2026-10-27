@@ -1,0 +1,176 @@
+变量:
+    AUF_Target_Unit: unit[]
+    AUF_Target_P: integer = 0
+    AUF_Target_Me: integer = 0
+    AUF_Target_ClickResult: integer = 0
+    AUF_Target_BuffCount: integer = 0
+    AUF_Target_BuffCode: buffcode[]
+    AUF_Target_BuffIcon: string[]
+    AUF_Target_BuffHit: string[]
+    AUF_Target_BuffN: integer = 0
+    AUF_Target_BuffI: integer = 0
+    AUF_Target_TypeCount: integer = 0
+    AUF_Target_TypeCode: unitcode[]
+    AUF_Target_TypeIcon: string[]
+    AUF_Target_TypeI: integer = 0
+触发器 目标 登记 Target_Register (init):
+    actions:
+        CommentString("每个增减益一组：增减益、图标路径；按这里的顺序显示单位身上有的增减益")
+        SetVariable(udg_AUF_Target_BuffCount, 1)
+        SetVariable(udg_AUF_Target_BuffCode[1], 'BHbd')
+        SetVariable(udg_AUF_Target_BuffIcon[1], "ReplaceableTextures\\CommandButtons\\BTNBlizzard")
+触发器 目标 头像 Target_Portrait (init):
+    actions:
+        CommentString("每种单位一组：单位类型、头像图标路径；没登记的单位头像为空")
+        SetVariable(udg_AUF_Target_TypeCount, 1)
+        SetVariable(udg_AUF_Target_TypeCode[1], 'Hpal')
+        SetVariable(udg_AUF_Target_TypeIcon[1], "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin")
+触发器 目标 选择 Target_Pick:
+    events:
+        TriggerRegisterPlayerSelectionEventBJ(Player00, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player01, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player02, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player03, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player04, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player05, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player06, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player07, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player08, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player09, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player10, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player11, SelDeselOptionSel)
+    actions:
+        SetVariable(udg_AUF_Target_Unit[GetConvertedPlayerId(GetTriggerPlayer())], GetTriggerUnit())
+触发器 目标 取消选择 Target_Unpick:
+    events:
+        TriggerRegisterPlayerSelectionEventBJ(Player00, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player01, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player02, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player03, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player04, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player05, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player06, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player07, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player08, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player09, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player10, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player11, SelDeselOptionDesel)
+    actions:
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareUnit(udg_AUF_Target_Unit[GetConvertedPlayerId(GetTriggerPlayer())], OperatorEqualENE, GetTriggerUnit())
+            then:
+                SetVariable(udg_AUF_Target_Unit[GetConvertedPlayerId(GetTriggerPlayer())], UnitNull)
+        }
+触发器 目标 刷新 Target_Refresh:
+    events:
+        TriggerRegisterTimerEventPeriodic(0.1)
+    actions:
+        ForLoopVarMultiple(udg_AUF_Target_P, 1, 12) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareUnit(udg_AUF_Target_Unit[udg_AUF_Target_P], OperatorNotEqualENE, UnitNull)
+                        OperatorCompareReal(GetUnitStateSwap(UnitStateMaxLife, udg_AUF_Target_Unit[udg_AUF_Target_P]), OperatorLessEq, 0)
+                    then:
+                        SetVariable(udg_AUF_Target_Unit[udg_AUF_Target_P], UnitNull)
+                }
+        }
+        CommentString("以下只改本机界面")
+        SetVariable(udg_AUF_Target_Me, GetConvertedPlayerId(GetLocalPlayer()))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareUnit(udg_AUF_Target_Unit[udg_AUF_Target_Me], OperatorNotEqualENE, UnitNull)
+            then:
+                SetVariable(udg_AUIV_target_shown, true)
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(GetUnitStateSwap(UnitStateMaxLife, udg_AUF_Target_Unit[udg_AUF_Target_Me]), OperatorGreater, 0)
+                    then:
+                        SetVariable(udg_AUIV_target_hp, OperatorReal(GetUnitStateSwap(UnitStateLife, udg_AUF_Target_Unit[udg_AUF_Target_Me]), OperatorDivide, GetUnitStateSwap(UnitStateMaxLife, udg_AUF_Target_Unit[udg_AUF_Target_Me])))
+                    else:
+                        SetVariable(udg_AUIV_target_hp, 0)
+                }
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(GetUnitStateSwap(UnitStateMaxMana, udg_AUF_Target_Unit[udg_AUF_Target_Me]), OperatorGreater, 0)
+                    then:
+                        SetVariable(udg_AUIV_target_mp, OperatorReal(GetUnitStateSwap(UnitStateMana, udg_AUF_Target_Unit[udg_AUF_Target_Me]), OperatorDivide, GetUnitStateSwap(UnitStateMaxMana, udg_AUF_Target_Unit[udg_AUF_Target_Me])))
+                    else:
+                        SetVariable(udg_AUIV_target_mp, 0)
+                }
+                SetVariable(udg_AUIV_target_hp_now, GetUnitStateSwap(UnitStateLife, udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                SetVariable(udg_AUIV_target_hp_max, GetUnitStateSwap(UnitStateMaxLife, udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                SetVariable(udg_AUIV_target_portrait, "")
+                ForLoopVarMultiple(udg_AUF_Target_TypeI, 1, udg_AUF_Target_TypeCount) {
+                    actions:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareUnitCode(GetUnitTypeId(udg_AUF_Target_Unit[udg_AUF_Target_Me]), OperatorEqualENE, udg_AUF_Target_TypeCode[udg_AUF_Target_TypeI])
+                            then:
+                                SetVariable(udg_AUIV_target_portrait, udg_AUF_Target_TypeIcon[udg_AUF_Target_TypeI])
+                        }
+                }
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareBoolean(IsUnitType(udg_AUF_Target_Unit[udg_AUF_Target_Me], UnitTypeHero), OperatorEqualENE, true)
+                    then:
+                        SetVariable(udg_AUIV_target_name, GetHeroProperName(udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                    else:
+                        SetVariable(udg_AUIV_target_name, GetUnitName(udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                }
+                SetVariable(udg_AUIV_target_dead, IsUnitDeadBJ(udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                SetVariable(udg_AUF_Target_BuffHit[1], "")
+                SetVariable(udg_AUF_Target_BuffHit[2], "")
+                SetVariable(udg_AUF_Target_BuffHit[3], "")
+                SetVariable(udg_AUF_Target_BuffHit[4], "")
+                SetVariable(udg_AUF_Target_BuffHit[5], "")
+                SetVariable(udg_AUF_Target_BuffHit[6], "")
+                SetVariable(udg_AUF_Target_BuffN, 0)
+                ForLoopVarMultiple(udg_AUF_Target_BuffI, 1, udg_AUF_Target_BuffCount) {
+                    actions:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUF_Target_BuffN, OperatorLess, 6)
+                                OperatorCompareBoolean(UnitHasBuffBJ(udg_AUF_Target_Unit[udg_AUF_Target_Me], udg_AUF_Target_BuffCode[udg_AUF_Target_BuffI]), OperatorEqualENE, true)
+                            then:
+                                SetVariable(udg_AUF_Target_BuffN, OperatorInt(udg_AUF_Target_BuffN, OperatorAdd, 1))
+                                SetVariable(udg_AUF_Target_BuffHit[udg_AUF_Target_BuffN], udg_AUF_Target_BuffIcon[udg_AUF_Target_BuffI])
+                        }
+                }
+                SetVariable(udg_AUIV_target_buff1, udg_AUF_Target_BuffHit[1])
+                SetVariable(udg_AUIV_target_buff2, udg_AUF_Target_BuffHit[2])
+                SetVariable(udg_AUIV_target_buff3, udg_AUF_Target_BuffHit[3])
+                SetVariable(udg_AUIV_target_buff4, udg_AUF_Target_BuffHit[4])
+                SetVariable(udg_AUIV_target_buff5, udg_AUF_Target_BuffHit[5])
+                SetVariable(udg_AUIV_target_buff6, udg_AUF_Target_BuffHit[6])
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareBoolean(IsUnitType(udg_AUF_Target_Unit[udg_AUF_Target_Me], UnitTypeHero), OperatorEqualENE, true)
+                    then:
+                        SetVariable(udg_AUIV_target_level, GetHeroLevel(udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                    else:
+                        SetVariable(udg_AUIV_target_level, GetUnitLevel(udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                }
+            else:
+                SetVariable(udg_AUIV_target_shown, false)
+        }
+        ConditionalTriggerExecute(`目标框架 更新 target_Update`)
+触发器 目标 选中 Target_Select:
+    events:
+        AudastraUITriggerRegisterEvent("target.select")
+    actions:
+        CommentString("界面点击只在本机发生：举着单位目标技能时作为目标交给游戏，否则只改本机的选择")
+        SetVariable(udg_AUF_Target_Me, GetConvertedPlayerId(GetLocalPlayer()))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareUnit(udg_AUF_Target_Unit[udg_AUF_Target_Me], OperatorNotEqualENE, UnitNull)
+            then:
+                SetVariable(udg_AUF_Target_ClickResult, AudastraUIClickUnit(udg_AUF_Target_Unit[udg_AUF_Target_Me]))
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUF_Target_ClickResult, OperatorLessEq, 0)
+                    then:
+                        SelectUnitForPlayerSingle(udg_AUF_Target_Unit[udg_AUF_Target_Me], GetLocalPlayer())
+                }
+        }

@@ -1,0 +1,231 @@
+变量:
+    AUP_Member: unit
+    AUP_Unit: unit[]
+    AUP_Count: integer = 0
+    AUP_Found: integer = 0
+    AUP_FindI: integer = 0
+    AUP_I: integer = 0
+    AUP_X: real[]
+    AUP_Y: real[]
+    AUP_Point: location
+    AUP_Self: integer = 0
+    AUP_DX: real = 0
+    AUP_DY: real = 0
+    AUP_Click: integer = 0
+    AUP_ClickResult: integer = 0
+    AUP_BuffCount: integer = 0
+    AUP_BuffCode: buffcode[]
+    AUP_BuffIcon: string[]
+    AUP_BuffHit: string[]
+    AUP_BuffN: integer = 0
+    AUP_BuffI: integer = 0
+    AUP_TypeCount: integer = 0
+    AUP_TypeCode: unitcode[]
+    AUP_TypeIcon: string[]
+    AUP_TypeI: integer = 0
+触发器 团队 登记 Party_Register (init):
+    actions:
+        CommentString("每个增减益一组：增减益、图标路径；按这里的顺序显示单位身上有的增减益")
+        SetVariable(udg_AUP_BuffCount, 1)
+        SetVariable(udg_AUP_BuffCode[1], 'BHbd')
+        SetVariable(udg_AUP_BuffIcon[1], "ReplaceableTextures\\CommandButtons\\BTNBlizzard")
+触发器 团队 头像 Party_Portrait (init):
+    actions:
+        CommentString("每种单位一组：单位类型、头像图标路径；没登记的单位头像为空")
+        SetVariable(udg_AUP_TypeCount, 1)
+        SetVariable(udg_AUP_TypeCode[1], 'Hpal')
+        SetVariable(udg_AUP_TypeIcon[1], "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin")
+触发器 团队 加入 Party_Join:
+    actions:
+        CommentString("先把要加入的单位设给 AUP_Member；已在名单里或名单已满时不加入")
+        SetVariable(udg_AUP_Found, 0)
+        ForLoopVarMultiple(udg_AUP_FindI, 1, udg_AUP_Count) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareUnit(udg_AUP_Unit[udg_AUP_FindI], OperatorEqualENE, udg_AUP_Member)
+                    then:
+                        SetVariable(udg_AUP_Found, udg_AUP_FindI)
+                }
+        }
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUP_Found, OperatorEqual, 0)
+                OperatorCompareInteger(udg_AUP_Count, OperatorLess, 5)
+                OperatorCompareUnit(udg_AUP_Member, OperatorNotEqualENE, UnitNull)
+            then:
+                SetVariable(udg_AUP_Count, OperatorInt(udg_AUP_Count, OperatorAdd, 1))
+                SetVariable(udg_AUP_Unit[udg_AUP_Count], udg_AUP_Member)
+        }
+触发器 团队 移出 Party_Leave:
+    actions:
+        CommentString("先把要移出的单位设给 AUP_Member；后面的队员前移一格")
+        SetVariable(udg_AUP_Found, 0)
+        ForLoopVarMultiple(udg_AUP_FindI, 1, udg_AUP_Count) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareUnit(udg_AUP_Unit[udg_AUP_FindI], OperatorEqualENE, udg_AUP_Member)
+                    then:
+                        SetVariable(udg_AUP_Found, udg_AUP_FindI)
+                }
+        }
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUP_Found, OperatorGreater, 0)
+            then:
+                ForLoopVarMultiple(udg_AUP_FindI, udg_AUP_Found, OperatorInt(udg_AUP_Count, OperatorSubtract, 1)) {
+                    actions:
+                        SetVariable(udg_AUP_Unit[udg_AUP_FindI], udg_AUP_Unit[OperatorInt(udg_AUP_FindI, OperatorAdd, 1)])
+                }
+                SetVariable(udg_AUP_Unit[udg_AUP_Count], UnitNull)
+                SetVariable(udg_AUP_Count, OperatorInt(udg_AUP_Count, OperatorSubtract, 1))
+        }
+触发器 团队 候选 Party_Candidate:
+    actions:
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareBoolean(IsUnitType(udg_AUP_Member, UnitTypeHero), OperatorEqualENE, true)
+                OperatorCompareBoolean(IsUnitIllusionBJ(udg_AUP_Member), OperatorEqualENE, false)
+                OperatorComparePlayerControl(GetPlayerController(GetOwningPlayer(udg_AUP_Member)), OperatorEqualENE, MapControlUser)
+                OperatorComparePlayerSlotStatus(GetPlayerSlotState(GetOwningPlayer(udg_AUP_Member)), OperatorEqualENE, PlayerSlotStatePlaying)
+            then:
+                ConditionalTriggerExecute(`团队 加入 Party_Join`)
+        }
+触发器 团队 初始化 Party_Init (init):
+    actions:
+        ForGroupMultiple(GetUnitsInRectAll(GetPlayableMapRect())) {
+            actions:
+                SetVariable(udg_AUP_Member, GetEnumUnit())
+                ConditionalTriggerExecute(`团队 候选 Party_Candidate`)
+        }
+触发器 团队 英雄进入 Party_HeroEnter:
+    events:
+        TriggerRegisterEnterRectSimple(GetPlayableMapRect())
+    actions:
+        SetVariable(udg_AUP_Member, GetTriggerUnit())
+        ConditionalTriggerExecute(`团队 候选 Party_Candidate`)
+触发器 团队 刷新 Party_Refresh:
+    events:
+        TriggerRegisterTimerEventPeriodic(0.1)
+    actions:
+        ForLoopVarMultiple(udg_AUP_I, 1, udg_AUP_Count) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(GetUnitStateSwap(UnitStateMaxLife, udg_AUP_Unit[udg_AUP_I]), OperatorLessEq, 0)
+                    then:
+                        SetVariable(udg_AUP_Member, udg_AUP_Unit[udg_AUP_I])
+                        ConditionalTriggerExecute(`团队 移出 Party_Leave`)
+                }
+        }
+        ForLoopVarMultiple(udg_AUP_I, 1, udg_AUP_Count) {
+            actions:
+                SetVariable(udg_AUP_Point, GetUnitLoc(udg_AUP_Unit[udg_AUP_I]))
+                SetVariable(udg_AUP_X[udg_AUP_I], GetLocationX(udg_AUP_Point))
+                SetVariable(udg_AUP_Y[udg_AUP_I], GetLocationY(udg_AUP_Point))
+                RemoveLocation(udg_AUP_Point)
+        }
+        CommentString("以下只改本机界面")
+        SetVariable(udg_AUP_Self, 0)
+        ForLoopVarMultiple(udg_AUP_I, 1, udg_AUP_Count) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUP_Self, OperatorEqual, 0)
+                        OperatorComparePlayer(GetOwningPlayer(udg_AUP_Unit[udg_AUP_I]), OperatorEqualENE, GetLocalPlayer())
+                    then:
+                        SetVariable(udg_AUP_Self, udg_AUP_I)
+                }
+        }
+        ForLoopVarMultiple(udg_AUP_I, 1, 5) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUP_I, OperatorLessEq, udg_AUP_Count)
+                    then:
+                        SetVariable(udg_AUIV_party_shown[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], true)
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareReal(GetUnitStateSwap(UnitStateMaxLife, udg_AUP_Unit[udg_AUP_I]), OperatorGreater, 0)
+                            then:
+                                SetVariable(udg_AUIV_party_hp[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], OperatorReal(GetUnitStateSwap(UnitStateLife, udg_AUP_Unit[udg_AUP_I]), OperatorDivide, GetUnitStateSwap(UnitStateMaxLife, udg_AUP_Unit[udg_AUP_I])))
+                            else:
+                                SetVariable(udg_AUIV_party_hp[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], 0)
+                        }
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareReal(GetUnitStateSwap(UnitStateMaxMana, udg_AUP_Unit[udg_AUP_I]), OperatorGreater, 0)
+                            then:
+                                SetVariable(udg_AUIV_party_mp[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], OperatorReal(GetUnitStateSwap(UnitStateMana, udg_AUP_Unit[udg_AUP_I]), OperatorDivide, GetUnitStateSwap(UnitStateMaxMana, udg_AUP_Unit[udg_AUP_I])))
+                            else:
+                                SetVariable(udg_AUIV_party_mp[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], 0)
+                        }
+                        SetVariable(udg_AUIV_party_hp_now[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], GetUnitStateSwap(UnitStateLife, udg_AUP_Unit[udg_AUP_I]))
+                        SetVariable(udg_AUIV_party_hp_max[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], GetUnitStateSwap(UnitStateMaxLife, udg_AUP_Unit[udg_AUP_I]))
+                        SetVariable(udg_AUIV_party_portrait[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], "")
+                        ForLoopVarMultiple(udg_AUP_TypeI, 1, udg_AUP_TypeCount) {
+                            actions:
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareUnitCode(GetUnitTypeId(udg_AUP_Unit[udg_AUP_I]), OperatorEqualENE, udg_AUP_TypeCode[udg_AUP_TypeI])
+                                    then:
+                                        SetVariable(udg_AUIV_party_portrait[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], udg_AUP_TypeIcon[udg_AUP_TypeI])
+                                }
+                        }
+                        SetVariable(udg_AUIV_party_name[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], GetPlayerName(GetOwningPlayer(udg_AUP_Unit[udg_AUP_I])))
+                        SetVariable(udg_AUIV_party_dead[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], IsUnitDeadBJ(udg_AUP_Unit[udg_AUP_I]))
+                        SetVariable(udg_AUP_BuffHit[1], "")
+                        SetVariable(udg_AUP_BuffHit[2], "")
+                        SetVariable(udg_AUP_BuffHit[3], "")
+                        SetVariable(udg_AUP_BuffHit[4], "")
+                        SetVariable(udg_AUP_BuffN, 0)
+                        ForLoopVarMultiple(udg_AUP_BuffI, 1, udg_AUP_BuffCount) {
+                            actions:
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareInteger(udg_AUP_BuffN, OperatorLess, 4)
+                                        OperatorCompareBoolean(UnitHasBuffBJ(udg_AUP_Unit[udg_AUP_I], udg_AUP_BuffCode[udg_AUP_BuffI]), OperatorEqualENE, true)
+                                    then:
+                                        SetVariable(udg_AUP_BuffN, OperatorInt(udg_AUP_BuffN, OperatorAdd, 1))
+                                        SetVariable(udg_AUP_BuffHit[udg_AUP_BuffN], udg_AUP_BuffIcon[udg_AUP_BuffI])
+                                }
+                        }
+                        SetVariable(udg_AUIV_party_buff1[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], udg_AUP_BuffHit[1])
+                        SetVariable(udg_AUIV_party_buff2[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], udg_AUP_BuffHit[2])
+                        SetVariable(udg_AUIV_party_buff3[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], udg_AUP_BuffHit[3])
+                        SetVariable(udg_AUIV_party_buff4[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], udg_AUP_BuffHit[4])
+                        SetVariable(udg_AUP_DX, OperatorReal(udg_AUP_X[udg_AUP_I], OperatorSubtract, udg_AUP_X[udg_AUP_Self]))
+                        SetVariable(udg_AUP_DY, OperatorReal(udg_AUP_Y[udg_AUP_I], OperatorSubtract, udg_AUP_Y[udg_AUP_Self]))
+                        SetVariable(udg_AUIV_party_far[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], false)
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUP_Self, OperatorGreater, 0)
+                                OperatorCompareReal(OperatorReal(OperatorReal(udg_AUP_DX, OperatorMultiply, udg_AUP_DX), OperatorAdd, OperatorReal(udg_AUP_DY, OperatorMultiply, udg_AUP_DY)), OperatorGreater, 1440000)
+                            then:
+                                SetVariable(udg_AUIV_party_far[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], true)
+                        }
+                    else:
+                        SetVariable(udg_AUIV_party_shown[OperatorInt(udg_AUP_I, OperatorSubtract, 1)], false)
+                }
+        }
+        ConditionalTriggerExecute(`团队框架 更新 party_Update`)
+触发器 团队 选中 Party_Select:
+    events:
+        AudastraUITriggerRegisterEvent("party.select")
+    actions:
+        CommentString("界面点击只在本机发生：举着单位目标技能时作为目标交给游戏，否则只改本机的选择")
+        SetVariable(udg_AUP_Click, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUP_Click, OperatorGreaterEq, 1)
+                OperatorCompareInteger(udg_AUP_Click, OperatorLessEq, udg_AUP_Count)
+            then:
+                SetVariable(udg_AUP_ClickResult, AudastraUIClickUnit(udg_AUP_Unit[udg_AUP_Click]))
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUP_ClickResult, OperatorLessEq, 0)
+                    then:
+                        SelectUnitForPlayerSingle(udg_AUP_Unit[udg_AUP_Click], GetLocalPlayer())
+                }
+        }

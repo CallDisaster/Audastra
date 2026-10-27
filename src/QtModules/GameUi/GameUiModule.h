@@ -2,12 +2,6 @@
 
 #include "GameUiSources.h"
 #include "Modules/EditorModule.h"
-#include "War3MapCore/GameUi/CastTriggers.h"
-#include "War3MapCore/GameUi/ActionBarTriggers.h"
-#include "War3MapCore/GameUi/MeterTriggers.h"
-#include "War3MapCore/GameUi/PartyTriggers.h"
-#include "War3MapCore/GameUi/TalentTriggers.h"
-#include "War3MapCore/GameUi/TargetTriggers.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
@@ -119,8 +113,7 @@ public:
     void SetShowHidden(bool show);
     // 编写地图界面描述。编辑先按 audastra.ui 的规则检查，再作为导入文件 AudastraUI\<编号>.json 放进地图的待保存修改，
     // 与导入文件同一撤销栈和保存流程。失败时给出原因，什么都不改。edits 的写法见 UiDescriptionEdit.h。
-    // preset 为起始模板编号（UiPresets.h，如 castbar、party），空为空白描述。
-    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr, const QString& preset = {});
+    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr);
     bool EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error = nullptr);
     // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；返回新框架编号，失败为空。
     QString AddDescriptionFrame(GameUi::UiFrameType type, QString* error = nullptr);
@@ -152,158 +145,6 @@ public:
         QString problem;  // 查询失败的原因
     };
     [[nodiscard]] RuntimeRequirement QueryRuntimeRequirement() const;
-    // 读条系统（CastTriggers.h）：整批写进触发器编辑器的“读条系统”类别，走触发器撤销栈。地图里已有登记触发器时保留它，
-    // abilities 不写入（registrationKept 为真）。bar 为绑定的界面描述编号，其界面触发器须已生成；空为不绑定。
-    // 需要 YDWE 的“运行触发器（带参数）”。preview 为真时只给出生成结果，不改地图。
-    struct CastSystemRequest {
-        std::vector<GameUi::CastAbility> abilities;
-        QString bar;
-        QString visible, progress, text, remaining, channel, interrupted;  // 界面的数值与状态编号
-    };
-    struct CastSystemGeneration {
-        QString featureText;
-        QStringList triggers;
-        QStringList variables;
-        bool registrationKept = false;
-    };
-    std::optional<CastSystemGeneration> GenerateCastSystem(const CastSystemRequest& request, bool preview, QString* error = nullptr);
-    // 团队框架（PartyTriggers.h）：整批写进触发器编辑器的“团队框架”类别，走触发器撤销栈。frame 为绑定的界面描述编号，
-    // 其界面触发器须已生成；其余为界面的数值与事件编号，空为不绑定（shown 必填）。绑定过远或点选时需要 YDWE 的
-    // GetLocalPlayer（过远还要 RemoveLocation）。buffIcons 为增减益图标数值（按显示顺序），buffs 为登记的增减益码，
-    // 图标取自物编；地图里已有登记触发器时保留它，buffs 不写入（registrationKept 为真）。healthNow/healthMax/manaNow/manaMax 为
-    // 生命、法力的数字，portrait 为头像图标数值，portraits 为登记头像的单位类型，图标取自物编；地图里已有头像触发器时保留它
-    // （portraitKept 为真）。preview 为真时只给出生成结果，不改地图。
-    struct PartySystemRequest {
-        QString frame;
-        QString shown, health, mana, name, dead, outOfRange, select;
-        QString healthNow, healthMax, manaNow, manaMax, portrait;
-        QStringList buffIcons;
-        QStringList buffs;
-        QStringList portraits;
-        GameUi::UnitNameSource nameSource = GameUi::UnitNameSource::Player;
-        double farRange = 1200.0;
-        bool autoHeroes = true;
-    };
-    struct PartySystemGeneration {
-        QString featureText;
-        QStringList triggers;
-        QStringList variables;
-        std::uint32_t slotCount = 0;
-        QString memberVariable, joinTrigger, leaveTrigger;
-        bool registrationKept = false;
-        bool portraitKept = false;
-    };
-    std::optional<PartySystemGeneration> GeneratePartySystem(const PartySystemRequest& request, bool preview, QString* error = nullptr);
-    // 目标框架（TargetTriggers.h）：整批写进“目标框架”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器须已生成；
-    // 其余为界面的数值（单值）与事件编号，空为不绑定（shown 必填）。需要 YDWE 的 GetLocalPlayer；绑定点选时还要 AudastraUI 的
-    // AudastraUIClickUnit。增减益与头像的图标取自物编；地图里已有同名登记或头像触发器时保留它（registrationKept、portraitKept 为真）。
-    // systemName 与 key 区分同图的多份（例如目标与焦点）。preview 为真时只给出生成结果，不改地图。
-    struct TargetSystemRequest {
-        QString frame;
-        QString systemName = QStringLiteral("目标");
-        QString key = QStringLiteral("Target");
-        GameUi::TargetSource source = GameUi::TargetSource::Selection;
-        QString shown, health, mana, healthNow, healthMax, manaNow, manaMax, name, level, dead, portrait, select;
-        QStringList buffIcons;
-        QStringList buffs;
-        QStringList portraits;
-        GameUi::UnitNameSource nameSource = GameUi::UnitNameSource::Unit;
-        int players = static_cast<int>(GameUi::kTargetMaxPlayers);
-    };
-    struct TargetSystemGeneration {
-        QString featureText;
-        QStringList triggers;
-        QStringList variables;
-        QString setTrigger, memberVariable, playerVariable;
-        bool registrationKept = false;
-        bool portraitKept = false;
-    };
-    std::optional<TargetSystemGeneration> GenerateTargetSystem(const TargetSystemRequest& request, bool preview, QString* error = nullptr);
-    // 伤害统计（MeterTriggers.h）：整批写进“伤害统计”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器须已生成；
-    // shown 为布尔数组（格数就是行数），其余为同样格数的数组，total、time 为单值，空为不绑定。需要 YDWE 的“任意单位伤害事件”。
-    // systemName 与 key 区分同图的多份。preview 为真时只给出生成结果，不改地图。
-    struct MeterSystemRequest {
-        QString frame;
-        QString systemName = QStringLiteral("伤害");
-        QString key = QStringLiteral("Damage");
-        QString shown, name, amount, amountText, share, percent, rate, color, total, time;
-        int players = static_cast<int>(GameUi::kMeterMaxPlayers);
-        bool enemiesOnly = true;
-    };
-    struct MeterSystemGeneration {
-        QString featureText;
-        QStringList triggers;
-        QStringList variables;
-        std::uint32_t rows = 0;
-        QString resetTrigger, amountVariable;
-    };
-    std::optional<MeterSystemGeneration> GenerateMeterSystem(const MeterSystemRequest& request, bool preview, QString* error = nullptr);
-    // 技能栏（ActionBarTriggers.h）：整批写进“技能栏”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器须已生成；
-    // shown 为布尔数组（格数就是格数），icon、hotkey、level、cooldown、cooldownText、noMana 为同样格数的数组，barShown 为单值，
-    // use 为点击事件，空为不绑定。entries 为登记的格：单位类型、第几格（1 起）、技能、热键（空时取物编里技能的热键），图标取自物编；
-    // 地图里已有登记触发器时保留它，entries 不写入（registrationKept 为真）。abilityState 为真时要 YDWE 的技能属性（JAPI）。
-    // systemName 与 key 区分同图的多份。preview 为真时只给出生成结果，不改地图。
-    struct ActionBarSystemRequest {
-        struct Entry {
-            QString unit;
-            int slot = 1;
-            QString ability;
-            QString hotkey;
-        };
-        QString frame;
-        QString systemName = QStringLiteral("技能栏");
-        QString key = QStringLiteral("Bar");
-        GameUi::TargetSource source = GameUi::TargetSource::Selection;
-        QString barShown, shown, icon, hotkey, level, cooldown, cooldownText, noMana, use;
-        std::vector<Entry> entries;
-        int players = static_cast<int>(GameUi::kActionBarMaxPlayers);
-        bool abilityState = true;
-    };
-    struct ActionBarSystemGeneration {
-        QString featureText;
-        QStringList triggers;
-        QStringList variables;
-        std::uint32_t slotCount = 0;
-        QString registrationTrigger, setTrigger, memberVariable, playerVariable;
-        bool registrationKept = false;
-    };
-    std::optional<ActionBarSystemGeneration> GenerateActionBarSystem(const ActionBarSystemRequest& request, bool preview, QString* error = nullptr);
-    // 统一天赋树（TalentTriggers.h）：整批写进“天赋系统”类别，走触发器撤销栈。frame 为绑定的界面描述编号，其界面触发器
-    // 须已生成；其余为界面的数值与事件编号，空为不绑定（shown、level 与每列的图标、名字、已选、点击必填）。需要 YDWE 的
-    // GetLocalPlayer 与 RemoveLocation。登记里选项的图标为空时取学会技能在物编里的图标；地图里已有登记触发器时保留它，
-    // heroes 不写入（registrationKept 为真），replaceRegistration 为真时按 heroes 重写。afterPick 为选定后运行的触发器，须已在地图里。
-    struct TalentSystemRequest {
-        struct Column {
-            QString icon, name, picked, pick, enter, leave;
-        };
-        struct Entry {
-            int tier = 1, option = 1;
-            QString name, icon, disabledIcon, text, learn;
-        };
-        struct Hero {
-            QString unitType, label;
-            QList<Entry> entries;
-        };
-        QString name = QStringLiteral("天赋");
-        QString frame;
-        QString shown, entryShown, entry, title, points, level, open, close, tipShown, tipTitle, tipText;
-        QList<Column> columns;
-        QList<int> unlockLevels;
-        QString syncUnitType = QStringLiteral("hfoo");
-        int players = 12;
-        QString afterPick;
-        QList<Hero> heroes;
-        bool replaceRegistration = false;
-    };
-    struct TalentSystemGeneration {
-        QString featureText;
-        QStringList triggers;
-        QStringList variables;
-        std::uint32_t tiers = 0, options = 0;
-        QString pickedVariable, bindTrigger, registrationTrigger;
-        bool registrationKept = false;
-    };
-    std::optional<TalentSystemGeneration> GenerateTalentSystem(const TalentSystemRequest& request, bool preview, QString* error = nullptr);
     [[nodiscard]] bool IsLoading() const noexcept { return definitionsPending_ || assetsPending_; }
     [[nodiscard]] QImage RenderImage(const QSize& size) const;
     void Reload();
@@ -347,14 +188,6 @@ private:
     // 修改会重建属性树与表格（删掉正在发出信号的单元），放到下一轮事件里提交；失败时报告并恢复。
     void CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel, std::function<void()> after = {});
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
-    void ShowCastSystemDialog();
-    void ShowPartySystemDialog();
-    void ShowTargetSystemDialog();
-    void ShowMeterSystemDialog();
-    void ShowActionBarSystemDialog();
-    void ShowTalentSystemDialog();
-    // 按模板新建一份界面描述（编号为模板名，重名时加序号）并生成它的界面触发器；返回新编号。
-    std::optional<QString> CreateFromPreset(const QString& preset, QString* error);
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
     QString AddFrameObject(QJsonObject frame, const char* idPrefix, QString* error);
@@ -454,12 +287,6 @@ private:
     QToolButton* addFrameButton_ = nullptr;
     QPushButton* removeFrameButton_ = nullptr;
     QPushButton* generateTriggersButton_ = nullptr;
-    QPushButton* castSystemButton_ = nullptr;
-    QPushButton* partySystemButton_ = nullptr;
-    QPushButton* targetSystemButton_ = nullptr;
-    QPushButton* meterSystemButton_ = nullptr;
-    QPushButton* actionBarSystemButton_ = nullptr;
-    QPushButton* talentSystemButton_ = nullptr;
 };
 
 } // namespace War3Map::Modules

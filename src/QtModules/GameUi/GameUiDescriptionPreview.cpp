@@ -28,12 +28,6 @@ QString Text(const std::string& text) { return QString::fromUtf8(text.data(), st
 
 const std::vector<GameUiDescriptionFile> kNoDescriptions;
 
-const UiValue* FindValue(const UiDescription& description, std::string_view id) {
-    for (const auto& value : description.values) {
-        if (value.id == id) return &value;
-    }
-    return nullptr;
-}
 
 // 预览键：编号，或 编号[下标]。
 struct PreviewKey {
@@ -105,7 +99,7 @@ bool GameUiModule::SetDescriptionValues(const QString& id, const std::map<std::s
     std::map<std::string, std::string> accepted;
     for (const auto& [key, text] : values) {
         const auto parsed = ParseKey(key);
-        const UiValue* value = parsed ? FindValue(*description, parsed->id) : nullptr;
+        const UiValue* value = parsed ? FindUiValue(*description, parsed->id) : nullptr;
         if (!value) return fail(tr("界面 %1 没有数值 %2").arg(id, Text(key)));
         if (value->size == 0 && parsed->index) return fail(tr("数值 %1 不是数组，不能写下标").arg(Text(value->id)));
         if (value->size > 0 && (!parsed->index || *parsed->index >= value->size)) {
@@ -250,7 +244,7 @@ void GameUiModule::PruneDescriptionPreview(const UiDescription& description) {
     }
     std::erase_if(preview.values, [&](const auto& entry) {
         const auto parsed = ParseKey(entry.first);
-        const UiValue* value = parsed ? FindValue(description, parsed->id) : nullptr;
+        const UiValue* value = parsed ? FindUiValue(description, parsed->id) : nullptr;
         if (!value || (value->size == 0) != !parsed->index || (parsed->index && *parsed->index >= value->size)) return true;
         return !NormalizeUiValue(value->type, entry.second).has_value();
     });

@@ -1,0 +1,190 @@
+{
+  "format": "audastra.ui",
+  "version": 1,
+  "id": "actionbar",
+  "label": "技能栏",
+  "values": [
+    {
+      "id": "bar_shown",
+      "label": "技能栏显示",
+      "type": "boolean"
+    },
+    {
+      "id": "shown",
+      "label": "显示",
+      "type": "boolean",
+      "size": 12
+    },
+    {
+      "id": "icon",
+      "label": "图标",
+      "type": "string",
+      "size": 12
+    },
+    {
+      "id": "key",
+      "label": "热键",
+      "type": "string",
+      "size": 12
+    },
+    {
+      "id": "cooldown",
+      "label": "冷却比例",
+      "type": "real",
+      "size": 12,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "cooldown_text",
+      "label": "冷却文字",
+      "type": "string",
+      "size": 12
+    },
+    {
+      "id": "no_mana",
+      "label": "法力不足",
+      "type": "boolean",
+      "size": 12
+    }
+  ],
+  "frames": [
+    {
+      "id": "bar",
+      "label": "技能栏",
+      "type": "panel",
+      "anchors": [
+        {
+          "point": "BOTTOM",
+          "to": "screen",
+          "y": 0.16
+        }
+      ],
+      "width": 0.236,
+      "height": 0.076,
+      "visible": "bar_shown",
+      "children": [
+        {
+          "id": "slot",
+          "label": "格",
+          "type": "panel",
+          "anchors": [
+            {
+              "point": "TOPLEFT"
+            }
+          ],
+          "width": 0.036,
+          "height": 0.036,
+          "visible": "shown[]",
+          "repeat": {
+            "count": 12,
+            "dx": 0.04,
+            "columns": 6,
+            "rowDy": -0.04
+          },
+          "children": [
+            {
+              "id": "art",
+              "label": "图标",
+              "type": "backdrop",
+              "anchors": [
+                {
+                  "point": "TOPLEFT"
+                },
+                {
+                  "point": "BOTTOMRIGHT"
+                }
+              ],
+              "texture": "{icon[]}"
+            },
+            {
+              "id": "cd",
+              "label": "冷却",
+              "type": "bar",
+              "anchors": [
+                {
+                  "point": "LEFT"
+                }
+              ],
+              "width": 0.036,
+              "height": 0.036,
+              "texture": "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background",
+              "value": "cooldown[]"
+            },
+            {
+              "id": "mana",
+              "label": "法力不足",
+              "type": "backdrop",
+              "anchors": [
+                {
+                  "point": "BOTTOMLEFT"
+                },
+                {
+                  "point": "BOTTOMRIGHT"
+                }
+              ],
+              "height": 0.004,
+              "texture": "ReplaceableTextures\\TeamColor\\TeamColor01",
+              "visible": "no_mana[]"
+            },
+            {
+              "id": "cd_text",
+              "label": "冷却秒数",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "CENTER"
+                }
+              ],
+              "width": 0.036,
+              "height": 0.02,
+              "text": "{cooldown_text[]}"
+            },
+            {
+              "id": "key",
+              "label": "热键",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "TOPLEFT",
+                  "x": 0.002,
+                  "y": -0.001
+                }
+              ],
+              "width": 0.03,
+              "height": 0.014,
+              "text": "{key[]}",
+              "color": [
+                1,
+                0.86,
+                0.4,
+                1
+              ],
+              "justifyH": "left"
+            },
+            {
+              "id": "hit",
+              "label": "点选",
+              "type": "button",
+              "anchors": [
+                {
+                  "point": "TOPLEFT"
+                },
+                {
+                  "point": "BOTTOMRIGHT"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "use",
+      "frame": "hit",
+      "on": "click"
+    }
+  ]
+}

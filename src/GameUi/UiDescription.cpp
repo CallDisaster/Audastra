@@ -606,6 +606,11 @@ UiFrame* FindUiFrame(UiDescription& description, std::string_view id) {
     return FindIn(description.frames, id);
 }
 
+const UiValue* FindUiValue(const UiDescription& description, std::string_view id) {
+    const auto found = std::find_if(description.values.begin(), description.values.end(), [&](const UiValue& value) { return value.id == id; });
+    return found == description.values.end() ? nullptr : &*found;
+}
+
 std::string SerializeUiFrame(const UiFrame& frame) {
     OrderedJson json = FrameJson(frame);
     json.erase("children");

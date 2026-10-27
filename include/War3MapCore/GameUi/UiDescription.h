@@ -191,6 +191,8 @@ struct UiDescription {
 // 按编号查框架（含子框架）；没有时为空。
 [[nodiscard]] const UiFrame* FindUiFrame(const UiDescription& description, std::string_view id);
 [[nodiscard]] UiFrame* FindUiFrame(UiDescription& description, std::string_view id);
+// 按编号查数值；没有时为空。
+[[nodiscard]] const UiValue* FindUiValue(const UiDescription& description, std::string_view id);
 
 // 地图成员路径 AudastraUI\<编号>.json；IsUiDescriptionMember 不区分大小写，接受 / 与 \。
 [[nodiscard]] std::string UiDescriptionMemberPath(std::string_view id);

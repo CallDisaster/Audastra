@@ -1,0 +1,342 @@
+变量:
+    AUC_Clock: timer
+    AUC_RegCount: integer = 0
+    AUC_RegAbility: abilcode[]
+    AUC_RegCast: real[]
+    AUC_RegChannel: real[]
+    AUC_RegTick: real[]
+    AUC_RegEffect: trigger[]
+    AUC_Count: integer = 0
+    AUC_Unit: unit[]
+    AUC_SlotReg: integer[]
+    AUC_Ability: abilcode[]
+    AUC_Level: integer[]
+    AUC_Target: unit[]
+    AUC_X: real[]
+    AUC_Y: real[]
+    AUC_Ticks: integer[]
+    AUC_Stage: integer[]
+    AUC_Start: real[]
+    AUC_Length: real[]
+    AUC_FindAbility: abilcode
+    AUC_FindUnit: unit
+    AUC_FindI: integer = 0
+    AUC_Reg: integer = 0
+    AUC_Slot: integer = 0
+    AUC_Phase: integer = 0
+    AUC_Point: location
+    AUC_Now: real = 0
+    AUC_TickI: integer = 0
+    AUC_FlashUntil: real[]
+    AUC_FlashName: string[]
+    AUC_ShowI: integer = 0
+    AUC_ShowSlot: integer = 0
+    AUC_ShowNow: real = 0
+    AUC_ShowRatio: real = 0
+    AUC_Shown: integer = 0
+触发器 读条 登记 Cast_Register (init):
+    actions:
+        CommentString("每个技能一组：技能、读条秒数、引导秒数、跳间隔（0 为不跳）、效果触发器；秒数须与物编一致")
+        SetVariable(udg_AUC_RegCount, 2)
+        SetVariable(udg_AUC_RegAbility[1], 'A000')
+        SetVariable(udg_AUC_RegCast[1], 1.5)
+        SetVariable(udg_AUC_RegChannel[1], 0)
+        SetVariable(udg_AUC_RegTick[1], 0)
+        SetVariable(udg_AUC_RegEffect[1], `效果 读条 Bolt`)
+        SetVariable(udg_AUC_RegAbility[2], 'A001')
+        SetVariable(udg_AUC_RegCast[2], 0)
+        SetVariable(udg_AUC_RegChannel[2], 3)
+        SetVariable(udg_AUC_RegTick[2], 0.5)
+        SetVariable(udg_AUC_RegEffect[2], `效果 引导 Ritual`)
+触发器 读条 初始化 Cast_Init (init):
+    actions:
+        StartTimerBJ(udg_AUC_Clock, PeriodicOptionOneTime, 1000000.00)
+触发器 读条 查找技能 Cast_FindAbility:
+    actions:
+        SetVariable(udg_AUC_Reg, 0)
+        ForLoopVarMultiple(udg_AUC_FindI, 1, udg_AUC_RegCount) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareAbilityId(udg_AUC_RegAbility[udg_AUC_FindI], OperatorEqualENE, udg_AUC_FindAbility)
+                    then:
+                        SetVariable(udg_AUC_Reg, udg_AUC_FindI)
+                }
+        }
+触发器 读条 查找施法者 Cast_FindSlot:
+    actions:
+        SetVariable(udg_AUC_Slot, 0)
+        ForLoopVarMultiple(udg_AUC_FindI, 1, udg_AUC_Count) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareUnit(udg_AUC_Unit[udg_AUC_FindI], OperatorEqualENE, udg_AUC_FindUnit)
+                    then:
+                        SetVariable(udg_AUC_Slot, udg_AUC_FindI)
+                }
+        }
+触发器 读条 释放 Cast_Free:
+    actions:
+        SetVariable(udg_AUC_Unit[udg_AUC_Slot], udg_AUC_Unit[udg_AUC_Count])
+        SetVariable(udg_AUC_SlotReg[udg_AUC_Slot], udg_AUC_SlotReg[udg_AUC_Count])
+        SetVariable(udg_AUC_Ability[udg_AUC_Slot], udg_AUC_Ability[udg_AUC_Count])
+        SetVariable(udg_AUC_Level[udg_AUC_Slot], udg_AUC_Level[udg_AUC_Count])
+        SetVariable(udg_AUC_Target[udg_AUC_Slot], udg_AUC_Target[udg_AUC_Count])
+        SetVariable(udg_AUC_X[udg_AUC_Slot], udg_AUC_X[udg_AUC_Count])
+        SetVariable(udg_AUC_Y[udg_AUC_Slot], udg_AUC_Y[udg_AUC_Count])
+        SetVariable(udg_AUC_Ticks[udg_AUC_Slot], udg_AUC_Ticks[udg_AUC_Count])
+        SetVariable(udg_AUC_Stage[udg_AUC_Slot], udg_AUC_Stage[udg_AUC_Count])
+        SetVariable(udg_AUC_Start[udg_AUC_Slot], udg_AUC_Start[udg_AUC_Count])
+        SetVariable(udg_AUC_Length[udg_AUC_Slot], udg_AUC_Length[udg_AUC_Count])
+        SetVariable(udg_AUC_Count, OperatorInt(udg_AUC_Count, OperatorSubtract, 1))
+触发器 读条 派发 Cast_Dispatch:
+    actions:
+        SetVariable(udg_AUC_Unit[0], udg_AUC_Unit[udg_AUC_Slot])
+        SetVariable(udg_AUC_SlotReg[0], udg_AUC_SlotReg[udg_AUC_Slot])
+        SetVariable(udg_AUC_Ability[0], udg_AUC_Ability[udg_AUC_Slot])
+        SetVariable(udg_AUC_Level[0], udg_AUC_Level[udg_AUC_Slot])
+        SetVariable(udg_AUC_Target[0], udg_AUC_Target[udg_AUC_Slot])
+        SetVariable(udg_AUC_X[0], udg_AUC_X[udg_AUC_Slot])
+        SetVariable(udg_AUC_Y[0], udg_AUC_Y[udg_AUC_Slot])
+        SetVariable(udg_AUC_Ticks[0], udg_AUC_Ticks[udg_AUC_Slot])
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUC_Phase, OperatorNotEqual, 2)
+            then:
+                ConditionalTriggerExecute(`读条 释放 Cast_Free`)
+        }
+        YDWEExecuteTriggerMultiple(udg_AUC_RegEffect[udg_AUC_SlotReg[0]], tirggerexecute_notcondition) {
+            params:
+                YDWESetAnyTypeLocalVariable(typename07_unit, "施法单位", udg_AUC_Unit[0])
+                YDWESetAnyTypeLocalVariable(typename07_unit, "目标单位", udg_AUC_Target[0])
+                YDWESetAnyTypeLocalVariable(typename02_real, "目标X", udg_AUC_X[0])
+                YDWESetAnyTypeLocalVariable(typename02_real, "目标Y", udg_AUC_Y[0])
+                YDWESetAnyTypeLocalVariable(typename01_integer, "技能", udg_AUC_Ability[0])
+                YDWESetAnyTypeLocalVariable(typename01_integer, "等级", udg_AUC_Level[0])
+                YDWESetAnyTypeLocalVariable(typename01_integer, "阶段", udg_AUC_Phase)
+                YDWESetAnyTypeLocalVariable(typename01_integer, "跳数", udg_AUC_Ticks[0])
+        }
+触发器 读条 开始 Cast_Begin:
+    events:
+        TriggerRegisterAnyUnitEventBJ(PlayerUnitEventSpellChannel)
+    actions:
+        SetVariable(udg_AUC_FindAbility, GetSpellAbilityId())
+        ConditionalTriggerExecute(`读条 查找技能 Cast_FindAbility`)
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUC_Reg, OperatorGreater, 0)
+            then:
+                SetVariable(udg_AUC_FindUnit, GetTriggerUnit())
+                ConditionalTriggerExecute(`读条 查找施法者 Cast_FindSlot`)
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUC_Slot, OperatorEqual, 0)
+                    then:
+                        SetVariable(udg_AUC_Count, OperatorInt(udg_AUC_Count, OperatorAdd, 1))
+                        SetVariable(udg_AUC_Slot, udg_AUC_Count)
+                }
+                SetVariable(udg_AUC_Unit[udg_AUC_Slot], GetTriggerUnit())
+                SetVariable(udg_AUC_SlotReg[udg_AUC_Slot], udg_AUC_Reg)
+                SetVariable(udg_AUC_Ability[udg_AUC_Slot], GetSpellAbilityId())
+                SetVariable(udg_AUC_Level[udg_AUC_Slot], GetUnitAbilityLevel(GetTriggerUnit(), GetSpellAbilityId()))
+                SetVariable(udg_AUC_Target[udg_AUC_Slot], GetSpellTargetUnit())
+                SetVariable(udg_AUC_Point, GetSpellTargetLoc())
+                SetVariable(udg_AUC_X[udg_AUC_Slot], GetLocationX(udg_AUC_Point))
+                SetVariable(udg_AUC_Y[udg_AUC_Slot], GetLocationY(udg_AUC_Point))
+                RemoveLocation(udg_AUC_Point)
+                SetVariable(udg_AUC_Ticks[udg_AUC_Slot], 0)
+                SetVariable(udg_AUC_Stage[udg_AUC_Slot], 1)
+                SetVariable(udg_AUC_Start[udg_AUC_Slot], TimerGetElapsed(udg_AUC_Clock))
+                SetVariable(udg_AUC_Length[udg_AUC_Slot], udg_AUC_RegCast[udg_AUC_Reg])
+        }
+触发器 读条 生效 Cast_Effect:
+    events:
+        TriggerRegisterAnyUnitEventBJ(PlayerUnitEventSpellEffect)
+    actions:
+        SetVariable(udg_AUC_FindUnit, GetTriggerUnit())
+        ConditionalTriggerExecute(`读条 查找施法者 Cast_FindSlot`)
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUC_Slot, OperatorGreater, 0)
+                OperatorCompareAbilityId(udg_AUC_Ability[udg_AUC_Slot], OperatorEqualENE, GetSpellAbilityId())
+                OperatorCompareInteger(udg_AUC_Stage[udg_AUC_Slot], OperatorEqual, 1)
+            then:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(udg_AUC_RegChannel[udg_AUC_SlotReg[udg_AUC_Slot]], OperatorGreater, 0.00)
+                    then:
+                        SetVariable(udg_AUC_Stage[udg_AUC_Slot], 2)
+                        SetVariable(udg_AUC_Start[udg_AUC_Slot], TimerGetElapsed(udg_AUC_Clock))
+                        SetVariable(udg_AUC_Length[udg_AUC_Slot], udg_AUC_RegChannel[udg_AUC_SlotReg[udg_AUC_Slot]])
+                    else:
+                        SetVariable(udg_AUC_Phase, 1)
+                        ConditionalTriggerExecute(`读条 派发 Cast_Dispatch`)
+                }
+        }
+触发器 读条 结束 Cast_Finish:
+    events:
+        TriggerRegisterAnyUnitEventBJ(PlayerUnitEventSpellFinish)
+    actions:
+        SetVariable(udg_AUC_FindUnit, GetTriggerUnit())
+        ConditionalTriggerExecute(`读条 查找施法者 Cast_FindSlot`)
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUC_Slot, OperatorGreater, 0)
+                OperatorCompareAbilityId(udg_AUC_Ability[udg_AUC_Slot], OperatorEqualENE, GetSpellAbilityId())
+                OperatorCompareInteger(udg_AUC_Stage[udg_AUC_Slot], OperatorEqual, 2)
+            then:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(udg_AUC_RegTick[udg_AUC_SlotReg[udg_AUC_Slot]], OperatorGreater, 0.00)
+                        OperatorCompareInteger(udg_AUC_Ticks[udg_AUC_Slot], OperatorLess, R2I(OperatorReal(OperatorReal(udg_AUC_RegChannel[udg_AUC_SlotReg[udg_AUC_Slot]], OperatorDivide, udg_AUC_RegTick[udg_AUC_SlotReg[udg_AUC_Slot]]), OperatorAdd, 0.001)))
+                    then:
+                        SetVariable(udg_AUC_Ticks[udg_AUC_Slot], OperatorInt(udg_AUC_Ticks[udg_AUC_Slot], OperatorAdd, 1))
+                        SetVariable(udg_AUC_Phase, 2)
+                        ConditionalTriggerExecute(`读条 派发 Cast_Dispatch`)
+                        SetVariable(udg_AUC_FindUnit, GetTriggerUnit())
+                        ConditionalTriggerExecute(`读条 查找施法者 Cast_FindSlot`)
+                }
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUC_Slot, OperatorGreater, 0)
+                        OperatorCompareAbilityId(udg_AUC_Ability[udg_AUC_Slot], OperatorEqualENE, GetSpellAbilityId())
+                        OperatorCompareInteger(udg_AUC_Stage[udg_AUC_Slot], OperatorEqual, 2)
+                    then:
+                        SetVariable(udg_AUC_Phase, 1)
+                        ConditionalTriggerExecute(`读条 派发 Cast_Dispatch`)
+                }
+        }
+触发器 读条 停止 Cast_Stop:
+    events:
+        TriggerRegisterAnyUnitEventBJ(PlayerUnitEventSpellEndCast)
+    actions:
+        SetVariable(udg_AUC_FindUnit, GetTriggerUnit())
+        ConditionalTriggerExecute(`读条 查找施法者 Cast_FindSlot`)
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUC_Slot, OperatorGreater, 0)
+                OperatorCompareAbilityId(udg_AUC_Ability[udg_AUC_Slot], OperatorEqualENE, GetSpellAbilityId())
+            then:
+                SetVariable(udg_AUC_FlashUntil[GetConvertedPlayerId(GetOwningPlayer(GetTriggerUnit()))], OperatorReal(TimerGetElapsed(udg_AUC_Clock), OperatorAdd, 0.5))
+                SetVariable(udg_AUC_FlashName[GetConvertedPlayerId(GetOwningPlayer(GetTriggerUnit()))], GetAbilityName(GetSpellAbilityId()))
+                SetVariable(udg_AUC_Phase, 3)
+                ConditionalTriggerExecute(`读条 派发 Cast_Dispatch`)
+        }
+触发器 读条 刷新 Cast_Refresh:
+    events:
+        TriggerRegisterTimerEventPeriodic(0.03)
+    actions:
+        SetVariable(udg_AUC_Now, TimerGetElapsed(udg_AUC_Clock))
+        ForLoopVarMultiple(udg_AUC_TickI, 1, udg_AUC_Count) {
+            actions:
+                SetVariable(udg_AUC_Slot, udg_AUC_TickI)
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareBoolean(IsUnitDeadBJ(udg_AUC_Unit[udg_AUC_Slot]), OperatorEqualENE, true)
+                    then:
+                        SetVariable(udg_AUC_Phase, 3)
+                        ConditionalTriggerExecute(`读条 派发 Cast_Dispatch`)
+                    else:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUC_Stage[udg_AUC_Slot], OperatorEqual, 2)
+                                OperatorCompareReal(udg_AUC_RegTick[udg_AUC_SlotReg[udg_AUC_Slot]], OperatorGreater, 0.00)
+                                OperatorCompareInteger(udg_AUC_Ticks[udg_AUC_Slot], OperatorLess, R2I(OperatorReal(OperatorReal(udg_AUC_RegChannel[udg_AUC_SlotReg[udg_AUC_Slot]], OperatorDivide, udg_AUC_RegTick[udg_AUC_SlotReg[udg_AUC_Slot]]), OperatorAdd, 0.001)))
+                                OperatorCompareReal(OperatorReal(udg_AUC_Now, OperatorSubtract, udg_AUC_Start[udg_AUC_Slot]), OperatorGreaterEq, OperatorReal(I2R(OperatorInt(udg_AUC_Ticks[udg_AUC_Slot], OperatorAdd, 1)), OperatorMultiply, udg_AUC_RegTick[udg_AUC_SlotReg[udg_AUC_Slot]]))
+                            then:
+                                SetVariable(udg_AUC_Ticks[udg_AUC_Slot], OperatorInt(udg_AUC_Ticks[udg_AUC_Slot], OperatorAdd, 1))
+                                SetVariable(udg_AUC_Phase, 2)
+                                ConditionalTriggerExecute(`读条 派发 Cast_Dispatch`)
+                        }
+                }
+        }
+触发器 读条 显示 Cast_Show:
+    events:
+        TriggerRegisterTimerEventPeriodic(0.03)
+    actions:
+        CommentString("只改本机界面；同步数据只在施法事件里改")
+        SetVariable(udg_AUC_ShowNow, TimerGetElapsed(udg_AUC_Clock))
+        SetVariable(udg_AUC_ShowSlot, 0)
+        ForLoopVarMultiple(udg_AUC_ShowI, 1, udg_AUC_Count) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorComparePlayer(GetOwningPlayer(udg_AUC_Unit[udg_AUC_ShowI]), OperatorEqualENE, GetLocalPlayer())
+                        OperatorCompareReal(udg_AUC_Length[udg_AUC_ShowI], OperatorGreater, 0.00)
+                    then:
+                        SetVariable(udg_AUC_ShowSlot, udg_AUC_ShowI)
+                }
+        }
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUC_ShowSlot, OperatorGreater, 0)
+            then:
+                SetVariable(udg_AUC_ShowRatio, OperatorReal(OperatorReal(udg_AUC_ShowNow, OperatorSubtract, udg_AUC_Start[udg_AUC_ShowSlot]), OperatorDivide, udg_AUC_Length[udg_AUC_ShowSlot]))
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(udg_AUC_ShowRatio, OperatorGreater, 1.00)
+                    then:
+                        SetVariable(udg_AUC_ShowRatio, 1.00)
+                }
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUC_Stage[udg_AUC_ShowSlot], OperatorEqual, 2)
+                    then:
+                        SetVariable(udg_AUC_ShowRatio, OperatorReal(1.00, OperatorSubtract, udg_AUC_ShowRatio))
+                }
+                SetVariable(udg_AUIV_castbar_shown, true)
+                SetVariable(udg_AUIV_castbar_progress, udg_AUC_ShowRatio)
+                SetVariable(udg_AUIV_castbar_text, GetAbilityName(udg_AUC_Ability[udg_AUC_ShowSlot]))
+                SetVariable(udg_AUIV_castbar_remaining, OperatorReal(udg_AUC_Length[udg_AUC_ShowSlot], OperatorSubtract, OperatorReal(udg_AUC_ShowNow, OperatorSubtract, udg_AUC_Start[udg_AUC_ShowSlot])))
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(udg_AUIV_castbar_remaining, OperatorLess, 0.00)
+                    then:
+                        SetVariable(udg_AUIV_castbar_remaining, 0.00)
+                }
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUC_Stage[udg_AUC_ShowSlot], OperatorEqual, 2)
+                        OperatorCompareInteger(udg_AUC_Shown, OperatorNotEqual, 2)
+                    then:
+                        SetVariable(udg_AUC_Shown, 2)
+                        ConditionalTriggerExecute(`读条条 状态 引导 castbar_State_channel`)
+                }
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUC_Stage[udg_AUC_ShowSlot], OperatorEqual, 1)
+                        OperatorCompareInteger(udg_AUC_Shown, OperatorNotEqual, 1)
+                    then:
+                        SetVariable(udg_AUC_Shown, 1)
+                        ConditionalTriggerExecute(`读条条 基础状态 castbar_BaseState`)
+                }
+                ConditionalTriggerExecute(`读条条 更新 castbar_Update`)
+            else:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareReal(udg_AUC_FlashUntil[GetConvertedPlayerId(GetLocalPlayer())], OperatorGreater, udg_AUC_ShowNow)
+                    then:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUC_Shown, OperatorNotEqual, 3)
+                            then:
+                                SetVariable(udg_AUC_Shown, 3)
+                                SetVariable(udg_AUIV_castbar_shown, true)
+                                SetVariable(udg_AUIV_castbar_progress, 1.00)
+                                SetVariable(udg_AUIV_castbar_text, udg_AUC_FlashName[GetConvertedPlayerId(GetLocalPlayer())])
+                                SetVariable(udg_AUIV_castbar_remaining, 0.00)
+                                ConditionalTriggerExecute(`读条条 状态 打断 castbar_State_interrupt`)
+                                ConditionalTriggerExecute(`读条条 更新 castbar_Update`)
+                        }
+                    else:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUC_Shown, OperatorNotEqual, 0)
+                            then:
+                                SetVariable(udg_AUC_Shown, 0)
+                                SetVariable(udg_AUIV_castbar_shown, false)
+                                ConditionalTriggerExecute(`读条条 基础状态 castbar_BaseState`)
+                                ConditionalTriggerExecute(`读条条 更新 castbar_Update`)
+                        }
+                }
+        }

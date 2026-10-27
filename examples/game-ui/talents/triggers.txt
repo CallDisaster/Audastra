@@ -1,0 +1,521 @@
+变量:
+    AUT_HeroCount: integer = 0
+    AUT_HeroType: unitcode[]
+    AUT_Name: string[]
+    AUT_Icon: string[]
+    AUT_IconOff: string[]
+    AUT_Text: string[]
+    AUT_Learn: abilcode[]
+    AUT_Learns: boolean[]
+    AUT_TierLevel: integer[]
+    AUT_Hero: unit[]
+    AUT_Group: integer[]
+    AUT_Open: integer[]
+    AUT_Free: integer[]
+    AUT_Picked: integer[]
+    AUT_Sync: unit[]
+    AUT_Unit: unit
+    AUT_PickUnit: unit
+    AUT_PickTier: integer = 0
+    AUT_PickOption: integer = 0
+    AUT_P: integer = 0
+    AUT_T: integer = 0
+    AUT_O: integer = 0
+    AUT_K: integer = 0
+    AUT_I: integer = 0
+    AUT_J: integer = 0
+    AUT_Found: integer = 0
+    AUT_Point: location
+    AUT_LP: integer = 0
+    AUT_LT: integer = 0
+    AUT_LK: integer = 0
+    AUT_LRow: integer = 0
+    AUT_LLevel: integer = 0
+    AUT_LPick: integer = 0
+触发器 天赋 登记 Talent_Register:
+    actions:
+        CommentString("每个英雄类型一组：先写英雄类型，再按 层、列 写名字、图标、灰色图标、说明和学会的技能（不学技能时不写）")
+        CommentString("下标 = (英雄序号 - 1) x 28 + (层 - 1) x 4 + 列")
+        SetVariable(udg_AUT_HeroCount, 1)
+        CommentString("圣骑士")
+        SetVariable(udg_AUT_HeroType[1], 'Hpal')
+        CommentString("第 1 层第 1 项：圣光增强")
+        SetVariable(udg_AUT_Name[1], "圣光增强")
+        SetVariable(udg_AUT_Icon[1], "ReplaceableTextures\\CommandButtons\\BTNHolyBolt.blp")
+        SetVariable(udg_AUT_IconOff[1], "ReplaceableTextures\\CommandButtonsDisabled\\DISBTNHolyBolt.blp")
+        SetVariable(udg_AUT_Text[1], "圣光术治疗量提高")
+        CommentString("第 1 层第 2 项：迅捷")
+        SetVariable(udg_AUT_Name[2], "迅捷")
+        SetVariable(udg_AUT_Icon[2], "ReplaceableTextures\\CommandButtons\\BTNBoots.blp")
+        SetVariable(udg_AUT_IconOff[2], "ReplaceableTextures\\CommandButtonsDisabled\\DISBTNBoots.blp")
+        SetVariable(udg_AUT_Text[2], "移动速度提高")
+触发器 天赋 计算 Talent_Count:
+    actions:
+        CommentString("先设 AUT_P 为玩家编号；可选数 = 已开放、尚未选择的层数")
+        SetVariable(udg_AUT_Open[udg_AUT_P], 0)
+        SetVariable(udg_AUT_Free[udg_AUT_P], 0)
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_P], OperatorGreater, 0)
+            then:
+                ForLoopVarMultiple(udg_AUT_I, 1, 5) {
+                    actions:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(GetHeroLevel(udg_AUT_Hero[udg_AUT_P]), OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_I])
+                            then:
+                                SetVariable(udg_AUT_Open[udg_AUT_P], OperatorInt(udg_AUT_Open[udg_AUT_P], OperatorAdd, 1))
+                        }
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(GetHeroLevel(udg_AUT_Hero[udg_AUT_P]), OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_I])
+                                OperatorCompareInteger(udg_AUT_Picked[OperatorInt(OperatorInt(udg_AUT_P, OperatorMultiply, 8), OperatorAdd, udg_AUT_I)], OperatorEqual, 0)
+                            then:
+                                SetVariable(udg_AUT_Free[udg_AUT_P], OperatorInt(udg_AUT_Free[udg_AUT_P], OperatorAdd, 1))
+                        }
+                }
+        }
+触发器 天赋 刷新 Talent_Refresh:
+    actions:
+        CommentString("只改本机界面：内容是本机玩家英雄的那一份")
+        SetVariable(udg_AUT_LP, GetConvertedPlayerId(GetLocalPlayer()))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_LP], OperatorGreater, 0)
+            then:
+                SetVariable(udg_AUIV_talents_entry_shown, true)
+                SetVariable(udg_AUT_LLevel, GetHeroLevel(udg_AUT_Hero[udg_AUT_LP]))
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUT_Free[udg_AUT_LP], OperatorGreater, 0)
+                    then:
+                        SetVariable(udg_AUIV_talents_entry, OperatorString(OperatorString("天赋 (", I2S(udg_AUT_Free[udg_AUT_LP])), ")"))
+                        SetVariable(udg_AUIV_talents_points, OperatorString("可选 ", I2S(udg_AUT_Free[udg_AUT_LP])))
+                    else:
+                        SetVariable(udg_AUIV_talents_entry, "天赋")
+                        SetVariable(udg_AUIV_talents_points, "")
+                }
+                SetVariable(udg_AUIV_talents_title, OperatorString("天赋 · ", GetHeroProperName(udg_AUT_Hero[udg_AUT_LP])))
+                ForLoopVarMultiple(udg_AUT_LT, 1, 5) {
+                    actions:
+                        SetVariable(udg_AUT_LRow, OperatorInt(udg_AUT_LT, OperatorSubtract, 1))
+                        SetVariable(udg_AUT_LPick, udg_AUT_Picked[OperatorInt(OperatorInt(udg_AUT_LP, OperatorMultiply, 8), OperatorAdd, udg_AUT_LT)])
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUT_LLevel, OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                            then:
+                                SetVariable(udg_AUIV_talents_level[udg_AUT_LRow], OperatorString(I2S(udg_AUT_TierLevel[udg_AUT_LT]), " 级"))
+                            else:
+                                SetVariable(udg_AUIV_talents_level[udg_AUT_LRow], OperatorString(OperatorString("|cff808080需要 ", I2S(udg_AUT_TierLevel[udg_AUT_LT])), " 级|r"))
+                        }
+                        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 1))
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 1)
+                            then:
+                                SetVariable(udg_AUIV_talents_picked1[udg_AUT_LRow], true)
+                            else:
+                                SetVariable(udg_AUIV_talents_picked1[udg_AUT_LRow], false)
+                        }
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUT_LLevel, OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                                OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 0)
+                            then:
+                                SetVariable(udg_AUIV_talents_icon1[udg_AUT_LRow], udg_AUT_Icon[udg_AUT_LK])
+                                SetVariable(udg_AUIV_talents_name1[udg_AUT_LRow], udg_AUT_Name[udg_AUT_LK])
+                            else:
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareInteger(udg_AUT_LLevel, OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                                        OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 1)
+                                    then:
+                                        SetVariable(udg_AUIV_talents_icon1[udg_AUT_LRow], udg_AUT_Icon[udg_AUT_LK])
+                                        SetVariable(udg_AUIV_talents_name1[udg_AUT_LRow], udg_AUT_Name[udg_AUT_LK])
+                                    else:
+                                        SetVariable(udg_AUIV_talents_icon1[udg_AUT_LRow], udg_AUT_IconOff[udg_AUT_LK])
+                                        SetVariable(udg_AUIV_talents_name1[udg_AUT_LRow], "")
+                                        IfThenElseMultiple() {
+                                            if:
+                                                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+                                            then:
+                                                SetVariable(udg_AUIV_talents_name1[udg_AUT_LRow], OperatorString(OperatorString("|cff808080", udg_AUT_Name[udg_AUT_LK]), "|r"))
+                                        }
+                                }
+                        }
+                        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 2))
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 2)
+                            then:
+                                SetVariable(udg_AUIV_talents_picked2[udg_AUT_LRow], true)
+                            else:
+                                SetVariable(udg_AUIV_talents_picked2[udg_AUT_LRow], false)
+                        }
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUT_LLevel, OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                                OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 0)
+                            then:
+                                SetVariable(udg_AUIV_talents_icon2[udg_AUT_LRow], udg_AUT_Icon[udg_AUT_LK])
+                                SetVariable(udg_AUIV_talents_name2[udg_AUT_LRow], udg_AUT_Name[udg_AUT_LK])
+                            else:
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareInteger(udg_AUT_LLevel, OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                                        OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 2)
+                                    then:
+                                        SetVariable(udg_AUIV_talents_icon2[udg_AUT_LRow], udg_AUT_Icon[udg_AUT_LK])
+                                        SetVariable(udg_AUIV_talents_name2[udg_AUT_LRow], udg_AUT_Name[udg_AUT_LK])
+                                    else:
+                                        SetVariable(udg_AUIV_talents_icon2[udg_AUT_LRow], udg_AUT_IconOff[udg_AUT_LK])
+                                        SetVariable(udg_AUIV_talents_name2[udg_AUT_LRow], "")
+                                        IfThenElseMultiple() {
+                                            if:
+                                                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+                                            then:
+                                                SetVariable(udg_AUIV_talents_name2[udg_AUT_LRow], OperatorString(OperatorString("|cff808080", udg_AUT_Name[udg_AUT_LK]), "|r"))
+                                        }
+                                }
+                        }
+                        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 3))
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 3)
+                            then:
+                                SetVariable(udg_AUIV_talents_picked3[udg_AUT_LRow], true)
+                            else:
+                                SetVariable(udg_AUIV_talents_picked3[udg_AUT_LRow], false)
+                        }
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUT_LLevel, OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                                OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 0)
+                            then:
+                                SetVariable(udg_AUIV_talents_icon3[udg_AUT_LRow], udg_AUT_Icon[udg_AUT_LK])
+                                SetVariable(udg_AUIV_talents_name3[udg_AUT_LRow], udg_AUT_Name[udg_AUT_LK])
+                            else:
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareInteger(udg_AUT_LLevel, OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                                        OperatorCompareInteger(udg_AUT_LPick, OperatorEqual, 3)
+                                    then:
+                                        SetVariable(udg_AUIV_talents_icon3[udg_AUT_LRow], udg_AUT_Icon[udg_AUT_LK])
+                                        SetVariable(udg_AUIV_talents_name3[udg_AUT_LRow], udg_AUT_Name[udg_AUT_LK])
+                                    else:
+                                        SetVariable(udg_AUIV_talents_icon3[udg_AUT_LRow], udg_AUT_IconOff[udg_AUT_LK])
+                                        SetVariable(udg_AUIV_talents_name3[udg_AUT_LRow], "")
+                                        IfThenElseMultiple() {
+                                            if:
+                                                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+                                            then:
+                                                SetVariable(udg_AUIV_talents_name3[udg_AUT_LRow], OperatorString(OperatorString("|cff808080", udg_AUT_Name[udg_AUT_LK]), "|r"))
+                                        }
+                                }
+                        }
+                }
+            else:
+                SetVariable(udg_AUIV_talents_entry_shown, false)
+                SetVariable(udg_AUIV_talents_shown, false)
+                SetVariable(udg_AUIV_talents_tip_shown, false)
+        }
+        ConditionalTriggerExecute(`天赋树 更新 talents_Update`)
+触发器 天赋 绑定 Talent_Bind:
+    actions:
+        CommentString("先设 AUT_Unit 为英雄；类型登记过时成为其所属玩家的天赋英雄（换英雄时已选结果保留）")
+        SetVariable(udg_AUT_Found, 0)
+        ForLoopVarMultiple(udg_AUT_I, 1, udg_AUT_HeroCount) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareUnitCode(GetUnitTypeId(udg_AUT_Unit), OperatorEqualENE, udg_AUT_HeroType[udg_AUT_I])
+                    then:
+                        SetVariable(udg_AUT_Found, udg_AUT_I)
+                }
+        }
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Found, OperatorGreater, 0)
+            then:
+                SetVariable(udg_AUT_P, GetConvertedPlayerId(GetOwningPlayer(udg_AUT_Unit)))
+                SetVariable(udg_AUT_Hero[udg_AUT_P], udg_AUT_Unit)
+                SetVariable(udg_AUT_Group[udg_AUT_P], udg_AUT_Found)
+                ConditionalTriggerExecute(`天赋 计算 Talent_Count`)
+                ConditionalTriggerExecute(`天赋 刷新 Talent_Refresh`)
+        }
+触发器 天赋 候选 Talent_Candidate:
+    actions:
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareBoolean(IsUnitType(udg_AUT_Unit, UnitTypeHero), OperatorEqualENE, true)
+                OperatorCompareBoolean(IsUnitIllusionBJ(udg_AUT_Unit), OperatorEqualENE, false)
+                OperatorComparePlayerControl(GetPlayerController(GetOwningPlayer(udg_AUT_Unit)), OperatorEqualENE, MapControlUser)
+                OperatorComparePlayerSlotStatus(GetPlayerSlotState(GetOwningPlayer(udg_AUT_Unit)), OperatorEqualENE, PlayerSlotStatePlaying)
+                OperatorCompareInteger(udg_AUT_Group[GetConvertedPlayerId(GetOwningPlayer(udg_AUT_Unit))], OperatorEqual, 0)
+            then:
+                ConditionalTriggerExecute(`天赋 绑定 Talent_Bind`)
+        }
+触发器 天赋 初始化 Talent_Init (init):
+    actions:
+        ConditionalTriggerExecute(`天赋 登记 Talent_Register`)
+        SetVariable(udg_AUT_TierLevel[1], 5)
+        SetVariable(udg_AUT_TierLevel[2], 10)
+        SetVariable(udg_AUT_TierLevel[3], 15)
+        SetVariable(udg_AUT_TierLevel[4], 20)
+        SetVariable(udg_AUT_TierLevel[5], 25)
+        CommentString("同步单位：每个用户玩家每个选项一个，透明、无敌、暂停、不占人口，放在地图左下角之外")
+        SetVariable(udg_AUT_Point, Location(OperatorReal(GetRectMinX(GetEntireMapRect()), OperatorAdd, 64), OperatorReal(GetRectMinY(GetEntireMapRect()), OperatorAdd, 64)))
+        ForLoopVarMultiple(udg_AUT_P, 1, 12) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorComparePlayerControl(GetPlayerController(ConvertedPlayer(udg_AUT_P)), OperatorEqualENE, MapControlUser)
+                        OperatorComparePlayerSlotStatus(GetPlayerSlotState(ConvertedPlayer(udg_AUT_P)), OperatorEqualENE, PlayerSlotStatePlaying)
+                    then:
+                        ForLoopVarMultiple(udg_AUT_T, 1, 5) {
+                            actions:
+                                ForLoopVarMultiple(udg_AUT_O, 1, 3) {
+                                    actions:
+                                        CreateNUnitsAtLoc(1, 'hfoo', ConvertedPlayer(udg_AUT_P), udg_AUT_Point, 0)
+                                        SetVariable(udg_AUT_Sync[OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_P, OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_T, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, udg_AUT_O)], GetLastCreatedUnit())
+                                        SetUnitUseFoodBJ(EnableDisableDisable, GetLastCreatedUnit())
+                                        SetUnitInvulnerable(GetLastCreatedUnit(), InvulnerabilityInvulnerable)
+                                        SetUnitPathing(GetLastCreatedUnit(), PathingOff)
+                                        SetUnitPositionLoc(GetLastCreatedUnit(), udg_AUT_Point)
+                                        SetUnitVertexColorBJ(GetLastCreatedUnit(), 100, 100, 100, 100)
+                                        PauseUnitBJ(PauseUnpauseOptionPause, GetLastCreatedUnit())
+                                }
+                        }
+                }
+        }
+        RemoveLocation(udg_AUT_Point)
+        ForGroupMultiple(GetUnitsInRectAll(GetPlayableMapRect())) {
+            actions:
+                SetVariable(udg_AUT_Unit, GetEnumUnit())
+                ConditionalTriggerExecute(`天赋 候选 Talent_Candidate`)
+        }
+        ConditionalTriggerExecute(`天赋 刷新 Talent_Refresh`)
+触发器 天赋 英雄进入 Talent_HeroEnter:
+    events:
+        TriggerRegisterEnterRectSimple(GetPlayableMapRect())
+    actions:
+        SetVariable(udg_AUT_Unit, GetTriggerUnit())
+        ConditionalTriggerExecute(`天赋 候选 Talent_Candidate`)
+触发器 天赋 升级 Talent_Level:
+    events:
+        TriggerRegisterAnyUnitEventBJ(PlayerUnitEventHero_Level)
+    actions:
+        SetVariable(udg_AUT_P, GetConvertedPlayerId(GetOwningPlayer(GetTriggerUnit())))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareUnit(GetTriggerUnit(), OperatorEqualENE, udg_AUT_Hero[udg_AUT_P])
+            then:
+                ConditionalTriggerExecute(`天赋 计算 Talent_Count`)
+                ConditionalTriggerExecute(`天赋 刷新 Talent_Refresh`)
+        }
+触发器 天赋 选择 Talent_Pick:
+    events:
+        TriggerRegisterPlayerSelectionEventBJ(Player00, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player01, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player02, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player03, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player04, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player05, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player06, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player07, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player08, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player09, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player10, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player11, SelDeselOptionSel)
+    conditions:
+        OperatorCompareUnitCode(GetUnitTypeId(GetTriggerUnit()), OperatorEqualENE, 'hfoo')
+    actions:
+        CommentString("同步单位被选中：所有玩家都会运行，这里写入同步的选择结果")
+        SetVariable(udg_AUT_P, GetConvertedPlayerId(GetTriggerPlayer()))
+        SetVariable(udg_AUT_T, 0)
+        SetVariable(udg_AUT_O, 0)
+        ForLoopVarMultiple(udg_AUT_I, 1, 5) {
+            actions:
+                ForLoopVarMultiple(udg_AUT_J, 1, 3) {
+                    actions:
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareUnit(GetTriggerUnit(), OperatorEqualENE, udg_AUT_Sync[OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_P, OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_I, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, udg_AUT_J)])
+                            then:
+                                SetVariable(udg_AUT_T, udg_AUT_I)
+                                SetVariable(udg_AUT_O, udg_AUT_J)
+                        }
+                }
+        }
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_T, OperatorGreater, 0)
+            then:
+                SelectUnitRemoveForPlayer(GetTriggerUnit(), GetTriggerPlayer())
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareInteger(udg_AUT_Group[udg_AUT_P], OperatorGreater, 0)
+                        OperatorCompareInteger(GetHeroLevel(udg_AUT_Hero[udg_AUT_P]), OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_T])
+                        OperatorCompareInteger(udg_AUT_Picked[OperatorInt(OperatorInt(udg_AUT_P, OperatorMultiply, 8), OperatorAdd, udg_AUT_T)], OperatorEqual, 0)
+                        OperatorCompareString(udg_AUT_Name[OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_P], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_T, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, udg_AUT_O)], OperatorNotEqualENE, "")
+                    then:
+                        SetVariable(udg_AUT_K, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_P], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_T, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, udg_AUT_O))
+                        SetVariable(udg_AUT_Picked[OperatorInt(OperatorInt(udg_AUT_P, OperatorMultiply, 8), OperatorAdd, udg_AUT_T)], udg_AUT_O)
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareBoolean(udg_AUT_Learns[udg_AUT_K], OperatorEqualENE, true)
+                            then:
+                                UnitAddAbilityBJ(udg_AUT_Learn[udg_AUT_K], udg_AUT_Hero[udg_AUT_P])
+                        }
+                        ConditionalTriggerExecute(`天赋 计算 Talent_Count`)
+                        SetVariable(udg_AUT_PickUnit, udg_AUT_Hero[udg_AUT_P])
+                        SetVariable(udg_AUT_PickTier, udg_AUT_T)
+                        SetVariable(udg_AUT_PickOption, udg_AUT_O)
+                        ConditionalTriggerExecute(`天赋 刷新 Talent_Refresh`)
+                }
+        }
+触发器 天赋 入口 Talent_Open:
+    events:
+        AudastraUITriggerRegisterEvent("talents.open")
+    actions:
+        CommentString("界面点击只在本机发生：只开关本机面板")
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareBoolean(udg_AUIV_talents_shown, OperatorEqualENE, true)
+            then:
+                SetVariable(udg_AUIV_talents_shown, false)
+                SetVariable(udg_AUIV_talents_tip_shown, false)
+            else:
+                SetVariable(udg_AUIV_talents_shown, true)
+        }
+        ConditionalTriggerExecute(`天赋 刷新 Talent_Refresh`)
+触发器 天赋 关闭 Talent_Close:
+    events:
+        AudastraUITriggerRegisterEvent("talents.close")
+    actions:
+        SetVariable(udg_AUIV_talents_shown, false)
+        SetVariable(udg_AUIV_talents_tip_shown, false)
+        ConditionalTriggerExecute(`天赋树 更新 talents_Update`)
+触发器 天赋 点选1 Talent_Click1:
+    events:
+        AudastraUITriggerRegisterEvent("talents.pick1")
+    actions:
+        CommentString("界面点击只在本机发生：选中同步单位，由“选择”触发器在所有玩家上写入结果")
+        SetVariable(udg_AUT_LP, GetConvertedPlayerId(GetLocalPlayer()))
+        SetVariable(udg_AUT_LT, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 1))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_LP], OperatorGreater, 0)
+                OperatorCompareInteger(udg_AUT_LT, OperatorLessEq, 5)
+                OperatorCompareInteger(GetHeroLevel(udg_AUT_Hero[udg_AUT_LP]), OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                OperatorCompareInteger(udg_AUT_Picked[OperatorInt(OperatorInt(udg_AUT_LP, OperatorMultiply, 8), OperatorAdd, udg_AUT_LT)], OperatorEqual, 0)
+                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+            then:
+                SelectUnitAddForPlayer(udg_AUT_Sync[OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_LP, OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 1)], GetLocalPlayer())
+        }
+触发器 天赋 移入1 Talent_Enter1:
+    events:
+        AudastraUITriggerRegisterEvent("talents.enter1")
+    actions:
+        SetVariable(udg_AUT_LP, GetConvertedPlayerId(GetLocalPlayer()))
+        SetVariable(udg_AUT_LT, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 1))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_LP], OperatorGreater, 0)
+                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+            then:
+                SetVariable(udg_AUIV_talents_tip_shown, true)
+                SetVariable(udg_AUIV_talents_tip_title, udg_AUT_Name[udg_AUT_LK])
+                SetVariable(udg_AUIV_talents_tip_text, OperatorString(OperatorString(OperatorString(OperatorString("第 ", I2S(udg_AUT_LT)), " 层 · "), I2S(udg_AUT_TierLevel[udg_AUT_LT])), OperatorString(" 级|n", udg_AUT_Text[udg_AUT_LK])))
+                ConditionalTriggerExecute(`天赋树 更新 talents_Update`)
+        }
+触发器 天赋 移出1 Talent_Leave1:
+    events:
+        AudastraUITriggerRegisterEvent("talents.leave1")
+    actions:
+        SetVariable(udg_AUIV_talents_tip_shown, false)
+        ConditionalTriggerExecute(`天赋树 更新 talents_Update`)
+触发器 天赋 点选2 Talent_Click2:
+    events:
+        AudastraUITriggerRegisterEvent("talents.pick2")
+    actions:
+        CommentString("界面点击只在本机发生：选中同步单位，由“选择”触发器在所有玩家上写入结果")
+        SetVariable(udg_AUT_LP, GetConvertedPlayerId(GetLocalPlayer()))
+        SetVariable(udg_AUT_LT, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 2))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_LP], OperatorGreater, 0)
+                OperatorCompareInteger(udg_AUT_LT, OperatorLessEq, 5)
+                OperatorCompareInteger(GetHeroLevel(udg_AUT_Hero[udg_AUT_LP]), OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                OperatorCompareInteger(udg_AUT_Picked[OperatorInt(OperatorInt(udg_AUT_LP, OperatorMultiply, 8), OperatorAdd, udg_AUT_LT)], OperatorEqual, 0)
+                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+            then:
+                SelectUnitAddForPlayer(udg_AUT_Sync[OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_LP, OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 2)], GetLocalPlayer())
+        }
+触发器 天赋 移入2 Talent_Enter2:
+    events:
+        AudastraUITriggerRegisterEvent("talents.enter2")
+    actions:
+        SetVariable(udg_AUT_LP, GetConvertedPlayerId(GetLocalPlayer()))
+        SetVariable(udg_AUT_LT, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 2))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_LP], OperatorGreater, 0)
+                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+            then:
+                SetVariable(udg_AUIV_talents_tip_shown, true)
+                SetVariable(udg_AUIV_talents_tip_title, udg_AUT_Name[udg_AUT_LK])
+                SetVariable(udg_AUIV_talents_tip_text, OperatorString(OperatorString(OperatorString(OperatorString("第 ", I2S(udg_AUT_LT)), " 层 · "), I2S(udg_AUT_TierLevel[udg_AUT_LT])), OperatorString(" 级|n", udg_AUT_Text[udg_AUT_LK])))
+                ConditionalTriggerExecute(`天赋树 更新 talents_Update`)
+        }
+触发器 天赋 移出2 Talent_Leave2:
+    events:
+        AudastraUITriggerRegisterEvent("talents.leave2")
+    actions:
+        SetVariable(udg_AUIV_talents_tip_shown, false)
+        ConditionalTriggerExecute(`天赋树 更新 talents_Update`)
+触发器 天赋 点选3 Talent_Click3:
+    events:
+        AudastraUITriggerRegisterEvent("talents.pick3")
+    actions:
+        CommentString("界面点击只在本机发生：选中同步单位，由“选择”触发器在所有玩家上写入结果")
+        SetVariable(udg_AUT_LP, GetConvertedPlayerId(GetLocalPlayer()))
+        SetVariable(udg_AUT_LT, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 3))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_LP], OperatorGreater, 0)
+                OperatorCompareInteger(udg_AUT_LT, OperatorLessEq, 5)
+                OperatorCompareInteger(GetHeroLevel(udg_AUT_Hero[udg_AUT_LP]), OperatorGreaterEq, udg_AUT_TierLevel[udg_AUT_LT])
+                OperatorCompareInteger(udg_AUT_Picked[OperatorInt(OperatorInt(udg_AUT_LP, OperatorMultiply, 8), OperatorAdd, udg_AUT_LT)], OperatorEqual, 0)
+                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+            then:
+                SelectUnitAddForPlayer(udg_AUT_Sync[OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_LP, OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 3)], GetLocalPlayer())
+        }
+触发器 天赋 移入3 Talent_Enter3:
+    events:
+        AudastraUITriggerRegisterEvent("talents.enter3")
+    actions:
+        SetVariable(udg_AUT_LP, GetConvertedPlayerId(GetLocalPlayer()))
+        SetVariable(udg_AUT_LT, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        SetVariable(udg_AUT_LK, OperatorInt(OperatorInt(OperatorInt(OperatorInt(udg_AUT_Group[udg_AUT_LP], OperatorSubtract, 1), OperatorMultiply, 28), OperatorAdd, OperatorInt(OperatorInt(udg_AUT_LT, OperatorSubtract, 1), OperatorMultiply, 4)), OperatorAdd, 3))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareInteger(udg_AUT_Group[udg_AUT_LP], OperatorGreater, 0)
+                OperatorCompareString(udg_AUT_Name[udg_AUT_LK], OperatorNotEqualENE, "")
+            then:
+                SetVariable(udg_AUIV_talents_tip_shown, true)
+                SetVariable(udg_AUIV_talents_tip_title, udg_AUT_Name[udg_AUT_LK])
+                SetVariable(udg_AUIV_talents_tip_text, OperatorString(OperatorString(OperatorString(OperatorString("第 ", I2S(udg_AUT_LT)), " 层 · "), I2S(udg_AUT_TierLevel[udg_AUT_LT])), OperatorString(" 级|n", udg_AUT_Text[udg_AUT_LK])))
+                ConditionalTriggerExecute(`天赋树 更新 talents_Update`)
+        }
+触发器 天赋 移出3 Talent_Leave3:
+    events:
+        AudastraUITriggerRegisterEvent("talents.leave3")
+    actions:
+        SetVariable(udg_AUIV_talents_tip_shown, false)
+        ConditionalTriggerExecute(`天赋树 更新 talents_Update`)

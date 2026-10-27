@@ -2,7 +2,7 @@
 
 #include "AudastraUiCatalog.h"
 
-// 目标框架测试的合成签名层：取消选择的选项与单位等级。名字、参数类型与预设照原版 TriggerData；
+// 目标框架示例测试的合成签名层：取消选择的选项与单位等级。名字、参数类型与预设照原版 TriggerData；
 // 放在 SpellLayer、PartyLayer、TalentLayer 之后（选择事件、英雄等级等取自前几层）。
 namespace AudastraUiTest {
 

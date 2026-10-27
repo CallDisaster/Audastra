@@ -16,7 +16,7 @@
 #include <string_view>
 #include <vector>
 
-// 生成器（读条系统、团队框架）测试共用：合成函数库加 AudastraUI 包上的空触发器文档，
+// 界面示例测试用：合成函数库加 AudastraUI 包上的空触发器文档，
 // 按功能写法整批写进类别、按名字导出触发器文本，并用生产输出器生成整图脚本。
 namespace AudastraUiTest {
 

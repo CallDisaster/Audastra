@@ -1,0 +1,186 @@
+{
+  "format": "audastra.ui",
+  "version": 1,
+  "id": "meter",
+  "label": "伤害统计",
+  "values": [
+    {
+      "id": "shown",
+      "label": "显示",
+      "type": "boolean",
+      "size": 8
+    },
+    {
+      "id": "name",
+      "label": "名字",
+      "type": "string",
+      "size": 8
+    },
+    {
+      "id": "amount",
+      "label": "伤害",
+      "type": "real",
+      "size": 8
+    },
+    {
+      "id": "amount_text",
+      "label": "伤害文字",
+      "type": "string",
+      "size": 8
+    },
+    {
+      "id": "share",
+      "label": "比例",
+      "type": "real",
+      "size": 8,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "percent",
+      "label": "占比",
+      "type": "real",
+      "size": 8
+    },
+    {
+      "id": "rate",
+      "label": "每秒伤害",
+      "type": "real",
+      "size": 8
+    },
+    {
+      "id": "color",
+      "label": "颜色",
+      "type": "string",
+      "size": 8
+    },
+    {
+      "id": "total",
+      "label": "总伤害",
+      "type": "real"
+    },
+    {
+      "id": "time",
+      "label": "秒数",
+      "type": "real"
+    }
+  ],
+  "frames": [
+    {
+      "id": "panel",
+      "label": "伤害统计",
+      "type": "backdrop",
+      "anchors": [
+        {
+          "point": "BOTTOMRIGHT",
+          "to": "screen",
+          "x": -0.006,
+          "y": 0.2
+        }
+      ],
+      "width": 0.21,
+      "height": 0.154,
+      "texture": "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background",
+      "visible": "shown[0]",
+      "children": [
+        {
+          "id": "title",
+          "label": "标题",
+          "type": "text",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "x": 0.008,
+              "y": -0.005
+            }
+          ],
+          "width": 0.12,
+          "height": 0.014,
+          "text": "伤害统计",
+          "justifyH": "left"
+        },
+        {
+          "id": "time",
+          "label": "秒数",
+          "type": "text",
+          "anchors": [
+            {
+              "point": "TOPRIGHT",
+              "x": -0.008,
+              "y": -0.005
+            }
+          ],
+          "width": 0.07,
+          "height": 0.014,
+          "text": "{time:0} 秒",
+          "justifyH": "right"
+        },
+        {
+          "id": "row",
+          "label": "行",
+          "type": "panel",
+          "anchors": [
+            {
+              "point": "TOPLEFT",
+              "x": 0.006,
+              "y": -0.022
+            }
+          ],
+          "width": 0.198,
+          "height": 0.014,
+          "visible": "shown[]",
+          "repeat": {
+            "count": 8,
+            "dy": -0.016
+          },
+          "children": [
+            {
+              "id": "bar",
+              "label": "比例",
+              "type": "bar",
+              "anchors": [
+                {
+                  "point": "LEFT"
+                }
+              ],
+              "width": 0.198,
+              "height": 0.014,
+              "texture": "{color[]}",
+              "value": "share[]"
+            },
+            {
+              "id": "name",
+              "label": "名字",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "LEFT",
+                  "x": 0.004
+                }
+              ],
+              "width": 0.09,
+              "height": 0.014,
+              "text": "{name[]}",
+              "justifyH": "left"
+            },
+            {
+              "id": "amount",
+              "label": "伤害",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "RIGHT",
+                  "x": -0.004
+                }
+              ],
+              "width": 0.11,
+              "height": 0.014,
+              "text": "{amount_text[]}（{rate[]:0}/秒）",
+              "justifyH": "right"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

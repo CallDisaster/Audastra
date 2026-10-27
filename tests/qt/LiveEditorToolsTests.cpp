@@ -347,9 +347,8 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
-        "game_ui_action_bar_system", "game_ui_cast_system", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
-        "game_ui_description_triggers", "game_ui_meter_system",
-        "game_ui_nodes_query", "game_ui_party_system", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_talent_system", "game_ui_target_system", "game_ui_view_read", "game_ui_view_set",
+        "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read", "game_ui_description_triggers",
+        "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
@@ -365,7 +364,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{97});
+    QCOMPARE(expected.size(), qsizetype{91});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2670,125 +2669,21 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!f.tools->Invoke("game_ui_description_triggers", badPreview).value("ok").toBool());
     QVERIFY(!f.tools->Invoke("game_ui_description_triggers", args).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{5});
-    // 读条系统：登记项与读条条的形状在到达宿主前检查。
-    auto cast = args; cast["preview"] = true;
-    cast["abilities"] = QJsonArray{QJsonObject{{"ability", "A000"}, {"cast", 1.5}, {"effect", "效果"}}};
-    cast["bar"] = QJsonObject{{"description", "CastBar"}, {"visible", "shown"}, {"progress", "progress"}};
-    QVERIFY(f.tools->Invoke("game_ui_cast_system", cast).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{6});
-    auto badAbility = cast; badAbility["abilities"] = QJsonArray{QJsonObject{{"ability", "A0"}, {"effect", "效果"}}};
-    QVERIFY(!f.tools->Invoke("game_ui_cast_system", badAbility).value("ok").toBool());
-    auto badSeconds = cast; badSeconds["abilities"] = QJsonArray{QJsonObject{{"ability", "A000"}, {"tick", -1}, {"effect", "效果"}}};
-    QVERIFY(!f.tools->Invoke("game_ui_cast_system", badSeconds).value("ok").toBool());
-    auto badPreset = args; badPreset["description"] = "Bar"; badPreset["preset"] = "unknown";
-    QVERIFY(!f.tools->Invoke("game_ui_description_create", badPreset).value("ok").toBool());
-    auto badBar = cast; badBar["bar"] = QJsonObject{{"description", "CastBar"}, {"visible", "shown"}};
-    QVERIFY(!f.tools->Invoke("game_ui_cast_system", badBar).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{6});
-    // 团队框架：绑定对象、名字来源、距离与布尔项的形状在到达宿主前检查。
-    auto party = args; party["preview"] = true; party["name_source"] = "unit"; party["far_range"] = 900; party["auto_heroes"] = false;
-    party["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"out_of_range", "far"}, {"select", "select"}};
-    QVERIFY(f.tools->Invoke("game_ui_party_system", party).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{7});
-    auto noShown = party; noShown["frame"] = QJsonObject{{"description", "Party"}};
-    QVERIFY(!f.tools->Invoke("game_ui_party_system", noShown).value("ok").toBool());
-    auto badKey = party; badKey["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"far", "far"}};
-    QVERIFY(!f.tools->Invoke("game_ui_party_system", badKey).value("ok").toBool());
-    auto badSource = party; badSource["name_source"] = "hero";
-    QVERIFY(!f.tools->Invoke("game_ui_party_system", badSource).value("ok").toBool());
-    auto badRange = party; badRange["far_range"] = 50;
-    QVERIFY(!f.tools->Invoke("game_ui_party_system", badRange).value("ok").toBool());
-    auto badHeroes = party; badHeroes["auto_heroes"] = "yes";
-    QVERIFY(!f.tools->Invoke("game_ui_party_system", badHeroes).value("ok").toBool());
-    auto buffs = party; buffs["buffs"] = QJsonArray{"B000", "B001"};
-    buffs["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"buff_icons", QJsonArray{"buff1", "buff2"}}};
-    QVERIFY(f.tools->Invoke("game_ui_party_system", buffs).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{8});
-    auto badBuff = buffs; badBuff["buffs"] = QJsonArray{"B0"};
-    QVERIFY(!f.tools->Invoke("game_ui_party_system", badBuff).value("ok").toBool());
-    auto badIcons = buffs; badIcons["frame"] = QJsonObject{{"description", "Party"}, {"shown", "shown"}, {"buff_icons", "buff1"}};
-    QVERIFY(!f.tools->Invoke("game_ui_party_system", badIcons).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{8});
-    // 天赋树：只给界面编号即按模板绑定；层、列、登记与解锁等级的形状在到达宿主前检查。
-    auto talent = args; talent["preview"] = true; talent["frame"] = QJsonObject{{"description", "Talents"}};
-    talent["heroes"] = QJsonArray{QJsonObject{{"unit", "O000"},
-        {"talents", QJsonArray{QJsonObject{{"tier", 1}, {"option", 2}, {"name", "迅捷"}, {"learn", "A001"}}}}}};
-    talent["unlock_levels"] = QJsonArray{2, 4, 6, 8, 10};
-    QVERIFY(f.tools->Invoke("game_ui_talent_system", talent).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{9});
-    auto noFrame = talent; noFrame.remove("frame");
-    QVERIFY(!f.tools->Invoke("game_ui_talent_system", noFrame).value("ok").toBool());
-    auto badTier = talent;
-    badTier["heroes"] = QJsonArray{QJsonObject{{"unit", "O000"}, {"talents", QJsonArray{QJsonObject{{"tier", 8}, {"option", 1}, {"name", "x"}}}}}};
-    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badTier).value("ok").toBool());
-    auto badUnit = talent; badUnit["sync_unit"] = "hf";
-    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badUnit).value("ok").toBool());
-    auto badLevels = talent; badLevels["unlock_levels"] = QJsonArray{0};
-    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badLevels).value("ok").toBool());
-    auto badColumns = talent;
-    badColumns["frame"] = QJsonObject{{"description", "Talents"}, {"columns", QJsonArray{QJsonObject{{"icon", "icon1"}, {"name", "name1"}}}}};
-    QVERIFY(!f.tools->Invoke("game_ui_talent_system", badColumns).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{9});
-    // 目标框架：来源、键、玩家数与绑定的形状在到达宿主前检查。
-    auto target = args; target["preview"] = true; target["source"] = "focus"; target["key"] = "Focus"; target["players"] = 4;
-    target["frame"] = QJsonObject{{"description", "Target"}, {"shown", "shown"}, {"level", "level"}, {"select", "select"}};
-    target["portraits"] = QJsonArray{"Hpal"};
-    QVERIFY(f.tools->Invoke("game_ui_target_system", target).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{10});
-    auto badTargetSource = target; badTargetSource["source"] = "mouse";
-    QVERIFY(!f.tools->Invoke("game_ui_target_system", badTargetSource).value("ok").toBool());
-    auto badPlayers = target; badPlayers["players"] = 13;
-    QVERIFY(!f.tools->Invoke("game_ui_target_system", badPlayers).value("ok").toBool());
-    auto badTargetKey = target; badTargetKey["frame"] = QJsonObject{{"description", "Target"}, {"shown", "shown"}, {"far", "far"}};
-    QVERIFY(!f.tools->Invoke("game_ui_target_system", badTargetKey).value("ok").toBool());
-    auto badPortrait = target; badPortrait["portraits"] = QJsonArray{"Hp"};
-    QVERIFY(!f.tools->Invoke("game_ui_target_system", badPortrait).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{10});
-    // 伤害统计：键、玩家数、只记敌人与绑定的形状在到达宿主前检查。
-    auto meter = args; meter["preview"] = true; meter["key"] = "Boss"; meter["players"] = 6; meter["enemies_only"] = false;
-    meter["frame"] = QJsonObject{{"description", "Meter"}, {"shown", "shown"}, {"amount_text", "amount_text"}, {"time", "time"}};
-    QVERIFY(f.tools->Invoke("game_ui_meter_system", meter).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{11});
-    auto badMeterPlayers = meter; badMeterPlayers["players"] = 0;
-    QVERIFY(!f.tools->Invoke("game_ui_meter_system", badMeterPlayers).value("ok").toBool());
-    auto badEnemies = meter; badEnemies["enemies_only"] = "no";
-    QVERIFY(!f.tools->Invoke("game_ui_meter_system", badEnemies).value("ok").toBool());
-    auto badMeterFrame = meter; badMeterFrame["frame"] = QJsonObject{{"description", "Meter"}, {"shown", "shown"}, {"select", "select"}};
-    QVERIFY(!f.tools->Invoke("game_ui_meter_system", badMeterFrame).value("ok").toBool());
-    auto noMeterShown = meter; noMeterShown["frame"] = QJsonObject{{"description", "Meter"}};
-    QVERIFY(!f.tools->Invoke("game_ui_meter_system", noMeterShown).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{11});
-    // 技能栏：来源、技能状态、登记的格与绑定的形状在到达宿主前检查。
-    auto bar = args; bar["preview"] = true; bar["source"] = "focus"; bar["ability_state"] = false; bar["players"] = 4;
-    bar["frame"] = QJsonObject{{"description", "Bar"}, {"shown", "shown"}, {"hotkey", "key"}, {"use", "use"}};
-    bar["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 1}, {"ability", "AHhb"}}, QJsonObject{{"unit", "Hpal"}, {"slot", 2}, {"ability", "AHds"}, {"hotkey", "D"}}};
-    QVERIFY(f.tools->Invoke("game_ui_action_bar_system", bar).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{12});
-    auto badBarSource = bar; badBarSource["source"] = "hero";
-    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badBarSource).value("ok").toBool());
-    auto badState = bar; badState["ability_state"] = 1;
-    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badState).value("ok").toBool());
-    auto badSlot = bar; badSlot["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 25}, {"ability", "AHhb"}}};
-    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badSlot).value("ok").toBool());
-    auto badBarAbility = bar; badBarAbility["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 1}, {"ability", "AH"}}};
-    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badBarAbility).value("ok").toBool());
-    auto extraSlot = bar; extraSlot["slots"] = QJsonArray{QJsonObject{{"unit", "Hpal"}, {"slot", 1}, {"ability", "AHhb"}, {"icon", "x"}}};
-    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", extraSlot).value("ok").toBool());
-    auto badBarFrame = bar; badBarFrame["frame"] = QJsonObject{{"description", "Bar"}, {"shown", "shown"}, {"key", "key"}};
-    QVERIFY(!f.tools->Invoke("game_ui_action_bar_system", badBarFrame).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{12});
+    // 内置界面系统已改成示例（examples/game-ui），编辑器不再提供生成工具与起始模板。
+    for (const auto* removed : {"game_ui_cast_system", "game_ui_party_system", "game_ui_target_system", "game_ui_meter_system",
+             "game_ui_action_bar_system", "game_ui_talent_system"}) {
+        QVERIFY(!Names(f.tools->Tools()).contains(removed));
+        QVERIFY(!f.tools->Invoke(removed, args).value("ok").toBool());
+    }
+    auto withPreset = args; withPreset["description"] = "Bar"; withPreset["preset"] = "castbar";
+    QVERIFY(!f.tools->Invoke("game_ui_description_create", withPreset).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{5});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_preview_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_edit"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_triggers"));
-    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_cast_system"));
-    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_party_system"));
-    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_talent_system"));
-    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_target_system"));
-    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_meter_system"));
-    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_action_bar_system"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }

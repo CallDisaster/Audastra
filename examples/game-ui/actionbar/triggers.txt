@@ -1,0 +1,209 @@
+变量:
+    AUA_Bar_Unit: unit[]
+    AUA_Bar_P: integer = 0
+    AUA_Bar_Me: integer = 0
+    AUA_Bar_S: integer = 0
+    AUA_Bar_I: integer = 0
+    AUA_Bar_L: integer = 0
+    AUA_Bar_Click: integer = 0
+    AUA_Bar_LastType: unitcode
+    AUA_Bar_Count: integer = 0
+    AUA_Bar_Type: unitcode[]
+    AUA_Bar_Slot: integer[]
+    AUA_Bar_Ability: abilcode[]
+    AUA_Bar_Icon: string[]
+    AUA_Bar_Key: string[]
+    AUA_Bar_SlotUsed: boolean[]
+    AUA_Bar_SlotAbility: abilcode[]
+    AUA_Bar_SlotIcon: string[]
+    AUA_Bar_SlotKey: string[]
+    AUA_Bar_Cooldown: real = 0
+    AUA_Bar_Total: real = 0
+触发器 技能栏 登记 Bar_Register (init):
+    actions:
+        CommentString("每格一组：单位类型、第几格（1 起）、技能、图标路径、热键；热键要和物编里这个技能的热键一致，点格子时按下它")
+        SetVariable(udg_AUA_Bar_Count, 2)
+        SetVariable(udg_AUA_Bar_Type[1], 'Hpal')
+        SetVariable(udg_AUA_Bar_Slot[1], 1)
+        SetVariable(udg_AUA_Bar_Ability[1], 'AHhb')
+        SetVariable(udg_AUA_Bar_Icon[1], "ReplaceableTextures\\CommandButtons\\BTNHolyBolt.blp")
+        SetVariable(udg_AUA_Bar_Key[1], "T")
+        SetVariable(udg_AUA_Bar_Type[2], 'Hpal')
+        SetVariable(udg_AUA_Bar_Slot[2], 2)
+        SetVariable(udg_AUA_Bar_Ability[2], 'AHds')
+        SetVariable(udg_AUA_Bar_Icon[2], "ReplaceableTextures\\CommandButtons\\BTNDivineIntervention.blp")
+        SetVariable(udg_AUA_Bar_Key[2], "D")
+触发器 技能栏 选择 Bar_Pick:
+    events:
+        TriggerRegisterPlayerSelectionEventBJ(Player00, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player01, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player02, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player03, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player04, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player05, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player06, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player07, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player08, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player09, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player10, SelDeselOptionSel)
+        TriggerRegisterPlayerSelectionEventBJ(Player11, SelDeselOptionSel)
+    actions:
+        SetVariable(udg_AUA_Bar_Unit[GetConvertedPlayerId(GetTriggerPlayer())], GetTriggerUnit())
+触发器 技能栏 取消选择 Bar_Unpick:
+    events:
+        TriggerRegisterPlayerSelectionEventBJ(Player00, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player01, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player02, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player03, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player04, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player05, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player06, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player07, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player08, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player09, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player10, SelDeselOptionDesel)
+        TriggerRegisterPlayerSelectionEventBJ(Player11, SelDeselOptionDesel)
+    actions:
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareUnit(udg_AUA_Bar_Unit[GetConvertedPlayerId(GetTriggerPlayer())], OperatorEqualENE, GetTriggerUnit())
+            then:
+                SetVariable(udg_AUA_Bar_Unit[GetConvertedPlayerId(GetTriggerPlayer())], UnitNull)
+        }
+触发器 技能栏 刷新 Bar_Refresh:
+    events:
+        TriggerRegisterTimerEventPeriodic(0.1)
+    actions:
+        ForLoopVarMultiple(udg_AUA_Bar_P, 1, 12) {
+            actions:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareUnit(udg_AUA_Bar_Unit[udg_AUA_Bar_P], OperatorNotEqualENE, UnitNull)
+                        OperatorCompareReal(GetUnitStateSwap(UnitStateMaxLife, udg_AUA_Bar_Unit[udg_AUA_Bar_P]), OperatorLessEq, 0)
+                    then:
+                        SetVariable(udg_AUA_Bar_Unit[udg_AUA_Bar_P], UnitNull)
+                }
+        }
+        CommentString("以下只改本机界面")
+        SetVariable(udg_AUA_Bar_Me, GetConvertedPlayerId(GetLocalPlayer()))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareUnit(udg_AUA_Bar_Unit[udg_AUA_Bar_Me], OperatorNotEqualENE, UnitNull)
+            then:
+                SetVariable(udg_AUIV_actionbar_bar_shown, true)
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareUnitCode(GetUnitTypeId(udg_AUA_Bar_Unit[udg_AUA_Bar_Me]), OperatorNotEqualENE, udg_AUA_Bar_LastType)
+                    then:
+                        SetVariable(udg_AUA_Bar_LastType, GetUnitTypeId(udg_AUA_Bar_Unit[udg_AUA_Bar_Me]))
+                        ForLoopVarMultiple(udg_AUA_Bar_S, 1, 12) {
+                            actions:
+                                SetVariable(udg_AUA_Bar_SlotUsed[udg_AUA_Bar_S], false)
+                        }
+                        ForLoopVarMultiple(udg_AUA_Bar_I, 1, udg_AUA_Bar_Count) {
+                            actions:
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareUnitCode(udg_AUA_Bar_Type[udg_AUA_Bar_I], OperatorEqualENE, udg_AUA_Bar_LastType)
+                                        OperatorCompareInteger(udg_AUA_Bar_Slot[udg_AUA_Bar_I], OperatorGreaterEq, 1)
+                                        OperatorCompareInteger(udg_AUA_Bar_Slot[udg_AUA_Bar_I], OperatorLessEq, 12)
+                                    then:
+                                        SetVariable(udg_AUA_Bar_SlotUsed[udg_AUA_Bar_Slot[udg_AUA_Bar_I]], true)
+                                        SetVariable(udg_AUA_Bar_SlotAbility[udg_AUA_Bar_Slot[udg_AUA_Bar_I]], udg_AUA_Bar_Ability[udg_AUA_Bar_I])
+                                        SetVariable(udg_AUA_Bar_SlotIcon[udg_AUA_Bar_Slot[udg_AUA_Bar_I]], udg_AUA_Bar_Icon[udg_AUA_Bar_I])
+                                        SetVariable(udg_AUA_Bar_SlotKey[udg_AUA_Bar_Slot[udg_AUA_Bar_I]], udg_AUA_Bar_Key[udg_AUA_Bar_I])
+                                }
+                        }
+                }
+                ForLoopVarMultiple(udg_AUA_Bar_S, 1, 12) {
+                    actions:
+                        SetVariable(udg_AUA_Bar_L, 0)
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareBoolean(udg_AUA_Bar_SlotUsed[udg_AUA_Bar_S], OperatorEqualENE, true)
+                            then:
+                                SetVariable(udg_AUA_Bar_L, GetUnitAbilityLevelSwapped(udg_AUA_Bar_SlotAbility[udg_AUA_Bar_S], udg_AUA_Bar_Unit[udg_AUA_Bar_Me]))
+                        }
+                        IfThenElseMultiple() {
+                            if:
+                                OperatorCompareInteger(udg_AUA_Bar_L, OperatorGreater, 0)
+                            then:
+                                SetVariable(udg_AUIV_actionbar_shown[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], true)
+                                SetVariable(udg_AUIV_actionbar_icon[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], udg_AUA_Bar_SlotIcon[udg_AUA_Bar_S])
+                                SetVariable(udg_AUIV_actionbar_key[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], udg_AUA_Bar_SlotKey[udg_AUA_Bar_S])
+                                SetVariable(udg_AUA_Bar_Cooldown, YDWEGetUnitAbilityState(udg_AUA_Bar_Unit[udg_AUA_Bar_Me], udg_AUA_Bar_SlotAbility[udg_AUA_Bar_S], ABILITY_STATE_COOLDOWN))
+                                SetVariable(udg_AUA_Bar_Total, YDWEGetUnitAbilityDataReal(udg_AUA_Bar_Unit[udg_AUA_Bar_Me], udg_AUA_Bar_SlotAbility[udg_AUA_Bar_S], udg_AUA_Bar_L, ABILITY_DATA_COOL))
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareReal(udg_AUA_Bar_Cooldown, OperatorGreater, 0)
+                                    then:
+                                        IfThenElseMultiple() {
+                                            if:
+                                                OperatorCompareReal(udg_AUA_Bar_Total, OperatorGreater, udg_AUA_Bar_Cooldown)
+                                            then:
+                                                SetVariable(udg_AUIV_actionbar_cooldown[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], OperatorReal(udg_AUA_Bar_Cooldown, OperatorDivide, udg_AUA_Bar_Total))
+                                            else:
+                                                SetVariable(udg_AUIV_actionbar_cooldown[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], 1)
+                                        }
+                                    else:
+                                        SetVariable(udg_AUIV_actionbar_cooldown[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], 0)
+                                }
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareReal(udg_AUA_Bar_Cooldown, OperatorGreater, 0)
+                                    then:
+                                        IfThenElseMultiple() {
+                                            if:
+                                                OperatorCompareReal(udg_AUA_Bar_Cooldown, OperatorLess, 10)
+                                            then:
+                                                SetVariable(udg_AUIV_actionbar_cooldown_text[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], AudastraUIFormatReal(udg_AUA_Bar_Cooldown, 1))
+                                            else:
+                                                SetVariable(udg_AUIV_actionbar_cooldown_text[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], AudastraUIFormatReal(udg_AUA_Bar_Cooldown, 0))
+                                        }
+                                    else:
+                                        SetVariable(udg_AUIV_actionbar_cooldown_text[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], "")
+                                }
+                                IfThenElseMultiple() {
+                                    if:
+                                        OperatorCompareReal(GetUnitStateSwap(UnitStateMana, udg_AUA_Bar_Unit[udg_AUA_Bar_Me]), OperatorLess, I2R(YDWEGetUnitAbilityDataInteger(udg_AUA_Bar_Unit[udg_AUA_Bar_Me], udg_AUA_Bar_SlotAbility[udg_AUA_Bar_S], udg_AUA_Bar_L, ABILITY_DATA_COST)))
+                                    then:
+                                        SetVariable(udg_AUIV_actionbar_no_mana[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], true)
+                                    else:
+                                        SetVariable(udg_AUIV_actionbar_no_mana[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], false)
+                                }
+                            else:
+                                SetVariable(udg_AUIV_actionbar_shown[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], false)
+                        }
+                }
+            else:
+                SetVariable(udg_AUIV_actionbar_bar_shown, false)
+                ForLoopVarMultiple(udg_AUA_Bar_S, 1, 12) {
+                    actions:
+                        SetVariable(udg_AUIV_actionbar_shown[OperatorInt(udg_AUA_Bar_S, OperatorSubtract, 1)], false)
+                }
+        }
+        ConditionalTriggerExecute(`技能栏 更新 actionbar_Update`)
+触发器 技能栏 使用 Bar_Use:
+    events:
+        AudastraUITriggerRegisterEvent("actionbar.use")
+    actions:
+        CommentString("界面点击只在本机发生：选中的就是当前单位时按下这一格的热键，否则先选中当前单位")
+        SetVariable(udg_AUA_Bar_Me, GetConvertedPlayerId(GetLocalPlayer()))
+        SetVariable(udg_AUA_Bar_Click, OperatorInt(AudastraUIGetTriggerIndex(), OperatorAdd, 1))
+        IfThenElseMultiple() {
+            if:
+                OperatorCompareUnit(udg_AUA_Bar_Unit[udg_AUA_Bar_Me], OperatorNotEqualENE, UnitNull)
+                OperatorCompareInteger(udg_AUA_Bar_Click, OperatorGreaterEq, 1)
+                OperatorCompareInteger(udg_AUA_Bar_Click, OperatorLessEq, 12)
+                OperatorCompareBoolean(udg_AUA_Bar_SlotUsed[udg_AUA_Bar_Click], OperatorEqualENE, true)
+            then:
+                IfThenElseMultiple() {
+                    if:
+                        OperatorCompareBoolean(IsUnitSelected(udg_AUA_Bar_Unit[udg_AUA_Bar_Me], GetLocalPlayer()), OperatorEqualENE, true)
+                        OperatorCompareString(udg_AUA_Bar_SlotKey[udg_AUA_Bar_Click], OperatorNotEqualENE, "")
+                    then:
+                        ForceUIKeyBJ(GetLocalPlayer(), udg_AUA_Bar_SlotKey[udg_AUA_Bar_Click])
+                    else:
+                        SelectUnitForPlayerSingle(udg_AUA_Bar_Unit[udg_AUA_Bar_Me], GetLocalPlayer())
+                }
+        }

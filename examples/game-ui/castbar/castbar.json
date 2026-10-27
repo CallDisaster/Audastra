@@ -1,0 +1,123 @@
+{
+  "format": "audastra.ui",
+  "version": 1,
+  "id": "castbar",
+  "label": "读条条",
+  "values": [
+    {
+      "id": "shown",
+      "label": "显示",
+      "type": "boolean"
+    },
+    {
+      "id": "progress",
+      "label": "进度",
+      "type": "real",
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "text",
+      "label": "技能名",
+      "type": "string"
+    },
+    {
+      "id": "remaining",
+      "label": "剩余秒数",
+      "type": "real"
+    }
+  ],
+  "frames": [
+    {
+      "id": "back",
+      "label": "底框",
+      "type": "backdrop",
+      "anchors": [
+        {
+          "point": "BOTTOM",
+          "to": "screen",
+          "y": 0.17
+        }
+      ],
+      "width": 0.25,
+      "height": 0.032,
+      "texture": "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background",
+      "visible": "shown",
+      "children": [
+        {
+          "id": "fill",
+          "label": "进度",
+          "type": "bar",
+          "anchors": [
+            {
+              "point": "CENTER"
+            }
+          ],
+          "width": 0.234,
+          "height": 0.016,
+          "texture": "ReplaceableTextures\\TeamColor\\TeamColor04",
+          "background": "ReplaceableTextures\\TeamColor\\TeamColor08",
+          "value": "progress",
+          "children": [
+            {
+              "id": "name",
+              "label": "技能名",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "LEFT",
+                  "x": 0.004
+                }
+              ],
+              "width": 0.16,
+              "height": 0.016,
+              "text": "{text}",
+              "justifyH": "left"
+            },
+            {
+              "id": "time",
+              "label": "剩余",
+              "type": "text",
+              "anchors": [
+                {
+                  "point": "RIGHT",
+                  "x": -0.004
+                }
+              ],
+              "width": 0.06,
+              "height": 0.016,
+              "text": "{remaining:1}",
+              "justifyH": "right"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "states": [
+    {
+      "id": "channel",
+      "label": "引导",
+      "set": [
+        {
+          "frame": "fill",
+          "texture": "ReplaceableTextures\\TeamColor\\TeamColor06"
+        }
+      ]
+    },
+    {
+      "id": "interrupt",
+      "label": "打断",
+      "set": [
+        {
+          "frame": "fill",
+          "texture": "ReplaceableTextures\\TeamColor\\TeamColor00"
+        },
+        {
+          "frame": "time",
+          "text": "打断"
+        }
+      ]
+    }
+  ]
+}
