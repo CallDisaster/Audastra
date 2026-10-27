@@ -5,6 +5,7 @@
 #include "../Core/Mpq/MpqCrypt.h"
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Jass/JassChecker.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/MapData/MapSettings.h"
@@ -29,7 +30,8 @@
 namespace War3Map::Script {
 namespace {
 constexpr std::size_t kScriptBudget = 16u * 1024u * 1024u;
-constexpr std::size_t kTokenBudget = 2u * 1024u * 1024u;
+// 与保存检查共用记号上限：16 MiB 内的实际大图主脚本可超过两百万个记号。
+const std::size_t kTokenBudget = Jass::JassCheckOptions{}.maxTokens;
 constexpr std::size_t kPeBudget = 32u * 1024u * 1024u;
 using LaunchPlan = Services::MapTestLaunchPlan;
 using namespace Jass::detail;

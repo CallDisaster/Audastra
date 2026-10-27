@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/MapRuntimeBoot.h"
+#include "War3MapCore/Jass/JassChecker.h"
 #include "../Jass/JassLexer.h"
 #include "../Lua/LuaLexer.h"
 #include <algorithm>
@@ -19,7 +20,8 @@ struct Layout {
 };
 Result<Tokens> Lex(std::string_view script) {
     if (script.size() > 16 * 1024 * 1024) return Result<Tokens>::Failure("MapRuntime", "RUNTIME_BOOT_INVALID", "主脚本超过16MiB运行库结构检查预算。");
-    auto result = LexJassBounded(script, {}, 1024 * 1024);
+    // 与保存检查共用记号上限：16 MiB 内的实际大图主脚本可超过一百万个记号。
+    auto result = LexJassBounded(script, {}, Jass::JassCheckOptions{}.maxTokens);
     if (!result.Succeeded() || !result.value) return result;
     if (std::any_of(result.value->begin(), result.value->end(), [](const auto& token) { return token.kind == TokenKind::Invalid; }))
         return Result<Tokens>::Failure("MapRuntime", "RUNTIME_BOOT_INVALID", "主脚本包含无效词法，不能安装运行库启动。");

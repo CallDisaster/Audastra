@@ -1,5 +1,6 @@
 #include "War3MapCore/Script/MapRuntimeBoot.h"
 #include <iostream>
+#include <string>
 #include <stdexcept>
 using namespace War3Map::Script;
 namespace {
@@ -130,7 +131,19 @@ void LuaUsage() {
     Require(!analyze(std::string(16 * 1024 * 1024 + 1, ' ')).Succeeded(), "Lua source analysis is bounded");
 }
 }
+void LargeScript() {
+    // Real maps exceed one million tokens well inside the 16 MiB script limit (about two million here).
+    std::string body;
+    body.reserve(12 * 1024 * 1024);
+    for (int i = 0; i < 100000; ++i)
+        body += "set udg_counter=udg_counter+1\nset udg_flag=not udg_flag\nset udg_value=udg_value*2\n";
+    const std::string script = "globals\ninteger udg_counter=0\nboolean udg_flag=false\ninteger udg_value=1\nendglobals\n"
+        "function filler takes nothing returns nothing\n" + body + "endfunction\n" + std::string(original);
+    auto installed = ApplyMapRuntimeBoot(script, {});
+    Require(installed.Succeeded(), "large real-map script is not refused by a lexer budget below the script size limit");
+    Require(VerifyMapRuntimeBoot(*installed.value, true).Succeeded(), "large installed script verifies");
+}
 int main() {
-    try { Boot(); Identity(); TestDiagnostics(); LuaUsage(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    try { Boot(); Identity(); TestDiagnostics(); LuaUsage(); LargeScript(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "map runtime boot tests passed\n";
 }

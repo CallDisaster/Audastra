@@ -36,8 +36,9 @@ struct JassCheckOptions {
     std::size_t maxSources = 64;
     std::size_t maxSourceBytes = 32 * 1024 * 1024;
     std::size_t maxTotalBytes = 64 * 1024 * 1024;
-    std::size_t maxTokens = 4 * 1024 * 1024; // 所有来源合计，含每个来源的 End
-    std::size_t maxAstNodes = 4 * 1024 * 1024; // 声明、表达式、语句及参数边合计
+    // 实际大图（约 6 MB、写法紧凑的主脚本）已超过 400 万个记号；上限只限制增长，不预先分配。
+    std::size_t maxTokens = 12 * 1024 * 1024; // 所有来源合计，含每个来源的 End
+    std::size_t maxAstNodes = 8 * 1024 * 1024; // 声明、表达式、语句及参数边合计
     std::size_t maxPoolNodes = 262144; // 单个全局/函数池，包含参数边
     std::size_t maxAstDepth = 128; // 真实子树深度；有效值最多 512，防止递归检查耗尽栈
     std::size_t maxNesting = 64;   // 解析递归结构；有效值最多 128
