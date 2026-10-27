@@ -163,6 +163,24 @@ struct UiEvent {
     friend bool operator==(const UiEvent&, const UiEvent&) = default;
 };
 
+// 编辑器里的模拟（游戏不读这一段）：计时器只按周期发出“到期”，界面怎么变由作者自己写的触发器决定，
+// 编辑器预览时执行这些触发器。起始值是开始模拟时数值的取值，键为 编号 或 编号[下标]（数组要写下标），没写的用默认值。
+struct UiSimulationTimer {
+    std::string id;
+    std::string label;
+    double period = 1.0;  // 秒
+    bool repeat = true;
+
+    friend bool operator==(const UiSimulationTimer&, const UiSimulationTimer&) = default;
+};
+
+struct UiSimulation {
+    std::vector<UiSimulationTimer> timers;
+    std::map<std::string, std::string, std::less<>> values;  // 规范文本，见 NormalizeUiValue
+
+    friend bool operator==(const UiSimulation&, const UiSimulation&) = default;
+};
+
 struct UiDescription {
     std::string id;
     std::string label;
@@ -170,6 +188,7 @@ struct UiDescription {
     std::vector<UiFrame> frames;
     std::vector<UiState> states;
     std::vector<UiEvent> events;
+    UiSimulation simulation;
 
     friend bool operator==(const UiDescription&, const UiDescription&) = default;
 };

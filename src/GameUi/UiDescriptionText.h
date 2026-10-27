@@ -21,6 +21,9 @@ inline constexpr std::size_t kMaxEvents = 128;
 inline constexpr std::size_t kMaxDepth = 16;
 inline constexpr std::uint32_t kMaxArraySize = 64;
 inline constexpr std::uint32_t kMaxRepeat = 64;
+inline constexpr std::size_t kMaxSimulationTimers = 32;
+inline constexpr double kMinSimulationPeriod = 0.01;
+inline constexpr double kMaxSimulationPeriod = 3600.0;
 
 [[nodiscard]] inline Diagnostic MakeUiError(const char* code, std::string message) {
     return Diagnostic{DiagnosticSeverity::Error, "GameUi", code, std::move(message), std::nullopt};

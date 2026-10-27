@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <set>
 #include <span>
 
 // 编辑在描述的规范 JSON 上进行，最后整份交给严格读取器：编辑与读取文件用同一套规则。
@@ -71,6 +72,7 @@ public:
         if (op == "set_values") return Keys(edit, {"op", "values"}) && Replace(edit, "values");
         if (op == "set_states") return Keys(edit, {"op", "states"}) && Replace(edit, "states");
         if (op == "set_events") return Keys(edit, {"op", "events"}) && Replace(edit, "events");
+        if (op == "set_simulation") return Keys(edit, {"op", "simulation"}) && SetSimulation(edit);
         return Fail("不认识的 op：" + op);
     }
 
@@ -288,6 +290,15 @@ private:
                 for (auto& entry : state["set"]) retemplate(entry, "text");
             }
         }
+        if (document_.contains("simulation") && document_["simulation"].contains("values") &&
+            document_["simulation"]["values"].is_object()) {
+            Json renamed = Json::object();
+            for (const auto& item : document_["simulation"]["values"].items()) {
+                const auto parsed = detail::ParseUiValueReference(item.key());
+                renamed[parsed && parsed->id == from ? to + item.key().substr(from.size()) : item.key()] = item.value();
+            }
+            document_["simulation"]["values"] = std::move(renamed);
+        }
         return true;
     }
 
@@ -322,7 +333,34 @@ private:
         if (!edit.contains(key) || !edit[key].is_array()) return Fail(std::string(key) + " 应为数组");
         if (edit[key].empty()) document_.erase(key);
         else document_[key] = edit[key];
+        if (std::string_view(key) == "values") PruneSimulationValues();
         return true;
+    }
+
+    bool SetSimulation(const Json& edit) {
+        if (!edit["simulation"].is_object()) return Fail("simulation 应为对象");
+        if (edit["simulation"].empty()) document_.erase("simulation");
+        else document_["simulation"] = edit["simulation"];
+        return true;
+    }
+
+    // 删掉的数值不再有模拟起始值。
+    void PruneSimulationValues() {
+        if (!document_.contains("simulation") || !document_["simulation"].contains("values")) return;
+        std::set<std::string> ids;
+        if (document_.contains("values")) {
+            for (const auto& value : document_["values"]) {
+                if (value.is_object() && value.contains("id") && value["id"].is_string()) ids.insert(value["id"].get<std::string>());
+            }
+        }
+        Json& values = document_["simulation"]["values"];
+        for (auto it = values.begin(); it != values.end();) {
+            const auto reference = detail::ParseUiValueReference(it.key());
+            if (reference && !ids.contains(reference->id)) it = values.erase(it);
+            else ++it;
+        }
+        if (values.empty()) document_["simulation"].erase("values");
+        if (document_["simulation"].empty()) document_.erase("simulation");
     }
 
     Json document_;

@@ -39,12 +39,46 @@ public:
         for (const auto& info : order_) CheckFrame(info);
         CheckStates();
         CheckEvents();
+        CheckSimulation();
         return std::move(diagnostics_);
     }
 
 private:
     void Error(const std::string& path, const char* code, const std::string& message) {
         diagnostics_.push_back(MakeError(code, UiDescriptionMemberPath(description_.id) + " " + path + "：" + message));
+    }
+
+    void CheckSimulation() {
+        const UiSimulation& simulation = description_.simulation;
+        if (simulation.timers.size() > kMaxSimulationTimers) {
+            Error("/simulation/timers", "AUI_RANGE", "模拟计时器超过 " + std::to_string(kMaxSimulationTimers) + " 个");
+        }
+        std::set<std::string> seen;
+        for (std::size_t i = 0; i < simulation.timers.size(); ++i) {
+            const UiSimulationTimer& timer = simulation.timers[i];
+            const std::string path = "/simulation/timers/" + std::to_string(i);
+            if (!IsValidUiId(timer.id)) Error(path + "/id", "AUI_ID_INVALID", "模拟计时器编号无效");
+            else if (!seen.insert(timer.id).second) Error(path + "/id", "AUI_ID_DUPLICATE", "模拟计时器编号 " + timer.id + " 重复");
+            if (!(timer.period >= kMinSimulationPeriod && timer.period <= kMaxSimulationPeriod)) {
+                Error(path + "/period", "AUI_RANGE", "周期应在 0.01 到 3600 秒之间");
+            }
+        }
+        for (const auto& [key, text] : simulation.values) {
+            const std::string path = "/simulation/values/" + key;
+            const auto reference = detail::ParseUiValueReference(key);
+            const UiValue* value = reference && !reference->perInstance ? FindUiValue(description_, reference->id) : nullptr;
+            if (!value) {
+                Error(path, "AUI_VALUE_UNKNOWN", "起始值对应的数值不存在");
+                continue;
+            }
+            if (value->size > 0 && (!reference->index || *reference->index >= value->size)) {
+                Error(path, "AUI_BINDING", "数组数值的起始值要写下标 0 到 " + std::to_string(value->size - 1));
+            } else if (value->size == 0 && reference->index) {
+                Error(path, "AUI_BINDING", "单值不能写下标");
+            } else if (NormalizeUiValue(value->type, text) != std::optional<std::string>(text)) {
+                Error(path, "AUI_TYPE", "起始值与数值类型不符");
+            }
+        }
     }
 
     void CheckValues() {

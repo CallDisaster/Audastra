@@ -410,6 +410,58 @@ void TestEdits() {
 
 } // namespace
 
+std::string First(const std::vector<Diagnostic>& diagnostics) { return diagnostics.empty() ? std::string() : diagnostics.front().message; }
+
+// 模拟：计时器与起始值存在描述里，规范输出稳定；引用、下标与类型都检查；编辑整体替换并随数值改名、删除。
+void TestSimulation() {
+    const std::string base = R"({"format": "audastra.ui", "version": 1, "id": "Hud",
+  "values": [{"id": "hp", "type": "real", "default": 1}, {"id": "name", "type": "string"},
+             {"id": "on", "type": "boolean"}, {"id": "icons", "type": "string", "size": 3}],
+  "simulation": )";
+    const auto parsed = ParseUiDescription(base + R"({"timers": [{"id": "tick", "label": "每跳", "period": 0.25},
+      {"id": "once", "period": 2, "repeat": false}], "values": {"hp": 0.50, "name": "Boss", "on": true, "icons[1]": "X"}}})");
+    Require(parsed.Succeeded(), ("simulation parses: " + First(parsed.diagnostics)).c_str());
+    const UiSimulation& simulation = parsed.value->simulation;
+    Require(simulation.timers.size() == 2 && simulation.timers[0].period == 0.25 && simulation.timers[0].repeat &&
+                !simulation.timers[1].repeat && simulation.timers[0].label == "每跳",
+        "timers read");
+    Require(simulation.values.at("hp") == "0.5" && simulation.values.at("on") == "true" && simulation.values.at("icons[1]") == "X",
+        "start values normalized");
+    const std::string text = SerializeUiDescription(*parsed.value);
+    const auto again = ParseUiDescription(text);
+    Require(again.Succeeded() && *again.value == *parsed.value && SerializeUiDescription(*again.value) == text, "simulation round trip");
+    Require(text.find("\"hp\": 0.5") != std::string::npos && text.find("\"on\": true") != std::string::npos &&
+                text.find("\"repeat\": false") != std::string::npos && text.find("\"repeat\": true") == std::string::npos,
+        "typed start values, default repeat omitted");
+
+    const auto errors = [&](const std::string& section) { return ParseUiDescription(base + section + "}").diagnostics; };
+    Require(HasCode(errors(R"({"timers": [{"id": "a", "period": 1}, {"id": "a", "period": 1}]})"), "AUI_ID_DUPLICATE"), "duplicate timer");
+    Require(HasCode(errors(R"({"timers": [{"id": "a", "period": 0}]})"), "AUI_RANGE"), "period range");
+    Require(HasCode(errors(R"({"timers": [{"id": "a"}]})"), "AUI_FIELD_MISSING"), "period required");
+    Require(HasCode(errors(R"({"values": {"mp": 1}})"), "AUI_VALUE_UNKNOWN"), "unknown value");
+    Require(HasCode(errors(R"({"values": {"icons": "X"}})"), "AUI_BINDING"), "array needs index");
+    Require(HasCode(errors(R"({"values": {"icons[3]": "X"}})"), "AUI_BINDING"), "index in range");
+    Require(HasCode(errors(R"({"values": {"hp[0]": 1}})"), "AUI_BINDING"), "scalar takes no index");
+    Require(HasCode(errors(R"({"values": {"hp": "full"}})"), "AUI_TYPE"), "type checked");
+    Require(HasCode(errors(R"({"tick": 1})"), "AUI_FIELD_UNKNOWN"), "unknown simulation field");
+
+    // 编辑：整体替换；数值改名时起始值的键跟着改，删掉数值时起始值一并去掉。
+    const auto set = ApplyUiEdits(*parsed.value, R"([{"op": "set_simulation", "simulation": {"timers": [{"id": "t", "period": 1}]}}])");
+    Require(set.Succeeded() && set.value->simulation.timers.size() == 1 && set.value->simulation.values.empty(), "set_simulation replaces");
+    const auto cleared = ApplyUiEdits(*parsed.value, R"([{"op": "set_simulation", "simulation": {}}])");
+    Require(cleared.Succeeded() && cleared.value->simulation == UiSimulation{}, "empty simulation removes the section");
+    Require(HasCode(ApplyUiEdits(*parsed.value, R"([{"op": "set_simulation", "simulation": {"values": {"mp": 1}}}])").diagnostics,
+                "AUI_VALUE_UNKNOWN"),
+        "set_simulation checked");
+    const auto renamed = ApplyUiEdits(*parsed.value, R"([{"op": "rename_value", "from": "icons", "to": "badges"}])");
+    Require(renamed.Succeeded() && renamed.value->simulation.values.contains("badges[1]") &&
+                !renamed.value->simulation.values.contains("icons[1]"),
+        "rename keeps start values");
+    const auto removed = ApplyUiEdits(*parsed.value, R"([{"op": "set_values", "values": [{"id": "hp", "type": "real"}]}])");
+    Require(removed.Succeeded() && removed.value->simulation.values.size() == 1 && removed.value->simulation.values.contains("hp"),
+        ("removed values drop their start values: " + First(removed.diagnostics)).c_str());
+}
+
 int main() {
     try {
         TestRoundTrip();
@@ -421,6 +473,7 @@ int main() {
         TestRepeatWrap();
         TestGameArea();
         TestEdits();
+        TestSimulation();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;

@@ -348,6 +348,61 @@ void ReadState(Reader& reader, const Json& json, const std::string& path, std::v
     states.push_back(std::move(state));
 }
 
+// 起始值按数值类型写：实数、整数写数值，布尔写 true/false，文字写字符串；存成规范文本。
+// 引用的数值不存在、下标不对等留给检查报告。
+void ReadSimulation(Reader& reader, const Json& json, UiDescription& description) {
+    const std::string path = "/simulation";
+    if (!reader.Object(json, path, {"timers", "values"})) return;
+    if (const Json* timers = reader.Array(json, "timers", path, kMaxSimulationTimers)) {
+        for (std::size_t i = 0; i < timers->size(); ++i) {
+            const Json& item = (*timers)[i];
+            const std::string at = path + "/timers/" + std::to_string(i);
+            if (!reader.Object(item, at, {"id", "label", "period", "repeat"})) continue;
+            UiSimulationTimer timer;
+            timer.id = reader.String(item, "id", at, true).value_or("");
+            timer.label = reader.String(item, "label", at, false).value_or("");
+            timer.period = reader.Number(item, "period", at, true, kMinSimulationPeriod, kMaxSimulationPeriod).value_or(1.0);
+            timer.repeat = reader.Bool(item, "repeat", at, false).value_or(true);
+            description.simulation.timers.push_back(std::move(timer));
+        }
+    }
+    const Json* values = reader.Field(json, "values", path, false);
+    if (!values) return;
+    if (!values->is_object()) {
+        reader.Error(path + "/values", "AUI_TYPE", "应为对象：键为 编号 或 编号[下标]");
+        return;
+    }
+    for (const auto& item : values->items()) {
+        const std::string at = path + "/values/" + item.key();
+        const Json& value = item.value();
+        const auto reference = detail::ParseUiValueReference(item.key());
+        const UiValue* target = reference ? FindUiValue(description, reference->id) : nullptr;
+        std::string text;
+        if (value.is_string()) {
+            text = value.get<std::string>();
+        } else if (value.is_boolean()) {
+            text = value.get<bool>() ? "true" : "false";
+        } else if (value.is_number()) {
+            const auto number = reader.NumberValue(value, at, -1.0e9, 1.0e9);
+            if (!number) continue;
+            text = detail::FormatUiNumber(*number);
+        } else {
+            reader.Error(at, "AUI_TYPE", "应为数值、布尔或文字");
+            continue;
+        }
+        if (target) {
+            const bool number = target->type == UiValueType::Real || target->type == UiValueType::Integer;
+            const bool matches = number ? value.is_number() : target->type == UiValueType::Boolean ? value.is_boolean() : value.is_string();
+            if (!matches) {
+                reader.Error(at, "AUI_TYPE", "起始值与数值类型不符");
+                continue;
+            }
+            if (auto normalized = NormalizeUiValue(target->type, text)) text = std::move(*normalized);
+        }
+        description.simulation.values.emplace(item.key(), std::move(text));
+    }
+}
+
 // ---------------------------------------------------------------- 输出
 
 OrderedJson Num(double value) {
@@ -464,7 +519,7 @@ Result<UiDescription> ParseUiDescription(std::string_view text, std::string_view
     const Json& json = *parsed.value;
     Reader reader(source);
     UiDescription description;
-    if (reader.Object(json, "", {"format", "version", "id", "label", "values", "frames", "states", "events"})) {
+    if (reader.Object(json, "", {"format", "version", "id", "label", "values", "frames", "states", "events", "simulation"})) {
         const auto format = reader.String(json, "format", "", true);
         if (format && *format != kUiDescriptionFormat) reader.Error("/format", "AUI_FORMAT", "不是 audastra.ui 界面描述");
         const auto version = reader.Count(json, "version", "", true, 1, 1000);
@@ -497,6 +552,7 @@ Result<UiDescription> ParseUiDescription(std::string_view text, std::string_view
                 description.events.push_back(std::move(event));
             }
         }
+        if (const Json* simulation = reader.Field(json, "simulation", "", false)) ReadSimulation(reader, *simulation, description);
     }
     ParseResult result;
     result.diagnostics = std::move(reader.diagnostics);
@@ -581,6 +637,40 @@ std::string SerializeUiDescription(const UiDescription& description) {
             events.push_back(std::move(item));
         }
         json["events"] = std::move(events);
+    }
+    const UiSimulation& simulation = description.simulation;
+    if (!simulation.timers.empty() || !simulation.values.empty()) {
+        OrderedJson section;
+        if (!simulation.timers.empty()) {
+            OrderedJson timers = OrderedJson::array();
+            for (const auto& timer : simulation.timers) {
+                OrderedJson item;
+                item["id"] = timer.id;
+                if (!timer.label.empty()) item["label"] = timer.label;
+                item["period"] = Num(timer.period);
+                if (!timer.repeat) item["repeat"] = false;
+                timers.push_back(std::move(item));
+            }
+            section["timers"] = std::move(timers);
+        }
+        if (!simulation.values.empty()) {
+            OrderedJson values = OrderedJson::object();
+            for (const auto& [key, text] : simulation.values) {
+                const auto reference = detail::ParseUiValueReference(key);
+                const UiValue* target = reference ? FindUiValue(description, reference->id) : nullptr;
+                double number = 0.0;
+                if (target && (target->type == UiValueType::Real || target->type == UiValueType::Integer) &&
+                    std::from_chars(text.data(), text.data() + text.size(), number).ec == std::errc{}) {
+                    values[key] = Num(number);
+                } else if (target && target->type == UiValueType::Boolean && (text == "true" || text == "false")) {
+                    values[key] = text == "true";
+                } else {
+                    values[key] = text;
+                }
+            }
+            section["values"] = std::move(values);
+        }
+        json["simulation"] = std::move(section);
     }
     return json.dump(2, ' ', false, OrderedJson::error_handler_t::replace) + "\n";
 }
