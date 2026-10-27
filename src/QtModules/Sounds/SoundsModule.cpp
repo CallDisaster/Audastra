@@ -705,8 +705,12 @@ void SoundsModule::StartGameIndex() {
                     tr("游戏 · %1").arg(Text(file.archiveName)), {}, {}, true});
             }
         }
-        if (!result->diagnostics.empty())
-            ShowStatus(tr("游戏声音目录不完整：%1").arg(Text(result->diagnostics.front().message)), true);
+        if (!result->diagnostics.empty()) {
+            // 读不到某个归档的 listfile 只是目录不全（核心定为警告），不按错误显示。
+            const bool error = std::any_of(result->diagnostics.begin(), result->diagnostics.end(),
+                [](const auto& diagnostic) { return diagnostic.severity == DiagnosticSeverity::Error; });
+            ShowStatus(tr("游戏声音目录不完整：%1").arg(Text(result->diagnostics.front().message)), error);
+        }
         RebuildResources();
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
