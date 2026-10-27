@@ -33,6 +33,8 @@ struct ProviderSettings {
 struct AgentSettings {
     bool aiEnabled = false;
     bool reducedMotion = false;
+    // 助手或外部 MCP 改了触发器、变量时，编辑器跳到改动处（不抢焦点）。
+    bool followChanges = false;
     QList<ProviderSettings> providers;
     bool allowEdits = false;
     bool allowSave = false;

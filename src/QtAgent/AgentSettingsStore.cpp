@@ -162,6 +162,7 @@ AgentSettings AgentSettingsStore::Load(QString* error) const {
     }
     if (!ReadBool(object, QStringLiteral("ai_enabled"), false, settings.aiEnabled)
         || !ReadBool(object, QStringLiteral("reduced_motion"), false, settings.reducedMotion)
+        || !ReadBool(object, QStringLiteral("follow_changes"), false, settings.followChanges)
         || !ReadBool(object, QStringLiteral("allow_edits"), false, settings.allowEdits)
         || !ReadBool(object, QStringLiteral("allow_save"), false, settings.allowSave)
         || !ReadBool(object, QStringLiteral("allow_commands"), false, settings.allowCommands)
@@ -235,6 +236,7 @@ bool AgentSettingsStore::Save(const AgentSettings& settings, QString* error) con
     for (const auto& tool : settings.disabledTools) disabled.append(tool);
     const auto bytes = QJsonDocument(QJsonObject{{QStringLiteral("version"), 1},
         {QStringLiteral("ai_enabled"), settings.aiEnabled}, {QStringLiteral("reduced_motion"), settings.reducedMotion},
+        {QStringLiteral("follow_changes"), settings.followChanges},
         {QStringLiteral("providers"), providers}, {QStringLiteral("allow_edits"), settings.allowEdits},
         {QStringLiteral("allow_save"), settings.allowSave}, {QStringLiteral("allow_commands"), settings.allowCommands},
         {QStringLiteral("mcp_enabled"), settings.mcpEnabled}, {QStringLiteral("mcp_port"), settings.mcpPort},

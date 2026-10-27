@@ -128,6 +128,7 @@ void AgentSettingsTests::settingsRoundtripAndCredentialIsolation() {
     settings.mcpEnabled = true;
     settings.mcpPort = 19876;
     settings.disabledTools = {QStringLiteral("save_map_edit_candidate")};
+    settings.followChanges = true;
     QString error;
     QVERIFY2(store.Save(settings, &error), qPrintable(error));
     const auto encoded = Read(store.FilePath());
@@ -140,6 +141,7 @@ void AgentSettingsTests::settingsRoundtripAndCredentialIsolation() {
     QVERIFY(result.aiEnabled);
     QVERIFY(result.allowEdits);
     QCOMPARE(result.mcpPort, quint16(19876));
+    QVERIFY(result.followChanges);
     QCOMPARE(result.disabledTools, settings.disabledTools);
     QCOMPARE(result.providers.size(), qsizetype(1));
     QCOMPARE(result.providers.front().credentialRef, QStringLiteral("fixture-reference"));

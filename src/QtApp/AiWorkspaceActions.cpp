@@ -113,6 +113,12 @@ bool AgentSidebarFits(const QWidget& host, const QWidget& editor) {
     return host.width() >= 1280 && host.contentsRect().width() >= editorMinimum + AgentSidebarTargetWidth + separator;
 }
 
+// 助手改动列表里的对象：变量去变量表，其余（触发器、类别、注释）去触发器编辑器。
+War3Map::Shell::NavigationTarget AgentChangeTarget(const QString& kind, const QString& id) {
+    const auto module = kind == QStringLiteral("variable") ? QStringLiteral("variables") : QStringLiteral("triggers");
+    return {module.toStdString(), kind, id, {{"stableIdentity", true}}};
+}
+
 // 记录 Qt 实际控件与原生视口状态；回执据此区分重复控件和旧像素残留。
 void CapturePresentationFacts(QWidget& host, QWidget& editor) {
     const auto bars = host.findChildren<QStatusBar*>();
@@ -445,9 +451,27 @@ void MainWindow::PresentAgentWorkspace(int mode) {
             });
         connect(state->window, &War3Map::Agent::AgentWindow::NavigateRequested, this,
             [this](const QString& kind, const QString& id) {
-                const auto module = kind == QStringLiteral("variable") ? QStringLiteral("variables") : QStringLiteral("triggers");
-                Navigate({module.toStdString(), kind, id, {{"stableIdentity", true}}});
+                Navigate(AgentChangeTarget(kind, id));
                 activateWindow();
+            });
+        connect(state->window, &War3Map::Agent::AgentWindow::FollowRequested, this,
+            [this, state](const QString& kind, const QString& id) {
+                // 助手占整页时编辑区不可见，不跟随；跳转不激活窗口，不打断作者正在输入的地方。
+                if (state->stack && state->stack->currentWidget() == state->window) return;
+                ShellWindow::Navigate(AgentChangeTarget(kind, id));
+            });
+        connect(state->window, &War3Map::Agent::AgentWindow::FollowChangesChangeRequested, this,
+            [this, state](bool follow) {
+                auto next = state->settings;
+                next.followChanges = follow;
+                QString error;
+                if (!state->store.Save(next, &error)) {
+                    AddDiagnostic(tr("错误"), tr("助手"), QStringLiteral("AGENT_SETTINGS_SAVE_FAILED"), error);
+                    state->window->SetSettings(state->settings);
+                    return;
+                }
+                state->settings = next;
+                state->window->SetSettings(state->settings);
             });
     }
     using Mode = War3Map::Agent::AgentWindow::PresentationMode;

@@ -99,6 +99,7 @@ private slots:
     void enterSendsShiftEnterBreaksCtrlEnterQueues();
     void actualChangesAreSeparateFromOutput();
     void toolLifecycleDetailsAndNavigation();
+    void followChangesJumpsToLastLocatableItem();
     void streamedTextIsBatchedAndDoesNotStealScrolling();
     void stoppingIsExplicitAndRunEndIsNotInventedSuccess();
     void presentationSizesShrinkAndKeepComposer();
@@ -395,6 +396,42 @@ void AgentWindowTests::toolLifecycleDetailsAndNavigation() {
     QVERIFY(changes);
     QVERIFY(FindDetail(changes, QStringLiteral("修改前")));
     QVERIFY(FindDetail(changes, QStringLiteral("修改后")));
+}
+
+void AgentWindowTests::followChangesJumpsToLastLocatableItem() {
+    AgentWindow window;
+    window.SetSettings(TestSettings());
+    auto* follow = window.findChild<QToolButton*>(QStringLiteral("agentFollowChanges"));
+    QVERIFY(follow && follow->isCheckable() && !follow->isChecked());
+    QSignalSpy toggled(&window, &AgentWindow::FollowChangesChangeRequested);
+    QSignalSpy followed(&window, &AgentWindow::FollowRequested);
+    QSignalSpy navigated(&window, &AgentWindow::NavigateRequested);
+    const auto item = [](const char* kind, const char* id) {
+        return QJsonObject{{QStringLiteral("kind"), QString::fromLatin1(kind)}, {QStringLiteral("object_id"), QString::fromLatin1(id)},
+            {QStringLiteral("title"), QStringLiteral("改动")}};
+    };
+    const QJsonObject batch{{QStringLiteral("type"), QStringLiteral("changes")}, {QStringLiteral("trigger_nodes"), 2},
+        {QStringLiteral("items"), QJsonArray{item("trigger", "11"), item("variable", "22"), item("file", "")}}};
+    // 关着时只列出改动，不跳转。
+    window.AppendEvent(batch);
+    QCOMPARE(followed.count(), 0);
+    // 点开关只发请求，由宿主保存后经 SetSettings 回写。
+    follow->click();
+    QCOMPARE(toggled.count(), 1);
+    QVERIFY(toggled.front().at(0).toBool());
+    auto settings = TestSettings();
+    settings.followChanges = true;
+    window.SetSettings(settings);
+    QVERIFY(follow->isChecked());
+    // 开着时跳到这批里最后一个能定位的对象（文件没有对象编号，跳过）；不发点击导航。
+    window.AppendEvent(batch);
+    QCOMPARE(followed.count(), 1);
+    QCOMPARE(followed.front().at(0).toString(), QStringLiteral("variable"));
+    QCOMPARE(followed.front().at(1).toString(), QStringLiteral("22"));
+    QCOMPARE(navigated.count(), 0);
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("changes")}, {QStringLiteral("files"), 1},
+        {QStringLiteral("items"), QJsonArray{item("import", "")}}});
+    QCOMPARE(followed.count(), 1);
 }
 
 void AgentWindowTests::streamedTextIsBatchedAndDoesNotStealScrolling() {
@@ -893,7 +930,7 @@ void AgentWindowTests::headerControlsStayVisibleAtNarrowWidths() {
         window.resize(width, 820);
         QCoreApplication::processEvents();
         QCOMPARE(window.width(), width);
-        for (const auto* name : {"agentConversations", "agentNewConversation", "agentPresentation", "agentSettings"}) {
+        for (const auto* name : {"agentConversations", "agentFollowChanges", "agentNewConversation", "agentPresentation", "agentSettings"}) {
             auto* button = window.findChild<QToolButton*>(QString::fromLatin1(name));
             QVERIFY(button);
             QVERIFY2(button->isVisible(), name);

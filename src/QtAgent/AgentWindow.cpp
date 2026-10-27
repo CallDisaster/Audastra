@@ -155,6 +155,7 @@ struct AgentWindow::Private {
     QToolButton* back = nullptr;
     QToolButton* newConversation = nullptr;
     QToolButton* sessionsButton = nullptr;
+    QToolButton* followButton = nullptr;
     UiKit::PopoverSurface* sessionsPopover = nullptr;
     QListWidget* sessionList = nullptr;
     QPushButton* renameSession = nullptr;
@@ -289,6 +290,14 @@ void AgentWindow::Private::Build() {
         if (!busy) sessionsPopover->ToggleAnchored(sessionsButton, UiKit::PopoverSurface::PreferredSide::Below, Qt::AlignRight);
     });
     headerLayout->addWidget(sessionsButton);
+    followButton = new QToolButton(header);
+    followButton->setObjectName(QStringLiteral("agentFollowChanges"));
+    followButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/eye")));
+    followButton->setCheckable(true);
+    followButton->setToolTip(QStringLiteral("跟随修改"));
+    followButton->setAccessibleName(QStringLiteral("跟随修改"));
+    QObject::connect(followButton, &QToolButton::clicked, q, [this](bool checked) { emit q->FollowChangesChangeRequested(checked); });
+    headerLayout->addWidget(followButton);
     newConversation = new QToolButton(header);
     newConversation->setObjectName(QStringLiteral("agentNewConversation"));
     newConversation->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/plus")));
@@ -587,11 +596,14 @@ void AgentWindow::Private::Build() {
         "QLabel#agentHeaderTitle { font-size:14px; font-weight:500; }"
         "QLabel#agentActiveMap { font-size:13px; color:palette(placeholder-text); padding-left:2px; }"
         "QLabel#agentHistoryNotice, QLabel#agentMessageAnnotation, QLabel#agentMapSummary { font-size:12px; color:palette(placeholder-text); }"
-        "QToolButton#agentBack, QToolButton#agentConversations, QToolButton#agentNewConversation, QToolButton#agentPresentation, QToolButton#agentSettings {"
+        "QToolButton#agentBack, QToolButton#agentConversations, QToolButton#agentFollowChanges, QToolButton#agentNewConversation,"
+        " QToolButton#agentPresentation, QToolButton#agentSettings {"
         " border:0; border-radius:16px; background:transparent; padding:0;"
         " min-width:32px; max-width:32px; min-height:32px; max-height:32px; }"
-        "QToolButton#agentBack:hover, QToolButton#agentConversations:hover, QToolButton#agentNewConversation:hover, QToolButton#agentPresentation:hover,"
+        "QToolButton#agentBack:hover, QToolButton#agentConversations:hover, QToolButton#agentFollowChanges:hover,"
+        " QToolButton#agentNewConversation:hover, QToolButton#agentPresentation:hover,"
         " QToolButton#agentSettings:hover { background:rgba(255,255,255,0.07); }"
+        "QToolButton#agentFollowChanges:checked { background:rgba(255,255,255,0.14); }"
         "QToolButton#agentPresentation::menu-indicator { image:none; width:0; }"
         "QWidget#agentConversationCanvas, QWidget#agentReadingColumn { background:transparent; }"
         "QScrollArea#agentConversation { border:0; background:transparent; }"
@@ -1173,8 +1185,18 @@ void AgentWindow::Private::UpdateChanges(const QJsonObject& event) {
         totals[i] = absolute ? value : AddCount(totals[i], value);
         counters[i]->SetTarget(totals[i]);
     }
-    conversation->AppendChanges(event.value(QStringLiteral("items")).toArray());
+    const QJsonArray items = event.value(QStringLiteral("items")).toArray();
+    conversation->AppendChanges(items);
     UpdateSummary();
+    if (!settings.followChanges) return;
+    for (qsizetype i = items.size() - 1; i >= 0; --i) {
+        const QJsonObject item = items.at(i).toObject();
+        const QString kind = item.value(QStringLiteral("kind")).toString();
+        const QString objectId = item.value(QStringLiteral("object_id")).toString();
+        if (kind.isEmpty() || objectId.isEmpty()) continue;
+        emit q->FollowRequested(kind, objectId);
+        return;
+    }
 }
 
 void AgentWindow::Private::UpdateElapsed() {
@@ -1244,6 +1266,7 @@ AgentWindow::~AgentWindow() = default;
 void AgentWindow::SetSettings(const AgentSettings& settings) {
     const QVariant previous = d_->models->currentData();
     d_->settings = settings;
+    d_->followButton->setChecked(settings.followChanges);
     {
         const QSignalBlocker blocker(d_->models);
         d_->models->clear();
