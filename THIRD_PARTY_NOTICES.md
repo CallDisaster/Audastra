@@ -32,6 +32,10 @@ Lua **5.3.6**，官方源码 <https://www.lua.org/ftp/lua-5.3.6.tar.gz>，MIT �
 
 War3RenderCore 是同一作者的独立仓库，版本与逐文件哈希由 `War3RenderCore.lock.json` 固定，构建时作为源码编入编辑器。许可为 GNU GPL v3，另附依 GPLv3 第 7 条给出的“与 Audastra 组合”附加许可（见 `NOTICE.md` 与核心仓库 `COPYRIGHT.md`）。作者以版权人身份在 Audastra 中使用该核心。
 
+## WarVK
+
+运行库中注明来自 WarVK 的代码取自同一作者的 WarVK 项目（<https://github.com/CallDisaster/War3VK>，GNU GPL v3）。作者以版权人身份另行授权 Audastra 在本仓库协议下使用其持有版权的部分，见 WarVK 仓库 `LICENSE-AUDASTRA.md`。WarVK 所含的 DXVK、Dear ImGui、MinHook 等第三方组件不在该授权内，Audastra 不从中取用代码。
+
 ## AI 助手运行时
 
 内置助手使用 Node.js 运行时（MIT，许可原文随包为 `licenses/Node-LICENSE.txt`）和 `@earendil-works/pi-agent-core`、`@earendil-works/pi-ai` 1.0.0（MIT），版本见 `tools/agent-runtime/package.json` 与锁文件。发布时由 esbuild 打包为单个 `worker.bundle.mjs`，其中包含的全部传递依赖（含 Apache-2.0 的 `openai`、`@google/genai` 等）的许可原文随包放在 `licenses/Agent-runtime/`。`node_modules` 与 Node 可执行文件不进入仓库。

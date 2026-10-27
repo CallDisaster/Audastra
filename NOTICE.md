@@ -34,6 +34,8 @@ Required Notice: Copyright (c) 2026 CallDisaster. Audastra.
 
 编辑器编译时包含同一作者的共享渲染核心 War3RenderCore。核心单独以 GNU GPL v3 提供，并附依 GPLv3 第 7 条给出的附加许可：允许把核心与 Audastra（含修改版）组合后分发，分发组合程序时须同时提供核心与所用 Audastra 部分的源码。核心部分仍适用 GPLv3，Audastra 其余部分仍适用本仓库协议。条款原文见核心仓库的 `COPYRIGHT.md`。
 
+运行库中标明来自 WarVK 的代码取自同一作者的 WarVK 项目。WarVK 以 GNU GPL v3 提供，作者以版权人身份另行授权 Audastra 在本仓库协议下使用其持有版权的部分（条款原文见 WarVK 仓库的 `LICENSE-AUDASTRA.md`）；WarVK 中的第三方组件不在此列，仍按各自原许可。这些文件在文件头注明来源。
+
 Warcraft、Warcraft III、World Editor 及相关名称和资源归其各自权利人所有。本项目是独立开发的兼容性工具，未获得 Blizzard Entertainment 的认可或背书。
 
 本仓库不得包含 Warcraft III 游戏数据、私有地图、YDWE 二进制文件、加密密钥或其他专有资源。
