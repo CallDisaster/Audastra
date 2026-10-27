@@ -448,8 +448,14 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         request.dead = frame.value("dead").toString();
         request.outOfRange = frame.value("out_of_range").toString();
         request.select = frame.value("select").toString();
+        request.healthNow = frame.value("health_now").toString();
+        request.healthMax = frame.value("health_max").toString();
+        request.manaNow = frame.value("mana_now").toString();
+        request.manaMax = frame.value("mana_max").toString();
+        request.portrait = frame.value("portrait").toString();
         for (const auto& icon : frame.value("buff_icons").toArray()) request.buffIcons.append(icon.toString());
         for (const auto& buff : args.value("buffs").toArray()) request.buffs.append(buff.toString());
+        for (const auto& unit : args.value("portraits").toArray()) request.portraits.append(unit.toString());
         if (args.value("name_source").toString() == QLatin1String("unit")) request.nameSource = PartyNameSource::Unit;
         request.farRange = args.value("far_range").toDouble(request.farRange);
         request.autoHeroes = args.value("auto_heroes").toBool(true);
@@ -467,6 +473,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         binding.insert("join_trigger", generated->joinTrigger);
         binding.insert("leave_trigger", generated->leaveTrigger);
         binding.insert("registration_kept", generated->registrationKept);
+        binding.insert("portrait_kept", generated->portraitKept);
         return binding;
     }
 

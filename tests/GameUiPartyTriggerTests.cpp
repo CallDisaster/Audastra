@@ -203,6 +203,70 @@ void TestBuffs() {
     if (AudastraUiTest::CheckWithGameScripts(f, script)) std::cout << "party script checked against game scripts\n";
 }
 
+// 生命数字与头像：数字取单位当前/最大生命；头像触发器列出单位类型与图标，每格按单位类型填头像，没登记的为空。
+void TestNumbersAndPortraits() {
+    using namespace PartyPreset;
+    const UiDescription d = PartyDescription();
+    PartySystemOptions options = FullBinding(d);
+    options.frame.healthNow = std::string(kHealthNow);
+    options.frame.healthMax = std::string(kHealthMax);
+    options.frame.portrait = std::string(kPortrait);
+    options.portraits = {PartyPortrait{"Hpal", "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin"},
+        PartyPortrait{"H000", "ReplaceableTextures\\CommandButtons\\BTNJaina"}};
+
+    PartySystemOptions bad = options;
+    bad.frame.healthNow = std::string(kName);
+    bad.portraits.push_back(PartyPortrait{"Hp", ""});
+    bad.portraits.push_back(PartyPortrait{"Hpal", "x"});
+    const auto refused = GeneratePartySystem(bad);
+    Require(!refused.Succeeded() && refused.diagnostics.size() == 4, "数字类型、单位类型、图标、重复登记一起报：" + First(refused.diagnostics));
+    Require(Has(refused.diagnostics, "AUP_PORTRAIT_INVALID"), "头像诊断");
+    PartySystemOptions unbound = FullBinding(d);
+    unbound.portraits = options.portraits;
+    Require(!GeneratePartySystem(unbound).Succeeded(), "登记了头像却没有头像数值");
+
+    const auto plan = GeneratePartySystem(options);
+    Require(plan.Succeeded(), "带数字与头像生成：" + First(plan.diagnostics));
+    Require(plan.value->triggers.size() == 8 && plan.value->triggers.front() == "团队 头像 Party_Portrait"
+            && plan.value->portraitTrigger == "团队 头像 Party_Portrait",
+        "头像触发器在最前");
+    const std::string& text = plan.value->featureText;
+    const std::string cell = "[OperatorInt(udg_AUP_I, OperatorSubtract, 1)]";
+    for (const std::string part : {std::string("触发器 团队 头像 Party_Portrait (init):"), std::string("SetVariable(udg_AUP_TypeCode[2], 'H000')"),
+             "SetVariable(udg_AUIV_party_hp_now" + cell + ", GetUnitStateSwap(UnitStateLife, udg_AUP_Unit[udg_AUP_I]))",
+             "SetVariable(udg_AUIV_party_hp_max" + cell + ", GetUnitStateSwap(UnitStateMaxLife, udg_AUP_Unit[udg_AUP_I]))",
+             "SetVariable(udg_AUIV_party_portrait" + cell + ", \"\")",
+             std::string("OperatorCompareUnitCode(GetUnitTypeId(udg_AUP_Unit[udg_AUP_I]), OperatorEqualENE, udg_AUP_TypeCode[udg_AUP_TypeI])"),
+             "SetVariable(udg_AUIV_party_portrait" + cell + ", udg_AUP_TypeIcon[udg_AUP_TypeI])"}) {
+        Require(Contains(text, part), "生成文本缺少：" + part + "\n" + text);
+    }
+    PartySystemOptions keep = options;
+    keep.includePortraitRegistration = false;
+    const auto kept = GeneratePartySystem(keep);
+    Require(kept.Succeeded() && kept.value->triggers.size() == 7 && !Contains(kept.value->featureText, "Party_Portrait (init)"),
+        "已有头像触发器时不再生成");
+
+    // 模板：头像框架按数值换贴图、为空时隐藏；生命数字写成“当前/最大”，死亡时不显示。
+    const auto ui = GenerateUiTriggers(d);
+    Require(ui.Succeeded(), "界面触发器：" + First(ui.diagnostics));
+    Require(Contains(ui.value->featureText, "OperatorCompareString(udg_AUIV_party_portrait[GetForLoopIndexA()], OperatorNotEqualENE, \"\")"),
+        "头像数值为空时隐藏");
+    Require(Contains(ui.value->featureText, "udg_AUIV_party_hp_now[GetForLoopIndexA()]")
+            && Contains(ui.value->featureText, "udg_AUIV_party_hp_max[GetForLoopIndexA()]"),
+        "生命数字取当前与最大生命");
+
+    Fixture f;
+    Require(f.Apply(kUiTriggerCategory, ui.value->featureText).Succeeded(), "写进界面触发器");
+    const auto applied = f.Apply(kPartyTriggerCategory, plan.value->featureText);
+    Require(applied.Succeeded(), "带头像写入：" + First(applied.diagnostics));
+    Require(f.Trigger("团队 头像 Party_Portrait")->runOnInit != 0, "头像触发器在地图初始化时运行");
+    const std::string script = f.Script();
+    for (const char* part : {"set udg_AUP_TypeCode[1] = 'Hpal'", "if ((GetUnitTypeId(udg_AUP_Unit[udg_AUP_I]) == udg_AUP_TypeCode[udg_AUP_TypeI])) then"}) {
+        Require(Contains(script, part), std::string("脚本缺少：") + part + "\n" + script);
+    }
+    if (AudastraUiTest::CheckWithGameScripts(f, script)) std::cout << "party portrait script checked against game scripts\n";
+}
+
 } // namespace
 
 int main() {
@@ -212,6 +276,7 @@ int main() {
         TestGeneratedText();
         TestAppliedAndCompiled();
         TestBuffs();
+        TestNumbersAndPortraits();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

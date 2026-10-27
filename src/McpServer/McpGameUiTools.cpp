@@ -97,7 +97,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
         } else if (tool.name == "game_ui_description_create") {
             tool.description = "新建一份地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程。"
                 "preset 可选起始模板：castbar 读条条（数值 shown、progress、text、remaining，状态 channel、interrupt，"
-                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
+                "与 game_ui_cast_system 的读条条绑定对应）；party 团队框架（5 格，数组数值 shown、hp、mp、name、dead、far、hp_now、hp_max、portrait、buff1..buff4，点击事件 select，与 game_ui_party_system 的绑定对应）；talents 统一天赋树（入口按钮与面板，5 层 × 3 列，单值 shown、entry_shown、entry、title、points、"
                 "tip_shown、tip_title、tip_text，数组 level、icon1..3、name1..3、picked1..3，事件 open、close、pick1..3、enter1..3、leave1..3，"
                 "与 game_ui_talent_system 的默认绑定对应）；省略为空白";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
@@ -151,13 +151,17 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
                 "每 0.1 秒把每格的显示、生命与法力比例、名字、死亡、过远写进界面数组数值并运行该界面的“更新”触发器；点击事件选中该队员（只改本机选择）。"
                 "frame 绑定一份已生成界面触发器的界面描述：shown（布尔数组，格数即队伍上限）必填；health、mana（实数数组）、name（字符串数组）、"
                 "dead、out_of_range（布尔数组）可空，格数须与 shown 相同；select 为点击事件编号，事件框架须在重复次数等于格数的重复框架里。"
-                "party 模板对应 shown、hp、mp、name、dead、far、select。name_source：player 玩家名（默认）或 unit 英雄名/单位名；"
+                "health_now、health_max、mana_now、mana_max（实数数组）为生命、法力的当前与最大值，界面文字可写 {hp_now[]:0}/{hp_max[]:0}。"
+                "party 模板对应 shown、hp、mp、name、dead、far、select、hp_now、hp_max、portrait。name_source：player 玩家名（默认）或 unit 英雄名/单位名；"
                 "far_range 为过远距离（默认 1200）。过远与点选需要 YDWE 的 GetLocalPlayer、RemoveLocation。"
                 "frame.buff_icons 为增减益图标数值（字符串数组，按显示顺序，party 模板为 buff1..buff4）；buffs 为要显示的增减益码，"
                 "写进“团队 登记 Party_Register”触发器，图标取自物编；地图里已有登记触发器时保留它，buffs 不写入（结果 registration_kept 为 true）。"
+                "frame.portrait 为头像图标数值（字符串数组）；portraits 为登记头像的单位类型，写进“团队 头像 Party_Portrait”触发器，"
+                "图标取自物编，没登记的单位头像为空；地图里已有头像触发器时保留它，portraits 不写入（结果 portrait_kept 为 true）。"
                 "preview 为 true 时只返回生成的功能写法，不改地图";
             QJsonObject frameProperties;
-            for (const char* key : {"description", "shown", "health", "mana", "name", "dead", "out_of_range", "select"})
+            for (const char* key : {"description", "shown", "health", "mana", "name", "dead", "out_of_range", "select", "health_now", "health_max",
+                     "mana_now", "mana_max", "portrait"})
                 frameProperties.insert(key, QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
             frameProperties.insert("buff_icons", QJsonObject{{"type", "array"}, {"maxItems", 16},
                 {"items", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}}}});
@@ -167,6 +171,8 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("far_range", QJsonObject{{"type", "number"}, {"minimum", 100}, {"maximum", 100000}});
             properties.insert("auto_heroes", QJsonObject{{"type", "boolean"}});
             properties.insert("buffs", QJsonObject{{"type", "array"}, {"maxItems", 64},
+                {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
+            properties.insert("portraits", QJsonObject{{"type", "array"}, {"maxItems", 256},
                 {"items", QJsonObject{{"type", "string"}, {"minLength", 4}, {"maxLength", 4}}}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("frame");

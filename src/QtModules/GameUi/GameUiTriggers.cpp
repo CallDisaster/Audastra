@@ -185,6 +185,11 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
     options.frame = PartyFrameBinding{description, request.shown.toStdString(), request.health.toStdString(), request.mana.toStdString(),
         request.name.toStdString(), request.dead.toStdString(), request.outOfRange.toStdString(), request.select.toStdString(), {}};
     for (const auto& icon : request.buffIcons) options.frame.buffIcons.push_back(icon.toStdString());
+    options.frame.healthNow = request.healthNow.toStdString();
+    options.frame.healthMax = request.healthMax.toStdString();
+    options.frame.manaNow = request.manaNow.toStdString();
+    options.frame.manaMax = request.manaMax.toStdString();
+    options.frame.portrait = request.portrait.toStdString();
     options.nameSource = request.nameSource;
     options.farRange = request.farRange;
     options.autoHeroes = request.autoHeroes;
@@ -200,6 +205,17 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
             options.buffs.push_back(PartyBuff{code.toStdString(), icon.toStdString()});
         }
     }
+    const bool portraitKept = !request.portrait.isEmpty() && std::any_of(triggers.begin(), triggers.end(), [&](const Trigger::TriggerRecord& row) {
+        return row.name.text == PartyTriggerName(options.name, "头像", "Portrait");
+    });
+    options.includePortraitRegistration = !portraitKept;
+    if (!portraitKept) {
+        for (const auto& code : request.portraits) {
+            const auto icon = ResolveProjectObjectPresentation(project_, ObjectData::ObjectKey{ObjectData::ObjectType::Unit, code.toStdString()}).iconPath;
+            if (icon.isEmpty()) return fail(tr("单位 %1 在物编里没有图标").arg(code));
+            options.portraits.push_back(PartyPortrait{code.toStdString(), icon.toStdString()});
+        }
+    }
     auto plan = GameUi::GeneratePartySystem(options);
     if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
 
@@ -212,6 +228,7 @@ std::optional<GameUiModule::PartySystemGeneration> GameUiModule::GeneratePartySy
     result.joinTrigger = Text(plan.value->joinTrigger);
     result.leaveTrigger = Text(plan.value->leaveTrigger);
     result.registrationKept = kept;
+    result.portraitKept = portraitKept;
     if (preview) return result;
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kPartyTriggerCategory), plan.value->featureText, {}, std::nullopt});

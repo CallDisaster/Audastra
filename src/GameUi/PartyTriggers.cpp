@@ -39,6 +39,7 @@ public:
         }
         Variables();
         if (Buffs() && o_.includeRegistration) text_.Trigger(Name("登记", "Register"), {}, Registration(), {}, "init");
+        if (Portraits() && o_.includePortraitRegistration) text_.Trigger(Name("头像", "Portrait"), {}, PortraitRegistration(), {}, "init");
         // 被运行的触发器写在前面。
         text_.Trigger(Name("加入", "Join"), {}, Join());
         text_.Trigger(Name("移出", "Leave"), {}, Leave());
@@ -65,12 +66,14 @@ public:
         plan.joinTrigger = Name("加入", "Join");
         plan.leaveTrigger = Name("移出", "Leave");
         if (Buffs()) plan.registrationTrigger = Name("登记", "Register");
+        if (Portraits()) plan.portraitTrigger = Name("头像", "Portrait");
         return Result<PartySystemPlan>::Success(std::move(plan));
     }
 
 private:
     [[nodiscard]] const UiDescription& d() const { return *b_.description; }
     [[nodiscard]] bool Buffs() const { return !b_.buffIcons.empty(); }
+    [[nodiscard]] bool Portraits() const { return !b_.portrait.empty(); }
     void Error(const char* code, const std::string& message) { errors_.push_back(Note(DiagnosticSeverity::Error, code, message)); }
 
     [[nodiscard]] std::string Name(std::string_view role, std::string_view key) const { return PartyTriggerName(o_.name, role, key); }
@@ -101,6 +104,11 @@ private:
         };
         value(b_.health, UiValueType::Real, "实数");
         value(b_.mana, UiValueType::Real, "实数");
+        value(b_.healthNow, UiValueType::Real, "实数");
+        value(b_.healthMax, UiValueType::Real, "实数");
+        value(b_.manaNow, UiValueType::Real, "实数");
+        value(b_.manaMax, UiValueType::Real, "实数");
+        value(b_.portrait, UiValueType::String, "字符串");
         value(b_.name, UiValueType::String, "字符串");
         value(b_.dead, UiValueType::Boolean, "布尔");
         value(b_.outOfRange, UiValueType::Boolean, "布尔");
@@ -109,6 +117,24 @@ private:
         }
         if (!b_.select.empty()) CheckSelect();
         CheckBuffs();
+        CheckPortraits();
+    }
+
+    void CheckPortraits() {
+        if (!Portraits()) {
+            if (!o_.portraits.empty()) Error("AUP_OPTION_INVALID", "登记了头像，但没有绑定头像数值");
+            return;
+        }
+        if (o_.portraits.size() > 256) Error("AUP_PORTRAIT_INVALID", "最多登记 256 个头像");
+        for (std::size_t i = 0; i < o_.portraits.size(); ++i) {
+            const PartyPortrait& portrait = o_.portraits[i];
+            const std::string at = "第 " + std::to_string(i + 1) + " 个头像（" + portrait.unit + "）：";
+            if (!ValidRawcode(portrait.unit)) Error("AUP_PORTRAIT_INVALID", at + "单位类型应为 4 个字符");
+            if (!UsableLabel(portrait.icon)) Error("AUP_PORTRAIT_INVALID", at + "需要图标路径");
+            for (std::size_t j = 0; j < i; ++j) {
+                if (o_.portraits[j].unit == portrait.unit) Error("AUP_PORTRAIT_INVALID", at + "已在第 " + std::to_string(j + 1) + " 个登记");
+            }
+        }
     }
 
     void CheckBuffs() {
@@ -178,6 +204,12 @@ private:
             var("BuffN", "integer", false, "0");
             var("BuffI", "integer", false, "0");
         }
+        if (Portraits()) {
+            var("TypeCount", "integer", false, "0");
+            var("TypeCode", "unitcode", true);
+            var("TypeIcon", "string", true);
+            var("TypeI", "integer", false, "0");
+        }
     }
 
     Lines Registration() const {
@@ -187,6 +219,17 @@ private:
             const std::string index = std::to_string(i + 1);
             out.push_back(Set(At("BuffCode", index), "'" + o_.buffs[i].buff + "'"));
             out.push_back(Set(At("BuffIcon", index), Quote(o_.buffs[i].icon)));
+        }
+        return out;
+    }
+
+    Lines PortraitRegistration() const {
+        Lines out{Call("CommentString", {Quote("每种单位一组：单位类型、头像图标路径；没登记的单位头像为空")}),
+            Set(V("TypeCount"), std::to_string(o_.portraits.size()))};
+        for (std::size_t i = 0; i < o_.portraits.size(); ++i) {
+            const std::string index = std::to_string(i + 1);
+            out.push_back(Set(At("TypeCode", index), "'" + o_.portraits[i].unit + "'"));
+            out.push_back(Set(At("TypeIcon", index), Quote(o_.portraits[i].icon)));
         }
         return out;
     }
@@ -258,6 +301,16 @@ private:
         Lines filled{Set(at(b_.shown), "true")};
         if (!b_.health.empty()) Append(filled, Ratio(at(b_.health), "UnitStateLife", "UnitStateMaxLife", unit));
         if (!b_.mana.empty()) Append(filled, Ratio(at(b_.mana), "UnitStateMana", "UnitStateMaxMana", unit));
+        if (!b_.healthNow.empty()) filled.push_back(Set(at(b_.healthNow), State("UnitStateLife", unit)));
+        if (!b_.healthMax.empty()) filled.push_back(Set(at(b_.healthMax), State("UnitStateMaxLife", unit)));
+        if (!b_.manaNow.empty()) filled.push_back(Set(at(b_.manaNow), State("UnitStateMana", unit)));
+        if (!b_.manaMax.empty()) filled.push_back(Set(at(b_.manaMax), State("UnitStateMaxMana", unit)));
+        if (Portraits()) {
+            filled.push_back(Set(at(b_.portrait), Quote("")));
+            Append(filled, ForLoopVar(V("TypeI"), "1", V("TypeCount"),
+                If({Call("OperatorCompareUnitCode", {Call("GetUnitTypeId", {unit}), "OperatorEqualENE", At("TypeCode", V("TypeI"))})},
+                    {Set(at(b_.portrait), At("TypeIcon", V("TypeI")))})));
+        }
         if (!b_.name.empty()) {
             if (o_.nameSource == PartyNameSource::Player) {
                 filled.push_back(Set(at(b_.name), Call("GetPlayerName", {Call("GetOwningPlayer", {unit})})));

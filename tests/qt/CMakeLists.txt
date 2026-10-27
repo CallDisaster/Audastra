@@ -622,7 +622,8 @@ foreach(editor_project_group IN ITEMS native-pathing native-objects derived terr
     set(editor_project_group_log "${CMAKE_CURRENT_BINARY_DIR}/qt-editor-project-${editor_project_group}-$<CONFIG>.qtest.txt")
     add_test(NAME qt-editor-project-${editor_project_group} COMMAND war3-map-editor-project-tests
         --case-group=${editor_project_group} -o -,txt -o "${editor_project_group_log},txt")
-    set_tests_properties(qt-editor-project-${editor_project_group} PROPERTIES TIMEOUT 30 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    # native-objects 单独跑约 26 秒，并行时会超过 30 秒。
+    set_tests_properties(qt-editor-project-${editor_project_group} PROPERTIES TIMEOUT 120 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
         ATTACHED_FILES_ON_FAIL "${editor_project_group_log}"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endforeach()

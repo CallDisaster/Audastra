@@ -15,6 +15,7 @@
 // - “过远”按本机玩家在名单里的第一个队员量距离；点格子只在本机发生，只改本机的选择（游戏自己同步选择）。
 // - 增减益：“登记”触发器列出要显示的增减益与图标（作者可改，重新生成时保留）；每格按登记顺序把队员身上有的
 //   增减益图标填进绑定的图标数值，多出的为空。
+// - 头像：“头像”触发器列出单位类型与头像图标（作者可改，重新生成时保留）；每格填队员单位类型的头像，没登记的为空。
 // 触发器名为“<名字> <用途> Party_<键>”。
 namespace War3Map::GameUi {
 
@@ -37,11 +38,22 @@ struct PartyFrameBinding {
     std::string outOfRange;  // 布尔：离本机玩家的队员超过 farRange
     std::string select;      // 点击事件编号：事件须是点击，框架是重复框架（或其中的子框架），重复次数等于格数
     std::vector<std::string> buffIcons;  // 文字：第 1、2…个增减益的图标路径，没有时为空
+    std::string healthNow;   // 实数：当前生命（显示数字用）
+    std::string healthMax;   // 实数：最大生命
+    std::string manaNow;     // 实数：当前法力
+    std::string manaMax;     // 实数：最大法力
+    std::string portrait;    // 文字：队员单位类型的头像图标路径，没登记时为空
 };
 
 // 登记的增减益：增减益码与图标路径。
 struct PartyBuff {
     std::string buff;
+    std::string icon;
+};
+
+// 登记的头像：单位类型与头像图标路径。
+struct PartyPortrait {
+    std::string unit;
     std::string icon;
 };
 
@@ -53,6 +65,8 @@ struct PartySystemOptions {
     bool autoHeroes = true;
     std::vector<PartyBuff> buffs;     // 写进“登记”触发器，最多 64 个
     bool includeRegistration = true;  // 地图里已有登记触发器时为假：不生成它，保留作者的登记
+    std::vector<PartyPortrait> portraits;     // 写进“头像”触发器，最多 256 个
+    bool includePortraitRegistration = true;  // 地图里已有头像触发器时为假：不生成它，保留作者的头像表
 };
 
 struct PartySystemPlan {
@@ -64,9 +78,10 @@ struct PartySystemPlan {
     std::string joinTrigger;
     std::string leaveTrigger;
     std::string registrationTrigger;  // 绑定了图标时的登记触发器名，否则为空
+    std::string portraitTrigger;      // 绑定了头像时的头像触发器名，否则为空
 };
 
-// 选项或绑定不合法时一次列出全部错误并失败（AUP_OPTION_INVALID、AUP_FRAME_INVALID、AUP_BUFF_INVALID），不给部分结果。
+// 选项或绑定不合法时一次列出全部错误并失败（AUP_OPTION_INVALID、AUP_FRAME_INVALID、AUP_BUFF_INVALID、AUP_PORTRAIT_INVALID），不给部分结果。
 [[nodiscard]] Result<PartySystemPlan> GeneratePartySystem(const PartySystemOptions& options);
 // “<名字> <用途> Party_<键>”，例如“团队 加入 Party_Join”。
 [[nodiscard]] std::string PartyTriggerName(std::string_view name, std::string_view role, std::string_view key);

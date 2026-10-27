@@ -823,7 +823,7 @@ void GameUiModuleTests::CreatesFromPresets() {
     QVERIFY(presets->findData(QStringLiteral("castbar")) > 0 && presets->findData(QStringLiteral("party")) > 0
         && presets->findData(QStringLiteral("talents")) > 0);
     QVERIFY2(module.CreateDescription(QStringLiteral("Party"), {}, &error, QStringLiteral("party")), qPrintable(error));
-    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{10});
+    QCOMPARE(module.Description(QStringLiteral("Party"))->values.size(), std::size_t{13});
     QCOMPARE(module.Description(QStringLiteral("Party"))->events.size(), std::size_t{1});
     QCOMPARE(module.Description(QStringLiteral("Party"))->label, std::string("团队框架"));
     QVERIFY(module.SelectFrame(QStringLiteral("slot#4")));
@@ -911,6 +911,24 @@ void GameUiModuleTests::GeneratesPartySystem() {
     QVERIFY2(again, qPrintable(error));
     QVERIFY(again->registrationKept);
     QCOMPARE(again->triggers.size(), qsizetype{7});
+
+    // 头像：单位图标取自物编，取不到时拒绝；生成头像触发器，再次生成时保留作者的头像表。
+    request.healthNow = id(kHealthNow);
+    request.healthMax = id(kHealthMax);
+    request.portrait = id(kPortrait);
+    request.portraits = {QStringLiteral("Hxxx")};
+    QVERIFY(!module.GeneratePartySystem(request, true, &error));
+    QVERIFY(error.contains(QStringLiteral("Hxxx")));
+    request.portraits.clear();
+    const auto withPortraits = module.GeneratePartySystem(request, false, &error);
+    QVERIFY2(withPortraits, qPrintable(error));
+    QVERIFY(withPortraits->triggers.contains(QStringLiteral("团队 头像 Party_Portrait")));
+    QVERIFY(!withPortraits->portraitKept);
+    request.portraits = {QStringLiteral("Hxxx")};
+    const auto keptPortraits = module.GeneratePartySystem(request, true, &error);
+    QVERIFY2(keptPortraits, qPrintable(error));
+    QVERIFY(keptPortraits->portraitKept && keptPortraits->registrationKept);
+    QVERIFY(!keptPortraits->triggers.contains(QStringLiteral("团队 头像 Party_Portrait")));
 }
 
 // 天赋树：按模板新建界面并生成界面触发器后，天赋系统检查同步单位与英雄在物编里存在；没有物编时拒绝且不改地图。

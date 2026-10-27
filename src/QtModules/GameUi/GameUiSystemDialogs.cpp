@@ -176,6 +176,11 @@ void GameUiModule::ShowPartySystemDialog() {
     auto* shown = ui.Combo("gameUiPartyShown", tr("显示"));
     auto* health = ui.Combo("gameUiPartyHealth", tr("生命"));
     auto* mana = ui.Combo("gameUiPartyMana", tr("法力"));
+    auto* healthNow = ui.Combo("gameUiPartyHealthNow", tr("当前生命"));
+    auto* healthMax = ui.Combo("gameUiPartyHealthMax", tr("最大生命"));
+    auto* manaNow = ui.Combo("gameUiPartyManaNow", tr("当前法力"));
+    auto* manaMax = ui.Combo("gameUiPartyManaMax", tr("最大法力"));
+    auto* portrait = ui.Combo("gameUiPartyPortrait", tr("头像"));
     auto* name = ui.Combo("gameUiPartyName", tr("名字"));
     auto* dead = ui.Combo("gameUiPartyDead", tr("死亡"));
     auto* outOfRange = ui.Combo("gameUiPartyOutOfRange", tr("过远"));
@@ -209,6 +214,17 @@ void GameUiModule::ShowPartySystemDialog() {
     buffs->SetKindFilter(QStringLiteral("buff"));
     buffs->SetInlineCatalogEnabled(true);
     ui.form->addRow(tr("增减益"), buffs);
+    // 头像：登记的单位类型按物编图标显示，没登记的队员头像为空。
+    auto* portraits = new QtApp::OrderedObjectListWidget(project_.iconProvider_.get(), &ui.dialog);
+    portraits->setObjectName(QStringLiteral("gameUiPartyPortraits"));
+    QVector<QtApp::ObjectViewEntry> unitEntries;
+    for (auto& entry : QtApp::BuildObjectViewEntries(project_)) {
+        if (entry.kind == QLatin1String("unit")) unitEntries.push_back(std::move(entry));
+    }
+    portraits->SetEntries(unitEntries);
+    portraits->SetKindFilter(QStringLiteral("unit"));
+    portraits->SetInlineCatalogEnabled(true);
+    ui.form->addRow(tr("头像单位"), portraits);
 
     FillDescriptions(frame, Descriptions(), {}, tr("新建团队框架"), "party");
     // 其余数值按“显示”数组的格数筛选。
@@ -223,6 +239,11 @@ void GameUiModule::ShowPartySystemDialog() {
         const UiDescription* cells = size ? description : nullptr;
         FillValues(health, cells, UiValueType::Real, size, true, {"hp", "health", "life"});
         FillValues(mana, cells, UiValueType::Real, size, true, {"mp", "mana"});
+        FillValues(healthNow, cells, UiValueType::Real, size, true, {"hp_now", "health_now", "life_now"});
+        FillValues(healthMax, cells, UiValueType::Real, size, true, {"hp_max", "health_max", "life_max"});
+        FillValues(manaNow, cells, UiValueType::Real, size, true, {"mp_now", "mana_now"});
+        FillValues(manaMax, cells, UiValueType::Real, size, true, {"mp_max", "mana_max"});
+        FillValues(portrait, cells, UiValueType::String, size, true, {"portrait", "avatar"});
         FillValues(name, cells, UiValueType::String, size, true, {"name", "label"});
         FillValues(dead, cells, UiValueType::Boolean, size, true, {"dead"});
         FillValues(outOfRange, cells, UiValueType::Boolean, size, true, {"far", "range", "outofrange"});
@@ -256,7 +277,8 @@ void GameUiModule::ShowPartySystemDialog() {
             Prefer(shown, {"shown", "visible", "show"});
         }
         refillCells();
-        for (QWidget* box : std::initializer_list<QWidget*>{shown, health, mana, name, dead, outOfRange, select, buffIcons}) {
+        for (QWidget* box : std::initializer_list<QWidget*>{shown, health, mana, healthNow, healthMax, manaNow, manaMax, portrait, name, dead,
+                 outOfRange, select, buffIcons}) {
             box->setEnabled(description != nullptr);
         }
     };
@@ -272,6 +294,7 @@ void GameUiModule::ShowPartySystemDialog() {
     request.farRange = range->value();
     request.autoHeroes = autoHeroes->isChecked();
     request.buffs = buffs->Ids();
+    request.portraits = portraits->Ids();
     QString error;
     if (request.frame.startsWith(QLatin1Char('+'))) {
         const auto created = CreateFromPreset(QStringLiteral("party"), &error);
@@ -288,6 +311,9 @@ void GameUiModule::ShowPartySystemDialog() {
         request.dead = Text(kDead);
         request.outOfRange = Text(kFar);
         request.select = Text(kSelect);
+        request.healthNow = Text(kHealthNow);
+        request.healthMax = Text(kHealthMax);
+        request.portrait = Text(kPortrait);
         for (const auto icon : kBuffs) request.buffIcons.append(Text(icon));
     } else {
         request.shown = shown->currentData().toString();
@@ -297,6 +323,11 @@ void GameUiModule::ShowPartySystemDialog() {
         request.dead = dead->currentData().toString();
         request.outOfRange = outOfRange->currentData().toString();
         request.select = select->currentData().toString();
+        request.healthNow = healthNow->currentData().toString();
+        request.healthMax = healthMax->currentData().toString();
+        request.manaNow = manaNow->currentData().toString();
+        request.manaMax = manaMax->currentData().toString();
+        request.portrait = portrait->currentData().toString();
         for (int i = 0; i < buffIcons->count(); ++i) {
             if (buffIcons->item(i)->checkState() == Qt::Checked) request.buffIcons.append(buffIcons->item(i)->data(Qt::UserRole).toString());
         }
