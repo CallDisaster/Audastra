@@ -1,6 +1,8 @@
 #include "GameUiToolService.h"
 
+#include "GameUiAuthoringJson.h"
 #include "GameUiModule.h"
+#include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QBuffer>
@@ -184,6 +186,27 @@ QJsonArray StringArray(const QStringList& values, int limit) {
     return array;
 }
 
+// 可新建的界面类型（与右键“创建界面”同一份）：作用、用法、可换项与默认框架，add_frame 可照默认框架写。
+QJsonArray FrameKindsJson() {
+    static constexpr std::string_view kSlotKinds[] = {"texture", "icon", "text", "number", "flag"};
+    QJsonArray kinds;
+    for (const auto& kind : UiFrameKinds()) {
+        QJsonArray swappable;
+        for (const auto& slot : kind.swappable) {
+            swappable.append(QJsonObject{{"field", Text(std::string(slot.field))}, {"label", Text(std::string(slot.label))},
+                {"kind", Text(std::string(kSlotKinds[static_cast<int>(slot.kind)]))}, {"bindable", slot.bindable}});
+        }
+        QJsonObject row{{"kind", Text(std::string(kind.id))}, {"group", Text(std::string(kind.group))},
+            {"label", Text(std::string(kind.label))}, {"purpose", Text(std::string(kind.purpose))},
+            {"usage", Text(std::string(kind.usage))}, {"slots", swappable}};
+        if (kind.type != UiFrameType::Template) {
+            row.insert("frame", FrameObject(DefaultUiFrame(kind, std::string(UiFrameIdPrefix(kind)) + "1")));
+        }
+        kinds.append(row);
+    }
+    return kinds;
+}
+
 QJsonObject View(const GameUiModule& module, QJsonObject result) {
     result.insert("race", module.Race());
     result.insert("expansion", module.Expansion());
@@ -224,6 +247,7 @@ QJsonObject View(const GameUiModule& module, QJsonObject result) {
     }
     result.insert("descriptions", descriptions);
     result.insert("description_count", static_cast<qint64>(files.size()));
+    result.insert("frame_kinds", FrameKindsJson());
     return result;
 }
 

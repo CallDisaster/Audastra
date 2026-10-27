@@ -61,9 +61,7 @@ std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescription
     if (!project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Action, "AudastraUISetPoint"))
         return fail(tr("触发器函数库里没有 AudastraUI，先在函数库里安装并启用它"));
 
-    UiSkin skin;
-    skin.SetGameSkins(definitions_->gameSkins);
-    if (!definitions_->mapSkin.empty()) skin.SetMapSkin(definitions_->mapSkin);
+    const UiSkin skin = MakeSkin();
     UiTriggerOptions options;
     options.library = definitions_->library.get();
     if (const auto font = skin.Lookup("MasterFont", race_.toStdString(), expansion_)) options.defaultFont = font->value;

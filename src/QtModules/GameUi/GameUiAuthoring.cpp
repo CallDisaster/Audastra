@@ -3,10 +3,13 @@
 #include "EditorProject.h"
 #include "GameUiAuthoringJson.h"
 #include "GameUiCanvas.h"
+#include "GameUiKindPicker.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -15,6 +18,7 @@
 #include <QListWidget>
 #include <QMenu>
 #include <QPushButton>
+#include <QScreen>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -33,50 +37,6 @@ namespace {
 using namespace War3Map::GameUi;
 
 QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
-
-const char* IdPrefix(UiFrameType type) {
-    switch (type) {
-    case UiFrameType::Backdrop: return "back";
-    case UiFrameType::Text: return "text";
-    case UiFrameType::Bar: return "bar";
-    case UiFrameType::Button: return "button";
-    default: return "panel";
-    }
-}
-
-// 新框架居中于父框架，带上能看见的默认外观，作者再改。
-QJsonObject DefaultFrame(UiFrameType type, const QString& id) {
-    const QString background = QStringLiteral("UI\\Widgets\\ToolTips\\Human\\human-tooltip-background");
-    QJsonObject frame{{"id", id}, {"type", Text(std::string(UiFrameTypeName(type)))},
-        {"anchors", QJsonArray{QJsonObject{{"point", "CENTER"}}}}};
-    switch (type) {
-    case UiFrameType::Backdrop:
-        frame.insert("width", 0.12);
-        frame.insert("height", 0.06);
-        frame.insert("texture", background);
-        break;
-    case UiFrameType::Text:
-        frame.insert("text", QObject::tr("文字"));
-        break;
-    case UiFrameType::Bar:
-        frame.insert("width", 0.15);
-        frame.insert("height", 0.015);
-        frame.insert("texture", QStringLiteral("ReplaceableTextures\\TeamColor\\TeamColor06"));
-        frame.insert("background", QStringLiteral("ReplaceableTextures\\TeamColor\\TeamColor13"));
-        break;
-    case UiFrameType::Button:
-        frame.insert("width", 0.08);
-        frame.insert("height", 0.03);
-        frame.insert("texture", background);
-        frame.insert("text", QObject::tr("按钮"));
-        break;
-    default:
-        frame.insert("width", 0.12);
-        frame.insert("height", 0.06);
-        break;
-    }
-    return frame;
-}
 
 QString FirstMessage(const std::vector<Diagnostic>& diagnostics) {
     QStringList messages;
@@ -151,37 +111,158 @@ bool GameUiModule::EditDescription(const QString& id, const QString& edits, cons
     return StageDescription(std::move(*edited.value), false, undoLabel.isEmpty() ? tr("修改界面 %1").arg(id) : undoLabel, error);
 }
 
-QString GameUiModule::AddDescriptionFrame(UiFrameType type, QString* error) {
-    return AddFrameObject(DefaultFrame(type, {}), IdPrefix(type), error);
-}
-
-QString GameUiModule::AddDescriptionTemplate(const QString& templateName, QString* error) {
-    if (templateName.trimmed().isEmpty()) {
-        if (error) *error = tr("模板名为空");
-        return {};
-    }
-    QJsonObject frame{{"type", "template"}, {"template", templateName.trimmed()},
-        {"anchors", QJsonArray{QJsonObject{{"point", "CENTER"}}}}};
-    return AddFrameObject(std::move(frame), "template", error);
-}
-
-// 编号按类型取下一个空号，放在所选框架下（选中描述根节点时为顶层）。
-QString GameUiModule::AddFrameObject(QJsonObject frame, const char* idPrefix, QString* error) {
+QString GameUiModule::AddDescriptionFrame(const QString& kind, QString* error, const QString& templateName) {
     if (!tree_ || selected_ >= tree_->Nodes().size() || !tree_->Nodes()[selected_].uiFrame) {
         if (error) *error = tr("先选中一个界面描述里的框架");
         return {};
     }
     const UiFrameLink link = *tree_->Nodes()[selected_].uiFrame;
-    const QString id = Text(link.description);
+    return CreateDescriptionFrame(kind, Text(link.description), Text(link.frame), std::nullopt, templateName, error);
+}
+
+QString GameUiModule::AddDescriptionTemplate(const QString& templateName, QString* error) {
+    return AddDescriptionFrame(QStringLiteral("template"), error, templateName);
+}
+
+// 编号按类型取下一个空号；给了位置时把中心锚点的偏移换算到父框架中心。
+QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QString& id, const QString& parent,
+    std::optional<QPointF> at, const QString& templateName, QString* error) {
+    const auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return QString();
+    };
+    const UiFrameKind* kind = FindUiFrameKind(kindId.toStdString());
+    if (!kind) return fail(tr("没有界面类型 %1").arg(kindId));
+    if (kind->type == UiFrameType::Template && templateName.trimmed().isEmpty()) return fail(tr("模板名为空"));
     const UiDescription* description = Description(id);
-    if (!description) return {};
-    const QString frameId = Text(NextUiFrameId(*description, idPrefix));
-    frame.insert(QStringLiteral("id"), frameId);
-    QJsonObject edit{{"op", "add_frame"}, {"frame", frame}};
-    if (!link.frame.empty()) edit.insert("parent", Text(link.frame));
+    if (!description) return fail(tr("地图里没有界面描述 %1").arg(id));
+    if (!parent.isEmpty() && !FindUiFrame(*description, parent.toStdString())) return fail(tr("界面 %1 里没有框架 %2").arg(id, parent));
+    UiFrame frame = DefaultUiFrame(*kind, NextUiFrameId(*description, UiFrameIdPrefix(*kind)), templateName.trimmed().toStdString());
+    const FrameNode* parentNode = nullptr;
+    if (tree_) {
+        for (const auto& node : tree_->Nodes()) {
+            if (node.uiFrame && Text(node.uiFrame->description) == id && Text(node.uiFrame->frame) == parent) {
+                parentNode = &node;
+                break;
+            }
+        }
+    }
+    if (at && parentNode && parentNode->layout == LayoutState::Placed && !frame.anchors.empty()) {
+        frame.anchors.front().x = Round4(at->x() - (parentNode->rect.left + parentNode->rect.right) / 2.0);
+        frame.anchors.front().y = Round4(at->y() - (parentNode->rect.top + parentNode->rect.bottom) / 2.0);
+    }
+    const QString frameId = Text(frame.id);
+    QJsonObject edit{{"op", "add_frame"}, {"frame", FrameObject(frame)}};
+    if (!parent.isEmpty()) edit.insert("parent", parent);
     if (!EditDescription(id, CompactEdits({edit}), tr("界面 %1：添加 %2").arg(id, frameId), error)) return {};
     if (!SelectFrame(frameId)) (void)SelectFrame(frameId + QStringLiteral("#0"));
     return frameId;
+}
+
+GameUiModule::FramePreview GameUiModule::PreviewFrame(const UiFrame& frame) {
+    FramePreview preview;
+    if (!definitions_ || !definitions_->library) return preview;
+    UiDescription description;
+    description.id = "AudastraKindPreview";
+    description.frames.push_back(frame);
+    const UiSkin skin = MakeSkin();
+    FrameTreeOptions options;
+    options.race = race_.toStdString();
+    options.expansion = expansion_;
+    preview.tree = std::make_unique<FrameTree>(options);
+    std::vector<Diagnostic> diagnostics;
+    (void)AddUiDescription(*preview.tree, *definitions_->library, &skin, description, {}, diagnostics);
+    (void)preview.tree->Layout();
+    preview.list = BuildDrawList(*preview.tree, {});
+    for (const auto& node : preview.tree->Nodes()) {
+        if (node.uiFrame && node.uiFrame->frame == frame.id && node.layout == LayoutState::Placed) {
+            preview.focus = node.rect;
+            break;
+        }
+    }
+    previewDrawList_ = preview.list;
+    StartAssetsJob();
+    return preview;
+}
+
+QPointer<QWidget> GameUiModule::OpenKindPicker(std::uint32_t node, std::optional<QPointF> at, const QPoint& global) {
+    if (!definitions_ || definitions_->descriptions.empty()) return nullptr;
+    // 放进：所点节点所在的描述框架，其次所选节点的，再其次第一份描述的顶层。
+    const auto linkOf = [this](std::uint32_t id) -> std::optional<UiFrameLink> {
+        if (!tree_ || id >= tree_->Nodes().size() || !tree_->Nodes()[id].uiFrame) return std::nullopt;
+        return tree_->Nodes()[id].uiFrame;
+    };
+    const std::optional<UiFrameLink> preferred = linkOf(node) ? linkOf(node) : linkOf(selected_);
+    QList<GameUiKindPicker::Target> targets;
+    int current = 0;
+    const auto label = [](const std::string& name, const std::string& id) {
+        return name.empty() ? Text(id) : QStringLiteral("%1  %2").arg(Text(name), Text(id));
+    };
+    const std::function<void(const UiDescription&, const std::vector<UiFrame>&, int)> addFrames =
+        [&](const UiDescription& description, const std::vector<UiFrame>& frames, int depth) {
+            for (const auto& frame : frames) {
+                if (preferred && preferred->description == description.id && preferred->frame == frame.id) {
+                    current = static_cast<int>(targets.size());
+                }
+                targets.push_back({QString(depth * 2, QChar::Space) + label(frame.label, frame.id), Text(description.id), Text(frame.id)});
+                addFrames(description, frame.children, depth + 1);
+            }
+        };
+    for (const auto& file : definitions_->descriptions) {
+        const UiDescription& description = file.description;
+        if (preferred && preferred->description == description.id && preferred->frame.empty()) current = static_cast<int>(targets.size());
+        targets.push_back({label(description.label, description.id), Text(description.id), {}});
+        addFrames(description, description.frames, 1);
+    }
+    auto* picker = new GameUiKindPicker(*this, std::move(targets), current, page_);
+    connect(picker, &GameUiKindPicker::Chosen, this,
+        [this, at](const QString& kind, const QString& templateName, const QString& description, const QString& frame) {
+            QString error;
+            if (CreateDescriptionFrame(kind, description, frame, at, templateName, &error).isEmpty()) ReportAuthoring(error);
+        });
+    picker->adjustSize();
+    QRect geometry(global, picker->sizeHint());
+    if (const QScreen* screen = QGuiApplication::screenAt(global)) {
+        const QRect available = screen->availableGeometry();
+        geometry.moveLeft(std::clamp(geometry.left(), available.left(), std::max(available.left(), available.right() - geometry.width())));
+        geometry.moveTop(std::clamp(geometry.top(), available.top(), std::max(available.top(), available.bottom() - geometry.height())));
+    }
+    picker->move(geometry.topLeft());
+    picker->show();
+    return picker;
+}
+
+void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at, const QPoint& global, bool fromTree) {
+    if (!tree_ || !page_) return;
+    const FrameNode* item = node < tree_->Nodes().size() && node != kScreenNode ? &tree_->Nodes()[node] : nullptr;
+    if (item) SelectNode(node);
+    const bool isFrame = item && item->uiFrame && !item->uiFrame->frame.empty();
+    QMenu menu(page_);
+    QAction* create = menu.addAction(tr("创建界面…"), this, [this, node, at, global] { (void)OpenKindPicker(node, at, global); });
+    create->setEnabled(definitions_ && !definitions_->descriptions.empty());
+    AddNewDescriptionForm(menu.addMenu(tr("新建界面描述")));
+    if (isFrame) {
+        menu.addSeparator();
+        menu.addAction(tr("删除"), this, [this] {
+            QString error;
+            if (!RemoveSelectedDescriptionFrame(&error) && !error.isEmpty()) ReportAuthoring(error);
+        });
+    }
+    if (fromTree && item) {
+        menu.addSeparator();
+        menu.addAction(tr("只显示这一项"), this, [this, node] { ShowOnly(node); });
+        menu.addAction(tr("全部显示"), this, [this] {
+            hiddenKeys_.clear();
+            RebuildDrawList();
+            PopulateTree();
+            StartAssetsJob();
+        });
+        if (item->parent == kScreenNode && !item->uiFrame) {
+            const QString name = Text(item->name);
+            menu.addAction(tr("移除"), this, [this, name] { RemoveRoot(name); });
+        }
+    }
+    menu.exec(global);
 }
 
 bool GameUiModule::RemoveSelectedDescriptionFrame(QString* error) {
@@ -234,13 +315,8 @@ void GameUiModule::ReportAuthoring(const QString& error) {
     UpdateProblems();
 }
 
-QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
-    newDescriptionButton_ = new QToolButton(toolbar);
-    newDescriptionButton_->setObjectName(QStringLiteral("gameUiNewDescription"));
-    newDescriptionButton_->setText(tr("新建界面"));
-    newDescriptionButton_->setPopupMode(QToolButton::InstantPopup);
-    auto* createMenu = new QMenu(newDescriptionButton_);
-    auto* form = new QWidget(createMenu);
+void GameUiModule::AddNewDescriptionForm(QMenu* menu) {
+    auto* form = new QWidget(menu);
     auto* formLayout = new QHBoxLayout(form);
     formLayout->setContentsMargins(6, 4, 6, 4);
     auto* idEdit = new QLineEdit(form);
@@ -253,36 +329,48 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     formLayout->addWidget(idEdit);
     formLayout->addWidget(labelEdit);
     formLayout->addWidget(create);
-    auto* formAction = new QWidgetAction(createMenu);
+    auto* formAction = new QWidgetAction(menu);
     formAction->setDefaultWidget(form);
-    createMenu->addAction(formAction);
-    newDescriptionButton_->setMenu(createMenu);
-    const auto submit = [this, idEdit, labelEdit, createMenu] {
+    menu->addAction(formAction);
+    const auto submit = [this, idEdit, labelEdit, menu] {
         QString error;
-        if (CreateDescription(idEdit->text().trimmed(), labelEdit->text().trimmed(), &error)) {
-            idEdit->clear();
-            labelEdit->clear();
-            createMenu->close();
-        } else {
+        if (!CreateDescription(idEdit->text().trimmed(), labelEdit->text().trimmed(), &error)) {
             ReportAuthoring(error);
+            return;
         }
+        idEdit->clear();
+        labelEdit->clear();
+        // 放在右键菜单的子菜单里时连同上级菜单一起关掉。
+        for (QWidget* open = menu; auto* current = qobject_cast<QMenu*>(open); open = current->parentWidget()) current->close();
     };
     connect(create, &QPushButton::clicked, this, submit);
     connect(idEdit, &QLineEdit::returnPressed, this, submit);
     connect(labelEdit, &QLineEdit::returnPressed, this, submit);
-    connect(createMenu, &QMenu::aboutToShow, idEdit, [idEdit] { idEdit->setFocus(); });
+    connect(menu, &QMenu::aboutToShow, idEdit, [idEdit] { idEdit->setFocus(); });
+}
+
+QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
+    newDescriptionButton_ = new QToolButton(toolbar);
+    newDescriptionButton_->setObjectName(QStringLiteral("gameUiNewDescription"));
+    newDescriptionButton_->setText(tr("新建界面"));
+    newDescriptionButton_->setPopupMode(QToolButton::InstantPopup);
+    auto* createMenu = new QMenu(newDescriptionButton_);
+    AddNewDescriptionForm(createMenu);
+    newDescriptionButton_->setMenu(createMenu);
 
     addFrameButton_ = new QToolButton(toolbar);
     addFrameButton_->setObjectName(QStringLiteral("gameUiAddFrame"));
     addFrameButton_->setText(tr("添加"));
     addFrameButton_->setPopupMode(QToolButton::InstantPopup);
     auto* addMenu = new QMenu(addFrameButton_);
-    const std::pair<UiFrameType, QString> types[] = {{UiFrameType::Panel, tr("容器")}, {UiFrameType::Backdrop, tr("背景")},
-        {UiFrameType::Text, tr("文字")}, {UiFrameType::Bar, tr("进度条")}, {UiFrameType::Button, tr("按钮")}};
-    for (const auto& [type, name] : types) {
-        connect(addMenu->addAction(name), &QAction::triggered, this, [this, type] {
+    for (const auto& kind : UiFrameKinds()) {
+        if (kind.type == UiFrameType::Template) continue;
+        const QString id = Text(std::string(kind.id));
+        QAction* action = addMenu->addAction(Text(std::string(kind.label)));
+        action->setToolTip(Text(std::string(kind.purpose)));
+        connect(action, &QAction::triggered, this, [this, id] {
             QString error;
-            if (AddDescriptionFrame(type, &error).isEmpty()) ReportAuthoring(error);
+            if (AddDescriptionFrame(id, &error).isEmpty()) ReportAuthoring(error);
         });
     }
     // 模板：游戏与地图界面文件里的框架模板，按名字搜索后回车或双击添加。

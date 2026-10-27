@@ -8,6 +8,7 @@
 #include <QWidget>
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace War3Map::Modules {
@@ -32,6 +33,8 @@ public:
     void SetSelected(std::uint32_t node);
     // 选中节点能否拖动（自有界面描述的框架）。
     void SetDraggable(bool draggable);
+    // 放大到该区域（屏幕单位）铺满控件，留出边距；空为显示整个画面。用于类型预览。
+    void SetFocusRect(std::optional<GameUi::FrameRect> rect);
 
     [[nodiscard]] double Aspect() const noexcept { return aspect_; }
     [[nodiscard]] std::uint32_t Selected() const noexcept { return selected_; }
@@ -46,12 +49,15 @@ signals:
     void NodeClicked(std::uint32_t node);
     // 拖动松开：位移为屏幕单位（右、上为正），已取到 0.001。
     void NodeDragged(std::uint32_t node, double dx, double dy);
+    // 右键：所点节点（没有为 kNoNode）、所点位置（屏幕单位，左下为原点）与全局像素位置。
+    void ContextMenuRequested(std::uint32_t node, QPointF point, QPoint global);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
     struct HitBox {
@@ -80,6 +86,7 @@ private:
     bool showBounds_ = false;
     bool showNames_ = false;
     std::uint32_t selected_ = GameUi::kNoNode;
+    std::optional<GameUi::FrameRect> focus_;
     bool draggable_ = false;
     std::uint32_t dragNode_ = GameUi::kNoNode;  // 按下时可拖动的节点
     QPointF dragStart_;

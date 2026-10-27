@@ -69,7 +69,8 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
         QJsonArray required{"project_identity", "expected_revision"};
         if (tool.name == "game_ui_view_read") {
             tool.description = "读取界面工作区的预览设置（种族、版本、宽高比、根界面、是否显示隐藏框架）、读取状态、问题、地图自带界面列表、"
-                "地图脚本创建的界面数量与预览未还原的界面调用，以及地图自己的界面描述（AudastraUI，含数值、状态、事件与当前预览取值）";
+                "地图脚本创建的界面数量与预览未还原的界面调用，地图自己的界面描述（AudastraUI，含数值、状态、事件与当前预览取值），"
+                "以及可新建的界面类型 frame_kinds（作用、用法、可换项与默认框架，与编辑器右键“创建界面”同一份）";
         } else if (tool.name == "game_ui_view_set") {
             tool.description = "设置界面预览：种族、版本、宽高比、增删根界面（GameUI 为游戏代码区域，MapScriptUI 为地图脚本创建的界面）、只显示某节点；只改预览，不改地图";
             properties.insert("race", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"Human", "Orc", "NightElf", "Undead"}}});
@@ -103,7 +104,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："
                 "set_description{label}；add_frame{parent?,index?,frame}；set_frame{frame,fields}（null 删除字段，改 id 同步引用）；"
                 "move_frame{frame,parent,index?}；remove_frame{frame}；rename_value{from,to}（同步框架取值、文字与贴图模板）；set_values{values}、set_states{states}、set_events{events}（整体替换）。"
-                "框架与字段按 audastra.ui 写法：type 为 panel/backdrop/text/bar/button/template，anchors 为 {point,to,toPoint,x,y}，"
+                "框架与字段按 audastra.ui 写法（新框架可照 game_ui_view_read 的 frame_kinds[].frame 默认外观写）：type 为 panel/backdrop/text/bar/button/template，anchors 为 {point,to,toPoint,x,y}，"
                 "to 为 parent、screen、框架编号或 game:区域标识；value/visible 可写 编号、编号[] 或 编号[下标]（visible 取文字数值时非空为显示），"
                 "文字可写 {编号:小数位}，贴图也可写 {编号} 按数值换图。"
                 "结果作为导入文件进入待保存修改";

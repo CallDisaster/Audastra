@@ -207,16 +207,22 @@ void GameUiModule::SetAspect(double aspect) {
     }
 }
 
+UiSkin GameUiModule::MakeSkin() const {
+    UiSkin skin;
+    if (!definitions_) return skin;
+    skin.SetGameSkins(definitions_->gameSkins);
+    skin.SetMiscUi(definitions_->miscUi);
+    if (!definitions_->mapSkin.empty()) skin.SetMapSkin(definitions_->mapSkin);
+    skin.SetTeamColors(definitions_->teamColors);
+    return skin;
+}
+
 void GameUiModule::RebuildScene() {
     tree_.reset();
     drawList_ = {};
     sceneDiagnostics_.clear();
     if (definitions_ && definitions_->library) {
-        UiSkin skin;
-        skin.SetGameSkins(definitions_->gameSkins);
-        skin.SetMiscUi(definitions_->miscUi);
-        if (!definitions_->mapSkin.empty()) skin.SetMapSkin(definitions_->mapSkin);
-        skin.SetTeamColors(definitions_->teamColors);
+        const UiSkin skin = MakeSkin();
         FrameTreeOptions options;
         options.race = race_.toStdString();
         options.expansion = expansion_;
@@ -307,9 +313,11 @@ void GameUiModule::StartAssetsJob() {
         requestedAssets_.insert(key);
         output.push_back(path);
     };
-    for (const auto& command : drawList_.commands) {
-        if (command.kind == DrawKind::Image) want(command.image.path, textures);
-        else want(command.text.fontPath, fonts);
+    for (const auto* list : {&drawList_, &previewDrawList_}) {
+        for (const auto& command : list->commands) {
+            if (command.kind == DrawKind::Image) want(command.image.path, textures);
+            else want(command.text.fontPath, fonts);
+        }
     }
     if (textures.empty() && fonts.empty()) return;
     assetsPending_ = true;

@@ -307,22 +307,10 @@ void GameUiModule::BuildPage() {
     connect(nodes_, &QTreeWidget::itemChanged, this, &GameUiModule::OnItemChanged);
     connect(nodes_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& position) {
         QTreeWidgetItem* item = nodes_->itemAt(position);
-        if (!item || !tree_) return;
-        const auto id = item->data(0, kNodeRole).toUInt();
-        QMenu menu(nodes_);
-        menu.addAction(tr("只显示这一项"), this, [this, id] { ShowOnly(id); });
-        menu.addAction(tr("全部显示"), this, [this] {
-            hiddenKeys_.clear();
-            RebuildDrawList();
-            PopulateTree();
-            StartAssetsJob();
-        });
-        if (!item->parent()) {
-            const QString name = Text(tree_->Nodes()[id].name);
-            menu.addSeparator();
-            menu.addAction(tr("移除"), this, [this, name] { RemoveRoot(name); });
-        }
-        menu.exec(nodes_->viewport()->mapToGlobal(position));
+        ShowContextMenu(item ? item->data(0, kNodeRole).toUInt() : kNoNode, std::nullopt, nodes_->viewport()->mapToGlobal(position), true);
+    });
+    connect(canvas_, &GameUiCanvas::ContextMenuRequested, this, [this](std::uint32_t node, QPointF point, QPoint global) {
+        ShowContextMenu(node, point, global, false);
     });
     connect(canvas_, &GameUiCanvas::NodeClicked, this, [this](std::uint32_t node) { SelectNode(node); });
     connect(canvas_, &GameUiCanvas::NodeDragged, this, [this](std::uint32_t node, double dx, double dy) {

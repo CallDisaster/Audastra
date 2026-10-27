@@ -4,6 +4,7 @@
 #include "Theme/ThemeManager.h"
 #include "War3MapCore/Text/WarcraftText.h"
 
+#include <QContextMenuEvent>
 #include <QFontMetricsF>
 #include <QMouseEvent>
 #include <QPainter>
@@ -122,17 +123,7 @@ void GameUiCanvas::SetShowNames(bool show) { showNames_ = show; update(); }
 void GameUiCanvas::SetSelected(std::uint32_t node) { selected_ = node; update(); }
 void GameUiCanvas::SetDraggable(bool draggable) { draggable_ = draggable; }
 
-QRectF GameUiCanvas::ScreenRect() const {
-    const QRectF available = QRectF(rect()).adjusted(kMargin, kMargin, -kMargin, -kMargin);
-    if (available.width() <= 0.0 || available.height() <= 0.0) return {};
-    double width = available.width();
-    double height = width / aspect_;
-    if (height > available.height()) {
-        height = available.height();
-        width = height * aspect_;
-    }
-    return QRectF(available.center().x() - width / 2.0, available.center().y() - height / 2.0, width, height);
-}
+void GameUiCanvas::SetFocusRect(std::optional<FrameRect> rect) { focus_ = rect; update(); }
 
 namespace {
 
@@ -146,6 +137,27 @@ QRectF ToPixelRect(const QRectF& screen, const FrameTreeOptions& options, const 
 }
 
 } // namespace
+
+QRectF GameUiCanvas::ScreenRect() const {
+    const QRectF available = QRectF(rect()).adjusted(kMargin, kMargin, -kMargin, -kMargin);
+    if (available.width() <= 0.0 || available.height() <= 0.0) return {};
+    double width = available.width();
+    double height = width / aspect_;
+    if (height > available.height()) {
+        height = available.height();
+        width = height * aspect_;
+    }
+    const QRectF screen(available.center().x() - width / 2.0, available.center().y() - height / 2.0, width, height);
+    if (!focus_ || !tree_) return screen;
+    // 放大：焦点区域缩放到可用区域的八成，中心对齐。
+    const QRectF target = ToPixelRect(screen, tree_->Options(), *focus_);
+    if (target.width() < 1.0 || target.height() < 1.0) return screen;
+    const double scale = std::min(available.width() / target.width(), available.height() / target.height()) * 0.8;
+    const QPointF center = target.center();
+    const QRectF scaled(center.x() + (screen.left() - center.x()) * scale, center.y() + (screen.top() - center.y()) * scale,
+        screen.width() * scale, screen.height() * scale);
+    return scaled.translated(available.center() - center);
+}
 
 void GameUiCanvas::paintEvent(QPaintEvent*) {
     QPainter painter(this);
@@ -458,6 +470,16 @@ void GameUiCanvas::mouseReleaseEvent(QMouseEvent* event) {
     const double dx = snap(dragOffset_.x() / screen.width() * options.screenWidth);
     const double dy = snap(-dragOffset_.y() / screen.height() * options.screenHeight);
     if (dx != 0.0 || dy != 0.0) emit NodeDragged(node, dx, dy);
+}
+
+void GameUiCanvas::contextMenuEvent(QContextMenuEvent* event) {
+    const QRectF screen = ScreenRect();
+    if (!tree_ || screen.isEmpty()) return QWidget::contextMenuEvent(event);
+    const auto& options = tree_->Options();
+    const QPointF position = event->pos();
+    const QPointF point((position.x() - screen.left()) / screen.width() * options.screenWidth,
+        (screen.bottom() - position.y()) / screen.height() * options.screenHeight);
+    emit ContextMenuRequested(NodeAt(position), point, event->globalPos());
 }
 
 void GameUiCanvas::mouseMoveEvent(QMouseEvent* event) {

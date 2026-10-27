@@ -1,12 +1,20 @@
 #include "AudastraUiCatalog.h"
 #include "EditorProject.h"
 #include "GameUiCanvas.h"
+#include "GameUiKindPicker.h"
 #include "GameUiModule.h"
+#include "GameUiToolService.h"
+#include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QStandardItemModel>
 #include <QTableWidget>
@@ -74,6 +82,7 @@ private slots:
     void DescriptionDataTablesEdit();
     void GeneratesDescriptionTriggers();
     void FramePropertiesEditLayoutAndText();
+    void KindPickerCreatesTypedFrames();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -374,7 +383,7 @@ void GameUiModuleTests::AuthoringStagesDescriptionImport() {
     QCOMPARE(selectedName(), std::string("Hud"));
     QVERIFY(!module.CreateDescription(QStringLiteral("Hud"), {}, &error));
 
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Bar, &error), QStringLiteral("bar1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("bar"), &error), QStringLiteral("bar1"));
     QCOMPARE(selectedName(), std::string("bar1"));
     QVERIFY(module.Tree()->Nodes()[module.SelectedNode()].layout == LayoutState::Placed);
 
@@ -403,7 +412,7 @@ void GameUiModuleTests::AuthoringStagesDescriptionImport() {
     QCOMPARE(frame("bar1")->anchors[0].y, -0.02);
     QVERIFY(qAbs(module.Tree()->Nodes()[module.SelectedNode()].rect.left - left - 0.05f) < 1e-5f);
 
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Text, &error), QStringLiteral("text1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("text"), &error), QStringLiteral("text1"));
     QCOMPARE(frame("bar1")->children.size(), std::size_t{1});
     QVERIFY(module.RemoveSelectedDescriptionFrame(&error));
     QVERIFY(!frame("text1"));
@@ -433,7 +442,7 @@ void GameUiModuleTests::DescriptionDataTablesEdit() {
     module.LoadDefinitionsForTesting(SyntheticDefinitions());
     QString error;
     QVERIFY2(module.CreateDescription(QStringLiteral("Cast"), {}, &error), qPrintable(error));
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Bar, &error), QStringLiteral("bar1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("bar"), &error), QStringLiteral("bar1"));
     const auto description = [&module] { return module.Description(QStringLiteral("Cast")); };
     const auto click = [page](const char* name) {
         auto* button = page->findChild<QPushButton*>(QLatin1String(name));
@@ -512,7 +521,7 @@ void GameUiModuleTests::DescriptionDataTablesEdit() {
     QCOMPARE(module.DescriptionPreview(QStringLiteral("Cast")).state, std::string("interrupted"));
 
     // 事件：按钮默认点击，可改触发与删除。
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Button, &error), QStringLiteral("button1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("button"), &error), QStringLiteral("button1"));
     click("gameUiAddEvent");
     QCOMPARE(description()->events.size(), std::size_t{1});
     QVERIFY(description()->events[0].frame == "button1" && description()->events[0].kind == UiEventKind::Click);
@@ -546,8 +555,8 @@ void GameUiModuleTests::GeneratesDescriptionTriggers() {
     module.LoadDefinitionsForTesting(std::move(definitions));
     QString error;
     QVERIFY2(module.CreateDescription(QStringLiteral("Cast"), QStringLiteral("读条"), &error), qPrintable(error));
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Bar, &error), QStringLiteral("bar1"));
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Text, &error), QStringLiteral("text1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("bar"), &error), QStringLiteral("bar1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("text"), &error), QStringLiteral("text1"));
     QVERIFY2(module.EditDescription(QStringLiteral("Cast"),
                  QStringLiteral(R"([{"op":"set_frame","frame":"text1","fields":{"fontHeight":0.013}}])"), {}, &error),
         qPrintable(error));
@@ -626,9 +635,9 @@ void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
     module.LoadDefinitionsForTesting(SyntheticDefinitions());
     QString error;
     QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error), qPrintable(error));
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Backdrop, &error), QStringLiteral("back1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back1"));
     QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
-    QCOMPARE(module.AddDescriptionFrame(UiFrameType::Text, &error), QStringLiteral("text1"));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("text"), &error), QStringLiteral("text1"));
     const auto frame = [&module](const char* id) { return FindUiFrame(*module.Description(QStringLiteral("Hud")), id); };
     auto* properties = page->findChild<QTreeWidget*>(QStringLiteral("gameUiProperties"));
     QVERIFY(properties);
@@ -739,6 +748,89 @@ void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
     QVERIFY(field(QStringLiteral("模板")));
     choose(field(QStringLiteral("模板")), QStringLiteral("ConsoleUI"));
     QCOMPARE(frame("template1")->templateName, std::string("ConsoleUI"));
+}
+
+void GameUiModuleTests::KindPickerCreatesTypedFrames() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    QVERIFY(module.Widget());
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(!module.OpenKindPicker(kNoNode, std::nullopt, QPoint(10, 10)));  // 没有描述时不打开
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error), qPrintable(error));
+    const auto description = [&module] { return module.Description(QStringLiteral("Hud")); };
+    const auto text = [](std::string_view value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); };
+
+    // 每种类型的默认框架都能放进描述并排得出位置。
+    for (const auto& kind : UiFrameKinds()) {
+        const QString templateName = kind.type == UiFrameType::Template ? QStringLiteral("Box") : QString();
+        const QString created = module.CreateDescriptionFrame(text(kind.id), QStringLiteral("Hud"), {}, std::nullopt, templateName, &error);
+        QVERIFY2(!created.isEmpty(), qPrintable(text(kind.id) + QStringLiteral("：") + error));
+        const LayoutState layout = module.Tree()->Nodes()[module.SelectedNode()].layout;
+        QVERIFY2(layout == (kind.type == UiFrameType::Text ? LayoutState::SizeFromContent : LayoutState::Placed), qPrintable(text(kind.id)));
+    }
+    QCOMPARE(description()->frames.size(), UiFrameKinds().size());
+    QVERIFY(module.CreateDescriptionFrame(QStringLiteral("nope"), QStringLiteral("Hud"), {}, std::nullopt, {}, &error).isEmpty());
+    QVERIFY(module.CreateDescriptionFrame(QStringLiteral("template"), QStringLiteral("Hud"), {}, std::nullopt, {}, &error).isEmpty());
+
+    // 右键位置：新框架中心落在所点处（顶层相对屏幕中心，嵌套相对父框架中心）。
+    QCOMPARE(module.CreateDescriptionFrame(QStringLiteral("icon"), QStringLiteral("Hud"), {}, QPointF(0.1, 0.5), {}, &error),
+        QStringLiteral("icon2"));
+    const auto& iconNode = module.Tree()->Nodes()[module.SelectedNode()];
+    QVERIFY(qAbs((iconNode.rect.left + iconNode.rect.right) / 2.0 - 0.1) < 1e-4);
+    QVERIFY(qAbs((iconNode.rect.top + iconNode.rect.bottom) / 2.0 - 0.5) < 1e-4);
+    QCOMPARE(module.CreateDescriptionFrame(QStringLiteral("text"), QStringLiteral("Hud"), QStringLiteral("panel1"), QPointF(0.45, 0.32), {},
+                 &error),
+        QStringLiteral("text2"));
+    QCOMPARE(FindUiFrame(*description(), "panel1")->children.size(), std::size_t{1});
+    QCOMPARE(FindUiFrame(*description(), "text2")->anchors[0].x, 0.05);
+    QCOMPARE(FindUiFrame(*description(), "text2")->anchors[0].y, 0.02);
+
+    // 类型选取：默认放进所点节点；作用与用法取自类型表；预览放大到所选类型；创建后放进目标框架。
+    QVERIFY(module.SelectFrame(QStringLiteral("bar1")));
+    QPointer<Modules::GameUiKindPicker> picker =
+        qobject_cast<Modules::GameUiKindPicker*>(module.OpenKindPicker(module.SelectedNode(), std::nullopt, QPoint(10, 10)).data());
+    QVERIFY(picker);
+    auto* target = picker->findChild<QComboBox*>(QStringLiteral("gameUiKindTarget"));
+    QVERIFY(target && target->currentText().contains(QStringLiteral("bar1")));
+    QVERIFY(picker->SelectKind(QStringLiteral("button")));
+    QCOMPARE(picker->findChild<QLabel*>(QStringLiteral("gameUiKindPurpose"))->text(), text(FindUiFrameKind("button")->purpose));
+    QCOMPARE(picker->findChild<QLabel*>(QStringLiteral("gameUiKindUsage"))->text(), text(FindUiFrameKind("button")->usage));
+    auto* preview = picker->findChild<Modules::GameUiCanvas*>(QStringLiteral("gameUiKindPreview"));
+    QVERIFY(preview && preview->ScreenRect().width() > preview->width());
+    picker->Accept();
+    QCOMPARE(FindUiFrame(*description(), "bar1")->children.size(), std::size_t{1});
+    QCOMPARE(FindUiFrame(*description(), "bar1")->children[0].type, UiFrameType::Button);
+
+    // 模板类型改为搜索模板；没选中模板时不能创建。
+    picker = qobject_cast<Modules::GameUiKindPicker*>(module.OpenKindPicker(kNoNode, std::nullopt, QPoint(10, 10)).data());
+    QVERIFY(picker && picker->SelectKind(QStringLiteral("template")));
+    auto* create = picker->findChild<QPushButton*>(QStringLiteral("gameUiKindCreate"));
+    auto* search = picker->findChild<QLineEdit*>(QStringLiteral("gameUiKindTemplateSearch"));
+    QVERIFY(create && search && search->isVisibleTo(picker));
+    search->setText(QStringLiteral("nothing"));
+    QVERIFY(!create->isEnabled());
+    search->setText(QStringLiteral("Box"));
+    QVERIFY(create->isEnabled());
+    picker->Accept();
+    QVERIFY(FindUiFrame(*description(), "template2"));
+    QCOMPARE(FindUiFrame(*description(), "template2")->templateName, std::string("Box"));
+
+    // 助手读到同一份类型表；默认框架可直接作为 add_frame 写入。
+    Modules::GameUiToolService service([&module] { return &module; });
+    const QJsonArray kinds = service.Invoke(QStringLiteral("game_ui_view_read"), {}).value("frame_kinds").toArray();
+    QCOMPARE(kinds.size(), static_cast<qsizetype>(UiFrameKinds().size()));
+    QCOMPARE(kinds[0].toObject().value("kind").toString(), QStringLiteral("panel"));
+    QJsonObject bar;
+    for (const auto& kind : kinds) {
+        if (kind.toObject().value("kind").toString() == QLatin1String("bar")) bar = kind.toObject().value("frame").toObject();
+    }
+    QVERIFY(bar.contains(QStringLiteral("background")));
+    bar.insert(QStringLiteral("id"), QStringLiteral("hp"));
+    const QJsonArray edits{QJsonObject{{"op", "add_frame"}, {"frame", bar}}};
+    QVERIFY2(module.EditDescription(QStringLiteral("Hud"), QString::fromUtf8(QJsonDocument(edits).toJson(QJsonDocument::Compact)), {}, &error),
+        qPrintable(error));
+    QVERIFY(FindUiFrame(*description(), "hp"));
 }
 
 int main(int argc, char** argv) {

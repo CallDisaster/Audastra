@@ -4,6 +4,7 @@
 #include "Modules/EditorModule.h"
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
+#include "War3MapCore/GameUi/UiSkin.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Services/MapRuntimePackage.h"
 
@@ -11,6 +12,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QObject>
+#include <QPointF>
 #include <QPointer>
 #include <QRect>
 #include <QSet>
@@ -32,6 +34,7 @@ class QComboBox;
 class QJsonArray;
 class QLabel;
 class QLineEdit;
+class QMenu;
 class QPoint;
 class QPushButton;
 class QSplitter;
@@ -115,10 +118,26 @@ public:
     // 与导入文件同一撤销栈和保存流程。失败时给出原因，什么都不改。edits 的写法见 UiDescriptionEdit.h。
     bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr);
     bool EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error = nullptr);
-    // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；返回新框架编号，失败为空。
-    QString AddDescriptionFrame(GameUi::UiFrameType type, QString* error = nullptr);
+    // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；kind 为 UiFrameKinds 的编号，模板类型给模板名。
+    // 返回新框架编号，失败为空。
+    QString AddDescriptionFrame(const QString& kind, QString* error = nullptr, const QString& templateName = {});
+    // 在描述 description 的框架 parent 下（空为顶层）添加；at 为新框架中心（屏幕单位，左下为原点），空为居中于父框架。
+    QString CreateDescriptionFrame(const QString& kind, const QString& description, const QString& parent,
+        std::optional<QPointF> at, const QString& templateName = {}, QString* error = nullptr);
     // 在所选描述框架下添加游戏或地图界面文件里的模板框架。
     QString AddDescriptionTemplate(const QString& templateName, QString* error = nullptr);
+    // 类型预览：只含这一个框架的界面树与绘制清单；用到的贴图与字体按需读取，读到后发出 AssetsChanged。
+    struct FramePreview {
+        std::unique_ptr<GameUi::FrameTree> tree;
+        GameUi::FrameDrawList list;
+        std::optional<GameUi::FrameRect> focus;  // 框架所占区域
+    };
+    [[nodiscard]] FramePreview PreviewFrame(const GameUi::UiFrame& frame);
+    [[nodiscard]] const QHash<QString, QImage>& Textures() const noexcept { return textures_; }
+    [[nodiscard]] const QHash<QString, QString>& FontFamilies() const noexcept { return fontFamilies_; }
+    // 右键创建：打开类型选取，放进 node 所在的描述框架（不在描述里时为所选或第一份描述的顶层）；
+    // 没有描述时返回空。at 为新框架中心。
+    QPointer<QWidget> OpenKindPicker(std::uint32_t node, std::optional<QPointF> at, const QPoint& global);
     bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
     // 给所选描述框架加一个锚点（取第一个没用过的对齐点）、删去第 index 个锚点。
     bool AddDescriptionAnchor(QString* error = nullptr);
@@ -188,9 +207,13 @@ private:
     // 修改会重建属性树与表格（删掉正在发出信号的单元），放到下一轮事件里提交；失败时报告并恢复。
     void CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel, std::function<void()> after = {});
     QList<QWidget*> BuildAuthoringControls(QWidget* toolbar);
+    // 编号、显示名与“创建”一行，放进菜单（工具栏“新建界面”与右键菜单共用）。
+    void AddNewDescriptionForm(QMenu* menu);
+    // 画布与节点树的右键菜单：新建界面描述、创建界面、删除，节点树另有只显示、全部显示、移除根界面。
+    void ShowContextMenu(std::uint32_t node, std::optional<QPointF> at, const QPoint& global, bool fromTree);
+    [[nodiscard]] GameUi::UiSkin MakeSkin() const;
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
-    QString AddFrameObject(QJsonObject frame, const char* idPrefix, QString* error);
     // 属性树“编辑”一组（GameUiFrameProperties.cpp）。
     void InstallPropertyEditors();
     void AddEditableRows(QTreeWidgetItem* group, const GameUi::UiFrame& frame);
@@ -237,6 +260,7 @@ private:
     std::optional<GameUiDefinitions> definitions_;
     std::unique_ptr<GameUi::FrameTree> tree_;
     GameUi::FrameDrawList drawList_;
+    GameUi::FrameDrawList previewDrawList_;  // 类型预览用到的贴图与字体，随画面一起读取
     std::vector<Diagnostic> sceneDiagnostics_;
     std::vector<Diagnostic> loadDiagnostics_;
     QSet<QString> hiddenKeys_;
