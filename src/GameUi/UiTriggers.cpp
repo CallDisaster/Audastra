@@ -661,7 +661,6 @@ private:
         std::string condition;
         switch (spec->type) {
         case UiValueType::Boolean:
-            if (!binding.invert) return {Call("AudastraUIShow", {self, *ref})};
             condition = Call("OperatorCompareBoolean", {*ref, "OperatorEqualENE", "true"});
             break;
         case UiValueType::Integer:
@@ -674,9 +673,18 @@ private:
             condition = Call("OperatorCompareString", {*ref, "OperatorNotEqualENE", Quote("")});
             break;
         }
-        const std::string on = binding.invert ? "false" : "true";
-        const std::string off = binding.invert ? "true" : "false";
-        return If({condition}, {Call("AudastraUIShow", {self, on})}, {Call("AudastraUIShow", {self, off})});
+        // 上次发的显示状态记成整数：-1 没发过，0 隐藏，1 显示。
+        const auto name = UiSentVariableName(d_.id, info.frame->id, PropertyKey(Property::Visible));
+        if (std::none_of(sent_.begin(), sent_.end(), [&](const Sent& sent) { return sent.variable == name; })) {
+            sent_.push_back({name, "integer", "-1", GroupSize(info)});
+        }
+        const std::string sent = SentRef(info, Property::Visible);
+        auto show = [&](bool shown) {
+            const std::string flag = shown ? "1" : "0";
+            return If({Call("OperatorCompareInteger", {sent, "OperatorNotEqual", flag})},
+                {Set(sent, flag), Call("AudastraUIShow", {self, shown ? "true" : "false"})});
+        };
+        return If({condition}, show(!binding.invert), show(binding.invert));
     }
 
     // 有状态覆盖这一属性时，只在当前状态不覆盖它时刷新。
@@ -694,7 +702,7 @@ private:
     }
 
     // 上次发给游戏的绑定值：取值没变就不再发。界面库每次请求都很贵，团队框架每 0.1 秒把所有框架重发一遍
-    // 会占满游戏主线程。显示/隐藏只是一次调用，不记。
+    // 会占满游戏主线程。显示/隐藏也记。
     struct Sent {
         std::string variable, type, initial;
         std::uint32_t size = 0;
@@ -836,6 +844,7 @@ private:
                     }
                     break;
                 case Property::Visible:
+                    Unsend(info, property, statements);
                     if (!frame.visible.binding) statements.push_back(Call("AudastraUIShow", {Self(info), frame.visible.literal ? "true" : "false"}));
                     break;
                 case Property::Value:

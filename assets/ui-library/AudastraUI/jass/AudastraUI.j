@@ -436,12 +436,33 @@ library AudastraUI requires AudastraJapi
     // ── 单位 ──
 
     // 点团队框架里的队员：本机正举着要选单位目标的技能或物品时，把这次点击交给游戏作为目标（等同在世界里点这个单位），
-    // 由游戏校验目标、提示错误、退出选目标并下达指令。返回 0 普通选择、没处理；1 已作为目标交给游戏；2 目标不合法、
-    // 游戏已提示；3 其他输入状态（点目标、建造、菜单等）、没处理；负数为运行库不可用或不支持，AudastraUILastError 说明原因。
-    // 运行库还没有这项能力，目前总是返回 -1（不支持）。
+    // 由游戏校验目标、提示错误、退出选目标并下达指令。返回 0 普通选择、没处理；1 已交给游戏的单位点击处理（目标不合法时
+    // 游戏同样会提示，返回值分不出来）；2 留作目标不合法，目前不会出现；3 其他输入状态（点地面、建造、菜单等）、没处理；
+    // 负数为 JAPI 状态码取负（运行库不可用、旧版运行库没有这项能力等），AudastraUILastError 说明原因。
     function AudastraUIClickUnit takes unit whichUnit returns integer
-        call Refuse(12)
-        return -1
+        local integer result
+        if whichUnit == null then
+            call Refuse(5)
+            return -5
+        endif
+        if not Connect() then
+            if connectStatus > 0 then
+                call Refuse(connectStatus)
+                return -connectStatus
+            endif
+            call Refuse(8)
+            return -8
+        endif
+        // 调用失败时 AjCallInt 返回 0，不能当成普通选择。
+        set result = AjCallInt(PREFIX + "clickunit", AjArgInt(GetHandleId(whichUnit)))
+        if not Check() then
+            return -failedStatus
+        endif
+        if result < 0 or result > 3 then
+            call Refuse(17)
+            return -17
+        endif
+        return result
     endfunction
 
 endlibrary

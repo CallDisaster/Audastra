@@ -139,7 +139,7 @@ void TestGeneratedText() {
         "读条 状态 打断 cast_State_interrupt", "读条 基础状态 cast_BaseState"}, "触发器名与顺序");
     Require(plan.value->variables == std::vector<std::string>{"AUI_cast_root", "AUI_cast_bar", "AUI_cast_label", "AUI_cast_slot",
         "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast",
-        "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_text"}, "变量名与顺序");
+        "AUIL_cast_root_visible", "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_text"}, "变量名与顺序");
     // 刷新只发变化的值：先和上次发的比，变了才记下并发出去；回到基础状态时状态改过的属性重新发。
     Require(Contains(text, "    AUIL_cast_slot_text: string[3] = \"AUI:unsent\"\n")
             && Contains(text, "OperatorCompareString(" ) && Contains(text, "OperatorNotEqualENE, udg_AUIL_cast_label_text)")
@@ -206,7 +206,14 @@ void TestGeneratedText() {
     Require(Contains(text, "OperatorCompareString(udg_AUIS_cast, OperatorNotEqualENE, \"interrupt\")"), "状态守卫：\n" + text);
     Require(Contains(text, "OperatorString(OperatorString(udg_AUIV_cast_name, \" \"), AudastraUIFormatReal(udg_AUIV_cast_progress, 1))"),
         "文字模板拼接：\n" + text);
-    Require(Contains(text, "AudastraUIShow(udg_AUI_cast_root, udg_AUIV_cast_shown)"), "显示绑定到布尔数值");
+    // 显示状态也只在变化时发：-1 没发过，0 隐藏，1 显示。
+    Require(Contains(text, "    AUIL_cast_root_visible: integer = -1\n")
+            && Contains(text, "OperatorCompareBoolean(udg_AUIV_cast_shown, OperatorEqualENE, true)")
+            && Contains(text, "OperatorCompareInteger(udg_AUIL_cast_root_visible, OperatorNotEqual, 1)")
+            && Contains(text, "SetVariable(udg_AUIL_cast_root_visible, 1)")
+            && Contains(text, "AudastraUIShow(udg_AUI_cast_root, true)")
+            && Contains(text, "SetVariable(udg_AUIL_cast_root_visible, 0)")
+            && Contains(text, "AudastraUIShow(udg_AUI_cast_root, false)"), "显示绑定到布尔数值，变化时才发：\n" + text);
 }
 
 // 预览里没写贴图的部分是透明的：游戏里不能留下没设贴图的 BACKDROP（会画成绿块）。
@@ -513,6 +520,7 @@ void TestScriptLibrary() {
         "type agent extends handle\ntype trigger extends agent\ntype timer extends agent\ntype player extends agent\n"
         "type widget extends agent\ntype unit extends widget\n"
         "type triggeraction extends handle\n"
+        "native GetHandleId takes handle h returns integer\n"
         "native R2SW takes real r, integer width, integer precision returns string\n"
         "native SubString takes string source, integer start, integer end returns string\n"
         "native StringLength takes string s returns integer\n"
