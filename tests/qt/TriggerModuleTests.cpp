@@ -2521,6 +2521,12 @@ void TriggerModuleTests::FunctionPickerShowsCategoryPrefixes() {
 
 int main(int argc, char** argv) {
     qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
+    // 设置写进本次运行的临时 INI：低完整性进程写不了注册表 HKCU\Software。
+    QTemporaryDir testSettings;
+    if (!testSettings.isValid()) return 2;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, testSettings.path());
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, testSettings.path());
     QApplication application(argc, argv);
     UiKit::ApplyApplicationFont(UiKit::LoadFonts(UiKit::DefaultFontDirectory()));
     UiKit::ThemeManager theme;

@@ -9487,7 +9487,6 @@ int main(int argc, char** argv) {
         return false;
     }();
     // 只隔离这个显式真实用例；原 NativeWorkbench 默认 main/测试环境保持原行为。
-    std::unique_ptr<QTemporaryDir> mainHostSettings;
     if (mainHostRequested) {
         if (qEnvironmentVariable("FORGE_NAVIGATION_OWNED_MAP").isEmpty() || qEnvironmentVariable("FORGE_YDWE_ROOT").isEmpty()) {
             std::fputs("TRIGGER_REPLACE_MAIN_HOST_SKIP explicit readonly map and catalog ENV are required\n", stdout);
@@ -9497,12 +9496,14 @@ int main(int argc, char** argv) {
             std::fputs("The actual MainWindow readonly case requires QT_QPA_PLATFORM=offscreen\n", stderr); return 2;
         }
         qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
-        mainHostSettings = std::make_unique<QTemporaryDir>();
-        if (!mainHostSettings->isValid()) return 2;
-        QSettings::setDefaultFormat(QSettings::IniFormat);
-        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, mainHostSettings->path());
-        QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, mainHostSettings->path());
     }
+    // 设置一律写进本次运行的临时 INI，不碰注册表：低完整性进程（例如目录带沙箱低标签时）写不了
+    // HKCU\Software，原先每次运行还会在注册表留下一个测试键。
+    QTemporaryDir testSettings;
+    if (!testSettings.isValid()) return 2;
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, testSettings.path());
+    QSettings::setPath(QSettings::IniFormat, QSettings::SystemScope, testSettings.path());
     QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
     // 默认离屏；排查真实字体下的布局时可显式指定 QT_QPA_PLATFORM=windows。
     if (!qEnvironmentVariableIsSet("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", QByteArrayLiteral("offscreen"));
