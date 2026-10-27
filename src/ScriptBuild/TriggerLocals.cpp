@@ -220,8 +220,10 @@ StorageNatives TriggerEmitter::Storage(const std::string& type) {
         }
     }
     if (!natives.known) {
-        Warn("storage-type-unsupported", "YDTrigger 局部变量 / 自定义值的“" + type + "”类型没有内置存取方式，生成 YDTRIGGER_" + type
-            + " 宏；函数库头文件未定义它时语法检查会报未声明。");
+        Warn("storage-type-unsupported", type == "handle"
+            ? "局部变量用在 handle 参数里没有存取方式；先存进具体类型（如单位）的变量或直接用全局表达式。仍生成原有 YDTRIGGER_handle 宏，未定义时语法检查会报错。"
+            : "YDTrigger 局部变量 / 自定义值的“" + type + "”类型没有内置存取方式，生成 YDTRIGGER_" + type
+                + " 宏；函数库头文件未定义它时语法检查会报未声明。");
     }
     return natives;
 }

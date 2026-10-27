@@ -79,6 +79,8 @@ public:
     [[nodiscard]] static bool Enabled(const Trigger::EcaNode& eca) { return eca.enabled != 0; }
     // 已写出的触发器用到了 YDTrigger 存储（局部变量或自定义值），需要引入 YDTriggerSaveLoadSystem 库。
     [[nodiscard]] bool UsesStorage() const noexcept { return usesStorage_; }
+    // 文本Cut/Insert完成后再解析语句锚点，诊断位置不能依赖发射中途的偏移。
+    void ResolveDiagnosticOrigins(std::string_view source);
 
 private:
     using Eca = Trigger::EcaNode;
@@ -198,6 +200,7 @@ private:
     const Trigger::TriggerTypeSystem& types_;
     ScriptText& out_;
     std::vector<Diagnostic>& diagnostics_;
+    mutable std::vector<std::pair<std::size_t, ScriptOwner>> diagnosticOwners_;
     std::unordered_map<std::string, const Trigger::VariableRecord*> variables_;
     // 触发器参数值 → 脚本全局名：WE 写法映射到自身，旧版本编辑器写过的形式映射到同一个触发器的 WE 写法。
     struct TriggerSymbolTarget {

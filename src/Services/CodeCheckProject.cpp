@@ -435,13 +435,35 @@ std::optional<std::string> PrepareContext(CodeCheckProjectCache::Impl& owned,
     return std::nullopt;
 }
 
+std::vector<std::size_t> LineStarts(std::string_view text, std::stop_token cancel, Clock::time_point deadline);
+
+void AppendGeneratorDiagnostics(CodeCheckResult& result, const Script::MapScriptResult& generated,
+    std::stop_token cancel, Clock::time_point deadline) {
+    if (generated.diagnostics.empty()) return;
+    const auto starts = LineStarts(generated.text, cancel, deadline);
+    for (const auto& diagnostic : generated.diagnostics) {
+        Poll(cancel, deadline);
+        CodeCheckDiagnostic output;
+        output.severity = diagnostic.severity; output.code = diagnostic.code; output.message = diagnostic.message;
+        if (diagnostic.origin && diagnostic.origin->source == "Map/generated.j" && diagnostic.origin->offset < generated.text.size()) {
+            const auto offset = static_cast<std::size_t>(diagnostic.origin->offset);
+            const auto line = std::upper_bound(starts.begin(), starts.end(), offset);
+            output.source = "Map/generated.j"; output.line = static_cast<std::uint32_t>(line - starts.begin());
+            output.byteColumn = static_cast<std::uint32_t>(offset - *std::prev(line) + 1);
+            // 最终owner边界的精确零长锚点；没有声称宏展开后的词法范围。
+            output.byteLength = 0; output.originMapped = true; output.byteRangeExact = true;
+        }
+        result.diagnostics.push_back(std::move(output));
+    }
+}
+
 // 用给定触发器文档按保存链生成整图 → 注入/预处理 → 模板 → 同一 JASS 检查。
 // requiredAuthor：须发射该作者代码块，否则不能用整图结果代表它。generatedOut 取回本次生成结果。
 // executeTemplates：内置求值覆盖不了的模板按保存链在 Lua 沙盒整份执行（slk 读已保存地图物编）；
 // 为假时与代码编辑器一致，不执行这类模板，只检查作者代码所在段。
 CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
     CodeCheckRequest& request, const Trigger::TriggerDocument& document, std::optional<StableId> requiredAuthor,
-    bool executeTemplates, const std::function<CodeCheckResult(std::string)>& fallback, std::stop_token cancel,
+    bool executeTemplates, const std::function<CodeCheckResult(std::string)>& fallbackInput, std::stop_token cancel,
     Clock::time_point deadline, Script::MapScriptResult* generatedOut, std::string* expandedOut = nullptr) {
     Script::MapScriptInputs inputs;
     inputs.triggers = &document; inputs.catalog = snapshot->catalog.get(); inputs.queries = Script::BuildObjectQueries(owned.objects);
@@ -457,6 +479,12 @@ CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std:
     inputs.nullSafeHandleSet = std::any_of(owned.layout->systemIncludes.begin(), owned.layout->systemIncludes.end(),
         [&](const auto& directory) { return std::filesystem::exists(directory / "YDTrigger/SaveLoadSystem/HTSystem.j", error); });
     auto generated = Script::GenerateMapScript(inputs);
+    const auto fallback = [&](std::string reason) {
+        auto result = fallbackInput(std::move(reason));
+        AppendGeneratorDiagnostics(result, generated, cancel, deadline);
+        if (generatedOut) *generatedOut = std::move(generated);
+        return result;
+    };
     if (!generated.Succeeded()) return fallback(Reason(generated.diagnostics, "生产整图生成尚不能完成。"));
     if (requiredAuthor && std::none_of(generated.authorCode.begin(), generated.authorCode.end(),
         [&](const auto& span) { return span.triggerId == *requiredAuthor; }))
@@ -577,6 +605,7 @@ CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std:
         return expanded;
     }
     auto result = CheckCode(request, cancel);
+    AppendGeneratorDiagnostics(result, generated, cancel, deadline);
     if (!templateNote.empty()) result.reason += (result.reason.empty() ? "" : " ") + templateNote;
     std::size_t externalBytes = 0;
     for (const auto& source : result.externalSources) externalBytes += source.text.size();
@@ -752,7 +781,7 @@ CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjec
         if (auto reason = PrepareContext(owned, snapshot, request, cancel, deadline)) return incomplete(std::move(*reason));
         Script::MapScriptResult generated;
         auto result = CheckGeneratedMap(owned, snapshot, request, *document, std::nullopt, true, incomplete, cancel, deadline, &generated);
-        if (result.contextComplete) LocateTriggerDiagnostics(result, generated, *document, *snapshot->catalog, cancel, deadline);
+        if (!generated.statements.empty()) LocateTriggerDiagnostics(result, generated, *document, *snapshot->catalog, cancel, deadline);
         // 先列能定位到 T 语句的错误，再列其他错误与提示，便于分页读取。
         const auto rank = [](const CodeCheckDiagnostic& diagnostic) {
             const bool error = diagnostic.severity == DiagnosticSeverity::Error;

@@ -87,6 +87,11 @@ void McpCodeCheckToolsTests::DiagnosticsArePagedAndFieldsAreStrict() {
             Services::CodeCheckResult result; result.completed = true; result.syntaxChecked = true;
             for (int i = 0; i < 130; ++i) result.diagnostics.push_back({DiagnosticSeverity::Error,
                 "author.j", "EXACT", "owned failure " + std::to_string(i), static_cast<std::uint32_t>(i + 1), 3, 2, true});
+            auto& warning = result.diagnostics.back();
+            warning.severity = DiagnosticSeverity::Warning; warning.code = "storage-type-unsupported";
+            warning.message = "局部变量用在 handle 参数里没有存取方式；先存进具体类型（如单位）的变量或直接用全局表达式。";
+            warning.trigger = Services::CodeCheckTriggerLocation{17, 23, "StorageProbe", "YDWEGetAnyTypeLocalVariable", 3, 31,
+                "call RecordInteger(GetHandleId(YDTRIGGER_handle(GET)(...)))"};
             return result;
         };
         return Result<Mcp::CodeCheckToolWork>::Success(std::move(work));
@@ -101,6 +106,14 @@ void McpCodeCheckToolsTests::DiagnosticsArePagedAndFieldsAreStrict() {
     QVERIFY(QJsonDocument(page).toJson(QJsonDocument::Compact).size() <= 256 * 1024 + 8192);
     args.insert("offset", "128"); page = session.Invoke(args, host);
     QCOMPARE(page.value("diagnostics").toArray().size(), 2); QVERIFY(page.value("diagnostics_complete").toBool());
+    const auto warning = page.value("diagnostics").toArray()[1].toObject();
+    QCOMPARE(warning.value("code").toString(), QString("storage-type-unsupported"));
+    QCOMPARE(warning.value("severity").toString(), QString("warning"));
+    const auto t = warning.value("t").toObject();
+    QCOMPARE(t.value("trigger_id").toString(), QString("17")); QCOMPARE(t.value("eca_id").toString(), QString("23"));
+    QCOMPARE(t.value("trigger_name").toString(), QString("StorageProbe"));
+    QCOMPARE(t.value("line").toInt(), 3); QCOMPARE(t.value("column").toInt(), 31);
+    QVERIFY(t.value("generated").toString().contains("YDTRIGGER_handle"));
     args.insert("offset", 0); QVERIFY(!session.Invoke(args, host).value("ok").toBool());
     args = Submit(); args.insert("trigger_id", "01"); QVERIFY(!session.Invoke(args, host).value("ok").toBool());
     args = Submit(); args.insert("unknown", true); QCOMPARE(Error(session.Invoke(args, host)), QString("CODE_CHECK_ARGUMENT_UNKNOWN"));

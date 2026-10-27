@@ -3,11 +3,13 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Services/CodeCheckProject.h"
+#include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "../MapDataFixtures.h"
+#include "../AuxiliarySaveFixtures.h"
 
 #include <Windows.h>
 
@@ -175,7 +177,7 @@ constexpr std::string_view kTemplateForcedInclude =
 
 class ModernProjectFixture final {
 public:
-    explicit ModernProjectFixture(std::string_view forcedInclude = "// original forced include\n") {
+    explicit ModernProjectFixture(std::string_view forcedInclude = "// original forced include\n", bool storageProbe = false) {
         tool = temporary.Path() / "tool";
         source = temporary.Path() / "maps" / "original.w3x";
         baseLibrary = tool / "ui/base/jass/BaseProbe.j";
@@ -186,7 +188,18 @@ public:
         WriteOriginalText(tool / "ui/addon/define.txt", "[TriggerTypes]\nProbeInteger=0,1,1,原创类型,integer\n");
         // T 检查用：一个有实现的动作（原创 blizzard 夹具中的函数）与一个脚本里不存在的动作。
         WriteOriginalText(tool / "ui/addon/action.txt", "[InitBlizzard]\n[MissingProbeAction]\n");
+        if (storageProbe) {
+            WriteOriginalText(tool / "ui/addon/define.txt", "[TriggerTypes]\nProbeInteger=0,1,1,原创类型,integer\n"
+                "integer=0,1,1,Integer,integer\nhandle=0,1,1,Handle,handle\nstring=0,1,1,String,string\n"
+                "typename=1,0,0,Type,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
+                "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename39_handle=0,typename,39,Handle\n");
+            WriteOriginalText(tool / "ui/addon/action.txt", "[InitBlizzard]\n[MissingProbeAction]\n[RecordInteger]\n[[.args]]\ntype=integer\n");
+            WriteOriginalText(tool / "ui/addon/call.txt", "[GetHandleId]\nreturns=integer\n[[.args]]\ntype=handle\n"
+                "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n");
+        }
         WriteOriginalText(tool / "compiler/jass/24/common.j", kOriginalCommon);
+        if (storageProbe) WriteOriginalText(tool / "compiler/jass/24/common.j", std::string(kOriginalCommon)
+            + "native GetHandleId takes handle value returns integer\nnative RecordInteger takes integer value returns nothing\n");
         WriteOriginalText(tool / "compiler/jass/24/blizzard.j", kOriginalBlizzard);
         WriteOriginalText(tool / "compiler/include/WaveForce.i", forcedInclude);
         for (const auto* name : {"YDTrigger.h", "Globals.h", "Function.h"}) {
@@ -459,6 +472,8 @@ void TriggerCheckLocatesGuiStatements() {
     fixture.RequireSourceUnchanged();
 }
 
+#include "CodeCheckStorageDiagnosticCases.h"
+
 } // namespace
 
 int main() {
@@ -469,6 +484,7 @@ int main() {
         TemplateMacrosExpandBeforeCheckingAndKeepAuthorLines();
         UnexecutedTemplateElsewhereStillExpandsAuthorSection();
         TriggerCheckLocatesGuiStatements();
+        UnsupportedLocalStorageWarningReachesCheckAndSave();
         std::cout << "Original modern project: enabled UI injection, quoted include, repeated cache, changed identity, unbound roots and template macros passed\n";
         return 0;
     } catch (const std::exception& error) {

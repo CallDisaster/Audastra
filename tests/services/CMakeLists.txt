@@ -426,7 +426,7 @@ target_compile_options(war3-code-check-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-code-check COMMAND war3-code-check-tests)
 set_tests_properties(services-code-check PROPERTIES TIMEOUT 30)
 
-add_executable(war3-code-check-modern-project-tests CodeCheckModernProjectTests.cpp)
+add_executable(war3-code-check-modern-project-tests CodeCheckModernProjectTests.cpp CodeCheckStorageDiagnosticCases.h)
 target_link_libraries(war3-code-check-modern-project-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-code-check-modern-project-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-code-check-modern-project-tests PRIVATE /W4 /permissive- /utf-8)

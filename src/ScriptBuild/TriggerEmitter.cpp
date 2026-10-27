@@ -5,6 +5,7 @@
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/LegacyTriggerReferences.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerTextNotation.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -218,8 +219,39 @@ std::string TriggerEmitter::FuncName(const std::string& name, std::size_t index)
 }
 
 void TriggerEmitter::Warn(std::string code, std::string message) const {
+    const bool locate = code == "storage-type-unsupported";
     std::string where = trigger_ != nullptr ? "触发器“" + trigger_->name.text + "”：" : std::string{};
     diagnostics_.push_back({DiagnosticSeverity::Warning, "Script.Trigger", std::move(code), where + std::move(message), {}});
+    if (locate && out_.Owner().trigger != 0) diagnosticOwners_.emplace_back(diagnostics_.size() - 1, out_.Owner());
+}
+
+void TriggerEmitter::ResolveDiagnosticOrigins(std::string_view source) {
+    if (diagnosticOwners_.empty()) return;
+    using Key = std::pair<std::uint64_t, std::uint64_t>;
+    std::map<Key, std::size_t> offsets;
+    const auto& marks = out_.OwnerMarks();
+    for (std::size_t i = 0; i < marks.size(); ++i) {
+        const auto end = i + 1 < marks.size() ? marks[i + 1].offset : out_.Size();
+        if (end > marks[i].offset) offsets.try_emplace(Key{marks[i].owner.trigger, marks[i].owner.eca}, marks[i].offset);
+    }
+    std::map<std::uint64_t, std::vector<Trigger::TriggerTextAnchor>> rendered;
+    for (const auto& [index, owner] : diagnosticOwners_) {
+        const auto offset = offsets.find({owner.trigger, owner.eca});
+        if (index >= diagnostics_.size() || offset == offsets.end()) continue;
+        auto& diagnostic = diagnostics_[index];
+        diagnostic.origin = OriginSpan{std::string(source), offset->second, 0, {}};
+        auto [cached, fresh] = rendered.try_emplace(owner.trigger);
+        if (fresh) {
+            const auto text = Trigger::RenderTriggerText(document_, catalog_, owner.trigger, 4u * 1024u * 1024u, &cached->second);
+            if (!text.Succeeded()) cached->second.clear();
+        }
+        for (const auto& anchor : cached->second) if (anchor.ecaId == owner.eca) {
+            diagnostic.message += "（T第" + std::to_string(anchor.line) + "行" + std::to_string(anchor.column)
+                + "列，trigger_id=" + std::to_string(owner.trigger) + "，eca_id=" + std::to_string(owner.eca) + "）";
+            break;
+        }
+    }
+    diagnosticOwners_.clear();
 }
 
 std::string TriggerEmitter::TriggerVariable(const Trigger::TriggerRecord& trigger) const {
