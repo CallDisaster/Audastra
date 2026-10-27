@@ -59,7 +59,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
-             "game_ui_description_triggers"}) {
+             "game_ui_description_triggers", "game_ui_trigger_simulation"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read";
@@ -122,6 +122,18 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("preview", QJsonObject{{"type", "boolean"}});
             required.append("description");
+        } else if (tool.name == "game_ui_trigger_simulation") {
+            tool.description = "界面模拟：在编辑器里执行作者自己的触发器。界面描述的模拟计时器（set_simulation）每次到期，执行用事件 "
+                "AudastraUIRegisterSimulationTimer(界面编号, 计时器编号)“界面模拟计时器到期”订阅它的触发器（游戏里不会发生），"
+                "再把这份界面的数值与状态变量读回预览；生成的创建、更新与状态触发器不执行，改为读回数值、切换状态。"
+                "action：status 只读状态；start 按周期运行；step 推进 steps 次到期；pause；reset 丢掉脚本，预览回到起始值。"
+                "第一次 start/step 在后台按当前触发器（含未保存修改）生成整图脚本，wait_ms 内等它准备好；改了触发器要先 reset。"
+                "触发器碰到模拟里不能执行的游戏函数（单位、玩家、计时器、等待等）时停下并暂停，problems 给出函数名与位置。只改预览，不改地图";
+            properties.insert("action", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"status", "start", "step", "pause", "reset"}}});
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("steps", IntegerSchema(1, 1000));
+            properties.insert("wait_ms", IntegerSchema(0, 60000));
+            required.append("action");
         } else if (tool.name == "game_ui_preview_set") {
             tool.description = "地图界面描述的预览：切换状态（空字符串为基础状态）、按 编号 或 编号[下标] 给数值（文字、数值或布尔），"
                 "之后的节点查询与绘图显示这组取值。整批检查，任何一项不合法都不改。只改预览，不改地图";
@@ -156,7 +168,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
     if (!identity.isString() || identity.toString().isEmpty() || identity.toString().size() > 128 || identity.toString().contains(QChar::Null)
         || !ParseUnsignedId(args, "expected_revision", true).Succeeded())
         return Failure("GAME_UI_ARGUMENT", "工程身份或修订无效。");
-    for (const auto* key : {"race", "aspect"}) {
+    for (const auto* key : {"race", "aspect", "action"}) {
         if (!args.contains(key)) continue;
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 不在可选范围内。");
@@ -191,7 +203,8 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
         if (!value.isString() || value.toString().size() > kMaxNameLength || value.toString().contains(QChar::Null))
             return Failure("GAME_UI_ARGUMENT", "name_contains 无效。");
     }
-    for (const auto& key : {QStringLiteral("offset"), QStringLiteral("limit"), QStringLiteral("width"), QStringLiteral("height")}) {
+    for (const auto& key : {QStringLiteral("offset"), QStringLiteral("limit"), QStringLiteral("width"), QStringLiteral("height"),
+             QStringLiteral("steps"), QStringLiteral("wait_ms")}) {
         if (!args.contains(key)) continue;
         const auto schema = properties.value(key).toObject();
         if (!ValidInteger(args.value(key), schema.value("minimum").toInt(), schema.value("maximum").toInt()))

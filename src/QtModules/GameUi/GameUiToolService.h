@@ -18,6 +18,7 @@ public:
 
 private:
     ModuleProvider provider_;
+    bool waiting_ = false;  // 正在等模拟准备：不嵌套等待
 };
 
 } // namespace War3Map::Modules

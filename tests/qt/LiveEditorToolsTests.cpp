@@ -348,7 +348,8 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read", "game_ui_description_triggers",
-        "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_view_read", "game_ui_view_set",
+        "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_trigger_simulation",
+        "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
         "lua_test_hot_reload", "lua_test_reload_result",
@@ -364,7 +365,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{91});
+    QCOMPARE(expected.size(), qsizetype{92});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
@@ -2669,6 +2670,16 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!f.tools->Invoke("game_ui_description_triggers", badPreview).value("ok").toBool());
     QVERIFY(!f.tools->Invoke("game_ui_description_triggers", args).value("ok").toBool());
     QCOMPARE(received.size(), qsizetype{5});
+    // 界面模拟：action 只能取列出的值，steps 与 wait_ms 有范围。
+    auto simulation = args; simulation["action"] = "step"; simulation["description"] = "CastBar"; simulation["steps"] = 3;
+    QVERIFY(f.tools->Invoke("game_ui_trigger_simulation", simulation).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{6});
+    auto badAction = simulation; badAction["action"] = "run";
+    QVERIFY(!f.tools->Invoke("game_ui_trigger_simulation", badAction).value("ok").toBool());
+    auto badSteps = simulation; badSteps["steps"] = 0;
+    QCOMPARE(ErrorCode(f.tools->Invoke("game_ui_trigger_simulation", badSteps)), QString("GAME_UI_ARGUMENT"));
+    QVERIFY(!f.tools->Invoke("game_ui_trigger_simulation", args).value("ok").toBool());
+    QCOMPARE(received.size(), qsizetype{6});
     // 内置界面系统已改成示例（examples/game-ui），编辑器不再提供生成工具与起始模板。
     for (const auto* removed : {"game_ui_cast_system", "game_ui_party_system", "game_ui_target_system", "game_ui_meter_system",
              "game_ui_action_bar_system", "game_ui_talent_system"}) {
@@ -2677,13 +2688,14 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     }
     auto withPreset = args; withPreset["description"] = "Bar"; withPreset["preset"] = "castbar";
     QVERIFY(!f.tools->Invoke("game_ui_description_create", withPreset).value("ok").toBool());
-    QCOMPARE(received.size(), qsizetype{5});
+    QCOMPARE(received.size(), qsizetype{6});
     Mcp::ToolPolicy policy; policy.allowEdit = false; f.tools->SetPolicy(policy);
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_view_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_simulate"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_preview_set"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_edit"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_description_triggers"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_trigger_simulation"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
 }

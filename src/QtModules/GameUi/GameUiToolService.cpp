@@ -6,8 +6,11 @@
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QBuffer>
+#include <QCoreApplication>
+#include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QScopedValueRollback>
 #include <QThread>
 
 #include <algorithm>
@@ -177,6 +180,26 @@ QJsonObject DescriptionJson(const GameUiModule& module, const GameUiDescriptionF
         events.append(QJsonObject{{"id", Text(event.id)}, {"frame", Text(event.frame)}, {"on", EventKindName(event.kind)}});
     }
     if (!events.isEmpty()) json.insert("events", events);
+    return json;
+}
+
+QJsonObject TriggerSimulationJson(const GameUiModule& module) {
+    const auto status = module.TriggerSimulationState();
+    QJsonObject json{{"description", status.description}, {"preparing", status.preparing}, {"running", status.running},
+        {"ready", status.ready}, {"time", status.time}, {"fired", static_cast<qint64>(status.fired)}};
+    QJsonArray subscriptions;
+    for (const auto& [description, timer] : status.subscriptions)
+        subscriptions.append(QJsonObject{{"description", Text(description)}, {"timer", Text(timer)}});
+    json.insert("subscriptions", subscriptions);
+    QJsonArray problems;
+    for (const auto& problem : module.TriggerSimulationProblems()) {
+        problems.append(QJsonObject{{"severity", SeverityName(problem.severity)}, {"code", Text(problem.code)}, {"message", Text(problem.message)}});
+    }
+    json.insert("problems", problems);
+    const auto& files = module.Descriptions();
+    const auto file = std::find_if(files.begin(), files.end(),
+        [&](const GameUiDescriptionFile& candidate) { return Text(candidate.description.id) == status.description; });
+    if (file != files.end()) json.insert("preview", DescriptionJson(module, *file));
     return json;
 }
 
@@ -427,6 +450,38 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
             warnings.append(QJsonObject{{"code", Text(warning.code)}, {"message", Text(warning.message)}});
         }
         binding.insert("warnings", warnings);
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_trigger_simulation")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString action = args.value("action").toString();
+        const QString id = args.value("description").toString();
+        if ((action == QLatin1String("start") || action == QLatin1String("step")) && id.isEmpty())
+            return Failure("GAME_UI_ARGUMENT", QObject::tr("start 与 step 要给出界面编号 description。"));
+        QString error;
+        bool ok = true;
+        if (action == QLatin1String("start")) ok = module->StartTriggerSimulation(id, &error);
+        else if (action == QLatin1String("step")) ok = module->StepTriggerSimulation(id, &error);
+        else if (action == QLatin1String("pause")) module->PauseTriggerSimulation();
+        else if (action == QLatin1String("reset")) module->ResetTriggerSimulation();
+        if (!ok) return Failure("GAME_UI_SIMULATION", error);
+        // 等后台生成脚本（只处理非用户输入事件，不嵌套等待）。
+        const int wait = std::min(args.value("wait_ms").toInt(0), 60000);
+        if (wait > 0 && !waiting_) {
+            QScopedValueRollback<bool> waiting(waiting_, true);
+            QElapsedTimer timer;
+            timer.start();
+            while (module->TriggerSimulationState().preparing && timer.elapsed() < wait)
+                QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 50);
+        }
+        if (action == QLatin1String("step")) {
+            const int steps = args.value("steps").toInt(1);
+            for (int i = 1; i < steps && module->TriggerSimulationState().ready && !module->TriggerSimulationState().running; ++i) {
+                (void)module->StepTriggerSimulation(id);
+            }
+        }
+        binding.insert("simulation", TriggerSimulationJson(*module));
         return binding;
     }
 
