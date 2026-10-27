@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QDateTime>
+#include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -11,10 +12,12 @@
 #include <QJsonObject>
 #include <QImageReader>
 #include <QPixmap>
+#include <QPushButton>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QScreen>
 #include <QStackedWidget>
+#include <QTimer>
 
 #include <cmath>
 #include <optional>
@@ -122,6 +125,27 @@ bool MainWindow::CaptureUi(const std::filesystem::path& directory, QStringList& 
             ActivateModule(id);
             settle(400);
             capture(*this, QString::fromStdString(id), QStringLiteral("module_window"));
+        }
+        // 变量属性表单是模态窗口：有可编辑变量时打开、抓取本次真实像素再取消，不提交任何修改。
+        ActivateModule("variables");
+        settle(200);
+        QPushButton* properties = nullptr;
+        for (auto* widget : QApplication::allWidgets()) {
+            if (widget->objectName() == QStringLiteral("variablePropertiesButton") && widget->isVisible())
+                properties = qobject_cast<QPushButton*>(widget);
+        }
+        if (properties && properties->isEnabled()) {
+            bool formCaptured = false;
+            QTimer::singleShot(400, this, [&] {
+                auto* form = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+                if (!form) return;
+                capture(*form, QStringLiteral("variables-properties"), QStringLiteral("module_form"));
+                formCaptured = true;
+                form->reject();
+            });
+            properties->click();
+            settle(500);
+            if (!formCaptured) { log << QStringLiteral("capture-ui=variables-properties-unavailable"); ok = false; }
         }
     }
     ShowAbout();

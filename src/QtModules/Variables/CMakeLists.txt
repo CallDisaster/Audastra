@@ -1,7 +1,8 @@
 qt_add_library(War3MapQtModuleVariables STATIC
     VariablesModule.cpp VariablesModule.h
     VariablesNavigation.cpp
-    VariablesDialog.cpp VariablesDialog.h)
+    VariablesDialog.cpp VariablesDialog.h
+    VariablePropertiesDialog.cpp VariablePropertiesDialog.h)
 add_library(War3MapEditor::QtModuleVariables ALIAS War3MapQtModuleVariables)
 target_include_directories(War3MapQtModuleVariables PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(War3MapQtModuleVariables PUBLIC

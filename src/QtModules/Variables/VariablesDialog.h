@@ -1,6 +1,7 @@
 #pragma once
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/Services/NameResolution.h"
+#include "VariablePropertiesDialog.h"
 #include <QDialog>
 #include <functional>
 #include <optional>
@@ -8,7 +9,7 @@ class QUndoStack;
 class QTableWidget;
 class QPushButton;
 
-// 变量管理对话框：列出全局变量，支持新建/重命名/删除（经撤销栈）。
+// 变量管理对话框：列出全局变量，支持新建/属性/重命名/删除（经撤销栈）。
 class VariablesDialog final : public QDialog {
 public:
     VariablesDialog(
@@ -22,10 +23,21 @@ public:
     using NameResolver = std::function<War3Map::Services::NameResolution(std::string_view, std::string_view)>;
     void SetNameResolver(NameResolver resolver);
     void RefreshNames() { RebuildList(); }
+    // 新建与“属性…”改用类型化表单，经共用触发器图编辑整批发布（与 Agent 同一检查与撤销）。
+    // 未接通时新建退回旧的简单表单，属性不可用。
+    struct GraphEditing {
+        std::function<const War3Map::Trigger::UiCatalog*()> catalog;
+        VariablePropertiesDialog::ObjectChoices objects;
+        // 发布失败返回诊断且不改文档。
+        std::function<War3Map::Status(std::vector<War3Map::Trigger::GraphEditOperation>, const QString&)> publish;
+    };
+    void SetGraphEditing(GraphEditing editing);
 
 private:
     void RebuildList(std::optional<War3Map::StableId> preferredId = std::nullopt);
     void AddVariable();
+    void EditSelected();
+    [[nodiscard]] bool GraphEditingReady() const;
     void RenameSelected();
     void RemoveSelected();
     [[nodiscard]] std::optional<std::size_t> SelectedRow() const;
@@ -33,9 +45,11 @@ private:
     War3Map::Trigger::TriggerDocument* document_ = nullptr;
     QUndoStack* undoStack_ = nullptr;
     QTableWidget* table_ = nullptr;
+    QPushButton* propertiesButton_ = nullptr;
     QPushButton* renameButton_ = nullptr;
     QPushButton* removeButton_ = nullptr;
     bool embedded_ = false;
     bool showRawValues_ = false;
     NameResolver nameResolver_;
+    GraphEditing graphEditing_;
 };

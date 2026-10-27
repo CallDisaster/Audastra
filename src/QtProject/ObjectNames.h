@@ -43,6 +43,16 @@ struct ObjectPresentation {
 [[nodiscard]] War3Map::Trigger::ReferencePresentation ResolveProjectReferencePresentation(
     const War3Map::QtProject::EditorProject& project, std::string_view rawValue, std::string_view uiType = {});
 
+// 触发器值类型（unitcode、abilcode 等）对应的物体类别；不是物体代码的类型返回空。
+[[nodiscard]] std::optional<War3Map::ObjectData::ObjectType> ObjectTypeOfTriggerType(std::string_view uiType);
+struct ProjectObjectChoice {
+    QString rawcode;
+    QString name;
+};
+// 触发器取值、变量初值等固定物体选择共用的候选：地图物体在前，原版目录中未被覆盖的随后；名称按当前地图解析。
+[[nodiscard]] std::vector<ProjectObjectChoice> ProjectObjectChoices(
+    const War3Map::QtProject::EditorProject& project, std::string_view uiType);
+
 // 地图覆盖 → 自定义父链 → 原版目录。供物编、实例与选择器共用显示身份。
 [[nodiscard]] ObjectPresentation ResolveObjectPresentation(
     const War3Map::ObjectData::ObjectKey& key,

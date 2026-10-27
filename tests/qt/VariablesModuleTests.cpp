@@ -3,12 +3,22 @@
 #include "TriggerCommands.h"
 #include "Shell/ShellWindow.h"
 #include "Modules/ModuleRegistry.h"
+#include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPointer>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QTimer>
 #include <QDir>
 #include <QFile>
 #include <QScrollBar>
@@ -16,6 +26,9 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUndoStack>
+#include <algorithm>
+#include <functional>
+#include <memory>
 
 using namespace War3Map;
 
@@ -28,6 +41,45 @@ std::unique_ptr<Trigger::TriggerDocument> Document(const std::string& prefix, in
     }
     return document;
 }
+
+// 依次处理之后弹出的模态表单（同一表单被重新打开也算下一步）；每步拿到当时可见的表单。
+// 步骤用完后还出现的表单记为失败并关掉（附上表单里的诊断），测试报告失败而不是卡在模态循环里。
+// 返回的处理器只在调用方持有期间有效，各次点击互不干扰。
+[[nodiscard]] std::unique_ptr<QTimer> OnForms(std::vector<std::function<void(QDialog&)>> steps) {
+    auto timer = std::make_unique<QTimer>();
+    auto queue = std::make_shared<std::vector<std::function<void(QDialog&)>>>(std::move(steps));
+    auto next = std::make_shared<std::size_t>(0);
+    QObject::connect(timer.get(), &QTimer::timeout, timer.get(), [queue, next] {
+        auto* form = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (form == nullptr || !form->isVisible()) return;
+        const QPointer<QDialog> guard(form);
+        if (*next >= queue->size()) {
+            const auto* problem = form->findChild<QLabel*>("formProblem");
+            QTest::qFail(qPrintable(QStringLiteral("未预期的表单：%1").arg(problem ? problem->text() : form->windowTitle())),
+                __FILE__, __LINE__);
+            form->reject();
+            return;
+        }
+        (*queue)[(*next)++](*form);
+        if (QTest::currentTestFailed() && guard && guard->isVisible()) guard->reject();
+    });
+    timer->start(5);
+    return timer;
+}
+
+void Choose(QDialog& form, const char* name, const QString& value) {
+    auto* box = form.findChild<QComboBox*>(QString::fromLatin1(name));
+    QVERIFY(box != nullptr);
+    const int index = box->findData(value);
+    QVERIFY2(index >= 0, qPrintable(value));
+    box->setCurrentIndex(index);
+}
+
+void Confirm(QDialog& form) {
+    auto* buttons = form.findChild<QDialogButtonBox*>();
+    QVERIFY(buttons != nullptr && buttons->button(QDialogButtonBox::Ok) != nullptr);
+    buttons->button(QDialogButtonBox::Ok)->click();
+}
 }
 
 class VariablesModuleTests final : public QObject {
@@ -37,7 +89,114 @@ private slots:
     void DocumentReplacementDropsOldBindings();
     void ViewStateRestoresSelection();
     void InitialObjectNamesRefreshAfterObjectUndoAndReplacement();
+    void PropertiesFormPublishesTypedChangesAsOneUndo();
 };
+
+void VariablesModuleTests::PropertiesFormPublishesTypedChangesAsOneUndo() {
+    QTemporaryDir ui;
+    QVERIFY(ui.isValid());
+    QVERIFY(QDir{}.mkpath(ui.filePath("ui/base")));
+    const auto write = [&](const char* path, const char* text) {
+        QFile file(ui.filePath(QString::fromLatin1(path)));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(text);
+    };
+    write("ui/config", "base\n");
+    write("ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,整数,integer\nboolean=0,1,1,布尔值,boolean\n"
+        "player=0,1,1,玩家,handle\nunitcode=0,1,1,单位类型,integer\ncode=0,0,0,代码,code\n"
+        "[TriggerParams]\nPlayer00=0,player,Player(0),玩家1（红色）\n");
+    auto loaded = Trigger::UiCatalog::Load(ui.path().toStdWString());
+    QVERIFY(loaded.Succeeded());
+    QtProject::EditorProject project;
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*loaded.value));
+    // 共用图编辑只接受经真实编解码器建立来源的文档：原创空文档加一个变量后写出再读回。
+    const Trigger::WtgWctCodec codec;
+    auto empty = codec.CreateEmpty(*project.uiCatalog_);
+    QVERIFY(empty.Succeeded());
+    QVERIFY(Trigger::TriggerDocumentEditor::AddVariable(*empty.value, "Count", "integer", false).Succeeded());
+    const auto encoded = codec.Serialize(*empty.value, *project.uiCatalog_);
+    QVERIFY(encoded.Succeeded());
+    auto sealed = codec.Parse(encoded.value->wtg, encoded.value->wct, *project.uiCatalog_);
+    QVERIFY(sealed.Succeeded());
+    project.ReplaceTriggerDocument(std::make_unique<Trigger::TriggerDocument>(std::move(*sealed.value)));
+    Modules::VariablesModule module(project);
+    auto* page = module.Widget();
+    auto* table = page->findChild<QTableWidget*>("globalVariablesTable");
+    auto* properties = page->findChild<QPushButton*>("variablePropertiesButton");
+    auto* add = page->findChild<QPushButton*>("addVariableButton");
+    QVERIFY(table && properties && add);
+    table->selectRow(0);
+    QVERIFY(properties->isEnabled());
+
+    // 改类型并设初值：一次发布、一条撤销；类型只列可声明为全局变量的类型。
+    bool listedCode = true;
+    auto forms = OnForms({[&](QDialog& form) {
+        auto* type = form.findChild<QComboBox*>("variableType");
+        QVERIFY(type != nullptr);
+        listedCode = type->findData(QStringLiteral("code")) >= 0;
+        QVERIFY(form.findChild<QLineEdit*>("variableName")->isReadOnly());
+        Choose(form, "variableType", QStringLiteral("boolean"));
+        form.findChild<QCheckBox*>("variableInitialized")->setChecked(true);
+        Choose(form, "variableInitialValue", QStringLiteral("true"));
+        Confirm(form);
+    }});
+    properties->click();
+    QVERIFY(!listedCode);
+    const auto& count = project.triggerDocument_->variables.front();
+    QCOMPARE(count.typeName.text, std::string("boolean"));
+    QCOMPARE(count.hasDefault, 1);
+    QCOMPARE(count.value.text, std::string("true"));
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("布尔值"));
+    page->findChild<QCheckBox*>("variableRawValues")->setChecked(true);
+    QCOMPARE(table->item(0, 1)->text(), QStringLiteral("boolean"));
+    page->findChild<QCheckBox*>("variableRawValues")->setChecked(false);
+
+    // 新建：数组大小与预设初值同一个表单。
+    forms = OnForms({[&](QDialog& form) {
+        form.findChild<QLineEdit*>("variableName")->setText(QStringLiteral("Owner"));
+        Choose(form, "variableType", QStringLiteral("player"));
+        form.findChild<QCheckBox*>("variableArray")->setChecked(true);
+        form.findChild<QSpinBox*>("variableArraySize")->setValue(12);
+        form.findChild<QCheckBox*>("variableInitialized")->setChecked(true);
+        Choose(form, "variableInitialValue", QStringLiteral("Player00"));
+        Confirm(form);
+    }});
+    add->click();
+    QCOMPARE(project.triggerDocument_->variables.size(), std::size_t{2});
+    const auto& owner = project.triggerDocument_->variables.back();
+    QCOMPARE(owner.name.text, std::string("Owner"));
+    QCOMPARE(owner.typeName.text, std::string("player"));
+    QCOMPARE(owner.isArray, 1);
+    QCOMPARE(owner.size, 12);
+    QCOMPARE(owner.value.text, std::string("Player00"));
+    QCOMPARE(project.triggerUndoStack_->count(), 2);
+
+    // 不合法的字面值由共用批次拒绝：表单留着并显示原因，文档与撤销栈不变。
+    table->selectRow(0);
+    bool problemShown = false;
+    forms = OnForms({[&](QDialog& form) {
+        Choose(form, "variableType", QStringLiteral("integer"));
+        form.findChild<QCheckBox*>("variableInitialized")->setChecked(true);
+        form.findChild<QComboBox*>("variableInitialValue")->setEditText(QStringLiteral("abc"));
+        Confirm(form);
+    }, [&](QDialog& form) {
+        auto* problem = form.findChild<QLabel*>("formProblem");
+        problemShown = problem && problem->isVisible() && !problem->text().isEmpty();
+        form.reject();
+    }});
+    properties->click();
+    QVERIFY(problemShown);
+    QCOMPARE(project.triggerDocument_->variables.front().typeName.text, std::string("boolean"));
+    QCOMPARE(project.triggerUndoStack_->count(), 2);
+
+    project.triggerUndoStack_->undo();
+    project.triggerUndoStack_->undo();
+    QCOMPARE(project.triggerDocument_->variables.size(), std::size_t{1});
+    QCOMPARE(project.triggerDocument_->variables.front().typeName.text, std::string("integer"));
+    QCOMPARE(project.triggerDocument_->variables.front().hasDefault, 0);
+}
 
 void VariablesModuleTests::InitialObjectNamesRefreshAfterObjectUndoAndReplacement() {
     QtProject::EditorProject project;

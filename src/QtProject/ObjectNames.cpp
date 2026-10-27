@@ -228,6 +228,46 @@ ObjectPresentation ResolveProjectObjectPresentation(const War3Map::QtProject::Ed
     return QtPresentation(resolved);
 }
 
+std::optional<War3Map::ObjectData::ObjectType> ObjectTypeOfTriggerType(std::string_view uiType) {
+    using War3Map::ObjectData::ObjectType;
+    if (uiType == "unitcode") return ObjectType::Unit;
+    if (uiType == "itemcode") return ObjectType::Item;
+    if (uiType == "abilcode" || uiType == "heroskillcode") return ObjectType::Ability;
+    if (uiType == "buffcode") return ObjectType::Buff;
+    if (uiType == "techcode") return ObjectType::Upgrade;
+    if (uiType == "doodadcode") return ObjectType::Doodad;
+    if (uiType == "destructablecode") return ObjectType::Destructable;
+    return std::nullopt;
+}
+
+std::vector<ProjectObjectChoice> ProjectObjectChoices(const War3Map::QtProject::EditorProject& project, std::string_view uiType) {
+    std::vector<ProjectObjectChoice> objects;
+    const auto type = ObjectTypeOfTriggerType(uiType);
+    if (!type) return objects;
+    std::unordered_set<std::string> seen;
+    // 地图自定义对象：LNI 文档或原生文档（大地图走原生文档）。名称可能是 TRIGSTR 引用，按当前地图字符串表解析，与物编显示一致。
+    const auto index = static_cast<std::size_t>(*type);
+    if (const auto* document = project.objectDocuments_[index].get()) {
+        for (const auto& record : document->Objects()) {
+            seen.insert(record.key.rawcode);
+            objects.push_back({QString::fromStdString(record.key.rawcode), ResolveProjectObjectPresentation(project, record.key).name});
+        }
+    } else if (const auto* native = project.nativeObjectDocuments_[index].get();
+               native && native->IsStructurallySafe() && native->Type() == *type) {
+        for (const auto& record : native->Objects()) {
+            seen.insert(record.key.rawcode);
+            objects.push_back({QString::fromStdString(record.key.rawcode), ResolveProjectObjectPresentation(project, record.key).name});
+        }
+    }
+    if (project.standardCatalog_) {
+        for (const auto& entry : project.standardCatalog_->Entries()) {
+            if (entry.key.type != *type || seen.contains(entry.key.rawcode)) continue;
+            objects.push_back({QString::fromStdString(entry.key.rawcode), ResolveProjectObjectPresentation(project, entry.key).name});
+        }
+    }
+    return objects;
+}
+
 War3Map::Trigger::ReferencePresentation ResolveProjectReferencePresentation(
     const War3Map::QtProject::EditorProject& project, std::string_view rawValue, std::string_view uiType) {
     const auto name = ResolveProjectName(project, rawValue, uiType);

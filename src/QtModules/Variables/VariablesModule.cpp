@@ -2,6 +2,7 @@
 #include "VariablesDialog.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
+#include "TriggerCommands.h"
 #include "Modules/ModuleHost.h"
 #include <QLabel>
 #include <QScrollBar>
@@ -70,6 +71,16 @@ void VariablesModule::Refresh() {
     if (document) {
         editor_ = new VariablesDialog(project_.triggerDocument_.get(), project_.triggerUndoStack_, page_, true);
         editor_->SetNameResolver([this](std::string_view raw, std::string_view type) { return ResolveProjectName(project_, raw, type); });
+        editor_->SetGraphEditing({
+            [this] { return project_.uiCatalog_.get(); },
+            [this](std::string_view type) {
+                std::vector<VariablePropertiesDialog::Choice> choices;
+                for (auto& object : ProjectObjectChoices(project_, type)) choices.push_back({std::move(object.rawcode), std::move(object.name)});
+                return choices;
+            },
+            [this](std::vector<Trigger::GraphEditOperation> operations, const QString& label) {
+                return Status{QtProject::PublishTriggerGraphOperations(project_, std::move(operations), label).diagnostics};
+            }});
         layout_->addWidget(editor_, 1);
     } else {
         empty_ = new QLabel(tr("未加载触发器"), page_);

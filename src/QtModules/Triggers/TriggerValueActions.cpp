@@ -28,8 +28,6 @@
 #include <QTreeView>
 #include <QUndoStack>
 
-#include <set>
-
 // 参数编辑的公共管线（参数对话框与取值面板共用）与取值面板的打开 / 应用。
 namespace War3Map::Modules {
 namespace {
@@ -49,19 +47,6 @@ std::optional<QString> CurrentStringBody(const QtProject::EditorProject& project
     const auto resolved = map.Strings()->Resolve("TRIGSTR_" + std::to_string(*id));
     return resolved.Succeeded() && resolved.value ? std::optional<QString>(QString::fromStdString(
         Trigger::DecodeSourceText(std::as_bytes(std::span(resolved.value->data(), resolved.value->size()))).text)) : std::nullopt;
-}
-
-// 参数类型 → 物体类别（物体面板列出地图与原版物体）。
-std::optional<ObjectData::ObjectType> ObjectTypeOf(const std::string& uiType) {
-    using ObjectData::ObjectType;
-    if (uiType == "unitcode") return ObjectType::Unit;
-    if (uiType == "itemcode") return ObjectType::Item;
-    if (uiType == "abilcode" || uiType == "heroskillcode") return ObjectType::Ability;
-    if (uiType == "buffcode") return ObjectType::Buff;
-    if (uiType == "techcode") return ObjectType::Upgrade;
-    if (uiType == "doodadcode") return ObjectType::Doodad;
-    if (uiType == "destructablecode") return ObjectType::Destructable;
-    return std::nullopt;
 }
 
 } // namespace
@@ -501,31 +486,7 @@ void TriggerModule::EditFirstArgument() {
 
 std::vector<TriggerValueObject> TriggerModule::ObjectsFor(const std::string& uiType) const {
     std::vector<TriggerValueObject> objects;
-    const auto type = ObjectTypeOf(uiType);
-    if (!type) {
-        return objects;
-    }
-    std::set<std::string> seen;
-    // 地图自定义对象：LNI 文档或原生文档（大地图走原生文档）。名称可能是 TRIGSTR 引用，按当前地图字符串表解析，与物编显示一致。
-    const auto index = static_cast<std::size_t>(*type);
-    if (const auto* document = project_.objectDocuments_[index].get()) {
-        for (const auto& record : document->Objects()) {
-            seen.insert(record.key.rawcode);
-            objects.push_back({QString::fromStdString(record.key.rawcode), ResolveProjectObjectPresentation(project_, record.key).name});
-        }
-    } else if (const auto* native = project_.nativeObjectDocuments_[index].get();
-               native && native->IsStructurallySafe() && native->Type() == *type) {
-        for (const auto& record : native->Objects()) {
-            seen.insert(record.key.rawcode);
-            objects.push_back({QString::fromStdString(record.key.rawcode), ResolveProjectObjectPresentation(project_, record.key).name});
-        }
-    }
-    if (project_.standardCatalog_) {
-        for (const auto& entry : project_.standardCatalog_->Entries()) {
-            if (entry.key.type != *type || seen.contains(entry.key.rawcode)) continue;
-            objects.push_back({QString::fromStdString(entry.key.rawcode), ResolveProjectObjectPresentation(project_, entry.key).name});
-        }
-    }
+    for (auto& choice : ProjectObjectChoices(project_, uiType)) objects.push_back({std::move(choice.rawcode), std::move(choice.name)});
     return objects;
 }
 

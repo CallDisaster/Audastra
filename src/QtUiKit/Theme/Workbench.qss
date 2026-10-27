@@ -44,6 +44,7 @@ QFrame#triggerCommandBar QPushButton:disabled { background: transparent; border-
 QFrame#triggerCommandBar QPushButton#primaryButton:enabled,
 QFrame#triggerCommandBar QPushButton#accentButton:enabled { background: @selection; color: @accent; border-color: transparent; }
 QLabel#emptyState { color: @muted; }
+QLabel#formProblem { color: @red; }
 QFrame#valuePanelCurrentCard { background: @raised; border: 1px solid @line; border-radius: @radiusMd; }
 QLabel#valuePanelCurrentName { color: @text; font-weight: @weightMedium; }
 QLabel#valuePanelCurrentSummary { color: @muted; font-size: @fontSmall; }

@@ -55,14 +55,18 @@ VariablesDialog::VariablesDialog(
     auto* buttons = new QHBoxLayout;
     auto* addButton = new QPushButton(tr("新建变量…"));
     addButton->setObjectName(QStringLiteral("addVariableButton"));
+    propertiesButton_ = new QPushButton(tr("属性…"));
+    propertiesButton_->setObjectName(QStringLiteral("variablePropertiesButton"));
     renameButton_ = new QPushButton(tr("重命名…"));
     renameButton_->setObjectName(QStringLiteral("renameVariableButton"));
     removeButton_ = new QPushButton(tr("删除"));
     removeButton_->setObjectName(QStringLiteral("removeVariableButton"));
     auto* closeButton = new QPushButton(tr("关闭"));
+    propertiesButton_->setEnabled(false);
     renameButton_->setEnabled(false);
     removeButton_->setEnabled(false);
     buttons->addWidget(addButton);
+    buttons->addWidget(propertiesButton_);
     buttons->addWidget(renameButton_);
     buttons->addWidget(removeButton_);
     buttons->addStretch();
@@ -71,12 +75,15 @@ VariablesDialog::VariablesDialog(
     layout->addLayout(buttons);
 
     connect(addButton, &QPushButton::clicked, this, &VariablesDialog::AddVariable);
+    connect(propertiesButton_, &QPushButton::clicked, this, &VariablesDialog::EditSelected);
+    connect(table_, &QTableWidget::cellDoubleClicked, this, [this] { if (GraphEditingReady()) EditSelected(); });
     connect(renameButton_, &QPushButton::clicked, this, &VariablesDialog::RenameSelected);
     connect(removeButton_, &QPushButton::clicked, this, &VariablesDialog::RemoveSelected);
     connect(closeButton, &QPushButton::clicked, this, &QDialog::accept);
     connect(table_->selectionModel(), &QItemSelectionModel::selectionChanged,
             this, [this]() {
                 const bool has = SelectedRow().has_value();
+                propertiesButton_->setEnabled(has && GraphEditingReady());
                 renameButton_->setEnabled(has);
                 removeButton_->setEnabled(has);
             });
@@ -100,6 +107,15 @@ void VariablesDialog::SetNameResolver(NameResolver resolver) {
     RebuildList();
 }
 
+void VariablesDialog::SetGraphEditing(GraphEditing editing) {
+    graphEditing_ = std::move(editing);
+    RebuildList();
+}
+
+bool VariablesDialog::GraphEditingReady() const {
+    return document_ != nullptr && graphEditing_.catalog && graphEditing_.publish && graphEditing_.catalog() != nullptr;
+}
+
 void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) {
     const int previousRow = table_->currentRow();
     if (!preferredId && previousRow >= 0) {
@@ -110,11 +126,17 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
     const QSignalBlocker selectionBlocker(table_->selectionModel());
     table_->setRowCount(0);
     if (document_ == nullptr) {
+        propertiesButton_->setEnabled(false);
         renameButton_->setEnabled(false);
         removeButton_->setEnabled(false);
         return;
     }
     int selectedRow = -1;
+    // 类型列默认显示函数库里的中文名，“显示原始字段”时显示类型名。
+    std::optional<War3Map::Trigger::TriggerTypeSystem> types;
+    if (!showRawValues_ && graphEditing_.catalog) {
+        if (const auto* catalog = graphEditing_.catalog()) types.emplace(*catalog);
+    }
     table_->setRowCount(static_cast<int>(document_->variables.size()));
     for (std::size_t row = 0; row < document_->variables.size(); ++row) {
         const auto& variable = document_->variables[row];
@@ -123,8 +145,12 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
         name->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(variable.id));
         table_->setItem(r, 0, name);
         if (preferredId && variable.id == *preferredId) selectedRow = r;
-        table_->setItem(r, 1, new QTableWidgetItem(
-            QString::fromUtf8(variable.typeName.text)));
+        auto* type = new QTableWidgetItem(QString::fromUtf8(variable.typeName.text));
+        if (types) {
+            type->setText(QString::fromStdString(types->DisplayName(variable.typeName.text)));
+            type->setToolTip(QString::fromUtf8(variable.typeName.text));
+        }
+        table_->setItem(r, 1, type);
         table_->setItem(r, 2, new QTableWidgetItem(
             variable.isArray != 0 ? tr("数组") : tr("—")));
         table_->setItem(r, 3, new QTableWidgetItem(variable.isArray ? QString::number(variable.size) : tr("—")));
@@ -144,6 +170,7 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
         table_->setCurrentCell(selectedRow, 0);
         table_->selectRow(selectedRow);
     }
+    propertiesButton_->setEnabled(selectedRow >= 0 && GraphEditingReady());
     renameButton_->setEnabled(selectedRow >= 0);
     removeButton_->setEnabled(selectedRow >= 0);
 }
@@ -156,8 +183,61 @@ std::optional<std::size_t> VariablesDialog::SelectedRow() const {
     return static_cast<std::size_t>(items.first()->row());
 }
 
+namespace {
+QString FirstProblem(const War3Map::Status& status) {
+    const auto error = std::find_if(status.diagnostics.begin(), status.diagnostics.end(),
+        [](const auto& diagnostic) { return diagnostic.severity == War3Map::DiagnosticSeverity::Error; });
+    if (error != status.diagnostics.end()) return QString::fromUtf8(error->message);
+    return status.diagnostics.empty() ? QObject::tr("修改未通过检查。") : QString::fromUtf8(status.diagnostics.front().message);
+}
+} // namespace
+
+void VariablesDialog::EditSelected() {
+    const auto row = SelectedRow();
+    if (!GraphEditingReady() || !row || *row >= document_->variables.size()) return;
+    const auto& variable = document_->variables[*row];
+    const auto id = variable.id;
+    War3Map::Trigger::GraphVariableValue current{variable.name.text, variable.typeName.text, variable.isArray != 0,
+        variable.size, variable.hasDefault != 0, variable.value.text};
+    VariablePropertiesDialog form(*graphEditing_.catalog(), graphEditing_.objects, showRawValues_, current, this);
+    while (form.exec() == QDialog::Accepted) {
+        // 表单打开期间文档可能被撤销等改动：按稳定 ID 重新取当前记录作前值，前值变了由批次拒绝。
+        const auto found = std::find_if(document_->variables.begin(), document_->variables.end(),
+            [id](const auto& candidate) { return candidate.id == id; });
+        if (found == document_->variables.end()) return;
+        auto operations = VariablePropertyOperations(*found, form.Value());
+        if (operations.empty()) return;
+        const auto published = graphEditing_.publish(std::move(operations), tr("修改变量属性"));
+        if (published.Succeeded()) {
+            RebuildList(id);
+            return;
+        }
+        form.ShowProblem(FirstProblem(published));
+    }
+}
+
 void VariablesDialog::AddVariable() {
     if (document_ == nullptr || undoStack_ == nullptr) {
+        return;
+    }
+    if (GraphEditingReady()) {
+        VariablePropertiesDialog form(*graphEditing_.catalog(), graphEditing_.objects, showRawValues_, std::nullopt, this);
+        while (form.exec() == QDialog::Accepted) {
+            War3Map::Trigger::GraphCreate create;
+            create.clientKey = "variable";
+            create.value = form.Value();
+            create.parent.kind = War3Map::Trigger::GraphParentKind::Variables;
+            for (const auto& variable : document_->variables)
+                create.parent.orderedChildren.push_back({War3Map::Trigger::GraphRecordKind::Variable, variable.id, {}});
+            std::vector<War3Map::Trigger::GraphEditOperation> operations;
+            operations.emplace_back(std::move(create));
+            const auto published = graphEditing_.publish(std::move(operations), tr("新建变量"));
+            if (published.Succeeded()) {
+                if (!document_->variables.empty()) RebuildList(document_->variables.back().id);
+                return;
+            }
+            form.ShowProblem(FirstProblem(published));
+        }
         return;
     }
     QDialog form(this);
