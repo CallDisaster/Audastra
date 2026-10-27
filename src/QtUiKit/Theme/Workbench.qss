@@ -85,7 +85,7 @@ QToolButton::menu-arrow { width: 8px; height: 8px; }
 QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: right center; width: 8px; height: 8px; }
 /* 带菜单的按钮：右侧留出箭头位置，箭头与边框保持间距。 */
 QPushButton[menuButton="true"] { padding-left: 10px; padding-right: 22px; }
-QPushButton[menuButton="true"]::menu-indicator {
+QPushButton::menu-indicator {
     subcontrol-origin: padding; subcontrol-position: right center; right: 9px; width: 8px; height: 8px;
 }
 QPushButton#primaryButton, QPushButton#accentButton { background: @selection; color: @accent; border-color: @accentLine; }
@@ -136,6 +136,11 @@ QWidget#resourcePreviewPanel QLabel#resourcePreviewSource { color: @muted; }
 QSpinBox, QDoubleSpinBox, QDateTimeEdit { padding-right: 22px; }
 QSpinBox::up-button, QDoubleSpinBox::up-button, QDateTimeEdit::up-button,
 QSpinBox::down-button, QDoubleSpinBox::down-button, QDateTimeEdit::down-button { width: 18px; border: 0; border-left: 1px solid @line; background: @raised; }
+/* 按钮一经样式化，Qt 不再画默认箭头，须显式给出。 */
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow, QDateTimeEdit::up-arrow { image: url(:/war3map/icons/qss/chevron-up.svg); width: 10px; height: 10px; }
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow, QDateTimeEdit::down-arrow { image: url(:/war3map/icons/qss/chevron-down.svg); width: 10px; height: 10px; }
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover, QDateTimeEdit::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover, QDateTimeEdit::down-button:hover { background: @hover; }
 QTextEdit, QPlainTextEdit, QTextBrowser { color: @text; background: @bg; border: 1px solid @line; border-radius: @radiusSm; padding: 7px; }
 QTextEdit:focus, QPlainTextEdit:focus { border-color: @accentLine; }
 QTextBrowser#triggerParamEditor { background: @panel; border: 0; border-top: 1px solid @line; padding: 10px 12px; }

@@ -178,12 +178,19 @@ private:
         QTextOption textOption;
         textOption.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
         layout.setTextOption(textOption);
+        const QString text = layout.text();
         layout.beginLayout();
         qreal height = 0;
         while (true) {
             auto line = layout.createLine();
             if (!line.isValid()) break;
             line.setLineWidth(std::max(1, width));
+            // 路径优先在反斜杠后换行；单段放不下这一行时才在段内断开。
+            const int start = line.textStart(), end = start + line.textLength();
+            if (end < text.size() && text[end - 1] != QLatin1Char('\\') && text[end - 1] != QLatin1Char(' ')) {
+                const auto slash = text.lastIndexOf(QLatin1Char('\\'), end - 1);
+                if (slash >= start) line.setNumColumns(static_cast<int>(slash) + 1 - start);
+            }
             line.setPosition({0, height});
             height += line.height();
         }

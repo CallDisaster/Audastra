@@ -2,7 +2,9 @@
 
 #include "War3MapCore/Text/WarcraftText.h"
 
+#include <QAbstractTextDocumentLayout>
 #include <QColorDialog>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -18,6 +20,8 @@
 #include <QVBoxLayout>
 #include <QVariant>
 
+#include <algorithm>
+#include <cmath>
 #include <exception>
 #include <utility>
 
@@ -74,9 +78,10 @@ WarcraftTextPreview::WarcraftTextPreview(QWidget* parent) : QWidget(parent) {
     preview_->document()->setUndoRedoEnabled(false);
     preview_->setReadOnly(true);
     preview_->setAcceptRichText(false);
-    preview_->setMinimumHeight(62);
-    preview_->setMaximumHeight(132);
     preview_->setTabChangesFocus(true);
+    connect(preview_->document()->documentLayout(), &QAbstractTextDocumentLayout::documentSizeChanged, this,
+        [this] { FitPreviewHeight(); });
+    preview_->installEventFilter(this);
     outer->addWidget(preview_);
     source_ = new QLabel(this);
     source_->setObjectName(QStringLiteral("warcraftTextSource"));
@@ -99,6 +104,22 @@ WarcraftTextPreview::WarcraftTextPreview(QWidget* parent) : QWidget(parent) {
     connect(reset_, &QPushButton::clicked, this, [this] { (void)InsertReset(); });
     connect(newline_, &QPushButton::clicked, this, [this] { (void)InsertNewline(); });
     Refresh();
+}
+
+bool WarcraftTextPreview::eventFilter(QObject* watched, QEvent* event) {
+    // 样式表在显示时才生效，边框与内边距随之改变，需要重算一次。
+    if (watched == preview_ && (event->type() == QEvent::Show || event->type() == QEvent::StyleChange))
+        QTimer::singleShot(0, this, [this] { FitPreviewHeight(); });
+    return QWidget::eventFilter(watched, event);
+}
+
+void WarcraftTextPreview::FitPreviewHeight() {
+    constexpr int kMaximumHeight = 132;
+    const int chrome = preview_->height() - preview_->viewport()->height();
+    const int margin = 2 * static_cast<int>(std::ceil(preview_->document()->documentMargin()));
+    const int content = static_cast<int>(std::ceil(preview_->document()->size().height()));
+    const int height = std::clamp(content, preview_->fontMetrics().lineSpacing() + margin, kMaximumHeight - chrome) + chrome;
+    if (height != preview_->height()) preview_->setFixedHeight(height);
 }
 
 void WarcraftTextPreview::ResetBinding(const QString& explanation, bool available) {

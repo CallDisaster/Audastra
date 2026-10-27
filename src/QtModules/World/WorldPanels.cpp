@@ -319,6 +319,7 @@ QWidget* WorldModule::BuildSelectPage() {
     commands->setObjectName(QStringLiteral("worldAuxiliaryCommands"));
     auto* create = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("新建"), commands);
     create->setObjectName(QStringLiteral("worldNewAuxiliary"));
+    create->setProperty("menuButton", true);
     auto* menu = new QMenu(create); create->setMenu(menu);
     auto* newRegion = menu->addAction(tr("新建区域")); newRegion->setObjectName(QStringLiteral("worldNewRegion"));
     auto* newCamera = menu->addAction(tr("新建镜头")); newCamera->setObjectName(QStringLiteral("worldNewCamera"));

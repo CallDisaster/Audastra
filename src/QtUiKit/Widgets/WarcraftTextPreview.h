@@ -42,7 +42,12 @@ public:
     [[nodiscard]] QTextEdit* Preview() const { return preview_; }
     [[nodiscard]] QString StatusText() const;
 
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
+    // 预览高度跟随渲染后的行数：单行文字只占一行，长文到上限后滚动。
+    void FitPreviewHeight();
     void ResetBinding(const QString& sourceExplanation, bool sourceAvailable);
     void Schedule();
     void ChooseColour();

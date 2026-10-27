@@ -66,9 +66,9 @@ void TriggerModule::BuildPage() {
     auto* commands = commandBar->ContentLayout();
     commands->setContentsMargins(8, 7, 8, 7);
     commands->setSpacing(6);
-    addEventButton_ = new QPushButton(tr("＋ 事件"), commandBar);
-    addConditionButton_ = new QPushButton(tr("＋ 条件"), commandBar);
-    addActionButton_ = new QPushButton(tr("＋ 动作"), commandBar);
+    addEventButton_ = new QPushButton(tr("新事件"), commandBar);
+    addConditionButton_ = new QPushButton(tr("新条件"), commandBar);
+    addActionButton_ = new QPushButton(tr("新动作"), commandBar);
     editEcaButton_ = new QPushButton(tr("编辑参数"), commandBar);
     addEventButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/zap")));
     addConditionButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/list-filter")));
