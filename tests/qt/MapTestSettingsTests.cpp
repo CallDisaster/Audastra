@@ -527,7 +527,7 @@ void MapTestSettingsTests::AppliedDirectoryChangeMigratesAndReports() {
     QVERIFY(ApplicationSettingsCommit::Commit(preferences, store, agent, {}, nullptr, {}, page.Preferences(), migration));
     auto* service = MapBackupMigrationService::Application(); QVERIFY(service);
     auto* status = page.findChild<QLabel*>(QStringLiteral("mapLegacyBackupInspection")); QVERIFY(status);
-    QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("已迁移地图备份 1 份")), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(status->text().contains(QStringLiteral("已把 1 份备份移到新目录")), 5000);
     QVERIFY(!service->Busy());
     QVERIFY(!std::filesystem::exists(saved.value->backup));
     QVERIFY(std::filesystem::exists(std::filesystem::path(to.toStdWString()) / saved.value->backup.filename()));

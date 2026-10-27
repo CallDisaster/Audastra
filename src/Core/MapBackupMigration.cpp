@@ -110,9 +110,12 @@ bool MoveOne(Migration& migration, const std::filesystem::path& from, const std:
     if (transaction.createdFile && CopySource(file.Get(), transaction.file.Get(), &control))
         return skip("BACKUP_MIGRATION_COPY_FAILED", "复制或刷盘失败");
     const auto copied = Sha256Handle(transaction.file.Get(), &control);
-    if (!copied.Succeeded() || !copied.value || *copied.value != *hash.value
-        || !RegularFile(transaction.file.Get(), targetInfo) || FileSize(targetInfo) != size)
-        return skip("BACKUP_MIGRATION_CONFLICT", "目标同名内容不同或读取未完成，不覆盖");
+    if (!copied.Succeeded() || !copied.value || !RegularFile(transaction.file.Get(), targetInfo))
+        return skip("BACKUP_MIGRATION_TARGET_UNAVAILABLE", "无法读取或核对新目录里的同名文件");
+    if (*copied.value != *hash.value || FileSize(targetInfo) != size)
+        return transaction.createdFile
+            ? skip("BACKUP_MIGRATION_COPY_FAILED", "复制后的备份与旧文件不同，旧文件保留")
+            : skip("BACKUP_MIGRATION_CONFLICT", "新目录已有同名的不同文件");
     const auto receiptPath = to / L".forge-backup-owners" / name;
     transaction.receipt.Reset(CreateFileW(WindowsApiPath(receiptPath).c_str(), GENERIC_READ | GENERIC_WRITE | DELETE,
         FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));

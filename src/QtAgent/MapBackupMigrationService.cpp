@@ -21,12 +21,20 @@ MapBackupMigrationReport Run(const MapBackupMigrationRequest& request, std::stop
     return report;
 }
 QString Report(const MapBackupMigrationReport& result) {
-    QString text;
-    if (result.hasResult) text = QObject::tr("已迁移地图备份 %1 份，跳过 %2 份，清理 %3 份")
-        .arg(result.moved).arg(result.skipped).arg(result.pruned);
-    else text = QObject::tr("地图备份迁移未完成，旧备份保留");
+    QStringList parts;
+    qsizetype first = 0;
+    if (result.moved) parts << QObject::tr("已把 %1 份备份移到新目录").arg(result.moved);
+    if (result.skipped) {
+        auto skipped = QObject::tr("%1 份没有移动").arg(result.skipped);
+        if (!result.diagnostics.isEmpty()) { skipped += QStringLiteral("：") + result.diagnostics.front(); first = 1; }
+        parts << skipped;
+    }
+    if (result.pruned) parts << QObject::tr("按保留数量删除了 %1 份旧备份").arg(result.pruned);
+    QString text = parts.join(QObject::tr("，"));
+    if (text.isEmpty()) text = result.hasResult && result.complete && result.diagnostics.isEmpty()
+        ? QObject::tr("旧目录里没有编辑器的备份") : QObject::tr("旧备份迁移未完成，原文件保留");
     // 设置页沿用现有状态位置；逐份完整诊断由Core返回，不把失败折叠成成功。
-    for (qsizetype i = 0; i < result.diagnostics.size() && i < 8; ++i)
+    for (qsizetype i = first; i < result.diagnostics.size() && i < 8; ++i)
         text += QLatin1Char('\n') + result.diagnostics[i];
     if (result.diagnostics.size() > 8) text += QObject::tr("\n另有 %1 项未迁移诊断").arg(result.diagnostics.size() - 8);
     return text;
