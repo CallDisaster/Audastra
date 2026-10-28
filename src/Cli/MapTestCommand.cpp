@@ -159,7 +159,7 @@ int RunMapTest(int argc, wchar_t** argv) {
             const auto& value = *result.value;
             line.update({{"pid", value.processId}, {"hwnd", value.window}, {"sequence", value.sequence}, {"client_width", value.width},
                 {"client_height", value.height}, {"pixel_x", value.pixelX}, {"pixel_y", value.pixelY}, {"method", value.method},
-                {"virtual_cursor_observed", value.cursorObserved}, {"virtual_key_observed", value.keyObserved}});
+                {"virtual_cursor_observed", value.cursorObserved}, {"virtual_key_observed", value.keyObserved}, {"coordinate_space", "target_window_dpi_client"}});
         } else {
             if (origin != "startup_space") Print(result.diagnostics);
             line["error"] = result.diagnostics.empty() ? "MAP_TEST_INPUT_FAILED" : result.diagnostics.front().code;

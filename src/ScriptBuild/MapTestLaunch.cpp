@@ -296,6 +296,16 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
     else EnumWindows(visit, reinterpret_cast<LPARAM>(&search));
     if (!search.window || search.tied) return fail("MAP_TEST_INPUT_NO_WINDOW", "本次游戏的测试接收窗口不存在或不唯一；未向其他窗口发送。");
     const auto window = search.window; DWORD pid = 0; const auto thread = GetWindowThreadProcessId(window, &pid);
+    // 宿主与游戏可能采用不同DPI模式；仅切换本调用线程的查询上下文，结束后立即恢复。
+    using QueryDpi = HANDLE(WINAPI*)(HWND);
+    using ChangeDpi = HANDLE(WINAPI*)(HANDLE);
+    struct DpiScope { ChangeDpi change = nullptr; HANDLE previous = nullptr; ~DpiScope() { if (previous) change(previous); } } dpi;
+    const auto user32 = GetModuleHandleW(L"user32.dll");
+    const auto queryDpi = reinterpret_cast<QueryDpi>(GetProcAddress(user32, "GetWindowDpiAwarenessContext"));
+    dpi.change = reinterpret_cast<ChangeDpi>(GetProcAddress(user32, "SetThreadDpiAwarenessContext"));
+    const auto context = queryDpi ? queryDpi(window) : nullptr;
+    if (!context || !dpi.change || !(dpi.previous = dpi.change(context)))
+        return fail("MAP_TEST_INPUT_DPI_UNCONFIRMED", "无法确认目标窗口的DPI客户区坐标，拒绝猜测像素或使用前台输入。");
     RECT client{};
     if (!thread || pid != id || !GetClientRect(window, &client)) return fail("MAP_TEST_INPUT_WINDOW_CHANGED", "测试窗口身份或客户区已改变。");
     WindowInputPacket packet; packet.processId = id; packet.createdLow = created.dwLowDateTime; packet.createdHigh = created.dwHighDateTime;
