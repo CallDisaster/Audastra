@@ -15,6 +15,8 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
+
 namespace War3Map::Modules {
 
 QString SettingsRawText(const MapData::SettingsRawcode& id) {
@@ -42,12 +44,25 @@ namespace {
 
 constexpr int RawRole = Qt::UserRole + 1;
 
-// 对象格：编辑时才建可搜索的选择框（首项“无”），提交写回原始代码与显示名。
-class ObjectCellDelegate final : public QStyledItemDelegate {
+constexpr int EditorRowHeight = 32; // 行内选择框/数值框的高度，行不低于它
+
+// 树中行高取自代理；表格行高另由表头默认节高给出。
+class RowDelegate : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        auto size = QStyledItemDelegate::sizeHint(option, index);
+        size.setHeight(std::max(size.height(), EditorRowHeight));
+        return size;
+    }
+};
+
+// 对象格：编辑时才建可搜索的选择框（首项“无”），选中即提交，写回原始代码与显示名。
+class ObjectCellDelegate final : public RowDelegate {
 public:
     using ChoicesFor = std::function<const std::vector<RandomObjectChoice>*(const QModelIndex&)>;
     ObjectCellDelegate(ChoicesFor choices, RandomObjectName nameOf, QObject* parent)
-        : QStyledItemDelegate(parent), choices_(std::move(choices)), nameOf_(std::move(nameOf)) {}
+        : RowDelegate(parent), choices_(std::move(choices)), nameOf_(std::move(nameOf)) {}
 
     QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&, const QModelIndex& index) const override {
         const auto* choices = choices_(index);
@@ -60,6 +75,10 @@ public:
         box->completer()->setCompletionMode(QCompleter::PopupCompletion);
         box->addItem(tr("无"), QString{});
         for (const auto& choice : *choices) box->addItem(choice.display, choice.raw);
+        connect(box, qOverload<int>(&QComboBox::activated), this, [this, box] {
+            emit const_cast<ObjectCellDelegate*>(this)->commitData(box);
+            emit const_cast<ObjectCellDelegate*>(this)->closeEditor(box);
+        });
         return box;
     }
     void setEditorData(QWidget* editor, const QModelIndex& index) const override {
@@ -91,9 +110,9 @@ private:
     RandomObjectName nameOf_;
 };
 
-class ChanceDelegate final : public QStyledItemDelegate {
+class ChanceDelegate final : public RowDelegate {
 public:
-    using QStyledItemDelegate::QStyledItemDelegate;
+    using RowDelegate::RowDelegate;
     QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&, const QModelIndex&) const override {
         auto* spin = new QSpinBox(parent);
         spin->setObjectName(QStringLiteral("randomChanceEditor"));
@@ -166,7 +185,7 @@ RandomUnitTableDialog::RandomUnitTableDialog(const std::optional<MapData::MapRan
     rows_ = new QTableWidget(0, 1);
     rows_->setObjectName(QStringLiteral("randomUnitRows"));
     rows_->verticalHeader()->hide();
-    rows_->verticalHeader()->setDefaultSectionSize(28);
+    rows_->verticalHeader()->setDefaultSectionSize(EditorRowHeight);
     rows_->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     rows_->setSelectionBehavior(QAbstractItemView::SelectItems);
     rows_->setItemDelegateForColumn(0, new ChanceDelegate(rows_));
