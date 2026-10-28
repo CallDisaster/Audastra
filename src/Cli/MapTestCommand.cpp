@@ -14,6 +14,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
 
 // 命令行地图测试：与编辑器 F9 同一准备、预检、启动与 Lua 邮箱链路，便于脚本与 Agent 验证。
 // 只写入本次新建的独占目录和游戏 Maps/Audastra 短路径副本；游戏退出后按租约清理。
@@ -22,7 +25,13 @@ namespace Services = War3Map::Services;
 namespace Script = War3Map::Script;
 
 struct Reload { double after = 0; std::string module; std::filesystem::path file; bool sent = false; std::uint32_t sequence = 0; };
-struct Shot { double after = 0; std::filesystem::path output; bool done = false; };
+struct Event { double after = 0; Script::MapTestInput input; std::filesystem::path screenshot; bool done = false; };
+
+double Number(const wchar_t* text) {
+    std::size_t used = 0; const std::wstring value(text); const double result = std::stod(value, &used);
+    if (used != value.size() || !std::isfinite(result) || result < 0 || result > 86400) throw std::invalid_argument("invalid time/coordinate");
+    return result;
+}
 
 std::string Utf8(const wchar_t* value) {
     const auto text = std::filesystem::path(value).u8string();
@@ -38,14 +47,18 @@ int RunMapTest(int argc, wchar_t** argv) {
     const std::filesystem::path map = argv[2], game = argv[3], helpers = argv[4];
     std::filesystem::path ydwe;
     double seconds = 60;
+    double exitTimeout = 120;
     auto engine = Services::MapTestLuaEngine::Owned;
     bool hotReload = true, stopAfter = false, hidden = false, backgroundPlay = false, pressSpace = false, cloaked = false;
     std::vector<Reload> reloads;
-    std::vector<Shot> shots;
+    std::vector<Event> events;
+    bool closeRequested = false;
+    try {
     for (int index = 5; index < argc; ++index) {
         const std::wstring option = argv[index];
         if (option == L"--ydwe" && index + 1 < argc) ydwe = argv[++index];
-        else if (option == L"--seconds" && index + 1 < argc) seconds = std::stod(argv[++index]);
+        else if (option == L"--seconds" && index + 1 < argc) seconds = Number(argv[++index]);
+        else if (option == L"--exit-timeout" && index + 1 < argc) exitTimeout = Number(argv[++index]);
         else if (option == L"--lua-engine" && index + 1 < argc) {
             const std::wstring value = argv[++index];
             if (value != L"owned" && value != L"ydwe") return 2;
@@ -60,14 +73,39 @@ int RunMapTest(int argc, wchar_t** argv) {
         else if (option == L"--press-space") pressSpace = true;
         // --screenshot-after 秒 输出.tga：让游戏自己截一张图，移到给定路径。
         else if (option == L"--screenshot-after" && index + 2 < argc) {
-            shots.push_back({std::stod(argv[index + 1]), argv[index + 2]}); index += 2;
+            if (!*argv[index + 2]) return 2;
+            events.push_back({Number(argv[index + 1]), {}, argv[index + 2]}); index += 2;
+        }
+        else if (option == L"--click-after" && index + 3 < argc) {
+            events.push_back({Number(argv[index + 1]), {Script::MapTestInputKind::Click, Number(argv[index + 2]), Number(argv[index + 3]), {}}}); index += 3;
+        }
+        else if (option == L"--key-after" && index + 2 < argc) {
+            const auto parsed = Script::ParseMapTestKeys(Utf8(argv[index + 2]));
+            if (!parsed.Succeeded() || !parsed.value) { Print(parsed.diagnostics); return 2; }
+            events.push_back({Number(argv[index + 1]), {Script::MapTestInputKind::Key, 0, 0, *parsed.value}}); index += 2;
+        }
+        else if (option == L"--close-after" && index + 1 < argc) {
+            if (closeRequested) return 2; closeRequested = true;
+            events.push_back({Number(argv[++index]), {Script::MapTestInputKind::Close}});
         }
         else if (option == L"--reload-after" && index + 3 < argc) {
             Reload reload;
-            reload.after = std::stod(argv[index + 1]); reload.module = Utf8(argv[index + 2]); reload.file = argv[index + 3];
+            reload.after = Number(argv[index + 1]); reload.module = Utf8(argv[index + 2]); reload.file = argv[index + 3];
             reloads.push_back(std::move(reload)); index += 3;
         } else return 2;
     }
+    } catch (const std::exception&) { std::cerr << "MAP_TEST_INPUT_ARGUMENT: invalid numeric argument\n"; return 2; }
+    if (!seconds || !exitTimeout || exitTimeout > 3600 || events.size() > 128 || (closeRequested && stopAfter)) return 2;
+    double firstInput = seconds + 1;
+    for (const auto& event : events) {
+        if (event.after >= seconds || (!event.screenshot.empty() && event.screenshot.extension() != L".tga")) return 2;
+        if (event.screenshot.empty()) {
+            if (!cloaked) { std::cerr << "MAP_TEST_INPUT_UNSUPPORTED: scheduled input requires --cloaked\n"; return 2; }
+            const auto valid = Script::ValidateMapTestInput(event.input); if (!valid.Succeeded()) { Print(valid.diagnostics); return 2; }
+            firstInput = std::min(firstInput, event.after);
+        }
+    }
+    std::stable_sort(events.begin(), events.end(), [](const auto& a, const auto& b) { return a.after < b.after; });
     const auto sha = War3Map::Sha256File(map);
     if (!sha.Succeeded()) { Print(sha.diagnostics); return 1; }
     wchar_t temp[MAX_PATH + 1]{};
@@ -110,6 +148,26 @@ int RunMapTest(int argc, wchar_t** argv) {
     std::string lastState;
     std::string lastRuntime;
     double lastSpace = -2;
+    bool inputFailed = false, shotFailed = false, stopped = false;
+    const auto logInput = [&](const Script::MapTestInput& input, double planned, std::string_view origin) {
+        const auto result = receipt.lease->SendTestInput(input);
+        nlohmann::json line{{"elapsed_seconds", elapsed()}, {"scheduled_seconds", planned}, {"origin", origin},
+            {"kind", input.kind == Script::MapTestInputKind::Click ? "click" : input.kind == Script::MapTestInputKind::Key ? "key" : "close"},
+            {"ui_x", input.x}, {"ui_y", input.y}, {"keys", input.keys}, {"transport_complete", result.Succeeded()},
+            {"pid", nullptr}, {"hwnd", nullptr}, {"method", "none"}};
+        if (result.Succeeded() && result.value) {
+            const auto& value = *result.value;
+            line.update({{"pid", value.processId}, {"hwnd", value.window}, {"sequence", value.sequence}, {"client_width", value.width},
+                {"client_height", value.height}, {"pixel_x", value.pixelX}, {"pixel_y", value.pixelY}, {"method", value.method},
+                {"virtual_cursor_observed", value.cursorObserved}, {"virtual_key_observed", value.keyObserved}});
+        } else {
+            if (origin != "startup_space") Print(result.diagnostics);
+            line["error"] = result.diagnostics.empty() ? "MAP_TEST_INPUT_FAILED" : result.diagnostics.front().code;
+            line["owned_job_pids"] = receipt.lease->ProcessIds();
+        }
+        std::cout << "test_input=" << line.dump() << std::endl;
+        return result.Succeeded();
+    };
     const auto pollRuntime = [&] {
         if (!receipt.lease) return;
         const auto runtime = receipt.lease->QueryRuntimeEvidence();
@@ -130,20 +188,31 @@ int RunMapTest(int argc, wchar_t** argv) {
     };
     while (elapsed() < seconds && receipt.lease && receipt.lease->IsActive()) {
         pollRuntime();
-        if (pressSpace && elapsed() - lastSpace >= 2) { lastSpace = elapsed(); (void)receipt.lease->PressSpace(); }
-        for (auto& shot : shots) {
-            if (shot.done || elapsed() < shot.after) continue;
-            shot.done = true;
+        // 显式菜单输入开始后停止自动空格，避免影响随后菜单/确认框。
+        if (pressSpace && elapsed() < firstInput && elapsed() - lastSpace >= 2) {
+            lastSpace = elapsed();
+            if (cloaked) (void)logInput({Script::MapTestInputKind::Key, 0, 0, {VK_SPACE}}, lastSpace, "startup_space");
+            else (void)receipt.lease->PressSpace();
+        }
+        for (auto& event : events) {
+            if (event.done || elapsed() < event.after) continue;
+            event.done = true;
+            if (event.screenshot.empty()) {
+                if (!logInput(event.input, event.after, "scheduled")) { inputFailed = true; break; }
+                continue;
+            }
             const auto taken = receipt.lease->RequestGameScreenshot(5000);
             Print(taken.diagnostics);
             std::error_code copied, ignored;
             // 游戏目录和输出可能不在同一个盘：先复制，复制成功再删游戏写的那张。
             const bool saved = taken.Succeeded() && taken.value
-                && std::filesystem::copy_file(*taken.value, shot.output, std::filesystem::copy_options::overwrite_existing, copied);
+                && std::filesystem::copy_file(*taken.value, event.screenshot, std::filesystem::copy_options::overwrite_existing, copied);
             if (saved) std::filesystem::remove(*taken.value, ignored);
-            std::cout << "[" << elapsed() << "s] screenshot=" << (saved ? "true" : "false") << " output=" << shot.output.string()
+            if (!saved) shotFailed = true;
+            std::cout << "[" << elapsed() << "s] screenshot=" << (saved ? "true" : "false") << " output=" << event.screenshot.string()
                 << (copied ? " copy_error=" + copied.message() : std::string{}) << std::endl;
         }
+        if (inputFailed) break;
         if (receipt.luaMailbox) {
             const auto query = Services::QueryLuaTestReload(*receipt.luaMailbox);
             if (query.Succeeded() && query.value) {
@@ -180,18 +249,37 @@ int RunMapTest(int argc, wchar_t** argv) {
     std::cout << "observation_done=true\nwaiting_for_game_exit=true" << std::endl;
     // --stop：观察结束后结束本次启动的进程树（与编辑器 map_test_stop 相同）。
     if (stopAfter && receipt.lease && receipt.lease->IsActive()) {
-        const auto stopped = receipt.lease->Stop();
-        Print(stopped.diagnostics);
-        std::cout << "stop_requested=" << (stopped.Succeeded() ? "true" : "false") << std::endl;
+        const auto stopResult = receipt.lease->Stop();
+        Print(stopResult.diagnostics);
+        std::cout << "stop_requested=" << (stopResult.Succeeded() ? "true" : "false") << std::endl;
     }
-    while (receipt.lease && receipt.lease->IsActive()) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    stopped = stopAfter;
+    if (inputFailed && !stopAfter) { std::cout << "test_failed=true\nactive_game_retained=true\n"; return 1; }
+    const auto waitStart = std::chrono::steady_clock::now();
+    while (receipt.lease && receipt.lease->IsActive()) {
+        pollRuntime();
+        if (std::chrono::duration<double>(std::chrono::steady_clock::now() - waitStart).count() >= exitTimeout) {
+            std::cerr << "MAP_TEST_EXIT_TIMEOUT: no forced termination; test process and copies retained\n"; return 1;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
     pollRuntime();
+    bool exitKnown = false, gameExitZero = true;
+    if (receipt.lease) for (const auto& process : receipt.lease->ProcessExits()) {
+        std::cout << "process_exit=" << nlohmann::json{{"pid",process.processId},{"launcher",process.launcher},{"game",process.game},
+            {"known",process.known},{"exit_code",process.exitCode}}.dump() << std::endl;
+        if (process.game) { exitKnown = true; gameExitZero &= process.known && process.exitCode == 0; }
+    }
     const auto cleaned = receipt.lease ? receipt.lease->Cleanup() : War3Map::Status::Ok();
     Print(cleaned.diagnostics);
     const auto files = (*workspace.value)->Cleanup(true);
     Print(files.diagnostics);
     // 游戏被强制结束时退出码非零，租约照常清理副本；两者分别报告。
     std::cout << "game_exited=true\ngame_exit_clean=" << (cleaned.Succeeded() ? "true" : "false")
+        << "\nunforced_process_exit=" << (!stopped ? "true" : "false")
+        << "\ngame_exit_code_zero=" << (exitKnown && gameExitZero ? "true" : "false")
         << "\nworkspace_cleanup=" << (files.Succeeded() ? "true" : "false") << std::endl;
-    return 0;
+    const bool missed = std::any_of(events.begin(), events.end(), [](const auto& event) { return !event.done; });
+    if (missed) std::cout << "scheduled_events_incomplete=true\n";
+    return !inputFailed && !shotFailed && !missed && cleaned.Succeeded() && files.Succeeded() && exitKnown && gameExitZero ? 0 : 1;
 }

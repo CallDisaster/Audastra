@@ -9,6 +9,7 @@
 #include "War3MapCore/Services/MapTestWorkspace.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Runtime/RuntimeTestEvidence.h"
+#include "War3MapCore/Runtime/WindowTestInputProtocol.h"
 
 #include <nlohmann/json.hpp>
 
@@ -49,7 +50,8 @@ struct MapTestLaunchLease::Impl {
     bool cloaked = false; // 游戏窗口在用户桌面上隐身。
     FILETIME launcherCreated{};
     bool launcherGameIdentity = false;
-    struct Child { HANDLE handle; DWORD id; FILETIME created; bool gameIdentity = false; bool exited = false; };
+    std::atomic<std::uint32_t> inputSequence{0};
+    struct Child { HANDLE handle; DWORD id; FILETIME created; bool gameIdentity = false; bool exited = false; DWORD exitCode = STILL_ACTIVE; bool exitKnown = false; };
     std::vector<Child> children;
     std::thread monitor;
     static bool ImageMatches(HANDLE handle, const std::filesystem::path& expected) noexcept {
@@ -99,6 +101,7 @@ struct MapTestLaunchLease::Impl {
         std::lock_guard lock(mutex);
         for (auto& child : children) if (child.handle) {
             child.exited = WaitForSingleObject(child.handle, 0) == WAIT_OBJECT_0;
+            child.exitKnown = child.exited && GetExitCodeProcess(child.handle, &child.exitCode);
             CloseHandle(child.handle); child.handle = nullptr;
         }
         if (launcher) { CloseHandle(launcher); launcher = nullptr; }
@@ -240,6 +243,7 @@ void* MapTestLaunchLease::GameWindow() const {
 
 bool MapTestLaunchLease::PressSpace() const {
 #ifdef _WIN32
+    if (impl_ && impl_->cloaked) return SendTestInput({MapTestInputKind::Key, 0, 0, {VK_SPACE}}).Succeeded();
     const auto window = static_cast<HWND>(GameWindow());
     if (!window) return false;
     PostMessageW(window, WM_KEYDOWN, VK_SPACE, 0x00390001);
@@ -248,6 +252,99 @@ bool MapTestLaunchLease::PressSpace() const {
 #else
     return false;
 #endif
+}
+
+Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput& input) const {
+    const auto fail = [](const char* code, const std::string& text) { return Result<MapTestInputReceipt>::Failure("Map.Test", code, text); };
+    const auto valid = ValidateMapTestInput(input);
+    if (!valid.Succeeded()) { Result<MapTestInputReceipt> result; result.diagnostics = valid.diagnostics; return result; }
+#ifdef _WIN32
+    using namespace Runtime;
+    if (!impl_ || !impl_->cloaked) return fail("MAP_TEST_INPUT_UNSUPPORTED", "虚拟测试输入只支持本次--cloaked启动，不会退回前台输入。");
+    std::lock_guard stateLock(impl_->lifecycle);
+    if (impl_->finished || !impl_->job) return fail("MAP_TEST_INPUT_ENDED", "本次测试已经结束。");
+    HANDLE process = nullptr; DWORD id = 0; FILETIME created{};
+    {
+        std::lock_guard lock(impl_->mutex);
+        for (const auto& child : impl_->children) if (child.gameIdentity && child.handle && WaitForSingleObject(child.handle, 0) == WAIT_TIMEOUT) {
+            if (id) return fail("MAP_TEST_INPUT_AMBIGUOUS", "本次Job有多个游戏进程，拒绝选择输入目标。");
+            process = child.handle; id = child.id; created = child.created;
+        }
+    }
+    if (!id && impl_->launcherGameIdentity && impl_->launcher && WaitForSingleObject(impl_->launcher, 0) == WAIT_TIMEOUT) {
+        process = impl_->launcher; id = impl_->launcherId.load(); created = impl_->launcherCreated;
+    }
+    const auto owned = [&] {
+        FILETIME actual{}, exited{}, kernel{}, user{}; BOOL belongs = FALSE;
+        return process && WaitForSingleObject(process, 0) == WAIT_TIMEOUT && GetProcessTimes(process, &actual, &exited, &kernel, &user)
+            && CompareFileTime(&created, &actual) == 0 && IsProcessInJob(process, impl_->job, &belongs) && belongs && Impl::ImageMatches(process, impl_->gameImage);
+    };
+    if (!owned()) return fail("MAP_TEST_INPUT_NO_GAME", "无法确认本次测试原游戏句柄、创建时间、Job和映像身份。");
+    struct Search { DWORD pid; HWND window = nullptr; LONG area = 0; bool tied = false; } search{id};
+    const auto visit = [](HWND window, LPARAM parameter) -> BOOL {
+        auto& value = *reinterpret_cast<Search*>(parameter); DWORD pid = 0;
+        GetWindowThreadProcessId(window, &pid);
+        if (pid != value.pid || GetAncestor(window, GA_ROOT) != window || IsIconic(window)
+            || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return TRUE;
+        RECT rect{}; if (!GetClientRect(window, &rect) || rect.right <= 0 || rect.bottom <= 0 || rect.right > 32767 || rect.bottom > 32767) return TRUE;
+        const auto area = rect.right * rect.bottom;
+        if (area > value.area) { value.window = window; value.area = area; value.tied = false; }
+        else if (area == value.area) value.tied = true;
+        return TRUE;
+    };
+    if (impl_->desktop) EnumDesktopWindows(impl_->desktop, visit, reinterpret_cast<LPARAM>(&search));
+    else EnumWindows(visit, reinterpret_cast<LPARAM>(&search));
+    if (!search.window || search.tied) return fail("MAP_TEST_INPUT_NO_WINDOW", "本次游戏的测试接收窗口不存在或不唯一；未向其他窗口发送。");
+    const auto window = search.window; DWORD pid = 0; const auto thread = GetWindowThreadProcessId(window, &pid);
+    RECT client{};
+    if (!thread || pid != id || !GetClientRect(window, &client)) return fail("MAP_TEST_INPUT_WINDOW_CHANGED", "测试窗口身份或客户区已改变。");
+    WindowInputPacket packet; packet.processId = id; packet.createdLow = created.dwLowDateTime; packet.createdHigh = created.dwHighDateTime;
+    packet.sequence = ++impl_->inputSequence; if (!packet.sequence) return fail("MAP_TEST_INPUT_SEQUENCE", "本次测试输入序号已耗尽。");
+    packet.width = client.right; packet.height = client.bottom;
+    packet.kind = input.kind == MapTestInputKind::Click ? WindowInputKind::Click : input.kind == MapTestInputKind::Key ? WindowInputKind::Key : WindowInputKind::Close;
+    if (input.kind == MapTestInputKind::Click) {
+        const auto pixel = MapTestInputPixel(input.x, input.y, client.right, client.bottom);
+        if (!pixel.Succeeded() || !pixel.value) return fail("MAP_TEST_INPUT_GEOMETRY", "实际客户区无法换算界面坐标。");
+        packet.x = pixel.value->first; packet.y = pixel.value->second;
+    }
+    packet.keyCount = static_cast<std::uint32_t>(input.keys.size()); std::copy(input.keys.begin(), input.keys.end(), packet.keys);
+    const auto send = [&]() -> DWORD_PTR {
+        DWORD actualPid = 0;
+        if (!owned() || GetWindowThreadProcessId(window, &actualPid) != thread || actualPid != id
+            || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return 0;
+        COPYDATASTRUCT copy{ kWindowInputMagic, sizeof(packet), &packet }; DWORD_PTR result = 0;
+        return SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result) ? result : 0;
+    };
+    auto result = send(); const auto start = GetTickCount64();
+    while ((result & kWindowInputStateMask) == static_cast<unsigned>(WindowInputState::Pending) && GetTickCount64() - start < 3000) {
+        Sleep(20); packet.kind = WindowInputKind::Query; result = send();
+    }
+    if ((result & kWindowInputStateMask) != static_cast<unsigned>(WindowInputState::Complete))
+        return fail("MAP_TEST_INPUT_DELIVERY", "本次游戏未确认测试输入完成（state=" + std::to_string(result & kWindowInputStateMask)
+            + "，pid=" + std::to_string(id) + "，hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(window)) + "）；没有前台输入后备路径。");
+    MapTestInputReceipt receipt; receipt.processId = id; receipt.sequence = packet.sequence; receipt.window = reinterpret_cast<std::uintptr_t>(window);
+    receipt.width = client.right; receipt.height = client.bottom; receipt.pixelX = packet.x; receipt.pixelY = packet.y;
+    receipt.cursorObserved = result & kWindowInputCursorRead; receipt.keyObserved = result & kWindowInputKeyRead;
+    receipt.method = input.kind == MapTestInputKind::Close ? "owned_window_wm_close_posted" : "owned_window_messages_and_virtual_user32";
+    return Result<MapTestInputReceipt>::Success(std::move(receipt));
+#else
+    return fail("MAP_TEST_INPUT_UNSUPPORTED", "当前平台不支持测试输入。");
+#endif
+}
+
+std::vector<MapTestProcessExit> MapTestLaunchLease::ProcessExits() const {
+    std::vector<MapTestProcessExit> result;
+#ifdef _WIN32
+    if (!impl_) return result;
+    std::lock_guard stateLock(impl_->lifecycle); std::lock_guard lock(impl_->mutex);
+    result.push_back({impl_->launcherId.load(), impl_->exitCode, true, impl_->launcherGameIdentity, impl_->finished});
+    for (const auto& child : impl_->children) {
+        DWORD code = child.exitCode;
+        const bool known = child.handle ? WaitForSingleObject(child.handle, 0) == WAIT_OBJECT_0 && GetExitCodeProcess(child.handle, &code) : child.exitKnown;
+        result.push_back({child.id, code, false, child.gameIdentity, known});
+    }
+#endif
+    return result;
 }
 
 Result<std::filesystem::path> MapTestLaunchLease::RequestGameScreenshot(std::uint32_t timeoutMs) const {

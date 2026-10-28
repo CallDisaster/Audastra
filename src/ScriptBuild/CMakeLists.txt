@@ -36,6 +36,7 @@ add_library(War3MapScriptBuild STATIC
     ExternalProcess.cpp
     MapTestSlk.cpp
     GameScreenshot127.cpp
+    MapTestInput.cpp
     MapTestLaunch.cpp
     MapTestRuntime.cpp
     LuaTemplateSandbox.cpp

@@ -1,6 +1,7 @@
 #include <windows.h>
 #include "../../src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.h"
 #include "../../src/WarcraftRuntime32/Japi/RuntimeTestWriter.h"
+#include "../../src/WarcraftRuntime32/GameTest/WindowInput.h"
 
 #include <cstring>
 #include <filesystem>
@@ -10,6 +11,38 @@
 
 namespace {
 using namespace Audastra::Runtime32;
+unsigned mouseDowns = 0, mouseUps = 0, qDowns = 0;
+LRESULT CALLBACK InputWindowProc(HWND window, UINT message, WPARAM key, LPARAM point) {
+    if (message == WM_LBUTTONDOWN) ++mouseDowns;
+    if (message == WM_LBUTTONUP) ++mouseUps;
+    if (message == WM_KEYDOWN && key == 'Q') ++qDowns;
+    if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
+    if (message == WM_DESTROY) { PostQuitMessage(0); return 0; }
+    return DefWindowProcW(window, message, key, point);
+}
+int InputFixture(const std::filesystem::path& marker, DWORD timeout) {
+    WNDCLASSW type{}; type.lpfnWndProc = InputWindowProc; type.hInstance = GetModuleHandleW(nullptr); type.lpszClassName = L"AudastraOwnedInputFixture";
+    if (!RegisterClassW(&type)) return 81;
+    const auto window = CreateWindowW(type.lpszClassName, L"owned hidden input fixture", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, type.hInstance, nullptr);
+    if (!window || !GameTest::InstallWindowInput(window)) return 82;
+    const auto start = GetTickCount64(); bool held = false, cursor = false;
+    while (GetTickCount64() - start < timeout) {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if (message.message == WM_QUIT) {
+                std::ofstream output(marker); output << mouseDowns << ',' << mouseUps << ',' << qDowns << ',' << held << ',' << cursor;
+                return 0;
+            }
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
+        POINT position{}; cursor |= GameTest::WindowInputCursor(window, position);
+        held |= (GameTest::WindowInputKey(VK_LBUTTON, true) & 0x8000) != 0;
+        (void)GameTest::WindowInputKey(VK_CONTROL, false);
+        BYTE keyboard[256]{}; (void)GameTest::WindowInputKeyboard(keyboard);
+        Sleep(1);
+    }
+    DestroyWindow(window); return 83;
+}
 std::wstring Value(int argc, wchar_t** argv, std::wstring_view flag) {
     for (int index = 2; index + 1 < argc; ++index) if (argv[index] == flag) return argv[index + 1];
     return {};
@@ -93,6 +126,7 @@ int wmain(int argc, wchar_t** argv) {
     const std::filesystem::path marker = argv[2];
     const auto milliseconds = std::stoul(argv[3]);
     if (milliseconds > 10000) return 3;
+    if (mode == L"--input-window") return InputFixture(marker, static_cast<DWORD>(milliseconds));
     if (mode == L"--evidence") {
         Audastra::Runtime32::Japi::RuntimeTestWriter writer;
         writer.Loaded(); writer.Installed(0, std::string(64, 'b')); writer.Hello(7);

@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Services/MapTestService.h"
 #include "War3MapCore/Services/RuntimeTestSession.h"
+#include "War3MapCore/Script/MapTestInput.h"
 
 #include <cstdint>
 #include <memory>
@@ -44,6 +45,10 @@ public:
     [[nodiscard]] void* GameWindow() const;
     // 给游戏窗口发一次空格，越过载入后的“按任意键继续”（载入中会被忽略）。没找到窗口时返回 false。
     [[nodiscard]] bool PressSpace() const;
+    // 仅已核验本Job原游戏身份、且安装了隐身测试接收器的窗口；绝不抢系统焦点或移动真实鼠标。
+    // Complete只代表消息已交窗口过程和虚拟状态完成；业务效果须另核截图/运行库回执。
+    [[nodiscard]] Result<MapTestInputReceipt> SendTestInput(const MapTestInput& input) const;
+    [[nodiscard]] std::vector<MapTestProcessExit> ProcessExits() const;
     // 让本次测试的 1.27a 游戏用自己的截图功能存一张画面（取自游戏后台缓冲，屏幕关闭、锁屏、
     // 不可见桌面都能截）。返回游戏写在 <游戏目录>\Screenshots 下的新 TGA，调用方读完后删除。
     // 不是 1.27a、游戏已结束，或限时内没画出新帧（最小化、暂停）时失败，不留下待截请求。

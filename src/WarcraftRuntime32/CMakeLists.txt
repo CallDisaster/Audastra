@@ -38,11 +38,12 @@ target_include_directories(audastra-warcraft-launcher PRIVATE "${CMAKE_CURRENT_L
 add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h
     GameTest/BackgroundPlay127.cpp
     GameTest/CloakedWindow.cpp
+    GameTest/WindowInput.cpp
     GameTest/MutedSound.cpp)
 target_compile_definitions(audastra-warcraft-bootstrap PRIVATE
     AUD_JAPI_BRIDGE_EXPERIMENTAL=$<BOOL:${AUD_JAPI_BRIDGE_EXPERIMENTAL}>)
 target_link_libraries(audastra-warcraft-launcher PRIVATE audastra-detours bcrypt)
-target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game audastra-game-ui bcrypt dwmapi)
+target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audastra-own-lua-game audastra-game-ui bcrypt dwmapi comctl32)
 # 自有界面库：调用 1.27a 自己的界面函数；作为内置 JAPI 模块 audastraui 由 bootstrap 装进每个新 Host。
 add_library(audastra-game-ui STATIC GameUi/GameUiAbi127.cpp GameUi/GameUiLibrary.cpp GameUi/GameUiModule.cpp
     GameUi/GameInput127.cpp GameUi/GameUiDataPlane.cpp)
