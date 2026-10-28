@@ -87,6 +87,17 @@ std::vector<std::byte> FlatTerrain(float offsetX = -8192.0f, float offsetY = -81
     return std::move(fixture.bytes);
 }
 
+// 完整 v25 设置夹具去掉随机表：这些用例不提供物编类别来源，而随机表初始化要求证明每个选择项的类别。
+std::vector<std::byte> SettingsWithoutRandomTables() {
+    auto settings = MapData::MapSettings::Parse(MapDataFixtures::FullMapSettingsV25().bytes);
+    Require(settings.Succeeded() && settings.value->custom.has_value(), "full settings fixture should parse");
+    settings.value->custom->randomUnits.clear();
+    settings.value->custom->randomItems.clear();
+    const auto bytes = settings.value->Serialize();
+    Require(bytes.Succeeded(), "settings without random tables should serialize");
+    return *bytes.value;
+}
+
 void TestOverlayChangesGeneratedScript() {
     Scratch scratch;
     Write(scratch.Path() / "ui/config", "base\n");
@@ -97,7 +108,7 @@ void TestOverlayChangesGeneratedScript() {
     Write(scratch.Path() / "ui/base/call.txt", "[GetLastCreated]\nreturns=unit\n");
     auto catalog = Trigger::UiCatalog::Load(scratch.Path());
     Require(catalog.Succeeded(), "synthetic UI catalog should load");
-    const auto settingsBytes = MapDataFixtures::FullMapSettingsV25().bytes;
+    const auto settingsBytes = SettingsWithoutRandomTables();
     auto baseUnits = MapData::ParseUnitPlacements(MapDataFixtures::EmptyUnitsV8Sub11());
     Require(baseUnits.Succeeded(), "empty source units should parse");
     MapData::UnitPlacement originalUnit;
@@ -276,7 +287,7 @@ void TestFinalDoodadsReachJassWithoutCreatingNativeDecorationsTwice() {
     record.scale = {2, 3, 4}; doodads.doodads.push_back(record);
     doodads.specialDoodads.push_back({"A004", 2, {7, -8}});
     const auto doo = doodads.Serialize(); Require(doo.Succeeded(), "原创非空 classic DOO 序列化");
-    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", SettingsWithoutRandomTables()},
         {"war3mapUnits.doo", MapDataFixtures::EmptyUnitsV8Sub11()}, {"war3map.doo", *doo.value}, {"war3map.w3e", FlatTerrain()}};
     const auto source = scratch.Path() / "doodads.mpq";
     Require(WriteVerifiedArchive(source, members).Succeeded(), "真实写原创初始化归档");
