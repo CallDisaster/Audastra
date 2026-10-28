@@ -25,19 +25,19 @@ int InputFixture(const std::filesystem::path& marker, DWORD timeout) {
     if (!RegisterClassW(&type)) return 81;
     const auto window = CreateWindowW(type.lpszClassName, L"owned hidden input fixture", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, type.hInstance, nullptr);
     if (!window || !GameTest::InstallWindowInput(window)) return 82;
-    const auto start = GetTickCount64(); bool held = false, cursor = false;
+    const auto start = GetTickCount64(); bool held = false, cursor = false, modifierAlias = false;
     while (GetTickCount64() - start < timeout) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
             if (message.message == WM_QUIT) {
-                std::ofstream output(marker); output << mouseDowns << ',' << mouseUps << ',' << qDowns << ',' << held << ',' << cursor;
+                std::ofstream output(marker); output << mouseDowns << ',' << mouseUps << ',' << qDowns << ',' << held << ',' << cursor << ',' << modifierAlias;
                 return 0;
             }
             TranslateMessage(&message); DispatchMessageW(&message);
         }
         POINT position{}; cursor |= GameTest::WindowInputCursor(window, position);
         held |= (GameTest::WindowInputKey(VK_LBUTTON, true) & 0x8000) != 0;
-        (void)GameTest::WindowInputKey(VK_CONTROL, false);
+        if (GameTest::WindowInputKey(VK_CONTROL, false) & 0x8000) modifierAlias |= (GameTest::WindowInputKey(VK_LCONTROL, false) & 0x8000) != 0;
         BYTE keyboard[256]{}; (void)GameTest::WindowInputKeyboard(keyboard);
         Sleep(1);
     }

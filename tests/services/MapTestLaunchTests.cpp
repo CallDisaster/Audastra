@@ -220,7 +220,7 @@ int wmain(int argc, wchar_t** argv) {
             const auto exits = run.value->lease->ProcessExits();
             Require(exits.size()==1 && exits[0].game && exits[0].known && exits[0].exitCode==0, "natural fixture exit code retained after original handle closure");
             std::ifstream output(marker); std::string line; std::getline(output,line);
-            Require(line == "2,2,1,1,1", "original WndProc saw two clicks and key; process-local pointer/key state observed");
+            Require(line == "2,2,1,1,1,1", "original WndProc saw clicks/key; process-local pointer/key state and modifier alias observed");
             POINT after{}; Require(GetCursorPos(&after) && before.x==after.x && before.y==after.y && GetForegroundWindow()==foreground,
                 "test messages never move real cursor or switch foreground");
             Require(!run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{'Q'}}).Succeeded(), "ended session cannot receive input");

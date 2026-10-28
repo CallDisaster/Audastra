@@ -35,8 +35,31 @@ bool Identity(const WindowInputPacket& request) {
         && created.dwLowDateTime == request.createdLow && created.dwHighDateTime == request.createdHigh;
 }
 void ClearKeys() { for (auto& key : keys) key.store(0); }
+SHORT ReadVirtualKey(unsigned key, bool edge) {
+    const auto read = [edge](unsigned index) { return edge ? keys[index].fetch_and(static_cast<SHORT>(0x8000)) : keys[index].load(); };
+    SHORT value = read(key);
+    // 无侧别修饰键按左侧键生成；通用查询同时汇总左右侧，保持虚拟查询的一致性。
+    for (const auto generic : {VK_SHIFT, VK_CONTROL, VK_MENU}) {
+        const unsigned left = generic == VK_SHIFT ? VK_LSHIFT : generic == VK_CONTROL ? VK_LCONTROL : VK_LMENU;
+        if (key == static_cast<unsigned>(generic)) value = static_cast<SHORT>(value | read(left) | read(left + 1));
+        else if (key == left) value = static_cast<SHORT>(value | read(generic));
+    }
+    return edge ? value : static_cast<SHORT>(value & 0x8000);
+}
+LPARAM KeyBits(unsigned key, bool up, bool alt);
 void End(WindowInputState result) {
     if (timer) { KillTimer(nullptr, timer); timer = 0; }
+    if (result != WindowInputState::Complete && state == WindowInputState::Pending && phase == 1) {
+        const auto window = target.load();
+        if (Owned(window)) {
+            if (action.kind == WindowInputKind::Click) (void)PostMessageW(window, WM_LBUTTONUP, 0, MAKELPARAM(action.x, action.y));
+            else for (unsigned i = action.keyCount; i > 0; --i) {
+                const auto key = action.keys[i - 1];
+                const bool alt = std::find(action.keys, action.keys + action.keyCount, static_cast<std::uint32_t>(VK_MENU)) != action.keys + action.keyCount;
+                (void)PostMessageW(window, alt || key == VK_F10 ? WM_SYSKEYUP : WM_KEYUP, key, KeyBits(key, true, alt));
+            }
+        }
+    }
     ClearKeys(); expires = 0; state = result;
 }
 LPARAM KeyBits(unsigned key, bool up, bool alt) {
@@ -175,12 +198,12 @@ SHORT WindowInputKey(int key, bool consumeEdge) {
     if (key < 0 || key >= 256) return 0;
     if (WindowInputTarget()) keyRead = true;
     if (const auto limit = expires.load(); limit && GetTickCount64() >= limit) return 0;
-    return consumeEdge ? keys[key].fetch_and(static_cast<SHORT>(0x8000)) : static_cast<SHORT>(keys[key].load() & 0x8000);
+    return ReadVirtualKey(static_cast<unsigned>(key), consumeEdge);
 }
 BOOL WindowInputKeyboard(PBYTE output) {
     if (!output) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
     const auto limit = expires.load(); const bool expired = limit && GetTickCount64() >= limit;
-    for (unsigned i = 0; i < 256; ++i) output[i] = !expired && (keys[i].load() & 0x8000) ? 0x80 : 0;
+    for (unsigned i = 0; i < 256; ++i) output[i] = !expired && (ReadVirtualKey(i, false) & 0x8000) ? 0x80 : 0;
     if (WindowInputTarget()) keyRead = true;
     return TRUE;
 }
