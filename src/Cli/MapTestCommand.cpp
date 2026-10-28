@@ -6,6 +6,7 @@
 #include "War3MapCore/Services/MapTestWorkspace.h"
 
 #include <Windows.h>
+#include <nlohmann/json.hpp>
 
 #include <chrono>
 #include <filesystem>
@@ -107,8 +108,28 @@ int RunMapTest(int argc, wchar_t** argv) {
     const auto elapsed = [&] { return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count(); };
     std::uint32_t lastDiagnostic = 0;
     std::string lastState;
+    std::string lastRuntime;
     double lastSpace = -2;
+    const auto pollRuntime = [&] {
+        if (!receipt.lease) return;
+        const auto runtime = receipt.lease->QueryRuntimeEvidence();
+        if (runtime.Succeeded() && runtime.value) {
+            const auto& v = *runtime.value;
+            const auto json = nlohmann::json{{"state", v.state}, {"session_nonce", v.sessionNonce},
+                {"map_sha256", v.mapSha256}, {"process_id", v.processId}, {"process_created", v.processCreated},
+                {"epoch", v.epoch}, {"module_loaded", v.moduleLoaded}, {"handshake_success", v.handshakeSuccess},
+                {"runtime_sha256", v.runtimeSha256}, {"expected_sha256", v.expectedSha256},
+                {"phase_started_ms", v.loadedMs}, {"installed_ms", v.installedMs}, {"hello_ms", v.helloMs},
+                {"report_ms", v.reportMs}, {"status", v.status}, {"host_deadline", v.hostDeadline}}.dump();
+            if (json != lastRuntime) { lastRuntime = json; std::cout << "runtime_evidence=" << json << std::endl; }
+        } else if (!runtime.diagnostics.empty()) {
+            const auto& diagnostic = runtime.diagnostics.back();
+            const auto key = diagnostic.code + diagnostic.message;
+            if (key != lastRuntime) { lastRuntime = key; std::cout << "runtime_evidence_error=" << diagnostic.code << std::endl; }
+        }
+    };
     while (elapsed() < seconds && receipt.lease && receipt.lease->IsActive()) {
+        pollRuntime();
         if (pressSpace && elapsed() - lastSpace >= 2) { lastSpace = elapsed(); (void)receipt.lease->PressSpace(); }
         for (auto& shot : shots) {
             if (shot.done || elapsed() < shot.after) continue;
@@ -164,6 +185,7 @@ int RunMapTest(int argc, wchar_t** argv) {
         std::cout << "stop_requested=" << (stopped.Succeeded() ? "true" : "false") << std::endl;
     }
     while (receipt.lease && receipt.lease->IsActive()) std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    pollRuntime();
     const auto cleaned = receipt.lease ? receipt.lease->Cleanup() : War3Map::Status::Ok();
     Print(cleaned.diagnostics);
     const auto files = (*workspace.value)->Cleanup(true);

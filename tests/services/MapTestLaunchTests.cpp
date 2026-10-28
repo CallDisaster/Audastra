@@ -215,6 +215,20 @@ int wmain(int argc, wchar_t** argv) {
         const auto failureCleanup = startupFailure.value->lease->Cleanup();
         Require(Code(failureCleanup, "MAP_TEST_PROCESS_EXIT") && failureCleanup.diagnostics.back().message.find("original pre-handshake failure") != std::string::npos,
             "bootstrap failure before mailbox handshake retains concrete bounded failure text");
+        Services::MapTestLaunchPlan evidencePlan;
+        evidencePlan.executable = game; evidencePlan.executableSha256 = Hash(game);
+        evidencePlan.workingDirectory = plan.workingDirectory;
+        evidencePlan.testMap = plan.testMap; evidencePlan.testMapSha256 = plan.testMapSha256;
+        evidencePlan.gameMapCopy = task("runtime-evidence");
+        evidencePlan.arguments = {L"--evidence", (temp.root / "runtime-evidence-ended").wstring(), L"500"};
+        auto observed = Script::detail::LaunchVerifiedMapTestPlan(evidencePlan); Success(observed, "test-only environment reaches original fixture process");
+        WaitTerminal(observed.value->lease);
+        const auto evidence = observed.value->lease->QueryRuntimeEvidence(); Success(evidence, "read original fixture evidence after process exit");
+        Require(evidence.value->handshakeSuccess && evidence.value->epoch == 7
+            && evidence.value->mapSha256 == evidencePlan.testMapSha256 && evidence.value->processId == observed.value->launcherProcessId,
+            "original launch identity, nonce, map, VM and final acknowledgement match");
+        Success(observed.value->lease->Cleanup(), "evidence run cleanup");
+        Require(observed.value->lease->QueryRuntimeEvidence().Succeeded(), "own test evidence survives normal map cleanup");
         plan.gameMapCopy = task("owned-changed-bootstrap");
         { std::ofstream changed(plan.runtimeBootstrap, std::ios::binary | std::ios::trunc); changed << "changed bootstrap"; }
         Require(Code(Script::detail::LaunchVerifiedMapTestPlan(plan), "MAP_TEST_EXECUTABLE_CHANGED"),

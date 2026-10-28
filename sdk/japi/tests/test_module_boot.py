@@ -6,7 +6,7 @@ import unittest
 from test_ui_connect import initial_globals, translate_function, JAPI_GLOBALS, Transport, read_jass
 
 SOURCE = Path(__file__).resolve().parents[1] / "jass" / "AudastraJapi.j"
-FUNCTIONS = ("AjFail", "AjInitialize", "AjStopRuntimeModule", "AjRuntimeModuleLoaded",
+FUNCTIONS = ("AjFail", "AjInitialize", "AjReportRuntimeTest", "AjStopRuntimeModule", "AjRuntimeModuleLoaded",
              "AjPollRuntimeModule", "AjStartRuntimeModule")
 GLOBALS = JAPI_GLOBALS + ("AjRuntimeModuleAttempts", "AjRuntimeModuleTimer")
 
@@ -19,6 +19,7 @@ class ModuleBoot(unittest.TestCase):
         events = []
         transport = Transport(state, hello=hello, identity_default=identity)
         state.update({"AjRequest": transport.request, "CreateTimer": lambda: object(),
+                      "I2S": str, "GetLocalizedString": lambda text: events.append(("report", text)),
                       "TimerStart": lambda *a: events.append(("timer", a[1:3])),
                       "PauseTimer": lambda t: events.append(("pause",)),
                       "DestroyTimer": lambda t: events.append(("destroy",))})
@@ -28,7 +29,7 @@ class ModuleBoot(unittest.TestCase):
             if loaded is not None:
                 state["AjRuntimeModuleLoaded"](loaded)
         state["ExecuteFunc"] = load
-        calls = FUNCTIONS + ("CreateTimer", "TimerStart", "PauseTimer", "DestroyTimer", "ExecuteFunc")
+        calls = FUNCTIONS + ("CreateTimer", "TimerStart", "PauseTimer", "DestroyTimer", "ExecuteFunc", "I2S", "GetLocalizedString")
         for name in FUNCTIONS:
             exec(translate_function(source, name, set(GLOBALS), calls), state)
         return state, events, transport
@@ -81,6 +82,16 @@ class ModuleBoot(unittest.TestCase):
         self.assertFalse(state["AjInitialize"]())
         self.assertEqual(state["AjLastStatus"], 14)
         self.assertIsNone(state["AjRuntimeModuleTimer"])
+        self.assertTrue(any(event[0] == "report" and ";host.testreport;i:-3;i:14;s:expected" in event[1] for event in events))
+
+    def test_success_acknowledges_only_after_matching_identity(self):
+        state, events, wire = self.make()
+        state["AjStartRuntimeModule"]()
+        state["AjPollRuntimeModule"]()
+        self.assertEqual(state["AjRuntimeModuleState"], 3)
+        reports = [event[1] for event in events if event[0] == "report"]
+        self.assertEqual(len(reports), 1)
+        self.assertIn(";host.testreport;i:3;i:0;s:expected", reports[0])
 
     def test_ai_product_never_schedules_module(self):
         state, events, wire = self.make()

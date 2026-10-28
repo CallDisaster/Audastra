@@ -8,6 +8,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Services/MapTestWorkspace.h"
 #include "War3MapCore/VerifiedFile.h"
+#include "War3MapCore/Runtime/RuntimeTestEvidence.h"
 
 #include <nlohmann/json.hpp>
 
@@ -43,9 +44,11 @@ struct MapTestLaunchLease::Impl {
     std::vector<HANDLE> protectedDirectories;
     std::vector<HANDLE> protectedFiles;
     std::filesystem::path gameImage;
+    std::shared_ptr<Services::RuntimeTestSession> runtimeEvidence;
     HDESK desktop = nullptr; // 后台测试的不可见桌面；进程都退出后随本记录关闭。
     bool cloaked = false; // 游戏窗口在用户桌面上隐身。
     FILETIME launcherCreated{};
+    bool launcherGameIdentity = false;
     struct Child { HANDLE handle; DWORD id; FILETIME created; bool gameIdentity = false; bool exited = false; };
     std::vector<Child> children;
     std::thread monitor;
@@ -289,6 +292,13 @@ Result<std::filesystem::path> MapTestLaunchLease::RequestGameScreenshot(std::uin
 #endif
 }
 
+Result<Services::RuntimeTestSnapshot> MapTestLaunchLease::QueryRuntimeEvidence() const {
+#ifdef _WIN32
+    if (impl_ && impl_->runtimeEvidence) return impl_->runtimeEvidence->Query();
+#endif
+    return Result<Services::RuntimeTestSnapshot>::Failure("Map.Test", "RUNTIME_TEST_UNAVAILABLE", "本次测试没有运行库证据会话。");
+}
+
 Status MapTestLaunchLease::Cleanup() {
 #ifdef _WIN32
     if (IsActive()) return Status::Failure("Map.Test", "MAP_TEST_STILL_ACTIVE", "游戏进程树仍在运行或终态未确认，测试副本已保留。");
@@ -465,6 +475,39 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     state->cloaked = plan.cloakedWindow;
     auto* rawState = state.get();
     auto lease = std::shared_ptr<MapTestLaunchLease>(new MapTestLaunchLease(std::move(state)));
+    const std::weak_ptr<MapTestLaunchLease> weakLease = lease;
+    auto evidence = Services::RuntimeTestSession::Create(plan.testMapSha256, [weakLease](std::uint32_t id, std::uint64_t created) {
+        const auto held = weakLease.lock();
+        if (!held) return false;
+        auto& state = *held->impl_;
+        std::lock_guard stateLock(state.lifecycle); std::lock_guard childLock(state.mutex);
+        const auto sameTime = [created](const FILETIME& time) {
+            return ((static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime) == created;
+        };
+        if (id == state.launcherId.load() && state.launcherGameIdentity && sameTime(state.launcherCreated)) return true;
+        const MapTestLaunchLease::Impl::Child* found = nullptr;
+        for (const auto& child : state.children) if (child.id == id) { if (found) return false; found = &child; }
+        return found && found->gameIdentity && sameTime(found->created);
+    });
+    if (!evidence.Succeeded()) return {std::nullopt, evidence.diagnostics};
+    rawState->runtimeEvidence = *evidence.value;
+    // 环境只交给本次创建的进程树，不修改编辑器/作者进程环境；清除上游残留会话。
+    std::vector<wchar_t> environment;
+    std::vector<std::wstring> environmentRows;
+    if (const auto inherited = GetEnvironmentStringsW()) {
+        for (const wchar_t* row = inherited; *row; row += wcslen(row) + 1) {
+            const auto keyLength = wcslen(Audastra::Runtime32::kRuntimeTestEnvironment);
+            if (_wcsnicmp(row, Audastra::Runtime32::kRuntimeTestEnvironment, keyLength) == 0 && row[keyLength] == L'=') continue;
+            environmentRows.emplace_back(row);
+        }
+        FreeEnvironmentStringsW(inherited);
+    } else return Result<MapTestLaunchReceipt>::Failure("Map.Test", "RUNTIME_TEST_ENVIRONMENT", "无法冻结本次测试的子进程环境。");
+    const auto& nonce = rawState->runtimeEvidence->Nonce();
+    const auto entry = std::wstring(Audastra::Runtime32::kRuntimeTestEnvironment) + L"=" + std::wstring(nonce.begin(), nonce.end());
+    environmentRows.push_back(entry);
+    std::sort(environmentRows.begin(), environmentRows.end(), [](const auto& a, const auto& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
+    for (const auto& row : environmentRows) { environment.insert(environment.end(), row.begin(), row.end()); environment.push_back(0); }
+    environment.push_back(0);
     std::shared_ptr<Services::LuaTestMailboxSession> mailbox;
     std::unique_ptr<Services::detail::LuaTestMailboxLaunchHandle> inheritedMailbox;
     if (plan.useOwnedLuaRuntime) {
@@ -480,8 +523,8 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     for (const auto& argument : plan.arguments) { command += L' '; command += QuoteArgument(argument); }
     if (inheritedMailbox) {
         command += L" --lua-mailbox-handle " + std::to_wstring(inheritedMailbox->Value());
-        const auto nonce = inheritedMailbox->Nonce();
-        command += L" --lua-session-nonce " + std::wstring(nonce.begin(), nonce.end());
+        const auto luaNonce = inheritedMailbox->Nonce();
+        command += L" --lua-session-nonce " + std::wstring(luaNonce.begin(), luaNonce.end());
     }
     struct Attributes {
         std::vector<std::byte> storage;
@@ -549,7 +592,7 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
         created = CreateProcessW(plan.executable.c_str(), command.data(), nullptr, nullptr, inheritedMailbox ? TRUE : FALSE,
             CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | (plan.useOwnedLuaRuntime ? DETACHED_PROCESS : CREATE_NO_WINDOW)
                 | (attributes.value ? EXTENDED_STARTUPINFO_PRESENT : 0),
-            nullptr, plan.workingDirectory.c_str(), &startup.StartupInfo, &process);
+            environment.data(), plan.workingDirectory.c_str(), &startup.StartupInfo, &process);
         creationError = GetLastError();
         SetErrorMode(previous);
     }
@@ -581,6 +624,7 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     BOOL inJob = FALSE;
     if (!IsProcessInJob(process.hProcess, rawState->job, &inJob) || !inJob)
         return abort("MAP_TEST_LAUNCH_JOB_ASSIGN", "独立启动器的Job归属复核失败，已停止尚未恢复的启动器");
+    rawState->launcherGameIdentity = MapTestLaunchLease::Impl::ImageMatches(process.hProcess, rawState->gameImage);
     // 使用CreateProcess的原launcher句柄，绝不按PID重开过去身份。
     HANDLE launcherJobKeeper = nullptr;
     if (!DuplicateHandle(GetCurrentProcess(), rawState->job, process.hProcess, &launcherJobKeeper, 0, FALSE, DUPLICATE_SAME_ACCESS))

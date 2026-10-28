@@ -389,6 +389,15 @@ function AjRequest takes string command, string arguments, string expectedKind r
     return true
 endfunction
 
+// 测试观察器仅由专用启动宿主提供；普通宿主拒绝，返回值不改变握手状态。
+function AjReportRuntimeTest takes integer state, integer status returns nothing
+    if AjEpoch <= 0 or AjExpectedRuntimeIdentity == "" or AjNextRequest >= 2147483647 then
+        return
+    endif
+    set AjNextRequest = AjNextRequest + 1
+    call GetLocalizedString("ajapi:2;" + I2S(AjEpoch) + ";" + I2S(AjNextRequest) + ";host.testreport;i:" + I2S(state) + ";i:" + I2S(status) + ";s:" + AjExpectedRuntimeIdentity)
+endfunction
+
 function AjInitialize takes nothing returns boolean
     if AjRuntimeModuleExpected and AjRuntimeModuleState != 3 and not AjRuntimeModulePolling then
         return AjFail(AjRuntimeModuleLastStatus)
@@ -408,9 +417,11 @@ function AjInitialize takes nothing returns boolean
         endif
         if AjLastText != AjExpectedRuntimeIdentity then
             set AjReady = false
+            call AjReportRuntimeTest(-3, 14)
             return AjFail(14)
         endif
     endif
+    call AjReportRuntimeTest(3, 0)
     return true
 endfunction
 
@@ -463,6 +474,7 @@ function AjPollRuntimeModule takes nothing returns nothing
         call AjStopRuntimeModule()
     elseif AjRuntimeModuleAttempts >= 150 then
         set AjRuntimeModuleState = -2
+        call AjReportRuntimeTest(-2, AjRuntimeModuleLastStatus)
         call AjStopRuntimeModule()
     endif
 endfunction

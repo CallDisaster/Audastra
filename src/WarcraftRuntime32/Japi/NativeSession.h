@@ -33,7 +33,8 @@ public:
     // 只能禁用本代际并记录错误，不能擅自结束玩家进程。
     // reply 只用于观测已成功交给 VM 的响应；异常不会改变已执行命令的结果。
     explicit NativeSession(std::function<void(std::string_view)> fatal,
-        std::function<void(std::string_view, std::string_view)> reply = {}, std::string runtimeIdentity = {});
+        std::function<void(std::string_view, std::string_view)> reply = {}, std::string runtimeIdentity = {},
+        std::function<bool(uint32_t, int32_t, int32_t, std::string_view)> testReport = {});
     ~NativeSession();
     // nullopt = 不属于本协议；0 = 已消费但 VM 故障，绝不回落原版解释器。
     std::optional<std::uint32_t> Dispatch(std::uint64_t generation, std::string_view input, const Attach& attach);
@@ -53,5 +54,6 @@ private:
     unsigned depth_ = 0;
     bool failed_ = false;
     std::string runtimeIdentity_;
+    std::function<bool(uint32_t, int32_t, int32_t, std::string_view)> testReport_;
 };
 }

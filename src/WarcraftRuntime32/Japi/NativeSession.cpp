@@ -13,8 +13,9 @@ struct Depth {
 };
 }
 NativeSession::NativeSession(std::function<void(std::string_view)> fatal,
-    std::function<void(std::string_view, std::string_view)> reply, std::string runtimeIdentity)
-    : fatal_(std::move(fatal)), reply_(std::move(reply)), runtimeIdentity_(std::move(runtimeIdentity)) {
+    std::function<void(std::string_view, std::string_view)> reply, std::string runtimeIdentity,
+    std::function<bool(uint32_t, int32_t, int32_t, std::string_view)> testReport)
+    : fatal_(std::move(fatal)), reply_(std::move(reply)), runtimeIdentity_(std::move(runtimeIdentity)), testReport_(std::move(testReport)) {
     if (!fatal_) throw std::invalid_argument("JAPI session requires a fatal handler");
 }
 NativeSession::~NativeSession() { if (vm_) vm_->Invalidate(); }
@@ -54,6 +55,7 @@ std::optional<std::uint32_t> NativeSession::Dispatch(std::uint64_t generation,
             audastra::japi::HostOptions options;
             options.initialEpoch = static_cast<std::uint32_t>(generation);
             options.runtimeIdentity = runtimeIdentity_;
+            options.runtimeTestReport = testReport_;
             // 基础桥不授予加载器，不提供脚本执行器；同步能力保持默认关闭。
             host_ = std::make_unique<audastra::japi::Host>(std::move(options));
             if (opened.install) {

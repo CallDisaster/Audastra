@@ -77,6 +77,7 @@ domain=0（local）或 1（sync）。LOCAL／ASYNC 事件处理期间，以及 l
 | `host.hello` | 无，epoch=0 | INT | 当前能力位，响应头提供 epoch；不改变会话 |
 | `host.version` | 无 | TEXT | `2.0.0` |
 | `host.runtimeidentity` | 无 | TEXT | 适配器核实的运行库内容身份；未配置则STATE，不从地图参数赋值 |
+  | `host.testreport` | `i:state;i:status;s:expectedSha256` | VOID | 可选测试观察器；普通Host返回POLICY，不提供读写文件或执行入口 |
 | `host.bind` | `s:function` | VOID | 注册 dispatcher 并做事件零握手；同名幂等，异名拒绝 |
 | `host.pump` | 无 | VOID | 显式安全点；有未派完事件／未停止模块时返回 BUSY |
 | `host.event` | 无 | TEXT | 仅 dispatcher 内可读一次当前事件；第二次返回空串 |

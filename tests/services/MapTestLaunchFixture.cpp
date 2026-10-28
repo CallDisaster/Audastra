@@ -1,5 +1,6 @@
 #include <windows.h>
 #include "../../src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.h"
+#include "../../src/WarcraftRuntime32/Japi/RuntimeTestWriter.h"
 
 #include <cstring>
 #include <filesystem>
@@ -92,6 +93,14 @@ int wmain(int argc, wchar_t** argv) {
     const std::filesystem::path marker = argv[2];
     const auto milliseconds = std::stoul(argv[3]);
     if (milliseconds > 10000) return 3;
+    if (mode == L"--evidence") {
+        Audastra::Runtime32::Japi::RuntimeTestWriter writer;
+        writer.Loaded(); writer.Installed(0, std::string(64, 'b')); writer.Hello(7);
+        if (!writer.Report(7, 3, 0, std::string(64, 'b'))) return 71;
+        Sleep(static_cast<DWORD>(milliseconds));
+        std::ofstream file(marker, std::ios::binary); file << "original fixture reported its own test evidence";
+        return file ? 0 : 72;
+    }
     if (mode == L"--child") {
         Sleep(static_cast<DWORD>(milliseconds));
         std::ofstream file(marker, std::ios::binary); file << "child completed naturally";

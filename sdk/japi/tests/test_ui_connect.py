@@ -19,12 +19,12 @@ import unittest
 
 
 UI_FUNCTIONS = ("Connect", "Check", "AudastraUIIsReady", "AudastraUILastError")
-JAPI_FUNCTIONS = ("AjInitialize", "AjModuleLoad", "AjFail")
+JAPI_FUNCTIONS = ("AjInitialize", "AjModuleLoad", "AjFail", "AjReportRuntimeTest")
 UI_GLOBALS = ("PREFIX", "connectStatus", "failedStatus", "failedRequest")
-JAPI_GLOBALS = ("AjReady", "AjLastStatus", "AjNextRequest", "AjCapabilities", "AjLastInteger",
+JAPI_GLOBALS = ("AjEpoch", "AjReady", "AjLastStatus", "AjNextRequest", "AjCapabilities", "AjLastInteger",
                 "AjExpectedRuntimeIdentity", "AjLastText", "AjLastKind", "AjLastReal",
                 "AjRuntimeModuleExpected", "AjRuntimeModuleState", "AjRuntimeModulePolling", "AjRuntimeModuleLastStatus")
-STUB_FUNCTIONS = ("AjRequest", "AjCallVoid", "AjCallBool", "AjCallText", "AjArgText", "AjArgInt", "I2S",
+STUB_FUNCTIONS = ("AjRequest", "AjCallVoid", "AjCallBool", "AjCallText", "AjArgText", "AjArgInt", "I2S", "GetLocalizedString",
                   "AudastraUIDataErrors")
 TYPES = {"boolean": "False", "integer": "0", "string": '""', "real": "0.0"}
 
@@ -222,6 +222,8 @@ class Transport:
         result = queue.popleft() if queue else self.defaults[command]
         status, value = result if isinstance(result, tuple) else (result, 3 if command == "host.hello" else 0)
         self.state["AjLastStatus"] = status
+        if command == "host.hello" and status == 0:
+            self.state["AjEpoch"] = 1
         self.state["AjLastInteger"] = int(value) if status == 0 and expected_kind in ("i", "b") else 0
         self.text = value if status == 0 and expected_kind == "s" else ""
         self.state["AjLastText"] = self.text
@@ -246,6 +248,7 @@ def runtime(ui_source: str, japi_source: str, **outcomes) -> tuple[dict, Transpo
                   "AjCallBool": transport.call_bool, "AjCallText": transport.call_text,
                   "AjArgText": lambda text: ";s:" + text,
                   "AjArgInt": lambda number: ";i:" + str(number), "I2S": str,
+                  "GetLocalizedString": lambda text: "",
                   # 这些用例从不绑定界面数据面（dataStatus 保持 -1），库里的数据面错误查询此时返回空、不发请求。
                   "AudastraUIDataErrors": lambda: ""})
     for source, names in ((ui_source, UI_FUNCTIONS), (japi_source, JAPI_FUNCTIONS)):

@@ -47,13 +47,15 @@ target_link_libraries(audastra-warcraft-bootstrap PRIVATE audastra-detours audas
 add_library(audastra-game-ui STATIC GameUi/GameUiAbi127.cpp GameUi/GameUiLibrary.cpp GameUi/GameUiModule.cpp
     GameUi/GameInput127.cpp GameUi/GameUiDataPlane.cpp)
 target_link_libraries(audastra-game-ui PUBLIC audastra-japi)
-add_library(audastra-map-runtime SHARED Japi/StandaloneRuntime.cpp Japi/ProcessOwner.cpp Japi/StandaloneRuntime.def)
+add_library(audastra-map-runtime SHARED Japi/StandaloneRuntime.cpp Japi/ProcessOwner.cpp Japi/RuntimeTestWriter.cpp Japi/StandaloneRuntime.def)
+target_include_directories(audastra-map-runtime PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
 target_link_libraries(audastra-map-runtime PRIVATE audastra-own-lua-game audastra-game-ui audastra-detours bcrypt)
 set_target_properties(audastra-map-runtime PROPERTIES PREFIX "" OUTPUT_NAME "warvk_runtime")
 target_compile_definitions(audastra-map-runtime PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)
 target_compile_options(audastra-map-runtime PRIVATE /utf-8 /W4 /permissive-)
 add_library(audastra-module-runtime SHARED Japi/StandaloneRuntime.cpp Japi/ProcessOwner.cpp
-    Japi/StandaloneRuntime.def Japi/ModuleEntry.cpp)
+    Japi/StandaloneRuntime.def Japi/ModuleEntry.cpp Japi/RuntimeTestWriter.cpp)
+target_include_directories(audastra-module-runtime PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
 target_link_libraries(audastra-module-runtime PRIVATE audastra-own-lua-game audastra-game-ui audastra-detours bcrypt user32)
 set_target_properties(audastra-module-runtime PROPERTIES PREFIX "" OUTPUT_NAME "warvk_runtime_module")
 target_compile_definitions(audastra-module-runtime PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00)

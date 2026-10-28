@@ -1,5 +1,6 @@
 #include "GameSession.h"
 #include "ProcessOwner.h"
+#include "RuntimeTestWriter.h"
 #include "../OwnLua/GameVm127.h"
 #include "../GameUi/GameUiModule.h"
 #include "../RuntimeFiles.h"
@@ -28,6 +29,7 @@ constexpr std::uintptr_t kInitialize = 0x1e9a50, kDestroyVm = 0x7dd070;
 // 来自固定映像的 stock native 登记与对应实现；real 是指针，string 是 VM object。
 constexpr std::uintptr_t kSaveReal = 0x1f3a10, kSaveStr = 0x1f3af0, kSaveBoolean = 0x1f3570;
 constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
+RuntimeTestWriter testEvidence;
 
 void Trace(std::string_view message, bool fault = false, bool counter = false) noexcept {
     try {
@@ -42,7 +44,7 @@ void Trace(std::string_view message, bool fault = false, bool counter = false) n
             attempted = true;
             std::array<wchar_t, 32768> path{};
             const auto length = GetTempPathW(static_cast<DWORD>(path.size()), path.data());
-            if (length && length < path.size()) {
+            if (length && length < path.size() && testEvidence.Enabled()) {
                 const auto name = std::filesystem::path(path.data()) / (L"audastra-japi-"
                     + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".log");
                 file = CreateFileW(name.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
@@ -97,6 +99,7 @@ struct Runtime {
         if (session) session->Reset();
         session.reset(); data.reset(); vm.reset(); thread = 0;
         if (++epoch > INT32_MAX) { Fail("epoch exhausted"); return; }
+        testEvidence.Reset(static_cast<std::uint32_t>(epoch));
         failed = false;
         Trace("vm-reset epoch=" + std::to_string(epoch));
     }
@@ -126,6 +129,7 @@ void TraceReply(std::string_view input, std::string_view output) {
     audastra::japi::Response reply;
     if (audastra::japi::ParseRequest(input, request) != AJ_OK
         || audastra::japi::ParseResponse(output, reply) != AJ_OK) return;
+    if (request.command == "host.hello" && reply.status == AJ_OK) testEvidence.Hello(reply.epoch);
     auto message = "epoch=" + std::to_string(reply.epoch) + " request=" + std::to_string(reply.id)
         + " command=" + request.command + " status=" + std::to_string(reply.status)
         + " kind=" + std::to_string(reply.value.kind);
@@ -162,7 +166,11 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
         if (!self->thread) self->thread = thread;
         if (self->thread != thread) { self->Fail("owned request on wrong thread"); return 0; }
         if (!self->session) self->session = std::make_unique<NativeSession>(
-            [self](auto error) { self->Fail(error); }, &TraceReply, self->identity);
+            [self](auto error) { self->Fail(error); }, &TraceReply, self->identity,
+            [self](auto epoch, auto state, auto status, auto expected) {
+                testEvidence.Installed(AJ_OK, self->identity);
+                return testEvidence.Report(epoch, state, status, expected);
+            });
         struct Depth { unsigned& value; ~Depth() { --value; } } depth{self->depth};
         ++self->depth;
         const std::string_view input(bytes.data(), count);
@@ -348,8 +356,12 @@ int Install(std::string_view identity) {
     return AJ_OK;
 }
 int Start() {
+    testEvidence.Loaded();
     std::string error;
+    std::string identity;
     const auto result = InitializeProcessRuntime(reinterpret_cast<const void*>(&Start), installLock, &Install, error);
+    if (const auto* current = runtime.load()) identity = current->identity;
+    testEvidence.Installed(result, identity);
     if (!error.empty()) Trace("owner-rejected: " + error);
     return result;
 }

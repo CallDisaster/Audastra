@@ -46,6 +46,8 @@ struct HostOptions {
     bool synchronousCallbacksVerified = false;
     // Set only by a verified embedding adapter, never by a map request.
     std::string runtimeIdentity;
+    // Optional test-only observer. Absent in ordinary hosts; cannot execute map code.
+    std::function<bool(uint32_t, int32_t, int32_t, std::string_view)> runtimeTestReport;
 };
 struct ResetResult {
     int32_t status = AJ_OK;

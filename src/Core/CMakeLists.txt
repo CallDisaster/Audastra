@@ -15,6 +15,7 @@ add_library(War3MapCore STATIC
     Services/MapTestService.cpp
     Services/MapTestWorkspace.cpp
     Services/LuaTestMailboxSession.cpp
+    Services/RuntimeTestSession.cpp
     ProjectStore.cpp
     EditRevision.cpp
     VerifiedFile.cpp

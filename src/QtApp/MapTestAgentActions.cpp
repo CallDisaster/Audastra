@@ -170,7 +170,23 @@ QJsonObject MainWindow::MapTestTool(const QString& name, const QJsonObject& argu
 }
 
 QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
-    if (!mapTestScenario_) return Failure("MAP_TEST_SCENARIO_NONE", tr("本次测试没有带测试场景；请用 map_test_start 的 scenario 启动。"));
+    const auto readRuntime = [](const std::shared_ptr<War3Map::Script::MapTestLaunchLease>& lease) -> QJsonObject {
+        if (!lease) return Failure("MAP_TEST_NOT_RUNNING", QObject::tr("本次没有测试游戏记录。"));
+        const auto evidence = lease->QueryRuntimeEvidence();
+        if (!evidence.Succeeded() || !evidence.value) return Failure(evidence.diagnostics, "RUNTIME_TEST_UNAVAILABLE");
+        const auto& v = *evidence.value;
+        return {{"state", QString::fromStdString(v.state)}, {"session_nonce", QString::fromStdString(v.sessionNonce)},
+            {"map_sha256", QString::fromStdString(v.mapSha256)}, {"process_id", static_cast<double>(v.processId)},
+            {"process_created", QString::number(v.processCreated)}, {"epoch", static_cast<double>(v.epoch)},
+            {"module_loaded", v.moduleLoaded}, {"handshake_success", v.handshakeSuccess},
+            {"runtime_sha256", QString::fromStdString(v.runtimeSha256)}, {"expected_sha256", QString::fromStdString(v.expectedSha256)},
+            {"phase_started_ms", static_cast<double>(v.loadedMs)}, {"installed_ms", static_cast<double>(v.installedMs)},
+            {"hello_ms", static_cast<double>(v.helloMs)}, {"report_ms", static_cast<double>(v.reportMs)},
+            {"status", v.status}, {"host_deadline", v.hostDeadline}};
+    };
+    auto runtime = readRuntime(mapTestLease_);
+    if (!mapTestScenario_) return QJsonObject{{"ok", true}, {"runtime_evidence", runtime},
+        {"game_running", mapTestLease_ && mapTestLease_->IsActive()}, {"scenario_present", false}};
     const int wait = std::clamp(arguments.value("wait_ms").toInt(30000), 0, 600000);
     // 等待期间照常处理事件，别的请求可能结束或重开测试：只看开始等待时的这一局。
     const auto scenario = *mapTestScenario_;
@@ -197,7 +213,9 @@ QJsonObject MainWindow::MapTestScenarioResult(const QJsonObject& arguments) {
         if ((report && report->finished) || !running || clock.elapsed() >= wait) break;
         Pause(250);
     }
+    runtime = readRuntime(lease);
     QJsonObject result{{"ok", true}, {"game_running", running},
+        {"runtime_evidence", runtime},
         {"result_file", QString::fromStdWString(scenario.resultPath.wstring())}};
     if (!report) {
         result.insert("started", false); result.insert("finished", false); result.insert("written", false);

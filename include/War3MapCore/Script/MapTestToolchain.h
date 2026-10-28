@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Services/MapTestService.h"
+#include "War3MapCore/Services/RuntimeTestSession.h"
 
 #include <cstdint>
 #include <memory>
@@ -47,6 +48,8 @@ public:
     // 不可见桌面都能截）。返回游戏写在 <游戏目录>\Screenshots 下的新 TGA，调用方读完后删除。
     // 不是 1.27a、游戏已结束，或限时内没画出新帧（最小化、暂停）时失败，不留下待截请求。
     [[nodiscard]] Result<std::filesystem::path> RequestGameScreenshot(std::uint32_t timeoutMs = 5000) const;
+    // 只读本次专用会话邮箱；不读取游戏内存，不依赖地图中的其他模块。
+    [[nodiscard]] Result<Services::RuntimeTestSnapshot> QueryRuntimeEvidence() const;
     // 仅原进程树终态后调用；在后台核对并清理本次短路径副本，返回启动终态诊断。
     [[nodiscard]] Status Cleanup();
 private:

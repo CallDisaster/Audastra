@@ -98,7 +98,7 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
             {"visible", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {});
     add("map_test_result", "读回本次测试场景写出的结果：记录行、断言通过/失败数、读取的变量、是否已开始与执行完"
         "（游戏写入的资源路径只给 loaded_files 个数）；场景开始前每 2 秒给测试游戏发空格越过“按任意键继续”；"
-        "未执行完时在 wait_ms 内等待", ToolPermission::External,
+        "未执行完时在 wait_ms 内等待。另返回本次运行库只读证据（会话/地图/进程/VM身份、载入、握手、超时或身份拒绝及时间）；没有场景时也可查询运行库证据", ToolPermission::External,
         {{"wait_ms", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 600000}, {"default", 30000}}}}, {});
     add("map_test_capture", "截取本次测试游戏的当前画面，存为 PNG 并返回路径与截取方式。1.27a 由游戏自己截图（看不见的测试也能截）；"
         "其他版本截窗口，只对 visible 测试有效（窗口被遮挡也可，不能最小化；游戏没绘制出画面时失败并给原因）",

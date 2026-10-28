@@ -32,6 +32,12 @@ Response Host::Impl::Control(const Request& r) {
         if (!Args(r, "")) return Error(AJ_ARGUMENT);
         return options.runtimeIdentity.empty() ? Error(AJ_STATE) : Text(options.runtimeIdentity);
     }
+    if (name == "host.testreport") {
+        if (!Args(r, "iis")) return Error(AJ_ARGUMENT);
+        if (!options.runtimeTestReport) return Error(AJ_POLICY);
+        return Error(options.runtimeTestReport(epoch, r.arguments[0].integer, r.arguments[1].integer,
+            r.arguments[2].text) ? AJ_OK : AJ_POLICY);
+    }
     if (name == "host.bind") return Args(r, "s") ? Error(Bind(r.arguments[0].text)) : Error(AJ_ARGUMENT);
     if (name == "host.pump") return Args(r, "") ? Error(Pump()) : Error(AJ_ARGUMENT);
     if (name == "host.event") {
