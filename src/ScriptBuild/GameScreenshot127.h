@@ -21,6 +21,7 @@ struct VerifiedScreenshot127 {
     std::uintptr_t flag = 0;
     bool eventChanged = false;
     std::shared_ptr<void> fileLease;
+    bool dosStubChanged = false;
 };
 // 内部纯核验步骤，不写进程、不调用游戏；base只由上面的模块归属检查或原创映像夹具提供。
 [[nodiscard]] Result<VerifiedScreenshot127> QualifyGame127Screenshot(void* process,

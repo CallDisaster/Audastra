@@ -169,7 +169,7 @@ ctest --test-dir build/map-runtime32 -C Release -R "audastra-(map-runtime-contra
 入口不依赖启动器参数、共享内存或邮箱：
 
 1. 找到已经加载的 `Game.dll`，取得只读来源租约，核对 SHA-256 和 PE 映像。
-2. 校验本项目已有原版 ABI 核验所支持的 native／VM 生命周期入口。映像版本或入口字节不同即拒绝，不覆盖未知钩子。
+2. 校验原版ABI对应的native/VM生命周期入口及重定位后原码。初始化入口仅允许经过资格核验的直接rel32前任链，其余未知变化拒绝；接链、引用保活和诊断边界见[HOOK_CHAINS.md](HOOK_CHAINS.md)。
 3. 通过事务安装晚加载字符串桥和生命周期通知，枚举本进程线程参与指令位置调整。挂起阶段不执行本方日志、文件操作或容器扩容。
 4. 第一次 `ajapi:` 请求在真实 JASS 调用线程上建立 `GameVm127` 租约、`NativeSession` 和 Host，不把 AI 初始化线程当作 JASS 线程。
 5. 将内置 `audastraui` 注册到该 Host。地图的 `AjModuleLoad("audastraui")` 确认其可用；`audastraui.ready` 另外检验游戏 UI 是否就绪。
@@ -197,7 +197,7 @@ e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a
 
 ## 4. 日志与分层诊断
 
-入口写 `OutputDebugStringA`，并尝试独占新建 `%TEMP%/audastra-japi-<PID>-<tick>.log`。不会覆盖已有文件；文件创建失败时仍有调试输出。最多记录 2048 行，单条截断，不记录地图任意参数、文字返回值或内存地址。
+入口写`OutputDebugStringA`；只有附着本方测试邮箱后才尝试独占新建`%TEMP%/audastra-japi-<PID>-<tick>.log`，不覆盖已有文件。普通日志有2048行预算，故障另有64行预算，均截断单条，不记录地图任意参数或文字返回值。测试专用挂钩诊断会记录固定点的机器码字节、实际模块名和相对位置，见[HOOK_CHAINS.md](HOOK_CHAINS.md)；普通玩家不写这些测试文件诊断。
 
 主要标记：
 

@@ -15,7 +15,7 @@ target_compile_definitions(audastra-own-lua-game-data PRIVATE UNICODE _UNICODE W
 target_compile_options(audastra-own-lua-game-data PRIVATE /utf-8 /W4 /permissive-)
 
 add_library(audastra-own-lua-game STATIC "${CMAKE_CURRENT_LIST_DIR}/GameVm127.cpp"
-    "${CMAKE_CURRENT_LIST_DIR}/GameImage127.cpp" "${CMAKE_CURRENT_LIST_DIR}/GameNativeProvider.cpp"
+    "${CMAKE_CURRENT_LIST_DIR}/GameImage127.cpp" "${CMAKE_CURRENT_LIST_DIR}/Pe32OriginalCode.cpp" "${CMAKE_CURRENT_LIST_DIR}/GameNativeProvider.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/GameNativeObserver.cpp" "${CMAKE_CURRENT_LIST_DIR}/OwnedLuaSession.cpp"
     "${CMAKE_CURRENT_LIST_DIR}/../Japi/GameSession.cpp")
 target_link_libraries(audastra-own-lua-game PUBLIC audastra-own-lua-game-data audastra-own-lua-host

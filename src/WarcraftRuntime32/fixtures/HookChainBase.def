@@ -1,0 +1,5 @@
+EXPORTS
+    ChainEntry
+    ChainAbsolute
+    ChainSetRecord
+    ChainCount

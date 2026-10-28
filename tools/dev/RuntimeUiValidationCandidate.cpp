@@ -128,7 +128,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto resourceSha = Take(Sha256File(resources.target));
         TriggerTransactionBinding transaction{resourceSha, 1, {0, expected, catalog.Sha256()}, 1};
         MapEditSaveRequest request; request.sourceMap = resources.target; request.expectedSourceSha256 = resourceSha;
-        request.targetCandidate = out / "coexist-ui-candidate4.w3x";
+        request.targetCandidate = out / "coexist-ui-candidate.w3x";
         request.toolRoot = data; request.uiRoot = data / "ui"; request.gameRoot = game; request.effectiveLayers = layers;
         request.triggerTransaction = Take(TriggerTransactionSnapshot::Freeze(document, catalog, wtg, wct, transaction));
         request.runtime.purpose = MapRuntimeSavePurpose::InternalValidation;

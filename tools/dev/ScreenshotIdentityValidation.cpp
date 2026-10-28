@@ -49,6 +49,21 @@ int wmain(int argc, wchar_t** argv) {
         }
         require(qualified.Succeeded(), "stock identity and target page accepted");
         qualified.value.reset();
+        require(VirtualProtect(owned.view, 1024, PAGE_WRITECOPY, &headerPrevious), "own DOS stub fixture");
+        for (long i = 64; i < dos->e_lfanew; ++i) static_cast<unsigned char*>(owned.view)[i] ^= 0x5a;
+        qualified = QualifyGame127Screenshot(GetCurrentProcess(), base, path);
+        require(qualified.Succeeded() && qualified.value->dosStubChanged, "DOS stub mutations ignored within exact bounds");
+        qualified.value.reset();
+        for (long i = 64; i < dos->e_lfanew; ++i) static_cast<unsigned char*>(owned.view)[i] ^= 0x5a;
+        const auto rejectByte = [&](std::size_t offset) {
+            auto* bytes = static_cast<unsigned char*>(owned.view); bytes[offset] ^= 1;
+            const auto refused = !QualifyGame127Screenshot(GetCurrentProcess(), base, path).Succeeded();
+            bytes[offset] ^= 1; require(refused, "structural PE/DOS byte change must be rejected");
+        };
+        rejectByte(0); rejectByte(60); rejectByte(dos->e_lfanew); rejectByte(dos->e_lfanew + 8);
+        rejectByte(dos->e_lfanew + 24 + 4);
+        rejectByte(dos->e_lfanew + sizeof(IMAGE_NT_HEADERS32) + offsetof(IMAGE_SECTION_HEADER, Characteristics));
+        require(VirtualProtect(owned.view, 1024, headerPrevious, &headerIgnored), "restore protected header after structural negatives");
         require(VirtualProtect(owned.view, 1024, PAGE_WRITECOPY, &headerPrevious), "own wrong image-base fixture");
         nt->OptionalHeader.ImageBase ^= 0x10000;
         require(!QualifyGame127Screenshot(GetCurrentProcess(), base, path).Succeeded(), "unknown mapped image base refused");
@@ -73,7 +88,7 @@ int wmain(int argc, wchar_t** argv) {
         { std::ofstream file(invalid, std::ios::binary); file << "original invalid image fixture"; require(!!file, "create only new invalid fixture"); }
         require(!QualifyGame127Screenshot(GetCurrentProcess(), base, invalid).Succeeded(), "unknown complete image identity rejected even at same mapping");
         const auto after = Sha256File(path); require(after.Succeeded() && *after.value == *before.value, "disk original unchanged");
-        std::cout << "stock_pass=true\nrelocated_header_pass=true\nwrong_image_base_refused=true\naltered_event_pass=true\nchanged_header_refused=true\nreadonly_flag_refused=true\nunknown_sha_refused=true\nsource_unchanged=true\ngame_started=false\n";
+        std::cout << "stock_pass=true\nrelocated_header_pass=true\ndos_stub_change_pass=true\ndos_magic_refused=true\ne_lfanew_refused=true\npe_signature_refused=true\nfile_header_refused=true\noptional_header_refused=true\nsection_table_refused=true\nwrong_image_base_refused=true\naltered_event_pass=true\nchanged_header_refused=true\nreadonly_flag_refused=true\nunknown_sha_refused=true\nsource_unchanged=true\ngame_started=false\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

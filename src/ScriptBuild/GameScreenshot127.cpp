@@ -2,6 +2,7 @@
 #include "War3MapCore/Hash.h"
 
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <set>
 #include <string>
@@ -74,18 +75,26 @@ Result<VerifiedScreenshot127> QualifyGame127Screenshot(void* processHandle, std:
         || !ReadFile(handle, diskHeader.data(), static_cast<DWORD>(diskHeader.size()), &headerBytes, nullptr)
         || headerBytes != diskHeader.size() || !Read(process, base, header.data(), header.size()))
         return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "Game.dll映射头与已核验磁盘映像不符，拒绝截图。");
-    // 加载器可将PE32的ImageBase改成实际映射基址；只允许这一处可证明的装载变化。
+    // DOS存根不属于PE结构身份；只忽略[0x40,e_lfanew)，DOS头和全部PE结构仍严格核对。
     IMAGE_DOS_HEADER dos{}; std::memcpy(&dos, diskHeader.data(), sizeof(dos));
-    if (dos.e_lfanew < 0 || static_cast<std::size_t>(dos.e_lfanew) > diskHeader.size() - sizeof(IMAGE_NT_HEADERS32)
+    if (dos.e_magic != IMAGE_DOS_SIGNATURE || dos.e_lfanew < 64 || static_cast<std::size_t>(dos.e_lfanew) > diskHeader.size() - sizeof(IMAGE_NT_HEADERS32)
         || base > 0xffffffffull)
         return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "截图映像的PE32基址不可确认。");
+    IMAGE_NT_HEADERS32 nt{}; std::memcpy(&nt, diskHeader.data() + dos.e_lfanew, sizeof(nt));
+    if (nt.Signature != IMAGE_NT_SIGNATURE || nt.FileHeader.Machine != IMAGE_FILE_MACHINE_I386
+        || nt.FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER32)
+        || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC || !nt.FileHeader.NumberOfSections || nt.FileHeader.NumberOfSections > 96
+        || static_cast<std::size_t>(dos.e_lfanew) + sizeof(nt) + nt.FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER) > diskHeader.size())
+        return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "无法完整核对PE签名、可选头和节表，拒绝截图。");
+    const bool stubChanged = !std::equal(header.begin() + 64, header.begin() + dos.e_lfanew, diskHeader.begin() + 64);
+    std::copy(diskHeader.begin() + 64, diskHeader.begin() + dos.e_lfanew, header.begin() + 64);
     const bool originalHeader = header == diskHeader;
     const auto imageBaseOffset = static_cast<std::size_t>(dos.e_lfanew) + offsetof(IMAGE_NT_HEADERS32, OptionalHeader)
         + offsetof(IMAGE_OPTIONAL_HEADER32, ImageBase);
     const auto actualBase = static_cast<std::uint32_t>(base);
     std::memcpy(diskHeader.data() + imageBaseOffset, &actualBase, sizeof(actualBase));
     if (!originalHeader && header != diskHeader)
-        return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "Game.dll映射头除实际基址外仍与已核验映像不符，拒绝截图。");
+        return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "Game.dll的DOS头或PE结构除合法基址外与已核验映像不符，拒绝截图。");
     if (base > 0xffffffffull - kScreenshotFlagRva)
         return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "截图数据槽超出PE32地址范围。");
     const auto flag = base + kScreenshotFlagRva;
@@ -98,7 +107,7 @@ Result<VerifiedScreenshot127> QualifyGame127Screenshot(void* processHandle, std:
         || flag + sizeof(std::uint32_t) > reinterpret_cast<std::uintptr_t>(page.BaseAddress) + page.RegionSize
         || !Read(process, base + kScreenshotEventRva, code.data(), code.size()))
         return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "已核验映像的截图数据页或入口不可确认，拒绝截图。");
-    return Result<VerifiedScreenshot127>::Success({flag, code != ExpectedEvent(static_cast<std::uint32_t>(flag)), image});
+    return Result<VerifiedScreenshot127>::Success({flag, code != ExpectedEvent(static_cast<std::uint32_t>(flag)), image, stubChanged});
 #else
     (void)processHandle; (void)base; (void)expected;
     return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "当前平台不支持游戏截图。");
@@ -152,6 +161,7 @@ Result<std::filesystem::path> RequestGame127Screenshot(void* processHandle, cons
             auto result = Result<std::filesystem::path>::Success(path);
             result.diagnostics.push_back({DiagnosticSeverity::Info, "Map.Test", "MAP_TEST_SCREENSHOT_IDENTITY",
                 std::string("完整1.27a磁盘身份、映射头与数据页已核验；入口字节") + (eventChanged ? "已改变" : "与原版一致")
+                    + (qualified.value->dosStubChanged ? "；DOS存根变化已按边界忽略" : "；DOS存根原样")
                     + "；只请求游戏自带截图标志，不执行或改写入口。", std::nullopt});
             return result;
         }

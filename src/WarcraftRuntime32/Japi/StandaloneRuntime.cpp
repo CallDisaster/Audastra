@@ -1,6 +1,7 @@
 #include "GameSession.h"
 #include "ProcessOwner.h"
 #include "RuntimeTestWriter.h"
+#include "HookSite.h"
 #include "../OwnLua/GameVm127.h"
 #include "../GameUi/GameUiModule.h"
 #include "../RuntimeFiles.h"
@@ -83,6 +84,7 @@ struct Runtime {
     unsigned depth = 0;
     bool failed = false;
     std::string identity;
+    std::array<std::unique_ptr<HookSite>, 7> sites;
 
     void Fail(std::string_view message) {
         failed = true;
@@ -296,29 +298,44 @@ int Install(std::string_view identity) {
     auto opened = OwnLua::GameImage127::Open(GetModuleHandleW(L"Game.dll"));
     if (!opened.image) { Trace("game-identity-rejected: " + opened.error); return AJ_POLICY; }
     const auto& image = *opened.image;
-    constexpr unsigned char localized[]{0x55, 0x8b, 0xec, 0x81, 0xec, 0x04, 0x08, 0x00, 0x00};
-    constexpr unsigned char initialize[]{0xe8, 0x5b, 0x96, 0x5f, 0x00, 0x68};
-    constexpr unsigned char destroy[]{0x55, 0x8b, 0xec, 0x6a, 0xff};
-    if (!image.Matches(kLocalized, localized) || !image.Matches(kInitialize, initialize)
-        || !image.Matches(kDestroyVm, destroy)) {
-        Trace("hook-sites-changed: refusing existing hooks/unsupported image"); return AJ_POLICY;
-    }
     auto owned = std::make_unique<Runtime>();
     owned->identity = identity;
     owned->image = std::move(opened.image);
     owned->localized = reinterpret_cast<Localized>(image.Base() + kLocalized);
     owned->initialize = reinterpret_cast<Initialize>(image.Base() + kInitialize);
     owned->destroyVm = reinterpret_cast<DestroyVm>(image.Base() + kDestroyVm);
-    constexpr unsigned char saveScalar[]{0x55, 0x8b, 0xec, 0x8b, 0x4d, 0x08, 0x56};
-    constexpr unsigned char saveString[]{0x55, 0x8b, 0xec, 0x8b, 0x4d, 0x08, 0x57};
-    constexpr unsigned char resolveTable[]{0x55, 0x8b, 0xec, 0x6a, 0xff};
-    owned->dataHooks = image.Matches(kSaveReal, saveScalar) && image.Matches(kSaveBoolean, saveScalar)
-        && image.Matches(kSaveStr, saveString) && image.Matches(kResolveTable, resolveTable);
+    constexpr std::array<std::uintptr_t, 7> rvas{kLocalized, kInitialize, kDestroyVm, kSaveReal, kSaveStr, kSaveBoolean, kResolveTable};
+    constexpr std::array<const char*, 7> names{"localized", "initialize", "destroy_vm", "save_real", "save_str", "save_boolean", "resolve_table"};
+    const auto reportSite = [&](std::size_t i, std::string_view reason) {
+        auto message = "hook-site site=" + std::string(names[i]) + " reason=" + std::string(reason);
+        if (testEvidence.Enabled()) message += " " + DescribeHookSite(image.Base() + rvas[i]);
+        Trace(message, reason != "original" && reason != "verified_rel32_chain");
+        if (testEvidence.Enabled() && owned->sites[i]) for (std::size_t hop = 1; hop < owned->sites[i]->ObservationCount(); ++hop)
+            Trace("hook-chain-hop site=" + std::string(names[i]) + " hop=" + std::to_string(hop) + " "
+                + DescribeHookSite(owned->sites[i]->ObservationAddress(hop)));
+    };
+    for (std::size_t i = 0; i < rvas.size(); ++i) {
+        std::array<unsigned char, 32> expected{};
+        if (!image.OriginalCode(static_cast<std::uint32_t>(rvas[i]), expected)) {
+            reportSite(i, "original_relocation_unavailable");
+        } else {
+            owned->sites[i] = std::make_unique<HookSite>(image.Base() + rvas[i], expected, i == 1);
+            reportSite(i, owned->sites[i]->Reason());
+        }
+    }
+    const auto accepted = [&](std::size_t i) { return owned->sites[i] && owned->sites[i]->Approved(); };
+    if (!accepted(0) || !accepted(1) || !accepted(2)) {
+        Trace("hook-sites-changed: required site qualification refused"); return AJ_POLICY;
+    }
+    owned->dataHooks = accepted(3) && accepted(4) && accepted(5) && accepted(6);
     if (owned->dataHooks) {
         owned->saveReal = reinterpret_cast<SaveReal>(image.Base() + kSaveReal);
         owned->saveStr = reinterpret_cast<SaveStr>(image.Base() + kSaveStr);
         owned->saveBoolean = reinterpret_cast<SaveBoolean>(image.Base() + kSaveBoolean);
-    } else Trace("data-plane unavailable: native sites changed; preserving original natives");
+    } else {
+        for (std::size_t i = 3; i < owned->sites.size(); ++i) owned->sites[i].reset();
+        Trace("data-plane unavailable: native sites changed; preserving original natives");
+    }
     Threads threads;
     threads.handles.reserve(256);
     auto status = OpenThreads(threads);
@@ -332,23 +349,35 @@ int Install(std::string_view identity) {
     status = DetourTransactionBegin();
     if (status != NO_ERROR) { Trace("detours-begin-failed"); return AJ_BACKEND; }
     runtime.store(owned.get());
-    status = DetourAttach(reinterpret_cast<PVOID*>(&owned->localized), LocalizedHook);
-    if (status == NO_ERROR) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->initialize), InitializeHook);
-    if (status == NO_ERROR) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->destroyVm), DestroyVmHook);
-    if (status == NO_ERROR && owned->dataHooks) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->saveReal), SaveRealHook);
-    if (status == NO_ERROR && owned->dataHooks) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->saveStr), SaveStrHook);
-    if (status == NO_ERROR && owned->dataHooks) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->saveBoolean), SaveBooleanHook);
+    struct Attachment { std::size_t site; PVOID* next; PVOID callback; };
+    const std::array<Attachment, 6> attachments{{
+        {0, reinterpret_cast<PVOID*>(&owned->localized), reinterpret_cast<PVOID>(&LocalizedHook)},
+        {1, reinterpret_cast<PVOID*>(&owned->initialize), reinterpret_cast<PVOID>(&InitializeHook)},
+        {2, reinterpret_cast<PVOID*>(&owned->destroyVm), reinterpret_cast<PVOID>(&DestroyVmHook)},
+        {3, reinterpret_cast<PVOID*>(&owned->saveReal), reinterpret_cast<PVOID>(&SaveRealHook)},
+        {4, reinterpret_cast<PVOID*>(&owned->saveStr), reinterpret_cast<PVOID>(&SaveStrHook)},
+        {5, reinterpret_cast<PVOID*>(&owned->saveBoolean), reinterpret_cast<PVOID>(&SaveBooleanHook)}}};
+    std::size_t changedSite = owned->sites.size(); bool snapshotChanged = false;
+    for (const auto& step : attachments) {
+        if (step.site >= 3 && !owned->dataHooks) continue;
+        status = AttachQualifiedHook(*owned->sites[step.site], step.next, step.callback);
+        if (status != NO_ERROR) { changedSite = step.site; break; }
+    }
     if (status == NO_ERROR) {
         for (const auto thread : threads.handles) {
             status = DetourUpdateThread(thread);
             if (status != NO_ERROR) break;
         }
     }
+    if (status == NO_ERROR) for (std::size_t i = 0; i < owned->sites.size(); ++i) {
+        if (owned->sites[i] && !owned->sites[i]->StillMatches()) { changedSite = i; snapshotChanged = true; status = ERROR_INVALID_DATA; break; }
+    }
     if (status == NO_ERROR) status = DetourTransactionCommit();
     else DetourTransactionAbort();
     if (status != NO_ERROR) {
         runtime.store(nullptr);
-        Trace("hook-install-failed win32=" + std::to_string(status)); return AJ_BACKEND;
+        if (changedSite != owned->sites.size()) reportSite(changedSite, snapshotChanged ? "changed_before_commit" : "attach_rejected");
+        Trace("hook-install-failed win32=" + std::to_string(status)); return status == ERROR_INVALID_DATA ? AJ_POLICY : AJ_BACKEND;
     }
     owned.release(); // 钩子与会话为进程级拥有；不在 DllMain 卸载/析构。
     ownerState.store(1);
