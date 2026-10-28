@@ -22,7 +22,8 @@ UI_FUNCTIONS = ("Connect", "Check", "AudastraUIIsReady", "AudastraUILastError")
 JAPI_FUNCTIONS = ("AjInitialize", "AjModuleLoad", "AjFail")
 UI_GLOBALS = ("PREFIX", "connectStatus", "failedStatus", "failedRequest")
 JAPI_GLOBALS = ("AjReady", "AjLastStatus", "AjNextRequest", "AjCapabilities", "AjLastInteger",
-                "AjExpectedRuntimeIdentity", "AjLastText", "AjLastKind", "AjLastReal")
+                "AjExpectedRuntimeIdentity", "AjLastText", "AjLastKind", "AjLastReal",
+                "AjRuntimeModuleExpected", "AjRuntimeModuleState", "AjRuntimeModulePolling", "AjRuntimeModuleLastStatus")
 STUB_FUNCTIONS = ("AjRequest", "AjCallVoid", "AjCallBool", "AjCallText", "AjArgText", "AjArgInt", "I2S",
                   "AudastraUIDataErrors")
 TYPES = {"boolean": "False", "integer": "0", "string": '""', "real": "0.0"}

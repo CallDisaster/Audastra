@@ -855,7 +855,9 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         }
         result.script = std::move(*output);
         if (options.mapRuntimeBoot) {
+            if (!WriteFile(dir / "6_runtime-input.j", result.script)) { Fail(result, "WORKDIR_WRITE", "无法冻结运行库改写前的同阶段主脚本。"); return result; }
             auto plan = *options.mapRuntimeBoot; plan.injectedSourceSha256 = result.injectedSourceSha256;
+            if (options.frameworkInputs) plan.moduleLoaders = options.frameworkInputs->profile.moduleLoaders;
             auto boot = ApplyMapRuntimeBoot(result.script, plan);
             result.diagnostics.insert(result.diagnostics.end(), boot.diagnostics.begin(), boot.diagnostics.end());
             if (!boot.Succeeded()) { result.script.clear(); return result; }
@@ -878,7 +880,9 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         return result;
     }
     if (options.mapRuntimeBoot) {
+        if (!WriteFile(dir / "6_runtime-input.j", finalScript)) { Fail(result, "WORKDIR_WRITE", "无法冻结运行库改写前的同阶段主脚本。"); return result; }
         auto plan = *options.mapRuntimeBoot; plan.injectedSourceSha256 = result.injectedSourceSha256;
+        if (options.frameworkInputs) plan.moduleLoaders = options.frameworkInputs->profile.moduleLoaders;
         auto boot = ApplyMapRuntimeBoot(finalScript, plan);
         result.diagnostics.insert(result.diagnostics.end(), boot.diagnostics.begin(), boot.diagnostics.end());
         if (!boot.Succeeded()) return result;

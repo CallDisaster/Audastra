@@ -663,7 +663,7 @@ add_executable(audastra-runtime-package-freezer EXCLUDE_FROM_ALL "${PROJECT_SOUR
 target_link_libraries(audastra-runtime-package-freezer PRIVATE War3MapEditor::Services audastra-json)
 target_compile_definitions(audastra-runtime-package-freezer PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-runtime-package-freezer PRIVATE /W4 /permissive- /utf-8)
-add_executable(war3-map-runtime-boot-tests MapRuntimeBootTests.cpp)
+add_executable(war3-map-runtime-boot-tests MapRuntimeBootTests.cpp RuntimeModuleBootTests.cpp)
 target_link_libraries(war3-map-runtime-boot-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_options(war3-map-runtime-boot-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME script-map-runtime-boot COMMAND war3-map-runtime-boot-tests)

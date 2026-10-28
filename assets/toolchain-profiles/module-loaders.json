@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "moduleLoaders": [{
+    "id": "archive-module-v1",
+    "function": "MHTool_LoadModule",
+    "parameters": ["string", "boolean"],
+    "returns": "boolean",
+    "availableAfter": "main",
+    "anonymous": true
+  }]
+}

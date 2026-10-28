@@ -158,7 +158,7 @@ Result<std::string> ValidateScriptToolchainProfile(const ScriptToolchainProfile&
         (profile.returnbugPolicy == ScriptProfileReturnbugPolicy::InventoriedOnly &&
             (profile.targetVersionMacro >= 124 || profile.baseLibraryCategory != ScriptProfileBaseLibraryCategory::Pre124 ||
                 profile.returnbugPatternSetVersion != kPre124ReturnbugPatternSet))) {
-        return Fail("SCRIPT_PROFILE_RETURNBUG_SCOPE", "盘点例外只限1.24以前目标及Pre124基础库档位的YDWEBase_returnbug；1.27a MemHack导入不授予主脚本类型例外。");
+        return Fail("SCRIPT_PROFILE_RETURNBUG_SCOPE", "盘点例外只限1.24以前目标及Pre124基础库档位的YDWEBase_returnbug；不透明导入不授予主脚本类型例外。");
     }
     if (profile.sourceRoots.size() > MaxSources || profile.ordinaryIncludeAccess.size() > MaxSources ||
         profile.templateApis.size() > MaxApis || profile.directives.size() > 5) {
@@ -174,6 +174,14 @@ Result<std::string> ValidateScriptToolchainProfile(const ScriptToolchainProfile&
         if (!IsName(api, true) || IsHostApi(api) || std::find(profile.templateApis.begin(), profile.templateApis.begin() + index, api) != profile.templateApis.begin() + index) {
             return Fail("SCRIPT_PROFILE_API_INVALID", "模板API必须为有界、唯一的公开标识符，不能声明宿主文件、系统或动态加载入口。");
         }
+    }
+    if (profile.moduleLoaders.size() > 8) return Fail("SCRIPT_PROFILE_LIMIT", "模块加载声明超过8项。");
+    for (std::size_t i = 0; i < profile.moduleLoaders.size(); ++i) {
+        const auto& loader = profile.moduleLoaders[i];
+        if (!ScriptModuleLoaderIdentity(loader).Succeeded() || std::any_of(profile.moduleLoaders.begin(),
+            profile.moduleLoaders.begin() + i, [&](const auto& prior) {
+                return prior.id == loader.id || prior.functionName == loader.functionName;
+            })) return Fail("SCRIPT_PROFILE_MODULE_LOADER_INVALID", "模块加载声明无效或有重复身份、函数名。");
     }
     if (profile.featureExtensions.size() > 64 || profile.unsupportedPlugins.size() > 64)
         return Fail("SCRIPT_PROFILE_LIMIT", "框架编译插件声明超过64项。");
@@ -281,6 +289,10 @@ Result<std::string> ValidateScriptToolchainProfile(const ScriptToolchainProfile&
                 valid = valid && identity.Add(plugin.name) && identity.Number(plugin.identifiers.size());
                 for (const auto& name : plugin.identifiers) valid = valid && identity.Add(name);
             }
+        }
+        if (!profile.moduleLoaders.empty()) {
+            valid = valid && identity.Add("War3Map.ModuleLoaders.v1") && identity.Number(profile.moduleLoaders.size());
+            for (const auto& loader : profile.moduleLoaders) valid = valid && identity.Add(*ScriptModuleLoaderIdentity(loader).value);
         }
         if (!valid) return Fail("SCRIPT_PROFILE_LIMIT", "工具链档案的完整逻辑身份超过1MiB预算。");
         return Sha256Text(identity.Text());

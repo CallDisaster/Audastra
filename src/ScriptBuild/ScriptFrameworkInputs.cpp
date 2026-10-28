@@ -364,6 +364,7 @@ Result<ScriptToolchainProfile> MakeLegacyFrameworkProfile(const ScriptToolchainL
     profile.sourceRoots.push_back({ScriptProfileSourceRole::Native, layout.root / "jass" / "native", false});
     for (auto& source : profile.sourceRoots) source.encoding = ScriptProfileEncoding::UniqueUtf8OrGbk;
     AddFrameworkPlugins(profile, layout);
+    profile.moduleLoaders = DefaultScriptModuleLoaders();
     auto valid = ValidateScriptToolchainProfile(profile);
     if (!valid.Succeeded()) return {{}, std::move(valid.diagnostics)};
     return Result<ScriptToolchainProfile>::Success(std::move(profile));

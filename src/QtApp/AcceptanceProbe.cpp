@@ -59,12 +59,15 @@ bool MainWindow::ProbeRuntimeSave(const std::filesystem::path& outputPath, const
     const auto script = candidate.value->ReadMember(scriptName);
     if (!script.Succeeded()) return false;
     const std::string_view scriptText(reinterpret_cast<const char*>(script.value->data()), script.value->size());
-    if (!Script::VerifyMapRuntimeBoot(scriptText, true).Succeeded()
-        || !Script::VerifyMapRuntimeIdentity(scriptText, package->payloadSha256).Succeeded()) return false;
+    const auto module = Script::InspectMapRuntimeModuleBoot(scriptText, Script::DefaultScriptModuleLoaders());
+    if (!module.Succeeded() || !Script::VerifyMapRuntimeBoot(scriptText, true, *module.value).Succeeded()
+        || !Script::VerifyMapRuntimeIdentity(scriptText, module.value->has_value()
+            ? package->modulePayloadSha256 : package->payloadSha256).Succeeded()) return false;
     log << QStringLiteral("runtime-save: saved=true purpose=internal_validation baseline_changed=false")
         << QStringLiteral("runtime-save: source_sha256=%1").arg(QString::fromStdString(sourceSha))
         << QStringLiteral("runtime-save: candidate_sha256=%1").arg(QString::fromStdString(candidate.value->SourceSha256()))
         << QStringLiteral("runtime-save: package_sha256=%1").arg(packageSha256)
+        << QStringLiteral("runtime-save: module_strategy=%1").arg(module.value->has_value())
         << QStringLiteral("runtime-save: main_boot_verified=true payload_identity_verified=true")
         << QStringLiteral("runtime-save: original_editor_validated=false game_validated=false");
     return true;

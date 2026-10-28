@@ -1,0 +1,4 @@
+std::vector<ScriptProfileModuleLoader> DefaultScriptModuleLoaders() {
+    return {
+@RUNTIME_MODULE_LOADER_ROWS@    };
+}

@@ -143,7 +143,8 @@ void LargeScript() {
     Require(installed.Succeeded(), "large real-map script is not refused by a lexer budget below the script size limit");
     Require(VerifyMapRuntimeBoot(*installed.value, true).Succeeded(), "large installed script verifies");
 }
+void RuntimeModuleBootTests();
 int main() {
-    try { Boot(); Identity(); TestDiagnostics(); LuaUsage(); LargeScript(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    try { Boot(); Identity(); TestDiagnostics(); LuaUsage(); LargeScript(); RuntimeModuleBootTests(); } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "map runtime boot tests passed\n";
 }

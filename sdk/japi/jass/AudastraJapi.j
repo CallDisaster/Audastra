@@ -7,6 +7,12 @@ globals
     integer AjCapabilities = 0
     boolean AjReady = false
     string AjExpectedRuntimeIdentity = ""
+    boolean AjRuntimeModuleExpected = false
+    integer AjRuntimeModuleState = 0
+    integer AjRuntimeModuleAttempts = 0
+    integer AjRuntimeModuleLastStatus = 8
+    boolean AjRuntimeModulePolling = false
+    timer AjRuntimeModuleTimer = null
     integer AjLastStatus = 8
     string AjLastKind = "v"
     integer AjLastInteger = 0
@@ -294,6 +300,9 @@ function AjRequest takes string command, string arguments, string expectedKind r
     local string value
     local integer responseEpoch
     local integer status
+    if AjRuntimeModuleExpected and AjRuntimeModuleState != 3 and not AjRuntimeModulePolling then
+        return AjFail(AjRuntimeModuleLastStatus)
+    endif
     if not AjReady and command != "host.hello" then
         return AjFail(8)
     endif
@@ -381,6 +390,9 @@ function AjRequest takes string command, string arguments, string expectedKind r
 endfunction
 
 function AjInitialize takes nothing returns boolean
+    if AjRuntimeModuleExpected and AjRuntimeModuleState != 3 and not AjRuntimeModulePolling then
+        return AjFail(AjRuntimeModuleLastStatus)
+    endif
     if AjReady then
         return true
     endif
@@ -402,7 +414,69 @@ function AjInitialize takes nothing returns boolean
     return true
 endfunction
 
-// 仅由测试运行保存产物显式启动；普通地图不会安排此计时器。
+// 主初始化完成后由受管入口安排；仅在游戏线程回调中请求公开模块加载器。
+function AjStopRuntimeModule takes nothing returns nothing
+    if AjRuntimeModuleTimer == null then
+        return
+    endif
+    call PauseTimer(AjRuntimeModuleTimer)
+    call DestroyTimer(AjRuntimeModuleTimer)
+    set AjRuntimeModuleTimer = null
+endfunction
+
+function AjRuntimeModuleLoaded takes boolean loaded returns nothing
+    if AjRuntimeModuleState != 1 then
+        return
+    endif
+    if loaded then
+        set AjRuntimeModuleState = 2
+    else
+        set AjRuntimeModuleState = -1
+        set AjRuntimeModuleLastStatus = 13
+    endif
+endfunction
+
+function AjPollRuntimeModule takes nothing returns nothing
+    if AjRuntimeModuleTimer == null then
+        return
+    endif
+    set AjRuntimeModuleAttempts = AjRuntimeModuleAttempts + 1
+    if AjRuntimeModuleState == 1 then
+        call ExecuteFunc("AudastraRuntimeModuleLoad")
+        if AjRuntimeModuleState == 1 then
+            set AjRuntimeModuleState = -1
+            set AjRuntimeModuleLastStatus = 13
+        endif
+    endif
+    if AjRuntimeModuleState == 2 then
+        set AjRuntimeModulePolling = true
+        if AjInitialize() then
+            set AjRuntimeModuleState = 3
+        endif
+        set AjRuntimeModuleLastStatus = AjLastStatus
+        set AjRuntimeModulePolling = false
+        if AjRuntimeModuleLastStatus == 14 then
+            set AjRuntimeModuleState = -3
+        endif
+    endif
+    if AjRuntimeModuleState == 3 or AjRuntimeModuleState < 0 then
+        call AjStopRuntimeModule()
+    elseif AjRuntimeModuleAttempts >= 150 then
+        set AjRuntimeModuleState = -2
+        call AjStopRuntimeModule()
+    endif
+endfunction
+
+function AjStartRuntimeModule takes nothing returns nothing
+    if not AjRuntimeModuleExpected or AjRuntimeModuleState != 0 then
+        return
+    endif
+    set AjRuntimeModuleState = 1
+    set AjRuntimeModuleTimer = CreateTimer()
+    call TimerStart(AjRuntimeModuleTimer, 0.2, true, function AjPollRuntimeModule)
+endfunction
+
+// 仅由测试运行保存产物显式启动；普通地图不会安排提示计时器。
 function AjStopTestDiagnostics takes nothing returns nothing
     if AjTestDiagnosticTimer == null then
         return

@@ -22,14 +22,16 @@ int wmain(int argc, wchar_t** argv) {
         // 只有冻结计划是JSON；载荷缓冲从不经过解析器、输出或编译器。
         const std::string_view planText(reinterpret_cast<const char*>(plan.value->data()), plan.value->size());
         const auto json = Json::parse(planText);
-        const std::map<std::string, std::pair<std::string, std::string>> targets{
+        std::map<std::string, std::pair<std::string, std::string>> targets{
             {"bootstrap", {"bootstrap.blob", "warvk_loader_raw.ai"}}, {"payload", {"payload.blob", "warvk_runtime.blp"}},
             {"client", {"client.j", ""}}, {"license", {"license.txt", "audastra/runtime/licenses/license-memhack.txt"}},
             {"origin", {"origin.txt", "audastra/runtime/licenses/origin.txt"}}};
-        require(json.at("schema") == 1 && json.at("files").is_array() && json.at("files").size() == targets.size());
+        require(json.at("schema") == 1 || json.at("schema") == 2);
+        if (json.at("schema") == 2) targets.emplace("module", std::pair{"module.blob", "warvk_runtime_module.dll"});
+        require(json.at("files").is_array() && json.at("files").size() == targets.size());
         struct File { std::string path; std::vector<std::byte> bytes; };
         std::vector<File> files;
-        Json manifest{{"schema", 1}, {"id", json.at("id")}, {"version", json.at("version")}, {"abi", 0x20000}, {"scope", "internal"},
+        Json manifest{{"schema", json.at("schema")}, {"id", json.at("id")}, {"version", json.at("version")}, {"abi", 0x20000}, {"scope", "internal"},
             {"gameSha256", "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"}, {"files", Json::array()}};
         std::set<std::string> seen;
         std::uint64_t total = 0;

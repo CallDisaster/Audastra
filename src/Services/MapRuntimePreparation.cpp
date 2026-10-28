@@ -105,7 +105,7 @@ std::string SerializeMapRuntimeArchiveState(const MapRuntimeArchiveState& state)
         for (const auto& diagnostic : package.diagnostics)
             diagnostics.push_back({{"code", diagnostic.code}, {"message", diagnostic.message}});
         packages.push_back({{"package_sha256", package.packageSha256}, {"id", package.id}, {"version", package.version},
-            {"payload_sha256", package.payloadSha256}, {"internal_only", package.internalOnly},
+            {"payload_sha256", package.payloadSha256}, {"module_payload_sha256", package.modulePayloadSha256}, {"internal_only", package.internalOnly},
             {"available", package.available}, {"diagnostics", diagnostics}});
     }
     return Json{{"ok", true}, {"source_sha256", state.sourceSha256}, {"approved", false},

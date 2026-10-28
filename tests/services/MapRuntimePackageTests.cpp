@@ -542,6 +542,83 @@ void UnknownOwnership() {
         Require(*Sha256File(source).value == archive.value->SourceSha256(), "rejected ownership leaves source unchanged");
     }
 }
+void ModulePackageAndSave() {
+    Fixture f;
+    f.Add("module.blob", "warvk_runtime_module.dll", "module", "original synthetic module payload"); f.Save();
+    Require(Code(MapRuntimePackage::Capture(f.source, MapRuntimeSavePurpose::InternalValidation), "RUNTIME_PACKAGE_INVALID"), "schema1 never accepts module role");
+    f.manifest["schema"] = 2; f.Save();
+    const auto captured = MapRuntimePackage::Capture(f.source, MapRuntimeSavePurpose::InternalValidation);
+    Require(captured.Succeeded() && (*captured.value)->ModulePayloadSha256() == *Sha256(Bytes("original synthetic module payload")).value,
+        "schema2 captures independent module content identity");
+    const auto originalManifest = f.manifest;
+    f.manifest["files"].erase(f.manifest["files"].size() - 1); f.Save();
+    Require(Code(MapRuntimePackage::Capture(f.source, MapRuntimeSavePurpose::TestRun), "RUNTIME_PACKAGE_INVALID"), "schema2 requires module role");
+    f.manifest = originalManifest; f.Save();
+    const auto loader = Script::DefaultScriptModuleLoaders().at(0);
+    const std::string original = "globals\nstring AjExpectedRuntimeIdentity=\"\"\nboolean AjRuntimeModuleExpected=false\nendglobals\nfunction " +
+        loader.functionName + " takes string p, boolean a returns boolean\nreturn true\nendfunction\n"
+        "function original_init takes nothing returns nothing\ncall StartCampaignAI(Player(12),\"original.blob\")\nendfunction\n"
+        "function AjStartRuntimeModule takes nothing returns nothing\nendfunction\n"
+        "function main takes nothing returns nothing\ncall original_init()\ncall AudastraUIAvailable()\nendfunction\n";
+    const auto source = f.root / "module-source.w3x";
+    const auto settings = *SerializeMapRuntimeSettings({MapRuntimeMode::Enabled, f.source.manifestSha256}).value;
+    Require(WriteVerifiedArchive(source, std::vector<MapArchiveMember>{{"war3map.j", Bytes(original)},
+        {std::string(kMapRuntimeSettingsMember), settings}, {"original.blob", Bytes("unmanaged opaque member")}}).Succeeded(), "original module fixture");
+    const auto archive = MapArchiveSession::Open(source); Require(archive.Succeeded(), "open module fixture");
+    MapSaveTask first; Require(first.FreezeArchive(*archive.value).Succeeded(), "freeze module fixture");
+    first.target = f.root / "module-first.w3x"; first.runtimePurpose = MapRuntimeSavePurpose::InternalValidation;
+    first.testCopyOnly = true; first.runtimePackageSources = {f.source}; first.runtimeApprovedPackageSha256 = f.source.manifestSha256;
+    first.script.emplace(); first.script->scriptMember = "war3map.j";
+    Require(PrepareMapRuntimeSave(first).Succeeded(), "prepare module policy before compilation");
+    auto& boot = *first.script->toolchain.mapRuntimeBoot;
+    boot.injectedSourceSha256 = {*Sha256(Bytes("original synthetic client source bytes")).value};
+    const auto compiled = Script::ApplyMapRuntimeBoot(original, boot);
+    Require(compiled.Succeeded() && first.runtimeState->moduleLoader == loader, "common build selects module, captures consent and exact source identity");
+    first.scriptInjectedSourceSha256 = boot.injectedSourceSha256;
+    first.script.reset(); first.scriptRebuilt = true;
+    first.replacements.push_back({"war3map.j", Bytes(*compiled.value)});
+    // 本段只测脚本构建后的派生门；合成替身不构成真实工具链编译或游戏证明。
+    Require(FinalizeMapRuntimeSave(first).Succeeded() && VerifyMapRuntimeSave(first).Succeeded(), "module final gates bind selected product and ownership");
+    const auto metadata = std::find_if(first.replacements.begin(), first.replacements.end(), [](const auto& item) { return item.name == kMapRuntimeInstallationMember; });
+    Require(metadata != first.replacements.end(), "module metadata exists");
+    const auto json = nlohmann::json::parse(std::string(reinterpret_cast<const char*>(metadata->data.data()), metadata->data.size()));
+    Require(json["schema"] == 2 && json["bootRule"] == 2 && json["moduleLoaderId"] == loader.id, "new ownership version is explicit");
+    std::vector<MapArchiveMember> members;
+    for (const auto& member : first.replacements) members.push_back({member.name, member.data});
+    members.push_back({"original.blob", Bytes("unmanaged opaque member")});
+    members.push_back({std::string(kMapRuntimeSettingsMember), settings});
+    Require(WriteVerifiedArchive(first.target, members).Succeeded(), "serialize unit-test derived fixture");
+    const auto installed = MapArchiveSession::Open(first.target); Require(installed.Succeeded(), "reopen module ownership fixture");
+    MapSaveTask repeated; Require(repeated.FreezeArchive(*installed.value).Succeeded(), "freeze repeated module save");
+    repeated.target = f.root / "module-repeat.w3x"; repeated.runtimePurpose = MapRuntimeSavePurpose::InternalValidation;
+    repeated.testCopyOnly = true; repeated.runtimePackageSources = {f.source}; repeated.runtimeApprovedPackageSha256 = f.source.manifestSha256;
+    MapSaveService::Run(repeated);
+    if (!repeated.succeeded) for (const auto& d : repeated.diagnostics) std::cerr << d.code << ": " << d.message << '\n';
+    Require(repeated.succeeded && repeated.nextSession->ReadMember("war3map.j").value == Bytes(*compiled.value), "normal shared save restores module ownership without rebuilding or reordering");
+    Require(repeated.nextSession->ReadMember("original.blob").value == Bytes("unmanaged opaque member"), "unmanaged member preserved");
+    auto originalBody = original.substr(original.find("function original_init"), std::string("function original_init takes nothing returns nothing\ncall StartCampaignAI(Player(12),\"original.blob\")\nendfunction").size());
+    Require(compiled.value->find(originalBody) != std::string::npos, "third-party initialization full body exact in same phase");
+    auto tampered = *compiled.value; tampered.replace(tampered.find("warvk_runtime_module.dll"), 24, "wrong.dll");
+    first.replacements[0].data = Bytes(tampered);
+    Require(!VerifyMapRuntimeSave(first).Succeeded(), "post-finalization script drift refuses publication");
+    MapSaveTask publicSave; Require(publicSave.FreezeArchive(*installed.value).Succeeded(), "freeze module normal purpose");
+    publicSave.target = f.root / "forbidden-public.w3x"; publicSave.runtimePackageSources = {f.source}; publicSave.runtimeApprovedPackageSha256 = f.source.manifestSha256;
+    MapSaveService::Run(publicSave);
+    Require(!publicSave.succeeded && Code(publicSave, "RUNTIME_DISTRIBUTION_NOT_APPROVED") && !std::filesystem::exists(publicSave.target), "module strategy does not grant public distribution");
+    auto unused = *compiled.value;
+    unused.replace(unused.find("call AudastraUIAvailable()"), std::string("call AudastraUIAvailable()").size(), "call Marker()");
+    Script::MapRuntimeBootPlan removal; removal.enabled = false; removal.ownsExisting = true; removal.ownedModuleLoader = loader;
+    const auto stripped = Script::ApplyMapRuntimeBoot(unused, removal); Require(stripped.Succeeded(), "owned module removal plan");
+    MapSaveTask disabled; Require(disabled.FreezeArchive(*installed.value).Succeeded(), "freeze module disable");
+    disabled.target = f.root / "module-disabled.w3x"; disabled.runtimePackageSources = {f.source};
+    disabled.replacements = {{"war3map.j", Bytes(*stripped.value)}, {std::string(kMapRuntimeSettingsMember),
+        *SerializeMapRuntimeSettings({MapRuntimeMode::Disabled, {}}).value}};
+    disabled.scriptRebuilt = true;
+    MapSaveService::Run(disabled);
+    Require(disabled.succeeded && !disabled.nextSession->HasMember("warvk_runtime_module.dll") &&
+        !disabled.nextSession->HasMember(kMapRuntimeInstallationMember) && disabled.nextSession->HasMember("original.blob"),
+        "normal-purpose disable removes only owned module members and leaves original initialization/member");
+}
 void LuaPolicy() {
     Fixture f;
     MapData::MapSettings settings; settings.formatVersion = 31; settings.scriptLanguage = 1;
@@ -569,7 +646,7 @@ void LuaPolicy() {
 }
 }
 int main() {
-    try { Settings(); Preparation(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); DiagnosticSaveRoundTrip(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); LuaPolicy(); }
+    try { Settings(); Preparation(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); DiagnosticSaveRoundTrip(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); ModulePackageAndSave(); LuaPolicy(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "runtime settings and package tests passed\n";
 }

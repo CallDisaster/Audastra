@@ -17,6 +17,7 @@ struct MapRuntimeSaveState {
     std::vector<std::string> removedMembers;
     bool active = false;
     MapRuntimeSavePurpose purpose = MapRuntimeSavePurpose::Normal;
+    std::optional<Script::ScriptProfileModuleLoader> moduleLoader;
 };
 [[nodiscard]] Status PrepareMapRuntimeSave(MapSaveTask& task);
 [[nodiscard]] Status FinalizeMapRuntimeSave(MapSaveTask& task);

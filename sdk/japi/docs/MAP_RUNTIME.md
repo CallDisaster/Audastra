@@ -25,6 +25,20 @@
 
 `LoadInstalledMapRuntimeSources` 和 `QueryMapRuntimePackages` 为共用查询；后者只返回包身份、版本、DLL身份、内部范围、可读取状态及诊断，不返回目录或黑盒内容。“可读取”不是游戏可运行或公开分发的证明。Qt工程的 `QueryMapRuntimeState` 另附当前generation/revision、地图设置与本工程明确批准状态；地图自带包身份不会自动使批准为true。查询不修改工程；启用仍须使用同一图/资源修订事务，保存仍有独立用途与发布前核验。CLI和独立保存入口已接同一准备服务，真实包与验收候选按版本分别登记；实机共存仍待完成。
 
+### 模块加载共存策略（开发接口，尚待游戏验收）
+
+同一中立敌对玩家已有其他AI初始化时，不再抢占该玩家或追加本方AI。工具链档案的`moduleLoaders`声明公开加载函数、固定`(string, boolean) -> boolean`签名、匿名参数及`AfterMain`阶段。内置声明由`assets/toolchain-profiles/module-loaders.json`编译生成，声明身份进入工具链SHA；最终主脚本还必须有唯一匹配声明。缺声明、签名错误、重复或歧义均拒绝；没有适配声明的竞争初始化仍返回`RUNTIME_COEXISTENCE_UNVERIFIED`。地图和Agent不能用开关跳过检查。
+
+模块路径保留其他初始化的函数体、调用次数、参数和相对次序。本方仅在`main`末尾加入一次`AjStartRuntimeModule()`，随后0.2秒计时器在游戏线程调用受管shim。公开加载函数只负责归档释放和装入DLL，不需要也不假定它调用导出。构建工作目录同时保留`6_runtime-input.j`与最终`6_vjass.j`供同阶段身份比对；它们不包含AI文本。main有提前返回、手工/被改动的受管片段或未知所有权时拒绝自动重排。
+
+`warvk_runtime.dll`仍为AI产物，只能显式调用`WarVKAIInit`；新增`warvk_runtime_module.dll`为模块产物，只有后者含线程入口。DllMain仅保留自己存续引用、安排worker并释放线程句柄；worker离开加载锁后调用相同初始化，再原子释放引用并退出。已安装钩子另外固定进程拥有者；相同DLL内容复用，不同内容要求重启游戏。两个产物的内容身份不同，不能在同一进程中互换并沿用旧握手。线程存续处理遵循[Windows DLL实践](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-best-practices)及[FreeLibraryAndExitThread](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-freelibraryandexitthread)的约定。
+
+模块路径每VM只装入一次。SDK的`AjRuntimeModuleState`为0未开始、1装入中、2等待桥、3已握手、-1装入失败、-2超时、-3身份拒绝。装入成功不等于桥就绪：最多150次、间隔0.2秒尝试hello与内容身份，无阻塞等待或无限轮询。早期调用返回`AjRuntimeModuleLastStatus`（初始8）；加载失败13、身份拒绝14，超时保留最后失败状态。失败不会让UI连接缓存成功。正式玩家没有提示；只有`TestRun`另安排测试提示。
+
+包schema1不变。schema2额外要求唯一`module`角色，固定归档成员`warvk_runtime_module.dll`；保留原bootstrap/payload/client/notice角色，不自动执行两个载荷。模块安装回执用schema2/bootRule2，额外绑定`moduleLoaderId`和`moduleLoaderSha256`；AI回执仍是1/1。CLI、活动及独立保存经过同一构建/发布复核，包查询多返回`module_payload_sha256`。新客户端或载荷须显式锁定新包，不能只更新摘要沿用旧客户。内部包仍只能保存到专用新副本，不授予公开分发资格。
+
+离线测试只能证明启动结构、限次重试、字节/身份和保存门禁。实际双方钩子安装、功能和同进程重开/换图/菜单重进仍须在专用副本进游戏验收；`hook-sites-changed`等失败不得强行覆盖未知钩子。
+
 ### 测试副本与活动地图工具（开发接口）
 
 普通“保存／另存为”保持 `Normal` 用途，不因为地图内声明、已批准包或测试副本标志而取得内部包的公开分发资格。“测试地图”在准备脚本之前通过 `PrepareMapTestCopy` 冻结 `TestRun` 用途；内部专用验收可明确选择 `InternalValidation`。这两种用途只允许不存在的独立新路径，不得原地保存、覆盖现有目标或通过 `CommitMapSave` 切换工程的源图、保存基线及撤销历史。内容预检可带明确用途但不写地图；通过预检不授予后续正式保存资格。
