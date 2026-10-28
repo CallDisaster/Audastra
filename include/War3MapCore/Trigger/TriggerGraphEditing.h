@@ -148,8 +148,11 @@ struct GraphPlace {
     GraphRecordRef target, anchor;
     bool after = true;
 };
+class PreparedTriggerCodeIdentityChange;
+struct GraphCodeIdentityChange { std::shared_ptr<const PreparedTriggerCodeIdentityChange> prepared; };
 using GraphEditOperation = std::variant<GraphCreate, GraphSet, GraphRename, GraphMove, GraphRemove, GraphInsertSubtree,
-    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText, GraphApplyFeatureText, GraphPatchTriggerText, GraphPlace>;
+    GraphReplaceArgument, GraphInsertText, GraphReplaceTriggerText, GraphApplyFeatureText, GraphPatchTriggerText, GraphPlace,
+    GraphCodeIdentityChange>;
 struct TriggerGraphBinding {
     std::string sourceWtgSha256, sourceWctSha256, uiCatalogSha256;
     std::string currentWtgSha256, currentWctSha256;
@@ -179,6 +182,7 @@ struct TriggerGraphEditReceipt {
     std::map<std::string, GraphRecordRef> created;
     std::vector<AtomicRenameReceipt> renames;
     std::vector<GraphArgumentReplacementReceipt> argumentReplacements;
+    std::size_t codeIdentityChanges = 0;
     // 编辑收据不是撤销栈、外部引用证明、保存或运行证明。
     bool externalDependenciesVerified = false;
 };

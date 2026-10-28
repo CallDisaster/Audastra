@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -66,5 +67,22 @@ struct IdentifierRewriteResult {
 // private/public、scope/library/struct、局部遮蔽、未展开指令和未知绑定拒绝，无部分结果。
 // 当前只接受单一显式编码阶段文本，不能冒称混合 include 来源映射；不授予保存/类型例外。
 [[nodiscard]] Result<IdentifierRewriteResult> RewriteUdgIdentifiers(const IdentifierRewriteRequest& request);
+
+// 根级JASS或完整语句片段的精确标识符改写。字符串、注释和原始排版保持原字节。
+// 不解释宏/vJass作用域；局部遮蔽、动态分发及不完整语法明确拒绝。
+struct ExactIdentifierMapping { std::string before, after; };
+struct ExactIdentifierDeclaration {
+    std::string name;
+    std::uint32_t offset = 0, line = 0;
+    bool function = false, local = false, initializer = false;
+};
+struct ExactIdentifierResult {
+    std::string text;
+    std::vector<ExactIdentifierDeclaration> declarations;
+    std::size_t replacements = 0;
+};
+[[nodiscard]] Result<ExactIdentifierResult> RewriteExactIdentifiers(
+    const IdentifierRewriteRequest& request, std::span<const ExactIdentifierMapping> mappings,
+    bool statements = false);
 
 } // namespace War3Map::Jass

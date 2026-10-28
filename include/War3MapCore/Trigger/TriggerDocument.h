@@ -110,6 +110,8 @@ public:
     [[nodiscard]] std::string_view SourceWtgSha256() const noexcept;
     [[nodiscard]] std::string_view SourceWctSha256() const noexcept;
     [[nodiscard]] std::string_view UiCatalogSha256() const noexcept;
+    // 只有受限代码身份服务经Core重核后可建立；普通IR/客户端不能构造。
+    [[nodiscard]] Status VerifyCodeIdentityAuthorization(const TriggerDocument& original) const;
 
     std::vector<CategoryRecord> categories;
     std::int32_t wtgVersion = kWtgVersion; // 读入的格式版本，原样写回（kWtgVersion 或 kWtgLegacyVersion）
@@ -123,9 +125,11 @@ public:
 private:
     struct SourceSeal;
     std::shared_ptr<const SourceSeal> sourceSeal_;
+    std::shared_ptr<const TriggerDocument> codeIdentityAuthorization_;
 
     friend class WtgWctCodec;
     friend class TriggerCodeEditor; // 只为转回 T 的探测文档复用同一 seal，不能新建或替换来源记录。
+    friend class PreparedTriggerCodeIdentityChange;
 };
 
 struct EncodedTriggerDocument {

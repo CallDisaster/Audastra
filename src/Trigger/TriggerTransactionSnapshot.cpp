@@ -72,6 +72,7 @@ Status SameText(const RawText& original, const RawText& edited) {
 }
 
 Status PreserveGuiAndCustomCode(const TriggerDocument& original, const TriggerDocument& edited) {
+    if (edited.VerifyCodeIdentityAuthorization(original).Succeeded()) return Status::Ok();
     for (const auto& check : {SameText(original.wct.customComment, edited.wct.customComment),
             SameText(original.wct.customCode, edited.wct.customCode)})
         if (!check.Succeeded()) return check;

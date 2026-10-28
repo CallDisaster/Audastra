@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
+#include "War3MapCore/Trigger/TriggerCodeIdentityChange.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerFeatureText.h"
@@ -126,6 +127,8 @@ struct RequestBudget {
                 return Ref(item.trigger) && AddText(item.expected) && AddText(item.text);
             } else if constexpr (std::is_same_v<T, GraphPlace>) {
                 return Ref(item.target) && Ref(item.anchor);
+            } else if constexpr (std::is_same_v<T, GraphCodeIdentityChange>) {
+                return static_cast<bool>(item.prepared);
             } else {
                 return Parent(item.parent) && (!item.before || Ref(*item.before)) && item.root && Eca(*item.root, 0);
             }
@@ -410,6 +413,15 @@ struct Editor {
             return TriggerDocumentEditor::SetScalarArgument(doc, *id.value, scalar.kind, scalar.value);
         }
         return Fail("TRIGGER_GRAPH_FIELD_UNSUPPORTED", "字段不适用。");
+    }
+    Status Apply(const GraphCodeIdentityChange& op) {
+        if (!op.prepared) return Fail("TRIGGER_CODE_SOURCE_STALE", "没有核定的代码身份计划。");
+        const auto applied = op.prepared->ApplyTo(doc, catalog);
+        if (applied.Succeeded()) {
+            ++receipt.codeIdentityChanges;
+            nextId = detail::NextGeneratedCounter(doc);
+        }
+        return applied;
     }
     Status Apply(const GraphRename& op) {
         const auto id = Resolve(op.target); if (!id.Succeeded()) return {id.diagnostics};
@@ -1052,7 +1064,10 @@ Result<TriggerGraphEditReceipt> ApplyPrivateGraphCandidate(const GraphCodeProtec
     if (const auto valid = WtgWctCodec{}.Validate(candidate, catalog); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
     if (const auto valid = editor.ValidateTouched(); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
     // ordinary T 不应产生 WCT 变化；对全部既有代码槽再次逐字节复核。
-    if (const auto valid = CheckGraphCodeProtection(source, candidate); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
+    if (!editor.receipt.codeIdentityChanges) {
+        if (const auto valid = CheckGraphCodeProtection(source, candidate); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
+    } else if (const auto valid = candidate.VerifyCodeIdentityAuthorization(candidate); !valid.Succeeded())
+        return Failed<TriggerGraphEditReceipt>(valid);
     return Result<TriggerGraphEditReceipt>::Success(std::move(editor.receipt));
 }
 } // namespace

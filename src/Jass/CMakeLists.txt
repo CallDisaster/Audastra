@@ -1,6 +1,7 @@
 # 自研脚本编译链（JASS / vJass）：预处理、词法 / 语法分析、类型检查与 vJass 子集翻译。只依赖 Core。
 add_library(War3MapJass STATIC
     IdentifierRewrite.cpp
+    ExactIdentifierRewrite.cpp
     JassChecker.cpp
     JassCodeCheck.cpp
     JassDeclarationIndex.cpp
