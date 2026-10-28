@@ -876,7 +876,7 @@ Result<Trigger::TriggerGraphEditReceipt> McpWorkspace::ApplyGraphEdit(
     TransactionId transactionId,
     const ProjectRevision& expectedRevision,
     const Trigger::TriggerGraphEditBatch& batch,
-    const GraphEditPublishValidator& prepublish) {
+    const GraphEditPublishValidator& prepublish, bool dryRun) {
     const auto active = CheckActive(transactionId, expectedRevision);
     if (!active.Succeeded()) return FailureFrom<Trigger::TriggerGraphEditReceipt>(active);
     Trigger::TriggerDocument candidate = activeEdit_->document;
@@ -891,6 +891,8 @@ Result<Trigger::TriggerGraphEditReceipt> McpWorkspace::ApplyGraphEdit(
         const auto checked = prepublish(activeEdit_->document, candidate, *edited.value);
         if (!checked.Succeeded()) return FailureFrom<Trigger::TriggerGraphEditReceipt>(checked);
     }
+    if (dryRun || (edited.value->before.currentWtgSha256 == edited.value->after.currentWtgSha256
+        && edited.value->before.currentWctSha256 == edited.value->after.currentWctSha256)) return edited;
     const auto sealed = SealDocument(std::move(candidate), "MCP 通用完整 GUI 图批次编辑");
     if (!sealed.Succeeded()) return FailureFrom<Trigger::TriggerGraphEditReceipt>(sealed);
     if (references) activeEdit_->usedMapObjectReferences = *objects.value;

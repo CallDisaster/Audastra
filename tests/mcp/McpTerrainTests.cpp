@@ -1,5 +1,6 @@
 #include "McpServer.h"
 #include "../support/MapCustomSettingsFixture.h"
+#include "../support/TriggerCodeIdentitySaveFixture.h"
 #include "McpTools.h"
 #include "McpWorkspace.h"
 #include "McpTerrain.h"
@@ -111,6 +112,7 @@ QByteArray Request(const char* name, const QJsonObject& arguments) {
 
 QJsonObject Call(McpServer& server, const char* name, const QJsonObject& arguments) {
     const auto response = server.HandleMessage(Request(name, arguments));
+    if (response && response->error) std::cerr << name << " protocol error: " << QJsonDocument(*response->error).toJson(QJsonDocument::Compact).left(1200).constData() << '\n';
     Expect(response && !response->error, "unexpected protocol error");
     const auto envelope = response->result.toObject();
     const auto content = envelope.value("content").toArray();
@@ -785,6 +787,7 @@ void TestNativeWaterSaveTransport() {
 } // namespace
 
 #include "MapCustomSettingsSaveCases.h"
+#include "TriggerCodeIdentityCases.h"
 int main(int argc, char** argv) {
     QCoreApplication application(argc, argv);
     try {
@@ -813,6 +816,7 @@ int main(int argc, char** argv) {
         }
         Expect(arguments.size() == 1, "usage: test executable [--write-fixture <new-or-empty-directory>]");
         TestCustomSettingsSaveAndQuery();
+        TestCodeIdentityGraphTransport();
         TestNormalSaveTextureAndWaterSchema();
         TestNativeWaterSaveTransport();
         TestRemoveWaterSaveTransport();

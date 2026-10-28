@@ -39,6 +39,7 @@ target_compile_definitions(war3-map-cli-map-edit-save-tests PRIVATE NOMINMAX UNI
 target_compile_options(war3-map-cli-map-edit-save-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME cli-map-edit-save COMMAND war3-map-cli-map-edit-save-tests)
 target_sources(war3-map-cli-map-edit-save-tests PRIVATE support/MapCustomSettingsFixture.h)
+target_sources(war3-map-cli-map-edit-save-tests PRIVATE CliTriggerCodeIdentityCases.h support/TriggerCodeIdentitySaveFixture.h)
 target_sources(war3-map-cli-map-edit-save-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Cli/MapCustomSettingsCommand.cpp")
 set_tests_properties(cli-map-edit-save PROPERTIES TIMEOUT 60)
 

@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/Services/TriggerCodeIdentityEditing.h"
 
 #include "War3MapCore/EditorSession.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
@@ -117,6 +118,7 @@ public:
     [[nodiscard]] Result<MapData::MapDataEditSession::EditReceipt> ApplyPlacementPlan(
         const MapData::PreparedMapDataPlacement& plan, const MapData::MapDataPublishValidator& prepublish = {});
     [[nodiscard]] Services::AuxiliaryReferenceContext AuxiliaryReferences() const;
+    [[nodiscard]] Result<Services::TriggerCodeIdentityContext> CodeIdentityContext();
     [[nodiscard]] Result<MapData::MapDataEditSession::EditReceipt> ApplyAuxiliaryPlan(
         const Services::PreparedAuxiliaryEdit& plan, const MapData::MapDataPublishValidator& prepublish = {});
     [[nodiscard]] Result<McpWorkspaceTerrainContext> TerrainContext(std::string documentId,
@@ -165,7 +167,7 @@ public:
         TransactionId transactionId,
         const ProjectRevision& expectedRevision,
         const Trigger::TriggerGraphEditBatch& batch,
-        const GraphEditPublishValidator& prepublish = {});
+        const GraphEditPublishValidator& prepublish = {}, bool dryRun = false);
     [[nodiscard]] Result<SemanticDiff> PreviewEdit(
         TransactionId transactionId,
         const ProjectRevision& expectedRevision);

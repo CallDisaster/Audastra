@@ -1,5 +1,7 @@
 #include "McpToolInternal.h"
 #include "McpTriggerGraphJson.h"
+#include "McpTriggerCodeIdentity.h"
+#include "War3MapCore/Hash.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/LegacyTriggerReferences.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
@@ -722,6 +724,14 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
             row.insert("name_derived_trigger_symbol", record.type == 1 ? QJsonValue(QJsonValue::Null)
                 : QJsonValue(QString::fromStdString(TriggerDirectoryEditor::TriggerSymbol(record.name))));
             row.insert("script_symbol_state", record.type == 1 ? "comment-no-runtime-symbol" : "name-derived");
+            if (record.customTextFlag) {
+                const auto bytes = record.customText.ToBytes();
+                if (!bytes.Succeeded()) throw GraphJsonError("自定义代码槽不能按原编码读取。", "TRIGGER_CODE_ENCODING_UNSUPPORTED");
+                const auto hash = Sha256(*bytes.value);
+                if (!hash.Succeeded()) throw GraphJsonError("无法取得自定义代码槽身份。", "TRIGGER_CODE_SOURCE_STALE");
+                row.insert("custom_code_sha256", QString::fromStdString(*hash.value));
+                row.insert("custom_code_bytes", QString::number(bytes.value->size()));
+            }
         } else if (table == "ecas") {
             const auto& record = document.ecaNodes[index];
             row = {{"ref", RefJson(GraphRecordKind::Eca, record.id)}, {"source_trigger_id", QString::number(record.sourceTriggerId)},
@@ -863,7 +873,7 @@ QJsonObject GraphSchema() {
         {"operations", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 256}, {"items", QJsonObject{{"oneOf", variants}}}}}},
         {"transaction_id", "expected_revision", "expected", "operations"});
     schema["$defs"] = QJsonObject{{"eca", eca}, {"argument", argument}};
-    return schema;
+    return CodeIdentityGraphSchema(std::move(schema));
 }
 } // namespace
 
@@ -992,24 +1002,37 @@ void RegisterTriggerGraphTools(McpServer& server) {
     edit.permission = ToolPermission::Edit;
     edit.description = "在单一目录事务内原子编辑 GUI 图：创建、字段、精确改名、顺序移动、删除、类型子树和受guard保护的参数原位替换。"
         "insert_text / replace_trigger_text 用紧凑 T 写法一次写入整段事件/条件/动作；apply_feature_text 一次写入一个功能的变量与多个触发器（after 指定新触发器插在哪个触发器之后，写法见 AGENT_GUIDE）；"
-        "move 省略 from/to 时只给 before 或 after 即可把触发器/类别放到锚点旁。代码审计仅 CallerAsserted，不创建自定义脚本。";
+        "move 省略 from/to 时只给 before 或 after 即可把触发器/类别放到锚点旁。普通T代码保护不变；"
+        "rename_custom_trigger/copy_custom_trigger仅编辑既有JASS自定义触发器，需显式dry_run，每批最多一个并置于第一项；其它操作可作为原子后缀。失败不发布前缀，复制不接受代码正文。";
     edit.inputSchema = GraphSchema(); edit.maxResponseBytes = kResponseBytes;
     edit.handler = [&server](const QJsonObject& request) -> QJsonValue {
         QJsonObject error; auto* workspace = RequireWorkspace(server, error); if (!workspace) return error;
         try {
             if (static_cast<std::size_t>(QJsonDocument(request).toJson(QJsonDocument::Compact).size()) > kRequestBytes)
                 throw GraphJsonError("图请求超过 4 MiB 编码预算。", "MCP_TRIGGER_GRAPH_REQUEST_BUDGET");
-            Object(request, {"transaction_id", "expected_revision", "expected", "operations"}, {"schema_version"});
+            Object(request, {"transaction_id", "expected_revision", "expected", "operations"}, {"schema_version", "dry_run"});
             if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
             Object(request.value("expected_revision"), {"generation", "source_sha256", "ui_catalog_sha256"});
             const auto envelope = ParseEnvelope(request); if (!envelope.Succeeded()) return Failure(envelope);
             auto graphRequest = request;
             graphRequest.remove("transaction_id");
             graphRequest.remove("expected_revision");
-            const auto batch = DecodeGraphBatch(graphRequest);
+            const bool codeIdentity = HasCodeIdentityOperation(graphRequest);
+            if (codeIdentity && !request.value("dry_run").isBool()) return Failure("TRIGGER_CODE_REQUEST_INVALID", "代码身份编辑必须显式提供dry_run布尔值。");
+            const bool dryRun = request.value("dry_run").toBool(false); graphRequest.remove("dry_run");
+            Services::TriggerCodeIdentitySummary summary;
+            Result<Trigger::TriggerGraphEditBatch> batch;
+            if (codeIdentity) {
+                auto context = workspace->CodeIdentityContext(); if (!context.Succeeded()) return Failure(context);
+                batch = DecodeCodeIdentityGraphBatch(graphRequest, *context.value, dryRun, &summary);
+            } else batch = DecodeGraphBatch(graphRequest);
             if (!batch.Succeeded()) return Failure(batch);
-            const auto result = workspace->ApplyGraphEdit(envelope.value->first, envelope.value->second, *batch.value);
-            return result.Succeeded() ? GraphReceipt(*result.value, *workspace) : Failure(result);
+            const auto result = workspace->ApplyGraphEdit(envelope.value->first, envelope.value->second, *batch.value, {}, dryRun);
+            if (!result.Succeeded()) return Failure(result);
+            auto payload = GraphReceipt(*result.value, *workspace); payload.insert("dry_run", dryRun);
+            payload.insert("published", !dryRun && (result.value->before.currentWtgSha256 != result.value->after.currentWtgSha256 || result.value->before.currentWctSha256 != result.value->after.currentWctSha256));
+            if (codeIdentity) payload.insert("code_identity", CodeIdentitySummaryJson(summary));
+            return payload;
         } catch (const GraphJsonError& failure) { return Failure(failure.code, failure.what()); }
     };
     server.RegisterTool(std::move(edit));

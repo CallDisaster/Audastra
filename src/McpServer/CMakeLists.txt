@@ -52,6 +52,7 @@ if(TARGET Qt6::Core)
         McpToolMapEdit.cpp
         McpTerrainTextureSlotCommand.cpp McpTerrainTextureSlotCommand.h
         McpToolTriggerGraph.cpp
+        McpTriggerCodeIdentity.cpp
         McpToolMapCreate.cpp
         McpToolCampaign.cpp
         McpToolReadOnly.cpp

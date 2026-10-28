@@ -345,6 +345,7 @@ private slots:
     void TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo();
     void TextureSlotPreparationRejectsConcurrentRevision();
     void CustomSettingsShareOriginalUndoAndRejectStaleCas();
+    void CustomCodeIdentitySharesProjectUndoAndForge();
     void SettingsPageEditsTechnologyThroughSharedService();
     void SettingsPageEditsRandomTables();
     void TechPageBuildsRandomTableCommands();
@@ -2740,6 +2741,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
 #include "LiveTerrainResizeCases.h"
 #include "LiveTerrainTextureSlotCases.h"
 #include "LiveMapCustomSettingsCases.h"
+#include "LiveTriggerCodeIdentityCases.h"
 void LiveEditorToolsTests::RuntimeToolsRequireExplicitConsentAndShareUndo() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const auto initial = f.tools->Invoke("map_runtime_query", {});

@@ -407,6 +407,34 @@ CLI 使用同一保存链：`map-edit-save ... --terrain-slot-replace ground 0 L
 
 `dry_run` 必填。预览会核对真实来源与新槽资源，不改工程修订或撤销栈；提交改为 `false`，仍重新核对全部身份和资源，沿共用撤销栈发布。回执包含实际前后表、槽号、是否变化、dirty 和新身份；`map_saved:false` 表示还须正常保存。撤销、重做或其他编辑后重新查询身份。独立目录宿主仅支持此工具的预览，写地图候选继续用上面的独立保存批次；失败时不返回可保存的部分结果。
 
+### 已有自定义代码触发器的改名与复制
+
+作者明确要求修改已有自定义代码触发器身份时，可使用 `rename_custom_trigger` / `copy_custom_trigger`。普通 GUI 触发器继续走原有改名/T 编辑路径；本入口不转换 GUI，也不接受代码正文。独立 MCP 用 `edit_trigger_graph`，活动编辑器用 `editor_edit_trigger_graph`，均先查询对应的图身份与触发器行，再提交同一服务的操作。
+
+触发器行提供 `name` 的完整原编码/原字节、稳定 `ref.id`、`custom_code_sha256` 与 `custom_code_bytes`。`expected` 必须回传本次真实图 binding；不要按显示名、行号、文件 SHA 或中文字符数猜稳定 ID、脚本名或代码槽摘要。示意请求如下，所有尖括号内容都要替换为查询结果：
+
+```json
+{
+  "expected": "<完整图 binding 对象>",
+  "dry_run": true,
+  "operations": [{
+    "op": "rename_custom_trigger",
+    "trigger_id": "<触发器 ref.id>",
+    "expected_name": "<查询行的完整 name 对象>",
+    "expected_code_sha256": "<查询行的 custom_code_sha256>",
+    "name": "新的触发器名"
+  }]
+}
+```
+
+另带各宿主原有身份字段：独立事务的 `transaction_id/expected_revision`，或活动工程的 `project_identity/expected_revision`。`dry_run` 必须显式提供；true 不修改事务、修订或撤销栈。预览后核对 `code_identity` 中的旧/新名称、符号、位置与引用数量，再用最新身份提交 false。每批最多一个代码身份操作，放在第一项；普通 T 操作可作为同一原子批次的后缀，任一失败不发布前缀。
+
+复制将 `op` 改为 `copy_custom_trigger`，还需 `category:{"kind":"category","id":"<分类 ref.id>"}`、`after_trigger_id`（`"0"` 表示类别末尾）和 `expected_category_order`（当前目标类别内触发器稳定 ID 的完整顺序）。分类必须用 `ref.id`，不传原生 `category_id`。新触发器 ID 从回执 `code_identity.result_id` 取得；只有副本内部的自身符号被改写，外部引用仍指向原触发器。
+
+独立目录编辑后仍走原来的 preview/validate 与 `save_map_edit_candidate`；活动修改仍需编辑器正常保存。CLI 使用原 `map-edit-save` 参数再加 `--trigger-code-edit-file <UTF-8 JSON>`，文件采用上述 expected/dry_run/operations 结构（不含 MCP 身份字段）。true 只准备，不输出地图；false 由同一正常保存服务输出独立候选。其它领域修改不混入该 CLI 请求。
+
+当前只支持可证明的 JASS：UTF-8/CP936 的中文显示名可按生成器同一编码规则改写；原 WCT 符号须与该规则一致。手写非 ASCII 符号、未展开宏、不能证明的 vJass 作用域、动态字符串分发、遮蔽或不透明引用来源明确拒绝。字符串、注释与无关原字节保持不变；若字符串分发必须改名才能成立，则拒绝，不能全文替换。外槽/全局同前缀声明、额外用户声明或目标符号冲突都会列出中文位置。Lua 目标不支持；JASS 身份事务不能在保存时改选 Lua。
+
 ## 5. 结果应如何记录
 
 保留源/候选路径与 SHA、包内源码身份、请求的绑定/raw、新值、退出码/业务 ok、原始诊断和重开结果。候选存在时换新路径，不覆盖源图或已有证据。

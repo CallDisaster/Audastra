@@ -1,12 +1,36 @@
 #include "McpWorkspace.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Services/MapObjectReferenceCapture.h"
 
 #include <algorithm>
 #include <limits>
 #include <set>
 
 namespace War3Map::Mcp {
+Result<Services::TriggerCodeIdentityContext> McpWorkspace::CodeIdentityContext() {
+    using R = Result<Services::TriggerCodeIdentityContext>;
+    auto checked = CaptureMapDataSources(); if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    auto objects = MapObjectReferences();
+    if (!objects.Succeeded()) return {{}, objects.diagnostics};
+    Services::TriggerCodeIdentityContext context; context.document = &VisibleDocument(); context.catalog = &catalog_;
+    context.mapObjects = (*objects.value)->References().empty() ? nullptr : objects.value->get();
+    const auto map = activeEdit_ ? activeEdit_->mapData : committedMapData_;
+    const auto* settings = map && map->Settings() ? &*map->Settings() : nullptr;
+    if (settings) context.target = settings->scriptLanguage == 0 ? Services::TriggerCodeScriptTarget::Jass : Services::TriggerCodeScriptTarget::Lua;
+    auto references = AuxiliaryReferences(); context.completeScriptSources = references.completeTriggerSource;
+    context.opaqueScriptSources = references.opaqueScriptSources;
+    if (mapDataSource_) for (const auto& file : mapDataSource_->Snapshot().files)
+        if (file.relativePath.generic_string() == "war3map.lua") context.target = Services::TriggerCodeScriptTarget::Lua;
+    const auto epoch = toolEpoch_;
+    context.verify = [this, epoch, owner = *objects.value] {
+        (void)owner;
+        if (toolEpoch_ != epoch) return Status::Failure("MCP", "TRIGGER_CODE_SOURCE_STALE", "代码身份操作准备后工作区修订已变化。");
+        const auto checked = CheckEnvironmentUnchanged(); if (!checked.Succeeded()) return checked;
+        return Services::VerifyDirectoryMapObjectReferenceClassificationSources(*owner, projectRoot_, gameRoot_);
+    };
+    return R::Success(std::move(context));
+}
 namespace {
 template<class T, class U> Result<T> Failed(const U& source) { return {{}, source.diagnostics}; }
 }

@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "MapEditCodeIdentityInternal.h"
 #include "War3MapCore/Services/TerrainShadowBake.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
@@ -606,8 +607,18 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
 
 } // namespace
 
+Result<Trigger::UiCatalog> ResolveMapEditCatalog(const std::filesystem::path& root,
+    const std::optional<std::vector<std::string>>& layers) { return ResolveEditCatalog(root, layers); }
+
 Result<MapEditSaveReceipt> SaveMapEditCandidate(
     const MapEditSaveRequest& request, const MapSaveService::Progress& progress) {
+    if (request.triggerCodeIdentity) {
+        try { return SaveTriggerCodeIdentityCandidate(request, progress); }
+        catch (const std::exception&) { return Result<MapEditSaveReceipt>::Failure("Trigger.CodeIdentity", "TRIGGER_CODE_PREPARE_FAILED", "无法准备代码身份保存，未写入地图候选。"); }
+    }
+    if (request.luaTarget && request.triggerTransaction
+        && request.triggerTransaction->Document().VerifyCodeIdentityAuthorization(request.triggerTransaction->Document()).Succeeded())
+        return Result<MapEditSaveReceipt>::Failure("Trigger.CodeIdentity", "TRIGGER_CODE_LUA_UNSUPPORTED", "此事务的代码身份编辑绑定JASS，不能在保存时切换为Lua。");
     bool written = false;
     try {
         const bool fieldRequest = !request.fieldEdits.empty();

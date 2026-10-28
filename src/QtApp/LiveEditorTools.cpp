@@ -20,6 +20,8 @@
 #include "McpMapDataTools.h"
 #include "McpMapCustomSettingsTools.h"
 #include "ProjectMapCustomSettings.h"
+#include "ProjectTriggerCodeIdentity.h"
+#include "McpTriggerCodeIdentity.h"
 #include "ProjectObjectCatalog.h"
 #include "McpMapRuntimeTools.h"
 #include "McpImportTools.h"
@@ -639,11 +641,23 @@ private:
             request.remove("project_identity"); request.remove("expected_revision");
             const bool dryRun = request.value("dry_run").toBool(false);
             request.remove("dry_run");
-            const auto decoded = Mcp::DecodeGraphBatch(request);
+            const bool codeIdentity = Mcp::HasCodeIdentityOperation(request);
+            if (codeIdentity && !arguments.value("dry_run").isBool()) return Mcp::Failure("TRIGGER_CODE_REQUEST_INVALID", "代码身份编辑必须显式提供dry_run布尔值。");
+            Services::TriggerCodeIdentitySummary summary;
+            std::optional<Services::PreparedTriggerCodeIdentityEdit> codePrepared;
+            Result<Trigger::TriggerGraphEditBatch> decoded;
+            if (codeIdentity) {
+                auto context = QtProject::CaptureProjectTriggerCodeIdentityContext(project_); if (!context.Succeeded()) return Mcp::Failure(context);
+                decoded = Mcp::DecodeCodeIdentityGraphBatch(request, *context.value, dryRun, &summary, &codePrepared);
+            } else decoded = Mcp::DecodeGraphBatch(request);
             if (!decoded.Succeeded()) return Mcp::Failure(decoded);
             QJsonObject changes;
             TriggerDocument preview;
-            const auto edited = ApplyGraphBatch(*decoded.value, {}, &changes, dryRun ? &preview : nullptr);
+            Result<Trigger::TriggerGraphEditReceipt> edited;
+            if (codeIdentity && !dryRun) {
+                std::vector<Trigger::GraphEditOperation> suffix(decoded.value->operations.begin() + 1, decoded.value->operations.end());
+                edited = QtProject::ApplyProjectTriggerCodeIdentity(project_, *codePrepared, QObject::tr("修改自定义触发器身份"), std::move(suffix));
+            } else edited = ApplyGraphBatch(*decoded.value, {}, &changes, dryRun ? &preview : nullptr);
             if (!edited.Succeeded()) return Mcp::Failure(edited);
             QJsonObject created;
             for (const auto& [key, ref] : edited.value->created) created.insert(QString::fromStdString(key),
@@ -652,6 +666,10 @@ private:
                 {"revision", QString::number(project_.editRevision_.Revision())}, {"before", Binding(edited.value->before)},
                 {"binding", Binding(edited.value->after)}, {"applied_operations", QString::number(edited.value->appliedOperations)},
                 {"created", created}, {"saved", false}, {"runtime_verified", false}};
+            if (codeIdentity) result.insert("code_identity", Mcp::CodeIdentitySummaryJson(summary));
+            result.insert("dry_run", dryRun);
+            result.insert("published", !dryRun && (edited.value->before.currentWtgSha256 != edited.value->after.currentWtgSha256
+                || edited.value->before.currentWctSha256 != edited.value->after.currentWctSha256));
             if (!dryRun) {
                 // 预览不发布变化，活动面板不能把它当作已写入。
                 result.insert("changes", changes);
@@ -693,7 +711,11 @@ private:
             QJsonObject request;
             for (const auto* key : {"expected", "operations", "schema_version"})
                 if (arguments.contains(key)) request.insert(key, arguments.value(key));
-            const auto decoded = Mcp::DecodeGraphBatch(request);
+            Result<Trigger::TriggerGraphEditBatch> decoded;
+            if (Mcp::HasCodeIdentityOperation(request)) {
+                auto context = QtProject::CaptureProjectTriggerCodeIdentityContext(project_); if (!context.Succeeded()) return Mcp::Failure(context);
+                decoded = Mcp::DecodeCodeIdentityGraphBatch(request, *context.value, true);
+            } else decoded = Mcp::DecodeGraphBatch(request);
             if (!decoded.Succeeded()) return Mcp::Failure(decoded);
             const auto references = project_.CaptureTriggerMapObjectReferences();
             const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()

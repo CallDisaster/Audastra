@@ -388,7 +388,14 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
-        if (flag == L"--settings-custom-edit-file") {
+        if (flag == L"--trigger-code-edit-file") {
+            if (index + 1 >= argc || request.triggerCodeIdentity) return Invalid("代码身份编辑需要唯一JSON文件参数。");
+            const auto bytes = IO::ReadFileBytes(argv[index + 1], 65536);
+            if (!bytes.Succeeded()) { PrintDiagnostics(bytes.diagnostics); return 1; }
+            auto parsed = Services::ParseTriggerCodeIdentityEdit({reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size()});
+            if (!parsed.Succeeded()) { PrintDiagnostics(parsed.diagnostics); return 1; }
+            request.triggerCodeIdentity = std::move(*parsed.value); index += 2;
+        } else if (flag == L"--settings-custom-edit-file") {
             if (index + 1 >= argc || request.settingsCustomEdits) return Invalid("custom settings requires one JSON file and cannot repeat");
             const auto bytes = IO::ReadFileBytes(argv[index + 1], 1024 * 1024);
             if (!bytes.Succeeded()) { PrintDiagnostics(bytes.diagnostics); return 1; }
@@ -669,7 +676,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     else request.runtimeCatalogDiagnostics = runtimeSources.diagnostics;
     if (request.terrainStrokes.empty() && request.fieldEdits.empty()
         && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits
-        && !request.rebuildTerrainShadow && !request.runtime.decision && !request.settingsCustomEdits)
+        && !request.rebuildTerrainShadow && !request.runtime.decision && !request.settingsCustomEdits && !request.triggerCodeIdentity)
         return Invalid("at least one bounded edit operation is required");
     auto saved = Services::SaveMapEditCandidate(request);
     PrintDiagnostics(saved.diagnostics);
@@ -708,6 +715,9 @@ int RunMapEditSave(int argc, wchar_t** argv) {
                   << "\nminimap_mip_count=" << minimap.encodedMipCount
                   << "\nminimap_manifest_sha256=" << minimap.manifestSha256;
     }
+    if (receipt.codeIdentity) std::cout << "\ncode_identity=" << Services::TriggerCodeIdentitySummaryJson(*receipt.codeIdentity,
+        receipt.codeIdentityGraph ? &*receipt.codeIdentityGraph : nullptr)
+        << "\npreview_only=" << (receipt.previewOnly ? "true" : "false");
     if (receipt.triggerEdits) std::cout << "\napplied_trigger_edits=" << receipt.triggerEdits->operationCount
         << "\nremoved_eca_count=" << receipt.triggerEdits->removedEcaCount
         << "\nremoved_argument_count=" << receipt.triggerEdits->removedArgumentCount

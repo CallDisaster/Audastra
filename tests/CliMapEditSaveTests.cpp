@@ -4,6 +4,7 @@
 #include "support/TerrainResizeFixture.h"
 #include "support/TerrainTextureSlotSaveFixture.h"
 #include "support/MapCustomSettingsFixture.h"
+#include "support/TriggerCodeIdentitySaveFixture.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
 
 #include <iostream>
@@ -317,6 +318,7 @@ void BoundsUseIntegerHalfOpenCellsAndShareOrderedCommandLimit() {
 #include "CliTerrainPathingCases.h"
 #include "CliTerrainResizeCases.h"
 #include "CliTerrainTextureSlotCases.h"
+#include "CliTriggerCodeIdentityCases.h"
 
 } // namespace
 
@@ -375,6 +377,7 @@ int main() {
         TerrainResizeUsesSignedBeforeCanvasEdges();
         TerrainTextureSlotsUseSharedOrderedSave();
         CustomSettingsUseSharedSave();
+        CustomCodeIdentityCliUsesNormalSave();
         std::cout << "Map edit save CLI minimap option gates passed\n";
         return 0;
     } catch (const std::exception& error) {

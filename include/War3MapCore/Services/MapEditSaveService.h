@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/Services/TriggerCodeIdentityJson.h"
 #include "War3MapCore/Services/MapCustomSettingsEditing.h"
 
 #include "War3MapCore/MapData/MapFields.h"
@@ -125,6 +126,7 @@ struct MapEditSaveRequest {
     std::shared_ptr<const Trigger::MapObjectReferenceSnapshot> mapObjectReferences;
     // 仅可信宿主提供，不接受客户端函数或脚本。保存链在实际发布前再次复核。
     std::function<Status()> beforePublish;
+    std::optional<ParsedTriggerCodeIdentityEdit> triggerCodeIdentity;
 };
 
 struct MapEditMemberReceipt {
@@ -166,6 +168,9 @@ struct MapEditSaveReceipt {
     MapRuntimeSavePurpose runtimePurpose = MapRuntimeSavePurpose::Normal;
     bool runtimePackaged = false;
     std::size_t appliedSettingsCustomEditCount = 0;
+    std::optional<TriggerCodeIdentitySummary> codeIdentity;
+    bool previewOnly = false;
+    std::optional<Trigger::TriggerGraphEditReceipt> codeIdentityGraph;
 };
 
 // 接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

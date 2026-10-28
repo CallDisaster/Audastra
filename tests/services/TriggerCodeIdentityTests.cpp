@@ -115,6 +115,8 @@ void CopyAndGuards() {
     Require(!same.Summary().changed && Take(TriggerCodeIdentityEditing::Apply(f.Context(), f.document, same)).codeIdentityChanges == 0, "no-op no publication");
 }
 void RejectionsAndNames() {
+    { Fixture f; auto request = f.Request(); request.expectedName.originalBytes.push_back(std::byte{0x7f});
+      Require(Code(TriggerCodeIdentityEditing::Prepare(f.Context(), request), "TRIGGER_CODE_SOURCE_STALE"), "raw name CAS cannot fall back to equal decoded text"); }
     { Fixture f; f.document.wct.customCode.text += "function UnapprovedPayload takes nothing returns nothing\nendfunction\n";
       const auto plan = Take(TriggerCodeIdentityEditing::Prepare(f.Context(), f.Request())); Take(TriggerCodeIdentityEditing::Apply(f.Context(), f.document, plan));
       Require(!TriggerTransactionSnapshot::Freeze(f.document, f.catalog, f.original.wtg, f.original.wct, f.Binding()).Succeeded(), "identity proof must not adopt unrelated prior code changes"); }
@@ -135,13 +137,17 @@ void RejectionsAndNames() {
     }
     { Fixture f; f.document.triggers[0].customText.text += "function UserHelper takes nothing returns nothing\nendfunction\n"; f.Reseal();
       Require(Code(TriggerCodeIdentityEditing::Prepare(f.Context(), f.Request("Clone", true)), "TRIGGER_CODE_COPY_DECLARATION_UNSUPPORTED"), "user declarations not blindly cloned"); }
-    for (auto encoding : {TextEncoding::Utf8, TextEncoding::Gb18030}) {
-        Fixture f("中文甲", encoding); const auto plan = Take(TriggerCodeIdentityEditing::Prepare(f.Context(), f.Request("另一名称")));
+    for (auto encoding : {TextEncoding::Utf8, TextEncoding::Gb18030}) for (const bool copy : {false, true}) {
+        Fixture f("中文甲", encoding); const auto plan = Take(TriggerCodeIdentityEditing::Prepare(f.Context(), f.Request("另一名称", copy)));
         Take(TriggerCodeIdentityEditing::Apply(f.Context(), f.document, plan));
-        const auto stem = TriggerDirectoryEditor::ScriptName(f.document.triggers[0].name);
-        Require(f.document.triggers[0].customText.text.find("function InitTrig_" + stem) != std::string::npos, "Chinese storage mapping matches generator");
-        Require(f.document.triggers[0].name.encoding == encoding, "name encoding retained");
+        const auto* result = TriggerDocumentEditor::FindTrigger(f.document, plan.Summary().resultId);
+        const auto stem = TriggerDirectoryEditor::ScriptName(result->name);
+        Require(result->name.text == "另一名称" && result->customText.text.find("function InitTrig_" + stem) != std::string::npos, "Chinese rename/copy storage mapping matches generator");
+        Require(result->name.encoding == encoding, "name encoding retained");
     }
+    for (const bool copy : {false, true}) { Fixture f("中文甲");
+      f.document.triggers[0].customText.text = "function InitTrig_中文甲 takes nothing returns nothing\nendfunction\n"; f.Reseal();
+      Require(!TriggerCodeIdentityEditing::Prepare(f.Context(), f.Request("另一名称", copy)).Succeeded(), "handwritten non-ASCII legacy symbol is an explicit unsupported gap"); }
     { Fixture f("中文甲"); Require(Code(TriggerCodeIdentityEditing::Prepare(f.Context(), f.Request("中文乙", true)), "TRIGGER_CODE_SYMBOL_CONFLICT"), "same underscore Chinese symbol collision"); }
     { Fixture f; const auto gui = f.document.triggers.back(); auto request = f.Request(); request.triggerId = gui.id; request.expectedName = gui.name;
       request.expectedCodeSha256 = Take(Sha256(Take(gui.customText.ToBytes())));

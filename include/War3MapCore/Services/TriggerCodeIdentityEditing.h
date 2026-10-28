@@ -23,6 +23,7 @@ struct TriggerCodeIdentityRequest {
     std::int32_t categoryId = 0;
     StableId afterTriggerId = 0;
     std::vector<StableId> expectedCategoryOrder;
+    StableId categoryRecordId = 0; // 协议使用分类ref.id；原生categoryId仅供可信C++调用方。
 };
 struct TriggerCodeIdentitySummary {
     StableId triggerId = 0, resultId = 0;
@@ -43,6 +44,7 @@ private:
 };
 class TriggerCodeIdentityEditing final {
 public:
+    [[nodiscard]] static Status VerifyContext(const TriggerCodeIdentityContext& context);
     [[nodiscard]] static Result<PreparedTriggerCodeIdentityEdit> Prepare(
         const TriggerCodeIdentityContext& context, const TriggerCodeIdentityRequest& request);
     [[nodiscard]] static Result<Trigger::TriggerGraphEditReceipt> Apply(

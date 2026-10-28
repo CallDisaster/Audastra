@@ -25,7 +25,8 @@ Status Context(const TriggerCodeIdentityContext& c) {
 }
 bool Same(const RawText& a, const RawText& b) {
     const auto x = a.ToBytes(), y = b.ToBytes();
-    return a.text == b.text && a.encoding == b.encoding && x.Succeeded() && y.Succeeded() && *x.value == *y.value;
+    return a.text == b.text && a.encoding == b.encoding && a.originalBytes == b.originalBytes
+        && x.Succeeded() && y.Succeeded() && *x.value == *y.value;
 }
 bool Same(const TriggerGraphBinding& a, const TriggerGraphBinding& b) {
     return a.sourceWtgSha256 == b.sourceWtgSha256 && a.sourceWctSha256 == b.sourceWctSha256
@@ -73,6 +74,7 @@ RawText Rewritten(const RawText& before, const std::string& raw) {
     return value;
 }
 }
+Status TriggerCodeIdentityEditing::VerifyContext(const TriggerCodeIdentityContext& context) { return Context(context); }
 Result<PreparedTriggerCodeIdentityEdit> TriggerCodeIdentityEditing::Prepare(
     const TriggerCodeIdentityContext& context, const TriggerCodeIdentityRequest& request) {
     const auto fail = [](Status status) -> R { return {{}, std::move(status.diagnostics)}; };
@@ -100,13 +102,19 @@ Result<PreparedTriggerCodeIdentityEdit> TriggerCodeIdentityEditing::Prepare(
     const auto oldStem = TriggerDirectoryEditor::ScriptName(original->name), newStem = TriggerDirectoryEditor::ScriptName(newName);
     if (newStem.empty()) return fail(Bad("NAME_INVALID", "新名称不能生成有效脚本符号。"));
     const bool copy = request.action == TriggerCodeIdentityAction::Copy;
+    auto categoryId = request.categoryId;
+    if (copy && request.categoryRecordId) {
+        const auto category = std::find_if(source.categories.begin(), source.categories.end(), [&](const auto& c) { return c.id == request.categoryRecordId; });
+        if (category == source.categories.end()) return fail(Bad("SOURCE_STALE", "复制目标分类ref.id已不存在。"));
+        categoryId = category->categoryId;
+    }
     for (const auto& trigger : source.triggers) if (trigger.type == 0 && (copy || trigger.id != original->id)) {
         const auto stem = TriggerDirectoryEditor::ScriptName(trigger.name);
         if ((trigger.id != original->id && stem == oldStem) || stem == newStem || trigger.name.text == request.name)
             return fail(Bad("SYMBOL_CONFLICT", "触发器“" + trigger.name.text + "”的名称或生成符号冲突。"));
     }
     if (copy) {
-        std::vector<StableId> order; for (const auto& t : source.triggers) if (t.categoryId == request.categoryId) order.push_back(t.id);
+        std::vector<StableId> order; for (const auto& t : source.triggers) if (t.categoryId == categoryId) order.push_back(t.id);
         if (order != request.expectedCategoryOrder || (request.afterTriggerId && std::find(order.begin(), order.end(), request.afterTriggerId) == order.end()))
             return fail(Bad("SOURCE_STALE", "复制目标类别顺序或定位锚点已变化。"));
     }
@@ -184,7 +192,7 @@ Result<PreparedTriggerCodeIdentityEdit> TriggerCodeIdentityEditing::Prepare(
     if (copy) {
         auto snapshot = TriggerDirectoryEditor::CopyTrigger(source, original->id); if (!snapshot.Succeeded()) return {{}, snapshot.diagnostics};
         snapshot.value->trigger.customText = std::move(copiedCode);
-        const auto added = TriggerDirectoryEditor::PasteTrigger(candidate, catalog, *snapshot.value, request.categoryId, request.name, request.afterTriggerId);
+        const auto added = TriggerDirectoryEditor::PasteTrigger(candidate, catalog, *snapshot.value, categoryId, request.name, request.afterTriggerId);
         if (!added.Succeeded()) return {{}, added.diagnostics};
         result.summary_.resultId = *added.value;
         TriggerDocumentEditor::FindTrigger(candidate, *added.value)->name = std::move(newName);

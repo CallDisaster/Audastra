@@ -122,6 +122,7 @@ if(TARGET War3MapMcpProtocol)
     target_compile_options(war3-map-mcp-terrain-tests PRIVATE /W4 /permissive- /utf-8)
     add_test(NAME mcp-terrain-readonly COMMAND war3-map-mcp-terrain-tests)
     target_sources(war3-map-mcp-terrain-tests PRIVATE MapCustomSettingsSaveCases.h ../support/MapCustomSettingsFixture.h)
+    target_sources(war3-map-mcp-terrain-tests PRIVATE TriggerCodeIdentityCases.h ../support/TriggerCodeIdentitySaveFixture.h)
     set_tests_properties(mcp-terrain-readonly PROPERTIES ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     add_executable(war3-map-mcp-protocol-tests McpProtocolTests.cpp)
