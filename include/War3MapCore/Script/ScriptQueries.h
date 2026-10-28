@@ -20,6 +20,7 @@ struct ObjectQuerySources {
     std::vector<ObjectData::ObjectRecord> units;
     std::vector<ObjectData::ObjectRecord> items;
     std::vector<ObjectData::ObjectRecord> abilities;
+    std::vector<ObjectData::ObjectRecord> destructables;
 };
 
 [[nodiscard]] ObjectQueries BuildObjectQueries(ObjectQuerySources sources);

@@ -52,6 +52,7 @@ add_library(War3MapScriptBuild STATIC
     ${CMAKE_CURRENT_BINARY_DIR}/LuaTriggerRuntimeSource.cpp
     MapGlobals.cpp
     MapInitializationPlan.cpp
+    MapRandomInitialization.cpp
     MapObjects.cpp
     MapScriptBuild.cpp
     MapRuntimeBoot.cpp

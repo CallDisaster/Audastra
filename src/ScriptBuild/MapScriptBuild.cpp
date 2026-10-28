@@ -4,12 +4,14 @@
 #include "War3MapCore/MapData/MapAuxiliary.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapSettings.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
 #include "War3MapCore/Script/ClassicLuaEntryPipeline.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 
 namespace War3Map::Script {
@@ -25,35 +27,36 @@ bool SameMember(std::string_view left, std::string_view right) {
     });
 }
 
-template <typename T, typename Parser>
-std::optional<T> ParseMember(const MapArchiveSession& archive, std::span<const MemberReplacement> edits,
-    std::span<const std::string> removals,
-    std::string_view name, Parser parser, std::vector<Diagnostic>& diagnostics) {
+Result<std::optional<std::vector<std::byte>>> ReadEffectiveMember(const MapArchiveSession& archive,
+    std::span<const MemberReplacement> edits, std::span<const std::string> removals, std::string_view name) {
+    using R = Result<std::optional<std::vector<std::byte>>>;
     const MemberReplacement* override = nullptr;
     for (const auto& member : edits) {
         if (!SameMember(member.name, name)) continue;
         if (override) {
-            diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "MAP_EDIT_CONFLICT",
-                std::string(name) + " 有多个待保存版本，拒绝任取一个生成脚本", {}});
-            return std::nullopt;
+            return R::Failure("Script.Build", "MAP_EDIT_CONFLICT", std::string(name) + " 有多个待保存版本，拒绝任取一个生成脚本");
         }
         override = &member;
     }
     const bool removed = std::any_of(removals.begin(), removals.end(),
         [name](const std::string& member) { return SameMember(member, name); });
     if (removed && override) {
-        diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "MAP_EDIT_CONFLICT",
-            std::string(name) + " 同时被修改和删除，拒绝生成脚本", {}});
-        return std::nullopt;
+        return R::Failure("Script.Build", "MAP_EDIT_CONFLICT", std::string(name) + " 同时被修改和删除，拒绝生成脚本");
     }
-    if (removed) return std::nullopt;
-    if (!override && !archive.HasMember(name)) return std::nullopt;
-    const auto bytes = override ? Result<std::vector<std::byte>>::Success(override->data) : archive.ReadMember(name);
-    if (!bytes.Succeeded() || !bytes.value) {
-        diagnostics.insert(diagnostics.end(), bytes.diagnostics.begin(), bytes.diagnostics.end());
-        return std::nullopt;
-    }
-    auto parsed = parser(*bytes.value);
+    if (removed) return R::Success(std::nullopt);
+    if (override) return R::Success(std::optional(override->data));
+    auto captured = archive.CaptureExactMembers(std::array<std::string, 1>{std::string(name)});
+    if (!captured.Succeeded()) return {{}, captured.diagnostics};
+    if (!captured.value->front().present) return R::Success(std::nullopt);
+    return R::Success(std::optional(std::move(captured.value->front().bytes)));
+}
+template <typename T, typename Parser>
+std::optional<T> ParseMember(const MapArchiveSession& archive, std::span<const MemberReplacement> edits,
+    std::span<const std::string> removals, std::string_view name, Parser parser, std::vector<Diagnostic>& diagnostics) {
+    auto bytes = ReadEffectiveMember(archive, edits, removals, name);
+    if (!bytes.Succeeded()) { diagnostics.insert(diagnostics.end(), bytes.diagnostics.begin(), bytes.diagnostics.end()); return {}; }
+    if (!bytes.value->has_value()) return {};
+    auto parsed = parser(**bytes.value);
     if (!parsed.Succeeded() || !parsed.value) {
         diagnostics.insert(diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end());
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "MAP_MEMBER_UNPARSED",
@@ -226,6 +229,15 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     sources.units = request.units;
     sources.items = request.items;
     sources.abilities = request.abilities;
+    if (!luaMode && doodads && std::any_of(doodads->doodads.begin(), doodads->doodads.end(), [](const auto& d) { return d.droppedItemTable != -1; })) {
+        auto records = ParseMember<std::vector<ObjectData::ObjectRecord>>(archive, edits, removals, "war3map.w3b", [](auto bytes) -> Result<std::vector<ObjectData::ObjectRecord>> {
+            auto parsed = ObjectData::NativeObjectCodec(ObjectData::ObjectType::Destructable).Parse(bytes);
+            const auto* document = parsed.Succeeded() ? dynamic_cast<ObjectData::NativeObjectDocument*>(parsed.document.get()) : nullptr;
+            if (!document || !document->IsStructurallySafe()) return Result<std::vector<ObjectData::ObjectRecord>>::Failure("Script.Build", "MAP_DESTRUCTABLE_SOURCE_UNSAFE", "全局掉落所需的可破坏物来源未完整解析。");
+            return Result<std::vector<ObjectData::ObjectRecord>>::Success({document->Objects().begin(), document->Objects().end()});
+        }, diagnostics);
+        if (records) sources.destructables = std::move(*records);
+    }
 
     MapScriptInputs inputs;
     inputs.queries = BuildObjectQueries(std::move(sources));

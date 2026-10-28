@@ -343,6 +343,18 @@ void CustomSettingsUseSharedSave() {
     args[7] = (fixture.base.root / "cli-no-prefix.w3x").wstring();
     C::Write(json, "{\"expected_member_sha256\":\"" + request.expectedMemberSha256 + "\",\"operations\":[{\"section\":\"upgrades\",\"op\":\"append\",\"expected_count\":1,\"value\":{\"player_mask\":1,\"id_hex\":\"52303031\",\"level\":1,\"availability\":2}}]}");
     Require(Invoke(args).exitCode != 0 && !std::filesystem::exists(fixture.base.root / "cli-no-prefix.w3x"), "CLI stale CAS does not publish");
+    if (War3Map::Script::RandomMapInitializationAvailable()) {
+        auto random = fixture.Request("direct-random"); random.settingsCustomEdits = fixture.AppendRandomUnits();
+        C::Take(War3Map::Services::SaveMapEditCandidate(random));
+        C::Write(json, "{\"expected_member_sha256\":\"" + random.settingsCustomEdits->expectedMemberSha256
+            + "\",\"operations\":" + C::Fixture::RandomUnitOperationsJson() + "}");
+        args[7] = (fixture.base.root / "cli-random.w3x").wstring();
+        const auto saved = Invoke(args); Require(saved.exitCode == 0, saved.error.c_str());
+        auto cliRandom = C::Take(War3Map::MapArchiveSession::Open(fixture.base.root / "cli-random.w3x"));
+        auto directRandom = C::Take(War3Map::MapArchiveSession::Open(random.targetCandidate));
+        for (const auto* member : {"war3map.w3i", "war3map.j", "unchanged.bin"})
+            Require(C::Take(cliRandom.ReadMember(member)) == C::Take(directRandom.ReadMember(member)), "CLI random table normal save matches the same service");
+    }
 }
 }
 int main() {

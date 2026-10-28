@@ -251,6 +251,11 @@ foreach(command_service_test IN ITEMS CommandRegistry ProjectSearch ProjectChang
 endforeach()
 
 add_executable(war3-map-script-build-tests ScriptBuildTests.cpp)
+add_executable(audastra-script-random-initialization-tests ScriptRandomInitializationTests.cpp)
+target_link_libraries(audastra-script-random-initialization-tests PRIVATE War3MapEditor::ScriptBuild)
+target_compile_definitions(audastra-script-random-initialization-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-script-random-initialization-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME script-random-initialization COMMAND audastra-script-random-initialization-tests)
 add_executable(war3-map-trigger-transaction-save-tests services/TriggerTransactionSaveTests.cpp)
 target_link_libraries(war3-map-trigger-transaction-save-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(war3-map-trigger-transaction-save-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

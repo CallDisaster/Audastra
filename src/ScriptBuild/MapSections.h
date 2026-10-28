@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ScriptText.h"
+#include "MapRandomInitialization.h"
 
 #include "War3MapCore/Script/MapScript.h"
 
@@ -19,6 +20,7 @@ struct MapContext {
     // 被触发器或自定义脚本引用的预放置对象；可破坏物仅能绑定 DOO 中需脚本创建的记录。
     std::set<std::string> referencedObjects;
     std::vector<std::size_t> scriptedDoodadIndexes;
+    MapRandomInitialization random;
 
     [[nodiscard]] std::string Resolve(std::string_view text) const;
     [[nodiscard]] std::string RegionVariable(std::string_view name) const;

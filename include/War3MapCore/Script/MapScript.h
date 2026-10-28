@@ -19,8 +19,14 @@
 
 namespace War3Map::Script {
 
+// 当前JASS全局随机表能力；具体版本、对象来源和放置模式仍由生成检查逐项核对。
+[[nodiscard]] bool RandomMapInitializationAvailable() noexcept;
+
 // 需要物编 / 游戏数据才能回答的问题。未提供时使用保守的默认规则（见各字段注释）。
 struct ObjectQueries {
+    // 正向证明的创建类别：0单位、1建筑、2物品。未知、父链循环或跨类歧义返回空；
+    // 随机放置不能借用isItem=false的默认值来猜对象存在。
+    struct PlacementInfo { std::int32_t kind = 0; std::int32_t teamColor = -1; };
     // 放置物是否为物品；默认：rawcode 不是单位 / 建筑即视为单位（不产生物品）。
     std::function<bool(std::string_view rawcode)> isItem;
     // 单位是否为建筑（进入 CreateBuildingsForPlayer）；默认否。
@@ -43,6 +49,9 @@ struct ObjectQueries {
     // 游戏声音标签与时长（毫秒）；未提供时省略 SetSoundParamsFromLabel / SetSoundDuration。
     std::function<std::optional<std::string>(std::string_view path)> soundLabel;
     std::function<std::optional<int>(std::string_view path)> soundDuration;
+    std::function<std::optional<PlacementInfo>(std::string_view rawcode)> placement;
+    std::function<std::optional<AbilityInfo>(std::string_view rawcode)> abilityInitialization;
+    std::function<bool(std::string_view rawcode)> knownDestructable;
 };
 
 // 地形范围（war3map.w3e 头部）：顶点数与左下角坐标。WE 用它和 w3i 的镜头边距计算 SetCameraBounds。

@@ -58,7 +58,7 @@ std::vector<ToolDefinition> MapCustomSettingsToolDefinitions() {
     for (bool write : {false, true}) {
         ToolDefinition tool; tool.name = write ? "map_custom_settings_edit" : "map_custom_settings_get";
         tool.permission = write ? ToolPermission::Edit : ToolPermission::Query;
-        tool.description = write ? "原生 v25 科技逐行 append/update/delete，随机表整表预览；逐条 CAS，失败不发布前缀。dry_run 必填，随机提交尚未开放，一个批次走同一撤销事务。"
+        tool.description = write ? "原生 v25 科技逐行 append/update/delete，随机表整表 append/replace/delete；逐条 CAS，失败不发布前缀。dry_run 必填，一个批次走同一撤销事务。随机表新增/删除/改列需完整引用覆盖；正常保存支持JASS全局表，Lua及其它随机放置模式明确拒绝。"
             : "查询活动地图升级、科技限制和随机单位/物品表。先 summary 取得 settings_binding，后续精确回传；offset 从0起，每页最多256项，名称保留 raw_hex。";
         auto properties = write ? QJsonObject{{"settings_binding", QJsonObject{{"type", "object"}}},
             {"operations", Array(MapCustomSettingsOperationSchema(), 128)}, {"dry_run", QJsonObject{{"type", "boolean"}}}} : QueryProperties();

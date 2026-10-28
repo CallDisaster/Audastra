@@ -1,6 +1,7 @@
 #include "ProjectMapCustomSettings.h"
 #include "EditorProject.h"
 #include "ProjectObjectCatalog.h"
+#include "ProjectAuxiliaryEdits.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/Services/MapCustomSettingsSources.h"
 
@@ -22,14 +23,19 @@ Result<Services::MapCustomSettingsValidation> CaptureProjectMapCustomSettingsVal
     Services::MapCustomSettingsObjectOverlay overlay;
     for (std::size_t i = 0; i < overlay.size(); ++i) if (project.objectDocuments_[i])
         overlay[i] = std::make_shared<const ObjectData::LniObjectDocument>(*project.objectDocuments_[i]);
-    auto validation = Services::CaptureMapCustomSettingsValidation(input, std::move(overlay));
+    auto validation = Services::CaptureMapCustomSettingsValidation(input, std::move(overlay), CaptureAuxiliaryReferences(project));
     if (!validation.Succeeded()) return validation;
+    validation.value->randomWriteQualification = [target = project.luaMapTarget_](const MapDocument& document) {
+        return Services::MapCustomSettingsEditing::RandomWriteQualification(document, target ? &*target : nullptr);
+    };
     const auto generation = project.editRevision_.Generation(), revision = project.editRevision_.Revision();
     const auto gameRoot = project.war3GameRoot_;
+    const auto targetGeneration = project.luaMapTargetGeneration_;
     QPointer<EditorProject> guard(&project);
     auto previous = std::move(validation.value->verify);
-    validation.value->verify = [guard, generation, revision, gameRoot, previous] {
-        if (!guard || guard->editRevision_.Generation() != generation || guard->editRevision_.Revision() != revision || guard->war3GameRoot_ != gameRoot)
+    validation.value->verify = [guard, generation, revision, gameRoot, targetGeneration, previous] {
+        if (!guard || guard->editRevision_.Generation() != generation || guard->editRevision_.Revision() != revision || guard->war3GameRoot_ != gameRoot
+            || guard->luaMapTargetGeneration_ != targetGeneration)
             return Status::Failure("Map.CustomSettings", "SETTINGS_PROJECT_STALE", "工程物编或资源修订已变化。");
         return previous ? previous() : Status::Ok();
     };

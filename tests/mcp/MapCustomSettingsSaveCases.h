@@ -26,4 +26,15 @@ void TestCustomSettingsSaveAndQuery() {
     args["settings_custom_edits"] = commands; args["output_path"] = QString::fromStdWString((fixture.base.root / "mcp-no-prefix.w3x").wstring());
     Code(Call(server, "save_map_edit_candidate", args), "SETTINGS_COUNT_STALE");
     Expect(!std::filesystem::exists(fixture.base.root / "mcp-no-prefix.w3x"), "MCP failed suffix has no candidate");
+    if (Script::RandomMapInitializationAvailable()) {
+        auto random = fixture.Request("direct-mcp-random"); random.settingsCustomEdits = fixture.AppendRandomUnits();
+        C::Take(Services::SaveMapEditCandidate(random));
+        args["settings_custom_edits"] = QJsonDocument::fromJson(QByteArray::fromStdString(C::Fixture::RandomUnitOperationsJson())).array();
+        args["output_path"] = QString::fromStdWString((fixture.base.root / "mcp-random.w3x").wstring());
+        const auto result = Call(server, "save_map_edit_candidate", args); Expect(result.value("ok").toBool(), QJsonDocument(result).toJson().constData());
+        auto mcpRandom = C::Take(MapArchiveSession::Open(fixture.base.root / "mcp-random.w3x"));
+        auto directRandom = C::Take(MapArchiveSession::Open(random.targetCandidate));
+        for (const auto* member : {"war3map.w3i", "war3map.j", "unchanged.bin"})
+            Expect(C::Take(mcpRandom.ReadMember(member)) == C::Take(directRandom.ReadMember(member)), "MCP random table normal save matches the same service");
+    }
 }

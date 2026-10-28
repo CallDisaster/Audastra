@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapCustomSettingsEditing.h"
+#include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Services/NameResolution.h"
 #include "War3MapCore/Text/Utf8Scalar.h"
 
@@ -165,14 +166,14 @@ Result<std::string> QueryMapCustomSettings(const MapDocument& document, const Ma
         const auto& member = document.Member(MapDataKind::Settings);
         constexpr std::string_view states[]{"missing", "ready", "partial", "invalid", "ambiguous", "unreadable"};
         Json result{{"settings_binding", settingsBinding}, {"member_state", states[static_cast<unsigned>(member.state)]}, {"diagnostics", Diagnostics(member.diagnostics)},
-            {"native_v25_writable", allowed.Succeeded()}, {"write_blockers", Diagnostics(allowed.diagnostics)}, {"random_commit_supported", false}};
+            {"native_v25_writable", allowed.Succeeded()}, {"write_blockers", Diagnostics(allowed.diagnostics)}, {"random_commit_supported", Script::RandomMapInitializationAvailable()}};
         if (!document.Settings()) { result["custom_present"] = nullptr; return R::Success(result.dump()); }
         const auto& settings = *document.Settings(); result["version"] = settings.formatVersion; result["custom_present"] = settings.custom.has_value();
         result["unknown_tail_bytes"] = settings.UnknownTail().size();
         if (!settings.custom) return R::Success(result.dump());
         const auto& tables = *settings.custom;
         result["counts"] = {{"upgrades", tables.upgrades.size()}, {"tech_restrictions", tables.techRestrictions.size()}, {"random_units", tables.randomUnits.size()}, {"random_items", tables.randomItems.size()}};
-        result["random_initialization_blocked"] = !tables.randomUnits.empty() || !tables.randomItems.empty();
+        result["random_initialization_blocked"] = !Script::RandomMapInitializationAvailable() && (!tables.randomUnits.empty() || !tables.randomItems.empty());
         if (summary) return R::Success(result.dump());
         const auto offset = query.contains("offset") ? Number(query.at("offset"), 0, INT32_MAX) : 0;
         const auto limit = query.contains("limit") ? Number(query.at("limit"), 1, 256) : 64;

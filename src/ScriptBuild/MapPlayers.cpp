@@ -331,6 +331,7 @@ void WriteMain(MapContext& context, bool upgrades, bool techTree) {
     if (context.in.cameras != nullptr && !context.in.cameras->entries.empty()) out.Line("call CreateCameras(  )");
     if (upgrades) out.Line("call InitUpgrades(  )");
     if (techTree) out.Line("call InitTechTree(  )");
+    if (!context.random.unitTables.empty()) out.Line("call InitRandomGroups(  )");
     if (HasScriptedDestructables(context)) out.Line("call CreateAllDestructables(  )");
     if (HasPlacedItems(context)) out.Line("call CreateAllItems(  )");
     out.Line("call CreateAllUnits(  )");

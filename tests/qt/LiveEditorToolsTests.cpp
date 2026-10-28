@@ -140,7 +140,7 @@ struct Fixture {
     QString error;
     StableId trigger = 0;
 
-    bool Initialize(bool selectedLayers = false) {
+    bool Initialize(bool selectedLayers = false, bool withCustomCode = true) {
         // 原创夹具不继承开发安装目录里的真实包；每项运行库测试自行提供合成来源。
         project.runtimePackageSources_.clear(); project.runtimeCatalogDiagnostics_.clear();
         if (!sandbox.isValid() || !source.isValid() || !ui.isValid() || !outputs.isValid()) return Fail("temporary directories");
@@ -162,7 +162,7 @@ struct Fixture {
         auto added = TriggerDocumentEditor::AddTrigger(*empty.value, *category.value, "0-0-1 原始业务");
         if (!added.Succeeded()) return Fail("trigger creation");
         if (!TriggerDocumentEditor::SetTriggerComment(*empty.value, *added.value, "原始说明").Succeeded() ||
-            !TriggerDocumentEditor::SetGlobalCustomCode(*empty.value, "// 原有作者代码，仅透传\r\n").Succeeded())
+            !TriggerDocumentEditor::SetGlobalCustomCode(*empty.value, withCustomCode ? "// 原有作者代码，仅透传\r\n" : "").Succeeded())
             return Fail("original text fixture");
         const auto encoded = WtgWctCodec{}.Serialize(*empty.value, *catalog.value);
         if (!encoded.Succeeded() ||

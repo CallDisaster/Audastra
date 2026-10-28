@@ -2,6 +2,7 @@
 #include "War3MapCore/ObjectData/EffectiveObjectCatalog.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/Trigger/TriggerDocument.h"
 
 #include <algorithm>
 #include <array>
@@ -44,7 +45,7 @@ struct Sources {
 } // namespace
 
 Result<MapCustomSettingsValidation> CaptureMapCustomSettingsValidation(
-    const ObjectCatalogSources& input, MapCustomSettingsObjectOverlay overlay) {
+    const ObjectCatalogSources& input, MapCustomSettingsObjectOverlay overlay, const AuxiliaryReferenceContext& references) {
     using R = Result<MapCustomSettingsValidation>;
     std::size_t overlayBytes = 0;
     for (std::size_t i = 0; i < overlay.size(); ++i) if (overlay[i]) {
@@ -81,6 +82,10 @@ Result<MapCustomSettingsValidation> CaptureMapCustomSettingsValidation(
     MapCustomSettingsValidation result;
     result.objectContext = [owner](ObjectType type) { return owner->Context(type); };
     result.verify = [owner] { return owner->snapshot.Verify(); };
+    const auto triggerOwner = references.triggers ? std::make_shared<const Trigger::TriggerDocument>(*references.triggers) : nullptr;
+    result.references = [triggerOwner, complete = references.completeTriggerSource, opaque = references.opaqueScriptSources] {
+        return AuxiliaryReferenceContext{triggerOwner.get(), complete, opaque};
+    };
     return R::Success(std::move(result));
 }
 Result<std::vector<std::string>> MapCustomSettingsInputNames() {

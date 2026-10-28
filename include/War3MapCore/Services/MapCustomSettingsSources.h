@@ -9,6 +9,7 @@ namespace War3Map::Services {
 using MapCustomSettingsObjectOverlay = std::array<std::shared_ptr<const ObjectData::LniObjectDocument>, 7>;
 [[nodiscard]] Result<std::vector<std::string>> MapCustomSettingsInputNames();
 [[nodiscard]] Result<MapCustomSettingsValidation> CaptureMapCustomSettingsValidation(
-    const ObjectCatalogSources& sources, MapCustomSettingsObjectOverlay overlay = {});
+    const ObjectCatalogSources& sources, MapCustomSettingsObjectOverlay overlay = {},
+    const AuxiliaryReferenceContext& references = {});
 
 } // namespace War3Map::Services

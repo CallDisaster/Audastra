@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/GeneratedObjectSymbol.h"
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -225,10 +226,12 @@ std::string MapContext::RegionByCreation(std::int32_t creationNumber) const {
 }
 
 bool MapContext::IsItem(std::string_view rawcode) const {
+    if (!random.placements.empty() && rawcode == "iDNR") return true;
     return in.queries.isItem ? in.queries.isItem(rawcode) : false;
 }
 
 bool MapContext::IsBuilding(std::string_view rawcode) const {
+    if (!random.placements.empty() && rawcode == "bDNR") return true;
     return in.queries.isBuilding ? in.queries.isBuilding(rawcode) : false;
 }
 
@@ -285,7 +288,7 @@ static bool ValidateDestructables(MapContext& context) {
                 reject("DESTRUCTABLE_ID_INVALID", "war3map.doo 第 " + std::to_string(index) + " 条不能形成可靠的脚本对象名");
                 continue;
             }
-            if (entry.lifePercent != 100 || entry.droppedItemTable != -1) {
+            if (entry.lifePercent != 100 || (entry.droppedItemTable != -1 && !context.random.itemTables.contains(entry.droppedItemTable))) {
                 reject("DESTRUCTABLE_INIT_UNSUPPORTED", "war3map.doo 第 " + std::to_string(index) + " 条含未经原版对照的生命值或全局掉落表");
                 continue;
             }
@@ -330,7 +333,15 @@ std::string Real3(double value) {
     return buffer;
 }
 
-std::string Rawcode(std::string_view rawcode) { return "'" + std::string(rawcode) + "'"; }
+std::string Rawcode(std::string_view rawcode) {
+    if (rawcode.size() == 4 && !std::all_of(rawcode.begin(), rawcode.end(), [](unsigned char c) {
+        return c >= 32 && c <= 126 && c != '\'' && c != '\\';
+    })) {
+        std::uint32_t value = 0; for (unsigned char c : rawcode) value = (value << 8) | c;
+        return std::to_string(std::bit_cast<std::int32_t>(value));
+    }
+    return "'" + std::string(rawcode) + "'";
+}
 
 } // namespace detail
 
@@ -347,6 +358,10 @@ MapScriptResult GenerateMapScript(const MapScriptInputs& inputs) {
     const auto& document = *inputs.triggers;
     ScriptText out;
     detail::MapContext context{inputs, out, result.diagnostics, {}, {}};
+    auto random = detail::CaptureMapRandomInitialization(inputs);
+    result.diagnostics.insert(result.diagnostics.end(), random.diagnostics.begin(), random.diagnostics.end());
+    if (!random.Succeeded()) return result;
+    context.random = std::move(*random.value);
     if (!detail::CollectEmittedObjectReferences(document, *inputs.catalog, context)) return result;
     if (!detail::ValidateDestructables(context)) return result;
 
@@ -384,6 +399,7 @@ MapScriptResult GenerateMapScript(const MapScriptInputs& inputs) {
     detail::WriteHeader(context);
     const std::size_t storageSwitch = detail::WriteGlobals(context, triggerVariables);
     detail::WriteInitGlobals(context);
+    detail::WriteRandomGroups(context);
     detail::WriteItemTables(context);
     detail::WriteDoodadTables(context);
     detail::WriteSounds(context);

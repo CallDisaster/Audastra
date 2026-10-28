@@ -1,10 +1,12 @@
 #include "War3MapCore/Script/ScriptQueries.h"
 
 #include <cstdlib>
+#include <charconv>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <sstream>
+#include <set>
 #include <unordered_map>
 
 namespace War3Map::Script {
@@ -15,6 +17,94 @@ struct QueryState {
     std::unordered_map<std::string, ObjectData::ObjectRecord> units;
     std::unordered_map<std::string, ObjectData::ObjectRecord> items;
     std::unordered_map<std::string, ObjectData::ObjectRecord> abilities;
+    std::unordered_map<std::string, ObjectData::ObjectRecord> destructables;
+    std::set<std::string> ambiguousUnits, ambiguousItems, ambiguousAbilities, ambiguousDestructables;
+
+    struct Resolved {
+        const ObjectData::StandardObjectEntry* base = nullptr;
+        std::vector<const ObjectData::ObjectRecord*> overrides;
+    };
+    std::optional<Resolved> Resolve(ObjectData::ObjectType type,
+        const std::unordered_map<std::string, ObjectData::ObjectRecord>& records,
+        const std::set<std::string>& ambiguous, std::string_view id) const {
+        if (!standard) return {};
+        Resolved result; std::set<std::string> seen; std::string current(id);
+        for (std::size_t depth = 0; depth < 128; ++depth) {
+            if (!seen.insert(current).second || ambiguous.contains(current)) return {};
+            const auto found = records.find(current);
+            if (found != records.end()) {
+                if (found->second.key.type != type) return {};
+                result.overrides.push_back(&found->second);
+                if (found->second.parentRawcode) { current = *found->second.parentRawcode; continue; }
+            }
+            result.base = standard->Find(type, current);
+            if (!result.base) return {};
+            return result;
+        }
+        return {};
+    }
+    static std::optional<std::string> Property(const Resolved& source, std::string_view nativeField, std::string_view standardField) {
+        for (const auto* record : source.overrides) if (auto value = Modified(*record, nativeField)) return value;
+        const auto value = source.base->Field(standardField);
+        return value.empty() ? std::nullopt : std::optional(std::string(value));
+    }
+    std::optional<ObjectQueries::PlacementInfo> Placement(std::string_view id) const {
+        const bool hasUnit = units.contains(std::string(id)) || (standard && standard->Find(ObjectData::ObjectType::Unit, id));
+        const bool hasItem = items.contains(std::string(id)) || (standard && standard->Find(ObjectData::ObjectType::Item, id));
+        if (hasUnit == hasItem) return {};
+        const auto unit = Resolve(ObjectData::ObjectType::Unit, units, ambiguousUnits, id);
+        const auto item = Resolve(ObjectData::ObjectType::Item, items, ambiguousItems, id);
+        // 顶层或任何父级歧义不能借另一类别的成功结果掩盖。
+        if (ambiguousUnits.contains(std::string(id)) || ambiguousItems.contains(std::string(id)) || unit.has_value() == item.has_value()) return {};
+        if (item) return ObjectQueries::PlacementInfo{2, -1};
+        for (const auto* record : unit->overrides) {
+            std::set<std::string> fields;
+            for (const auto& modification : record->modifications) {
+                // 未经原生投影的LNI字段不能按原版默认值推断类别。
+                if (modification.key.fieldId.size() != 4) return {};
+                if (modification.key.fieldId != "ubdg" && modification.key.fieldId != "utco") continue;
+                if (!fields.insert(modification.key.fieldId).second || modification.key.level
+                    || modification.key.dataIndex || modification.key.variation) return {};
+                if (!std::holds_alternative<std::int32_t>(modification.value)
+                    && !(modification.key.fieldId == "ubdg" && std::holds_alternative<bool>(modification.value))) return {};
+            }
+        }
+        const auto building = Property(*unit, "ubdg", "isbldg");
+        if (!building || (*building != "0" && *building != "1" && *building != "false" && *building != "true")) return {};
+        ObjectQueries::PlacementInfo result{*building == "1" || *building == "true" ? 1 : 0, -1};
+        if (const auto color = Property(*unit, "utco", "teamcolor")) {
+            const auto [end, error] = std::from_chars(color->data(), color->data() + color->size(), result.teamColor);
+            if (error != std::errc{} || end != color->data() + color->size() || result.teamColor < -1 || result.teamColor > 15) return {};
+        }
+        return result;
+    }
+    std::optional<ObjectQueries::AbilityInfo> AbilityInitialization(std::string_view id) const {
+        const auto source = Resolve(ObjectData::ObjectType::Ability, abilities, ambiguousAbilities, id);
+        if (!source) return {};
+        ObjectQueries::AbilityInfo result; result.known = true;
+        const auto direct = abilities.find(std::string(id)); result.custom = direct != abilities.end() && direct->second.parentRawcode.has_value();
+        for (const auto* record : source->overrides) {
+            std::set<std::string> fields;
+            for (const auto& modification : record->modifications) {
+                const auto& key = modification.key;
+                if (key.fieldId.size() != 4) return {};
+                if (key.fieldId != "aher" && key.fieldId != "aoro" && key.fieldId != "aorf") continue;
+                if (!fields.insert(key.fieldId).second || (key.level && *key.level != 0) || (key.dataIndex && *key.dataIndex != 0) || key.variation) return {};
+                if (key.fieldId == "aher") {
+                    if (!std::holds_alternative<std::int32_t>(modification.value) && !std::holds_alternative<bool>(modification.value)) return {};
+                } else if (!std::holds_alternative<std::string>(modification.value)) return {};
+            }
+        }
+        const auto boolean = [&](std::string_view native, std::string_view standard, bool& target) {
+            auto value = Property(*source, native, standard);
+            if (!value || (*value != "0" && *value != "1" && *value != "false" && *value != "true")) return false;
+            target = *value == "1" || *value == "true"; return true;
+        };
+        if (!boolean("aher", "hero", result.hero)) return {};
+        result.autocast = !source->base->Field("orderoff").empty();
+        result.orderOn = Property(*source, "aoro", "orderon").value_or(""); result.orderOff = Property(*source, "aorf", "orderoff").value_or("");
+        return result;
+    }
 
     // 自定义物体的字段覆盖；未覆盖时返回空。
     static std::optional<std::string> Modified(const ObjectData::ObjectRecord& record, std::string_view field) {
@@ -42,11 +132,15 @@ bool Truthy(std::string_view value) { return value == "1" || value == "true" || 
 ObjectQueries BuildObjectQueries(ObjectQuerySources sources) {
     auto state = std::make_shared<QueryState>();
     state->standard = sources.standard;
-    for (auto& record : sources.units) state->units.emplace(record.key.rawcode, std::move(record));
-    for (auto& record : sources.items) state->items.emplace(record.key.rawcode, std::move(record));
-    for (auto& record : sources.abilities) state->abilities.emplace(record.key.rawcode, std::move(record));
+    for (auto& record : sources.units) { const auto id = record.key.rawcode; if (!state->units.emplace(id, std::move(record)).second) state->ambiguousUnits.insert(id); }
+    for (auto& record : sources.items) { const auto id = record.key.rawcode; if (!state->items.emplace(id, std::move(record)).second) state->ambiguousItems.insert(id); }
+    for (auto& record : sources.abilities) { const auto id = record.key.rawcode; if (!state->abilities.emplace(id, std::move(record)).second) state->ambiguousAbilities.insert(id); }
+    for (auto& record : sources.destructables) { const auto id = record.key.rawcode; if (!state->destructables.emplace(id, std::move(record)).second) state->ambiguousDestructables.insert(id); }
 
     ObjectQueries queries;
+    queries.placement = [state](std::string_view id) { return state->Placement(id); };
+    queries.abilityInitialization = [state](std::string_view id) { return state->AbilityInitialization(id); };
+    queries.knownDestructable = [state](std::string_view id) { return state->Resolve(ObjectData::ObjectType::Destructable, state->destructables, state->ambiguousDestructables, id).has_value(); };
     queries.isItem = [state](std::string_view rawcode) {
         if (state->items.contains(std::string(rawcode))) return true;
         return state->standard != nullptr && state->standard->Find(ObjectData::ObjectType::Item, rawcode) != nullptr;

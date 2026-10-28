@@ -132,6 +132,7 @@ std::size_t WriteGlobals(MapContext& context, const std::vector<std::string>& tr
         }
     }
     for (const auto& variable : triggerVariables) Declare(out, "trigger", variable, "null");
+    WriteRandomGroupGlobals(context);
     if (context.in.units != nullptr) {
         for (const auto& unit : context.in.units->units) {
             const bool item = context.IsItem(unit.rawcode);

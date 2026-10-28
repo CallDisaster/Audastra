@@ -1,6 +1,7 @@
 #pragma once
 #include "TerrainTextureSlotSaveFixture.h"
 #include "War3MapCore/Services/MapCustomSettingsSources.h"
+#include "War3MapCore/Script/MapScript.h"
 
 namespace AudastraTest::CustomSettings {
 using namespace War3Map;
@@ -44,6 +45,10 @@ struct Fixture {
             "native SetPlayerController takes player p, mapcontrol c returns nothing\n"
             "native SetStartLocPrioCount takes integer n, integer count returns nothing\n"
             "native DefineStartLocation takes integer n, real x, real y returns nothing\n");
+        declarations.common.insert(declarations.common.find("globals\n"),
+            "native RandomDistReset takes nothing returns nothing\n"
+            "native RandomDistAddItem takes integer id, integer chance returns nothing\n"
+            "native RandomDistChoose takes nothing returns integer\n");
         declarations.common.insert(declarations.common.find("endglobals"), "constant racepreference RACE_PREF_HUMAN = null\nconstant mapcontrol MAP_CONTROL_USER = null\n");
         declarations.blizzard += "function SetPlayerSlotAvailable takes player p, mapcontrol c returns nothing\nendfunction\n";
         Write(base.inputs.tool / "compiler/jass/24/common.j", declarations.common);
@@ -68,6 +73,16 @@ struct Fixture {
         Services::MapCustomSettingsCommand command; command.expectedCount = 0;
         command.value = MapData::MapUpgradeAvailability{1, Raw("R001"), 1, 2};
         return {Take(Services::MapCustomSettingsEditing::MemberIdentity(map)), {command}};
+    }
+    Services::MapCustomSettingsEditRequest AppendRandomUnits() const {
+        auto result = AppendUpgrade();
+        Services::MapCustomSettingsCommand command; command.section = Services::MapCustomSettingsSection::RandomUnits;
+        command.expectedCount = 0; command.number = 7;
+        command.value = MapData::MapRandomUnitTable{7, "Original table", {0}, {{30, {Raw("u001")}}}};
+        result.operations = {command}; return result;
+    }
+    static std::string RandomUnitOperationsJson() {
+        return R"([{"section":"random_units","op":"append","expected_count":0,"number":7,"value":{"name":{"utf8":"Original table"},"column_types":[0],"rows":[{"chance":30,"ids":[{"kind":"object","id_hex":"75303031"}]}]}}])";
     }
 };
 } // namespace AudastraTest::CustomSettings

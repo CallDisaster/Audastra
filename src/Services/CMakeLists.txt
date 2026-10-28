@@ -20,6 +20,7 @@ add_library(War3MapServices STATIC
     ProjectReferenceIndex.cpp
     AuxiliaryEditing.cpp
     MapCustomSettingsEditing.cpp
+    MapCustomSettingsReferences.cpp
     MapCustomSettingsJson.cpp
     MapCustomSettingsSources.cpp
     MapCustomSettingsQuery.cpp

@@ -755,9 +755,24 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         std::optional<MapCustomSettingsValidation> customValidation;
         if (customRequest) {
             ObjectCatalogSources inputs; inputs.archive = &source; inputs.gameRoot = request.gameRoot;
-            auto captured = CaptureMapCustomSettingsValidation(inputs);
+            auto catalog = ResolveEditCatalog(request.uiRoot.empty() ? request.toolRoot : request.uiRoot, request.effectiveLayers);
+            if (!catalog.Succeeded()) return Forward(catalog.diagnostics);
+            const std::array<std::string, 2> triggerNames{"war3map.wtg", "war3map.wct"};
+            auto pair = source.CaptureExactMembers(triggerNames);
+            if (!pair.Succeeded()) return Forward(pair.diagnostics);
+            if (!(*pair.value)[0].present || !(*pair.value)[1].present)
+                return Fail("SETTINGS_RANDOM_REFERENCE_COVERAGE_REQUIRED", "自定义设置正常保存需要完整 WTG/WCT，不能把缺失当成无引用。");
+            auto triggers = Trigger::WtgWctCodec{}.Parse((*pair.value)[0].bytes, (*pair.value)[1].bytes, *catalog.value);
+            if (!triggers.Succeeded()) return Forward(triggers.diagnostics);
+            AuxiliaryReferenceContext references{&*triggers.value, true, {}};
+            for (const auto& member : source.Members()) ObserveAuxiliaryScriptSource(references, member.name);
+            if (source.HasOpaqueMembers()) references.opaqueScriptSources.push_back("未命名归档成员");
+            auto captured = CaptureMapCustomSettingsValidation(inputs, {}, references);
             if (!captured.Succeeded()) return Forward(captured.diagnostics);
             customValidation = std::move(*captured.value);
+            customValidation->randomWriteQualification = [target = request.luaTarget](const MapDocument& document) {
+                return MapCustomSettingsEditing::RandomWriteQualification(document, target ? &*target : nullptr);
+            };
             auto plan = MapCustomSettingsEditing::Prepare(std::make_shared<const MapDocument>(map), *request.settingsCustomEdits, *customValidation);
             if (!plan.Succeeded()) return Forward(plan.diagnostics);
             auto applied = MapCustomSettingsEditing::Apply(edits, *plan.value, *customValidation);

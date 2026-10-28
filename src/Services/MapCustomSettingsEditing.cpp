@@ -1,4 +1,6 @@
 #include "War3MapCore/Services/MapCustomSettingsEditing.h"
+#include "MapCustomSettingsReferences.h"
+#include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Services/AuxiliaryEditing.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Text/Utf8Scalar.h"
@@ -158,6 +160,16 @@ Status MapCustomSettingsEditing::WriteQualification(const MapDocument& document)
         return Bad("SETTINGS_CUSTOM_VERSION_READ_ONLY", "本轮只开放来源为原生 W3I v25 的修改，其它版本仅查询。");
     return Status::Ok();
 }
+Status MapCustomSettingsEditing::RandomWriteQualification(const MapDocument& document,
+    const LuaMapTargetRequest* selectedLuaTarget) {
+    if (selectedLuaTarget) return Bad("SETTINGS_RANDOM_LUA_UNSUPPORTED", "随机单位/物品表当前只支持经典v25的JASS初始化；所选Lua目标尚不支持，请先切换保存目标。");
+    auto writable = WriteQualification(document); if (!writable.Succeeded()) return writable;
+    if (document.Settings()->scriptLanguage != 0)
+        return Bad("SETTINGS_RANDOM_LANGUAGE_UNSUPPORTED", "随机单位/物品表当前只支持JASS初始化，不能按未知脚本语言保存。");
+    if (!Script::RandomMapInitializationAvailable())
+        return Bad("SETTINGS_RANDOM_COMMIT_UNSUPPORTED", "当前构建尚未提供已验收的随机表初始化。");
+    return Status::Ok();
+}
 Result<std::string> MapCustomSettingsEditing::MemberIdentity(const MapDocument& document) {
     const auto& member = document.Member(MapDataKind::Settings);
     if (member.sources.size() != 1) return Result<std::string>::Failure("Map.CustomSettings", "SETTINGS_MEMBER_AMBIGUOUS", "W3I 没有唯一来源。");
@@ -197,7 +209,15 @@ Result<PreparedMapCustomSettingsEdit> MapCustomSettingsEditing::Prepare(std::sha
     if (sources.verify) { auto verified = sources.verify(); if (!verified.Succeeded()) return fail(verified); }
     PreparedMapCustomSettingsEdit result;
     result.before_ = current; result.request_ = request;
+    result.randomAvailable_ = Script::RandomMapInitializationAvailable();
     auto settings = *current->Settings();
+    if (!settings.custom->randomUnits.empty() || !settings.custom->randomItems.empty()
+        || std::any_of(request.operations.begin(), request.operations.end(), [](const auto& operation) {
+            return operation.section == Section::RandomUnits || operation.section == Section::RandomItems;
+        })) {
+        auto qualification = sources.randomWriteQualification ? sources.randomWriteQualification(*current) : RandomWriteQualification(*current);
+        if (!qualification.Succeeded()) return fail(std::move(qualification));
+    }
     if (settings.custom->upgrades.size() > 65536 || settings.custom->techRestrictions.size() > 65536
         || settings.custom->randomUnits.size() > 4096 || settings.custom->randomItems.size() > 4096)
         return fail(Bad("SETTINGS_SOURCE_EDIT_BUDGET", "源自定义表超过本轮编辑预算，保留查询能力。"));
@@ -233,7 +253,12 @@ Result<PreparedMapCustomSettingsEdit> MapCustomSettingsEditing::Prepare(std::sha
             }
             if (remove) {
                 if (!std::holds_alternative<std::monostate>(command.value) || command.keepName) return Bad("SETTINGS_COMMAND_SHAPE_INVALID", "删除不接受值或名称。");
-                if constexpr (table) return Bad("SETTINGS_RANDOM_REFERENCE_COVERAGE_REQUIRED", "删除随机表需要完整的摆放、触发器及脚本引用覆盖，当前阶段不开放。");
+                if constexpr (table) {
+                    const MapCustomSettingsValue old = rows[index];
+                    auto references = CheckRandomSettingsReferences(*current, command.section, &old, nullptr, sources);
+                    if (!references.Succeeded()) return references;
+                    result.randomChanges_ = true;
+                }
                 rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(index)); result.stepKeys_.emplace_back(); return Status::Ok();
             }
             const auto* supplied = std::get_if<Record>(&command.value);
@@ -255,9 +280,10 @@ Result<PreparedMapCustomSettingsEdit> MapCustomSettingsEditing::Prepare(std::sha
                         at += scalar.bytes;
                     }
                 }
-                if constexpr (std::is_same_v<Record, MapRandomUnitTable>) {
-                    if (!append && record.columnTypes != rows[index].columnTypes) return Bad("SETTINGS_RANDOM_REFERENCE_COVERAGE_REQUIRED", "改变随机表列结构需要完整引用覆盖，当前阶段不开放。");
-                }
+                const MapCustomSettingsValue replacement = record;
+                const MapCustomSettingsValue old = append ? MapCustomSettingsValue{} : MapCustomSettingsValue{rows[index]};
+                auto references = CheckRandomSettingsReferences(*current, command.section, append ? nullptr : &old, &replacement, sources);
+                if (!references.Succeeded()) return references;
             } else if (command.keepName) return Bad("SETTINGS_COMMAND_SHAPE_INVALID", "科技行不接受名称。");
             auto key = RecordKey(command.section, record, settings.formatVersion); if (!key.Succeeded()) return {key.diagnostics};
             MapSettings budgetEnvelope; budgetEnvelope.formatVersion = 25; budgetEnvelope.custom.emplace();
@@ -309,8 +335,10 @@ Status MapCustomSettingsEditing::Apply(MapDataEditSession& session, const Prepar
     const MapCustomSettingsValidation& validation, const MapDataPublishValidator& validator) {
     if (!AuxiliaryEditing::AreEquivalentMapSources(session.Snapshot(), plan.Before())) return Bad("SETTINGS_PLAN_STALE", "准备后地图来源已变化，不能覆盖新编辑。");
     if (!plan.HasChanges()) return Status::Ok();
-    if (plan.randomChanges_) return Bad("SETTINGS_RANDOM_COMMIT_UNSUPPORTED", "随机表目前仅查询与预览；提交须等待初始化和实际游戏验收。");
-    if (plan.InitializationBlocked()) return Bad("MAP_INIT_RANDOM_TABLE_UNSUPPORTED", "当前地图已有随机表，初始化资格须等后续实现与验收，当前仅允许预览。");
+    if (!Script::RandomMapInitializationAvailable()) {
+        if (plan.randomChanges_) return Bad("SETTINGS_RANDOM_COMMIT_UNSUPPORTED", "随机表提交尚未通过初始化和实际游戏验收。");
+        if (plan.InitializationBlocked()) return Bad("MAP_INIT_RANDOM_TABLE_UNSUPPORTED", "当前构建尚未通过随机表初始化资格，当前仅允许预览。");
+    }
     auto checked = Prepare(plan.before_, plan.request_, validation);
     if (!checked.Succeeded()) return {checked.diagnostics};
     if (!AuxiliaryEditing::AreEquivalentMapSources(checked.value->After(), plan.After())) return Bad("SETTINGS_PLAN_STALE", "重新准备结果与冻结候选不一致。");

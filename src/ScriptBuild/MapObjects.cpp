@@ -36,17 +36,7 @@ bool EmptyRawcode(std::string_view rawcode) {
 
 // 物品组条目：空位写 -1；Y?I<等级> 为指定类别与等级的随机物品。
 std::string ItemChoice(std::string_view rawcode) {
-    if (EmptyRawcode(rawcode)) return "-1";
-    if (rawcode.size() == 4 && rawcode[0] == 'Y' && rawcode[2] == 'I') {
-        static constexpr std::pair<char, const char*> kClasses[] = {
-            {'Y', "ITEM_TYPE_ANY"}, {'i', "ITEM_TYPE_PERMANENT"}, {'j', "ITEM_TYPE_CHARGED"}, {'k', "ITEM_TYPE_POWERUP"},
-            {'l', "ITEM_TYPE_ARTIFACT"}, {'m', "ITEM_TYPE_PURCHASABLE"}, {'n', "ITEM_TYPE_CAMPAIGN"}, {'o', "ITEM_TYPE_MISCELLANEOUS"}};
-        for (const auto& [code, type] : kClasses) {
-            // 等级为字符减 '0'（'/' 表示任意等级 -1）。
-            if (code == rawcode[1]) return std::string("ChooseRandomItemEx( ") + type + ", " + std::to_string(rawcode[3] - '0') + " )";
-        }
-    }
-    return Rawcode(rawcode);
+    return LegacyItemChoiceExpression(rawcode);
 }
 
 // 掉落物品函数：每个物品组独立随机一件，单位死亡或被中立敌对玩家转移时掉落。
@@ -77,6 +67,8 @@ void WriteDropFunction(ScriptText& out, const std::string& name, const std::vect
         out.Line("call RandomDistReset(  )");
         std::int32_t total = 0;
         for (const auto& [rawcode, chance] : sets[set]) {
+            // 0权重仍保留在W3I；不占BJ分布数组，避免大量零项耗尽经典数组槽。
+            if (chance == 0) continue;
             out.Line("call RandomDistAddItem( " + ItemChoice(rawcode) + ", " + std::to_string(chance) + " )");
             total += chance;
         }
@@ -151,6 +143,7 @@ bool HasPlacedItems(const MapContext& context) {
 bool HasScriptedDestructables(const MapContext& context) { return !context.scriptedDoodadIndexes.empty(); }
 
 bool HasDoodadDropChoices(const MapData::DoodadPlacement& doodad) {
+    if (doodad.droppedItemTable != -1) return true;
     // 原版对空 itemSet 不生成掉落函数或死亡事件；需至少一个真实选项。
     return std::any_of(doodad.itemSets.begin(), doodad.itemSets.end(), [](const auto& set) { return !set.items.empty(); });
 }
@@ -197,7 +190,7 @@ void WriteDoodadTables(MapContext& context) {
     bool banner = false;
     for (const auto index : context.scriptedDoodadIndexes) {
         const auto& doodad = context.in.doodads->doodads[index];
-        if (!HasDoodadDropChoices(doodad)) continue;
+        if (!HasDoodadDropChoices(doodad) || doodad.droppedItemTable != -1) continue;
         if (!banner) {
             WriteSectionBanner(context.out, "Destructible Item Tables");
             banner = true;
@@ -309,7 +302,9 @@ void WriteDestructables(MapContext& context) {
             out.Line("set t = CreateTrigger(  )");
             out.Line("call TriggerRegisterDeathEvent( t, " + variable + " )");
             out.Line("call TriggerAddAction( t, function SaveDyingWidget )");
-            out.Line("call TriggerAddAction( t, function " + Numbered6("Doodad", static_cast<std::int32_t>(index), "_DropItems") + " )");
+            const auto drop = doodad.droppedItemTable != -1 ? Numbered6("ItemTable", doodad.droppedItemTable, "_DropItems")
+                : Numbered6("Doodad", static_cast<std::int32_t>(index), "_DropItems");
+            out.Line("call TriggerAddAction( t, function " + drop + " )");
         }
     }
     out.End();
@@ -334,9 +329,17 @@ void WriteItems(MapContext& context) {
     std::stable_sort(items.begin(), items.end(), [](const auto* a, const auto* b) { return a->rawcode < b->rawcode; });
     for (const auto* item : items) {
         const auto& unit = *item;
-        const std::string call = "CreateItem( " + Rawcode(unit.rawcode) + ", " + Real1(unit.position[0]) + ", " + Real1(unit.position[1]) + " )";
+        const auto index = static_cast<std::size_t>(item - placed.data());
+        const auto random = context.random.placements.find(index);
+        const bool dynamic = random != context.random.placements.end();
+        if (dynamic) {
+            out.Line("set itemID = " + random->second.typeExpression);
+            out.Line("if (itemID != -1 and itemID != 0) then"); out.Begin();
+        }
+        const std::string call = "CreateItem( " + (dynamic ? std::string("itemID") : Rawcode(unit.rawcode)) + ", " + Real1(unit.position[0]) + ", " + Real1(unit.position[1]) + " )";
         const std::string variable = context.PlacedVariable("gg_item_", unit);
         out.Line(context.referencedObjects.contains(variable) ? "set " + variable + " = " + call : "call " + call);
+        if (dynamic) { out.End(); out.Line("endif"); }
     }
     out.End();
     out.Line("endfunction");
@@ -349,10 +352,22 @@ void WriteUnit(MapContext& context, const MapData::UnitPlacement& unit, std::siz
     auto& out = context.out;
     const std::string global = context.PlacedVariable("gg_unit_", unit);
     const std::string v = context.referencedObjects.contains(global) ? global : "u";
+    const auto random = context.random.placements.find(index);
+    const bool dynamic = random != context.random.placements.end();
+    if (dynamic) {
+        out.Line("set unitID = " + random->second.typeExpression);
+        out.Line("if (unitID != -1 and unitID != 0) then"); out.Begin();
+    }
     // WE 以单精度换算角度（影响第三位小数的舍入）。
     float facing = unit.rotation * (180.0f / std::numbers::pi_v<float>);
     if (facing < 0) facing += 360.0f;
-    if (unit.rawcode == "ugol") {
+    if (dynamic) {
+        out.Line("if (unitID == 'ugol') then"); out.Begin();
+        out.Line("set " + v + " = CreateBlightedGoldmine( p, " + Real1(unit.position[0]) + ", " + Real1(unit.position[1]) + ", " + Real3(facing) + " )");
+        out.End(); out.Line("else"); out.Begin();
+        out.Line("set " + v + " = CreateUnit( p, unitID, " + Real1(unit.position[0]) + ", " + Real1(unit.position[1]) + ", " + Real3(facing) + " )");
+        out.End(); out.Line("endif");
+    } else if (unit.rawcode == "ugol") {
         out.Line("set " + v + " = CreateBlightedGoldmine( p, " + Real1(unit.position[0]) + ", " + Real1(unit.position[1]) + ", " + Real3(facing) + " )");
     } else {
         out.Line("set " + v + " = CreateUnit( p, " + Rawcode(unit.rawcode) + ", " + Real1(unit.position[0]) + ", " +
@@ -365,27 +380,40 @@ void WriteUnit(MapContext& context, const MapData::UnitPlacement& unit, std::siz
         out.Line("call SetUnitState( " + v + ", UNIT_STATE_LIFE, " + percent + " * life )");
     }
     // 12500 是常见实例值，并不是“默认”的哨兵；WE 对金矿总是显式设置储量。
-    if (unit.rawcode == "ngol" || unit.rawcode == "ugol") {
+    if (dynamic) {
+        out.Line("if (unitID == 'ngol' or unitID == 'ugol') then"); out.Begin();
+        out.Line("call SetResourceAmount( " + v + ", " + std::to_string(unit.gold) + " )"); out.End(); out.Line("endif");
+    } else if (unit.rawcode == "ngol" || unit.rawcode == "ugol") {
         out.Line("call SetResourceAmount( " + v + ", " + std::to_string(unit.gold) + " )");
     }
-    const bool hero = context.IsHero(unit.rawcode);
+    const bool hero = dynamic || context.IsHero(unit.rawcode);
+    const bool heroFields = unit.heroLevel > 1 || unit.heroStrength > 0 || unit.heroAgility > 0 || unit.heroIntelligence > 0;
+    if (dynamic && heroFields) { out.Line("if (IsUnitType( " + v + ", UNIT_TYPE_HERO )) then"); out.Begin(); }
     if (hero && unit.heroLevel > 1) out.Line("call SetHeroLevel( " + v + ", " + std::to_string(unit.heroLevel) + ", false )");
     if (hero && unit.heroStrength > 0) out.Line("call SetHeroStr( " + v + ", " + std::to_string(unit.heroStrength) + ", true )");
     if (hero && unit.heroAgility > 0) out.Line("call SetHeroAgi( " + v + ", " + std::to_string(unit.heroAgility) + ", true )");
     if (hero && unit.heroIntelligence > 0) out.Line("call SetHeroInt( " + v + ", " + std::to_string(unit.heroIntelligence) + ", true )");
+    if (dynamic && heroFields) { out.End(); out.Line("endif"); }
     if (unit.mana != -1) out.Line("call SetUnitState( " + v + ", UNIT_STATE_MANA, " + std::to_string(unit.mana) + " )");
     // 放置时指定的颜色优先；否则单位类型自带颜色时写类型颜色。
-    const int typeColor = context.in.queries.unitTeamColor ? context.in.queries.unitTeamColor(unit.rawcode) : -1;
+    const int typeColor = !dynamic && context.in.queries.unitTeamColor ? context.in.queries.unitTeamColor(unit.rawcode) : -1;
     if (unit.teamColor != -1) out.Line("call SetUnitColor( " + v + ", ConvertPlayerColor(" + std::to_string(unit.teamColor) + ") )");
     else if (typeColor != -1) out.Line("call SetUnitColor( " + v + ", ConvertPlayerColor(" + std::to_string(typeColor) + ") )");
+    else if (dynamic) for (const auto& [id, color] : random->second.typeColors) {
+        out.Line("if (unitID == " + *RandomChoiceExpression(id, random->second.kind) + ") then"); out.Begin();
+        out.Line("call SetUnitColor( " + v + ", ConvertPlayerColor(" + std::to_string(color) + ") )"); out.End(); out.Line("endif");
+    }
     if (unit.targetAcquisition == -2.0f) out.Line("call SetUnitAcquireRange( " + v + ", 200.0 )");
     else if (unit.targetAcquisition >= 0.0f) out.Line("call SetUnitAcquireRange( " + v + ", " + Real1(unit.targetAcquisition) + " )");
-    for (const auto& ability : unit.abilities) {
+    for (std::size_t abilityIndex = 0; abilityIndex < unit.abilities.size(); ++abilityIndex) {
+        const auto& ability = unit.abilities[abilityIndex];
         ObjectQueries::AbilityInfo info;
-        if (context.in.queries.ability) info = context.in.queries.ability(ability.rawcode);
+        if (dynamic) info = random->second.abilities.at(abilityIndex);
+        else if (context.in.queries.ability) info = context.in.queries.ability(ability.rawcode);
         else info.autocast = ability.autocast;
         // 非英雄单位上的英雄技能在游戏中无效，WE 不写任何语句。
         if (!info.known || (info.hero && !hero)) continue;
+        if (dynamic && info.hero) { out.Line("if (IsUnitType( " + v + ", UNIT_TYPE_HERO )) then"); out.Begin(); }
         const bool selected = hero && info.hero && ability.level > 0;
         for (std::int32_t level = 0; selected && level < ability.level; ++level) {
             out.Line("call SelectHeroSkill( " + v + ", " + Rawcode(ability.rawcode) + " )");
@@ -395,6 +423,7 @@ void WriteUnit(MapContext& context, const MapData::UnitPlacement& unit, std::siz
         if (ability.autocast || info.autocast || (info.custom && selected)) {
             out.Line("call IssueImmediateOrder( " + v + ", " + QuoteJassString(order) + " )");
         }
+        if (dynamic && info.hero) { out.End(); out.Line("endif"); }
     }
     for (const auto& item : unit.inventory) {
         out.Line("call UnitAddItemToSlotById( " + v + ", " + Rawcode(item.rawcode) + ", " + std::to_string(item.slot) + " )");
@@ -415,6 +444,7 @@ void WriteUnit(MapContext& context, const MapData::UnitPlacement& unit, std::siz
         out.Line("call TriggerRegisterUnitEvent( t, " + v + ", EVENT_UNIT_CHANGE_OWNER )");
         out.Line("call TriggerAddAction( t, function " + drop + " )");
     }
+    if (dynamic) { out.End(); out.Line("endif"); }
 }
 
 } // namespace

@@ -26,7 +26,7 @@ struct AuxiliaryReferenceContext {
     const Trigger::TriggerDocument* triggers = nullptr;
     // false 表示未读取/未完整解析 WTG/WCT，不能将空索引解释成没有引用。
     bool completeTriggerSource = false;
-    // 外部 Lua/JASS 文件尚无完整静态引用证明；只保留来源标识，不读取或执行代码。
+    // 外部脚本尚无完整静态引用证明；AI成员仅按名字记录，始终不读取或执行内容。
     std::vector<std::string> opaqueScriptSources;
 };
 

@@ -1,7 +1,8 @@
 #pragma once
+#include "ProjectMapCustomSettings.h"
 void LiveEditorToolsTests::CustomSettingsShareOriginalUndoAndRejectStaleCas() {
     namespace C = AudastraTest::CustomSettings;
-    C::Fixture native; Fixture fixture; QVERIFY2(fixture.Initialize(), qPrintable(fixture.error));
+    C::Fixture native; Fixture fixture; QVERIFY2(fixture.Initialize(false, false), qPrintable(fixture.error));
     for (const auto& member : native.members) if (member.name == "war3map.w3i" || member.name.ends_with(".doo") || member.name.ends_with(".slk") || member.name.starts_with("UI/"))
         QVERIFY(WriteFile(fixture.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
     fixture.project.war3GameRoot_ = native.base.inputs.game;
@@ -35,6 +36,30 @@ void LiveEditorToolsTests::CustomSettingsShareOriginalUndoAndRejectStaleCas() {
     const auto count = fixture.project.mapDataUndoStack_->count();
     auto rejected = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY(!rejected.value("ok").toBool()); QCOMPARE(ErrorCode(rejected), QString("SETTINGS_COUNT_STALE"));
     QCOMPARE(fixture.project.mapDataUndoStack_->count(), count); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->techRestrictions.empty());
+    if (Script::RandomMapInitializationAvailable()) {
+        edit = fixture.Context(); edit["settings_binding"] = summary.value("settings_binding"); edit["dry_run"] = true;
+        edit["operations"] = QJsonDocument::fromJson(QByteArray::fromStdString(C::Fixture::RandomUnitOperationsJson())).array();
+        auto randomPreview = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY2(randomPreview.value("ok").toBool(), qPrintable(Explain(randomPreview)));
+        QVERIFY(randomPreview.value("can_commit").toBool()); QCOMPARE(fixture.project.mapDataUndoStack_->count(), count);
+        edit["dry_run"] = false; auto random = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY2(random.value("ok").toBool(), qPrintable(Explain(random)));
+        QCOMPARE(fixture.project.mapDataUndoStack_->count(), count + 1);
+        QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().number, 7);
+        QVERIFY(!fixture.tools->Invoke("map_custom_settings_edit", edit).value("ok").toBool());
+        fixture.project.mapDataUndoStack_->undo(); QVERIFY(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.empty());
+        fixture.project.mapDataUndoStack_->redo(); QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().rows.front().chance, 30);
+        auto frozen = War3Map::QtProject::CaptureProjectMapCustomSettingsValidation(fixture.project); QVERIFY(frozen.Succeeded());
+        ++fixture.project.luaMapTargetGeneration_;
+        const auto changedTarget = frozen.value->verify(); QVERIFY(!changedTarget.Succeeded());
+        QCOMPARE(QString::fromStdString(changedTarget.diagnostics.front().code), QString("SETTINGS_PROJECT_STALE"));
+        fixture.project.luaMapTarget_.emplace(); ++fixture.project.luaMapTargetGeneration_;
+        request = fixture.Context(); request["section"] = "summary";
+        summary = fixture.tools->Invoke("map_custom_settings_get", request);
+        edit = fixture.Context(); edit["settings_binding"] = summary.value("settings_binding"); edit["dry_run"] = true;
+        edit["operations"] = QJsonDocument::fromJson(QByteArray::fromStdString(C::Fixture::RandomUnitOperationsJson())).array();
+        const auto targetUndo = fixture.project.mapDataUndoStack_->count();
+        auto blocked = fixture.tools->Invoke("map_custom_settings_edit", edit); QVERIFY(!blocked.value("ok").toBool());
+        QCOMPARE(ErrorCode(blocked), QString("SETTINGS_RANDOM_LUA_UNSUPPORTED")); QCOMPARE(fixture.project.mapDataUndoStack_->count(), targetUndo);
+    }
 }
 
 // 地图设置页的科技表与 Agent 工具走同一服务：表单添加、选中删除各一个撤销记录；未应用草稿时拒绝且不改地图。

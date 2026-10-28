@@ -118,6 +118,8 @@ void DirectorySealMissingAndAliasGate() {
     AuxiliaryReferenceContext refs; ObserveAuxiliaryScriptSource(refs, "map/scripts/war3map.j");
     ObserveAuxiliaryScriptSource(refs, "war3map.j"); ObserveAuxiliaryScriptSource(refs, "map/custom/Owned.LUA");
     Need(refs.opaqueScriptSources.size() == 1, "generated JASS excluded, external Lua stays opaque");
+    ObserveAuxiliaryScriptSource(refs, "map/blackbox.AI");
+    Need(refs.opaqueScriptSources.size() == 2, "AI is tracked only by member name and grants no negative reference proof");
 }
 void SaveServiceRechecksSourceBeforeToolchain() {
     Scratch scratch; History h;

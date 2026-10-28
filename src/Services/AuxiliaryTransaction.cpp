@@ -50,7 +50,7 @@ void ObserveAuxiliaryScriptSource(AuxiliaryReferenceContext& context, std::strin
     auto lower = Text::LowerAscii(name);
     std::replace(lower.begin(), lower.end(), '\\', '/');
     if (lower.starts_with("map/")) lower.erase(0, 4);
-    if ((lower.ends_with(".lua") || lower.ends_with(".j"))
+    if ((lower.ends_with(".lua") || lower.ends_with(".j") || lower.ends_with(".ai"))
         && lower != "war3map.j" && lower != "scripts/war3map.j")
         context.opaqueScriptSources.push_back(std::move(name));
 }
