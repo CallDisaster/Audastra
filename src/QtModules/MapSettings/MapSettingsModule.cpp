@@ -653,7 +653,9 @@ void MapSettingsModule::BuildForms() {
         if (!allowed.Succeeded()) readOnly = QString::fromStdString(allowed.diagnostics.front().message);
         else if (!draft_->custom->randomUnits.empty() || !draft_->custom->randomItems.empty())
             readOnly = tr("地图含随机单位/物品表，其初始化尚未接通，科技设置暂只能查看。");
-        techPage_ = new MapTechPage(project_, *draft_, rawFields_ && rawFields_->isChecked(), readOnly,
+        // 随机表编辑等其地图初始化在服务中放行后再开。
+        const QString randomReadOnly = tr("随机单位/物品表的地图初始化尚未接通，暂只能查看。");
+        techPage_ = new MapTechPage(project_, *draft_, rawFields_ && rawFields_->isChecked(), readOnly, randomReadOnly,
             MapTechPage::ProjectCommit(project_, this,
                 [this] { return pending_ ? tr("先应用或放弃上方未应用的地图设置修改。") : QString{}; },
                 [this](const QString& problem) { SetMessage(problem, true); }),

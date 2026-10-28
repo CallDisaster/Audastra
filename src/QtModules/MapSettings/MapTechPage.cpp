@@ -1,6 +1,7 @@
 #include "MapTechPage.h"
 
 #include "EditorProject.h"
+#include "MapRandomTableDialogs.h"
 #include "Icons/IconProvider.h"
 #include "ObjectNames.h"
 #include "ProjectMapCustomSettings.h"
@@ -34,21 +35,23 @@ using Section = Services::MapCustomSettingsSection;
 using Action = Services::MapCustomSettingsAction;
 using ObjectData::ObjectType;
 
-QString RawText(const MapData::SettingsRawcode& id) {
-    QString text;
-    for (const auto byte : id) text.append(QChar(static_cast<char16_t>(static_cast<unsigned char>(byte))));
-    return text;
+constexpr int RandomSectionRole = Qt::UserRole + 1;
+constexpr int RandomIndexRole = Qt::UserRole + 2;
+
+// Y?I?/Y?U?/Y?B? 是按等级/类别随机的占位，不是实际对象。
+bool IsRandomPlaceholder(const QString& raw) {
+    return raw.size() == 4 && raw.at(0) == QChar('Y') && (raw.at(2) == QChar('I') || raw.at(2) == QChar('U') || raw.at(2) == QChar('B'));
 }
 
-std::optional<MapData::SettingsRawcode> RawCode(const QString& text) {
-    if (text.size() != 4) return std::nullopt;
-    MapData::SettingsRawcode id{};
-    for (int i = 0; i < 4; ++i) {
-        const auto unit = text.at(i).unicode();
-        if (unit < 0x20 || unit > 0x7e) return std::nullopt;
-        id[static_cast<std::size_t>(i)] = static_cast<std::byte>(unit);
-    }
-    return id;
+// 随机表名可能是字符串表引用；snapshot 按需取一次供同批解析。
+QString DecodedTableName(QtProject::EditorProject& project, const std::string& name, std::optional<MapDocument>& snapshot) {
+    QString text = QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()));
+    if (name.starts_with("TRIGSTR_")) {
+        if (!snapshot && project.MapEdits()) snapshot.emplace(project.MapEdits()->Snapshot());
+        const auto resolved = snapshot ? snapshot->ResolveString(name) : Result<std::string>{};
+        if (resolved.Succeeded() && resolved.value) text = QString::fromStdString(*resolved.value);
+    } else if (text.toUtf8().toStdString() != name) text = QObject::tr("[名称无法解码]");
+    return text;
 }
 
 // 科技限制的对象可能是单位、物品或技能；只在恰好一类中存在时给出类别。
@@ -215,9 +218,9 @@ QTableWidget* MakeTable(const QString& name, int columns, QWidget* parent) {
 } // namespace
 
 MapTechPage::MapTechPage(QtProject::EditorProject& project, const MapData::MapSettings& settings, bool raw,
-    const QString& readOnly, Commit commit, QWidget* parent)
+    const QString& readOnly, const QString& randomReadOnly, Commit commit, QWidget* parent)
     : QWidget(parent), project_(project), settings_(settings), raw_(raw), editable_(readOnly.isEmpty()),
-      commit_(std::move(commit)) {
+      randomEditable_(readOnly.isEmpty() && randomReadOnly.isEmpty()), commit_(std::move(commit)) {
     setObjectName(QStringLiteral("mapTechPage"));
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -251,9 +254,30 @@ MapTechPage::MapTechPage(QtProject::EditorProject& project, const MapData::MapSe
     randomTitle->setObjectName(QStringLiteral("sectionTitle"));
     randomHeader->addWidget(randomTitle);
     randomHeader->addStretch(1);
-    auto* randomState = new QLabel(tr("只读"));
-    randomState->setObjectName(QStringLiteral("paneHint"));
-    randomHeader->addWidget(randomState);
+    if (randomEditable_) {
+        auto* addUnits = new QPushButton(tr("添加单位组…"));
+        addUnits->setObjectName(QStringLiteral("techRandomAddUnits"));
+        auto* addItems = new QPushButton(tr("添加物品表…"));
+        addItems->setObjectName(QStringLiteral("techRandomAddItems"));
+        editRandom_ = new QPushButton(tr("修改…"));
+        editRandom_->setObjectName(QStringLiteral("techRandomEdit"));
+        deleteRandom_ = new QPushButton(tr("删除"));
+        deleteRandom_->setObjectName(QStringLiteral("techRandomDelete"));
+        for (auto* button : {addUnits, addItems, editRandom_, deleteRandom_}) randomHeader->addWidget(button);
+        editRandom_->setEnabled(false);
+        deleteRandom_->setEnabled(false);
+        connect(addUnits, &QPushButton::clicked, this, [this] { EditRandom(Section::RandomUnits, -1); });
+        connect(addItems, &QPushButton::clicked, this, [this] { EditRandom(Section::RandomItems, -1); });
+        connect(editRandom_, &QPushButton::clicked, this, [this] {
+            if (const auto selected = SelectedRandom()) EditRandom(selected->first, selected->second);
+        });
+        connect(deleteRandom_, &QPushButton::clicked, this, &MapTechPage::DeleteRandom);
+    } else if (editable_) {
+        auto* randomState = new QLabel(tr("只读"));
+        randomState->setObjectName(QStringLiteral("paneHint"));
+        randomState->setToolTip(randomReadOnly);
+        randomHeader->addWidget(randomState);
+    }
     layout->addLayout(randomHeader);
     random_ = new QTreeWidget(this);
     random_->setObjectName(QStringLiteral("techRandomTables"));
@@ -262,6 +286,16 @@ MapTechPage::MapTechPage(QtProject::EditorProject& project, const MapData::MapSe
     random_->setMinimumHeight(240);
     random_->header()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     layout->addWidget(random_, 2);
+    if (randomEditable_) {
+        connect(random_, &QTreeWidget::itemSelectionChanged, this, [this] {
+            const bool selected = SelectedRandom().has_value();
+            editRandom_->setEnabled(selected);
+            deleteRandom_->setEnabled(selected);
+        });
+        connect(random_, &QTreeWidget::itemDoubleClicked, this, [this] {
+            if (const auto selected = SelectedRandom()) EditRandom(selected->first, selected->second);
+        });
+    }
     if (!editable_) {
         // 只读原因放在页顶，先于各表看到。
         auto* reason = new QLabel(readOnly);
@@ -311,7 +345,7 @@ QString MapTechPage::PlayersText(std::uint32_t mask) const {
 }
 
 QString MapTechPage::ObjectText(const MapData::SettingsRawcode& id, QIcon* icon, QString* tooltip) const {
-    const QString raw = RawText(id);
+    const QString raw = SettingsRawText(id);
     *tooltip = raw;
     if (raw_) return raw;
     const auto type = TechObjectType(project_, raw.toStdString(), {ObjectType::Upgrade, ObjectType::Unit, ObjectType::Item, ObjectType::Ability});
@@ -358,12 +392,7 @@ void MapTechPage::FillRandom() {
     const auto& custom = *settings_.custom;
     std::optional<MapDocument> snapshot;
     const auto tableName = [&](const std::string& name, std::int32_t number) {
-        QString text = QString::fromUtf8(name.data(), static_cast<qsizetype>(name.size()));
-        if (name.starts_with("TRIGSTR_")) {
-            if (!snapshot && project_.MapEdits()) snapshot.emplace(project_.MapEdits()->Snapshot());
-            const auto resolved = snapshot ? snapshot->ResolveString(name) : Result<std::string>{};
-            if (resolved.Succeeded() && resolved.value) text = QString::fromStdString(*resolved.value);
-        } else if (text.toUtf8().toStdString() != name) text = tr("[名称无法解码]");
+        const QString text = DecodedTableName(project_, name, snapshot);
         return raw_ ? QStringLiteral("%1 · %2").arg(number).arg(text) : tr("%1（编号 %2）").arg(text).arg(number);
     };
     const auto setObject = [this](QTreeWidgetItem* item, int column, const MapData::SettingsRawcode& id) {
@@ -371,9 +400,8 @@ void MapTechPage::FillRandom() {
             item->setText(column, raw_ ? QStringLiteral("none") : tr("无"));
             return;
         }
-        const QString raw = RawText(id);
-        // Y?I?/Y?U?/Y?B? 是按等级/类别随机的占位，不是实际对象。
-        if (raw.size() == 4 && raw.at(0) == QChar('Y') && (raw.at(2) == QChar('I') || raw.at(2) == QChar('U') || raw.at(2) == QChar('B'))) {
+        const QString raw = SettingsRawText(id);
+        if (IsRandomPlaceholder(raw)) {
             item->setText(column, raw);
             item->setToolTip(column, tr("按等级/类别随机的占位"));
             return;
@@ -384,10 +412,7 @@ void MapTechPage::FillRandom() {
         item->setIcon(column, icon);
         item->setToolTip(column, tooltip);
     };
-    const auto typeName = [this](std::int32_t type) {
-        if (raw_) return QString::number(type);
-        return type == 0 ? tr("单位") : type == 1 ? tr("建筑") : type == 2 ? tr("物品") : tr("未知 %1").arg(type);
-    };
+    const auto typeName = [this](std::int32_t type) { return raw_ ? QString::number(type) : RandomColumnTypeName(type); };
     random_->clear();
     int columns = 1;
     for (const auto& table : custom.randomUnits) columns = std::max(columns, static_cast<int>(table.columnTypes.size()));
@@ -396,8 +421,14 @@ void MapTechPage::FillRandom() {
     random_->setColumnCount(columns + 1);
     random_->setHeaderLabels(headers);
     auto* units = new QTreeWidgetItem(random_, {tr("随机单位组（%1）").arg(custom.randomUnits.size())});
-    for (const auto& table : custom.randomUnits) {
+    const auto markGroup = [](QTreeWidgetItem* group, Section section, std::size_t index) {
+        group->setData(0, RandomSectionRole, static_cast<int>(section));
+        group->setData(0, RandomIndexRole, static_cast<int>(index));
+    };
+    for (std::size_t index = 0; index < custom.randomUnits.size(); ++index) {
+        const auto& table = custom.randomUnits[index];
         auto* group = new QTreeWidgetItem(units, {tableName(table.name, table.number)});
+        markGroup(group, Section::RandomUnits, index);
         for (std::size_t column = 0; column < table.columnTypes.size(); ++column) {
             group->setText(static_cast<int>(column) + 1, typeName(table.columnTypes[column]));
             group->setForeground(static_cast<int>(column) + 1, random_->palette().brush(QPalette::PlaceholderText));
@@ -408,8 +439,10 @@ void MapTechPage::FillRandom() {
         }
     }
     auto* items = new QTreeWidgetItem(random_, {tr("随机物品表（%1）").arg(custom.randomItems.size())});
-    for (const auto& table : custom.randomItems) {
+    for (std::size_t index = 0; index < custom.randomItems.size(); ++index) {
+        const auto& table = custom.randomItems[index];
         auto* group = new QTreeWidgetItem(items, {tableName(table.name, table.number)});
+        markGroup(group, Section::RandomItems, index);
         for (std::size_t set = 0; set < table.sets.size(); ++set) {
             auto* node = new QTreeWidgetItem(group, {tr("物品组 %1").arg(set + 1)});
             for (const auto& entry : table.sets[set]) {
@@ -444,19 +477,19 @@ void MapTechPage::EditRow(Section section, int row) {
     if (row >= 0 && upgrade && row < static_cast<int>(custom.upgrades.size())) {
         const auto& value = custom.upgrades[static_cast<std::size_t>(row)];
         mask = value.playerMask;
-        current = RawText(value.id);
+        current = SettingsRawText(value.id);
         level = value.level;
         availability = value.availability;
     } else if (row >= 0 && !upgrade && row < static_cast<int>(custom.techRestrictions.size())) {
         const auto& value = custom.techRestrictions[static_cast<std::size_t>(row)];
         mask = value.playerMask;
-        current = RawText(value.id);
+        current = SettingsRawText(value.id);
     } else row = -1;
     const QString what = upgrade ? tr("升级可用性") : tr("科技限制");
     const QString label = (row < 0 ? tr("添加%1") : tr("修改%1")).arg(what);
     TechRowDialog dialog(label, settings_.players, mask, choices, current, upgrade, level, availability,
         [&](std::uint32_t chosenMask, const QString& raw, int chosenLevel, int chosenAvailability) -> QString {
-            const auto id = RawCode(raw);
+            const auto id = SettingsRawFromText(raw);
             if (!id) return tr("对象代码无效。");
             Services::MapCustomSettingsCommand command;
             command.section = section;
@@ -498,6 +531,101 @@ void MapTechPage::DeleteRow(Section section) {
         command.index = static_cast<std::uint32_t>(row);
         command.expectedKey = *key.value;
         problem = commit_(std::move(command), upgrade ? tr("删除升级可用性") : tr("删除科技限制"));
+    }
+    problem_->setText(problem);
+    problem_->setVisible(!problem.isEmpty());
+}
+
+QString MapTechPage::ObjectName(const MapData::SettingsRawcode& id) const {
+    const QString raw = SettingsRawText(id);
+    if (IsRandomPlaceholder(raw)) return raw;
+    QIcon icon;
+    QString tooltip;
+    return ObjectText(id, &icon, &tooltip);
+}
+
+std::optional<std::pair<Section, int>> MapTechPage::SelectedRandom() const {
+    for (auto* item = random_->currentItem(); item; item = item->parent()) {
+        const auto section = item->data(0, RandomSectionRole);
+        if (section.isValid()) return std::pair{static_cast<Section>(section.toInt()), item->data(0, RandomIndexRole).toInt()};
+    }
+    return std::nullopt;
+}
+
+void MapTechPage::EditRandom(Section section, int index) {
+    const auto& custom = *settings_.custom;
+    const bool items = section == Section::RandomItems;
+    const int count = static_cast<int>(items ? custom.randomItems.size() : custom.randomUnits.size());
+    if (index >= count) return;
+    const auto position = static_cast<std::size_t>(std::max(index, 0));
+    RandomObjectChoices choices;
+    const auto addChoices = [this](const char* uiType, std::vector<RandomObjectChoice>& target) {
+        for (const auto& choice : ProjectObjectChoices(project_, uiType))
+            target.push_back({choice.rawcode, choice.name + QStringLiteral(" (") + choice.rawcode + QChar(')')});
+    };
+    if (!items) addChoices("unitcode", choices.units);
+    addChoices("itemcode", choices.items);
+    // 新表编号取本分区已用编号之后的第一个。
+    std::int32_t next = 0;
+    if (items) for (const auto& table : custom.randomItems) next = std::max(next, table.number + 1);
+    else for (const auto& table : custom.randomUnits) next = std::max(next, table.number + 1);
+    std::optional<MapDocument> snapshot;
+    const QString shownName = index >= 0
+        ? DecodedTableName(project_, items ? custom.randomItems[position].name : custom.randomUnits[position].name, snapshot)
+        : (items ? tr("物品表 %1") : tr("单位组 %1")).arg(next);
+    const QString label = index < 0 ? (items ? tr("添加随机物品表") : tr("添加随机单位组"))
+                                    : (items ? tr("修改随机物品表") : tr("修改随机单位组"));
+    const auto submit = [&](Services::MapCustomSettingsValue value, bool keepName) -> QString {
+        Services::MapCustomSettingsCommand command;
+        command.section = section;
+        command.keepName = keepName;
+        if (index < 0) {
+            command.action = Action::Append;
+            command.expectedCount = static_cast<std::uint32_t>(count);
+        } else {
+            const Services::MapCustomSettingsValue previous = items ? Services::MapCustomSettingsValue{custom.randomItems[position]}
+                                                                    : Services::MapCustomSettingsValue{custom.randomUnits[position]};
+            const auto key = Services::MapCustomSettingsEditing::RecordKey(section, previous, settings_.formatVersion);
+            if (!key.Succeeded()) return QString::fromStdString(key.diagnostics.front().message);
+            command.action = Action::Update;
+            command.number = items ? custom.randomItems[position].number : custom.randomUnits[position].number;
+            command.expectedKey = *key.value;
+        }
+        command.value = std::move(value);
+        return commit_(std::move(command), label);
+    };
+    const RandomObjectName nameOf = [this](const MapData::SettingsRawcode& id) { return ObjectName(id); };
+    if (items) {
+        RandomItemTableDialog dialog(index < 0 ? std::nullopt : std::optional{custom.randomItems[position]}, shownName, next, choices,
+            nameOf, [&](const MapData::MapRandomItemTable& table, bool keepName) { return submit(table, keepName); }, window());
+        dialog.exec();
+    } else {
+        RandomUnitTableDialog dialog(index < 0 ? std::nullopt : std::optional{custom.randomUnits[position]}, shownName, next, choices,
+            nameOf, [&](const MapData::MapRandomUnitTable& table, bool keepName) { return submit(table, keepName); }, window());
+        dialog.exec();
+    }
+}
+
+void MapTechPage::DeleteRandom() {
+    const auto selected = SelectedRandom();
+    if (!selected) return;
+    const auto& custom = *settings_.custom;
+    const auto [section, index] = *selected;
+    const bool items = section == Section::RandomItems;
+    if (index < 0 || index >= static_cast<int>(items ? custom.randomItems.size() : custom.randomUnits.size())) return;
+    const auto position = static_cast<std::size_t>(index);
+    const Services::MapCustomSettingsValue previous = items ? Services::MapCustomSettingsValue{custom.randomItems[position]}
+                                                            : Services::MapCustomSettingsValue{custom.randomUnits[position]};
+    const auto key = Services::MapCustomSettingsEditing::RecordKey(section, previous, settings_.formatVersion);
+    QString problem;
+    if (!key.Succeeded()) problem = QString::fromStdString(key.diagnostics.front().message);
+    else {
+        Services::MapCustomSettingsCommand command;
+        command.section = section;
+        command.action = Action::Delete;
+        command.number = items ? custom.randomItems[position].number : custom.randomUnits[position].number;
+        command.expectedKey = *key.value;
+        problem = commit_(std::move(command), items ? tr("删除随机物品表") : tr("删除随机单位组"));
     }
     problem_->setText(problem);
     problem_->setVisible(!problem.isEmpty());

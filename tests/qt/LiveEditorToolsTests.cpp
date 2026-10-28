@@ -9,6 +9,7 @@
 #include "McpMapDataTools.h"
 #include "McpMapCustomSettingsTools.h"
 #include "MapSettingsModule.h"
+#include "MapTechPage.h"
 #include "Theme/ThemeManager.h"
 #include "../support/MapCustomSettingsFixture.h"
 #include "McpMapRuntimeTools.h"
@@ -53,6 +54,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -345,6 +347,7 @@ private slots:
     void CustomSettingsShareOriginalUndoAndRejectStaleCas();
     void SettingsPageEditsTechnologyThroughSharedService();
     void SettingsPageListsRandomTablesReadOnly();
+    void TechPageBuildsRandomTableCommands();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
     void ImportMetadataUsesSourceAndCurrentAssetOverlay();
