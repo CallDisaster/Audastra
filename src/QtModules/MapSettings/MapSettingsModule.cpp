@@ -646,15 +646,19 @@ void MapSettingsModule::BuildForms() {
     auto* tech = addForm(tr("科技与随机表"));
     if (draft_->custom) {
         // 科技行经共用自定义设置服务逐条提交（各一个撤销记录），与上方草稿的“应用”分开；草稿未应用时不接受。
-        QString readOnly;
-        const auto* session = project_.MapEdits();
-        const auto allowed = session ? Services::MapCustomSettingsEditing::WriteQualification(session->Snapshot())
-            : Status::Failure("Map.CustomSettings", "SETTINGS_DOCUMENT_REQUIRED", tr("当前没有打开地图。").toStdString());
-        if (!allowed.Succeeded()) readOnly = QString::fromStdString(allowed.diagnostics.front().message);
-        else if (!draft_->custom->randomUnits.empty() || !draft_->custom->randomItems.empty())
-            readOnly = tr("地图含随机单位/物品表，其初始化尚未接通，科技设置暂只能查看。");
-        // 随机表编辑等其地图初始化在服务中放行后再开。
-        const QString randomReadOnly = tr("随机单位/物品表的地图初始化尚未接通，暂只能查看。");
+        // 随机表资格看实际保存目标（经典 Lua 地图的 W3I 仍记为 JASS）；地图已有随机表时，科技修改也要它通过。
+        QString readOnly, randomReadOnly;
+        if (const auto* session = project_.MapEdits()) {
+            const auto snapshot = session->Snapshot();
+            const auto allowed = Services::MapCustomSettingsEditing::WriteQualification(snapshot);
+            const auto random = Services::MapCustomSettingsEditing::RandomWriteQualification(snapshot,
+                project_.luaMapTarget_ ? &*project_.luaMapTarget_ : nullptr);
+            if (!allowed.Succeeded()) readOnly = QString::fromStdString(allowed.diagnostics.front().message);
+            if (!random.Succeeded()) randomReadOnly = QString::fromStdString(random.diagnostics.front().message);
+            if (readOnly.isEmpty() && !randomReadOnly.isEmpty()
+                && (!draft_->custom->randomUnits.empty() || !draft_->custom->randomItems.empty()))
+                readOnly = randomReadOnly;
+        } else readOnly = tr("当前没有打开地图。");
         techPage_ = new MapTechPage(project_, *draft_, rawFields_ && rawFields_->isChecked(), readOnly, randomReadOnly,
             MapTechPage::ProjectCommit(project_, this,
                 [this] { return pending_ ? tr("先应用或放弃上方未应用的地图设置修改。") : QString{}; },

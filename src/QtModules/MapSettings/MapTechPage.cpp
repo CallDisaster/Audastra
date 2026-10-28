@@ -651,7 +651,7 @@ MapTechPage::Commit MapTechPage::ProjectCommit(QtProject::EditorProject& project
         auto plan = Services::MapCustomSettingsEditing::Prepare(current, request, *validation.value);
         if (!plan.Succeeded()) return FirstProblem(plan.diagnostics);
         if (!plan.value->HasChanges()) return {};
-        if (!plan.value->CanCommit()) return QObject::tr("地图含随机单位/物品表，其初始化尚未接通，科技设置暂只能查看。");
+        if (!plan.value->CanCommit()) return QObject::tr("当前构建不支持随机单位/物品表初始化，此修改暂不能提交。");
         auto prepared = std::make_shared<const Services::PreparedMapCustomSettingsEdit>(std::move(*plan.value));
         auto checks = std::make_shared<const Services::MapCustomSettingsValidation>(std::move(*validation.value));
         // 发布会发出地图变化并重建设置页（含发起本次提交的表单与按钮），推迟到当前调用栈结束后。

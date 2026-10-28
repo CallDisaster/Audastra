@@ -185,16 +185,20 @@ inline bool OpenRandomTableMap(AudastraTest::CustomSettings::Fixture& native, Fi
     return fixture.project.MapEdits() != nullptr;
 }
 
-// 含随机表的地图：随机表按组只读列出（名称、列类型、概率、对象），初始化接通前科技表也只读。
-void LiveEditorToolsTests::SettingsPageListsRandomTablesReadOnly() {
-    AudastraTest::CustomSettings::Fixture native; Fixture fixture; QVERIFY2(fixture.Initialize(), qPrintable(fixture.error));
+// 含随机表的 JASS 地图：随机表按组列出（名称、列类型、概率、对象）并经共用服务整表修改，一次一个撤销；
+// 保存目标为 Lua 时随机表初始化不受支持，整页只读并在页顶给出原因。
+void LiveEditorToolsTests::SettingsPageEditsRandomTables() {
+    AudastraTest::CustomSettings::Fixture native; Fixture fixture; QVERIFY2(fixture.Initialize(false, false), qPrintable(fixture.error));
     QVERIFY(OpenRandomTableMap(native, fixture));
+    const QString capture = qEnvironmentVariable("AUDASTRA_FORM_CAPTURE_DIR");
+    War3Map::UiKit::ThemeManager theme; // 截图时先套主题再建页，列表里的弱化色取自当前主题
+    if (!capture.isEmpty()) theme.ApplyTheme(QStringLiteral("graphite"));
     War3Map::Modules::MapSettingsModule module(fixture.project);
-    auto* page = module.Widget()->findChild<QWidget*>(QStringLiteral("mapTechPage"));
-    QVERIFY(page);
-    QVERIFY(page->findChild<QPushButton*>(QStringLiteral("techUpgradesAdd"))->isHidden());
-    QVERIFY(!page->findChild<QPushButton*>(QStringLiteral("techRandomAddUnits")));
-    auto* tree = page->findChild<QTreeWidget*>(QStringLiteral("techRandomTables"));
+    const auto page = [&module] { return module.Widget()->findChild<QWidget*>(QStringLiteral("mapTechPage")); };
+    QVERIFY(page());
+    QVERIFY(!page()->findChild<QPushButton*>(QStringLiteral("techUpgradesAdd"))->isHidden());
+    QVERIFY(page()->findChild<QPushButton*>(QStringLiteral("techRandomAddUnits")));
+    auto* tree = page()->findChild<QTreeWidget*>(QStringLiteral("techRandomTables"));
     QVERIFY(tree && tree->topLevelItemCount() == 2);
     auto* units = tree->topLevelItem(0);
     QCOMPARE(units->childCount(), 1);
@@ -211,9 +215,7 @@ void LiveEditorToolsTests::SettingsPageListsRandomTablesReadOnly() {
     QCOMPARE(drops->child(0)->childCount(), 2);
     QCOMPARE(drops->child(0)->child(0)->toolTip(1), QStringLiteral("i001"));
     QCOMPARE(drops->child(0)->child(1)->text(0), QStringLiteral("70%"));
-    if (const auto directory = qEnvironmentVariable("AUDASTRA_FORM_CAPTURE_DIR"); !directory.isEmpty()) {
-        War3Map::UiKit::ThemeManager theme;
-        theme.ApplyTheme(QStringLiteral("graphite"));
+    if (!capture.isEmpty()) {
         auto* widget = module.Widget();
         widget->resize(1100, 760);
         widget->show();
@@ -221,9 +223,51 @@ void LiveEditorToolsTests::SettingsPageListsRandomTablesReadOnly() {
         sections->setCurrentItem(sections->findItems(QStringLiteral("科技与随机表"), Qt::MatchExactly).front());
         tree->expandAll();
         QTest::qWait(100);
-        widget->grab().save(directory + QStringLiteral("/tech-random.png"));
+        widget->grab().save(capture + QStringLiteral("/tech-random.png"));
         widget->hide();
     }
+
+    // 经页面表单把 Camp 第二行概率改为 35：实际提交，一个撤销记录。
+    const auto undo = fixture.project.mapDataUndoStack_->count();
+    QString problem;
+    bool driven = false;
+    QTimer driver;
+    driver.setInterval(20);
+    QObject::connect(&driver, &QTimer::timeout, [&] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog || dialog->objectName() != QStringLiteral("randomUnitTableDialog")) return;
+        driver.stop();
+        dialog->findChild<QTableWidget*>(QStringLiteral("randomUnitRows"))->item(1, 0)->setText(QStringLiteral("35"));
+        dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Ok)->click();
+        driven = true;
+        if (dialog->isVisible()) {
+            problem = dialog->findChild<QLabel*>(QStringLiteral("formProblem"))->text();
+            dialog->reject();
+        }
+    });
+    driver.start();
+    tree->setCurrentItem(camp);
+    page()->findChild<QPushButton*>(QStringLiteral("techRandomEdit"))->click();
+    QVERIFY(driven);
+    QVERIFY2(problem.isEmpty(), qPrintable(problem));
+    QTRY_COMPARE(fixture.project.mapDataUndoStack_->count(), undo + 1);
+    QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().rows[1].chance, 35);
+    QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().name, std::string("Camp"));
+    QTRY_COMPARE(page()->findChild<QTreeWidget*>(QStringLiteral("techRandomTables"))->topLevelItem(0)->child(0)->child(1)->text(0),
+        QStringLiteral("35%"));
+    fixture.project.mapDataUndoStack_->undo();
+    QCOMPARE(fixture.project.MapEdits()->Snapshot().Settings()->custom->randomUnits.front().rows[1].chance, 40);
+
+    // 选了 Lua 保存目标：随机表与科技表都只读，原因在页顶。
+    fixture.project.luaMapTarget_.emplace();
+    ++fixture.project.luaMapTargetGeneration_;
+    War3Map::Modules::MapSettingsModule luaModule(fixture.project);
+    auto* luaPage = luaModule.Widget()->findChild<QWidget*>(QStringLiteral("mapTechPage"));
+    QVERIFY(luaPage);
+    QVERIFY(luaPage->findChild<QPushButton*>(QStringLiteral("techUpgradesAdd"))->isHidden());
+    QVERIFY(!luaPage->findChild<QPushButton*>(QStringLiteral("techRandomAddUnits")));
+    auto* reason = luaPage->findChild<QLabel*>(QStringLiteral("techReadOnlyReason"));
+    QVERIFY(reason && reason->text().contains(QStringLiteral("Lua")));
 }
 
 // 随机表表单：修改已有单位组（编号与列不可改，名称不变沿用原编码）、新建物品表、删除，各生成一条带 CAS 的服务命令。

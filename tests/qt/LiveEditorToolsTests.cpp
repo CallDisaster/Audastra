@@ -346,7 +346,7 @@ private slots:
     void TextureSlotPreparationRejectsConcurrentRevision();
     void CustomSettingsShareOriginalUndoAndRejectStaleCas();
     void SettingsPageEditsTechnologyThroughSharedService();
-    void SettingsPageListsRandomTablesReadOnly();
+    void SettingsPageEditsRandomTables();
     void TechPageBuildsRandomTableCommands();
     void BoundaryDraftSavesAndReopensAsProject_data();
     void BoundaryDraftSavesAndReopensAsProject();
