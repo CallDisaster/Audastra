@@ -67,6 +67,8 @@ CLI `map-edit-save` 可附以下选项，也可只提交一项运行库决定而
 
 非关闭模式须明确批准及固定包身份；关闭时不传包和批准。用途默认normal，内部包仍只能进入独立、全新的内部验收/测试副本。示例中的包身份须来自当前安装目录，不能用占位SHA执行。
 
+显式`enabled`模式即有运行库启动依赖，即使地图尚无界面调用，两个注入后端也会通过函数库登记选择配套客户端一次；不向作者脚本添加伪调用，仍核对实际消费摘要。`automatic`没有真实依赖、以及`disabled`模式均不因此强制注入。缺失、旧版或重复客户端仍拒绝保存。
+
 独立MCP `save_map_edit_candidate` 使用同一Core服务，参数为 `runtime: {mode, package_sha256, approve_native_runtime}` 和 `runtime_purpose`。决定可独立提交，或伴随原来的一项有界领域编辑；不会把两种普通领域编辑合并放行。包路径与分发许可只由宿主固定安装目录提供，不接受请求字段。批准与当前源地图SHA绑定在同一次保存任务内，不从归档自动继承；失败不写部分设置/成员。两入口回执均区分实际 `runtime_packaged` 与保存用途，不报告游戏通过。
 
 活动编辑器的 `editor_save_map` 可显式传 `runtime_purpose: "internal_validation"`，只允许新的非原地路径。宿主仍调用MainWindow共用保存处理器，输出不会切换工程基线；不传该字段仍是普通保存。内部验收探针 `--probe-runtime-save <new-map>` 配合 `--open-map`、`--runtime-source-sha256` 和 `--runtime-package-sha256`，在专用无界面编辑器进程中复用同一批准事务和保存处理器；它不改作者触发器，不替代可见UI、原版编辑器或游戏验收。

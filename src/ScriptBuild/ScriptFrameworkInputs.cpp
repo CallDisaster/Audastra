@@ -482,7 +482,7 @@ Status ValidateFrameworkIncludes(const ScriptFrameworkInputs& inputs, const Scri
 
 Result<std::string> InjectScriptFramework(std::string_view script, const ScriptFrameworkInputs& inputs,
     std::vector<std::filesystem::path>& injected, Jass::SourceLexicalView* lexicalView,
-    std::vector<std::string>* sourceSha256) {
+    std::vector<std::string>* sourceSha256, std::span<const std::string_view> requiredIdentifiers) {
     auto valid = ValidateFrameworkSourceEncoding(script, inputs.profile.mainSourceDirectory / "war3map.j", inputs.profile.mainEncoding,
         FrameworkDirectivePolicy(inputs));
     if (!valid.Succeeded()) return Failed<std::string>(valid);
@@ -491,6 +491,7 @@ Result<std::string> InjectScriptFramework(std::string_view script, const ScriptF
     auto tokens = Jass::detail::LexPp(mainView.value->text, Text::SourceEncoding::Utf8);
     if (!tokens.Succeeded()) return {{}, std::move(tokens.diagnostics)};
     std::unordered_set<std::string_view> identifiers;
+    identifiers.insert(requiredIdentifiers.begin(), requiredIdentifiers.end());
     for (const auto& token : *tokens.value)
         if (token.kind == Jass::detail::PpKind::Identifier) identifiers.insert(token.text);
     if (auto missing = CheckMissingInjectionLibraries(inputs.injection, identifiers); !missing.Succeeded())

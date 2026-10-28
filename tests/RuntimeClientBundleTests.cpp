@@ -21,6 +21,15 @@ int wmain(int argc, wchar_t** argv) {
             table, diagnostics, &files, &hashes);
         require(files.size() == 1 && hashes == std::vector<std::string>{*hash.value}, "consumer records exactly the generated client bytes");
         require(output.find("audastraui.") != output.npos && output.find("bindtable") != output.npos, "current combined UI client consumed");
+        const std::string unused = "function main takes nothing returns nothing\nendfunction\n";
+        std::vector<std::filesystem::path> explicitFiles; std::vector<std::string> explicitHashes;
+        constexpr std::string_view required[]{"AudastraUIIsReady"};
+        const auto explicitOutput = Script::InjectCode(unused, table, diagnostics, &explicitFiles, &explicitHashes, required);
+        require(explicitFiles.size() == 1 && explicitHashes == hashes && explicitOutput.starts_with(unused),
+            "explicit dependency consumes exact current client once without adding a fake author call");
+        std::vector<std::filesystem::path> unusedFiles;
+        require(Script::InjectCode(unused, table, diagnostics, &unusedFiles) == unused && unusedFiles.empty(),
+            "unused automatic input remains unchanged");
         if (argc == 4) {
             const std::wstring identity(argv[3]);
             const Services::MapRuntimePackageSource source{argv[2], std::string(identity.begin(), identity.end()), false};

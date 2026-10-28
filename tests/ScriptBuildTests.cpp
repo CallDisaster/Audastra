@@ -324,8 +324,9 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
     WriteText(tool / "compiler" / "jass" / "24" / "blizzard.j", "// original synthetic base\n");
     const std::string client = "library AudastraJapi\nglobals\nstring AjExpectedRuntimeIdentity = \"\"\nendglobals\n"
         "function AjInitialize takes nothing returns boolean\nreturn true\nendfunction\n"
+        "function AudastraUIIsReady takes nothing returns boolean\nreturn true\nendfunction\n"
         "function AjStartTestDiagnostics takes nothing returns nothing\nendfunction\nendlibrary\n";
-    WriteText(jass / "Client.cfg", "AjInitialize\n"); WriteText(jass / "Client.j", client);
+    WriteText(jass / "Client.cfg", "AjInitialize\nAudastraUIIsReady\n"); WriteText(jass / "Client.j", client);
     const auto hash = Sha256(std::as_bytes(std::span(client)));
     const auto layout = ResolveScriptToolchainLayout({tool,24,127});
     Require(layout.Succeeded() && hash.Succeeded(), "runtime pipeline has a real synthetic source layout");
@@ -360,6 +361,17 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
     const auto unused = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
     Require(unused.Succeeded() && validated == 0 && unused.injectedSourceSha256.empty()
         && VerifyMapRuntimeBoot(unused.script, false).Succeeded(), "unused maps neither inject nor authorize a runtime package");
+    WriteText(jass / "Client.j", client);
+    boot.onlyIfUsed = false; options.workDir = root / "explicit-empty"; validated = 0;
+    const auto explicitEmpty = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
+    Require(explicitEmpty.Succeeded() && explicitEmpty.syntaxChecked && validated == 1
+        && explicitEmpty.injectedSourceSha256 == std::vector<std::string>{*hash.value}
+        && VerifyMapRuntimeBoot(explicitEmpty.script, true).Succeeded(),
+        "explicit runtime mode injects verified bootstrap client even before any author UI call exists");
+    boot.enabled = false; options.workDir = root / "disabled-empty"; validated = 0;
+    const auto disabledEmpty = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
+    Require(disabledEmpty.Succeeded() && validated == 0 && disabledEmpty.injectedSourceSha256.empty(),
+        "disabled runtime does not select client dependency");
 }
 
 // UI 根选 YDWE 根或其 ui 目录都能找到 compiler/；没有 ui/config 标记的目录不向上查找。
@@ -1272,6 +1284,12 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
         const auto actual = InjectScriptFramework("call InjectedCall()\n", *captured.value, actualPaths, nullptr, &actualHashes);
         Require(actual.Succeeded() && actualHashes == injected.injectedSourceSha256,
             "framework injection and completed pipeline agree on consumed source identity");
+        constexpr std::string_view required[]{"InjectedCall"};
+        actualPaths.clear(); actualHashes.clear();
+        const std::string noCall = "function main takes nothing returns nothing\nendfunction\n";
+        const auto explicitOnly = InjectScriptFramework(noCall, *captured.value, actualPaths, nullptr, &actualHashes, required);
+        Require(explicitOnly.Succeeded() && explicitOnly.value->starts_with(noCall) && actualPaths.size() == 1
+            && actualHashes == injected.injectedSourceSha256, "framework honors explicit dependency without fake script calls");
     }
     std::vector<std::filesystem::path> paths;
     const std::string ignored = "// InjectedCall\nglobals\nstring s=\"InjectedCall\"\nendglobals\ncall InjectedCallSuffix()\n";

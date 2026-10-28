@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -55,8 +56,10 @@ void AppendMissingIncludeHints(std::vector<Diagnostic>& diagnostics, std::size_t
     const std::vector<std::filesystem::path>& jassDirs);
 
 // 返回注入后的脚本；追加的文件按路径排序，每个文件后补 CRLF。
+// requiredIdentifiers 是宿主明确选择的库依赖，不向作者脚本插入伪调用。
 [[nodiscard]] std::string InjectCode(std::string script, const InjectTable& table, std::vector<Diagnostic>& diagnostics,
-    std::vector<std::filesystem::path>* injected = nullptr, std::vector<std::string>* sourceSha256 = nullptr);
+    std::vector<std::filesystem::path>* injected = nullptr, std::vector<std::string>* sourceSha256 = nullptr,
+    std::span<const std::string_view> requiredIdentifiers = {});
 
 struct ScriptInjectionSources;
 // 代码编辑器只读检查使用同一完整标识符匹配与所选来源，全文由捕获服务拥有。
