@@ -172,8 +172,9 @@ public:
 
     // 将源归档逐字节复制到独占打开的候选句柄，仅追加替换已列出的现有成员。
     // 原数据区、哈希表及匿名 block 不移动；不能新增成员或改变清单。
+    // allowFullyNamed 显式选择同样的原字节保留路径处理完整命名归档，不解码未改成员。
     [[nodiscard]] Status WriteOpaquePreservingPatchToHandle(
-        void* outputHandle, std::span<const MpqBuildFile> replacements) const;
+        void* outputHandle, std::span<const MpqBuildFile> replacements, bool allowFullyNamed = false) const;
     // 共用追加写出器的纯输入准备校验；不复制/发布归档，不证明写权限或回读结果。
     [[nodiscard]] Status ValidateOpaquePreservingPatchInputs(
         std::span<const MpqBuildFile> replacements) const;
@@ -202,7 +203,7 @@ public:
 
 private:
     [[nodiscard]] Result<std::vector<std::uint32_t>> PrepareOpaquePreservingPatchInputs(
-        std::span<const MpqBuildFile> replacements) const;
+        std::span<const MpqBuildFile> replacements, bool allowFullyNamed = false) const;
     class Impl;
     explicit MpqArchive(std::unique_ptr<Impl> impl);
     [[nodiscard]] static Result<MpqArchive> OpenParsed(

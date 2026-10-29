@@ -1035,11 +1035,11 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
 }
 
 Result<std::vector<std::uint32_t>> MpqArchive::PrepareOpaquePreservingPatchInputs(
-    std::span<const MpqBuildFile> replacements) const {
+    std::span<const MpqBuildFile> replacements, bool allowFullyNamed) const {
     try {
         const auto inventory = ListFilesPreservingOpaque();
         if (!inventory.Succeeded()) return Result<std::vector<std::uint32_t>>{std::nullopt, inventory.diagnostics};
-        if (inventory.value->size() >= FileCount()) {
+        if (!allowFullyNamed && inventory.value->size() >= FileCount()) {
             return Result<std::vector<std::uint32_t>>::Failure("Mpq", "OPAQUE_PATCH_NOT_REQUIRED", "此归档没有匿名成员，应使用完整保存路径。");
         }
         std::map<std::string, std::uint32_t> namedBlocks;
@@ -1086,13 +1086,13 @@ Status MpqArchive::ValidateOpaquePreservingPatchInputs(std::span<const MpqBuildF
 }
 
 Status MpqArchive::WriteOpaquePreservingPatchToHandle(
-    void* outputHandle, std::span<const MpqBuildFile> replacements) const {
+    void* outputHandle, std::span<const MpqBuildFile> replacements, bool allowFullyNamed) const {
     try {
         const HANDLE output = static_cast<HANDLE>(outputHandle);
         if (output == nullptr || output == INVALID_HANDLE_VALUE) {
             return Status::Failure("Mpq", "OUTPUT_HANDLE_INVALID", "候选文件句柄无效。");
         }
-        const auto prepared = PrepareOpaquePreservingPatchInputs(replacements);
+        const auto prepared = PrepareOpaquePreservingPatchInputs(replacements, allowFullyNamed);
         if (!prepared.Succeeded()) return Status{prepared.diagnostics};
         const std::uint64_t tableBytes = static_cast<std::uint64_t>(impl_->blockTable.size()) * kBlockEntrySize;
         const auto setPosition = [output](std::uint64_t offset) {
