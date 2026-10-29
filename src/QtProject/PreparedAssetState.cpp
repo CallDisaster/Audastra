@@ -48,26 +48,26 @@ Result<std::shared_ptr<PreparedAssetStateEdit>> EditorProject::PrepareAssetState
 Status EditorProject::PublishPreparedAssetState(PreparedAssetStateEdit& prepared) {
     QPointer<EditorProject> guard;
     try {
-    if (prepared.owner_ != this || archiveSession_.get() != prepared.archive_ || directorySnapshot_.get() != prepared.directory_
-        || sourceArchivePath_ != prepared.sourcePath_ || projectFilePath_ != prepared.projectPath_
-        || pendingImports_ != prepared.before_.imports || assetEdits_ != prepared.before_.edits
-        || runtimeApprovedPackageSha256_ != prepared.before_.runtimeApprovedPackageSha256
-        || !editTrackingReady_ || editTrackingFailed_ || sourceChangeSuspected_ || sourceChangeConfirmed_)
-        return Status::Failure("Asset", "ASSET_SOURCE_STALE", "候选资源的来源或前值已变化，未发布。");
-    if (std::any_of(prepared.after_.imports.begin(), prepared.after_.imports.end(), [](const auto& entry) { return !entry.ownedPayload; })) {
-        const auto scopes = CaptureEditScopes(&prepared.after_);
-        if (!scopes || *scopes != prepared.observation_.Scopes())
-            return Status::Failure("Asset", "ASSET_SOURCE_STALE", "候选磁盘导入在准备后发生变化，未发布。");
-    }
-    struct State { EditorProject* project; AssetState* candidate; } state{this, &prepared.after_};
-    guard = this;
-    const auto published = editRevision_.CommitObservation(std::move(prepared.observation_), [](void* opaque) noexcept {
-        auto& state = *static_cast<State*>(opaque);
-        state.project->pendingImports_.swap(state.candidate->imports);
-        state.project->assetEdits_.swap(state.candidate->edits);
-        state.project->runtimeApprovedPackageSha256_.swap(state.candidate->runtimeApprovedPackageSha256);
-    }, &state);
-    if (!published.Succeeded()) return published;
+        if (prepared.owner_ != this || archiveSession_.get() != prepared.archive_ || directorySnapshot_.get() != prepared.directory_
+            || sourceArchivePath_ != prepared.sourcePath_ || projectFilePath_ != prepared.projectPath_
+            || pendingImports_ != prepared.before_.imports || assetEdits_ != prepared.before_.edits
+            || runtimeApprovedPackageSha256_ != prepared.before_.runtimeApprovedPackageSha256
+            || !editTrackingReady_ || editTrackingFailed_ || sourceChangeSuspected_ || sourceChangeConfirmed_)
+            return Status::Failure("Asset", "ASSET_SOURCE_STALE", "候选资源的来源或前值已变化，未发布。");
+        if (std::any_of(prepared.after_.imports.begin(), prepared.after_.imports.end(), [](const auto& entry) { return !entry.ownedPayload; })) {
+            const auto scopes = CaptureEditScopes(&prepared.after_);
+            if (!scopes || *scopes != prepared.observation_.Scopes())
+                return Status::Failure("Asset", "ASSET_SOURCE_STALE", "候选磁盘导入在准备后发生变化，未发布。");
+        }
+        struct State { EditorProject* project; AssetState* candidate; } commitState{this, &prepared.after_};
+        guard = this;
+        const auto published = editRevision_.CommitObservation(std::move(prepared.observation_), [](void* opaque) noexcept {
+            auto& state = *static_cast<State*>(opaque);
+            state.project->pendingImports_.swap(state.candidate->imports);
+            state.project->assetEdits_.swap(state.candidate->edits);
+            state.project->runtimeApprovedPackageSha256_.swap(state.candidate->runtimeApprovedPackageSha256);
+        }, &commitState);
+        if (!published.Succeeded()) return published;
     } catch (...) {
         return Status::Failure("Asset", "ASSET_REVISION_PREPARE_FAILED", "发布前无法复核候选资源，未修改资源。");
     }
