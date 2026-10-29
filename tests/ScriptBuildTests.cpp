@@ -1202,7 +1202,9 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     const auto dependency = ui / "base/jass/dep.j";
     std::filesystem::create_directories(map);
     WriteText(ui / "config", "base\n");
-    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
+    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\nscriptcode=1,0,0,Code,string\n");
+    WriteText(ui / "base/action.txt", "[OriginalUse]\n[[.args]]\ntype=integer\n");
+    WriteText(ui / "base/call.txt", "[YDWEForLoopLocVarIndex]\nreturns=integer\n[[.args]]\ntype=scriptcode\n");
     WriteText(ui / "base/jass/Fixture.cfg", "UnrelatedEntry\n");
     WriteText(ui / "base/jass/Fixture.j", "// original modern library\n");
     WriteText(tool / "compiler/include/WaveForce.i", "#define FORCE_VALUE 11\n");
@@ -1267,6 +1269,22 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     review = query(); Require(review.Succeeded() && !review.value->complete, "source-directory shadow cannot stand in for a fresh save workspace");
     doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"}; review = query();
     Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN") != std::string::npos, "modern AI include never read");
+    std::filesystem::remove(map / "dep.j");
+    doc.wct.customCode = {};
+    const auto owner = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "LogicalOwner"); Require(owner.Succeeded(), "logical argument owner");
+    op.parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *owner.value, {}});
+    auto added = Trigger::TriggerDocumentEditor::AppendRootEca(doc, *catalog.value, *owner.value, Trigger::UiDefinitionKind::Action, "OriginalUse");
+    Require(added.Succeeded(), "logical name action");
+    const auto outer = doc.argumentNodes.back().id;
+    const auto called = Trigger::TriggerDocumentEditor::AppendArgumentCall(doc, *catalog.value, outer, "integer", "YDWEForLoopLocVarIndex");
+    Require(called.Succeeded(), "production local-name lowering");
+    doc.argumentNodes.back().type = 3; doc.argumentNodes.back().value = Trigger::RawText{"原创局部名"};
+    review = query(); Require(review.Succeeded() && review.value->complete, "logical name is audited while its production JASS is ASCII");
+    confirm(*review.value);
+    Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "lowered name does not become unknown executable code");
+    doc.argumentNodes.back().value = Trigger::RawText{"gg_trg_Target"};
+    review = query(); Require(review.Succeeded() && review.value->complete
+        && std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& b) { return b.referenced; }), "all raw parameter references still scanned despite production lowering");
 }
 void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto tool = root / "framework", ui = tool / "share" / "mpq", map = root / "map-source";
