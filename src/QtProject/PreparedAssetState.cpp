@@ -1,7 +1,6 @@
 #include "PreparedAssetState.h"
 #include "PendingImportPayload.h"
 #include <QPointer>
-#include <QSet>
 #include <set>
 #include <algorithm>
 
@@ -27,19 +26,8 @@ Result<std::shared_ptr<PreparedAssetStateEdit>> EditorProject::PrepareAssetState
         if (sealedReceipt) for (const auto& entry : sealedReceipt->imports) if (entry.ownedPayload) trustedBodies.insert(entry.ownedPayload.get());
         for (auto& entry : candidate.imports) if (entry.ownedPayload && !trustedBodies.contains(entry.ownedPayload.get()))
             entry.ownedPayload = std::make_shared<const std::vector<std::byte>>(*entry.ownedPayload);
-        QSet<QString> importPaths, editPaths;
-        for (const auto& entry : candidate.imports) {
-            const auto problem = CheckAssetPath(entry.archivePath);
-            if (!problem.isEmpty() || importPaths.contains(AssetKey(entry.archivePath)))
-                return Output::Failure("Asset", "ASSET_REVISION_PREPARE_FAILED", "候选导入路径无效或重复：" + entry.archivePath.toStdString());
-            importPaths.insert(AssetKey(entry.archivePath));
-        }
-        for (const auto& entry : candidate.edits) {
-            if (!CheckAssetPath(entry.from).isEmpty() || (!entry.to.isEmpty() && !CheckAssetPath(entry.to).isEmpty())
-                || editPaths.contains(AssetKey(entry.from)))
-                return Output::Failure("Asset", "ASSET_REVISION_PREPARE_FAILED", "候选资源编辑路径无效或重复。");
-            editPaths.insert(AssetKey(entry.from));
-        }
+        // 路径规则由各入口自己的准入负责（内存导入在 PrepareImportPayloads，磁盘导入与编辑器管理的成员由保存门禁拒绝）；
+        // 这里不另加一套，否则先进队列、保存时说明原因的流程和有歧义状态的显示都会被提前拦掉。
         std::vector<std::pair<std::size_t, std::string>> diskFingerprints;
         for (std::size_t i = 0; i < candidate.imports.size(); ++i) {
             auto hash = FingerprintPendingImport(candidate.imports[i]);
@@ -48,9 +36,7 @@ Result<std::shared_ptr<PreparedAssetStateEdit>> EditorProject::PrepareAssetState
         }
         std::optional<PreparedEditObservation> observation;
         if (editTrackingReady_) {
-            const auto current = CaptureEditScopes();
-            if (!current || *current != editRevision_.Current())
-                return Output::Failure("Asset", "ASSET_SOURCE_STALE", "当前资源与修订快照不一致，未修改资源。");
+            // 其他模块尚未登记的改动与以往一样随这次观察一起记入修订，不因此拒绝资源修改；并发由代次与修订号把关。
             auto scopes = CaptureEditScopes(&candidate);
             if (!scopes) return Output::Failure("Asset", "ASSET_REVISION_PREPARE_FAILED", "无法建立候选资源的完整指纹和编辑修订，未修改资源。");
             auto prepared = editRevision_.PrepareObservation(expectedGeneration, expectedRevision, std::move(*scopes), std::move(description), operation);
