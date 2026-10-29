@@ -107,6 +107,10 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
             Evidence(block, source, tokens[i].offset, word.size(), "动态环境/脚本构造未覆盖", false);
         }
         if (word == "+") {
+            const auto numeric = [](const Token& token) {
+                return !token.quoted && !token.text.empty() && std::all_of(token.text.begin(), token.text.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+            };
+            if (i && i + 1 < tokens.size() && numeric(tokens[i - 1]) && numeric(tokens[i + 1])) continue;
             block.dynamic = true; Evidence(block, source, tokens[i].offset, 1, "拼接/构造表达式（目标未证明）", false);
             // 不把分拆的目标名字、宏或运行时字符串错误地报告为零命中。
             block.complete = false;

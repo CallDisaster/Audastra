@@ -37,7 +37,7 @@ struct Fixture {
     GraphRemove Remove() const {
         GraphParentExpectation parent{GraphParentKind::CategoryTriggers, {GraphRecordKind::Category, doc.categories.front().id, {}}, {}, {}};
         for (const auto& t : doc.triggers) parent.orderedChildren.push_back({GraphRecordKind::Trigger, t.id, {}});
-        return {{GraphRecordKind::Trigger, target, {}}, "Target Name", parent};
+        return {{GraphRecordKind::Trigger, target, {}}, doc.triggers.front().name.text, parent};
     }
     TriggerGraphEditBatch Batch(const GraphRemove& op) const { auto b = CaptureTriggerGraphBinding(doc, catalog); Good(b, "binding"); return {*b.value, {op}}; }
     DeclarationRemovalReview Review(const GraphRemove& op) const { auto r = QueryDeclarationRemovalAudit(doc, catalog, Batch(op), 0); Good(r, "review"); return *r.value; }
@@ -95,5 +95,25 @@ void TypedDynamicAndVariable() {
     GraphRemove remove{{GraphRecordKind::Variable, variable.id, {}}, variable.name.text, parent};
     f.Confirm(remove, f.Review(remove)); Good(ApplyTriggerGraphEditBatch(f.doc, f.catalog, f.Batch(remove)), "variable deletion uses same audit contract");
 }
+void EncodingAndPrefix() {
+    Fixture f; f.doc.triggers.front().name = RawText{"目标 名", TextEncoding::Gb18030, {}};
+    f.doc.wct.customCode = RawText{"// 目标 名仅作注释\r\ncall BJDebugMsg(\"无关显示\")\r\n", TextEncoding::Gb18030, {}};
+    auto op = f.Remove(); auto r = f.Review(op);
+    Require(r.complete && r.individualBlocks.size() == 1, "encoded comment and string purpose remain individually reviewable");
+    Require(r.symbols.front() == TriggerDirectoryEditor::TriggerSymbol(f.doc.triggers.front().name), "Chinese symbol uses the actual generator mapping");
+    bool encodedOffset = false;
+    for (const auto& hit : r.individualBlocks.front().evidence) { Require(hit.rawRangeExact, "original encoded range is exact"); encodedOffset |= hit.rawByteOffset < hit.decodedByteOffset; }
+    Require(encodedOffset, "GB18030 byte offsets are not mislabeled UTF8 offsets");
+    f.Confirm(op, r); Good(ApplyTriggerGraphEditBatch(f.doc, f.catalog, f.Batch(op)), "Chinese target deletion with separately reviewed encoded code");
+
+    Fixture p;
+    p.doc.wct.customCode = RawText{"globals\ninteger n = 3 + 4\nendglobals\n"};
+    auto append = TriggerDocumentEditor::AppendRootEca(p.doc, p.catalog, p.doc.triggers.front().id, UiDefinitionKind::Action, "Run"); Good(append, "self reference");
+    const auto* eca = TriggerDocumentEditor::FindEca(p.doc, append.value->rootEcaId);
+    p.doc.argumentNodes[eca->arguments.front()].type = 1; p.doc.argumentNodes[eca->arguments.front()].value = RawText{"gg_trg_Target_Name"};
+    op = p.Remove(); r = p.Review(op);
+    Require(r.complete && r.typedArgumentIds.empty() && r.groupableBlocks.size() == 3, "removed subtree references and literal arithmetic do not create false blockers");
+    p.Confirm(op, r); Good(ApplyTriggerGraphEditBatch(p.doc, p.catalog, p.Batch(op)), "self reference disappears with its owner");
 }
-int main() { try { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); std::cout << "Removal audit transactions passed\n"; return 0; } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
+}
+int main() { try { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); EncodingAndPrefix(); std::cout << "Removal audit transactions passed\n"; return 0; } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
