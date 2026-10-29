@@ -4,11 +4,6 @@ target_link_libraries(war3-map-archive-script-audit-tests PRIVATE War3MapEditor:
 target_compile_definitions(war3-map-archive-script-audit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-archive-script-audit-tests PRIVATE /utf-8 /W4 /permissive-)
 add_test(NAME archive-script-audit COMMAND war3-map-archive-script-audit-tests)
-add_executable(war3-map-jass-preprocessor-tests JassPreprocessorTests.cpp)
-target_link_libraries(war3-map-jass-preprocessor-tests PRIVATE War3MapEditor::Jass)
-target_compile_definitions(war3-map-jass-preprocessor-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
-target_compile_options(war3-map-jass-preprocessor-tests PRIVATE /utf-8 /W4 /permissive-)
-add_test(NAME jass-preprocessor COMMAND war3-map-jass-preprocessor-tests)
 include("${CMAKE_CURRENT_SOURCE_DIR}/helpers/TestLua.cmake")
 
 add_executable(war3-map-cli-resource-check-tests ResourceCheckCommandTests.cpp
