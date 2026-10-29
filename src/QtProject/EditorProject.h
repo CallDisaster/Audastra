@@ -121,6 +121,7 @@ struct AssetState {
     std::string runtimeApprovedPackageSha256;
     [[nodiscard]] bool operator==(const AssetState&) const = default;
 };
+class PreparedAssetStateEdit;
 
 // 地图保存（写回或另存）成功后的结果。
 struct MapCopySaveResult {
@@ -161,7 +162,7 @@ public:
     EditorProject& operator=(const EditorProject&) = delete;
 
     // 由工程层计算来源/文档/导入字节身份，多个 UI 模块共用同一快照。
-    [[nodiscard]] std::optional<EditScopeSnapshot> CaptureEditScopes() const;
+    [[nodiscard]] std::optional<EditScopeSnapshot> CaptureEditScopes(const AssetState* candidateAssets = nullptr) const;
     [[nodiscard]] std::optional<EditScopeSnapshot> CaptureMapEditScopes() const;
     [[nodiscard]] std::string ProjectFingerprint() const;
     // 保存准备阶段使用 CaptureEditScopes 已冻结的导入 SHA，避免再次读盘产生混合身份。
@@ -390,7 +391,11 @@ public:
     [[nodiscard]] QString RecordAssetEdit(const QString& label,
         const std::function<QString(AssetState&)>& prepare);
     // 收据已准备好的完整状态通过一次 swap 发布；正文保存仍走原导入队列。
-    void PublishAssetState(AssetState state);
+    [[nodiscard]] Result<std::shared_ptr<PreparedAssetStateEdit>> PrepareAssetStateEdit(AssetState candidate,
+        std::uint64_t expectedGeneration, std::uint64_t expectedRevision, std::string description,
+        EditOperation operation = EditOperation::Edit);
+    [[nodiscard]] Status PublishPreparedAssetState(PreparedAssetStateEdit& prepared);
+    Status PublishAssetState(AssetState state);
     // 按钮图标对应的暂停图标路径（游戏按“CommandButtonsDisabled\DIS + 文件名”查找）；不是 BTN/PAS 图标时为空。
     [[nodiscard]] static QString DisabledIconPath(const QString& iconPath);
     // 缺少暂停图标的按钮图标（地图与游戏数据里都没有对应的 DIS 文件）；保存时自动生成。

@@ -128,6 +128,44 @@ EditScopeSnapshot EditRevision::Current() const {
     return current_;
 }
 
+Result<PreparedEditObservation> EditRevision::PrepareObservation(std::uint64_t expectedGeneration,
+    std::uint64_t expectedRevision, EditScopeSnapshot current, std::string description, EditOperation operation) {
+    using Output = Result<PreparedEditObservation>;
+    const auto valid = Validate(current);
+    if (!valid.Succeeded()) return {std::nullopt, valid.diagnostics};
+    const auto fallback = DefaultDescription(operation);
+    if (fallback.empty()) return Output::Failure("EditRevision", "edit.operation-invalid", "未知的编辑操作类型");
+    std::scoped_lock lock(mutex_);
+    if (generation_ != expectedGeneration || revision_ != expectedRevision)
+        return Output::Failure("EditRevision", "edit.observation-stale", "候选修订的来源或前置修订已变化。");
+    PreparedEditObservation prepared;
+    prepared.owner_ = owner_; prepared.generation_ = generation_; prepared.revision_ = revision_;
+    prepared.changed_ = current != current_;
+    if (prepared.changed_) {
+        if (revision_ == std::numeric_limits<std::uint64_t>::max())
+            return Output::Failure("EditRevision", "edit.revision-exhausted", "文档修订编号已耗尽");
+        prepared.entry_ = {revision_ + 1, operation, description.empty() ? fallback : std::move(description), Changes(current_, current)};
+        journal_.reserve(journal_.size() + 1);
+    }
+    prepared.current_ = std::move(current);
+    return Output::Success(std::move(prepared));
+}
+
+Status EditRevision::CommitObservation(PreparedEditObservation&& prepared, void (*publish)(void*) noexcept, void* state) {
+    std::scoped_lock lock(mutex_);
+    if (prepared.consumed_ || prepared.owner_ != owner_ || prepared.generation_ != generation_ || prepared.revision_ != revision_
+        || (prepared.changed_ && journal_.capacity() <= journal_.size()))
+        return Status::Failure("EditRevision", "edit.observation-stale", "候选修订已过期、已消费或缺少准备容量；未发布。");
+    if (publish) publish(state);
+    if (prepared.changed_) {
+        journal_.push_back(std::move(prepared.entry_));
+        current_.swap(prepared.current_);
+        ++revision_;
+    }
+    prepared.consumed_ = true;
+    return Status::Ok();
+}
+
 std::uint64_t EditRevision::Generation() const {
     std::scoped_lock lock(mutex_);
     return generation_;

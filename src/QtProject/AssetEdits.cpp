@@ -155,7 +155,10 @@ std::vector<AssetEntry> EditorProject::AssetEntries(const AssetState& state, std
 QString EditorProject::MoveAsset(const QString& from, const QString& to) {
     auto candidate = CaptureAssets();
     const auto problem = MoveAsset(candidate, from, to);
-    if (problem.isEmpty() && candidate != CaptureAssets()) PublishAssetState(std::move(candidate));
+    if (problem.isEmpty() && candidate != CaptureAssets()) {
+        const auto published = PublishAssetState(std::move(candidate));
+        if (!published.Succeeded()) return QString::fromStdString(published.diagnostics.front().message);
+    }
     return problem;
 }
 
@@ -209,7 +212,10 @@ QString EditorProject::MoveAsset(AssetState& state, const QString& from, const Q
 QString EditorProject::RemoveAsset(const QString& path) {
     auto candidate = CaptureAssets();
     const auto problem = RemoveAsset(candidate, path);
-    if (problem.isEmpty()) PublishAssetState(std::move(candidate));
+    if (problem.isEmpty()) {
+        const auto published = PublishAssetState(std::move(candidate));
+        if (!published.Succeeded()) return QString::fromStdString(published.diagnostics.front().message);
+    }
     return problem;
 }
 
@@ -261,11 +267,12 @@ void EditorProject::RestoreAssets(const AssetState& state) {
     PublishAssetState(state);
 }
 
-void EditorProject::PublishAssetState(AssetState state) {
-    pendingImports_.swap(state.imports);
-    assetEdits_.swap(state.edits);
-    runtimeApprovedPackageSha256_.swap(state.runtimeApprovedPackageSha256);
-    NotifyImportsChanged(true);
+Status EditorProject::PublishAssetState(AssetState state) {
+    auto prepared = PrepareAssetStateEdit(std::move(state), editRevision_.Generation(), editRevision_.Revision(), "更新资源");
+    Status status = prepared.Succeeded() ? PublishPreparedAssetState(**prepared.value) : Status{prepared.diagnostics};
+    if (!status.Succeeded()) for (const auto& diagnostic : status.diagnostics)
+        AddDiagnostic(tr("错误"), tr("资源"), QString::fromStdString(diagnostic.code), QString::fromStdString(diagnostic.message));
+    return status;
 }
 
 } // namespace War3Map::QtProject

@@ -81,7 +81,8 @@ bool OpenSyntheticMap(const QTemporaryDir& dir, QtProject::EditorProject& projec
     auto session = MapArchiveSession::Open(path);
     if (!session.Succeeded()) return false;
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*session.value));
-    return true;
+    project.sourceArchivePath_ = path; project.projectRoot_ = path.parent_path(); project.ResetEditTracking();
+    return project.editTrackingReady_ && !project.editTrackingFailed_;
 }
 
 

@@ -8,6 +8,7 @@ qt_add_library(War3MapQtProject STATIC
     Commands/MapDataCommands.h
     Commands/AssetCommands.cpp
     Commands/AssetCommands.h
+    PreparedAssetState.cpp PreparedAssetState.h
     Commands/TriggerArgumentCommands.cpp
     Commands/TriggerArgumentCommands.h
     Commands/TriggerStringCommands.cpp
