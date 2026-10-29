@@ -461,9 +461,24 @@ UiError GameUiLibrary::SetParent(FrameHandle frame, FrameHandle parent) {
     return UiError::Unsupported;
 }
 
+GameUiLibrary::Slot* GameUiLibrary::ResolveText(FrameHandle frame, UiError& error) {
+    auto* slot = Resolve(frame, error);
+    if (!slot) return nullptr;
+    if (slot->vtable == entries_.vtText || slot->vtable == entries_.vtSimpleFontString || slot->vtable == entries_.vtEditBox) return slot;
+    error = UiError::Unsupported;
+    return nullptr;
+}
+UiError GameUiLibrary::TextStatus(FrameHandle frame) {
+    UiError error{};
+    return ResolveText(frame, error) ? UiError::None : error;
+}
+UiError GameUiLibrary::FrameStatus(FrameHandle frame) {
+    UiError error{};
+    return Resolve(frame, error) ? UiError::None : error;
+}
 UiError GameUiLibrary::SetText(FrameHandle frame, std::string_view text) {
     UiError error{};
-    const auto* slot = Resolve(frame, error);
+    const auto* slot = ResolveText(frame, error);
     if (!slot) return error;
     const std::string value(text);
     const auto object = slot->object;

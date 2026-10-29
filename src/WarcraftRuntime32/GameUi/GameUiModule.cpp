@@ -1,6 +1,7 @@
 #include "GameUiModule.h"
 
 #include "GameUiLibrary.h"
+#include "GameUiStatus.h"
 
 #include <cstring>
 #include <deque>
@@ -26,25 +27,6 @@ struct CommandSpec {
     std::int32_t result;
     Handler handler;
 };
-
-std::int32_t StatusOf(UiError error) noexcept {
-    switch (error) {
-    case UiError::None: return AJ_OK;
-    case UiError::NotReady: return AJ_STATE;
-    case UiError::WrongThread: return AJ_THREAD;
-    case UiError::BadHandle:
-    case UiError::NotFound:
-    case UiError::BadArgument: return AJ_ARGUMENT;
-    case UiError::ParentCycle: return AJ_ARGUMENT;
-    case UiError::StaleFrame: return AJ_STALE;
-    case UiError::Unsupported: return AJ_UNSUPPORTED;
-    case UiError::UnsupportedParent: return AJ_UNSUPPORTED;
-    case UiError::TableFull: return AJ_LIMIT;
-    case UiError::NotOwned: return AJ_STATE;
-    case UiError::Faulted: return AJ_INTERNAL;
-    }
-    return AJ_INTERNAL;
-}
 
 struct Instance {
     struct Binding {
@@ -72,6 +54,35 @@ struct Instance {
             failedReason = result.reason;
         }
         return result.status;
+    }
+
+    std::int32_t RecordControl(const AjCall& call, std::int32_t status) {
+        if (status != AJ_OK) {
+            failedRequest = call.request;
+            failedReason = data ? data->ControlReason() : "当前运行库没有界面数据面能力";
+        }
+        return status;
+    }
+
+    UiError PollEvents() {
+        if (!ui) return UiError::NotReady;
+        if (const auto status = ui->Status(); status != UiError::None) return status;
+        ui->Poll(ui->ReadPointer());
+        if (const auto status = ui->Status(); status != UiError::None) return status;
+        bool overflow = false;
+        for (const auto& event : ui->TakeEvents()) {
+            if (events.size() < kMaxQueued) events.push_back(event);
+            else overflow = true;
+        }
+        return overflow ? UiError::TableFull : UiError::None;
+    }
+
+    bool TakeNextEvent(UiFrameEvent& result) {
+        while (!events.empty()) {
+            const auto event = events.front(); events.pop_front();
+            if (ui && ui->FrameStatus(event.frame) == UiError::None) { result = event; return true; }
+        }
+        return false;
     }
 
     GameUiEntryPoints entries;
@@ -230,19 +241,14 @@ const CommandSpec kCommands[] = {
     {"audastraui.poll", "", AJ_INT, [](Instance& s, const AjCall& c, const AjArg*, AjResult& out) -> std::int32_t {
         // 读一次鼠标状态，返回排队等取的事件数；地图侧计时器按返回数逐个取。
         out.kind = AJ_INT;
-        if (const auto ready = s.ui->Status(); ready != UiError::None) return s.Record(c, ready);
-        s.ui->Poll(s.ui->ReadPointer());
-        for (const auto& event : s.ui->TakeEvents()) {
-            if (s.events.size() < kMaxQueued) s.events.push_back(event);
-        }
+        if (const auto ready = s.PollEvents(); ready != UiError::None) return s.Record(c, ready);
         out.integer = static_cast<std::int32_t>(s.events.size());
         return AJ_OK;
     }},
     {"audastraui.event", "", AJ_TEXT, [](Instance& s, const AjCall&, const AjArg*, AjResult& out) -> std::int32_t {
         // “框架句柄|事件类型”；没有事件时为空文字。
-        if (s.events.empty()) return ReplyText(out, {});
-        const auto event = s.events.front();
-        s.events.pop_front();
+        UiFrameEvent event{};
+        if (!s.TakeNextEvent(event)) return ReplyText(out, {});
         return ReplyText(out, std::to_string(event.frame) + '|' + std::to_string(event.kind));
     }},
     {"audastraui.clickunit", "i", AJ_INT, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
@@ -264,6 +270,14 @@ const CommandSpec kCommands[] = {
     }},
     {"audastraui.dataerrors", "", AJ_TEXT, [](Instance& s, const AjCall&, const AjArg*, AjResult& out) -> std::int32_t {
         return ReplyText(out, s.data ? s.data->Errors() : "0|");
+    }},
+    {"audastraui.textformat", "ds", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID;
+        return s.RecordControl(c, s.data ? s.data->RegisterTextFormat(Frame(a[0]), Text(a[1])) : AJ_UNSUPPORTED);
+    }},
+    {"audastraui.eventtable", "", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg*, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID;
+        return s.RecordControl(c, s.data ? s.data->EnableEventTable() : AJ_UNSUPPORTED);
     }},
 };
 
@@ -288,7 +302,14 @@ std::int32_t AJ_CALL Start(void* user) {
     auto& self = *static_cast<Instance*>(user);
     self.ui.emplace(self.entries, self.observer);
     self.input.emplace(self.inputEntries, self.observer);
-    if (self.data) self.data->Attach(*self.ui);
+    if (self.data) self.data->Attach(*self.ui, [&self](bool refresh, UiFrameEvent& event, bool& found) {
+        if (refresh) {
+            const auto status = self.PollEvents();
+            if (status != UiError::None) return status;
+        }
+        found = self.TakeNextEvent(event);
+        return UiError::None;
+    });
     return AJ_OK;
 }
 

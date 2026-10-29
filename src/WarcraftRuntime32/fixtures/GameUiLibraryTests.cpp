@@ -588,7 +588,7 @@ void ModuleCalls() {
     Check(m.Call("module.load;s:audastraui").status == AJ_OK, "map-side load finds the active built-in module");
     Check(m.Call("module.load;s:other").status == AJ_UNSUPPORTED, "no loader: maps cannot pull other modules");
     Check(m.Call("module.info;s:audastraui").value.text
-        == "audastraui|1.2.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
+        == "audastraui|1.3.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
 
     auto r = m.Call("audastraui.ready");
     Check(r.status == AJ_OK && r.value.kind == AJ_BOOL && r.value.integer == 1, "ready with complete entries and game UI");
@@ -803,13 +803,21 @@ void DataPlaneModule() {
     Check(m.Call("audastraui.bindtable;i:1234").status == AJ_OK && m.Call("audastraui.dataerrors").value.text == "0|", "wire bind and diagnostics contracts");
     const auto frame = m.Call("audastraui.create;s:Text;d:0;i:0;i:0").value.integer;
     Check(data->SaveBoolean(1234, frame, 5, 1).applied, "module attaches data consumer to same UI library");
+    Check(m.Call("audastraui.textformat;d:" + std::to_string(frame) + ";s:{0}").status == AJ_OK
+        && data->SaveInteger(1234, frame, 24, 16777217).applied && data->SaveBoolean(1234, frame, 6, 1).applied,
+        "format registration and int arguments use real module contract");
+    Check(m.Call("audastraui.eventtable").status == AJ_UNSUPPORTED && m.Call("audastraui.ready").value.integer == 1,
+        "optional event capability refusal does not disable drawing");
     Check(m.Call("audastraui.bindtable;i:5678").status == AJ_STATE, "conflicting bind reports normal module status");
     const auto failed = m.request;
     Check(!m.Call("audastraui.error;i:" + std::to_string(failed)).value.text.empty(), "binding reason uses failed-request error channel");
     Check(m.host.Reset(2).applied && !data->Owns(1234), "host stop clears table before module destruction");
 }
 
-// AudastraUI.j 里每个模块调用与契约一致：命令名、参数类型顺序、返回类型；契约里每条命令都被用到。
+#include "GameUiTextFormatTests.h"
+#include "GameUiDataFormatTests.h"
+
+// 校验已有包装调用及新增可选能力的明确契约；生成器侧接线另作集成验收。
 void ScriptMatchesModule() {
     std::ifstream stream(AUDASTRA_UI_SCRIPT, std::ios::binary);
     const std::string script((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
@@ -851,6 +859,16 @@ void ScriptMatchesModule() {
         }
     }
     for (const auto& command : contract.commands) {
+        if (command.name == "audastraui.textformat" && !used.contains(command.name)) {
+            Check(command.arguments == "ds" && command.resultKind == AJ_VOID && command.domain == AJ_LOCAL_COMMAND,
+                "optional format control has a separately exercised contract");
+            continue;
+        }
+        if (command.name == "audastraui.eventtable" && !used.contains(command.name)) {
+            Check(command.arguments.empty() && command.resultKind == AJ_VOID && command.domain == AJ_LOCAL_COMMAND,
+                "optional event control has a separately exercised contract");
+            continue;
+        }
         // 输入是1.1的可选能力，旧版绘制包装仍可完整使用1.0命令。
         if (command.name == "audastraui.dataerrors" && !used.contains(command.name)) {
             Check(command.arguments.empty() && command.resultKind == AJ_TEXT && command.domain == AJ_LOCAL_COMMAND,
@@ -879,6 +897,12 @@ int main() {
         ModuleUnavailable();
         DataPlane();
         DataPlaneModule();
+        TextFormatContracts();
+        FormattedDataPlane();
+        EventTableDataPlane();
+        EventTableModule();
+        EventTableFaultIsolation();
+        FormattedDataCapacity();
         ScriptMatchesModule();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";

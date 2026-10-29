@@ -1,5 +1,6 @@
 #include "GameUiDataPlane.h"
 #include "GameUiMemory.h"
+#include "GameUiStatus.h"
 #include "aj/Protocol.h"
 #include <array>
 #include <bit>
@@ -42,7 +43,9 @@ bool CopyString(Address object, std::array<char, AJ_MAX_INPUT_TEXT + 1>& bytes, 
 GameUiDataPlane::GameUiDataPlane(GameUiDataContext context, UiFaultObserver observer)
     : context_(std::move(context)), observer_(observer), thread_(GetCurrentThreadId()) {}
 
-void GameUiDataPlane::Attach(GameUiLibrary& ui) noexcept { if (!stopped_ && !ui_) ui_ = &ui; }
+void GameUiDataPlane::Attach(GameUiLibrary& ui, EventPump events) {
+    if (!stopped_ && !ui_) { ui_ = &ui; eventPump_ = std::move(events); }
+}
 void GameUiDataPlane::Stop() noexcept {
     if (stopped_) return;
     if (context_.boundTable && table_) context_.boundTable->store(0, std::memory_order_release);
@@ -51,6 +54,7 @@ void GameUiDataPlane::Stop() noexcept {
     table_ = 0;
     tableObject_ = 0;
     tableKeyA_ = 0; tableKeyB_ = 0;
+    formats_.clear(); eventPump_ = {}; eventsEnabled_ = false;
 }
 bool GameUiDataPlane::Owns(std::int32_t table) const noexcept { return !stopped_ && table_ && table == table_; }
 
@@ -128,15 +132,127 @@ UiDataWrite GameUiDataPlane::Reject(Error error) noexcept {
     return {true, false};
 }
 
+std::int32_t GameUiDataPlane::BeginControl() noexcept {
+    controlReason_ = {};
+    if (GetCurrentThreadId() != thread_) { controlReason_ = "界面数据控制只能在游戏线程调用"; return AJ_THREAD; }
+    if (stopped_) { controlReason_ = "界面数据会话已结束"; return AJ_STALE; }
+    if (!table_ || !ui_) { controlReason_ = "界面私有表尚未绑定"; return AJ_UNSUPPORTED; }
+    if (inFlight_) { controlReason_ = "界面数据正在写入，拒绝重入控制"; return AJ_REENTRANT; }
+    if (!Begin(table_)) {
+        controlReason_ = "界面私有表或VM会话不可用";
+        return faulted_ ? AJ_INTERNAL : stopped_ ? AJ_STALE : AJ_STATE;
+    }
+    return AJ_OK;
+}
+
+std::int32_t GameUiDataPlane::RegisterTextFormat(FrameHandle frame, std::string_view format) noexcept {
+    const auto ready = BeginControl();
+    if (ready != AJ_OK) return ready;
+    const auto finish = [&](std::int32_t status, std::string_view reason = {}) {
+        controlReason_ = reason;
+        (void)Finish(UiError::None);
+        return status;
+    };
+    try {
+        const auto frameStatus = ui_->TextStatus(frame);
+        if (frameStatus != UiError::None) return finish(StatusOf(frameStatus), UiErrorText(frameStatus));
+        auto compiled = CompiledTextFormat::Parse(format);
+        if (!compiled) return finish(AJ_ARGUMENT, "文字格式无效或超过384编码字节预算");
+        // 清掉本库销毁的框架（含子树）的缓存，不让重建界面积累历史格式。
+        for (auto it = formats_.begin(); it != formats_.end();) {
+            if (ui_->TextStatus(it->first) != UiError::None) it = formats_.erase(it);
+            else ++it;
+        }
+        if (!formats_.contains(frame) && formats_.size() >= kMaxFormats)
+            return finish(AJ_LIMIT, "本会话格式化文字框架超过1024个");
+        FormattedFrame state{std::move(*compiled)};
+        formats_.insert_or_assign(frame, std::move(state));
+        return finish(AJ_OK);
+    } catch (...) { return finish(AJ_INTERNAL, "文字格式注册失败"); }
+}
+
+std::int32_t GameUiDataPlane::EnableEventTable() noexcept {
+    const auto ready = BeginControl();
+    if (ready != AJ_OK) return ready;
+    const bool supported = context_.storeInteger && eventPump_;
+    if (supported) eventsEnabled_ = true;
+    else controlReason_ = "当前运行库没有可核验的整数事件表能力";
+    (void)Finish(UiError::None);
+    return supported ? AJ_OK : AJ_UNSUPPORTED;
+}
+
+UiDataWrite GameUiDataPlane::AssignArgument(FrameHandle frame, int index, TextFormatArgument argument) {
+    const auto status = ui_->TextStatus(frame);
+    if (status != UiError::None) { formats_.erase(frame); return Finish(status); }
+    const auto found = formats_.find(frame);
+    if (found == formats_.end()) return Reject(Error::Format);
+    found->second.arguments[static_cast<std::size_t>(index)] = argument;
+    return Finish(UiError::None);
+}
+
+UiDataWrite GameUiDataPlane::CommitText(FrameHandle frame) {
+    const auto status = ui_->TextStatus(frame);
+    if (status != UiError::None) { formats_.erase(frame); return Finish(status); }
+    const auto found = formats_.find(frame);
+    if (found == formats_.end()) return Reject(Error::Format);
+    auto& state = found->second;
+    auto text = state.format.Render(state.arguments);
+    if (!text) return Reject(Error::Format);
+    // 每次显式提交都恢复完整结果，保留与其他SetText调用的先后顺序。
+    return Finish(ui_->SetText(frame, *text));
+}
+
+bool GameUiDataPlane::StoreEventInteger(std::int32_t child, std::int32_t value) noexcept {
+    if (stopped_ || !context_.storeInteger) return false;
+    UiFault fault{}; fault.epoch = epoch_; fault.entry = "audastraui.eventwrite";
+    auto invoke = [&] { context_.storeInteger(table_, 0, child, value); };
+    if (!Guard(invoke, fault)) {
+        faulted_ = true;
+        if (observer_) observer_(fault);
+        return false;
+    }
+    return !stopped_;
+}
+
+UiDataWrite GameUiDataPlane::PollEvent(bool refresh) {
+    if (!eventsEnabled_ || !eventPump_ || !context_.storeInteger) return Reject(Error::Property);
+    // 地图先FlushChildHashtable(table,0)。完成标记最后写；故障时不重放旧事件。
+    if (!StoreEventInteger(0, 0)) return Reject(Error::Internal);
+    UiFrameEvent event{}; bool found = false;
+    const auto pump = eventPump_; // Stop可能在同步回调内清空成员，当前调用仍持有自己的闭包。
+    const auto status = pump(refresh, event, found);
+    if (stopped_) return Finish(UiError::None);
+    if (status != UiError::None) return Finish(status);
+    if (found) {
+        const auto frameStatus = ui_->FrameStatus(event.frame);
+        if (frameStatus != UiError::None) return Finish(frameStatus);
+        if (event.kind != kUiEventEnter && event.kind != kUiEventLeave && event.kind != kUiEventClick) return Reject(Error::Value);
+    }
+    if (found && (!StoreEventInteger(1, event.frame) || !StoreEventInteger(2, event.kind) || !StoreEventInteger(0, 1)))
+        return Reject(Error::Internal);
+    return Finish(UiError::None);
+}
+
+UiDataWrite GameUiDataPlane::SaveInteger(std::int32_t table, FrameHandle frame, std::int32_t property, std::int32_t value) noexcept {
+    if (!Owns(table)) return {};
+    if (!Begin(table)) return {true, false};
+    if (property < 24 || property > 31) return Reject(Error::Property);
+    try { return AssignArgument(frame, property - 24, {true, true, 0, value}); }
+    catch (...) { return Reject(Error::Internal); }
+}
+
 UiDataWrite GameUiDataPlane::SaveReal(std::int32_t table, FrameHandle frame, std::int32_t property, const float* value) noexcept {
     if (!Owns(table)) return {};
     if (!Begin(table)) return {true, false};
-    if (property != 1 && property != 2) return Reject(Error::Property);
+    if (property != 1 && property != 2 && (property < 16 || property > 23)) return Reject(Error::Property);
     Address bits = 0;
     if (!Detail::ReadWord(reinterpret_cast<Address>(value), bits) || !std::isfinite(std::bit_cast<float>(bits))) {
         return Reject(Error::Value);
     }
-    try { return Finish(property == 1 ? ui_->SetValue(frame, std::bit_cast<float>(bits)) : ui_->SetWidth(frame, std::bit_cast<float>(bits))); }
+    try {
+        if (property >= 16) return AssignArgument(frame, property - 16, {true, false, std::bit_cast<float>(bits), 0});
+        return Finish(property == 1 ? ui_->SetValue(frame, std::bit_cast<float>(bits)) : ui_->SetWidth(frame, std::bit_cast<float>(bits)));
+    }
     catch (...) { return Reject(Error::Internal); }
 }
 UiDataWrite GameUiDataPlane::SaveStr(std::int32_t table, FrameHandle frame, std::int32_t property, Address object) noexcept {
@@ -154,9 +270,13 @@ UiDataWrite GameUiDataPlane::SaveStr(std::int32_t table, FrameHandle frame, std:
 UiDataWrite GameUiDataPlane::SaveBoolean(std::int32_t table, FrameHandle frame, std::int32_t property, std::int32_t value) noexcept {
     if (!Owns(table)) return {};
     if (!Begin(table)) return {true, false};
-    if (property != 5) return Reject(Error::Property);
-    if (value != 0 && value != 1) return Reject(Error::Value);
-    try { return Finish(ui_->SetVisible(frame, value != 0)); }
+    if (property < 5 || property > 8) return Reject(Error::Property);
+    if ((value != 0 && value != 1) || (property != 5 && value != 1)) return Reject(Error::Value);
+    try {
+        if (property == 6) return CommitText(frame);
+        if (property >= 7) return frame == 0 ? PollEvent(property == 7) : Reject(Error::Property);
+        return Finish(ui_->SetVisible(frame, value != 0));
+    }
     catch (...) { return Reject(Error::Internal); }
 }
 
@@ -172,6 +292,7 @@ std::string GameUiDataPlane::Errors() const {
     case Error::Value: reason = "界面数据面值无效或超过长度限制"; break;
     case Error::Internal: reason = "界面数据面内部异常"; break;
     case Error::Ui: reason = UiErrorText(lastUi_); break;
+    case Error::Format: reason = "文字格式未注册、参数未齐全或格式化输出超限"; break;
     }
     return std::to_string(errors_) + '|' + std::string(reason);
 }

@@ -23,12 +23,15 @@ using DestroyVm = std::uintptr_t(__thiscall*)(std::uintptr_t);
 using SaveReal = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, const float*);
 using SaveStr = std::int32_t(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::uintptr_t);
 using SaveBoolean = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::int32_t);
+using SaveInteger = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::int32_t);
 // 原版同 SHA 的 stock 登记第24项：GetLocalizedString (S)S，登记调用 RVA 1e9c30。
 // 只读核验来自本项目原有 stock 登记扫描器；不是引导器实现中的地址。
 constexpr std::uintptr_t kLocalized = 0x1e31d0;
 constexpr std::uintptr_t kInitialize = 0x1e9a50, kDestroyVm = 0x7dd070;
 // 来自固定映像的 stock native 登记与对应实现；real 是指针，string 是 VM object。
 constexpr std::uintptr_t kSaveReal = 0x1f3a10, kSaveStr = 0x1f3af0, kSaveBoolean = 0x1f3570;
+// 固定映像 stock 登记 RVA 1ed0c9..1ed0d8：SaveInteger (Hhashtable;III)V。
+constexpr std::uintptr_t kSaveInteger = 0x1f3890;
 constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
 RuntimeTestWriter testEvidence;
 
@@ -73,6 +76,7 @@ struct Runtime {
     SaveReal saveReal = nullptr;
     SaveStr saveStr = nullptr;
     SaveBoolean saveBoolean = nullptr;
+    SaveInteger saveInteger = nullptr;
     bool dataHooks = false;
     std::atomic<std::int32_t> boundTable{0};
     std::recursive_mutex lock;
@@ -84,7 +88,7 @@ struct Runtime {
     unsigned depth = 0;
     bool failed = false;
     std::string identity;
-    std::array<std::unique_ptr<HookSite>, 7> sites;
+    std::array<std::unique_ptr<HookSite>, 8> sites;
 
     void Fail(std::string_view message) {
         failed = true;
@@ -184,6 +188,9 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                         GameUi::GameUiDataContext context{
                             reinterpret_cast<GameUi::FnResolveUiTable>(image.Base() + kResolveTable),
                             [vm] { const auto current = vm.lock(); return current && current->Generation() && current->MatchesCurrentMainVm(); }, &self->boundTable};
+                        context.storeInteger = [self](std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) {
+                            self->saveInteger(table, parent, child, value);
+                        };
                         self->data = std::make_shared<GameUi::GameUiDataPlane>(std::move(context), &TraceUiFault);
                     }
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),
@@ -241,6 +248,17 @@ void __cdecl SaveBooleanHook(std::int32_t table, std::int32_t parent, std::int32
     try {
         if (WriteData(*self, [&](auto& data) { return data.SaveBoolean(table, parent, child, value); }).intercepted) return;
         self->saveBoolean(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); }
+}
+void __cdecl SaveIntegerHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveInteger) return;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) {
+        self->saveInteger(table, parent, child, value); return;
+    }
+    try {
+        if (WriteData(*self, [&](auto& data) { return data.SaveInteger(table, parent, child, value); }).intercepted) return;
+        self->saveInteger(table, parent, child, value);
     } catch (...) { Trace("data-write dispatch exception", true); }
 }
 void __cdecl InitializeHook() noexcept {
@@ -304,8 +322,8 @@ int Install(std::string_view identity) {
     owned->localized = reinterpret_cast<Localized>(image.Base() + kLocalized);
     owned->initialize = reinterpret_cast<Initialize>(image.Base() + kInitialize);
     owned->destroyVm = reinterpret_cast<DestroyVm>(image.Base() + kDestroyVm);
-    constexpr std::array<std::uintptr_t, 7> rvas{kLocalized, kInitialize, kDestroyVm, kSaveReal, kSaveStr, kSaveBoolean, kResolveTable};
-    constexpr std::array<const char*, 7> names{"localized", "initialize", "destroy_vm", "save_real", "save_str", "save_boolean", "resolve_table"};
+    constexpr std::array<std::uintptr_t, 8> rvas{kLocalized, kInitialize, kDestroyVm, kSaveReal, kSaveStr, kSaveBoolean, kResolveTable, kSaveInteger};
+    constexpr std::array<const char*, 8> names{"localized", "initialize", "destroy_vm", "save_real", "save_str", "save_boolean", "resolve_table", "save_integer"};
     const auto reportSite = [&](std::size_t i, std::string_view reason) {
         auto message = "hook-site site=" + std::string(names[i]) + " reason=" + std::string(reason);
         if (testEvidence.Enabled()) message += " " + DescribeHookSite(image.Base() + rvas[i]);
@@ -327,11 +345,12 @@ int Install(std::string_view identity) {
     if (!accepted(0) || !accepted(1) || !accepted(2)) {
         Trace("hook-sites-changed: required site qualification refused"); return AJ_POLICY;
     }
-    owned->dataHooks = accepted(3) && accepted(4) && accepted(5) && accepted(6);
+    owned->dataHooks = accepted(3) && accepted(4) && accepted(5) && accepted(6) && accepted(7);
     if (owned->dataHooks) {
         owned->saveReal = reinterpret_cast<SaveReal>(image.Base() + kSaveReal);
         owned->saveStr = reinterpret_cast<SaveStr>(image.Base() + kSaveStr);
         owned->saveBoolean = reinterpret_cast<SaveBoolean>(image.Base() + kSaveBoolean);
+        owned->saveInteger = reinterpret_cast<SaveInteger>(image.Base() + kSaveInteger);
     } else {
         for (std::size_t i = 3; i < owned->sites.size(); ++i) owned->sites[i].reset();
         Trace("data-plane unavailable: native sites changed; preserving original natives");
@@ -350,13 +369,14 @@ int Install(std::string_view identity) {
     if (status != NO_ERROR) { Trace("detours-begin-failed"); return AJ_BACKEND; }
     runtime.store(owned.get());
     struct Attachment { std::size_t site; PVOID* next; PVOID callback; };
-    const std::array<Attachment, 6> attachments{{
+    const std::array<Attachment, 7> attachments{{
         {0, reinterpret_cast<PVOID*>(&owned->localized), reinterpret_cast<PVOID>(&LocalizedHook)},
         {1, reinterpret_cast<PVOID*>(&owned->initialize), reinterpret_cast<PVOID>(&InitializeHook)},
         {2, reinterpret_cast<PVOID*>(&owned->destroyVm), reinterpret_cast<PVOID>(&DestroyVmHook)},
         {3, reinterpret_cast<PVOID*>(&owned->saveReal), reinterpret_cast<PVOID>(&SaveRealHook)},
         {4, reinterpret_cast<PVOID*>(&owned->saveStr), reinterpret_cast<PVOID>(&SaveStrHook)},
-        {5, reinterpret_cast<PVOID*>(&owned->saveBoolean), reinterpret_cast<PVOID>(&SaveBooleanHook)}}};
+        {5, reinterpret_cast<PVOID*>(&owned->saveBoolean), reinterpret_cast<PVOID>(&SaveBooleanHook)},
+        {7, reinterpret_cast<PVOID*>(&owned->saveInteger), reinterpret_cast<PVOID>(&SaveIntegerHook)}}};
     std::size_t changedSite = owned->sites.size(); bool snapshotChanged = false;
     for (const auto& step : attachments) {
         if (step.site >= 3 && !owned->dataHooks) continue;

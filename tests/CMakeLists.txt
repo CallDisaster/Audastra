@@ -1,4 +1,9 @@
 include_directories("${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
+add_executable(war3-map-ui-number-format-tests "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/fixtures/UiNumberFormatTests.cpp")
+target_include_directories(war3-map-ui-number-format-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
+target_compile_options(war3-map-ui-number-format-tests PRIVATE /utf-8 /W4 /permissive-)
+add_test(NAME audastra-ui-number-format COMMAND war3-map-ui-number-format-tests)
+
 add_executable(war3-map-archive-script-audit-tests ArchiveScriptAuditTests.cpp)
 target_link_libraries(war3-map-archive-script-audit-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-map-archive-script-audit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

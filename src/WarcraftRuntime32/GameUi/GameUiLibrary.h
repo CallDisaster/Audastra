@@ -100,6 +100,8 @@ public:
     [[nodiscard]] UiError SetParent(FrameHandle frame, FrameHandle parent);
 
     [[nodiscard]] UiError SetText(FrameHandle frame, std::string_view text);
+    [[nodiscard]] UiError TextStatus(FrameHandle frame);
+    [[nodiscard]] UiError FrameStatus(FrameHandle frame);
     [[nodiscard]] UiError SetFont(FrameHandle frame, std::string_view font, float height, int flags);
     // 水平 0 左 1 中 2 右；竖直 0 上 1 中 2 下。
     [[nodiscard]] UiError SetTextAlign(FrameHandle frame, int horizontal, int vertical);
@@ -140,6 +142,7 @@ private:
     [[nodiscard]] UiError Ready() const noexcept;
     [[nodiscard]] UiCreated Adopt(Address object, Owner owner);
     [[nodiscard]] Slot* Resolve(FrameHandle handle, UiError& error);
+    [[nodiscard]] Slot* ResolveText(FrameHandle handle, UiError& error);
     [[nodiscard]] FrameHandle HandleOf(std::size_t index) const noexcept;
     [[nodiscard]] bool Classify(Address object, Address& vtable, FrameFamily& family) const noexcept;
     [[nodiscard]] Address LayoutOf(const Slot& slot) const noexcept;
