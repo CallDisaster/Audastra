@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 #include <algorithm>
@@ -33,7 +34,7 @@ double Number(const wchar_t* text) {
     return result;
 }
 
-std::string Utf8(const wchar_t* value) {
+std::string Utf8(std::wstring_view value) {
     const auto text = std::filesystem::path(value).u8string();
     return std::string(text.begin(), text.end());
 }
