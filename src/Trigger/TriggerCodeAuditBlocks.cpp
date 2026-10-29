@@ -40,11 +40,13 @@ Status VisitOpaqueCodeBlocks(const TriggerDocument& document, const UiCatalog& c
     }
     const auto literal = [&](std::string_view type, std::string_view value) {
         const auto kind = types.LiteralKind(type);
-        if (kind == TriggerTypeSystem::Literal::String) return true;
         if (kind == TriggerTypeSystem::Literal::Integer || kind == TriggerTypeSystem::Literal::Real
-            || kind == TriggerTypeSystem::Literal::Boolean || kind == TriggerTypeSystem::Literal::ObjectCode)
+            || kind == TriggerTypeSystem::Literal::Boolean || kind == TriggerTypeSystem::Literal::ObjectCode
+            || kind == TriggerTypeSystem::Literal::String)
             return types.ValidateLiteral(type, value).Succeeded();
-        return value == "null";
+        // scriptcode 即使声明string基础类型也按源码发射；未知类型不能借null字样绕过清单。
+        return kind == TriggerTypeSystem::Literal::Other && !type.empty() && type != "AnyReturnType" && value == "null"
+            && (types.Accepts("handle", type) || types.Accepts("code", type));
     };
     const auto mentions = [&](std::string_view text) {
         return std::any_of(symbols.begin(), symbols.end(), [&](const auto& symbol) { return text.find(symbol) != std::string_view::npos; });
