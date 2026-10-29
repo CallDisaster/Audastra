@@ -184,10 +184,10 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         expanded.text = std::move(evaluated.value->text);
     }
     if (framework) {
-        const auto hash = Sha256Text(expanded.text); if (!hash.Succeeded()) return {{}, hash.diagnostics};
+        const auto rewriteHash = Sha256Text(expanded.text); if (!rewriteHash.Succeeded()) return {{}, rewriteHash.diagnostics};
         Jass::IdentifierRewriteRequest rewrite;
         rewrite.text = expanded.text; rewrite.encoding = Text::SourceEncoding::Utf8;
-        rewrite.sourceName = "remove-template.j"; rewrite.expectedInputSha256 = *hash.value;
+        rewrite.sourceName = "remove-template.j"; rewrite.expectedInputSha256 = *rewriteHash.value;
         rewrite.globalScopeIdentity = "map:root";
         const auto mapped = Jass::RewriteUdgIdentifiers(rewrite);
         if (!mapped.Succeeded() || !mapped.value) {
@@ -225,8 +225,12 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         if (found == inputs.triggers->triggers.end()) return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_MAP", "生成来源缺少触发器。");
         if (const auto s = add(found->id, found->customText); !s.Succeeded()) return {{}, s.diagnostics};
     }
+    const auto isMain = [&](std::string_view file) {
+        return file == request.mainName || PathText(std::filesystem::u8path(file).lexically_normal())
+            == PathText((request.mainDirectory / request.mainName).lexically_normal());
+    };
     const auto owner = [&](std::string_view file, std::size_t line) -> std::optional<StableId> {
-        if (file != request.mainName && file != PathText(request.mainDirectory / request.mainName)) return StableId{0};
+        if (!isMain(file)) return StableId{0};
         if (!line || line > mainLines.size()) return {};
         const auto offset = mainLines[line - 1];
         if (offset >= generated.text.size()) return StableId{0};
@@ -238,7 +242,7 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         return span.triggerId;
     };
     const auto origin = [&](std::string file, std::size_t line) -> Trigger::RemovalPreprocessOrigin {
-        if ((file == request.mainName || file == PathText(request.mainDirectory / request.mainName)) && line && line <= mainLines.size()) {
+        if (isMain(file) && line && line <= mainLines.size()) {
             const auto offset = mainLines[line - 1];
             for (const auto& part : appended) if (offset >= part.begin && offset < part.end) {
                 const auto n = std::upper_bound(part.lines.begin(), part.lines.end(), offset - part.begin) - part.lines.begin();
