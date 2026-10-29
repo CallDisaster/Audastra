@@ -273,12 +273,21 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         const auto row = Key(kind, id) + ":" + *sha.value + ":" + *digest.value + ":" + std::to_string(static_cast<unsigned>(text.encoding)) + "\n";
         if (const auto added = update(manifest, row); !added.Succeeded()) return added;
         review.complete &= block.complete;
+        const auto sample = [&] {
+            auto length = std::min<std::size_t>(text.text.size(), 256);
+            while (length && length < text.text.size() && (static_cast<unsigned char>(text.text[length]) & 0xc0) == 0x80) --length;
+            block.sampleText = text.text.substr(0, length); block.sampleTruncated = length < text.text.size();
+        };
         if (block.groupable) {
             if (const auto added = update(group, row); !added.Succeeded()) return added;
             ++review.groupableCount; review.groupableIdentities_.push_back(block.identity);
-            if (review.groupableSamples.size() < 20) review.groupableSamples.push_back(std::move(block));
+            if (review.groupableSamples.size() < 20) {
+                sample();
+                review.groupableSamples.push_back(std::move(block));
+            }
         } else {
             if (review.individualBlocks.size() >= kIndividuals) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "须单独确认的代码块超过16384块，未提供部分放行。");
+            sample();
             review.individualBlocks.push_back(std::move(block));
         }
         return Status::Ok();

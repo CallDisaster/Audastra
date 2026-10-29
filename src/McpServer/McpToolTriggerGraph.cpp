@@ -479,7 +479,8 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
                 result.append(QJsonObject{{"identity", QJsonObject{{"kind", kind}, {"id", QString::number(b.id)}, {"encoding", EncodingName(b.encoding)},
                     {"source_sha256", QString::fromStdString(b.sourceSha256)}, {"evidence_sha256", QString::fromStdString(b.evidenceSha256)}}},
                     {"complete", block.complete}, {"dynamic", block.dynamic}, {"referenced", block.referenced},
-                    {"incomplete_reason", QString::fromStdString(block.incompleteReason)}, {"evidence", evidence}});
+                    {"incomplete_reason", QString::fromStdString(block.incompleteReason)}, {"evidence", evidence},
+                    {"sample_text", QString::fromStdString(block.sampleText)}, {"sample_truncated", block.sampleTruncated}});
             }
             return result;
         };

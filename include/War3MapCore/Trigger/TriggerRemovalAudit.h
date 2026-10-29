@@ -29,6 +29,8 @@ struct RemovalCodeBlock {
     std::vector<RemovalReferenceEvidence> evidence;
     bool groupable = false, complete = true, dynamic = false, referenced = false;
     std::string incompleteReason;
+    std::string sampleText;
+    bool sampleTruncated = false;
 };
 struct DeclarationRemovalReview {
     TriggerGraphBinding binding;
