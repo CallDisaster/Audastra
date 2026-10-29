@@ -1123,7 +1123,8 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     confirm(*review.value);
     Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "original dependency can be confirmed");
     WriteText(map / "dep.j", "// content changed\n");
-    Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "dependency change invalidates old confirmation");
+    const auto stale = Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider);
+    Require(!stale.Succeeded() && HasCode(stale.diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "dependency change invalidates old confirmation");
     WriteText(map / "dep.j", "// \xd6\xd0\xce\xc4\ncall TriggerExecute(gg_trg_Target)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty(), "included reference has complete evidence");
     Require(std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& block) {
@@ -1141,6 +1142,16 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     WriteText(map / "dep.j", "#define JOIN(a,b) a ## b\nJOIN(unrelated,Name)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty() && review.value->individualBlocks.front().dynamic, "invoked paste macro needs individual confirmation");
     confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "explicit paste macro review permits unrelated deletion");
+    WriteText(map / "dep.j", "#define STRINGIFY(x) #x\nSTRINGIFY(unrelated)\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty() && review.value->individualBlocks.front().dynamic, "invoked stringification macro needs individual confirmation");
+    confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "explicit stringification review permits unrelated deletion");
+    auto changedProfile = *profile.value; ++changedProfile.profileRevision;
+    const auto alternate = CaptureScriptFrameworkInputs(changedProfile, *layout.value, *catalog.value); Require(alternate.Succeeded(), "alternate bound profile");
+    Trigger::RemovalPreprocessProvider otherProfile = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto&) {
+        MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions; return CaptureRemovalPreprocessCoverage(inputs, *alternate.value);
+    };
+    const auto changed = Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &otherProfile);
+    Require(!changed.Succeeded() && HasCode(changed.diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "profile identity invalidates old confirmation");
     Trigger::TriggerGraphEditLimits limits; limits.removalPreprocessProvider = provider;
     auto copy = doc; auto binding = Trigger::CaptureTriggerGraphBinding(copy, *catalog.value); Require(binding.Succeeded(), "preprocess preview binding");
     Require(Trigger::ApplyTriggerGraphEditBatch(copy, *catalog.value, {*binding.value, {op}}, limits).Succeeded(), "same provider used at actual in-memory publication");
