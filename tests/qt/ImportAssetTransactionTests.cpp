@@ -4,6 +4,7 @@
 #include "MapSaveJob.h"
 #include "War3MapCore/Hash.h"
 #include "Commands/TriggerCommands.h"
+#include "Commands/AssetCommands.h"
 #include "War3MapCore/Services/ImportPayloadPolicy.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
@@ -177,6 +178,28 @@ private slots:
         values = {{"refuse.bin", Binary(16)}};
         QVERIFY(!project.AddImportPayloads(values, false, "must not recover failed tracking").isEmpty());
         QVERIFY(project.CaptureAssets() == before); QVERIFY(project.editTrackingFailed_);
+    }
+    void FailedFirstPublicationPreservesTheExistingRedoBranch() {
+        Fixture fixture; auto& project = *fixture.project;
+        std::vector<EditorProject::ImportPayload> values{{"owned.bin", Binary(31)}};
+        QVERIFY(project.AddImportPayloads(values, false, "first owned edit").isEmpty());
+        project.AssetUndoStack()->undo(); QVERIFY(project.AssetUndoStack()->canRedo());
+        const auto before = project.CaptureAssets(); const auto revision = project.editRevision_.Revision();
+        const auto count = project.AssetUndoStack()->count(), index = project.AssetUndoStack()->index();
+        const auto path = fixture.inputs.root / "changing-import.bin";
+        QFile disk(QString::fromStdWString(path.wstring())); QVERIFY(disk.open(QIODevice::WriteOnly));
+        QCOMPARE(disk.write("original"), qint64{8}); disk.close();
+        auto candidate = before; candidate.imports.push_back({"changing.bin", QString::fromStdWString(path.wstring()), 8});
+        auto prepared = project.PrepareAssetStateEdit(candidate, project.editRevision_.Generation(), revision, "disk edit"); QVERIFY(prepared.Succeeded());
+        auto receipt = std::make_shared<Status>();
+        AssetStateCommand command(project, before, candidate, "disk edit", *prepared.value, receipt);
+        QVERIFY(disk.open(QIODevice::WriteOnly | QIODevice::Truncate)); QCOMPARE(disk.write("modified"), qint64{8}); disk.close();
+        command.PublishBeforePush(); QVERIFY(!receipt->Succeeded()); QVERIFY(command.isObsolete());
+        QVERIFY(project.CaptureAssets() == before); QCOMPARE(project.editRevision_.Revision(), revision);
+        QCOMPARE(project.AssetUndoStack()->count(), count); QCOMPARE(project.AssetUndoStack()->index(), index); QVERIFY(project.AssetUndoStack()->canRedo());
+        QVERIFY(!project.RecordAssetEdit("invalid new edit", [](AssetState&) { return QStringLiteral("cancelled"); }).isEmpty());
+        QCOMPARE(project.AssetUndoStack()->count(), count); QVERIFY(project.AssetUndoStack()->canRedo());
+        project.AssetUndoStack()->redo(); QCOMPARE(project.pendingImports_.size(), std::size_t{1}); QVERIFY(project.editTrackingReady_);
     }
 };
 QTEST_MAIN(ImportAssetTransactionTests)

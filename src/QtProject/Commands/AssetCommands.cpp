@@ -83,8 +83,9 @@ QString EditorProject::RecordAssetEdit(const QString& label,
         if (!prepared.Succeeded()) return QString::fromStdString(prepared.diagnostics.front().code + " · " + prepared.diagnostics.front().message);
         auto firstStatus = std::make_shared<Status>();
         auto command = std::make_unique<AssetStateCommand>(*this, std::move(before), std::move(candidate), label, *prepared.value, firstStatus);
-        assetUndoStack_->push(command.release());
+        command->PublishBeforePush();
         if (!firstStatus->Succeeded()) return QString::fromStdString(firstStatus->diagnostics.front().code + " · " + firstStatus->diagnostics.front().message);
+        assetUndoStack_->push(command.release());
         return {};
     } catch (const std::exception&) {
         return tr("无法准备资源编辑，当前资源保持原状。");

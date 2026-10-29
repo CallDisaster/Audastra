@@ -12,7 +12,9 @@ public:
     AssetStateCommand(EditorProject& project, AssetState before, AssetState after, QString label,
         std::shared_ptr<PreparedAssetStateEdit> firstPrepared = {}, std::shared_ptr<Status> firstStatus = {});
     void undo() override { Apply(false); }
-    void redo() override { Apply(true); }
+    void redo() override { if (skipNextRedo_) skipNextRedo_ = false; else Apply(true); }
+    // 首次发布在入栈前完成；Qt push即使redo拒绝也会删除旧重做分支。
+    void PublishBeforePush() { Apply(true); skipNextRedo_ = !isObsolete(); }
 
 private:
     void Apply(bool forward);
@@ -25,6 +27,7 @@ private:
     std::uint64_t generation_ = 0;
     std::shared_ptr<PreparedAssetStateEdit> firstPrepared_;
     std::shared_ptr<Status> firstStatus_;
+    bool skipNextRedo_ = false;
 };
 
 } // namespace War3Map::QtProject
