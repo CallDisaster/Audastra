@@ -131,7 +131,7 @@ void Evidence(RemovalCodeBlock& block, const RawText& source, std::size_t at, st
 }
 // 只作有界词法证据，不执行宏或猜测动态目标。未知指令/未闭合文本不取得完整覆盖。
 void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemovalReview& review, std::size_t& tokensLeft,
-    const std::vector<std::string>& names) {
+    const std::vector<std::string>& names, bool executableIdentifiers = true) {
     const auto& text = source.text; std::vector<Token> tokens;
     if (text.find("<?") != std::string::npos) Incomplete(block, "本轮未覆盖Lua模板");
     if (text.find('\0') != std::string::npos) { Incomplete(block, "含NUL字节"); Evidence(block, source, text.find('\0'), 1, "不支持的NUL字节", false); }
@@ -170,7 +170,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (NameByte(static_cast<unsigned char>(text[i]))) {
             while (i < text.size() && NameByte(static_cast<unsigned char>(text[i]))) ++i;
             auto value = text.substr(begin, i - begin); --tokensLeft; tokens.push_back({value, begin, false, i - begin});
-            if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c >= 128; })) Incomplete(block, "执行代码非ASCII标识符尚未由宿主映射");
+            if (executableIdentifiers && std::any_of(value.begin(), value.end(), [](unsigned char c) { return c >= 128; })) Incomplete(block, "执行代码非ASCII标识符尚未由宿主映射");
             if (Match(value, review, true)) Evidence(block, source, begin, i - begin, "可执行生成符号", true);
         } else { --tokensLeft; tokens.push_back({text.substr(i, 1), i, false, 1}); ++i; }
     }
@@ -348,7 +348,12 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
                 if (block.evidence.size() >= kEvidence) Incomplete(block, "宏证据数量超过预算");
                 else block.evidence.push_back(std::move(hit));
             }
-        } else Scan(block, text, review, tokensLeft, nameBytes);
+        } else {
+            // 参数原值还包含由生产生成器降为存储键的名称，不能把原值本身当作JASS文件。
+            // 仅在整份实际生成正文已有完整宿主覆盖时区分这层表示；仍逐块扫描所有引用和动态构造。
+            const bool loweredArgument = coverage && coverage->complete && kind == AtomicRenameCodeKind::ArgumentCode;
+            Scan(block, text, review, tokensLeft, nameBytes, !loweredArgument);
+        }
         if (kind == AtomicRenameCodeKind::ArgumentCode) {
             const auto found = arguments.find(id);
             if (found != arguments.end()) {
