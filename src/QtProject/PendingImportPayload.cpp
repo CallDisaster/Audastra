@@ -10,6 +10,10 @@ Status ValidatePendingImports(std::span<const PendingImport> entries) {
     std::uint64_t ownedBytes = 0;
     for (const auto& entry : entries) {
         if (entry.size < 0) return Status::Failure("Import", "OWNED_IMPORT_INVALID", "导入长度无效。");
+        if (entry.ownedPayload && (!entry.diskPath.isEmpty() || static_cast<std::uint64_t>(entry.size) != entry.ownedPayload->size()))
+            return Status::Failure("Import", "OWNED_IMPORT_INVALID", "内存导入的来源或长度不一致。");
+        if (!entry.ownedPayload && entry.diskPath.isEmpty())
+            return Status::Failure("Import", "IMPORT_SOURCE_INVALID", "导入缺少完整来源。");
         const auto role = entry.ownedPayload ? (entry.runtimeLuaDraft ? Services::ImportPayloadRole::OwnedLuaDraft
             : Services::ImportPayloadRole::OwnedResource) : Services::ImportPayloadRole::DiskResource;
         if (const auto status = Services::ImportPayloadPolicy::Check(role, static_cast<std::uint64_t>(entry.size)); !status.Succeeded()) return status;
@@ -22,15 +26,10 @@ Status ValidatePendingImports(std::span<const PendingImport> entries) {
     return Status::Ok();
 }
 Result<std::string> FingerprintPendingImport(const PendingImport& entry, const ProjectSaveControl* control) {
+    if (const auto status = ValidatePendingImports(std::span(&entry, 1)); !status.Succeeded()) return {{}, status.diagnostics};
     if (entry.ownedPayload) {
-        if (!entry.diskPath.isEmpty() || entry.size < 0 || static_cast<std::size_t>(entry.size) != entry.ownedPayload->size())
-            return Result<std::string>::Failure("资源", "OWNED_IMPORT_INVALID", "内存导入的来源、长度或预算不一致。");
-        const auto role = entry.runtimeLuaDraft ? Services::ImportPayloadRole::OwnedLuaDraft : Services::ImportPayloadRole::OwnedResource;
-        if (const auto status = Services::ImportPayloadPolicy::Check(role, entry.ownedPayload->size()); !status.Succeeded()) return {{}, status.diagnostics};
         return Sha256(*entry.ownedPayload, control);
     }
-    if (entry.diskPath.isEmpty() || entry.size < 0)
-        return Result<std::string>::Failure("资源", "IMPORT_SOURCE_INVALID", "导入缺少完整来源。");
     return Sha256File(std::filesystem::path(entry.diskPath.toStdWString()), control);
 }
 Result<std::vector<std::byte>> ReadFrozenPendingImport(const PendingImport& entry, std::string_view expectedSha256,
