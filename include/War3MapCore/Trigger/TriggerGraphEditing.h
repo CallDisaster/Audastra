@@ -3,6 +3,8 @@
 #include "War3MapCore/Trigger/TriggerEditing.h"
 
 #include <map>
+#include <functional>
+#include <span>
 #include <memory>
 #include <stop_token>
 #include <variant>
@@ -49,6 +51,7 @@ struct GraphArgumentValue {
     GraphScalarValue scalar;
     std::shared_ptr<const GraphEcaValue> call;
     std::shared_ptr<const GraphArgumentValue> index;
+    std::string origin; // 解析器提供的原始参数位置，仅用于诊断，不赋予权限。
 };
 struct GraphEcaValue {
     std::string clientKey, function;
@@ -87,10 +90,22 @@ struct GraphMove {
     GraphParentExpectation from, to;
     std::optional<GraphRecordRef> before;
 };
+struct RemovalBlockIdentity {
+    AtomicRenameCodeKind kind = AtomicRenameCodeKind::GlobalCustomCode;
+    StableId id = 0;
+    TextEncoding encoding = TextEncoding::Utf8;
+    std::string sourceSha256, evidenceSha256;
+    bool operator==(const RemovalBlockIdentity&) const = default;
+};
+struct RemovalCodeConfirmation {
+    std::string reviewSha256, decision, reason;
+    std::vector<RemovalBlockIdentity> blocks;
+};
 struct GraphRemove {
     GraphRecordRef target;
     std::string expectedName;
     GraphParentExpectation parent;
+    std::vector<RemovalCodeConfirmation> codeAudits;
 };
 struct GraphInsertSubtree {
     GraphParentExpectation parent;
@@ -163,6 +178,7 @@ struct TriggerGraphEditBatch {
     std::vector<GraphEditOperation> operations;
 };
 enum class TriggerScalarWorkPolicy : std::uint8_t { BoundedSourcesV2, LegacyKnownWork };
+class TriggerStorageCapabilities;
 struct TriggerGraphEditLimits {
     std::size_t maxOperations = 256;
     std::size_t maxAddedRecords = 16384;
@@ -175,12 +191,15 @@ struct TriggerGraphEditLimits {
     std::size_t scalarAdditionalOwnedBytes = 0; // Service 已新拥有的预览/请求/guard 临时量。
     TriggerScalarWorkPolicy scalarWorkPolicy = TriggerScalarWorkPolicy::BoundedSourcesV2;
     std::size_t maxScalarRecords = 524288, maxScalarEdges = 1048576;
+    std::shared_ptr<const TriggerStorageCapabilities> storageCapabilities; // 宿主冻结来源，不接受工具请求设置。
+    std::function<Result<std::shared_ptr<const TriggerStorageCapabilities>>(std::span<const std::string>)> storageCapabilityProvider;
 };
 struct TriggerGraphEditReceipt {
     TriggerGraphBinding before, after;
     std::size_t appliedOperations = 0;
     std::map<std::string, GraphRecordRef> created;
     std::vector<AtomicRenameReceipt> renames;
+    std::vector<RemovalCodeConfirmation> removalAudits;
     std::vector<GraphArgumentReplacementReceipt> argumentReplacements;
     std::size_t codeIdentityChanges = 0;
     // 编辑收据不是撤销栈、外部引用证明、保存或运行证明。

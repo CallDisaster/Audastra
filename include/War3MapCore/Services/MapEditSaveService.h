@@ -196,6 +196,14 @@ struct MapTriggerTextQueryReceipt {
     // 普通 GUI 槽且根数量在编辑预算内时，提供完整原树绑定；不替代 batch 的 pair SHA。
     std::optional<Trigger::TriggerEditTriggerTarget> guiTarget;
 };
+struct MapTriggerQuerySources {
+    std::shared_ptr<MapArchiveSession> archive;
+    Trigger::UiCatalog catalog;
+    Trigger::TriggerDocument document;
+    std::vector<std::byte> wtg;
+};
+// 共用只读配对来源；只读取WTG/WCT，来源SHA/目录/编码由同一入口核验。
+[[nodiscard]] Result<MapTriggerQuerySources> CaptureMapTriggerQuerySources(const MapTriggerTextQueryRequest& request);
 // 从只读归档获取有界 WCT 文本页，使用与保存相同的有效 Catalog 来源。
 // 不执行编译器、不创建工作目录、不消费旧目录事务中的 overlay。
 [[nodiscard]] Result<MapTriggerTextQueryReceipt> QueryMapTriggerText(const MapTriggerTextQueryRequest& request);

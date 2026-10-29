@@ -1,4 +1,5 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/TriggerRemovalAudit.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -9,6 +10,8 @@
 #include "War3MapCore/Trigger/TriggerFeatureText.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerReal.h"
+#include "War3MapCore/Trigger/TriggerValueSafety.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 #include "TriggerArgumentReplacement.h"
 #include "TriggerIdAllocation.h"
@@ -67,12 +70,12 @@ struct RequestBudget {
     }
     bool Arg(const GraphArgumentValue& argument, std::size_t depth, bool existingRoot = false) {
         if (depth > limits.maxDepth || (!existingRoot && records++ >= limits.maxAddedRecords)
-            || !AddText(argument.clientKey) || !AddText(argument.scalar.value)) return false;
+            || !AddText(argument.clientKey) || !AddText(argument.scalar.value) || !AddText(argument.origin)) return false;
         return (!argument.call || Eca(*argument.call, depth + 1)) && (!argument.index || Arg(*argument.index, depth + 1));
     }
     bool Eca(const GraphEcaValue& eca, std::size_t depth) {
         if (depth > limits.maxDepth || records++ >= limits.maxAddedRecords
-            || !AddText(eca.clientKey) || !AddText(eca.function)) return false;
+            || !AddText(eca.clientKey) || !AddText(eca.function) || !AddText(eca.origin)) return false;
         for (const auto& arg : eca.arguments) if (!Arg(arg, depth + 1)) return false;
         for (const auto& child : eca.children) if (!child || !Eca(*child, depth + 1)) return false;
         return true;
@@ -113,7 +116,16 @@ struct RequestBudget {
             } else if constexpr (std::is_same_v<T, GraphMove>) {
                 return Ref(item.target) && Parent(item.from) && Parent(item.to) && (!item.before || Ref(*item.before));
             } else if constexpr (std::is_same_v<T, GraphRemove>) {
-                return Ref(item.target) && AddText(item.expectedName) && Parent(item.parent);
+                if (!Ref(item.target) || !AddText(item.expectedName) || !Parent(item.parent) || item.codeAudits.size() > 16384) return false;
+                std::size_t blocks = 0;
+                for (const auto& audit : item.codeAudits) {
+                    if (!AddText(audit.reviewSha256) || !AddText(audit.decision) || !AddText(audit.reason)) return false;
+                    if (audit.blocks.size() > 16384 - blocks) return false;
+                    blocks += audit.blocks.size();
+                    for (const auto& block : audit.blocks)
+                        if (!AddText(block.sourceSha256) || !AddText(block.evidenceSha256)) return false;
+                }
+                return true;
             } else if constexpr (std::is_same_v<T, GraphReplaceArgument>) {
                 return Ref(item.target) && AddText(item.expected.uiSignature) && AddText(item.expected.expectedType)
                     && AddText(item.expected.subtreeSha256) && Arg(item.value, 0, true);
@@ -145,10 +157,27 @@ struct Editor {
     TriggerGraphEditReceipt receipt;
     std::set<StableId> typedEcas, typedArguments, typedVariables;
     std::uint64_t nextId;
+    std::set<StableId> changedVariableTypes;
     std::map<StableId, std::string> origins; // 紧凑写法节点的行列，诊断定位用
     // 整体替换时目标触发器原有的值，按所属触发器记录，只能留在原触发器里。
     std::set<std::pair<StableId, std::string>> preservedCode; // (触发器, 代码类参数值)
     std::set<std::tuple<StableId, std::string, std::string>> preservedLiterals; // (触发器, 期望类型, 固定值)
+
+    void TouchEcaTree(std::uint32_t index, std::size_t depth = 0) {
+        if (index >= doc.ecaNodes.size() || depth > limits.maxDepth) return;
+        const auto& node = doc.ecaNodes[index]; typedEcas.insert(node.id);
+        for (const auto arg : node.arguments) if (arg < doc.argumentNodes.size() && doc.argumentNodes[arg].callEca)
+            TouchEcaTree(*doc.argumentNodes[arg].callEca, depth + 1);
+        for (const auto arg : node.arguments) if (arg < doc.argumentNodes.size()) {
+            auto index = doc.argumentNodes[arg].indexArgument;
+            for (std::size_t indexDepth = depth; index && *index < doc.argumentNodes.size() && indexDepth <= limits.maxDepth; ++indexDepth) {
+                const auto& nested = doc.argumentNodes[*index];
+                if (nested.callEca) TouchEcaTree(*nested.callEca, indexDepth + 1);
+                index = nested.indexArgument;
+            }
+        }
+        for (const auto child : node.children) TouchEcaTree(child, depth + 1);
+    }
 
     Result<StableId> NewId() {
         const auto id = detail::AllocateId(nextId);
@@ -388,7 +417,9 @@ struct Editor {
             switch (op.field) {
             case GraphField::Comment: row->type = std::get<bool>(op.value) ? 1 : 0; return Status::Ok();
             case GraphField::Description: return TriggerDocumentEditor::SetTriggerComment(doc, row->id, std::get<std::string>(op.value));
-            case GraphField::Enabled: return TriggerDocumentEditor::SetTriggerEnabled(doc, row->id, std::get<bool>(op.value));
+            case GraphField::Enabled:
+                if (std::get<bool>(op.value)) for (const auto root : row->ecas) TouchEcaTree(root);
+                return TriggerDocumentEditor::SetTriggerEnabled(doc, row->id, std::get<bool>(op.value));
             case GraphField::InitiallyOn: return TriggerDocumentEditor::SetTriggerInitiallyOn(doc, row->id, std::get<bool>(op.value));
             case GraphField::RunOnInit: return TriggerDocumentEditor::SetTriggerRunOnInit(doc, row->id, std::get<bool>(op.value));
             default: break;
@@ -398,7 +429,9 @@ struct Editor {
         } else if (op.target.kind == GraphRecordKind::Variable) {
             auto* row = Find(doc.variables, *id.value); typedVariables.insert(row->id);
             switch (op.field) {
-            case GraphField::VariableType: return SetText(row->typeName, std::get<std::string>(op.value));
+            case GraphField::VariableType:
+                changedVariableTypes.insert(row->id);
+                return SetText(row->typeName, std::get<std::string>(op.value));
             case GraphField::VariableArray: row->isArray = std::get<bool>(op.value) ? 1 : 0; break;
             case GraphField::VariableArraySize: row->size = std::get<std::int32_t>(op.value); break;
             case GraphField::VariableInitialized: row->hasDefault = std::get<bool>(op.value) ? 1 : 0; break;
@@ -407,6 +440,10 @@ struct Editor {
             }
             return Status::Ok();
         } else if (op.target.kind == GraphRecordKind::Eca) {
+            if (std::get<bool>(op.value)) {
+                const auto* node = Find(doc.ecaNodes, *id.value);
+                if (node) TouchEcaTree(static_cast<std::uint32_t>(node - doc.ecaNodes.data()));
+            }
             return TriggerDocumentEditor::SetEcaEnabled(doc, *id.value, std::get<bool>(op.value));
         } else {
             const auto& scalar = std::get<GraphScalarValue>(op.value); typedArguments.insert(*id.value);
@@ -476,18 +513,6 @@ struct Editor {
         }
         return Position(op.target.kind, *id.value, parent, before);
     }
-    bool HasOpaqueCode() const {
-        if (!doc.wct.customCode.text.empty()) return true;
-        for (const auto& row : doc.triggers) if (!row.customText.text.empty()) return true;
-        for (const auto& row : doc.ecaNodes) {
-            for (std::size_t i = 0; i < row.arguments.size(); ++i)
-                if (types.LiteralKind(types.ExpectedType(doc, row, i)) == TriggerTypeSystem::Literal::Script) return true;
-        }
-        for (const auto& row : doc.variables) if (row.hasDefault && !FindPreset(catalog, row.value.text)
-                && row.value.text != "null" && (types.LiteralKind(row.typeName.text) == TriggerTypeSystem::Literal::Other
-                    || types.LiteralKind(row.typeName.text) == TriggerTypeSystem::Literal::Script)) return true;
-        return false;
-    }
     Status Apply(const GraphRemove& op) {
         const auto id = Resolve(op.target); if (!id.Succeeded()) return {id.diagnostics};
         if (auto status = Guard(op.parent, *id.value); !status.Succeeded()) return status;
@@ -505,13 +530,9 @@ struct Editor {
         if (op.target.kind == GraphRecordKind::Eca) {
             auto removed = TriggerDocumentEditor::RemoveEcaSubtree(doc, *id.value); return {std::move(removed.diagnostics)};
         }
-        if (HasOpaqueCode()) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "不透明代码仍可能引用声明，通用删除未获得完整引用资格。");
-        const bool variable = op.target.kind == GraphRecordKind::Variable;
-        const auto* trigger = variable ? nullptr : Find(doc.triggers, *id.value);
-        for (const auto& arg : doc.argumentNodes) if (arg.type == 1 && (variable
-                ? arg.value.text == "udg_" + name || arg.value.text == name
-                : TriggerDirectoryEditor::IsTriggerSymbolOf(arg.value.text, trigger->name)))
-            return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "声明仍有 typed 参数引用，须先在同批次移除或改绑它们。");
+        auto resolved = op; resolved.target.id = *id.value; resolved.target.clientKey.clear();
+        if (auto checked = CheckDeclarationRemovalAudit(doc, catalog, resolved, mapObjects); !checked.Succeeded()) return checked;
+        receipt.removalAudits.insert(receipt.removalAudits.end(), op.codeAudits.begin(), op.codeAudits.end());
         if (op.target.kind == GraphRecordKind::Variable) return TriggerDocumentEditor::RemoveVariable(doc, name);
         if (Find(doc.triggers, *id.value)->customTextFlag) return Fail("TRIGGER_GRAPH_CUSTOM_READ_ONLY", "不能删除既有自定义代码槽。");
         auto removed = TriggerDocumentEditor::RemoveTrigger(doc, *id.value); return {std::move(removed.diagnostics)};
@@ -523,6 +544,7 @@ struct Editor {
     Status ConfigureArgument(StableId id, const GraphArgumentValue& spec, const std::string& expected, std::size_t depth) {
         if (depth > limits.maxDepth) return Fail("TRIGGER_GRAPH_BUDGET", "参数递归超过预算。");
         if (auto status = Bind(spec.clientKey, GraphRecordKind::Argument, id); !status.Succeeded()) return status;
+        if (!spec.origin.empty()) origins[id] = spec.origin;
         if (auto status = ClearDefaultCall(id); !status.Succeeded()) return status;
         typedArguments.insert(id);
         if (spec.call) {
@@ -942,14 +964,29 @@ struct Editor {
     }
     Status ValidateTouched() {
         Status failures;
+        std::vector<StableId> safetyScope;
         std::optional<std::vector<char>> inactive;
         std::map<StableId, std::vector<LocalVariable>> replacementLocals;
         for (const auto id : typedVariables) if (const auto* row = Find(doc.variables, id)) {
-            if (auto status = ValidateVariable(*row); !status.Succeeded()) return status;
+            auto status = ValidateVariable(*row);
+            if (!status.Succeeded()) return status;
+            for (auto& diagnostic : status.diagnostics) {
+                diagnostic.message += "（variable_id=" + std::to_string(row->id) + "，变量“" + row->name.text + "”初值）";
+                failures.diagnostics.push_back(std::move(diagnostic));
+            }
         }
         for (const auto& eca : doc.ecaNodes) for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
             const auto& argument = doc.argumentNodes[eca.arguments[i]];
             bool changed = typedEcas.contains(eca.id);
+            const auto* definition = catalog.Find(eca.type, eca.name.text);
+            if (definition && TriggerTypeSystem::DeclaredType(*definition, i) == "Null") {
+                for (std::size_t prior = 0; prior < i; ++prior) {
+                    const auto& selector = doc.argumentNodes[eca.arguments[prior]];
+                    if (typedArguments.contains(selector.id) && types.IsTypeSelector(TriggerTypeSystem::DeclaredType(*definition, prior))) changed = true;
+                    if (selector.type == 1) for (const auto& variable : doc.variables)
+                        if (changedVariableTypes.contains(variable.id) && (selector.value.text == variable.name.text || selector.value.text == "udg_" + variable.name.text)) changed = true;
+                }
+            }
             auto index = eca.arguments[i];
             for (std::size_t depth = 0; depth <= 256 && index < doc.argumentNodes.size(); ++depth) {
                 const auto& current = doc.argumentNodes[index];
@@ -961,6 +998,7 @@ struct Editor {
                 index = *current.indexArgument;
             }
             if (changed) {
+                safetyScope.push_back(argument.id);
                 // 禁用语句（含其禁用上级下的语句）不生成脚本，WE 允许其中留着未设置或失效的参数，不做类型门禁。
                 if (!inactive) inactive = InactiveEcas();
                 if ((*inactive)[static_cast<std::size_t>(&eca - doc.ecaNodes.data())]) continue;
@@ -985,15 +1023,54 @@ struct Editor {
                 auto status = argument.type == -1
                     ? Fail("TRIGGER_GRAPH_ARGUMENT_UNSET", "参数未设置（?）只能留在禁用的语句里。")
                     : TypedArgument(argument, expected, eca.sourceTriggerId, eca.name.text);
-                if (!status.Succeeded()) {
-                    if (const auto found = origins.find(eca.id); found != origins.end())
+                if (!status.diagnostics.empty()) {
+                    for (auto& diagnostic : status.diagnostics) diagnostic.message += "（trigger_id=" + std::to_string(eca.sourceTriggerId)
+                        + "，eca_id=" + std::to_string(eca.id) + "，argument_id=" + std::to_string(argument.id) + "）";
+                    if (const auto argumentOrigin = origins.find(argument.id); argumentOrigin != origins.end())
+                        Locate(status, argumentOrigin->second);
+                    else if (const auto found = origins.find(eca.id); found != origins.end())
                         Locate(status, found->second + " 第 " + std::to_string(i + 1) + " 个参数");
                     for (auto& diagnostic : status.diagnostics) failures.diagnostics.push_back(std::move(diagnostic));
                     if (failures.diagnostics.size() >= 64) return failures;
                 }
             }
         }
-        return failures.diagnostics.empty() ? Status::Ok() : failures;
+        if (!safetyScope.empty()) {
+            auto safety = AnalyzeTriggerValues(doc, catalog, safetyScope, limits.storageCapabilities.get());
+            if (!safety.Succeeded()) return Status{safety.diagnostics};
+            if (!limits.storageCapabilities && limits.storageCapabilityProvider) {
+                std::set<std::string> required;
+                for (const auto& issue : safety.value->issues) if (issue.enabled && !issue.storageType.empty()) required.insert(issue.storageType);
+                if (!required.empty()) {
+                    const std::vector<std::string> names(required.begin(), required.end());
+                    const auto captured = limits.storageCapabilityProvider(names);
+                    if (!captured.Succeeded()) return Status{captured.diagnostics};
+                    safety = AnalyzeTriggerValues(doc, catalog, safetyScope, captured.value->get());
+                    if (!safety.Succeeded()) return Status{safety.diagnostics};
+                }
+            }
+            std::map<StableId, std::vector<TriggerTextArgumentAnchor>> renderedPositions;
+            for (auto& issue : safety.value->issues) {
+                Status located{{std::move(issue.diagnostic)}};
+                if (const auto found = origins.find(issue.argumentId); found != origins.end()) Locate(located, found->second);
+                else if (const auto ecaOrigin = origins.find(issue.ecaId); ecaOrigin != origins.end())
+                    Locate(located, ecaOrigin->second + " 第 " + std::to_string(issue.position + 1) + " 个参数");
+                else {
+                    auto positions = renderedPositions.find(issue.triggerId);
+                    if (positions == renderedPositions.end()) {
+                        std::vector<TriggerTextArgumentAnchor> anchors;
+                        const auto rendered = RenderTriggerText(doc, catalog, issue.triggerId, limits.maxRequestTextBytes, nullptr, mapObjects, &anchors);
+                        if (!rendered.Succeeded()) return Fail("TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "不能将参数诊断定位回当前T文本，请先补齐该触发器的可读上下文。");
+                        positions = renderedPositions.emplace(issue.triggerId, std::move(anchors)).first;
+                    }
+                    const auto anchor = std::find_if(positions->second.begin(), positions->second.end(), [&](const auto& row) { return row.argumentId == issue.argumentId; });
+                    if (anchor == positions->second.end()) return Fail("TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "当前T文本没有此参数的精确位置。");
+                    Locate(located, "当前T第 " + std::to_string(anchor->line) + " 行第 " + std::to_string(anchor->column) + " 列");
+                }
+                failures.diagnostics.push_back(std::move(located.diagnostics.front()));
+            }
+        }
+        return failures;
     }
 };
 } // namespace
@@ -1062,13 +1139,16 @@ Result<TriggerGraphEditReceipt> ApplyPrivateGraphCandidate(const GraphCodeProtec
         ++editor.receipt.appliedOperations;
     }
     if (const auto valid = WtgWctCodec{}.Validate(candidate, catalog); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
-    if (const auto valid = editor.ValidateTouched(); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
+    auto valueSafety = editor.ValidateTouched();
+    if (!valueSafety.Succeeded()) return Failed<TriggerGraphEditReceipt>(valueSafety);
     // ordinary T 不应产生 WCT 变化；对全部既有代码槽再次逐字节复核。
     if (!editor.receipt.codeIdentityChanges) {
         if (const auto valid = CheckGraphCodeProtection(source, candidate); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
     } else if (const auto valid = candidate.VerifyCodeIdentityAuthorization(candidate); !valid.Succeeded())
         return Failed<TriggerGraphEditReceipt>(valid);
-    return Result<TriggerGraphEditReceipt>::Success(std::move(editor.receipt));
+    auto result = Result<TriggerGraphEditReceipt>::Success(std::move(editor.receipt));
+    result.diagnostics = std::move(valueSafety.diagnostics);
+    return result;
 }
 } // namespace
 
@@ -1089,5 +1169,30 @@ Result<TriggerGraphEditReceipt> ApplyTriggerGraphEditBatch(TriggerDocument& docu
 }
 
 #include "TriggerGraphScalarReplay.h"
+
+Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocument& document, const UiCatalog& catalog,
+    const TriggerGraphEditBatch& batch, std::size_t operationIndex, const TriggerGraphEditLimits& limits,
+    const MapObjectReferenceSnapshot* objects) {
+    using Out = Result<DeclarationRemovalReview>;
+    if (const auto status = CheckGraphBatchRequest(batch, limits); !status.Succeeded()) return Failed<DeclarationRemovalReview>(status);
+    if (operationIndex >= batch.operations.size() || !std::holds_alternative<GraphRemove>(batch.operations[operationIndex]))
+        return Out::Failure(kDomain, "TRIGGER_GRAPH_REMOVE_UNSUPPORTED", "operation_index必须指向remove操作。");
+    const auto binding = CaptureTriggerGraphBinding(document, catalog, objects);
+    if (!binding.Succeeded()) return Failed<DeclarationRemovalReview>(binding);
+    if (!SameBinding(*binding.value, batch.expected)) return Out::Failure(kDomain, "TRIGGER_GRAPH_SOURCE_STALE", "删除取证的来源修订已变化。");
+    auto candidate = document;
+    auto operation = std::get<GraphRemove>(batch.operations[operationIndex]);
+    if (operationIndex) {
+        auto prefix = batch; prefix.operations.resize(operationIndex);
+        const auto applied = ApplyTriggerGraphEditBatch(candidate, catalog, prefix, limits, objects);
+        if (!applied.Succeeded()) return Failed<DeclarationRemovalReview>(applied);
+        if (!operation.target.clientKey.empty()) {
+            const auto found = applied.value->created.find(operation.target.clientKey);
+            if (found == applied.value->created.end()) return Out::Failure(kDomain, "TRIGGER_GRAPH_TARGET_MISSING", "删除目标client_key未由前序操作创建。");
+            operation.target = found->second;
+        }
+    }
+    return QueryDeclarationRemovalAudit(candidate, catalog, operation, objects);
+}
 
 } // namespace War3Map::Trigger

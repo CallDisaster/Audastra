@@ -1,4 +1,5 @@
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerReal.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 
 #include "War3MapCore/Game/WorldEditStrings.h"
@@ -253,7 +254,9 @@ Status TriggerTypeSystem::ValidateLiteral(std::string_view type, std::string_vie
             message += presets.size() > 8 ? " 等 " + std::to_string(presets.size()) + " 个（查询 presets 表可列全）。" : "。";
         }
     }
-    return message.empty() ? Status{} : Status::Failure("Trigger.Type", "TRIGGER_LITERAL_INVALID", std::move(message));
+    if (!message.empty()) return Status::Failure("Trigger.Type", "TRIGGER_LITERAL_INVALID", std::move(message));
+    if (kind == Literal::Real) if (auto warning = CheckTriggerRealLiteral(value)) return Status{{std::move(*warning)}};
+    return Status::Ok();
 }
 
 const TriggerTypeInfo* TriggerTypeSystem::Find(std::string_view type) const {

@@ -14,20 +14,71 @@ void UnsupportedLocalStorageWarningReachesCheckAndSave() {
     const auto edited = Trigger::ApplyTriggerGraphEditBatch(*document, *fixture.frozen->catalog, batch);
     std::string details;
     for (const auto& d : edited.diagnostics) details += d.code + ":" + d.message + "\n";
-    Require(edited.Succeeded(), "parse the original two-line T probe: " + details);
+    Require(!edited.Succeeded() && std::any_of(edited.diagnostics.begin(), edited.diagnostics.end(), [](const auto& d) {
+        return d.code == "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE";
+    }), "new active T cannot publish without an actual storage capability snapshot: " + details);
+    const std::vector<std::string> required{"handle"};
+    const auto absent = Script::CaptureMapTriggerStorageCapabilities(*fixture.frozen->catalog, fixture.tool,
+        fixture.tool, fixture.source.parent_path(), required);
+    details.clear(); for (const auto& d : absent.diagnostics) details += d.code + ":" + d.message;
+    Require(absent.Succeeded() && absent.value && (*absent.value)->Supports(fixture.frozen->catalog->Sha256(), "handle") == false,
+        "actual original toolchain proves handle macro absent: " + details);
+    Trigger::TriggerGraphEditLimits limits; limits.storageCapabilities = *absent.value;
+    const auto rejected = Trigger::ApplyTriggerGraphEditBatch(*document, *fixture.frozen->catalog, batch, limits);
+    Require(!rejected.Succeeded() && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& d) {
+        return d.code == "TRIGGER_LOCAL_HANDLE_STORAGE_UNSUPPORTED";
+    }), "known absent storage rejects before publication");
+    WriteOriginalText(fixture.tool / "compiler/include/WaveForce.i", "#define YDTRIGGER_handle(op) LoadUnitHandle\n");
+    const auto extension = Script::CaptureMapTriggerStorageCapabilities(*fixture.frozen->catalog, fixture.tool,
+        fixture.tool, fixture.source.parent_path(), required);
+    Require(extension.Succeeded() && (*extension.value)->Supports(fixture.frozen->catalog->Sha256(), "handle") == true,
+        "actual extension macro capability is accepted");
+    auto extendedDocument = *document; limits.storageCapabilities = *extension.value;
+    Require(Trigger::ApplyTriggerGraphEditBatch(extendedDocument, *fixture.frozen->catalog, batch, limits).Succeeded(),
+        "verified extension supports the shared publication gate");
+    WriteOriginalText(fixture.tool / "compiler/include/WaveForce.i", "#define YDTRIGGER_handle(op) \"not_callable\"\n");
+    const auto malformed = Script::CaptureMapTriggerStorageCapabilities(*fixture.frozen->catalog, fixture.tool,
+        fixture.tool, fixture.source.parent_path(), required);
+    Require(!malformed.Succeeded(), "defined but non-callable macro is not accepted as storage support");
+    WriteOriginalText(fixture.tool / "compiler/include/WaveForce.i", "// original no handle storage macro\n");
+    Require(!(*extension.value)->Validate().Succeeded(), "changed actual capability sources invalidate the snapshot");
+    auto disabledBatch = batch;
+    std::get<Trigger::GraphReplaceTriggerText>(disabledBatch.operations.front()).text =
+        "actions:\n    InitBlizzard()\n    ~RecordInteger(GetHandleId(YDWEGetAnyTypeLocalVariable(\"英雄\")))\n";
+    auto disabledDocument = *document;
+    Require(Trigger::ApplyTriggerGraphEditBatch(disabledDocument, *fixture.frozen->catalog, disabledBatch, limits).Succeeded(),
+        "disabled values only warn and do not demand an unused stale capability proof");
+    // 模拟旧版本已经写入的来源，绕过的是夹具构造，不是产品发布入口。
+    const auto init = Trigger::TriggerDocumentEditor::AppendRootEca(*document, *fixture.frozen->catalog, *trigger.value,
+        Trigger::UiDefinitionKind::Action, "InitBlizzard");
+    const auto record = Trigger::TriggerDocumentEditor::AppendRootEca(*document, *fixture.frozen->catalog, *trigger.value,
+        Trigger::UiDefinitionKind::Action, "RecordInteger");
+    Require(init.Succeeded() && record.Succeeded(), "construct original legacy source actions");
+    const auto firstArgument = [&](StableId id) {
+        const auto found = std::find_if(document->ecaNodes.begin(), document->ecaNodes.end(), [&](const auto& eca) { return eca.id == id; });
+        Require(found != document->ecaNodes.end() && !found->arguments.empty(), "legacy call argument exists");
+        return document->argumentNodes[found->arguments.front()].id;
+    };
+    const auto handle = Trigger::TriggerDocumentEditor::AppendArgumentCall(*document, *fixture.frozen->catalog,
+        firstArgument(record.value->rootEcaId), "integer", "GetHandleId");
+    Require(handle.Succeeded(), "legacy outer call");
+    const auto local = Trigger::TriggerDocumentEditor::AppendArgumentCall(*document, *fixture.frozen->catalog,
+        firstArgument(handle.value->rootEcaId), "handle", "YDWEGetAnyTypeLocalVariable");
+    Require(local.Succeeded() && Trigger::TriggerDocumentEditor::SetScalarArgument(*document,
+        firstArgument(local.value->rootEcaId), 3, "英雄").Succeeded(), "legacy generic local read");
     CodeCheckProjectCache cache;
     const auto checked = CheckProjectTriggers(fixture.frozen, cache, document, 701);
     details = checked.reason;
     for (const auto& d : checked.diagnostics) details += "\n" + d.code + ":" + d.message;
     const auto warning = std::find_if(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& d) {
-        return d.code == "storage-type-unsupported" && d.severity == DiagnosticSeverity::Warning;
+        return d.code == "TRIGGER_LOCAL_HANDLE_STORAGE_UNSUPPORTED" && d.severity == DiagnosticSeverity::Error;
     });
     Require(warning != checked.diagnostics.end(), "the shared check retains the generator warning: " + details);
     Require(warning->trigger && warning->trigger->triggerId == *trigger.value && warning->trigger->triggerName == "StorageProbe"
         && warning->trigger->ecaId != 0 && warning->trigger->function == "YDWEGetAnyTypeLocalVariable"
         && warning->trigger->line == 3 && warning->trigger->column == 31,
         "storage warning identifies the nested local read at T line 3 column 31: " + details);
-    Require(warning->message.find("具体类型（如单位）") != std::string::npos && warning->message.find("全局表达式") != std::string::npos,
+    Require(warning->message.find("unit等具体类型变量") != std::string::npos,
         "warning gives the concrete supported workaround");
     Require(std::any_of(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& d) {
         return d.severity == DiagnosticSeverity::Error;
@@ -70,7 +121,7 @@ void UnsupportedLocalStorageWarningReachesCheckAndSave() {
     details.clear();
     for (const auto& diagnostic : saved.diagnostics) details += diagnostic.code + ": " + diagnostic.message + "\n";
     const auto savedWarning = std::find_if(saved.diagnostics.begin(), saved.diagnostics.end(), [](const auto& d) {
-        return d.code == "storage-type-unsupported" && d.severity == DiagnosticSeverity::Warning;
+        return d.code == "TRIGGER_LOCAL_HANDLE_STORAGE_UNSUPPORTED" && d.severity == DiagnosticSeverity::Error;
     });
     Require(!saved.Succeeded() && !std::filesystem::exists(request.targetCandidate), "unsupported generated syntax still prevents normal candidate publication");
     Require(savedWarning != saved.diagnostics.end() && savedWarning->origin && savedWarning->origin->source == "Map/generated.j"

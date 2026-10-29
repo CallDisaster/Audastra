@@ -1,0 +1,38 @@
+#pragma once
+#include "War3MapCore/Trigger/TriggerGraphEditing.h"
+
+namespace War3Map::Trigger {
+struct RemovalReferenceEvidence {
+    std::string context, text;
+    std::size_t decodedByteOffset = 0, decodedByteLength = 0;
+    std::size_t rawByteOffset = 0, rawByteLength = 0;
+    bool rawRangeExact = false;
+    std::size_t line = 1, column = 1;
+    bool definite = false;
+};
+struct RemovalCodeBlock {
+    RemovalBlockIdentity identity;
+    std::vector<RemovalReferenceEvidence> evidence;
+    bool groupable = false, complete = true, dynamic = false, referenced = false;
+    std::string incompleteReason;
+};
+struct DeclarationRemovalReview {
+    TriggerGraphBinding binding;
+    GraphRecordRef target;
+    std::string expectedName, reviewSha256;
+    std::vector<std::string> symbols;
+    std::vector<StableId> typedArgumentIds;
+    std::vector<RemovalCodeBlock> groupableBlocks, individualBlocks;
+    bool complete = true;
+    bool externalDependenciesVerified = false;
+};
+// 只读查询。按与实际编辑相同的前序操作准备候选；operationIndex指向remove。
+[[nodiscard]] Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(
+    const TriggerDocument&, const UiCatalog&, const TriggerGraphEditBatch&, std::size_t operationIndex,
+    const TriggerGraphEditLimits& limits = {}, const MapObjectReferenceSnapshot* mapObjects = nullptr);
+// 当前删前候选使用的同一取证入口，不提供按名称搜索或静默选择。
+[[nodiscard]] Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(
+    const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot* mapObjects = nullptr);
+[[nodiscard]] Status CheckDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&,
+    const MapObjectReferenceSnapshot* mapObjects = nullptr);
+}

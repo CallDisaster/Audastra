@@ -7,8 +7,10 @@
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerValueSafety.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -864,19 +866,24 @@ Status McpWorkspace::SetScalarArgument(
     if (!scalar.Succeeded()) {
         return scalar;
     }
-    const Status changed = Trigger::TriggerDocumentEditor::SetScalarArgument(
-        candidate, argumentId, valueKind, std::move(value));
-    if (!changed.Succeeded()) {
-        return changed;
-    }
-    return SealDocument(std::move(candidate), "MCP 修改 GUI 标量参数");
+    const auto changed = Trigger::TriggerDocumentEditor::SetScalarArgument(candidate, argumentId, valueKind, std::move(value));
+    if (!changed.Succeeded()) return changed;
+    const std::array<StableId, 1> touched{argumentId};
+    const auto safety = Trigger::AnalyzeTriggerValues(candidate, catalog_, touched);
+    if (!safety.Succeeded()) return {safety.diagnostics};
+    Status checked;
+    for (const auto& issue : safety.value->issues) checked.diagnostics.push_back(issue.diagnostic);
+    if (!checked.Succeeded()) return checked;
+    const auto sealed = SealDocument(std::move(candidate), "MCP 修改 GUI 标量参数");
+    if (!sealed.Succeeded()) return sealed;
+    return checked;
 }
 
 Result<Trigger::TriggerGraphEditReceipt> McpWorkspace::ApplyGraphEdit(
     TransactionId transactionId,
     const ProjectRevision& expectedRevision,
     const Trigger::TriggerGraphEditBatch& batch,
-    const GraphEditPublishValidator& prepublish, bool dryRun) {
+    const GraphEditPublishValidator& prepublish, bool dryRun, const Trigger::TriggerGraphEditLimits& limits) {
     const auto active = CheckActive(transactionId, expectedRevision);
     if (!active.Succeeded()) return FailureFrom<Trigger::TriggerGraphEditReceipt>(active);
     Trigger::TriggerDocument candidate = activeEdit_->document;
@@ -885,7 +892,7 @@ Result<Trigger::TriggerGraphEditReceipt> McpWorkspace::ApplyGraphEdit(
         return FailureFrom<Trigger::TriggerGraphEditReceipt>(objects);
     const auto* references = !batch.expected.mapObjectReferencesSha256.empty() && objects.Succeeded() && objects.value
         ? objects.value->get() : nullptr;
-    auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, catalog_, batch, {}, references);
+    auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, catalog_, batch, limits, references);
     if (!edited.Succeeded()) return edited;
     if (prepublish) {
         const auto checked = prepublish(activeEdit_->document, candidate, *edited.value);

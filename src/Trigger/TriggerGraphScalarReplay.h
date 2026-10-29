@@ -385,7 +385,9 @@ Result<std::shared_ptr<ScalarState>> PrepareScalarOwnedImpl(TriggerDocument& doc
         if (stop.stop_requested()) return Failed<std::shared_ptr<ScalarState>>(Fail("TRIGGER_GRAPH_SCALAR_CANCELLED", "终态收据返回前取消；未发布。"));
         state->receipt = std::move(*edited.value); state->beforeIdentity = *before.value; state->afterIdentity = *after.value;
         state->policy = limits.scalarWorkPolicy; state->cost = cost; state->maxOwnedBytes = limits.maxScalarOwnedBytes; state->maxWorkUnits = limits.maxScalarWorkUnits;
-        return Result<std::shared_ptr<ScalarState>>::Success(std::move(state));
+        auto result = Result<std::shared_ptr<ScalarState>>::Success(std::move(state));
+        result.diagnostics = std::move(edited.diagnostics);
+        return result;
     } catch (const std::bad_alloc&) { return Failed<std::shared_ptr<ScalarState>>(Fail("TRIGGER_GRAPH_SCALAR_ALLOCATION_FAILED", "紧凑候选分配失败；未发布源。")); }
     catch (...) { return Failed<std::shared_ptr<ScalarState>>(Fail("TRIGGER_GRAPH_SCALAR_PREPARE_FAILED", "紧凑候选准备失败；未发布源。")); }
 }
@@ -396,7 +398,9 @@ Result<TriggerGraphScalarEditReceipt> PrepareOwnedTriggerGraphScalarEditBatch(Tr
     const auto state = PrepareScalarOwnedImpl(ownedDocument, catalog, batch, limits, mapObjects, stop, false);
     if (!state.Succeeded()) return Failed<TriggerGraphScalarEditReceipt>(state);
     TriggerGraphScalarEditReceipt result; result.state_ = *state.value;
-    return Result<TriggerGraphScalarEditReceipt>::Success(std::move(result));
+    auto output = Result<TriggerGraphScalarEditReceipt>::Success(std::move(result));
+    output.diagnostics = state.diagnostics;
+    return output;
 }
 Result<TriggerGraphScalarEditReceipt> PrepareTriggerGraphScalarEditBatch(const TriggerDocument& document,
     const UiCatalog& catalog, const TriggerGraphEditBatch& batch, const TriggerGraphEditLimits& limits,
@@ -409,7 +413,9 @@ Result<TriggerGraphScalarEditReceipt> PrepareTriggerGraphScalarEditBatch(const T
         const auto state = PrepareScalarOwnedImpl(candidate, catalog, batch, limits, mapObjects, {}, true);
         if (!state.Succeeded()) return Failed<TriggerGraphScalarEditReceipt>(state);
         TriggerGraphScalarEditReceipt result; result.state_ = *state.value;
-        return Result<TriggerGraphScalarEditReceipt>::Success(std::move(result));
+        auto output = Result<TriggerGraphScalarEditReceipt>::Success(std::move(result));
+        output.diagnostics = state.diagnostics;
+        return output;
     } catch (...) { return Failed<TriggerGraphScalarEditReceipt>(Fail("TRIGGER_GRAPH_SCALAR_ALLOCATION_FAILED", "唯一私有候选复制失败；未发布源。")); }
 }
 

@@ -5,12 +5,14 @@
 #include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerReal.h"
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <map>
 #include <optional>
+#include <tuple>
 
 namespace War3Map::Trigger {
 namespace {
@@ -455,6 +457,7 @@ private:
     }
     GraphArgumentValue Argument(const Expression& expression, const std::string& declaredType, std::size_t depth) {
         GraphArgumentValue argument;
+        argument.origin = Where(expression.at);
         if (!Count(expression.at, depth)) return argument;
         if (expression.call) {
             const auto slot = TriggerTypeSystem::FunctionSlotKind(declaredType);
@@ -591,6 +594,7 @@ public:
 
     std::string error;
     std::vector<std::pair<StableId, std::size_t>> offsets; // (节点, 在输出中的字节位置)
+    std::vector<std::tuple<StableId, std::size_t, std::size_t>> argumentOffsets;
 
     bool Eca(std::uint32_t index, std::size_t indent, std::string& out) {
         if (index >= document_.ecaNodes.size()) return Fail("ECA 索引无效。");
@@ -649,6 +653,12 @@ private:
         return true;
     }
     bool Argument(const ArgumentNode& argument, const std::string& expected, std::string& out) {
+        const auto start = out.size();
+        const auto ok = ArgumentBody(argument, expected, out);
+        argumentOffsets.emplace_back(argument.id, start, out.size() - start);
+        return ok;
+    }
+    bool ArgumentBody(const ArgumentNode& argument, const std::string& expected, std::string& out) {
         const auto& value = argument.value.text;
         if (argument.indexArgument && argument.type != 1) return Fail("非变量参数带了数组下标。");
         switch (argument.type) {
@@ -719,7 +729,7 @@ private:
         using Kind = TriggerTypeSystem::Literal;
         switch (types_.LiteralKind(expected)) {
         case Kind::Integer: if (TriggerTypeSystem::IsIntegerLiteral(value)) return value; break;
-        case Kind::Real: if (TriggerTypeSystem::IsRealLiteral(value)) return value; break;
+        case Kind::Real: if (const auto shortest = ShortestTriggerReal(value)) return *shortest; break;
         case Kind::Boolean: if (value == "true" || value == "false") return value; break;
         case Kind::ObjectCode: if (TriggerTypeSystem::IsObjectCodeLiteral(value)) return "'" + value + "'"; break;
         default: break;
@@ -796,7 +806,8 @@ std::string TriggerTextQuoted(std::string_view value) { return Quoted(value); }
 std::string TriggerTextName(std::string_view name) { return NameText(name); }
 
 Result<std::string> RenderTriggerText(const TriggerDocument& document, const UiCatalog& catalog,
-    StableId triggerId, std::size_t maxBytes, std::vector<TriggerTextAnchor>* anchors, const MapObjectReferenceSnapshot* mapObjects) {
+    StableId triggerId, std::size_t maxBytes, std::vector<TriggerTextAnchor>* anchors, const MapObjectReferenceSnapshot* mapObjects,
+    std::vector<TriggerTextArgumentAnchor>* argumentAnchors) {
     const auto trigger = std::find_if(document.triggers.begin(), document.triggers.end(),
         [triggerId](const TriggerRecord& row) { return row.id == triggerId; });
     if (trigger == document.triggers.end())
@@ -833,6 +844,19 @@ Result<std::string> RenderTriggerText(const TriggerDocument& document, const UiC
                 else if ((byte & 0xC0U) != 0x80U) ++at.column;
             }
             anchors->push_back({eca, at.line, at.column});
+        }
+    }
+    if (argumentAnchors) {
+        argumentAnchors->clear();
+        std::sort(renderer.argumentOffsets.begin(), renderer.argumentOffsets.end(), [](const auto& a, const auto& b) { return std::get<1>(a) < std::get<1>(b); });
+        Position at; std::size_t scanned = 0;
+        for (const auto& [id, offset, length] : renderer.argumentOffsets) {
+            for (; scanned < offset; ++scanned) {
+                const auto byte = static_cast<unsigned char>(out[scanned]);
+                if (byte == '\n') { ++at.line; at.column = 1; }
+                else if ((byte & 0xC0U) != 0x80U) ++at.column;
+            }
+            argumentAnchors->push_back({id, at.line, at.column, offset, length});
         }
     }
     return Result<std::string>::Success(std::move(out));

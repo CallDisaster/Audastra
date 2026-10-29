@@ -287,6 +287,9 @@ void TestSafeWorkspace() {
         Expect(workspace.SetScalarArgument(
             *transaction.value, revision, unitArgument, 0, "PresetFootman").Succeeded(),
             "matching TriggerParams preset was rejected");
+        const auto precision = workspace.SetScalarArgument(*transaction.value, revision, realArgument, 3, "0.13799999999999998");
+        Expect(precision.Succeeded() && HasDiagnostic(precision, "TRIGGER_REAL_LITERAL_PRECISION_RISK"),
+            "legacy scalar publishing retains the common real warning");
         Expect(workspace.SetScalarArgument(
             *transaction.value, revision, unitArgument, 1, "udg_UnitVar").Succeeded(),
             "matching declared variable was rejected");

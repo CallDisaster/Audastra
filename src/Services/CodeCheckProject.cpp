@@ -15,6 +15,8 @@
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
+#include "War3MapCore/Script/TriggerStorageCapabilities.h"
+#include "War3MapCore/Script/ScriptUserSourceRequest.h"
 
 #include <algorithm>
 #include <chrono>
@@ -43,20 +45,8 @@ std::string Reason(const std::vector<Diagnostic>& diagnostics, std::string fallb
 }
 Script::ScriptUserSourceRequest ModernUserSources(const Script::ScriptToolchainLayout& layout,
     const CodeCheckProjectSnapshot& snapshot, const std::filesystem::path& mapDirectory) {
-    Script::ScriptUserSourceRequest request{&layout, snapshot.catalog.get(),
-        Trigger::UiCatalog::ResolveUiRoot(snapshot.uiRoot.empty() ? snapshot.toolRoot : snapshot.uiRoot)};
-    request.mapDirectory = mapDirectory;
-    // 与 MapScriptBuild 相同：只按实际启用层序提供各层现存 jass 根。
-    // 来源计划不会自行推断显式根；捕获和复核都必须使用同一份输入合同。
-    for (const auto& layer : snapshot.catalog->Layers()) {
-        const auto root = request.uiRoot / std::filesystem::path(std::u8string(layer.begin(), layer.end())) / "jass";
-        std::error_code error;
-        if (std::filesystem::is_directory(root, error)) {
-            request.explicitInjectionRoots.push_back(root);
-            request.explicitUserIncludes.push_back(root);
-        }
-    }
-    return request;
+    return Script::MakeModernUserSourceRequest(layout, *snapshot.catalog,
+        snapshot.uiRoot.empty() ? snapshot.toolRoot : snapshot.uiRoot, mapDirectory);
 }
 void Poll(std::stop_token cancel, Clock::time_point deadline) {
     if (cancel.stop_requested() || Clock::now() >= deadline) throw std::runtime_error("code-check-stopped");
@@ -794,9 +784,48 @@ CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjec
         std::lock_guard lock(cache.impl_->mutex);
         auto& owned = *cache.impl_;
         if (auto reason = PrepareContext(owned, snapshot, request, cancel, deadline)) return incomplete(std::move(*reason));
+        std::shared_ptr<const Trigger::TriggerStorageCapabilities> storageCapabilities;
+        const auto requiredStorage = Trigger::RequiredTriggerStorageTypes(*document, *snapshot->catalog);
+        if (!requiredStorage.empty()) {
+            auto captured = Script::CaptureMapTriggerStorageCapabilities(*snapshot->catalog, snapshot->toolRoot, snapshot->uiRoot,
+                snapshot->sourcePath.parent_path(), requiredStorage);
+            if (captured.Succeeded()) storageCapabilities = *captured.value;
+        }
+        auto safety = Trigger::AnalyzeTriggerValues(*document, *snapshot->catalog, {}, storageCapabilities.get());
+        if (!safety.Succeeded()) return incomplete(Reason(safety.diagnostics, "参数安全检查不能完整执行。"));
         Script::MapScriptResult generated;
         auto result = CheckGeneratedMap(owned, snapshot, request, *document, std::nullopt, true, incomplete, cancel, deadline, &generated);
         if (!generated.statements.empty()) LocateTriggerDiagnostics(result, generated, *document, *snapshot->catalog, cancel, deadline);
+        std::erase_if(result.diagnostics, [&](const auto& diagnostic) {
+            if (diagnostic.code == "TRIGGER_REAL_LITERAL_PRECISION_RISK") return true;
+            if (diagnostic.code != "storage-type-unsupported" || !diagnostic.trigger) return false;
+            return std::any_of(safety.value->issues.begin(), safety.value->issues.end(), [&](const auto& issue) {
+                if (issue.storageType.empty() || issue.triggerId != diagnostic.trigger->triggerId) return false;
+                const auto argument = std::find_if(document->argumentNodes.begin(), document->argumentNodes.end(), [&](const auto& row) { return row.id == issue.argumentId; });
+                return argument != document->argumentNodes.end() && argument->callEca && *argument->callEca < document->ecaNodes.size()
+                    && document->ecaNodes[*argument->callEca].id == diagnostic.trigger->ecaId;
+            });
+        });
+        for (const auto& issue : safety.value->issues) {
+            CodeCheckDiagnostic diagnostic;
+            diagnostic.severity = issue.diagnostic.severity; diagnostic.code = issue.diagnostic.code; diagnostic.message = issue.diagnostic.message;
+            const auto trigger = std::find_if(document->triggers.begin(), document->triggers.end(), [&](const auto& row) { return row.id == issue.triggerId; });
+            if (trigger != document->triggers.end()) {
+                std::vector<Trigger::TriggerTextArgumentAnchor> anchors;
+                const auto text = Trigger::RenderTriggerText(*document, *snapshot->catalog, trigger->id, 4 * 1024 * 1024, nullptr, nullptr, &anchors);
+                if (text.Succeeded()) {
+                    const auto found = std::find_if(anchors.begin(), anchors.end(), [&](const auto& anchor) { return anchor.argumentId == issue.argumentId; });
+                    if (found != anchors.end()) diagnostic.trigger = CodeCheckTriggerLocation{issue.triggerId, issue.ecaId, trigger->name.text,
+                        "", static_cast<std::uint32_t>(found->line), static_cast<std::uint32_t>(found->column), {}};
+                    const auto argument = std::find_if(document->argumentNodes.begin(), document->argumentNodes.end(), [&](const auto& row) { return row.id == issue.argumentId; });
+                    if (diagnostic.trigger && argument != document->argumentNodes.end() && argument->callEca && *argument->callEca < document->ecaNodes.size()) {
+                        diagnostic.trigger->ecaId = document->ecaNodes[*argument->callEca].id;
+                        diagnostic.trigger->function = document->ecaNodes[*argument->callEca].name.text;
+                    }
+                }
+            }
+            result.diagnostics.push_back(std::move(diagnostic));
+        }
         // 先列能定位到 T 语句的错误，再列其他错误与提示，便于分页读取。
         const auto rank = [](const CodeCheckDiagnostic& diagnostic) {
             const bool error = diagnostic.severity == DiagnosticSeverity::Error;

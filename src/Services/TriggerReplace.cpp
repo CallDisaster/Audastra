@@ -1078,7 +1078,10 @@ public:
         auto data = std::make_shared<TriggerReplacePreviewData>(source.prepared);
         data->scalarReceipt = *applied.value; data->batch.expected = applied.value->Receipt().before;
         out.cost = applied.value->Cost(); out.documentBytesCharged = out.cost.peakOwnedBytes; out.workUnitsCharged = out.cost.workUnitsCharged;
-        out.preview = TriggerReplacePreview(std::move(data)); return Result<TriggerReplacePreviewResult>::Success(std::move(out));
+        out.preview = TriggerReplacePreview(std::move(data));
+        auto result = Result<TriggerReplacePreviewResult>::Success(std::move(out));
+        result.diagnostics = applied.diagnostics;
+        return result;
     }
     static Status CheckContext(const TriggerReplaceContext& c, const TriggerReplacePreview& preview, const TriggerReplaceLimits& l) {
         if (!preview.data_ || preview.data_->scalarReceipt.Empty()) return Fail("TRIGGER_REPLACE_PREVIEW_UNBOUND", "没有服务实际创建的非空预览。");

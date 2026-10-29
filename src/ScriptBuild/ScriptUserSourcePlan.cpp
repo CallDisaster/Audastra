@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/ScriptUserSourcePlan.h"
+#include "War3MapCore/Script/ScriptUserSourceRequest.h"
 #include "ScriptSourceBinding.h"
 
 #include "War3MapCore/Hash.h"
@@ -12,6 +13,20 @@
 #include <utility>
 
 namespace War3Map::Script {
+ScriptUserSourceRequest MakeModernUserSourceRequest(const ScriptToolchainLayout& layout, const Trigger::UiCatalog& catalog,
+    const std::filesystem::path& uiRoot, const std::filesystem::path& mapDirectory) {
+    ScriptUserSourceRequest request{&layout, &catalog, Trigger::UiCatalog::ResolveUiRoot(uiRoot)};
+    request.mapDirectory = mapDirectory;
+    for (const auto& layer : catalog.Layers()) {
+        const auto root = request.uiRoot / std::filesystem::path(std::u8string(layer.begin(), layer.end())) / "jass";
+        std::error_code error;
+        if (std::filesystem::is_directory(root, error)) {
+            request.explicitInjectionRoots.push_back(root);
+            request.explicitUserIncludes.push_back(root);
+        }
+    }
+    return request;
+}
 namespace {
 using Kind = ScriptToolchainBindingKind;
 using PlanResult = Result<ScriptUserSourcePlan>;

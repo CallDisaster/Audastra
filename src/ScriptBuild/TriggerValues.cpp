@@ -3,6 +3,7 @@
 #include "ScriptNames.h"
 
 #include "War3MapCore/Script/MapScript.h"
+#include "War3MapCore/Trigger/TriggerReal.h"
 
 namespace War3Map::Script::detail {
 namespace {
@@ -111,6 +112,9 @@ void TriggerEmitter::PutNativeValue(const Arg& arg, const std::string& slotType)
             return;
         }
         const auto kind = types_.LiteralKind(slotType);
+        if (kind == Trigger::TriggerTypeSystem::Literal::Real) {
+            if (const auto warning = Trigger::CheckTriggerRealLiteral(value)) Warn(warning->code, warning->message);
+        }
         const auto validated = types_.ValidateLiteral(slotType, value);
         if (!validated.Succeeded() && (kind == Trigger::TriggerTypeSystem::Literal::ObjectCode
             || kind == Trigger::TriggerTypeSystem::Literal::Integer || kind == Trigger::TriggerTypeSystem::Literal::Other)) {

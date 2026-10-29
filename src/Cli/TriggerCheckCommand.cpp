@@ -1,4 +1,5 @@
 #include "TriggerCheckCommand.h"
+#include "War3MapCore/Script/TriggerStorageCapabilities.h"
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -28,7 +29,7 @@ const char* Severity(DiagnosticSeverity severity) {
 
 // 在内存中用文本整体替换一个触发器；失败时列出全部诊断。
 bool ReplaceTrigger(Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog, const MapArchiveSession& archive,
-    const std::filesystem::path& gameRoot, std::string_view name, const std::filesystem::path& textFile) {
+    const std::filesystem::path& gameRoot, const std::filesystem::path& toolRoot, std::string_view name, const std::filesystem::path& textFile) {
     std::ifstream stream(textFile, std::ios::binary);
     if (!stream) { std::cerr << "TriggerCheck: TEXT_FILE_READ_FAILED\n"; return false; }
     const std::string text{std::istreambuf_iterator<char>(stream), {}};
@@ -42,11 +43,16 @@ bool ReplaceTrigger(Trigger::TriggerDocument& document, const Trigger::UiCatalog
     if (!binding.Succeeded()) { std::cerr << FirstMessage(binding.diagnostics) << '\n'; return false; }
     Trigger::TriggerGraphEditBatch batch{*binding.value, {}};
     batch.operations.emplace_back(Trigger::GraphReplaceTriggerText{{Trigger::GraphRecordKind::Trigger, trigger->id, {}}, text});
-    const auto applied = Trigger::ApplyTriggerGraphEditBatch(document, catalog, batch, {}, references);
+    Trigger::TriggerGraphEditLimits limits;
+    limits.storageCapabilityProvider = [&](std::span<const std::string> names) {
+        return Script::CaptureMapTriggerStorageCapabilities(catalog, toolRoot, toolRoot, archive.SourcePath().parent_path(), names);
+    };
+    const auto applied = Trigger::ApplyTriggerGraphEditBatch(document, catalog, batch, limits, references);
     if (!applied.Succeeded()) {
         for (const auto& diagnostic : applied.diagnostics) std::cout << "edit " << diagnostic.code << " " << diagnostic.message << '\n';
         return false;
     }
+    for (const auto& diagnostic : applied.diagnostics) std::cout << "edit " << diagnostic.code << " " << diagnostic.message << '\n';
     return true;
 }
 } // namespace
@@ -86,7 +92,7 @@ int RunTriggerCheck(const std::filesystem::path& ydweRoot, const std::filesystem
     }
 
     if (!triggerName.empty() && !textFile.empty()
-        && !ReplaceTrigger(*document, *catalog, *archive.value, gameRoot, triggerName, textFile)) return 2;
+        && !ReplaceTrigger(*document, *catalog, *archive.value, gameRoot, ydweRoot, triggerName, textFile)) return 2;
 
     Services::CodeCheckProjectCache cache;
     const auto started = std::chrono::steady_clock::now();

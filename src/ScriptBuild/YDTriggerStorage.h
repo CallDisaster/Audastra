@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/Trigger/TriggerStorage.h"
 
 #include <span>
 #include <string>
@@ -16,15 +17,8 @@ inline constexpr std::string_view kLocalTable = "YDLOC";
 inline constexpr std::string_view kUserDataTable = "YDHT";
 
 // 某个存储类型（YDTrigger 的 type 参数，如 integer / unit / StringExt）对应的原生哈希表函数。
-struct StorageNatives {
-    std::string load;   // LoadInteger / LoadStr / LoadUnitHandle …
-    std::string save;   // SaveInteger / SaveUnitHandle …；nullSafeHandleSet 时句柄类型为库函数 YDTRIGGER_SET_<type>
-    std::string have;   // HaveSavedInteger / HaveSavedString / HaveSavedHandle …
-    std::string remove; // RemoveSavedInteger / RemoveSavedString / RemoveSavedHandle …
-    bool known = true;  // false：YDTrigger 不支持该类型，名称按宏拼接规则原样给出（语法检查会报未定义）
-};
-
-[[nodiscard]] StorageNatives StorageFor(std::string_view type, bool nullSafeHandleSet);
+using Trigger::StorageNatives;
+using Trigger::StorageFor;
 
 // 常量键：StringHash(name) 的编译期结果，写成 0x%08X（name 中的反斜杠转义与模板求值一致）。
 [[nodiscard]] std::string StorageKey(std::string_view name);

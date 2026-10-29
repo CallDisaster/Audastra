@@ -219,7 +219,7 @@ std::string TriggerEmitter::FuncName(const std::string& name, std::size_t index)
 }
 
 void TriggerEmitter::Warn(std::string code, std::string message) const {
-    const bool locate = code == "storage-type-unsupported";
+    const bool locate = code == "storage-type-unsupported" || code == "TRIGGER_REAL_LITERAL_PRECISION_RISK";
     std::string where = trigger_ != nullptr ? "触发器“" + trigger_->name.text + "”：" : std::string{};
     diagnostics_.push_back({DiagnosticSeverity::Warning, "Script.Trigger", std::move(code), where + std::move(message), {}});
     if (locate && out_.Owner().trigger != 0) diagnosticOwners_.emplace_back(diagnostics_.size() - 1, out_.Owner());

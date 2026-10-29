@@ -103,6 +103,7 @@ public:
         std::uintmax_t maxSourceBytes = 32ULL * 1024 * 1024);
     [[nodiscard]] const Trigger::TriggerTypeSystem* PreparedProjectSearchTypes() const noexcept;
     [[nodiscard]] const std::filesystem::path& SourceRoot() const noexcept { return projectRoot_; }
+    [[nodiscard]] const std::filesystem::path& UiDataRoot() const noexcept { return uiDataRoot_; }
     [[nodiscard]] const std::filesystem::path& GameRoot() const noexcept { return gameRoot_; }
 
     // 同一领域命令在 GUI 与独立 MCP 使用；独立宿主仍只写 EditorSession overlay。
@@ -167,7 +168,8 @@ public:
         TransactionId transactionId,
         const ProjectRevision& expectedRevision,
         const Trigger::TriggerGraphEditBatch& batch,
-        const GraphEditPublishValidator& prepublish = {}, bool dryRun = false);
+        const GraphEditPublishValidator& prepublish = {}, bool dryRun = false,
+        const Trigger::TriggerGraphEditLimits& limits = {});
     [[nodiscard]] Result<SemanticDiff> PreviewEdit(
         TransactionId transactionId,
         const ProjectRevision& expectedRevision);
