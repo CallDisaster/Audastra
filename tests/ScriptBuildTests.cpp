@@ -1113,7 +1113,13 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
         }
         for (const auto& block : review.individualBlocks) op.codeAudits.push_back({review.reviewSha256, "no_reference", "reviewed original macro evidence", {block.identity}});
     };
-    auto review = query(); Require(review.Succeeded() && review.value->complete && review.value->includedFileCount >= 2, "actual include/force-include coverage complete");
+    auto review = query();
+    if (!review.Succeeded()) for (const auto& d : review.diagnostics) std::cerr << d.code << ": " << d.message << '\n';
+    else if (!review.value->complete || review.value->includedFileCount < 2) {
+        std::cerr << "removal fixture complete=" << review.value->complete << " includes=" << review.value->includedFileCount << '\n';
+        for (const auto& block : review.value->individualBlocks) if (!block.complete) std::cerr << block.incompleteReason << '\n';
+    }
+    Require(review.Succeeded() && review.value->complete && review.value->includedFileCount >= 2, "actual include/force-include coverage complete");
     confirm(*review.value);
     Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "original dependency can be confirmed");
     WriteText(map / "dep.j", "// content changed\n");

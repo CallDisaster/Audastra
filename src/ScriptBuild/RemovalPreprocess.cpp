@@ -153,7 +153,8 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
     for (std::size_t i = 0; i < outputLines.size(); ++i) {
         const auto position = expanded.sourceMap.Find(static_cast<std::uint32_t>(i + 1));
         if (!position || position->file >= expanded.sourceMap.Files().size()) {
-            if (i + 1 < outputLines.size() && outputLines[i + 1] > outputLines[i] + 1) {
+            const auto end = i + 1 < outputLines.size() ? outputLines[i + 1] : expandedText.size();
+            if (expandedText.substr(outputLines[i], end - outputLines[i]).find_first_not_of(" \t\r\n") != std::string::npos) {
                 result.complete = false; result.incompleteReason = "展开文本缺少来源映射";
             }
             continue;
