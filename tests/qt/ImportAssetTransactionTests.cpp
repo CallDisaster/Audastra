@@ -2,6 +2,7 @@
 #include "PreparedAssetState.h"
 #include "PendingImportPayload.h"
 #include "MapSaveJob.h"
+#include "War3MapCore/Hash.h"
 #include "Commands/TriggerCommands.h"
 #include "War3MapCore/Services/ImportPayloadPolicy.h"
 #include "War3MapCore/Resources/ImportTable.h"
