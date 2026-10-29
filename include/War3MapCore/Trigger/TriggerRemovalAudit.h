@@ -2,6 +2,20 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 
 namespace War3Map::Trigger {
+struct OpaqueArgumentSample { StableId id = 0; std::size_t bytes = 0; std::string text; };
+struct OpaqueArgumentClass {
+    std::string expectedType;
+    int literalKind = 0;
+    bool validateLiteral = false, opaque = false, dispatch = false;
+    std::size_t count = 0, bytes = 0, shortCount = 0;
+    std::vector<OpaqueArgumentSample> samples;
+};
+struct OpaqueArgumentInventory {
+    std::size_t arguments = 0, opaqueArguments = 0, totalBytes = 0;
+    std::vector<OpaqueArgumentClass> classes;
+};
+// 完整有界统计，不是删除证据或授权；不会改变正式审计的块数上限。
+[[nodiscard]] Result<OpaqueArgumentInventory> InspectOpaqueArgumentInventory(const TriggerDocument&, const UiCatalog&);
 struct RemovalReferenceEvidence {
     std::string context, text;
     std::size_t decodedByteOffset = 0, decodedByteLength = 0;
