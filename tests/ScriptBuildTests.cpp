@@ -1172,6 +1172,8 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
 }
 void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     const auto tool = root / "tool", ui = tool / "ui", map = root / "map";
+    const auto dependency = ui / "base/jass/dep.j";
+    std::filesystem::create_directories(map);
     WriteText(ui / "config", "base\n");
     WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
     WriteText(ui / "base/jass/Fixture.cfg", "UnrelatedEntry\n");
@@ -1180,7 +1182,7 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     for (const auto* header : {"YDTrigger.h", "Globals.h", "Function.h"}) WriteText(tool / "compiler/include/YDTrigger" / header, "// original fixture interface\n");
     WriteText(tool / "compiler/jass/24/common.j", "// original common\n");
     WriteText(tool / "compiler/jass/24/blizzard.j", "// original blizzard\n");
-    WriteText(map / "dep.j", "// original dependency\n");
+    WriteText(dependency, "// original dependency\n");
     const auto layout = ResolveScriptToolchainLayout({tool, 24, 127}); const auto catalog = Trigger::UiCatalog::Load(ui);
     Require(layout.Succeeded() && catalog.Succeeded(), "modern removal context");
     const auto sources = MakeModernUserSourceRequest(*layout.value, *catalog.value, ui, map);
@@ -1206,15 +1208,17 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     if (!review.Succeeded()) for (const auto& d : review.diagnostics) std::cerr << d.code << ':' << d.message << '\n';
     Require(review.Succeeded() && review.value->complete && review.value->includedFileCount >= 5, "modern complete include coverage");
     confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "modern group check");
-    WriteText(map / "dep.j", "// changed dependency\n");
+    WriteText(dependency, "// changed dependency\n");
     const auto stale = Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); Require(HasCode(stale.diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "modern dependency hash bound");
-    WriteText(map / "dep.j", "call TriggerExecute(gg_trg_Target)\n");
+    WriteText(dependency, "call TriggerExecute(gg_trg_Target)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().referenced, "modern included target detected");
-    WriteText(map / "dep.j", "#define JOIN(a,b) a ## b\nJOIN(unrelated,Name)\n");
+    WriteText(dependency, "#define JOIN(a,b) a ## b\nJOIN(unrelated,Name)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().dynamic, "modern paste macro needs review");
     confirm(*review.value); Trigger::TriggerGraphEditLimits limits; limits.removalPreprocessProvider = provider;
     auto copy = doc; auto binding = Trigger::CaptureTriggerGraphBinding(copy, *catalog.value); Require(binding.Succeeded(), "modern binding");
     Require(Trigger::ApplyTriggerGraphEditBatch(copy, *catalog.value, {*binding.value, {op}}, limits).Succeeded(), "modern memory deletion preview");
+    WriteText(map / "dep.j", "// source-directory shadow is not a save workspace\n");
+    review = query(); Require(review.Succeeded() && !review.value->complete, "source-directory shadow cannot stand in for a fresh save workspace");
     doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"}; review = query();
     Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN") != std::string::npos, "modern AI include never read");
 }

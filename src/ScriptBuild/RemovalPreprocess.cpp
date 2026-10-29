@@ -4,6 +4,7 @@
 #include "War3MapCore/Text/SourceEncoding.h"
 #include "War3MapCore/Text/Utf8Scalar.h"
 #include <algorithm>
+#include <cwctype>
 #include <map>
 #include <set>
 
@@ -97,7 +98,7 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     request.mainDirectory = framework ? framework->profile.mainSourceDirectory : entry.mapDirectory;
     request.captureMacroAudit = true; request.forbidAiIncludes = true;
     if (framework) request.frameworkDirectivePolicy = FrameworkDirectivePolicy(*framework);
-    request.includeCandidatePolicy = ScriptIncludeCandidatePolicy::BoundRootsSearch;
+    request.includeCandidatePolicy = framework ? ScriptIncludeCandidatePolicy::BoundRootsSearch : ScriptIncludeCandidatePolicy::Strict;
     request.defines = {{"WARCRAFT_VERSION", std::to_string(current.layout->versionMacro)}, {"YDWE_VERSION_STRING", "\"" + std::string(versionString) + "\""}};
     if (inputs.debug) request.defines.emplace_back("DEBUG", "1");
     if (scriptInjection) { request.defines.emplace_back("SCRIPT_INJECTION", "1"); if (framework) request.mainLexicalView = lexical; }
@@ -130,8 +131,23 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     result.identitySha256 = *hash.value;
     const auto& expanded = sources.preprocessed;
     result.complete = expanded.Succeeded();
+    if (!framework) for (const auto& trace : sources.includeCandidates) {
+        const bool main = trace.requester == std::filesystem::path(request.mainName)
+            || trace.requester == request.mainDirectory / request.mainName;
+        if (!main || trace.searchRole != Jass::IncludeSearchRole::CurrentFile) continue;
+        auto name = trace.candidate.filename().wstring();
+        std::transform(name.begin(), name.end(), name.begin(), [](wchar_t c) { return std::towlower(c); });
+        const bool stage = name == L"1_war3map.j" || name == L"2_inject.j";
+        const bool local = trace.sourceIndex < sources.includes.size()
+            && sources.includes[trace.sourceIndex].binding.kind == ScriptToolchainBindingKind::RegularFile;
+        if (stage || local) {
+            result.complete = false;
+            result.incompleteReason = "现代保存使用独立编译目录；源图目录的影子包含或构建中间文件未证明等价：" + PathText(trace.candidate);
+            break;
+        }
+    }
     if (!result.complete) {
-        result.incompleteReason = "预处理失败";
+        if (result.incompleteReason.empty()) result.incompleteReason = "预处理失败";
         for (const auto& d : expanded.diagnostics) if (d.severity == DiagnosticSeverity::Error) result.incompleteReason += "；" + d.code + ":" + d.message;
         return Out::Success(std::move(result));
     }
