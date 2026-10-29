@@ -122,10 +122,27 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (!dispatch) continue;
         block.dynamic = true; Evidence(block, source, tokens[i].offset, word.size(), "按名/动态调用位置", false);
         if (i + 2 < tokens.size() && tokens[i + 1].text == "(") {
-            const auto& argument = tokens[i + 2];
-            if (argument.quoted && i + 3 < tokens.size() && (tokens[i + 3].text == ")" || tokens[i + 3].text == ",")) {
-                if (Match(argument.text, review, false)) Evidence(block, source, argument.offset, argument.length, "常量按名目标引用", true);
-            } else Evidence(block, source, argument.offset, argument.length, "动态调用目标表达式（须单独确认）", false);
+            std::size_t depth = 1, first = i + 2; bool closed = false;
+            for (std::size_t cursor = first; cursor < tokens.size(); ++cursor) {
+                if (!tokensLeft) { block.complete = false; break; } --tokensLeft;
+                const auto& token = tokens[cursor];
+                if (!token.quoted && token.text == "(") ++depth;
+                if (!token.quoted && token.text == ")") --depth;
+                if (!depth || (depth == 1 && !token.quoted && token.text == ",")) {
+                    if (cursor > first) {
+                        const auto& argument = tokens[first];
+                        if (cursor == first + 1 && argument.quoted) {
+                            if (Match(argument.text, review, false)) Evidence(block, source, argument.offset, argument.length, "常量按名目标引用", true);
+                        } else {
+                            const auto end = tokens[cursor - 1].offset + tokens[cursor - 1].length;
+                            Evidence(block, source, argument.offset, end - argument.offset, "动态调用目标表达式（须单独确认）", false);
+                        }
+                    }
+                    first = cursor + 1;
+                    if (!depth) { closed = true; break; }
+                }
+            }
+            if (!closed) block.complete = false;
         } else Evidence(block, source, tokens[i].offset, word.size(), "按名入口引用（须单独确认）", false);
     }
     std::stable_sort(block.evidence.begin(), block.evidence.end(), [](const auto& a, const auto& b) { return a.decodedByteOffset < b.decodedByteOffset; });

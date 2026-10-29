@@ -462,6 +462,7 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
                 QJsonArray evidence;
                 for (const auto& hit : block.evidence) evidence.append(QJsonObject{{"context", QString::fromStdString(hit.context)},
                     {"text", QString::fromStdString(hit.text)}, {"decoded_byte_offset", QString::number(hit.decodedByteOffset)},
+                    {"snippet_truncated", hit.text.size() < hit.decodedByteLength},
                     {"decoded_byte_length", QString::number(hit.decodedByteLength)}, {"line", QString::number(hit.line)},
                     {"column", QString::number(hit.column)}, {"raw_byte_offset", QString::number(hit.rawByteOffset)},
                     {"raw_byte_length", QString::number(hit.rawByteLength)}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});

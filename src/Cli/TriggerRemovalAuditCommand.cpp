@@ -31,7 +31,7 @@ Json Blocks(const std::vector<RemovalCodeBlock>& blocks) {
     Json result = Json::array();
     for (const auto& block : blocks) {
         const auto& id = block.identity; Json evidence = Json::array();
-        for (const auto& hit : block.evidence) evidence.push_back({{"context", hit.context}, {"text", hit.text}, {"line", hit.line}, {"column", hit.column},
+        for (const auto& hit : block.evidence) evidence.push_back({{"context", hit.context}, {"text", hit.text}, {"snippet_truncated", hit.text.size() < hit.decodedByteLength}, {"line", hit.line}, {"column", hit.column},
             {"decoded_byte_offset", hit.decodedByteOffset}, {"decoded_byte_length", hit.decodedByteLength},
             {"raw_byte_offset", hit.rawByteOffset}, {"raw_byte_length", hit.rawByteLength}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});
         result.push_back({{"identity", {{"kind", Kind(id.kind)}, {"id", std::to_string(id.id)}, {"encoding", TriggerEditEncodingName(id.encoding)},
