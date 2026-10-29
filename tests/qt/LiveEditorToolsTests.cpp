@@ -347,6 +347,7 @@ private slots:
     void CustomSettingsShareOriginalUndoAndRejectStaleCas();
     void CustomCodeIdentitySharesProjectUndoAndForge();
     void CustomCodeIdentityFromTriggerDirectory();
+    void RemovalCommitsQueryConfirmations();
     void SettingsPageEditsTechnologyThroughSharedService();
     void SettingsPageEditsRandomTables();
     void TechPageBuildsRandomTableCommands();

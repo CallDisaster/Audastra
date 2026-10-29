@@ -1,6 +1,7 @@
 #include "TriggerCommands.h"
 
 #include "EditorProject.h"
+#include "ProjectRemovalCodeAudit.h"
 #include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Script/TriggerStorageCapabilities.h"
@@ -771,10 +772,7 @@ Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
             edited = Result<Receipt>::Success(std::move(unchanged));
         } else {
             Trigger::TriggerGraphEditLimits limits;
-            limits.removalPreprocessProvider = [&project, provider = Trigger::RemovalPreprocessProvider{}](const auto& document, const auto& catalog, const auto& operation) mutable {
-                if (!provider) provider = Services::MakeProjectRemovalPreprocessProvider(project.CaptureCodeCheckSnapshot());
-                return provider(document, catalog, operation);
-            };
+            limits.removalPreprocessProvider = LazyRemovalPreprocessProvider(project);
             limits.storageCapabilityProvider = [&](std::span<const std::string> names) {
                 const auto snapshot = project.CaptureCodeCheckSnapshot();
                 if (!snapshot) return Result<std::shared_ptr<const Trigger::TriggerStorageCapabilities>>::Failure(

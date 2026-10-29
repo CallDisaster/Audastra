@@ -120,6 +120,13 @@ std::optional<RemovalCodeNotice> RemovalCodeAudit::Run(
     return notice;
 }
 
+Trigger::RemovalPreprocessProvider LazyRemovalPreprocessProvider(const EditorProject& project) {
+    return [&project, provider = Trigger::RemovalPreprocessProvider{}](const auto& document, const auto& catalog, const auto& operation) mutable {
+        if (!provider) provider = Services::MakeProjectRemovalPreprocessProvider(project.CaptureCodeCheckSnapshot());
+        return provider(document, catalog, operation);
+    };
+}
+
 bool RemovalCodeAudit::Current(const EditorProject& project) const {
     // 快照身份已含修订、引用索引与来源变化标记；没有快照时只核对修订。
     if (snapshot_ && !project.IsCodeCheckBindingCurrent(snapshot_->binding)) return false;

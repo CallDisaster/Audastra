@@ -118,3 +118,65 @@ void LiveEditorToolsTests::CustomCodeIdentityFromTriggerDirectory() {
     QCOMPARE(QString::fromStdString(codeTrigger()->name.text), QString("CodeSource"));
     QCOMPARE(codeTrigger()->customText.text, before);
 }
+
+// MCP 实时删除与 remove_audit 查询用同一预处理覆盖：查询给出的确认能直接提交，一步撤销。
+void LiveEditorToolsTests::RemovalCommitsQueryConfirmations() {
+    namespace I = AudastraTest::CodeIdentity;
+    I::Fixture native; Fixture f; QVERIFY2(f.Initialize(false, false), qPrintable(f.error));
+    for (const auto& member : native.members) if (member.name != "war3map.wtg" && member.name != "war3map.wct")
+        QVERIFY(WriteFile(f.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
+    f.project.war3GameRoot_ = native.base.inputs.game;
+    // 全局代码按名调用无关函数：这块须单独确认，确认身份里含预处理覆盖。
+    QVERIFY(TriggerDocumentEditor::SetGlobalCustomCode(*f.project.triggerDocument_,
+        "function UsesOther takes nothing returns nothing\r\n    call ExecuteFunc(\"Unrelated\")\r\nendfunction\r\n").Succeeded());
+    const auto encoded = WtgWctCodec{}.Serialize(*f.project.triggerDocument_, *f.project.uiCatalog_); QVERIFY(encoded.Succeeded());
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wtg"), Bytes(encoded.value->wtg)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wct"), Bytes(encoded.value->wct)));
+    auto parsed = WtgWctCodec{}.Parse(encoded.value->wtg, encoded.value->wct, *f.project.uiCatalog_); QVERIFY(parsed.Succeeded());
+    f.project.triggerDocument_ = std::make_unique<TriggerDocument>(std::move(*parsed.value));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+
+    const auto& current = *f.project.triggerDocument_;
+    const auto targetId = current.triggers.front().id;
+    const auto categoryId = current.triggers.front().categoryId;
+    const auto category = std::find_if(current.categories.begin(), current.categories.end(), [&](const auto& c) { return c.categoryId == categoryId; });
+    QJsonArray children;
+    for (const auto& t : current.triggers)
+        if (t.categoryId == categoryId) children.append(QJsonObject{{"kind", "trigger"}, {"id", QString::number(t.id)}});
+    QJsonObject remove{{"op", "remove"}, {"target", QJsonObject{{"kind", "trigger"}, {"id", QString::number(targetId)}}},
+        {"expected_name", QString::fromStdString(current.triggers.front().name.text)},
+        {"parent", QJsonObject{{"kind", "category_triggers"}, {"owner", QJsonObject{{"kind", "category"}, {"id", QString::number(category->id)}}},
+            {"ordered_children", children}}}};
+    const auto references = f.project.CaptureTriggerMapObjectReferences();
+    const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty() ? references.value->get() : nullptr;
+    const auto binding = CaptureTriggerGraphBinding(current, *f.project.uiCatalog_, objects); QVERIFY(binding.Succeeded());
+    auto query = f.Context();
+    query.insert("table", "remove_audit"); query.insert("operation_index", 0);
+    query.insert("plan", QJsonObject{{"expected", BindingJson(*binding.value)}, {"operations", QJsonArray{remove}}});
+    const auto review = f.tools->Invoke("editor_query_trigger_graph", query);
+    QVERIFY2(review.value("ok").toBool() && review.value("complete").toBool(), qPrintable(Explain(review)));
+    QVERIFY(!review.value("preprocess_identity_sha256").toString().isEmpty());
+    const auto sha = review.value("review_sha256").toString();
+    QJsonArray audits;
+    if (review.value("groupable_count").toVariant().toLongLong() > 0)
+        audits.append(QJsonObject{{"review_sha256", sha}, {"decision", "no_reference"}, {"reason", "零命中整组已核对"},
+            {"groupable_count", review.value("groupable_count")}, {"groupable_sha256", review.value("groupable_sha256")}});
+    const auto blocks = review.value("individual_blocks").toArray();
+    QVERIFY(!blocks.isEmpty());
+    for (const auto& block : blocks)
+        audits.append(QJsonObject{{"review_sha256", sha}, {"decision", "no_reference"}, {"reason", "ExecuteFunc 字面量与目标无关"},
+            {"blocks", QJsonArray{block.toObject().value("identity")}}});
+    remove.insert("code_audits", audits);
+    auto request = f.Context();
+    request.insert("expected", BindingJson(*binding.value));
+    request.insert("operations", QJsonArray{remove});
+    const auto undo = f.project.triggerUndoStack_->count();
+    const auto removed = f.tools->Invoke("editor_edit_trigger_graph", request);
+    QVERIFY2(removed.value("ok").toBool(), qPrintable(Explain(removed)));
+    QCOMPARE(f.project.triggerUndoStack_->count(), undo + 1);
+    QVERIFY(TriggerDocumentEditor::FindTrigger(*f.project.triggerDocument_, targetId) == nullptr);
+    f.project.triggerUndoStack_->undo();
+    QVERIFY(TriggerDocumentEditor::FindTrigger(*f.project.triggerDocument_, targetId) != nullptr);
+}

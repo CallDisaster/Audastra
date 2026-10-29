@@ -21,6 +21,7 @@
 #include "McpMapCustomSettingsTools.h"
 #include "ProjectMapCustomSettings.h"
 #include "ProjectTriggerCodeIdentity.h"
+#include "ProjectRemovalCodeAudit.h"
 #include "McpTriggerCodeIdentity.h"
 #include "ProjectObjectCatalog.h"
 #include "McpMapRuntimeTools.h"
@@ -601,7 +602,10 @@ private:
             ? references.value->get() : nullptr;
         TriggerDocument before(*project_.triggerDocument_);
         TriggerDocument candidate(before);
-        auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, *project_.uiCatalog_, batch, {}, objects);
+        // 删除声明与 remove_audit 查询用同一预处理覆盖，查询给出的确认才能在这里提交。
+        Trigger::TriggerGraphEditLimits limits;
+        limits.removalPreprocessProvider = QtProject::LazyRemovalPreprocessProvider(project_);
+        auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, *project_.uiCatalog_, batch, limits, objects);
         if (!edited.Succeeded()) return edited;
         RecordChanges changes;
         changes.Compare(before.categories, candidate.categories, false);
@@ -725,7 +729,9 @@ private:
             const auto references = project_.CaptureTriggerMapObjectReferences();
             const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()
                 ? references.value->get() : nullptr;
-            const auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, *project_.uiCatalog_, *decoded.value, {}, objects);
+            Trigger::TriggerGraphEditLimits limits;
+            limits.removalPreprocessProvider = QtProject::LazyRemovalPreprocessProvider(project_);
+            const auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, *project_.uiCatalog_, *decoded.value, limits, objects);
             if (!edited.Succeeded()) return Mcp::Failure(edited);
         }
         const auto snapshot = project_.CaptureCodeCheckSnapshot();
