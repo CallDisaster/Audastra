@@ -56,7 +56,7 @@ struct Token { std::string text; std::size_t offset; bool quoted = false; std::s
 bool NeedsPreprocessing(std::string_view text) {
     if (text.find("<?") != std::string_view::npos) return true;
     for (std::size_t i = 0; i < text.size();) {
-        if (text[i] == '#' || text.substr(i).starts_with("//!")) return true;
+        if (text[i] == '#' || text.substr(i).starts_with("//!") || static_cast<unsigned char>(text[i]) >= 128) return true;
         if (text.substr(i).starts_with("//")) { while (i < text.size() && text[i] != '\n' && text[i] != '\r') ++i; }
         else if (text.substr(i).starts_with("/*")) {
             const auto end = text.find("*/", i + 2); i = end == std::string_view::npos ? text.size() : end + 2;
