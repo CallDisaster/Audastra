@@ -212,7 +212,16 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         if ((kind == AtomicRenameCodeKind::ArgumentCode && removedArguments.contains(id))
             || (kind == AtomicRenameCodeKind::VariableInitialValue && op.target.kind == GraphRecordKind::Variable && id == op.target.id)) return Status::Ok();
         const auto size = std::max(text.text.size(), text.originalBytes.size());
-        if (size > kBytes - bytes || ++count > kBlocks) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "代码删除审计超出64MiB或块数预算。");
+        if (size > kBytes - bytes || ++count > kBlocks) {
+            std::string message = "删除审计预算不足；当前块=" + Key(kind, id) + "；累计块=" + std::to_string(count)
+                + "；累计字节=" + std::to_string(bytes) + "；当前块字节=" + std::to_string(size)
+                + "；上限=16384块/64MiB；已完成可合并=" + std::to_string(review.groupableBlocks.size())
+                + "、单独=" + std::to_string(review.individualBlocks.size()) + "（部分结果，不可放行）";
+            const auto arg = arguments.find(id);
+            if (kind == AtomicRenameCodeKind::ArgumentCode && arg != arguments.end())
+                message += "；参数来源种类=" + std::to_string(arg->second->type);
+            return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", std::move(message));
+        }
         bytes += size;
         const auto sha = detail::CodeBlockSha256(text); if (!sha.Succeeded()) return Status{sha.diagnostics};
         RemovalCodeBlock block; block.identity = {kind, id, text.encoding, *sha.value, {}};
