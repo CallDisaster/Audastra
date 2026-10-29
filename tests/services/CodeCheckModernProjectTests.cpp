@@ -7,6 +7,7 @@
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/TriggerRemovalAudit.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Script/TriggerStorageCapabilities.h"
 #include "../MapDataFixtures.h"
@@ -478,6 +479,101 @@ void TriggerCheckLocatesGuiStatements() {
     fixture.RequireSourceUnchanged();
 }
 
+// 删除审计的模板上下文必须冻结全部七类物编；不能仅绑定生成器使用的前三类。
+// 本夹具不依赖大型SLK默认库，只验证真实宿主提供器覆盖和旧确认的来源身份。
+void PendingHigherObjectEditsInvalidateRemovalCoverage() {
+    ModernProjectFixture fixture;
+    auto document = *fixture.frozen->triggers;
+    const auto category = Trigger::TriggerDirectoryEditor::AddCategory(document, "Original removal objects");
+    Require(category.Succeeded() && category.value, "add original removal fixture category");
+    const auto trigger = Trigger::TriggerDocumentEditor::AddTrigger(document, *category.value, "PendingObjectTarget");
+    Require(trigger.Succeeded() && trigger.value, "add original ordinary removal target");
+    Trigger::GraphParentExpectation parent{Trigger::GraphParentKind::CategoryTriggers,
+        {Trigger::GraphRecordKind::Category, document.categories.back().id, {}}, {}, {}};
+    parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *trigger.value, {}});
+    Trigger::GraphRemove remove{{Trigger::GraphRecordKind::Trigger, *trigger.value, {}}, "PendingObjectTarget", parent};
+
+    constexpr auto type = ObjectData::ObjectType::Buff;
+    const ObjectData::ObjectKey object{type, "B900"};
+    const ObjectData::ModificationKey field{"fnam", {}, {}, {}};
+    auto native = ObjectData::NativeObjectDocument::CreateEmpty(type);
+    Require(native.Succeeded() && native.value, "create original high-index native object baseline");
+    Require(native.value->AddCustomObject(object.rawcode, "B000").Succeeded(), "add original custom buff");
+    Require(native.value->AddModification(object, field, ObjectData::NativeValueType::String, std::string("original-value")).Succeeded(),
+        "set original high-index native field");
+    auto baseline = std::make_shared<CodeCheckProjectSnapshot>(*fixture.frozen);
+    baseline->binding += "/pending-high-object";
+    baseline->triggers = std::make_shared<const Trigger::TriggerDocument>(document);
+    baseline->nativeObjects[static_cast<std::size_t>(type)] = std::make_shared<const ObjectData::NativeObjectDocument>(*native.value);
+    auto baseProvider = MakeProjectRemovalPreprocessProvider(baseline);
+    const auto original = Trigger::QueryDeclarationRemovalAudit(document, *baseline->catalog, remove, nullptr, &baseProvider);
+    std::string details;
+    for (const auto& diagnostic : original.diagnostics) details += diagnostic.code + ":" + diagnostic.message + "\n";
+    if (original.value) for (const auto& block : original.value->individualBlocks) details += block.incompleteReason + "\n";
+    Require(original.Succeeded() && original.value && original.value->complete && !original.value->preprocessIdentitySha256.empty(),
+        "actual host must provide complete baseline removal coverage: " + details);
+    if (original.value->groupableCount) {
+        Trigger::RemovalCodeConfirmation confirmation{original.value->reviewSha256, "no_reference", "reviewed original zero-hit group", {}};
+        confirmation.group = Trigger::RemovalCodeConfirmation::Group{original.value->groupableCount, original.value->groupableSha256};
+        remove.codeAudits.push_back(std::move(confirmation));
+    }
+    for (const auto& block : original.value->individualBlocks)
+        remove.codeAudits.push_back({original.value->reviewSha256, "no_reference", "reviewed original individual evidence", {block.identity}});
+    Require(Trigger::CheckDeclarationRemovalAudit(document, *baseline->catalog, remove, nullptr, &baseProvider).Succeeded(),
+        "original confirmation is valid before object-only changes");
+
+    auto changedNative = std::make_shared<CodeCheckProjectSnapshot>(*baseline);
+    changedNative->binding += "/native-edit"; ++changedNative->revision;
+    auto pending = *native.value;
+    Require(pending.SetModification(object, field, std::string("pending-native-value")).Succeeded(), "change high-index native field only in memory");
+    changedNative->nativeObjects[static_cast<std::size_t>(type)] = std::make_shared<const ObjectData::NativeObjectDocument>(std::move(pending));
+
+    const auto lniBytes = ObjectData::RenderObjectRecordsToLni(type, native.value->Objects());
+    Require(lniBytes.Succeeded() && lniBytes.value, "render original high-index native baseline as LNI");
+    auto parsed = ObjectData::LniObjectCodec(type).Parse(*lniBytes.value);
+    Require(parsed.Succeeded() && parsed.document, "parse original high-index LNI view");
+    auto* lni = dynamic_cast<ObjectData::LniObjectDocument*>(parsed.document.get());
+    Require(lni && lni->SetModification(object, field, std::string("pending-lni-value")).Succeeded(), "change high-index LNI field only in memory");
+    auto changedLni = std::make_shared<CodeCheckProjectSnapshot>(*baseline);
+    changedLni->binding += "/lni-edit"; ++changedLni->revision;
+    changedLni->editableObjects[static_cast<std::size_t>(type)] = std::make_shared<const ObjectData::LniObjectDocument>(*lni);
+
+    auto changedStrings = std::make_shared<CodeCheckProjectSnapshot>(*baseline);
+    changedStrings->binding += "/wts-edit"; ++changedStrings->revision;
+    Require(baseline->map.has_value(), "baseline carries current parsed map members");
+    std::vector<MapArchiveMember> pendingMembers;
+    for (const auto& member : baseline->map->Members()) {
+        if (member.kind == MapDataKind::Strings) continue;
+        pendingMembers.insert(pendingMembers.end(), member.sources.begin(), member.sources.end());
+    }
+    pendingMembers.push_back({"war3map.wts", OriginalBytes("STRING 9\n{\npending original WTS value\n}\n")});
+    changedStrings->map = MapDocument::FromMembers(pendingMembers, fixture.source);
+    const auto resolved = changedStrings->map->ResolveString("TRIGSTR_009");
+    Require(changedStrings->map->Member(MapDataKind::Strings).state == MapDataState::Ready
+        && resolved.Succeeded() && resolved.value && *resolved.value == "pending original WTS value",
+        "pending WTS is a valid native member in the private map document");
+    Require(changedStrings->triggers == baseline->triggers && changedStrings->nativeObjects == baseline->nativeObjects
+        && changedStrings->editableObjects == baseline->editableObjects,
+        "WTS-only snapshot leaves trigger and all native/LNI object snapshots unchanged");
+
+    for (const auto& changed : {changedNative, changedLni, changedStrings}) {
+        auto provider = MakeProjectRemovalPreprocessProvider(changed);
+        const auto review = Trigger::QueryDeclarationRemovalAudit(document, *changed->catalog, remove, nullptr, &provider);
+        details.clear();
+        for (const auto& diagnostic : review.diagnostics) details += diagnostic.code + ":" + diagnostic.message + "\n";
+        if (review.value) for (const auto& block : review.value->individualBlocks) details += block.incompleteReason + "\n";
+        Require(review.Succeeded() && review.value && review.value->complete, "pending object or WTS edit remains auditable: " + details);
+        Require(review.value->preprocessIdentitySha256 != original.value->preprocessIdentitySha256
+            && review.value->reviewSha256 != original.value->reviewSha256,
+            "unsaved high-index native/LNI or WTS edit changes coverage and review identities");
+        const auto checked = Trigger::CheckDeclarationRemovalAudit(document, *changed->catalog, remove, nullptr, &provider);
+        Require(!checked.Succeeded() && std::any_of(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TRIGGER_REMOVE_CODE_AUDIT_STALE";
+        }), "old confirmation must reject unsaved high-index native/LNI or WTS changes");
+    }
+    fixture.RequireSourceUnchanged();
+}
+
 #include "CodeCheckStorageDiagnosticCases.h"
 
 } // namespace
@@ -490,6 +586,7 @@ int main() {
         TemplateMacrosExpandBeforeCheckingAndKeepAuthorLines();
         UnexecutedTemplateElsewhereStillExpandsAuthorSection();
         TriggerCheckLocatesGuiStatements();
+        PendingHigherObjectEditsInvalidateRemovalCoverage();
         UnsupportedLocalStorageWarningReachesCheckAndSave();
         std::cout << "Original modern project: enabled UI injection, quoted include, repeated cache, changed identity, unbound roots and template macros passed\n";
         return 0;

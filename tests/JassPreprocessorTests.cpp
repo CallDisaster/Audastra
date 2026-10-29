@@ -243,7 +243,8 @@ void TestPhysicalLineSplices() {
     Require(HasCode(failed,"PP_ERROR_DIRECTIVE") && failed.diagnostics.back().message.find("main.j:3: #error stopnow")!=std::string::npos,
         "错误指令文本逻辑续接且诊断仍为物理第三行");
     const auto gbk=SplicePpLines(std::string("\x81\x5C\nx"),64,Text::SourceEncoding::Gbk);
-    Require(gbk.Succeeded() && gbk.value->splices.empty(), "显式GBK尾5C不是ASCII反斜杠续行");
+    Require(gbk.Succeeded() && gbk.value->splices.size() == 1 && gbk.value->text == std::string("\x81") + "x",
+        "phase2按原字节识别尾5C续行，不按代码页吞掉反斜杠；执行标识符另由词法验证");
     auto crossed=SplicePpLines("AB\\\nCD\n");
     auto crossedTokens=LexPp(crossed.value->text);
     crossed.value->MapOrigins(crossedTokens);
@@ -271,11 +272,11 @@ void TestEncodedLexer() {
     const auto utf8 = LexPp(source, SourceEncoding::Utf8);
     Require(utf8.Succeeded() && utf8.value->at(0).text == "$宏名1" && utf8.value->at(2).line == 2
         && utf8.value->at(2).text == "\"中文😀\"" && utf8.value->at(3).kind == PpKind::Char, "UTF8记号/字面量原保");
-    const std::string gbk = std::string("// \x81\x5C\r\n$\xB1\xE4\xC1\xBF \"\x81\x5C\" '\x81\x5C'");
+    const std::string gbk = std::string("// \x81\x40\r\n$\xB1\xE4\xC1\xBF \"\x9C\x5C\x5C\" '\x8A\x5C\x5C'");
     const auto result = LexPp(gbk, SourceEncoding::Gbk);
     Require(result.Succeeded() && result.value->at(1).line == 2 && result.value->at(1).offset == 7
-        && result.value->at(1).kind == PpKind::Identifier && result.value->at(2).text == gbk.substr(13, 4)
-        && result.value->at(3).text == gbk.substr(18, 4), "GBK尾5C不延续注释/吞引号");
+        && result.value->at(1).kind == PpKind::Identifier && result.value->at(2).text == gbk.substr(13, 5)
+        && result.value->at(3).text == gbk.substr(19, 5), "不透明文本按原字节转义/闭合，不用代码页吞尾5C");
     Require(LexSingle("$宏名1", SourceEncoding::Utf8).value == PpKind::Identifier
         && LexSingle(gbk.substr(7, 5), SourceEncoding::Gbk).value == PpKind::Identifier
         && !LexSingle("x y", SourceEncoding::Utf8).Succeeded(), "粘贴结果共用编码与单记号规则");
@@ -283,7 +284,11 @@ void TestEncodedLexer() {
     const auto numeric = LexPp(number, SourceEncoding::Gbk);
     Require(numeric.Succeeded() && numeric.value->at(1).Is("+"), "GBK尾65不是指数标记e");
     const auto broken = LexPp(std::string("\"\x81\""), SourceEncoding::Gbk);
-    Require(!broken.value && broken.diagnostics.front().origin->offset == 1, "坏GBK字符串不退回标点/部分成功");
+    Require(broken.Succeeded(), "字符串内未知编码字节不猜代码页、不拒绝");
+    Require(!LexPp(std::string("\"\x9C\x5C\""), SourceEncoding::Gbk).Succeeded(), "字节尾5C吞掉结束引号，PP与JASS边界一致");
+    const auto originalBytes = std::string("call F(\"\x9C\x5C\x5C\")\n");
+    const auto preprocessed = Run(originalBytes);
+    Require(preprocessed.Succeeded() && preprocessed.text == originalBytes, "预处理器完整保留未知编码字节字符串");
     for (const auto text : {"udg_。", "/* unfinished", "\"unfinished", "// \x1A\nvalid"}) {
         Require(!LexPp(text, SourceEncoding::Utf8).Succeeded(), "编码PP严格拒绝非法记号/边界");
     }

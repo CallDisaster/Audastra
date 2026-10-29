@@ -201,35 +201,10 @@ Jass::SourceMap MapPreprocessed(const Jass::PreprocessResult& preprocessed, cons
 // （例如 YDNL 展开出的换行）都指向模板所在的输入行。换行规则与 LineCount 一致。
 Jass::SourceMap MapTemplateOutput(std::string_view input, const Script::TemplateResult& evaluated,
     std::stop_token cancel, Clock::time_point deadline) {
-    Jass::SourceMap map;
-    const auto file = map.AddFile("template-input");
-    std::size_t span = 0, inputAt = 0;
-    std::uint32_t inputLine = 1, outputLine = 1;
-    const auto inputLineAt = [&](std::size_t offset) {
-        for (; inputAt < offset && inputAt < input.size(); ++inputAt) {
-            if ((inputAt & 4095u) == 0) Poll(cancel, deadline);
-            if (input[inputAt] == '\n' || (input[inputAt] == '\r' && (inputAt + 1 >= input.size() || input[inputAt + 1] != '\n'))) ++inputLine;
-        }
-        return inputLine;
-    };
-    const auto& output = evaluated.text;
-    for (std::size_t start = 0;;) {
-        const auto& spans = evaluated.spans;
-        while (span + 1 < spans.size() && spans[span + 1].outputBegin <= start) ++span;
-        std::size_t source = start;
-        if (!spans.empty() && spans[span].outputBegin <= start)
-            source = start < spans[span].outputEnd ? spans[span].sourceBegin : spans[span].sourceEnd + (start - spans[span].outputEnd);
-        map.Map(outputLine, {file, inputLineAt(source)});
-        auto at = start;
-        while (at < output.size() && output[at] != '\r' && output[at] != '\n') {
-            if ((at & 4095u) == 0) Poll(cancel, deadline);
-            ++at;
-        }
-        if (at == output.size()) break;
-        if (output[at++] == '\r' && at < output.size() && output[at] == '\n') ++at;
-        start = at; ++outputLine;
-    }
-    return map;
+    Poll(cancel, deadline);
+    auto result = Script::MapTemplateSourceLines(input, evaluated);
+    Poll(cancel, deadline);
+    return result;
 }
 // 整图含编辑器不执行的模板块（如物编生成）时：取同次生产预处理结果中本代码块的行段（宏已按保存链展开），
 // 只对这一段做模板求值并检查正文语法，行号经同一映射回到作者原行。本段自身含不能求值的模板时返回空。
@@ -293,13 +268,15 @@ struct CodeCheckProjectCache::Impl {
     std::optional<Script::ScriptInjectionSources> injection;
     Script::ObjectQuerySources objects;
     std::optional<Script::TemplateContext> templates; // 与保存链同一构造：工具链命令表 + 原版与本图技能
-    std::optional<Script::SlkMapSourceSnapshot> slk; // 整份执行模板时 slk 库读取的已保存地图物编，随归档复用
+    std::vector<MemberReplacement> templateEdits; // 七类当前物编及W3I/WTS，与冻结的保存输入同源
+    std::vector<std::string> templateRemovals;
+    std::optional<Script::SlkMapSourceSnapshot> slk; // 整份执行模板的最终成员快照，随冻结上下文复用
     std::string incomplete;
     bool captureFinished = false;
 
     void Clear() {
         snapshot.reset(); archive.reset(); map.reset(); game.reset(); standard.reset(); layout.reset(); bases.reset(); slk.reset();
-        framework.reset(); entry.reset(); injection.reset(); objects = {}; templates.reset();
+        framework.reset(); entry.reset(); injection.reset(); objects = {}; templates.reset(); templateEdits.clear(); templateRemovals.clear();
         incomplete.clear(); captureFinished = false;
     }
 
@@ -333,22 +310,54 @@ struct CodeCheckProjectCache::Impl {
             standard.emplace(std::move(*loaded.value));
         } else if (map->Units() && !map->Units()->units.empty()) { fail("预放单位的完整初始化检查缺少本次游戏物编目录。"); return; }
         objects.standard = standard ? &*standard : nullptr;
-        for (std::size_t index = 0; index < 3; ++index) {
+        const auto objectTypes = next->scriptAuditOnly ? next->nativeObjects.size() : std::size_t{3};
+        for (std::size_t index = 0; index < objectTypes; ++index) {
             Poll(cancel, deadline);
             const auto type = static_cast<ObjectData::ObjectType>(index);
             std::optional<ObjectData::NativeObjectDocument> native;
             if (next->nativeObjects[index]) native = *next->nativeObjects[index];
             else {
-                if (archive->HasMember(ObjectData::NativeFileName(type))) { fail("现有物编成员没有可验证的native基线。"); return; }
-                auto empty = ObjectData::NativeObjectDocument::CreateEmpty(type); if (empty.Succeeded()) native = std::move(*empty.value);
+                if (archive->HasMember(ObjectData::NativeFileName(type))) {
+                    if (index < 3) { fail("现有物编成员没有可验证的native基线。"); return; }
+                    // 旧的只读宿主可能只提供前三类；其余来源仍由白名单归档明确读取，不能静默当空。
+                    const auto bytes = archive->ReadMember(ObjectData::NativeFileName(type));
+                    if (!bytes.Succeeded()) { fail(Reason(bytes.diagnostics, "模板物编基线无法读取。")); return; }
+                    auto parsed = ObjectData::NativeObjectCodec(type).Parse(*bytes.value);
+                    if (!parsed.Succeeded() || !parsed.document) { fail(Reason(parsed.diagnostics, "模板物编基线无法解析。")); return; }
+                    const auto* value = dynamic_cast<const ObjectData::NativeObjectDocument*>(parsed.document.get());
+                    if (!value) { fail("模板物编来源不是原生文档。"); return; }
+                    native = *value;
+                } else {
+                    auto empty = ObjectData::NativeObjectDocument::CreateEmpty(type); if (empty.Succeeded()) native = std::move(*empty.value);
+                }
             }
             if (!native) { fail("物编基线无法冻结。"); return; }
             if (next->editableObjects[index]) {
                 auto applied = ObjectData::ApplyLniChangesToNative(*native, *next->editableObjects[index], next->objectSchema.get(), objects.standard);
                 if (!applied.Succeeded()) { fail(Reason(applied.diagnostics, "当前物编覆盖无法按保存规则回灌。")); return; }
             }
-            auto& records = index == 0 ? objects.units : index == 1 ? objects.abilities : objects.items;
-            records.assign(native->Objects().begin(), native->Objects().end());
+            if (index < 3) {
+                auto& records = index == 0 ? objects.units : index == 1 ? objects.abilities : objects.items;
+                records.assign(native->Objects().begin(), native->Objects().end());
+            }
+            if (next->scriptAuditOnly) {
+                auto serialized = ObjectData::NativeObjectCodec(type).Serialize(*native);
+                if (!serialized.Succeeded() || !serialized.value) { fail(Reason(serialized.diagnostics, "模板物编覆盖身份无法冻结。")); return; }
+                templateEdits.push_back({std::string(ObjectData::NativeFileName(type)), std::move(*serialized.value)});
+            }
+        }
+        if (next->scriptAuditOnly) for (const auto kind : {MapDataKind::Settings, MapDataKind::Strings}) {
+            const auto& member = map->Member(kind);
+            if (member.state == MapDataState::Missing) {
+                if (archive->HasMember(member.memberName)) templateRemovals.push_back(member.memberName);
+                continue;
+            }
+            if (member.state == MapDataState::Ambiguous || member.state == MapDataState::Unreadable
+                || member.state == MapDataState::Invalid || member.sources.size() != 1
+                || (kind == MapDataKind::Settings && map->LniSettings())) {
+                fail("模板地图设置/字符串表没有唯一的原生冻结来源：" + member.memberName); return;
+            }
+            templateEdits.push_back({member.memberName, member.sources.front().data});
         }
         auto capturedBases = Script::CaptureScriptBaseInputs({&*layout, Script::ScriptBasePolicy::BoundLayout,
             &*archive, next->baseReplacements, next->baseRemovals, game ? &*game : nullptr, {}, next->revision});
@@ -896,6 +905,67 @@ Result<ProjectJassScript> BuildProjectJassScript(const std::shared_ptr<const Cod
     }
 }
 
+namespace {
+// 模板只读审计的身份包括实际命令表、当前物编覆盖和原版技能查询值。
+// 有界来源捕获与保存共用，不执行安装目录中的模板程序文件。
+Result<std::string> RemovalTemplateIdentity(const CodeCheckProjectCache::Impl& owned,
+    const CodeCheckProjectSnapshot& snapshot) {
+    std::string identity = "builtin-template-host-lua53-v1\n";
+    const auto add = [&](std::string_view text) { identity += std::to_string(text.size()) + ':'; identity += text; };
+    add(snapshot.sourceSha256);
+    for (const auto& edit : owned.templateEdits) {
+        auto hash = Sha256(edit.data); if (!hash.Succeeded()) return hash;
+        add(edit.name); add(*hash.value);
+    }
+    for (const auto& removal : owned.templateRemovals) { add("removed"); add(removal); }
+    for (const auto& directory : {snapshot.toolRoot / "compiler/script/computed", snapshot.toolRoot / "share/script/computed"}) {
+        for (const auto* name : {"abilityOrder.lua", "ability2order.lua", "order_id.lua", "order_list.lua"}) {
+            auto source = Script::CaptureReadOnlyScriptSource(directory / name);
+            if (!source.Succeeded() || !source.value) return {{}, source.diagnostics};
+            add(PathText(source.value->binding.path));
+            add(source.value->binding.kind == Script::ScriptToolchainBindingKind::RegularFile ? "present" : "missing");
+            add(source.value->binding.sha256);
+        }
+    }
+    if (owned.standard) for (const auto& entry : owned.standard->Entries()) {
+        if (entry.key.type != ObjectData::ObjectType::Ability) continue;
+        add(entry.key.rawcode);
+        std::map<std::string, std::string> ordered(entry.fields.begin(), entry.fields.end());
+        for (const auto& [name, value] : ordered) { add(name); add(value); }
+    }
+    return Sha256Text(identity);
+}
+Result<std::string> RemovalSlkIdentity(CodeCheckProjectCache::Impl& owned,
+    const CodeCheckProjectSnapshot& snapshot, std::string_view baseline) {
+    auto current = RemovalTemplateIdentity(owned, snapshot);
+    if (!current.Succeeded() || !current.value) return current;
+    if (*current.value != baseline) return Result<std::string>::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_TEMPLATE_SOURCE_CHANGED", "模板宿主查询数据已改变，请重新审计。");
+    std::string identity = *current.value;
+    if (!owned.slk) return Sha256Text(identity + "\nslk-not-used");
+    identity += "\n" + owned.slk->ManifestSha256();
+    const auto root = Script::FindTemplateW3x2lniRoot(snapshot.toolRoot);
+    if (!root) return Result<std::string>::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_TEMPLATE_SLK_SOURCE", "模板物编库来源未绑定。");
+    auto layout = Script::DetectSlkDatasetLayout(*root);
+    if (!layout.Succeeded() || !layout.value) return {{}, layout.diagnostics};
+    const auto members = owned.slk->Members();
+    if (members.size() != 9) return Result<std::string>::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_TEMPLATE_SLK_SOURCE", "模板物编快照不完整。");
+    Script::SlkDatasetRequest request;
+    request.coreRoot = Script::SlkDatasetCoreRoot(*root, *layout.value);
+    request.installedYdweRoot = *root; request.layout = *layout.value;
+    request.finalW3i = members[8].bytes; request.documentRevision = owned.slk->Revision();
+    auto dataset = Script::ReadSlkTypedDataset(request);
+    if (!dataset.Succeeded() || !dataset.value) return {{}, dataset.diagnostics};
+    identity += "\n" + dataset.value->manifestSha256;
+    if (*layout.value != Script::SlkDatasetLayout::ScriptPrebuiltDefault) {
+        const auto types = *root / "plugin/w3x2lni/data" / dataset.value->dataSetId / "prebuilt/metadata.ini";
+        auto file = Script::CaptureReadOnlyScriptSource(types, true, 8 * 1024 * 1024);
+        if (!file.Succeeded() || !file.value) return {{}, file.diagnostics};
+        identity += "\n" + PathText(file.value->binding.path) + "\n" + file.value->binding.sha256;
+    }
+    return Sha256Text(identity);
+}
+}
+
 Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::shared_ptr<const CodeCheckProjectSnapshot> snapshot) {
     if (snapshot) { auto audit = std::make_shared<CodeCheckProjectSnapshot>(*snapshot); audit->scriptAuditOnly = true; snapshot = std::move(audit); }
     auto cache = std::make_shared<CodeCheckProjectCache>();
@@ -912,10 +982,21 @@ Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::sha
                 return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", *reason);
             if (const auto status = owned.archive->VerifySourceUnchanged(); !status.Succeeded()) return {{}, status.diagnostics};
             const auto inputs = ProjectMapScriptInputs(owned, snapshot, document);
-            if (owned.framework) return Script::CaptureRemovalPreprocessCoverage(inputs, *owned.framework, operation);
+            auto identity = RemovalTemplateIdentity(owned, *snapshot);
+            if (!identity.Succeeded() || !identity.value) return {{}, identity.diagnostics};
+            Script::RemovalTemplateInputs templates;
+            templates.identitySha256 = *identity.value;
+            templates.context = Script::BuildTemplateContext(snapshot->toolRoot, owned.standard ? &*owned.standard : nullptr, owned.objects.abilities);
+            templates.context.importRoot.reset();
+            templates.context.wholeChunk = Script::MakeLuaWholeChunk(templates.context,
+                {snapshot->toolRoot, &*owned.archive, owned.templateEdits, owned.templateRemovals, snapshot->revision, {}}, owned.slk);
+            templates.identityAfterEvaluation = [&owned, &snapshot, baseline = *identity.value] {
+                return RemovalSlkIdentity(owned, *snapshot, baseline);
+            };
+            if (owned.framework) return Script::CaptureRemovalPreprocessCoverage(inputs, *owned.framework, operation, "1.32.13", true, &templates);
             if (!owned.entry || !owned.injection) return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "当前工具链没有可重放的预处理档案。");
             return Script::CaptureRemovalPreprocessCoverage(inputs, *owned.entry,
-                ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path()), *owned.injection, operation);
+                ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path()), *owned.injection, operation, "1.32.13", true, &templates);
         } catch (const std::exception&) {
             return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "无法完整捕获预处理覆盖，未删除。");
         }

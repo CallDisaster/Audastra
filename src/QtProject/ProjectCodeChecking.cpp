@@ -96,7 +96,7 @@ std::shared_ptr<const Services::CodeCheckProjectSnapshot> EditorProject::Capture
             static_cast<std::int32_t>(terrain->header.width), static_cast<std::int32_t>(terrain->header.height),
             terrain->header.offset[0], terrain->header.offset[1]};
     } else if (mapDocument_) snapshot->map = *mapDocument_;
-    for (std::size_t index = 0; index < 3; ++index) {
+    for (std::size_t index = 0; index < snapshot->nativeObjects.size(); ++index) {
         if (nativeObjectDocuments_[index]) snapshot->nativeObjects[index] =
             std::make_shared<const ObjectData::NativeObjectDocument>(*nativeObjectDocuments_[index]);
         if (objectDocuments_[index]) snapshot->editableObjects[index] =

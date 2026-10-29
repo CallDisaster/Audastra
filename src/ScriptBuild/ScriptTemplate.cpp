@@ -586,6 +586,29 @@ std::optional<TemplateResult> AlignTemplateOutput(std::string_view input, const 
     return aligned;
 }
 
+Jass::SourceMap MapTemplateSourceLines(std::string_view input, const TemplateResult& evaluated) {
+    Jass::SourceMap map; const auto file = map.AddFile("template-input");
+    std::size_t span = 0, inputAt = 0;
+    std::uint32_t inputLine = 1, outputLine = 1;
+    for (std::size_t start = 0;;) {
+        while (span + 1 < evaluated.spans.size() && evaluated.spans[span + 1].outputBegin <= start) ++span;
+        std::size_t source = start;
+        if (!evaluated.spans.empty() && evaluated.spans[span].outputBegin <= start) {
+            const auto& item = evaluated.spans[span];
+            source = start < item.outputEnd ? item.sourceBegin : item.sourceEnd + (start - item.outputEnd);
+        }
+        for (; inputAt < source && inputAt < input.size(); ++inputAt)
+            if (input[inputAt] == '\n' || (input[inputAt] == '\r' && (inputAt + 1 >= input.size() || input[inputAt + 1] != '\n'))) ++inputLine;
+        map.Map(outputLine, {file, inputLine});
+        auto at = start;
+        while (at < evaluated.text.size() && evaluated.text[at] != '\r' && evaluated.text[at] != '\n') ++at;
+        if (at == evaluated.text.size()) break;
+        if (evaluated.text[at++] == '\r' && at < evaluated.text.size() && evaluated.text[at] == '\n') ++at;
+        start = at; ++outputLine;
+    }
+    return map;
+}
+
 TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& context) {
     TemplateResult result;
     result.text.reserve(text.size());

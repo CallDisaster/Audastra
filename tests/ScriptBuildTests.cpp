@@ -1080,7 +1080,8 @@ void TestFrameworkPlugins(const std::filesystem::path& root) {
 void TestRemovalPreprocessing(const std::filesystem::path& root) {
     const auto tool = root / "tool", ui = tool / "share/mpq", map = root / "map";
     WriteText(ui / "config", "base\n");
-    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
+    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\nscriptcode=1,0,0,Code,string\n");
+    WriteText(ui / "base/action.txt", "[OriginalCode]\n[[.args]]\ntype=scriptcode\n");
     WriteText(tool / "plugin/wave/include/WaveForce.i", "#define FORCE_VALUE 11\n");
     for (const auto* header : {"YDTrigger.h", "Globals.h", "Function.h"})
         WriteText(tool / "plugin/wave/include/YDTrigger" / header, "// original empty fixture interface\n");
@@ -1168,14 +1169,45 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     doc.wct.customCode = Trigger::RawText{"//! textmacro Original\n"};
     review = query(); Require(review.Succeeded() && !review.value->complete, "vJass directives remain incomplete");
     doc.wct.customCode = Trigger::RawText{"<? original ?>\n"};
-    review = query(); Require(review.Succeeded() && !review.value->complete, "Lua templates remain incomplete");
+    review = query(); Require(review.Succeeded() && !review.value->complete, "unsupported Lua templates remain incomplete");
+    doc.wct.customCode = Trigger::RawText{"<?=\"gg_trg_Target\"?>\n"};
+    review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().referenced, "template-produced target is a definite reference");
+    for (const auto& b : review.value->individualBlocks) for (const auto& e : b.evidence)
+        std::cerr << "template-origin: " << e.sourceFile << ':' << e.sourceLine << " definite=" << e.definite << '\n';
+    Require(std::any_of(review.value->individualBlocks.front().evidence.begin(), review.value->individualBlocks.front().evidence.end(), [](const auto& e) {
+        return e.definite && e.sourceFile == "WCT/header.j" && e.sourceLine == 1;
+    }), "template span plus preprocessing maps generated symbol to author line");
+    doc.wct.customCode = Trigger::RawText{"<? import('original.txt')('missing-input.bin', true) ?>\n"};
+    review = query(); Require(review.Succeeded() && review.value->complete, "readonly import validates without reading a missing path or producing a member");
+    doc.wct.customCode = Trigger::RawText{"<?=os.execute('blocked')?>\n"};
+    review = query(); Require(review.Succeeded() && !review.value->complete, "template host cannot access os");
+    doc.wct.customCode = Trigger::RawText{"#line 70000 \"war3map.j\"\ncall TriggerExecute(gg_trg_Target)\n"};
+    review = query(); Require(review.Succeeded() && review.value->complete
+        && std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& b) { return b.referenced; }), "logical line remapping cannot drop generated reference bytes");
+    auto owner = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "TemplateOwner"); Require(owner.Succeeded(), "template owner");
+    op.parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *owner.value, {}});
+    const auto appended = Trigger::TriggerDocumentEditor::AppendRootEca(doc, *catalog.value, *owner.value, Trigger::UiDefinitionKind::Action, "OriginalCode");
+    Require(appended.Succeeded(), "template source argument");
+    doc.wct.customCode = {};
+    auto& argument = doc.argumentNodes.back(); argument.type = 3; argument.value = Trigger::RawText{"<?=\"gg_trg_Target\"?>"};
+    review = query(); Require(review.Succeeded() && review.value->complete, "template argument coverage complete");
+    Require(std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [&](const auto& b) {
+        return b.identity.kind == Trigger::AtomicRenameCodeKind::ArgumentCode && b.identity.id == argument.id && b.referenced
+            && !b.evidence.empty() && b.evidence.front().sourceFile.starts_with("WTG/argument-");
+    }), "template argument maps back to its own block and catches target output");
+    argument.value = Trigger::RawText{"<?=StringHash('原创名称')?>"};
+    review = query(); Require(review.Succeeded() && review.value->complete, "generic StringHash argument uses shared evaluator");
+    confirm(*review.value);
+    Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "evaluated template argument allows explicitly reviewed deletion");
 }
 void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     const auto tool = root / "tool", ui = tool / "ui", map = root / "map";
     const auto dependency = ui / "base/jass/dep.j";
     std::filesystem::create_directories(map);
     WriteText(ui / "config", "base\n");
-    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
+    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\nscriptcode=1,0,0,Code,string\n");
+    WriteText(ui / "base/action.txt", "[OriginalUse]\n[[.args]]\ntype=integer\n");
+    WriteText(ui / "base/call.txt", "[YDWEForLoopLocVarIndex]\nreturns=integer\n[[.args]]\ntype=scriptcode\n");
     WriteText(ui / "base/jass/Fixture.cfg", "UnrelatedEntry\n");
     WriteText(ui / "base/jass/Fixture.j", "// original modern library\n");
     WriteText(tool / "compiler/include/WaveForce.i", "#define FORCE_VALUE 11\n");
@@ -1194,9 +1226,12 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     doc.wct.customCode = Trigger::RawText{"#include \"dep.j\"\n"};
     Trigger::GraphRemove op; op.target = {Trigger::GraphRecordKind::Trigger, *target.value, {}}; op.expectedName = "Target";
     op.parent.kind = Trigger::GraphParentKind::CategoryTriggers; op.parent.owner = {Trigger::GraphRecordKind::Category, doc.categories.front().id, {}}; op.parent.orderedChildren = {op.target};
+    RemovalTemplateInputs templateInputs; templateInputs.identitySha256 = *Sha256Text("original template host fixture").value;
+    std::string templateData = "original object data";
+    templateInputs.identityAfterEvaluation = [&] { return Sha256Text(templateData); };
     Trigger::RemovalPreprocessProvider provider = [&](const auto& current, const auto& definitions, const auto& operation) {
         MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions;
-        return CaptureRemovalPreprocessCoverage(inputs, *entry.value, sources, *injection.value, operation);
+        return CaptureRemovalPreprocessCoverage(inputs, *entry.value, sources, *injection.value, operation, "1.32.13", true, &templateInputs);
     };
     const auto query = [&] { return Trigger::QueryDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); };
     const auto confirm = [&](const Trigger::DeclarationRemovalReview& review) {
@@ -1208,16 +1243,26 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     if (!review.Succeeded()) for (const auto& d : review.diagnostics) std::cerr << d.code << ':' << d.message << '\n';
     Require(review.Succeeded() && review.value->complete && review.value->includedFileCount >= 5, "modern complete include coverage");
     confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "modern group check");
+    templateData = "changed object data";
+    Require(HasCode(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "template object dependency change invalidates confirmation");
+    review = query(); confirm(*review.value);
+    templateInputs.libraries.push_back("original-fixture-library");
+    Require(HasCode(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "enabled template libraries invalidate confirmation");
+    templateInputs.libraries.clear();
     WriteText(dependency, "// changed dependency\n");
     const auto stale = Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); Require(HasCode(stale.diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "modern dependency hash bound");
     WriteText(dependency, "call TriggerExecute(gg_trg_Target)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().referenced, "modern included target detected");
     WriteText(dependency, "// \xd6\xd0\xce\xc4\n");
-    review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty()
-        && !review.value->individualBlocks.front().referenced, "only unbound comment bytes require separate review without guessing a code page");
-    confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "explicit non-executable comment review passes");
+    review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.empty(), "unrelated GBK comment bytes need no blanket separate confirmation");
+    confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "unrelated byte comment group review passes");
     WriteText(dependency, "call BJDebugMsg(\"\xd6\xd0\xce\xc4\")\n");
-    review = query(); Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("dep.j:1") != std::string::npos, "unbound string encoding remains incomplete with an exact source line");
+    review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.empty(), "GBK string bytes pass unchanged without forced evidence");
+    WriteText(dependency, "call BJDebugMsg(\"\xd6\xd0 gg_trg_Target\")\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty()
+        && !review.value->individualBlocks.front().referenced, "GBK string containing an ASCII symbol is possible only");
+    WriteText(dependency, "call \xd6\xd0\xce\xc4()\n");
+    review = query(); Require(review.Succeeded() && !review.value->complete, "modern nonASCII executable identifier remains incomplete");
     WriteText(dependency, "#define JOIN(a,b) a ## b\nJOIN(unrelated,Name)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().dynamic, "modern paste macro needs review");
     confirm(*review.value); Trigger::TriggerGraphEditLimits limits; limits.removalPreprocessProvider = provider;
@@ -1227,6 +1272,22 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     review = query(); Require(review.Succeeded() && !review.value->complete, "source-directory shadow cannot stand in for a fresh save workspace");
     doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"}; review = query();
     Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN") != std::string::npos, "modern AI include never read");
+    std::filesystem::remove(map / "dep.j");
+    doc.wct.customCode = {};
+    const auto owner = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "LogicalOwner"); Require(owner.Succeeded(), "logical argument owner");
+    op.parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *owner.value, {}});
+    auto added = Trigger::TriggerDocumentEditor::AppendRootEca(doc, *catalog.value, *owner.value, Trigger::UiDefinitionKind::Action, "OriginalUse");
+    Require(added.Succeeded(), "logical name action");
+    const auto outer = doc.argumentNodes.back().id;
+    const auto called = Trigger::TriggerDocumentEditor::AppendArgumentCall(doc, *catalog.value, outer, "integer", "YDWEForLoopLocVarIndex");
+    Require(called.Succeeded(), "production local-name lowering");
+    doc.argumentNodes.back().type = 3; doc.argumentNodes.back().value = Trigger::RawText{"原创局部名"};
+    review = query(); Require(review.Succeeded() && review.value->complete, "logical name is audited while its production JASS is ASCII");
+    confirm(*review.value);
+    Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "lowered name does not become unknown executable code");
+    doc.argumentNodes.back().value = Trigger::RawText{"gg_trg_Target"};
+    review = query(); Require(review.Succeeded() && review.value->complete
+        && std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& b) { return b.referenced; }), "all raw parameter references still scanned despite production lowering");
 }
 void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto tool = root / "framework", ui = tool / "share" / "mpq", map = root / "map-source";
@@ -1488,14 +1549,14 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
         "an explicit per-file encoding is bound to the logical profile and frozen source plan");
     Require(!MakeFrameworkLexicalView("globals\ninteger udg_\xd6\xd0=1\nendglobals\n", map / "gbk-name.j", ScriptProfileEncoding::Gbk).Succeeded(),
         "GBK code identifiers remain unsupported instead of whole-text transcoding");
-    const std::string opaque = "// \xd6\xd0\n#define OPAQUE_LITERAL \"\x81\x5c\"\nglobals\nstring value=OPAQUE_LITERAL\nendglobals\n";
+    const std::string opaque = "// \xd6\xd0\n#define OPAQUE_LITERAL \"\x9c\x5c\x5c\"\nglobals\nstring value=OPAQUE_LITERAL\nendglobals\n";
     WriteText(map / "opaque.j", opaque);
     auto mixed = feature; mixed.mainText = "$include \"opaque.j\"\n" + plain;
     const auto mixedCaptured = CaptureScriptPreprocessSources(captured.value->entryPlan, FrameworkSourceRequest(*captured.value), mixed);
-    Require(mixedCaptured.Succeeded() && mixedCaptured.value->preprocessed.text.find("\"\x81\x5c\"") != std::string::npos &&
-        !mixedCaptured.value->preprocessed.lexicalView.opaque.empty() &&
+    Require(mixedCaptured.Succeeded() && mixedCaptured.value->preprocessed.text.find("\"\x9c\x5c\x5c\"") != std::string::npos &&
+        mixedCaptured.value->preprocessed.lexicalView.opaque.empty() &&
         Jass::ValidateSourceLexicalView(mixedCaptured.value->preprocessed.text, mixedCaptured.value->preprocessed.lexicalView).Succeeded(),
-        "mixed sources carry raw GBK literal bytes, including a trail backslash, through macro expansion");
+        "mixed sources carry literal bytes and byte escapes through macro expansion without scalar masking");
     const auto mixedReplay = ReplayScriptPreprocessSources(*mixedCaptured.value);
     Require(mixedReplay.Succeeded() && mixedReplay.text == mixedCaptured.value->preprocessed.text &&
         mixedReplay.lexicalView.opaque == mixedCaptured.value->preprocessed.lexicalView.opaque,
@@ -1508,28 +1569,30 @@ void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto opaqueRewritten = Jass::RewriteUdgIdentifiers(opaqueRewrite);
     Require(opaqueRewritten.Succeeded() && opaqueRewritten.value->text == mixedReplay.text,
         "rewrite lexes the qualified view but returns exact original literal bytes");
-    const auto translatedOpaque = RebindFrameworkLexicalView("globals\nstring value=\"\x81\x5c\"\nendglobals\n", mixedReplay.text, mixedReplay.lexicalView);
-    Require(translatedOpaque.Succeeded() && !translatedOpaque.value->opaque.empty(),
-        "later output only rebinds a complete literal copied unchanged from an owned qualified source");
-    Require(!RebindFrameworkLexicalView("globals\nstring value=\"new\x81\x5c\"\nendglobals\n", mixedReplay.text, mixedReplay.lexicalView).Succeeded(),
-        "new or transformed opaque output cannot inherit unrelated source encoding qualification");
+    const auto translatedOpaque = RebindFrameworkLexicalView("globals\nstring value=\"\x9c\x5c\x5c\"\nendglobals\n", mixedReplay.text, mixedReplay.lexicalView);
+    Require(translatedOpaque.Succeeded() && translatedOpaque.value->opaque.empty(),
+        "later output preserves raw byte literals without requiring scalar qualification");
+    Require(RebindFrameworkLexicalView("globals\nstring value=\"new\x9c\x5c\x5c\"\nendglobals\n", mixedReplay.text, mixedReplay.lexicalView).Succeeded(),
+        "fresh opaque byte strings are permitted by the same byte lexical rule");
+    Require(!MakeFrameworkLexicalView("set s=\"\x9c\x5c\"\n", map / "unclosed.j", ScriptProfileEncoding::Gbk).Succeeded(),
+        "a tail5C consumes the quote under byte lexing instead of being scalar-masked");
+    Require(!RebindFrameworkLexicalView("set \x9c\x40=1\n", mixedReplay.text, mixedReplay.lexicalView).Succeeded(),
+        "unknown encoded executable bytes are not granted opaque-text qualification");
     // 两处原字节完全相同的中文注释：输出字节确定，只是诊断位置取首次出现处，不当作歧义。
     const std::string repeated = "// \xd6\xd0\nglobals\n// \xd6\xd0\nendglobals\n";
     const auto repeatedView = MakeFrameworkLexicalView(repeated, map / "repeated.j", ScriptProfileEncoding::Gbk);
-    Require(repeatedView.Succeeded() && repeatedView.value->opaque.size() == 2, "repeated GBK comments produce two qualified spans");
+    Require(repeatedView.Succeeded() && repeatedView.value->opaque.empty(), "repeated GBK comments retain raw bytes without masking spans");
     const auto repeatedRebound = RebindFrameworkLexicalView(repeated, repeated, *repeatedView.value);
-    Require(repeatedRebound.Succeeded() && repeatedRebound.value->opaque.size() == 2 &&
-        HasCode(repeatedRebound.diagnostics, "SCRIPT_FRAMEWORK_OUTPUT_OPAQUE_SHARED_BYTES") &&
-        repeatedRebound.value->opaque[1].origin.offset == repeatedView.value->opaque[0].origin.offset,
-        "identical opaque bytes from several places rebind deterministically to the first origin");
+    Require(repeatedRebound.Succeeded() && repeatedRebound.value->text == repeated && repeatedRebound.value->opaque.empty(),
+        "repeated opaque byte text requires neither encoding guesses nor provenance substitution");
     auto forged = mixedReplay.lexicalView; forged.text[0] = '#';
     Require(!Jass::ValidateSourceLexicalView(mixedReplay.text, forged).Succeeded(),
         "the lexical provider cannot hide or replace arbitrary original ASCII code");
-    WriteText(map / "stringize.j", "#define STR(x) #x\nglobals\nstring value=STR(\"\x81\x5c\")\nendglobals\n");
+    WriteText(map / "stringize.j", "#define STR(x) #x\nglobals\nstring value=STR(\"\x9c\x5c\x5c\")\nendglobals\n");
     auto unsupportedStringize = feature; unsupportedStringize.mainText = "$include \"stringize.j\"\n";
     const auto stringize = CaptureScriptPreprocessSources(captured.value->entryPlan, FrameworkSourceRequest(*captured.value), unsupportedStringize);
-    Require(!stringize.Succeeded() && HasCode(stringize.diagnostics, "PP_OPAQUE_STRINGIZE_UNSUPPORTED"),
-        "macro stringification cannot reinterpret opaque cross-encoding bytes");
+    Require(stringize.Succeeded() && stringize.value->preprocessed.text.find(std::string("\x9c")) != std::string::npos,
+        "macro stringification escapes syntax bytes while preserving opaque nonASCII bytes");
     auto incomplete = *captured.value; incomplete.uiBindings.pop_back();
     Require(!VerifyScriptFrameworkInputs(incomplete, *layout.value).Succeeded(), "source binding list cannot omit a UI negative candidate");
     WriteText(ui / "base" / "action.txt", "// new source that was absent\n");

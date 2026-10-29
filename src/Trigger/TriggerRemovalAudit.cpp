@@ -3,7 +3,10 @@
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Jass/ByteLexical.h"
+#include "War3MapCore/Text/SourceEncoding.h"
 #include "TriggerCodeAuditBlocks.h"
+#include <Windows.h>
 #include <algorithm>
 #include <cctype>
 #include <set>
@@ -17,13 +20,29 @@ Status Fail(const char* code, std::string message) { return Status::Failure("Tri
 std::string Key(AtomicRenameCodeKind kind, StableId id) { return std::to_string(static_cast<unsigned>(kind)) + ":" + std::to_string(id); }
 bool NameByte(unsigned char c) { return std::isalnum(c) || c == '_' || c >= 128; }
 bool Match(std::string_view value, const DeclarationRemovalReview& review, bool identifier) {
+    // 按名字符串中的非ASCII只作显示名提及；不能冒充精确的ASCII生成符号。
+    if (!identifier && std::any_of(value.begin(), value.end(), [](unsigned char c) { return c >= 128; })) return false;
     if (!identifier && value == review.expectedName) return true;
     return std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) {
         return s.ends_with('_') ? value.starts_with(s) : value == s;
     });
 }
-bool Mentions(std::string_view value, const DeclarationRemovalReview& review) {
-    return value.find(review.expectedName) != std::string_view::npos
+std::vector<std::string> DisplayNameBytes(std::string_view name) {
+    std::vector<std::string> names{std::string(name)};
+    const auto count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.data(), static_cast<int>(name.size()), nullptr, 0);
+    if (!count) return names;
+    std::wstring wide(count, L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.data(), static_cast<int>(name.size()), wide.data(), count) != count) return names;
+    BOOL substituted = FALSE;
+    const auto bytes = WideCharToMultiByte(936, WC_NO_BEST_FIT_CHARS, wide.data(), count, nullptr, 0, nullptr, &substituted);
+    if (!bytes || substituted) return names;
+    std::string gbk(bytes, '\0');
+    if (WideCharToMultiByte(936, WC_NO_BEST_FIT_CHARS, wide.data(), count, gbk.data(), bytes, nullptr, &substituted) == bytes
+        && !substituted && gbk != name) names.push_back(std::move(gbk));
+    return names;
+}
+bool Mentions(std::string_view value, const DeclarationRemovalReview& review, const std::vector<std::string>& names) {
+    return std::any_of(names.begin(), names.end(), [&](const auto& name) { return value.find(name) != std::string_view::npos; })
         || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return value.find(s) != std::string_view::npos; });
 }
 bool MacroMentionsSymbol(std::string_view body, const DeclarationRemovalReview& review) {
@@ -39,13 +58,13 @@ struct Token { std::string text; std::size_t offset; bool quoted = false; std::s
 bool NeedsPreprocessing(std::string_view text) {
     if (text.find("<?") != std::string_view::npos) return true;
     for (std::size_t i = 0; i < text.size();) {
-        if (text[i] == '#' || text.substr(i).starts_with("//!")) return true;
+        if (text[i] == '#' || text.substr(i).starts_with("//!") || static_cast<unsigned char>(text[i]) >= 128) return true;
         if (text.substr(i).starts_with("//")) { while (i < text.size() && text[i] != '\n' && text[i] != '\r') ++i; }
         else if (text.substr(i).starts_with("/*")) {
             const auto end = text.find("*/", i + 2); i = end == std::string_view::npos ? text.size() : end + 2;
         } else if (text[i] == '"' || text[i] == '\'') {
             const auto quote = text[i++];
-            while (i < text.size()) { if (text[i] == '\\' && i + 1 < text.size()) i += 2; else if (text[i++] == quote) break; }
+            while (i < text.size()) { if (text[i] == quote) { ++i; break; } i = Jass::QuotedByteNext(text, i); }
         } else ++i;
     }
     return false;
@@ -66,6 +85,8 @@ std::vector<std::size_t> ArgumentBoundaries(const std::vector<Token>& tokens) {
 void Incomplete(RemovalCodeBlock& block, const char* reason) { block.complete = false; if (block.incompleteReason.empty()) block.incompleteReason = reason; }
 void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     if (block.evidence.empty()) return;
+    // 宿主展开证据已经绑定真实来源行，不把含原字节的展开视图再按展示UTF-8重编码。
+    if (std::all_of(block.evidence.begin(), block.evidence.end(), [](const auto& hit) { return !hit.sourceFile.empty(); })) return;
     const auto original = source.ToBytes(), encoded = RawText{source.text, source.encoding, {}}.ToBytes();
     if (!original.Succeeded() || !encoded.Succeeded() || *original.value != *encoded.value) { Incomplete(block, "原字节不能按声明编码精确往返"); return; }
     const auto prefix = RawText{"", source.encoding, {}}.ToBytes();
@@ -88,6 +109,18 @@ void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     const auto at = [&](std::size_t offset) { return std::lower_bound(points.begin(), points.end(), offset, [](const auto& p, auto n) { return p.first < n; })->second; };
     for (auto& hit : block.evidence) if (hit.sourceFile.empty()) { hit.rawByteOffset = at(hit.decodedByteOffset); hit.rawByteLength = at(hit.decodedByteOffset + hit.decodedByteLength) - hit.rawByteOffset; hit.rawRangeExact = true; }
 }
+std::string EvidenceDisplay(std::string_view bytes) {
+    constexpr char hex[] = "0123456789ABCDEF";
+    std::string display;
+    for (std::uint32_t at = 0; at < bytes.size();) {
+        const auto byte = static_cast<unsigned char>(bytes[at]);
+        if (byte < 0x80) { display += bytes[at++]; continue; }
+        const auto scalar = Text::ReadSourceScalar(bytes, at, Text::SourceEncoding::Utf8);
+        if (scalar.Succeeded()) { display.append(bytes.substr(at, scalar.value->bytes)); at += scalar.value->bytes; }
+        else { display += "\\x"; display += hex[byte >> 4]; display += hex[byte & 15]; ++at; }
+    }
+    return display;
+}
 void Evidence(RemovalCodeBlock& block, const RawText& source, std::size_t at, std::size_t size,
     std::string context, bool definite) {
     if (block.evidence.size() >= kEvidence) { block.complete = false; return; }
@@ -95,14 +128,16 @@ void Evidence(RemovalCodeBlock& block, const RawText& source, std::size_t at, st
     hit.decodedByteOffset = at; hit.decodedByteLength = size;
     auto snippet = std::min<std::size_t>(size, 256);
     while (snippet && at + snippet < source.text.size() && (static_cast<unsigned char>(source.text[at + snippet]) & 0xc0) == 0x80) --snippet;
-    hit.text = source.text.substr(at, snippet);
+    hit.text = EvidenceDisplay(std::string_view(source.text).substr(at, snippet));
     block.referenced |= definite; block.evidence.push_back(std::move(hit));
 }
 // 只作有界词法证据，不执行宏或猜测动态目标。未知指令/未闭合文本不取得完整覆盖。
-void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemovalReview& review, std::size_t& tokensLeft) {
+void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemovalReview& review, std::size_t& tokensLeft,
+    const std::vector<std::string>& names, bool executableIdentifiers = true) {
     const auto& text = source.text; std::vector<Token> tokens;
     if (text.find("<?") != std::string::npos) Incomplete(block, "本轮未覆盖Lua模板");
     if (text.find('\0') != std::string::npos) { Incomplete(block, "含NUL字节"); Evidence(block, source, text.find('\0'), 1, "不支持的NUL字节", false); }
+    if (text.find('\x1a') != std::string::npos) { Incomplete(block, "含Ctrl-Z字节"); Evidence(block, source, text.find('\x1a'), 1, "不支持的Ctrl-Z字节", false); }
     for (std::size_t i = 0; i < text.size();) {
         if (!tokensLeft) { Incomplete(block, "词法扫描预算截断"); break; }
         const auto begin = i;
@@ -115,31 +150,29 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
             if (line) { while (i < text.size() && text[i] != '\n' && text[i] != '\r') ++i; }
             else { const auto end = text.find("*/", i); if (end == std::string::npos) { Incomplete(block, "块注释未闭合"); i = text.size(); } else i = end + 2; }
             const auto comment = std::string_view(text).substr(begin, i - begin);
-            if (Mentions(comment, review))
+            if (Mentions(comment, review, names))
                 Evidence(block, source, begin, i - begin, "注释命中（非执行引用）", false);
             continue;
         }
         if (text[i] == '"' || text[i] == '\'') {
-            const char quote = text[i++]; std::string decoded; bool closed = false;
-            while (i < text.size()) {
-                const char c = text[i++]; if (c == quote) { closed = true; break; }
-                if (c == '\\' && i < text.size()) {
-                    const auto escaped = text[i++];
-                    if (escaped == '"' || escaped == '\\' || escaped == '\'') decoded += escaped;
-                    else if (escaped == 'n') decoded += '\n';
-                    else if (escaped == 'r') decoded += '\r';
-                    else if (escaped == 't') decoded += '\t';
-                    else { Incomplete(block, "含未知字符串转义"); decoded += '\\'; decoded += escaped; }
-                } else decoded += c;
+            const char quote = text[i];
+            const auto opaque = *Jass::ScanByteOpaque(text, i);
+            i = opaque.end;
+            if (!opaque.closed) Incomplete(block, "字符串或物编字面量未闭合");
+            std::string decoded;
+            if (quote == '"' && opaque.closed) {
+                const auto value = Jass::DecodeStringBytes(std::string_view(text).substr(begin, i - begin));
+                if (value) decoded = *value;
+                else { Incomplete(block, "含未知字符串转义"); decoded = text.substr(begin, i - begin); }
             }
-            if (!closed) Incomplete(block, "字符串或物编字面量未闭合");
             --tokensLeft; tokens.push_back({decoded, begin, true, i - begin});
-            if (quote == '"' && Mentions(decoded, review)) Evidence(block, source, begin, i - begin, "名字字符串（须审阅用途）", false);
+            if (quote == '"' && Mentions(decoded, review, names)) Evidence(block, source, begin, i - begin, "名字字符串（须审阅用途）", false);
             continue;
         }
         if (NameByte(static_cast<unsigned char>(text[i]))) {
             while (i < text.size() && NameByte(static_cast<unsigned char>(text[i]))) ++i;
             auto value = text.substr(begin, i - begin); --tokensLeft; tokens.push_back({value, begin, false, i - begin});
+            if (executableIdentifiers && std::any_of(value.begin(), value.end(), [](unsigned char c) { return c >= 128; })) Incomplete(block, "执行代码非ASCII标识符尚未由宿主映射");
             if (Match(value, review, true)) Evidence(block, source, begin, i - begin, "可执行生成符号", true);
         } else { --tokensLeft; tokens.push_back({text.substr(i, 1), i, false, 1}); ++i; }
     }
@@ -199,6 +232,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
     const auto valid = WtgWctCodec{}.Validate(doc, catalog); if (!valid.Succeeded()) return {std::nullopt, valid.diagnostics};
     const auto binding = CaptureTriggerGraphBinding(doc, catalog, objects); if (!binding.Succeeded()) return {std::nullopt, binding.diagnostics};
     DeclarationRemovalReview review; review.binding = *binding.value; review.target = op.target; review.expectedName = op.expectedName;
+    const auto nameBytes = DisplayNameBytes(op.expectedName);
     if (op.target.kind == GraphRecordKind::Variable) {
         const auto at = std::find_if(doc.variables.begin(), doc.variables.end(), [&](const auto& r) { return r.id == op.target.id; });
         if (at == doc.variables.end() || at->name.text != op.expectedName) return Out::Failure("Trigger.RemoveAudit", "TRIGGER_GRAPH_NAME_STALE", "删除变量的身份或原名已变化。");
@@ -269,7 +303,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
     const auto update = [](Sha256Stream& stream, std::string_view text) {
         return stream.Update(std::as_bytes(std::span(text.data(), text.size())));
     };
-    const auto header = update(manifest, "remove-audit-v2:" + review.binding.currentWtgSha256 + review.binding.currentWctSha256 + catalog.Sha256()
+    const auto header = update(manifest, "remove-audit-v2:jass-bytes-v1:names=utf8,gbk:" + review.binding.currentWtgSha256 + review.binding.currentWctSha256 + catalog.Sha256()
         + std::to_string(static_cast<unsigned>(op.target.kind)) + ":" + std::to_string(op.target.id) + ":" + op.expectedName
         + ":preprocess:" + review.preprocessProfileSha256 + ":" + review.preprocessIdentitySha256);
     if (!header.Succeeded()) return {std::nullopt, header.diagnostics};
@@ -298,7 +332,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
             if (entry.sourceSha256 != *sha.value) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "预处理覆盖与当前代码块不同。");
             if (entry.text.size() > kBytes - bytes) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "展开文本超过删除审计预算。");
             bytes += entry.text.size();
-            Scan(block, RawText{entry.text}, review, tokensLeft);
+            Scan(block, RawText{entry.text}, review, tokensLeft, nameBytes);
             for (auto& hit : block.evidence) {
                 if (!hit.line || hit.line > entry.origins.size()) { Incomplete(block, "展开证据缺少来源映射"); continue; }
                 const auto& origin = entry.origins[hit.line - 1];
@@ -316,14 +350,12 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
                 if (block.evidence.size() >= kEvidence) Incomplete(block, "宏证据数量超过预算");
                 else block.evidence.push_back(std::move(hit));
             }
-            for (const auto& note : entry.commentsWithUnknownEncoding) {
-                RemovalReferenceEvidence hit; hit.context = "注释含未声明编码字节（仅非执行文本，须单独确认）";
-                hit.sourceFile = note.file; hit.sourceLine = note.line;
-                if (hit.sourceFile.empty() || !hit.sourceLine) Incomplete(block, "注释证据缺少来源映射");
-                if (block.evidence.size() >= kEvidence) Incomplete(block, "注释证据超过预算");
-                else block.evidence.push_back(std::move(hit));
-            }
-        } else Scan(block, text, review, tokensLeft);
+        } else {
+            // 参数原值还包含由生产生成器降为存储键的名称，不能把原值本身当作JASS文件。
+            // 仅在整份实际生成正文已有完整宿主覆盖时区分这层表示；仍逐块扫描所有引用和动态构造。
+            const bool loweredArgument = coverage && coverage->complete && kind == AtomicRenameCodeKind::ArgumentCode;
+            Scan(block, text, review, tokensLeft, nameBytes, !loweredArgument);
+        }
         if (kind == AtomicRenameCodeKind::ArgumentCode) {
             const auto found = arguments.find(id);
             if (found != arguments.end()) {
@@ -336,7 +368,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
                         if (preset->script.size() > kBytes - bytes) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "目录预设展开超出代码审计预算。");
                         bytes += preset->script.size();
                         RemovalCodeBlock expanded;
-                        Scan(expanded, RawText{preset->script}, review, tokensLeft);
+                        Scan(expanded, RawText{preset->script}, review, tokensLeft, nameBytes);
                         if (!expanded.complete) { block.complete = false; block.incompleteReason = "目录预设展开：" + expanded.incompleteReason; }
                         block.dynamic |= expanded.dynamic;
                         for (const auto& hit : expanded.evidence)

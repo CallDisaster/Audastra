@@ -1,4 +1,5 @@
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/Script/SlkMapMemberProtocol.h"
 #include "War3MapCore/ProjectSaveControl.h"
 
 #include "War3MapCore/Hash.h"
@@ -138,7 +139,15 @@ bool ScriptAuditMember(std::string_view name) {
     static const std::set<std::string> allowed{"WAR3MAP.WTG", "WAR3MAP.WCT", "WAR3MAP.W3I", "WAR3MAPUNITS.DOO", "WAR3MAP.DOO",
         "WAR3MAP.W3R", "WAR3MAP.W3C", "WAR3MAP.W3S", "WAR3MAP.WTS", "WAR3MAP.W3E", "WAR3MAP.W3U", "WAR3MAP.W3A", "WAR3MAP.W3T",
         "COMMON.J", "BLIZZARD.J", "SCRIPTS\\COMMON.J", "SCRIPTS\\BLIZZARD.J"};
-    return allowed.contains(Canonical(name));
+    const auto canonical = Canonical(name);
+    if (allowed.contains(canonical)) return true;
+    // 与SLK快照共用固定物理槽位；不扩大到任意导入或脚本读取。
+    static const auto slk = [] {
+        std::set<std::string> names;
+        for (const auto& member : Script::SlkMapMemberProtocol::FixedNames()) names.insert(Canonical(member));
+        return names;
+    }();
+    return slk.contains(canonical);
 }
 } // namespace
 

@@ -193,8 +193,6 @@ struct RemovalPreprocessBlock {
     std::string sourceSha256, text;
     std::vector<RemovalPreprocessOrigin> origins;
     std::vector<RemovalPreprocessMacro> macros;
-    // 字节边界已证明只属于注释，但未声明显示编码；保留单独审阅，不猜代码页。
-    std::vector<RemovalPreprocessOrigin> commentsWithUnknownEncoding;
 };
 struct RemovalPreprocessCoverage {
     std::string profileSha256, identitySha256;
