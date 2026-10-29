@@ -8,6 +8,7 @@ namespace Audastra::Runtime32::GameTest {
 namespace {
 using namespace War3Map::Runtime;
 thread_local HHOOK inputHook = nullptr;
+thread_local HHOOK postedInputHook = nullptr;
 std::atomic<HWND> target{};
 std::atomic<LONG> cursorX{0}, cursorY{0};
 std::array<std::atomic<SHORT>, 256> keys{};
@@ -189,11 +190,23 @@ LRESULT CALLBACK InputHook(int code, WPARAM wparam, LPARAM lparam) {
     }
     return CallNextHookEx(nullptr, code, wparam, lparam);
 }
+LRESULT CALLBACK PostedInputHook(int code, WPARAM wparam, LPARAM lparam) {
+    if (code >= 0 && wparam == PM_REMOVE && lparam) {
+        const auto& message = *reinterpret_cast<const MSG*>(lparam);
+        if ((message.message >= WM_KEYFIRST && message.message <= WM_KEYLAST)
+            || (message.message >= WM_MOUSEFIRST && message.message <= WM_MOUSELAST))
+            ObserveInput(message.hwnd, message.message, message.wParam, message.lParam);
+    }
+    return CallNextHookEx(nullptr, code, wparam, lparam);
+}
 }
 bool InstallWindowInput(HWND window) {
     if (!Owned(window) || GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId()) return false;
     // 只监视本线程的窗口消息，不替换应用窗口过程，后续过程切换也不会丢失接收器。
     if (!inputHook && !(inputHook = SetWindowsHookExW(WH_CALLWNDPROC, InputHook, nullptr, GetCurrentThreadId()))) return false;
+    if (!postedInputHook && !(postedInputHook = SetWindowsHookExW(WH_GETMESSAGE, PostedInputHook, nullptr, GetCurrentThreadId()))) {
+        UnhookWindowsHookEx(inputHook); inputHook = nullptr; return false;
+    }
     if (!SetPropW(window, War3Map::Runtime::kWindowInputProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(War3Map::Runtime::kWindowInputMagic)))) {
         return false;
     }
