@@ -333,6 +333,14 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
     if (impl_->desktop) EnumDesktopWindows(impl_->desktop, visit, reinterpret_cast<LPARAM>(&search));
     else EnumWindows(visit, reinterpret_cast<LPARAM>(&search));
     if (!search.window || search.tied) return fail("MAP_TEST_INPUT_NO_WINDOW", "本次游戏的测试接收窗口不存在或不唯一；未向其他窗口发送。");
+    HWND endpoint = nullptr; DWORD endpointThread = 0;
+    for (HWND next = nullptr; (next = FindWindowExW(HWND_MESSAGE, next, kWindowInputEndpointClass, nullptr)) != nullptr;) {
+        DWORD owner = 0; const auto threadId = GetWindowThreadProcessId(next, &owner);
+        if (owner != id || GetPropW(next, kWindowInputEndpointProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) continue;
+        if (endpoint) return fail("MAP_TEST_INPUT_AMBIGUOUS", "本次游戏有多个测试控制端，拒绝选择。");
+        endpoint = next; endpointThread = threadId;
+    }
+    if (!endpoint) return fail("MAP_TEST_INPUT_NO_ENDPOINT", "本次游戏的专用测试控制端尚未就绪；不会请求其他进程或前台输入。");
     const auto window = search.window; DWORD pid = 0; const auto thread = GetWindowThreadProcessId(window, &pid);
     // 宿主与游戏可能采用不同DPI模式；仅切换本调用线程的查询上下文，结束后立即恢复。
     using QueryDpi = HANDLE(WINAPI*)(HWND);
@@ -347,6 +355,7 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
     RECT client{};
     if (!thread || pid != id || !GetClientRect(window, &client)) return fail("MAP_TEST_INPUT_WINDOW_CHANGED", "测试窗口身份或客户区已改变。");
     WindowInputPacket packet; packet.processId = id; packet.createdLow = created.dwLowDateTime; packet.createdHigh = created.dwHighDateTime;
+    packet.targetWindow = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(window));
     packet.sequence = ++impl_->inputSequence; if (!packet.sequence) return fail("MAP_TEST_INPUT_SEQUENCE", "本次测试输入序号已耗尽。");
     packet.width = client.right; packet.height = client.bottom;
     packet.kind = input.kind == MapTestInputKind::Click ? WindowInputKind::Click : input.kind == MapTestInputKind::Key ? WindowInputKind::Key : WindowInputKind::Close;
@@ -363,14 +372,17 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
         sendStage = "ownership_guard";
         if (!owned() || GetWindowThreadProcessId(window, &actualPid) != thread || actualPid != id
             || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return 0;
+        if (GetWindowThreadProcessId(endpoint, &actualPid) != endpointThread || actualPid != id
+            || GetPropW(endpoint, kWindowInputEndpointProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return 0;
         COPYDATASTRUCT copy{ kWindowInputMagic, sizeof(packet), &packet }; DWORD_PTR result = 0;
         SetLastError(0);
         sendStage = "send_message";
-        sendReturned = SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result) != 0;
+        sendReturned = SendMessageTimeoutW(endpoint, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result) != 0;
         sendError = GetLastError(); windowReply = result;
         if (!sendReturned) return 0;
-        ackSequence = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputSequenceProperty)));
-        return ackSequence == packet.sequence ? reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputResultProperty)) : 0;
+        ackSequence = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(endpoint, kWindowInputSequenceProperty)));
+        // 本方专用端的同步返回绑定本次包；正常关闭可能立即销毁进程与窗口属性。
+        return result;
     };
     auto result = send(); const auto start = GetTickCount64();
     while ((result & kWindowInputStateMask) == static_cast<unsigned>(WindowInputState::Pending) && GetTickCount64() - start < 3000) {
@@ -386,7 +398,7 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
     MapTestInputReceipt receipt; receipt.processId = id; receipt.sequence = packet.sequence; receipt.window = reinterpret_cast<std::uintptr_t>(window);
     receipt.width = client.right; receipt.height = client.bottom; receipt.pixelX = packet.x; receipt.pixelY = packet.y;
     receipt.cursorObserved = result & kWindowInputCursorRead; receipt.keyObserved = result & kWindowInputKeyRead;
-    receipt.method = input.kind == MapTestInputKind::Close ? "owned_window_wm_close_posted" : "owned_window_messages_and_virtual_user32";
+    receipt.method = input.kind == MapTestInputKind::Close ? "owned_endpoint_wm_close_posted" : "owned_endpoint_queued_messages_and_virtual_user32";
     return Result<MapTestInputReceipt>::Success(std::move(receipt));
 #else
     return fail("MAP_TEST_INPUT_UNSUPPORTED", "当前平台不支持测试输入。");

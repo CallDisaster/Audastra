@@ -203,9 +203,15 @@ int wmain(int argc, wchar_t** argv) {
             Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{VK_CONTROL,'Q'}}), "key chord dispatch and release");
             War3Map::Runtime::WindowInputPacket spoof;
             spoof.processId = run.value->launcherProcessId; spoof.sequence = 42;
+            spoof.targetWindow = static_cast<std::uint32_t>(clicked.value->window);
             COPYDATASTRUCT data{War3Map::Runtime::kWindowInputMagic,sizeof(spoof),&spoof}; DWORD_PTR answer = 0;
             const auto exchange = [&] {
-                const auto window = reinterpret_cast<HWND>(clicked.value->window);
+                HWND window = nullptr;
+                for (HWND next = nullptr; (next = FindWindowExW(HWND_MESSAGE,next,Runtime::kWindowInputEndpointClass,nullptr)) != nullptr;) {
+                    DWORD pid = 0; GetWindowThreadProcessId(next,&pid);
+                    if (pid == run.value->launcherProcessId) { window = next; break; }
+                }
+                if (!window) return false;
                 if (!SendMessageTimeoutW(window,WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG,1000,&answer)) return false;
                 if (static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, Runtime::kWindowInputSequenceProperty))) != spoof.sequence) return false;
                 answer = reinterpret_cast<ULONG_PTR>(GetPropW(window, Runtime::kWindowInputResultProperty));
@@ -219,6 +225,9 @@ int wmain(int argc, wchar_t** argv) {
             spoof.createdLow=created.dwLowDateTime; spoof.createdHigh=created.dwHighDateTime;
             Require(exchange()
                 && answer == static_cast<unsigned>(Runtime::WindowInputState::UnknownSequence), "unknown sequence cannot acknowledge old action");
+            spoof.targetWindow = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(otherWindow));
+            Require(exchange() && answer == static_cast<unsigned>(Runtime::WindowInputState::WrongIdentity), "control endpoint refuses a target in another process");
+            spoof.targetWindow = static_cast<std::uint32_t>(clicked.value->window);
             spoof.kind=Runtime::WindowInputKind::Click; spoof.width=1; spoof.height=1;
             Require(exchange()
                 && answer == static_cast<unsigned>(Runtime::WindowInputState::WindowChanged), "changed geometry refuses input");

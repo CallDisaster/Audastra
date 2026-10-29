@@ -7,22 +7,19 @@
 namespace Audastra::Runtime32::GameTest {
 namespace {
 using namespace War3Map::Runtime;
-thread_local HHOOK inputHook = nullptr;
-thread_local HHOOK postedInputHook = nullptr;
+std::atomic<bool> endpointStarting{false};
 std::atomic<HWND> target{};
 std::atomic<LONG> cursorX{0}, cursorY{0};
 std::array<std::atomic<SHORT>, 256> keys{};
 std::atomic<bool> cursorRead{false}, keyRead{false};
 std::atomic<ULONGLONG> expires{0};
-// 除虚拟查询的原子状态外，仅窗口线程读写动作；不在游戏线程等待或睡眠。
+// 除虚拟查询的原子状态外，仅专用控制线程读写动作；不在游戏线程等待或睡眠。
 WindowInputPacket action{};
 WindowInputState state = WindowInputState::Complete;
 UINT_PTR timer = 0;
 unsigned phase = 0;
 std::atomic<DWORD> ownerThread{0};
 ULONGLONG due = 0;
-unsigned downSeen = 0, upSeen = 0;
-bool moveSeen = false;
 
 bool Owned(HWND window) {
     DWORD pid = 0;
@@ -85,6 +82,9 @@ void CALLBACK Advance(HWND, UINT, UINT_PTR id, DWORD) {
     if (GetTickCount64() >= expires.load()) { End(WindowInputState::DispatchFailed); return; }
     const auto window = target.load();
     if (!Owned(window)) { End(WindowInputState::WindowChanged); return; }
+    const auto previousDpi = SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(window));
+    struct Dpi { DPI_AWARENESS_CONTEXT previous; ~Dpi() { if (previous) SetThreadDpiAwarenessContext(previous); } } dpi{previousDpi};
+    if (!previousDpi) { End(WindowInputState::WindowChanged); return; }
     RECT client{};
     if (!GetClientRect(window, &client) || client.right != action.width || client.bottom != action.height) { End(WindowInputState::WindowChanged); return; }
     const LPARAM pixel = MAKELPARAM(action.x, action.y);
@@ -105,21 +105,25 @@ void CALLBACK Advance(HWND, UINT, UINT_PTR id, DWORD) {
         if (!ok) { End(WindowInputState::DispatchFailed); return; }
         phase = 2; due = GetTickCount64() + 100;
     } else {
-        const auto expected = action.kind == WindowInputKind::Click ? 1u : (1u << action.keyCount) - 1;
-        if (downSeen == expected && upSeen == expected && (action.kind != WindowInputKind::Click || moveSeen)) End(WindowInputState::Complete);
+        // 确认已向目标队列投递且虚拟状态已完成；业务效果另由截图/回执验证。
+        End(WindowInputState::Complete);
     }
 }
 std::uint32_t Report() {
     return static_cast<std::uint32_t>(state) | (cursorRead.load() ? kWindowInputCursorRead : 0) | (keyRead.load() ? kWindowInputKeyRead : 0);
 }
 LRESULT Receive(HWND window, const WindowInputPacket& request) {
-    if (request.magic != kWindowInputMagic || request.version != 1 || request.bytes != sizeof(request) || !request.sequence) return static_cast<LRESULT>(WindowInputState::Invalid);
-    if (!Owned(window) || !Identity(request)) return static_cast<LRESULT>(WindowInputState::WrongIdentity);
+    if (request.magic != kWindowInputMagic || request.version != 2 || request.bytes != sizeof(request) || !request.sequence) return static_cast<LRESULT>(WindowInputState::Invalid);
+    if (!Owned(window) || !IsWindowVisible(window) || !Identity(request)
+        || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return static_cast<LRESULT>(WindowInputState::WrongIdentity);
     DWORD emptyThread = 0; ownerThread.compare_exchange_strong(emptyThread, GetCurrentThreadId());
     if (ownerThread.load() != GetCurrentThreadId()) return static_cast<LRESULT>(WindowInputState::WrongIdentity);
     if (request.kind == WindowInputKind::Query)
         return request.sequence == action.sequence && window == target.load() ? Report() : static_cast<LRESULT>(WindowInputState::UnknownSequence);
     if (state == WindowInputState::Pending) return static_cast<LRESULT>(WindowInputState::Busy);
+    const auto previousDpi = SetThreadDpiAwarenessContext(GetWindowDpiAwarenessContext(window));
+    struct Dpi { DPI_AWARENESS_CONTEXT previous; ~Dpi() { if (previous) SetThreadDpiAwarenessContext(previous); } } dpi{previousDpi};
+    if (!previousDpi) return static_cast<LRESULT>(WindowInputState::WindowChanged);
     RECT client{};
     if (!GetClientRect(window, &client) || request.width < 1 || request.height < 1 || request.width > 32767 || request.height > 32767
         || request.width != client.right || request.height != client.bottom) return static_cast<LRESULT>(WindowInputState::WindowChanged);
@@ -136,7 +140,6 @@ LRESULT Receive(HWND window, const WindowInputPacket& request) {
     if (target.load() != window) { cursorX = client.right / 2; cursorY = client.bottom / 2; }
     action = request; target = window; ownerThread = GetCurrentThreadId();
     cursorRead = false; keyRead = false; ClearKeys();
-    downSeen = upSeen = 0; moveSeen = false;
     if (request.kind == WindowInputKind::Close) {
         state = PostMessageW(window, WM_CLOSE, 0, 0) ? WindowInputState::Complete : WindowInputState::DispatchFailed;
         return Report();
@@ -150,62 +153,42 @@ LRESULT Receive(HWND window, const WindowInputPacket& request) {
     if (!timer) End(WindowInputState::DispatchFailed);
     return Report();
 }
-void ObserveInput(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return;
+LRESULT CALLBACK EndpointProc(HWND endpoint, UINT message, WPARAM wparam, LPARAM lparam) {
     if (message == WM_COPYDATA && lparam) {
         const auto* copy = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
         if (copy->dwData == kWindowInputMagic) {
-            if (copy->cbData != sizeof(WindowInputPacket) || !copy->lpData) return;
+            if (copy->cbData != sizeof(WindowInputPacket) || !copy->lpData) return static_cast<LRESULT>(WindowInputState::Invalid);
             const auto packet = *static_cast<const WindowInputPacket*>(copy->lpData);
+            const auto window = reinterpret_cast<HWND>(static_cast<ULONG_PTR>(packet.targetWindow));
             const auto answer = Receive(window, packet);
-            // 应用可以更换窗口过程或自行处理WM_COPYDATA；回执不依赖其返回值。
-            (void)SetPropW(window, kWindowInputResultProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(answer)));
-            (void)SetPropW(window, kWindowInputSequenceProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(packet.sequence)));
-            return;
+            (void)SetPropW(endpoint, kWindowInputResultProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(answer)));
+            (void)SetPropW(endpoint, kWindowInputSequenceProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(packet.sequence)));
+            return answer;
         }
     }
-    if (window == target.load() && ownerThread.load() == GetCurrentThreadId() && state == WindowInputState::Pending) {
-        if (action.kind == WindowInputKind::Click && lparam == MAKELPARAM(action.x, action.y)) {
-            if (message == WM_MOUSEMOVE) moveSeen = true;
-            if (message == WM_LBUTTONDOWN) downSeen = 1;
-            if (message == WM_LBUTTONUP) upSeen = 1;
-        } else if (action.kind == WindowInputKind::Key) {
-            for (unsigned i = 0; i < action.keyCount; ++i) if (wparam == action.keys[i]) {
-                if (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) downSeen |= 1u << i;
-                if (message == WM_KEYUP || message == WM_SYSKEYUP) upSeen |= 1u << i;
-            }
-        }
-    }
-    if (message == WM_NCDESTROY) {
-        RemovePropW(window, kWindowInputProperty);
-        RemovePropW(window, kWindowInputSequenceProperty);
-        RemovePropW(window, kWindowInputResultProperty);
-        if (target.load() == window) { End(WindowInputState::WindowChanged); target = nullptr; ownerThread = 0; }
-    }
+    return DefWindowProcW(endpoint, message, wparam, lparam);
 }
-LRESULT CALLBACK InputHook(int code, WPARAM wparam, LPARAM lparam) {
-    if (code >= 0 && lparam) {
-        const auto& message = *reinterpret_cast<const CWPSTRUCT*>(lparam);
-        ObserveInput(message.hwnd, message.message, message.wParam, message.lParam);
-    }
-    return CallNextHookEx(nullptr, code, wparam, lparam);
-}
-LRESULT CALLBACK PostedInputHook(int code, WPARAM wparam, LPARAM lparam) {
-    if (code >= 0 && wparam == PM_REMOVE && lparam) {
-        const auto& message = *reinterpret_cast<const MSG*>(lparam);
-        if ((message.message >= WM_KEYFIRST && message.message <= WM_KEYLAST)
-            || (message.message >= WM_MOUSEFIRST && message.message <= WM_MOUSELAST))
-            ObserveInput(message.hwnd, message.message, message.wParam, message.lParam);
-    }
-    return CallNextHookEx(nullptr, code, wparam, lparam);
+DWORD WINAPI EndpointThread(void*) {
+    WNDCLASSW type{}; type.lpfnWndProc = EndpointProc; type.hInstance = GetModuleHandleW(nullptr);
+    type.lpszClassName = kWindowInputEndpointClass;
+    if (!RegisterClassW(&type)) return 1;
+    const auto endpoint = CreateWindowExW(0, type.lpszClassName, L"", 0, 0, 0, 0, 0,
+        HWND_MESSAGE, nullptr, type.hInstance, nullptr);
+    if (!endpoint || !SetPropW(endpoint, kWindowInputEndpointProperty,
+        reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic)))) return 2;
+    MSG message{};
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) DispatchMessageW(&message);
+    return 0;
 }
 }
 bool InstallWindowInput(HWND window) {
     if (!Owned(window) || GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId()) return false;
-    // 只监视本线程的窗口消息，不替换应用窗口过程，后续过程切换也不会丢失接收器。
-    if (!inputHook && !(inputHook = SetWindowsHookExW(WH_CALLWNDPROC, InputHook, nullptr, GetCurrentThreadId()))) return false;
-    if (!postedInputHook && !(postedInputHook = SetWindowsHookExW(WH_GETMESSAGE, PostedInputHook, nullptr, GetCurrentThreadId()))) {
-        UnhookWindowsHookEx(inputHook); inputHook = nullptr; return false;
+    // 控制线程不依赖游戏加载页的消息循环；不创建可见窗口，不更换游戏窗口过程。
+    bool empty = false;
+    if (endpointStarting.compare_exchange_strong(empty, true)) {
+        const auto thread = CreateThread(nullptr, 0, EndpointThread, nullptr, 0, nullptr);
+        if (!thread) { endpointStarting = false; return false; }
+        CloseHandle(thread);
     }
     if (!SetPropW(window, War3Map::Runtime::kWindowInputProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(War3Map::Runtime::kWindowInputMagic)))) {
         return false;

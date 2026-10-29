@@ -7,6 +7,8 @@ inline constexpr std::uint32_t kWindowInputMagic = 0x41554950;
 inline constexpr wchar_t kWindowInputProperty[] = L"Audastra.TestInput.V1";
 inline constexpr wchar_t kWindowInputSequenceProperty[] = L"Audastra.TestInput.Sequence.V1";
 inline constexpr wchar_t kWindowInputResultProperty[] = L"Audastra.TestInput.Result.V1";
+inline constexpr wchar_t kWindowInputEndpointClass[] = L"Audastra.TestInput.Endpoint.V2";
+inline constexpr wchar_t kWindowInputEndpointProperty[] = L"Audastra.TestInput.Endpoint.V2";
 enum class WindowInputKind : std::uint32_t { Click = 1, Key = 2, Query = 3, Close = 4 };
 enum class WindowInputState : std::uint32_t {
     Pending = 1, Complete = 2, Invalid = 16, WrongIdentity = 17,
@@ -17,11 +19,12 @@ inline constexpr std::uint32_t kWindowInputCursorRead = 0x100;
 inline constexpr std::uint32_t kWindowInputKeyRead = 0x200;
 // WM_COPYDATA只传固定宽度值，不传宿主指针；两种位数必须使用同一布局。
 struct WindowInputPacket {
-    std::uint32_t magic = kWindowInputMagic, version = 1, bytes = sizeof(WindowInputPacket);
+    std::uint32_t magic = kWindowInputMagic, version = 2, bytes = sizeof(WindowInputPacket);
     WindowInputKind kind = WindowInputKind::Query;
     std::uint32_t processId = 0, createdLow = 0, createdHigh = 0, sequence = 0;
     std::int32_t width = 0, height = 0, x = 0, y = 0;
     std::uint32_t keyCount = 0, keys[8]{};
+    std::uint32_t targetWindow = 0;
 };
-static_assert(sizeof(WindowInputPacket) == 84 && std::is_trivially_copyable_v<WindowInputPacket>);
+static_assert(sizeof(WindowInputPacket) == 88 && std::is_trivially_copyable_v<WindowInputPacket>);
 }
