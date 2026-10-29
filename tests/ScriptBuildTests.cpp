@@ -3,6 +3,7 @@
 #include "War3MapCore/Script/ScriptToolchainLayout.h"
 #include "War3MapCore/Script/ScriptBaseInputs.h"
 #include "War3MapCore/Script/ScriptUserSourcePlan.h"
+#include "War3MapCore/Script/ScriptUserSourceRequest.h"
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Script/ScriptPreprocessSources.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
@@ -1169,6 +1170,54 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     doc.wct.customCode = Trigger::RawText{"<? original ?>\n"};
     review = query(); Require(review.Succeeded() && !review.value->complete, "Lua templates remain incomplete");
 }
+void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
+    const auto tool = root / "tool", ui = tool / "ui", map = root / "map";
+    WriteText(ui / "config", "base\n");
+    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
+    WriteText(ui / "base/jass/Fixture.cfg", "UnrelatedEntry\n");
+    WriteText(ui / "base/jass/Fixture.j", "// original modern library\n");
+    WriteText(tool / "compiler/include/WaveForce.i", "#define FORCE_VALUE 11\n");
+    for (const auto* header : {"YDTrigger.h", "Globals.h", "Function.h"}) WriteText(tool / "compiler/include/YDTrigger" / header, "// original fixture interface\n");
+    WriteText(tool / "compiler/jass/24/common.j", "// original common\n");
+    WriteText(tool / "compiler/jass/24/blizzard.j", "// original blizzard\n");
+    WriteText(map / "dep.j", "// original dependency\n");
+    const auto layout = ResolveScriptToolchainLayout({tool, 24, 127}); const auto catalog = Trigger::UiCatalog::Load(ui);
+    Require(layout.Succeeded() && catalog.Succeeded(), "modern removal context");
+    const auto sources = MakeModernUserSourceRequest(*layout.value, *catalog.value, ui, map);
+    const auto entry = CaptureScriptUserSourcePlan(sources); Require(entry.Succeeded(), "modern entry plan");
+    const auto injection = CaptureScriptInjectionSources(*entry.value, sources, true); Require(injection.Succeeded(), "modern owned injection");
+    auto created = Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value); Require(created.Succeeded(), "modern sealed document"); auto doc = *created.value;
+    auto category = Trigger::TriggerDirectoryEditor::AddCategory(doc, "Original"); Require(category.Succeeded(), "modern category");
+    auto target = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "Target"); Require(target.Succeeded(), "modern target");
+    doc.wct.customCode = Trigger::RawText{"#include \"dep.j\"\n"};
+    Trigger::GraphRemove op; op.target = {Trigger::GraphRecordKind::Trigger, *target.value, {}}; op.expectedName = "Target";
+    op.parent.kind = Trigger::GraphParentKind::CategoryTriggers; op.parent.owner = {Trigger::GraphRecordKind::Category, doc.categories.front().id, {}}; op.parent.orderedChildren = {op.target};
+    Trigger::RemovalPreprocessProvider provider = [&](const auto& current, const auto& definitions, const auto& operation) {
+        MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions;
+        return CaptureRemovalPreprocessCoverage(inputs, *entry.value, sources, *injection.value, operation);
+    };
+    const auto query = [&] { return Trigger::QueryDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); };
+    const auto confirm = [&](const Trigger::DeclarationRemovalReview& review) {
+        op.codeAudits.clear();
+        if (review.groupableCount) { Trigger::RemovalCodeConfirmation c{review.reviewSha256, "no_reference", "reviewed modern original group", {}}; c.group = Trigger::RemovalCodeConfirmation::Group{review.groupableCount, review.groupableSha256}; op.codeAudits.push_back(c); }
+        for (const auto& b : review.individualBlocks) op.codeAudits.push_back({review.reviewSha256, "no_reference", "reviewed modern original macro", {b.identity}});
+    };
+    auto review = query();
+    if (!review.Succeeded()) for (const auto& d : review.diagnostics) std::cerr << d.code << ':' << d.message << '\n';
+    Require(review.Succeeded() && review.value->complete && review.value->includedFileCount >= 5, "modern complete include coverage");
+    confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "modern group check");
+    WriteText(map / "dep.j", "// changed dependency\n");
+    const auto stale = Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); Require(HasCode(stale.diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "modern dependency hash bound");
+    WriteText(map / "dep.j", "call TriggerExecute(gg_trg_Target)\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().referenced, "modern included target detected");
+    WriteText(map / "dep.j", "#define JOIN(a,b) a ## b\nJOIN(unrelated,Name)\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().dynamic, "modern paste macro needs review");
+    confirm(*review.value); Trigger::TriggerGraphEditLimits limits; limits.removalPreprocessProvider = provider;
+    auto copy = doc; auto binding = Trigger::CaptureTriggerGraphBinding(copy, *catalog.value); Require(binding.Succeeded(), "modern binding");
+    Require(Trigger::ApplyTriggerGraphEditBatch(copy, *catalog.value, {*binding.value, {op}}, limits).Succeeded(), "modern memory deletion preview");
+    doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"}; review = query();
+    Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN") != std::string::npos, "modern AI include never read");
+}
 void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto tool = root / "framework", ui = tool / "share" / "mpq", map = root / "map-source";
     WriteText(ui / "config", "base\n");
@@ -2146,6 +2195,7 @@ int main() {
         TestToolchainLayouts(root / "layouts");
         TestFrameworkPipeline(root / "framework");
         TestRemovalPreprocessing(root / "remove-preprocess");
+        TestModernRemovalPreprocessing(root / "modern-remove-preprocess");
         TestFrameworkPlugins(root / "framework-plugins");
         TestNamesAndTerrain();
         TestObjectCodeEditAndCompilation(root / "object-code");

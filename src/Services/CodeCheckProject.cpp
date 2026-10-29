@@ -910,9 +910,12 @@ Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::sha
             CodeCheckRequest request;
             if (auto reason = PrepareContext(owned, snapshot, request, {}, Clock::now() + std::chrono::seconds(60)))
                 return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", *reason);
-            if (!owned.framework) return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "当前工具链没有可重放的预处理档案。");
             if (const auto status = owned.archive->VerifySourceUnchanged(); !status.Succeeded()) return {{}, status.diagnostics};
-            return Script::CaptureRemovalPreprocessCoverage(ProjectMapScriptInputs(owned, snapshot, document), *owned.framework, operation);
+            const auto inputs = ProjectMapScriptInputs(owned, snapshot, document);
+            if (owned.framework) return Script::CaptureRemovalPreprocessCoverage(inputs, *owned.framework, operation);
+            if (!owned.entry || !owned.injection) return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "当前工具链没有可重放的预处理档案。");
+            return Script::CaptureRemovalPreprocessCoverage(inputs, *owned.entry,
+                ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path()), *owned.injection, operation);
         } catch (const std::exception&) {
             return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "无法完整捕获预处理覆盖，未删除。");
         }

@@ -1,6 +1,8 @@
 #include "War3MapCore/Script/RemovalPreprocess.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Text/SourceEncoding.h"
+#include "War3MapCore/Text/Utf8Scalar.h"
 #include <algorithm>
 #include <map>
 #include <set>
@@ -33,18 +35,27 @@ Result<std::string> AuditText(const Jass::PreprocessResult& result) {
         previous = span.offset + span.length;
     }
     text.append(result.text, previous, result.text.size() - previous);
+    for (std::size_t at = 0; at < text.size();) {
+        const auto scalar = Text::Detail::ReadUtf8Scalar(text, at);
+        if (!scalar.Valid()) return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "展开正文含未绑定编码的字节，不能声明完整引用覆盖。");
+        at += scalar.bytes;
+    }
     return Result<std::string>::Success(std::move(text));
 }
 }
-Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
-    const MapScriptInputs& inputs, const ScriptFrameworkInputs& framework, const Trigger::GraphRemove& removedTarget,
+static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
+    const MapScriptInputs& inputs, const ScriptFrameworkInputs* framework, const ScriptUserSourcePlan& entry,
+    const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection, const Trigger::GraphRemove& removedTarget,
     std::string_view versionString, bool scriptInjection) {
     using Out = Result<Trigger::RemovalPreprocessCoverage>;
     using Kind = Trigger::AtomicRenameCodeKind;
-    if (!inputs.triggers || !inputs.catalog || inputs.catalog->Sha256() != framework.catalog.Sha256())
+    if (!inputs.triggers || !inputs.catalog || !current.layout || inputs.catalog->Sha256() != entry.catalogSha256)
         return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "预处理覆盖需要当前候选与同一工具链目录。");
-    if (const auto s = VerifyScriptFrameworkInputs(framework, framework.layout); !s.Succeeded()) return {{}, s.diagnostics};
-    const auto profile = ValidateScriptToolchainProfile(framework.profile);
+    const auto verified = framework ? VerifyScriptFrameworkInputs(*framework, *current.layout)
+        : VerifyScriptInjectionSources(injection, entry, current, !current.layout->allowReturnBug);
+    if (!verified.Succeeded()) return {{}, verified.diagnostics};
+    const auto profile = framework ? ValidateScriptToolchainProfile(framework->profile)
+        : Sha256Text("remove-modern-profile-v1:" + injection.entryPlanIdentitySha256);
     if (!profile.Succeeded()) return {{}, profile.diagnostics};
     Trigger::RemovalPreprocessCoverage result; result.profileSha256 = *profile.value;
     // 私有删除投影仍由生产生成器组成整图。去掉目标自身的声明/初始化，再扫描全部生成正文，
@@ -69,27 +80,37 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
     std::vector<std::string> injectedHashes;
     Jass::SourceLexicalView lexical;
     auto mainText = Result<std::string>::Success(generated.text);
-    if (scriptInjection) mainText = InjectScriptFramework(generated.text, framework, injected, &lexical, &injectedHashes);
+    if (scriptInjection) {
+        if (framework) mainText = InjectScriptFramework(generated.text, *framework, injected, &lexical, &injectedHashes);
+        else {
+            mainText = InjectOwnedCode(generated.text, injection, Jass::PreprocessCheckOptions(), &injected);
+            for (const auto& path : injected) {
+                const auto file = std::find_if(injection.files.begin(), injection.files.end(), [&](const auto& f) { return f.binding.path == path; });
+                if (file == injection.files.end()) return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_MAP", "现代注入来源丢失。");
+                injectedHashes.push_back(file->binding.sha256);
+            }
+        }
+    }
     if (!mainText.Succeeded()) return {{}, mainText.diagnostics};
     ScriptPreprocessSourceRequest request;
     request.mainText = *mainText.value; request.mainName = "war3map.j";
-    request.mainDirectory = framework.profile.mainSourceDirectory;
+    request.mainDirectory = framework ? framework->profile.mainSourceDirectory : entry.mapDirectory;
     request.captureMacroAudit = true; request.forbidAiIncludes = true;
-    request.frameworkDirectivePolicy = FrameworkDirectivePolicy(framework);
+    if (framework) request.frameworkDirectivePolicy = FrameworkDirectivePolicy(*framework);
     request.includeCandidatePolicy = ScriptIncludeCandidatePolicy::BoundRootsSearch;
-    request.defines = {{"WARCRAFT_VERSION", std::to_string(framework.layout.versionMacro)}, {"YDWE_VERSION_STRING", "\"" + std::string(versionString) + "\""}};
+    request.defines = {{"WARCRAFT_VERSION", std::to_string(current.layout->versionMacro)}, {"YDWE_VERSION_STRING", "\"" + std::string(versionString) + "\""}};
     if (inputs.debug) request.defines.emplace_back("DEBUG", "1");
-    if (scriptInjection) { request.defines.emplace_back("SCRIPT_INJECTION", "1"); request.mainLexicalView = lexical; }
+    if (scriptInjection) { request.defines.emplace_back("SCRIPT_INJECTION", "1"); if (framework) request.mainLexicalView = lexical; }
     // 档案中的前置特性阶段保持与保存一致；不执行模板或vJass指令。
-    const auto captured = CaptureScriptPreprocessSources(framework.entryPlan, FrameworkSourceRequest(framework), request);
+    const auto captured = CaptureScriptPreprocessSources(entry, current, request);
     if (!captured.value) return {{}, captured.diagnostics};
     const auto& sources = *captured.value;
     std::string identity = "remove-preprocess-v1\n" + result.profileSha256 + "\n" + sources.mainSha256 + "\n";
-    identity += framework.entryPlan.layoutIdentitySha256 + "\n" + framework.catalog.Sha256() + "\n";
+    identity += entry.layoutIdentitySha256 + "\n" + entry.catalogSha256 + "\n";
     for (const auto& [name, value] : request.defines) identity += std::to_string(name.size()) + ":" + name + std::to_string(value.size()) + ":" + value + "\n";
     result.inputBytes = request.mainText.size();
-    for (const auto& binding : framework.entryPlan.bindings) identity += PathText(binding.path) + "\n" + binding.sha256 + "\n";
-    for (const auto& file : framework.injection.files) {
+    for (const auto& binding : entry.bindings) identity += PathText(binding.path) + "\n" + binding.sha256 + "\n";
+    for (const auto& file : injection.files) {
         identity += PathText(file.binding.path) + "\n" + file.binding.sha256 + "\n";
         result.inputBytes += file.bytes.size();
     }
@@ -121,12 +142,13 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
     std::vector<Appended> appended;
     std::size_t appendedAt = generated.text.size();
     for (const auto& path : injected) {
-        const auto file = std::find_if(framework.injection.files.begin(), framework.injection.files.end(), [&](const auto& f) { return f.binding.path == path; });
-        if (file == framework.injection.files.end()) return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_MAP", "注入来源丢失。");
-        appendedAt += 2;
+        const auto file = std::find_if(injection.files.begin(), injection.files.end(), [&](const auto& f) { return f.binding.path == path; });
+        if (file == injection.files.end()) return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_MAP", "注入来源丢失。");
+        if (framework) appendedAt += 2;
         const std::string_view text(reinterpret_cast<const char*>(file->bytes.data()), file->bytes.size());
         appended.push_back({appendedAt, appendedAt + file->bytes.size(), PathText(path), Lines(text)});
         appendedAt += file->bytes.size();
+        if (!framework) appendedAt += 2;
     }
     std::map<StableId, std::size_t> index;
     const auto add = [&](StableId id, const Trigger::RawText& source) -> Status {
@@ -211,5 +233,14 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
         if (unsupported(text)) { result.complete = false; result.incompleteReason = "包含文件含本轮未覆盖的vJass指令或Lua模板：" + PathText(file.binding.path); break; }
     }
     return Out::Success(std::move(result));
+}
+Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(const MapScriptInputs& inputs,
+    const ScriptFrameworkInputs& framework, const Trigger::GraphRemove& target, std::string_view version, bool inject) {
+    return CaptureCoverage(inputs, &framework, framework.entryPlan, FrameworkSourceRequest(framework), framework.injection, target, version, inject);
+}
+Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(const MapScriptInputs& inputs,
+    const ScriptUserSourcePlan& entry, const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection,
+    const Trigger::GraphRemove& target, std::string_view version, bool inject) {
+    return CaptureCoverage(inputs, nullptr, entry, current, injection, target, version, inject);
 }
 }

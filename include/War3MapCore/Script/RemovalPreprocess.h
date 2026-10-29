@@ -10,4 +10,9 @@ namespace War3Map::Script {
     const MapScriptInputs& inputs, const ScriptFrameworkInputs& framework,
     const Trigger::GraphRemove& removedTarget,
     std::string_view versionString = "1.32.13", bool scriptInjection = true);
+[[nodiscard]] Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
+    const MapScriptInputs& inputs, const ScriptUserSourcePlan& entryPlan,
+    const ScriptUserSourceRequest& currentSources, const ScriptInjectionSources& injection,
+    const Trigger::GraphRemove& removedTarget,
+    std::string_view versionString = "1.32.13", bool scriptInjection = true);
 }
