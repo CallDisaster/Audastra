@@ -2,6 +2,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Jass/ByteLexical.h"
+#include "War3MapCore/Jass/IdentifierRewrite.h"
 #include <algorithm>
 #include <cwctype>
 #include <map>
@@ -181,6 +182,21 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         auto map = MapTemplateSourceLines(expanded.text, *evaluated.value);
         expanded.sourceMap = map.ComposeWith(expanded.sourceMap, static_cast<std::uint32_t>(Lines(evaluated.value->text).size()));
         expanded.text = std::move(evaluated.value->text);
+    }
+    if (framework) {
+        const auto hash = Sha256Text(expanded.text); if (!hash.Succeeded()) return {{}, hash.diagnostics};
+        Jass::IdentifierRewriteRequest rewrite;
+        rewrite.text = expanded.text; rewrite.encoding = Text::SourceEncoding::Utf8;
+        rewrite.sourceName = "remove-template.j"; rewrite.expectedInputSha256 = *hash.value;
+        rewrite.globalScopeIdentity = "map:root";
+        const auto mapped = Jass::RewriteUdgIdentifiers(rewrite);
+        if (!mapped.Succeeded() || !mapped.value) {
+            result.complete = false; result.incompleteReason = "旧版标识符映射未完成";
+            for (const auto& d : mapped.diagnostics) result.incompleteReason += "；" + d.code + ":" + d.message;
+            return Out::Success(std::move(result));
+        }
+        expanded.text = mapped.value->text;
+        identity += "identifier-rule:" + mapped.value->ruleVersion + "\n" + mapped.value->outputSha256 + "\n";
     }
     const auto mainLines = Lines(request.mainText);
     struct Appended { std::size_t begin, end; std::string file; std::vector<std::size_t> lines; };
