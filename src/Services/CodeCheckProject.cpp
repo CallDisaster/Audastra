@@ -309,22 +309,36 @@ struct CodeCheckProjectCache::Impl {
             standard.emplace(std::move(*loaded.value));
         } else if (map->Units() && !map->Units()->units.empty()) { fail("预放单位的完整初始化检查缺少本次游戏物编目录。"); return; }
         objects.standard = standard ? &*standard : nullptr;
-        for (std::size_t index = 0; index < 3; ++index) {
+        const auto objectTypes = next->scriptAuditOnly ? next->nativeObjects.size() : std::size_t{3};
+        for (std::size_t index = 0; index < objectTypes; ++index) {
             Poll(cancel, deadline);
             const auto type = static_cast<ObjectData::ObjectType>(index);
             std::optional<ObjectData::NativeObjectDocument> native;
             if (next->nativeObjects[index]) native = *next->nativeObjects[index];
             else {
-                if (archive->HasMember(ObjectData::NativeFileName(type))) { fail("现有物编成员没有可验证的native基线。"); return; }
-                auto empty = ObjectData::NativeObjectDocument::CreateEmpty(type); if (empty.Succeeded()) native = std::move(*empty.value);
+                if (archive->HasMember(ObjectData::NativeFileName(type))) {
+                    if (index < 3) { fail("现有物编成员没有可验证的native基线。"); return; }
+                    // 旧的只读宿主可能只提供前三类；其余来源仍由白名单归档明确读取，不能静默当空。
+                    const auto bytes = archive->ReadMember(ObjectData::NativeFileName(type));
+                    if (!bytes.Succeeded()) { fail(Reason(bytes.diagnostics, "模板物编基线无法读取。")); return; }
+                    auto parsed = ObjectData::NativeObjectCodec(type).Parse(*bytes.value);
+                    if (!parsed.Succeeded() || !parsed.document) { fail(Reason(parsed.diagnostics, "模板物编基线无法解析。")); return; }
+                    const auto* value = dynamic_cast<const ObjectData::NativeObjectDocument*>(parsed.document.get());
+                    if (!value) { fail("模板物编来源不是原生文档。"); return; }
+                    native = *value;
+                } else {
+                    auto empty = ObjectData::NativeObjectDocument::CreateEmpty(type); if (empty.Succeeded()) native = std::move(*empty.value);
+                }
             }
             if (!native) { fail("物编基线无法冻结。"); return; }
             if (next->editableObjects[index]) {
                 auto applied = ObjectData::ApplyLniChangesToNative(*native, *next->editableObjects[index], next->objectSchema.get(), objects.standard);
                 if (!applied.Succeeded()) { fail(Reason(applied.diagnostics, "当前物编覆盖无法按保存规则回灌。")); return; }
             }
-            auto& records = index == 0 ? objects.units : index == 1 ? objects.abilities : objects.items;
-            records.assign(native->Objects().begin(), native->Objects().end());
+            if (index < 3) {
+                auto& records = index == 0 ? objects.units : index == 1 ? objects.abilities : objects.items;
+                records.assign(native->Objects().begin(), native->Objects().end());
+            }
             if (next->scriptAuditOnly) {
                 auto serialized = ObjectData::NativeObjectCodec(type).Serialize(*native);
                 if (!serialized.Succeeded() || !serialized.value) { fail(Reason(serialized.diagnostics, "模板物编覆盖身份无法冻结。")); return; }

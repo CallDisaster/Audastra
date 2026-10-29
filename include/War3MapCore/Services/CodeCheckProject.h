@@ -38,8 +38,9 @@ struct CodeCheckProjectSnapshot {
     std::shared_ptr<const Trigger::UiCatalog> catalog;
     std::optional<MapDocument> map;
     std::optional<Script::TerrainExtent> terrain;
-    std::array<std::shared_ptr<const ObjectData::NativeObjectDocument>, 3> nativeObjects;
-    std::array<std::shared_ptr<const ObjectData::LniObjectDocument>, 3> editableObjects;
+    // 生成查询使用前三类；模板slk必须绑定本次七类物编的未保存覆盖。
+    std::array<std::shared_ptr<const ObjectData::NativeObjectDocument>, 7> nativeObjects;
+    std::array<std::shared_ptr<const ObjectData::LniObjectDocument>, 7> editableObjects;
     std::shared_ptr<const ObjectData::ObjectFieldSchema> objectSchema;
     std::vector<Script::ScriptProfileSourceEncoding> sourceEncodings;
     std::vector<Script::ScriptProfileIncludeAccess> includeAccess;
