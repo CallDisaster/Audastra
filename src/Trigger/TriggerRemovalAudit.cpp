@@ -26,6 +26,15 @@ bool Mentions(std::string_view value, const DeclarationRemovalReview& review) {
     return value.find(review.expectedName) != std::string_view::npos
         || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return value.find(s) != std::string_view::npos; });
 }
+bool MacroMentionsSymbol(std::string_view body, const DeclarationRemovalReview& review) {
+    for (std::size_t i = 0; i < body.size();) {
+        if (!NameByte(static_cast<unsigned char>(body[i]))) { ++i; continue; }
+        const auto begin = i;
+        while (i < body.size() && NameByte(static_cast<unsigned char>(body[i]))) ++i;
+        if (Match(body.substr(begin, i - begin), review, true)) return true;
+    }
+    return false;
+}
 struct Token { std::string text; std::size_t offset; bool quoted = false; std::size_t length = 0; };
 bool NeedsPreprocessing(std::string_view text) {
     if (text.find("<?") != std::string_view::npos) return true;
@@ -296,7 +305,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
                 if (hit.sourceFile.empty() || !hit.sourceLine) Incomplete(block, "展开证据缺少来源映射");
             }
             for (const auto& macro : entry.macros) {
-                const bool definite = !macro.expanded && (Match(macro.name, review, true) || Mentions(macro.body, review));
+                const bool definite = !macro.expanded && (Match(macro.name, review, true) || MacroMentionsSymbol(macro.body, review));
                 if (!definite && !(macro.expanded && macro.tokenConstruction)) continue;
                 RemovalReferenceEvidence hit; hit.context = definite ? "宏定义含目标符号" : "宏调用含拼接/字符串化（须单独确认）";
                 hit.text = macro.name; hit.sourceFile = macro.file; hit.sourceLine = macro.line;

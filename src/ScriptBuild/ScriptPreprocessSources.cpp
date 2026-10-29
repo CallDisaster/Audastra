@@ -822,6 +822,8 @@ Result<ScriptPreprocessSources> CaptureScriptPreprocessSources(const ScriptUserS
                 auto extension = input.extension().wstring();
                 std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t c) { return std::towlower(c); });
                 if (extension == L".ai") return Failure("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN", "删除审计不读取AI引导文件。", input);
+                static const std::set<std::wstring> textExtensions{L"", L".j", L".h", L".hpp", L".hh", L".hxx", L".i", L".inc", L".txt", L".cfg"};
+                if (!textExtensions.contains(extension)) return Failure("SCRIPT_AUDIT_TEXT_INCLUDE_REQUIRED", "删除审计只读取文本库包含文件。", input);
             }
             std::filesystem::path path;
             if (!Detail::NormalizeSourcePath(input, path) || sources.includeCandidates.empty() ||

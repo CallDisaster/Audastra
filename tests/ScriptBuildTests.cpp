@@ -1130,6 +1130,8 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
         return std::any_of(block.evidence.begin(), block.evidence.end(), [](const auto& hit) { return hit.definite && hit.sourceFile.ends_with("dep.j") && hit.sourceLine == 2; });
     }), "include evidence mapped to actual file/line");
     confirm(*review.value); Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "included target reference refuses deletion");
+    WriteText(map / "dep.j", "#define OnlyLabel \"AnotherTargetLabel\"\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && std::none_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& b) { return b.referenced; }), "unrelated label substring is not a target symbol in a macro");
     WriteText(map / "dep.j", "#define Alias gg_trg_Target\n");
     review = query(); Require(review.Succeeded() && review.value->complete, "macro target body covered");
     confirm(*review.value); Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "macro alias target refuses deletion even unused");
