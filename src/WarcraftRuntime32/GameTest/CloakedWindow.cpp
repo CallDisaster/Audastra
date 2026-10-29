@@ -206,7 +206,6 @@ BOOL WINAPI PeekVirtualW(LPMSG message, HWND window, UINT low, UINT high, UINT f
     return result;
 }
 DWORD WINAPI VirtualMessagePos() {
-    if (!MainWindow()) return originalMessagePos();
     POINT point{};
     return ReadCursor(&point) ? MAKELONG(static_cast<SHORT>(point.x), static_cast<SHORT>(point.y)) : 0;
 }
