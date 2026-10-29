@@ -489,7 +489,7 @@ void PendingHigherObjectEditsInvalidateRemovalCoverage() {
     const auto trigger = Trigger::TriggerDocumentEditor::AddTrigger(document, *category.value, "PendingObjectTarget");
     Require(trigger.Succeeded() && trigger.value, "add original ordinary removal target");
     Trigger::GraphParentExpectation parent{Trigger::GraphParentKind::CategoryTriggers,
-        {Trigger::GraphRecordKind::Category, *category.value, {}}, {}, {}};
+        {Trigger::GraphRecordKind::Category, document.categories.back().id, {}}, {}, {}};
     parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *trigger.value, {}});
     Trigger::GraphRemove remove{{Trigger::GraphRecordKind::Trigger, *trigger.value, {}}, "PendingObjectTarget", parent};
 
