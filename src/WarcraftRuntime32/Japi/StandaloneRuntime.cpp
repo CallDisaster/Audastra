@@ -143,6 +143,8 @@ void TraceReply(std::string_view input, std::string_view output) {
     // 只记录布尔结果与句柄是否存在；不记录作者文字、实际句柄或请求参数。
     if (reply.value.kind == AJ_BOOL) message += " bool=" + std::to_string(reply.value.integer);
     if (reply.value.kind == AJ_HANDLE) message += reply.value.integer ? " handle=nonzero" : " handle=zero";
+    if (testEvidence.Enabled() && request.command == "audastraui.clickunit" && reply.value.kind == AJ_INT)
+        message += " input_result=" + std::to_string(reply.value.integer);
     if (request.command == "audastraui.dataerrors") {
         // 只记录自有计数，不记录作者文字/资源路径；独立预算不会挤掉真正的异常日志。
         std::uint32_t count = 0;
