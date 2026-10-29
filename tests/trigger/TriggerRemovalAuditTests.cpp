@@ -3,6 +3,7 @@
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -18,7 +19,8 @@ template<class T> void Good(const T& result, const char* text) {
 }
 template<class T> bool Code(const T& r, std::string_view code) { return std::any_of(r.diagnostics.begin(), r.diagnostics.end(), [&](const auto& d) { return d.code == code; }); }
 struct Fixture {
-    std::filesystem::path root = std::filesystem::temp_directory_path() / ("Audastra-RemoveAudit-" + std::to_string(GetCurrentProcessId()) + '-' + std::to_string(GetTickCount64()));
+    inline static std::atomic<unsigned> sequence{0};
+    std::filesystem::path root = std::filesystem::temp_directory_path() / ("Audastra-RemoveAudit-" + std::to_string(GetCurrentProcessId()) + '-' + std::to_string(GetTickCount64()) + '-' + std::to_string(sequence.fetch_add(1)));
     UiCatalog catalog; TriggerDocument doc; StableId target = 0, category = 0;
     Fixture() {
         Require(std::filesystem::create_directory(root), "fresh original fixture");
