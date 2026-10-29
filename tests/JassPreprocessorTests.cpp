@@ -243,7 +243,8 @@ void TestPhysicalLineSplices() {
     Require(HasCode(failed,"PP_ERROR_DIRECTIVE") && failed.diagnostics.back().message.find("main.j:3: #error stopnow")!=std::string::npos,
         "错误指令文本逻辑续接且诊断仍为物理第三行");
     const auto gbk=SplicePpLines(std::string("\x81\x5C\nx"),64,Text::SourceEncoding::Gbk);
-    Require(gbk.Succeeded() && gbk.value->splices.empty(), "显式GBK尾5C不是ASCII反斜杠续行");
+    Require(gbk.Succeeded() && gbk.value->splices.size() == 1 && gbk.value->text == std::string("\x81") + "x",
+        "phase2按原字节识别尾5C续行，不按代码页吞掉反斜杠；执行标识符另由词法验证");
     auto crossed=SplicePpLines("AB\\\nCD\n");
     auto crossedTokens=LexPp(crossed.value->text);
     crossed.value->MapOrigins(crossedTokens);
