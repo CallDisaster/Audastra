@@ -380,8 +380,7 @@ void VariablesDialog::RemoveSelected() {
             : tr("确定删除变量“%1”吗？引用它的脚本将不再编译（可撤销）。").arg(QString::fromUtf8(record.name.text)),
         QMessageBox::Yes | QMessageBox::No, this);
     if (!review.incomplete.isEmpty()) review.lines << tr("没能全部检查：%1").arg(review.incomplete);
-    if (!review.lines.isEmpty()) box.setInformativeText(review.lines.join('
-'));
+    if (!review.lines.isEmpty()) box.setInformativeText(review.lines.join('\n'));
     box.setDefaultButton(QMessageBox::No);
     if (box.exec() != QMessageBox::Yes) {
         return;
