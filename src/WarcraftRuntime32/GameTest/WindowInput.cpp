@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 
 namespace Audastra::Runtime32::GameTest {
 namespace {
@@ -202,7 +203,7 @@ DWORD WINAPI EndpointThread(void*) {
     // 仅测试控制端存在时、且已请求退出后记录异常元数据；不读取指令或业务内存，不处理异常。
     wchar_t temporary[32768]{}, path[32768]{};
     const auto length = GetTempPathW(32768, temporary);
-    if (length && length < 32768 && swprintf_s(path, L"%saudastra-test-exit-%lu-%llu.log", temporary,
+    if (length && length < 32768 && swprintf_s(path, L"%lsaudastra-test-exit-%lu-%llu.log", temporary,
         GetCurrentProcessId(), GetTickCount64()) > 0) {
         exitTrace = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (exitTrace != INVALID_HANDLE_VALUE) (void)AddVectoredExceptionHandler(0, ObserveExitFault);
