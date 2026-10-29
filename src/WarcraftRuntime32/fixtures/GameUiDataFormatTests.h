@@ -171,13 +171,14 @@ void TextObservationIsolation() {
     Reset(); g_raiseTable = false; g_tableObject = reinterpret_cast<Address>(g_tableWords.data());
     GameUiLibrary ui(Entries());
     unsigned arguments = 0, commits = 0;
+    bool observationsValid = true;
     GameUiDataContext context{&ResolveTable, [] { return true; }};
     context.observeTextArgument = [&](std::uint32_t ordinal, FrameHandle, int, bool integer, std::uint32_t) {
-        Check(integer && ordinal == ++arguments, "argument observation has a bounded monotonic ordinal");
+        if (!integer || ordinal != ++arguments) observationsValid = false;
         throw std::runtime_error("observer failure");
     };
     context.observeTextCommit = [&](std::uint32_t ordinal, FrameHandle, std::string_view) {
-        Check(ordinal == ++commits, "commit observation has a bounded monotonic ordinal");
+        if (ordinal != ++commits) observationsValid = false;
         throw std::runtime_error("observer failure");
     };
     GameUiDataPlane data(context); data.Attach(ui);
@@ -187,5 +188,5 @@ void TextObservationIsolation() {
         Check(data.SaveInteger(1234, frame, 24, i).applied && data.SaveBoolean(1234, frame, 6, 1).applied,
             "diagnostic observer exceptions cannot change writes or rendering");
     }
-    Check(arguments == 512 && commits == 512 && data.Errors() == "0|", "diagnostics stop at a fixed per-session budget");
+    Check(observationsValid && arguments == 512 && commits == 512 && data.Errors() == "0|", "diagnostics stop at a fixed per-session budget");
 }
