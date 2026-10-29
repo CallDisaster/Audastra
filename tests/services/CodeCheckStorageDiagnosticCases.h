@@ -61,14 +61,14 @@ void UnsupportedLocalStorageWarningReachesCheckAndSave() {
     details = checked.reason;
     for (const auto& d : checked.diagnostics) details += "\n" + d.code + ":" + d.message;
     const auto warning = std::find_if(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& d) {
-        return d.code == "storage-type-unsupported" && d.severity == DiagnosticSeverity::Warning;
+        return d.code == "TRIGGER_LOCAL_HANDLE_STORAGE_UNSUPPORTED" && d.severity == DiagnosticSeverity::Error;
     });
     Require(warning != checked.diagnostics.end(), "the shared check retains the generator warning: " + details);
     Require(warning->trigger && warning->trigger->triggerId == *trigger.value && warning->trigger->triggerName == "StorageProbe"
         && warning->trigger->ecaId != 0 && warning->trigger->function == "YDWEGetAnyTypeLocalVariable"
         && warning->trigger->line == 3 && warning->trigger->column == 31,
         "storage warning identifies the nested local read at T line 3 column 31: " + details);
-    Require(warning->message.find("具体类型（如单位）") != std::string::npos && warning->message.find("全局表达式") != std::string::npos,
+    Require(warning->message.find("unit等具体类型变量") != std::string::npos,
         "warning gives the concrete supported workaround");
     Require(std::any_of(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& d) {
         return d.severity == DiagnosticSeverity::Error;
@@ -111,7 +111,7 @@ void UnsupportedLocalStorageWarningReachesCheckAndSave() {
     details.clear();
     for (const auto& diagnostic : saved.diagnostics) details += diagnostic.code + ": " + diagnostic.message + "\n";
     const auto savedWarning = std::find_if(saved.diagnostics.begin(), saved.diagnostics.end(), [](const auto& d) {
-        return d.code == "storage-type-unsupported" && d.severity == DiagnosticSeverity::Warning;
+        return d.code == "TRIGGER_LOCAL_HANDLE_STORAGE_UNSUPPORTED" && d.severity == DiagnosticSeverity::Error;
     });
     Require(!saved.Succeeded() && !std::filesystem::exists(request.targetCandidate), "unsupported generated syntax still prevents normal candidate publication");
     Require(savedWarning != saved.diagnostics.end() && savedWarning->origin && savedWarning->origin->source == "Map/generated.j"

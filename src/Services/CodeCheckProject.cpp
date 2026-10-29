@@ -807,8 +807,17 @@ CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjec
         Script::MapScriptResult generated;
         auto result = CheckGeneratedMap(owned, snapshot, request, *document, std::nullopt, true, incomplete, cancel, deadline, &generated);
         if (!generated.statements.empty()) LocateTriggerDiagnostics(result, generated, *document, *snapshot->catalog, cancel, deadline);
+        std::erase_if(result.diagnostics, [&](const auto& diagnostic) {
+            if (diagnostic.code == "TRIGGER_REAL_LITERAL_PRECISION_RISK") return true;
+            if (diagnostic.code != "storage-type-unsupported" || !diagnostic.trigger) return false;
+            return std::any_of(safety.value->issues.begin(), safety.value->issues.end(), [&](const auto& issue) {
+                if (issue.storageType.empty() || issue.triggerId != diagnostic.trigger->triggerId) return false;
+                const auto argument = std::find_if(document->argumentNodes.begin(), document->argumentNodes.end(), [&](const auto& row) { return row.id == issue.argumentId; });
+                return argument != document->argumentNodes.end() && argument->callEca && *argument->callEca < document->ecaNodes.size()
+                    && document->ecaNodes[*argument->callEca].id == diagnostic.trigger->ecaId;
+            });
+        });
         for (const auto& issue : safety.value->issues) {
-            if (issue.diagnostic.code == "TRIGGER_REAL_LITERAL_PRECISION_RISK") continue; // 发射器已使用同一规则记录实际生成位置。
             CodeCheckDiagnostic diagnostic;
             diagnostic.severity = issue.diagnostic.severity; diagnostic.code = issue.diagnostic.code; diagnostic.message = issue.diagnostic.message;
             const auto trigger = std::find_if(document->triggers.begin(), document->triggers.end(), [&](const auto& row) { return row.id == issue.triggerId; });
@@ -819,6 +828,11 @@ CodeCheckResult CheckProjectTriggers(const std::shared_ptr<const CodeCheckProjec
                     const auto found = std::find_if(anchors.begin(), anchors.end(), [&](const auto& anchor) { return anchor.argumentId == issue.argumentId; });
                     if (found != anchors.end()) diagnostic.trigger = CodeCheckTriggerLocation{issue.triggerId, issue.ecaId, trigger->name.text,
                         "", static_cast<std::uint32_t>(found->line), static_cast<std::uint32_t>(found->column), {}};
+                    const auto argument = std::find_if(document->argumentNodes.begin(), document->argumentNodes.end(), [&](const auto& row) { return row.id == issue.argumentId; });
+                    if (diagnostic.trigger && argument != document->argumentNodes.end() && argument->callEca && *argument->callEca < document->ecaNodes.size()) {
+                        diagnostic.trigger->ecaId = document->ecaNodes[*argument->callEca].id;
+                        diagnostic.trigger->function = document->ecaNodes[*argument->callEca].name.text;
+                    }
                 }
             }
             result.diagnostics.push_back(std::move(diagnostic));

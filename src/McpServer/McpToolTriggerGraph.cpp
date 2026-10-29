@@ -10,6 +10,7 @@
 #include "War3MapCore/Trigger/TriggerFeatureText.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Script/TriggerStorageCapabilities.h"
 
 #include <QJsonDocument>
 
@@ -1118,7 +1119,14 @@ void RegisterTriggerGraphTools(McpServer& server) {
                 batch = DecodeCodeIdentityGraphBatch(graphRequest, *context.value, dryRun, &summary);
             } else batch = DecodeGraphBatch(graphRequest);
             if (!batch.Succeeded()) return Failure(batch);
-            const auto result = workspace->ApplyGraphEdit(envelope.value->first, envelope.value->second, *batch.value, {}, dryRun);
+            TriggerGraphEditLimits limits;
+            limits.storageCapabilityProvider = [&](std::span<const std::string> names) {
+                const auto root = HostConfiguredSaveRoot("FORGE_MCP_YDWE_ROOT");
+                if (!root.Succeeded()) return Result<std::shared_ptr<const TriggerStorageCapabilities>>::Failure(
+                    "Trigger.Value", "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "宿主未配置实际工具链根，不能确认扩展存取支持。");
+                return Script::CaptureMapTriggerStorageCapabilities(workspace->Catalog(), *root.value, workspace->UiDataRoot(), workspace->SourceRoot(), names);
+            };
+            const auto result = workspace->ApplyGraphEdit(envelope.value->first, envelope.value->second, *batch.value, {}, dryRun, limits);
             if (!result.Succeeded()) return Failure(result);
             auto payload = GraphReceipt(*result.value, *workspace); payload.insert("dry_run", dryRun);
             payload.insert("diagnostics", DiagnosticsJson(result.diagnostics).value("diagnostics"));

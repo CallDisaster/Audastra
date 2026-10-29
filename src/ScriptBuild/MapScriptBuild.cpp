@@ -8,6 +8,7 @@
 #include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
+#include "War3MapCore/Script/TriggerStorageCapabilities.h"
 #include "War3MapCore/Script/ClassicLuaEntryPipeline.h"
 
 #include <algorithm>
@@ -296,6 +297,8 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
     if (request.archive && !request.archive->SourcePath().empty())
         templates.importRoot = request.archive->SourcePath().parent_path();
     result.generated = GenerateMapScript(inputs);
+    if (request.compile && result.generated.Succeeded()) AppendMapTriggerValueDiagnostics(result.generated, *inputs.triggers, *inputs.catalog,
+        options.toolRoot, options.uiRoot.empty() ? options.toolRoot : options.uiRoot, archive.SourcePath().parent_path());
     if (!request.compile || !result.generated.Succeeded()) return result;
 
     if (options.jassDirs.empty() && !options.frameworkInputs) {
