@@ -1097,7 +1097,9 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     auto target = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "Target"); Require(target.Succeeded(), "removal target");
     doc.wct.customCode = Trigger::RawText{"#include \"dep.j\"\n"};
     Trigger::GraphRemove op; op.target = {Trigger::GraphRecordKind::Trigger, *target.value, {}}; op.expectedName = "Target";
-    op.parent = {Trigger::GraphParentKind::CategoryTriggers, {Trigger::GraphRecordKind::Category, *category.value, {}}, {}, {{Trigger::GraphRecordKind::Trigger, *target.value, {}}}};
+    op.parent.kind = Trigger::GraphParentKind::CategoryTriggers;
+    op.parent.owner = {Trigger::GraphRecordKind::Category, *category.value, {}};
+    op.parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *target.value, {}});
     Trigger::RemovalPreprocessProvider provider = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto&) {
         MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions;
         return CaptureRemovalPreprocessCoverage(inputs, *framework.value);
