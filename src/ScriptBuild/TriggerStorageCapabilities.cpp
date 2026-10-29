@@ -84,9 +84,11 @@ Result<std::shared_ptr<const Trigger::TriggerStorageCapabilities>> CaptureTrigge
         request.frameworkDirectivePolicy = inputs.layout.kind == ScriptToolchainLayoutKind::Modern
             ? ScriptFrameworkDirectivePolicy::None : FrameworkDirectivePolicy(inputs);
         auto captured = CaptureScriptPreprocessSources(inputs.entryPlan, CurrentSources(inputs), request);
-        if (!captured.Succeeded() || !captured.value || !captured.value->executionSupported) return failure("实际存取能力预处理未能完整捕获，不能猜测扩展支持。");
+        if (!captured.Succeeded() || !captured.value) return failure("实际存取能力预处理未能完整捕获，不能猜测扩展支持："
+            + (captured.diagnostics.empty() ? std::string("没有完整来源。") : captured.diagnostics.front().code + "：" + captured.diagnostics.front().message));
         auto replay = ReplayScriptPreprocessSources(*captured.value);
-        if (!replay.Succeeded()) return failure("实际存取能力预处理回放失败。");
+        // 此API的executionSupported不授予整链执行；这里只使用同源的纯宏捕获和回放。
+        if (!replay.Succeeded() || replay.text != captured.value->preprocessed.text) return failure("实际存取能力预处理回放失败或不同源。");
         const auto at = replay.text.find(marker);
         if (at == replay.text.npos || replay.text.find(marker, at + marker.size()) != replay.text.npos) return failure("存取能力探测标记丢失或歧义。");
         const auto end = replay.text.find_first_of("\r\n", at);
