@@ -139,7 +139,7 @@ std::vector<RemovalCodeConfirmation> ReadConfirmations(const std::filesystem::pa
 }
 int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
     using namespace War3Map; using namespace War3Map::Trigger;
-    if (argc < 7) { std::cerr << "用法：map-trigger-remove-audit <地图> <源SHA> <UI目录> <trigger|variable> <id|list> [--match <精确原名>] [--confirm-file <JSON>]\n"; return 2; }
+    if (argc < 7) { std::cerr << "用法：map-trigger-remove-audit <地图> <源SHA> <UI目录> <trigger|variable> <id|list|inventory> [--match <精确原名>] [--tool-root <工具根>] [--game-root <游戏根>] [--confirm-file <JSON>]\n"; return 2; }
     try {
         Services::MapTriggerTextQueryRequest request; request.sourceMap = argv[2]; request.expectedSourceSha256 = Utf8(argv[3]); request.uiRoot = argv[4];
         const auto kind = Utf8(argv[5]); if (kind != "trigger" && kind != "variable") throw std::invalid_argument("目标种类必须为trigger或variable。");

@@ -242,11 +242,12 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
     std::optional<RemovalPreprocessCoverage> coverage;
     std::unordered_map<std::string, const RemovalPreprocessBlock*> covered;
     bool needsPreprocessing = false;
-    const auto probe = detail::VisitOpaqueCodeBlocks(doc, catalog, review.symbols, [&](auto, auto, const RawText& text) {
-        needsPreprocessing |= NeedsPreprocessing(text.text);
-        return Status::Ok();
-    });
-    if (!probe.Succeeded()) return {std::nullopt, probe.diagnostics};
+    if (preprocessing && *preprocessing && review.typedArgumentIds.empty()) {
+        const auto probe = detail::VisitOpaqueCodeBlocks(doc, catalog, review.symbols, [&](auto, auto, const RawText& text) {
+            needsPreprocessing |= NeedsPreprocessing(text.text); return Status::Ok();
+        });
+        if (!probe.Succeeded()) return {std::nullopt, probe.diagnostics};
+    }
     if (needsPreprocessing && review.typedArgumentIds.empty() && preprocessing && *preprocessing) {
         const auto captured = (*preprocessing)(doc, catalog, op);
         if (!captured.Succeeded()) return {std::nullopt, captured.diagnostics};
