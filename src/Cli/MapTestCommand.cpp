@@ -154,6 +154,13 @@ int RunMapTest(int argc, wchar_t** argv) {
     double exitNextDue = 0;
     std::string exitStage = "not_requested";
     const auto exitPlan = Script::MapTestNormalExit127();
+    const auto gameHasExited = [&] {
+        bool seen = false;
+        for (const auto& process : receipt.lease->ProcessExits()) if (process.game) {
+            seen = true; if (!process.known) return false;
+        }
+        return seen;
+    };
     const auto logInput = [&](const Script::MapTestInput& input, double planned, std::string_view origin) {
         const auto result = receipt.lease->SendTestInput(input);
         nlohmann::json line{{"elapsed_seconds", elapsed()}, {"scheduled_seconds", planned}, {"origin", origin},
@@ -256,11 +263,15 @@ int RunMapTest(int argc, wchar_t** argv) {
                 << (copied ? " copy_error=" + copied.message() : std::string{}) << std::endl;
         }
         if (exitStarted && !inputFailed && exitStep < exitPlan.size() && elapsed() >= exitNextDue && receipt.lease->IsActive()) {
-            const auto& step = exitPlan[exitStep]; exitStage = step.stage;
-            std::cout << "normal_exit_stage=" << nlohmann::json{{"stage",exitStage},{"elapsed_seconds",elapsed()}}.dump() << std::endl;
-            if (!logInput(step.input, elapsed(), "normal_exit")) inputFailed = true;
-            ++exitStep;
-            exitNextDue = elapsed() + (exitStep < exitPlan.size() ? exitPlan[exitStep].delaySeconds : 0);
+            if (gameHasExited()) {
+                exitStep = exitPlan.size(); exitStage = "game_exited_waiting_for_job";
+            } else {
+                const auto& step = exitPlan[exitStep]; exitStage = step.stage;
+                std::cout << "normal_exit_stage=" << nlohmann::json{{"stage",exitStage},{"elapsed_seconds",elapsed()}}.dump() << std::endl;
+                if (!logInput(step.input, elapsed(), "normal_exit")) inputFailed = !gameHasExited();
+                ++exitStep;
+                exitNextDue = elapsed() + (exitStep < exitPlan.size() ? exitPlan[exitStep].delaySeconds : 0);
+            }
         }
         if (inputFailed) break;
         if (receipt.luaMailbox && !exitStarted) {
