@@ -204,9 +204,9 @@ void LargeGroupedReview() {
     const auto changed = f.Review(op); Require(changed.groupableSha256 != review.groupableSha256, "one unsampled block changes whole group digest");
     f.Fails(op, "TRIGGER_REMOVE_CODE_AUDIT_STALE"); f.doc.argumentNodes.back().value = previous;
     Good(ApplyTriggerGraphEditBatch(f.doc, f.catalog, f.Batch(op)), "large grouped deletion preview");
-    Fixture legacy; auto old = legacy.Remove(); auto small = legacy.Review(old);
-    RemovalCodeConfirmation c{small.reviewSha256, "no_reference", "legacy explicit identities", {}};
-    for (const auto& sample : small.groupableSamples) c.blocks.push_back(sample.identity);
+    Fixture legacy; auto old = legacy.Remove(); auto legacyReview = legacy.Review(old);
+    RemovalCodeConfirmation c{legacyReview.reviewSha256, "no_reference", "legacy explicit identities", {}};
+    for (const auto& sample : legacyReview.groupableSamples) c.blocks.push_back(sample.identity);
     old.codeAudits = {c}; Good(CheckDeclarationRemovalAudit(legacy.doc, legacy.catalog, old), "legacy grouped list remains compatible");
     old.codeAudits.push_back(c); legacy.Fails(old, "TRIGGER_REMOVE_CODE_AUDIT_INVALID");
 }
