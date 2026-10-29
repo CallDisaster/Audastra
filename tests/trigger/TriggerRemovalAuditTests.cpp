@@ -174,6 +174,8 @@ void ByteOpaqueCoverage() {
         "invalid UTF8 evidence escapes only display bytes, preserving scan offsets and source identity");
     expanded = "call BJDebugMsg(\"\x9C\x5C\")\n";
     Require(!query().complete, "audit shares PP/JASS byte escape boundary for tail5C");
+    expanded = "call 未映射()\n";
+    Require(!query().complete, "trusted expansion cannot bypass unmapped executable identifier rejection");
 
     f.doc.triggers.front().name = RawText{"目标 名"}; op = f.Remove();
     const auto gbk = RawText{op.expectedName, TextEncoding::Gb18030, {}}.ToBytes(); Good(gbk, "original display name encoded");
