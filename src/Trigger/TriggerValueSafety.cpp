@@ -38,7 +38,6 @@ std::vector<std::string> RequiredTriggerStorageTypes(const TriggerDocument& docu
 Result<TriggerValueSafetyReport> AnalyzeTriggerValues(const TriggerDocument& document, const UiCatalog& catalog,
     std::span<const StableId> affectedArguments, const TriggerStorageCapabilities* capabilities) {
     using Output = Result<TriggerValueSafetyReport>;
-    if (capabilities) if (const auto valid = capabilities->Validate(); !valid.Succeeded()) return {std::nullopt, valid.diagnostics};
     if (document.argumentNodes.size() > 524288 || document.ecaNodes.size() > 524288)
         return Output::Failure("Trigger.Value", "TRIGGER_VALUE_CHECK_BUDGET", "参数安全检查超出图规模预算。");
     const TriggerTypeSystem types(catalog);
@@ -77,6 +76,7 @@ Result<TriggerValueSafetyReport> AnalyzeTriggerValues(const TriggerDocument& doc
     }
     std::vector<char> visited(document.ecaNodes.size());
     TriggerValueSafetyReport report;
+    bool capabilitiesValidated = false;
     const auto visit = [&](const auto& self, std::uint32_t index, bool enabled, std::size_t depth) -> Status {
         if (index >= document.ecaNodes.size() || depth > 256 || visited[index])
             return Status::Failure("Trigger.Value", "TRIGGER_VALUE_CHECK_STRUCTURE", "参数安全检查遇到越界、重复挂载或过深的图。");
@@ -97,7 +97,11 @@ Result<TriggerValueSafetyReport> AnalyzeTriggerValues(const TriggerDocument& doc
                     if (call.name.text == kLocalGet || call.name.text == kLocalGetArray) {
                         const auto storage = StorageType(types, expected);
                         requiredStorage = storage;
-                        const auto supported = capabilities ? capabilities->Supports(catalog.Sha256(), storage) : std::nullopt;
+                        if (capabilities && enabled && !storage.empty() && !capabilitiesValidated) {
+                            if (const auto valid = capabilities->Validate(); !valid.Succeeded()) return valid;
+                            capabilitiesValidated = true;
+                        }
+                        const auto supported = capabilities && enabled ? capabilities->Supports(catalog.Sha256(), storage) : std::nullopt;
                         if (!storage.empty() && (!supported || !*supported)) issue = Diagnostic{enabled ? DiagnosticSeverity::Error : DiagnosticSeverity::Warning,
                             "Trigger.Value", supported ? "TRIGGER_LOCAL_HANDLE_STORAGE_UNSUPPORTED" : "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE",
                             "泛型局部读取将按父槽“" + expected + "”生成存取宏；" + (supported ? std::string("当前工具链没有此类型的存取宏。")

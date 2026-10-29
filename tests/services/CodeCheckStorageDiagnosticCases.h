@@ -42,6 +42,12 @@ void UnsupportedLocalStorageWarningReachesCheckAndSave() {
     Require(!malformed.Succeeded(), "defined but non-callable macro is not accepted as storage support");
     WriteOriginalText(fixture.tool / "compiler/include/WaveForce.i", "// original no handle storage macro\n");
     Require(!(*extension.value)->Validate().Succeeded(), "changed actual capability sources invalidate the snapshot");
+    auto disabledBatch = batch;
+    std::get<Trigger::GraphReplaceTriggerText>(disabledBatch.operations.front()).text =
+        "actions:\n    InitBlizzard()\n    ~RecordInteger(GetHandleId(YDWEGetAnyTypeLocalVariable(\"英雄\")))\n";
+    auto disabledDocument = *document;
+    Require(Trigger::ApplyTriggerGraphEditBatch(disabledDocument, *fixture.frozen->catalog, disabledBatch, limits).Succeeded(),
+        "disabled values only warn and do not demand an unused stale capability proof");
     // 模拟旧版本已经写入的来源，绕过的是夹具构造，不是产品发布入口。
     const auto init = Trigger::TriggerDocumentEditor::AppendRootEca(*document, *fixture.frozen->catalog, *trigger.value,
         Trigger::UiDefinitionKind::Action, "InitBlizzard");
