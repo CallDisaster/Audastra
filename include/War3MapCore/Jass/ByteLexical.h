@@ -6,6 +6,7 @@
 #include <string_view>
 
 namespace War3Map::Jass {
+[[nodiscard]] inline bool IsSourceControlByte(char c) noexcept { return c == '\0' || c == '\x1a'; }
 // JASS 不透明文本按字节处理。反斜杠只消耗紧随的一个字节，不按代码页吞掉尾字节。
 [[nodiscard]] inline std::size_t QuotedByteNext(std::string_view text, std::size_t at) noexcept {
     return at + (text[at] == '\\' && at + 1 < text.size() ? 2 : 1);

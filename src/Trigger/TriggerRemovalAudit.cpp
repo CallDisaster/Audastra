@@ -133,6 +133,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
     const auto& text = source.text; std::vector<Token> tokens;
     if (text.find("<?") != std::string::npos) Incomplete(block, "本轮未覆盖Lua模板");
     if (text.find('\0') != std::string::npos) { Incomplete(block, "含NUL字节"); Evidence(block, source, text.find('\0'), 1, "不支持的NUL字节", false); }
+    if (text.find('\x1a') != std::string::npos) { Incomplete(block, "含Ctrl-Z字节"); Evidence(block, source, text.find('\x1a'), 1, "不支持的Ctrl-Z字节", false); }
     for (std::size_t i = 0; i < text.size();) {
         if (!tokensLeft) { Incomplete(block, "词法扫描预算截断"); break; }
         const auto begin = i;

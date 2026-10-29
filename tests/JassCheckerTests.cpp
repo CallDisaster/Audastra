@@ -208,6 +208,7 @@ void TestEncodedLexer() {
     Require(!LexJass(std::string("\"\x9C\x5C\""), SourceEncoding::Gbk).Succeeded(), "GBK尾5C按字节吞掉结束引号，不因编码声明绕过");
     const auto broken = LexJass(std::string("// \xC0\xAF\nset x=1"), SourceEncoding::Utf8);
     Require(broken.Succeeded(), "注释内原始字节不按来源编码拒绝");
+    Require(!LexJass("// \x1A\nset x=1", SourceEncoding::Utf8).Succeeded(), "显式ASCII控制字节门禁不因不透明字节策略放宽");
     Expect("function F takes nothing returns string\nreturn \"\x9C\x5C\x5C\"\nendfunction\n", 0, "", "未知编码字符串按字节通过JASS检查");
     for (const auto text : {"udg_。", "udg_😀", "/* unfinished", "\"unfinished", "x\x1A y"}) {
         Require(!LexJass(text, SourceEncoding::Utf8, {.blockComments = true}).Succeeded(), "不支持标量/坏边界拒绝");

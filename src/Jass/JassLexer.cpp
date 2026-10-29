@@ -108,6 +108,7 @@ public:
                 const std::size_t start = at_;
                 while (at_ < text_.size() && text_[at_] != '\n' && text_[at_] != '\r') {
                     Tick();
+                    if (IsSourceControlByte(text_[at_]) && !source_.Width(at_)) break;
                     ++at_;
                 }
                 if (text_.substr(start).starts_with("//#")
@@ -171,6 +172,7 @@ private:
         at_ += 2;
         while (at_ < text_.size() && !(text_[at_] == '*' && Next(1) == '/')) {
             Tick();
+            if (IsSourceControlByte(text_[at_]) && !source_.Width(at_)) return;
             if (text_[at_] == '\n' || (text_[at_] == '\r' && Next(1) != '\n')) ++line_;
             ++at_;
         }
@@ -231,11 +233,13 @@ private:
         while (at_ < text_.size()) {
             Tick();
             const char c = text_[at_];
+            if (IsSourceControlByte(c) && !source_.Width(at_)) return false;
             if (c == '"') {
                 ++at_;
                 return true;
             }
             if (c == '\\' && at_ + 1 < text_.size()) {
+                if (IsSourceControlByte(text_[at_ + 1]) && !source_.Width(at_ + 1)) return false;
                 if (text_[at_ + 1] == '\n' || (text_[at_ + 1] == '\r' && Next(2) != '\n')) ++line_;
                 at_ = QuotedByteNext(text_, at_);
                 continue;
@@ -251,6 +255,8 @@ private:
         std::size_t at = at_ + 1;
         while (at < text_.size() && text_[at] != '\'' && text_[at] != '\n' && text_[at] != '\r') {
             Tick();
+            if (IsSourceControlByte(text_[at]) && !source_.Width(at)) return false;
+            if (text_[at] == '\\' && at + 1 < text_.size() && IsSourceControlByte(text_[at + 1]) && !source_.Width(at + 1)) return false;
             at = QuotedByteNext(text_, at);
         }
         if (at >= text_.size() || text_[at] != '\'') {

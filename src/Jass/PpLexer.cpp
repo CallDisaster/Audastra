@@ -109,6 +109,7 @@ private:
         while (at_ < text_.size()) {
             Poll();
             const char c = text_[at_];
+            if (IsSourceControlByte(c) && !source_.Width(at_)) return;
             if (c == '\\' && (Next(1) == '\n' || Next(1) == '\r')) {
                 at_ += Next(1) == '\r' && Next(2) == '\n' ? 3 : 2;
                 ++line_;
@@ -124,6 +125,7 @@ private:
         at_ += 2;
         while (at_ < text_.size()) {
             Poll();
+            if (IsSourceControlByte(text_[at_]) && !source_.Width(at_)) return;
             if (text_[at_] == '*' && Next(1) == '/') {
                 at_ += 2;
                 return;
@@ -199,12 +201,14 @@ private:
         while (at < text_.size()) {
             Poll();
             const char c = text_[at];
+            if (IsSourceControlByte(c) && !source_.Width(at)) return false;
             if (c == quote) {
                 at_ = at + 1;
                 line_ += lines;
                 return true;
             }
             if (c == '\\' && at + 1 < text_.size()) {
+                if (IsSourceControlByte(text_[at + 1]) && !source_.Width(at + 1)) return false;
                 if (text_[at + 1] == '\n' || (text_[at + 1] == '\r' && (at + 2 >= text_.size() || text_[at + 2] != '\n'))) ++lines;
                 at = QuotedByteNext(text_, at);
                 continue;

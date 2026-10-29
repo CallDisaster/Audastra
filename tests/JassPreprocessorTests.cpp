@@ -288,7 +288,7 @@ void TestEncodedLexer() {
     const auto originalBytes = std::string("call F(\"\x9C\x5C\x5C\")\n");
     const auto preprocessed = Run(originalBytes);
     Require(preprocessed.Succeeded() && preprocessed.text == originalBytes, "预处理器完整保留未知编码字节字符串");
-    for (const auto text : {"udg_。", "/* unfinished", "\"unfinished"}) {
+    for (const auto text : {"udg_。", "/* unfinished", "\"unfinished", "// \x1A\nvalid"}) {
         Require(!LexPp(text, SourceEncoding::Utf8).Succeeded(), "编码PP严格拒绝非法记号/边界");
     }
     Require(!LexPp("", static_cast<SourceEncoding>(99)).Succeeded(), "空PP来源也拒绝未知编码");
