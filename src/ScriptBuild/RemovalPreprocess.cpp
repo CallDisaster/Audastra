@@ -170,6 +170,7 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
                     return {span.triggerId ? "WCT/trigger-" + std::to_string(span.triggerId) + ".j" : "WCT/header.j", line - static_cast<std::size_t>(first) + 1};
                 }
             }
+            return {"Map/generated.j", line};
         }
         return {std::move(file), line};
     };
