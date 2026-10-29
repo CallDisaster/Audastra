@@ -14,6 +14,7 @@ struct RemovalCodeBlock {
     RemovalBlockIdentity identity;
     std::vector<RemovalReferenceEvidence> evidence;
     bool groupable = false, complete = true, dynamic = false, referenced = false;
+    std::string incompleteReason;
 };
 struct DeclarationRemovalReview {
     TriggerGraphBinding binding;

@@ -27,16 +27,17 @@ bool Mentions(std::string_view value, const DeclarationRemovalReview& review) {
         || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return value.find(s) != std::string_view::npos; });
 }
 struct Token { std::string text; std::size_t offset; bool quoted = false; std::size_t length = 0; };
+void Incomplete(RemovalCodeBlock& block, const char* reason) { block.complete = false; if (block.incompleteReason.empty()) block.incompleteReason = reason; }
 void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     if (block.evidence.empty()) return;
     const auto original = source.ToBytes(), encoded = RawText{source.text, source.encoding, {}}.ToBytes();
-    if (!original.Succeeded() || !encoded.Succeeded() || *original.value != *encoded.value) { block.complete = false; return; }
+    if (!original.Succeeded() || !encoded.Succeeded() || *original.value != *encoded.value) { Incomplete(block, "原字节不能按声明编码精确往返"); return; }
     const auto prefix = RawText{"", source.encoding, {}}.ToBytes();
-    if (!prefix.Succeeded()) { block.complete = false; return; }
+    if (!prefix.Succeeded()) { Incomplete(block, "无法核对原编码前缀"); return; }
     const auto bom = prefix.value->size();
     std::vector<std::pair<std::size_t, std::size_t>> points{{0, bom}};
     for (const auto& hit : block.evidence) {
-        if (hit.decodedByteOffset > source.text.size() || hit.decodedByteLength > source.text.size() - hit.decodedByteOffset) { block.complete = false; return; }
+        if (hit.decodedByteOffset > source.text.size() || hit.decodedByteLength > source.text.size() - hit.decodedByteOffset) { Incomplete(block, "证据位置越界"); return; }
         points.emplace_back(hit.decodedByteOffset, 0); points.emplace_back(hit.decodedByteOffset + hit.decodedByteLength, 0);
     }
     std::sort(points.begin(), points.end());
@@ -44,7 +45,7 @@ void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     std::size_t previous = 0, raw = bom;
     for (auto& point : points) {
         const auto segment = RawText{source.text.substr(previous, point.first - previous), source.encoding, {}}.ToBytes();
-        if (!segment.Succeeded() || segment.value->size() < bom) { block.complete = false; return; }
+        if (!segment.Succeeded() || segment.value->size() < bom) { Incomplete(block, "证据边界不能按原编码精确定位"); return; }
         raw += segment.value->size() - bom; previous = point.first; point.second = raw;
     }
     const auto at = [&](std::size_t offset) { return std::lower_bound(points.begin(), points.end(), offset, [](const auto& p, auto n) { return p.first < n; })->second; };
@@ -63,18 +64,18 @@ void Evidence(RemovalCodeBlock& block, const RawText& source, std::size_t at, st
 // 只作有界词法证据，不执行宏或猜测动态目标。未知指令/未闭合文本不取得完整覆盖。
 void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemovalReview& review, std::size_t& tokensLeft) {
     const auto& text = source.text; std::vector<Token> tokens;
-    if (text.find('\0') != std::string::npos) { block.complete = false; Evidence(block, source, text.find('\0'), 1, "不支持的NUL字节", false); }
+    if (text.find('\0') != std::string::npos) { Incomplete(block, "含NUL字节"); Evidence(block, source, text.find('\0'), 1, "不支持的NUL字节", false); }
     for (std::size_t i = 0; i < text.size();) {
-        if (!tokensLeft) { block.complete = false; break; }
+        if (!tokensLeft) { Incomplete(block, "词法扫描预算截断"); break; }
         const auto begin = i;
         if (std::isspace(static_cast<unsigned char>(text[i]))) { ++i; continue; }
         if (text[i] == '#' || (text[i] == '/' && i + 2 < text.size() && text[i + 1] == '/' && text[i + 2] == '!')) {
-            block.complete = false; Evidence(block, source, i, 1, "未展开指令/外部来源", false);
+            Incomplete(block, "含未展开指令/外部来源"); Evidence(block, source, i, 1, "未展开指令/外部来源", false);
         }
         if (text[i] == '/' && i + 1 < text.size() && (text[i + 1] == '/' || text[i + 1] == '*')) {
             const bool line = text[i + 1] == '/'; i += 2;
             if (line) { while (i < text.size() && text[i] != '\n') ++i; }
-            else { const auto end = text.find("*/", i); if (end == std::string::npos) { block.complete = false; i = text.size(); } else i = end + 2; }
+            else { const auto end = text.find("*/", i); if (end == std::string::npos) { Incomplete(block, "块注释未闭合"); i = text.size(); } else i = end + 2; }
             const auto comment = std::string_view(text).substr(begin, i - begin);
             if (Mentions(comment, review))
                 Evidence(block, source, begin, i - begin, "注释命中（非执行引用）", false);
@@ -90,10 +91,10 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
                     else if (escaped == 'n') decoded += '\n';
                     else if (escaped == 'r') decoded += '\r';
                     else if (escaped == 't') decoded += '\t';
-                    else { block.complete = false; decoded += '\\'; decoded += escaped; }
+                    else { Incomplete(block, "含未知字符串转义"); decoded += '\\'; decoded += escaped; }
                 } else decoded += c;
             }
-            if (!closed) block.complete = false;
+            if (!closed) Incomplete(block, "字符串或物编字面量未闭合");
             --tokensLeft; tokens.push_back({decoded, begin, true, i - begin});
             if (quote == '"' && Mentions(decoded, review)) Evidence(block, source, begin, i - begin, "名字字符串（须审阅用途）", false);
             continue;
@@ -108,7 +109,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (tokens[i].quoted) continue;
         const auto& word = tokens[i].text;
         if (word == "load" || word == "loadstring" || word == "ExecuteString") {
-            block.dynamic = true; block.complete = false;
+            block.dynamic = true; Incomplete(block, "从字符串执行代码，未覆盖其正文");
             Evidence(block, source, tokens[i].offset, word.size(), "动态环境/脚本构造未覆盖", false);
         }
         if (word == "_G" || word == "_ENV") {
@@ -124,7 +125,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (i + 2 < tokens.size() && tokens[i + 1].text == "(") {
             std::size_t depth = 1, first = i + 2; bool closed = false;
             for (std::size_t cursor = first; cursor < tokens.size(); ++cursor) {
-                if (!tokensLeft) { block.complete = false; break; } --tokensLeft;
+                if (!tokensLeft) { Incomplete(block, "调用表达式扫描预算截断"); break; } --tokensLeft;
                 const auto& token = tokens[cursor];
                 if (!token.quoted && token.text == "(") ++depth;
                 if (!token.quoted && token.text == ")") --depth;
@@ -142,7 +143,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
                     if (!depth) { closed = true; break; }
                 }
             }
-            if (!closed) block.complete = false;
+            if (!closed) Incomplete(block, "按名调用表达式未闭合或预算不足");
         } else Evidence(block, source, tokens[i].offset, word.size(), "按名入口引用（须单独确认）", false);
     }
     std::stable_sort(block.evidence.begin(), block.evidence.end(), [](const auto& a, const auto& b) { return a.decodedByteOffset < b.decodedByteOffset; });
@@ -223,13 +224,14 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
                 std::optional<std::string> constantName;
                 if (arg.type == 0) {
                     const auto preset = FindPreset(catalog, arg.value.text);
-                    if (!preset) { block.complete = false; Evidence(block, text, 0, text.text.size(), "目录中缺少预设：" + arg.value.text, false); }
+                    if (!preset) { Incomplete(block, "目录中缺少预设"); Evidence(block, text, 0, text.text.size(), "目录中缺少预设：" + arg.value.text, false); }
                     else {
                         if (preset->script.size() > kBytes - bytes) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "目录预设展开超出代码审计预算。");
                         bytes += preset->script.size();
                         RemovalCodeBlock expanded;
                         Scan(expanded, RawText{preset->script}, review, tokensLeft);
-                        block.complete &= expanded.complete; block.dynamic |= expanded.dynamic;
+                        if (!expanded.complete) { block.complete = false; block.incompleteReason = "目录预设展开：" + expanded.incompleteReason; }
+                        block.dynamic |= expanded.dynamic;
                         for (const auto& hit : expanded.evidence)
                             Evidence(block, text, 0, text.text.size(), "目录预设 " + arg.value.text + "：" + hit.context + "：" + hit.text, hit.definite);
                         const auto value = std::string_view(preset->script);
@@ -246,6 +248,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         }
         block.groupable = block.complete && !block.dynamic && block.evidence.empty();
         LocateRawEvidence(block, text);
+        if (!block.complete && block.incompleteReason.empty()) block.incompleteReason = "引用证据数量达到上限，未提供截断放行结果";
         findings += block.evidence.size();
         if (findings > 16384) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "引用证据总量超出预算，未提供截断放行结果。");
         const auto decodedSha = Sha256Text(text.text); if (!decodedSha.Succeeded()) return Status{decodedSha.diagnostics};

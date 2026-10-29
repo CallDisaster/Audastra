@@ -36,7 +36,7 @@ Json Blocks(const std::vector<RemovalCodeBlock>& blocks) {
             {"raw_byte_offset", hit.rawByteOffset}, {"raw_byte_length", hit.rawByteLength}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});
         result.push_back({{"identity", {{"kind", Kind(id.kind)}, {"id", std::to_string(id.id)}, {"encoding", TriggerEditEncodingName(id.encoding)},
             {"source_sha256", id.sourceSha256}, {"evidence_sha256", id.evidenceSha256}}}, {"complete", block.complete}, {"dynamic", block.dynamic},
-            {"referenced", block.referenced}, {"evidence", evidence}});
+            {"referenced", block.referenced}, {"incomplete_reason", block.incompleteReason}, {"evidence", evidence}});
     }
     return result;
 }
