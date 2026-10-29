@@ -29,6 +29,8 @@ struct RemovalCodeBlock {
     std::vector<RemovalReferenceEvidence> evidence;
     bool groupable = false, complete = true, dynamic = false, referenced = false;
     std::string incompleteReason;
+    std::string sampleText;
+    bool sampleTruncated = false;
 };
 struct DeclarationRemovalReview {
     TriggerGraphBinding binding;
@@ -36,9 +38,16 @@ struct DeclarationRemovalReview {
     std::string expectedName, reviewSha256;
     std::vector<std::string> symbols;
     std::vector<StableId> typedArgumentIds;
-    std::vector<RemovalCodeBlock> groupableBlocks, individualBlocks;
+    std::size_t groupableCount = 0;
+    std::string groupableSha256;
+    std::vector<RemovalCodeBlock> groupableSamples, individualBlocks;
     bool complete = true;
     bool externalDependenciesVerified = false;
+private:
+    // 只供旧逐块确认核对，查询调用方只获得整组身份与有界样本。
+    std::vector<RemovalBlockIdentity> groupableIdentities_;
+    friend Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot*);
+    friend Status CheckDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot*);
 };
 // 只读查询。按与实际编辑相同的前序操作准备候选；operationIndex指向remove。
 [[nodiscard]] Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(

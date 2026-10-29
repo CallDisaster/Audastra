@@ -12,7 +12,7 @@
 
 namespace War3Map::Trigger {
 namespace {
-constexpr std::size_t kBytes = 64 * 1024 * 1024, kBlocks = 16384, kEvidence = 4096;
+constexpr std::size_t kBytes = 64 * 1024 * 1024, kBlocks = 262144, kIndividuals = 16384, kEvidence = 4096;
 Status Fail(const char* code, std::string message) { return Status::Failure("Trigger.RemoveAudit", code, std::move(message)); }
 std::string Key(AtomicRenameCodeKind kind, StableId id) { return std::to_string(static_cast<unsigned>(kind)) + ":" + std::to_string(id); }
 bool NameByte(unsigned char c) { return std::isalnum(c) || c == '_' || c >= 128; }
@@ -27,6 +27,19 @@ bool Mentions(std::string_view value, const DeclarationRemovalReview& review) {
         || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return value.find(s) != std::string_view::npos; });
 }
 struct Token { std::string text; std::size_t offset; bool quoted = false; std::size_t length = 0; };
+std::vector<std::size_t> ArgumentBoundaries(const std::vector<Token>& tokens) {
+    std::vector<std::size_t> next(tokens.size(), tokens.size()), tails;
+    // 每个逗号只归属当前括号层，嵌套按名调用不重复遍历内部表达式。
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].quoted) continue;
+        if (tokens[i].text == "(") tails.push_back(i);
+        else if (!tails.empty() && (tokens[i].text == "," || tokens[i].text == ")")) {
+            next[tails.back()] = i;
+            if (tokens[i].text == ")") tails.pop_back(); else tails.back() = i;
+        }
+    }
+    return next;
+}
 void Incomplete(RemovalCodeBlock& block, const char* reason) { block.complete = false; if (block.incompleteReason.empty()) block.incompleteReason = reason; }
 void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     if (block.evidence.empty()) return;
@@ -105,6 +118,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
             if (Match(value, review, true)) Evidence(block, source, begin, i - begin, "可执行生成符号", true);
         } else { --tokensLeft; tokens.push_back({text.substr(i, 1), i, false, 1}); ++i; }
     }
+    const auto boundaries = ArgumentBoundaries(tokens);
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         if (tokens[i].quoted) continue;
         const auto& word = tokens[i].text;
@@ -123,25 +137,19 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (!dispatch) continue;
         block.dynamic = true; Evidence(block, source, tokens[i].offset, word.size(), "按名/动态调用位置", false);
         if (i + 2 < tokens.size() && tokens[i + 1].text == "(") {
-            std::size_t depth = 1, first = i + 2; bool closed = false;
-            for (std::size_t cursor = first; cursor < tokens.size(); ++cursor) {
-                if (!tokensLeft) { Incomplete(block, "调用表达式扫描预算截断"); break; } --tokensLeft;
-                const auto& token = tokens[cursor];
-                if (!token.quoted && token.text == "(") ++depth;
-                if (!token.quoted && token.text == ")") --depth;
-                if (!depth || (depth == 1 && !token.quoted && token.text == ",")) {
-                    if (cursor > first) {
-                        const auto& argument = tokens[first];
-                        if (cursor == first + 1 && argument.quoted) {
-                            if (Match(argument.text, review, false)) Evidence(block, source, argument.offset, argument.length, "常量按名目标引用", true);
-                        } else {
-                            const auto end = tokens[cursor - 1].offset + tokens[cursor - 1].length;
-                            Evidence(block, source, argument.offset, end - argument.offset, "动态调用目标表达式（须单独确认）", false);
-                        }
+            std::size_t first = i + 2; bool closed = false;
+            for (auto cursor = boundaries[i + 1]; cursor < tokens.size(); cursor = boundaries[cursor]) {
+                if (cursor > first) {
+                    const auto& argument = tokens[first];
+                    if (cursor == first + 1 && argument.quoted) {
+                        if (Match(argument.text, review, false)) Evidence(block, source, argument.offset, argument.length, "常量按名目标引用", true);
+                    } else {
+                        const auto end = tokens[cursor - 1].offset + tokens[cursor - 1].length;
+                        Evidence(block, source, argument.offset, end - argument.offset, "动态调用目标表达式（须单独确认）", false);
                     }
-                    first = cursor + 1;
-                    if (!depth) { closed = true; break; }
                 }
+                first = cursor + 1;
+                if (tokens[cursor].text == ")") { closed = true; break; }
             }
             if (!closed) Incomplete(block, "按名调用表达式未闭合或预算不足");
         } else Evidence(block, source, tokens[i].offset, word.size(), "按名入口引用（须单独确认）", false);
@@ -204,9 +212,14 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
             : TriggerDirectoryEditor::IsTriggerSymbolOf(arg.value.text, removedTrigger->name);
         if (referenced) review.typedArgumentIds.push_back(arg.id);
     }
-    std::size_t bytes = 0, count = 0, tokensLeft = 262144, findings = 0;
-    std::string manifest = review.binding.currentWtgSha256 + review.binding.currentWctSha256 + catalog.Sha256()
-        + std::to_string(static_cast<unsigned>(op.target.kind)) + ":" + std::to_string(op.target.id) + ":" + op.expectedName;
+    std::size_t bytes = 0, count = 0, tokensLeft = kBytes, findings = 0;
+    Sha256Stream manifest(256 * kBlocks + 4096), group(256 * kBlocks);
+    const auto update = [](Sha256Stream& stream, std::string_view text) {
+        return stream.Update(std::as_bytes(std::span(text.data(), text.size())));
+    };
+    const auto header = update(manifest, "remove-audit-v2:" + review.binding.currentWtgSha256 + review.binding.currentWctSha256 + catalog.Sha256()
+        + std::to_string(static_cast<unsigned>(op.target.kind)) + ":" + std::to_string(op.target.id) + ":" + op.expectedName);
+    if (!header.Succeeded()) return {std::nullopt, header.diagnostics};
     const auto status = detail::VisitOpaqueCodeBlocks(doc, catalog, review.symbols, [&](auto kind, StableId id, const RawText& text) {
         if (text.text.empty()) return Status::Ok();
         if ((kind == AtomicRenameCodeKind::ArgumentCode && removedArguments.contains(id))
@@ -215,7 +228,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         if (size > kBytes - bytes || ++count > kBlocks) {
             std::string message = "删除审计预算不足；当前块=" + Key(kind, id) + "；累计块=" + std::to_string(count)
                 + "；累计字节=" + std::to_string(bytes) + "；当前块字节=" + std::to_string(size)
-                + "；上限=16384块/64MiB；已完成可合并=" + std::to_string(review.groupableBlocks.size())
+                + "；上限=262144块/64MiB；已完成可合并=" + std::to_string(review.groupableCount)
                 + "、单独=" + std::to_string(review.individualBlocks.size()) + "（部分结果，不可放行）";
             const auto arg = arguments.find(id);
             if (kind == AtomicRenameCodeKind::ArgumentCode && arg != arguments.end())
@@ -265,13 +278,32 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         for (const auto& hit : block.evidence) evidence += "\n" + hit.context + ":" + std::to_string(hit.decodedByteOffset) + ":" + std::to_string(hit.definite);
         const auto digest = Sha256Text(evidence); if (!digest.Succeeded()) return Status{digest.diagnostics};
         block.identity.evidenceSha256 = *digest.value;
-        manifest += "\n" + Key(kind, id) + ":" + *sha.value + ":" + *digest.value + ":" + std::to_string(static_cast<unsigned>(text.encoding));
+        const auto row = Key(kind, id) + ":" + *sha.value + ":" + *digest.value + ":" + std::to_string(static_cast<unsigned>(text.encoding)) + "\n";
+        if (const auto added = update(manifest, row); !added.Succeeded()) return added;
         review.complete &= block.complete;
-        (block.groupable ? review.groupableBlocks : review.individualBlocks).push_back(std::move(block));
+        const auto sample = [&] {
+            auto length = std::min<std::size_t>(text.text.size(), 256);
+            while (length && length < text.text.size() && (static_cast<unsigned char>(text.text[length]) & 0xc0) == 0x80) --length;
+            block.sampleText = text.text.substr(0, length); block.sampleTruncated = length < text.text.size();
+        };
+        if (block.groupable) {
+            if (const auto added = update(group, row); !added.Succeeded()) return added;
+            ++review.groupableCount; review.groupableIdentities_.push_back(block.identity);
+            if (review.groupableSamples.size() < 20) {
+                sample();
+                review.groupableSamples.push_back(std::move(block));
+            }
+        } else {
+            if (review.individualBlocks.size() >= kIndividuals) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "须单独确认的代码块超过16384块，未提供部分放行。");
+            sample();
+            review.individualBlocks.push_back(std::move(block));
+        }
         return Status::Ok();
     });
     if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
-    const auto digest = Sha256Text(manifest); if (!digest.Succeeded()) return {std::nullopt, digest.diagnostics};
+    const auto grouped = group.Finish(); if (!grouped.Succeeded()) return {std::nullopt, grouped.diagnostics};
+    review.groupableSha256 = *grouped.value;
+    const auto digest = manifest.Finish(); if (!digest.Succeeded()) return {std::nullopt, digest.diagnostics};
     review.reviewSha256 = *digest.value; return Out::Success(std::move(review));
 }
 Status CheckDeclarationRemovalAudit(const TriggerDocument& doc, const UiCatalog& catalog, const GraphRemove& op,
@@ -283,21 +315,40 @@ Status CheckDeclarationRemovalAudit(const TriggerDocument& doc, const UiCatalog&
     for (const auto& block : r.individualBlocks) if (block.referenced)
         return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "代码仍引用删除目标，请先移除或改绑；块=" + Key(block.identity.kind, block.identity.id));
     if (!r.complete) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "未解析的执行代码、外部指令或截断使引用证据不完整，未删除。");
-    if (op.codeAudits.size() > kBlocks) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "确认条数超过预算。");
-    std::set<std::string> consumed;
+    if (op.codeAudits.size() > kIndividuals + 1) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "确认条数超过预算。");
+    struct Entry { const RemovalBlockIdentity* identity; bool groupable; };
+    std::unordered_map<std::string, Entry> index;
+    index.reserve(r.groupableCount + r.individualBlocks.size());
+    for (const auto& identity : r.groupableIdentities_) index.emplace(Key(identity.kind, identity.id), Entry{&identity, true});
+    for (const auto& block : r.individualBlocks) index.emplace(Key(block.identity.kind, block.identity.id), Entry{&block.identity, false});
+    std::unordered_set<std::string> consumed;
+    consumed.reserve(index.size());
+    bool wholeGroup = false, legacyGroup = false;
+    std::size_t consumedGroup = 0, consumedIndividual = 0;
     for (const auto& audit : op.codeAudits) {
         if (audit.reviewSha256 != r.reviewSha256) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "删除审计的目标、修订、代码或证据已变化。");
         if (audit.decision != "no_reference" || audit.reason.empty() || audit.reason.size() > 4096 || audit.reason.find('\0') != std::string::npos
-            || audit.blocks.empty() || audit.blocks.size() > kBlocks) return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "确认必须逐块绑定身份、no_reference及审阅理由。");
+            || (!audit.group && audit.blocks.empty()) || audit.blocks.size() > kIndividuals)
+            return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "确认必须绑定整组或逐块身份、no_reference及审阅理由。");
+        if (audit.group) {
+            if (!audit.blocks.empty() || wholeGroup || legacyGroup || !audit.group->count)
+                return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "整组确认不得与可合并块逐块确认混用或重复。");
+            if (audit.group->count != r.groupableCount || audit.group->sha256 != r.groupableSha256)
+                return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "可合并代码整组数量或摘要已变化。");
+            wholeGroup = true;
+            continue;
+        }
         for (const auto& identity : audit.blocks) {
-            const auto find = [&](const auto& blocks) { return std::find_if(blocks.begin(), blocks.end(), [&](const auto& b) { return b.identity == identity; }); };
-            const bool groupable = find(r.groupableBlocks) != r.groupableBlocks.end();
-            if (!groupable && find(r.individualBlocks) == r.individualBlocks.end()) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "确认中包含不匹配或旧代码块。");
-            if ((!groupable && audit.blocks.size() != 1) || !consumed.insert(Key(identity.kind, identity.id)).second)
+            const auto key = Key(identity.kind, identity.id);
+            const auto found = index.find(key);
+            if (found == index.end() || *found->second.identity != identity) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "确认中包含不匹配或旧代码块。");
+            const bool groupable = found->second.groupable;
+            if ((!groupable && audit.blocks.size() != 1) || !consumed.insert(key).second || (groupable && wholeGroup))
                 return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "有命中或动态构造的块须单独确认；不得重复确认。");
+            if (groupable) { legacyGroup = true; ++consumedGroup; } else ++consumedIndividual;
         }
     }
-    if (consumed.size() != r.groupableBlocks.size() + r.individualBlocks.size())
+    if ((!wholeGroup && consumedGroup != r.groupableCount) || consumedIndividual != r.individualBlocks.size())
         return Fail("TRIGGER_REMOVE_CODE_AUDIT_REQUIRED", "请审阅所有代码块：零命中且无动态构造的块可合并，其余须单独确认。");
     return Status::Ok();
 }

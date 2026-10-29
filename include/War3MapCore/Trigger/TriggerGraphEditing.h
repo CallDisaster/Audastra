@@ -100,6 +100,8 @@ struct RemovalBlockIdentity {
 struct RemovalCodeConfirmation {
     std::string reviewSha256, decision, reason;
     std::vector<RemovalBlockIdentity> blocks;
+    struct Group { std::size_t count = 0; std::string sha256; };
+    std::optional<Group> group;
 };
 struct GraphRemove {
     GraphRecordRef target;
