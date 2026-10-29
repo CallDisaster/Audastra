@@ -59,7 +59,7 @@ class TriggerValuePanel;
 struct TriggerDirectoryItem;
 struct TriggerDirectoryMove;
 namespace TriggerBlueprintDetail { struct PinTarget; }
-namespace War3Map::QtProject { class EditorProject; namespace detail { struct TriggerScalarUiNotice; } }
+namespace War3Map::QtProject { class EditorProject; struct RemovalCodeNotice; namespace detail { struct TriggerScalarUiNotice; } }
 namespace War3Map { class MapDocument; }
 namespace War3Map::Trigger { struct TriggerRecord; class TriggerTypeSystem; class UiCatalog; }
 namespace War3Map::Services { class CodeCheckProjectCache; struct CodeCheckLuaSources; }
@@ -214,6 +214,8 @@ private:
     // 这些触发器（gg_trg_ 名称）在它们之外的引用：最多渲染 8 行，total 为总数。
     [[nodiscard]] QStringList TriggerReferenceLines(const std::vector<StableId>& triggerIds, std::size_t& total) const;
     [[nodiscard]] bool Confirm(const QString& title, const QString& body, const QStringList& references);
+    // 删除前按与 Agent 删除门禁同一审计查代码里的引用；作者取消或检查期间地图有变化时返回空（已提示原因）。
+    [[nodiscard]] std::optional<QtProject::RemovalCodeNotice> CheckRemovalCode(const std::vector<StableId>& triggerIds);
     // 目录整体刷新：保留折叠状态、当前项与滚动位置；selectTriggerId 非 0 时改选该触发器。
     void RefreshExplorer(StableId selectTriggerId = 0);
     void ApplyExplorerExpansion();

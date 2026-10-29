@@ -372,6 +372,7 @@ private slots:
     void SharedMapStringsUseOneUndoAndPreserveOriginalBody();
     void RealAudastraNameSamplesRenderReadOnlyProjection();
     void CustomCodeHeaderEncodingAndOneUndo();
+    void DeleteListsCodeReferences();
     void CodeUnicodeDisplayBaselinePreservesOriginalBytes_data();
     void CodeUnicodeDisplayBaselinePreservesOriginalBytes();
     void OrdinaryChineseCodeRemainsEditableAndUsesOneUndo_data();
@@ -892,6 +893,42 @@ void TriggerModuleTests::CustomCodeHeaderEncodingAndOneUndo() {
     QCOMPARE(Named(project, "AuthorCode")->enabled, 1);
     project.triggerUndoStack_->undo();
     QCOMPARE(Named(project, "AuthorCode")->customText.text, originalText);
+}
+
+void TriggerModuleTests::DeleteListsCodeReferences() {
+    // 删除前与 Agent 同一审计查代码：全局代码直接引用 Spawn，确认框列出位置；取消不删，确认后删除且可撤销。
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QtProject::EditorProject project;
+    const std::string header = "function UsesSpawn takes nothing returns nothing
+    call TriggerExecute(gg_trg_Spawn)
+endfunction
+";
+    QVERIFY(InstallCodeProject(project, root.path().toStdWString(), false, header));
+    Modules::TriggerModule module(project);
+    auto* page = module.Widget(); page->resize(1450, 900); page->show();
+    QVERIFY(module.Reveal({"triggers", "trigger", "Spawn", {}}));
+    QString body;
+    QStringList lines;
+    int confirmations = 0;
+    module.SetConfirmHandler([&](const QString&, const QString& text, const QStringList& references) {
+        ++confirmations; body = text; lines = references; return false;
+    });
+    module.DeleteCurrentItem();
+    QCOMPARE(confirmations, 1);
+    QVERIFY(body.contains(QStringLiteral("被 1 处引用")));
+    QCOMPARE(lines.size(), 1);
+    QVERIFY(lines.front().startsWith(QStringLiteral("代码引用 · 全局自定义代码 第 2 行")));
+    QVERIFY(lines.front().contains(QStringLiteral("gg_trg_Spawn")));
+    QVERIFY(Named(project, "Spawn") != nullptr);
+    QCOMPARE(project.triggerUndoStack_->count(), 0);
+    module.SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++confirmations; return true; });
+    module.DeleteCurrentItem();
+    QCOMPARE(confirmations, 2);
+    QVERIFY(Named(project, "Spawn") == nullptr);
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+    project.triggerUndoStack_->undo();
+    QVERIFY(Named(project, "Spawn") != nullptr);
 }
 
 void TriggerModuleTests::CodeUnicodeDisplayBaselinePreservesOriginalBytes_data() {

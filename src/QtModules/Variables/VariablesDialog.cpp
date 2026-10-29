@@ -368,12 +368,22 @@ void VariablesDialog::RemoveSelected() {
         return;
     }
     const War3Map::Trigger::VariableRecord record = document_->variables[*row];
-    if (QMessageBox::question(
-            this, tr("删除变量"),
-            tr("确定删除变量“%1”吗？引用它的脚本将不再编译（可撤销）。")
-                .arg(QString::fromUtf8(record.name.text)),
-            QMessageBox::Yes | QMessageBox::No,
-            QMessageBox::No) != QMessageBox::Yes) {
+    RemovalReview review;
+    if (removalCheck_) {
+        auto checked = removalCheck_(record);
+        if (!checked) return;
+        review = std::move(*checked);
+    }
+    QMessageBox box(QMessageBox::Question, tr("删除变量"),
+        review.references != 0
+            ? tr("变量“%1”被引用 %2 处，删除后这些位置会变成无效引用（可撤销）。").arg(QString::fromUtf8(record.name.text)).arg(review.references)
+            : tr("确定删除变量“%1”吗？引用它的脚本将不再编译（可撤销）。").arg(QString::fromUtf8(record.name.text)),
+        QMessageBox::Yes | QMessageBox::No, this);
+    if (!review.incomplete.isEmpty()) review.lines << tr("没能全部检查：%1").arg(review.incomplete);
+    if (!review.lines.isEmpty()) box.setInformativeText(review.lines.join('
+'));
+    box.setDefaultButton(QMessageBox::No);
+    if (box.exec() != QMessageBox::Yes) {
         return;
     }
     const War3Map::Status removed =

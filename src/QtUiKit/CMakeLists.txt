@@ -28,6 +28,7 @@ qt_add_library(War3MapQtUiKit STATIC
     Widgets/ColumnLayout.h
     Widgets/CommandPalette.cpp
     Widgets/CommandPalette.h
+    Widgets/BlockingTask.cpp Widgets/BlockingTask.h
     Widgets/ChangesPanel.cpp
     Widgets/ChangesPanel.h
     Widgets/ElidedLabel.cpp

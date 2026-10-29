@@ -3,6 +3,7 @@
 #include "War3MapCore/Services/NameResolution.h"
 #include "VariablePropertiesDialog.h"
 #include <QDialog>
+#include <QStringList>
 #include <functional>
 #include <optional>
 class QUndoStack;
@@ -32,6 +33,10 @@ public:
         std::function<War3Map::Status(std::vector<War3Map::Trigger::GraphEditOperation>, const QString&)> publish;
     };
     void SetGraphEditing(GraphEditing editing);
+    // 删除前查代码里的引用：返回要列在确认框里的行，返回空表示不删（取消或期间地图有变化）。未设置时只确认一次。
+    struct RemovalReview { QStringList lines; std::size_t references = 0; QString incomplete; };
+    using RemovalCheck = std::function<std::optional<RemovalReview>(const War3Map::Trigger::VariableRecord&)>;
+    void SetRemovalCheck(RemovalCheck check) { removalCheck_ = std::move(check); }
 
 private:
     void RebuildList(std::optional<War3Map::StableId> preferredId = std::nullopt);
@@ -52,4 +57,5 @@ private:
     bool showRawValues_ = false;
     NameResolver nameResolver_;
     GraphEditing graphEditing_;
+    RemovalCheck removalCheck_;
 };

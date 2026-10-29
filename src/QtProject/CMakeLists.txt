@@ -54,6 +54,7 @@ qt_add_library(War3MapQtProject STATIC
     ProjectAuxiliaryEdits.cpp ProjectAuxiliaryEdits.h
     ProjectMapCustomSettings.cpp ProjectMapCustomSettings.h
     ProjectTriggerCodeIdentity.cpp ProjectTriggerCodeIdentity.h
+    ProjectRemovalCodeAudit.cpp ProjectRemovalCodeAudit.h
     TerrainWaterEditPreparation.cpp TerrainWaterEditPreparation.h
     TerrainResizeEditPreparation.cpp TerrainResizeEditPreparation.h
     TerrainTextureSlotEditPreparation.cpp TerrainTextureSlotEditPreparation.h

@@ -2,6 +2,7 @@
 #include "VariablesDialog.h"
 #include "EditorProject.h"
 #include "ObjectNames.h"
+#include "ProjectRemovalCodeAudit.h"
 #include "TriggerCommands.h"
 #include "Modules/ModuleHost.h"
 #include <QLabel>
@@ -9,7 +10,9 @@
 #include <QJsonArray>
 #include <QTableWidget>
 
+#include "Widgets/BlockingTask.h"
 #include "Widgets/ColumnLayout.h"
+#include <QMessageBox>
 #include <QUndoStack>
 #include <QVBoxLayout>
 
@@ -81,6 +84,22 @@ void VariablesModule::Refresh() {
             [this](std::vector<Trigger::GraphEditOperation> operations, const QString& label) {
                 return Status{QtProject::PublishTriggerGraphOperations(project_, std::move(operations), label).diagnostics};
             }});
+        // 删除前与 Agent 删除门禁同一审计：触发器参数、代码里的直接引用和按名使用。
+        editor_->SetRemovalCheck([this](const Trigger::VariableRecord& record) -> std::optional<VariablesDialog::RemovalReview> {
+            Trigger::GraphRemove remove;
+            remove.target = {Trigger::GraphRecordKind::Variable, record.id, {}};
+            remove.expectedName = record.name.text;
+            const auto audit = QtProject::RemovalCodeAudit::Prepare(project_, {remove}, {});
+            std::optional<QtProject::RemovalCodeNotice> result;
+            const bool finished = UiKit::RunBlockingTask(page_, tr("正在检查变量的引用…"), tr("取消删除"),
+                [&](const UiKit::BlockingTaskControl& control) { result = audit.Run({}, *control.stop); });
+            if (!finished || !result) return std::nullopt;
+            if (!audit.Current(project_)) {
+                QMessageBox::information(page_, tr("删除变量"), tr("检查期间地图有变化，未删除；请重新删除。"));
+                return std::nullopt;
+            }
+            return VariablesDialog::RemovalReview{std::move(result->lines), result->references, std::move(result->incomplete)};
+        });
         layout_->addWidget(editor_, 1);
     } else {
         empty_ = new QLabel(tr("未加载触发器"), page_);

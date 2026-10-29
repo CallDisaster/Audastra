@@ -5,6 +5,8 @@
 #include "TriggerDirectoryCommands.h"
 #include "TriggerModels.h"
 #include "ProjectTriggerCodeIdentity.h"
+#include "ProjectRemovalCodeAudit.h"
+#include "Widgets/BlockingTask.h"
 
 #include "War3MapCore/Hash.h"
 
@@ -401,6 +403,44 @@ bool TriggerModule::Confirm(const QString& title, const QString& body, const QSt
     return box.clickedButton() == remove;
 }
 
+std::optional<QtProject::RemovalCodeNotice> TriggerModule::CheckRemovalCode(const std::vector<StableId>& triggerIds) {
+    const auto* document = project_.triggerDocument_.get();
+    std::vector<Trigger::GraphRemove> targets;
+    bool customCode = false;
+    for (const StableId id : triggerIds) {
+        const auto* trigger = document ? FindTrigger(*document, id) : nullptr;
+        if (trigger == nullptr) continue;
+        // 删除投影只支持普通触发器；自定义代码触发器的生成符号暂不查。
+        if (trigger->customTextFlag != 0) { customCode = true; continue; }
+        Trigger::GraphRemove remove;
+        remove.target = {Trigger::GraphRecordKind::Trigger, id, {}};
+        remove.expectedName = trigger->name.text;
+        targets.push_back(std::move(remove));
+    }
+    QtProject::RemovalCodeNotice notice;
+    if (!targets.empty()) {
+        const auto audit = QtProject::RemovalCodeAudit::Prepare(project_, std::move(targets), {triggerIds.begin(), triggerIds.end()});
+        std::optional<QtProject::RemovalCodeNotice> result;
+        const bool finished = UiKit::RunBlockingTask(page_, tr("正在检查代码里的引用…"), tr("取消删除"),
+            [&](const UiKit::BlockingTaskControl& control) {
+                result = audit.Run([&](std::size_t done, std::size_t total) {
+                    if (total > 1) control.progress(tr("正在检查代码里的引用（%1/%2）…").arg(done + 1).arg(total));
+                }, *control.stop);
+            });
+        if (!finished || !result) {
+            ShowStatus(tr("已取消删除"), 4000);
+            return std::nullopt;
+        }
+        if (!audit.Current(project_)) {
+            ShowStatus(tr("未删除：检查期间地图有变化，请重新删除。"), 8000);
+            return std::nullopt;
+        }
+        notice = std::move(*result);
+    }
+    if (customCode && notice.incomplete.isEmpty()) notice.incomplete = tr("代码里对自定义代码触发器的引用暂不检查");
+    return notice;
+}
+
 void TriggerModule::DeleteCurrentItem() {
     if (const auto item = CurrentDirectoryItem()) {
         DeleteDirectoryItem(*item);
@@ -417,14 +457,19 @@ void TriggerModule::DeleteDirectoryItem(const TriggerDirectoryItem& item) {
         DeleteCategory(item.categoryId);
         return;
     }
-    const auto* trigger = FindTrigger(*document, item.triggerId);
-    if (trigger == nullptr) {
+    if (FindTrigger(*document, item.triggerId) == nullptr) {
         return;
     }
+    const auto code = CheckRemovalCode({item.triggerId});
+    if (!code) return;
+    const auto* trigger = FindTrigger(*document, item.triggerId);
     const QString name = U8(trigger->name.text);
     std::size_t total = 0;
-    const QStringList references = TriggerReferenceLines({item.triggerId}, total);
-    // 被其他触发器引用（运行触发器、开关触发器等）时先确认；否则直接删除，可撤销，不打断连续整理。
+    QStringList references = TriggerReferenceLines({item.triggerId}, total);
+    total += code->references;
+    references << code->lines;
+    if (!code->incomplete.isEmpty() && total != 0) references << tr("没能全部检查：%1").arg(code->incomplete);
+    // 被其他触发器或代码引用（运行触发器、开关触发器、按名调用等）时先确认；否则直接删除，可撤销，不打断连续整理。
     if (total != 0 && !Confirm(tr("删除触发器"),
             tr("“%1”被 %2 处引用，删除后这些位置会变成无效引用。").arg(name).arg(total), references)) {
         return;
@@ -444,7 +489,8 @@ void TriggerModule::DeleteDirectoryItem(const TriggerDirectoryItem& item) {
         nullptr, &project_.guiConversionSnapshots_));
     SelectDirectoryItem(neighbour);
     ShowSelectedTrigger();
-    ShowStatus(tr("已删除 %1 · Ctrl+Z 撤销").arg(name), 5000);
+    ShowStatus(tr("已删除 %1 · Ctrl+Z 撤销").arg(name)
+        + (code->incomplete.isEmpty() ? QString() : tr(" · 代码引用没能全部检查：%1").arg(code->incomplete)), 8000);
 }
 
 void TriggerModule::DeleteCategory(std::int32_t categoryId) {
@@ -467,6 +513,7 @@ void TriggerModule::DeleteCategory(std::int32_t categoryId) {
     else if (position > 0) neighbour = document->categories[position - 1].categoryId;
 
     auto before = Directory::CaptureLayout(*document);
+    QtProject::RemovalCodeNotice code;
     if (inside.empty()) {
         if (const Status removed = Directory::RemoveEmptyCategory(*document, categoryId); !removed.Succeeded()) {
             project_.AddDiagnostics(removed.diagnostics);
@@ -474,9 +521,14 @@ void TriggerModule::DeleteCategory(std::int32_t categoryId) {
         }
         PushDirectoryChange(std::move(before), tr("删除类别 %1").arg(name));
     } else {
+        auto checked = CheckRemovalCode(inside);
+        if (!checked) return;
+        code = std::move(*checked);
         std::size_t total = 0;
         QStringList references = TriggerReferenceLines(inside, total);
+        references << code.lines;
         if (!references.isEmpty()) references.prepend(tr("类别外的引用："));
+        if (!code.incomplete.isEmpty()) references << tr("没能全部检查：%1").arg(code.incomplete);
         if (!Confirm(tr("删除类别"),
                 tr("删除类别“%1”及其中 %2 个触发器？可以用 Ctrl+Z 撤销。").arg(name).arg(inside.size()), references)) {
             return;
@@ -518,7 +570,8 @@ void TriggerModule::DeleteCategory(std::int32_t categoryId) {
         RefreshExplorer();
     }
     ShowSelectedTrigger();
-    ShowStatus(tr("已删除类别 %1 · Ctrl+Z 撤销").arg(name), 5000);
+    ShowStatus(tr("已删除类别 %1 · Ctrl+Z 撤销").arg(name)
+        + (code.incomplete.isEmpty() ? QString() : tr(" · 代码引用没能全部检查：%1").arg(code.incomplete)), 8000);
 }
 
 void TriggerModule::CopyCurrentTrigger() {
