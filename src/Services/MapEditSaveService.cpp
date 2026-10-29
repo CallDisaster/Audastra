@@ -1240,6 +1240,34 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
     }
 }
 
+Result<MapTriggerQuerySources> CaptureMapTriggerQuerySources(const MapTriggerTextQueryRequest& request) {
+    using Out = Result<MapTriggerQuerySources>;
+    if (request.sourceMap.empty() || (request.uiRoot.empty() && request.toolRoot.empty()) || !ValidSha(request.expectedSourceSha256)
+        || (request.expectedCatalogSha256 && !ValidSha(*request.expectedCatalogSha256)))
+        return Out::Failure("MapEdit.Query", "TRIGGER_TEXT_QUERY_INVALID", "地图、UI来源与查询绑定SHA无效。");
+    auto opened = MapArchiveSession::Open(request.sourceMap);
+    if (!opened.Succeeded()) return {std::nullopt, opened.diagnostics};
+    if (opened.value->SourceSha256() != request.expectedSourceSha256)
+        return Out::Failure("MapEdit.Query", "SAVE_SOURCE_STALE", "查询源归档SHA与请求不符。");
+    auto catalog = ResolveEditCatalog(request.uiRoot.empty() ? request.toolRoot : request.uiRoot, request.effectiveLayers);
+    if (!catalog.Succeeded()) return {std::nullopt, catalog.diagnostics};
+    if (request.expectedCatalogSha256 && catalog.value->Sha256() != *request.expectedCatalogSha256)
+        return Out::Failure("MapEdit.Query", "TRIGGER_EDIT_SOURCE_STALE", "查询Catalog已变化；expected=" + *request.expectedCatalogSha256 + "; actual=" + catalog.value->Sha256());
+    const std::array<std::string, 2> names{"war3map.wtg", "war3map.wct"};
+    auto pair = opened.value->CaptureExactMembers(names);
+    if (!pair.Succeeded()) return {std::nullopt, pair.diagnostics};
+    if (!(*pair.value)[0].present || !(*pair.value)[1].present)
+        return Out::Failure("MapEdit.Query", "SAVE_TRIGGER_PAIR_MISSING", "源地图缺少完整WTG/WCT配对成员。");
+    auto document = Trigger::WtgWctCodec{}.Parse((*pair.value)[0].bytes, (*pair.value)[1].bytes, *catalog.value);
+    if (!document.Succeeded()) return {std::nullopt, document.diagnostics};
+    const auto unchanged = opened.value->VerifySourceUnchanged(); if (!unchanged.Succeeded()) return {std::nullopt, unchanged.diagnostics};
+    auto result = Out::Success({std::make_shared<MapArchiveSession>(std::move(*opened.value)), std::move(*catalog.value),
+        std::move(*document.value), std::move((*pair.value)[0].bytes)});
+    result.diagnostics = std::move(catalog.diagnostics);
+    result.diagnostics.insert(result.diagnostics.end(), document.diagnostics.begin(), document.diagnostics.end());
+    return result;
+}
+
 Result<MapTriggerTextQueryReceipt> QueryMapTriggerText(const MapTriggerTextQueryRequest& request) {
     using QueryResult = Result<MapTriggerTextQueryReceipt>;
     const auto forward = [](std::vector<Diagnostic> diagnostics) {
@@ -1252,24 +1280,13 @@ Result<MapTriggerTextQueryReceipt> QueryMapTriggerText(const MapTriggerTextQuery
             || !ValidSha(request.expectedSourceSha256)
             || (request.expectedCatalogSha256 && !ValidSha(*request.expectedCatalogSha256)))
             return QueryResult::Failure("MapEdit.Query", "TRIGGER_TEXT_QUERY_INVALID", "地图、UI 来源与查询绑定 SHA 无效。");
-        auto opened = MapArchiveSession::Open(request.sourceMap);
-        if (!opened.Succeeded() || !opened.value) return forward(std::move(opened.diagnostics));
-        auto& source = *opened.value;
-        if (source.SourceSha256() != request.expectedSourceSha256)
-            return QueryResult::Failure("MapEdit.Query", "SAVE_SOURCE_STALE", "查询源归档 SHA 与请求不符。");
-        auto catalog = ResolveEditCatalog(request.uiRoot.empty() ? request.toolRoot : request.uiRoot, request.effectiveLayers);
-        if (!catalog.Succeeded() || !catalog.value) return forward(std::move(catalog.diagnostics));
-        if (request.expectedCatalogSha256 && catalog.value->Sha256() != *request.expectedCatalogSha256)
-            return QueryResult::Failure("MapEdit.Query", "TRIGGER_EDIT_SOURCE_STALE", "查询 Catalog 已变化；expected="
-                + *request.expectedCatalogSha256 + "; actual=" + catalog.value->Sha256());
-        const std::array<std::string, 2> names{"war3map.wtg", "war3map.wct"};
-        auto pair = source.CaptureExactMembers(names);
-        if (!pair.Succeeded() || !pair.value) return forward(std::move(pair.diagnostics));
-        if (!(*pair.value)[0].present || !(*pair.value)[1].present)
-            return QueryResult::Failure("MapEdit.Query", "SAVE_TRIGGER_PAIR_MISSING", "源地图缺少完整 WTG/WCT 配对成员。");
-        const auto& wtg = (*pair.value)[0].bytes;
-        auto document = Trigger::WtgWctCodec{}.Parse(wtg, (*pair.value)[1].bytes, *catalog.value);
-        if (!document.Succeeded() || !document.value) return forward(std::move(document.diagnostics));
+        auto captured = CaptureMapTriggerQuerySources(request);
+        if (!captured.Succeeded()) return forward(std::move(captured.diagnostics));
+        auto& source = *captured.value->archive;
+        const auto& wtg = captured.value->wtg;
+        auto catalog = Result<Trigger::UiCatalog>::Success(std::move(captured.value->catalog));
+        catalog.diagnostics = std::move(captured.diagnostics);
+        auto document = Result<Trigger::TriggerDocument>::Success(std::move(captured.value->document));
         auto page = Trigger::QueryTriggerText(*document.value, *catalog.value, request.query);
         if (!page.Succeeded() || !page.value) return forward(std::move(page.diagnostics));
         MapTriggerTextQueryReceipt receipt{source.SourceSha256(), std::move(*page.value), catalog.value->Layers(), {}};

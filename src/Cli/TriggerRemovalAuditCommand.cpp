@@ -1,0 +1,153 @@
+#include "TriggerRemovalAuditCommand.h"
+#include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Trigger/TriggerRemovalAudit.h"
+#include <nlohmann/json.hpp>
+#include <charconv>
+#include <algorithm>
+#include <fstream>
+#include <iostream>
+#include <set>
+
+namespace {
+using namespace War3Map;
+using namespace War3Map::Trigger;
+using Json = nlohmann::json;
+std::string Utf8(const wchar_t* value) { const auto text = std::filesystem::path(value).u8string(); return {text.begin(), text.end()}; }
+StableId Id(std::string_view value) {
+    StableId id = 0; const auto parsed = std::from_chars(value.data(), value.data() + value.size(), id);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) throw std::invalid_argument("StableId必须为十进制整数。");
+    return id;
+}
+const char* Kind(AtomicRenameCodeKind kind) {
+    switch (kind) {
+    case AtomicRenameCodeKind::GlobalCustomCode: return "global_custom_code";
+    case AtomicRenameCodeKind::TriggerCustomCode: return "trigger_custom_code";
+    case AtomicRenameCodeKind::ArgumentCode: return "argument_code";
+    case AtomicRenameCodeKind::VariableInitialValue: return "variable_initial_value";
+    }
+    throw std::invalid_argument("未知代码块种类。");
+}
+Json Blocks(const std::vector<RemovalCodeBlock>& blocks) {
+    Json result = Json::array();
+    for (const auto& block : blocks) {
+        const auto& id = block.identity; Json evidence = Json::array();
+        for (const auto& hit : block.evidence) evidence.push_back({{"context", hit.context}, {"text", hit.text}, {"line", hit.line}, {"column", hit.column},
+            {"decoded_byte_offset", hit.decodedByteOffset}, {"decoded_byte_length", hit.decodedByteLength},
+            {"raw_byte_offset", hit.rawByteOffset}, {"raw_byte_length", hit.rawByteLength}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});
+        result.push_back({{"identity", {{"kind", Kind(id.kind)}, {"id", std::to_string(id.id)}, {"encoding", TriggerEditEncodingName(id.encoding)},
+            {"source_sha256", id.sourceSha256}, {"evidence_sha256", id.evidenceSha256}}}, {"complete", block.complete}, {"dynamic", block.dynamic},
+            {"referenced", block.referenced}, {"evidence", evidence}});
+    }
+    return result;
+}
+Json Diagnostics(const std::vector<Diagnostic>& values) {
+    Json result = Json::array(); for (const auto& d : values) result.push_back({{"code", d.code}, {"message", d.message}}); return result;
+}
+void Keys(const Json& value, std::initializer_list<std::string_view> keys) {
+    if (!value.is_object() || value.size() != keys.size()) throw std::invalid_argument("删除确认字段不完整或含冗余字段。");
+    for (auto key : keys) if (!value.contains(key)) throw std::invalid_argument("删除确认缺少字段。");
+}
+std::vector<RemovalCodeConfirmation> ReadConfirmations(const std::filesystem::path& path, const Services::MapTriggerQuerySources& source,
+    const DeclarationRemovalReview& review) {
+    if (std::filesystem::file_size(path) > 4 * 1024 * 1024) throw std::invalid_argument("删除确认文件超过4MiB。");
+    std::ifstream stream(path, std::ios::binary); if (!stream) throw std::invalid_argument("无法读取删除确认文件。");
+    std::vector<std::set<std::string>> keys;
+    const auto root = Json::parse(stream, [&](int depth, Json::parse_event_t event, Json& value) {
+        if (depth > 64) throw std::invalid_argument("删除确认JSON嵌套过深。");
+        if (event == Json::parse_event_t::object_start) keys.emplace_back();
+        else if (event == Json::parse_event_t::key && !keys.back().insert(value.get<std::string>()).second) throw std::invalid_argument("删除确认JSON含重复键。");
+        else if (event == Json::parse_event_t::object_end) keys.pop_back();
+        return true;
+    });
+    Keys(root, {"source_sha256", "catalog_sha256", "target_id", "expected_name", "code_audits"});
+    if (root.at("source_sha256") != source.archive->SourceSha256() || root.at("catalog_sha256") != source.catalog.Sha256()
+        || root.at("target_id") != std::to_string(review.target.id) || root.at("expected_name") != review.expectedName)
+        throw std::invalid_argument("确认文件的地图、目录或目标身份已变化。");
+    const auto& audits = root.at("code_audits");
+    if (!audits.is_array() || audits.size() > 16384) throw std::invalid_argument("确认条数超出预算。");
+    std::vector<RemovalCodeConfirmation> result;
+    for (const auto& item : audits) {
+        Keys(item, {"review_sha256", "decision", "reason", "blocks"});
+        RemovalCodeConfirmation confirmation{item.at("review_sha256").get<std::string>(), item.at("decision").get<std::string>(), item.at("reason").get<std::string>(), {}};
+        if (!item.at("blocks").is_array() || item.at("blocks").size() > 16384) throw std::invalid_argument("逐块确认超过预算。");
+        for (const auto& b : item.at("blocks")) {
+            Keys(b, {"kind", "id", "encoding", "source_sha256", "evidence_sha256"});
+            std::optional<AtomicRenameCodeKind> kind;
+            for (auto k : {AtomicRenameCodeKind::GlobalCustomCode, AtomicRenameCodeKind::TriggerCustomCode, AtomicRenameCodeKind::ArgumentCode, AtomicRenameCodeKind::VariableInitialValue})
+                if (b.at("kind") == Kind(k)) kind = k;
+            const auto encoding = ParseTriggerEditEncoding(b.at("encoding").get<std::string>());
+            if (!kind || !encoding) throw std::invalid_argument("确认的代码块种类或编码无效。");
+            confirmation.blocks.push_back({*kind, Id(b.at("id").get<std::string>()), *encoding,
+                b.at("source_sha256").get<std::string>(), b.at("evidence_sha256").get<std::string>()});
+        }
+        result.push_back(std::move(confirmation));
+    }
+    return result;
+}
+}
+int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
+    using namespace War3Map; using namespace War3Map::Trigger;
+    if (argc < 7) { std::cerr << "用法：map-trigger-remove-audit <地图> <源SHA> <UI目录> <trigger|variable> <id|list> [--match <精确原名>] [--confirm-file <JSON>]\n"; return 2; }
+    try {
+        Services::MapTriggerTextQueryRequest request; request.sourceMap = argv[2]; request.expectedSourceSha256 = Utf8(argv[3]); request.uiRoot = argv[4];
+        const auto kind = Utf8(argv[5]); if (kind != "trigger" && kind != "variable") throw std::invalid_argument("目标种类必须为trigger或variable。");
+        const auto selector = Utf8(argv[6]); std::string match; std::filesystem::path confirmations;
+        for (int i = 7; i < argc; i += 2) {
+            if (i + 1 >= argc) throw std::invalid_argument("查询选项缺少值。");
+            const auto option = Utf8(argv[i]);
+            if (option == "--match" && match.empty()) match = Utf8(argv[i + 1]);
+            else if (option == "--confirm-file" && confirmations.empty()) confirmations = argv[i + 1];
+            else throw std::invalid_argument("未知或重复的删除审计选项。");
+        }
+        auto source = Services::CaptureMapTriggerQuerySources(request);
+        if (!source.Succeeded()) { std::cout << Json{{"ok", false}, {"diagnostics", Diagnostics(source.diagnostics)}}.dump() << '\n'; return 1; }
+        auto& sources = *source.value;
+        Json output{{"source_sha256", sources.archive->SourceSha256()}, {"catalog_sha256", sources.catalog.Sha256()}, {"saved", false}, {"runtime_verified", false}};
+        if (selector == "list") {
+            if (!confirmations.empty()) throw std::invalid_argument("list不接受删除确认。");
+            Json rows = Json::array(); std::size_t count = 0;
+            const auto add = [&](const auto& values) {
+                for (const auto& row : values) if (match.empty() || row.name.text == match) {
+                    ++count; if (rows.size() < 128) rows.push_back({{"id", std::to_string(row.id)}, {"name", row.name.text}});
+                }
+            };
+            if (kind == "trigger") add(sources.document.triggers); else add(sources.document.variables);
+            output["rows"] = rows; output["truncated"] = count > rows.size(); output["ok"] = true;
+        } else {
+            if (!match.empty()) throw std::invalid_argument("--match只用于list，审计须提供稳定ID。");
+            const auto id = Id(selector); if (!id) throw std::invalid_argument("删除目标ID不能为0。");
+            GraphRemove op; op.target = {kind == "trigger" ? GraphRecordKind::Trigger : GraphRecordKind::Variable, id, {}};
+            if (kind == "trigger") {
+                const auto at = std::find_if(sources.document.triggers.begin(), sources.document.triggers.end(), [&](const auto& r) { return r.id == id; });
+                if (at == sources.document.triggers.end()) throw std::invalid_argument("触发器ID不存在。");
+                op.expectedName = at->name.text;
+                const auto cat = std::find_if(sources.document.categories.begin(), sources.document.categories.end(), [&](const auto& r) { return r.categoryId == at->categoryId; });
+                if (cat == sources.document.categories.end()) throw std::invalid_argument("触发器分类不存在。");
+                op.parent = {GraphParentKind::CategoryTriggers, {GraphRecordKind::Category, cat->id, {}}, {}, {}};
+                for (const auto& row : sources.document.triggers) if (row.categoryId == at->categoryId) op.parent.orderedChildren.push_back({GraphRecordKind::Trigger, row.id, {}});
+            } else {
+                const auto at = std::find_if(sources.document.variables.begin(), sources.document.variables.end(), [&](const auto& r) { return r.id == id; });
+                if (at == sources.document.variables.end()) throw std::invalid_argument("变量ID不存在。");
+                op.expectedName = at->name.text; op.parent.kind = GraphParentKind::Variables;
+                for (const auto& row : sources.document.variables) op.parent.orderedChildren.push_back({GraphRecordKind::Variable, row.id, {}});
+            }
+            const auto review = QueryDeclarationRemovalAudit(sources.document, sources.catalog, op);
+            if (!review.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(review.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+            const auto& r = *review.value; Json typed = Json::array();
+            for (const auto value : r.typedArgumentIds) typed.push_back(std::to_string(value));
+            output.update({{"ok", true}, {"target_id", std::to_string(id)}, {"expected_name", r.expectedName}, {"review_sha256", r.reviewSha256},
+                {"complete", r.complete}, {"symbols", r.symbols}, {"typed_argument_ids", typed},
+                {"groupable_blocks", Blocks(r.groupableBlocks)}, {"individual_blocks", Blocks(r.individualBlocks)}, {"external_dependencies_verified", false}});
+            if (!confirmations.empty()) {
+                op.codeAudits = ReadConfirmations(confirmations, sources, r);
+                const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {r.binding, {op}});
+                output["preview_passed"] = edited.Succeeded(); output["diagnostics"] = Diagnostics(edited.diagnostics); output["ok"] = edited.Succeeded();
+                output["code_coverage"] = "CallerAssertedNotRuntimeProven";
+            }
+        }
+        const auto unchanged = sources.archive->VerifySourceUnchanged();
+        if (!unchanged.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(unchanged.diagnostics); }
+        const auto result = output.dump(); if (result.size() > 4 * 1024 * 1024) throw std::invalid_argument("完整审计回执超过4MiB，未提供截断结果。");
+        std::cout << result << '\n'; return output.at("ok").get<bool>() ? 0 : 1;
+    } catch (const std::exception& e) { std::cout << Json{{"ok", false}, {"code", "TRIGGER_REMOVE_QUERY_INVALID"}, {"message", e.what()}, {"saved", false}}.dump() << '\n'; return 1; }
+}

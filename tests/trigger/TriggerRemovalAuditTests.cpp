@@ -82,7 +82,12 @@ void IndividualAndReferences() {
     for (const auto* code : {"call Run(gg_trg_Target_Name)\n", "call ExecuteFunc(\"InitTrig_Target_Name\")\n"}) {
         f.doc.wct.customCode = RawText{code}; op = f.Remove(); r = f.Review(op); f.Confirm(op, r); f.Fails(op, "TRIGGER_GRAPH_REMOVE_REFERENCED");
     }
-    for (const auto* code : {"call ExecuteFunc(prefix + suffix)\n", "call ExecuteFunc(\"InitTrig_\" + \"Target_Name\")\n", "//! import \"external.j\"\n", "/* unterminated"}) {
+    for (const auto* code : {"call ExecuteFunc(prefix + suffix)\n", "call ExecuteFunc(\"InitTrig_\" + \"Target_Name\")\n", "set x = _G[key]\n"}) {
+        f.doc.wct.customCode = RawText{code}; op = f.Remove(); r = f.Review(op);
+        Require(r.complete && !r.individualBlocks.empty(), "dynamic evidence requires individual review rather than an incomplete verdict");
+        f.Confirm(op, r); Good(CheckDeclarationRemovalAudit(f.doc, f.catalog, op), "explicit individual dynamic review is accepted");
+    }
+    for (const auto* code : {"//! import \"external.j\"\n", "/* unterminated", "call loadstring(code)\n"}) {
         f.doc.wct.customCode = RawText{code}; op = f.Remove(); r = f.Review(op); f.Confirm(op, r); f.Fails(op, "TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN");
     }
 }
@@ -94,7 +99,8 @@ void TypedDynamicAndVariable() {
     const auto* eca = TriggerDocumentEditor::FindEca(f.doc, added.value->rootEcaId);
     auto& arg = f.doc.argumentNodes[eca->arguments.front()]; arg.type = 1; arg.value = RawText{"udg_TargetFunction"};
     Good(TriggerDocumentEditor::AddVariable(f.doc, "TargetFunction", "string"), "dynamic function variable");
-    auto op = f.Remove(); auto r = f.Review(op); Require(!r.complete, "typed dynamic destination remains unknown"); f.Confirm(op, r); f.Fails(op, "TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN");
+    auto op = f.Remove(); auto r = f.Review(op); Require(r.complete && !r.individualBlocks.empty(), "typed dynamic destination is individually reviewable");
+    f.Confirm(op, r); Good(CheckDeclarationRemovalAudit(f.doc, f.catalog, op), "typed dynamic review accepted without claiming runtime proof");
     arg.type = 3; arg.value = RawText{"InitTrig_Target_Name"}; op = f.Remove(); r = f.Review(op); f.Confirm(op, r); f.Fails(op, "TRIGGER_GRAPH_REMOVE_REFERENCED");
     arg.value = RawText{"Unrelated"};
     auto variable = f.doc.variables.front(); GraphParentExpectation parent{GraphParentKind::Variables, {}, {{GraphRecordKind::Variable, variable.id, {}}}, {}};
@@ -103,7 +109,7 @@ void TypedDynamicAndVariable() {
 }
 void EncodingAndPrefix() {
     Fixture f; f.doc.triggers.front().name = RawText{"目标 名", TextEncoding::Gb18030, {}};
-    f.doc.wct.customCode = RawText{"// 目标 名仅作注释\r\ncall BJDebugMsg(\"无关显示\")\r\n", TextEncoding::Gb18030, {}};
+    f.doc.wct.customCode = RawText{"// 目标 名仅作注释\r\ncall BJDebugMsg(\"无关显示：目标 名\")\r\n", TextEncoding::Gb18030, {}};
     auto op = f.Remove(); auto r = f.Review(op);
     Require(r.complete && r.individualBlocks.size() == 1, "encoded comment and string purpose remain individually reviewable");
     Require(r.symbols.front() == TriggerDirectoryEditor::TriggerSymbol(f.doc.triggers.front().name), "Chinese symbol uses the actual generator mapping");
@@ -113,7 +119,7 @@ void EncodingAndPrefix() {
     f.Confirm(op, r); Good(ApplyTriggerGraphEditBatch(f.doc, f.catalog, f.Batch(op)), "Chinese target deletion with separately reviewed encoded code");
 
     Fixture p;
-    p.doc.wct.customCode = RawText{"globals\ninteger n = 3 + 4\nendglobals\n"};
+    p.doc.wct.customCode = RawText{"set i = i + 1\ncall BJDebugMsg(\"a\" + I2S(n))\ncall DisplayTextToPlayer(p,0,0,\"plain\")\ncall TriggerExecute(udg_t)\n"};
     auto append = TriggerDocumentEditor::AppendRootEca(p.doc, p.catalog, p.doc.triggers.front().id, UiDefinitionKind::Action, "Run"); Good(append, "self reference");
     const auto* eca = TriggerDocumentEditor::FindEca(p.doc, append.value->rootEcaId);
     p.doc.argumentNodes[eca->arguments.front()].type = 1; p.doc.argumentNodes[eca->arguments.front()].value = RawText{"gg_trg_Target_Name"};

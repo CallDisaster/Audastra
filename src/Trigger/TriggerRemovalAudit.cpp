@@ -55,7 +55,9 @@ void Evidence(RemovalCodeBlock& block, const RawText& source, std::size_t at, st
     if (block.evidence.size() >= kEvidence) { block.complete = false; return; }
     RemovalReferenceEvidence hit; hit.context = std::move(context); hit.definite = definite;
     hit.decodedByteOffset = at; hit.decodedByteLength = size;
-    hit.text = source.text.substr(at, std::min<std::size_t>(size, 256));
+    auto snippet = std::min<std::size_t>(size, 256);
+    while (snippet && at + snippet < source.text.size() && (static_cast<unsigned char>(source.text[at + snippet]) & 0xc0) == 0x80) --snippet;
+    hit.text = source.text.substr(at, snippet);
     block.referenced |= definite; block.evidence.push_back(std::move(hit));
 }
 // 只作有界词法证据，不执行宏或猜测动态目标。未知指令/未闭合文本不取得完整覆盖。
@@ -105,28 +107,17 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         if (tokens[i].quoted) continue;
         const auto& word = tokens[i].text;
-        if (word == "_G" || word == "_ENV" || word == "load" || word == "loadstring" || word == "ExecuteString"
-            || (word == "." && i + 1 < tokens.size() && tokens[i + 1].text == ".")) {
+        if (word == "load" || word == "loadstring" || word == "ExecuteString") {
             block.dynamic = true; block.complete = false;
             Evidence(block, source, tokens[i].offset, word.size(), "动态环境/脚本构造未覆盖", false);
         }
-        if (word == "+") {
-            const auto numeric = [](const Token& token) {
-                return !token.quoted && !token.text.empty() && std::all_of(token.text.begin(), token.text.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
-            };
-            if (i && i + 1 < tokens.size() && numeric(tokens[i - 1]) && numeric(tokens[i + 1])) continue;
-            block.dynamic = true; Evidence(block, source, tokens[i].offset, 1, "拼接/构造表达式（目标未证明）", false);
-            // 不把分拆的目标名字、宏或运行时字符串错误地报告为零命中。
-            block.complete = false;
+        if (word == "_G" || word == "_ENV") {
+            block.dynamic = true; Evidence(block, source, tokens[i].offset, word.size(), "动态环境按名访问（须单独确认）", false);
         }
         std::string lower = word;
         std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         const bool call = i + 1 < tokens.size() && tokens[i + 1].text == "(";
-        // 未登记的字符串用途仍需单独审阅，不能假定任意外部函数不会按名字查找。
-        if (call && i + 2 < tokens.size() && tokens[i + 2].quoted) {
-            block.dynamic = true; Evidence(block, source, tokens[i].offset, word.size(), "字符串参数调用（须审阅用途）", false);
-        }
-        const bool dispatch = word == "ExecuteFunc" || word == "TriggerExecute" || (call && (lower.find("byname") != std::string::npos
+        const bool dispatch = word == "ExecuteFunc" || (call && (lower.find("byname") != std::string::npos
             || lower.find("bystring") != std::string::npos || lower.find("lookup") != std::string::npos));
         if (!dispatch) continue;
         block.dynamic = true; Evidence(block, source, tokens[i].offset, word.size(), "按名/动态调用位置", false);
@@ -134,8 +125,8 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
             const auto& argument = tokens[i + 2];
             if (argument.quoted && i + 3 < tokens.size() && (tokens[i + 3].text == ")" || tokens[i + 3].text == ",")) {
                 if (Match(argument.text, review, false)) Evidence(block, source, argument.offset, argument.length, "常量按名目标引用", true);
-            } else if (word != "TriggerExecute") block.complete = false;
-        } else block.complete = false;
+            } else Evidence(block, source, argument.offset, argument.length, "动态调用目标表达式（须单独确认）", false);
+        } else Evidence(block, source, tokens[i].offset, word.size(), "按名入口引用（须单独确认）", false);
     }
     std::stable_sort(block.evidence.begin(), block.evidence.end(), [](const auto& a, const auto& b) { return a.decodedByteOffset < b.decodedByteOffset; });
     std::size_t at = 0, line = 1, column = 1;
@@ -212,11 +203,27 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
             const auto found = arguments.find(id);
             if (found != arguments.end()) {
                 const auto& arg = *found->second;
-                if (arg.type == 0) { block.complete = false; Evidence(block, text, 0, text.text.size(), "目录预设代码未完成引用核验", false); }
+                std::optional<std::string> constantName;
+                if (arg.type == 0) {
+                    const auto preset = FindPreset(catalog, arg.value.text);
+                    if (!preset) { block.complete = false; Evidence(block, text, 0, text.text.size(), "目录中缺少预设：" + arg.value.text, false); }
+                    else {
+                        if (preset->script.size() > kBytes - bytes) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "目录预设展开超出代码审计预算。");
+                        bytes += preset->script.size();
+                        RemovalCodeBlock expanded;
+                        Scan(expanded, RawText{preset->script}, review, tokensLeft);
+                        block.complete &= expanded.complete; block.dynamic |= expanded.dynamic;
+                        for (const auto& hit : expanded.evidence)
+                            Evidence(block, text, 0, text.text.size(), "目录预设 " + arg.value.text + "：" + hit.context + "：" + hit.text, hit.definite);
+                        const auto value = std::string_view(preset->script);
+                        if (value.size() >= 2 && value.front() == '"' && value.back() == '"' && value.find('\\') == std::string_view::npos)
+                            constantName = std::string(value.substr(1, value.size() - 2));
+                    }
+                }
                 if (byNameArguments.contains(id)) {
                     block.dynamic = true;
-                    Evidence(block, text, 0, text.text.size(), "typed按名调用参数", arg.type == 3 && Match(text.text, review, false));
-                    if (arg.type != 3) block.complete = false;
+                    const bool definite = arg.type == 3 ? Match(text.text, review, false) : constantName && Match(*constantName, review, false);
+                    Evidence(block, text, 0, text.text.size(), arg.type == 3 || constantName ? "typed按名调用常量参数" : "typed按名动态参数（须单独确认）", definite);
                 }
             }
         }
@@ -246,7 +253,7 @@ Status CheckDeclarationRemovalAudit(const TriggerDocument& doc, const UiCatalog&
     if (!r.typedArgumentIds.empty()) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "声明仍有存活typed参数引用，须先移除或改绑。");
     for (const auto& block : r.individualBlocks) if (block.referenced)
         return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "代码仍引用删除目标，请先移除或改绑；块=" + Key(block.identity.kind, block.identity.id));
-    if (!r.complete) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "动态目标、外部指令或截断使引用证据不完整，未删除。");
+    if (!r.complete) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "未解析的执行代码、外部指令或截断使引用证据不完整，未删除。");
     if (op.codeAudits.size() > kBlocks) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "确认条数超过预算。");
     std::set<std::string> consumed;
     for (const auto& audit : op.codeAudits) {
