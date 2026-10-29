@@ -226,8 +226,10 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
         return Fail<MapTestLaunchPlan>("MAP_TEST_GAME_IDENTITY", "无法核对所选游戏启动文件的身份。");
     plan.gameExecutableSha256 = *gameSha.value;
     plan.gameModuleSha256 = *moduleSha.value;
-    plan.backgroundPlay = artifact.backgroundPlay && plan.gameModuleSha256 == kMapTestGame127ModuleSha256;
-    // 隐身窗口留在用户桌面上照常绘制；没有后台运行时窗口失焦会停住，只能退回不可见桌面。
+    if (artifact.cloakedWindow && plan.gameModuleSha256 != kMapTestGame127ModuleSha256)
+        return Fail<MapTestLaunchPlan>("MAP_TEST_CLOAK_UNSUPPORTED", "所选游戏无法确认隐身后台运行能力；不会改用不可见桌面或前台输入。");
+    plan.backgroundPlay = (artifact.backgroundPlay || artifact.cloakedWindow) && plan.gameModuleSha256 == kMapTestGame127ModuleSha256;
+    // 隐身测试必须同时安装后台运行与输入接收器，不能静默切换桌面策略。
     plan.cloakedWindow = artifact.cloakedWindow && plan.backgroundPlay;
     if (plan.cloakedWindow) plan.hiddenDesktop = false;
     const bool silent = artifact.hiddenDesktop || plan.cloakedWindow;

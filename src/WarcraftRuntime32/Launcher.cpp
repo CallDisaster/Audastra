@@ -545,7 +545,10 @@ struct RunReceipt {
         }
         json += "}\n";
         DWORD written = 0;
-        return WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr) && written == json.size() && FlushFileBuffers(file);
+        LARGE_INTEGER start{};
+        return SetFilePointerEx(file, start, nullptr, FILE_BEGIN)
+            && WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr)
+            && written == json.size() && SetEndOfFile(file) && FlushFileBuffers(file);
     }
 };
 int Run(int argc, wchar_t** argv) {
@@ -702,6 +705,8 @@ int Run(int argc, wchar_t** argv) {
         if (!result.Write()) return 65;
         return static_cast<int>(result.bridgeExit);
     };
+    result.stage = "launcher-starting";
+    if (!result.Write()) return 65;
     BOOL bridgeInJob = FALSE;
     if (!IsProcessInJob(GetCurrentProcess(), nullptr, &bridgeInJob) || !bridgeInJob) return fail("bridge-job-required", ERROR_ACCESS_DENIED);
     if (desktopWitnessRequested && !witness.Create(probeNonce)) return fail("probe-desktop-witness-create", witness.error);
@@ -855,6 +860,8 @@ int Run(int argc, wchar_t** argv) {
         if (terminal != WAIT_TIMEOUT) return abort("game-initialization-wait");
         if (GetTickCount64() - handshakeStart >= 15000) return abort("runtime-initialization-timeout", WAIT_TIMEOUT);
     }
+    result.stage = "runtime-initialized-game-running";
+    if (!result.Write()) return 65;
     if (probe) {
         const auto probeStart = GetTickCount64();
         while (true) {

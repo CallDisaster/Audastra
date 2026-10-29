@@ -95,9 +95,8 @@ void CopyAndPlanKeepSource() {
         "background play stays off for a Game.dll that is not the verified 1.27a module");
     hidden.cloakedWindow = true;
     const auto uncloaked = BuildMapTestLaunchPlan(hidden);
-    Require(uncloaked.Succeeded() && !uncloaked.value->cloakedWindow && uncloaked.value->hiddenDesktop
-        && uncloaked.value->arguments == background.value->arguments,
-        "without background play a cloak request falls back to the hidden desktop");
+    Require(!uncloaked.Succeeded() && uncloaked.diagnostics.back().code == "MAP_TEST_CLOAK_UNSUPPORTED",
+        "an unverified cloak request rejects before launch instead of silently changing desktop policy");
     const auto secondArtifact = PrepareMapTest(f.Request("prepared-second")); Require(secondArtifact.Succeeded(), "prepare second independent task");
     const auto second = BuildMapTestLaunchPlan(*secondArtifact.value);
     Require(second.Succeeded() && second.value->gameMapCopy != plan.value->gameMapCopy, "separate frozen tasks have distinct short-copy directories");

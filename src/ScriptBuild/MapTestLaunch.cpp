@@ -255,7 +255,45 @@ bool MapTestLaunchLease::PressSpace() const {
 }
 
 Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput& input) const {
-    const auto fail = [](const char* code, const std::string& text) { return Result<MapTestInputReceipt>::Failure("Map.Test", code, text); };
+    // 失败时只记录本Job窗口，不收集其他应用的标题或窗口内容。
+    const auto ids = ProcessIds();
+    const auto fail = [&](const char* code, const std::string& text) {
+        std::string detail = text;
+#ifdef _WIN32
+        struct Inventory { const std::vector<std::uint32_t>& ids; nlohmann::json rows = nlohmann::json::array(); bool truncated = false; } inventory{ids};
+        const auto visit = [](HWND window, LPARAM param) -> BOOL {
+            auto& value = *reinterpret_cast<Inventory*>(param); DWORD pid = 0;
+            GetWindowThreadProcessId(window, &pid);
+            if (std::find(value.ids.begin(), value.ids.end(), pid) == value.ids.end()) return TRUE;
+            if (value.rows.size() >= 64) { value.truncated = true; return FALSE; }
+            char name[256]{}; GetClassNameA(window, name, sizeof(name)); RECT rect{};
+            const bool geometry = GetClientRect(window, &rect) != FALSE;
+            const bool receiver = GetPropW(window, Runtime::kWindowInputProperty)
+                == reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(Runtime::kWindowInputMagic));
+            DWORD cloak = 0; HRESULT cloakStatus = E_NOTIMPL;
+            if (const auto module = LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+                using Query = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+                if (const auto query = reinterpret_cast<Query>(GetProcAddress(module, "DwmGetWindowAttribute")))
+                    cloakStatus = query(window, 14, &cloak, sizeof(cloak));
+                FreeLibrary(module);
+            }
+            const char* reason = GetAncestor(window, GA_ROOT) != window ? "not_root" : IsIconic(window) ? "minimized"
+                : !receiver ? "test_receiver_missing" : !geometry || rect.right <= 0 || rect.bottom <= 0
+                || rect.right > 32767 || rect.bottom > 32767 ? "invalid_client_geometry" : "eligible_requires_unique_game_identity";
+            value.rows.push_back({{"hwnd", reinterpret_cast<std::uintptr_t>(window)}, {"pid", pid}, {"class", name},
+                {"visible", IsWindowVisible(window) != FALSE}, {"minimized", IsIconic(window) != FALSE},
+                {"width", rect.right}, {"height", rect.bottom}, {"test_receiver", receiver},
+                {"dwm_cloak_known", SUCCEEDED(cloakStatus)}, {"dwm_cloak_flags", cloak}, {"reason", reason}});
+            return TRUE;
+        };
+        const auto ok = impl_ && impl_->desktop ? EnumDesktopWindows(impl_->desktop, visit, reinterpret_cast<LPARAM>(&inventory))
+            : EnumWindows(visit, reinterpret_cast<LPARAM>(&inventory));
+        detail += " input_window_inventory=" + nlohmann::json({{"owned_job_pids", ids}, {"cloaked_plan", impl_ && impl_->cloaked},
+            {"hidden_desktop", impl_ && impl_->desktop != nullptr}, {"enumeration_ok", ok != FALSE},
+            {"truncated", inventory.truncated}, {"windows", inventory.rows}}).dump();
+#endif
+        return Result<MapTestInputReceipt>::Failure("Map.Test", code, std::move(detail));
+    };
     const auto valid = ValidateMapTestInput(input);
     if (!valid.Succeeded()) { Result<MapTestInputReceipt> result; result.diagnostics = valid.diagnostics; return result; }
 #ifdef _WIN32
