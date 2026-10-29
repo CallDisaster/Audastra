@@ -232,10 +232,14 @@ void TestDiagnosticTextAmplificationAndLexicalClassification() {
     Hard(Check(ignored, options), "JASS_DIAGNOSTIC_BYTES_BUDGET",
         "small total diagnostic byte budget prevents repeated long-name amplification");
 
-    const std::string badUtf8 = "//" + std::string(1, static_cast<char>(0xff));
+    // 注释里的非 UTF-8 字节按 jass-bytes-v1 原样通过；源码控制字节仍按编码来源拒绝。
     options = {};
+    CheckBudget opaqueBudget(options);
+    Require(LexJassBounded("//" + std::string(1, static_cast<char>(0xff)), Text::SourceEncoding::Utf8, {}, 32, &opaqueBudget).Succeeded(),
+        "non-UTF-8 comment bytes stay opaque");
+    const std::string badSource = "//" + std::string(1, '\x1a');
     CheckBudget budget(options);
-    const auto lexical = LexJassBounded(badUtf8, Text::SourceEncoding::Utf8, {}, 32, &budget);
+    const auto lexical = LexJassBounded(badSource, Text::SourceEncoding::Utf8, {}, 32, &budget);
     Require(!lexical.Succeeded() && !lexical.diagnostics.empty(), "encoded lexer rejects actual invalid source bytes");
     const auto originalCode = lexical.diagnostics.front().code;
     try { budget.RejectLexical(lexical.diagnostics); Require(false, "reject lexical must abort"); }
