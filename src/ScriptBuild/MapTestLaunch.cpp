@@ -356,14 +356,18 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
         packet.x = pixel.value->first; packet.y = pixel.value->second;
     }
     packet.keyCount = static_cast<std::uint32_t>(input.keys.size()); std::copy(input.keys.begin(), input.keys.end(), packet.keys);
+    DWORD sendError = 0; bool sendReturned = false; DWORD_PTR windowReply = 0; std::uint32_t ackSequence = 0;
     const auto send = [&]() -> DWORD_PTR {
         DWORD actualPid = 0;
         if (!owned() || GetWindowThreadProcessId(window, &actualPid) != thread || actualPid != id
             || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return 0;
         COPYDATASTRUCT copy{ kWindowInputMagic, sizeof(packet), &packet }; DWORD_PTR result = 0;
-        if (!SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result)) return 0;
-        const auto sequence = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputSequenceProperty)));
-        return sequence == packet.sequence ? reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputResultProperty)) : 0;
+        SetLastError(0);
+        sendReturned = SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result) != 0;
+        sendError = GetLastError(); windowReply = result;
+        if (!sendReturned) return 0;
+        ackSequence = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputSequenceProperty)));
+        return ackSequence == packet.sequence ? reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputResultProperty)) : 0;
     };
     auto result = send(); const auto start = GetTickCount64();
     while ((result & kWindowInputStateMask) == static_cast<unsigned>(WindowInputState::Pending) && GetTickCount64() - start < 3000) {
@@ -371,7 +375,10 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
     }
     if ((result & kWindowInputStateMask) != static_cast<unsigned>(WindowInputState::Complete))
         return fail("MAP_TEST_INPUT_DELIVERY", "本次游戏未确认测试输入完成（state=" + std::to_string(result & kWindowInputStateMask)
-            + "，pid=" + std::to_string(id) + "，hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(window)) + "）；没有前台输入后备路径。");
+            + "，pid=" + std::to_string(id) + "，hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(window))
+            + "，send_ok=" + std::to_string(sendReturned) + "，send_error=" + std::to_string(sendError)
+            + "，window_reply=" + std::to_string(windowReply) + "，ack_sequence=" + std::to_string(ackSequence)
+            + "）；没有前台输入后备路径。");
     MapTestInputReceipt receipt; receipt.processId = id; receipt.sequence = packet.sequence; receipt.window = reinterpret_cast<std::uintptr_t>(window);
     receipt.width = client.right; receipt.height = client.bottom; receipt.pixelX = packet.x; receipt.pixelY = packet.y;
     receipt.cursorObserved = result & kWindowInputCursorRead; receipt.keyObserved = result & kWindowInputKeyRead;
