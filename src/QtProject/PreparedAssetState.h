@@ -4,6 +4,9 @@
 namespace War3Map::QtProject {
 // 仅工程准备服务能创建，调用方不能修改来源、指纹或候选修订。
 class PreparedAssetStateEdit final {
+public:
+    [[nodiscard]] const AssetState& Candidate() const noexcept { return after_; }
+private:
     friend class EditorProject;
     PreparedAssetStateEdit(EditorProject& owner, AssetState before, AssetState after, PreparedEditObservation observation)
         : owner_(&owner), before_(std::move(before)), after_(std::move(after)), observation_(std::move(observation)),

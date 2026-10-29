@@ -47,7 +47,21 @@ void AssetStateCommand::Apply(bool forward) {
     auto prepared = firstPrepared_ ? Result<std::shared_ptr<PreparedAssetStateEdit>>::Success(std::move(firstPrepared_))
         : project_.PrepareAssetStateEdit(std::move(candidate), generation_, project_.editRevision_.Revision(),
             forward ? "重做资源修改" : "撤销资源修改", forward ? EditOperation::Redo : EditOperation::Undo);
-    const auto status = prepared.Succeeded() ? project_.PublishPreparedAssetState(**prepared.value) : Status{prepared.diagnostics};
+    Status status;
+    if (!prepared.Succeeded()) status.diagnostics = prepared.diagnostics;
+    else {
+        AssetState sealed;
+        try { sealed = (*prepared.value)->Candidate(); }
+        catch (...) {
+            status = Status::Failure("Asset", "ASSET_REVISION_PREPARE_FAILED", "无法保存已封存资源收据，未发布。");
+        }
+        if (status.Succeeded()) {
+            auto& cached = forward ? after_ : before_;
+            std::swap(cached, sealed);
+            status = project_.PublishPreparedAssetState(**prepared.value);
+            if (!status.Succeeded()) std::swap(cached, sealed);
+        }
+    }
     if (firstStatus_) { *firstStatus_ = status; firstStatus_.reset(); }
     if (!status.Succeeded()) {
         setObsolete(true);

@@ -37,6 +37,7 @@ struct EditSavedBaseline {
 };
 class PreparedEditObservation final {
 public:
+    [[nodiscard]] const EditScopeSnapshot& Scopes() const noexcept { return current_; }
     PreparedEditObservation(PreparedEditObservation&& other) noexcept { *this = std::move(other); }
     PreparedEditObservation& operator=(PreparedEditObservation&& other) noexcept {
         if (this != &other) {

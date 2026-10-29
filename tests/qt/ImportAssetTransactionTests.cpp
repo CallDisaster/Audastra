@@ -51,6 +51,17 @@ std::string Problems(const std::vector<Diagnostic>& diagnostics) {
 class ImportAssetTransactionTests final : public QObject {
     Q_OBJECT
 private slots:
+    void PreparedOwnedPayloadDoesNotBorrowMutableAliases() {
+        using namespace AuxiliarySaveFixtures;
+        Fixture fixture; auto& project = *fixture.project;
+        auto bytes = Binary(256); const auto expected = Take(Sha256(*bytes));
+        auto candidate = project.CaptureAssets(); PendingImport entry{"alias.bin", {}, 256}; entry.ownedPayload = bytes; candidate.imports.push_back(entry);
+        auto prepared = project.PrepareAssetStateEdit(candidate, project.editRevision_.Generation(), project.editRevision_.Revision(), "owned alias proof");
+        QVERIFY(prepared.Succeeded()); (*bytes)[0] ^= std::byte{1};
+        QVERIFY(project.PublishPreparedAssetState(**prepared.value).Succeeded());
+        QCOMPARE(Take(FingerprintPendingImport(project.pendingImports_.front())), expected);
+        QCOMPARE(*project.CaptureEditScopes(), project.editRevision_.Current());
+    }
     void FourMiBReplaceEditSaveUndoRedo() {
         using namespace AuxiliarySaveFixtures;
         Fixture fixture; auto& project = *fixture.project;
