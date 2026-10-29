@@ -170,6 +170,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (NameByte(static_cast<unsigned char>(text[i]))) {
             while (i < text.size() && NameByte(static_cast<unsigned char>(text[i]))) ++i;
             auto value = text.substr(begin, i - begin); --tokensLeft; tokens.push_back({value, begin, false, i - begin});
+            if (std::any_of(value.begin(), value.end(), [](unsigned char c) { return c >= 128; })) Incomplete(block, "执行代码非ASCII标识符尚未由宿主映射");
             if (Match(value, review, true)) Evidence(block, source, begin, i - begin, "可执行生成符号", true);
         } else { --tokensLeft; tokens.push_back({text.substr(i, 1), i, false, 1}); ++i; }
     }
