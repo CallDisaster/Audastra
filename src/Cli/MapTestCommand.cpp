@@ -274,7 +274,12 @@ int RunMapTest(int argc, wchar_t** argv) {
             } else {
                 const auto& step = exitPlan[exitStep]; exitStage = step.stage;
                 std::cout << "normal_exit_stage=" << nlohmann::json{{"stage",exitStage},{"elapsed_seconds",elapsed()}}.dump() << std::endl;
-                if (!logInput(step.input, elapsed(), "normal_exit")) inputFailed = !gameHasExited();
+                if (!logInput(step.input, elapsed(), "normal_exit")) {
+                    // 原窗口可能先于进程销毁；继续等原进程终态，不能提前丢弃清理租约。
+                    std::cout << "normal_exit_transport_unconfirmed=true\n";
+                    exitStep = exitPlan.size(); exitStage += "_transport_unconfirmed";
+                    continue;
+                }
                 ++exitStep;
                 exitNextDue = elapsed() + (exitStep < exitPlan.size() ? exitPlan[exitStep].delaySeconds : 0);
             }

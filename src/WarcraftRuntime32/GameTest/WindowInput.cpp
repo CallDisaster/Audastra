@@ -3,11 +3,40 @@
 #include <array>
 #include <atomic>
 #include <algorithm>
+#include <cstdio>
+#include <cstring>
 
 namespace Audastra::Runtime32::GameTest {
 namespace {
 using namespace War3Map::Runtime;
 std::atomic<bool> endpointStarting{false};
+std::atomic<bool> exitRequested{false};
+std::atomic<unsigned> exitFaults{0};
+HANDLE exitTrace = INVALID_HANDLE_VALUE;
+
+void TraceExitAddress(const char* kind, unsigned code, void* address) noexcept {
+    MEMORY_BASIC_INFORMATION region{}; char path[512]{};
+    if (VirtualQuery(address, &region, sizeof(region)) && region.Type == MEM_IMAGE)
+        GetModuleFileNameA(static_cast<HMODULE>(region.AllocationBase), path, sizeof(path));
+    const auto name = std::strrchr(path, '\\'); char line[768]{};
+    const auto length = sprintf_s(line, "pid=%lu tid=%lu %s code=%08X address=%p owner=%s offset=%llX\n",
+        GetCurrentProcessId(), GetCurrentThreadId(), kind, code, address, name ? name + 1 : path,
+        static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(address) - reinterpret_cast<std::uintptr_t>(region.AllocationBase)));
+    DWORD written = 0;
+    if (length > 0) { (void)WriteFile(exitTrace, line, static_cast<DWORD>(length), &written, nullptr); (void)FlushFileBuffers(exitTrace); }
+}
+LONG CALLBACK ObserveExitFault(EXCEPTION_POINTERS* fault) noexcept {
+    if (!fault || !fault->ExceptionRecord || !exitRequested.load() || fault->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION
+        || exitTrace == INVALID_HANDLE_VALUE || exitFaults.fetch_add(1) >= 16) return EXCEPTION_CONTINUE_SEARCH;
+    thread_local bool reporting = false;
+    if (reporting) return EXCEPTION_CONTINUE_SEARCH;
+    reporting = true;
+    TraceExitAddress("exception", fault->ExceptionRecord->ExceptionCode, fault->ExceptionRecord->ExceptionAddress);
+    void* frames[12]{}; const auto count = CaptureStackBackTrace(0, 12, frames, nullptr);
+    for (USHORT index = 0; index < count; ++index) TraceExitAddress("stack", index, frames[index]);
+    reporting = false;
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 std::atomic<HWND> target{};
 std::atomic<LONG> cursorX{0}, cursorY{0};
 std::array<std::atomic<SHORT>, 256> keys{};
@@ -141,6 +170,7 @@ LRESULT Receive(HWND window, const WindowInputPacket& request) {
     action = request; target = window; ownerThread = GetCurrentThreadId();
     cursorRead = false; keyRead = false; ClearKeys();
     if (request.kind == WindowInputKind::Close) {
+        exitRequested = true;
         state = PostMessageW(window, WM_CLOSE, 0, 0) ? WindowInputState::Complete : WindowInputState::DispatchFailed;
         return Report();
     }
@@ -169,6 +199,14 @@ LRESULT CALLBACK EndpointProc(HWND endpoint, UINT message, WPARAM wparam, LPARAM
     return DefWindowProcW(endpoint, message, wparam, lparam);
 }
 DWORD WINAPI EndpointThread(void*) {
+    // 仅测试控制端存在时、且已请求退出后记录异常元数据；不读取指令或业务内存，不处理异常。
+    wchar_t temporary[32768]{}, path[32768]{};
+    const auto length = GetTempPathW(32768, temporary);
+    if (length && length < 32768 && swprintf_s(path, L"%saudastra-test-exit-%lu-%llu.log", temporary,
+        GetCurrentProcessId(), GetTickCount64()) > 0) {
+        exitTrace = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (exitTrace != INVALID_HANDLE_VALUE) (void)AddVectoredExceptionHandler(0, ObserveExitFault);
+    }
     WNDCLASSW type{}; type.lpfnWndProc = EndpointProc; type.hInstance = GetModuleHandleW(nullptr);
     type.lpszClassName = kWindowInputEndpointClass;
     if (!RegisterClassW(&type)) return 1;
