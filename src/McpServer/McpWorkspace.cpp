@@ -864,12 +864,17 @@ Status McpWorkspace::SetScalarArgument(
     if (!scalar.Succeeded()) {
         return scalar;
     }
-    const Status changed = Trigger::TriggerDocumentEditor::SetScalarArgument(
-        candidate, argumentId, valueKind, std::move(value));
-    if (!changed.Succeeded()) {
-        return changed;
-    }
-    return SealDocument(std::move(candidate), "MCP 修改 GUI 标量参数");
+    if (previous == candidate.argumentNodes.end())
+        return Status::Failure("MCP", "MCP_ARGUMENT_OWNER_MISSING", "目标参数不存在。");
+    const auto binding = Trigger::CaptureTriggerGraphBinding(candidate, catalog_);
+    if (!binding.Succeeded()) return {binding.diagnostics};
+    Trigger::GraphSet edit;
+    edit.target = {Trigger::GraphRecordKind::Argument, argumentId, {}};
+    edit.field = Trigger::GraphField::ArgumentScalar;
+    edit.expected = Trigger::GraphScalarValue{previous->type, previous->value.text};
+    edit.value = Trigger::GraphScalarValue{valueKind, std::move(value)};
+    const auto edited = ApplyGraphEdit(transactionId, expectedRevision, {*binding.value, {std::move(edit)}});
+    return {edited.diagnostics};
 }
 
 Result<Trigger::TriggerGraphEditReceipt> McpWorkspace::ApplyGraphEdit(
