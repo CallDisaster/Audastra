@@ -59,11 +59,16 @@ bool Cloaked(HWND window) {
 // 第一个仍存在的隐身窗口，即游戏主窗口。
 HWND MainWindow() {
     if (const auto input = WindowInputTarget(); input && Cloaked(input)) return input;
+    HWND best = nullptr; LONG area = 0;
     for (const auto& entry : windows) {
         const auto value = entry.load();
-        if (value && Cloaked(value)) return value;
+        RECT rect{};
+        if (value && Cloaked(value) && IsWindowVisible(value) && !IsIconic(value)
+            && GetClientRect(value, &rect) && rect.right > 0 && rect.bottom > 0 && rect.right * rect.bottom > area) {
+            best = value; area = rect.right * rect.bottom;
+        }
     }
-    return nullptr;
+    return best;
 }
 
 // 游戏只有自认为在前台才推进菜单流程（例如 -loadfile 进图）。隐身窗口从不真正激活，

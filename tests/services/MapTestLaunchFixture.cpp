@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <dwmapi.h>
 #include "../../src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.h"
 #include "../../src/WarcraftRuntime32/Japi/RuntimeTestWriter.h"
 #include "../../src/WarcraftRuntime32/GameTest/WindowInput.h"
@@ -25,6 +26,16 @@ int InputFixture(const std::filesystem::path& marker, DWORD timeout) {
     if (!RegisterClassW(&type)) return 81;
     const auto window = CreateWindowW(type.lpszClassName, L"owned hidden input fixture", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, type.hInstance, nullptr);
     if (!window || !GameTest::InstallWindowInput(window)) return 82;
+    // 同进程的大型隐藏辅助窗口不能夺走游戏输入；主窗口DWM隐身但保持逻辑可见。
+    BOOL cloak = TRUE;
+    if (FAILED(DwmSetWindowAttribute(window, DWMWA_CLOAK, &cloak, sizeof(cloak)))) return 84;
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    WNDCLASSW utility{}; utility.lpfnWndProc = DefWindowProcW; utility.hInstance = type.hInstance;
+    utility.lpszClassName = L"AudastraHiddenLargerUtilityFixture";
+    if (!RegisterClassW(&utility)) return 85;
+    const auto auxiliary = CreateWindowW(utility.lpszClassName, L"owned utility fixture", WS_OVERLAPPEDWINDOW,
+        0, 0, 2048, 1536, nullptr, nullptr, type.hInstance, nullptr);
+    if (!auxiliary || !GameTest::InstallWindowInput(auxiliary) || IsWindowVisible(auxiliary)) return 86;
     const auto start = GetTickCount64(); bool held = false, cursor = false, modifierAlias = false;
     while (GetTickCount64() - start < timeout) {
         MSG message{};

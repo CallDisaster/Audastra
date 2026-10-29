@@ -277,7 +277,7 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
                     cloakStatus = query(window, 14, &cloak, sizeof(cloak));
                 FreeLibrary(module);
             }
-            const char* reason = GetAncestor(window, GA_ROOT) != window ? "not_root" : IsIconic(window) ? "minimized"
+            const char* reason = GetAncestor(window, GA_ROOT) != window ? "not_root" : !IsWindowVisible(window) ? "not_visible" : IsIconic(window) ? "minimized"
                 : !receiver ? "test_receiver_missing" : !geometry || rect.right <= 0 || rect.bottom <= 0
                 || rect.right > 32767 || rect.bottom > 32767 ? "invalid_client_geometry" : "eligible_requires_unique_game_identity";
             value.rows.push_back({{"hwnd", reinterpret_cast<std::uintptr_t>(window)}, {"pid", pid}, {"class", name},
@@ -322,7 +322,7 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
     const auto visit = [](HWND window, LPARAM parameter) -> BOOL {
         auto& value = *reinterpret_cast<Search*>(parameter); DWORD pid = 0;
         GetWindowThreadProcessId(window, &pid);
-        if (pid != value.pid || GetAncestor(window, GA_ROOT) != window || IsIconic(window)
+        if (pid != value.pid || GetAncestor(window, GA_ROOT) != window || !IsWindowVisible(window) || IsIconic(window)
             || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return TRUE;
         RECT rect{}; if (!GetClientRect(window, &rect) || rect.right <= 0 || rect.bottom <= 0 || rect.right > 32767 || rect.bottom > 32767) return TRUE;
         const auto area = rect.right * rect.bottom;
