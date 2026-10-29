@@ -316,6 +316,13 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
                 if (block.evidence.size() >= kEvidence) Incomplete(block, "宏证据数量超过预算");
                 else block.evidence.push_back(std::move(hit));
             }
+            for (const auto& note : entry.commentsWithUnknownEncoding) {
+                RemovalReferenceEvidence hit; hit.context = "注释含未声明编码字节（仅非执行文本，须单独确认）";
+                hit.sourceFile = note.file; hit.sourceLine = note.line;
+                if (hit.sourceFile.empty() || !hit.sourceLine) Incomplete(block, "注释证据缺少来源映射");
+                if (block.evidence.size() >= kEvidence) Incomplete(block, "注释证据超过预算");
+                else block.evidence.push_back(std::move(hit));
+            }
         } else Scan(block, text, review, tokensLeft);
         if (kind == AtomicRenameCodeKind::ArgumentCode) {
             const auto found = arguments.find(id);

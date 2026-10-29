@@ -1212,6 +1212,12 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     const auto stale = Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); Require(HasCode(stale.diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "modern dependency hash bound");
     WriteText(dependency, "call TriggerExecute(gg_trg_Target)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().referenced, "modern included target detected");
+    WriteText(dependency, "// \xd6\xd0\xce\xc4\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty()
+        && !review.value->individualBlocks.front().referenced, "only unbound comment bytes require separate review without guessing a code page");
+    confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "explicit non-executable comment review passes");
+    WriteText(dependency, "call BJDebugMsg(\"\xd6\xd0\xce\xc4\")\n");
+    review = query(); Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("dep.j:1") != std::string::npos, "unbound string encoding remains incomplete with an exact source line");
     WriteText(dependency, "#define JOIN(a,b) a ## b\nJOIN(unrelated,Name)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().dynamic, "modern paste macro needs review");
     confirm(*review.value); Trigger::TriggerGraphEditLimits limits; limits.removalPreprocessProvider = provider;

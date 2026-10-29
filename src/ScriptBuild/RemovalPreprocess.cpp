@@ -19,7 +19,7 @@ std::vector<std::size_t> Lines(std::string_view text) {
     }
     return result;
 }
-Result<std::string> AuditText(const Jass::PreprocessResult& result) {
+Result<std::string> AuditText(const Jass::PreprocessResult& result, std::vector<std::size_t>& commentLines, std::size_t& failureLine) {
     std::string text; std::size_t previous = 0;
     for (const auto& span : result.lexicalView.opaque) {
         if (span.offset < previous || span.offset > result.text.size() || span.length > result.text.size() - span.offset)
@@ -36,12 +36,46 @@ Result<std::string> AuditText(const Jass::PreprocessResult& result) {
         previous = span.offset + span.length;
     }
     text.append(result.text, previous, result.text.size() - previous);
+    enum class State { Code, String, Rawcode, LineComment, BlockComment } state = State::Code;
+    bool escaped = false; std::size_t line = 1;
+    std::string normalized; normalized.reserve(text.size());
     for (std::size_t at = 0; at < text.size();) {
-        const auto scalar = Text::Detail::ReadUtf8Scalar(text, at);
-        if (!scalar.Valid()) return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "展开正文含未绑定编码的字节，不能声明完整引用覆盖。");
-        at += scalar.bytes;
+        const auto c = static_cast<unsigned char>(text[at]);
+        if (c >= 128) {
+            const auto scalar = Text::Detail::ReadUtf8Scalar(text, at);
+            if (scalar.Valid()) { normalized.append(text, at, scalar.bytes); at += scalar.bytes; escaped = false; continue; }
+            if (state != State::LineComment && state != State::BlockComment) {
+                failureLine = line;
+                return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "执行代码或字符串含未声明编码字节，不能声明完整引用覆盖。");
+            }
+            if (commentLines.empty() || commentLines.back() != line) {
+                if (commentLines.size() >= 262144) { failureLine = line; return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "未声明注释编码的位置超过预算。"); }
+                commentLines.push_back(line);
+            }
+            constexpr char hex[] = "0123456789ABCDEF";
+            normalized += "\\x"; normalized += hex[c >> 4]; normalized += hex[c & 15]; ++at; continue;
+        }
+        const auto next = at + 1 < text.size() ? text[at + 1] : '\0';
+        if (state == State::Code) {
+            if (c == '/' && (next == '/' || next == '*')) {
+                state = next == '/' ? State::LineComment : State::BlockComment;
+                normalized += '/'; normalized += next; at += 2; continue;
+            }
+            if (c == '"' || c == '\'') { state = c == '"' ? State::String : State::Rawcode; escaped = false; }
+        } else if (state == State::LineComment) {
+            if (c == '\r' || c == '\n') state = State::Code;
+        } else if (state == State::BlockComment) {
+            if (c == '*' && next == '/') { state = State::Code; normalized += "*/"; at += 2; continue; }
+        } else {
+            if (escaped) escaped = false;
+            else if (c == '\\') escaped = true;
+            else if (c == (state == State::String ? '"' : '\'')) state = State::Code;
+        }
+        normalized += static_cast<char>(c);
+        if (c == '\r' || (c == '\n' && (!at || text[at - 1] != '\r'))) ++line;
+        ++at;
     }
-    return Result<std::string>::Success(std::move(text));
+    return Result<std::string>::Success(std::move(normalized));
 }
 }
 static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
@@ -106,7 +140,7 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     const auto captured = CaptureScriptPreprocessSources(entry, current, request);
     if (!captured.value) return {{}, captured.diagnostics};
     const auto& sources = *captured.value;
-    std::string identity = "remove-preprocess-v1\n" + result.profileSha256 + "\n" + sources.mainSha256 + "\n";
+    std::string identity = "remove-preprocess-v2\n" + result.profileSha256 + "\n" + sources.mainSha256 + "\n";
     identity += entry.layoutIdentitySha256 + "\n" + entry.catalogSha256 + "\n";
     for (const auto& [name, value] : request.defines) identity += std::to_string(name.size()) + ":" + name + std::to_string(value.size()) + ":" + value + "\n";
     result.inputBytes = request.mainText.size();
@@ -151,9 +185,7 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         for (const auto& d : expanded.diagnostics) if (d.severity == DiagnosticSeverity::Error) result.incompleteReason += "；" + d.code + ":" + d.message;
         return Out::Success(std::move(result));
     }
-    const auto normalized = AuditText(expanded); if (!normalized.Succeeded()) return {{}, normalized.diagnostics};
-    const auto& expandedText = *normalized.value;
-    const auto mainLines = Lines(request.mainText), outputLines = Lines(expandedText);
+    const auto mainLines = Lines(request.mainText);
     struct Appended { std::size_t begin, end; std::string file; std::vector<std::size_t> lines; };
     std::vector<Appended> appended;
     std::size_t appendedAt = generated.text.size();
@@ -212,6 +244,32 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         }
         return {std::move(file), line};
     };
+    std::vector<std::size_t> commentLines; std::size_t failureLine = 0;
+    const auto normalized = AuditText(expanded, commentLines, failureLine);
+    if (!normalized.Succeeded()) {
+        result.complete = false;
+        result.incompleteReason = normalized.diagnostics.front().code + ":" + normalized.diagnostics.front().message;
+        const auto position = expanded.sourceMap.Find(static_cast<std::uint32_t>(failureLine));
+        if (position && position->file < expanded.sourceMap.Files().size()) {
+            const auto located = origin(expanded.sourceMap.Files()[position->file], position->line);
+            result.incompleteReason += "；来源=" + located.file + ":" + std::to_string(located.line);
+        }
+        return Out::Success(std::move(result));
+    }
+    const auto& expandedText = *normalized.value;
+    const auto outputLines = Lines(expandedText);
+    std::set<std::pair<std::size_t, std::string>> noted;
+    for (const auto line : commentLines) {
+        const auto position = expanded.sourceMap.Find(static_cast<std::uint32_t>(line));
+        if (!position || position->file >= expanded.sourceMap.Files().size()) {
+            result.complete = false; result.incompleteReason = "注释字节证据缺少来源映射"; continue;
+        }
+        const auto& file = expanded.sourceMap.Files()[position->file];
+        const auto target = owner(file, position->line).value_or(0);
+        auto& block = result.blocks[index.at(target)];
+        const auto location = origin(file, position->line);
+        if (noted.emplace(index.at(target), location.file).second) block.commentsWithUnknownEncoding.push_back(location);
+    }
     for (std::size_t i = 0; i < outputLines.size(); ++i) {
         const auto position = expanded.sourceMap.Find(static_cast<std::uint32_t>(i + 1));
         if (!position || position->file >= expanded.sourceMap.Files().size()) {
