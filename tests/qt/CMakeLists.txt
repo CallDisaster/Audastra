@@ -154,7 +154,7 @@ add_test(NAME qt-live-editor-tools COMMAND war3-map-live-editor-tools-tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/qt-live-editor-tools-$<CONFIG>.qtest.txt" -txt)
 target_sources(war3-map-live-editor-tools-tests PRIVATE LiveMapCustomSettingsCases.h ../support/MapCustomSettingsFixture.h)
 target_sources(war3-map-live-editor-tools-tests PRIVATE LiveTriggerCodeIdentityCases.h ../support/TriggerCodeIdentitySaveFixture.h)
-target_link_libraries(war3-map-live-editor-tools-tests PRIVATE War3MapEditor::QtModuleMapSettings)
+target_link_libraries(war3-map-live-editor-tools-tests PRIVATE War3MapEditor::QtModuleMapSettings War3MapEditor::QtModuleTriggers)
 set_tests_properties(qt-live-editor-tools PROPERTIES TIMEOUT 60
     ATTACHED_FILES_ON_FAIL "${CMAKE_CURRENT_BINARY_DIR}/qt-live-editor-tools-$<CONFIG>.qtest.txt"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")

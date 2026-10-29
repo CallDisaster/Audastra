@@ -4,6 +4,9 @@
 #include "TriggerCommands.h"
 #include "TriggerDirectoryCommands.h"
 #include "TriggerModels.h"
+#include "ProjectTriggerCodeIdentity.h"
+
+#include "War3MapCore/Hash.h"
 
 #include "War3MapCore/Services/ProjectReferenceIndex.h"
 #include "War3MapCore/Trigger/LegacyTriggerReferences.h"
@@ -215,13 +218,6 @@ bool TriggerModule::RenameDirectoryItem(const TriggerDirectoryItem& item, const 
     if (document == nullptr || project_.triggerUndoStack_ == nullptr) {
         return false;
     }
-    if (!item.category) {
-        const auto* trigger = FindTrigger(*document, item.triggerId);
-        if (trigger && trigger->customTextFlag != 0) {
-            ShowStatus(tr("自定义代码触发器暂不能直接改名：需要同步 InitTrig 和代码中的生成符号。"), 10000);
-            return false;
-        }
-    }
     if (!CommitPendingEdits()) return false;
     const std::string text = name.trimmed().toStdString();
     const Status valid = item.category ? Directory::ValidateCategoryName(*document, text, item.categoryId)
@@ -274,14 +270,14 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
     if (document == nullptr || project_.triggerUndoStack_ == nullptr) {
         return;
     }
+    if (!CommitPendingEdits()) return;
     if (!item.category) {
         const auto* trigger = FindTrigger(*document, item.triggerId);
         if (trigger && trigger->customTextFlag != 0) {
-            ShowStatus(tr("自定义代码触发器暂不能直接改名：需要同步 InitTrig 和代码中的生成符号。"), 10000);
+            if (trigger->name.text != name) (void)ApplyCustomCodeIdentity(false, item.triggerId, name, trigger->categoryId, 0);
             return;
         }
     }
-    if (!CommitPendingEdits()) return;
     if (item.category) {
         const auto found = std::find_if(document->categories.begin(), document->categories.end(),
             [&item](const Trigger::CategoryRecord& category) { return category.categoryId == item.categoryId; });
@@ -311,6 +307,49 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
         return;
     }
     RefreshExplorer();
+}
+
+bool TriggerModule::ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name, std::int32_t categoryId,
+    StableId afterTriggerId) {
+    const QString verb = copy ? tr("复制") : tr("重命名");
+    const auto fail = [&](const std::vector<Diagnostic>& diagnostics, const QString& fallback) {
+        project_.AddDiagnostics(diagnostics);
+        ShowStatus(tr("未%1：%2").arg(verb, FirstMessage(diagnostics, fallback)), 10000);
+        return false;
+    };
+    auto* document = project_.triggerDocument_.get();
+    const auto* trigger = document ? FindTrigger(*document, triggerId) : nullptr;
+    if (trigger == nullptr || project_.uiCatalog_ == nullptr) return false;
+    const auto context = QtProject::CaptureProjectTriggerCodeIdentityContext(project_);
+    if (!context.Succeeded()) return fail(context.diagnostics, tr("无法确认触发器来源"));
+    const auto binding = Trigger::CaptureTriggerGraphBinding(*document, *project_.uiCatalog_, context.value->mapObjects);
+    if (!binding.Succeeded()) return fail(binding.diagnostics, tr("无法确认触发器来源"));
+    const auto bytes = trigger->customText.ToBytes();
+    if (!bytes.Succeeded()) return fail(bytes.diagnostics, tr("代码正文不能按原编码写出"));
+    const auto sha = Sha256(*bytes.value);
+    if (!sha.Succeeded()) return fail(sha.diagnostics, tr("无法计算代码指纹"));
+    Services::TriggerCodeIdentityRequest request;
+    request.action = copy ? Services::TriggerCodeIdentityAction::Copy : Services::TriggerCodeIdentityAction::Rename;
+    request.expected = *binding.value;
+    request.triggerId = triggerId;
+    request.expectedName = trigger->name;
+    request.expectedCodeSha256 = *sha.value;
+    request.name = name;
+    if (copy) {
+        request.categoryId = categoryId;
+        request.afterTriggerId = afterTriggerId;
+        for (const auto& row : document->triggers)
+            if (row.categoryId == categoryId) request.expectedCategoryOrder.push_back(row.id);
+    }
+    const auto prepared = Services::TriggerCodeIdentityEditing::Prepare(*context.value, request);
+    if (!prepared.Succeeded()) return fail(prepared.diagnostics, tr("代码里的生成符号无法完整同步"));
+    const auto applied = QtProject::ApplyProjectTriggerCodeIdentity(project_, *prepared.value,
+        copy ? tr("复制自定义代码触发器") : tr("重命名自定义代码触发器"));
+    if (!applied.Succeeded()) return fail(applied.diagnostics, tr("发布失败"));
+    const auto& summary = prepared.value->Summary();
+    RefreshExplorer(copy ? summary.resultId : triggerId);
+    ShowStatus(tr("已%1为 %2，同步了 %3 处生成符号 · Ctrl+Z 撤销").arg(verb, U8(name)).arg(summary.changedReferences), 6000);
+    return true;
 }
 
 QStringList TriggerModule::TriggerReferenceLines(const std::vector<StableId>& triggerIds, std::size_t& total) const {
@@ -529,10 +568,6 @@ void TriggerModule::DuplicateCurrentTrigger() {
 
 void TriggerModule::PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std::int32_t categoryId, StableId afterTriggerId) {
     if (!CommitPendingEdits()) return;
-    if (snapshot.trigger.customTextFlag != 0) {
-        ShowStatus(tr("暂不能复制为新的自定义代码触发器：需要同步 InitTrig 和代码中的生成符号。"), 10000);
-        return;
-    }
     auto* document = project_.triggerDocument_.get();
     if (document == nullptr || project_.uiCatalog_ == nullptr || project_.triggerUndoStack_ == nullptr) {
         return;
@@ -540,6 +575,17 @@ void TriggerModule::PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std:
     std::string name = snapshot.trigger.name.text + tr(" 副本").toStdString();
     if (!Directory::ValidateTriggerName(*document, name).Succeeded()) {
         name = Directory::UniqueTriggerName(*document, name);
+    }
+    if (snapshot.trigger.customTextFlag != 0) {
+        // 代码身份服务复制的是本图里现有的触发器：剪贴板里的必须就是它、且正文没改过，不能拿别处的正文冒充。
+        const auto* source = FindTrigger(*document, snapshot.trigger.id);
+        if (source == nullptr || source->customTextFlag == 0 || source->name.text != snapshot.trigger.name.text
+            || source->customText.text != snapshot.trigger.customText.text || source->customText.encoding != snapshot.trigger.customText.encoding) {
+            ShowStatus(tr("只能复制本地图里现有、复制后没改过的自定义代码触发器；请重新选中它再复制。"), 10000);
+            return;
+        }
+        (void)ApplyCustomCodeIdentity(true, source->id, name, categoryId, afterTriggerId);
+        return;
     }
     auto pasted = Directory::PasteTrigger(*document, *project_.uiCatalog_, snapshot, categoryId, name, afterTriggerId);
     if (!pasted.Succeeded()) {

@@ -209,6 +209,8 @@ private:
     void FixLegacyTriggerReferences(StableId triggerId);
     void PushDirectoryChange(Trigger::TriggerDirectoryLayout before, const QString& label);
     void ApplyRename(const TriggerDirectoryItem& item, const std::string& name);
+    // 自定义代码触发器的改名、复制：走与 Agent 共用的代码身份服务（同步 InitTrig 与代码里的生成符号），一条撤销命令。
+    bool ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name, std::int32_t categoryId, StableId afterTriggerId);
     // 这些触发器（gg_trg_ 名称）在它们之外的引用：最多渲染 8 行，total 为总数。
     [[nodiscard]] QStringList TriggerReferenceLines(const std::vector<StableId>& triggerIds, std::size_t& total) const;
     [[nodiscard]] bool Confirm(const QString& title, const QString& body, const QStringList& references);

@@ -1,5 +1,7 @@
 #pragma once
 #include "ProjectTriggerCodeIdentity.h"
+#include "TriggerModels.h"
+#include "TriggerModule.h"
 #include "../support/TriggerCodeIdentitySaveFixture.h"
 
 void LiveEditorToolsTests::CustomCodeIdentitySharesProjectUndoAndForge() {
@@ -69,4 +71,50 @@ void LiveEditorToolsTests::CustomCodeIdentitySharesProjectUndoAndForge() {
     const auto count = f.project.triggerUndoStack_->count(); f.project.luaMapTarget_.emplace(); ++f.project.luaMapTargetGeneration_;
     auto rejected = QtProject::ApplyProjectTriggerCodeIdentity(f.project, *plan.value, QStringLiteral("test"));
     QVERIFY(!rejected.Succeeded()); QCOMPARE(f.project.triggerUndoStack_->count(), count);
+}
+
+// 触发器目录里给自定义代码触发器改名、复制：走同一代码身份服务，一步撤销，生成符号随名字同步。
+void LiveEditorToolsTests::CustomCodeIdentityFromTriggerDirectory() {
+    namespace I = AudastraTest::CodeIdentity;
+    I::Fixture native; Fixture f; QVERIFY2(f.Initialize(false, false), qPrintable(f.error));
+    for (const auto& member : native.members) if (member.name != "war3map.wtg" && member.name != "war3map.wct")
+        QVERIFY(WriteFile(f.source.filePath("map/" + QString::fromStdString(member.name)), Bytes(member.data)));
+    f.project.war3GameRoot_ = native.base.inputs.game;
+    auto& document = *f.project.triggerDocument_;
+    const auto custom = TriggerDocumentEditor::AddTrigger(document, document.categories.front().categoryId, "CodeSource"); QVERIFY(custom.Succeeded());
+    auto* row = TriggerDocumentEditor::FindTrigger(document, *custom.value); row->customTextFlag = 1;
+    row->customText = native.triggers.triggers.back().customText;
+    const auto encoded = WtgWctCodec{}.Serialize(document, *f.project.uiCatalog_); QVERIFY(encoded.Succeeded());
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wtg"), Bytes(encoded.value->wtg)));
+    QVERIFY(WriteFile(f.source.filePath("map/war3map.wct"), Bytes(encoded.value->wct)));
+    auto parsed = WtgWctCodec{}.Parse(encoded.value->wtg, encoded.value->wct, *f.project.uiCatalog_); QVERIFY(parsed.Succeeded());
+    f.project.triggerDocument_ = std::make_unique<TriggerDocument>(std::move(*parsed.value));
+    auto directory = DirectoryWorkspace::Open(f.project.projectRoot_); QVERIFY(directory.Succeeded());
+    f.project.directorySnapshot_ = std::make_unique<DirectoryWorkspace>(std::move(*directory.value));
+    f.project.LoadMapDocument(); f.project.ResetEditTracking();
+    const auto codeTrigger = [&]() -> const TriggerRecord* {
+        const auto& rows = f.project.triggerDocument_->triggers;
+        const auto found = std::find_if(rows.begin(), rows.end(), [](const auto& t) { return t.customTextFlag != 0; });
+        return found == rows.end() ? nullptr : &*found;
+    };
+    const auto* source = codeTrigger(); QVERIFY(source);
+    const auto id = source->id; const auto category = source->categoryId; const auto before = source->customText.text;
+    const auto undoCount = f.project.triggerUndoStack_->count();
+    Modules::TriggerModule module(f.project); (void)module.Widget();
+    QVERIFY(module.RenameDirectoryItem({false, id, category}, QStringLiteral("CodeGui")));
+    QTRY_COMPARE(QString::fromStdString(codeTrigger()->name.text), QString("CodeGui"));
+    QCOMPARE(f.project.triggerUndoStack_->count(), undoCount + 1);
+    QVERIFY(codeTrigger()->customText.text.find("function InitTrig_CodeGui") != std::string::npos);
+    QVERIFY(codeTrigger()->customText.text != before);
+    module.DuplicateCurrentTrigger();
+    QCOMPARE(f.project.triggerDocument_->triggers.size(), std::size_t(3));
+    QCOMPARE(f.project.triggerUndoStack_->count(), undoCount + 2);
+    const auto& copy = f.project.triggerDocument_->triggers.back();
+    QVERIFY(copy.customTextFlag != 0 && copy.id != id);
+    QVERIFY(copy.name.text.starts_with("CodeGui"));
+    QVERIFY(copy.customText.text.find("function InitTrig_CodeGui takes") == std::string::npos);
+    f.project.triggerUndoStack_->undo(); f.project.triggerUndoStack_->undo();
+    QCOMPARE(f.project.triggerDocument_->triggers.size(), std::size_t(2));
+    QCOMPARE(QString::fromStdString(codeTrigger()->name.text), QString("CodeSource"));
+    QCOMPARE(codeTrigger()->customText.text, before);
 }

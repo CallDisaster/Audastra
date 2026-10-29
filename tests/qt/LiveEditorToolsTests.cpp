@@ -346,6 +346,7 @@ private slots:
     void TextureSlotPreparationRejectsConcurrentRevision();
     void CustomSettingsShareOriginalUndoAndRejectStaleCas();
     void CustomCodeIdentitySharesProjectUndoAndForge();
+    void CustomCodeIdentityFromTriggerDirectory();
     void SettingsPageEditsTechnologyThroughSharedService();
     void SettingsPageEditsRandomTables();
     void TechPageBuildsRandomTableCommands();
