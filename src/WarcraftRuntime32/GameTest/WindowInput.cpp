@@ -77,15 +77,6 @@ bool PostKeys(HWND window, bool up) {
         keys[key].store(up ? 0 : static_cast<SHORT>(0x8001));
         if (!PostMessageW(window, alt || key == VK_F10 ? (up ? WM_SYSKEYUP : WM_SYSKEYDOWN) : (up ? WM_KEYUP : WM_KEYDOWN),
             key, KeyBits(key, up, alt))) return false;
-        if (!up) {
-            BYTE keyboard[256]{}; (void)WindowInputKeyboard(keyboard);
-            wchar_t text[8]{};
-            // 不改变内核键盘布局状态；字符与虚拟按键均只交给本次窗口。
-            const auto count = ToUnicodeEx(key, MapVirtualKeyW(key, MAPVK_VK_TO_VSC), keyboard, text, 8, 4, GetKeyboardLayout(0));
-            if (count < 0 || count > 8) return false;
-            for (int character = 0; character < count; ++character)
-                if (!PostMessageW(window, alt ? WM_SYSCHAR : WM_CHAR, text[character], KeyBits(key, false, alt))) return false;
-        }
     }
     return true;
 }
@@ -215,11 +206,5 @@ BOOL WindowInputKeyboard(PBYTE output) {
     for (unsigned i = 0; i < 256; ++i) output[i] = !expired && (ReadVirtualKey(i, false) & 0x8000) ? 0x80 : 0;
     if (WindowInputTarget()) keyRead = true;
     return TRUE;
-}
-bool WindowInputAlreadyTranslated(const MSG* message) {
-    return message && GetCurrentThreadId() == ownerThread.load() && state == WindowInputState::Pending
-        && action.kind == WindowInputKind::Key && message->hwnd == target.load()
-        && (message->message == WM_KEYDOWN || message->message == WM_SYSKEYDOWN)
-        && std::find(action.keys, action.keys + action.keyCount, message->wParam) != action.keys + action.keyCount;
 }
 }

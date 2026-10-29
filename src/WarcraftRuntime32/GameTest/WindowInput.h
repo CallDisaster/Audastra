@@ -8,6 +8,4 @@ namespace Audastra::Runtime32::GameTest {
 [[nodiscard]] bool WindowInputCursor(HWND window, POINT& point);
 [[nodiscard]] SHORT WindowInputKey(int key, bool consumeEdge);
 [[nodiscard]] BOOL WindowInputKeyboard(PBYTE keys);
-// 合成按键自行提供字符消息；消息循环再次翻译时只抑制该次动作，避免重复字符。
-[[nodiscard]] bool WindowInputAlreadyTranslated(const MSG* message);
 }

@@ -11,12 +11,11 @@
 
 namespace {
 using namespace Audastra::Runtime32;
-unsigned mouseDowns = 0, mouseUps = 0, qDowns = 0, spaceChars = 0;
+unsigned mouseDowns = 0, mouseUps = 0, qDowns = 0;
 LRESULT CALLBACK InputWindowProc(HWND window, UINT message, WPARAM key, LPARAM point) {
     if (message == WM_LBUTTONDOWN) ++mouseDowns;
     if (message == WM_LBUTTONUP) ++mouseUps;
     if (message == WM_KEYDOWN && key == 'Q') ++qDowns;
-    if (message == WM_CHAR && key == ' ') ++spaceChars;
     if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
     if (message == WM_DESTROY) { PostQuitMessage(0); return 0; }
     return DefWindowProcW(window, message, key, point);
@@ -31,11 +30,10 @@ int InputFixture(const std::filesystem::path& marker, DWORD timeout) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
             if (message.message == WM_QUIT) {
-                std::ofstream output(marker); output << mouseDowns << ',' << mouseUps << ',' << qDowns << ',' << held << ',' << cursor << ',' << modifierAlias << ',' << spaceChars;
+                std::ofstream output(marker); output << mouseDowns << ',' << mouseUps << ',' << qDowns << ',' << held << ',' << cursor << ',' << modifierAlias;
                 return 0;
             }
-            if (!GameTest::WindowInputAlreadyTranslated(&message)) TranslateMessage(&message);
-            DispatchMessageW(&message);
+            TranslateMessage(&message); DispatchMessageW(&message);
         }
         POINT position{}; cursor |= GameTest::WindowInputCursor(window, position);
         held |= (GameTest::WindowInputKey(VK_LBUTTON, true) & 0x8000) != 0;
