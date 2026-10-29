@@ -70,12 +70,12 @@ struct RequestBudget {
     }
     bool Arg(const GraphArgumentValue& argument, std::size_t depth, bool existingRoot = false) {
         if (depth > limits.maxDepth || (!existingRoot && records++ >= limits.maxAddedRecords)
-            || !AddText(argument.clientKey) || !AddText(argument.scalar.value)) return false;
+            || !AddText(argument.clientKey) || !AddText(argument.scalar.value) || !AddText(argument.origin)) return false;
         return (!argument.call || Eca(*argument.call, depth + 1)) && (!argument.index || Arg(*argument.index, depth + 1));
     }
     bool Eca(const GraphEcaValue& eca, std::size_t depth) {
         if (depth > limits.maxDepth || records++ >= limits.maxAddedRecords
-            || !AddText(eca.clientKey) || !AddText(eca.function)) return false;
+            || !AddText(eca.clientKey) || !AddText(eca.function) || !AddText(eca.origin)) return false;
         for (const auto& arg : eca.arguments) if (!Arg(arg, depth + 1)) return false;
         for (const auto& child : eca.children) if (!child || !Eca(*child, depth + 1)) return false;
         return true;
@@ -157,6 +157,7 @@ struct Editor {
     TriggerGraphEditReceipt receipt;
     std::set<StableId> typedEcas, typedArguments, typedVariables;
     std::uint64_t nextId;
+    std::set<StableId> changedVariableTypes;
     std::map<StableId, std::string> origins; // 紧凑写法节点的行列，诊断定位用
     // 整体替换时目标触发器原有的值，按所属触发器记录，只能留在原触发器里。
     std::set<std::pair<StableId, std::string>> preservedCode; // (触发器, 代码类参数值)
@@ -167,6 +168,14 @@ struct Editor {
         const auto& node = doc.ecaNodes[index]; typedEcas.insert(node.id);
         for (const auto arg : node.arguments) if (arg < doc.argumentNodes.size() && doc.argumentNodes[arg].callEca)
             TouchEcaTree(*doc.argumentNodes[arg].callEca, depth + 1);
+        for (const auto arg : node.arguments) if (arg < doc.argumentNodes.size()) {
+            auto index = doc.argumentNodes[arg].indexArgument;
+            for (std::size_t indexDepth = depth; index && *index < doc.argumentNodes.size() && indexDepth <= limits.maxDepth; ++indexDepth) {
+                const auto& nested = doc.argumentNodes[*index];
+                if (nested.callEca) TouchEcaTree(*nested.callEca, indexDepth + 1);
+                index = nested.indexArgument;
+            }
+        }
         for (const auto child : node.children) TouchEcaTree(child, depth + 1);
     }
 
@@ -420,7 +429,9 @@ struct Editor {
         } else if (op.target.kind == GraphRecordKind::Variable) {
             auto* row = Find(doc.variables, *id.value); typedVariables.insert(row->id);
             switch (op.field) {
-            case GraphField::VariableType: return SetText(row->typeName, std::get<std::string>(op.value));
+            case GraphField::VariableType:
+                changedVariableTypes.insert(row->id);
+                return SetText(row->typeName, std::get<std::string>(op.value));
             case GraphField::VariableArray: row->isArray = std::get<bool>(op.value) ? 1 : 0; break;
             case GraphField::VariableArraySize: row->size = std::get<std::int32_t>(op.value); break;
             case GraphField::VariableInitialized: row->hasDefault = std::get<bool>(op.value) ? 1 : 0; break;
@@ -967,6 +978,15 @@ struct Editor {
         for (const auto& eca : doc.ecaNodes) for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
             const auto& argument = doc.argumentNodes[eca.arguments[i]];
             bool changed = typedEcas.contains(eca.id);
+            const auto* definition = catalog.Find(eca.type, eca.name.text);
+            if (definition && TriggerTypeSystem::DeclaredType(*definition, i) == "Null") {
+                for (std::size_t prior = 0; prior < i; ++prior) {
+                    const auto& selector = doc.argumentNodes[eca.arguments[prior]];
+                    if (typedArguments.contains(selector.id) && types.IsTypeSelector(TriggerTypeSystem::DeclaredType(*definition, prior))) changed = true;
+                    if (selector.type == 1) for (const auto& variable : doc.variables)
+                        if (changedVariableTypes.contains(variable.id) && (selector.value.text == variable.name.text || selector.value.text == "udg_" + variable.name.text)) changed = true;
+                }
+            }
             auto index = eca.arguments[i];
             for (std::size_t depth = 0; depth <= 256 && index < doc.argumentNodes.size(); ++depth) {
                 const auto& current = doc.argumentNodes[index];
@@ -1029,11 +1049,24 @@ struct Editor {
                     if (!safety.Succeeded()) return Status{safety.diagnostics};
                 }
             }
+            std::map<StableId, std::vector<TriggerTextArgumentAnchor>> renderedPositions;
             for (auto& issue : safety.value->issues) {
                 Status located{{std::move(issue.diagnostic)}};
                 if (const auto found = origins.find(issue.argumentId); found != origins.end()) Locate(located, found->second);
                 else if (const auto ecaOrigin = origins.find(issue.ecaId); ecaOrigin != origins.end())
                     Locate(located, ecaOrigin->second + " 第 " + std::to_string(issue.position + 1) + " 个参数");
+                else {
+                    auto positions = renderedPositions.find(issue.triggerId);
+                    if (positions == renderedPositions.end()) {
+                        std::vector<TriggerTextArgumentAnchor> anchors;
+                        const auto rendered = RenderTriggerText(doc, catalog, issue.triggerId, limits.maxRequestTextBytes, nullptr, mapObjects, &anchors);
+                        if (!rendered.Succeeded()) return Fail("TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "不能将参数诊断定位回当前T文本，请先补齐该触发器的可读上下文。");
+                        positions = renderedPositions.emplace(issue.triggerId, std::move(anchors)).first;
+                    }
+                    const auto anchor = std::find_if(positions->second.begin(), positions->second.end(), [&](const auto& row) { return row.argumentId == issue.argumentId; });
+                    if (anchor == positions->second.end()) return Fail("TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "当前T文本没有此参数的精确位置。");
+                    Locate(located, "当前T第 " + std::to_string(anchor->line) + " 行第 " + std::to_string(anchor->column) + " 列");
+                }
                 failures.diagnostics.push_back(std::move(located.diagnostics.front()));
             }
         }

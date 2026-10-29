@@ -16,6 +16,7 @@
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Script/TriggerStorageCapabilities.h"
+#include "War3MapCore/Script/ScriptUserSourceRequest.h"
 
 #include <algorithm>
 #include <chrono>
@@ -44,20 +45,8 @@ std::string Reason(const std::vector<Diagnostic>& diagnostics, std::string fallb
 }
 Script::ScriptUserSourceRequest ModernUserSources(const Script::ScriptToolchainLayout& layout,
     const CodeCheckProjectSnapshot& snapshot, const std::filesystem::path& mapDirectory) {
-    Script::ScriptUserSourceRequest request{&layout, snapshot.catalog.get(),
-        Trigger::UiCatalog::ResolveUiRoot(snapshot.uiRoot.empty() ? snapshot.toolRoot : snapshot.uiRoot)};
-    request.mapDirectory = mapDirectory;
-    // 与 MapScriptBuild 相同：只按实际启用层序提供各层现存 jass 根。
-    // 来源计划不会自行推断显式根；捕获和复核都必须使用同一份输入合同。
-    for (const auto& layer : snapshot.catalog->Layers()) {
-        const auto root = request.uiRoot / std::filesystem::path(std::u8string(layer.begin(), layer.end())) / "jass";
-        std::error_code error;
-        if (std::filesystem::is_directory(root, error)) {
-            request.explicitInjectionRoots.push_back(root);
-            request.explicitUserIncludes.push_back(root);
-        }
-    }
-    return request;
+    return Script::MakeModernUserSourceRequest(layout, *snapshot.catalog,
+        snapshot.uiRoot.empty() ? snapshot.toolRoot : snapshot.uiRoot, mapDirectory);
 }
 void Poll(std::stop_token cancel, Clock::time_point deadline) {
     if (cancel.stop_requested() || Clock::now() >= deadline) throw std::runtime_error("code-check-stopped");

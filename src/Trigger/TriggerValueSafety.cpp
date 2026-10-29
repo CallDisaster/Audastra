@@ -81,6 +81,14 @@ Result<TriggerValueSafetyReport> AnalyzeTriggerValues(const TriggerDocument& doc
                 }
             }
             if (argument.callEca) if (const auto status = self(self, *argument.callEca, enabled, depth + 1); !status.Succeeded()) return status;
+            auto indexArgument = argument.indexArgument;
+            for (std::size_t indexDepth = depth; indexArgument; ++indexDepth) {
+                if (*indexArgument >= document.argumentNodes.size() || indexDepth > 256)
+                    return Status::Failure("Trigger.Value", "TRIGGER_VALUE_CHECK_STRUCTURE", "数组下标图越界或过深。");
+                const auto& nested = document.argumentNodes[*indexArgument];
+                if (nested.callEca) if (const auto status = self(self, *nested.callEca, enabled, indexDepth + 1); !status.Succeeded()) return status;
+                indexArgument = nested.indexArgument;
+            }
         }
         for (const auto child : eca.children) if (const auto status = self(self, child, enabled, depth + 1); !status.Succeeded()) return status;
         return Status::Ok();

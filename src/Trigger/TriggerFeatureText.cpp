@@ -2,6 +2,7 @@
 
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerReal.h"
 
 #include <algorithm>
 #include <charconv>
@@ -210,6 +211,7 @@ Result<std::string> RenderFeatureText(const TriggerDocument& document, const UiC
             const auto kind = types.LiteralKind(variable.typeName.text);
             out += " = ";
             if (kind == TriggerTypeSystem::Literal::String) out += TriggerTextQuoted(value);
+            else if (kind == TriggerTypeSystem::Literal::Real && ShortestTriggerReal(value)) out += *ShortestTriggerReal(value);
             else if (kind == TriggerTypeSystem::Literal::ObjectCode && TriggerTypeSystem::IsObjectCodeLiteral(value)) out += "'" + value + "'";
             else if (const auto plain = ParseTriggerTextValue(value); plain.Succeeded() && *plain.value == value) out += value;
             else if (!value.empty()) out += TriggerTextName(value);

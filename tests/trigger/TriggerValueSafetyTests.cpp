@@ -56,6 +56,13 @@ void Publishing() {
     Require(Code(edited, "TRIGGER_REAL_LITERAL_PRECISION_RISK"), "graph edit retains warning");
     Require(edited.diagnostics.front().message.find("第 2 行第 16 列") != std::string::npos, "exact original argument location");
     Require(doc.argumentNodes.front().value.text == "0.13799999999999998", "author bytes not rewritten");
+    const auto scalarBinding = CaptureTriggerGraphBinding(doc, catalog); Good(scalarBinding, "scalar binding");
+    const auto scalar = PrepareTriggerGraphScalarEditBatch(doc, catalog, {*scalarBinding.value, {GraphSet{
+        {GraphRecordKind::Argument, doc.argumentNodes.front().id, {}}, GraphField::ArgumentScalar,
+        GraphScalarValue{3, "0.13799999999999998"}, GraphScalarValue{3, "0.23333333333333333"}}}});
+    Good(scalar, "warning permits compact scalar preparation");
+    Require(Code(scalar, "TRIGGER_REAL_LITERAL_PRECISION_RISK") && doc.argumentNodes.front().value.text == "0.13799999999999998",
+        "compact scalar receipt retains warning and preparation preserves source");
     std::vector<TriggerTextArgumentAnchor> anchors;
     const auto rendered = RenderTriggerText(doc, catalog, *trigger.value, 4096, nullptr, nullptr, &anchors); Good(rendered, "render");
     Require(rendered.value->find("RecordReal(0.138)") != std::string::npos && anchors.size() == 1 && anchors.front().column == 16, "editor output shortest and exact argument anchor");
