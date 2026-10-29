@@ -22,10 +22,11 @@ LRESULT CALLBACK InputWindowProc(HWND window, UINT message, WPARAM key, LPARAM p
     return DefWindowProcW(window, message, key, point);
 }
 int InputFixture(const std::filesystem::path& marker, DWORD timeout) {
-    WNDCLASSW type{}; type.lpfnWndProc = InputWindowProc; type.hInstance = GetModuleHandleW(nullptr); type.lpszClassName = L"AudastraOwnedInputFixture";
+    WNDCLASSW type{}; type.lpfnWndProc = DefWindowProcW; type.hInstance = GetModuleHandleW(nullptr); type.lpszClassName = L"AudastraOwnedInputFixture";
     if (!RegisterClassW(&type)) return 81;
     const auto window = CreateWindowW(type.lpszClassName, L"owned hidden input fixture", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, type.hInstance, nullptr);
     if (!window || !GameTest::InstallWindowInput(window)) return 82;
+    SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(InputWindowProc));
     // 同进程的大型隐藏辅助窗口不能夺走游戏输入；主窗口DWM隐身但保持逻辑可见。
     BOOL cloak = TRUE;
     if (FAILED(DwmSetWindowAttribute(window, DWMWA_CLOAK, &cloak, sizeof(cloak)))) return 84;

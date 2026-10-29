@@ -361,7 +361,9 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
         if (!owned() || GetWindowThreadProcessId(window, &actualPid) != thread || actualPid != id
             || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return 0;
         COPYDATASTRUCT copy{ kWindowInputMagic, sizeof(packet), &packet }; DWORD_PTR result = 0;
-        return SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result) ? result : 0;
+        if (!SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result)) return 0;
+        const auto sequence = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputSequenceProperty)));
+        return sequence == packet.sequence ? reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputResultProperty)) : 0;
     };
     auto result = send(); const auto start = GetTickCount64();
     while ((result & kWindowInputStateMask) == static_cast<unsigned>(WindowInputState::Pending) && GetTickCount64() - start < 3000) {

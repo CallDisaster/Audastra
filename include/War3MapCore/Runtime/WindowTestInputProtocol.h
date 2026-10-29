@@ -5,6 +5,8 @@
 namespace War3Map::Runtime {
 inline constexpr std::uint32_t kWindowInputMagic = 0x41554950;
 inline constexpr wchar_t kWindowInputProperty[] = L"Audastra.TestInput.V1";
+inline constexpr wchar_t kWindowInputSequenceProperty[] = L"Audastra.TestInput.Sequence.V1";
+inline constexpr wchar_t kWindowInputResultProperty[] = L"Audastra.TestInput.Result.V1";
 enum class WindowInputKind : std::uint32_t { Click = 1, Key = 2, Query = 3, Close = 4 };
 enum class WindowInputState : std::uint32_t {
     Pending = 1, Complete = 2, Invalid = 16, WrongIdentity = 17,

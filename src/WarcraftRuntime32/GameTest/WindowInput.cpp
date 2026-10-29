@@ -1,6 +1,5 @@
 #include "WindowInput.h"
 #include "War3MapCore/Runtime/WindowTestInputProtocol.h"
-#include <commctrl.h>
 #include <array>
 #include <atomic>
 #include <algorithm>
@@ -8,7 +7,7 @@
 namespace Audastra::Runtime32::GameTest {
 namespace {
 using namespace War3Map::Runtime;
-constexpr UINT_PTR kSubclass = kWindowInputMagic;
+thread_local HHOOK inputHook = nullptr;
 std::atomic<HWND> target{};
 std::atomic<LONG> cursorX{0}, cursorY{0};
 std::array<std::atomic<SHORT>, 256> keys{};
@@ -150,13 +149,18 @@ LRESULT Receive(HWND window, const WindowInputPacket& request) {
     if (!timer) End(WindowInputState::DispatchFailed);
     return Report();
 }
-LRESULT CALLBACK InputProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam, UINT_PTR, DWORD_PTR) {
+void ObserveInput(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return;
     if (message == WM_COPYDATA && lparam) {
         const auto* copy = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
         if (copy->dwData == kWindowInputMagic) {
-            if (copy->cbData != sizeof(WindowInputPacket) || !copy->lpData) return static_cast<LRESULT>(WindowInputState::Invalid);
+            if (copy->cbData != sizeof(WindowInputPacket) || !copy->lpData) return;
             const auto packet = *static_cast<const WindowInputPacket*>(copy->lpData);
-            return Receive(window, packet);
+            const auto answer = Receive(window, packet);
+            // 应用可以更换窗口过程或自行处理WM_COPYDATA；回执不依赖其返回值。
+            (void)SetPropW(window, kWindowInputResultProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(answer)));
+            (void)SetPropW(window, kWindowInputSequenceProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(packet.sequence)));
+            return;
         }
     }
     if (window == target.load() && ownerThread.load() == GetCurrentThreadId() && state == WindowInputState::Pending) {
@@ -173,17 +177,25 @@ LRESULT CALLBACK InputProc(HWND window, UINT message, WPARAM wparam, LPARAM lpar
     }
     if (message == WM_NCDESTROY) {
         RemovePropW(window, kWindowInputProperty);
+        RemovePropW(window, kWindowInputSequenceProperty);
+        RemovePropW(window, kWindowInputResultProperty);
         if (target.load() == window) { End(WindowInputState::WindowChanged); target = nullptr; ownerThread = 0; }
-        RemoveWindowSubclass(window, InputProc, kSubclass);
     }
-    return DefSubclassProc(window, message, wparam, lparam);
+}
+LRESULT CALLBACK InputHook(int code, WPARAM wparam, LPARAM lparam) {
+    if (code >= 0 && lparam) {
+        const auto& message = *reinterpret_cast<const CWPSTRUCT*>(lparam);
+        ObserveInput(message.hwnd, message.message, message.wParam, message.lParam);
+    }
+    return CallNextHookEx(nullptr, code, wparam, lparam);
 }
 }
 bool InstallWindowInput(HWND window) {
     if (!Owned(window) || GetWindowThreadProcessId(window, nullptr) != GetCurrentThreadId()) return false;
-    if (!SetWindowSubclass(window, InputProc, kSubclass, 0)) return false;
+    // 只监视本线程的窗口消息，不替换应用窗口过程，后续过程切换也不会丢失接收器。
+    if (!inputHook && !(inputHook = SetWindowsHookExW(WH_CALLWNDPROC, InputHook, nullptr, GetCurrentThreadId()))) return false;
     if (!SetPropW(window, War3Map::Runtime::kWindowInputProperty, reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(War3Map::Runtime::kWindowInputMagic)))) {
-        RemoveWindowSubclass(window, InputProc, kSubclass); return false;
+        return false;
     }
     return true;
 }

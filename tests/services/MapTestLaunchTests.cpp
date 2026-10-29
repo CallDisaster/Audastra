@@ -204,16 +204,23 @@ int wmain(int argc, wchar_t** argv) {
             War3Map::Runtime::WindowInputPacket spoof;
             spoof.processId = run.value->launcherProcessId; spoof.sequence = 42;
             COPYDATASTRUCT data{War3Map::Runtime::kWindowInputMagic,sizeof(spoof),&spoof}; DWORD_PTR answer = 0;
-            Require(SendMessageTimeoutW(reinterpret_cast<HWND>(clicked.value->window),WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG,1000,&answer)
+            const auto exchange = [&] {
+                const auto window = reinterpret_cast<HWND>(clicked.value->window);
+                if (!SendMessageTimeoutW(window,WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG,1000,&answer)) return false;
+                if (static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, Runtime::kWindowInputSequenceProperty))) != spoof.sequence) return false;
+                answer = reinterpret_cast<ULONG_PTR>(GetPropW(window, Runtime::kWindowInputResultProperty));
+                return true;
+            };
+            Require(exchange()
                 && answer == static_cast<unsigned>(War3Map::Runtime::WindowInputState::WrongIdentity), "wrong creation time rejected inside receiver");
             const auto query = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,run.value->launcherProcessId);
             FILETIME created{}, exited{}, kernel{}, user{};
             Require(query && GetProcessTimes(query,&created,&exited,&kernel,&user), "read only original fixture process creation time"); CloseHandle(query);
             spoof.createdLow=created.dwLowDateTime; spoof.createdHigh=created.dwHighDateTime;
-            Require(SendMessageTimeoutW(reinterpret_cast<HWND>(clicked.value->window),WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG,1000,&answer)
+            Require(exchange()
                 && answer == static_cast<unsigned>(Runtime::WindowInputState::UnknownSequence), "unknown sequence cannot acknowledge old action");
             spoof.kind=Runtime::WindowInputKind::Click; spoof.width=1; spoof.height=1;
-            Require(SendMessageTimeoutW(reinterpret_cast<HWND>(clicked.value->window),WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG,1000,&answer)
+            Require(exchange()
                 && answer == static_cast<unsigned>(Runtime::WindowInputState::WindowChanged), "changed geometry refuses input");
             Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Close}), "native WM_CLOSE request without terminating job");
             WaitTerminal(run.value->lease);
