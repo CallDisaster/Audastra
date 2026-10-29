@@ -443,7 +443,11 @@ CLI 使用同一保存链：`map-edit-save ... --terrain-slot-replace ground 0 L
 
 CLI 只读入口为 `map-trigger-remove-audit <map> <source-sha> <ui-root> <trigger|variable> <id> --tool-root <tool-root> --game-root <game-root>`；地图有预放物等初始化依赖时必须提供游戏数据。`--confirm-file <json>` 只做内存删除预演，不写地图。可用 `--prior-trigger <id> --prior-confirm-file <json>` 在同一私有候选中先预演删触发器，再审计或预演删变量。工具链身份、读取的包含路径或内容变化，旧确认即失效；未配置完整宿主上下文时继续拒绝，不能由请求伪造覆盖。
 
-本覆盖不读取 AI 引导文件，包含解析遇到相应路径立即拒绝。vJass 的 `//!` 指令、Lua 模板与失败的预处理仍是不完整来源。`preprocess_profile_sha256`、`preprocess_identity_sha256`、`included_file_count` 和 `external_dependencies_verified` 说明预处理来源覆盖，不代表脚本已编译、地图已保存或已进游戏。整个查询仍受 262144 块、64 MiB 代码字节、16384 个单独块及总证据预算约束。
+不透明文本与保存/检查使用同一 `jass-bytes-v1` 字节词法：字符串、rawcode、注释保持原字节，反斜杠只转义下一个字节；显示名查 UTF-8 和可精确编码的 GBK 形式。无命中的非UTF-8注释或字符串不强制单独确认；现代档案中不透明文本外的非ASCII代码仍是不完整来源。展开证据显示的非法UTF-8字节以 `\xNN` 表示，不能把显示文本当作可写回源码。
+
+Lua 模板在预处理后使用保存链同一 `EvaluateTemplates` 与受限宿主求值，按 `TemplateSpan` 和 SourceMap 回溯；原参数来源显示为 `WTG/argument-<ID>`。只读用途清空 `importRoot`，不读取模板 import 的文件、不产生成员；模板失败或输出不能精确映射时拒绝。宿主、启用库、命令表与实际物编来源身份均参与覆盖摘要。未发射的原模板块也需独立覆盖，不能以禁用为由跳过；不能独立求值的上下文相关块保留不完整。
+
+本覆盖不读取 AI 引导文件，包含解析遇到相应路径立即拒绝。vJass 的 `//!` 指令、失败的预处理或模板求值仍是不完整来源。`preprocess_profile_sha256`、`preprocess_identity_sha256`、`included_file_count` 和 `external_dependencies_verified` 说明来源覆盖，不代表脚本已编译、地图已保存或已进游戏。整个查询仍受 262144 块、64 MiB 代码字节、16384 个单独块及总证据预算约束。
 
 ## 5. 结果应如何记录
 
