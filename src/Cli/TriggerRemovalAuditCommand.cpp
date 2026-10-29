@@ -53,6 +53,12 @@ Json Blocks(const std::vector<RemovalCodeBlock>& blocks) {
 Json Diagnostics(const std::vector<Diagnostic>& values) {
     Json result = Json::array(); for (const auto& d : values) result.push_back({{"code", d.code}, {"message", d.message}}); return result;
 }
+int Emit(const Json& output) {
+    const auto text = output.dump();
+    if (text.size() > 4 * 1024 * 1024) throw std::invalid_argument("完整审计回执超过4MiB，未提供截断结果。");
+    std::cout << text << '\n';
+    return output.at("ok").get<bool>() ? 0 : 1;
+}
 using Clock = std::chrono::steady_clock;
 double Milliseconds(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
 Json PeakMemory() {
@@ -147,7 +153,7 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
             else throw std::invalid_argument("未知或重复的删除审计选项。");
         }
         auto source = Services::CaptureMapTriggerQuerySources(request);
-        if (!source.Succeeded()) { std::cout << Json{{"ok", false}, {"diagnostics", Diagnostics(source.diagnostics)}}.dump() << '\n'; return 1; }
+        if (!source.Succeeded()) return Emit(Json{{"ok", false}, {"diagnostics", Diagnostics(source.diagnostics)}});
         auto& sources = *source.value;
         Json output{{"source_sha256", sources.archive->SourceSha256()}, {"catalog_sha256", sources.catalog.Sha256()}, {"saved", false}, {"runtime_verified", false}};
         if (priorTrigger || !priorConfirmations.empty()) {
@@ -155,17 +161,17 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
                 throw std::invalid_argument("前序预演须同时给出触发器ID及原审计确认文件，仅用于目标审计。");
             auto prior = Remove(sources.document, true, priorTrigger);
             auto reviewed = QueryDeclarationRemovalAudit(sources.document, sources.catalog, prior);
-            if (!reviewed.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(reviewed.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+            if (!reviewed.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(reviewed.diagnostics); return Emit(output); }
             prior.codeAudits = ReadConfirmations(priorConfirmations, sources, *reviewed.value);
             const auto start = Clock::now();
             const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {reviewed.value->binding, {prior}});
             output["prior_preview_ms"] = Milliseconds(start); output["prior_preview_passed"] = edited.Succeeded();
-            if (!edited.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(edited.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+            if (!edited.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(edited.diagnostics); return Emit(output); }
         }
         if (selector == "inventory") {
             if (!confirmations.empty() || !match.empty()) throw std::invalid_argument("分类统计不接受确认或目标名字。");
             const auto report = InspectOpaqueArgumentInventory(sources.document, sources.catalog);
-            if (!report.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(report.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+            if (!report.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(report.diagnostics); return Emit(output); }
             Json rows = Json::array();
             for (const auto& row : report.value->classes) {
                 Json samples = Json::array();
@@ -192,7 +198,7 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
             const auto queryStart = Clock::now();
             const auto review = QueryDeclarationRemovalAudit(sources.document, sources.catalog, op);
             output["audit_ms"] = Milliseconds(queryStart); output["process_peak_working_set_bytes"] = PeakMemory();
-            if (!review.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(review.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+            if (!review.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(review.diagnostics); return Emit(output); }
             const auto& r = *review.value; Json typed = Json::array();
             for (const auto value : r.typedArgumentIds) typed.push_back(std::to_string(value));
             output.update({{"ok", true}, {"target_id", std::to_string(id)}, {"expected_name", r.expectedName}, {"review_sha256", r.reviewSha256},
@@ -206,7 +212,7 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
                 output["check_ms"] = Milliseconds(checkStart);
                 if (!checked.Succeeded()) {
                     output["preview_passed"] = false; output["diagnostics"] = Diagnostics(checked.diagnostics); output["ok"] = false;
-                    output["process_peak_working_set_bytes"] = PeakMemory(); std::cout << output.dump() << '\n'; return 1;
+                    output["process_peak_working_set_bytes"] = PeakMemory(); return Emit(output);
                 }
                 const auto previewStart = Clock::now();
                 const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {r.binding, {op}});
@@ -217,7 +223,6 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
         }
         const auto unchanged = sources.archive->VerifySourceUnchanged();
         if (!unchanged.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(unchanged.diagnostics); }
-        const auto result = output.dump(); if (result.size() > 4 * 1024 * 1024) throw std::invalid_argument("完整审计回执超过4MiB，未提供截断结果。");
-        std::cout << result << '\n'; return output.at("ok").get<bool>() ? 0 : 1;
+        return Emit(output);
     } catch (const std::exception& e) { std::cout << Json{{"ok", false}, {"code", "TRIGGER_REMOVE_QUERY_INVALID"}, {"message", e.what()}, {"saved", false}}.dump() << '\n'; return 1; }
 }
