@@ -164,6 +164,9 @@ int RunMapTest(int argc, wchar_t** argv) {
             if (origin != "startup_space") Print(result.diagnostics);
             line["error"] = result.diagnostics.empty() ? "MAP_TEST_INPUT_FAILED" : result.diagnostics.front().code;
             line["owned_job_pids"] = receipt.lease->ProcessIds();
+            line["diagnostics"] = nlohmann::json::array();
+            for (const auto& diagnostic : result.diagnostics)
+                line["diagnostics"].push_back({{"code", diagnostic.code}, {"message", diagnostic.message}});
         }
         std::cout << "test_input=" << line.dump() << std::endl;
         return result.Succeeded();
