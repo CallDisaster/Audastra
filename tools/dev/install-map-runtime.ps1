@@ -12,7 +12,7 @@ function Assert-PlainLocalPath([string]$Path) {
     $full=[IO.Path]::GetFullPath($Path)
     if($full -notmatch '^[A-Za-z]:[\\/]' -or $full.Substring(2).Contains(':')){throw 'RUNTIME_INSTALL_PATH_INVALID'}
     for($at=$full;$at;$at=[IO.Path]::GetDirectoryName($at)){
-        if((Test-Path -LiteralPath $at) -and ((Get-Item -LiteralPath $at).Attributes -band [IO.FileAttributes]::ReparsePoint)){
+        if((Test-Path -LiteralPath $at) -and ((Get-Item -LiteralPath $at -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){
             throw 'RUNTIME_INSTALL_PATH_INVALID: reparse point'
         }
     }

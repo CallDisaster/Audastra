@@ -6,7 +6,7 @@ function Copy-PendingMapRuntimeInstallation {
         $full=[IO.Path]::GetFullPath($Path)
         if($full -notmatch '^[A-Za-z]:[\\/]' -or $full.Substring(2).Contains(':')){throw 'RUNTIME_STAGE_PATH_INVALID'}
         for($p=$full;$p;$p=[IO.Path]::GetDirectoryName($p)){
-            if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'RUNTIME_STAGE_PATH_INVALID'}
+            if((Test-Path -LiteralPath $p) -and ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)){throw 'RUNTIME_STAGE_PATH_INVALID'}
         }
         return $full
     }
