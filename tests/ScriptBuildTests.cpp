@@ -1098,7 +1098,7 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     doc.wct.customCode = Trigger::RawText{"#include \"dep.j\"\n"};
     Trigger::GraphRemove op; op.target = {Trigger::GraphRecordKind::Trigger, *target.value, {}}; op.expectedName = "Target";
     op.parent.kind = Trigger::GraphParentKind::CategoryTriggers;
-    op.parent.owner = {Trigger::GraphRecordKind::Category, *category.value, {}};
+    op.parent.owner = {Trigger::GraphRecordKind::Category, doc.categories.front().id, {}};
     op.parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *target.value, {}});
     Trigger::RemovalPreprocessProvider provider = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto&) {
         MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions;
