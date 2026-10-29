@@ -37,8 +37,6 @@ void BindProject(QtProject::EditorProject& project, const WorldTerrainSources& s
     auto opened = MapArchiveSession::Open(sources.archivePath); Require(opened.Succeeded(), "open project archive fixture");
     project.sourceArchivePath_ = sources.archivePath;
     project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*opened.value));
-    project.projectRoot_ = sources.archivePath.parent_path(); project.ResetEditTracking();
-    Require(project.editTrackingReady_ && !project.editTrackingFailed_, "fixture has a real revision baseline before asset edits");
 }
 WorldTerrainSources Capture(const QtProject::EditorProject& project) {
     auto captured = CaptureWorldTerrainSources(project); Require(captured.Succeeded(), "capture complete world sources");

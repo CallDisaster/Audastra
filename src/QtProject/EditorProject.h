@@ -546,6 +546,10 @@ public:
     QTimer* uiLibraryDebounce_ = nullptr;
 
 private:
+    friend class AssetStateCommand;
+    [[nodiscard]] Result<std::shared_ptr<PreparedAssetStateEdit>> PrepareAssetStateEditImpl(AssetState candidate,
+        std::uint64_t expectedGeneration, std::uint64_t expectedRevision, std::string description,
+        EditOperation operation, const AssetState* sealedReceipt);
     std::set<const QObject*> pendingTerrainCommits_;
     // 只在成功打开/保存提交时捕获一次，不在修改面板刷新时复制整份文档。
     void CaptureContentChangesBaseline();

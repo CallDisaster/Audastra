@@ -148,6 +148,36 @@ private slots:
         QVERIFY(!Services::ImportPayloadPolicy::Check(Services::ImportPayloadRole::OwnedResource, 64ull * 1024 * 1024 + 1).Succeeded());
         QVERIFY(project.editTrackingReady_ && !project.editTrackingFailed_);
     }
+    void ConsecutiveOwnedEditsReplayTheirSealedHistory() {
+        Fixture fixture; auto& project = *fixture.project;
+        const auto put = [&](std::size_t size) {
+            std::vector<EditorProject::ImportPayload> values{{"unchanged.bin", Binary(size)}};
+            return project.AddImportPayloads(values, true, "replace original binary");
+        };
+        QVERIFY(put(17).isEmpty()); const auto first = project.CaptureAssets();
+        QVERIFY(put(29).isEmpty()); const auto second = project.CaptureAssets();
+        QVERIFY(put(37).isEmpty()); const auto third = project.CaptureAssets();
+        project.AssetUndoStack()->undo(); QVERIFY(project.CaptureAssets() == second);
+        project.AssetUndoStack()->undo(); QVERIFY(project.CaptureAssets() == first);
+        project.AssetUndoStack()->undo(); QVERIFY(project.pendingImports_.empty());
+        for (int i = 0; i < 3; ++i) project.AssetUndoStack()->redo();
+        QVERIFY(project.CaptureAssets() == third);
+        QVERIFY(project.editTrackingReady_ && !project.editTrackingFailed_);
+    }
+    void QueueBeforeMapTrackingDoesNotInventARevisionOrRecoverFailure() {
+        EditorProject project; QVERIFY(!project.editTrackingReady_);
+        const auto revision = project.editRevision_.Revision();
+        std::vector<EditorProject::ImportPayload> values{{"original.bin", Binary(32)}};
+        QVERIFY(project.AddImportPayloads(values, false, "queue before opening a map").isEmpty());
+        QVERIFY(!project.editTrackingReady_); QCOMPARE(project.editRevision_.Revision(), revision);
+        project.AssetUndoStack()->undo(); QVERIFY(project.pendingImports_.empty());
+        project.AssetUndoStack()->redo(); QCOMPARE(project.pendingImports_.size(), std::size_t{1});
+        project.editTrackingFailed_ = true;
+        const auto before = project.CaptureAssets();
+        values = {{"refuse.bin", Binary(16)}};
+        QVERIFY(!project.AddImportPayloads(values, false, "must not recover failed tracking").isEmpty());
+        QVERIFY(project.CaptureAssets() == before); QVERIFY(project.editTrackingFailed_);
+    }
 };
 QTEST_MAIN(ImportAssetTransactionTests)
 #include "ImportAssetTransactionTests.moc"

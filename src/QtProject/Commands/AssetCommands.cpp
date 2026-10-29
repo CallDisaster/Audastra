@@ -45,8 +45,8 @@ void AssetStateCommand::Apply(bool forward) {
         return;
     }
     auto prepared = firstPrepared_ ? Result<std::shared_ptr<PreparedAssetStateEdit>>::Success(std::move(firstPrepared_))
-        : project_.PrepareAssetStateEdit(std::move(candidate), generation_, project_.editRevision_.Revision(),
-            forward ? "重做资源修改" : "撤销资源修改", forward ? EditOperation::Redo : EditOperation::Undo);
+        : project_.PrepareAssetStateEditImpl(std::move(candidate), generation_, project_.editRevision_.Revision(),
+            forward ? "重做资源修改" : "撤销资源修改", forward ? EditOperation::Redo : EditOperation::Undo, &wanted);
     Status status;
     if (!prepared.Succeeded()) status.diagnostics = prepared.diagnostics;
     else {
