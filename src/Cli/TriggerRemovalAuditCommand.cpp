@@ -1,5 +1,6 @@
 #include "TriggerRemovalAuditCommand.h"
 #include "War3MapCore/Services/MapEditSaveService.h"
+#include "War3MapCore/Services/CodeCheckProject.h"
 #include "War3MapCore/Trigger/TriggerRemovalAudit.h"
 #include <nlohmann/json.hpp>
 #include <charconv>
@@ -41,6 +42,7 @@ Json Blocks(const std::vector<RemovalCodeBlock>& blocks) {
     for (const auto& block : blocks) {
         const auto& id = block.identity; Json evidence = Json::array();
         for (const auto& hit : block.evidence) evidence.push_back({{"context", hit.context}, {"text", hit.text}, {"snippet_truncated", hit.text.size() < hit.decodedByteLength}, {"line", hit.line}, {"column", hit.column},
+            {"source_file", hit.sourceFile}, {"source_line", hit.sourceLine},
             {"decoded_byte_offset", hit.decodedByteOffset}, {"decoded_byte_length", hit.decodedByteLength},
             {"raw_byte_offset", hit.rawByteOffset}, {"raw_byte_length", hit.rawByteLength}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});
         result.push_back({{"identity", {{"kind", Kind(id.kind)}, {"id", std::to_string(id.id)}, {"encoding", TriggerEditEncodingName(id.encoding)},
@@ -142,7 +144,7 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
         Services::MapTriggerTextQueryRequest request; request.sourceMap = argv[2]; request.expectedSourceSha256 = Utf8(argv[3]); request.uiRoot = argv[4];
         const auto kind = Utf8(argv[5]); if (kind != "trigger" && kind != "variable") throw std::invalid_argument("目标种类必须为trigger或variable。");
         const auto selector = Utf8(argv[6]); std::string match; std::filesystem::path confirmations, priorConfirmations;
-        StableId priorTrigger = 0;
+        StableId priorTrigger = 0; std::filesystem::path toolRoot, gameRoot;
         for (int i = 7; i < argc; i += 2) {
             if (i + 1 >= argc) throw std::invalid_argument("查询选项缺少值。");
             const auto option = Utf8(argv[i]);
@@ -150,21 +152,45 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
             else if (option == "--confirm-file" && confirmations.empty()) confirmations = argv[i + 1];
             else if (option == "--prior-trigger" && !priorTrigger) priorTrigger = Id(Utf8(argv[i + 1]));
             else if (option == "--prior-confirm-file" && priorConfirmations.empty()) priorConfirmations = argv[i + 1];
+            else if (option == "--tool-root" && toolRoot.empty()) toolRoot = argv[i + 1];
+            else if (option == "--game-root" && gameRoot.empty()) gameRoot = argv[i + 1];
             else throw std::invalid_argument("未知或重复的删除审计选项。");
         }
         auto source = Services::CaptureMapTriggerQuerySources(request);
         if (!source.Succeeded()) return Emit(Json{{"ok", false}, {"diagnostics", Diagnostics(source.diagnostics)}});
         auto& sources = *source.value;
+        TriggerGraphEditLimits limits;
+        if (!toolRoot.empty()) {
+            auto snapshot = std::make_shared<Services::CodeCheckProjectSnapshot>();
+            snapshot->binding = sources.archive->SourceSha256() + sources.catalog.Sha256();
+            snapshot->sourcePath = request.sourceMap; snapshot->sourceSha256 = sources.archive->SourceSha256();
+            snapshot->toolRoot = toolRoot; snapshot->uiRoot = request.uiRoot; snapshot->gameRoot = gameRoot;
+            snapshot->catalog = std::make_shared<UiCatalog>(sources.catalog);
+            snapshot->triggers = std::make_shared<TriggerDocument>(sources.document);
+            for (std::size_t i = 0; i < snapshot->nativeObjects.size(); ++i) {
+                const auto type = static_cast<ObjectData::ObjectType>(i);
+                const auto member = ObjectData::NativeFileName(type);
+                if (!sources.archive->HasMember(member)) continue;
+                const auto bytes = sources.archive->ReadMember(member);
+                if (!bytes.Succeeded()) return Emit(Json{{"ok", false}, {"diagnostics", Diagnostics(bytes.diagnostics)}, {"saved", false}});
+                auto parsed = ObjectData::NativeObjectCodec(type).Parse(*bytes.value);
+                if (!parsed.Succeeded()) return Emit(Json{{"ok", false}, {"diagnostics", Diagnostics(parsed.diagnostics)}, {"saved", false}});
+                auto* native = dynamic_cast<ObjectData::NativeObjectDocument*>(parsed.document.get());
+                if (!native) throw std::invalid_argument("物编来源不是原生文档。");
+                snapshot->nativeObjects[i] = std::make_shared<ObjectData::NativeObjectDocument>(*native);
+            }
+            limits.removalPreprocessProvider = Services::MakeProjectRemovalPreprocessProvider(std::move(snapshot));
+        }
         Json output{{"source_sha256", sources.archive->SourceSha256()}, {"catalog_sha256", sources.catalog.Sha256()}, {"saved", false}, {"runtime_verified", false}};
         if (priorTrigger || !priorConfirmations.empty()) {
             if (!priorTrigger || priorConfirmations.empty() || selector == "list" || selector == "inventory")
                 throw std::invalid_argument("前序预演须同时给出触发器ID及原审计确认文件，仅用于目标审计。");
             auto prior = Remove(sources.document, true, priorTrigger);
-            auto reviewed = QueryDeclarationRemovalAudit(sources.document, sources.catalog, prior);
+            auto reviewed = QueryDeclarationRemovalAudit(sources.document, sources.catalog, prior, nullptr, &limits.removalPreprocessProvider);
             if (!reviewed.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(reviewed.diagnostics); return Emit(output); }
             prior.codeAudits = ReadConfirmations(priorConfirmations, sources, *reviewed.value);
             const auto start = Clock::now();
-            const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {reviewed.value->binding, {prior}});
+            const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {reviewed.value->binding, {prior}}, limits);
             output["prior_preview_ms"] = Milliseconds(start); output["prior_preview_passed"] = edited.Succeeded();
             if (!edited.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(edited.diagnostics); return Emit(output); }
         }
@@ -196,7 +222,7 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
             const auto id = Id(selector); if (!id) throw std::invalid_argument("删除目标ID不能为0。");
             auto op = Remove(sources.document, kind == "trigger", id);
             const auto queryStart = Clock::now();
-            const auto review = QueryDeclarationRemovalAudit(sources.document, sources.catalog, op);
+            const auto review = QueryDeclarationRemovalAudit(sources.document, sources.catalog, op, nullptr, &limits.removalPreprocessProvider);
             output["audit_ms"] = Milliseconds(queryStart); output["process_peak_working_set_bytes"] = PeakMemory();
             if (!review.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(review.diagnostics); return Emit(output); }
             const auto& r = *review.value; Json typed = Json::array();
@@ -204,18 +230,19 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
             output.update({{"ok", true}, {"target_id", std::to_string(id)}, {"expected_name", r.expectedName}, {"review_sha256", r.reviewSha256},
                 {"complete", r.complete}, {"symbols", r.symbols}, {"typed_argument_ids", typed},
                 {"groupable_count", r.groupableCount}, {"groupable_sha256", r.groupableSha256}, {"groupable_samples", Blocks(r.groupableSamples)},
-                {"individual_blocks", Blocks(r.individualBlocks)}, {"external_dependencies_verified", false}});
+                {"individual_blocks", Blocks(r.individualBlocks)}, {"external_dependencies_verified", r.externalDependenciesVerified},
+                {"preprocess_identity_sha256", r.preprocessIdentitySha256}, {"preprocess_profile_sha256", r.preprocessProfileSha256}, {"included_file_count", r.includedFileCount}});
             if (!confirmations.empty()) {
                 op.codeAudits = ReadConfirmations(confirmations, sources, r);
                 const auto checkStart = Clock::now();
-                const auto checked = CheckDeclarationRemovalAudit(sources.document, sources.catalog, op);
+                const auto checked = CheckDeclarationRemovalAudit(sources.document, sources.catalog, op, nullptr, &limits.removalPreprocessProvider);
                 output["check_ms"] = Milliseconds(checkStart);
                 if (!checked.Succeeded()) {
                     output["preview_passed"] = false; output["diagnostics"] = Diagnostics(checked.diagnostics); output["ok"] = false;
                     output["process_peak_working_set_bytes"] = PeakMemory(); return Emit(output);
                 }
                 const auto previewStart = Clock::now();
-                const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {r.binding, {op}});
+                const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {r.binding, {op}}, limits);
                 output["preview_ms"] = Milliseconds(previewStart); output["process_peak_working_set_bytes"] = PeakMemory();
                 output["preview_passed"] = edited.Succeeded(); output["diagnostics"] = Diagnostics(edited.diagnostics); output["ok"] = edited.Succeeded();
                 output["code_coverage"] = "CallerAssertedNotRuntimeProven";

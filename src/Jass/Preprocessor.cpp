@@ -138,6 +138,8 @@ private:
 };
 
 struct Macro {
+    std::string source;
+    std::uint32_t sourceLine = 0;
     std::uint32_t id = 0;
     bool function = false;
     bool variadic = false;
@@ -266,6 +268,7 @@ private:
     bool CollectArguments(const Macro& macro, const PpToken& name, Stream& stream, std::vector<TokenList>& arguments,
         PpToken& closing, const FileContext& file, std::uint32_t* sourceEnd);
     TokenList Substitute(const Macro& macro, std::vector<TokenList>& arguments);
+    void AuditMacro(const Macro& macro, std::string_view name, const FileContext& file, std::uint32_t line, bool expanded);
     TokenList ExpandIsolated(std::span<const PpToken> tokens, const FileContext& file);
     PpToken Stringize(const TokenList& argument, bool space);
     void Paste(TokenList& out, const PpToken& right);
@@ -298,6 +301,7 @@ private:
     std::map<std::filesystem::path, std::string> includeContents_;
     bool includeSearchFailed_ = false;
     bool stopped_ = false;
+    std::size_t macroAuditBytes_ = 0;
     std::uint32_t outputLine_ = 1;
     bool lastWasExpansion_ = false;
     std::uint32_t currentLine_ = 0;
@@ -1084,6 +1088,22 @@ TokenList Engine::Substitute(const Macro& macro, std::vector<TokenList>& argumen
     return out;
 }
 
+void Engine::AuditMacro(const Macro& macro, std::string_view name, const FileContext& file, std::uint32_t line, bool expanded) {
+    if (!options_.captureMacroAudit || macro.builtin != Macro::Builtin::None) return;
+    const bool construction = std::any_of(macro.body.begin(), macro.body.end(), [](const auto& t) { return t.Is("#") || t.Is("##"); });
+    if (expanded && !construction) return;
+    PreprocessResult::MacroAudit record;
+    record.name = name; record.source = expanded ? file.name : macro.source;
+    record.line = expanded ? line : macro.sourceLine;
+    record.expanded = expanded; record.tokenConstruction = construction;
+    for (const auto& token : macro.body) { record.body += token.text; record.body += ' '; }
+    const auto bytes = record.name.size() + record.body.size() + record.source.size();
+    if (result_.macroAudit.size() >= 262144 || bytes > 64 * 1024 * 1024 - macroAuditBytes_) {
+        Report(DiagnosticSeverity::Error, "PP_MACRO_AUDIT_BUDGET", file, line, "宏覆盖证据超出预算，未提供部分结果");
+        stopped_ = true; return;
+    }
+    macroAuditBytes_ += bytes; result_.macroAudit.push_back(std::move(record));
+}
 bool Engine::TryExpand(const PpToken& name, Stream& stream, const FileContext& file, std::uint32_t* sourceEnd) {
     if (stopped_) return false;
     const Macro* macro = FindMacro(name);
@@ -1128,6 +1148,7 @@ bool Engine::TryExpand(const PpToken& name, Stream& stream, const FileContext& f
         body = Substitute(*macro, arguments);
         hide = hideSets_.With(hideSets_.Intersect(name.hide, closing.hide), macro->id);
     }
+    AuditMacro(*macro, name.text, file, name.line, true);
     if (stopped_) return true;
     std::size_t bodyBytes = 0;
     for (const auto& token : body) {
@@ -1268,6 +1289,7 @@ void Engine::Define(const FileContext& file, std::span<const PpToken> tokens, st
     Macro macro;
     macro.id = MacroId(name);
     macro.origin = DiagnosticText(file.name) + ":" + std::to_string(line);
+    macro.source = file.name; macro.sourceLine = line;
     std::size_t at = 1;
     if (at < tokens.size() && tokens[at].Is("(") && !tokens[at].space) {
         macro.function = true;
@@ -1317,6 +1339,8 @@ void Engine::Define(const FileContext& file, std::span<const PpToken> tokens, st
         return;
     }
     const std::string_view key = macroNames_[macro.id - 1];
+    AuditMacro(macro, name, file, line, false);
+    if (stopped_) return;
     if (const auto found = macros_.find(key); found != macros_.end()) {
         if (!SameDefinition(found->second, macro)) {
             Report(DiagnosticSeverity::Warning, "PP_MACRO_REDEFINED", file, line,

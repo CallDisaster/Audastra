@@ -50,6 +50,7 @@ void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     const auto bom = prefix.value->size();
     std::vector<std::pair<std::size_t, std::size_t>> points{{0, bom}};
     for (const auto& hit : block.evidence) {
+        if (!hit.sourceFile.empty()) continue;
         if (hit.decodedByteOffset > source.text.size() || hit.decodedByteLength > source.text.size() - hit.decodedByteOffset) { Incomplete(block, "证据位置越界"); return; }
         points.emplace_back(hit.decodedByteOffset, 0); points.emplace_back(hit.decodedByteOffset + hit.decodedByteLength, 0);
     }
@@ -62,7 +63,7 @@ void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
         raw += segment.value->size() - bom; previous = point.first; point.second = raw;
     }
     const auto at = [&](std::size_t offset) { return std::lower_bound(points.begin(), points.end(), offset, [](const auto& p, auto n) { return p.first < n; })->second; };
-    for (auto& hit : block.evidence) { hit.rawByteOffset = at(hit.decodedByteOffset); hit.rawByteLength = at(hit.decodedByteOffset + hit.decodedByteLength) - hit.rawByteOffset; hit.rawRangeExact = true; }
+    for (auto& hit : block.evidence) if (hit.sourceFile.empty()) { hit.rawByteOffset = at(hit.decodedByteOffset); hit.rawByteLength = at(hit.decodedByteOffset + hit.decodedByteLength) - hit.rawByteOffset; hit.rawRangeExact = true; }
 }
 void Evidence(RemovalCodeBlock& block, const RawText& source, std::size_t at, std::size_t size,
     std::string context, bool definite) {
@@ -77,6 +78,7 @@ void Evidence(RemovalCodeBlock& block, const RawText& source, std::size_t at, st
 // 只作有界词法证据，不执行宏或猜测动态目标。未知指令/未闭合文本不取得完整覆盖。
 void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemovalReview& review, std::size_t& tokensLeft) {
     const auto& text = source.text; std::vector<Token> tokens;
+    if (text.find("<?") != std::string::npos) Incomplete(block, "本轮未覆盖Lua模板");
     if (text.find('\0') != std::string::npos) { Incomplete(block, "含NUL字节"); Evidence(block, source, text.find('\0'), 1, "不支持的NUL字节", false); }
     for (std::size_t i = 0; i < text.size();) {
         if (!tokensLeft) { Incomplete(block, "词法扫描预算截断"); break; }
@@ -168,7 +170,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
 }
 }
 Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocument& doc, const UiCatalog& catalog,
-    const GraphRemove& op, const MapObjectReferenceSnapshot* objects) {
+    const GraphRemove& op, const MapObjectReferenceSnapshot* objects, const RemovalPreprocessProvider* preprocessing) {
     using Out = Result<DeclarationRemovalReview>;
     const auto valid = WtgWctCodec{}.Validate(doc, catalog); if (!valid.Succeeded()) return {std::nullopt, valid.diagnostics};
     const auto binding = CaptureTriggerGraphBinding(doc, catalog, objects); if (!binding.Succeeded()) return {std::nullopt, binding.diagnostics};
@@ -213,15 +215,41 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         if (referenced) review.typedArgumentIds.push_back(arg.id);
     }
     std::size_t bytes = 0, count = 0, tokensLeft = kBytes, findings = 0;
+    std::optional<RemovalPreprocessCoverage> coverage;
+    std::unordered_map<std::string, const RemovalPreprocessBlock*> covered;
+    bool needsPreprocessing = false;
+    const auto probe = detail::VisitOpaqueCodeBlocks(doc, catalog, review.symbols, [&](auto, auto, const RawText& text) {
+        needsPreprocessing |= text.text.find('#') != std::string::npos || text.text.find("//!") != std::string::npos || text.text.find("<?") != std::string::npos;
+        return Status::Ok();
+    });
+    if (!probe.Succeeded()) return {std::nullopt, probe.diagnostics};
+    if (needsPreprocessing && preprocessing && *preprocessing) {
+        const auto captured = (*preprocessing)(doc, catalog, op);
+        if (!captured.Succeeded()) return {std::nullopt, captured.diagnostics};
+        coverage = std::move(*captured.value);
+        if (coverage->inputBytes > kBytes || coverage->blocks.size() > kBlocks)
+            return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "预处理来源超过删除审计预算。");
+        bytes = coverage->inputBytes;
+        review.externalDependenciesVerified = coverage->complete;
+        review.preprocessIdentitySha256 = coverage->identitySha256;
+        review.preprocessProfileSha256 = coverage->profileSha256;
+        review.includedFileCount = coverage->includedFileCount;
+        if (coverage->identitySha256.size() != 64 || coverage->profileSha256.size() != 64)
+            return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_INVALID", "预处理覆盖缺少来源身份。");
+        for (const auto& entry : coverage->blocks)
+            if (!covered.emplace(Key(entry.kind, entry.id), &entry).second)
+                return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_INVALID", "预处理覆盖代码块身份重复。");
+    }
     Sha256Stream manifest(256 * kBlocks + 4096), group(256 * kBlocks);
     const auto update = [](Sha256Stream& stream, std::string_view text) {
         return stream.Update(std::as_bytes(std::span(text.data(), text.size())));
     };
     const auto header = update(manifest, "remove-audit-v2:" + review.binding.currentWtgSha256 + review.binding.currentWctSha256 + catalog.Sha256()
-        + std::to_string(static_cast<unsigned>(op.target.kind)) + ":" + std::to_string(op.target.id) + ":" + op.expectedName);
+        + std::to_string(static_cast<unsigned>(op.target.kind)) + ":" + std::to_string(op.target.id) + ":" + op.expectedName
+        + ":preprocess:" + review.preprocessProfileSha256 + ":" + review.preprocessIdentitySha256);
     if (!header.Succeeded()) return {std::nullopt, header.diagnostics};
     const auto status = detail::VisitOpaqueCodeBlocks(doc, catalog, review.symbols, [&](auto kind, StableId id, const RawText& text) {
-        if (text.text.empty()) return Status::Ok();
+        if (text.text.empty() && !(coverage && kind == AtomicRenameCodeKind::GlobalCustomCode)) return Status::Ok();
         if ((kind == AtomicRenameCodeKind::ArgumentCode && removedArguments.contains(id))
             || (kind == AtomicRenameCodeKind::VariableInitialValue && op.target.kind == GraphRecordKind::Variable && id == op.target.id)) return Status::Ok();
         const auto size = std::max(text.text.size(), text.originalBytes.size());
@@ -238,7 +266,31 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         bytes += size;
         const auto sha = detail::CodeBlockSha256(text); if (!sha.Succeeded()) return Status{sha.diagnostics};
         RemovalCodeBlock block; block.identity = {kind, id, text.encoding, *sha.value, {}};
-        Scan(block, text, review, tokensLeft);
+        const auto expanded = covered.find(Key(kind, id));
+        if (coverage && !coverage->complete && kind == AtomicRenameCodeKind::GlobalCustomCode) Incomplete(block, coverage->incompleteReason.c_str());
+        if (coverage && coverage->complete && expanded != covered.end()) {
+            const auto& entry = *expanded->second;
+            if (entry.sourceSha256 != *sha.value) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "预处理覆盖与当前代码块不同。");
+            if (entry.text.size() > kBytes - bytes) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "展开文本超过删除审计预算。");
+            bytes += entry.text.size();
+            Scan(block, RawText{entry.text}, review, tokensLeft);
+            for (auto& hit : block.evidence) {
+                if (!hit.line || hit.line > entry.origins.size()) { Incomplete(block, "展开证据缺少来源映射"); continue; }
+                const auto& origin = entry.origins[hit.line - 1];
+                hit.sourceFile = origin.file; hit.sourceLine = origin.line;
+                if (hit.sourceFile.empty() || !hit.sourceLine) Incomplete(block, "展开证据缺少来源映射");
+            }
+            for (const auto& macro : entry.macros) {
+                const bool definite = !macro.expanded && (Match(macro.name, review, true) || Mentions(macro.body, review));
+                if (!definite && !(macro.expanded && macro.tokenConstruction)) continue;
+                RemovalReferenceEvidence hit; hit.context = definite ? "宏定义含目标符号" : "宏调用含拼接/字符串化（须单独确认）";
+                hit.text = macro.name; hit.sourceFile = macro.file; hit.sourceLine = macro.line;
+                hit.definite = definite; block.referenced |= definite;
+                block.dynamic |= !definite;
+                if (block.evidence.size() >= kEvidence) Incomplete(block, "宏证据数量超过预算");
+                else block.evidence.push_back(std::move(hit));
+            }
+        } else Scan(block, text, review, tokensLeft);
         if (kind == AtomicRenameCodeKind::ArgumentCode) {
             const auto found = arguments.find(id);
             if (found != arguments.end()) {
@@ -275,7 +327,8 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         if (findings > 16384) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "引用证据总量超出预算，未提供截断放行结果。");
         const auto decodedSha = Sha256Text(text.text); if (!decodedSha.Succeeded()) return Status{decodedSha.diagnostics};
         std::string evidence = *decodedSha.value + "\n" + std::to_string(block.complete) + std::to_string(block.dynamic);
-        for (const auto& hit : block.evidence) evidence += "\n" + hit.context + ":" + std::to_string(hit.decodedByteOffset) + ":" + std::to_string(hit.definite);
+        for (const auto& hit : block.evidence) evidence += "\n" + hit.context + ":" + std::to_string(hit.decodedByteOffset) + ":" + std::to_string(hit.definite)
+            + ":" + hit.sourceFile + ":" + std::to_string(hit.sourceLine);
         const auto digest = Sha256Text(evidence); if (!digest.Succeeded()) return Status{digest.diagnostics};
         block.identity.evidenceSha256 = *digest.value;
         const auto row = Key(kind, id) + ":" + *sha.value + ":" + *digest.value + ":" + std::to_string(static_cast<unsigned>(text.encoding)) + "\n";
@@ -307,8 +360,8 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
     review.reviewSha256 = *digest.value; return Out::Success(std::move(review));
 }
 Status CheckDeclarationRemovalAudit(const TriggerDocument& doc, const UiCatalog& catalog, const GraphRemove& op,
-    const MapObjectReferenceSnapshot* objects) {
-    const auto review = QueryDeclarationRemovalAudit(doc, catalog, op, objects);
+    const MapObjectReferenceSnapshot* objects, const RemovalPreprocessProvider* preprocessing) {
+    const auto review = QueryDeclarationRemovalAudit(doc, catalog, op, objects, preprocessing);
     if (!review.Succeeded()) return {review.diagnostics};
     const auto& r = *review.value;
     if (!r.typedArgumentIds.empty()) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "声明仍有存活typed参数引用，须先移除或改绑。");

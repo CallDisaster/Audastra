@@ -181,6 +181,28 @@ struct TriggerGraphEditBatch {
 };
 enum class TriggerScalarWorkPolicy : std::uint8_t { BoundedSourcesV2, LegacyKnownWork };
 class TriggerStorageCapabilities;
+struct RemovalPreprocessOrigin { std::string file; std::size_t line = 0; };
+struct RemovalPreprocessMacro {
+    std::string name, body, file;
+    std::size_t line = 0;
+    bool expanded = false, tokenConstruction = false;
+};
+struct RemovalPreprocessBlock {
+    AtomicRenameCodeKind kind = AtomicRenameCodeKind::GlobalCustomCode;
+    StableId id = 0;
+    std::string sourceSha256, text;
+    std::vector<RemovalPreprocessOrigin> origins;
+    std::vector<RemovalPreprocessMacro> macros;
+};
+struct RemovalPreprocessCoverage {
+    std::string profileSha256, identitySha256;
+    std::size_t includedFileCount = 0, inputBytes = 0;
+    bool complete = false;
+    std::string incompleteReason;
+    std::vector<RemovalPreprocessBlock> blocks;
+};
+// 仅宿主提供；不接受请求端伪造的覆盖结果。每次查询/发布重新捕获实际候选来源。
+using RemovalPreprocessProvider = std::function<Result<RemovalPreprocessCoverage>(const TriggerDocument&, const UiCatalog&, const GraphRemove&)>;
 struct TriggerGraphEditLimits {
     std::size_t maxOperations = 256;
     std::size_t maxAddedRecords = 16384;
@@ -195,6 +217,7 @@ struct TriggerGraphEditLimits {
     std::size_t maxScalarRecords = 524288, maxScalarEdges = 1048576;
     std::shared_ptr<const TriggerStorageCapabilities> storageCapabilities; // 宿主冻结来源，不接受工具请求设置。
     std::function<Result<std::shared_ptr<const TriggerStorageCapabilities>>(std::span<const std::string>)> storageCapabilityProvider;
+    RemovalPreprocessProvider removalPreprocessProvider;
 };
 struct TriggerGraphEditReceipt {
     TriggerGraphBinding before, after;

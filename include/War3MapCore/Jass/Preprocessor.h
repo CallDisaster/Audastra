@@ -88,6 +88,7 @@ struct PreprocessOptions {
     // 0 使用 check.maxTotalBytes 硬上限；非零时取两者中较小的输出/单次展开预算。
     std::size_t maxOutputBytes = 0;
     JassCheckOptions check = PreprocessCheckOptions();
+    bool captureMacroAudit = false;
 };
 
 // C include 和框架 $include 共用；未设置 policy 时保留原查找行为。
@@ -95,6 +96,12 @@ struct PreprocessOptions {
     const PreprocessOptions& options, const IncludeCandidateRequest& request);
 
 struct PreprocessResult {
+    struct MacroAudit {
+        std::string name, body, source;
+        std::uint32_t line = 0;
+        bool expanded = false, tokenConstruction = false;
+    };
+    std::vector<MacroAudit> macroAudit;
     std::string text;
     SourceLexicalView lexicalView; // 仅显式框架来源模式拥有，原现代调用为空。
     std::vector<Diagnostic> diagnostics;

@@ -23,6 +23,8 @@ struct RemovalReferenceEvidence {
     bool rawRangeExact = false;
     std::size_t line = 1, column = 1;
     bool definite = false;
+    std::string sourceFile;
+    std::size_t sourceLine = 0;
 };
 struct RemovalCodeBlock {
     RemovalBlockIdentity identity;
@@ -43,11 +45,13 @@ struct DeclarationRemovalReview {
     std::vector<RemovalCodeBlock> groupableSamples, individualBlocks;
     bool complete = true;
     bool externalDependenciesVerified = false;
+    std::string preprocessIdentitySha256, preprocessProfileSha256;
+    std::size_t includedFileCount = 0;
 private:
     // 只供旧逐块确认核对，查询调用方只获得整组身份与有界样本。
     std::vector<RemovalBlockIdentity> groupableIdentities_;
-    friend Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot*);
-    friend Status CheckDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot*);
+    friend Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot*, const RemovalPreprocessProvider*);
+    friend Status CheckDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot*, const RemovalPreprocessProvider*);
 };
 // 只读查询。按与实际编辑相同的前序操作准备候选；operationIndex指向remove。
 [[nodiscard]] Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(
@@ -55,7 +59,8 @@ private:
     const TriggerGraphEditLimits& limits = {}, const MapObjectReferenceSnapshot* mapObjects = nullptr);
 // 当前删前候选使用的同一取证入口，不提供按名称搜索或静默选择。
 [[nodiscard]] Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(
-    const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot* mapObjects = nullptr);
+    const TriggerDocument&, const UiCatalog&, const GraphRemove&, const MapObjectReferenceSnapshot* mapObjects = nullptr,
+    const RemovalPreprocessProvider* preprocessing = nullptr);
 [[nodiscard]] Status CheckDeclarationRemovalAudit(const TriggerDocument&, const UiCatalog&, const GraphRemove&,
-    const MapObjectReferenceSnapshot* mapObjects = nullptr);
+    const MapObjectReferenceSnapshot* mapObjects = nullptr, const RemovalPreprocessProvider* preprocessing = nullptr);
 }

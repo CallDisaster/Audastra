@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cwctype>
 #include <exception>
 #include <map>
 #include <set>
@@ -485,6 +486,7 @@ bool ProfileRequestMatches(const ScriptUserSourcePlan& plan, const ScriptPreproc
 }
 Jass::PreprocessOptions Options(const ScriptPreprocessSources& sources) {
     Jass::PreprocessOptions options;
+    options.captureMacroAudit = sources.request.captureMacroAudit;
     options.check = sources.request.check;
     options.userIncludes = sources.entryPlan.orderedUserIncludes;
     options.systemIncludes = sources.systemIncludes;
@@ -586,9 +588,16 @@ Jass::PreprocessResult PreprocessOwned(const ScriptPreprocessSources& sources, s
         composed.Map(line, {found->second, position->line});
     }
     result.sourceMap = std::move(composed);
+    for (auto& macro : result.macroAudit) if (macro.source == sources.request.mainName) {
+        const auto original = framework.sourceMap.Find(macro.line);
+        if (original && original->file < framework.sourceMap.Files().size()) {
+            macro.source = framework.sourceMap.Files()[original->file]; macro.line = original->line;
+        } else { macro.source.clear(); macro.line = 0; }
+    }
     return result;
 }
 bool SameRequest(const ScriptPreprocessSourceRequest& a, const ScriptPreprocessSourceRequest& b) {
+    if (a.captureMacroAudit != b.captureMacroAudit || a.forbidAiIncludes != b.forbidAiIncludes) return false;
     return a.mainText == b.mainText && a.mainName == b.mainName &&
         a.mainDirectory == b.mainDirectory && a.defines == b.defines && a.mainPolicy == b.mainPolicy &&
         a.frameworkDirectivePolicy == b.frameworkDirectivePolicy &&
@@ -809,6 +818,11 @@ Result<ScriptPreprocessSources> CaptureScriptPreprocessSources(const ScriptUserS
             return eligibility;
         };
         options.includeProvider = [&](const std::filesystem::path& input) -> ContentResult {
+            if (request.forbidAiIncludes) {
+                auto extension = input.extension().wstring();
+                std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t c) { return std::towlower(c); });
+                if (extension == L".ai") return Failure("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN", "删除审计不读取AI引导文件。", input);
+            }
             std::filesystem::path path;
             if (!Detail::NormalizeSourcePath(input, path) || sources.includeCandidates.empty() ||
                 sources.includeCandidates.back().eligibility != Jass::IncludeCandidateEligibility::Allowed ||
@@ -849,7 +863,7 @@ Result<ScriptPreprocessSources> CaptureScriptPreprocessSources(const ScriptUserS
         sources.frameworkFeatureFlags = std::move(framework.flags);
         sources.preprocessed.diagnostics.insert(sources.preprocessed.diagnostics.begin(),
             prepared.diagnostics.begin(), prepared.diagnostics.end());
-        if (!sources.preprocessed.Succeeded()) return {{}, std::move(sources.preprocessed.diagnostics)};
+        if (!sources.preprocessed.Succeeded() && !request.captureMacroAudit) return {{}, std::move(sources.preprocessed.diagnostics)};
         CaptureResult result = CaptureResult::Success(std::move(sources));
         result.diagnostics = result.value->preprocessed.diagnostics;
         return result;

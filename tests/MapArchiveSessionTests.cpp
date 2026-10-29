@@ -88,6 +88,18 @@ void RequireNoTemporary(const std::filesystem::path& directory) {
         Require(!entry.path().filename().wstring().starts_with(L".forge-candidate-"), "failed save leaked its temporary file");
     }
 }
+void TestReadOnlyScriptAudit() {
+    TempDirectory directory; const auto source = CreateSource(directory);
+    const auto audit = MapArchiveSession::OpenScriptAudit(source); RequireSuccess(audit, "read-only selective audit");
+    Require(audit.value->HasMember("war3map.wtg") && audit.value->HasMember("war3map.wct"), "paired sources loaded");
+    Require(!audit.value->HasMember("unknown/opaque.bin") && !audit.value->HasMember("war3map.j"), "opaque and generated members not decoded");
+    const std::array<std::string, 1> forbidden{"unknown/opaque.bin"};
+    Require(!audit.value->CaptureExactMembers(forbidden).Succeeded(), "cannot widen selected query reads");
+    const auto target = directory.Path() / "not-written.w3x";
+    Require(!audit.value->SaveCandidate(target, {}).Succeeded() && !std::filesystem::exists(target), "query snapshot cannot write a partial archive");
+    Require(!audit.value->SaveInPlace({}).Succeeded(), "query snapshot cannot replace source");
+    Require(!audit.value->PreflightSave({}).Succeeded(), "query snapshot cannot grant save preflight");
+}
 
 void TestCompleteRoundTripAndIndependentBaseline() {
     TempDirectory directory;
@@ -1024,6 +1036,7 @@ int main() {
         TestUnchangedMembersReuseSourceBlocks();
         TestSourceSectorSizeIsKept();
         TestAfterSaveMatchesReopenedSession();
+        TestReadOnlyScriptAudit();
         std::cout << "MapArchiveSession: all scenarios passed\n";
         return 0;
     } catch (const std::exception& error) {

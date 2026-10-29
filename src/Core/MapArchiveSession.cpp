@@ -134,9 +134,21 @@ bool SafeTargetFilename(const std::filesystem::path& path) {
     return !reserved.contains(stem);
 }
 
+bool ScriptAuditMember(std::string_view name) {
+    static const std::set<std::string> allowed{"WAR3MAP.WTG", "WAR3MAP.WCT", "WAR3MAP.W3I", "WAR3MAPUNITS.DOO", "WAR3MAP.DOO",
+        "WAR3MAP.W3R", "WAR3MAP.W3C", "WAR3MAP.W3S", "WAR3MAP.WTS", "WAR3MAP.W3E", "WAR3MAP.W3U", "WAR3MAP.W3A", "WAR3MAP.W3T",
+        "COMMON.J", "BLIZZARD.J", "SCRIPTS\\COMMON.J", "SCRIPTS\\BLIZZARD.J"};
+    return allowed.contains(Canonical(name));
+}
 } // namespace
 
 Result<MapArchiveSession> MapArchiveSession::Open(const std::filesystem::path& path, const ProjectSaveControl* control) {
+    return OpenImpl(path, control, false);
+}
+Result<MapArchiveSession> MapArchiveSession::OpenScriptAudit(const std::filesystem::path& path) {
+    return OpenImpl(path, nullptr, true);
+}
+Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::path& path, const ProjectSaveControl* control, bool scriptAuditOnly) {
     try {
         FileHandle source(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -177,6 +189,7 @@ Result<MapArchiveSession> MapArchiveSession::Open(const std::filesystem::path& p
         auto prefix = opened.value->ReadArchivePrefix();
         if (!prefix.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(prefix.diagnostics));
         MapArchiveSession session;
+        session.scriptAuditOnly_ = scriptAuditOnly;
         session.sourcePath_ = std::move(*sourcePath.value);
         session.sourceSha256_ = std::move(*sha.value);
         session.volumeSerial_ = info.dwVolumeSerialNumber;
@@ -185,6 +198,7 @@ Result<MapArchiveSession> MapArchiveSession::Open(const std::filesystem::path& p
         session.opaqueMemberCount_ = opaqueMembers ? opened.value->FileCount() - inventory.value->size() : 0;
         session.prefix_ = std::move(*prefix.value);
         for (const auto& member : *inventory.value) {
+            if (scriptAuditOnly && !ScriptAuditMember(member.name)) continue;
             if (Mpq::IsMpqMetadataMemberName(member.name)) {
                 session.metadataMembers_.push_back(member.name);
                 continue;
@@ -211,13 +225,15 @@ Status MapArchiveSession::VerifySourceUnchanged(const ProjectSaveControl* contro
 
 bool MapArchiveSession::HasMember(std::string_view name) const {
     const auto key = Canonical(name);
-    if (key == "(LISTFILE)") return true;
+    if (key == "(LISTFILE)") return !scriptAuditOnly_;
     return std::any_of(members_.begin(), members_.end(), [&key](const auto& member) {
         return Canonical(member.name) == key;
     });
 }
 
 Result<std::vector<std::byte>> MapArchiveSession::ReadMember(std::string_view name, const ProjectSaveControl* control) const {
+    if (scriptAuditOnly_ && !ScriptAuditMember(name)) return Result<std::vector<std::byte>>::Failure(
+        "MapArchiveSession", "SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读脚本审计快照不读取白名单外成员。");
     const auto key = Canonical(name);
     const auto copy = [control](const std::vector<std::byte>& input) -> Result<std::vector<std::byte>> {
         std::vector<std::byte> result(input.size());
@@ -251,6 +267,7 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         canonicalNames.reserve(names.size());
         std::map<std::string, const MapArchiveMember*> namedSnapshots;
         for (const auto& name : names) {
+            if (scriptAuditOnly_ && !ScriptAuditMember(name)) return fail("SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读脚本审计快照不读取白名单外成员。");
             if (name.size() > limits.pathBytes || name.size() > limits.totalPathBytes - paths)
                 return fail("EXACT_MEMBER_LIMIT", "明确来源请求路径超过单项或累计预算。");
             paths += name.size();
@@ -615,6 +632,7 @@ std::vector<MapArchiveMember> MapArchiveSession::MembersAfter(
 
 Result<MapArchiveSession> MapArchiveSession::AfterSave(const ArchiveSaveResult& written,
     std::span<const MemberReplacement> replacements, std::span<const std::string> removals) const {
+    if (scriptAuditOnly_) return Result<MapArchiveSession>::Failure("MapArchiveSession", "SCRIPT_AUDIT_READ_ONLY", "只读脚本审计快照不能切换保存基线。");
     try {
         FileHandle file(CreateFileW(written.path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -703,6 +721,7 @@ Status MapArchiveSession::PreflightSave(std::span<const MemberReplacement> repla
 Result<ArchiveSaveResult> MapArchiveSession::WriteCandidate(
     const std::filesystem::path& targetPath, std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals, bool hashSource, bool preflight) const {
+    if (scriptAuditOnly_) return Result<ArchiveSaveResult>::Failure("MapArchiveSession", "SCRIPT_AUDIT_READ_ONLY", "只读脚本审计快照不能写出地图。");
     try {
         // 租约句柄不共享写入与删除：持有期间源图内容不会变化，只需在开头散列一次，
         // 之后的检查只核对文件身份与路径指向。调用方已在外层租约下散列过时（原地保存）跳过散列。

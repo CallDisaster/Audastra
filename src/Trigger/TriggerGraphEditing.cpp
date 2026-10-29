@@ -531,7 +531,7 @@ struct Editor {
             auto removed = TriggerDocumentEditor::RemoveEcaSubtree(doc, *id.value); return {std::move(removed.diagnostics)};
         }
         auto resolved = op; resolved.target.id = *id.value; resolved.target.clientKey.clear();
-        if (auto checked = CheckDeclarationRemovalAudit(doc, catalog, resolved, mapObjects); !checked.Succeeded()) return checked;
+        if (auto checked = CheckDeclarationRemovalAudit(doc, catalog, resolved, mapObjects, &limits.removalPreprocessProvider); !checked.Succeeded()) return checked;
         receipt.removalAudits.insert(receipt.removalAudits.end(), op.codeAudits.begin(), op.codeAudits.end());
         if (op.target.kind == GraphRecordKind::Variable) return TriggerDocumentEditor::RemoveVariable(doc, name);
         if (Find(doc.triggers, *id.value)->customTextFlag) return Fail("TRIGGER_GRAPH_CUSTOM_READ_ONLY", "不能删除既有自定义代码槽。");
@@ -1192,7 +1192,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
             operation.target = found->second;
         }
     }
-    return QueryDeclarationRemovalAudit(candidate, catalog, operation, objects);
+    return QueryDeclarationRemovalAudit(candidate, catalog, operation, objects, &limits.removalPreprocessProvider);
 }
 
 } // namespace War3Map::Trigger

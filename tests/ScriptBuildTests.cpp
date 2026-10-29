@@ -6,6 +6,7 @@
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Script/ScriptPreprocessSources.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
+#include "War3MapCore/Script/RemovalPreprocess.h"
 #include "War3MapCore/Script/ScriptQueries.h"
 #include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include "War3MapCore/Jass/IdentifierRewrite.h"
@@ -1075,6 +1076,75 @@ void TestFrameworkPlugins(const std::filesystem::path& root) {
     Require(comment.Succeeded(), "a plugin name inside a comment does not trigger the plugin");
 }
 
+void TestRemovalPreprocessing(const std::filesystem::path& root) {
+    const auto tool = root / "tool", ui = tool / "share/mpq", map = root / "map";
+    WriteText(ui / "config", "base\n");
+    WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
+    WriteText(tool / "plugin/wave/include/WaveForce.i", "#define FORCE_VALUE 11\n");
+    WriteText(tool / "jass/system/ht/common.j", "// original fixture\n");
+    WriteText(tool / "jass/system/ht/blizzard.j", "// original fixture\n");
+    WriteText(map / "dep.j", "function Dependency takes nothing returns nothing\nendfunction\n");
+    const auto layout = ResolveScriptToolchainLayout({tool, 24, 127});
+    const auto catalog = Trigger::UiCatalog::Load(ui);
+    Require(layout.Succeeded() && catalog.Succeeded(), "removal real fixture layout/catalog");
+    auto profile = MakeLegacyFrameworkProfile(*layout.value, *catalog.value, ui, map);
+    Require(profile.Succeeded(), "removal profile");
+    const auto framework = CaptureScriptFrameworkInputs(*profile.value, *layout.value, *catalog.value);
+    Require(framework.Succeeded(), "removal owned framework");
+    auto created = Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value); Require(created.Succeeded(), "removal sealed document");
+    auto doc = *created.value;
+    auto category = Trigger::TriggerDirectoryEditor::AddCategory(doc, "Original"); Require(category.Succeeded(), "removal category");
+    auto target = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "Target"); Require(target.Succeeded(), "removal target");
+    doc.wct.customCode = Trigger::RawText{"#include \"dep.j\"\n"};
+    Trigger::GraphRemove op; op.target = {Trigger::GraphRecordKind::Trigger, *target.value, {}}; op.expectedName = "Target";
+    op.parent = {Trigger::GraphParentKind::CategoryTriggers, {Trigger::GraphRecordKind::Category, *category.value, {}}, {}, {{Trigger::GraphRecordKind::Trigger, *target.value, {}}}};
+    Trigger::RemovalPreprocessProvider provider = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto&) {
+        MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions;
+        return CaptureRemovalPreprocessCoverage(inputs, *framework.value);
+    };
+    const auto query = [&] { return Trigger::QueryDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); };
+    const auto confirm = [&](const Trigger::DeclarationRemovalReview& review) {
+        op.codeAudits.clear();
+        if (review.groupableCount) {
+            Trigger::RemovalCodeConfirmation group{review.reviewSha256, "no_reference", "reviewed original grouped source", {}};
+            group.group = Trigger::RemovalCodeConfirmation::Group{review.groupableCount, review.groupableSha256}; op.codeAudits.push_back(group);
+        }
+        for (const auto& block : review.individualBlocks) op.codeAudits.push_back({review.reviewSha256, "no_reference", "reviewed original macro evidence", {block.identity}});
+    };
+    auto review = query(); Require(review.Succeeded() && review.value->complete && review.value->includedFileCount >= 2, "actual include/force-include coverage complete");
+    confirm(*review.value);
+    Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "original dependency can be confirmed");
+    WriteText(map / "dep.j", "// content changed\n");
+    Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "dependency change invalidates old confirmation");
+    WriteText(map / "dep.j", "call TriggerExecute(gg_trg_Target)\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty(), "included reference has complete evidence");
+    Require(std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& block) {
+        return std::any_of(block.evidence.begin(), block.evidence.end(), [](const auto& hit) { return hit.definite && hit.sourceFile.ends_with("dep.j") && hit.sourceLine == 1; });
+    }), "include evidence mapped to actual file/line");
+    confirm(*review.value); Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "included target reference refuses deletion");
+    WriteText(map / "dep.j", "#define Alias gg_trg_Target\n");
+    review = query(); Require(review.Succeeded() && review.value->complete, "macro target body covered");
+    confirm(*review.value); Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "macro alias target refuses deletion even unused");
+    WriteText(map / "dep.j", "#define gg_trg_Target hidden\n");
+    review = query(); Require(review.Succeeded() && review.value->complete, "macro name target covered");
+    confirm(*review.value); Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "macro name cannot hide target");
+    WriteText(map / "dep.j", "#define JOIN(a,b) a ## b\nJOIN(unrelated,Name)\n");
+    review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty() && review.value->individualBlocks.front().dynamic, "invoked paste macro needs individual confirmation");
+    confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "explicit paste macro review permits unrelated deletion");
+    Trigger::TriggerGraphEditLimits limits; limits.removalPreprocessProvider = provider;
+    auto copy = doc; auto binding = Trigger::CaptureTriggerGraphBinding(copy, *catalog.value); Require(binding.Succeeded(), "preprocess preview binding");
+    Require(Trigger::ApplyTriggerGraphEditBatch(copy, *catalog.value, {*binding.value, {op}}, limits).Succeeded(), "same provider used at actual in-memory publication");
+    std::filesystem::remove(map / "dep.j");
+    review = query(); Require(review.Succeeded() && !review.value->complete, "missing include incomplete");
+    doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"};
+    review = query(); Require(review.Succeeded() && !review.value->complete, "AI suffix rejected before any file read");
+    doc.wct.customCode = Trigger::RawText{"#if (\n#endif\n"};
+    review = query(); Require(review.Succeeded() && !review.value->complete, "failed preprocessing incomplete");
+    doc.wct.customCode = Trigger::RawText{"//! textmacro Original\n"};
+    review = query(); Require(review.Succeeded() && !review.value->complete, "vJass directives remain incomplete");
+    doc.wct.customCode = Trigger::RawText{"<? original ?>\n"};
+    review = query(); Require(review.Succeeded() && !review.value->complete, "Lua templates remain incomplete");
+}
 void TestFrameworkPipeline(const std::filesystem::path& root) {
     const auto tool = root / "framework", ui = tool / "share" / "mpq", map = root / "map-source";
     WriteText(ui / "config", "base\n");
@@ -2051,6 +2121,7 @@ int main() {
         TestToolRoot(root / "tools");
         TestToolchainLayouts(root / "layouts");
         TestFrameworkPipeline(root / "framework");
+        TestRemovalPreprocessing(root / "remove-preprocess");
         TestFrameworkPlugins(root / "framework-plugins");
         TestNamesAndTerrain();
         TestObjectCodeEditAndCompilation(root / "object-code");
