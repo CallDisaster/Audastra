@@ -667,6 +667,7 @@ private:
                 {"binding", Binding(edited.value->after)}, {"applied_operations", QString::number(edited.value->appliedOperations)},
                 {"created", created}, {"saved", false}, {"runtime_verified", false}};
             if (codeIdentity) result.insert("code_identity", Mcp::CodeIdentitySummaryJson(summary));
+            result.insert("diagnostics", Mcp::DiagnosticsJson(edited.diagnostics).value("diagnostics"));
             result.insert("dry_run", dryRun);
             result.insert("published", !dryRun && (edited.value->before.currentWtgSha256 != edited.value->after.currentWtgSha256
                 || edited.value->before.currentWctSha256 != edited.value->after.currentWctSha256));

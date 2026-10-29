@@ -957,7 +957,12 @@ struct Editor {
         std::optional<std::vector<char>> inactive;
         std::map<StableId, std::vector<LocalVariable>> replacementLocals;
         for (const auto id : typedVariables) if (const auto* row = Find(doc.variables, id)) {
-            if (auto status = ValidateVariable(*row); !status.Succeeded()) return status;
+            auto status = ValidateVariable(*row);
+            if (!status.Succeeded()) return status;
+            for (auto& diagnostic : status.diagnostics) {
+                diagnostic.message += "（variable_id=" + std::to_string(row->id) + "，变量“" + row->name.text + "”初值）";
+                failures.diagnostics.push_back(std::move(diagnostic));
+            }
         }
         for (const auto& eca : doc.ecaNodes) for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
             const auto& argument = doc.argumentNodes[eca.arguments[i]];
@@ -1015,7 +1020,7 @@ struct Editor {
             if (!safety.Succeeded()) return Status{safety.diagnostics};
             if (!limits.storageCapabilities && limits.storageCapabilityProvider) {
                 std::set<std::string> required;
-                for (const auto& issue : safety.value->issues) if (!issue.storageType.empty()) required.insert(issue.storageType);
+                for (const auto& issue : safety.value->issues) if (issue.enabled && !issue.storageType.empty()) required.insert(issue.storageType);
                 if (!required.empty()) {
                     const std::vector<std::string> names(required.begin(), required.end());
                     const auto captured = limits.storageCapabilityProvider(names);

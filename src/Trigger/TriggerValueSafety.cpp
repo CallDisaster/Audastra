@@ -17,6 +17,10 @@ std::optional<bool> TriggerStorageCapabilities::Supports(std::string_view catalo
     const auto found = supported_.find(type);
     return found == supported_.end() ? std::nullopt : std::optional(found->second);
 }
+Status TriggerStorageCapabilities::Validate() const {
+    if (!verifySources_) return Status::Failure("Trigger.Value", "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "存取能力快照没有来源核验。");
+    return verifySources_();
+}
 std::vector<std::string> RequiredTriggerStorageTypes(const TriggerDocument& document, const UiCatalog& catalog) {
     const TriggerTypeSystem types(catalog);
     std::set<std::string> required;
@@ -34,6 +38,7 @@ std::vector<std::string> RequiredTriggerStorageTypes(const TriggerDocument& docu
 Result<TriggerValueSafetyReport> AnalyzeTriggerValues(const TriggerDocument& document, const UiCatalog& catalog,
     std::span<const StableId> affectedArguments, const TriggerStorageCapabilities* capabilities) {
     using Output = Result<TriggerValueSafetyReport>;
+    if (capabilities) if (const auto valid = capabilities->Validate(); !valid.Succeeded()) return {std::nullopt, valid.diagnostics};
     if (document.argumentNodes.size() > 524288 || document.ecaNodes.size() > 524288)
         return Output::Failure("Trigger.Value", "TRIGGER_VALUE_CHECK_BUDGET", "参数安全检查超出图规模预算。");
     const TriggerTypeSystem types(catalog);

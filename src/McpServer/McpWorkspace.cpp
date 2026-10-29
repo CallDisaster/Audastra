@@ -1,5 +1,7 @@
 #include "McpWorkspace.h"
 #include "McpWorkspaceObjectsState.h"
+#include "McpToolInternal.h"
+#include "War3MapCore/Script/TriggerStorageCapabilities.h"
 
 #include "War3MapCore/CompatibilityProfile.h"
 #include "War3MapCore/Hash.h"
@@ -885,7 +887,14 @@ Result<Trigger::TriggerGraphEditReceipt> McpWorkspace::ApplyGraphEdit(
         return FailureFrom<Trigger::TriggerGraphEditReceipt>(objects);
     const auto* references = !batch.expected.mapObjectReferencesSha256.empty() && objects.Succeeded() && objects.value
         ? objects.value->get() : nullptr;
-    auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, catalog_, batch, {}, references);
+    Trigger::TriggerGraphEditLimits limits;
+    limits.storageCapabilityProvider = [&](std::span<const std::string> names) {
+        const auto root = HostConfiguredSaveRoot("FORGE_MCP_YDWE_ROOT");
+        if (!root.Succeeded()) return Result<std::shared_ptr<const Trigger::TriggerStorageCapabilities>>::Failure(
+            "Trigger.Value", "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "宿主未配置实际工具链根，不能确认扩展存取支持。");
+        return Script::CaptureMapTriggerStorageCapabilities(catalog_, *root.value, uiDataRoot_, projectRoot_, names);
+    };
+    auto edited = Trigger::ApplyTriggerGraphEditBatch(candidate, catalog_, batch, limits, references);
     if (!edited.Succeeded()) return edited;
     if (prepublish) {
         const auto checked = prepublish(activeEdit_->document, candidate, *edited.value);

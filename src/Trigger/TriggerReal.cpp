@@ -15,8 +15,7 @@ std::string_view Trim(std::string_view value) {
 bool Risk(std::string_view value) {
     if (value.starts_with('-')) value.remove_prefix(1);
     const auto dot = value.find('.');
-    const auto last = value.find_last_not_of('0');
-    if (dot != value.npos && last != value.npos && last > dot && last - dot > 9) return true;
+    if (dot != value.npos && value.size() - dot - 1 > 9) return true;
     std::string digits;
     for (const char c : value) if (c >= '0' && c <= '9') digits += c;
     const auto first = digits.find_first_not_of('0');

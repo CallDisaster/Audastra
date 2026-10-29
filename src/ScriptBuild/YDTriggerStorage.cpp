@@ -54,12 +54,12 @@ std::string HandlePage(std::string_view handle) {
 
 TableWrap UserDataTableWrap(std::string_view type) {
     // 布尔值、角度与文件路径类型在 YDWE 头文件中没有可用的转换（展开为未定义名称），按未知类型处理。
-    const auto* entry = FindType(type);
-    if (entry == nullptr || type == "boolean" || type == "radian" || type == "degree" || type == "imagefile" ||
+    const auto storage = StorageFor(type, false);
+    if (!storage.known || type == "boolean" || type == "radian" || type == "degree" || type == "imagefile" ||
         type == "modelfile" || type == "StringExt") {
         return {"YDTRIGGER_ANY2I_" + std::string(type) + "(", ")", false};
     }
-    if (!entry->handle) {
+    if (storage.have != "HaveSavedHandle") {
         if (type == "real") return {"R2I(", ")", true};
         if (type == "string") return {"StringHash(", ")", true};
         return {"", "", true};

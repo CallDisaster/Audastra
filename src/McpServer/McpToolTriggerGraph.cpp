@@ -1121,6 +1121,7 @@ void RegisterTriggerGraphTools(McpServer& server) {
             const auto result = workspace->ApplyGraphEdit(envelope.value->first, envelope.value->second, *batch.value, {}, dryRun);
             if (!result.Succeeded()) return Failure(result);
             auto payload = GraphReceipt(*result.value, *workspace); payload.insert("dry_run", dryRun);
+            payload.insert("diagnostics", DiagnosticsJson(result.diagnostics).value("diagnostics"));
             payload.insert("published", !dryRun && (result.value->before.currentWtgSha256 != result.value->after.currentWtgSha256 || result.value->before.currentWctSha256 != result.value->after.currentWctSha256));
             if (codeIdentity) payload.insert("code_identity", CodeIdentitySummaryJson(summary));
             return payload;

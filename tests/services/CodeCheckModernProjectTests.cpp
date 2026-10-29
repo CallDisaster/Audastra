@@ -8,6 +8,7 @@
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
+#include "War3MapCore/Script/TriggerStorageCapabilities.h"
 #include "../MapDataFixtures.h"
 #include "../AuxiliarySaveFixtures.h"
 
