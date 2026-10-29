@@ -897,10 +897,7 @@ void TriggerModuleTests::DeleteListsCodeReferences() {
     QTemporaryDir root;
     QVERIFY(root.isValid());
     QtProject::EditorProject project;
-    const std::string header = "function UsesSpawn takes nothing returns nothing
-    call TriggerExecute(gg_trg_Spawn)
-endfunction
-";
+    const std::string header = "function UsesSpawn takes nothing returns nothing\n    call TriggerExecute(gg_trg_Spawn)\nendfunction\n";
     QVERIFY(InstallCodeProject(project, root.path().toStdWString(), false, header));
     Modules::TriggerModule module(project);
     auto* page = module.Widget(); page->resize(1450, 900); page->show();
