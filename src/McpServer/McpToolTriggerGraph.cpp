@@ -3,6 +3,7 @@
 #include "McpTriggerCodeIdentity.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/TriggerRemovalAudit.h"
 #include "War3MapCore/Trigger/LegacyTriggerReferences.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
@@ -273,6 +274,28 @@ public:
         audit.reason = String(object, "reason");
         return audit;
     }
+    RemovalCodeConfirmation RemovalAudit(const QJsonValue& value) {
+        Count();
+        const auto object = Object(value, {"review_sha256", "decision", "reason", "blocks"});
+        RemovalCodeConfirmation audit{Sha(object, "review_sha256"), String(object, "decision"), String(object, "reason"), {}};
+        for (const auto& entry : Array(object, "blocks")) {
+            Count();
+            const auto block = Object(entry, {"kind", "id", "encoding", "source_sha256", "evidence_sha256"});
+            const auto kind = String(block, "kind");
+            RemovalBlockIdentity identity;
+            if (kind == "global_custom_code") identity.kind = AtomicRenameCodeKind::GlobalCustomCode;
+            else if (kind == "trigger_custom_code") identity.kind = AtomicRenameCodeKind::TriggerCustomCode;
+            else if (kind == "argument_code") identity.kind = AtomicRenameCodeKind::ArgumentCode;
+            else if (kind == "variable_initial_value") identity.kind = AtomicRenameCodeKind::VariableInitialValue;
+            else throw GraphJsonError("未知删除代码审计kind。");
+            identity.id = Id(block, "id", identity.kind == AtomicRenameCodeKind::GlobalCustomCode);
+            if (identity.kind == AtomicRenameCodeKind::GlobalCustomCode && identity.id) throw GraphJsonError("全局代码块id必须为0。");
+            identity.encoding = Encoding(String(block, "encoding"));
+            identity.sourceSha256 = Sha(block, "source_sha256"); identity.evidenceSha256 = Sha(block, "evidence_sha256");
+            audit.blocks.push_back(std::move(identity));
+        }
+        return audit;
+    }
     GraphField Field(std::string_view text) {
         if (text == "comment") return GraphField::Comment;
         if (text == "description") return GraphField::Description;
@@ -352,8 +375,10 @@ public:
                 if (object.contains("before")) move.before = Ref(object.value("before"));
                 batch.operations.emplace_back(std::move(move));
             } else if (op == "remove") {
-                const auto object = Object(value, {"op", "target", "expected_name", "parent"});
-                batch.operations.emplace_back(GraphRemove{Ref(object.value("target")), String(object, "expected_name"), Parent(object.value("parent"))});
+                const auto object = Object(value, {"op", "target", "expected_name", "parent"}, {"code_audits"});
+                GraphRemove remove{Ref(object.value("target")), String(object, "expected_name"), Parent(object.value("parent"))};
+                if (object.contains("code_audits")) for (const auto& audit : Array(object, "code_audits")) remove.codeAudits.push_back(RemovalAudit(audit));
+                batch.operations.emplace_back(std::move(remove));
             } else if (op == "insert_subtree") {
                 const auto object = Object(value, {"op", "parent", "root"}, {"before"});
                 GraphInsertSubtree insert; insert.parent = Parent(object.value("parent")); insert.root = std::make_shared<const GraphEcaValue>(Eca(object.value("root")));
@@ -416,9 +441,47 @@ QJsonValue OptionalIndex(const TriggerDocument& document, const std::optional<st
 QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& catalog,
     const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}) {
     Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "include_replacement_guard",
-        "functions", "ui_layer", "trigger_id", "category_id", "type", "match"});
+        "functions", "ui_layer", "trigger_id", "category_id", "type", "match", "plan", "operation_index"});
     if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
     const auto table = String(request, "table");
+    if (table == "remove_audit") {
+        Object(request, {"table", "plan", "operation_index"}, {"schema_version"});
+        if (!request.value("plan").isObject()) throw GraphJsonError("plan须为同一图批次对象。");
+        const auto index = Integer(request, "operation_index");
+        if (index < 0) throw GraphJsonError("operation_index须为非负整数。");
+        const auto plan = DecodeGraphBatch(request.value("plan").toObject()); if (!plan.Succeeded()) return Failure(plan);
+        const auto review = QueryDeclarationRemovalAudit(document, catalog, *plan.value, static_cast<std::size_t>(index), {}, mapObjects);
+        if (!review.Succeeded()) return Failure(review);
+        const auto rows = [](const auto& blocks) {
+            QJsonArray result;
+            for (const auto& block : blocks) {
+                const auto& b = block.identity;
+                const char* kind = b.kind == AtomicRenameCodeKind::GlobalCustomCode ? "global_custom_code"
+                    : b.kind == AtomicRenameCodeKind::TriggerCustomCode ? "trigger_custom_code"
+                    : b.kind == AtomicRenameCodeKind::ArgumentCode ? "argument_code" : "variable_initial_value";
+                QJsonArray evidence;
+                for (const auto& hit : block.evidence) evidence.append(QJsonObject{{"context", QString::fromStdString(hit.context)},
+                    {"text", QString::fromStdString(hit.text)}, {"decoded_byte_offset", QString::number(hit.decodedByteOffset)},
+                    {"decoded_byte_length", QString::number(hit.decodedByteLength)}, {"line", QString::number(hit.line)},
+                    {"column", QString::number(hit.column)}, {"raw_byte_offset", QString::number(hit.rawByteOffset)},
+                    {"raw_byte_length", QString::number(hit.rawByteLength)}, {"raw_range_exact", hit.rawRangeExact}, {"definite", hit.definite}});
+                result.append(QJsonObject{{"identity", QJsonObject{{"kind", kind}, {"id", QString::number(b.id)}, {"encoding", EncodingName(b.encoding)},
+                    {"source_sha256", QString::fromStdString(b.sourceSha256)}, {"evidence_sha256", QString::fromStdString(b.evidenceSha256)}}},
+                    {"complete", block.complete}, {"dynamic", block.dynamic}, {"referenced", block.referenced}, {"evidence", evidence}});
+            }
+            return result;
+        };
+        QJsonArray symbols, typed;
+        for (const auto& symbol : review.value->symbols) symbols.append(QString::fromStdString(symbol));
+        for (const auto id : review.value->typedArgumentIds) typed.append(QString::number(id));
+        QJsonObject result{{"ok", true}, {"schema_version", 1}, {"table", "remove_audit"}, {"binding", BindingJson(review.value->binding)},
+            {"review_sha256", QString::fromStdString(review.value->reviewSha256)}, {"symbols", symbols}, {"typed_argument_ids", typed},
+            {"complete", review.value->complete}, {"groupable_blocks", rows(review.value->groupableBlocks)},
+            {"individual_blocks", rows(review.value->individualBlocks)}, {"external_dependencies_verified", false}};
+        if (static_cast<std::size_t>(QJsonDocument(result).toJson(QJsonDocument::Compact).size()) > kResponseBytes)
+            throw GraphJsonError("完整删除审计超过回执预算，未截断放行。", "MCP_TRIGGER_GRAPH_RESPONSE_BUDGET");
+        return result;
+    }
     if (table == "trigger_text") {
         // 整个触发器导出为紧凑 T 写法，可直接修改后用 replace_trigger_text 写回。
         Object(request, {"table", "trigger_id"}, {"schema_version"});
@@ -804,10 +867,13 @@ QJsonObject GraphReceipt(const TriggerGraphEditReceipt& receipt, McpWorkspace& w
             {"before_subtree_sha256", QString::fromStdString(replace.beforeSubtreeSha256)},
             {"after_subtree_sha256", QString::fromStdString(replace.afterSubtreeSha256)},
             {"removed_ecas", QString::number(replace.removedEcas)}, {"removed_arguments", QString::number(replace.removedArguments)}});
+    QJsonArray removals;
+    for (const auto& audit : receipt.removalAudits) removals.append(QJsonObject{{"review_sha256", QString::fromStdString(audit.reviewSha256)},
+        {"block_count", QString::number(audit.blocks.size())}, {"coverage", "CallerAssertedNotRuntimeProven"}});
     return {{"ok", true}, {"schema_version", 1}, {"before", BindingJson(receipt.before)}, {"binding", BindingJson(receipt.after)},
         {"revision", RevisionJson(workspace.Revision())}, {"transaction_active", workspace.HasActiveTransaction()},
         {"applied_operations", QString::number(receipt.appliedOperations)}, {"created", created}, {"renames", renames},
-        {"argument_replacements", replacements},
+        {"argument_replacements", replacements}, {"removal_audits", removals},
         {"external_dependencies_verified", false}, {"saved", false}, {"runtime_verified", false}};
 }
 
@@ -858,7 +924,8 @@ QJsonObject GraphSchema() {
         {"op", "target", "expected_name", "name"}));
     // move：from+to(+before) 为带完整顺序 guard 的移动；省略 from/to 时只给 before 或 after 之一做轻量移动（触发器/类别）。
     variants.append(Shape({{"op", op("move")}, {"target", ref}, {"from", parent}, {"to", parent}, {"before", ref}, {"after", ref}}, {"op", "target"}));
-    variants.append(Shape({{"op", op("remove")}, {"target", ref}, {"expected_name", string}, {"parent", parent}}, {"op", "target", "expected_name", "parent"}));
+    variants.append(Shape({{"op", op("remove")}, {"target", ref}, {"expected_name", string}, {"parent", parent},
+        {"code_audits", ArraySchema(GraphRemovalCodeAuditSchema())}}, {"op", "target", "expected_name", "parent"}));
     variants.append(Shape({{"op", op("insert_subtree")}, {"parent", parent}, {"root", ecaRef}, {"before", ref}}, {"op", "parent", "root"}));
     variants.append(Shape({{"op", op("replace_argument")}, {"target", ref}, {"expected", argumentGuard}, {"value", argumentRef}},
         {"op", "target", "expected", "value"}));
@@ -919,6 +986,27 @@ QJsonObject GraphRenameCodeAuditSchema() {
         {"kind", "id", "encoding", "source_sha256", "ui_catalog_sha256", "old_name", "new_name", "old_symbol", "new_symbol", "reason"});
 }
 
+QJsonObject GraphRemovalCodeAuditSchema() {
+    auto block = GraphRenameCodeAuditSchema();
+    auto fields = block.value("properties").toObject();
+    for (const auto* key : {"ui_catalog_sha256", "old_name", "new_name", "old_symbol", "new_symbol", "reason"}) fields.remove(key);
+    fields.insert("evidence_sha256", fields.value("source_sha256"));
+    block = Shape(fields, {"kind", "id", "encoding", "source_sha256", "evidence_sha256"});
+    return Shape({{"review_sha256", fields.value("source_sha256")},
+        {"decision", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"no_reference"}}}}, {"reason", StringSchema()},
+        {"blocks", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16384}, {"items", block}}}},
+        {"review_sha256", "decision", "reason", "blocks"});
+}
+Result<std::vector<RemovalCodeConfirmation>> DecodeGraphRemovalCodeAudits(const QJsonArray& audits) {
+    try {
+        if (audits.size() > static_cast<qsizetype>(kRecords) || static_cast<std::size_t>(QJsonDocument(audits).toJson(QJsonDocument::Compact).size()) > kRequestBytes)
+            throw GraphJsonError("删除审计超过请求预算。", "MCP_TRIGGER_GRAPH_REQUEST_BUDGET");
+        GraphReader reader; std::vector<RemovalCodeConfirmation> result;
+        for (const auto& audit : audits) result.push_back(reader.RemovalAudit(audit));
+        return Result<std::vector<RemovalCodeConfirmation>>::Success(std::move(result));
+    } catch (const GraphJsonError& failure) { return Result<std::vector<RemovalCodeConfirmation>>::Failure("MCP", failure.code, failure.what()); }
+}
+
 Result<std::vector<Trigger::AtomicRenameCodeAudit>> DecodeGraphRenameCodeAudits(const QJsonArray& audits) {
     try {
         if (audits.size() > static_cast<qsizetype>(kRecords)
@@ -957,7 +1045,8 @@ QJsonObject GraphQueryProperties() {
     const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
     return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
-            "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline", "legacy_trigger_references"}}}},
+            "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline", "legacy_trigger_references", "remove_audit"}}}},
+        {"plan", GraphOperationSchema()}, {"operation_index", QJsonObject{{"type", "integer"}, {"minimum", 0}}},
         {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
         {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},

@@ -1,4 +1,5 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/TriggerRemovalAudit.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -113,7 +114,16 @@ struct RequestBudget {
             } else if constexpr (std::is_same_v<T, GraphMove>) {
                 return Ref(item.target) && Parent(item.from) && Parent(item.to) && (!item.before || Ref(*item.before));
             } else if constexpr (std::is_same_v<T, GraphRemove>) {
-                return Ref(item.target) && AddText(item.expectedName) && Parent(item.parent);
+                if (!Ref(item.target) || !AddText(item.expectedName) || !Parent(item.parent) || item.codeAudits.size() > 16384) return false;
+                std::size_t blocks = 0;
+                for (const auto& audit : item.codeAudits) {
+                    if (!AddText(audit.reviewSha256) || !AddText(audit.decision) || !AddText(audit.reason)) return false;
+                    if (audit.blocks.size() > 16384 - blocks) return false;
+                    blocks += audit.blocks.size();
+                    for (const auto& block : audit.blocks)
+                        if (!AddText(block.sourceSha256) || !AddText(block.evidenceSha256)) return false;
+                }
+                return true;
             } else if constexpr (std::is_same_v<T, GraphReplaceArgument>) {
                 return Ref(item.target) && AddText(item.expected.uiSignature) && AddText(item.expected.expectedType)
                     && AddText(item.expected.subtreeSha256) && Arg(item.value, 0, true);
@@ -476,18 +486,6 @@ struct Editor {
         }
         return Position(op.target.kind, *id.value, parent, before);
     }
-    bool HasOpaqueCode() const {
-        if (!doc.wct.customCode.text.empty()) return true;
-        for (const auto& row : doc.triggers) if (!row.customText.text.empty()) return true;
-        for (const auto& row : doc.ecaNodes) {
-            for (std::size_t i = 0; i < row.arguments.size(); ++i)
-                if (types.LiteralKind(types.ExpectedType(doc, row, i)) == TriggerTypeSystem::Literal::Script) return true;
-        }
-        for (const auto& row : doc.variables) if (row.hasDefault && !FindPreset(catalog, row.value.text)
-                && row.value.text != "null" && (types.LiteralKind(row.typeName.text) == TriggerTypeSystem::Literal::Other
-                    || types.LiteralKind(row.typeName.text) == TriggerTypeSystem::Literal::Script)) return true;
-        return false;
-    }
     Status Apply(const GraphRemove& op) {
         const auto id = Resolve(op.target); if (!id.Succeeded()) return {id.diagnostics};
         if (auto status = Guard(op.parent, *id.value); !status.Succeeded()) return status;
@@ -505,13 +503,9 @@ struct Editor {
         if (op.target.kind == GraphRecordKind::Eca) {
             auto removed = TriggerDocumentEditor::RemoveEcaSubtree(doc, *id.value); return {std::move(removed.diagnostics)};
         }
-        if (HasOpaqueCode()) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "不透明代码仍可能引用声明，通用删除未获得完整引用资格。");
-        const bool variable = op.target.kind == GraphRecordKind::Variable;
-        const auto* trigger = variable ? nullptr : Find(doc.triggers, *id.value);
-        for (const auto& arg : doc.argumentNodes) if (arg.type == 1 && (variable
-                ? arg.value.text == "udg_" + name || arg.value.text == name
-                : TriggerDirectoryEditor::IsTriggerSymbolOf(arg.value.text, trigger->name)))
-            return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "声明仍有 typed 参数引用，须先在同批次移除或改绑它们。");
+        auto resolved = op; resolved.target.id = *id.value; resolved.target.clientKey.clear();
+        if (auto checked = CheckDeclarationRemovalAudit(doc, catalog, resolved, mapObjects); !checked.Succeeded()) return checked;
+        receipt.removalAudits.insert(receipt.removalAudits.end(), op.codeAudits.begin(), op.codeAudits.end());
         if (op.target.kind == GraphRecordKind::Variable) return TriggerDocumentEditor::RemoveVariable(doc, name);
         if (Find(doc.triggers, *id.value)->customTextFlag) return Fail("TRIGGER_GRAPH_CUSTOM_READ_ONLY", "不能删除既有自定义代码槽。");
         auto removed = TriggerDocumentEditor::RemoveTrigger(doc, *id.value); return {std::move(removed.diagnostics)};
@@ -1089,5 +1083,30 @@ Result<TriggerGraphEditReceipt> ApplyTriggerGraphEditBatch(TriggerDocument& docu
 }
 
 #include "TriggerGraphScalarReplay.h"
+
+Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocument& document, const UiCatalog& catalog,
+    const TriggerGraphEditBatch& batch, std::size_t operationIndex, const TriggerGraphEditLimits& limits,
+    const MapObjectReferenceSnapshot* objects) {
+    using Out = Result<DeclarationRemovalReview>;
+    if (const auto status = CheckGraphBatchRequest(batch, limits); !status.Succeeded()) return Failed<DeclarationRemovalReview>(status);
+    if (operationIndex >= batch.operations.size() || !std::holds_alternative<GraphRemove>(batch.operations[operationIndex]))
+        return Out::Failure(kDomain, "TRIGGER_GRAPH_REMOVE_UNSUPPORTED", "operation_index必须指向remove操作。");
+    const auto binding = CaptureTriggerGraphBinding(document, catalog, objects);
+    if (!binding.Succeeded()) return Failed<DeclarationRemovalReview>(binding);
+    if (!SameBinding(*binding.value, batch.expected)) return Out::Failure(kDomain, "TRIGGER_GRAPH_SOURCE_STALE", "删除取证的来源修订已变化。");
+    auto candidate = document;
+    auto operation = std::get<GraphRemove>(batch.operations[operationIndex]);
+    if (operationIndex) {
+        auto prefix = batch; prefix.operations.resize(operationIndex);
+        const auto applied = ApplyTriggerGraphEditBatch(candidate, catalog, prefix, limits, objects);
+        if (!applied.Succeeded()) return Failed<DeclarationRemovalReview>(applied);
+        if (!operation.target.clientKey.empty()) {
+            const auto found = applied.value->created.find(operation.target.clientKey);
+            if (found == applied.value->created.end()) return Out::Failure(kDomain, "TRIGGER_GRAPH_TARGET_MISSING", "删除目标client_key未由前序操作创建。");
+            operation.target = found->second;
+        }
+    }
+    return QueryDeclarationRemovalAudit(candidate, catalog, operation, objects);
+}
 
 } // namespace War3Map::Trigger

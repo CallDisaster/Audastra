@@ -25,6 +25,8 @@ using GraphNameResolver = std::function<Services::NameResolution(std::string_vie
 [[nodiscard]] QJsonObject GraphVariableRowJson(const Trigger::VariableRecord& record);
 [[nodiscard]] QJsonObject GraphBindingJson(const Trigger::TriggerGraphBinding& binding);
 [[nodiscard]] QJsonObject GraphRenameCodeAuditSchema();
+[[nodiscard]] QJsonObject GraphRemovalCodeAuditSchema();
+[[nodiscard]] Result<std::vector<Trigger::RemovalCodeConfirmation>> DecodeGraphRemovalCodeAudits(const QJsonArray&);
 [[nodiscard]] Result<std::vector<Trigger::AtomicRenameCodeAudit>> DecodeGraphRenameCodeAudits(
     const QJsonArray& audits);
 [[nodiscard]] QJsonObject QueryGraphDocument(

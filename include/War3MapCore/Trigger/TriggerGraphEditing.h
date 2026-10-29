@@ -87,10 +87,22 @@ struct GraphMove {
     GraphParentExpectation from, to;
     std::optional<GraphRecordRef> before;
 };
+struct RemovalBlockIdentity {
+    AtomicRenameCodeKind kind = AtomicRenameCodeKind::GlobalCustomCode;
+    StableId id = 0;
+    TextEncoding encoding = TextEncoding::Utf8;
+    std::string sourceSha256, evidenceSha256;
+    bool operator==(const RemovalBlockIdentity&) const = default;
+};
+struct RemovalCodeConfirmation {
+    std::string reviewSha256, decision, reason;
+    std::vector<RemovalBlockIdentity> blocks;
+};
 struct GraphRemove {
     GraphRecordRef target;
     std::string expectedName;
     GraphParentExpectation parent;
+    std::vector<RemovalCodeConfirmation> codeAudits;
 };
 struct GraphInsertSubtree {
     GraphParentExpectation parent;
@@ -181,6 +193,7 @@ struct TriggerGraphEditReceipt {
     std::size_t appliedOperations = 0;
     std::map<std::string, GraphRecordRef> created;
     std::vector<AtomicRenameReceipt> renames;
+    std::vector<RemovalCodeConfirmation> removalAudits;
     std::vector<GraphArgumentReplacementReceipt> argumentReplacements;
     std::size_t codeIdentityChanges = 0;
     // 编辑收据不是撤销栈、外部引用证明、保存或运行证明。

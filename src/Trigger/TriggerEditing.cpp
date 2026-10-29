@@ -7,8 +7,10 @@
 #include "War3MapCore/Trigger/TriggerTypes.h"
 
 #include "TriggerIdAllocation.h"
+#include "TriggerCodeAuditBlocks.h"
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 #include <optional>
 #include <string_view>
@@ -646,9 +648,7 @@ Status CheckRenameCode(const TriggerDocument& document, const UiCatalog& catalog
                 "原子改名的代码审计原文超过 64 MiB 预算，未修改文档。");
         }
         codeBytes += bytes;
-        const auto raw = text.ToBytes();
-        if (!raw.Succeeded()) return {raw.diagnostics};
-        const auto sha = Sha256(*raw.value);
+        const auto sha = detail::CodeBlockSha256(text);
         if (!sha.Succeeded()) return {sha.diagnostics};
         const auto key = AuditKey(kind, id);
         const auto found = byBlock.find(key);
@@ -668,65 +668,8 @@ Status CheckRenameCode(const TriggerDocument& document, const UiCatalog& catalog
         byBlock.erase(found);
         return Status::Ok();
     };
-    if (auto status = check(AtomicRenameCodeKind::GlobalCustomCode, 0, document.wct.customCode);
-        !status.Succeeded()) return status;
-    for (const auto& trigger : document.triggers) {
-        if (auto status = check(AtomicRenameCodeKind::TriggerCustomCode, trigger.id, trigger.customText);
-            !status.Succeeded()) return status;
-    }
-    const TriggerTypeSystem types(catalog);
-    std::vector<std::string> expected(document.argumentNodes.size());
-    std::vector<bool> dispatchString(document.argumentNodes.size(), false);
-    for (const auto& eca : document.ecaNodes) {
-        const auto* definition = catalog.Find(eca.type, eca.name.text);
-        // Validate 已拒绝缺少定义/形状损坏，不能靠 audit 绕过结构门禁。
-        const auto script = DefinitionField(*definition, "script_name");
-        const auto alternate = DefinitionField(*definition, "script");
-        const bool dispatch = eca.name.text == "ExecuteFunc" || eca.name.text == "CustomScriptCode"
-            || eca.name.text == "YDWECustomScriptCode"
-            || (script && *script == "ExecuteFunc") || (alternate && *alternate == "ExecuteFunc");
-        for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
-            expected[eca.arguments[i]] = types.ExpectedType(document, eca, i);
-            dispatchString[eca.arguments[i]] = dispatch;
-        }
-    }
-    for (const auto& argument : document.argumentNodes) {
-        if (argument.indexArgument) expected[*argument.indexArgument] = "integer";
-    }
-    const auto literal = [&](std::string_view type, std::string_view value) {
-        const auto kind = types.LiteralKind(type);
-        if (kind == TriggerTypeSystem::Literal::String) return true;
-        if (kind == TriggerTypeSystem::Literal::Integer || kind == TriggerTypeSystem::Literal::Real
-            || kind == TriggerTypeSystem::Literal::Boolean || kind == TriggerTypeSystem::Literal::ObjectCode)
-            return types.ValidateLiteral(type, value).Succeeded();
-        return value == "null"; // 句柄零值；其它未知直接值不猜成安全表达式。
-    };
-    for (std::size_t i = 0; i < document.argumentNodes.size(); ++i) {
-        const auto& argument = document.argumentNodes[i];
-        bool opaque = argument.type != 0 && argument.type != 1 && argument.type != 2
-            && !literal(expected[i], argument.value.text);
-        if (argument.type == 0) {
-            const auto preset = FindPreset(catalog, argument.value.text);
-            // 固定目录预设不改；明文包含本次生成符号时仍需审计，防漏过预设中的引用。
-            opaque = !preset || preset->script.find(receipt.oldSymbol) != std::string::npos;
-        }
-        // 原版自定义脚本槽虽声明 string，生产生成器按代码处理；动态 ExecuteFunc 也不能
-        // 由参数的字符串/变量标签证明目标无关。包括函数来源的动态入口均显式审计。
-        opaque = opaque || dispatchString[i];
-        if (opaque) {
-            if (auto status = check(AtomicRenameCodeKind::ArgumentCode, argument.id, argument.value);
-                !status.Succeeded()) return status;
-        }
-    }
-    for (const auto& variable : document.variables) {
-        if (!variable.value.text.empty() && !literal(variable.typeName.text, variable.value.text)) {
-            const auto preset = FindPreset(catalog, variable.value.text);
-            if (!preset || preset->script.find(receipt.oldSymbol) != std::string::npos) {
-                if (auto status = check(AtomicRenameCodeKind::VariableInitialValue, variable.id, variable.value);
-                    !status.Succeeded()) return status;
-            }
-        }
-    }
+    const std::array symbols{receipt.oldSymbol};
+    if (auto status = detail::VisitOpaqueCodeBlocks(document, catalog, symbols, check); !status.Succeeded()) return status;
     if (!byBlock.empty()) {
         return Status::Failure("Trigger.Edit", "TRIGGER_RENAME_CODE_AUDIT_STALE",
             "审计包含当前文档未消费的代码块；拒绝旧槽位、错误种类或冗余放行。");

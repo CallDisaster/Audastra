@@ -32,6 +32,11 @@ if(MSVC)
     target_compile_options(war3-map-legacy-trigger-reference-tests PRIVATE /W4 /permissive- /utf-8)
 endif()
 add_test(NAME trigger-legacy-references COMMAND war3-map-legacy-trigger-reference-tests)
+add_executable(war3-map-trigger-removal-audit-tests TriggerRemovalAuditTests.cpp)
+target_link_libraries(war3-map-trigger-removal-audit-tests PRIVATE War3MapTrigger)
+target_compile_options(war3-map-trigger-removal-audit-tests PRIVATE /utf-8 /W4 /permissive-)
+add_test(NAME trigger-removal-audit COMMAND war3-map-trigger-removal-audit-tests)
+set_tests_properties(trigger-removal-audit PROPERTIES TIMEOUT 30)
 set_tests_properties(trigger-legacy-references PROPERTIES TIMEOUT 60)
 
 # U4: compact scalar receipt shares the existing graph editing validation.

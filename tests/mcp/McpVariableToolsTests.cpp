@@ -244,7 +244,7 @@ void TypedReferencesAndOpaqueCode() {
     const auto original = opaque.Bytes();
     rename = opaque.For(opaqueId); rename.insert("name", "Renamed");
     Require(Code(InvokeVariableTool("variables_rename", rename, opaque.host)) == "TRIGGER_RENAME_CODE_AUDIT_REQUIRED", "opaque rename preserves strict audit gate");
-    Require(Code(InvokeVariableTool("variables_delete", opaque.For(opaqueId), opaque.host)) == "TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "opaque deletion keeps unknown-reference refusal");
+    Require(Code(InvokeVariableTool("variables_delete", opaque.For(opaqueId), opaque.host)) == "TRIGGER_REMOVE_CODE_AUDIT_REQUIRED", "opaque deletion requires bound code review");
     rename.insert("code_audits", QJsonArray{QJsonObject{{"approved", true}}});
     Require(!InvokeVariableTool("variables_rename", rename, opaque.host).value("ok").toBool(), "generic audit boolean cannot bypass existing DTO"); SameBytes(opaque, original, count);
     const auto codeBytes = opaque.document.wct.customCode.ToBytes(); Require(codeBytes.Succeeded(), "actual opaque code bytes");
@@ -261,6 +261,23 @@ void TypedReferencesAndOpaqueCode() {
     Require(audited.value("ok").toBool() && audited.value("renames").toArray().first().toObject().value("code_coverage") == "caller-asserted-not-runtime-proven"
         && !audited.value("external_dependencies_verified").toBool() && opaque.Bytes().wct == original.wct,
         "bound audit uses the original decoder while keeping WCT bytes and evidence boundary");
+    const auto binding = CaptureTriggerGraphBinding(opaque.document, opaque.catalog); Require(binding.Succeeded(), "capture deletion identity");
+    QJsonArray children;
+    for (const auto& row : opaque.document.variables) children.append(QJsonObject{{"kind", "variable"}, {"id", QString::number(row.id)}});
+    QJsonObject operation{{"op", "remove"}, {"target", QJsonObject{{"kind", "variable"}, {"id", QString::number(opaqueId)}}},
+        {"expected_name", "Renamed"}, {"parent", QJsonObject{{"kind", "variables"}, {"ordered_children", children}}}};
+    const auto query = QueryGraphDocument(opaque.document, opaque.catalog, nullptr, QJsonObject{{"table", "remove_audit"},
+        {"plan", QJsonObject{{"expected", GraphBindingJson(*binding.value)}, {"operations", QJsonArray{operation}}}}, {"operation_index", 0}});
+    Require(query.value("ok").toBool() && query.value("complete").toBool() && query.value("individual_blocks").toArray().isEmpty(), "shared JSON query returns authoritative grouping");
+    QJsonArray blocks;
+    for (const auto& row : query.value("groupable_blocks").toArray()) blocks.append(row.toObject().value("identity"));
+    Require(!blocks.isEmpty(), "global code still requires explicit confirmation");
+    auto remove = opaque.For(opaqueId);
+    remove.insert("code_audits", QJsonArray{QJsonObject{{"review_sha256", query.value("review_sha256")}, {"decision", "no_reference"},
+        {"reason", "reviewed exact original zero-hit blocks"}, {"blocks", blocks}}});
+    const auto deleted = InvokeVariableTool("variables_delete", remove, opaque.host);
+    Require(deleted.value("ok").toBool() && opaque.document.variables.empty() && opaque.Bytes().wct == original.wct,
+        "variable adapter consumes the same grouped proof, preserving original code");
 }
 
 void BeforePublicationBudgetAndHostRefusal() {
