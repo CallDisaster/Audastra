@@ -223,7 +223,8 @@ void TriggerRenameTests::UnsafeCodeAndDuplicateNameRejectWithoutMutation() {
         Fixture f; QVERIFY2(f.Initialize(kind == 1 ? "// opaque author header\r\n" : "", kind == 2, kind == 3), qPrintable(f.error));
         const auto fingerprint = f.project.ProjectFingerprint();
         const bool accepted = f.RenameThroughModel(kind == 0 ? QStringLiteral("Other") : QStringLiteral("Changed"));
-        if (kind == 0 || kind == 2) QVERIFY(!accepted);
+        // 自定义代码触发器（kind 2）的改名排队后交代码身份服务；没有地图设置时脚本目标未知，服务拒绝。
+        if (kind == 0) QVERIFY(!accepted);
         else { QVERIFY(accepted); QCoreApplication::processEvents(); }
         QCOMPARE(f.project.triggerUndoStack_->count(), 0); QVERIFY(f.OriginalBytes()); QVERIFY(f.ReferencesEqual("Init"));
         QCOMPARE(f.project.ProjectFingerprint(), fingerprint); QVERIFY(f.SourceBytes());
