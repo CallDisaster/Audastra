@@ -42,7 +42,39 @@ Result<TriggerValueSafetyReport> AnalyzeTriggerValues(const TriggerDocument& doc
     if (document.argumentNodes.size() > 524288 || document.ecaNodes.size() > 524288)
         return Output::Failure("Trigger.Value", "TRIGGER_VALUE_CHECK_BUDGET", "参数安全检查超出图规模预算。");
     const TriggerTypeSystem types(catalog);
-    const std::set<StableId> scope(affectedArguments.begin(), affectedArguments.end());
+    std::set<StableId> scope(affectedArguments.begin(), affectedArguments.end());
+    if (!scope.empty()) {
+        constexpr auto missing = kInvalidNodeIndex;
+        std::vector<std::uint32_t> owners(document.argumentNodes.size(), missing), indexParents(owners), callParents(document.ecaNodes.size(), missing), queue;
+        std::vector<char> selected(document.argumentNodes.size());
+        const auto select = [&](std::uint32_t index) {
+            if (index < selected.size() && !selected[index]) { selected[index] = 1; queue.push_back(index); }
+        };
+        for (std::uint32_t i = 0; i < document.argumentNodes.size(); ++i) {
+            const auto& arg = document.argumentNodes[i];
+            if (scope.contains(arg.id)) select(i);
+            if (arg.indexArgument && *arg.indexArgument < indexParents.size()) indexParents[*arg.indexArgument] = i;
+            if (arg.callEca && *arg.callEca < callParents.size()) callParents[*arg.callEca] = i;
+        }
+        for (std::uint32_t i = 0; i < document.ecaNodes.size(); ++i)
+            for (const auto arg : document.ecaNodes[i].arguments) if (arg < owners.size()) owners[arg] = i;
+        for (std::size_t next = 0; next < queue.size(); ++next) {
+            const auto index = queue[next]; scope.insert(document.argumentNodes[index].id);
+            if (indexParents[index] != missing) select(indexParents[index]);
+            if (owners[index] == missing) continue;
+            const auto owner = owners[index];
+            if (callParents[owner] != missing) select(callParents[owner]);
+            const auto& eca = document.ecaNodes[owner];
+            const auto* definition = catalog.Find(eca.type, eca.name.text);
+            if (!definition) continue;
+            for (std::size_t i = 0; i < eca.arguments.size(); ++i) if (eca.arguments[i] == index) {
+                if (document.argumentNodes[index].type != 1 && !types.IsTypeSelector(TriggerTypeSystem::DeclaredType(*definition, i))) break;
+                for (std::size_t later = i + 1; later < eca.arguments.size(); ++later)
+                    if (TriggerTypeSystem::DeclaredType(*definition, later) == "Null") select(eca.arguments[later]);
+                break;
+            }
+        }
+    }
     std::vector<char> visited(document.ecaNodes.size());
     TriggerValueSafetyReport report;
     const auto visit = [&](const auto& self, std::uint32_t index, bool enabled, std::size_t depth) -> Status {

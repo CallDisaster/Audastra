@@ -7,8 +7,10 @@
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 #include "War3MapCore/Trigger/TriggerDataText.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerValueSafety.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cctype>
 #include <cmath>
@@ -864,17 +866,17 @@ Status McpWorkspace::SetScalarArgument(
     if (!scalar.Succeeded()) {
         return scalar;
     }
-    if (previous == candidate.argumentNodes.end())
-        return Status::Failure("MCP", "MCP_ARGUMENT_OWNER_MISSING", "目标参数不存在。");
-    const auto binding = Trigger::CaptureTriggerGraphBinding(candidate, catalog_);
-    if (!binding.Succeeded()) return {binding.diagnostics};
-    Trigger::GraphSet edit;
-    edit.target = {Trigger::GraphRecordKind::Argument, argumentId, {}};
-    edit.field = Trigger::GraphField::ArgumentScalar;
-    edit.expected = Trigger::GraphScalarValue{previous->type, previous->value.text};
-    edit.value = Trigger::GraphScalarValue{valueKind, std::move(value)};
-    const auto edited = ApplyGraphEdit(transactionId, expectedRevision, {*binding.value, {std::move(edit)}});
-    return {edited.diagnostics};
+    const auto changed = Trigger::TriggerDocumentEditor::SetScalarArgument(candidate, argumentId, valueKind, std::move(value));
+    if (!changed.Succeeded()) return changed;
+    const std::array<StableId, 1> touched{argumentId};
+    const auto safety = Trigger::AnalyzeTriggerValues(candidate, catalog_, touched);
+    if (!safety.Succeeded()) return {safety.diagnostics};
+    Status checked;
+    for (const auto& issue : safety.value->issues) checked.diagnostics.push_back(issue.diagnostic);
+    if (!checked.Succeeded()) return checked;
+    const auto sealed = SealDocument(std::move(candidate), "MCP 修改 GUI 标量参数");
+    if (!sealed.Succeeded()) return sealed;
+    return checked;
 }
 
 Result<Trigger::TriggerGraphEditReceipt> McpWorkspace::ApplyGraphEdit(

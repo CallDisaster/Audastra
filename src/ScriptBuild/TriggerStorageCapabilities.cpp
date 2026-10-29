@@ -92,9 +92,14 @@ Result<std::shared_ptr<const Trigger::TriggerStorageCapabilities>> CaptureTrigge
         const auto at = replay.text.find(marker);
         if (at == replay.text.npos || replay.text.find(marker, at + marker.size()) != replay.text.npos) return failure("存取能力探测标记丢失或歧义。");
         const auto end = replay.text.find_first_of("\r\n", at);
-        const auto expression = replay.text.substr(at + marker.size(), end == replay.text.npos ? end : end - at - marker.size());
-        snapshot->supported_[type] = expression.find(macro) == expression.npos && expression.find("YDTRIGGER_") == expression.npos
-            && std::any_of(expression.begin(), expression.end(), [](unsigned char c) { return std::isalpha(c); });
+        auto expression = replay.text.substr(at + marker.size(), end == replay.text.npos ? end : end - at - marker.size());
+        const auto begin = expression.find_first_not_of(" \t"), last = expression.find_last_not_of(" \t");
+        expression = begin == expression.npos ? std::string{} : expression.substr(begin, last - begin + 1);
+        if (expression.find(macro) != expression.npos) snapshot->supported_[type] = false;
+        else if (!expression.empty() && (std::isalpha(static_cast<unsigned char>(expression.front())) || expression.front() == '_')
+            && std::all_of(expression.begin(), expression.end(), [](unsigned char c) { return std::isalnum(c) || c == '_'; })
+            && expression.find("YDTRIGGER_") == expression.npos) snapshot->supported_[type] = true;
+        else return failure("扩展存取宏未展开成单一存取函数名，不能仅凭宏有定义就确认支持。");
         binding += captured.value->mainSha256 + captured.value->includeCandidatePolicySha256;
         for (const auto& source : captured.value->includes) {
             binding += source.binding.sha256;

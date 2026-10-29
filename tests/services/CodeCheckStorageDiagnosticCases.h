@@ -36,6 +36,10 @@ void UnsupportedLocalStorageWarningReachesCheckAndSave() {
     auto extendedDocument = *document; limits.storageCapabilities = *extension.value;
     Require(Trigger::ApplyTriggerGraphEditBatch(extendedDocument, *fixture.frozen->catalog, batch, limits).Succeeded(),
         "verified extension supports the shared publication gate");
+    WriteOriginalText(fixture.tool / "compiler/include/WaveForce.i", "#define YDTRIGGER_handle(op) \"not_callable\"\n");
+    const auto malformed = Script::CaptureMapTriggerStorageCapabilities(*fixture.frozen->catalog, fixture.tool,
+        fixture.tool, fixture.source.parent_path(), required);
+    Require(!malformed.Succeeded(), "defined but non-callable macro is not accepted as storage support");
     WriteOriginalText(fixture.tool / "compiler/include/WaveForce.i", "// original no handle storage macro\n");
     Require(!(*extension.value)->Validate().Succeeded(), "changed actual capability sources invalidate the snapshot");
     // 模拟旧版本已经写入的来源，绕过的是夹具构造，不是产品发布入口。

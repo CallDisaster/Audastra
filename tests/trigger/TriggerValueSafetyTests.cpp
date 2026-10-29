@@ -76,6 +76,17 @@ void Publishing() {
     const auto binding = CaptureTriggerGraphBinding(doc, catalog); Good(binding, "enable binding");
     const auto enabled = ApplyTriggerGraphEditBatch(doc, catalog, {*binding.value, {GraphSet{{GraphRecordKind::Eca, ecaId, {}}, GraphField::Enabled, false, true}}});
     Require(!enabled.Succeeded() && Code(enabled, "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE"), "enabling checks descendants before publication");
+    Good(TriggerDocumentEditor::SetEcaEnabled(doc, ecaId, true), "fixture simulates an active legacy issue");
+    const auto legacyBinding = CaptureTriggerGraphBinding(doc, catalog); Good(legacyBinding, "legacy binding");
+    const auto unrelated = ApplyTriggerGraphEditBatch(doc, catalog, {*legacyBinding.value, {GraphSet{
+        {GraphRecordKind::Trigger, *trigger.value, {}}, GraphField::Description, std::string{}, std::string{"label"}}}});
+    Good(unrelated, "unrelated edit is not blocked by an old local read");
+    const auto name = std::find_if(doc.argumentNodes.begin(), doc.argumentNodes.end(), [](const auto& arg) { return arg.value.text == "英雄"; });
+    Require(name != doc.argumentNodes.end(), "legacy local name argument");
+    const auto nameBinding = CaptureTriggerGraphBinding(doc, catalog); Good(nameBinding, "nested name binding");
+    const auto renamed = ApplyTriggerGraphEditBatch(doc, catalog, {*nameBinding.value, {GraphSet{
+        {GraphRecordKind::Argument, name->id, {}}, GraphField::ArgumentScalar, GraphScalarValue{3, "英雄"}, GraphScalarValue{3, "另名"}}}});
+    Require(!renamed.Succeeded() && Code(renamed, "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE"), "editing a nested name rechecks its containing generic read");
     std::error_code ec; std::filesystem::remove_all(root, ec);
 }
 }
