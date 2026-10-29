@@ -162,7 +162,7 @@ std::vector<ToolDefinition> VariableToolDefinitions() {
     add("variables_rename", "使用原RawText原子改名并更新明确typed引用。不透明代码默认拒绝；code_audits仅接受既有逐块SHA/编码/符号绑定审计，不能声称外部依赖或运行已验证。", rename,
         {"project_identity", "expected_revision", "id", "name"}, ToolPermission::Edit);
     auto remove = identity; remove.insert("id", IdSchema());
-    remove.insert("code_audits", QJsonObject{{"type", "array"}, {"maxItems", 16384}, {"items", GraphRemovalCodeAuditSchema()}});
+    remove.insert("code_audits", QJsonObject{{"type", "array"}, {"maxItems", 16385}, {"items", GraphRemovalCodeAuditSchema()}});
     add("variables_delete", "按精确StableId删除变量；用query_trigger_graph的remove_audit取证，code_audits确认完整代码清单。确定引用或证据缺口仍拒绝，不自动保存。", remove,
         {"project_identity", "expected_revision", "id"}, ToolPermission::Edit);
     return result;

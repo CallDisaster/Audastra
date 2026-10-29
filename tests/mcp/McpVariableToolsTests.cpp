@@ -269,12 +269,20 @@ void TypedReferencesAndOpaqueCode() {
     const auto query = QueryGraphDocument(opaque.document, opaque.catalog, nullptr, QJsonObject{{"table", "remove_audit"},
         {"plan", QJsonObject{{"expected", GraphBindingJson(*binding.value)}, {"operations", QJsonArray{operation}}}}, {"operation_index", 0}});
     Require(query.value("ok").toBool() && query.value("complete").toBool() && query.value("individual_blocks").toArray().isEmpty(), "shared JSON query returns authoritative grouping");
-    QJsonArray blocks;
-    for (const auto& row : query.value("groupable_blocks").toArray()) blocks.append(row.toObject().value("identity"));
-    Require(!blocks.isEmpty(), "global code still requires explicit confirmation");
+    Require(query.value("groupable_count").toInt() > 0 && !query.contains("groupable_blocks")
+        && query.value("groupable_samples").toArray().size() <= 20, "bounded summary still requires explicit confirmation");
     auto remove = opaque.For(opaqueId);
     remove.insert("code_audits", QJsonArray{QJsonObject{{"review_sha256", query.value("review_sha256")}, {"decision", "no_reference"},
-        {"reason", "reviewed exact original zero-hit blocks"}, {"blocks", blocks}}});
+        {"reason", "reviewed exact original zero-hit group"}, {"groupable_count", query.value("groupable_count")},
+        {"groupable_sha256", query.value("groupable_sha256")}}});
+    const auto audits = remove.value("code_audits").toArray();
+    auto invalid = audits.at(0).toObject(); invalid.insert("blocks", QJsonArray{});
+    Require(!DecodeGraphRemovalCodeAudits(QJsonArray{invalid}).Succeeded(), "JSON summary and list cannot coexist");
+    invalid = audits.at(0).toObject(); invalid.insert("groupable_count", true);
+    Require(!DecodeGraphRemovalCodeAudits(QJsonArray{invalid}).Succeeded(), "JSON group count is an integer, not a boolean");
+    remove.insert("code_audits", QJsonArray{audits.at(0), audits.at(0)});
+    Require(Code(InvokeVariableTool("variables_delete", remove, opaque.host)) == "TRIGGER_REMOVE_CODE_AUDIT_INVALID", "duplicate whole group rejected before publication");
+    remove.insert("code_audits", audits);
     const auto deleted = InvokeVariableTool("variables_delete", remove, opaque.host);
     Require(deleted.value("ok").toBool() && opaque.document.variables.empty() && opaque.Bytes().wct == original.wct,
         "variable adapter consumes the same grouped proof, preserving original code");

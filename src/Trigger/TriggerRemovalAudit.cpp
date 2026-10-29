@@ -12,7 +12,7 @@
 
 namespace War3Map::Trigger {
 namespace {
-constexpr std::size_t kBytes = 64 * 1024 * 1024, kBlocks = 16384, kEvidence = 4096;
+constexpr std::size_t kBytes = 64 * 1024 * 1024, kBlocks = 262144, kIndividuals = 16384, kEvidence = 4096;
 Status Fail(const char* code, std::string message) { return Status::Failure("Trigger.RemoveAudit", code, std::move(message)); }
 std::string Key(AtomicRenameCodeKind kind, StableId id) { return std::to_string(static_cast<unsigned>(kind)) + ":" + std::to_string(id); }
 bool NameByte(unsigned char c) { return std::isalnum(c) || c == '_' || c >= 128; }
@@ -125,7 +125,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (i + 2 < tokens.size() && tokens[i + 1].text == "(") {
             std::size_t depth = 1, first = i + 2; bool closed = false;
             for (std::size_t cursor = first; cursor < tokens.size(); ++cursor) {
-                if (!tokensLeft) { Incomplete(block, "调用表达式扫描预算截断"); break; } --tokensLeft;
+                // 这些token已在词法扫描按原字节计费，不对同一token重复扣减全图预算。
                 const auto& token = tokens[cursor];
                 if (!token.quoted && token.text == "(") ++depth;
                 if (!token.quoted && token.text == ")") --depth;
@@ -204,9 +204,14 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
             : TriggerDirectoryEditor::IsTriggerSymbolOf(arg.value.text, removedTrigger->name);
         if (referenced) review.typedArgumentIds.push_back(arg.id);
     }
-    std::size_t bytes = 0, count = 0, tokensLeft = 262144, findings = 0;
-    std::string manifest = review.binding.currentWtgSha256 + review.binding.currentWctSha256 + catalog.Sha256()
-        + std::to_string(static_cast<unsigned>(op.target.kind)) + ":" + std::to_string(op.target.id) + ":" + op.expectedName;
+    std::size_t bytes = 0, count = 0, tokensLeft = kBytes, findings = 0;
+    Sha256Stream manifest(256 * kBlocks + 4096), group(256 * kBlocks);
+    const auto update = [](Sha256Stream& stream, std::string_view text) {
+        return stream.Update(std::as_bytes(std::span(text.data(), text.size())));
+    };
+    const auto header = update(manifest, "remove-audit-v2:" + review.binding.currentWtgSha256 + review.binding.currentWctSha256 + catalog.Sha256()
+        + std::to_string(static_cast<unsigned>(op.target.kind)) + ":" + std::to_string(op.target.id) + ":" + op.expectedName);
+    if (!header.Succeeded()) return {std::nullopt, header.diagnostics};
     const auto status = detail::VisitOpaqueCodeBlocks(doc, catalog, review.symbols, [&](auto kind, StableId id, const RawText& text) {
         if (text.text.empty()) return Status::Ok();
         if ((kind == AtomicRenameCodeKind::ArgumentCode && removedArguments.contains(id))
@@ -215,7 +220,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         if (size > kBytes - bytes || ++count > kBlocks) {
             std::string message = "删除审计预算不足；当前块=" + Key(kind, id) + "；累计块=" + std::to_string(count)
                 + "；累计字节=" + std::to_string(bytes) + "；当前块字节=" + std::to_string(size)
-                + "；上限=16384块/64MiB；已完成可合并=" + std::to_string(review.groupableBlocks.size())
+                + "；上限=262144块/64MiB；已完成可合并=" + std::to_string(review.groupableCount)
                 + "、单独=" + std::to_string(review.individualBlocks.size()) + "（部分结果，不可放行）";
             const auto arg = arguments.find(id);
             if (kind == AtomicRenameCodeKind::ArgumentCode && arg != arguments.end())
@@ -265,13 +270,23 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         for (const auto& hit : block.evidence) evidence += "\n" + hit.context + ":" + std::to_string(hit.decodedByteOffset) + ":" + std::to_string(hit.definite);
         const auto digest = Sha256Text(evidence); if (!digest.Succeeded()) return Status{digest.diagnostics};
         block.identity.evidenceSha256 = *digest.value;
-        manifest += "\n" + Key(kind, id) + ":" + *sha.value + ":" + *digest.value + ":" + std::to_string(static_cast<unsigned>(text.encoding));
+        const auto row = Key(kind, id) + ":" + *sha.value + ":" + *digest.value + ":" + std::to_string(static_cast<unsigned>(text.encoding)) + "\n";
+        if (const auto added = update(manifest, row); !added.Succeeded()) return added;
         review.complete &= block.complete;
-        (block.groupable ? review.groupableBlocks : review.individualBlocks).push_back(std::move(block));
+        if (block.groupable) {
+            if (const auto added = update(group, row); !added.Succeeded()) return added;
+            ++review.groupableCount; review.groupableIdentities_.push_back(block.identity);
+            if (review.groupableSamples.size() < 20) review.groupableSamples.push_back(std::move(block));
+        } else {
+            if (review.individualBlocks.size() >= kIndividuals) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "须单独确认的代码块超过16384块，未提供部分放行。");
+            review.individualBlocks.push_back(std::move(block));
+        }
         return Status::Ok();
     });
     if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
-    const auto digest = Sha256Text(manifest); if (!digest.Succeeded()) return {std::nullopt, digest.diagnostics};
+    const auto grouped = group.Finish(); if (!grouped.Succeeded()) return {std::nullopt, grouped.diagnostics};
+    review.groupableSha256 = *grouped.value;
+    const auto digest = manifest.Finish(); if (!digest.Succeeded()) return {std::nullopt, digest.diagnostics};
     review.reviewSha256 = *digest.value; return Out::Success(std::move(review));
 }
 Status CheckDeclarationRemovalAudit(const TriggerDocument& doc, const UiCatalog& catalog, const GraphRemove& op,
@@ -283,21 +298,40 @@ Status CheckDeclarationRemovalAudit(const TriggerDocument& doc, const UiCatalog&
     for (const auto& block : r.individualBlocks) if (block.referenced)
         return Fail("TRIGGER_GRAPH_REMOVE_REFERENCED", "代码仍引用删除目标，请先移除或改绑；块=" + Key(block.identity.kind, block.identity.id));
     if (!r.complete) return Fail("TRIGGER_GRAPH_REMOVE_REFERENCE_UNKNOWN", "未解析的执行代码、外部指令或截断使引用证据不完整，未删除。");
-    if (op.codeAudits.size() > kBlocks) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "确认条数超过预算。");
-    std::set<std::string> consumed;
+    if (op.codeAudits.size() > kIndividuals + 1) return Fail("TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "确认条数超过预算。");
+    struct Entry { const RemovalBlockIdentity* identity; bool groupable; };
+    std::unordered_map<std::string, Entry> index;
+    index.reserve(r.groupableCount + r.individualBlocks.size());
+    for (const auto& identity : r.groupableIdentities_) index.emplace(Key(identity.kind, identity.id), Entry{&identity, true});
+    for (const auto& block : r.individualBlocks) index.emplace(Key(block.identity.kind, block.identity.id), Entry{&block.identity, false});
+    std::unordered_set<std::string> consumed;
+    consumed.reserve(index.size());
+    bool wholeGroup = false, legacyGroup = false;
+    std::size_t consumedGroup = 0, consumedIndividual = 0;
     for (const auto& audit : op.codeAudits) {
         if (audit.reviewSha256 != r.reviewSha256) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "删除审计的目标、修订、代码或证据已变化。");
         if (audit.decision != "no_reference" || audit.reason.empty() || audit.reason.size() > 4096 || audit.reason.find('\0') != std::string::npos
-            || audit.blocks.empty() || audit.blocks.size() > kBlocks) return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "确认必须逐块绑定身份、no_reference及审阅理由。");
+            || (!audit.group && audit.blocks.empty()) || audit.blocks.size() > kIndividuals)
+            return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "确认必须绑定整组或逐块身份、no_reference及审阅理由。");
+        if (audit.group) {
+            if (!audit.blocks.empty() || wholeGroup || legacyGroup || !audit.group->count)
+                return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "整组确认不得与可合并块逐块确认混用或重复。");
+            if (audit.group->count != r.groupableCount || audit.group->sha256 != r.groupableSha256)
+                return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "可合并代码整组数量或摘要已变化。");
+            wholeGroup = true;
+            continue;
+        }
         for (const auto& identity : audit.blocks) {
-            const auto find = [&](const auto& blocks) { return std::find_if(blocks.begin(), blocks.end(), [&](const auto& b) { return b.identity == identity; }); };
-            const bool groupable = find(r.groupableBlocks) != r.groupableBlocks.end();
-            if (!groupable && find(r.individualBlocks) == r.individualBlocks.end()) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "确认中包含不匹配或旧代码块。");
-            if ((!groupable && audit.blocks.size() != 1) || !consumed.insert(Key(identity.kind, identity.id)).second)
+            const auto key = Key(identity.kind, identity.id);
+            const auto found = index.find(key);
+            if (found == index.end() || *found->second.identity != identity) return Fail("TRIGGER_REMOVE_CODE_AUDIT_STALE", "确认中包含不匹配或旧代码块。");
+            const bool groupable = found->second.groupable;
+            if ((!groupable && audit.blocks.size() != 1) || !consumed.insert(key).second || (groupable && wholeGroup))
                 return Fail("TRIGGER_REMOVE_CODE_AUDIT_INVALID", "有命中或动态构造的块须单独确认；不得重复确认。");
+            if (groupable) { legacyGroup = true; ++consumedGroup; } else ++consumedIndividual;
         }
     }
-    if (consumed.size() != r.groupableBlocks.size() + r.individualBlocks.size())
+    if ((!wholeGroup && consumedGroup != r.groupableCount) || consumedIndividual != r.individualBlocks.size())
         return Fail("TRIGGER_REMOVE_CODE_AUDIT_REQUIRED", "请审阅所有代码块：零命中且无动态构造的块可合并，其余须单独确认。");
     return Status::Ok();
 }

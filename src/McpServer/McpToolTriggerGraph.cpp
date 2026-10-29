@@ -276,11 +276,19 @@ public:
         return audit;
     }
     RemovalCodeConfirmation RemovalAudit(const QJsonValue& value) {
-        Count();
-        const auto object = Object(value, {"review_sha256", "decision", "reason", "blocks"});
+        if (++removalAudits_ > 16385) throw GraphJsonError("删除确认条数超出预算。", "MCP_TRIGGER_GRAPH_REQUEST_BUDGET");
+        const auto object = Object(value, {"review_sha256", "decision", "reason"}, {"blocks", "groupable_count", "groupable_sha256"});
         RemovalCodeConfirmation audit{Sha(object, "review_sha256"), String(object, "decision"), String(object, "reason"), {}};
+        if (object.contains("groupable_count") || object.contains("groupable_sha256")) {
+            if (object.contains("blocks")) throw GraphJsonError("整组和逐块确认不能混用。");
+            const auto count = Integer(object, "groupable_count");
+            if (count <= 0 || count > 262144) throw GraphJsonError("整组确认数量超出预算。");
+            audit.group = RemovalCodeConfirmation::Group{static_cast<std::size_t>(count), Sha(object, "groupable_sha256")};
+            return audit;
+        }
         for (const auto& entry : Array(object, "blocks")) {
-            Count();
+            if (++removalIdentities_ > 262144 || audit.blocks.size() >= 16384)
+                throw GraphJsonError("删除逐块身份超出预算。", "MCP_TRIGGER_GRAPH_REQUEST_BUDGET");
             const auto block = Object(entry, {"kind", "id", "encoding", "source_sha256", "evidence_sha256"});
             const auto kind = String(block, "kind");
             RemovalBlockIdentity identity;
@@ -418,6 +426,7 @@ public:
     }
 private:
     std::size_t records_ = 0;
+    std::size_t removalAudits_ = 0, removalIdentities_ = 0;
     std::size_t createdReplyBytes_ = 0;
 };
 
@@ -479,7 +488,8 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
         for (const auto id : review.value->typedArgumentIds) typed.append(QString::number(id));
         QJsonObject result{{"ok", true}, {"schema_version", 1}, {"table", "remove_audit"}, {"binding", BindingJson(review.value->binding)},
             {"review_sha256", QString::fromStdString(review.value->reviewSha256)}, {"symbols", symbols}, {"typed_argument_ids", typed},
-            {"complete", review.value->complete}, {"groupable_blocks", rows(review.value->groupableBlocks)},
+            {"complete", review.value->complete}, {"groupable_count", static_cast<qint64>(review.value->groupableCount)},
+            {"groupable_sha256", QString::fromStdString(review.value->groupableSha256)}, {"groupable_samples", rows(review.value->groupableSamples)},
             {"individual_blocks", rows(review.value->individualBlocks)}, {"external_dependencies_verified", false}};
         if (static_cast<std::size_t>(QJsonDocument(result).toJson(QJsonDocument::Compact).size()) > kResponseBytes)
             throw GraphJsonError("完整删除审计超过回执预算，未截断放行。", "MCP_TRIGGER_GRAPH_RESPONSE_BUDGET");
@@ -872,7 +882,7 @@ QJsonObject GraphReceipt(const TriggerGraphEditReceipt& receipt, McpWorkspace& w
             {"removed_ecas", QString::number(replace.removedEcas)}, {"removed_arguments", QString::number(replace.removedArguments)}});
     QJsonArray removals;
     for (const auto& audit : receipt.removalAudits) removals.append(QJsonObject{{"review_sha256", QString::fromStdString(audit.reviewSha256)},
-        {"block_count", QString::number(audit.blocks.size())}, {"coverage", "CallerAssertedNotRuntimeProven"}});
+        {"block_count", QString::number(audit.group ? audit.group->count : audit.blocks.size())}, {"coverage", "CallerAssertedNotRuntimeProven"}});
     return {{"ok", true}, {"schema_version", 1}, {"before", BindingJson(receipt.before)}, {"binding", BindingJson(receipt.after)},
         {"revision", RevisionJson(workspace.Revision())}, {"transaction_active", workspace.HasActiveTransaction()},
         {"applied_operations", QString::number(receipt.appliedOperations)}, {"created", created}, {"renames", renames},
@@ -928,7 +938,7 @@ QJsonObject GraphSchema() {
     // move：from+to(+before) 为带完整顺序 guard 的移动；省略 from/to 时只给 before 或 after 之一做轻量移动（触发器/类别）。
     variants.append(Shape({{"op", op("move")}, {"target", ref}, {"from", parent}, {"to", parent}, {"before", ref}, {"after", ref}}, {"op", "target"}));
     variants.append(Shape({{"op", op("remove")}, {"target", ref}, {"expected_name", string}, {"parent", parent},
-        {"code_audits", ArraySchema(GraphRemovalCodeAuditSchema())}}, {"op", "target", "expected_name", "parent"}));
+        {"code_audits", QJsonObject{{"type", "array"}, {"maxItems", 16385}, {"items", GraphRemovalCodeAuditSchema()}}}}, {"op", "target", "expected_name", "parent"}));
     variants.append(Shape({{"op", op("insert_subtree")}, {"parent", parent}, {"root", ecaRef}, {"before", ref}}, {"op", "parent", "root"}));
     variants.append(Shape({{"op", op("replace_argument")}, {"target", ref}, {"expected", argumentGuard}, {"value", argumentRef}},
         {"op", "target", "expected", "value"}));
@@ -995,14 +1005,19 @@ QJsonObject GraphRemovalCodeAuditSchema() {
     for (const auto* key : {"ui_catalog_sha256", "old_name", "new_name", "old_symbol", "new_symbol", "reason"}) fields.remove(key);
     fields.insert("evidence_sha256", fields.value("source_sha256"));
     block = Shape(fields, {"kind", "id", "encoding", "source_sha256", "evidence_sha256"});
-    return Shape({{"review_sha256", fields.value("source_sha256")},
+    const auto individual = Shape({{"review_sha256", fields.value("source_sha256")},
         {"decision", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"no_reference"}}}}, {"reason", StringSchema()},
         {"blocks", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16384}, {"items", block}}}},
         {"review_sha256", "decision", "reason", "blocks"});
+    const auto grouped = Shape({{"review_sha256", fields.value("source_sha256")},
+        {"decision", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"no_reference"}}}}, {"reason", StringSchema()},
+        {"groupable_count", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 262144}}},
+        {"groupable_sha256", fields.value("source_sha256")}}, {"review_sha256", "decision", "reason", "groupable_count", "groupable_sha256"});
+    return {{"oneOf", QJsonArray{individual, grouped}}};
 }
 Result<std::vector<RemovalCodeConfirmation>> DecodeGraphRemovalCodeAudits(const QJsonArray& audits) {
     try {
-        if (audits.size() > static_cast<qsizetype>(kRecords) || static_cast<std::size_t>(QJsonDocument(audits).toJson(QJsonDocument::Compact).size()) > kRequestBytes)
+        if (audits.size() > 16385 || static_cast<std::size_t>(QJsonDocument(audits).toJson(QJsonDocument::Compact).size()) > kRequestBytes)
             throw GraphJsonError("删除审计超过请求预算。", "MCP_TRIGGER_GRAPH_REQUEST_BUDGET");
         GraphReader reader; std::vector<RemovalCodeConfirmation> result;
         for (const auto& audit : audits) result.push_back(reader.RemovalAudit(audit));

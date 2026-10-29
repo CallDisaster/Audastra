@@ -7,6 +7,15 @@
 #include <fstream>
 #include <iostream>
 #include <set>
+#include <chrono>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <Windows.h>
+#include <psapi.h>
 
 namespace {
 using namespace War3Map;
@@ -43,6 +52,31 @@ Json Blocks(const std::vector<RemovalCodeBlock>& blocks) {
 Json Diagnostics(const std::vector<Diagnostic>& values) {
     Json result = Json::array(); for (const auto& d : values) result.push_back({{"code", d.code}, {"message", d.message}}); return result;
 }
+using Clock = std::chrono::steady_clock;
+double Milliseconds(Clock::time_point start) { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); }
+Json PeakMemory() {
+    PROCESS_MEMORY_COUNTERS counters{};
+    if (!K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) return nullptr;
+    return counters.PeakWorkingSetSize;
+}
+GraphRemove Remove(const TriggerDocument& document, bool trigger, StableId id) {
+    GraphRemove op; op.target = {trigger ? GraphRecordKind::Trigger : GraphRecordKind::Variable, id, {}};
+    if (trigger) {
+        const auto at = std::find_if(document.triggers.begin(), document.triggers.end(), [&](const auto& r) { return r.id == id; });
+        if (at == document.triggers.end()) throw std::invalid_argument("触发器ID不存在。");
+        op.expectedName = at->name.text;
+        const auto cat = std::find_if(document.categories.begin(), document.categories.end(), [&](const auto& r) { return r.categoryId == at->categoryId; });
+        if (cat == document.categories.end()) throw std::invalid_argument("触发器分类不存在。");
+        op.parent = {GraphParentKind::CategoryTriggers, {GraphRecordKind::Category, cat->id, {}}, {}, {}};
+        for (const auto& row : document.triggers) if (row.categoryId == at->categoryId) op.parent.orderedChildren.push_back({GraphRecordKind::Trigger, row.id, {}});
+    } else {
+        const auto at = std::find_if(document.variables.begin(), document.variables.end(), [&](const auto& r) { return r.id == id; });
+        if (at == document.variables.end()) throw std::invalid_argument("变量ID不存在。");
+        op.expectedName = at->name.text; op.parent.kind = GraphParentKind::Variables;
+        for (const auto& row : document.variables) op.parent.orderedChildren.push_back({GraphRecordKind::Variable, row.id, {}});
+    }
+    return op;
+}
 void Keys(const Json& value, std::initializer_list<std::string_view> keys) {
     if (!value.is_object() || value.size() != keys.size()) throw std::invalid_argument("删除确认字段不完整或含冗余字段。");
     for (auto key : keys) if (!value.contains(key)) throw std::invalid_argument("删除确认缺少字段。");
@@ -64,11 +98,20 @@ std::vector<RemovalCodeConfirmation> ReadConfirmations(const std::filesystem::pa
         || root.at("target_id") != std::to_string(review.target.id) || root.at("expected_name") != review.expectedName)
         throw std::invalid_argument("确认文件的地图、目录或目标身份已变化。");
     const auto& audits = root.at("code_audits");
-    if (!audits.is_array() || audits.size() > 16384) throw std::invalid_argument("确认条数超出预算。");
+    if (!audits.is_array() || audits.size() > 16385) throw std::invalid_argument("确认条数超出预算。");
     std::vector<RemovalCodeConfirmation> result;
     for (const auto& item : audits) {
-        Keys(item, {"review_sha256", "decision", "reason", "blocks"});
+        const bool grouped = item.contains("groupable_count") || item.contains("groupable_sha256");
+        if (grouped) Keys(item, {"review_sha256", "decision", "reason", "groupable_count", "groupable_sha256"});
+        else Keys(item, {"review_sha256", "decision", "reason", "blocks"});
         RemovalCodeConfirmation confirmation{item.at("review_sha256").get<std::string>(), item.at("decision").get<std::string>(), item.at("reason").get<std::string>(), {}};
+        if (grouped) {
+            if (!item.at("groupable_count").is_number_integer()) throw std::invalid_argument("整组数量必须为整数。");
+            const auto count = item.at("groupable_count").get<std::int64_t>();
+            if (count <= 0 || count > 262144) throw std::invalid_argument("整组数量超出预算。");
+            confirmation.group = RemovalCodeConfirmation::Group{static_cast<std::size_t>(count), item.at("groupable_sha256").get<std::string>()};
+            result.push_back(std::move(confirmation)); continue;
+        }
         if (!item.at("blocks").is_array() || item.at("blocks").size() > 16384) throw std::invalid_argument("逐块确认超过预算。");
         for (const auto& b : item.at("blocks")) {
             Keys(b, {"kind", "id", "encoding", "source_sha256", "evidence_sha256"});
@@ -91,18 +134,33 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
     try {
         Services::MapTriggerTextQueryRequest request; request.sourceMap = argv[2]; request.expectedSourceSha256 = Utf8(argv[3]); request.uiRoot = argv[4];
         const auto kind = Utf8(argv[5]); if (kind != "trigger" && kind != "variable") throw std::invalid_argument("目标种类必须为trigger或variable。");
-        const auto selector = Utf8(argv[6]); std::string match; std::filesystem::path confirmations;
+        const auto selector = Utf8(argv[6]); std::string match; std::filesystem::path confirmations, priorConfirmations;
+        StableId priorTrigger = 0;
         for (int i = 7; i < argc; i += 2) {
             if (i + 1 >= argc) throw std::invalid_argument("查询选项缺少值。");
             const auto option = Utf8(argv[i]);
             if (option == "--match" && match.empty()) match = Utf8(argv[i + 1]);
             else if (option == "--confirm-file" && confirmations.empty()) confirmations = argv[i + 1];
+            else if (option == "--prior-trigger" && !priorTrigger) priorTrigger = Id(Utf8(argv[i + 1]));
+            else if (option == "--prior-confirm-file" && priorConfirmations.empty()) priorConfirmations = argv[i + 1];
             else throw std::invalid_argument("未知或重复的删除审计选项。");
         }
         auto source = Services::CaptureMapTriggerQuerySources(request);
         if (!source.Succeeded()) { std::cout << Json{{"ok", false}, {"diagnostics", Diagnostics(source.diagnostics)}}.dump() << '\n'; return 1; }
         auto& sources = *source.value;
         Json output{{"source_sha256", sources.archive->SourceSha256()}, {"catalog_sha256", sources.catalog.Sha256()}, {"saved", false}, {"runtime_verified", false}};
+        if (priorTrigger || !priorConfirmations.empty()) {
+            if (!priorTrigger || priorConfirmations.empty() || selector == "list" || selector == "inventory")
+                throw std::invalid_argument("前序预演须同时给出触发器ID及原审计确认文件，仅用于目标审计。");
+            auto prior = Remove(sources.document, true, priorTrigger);
+            auto reviewed = QueryDeclarationRemovalAudit(sources.document, sources.catalog, prior);
+            if (!reviewed.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(reviewed.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+            prior.codeAudits = ReadConfirmations(priorConfirmations, sources, *reviewed.value);
+            const auto start = Clock::now();
+            const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {reviewed.value->binding, {prior}});
+            output["prior_preview_ms"] = Milliseconds(start); output["prior_preview_passed"] = edited.Succeeded();
+            if (!edited.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(edited.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+        }
         if (selector == "inventory") {
             if (!confirmations.empty() || !match.empty()) throw std::invalid_argument("分类统计不接受确认或目标名字。");
             const auto report = InspectOpaqueArgumentInventory(sources.document, sources.catalog);
@@ -129,31 +187,29 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
         } else {
             if (!match.empty()) throw std::invalid_argument("--match只用于list，审计须提供稳定ID。");
             const auto id = Id(selector); if (!id) throw std::invalid_argument("删除目标ID不能为0。");
-            GraphRemove op; op.target = {kind == "trigger" ? GraphRecordKind::Trigger : GraphRecordKind::Variable, id, {}};
-            if (kind == "trigger") {
-                const auto at = std::find_if(sources.document.triggers.begin(), sources.document.triggers.end(), [&](const auto& r) { return r.id == id; });
-                if (at == sources.document.triggers.end()) throw std::invalid_argument("触发器ID不存在。");
-                op.expectedName = at->name.text;
-                const auto cat = std::find_if(sources.document.categories.begin(), sources.document.categories.end(), [&](const auto& r) { return r.categoryId == at->categoryId; });
-                if (cat == sources.document.categories.end()) throw std::invalid_argument("触发器分类不存在。");
-                op.parent = {GraphParentKind::CategoryTriggers, {GraphRecordKind::Category, cat->id, {}}, {}, {}};
-                for (const auto& row : sources.document.triggers) if (row.categoryId == at->categoryId) op.parent.orderedChildren.push_back({GraphRecordKind::Trigger, row.id, {}});
-            } else {
-                const auto at = std::find_if(sources.document.variables.begin(), sources.document.variables.end(), [&](const auto& r) { return r.id == id; });
-                if (at == sources.document.variables.end()) throw std::invalid_argument("变量ID不存在。");
-                op.expectedName = at->name.text; op.parent.kind = GraphParentKind::Variables;
-                for (const auto& row : sources.document.variables) op.parent.orderedChildren.push_back({GraphRecordKind::Variable, row.id, {}});
-            }
+            auto op = Remove(sources.document, kind == "trigger", id);
+            const auto queryStart = Clock::now();
             const auto review = QueryDeclarationRemovalAudit(sources.document, sources.catalog, op);
+            output["audit_ms"] = Milliseconds(queryStart); output["process_peak_working_set_bytes"] = PeakMemory();
             if (!review.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(review.diagnostics); std::cout << output.dump() << '\n'; return 1; }
             const auto& r = *review.value; Json typed = Json::array();
             for (const auto value : r.typedArgumentIds) typed.push_back(std::to_string(value));
             output.update({{"ok", true}, {"target_id", std::to_string(id)}, {"expected_name", r.expectedName}, {"review_sha256", r.reviewSha256},
                 {"complete", r.complete}, {"symbols", r.symbols}, {"typed_argument_ids", typed},
-                {"groupable_blocks", Blocks(r.groupableBlocks)}, {"individual_blocks", Blocks(r.individualBlocks)}, {"external_dependencies_verified", false}});
+                {"groupable_count", r.groupableCount}, {"groupable_sha256", r.groupableSha256}, {"groupable_samples", Blocks(r.groupableSamples)},
+                {"individual_blocks", Blocks(r.individualBlocks)}, {"external_dependencies_verified", false}});
             if (!confirmations.empty()) {
                 op.codeAudits = ReadConfirmations(confirmations, sources, r);
+                const auto checkStart = Clock::now();
+                const auto checked = CheckDeclarationRemovalAudit(sources.document, sources.catalog, op);
+                output["check_ms"] = Milliseconds(checkStart);
+                if (!checked.Succeeded()) {
+                    output["preview_passed"] = false; output["diagnostics"] = Diagnostics(checked.diagnostics); output["ok"] = false;
+                    output["process_peak_working_set_bytes"] = PeakMemory(); std::cout << output.dump() << '\n'; return 1;
+                }
+                const auto previewStart = Clock::now();
                 const auto edited = ApplyTriggerGraphEditBatch(sources.document, sources.catalog, {r.binding, {op}});
+                output["preview_ms"] = Milliseconds(previewStart); output["process_peak_working_set_bytes"] = PeakMemory();
                 output["preview_passed"] = edited.Succeeded(); output["diagnostics"] = Diagnostics(edited.diagnostics); output["ok"] = edited.Succeeded();
                 output["code_coverage"] = "CallerAssertedNotRuntimeProven";
             }
