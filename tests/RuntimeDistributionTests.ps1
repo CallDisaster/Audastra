@@ -1,0 +1,47 @@
+param([Parameter(Mandatory)][string]$Freezer,[Parameter(Mandatory)][string]$Tools)
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$root=Join-Path ([IO.Path]::GetTempPath()) ('audastra-runtime-distribution-'+[guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $root -ErrorAction Stop|Out-Null
+function Check([bool]$Value,[string]$Message){if(!$Value){throw $Message}}
+function Rejected([scriptblock]$Action,[string]$Message){$failed=$false;try{& $Action}catch{$failed=$true};Check $failed $Message}
+try{
+    $files=@()
+    foreach($role in @('bootstrap','payload','module','client','license','origin')){
+        # 原创占位字节，绝不使用真实引导器或第三方二进制。
+        $extension=if($role -eq 'client'){'.j'}else{'.blob'}
+        $path=Join-Path $root ($role+$extension)
+        [IO.File]::WriteAllBytes($path,[Text.Encoding]::UTF8.GetBytes('original-fixture-'+$role))
+        $files+=@{role=$role;source=$path;size=(Get-Item $path).Length;sha256=(Get-FileHash $path).Hash.ToLowerInvariant()}
+    }
+    $plan=Join-Path $root plan.json
+    @{schema=2;scope='public';id='original-fixture';version='1.3.0';files=$files}|ConvertTo-Json -Depth 5|Set-Content $plan -Encoding utf8NoBOM
+    $digest=(Get-FileHash $plan).Hash.ToLowerInvariant()
+    $installed=Join-Path $root install
+    & "$Tools/install-map-runtime.ps1" -FreezerExecutable $Freezer -Plan $plan -PlanSha256 $digest -OutputDirectory $installed
+    $catalog=Get-Content "$installed/runtime/catalog.json" -Raw|ConvertFrom-Json
+    Check ($catalog.packages.Count -eq 1 -and $catalog.packages[0].publicDistributionApproved -eq $false) 'Installation must retain unapproved catalog'
+    $package="$installed/runtime/packages/original-fixture-1.3.0"
+    $manifest=Get-Content "$package/manifest.json" -Raw|ConvertFrom-Json
+    Check ($manifest.scope -eq 'public' -and $manifest.files.Count -eq 6) 'Public candidate roles missing'
+    . "$Tools/StageMapRuntime.ps1"
+    Copy-PendingMapRuntimeInstallation -Source $installed -Target "$root/staged"
+    $staged=Get-Content "$root/staged/catalog.json" -Raw|ConvertFrom-Json
+    Check ($staged.packages[0].publicDistributionApproved -eq $false) 'Portable staging must not approve distribution'
+    Check ((Get-FileHash "$root/staged/packages/original-fixture-1.3.0/module.blob").Hash -eq (Get-FileHash "$package/module.blob").Hash) 'Module identity changed'
+    Rejected {Copy-PendingMapRuntimeInstallation -Source $installed -Target "$root/staged"} 'Existing target must remain untouched'
+    Rejected {& "$Tools/install-map-runtime.ps1" -FreezerExecutable $Freezer -Plan $plan -PlanSha256 ('0'*64) -OutputDirectory "$root/bad-plan"} 'Changed plan accepted'
+    Check (!(Test-Path "$root/bad-plan")) 'Plan failure created output'
+    [IO.File]::AppendAllText("$package/client.j",'changed')
+    Rejected {Copy-PendingMapRuntimeInstallation -Source $installed -Target "$root/stale"} 'Changed client accepted'
+    Check (!(Test-Path "$root/stale")) 'Incomplete source staged before verification'
+    $catalog.packages[0].publicDistributionApproved=$true
+    $catalog|ConvertTo-Json -Depth 5|Set-Content "$installed/runtime/catalog.json" -Encoding utf8NoBOM
+    Rejected {Copy-PendingMapRuntimeInstallation -Source $installed -Target "$root/approved"} 'Pending-only tool accepted elevated approval'
+    Write-Output 'RUNTIME_DISTRIBUTION_ORIGINAL_FIXTURES_PASSED'
+}finally{
+    # 只清理本测试创建且身份固定的临时树。
+    $full=[IO.Path]::GetFullPath($root)
+    Check ($full.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()),[StringComparison]::OrdinalIgnoreCase) -and (Split-Path $full -Leaf) -match '^audastra-runtime-distribution-[a-f0-9]{32}$') 'Unexpected cleanup path'
+    Remove-Item -LiteralPath $full -Recurse -Force
+}
