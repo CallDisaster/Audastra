@@ -11,6 +11,9 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUndoStack>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 using namespace War3Map;
 using namespace War3Map::QtProject;
@@ -104,6 +107,23 @@ private slots:
         QVERIFY(project.CommitMapSave(*normal).has_value());
         QCOMPARE(project.sourceArchivePath_, second); QVERIFY(project.editTrackingReady_ && !project.editTrackingFailed_);
         QCOMPARE(Take(Sha256File(fixture.inputs.source)), fixture.sourceSha);
+        const auto evidence = qEnvironmentVariable("FORGE_IMPORT_ACCEPTANCE_OUTPUT");
+        if (!evidence.isEmpty()) {
+            const std::filesystem::path root(evidence.toStdWString());
+            QVERIFY(!std::filesystem::exists(root)); QVERIFY(std::filesystem::create_directories(root));
+            QVERIFY(std::filesystem::copy_file(fixture.inputs.source, root / "original.w3x"));
+            QVERIFY(std::filesystem::copy_file(first, root / "test-candidate.w3x"));
+            QVERIFY(std::filesystem::copy_file(second, root / "normal-candidate.w3x"));
+            const QJsonObject proof{{"binary_bytes", static_cast<qint64>(mutableBytes->size())},
+                {"binary_sha256", QString::fromStdString(expectedSha)}, {"source_sha256", QString::fromStdString(fixture.sourceSha)},
+                {"test_candidate_sha256", QString::fromStdString(Take(Sha256File(first)))},
+                {"normal_candidate_sha256", QString::fromStdString(Take(Sha256File(second)))},
+                {"source_unchanged", true}, {"undo_redo_before_normal_commit", true}, {"normal_commit_succeeded", true},
+                {"note", "首份验收副本不切基线；撤销重做后再正常另存并提交。没有测试正式提交后复用旧撤销收据。"}};
+            QFile receipt(QString::fromStdWString((root / "receipt.json").wstring()));
+            QVERIFY(receipt.open(QIODevice::WriteOnly | QIODevice::NewOnly));
+            const auto json = QJsonDocument(proof).toJson(); QCOMPARE(receipt.write(json), static_cast<qint64>(json.size()));
+        }
     }
     void FailedPreparationAndStaleProofKeepStateAndHistory() {
         Fixture fixture; auto& project = *fixture.project;
