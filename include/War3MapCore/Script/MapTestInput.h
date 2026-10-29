@@ -24,6 +24,13 @@ struct MapTestProcessExit {
     std::uint32_t processId = 0, exitCode = 0;
     bool launcher = false, game = false, known = false;
 };
+struct MapTestNormalExitStep {
+    double delaySeconds = 0;
+    std::string stage;
+    MapTestInput input;
+};
+// 仅已核验的经典测试环境使用；通过游戏菜单正常退出，动作送达不等于进程已退出。
+[[nodiscard]] std::vector<MapTestNormalExitStep> MapTestNormalExit127();
 [[nodiscard]] Result<std::vector<std::uint32_t>> ParseMapTestKeys(std::string_view text);
 [[nodiscard]] Status ValidateMapTestInput(const MapTestInput& input);
 // 经典界面0..0.8/0..0.6按整个客户区拉伸；不猜测渲染器另设的letterbox视口。

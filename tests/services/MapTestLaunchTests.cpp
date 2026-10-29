@@ -199,6 +199,16 @@ int wmain(int argc, wchar_t** argv) {
             Success(clicked, "first click delivered only to original owned game image/window");
             Require(clicked.value->processId == run.value->launcherProcessId && clicked.value->window && clicked.value->cursorObserved && clicked.value->keyObserved,
                 "receiver reports target and virtual input observations");
+            const auto retained = run.value->lease->InspectRetainedState(); Success(retained, "read bounded owned-window and copy state while active");
+            Require(retained.value->gameMapCopy == inputPlan.gameMapCopy && retained.value->preparedMap == inputPlan.testMap,
+                "retained state binds the real frozen and short-path copies");
+            bool mainSeen = false, hiddenSeen = false;
+            for (const auto& window : retained.value->windows) {
+                Require(window.processId == run.value->launcherProcessId, "snapshot excludes unrelated parent windows");
+                mainSeen |= window.window == clicked.value->window && window.visible && window.cloakKnown && window.cloakFlags != 0;
+                hiddenSeen |= !window.visible && window.width > clicked.value->width;
+            }
+            Require(retained.value->windowEnumerationComplete && mainSeen && hiddenSeen, "snapshot distinguishes cloaked main and larger hidden utility");
             Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Click,.4,.4625,{}}), "second click delivers release before next click");
             Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{VK_CONTROL,'Q'}}), "key chord dispatch and release");
             War3Map::Runtime::WindowInputPacket spoof;

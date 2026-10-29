@@ -41,6 +41,7 @@ struct MapTestLaunchLease::Impl {
     DWORD exitCode = STILL_ACTIVE;
     bool cleaned = false;
     std::filesystem::path receipt;
+    std::filesystem::path preparedMap, gameMapCopy;
     std::shared_ptr<Services::MapTestWorkspaceLease> mapFiles;
     std::vector<HANDLE> protectedDirectories;
     std::vector<HANDLE> protectedFiles;
@@ -420,6 +421,43 @@ std::vector<MapTestProcessExit> MapTestLaunchLease::ProcessExits() const {
     return result;
 }
 
+Result<MapTestRetainedSnapshot> MapTestLaunchLease::InspectRetainedState() const {
+#ifdef _WIN32
+    if (!impl_) return Result<MapTestRetainedSnapshot>::Failure("Map.Test", "MAP_TEST_STATE_UNAVAILABLE", "测试租约不存在。");
+    MapTestRetainedSnapshot snapshot;
+    snapshot.activeProcessIds = ProcessIds(); snapshot.processes = ProcessExits();
+    std::lock_guard lock(impl_->lifecycle);
+    snapshot.preparedMap = impl_->preparedMap; snapshot.gameMapCopy = impl_->gameMapCopy; snapshot.launcherReceipt = impl_->receipt;
+    struct Context { MapTestRetainedSnapshot& value; bool truncated = false; } context{snapshot};
+    const auto visit = [](HWND window, LPARAM parameter) -> BOOL {
+        auto& context = *reinterpret_cast<Context*>(parameter); auto& value = context.value;
+        DWORD pid = 0; const auto thread = GetWindowThreadProcessId(window, &pid);
+        if (std::find(value.activeProcessIds.begin(), value.activeProcessIds.end(), pid) == value.activeProcessIds.end()) return TRUE;
+        if (value.windows.size() >= 64) { context.truncated = true; return FALSE; }
+        MapTestWindowSnapshot row; row.window = reinterpret_cast<std::uintptr_t>(window); row.processId = pid; row.threadId = thread;
+        row.visible = IsWindowVisible(window) != FALSE; row.minimized = IsIconic(window) != FALSE;
+        row.inputReceiver = GetPropW(window, Runtime::kWindowInputProperty) == reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(Runtime::kWindowInputMagic));
+        RECT rect{}; if (GetClientRect(window, &rect)) { row.width = rect.right; row.height = rect.bottom; }
+        wchar_t name[256]{}; const auto count = GetClassNameW(window, name, 256); char utf8[1024]{};
+        const auto bytes = count > 0 ? WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, count, utf8, 1024, nullptr, nullptr) : 0;
+        row.className = bytes > 0 ? std::string(utf8, bytes) : "<unavailable>";
+        if (const auto module = LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)) {
+            using Query = HRESULT(WINAPI*)(HWND, DWORD, PVOID, DWORD);
+            if (const auto query = reinterpret_cast<Query>(GetProcAddress(module, "DwmGetWindowAttribute")))
+                row.cloakKnown = SUCCEEDED(query(window, 14, &row.cloakFlags, sizeof(row.cloakFlags)));
+            FreeLibrary(module);
+        }
+        value.windows.push_back(std::move(row)); return TRUE;
+    };
+    const auto enumerated = impl_->desktop ? EnumDesktopWindows(impl_->desktop, visit, reinterpret_cast<LPARAM>(&context))
+        : EnumWindows(visit, reinterpret_cast<LPARAM>(&context));
+    snapshot.windowEnumerationComplete = enumerated && !context.truncated;
+    return Result<MapTestRetainedSnapshot>::Success(std::move(snapshot));
+#else
+    return Result<MapTestRetainedSnapshot>::Failure("Map.Test", "MAP_TEST_PLATFORM", "当前平台不支持测试状态查询。");
+#endif
+}
+
 Result<std::filesystem::path> MapTestLaunchLease::RequestGameScreenshot(std::uint32_t timeoutMs) const {
     const auto fail = [](const char* code, std::string message) {
         return Result<std::filesystem::path>::Failure("Map.Test", code, std::move(message));
@@ -555,6 +593,7 @@ static Result<MapTestLaunchReceipt> Run(const Services::MapTestLaunchPlan& plan)
     struct MutexScope { HANDLE handle; ~MutexScope() { ReleaseMutex(handle); CloseHandle(handle); } } startGuard{startMutex};
     auto state = std::make_unique<MapTestLaunchLease::Impl>();
     state->gameImage = (plan.workingDirectory / L"war3.exe").lexically_normal().make_preferred();
+    state->preparedMap = plan.testMap; state->gameMapCopy = plan.gameMapCopy;
     state->job = CreateJobObjectW(nullptr, (L"Local\\ForgeMapTestGame_" + suffix).c_str());
     if (!state->job) return Result<MapTestLaunchReceipt>::Failure("Map.Test", "MAP_TEST_LAUNCH_JOB", "无法建立游戏测试生命周期Job。");
     if (GetLastError() == ERROR_ALREADY_EXISTS)
