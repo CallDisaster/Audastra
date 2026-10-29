@@ -1172,6 +1172,8 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     review = query(); Require(review.Succeeded() && !review.value->complete, "unsupported Lua templates remain incomplete");
     doc.wct.customCode = Trigger::RawText{"<?=\"gg_trg_Target\"?>\n"};
     review = query(); Require(review.Succeeded() && review.value->complete && review.value->individualBlocks.front().referenced, "template-produced target is a definite reference");
+    for (const auto& b : review.value->individualBlocks) for (const auto& e : b.evidence)
+        std::cerr << "template-origin: " << e.sourceFile << ':' << e.sourceLine << " definite=" << e.definite << '\n';
     Require(std::any_of(review.value->individualBlocks.front().evidence.begin(), review.value->individualBlocks.front().evidence.end(), [](const auto& e) {
         return e.definite && e.sourceFile == "WCT/header.j" && e.sourceLine == 1;
     }), "template span plus preprocessing maps generated symbol to author line");
