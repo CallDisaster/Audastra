@@ -73,6 +73,10 @@ void IndividualAndReferences() {
     Require(r.complete && r.individualBlocks.size() == 1 && r.groupableBlocks.size() == 2, "constant dispatch and comment require individual review");
     f.Confirm(op, r); op.codeAudits.front().blocks.push_back(r.individualBlocks.front().identity); op.codeAudits.pop_back();
     f.Fails(op, "TRIGGER_REMOVE_CODE_AUDIT_INVALID");
+    f.doc.wct.customCode = RawText{"globals\nstring label = \"prefix Target Name suffix\"\nendglobals\n"};
+    op = f.Remove(); r = f.Review(op);
+    Require(r.complete && r.individualBlocks.size() == 1 && !r.individualBlocks.front().dynamic && !r.individualBlocks.front().referenced,
+        "target substring in an ordinary string requires separate review without claiming a definite call");
     for (const auto* code : {"call Run(gg_trg_Target_Name)\n", "call ExecuteFunc(\"InitTrig_Target_Name\")\n"}) {
         f.doc.wct.customCode = RawText{code}; op = f.Remove(); r = f.Review(op); f.Confirm(op, r); f.Fails(op, "TRIGGER_GRAPH_REMOVE_REFERENCED");
     }

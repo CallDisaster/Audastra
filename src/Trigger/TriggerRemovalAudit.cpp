@@ -22,6 +22,10 @@ bool Match(std::string_view value, const DeclarationRemovalReview& review, bool 
         return s.ends_with('_') ? value.starts_with(s) : value == s;
     });
 }
+bool Mentions(std::string_view value, const DeclarationRemovalReview& review) {
+    return value.find(review.expectedName) != std::string_view::npos
+        || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return value.find(s) != std::string_view::npos; });
+}
 struct Token { std::string text; std::size_t offset; bool quoted = false; std::size_t length = 0; };
 void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     if (block.evidence.empty()) return;
@@ -70,7 +74,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
             if (line) { while (i < text.size() && text[i] != '\n') ++i; }
             else { const auto end = text.find("*/", i); if (end == std::string::npos) { block.complete = false; i = text.size(); } else i = end + 2; }
             const auto comment = std::string_view(text).substr(begin, i - begin);
-            if (comment.find(review.expectedName) != std::string_view::npos || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return comment.find(s) != std::string_view::npos; }))
+            if (Mentions(comment, review))
                 Evidence(block, source, begin, i - begin, "注释命中（非执行引用）", false);
             continue;
         }
@@ -89,7 +93,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
             }
             if (!closed) block.complete = false;
             --tokensLeft; tokens.push_back({decoded, begin, true, i - begin});
-            if (quote == '"' && Match(decoded, review, false)) Evidence(block, source, begin, i - begin, "名字字符串（须审阅用途）", false);
+            if (quote == '"' && Mentions(decoded, review)) Evidence(block, source, begin, i - begin, "名字字符串（须审阅用途）", false);
             continue;
         }
         if (NameByte(static_cast<unsigned char>(text[i]))) {
