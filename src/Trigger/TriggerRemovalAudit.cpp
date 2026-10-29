@@ -20,6 +20,8 @@ Status Fail(const char* code, std::string message) { return Status::Failure("Tri
 std::string Key(AtomicRenameCodeKind kind, StableId id) { return std::to_string(static_cast<unsigned>(kind)) + ":" + std::to_string(id); }
 bool NameByte(unsigned char c) { return std::isalnum(c) || c == '_' || c >= 128; }
 bool Match(std::string_view value, const DeclarationRemovalReview& review, bool identifier) {
+    // 按名字符串中的非ASCII只作显示名提及；不能冒充精确的ASCII生成符号。
+    if (!identifier && std::any_of(value.begin(), value.end(), [](unsigned char c) { return c >= 128; })) return false;
     if (!identifier && value == review.expectedName) return true;
     return std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) {
         return s.ends_with('_') ? value.starts_with(s) : value == s;

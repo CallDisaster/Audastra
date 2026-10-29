@@ -184,6 +184,9 @@ void ByteOpaqueCoverage() {
     Require(r.complete && r.individualBlocks.size() == 1 && !r.individualBlocks.front().referenced
         && r.individualBlocks.front().evidence.front().context.find("注释命中") != std::string::npos,
         "GBK display-name comment is found without decoding opaque source");
+    expanded = "call ExecuteFunc(\"目标 名\")\n";
+    r = query(); Require(r.complete && !r.individualBlocks.front().referenced,
+        "a nonASCII display-name string is possible rather than an exact ASCII generated-symbol reference");
 }
 }
 void DerivedLiteralClassification() {
