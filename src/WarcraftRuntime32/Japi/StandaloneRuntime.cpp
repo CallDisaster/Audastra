@@ -35,7 +35,7 @@ constexpr std::uintptr_t kSaveInteger = 0x1f3890;
 constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
 RuntimeTestWriter testEvidence;
 
-void Trace(std::string_view message, bool fault = false, bool counter = false) noexcept {
+void Trace(std::string_view message, bool fault = false, bool counter = false, bool observation = false) noexcept {
     try {
         static std::mutex lock;
         static HANDLE file = INVALID_HANDLE_VALUE;
@@ -43,6 +43,7 @@ void Trace(std::string_view message, bool fault = false, bool counter = false) n
         static unsigned lines = 0;
         static unsigned faults = 0;
         static unsigned counters = 0;
+        static unsigned observations = 0;
         std::lock_guard guard(lock);
         if (!attempted) {
             attempted = true;
@@ -56,8 +57,8 @@ void Trace(std::string_view message, bool fault = false, bool counter = false) n
             }
         }
         // 故障保留独立预算，普通轮询刷满后也能记录；两者都不无限增长。
-        if (counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
-        if (counter) ++counters; else if (fault) ++faults; else ++lines;
+        if (observation ? observations >= 2048 : counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
+        if (observation) ++observations; else if (counter) ++counters; else if (fault) ++faults; else ++lines;
         const std::string text = "[AudastraJapi] pid=" + std::to_string(GetCurrentProcessId())
             + " tid=" + std::to_string(GetCurrentThreadId()) + " " + std::string(message.substr(0, 768)) + "\n";
         OutputDebugStringA(text.c_str());
@@ -191,6 +192,18 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                         context.storeInteger = [self](std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) {
                             self->saveInteger(table, parent, child, value);
                         };
+                        if (testEvidence.Enabled()) {
+                            context.observeTextArgument = [self](std::uint32_t ordinal, GameUi::FrameHandle frame,
+                                int index, bool integer, std::uint32_t bits) {
+                                Trace("ui-text-argument epoch=" + std::to_string(self->epoch) + " ordinal=" + std::to_string(ordinal) + " frame=" + std::to_string(frame)
+                                    + " index=" + std::to_string(index) + " type=" + (integer ? "integer" : "real")
+                                    + " bits=" + std::to_string(bits), false, false, true);
+                            };
+                            context.observeTextCommit = [self](std::uint32_t ordinal, GameUi::FrameHandle frame, std::string_view text) {
+                                Trace("ui-text-commit epoch=" + std::to_string(self->epoch) + " ordinal=" + std::to_string(ordinal) + " frame=" + std::to_string(frame)
+                                    + " text=" + audastra::japi::EncodeText(text), false, false, true);
+                            };
+                        }
                         self->data = std::make_shared<GameUi::GameUiDataPlane>(std::move(context), &TraceUiFault);
                     }
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),

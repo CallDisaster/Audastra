@@ -903,6 +903,7 @@ int main() {
         EventTableModule();
         EventTableFaultIsolation();
         FormattedDataCapacity();
+        TextObservationIsolation();
         ScriptMatchesModule();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";

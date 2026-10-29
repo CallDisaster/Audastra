@@ -187,6 +187,13 @@ UiDataWrite GameUiDataPlane::AssignArgument(FrameHandle frame, int index, TextFo
     const auto found = formats_.find(frame);
     if (found == formats_.end()) return Reject(Error::Format);
     found->second.arguments[static_cast<std::size_t>(index)] = argument;
+    if (context_.observeTextArgument && observedArguments_ < 512) {
+        const auto ordinal = ++observedArguments_;
+        try {
+            context_.observeTextArgument(ordinal, frame, index, argument.integer,
+                argument.integer ? std::bit_cast<std::uint32_t>(argument.value) : std::bit_cast<std::uint32_t>(argument.real));
+        } catch (...) {} // 观察失败不能把已接受的参数写入改成失败。
+    }
     return Finish(UiError::None);
 }
 
@@ -199,7 +206,12 @@ UiDataWrite GameUiDataPlane::CommitText(FrameHandle frame) {
     auto text = state.format.Render(state.arguments);
     if (!text) return Reject(Error::Format);
     // 每次显式提交都恢复完整结果，保留与其他SetText调用的先后顺序。
-    return Finish(ui_->SetText(frame, *text));
+    const auto statusWritten = ui_->SetText(frame, *text);
+    if (statusWritten == UiError::None && !stopped_ && context_.observeTextCommit && observedCommits_ < 512) {
+        const auto ordinal = ++observedCommits_;
+        try { context_.observeTextCommit(ordinal, frame, *text); } catch (...) {}
+    }
+    return Finish(statusWritten);
 }
 
 bool GameUiDataPlane::StoreEventInteger(std::int32_t child, std::int32_t value) noexcept {

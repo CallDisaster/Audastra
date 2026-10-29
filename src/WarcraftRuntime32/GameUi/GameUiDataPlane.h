@@ -19,6 +19,9 @@ struct GameUiDataContext {
     std::atomic<std::int32_t>* boundTable = nullptr;
     // 只调用已核验原版入口的 trampoline；输出固定表槽，不创建 JASS 字符串。
     std::function<void(std::int32_t, std::int32_t, std::int32_t, std::int32_t)> storeInteger;
+    // 仅测试宿主设置。观察本方参数和已提交结果，不读取引擎文字表，不影响写入结果。
+    std::function<void(std::uint32_t, FrameHandle, int, bool, std::uint32_t)> observeTextArgument;
+    std::function<void(std::uint32_t, FrameHandle, std::string_view)> observeTextCommit;
 };
 struct UiDataWrite {
     bool intercepted = false;
@@ -76,6 +79,7 @@ private:
     std::unordered_map<FrameHandle, FormattedFrame> formats_;
     EventPump eventPump_;
     bool eventsEnabled_ = false;
+    std::uint32_t observedArguments_ = 0, observedCommits_ = 0;
     bool stopped_ = false, inFlight_ = false, faulted_ = false;
 };
 
