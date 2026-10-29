@@ -64,7 +64,7 @@ struct MapTestArtifact {
     // 无人值守测试：失焦不暂停、后台不降速。只在 1.27a 上生效，其他版本照常启动。
     bool backgroundPlay = false;
     // 看不见但照常绘制：游戏留在用户桌面上，窗口隐身、不进任务栏、不激活，能截图。
-    // 需要后台运行可用（1.27a）；否则仍按 hiddenDesktop 开在不可见桌面上（原版在那里不绘制）。
+    // 自动要求后台运行能力（1.27a）；身份不符则拒绝，不能静默切换到不可见桌面。
     bool cloakedWindow = false;
 };
 

@@ -664,6 +664,15 @@ void OptionalRealYdweRuntimePlan() {
     Success(plan, "actual local YDWE six-module PE/Lua53/Initialize-export preflight passes without execution");
     Require(plan.value->runtimeLayout == Services::MapTestRuntimeLayout::YdweTree && plan.value->runtimeRoot == ydwe,
         "real static preflight preserves the actual local installation path");
+    map.cloakedWindow = true; map.hiddenDesktop = true; map.backgroundPlay = false;
+    const auto cloaked = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(cloaked, "cloaked launch plan independently requires verified background capability");
+    Require(cloaked.value->cloakedWindow && cloaked.value->backgroundPlay && !cloaked.value->hiddenDesktop,
+        "cloaked request alone installs both capabilities on the caller desktop");
+    const auto& arguments = cloaked.value->arguments;
+    Require(std::find(arguments.begin(), arguments.end(), L"--background-play") != arguments.end()
+        && std::find(arguments.begin(), arguments.end(), L"--window-cloak") != arguments.end(),
+        "actual launcher receives background and cloak flags from the public launch planner");
     Require(!std::filesystem::exists(plan.value->gameMapCopy.parent_path()) && !std::filesystem::exists(plan.value->runtimeReceipt),
         "actual local preflight creates no game task, runtime copies or launcher receipt");
     for (std::size_t index = 0; index < identities.size(); ++index) {

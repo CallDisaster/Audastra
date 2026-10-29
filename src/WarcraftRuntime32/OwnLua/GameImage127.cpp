@@ -1,4 +1,5 @@
 #include "GameImage127.h"
+#include "Pe32OriginalCode.h"
 #include "../RuntimeFiles.h"
 
 #include <array>
@@ -40,8 +41,12 @@ struct GameImage127::Impl {
     std::filesystem::path path;
     std::uintptr_t base;
     ImageHeader header;
+    Handle mapping;
+    const unsigned char* disk = nullptr;
+    std::size_t diskBytes = 0;
     Impl(HANDLE file, std::filesystem::path source, std::uintptr_t mapped, ImageHeader shape)
         : lease(file), path(std::move(source)), base(mapped), header(shape) {}
+    ~Impl() { if (disk) UnmapViewOfFile(disk); }
 };
 GameImage127::GameImage127(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 GameImage127::~GameImage127() = default;
@@ -58,6 +63,14 @@ GameImage127::OpenResult GameImage127::Open(HMODULE module) {
     if (!header.bytes) return {{}, "Game.dll 的已映射 PE 结构无效。"};
     auto impl = std::make_unique<Impl>(lease.value, path.data(), base, header);
     lease.value = INVALID_HANDLE_VALUE;
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(impl->lease.value, &size) || size.QuadPart <= 0 || size.QuadPart > 64 * 1024 * 1024)
+        return {{}, "无法读取已锁定映像的原始代码。"};
+    impl->mapping.value = CreateFileMappingW(impl->lease.value, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    if (!impl->mapping.value) return {{}, "无法映射已核验的原始代码。"};
+    impl->disk = static_cast<const unsigned char*>(MapViewOfFile(impl->mapping.value, FILE_MAP_READ, 0, 0, 0));
+    if (!impl->disk) return {{}, "无法读取已核验的代码映射。"};
+    impl->diskBytes = static_cast<std::size_t>(size.QuadPart);
     return {std::shared_ptr<GameImage127>(new GameImage127(std::move(impl))), {}};
 }
 std::uintptr_t GameImage127::Base() const noexcept { return impl_->base; }
@@ -84,5 +97,9 @@ bool GameImage127::Executable(std::uintptr_t address, std::size_t bytes) const n
 bool GameImage127::Matches(std::uintptr_t rva, std::span<const unsigned char> bytes) const noexcept {
     if (rva >= impl_->header.bytes || !Executable(impl_->base + rva, bytes.size())) return false;
     return SameBytes(impl_->base + rva, bytes.data(), bytes.size());
+}
+bool GameImage127::OriginalCode(std::uint32_t rva, std::span<unsigned char> bytes) const noexcept {
+    return Executable(impl_->base + rva, bytes.size()) && Pe32OriginalCode({impl_->disk, impl_->diskBytes},
+        static_cast<std::uint32_t>(impl_->base), rva, bytes);
 }
 } // namespace Audastra::Runtime32::OwnLua

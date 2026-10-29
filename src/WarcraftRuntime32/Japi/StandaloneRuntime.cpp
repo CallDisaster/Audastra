@@ -1,5 +1,7 @@
 #include "GameSession.h"
 #include "ProcessOwner.h"
+#include "RuntimeTestWriter.h"
+#include "HookSite.h"
 #include "../OwnLua/GameVm127.h"
 #include "../GameUi/GameUiModule.h"
 #include "../RuntimeFiles.h"
@@ -7,6 +9,7 @@
 #include <tlhelp32.h>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -17,24 +20,32 @@ namespace {
 using Localized = std::uint32_t(__cdecl*)(std::uintptr_t);
 using Initialize = void(__cdecl*)();
 using DestroyVm = std::uintptr_t(__thiscall*)(std::uintptr_t);
+using SaveReal = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, const float*);
+using SaveStr = std::int32_t(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::uintptr_t);
+using SaveBoolean = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::int32_t);
 // 原版同 SHA 的 stock 登记第24项：GetLocalizedString (S)S，登记调用 RVA 1e9c30。
 // 只读核验来自本项目原有 stock 登记扫描器；不是引导器实现中的地址。
 constexpr std::uintptr_t kLocalized = 0x1e31d0;
 constexpr std::uintptr_t kInitialize = 0x1e9a50, kDestroyVm = 0x7dd070;
+// 来自固定映像的 stock native 登记与对应实现；real 是指针，string 是 VM object。
+constexpr std::uintptr_t kSaveReal = 0x1f3a10, kSaveStr = 0x1f3af0, kSaveBoolean = 0x1f3570;
+constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
+RuntimeTestWriter testEvidence;
 
-void Trace(std::string_view message, bool fault = false) noexcept {
+void Trace(std::string_view message, bool fault = false, bool counter = false) noexcept {
     try {
         static std::mutex lock;
         static HANDLE file = INVALID_HANDLE_VALUE;
         static bool attempted = false;
         static unsigned lines = 0;
         static unsigned faults = 0;
+        static unsigned counters = 0;
         std::lock_guard guard(lock);
         if (!attempted) {
             attempted = true;
             std::array<wchar_t, 32768> path{};
             const auto length = GetTempPathW(static_cast<DWORD>(path.size()), path.data());
-            if (length && length < path.size()) {
+            if (length && length < path.size() && testEvidence.Enabled()) {
                 const auto name = std::filesystem::path(path.data()) / (L"audastra-japi-"
                     + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L".log");
                 file = CreateFileW(name.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr,
@@ -42,8 +53,8 @@ void Trace(std::string_view message, bool fault = false) noexcept {
             }
         }
         // 故障保留独立预算，普通轮询刷满后也能记录；两者都不无限增长。
-        if (fault ? faults >= 64 : lines >= 2048) return;
-        if (fault) ++faults; else ++lines;
+        if (counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
+        if (counter) ++counters; else if (fault) ++faults; else ++lines;
         const std::string text = "[AudastraJapi] pid=" + std::to_string(GetCurrentProcessId())
             + " tid=" + std::to_string(GetCurrentThreadId()) + " " + std::string(message.substr(0, 768)) + "\n";
         OutputDebugStringA(text.c_str());
@@ -59,14 +70,21 @@ struct Runtime {
     Localized localized = nullptr;
     Initialize initialize = nullptr;
     DestroyVm destroyVm = nullptr;
+    SaveReal saveReal = nullptr;
+    SaveStr saveStr = nullptr;
+    SaveBoolean saveBoolean = nullptr;
+    bool dataHooks = false;
+    std::atomic<std::int32_t> boundTable{0};
     std::recursive_mutex lock;
     std::unique_ptr<NativeSession> session;
     std::shared_ptr<StringVm> vm;
+    std::shared_ptr<GameUi::GameUiDataPlane> data;
     DWORD thread = 0;
     std::uint64_t epoch = 1;
     unsigned depth = 0;
     bool failed = false;
     std::string identity;
+    std::array<std::unique_ptr<HookSite>, 7> sites;
 
     void Fail(std::string_view message) {
         failed = true;
@@ -74,13 +92,16 @@ struct Runtime {
         Trace("failure: " + std::string(message));
     }
     void Reset() {
+        boundTable.store(0, std::memory_order_release);
+        if (data) data->Stop();
         if (depth) {
             if (session) session->Reset(); // 失效而不析构正在调用的 Host。
             Fail("VM reset during active JAPI call"); return;
         }
         if (session) session->Reset();
-        session.reset(); vm.reset(); thread = 0;
+        session.reset(); data.reset(); vm.reset(); thread = 0;
         if (++epoch > INT32_MAX) { Fail("epoch exhausted"); return; }
+        testEvidence.Reset(static_cast<std::uint32_t>(epoch));
         failed = false;
         Trace("vm-reset epoch=" + std::to_string(epoch));
     }
@@ -110,12 +131,26 @@ void TraceReply(std::string_view input, std::string_view output) {
     audastra::japi::Response reply;
     if (audastra::japi::ParseRequest(input, request) != AJ_OK
         || audastra::japi::ParseResponse(output, reply) != AJ_OK) return;
+    if (request.command == "host.hello" && reply.status == AJ_OK) testEvidence.Hello(reply.epoch);
     auto message = "epoch=" + std::to_string(reply.epoch) + " request=" + std::to_string(reply.id)
         + " command=" + request.command + " status=" + std::to_string(reply.status)
         + " kind=" + std::to_string(reply.value.kind);
     // 只记录布尔结果与句柄是否存在；不记录作者文字、实际句柄或请求参数。
     if (reply.value.kind == AJ_BOOL) message += " bool=" + std::to_string(reply.value.integer);
     if (reply.value.kind == AJ_HANDLE) message += reply.value.integer ? " handle=nonzero" : " handle=zero";
+    if (request.command == "audastraui.dataerrors") {
+        // 只记录自有计数，不记录作者文字/资源路径；独立预算不会挤掉真正的异常日志。
+        std::uint32_t count = 0;
+        const auto separator = reply.value.text.find('|');
+        bool valid = reply.status == AJ_OK && reply.value.kind == AJ_TEXT && separator != std::string::npos && separator > 0;
+        if (valid) {
+            const auto begin = reply.value.text.data();
+            const auto parsed = std::from_chars(begin, begin + separator, count);
+            valid = parsed.ec == std::errc{} && parsed.ptr == begin + separator && count <= INT32_MAX;
+        }
+        Trace("ui-data-errors epoch=" + std::to_string(reply.epoch) + " request=" + std::to_string(reply.id)
+            + " status=" + std::to_string(reply.status) + (valid ? " count=" + std::to_string(count) : " count=unavailable"), false, true);
+    }
     Trace(message);
 }
 std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
@@ -133,15 +168,26 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
         if (!self->thread) self->thread = thread;
         if (self->thread != thread) { self->Fail("owned request on wrong thread"); return 0; }
         if (!self->session) self->session = std::make_unique<NativeSession>(
-            [self](auto error) { self->Fail(error); }, &TraceReply, self->identity);
+            [self](auto error) { self->Fail(error); }, &TraceReply, self->identity,
+            [self](auto epoch, auto state, auto status, auto expected) {
+                testEvidence.Installed(AJ_OK, self->identity);
+                return testEvidence.Report(epoch, state, status, expected);
+            });
         struct Depth { unsigned& value; ~Depth() { --value; } } depth{self->depth};
         ++self->depth;
         const std::string_view input(bytes.data(), count);
         const auto result = self->session->Dispatch(self->epoch, input, [self] {
             auto attached = AttachGameStringVm(self->image, self->epoch,
-                [](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
+                [self](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
+                    if (self->dataHooks) {
+                        const std::weak_ptr<StringVm> vm = self->vm;
+                        GameUi::GameUiDataContext context{
+                            reinterpret_cast<GameUi::FnResolveUiTable>(image.Base() + kResolveTable),
+                            [vm] { const auto current = vm.lock(); return current && current->Generation() && current->MatchesCurrentMainVm(); }, &self->boundTable};
+                        self->data = std::make_shared<GameUi::GameUiDataPlane>(std::move(context), &TraceUiFault);
+                    }
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),
-                        [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault);
+                        [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault, self->data);
                     Trace("builtin-install audastraui status=" + std::to_string(status));
                     return status;
                 });
@@ -154,6 +200,48 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
         std::lock_guard guard(self->lock);
         self->Fail("native dispatch exception"); return 0;
     }
+}
+template<class Write>
+GameUi::UiDataWrite WriteData(Runtime& self, Write&& write) {
+    // 与字符串入口共用串行/活动深度，写入中发生 VM 清理时只失效，不销毁在栈上的消费者。
+    std::lock_guard guard(self.lock);
+    const auto data = self.data;
+    if (!data) return {};
+    struct Depth { unsigned& value; ~Depth() { --value; } } depth{self.depth};
+    ++self.depth;
+    return write(*data);
+}
+void __cdecl SaveRealHook(std::int32_t table, std::int32_t parent, std::int32_t child, const float* value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveReal) return;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) {
+        self->saveReal(table, parent, child, value); return;
+    }
+    try {
+        if (WriteData(*self, [&](auto& data) { return data.SaveReal(table, parent, child, value); }).intercepted) return;
+        self->saveReal(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); }
+}
+std::int32_t __cdecl SaveStrHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::uintptr_t value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveStr) return 0;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) return self->saveStr(table, parent, child, value);
+    try {
+        const auto result = WriteData(*self, [&](auto& data) { return data.SaveStr(table, parent, child, value); });
+        if (result.intercepted) return result.applied ? 1 : 0;
+        return self->saveStr(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); return 0; }
+}
+void __cdecl SaveBooleanHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveBoolean) return;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) {
+        self->saveBoolean(table, parent, child, value); return;
+    }
+    try {
+        if (WriteData(*self, [&](auto& data) { return data.SaveBoolean(table, parent, child, value); }).intercepted) return;
+        self->saveBoolean(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); }
 }
 void __cdecl InitializeHook() noexcept {
     auto* self = runtime.load();
@@ -210,19 +298,44 @@ int Install(std::string_view identity) {
     auto opened = OwnLua::GameImage127::Open(GetModuleHandleW(L"Game.dll"));
     if (!opened.image) { Trace("game-identity-rejected: " + opened.error); return AJ_POLICY; }
     const auto& image = *opened.image;
-    constexpr unsigned char localized[]{0x55, 0x8b, 0xec, 0x81, 0xec, 0x04, 0x08, 0x00, 0x00};
-    constexpr unsigned char initialize[]{0xe8, 0x5b, 0x96, 0x5f, 0x00, 0x68};
-    constexpr unsigned char destroy[]{0x55, 0x8b, 0xec, 0x6a, 0xff};
-    if (!image.Matches(kLocalized, localized) || !image.Matches(kInitialize, initialize)
-        || !image.Matches(kDestroyVm, destroy)) {
-        Trace("hook-sites-changed: refusing existing hooks/unsupported image"); return AJ_POLICY;
-    }
     auto owned = std::make_unique<Runtime>();
     owned->identity = identity;
     owned->image = std::move(opened.image);
     owned->localized = reinterpret_cast<Localized>(image.Base() + kLocalized);
     owned->initialize = reinterpret_cast<Initialize>(image.Base() + kInitialize);
     owned->destroyVm = reinterpret_cast<DestroyVm>(image.Base() + kDestroyVm);
+    constexpr std::array<std::uintptr_t, 7> rvas{kLocalized, kInitialize, kDestroyVm, kSaveReal, kSaveStr, kSaveBoolean, kResolveTable};
+    constexpr std::array<const char*, 7> names{"localized", "initialize", "destroy_vm", "save_real", "save_str", "save_boolean", "resolve_table"};
+    const auto reportSite = [&](std::size_t i, std::string_view reason) {
+        auto message = "hook-site site=" + std::string(names[i]) + " reason=" + std::string(reason);
+        if (testEvidence.Enabled()) message += " " + DescribeHookSite(image.Base() + rvas[i]);
+        Trace(message, reason != "original" && reason != "verified_rel32_chain");
+        if (testEvidence.Enabled() && owned->sites[i]) for (std::size_t hop = 1; hop < owned->sites[i]->ObservationCount(); ++hop)
+            Trace("hook-chain-hop site=" + std::string(names[i]) + " hop=" + std::to_string(hop) + " "
+                + DescribeHookSite(owned->sites[i]->ObservationAddress(hop)));
+    };
+    for (std::size_t i = 0; i < rvas.size(); ++i) {
+        std::array<unsigned char, 32> expected{};
+        if (!image.OriginalCode(static_cast<std::uint32_t>(rvas[i]), expected)) {
+            reportSite(i, "original_relocation_unavailable");
+        } else {
+            owned->sites[i] = std::make_unique<HookSite>(image.Base() + rvas[i], expected, i == 1);
+            reportSite(i, owned->sites[i]->Reason());
+        }
+    }
+    const auto accepted = [&](std::size_t i) { return owned->sites[i] && owned->sites[i]->Approved(); };
+    if (!accepted(0) || !accepted(1) || !accepted(2)) {
+        Trace("hook-sites-changed: required site qualification refused"); return AJ_POLICY;
+    }
+    owned->dataHooks = accepted(3) && accepted(4) && accepted(5) && accepted(6);
+    if (owned->dataHooks) {
+        owned->saveReal = reinterpret_cast<SaveReal>(image.Base() + kSaveReal);
+        owned->saveStr = reinterpret_cast<SaveStr>(image.Base() + kSaveStr);
+        owned->saveBoolean = reinterpret_cast<SaveBoolean>(image.Base() + kSaveBoolean);
+    } else {
+        for (std::size_t i = 3; i < owned->sites.size(); ++i) owned->sites[i].reset();
+        Trace("data-plane unavailable: native sites changed; preserving original natives");
+    }
     Threads threads;
     threads.handles.reserve(256);
     auto status = OpenThreads(threads);
@@ -236,29 +349,48 @@ int Install(std::string_view identity) {
     status = DetourTransactionBegin();
     if (status != NO_ERROR) { Trace("detours-begin-failed"); return AJ_BACKEND; }
     runtime.store(owned.get());
-    status = DetourAttach(reinterpret_cast<PVOID*>(&owned->localized), LocalizedHook);
-    if (status == NO_ERROR) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->initialize), InitializeHook);
-    if (status == NO_ERROR) status = DetourAttach(reinterpret_cast<PVOID*>(&owned->destroyVm), DestroyVmHook);
+    struct Attachment { std::size_t site; PVOID* next; PVOID callback; };
+    const std::array<Attachment, 6> attachments{{
+        {0, reinterpret_cast<PVOID*>(&owned->localized), reinterpret_cast<PVOID>(&LocalizedHook)},
+        {1, reinterpret_cast<PVOID*>(&owned->initialize), reinterpret_cast<PVOID>(&InitializeHook)},
+        {2, reinterpret_cast<PVOID*>(&owned->destroyVm), reinterpret_cast<PVOID>(&DestroyVmHook)},
+        {3, reinterpret_cast<PVOID*>(&owned->saveReal), reinterpret_cast<PVOID>(&SaveRealHook)},
+        {4, reinterpret_cast<PVOID*>(&owned->saveStr), reinterpret_cast<PVOID>(&SaveStrHook)},
+        {5, reinterpret_cast<PVOID*>(&owned->saveBoolean), reinterpret_cast<PVOID>(&SaveBooleanHook)}}};
+    std::size_t changedSite = owned->sites.size(); bool snapshotChanged = false;
+    for (const auto& step : attachments) {
+        if (step.site >= 3 && !owned->dataHooks) continue;
+        status = AttachQualifiedHook(*owned->sites[step.site], step.next, step.callback);
+        if (status != NO_ERROR) { changedSite = step.site; break; }
+    }
     if (status == NO_ERROR) {
         for (const auto thread : threads.handles) {
             status = DetourUpdateThread(thread);
             if (status != NO_ERROR) break;
         }
     }
+    if (status == NO_ERROR) for (std::size_t i = 0; i < owned->sites.size(); ++i) {
+        if (owned->sites[i] && !owned->sites[i]->StillMatches()) { changedSite = i; snapshotChanged = true; status = ERROR_INVALID_DATA; break; }
+    }
     if (status == NO_ERROR) status = DetourTransactionCommit();
     else DetourTransactionAbort();
     if (status != NO_ERROR) {
         runtime.store(nullptr);
-        Trace("hook-install-failed win32=" + std::to_string(status)); return AJ_BACKEND;
+        if (changedSite != owned->sites.size()) reportSite(changedSite, snapshotChanged ? "changed_before_commit" : "attach_rejected");
+        Trace("hook-install-failed win32=" + std::to_string(status)); return status == ERROR_INVALID_DATA ? AJ_POLICY : AJ_BACKEND;
     }
     owned.release(); // 钩子与会话为进程级拥有；不在 DllMain 卸载/析构。
     ownerState.store(1);
-    Trace("initialize-ready: awaiting first JASS request; builtin=audastraui");
+    Trace(std::string("initialize-ready: awaiting first JASS request; builtin=audastraui; data-plane=") + (runtime.load()->dataHooks ? "1" : "0"));
     return AJ_OK;
 }
 int Start() {
+    testEvidence.Loaded();
     std::string error;
+    std::string identity;
     const auto result = InitializeProcessRuntime(reinterpret_cast<const void*>(&Start), installLock, &Install, error);
+    if (const auto* current = runtime.load()) identity = current->identity;
+    testEvidence.Installed(result, identity);
     if (!error.empty()) Trace("owner-rejected: " + error);
     return result;
 }

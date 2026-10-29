@@ -1621,7 +1621,8 @@ private:
                     const auto diagnostics = Mcp::Failure(Status{package.diagnostics}).value("diagnostics");
                     packages.append(QJsonObject{{"package_sha256", QString::fromStdString(package.packageSha256)},
                         {"id", QString::fromStdString(package.id)}, {"version", QString::fromStdString(package.version)},
-                        {"payload_sha256", QString::fromStdString(package.payloadSha256)}, {"internal_only", package.internalOnly},
+                        {"payload_sha256", QString::fromStdString(package.payloadSha256)},
+                        {"module_payload_sha256", QString::fromStdString(package.modulePayloadSha256)}, {"internal_only", package.internalOnly},
                         {"available", package.available}, {"diagnostics", diagnostics}});
                 }
                 result.insert("packages", packages);

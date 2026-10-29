@@ -29,10 +29,14 @@ add_library(audastra-lua53-sandbox STATIC ${lua_sandbox_sources})
 target_include_directories(audastra-lua53-sandbox PUBLIC "${AUD_LUA53_SOURCE_DIR}")
 target_compile_definitions(audastra-lua53-sandbox PRIVATE _CRT_SECURE_NO_WARNINGS)
 
+include("${PROJECT_SOURCE_DIR}/cmake/RuntimeModuleLoaders.cmake")
 add_library(War3MapScriptBuild STATIC
+    RuntimeModuleProfiles.cpp
+    RuntimeModuleBoot.cpp
     ExternalProcess.cpp
     MapTestSlk.cpp
     GameScreenshot127.cpp
+    MapTestInput.cpp
     MapTestLaunch.cpp
     MapTestRuntime.cpp
     LuaTemplateSandbox.cpp
@@ -113,6 +117,7 @@ add_custom_command(
     VERBATIM)
 target_link_libraries(War3MapScriptBuild PUBLIC War3MapEditor::Core War3MapEditor::ObjectData War3MapEditor::Jass War3MapEditor::Lua War3MapTrigger)
 target_link_libraries(War3MapScriptBuild PRIVATE audastra-json audastra-lua53-sandbox)
+target_include_directories(War3MapScriptBuild PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_compile_definitions(War3MapScriptBuild PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 if(MSVC)
     target_compile_options(War3MapScriptBuild PRIVATE /W4 /permissive- /utf-8)

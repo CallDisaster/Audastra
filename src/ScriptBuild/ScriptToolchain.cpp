@@ -639,8 +639,12 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         const auto started = Clock::now();
         std::vector<std::filesystem::path> injected;
         std::size_t entries = 0;
+        constexpr std::string_view runtimeClient[]{"AudastraUIIsReady"};
+        // 显式启用即有启动依赖；按需模式仍只由真实作者调用选择库。
+        const std::span<const std::string_view> required = options.mapRuntimeBoot && options.mapRuntimeBoot->enabled
+            && !options.mapRuntimeBoot->onlyIfUsed ? std::span<const std::string_view>(runtimeClient) : std::span<const std::string_view>{};
         if (options.frameworkInputs) {
-            auto owned = InjectScriptFramework(script, *options.frameworkInputs, injected, &frameworkView, &result.injectedSourceSha256);
+            auto owned = InjectScriptFramework(script, *options.frameworkInputs, injected, &frameworkView, &result.injectedSourceSha256, required);
             for (auto& diagnostic : owned.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
             if (!owned.Succeeded()) { stage.exitCode = 1; return result; }
             entries = options.frameworkInputs->injection.choices.size();
@@ -648,7 +652,7 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         } else {
             const auto table = ScanInjectTable(options.jassDirs, options.warcraftVersion == 24, result.diagnostics);
             entries = table.entries.size();
-            script = InjectCode(std::move(script), table, result.diagnostics, &injected, &result.injectedSourceSha256);
+            script = InjectCode(std::move(script), table, result.diagnostics, &injected, &result.injectedSourceSha256, required);
         }
         stage.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started);
         stage.log = std::to_string(entries) + " 个注入函数，追加 " + std::to_string(injected.size()) + " 个文件";
@@ -855,7 +859,9 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         }
         result.script = std::move(*output);
         if (options.mapRuntimeBoot) {
+            if (!WriteFile(dir / "6_runtime-input.j", result.script)) { Fail(result, "WORKDIR_WRITE", "无法冻结运行库改写前的同阶段主脚本。"); return result; }
             auto plan = *options.mapRuntimeBoot; plan.injectedSourceSha256 = result.injectedSourceSha256;
+            if (options.frameworkInputs) plan.moduleLoaders = options.frameworkInputs->profile.moduleLoaders;
             auto boot = ApplyMapRuntimeBoot(result.script, plan);
             result.diagnostics.insert(result.diagnostics.end(), boot.diagnostics.begin(), boot.diagnostics.end());
             if (!boot.Succeeded()) { result.script.clear(); return result; }
@@ -878,7 +884,9 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         return result;
     }
     if (options.mapRuntimeBoot) {
+        if (!WriteFile(dir / "6_runtime-input.j", finalScript)) { Fail(result, "WORKDIR_WRITE", "无法冻结运行库改写前的同阶段主脚本。"); return result; }
         auto plan = *options.mapRuntimeBoot; plan.injectedSourceSha256 = result.injectedSourceSha256;
+        if (options.frameworkInputs) plan.moduleLoaders = options.frameworkInputs->profile.moduleLoaders;
         auto boot = ApplyMapRuntimeBoot(finalScript, plan);
         result.diagnostics.insert(result.diagnostics.end(), boot.diagnostics.begin(), boot.diagnostics.end());
         if (!boot.Succeeded()) return result;

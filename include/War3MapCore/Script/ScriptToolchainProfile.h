@@ -55,6 +55,17 @@ struct ScriptProfileUnsupportedPlugin {
 };
 inline constexpr std::string_view kUserdataGcTemplateLibrary = "xueyue-userdata-gc-v1";
 
+enum class ScriptModuleLoaderAvailability { AfterMain };
+struct ScriptProfileModuleLoader {
+    std::string id;
+    std::string functionName;
+    bool anonymous = true;
+    ScriptModuleLoaderAvailability availability = ScriptModuleLoaderAvailability::AfterMain;
+    [[nodiscard]] bool operator==(const ScriptProfileModuleLoader&) const = default;
+};
+[[nodiscard]] std::vector<ScriptProfileModuleLoader> DefaultScriptModuleLoaders();
+[[nodiscard]] Result<std::string> ScriptModuleLoaderIdentity(const ScriptProfileModuleLoader& loader);
+
 // 纯词法资格/编码匹配，不访问FS。ExactFile优先，其余用最具体Directory；调用方先验证档案。
 // 同一规范路径的重复/类型/编码冲突由Validate拒绝；更具体条目是显式覆盖，不依声明顺序猜编码。
 [[nodiscard]] const ScriptProfileIncludeAccess* MatchScriptIncludeAccess(
@@ -85,12 +96,13 @@ struct ScriptToolchainProfile {
     std::vector<std::string> templateApis;
     ScriptProfileReturnbugPolicy returnbugPolicy = ScriptProfileReturnbugPolicy::Strict;
     // Strict必须为空；InventoriedOnly仅可声明Pre124的YDWEBase_returnbug模式集。
-    // 1.27a MemHack的AI及配对载荷是普通不透明导入成员，不属于主脚本类型例外。
+    // AI及配对载荷是普通不透明导入成员，不属于主脚本类型例外。
     std::string returnbugPatternSetVersion;
     std::string directiveDialectVersion = "ydwe-dollar-v1";
     std::vector<ScriptProfileDirective> directives;
     std::vector<ScriptProfileFeatureExtension> featureExtensions;
     std::vector<ScriptProfileUnsupportedPlugin> unsupportedPlugins;
+    std::vector<ScriptProfileModuleLoader> moduleLoaders;
     [[nodiscard]] bool operator==(const ScriptToolchainProfile&) const = default;
 };
 

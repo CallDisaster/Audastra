@@ -54,23 +54,36 @@ struct Instance {
         const char* entry = nullptr;
     };
 
-    Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver observer);
+    Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver observer,
+        const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> data);
 
     // 失败的请求号与原因留给 audastraui.error；状态码只说明大类。
     std::int32_t Record(const AjCall& call, UiError error) noexcept {
         if (error == UiError::None) return AJ_OK;
         failedRequest = call.request;
-        failed = error;
+        failedReason = error == UiError::NotReady && !unavailable.empty()
+            ? unavailable : std::string(UiErrorText(error));
         return StatusOf(error);
+    }
+
+    std::int32_t RecordInput(const AjCall& call, const UnitClickResult& result) {
+        if (result.status != AJ_OK) {
+            failedRequest = call.request;
+            failedReason = result.reason;
+        }
+        return result.status;
     }
 
     GameUiEntryPoints entries;
     UiFaultObserver observer = nullptr;
     std::string unavailable;
     std::optional<GameUiLibrary> ui;   // start 时在游戏线程建
+    GameInputEntryPoints inputEntries;
+    std::optional<GameInput127> input;
+    std::shared_ptr<GameUiDataPlane> data;
     std::deque<UiFrameEvent> events;
     std::uint32_t failedRequest = 0;
-    UiError failed = UiError::None;
+    std::string failedReason;
     std::vector<Binding> bindings;
     std::vector<AjCommand> commands;
     AjModule descriptor{};
@@ -95,7 +108,8 @@ std::int32_t ReplyText(AjResult& out, std::string_view text) noexcept {
     return AjSetText(&out, text.data(), static_cast<std::uint32_t>(text.size()));
 }
 
-// 顺序即契约顺序；改动须同步 AudastraUI.j。全部是本机界面命令，不进同步域。
+// 顺序即契约顺序；改动须同步脚本包装。命令从本机界面发起；
+// clickunit让原版输入链决定是否生成游戏自己的同步命令，本库不另发网络消息。
 const CommandSpec kCommands[] = {
     {"audastraui.ready", "", AJ_BOOL, [](Instance& s, const AjCall& c, const AjArg*, AjResult& out) -> std::int32_t {
         // 回答本身总是成功；不可用时把原因记在这次请求上，地图侧随后可用 error 查询。
@@ -108,12 +122,10 @@ const CommandSpec kCommands[] = {
     }},
     {"audastraui.error", "i", AJ_TEXT, [](Instance& s, const AjCall&, const AjArg* a, AjResult& out) -> std::int32_t {
         // 只回答这个模块自己记下的那次失败；宿主层面的失败（未连接、过期请求）返回空。
-        if (s.failed == UiError::None || a[0].integer <= 0 || static_cast<std::uint32_t>(a[0].integer) != s.failedRequest)
+        if (s.failedReason.empty() || a[0].integer <= 0 || static_cast<std::uint32_t>(a[0].integer) != s.failedRequest)
             return ReplyText(out, {});
-        if (s.failed == UiError::NotReady && !s.unavailable.empty()
-            && EncodeText(s.unavailable).size() <= AJ_MAX_OUTPUT_TEXT)
-            return ReplyText(out, s.unavailable);
-        return ReplyText(out, UiErrorText(s.failed));
+        if (EncodeText(s.failedReason).size() <= AJ_MAX_OUTPUT_TEXT) return ReplyText(out, s.failedReason);
+        return ReplyText(out, "运行库操作失败，原因超过诊断长度限制");
     }},
     {"audastraui.root", "", AJ_HANDLE, [](Instance& s, const AjCall& c, const AjArg*, AjResult& out) -> std::int32_t {
         return Created(s, c, out, s.ui->Root());
@@ -233,6 +245,26 @@ const CommandSpec kCommands[] = {
         s.events.pop_front();
         return ReplyText(out, std::to_string(event.frame) + '|' + std::to_string(event.kind));
     }},
+    {"audastraui.clickunit", "i", AJ_INT, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        out.kind = AJ_INT;
+        out.integer = -1;
+        if (!s.input) return AJ_UNSUPPORTED;
+        const auto result = s.input->ClickUnit(a[0].integer, c.epoch, c.request);
+        out.integer = result.value;
+        return s.RecordInput(c, result);
+    }},
+    {"audastraui.bindtable", "i", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID;
+        const auto status = s.data ? s.data->Bind(a[0].integer, c.epoch, c.request) : AJ_UNSUPPORTED;
+        if (status != AJ_OK) {
+            s.failedRequest = c.request;
+            s.failedReason = s.data ? s.data->BindReason() : "此运行库没有已核验的界面数据面能力";
+        }
+        return status;
+    }},
+    {"audastraui.dataerrors", "", AJ_TEXT, [](Instance& s, const AjCall&, const AjArg*, AjResult& out) -> std::int32_t {
+        return ReplyText(out, s.data ? s.data->Errors() : "0|");
+    }},
 };
 
 std::int32_t AJ_CALL Invoke(void* user, const AjCall* call, const AjArg* args, std::uint32_t count, AjResult* out) {
@@ -255,10 +287,16 @@ std::int32_t AJ_CALL Invoke(void* user, const AjCall* call, const AjArg* args, s
 std::int32_t AJ_CALL Start(void* user) {
     auto& self = *static_cast<Instance*>(user);
     self.ui.emplace(self.entries, self.observer);
+    self.input.emplace(self.inputEntries, self.observer);
+    if (self.data) self.data->Attach(*self.ui);
     return AJ_OK;
 }
 
-void AJ_CALL RequestStop(void*) {}
+void AJ_CALL RequestStop(void* user) {
+    auto& self = *static_cast<Instance*>(user);
+    if (self.input) self.input->Stop();
+    if (self.data) self.data->Stop();
+}
 
 // 没有工作线程，停止请求后即可销毁。
 std::int32_t AJ_CALL PollStopped(void*) { return 1; }
@@ -266,6 +304,9 @@ std::int32_t AJ_CALL PollStopped(void*) { return 1; }
 void AJ_CALL Destroy(void* user) {
     auto& self = *static_cast<Instance*>(user);
     self.events.clear();
+    if (self.data) self.data->Stop();
+    self.data.reset();
+    self.input.reset();
     self.ui.reset();
 }
 
@@ -281,8 +322,9 @@ std::int32_t AJ_CALL Init(const AjHost* host, const AjModule** out) {
     return AJ_OK;
 }
 
-Instance::Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver faultObserver)
-    : entries(entryPoints), observer(faultObserver), unavailable(std::move(reason)) {
+Instance::Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver faultObserver,
+    const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> dataPlane)
+    : entries(entryPoints), observer(faultObserver), unavailable(std::move(reason)), inputEntries(input), data(std::move(dataPlane)) {
     bindings.reserve(std::size(kCommands));
     commands.reserve(std::size(kCommands));
     for (const auto& spec : kCommands)
@@ -303,8 +345,9 @@ ModuleContract GameUiModuleContract() {
     return contract;
 }
 
-std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, std::string unavailable, UiFaultObserver observer) {
-    auto instance = std::make_shared<Instance>(entries, std::move(unavailable), observer);
+std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, std::string unavailable,
+    UiFaultObserver observer, const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> data) {
+    auto instance = std::make_shared<Instance>(entries, std::move(unavailable), observer, input, std::move(data));
     t_installing = instance.get();
     const auto status = host.Install({&Init, instance, GameUiModuleContract()});
     t_installing = nullptr;
@@ -312,11 +355,14 @@ std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, s
 }
 
 std::int32_t InstallGameUiModule127(Host& host, Address base, const std::function<bool(Address, std::size_t)>& executable,
-    UiFaultObserver observer) {
+    UiFaultObserver observer, std::shared_ptr<GameUiDataPlane> data) {
     GameUiEntryPoints entries;
+    GameInputEntryPoints input;
     std::string error;
     if (!ResolveGameUiEntryPoints127(base, executable, entries, error)) entries = {};
-    return InstallGameUiModule(host, entries, std::move(error), observer);
+    std::string inputError;
+    static_cast<void>(ResolveGameInputEntryPoints127(base, executable, input, inputError));
+    return InstallGameUiModule(host, entries, std::move(error), observer, input, std::move(data));
 }
 
 } // namespace Audastra::Runtime32::GameUi

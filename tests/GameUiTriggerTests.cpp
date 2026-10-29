@@ -594,7 +594,7 @@ void TestScriptLibrary() {
         "native IsTriggerEnabled takes trigger whichTrigger returns boolean\n"
         "native CreateTimer takes nothing returns timer\nnative PauseTimer takes timer whichTimer returns nothing\n"
         "native TimerStart takes timer whichTimer, real timeout, boolean periodic, code handlerFunc returns nothing\n"
-        "native DestroyTimer takes timer whichTimer returns nothing\nnative GetLocalPlayer takes nothing returns player\n"
+        "native DestroyTimer takes timer whichTimer returns nothing\nnative ExecuteFunc takes string funcName returns nothing\nnative GetLocalPlayer takes nothing returns player\n"
         "native DisplayTimedTextToPlayer takes player toPlayer, real x, real y, real duration, string message returns nothing\n";
     Require(script.starts_with("library AudastraJapi\n") && script.find("library AudastraUI requires AudastraJapi") != std::string::npos,
         "注入文件里 JAPI 客户端库在界面库前面");

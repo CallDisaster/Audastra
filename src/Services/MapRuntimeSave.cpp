@@ -3,6 +3,7 @@
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Script/MapRuntimeBoot.h"
+#include "War3MapCore/Script/ScriptFrameworkInputs.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <set>
@@ -107,9 +108,23 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
     if (*installed.value) {
         try {
             const auto json = detail::ParseRuntimeJson(**installed.value, 32 * 1024);
-            if (!json.is_object() || json.size() != 5 || !json.at("schema").is_number_unsigned()
-                || json.at("schema") != 1 || !json.at("bootRule").is_number_unsigned() || json.at("bootRule") != 1)
+            const bool module = json.is_object() && json.contains("schema") && json.at("schema") == 2;
+            if (!json.is_object() || json.size() != (module ? 7 : 5) || !json.at("schema").is_number_unsigned()
+                || json.at("schema") != (module ? 2 : 1) || !json.at("bootRule").is_number_unsigned()
+                || json.at("bootRule") != (module ? 2 : 1))
                 throw std::runtime_error("schema");
+            if (module) {
+                const auto loaders = task.script && task.script->toolchain.frameworkInputs
+                    ? task.script->toolchain.frameworkInputs->profile.moduleLoaders : Script::DefaultScriptModuleLoaders();
+                for (const auto& loader : loaders) {
+                    const auto hash = Script::ScriptModuleLoaderIdentity(loader);
+                    if (hash.Succeeded() && json.at("moduleLoaderId") == loader.id && json.at("moduleLoaderSha256") == *hash.value) {
+                        if (state->moduleLoader) throw std::runtime_error("duplicate loader");
+                        state->moduleLoader = loader;
+                    }
+                }
+                if (!state->moduleLoader) throw std::runtime_error("loader unavailable");
+            }
             state->previousIdentity = json.at("packageSha256").get<std::string>();
             state->previousScriptSha256 = json.at("scriptSha256").get<std::string>();
             if (state->previousScriptSha256.size() != 64
@@ -119,6 +134,7 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
             const auto package = Package(task, state->previousIdentity, MapRuntimeSavePurpose::InternalValidation);
             if (!package.Succeeded() || !package.value) return {package.diagnostics};
             const auto& files = json.at("files");
+            if (module && (*package.value)->ModulePayloadSha256().empty()) throw std::runtime_error("module payload missing");
             if (!files.is_array() || files.size() != (*package.value)->Members().size()) throw std::runtime_error("files");
             std::set<std::string> seen;
             for (const auto& file : files) {
@@ -155,6 +171,7 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
         auto& boot = task.script->toolchain.mapRuntimeBoot.emplace();
         boot.testRunDiagnostics = task.runtimePurpose == MapRuntimeSavePurpose::TestRun;
         boot.enabled = approved; boot.ownsExisting = !state->previousIdentity.empty();
+        boot.ownedModuleLoader = state->moduleLoader;
         boot.onlyIfUsed = approved && state->settings.mode == MapRuntimeMode::Automatic;
         boot.resolvePayloadIdentity = [state, sources = task.runtimePackageSources, purpose = task.runtimePurpose]() -> Result<std::string> {
             if (state->approvedPackageSha256 != state->settings.packageSha256)
@@ -168,7 +185,16 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
             auto captured = MapRuntimePackage::Capture(*selected, purpose);
             if (!captured.Succeeded()) { Result<std::string> failed; failed.diagnostics = captured.diagnostics; return failed; }
             state->package = *captured.value;
+            state->moduleLoader.reset();
             return Result<std::string>::Success(state->package->PayloadSha256());
+        };
+        boot.resolveModulePayloadIdentity = [state, capture = boot.resolvePayloadIdentity](const Script::ScriptProfileModuleLoader& loader) -> Result<std::string> {
+            auto captured = capture();
+            if (!captured.Succeeded()) return captured;
+            if (state->package->ModulePayloadSha256().empty())
+                return Result<std::string>::Failure("MapRuntime", "RUNTIME_MODULE_PAYLOAD_MISSING", "当前锁定包不含模块启动载荷；请明确选择配套的新包，未自动升级。");
+            state->moduleLoader = loader;
+            return Result<std::string>::Success(state->package->ModulePayloadSha256());
         };
         boot.verifyScriptInputs = [state](std::span<const std::string> hashes) {
             if (!state->package) return Fail("RUNTIME_PACKAGE_MISSING", "脚本输入校验缺少已捕获包。");
@@ -214,7 +240,7 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
     state.active = required;
     if (!required && state.previousIdentity.empty()) return Status::Ok();
     if (!*script.value || state.scriptMember.ends_with(".lua")) return Fail("RUNTIME_LUA_UNSUPPORTED", "运行库需要完整经典1.27a JASS主脚本。");
-    const auto boot = Script::VerifyMapRuntimeBoot(Text(**script.value), required);
+    const auto boot = Script::VerifyMapRuntimeBoot(Text(**script.value), required, state.moduleLoader);
     if (!boot.Succeeded()) return boot;
     const auto diagnostic = Script::VerifyMapRuntimeTestDiagnostics(Text(**script.value), required && state.purpose == MapRuntimeSavePurpose::TestRun);
     if (!diagnostic.Succeeded()) return diagnostic;
@@ -247,7 +273,8 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
         if (state.package->InternalOnly() && (!task.testCopyOnly || task.inPlace
             || (!task.target.empty() && task.target.lexically_normal() == task.sourcePath.lexically_normal())))
             return Fail("RUNTIME_INTERNAL_COPY_REQUIRED", "内部黑盒包只能写入宿主明确标记的独立测试/验收副本，不能写回作者地图。");
-        const auto identity = Script::VerifyMapRuntimeIdentity(Text(**script.value), state.package->PayloadSha256());
+        const auto identity = Script::VerifyMapRuntimeIdentity(Text(**script.value), state.moduleLoader
+            ? state.package->ModulePayloadSha256() : state.package->PayloadSha256());
         if (!identity.Succeeded()) return identity;
         if (task.scriptRebuilt) {
             const auto inputs = state.package->VerifyScriptInputs(task.scriptInjectedSourceSha256);
@@ -288,6 +315,13 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
     if (required) {
         Json metadata{{"schema",1},{"bootRule",1},{"packageSha256",state.package->Identity()},
             {"scriptSha256",state.scriptSha256},{"files",Json::array()}};
+        if (state.moduleLoader) {
+            metadata["schema"] = 2; metadata["bootRule"] = 2;
+            metadata["moduleLoaderId"] = state.moduleLoader->id;
+            const auto hash = Script::ScriptModuleLoaderIdentity(*state.moduleLoader);
+            if (!hash.Succeeded()) return {hash.diagnostics};
+            metadata["moduleLoaderSha256"] = *hash.value;
+        }
         for (const auto& member : state.expectedMembers) {
             const auto hash = Sha256(member.data); if (!hash.Succeeded()) return {hash.diagnostics};
             metadata["files"].push_back({{"name",member.name},{"size",member.data.size()},{"sha256",*hash.value}});
@@ -333,10 +367,11 @@ Status VerifyMapRuntimeSave(const MapSaveTask& task) {
     if (!script.Succeeded() || !*script.value) return Fail("RUNTIME_BOOT_INVALID", "发布前主脚本缺失。");
     const auto hash = Sha256(**script.value);
     if (!hash.Succeeded() || *hash.value != state.scriptSha256) return Fail("RUNTIME_SOURCE_CHANGED", "主脚本在运行库终检之后变化。");
-    const auto boot = Script::VerifyMapRuntimeBoot(Text(**script.value), state.active);
+    const auto boot = Script::VerifyMapRuntimeBoot(Text(**script.value), state.active, state.moduleLoader);
     if (!boot.Succeeded() || !state.active) return boot;
     const auto diagnostic = Script::VerifyMapRuntimeTestDiagnostics(Text(**script.value), state.purpose == MapRuntimeSavePurpose::TestRun);
     if (!diagnostic.Succeeded()) return diagnostic;
-    return Script::VerifyMapRuntimeIdentity(Text(**script.value), state.package->PayloadSha256());
+    return Script::VerifyMapRuntimeIdentity(Text(**script.value), state.moduleLoader
+        ? state.package->ModulePayloadSha256() : state.package->PayloadSha256());
 }
 }

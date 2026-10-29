@@ -2,6 +2,7 @@
 #include "War3MapCore/Services/LuaTestMailboxSession.h"
 #include "War3MapCore/Hash.h"
 #include "../../src/ScriptBuild/MapTestLaunchInternal.h"
+#include "War3MapCore/Runtime/WindowTestInputProtocol.h"
 
 #include <windows.h>
 
@@ -10,9 +11,15 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <limits>
 
 namespace {
 using namespace War3Map;
+unsigned unrelatedMessages = 0;
+LRESULT CALLBACK UnrelatedWindow(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
+    if (message == WM_COPYDATA) ++unrelatedMessages;
+    return DefWindowProcW(window, message, wparam, lparam);
+}
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 template<class T> void Success(const Result<T>& result, const char* message) {
     if (result.Succeeded()) return;
@@ -54,7 +61,27 @@ struct Temp {
 }
 int wmain(int argc, wchar_t** argv) {
     try {
-        Require(argc == 2, "console fixture executable path argument");
+        const bool windowOnly = argc == 3 && std::wstring_view(argv[2]) == L"--input-window";
+        const bool inputContractOnly = argc == 3 && std::wstring_view(argv[2]) == L"--input-contract";
+        Require(argc == 2 || windowOnly || inputContractOnly, "original fixture executable path and optional input test mode");
+        const auto keys = Script::ParseMapTestKeys("Ctrl+Shift+Q"); Success(keys, "parse virtual key chord");
+        Require(*keys.value == std::vector<std::uint32_t>({17,16,'Q'}), "chord preserves modifier order");
+        for (const auto* bad : {"", "Ctrl+", "Ctrl+Ctrl", "F25", "Win+Q", "0x01", "0x5b", "-1", "Q+x+Q"})
+            Require(!Script::ParseMapTestKeys(bad).Succeeded(), "invalid/system/mouse/duplicate key refused");
+        Require(*Script::ParseMapTestKeys("F10").value == std::vector<std::uint32_t>{121}, "F10 virtual code");
+        Require(*Script::ParseMapTestKeys("0x0d").value == std::vector<std::uint32_t>{13}, "numeric virtual code");
+        const auto center = Script::MapTestInputPixel(.4, .3, 1920, 1080); Success(center, "widescreen stretched coordinate conversion");
+        Require(*center.value == std::pair<int,int>{960,540}, "client center exact");
+        Require(*Script::MapTestInputPixel(.8,0,1920,1080).value == std::pair<int,int>{1919,1079}, "edge clamped into client");
+        Require(!Script::MapTestInputPixel(std::numeric_limits<double>::quiet_NaN(), .2, 640,480).Succeeded()
+            && !Script::MapTestInputPixel(.9,.2,640,480).Succeeded() && !Script::MapTestInputPixel(.4,.2,0,480).Succeeded(), "unknown coordinates/geometry refused");
+        if (inputContractOnly) { std::cout << "Input parser and stretched coordinate contract passed; no windows or game\n"; return 0; }
+        if (windowOnly) {
+            const auto desktop = OpenInputDesktop(0,FALSE,DESKTOP_READOBJECTS);
+            POINT cursor{}; const bool available = desktop && GetCursorPos(&cursor) && GetForegroundWindow();
+            if (desktop) CloseDesktop(desktop);
+            if (!available) { std::cout << "INPUT_DESKTOP_UNAVAILABLE: original input-window fixture not run\n"; return 77; }
+        }
         Services::MapTestLaunchPlan pendingRuntime;
         pendingRuntime.useOwnedLuaRuntime = true; pendingRuntime.enableLuaHotReload = true;
         Require(Code(Script::detail::LaunchVerifiedMapTestPlan(pendingRuntime), "MAP_TEST_OWN_LUA_PLAN"),
@@ -71,9 +98,11 @@ int wmain(int argc, wchar_t** argv) {
         plan.executableSha256 = Hash(helper);
         const auto task = [&](const char* token) { return plan.workingDirectory / "Maps/Audastra" / token / "test.w3x"; };
         plan.gameMapCopy = task("first");
+        if (!windowOnly) {
         const auto firstMarker = temp.root / "first-child-ended";
         plan.arguments = {L"--parent", firstMarker.wstring(), L"1200"};
         auto first = Script::detail::LaunchVerifiedMapTestPlan(plan); Success(first, "trusted console fixture launch");
+        Require(!first.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{'Q'}}).Succeeded(), "ordinary console launch cannot use test input or a foreground fallback");
         Require(first.value->lease && first.value->lease->IsActive(), "suspended launcher assigned original Job before resume");
         Require(Hash(plan.gameMapCopy) == plan.testMapSha256, "independent short game copy has frozen source SHA");
         Require(!first.value->lease->Cleanup().Succeeded() && std::filesystem::exists(plan.gameMapCopy), "active game tree cannot delete the short map copy");
@@ -81,6 +110,9 @@ int wmain(int argc, wchar_t** argv) {
         const auto duplicate = Script::detail::LaunchVerifiedMapTestPlan(duplicatePlan);
         Require(Code(duplicate, "MAP_TEST_ALREADY_ACTIVE"), "same game install refuses another launch even with a different short map copy");
         WaitTerminal(first.value->lease);
+        const auto firstExits = first.value->lease->ProcessExits();
+        Require(firstExits.size()==2 && firstExits[0].launcher && firstExits[0].known && firstExits[0].exitCode==0
+            && firstExits[1].known && firstExits[1].exitCode==0, "original parent/child natural exit codes retained after handle closure");
         Require(std::filesystem::exists(firstMarker), "child completed naturally");
         Success(first.value->lease->Cleanup(), "safe short map cleanup after complete actual Job terminal");
         Require(!std::filesystem::exists(plan.gameMapCopy.parent_path()), "only first owned task directory removed");
@@ -135,6 +167,7 @@ int wmain(int argc, wchar_t** argv) {
         plan.arguments = {L"--parent", (temp.root / "after-fast-ended").wstring(), L"600"};
         auto afterFast = Script::detail::LaunchVerifiedMapTestPlan(plan); Success(afterFast, "fast exited child never permanently blocks a new test task");
         WaitTerminal(afterFast.value->lease); Success(afterFast.value->lease->Cleanup(), "next slow task has complete terminal proof");
+        }
 
         // 原创控制台接收器经过真实LaunchVerified入口/继承白名单/Job，不使用游戏或GPU。
         const auto game = plan.workingDirectory / "war3.exe";
@@ -144,6 +177,90 @@ int wmain(int argc, wchar_t** argv) {
         WriteNew(plan.runtimeBootstrap, "original placeholder bootstrap identity");
         plan.runtimeBootstrapSha256 = Hash(plan.runtimeBootstrap);
         plan.gameExecutableSha256 = Hash(game); plan.gameModuleSha256 = Hash(plan.workingDirectory / "Game.dll");
+        if (windowOnly) {
+            WNDCLASSW spy{}; spy.lpfnWndProc = UnrelatedWindow; spy.hInstance = GetModuleHandleW(nullptr); spy.lpszClassName = L"AudastraUnrelatedInputFixture";
+            Require(RegisterClassW(&spy) != 0, "register own unrelated hidden window");
+            const auto otherWindow = CreateWindowW(spy.lpszClassName, L"outside test job", WS_OVERLAPPEDWINDOW,0,0,800,600,nullptr,nullptr,spy.hInstance,nullptr);
+            Require(otherWindow && SetPropW(otherWindow,Runtime::kWindowInputProperty,reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(Runtime::kWindowInputMagic))), "own unrelated process/window witness");
+            auto inputPlan = plan; inputPlan.executable = game; inputPlan.cloakedWindow = true;
+            inputPlan.gameMapCopy = task("input-window");
+            const auto marker = temp.root / "input-natural-end.txt";
+            inputPlan.arguments = {L"--input-window", marker.wstring(), L"10000"};
+            POINT before{}; Require(GetCursorPos(&before), "real cursor before input fixture");
+            const auto foreground = GetForegroundWindow();
+            auto run = Script::detail::LaunchVerifiedMapTestPlan(inputPlan); Success(run, "owned hidden window input fixture launch");
+            Result<Script::MapTestInputReceipt> clicked;
+            const auto start = GetTickCount64();
+            do {
+                clicked = run.value->lease->SendTestInput({Script::MapTestInputKind::Click,.4,.4625,{}});
+                if (clicked.Succeeded()) break;
+                Sleep(10);
+            } while (GetTickCount64()-start<3000);
+            Success(clicked, "first click delivered only to original owned game image/window");
+            Require(clicked.value->processId == run.value->launcherProcessId && clicked.value->window && clicked.value->cursorObserved && clicked.value->keyObserved,
+                "receiver reports target and virtual input observations");
+            const auto retained = run.value->lease->InspectRetainedState(); Success(retained, "read bounded owned-window and copy state while active");
+            Require(retained.value->gameMapCopy == inputPlan.gameMapCopy && retained.value->preparedMap == inputPlan.testMap,
+                "retained state binds the real frozen and short-path copies");
+            bool mainSeen = false, hiddenSeen = false;
+            for (const auto& window : retained.value->windows) {
+                Require(window.processId == run.value->launcherProcessId, "snapshot excludes unrelated parent windows");
+                mainSeen |= window.window == clicked.value->window && window.visible && window.cloakKnown && window.cloakFlags != 0;
+                hiddenSeen |= !window.visible && window.width > clicked.value->width;
+            }
+            Require(retained.value->windowEnumerationComplete && mainSeen && hiddenSeen, "snapshot distinguishes cloaked main and larger hidden utility");
+            Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Click,.4,.4625,{}}), "second click delivers release before next click");
+            Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{VK_CONTROL,'Q'}}), "key chord dispatch and release");
+            War3Map::Runtime::WindowInputPacket spoof;
+            spoof.processId = run.value->launcherProcessId; spoof.sequence = 42;
+            spoof.targetWindow = static_cast<std::uint32_t>(clicked.value->window);
+            COPYDATASTRUCT data{War3Map::Runtime::kWindowInputMagic,sizeof(spoof),&spoof}; DWORD_PTR answer = 0;
+            const auto exchange = [&] {
+                HWND window = nullptr;
+                for (HWND next = nullptr; (next = FindWindowExW(HWND_MESSAGE,next,Runtime::kWindowInputEndpointClass,nullptr)) != nullptr;) {
+                    DWORD pid = 0; GetWindowThreadProcessId(next,&pid);
+                    if (pid == run.value->launcherProcessId) { window = next; break; }
+                }
+                if (!window) return false;
+                if (!SendMessageTimeoutW(window,WM_COPYDATA,0,reinterpret_cast<LPARAM>(&data),SMTO_ABORTIFHUNG,1000,&answer)) return false;
+                if (static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, Runtime::kWindowInputSequenceProperty))) != spoof.sequence) return false;
+                answer = reinterpret_cast<ULONG_PTR>(GetPropW(window, Runtime::kWindowInputResultProperty));
+                return true;
+            };
+            Require(exchange()
+                && answer == static_cast<unsigned>(War3Map::Runtime::WindowInputState::WrongIdentity), "wrong creation time rejected inside receiver");
+            const auto query = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,FALSE,run.value->launcherProcessId);
+            FILETIME created{}, exited{}, kernel{}, user{};
+            Require(query && GetProcessTimes(query,&created,&exited,&kernel,&user), "read only original fixture process creation time"); CloseHandle(query);
+            spoof.createdLow=created.dwLowDateTime; spoof.createdHigh=created.dwHighDateTime;
+            Require(exchange()
+                && answer == static_cast<unsigned>(Runtime::WindowInputState::UnknownSequence), "unknown sequence cannot acknowledge old action");
+            spoof.targetWindow = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(otherWindow));
+            Require(exchange() && answer == static_cast<unsigned>(Runtime::WindowInputState::WrongIdentity), "control endpoint refuses a target in another process");
+            spoof.targetWindow = static_cast<std::uint32_t>(clicked.value->window);
+            spoof.kind=Runtime::WindowInputKind::Click; spoof.width=1; spoof.height=1;
+            Require(exchange()
+                && answer == static_cast<unsigned>(Runtime::WindowInputState::WindowChanged), "changed geometry refuses input");
+            Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Close}), "native WM_CLOSE request without terminating job");
+            WaitTerminal(run.value->lease);
+            const auto exits = run.value->lease->ProcessExits();
+            Require(exits.size()==1 && exits[0].game && exits[0].known && exits[0].exitCode==0, "natural fixture exit code retained after original handle closure");
+            std::ifstream output(marker); std::string line; std::getline(output,line);
+            Require(line == "2,2,1,1,1,1", "original WndProc saw clicks/key; process-local pointer/key state and modifier alias observed");
+            POINT after{}; Require(GetCursorPos(&after) && before.x==after.x && before.y==after.y && GetForegroundWindow()==foreground,
+                "test messages never move real cursor or switch foreground");
+            Require(!run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{'Q'}}).Succeeded(), "ended session cannot receive input");
+            Success(run.value->lease->Cleanup(), "normal-close fixture cleanup");
+            Require(unrelatedMessages == 0, "larger unrelated window was never sent a message");
+            RemovePropW(otherWindow,Runtime::kWindowInputProperty); DestroyWindow(otherWindow);
+            inputPlan.cloakedWindow=false; inputPlan.gameMapCopy=task("input-not-cloaked");
+            inputPlan.arguments={L"--child",(temp.root/"input-disabled-end").wstring(),L"500"};
+            auto disabled = Script::detail::LaunchVerifiedMapTestPlan(inputPlan); Success(disabled,"ordinary process fixture");
+            Require(!disabled.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{'Q'}}).Succeeded(), "ordinary launch has no virtual/foreground input fallback");
+            WaitTerminal(disabled.value->lease); Success(disabled.value->lease->Cleanup(),"ordinary fixture cleanup");
+            std::cout << "Owned hidden input-window dispatch, isolation and native close fixture passed; no game\n";
+            return 0;
+        }
         plan.useOwnedLuaRuntime = true;
         SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
         HANDLE forbidden = CreateFileMappingW(INVALID_HANDLE_VALUE, &security, PAGE_READWRITE, 0, 4096, nullptr);
@@ -215,6 +332,20 @@ int wmain(int argc, wchar_t** argv) {
         const auto failureCleanup = startupFailure.value->lease->Cleanup();
         Require(Code(failureCleanup, "MAP_TEST_PROCESS_EXIT") && failureCleanup.diagnostics.back().message.find("original pre-handshake failure") != std::string::npos,
             "bootstrap failure before mailbox handshake retains concrete bounded failure text");
+        Services::MapTestLaunchPlan evidencePlan;
+        evidencePlan.executable = game; evidencePlan.executableSha256 = Hash(game);
+        evidencePlan.workingDirectory = plan.workingDirectory;
+        evidencePlan.testMap = plan.testMap; evidencePlan.testMapSha256 = plan.testMapSha256;
+        evidencePlan.gameMapCopy = task("runtime-evidence");
+        evidencePlan.arguments = {L"--evidence", (temp.root / "runtime-evidence-ended").wstring(), L"500"};
+        auto observed = Script::detail::LaunchVerifiedMapTestPlan(evidencePlan); Success(observed, "test-only environment reaches original fixture process");
+        WaitTerminal(observed.value->lease);
+        const auto evidence = observed.value->lease->QueryRuntimeEvidence(); Success(evidence, "read original fixture evidence after process exit");
+        Require(evidence.value->handshakeSuccess && evidence.value->epoch == 7
+            && evidence.value->mapSha256 == evidencePlan.testMapSha256 && evidence.value->processId == observed.value->launcherProcessId,
+            "original launch identity, nonce, map, VM and final acknowledgement match");
+        Success(observed.value->lease->Cleanup(), "evidence run cleanup");
+        Require(observed.value->lease->QueryRuntimeEvidence().Succeeded(), "own test evidence survives normal map cleanup");
         plan.gameMapCopy = task("owned-changed-bootstrap");
         { std::ofstream changed(plan.runtimeBootstrap, std::ios::binary | std::ios::trunc); changed << "changed bootstrap"; }
         Require(Code(Script::detail::LaunchVerifiedMapTestPlan(plan), "MAP_TEST_EXECUTABLE_CHANGED"),

@@ -25,6 +25,20 @@
 
 `LoadInstalledMapRuntimeSources` 和 `QueryMapRuntimePackages` 为共用查询；后者只返回包身份、版本、DLL身份、内部范围、可读取状态及诊断，不返回目录或黑盒内容。“可读取”不是游戏可运行或公开分发的证明。Qt工程的 `QueryMapRuntimeState` 另附当前generation/revision、地图设置与本工程明确批准状态；地图自带包身份不会自动使批准为true。查询不修改工程；启用仍须使用同一图/资源修订事务，保存仍有独立用途与发布前核验。CLI和独立保存入口已接同一准备服务，真实包与验收候选按版本分别登记；实机共存仍待完成。
 
+### 模块加载共存策略（开发接口，尚待游戏验收）
+
+同一中立敌对玩家已有其他AI初始化时，不再抢占该玩家或追加本方AI。工具链档案的`moduleLoaders`声明公开加载函数、固定`(string, boolean) -> boolean`签名、匿名参数及`AfterMain`阶段。内置声明由`assets/toolchain-profiles/module-loaders.json`编译生成，声明身份进入工具链SHA；最终主脚本还必须有唯一匹配声明。缺声明、签名错误、重复或歧义均拒绝；没有适配声明的竞争初始化仍返回`RUNTIME_COEXISTENCE_UNVERIFIED`。地图和Agent不能用开关跳过检查。
+
+模块路径保留其他初始化的函数体、调用次数、参数和相对次序。本方仅在`main`末尾加入一次`AjStartRuntimeModule()`，随后0.2秒计时器在游戏线程调用受管shim。公开加载函数只负责归档释放和装入DLL，不需要也不假定它调用导出。构建工作目录同时保留`6_runtime-input.j`与最终`6_vjass.j`供同阶段身份比对；它们不包含AI文本。main有提前返回、手工/被改动的受管片段或未知所有权时拒绝自动重排。
+
+`warvk_runtime.dll`仍为AI产物，只能显式调用`WarVKAIInit`；新增`warvk_runtime_module.dll`为模块产物，只有后者含线程入口。DllMain仅保留自己存续引用、安排worker并释放线程句柄；worker离开加载锁后调用相同初始化，再原子释放引用并退出。已安装钩子另外固定进程拥有者；相同DLL内容复用，不同内容要求重启游戏。两个产物的内容身份不同，不能在同一进程中互换并沿用旧握手。线程存续处理遵循[Windows DLL实践](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-best-practices)及[FreeLibraryAndExitThread](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-freelibraryandexitthread)的约定。
+
+模块路径每VM只装入一次。SDK的`AjRuntimeModuleState`为0未开始、1装入中、2等待桥、3已握手、-1装入失败、-2超时、-3身份拒绝。装入成功不等于桥就绪：最多150次、间隔0.2秒尝试hello与内容身份，无阻塞等待或无限轮询。早期调用返回`AjRuntimeModuleLastStatus`（初始8）；加载失败13、身份拒绝14，超时保留最后失败状态。失败不会让UI连接缓存成功。正式玩家没有提示；只有`TestRun`另安排测试提示。
+
+包schema1不变。schema2额外要求唯一`module`角色，固定归档成员`warvk_runtime_module.dll`；保留原bootstrap/payload/client/notice角色，不自动执行两个载荷。模块安装回执用schema2/bootRule2，额外绑定`moduleLoaderId`和`moduleLoaderSha256`；AI回执仍是1/1。CLI、活动及独立保存经过同一构建/发布复核，包查询多返回`module_payload_sha256`。新客户端或载荷须显式锁定新包，不能只更新摘要沿用旧客户。内部包仍只能保存到专用新副本，不授予公开分发资格。
+
+离线测试只能证明启动结构、限次重试、字节/身份和保存门禁。实际双方钩子安装、功能和同进程重开/换图/菜单重进仍须在专用副本进游戏验收；`hook-sites-changed`等失败不得强行覆盖未知钩子。
+
 ### 测试副本与活动地图工具（开发接口）
 
 普通“保存／另存为”保持 `Normal` 用途，不因为地图内声明、已批准包或测试副本标志而取得内部包的公开分发资格。“测试地图”在准备脚本之前通过 `PrepareMapTestCopy` 冻结 `TestRun` 用途；内部专用验收可明确选择 `InternalValidation`。这两种用途只允许不存在的独立新路径，不得原地保存、覆盖现有目标或通过 `CommitMapSave` 切换工程的源图、保存基线及撤销历史。内容预检可带明确用途但不写地图；通过预检不授予后续正式保存资格。
@@ -52,6 +66,8 @@ CLI `map-edit-save` 可附以下选项，也可只提交一项运行库决定而
 ```
 
 非关闭模式须明确批准及固定包身份；关闭时不传包和批准。用途默认normal，内部包仍只能进入独立、全新的内部验收/测试副本。示例中的包身份须来自当前安装目录，不能用占位SHA执行。
+
+显式`enabled`模式即有运行库启动依赖，即使地图尚无界面调用，两个注入后端也会通过函数库登记选择配套客户端一次；不向作者脚本添加伪调用，仍核对实际消费摘要。`automatic`没有真实依赖、以及`disabled`模式均不因此强制注入。缺失、旧版或重复客户端仍拒绝保存。
 
 独立MCP `save_map_edit_candidate` 使用同一Core服务，参数为 `runtime: {mode, package_sha256, approve_native_runtime}` 和 `runtime_purpose`。决定可独立提交，或伴随原来的一项有界领域编辑；不会把两种普通领域编辑合并放行。包路径与分发许可只由宿主固定安装目录提供，不接受请求字段。批准与当前源地图SHA绑定在同一次保存任务内，不从归档自动继承；失败不写部分设置/成员。两入口回执均区分实际 `runtime_packaged` 与保存用途，不报告游戏通过。
 
@@ -153,7 +169,7 @@ ctest --test-dir build/map-runtime32 -C Release -R "audastra-(map-runtime-contra
 入口不依赖启动器参数、共享内存或邮箱：
 
 1. 找到已经加载的 `Game.dll`，取得只读来源租约，核对 SHA-256 和 PE 映像。
-2. 校验本项目已有原版 ABI 核验所支持的 native／VM 生命周期入口。映像版本或入口字节不同即拒绝，不覆盖未知钩子。
+2. 校验原版ABI对应的native/VM生命周期入口及重定位后原码。初始化入口仅允许经过资格核验的直接rel32前任链，其余未知变化拒绝；接链、引用保活和诊断边界见[HOOK_CHAINS.md](HOOK_CHAINS.md)。
 3. 通过事务安装晚加载字符串桥和生命周期通知，枚举本进程线程参与指令位置调整。挂起阶段不执行本方日志、文件操作或容器扩容。
 4. 第一次 `ajapi:` 请求在真实 JASS 调用线程上建立 `GameVm127` 租约、`NativeSession` 和 Host，不把 AI 初始化线程当作 JASS 线程。
 5. 将内置 `audastraui` 注册到该 Host。地图的 `AjModuleLoad("audastraui")` 确认其可用；`audastraui.ready` 另外检验游戏 UI 是否就绪。
@@ -181,7 +197,7 @@ e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a
 
 ## 4. 日志与分层诊断
 
-入口写 `OutputDebugStringA`，并尝试独占新建 `%TEMP%/audastra-japi-<PID>-<tick>.log`。不会覆盖已有文件；文件创建失败时仍有调试输出。最多记录 2048 行，单条截断，不记录地图任意参数、文字返回值或内存地址。
+入口写`OutputDebugStringA`；只有附着本方测试邮箱后才尝试独占新建`%TEMP%/audastra-japi-<PID>-<tick>.log`，不覆盖已有文件。普通日志有2048行预算，故障另有64行预算，均截断单条，不记录地图任意参数或文字返回值。测试专用挂钩诊断会记录固定点的机器码字节、实际模块名和相对位置，见[HOOK_CHAINS.md](HOOK_CHAINS.md)；普通玩家不写这些测试文件诊断。
 
 主要标记：
 
@@ -249,4 +265,4 @@ audastra-japi-map-fixture "<原创seed.w3x>" "<seed-sha256>" "<专用游戏目�
 
 只用专用游戏安装及原创地图副本启动普通 `war3.exe -window -loadfile "<相对地图路径>"`。进图成功后检查屏幕断言与 DLL 日志，再逐项验证同进程重新开始、返回菜单后重新选图、跨不同地图的 epoch、旧句柄失效、模块复用和无崩溃；不能把其中一种操作代替全部换图场景。目前已通过的是同一地图首次进入及同进程重新开始一次，退出菜单观察到 reset，尚未回菜单后重新进入。首次进图未成功握手时，不记录后续 UI 或换图为通过。
 
-上述固定样例打包器不是作者地图的保存出口；编辑器保存接线及内部用途门禁见本文开头的开发接口说明。共用保存成功也不授予公开发布或游戏运行资格。完整协议、错误码和事件模型仍见 [PROTOCOL_V2.md](PROTOCOL_V2.md)；默认关闭的启动器路径见 [RUNTIME_BRIDGE.md](RUNTIME_BRIDGE.md)。
+上述固定样例打包器不是作者地图的保存出口；编辑器保存接线及内部用途门禁见本文开头的开发接口说明。共用保存成功也不授予公开发布或游戏运行资格。完整协议、错误码和事件模型仍见 [PROTOCOL_V2.md](PROTOCOL_V2.md)；默认关闭的启动器路径见 [RUNTIME_BRIDGE.md](RUNTIME_BRIDGE.md)。专用测试的外部握手邮箱、时间与截图身份门禁见 [TEST_EVIDENCE.md](TEST_EVIDENCE.md)。

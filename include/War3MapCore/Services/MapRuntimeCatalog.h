@@ -15,6 +15,7 @@ struct MapRuntimePackageInfo {
     bool internalOnly = true;
     bool available = false;
     std::vector<Diagnostic> diagnostics;
+    std::string modulePayloadSha256;
 };
 [[nodiscard]] Result<std::vector<MapRuntimePackageInfo>> QueryMapRuntimePackages(
     std::span<const MapRuntimePackageSource> sources);

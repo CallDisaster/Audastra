@@ -1,0 +1,35 @@
+# 公开模块加载接口由数据表声明；编译期验证固定签名与可用阶段。
+set(runtime_loaders_file "${PROJECT_SOURCE_DIR}/assets/toolchain-profiles/module-loaders.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${runtime_loaders_file}")
+file(READ "${runtime_loaders_file}" runtime_loaders)
+string(JSON loader_schema GET "${runtime_loaders}" schema)
+string(JSON loader_count LENGTH "${runtime_loaders}" moduleLoaders)
+if(NOT loader_schema EQUAL 1 OR loader_count LESS 1 OR loader_count GREATER 8)
+    message(FATAL_ERROR "Invalid module loader profile schema or budget")
+endif()
+set(RUNTIME_MODULE_LOADER_ROWS "")
+math(EXPR loader_last "${loader_count} - 1")
+foreach(index RANGE ${loader_last})
+    foreach(field IN ITEMS id function returns availableAfter anonymous)
+        string(JSON loader_${field} GET "${runtime_loaders}" moduleLoaders ${index} ${field})
+    endforeach()
+    string(JSON parameters GET "${runtime_loaders}" moduleLoaders ${index} parameters)
+    string(JSON parameter_count LENGTH "${parameters}")
+    string(JSON parameter_0 GET "${parameters}" 0)
+    string(JSON parameter_1 GET "${parameters}" 1)
+    if(NOT loader_id MATCHES "^[a-z][a-z0-9-]*$" OR
+       NOT loader_function MATCHES "^[A-Za-z_][A-Za-z0-9_]*$" OR
+       NOT parameter_count EQUAL 2 OR NOT parameter_0 STREQUAL "string" OR
+       NOT parameter_1 STREQUAL "boolean" OR NOT loader_returns STREQUAL "boolean" OR
+       NOT loader_availableAfter STREQUAL "main")
+        message(FATAL_ERROR "Invalid module loader declaration")
+    endif()
+    if(loader_anonymous)
+        set(loader_bool true)
+    else()
+        set(loader_bool false)
+    endif()
+    string(APPEND RUNTIME_MODULE_LOADER_ROWS "    {\"${loader_id}\", \"${loader_function}\", ${loader_bool}, ScriptModuleLoaderAvailability::AfterMain},\n")
+endforeach()
+configure_file("${CMAKE_CURRENT_LIST_DIR}/../src/ScriptBuild/RuntimeModuleProfiles.generated.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/RuntimeModuleProfiles.generated.h" @ONLY)

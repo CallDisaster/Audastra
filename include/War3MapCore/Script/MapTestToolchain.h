@@ -1,6 +1,8 @@
 #pragma once
 
 #include "War3MapCore/Services/MapTestService.h"
+#include "War3MapCore/Services/RuntimeTestSession.h"
+#include "War3MapCore/Script/MapTestInput.h"
 
 #include <cstdint>
 #include <memory>
@@ -20,6 +22,20 @@ namespace War3Map::Script {
     const Services::MapTestArtifact& artifact, const Services::MapTestProgress& progress = {});
 
 struct MapTestLaunchReceipt;
+struct MapTestWindowSnapshot {
+    std::uint64_t window = 0;
+    std::uint32_t processId = 0, threadId = 0, cloakFlags = 0;
+    int width = 0, height = 0;
+    bool visible = false, minimized = false, cloakKnown = false, inputReceiver = false;
+    std::string className;
+};
+struct MapTestRetainedSnapshot {
+    std::vector<std::uint32_t> activeProcessIds;
+    std::vector<MapTestProcessExit> processes;
+    std::vector<MapTestWindowSnapshot> windows;
+    std::filesystem::path preparedMap, gameMapCopy, launcherReceipt;
+    bool windowEnumerationComplete = false;
+};
 namespace detail { struct MapTestLaunchAccess; }
 class MapTestLaunchLease final {
 public:
@@ -43,10 +59,18 @@ public:
     [[nodiscard]] void* GameWindow() const;
     // 给游戏窗口发一次空格，越过载入后的“按任意键继续”（载入中会被忽略）。没找到窗口时返回 false。
     [[nodiscard]] bool PressSpace() const;
+    // 仅已核验本Job原游戏身份、且安装了隐身测试接收器的窗口；绝不抢系统焦点或移动真实鼠标。
+    // Complete只代表目标队列投递成功和虚拟状态完成；业务效果须另核截图/运行库回执。
+    [[nodiscard]] Result<MapTestInputReceipt> SendTestInput(const MapTestInput& input) const;
+    [[nodiscard]] std::vector<MapTestProcessExit> ProcessExits() const;
+    // 只读取本Job进程/窗口与冻结副本路径；未知游戏内部界面由截图佐证，不猜测菜单状态。
+    [[nodiscard]] Result<MapTestRetainedSnapshot> InspectRetainedState() const;
     // 让本次测试的 1.27a 游戏用自己的截图功能存一张画面（取自游戏后台缓冲，屏幕关闭、锁屏、
     // 不可见桌面都能截）。返回游戏写在 <游戏目录>\Screenshots 下的新 TGA，调用方读完后删除。
     // 不是 1.27a、游戏已结束，或限时内没画出新帧（最小化、暂停）时失败，不留下待截请求。
     [[nodiscard]] Result<std::filesystem::path> RequestGameScreenshot(std::uint32_t timeoutMs = 5000) const;
+    // 只读本次专用会话邮箱；不读取游戏内存，不依赖地图中的其他模块。
+    [[nodiscard]] Result<Services::RuntimeTestSnapshot> QueryRuntimeEvidence() const;
     // 仅原进程树终态后调用；在后台核对并清理本次短路径副本，返回启动终态诊断。
     [[nodiscard]] Status Cleanup();
 private:

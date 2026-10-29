@@ -85,12 +85,14 @@ InjectTable ScanInjectTable(const std::vector<std::filesystem::path>& jassDirs, 
 }
 
 std::string InjectCode(std::string script, const InjectTable& table, std::vector<Diagnostic>& diagnostics,
-    std::vector<std::filesystem::path>* injected, std::vector<std::string>* sourceSha256) {
+    std::vector<std::filesystem::path>* injected, std::vector<std::string>* sourceSha256,
+    std::span<const std::string_view> requiredIdentifiers) {
     // 只扫描原始脚本（不递归扫描追加内容），与 YDWE 一致。
     std::set<std::filesystem::path> files;
     // 使用共用 JASS/vJass 词法器跳过注释、字符串和 rawcode，按完整标识符匹配。
     // MHDebug_EnableLeakMonitor 等较长名称不能触发另一套 LeakMonitor 库。
     std::unordered_set<std::string_view> identifiers;
+    identifiers.insert(requiredIdentifiers.begin(), requiredIdentifiers.end());
     for (const auto& token : Jass::detail::LexJass(script, {.blockComments = true})) {
         if (token.kind == Jass::detail::TokenKind::Identifier) identifiers.insert(token.text);
     }

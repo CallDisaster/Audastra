@@ -225,6 +225,16 @@ void RuntimeIdentity() {
     Check(identity.status == AJ_OK && identity.value.kind == AJ_TEXT && identity.value.text == options.runtimeIdentity,
         "read-only identity is supplied by embedding adapter");
     Check(current.Call("host.runtimeidentity", ";s:replacement").status == AJ_ARGUMENT, "map cannot replace runtime identity");
+    Check(current.Call("host.testreport", ";i:3;i:0;s:" + options.runtimeIdentity).status == AJ_POLICY,
+        "ordinary host has no test evidence channel");
+    int reports = 0;
+    options.runtimeTestReport = [&](auto epoch, auto state, auto status, auto identity) {
+        ++reports; return epoch == 1 && state == 3 && status == 0 && identity == options.runtimeIdentity;
+    };
+    Host test(options); Client observer{test};
+    Check(observer.Call("host.testreport", ";i:3;i:0;s:" + options.runtimeIdentity).status == AJ_OK && reports == 1,
+        "test observer receives bounded typed acknowledgement");
+    Check(observer.Call("host.testreport", ";i:3").status == AJ_ARGUMENT && reports == 1, "malformed report never reaches observer");
 }
 void ConcurrentEvents() {
     HostOptions o; o.queueCapacity = 256;

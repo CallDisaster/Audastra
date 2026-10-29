@@ -1,5 +1,8 @@
 #include <windows.h>
+#include <dwmapi.h>
 #include "../../src/WarcraftRuntime32/OwnLua/LuaMailboxRuntime.h"
+#include "../../src/WarcraftRuntime32/Japi/RuntimeTestWriter.h"
+#include "../../src/WarcraftRuntime32/GameTest/WindowInput.h"
 
 #include <cstring>
 #include <filesystem>
@@ -9,6 +12,49 @@
 
 namespace {
 using namespace Audastra::Runtime32;
+unsigned mouseDowns = 0, mouseUps = 0, qDowns = 0;
+LRESULT CALLBACK InputWindowProc(HWND window, UINT message, WPARAM key, LPARAM point) {
+    if (message == WM_LBUTTONDOWN) ++mouseDowns;
+    if (message == WM_LBUTTONUP) ++mouseUps;
+    if (message == WM_KEYDOWN && key == 'Q') ++qDowns;
+    if (message == WM_CLOSE) { DestroyWindow(window); return 0; }
+    if (message == WM_DESTROY) { PostQuitMessage(0); return 0; }
+    return DefWindowProcW(window, message, key, point);
+}
+int InputFixture(const std::filesystem::path& marker, DWORD timeout) {
+    WNDCLASSW type{}; type.lpfnWndProc = DefWindowProcW; type.hInstance = GetModuleHandleW(nullptr); type.lpszClassName = L"AudastraOwnedInputFixture";
+    if (!RegisterClassW(&type)) return 81;
+    const auto window = CreateWindowW(type.lpszClassName, L"owned hidden input fixture", WS_OVERLAPPEDWINDOW, 0, 0, 640, 480, nullptr, nullptr, type.hInstance, nullptr);
+    if (!window || !GameTest::InstallWindowInput(window)) return 82;
+    SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(InputWindowProc));
+    // 同进程的大型隐藏辅助窗口不能夺走游戏输入；主窗口DWM隐身但保持逻辑可见。
+    BOOL cloak = TRUE;
+    if (FAILED(DwmSetWindowAttribute(window, DWMWA_CLOAK, &cloak, sizeof(cloak)))) return 84;
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    WNDCLASSW utility{}; utility.lpfnWndProc = DefWindowProcW; utility.hInstance = type.hInstance;
+    utility.lpszClassName = L"AudastraHiddenLargerUtilityFixture";
+    if (!RegisterClassW(&utility)) return 85;
+    const auto auxiliary = CreateWindowW(utility.lpszClassName, L"owned utility fixture", WS_OVERLAPPEDWINDOW,
+        0, 0, 2048, 1536, nullptr, nullptr, type.hInstance, nullptr);
+    if (!auxiliary || !GameTest::InstallWindowInput(auxiliary) || IsWindowVisible(auxiliary)) return 86;
+    const auto start = GetTickCount64(); bool held = false, cursor = false, modifierAlias = false;
+    while (GetTickCount64() - start < timeout) {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+            if (message.message == WM_QUIT) {
+                std::ofstream output(marker); output << mouseDowns << ',' << mouseUps << ',' << qDowns << ',' << held << ',' << cursor << ',' << modifierAlias;
+                return 0;
+            }
+            TranslateMessage(&message); DispatchMessageW(&message);
+        }
+        POINT position{}; cursor |= GameTest::WindowInputCursor(window, position);
+        held |= (GameTest::WindowInputKey(VK_LBUTTON, true) & 0x8000) != 0;
+        if (GameTest::WindowInputKey(VK_CONTROL, false) & 0x8000) modifierAlias |= (GameTest::WindowInputKey(VK_LCONTROL, false) & 0x8000) != 0;
+        BYTE keyboard[256]{}; (void)GameTest::WindowInputKeyboard(keyboard);
+        Sleep(1);
+    }
+    DestroyWindow(window); return 83;
+}
 std::wstring Value(int argc, wchar_t** argv, std::wstring_view flag) {
     for (int index = 2; index + 1 < argc; ++index) if (argv[index] == flag) return argv[index + 1];
     return {};
@@ -92,6 +138,15 @@ int wmain(int argc, wchar_t** argv) {
     const std::filesystem::path marker = argv[2];
     const auto milliseconds = std::stoul(argv[3]);
     if (milliseconds > 10000) return 3;
+    if (mode == L"--input-window") return InputFixture(marker, static_cast<DWORD>(milliseconds));
+    if (mode == L"--evidence") {
+        Audastra::Runtime32::Japi::RuntimeTestWriter writer;
+        writer.Loaded(); writer.Installed(0, std::string(64, 'b')); writer.Hello(7);
+        if (!writer.Report(7, 3, 0, std::string(64, 'b'))) return 71;
+        Sleep(static_cast<DWORD>(milliseconds));
+        std::ofstream file(marker, std::ios::binary); file << "original fixture reported its own test evidence";
+        return file ? 0 : 72;
+    }
     if (mode == L"--child") {
         Sleep(static_cast<DWORD>(milliseconds));
         std::ofstream file(marker, std::ios::binary); file << "child completed naturally";

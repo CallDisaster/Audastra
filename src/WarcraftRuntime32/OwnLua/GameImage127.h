@@ -19,6 +19,7 @@ public:
     [[nodiscard]] const std::filesystem::path& Path() const noexcept;
     [[nodiscard]] bool Executable(std::uintptr_t address, std::size_t bytes = 1) const noexcept;
     [[nodiscard]] bool Matches(std::uintptr_t rva, std::span<const unsigned char> bytes) const noexcept;
+    [[nodiscard]] bool OriginalCode(std::uint32_t rva, std::span<unsigned char> bytes) const noexcept;
 private:
     struct Impl;
     explicit GameImage127(std::unique_ptr<Impl> impl);

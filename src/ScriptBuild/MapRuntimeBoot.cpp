@@ -2,6 +2,7 @@
 #include "War3MapCore/Jass/JassChecker.h"
 #include "../Jass/JassLexer.h"
 #include "../Lua/LuaLexer.h"
+#include "RuntimeModuleBoot.h"
 #include <algorithm>
 #include <charconv>
 #include <stdexcept>
@@ -178,10 +179,17 @@ Result<bool> UsesMapRuntime(std::string_view script) {
     return Result<bool>::Success(usage.value->required);
 }
 
-Status VerifyMapRuntimeBoot(std::string_view script, bool enabled) {
+Status VerifyMapRuntimeBoot(std::string_view script, bool enabled, const std::optional<ScriptProfileModuleLoader>& moduleLoader) {
     auto result = Inspect(script);
     if (!result.Succeeded()) return {std::move(result.diagnostics)};
     const auto& layout = *result.value;
+    const auto module = Detail::VerifyModuleBoot(script, enabled ? moduleLoader : std::nullopt);
+    if (!module.Succeeded()) return module;
+    if (enabled && moduleLoader) {
+        if (layout.count || !layout.competingAi)
+            return Status::Failure("MapRuntime", "RUNTIME_BOOT_INVALID", "模块启动不得再启动本方AI，且只用于已有其他同玩家初始化的脚本。");
+        return Status::Ok();
+    }
     if (enabled && layout.competingAi)
         return Status::Failure("MapRuntime", "RUNTIME_COEXISTENCE_UNVERIFIED",
             "发现同一neutral aggressive玩家的其他AI启动，或玩家表达式不能确定；尚无已验收的共存启动序列，未抢占、改玩家或删除原初始化。");
@@ -198,6 +206,18 @@ Status VerifyMapRuntimeIdentity(std::string_view script, std::string_view payloa
     return Status::Ok();
 }
 
+Result<std::optional<ScriptProfileModuleLoader>> InspectMapRuntimeModuleBoot(std::string_view script,
+    std::span<const ScriptProfileModuleLoader> loaders) {
+    if (Detail::VerifyModuleBoot(script, {}).Succeeded())
+        return Result<std::optional<ScriptProfileModuleLoader>>::Success({});
+    auto selected = Detail::SelectModuleLoader(script, loaders);
+    if (!selected.Succeeded()) return selected;
+    if (!*selected.value) return {{}, Status::Failure("MapRuntime", "RUNTIME_MODULE_BOOT_INVALID", "最终模块形状缺少匹配的档案声明。").diagnostics};
+    const auto verified = VerifyMapRuntimeBoot(script, true, *selected.value);
+    if (!verified.Succeeded()) return {{}, verified.diagnostics};
+    return selected;
+}
+
 namespace {
 struct TestDiagnosticLayout { std::size_t begin = 0, end = 0, bootEnd = 0; bool declared = false; };
 Result<TestDiagnosticLayout> InspectTestDiagnostic(std::string_view script) {
@@ -211,6 +231,9 @@ Result<TestDiagnosticLayout> InspectTestDiagnostic(std::string_view script) {
     for (std::size_t i = 0; i + 1 < tokens.size(); ++i) {
         if (i + 2 < tokens.size() && tokens[i].Is(Keyword::Function) && tokens[i + 1].text == "main" && tokens[i + 2].Is(Keyword::Takes)) main = true;
         if (tokens[i].Is(Keyword::EndFunction)) main = false;
+        if (main && tokens[i].text == "AjStartRuntimeModule" && i + 3 < tokens.size()
+            && tokens[i + 1].IsOperator("(") && tokens[i + 2].IsOperator(")") && tokens[i + 3].EndsLine())
+            result.bootEnd = i + 2;
         if (tokens[i].text == "StartCampaignAI" && main) {
             for (std::size_t j = i + 1; j < tokens.size() && !tokens[j].EndsLine(); ++j)
                 if (tokens[j].kind == TokenKind::String && StringLiteralValue(tokens[j].text) == kBootstrap) {
@@ -260,9 +283,17 @@ Result<std::string> ApplyMapRuntimeBoot(std::string_view script, const MapRuntim
             return ApplyMapRuntimeBoot(script, removal);
         }
     }
-    auto identity = plan.payloadSha256;
-    if (plan.enabled && plan.resolvePayloadIdentity) {
-        auto resolved = plan.resolvePayloadIdentity();
+    const auto before = Inspect(script);
+    if (!before.Succeeded()) return {{}, before.diagnostics};
+    const auto selected = plan.enabled && before.value->competingAi
+        ? Detail::SelectModuleLoader(script, plan.moduleLoaders) : Result<std::optional<ScriptProfileModuleLoader>>::Success({});
+    if (!selected.Succeeded()) return {{}, selected.diagnostics};
+    const auto loader = *selected.value;
+    if (plan.enabled && before.value->competingAi && !loader)
+        return Result<std::string>::Failure("MapRuntime", "RUNTIME_COEXISTENCE_UNVERIFIED", "同玩家已有其他AI初始化，当前函数库缺少档案声明的模块加载接口；未改动原初始化。");
+    auto identity = loader ? plan.modulePayloadSha256 : plan.payloadSha256;
+    if (plan.enabled && ((loader && plan.resolveModulePayloadIdentity) || (!loader && plan.resolvePayloadIdentity))) {
+        auto resolved = loader ? plan.resolveModulePayloadIdentity(*loader) : plan.resolvePayloadIdentity();
         if (!resolved.Succeeded()) { Result<std::string> failed; failed.diagnostics = resolved.diagnostics; return failed; }
         identity = std::move(*resolved.value);
     }
@@ -270,16 +301,21 @@ Result<std::string> ApplyMapRuntimeBoot(std::string_view script, const MapRuntim
         const auto checked = plan.verifyScriptInputs(plan.injectedSourceSha256);
         if (!checked.Succeeded()) { Result<std::string> failed; failed.diagnostics = checked.diagnostics; return failed; }
     }
-    std::string identityScript;
+    auto stripped = Detail::RemoveModuleBoot(script, plan.ownedModuleLoader);
+    if (!stripped.Succeeded()) return stripped;
+    std::string identityScript = std::move(*stripped.value);
+    script = identityScript;
     if (plan.enabled && !identity.empty()) {
         if (!Digest(identity))
             return Result<std::string>::Failure("MapRuntime", "RUNTIME_IDENTITY_INVALID", "运行库内容身份不是小写SHA-256。");
         const auto binding = IdentityBinding(script);
         if (!binding.Succeeded()) { Result<std::string> failed; failed.diagnostics = binding.diagnostics; return failed; }
-        identityScript = std::string(script);
         identityScript.replace(binding.value->offset, binding.value->text.size(), "\"" + identity + "\"");
         script = identityScript;
     }
+    const auto bound = Detail::BindModuleExpected(script, plan.enabled && loader.has_value());
+    if (!bound.Succeeded()) return bound;
+    identityScript = *bound.value; script = identityScript;
     auto inspected = Inspect(script);
     if (!inspected.Succeeded()) { Result<std::string> result; result.diagnostics = std::move(inspected.diagnostics); return result; }
     const auto& layout = *inspected.value;
@@ -291,23 +327,29 @@ Result<std::string> ApplyMapRuntimeBoot(std::string_view script, const MapRuntim
     if (!diagnostic.Succeeded()) { Result<std::string> failed; failed.diagnostics = diagnostic.diagnostics; return failed; }
     if (diagnostic.value->end && !plan.ownsExisting)
         return Result<std::string>::Failure("MapRuntime", "RUNTIME_TEST_BOOT_INVALID", "已有测试诊断调用没有受管所有权，未接管作者代码。");
-    if (diagnostic.value->end && (!plan.enabled || !plan.testRunDiagnostics))
+    const bool retainedDiagnostic = diagnostic.value->end && plan.enabled && plan.testRunDiagnostics && !loader;
+    if (diagnostic.value->end && !retainedDiagnostic)
         result.erase(diagnostic.value->begin, diagnostic.value->end - diagnostic.value->begin);
-    if (plan.enabled && !layout.count) {
+    if (plan.enabled && !loader && !layout.count) {
         auto begin = static_cast<std::size_t>(tokens[layout.first].offset);
         while (begin && script[begin - 1] != '\r' && script[begin - 1] != '\n') --begin;
         const auto indent = script.substr(begin, tokens[layout.first].offset - begin);
         if (indent.find_first_not_of(" \t") != std::string_view::npos)
             return Result<std::string>::Failure("MapRuntime", "RUNTIME_BOOT_INVALID", "main语句不在独立行，拒绝改写。");
         result.insert(begin, std::string(indent) + std::string(kCall) + "\r\n");
-    } else if (!plan.enabled && layout.count) {
+    } else if ((!plan.enabled || loader) && layout.count) {
         const auto begin = tokens[layout.boot].offset;
         const auto end = tokens[layout.bootEnd].offset + tokens[layout.bootEnd].text.size();
         result.erase(begin, end - begin);
     }
-    const auto verified = VerifyMapRuntimeBoot(result, plan.enabled);
+    if (plan.enabled && loader) {
+        const auto module = Detail::AddModuleBoot(result, *loader);
+        if (!module.Succeeded()) return module;
+        result = *module.value;
+    }
+    const auto verified = VerifyMapRuntimeBoot(result, plan.enabled, loader);
     if (!verified.Succeeded()) { Result<std::string> failed; failed.diagnostics = verified.diagnostics; return failed; }
-    if (plan.enabled && plan.testRunDiagnostics && !diagnostic.value->end) {
+    if (plan.enabled && plan.testRunDiagnostics && !retainedDiagnostic) {
         const auto next = InspectTestDiagnostic(result);
         if (!next.Succeeded()) { Result<std::string> failed; failed.diagnostics = next.diagnostics; return failed; }
         if (!next.value->declared || !next.value->bootEnd)

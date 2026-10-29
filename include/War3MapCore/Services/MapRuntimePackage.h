@@ -41,12 +41,13 @@ public:
     [[nodiscard]] const std::string& Id() const noexcept { return id_; }
     [[nodiscard]] const std::string& Version() const noexcept { return version_; }
     [[nodiscard]] const std::string& PayloadSha256() const noexcept { return payloadSha256_; }
+    [[nodiscard]] const std::string& ModulePayloadSha256() const noexcept { return modulePayloadSha256_; }
     [[nodiscard]] bool InternalOnly() const noexcept { return internalOnly_; }
     [[nodiscard]] const std::vector<MemberReplacement>& Members() const noexcept { return members_; }
 private:
     struct File { std::filesystem::path path; std::uint64_t size; std::string sha256; };
     MapRuntimePackageSource source_;
-    std::string id_, version_, payloadSha256_, clientSha256_;
+    std::string id_, version_, payloadSha256_, clientSha256_, modulePayloadSha256_;
     bool internalOnly_ = true;
     std::vector<File> files_;
     std::vector<MemberReplacement> members_;

@@ -133,6 +133,7 @@ Result<std::vector<MapRuntimePackageInfo>> QueryMapRuntimePackages(std::span<con
             const auto& value = **package.value;
             info.id = value.Id(); info.version = value.Version(); info.payloadSha256 = value.PayloadSha256();
             info.internalOnly = value.InternalOnly(); info.available = true;
+            info.modulePayloadSha256 = value.ModulePayloadSha256();
         } else info.diagnostics = package.diagnostics;
         result.push_back(std::move(info));
     }
@@ -191,7 +192,7 @@ Result<std::shared_ptr<const MapRuntimePackage>> MapRuntimePackage::Capture(
         result->source_ = source;
         const auto json = detail::ParseRuntimeJson(*captured.value, 64 * 1024);
         if (!Keys(json, {"schema", "id", "version", "abi", "gameSha256", "scope", "files"})
-            || !json.at("schema").is_number_unsigned() || json.at("schema") != 1
+            || !json.at("schema").is_number_unsigned() || (json.at("schema") != 1 && json.at("schema") != 2)
             || !json.at("abi").is_number_unsigned() || json.at("abi") != 0x20000
             || json.at("gameSha256") != "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a")
             throw std::runtime_error("schema");
@@ -219,9 +220,10 @@ Result<std::shared_ptr<const MapRuntimePackage>> MapRuntimePackage::Capture(
                 throw std::runtime_error("path or budget");
             const bool bootstrap = role == "bootstrap" && member == "warvk_loader_raw.ai";
             const bool payload = role == "payload" && member == "warvk_runtime.blp";
+            const bool module = json.at("schema") == 2 && role == "module" && member == "warvk_runtime_module.dll";
             const bool notice = role == "notice" && member.starts_with("audastra/runtime/licenses/")
                 && member.ends_with(".txt");
-            if ((!bootstrap && !payload && !notice && !client) || (!notice && !roles.insert(role).second)) throw std::runtime_error("role");
+            if ((!bootstrap && !payload && !module && !notice && !client) || (!notice && !roles.insert(role).second)) throw std::runtime_error("role");
             const auto disk = source.root / std::filesystem::path(path);
             if (!PlainPath(disk)) return fail("RUNTIME_PACKAGE_MISSING", "运行库文件缺失或含重解析路径：" + path);
             auto bytes = ReadVerifiedFile(disk, hash, size);
@@ -231,9 +233,11 @@ Result<std::shared_ptr<const MapRuntimePackage>> MapRuntimePackage::Capture(
             if (!client) result->members_.push_back({member, std::move(*bytes.value)});
             if (client) result->clientSha256_ = hash;
             if (payload) result->payloadSha256_ = hash;
+            if (module) result->modulePayloadSha256_ = hash;
             total += size;
         }
         if (!roles.contains("bootstrap") || !roles.contains("payload") || !roles.contains("client")) throw std::runtime_error("roles");
+        if (json.at("schema") == 2 && !roles.contains("module")) throw std::runtime_error("module missing");
         if (std::none_of(result->members_.begin(), result->members_.end(), [](const auto& m) { return m.name.starts_with("audastra/runtime/licenses/"); }))
             throw std::runtime_error("notice missing");
         const auto current = result->VerifySource();

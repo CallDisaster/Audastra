@@ -1,4 +1,5 @@
 #include "CloakedWindow.h"
+#include "WindowInput.h"
 
 #include <detours.h>
 #include <dwmapi.h>
@@ -20,6 +21,7 @@ using ClipCursorFunction = BOOL(WINAPI*)(const RECT*);
 using SetCursorPosFunction = BOOL(WINAPI*)(int, int);
 using GetCursorPosFunction = BOOL(WINAPI*)(LPPOINT);
 using GetAsyncKeyStateFunction = SHORT(WINAPI*)(int);
+using GetKeyboardStateFunction = BOOL(WINAPI*)(PBYTE);
 
 CreateWindowExAFunction originalCreateA = CreateWindowExA;
 CreateWindowExWFunction originalCreateW = CreateWindowExW;
@@ -34,6 +36,8 @@ ClipCursorFunction originalClip = ClipCursor;
 SetCursorPosFunction originalSetCursor = SetCursorPos;
 GetCursorPosFunction originalGetCursor = GetCursorPos;
 GetAsyncKeyStateFunction originalKeyState = GetAsyncKeyState;
+GetAsyncKeyStateFunction originalSynchronousKeyState = GetKeyState;
+GetKeyboardStateFunction originalKeyboard = GetKeyboardState;
 
 volatile LONG* counter = nullptr;
 std::atomic<bool> installed{false};
@@ -42,6 +46,8 @@ std::array<std::atomic<HWND>, 32> windows{};
 
 bool Cloaked(HWND window) {
     if (!window) return false;
+    DWORD pid = 0;
+    if (!GetWindowThreadProcessId(window, &pid) || pid != GetCurrentProcessId()) return false;
     const auto root = GetAncestor(window, GA_ROOT);
     for (const auto& entry : windows) {
         const auto value = entry.load();
@@ -52,11 +58,17 @@ bool Cloaked(HWND window) {
 
 // 第一个仍存在的隐身窗口，即游戏主窗口。
 HWND MainWindow() {
+    if (const auto input = WindowInputTarget(); input && Cloaked(input)) return input;
+    HWND best = nullptr; LONG area = 0;
     for (const auto& entry : windows) {
         const auto value = entry.load();
-        if (value && IsWindow(value)) return value;
+        RECT rect{};
+        if (value && Cloaked(value) && IsWindowVisible(value) && !IsIconic(value)
+            && GetClientRect(value, &rect) && rect.right > 0 && rect.bottom > 0 && rect.right * rect.bottom > area) {
+            best = value; area = rect.right * rect.bottom;
+        }
     }
-    return nullptr;
+    return best;
 }
 
 // 游戏只有自认为在前台才推进菜单流程（例如 -loadfile 进图）。隐身窗口从不真正激活，
@@ -79,10 +91,11 @@ void Cloak(HWND window, bool show) {
     BOOL on = TRUE;
     bool recorded = false;
     for (auto& entry : windows) {
-        HWND empty = nullptr;
-        if (entry.compare_exchange_strong(empty, window)) { recorded = true; break; }
+        auto previous = entry.load();
+        if (previous == window) { recorded = true; break; }
+        if ((!previous || !IsWindow(previous)) && entry.compare_exchange_strong(previous, window)) { recorded = true; break; }
     }
-    if (!recorded || FAILED(DwmSetWindowAttribute(window, DWMWA_CLOAK, &on, sizeof(on)))) {
+    if (!recorded || FAILED(DwmSetWindowAttribute(window, DWMWA_CLOAK, &on, sizeof(on))) || !InstallWindowInput(window)) {
         TerminateProcess(GetCurrentProcess(), 0xA0D5C10A);
         return;
     }
@@ -139,11 +152,13 @@ HWND WINAPI QueryActive() { const auto main = MainWindow(); return main ? main :
 HWND WINAPI QueryFocus() { const auto main = MainWindow(); return main ? main : originalQueryFocus(); }
 
 // 自认为在前台的游戏可能锁鼠标、移鼠标、读真实鼠标和按键：隐身期间一律不碰用户的输入。
-BOOL WINAPI Clip(const RECT* rect) { return MainWindow() ? TRUE : originalClip(rect); }
-BOOL WINAPI MoveCursor(int x, int y) { return MainWindow() ? TRUE : originalSetCursor(x, y); }
+BOOL WINAPI Clip(const RECT*) { return TRUE; }
+BOOL WINAPI MoveCursor(int, int) { return TRUE; }
 BOOL WINAPI ReadCursor(LPPOINT point) {
     const auto main = MainWindow();
-    if (!main || !point) return originalGetCursor(point);
+    if (!point) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
+    if (!main) { *point = {}; return TRUE; }
+    if (WindowInputCursor(main, *point)) return TRUE;
     RECT client{};
     GetClientRect(main, &client);
     POINT center{(client.left + client.right) / 2, (client.top + client.bottom) / 2};
@@ -151,7 +166,9 @@ BOOL WINAPI ReadCursor(LPPOINT point) {
     *point = center;
     return TRUE;
 }
-SHORT WINAPI ReadKey(int key) { return MainWindow() ? 0 : originalKeyState(key); }
+SHORT WINAPI ReadKey(int key) { return WindowInputKey(key, true); }
+SHORT WINAPI ReadSynchronousKey(int key) { return WindowInputKey(key, false); }
+BOOL WINAPI ReadKeyboard(PBYTE output) { return WindowInputKeyboard(output); }
 
 } // namespace
 
@@ -177,6 +194,8 @@ bool InstallCloakedWindow(volatile LONG* cloaked, std::string& error) {
         attach(originalSetCursor, MoveCursor);
         attach(originalGetCursor, ReadCursor);
         attach(originalKeyState, ReadKey);
+        attach(originalSynchronousKeyState, ReadSynchronousKey);
+        attach(originalKeyboard, ReadKeyboard);
         if (code == NO_ERROR) code = DetourTransactionCommit();
         else DetourTransactionAbort();
     }
