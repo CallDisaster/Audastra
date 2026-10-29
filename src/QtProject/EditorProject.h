@@ -558,6 +558,10 @@ private:
     mutable std::string codeCheckStamp_;
     [[nodiscard]] std::string CodeCheckSourceStamp() const;
     mutable std::shared_ptr<const Services::CodeCheckProjectSnapshot> codeCheckSnapshot_;
+    // 预放引用快照按捕获输入缓存（TriggerMapObjectReferences.cpp）：大图每次捕获需数秒，查询与写入共用。
+    struct TriggerMapObjectCache;
+    mutable std::shared_ptr<const TriggerMapObjectCache> triggerMapObjectCache_;
+    [[nodiscard]] Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>> CaptureTriggerMapObjectReferencesUncached() const;
     std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_;
     std::uint64_t codeCheckCacheTouch_ = 0;
     void ScheduleCodeCheckCacheRelease();

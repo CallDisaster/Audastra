@@ -912,6 +912,10 @@ void TriggerValueTests::PreplacedCaptureUsesCurrentOverlays() {
     QVERIFY2(initialized.Succeeded(), initialized.diagnostics.empty() ? "" : initialized.diagnostics.front().message.c_str());
     const auto initial = project.CaptureTriggerMapObjectReferences();
     QVERIFY(initial.Succeeded());
+    // 输入未变时复用同一份快照；下面每处 overlay 修改都必须重新捕获。
+    const auto again = project.CaptureTriggerMapObjectReferences();
+    QVERIFY(again.Succeeded());
+    QCOMPARE(again.value->get(), initial.value->get());
     const auto originalMember = project.archiveSession_->ReadMember("war3map.w3u");
     QVERIFY(originalMember.Succeeded());
     const auto unitIndex = static_cast<std::size_t>(ObjectData::ObjectType::Unit);

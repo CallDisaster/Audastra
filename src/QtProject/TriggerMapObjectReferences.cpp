@@ -1,9 +1,11 @@
 #include "EditorProject.h"
 #include "ProjectObjectCatalog.h"
 
+#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 
 #include <algorithm>
@@ -11,8 +13,44 @@
 
 namespace War3Map::QtProject {
 
+// 捕获只读这些输入：文档、撤销栈与编辑修订（ReferenceStamp）、来源归档/目录/战役、游戏目录、
+// 原版目录、物编修改标记和导入资源。全部相同时复用上次成功的快照。
+struct EditorProject::TriggerMapObjectCache {
+    struct Key {
+        std::string references, archiveSha;
+        const void* archive = nullptr;
+        const void* readOnly = nullptr;
+        const void* directory = nullptr;
+        const void* campaign = nullptr;
+        const void* standard = nullptr;
+        Services::CampaignRevision campaignRevision;
+        std::filesystem::path root, gameRoot;
+        std::array<bool, kObjectTypeCount> dirty{};
+        AssetState assets;
+        bool operator==(const Key&) const = default;
+    };
+    Key key;
+    Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>> captured;
+};
+
 Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>>
 EditorProject::CaptureTriggerMapObjectReferences() const {
+    TriggerMapObjectCache::Key key{ReferenceStamp(), archiveSession_ ? archiveSession_->SourceSha256() : std::string{},
+        archiveSession_.get(), readOnlyArchive_.get(), directorySnapshot_.get(), campaignScope_.get(), standardCatalog_.get(),
+        campaignScope_ ? campaignScope_->Revision() : Services::CampaignRevision{}, projectRoot_, war3GameRoot_,
+        objectDirty_, CaptureAssets()};
+    // 来源待核验时不复用，交给捕获路径报告。
+    const bool reusable = !sourceChangeSuspected_ && !sourceChangeConfirmed_;
+    if (reusable && triggerMapObjectCache_ && triggerMapObjectCache_->key == key) return triggerMapObjectCache_->captured;
+    auto captured = CaptureTriggerMapObjectReferencesUncached();
+    if (reusable && captured.Succeeded()) {
+        triggerMapObjectCache_ = std::make_shared<const TriggerMapObjectCache>(TriggerMapObjectCache{std::move(key), captured});
+    } else triggerMapObjectCache_.reset();
+    return captured;
+}
+
+Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>>
+EditorProject::CaptureTriggerMapObjectReferencesUncached() const {
     using Output = Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>>;
     constexpr std::array kinds{ObjectData::ObjectType::Unit, ObjectData::ObjectType::Item};
     const std::array<std::string, 2> classificationNames{"Units/UnitData.slk", "Units/ItemData.slk"};
