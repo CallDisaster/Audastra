@@ -38,6 +38,7 @@ GetCursorPosFunction originalGetCursor = GetCursorPos;
 GetAsyncKeyStateFunction originalKeyState = GetAsyncKeyState;
 GetAsyncKeyStateFunction originalSynchronousKeyState = GetKeyState;
 GetKeyboardStateFunction originalKeyboard = GetKeyboardState;
+decltype(&TranslateMessage) originalTranslate = TranslateMessage;
 
 volatile LONG* counter = nullptr;
 std::atomic<bool> installed{false};
@@ -164,6 +165,7 @@ BOOL WINAPI ReadCursor(LPPOINT point) {
 SHORT WINAPI ReadKey(int key) { return WindowInputKey(key, true); }
 SHORT WINAPI ReadSynchronousKey(int key) { return WindowInputKey(key, false); }
 BOOL WINAPI ReadKeyboard(PBYTE output) { return WindowInputKeyboard(output); }
+BOOL WINAPI Translate(const MSG* message) { return WindowInputAlreadyTranslated(message) ? TRUE : originalTranslate(message); }
 
 } // namespace
 
@@ -191,6 +193,7 @@ bool InstallCloakedWindow(volatile LONG* cloaked, std::string& error) {
         attach(originalKeyState, ReadKey);
         attach(originalSynchronousKeyState, ReadSynchronousKey);
         attach(originalKeyboard, ReadKeyboard);
+        attach(originalTranslate, Translate);
         if (code == NO_ERROR) code = DetourTransactionCommit();
         else DetourTransactionAbort();
     }

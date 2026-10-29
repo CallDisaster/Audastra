@@ -201,6 +201,7 @@ int wmain(int argc, wchar_t** argv) {
                 "receiver reports target and virtual input observations");
             Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Click,.4,.4625,{}}), "second click delivers release before next click");
             Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{VK_CONTROL,'Q'}}), "key chord dispatch and release");
+            Success(run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{VK_SPACE}}), "space includes a character message without depending on desktop keyboard translation");
             War3Map::Runtime::WindowInputPacket spoof;
             spoof.processId = run.value->launcherProcessId; spoof.sequence = 42;
             COPYDATASTRUCT data{War3Map::Runtime::kWindowInputMagic,sizeof(spoof),&spoof}; DWORD_PTR answer = 0;
@@ -220,7 +221,7 @@ int wmain(int argc, wchar_t** argv) {
             const auto exits = run.value->lease->ProcessExits();
             Require(exits.size()==1 && exits[0].game && exits[0].known && exits[0].exitCode==0, "natural fixture exit code retained after original handle closure");
             std::ifstream output(marker); std::string line; std::getline(output,line);
-            Require(line == "2,2,1,1,1,1", "original WndProc saw clicks/key; process-local pointer/key state and modifier alias observed");
+            Require(line == "2,2,1,1,1,1,1", "original WndProc saw clicks/key and exactly one space character; modifier aliases observed");
             POINT after{}; Require(GetCursorPos(&after) && before.x==after.x && before.y==after.y && GetForegroundWindow()==foreground,
                 "test messages never move real cursor or switch foreground");
             Require(!run.value->lease->SendTestInput({Script::MapTestInputKind::Key,0,0,{'Q'}}).Succeeded(), "ended session cannot receive input");
