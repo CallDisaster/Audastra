@@ -203,7 +203,12 @@ int RunMapTest(int argc, wchar_t** argv) {
     };
     const auto recordRetained = [&] {
         nlohmann::json state{{"elapsed_seconds",elapsed()},{"normal_exit_started",exitStarted},
-            {"exit_stage",exitStage},{"workspace",Utf8(run.wstring())},{"scene","unknown; inspect captured frame"}};
+            {"exit_stage",exitStage},{"workspace",Utf8(run.wstring())},{"map_sha256",*sha.value},
+            {"scene","unknown; inspect captured frame"}};
+        const auto runtime = receipt.lease->QueryRuntimeEvidence();
+        if (runtime.Succeeded() && runtime.value) state["runtime_session"] = {{"nonce",runtime.value->sessionNonce},
+            {"process_id",runtime.value->processId},{"process_created",runtime.value->processCreated},
+            {"epoch",runtime.value->epoch},{"state",runtime.value->state},{"runtime_sha256",runtime.value->runtimeSha256}};
         const auto snapshot = receipt.lease->InspectRetainedState();
         if (snapshot.Succeeded() && snapshot.value) {
             const auto& value = *snapshot.value;
