@@ -868,12 +868,17 @@ void TriggerModuleTests::CustomCodeHeaderEncodingAndOneUndo() {
     QVERIFY(created->customText.text.find("set gg_trg_AuthorCode = CreateTrigger()") != std::string::npos);
     const auto count = project.triggerUndoStack_->count();
     const auto names = Names(project);
-    const auto dirty = project.triggerDirty_;
-    QVERIFY(!module.RenameDirectoryItem({false, id, created->categoryId}, QStringLiteral("RenamedCode")));
-    module.DuplicateCurrentTrigger(); module.CopyCurrentTrigger(); module.PasteTrigger();
+    // 改名与复制走代码身份服务：InitTrig 与生成符号一起改，各一步撤销；撤销后回到原状。
+    QVERIFY(module.RenameDirectoryItem({false, id, created->categoryId}, QStringLiteral("RenamedCode")));
+    QTRY_VERIFY(Named(project, "RenamedCode") != nullptr);
+    QVERIFY(Named(project, "RenamedCode")->customText.text.find("function InitTrig_RenamedCode takes nothing") != std::string::npos);
+    QCOMPARE(project.triggerUndoStack_->count(), count + 1);
+    module.DuplicateCurrentTrigger();
+    QCOMPARE(Names(project).size(), names.size() + 1);
+    QCOMPARE(project.triggerUndoStack_->count(), count + 2);
+    project.triggerUndoStack_->undo(); project.triggerUndoStack_->undo();
     QCOMPARE(Names(project), names);
-    QCOMPARE(project.triggerUndoStack_->count(), count);
-    QCOMPARE(project.triggerDirty_, dirty);
+    QVERIFY(module.Reveal({"triggers", "trigger", "AuthorCode", {}}));
     const auto originalText = Named(project, "AuthorCode")->customText.text;
     editor->appendPlainText(QStringLiteral("// 同时编辑属性"));
     auto* enabled = page->findChild<QCheckBox*>("triggerEnabledCheck");
