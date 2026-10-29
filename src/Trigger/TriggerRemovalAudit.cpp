@@ -83,6 +83,8 @@ std::vector<std::size_t> ArgumentBoundaries(const std::vector<Token>& tokens) {
 void Incomplete(RemovalCodeBlock& block, const char* reason) { block.complete = false; if (block.incompleteReason.empty()) block.incompleteReason = reason; }
 void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     if (block.evidence.empty()) return;
+    // 宿主展开证据已经绑定真实来源行，不把含原字节的展开视图再按展示UTF-8重编码。
+    if (std::all_of(block.evidence.begin(), block.evidence.end(), [](const auto& hit) { return !hit.sourceFile.empty(); })) return;
     const auto original = source.ToBytes(), encoded = RawText{source.text, source.encoding, {}}.ToBytes();
     if (!original.Succeeded() || !encoded.Succeeded() || *original.value != *encoded.value) { Incomplete(block, "原字节不能按声明编码精确往返"); return; }
     const auto prefix = RawText{"", source.encoding, {}}.ToBytes();
