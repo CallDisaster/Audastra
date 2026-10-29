@@ -1,4 +1,9 @@
 include_directories("${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
+add_executable(war3-map-archive-script-audit-tests ArchiveScriptAuditTests.cpp)
+target_link_libraries(war3-map-archive-script-audit-tests PRIVATE War3MapEditor::Core)
+target_compile_definitions(war3-map-archive-script-audit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-archive-script-audit-tests PRIVATE /utf-8 /W4 /permissive-)
+add_test(NAME archive-script-audit COMMAND war3-map-archive-script-audit-tests)
 include("${CMAKE_CURRENT_SOURCE_DIR}/helpers/TestLua.cmake")
 
 add_executable(war3-map-cli-resource-check-tests ResourceCheckCommandTests.cpp
