@@ -32,6 +32,9 @@ if(NOT TARGET War3MapCore)
 endif()
 
 add_library(War3MapTrigger STATIC
+    TriggerReal.cpp
+    TriggerStorage.cpp
+    TriggerValueSafety.cpp
     ScriptBuildService.cpp
     JassBackend/JassCompiler.cpp
     TriggerCodec.cpp

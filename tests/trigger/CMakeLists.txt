@@ -36,6 +36,11 @@ add_executable(war3-map-trigger-removal-audit-tests TriggerRemovalAuditTests.cpp
 target_link_libraries(war3-map-trigger-removal-audit-tests PRIVATE War3MapTrigger)
 target_compile_options(war3-map-trigger-removal-audit-tests PRIVATE /utf-8 /W4 /permissive-)
 add_test(NAME trigger-removal-audit COMMAND war3-map-trigger-removal-audit-tests)
+add_executable(war3-map-trigger-value-safety-tests TriggerValueSafetyTests.cpp)
+target_link_libraries(war3-map-trigger-value-safety-tests PRIVATE War3MapTrigger)
+target_compile_options(war3-map-trigger-value-safety-tests PRIVATE /utf-8 /W4 /permissive-)
+add_test(NAME trigger-value-safety COMMAND war3-map-trigger-value-safety-tests)
+set_tests_properties(trigger-value-safety PROPERTIES TIMEOUT 30)
 set_tests_properties(trigger-removal-audit PROPERTIES TIMEOUT 30)
 set_tests_properties(trigger-legacy-references PROPERTIES TIMEOUT 60)
 

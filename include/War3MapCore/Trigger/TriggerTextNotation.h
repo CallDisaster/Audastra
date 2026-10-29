@@ -49,6 +49,10 @@ struct TriggerTextAnchor {
     std::size_t line = 1;
     std::size_t column = 1;
 };
+struct TriggerTextArgumentAnchor {
+    StableId argumentId = 0;
+    std::size_t line = 1, column = 1, byteOffset = 0, byteLength = 0;
+};
 
 // 把触发器的全部根 ECA 导出为同一写法；无法如实表达的结构明确报错，不输出近似文本。
 // anchors 非空时按文本顺序填入各节点位置（供检查结果定位回 T）。
@@ -56,7 +60,8 @@ struct TriggerTextAnchor {
 // 读取与按行号修改须用同一份快照，导出才一致。
 [[nodiscard]] Result<std::string> RenderTriggerText(const TriggerDocument& document, const UiCatalog& catalog,
     StableId triggerId, std::size_t maxBytes = 1024U * 1024U, std::vector<TriggerTextAnchor>* anchors = nullptr,
-    const MapObjectReferenceSnapshot* mapObjects = nullptr);
+    const MapObjectReferenceSnapshot* mapObjects = nullptr,
+    std::vector<TriggerTextArgumentAnchor>* argumentAnchors = nullptr);
 
 // 单个值的写法与参数相同："文本"（转义同上）、'A000'、数字、名字（可用反引号）；返回值本体。
 [[nodiscard]] Result<std::string> ParseTriggerTextValue(std::string_view text);

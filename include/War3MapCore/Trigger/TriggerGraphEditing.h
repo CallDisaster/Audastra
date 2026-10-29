@@ -3,6 +3,8 @@
 #include "War3MapCore/Trigger/TriggerEditing.h"
 
 #include <map>
+#include <functional>
+#include <span>
 #include <memory>
 #include <stop_token>
 #include <variant>
@@ -49,6 +51,7 @@ struct GraphArgumentValue {
     GraphScalarValue scalar;
     std::shared_ptr<const GraphEcaValue> call;
     std::shared_ptr<const GraphArgumentValue> index;
+    std::string origin; // 解析器提供的原始参数位置，仅用于诊断，不赋予权限。
 };
 struct GraphEcaValue {
     std::string clientKey, function;
@@ -175,6 +178,7 @@ struct TriggerGraphEditBatch {
     std::vector<GraphEditOperation> operations;
 };
 enum class TriggerScalarWorkPolicy : std::uint8_t { BoundedSourcesV2, LegacyKnownWork };
+class TriggerStorageCapabilities;
 struct TriggerGraphEditLimits {
     std::size_t maxOperations = 256;
     std::size_t maxAddedRecords = 16384;
@@ -187,6 +191,8 @@ struct TriggerGraphEditLimits {
     std::size_t scalarAdditionalOwnedBytes = 0; // Service 已新拥有的预览/请求/guard 临时量。
     TriggerScalarWorkPolicy scalarWorkPolicy = TriggerScalarWorkPolicy::BoundedSourcesV2;
     std::size_t maxScalarRecords = 524288, maxScalarEdges = 1048576;
+    std::shared_ptr<const TriggerStorageCapabilities> storageCapabilities; // 宿主冻结来源，不接受工具请求设置。
+    std::function<Result<std::shared_ptr<const TriggerStorageCapabilities>>(std::span<const std::string>)> storageCapabilityProvider;
 };
 struct TriggerGraphEditReceipt {
     TriggerGraphBinding before, after;

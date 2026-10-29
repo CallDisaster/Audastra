@@ -10,6 +10,8 @@
 #include "War3MapCore/Trigger/TriggerFeatureText.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerReal.h"
+#include "War3MapCore/Trigger/TriggerValueSafety.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 #include "TriggerArgumentReplacement.h"
 #include "TriggerIdAllocation.h"
@@ -159,6 +161,14 @@ struct Editor {
     // 整体替换时目标触发器原有的值，按所属触发器记录，只能留在原触发器里。
     std::set<std::pair<StableId, std::string>> preservedCode; // (触发器, 代码类参数值)
     std::set<std::tuple<StableId, std::string, std::string>> preservedLiterals; // (触发器, 期望类型, 固定值)
+
+    void TouchEcaTree(std::uint32_t index, std::size_t depth = 0) {
+        if (index >= doc.ecaNodes.size() || depth > limits.maxDepth) return;
+        const auto& node = doc.ecaNodes[index]; typedEcas.insert(node.id);
+        for (const auto arg : node.arguments) if (arg < doc.argumentNodes.size() && doc.argumentNodes[arg].callEca)
+            TouchEcaTree(*doc.argumentNodes[arg].callEca, depth + 1);
+        for (const auto child : node.children) TouchEcaTree(child, depth + 1);
+    }
 
     Result<StableId> NewId() {
         const auto id = detail::AllocateId(nextId);
@@ -398,7 +408,9 @@ struct Editor {
             switch (op.field) {
             case GraphField::Comment: row->type = std::get<bool>(op.value) ? 1 : 0; return Status::Ok();
             case GraphField::Description: return TriggerDocumentEditor::SetTriggerComment(doc, row->id, std::get<std::string>(op.value));
-            case GraphField::Enabled: return TriggerDocumentEditor::SetTriggerEnabled(doc, row->id, std::get<bool>(op.value));
+            case GraphField::Enabled:
+                if (std::get<bool>(op.value)) for (const auto root : row->ecas) TouchEcaTree(root);
+                return TriggerDocumentEditor::SetTriggerEnabled(doc, row->id, std::get<bool>(op.value));
             case GraphField::InitiallyOn: return TriggerDocumentEditor::SetTriggerInitiallyOn(doc, row->id, std::get<bool>(op.value));
             case GraphField::RunOnInit: return TriggerDocumentEditor::SetTriggerRunOnInit(doc, row->id, std::get<bool>(op.value));
             default: break;
@@ -417,6 +429,10 @@ struct Editor {
             }
             return Status::Ok();
         } else if (op.target.kind == GraphRecordKind::Eca) {
+            if (std::get<bool>(op.value)) {
+                const auto* node = Find(doc.ecaNodes, *id.value);
+                if (node) TouchEcaTree(static_cast<std::uint32_t>(node - doc.ecaNodes.data()));
+            }
             return TriggerDocumentEditor::SetEcaEnabled(doc, *id.value, std::get<bool>(op.value));
         } else {
             const auto& scalar = std::get<GraphScalarValue>(op.value); typedArguments.insert(*id.value);
@@ -517,6 +533,7 @@ struct Editor {
     Status ConfigureArgument(StableId id, const GraphArgumentValue& spec, const std::string& expected, std::size_t depth) {
         if (depth > limits.maxDepth) return Fail("TRIGGER_GRAPH_BUDGET", "参数递归超过预算。");
         if (auto status = Bind(spec.clientKey, GraphRecordKind::Argument, id); !status.Succeeded()) return status;
+        if (!spec.origin.empty()) origins[id] = spec.origin;
         if (auto status = ClearDefaultCall(id); !status.Succeeded()) return status;
         typedArguments.insert(id);
         if (spec.call) {
@@ -936,6 +953,7 @@ struct Editor {
     }
     Status ValidateTouched() {
         Status failures;
+        std::vector<StableId> safetyScope;
         std::optional<std::vector<char>> inactive;
         std::map<StableId, std::vector<LocalVariable>> replacementLocals;
         for (const auto id : typedVariables) if (const auto* row = Find(doc.variables, id)) {
@@ -955,6 +973,7 @@ struct Editor {
                 index = *current.indexArgument;
             }
             if (changed) {
+                safetyScope.push_back(argument.id);
                 // 禁用语句（含其禁用上级下的语句）不生成脚本，WE 允许其中留着未设置或失效的参数，不做类型门禁。
                 if (!inactive) inactive = InactiveEcas();
                 if ((*inactive)[static_cast<std::size_t>(&eca - doc.ecaNodes.data())]) continue;
@@ -979,15 +998,41 @@ struct Editor {
                 auto status = argument.type == -1
                     ? Fail("TRIGGER_GRAPH_ARGUMENT_UNSET", "参数未设置（?）只能留在禁用的语句里。")
                     : TypedArgument(argument, expected, eca.sourceTriggerId, eca.name.text);
-                if (!status.Succeeded()) {
-                    if (const auto found = origins.find(eca.id); found != origins.end())
+                if (!status.diagnostics.empty()) {
+                    for (auto& diagnostic : status.diagnostics) diagnostic.message += "（trigger_id=" + std::to_string(eca.sourceTriggerId)
+                        + "，eca_id=" + std::to_string(eca.id) + "，argument_id=" + std::to_string(argument.id) + "）";
+                    if (const auto argumentOrigin = origins.find(argument.id); argumentOrigin != origins.end())
+                        Locate(status, argumentOrigin->second);
+                    else if (const auto found = origins.find(eca.id); found != origins.end())
                         Locate(status, found->second + " 第 " + std::to_string(i + 1) + " 个参数");
                     for (auto& diagnostic : status.diagnostics) failures.diagnostics.push_back(std::move(diagnostic));
                     if (failures.diagnostics.size() >= 64) return failures;
                 }
             }
         }
-        return failures.diagnostics.empty() ? Status::Ok() : failures;
+        if (!safetyScope.empty()) {
+            auto safety = AnalyzeTriggerValues(doc, catalog, safetyScope, limits.storageCapabilities.get());
+            if (!safety.Succeeded()) return Status{safety.diagnostics};
+            if (!limits.storageCapabilities && limits.storageCapabilityProvider) {
+                std::set<std::string> required;
+                for (const auto& issue : safety.value->issues) if (!issue.storageType.empty()) required.insert(issue.storageType);
+                if (!required.empty()) {
+                    const std::vector<std::string> names(required.begin(), required.end());
+                    const auto captured = limits.storageCapabilityProvider(names);
+                    if (!captured.Succeeded()) return Status{captured.diagnostics};
+                    safety = AnalyzeTriggerValues(doc, catalog, safetyScope, captured.value->get());
+                    if (!safety.Succeeded()) return Status{safety.diagnostics};
+                }
+            }
+            for (auto& issue : safety.value->issues) {
+                Status located{{std::move(issue.diagnostic)}};
+                if (const auto found = origins.find(issue.argumentId); found != origins.end()) Locate(located, found->second);
+                else if (const auto ecaOrigin = origins.find(issue.ecaId); ecaOrigin != origins.end())
+                    Locate(located, ecaOrigin->second + " 第 " + std::to_string(issue.position + 1) + " 个参数");
+                failures.diagnostics.push_back(std::move(located.diagnostics.front()));
+            }
+        }
+        return failures;
     }
 };
 } // namespace
@@ -1056,13 +1101,16 @@ Result<TriggerGraphEditReceipt> ApplyPrivateGraphCandidate(const GraphCodeProtec
         ++editor.receipt.appliedOperations;
     }
     if (const auto valid = WtgWctCodec{}.Validate(candidate, catalog); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
-    if (const auto valid = editor.ValidateTouched(); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
+    auto valueSafety = editor.ValidateTouched();
+    if (!valueSafety.Succeeded()) return Failed<TriggerGraphEditReceipt>(valueSafety);
     // ordinary T 不应产生 WCT 变化；对全部既有代码槽再次逐字节复核。
     if (!editor.receipt.codeIdentityChanges) {
         if (const auto valid = CheckGraphCodeProtection(source, candidate); !valid.Succeeded()) return Failed<TriggerGraphEditReceipt>(valid);
     } else if (const auto valid = candidate.VerifyCodeIdentityAuthorization(candidate); !valid.Succeeded())
         return Failed<TriggerGraphEditReceipt>(valid);
-    return Result<TriggerGraphEditReceipt>::Success(std::move(editor.receipt));
+    auto result = Result<TriggerGraphEditReceipt>::Success(std::move(editor.receipt));
+    result.diagnostics = std::move(valueSafety.diagnostics);
+    return result;
 }
 } // namespace
 

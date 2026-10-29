@@ -3,6 +3,8 @@
 #include "EditorProject.h"
 #include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Script/TriggerStorageCapabilities.h"
+#include "War3MapCore/Services/CodeCheckProject.h"
 #include <type_traits>
 
 #include <QDebug>
@@ -767,7 +769,17 @@ Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
         if (batch.operations.empty() && prepareAssets) {
             Receipt unchanged; unchanged.before = *binding.value; unchanged.after = *binding.value;
             edited = Result<Receipt>::Success(std::move(unchanged));
-        } else edited = Trigger::ApplyTriggerGraphEditBatch(*candidate, *project.uiCatalog_, batch, {}, objects);
+        } else {
+            Trigger::TriggerGraphEditLimits limits;
+            limits.storageCapabilityProvider = [&](std::span<const std::string> names) {
+                const auto snapshot = project.CaptureCodeCheckSnapshot();
+                if (!snapshot) return Result<std::shared_ptr<const Trigger::TriggerStorageCapabilities>>::Failure(
+                    "Trigger.Value", "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE", "工程没有可冻结的工具链上下文。");
+                return Script::CaptureMapTriggerStorageCapabilities(*project.uiCatalog_, snapshot->toolRoot, snapshot->uiRoot,
+                    snapshot->sourcePath.parent_path(), names);
+            };
+            edited = Trigger::ApplyTriggerGraphEditBatch(*candidate, *project.uiCatalog_, batch, limits, objects);
+        }
     } catch (...) {
         return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_PREPARE_FAILED", "无法准备完整触发器事务；当前文档未改动。");
     }
