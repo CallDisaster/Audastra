@@ -168,13 +168,12 @@ void TriggerModule::ConfigureCodeChecking() {
             };
         });
     } else {
-        if (!codeCheckCache_) codeCheckCache_ = std::make_shared<Services::CodeCheckProjectCache>();
         scriptView_->SetCheckBindingValidator([this](const QString& binding) {
             return project_.IsCodeCheckBindingCurrent(binding.toStdString());
         });
         // UI 只冻结共同工程快照；后台函数拥有全部来源，绝不借用 project_ 或控件。
         scriptView_->SetPrepareCheck([this](const QString& text, std::uint64_t generation) {
-            return PrepareProjectCodeCheck(project_.CaptureCodeCheckSnapshot(), codeCheckCache_, *codeTarget_, text, generation,
+            return PrepareProjectCodeCheck(project_.CaptureCodeCheckSnapshot(), project_.SharedCodeCheckCache(), *codeTarget_, text, generation,
                 scriptView_->Language(), scriptView_->Language() == UiKit::CodeLanguage::Lua ? codeLuaSources_ : nullptr);
         });
     }

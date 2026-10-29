@@ -306,10 +306,15 @@ struct CodeCheckProjectCache::Impl {
     std::string incomplete;
     bool captureFinished = false;
 
-    void Capture(const std::shared_ptr<const CodeCheckProjectSnapshot>& next, std::stop_token cancel, Clock::time_point deadline) {
-        snapshot = next; archive.reset(); map.reset(); game.reset(); standard.reset(); layout.reset(); bases.reset(); slk.reset();
+    void Clear() {
+        snapshot.reset(); archive.reset(); map.reset(); game.reset(); standard.reset(); layout.reset(); bases.reset(); slk.reset();
         framework.reset(); entry.reset(); injection.reset(); objects = {}; templates.reset();
-        incomplete = "上下文捕获尚未完成。"; captureFinished = false;
+        incomplete.clear(); captureFinished = false;
+    }
+
+    void Capture(const std::shared_ptr<const CodeCheckProjectSnapshot>& next, std::stop_token cancel, Clock::time_point deadline) {
+        Clear(); snapshot = next;
+        incomplete = "上下文捕获尚未完成。";
         const auto fail = [&](std::string reason) { incomplete = std::move(reason); captureFinished = true; };
         if (!next || !next->triggers || !next->catalog || next->binding.empty()) { fail("工程没有完整的冻结触发器来源。"); return; }
         Poll(cancel, deadline);
@@ -385,6 +390,16 @@ struct CodeCheckProjectCache::Impl {
 
 CodeCheckProjectCache::CodeCheckProjectCache() : impl_(std::make_unique<Impl>()) {}
 CodeCheckProjectCache::~CodeCheckProjectCache() = default;
+bool CodeCheckProjectCache::TryRelease() noexcept {
+    try {
+        std::unique_lock lock(impl_->mutex, std::try_to_lock);
+        if (!lock.owns_lock()) return false;
+        impl_->Clear();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLanguage language) {
     const std::string suffix = language == CodeLanguage::Lua53 ? ".lua" : ".j";
     return target.kind == Trigger::CodeBlockKind::GlobalHeader ? "WCT/header" + suffix

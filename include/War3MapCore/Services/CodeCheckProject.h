@@ -63,6 +63,9 @@ public:
     ~CodeCheckProjectCache();
     CodeCheckProjectCache(const CodeCheckProjectCache&) = delete;
     CodeCheckProjectCache& operator=(const CodeCheckProjectCache&) = delete;
+    // 释放已捕获的整图上下文（归档、地图、游戏数据、原版物编与工具链来源，大图约 1 GB）；
+    // 有检查正在使用时不等待、返回假。下次检查按当时的 snapshot 重新捕获。
+    [[nodiscard]] bool TryRelease() noexcept;
     struct Impl;
 private:
     std::unique_ptr<Impl> impl_;

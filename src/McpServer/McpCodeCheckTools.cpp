@@ -90,6 +90,8 @@ struct CodeCheckToolSession::Impl {
                 try {
                     auto checked = job->run(job->cancellation.get_token());
                     checked.generation = job->generation; checked.contextBinding = job->binding;
+                    // Report 只分页返回诊断与标志；整图声明/语义索引和导航来源每份约数十 MB，不随请求保留 5 分钟。
+                    checked.declarations = {}; checked.semanticIndex = {}; checked.externalSources = {};
                     std::lock_guard lock(state->mutex);
                     job->result.emplace(std::move(checked)); job->run = {}; job->running = false; job->done = true;
                 } catch (...) {

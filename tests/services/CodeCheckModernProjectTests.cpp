@@ -469,6 +469,11 @@ void TriggerCheckLocatesGuiStatements() {
         && at.line == 3 && at.column == 5 && at.generated.find("MissingProbeAction") != std::string::npos,
         "the error must point at line 3 column 5 of the compact T text: " + at.function + " " + std::to_string(at.line)
             + ":" + std::to_string(at.column) + " " + at.generated);
+
+    // 空闲释放整图上下文后，下一次检查按同一冻结来源重新捕获，结论不变。
+    Require(cache.TryRelease(), "an idle cache must release its captured context");
+    replace("actions:\n    InitBlizzard()\n");
+    RequireFull(CheckProjectTriggers(fixture.frozen, cache, document, 603), "a released cache must recapture and pass again");
     fixture.RequireSourceUnchanged();
 }
 

@@ -51,7 +51,7 @@ class EditorSession;
 class MapArchiveSession;
 class MpqWorkspace;
 class MapDocument;
-namespace Services { struct CodeCheckProjectSnapshot; struct CodeCheckResult; class CampaignSession; struct LuaRuntimeScripts; }
+namespace Services { struct CodeCheckProjectSnapshot; struct CodeCheckResult; class CodeCheckProjectCache; class CampaignSession; struct LuaRuntimeScripts; }
 namespace Lua { struct ApiCatalog; }
 namespace MapData { class MapDataEditSession; }
 
@@ -231,6 +231,9 @@ public:
     [[nodiscard]] std::uint64_t ContentCacheEpoch() const;
     // 只冻结当前语义结构并按修订缓存；磁盘、基础库与预处理在后台检查入口读取。
     [[nodiscard]] std::shared_ptr<const Services::CodeCheckProjectSnapshot> CaptureCodeCheckSnapshot() const;
+    // 整图检查缓存：代码视图与 Agent 检查共用一份（一份完整地图、游戏数据与原版物编，大图约 1 GB）。
+    // 每次取用都重新计时，最后一次取用 3 分钟后释放；检查仍在用时顺延，下次检查按当时来源重新捕获。
+    [[nodiscard]] std::shared_ptr<Services::CodeCheckProjectCache> SharedCodeCheckCache();
     // 编辑器自带 Lua 环境的接口目录（ProjectLuaCatalog.cpp）：游戏 common.j / blizzard.j 加地图变量。
     // 按游戏目录与变量表缓存；没有游戏目录时只含 Lua 标准库。
     [[nodiscard]] std::shared_ptr<const Lua::ApiCatalog> LuaRuntimeCatalog();
@@ -555,6 +558,9 @@ private:
     mutable std::string codeCheckStamp_;
     [[nodiscard]] std::string CodeCheckSourceStamp() const;
     mutable std::shared_ptr<const Services::CodeCheckProjectSnapshot> codeCheckSnapshot_;
+    std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_;
+    std::uint64_t codeCheckCacheTouch_ = 0;
+    void ScheduleCodeCheckCacheRelease();
     std::shared_ptr<const Services::CodeCheckResult> codeCheckIndex_;
     std::shared_ptr<const Services::LuaRuntimeScripts> luaRuntimeScripts_;
     std::optional<std::filesystem::path> luaRuntimeScriptsRoot_;

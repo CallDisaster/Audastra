@@ -311,7 +311,6 @@ private:
     UiKit::CodeProblemsView* codeProblems_ = nullptr;
     QWidget* codeTools_ = nullptr;
     QComboBox* codeLanguage_ = nullptr;
-    std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_;
     // Lua 代码块：接口目录与地图 Lua 文件，补全与检查共用；不是 Lua 时为空。
     std::shared_ptr<const Services::CodeCheckLuaSources> codeLuaSources_;
     // 代码悬停的函数库说明，按函数库身份缓存。

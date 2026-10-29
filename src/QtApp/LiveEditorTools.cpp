@@ -729,7 +729,7 @@ private:
         if (!generation.Succeeded() || !generation.value) return Mcp::Failure(generation);
         auto document = std::make_shared<const TriggerDocument>(std::move(candidate));
         Mcp::CodeCheckToolWork work{snapshot->binding, "T/whole-map",
-            [snapshot, cache = codeCheckCache_, document, id = *generation.value](std::stop_token cancel) {
+            [snapshot, cache = project_.SharedCodeCheckCache(), document, id = *generation.value](std::stop_token cancel) {
                 return Services::CheckProjectTriggers(snapshot, *cache, document, id, cancel);
             }};
         auto queued = codeChecks_.Enqueue(std::move(work), *generation.value);
@@ -1755,7 +1755,7 @@ private:
                         if (lua != (input.language == Services::CodeLanguage::Lua53)) return Result<Mcp::CodeCheckToolWork>::Failure(
                             "MCP", "CODE_CHECK_LANGUAGE_MISMATCH", "代码块语言与当前地图语言不同；未把JASS当Lua或反向检查。");
                         if (!input.hasText) input.text = Trigger::TriggerCodeEditor::NormalizedText(*text);
-                        auto cache = codeCheckCache_;
+                        auto cache = project_.SharedCodeCheckCache();
                         const auto key = Services::CodeCheckTargetSourceName(input.target);
                         // 与代码编辑器相同：Lua 代码块另做 jass.* 用法与 require 检查。
                         auto luaSources = lua ? LuaCheckSources({}) : Services::CodeCheckLuaSources{};
@@ -1913,7 +1913,6 @@ private:
     Mcp::CodeCheckToolSession codeChecks_;
     bool waitingForCheck_ = false;
     std::unique_ptr<LiveObjectResourceTools> objectResources_;
-    std::shared_ptr<Services::CodeCheckProjectCache> codeCheckCache_ = std::make_shared<Services::CodeCheckProjectCache>();
 };
 
 LiveEditorTools::LiveEditorTools(QtProject::EditorProject& project, QObject* parent)

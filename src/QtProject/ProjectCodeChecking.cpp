@@ -8,6 +8,8 @@
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/Services/CodeCheckProject.h"
 #include <QSettings>
+#include <QTimer>
+#include <chrono>
 #include <utility>
 
 namespace War3Map::QtProject {
@@ -44,6 +46,19 @@ std::string BuildSourceStamp(const EditorProject& project, std::string reference
 
 std::string EditorProject::CodeCheckSourceStamp() const {
     return BuildSourceStamp(*this, ReferenceStamp(), CaptureRoots(*this));
+}
+
+std::shared_ptr<Services::CodeCheckProjectCache> EditorProject::SharedCodeCheckCache() {
+    if (!codeCheckCache_) codeCheckCache_ = std::make_shared<Services::CodeCheckProjectCache>();
+    ScheduleCodeCheckCacheRelease();
+    return codeCheckCache_;
+}
+
+void EditorProject::ScheduleCodeCheckCacheRelease() {
+    const auto touch = ++codeCheckCacheTouch_;
+    QTimer::singleShot(std::chrono::minutes(3), this, [this, touch] {
+        if (touch == codeCheckCacheTouch_ && codeCheckCache_ && !codeCheckCache_->TryRelease()) ScheduleCodeCheckCacheRelease();
+    });
 }
 
 bool EditorProject::IsCodeCheckBindingCurrent(std::string_view binding) const {

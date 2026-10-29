@@ -244,7 +244,7 @@ bool GameUiModule::PrepareTriggerSimulation(const QString& id, QString* error) {
     auto job = std::make_shared<GameUiTriggerSimulationJob>();
     sim.preparing = true;
     const auto generation = ++sim.generation;
-    auto* worker = QThread::create([snapshot, document, cache = sim.cache, names = std::move(names), job]() mutable {
+    auto* worker = QThread::create([snapshot, document, cache = project_.SharedCodeCheckCache(), names = std::move(names), job]() mutable {
         auto built = Services::BuildProjectJassScript(snapshot, *cache, document);
         job->diagnostics = built.diagnostics;
         if (!built.Succeeded() || !built.value) return;
