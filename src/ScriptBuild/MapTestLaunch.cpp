@@ -357,13 +357,16 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
     }
     packet.keyCount = static_cast<std::uint32_t>(input.keys.size()); std::copy(input.keys.begin(), input.keys.end(), packet.keys);
     DWORD sendError = 0; bool sendReturned = false; DWORD_PTR windowReply = 0; std::uint32_t ackSequence = 0;
+    const char* sendStage = "not_started";
     const auto send = [&]() -> DWORD_PTR {
         DWORD actualPid = 0;
+        sendStage = "ownership_guard";
         if (!owned() || GetWindowThreadProcessId(window, &actualPid) != thread || actualPid != id
             || GetPropW(window, kWindowInputProperty) != reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(kWindowInputMagic))) return 0;
         COPYDATASTRUCT copy{ kWindowInputMagic, sizeof(packet), &packet }; DWORD_PTR result = 0;
         SetLastError(0);
-        sendReturned = SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result) != 0;
+        sendStage = "send_message";
+        sendReturned = SendMessageTimeoutW(window, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&copy), SMTO_BLOCK | SMTO_ERRORONEXIT, 1000, &result) != 0;
         sendError = GetLastError(); windowReply = result;
         if (!sendReturned) return 0;
         ackSequence = static_cast<std::uint32_t>(reinterpret_cast<ULONG_PTR>(GetPropW(window, kWindowInputSequenceProperty)));
@@ -377,6 +380,7 @@ Result<MapTestInputReceipt> MapTestLaunchLease::SendTestInput(const MapTestInput
         return fail("MAP_TEST_INPUT_DELIVERY", "本次游戏未确认测试输入完成（state=" + std::to_string(result & kWindowInputStateMask)
             + "，pid=" + std::to_string(id) + "，hwnd=" + std::to_string(reinterpret_cast<std::uintptr_t>(window))
             + "，send_ok=" + std::to_string(sendReturned) + "，send_error=" + std::to_string(sendError)
+            + "，send_stage=" + sendStage
             + "，window_reply=" + std::to_string(windowReply) + "，ack_sequence=" + std::to_string(ackSequence)
             + "）；没有前台输入后备路径。");
     MapTestInputReceipt receipt; receipt.processId = id; receipt.sequence = packet.sequence; receipt.window = reinterpret_cast<std::uintptr_t>(window);
