@@ -3,6 +3,8 @@
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Hash.h"
 #include <Windows.h>
+#include <psapi.h>
+#include <chrono>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -89,10 +91,12 @@ void IndividualAndReferences() {
     op = f.Remove(); r = f.Review(op);
     Require(r.complete && r.individualBlocks.size() == 1 && !r.individualBlocks.front().dynamic && !r.individualBlocks.front().referenced,
         "target substring in an ordinary string requires separate review without claiming a definite call");
-    for (const auto* code : {"call Run(gg_trg_Target_Name)\n", "call ExecuteFunc(\"InitTrig_Target_Name\")\n", "call LookupByName(table, \"Target Name\")\n"}) {
+    for (const auto* code : {"call Run(gg_trg_Target_Name)\n", "call ExecuteFunc(\"InitTrig_Target_Name\")\n", "call LookupByName(table, \"Target Name\")\n",
+        "call LookupByName(table, GetName(x, y), \"Target Name\")\n"}) {
         f.doc.wct.customCode = RawText{code}; op = f.Remove(); r = f.Review(op); f.Confirm(op, r); f.Fails(op, "TRIGGER_GRAPH_REMOVE_REFERENCED");
     }
-    for (const auto* code : {"call ExecuteFunc(prefix + suffix)\n", "call ExecuteFunc(\"InitTrig_\" + \"Target_Name\")\n", "set x = _G[key]\n"}) {
+    for (const auto* code : {"call ExecuteFunc(prefix + suffix)\n", "call ExecuteFunc(\"InitTrig_\" + \"Target_Name\")\n", "set x = _G[key]\n",
+        "call ExecuteFunc(GetName(LookupByName(table, key), prefix + suffix))\n"}) {
         f.doc.wct.customCode = RawText{code}; op = f.Remove(); r = f.Review(op);
         Require(r.complete && !r.individualBlocks.empty(), "dynamic evidence requires individual review rather than an incomplete verdict");
         f.Confirm(op, r); Good(CheckDeclarationRemovalAudit(f.doc, f.catalog, op), "explicit individual dynamic review is accepted");
@@ -189,10 +193,20 @@ void LargeGroupedReview() {
         f.doc.argumentNodes.push_back(std::move(arg)); f.doc.ecaNodes.push_back(std::move(eca));
     }
     f.doc.wct.customCode = RawText{"// Target Name only in comment\n"};
-    auto op = f.Remove(); auto review = f.Review(op);
+    auto op = f.Remove();
+    const auto begin = std::chrono::steady_clock::now();
+    auto review = f.Review(op);
+    const auto auditMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count();
     Require(review.complete && review.groupableCount >= count && review.groupableSamples.size() == 20
         && review.individualBlocks.size() == 1, "50k code blocks and more than 262144 tokens produce complete bounded summary");
-    f.Confirm(op, review); Good(CheckDeclarationRemovalAudit(f.doc, f.catalog, op), "whole group plus individual review");
+    f.Confirm(op, review);
+    const auto checkBegin = std::chrono::steady_clock::now();
+    Good(CheckDeclarationRemovalAudit(f.doc, f.catalog, op), "whole group plus individual review");
+    const auto checkMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - checkBegin).count();
+    PROCESS_MEMORY_COUNTERS memory{};
+    Require(K32GetProcessMemoryInfo(GetCurrentProcess(), &memory, sizeof(memory)) != FALSE, "own process memory measurement");
+    std::cout << "large_group_benchmark: zero_hit_blocks=" << review.groupableCount << " individual_blocks=" << review.individualBlocks.size()
+        << " audit_ms=" << auditMs << " successful_check_ms=" << checkMs << " process_peak_working_set_bytes=" << memory.PeakWorkingSetSize << '\n';
     auto wrong = op; ++wrong.codeAudits.front().group->count; f.Fails(wrong, "TRIGGER_REMOVE_CODE_AUDIT_STALE");
     wrong = op; wrong.codeAudits.front().group->sha256[0] ^= 1; f.Fails(wrong, "TRIGGER_REMOVE_CODE_AUDIT_STALE");
     wrong = op; wrong.codeAudits.push_back(wrong.codeAudits.front()); f.Fails(wrong, "TRIGGER_REMOVE_CODE_AUDIT_INVALID");

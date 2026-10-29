@@ -27,6 +27,19 @@ bool Mentions(std::string_view value, const DeclarationRemovalReview& review) {
         || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return value.find(s) != std::string_view::npos; });
 }
 struct Token { std::string text; std::size_t offset; bool quoted = false; std::size_t length = 0; };
+std::vector<std::size_t> ArgumentBoundaries(const std::vector<Token>& tokens) {
+    std::vector<std::size_t> next(tokens.size(), tokens.size()), tails;
+    // 每个逗号只归属当前括号层，嵌套按名调用不重复遍历内部表达式。
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].quoted) continue;
+        if (tokens[i].text == "(") tails.push_back(i);
+        else if (!tails.empty() && (tokens[i].text == "," || tokens[i].text == ")")) {
+            next[tails.back()] = i;
+            if (tokens[i].text == ")") tails.pop_back(); else tails.back() = i;
+        }
+    }
+    return next;
+}
 void Incomplete(RemovalCodeBlock& block, const char* reason) { block.complete = false; if (block.incompleteReason.empty()) block.incompleteReason = reason; }
 void LocateRawEvidence(RemovalCodeBlock& block, const RawText& source) {
     if (block.evidence.empty()) return;
@@ -105,6 +118,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
             if (Match(value, review, true)) Evidence(block, source, begin, i - begin, "可执行生成符号", true);
         } else { --tokensLeft; tokens.push_back({text.substr(i, 1), i, false, 1}); ++i; }
     }
+    const auto boundaries = ArgumentBoundaries(tokens);
     for (std::size_t i = 0; i < tokens.size(); ++i) {
         if (tokens[i].quoted) continue;
         const auto& word = tokens[i].text;
@@ -123,25 +137,19 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         if (!dispatch) continue;
         block.dynamic = true; Evidence(block, source, tokens[i].offset, word.size(), "按名/动态调用位置", false);
         if (i + 2 < tokens.size() && tokens[i + 1].text == "(") {
-            std::size_t depth = 1, first = i + 2; bool closed = false;
-            for (std::size_t cursor = first; cursor < tokens.size(); ++cursor) {
-                // 这些token已在词法扫描按原字节计费，不对同一token重复扣减全图预算。
-                const auto& token = tokens[cursor];
-                if (!token.quoted && token.text == "(") ++depth;
-                if (!token.quoted && token.text == ")") --depth;
-                if (!depth || (depth == 1 && !token.quoted && token.text == ",")) {
-                    if (cursor > first) {
-                        const auto& argument = tokens[first];
-                        if (cursor == first + 1 && argument.quoted) {
-                            if (Match(argument.text, review, false)) Evidence(block, source, argument.offset, argument.length, "常量按名目标引用", true);
-                        } else {
-                            const auto end = tokens[cursor - 1].offset + tokens[cursor - 1].length;
-                            Evidence(block, source, argument.offset, end - argument.offset, "动态调用目标表达式（须单独确认）", false);
-                        }
+            std::size_t first = i + 2; bool closed = false;
+            for (auto cursor = boundaries[i + 1]; cursor < tokens.size(); cursor = boundaries[cursor]) {
+                if (cursor > first) {
+                    const auto& argument = tokens[first];
+                    if (cursor == first + 1 && argument.quoted) {
+                        if (Match(argument.text, review, false)) Evidence(block, source, argument.offset, argument.length, "常量按名目标引用", true);
+                    } else {
+                        const auto end = tokens[cursor - 1].offset + tokens[cursor - 1].length;
+                        Evidence(block, source, argument.offset, end - argument.offset, "动态调用目标表达式（须单独确认）", false);
                     }
-                    first = cursor + 1;
-                    if (!depth) { closed = true; break; }
                 }
+                first = cursor + 1;
+                if (tokens[cursor].text == ")") { closed = true; break; }
             }
             if (!closed) Incomplete(block, "按名调用表达式未闭合或预算不足");
         } else Evidence(block, source, tokens[i].offset, word.size(), "按名入口引用（须单独确认）", false);
