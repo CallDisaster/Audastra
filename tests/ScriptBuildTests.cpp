@@ -1100,9 +1100,9 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     op.parent.kind = Trigger::GraphParentKind::CategoryTriggers;
     op.parent.owner = {Trigger::GraphRecordKind::Category, doc.categories.front().id, {}};
     op.parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *target.value, {}});
-    Trigger::RemovalPreprocessProvider provider = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto&) {
+    Trigger::RemovalPreprocessProvider provider = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto& operation) {
         MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions;
-        return CaptureRemovalPreprocessCoverage(inputs, *framework.value);
+        return CaptureRemovalPreprocessCoverage(inputs, *framework.value, operation);
     };
     const auto query = [&] { return Trigger::QueryDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider); };
     const auto confirm = [&](const Trigger::DeclarationRemovalReview& review) {
@@ -1147,8 +1147,8 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     confirm(*review.value); Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "explicit stringification review permits unrelated deletion");
     auto changedProfile = *profile.value; ++changedProfile.profileRevision;
     const auto alternate = CaptureScriptFrameworkInputs(changedProfile, *layout.value, *catalog.value); Require(alternate.Succeeded(), "alternate bound profile");
-    Trigger::RemovalPreprocessProvider otherProfile = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto&) {
-        MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions; return CaptureRemovalPreprocessCoverage(inputs, *alternate.value);
+    Trigger::RemovalPreprocessProvider otherProfile = [&](const Trigger::TriggerDocument& current, const Trigger::UiCatalog& definitions, const auto& operation) {
+        MapScriptInputs inputs; inputs.triggers = &current; inputs.catalog = &definitions; return CaptureRemovalPreprocessCoverage(inputs, *alternate.value, operation);
     };
     const auto changed = Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &otherProfile);
     Require(!changed.Succeeded() && HasCode(changed.diagnostics, "TRIGGER_REMOVE_CODE_AUDIT_STALE"), "profile identity invalidates old confirmation");

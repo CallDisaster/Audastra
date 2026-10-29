@@ -37,7 +37,8 @@ Result<std::string> AuditText(const Jass::PreprocessResult& result) {
 }
 }
 Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
-    const MapScriptInputs& inputs, const ScriptFrameworkInputs& framework, std::string_view versionString, bool scriptInjection) {
+    const MapScriptInputs& inputs, const ScriptFrameworkInputs& framework, const Trigger::GraphRemove& removedTarget,
+    std::string_view versionString, bool scriptInjection) {
     using Out = Result<Trigger::RemovalPreprocessCoverage>;
     using Kind = Trigger::AtomicRenameCodeKind;
     if (!inputs.triggers || !inputs.catalog || inputs.catalog->Sha256() != framework.catalog.Sha256())
@@ -46,7 +47,23 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
     const auto profile = ValidateScriptToolchainProfile(framework.profile);
     if (!profile.Succeeded()) return {{}, profile.diagnostics};
     Trigger::RemovalPreprocessCoverage result; result.profileSha256 = *profile.value;
-    const auto generated = GenerateMapScript(inputs);
+    // 私有删除投影仍由生产生成器组成整图。去掉目标自身的声明/初始化，再扫描全部生成正文，
+    // 避免把自动生成的自引用误当存活引用，也覆盖宏经GUI参数生成的新引用；不发布这个投影。
+    auto projected = *inputs.triggers;
+    if (removedTarget.target.kind == Trigger::GraphRecordKind::Trigger) {
+        const auto found = std::find_if(projected.triggers.begin(), projected.triggers.end(), [&](const auto& t) { return t.id == removedTarget.target.id && t.name.text == removedTarget.expectedName; });
+        if (found == projected.triggers.end() || found->customTextFlag)
+            return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "删除投影需要同一普通触发器身份。");
+        const auto removed = Trigger::TriggerDocumentEditor::RemoveTrigger(projected, found->id);
+        if (!removed.Succeeded()) return {{}, removed.diagnostics};
+    } else if (removedTarget.target.kind == Trigger::GraphRecordKind::Variable) {
+        const auto found = std::find_if(projected.variables.begin(), projected.variables.end(), [&](const auto& v) { return v.id == removedTarget.target.id && v.name.text == removedTarget.expectedName; });
+        if (found == projected.variables.end()) return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "删除投影的变量身份已改变。");
+        const auto removed = Trigger::TriggerDocumentEditor::RemoveVariable(projected, found->name.text);
+        if (!removed.Succeeded()) return {{}, removed.diagnostics};
+    } else return Out::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "不支持此类删除投影。");
+    auto projectedInputs = inputs; projectedInputs.triggers = &projected;
+    const auto generated = GenerateMapScript(projectedInputs);
     if (!generated.Succeeded()) return {{}, generated.diagnostics};
     std::vector<std::filesystem::path> injected;
     std::vector<std::string> injectedHashes;
@@ -68,8 +85,14 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
     if (!captured.value) return {{}, captured.diagnostics};
     const auto& sources = *captured.value;
     std::string identity = "remove-preprocess-v1\n" + result.profileSha256 + "\n" + sources.mainSha256 + "\n";
+    identity += framework.entryPlan.layoutIdentitySha256 + "\n" + framework.catalog.Sha256() + "\n";
     for (const auto& [name, value] : request.defines) identity += std::to_string(name.size()) + ":" + name + std::to_string(value.size()) + ":" + value + "\n";
     result.inputBytes = request.mainText.size();
+    for (const auto& binding : framework.entryPlan.bindings) identity += PathText(binding.path) + "\n" + binding.sha256 + "\n";
+    for (const auto& file : framework.injection.files) {
+        identity += PathText(file.binding.path) + "\n" + file.binding.sha256 + "\n";
+        result.inputBytes += file.bytes.size();
+    }
     for (std::size_t i = 0; i < injected.size(); ++i) identity += PathText(injected[i]) + "\n" + injectedHashes[i] + "\n";
     std::set<std::filesystem::path> included;
     for (const auto& trace : sources.includeCandidates) {
@@ -126,9 +149,9 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
         if (offset >= generated.text.size()) return StableId{0};
         const auto found = std::upper_bound(generated.authorCode.begin(), generated.authorCode.end(), offset,
             [](auto n, const auto& span) { return n < span.byteOffset; });
-        if (found == generated.authorCode.begin()) return {};
+        if (found == generated.authorCode.begin()) return StableId{0};
         const auto& span = *std::prev(found);
-        if (offset < span.byteOffset || offset >= span.byteOffset + span.byteLength) return {};
+        if (offset < span.byteOffset || offset >= span.byteOffset + span.byteLength) return StableId{0};
         return span.triggerId;
     };
     const auto origin = [&](std::string file, std::size_t line) -> Trigger::RemovalPreprocessOrigin {
@@ -168,9 +191,9 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
         block.origins.push_back(origin(file, position->line));
     }
     for (const auto& macro : expanded.macroAudit) {
-        const auto target = owner(macro.source, macro.line); if (!target) continue;
+        const auto target = owner(macro.source, macro.line).value_or(0);
         const auto located = origin(macro.source, macro.line);
-        result.blocks[index.at(*target)].macros.push_back({macro.name, macro.body, located.file, located.line, macro.expanded, macro.tokenConstruction});
+        result.blocks[index.at(target)].macros.push_back({macro.name, macro.body, located.file, located.line, macro.expanded, macro.tokenConstruction});
     }
     // 读取过但未激活的分支仍绑定身份；不把未实现模板或vJass预处理当成已覆盖。
     const auto unsupported = [](std::string_view text) {

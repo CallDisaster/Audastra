@@ -247,7 +247,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
         return Status::Ok();
     });
     if (!probe.Succeeded()) return {std::nullopt, probe.diagnostics};
-    if (needsPreprocessing && preprocessing && *preprocessing) {
+    if (needsPreprocessing && review.typedArgumentIds.empty() && preprocessing && *preprocessing) {
         const auto captured = (*preprocessing)(doc, catalog, op);
         if (!captured.Succeeded()) return {std::nullopt, captured.diagnostics};
         coverage = std::move(*captured.value);

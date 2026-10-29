@@ -8,5 +8,6 @@ namespace War3Map::Script {
 // inputs中的非触发器数据由宿主冻结保活；候选触发器在每次调用时重新生成。
 [[nodiscard]] Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
     const MapScriptInputs& inputs, const ScriptFrameworkInputs& framework,
+    const Trigger::GraphRemove& removedTarget,
     std::string_view versionString = "1.32.13", bool scriptInjection = true);
 }

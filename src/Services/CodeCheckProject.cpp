@@ -900,7 +900,7 @@ Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::sha
     if (snapshot) { auto audit = std::make_shared<CodeCheckProjectSnapshot>(*snapshot); audit->scriptAuditOnly = true; snapshot = std::move(audit); }
     auto cache = std::make_shared<CodeCheckProjectCache>();
     return [snapshot = std::move(snapshot), cache](const Trigger::TriggerDocument& document,
-        const Trigger::UiCatalog& catalog, const Trigger::GraphRemove&) -> Result<Trigger::RemovalPreprocessCoverage> {
+        const Trigger::UiCatalog& catalog, const Trigger::GraphRemove& operation) -> Result<Trigger::RemovalPreprocessCoverage> {
         using Out = Result<Trigger::RemovalPreprocessCoverage>;
         if (!snapshot || !snapshot->catalog || snapshot->catalog->Sha256() != catalog.Sha256())
             return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "宿主没有当前目录与工具链的冻结来源。");
@@ -912,7 +912,7 @@ Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::sha
                 return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", *reason);
             if (!owned.framework) return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "当前工具链没有可重放的预处理档案。");
             if (const auto status = owned.archive->VerifySourceUnchanged(); !status.Succeeded()) return {{}, status.diagnostics};
-            return Script::CaptureRemovalPreprocessCoverage(ProjectMapScriptInputs(owned, snapshot, document), *owned.framework);
+            return Script::CaptureRemovalPreprocessCoverage(ProjectMapScriptInputs(owned, snapshot, document), *owned.framework, operation);
         } catch (const std::exception&) {
             return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "无法完整捕获预处理覆盖，未删除。");
         }
