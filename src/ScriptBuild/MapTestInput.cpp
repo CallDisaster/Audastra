@@ -6,10 +6,8 @@
 
 namespace War3Map::Script {
 std::vector<MapTestNormalExitStep> MapTestNormalExit127() {
-    return {{0, "open_menu", {MapTestInputKind::Key, 0, 0, {0x79}}},
-        {2, "end_game", {MapTestInputKind::Key, 0, 0, {'E'}}},
-        {2, "exit_program", {MapTestInputKind::Key, 0, 0, {'X'}}},
-        {2, "confirm_exit", {MapTestInputKind::Key, 0, 0, {13}}}};
+    return {{0, "request_native_exit_confirmation", {MapTestInputKind::Close}},
+        {2, "confirm_exit", {MapTestInputKind::Key, 0, 0, {'X'}}}};
 }
 Result<std::vector<std::uint32_t>> ParseMapTestKeys(std::string_view text) {
     const auto fail = [] { return Result<std::vector<std::uint32_t>>::Failure("Map.Test", "MAP_TEST_INPUT_ARGUMENT", "按键须为虚拟键名、十进制或0x十六进制码；组合最多8键且不能重复。"); };

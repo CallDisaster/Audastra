@@ -250,7 +250,7 @@ int RunMapTest(int argc, wchar_t** argv) {
                     std::size_t cancelled = 0;
                     for (auto& pending : events) if (!pending.done) { pending.done = true; ++cancelled; }
                     std::cout << "normal_exit_started=" << nlohmann::json{{"elapsed_seconds",elapsed()},
-                        {"method","owned_menu_sequence_127"},{"cancelled_events",cancelled},
+                        {"method","owned_native_confirmation_127"},{"cancelled_events",cancelled},
                         {"startup_input_disabled",true}}.dump() << std::endl;
                     break;
                 }
