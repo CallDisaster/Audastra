@@ -1,12 +1,10 @@
 #pragma once
 
+#include "War3MapCore/Trigger/TriggerReal.h"
 #include "War3MapCore/Types.h"
 
 #include <algorithm>
-#include <array>
-#include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <initializer_list>
 #include <optional>
 #include <string>
@@ -44,16 +42,14 @@ inline void Append(Lines& out, const Lines& in, int depth = 0) {
     return out + "\"";
 }
 
-// JASS 实数字面量：定点、最多 6 位小数、去掉末尾的 0，不用指数写法。
+// JASS 实数字面量：与触发器编辑共用最短往返写法（float32，不用指数），整数值不带“.0”，与以往生成的文本一致。
+// 非有限或超出 float32 的值不悄悄写 0，而是写出不是实数字面量的记号，写入触发器时由目录检查报错。
 [[nodiscard]] inline std::string Real(double value) {
-    if (!std::isfinite(value)) value = 0.0;
-    std::array<char, 64> buffer{};
-    const int written = std::snprintf(buffer.data(), buffer.size(), "%.6f", value);
-    std::string text(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0);
-    while (text.ends_with('0')) text.pop_back();
-    if (text.ends_with('.')) text.pop_back();
-    if (text.empty() || text == "-0") text = "0";
-    return text;
+    auto text = Trigger::FormatTriggerReal(value);
+    if (!text) return "InvalidRealValue";
+    if (text->ends_with(".0")) text->resize(text->size() - 2);
+    if (*text == "-0") *text = "0";
+    return *text;
 }
 
 [[nodiscard]] inline std::string Call(std::string_view name, std::initializer_list<std::string> args = {}) {
