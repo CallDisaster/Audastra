@@ -344,6 +344,17 @@ static Status ValidateSourceLexicalViewImpl(std::string_view original, const Sou
     auto lex = budget ? detail::LexPpBounded(view.text, *budget, Text::SourceEncoding::Utf8)
         : detail::LexPp(view.text, Text::SourceEncoding::Utf8);
     if (!lex.Succeeded()) return {std::move(lex.diagnostics)};
+    if (!view.opaque.empty()) {
+        const auto raw = budget ? detail::LexPpBounded(original, *budget, Text::SourceEncoding::Utf8)
+            : detail::LexPp(original, Text::SourceEncoding::Utf8);
+        if (!raw.Succeeded()) return {raw.diagnostics};
+        if (raw.value->size() != lex.value->size()) return fail("词法视图改变了原字节记号边界。");
+        for (std::size_t i = 0; i < raw.value->size(); ++i) {
+            const auto& a = (*raw.value)[i]; const auto& b = (*lex.value)[i];
+            if (a.offset != b.offset || a.End() != b.End() || a.kind != b.kind)
+                return fail("词法视图改变了原字节转义或记号边界。");
+        }
+    }
     std::size_t cursor = 0, tokenIndex = 0;
     for (const auto& span : view.opaque) {
         if (budget) budget->Poll();

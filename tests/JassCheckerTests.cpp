@@ -200,13 +200,15 @@ void TestEncodedLexer() {
             && result.value->back().offset == source.size(), "编码标识符保留原字节/offset");
         Require(LexJass(source).at(1).text == "udg_", "默认词法仍只识别ASCII名称");
     }
-    const std::string gbk = std::string("\"\x81\x5C\" '\x81\x5C' // \x81\x5C\rset x=1");
+    const std::string gbk = std::string("\"\x9C\x5C\x5C\" '\x8A\x5C\x5C' // \x81\x5C\rset x=1");
     const auto quoted = LexJass(gbk, SourceEncoding::Gbk);
-    Require(quoted.Succeeded() && quoted.value->at(0).text == gbk.substr(0, 4)
-        && quoted.value->at(1).text == gbk.substr(5, 4) && quoted.value->at(3).line == 2
-        && ValidStringEscapes(quoted.value->at(0).text, SourceEncoding::Gbk), "GBK尾5C不是转义，字面量原保");
+    Require(quoted.Succeeded() && quoted.value->at(0).text == gbk.substr(0, 5)
+        && quoted.value->at(1).text == gbk.substr(6, 5) && quoted.value->at(3).line == 2
+        && ValidStringEscapes(quoted.value->at(0).text, SourceEncoding::Gbk), "字节词法中尾5C仍是转义，补第二个5C才闭合");
+    Require(!LexJass(std::string("\"\x9C\x5C\""), SourceEncoding::Gbk).Succeeded(), "GBK尾5C按字节吞掉结束引号，不因编码声明绕过");
     const auto broken = LexJass(std::string("// \xC0\xAF\nset x=1"), SourceEncoding::Utf8);
-    Require(!broken.value && broken.diagnostics.front().origin->offset == 3, "注释内非法UTF8给原offset且无部分结果");
+    Require(broken.Succeeded(), "注释内原始字节不按来源编码拒绝");
+    Expect("function F takes nothing returns string\nreturn \"\x9C\x5C\x5C\"\nendfunction\n", 0, "", "未知编码字符串按字节通过JASS检查");
     for (const auto text : {"udg_。", "udg_😀", "/* unfinished", "\"unfinished", "x\x1A y"}) {
         Require(!LexJass(text, SourceEncoding::Utf8, {.blockComments = true}).Succeeded(), "不支持标量/坏边界拒绝");
     }
@@ -316,9 +318,9 @@ void TestIdentifierRewrite() {
         request.globalScopeIdentity = "other-script/root";
         Require(RewriteUdgIdentifiers(request).value->mappings[0].generatedName != scalar.generatedName, "语义域参与稳定名");
     }
-    const std::string gbk = "globals\ninteger udg_\xB1\xE4\xC1\xBF\nstring s=\"\x81\x5C\"\nendglobals\n";
+    const std::string gbk = "globals\ninteger udg_\xB1\xE4\xC1\xBF\nstring s=\"\x9C\x5C\x5C\"\nendglobals\n";
     const auto gbkResult = RewriteUdgIdentifiers(requestFor(gbk, SourceEncoding::Gbk));
-    Require(gbkResult.Succeeded() && gbkResult.value->text.find("\"\x81\x5C\"") != std::string::npos, "GBK尾5C字面量未被吞掉或转码");
+    Require(gbkResult.Succeeded() && gbkResult.value->text.find("\"\x9C\x5C\x5C\"") != std::string::npos, "按字节闭合的GBK字面量未被改名或转码");
     const std::string base = "globals\ninteger udg_变量\nendglobals\n";
     const auto reject = [&](std::string_view text, std::string_view code) {
         const auto result = RewriteUdgIdentifiers(requestFor(text));

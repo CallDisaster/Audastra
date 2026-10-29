@@ -114,6 +114,8 @@ struct TemplateResult {
 };
 
 [[nodiscard]] TemplateResult EvaluateTemplates(std::string_view text, const TemplateContext& context);
+// 精确按TemplateSpan把模板输出行映射到求值前行；块外按字节偏移，块内回到模板起点。
+[[nodiscard]] Jass::SourceMap MapTemplateSourceLines(std::string_view input, const TemplateResult& evaluated);
 
 // 整份执行（wholeChunk）的输出没有逐块位置。按 builtin（同一输入的内置求值）登记的块位置，把块外文本
 // 逐段对回输出：块外文本须逐字节出现；内置求值已得到结果的块，其输出也须与整份执行一致；只有未执行的块

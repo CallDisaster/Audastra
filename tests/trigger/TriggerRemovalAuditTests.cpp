@@ -150,6 +150,39 @@ void EncodingAndPrefix() {
     Require(r.complete && r.typedArgumentIds.empty() && r.groupableCount == 3, "removed subtree references and literal arithmetic do not create false blockers");
     p.Confirm(op, r); Good(ApplyTriggerGraphEditBatch(p.doc, p.catalog, p.Batch(op)), "self reference disappears with its owner");
 }
+void ByteOpaqueCoverage() {
+    Fixture f;
+    f.doc.wct.customCode = RawText{"#define AUDIT_ORIGINAL 1\n"};
+    auto op = f.Remove();
+    std::string expanded = "call BJDebugMsg(\"\x9C\x5C\x5C\")\n// \x8A\x40\n";
+    RemovalPreprocessProvider provider = [&](const auto&, const auto&, const auto&) {
+        RemovalPreprocessCoverage c; c.complete = true; c.profileSha256 = std::string(64, 'a'); c.identitySha256 = std::string(64, 'b');
+        RemovalPreprocessBlock b; b.kind = AtomicRenameCodeKind::GlobalCustomCode; b.id = 0;
+        b.sourceSha256 = *Sha256Text(f.doc.wct.customCode.text).value;
+        b.text = expanded; b.origins.assign(8, {"original-fixture.j", 1}); c.blocks.push_back(std::move(b));
+        return Result<RemovalPreprocessCoverage>::Success(std::move(c));
+    };
+    const auto query = [&] { auto r = QueryDeclarationRemovalAudit(f.doc, f.catalog, op, nullptr, &provider); Good(r, "byte host coverage"); return *r.value; };
+    auto r = query();
+    Require(r.complete && r.individualBlocks.empty(), "unknown opaque bytes with no target are not forced into individual confirmation");
+    expanded = "call ExecuteFunc(\"\x8A\x40" "prefix gg_trg_Target_Name\")\n";
+    r = query();
+    Require(r.complete && r.individualBlocks.size() == 1 && !r.individualBlocks.front().referenced
+        && !r.individualBlocks.front().evidence.empty(), "GBK string containing ASCII target is possible, not exact named target");
+    Require(std::any_of(r.individualBlocks.front().evidence.begin(), r.individualBlocks.front().evidence.end(),
+        [](const auto& e) { return e.text.find("\\x8A") != std::string::npos; }),
+        "invalid UTF8 evidence escapes only display bytes, preserving scan offsets and source identity");
+    expanded = "call BJDebugMsg(\"\x9C\x5C\")\n";
+    Require(!query().complete, "audit shares PP/JASS byte escape boundary for tail5C");
+
+    f.doc.triggers.front().name = RawText{"目标 名"}; op = f.Remove();
+    const auto gbk = RawText{op.expectedName, TextEncoding::Gb18030, {}}.ToBytes(); Good(gbk, "original display name encoded");
+    expanded = "// " + std::string(reinterpret_cast<const char*>(gbk.value->data()), gbk.value->size()) + "\n";
+    r = query();
+    Require(r.complete && r.individualBlocks.size() == 1 && !r.individualBlocks.front().referenced
+        && r.individualBlocks.front().evidence.front().context.find("注释命中") != std::string::npos,
+        "GBK display-name comment is found without decoding opaque source");
+}
 }
 void DerivedLiteralClassification() {
     Fixture f;
@@ -235,6 +268,6 @@ void LargeGroupedReview() {
 }
 int main(int argc, char** argv) { try {
     if (argc == 2 && std::string_view(argv[1]) == "--large") LargeGroupedReview();
-    else { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); EncodingAndPrefix(); DerivedLiteralClassification(); }
+    else { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); EncodingAndPrefix(); ByteOpaqueCoverage(); DerivedLiteralClassification(); }
     std::cout << "Removal audit transactions passed\n"; return 0;
 } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

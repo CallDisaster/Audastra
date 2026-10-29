@@ -2,6 +2,7 @@
 
 #include "ScriptSourceBinding.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Jass/ByteLexical.h"
 #include "War3MapCore/Text/SourceEncoding.h"
 #include "../Jass/JassLexer.h"
 #include "../Jass/PpLexer.h"
@@ -137,6 +138,10 @@ Result<Jass::SourceLexicalView> MakeFrameworkLexicalView(std::string_view origin
     const auto validate = [&](Text::SourceEncoding encoding) {
         Status status = Status::Ok();
         for (std::uint32_t at = 0; at < original.size();) {
+            if (const auto opaque = Jass::ScanByteOpaque(original, at)) {
+                if (!opaque->closed) return Fail("SCRIPT_FRAMEWORK_SOURCE_LEXICAL_BOUNDARY", "不透明文本没有闭合。", source, at, opaque->end - at);
+                at = static_cast<std::uint32_t>(opaque->end); continue;
+            }
             if (static_cast<unsigned char>(original[at]) < 0x80) { ++at; continue; }
             const auto scalar = Text::ReadSourceScalar(original, at, encoding);
             if (!scalar.Succeeded()) { status.diagnostics = scalar.diagnostics; break; }
@@ -149,6 +154,16 @@ Result<Jass::SourceLexicalView> MakeFrameworkLexicalView(std::string_view origin
     };
     if (original.size() > 16u * 1024u * 1024u) return Failed<Jass::SourceLexicalView>(Fail(
         "SCRIPT_FRAMEWORK_SOURCE_BUDGET", "参与来源超过16MiB。", source));
+    if (declaration != ScriptProfileEncoding::Utf8 && declaration != ScriptProfileEncoding::Gbk
+        && declaration != ScriptProfileEncoding::UniqueUtf8OrGbk) return Failed<Jass::SourceLexicalView>(Fail(
+            "SCRIPT_FRAMEWORK_SOURCE_ENCODING_UNSUPPORTED", "未知来源编码资格。", source));
+    if (std::any_of(original.begin(), original.end(), [](unsigned char c) { return c >= 0x80; }) && NonAsciiOnlyOpaque(original)) {
+        Jass::SourceLexicalView view; view.text = original;
+        auto result = R::Success(std::move(view));
+        result.diagnostics.push_back({DiagnosticSeverity::Info, "Script.Framework", "SCRIPT_FRAMEWORK_SOURCE_ENCODING_OPAQUE",
+            "非ASCII只在不透明文本中，按jass-bytes-v1保留原字节，不推断代码页或屏蔽转义。", OriginSpan{source}});
+        return result;
+    }
     auto encoding = Text::SourceEncoding::Utf8;
     if (declaration == ScriptProfileEncoding::UniqueUtf8OrGbk) {
         const auto utf = validate(Text::SourceEncoding::Utf8), gbk = validate(Text::SourceEncoding::Gbk);
@@ -186,40 +201,13 @@ Result<Jass::SourceLexicalView> MakeFrameworkLexicalView(std::string_view origin
     }
     Jass::SourceLexicalView view; view.text = original;
     if (encoding == Text::SourceEncoding::Utf8) return R::Success(std::move(view));
-    auto hash = Sha256Text(original);
-    if (!hash.Succeeded()) return {{}, std::move(hash.diagnostics)};
-    std::size_t tokenIndex = 0;
-    std::uint32_t sourceLine = 1;
-    std::size_t opaqueStorage = 0;
-    for (std::uint32_t at = 0; at < original.size();) {
-        const auto scalar = Text::ReadSourceScalar(original, at, encoding);
-        const auto width = scalar.value->bytes;
-        while (tokenIndex < tokens.value->size() && (*tokens.value)[tokenIndex].End() <= at) ++tokenIndex;
-        if (static_cast<unsigned char>(original[at]) >= 0x80) {
-            auto kind = Jass::SourceOpaqueKind::Comment;
-            if (tokenIndex < tokens.value->size() && (*tokens.value)[tokenIndex].offset <= at) {
-                const auto& token = (*tokens.value)[tokenIndex];
-                if (token.kind == Jass::detail::PpKind::String) kind = Jass::SourceOpaqueKind::String;
-                else if (token.kind == Jass::detail::PpKind::Char) kind = Jass::SourceOpaqueKind::Rawcode;
-                else return Failed<Jass::SourceLexicalView>(Fail("SCRIPT_FRAMEWORK_GBK_IDENTIFIER_UNSUPPORTED",
-                    "GBK非ASCII代码token尚未支持跨来源绑定；不转码或猜测标识符。", source, at, width, sourceLine));
-            }
-            const auto ownedBytes = sizeof(Jass::SourceOpaqueSpan) + 128 + source.native().size() * sizeof(std::filesystem::path::value_type);
-            if (view.opaque.size() >= 262144 || ownedBytes > 32u * 1024u * 1024u - opaqueStorage) return Failed<Jass::SourceLexicalView>(Fail(
-                "SCRIPT_FRAMEWORK_SOURCE_BUDGET", "不透明标量位置超过262144项。", source, at, width));
-            opaqueStorage += ownedBytes;
-            std::fill_n(view.text.begin() + at, width, 'x'); // 尾0x5c属于已验证标量，不能当成转义/续行。
-            view.opaque.push_back({at, width, kind, OriginSpan{source, at, width, *hash.value}, *hash.value, sourceLine});
-        }
-        if (original[at] == '\r' || (original[at] == '\n' && (at == 0 || original[at - 1] != '\r'))) ++sourceLine;
-        at += width;
+    for (const auto& token : *tokens.value) {
+        if (token.kind == Jass::detail::PpKind::String || token.kind == Jass::detail::PpKind::Char) continue;
+        if (std::any_of(token.text.begin(), token.text.end(), [](unsigned char c) { return c >= 0x80; }))
+            return Failed<Jass::SourceLexicalView>(Fail("SCRIPT_FRAMEWORK_GBK_IDENTIFIER_UNSUPPORTED",
+                "GBK非ASCII代码token尚未支持跨来源绑定；不转码或猜测标识符。", source, token.offset, token.text.size(), token.line));
     }
-    auto checked = Jass::detail::LexPp(view.text, Text::SourceEncoding::Utf8);
-    if (!checked.Succeeded()) return {{}, std::move(checked.diagnostics)};
-    auto result = R::Success(std::move(view));
-    result.diagnostics.push_back({DiagnosticSeverity::Info, "Script.Framework", "SCRIPT_FRAMEWORK_GBK_OPAQUE_PRESERVED",
-        "该来源由严格唯一/显式CP936资格读取；字符串、注释、rawcode原字节保留，等长词法视图不写入地图。", OriginSpan{source}});
-    return result;
+    return R::Success(std::move(view));
 }
 
 ScriptUserSourceRequest FrameworkSourceRequest(const ScriptFrameworkInputs& inputs) {

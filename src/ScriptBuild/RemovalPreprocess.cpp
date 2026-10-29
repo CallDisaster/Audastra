@@ -1,8 +1,7 @@
 #include "War3MapCore/Script/RemovalPreprocess.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Script/ScriptPipeline.h"
-#include "War3MapCore/Text/SourceEncoding.h"
-#include "War3MapCore/Text/Utf8Scalar.h"
+#include "War3MapCore/Jass/ByteLexical.h"
 #include <algorithm>
 #include <cwctype>
 #include <map>
@@ -19,69 +18,28 @@ std::vector<std::size_t> Lines(std::string_view text) {
     }
     return result;
 }
-Result<std::string> AuditText(const Jass::PreprocessResult& result, std::vector<std::size_t>& commentLines, std::size_t& failureLine) {
-    std::string text; std::size_t previous = 0;
-    for (const auto& span : result.lexicalView.opaque) {
-        if (span.offset < previous || span.offset > result.text.size() || span.length > result.text.size() - span.offset)
-            return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "展开编码映射越界或重叠。");
-        text.append(result.text, previous, span.offset - previous);
-        const auto scalar = Text::ReadSourceScalar(result.text, span.offset, Text::SourceEncoding::Gbk);
-        if (!scalar.Succeeded() || scalar.value->bytes != span.length)
-            return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "展开不透明标量不能按已验证编码解码。");
-        const auto cp = scalar.value->codepoint;
-        if (cp < 0x80) text += static_cast<char>(cp);
-        else if (cp < 0x800) { text += static_cast<char>(0xc0 | (cp >> 6)); text += static_cast<char>(0x80 | (cp & 63)); }
-        else if (cp < 0x10000) { text += static_cast<char>(0xe0 | (cp >> 12)); text += static_cast<char>(0x80 | ((cp >> 6) & 63)); text += static_cast<char>(0x80 | (cp & 63)); }
-        else { text += static_cast<char>(0xf0 | (cp >> 18)); text += static_cast<char>(0x80 | ((cp >> 12) & 63)); text += static_cast<char>(0x80 | ((cp >> 6) & 63)); text += static_cast<char>(0x80 | (cp & 63)); }
-        previous = span.offset + span.length;
-    }
-    text.append(result.text, previous, result.text.size() - previous);
-    enum class State { Code, String, Rawcode, LineComment, BlockComment } state = State::Code;
-    bool escaped = false; std::size_t line = 1;
-    std::string normalized; normalized.reserve(text.size());
+Result<std::string> AuditText(const Jass::PreprocessResult& result, std::size_t& failureLine) {
+    std::string text = result.text;
+    // 与保存/检查词法共享字节边界；不透明内容保持原字节，不猜代码页。
+    std::size_t line = 1;
     for (std::size_t at = 0; at < text.size();) {
+        if (const auto opaque = Jass::ScanByteOpaque(text, at)) {
+            if (!opaque->closed) { failureLine = line; return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_LEXICAL", "不透明文本未闭合。"); }
+            while (at < opaque->end) { if (text[at] == '\r' || (text[at] == '\n' && (!at || text[at - 1] != '\r'))) ++line; ++at; }
+            continue;
+        }
         const auto c = static_cast<unsigned char>(text[at]);
-        if (c >= 128) {
-            const auto scalar = Text::Detail::ReadUtf8Scalar(text, at);
-            if (scalar.Valid()) { normalized.append(text, at, scalar.bytes); at += scalar.bytes; escaped = false; continue; }
-            if (state != State::LineComment && state != State::BlockComment) {
-                failureLine = line;
-                return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "执行代码或字符串含未声明编码字节，不能声明完整引用覆盖。");
-            }
-            if (commentLines.empty() || commentLines.back() != line) {
-                if (commentLines.size() >= 262144) { failureLine = line; return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_CODE_AUDIT_BUDGET", "未声明注释编码的位置超过预算。"); }
-                commentLines.push_back(line);
-            }
-            constexpr char hex[] = "0123456789ABCDEF";
-            normalized += "\\x"; normalized += hex[c >> 4]; normalized += hex[c & 15]; ++at; continue;
-        }
-        const auto next = at + 1 < text.size() ? text[at + 1] : '\0';
-        if (state == State::Code) {
-            if (c == '/' && (next == '/' || next == '*')) {
-                state = next == '/' ? State::LineComment : State::BlockComment;
-                normalized += '/'; normalized += next; at += 2; continue;
-            }
-            if (c == '"' || c == '\'') { state = c == '"' ? State::String : State::Rawcode; escaped = false; }
-        } else if (state == State::LineComment) {
-            if (c == '\r' || c == '\n') state = State::Code;
-        } else if (state == State::BlockComment) {
-            if (c == '*' && next == '/') { state = State::Code; normalized += "*/"; at += 2; continue; }
-        } else {
-            if (escaped) escaped = false;
-            else if (c == '\\') escaped = true;
-            else if (c == (state == State::String ? '"' : '\'')) state = State::Code;
-        }
-        normalized += static_cast<char>(c);
+        if (c >= 128) { failureLine = line; return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "执行代码含未映射的非ASCII标识符，不能声明完整引用覆盖。"); }
         if (c == '\r' || (c == '\n' && (!at || text[at - 1] != '\r'))) ++line;
         ++at;
     }
-    return Result<std::string>::Success(std::move(normalized));
+    return Result<std::string>::Success(std::move(text));
 }
 }
 static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     const MapScriptInputs& inputs, const ScriptFrameworkInputs* framework, const ScriptUserSourcePlan& entry,
     const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection, const Trigger::GraphRemove& removedTarget,
-    std::string_view versionString, bool scriptInjection) {
+    std::string_view versionString, bool scriptInjection, const RemovalTemplateInputs* templates) {
     using Out = Result<Trigger::RemovalPreprocessCoverage>;
     using Kind = Trigger::AtomicRenameCodeKind;
     if (!inputs.triggers || !inputs.catalog || !current.layout || inputs.catalog->Sha256() != entry.catalogSha256)
@@ -136,11 +94,11 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     request.defines = {{"WARCRAFT_VERSION", std::to_string(current.layout->versionMacro)}, {"YDWE_VERSION_STRING", "\"" + std::string(versionString) + "\""}};
     if (inputs.debug) request.defines.emplace_back("DEBUG", "1");
     if (scriptInjection) { request.defines.emplace_back("SCRIPT_INJECTION", "1"); if (framework) request.mainLexicalView = lexical; }
-    // 档案中的前置特性阶段保持与保存一致；不执行模板或vJass指令。
+    // 档案中的前置特性阶段保持与保存一致；模板在预处理后求值。
     const auto captured = CaptureScriptPreprocessSources(entry, current, request);
     if (!captured.value) return {{}, captured.diagnostics};
     const auto& sources = *captured.value;
-    std::string identity = "remove-preprocess-v2\n" + result.profileSha256 + "\n" + sources.mainSha256 + "\n";
+    std::string identity = "remove-preprocess-v3\njass-bytes-v1\nnames=utf8,gbk\n" + result.profileSha256 + "\n" + sources.mainSha256 + "\n";
     identity += entry.layoutIdentitySha256 + "\n" + entry.catalogSha256 + "\n";
     for (const auto& [name, value] : request.defines) identity += std::to_string(name.size()) + ":" + name + std::to_string(value.size()) + ":" + value + "\n";
     result.inputBytes = request.mainText.size();
@@ -161,9 +119,16 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     }
     for (const auto& file : sources.includes) result.inputBytes += file.binding.bytes;
     result.includedFileCount = included.size();
+    std::vector<std::string> libraries = templates ? templates->libraries : std::vector<std::string>{};
+    if (framework) for (const auto& extension : sources.entryPlan.profileFeatureExtensions) {
+        if (!extension.templateLibrary.empty() && std::find(sources.frameworkFeatureFlags.begin(), sources.frameworkFeatureFlags.end(), extension.feature) != sources.frameworkFeatureFlags.end()
+            && std::find(libraries.begin(), libraries.end(), extension.templateLibrary) == libraries.end()) libraries.push_back(extension.templateLibrary);
+    }
+    identity += "template-host-v1\n" + (templates ? templates->identitySha256 : "builtin-context") + "\n";
+    for (const auto& library : libraries) identity += "library:" + library + "\n";
     const auto hash = Sha256Text(identity); if (!hash.Succeeded()) return {{}, hash.diagnostics};
     result.identitySha256 = *hash.value;
-    const auto& expanded = sources.preprocessed;
+    auto expanded = sources.preprocessed;
     result.complete = expanded.Succeeded();
     if (!framework) for (const auto& trace : sources.includeCandidates) {
         const bool main = trace.requester == std::filesystem::path(request.mainName)
@@ -184,6 +149,38 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         if (result.incompleteReason.empty()) result.incompleteReason = "预处理失败";
         for (const auto& d : expanded.diagnostics) if (d.severity == DiagnosticSeverity::Error) result.incompleteReason += "；" + d.code + ":" + d.message;
         return Out::Success(std::move(result));
+    }
+    TemplateContext context = templates ? templates->context : TemplateContext{};
+    context.importRoot.reset();
+    const auto evaluate = [&](std::string_view input) -> Result<TemplateResult> {
+        auto evaluated = EvaluateTemplates(input, context);
+        const bool whole = (evaluated.skippedBlocks || !evaluated.Succeeded()) && context.wholeChunk
+            && std::none_of(evaluated.diagnostics.begin(), evaluated.diagnostics.end(), [](const auto& d) { return d.code == "TEMPLATE_IMPORT_FAILED"; });
+        if (whole) {
+            const auto output = context.wholeChunk(input, libraries);
+            if (!output.Succeeded() || !output.value) return {{}, output.diagnostics};
+            if (!output.value->imports.empty()) return Result<TemplateResult>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_TEMPLATE_IMPORT", "只读模板宿主不得产生成员。");
+            auto aligned = AlignTemplateOutput(input, evaluated, output.value->script);
+            if (!aligned) return Result<TemplateResult>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_TEMPLATE_MAP", "模板输出不能按TemplateSpan精确对回来源。");
+            evaluated = std::move(*aligned);
+            evaluated.diagnostics.insert(evaluated.diagnostics.end(), output.value->diagnostics.begin(), output.value->diagnostics.end());
+        }
+        if (!evaluated.Succeeded()) return {{}, evaluated.diagnostics};
+        if (!evaluated.imports.empty()) return Result<TemplateResult>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_TEMPLATE_IMPORT", "只读模板求值不得产生成员。");
+        if (framework && std::any_of(evaluated.diagnostics.begin(), evaluated.diagnostics.end(), [](const auto& d) { return d.code == "ABILITY_ORDER_UNKNOWN"; }))
+            return Result<TemplateResult>::Failure("Script.RemoveAudit", "SCRIPT_FRAMEWORK_ABILITY_ORDER_UNRESOLVED", "模板命令ID未绑定到实际物编。");
+        return Result<TemplateResult>::Success(std::move(evaluated));
+    };
+    if (expanded.text.find("<?") != std::string::npos) {
+        auto evaluated = evaluate(expanded.text);
+        if (!evaluated.Succeeded() || !evaluated.value) {
+            result.complete = false; result.incompleteReason = "模板求值失败";
+            for (const auto& d : evaluated.diagnostics) result.incompleteReason += "；" + d.code + ":" + d.message;
+            return Out::Success(std::move(result));
+        }
+        auto map = MapTemplateSourceLines(expanded.text, *evaluated.value);
+        expanded.sourceMap = map.ComposeWith(expanded.sourceMap, static_cast<std::uint32_t>(Lines(evaluated.value->text).size()));
+        expanded.text = std::move(evaluated.value->text);
     }
     const auto mainLines = Lines(request.mainText);
     struct Appended { std::size_t begin, end; std::string file; std::vector<std::size_t> lines; };
@@ -244,8 +241,8 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         }
         return {std::move(file), line};
     };
-    std::vector<std::size_t> commentLines; std::size_t failureLine = 0;
-    const auto normalized = AuditText(expanded, commentLines, failureLine);
+    std::size_t failureLine = 0;
+    const auto normalized = AuditText(expanded, failureLine);
     if (!normalized.Succeeded()) {
         result.complete = false;
         result.incompleteReason = normalized.diagnostics.front().code + ":" + normalized.diagnostics.front().message;
@@ -258,18 +255,6 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     }
     const auto& expandedText = *normalized.value;
     const auto outputLines = Lines(expandedText);
-    std::set<std::pair<std::size_t, std::string>> noted;
-    for (const auto line : commentLines) {
-        const auto position = expanded.sourceMap.Find(static_cast<std::uint32_t>(line));
-        if (!position || position->file >= expanded.sourceMap.Files().size()) {
-            result.complete = false; result.incompleteReason = "注释字节证据缺少来源映射"; continue;
-        }
-        const auto& file = expanded.sourceMap.Files()[position->file];
-        const auto target = owner(file, position->line).value_or(0);
-        auto& block = result.blocks[index.at(target)];
-        const auto location = origin(file, position->line);
-        if (noted.emplace(index.at(target), location.file).second) block.commentsWithUnknownEncoding.push_back(location);
-    }
     for (std::size_t i = 0; i < outputLines.size(); ++i) {
         const auto position = expanded.sourceMap.Find(static_cast<std::uint32_t>(i + 1));
         if (!position || position->file >= expanded.sourceMap.Files().size()) {
@@ -292,29 +277,70 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
         const auto located = origin(macro.source, macro.line);
         result.blocks[index.at(target)].macros.push_back({macro.name, macro.body, located.file, located.line, macro.expanded, macro.tokenConstruction});
     }
-    // 读取过但未激活的分支仍绑定身份；不把未实现模板或vJass预处理当成已覆盖。
+    // 参数/初值的原块仍独立绑定：生产正文已扫描；未发射的块也不因禁用而丢失模板证据。
+    // 上下文相关而不能独立求值的原块保持不完整，不能借整图成功覆盖未知的禁用源码。
+    const auto localTemplate = [&](Kind kind, StableId id, const Trigger::RawText& raw) -> Status {
+        if (raw.text.find("<?") == std::string::npos) return Status::Ok();
+        const auto bytes = raw.ToBytes(); if (!bytes.Succeeded()) return {bytes.diagnostics};
+        const auto hash = Sha256(*bytes.value); if (!hash.Succeeded()) return {hash.diagnostics};
+        auto evaluated = evaluate(raw.text);
+        if (!evaluated.Succeeded() || !evaluated.value) {
+            result.complete = false; result.incompleteReason = "原代码块模板求值不完整：" + std::to_string(id);
+            for (const auto& d : evaluated.diagnostics) result.incompleteReason += "；" + d.code + ":" + d.message;
+            return Status::Ok();
+        }
+        Trigger::RemovalPreprocessBlock block; block.kind = kind; block.id = id; block.sourceSha256 = *hash.value;
+        const auto mapping = MapTemplateSourceLines(raw.text, *evaluated.value);
+        block.text = std::move(evaluated.value->text);
+        Jass::PreprocessResult local; local.text = block.text;
+        std::size_t failedLine = 0;
+        const auto validText = AuditText(local, failedLine);
+        if (!validText.Succeeded()) {
+            result.complete = false; result.incompleteReason = "模板原块执行字节不能覆盖：WTG/" + std::to_string(id) + ":" + std::to_string(failedLine);
+            return Status::Ok();
+        }
+        const auto lines = Lines(block.text);
+        for (std::size_t line = 1; line <= lines.size(); ++line) {
+            const auto mapped = mapping.Find(static_cast<std::uint32_t>(line));
+            if (!mapped) { result.complete = false; result.incompleteReason = "原块模板缺少来源映射"; return Status::Ok(); }
+            block.origins.push_back({"WTG/" + std::string(kind == Kind::ArgumentCode ? "argument-" : "variable-") + std::to_string(id), mapped->line});
+        }
+        result.blocks.push_back(std::move(block));
+        return Status::Ok();
+    };
+    for (const auto& argument : projected.argumentNodes) if (argument.type == 3)
+        if (const auto s = localTemplate(Kind::ArgumentCode, argument.id, argument.value); !s.Succeeded()) return {{}, s.diagnostics};
+    for (const auto& variable : projected.variables)
+        if (const auto s = localTemplate(Kind::VariableInitialValue, variable.id, variable.value); !s.Succeeded()) return {{}, s.diagnostics};
+    if (templates && templates->identityAfterEvaluation) {
+        const auto dependency = templates->identityAfterEvaluation();
+        if (!dependency.Succeeded() || !dependency.value) return {{}, dependency.diagnostics};
+        identity += "template-dependencies:" + *dependency.value + "\n";
+    }
+    const auto finalHash = Sha256Text(identity); if (!finalHash.Succeeded()) return {{}, finalHash.diagnostics};
+    result.identitySha256 = *finalHash.value;
+    // 未激活的分支仍绑定身份；vJass指令仍在本轮范围之外。
     const auto unsupported = [](std::string_view text) {
-        if (text.find("<?") != std::string_view::npos) return true;
         for (auto offset : Lines(text)) {
             while (offset < text.size() && (text[offset] == ' ' || text[offset] == '\t')) ++offset;
             if (text.substr(offset).starts_with("//!")) return true;
         }
         return false;
     };
-    if (unsupported(request.mainText)) { result.complete = false; result.incompleteReason = "本轮未覆盖vJass指令或Lua模板"; }
+    if (unsupported(request.mainText)) { result.complete = false; result.incompleteReason = "本轮未覆盖vJass指令"; }
     for (const auto& file : sources.includes) {
         const std::string_view text(reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size());
-        if (unsupported(text)) { result.complete = false; result.incompleteReason = "包含文件含本轮未覆盖的vJass指令或Lua模板：" + PathText(file.binding.path); break; }
+        if (unsupported(text)) { result.complete = false; result.incompleteReason = "包含文件含本轮未覆盖的vJass指令：" + PathText(file.binding.path); break; }
     }
     return Out::Success(std::move(result));
 }
 Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(const MapScriptInputs& inputs,
-    const ScriptFrameworkInputs& framework, const Trigger::GraphRemove& target, std::string_view version, bool inject) {
-    return CaptureCoverage(inputs, &framework, framework.entryPlan, FrameworkSourceRequest(framework), framework.injection, target, version, inject);
+    const ScriptFrameworkInputs& framework, const Trigger::GraphRemove& target, std::string_view version, bool inject, const RemovalTemplateInputs* templates) {
+    return CaptureCoverage(inputs, &framework, framework.entryPlan, FrameworkSourceRequest(framework), framework.injection, target, version, inject, templates);
 }
 Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(const MapScriptInputs& inputs,
     const ScriptUserSourcePlan& entry, const ScriptUserSourceRequest& current, const ScriptInjectionSources& injection,
-    const Trigger::GraphRemove& target, std::string_view version, bool inject) {
-    return CaptureCoverage(inputs, nullptr, entry, current, injection, target, version, inject);
+    const Trigger::GraphRemove& target, std::string_view version, bool inject, const RemovalTemplateInputs* templates) {
+    return CaptureCoverage(inputs, nullptr, entry, current, injection, target, version, inject, templates);
 }
 }

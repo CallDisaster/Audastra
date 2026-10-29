@@ -1,5 +1,6 @@
 #include "PpLexer.h"
 #include "JassLexer.h"
+#include "War3MapCore/Jass/ByteLexical.h"
 #include "JassCheckBudget.h"
 
 #include <array>
@@ -114,9 +115,7 @@ private:
                 continue;
             }
             if (c == '\n' || c == '\r') return;
-            const auto width = source_.Width(at_);
-            if (!width) return;
-            at_ += width;
+            ++at_;
         }
     }
 
@@ -130,9 +129,7 @@ private:
                 return;
             }
             if (text_[at_] == '\n' || (text_[at_] == '\r' && Next(1) != '\n')) ++line_;
-            const auto width = source_.Width(at_);
-            if (!width) return;
-            at_ += width;
+            ++at_;
         }
         source_.Error("SOURCE_LEX_UNTERMINATED", "块注释没有结束。", start, at_ - start);
     }
@@ -209,18 +206,14 @@ private:
             }
             if (c == '\\' && at + 1 < text_.size()) {
                 if (text_[at + 1] == '\n' || (text_[at + 1] == '\r' && (at + 2 >= text_.size() || text_[at + 2] != '\n'))) ++lines;
-                const auto width = source_.Width(at + 1);
-                if (!width) return false;
-                at += 1 + width;
+                at = QuotedByteNext(text_, at);
                 continue;
             }
             if (c == '\n' || (c == '\r' && (at + 1 >= text_.size() || text_[at + 1] != '\n'))) {
                 if (!multiline) return false;
                 ++lines;
             }
-            const auto width = source_.Width(at);
-            if (!width) return false;
-            at += width;
+            at = QuotedByteNext(text_, at);
         }
         return false;
     }
@@ -280,9 +273,8 @@ Result<PpSplicedSource> SplicePpLines(std::string_view text, std::size_t maxStor
                 static_cast<std::uint32_t>(at),static_cast<std::uint32_t>(length)});
             at+=length; copied=at;
         } else {
-            const auto width=source.Width(at);
-            if (!width) return {std::nullopt,source.TakeDiagnostics()};
-            at+=width;
+            // 续行先于记号分析，按原始字节判断；编码检查由执行记号的词法阶段承担。
+            ++at;
         }
     }
     if (!result.splices.empty()) result.text.append(text.substr(copied));

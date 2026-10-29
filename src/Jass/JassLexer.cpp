@@ -1,4 +1,5 @@
 #include "JassLexer.h"
+#include "War3MapCore/Jass/ByteLexical.h"
 #include "JassCheckBudget.h"
 
 #include <algorithm>
@@ -107,9 +108,7 @@ public:
                 const std::size_t start = at_;
                 while (at_ < text_.size() && text_[at_] != '\n' && text_[at_] != '\r') {
                     Tick();
-                    const auto width = source_.Width(at_);
-                    if (!width) break;
-                    at_ += width;
+                    ++at_;
                 }
                 if (text_.substr(start).starts_with("//#")
                     || (options_.directiveComments && text_.substr(start).starts_with("//!"))) {
@@ -173,9 +172,7 @@ private:
         while (at_ < text_.size() && !(text_[at_] == '*' && Next(1) == '/')) {
             Tick();
             if (text_[at_] == '\n' || (text_[at_] == '\r' && Next(1) != '\n')) ++line_;
-            const auto width = source_.Width(at_);
-            if (!width) return;
-            at_ += width;
+            ++at_;
         }
         if (at_ == text_.size()) source_.Error("SOURCE_LEX_UNTERMINATED", "块注释没有结束。", start, at_ - start);
         at_ = at_ < text_.size() ? at_ + 2 : at_;
@@ -240,15 +237,11 @@ private:
             }
             if (c == '\\' && at_ + 1 < text_.size()) {
                 if (text_[at_ + 1] == '\n' || (text_[at_ + 1] == '\r' && Next(2) != '\n')) ++line_;
-                const auto width = source_.Width(at_ + 1);
-                if (!width) return false;
-                at_ += 1 + width;
+                at_ = QuotedByteNext(text_, at_);
                 continue;
             }
             if (c == '\n' || (c == '\r' && Next(1) != '\n')) ++line_;
-            const auto width = source_.Width(at_);
-            if (!width) return false;
-            at_ += width;
+            at_ = QuotedByteNext(text_, at_);
         }
         return false;
     }
@@ -258,13 +251,7 @@ private:
         std::size_t at = at_ + 1;
         while (at < text_.size() && text_[at] != '\'' && text_[at] != '\n' && text_[at] != '\r') {
             Tick();
-            if (text_[at] == '\\') {
-                ++at;
-                if (at >= text_.size()) break;
-            }
-            const auto width = source_.Width(at);
-            if (!width) return false;
-            at += width;
+            at = QuotedByteNext(text_, at);
         }
         if (at >= text_.size() || text_[at] != '\'') {
             ++at_;
@@ -357,43 +344,12 @@ bool ValidStringEscapes(std::string_view literal) noexcept {
 }
 
 std::optional<std::string> StringLiteralValue(std::string_view literal) {
-    if (literal.size() < 2 || literal.front() != '"' || literal.back() != '"') return std::nullopt;
-    std::string value;
-    value.reserve(literal.size() - 2);
-    for (std::size_t i = 1; i + 1 < literal.size(); ++i) {
-        if (literal[i] != '\\') {
-            value.push_back(literal[i]);
-            continue;
-        }
-        if (i + 2 >= literal.size()) return std::nullopt;
-        switch (literal[++i]) {
-        case 'b': value.push_back('\b'); break;
-        case 't': value.push_back('\t'); break;
-        case 'n': value.push_back('\n'); break;
-        case 'f': value.push_back('\f'); break;
-        case 'r': value.push_back('\r'); break;
-        case '"': value.push_back('"'); break;
-        case '\\': value.push_back('\\'); break;
-        default: return std::nullopt;
-        }
-    }
-    return value;
+    return DecodeStringBytes(literal);
 }
 
 bool ValidStringEscapes(std::string_view literal, Text::SourceEncoding encoding) {
-    LexerSource source(literal, encoding);
-    if (literal.size() < 2 || literal.front() != '"' || literal.back() != '"') return false;
-    for (std::size_t at = 1; at + 1 < literal.size();) {
-        if (literal[at] == '\\') {
-            if (++at + 1 >= literal.size()) return false;
-            const auto c = literal[at];
-            if (c != 'b' && c != 't' && c != 'n' && c != 'f' && c != 'r' && c != '"' && c != '\\') return false;
-        }
-        const auto width = source.Width(at);
-        if (!width || at + width >= literal.size()) return false;
-        at += width;
-    }
-    return source.Good();
+    (void)encoding;
+    return DecodeStringBytes(literal).has_value();
 }
 
 } // namespace War3Map::Jass::detail
