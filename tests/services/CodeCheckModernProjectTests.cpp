@@ -538,20 +538,38 @@ void PendingHigherObjectEditsInvalidateRemovalCoverage() {
     changedLni->binding += "/lni-edit"; ++changedLni->revision;
     changedLni->editableObjects[static_cast<std::size_t>(type)] = std::make_shared<const ObjectData::LniObjectDocument>(*lni);
 
-    for (const auto& changed : {changedNative, changedLni}) {
+    auto changedStrings = std::make_shared<CodeCheckProjectSnapshot>(*baseline);
+    changedStrings->binding += "/wts-edit"; ++changedStrings->revision;
+    Require(baseline->map.has_value(), "baseline carries current parsed map members");
+    std::vector<MapArchiveMember> pendingMembers;
+    for (const auto& member : baseline->map->Members()) {
+        if (member.kind == MapDataKind::Strings) continue;
+        pendingMembers.insert(pendingMembers.end(), member.sources.begin(), member.sources.end());
+    }
+    pendingMembers.push_back({"war3map.wts", OriginalBytes("STRING 9\n{\npending original WTS value\n}\n")});
+    changedStrings->map = MapDocument::FromMembers(pendingMembers, fixture.source);
+    const auto resolved = changedStrings->map->ResolveString("TRIGSTR_009");
+    Require(changedStrings->map->Member(MapDataKind::Strings).state == MapDataState::Ready
+        && resolved.Succeeded() && resolved.value && *resolved.value == "pending original WTS value",
+        "pending WTS is a valid native member in the private map document");
+    Require(changedStrings->triggers == baseline->triggers && changedStrings->nativeObjects == baseline->nativeObjects
+        && changedStrings->editableObjects == baseline->editableObjects,
+        "WTS-only snapshot leaves trigger and all native/LNI object snapshots unchanged");
+
+    for (const auto& changed : {changedNative, changedLni, changedStrings}) {
         auto provider = MakeProjectRemovalPreprocessProvider(changed);
         const auto review = Trigger::QueryDeclarationRemovalAudit(document, *changed->catalog, remove, nullptr, &provider);
         details.clear();
         for (const auto& diagnostic : review.diagnostics) details += diagnostic.code + ":" + diagnostic.message + "\n";
         if (review.value) for (const auto& block : review.value->individualBlocks) details += block.incompleteReason + "\n";
-        Require(review.Succeeded() && review.value && review.value->complete, "pending high-index object edit remains auditable: " + details);
+        Require(review.Succeeded() && review.value && review.value->complete, "pending object or WTS edit remains auditable: " + details);
         Require(review.value->preprocessIdentitySha256 != original.value->preprocessIdentitySha256
             && review.value->reviewSha256 != original.value->reviewSha256,
-            "unsaved native or LNI high-index object edit changes coverage and review identities");
+            "unsaved high-index native/LNI or WTS edit changes coverage and review identities");
         const auto checked = Trigger::CheckDeclarationRemovalAudit(document, *changed->catalog, remove, nullptr, &provider);
         Require(!checked.Succeeded() && std::any_of(checked.diagnostics.begin(), checked.diagnostics.end(), [](const auto& diagnostic) {
             return diagnostic.code == "TRIGGER_REMOVE_CODE_AUDIT_STALE";
-        }), "old confirmation must reject unsaved high-index native or LNI object changes");
+        }), "old confirmation must reject unsaved high-index native/LNI or WTS changes");
     }
     fixture.RequireSourceUnchanged();
 }

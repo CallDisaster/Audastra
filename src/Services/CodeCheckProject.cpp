@@ -268,14 +268,15 @@ struct CodeCheckProjectCache::Impl {
     std::optional<Script::ScriptInjectionSources> injection;
     Script::ObjectQuerySources objects;
     std::optional<Script::TemplateContext> templates; // 与保存链同一构造：工具链命令表 + 原版与本图技能
-    std::vector<MemberReplacement> templateObjectEdits; // 与当前冻结的三个可编辑物编覆盖保持同源
-    std::optional<Script::SlkMapSourceSnapshot> slk; // 整份执行模板时 slk 库读取的已保存地图物编，随归档复用
+    std::vector<MemberReplacement> templateEdits; // 七类当前物编及W3I/WTS，与冻结的保存输入同源
+    std::vector<std::string> templateRemovals;
+    std::optional<Script::SlkMapSourceSnapshot> slk; // 整份执行模板的最终成员快照，随冻结上下文复用
     std::string incomplete;
     bool captureFinished = false;
 
     void Clear() {
         snapshot.reset(); archive.reset(); map.reset(); game.reset(); standard.reset(); layout.reset(); bases.reset(); slk.reset();
-        framework.reset(); entry.reset(); injection.reset(); objects = {}; templates.reset(); templateObjectEdits.clear();
+        framework.reset(); entry.reset(); injection.reset(); objects = {}; templates.reset(); templateEdits.clear(); templateRemovals.clear();
         incomplete.clear(); captureFinished = false;
     }
 
@@ -342,8 +343,21 @@ struct CodeCheckProjectCache::Impl {
             if (next->scriptAuditOnly) {
                 auto serialized = ObjectData::NativeObjectCodec(type).Serialize(*native);
                 if (!serialized.Succeeded() || !serialized.value) { fail(Reason(serialized.diagnostics, "模板物编覆盖身份无法冻结。")); return; }
-                templateObjectEdits.push_back({std::string(ObjectData::NativeFileName(type)), std::move(*serialized.value)});
+                templateEdits.push_back({std::string(ObjectData::NativeFileName(type)), std::move(*serialized.value)});
             }
+        }
+        if (next->scriptAuditOnly) for (const auto kind : {MapDataKind::Settings, MapDataKind::Strings}) {
+            const auto& member = map->Member(kind);
+            if (member.state == MapDataState::Missing) {
+                if (archive->HasMember(member.memberName)) templateRemovals.push_back(member.memberName);
+                continue;
+            }
+            if (member.state == MapDataState::Ambiguous || member.state == MapDataState::Unreadable
+                || member.state == MapDataState::Invalid || member.sources.size() != 1
+                || (kind == MapDataKind::Settings && map->LniSettings())) {
+                fail("模板地图设置/字符串表没有唯一的原生冻结来源：" + member.memberName); return;
+            }
+            templateEdits.push_back({member.memberName, member.sources.front().data});
         }
         auto capturedBases = Script::CaptureScriptBaseInputs({&*layout, Script::ScriptBasePolicy::BoundLayout,
             &*archive, next->baseReplacements, next->baseRemovals, game ? &*game : nullptr, {}, next->revision});
@@ -899,10 +913,11 @@ Result<std::string> RemovalTemplateIdentity(const CodeCheckProjectCache::Impl& o
     std::string identity = "builtin-template-host-lua53-v1\n";
     const auto add = [&](std::string_view text) { identity += std::to_string(text.size()) + ':'; identity += text; };
     add(snapshot.sourceSha256);
-    for (const auto& edit : owned.templateObjectEdits) {
+    for (const auto& edit : owned.templateEdits) {
         auto hash = Sha256(edit.data); if (!hash.Succeeded()) return hash;
         add(edit.name); add(*hash.value);
     }
+    for (const auto& removal : owned.templateRemovals) { add("removed"); add(removal); }
     for (const auto& directory : {snapshot.toolRoot / "compiler/script/computed", snapshot.toolRoot / "share/script/computed"}) {
         for (const auto* name : {"abilityOrder.lua", "ability2order.lua", "order_id.lua", "order_list.lua"}) {
             auto source = Script::CaptureReadOnlyScriptSource(directory / name);
@@ -974,7 +989,7 @@ Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::sha
             templates.context = Script::BuildTemplateContext(snapshot->toolRoot, owned.standard ? &*owned.standard : nullptr, owned.objects.abilities);
             templates.context.importRoot.reset();
             templates.context.wholeChunk = Script::MakeLuaWholeChunk(templates.context,
-                {snapshot->toolRoot, &*owned.archive, owned.templateObjectEdits, {}, snapshot->revision, {}}, owned.slk);
+                {snapshot->toolRoot, &*owned.archive, owned.templateEdits, owned.templateRemovals, snapshot->revision, {}}, owned.slk);
             templates.identityAfterEvaluation = [&owned, &snapshot, baseline = *identity.value] {
                 return RemovalSlkIdentity(owned, *snapshot, baseline);
             };
