@@ -1,5 +1,6 @@
 #include "War3MapCore/Script/RemovalPreprocess.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Text/SourceEncoding.h"
 #include <algorithm>
 #include <map>
 #include <set>
@@ -14,6 +15,25 @@ std::vector<std::size_t> Lines(std::string_view text) {
         result.push_back(i + 1);
     }
     return result;
+}
+Result<std::string> AuditText(const Jass::PreprocessResult& result) {
+    std::string text; std::size_t previous = 0;
+    for (const auto& span : result.lexicalView.opaque) {
+        if (span.offset < previous || span.offset > result.text.size() || span.length > result.text.size() - span.offset)
+            return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "展开编码映射越界或重叠。");
+        text.append(result.text, previous, span.offset - previous);
+        const auto scalar = Text::ReadSourceScalar(result.text, span.offset, Text::SourceEncoding::Gbk);
+        if (!scalar.Succeeded() || scalar.value->bytes != span.length)
+            return Result<std::string>::Failure("Script.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_ENCODING", "展开不透明标量不能按已验证编码解码。");
+        const auto cp = scalar.value->codepoint;
+        if (cp < 0x80) text += static_cast<char>(cp);
+        else if (cp < 0x800) { text += static_cast<char>(0xc0 | (cp >> 6)); text += static_cast<char>(0x80 | (cp & 63)); }
+        else if (cp < 0x10000) { text += static_cast<char>(0xe0 | (cp >> 12)); text += static_cast<char>(0x80 | ((cp >> 6) & 63)); text += static_cast<char>(0x80 | (cp & 63)); }
+        else { text += static_cast<char>(0xf0 | (cp >> 18)); text += static_cast<char>(0x80 | ((cp >> 12) & 63)); text += static_cast<char>(0x80 | ((cp >> 6) & 63)); text += static_cast<char>(0x80 | (cp & 63)); }
+        previous = span.offset + span.length;
+    }
+    text.append(result.text, previous, result.text.size() - previous);
+    return Result<std::string>::Success(std::move(text));
 }
 }
 Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
@@ -71,7 +91,9 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
         for (const auto& d : expanded.diagnostics) if (d.severity == DiagnosticSeverity::Error) result.incompleteReason += "；" + d.code + ":" + d.message;
         return Out::Success(std::move(result));
     }
-    const auto mainLines = Lines(request.mainText), outputLines = Lines(expanded.text);
+    const auto normalized = AuditText(expanded); if (!normalized.Succeeded()) return {{}, normalized.diagnostics};
+    const auto& expandedText = *normalized.value;
+    const auto mainLines = Lines(request.mainText), outputLines = Lines(expandedText);
     struct Appended { std::size_t begin, end; std::string file; std::vector<std::size_t> lines; };
     std::vector<Appended> appended;
     std::size_t appendedAt = generated.text.size();
@@ -116,6 +138,15 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
                 const auto n = std::upper_bound(part.lines.begin(), part.lines.end(), offset - part.begin) - part.lines.begin();
                 return {part.file, static_cast<std::size_t>(n)};
             }
+            const auto found = std::upper_bound(generated.authorCode.begin(), generated.authorCode.end(), offset,
+                [](auto n, const auto& span) { return n < span.byteOffset; });
+            if (found != generated.authorCode.begin()) {
+                const auto& span = *std::prev(found);
+                if (offset >= span.byteOffset && offset < span.byteOffset + span.byteLength) {
+                    const auto first = std::upper_bound(mainLines.begin(), mainLines.end(), span.byteOffset) - mainLines.begin();
+                    return {span.triggerId ? "WCT/trigger-" + std::to_string(span.triggerId) + ".j" : "WCT/header.j", line - static_cast<std::size_t>(first) + 1};
+                }
+            }
         }
         return {std::move(file), line};
     };
@@ -130,9 +161,9 @@ Result<Trigger::RemovalPreprocessCoverage> CaptureRemovalPreprocessCoverage(
         const auto& file = expanded.sourceMap.Files()[position->file];
         const auto target = owner(file, position->line); if (!target) continue;
         auto& block = result.blocks[index.at(*target)];
-        auto end = i + 1 < outputLines.size() ? outputLines[i + 1] : expanded.text.size();
-        while (end > outputLines[i] && (expanded.text[end - 1] == '\r' || expanded.text[end - 1] == '\n')) --end;
-        block.text.append(expanded.text, outputLines[i], end - outputLines[i]); block.text += '\n';
+        auto end = i + 1 < outputLines.size() ? outputLines[i + 1] : expandedText.size();
+        while (end > outputLines[i] && (expandedText[end - 1] == '\r' || expandedText[end - 1] == '\n')) --end;
+        block.text.append(expandedText, outputLines[i], end - outputLines[i]); block.text += '\n';
         block.origins.push_back(origin(file, position->line));
     }
     for (const auto& macro : expanded.macroAudit) {

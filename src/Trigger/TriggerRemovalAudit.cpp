@@ -27,6 +27,20 @@ bool Mentions(std::string_view value, const DeclarationRemovalReview& review) {
         || std::any_of(review.symbols.begin(), review.symbols.end(), [&](const auto& s) { return value.find(s) != std::string_view::npos; });
 }
 struct Token { std::string text; std::size_t offset; bool quoted = false; std::size_t length = 0; };
+bool NeedsPreprocessing(std::string_view text) {
+    if (text.find("<?") != std::string_view::npos) return true;
+    for (std::size_t i = 0; i < text.size();) {
+        if (text[i] == '#' || text.substr(i).starts_with("//!")) return true;
+        if (text.substr(i).starts_with("//")) { while (i < text.size() && text[i] != '\n' && text[i] != '\r') ++i; }
+        else if (text.substr(i).starts_with("/*")) {
+            const auto end = text.find("*/", i + 2); i = end == std::string_view::npos ? text.size() : end + 2;
+        } else if (text[i] == '"' || text[i] == '\'') {
+            const auto quote = text[i++];
+            while (i < text.size()) { if (text[i] == '\\' && i + 1 < text.size()) i += 2; else if (text[i++] == quote) break; }
+        } else ++i;
+    }
+    return false;
+}
 std::vector<std::size_t> ArgumentBoundaries(const std::vector<Token>& tokens) {
     std::vector<std::size_t> next(tokens.size(), tokens.size()), tails;
     // 每个逗号只归属当前括号层，嵌套按名调用不重复遍历内部表达式。
@@ -89,7 +103,7 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
         }
         if (text[i] == '/' && i + 1 < text.size() && (text[i + 1] == '/' || text[i + 1] == '*')) {
             const bool line = text[i + 1] == '/'; i += 2;
-            if (line) { while (i < text.size() && text[i] != '\n') ++i; }
+            if (line) { while (i < text.size() && text[i] != '\n' && text[i] != '\r') ++i; }
             else { const auto end = text.find("*/", i); if (end == std::string::npos) { Incomplete(block, "块注释未闭合"); i = text.size(); } else i = end + 2; }
             const auto comment = std::string_view(text).substr(begin, i - begin);
             if (Mentions(comment, review))
@@ -160,7 +174,8 @@ void Scan(RemovalCodeBlock& block, const RawText& source, const DeclarationRemov
     std::size_t at = 0, line = 1, column = 1;
     for (auto& hit : block.evidence) {
         while (at < hit.decodedByteOffset) {
-            if (text[at] == '\n') { ++line; column = 1; }
+            if (text[at] == '\r' || (text[at] == '\n' && (!at || text[at - 1] != '\r'))) { ++line; column = 1; }
+            else if (text[at] == '\n') {}
             else if ((static_cast<unsigned char>(text[at]) & 0xc0) != 0x80) ++column;
             ++at;
         }
@@ -219,7 +234,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
     std::unordered_map<std::string, const RemovalPreprocessBlock*> covered;
     bool needsPreprocessing = false;
     const auto probe = detail::VisitOpaqueCodeBlocks(doc, catalog, review.symbols, [&](auto, auto, const RawText& text) {
-        needsPreprocessing |= text.text.find('#') != std::string::npos || text.text.find("//!") != std::string::npos || text.text.find("<?") != std::string::npos;
+        needsPreprocessing |= NeedsPreprocessing(text.text);
         return Status::Ok();
     });
     if (!probe.Succeeded()) return {std::nullopt, probe.diagnostics};
@@ -285,6 +300,7 @@ Result<DeclarationRemovalReview> QueryDeclarationRemovalAudit(const TriggerDocum
                 if (!definite && !(macro.expanded && macro.tokenConstruction)) continue;
                 RemovalReferenceEvidence hit; hit.context = definite ? "宏定义含目标符号" : "宏调用含拼接/字符串化（须单独确认）";
                 hit.text = macro.name; hit.sourceFile = macro.file; hit.sourceLine = macro.line;
+                if (hit.sourceFile.empty() || !hit.sourceLine) Incomplete(block, "宏证据缺少来源映射");
                 hit.definite = definite; block.referenced |= definite;
                 block.dynamic |= !definite;
                 if (block.evidence.size() >= kEvidence) Incomplete(block, "宏证据数量超过预算");

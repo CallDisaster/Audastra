@@ -1116,10 +1116,10 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     Require(Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "original dependency can be confirmed");
     WriteText(map / "dep.j", "// content changed\n");
     Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "dependency change invalidates old confirmation");
-    WriteText(map / "dep.j", "call TriggerExecute(gg_trg_Target)\n");
+    WriteText(map / "dep.j", "// \xd6\xd0\xce\xc4\ncall TriggerExecute(gg_trg_Target)\n");
     review = query(); Require(review.Succeeded() && review.value->complete && !review.value->individualBlocks.empty(), "included reference has complete evidence");
     Require(std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& block) {
-        return std::any_of(block.evidence.begin(), block.evidence.end(), [](const auto& hit) { return hit.definite && hit.sourceFile.ends_with("dep.j") && hit.sourceLine == 1; });
+        return std::any_of(block.evidence.begin(), block.evidence.end(), [](const auto& hit) { return hit.definite && hit.sourceFile.ends_with("dep.j") && hit.sourceLine == 2; });
     }), "include evidence mapped to actual file/line");
     confirm(*review.value); Require(!Trigger::CheckDeclarationRemovalAudit(doc, *catalog.value, op, nullptr, &provider).Succeeded(), "included target reference refuses deletion");
     WriteText(map / "dep.j", "#define Alias gg_trg_Target\n");
@@ -1137,7 +1137,8 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     std::filesystem::remove(map / "dep.j");
     review = query(); Require(review.Succeeded() && !review.value->complete, "missing include incomplete");
     doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"};
-    review = query(); Require(review.Succeeded() && !review.value->complete, "AI suffix rejected before any file read");
+    review = query(); Require(review.Succeeded() && !review.value->complete
+        && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN") != std::string::npos, "AI suffix rejected before any file read");
     doc.wct.customCode = Trigger::RawText{"#if (\n#endif\n"};
     review = query(); Require(review.Succeeded() && !review.value->complete, "failed preprocessing incomplete");
     doc.wct.customCode = Trigger::RawText{"//! textmacro Original\n"};

@@ -167,6 +167,13 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
             snapshot->toolRoot = toolRoot; snapshot->uiRoot = request.uiRoot; snapshot->gameRoot = gameRoot;
             snapshot->catalog = std::make_shared<UiCatalog>(sources.catalog);
             snapshot->triggers = std::make_shared<TriggerDocument>(sources.document);
+            snapshot->map = MapDocument::FromArchive(*sources.archive);
+            if (sources.archive->HasMember("war3map.w3e")) {
+                const auto terrain = sources.archive->ReadMember("war3map.w3e");
+                if (!terrain.Succeeded()) return Emit(Json{{"ok", false}, {"diagnostics", Diagnostics(terrain.diagnostics)}, {"saved", false}});
+                snapshot->terrain = Script::ReadTerrainExtent(*terrain.value);
+                if (!snapshot->terrain) throw std::invalid_argument("地形头无法绑定实际整图生成范围。");
+            }
             for (std::size_t i = 0; i < snapshot->nativeObjects.size(); ++i) {
                 const auto type = static_cast<ObjectData::ObjectType>(i);
                 const auto member = ObjectData::NativeFileName(type);
