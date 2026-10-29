@@ -1245,7 +1245,7 @@ Result<MapTriggerQuerySources> CaptureMapTriggerQuerySources(const MapTriggerTex
     if (request.sourceMap.empty() || (request.uiRoot.empty() && request.toolRoot.empty()) || !ValidSha(request.expectedSourceSha256)
         || (request.expectedCatalogSha256 && !ValidSha(*request.expectedCatalogSha256)))
         return Out::Failure("MapEdit.Query", "TRIGGER_TEXT_QUERY_INVALID", "地图、UI来源与查询绑定SHA无效。");
-    auto opened = MapArchiveSession::Open(request.sourceMap);
+    auto opened = MapArchiveSession::OpenScriptAudit(request.sourceMap);
     if (!opened.Succeeded()) return {std::nullopt, opened.diagnostics};
     if (opened.value->SourceSha256() != request.expectedSourceSha256)
         return Out::Failure("MapEdit.Query", "SAVE_SOURCE_STALE", "查询源归档SHA与请求不符。");

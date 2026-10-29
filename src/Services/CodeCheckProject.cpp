@@ -9,6 +9,7 @@
 #include "War3MapCore/Script/ReadOnlyScriptSource.h"
 #include "War3MapCore/Script/ScriptBaseInputs.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
+#include "War3MapCore/Script/RemovalPreprocess.h"
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Script/ScriptQueries.h"
@@ -309,7 +310,7 @@ struct CodeCheckProjectCache::Impl {
         if (!next || !next->triggers || !next->catalog || next->binding.empty()) { fail("工程没有完整的冻结触发器来源。"); return; }
         Poll(cancel, deadline);
         if (next->sourcePath.empty() || next->sourceSha256.empty()) { fail("当前工程没有绑定源地图 SHA；仅检查正文语法。"); return; }
-        auto opened = MapArchiveSession::Open(next->sourcePath);
+        auto opened = next->scriptAuditOnly ? MapArchiveSession::OpenScriptAudit(next->sourcePath) : MapArchiveSession::Open(next->sourcePath);
         if (!opened.Succeeded() || !opened.value) { fail(Reason(opened.diagnostics, "源地图无法只读捕获。")); return; }
         if (opened.value->SourceSha256() != next->sourceSha256) { fail("源地图已改变，冻结来源身份失效。"); return; }
         archive.emplace(std::move(*opened.value));
@@ -466,10 +467,8 @@ void AppendGeneratorDiagnostics(CodeCheckResult& result, const Script::MapScript
 // requiredAuthor：须发射该作者代码块，否则不能用整图结果代表它。generatedOut 取回本次生成结果。
 // executeTemplates：内置求值覆盖不了的模板按保存链在 Lua 沙盒整份执行（slk 读已保存地图物编）；
 // 为假时与代码编辑器一致，不执行这类模板，只检查作者代码所在段。
-CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
-    CodeCheckRequest& request, const Trigger::TriggerDocument& document, std::optional<StableId> requiredAuthor,
-    bool executeTemplates, const std::function<CodeCheckResult(std::string)>& fallbackInput, std::stop_token cancel,
-    Clock::time_point deadline, Script::MapScriptResult* generatedOut, std::string* expandedOut = nullptr) {
+Script::MapScriptInputs ProjectMapScriptInputs(CodeCheckProjectCache::Impl& owned,
+    const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot, const Trigger::TriggerDocument& document) {
     Script::MapScriptInputs inputs;
     inputs.triggers = &document; inputs.catalog = snapshot->catalog.get(); inputs.queries = Script::BuildObjectQueries(owned.objects);
     Script::AttachSoundQueries(inputs.queries, owned.game ? &*owned.game : nullptr, &*owned.archive);
@@ -483,6 +482,13 @@ CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std:
     std::error_code error;
     inputs.nullSafeHandleSet = std::any_of(owned.layout->systemIncludes.begin(), owned.layout->systemIncludes.end(),
         [&](const auto& directory) { return std::filesystem::exists(directory / "YDTrigger/SaveLoadSystem/HTSystem.j", error); });
+    return inputs;
+}
+CodeCheckResult CheckGeneratedMap(CodeCheckProjectCache::Impl& owned, const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
+    CodeCheckRequest& request, const Trigger::TriggerDocument& document, std::optional<StableId> requiredAuthor,
+    bool executeTemplates, const std::function<CodeCheckResult(std::string)>& fallbackInput, std::stop_token cancel,
+    Clock::time_point deadline, Script::MapScriptResult* generatedOut, std::string* expandedOut = nullptr) {
+    auto inputs = ProjectMapScriptInputs(owned, snapshot, document);
     auto generated = Script::GenerateMapScript(inputs);
     const auto fallback = [&](std::string reason) {
         auto result = fallbackInput(std::move(reason));
@@ -890,4 +896,29 @@ Result<ProjectJassScript> BuildProjectJassScript(const std::shared_ptr<const Cod
     }
 }
 
+Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::shared_ptr<const CodeCheckProjectSnapshot> snapshot) {
+    if (snapshot) { auto audit = std::make_shared<CodeCheckProjectSnapshot>(*snapshot); audit->scriptAuditOnly = true; snapshot = std::move(audit); }
+    auto cache = std::make_shared<CodeCheckProjectCache>();
+    return [snapshot = std::move(snapshot), cache](const Trigger::TriggerDocument& document,
+        const Trigger::UiCatalog& catalog, const Trigger::GraphRemove& operation) -> Result<Trigger::RemovalPreprocessCoverage> {
+        using Out = Result<Trigger::RemovalPreprocessCoverage>;
+        if (!snapshot || !snapshot->catalog || snapshot->catalog->Sha256() != catalog.Sha256())
+            return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "宿主没有当前目录与工具链的冻结来源。");
+        try {
+            std::lock_guard lock(cache->impl_->mutex);
+            auto& owned = *cache->impl_;
+            CodeCheckRequest request;
+            if (auto reason = PrepareContext(owned, snapshot, request, {}, Clock::now() + std::chrono::seconds(60)))
+                return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", *reason);
+            if (const auto status = owned.archive->VerifySourceUnchanged(); !status.Succeeded()) return {{}, status.diagnostics};
+            const auto inputs = ProjectMapScriptInputs(owned, snapshot, document);
+            if (owned.framework) return Script::CaptureRemovalPreprocessCoverage(inputs, *owned.framework, operation);
+            if (!owned.entry || !owned.injection) return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "当前工具链没有可重放的预处理档案。");
+            return Script::CaptureRemovalPreprocessCoverage(inputs, *owned.entry,
+                ModernUserSources(*owned.layout, *snapshot, owned.archive->SourcePath().parent_path()), *owned.injection, operation);
+        } catch (const std::exception&) {
+            return Out::Failure("Trigger.RemoveAudit", "TRIGGER_REMOVE_PREPROCESS_CONTEXT", "无法完整捕获预处理覆盖，未删除。");
+        }
+    };
+}
 } // namespace War3Map::Services

@@ -82,6 +82,15 @@ void GroupedAndStale() {
     Require(f.doc.triggers.size() == 2 && result.value->removalAudits.size() == 1 && f.doc.wct.customCode.ToBytes().value == wct.value, "one confirmation, exact code preserved");
 }
 void IndividualAndReferences() {
+    {
+        Fixture plain; plain.doc.wct.customCode = RawText{"// # is only a comment\r"}; auto remove = plain.Remove();
+        RemovalPreprocessProvider mustNotRead = [](const auto&, const auto&, const auto&) -> Result<RemovalPreprocessCoverage> { throw std::runtime_error("unexpected host read"); };
+        const auto review = QueryDeclarationRemovalAudit(plain.doc, plain.catalog, remove, nullptr, &mustNotRead);
+        Good(review, "a comment does not require host preprocessing"); Require(review.value->complete, "ordinary hash comment remains covered");
+        plain.doc.wct.customCode = RawText{"// original CR line\rcall ExecuteFunc(\"Target Name\")\r"};
+        const auto cr = plain.Review(remove);
+        Require(std::any_of(cr.individualBlocks.front().evidence.begin(), cr.individualBlocks.front().evidence.end(), [](const auto& e) { return e.definite && e.line == 2; }), "CR line comment cannot hide executable reference");
+    }
     Fixture f; f.doc.wct.customCode = RawText{"// Target Name only in a comment\ncall ExecuteFunc(\"Unrelated\")\n"};
     auto op = f.Remove(); auto r = f.Review(op);
     Require(r.complete && r.individualBlocks.size() == 1 && r.groupableCount == 2, "constant dispatch and comment require individual review");

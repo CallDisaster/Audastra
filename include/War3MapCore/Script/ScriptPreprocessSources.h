@@ -38,6 +38,7 @@ struct ScriptPreprocessSourceRequest {
     std::optional<Jass::SourceLexicalView> mainLexicalView;
     // 运行控制不参与来源身份；捕获和owned回放共用同一取消/绝对截止时间。
     Jass::JassCheckOptions check = [] { Jass::JassCheckOptions value; value.maxSources = 1024; return value; }();
+    bool captureMacroAudit = false, forbidAiIncludes = false;
 };
 
 struct ScriptIncludeSource {

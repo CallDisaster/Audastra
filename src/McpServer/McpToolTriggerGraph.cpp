@@ -449,7 +449,7 @@ QJsonValue OptionalIndex(const TriggerDocument& document, const std::optional<st
         argument ? document.argumentNodes[*index].id : document.ecaNodes[*index].id);
 }
 QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& catalog,
-    const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}) {
+    const MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names = {}, const TriggerGraphEditLimits& limits = {}) {
     Object(request, {"table"}, {"start", "limit", "schema_version", "argument_ids", "variable_ids", "include_replacement_guard",
         "functions", "ui_layer", "trigger_id", "category_id", "type", "match", "plan", "operation_index"});
     if (request.contains("schema_version") && Integer(request, "schema_version") != 1) throw GraphJsonError("未知图 schema_version。");
@@ -460,7 +460,7 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
         const auto index = Integer(request, "operation_index");
         if (index < 0) throw GraphJsonError("operation_index须为非负整数。");
         const auto plan = DecodeGraphBatch(request.value("plan").toObject()); if (!plan.Succeeded()) return Failure(plan);
-        const auto review = QueryDeclarationRemovalAudit(document, catalog, *plan.value, static_cast<std::size_t>(index), {}, mapObjects);
+        const auto review = QueryDeclarationRemovalAudit(document, catalog, *plan.value, static_cast<std::size_t>(index), limits, mapObjects);
         if (!review.Succeeded()) return Failure(review);
         const auto rows = [](const auto& blocks) {
             QJsonArray result;
@@ -471,6 +471,7 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
                     : b.kind == AtomicRenameCodeKind::ArgumentCode ? "argument_code" : "variable_initial_value";
                 QJsonArray evidence;
                 for (const auto& hit : block.evidence) evidence.append(QJsonObject{{"context", QString::fromStdString(hit.context)},
+                    {"source_file", QString::fromStdString(hit.sourceFile)}, {"source_line", QString::number(hit.sourceLine)},
                     {"text", QString::fromStdString(hit.text)}, {"decoded_byte_offset", QString::number(hit.decodedByteOffset)},
                     {"snippet_truncated", hit.text.size() < hit.decodedByteLength},
                     {"decoded_byte_length", QString::number(hit.decodedByteLength)}, {"line", QString::number(hit.line)},
@@ -491,7 +492,10 @@ QJsonObject QueryDocumentImpl(const TriggerDocument& document, const UiCatalog& 
             {"review_sha256", QString::fromStdString(review.value->reviewSha256)}, {"symbols", symbols}, {"typed_argument_ids", typed},
             {"complete", review.value->complete}, {"groupable_count", static_cast<qint64>(review.value->groupableCount)},
             {"groupable_sha256", QString::fromStdString(review.value->groupableSha256)}, {"groupable_samples", rows(review.value->groupableSamples)},
-            {"individual_blocks", rows(review.value->individualBlocks)}, {"external_dependencies_verified", false}};
+            {"individual_blocks", rows(review.value->individualBlocks)}, {"external_dependencies_verified", review.value->externalDependenciesVerified},
+            {"preprocess_identity_sha256", QString::fromStdString(review.value->preprocessIdentitySha256)},
+            {"preprocess_profile_sha256", QString::fromStdString(review.value->preprocessProfileSha256)},
+            {"included_file_count", static_cast<qint64>(review.value->includedFileCount)}};
         if (static_cast<std::size_t>(QJsonDocument(result).toJson(QJsonDocument::Compact).size()) > kResponseBytes)
             throw GraphJsonError("完整删除审计超过回执预算，未截断放行。", "MCP_TRIGGER_GRAPH_RESPONSE_BUDGET");
         return result;
@@ -1085,8 +1089,8 @@ QJsonObject GraphOperationSchema() {
 }
 
 QJsonObject QueryGraphDocument(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
-    const Trigger::MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names) {
-    try { return QueryDocumentImpl(document, catalog, mapObjects, request, names); }
+    const Trigger::MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names, const Trigger::TriggerGraphEditLimits& limits) {
+    try { return QueryDocumentImpl(document, catalog, mapObjects, request, names, limits); }
     catch (const GraphJsonError& failure) { return Failure(failure.code, failure.what()); }
 }
 

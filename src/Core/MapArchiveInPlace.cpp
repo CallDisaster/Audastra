@@ -178,6 +178,7 @@ Result<MapBackupInspection> InspectMapBackupDirectory(const std::filesystem::pat
 
 Result<InPlaceSaveResult> MapArchiveSession::SaveInPlace(std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals, const InPlaceSaveOptions& options) const {
+    if (scriptAuditOnly_) return Result<InPlaceSaveResult>::Failure("MapArchiveSession", "SCRIPT_AUDIT_READ_ONLY", "只读脚本审计快照不能写回地图。");
     const auto directory = sourcePath_.parent_path();
     const std::wstring stem = sourcePath_.stem().wstring();
     const std::wstring extension = sourcePath_.extension().wstring();

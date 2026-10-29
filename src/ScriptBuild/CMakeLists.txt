@@ -31,6 +31,7 @@ target_compile_definitions(audastra-lua53-sandbox PRIVATE _CRT_SECURE_NO_WARNING
 
 include("${PROJECT_SOURCE_DIR}/cmake/RuntimeModuleLoaders.cmake")
 add_library(War3MapScriptBuild STATIC
+    RemovalPreprocess.cpp
     TriggerStorageCapabilities.cpp
     TriggerValueDiagnostics.cpp
     RuntimeModuleProfiles.cpp

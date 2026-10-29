@@ -114,6 +114,8 @@ class MapArchiveSession {
 public:
     [[nodiscard]] static Result<MapArchiveSession> Open(const std::filesystem::path& path,
         const ProjectSaveControl* control = nullptr);
+    // 只解压脚本审计所需的固定基础/触发器/物编成员；不读取不透明导入，不能保存。
+    [[nodiscard]] static Result<MapArchiveSession> OpenScriptAudit(const std::filesystem::path& path);
     [[nodiscard]] Status VerifySourceUnchanged(const ProjectSaveControl* control = nullptr) const;
     [[nodiscard]] bool HasMember(std::string_view name) const;
     [[nodiscard]] Result<std::vector<std::byte>> ReadMember(std::string_view name,
@@ -170,6 +172,7 @@ public:
         std::span<const std::string> removals = {}) const;
 
 private:
+    [[nodiscard]] static Result<MapArchiveSession> OpenImpl(const std::filesystem::path&, const ProjectSaveControl*, bool scriptAuditOnly);
     [[nodiscard]] Result<ArchiveSaveResult> WriteCandidate(
         const std::filesystem::path& target,
         std::span<const MemberReplacement> replacements,
@@ -189,6 +192,7 @@ private:
     std::vector<MapArchiveMember> members_;
     std::vector<std::string> metadataMembers_;
     bool opaqueMembers_ = false;
+    bool scriptAuditOnly_ = false;
     std::size_t opaqueMemberCount_ = 0;
 };
 

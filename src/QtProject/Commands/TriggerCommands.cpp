@@ -771,6 +771,10 @@ Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
             edited = Result<Receipt>::Success(std::move(unchanged));
         } else {
             Trigger::TriggerGraphEditLimits limits;
+            limits.removalPreprocessProvider = [&project, provider = Trigger::RemovalPreprocessProvider{}](const auto& document, const auto& catalog, const auto& operation) mutable {
+                if (!provider) provider = Services::MakeProjectRemovalPreprocessProvider(project.CaptureCodeCheckSnapshot());
+                return provider(document, catalog, operation);
+            };
             limits.storageCapabilityProvider = [&](std::span<const std::string> names) {
                 const auto snapshot = project.CaptureCodeCheckSnapshot();
                 if (!snapshot) return Result<std::shared_ptr<const Trigger::TriggerStorageCapabilities>>::Failure(

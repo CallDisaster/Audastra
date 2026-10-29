@@ -573,8 +573,11 @@ private:
         if (request.value("table") == QStringLiteral("map_objects") && !references.Succeeded()) return Mcp::Failure(references);
         const auto* objects = references.Succeeded() && references.value && !(*references.value)->References().empty()
             ? references.value->get() : nullptr;
+        Trigger::TriggerGraphEditLimits limits;
+        if (request.value("table") == QStringLiteral("remove_audit"))
+            limits.removalPreprocessProvider = Services::MakeProjectRemovalPreprocessProvider(project_.CaptureCodeCheckSnapshot());
         auto result = Mcp::QueryGraphDocument(*project_.triggerDocument_, *project_.uiCatalog_, objects, request,
-            [this](std::string_view raw, std::string_view type) { return ResolveProjectName(project_, raw, type); });
+            [this](std::string_view raw, std::string_view type) { return ResolveProjectName(project_, raw, type); }, limits);
         result.insert("project_identity", projectIdentity_);
         result.insert("revision", QString::number(project_.editRevision_.Revision()));
         result.insert("document_generation", QString::number(generation_));

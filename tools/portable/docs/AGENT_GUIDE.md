@@ -435,6 +435,16 @@ CLI 使用同一保存链：`map-edit-save ... --terrain-slot-replace ground 0 L
 
 当前只支持可证明的 JASS：UTF-8/CP936 的中文显示名可按生成器同一编码规则改写；原 WCT 符号须与该规则一致。手写非 ASCII 符号、未展开宏、不能证明的 vJass 作用域、动态字符串分发、遮蔽或不透明引用来源明确拒绝。字符串、注释与无关原字节保持不变；若字符串分发必须改名才能成立，则拒绝，不能全文替换。外槽/全局同前缀声明、额外用户声明或目标符号冲突都会列出中文位置。Lua 目标不支持；JASS 身份事务不能在保存时改选 Lua。
 
+### 删除声明与预处理覆盖
+
+删除触发器或变量先用 `query_trigger_graph` 的 `table=remove_audit` 查询同一批次与 `operation_index`。零命中代码只返回 `groupable_count`、`groupable_sha256` 和最多 20 个样本；整组确认绑定 `review_sha256`、这两个组字段、`decision=no_reference` 与非空理由。有命中或动态构造的块仍逐块确认，不能混用两种可合并块确认写法。确定引用、缺失来源和任何预算截断都不能用确认理由绕过。
+
+活动编辑器由宿主冻结当前保存工具链。含预处理指令时，共用服务在内存删除投影上使用生产生成器、同一档案的预定义宏、强制包含与注入来源，再由真实预处理器展开整图。审计会检查展开后的代码和宏定义；宏名或宏体含目标符号是确定引用，调用了带 `#` 或 `##` 的宏须单独审阅。证据的 `source_file` / `source_line` 指向包含文件或 `WCT/header.j`、`WCT/trigger-<ID>.j` 的块内来源；`raw_range_exact=false` 时不要把展开偏移当作作者原字节偏移。
+
+CLI 只读入口为 `map-trigger-remove-audit <map> <source-sha> <ui-root> <trigger|variable> <id> --tool-root <tool-root> --game-root <game-root>`；地图有预放物等初始化依赖时必须提供游戏数据。`--confirm-file <json>` 只做内存删除预演，不写地图。可用 `--prior-trigger <id> --prior-confirm-file <json>` 在同一私有候选中先预演删触发器，再审计或预演删变量。工具链身份、读取的包含路径或内容变化，旧确认即失效；未配置完整宿主上下文时继续拒绝，不能由请求伪造覆盖。
+
+本覆盖不读取 AI 引导文件，包含解析遇到相应路径立即拒绝。vJass 的 `//!` 指令、Lua 模板与失败的预处理仍是不完整来源。`preprocess_profile_sha256`、`preprocess_identity_sha256`、`included_file_count` 和 `external_dependencies_verified` 说明预处理来源覆盖，不代表脚本已编译、地图已保存或已进游戏。整个查询仍受 262144 块、64 MiB 代码字节、16384 个单独块及总证据预算约束。
+
 ## 5. 结果应如何记录
 
 保留源/候选路径与 SHA、包内源码身份、请求的绑定/raw、新值、退出码/业务 ok、原始诊断和重开结果。候选存在时换新路径，不覆盖源图或已有证据。

@@ -9,6 +9,7 @@
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
+#include "War3MapCore/Trigger/TriggerRemovalAudit.h"
 
 #include <array>
 #include <filesystem>
@@ -46,6 +47,7 @@ struct CodeCheckProjectSnapshot {
     std::vector<MemberReplacement> baseReplacements;
     std::vector<std::string> baseRemovals;
     bool debug = false;
+    bool scriptAuditOnly = false;
 };
 
 // 编辑器里执行触发器用（界面模拟）的整图：实际基础库与翻译后的整图 JASS（见 BuildProjectJassScript）。
@@ -76,6 +78,7 @@ private:
         CodeCheckProjectCache&, std::shared_ptr<const Trigger::TriggerDocument>, std::uint64_t, std::stop_token);
     friend Result<ProjectJassScript> BuildProjectJassScript(const std::shared_ptr<const CodeCheckProjectSnapshot>&,
         CodeCheckProjectCache&, std::shared_ptr<const Trigger::TriggerDocument>, std::stop_token);
+    friend Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(std::shared_ptr<const CodeCheckProjectSnapshot>);
 };
 
 [[nodiscard]] std::string CodeCheckTargetSourceName(Trigger::CodeBlockTarget target, CodeLanguage language = CodeLanguage::Jass);
@@ -105,4 +108,7 @@ private:
     const std::shared_ptr<const CodeCheckProjectSnapshot>& snapshot,
     CodeCheckRequest request, std::stop_token cancel = {}, CodeCheckLuaSources lua = {});
 
+// UI/CLI/MCP共用宿主来源；闭包拥有缓存，只读且每次重新核对包含与档案身份。
+[[nodiscard]] Trigger::RemovalPreprocessProvider MakeProjectRemovalPreprocessProvider(
+    std::shared_ptr<const CodeCheckProjectSnapshot> snapshot);
 } // namespace War3Map::Services

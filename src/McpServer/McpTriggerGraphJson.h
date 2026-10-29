@@ -32,6 +32,6 @@ using GraphNameResolver = std::function<Services::NameResolution(std::string_vie
 [[nodiscard]] QJsonObject QueryGraphDocument(
     const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
     const Trigger::MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request,
-    const GraphNameResolver& names = {});
+    const GraphNameResolver& names = {}, const Trigger::TriggerGraphEditLimits& limits = {});
 
 } // namespace War3Map::Mcp
