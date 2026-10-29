@@ -1081,6 +1081,8 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     WriteText(ui / "config", "base\n");
     WriteText(ui / "base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n");
     WriteText(tool / "plugin/wave/include/WaveForce.i", "#define FORCE_VALUE 11\n");
+    for (const auto* header : {"YDTrigger.h", "Globals.h", "Function.h"})
+        WriteText(tool / "plugin/wave/include/YDTrigger" / header, "// original empty fixture interface\n");
     WriteText(tool / "jass/system/ht/common.j", "// original fixture\n");
     WriteText(tool / "jass/system/ht/blizzard.j", "// original fixture\n");
     WriteText(map / "dep.j", "function Dependency takes nothing returns nothing\nendfunction\n");
