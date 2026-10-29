@@ -376,11 +376,12 @@ std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, s
 }
 
 std::int32_t InstallGameUiModule127(Host& host, Address base, const std::function<bool(Address, std::size_t)>& executable,
-    UiFaultObserver observer, std::shared_ptr<GameUiDataPlane> data) {
+    UiFaultObserver observer, std::shared_ptr<GameUiDataPlane> data, std::function<void(Address, Address, bool)> observePointer) {
     GameUiEntryPoints entries;
     GameInputEntryPoints input;
     std::string error;
     if (!ResolveGameUiEntryPoints127(base, executable, entries, error)) entries = {};
+    entries.observePointer = std::move(observePointer);
     std::string inputError;
     static_cast<void>(ResolveGameInputEntryPoints127(base, executable, input, inputError));
     return InstallGameUiModule(host, entries, std::move(error), observer, input, std::move(data));

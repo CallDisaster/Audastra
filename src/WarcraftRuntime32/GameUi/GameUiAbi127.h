@@ -188,6 +188,7 @@ struct GameUiEntryPoints {
     Address activeLayer = 0;
     Address mouseEvent = 0;
     FnThisHitTest hitTestLayer = nullptr;
+    std::function<void(Address, Address, bool)> observePointer;
     Address simpleTop = 0;
 
     Address vtBackdrop = 0;
