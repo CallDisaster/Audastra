@@ -183,9 +183,19 @@ struct Tables {
     std::array<Address, 8> fdf{};
     Address status = 0;
     Address hovered = 0;
-    Address pressed = 0;
+    Address active = 0;
+    Address mouseEvent = 0;
+    unsigned hitCalls = 0;
+    bool hitFault = false;
     Address simpleTop = 0;
 } g_tables;
+
+Address __fastcall HitTest(Address self, int, Address event) {
+    Check(self == g_tables.active && event == reinterpret_cast<Address>(&g_tables.mouseEvent), "hit test uses active layer and current mouse event");
+    ++g_tables.hitCalls;
+    if (g_tables.hitFault) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    return g_tables.hovered;
+}
 
 void FillVtable(Vtable& vtable, Address height, bool classic) {
     vtable.fill(0);
@@ -258,8 +268,9 @@ GameUiEntryPoints Entries() {
     e.stringTable = reinterpret_cast<Address>(g_tables.strings.data());
     e.fdfTable = reinterpret_cast<Address>(g_tables.fdf.data());
     e.defaultStatus = reinterpret_cast<Address>(&g_tables.status);
-    e.hoveredLayer = reinterpret_cast<Address>(&g_tables.hovered);
-    e.pressedLayer = reinterpret_cast<Address>(&g_tables.pressed);
+    e.activeLayer = reinterpret_cast<Address>(&g_tables.active);
+    e.mouseEvent = reinterpret_cast<Address>(&g_tables.mouseEvent);
+    e.hitTestLayer = &HitTest;
     e.simpleTop = reinterpret_cast<Address>(&g_tables.simpleTop);
     e.vtBackdrop = reinterpret_cast<Address>(vtBackdrop.data());
     e.vtText = reinterpret_cast<Address>(vtText.data());
@@ -277,6 +288,7 @@ void Reset() {
     g_frames.clear();
     g_tables = {};
     g_root = NewFrame(vtClassic, 0, 0);
+    g_tables.active = g_root->Self();
     g_world = NewFrame(vtClassic, 0, 0);
     g_root->Set(Layout127::GameUiWorldFrame, g_world->Self());
     g_named = nullptr;
@@ -521,7 +533,23 @@ void PointerEvents() {
     top->Set(Layout127::SimpleTopHovered, label->Self());
     Check(ui.ReadPointer().hovered == label->Self(), "simple top resolves to hovered simple object");
     g_tables.hovered = buttonObject->Self();
-    Check(ui.ReadPointer().hovered == buttonObject->Self(), "classic hovered frame read directly");
+    Check(ui.ReadPointer().hovered == buttonObject->Self(), "classic hovered frame comes from live hit test");
+    g_tables.active = buttonObject->Self();
+    g_tables.hovered = 0;
+    Check(ui.ReadPointer().hovered == 0, "old active frame must not masquerade as a mouse hit outside the frame");
+    g_tables.hovered = label->Self();
+    ui.Poll({ui.ReadPointer().hovered, true});
+    (void)ui.TakeEvents();
+    g_tables.hovered = 0;
+    ui.Poll({ui.ReadPointer().hovered, false});
+    events = ui.TakeEvents();
+    for (const auto& event : events) Check(event.kind != kUiEventClick, "moving off a focused frame before release never clicks it");
+    const auto calls = g_tables.hitCalls;
+    g_tables.active = 0;
+    Check(ui.ReadPointer().hovered == 0 && g_tables.hitCalls == calls, "no active layer does not call the engine");
+    g_tables.active = buttonObject->Self();
+    g_tables.hitFault = true;
+    Check(ui.ReadPointer().hovered == 0 && ui.Faulted(), "hit test faults fail closed without reusing stale focus");
 }
 
 void FaultsAndThreads() {

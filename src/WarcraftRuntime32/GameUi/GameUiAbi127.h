@@ -64,8 +64,9 @@ inline constexpr std::uint32_t ControlSetEnabled = 0x0A95F0;
 inline constexpr std::uint32_t StringTable = 0xBB9CAC;
 inline constexpr std::uint32_t FdfTable = 0xBB9CFC;
 inline constexpr std::uint32_t DefaultStatus = 0xB662CC;
-inline constexpr std::uint32_t HoveredLayer = 0xBB9D8C;
-inline constexpr std::uint32_t PressedLayer = 0xBB9D90;
+inline constexpr std::uint32_t ActiveLayer = 0xBB9D88;
+inline constexpr std::uint32_t MouseEvent = 0xB66308;
+inline constexpr std::uint32_t HitTestLayer = 0x0996E0;
 inline constexpr std::uint32_t SimpleTop = 0xBBA0D0;
 
 // 虚表
@@ -117,6 +118,7 @@ using FnThisFloat = int(__fastcall*)(Address self, int edx, float value);
 using FnThisFloat2 = int(__fastcall*)(Address self, int edx, float first, float second);
 using FnThisFloatInt = int(__fastcall*)(Address self, int edx, float value, int update);
 using FnThisAddress = int(__fastcall*)(Address self, int edx, Address value);
+using FnThisHitTest = Address(__fastcall*)(Address self, int edx, Address mouseEvent);
 using FnThisVoid = int(__fastcall*)(Address self, int edx);
 using FnThisText = int(__fastcall*)(Address self, int edx, const char* text);
 using FnThisTextInt = int(__fastcall*)(Address self, int edx, const char* text, int value);
@@ -183,8 +185,9 @@ struct GameUiEntryPoints {
     Address stringTable = 0;
     Address fdfTable = 0;
     Address defaultStatus = 0;
-    Address hoveredLayer = 0;
-    Address pressedLayer = 0;
+    Address activeLayer = 0;
+    Address mouseEvent = 0;
+    FnThisHitTest hitTestLayer = nullptr;
     Address simpleTop = 0;
 
     Address vtBackdrop = 0;

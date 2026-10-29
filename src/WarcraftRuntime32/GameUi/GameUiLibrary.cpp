@@ -59,8 +59,8 @@ bool Complete(const GameUiEntryPoints& e) noexcept {
         && e.textSetAlignH && e.textSetAlignV && e.textUpdateAlign && e.fontStringSetText && e.fontStringSetFont
         && e.fontStringSetAlignH && e.fontStringSetAlignV && e.textureSetTexture && e.statusBarSetTexture
         && e.statusBarSetValue && e.statusBarSetLimits && e.sliderSetValue && e.editBoxSetText && e.modelSetModel
-        && e.controlSetEnabled && e.stringTable && e.fdfTable && e.defaultStatus && e.hoveredLayer
-        && e.pressedLayer && e.simpleTop && e.vtBackdrop && e.vtText && e.vtEditBox && e.vtSlider && e.vtModel
+        && e.controlSetEnabled && e.stringTable && e.fdfTable && e.defaultStatus && e.activeLayer
+        && e.mouseEvent && e.hitTestLayer && e.simpleTop && e.vtBackdrop && e.vtText && e.vtEditBox && e.vtSlider && e.vtModel
         && e.vtSimpleStatusBar && e.vtSimpleTexture && e.vtSimpleFontString;
 }
 
@@ -622,11 +622,13 @@ UiError GameUiLibrary::Watch(FrameHandle frame, std::uint8_t mask) {
     return UiError::None;
 }
 
-PointerSnapshot GameUiLibrary::ReadPointer() const {
+PointerSnapshot GameUiLibrary::ReadPointer() {
     PointerSnapshot pointer;
     if (Ready() != UiError::None) return pointer;
-    Address hovered = 0, top = 0;
-    if (!ReadWord(entries_.hoveredLayer, hovered)) return pointer;
+    Address active = 0, hovered = 0, top = 0;
+    if (!ReadWord(entries_.activeLayer, active) || !active) return pointer;
+    // 活动层不是命中结果；每次使用当前鼠标事件重新查询，不能沿用上次聚焦的框架。
+    if (Run([&] { hovered = entries_.hitTestLayer(active, 0, entries_.mouseEvent); }) != UiError::None) return pointer;
     // 鼠标在 Simple 系框架上时，经典层拿到的是全局 CSimpleTop，再从它取具体对象。
     if (hovered && ReadWord(entries_.simpleTop, top) && top && hovered == top) {
         Address simple = 0;

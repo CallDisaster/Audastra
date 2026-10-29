@@ -116,8 +116,9 @@ bool ResolveGameUiEntryPoints127(Address base, const std::function<bool(Address,
     r.Data(table.stringTable, StringTable);
     r.Data(table.fdfTable, FdfTable);
     r.Data(table.defaultStatus, DefaultStatus);
-    r.Data(table.hoveredLayer, HoveredLayer);
-    r.Data(table.pressedLayer, PressedLayer);
+    r.Data(table.activeLayer, ActiveLayer);
+    r.Data(table.mouseEvent, MouseEvent);
+    r.Code(table.hitTestLayer, HitTestLayer);
     r.Data(table.simpleTop, SimpleTop);
 
     r.Data(table.vtBackdrop, VtBackdrop);

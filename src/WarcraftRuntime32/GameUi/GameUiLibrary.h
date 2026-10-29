@@ -116,7 +116,7 @@ public:
 
     // 事件只在本机发生；会影响游戏的处理须由调用方同步后再执行。
     [[nodiscard]] UiError Watch(FrameHandle frame, std::uint8_t mask);
-    [[nodiscard]] PointerSnapshot ReadPointer() const;
+    [[nodiscard]] PointerSnapshot ReadPointer();
     void Poll(const PointerSnapshot& pointer);
     [[nodiscard]] std::vector<UiFrameEvent> TakeEvents();
 
