@@ -231,7 +231,8 @@ static Result<Trigger::RemovalPreprocessCoverage> CaptureCoverage(
     };
     const auto owner = [&](std::string_view file, std::size_t line) -> std::optional<StableId> {
         if (!isMain(file)) return StableId{0};
-        if (!line || line > mainLines.size()) return {};
+        // #line可改写逻辑行；无法落回作者槽位的正文仍归全局审计，不能丢掉可执行字节。
+        if (!line || line > mainLines.size()) return StableId{0};
         const auto offset = mainLines[line - 1];
         if (offset >= generated.text.size()) return StableId{0};
         const auto found = std::upper_bound(generated.authorCode.begin(), generated.authorCode.end(), offset,

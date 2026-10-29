@@ -1181,6 +1181,9 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     review = query(); Require(review.Succeeded() && review.value->complete, "readonly import validates without reading a missing path or producing a member");
     doc.wct.customCode = Trigger::RawText{"<?=os.execute('blocked')?>\n"};
     review = query(); Require(review.Succeeded() && !review.value->complete, "template host cannot access os");
+    doc.wct.customCode = Trigger::RawText{"#line 70000 \"war3map.j\"\ncall TriggerExecute(gg_trg_Target)\n"};
+    review = query(); Require(review.Succeeded() && review.value->complete
+        && std::any_of(review.value->individualBlocks.begin(), review.value->individualBlocks.end(), [](const auto& b) { return b.referenced; }), "logical line remapping cannot drop generated reference bytes");
     auto owner = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "TemplateOwner"); Require(owner.Succeeded(), "template owner");
     op.parent.orderedChildren.push_back({Trigger::GraphRecordKind::Trigger, *owner.value, {}});
     const auto appended = Trigger::TriggerDocumentEditor::AppendRootEca(doc, *catalog.value, *owner.value, Trigger::UiDefinitionKind::Action, "OriginalCode");
