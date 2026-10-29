@@ -236,6 +236,27 @@ void TestConcurrentSnapshotReaders() {
 
 } // namespace
 
+void TestPreparedObservation() {
+    EditRevision history, other;
+    const auto original = Original(); RequireOk(history.Reset(original, original, original));
+    auto next = original; next["imports/0"] = "owned:sha";
+    auto prepared = history.PrepareObservation(history.Generation(), history.Revision(), next, "准备资源");
+    Require(prepared.Succeeded() && history.Revision() == 0 && history.Journal().empty() && history.Current() == original,
+        "preparing does not publish any logical revision");
+    int asset = 0;
+    auto moved = std::move(*prepared.value);
+    Require(!history.CommitObservation(std::move(*prepared.value), [](void* state) noexcept { *static_cast<int*>(state) = 99; }, &asset).Succeeded()
+        && asset == 0, "moved-from token cannot publish");
+    Require(!other.CommitObservation(std::move(moved)).Succeeded(), "another owner cannot consume the proof");
+    RequireOk(history.CommitObservation(std::move(moved), [](void* state) noexcept { *static_cast<int*>(state) = 1; }, &asset));
+    Require(asset == 1 && history.Revision() == 1 && history.Current() == next && history.Journal().size() == 1, "asset and prepared revision publish together");
+    Require(!history.CommitObservation(std::move(moved)).Succeeded(), "consumed token cannot publish twice");
+    auto stale = history.PrepareObservation(history.Generation(), history.Revision(), original, "旧候选"); Require(stale.Succeeded(), "prepare stale probe");
+    auto changed = next; changed["triggers"] = "later"; RequireOk(history.Observe(changed, "其他编辑"));
+    Require(!history.CommitObservation(std::move(*stale.value), [](void* state) noexcept { *static_cast<int*>(state) = 99; }, &asset).Succeeded()
+        && asset == 1 && history.Current() == changed, "stale candidate leaves assets and revision untouched");
+}
+
 int main() {
     try {
         TestContentAndUndo();
@@ -246,6 +267,7 @@ int main() {
         TestValidationAndTicketIsolation();
         TestDeterministicEditSaveSequence();
         TestConcurrentSnapshotReaders();
+        TestPreparedObservation();
         std::cout << "EditRevision tests passed\n";
         return 0;
     } catch (const std::exception& exception) {

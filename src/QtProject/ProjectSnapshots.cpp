@@ -34,7 +34,7 @@ std::optional<std::string> EditorProject::CaptureTriggerFingerprint() const {
     return *wtg.value + ":" + *wct.value + ":" + uiCatalog_->Sha256();
 }
 
-std::optional<EditScopeSnapshot> EditorProject::CaptureEditScopes() const {
+std::optional<EditScopeSnapshot> EditorProject::CaptureEditScopes(const AssetState* candidateAssets) const {
     EditScopeSnapshot scopes;
     if (projectRoot_.empty()) return scopes;
     // 来源身份参与工程比较；另存地图以后工程必须保存新的完整基线。
@@ -58,17 +58,21 @@ std::optional<EditScopeSnapshot> EditorProject::CaptureEditScopes() const {
         scopes["triggers"] = *value;
     }
     // 使用导入顺序、虚拟路径和字节指纹，不使用磁盘时间戳冒充内容。
-    for (std::size_t i = 0; i < pendingImports_.size(); ++i) {
-        const auto& entry = pendingImports_[i];
+    const auto& imports = candidateAssets ? candidateAssets->imports : pendingImports_;
+    const auto& edits = candidateAssets ? candidateAssets->edits : assetEdits_;
+    const auto& approval = candidateAssets ? candidateAssets->runtimeApprovedPackageSha256 : runtimeApprovedPackageSha256_;
+    if (!ValidatePendingImports(imports).Succeeded()) return {};
+    for (std::size_t i = 0; i < imports.size(); ++i) {
+        const auto& entry = imports[i];
         const auto fingerprint = FingerprintPendingImport(entry);
         if (!fingerprint.Succeeded()) return {};
         scopes["imports/" + std::to_string(i)] = entry.archivePath.toStdString()
             + (entry.ownedPayload ? ":owned:" : ":disk:") + (entry.runtimeLuaDraft ? "lua:" : "asset:") + *fingerprint.value;
     }
-    for (std::size_t i = 0; i < assetEdits_.size(); ++i) {
-        scopes["assets/" + std::to_string(i)] = assetEdits_[i].from.toStdString() + ">" + assetEdits_[i].to.toStdString();
+    for (std::size_t i = 0; i < edits.size(); ++i) {
+        scopes["assets/" + std::to_string(i)] = edits[i].from.toStdString() + ">" + edits[i].to.toStdString();
     }
-    if (!runtimeApprovedPackageSha256_.empty()) scopes["runtime/approval"] = runtimeApprovedPackageSha256_;
+    if (!approval.empty()) scopes["runtime/approval"] = approval;
     const auto mapScopes = CaptureMapEditScopes();
     if (!mapScopes) return {};
     scopes.insert(mapScopes->begin(), mapScopes->end());

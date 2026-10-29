@@ -44,6 +44,7 @@
 #include "War3MapCore/Trigger/TriggerTextDiff.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Services/ImportPayloadPolicy.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Workspace.h"
 
@@ -1410,7 +1411,8 @@ private:
         }
         if (name == "imports_add") {
             // 调用时读入内存：之后磁盘文件再变也不影响本次导入和撤销。
-            constexpr qint64 kMaxFileBytes = 64LL * 1024 * 1024, kMaxTotalBytes = 256LL * 1024 * 1024;
+            constexpr qint64 kMaxFileBytes = Services::ImportPayloadPolicy::ownedFileBytes,
+                kMaxTotalBytes = Services::ImportPayloadPolicy::ownedBatchBytes;
             std::vector<QtProject::EditorProject::ImportPayload> payloads;
             qint64 total = 0;
             for (const auto& item : arguments.value("files").toArray()) {

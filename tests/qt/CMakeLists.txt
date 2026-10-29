@@ -13,6 +13,12 @@ foreach(product_unit IN ITEMS UpdateClient UpdateDialog FeedbackClient FeedbackD
     set_tests_properties(qt-${product_unit_lower} PROPERTIES TIMEOUT 90
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endforeach()
+qt_add_executable(audastra-import-asset-transaction-tests ImportAssetTransactionTests.cpp)
+target_link_libraries(audastra-import-asset-transaction-tests PRIVATE War3MapEditor::QtProject Qt6::Test Qt6::Widgets)
+target_compile_options(audastra-import-asset-transaction-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-import-asset-transaction COMMAND audastra-import-asset-transaction-tests)
+set_tests_properties(qt-import-asset-transaction PROPERTIES TIMEOUT 120 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 war3map_deploy_fonts(audastra-updatedialog-tests)
 
 qt_add_executable(audastra-recovery-exit-dialog-tests RecoveryExitDialogTests.cpp

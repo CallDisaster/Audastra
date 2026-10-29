@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "War3MapCore/Services/ImportPayloadPolicy.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -49,7 +50,7 @@ QString EditorProject::SuggestImportPath(const QString& diskPath) {
 int EditorProject::AddImportFiles(const QStringList& diskPaths, const QString& folder) {
     auto candidate = CaptureAssets();
     const int added = AddImportFiles(candidate, diskPaths, folder);
-    PublishAssetState(std::move(candidate));
+    if (!PublishAssetState(std::move(candidate)).Succeeded()) return 0;
     return added;
 }
 
@@ -98,10 +99,15 @@ QString EditorProject::PrepareImportPayloads(AssetState& state, std::vector<Impo
     if (payloads.empty()) return tr("没有要导入的文件。");
     const auto entries = AssetEntries(state);
     QSet<QString> requested;
+    std::uint64_t totalBytes = 0;
     for (auto& payload : payloads) {
         if (const auto problem = CheckAssetPath(payload.archivePath); !problem.isEmpty())
             return payload.archivePath + QStringLiteral("：") + problem;
         if (!payload.bytes) return payload.archivePath + tr("：缺少文件内容。");
+        if (payload.bytes->size() > Services::ImportPayloadPolicy::ownedFileBytes
+            || payload.bytes->size() > Services::ImportPayloadPolicy::ownedBatchBytes - totalBytes)
+            return tr("IMPORT_PAYLOAD_BUDGET · 单文件不能超过64MiB，内存导入合计不能超过256MiB。");
+        totalBytes += payload.bytes->size();
         const auto key = AssetKey(payload.archivePath);
         if (requested.contains(key)) return payload.archivePath + tr("：同一路径出现多次。");
         requested.insert(key);
@@ -132,7 +138,7 @@ QString EditorProject::PrepareImportPayloads(AssetState& state, std::vector<Impo
         const auto previous = std::find_if(candidate.imports.begin(), candidate.imports.end(),
             [&](const PendingImport& value) { return AssetKey(value.archivePath) == key; });
         if (previous == candidate.imports.end()) candidate.imports.push_back(std::move(entry));
-        else *previous = std::move(entry);
+        else { entry.runtimeLuaDraft = previous->runtimeLuaDraft; *previous = std::move(entry); }
         std::erase_if(candidate.edits, [&](const AssetEdit& edit) { return edit.to.isEmpty() && AssetKey(edit.from) == key; });
     }
     state = std::move(candidate);

@@ -103,7 +103,20 @@ int RunTriggerRemovalAudit(int argc, wchar_t** argv) {
         if (!source.Succeeded()) { std::cout << Json{{"ok", false}, {"diagnostics", Diagnostics(source.diagnostics)}}.dump() << '\n'; return 1; }
         auto& sources = *source.value;
         Json output{{"source_sha256", sources.archive->SourceSha256()}, {"catalog_sha256", sources.catalog.Sha256()}, {"saved", false}, {"runtime_verified", false}};
-        if (selector == "list") {
+        if (selector == "inventory") {
+            if (!confirmations.empty() || !match.empty()) throw std::invalid_argument("分类统计不接受确认或目标名字。");
+            const auto report = InspectOpaqueArgumentInventory(sources.document, sources.catalog);
+            if (!report.Succeeded()) { output["ok"] = false; output["diagnostics"] = Diagnostics(report.diagnostics); std::cout << output.dump() << '\n'; return 1; }
+            Json rows = Json::array();
+            for (const auto& row : report.value->classes) {
+                Json samples = Json::array();
+                for (const auto& sample : row.samples) samples.push_back({{"id", std::to_string(sample.id)}, {"bytes", sample.bytes}, {"text", sample.text}});
+                rows.push_back({{"expected_type", row.expectedType}, {"literal_kind", row.literalKind}, {"validate_literal", row.validateLiteral},
+                    {"opaque", row.opaque}, {"dispatch", row.dispatch}, {"count", row.count}, {"bytes", row.bytes}, {"short_count", row.shortCount}, {"samples", samples}});
+            }
+            output.update({{"ok", true}, {"statistics_only", true}, {"complete", true}, {"arguments", report.value->arguments},
+                {"opaque_arguments", report.value->opaqueArguments}, {"total_bytes", report.value->totalBytes}, {"classes", rows}});
+        } else if (selector == "list") {
             if (!confirmations.empty()) throw std::invalid_argument("list不接受删除确认。");
             Json rows = Json::array(); std::size_t count = 0;
             const auto add = [&](const auto& values) {

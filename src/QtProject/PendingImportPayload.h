@@ -5,11 +5,13 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <span>
 
 namespace War3Map { class ProjectSaveControl; }
 
 namespace War3Map::QtProject {
 struct PendingImport;
+[[nodiscard]] Status ValidatePendingImports(std::span<const PendingImport> entries);
 
 // 工程指纹、恢复和候选保存共用内存/磁盘载荷资格；不以磁盘路径为空代替真实内存来源。
 [[nodiscard]] Result<std::string> FingerprintPendingImport(const PendingImport& entry,

@@ -3,6 +3,7 @@
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include <Windows.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -128,4 +129,34 @@ void EncodingAndPrefix() {
     p.Confirm(op, r); Good(ApplyTriggerGraphEditBatch(p.doc, p.catalog, p.Batch(op)), "self reference disappears with its owner");
 }
 }
-int main() { try { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); EncodingAndPrefix(); std::cout << "Removal audit transactions passed\n"; return 0; } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
+void DerivedLiteralClassification() {
+    Fixture f;
+    auto encoded = WtgWctCodec{}.Serialize(f.doc, f.catalog); Good(encoded, "before catalog extension");
+    std::ofstream(f.root / "ui/base/define.txt", std::ios::app)
+        << "degree=0,1,1,Degree,real\nrealalias=0,1,1,Alias,degree\ndeepreal=0,1,1,Deep,realalias\n"
+        << "modelfile=0,1,1,Model,string\nmodelalias=0,1,1,ModelAlias,modelfile\n"
+        << "abilcode=0,1,1,Ability,integer\nabilityalias=0,1,1,Alias,abilcode\nabilityalias2=0,1,1,Alias2,abilityalias\n"
+        << "scriptcode=1,0,0,Code,string\n";
+    std::ofstream(f.root / "ui/base/action.txt", std::ios::app)
+        << "[UseDerived]\n[[.args]]\ntype=deepreal\n[[.args]]\ntype=modelalias\n[[.args]]\ntype=abilityalias2\n"
+        << "[UseCode]\n[[.args]]\ntype=scriptcode\n[UseUnknown]\n[[.args]]\ntype=MissingType\n";
+    auto loaded = UiCatalog::Load(f.root / "ui"); Good(loaded, "extended original catalog"); f.catalog = *loaded.value;
+    auto parsed = WtgWctCodec{}.Parse(encoded.value->wtg, encoded.value->wct, f.catalog); Good(parsed, "bind extended catalog");
+    f.doc = *parsed.value; f.target = f.doc.triggers.front().id; f.category = f.doc.categories.front().id;
+    auto owner = TriggerDocumentEditor::AddTrigger(f.doc, f.doc.categories.front().categoryId, "Typed owner"); Good(owner, "typed owner");
+    auto derived = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, *owner.value, UiDefinitionKind::Action, "UseDerived"); Good(derived, "derived slots");
+    for (std::size_t i = 0; i < 3; ++i) Good(TriggerDocumentEditor::SetScalarArgument(f.doc, derived.value->appendedArguments[i].id, 3,
+        std::array<const char*, 3>{"0.138", "Models\\original.mdx", "A001"}[i]), "valid derived literal");
+    auto code = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, *owner.value, UiDefinitionKind::Action, "UseCode"); Good(code, "source slot");
+    Good(TriggerDocumentEditor::SetScalarArgument(f.doc, code.value->appendedArguments.front().id, 3, "gg_trg_Target_Name"), "source symbol");
+    auto unknown = TriggerDocumentEditor::AppendRootEca(f.doc, f.catalog, *owner.value, UiDefinitionKind::Action, "UseUnknown"); Good(unknown, "unknown slot");
+    Good(TriggerDocumentEditor::SetScalarArgument(f.doc, unknown.value->appendedArguments.front().id, 3, "null"), "unknown null fixture");
+    auto inventory = InspectOpaqueArgumentInventory(f.doc, f.catalog); Good(inventory, "same classifier inventory");
+    for (const auto& row : inventory.value->classes) {
+        if (row.expectedType == "deepreal" || row.expectedType == "modelalias" || row.expectedType == "abilityalias2")
+            Require(row.validateLiteral && !row.opaque, "validated literal chains do not require opaque review");
+        if (row.expectedType == "scriptcode" || row.expectedType == "MissingType") Require(row.opaque, "source and unknown types remain auditable");
+    }
+    auto op = f.Remove(); auto review = f.Review(op); f.Confirm(op, review); f.Fails(op, "TRIGGER_GRAPH_REMOVE_REFERENCED");
+}
+int main() { try { GroupedAndStale(); IndividualAndReferences(); TypedDynamicAndVariable(); EncodingAndPrefix(); DerivedLiteralClassification(); std::cout << "Removal audit transactions passed\n"; return 0; } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

@@ -533,16 +533,15 @@ private slots:
         QVERIFY(!scripts.CreateScript("Lua\\..\\unsafe.lua")); QVERIFY(!scripts.CreateScript("Scripts\\war3map.lua"));
         QVERIFY(!scripts.CreateScript("Lua\\large.lua", QString(static_cast<qsizetype>(QtProject::kOwnedLuaAssetBytes) + 1, QChar('x'))));
         QVERIFY(project.CaptureAssets() == before); QCOMPARE(project.AssetUndoStack()->count(), 0);
-        QVERIFY(project.RecordAssetEdit("ambiguous source", [&](QtProject::AssetState& candidate) {
-            candidate.imports.push_back({"Lua\\ambiguous.lua", {}, 9, Payload("return 1\n"), true});
-            candidate.imports.push_back({"lua/AMBIGUOUS.lua", {}, 9, Payload("return 2\n"), true});
-            return QString{};
-        }).isEmpty());
+        // 模拟载入的旧冲突状态；新的编辑事务必须拒绝制造重复来源。
+        project.pendingImports_.push_back({"Lua\\ambiguous.lua", {}, 9, Payload("return 1\n"), true});
+        project.pendingImports_.push_back({"lua/AMBIGUOUS.lua", {}, 9, Payload("return 2\n"), true});
+        project.ObserveEditState("legacy ambiguous fixture");
         const auto ambiguous = project.CaptureAssets(); QVERIFY(!QtProject::ReadOwnedAsset(project, "Lua\\ambiguous.lua").Succeeded());
         QVERIFY(!project.RecordAssetEdit("must not pick source", [&](QtProject::AssetState& candidate) {
             return QtProject::PutOwnedAsset(project, candidate, "Lua\\ambiguous.lua", Payload("return 3\n"));
         }).isEmpty());
-        QVERIFY(project.CaptureAssets() == ambiguous); QCOMPARE(project.AssetUndoStack()->count(), 1);
+        QVERIFY(project.CaptureAssets() == ambiguous); QCOMPARE(project.AssetUndoStack()->count(), 0);
     }
     void InvalidUtf8AndNulCannotPublishOwnedDrafts() {
         QTemporaryDir dir; QVERIFY(dir.isValid()); QtProject::EditorProject project; QVERIFY(OpenMap(dir, project));

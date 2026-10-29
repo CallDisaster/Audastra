@@ -35,6 +35,28 @@ struct EditSavedBaseline {
     std::uint64_t revision = 0;
     EditScopeSnapshot scopes;
 };
+class PreparedEditObservation final {
+public:
+    [[nodiscard]] const EditScopeSnapshot& Scopes() const noexcept { return current_; }
+    PreparedEditObservation(PreparedEditObservation&& other) noexcept { *this = std::move(other); }
+    PreparedEditObservation& operator=(PreparedEditObservation&& other) noexcept {
+        if (this != &other) {
+            owner_ = std::exchange(other.owner_, 0); generation_ = other.generation_; revision_ = other.revision_;
+            current_ = std::move(other.current_); entry_ = std::move(other.entry_);
+            changed_ = other.changed_; consumed_ = std::exchange(other.consumed_, true);
+        }
+        return *this;
+    }
+    PreparedEditObservation(const PreparedEditObservation&) = delete;
+    PreparedEditObservation& operator=(const PreparedEditObservation&) = delete;
+private:
+    friend class EditRevision;
+    PreparedEditObservation() = default;
+    std::uint64_t owner_ = 0, generation_ = 0, revision_ = 0;
+    EditScopeSnapshot current_;
+    EditJournalEntry entry_;
+    bool changed_ = false, consumed_ = false;
+};
 
 // 保存票据只能由 BeginSave 生成；其中捕获的文档状态由服务持有，调用者无法修改。
 class EditSaveTicket {
@@ -75,6 +97,12 @@ public:
     // 内容相同的通知不增加修订或日志，取消和失败操作不会制造脏状态。
     [[nodiscard]] Status Observe(EditScopeSnapshot current, std::string description,
         EditOperation operation = EditOperation::Edit);
+    // 准备阶段完成验证、差异和日志容量分配；发布阶段只核对身份并执行不抛异常的交换。
+    [[nodiscard]] Result<PreparedEditObservation> PrepareObservation(std::uint64_t expectedGeneration,
+        std::uint64_t expectedRevision, EditScopeSnapshot current, std::string description,
+        EditOperation operation = EditOperation::Edit);
+    [[nodiscard]] Status CommitObservation(PreparedEditObservation&& observation,
+        void (*publish)(void*) noexcept = nullptr, void* state = nullptr);
 
     [[nodiscard]] EditScopeSnapshot Current() const;
     [[nodiscard]] std::uint64_t Generation() const;

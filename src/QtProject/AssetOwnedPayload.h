@@ -1,10 +1,11 @@
 #pragma once
 
 #include "EditorProject.h"
+#include "War3MapCore/Services/ImportPayloadPolicy.h"
 
 namespace War3Map::QtProject {
 
-inline constexpr std::size_t kOwnedLuaAssetBytes = 2u * 1024u * 1024u;
+inline constexpr std::size_t kOwnedLuaAssetBytes = Services::ImportPayloadPolicy::luaDraftBytes;
 
 struct OwnedAssetSource {
     QString path;
