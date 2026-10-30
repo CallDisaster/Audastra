@@ -27,7 +27,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto oldReceipt = std::filesystem::path(argv[7]).string();
         const auto newReceipt = std::filesystem::path(argv[8]).string();
         if (oldReceipt.empty() || newReceipt.empty()) throw std::runtime_error("explicit receipt relocation required");
-        for (const auto& arg : doc.arguments) {
+        for (const auto& arg : doc.argumentNodes) {
             auto value = arg.value.text;
             const auto at = value.find(oldReceipt);
             if (at == std::string::npos) continue;
