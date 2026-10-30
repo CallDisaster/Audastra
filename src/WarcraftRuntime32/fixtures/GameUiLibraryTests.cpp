@@ -761,6 +761,7 @@ void DataPlane() {
     const auto text = ui.Create("Text", 0, 0, 0).handle;
     auto* textObject = g_frames.back().get();
     const auto backdrop = ui.Create("Backdrop", 0, 0, 0).handle;
+    const auto backdropAddress = g_frames.back()->Self();
     const auto bar = ui.CreateSimple("Bar", 0, 0).handle;
     const float width = 0.25f;
     Check(!data.SaveReal(1234, text, 2, reinterpret_cast<const float*>(1)).intercepted
@@ -845,8 +846,11 @@ void DataPlane() {
     bad(next.SaveBoolean(1234, text, 5, 1));
     Check(next.Errors().starts_with("1|"), "old frame token cannot be reused after rebind");
     GameUiDataPlane nullTexture({&ResolveTable, [&] { return alive; }}); nullTexture.Attach(ui);
-    Check(nullTexture.Bind(1234, 2, 2) == AJ_OK && !nullTexture.SaveStr(1234, backdrop, 4, 0).applied
-        && nullTexture.Errors().starts_with("1|"), "null texture retains empty-path refusal");
+    const auto callsBeforeClear = g_log.size();
+    Check(nullTexture.Bind(1234, 2, 2) == AJ_OK && nullTexture.SaveStr(1234, backdrop, 4, 0).applied
+        && nullTexture.Errors() == "0|" && g_log.size() == callsBeforeClear + 1
+        && g_log.back() == "btex " + Hex(backdropAddress) + "  0 0 " + Hex(0) + " 1",
+        "null texture forwards an actual empty-path clear without recording a data error");
     gate.store(5678); data.Stop();
     Check(gate.load() == 5678, "repeated stop on an old consumer cannot clear a newer binding");
 }
