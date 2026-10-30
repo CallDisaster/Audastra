@@ -58,6 +58,12 @@ try{
         Rejected {Read-MapRuntimePublicApproval -ApprovalPath "$root/bad-approval.json" -ManifestPath "$package/manifest.json"} 'Changed role approved'
         $approval.files[$field]=$saved
     }
+    foreach($field in 'id','version','packageSha256'){
+        $saved=$approval[$field];$approval[$field]=if($field -eq 'packageSha256'){'0'*64}else{'different'}
+        $approval|ConvertTo-Json -Depth 6|Set-Content "$root/bad-approval.json" -Encoding utf8NoBOM
+        Rejected {Read-MapRuntimePublicApproval -ApprovalPath "$root/bad-approval.json" -ManifestPath "$package/manifest.json"} 'Approval accepted for another package'
+        $approval[$field]=$saved
+    }
     $original=Get-Content $approvalFile -Raw
     foreach($invalid in @($original.Replace('"schema": 1','"schema": 1, "schema": 1'),$original.Replace('"schema": 1','"schema": 1, "path": "arbitrary"'),$original.Replace('author-2026-10-27','unspecified'))){
         Set-Content "$root/bad-approval.json" $invalid -Encoding utf8NoBOM
