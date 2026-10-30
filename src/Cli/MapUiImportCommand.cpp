@@ -79,15 +79,17 @@ int RunMapUiImport(int argc, wchar_t** argv) {
             if(!item.is_object() || item.empty() || item.size()>2 || (!item.contains("description")&&!item.contains("triggers"))) throw std::runtime_error("MAP_UI_PLAN_ITEM_INVALID");
             for(const auto& [key,value]:item.items()) if(key!="description"&&key!="triggers") throw std::runtime_error("MAP_UI_PLAN_ITEM_INVALID");
             Trigger::TriggerGraphEditBatch batch{Take(Trigger::CaptureTriggerGraphBinding(document,catalog)),{}};
+            std::string category="导入的界面逻辑";
             if(item.contains("description")) {
                 auto description=Take(GameUi::ParseUiDescription(input(item,"description",".json"),"map-ui-import"));
+                category=description.label.empty()?description.id:description.label;
                 if(!ids.insert(description.id).second) throw std::runtime_error("MAP_UI_DESCRIPTION_DUPLICATE");
                 const auto generated=Take(GameUi::GenerateUiTriggers(description));
                 generatedCount+=generated.triggers.size();
                 batch.operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(GameUi::kUiTriggerCategory),generated.featureText,{}, {}});
                 import("AudastraUI/"+description.id+".json",GameUi::SerializeUiDescription(description));
             }
-            if(item.contains("triggers")) batch.operations.emplace_back(Trigger::GraphApplyFeatureText{"导入的界面逻辑",input(item,"triggers",".txt"),{}, {}});
+            if(item.contains("triggers")) batch.operations.emplace_back(Trigger::GraphApplyFeatureText{category,input(item,"triggers",".txt"),{}, {}});
             Take(Trigger::ApplyTriggerGraphEditBatch(document,catalog,batch));
         }
         for(const auto& [name,text]:{std::pair{GameUi::kUiTemplateTocMember,GameUi::UiTemplateTocText()},std::pair{GameUi::kUiTemplateFdfMember,GameUi::UiTemplateFdfText()}}) {
