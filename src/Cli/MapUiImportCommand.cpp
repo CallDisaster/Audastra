@@ -111,8 +111,11 @@ int RunMapUiImport(int argc, wchar_t** argv) {
             if(item.contains("triggers")) batch.operations.emplace_back(Trigger::GraphApplyFeatureText{category,input(item,"triggers",".txt"),{}, {}});
             Take(Trigger::ApplyTriggerGraphEditBatch(document,catalog,batch));
         }
+        Json templates=Json::array();
+        // 与界面“生成触发器”一致更新这两个保留路径；内容只来自内置模板，不接客户端成员字节。
         for(const auto& [name,text]:{std::pair{GameUi::kUiTemplateTocMember,GameUi::UiTemplateTocText()},std::pair{GameUi::kUiTemplateFdfMember,GameUi::UiTemplateFdfText()}}) {
-            if(source.HasMember(name) && Take(source.ReadMember(name))!=Bytes(text)) throw std::runtime_error("MAP_UI_TEMPLATE_CONFLICT");
+            const auto before=source.HasMember(name)?Take(Sha256(Take(source.ReadMember(name)))):std::string{};
+            templates.push_back({{"member",name},{"before_sha256",before},{"after_sha256",Take(Sha256(Bytes(text)))}});
             import(std::string(name),std::string(text));
         }
         task.replacements.push_back({"war3map.imp",Take(imports.Serialize())});
@@ -137,7 +140,8 @@ int RunMapUiImport(int argc, wchar_t** argv) {
         auto saved=Take(MapArchiveSession::Open(target));
         for(const auto& id:ids) if(!saved.HasMember("AudastraUI/"+id+".json"))throw std::runtime_error("MAP_UI_READBACK_MISSING");
         std::cout<<Json{{"source_sha256",expected},{"candidate_sha256",saved.SourceSha256()},{"descriptions",ids},
-            {"generated_triggers",generatedCount},{"runtime_purpose","normal"},{"normal_map_save",true},{"runtime_validated",false}}.dump(2)<<'\n';
+            {"generated_triggers",generatedCount},{"templates",templates},{"runtime_purpose","normal"},{"normal_map_save",true},
+            {"runtime_packaged",saved.HasMember(kMapRuntimeInstallationMember)},{"runtime_validated",false}}.dump(2)<<'\n';
         FinalizeScriptWorkspace(task);return 0;
     }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }
