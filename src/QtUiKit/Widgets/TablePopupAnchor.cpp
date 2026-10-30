@@ -76,7 +76,10 @@ private:
         const int height = std::min(size.height(), std::max(above, below));
         panel_->resize(size.width(), height);
         placed_ = panel_->size();
-        panel_->move(x, above >= below ? cell.top() - panel_->height() : cell.bottom() + 1);
+        // 面板最小尺寸放不进字段上下任一侧时，宁可盖住字段，也要整块留在工作区内。
+        const int top = std::clamp(above >= below ? cell.top() - panel_->height() : cell.bottom() + 1,
+            available.top(), std::max(available.top(), available.bottom() - panel_->height() + 1));
+        panel_->move(std::clamp(x, available.left(), std::max(available.left(), available.right() - panel_->width() + 1)), top);
     }
     // 缩放取整可能差一两个像素；只把明显的尺寸变化当作面板自己改了大小，避免反复放置。
     bool GrewBySelf() const {
