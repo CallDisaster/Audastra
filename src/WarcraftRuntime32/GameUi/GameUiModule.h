@@ -19,7 +19,7 @@
 namespace Audastra::Runtime32::GameUi {
 
 inline constexpr std::string_view kGameUiModuleName = "audastraui";
-inline constexpr std::string_view kGameUiModuleVersion = "1.2.0";
+inline constexpr std::string_view kGameUiModuleVersion = "1.3.0";
 
 // 名称、版本和命令顺序；装入时宿主按它逐项核对模块描述表。
 [[nodiscard]] audastra::japi::ModuleContract GameUiModuleContract();
@@ -33,6 +33,6 @@ inline constexpr std::string_view kGameUiModuleVersion = "1.2.0";
 // 按已核验的 Game.dll 基址解析 1.27a 入口后装入。
 [[nodiscard]] std::int32_t InstallGameUiModule127(audastra::japi::Host& host, Address base,
     const std::function<bool(Address, std::size_t)>& executable, UiFaultObserver observer = nullptr,
-    std::shared_ptr<GameUiDataPlane> data = {});
+    std::shared_ptr<GameUiDataPlane> data = {}, std::function<void(Address, Address, bool, float, float)> observePointer = {});
 
 } // namespace Audastra::Runtime32::GameUi

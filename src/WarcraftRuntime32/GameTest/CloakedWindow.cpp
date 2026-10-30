@@ -22,6 +22,9 @@ using SetCursorPosFunction = BOOL(WINAPI*)(int, int);
 using GetCursorPosFunction = BOOL(WINAPI*)(LPPOINT);
 using GetAsyncKeyStateFunction = SHORT(WINAPI*)(int);
 using GetKeyboardStateFunction = BOOL(WINAPI*)(PBYTE);
+using GetMessageFunction = BOOL(WINAPI*)(LPMSG, HWND, UINT, UINT);
+using PeekMessageFunction = BOOL(WINAPI*)(LPMSG, HWND, UINT, UINT, UINT);
+using GetMessagePosFunction = DWORD(WINAPI*)();
 
 CreateWindowExAFunction originalCreateA = CreateWindowExA;
 CreateWindowExWFunction originalCreateW = CreateWindowExW;
@@ -38,6 +41,9 @@ GetCursorPosFunction originalGetCursor = GetCursorPos;
 GetAsyncKeyStateFunction originalKeyState = GetAsyncKeyState;
 GetAsyncKeyStateFunction originalSynchronousKeyState = GetKeyState;
 GetKeyboardStateFunction originalKeyboard = GetKeyboardState;
+GetMessageFunction originalGetMessageA = GetMessageA, originalGetMessageW = GetMessageW;
+PeekMessageFunction originalPeekMessageA = PeekMessageA, originalPeekMessageW = PeekMessageW;
+GetMessagePosFunction originalMessagePos = GetMessagePos;
 
 volatile LONG* counter = nullptr;
 std::atomic<bool> installed{false};
@@ -170,6 +176,40 @@ SHORT WINAPI ReadKey(int key) { return WindowInputKey(key, true); }
 SHORT WINAPI ReadSynchronousKey(int key) { return WindowInputKey(key, false); }
 BOOL WINAPI ReadKeyboard(PBYTE output) { return WindowInputKeyboard(output); }
 
+// 消息中的屏幕位置也必须使用同一虚拟光标；只改本次主窗口的输入消息，不改消息内容或实际桌面。
+void CursorInMessage(LPMSG message) {
+    const auto main = MainWindow();
+    if (!message || !main || message->hwnd != main) return;
+    const auto type = message->message;
+    if (!((type >= WM_MOUSEFIRST && type <= WM_MOUSELAST) || (type >= WM_KEYFIRST && type <= WM_KEYLAST))) return;
+    POINT point{};
+    if (ReadCursor(&point)) message->pt = point;
+}
+BOOL WINAPI ReadMessageA(LPMSG message, HWND window, UINT low, UINT high) {
+    const auto result = originalGetMessageA(message, window, low, high);
+    if (result > 0) CursorInMessage(message);
+    return result;
+}
+BOOL WINAPI ReadMessageW(LPMSG message, HWND window, UINT low, UINT high) {
+    const auto result = originalGetMessageW(message, window, low, high);
+    if (result > 0) CursorInMessage(message);
+    return result;
+}
+BOOL WINAPI PeekVirtualA(LPMSG message, HWND window, UINT low, UINT high, UINT flags) {
+    const auto result = originalPeekMessageA(message, window, low, high, flags);
+    if (result) CursorInMessage(message);
+    return result;
+}
+BOOL WINAPI PeekVirtualW(LPMSG message, HWND window, UINT low, UINT high, UINT flags) {
+    const auto result = originalPeekMessageW(message, window, low, high, flags);
+    if (result) CursorInMessage(message);
+    return result;
+}
+DWORD WINAPI VirtualMessagePos() {
+    POINT point{};
+    return ReadCursor(&point) ? MAKELONG(static_cast<SHORT>(point.x), static_cast<SHORT>(point.y)) : 0;
+}
+
 } // namespace
 
 bool InstallCloakedWindow(volatile LONG* cloaked, std::string& error) {
@@ -196,6 +236,11 @@ bool InstallCloakedWindow(volatile LONG* cloaked, std::string& error) {
         attach(originalKeyState, ReadKey);
         attach(originalSynchronousKeyState, ReadSynchronousKey);
         attach(originalKeyboard, ReadKeyboard);
+        attach(originalGetMessageA, ReadMessageA);
+        attach(originalGetMessageW, ReadMessageW);
+        attach(originalPeekMessageA, PeekVirtualA);
+        attach(originalPeekMessageW, PeekVirtualW);
+        attach(originalMessagePos, VirtualMessagePos);
         if (code == NO_ERROR) code = DetourTransactionCommit();
         else DetourTransactionAbort();
     }

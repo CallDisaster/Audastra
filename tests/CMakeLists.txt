@@ -1,4 +1,12 @@
 include_directories("${WAR3_RENDER_CORE_SOURCE_DIR}/tests")
+add_executable(war3-map-ui-number-format-tests "${PROJECT_SOURCE_DIR}/src/WarcraftRuntime32/fixtures/UiNumberFormatTests.cpp")
+target_include_directories(war3-map-ui-number-format-tests PRIVATE "${PROJECT_SOURCE_DIR}/include")
+target_compile_options(war3-map-ui-number-format-tests PRIVATE /utf-8 /W4 /permissive-)
+add_test(NAME audastra-ui-number-format COMMAND war3-map-ui-number-format-tests)
+add_executable(war3-map-ui-text-contract-probe EXCLUDE_FROM_ALL GameUiTextContractProbe.cpp)
+target_link_libraries(war3-map-ui-text-contract-probe PRIVATE War3MapEditor::GameUi audastra-json)
+target_compile_options(war3-map-ui-text-contract-probe PRIVATE /utf-8 /W4 /permissive-)
+
 add_executable(war3-map-archive-script-audit-tests ArchiveScriptAuditTests.cpp)
 target_link_libraries(war3-map-archive-script-audit-tests PRIVATE War3MapEditor::Core)
 target_compile_definitions(war3-map-archive-script-audit-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
@@ -690,6 +698,14 @@ add_executable(audastra-runtime-package-freezer EXCLUDE_FROM_ALL "${PROJECT_SOUR
 target_link_libraries(audastra-runtime-package-freezer PRIVATE War3MapEditor::Services audastra-json)
 target_compile_definitions(audastra-runtime-package-freezer PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-runtime-package-freezer PRIVATE /W4 /permissive- /utf-8)
+find_program(AUDASTRA_RUNTIME_TEST_PWSH NAMES pwsh)
+if(AUDASTRA_RUNTIME_TEST_PWSH)
+    add_dependencies(war3-map-runtime-package-tests audastra-runtime-package-freezer)
+    add_test(NAME services-runtime-distribution-pipeline COMMAND "${AUDASTRA_RUNTIME_TEST_PWSH}" -NoProfile
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/RuntimeDistributionTests.ps1"
+        -Freezer "$<TARGET_FILE:audastra-runtime-package-freezer>" -Tools "${PROJECT_SOURCE_DIR}/tools/dev")
+    set_tests_properties(services-runtime-distribution-pipeline PROPERTIES TIMEOUT 120)
+endif()
 add_executable(war3-map-runtime-boot-tests MapRuntimeBootTests.cpp RuntimeModuleBootTests.cpp)
 target_link_libraries(war3-map-runtime-boot-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_options(war3-map-runtime-boot-tests PRIVATE /W4 /permissive- /utf-8)

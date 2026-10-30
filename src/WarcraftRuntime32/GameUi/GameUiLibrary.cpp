@@ -2,6 +2,10 @@
 #include "GameUiMemory.h"
 #include <atomic>
 #include <limits>
+#include <array>
+#include <cstring>
+#include <cmath>
+#include <cstddef>
 
 #include <windows.h>
 
@@ -59,8 +63,9 @@ bool Complete(const GameUiEntryPoints& e) noexcept {
         && e.textSetAlignH && e.textSetAlignV && e.textUpdateAlign && e.fontStringSetText && e.fontStringSetFont
         && e.fontStringSetAlignH && e.fontStringSetAlignV && e.textureSetTexture && e.statusBarSetTexture
         && e.statusBarSetValue && e.statusBarSetLimits && e.sliderSetValue && e.editBoxSetText && e.modelSetModel
-        && e.controlSetEnabled && e.stringTable && e.fdfTable && e.defaultStatus && e.hoveredLayer
-        && e.pressedLayer && e.simpleTop && e.vtBackdrop && e.vtText && e.vtEditBox && e.vtSlider && e.vtModel
+        && e.controlSetEnabled && e.stringTable && e.fdfTable && e.defaultStatus && e.activeLayer
+        && e.mouseEvent && e.mouseEventVtable && e.readCursorUi && e.hitTestLayer && e.simpleTop
+        && e.vtBackdrop && e.vtText && e.vtEditBox && e.vtSlider && e.vtModel
         && e.vtSimpleStatusBar && e.vtSimpleTexture && e.vtSimpleFontString;
 }
 
@@ -461,9 +466,24 @@ UiError GameUiLibrary::SetParent(FrameHandle frame, FrameHandle parent) {
     return UiError::Unsupported;
 }
 
+GameUiLibrary::Slot* GameUiLibrary::ResolveText(FrameHandle frame, UiError& error) {
+    auto* slot = Resolve(frame, error);
+    if (!slot) return nullptr;
+    if (slot->vtable == entries_.vtText || slot->vtable == entries_.vtSimpleFontString || slot->vtable == entries_.vtEditBox) return slot;
+    error = UiError::Unsupported;
+    return nullptr;
+}
+UiError GameUiLibrary::TextStatus(FrameHandle frame) {
+    UiError error{};
+    return ResolveText(frame, error) ? UiError::None : error;
+}
+UiError GameUiLibrary::FrameStatus(FrameHandle frame) {
+    UiError error{};
+    return Resolve(frame, error) ? UiError::None : error;
+}
 UiError GameUiLibrary::SetText(FrameHandle frame, std::string_view text) {
     UiError error{};
-    const auto* slot = Resolve(frame, error);
+    const auto* slot = ResolveText(frame, error);
     if (!slot) return error;
     const std::string value(text);
     const auto object = slot->object;
@@ -607,11 +627,24 @@ UiError GameUiLibrary::Watch(FrameHandle frame, std::uint8_t mask) {
     return UiError::None;
 }
 
-PointerSnapshot GameUiLibrary::ReadPointer() const {
+PointerSnapshot GameUiLibrary::ReadPointer() {
     PointerSnapshot pointer;
     if (Ready() != UiError::None) return pointer;
-    Address hovered = 0, top = 0;
-    if (!ReadWord(entries_.hoveredLayer, hovered)) return pointer;
+    Address active = 0, hovered = 0, top = 0;
+    if (!ReadWord(entries_.activeLayer, active) || !active) return pointer;
+    Address eventVtable = 0;
+    float x = 0, y = 0;
+    if (!ReadWord(entries_.mouseEvent, eventVtable) || eventVtable != entries_.mouseEventVtable
+        || !entries_.readCursorUi(x, y) || !std::isfinite(x) || !std::isfinite(y)
+        || x < 0 || x > 0.8f || y < 0 || y > 0.6f) return pointer;
+    // 全局事件可能保留旧位置。只在栈副本内填当前客户区坐标，不改游戏的事件、光标或焦点。
+    alignas(16) std::array<std::byte, 0x30> event{};
+    if (Run([&] {
+        std::memcpy(event.data(), reinterpret_cast<const void*>(entries_.mouseEvent), event.size());
+        std::memcpy(event.data() + 0x24, &x, sizeof(x));
+        std::memcpy(event.data() + 0x28, &y, sizeof(y));
+        hovered = entries_.hitTestLayer(active, 0, reinterpret_cast<Address>(event.data()));
+    }) != UiError::None) return pointer;
     // 鼠标在 Simple 系框架上时，经典层拿到的是全局 CSimpleTop，再从它取具体对象。
     if (hovered && ReadWord(entries_.simpleTop, top) && top && hovered == top) {
         Address simple = 0;
@@ -619,6 +652,9 @@ PointerSnapshot GameUiLibrary::ReadPointer() const {
     }
     pointer.hovered = hovered;
     pointer.buttonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+    if (entries_.observePointer) {
+        try { entries_.observePointer(active, hovered, pointer.buttonDown, x, y); } catch (...) {}
+    }
     return pointer;
 }
 

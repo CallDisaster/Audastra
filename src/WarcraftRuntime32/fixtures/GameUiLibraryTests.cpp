@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -183,9 +184,30 @@ struct Tables {
     std::array<Address, 8> fdf{};
     Address status = 0;
     Address hovered = 0;
-    Address pressed = 0;
+    Address active = 0;
+    alignas(16) std::array<std::byte, 0x30> mouseEvent{};
+    float cursorX = 0.1f, cursorY = 0.45f;
+    bool cursorValid = true, useHitGeometry = false;
+    unsigned hitCalls = 0;
+    bool hitFault = false;
     Address simpleTop = 0;
 } g_tables;
+
+Address __fastcall HitTest(Address self, int, Address event) {
+    Check(self == g_tables.active && event != reinterpret_cast<Address>(g_tables.mouseEvent.data()), "hit test uses active layer and a private event snapshot");
+    ++g_tables.hitCalls;
+    if (g_tables.hitFault) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    float x = 0, y = 0;
+    std::memcpy(&x, reinterpret_cast<const void*>(event + 0x24), sizeof(x));
+    std::memcpy(&y, reinterpret_cast<const void*>(event + 0x28), sizeof(y));
+    Check(x == g_tables.cursorX && y == g_tables.cursorY, "native query receives current cursor coordinates");
+    float oldX = 0;
+    std::memcpy(&oldX, g_tables.mouseEvent.data() + 0x24, sizeof(oldX));
+    Check(oldX == 0.1f, "query never changes the game's cached event");
+    if (g_tables.useHitGeometry && (x < 0.05f || x > 0.16f || y < 0.42f || y > 0.47f)) return 0;
+    return g_tables.hovered;
+}
+bool QueryCursor(float& x, float& y) { x = g_tables.cursorX; y = g_tables.cursorY; return g_tables.cursorValid; }
 
 void FillVtable(Vtable& vtable, Address height, bool classic) {
     vtable.fill(0);
@@ -258,8 +280,11 @@ GameUiEntryPoints Entries() {
     e.stringTable = reinterpret_cast<Address>(g_tables.strings.data());
     e.fdfTable = reinterpret_cast<Address>(g_tables.fdf.data());
     e.defaultStatus = reinterpret_cast<Address>(&g_tables.status);
-    e.hoveredLayer = reinterpret_cast<Address>(&g_tables.hovered);
-    e.pressedLayer = reinterpret_cast<Address>(&g_tables.pressed);
+    e.activeLayer = reinterpret_cast<Address>(&g_tables.active);
+    e.mouseEvent = reinterpret_cast<Address>(g_tables.mouseEvent.data());
+    e.mouseEventVtable = reinterpret_cast<Address>(vtClassic.data());
+    e.readCursorUi = &QueryCursor;
+    e.hitTestLayer = &HitTest;
     e.simpleTop = reinterpret_cast<Address>(&g_tables.simpleTop);
     e.vtBackdrop = reinterpret_cast<Address>(vtBackdrop.data());
     e.vtText = reinterpret_cast<Address>(vtText.data());
@@ -276,7 +301,12 @@ void Reset() {
     g_log.clear();
     g_frames.clear();
     g_tables = {};
+    const auto mouseVtable = reinterpret_cast<Address>(vtClassic.data());
+    std::memcpy(g_tables.mouseEvent.data(), &mouseVtable, sizeof(mouseVtable));
+    std::memcpy(g_tables.mouseEvent.data() + 0x24, &g_tables.cursorX, sizeof(float));
+    std::memcpy(g_tables.mouseEvent.data() + 0x28, &g_tables.cursorY, sizeof(float));
     g_root = NewFrame(vtClassic, 0, 0);
+    g_tables.active = g_root->Self();
     g_world = NewFrame(vtClassic, 0, 0);
     g_root->Set(Layout127::GameUiWorldFrame, g_world->Self());
     g_named = nullptr;
@@ -521,7 +551,31 @@ void PointerEvents() {
     top->Set(Layout127::SimpleTopHovered, label->Self());
     Check(ui.ReadPointer().hovered == label->Self(), "simple top resolves to hovered simple object");
     g_tables.hovered = buttonObject->Self();
-    Check(ui.ReadPointer().hovered == buttonObject->Self(), "classic hovered frame read directly");
+    Check(ui.ReadPointer().hovered == buttonObject->Self(), "classic hovered frame comes from live hit test");
+    g_tables.useHitGeometry = true;
+    g_tables.cursorX = 0.64f; g_tables.cursorY = 0.026f;
+    Check(ui.ReadPointer().hovered == 0, "native command button position cannot click the cached party frame");
+    g_tables.cursorX = 0.1f; g_tables.cursorY = 0.45f;
+    g_tables.useHitGeometry = false;
+    g_tables.active = buttonObject->Self();
+    g_tables.hovered = 0;
+    Check(ui.ReadPointer().hovered == 0, "old active frame must not masquerade as a mouse hit outside the frame");
+    g_tables.hovered = label->Self();
+    ui.Poll({ui.ReadPointer().hovered, true});
+    (void)ui.TakeEvents();
+    g_tables.hovered = 0;
+    ui.Poll({ui.ReadPointer().hovered, false});
+    events = ui.TakeEvents();
+    for (const auto& event : events) Check(event.kind != kUiEventClick, "moving off a focused frame before release never clicks it");
+    const auto calls = g_tables.hitCalls;
+    g_tables.cursorValid = false;
+    Check(ui.ReadPointer().hovered == 0 && g_tables.hitCalls == calls, "unrecognized or background window does not query a frame");
+    g_tables.cursorValid = true;
+    g_tables.active = 0;
+    Check(ui.ReadPointer().hovered == 0 && g_tables.hitCalls == calls, "no active layer does not call the engine");
+    g_tables.active = buttonObject->Self();
+    g_tables.hitFault = true;
+    Check(ui.ReadPointer().hovered == 0 && ui.Faulted(), "hit test faults fail closed without reusing stale focus");
 }
 
 void FaultsAndThreads() {
@@ -588,7 +642,7 @@ void ModuleCalls() {
     Check(m.Call("module.load;s:audastraui").status == AJ_OK, "map-side load finds the active built-in module");
     Check(m.Call("module.load;s:other").status == AJ_UNSUPPORTED, "no loader: maps cannot pull other modules");
     Check(m.Call("module.info;s:audastraui").value.text
-        == "audastraui|1.2.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
+        == "audastraui|1.3.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
 
     auto r = m.Call("audastraui.ready");
     Check(r.status == AJ_OK && r.value.kind == AJ_BOOL && r.value.integer == 1, "ready with complete entries and game UI");
@@ -803,13 +857,21 @@ void DataPlaneModule() {
     Check(m.Call("audastraui.bindtable;i:1234").status == AJ_OK && m.Call("audastraui.dataerrors").value.text == "0|", "wire bind and diagnostics contracts");
     const auto frame = m.Call("audastraui.create;s:Text;d:0;i:0;i:0").value.integer;
     Check(data->SaveBoolean(1234, frame, 5, 1).applied, "module attaches data consumer to same UI library");
+    Check(m.Call("audastraui.textformat;d:" + std::to_string(frame) + ";s:{0}").status == AJ_OK
+        && data->SaveInteger(1234, frame, 24, 16777217).applied && data->SaveBoolean(1234, frame, 6, 1).applied,
+        "format registration and int arguments use real module contract");
+    Check(m.Call("audastraui.eventtable").status == AJ_UNSUPPORTED && m.Call("audastraui.ready").value.integer == 1,
+        "optional event capability refusal does not disable drawing");
     Check(m.Call("audastraui.bindtable;i:5678").status == AJ_STATE, "conflicting bind reports normal module status");
     const auto failed = m.request;
     Check(!m.Call("audastraui.error;i:" + std::to_string(failed)).value.text.empty(), "binding reason uses failed-request error channel");
     Check(m.host.Reset(2).applied && !data->Owns(1234), "host stop clears table before module destruction");
 }
 
-// AudastraUI.j 里每个模块调用与契约一致：命令名、参数类型顺序、返回类型；契约里每条命令都被用到。
+#include "GameUiTextFormatTests.h"
+#include "GameUiDataFormatTests.h"
+
+// 校验已有包装调用及新增可选能力的明确契约；生成器侧接线另作集成验收。
 void ScriptMatchesModule() {
     std::ifstream stream(AUDASTRA_UI_SCRIPT, std::ios::binary);
     const std::string script((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
@@ -851,6 +913,16 @@ void ScriptMatchesModule() {
         }
     }
     for (const auto& command : contract.commands) {
+        if (command.name == "audastraui.textformat" && !used.contains(command.name)) {
+            Check(command.arguments == "ds" && command.resultKind == AJ_VOID && command.domain == AJ_LOCAL_COMMAND,
+                "optional format control has a separately exercised contract");
+            continue;
+        }
+        if (command.name == "audastraui.eventtable" && !used.contains(command.name)) {
+            Check(command.arguments.empty() && command.resultKind == AJ_VOID && command.domain == AJ_LOCAL_COMMAND,
+                "optional event control has a separately exercised contract");
+            continue;
+        }
         // 输入是1.1的可选能力，旧版绘制包装仍可完整使用1.0命令。
         if (command.name == "audastraui.dataerrors" && !used.contains(command.name)) {
             Check(command.arguments.empty() && command.resultKind == AJ_TEXT && command.domain == AJ_LOCAL_COMMAND,
@@ -879,6 +951,13 @@ int main() {
         ModuleUnavailable();
         DataPlane();
         DataPlaneModule();
+        TextFormatContracts();
+        FormattedDataPlane();
+        EventTableDataPlane();
+        EventTableModule();
+        EventTableFaultIsolation();
+        FormattedDataCapacity();
+        TextObservationIsolation();
         ScriptMatchesModule();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";

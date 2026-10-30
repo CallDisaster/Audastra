@@ -129,10 +129,10 @@ int wmain(int argc, wchar_t** argv) {
             Check(_wcsicmp(std::filesystem::path(argv[3]).extension().c_str(), L".dll") == 0, "stock input must be a DLL");
             Handle file(OpenLockedFile(argv[3])); Check(file.value != INVALID_HANDLE_VALUE && Sha256(file.value) == "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a", "explicit known stock image only");
             const auto game = ReadFileImage(argv[3]);
-            for (const auto rva : {0x1e31d0u,0x1e9a50u,0x7dd070u,0x1f3a10u,0x1f3af0u,0x1f3570u,0x1cf9d0u}) {
+            for (const auto rva : {0x1e31d0u,0x1e9a50u,0x7dd070u,0x1f3a10u,0x1f3af0u,0x1f3570u,0x1cf9d0u,0x1f3890u}) {
                 std::array<unsigned char,32> rebased{}; Check(OwnLua::Pe32OriginalCode(game,0x5e400000,rva,rebased),"known stock relocation window");
             }
-            std::cout << "known_stock_seven_relocation_windows=true\n";
+            std::cout << "known_stock_eight_relocation_windows=true\n";
         }
         FreeLibrary(base);
         std::cout << "chain_order=true\noriginal_call_exactly_once=true\nmultiple_layers=true\nowner_retained=true\nlifo_restore=true\nunknown_targets_refused=true\nrace_refused=true\ngame_started=false\n"; return 0;

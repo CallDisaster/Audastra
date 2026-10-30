@@ -9,6 +9,7 @@ param(
     [string]$AgentRuntimeDirectory = '',
     [string]$NodeExecutable = '',
     [string]$NodeLicense = '',
+    [string]$MapRuntimeInstallationRoot = '',
     [string]$UpdateOutputDirectory = '',
     [string]$MinimumDirectUpgrade = '',
     [string]$ReleaseNotes = ''
@@ -88,6 +89,10 @@ if ($LASTEXITCODE -ne 0) { throw "windeployqt failed: $LASTEXITCODE (partial out
 "[Paths]`nPrefix = .`nPlugins = plugins`nTranslations = translations`n" |
     Set-Content -LiteralPath "$bin/qt.conf" -Encoding ascii
 $runtimeFiles | Copy-Item -Destination $bin
+if ($MapRuntimeInstallationRoot) {
+    . "$PSScriptRoot/StageMapRuntime.ps1"
+    Copy-PendingMapRuntimeInstallation -Source $MapRuntimeInstallationRoot -Target "$bin/runtime"
+}
 New-Item -ItemType Directory -Path "$bin/fonts", "$licenses/fonts", "$licenses/Qt" | Out-Null
 $fonts | Copy-Item -Destination "$bin/fonts"
 Copy-Item -Path "$repo/third_party/fonts/LICENSES/*" -Destination "$licenses/fonts" -Recurse

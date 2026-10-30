@@ -4,12 +4,14 @@
 #include "HookSite.h"
 #include "../OwnLua/GameVm127.h"
 #include "../GameUi/GameUiModule.h"
+#include "../GameUi/GameUiMemory.h"
 #include "../RuntimeFiles.h"
 #include <detours.h>
 #include <tlhelp32.h>
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <bit>
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -23,16 +25,19 @@ using DestroyVm = std::uintptr_t(__thiscall*)(std::uintptr_t);
 using SaveReal = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, const float*);
 using SaveStr = std::int32_t(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::uintptr_t);
 using SaveBoolean = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::int32_t);
+using SaveInteger = void(__cdecl*)(std::int32_t, std::int32_t, std::int32_t, std::int32_t);
 // 原版同 SHA 的 stock 登记第24项：GetLocalizedString (S)S，登记调用 RVA 1e9c30。
 // 只读核验来自本项目原有 stock 登记扫描器；不是引导器实现中的地址。
 constexpr std::uintptr_t kLocalized = 0x1e31d0;
 constexpr std::uintptr_t kInitialize = 0x1e9a50, kDestroyVm = 0x7dd070;
 // 来自固定映像的 stock native 登记与对应实现；real 是指针，string 是 VM object。
 constexpr std::uintptr_t kSaveReal = 0x1f3a10, kSaveStr = 0x1f3af0, kSaveBoolean = 0x1f3570;
+// 固定映像 stock 登记 RVA 1ed0c9..1ed0d8：SaveInteger (Hhashtable;III)V。
+constexpr std::uintptr_t kSaveInteger = 0x1f3890;
 constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
 RuntimeTestWriter testEvidence;
 
-void Trace(std::string_view message, bool fault = false, bool counter = false) noexcept {
+void Trace(std::string_view message, bool fault = false, bool counter = false, bool observation = false, bool lifecycle = false) noexcept {
     try {
         static std::mutex lock;
         static HANDLE file = INVALID_HANDLE_VALUE;
@@ -40,6 +45,8 @@ void Trace(std::string_view message, bool fault = false, bool counter = false) n
         static unsigned lines = 0;
         static unsigned faults = 0;
         static unsigned counters = 0;
+        static unsigned observations = 0;
+        static unsigned lifecycles = 0;
         std::lock_guard guard(lock);
         if (!attempted) {
             attempted = true;
@@ -53,8 +60,8 @@ void Trace(std::string_view message, bool fault = false, bool counter = false) n
             }
         }
         // 故障保留独立预算，普通轮询刷满后也能记录；两者都不无限增长。
-        if (counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
-        if (counter) ++counters; else if (fault) ++faults; else ++lines;
+        if (lifecycle ? lifecycles >= 256 : observation ? observations >= 2048 : counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
+        if (lifecycle) ++lifecycles; else if (observation) ++observations; else if (counter) ++counters; else if (fault) ++faults; else ++lines;
         const std::string text = "[AudastraJapi] pid=" + std::to_string(GetCurrentProcessId())
             + " tid=" + std::to_string(GetCurrentThreadId()) + " " + std::string(message.substr(0, 768)) + "\n";
         OutputDebugStringA(text.c_str());
@@ -65,6 +72,8 @@ void Trace(std::string_view message, bool fault = false, bool counter = false) n
         }
     } catch (...) { OutputDebugStringA("[AudastraJapi] diagnostic-failure\n"); }
 }
+// 高频轮询和文字观察不能挤掉换图、会话销毁的有限诊断记录。
+void TraceLifecycle(std::string_view message) { Trace(message, false, false, false, true); }
 struct Runtime {
     std::shared_ptr<OwnLua::GameImage127> image;
     Localized localized = nullptr;
@@ -73,6 +82,7 @@ struct Runtime {
     SaveReal saveReal = nullptr;
     SaveStr saveStr = nullptr;
     SaveBoolean saveBoolean = nullptr;
+    SaveInteger saveInteger = nullptr;
     bool dataHooks = false;
     std::atomic<std::int32_t> boundTable{0};
     std::recursive_mutex lock;
@@ -84,7 +94,7 @@ struct Runtime {
     unsigned depth = 0;
     bool failed = false;
     std::string identity;
-    std::array<std::unique_ptr<HookSite>, 7> sites;
+    std::array<std::unique_ptr<HookSite>, 8> sites;
 
     void Fail(std::string_view message) {
         failed = true;
@@ -103,7 +113,7 @@ struct Runtime {
         if (++epoch > INT32_MAX) { Fail("epoch exhausted"); return; }
         testEvidence.Reset(static_cast<std::uint32_t>(epoch));
         failed = false;
-        Trace("vm-reset epoch=" + std::to_string(epoch));
+        TraceLifecycle("vm-reset epoch=" + std::to_string(epoch));
     }
 };
 std::atomic<Runtime*> runtime{nullptr};
@@ -138,6 +148,8 @@ void TraceReply(std::string_view input, std::string_view output) {
     // 只记录布尔结果与句柄是否存在；不记录作者文字、实际句柄或请求参数。
     if (reply.value.kind == AJ_BOOL) message += " bool=" + std::to_string(reply.value.integer);
     if (reply.value.kind == AJ_HANDLE) message += reply.value.integer ? " handle=nonzero" : " handle=zero";
+    if (testEvidence.Enabled() && request.command == "audastraui.clickunit" && reply.value.kind == AJ_INT)
+        message += " input_result=" + std::to_string(reply.value.integer);
     if (request.command == "audastraui.dataerrors") {
         // 只记录自有计数，不记录作者文字/资源路径；独立预算不会挤掉真正的异常日志。
         std::uint32_t count = 0;
@@ -184,15 +196,59 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                         GameUi::GameUiDataContext context{
                             reinterpret_cast<GameUi::FnResolveUiTable>(image.Base() + kResolveTable),
                             [vm] { const auto current = vm.lock(); return current && current->Generation() && current->MatchesCurrentMainVm(); }, &self->boundTable};
+                        context.storeInteger = [self](std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) {
+                            self->saveInteger(table, parent, child, value);
+                        };
+                        if (testEvidence.Enabled()) {
+                            context.observeTextArgument = [self](std::uint32_t ordinal, GameUi::FrameHandle frame,
+                                int index, bool integer, std::uint32_t bits) {
+                                Trace("ui-text-argument epoch=" + std::to_string(self->epoch) + " ordinal=" + std::to_string(ordinal) + " frame=" + std::to_string(frame)
+                                    + " index=" + std::to_string(index) + " type=" + (integer ? "integer" : "real")
+                                    + " bits=" + std::to_string(bits), false, false, true);
+                            };
+                            context.observeTextCommit = [self](std::uint32_t ordinal, GameUi::FrameHandle frame, std::string_view text) {
+                                Trace("ui-text-commit epoch=" + std::to_string(self->epoch) + " ordinal=" + std::to_string(ordinal) + " frame=" + std::to_string(frame)
+                                    + " text=" + audastra::japi::EncodeText(text), false, false, true);
+                            };
+                        }
                         self->data = std::make_shared<GameUi::GameUiDataPlane>(std::move(context), &TraceUiFault);
                     }
+                    std::function<void(GameUi::Address, GameUi::Address, bool, float, float)> pointerObserver;
+                    if (testEvidence.Enabled()) {
+                        const auto window = GetForegroundWindow();
+                        DWORD process = 0;
+                        const auto thread = GetWindowThreadProcessId(window, &process);
+                        char name[80]{}; RECT client{};
+                        if (process == GetCurrentProcessId() && GetClassNameA(window, name, sizeof(name)) && GetClientRect(window, &client))
+                            Trace("ui-window class=" + std::string(name) + " thread=" + std::to_string(thread)
+                                + " caller=" + std::to_string(GetCurrentThreadId()) + " width=" + std::to_string(client.right)
+                                + " height=" + std::to_string(client.bottom), false, false, true);
+                        pointerObserver = [self, base = image.Base(), lastHit = GameUi::Address{}, lastDown = false,
+                            samples = 0u](GameUi::Address active, GameUi::Address hit, bool down, float queryX, float queryY) mutable {
+                            if (samples >= 64 || (hit == lastHit && down == lastDown)) return;
+                            lastHit = hit; lastDown = down; ++samples;
+                            GameUi::Address x = 0, y = 0;
+                            const bool event = GameUi::Detail::ReadWord(base + GameUi::Rva127::MouseEvent + 0x24, x)
+                                && GameUi::Detail::ReadWord(base + GameUi::Rva127::MouseEvent + 0x28, y);
+                            POINT cursor{};
+                            const bool cursorOk = GetCursorPos(&cursor) != FALSE;
+                            Trace("ui-pointer epoch=" + std::to_string(self->epoch) + " active=" + std::to_string(active)
+                                + " hit=" + std::to_string(hit) + " down=" + std::to_string(down)
+                                + " event=" + std::to_string(event) + " cached_x_bits=" + std::to_string(x)
+                                + " cached_y_bits=" + std::to_string(y)
+                                + " query_x_bits=" + std::to_string(std::bit_cast<std::uint32_t>(queryX))
+                                + " query_y_bits=" + std::to_string(std::bit_cast<std::uint32_t>(queryY)) + " cursor=" + std::to_string(cursorOk)
+                                + " cursor_x=" + std::to_string(cursor.x) + " cursor_y=" + std::to_string(cursor.y), false, false, true);
+                        };
+                    }
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),
-                        [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault, self->data);
+                        [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault, self->data,
+                        std::move(pointerObserver));
                     Trace("builtin-install audastraui status=" + std::to_string(status));
                     return status;
                 });
             self->vm = attached.vm;
-            Trace("vm-attach epoch=" + std::to_string(self->epoch) + (attached.vm ? " ok" : " failed"));
+            TraceLifecycle("vm-attach epoch=" + std::to_string(self->epoch) + (attached.vm ? " ok" : " failed"));
             return attached;
         }).value_or(0);
         return result;
@@ -241,6 +297,17 @@ void __cdecl SaveBooleanHook(std::int32_t table, std::int32_t parent, std::int32
     try {
         if (WriteData(*self, [&](auto& data) { return data.SaveBoolean(table, parent, child, value); }).intercepted) return;
         self->saveBoolean(table, parent, child, value);
+    } catch (...) { Trace("data-write dispatch exception", true); }
+}
+void __cdecl SaveIntegerHook(std::int32_t table, std::int32_t parent, std::int32_t child, std::int32_t value) noexcept {
+    auto* self = runtime.load();
+    if (!self || !self->saveInteger) return;
+    if (!table || table != self->boundTable.load(std::memory_order_acquire)) {
+        self->saveInteger(table, parent, child, value); return;
+    }
+    try {
+        if (WriteData(*self, [&](auto& data) { return data.SaveInteger(table, parent, child, value); }).intercepted) return;
+        self->saveInteger(table, parent, child, value);
     } catch (...) { Trace("data-write dispatch exception", true); }
 }
 void __cdecl InitializeHook() noexcept {
@@ -304,8 +371,8 @@ int Install(std::string_view identity) {
     owned->localized = reinterpret_cast<Localized>(image.Base() + kLocalized);
     owned->initialize = reinterpret_cast<Initialize>(image.Base() + kInitialize);
     owned->destroyVm = reinterpret_cast<DestroyVm>(image.Base() + kDestroyVm);
-    constexpr std::array<std::uintptr_t, 7> rvas{kLocalized, kInitialize, kDestroyVm, kSaveReal, kSaveStr, kSaveBoolean, kResolveTable};
-    constexpr std::array<const char*, 7> names{"localized", "initialize", "destroy_vm", "save_real", "save_str", "save_boolean", "resolve_table"};
+    constexpr std::array<std::uintptr_t, 8> rvas{kLocalized, kInitialize, kDestroyVm, kSaveReal, kSaveStr, kSaveBoolean, kResolveTable, kSaveInteger};
+    constexpr std::array<const char*, 8> names{"localized", "initialize", "destroy_vm", "save_real", "save_str", "save_boolean", "resolve_table", "save_integer"};
     const auto reportSite = [&](std::size_t i, std::string_view reason) {
         auto message = "hook-site site=" + std::string(names[i]) + " reason=" + std::string(reason);
         if (testEvidence.Enabled()) message += " " + DescribeHookSite(image.Base() + rvas[i]);
@@ -327,11 +394,12 @@ int Install(std::string_view identity) {
     if (!accepted(0) || !accepted(1) || !accepted(2)) {
         Trace("hook-sites-changed: required site qualification refused"); return AJ_POLICY;
     }
-    owned->dataHooks = accepted(3) && accepted(4) && accepted(5) && accepted(6);
+    owned->dataHooks = accepted(3) && accepted(4) && accepted(5) && accepted(6) && accepted(7);
     if (owned->dataHooks) {
         owned->saveReal = reinterpret_cast<SaveReal>(image.Base() + kSaveReal);
         owned->saveStr = reinterpret_cast<SaveStr>(image.Base() + kSaveStr);
         owned->saveBoolean = reinterpret_cast<SaveBoolean>(image.Base() + kSaveBoolean);
+        owned->saveInteger = reinterpret_cast<SaveInteger>(image.Base() + kSaveInteger);
     } else {
         for (std::size_t i = 3; i < owned->sites.size(); ++i) owned->sites[i].reset();
         Trace("data-plane unavailable: native sites changed; preserving original natives");
@@ -350,13 +418,14 @@ int Install(std::string_view identity) {
     if (status != NO_ERROR) { Trace("detours-begin-failed"); return AJ_BACKEND; }
     runtime.store(owned.get());
     struct Attachment { std::size_t site; PVOID* next; PVOID callback; };
-    const std::array<Attachment, 6> attachments{{
+    const std::array<Attachment, 7> attachments{{
         {0, reinterpret_cast<PVOID*>(&owned->localized), reinterpret_cast<PVOID>(&LocalizedHook)},
         {1, reinterpret_cast<PVOID*>(&owned->initialize), reinterpret_cast<PVOID>(&InitializeHook)},
         {2, reinterpret_cast<PVOID*>(&owned->destroyVm), reinterpret_cast<PVOID>(&DestroyVmHook)},
         {3, reinterpret_cast<PVOID*>(&owned->saveReal), reinterpret_cast<PVOID>(&SaveRealHook)},
         {4, reinterpret_cast<PVOID*>(&owned->saveStr), reinterpret_cast<PVOID>(&SaveStrHook)},
-        {5, reinterpret_cast<PVOID*>(&owned->saveBoolean), reinterpret_cast<PVOID>(&SaveBooleanHook)}}};
+        {5, reinterpret_cast<PVOID*>(&owned->saveBoolean), reinterpret_cast<PVOID>(&SaveBooleanHook)},
+        {7, reinterpret_cast<PVOID*>(&owned->saveInteger), reinterpret_cast<PVOID>(&SaveIntegerHook)}}};
     std::size_t changedSite = owned->sites.size(); bool snapshotChanged = false;
     for (const auto& step : attachments) {
         if (step.site >= 3 && !owned->dataHooks) continue;

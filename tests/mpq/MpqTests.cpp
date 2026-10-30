@@ -2224,6 +2224,42 @@ void TestGameDataSourceIfProvided() {
     }
 }
 
+void TestExplicitNamedAppendPreservesOriginalBytes() {
+    using namespace War3Map::Mpq;
+    TempDirectory temp;
+    const auto source = temp.Path() / "named.mpq", target = temp.Path() / "named-patched.mpq";
+    const std::vector<MpqBuildFile> original{{"war3map.j", {std::byte{'a'}}, true, {}},
+        {"untouched.bin", std::vector<std::byte>(8192, std::byte{0x9c}), true, {}}};
+    Require(WriteMpqArchive(source, original).Succeeded(), "write named append fixture");
+    const auto before = ReadAll(source);
+    auto archive = MpqArchive::OpenReadOnly(source);
+    Require(archive.Succeeded(), "open named append fixture without decoding payloads");
+    const std::vector<MpqBuildFile> edits{{"war3map.j", {std::byte{'b'}}, true, {}}};
+    Require(!archive.value->ValidateOpaquePreservingPatchInputs(edits).Succeeded(),
+        "default named archive policy remains unchanged");
+    const auto output = CreateFileW(target.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(output != INVALID_HANDLE_VALUE, "create append candidate exclusively");
+    const std::vector<MpqBuildFile> addition{{"new.bin", {std::byte{'x'}}, true, {}}};
+    const auto rejected = archive.value->WriteOpaquePreservingPatchToHandle(output, addition, true);
+    const auto written = archive.value->WriteOpaquePreservingPatchToHandle(output, edits, true);
+    CloseHandle(output);
+    Require(!rejected.Succeeded(), "named opt-in cannot add members");
+    Require(written.Succeeded(), "explicit named append succeeds");
+    const auto after = ReadAll(target);
+    Require(after.size() > before.size(), "append retains source data area");
+    const auto prefix = archive.value->ArchivePrefixSize();
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        if ((i >= prefix + 8 && i < prefix + 12) || (i >= prefix + 0x14 && i < prefix + 0x18)) continue;
+        Require(before[i] == after[i], "unmodified original bytes remain at their exact offsets");
+    }
+    auto candidate = MpqArchive::OpenReadOnly(target);
+    Require(candidate.Succeeded(), "open named append candidate");
+    const auto script = candidate.value->ReadFile("war3map.j");
+    Require(script.Succeeded() && *script.value == edits.front().data, "explicit replacement reads back");
+    Require(ReadAll(source) == before, "source remains unchanged");
+}
+
 } // namespace
 
 int main() {
@@ -2234,6 +2270,7 @@ int main() {
         TestDeflateInflateRoundTrip();
         TestSyntheticArchiveRoundTrip();
         TestWriterRoundTrip();
+        TestExplicitNamedAppendPreservesOriginalBytes();
         TestArchiveCandidateSuccess();
         TestArchiveCandidatePreconditions();
         TestArchiveCandidatePublishRaces();

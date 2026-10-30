@@ -31,6 +31,10 @@ int wmain(int argc, wchar_t** argv) {
         require(json.at("files").is_array() && json.at("files").size() == targets.size());
         struct File { std::string path; std::vector<std::byte> bytes; };
         std::vector<File> files;
+        const auto scope = json.value("scope", std::string("internal"));
+        require(scope == "internal" || scope == "public");
+        // 冻结不授予分发许可；先按内部用途验证完整结构及来源，再输出待审批的公开清单。
+        if (scope == "public") targets.at("license").second = "audastra/runtime/licenses/license.txt";
         Json manifest{{"schema", json.at("schema")}, {"id", json.at("id")}, {"version", json.at("version")}, {"abi", 0x20000}, {"scope", "internal"},
             {"gameSha256", "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"}, {"files", Json::array()}};
         std::set<std::string> seen;
@@ -55,15 +59,27 @@ int wmain(int argc, wchar_t** argv) {
         require((!error && status.type() == std::filesystem::file_type::not_found) || error == std::errc::no_such_file_or_directory);
         require(std::filesystem::create_directory(output));
         for (const auto& file : files) require(IO::WriteFileBytes(output / file.path, file.bytes).Succeeded());
-        const auto text = manifest.dump();
+        auto text = manifest.dump();
         const auto bytes = std::as_bytes(std::span(text.data(), text.size()));
         require(IO::WriteFileBytes(output / "manifest.json", bytes).Succeeded());
-        const auto sha = Sha256(bytes); require(sha.Succeeded());
+        auto sha = Sha256(bytes); require(sha.Succeeded());
         const MapRuntimePackageSource source{output, *sha.value, false};
         const auto verified = MapRuntimePackage::Capture(source, MapRuntimeSavePurpose::InternalValidation);
         require(verified.Succeeded());
+        if (scope == "public") {
+            manifest["scope"] = "public";
+            text = manifest.dump();
+            const auto publicBytes = std::as_bytes(std::span(text.data(), text.size()));
+            require(IO::WriteFileBytes(output / "manifest.json", publicBytes).Succeeded());
+            sha = Sha256(publicBytes); require(sha.Succeeded());
+            const MapRuntimePackageSource pending{output, *sha.value, false};
+            const auto denied = MapRuntimePackage::Capture(pending, MapRuntimeSavePurpose::Normal);
+            require(!denied.Succeeded() && !denied.diagnostics.empty()
+                && denied.diagnostics.front().code == "RUNTIME_DISTRIBUTION_NOT_APPROVED");
+        }
         std::cout << "package_sha256=" << *sha.value << "\npayload_sha256=" << (*verified.value)->PayloadSha256()
-            << "\ninternal_only=true\nfiles=" << files.size() << '\n';
+            << "\ninternal_only=" << (scope == "internal" ? "true" : "false")
+            << "\npublic_distribution_approved=false\nfiles=" << files.size() << '\n';
         return 0;
     } catch (const std::exception&) {
         std::cerr << "RUNTIME_FREEZE_REJECTED: incomplete internal package was not installed; no payload content returned\n";
