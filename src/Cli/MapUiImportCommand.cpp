@@ -44,6 +44,21 @@ std::string ReadText(const std::filesystem::path& path, std::uint64_t budget) {
 }
 
 int RunMapUiImport(int argc, wchar_t** argv) {
+    if(argc==6 && std::wstring_view(argv[2])==L"--inspect") {
+        try {
+            const std::filesystem::path path(argv[3]);const auto expected=Utf8(argv[4]);
+            if(Take(Sha256File(path))!=expected)throw std::runtime_error("MAP_UI_SOURCE_CHANGED");
+            auto archive=Take(MapArchiveSession::OpenScriptAudit(path));
+            auto catalog=Take(Trigger::UiCatalog::Load(argv[5]));
+            auto document=Take(Trigger::WtgWctCodec{}.Parse(Take(archive.ReadMember("war3map.wtg")),Take(archive.ReadMember("war3map.wct")),catalog));
+            if(document.categories.size()>256 || document.triggers.size()>2048)throw std::runtime_error("MAP_UI_INSPECTION_BUDGET");
+            Json categories=Json::array(),triggers=Json::array();
+            for(const auto& c:document.categories)categories.push_back({{"id",c.categoryId},{"name",c.name.text}});
+            for(const auto& t:document.triggers)triggers.push_back({{"name",t.name.text},{"category",t.categoryId}});
+            Check(archive.VerifySourceUnchanged());
+            std::cout<<Json{{"source_sha256",expected},{"categories",categories},{"triggers",triggers}}.dump(2)<<'\n';return 0;
+        }catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
+    }
     if(argc!=12 || std::wstring_view(argv[9])!=L"--runtime-package" || std::wstring_view(argv[11])!=L"--approve-native-runtime") {
         std::cerr<<"usage: map-ui-import <source> <source-sha> <new-map> <tool-root> <ui-root> <game-root> <plan.json> --runtime-package <sha> --approve-native-runtime\n";return 2;
     }
@@ -76,8 +91,8 @@ int RunMapUiImport(int argc, wchar_t** argv) {
             Check(imports.Upsert(name,[&](std::string_view member){return source.HasMember(member);}));
         };
         for(const auto& item:plan.at("items")) {
-            if(!item.is_object() || item.empty() || item.size()>2 || (!item.contains("description")&&!item.contains("triggers"))) throw std::runtime_error("MAP_UI_PLAN_ITEM_INVALID");
-            for(const auto& [key,value]:item.items()) if(key!="description"&&key!="triggers") throw std::runtime_error("MAP_UI_PLAN_ITEM_INVALID");
+            if(!item.is_object() || item.empty() || item.size()>3 || (!item.contains("description")&&!item.contains("triggers"))) throw std::runtime_error("MAP_UI_PLAN_ITEM_INVALID");
+            for(const auto& [key,value]:item.items()) if(key!="description"&&key!="triggers"&&key!="category") throw std::runtime_error("MAP_UI_PLAN_ITEM_INVALID");
             Trigger::TriggerGraphEditBatch batch{Take(Trigger::CaptureTriggerGraphBinding(document,catalog)),{}};
             std::string category="导入的界面逻辑";
             if(item.contains("description")) {
@@ -88,6 +103,10 @@ int RunMapUiImport(int argc, wchar_t** argv) {
                 generatedCount+=generated.triggers.size();
                 batch.operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(GameUi::kUiTriggerCategory),generated.featureText,{}, {}});
                 import("AudastraUI/"+description.id+".json",GameUi::SerializeUiDescription(description));
+            }
+            if(item.contains("category")) {
+                category=item.at("category").get<std::string>();
+                if(category.empty() || category.size()>256)throw std::runtime_error("MAP_UI_CATEGORY_INVALID");
             }
             if(item.contains("triggers")) batch.operations.emplace_back(Trigger::GraphApplyFeatureText{category,input(item,"triggers",".txt"),{}, {}});
             Take(Trigger::ApplyTriggerGraphEditBatch(document,catalog,batch));
