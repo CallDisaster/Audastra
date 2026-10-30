@@ -22,6 +22,18 @@ int wmain(int argc, wchar_t** argv) {
         auto catalog = Take(Trigger::UiCatalog::Load(ui));
         auto doc = Take(Trigger::WtgWctCodec{}.Parse(Take(archive.ReadMember("war3map.wtg")),
             Take(archive.ReadMember("war3map.wct")), catalog));
+        Trigger::TriggerGraphEditBatch observations{Take(Trigger::CaptureTriggerGraphBinding(doc, catalog)), {}};
+        constexpr std::string_view oldReceipt = R"(E:\\Work\\Audastra-Validation\\ui-runtime-c9-20261027\\input-state-result.txt)";
+        for (const auto& arg : doc.arguments) {
+            auto value = arg.value.text;
+            const auto at = value.find(oldReceipt);
+            if (at == std::string::npos) continue;
+            value.replace(at, oldReceipt.size(), R"(C:\\Audastra\\codex-round23b\\receipts\\phase.txt)");
+            observations.operations.emplace_back(Trigger::GraphSet{{Trigger::GraphRecordKind::Argument, arg.id, {}},
+                Trigger::GraphField::ArgumentScalar, Trigger::GraphScalarValue{arg.type, arg.value.text},
+                Trigger::GraphScalarValue{arg.type, value}});
+        }
+        if (!observations.operations.empty()) Take(Trigger::ApplyTriggerGraphEditBatch(doc, catalog, observations));
         auto named = Take(Mpq::MpqArchive::OpenReadOnly(source));
         for (const auto* id : {"castbar", "party"}) {
             const auto bytes = Take(named.ReadFile(std::string("AudastraUI/") + id + ".json"));
