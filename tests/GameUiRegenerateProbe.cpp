@@ -59,6 +59,10 @@ int wmain(int argc, wchar_t** argv) {
             if (!plan.is_array() || plan.size() > 16) throw std::runtime_error("bounded probe plan required");
             for (const auto& item : plan) {
                 const auto id = item.at("id").get<std::string>();
+                if (item.value("fresh", false)) {
+                    doc = Take(Trigger::WtgWctCodec{}.CreateEmpty(catalog));
+                    descriptions.clear();
+                }
                 if (item.contains("description")) {
                     auto d = Take(GameUi::ParseUiDescription(read(item.at("description").get<std::string>(), ".json"), id));
                     std::erase_if(descriptions, [&](const auto& old) { return old.id == d.id; });
