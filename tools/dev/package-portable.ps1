@@ -91,7 +91,7 @@ if ($LASTEXITCODE -ne 0) { throw "windeployqt failed: $LASTEXITCODE (partial out
 $runtimeFiles | Copy-Item -Destination $bin
 if ($MapRuntimeInstallationRoot) {
     . "$PSScriptRoot/StageMapRuntime.ps1"
-    Copy-PendingMapRuntimeInstallation -Source $MapRuntimeInstallationRoot -Target "$bin/runtime"
+    Copy-PendingMapRuntimeInstallation -Source $MapRuntimeInstallationRoot -Target "$output/runtime"
 }
 New-Item -ItemType Directory -Path "$bin/fonts", "$licenses/fonts", "$licenses/Qt" | Out-Null
 $fonts | Copy-Item -Destination "$bin/fonts"
