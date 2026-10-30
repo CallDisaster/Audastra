@@ -65,8 +65,8 @@ void CheckExample(const std::filesystem::path& folder) {
     const auto uiApplied = f.Apply(kUiTriggerCategory, ui.value->featureText);
     Require(uiApplied.Succeeded(), name + " 界面触发器写入：" + First(uiApplied.diagnostics));
     const auto feature = Read(folder / "triggers.txt");
-    // 框架贴图路径须给真实扩展名，不能依赖单位图标接口的自动补全行为。
-    for (std::size_t at = 0; (at = feature.find("\"ReplaceableTextures", at)) != std::string::npos;) {
+    // 检查完整的静态图标路径；颜色贴图会拼接编号与扩展名，不是完整路径字面量。
+    for (std::size_t at = 0; (at = feature.find("\"ReplaceableTextures\\\\CommandButtons\\\\", at)) != std::string::npos;) {
         const auto end = feature.find('"', at + 1);
         Require(end != std::string::npos, name + " 贴图路径未结束");
         const std::string_view path(feature.data() + at + 1, end - at - 1);
