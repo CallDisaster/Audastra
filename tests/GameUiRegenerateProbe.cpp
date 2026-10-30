@@ -1,0 +1,63 @@
+// 手动验收入口：只读脚本白名单与明确的界面描述，复用生产生成/事务/编译服务。
+// 输出诊断工件而非可分发包；不打开通用全成员保存会话。
+#include "../src/Cli/ScriptBuildCommand.cpp"
+#include "War3MapCore/GameUi/UiDescription.h"
+#include "War3MapCore/GameUi/UiTriggers.h"
+#include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
+#include <stdexcept>
+
+template<class T> T Take(War3Map::Result<T> r) {
+    Print(r.diagnostics);
+    if (!r.Succeeded()) throw std::runtime_error("production service refused input");
+    return std::move(*r.value);
+}
+int wmain(int argc, wchar_t** argv) {
+    if (argc != 7) return 2;
+    try {
+        const std::filesystem::path source(argv[1]), ui(argv[2]), tool(argv[3]), gameRoot(argv[4]), out(argv[5]);
+        if (std::filesystem::exists(out)) throw std::runtime_error("output must be new");
+        std::filesystem::create_directories(out);
+        auto archive = Take(MapArchiveSession::OpenScriptAudit(source));
+        auto catalog = Take(Trigger::UiCatalog::Load(ui));
+        auto doc = Take(Trigger::WtgWctCodec{}.Parse(Take(archive.ReadMember("war3map.wtg")),
+            Take(archive.ReadMember("war3map.wct")), catalog));
+        auto named = Take(Mpq::MpqArchive::OpenReadOnly(source));
+        for (const auto* id : {"castbar", "party"}) {
+            const auto bytes = Take(named.ReadFile(std::string("AudastraUI/") + id + ".json"));
+            const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            auto description = Take(GameUi::ParseUiDescription(text, id));
+            auto generated = Take(GameUi::GenerateUiTriggers(description));
+            std::ofstream(out / (std::string(id) + ".t"), std::ios::binary) << generated.featureText;
+            Trigger::TriggerGraphEditBatch batch{Take(Trigger::CaptureTriggerGraphBinding(doc, catalog)), {}};
+            batch.operations.emplace_back(Trigger::GraphApplyFeatureText{"AudastraUI", generated.featureText, {}, {}});
+            Take(Trigger::ApplyTriggerGraphEditBatch(doc, catalog, batch));
+        }
+        auto encoded = Take(Trigger::WtgWctCodec{}.Serialize(doc, catalog));
+        // 同一次生产事务的原生触发器输出随验收工件保存，不能手改生成文字。
+        std::ofstream(out / "war3map.wtg", std::ios::binary).write(reinterpret_cast<const char*>(encoded.wtg.data()), encoded.wtg.size());
+        std::ofstream(out / "war3map.wct", std::ios::binary).write(reinterpret_cast<const char*>(encoded.wct.data()), encoded.wct.size());
+        const auto game = MountGame(gameRoot);
+        const auto standard = LoadStandard(game);
+        Script::MapScriptBuildRequest request;
+        request.archive = &archive; request.triggers = &doc; request.catalog = &catalog;
+        request.game = game ? &*game : nullptr; request.standard = standard ? &*standard : nullptr;
+        request.units = CustomObjects(archive, ObjectData::ObjectType::Unit);
+        request.items = CustomObjects(archive, ObjectData::ObjectType::Item);
+        request.abilities = CustomObjects(archive, ObjectData::ObjectType::Ability);
+        request.layers = catalog.Layers(); request.toolchain.toolRoot = tool; request.toolchain.uiRoot = ui;
+        request.toolchain.workDir = out / "compile";
+        Script::MapRuntimeBootPlan boot; boot.payloadSha256 = std::filesystem::path(argv[6]).string();
+        boot.testRunDiagnostics = true; request.toolchain.mapRuntimeBoot = boot;
+        auto result = Script::BuildMapScript(request);
+        Print(result.diagnostics); Print(result.generated.diagnostics);
+        std::ofstream(out / "generated.j", std::ios::binary) << result.generated.text;
+        if (result.pipeline) {
+            Print(result.pipeline->diagnostics);
+            std::ofstream(out / "compiled.j", std::ios::binary) << result.pipeline->script;
+        }
+        if (!result.Succeeded()) return 1;
+        std::cout << "production_regeneration=true\nscript_compile=true\nnormal_map_save=false\n";
+        return 0;
+    } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
+}
