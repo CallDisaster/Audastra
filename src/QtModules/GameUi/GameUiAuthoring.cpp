@@ -5,10 +5,17 @@
 #include "GameUiCanvas.h"
 #include "GameUiKindPicker.h"
 #include "Modules/ModuleHost.h"
+#include "TriggerCommands.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
+#include "War3MapCore/Trigger/TriggerGraphEditing.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -17,6 +24,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QScreen>
 #include <QTimer>
@@ -92,6 +100,50 @@ bool GameUiModule::CreateDescription(const QString& id, const QString& label, QS
         return false;
     }
     if (!StageDescription(std::move(*created.value), true, tr("新建界面 %1").arg(id), error)) return false;
+    (void)SelectFrame(id);
+    return true;
+}
+
+bool GameUiModule::ImportDescriptionFile(const QString& path, bool withTriggers, QString* error) {
+    const auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return false;
+    };
+    static constexpr qint64 kFileBytes = 8 * 1024 * 1024;
+    const auto read = [this](const QString& file, std::string* text) -> QString {
+        QFile input(file);
+        if (!input.open(QIODevice::ReadOnly)) return tr("读不了 %1：%2").arg(QDir::toNativeSeparators(file), input.errorString());
+        if (input.size() > kFileBytes) return tr("%1 超过 8 MB").arg(QDir::toNativeSeparators(file));
+        const QByteArray bytes = input.readAll();
+        text->assign(bytes.constData(), static_cast<std::size_t>(bytes.size()));
+        if (text->starts_with("\xEF\xBB\xBF")) text->erase(0, 3);
+        return {};
+    };
+    std::string json;
+    if (const QString problem = read(path, &json); !problem.isEmpty()) return fail(problem);
+    auto parsed = ParseUiDescription(json, path.toStdString());
+    if (!parsed.value) return fail(FirstMessage(parsed.diagnostics));
+    const QString id = Text(parsed.value->id);
+    const QString undoLabel = tr("导入界面 %1").arg(id);
+    if (!withTriggers) {
+        if (!StageDescription(std::move(*parsed.value), true, undoLabel, error)) return false;
+        (void)SelectFrame(id);
+        return true;
+    }
+    std::string triggers;
+    if (const QString problem = read(QFileInfo(path).dir().filePath(QStringLiteral("triggers.txt")), &triggers); !problem.isEmpty()) {
+        return fail(problem);
+    }
+    if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
+    const std::string category = parsed.value->label.empty() ? parsed.value->id : parsed.value->label;
+    std::vector<Trigger::GraphEditOperation> operations;
+    operations.emplace_back(Trigger::GraphApplyFeatureText{category, std::move(triggers), {}, std::nullopt});
+    QString staged;
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), undoLabel, [&]() -> Status {
+        if (StageDescription(std::move(*parsed.value), true, undoLabel, &staged)) return Status::Ok();
+        return Status::Failure("GameUi", "AUI_IMPORT_DESCRIPTION", staged.toStdString());
+    });
+    if (!applied.Succeeded()) return fail(staged.isEmpty() ? FirstMessage(applied.diagnostics) : staged);
     (void)SelectFrame(id);
     return true;
 }
@@ -357,6 +409,25 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     newDescriptionButton_->setProperty("menuButton", true);
     auto* createMenu = new QMenu(newDescriptionButton_);
     AddNewDescriptionForm(createMenu);
+    createMenu->addSeparator();
+    // 从文件导入：默认打开随编辑器带的示例目录；同目录有示例触发器时问一次是否一并写入。
+    QAction* importAction = createMenu->addAction(tr("从文件导入…"));
+    importAction->setObjectName(QStringLiteral("gameUiImportDescription"));
+    connect(importAction, &QAction::triggered, this, [this] {
+        const QString examples = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("examples/game-ui"));
+        const QString path = QFileDialog::getOpenFileName(page_, tr("导入界面"), QDir(examples).exists() ? examples : QString(),
+            tr("界面描述 (*.json)"));
+        if (path.isEmpty()) return;
+        bool withTriggers = false;
+        if (QFileInfo::exists(QFileInfo(path).dir().filePath(QStringLiteral("triggers.txt")))) {
+            const auto answer = QMessageBox::question(page_, tr("导入界面"), tr("同一目录里有 triggers.txt，一并写进触发器？"),
+                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Yes);
+            if (answer == QMessageBox::Cancel) return;
+            withTriggers = answer == QMessageBox::Yes;
+        }
+        QString error;
+        if (!ImportDescriptionFile(path, withTriggers, &error)) ReportAuthoring(error);
+    });
     newDescriptionButton_->setMenu(createMenu);
 
     addFrameButton_ = new QPushButton(tr("添加"), toolbar);

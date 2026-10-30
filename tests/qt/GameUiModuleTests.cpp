@@ -4,6 +4,7 @@
 #include "GameUiKindPicker.h"
 #include "GameUiModule.h"
 #include "GameUiToolService.h"
+#include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Script/MapScript.h"
@@ -12,6 +13,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -21,6 +25,7 @@
 #include <QStandardItemModel>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTemporaryDir>
 #include <QTest>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
@@ -84,6 +89,7 @@ private slots:
     void AuthoringStagesDescriptionImport();
     void DescriptionDataTablesEdit();
     void GeneratesDescriptionTriggers();
+    void ImportsDescriptionFile();
     void FramePropertiesEditLayoutAndText();
     void KindPickerCreatesTypedFrames();
     void FrameSettingsCardAndTexturePicker();
@@ -631,6 +637,69 @@ void GameUiModuleTests::GeneratesDescriptionTriggers() {
     QVERIFY(fixed->featureText.contains(QStringLiteral("AudastraUISetAbsPoint(udg_AUI_Cast_bar1, AudastraAnchorCenter, ")));
     QVERIFY(!fixed->featureText.contains(QStringLiteral("Minimap")));
     QVERIFY(!category() && project.triggerUndoStack_->index() == 0);
+}
+
+// 从文件导入示例：描述放进待保存修改；选了一并写入时，同目录 triggers.txt 写进以显示名命名的类别，一步撤销；
+// 触发器写不进时描述也不放入。
+void GameUiModuleTests::ImportsDescriptionFile() {
+    QTemporaryDir folder;
+    QVERIFY(folder.isValid());
+    const auto write = [&](const QString& name, const QByteArray& bytes) {
+        QDir().mkpath(QFileInfo(folder.filePath(name)).path());
+        QFile file(folder.filePath(name));
+        return file.open(QIODevice::WriteOnly) && file.write(bytes) == bytes.size();
+    };
+    const auto description = [](const char* id) {
+        auto created = NewUiDescription(id, "状态栏");
+        return created.value ? QByteArray::fromStdString(SerializeUiDescription(*created.value)) : QByteArray();
+    };
+    QVERIFY(write(QStringLiteral("hud/hud.json"), description("Hud")));
+    QVERIFY(write(QStringLiteral("hud/triggers.txt"), QByteArrayLiteral(
+        "变量:\n    AUH_Count: integer = 0\n触发器 状态栏 计数 Hud_Count:\n    events:\n        TriggerRegisterTimerEventPeriodic(1)\n"
+        "    actions:\n        SetVariable(udg_AUH_Count, 1)\n")));
+    QVERIFY(write(QStringLiteral("bad/bad.json"), QByteArrayLiteral("{}")));
+    QVERIFY(write(QStringLiteral("broken/other.json"), description("Other")));
+    QVERIFY(write(QStringLiteral("broken/triggers.txt"), QByteArrayLiteral(
+        "触发器 状态栏 坏 Other_Bad:\n    events:\n    actions:\n        NoSuchAction()\n")));
+
+    QtProject::EditorProject plain;
+    Modules::GameUiModule only(plain);
+    only.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY(!only.ImportDescriptionFile(folder.filePath(QStringLiteral("bad/bad.json")), false, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY2(only.ImportDescriptionFile(folder.filePath(QStringLiteral("hud/hud.json")), false, &error), qPrintable(error));
+    QVERIFY(only.Description(QStringLiteral("Hud")));
+    QVERIFY(!only.ImportDescriptionFile(folder.filePath(QStringLiteral("hud/hud.json")), false, &error));
+    // 没有触发器文档时不能一并写入。
+    QVERIFY(!only.ImportDescriptionFile(folder.filePath(QStringLiteral("broken/other.json")), true, &error));
+    QVERIFY(!only.Description(QStringLiteral("Other")));
+
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    AudastraUiTest::Catalog files;
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    QVERIFY2(module.ImportDescriptionFile(folder.filePath(QStringLiteral("hud/hud.json")), true, &error), qPrintable(error));
+    QVERIFY(module.Description(QStringLiteral("Hud")));
+    const auto& document = *project.triggerDocument_;
+    const auto category = std::find_if(document.categories.begin(), document.categories.end(),
+        [](const auto& row) { return row.name.text == "状态栏"; });
+    QVERIFY(category != document.categories.end());
+    QVERIFY(std::any_of(document.triggers.begin(), document.triggers.end(), [&](const auto& row) {
+        return row.categoryId == category->categoryId && row.name.text == "状态栏 计数 Hud_Count";
+    }));
+    QVERIFY(std::any_of(document.variables.begin(), document.variables.end(), [](const auto& row) { return row.name.text == "AUH_Count"; }));
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+
+    QVERIFY(!module.ImportDescriptionFile(folder.filePath(QStringLiteral("broken/other.json")), true, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!module.Description(QStringLiteral("Other")));
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
 }
 
 void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
