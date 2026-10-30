@@ -783,6 +783,12 @@ void DataPlane() {
     Check(data.SaveStr(1234, text, 3, empty.Self()).applied, "empty text retains string-command semantics");
     Check(data.SaveStr(1234, text, 3, 0).applied, "null VM string clears text like the old AjArgText path");
     Check(data.SaveStr(1234, backdrop, 4, texture.Self()).applied, "texture uses existing API with tile false");
+    VmText emptyBuffer(nullptr);
+    Check(data.SaveStr(1234, text, 3, emptyBuffer.Self()).applied,
+        "readable VM empty descriptor clears text without requiring an allocated character buffer");
+    Check(data.SaveStr(1234, backdrop, 4, emptyBuffer.Self()).applied
+        && data.SaveStr(1234, backdrop, 4, empty.Self()).applied,
+        "both empty VM string representations forward texture clearing to the same native API");
     Check(data.SaveReal(1234, bar, 1, &width).applied && data.Errors() == "0|", "status bar value takes finite float pointer");
     const auto bad = [&](UiDataWrite write) { Check(write.intercepted && !write.applied, "bad owned write consumed without applying"); };
     g_log.clear();
@@ -794,6 +800,8 @@ void DataPlane() {
     const float nan = std::numeric_limits<float>::quiet_NaN();
     bad(data.SaveReal(1234, bar, 1, &nan));
     bad(data.SaveStr(1234, text, 3, 1));
+    VmText unlinked(""); unlinked.object[2] = 0;
+    bad(data.SaveStr(1234, text, 3, unlinked.Self()));
     VmText control("a\nb"), invalid("\xff");
     // 长字符串对象另持有稳定存储；不使用临时 std::string 的指针。
     const std::string longStorage(385, 'x'); VmText tooLong(longStorage.c_str());

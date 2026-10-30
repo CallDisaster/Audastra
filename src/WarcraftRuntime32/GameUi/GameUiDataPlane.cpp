@@ -26,7 +26,9 @@ bool CopyString(Address object, std::array<char, AJ_MAX_INPUT_TEXT + 1>& bytes, 
     __try {
         const auto linked = object ? *reinterpret_cast<const Address*>(object + 8) : 0;
         const auto* text = linked ? *reinterpret_cast<const char* const*>(linked + 0x1c) : nullptr;
-        if (!text) return false;
+        // 已读取的中间描述仍存在、字符缓冲为空，是 VM 的空字符串表示。
+        // 未连接或不可读的引用仍拒绝，不能把损坏指针当作空文字。
+        if (!text) { if (!linked) return false; bytes[0] = 0; return true; }
         std::size_t encoded = 0;
         for (; size < bytes.size(); ++size) {
             const auto c = text[size];

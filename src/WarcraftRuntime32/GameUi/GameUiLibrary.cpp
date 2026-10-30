@@ -545,7 +545,6 @@ UiError GameUiLibrary::SetTexture(FrameHandle frame, std::string_view path, bool
     UiError error{};
     const auto* slot = Resolve(frame, error);
     if (!slot) return error;
-    if (path.empty()) return UiError::BadArgument;
     const std::string value(path);
     const auto object = slot->object;
     const auto vtable = slot->vtable;
