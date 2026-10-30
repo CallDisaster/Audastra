@@ -6,6 +6,7 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 
