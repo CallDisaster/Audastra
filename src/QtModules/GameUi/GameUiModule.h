@@ -168,6 +168,9 @@ public:
         std::vector<Diagnostic> warnings;
     };
     std::optional<TriggerGeneration> GenerateDescriptionTriggers(const QString& id, bool preview, QString* error = nullptr);
+    // 给界面事件建一个响应触发器（事件“界面事件”已填好事件名），放进以界面显示名命名的类别，返回触发器编号；
+    // 已有同名触发器时直接返回它，不覆盖作者写的动作。
+    std::optional<StableId> CreateEventTrigger(const QString& id, const QString& eventId, QString* error = nullptr);
     // 生成的界面触发器要用原生运行库。按规格在首次生成时由作者确认，保存时不再问：approved 为本工程已批准，
     // packages 为本机可信目录里的包。界面在生成后询问；Agent 拿到结果后须经作者同意再用 map_runtime_set 启用。
     struct RuntimeRequirement {

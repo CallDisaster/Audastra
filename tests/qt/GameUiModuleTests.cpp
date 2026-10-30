@@ -9,6 +9,7 @@
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
+#include "War3MapCore/Trigger/TriggerTextNotation.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -686,20 +687,42 @@ void GameUiModuleTests::ImportsDescriptionFile() {
     project.triggerUndoStack_ = new QUndoStack(&project);
     QVERIFY2(module.ImportDescriptionFile(folder.filePath(QStringLiteral("hud/hud.json")), true, &error), qPrintable(error));
     QVERIFY(module.Description(QStringLiteral("Hud")));
-    const auto& document = *project.triggerDocument_;
-    const auto category = std::find_if(document.categories.begin(), document.categories.end(),
-        [](const auto& row) { return row.name.text == "状态栏"; });
-    QVERIFY(category != document.categories.end());
-    QVERIFY(std::any_of(document.triggers.begin(), document.triggers.end(), [&](const auto& row) {
-        return row.categoryId == category->categoryId && row.name.text == "状态栏 计数 Hud_Count";
+    const auto& categories = project.triggerDocument_->categories;
+    const auto category = std::find_if(categories.begin(), categories.end(), [](const auto& row) { return row.name.text == "状态栏"; });
+    QVERIFY(category != categories.end());
+    const auto categoryId = category->categoryId;
+    const auto& imported = project.triggerDocument_->triggers;
+    QVERIFY(std::any_of(imported.begin(), imported.end(), [&](const auto& row) {
+        return row.categoryId == categoryId && row.name.text == "状态栏 计数 Hud_Count";
     }));
-    QVERIFY(std::any_of(document.variables.begin(), document.variables.end(), [](const auto& row) { return row.name.text == "AUH_Count"; }));
+    const auto& variables = project.triggerDocument_->variables;
+    QVERIFY(std::any_of(variables.begin(), variables.end(), [](const auto& row) { return row.name.text == "AUH_Count"; }));
     QCOMPARE(project.triggerUndoStack_->count(), 1);
 
     QVERIFY(!module.ImportDescriptionFile(folder.filePath(QStringLiteral("broken/other.json")), true, &error));
     QVERIFY(!error.isEmpty());
     QVERIFY(!module.Description(QStringLiteral("Other")));
     QCOMPARE(project.triggerUndoStack_->count(), 1);
+
+    // 事件的响应触发器：事件名已填好；再建一次直接用已有的，不覆盖。
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("button"), &error), QStringLiteral("button1"));
+    QVERIFY2(module.EditDescription(QStringLiteral("Hud"),
+                 QStringLiteral(R"([{"op":"set_events","events":[{"id":"open","frame":"button1","on":"click"}]}])"), {}, &error),
+        qPrintable(error));
+    QVERIFY(!module.CreateEventTrigger(QStringLiteral("Hud"), QStringLiteral("missing"), &error));
+    const auto handler = module.CreateEventTrigger(QStringLiteral("Hud"), QStringLiteral("open"), &error);
+    QVERIFY2(handler, qPrintable(error));
+    const auto& rows = project.triggerDocument_->triggers;
+    const auto trigger = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.id == *handler; });
+    QVERIFY(trigger != rows.end());
+    QCOMPARE(trigger->name.text, std::string("状态栏 事件 open Hud_On_open"));
+    QVERIFY(trigger->categoryId == categoryId);
+    const auto exported = Trigger::RenderTriggerText(*project.triggerDocument_, *project.uiCatalog_, *handler, 1 << 20, nullptr, nullptr);
+    QVERIFY(exported.Succeeded());
+    QVERIFY2(exported.value->find("AudastraUITriggerRegisterEvent(\"Hud.open\")") != std::string::npos, exported.value->c_str());
+    const auto steps = project.triggerUndoStack_->count();
+    QCOMPARE(module.CreateEventTrigger(QStringLiteral("Hud"), QStringLiteral("open"), &error), handler);
+    QCOMPARE(project.triggerUndoStack_->count(), steps);
 }
 
 void GameUiModuleTests::FramePropertiesEditLayoutAndText() {

@@ -3,6 +3,7 @@
 #include "GameUiAuthoringJson.h"
 #include "GameUiChoice.h"
 #include "GameUiTables.h"
+#include "Modules/ModuleHost.h"
 
 #include <QComboBox>
 #include <QJsonArray>
@@ -347,7 +348,20 @@ void GameUiModule::BuildDescriptionData(QTabWidget* tabs) {
     SetChoices(eventTable_, 2, [this] { return EventKinds(descriptionRaw_); });
     auto* addEvent = Button(tabs, "gameUiAddEvent", tr("添加"));
     auto* removeEvent = Button(tabs, "gameUiRemoveEvent", tr("删除"));
-    tabs->addTab(TablePage(tabs, eventTable_, {addEvent, removeEvent}), tr("事件"));
+    auto* eventTrigger = Button(tabs, "gameUiEventTrigger", tr("新建响应触发器"));
+    tabs->addTab(TablePage(tabs, eventTable_, {addEvent, removeEvent, eventTrigger}), tr("事件"));
+    connect(eventTrigger, &QPushButton::clicked, this, [this] {
+        const UiDescription* description = Description(descriptionPanelFor_);
+        const int row = eventTable_->currentRow();
+        if (!description || row < 0 || row >= static_cast<int>(description->events.size())) return;
+        QString error;
+        const auto trigger = CreateEventTrigger(descriptionPanelFor_, Text(description->events[static_cast<std::size_t>(row)].id), &error);
+        if (!trigger) {
+            ReportAuthoring(error);
+            return;
+        }
+        if (host_) host_->Navigate(Shell::NavigationTarget{"triggers", "trigger", QString::number(*trigger), {}});
+    });
     connect(addEvent, &QPushButton::clicked, this, [this, selectedFrame] {
         const UiDescription* description = Description(descriptionPanelFor_);
         if (!description || description->frames.empty()) return;

@@ -104,6 +104,41 @@ std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescription
     return result;
 }
 
+std::optional<StableId> GameUiModule::CreateEventTrigger(const QString& id, const QString& eventId, QString* error) {
+    const auto fail = [error](const QString& message) -> std::optional<StableId> {
+        if (error) *error = message;
+        return std::nullopt;
+    };
+    const UiDescription* description = Description(id);
+    if (!description) return fail(tr("地图里没有界面描述 %1").arg(id));
+    const auto event = std::find_if(description->events.begin(), description->events.end(),
+        [&](const UiEvent& row) { return Text(row.id) == eventId; });
+    if (event == description->events.end()) return fail(tr("界面 %1 没有事件 %2").arg(id, eventId));
+    if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
+    if (!project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Event, "AudastraUITriggerRegisterEvent"))
+        return fail(tr("触发器函数库里没有 AudastraUI，先在函数库里安装并启用它"));
+    const std::string name = UiTriggerName(*description, "事件 " + event->id, "On_" + event->id);
+    const auto find = [&]() -> std::optional<StableId> {
+        const auto& rows = project_.triggerDocument_->triggers;
+        const auto found = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.name.text == name; });
+        return found == rows.end() ? std::nullopt : std::optional<StableId>(found->id);
+    };
+    // 已有同名触发器时不覆盖作者写的动作，直接用它。
+    if (const auto existing = find()) return existing;
+    const std::string kind = event->kind == UiEventKind::Click ? "点击" : event->kind == UiEventKind::Enter ? "鼠标进入" : "鼠标离开";
+    std::string comment = "界面 " + description->id + " 的事件 " + event->id + "：" + event->frame + " " + kind;
+    const std::string text = "触发器 " + name + ":\n    events:\n        AudastraUITriggerRegisterEvent(\"" + UiEventKey(description->id, event->id)
+        + "\")\n    actions:\n        CommentString(\"" + comment + "\")\n";
+    const std::string category = description->label.empty() ? description->id : description->label;
+    std::vector<Trigger::GraphEditOperation> operations;
+    operations.emplace_back(Trigger::GraphApplyFeatureText{category, text, {}, std::nullopt});
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("新建 %1 的响应触发器").arg(eventId));
+    if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
+    const auto created = find();
+    if (!created) return fail(tr("没有找到新建的触发器 %1").arg(Text(name)));
+    return created;
+}
+
 GameUiModule::RuntimeRequirement GameUiModule::QueryRuntimeRequirement() const {
     RuntimeRequirement result;
     const auto state = project_.QueryMapRuntimeState();
