@@ -28,13 +28,13 @@
         CommentString("每个增减益一组：增减益、图标路径；按这里的顺序显示单位身上有的增减益")
         SetVariable(udg_AUP_BuffCount, 1)
         SetVariable(udg_AUP_BuffCode[1], 'BHbd')
-        SetVariable(udg_AUP_BuffIcon[1], "ReplaceableTextures\\CommandButtons\\BTNBlizzard")
+        SetVariable(udg_AUP_BuffIcon[1], "ReplaceableTextures\\CommandButtons\\BTNBlizzard.blp")
 触发器 团队 头像 Party_Portrait (init):
     actions:
         CommentString("每种单位一组：单位类型、头像图标路径；没登记的单位头像为空")
         SetVariable(udg_AUP_TypeCount, 1)
         SetVariable(udg_AUP_TypeCode[1], 'Hpal')
-        SetVariable(udg_AUP_TypeIcon[1], "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin")
+        SetVariable(udg_AUP_TypeIcon[1], "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin.blp")
 触发器 团队 加入 Party_Join:
     actions:
         CommentString("先把要加入的单位设给 AUP_Member；已在名单里或名单已满时不加入")

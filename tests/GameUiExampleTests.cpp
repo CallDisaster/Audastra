@@ -64,7 +64,16 @@ void CheckExample(const std::filesystem::path& folder) {
     Require(ui.Succeeded(), name + " 界面触发器：" + First(ui.diagnostics));
     const auto uiApplied = f.Apply(kUiTriggerCategory, ui.value->featureText);
     Require(uiApplied.Succeeded(), name + " 界面触发器写入：" + First(uiApplied.diagnostics));
-    const auto applied = f.Apply("示例", Read(folder / "triggers.txt"));
+    const auto feature = Read(folder / "triggers.txt");
+    // 框架贴图路径须给真实扩展名，不能依赖单位图标接口的自动补全行为。
+    for (std::size_t at = 0; (at = feature.find("\"ReplaceableTextures", at)) != std::string::npos;) {
+        const auto end = feature.find('"', at + 1);
+        Require(end != std::string::npos, name + " 贴图路径未结束");
+        const std::string_view path(feature.data() + at + 1, end - at - 1);
+        Require(path.ends_with(".blp") || path.ends_with(".tga"), name + " 框架贴图缺少扩展名：" + std::string(path));
+        at = end + 1;
+    }
+    const auto applied = f.Apply("示例", feature);
     Require(applied.Succeeded(), name + " 示例触发器写入：" + First(applied.diagnostics));
     const std::string script = f.Script();
     // 读条示例用逆天局部变量，脚本依赖 YDWE 预处理宏，游戏声明检查不适用。
