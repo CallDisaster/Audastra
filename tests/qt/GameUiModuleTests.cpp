@@ -723,6 +723,18 @@ void GameUiModuleTests::ImportsDescriptionFile() {
     const auto steps = project.triggerUndoStack_->count();
     QCOMPARE(module.CreateEventTrigger(QStringLiteral("Hud"), QStringLiteral("open"), &error), handler);
     QCOMPARE(project.triggerUndoStack_->count(), steps);
+
+    // 模拟计时器的触发器同样填好界面与计时器编号。
+    QVERIFY2(module.EditDescription(QStringLiteral("Hud"),
+                 QStringLiteral(R"([{"op":"set_simulation","simulation":{"timers":[{"id":"tick","period":1}]}}])"), {}, &error),
+        qPrintable(error));
+    QVERIFY(!module.CreateSimulationTrigger(QStringLiteral("Hud"), QStringLiteral("missing"), &error));
+    const auto ticker = module.CreateSimulationTrigger(QStringLiteral("Hud"), QStringLiteral("tick"), &error);
+    QVERIFY2(ticker, qPrintable(error));
+    const auto simulated = Trigger::RenderTriggerText(*project.triggerDocument_, *project.uiCatalog_, *ticker, 1 << 20, nullptr, nullptr);
+    QVERIFY(simulated.Succeeded());
+    QVERIFY2(simulated.value->find("AudastraUIRegisterSimulationTimer(\"Hud\", \"tick\")") != std::string::npos, simulated.value->c_str());
+    QCOMPARE(project.triggerUndoStack_->count(), steps + 1);
 }
 
 void GameUiModuleTests::FramePropertiesEditLayoutAndText() {

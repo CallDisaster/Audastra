@@ -4,6 +4,7 @@
 #include "GameUiTables.h"
 #include "GameUiTriggerSimulation.h"
 #include "EditorProject.h"
+#include "Modules/ModuleHost.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 
@@ -463,9 +464,23 @@ void GameUiModule::BuildTriggerSimulationPage(QTabWidget* tabs) {
     simStarts_ = MakeTable(page, "gameUiSimulationValues", kStartColumns);
     auto* addTimer = Button(page, "gameUiAddSimulationTimer", tr("添加计时器"));
     auto* removeTimer = Button(page, "gameUiRemoveSimulationTimer", tr("删除计时器"));
+    auto* timerTrigger = Button(page, "gameUiSimulationTrigger", tr("新建计时器触发器"));
     auto* split = new QSplitter(Qt::Vertical, page);
     split->setChildrenCollapsible(false);
-    split->addWidget(TablePage(split, simTimers_, {addTimer, removeTimer}));
+    split->addWidget(TablePage(split, simTimers_, {addTimer, removeTimer, timerTrigger}));
+    connect(timerTrigger, &QPushButton::clicked, this, [this] {
+        const UiDescription* description = Description(descriptionPanelFor_);
+        const int row = simTimers_->currentRow();
+        if (!description || row < 0 || row >= static_cast<int>(description->simulation.timers.size())) return;
+        QString error;
+        const auto trigger = CreateSimulationTrigger(descriptionPanelFor_,
+            Text(description->simulation.timers[static_cast<std::size_t>(row)].id), &error);
+        if (!trigger) {
+            ReportAuthoring(error);
+            return;
+        }
+        if (host_) host_->Navigate(Shell::NavigationTarget{"triggers", "trigger", QString::number(*trigger), {}});
+    });
     simStarts_->setParent(split);
     split->addWidget(simStarts_);
     layout->addWidget(split, 1);

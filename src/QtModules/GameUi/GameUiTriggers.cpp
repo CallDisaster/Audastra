@@ -104,39 +104,59 @@ std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescription
     return result;
 }
 
-std::optional<StableId> GameUiModule::CreateEventTrigger(const QString& id, const QString& eventId, QString* error) {
+// 由界面事件驱动的触发器：event 为写好的事件一行，放进以界面显示名命名的类别；已有同名触发器时不覆盖作者写的动作，直接用它。
+std::optional<StableId> GameUiModule::CreateHandlerTrigger(const UiDescription& description, const std::string& role,
+    const std::string& key, const std::string& event, const std::string& comment, const QString& undoLabel, QString* error) {
     const auto fail = [error](const QString& message) -> std::optional<StableId> {
         if (error) *error = message;
         return std::nullopt;
     };
-    const UiDescription* description = Description(id);
-    if (!description) return fail(tr("地图里没有界面描述 %1").arg(id));
-    const auto event = std::find_if(description->events.begin(), description->events.end(),
-        [&](const UiEvent& row) { return Text(row.id) == eventId; });
-    if (event == description->events.end()) return fail(tr("界面 %1 没有事件 %2").arg(id, eventId));
     if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
     if (!project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Event, "AudastraUITriggerRegisterEvent"))
         return fail(tr("触发器函数库里没有 AudastraUI，先在函数库里安装并启用它"));
-    const std::string name = UiTriggerName(*description, "事件 " + event->id, "On_" + event->id);
+    const std::string name = UiTriggerName(description, role, key);
     const auto find = [&]() -> std::optional<StableId> {
         const auto& rows = project_.triggerDocument_->triggers;
         const auto found = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.name.text == name; });
         return found == rows.end() ? std::nullopt : std::optional<StableId>(found->id);
     };
-    // 已有同名触发器时不覆盖作者写的动作，直接用它。
     if (const auto existing = find()) return existing;
-    const std::string kind = event->kind == UiEventKind::Click ? "点击" : event->kind == UiEventKind::Enter ? "鼠标进入" : "鼠标离开";
-    std::string comment = "界面 " + description->id + " 的事件 " + event->id + "：" + event->frame + " " + kind;
-    const std::string text = "触发器 " + name + ":\n    events:\n        AudastraUITriggerRegisterEvent(\"" + UiEventKey(description->id, event->id)
-        + "\")\n    actions:\n        CommentString(\"" + comment + "\")\n";
-    const std::string category = description->label.empty() ? description->id : description->label;
+    const std::string text = "触发器 " + name + ":\n    events:\n        " + event + "\n    actions:\n        CommentString(\"" + comment + "\")\n";
+    const std::string category = description.label.empty() ? description.id : description.label;
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{category, text, {}, std::nullopt});
-    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("新建 %1 的响应触发器").arg(eventId));
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), undoLabel);
     if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
     const auto created = find();
     if (!created) return fail(tr("没有找到新建的触发器 %1").arg(Text(name)));
     return created;
+}
+
+std::optional<StableId> GameUiModule::CreateEventTrigger(const QString& id, const QString& eventId, QString* error) {
+    const UiDescription* description = Description(id);
+    const auto event = description ? std::find_if(description->events.begin(), description->events.end(),
+        [&](const UiEvent& row) { return Text(row.id) == eventId; }) : std::vector<UiEvent>::const_iterator{};
+    if (!description || event == description->events.end()) {
+        if (error) *error = description ? tr("界面 %1 没有事件 %2").arg(id, eventId) : tr("地图里没有界面描述 %1").arg(id);
+        return std::nullopt;
+    }
+    const std::string kind = event->kind == UiEventKind::Click ? "点击" : event->kind == UiEventKind::Enter ? "鼠标进入" : "鼠标离开";
+    return CreateHandlerTrigger(*description, "事件 " + event->id, "On_" + event->id,
+        "AudastraUITriggerRegisterEvent(\"" + UiEventKey(description->id, event->id) + "\")",
+        "界面 " + description->id + " 的事件 " + event->id + "：" + event->frame + " " + kind, tr("新建 %1 的响应触发器").arg(eventId), error);
+}
+
+std::optional<StableId> GameUiModule::CreateSimulationTrigger(const QString& id, const QString& timerId, QString* error) {
+    const UiDescription* description = Description(id);
+    const auto& timers = description ? description->simulation.timers : std::vector<UiSimulationTimer>{};
+    const auto timer = std::find_if(timers.begin(), timers.end(), [&](const UiSimulationTimer& row) { return Text(row.id) == timerId; });
+    if (!description || timer == timers.end()) {
+        if (error) *error = description ? tr("界面 %1 没有模拟计时器 %2").arg(id, timerId) : tr("地图里没有界面描述 %1").arg(id);
+        return std::nullopt;
+    }
+    return CreateHandlerTrigger(*description, "模拟 " + timer->id, "Sim_" + timer->id,
+        "AudastraUIRegisterSimulationTimer(\"" + description->id + "\", \"" + timer->id + "\")",
+        "界面 " + description->id + " 的模拟计时器 " + timer->id + " 到期：只在编辑器模拟里运行", tr("新建 %1 的模拟触发器").arg(timerId), error);
 }
 
 GameUiModule::RuntimeRequirement GameUiModule::QueryRuntimeRequirement() const {
