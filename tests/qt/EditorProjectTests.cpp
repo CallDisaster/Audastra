@@ -26,6 +26,7 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainShadowBake.h"
 #include "War3MapCore/Services/CampaignService.h"
+#include "War3MapCore/Services/CodeCheckProject.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
 #include "../MapDataFixtures.h"
