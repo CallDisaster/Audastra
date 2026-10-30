@@ -148,6 +148,8 @@ void TraceReply(std::string_view input, std::string_view output) {
     // 只记录布尔结果与句柄是否存在；不记录作者文字、实际句柄或请求参数。
     if (reply.value.kind == AJ_BOOL) message += " bool=" + std::to_string(reply.value.integer);
     if (reply.value.kind == AJ_HANDLE) message += reply.value.integer ? " handle=nonzero" : " handle=zero";
+    if (testEvidence.Enabled() && reply.value.kind == AJ_HANDLE)
+        message += " handle_value=" + std::to_string(reply.value.integer);
     if (testEvidence.Enabled() && request.command == "audastraui.clickunit" && reply.value.kind == AJ_INT)
         message += " input_result=" + std::to_string(reply.value.integer);
     if (request.command == "audastraui.dataerrors") {
@@ -262,14 +264,19 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
     }
 }
 template<class Write>
-GameUi::UiDataWrite WriteData(Runtime& self, Write&& write) {
+GameUi::UiDataWrite WriteData(Runtime& self, Write&& write, const char* kind, std::int32_t frame, std::int32_t property) {
     // 与字符串入口共用串行/活动深度，写入中发生 VM 清理时只失效，不销毁在栈上的消费者。
     std::lock_guard guard(self.lock);
     const auto data = self.data;
     if (!data) return {};
     struct Depth { unsigned& value; ~Depth() { --value; } } depth{self.depth};
     ++self.depth;
-    return write(*data);
+    const auto result = write(*data);
+    static std::atomic<unsigned> rejected{0};
+    if (result.intercepted && !result.applied && testEvidence.Enabled() && rejected.fetch_add(1) < 16)
+        Trace("ui-data-rejected kind=" + std::string(kind) + " frame=" + std::to_string(frame)
+            + " property=" + std::to_string(property) + " errors=" + data->Errors(), true);
+    return result;
 }
 void __cdecl SaveRealHook(std::int32_t table, std::int32_t parent, std::int32_t child, const float* value) noexcept {
     auto* self = runtime.load();
@@ -278,7 +285,7 @@ void __cdecl SaveRealHook(std::int32_t table, std::int32_t parent, std::int32_t 
         self->saveReal(table, parent, child, value); return;
     }
     try {
-        if (WriteData(*self, [&](auto& data) { return data.SaveReal(table, parent, child, value); }).intercepted) return;
+        if (WriteData(*self, [&](auto& data) { return data.SaveReal(table, parent, child, value); }, "real", parent, child).intercepted) return;
         self->saveReal(table, parent, child, value);
     } catch (...) { Trace("data-write dispatch exception", true); }
 }
@@ -287,7 +294,7 @@ std::int32_t __cdecl SaveStrHook(std::int32_t table, std::int32_t parent, std::i
     if (!self || !self->saveStr) return 0;
     if (!table || table != self->boundTable.load(std::memory_order_acquire)) return self->saveStr(table, parent, child, value);
     try {
-        const auto result = WriteData(*self, [&](auto& data) { return data.SaveStr(table, parent, child, value); });
+        const auto result = WriteData(*self, [&](auto& data) { return data.SaveStr(table, parent, child, value); }, "string", parent, child);
         if (result.intercepted) return result.applied ? 1 : 0;
         return self->saveStr(table, parent, child, value);
     } catch (...) { Trace("data-write dispatch exception", true); return 0; }
@@ -299,7 +306,7 @@ void __cdecl SaveBooleanHook(std::int32_t table, std::int32_t parent, std::int32
         self->saveBoolean(table, parent, child, value); return;
     }
     try {
-        if (WriteData(*self, [&](auto& data) { return data.SaveBoolean(table, parent, child, value); }).intercepted) return;
+        if (WriteData(*self, [&](auto& data) { return data.SaveBoolean(table, parent, child, value); }, "boolean", parent, child).intercepted) return;
         self->saveBoolean(table, parent, child, value);
     } catch (...) { Trace("data-write dispatch exception", true); }
 }
@@ -310,7 +317,7 @@ void __cdecl SaveIntegerHook(std::int32_t table, std::int32_t parent, std::int32
         self->saveInteger(table, parent, child, value); return;
     }
     try {
-        if (WriteData(*self, [&](auto& data) { return data.SaveInteger(table, parent, child, value); }).intercepted) return;
+        if (WriteData(*self, [&](auto& data) { return data.SaveInteger(table, parent, child, value); }, "integer", parent, child).intercepted) return;
         self->saveInteger(table, parent, child, value);
     } catch (...) { Trace("data-write dispatch exception", true); }
 }
