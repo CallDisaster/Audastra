@@ -340,6 +340,53 @@ type = AudastraFrame
 type = boolean
 default = "true"
 
+[AudastraUIRegisterTextFormat]
+title = "设置数值文字格式"
+description = "设置 ${框架} 的数值文字格式为 ${格式}"
+comment = "{0} 到 {7} 取实参，{0:2} 保留 2 位小数，{{ 与 }} 写括号本身。之后用“刷新文字实参”推数值、“提交文字”写出。重新设置会清掉推过的实参。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = string
+default = "{0}"
+
+[AudastraUIPushTextArg]
+title = "刷新文字实参（实数）"
+description = "刷新 ${框架} 的文字实参 ${序号} 为 ${数值}"
+comment = "只记下数值，不改文字；推完要改的实参后用“提交文字”写出一次。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = integer
+default = "0"
+[[.args]]
+type = real
+default = "0"
+
+[AudastraUIPushTextIntArg]
+title = "刷新文字实参（整数）"
+description = "刷新 ${框架} 的文字实参 ${序号} 为 ${数值}"
+comment = "只记下数值，不改文字；推完要改的实参后用“提交文字”写出一次。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+[[.args]]
+type = integer
+default = "0"
+[[.args]]
+type = integer
+default = "0"
+
+[AudastraUICommitText]
+title = "提交文字"
+description = "按格式写出 ${框架} 的文字"
+comment = "格式用到的实参都推过才写出，否则保留原来的文字。"
+category = TC_AudastraUI
+[[.args]]
+type = AudastraFrame
+
 [AudastraUIWatchFrame]
 title = "监听界面事件"
 description = "监听 ${框架} 的 ${事件}，事件名 ${事件名}，序号 ${序号}"

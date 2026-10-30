@@ -90,6 +90,18 @@ type = real
 type = integer
 default = "-1"
 
+[AudastraUIFormatInteger]
+title = "整数转文字（界面）"
+description = "把 ${数值} 转成文字，补 ${小数位} 位小数"
+comment = "小数位大于 0 时在整数后补 0，与编辑器预览一致。"
+category = TC_AudastraUI
+returns = string
+[[.args]]
+type = integer
+[[.args]]
+type = integer
+default = "-1"
+
 [AudastraUIBooleanText]
 title = "布尔值转文字（界面）"
 description = "把 ${值} 转成文字"

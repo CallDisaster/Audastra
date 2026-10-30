@@ -1,11 +1,12 @@
 #include "UiDescriptionText.h"
 
 #include "War3MapCore/GameUi/UiDescription.h"
+#include "War3MapCore/Text/UiNumberFormat.h"
 
 #include <array>
 #include <charconv>
 #include <cmath>
-#include <cstdio>
+#include <cstdint>
 
 namespace War3Map::GameUi {
 namespace detail {
@@ -97,22 +98,20 @@ std::string FormatUiNumber(double value) {
 
 namespace {
 
-
-std::string FixedDecimals(double value, int decimals) {
-    std::array<char, 64> buffer{};
-    const int written = std::snprintf(buffer.data(), buffer.size(), "%.*f", decimals, value);
-    if (written <= 0) return "0";
-    std::string text(buffer.data(), static_cast<std::size_t>(written));
-    if (text.starts_with('-') && text.find_first_not_of("-0.") == std::string::npos) text.erase(0, 1);  // -0.0
-    return text;
-}
-
-// 没写小数位时最多 3 位，去掉末尾的 0。
-std::string ShortDecimals(double value) {
-    std::string text = FixedDecimals(value, 3);
-    while (text.ends_with('0')) text.pop_back();
-    if (text.ends_with('.')) text.pop_back();
-    return text;
+// 预览与游戏、运行库同一格式：实数先转成游戏里的 binary32 再按位数格式化，整数不经实数。
+std::string NumberText(UiValueType type, const std::string& value, std::optional<int> decimals) {
+    std::optional<std::string> text;
+    if (type == UiValueType::Real) {
+        float number = 0.0f;
+        std::from_chars(value.data(), value.data() + value.size(), number);
+        text = Text::FormatUiReal(number, decimals.value_or(-1));
+    } else {
+        std::int32_t number = 0;
+        const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), number);
+        if (error != std::errc() || end != value.data() + value.size()) return value;
+        text = Text::FormatUiInteger(number, decimals.value_or(-1));
+    }
+    return text ? *text : value;
 }
 
 } // namespace
@@ -146,13 +145,8 @@ std::string FormatUiText(const UiDescription& description, const UiInstanceState
         const auto value = UiValueText(description, state, reference.id, index);
         if (!value) continue;
         const UiValue* spec = FindUiValue(description, reference.id);
-        if (spec->type == UiValueType::Real) {
-            double number = 0.0;
-            std::from_chars(value->data(), value->data() + value->size(), number);
-            result += piece.decimals ? FixedDecimals(number, *piece.decimals) : ShortDecimals(number);
-        } else {
-            result += *value;
-        }
+        if (spec->type == UiValueType::Real || spec->type == UiValueType::Integer) result += NumberText(spec->type, *value, piece.decimals);
+        else result += *value;
     }
     return result;
 }

@@ -617,6 +617,8 @@ private:
             Append(out, TextStyle(info));
             if (!frame.text.empty() && !HasReferences(frame.text)) {
                 if (auto text = TextExpression(info, frame.text)) out.push_back(Call("AudastraUISetText", {TextTarget(info), *text}));
+            } else if (const auto format = NumericTextFormat(info, frame.text)) {
+                out.push_back(Call("AudastraUIRegisterTextFormat", {TextTarget(info), Quote(format->format)}));
             }
             break;
         case UiFrameType::Model:
@@ -683,7 +685,9 @@ private:
                 case UiValueType::Real:
                     part = Call("AudastraUIFormatReal", {*ref, piece.decimals ? std::to_string(*piece.decimals) : "-1"});
                     break;
-                case UiValueType::Integer: part = Call("I2S", {*ref}); break;
+                case UiValueType::Integer:
+                    part = piece.decimals ? Call("AudastraUIFormatInteger", {*ref, std::to_string(*piece.decimals)}) : Call("I2S", {*ref});
+                    break;
                 case UiValueType::Boolean: part = Call("AudastraUIBooleanText", {*ref}); break;
                 case UiValueType::String: part = *ref; break;
                 }
@@ -691,6 +695,91 @@ private:
             result = result ? Call("OperatorString", {*result, part}) : part;
         }
         return result ? *result : Quote("");
+    }
+
+    // 数值文字的格式：{k} / {k:d} 依次取 arguments[k]，文字里的括号写成 {{ }}。
+    struct TextFormat {
+        std::string format;
+        std::vector<std::pair<std::string, UiValueType>> arguments;  // 取值写法与类型
+    };
+    // 与运行库文字参数的预算一致：编码后 384 字节，% 与 ; 各占 3 字节；控制字符不能传。
+    static constexpr std::size_t kTextBytes = 384;
+    // 一个实参格式化后最长的字节数：实数为最大 float 的 6 位定点（含负号），整数为 int32 加 6 位小数。
+    static constexpr std::size_t kRealArgumentBytes = 47;
+    static constexpr std::size_t kIntegerArgumentBytes = 18;
+
+    // 模板里只有实数、整数取值、最多 8 个不同取值，且写出的文字一定在预算内时，走运行库的数值文字：创建时登记格式，
+    // 刷新只推数值、提交一次，不在脚本里拼字符串。其余照旧拼成文字刷新。
+    std::optional<TextFormat> NumericTextFormat(const FrameInfo& info, const std::string& text) {
+        const auto pieces = detail::ParseUiTextTemplate(text, nullptr);
+        if (!pieces) return std::nullopt;
+        TextFormat result;
+        std::vector<std::string> keys;
+        std::size_t bytes = 0;
+        for (const auto& piece : *pieces) {
+            if (!piece.reference) {
+                for (const char c : piece.literal) {
+                    const auto byte = static_cast<unsigned char>(c);
+                    if (byte < 0x20 || byte == 0x7f) return std::nullopt;
+                    const bool brace = c == '{' || c == '}';
+                    result.format.append(brace ? 2 : 1, c);
+                    bytes += (c == '%' || c == ';' ? 3 : 1) * (brace ? 2 : 1);
+                }
+                continue;
+            }
+            const auto& reference = *piece.reference;
+            const UiValue* spec = FindValue(reference.id);
+            if (!spec || (spec->type != UiValueType::Real && spec->type != UiValueType::Integer)) return std::nullopt;
+            if (reference.perInstance && !info.group) continue;  // 同预览：重复框架外没有下标，不取值
+            const std::string key = reference.id
+                + (reference.perInstance ? "[]" : reference.index ? "[" + std::to_string(*reference.index) + "]" : "");
+            auto found = std::find(keys.begin(), keys.end(), key);
+            if (found == keys.end()) {
+                if (keys.size() == 8) return std::nullopt;
+                const UiValue* value = nullptr;
+                const auto ref = ValueRef(info, reference.id, reference.perInstance, reference.index, &value);
+                if (!ref) return std::nullopt;
+                result.arguments.emplace_back(*ref, spec->type);
+                keys.push_back(key);
+                found = keys.end() - 1;
+            }
+            std::string slot = "{" + std::to_string(found - keys.begin());
+            if (piece.decimals) slot += ":" + std::to_string(*piece.decimals);
+            slot += "}";
+            result.format += slot;
+            bytes += spec->type == UiValueType::Real ? kRealArgumentBytes : kIntegerArgumentBytes;
+        }
+        if (result.arguments.empty() || bytes > kTextBytes) return std::nullopt;
+        return result;
+    }
+
+    // 数值文字的刷新：第一次（或回到基础状态后）推全部实参，之后只推变了的，推过才提交一次。
+    // 状态记成整数：0 没推过，1 已提交，2 推了还没提交。
+    Lines TextArguments(const FrameInfo& info, const TextFormat& format) {
+        const std::string target = TextTarget(info);
+        const auto track = [&](const std::string& name, std::string_view type, const std::string& initial) {
+            if (std::none_of(sent_.begin(), sent_.end(), [&](const Sent& sent) { return sent.variable == name; })) {
+                sent_.push_back({name, std::string(type), initial, GroupSize(info)});
+            }
+            return info.group ? "udg_" + name + "[" + std::string(kLoopIndex) + "]" : "udg_" + name;
+        };
+        const std::string state = track(UiSentVariableName(d_.id, info.frame->id, PropertyKey(Property::Text)), "integer", "0");
+        Lines all, changed;
+        for (std::size_t k = 0; k < format.arguments.size(); ++k) {
+            const auto& [value, type] = format.arguments[k];
+            const bool integer = type == UiValueType::Integer;
+            const std::string sent = track(UiSentVariableName(d_.id, info.frame->id, "text" + std::to_string(k)),
+                integer ? "integer" : "real", "0");
+            const Lines push{Set(sent, value), Call(integer ? "AudastraUIPushTextIntArg" : "AudastraUIPushTextArg", {target, std::to_string(k), sent})};
+            Append(all, push);
+            Lines body = push;
+            body.push_back(Set(state, "2"));
+            Append(changed, If({integer ? CompareInt(value, "OperatorNotEqual", sent) : CompareReal(value, "OperatorNotEqual", sent)}, body));
+        }
+        all.push_back(Set(state, "2"));
+        Lines out = If({CompareInt(state, "OperatorEqual", "0")}, all, changed);
+        Append(out, If({CompareInt(state, "OperatorEqual", "2")}, {Set(state, "1"), Call("AudastraUICommitText", {target})}));
+        return out;
     }
 
     std::optional<std::string> NumberExpression(const FrameInfo& info, const UiBinding& binding) {
@@ -810,7 +899,9 @@ private:
         const UiFrame& frame = *info.frame;
         Lines out;
         if ((frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) && HasReferences(frame.text)) {
-            if (auto text = TextExpression(info, frame.text)) {
+            if (const auto format = NumericTextFormat(info, frame.text)) {
+                Append(out, Guarded(info, Property::Text, TextArguments(info, *format)));
+            } else if (auto text = TextExpression(info, frame.text)) {
                 Append(out, Guarded(info, Property::Text, Changed(info, Property::Text, "string", *text,
                     {Call("AudastraUIPushText", {TextTarget(info), SentRef(info, Property::Text)})})));
             }

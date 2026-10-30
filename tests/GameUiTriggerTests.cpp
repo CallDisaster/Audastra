@@ -139,12 +139,17 @@ void TestGeneratedText() {
         "读条 状态 打断 cast_State_interrupt", "读条 基础状态 cast_BaseState"}, "触发器名与顺序");
     Require(plan.value->variables == std::vector<std::string>{"AUI_cast_root", "AUI_cast_bar", "AUIK_cast_bar_fill", "AUI_cast_label",
         "AUI_cast_slot", "AUIK_cast_slot_text", "AUIK_cast_slot_backdrop", "AUIK_cast_slot_pushed", "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast",
-        "AUIL_cast_root_visible", "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_text"}, "变量名与顺序");
+        "AUIL_cast_root_visible", "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_text", "AUIL_cast_slot_text0"}, "变量名与顺序");
     // 刷新只发变化的值：先和上次发的比，变了才记下并发出去；回到基础状态时状态改过的属性重新发。
-    Require(Contains(text, "    AUIL_cast_slot_text: string[3] = \"AUI:unsent\"\n")
+    // 只有数值的文字创建时登记格式，刷新只推变了的数值再提交一次；含文字取值的照旧拼成文字比较。
+    Require(Contains(text, "    AUIL_cast_slot_text: integer[3] = 0\n") && Contains(text, "    AUIL_cast_slot_text0: integer[3] = 0\n")
             && Contains(text, "OperatorCompareString(" ) && Contains(text, "OperatorNotEqualENE, udg_AUIL_cast_label_text)")
             && Contains(text, "AudastraUIPushText(udg_AUI_cast_label, udg_AUIL_cast_label_text)")
-            && Contains(text, "AudastraUIPushText(udg_AUIK_cast_slot_text[GetForLoopIndexA()], udg_AUIL_cast_slot_text[GetForLoopIndexA()])")
+            && Contains(text, "AudastraUIRegisterTextFormat(udg_AUIK_cast_slot_text[GetForLoopIndexA()], \"{0}\")")
+            && Contains(text, "OperatorCompareInteger(udg_AUIV_cast_charges[GetForLoopIndexA()], OperatorNotEqual, udg_AUIL_cast_slot_text0[GetForLoopIndexA()])")
+            && Contains(text, "AudastraUIPushTextIntArg(udg_AUIK_cast_slot_text[GetForLoopIndexA()], 0, udg_AUIL_cast_slot_text0[GetForLoopIndexA()])")
+            && Contains(text, "AudastraUICommitText(udg_AUIK_cast_slot_text[GetForLoopIndexA()])")
+            && !Contains(text, "I2S(udg_AUIV_cast_charges")
             && Contains(text, "OperatorNotEqual, udg_AUIL_cast_bar_value)")
             && Contains(text, "SetVariable(udg_AUIL_cast_bar_value, udg_AUIV_cast_progress)"), "刷新先比较上次发的值：\n" + text);
     const std::size_t base = text.find("读条 基础状态 cast_BaseState");
@@ -203,7 +208,7 @@ void TestGeneratedText() {
         && Contains(text, "AudastraUISetColor(udg_AUI_cast_label, 255, 204, 0, 255)")
         && Contains(text, "AudastraUISetTextAlign(udg_AUI_cast_label, AudastraJustifyLeft, AudastraJustifyMiddle)"), "文字样式：\n" + text);
     // 按钮文字在模板子框架上，按实例取自己的格。
-    Require(Contains(text, "SetVariable(udg_AUIL_cast_slot_text[GetForLoopIndexA()], I2S(udg_AUIV_cast_charges[GetForLoopIndexA()]))"),
+    Require(Contains(text, "SetVariable(udg_AUIL_cast_slot_text0[GetForLoopIndexA()], udg_AUIV_cast_charges[GetForLoopIndexA()])"),
         "按钮文字绑定：\n" + text);
     // 有状态覆盖的属性只在当前状态不覆盖时刷新。
     Require(Contains(text, "OperatorCompareString(udg_AUIS_cast, OperatorNotEqualENE, \"interrupt\")"), "状态守卫：\n" + text);
@@ -217,6 +222,56 @@ void TestGeneratedText() {
             && Contains(text, "AudastraUIPushShown(udg_AUI_cast_root, true)")
             && Contains(text, "SetVariable(udg_AUIL_cast_root_visible, 0)")
             && Contains(text, "AudastraUIPushShown(udg_AUI_cast_root, false)"), "显示绑定到布尔数值，变化时才发：\n" + text);
+}
+
+// 只有数值的文字：创建时登记一次格式，刷新逐个比较数值、只推变了的、推过才提交一次，不在脚本里拼字符串；
+// 回到基础状态时从头推一遍。含文字取值或超过 8 个取值的模板照旧拼成文字。
+void TestNumericText() {
+    UiDescription d;
+    d.id = "hud";
+    d.label = "状态栏";
+    d.values = {UiValue{"hp", "生命", UiValueType::Real, 0, "0", std::nullopt, std::nullopt},
+        UiValue{"maxHp", "生命上限", UiValueType::Integer, 0, "100", std::nullopt, std::nullopt},
+        UiValue{"name", "名字", UiValueType::String, 0, "", std::nullopt, std::nullopt},
+        UiValue{"slots", "格", UiValueType::Real, 9, "0", std::nullopt, std::nullopt}};
+    UiFrame life;
+    life.id = "life";
+    life.type = UiFrameType::Text;
+    life.anchors = {Anchor(FramePoint::Center, UiAnchorTarget::Screen, FramePoint::Center)};
+    life.text = "生命 {hp:1}/{maxHp} {{满}} {hp}";
+    UiFrame level = life;
+    level.id = "level";
+    level.text = "{name} {maxHp:2}";
+    UiFrame many = life;
+    many.id = "many";
+    many.text.clear();
+    for (int i = 0; i < 9; ++i) many.text += "{slots[" + std::to_string(i) + "]}";
+    d.frames = {life, level, many};
+    d.states = {UiState{"dead", "阵亡", {UiStateOverride{"life", std::nullopt, std::string("阵亡"), std::nullopt, std::nullopt}}}};
+    UiTriggerOptions options;
+    options.defaultFont = "Fonts\\dfst-m3u.ttf";
+    const auto plan = GenerateUiTriggers(d, options);
+    Require(plan.Succeeded(), "数值文字生成：" + First(plan.diagnostics));
+    const std::string& text = plan.value->featureText;
+    Require(Contains(text, "AudastraUIRegisterTextFormat(udg_AUI_hud_life, \"生命 {0:1}/{1} {{满}} {0}\")")
+            && Contains(text, "OperatorCompareReal(udg_AUIV_hud_hp, OperatorNotEqual, udg_AUIL_hud_life_text0)")
+            && Contains(text, "SetVariable(udg_AUIL_hud_life_text0, udg_AUIV_hud_hp)")
+            && Contains(text, "AudastraUIPushTextArg(udg_AUI_hud_life, 0, udg_AUIL_hud_life_text0)")
+            && Contains(text, "OperatorCompareInteger(udg_AUIV_hud_maxHp, OperatorNotEqual, udg_AUIL_hud_life_text1)")
+            && Contains(text, "AudastraUIPushTextIntArg(udg_AUI_hud_life, 1, udg_AUIL_hud_life_text1)")
+            && Contains(text, "OperatorCompareInteger(udg_AUIL_hud_life_text, OperatorEqual, 0)")
+            && Contains(text, "OperatorCompareInteger(udg_AUIL_hud_life_text, OperatorEqual, 2)")
+            && Contains(text, "AudastraUICommitText(udg_AUI_hud_life)")
+            && !Contains(text, "AudastraUIFormatReal(udg_AUIV_hud_hp"), "数值文字只推数值：\n" + text);
+    Require(Contains(text, "AudastraUIFormatInteger(udg_AUIV_hud_maxHp, 2)") && !Contains(text, "AudastraUIRegisterTextFormat(udg_AUI_hud_level")
+            && !Contains(text, "AudastraUIRegisterTextFormat(udg_AUI_hud_many") && Contains(text, "AudastraUIFormatReal(udg_AUIV_hud_slots[8], -1)"),
+        "含文字或超过 8 个取值照旧拼接：\n" + text);
+    const std::size_t base = text.find("状态栏 基础状态 hud_BaseState");
+    Require(base != std::string::npos && text.find("SetVariable(udg_AUIL_hud_life_text, 0)", base) != std::string::npos,
+        "回到基础状态时从头推数值文字：\n" + text);
+    Fixture f;
+    const auto applied = f.Apply(text);
+    Require(applied.Succeeded(), "数值文字写进触发器：" + First(applied.diagnostics));
 }
 
 // 预览里没写贴图的部分是透明的：游戏里不能留下没设贴图的 BACKDROP（会画成绿块）。
@@ -582,6 +637,11 @@ void TestScriptLibrary() {
         "native SaveReal takes hashtable table, integer parentKey, integer childKey, real value returns nothing\n"
         "native SaveStr takes hashtable table, integer parentKey, integer childKey, string value returns boolean\n"
         "native SaveBoolean takes hashtable table, integer parentKey, integer childKey, boolean value returns nothing\n"
+        "native SaveInteger takes hashtable table, integer parentKey, integer childKey, integer value returns nothing\n"
+        "native LoadInteger takes hashtable table, integer parentKey, integer childKey returns integer\n"
+        "native LoadReal takes hashtable table, integer parentKey, integer childKey returns real\n"
+        "native LoadStr takes hashtable table, integer parentKey, integer childKey returns string\n"
+        "native FlushChildHashtable takes hashtable table, integer parentKey returns nothing\n"
         "native R2SW takes real r, integer width, integer precision returns string\n"
         "native SubString takes string source, integer start, integer end returns string\n"
         "native StringLength takes string s returns integer\n"
@@ -613,6 +673,7 @@ int main() {
     SetConsoleOutputCP(CP_UTF8);
     try {
         TestGeneratedText();
+        TestNumericText();
         TestUntexturedFrames();
         TestThreadedCreation();
         TestAppliedThroughSharedChain();

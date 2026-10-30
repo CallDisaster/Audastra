@@ -3,13 +3,17 @@
 // 没装运行库、游戏版本不受支持或运行库未接通时 AudastraUIIsReady 为假，框架相关的调用什么都不做，
 // 取值返回 0 或空文字，AudastraUILastError 说明原因；生成的“创建”触发器按 0.2 秒轮询，最多 150 次，地图照常运行。
 // 界面事件只在本机发生（每个玩家的鼠标不同），事件触发器只在操作的玩家电脑上运行；会影响游戏的动作要先同步。
-// 文字格式化是纯脚本实现，位数规则同编辑器预览（最多 3 位、去掉末尾的 0）。
+// 数值文字的位数规则同编辑器预览与运行库（最多 3 位、去掉末尾的 0；固定位数半值远离 0；负零写成 0）。
 library AudastraUI requires AudastraJapi
 
     globals
         private constant string PREFIX = "audastraui."
         private constant real POLL_PERIOD = 0.02
         private constant integer MAX_ENTRIES = 8190
+        // 每次计时器到期最多派发的界面事件数，剩下的留到下一次。
+        private constant integer EVENTS_PER_POLL = 32
+        // 数值文字格式里最多的片段数（文字与取值交替）。
+        private constant integer MAX_FORMAT_PIECES = 512
         // -1 未连接过；0 已连接；其他仅记录上次失败的 JAPI 状态，不阻止重试。
         private integer connectStatus = -1
         private integer failedStatus = 0
@@ -18,6 +22,13 @@ library AudastraUI requires AudastraJapi
         // -1 还没绑定；0 已绑定；其他为上次绑定失败的 JAPI 状态。
         private hashtable dataTable = null
         private integer dataStatus = -1
+        // 整数事件通道：-1 还没协商；0 可用；其他为协商失败的 JAPI 状态，本局用字符串取事件。
+        private integer eventStatus = -1
+        // 运行库数值文字格式：-1 还没试；0 可用；6 旧版运行库不认识、12 不支持，本局都在脚本里拼文字。
+        private integer formatStatus = -1
+        // 数值文字格式：parent 为框架。0 方式（1 运行库、2 脚本拼接）、1 片段数；16+k 实数实参、24+k 整数实参、
+        // 40+k 实参类型（1 实数、2 整数）、50+k 格式用到实参 k；1000+i 片段的实参（-1 为文字）、2000+i 小数位、3000+i 文字。
+        private hashtable formatTable = null
         private timer pollTimer = null
         // 监听表：框架 + 事件类型 → 事件名、序号（同一框架同一类型只留最后一次）。
         private integer watchCount = 0
@@ -189,13 +200,42 @@ library AudastraUI requires AudastraJapi
 
     // ── 文字格式化 ──
 
+    // “-0”“-0.00”这类负零写成正零。
+    private function PositiveZero takes string text returns string
+        local integer length = StringLength(text)
+        local integer i = 1
+        local string c
+        if SubString(text, 0, 1) != "-" then
+            return text
+        endif
+        loop
+            exitwhen i >= length
+            set c = SubString(text, i, i + 1)
+            if c != "0" and c != "." then
+                return text
+            endif
+            set i = i + 1
+        endloop
+        return SubString(text, 1, length)
+    endfunction
+
     // decimals 为 -1 时最多保留 3 位小数并去掉小数点后末尾的 0。
     function AudastraUIFormatReal takes real value, integer decimals returns string
         local string text
         local integer length
         local integer dot = 0
         if decimals >= 0 then
-            return R2SW(value, 1, decimals)
+            set text = R2SW(value, 1, decimals)
+            set length = StringLength(text)
+            // 0 位时 R2SW 仍带小数点（“12.” 或 “12.0”），去掉。
+            if decimals == 0 then
+                loop
+                    exitwhen dot >= length or SubString(text, dot, dot + 1) == "."
+                    set dot = dot + 1
+                endloop
+                set text = SubString(text, 0, dot)
+            endif
+            return PositiveZero(text)
         endif
         set text = R2SW(value, 1, 3)
         set length = StringLength(text)
@@ -216,6 +256,21 @@ library AudastraUI requires AudastraJapi
         set text = SubString(text, 0, length)
         if text == "-0" then
             return "0"
+        endif
+        return text
+    endfunction
+
+    // decimals 大于 0 时在整数后补相应位数的 0。
+    function AudastraUIFormatInteger takes integer value, integer decimals returns string
+        local string text = I2S(value)
+        local integer i = 0
+        if decimals > 0 then
+            set text = text + "."
+            loop
+                exitwhen i >= decimals
+                set text = text + "0"
+                set i = i + 1
+            endloop
         endif
         return text
     endfunction
@@ -301,10 +356,39 @@ library AudastraUI requires AudastraJapi
         endloop
     endfunction
 
+    // 整数事件通道：事件从绑定表 parent 0 取回，不再每次计时器到期拼请求串。旧版运行库不认识时用字符串取事件，
+    // 两种通道共用同一队列，只用其中一种。不在游戏线程（9）、重入（11）下次再试。
+    private function EventTable takes nothing returns boolean
+        if eventStatus == -1 or eventStatus == 9 or eventStatus == 11 then
+            if not Bound() then
+                return false
+            endif
+            call AjCallVoid(PREFIX + "eventtable", "")
+            set eventStatus = AjLastStatus
+        endif
+        return eventStatus == 0
+    endfunction
+
     private function Poll takes nothing returns nothing
-        local integer pending = AjCallInt(PREFIX + "poll", "")
+        local integer pending
         local string eventText
         local integer bar
+        local integer count = 0
+        if EventTable() then
+            // 7 泵一次输入并取第一个事件，8 取下一个；完成标记 child 0 为 1 时 child 1 为框架、child 2 为事件类型。
+            call FlushChildHashtable(dataTable, 0)
+            call SaveBoolean(dataTable, 0, 7, true)
+            loop
+                exitwhen LoadInteger(dataTable, 0, 0) != 1
+                call Dispatch(LoadInteger(dataTable, 0, 1), LoadInteger(dataTable, 0, 2))
+                set count = count + 1
+                exitwhen count >= EVENTS_PER_POLL
+                call FlushChildHashtable(dataTable, 0)
+                call SaveBoolean(dataTable, 0, 8, true)
+            endloop
+            return
+        endif
+        set pending = AjCallInt(PREFIX + "poll", "")
         if not Check() then
             // 运行库停用或游戏界面已不在：停止轮询，下次监听时重新开始。
             call PauseTimer(pollTimer)
@@ -483,6 +567,9 @@ library AudastraUI requires AudastraJapi
     function AudastraUIDestroy takes integer frame returns nothing
         if Run("destroy", AjArgHandle(frame)) then
             call ForgetFrame(frame)
+            if formatTable != null then
+                call FlushChildHashtable(formatTable, frame)
+            endif
         endif
     endfunction
 
@@ -528,6 +615,186 @@ library AudastraUI requires AudastraJapi
             call SaveBoolean(dataTable, frame, 5, show)
         else
             call AudastraUIShow(frame, show)
+        endif
+    endfunction
+
+    // ── 数值文字 ──
+    // 带数值的文字先登记一次格式，之后只推数值、最后提交一次：运行库支持时由它格式化，不在脚本里拼字符串；
+    // 不支持时在这里缓存格式与实参，提交时才拼成文字。格式：{0}…{7} 取实参，{k:d} 保留 d（0 到 6）位小数，
+    // {{ 与 }} 为括号本身。
+
+    // 单个数字 0..limit，不是数字时为 -1。
+    private function Digit takes string c, integer limit returns integer
+        local integer d = 0
+        loop
+            exitwhen d > limit
+            if c == I2S(d) then
+                return d
+            endif
+            set d = d + 1
+        endloop
+        return -1
+    endfunction
+
+    private function AddPiece takes integer frame, integer argument, integer decimals, string text returns boolean
+        local integer count = LoadInteger(formatTable, frame, 1)
+        if count >= MAX_FORMAT_PIECES then
+            return false
+        endif
+        call SaveInteger(formatTable, frame, 1000 + count, argument)
+        call SaveInteger(formatTable, frame, 2000 + count, decimals)
+        call SaveStr(formatTable, frame, 3000 + count, text)
+        call SaveInteger(formatTable, frame, 1, count + 1)
+        if argument >= 0 then
+            call SaveInteger(formatTable, frame, 50 + argument, 1)
+        endif
+        return true
+    endfunction
+
+    // 拆成文字片段与实参片段；写法不对时返回假。
+    private function ParseFormat takes integer frame, string format returns boolean
+        local integer length = StringLength(format)
+        local integer i = 0
+        local integer start = 0
+        local integer argument
+        local integer decimals
+        local string c
+        loop
+            exitwhen i >= length
+            set c = SubString(format, i, i + 1)
+            if (c == "{" or c == "}") and SubString(format, i + 1, i + 2) == c then
+                if not AddPiece(frame, -1, -1, SubString(format, start, i + 1)) then
+                    return false
+                endif
+                set i = i + 2
+                set start = i
+            elseif c == "}" then
+                return false
+            elseif c == "{" then
+                if i > start and not AddPiece(frame, -1, -1, SubString(format, start, i)) then
+                    return false
+                endif
+                set argument = Digit(SubString(format, i + 1, i + 2), 7)
+                set decimals = -1
+                set i = i + 2
+                if SubString(format, i, i + 1) == ":" then
+                    set decimals = Digit(SubString(format, i + 1, i + 2), 6)
+                    set i = i + 2
+                    if decimals < 0 then
+                        return false
+                    endif
+                endif
+                if argument < 0 or SubString(format, i, i + 1) != "}" or not AddPiece(frame, argument, decimals, "") then
+                    return false
+                endif
+                set i = i + 1
+                set start = i
+            else
+                set i = i + 1
+            endif
+        endloop
+        return start >= length or AddPiece(frame, -1, -1, SubString(format, start, length))
+    endfunction
+
+    // 登记格式会清掉之前推过的实参。
+    function AudastraUIRegisterTextFormat takes integer frame, string format returns nothing
+        if frame == 0 then
+            call Refuse(5)
+            return
+        endif
+        if formatTable == null then
+            set formatTable = InitHashtable()
+        endif
+        call FlushChildHashtable(formatTable, frame)
+        if not ParseFormat(frame, format) then
+            call FlushChildHashtable(formatTable, frame)
+            call Refuse(5)
+            return
+        endif
+        if formatStatus != 6 and formatStatus != 12 and Bound() then
+            // 直接试，不经 Run：旧版运行库不认识这个命令时只回到脚本拼接，不记成调用失败。
+            call AjCallVoid(PREFIX + "textformat", AjArgHandle(frame) + AjArgText(format))
+            if AjLastStatus == 0 then
+                set formatStatus = 0
+                call SaveInteger(formatTable, frame, 0, 1)
+                return
+            endif
+            if AjLastStatus == 6 or AjLastStatus == 12 then
+                set formatStatus = AjLastStatus
+            endif
+        endif
+        call SaveInteger(formatTable, frame, 0, 2)
+    endfunction
+
+    private function FormatMode takes integer frame, integer index returns integer
+        if formatTable == null or index < 0 or index > 7 then
+            return 0
+        endif
+        return LoadInteger(formatTable, frame, 0)
+    endfunction
+
+    function AudastraUIPushTextArg takes integer frame, integer index, real value returns nothing
+        local integer mode = FormatMode(frame, index)
+        if mode == 1 then
+            call SaveReal(dataTable, frame, 16 + index, value)
+        elseif mode == 2 then
+            call SaveReal(formatTable, frame, 16 + index, value)
+            call SaveInteger(formatTable, frame, 40 + index, 1)
+        else
+            call Refuse(5)
+        endif
+    endfunction
+
+    function AudastraUIPushTextIntArg takes integer frame, integer index, integer value returns nothing
+        local integer mode = FormatMode(frame, index)
+        if mode == 1 then
+            call SaveInteger(dataTable, frame, 24 + index, value)
+        elseif mode == 2 then
+            call SaveInteger(formatTable, frame, 24 + index, value)
+            call SaveInteger(formatTable, frame, 40 + index, 2)
+        else
+            call Refuse(5)
+        endif
+    endfunction
+
+    // 脚本拼接：格式用到的实参都推过才写文字，否则保留原来的文字。
+    private function RenderFormat takes integer frame returns nothing
+        local integer count = LoadInteger(formatTable, frame, 1)
+        local integer i = 0
+        local integer argument
+        local string text = ""
+        loop
+            exitwhen i > 7
+            if LoadInteger(formatTable, frame, 50 + i) == 1 and LoadInteger(formatTable, frame, 40 + i) == 0 then
+                call Refuse(5)
+                return
+            endif
+            set i = i + 1
+        endloop
+        set i = 0
+        loop
+            exitwhen i >= count
+            set argument = LoadInteger(formatTable, frame, 1000 + i)
+            if argument < 0 then
+                set text = text + LoadStr(formatTable, frame, 3000 + i)
+            elseif LoadInteger(formatTable, frame, 40 + argument) == 2 then
+                set text = text + AudastraUIFormatInteger(LoadInteger(formatTable, frame, 24 + argument), LoadInteger(formatTable, frame, 2000 + i))
+            else
+                set text = text + AudastraUIFormatReal(LoadReal(formatTable, frame, 16 + argument), LoadInteger(formatTable, frame, 2000 + i))
+            endif
+            set i = i + 1
+        endloop
+        call AudastraUIPushText(frame, text)
+    endfunction
+
+    function AudastraUICommitText takes integer frame returns nothing
+        local integer mode = FormatMode(frame, 0)
+        if mode == 1 then
+            call SaveBoolean(dataTable, frame, 6, true)
+        elseif mode == 2 then
+            call RenderFormat(frame)
+        else
+            call Refuse(5)
         endif
     endfunction
 
