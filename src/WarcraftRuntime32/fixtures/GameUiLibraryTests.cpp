@@ -800,8 +800,6 @@ void DataPlane() {
     const float nan = std::numeric_limits<float>::quiet_NaN();
     bad(data.SaveReal(1234, bar, 1, &nan));
     bad(data.SaveStr(1234, text, 3, 1));
-    VmText unlinked(""); unlinked.object[2] = 0;
-    bad(data.SaveStr(1234, text, 3, unlinked.Self()));
     VmText control("a\nb"), invalid("\xff");
     // 长字符串对象另持有稳定存储；不使用临时 std::string 的指针。
     const std::string longStorage(385, 'x'); VmText tooLong(longStorage.c_str());
@@ -851,6 +849,20 @@ void DataPlane() {
         && nullTexture.Errors().starts_with("1|"), "null texture retains empty-path refusal");
     gate.store(5678); data.Stop();
     Check(gate.load() == 5678, "repeated stop on an old consumer cannot clear a newer binding");
+}
+
+void UnlinkedStringDataPlane() {
+    Reset(); g_raiseTable = false; g_tableObject = reinterpret_cast<Address>(g_tableWords.data());
+    GameUiLibrary ui(Entries());
+    GameUiDataPlane data({&ResolveTable, [] { return true; }});
+    data.Attach(ui);
+    const auto text = ui.Create("Text", 0, 0, 0).handle;
+    Check(data.Bind(1234, 1, 1) == AJ_OK, "bind unreadable string control");
+    VmText unlinked(""); unlinked.object[2] = 0;
+    g_log.clear();
+    const auto write = data.SaveStr(1234, text, 3, unlinked.Self());
+    Check(write.intercepted && !write.applied && data.Errors().starts_with("1|") && g_log.empty(),
+        "unlinked descriptors remain rejected without a native mutation");
 }
 
 void DataPlaneModule() {
@@ -970,6 +982,7 @@ int main() {
         ModuleCalls();
         ModuleUnavailable();
         DataPlane();
+        UnlinkedStringDataPlane();
         DataPlaneModule();
         OptionalExtensionRefusal();
         TextFormatContracts();
