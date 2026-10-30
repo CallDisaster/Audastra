@@ -646,20 +646,21 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
             && !options.mapRuntimeBoot->onlyIfUsed ? std::span<const std::string_view>(runtimeClient) : std::span<const std::string_view>{};
         // 运行库客户端只能由注入器从函数库取得。显式启用、或按需模式下脚本确实用到运行库时，注入目录里没有客户端
         // 就在这里说清楚，不拖到包身份核对才报“不符”。用法分析不确定时不在此报错，仍由后面的核对把关。
+        const std::string clientName(runtimeClient[0]);
         bool clientNeeded = !required.empty();
         if (!clientNeeded && options.mapRuntimeBoot && options.mapRuntimeBoot->enabled) {
             const auto usage = AnalyzeMapRuntimeUsage(script);
             clientNeeded = usage.Succeeded() && usage.value && usage.value->required;
         }
         const auto clientMissing = [&](const std::vector<std::filesystem::path>& roots, auto&& declares) {
-            if (!clientNeeded || declares(runtimeClient[0])) return false;
+            if (!clientNeeded || declares(clientName)) return false;
             std::string list;
             for (const auto& root : roots) {
                 const auto text = root.u8string();
                 list += (list.empty() ? "" : "、") + std::string(text.begin(), text.end());
             }
             Fail(result, "RUNTIME_CLIENT_NOT_INJECTABLE", "地图启用了界面运行库，但脚本注入目录（" + (list.empty() ? std::string("无") : list)
-                + "）里没有 AudastraUI 函数库（找不到 " + std::string(runtimeClient[0]) + "）。请在触发器的“函数库…”里安装或更新自带的 AudastraUI，"
+                + "）里没有 AudastraUI 函数库（找不到 " + clientName + "）。请在触发器的“函数库…”里安装或更新自带的 AudastraUI，"
                 "它会同时写进注入目录。");
             stage.exitCode = 1;
             return true;
