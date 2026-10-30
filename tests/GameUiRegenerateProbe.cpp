@@ -94,6 +94,10 @@ int wmain(int argc, wchar_t** argv) {
         request.layers = catalog.Layers(); request.toolchain.toolRoot = tool; request.toolchain.uiRoot = ui;
         request.toolchain.workDir = out / "compile";
         request.toolchain.jassDirs.push_back(ui / "ui/AudastraUI/jass");
+        for (const auto& layer : catalog.Layers()) {
+            const auto directory = ui / "ui" / layer / "jass";
+            if (layer != "AudastraUI" && std::filesystem::is_directory(directory)) request.toolchain.jassDirs.push_back(directory);
+        }
         for (const auto* layer : {"japi", "ydwe", "ydtrigger"})
             request.toolchain.jassDirs.push_back(tool / "ui" / layer / "jass");
         Script::MapRuntimeBootPlan boot; boot.payloadSha256 = std::filesystem::path(argv[6]).string();
