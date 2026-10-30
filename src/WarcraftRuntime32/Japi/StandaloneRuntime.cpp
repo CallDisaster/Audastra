@@ -37,7 +37,7 @@ constexpr std::uintptr_t kSaveInteger = 0x1f3890;
 constexpr std::uintptr_t kResolveTable = 0x1cf9d0;
 RuntimeTestWriter testEvidence;
 
-void Trace(std::string_view message, bool fault = false, bool counter = false, bool observation = false) noexcept {
+void Trace(std::string_view message, bool fault = false, bool counter = false, bool observation = false, bool lifecycle = false) noexcept {
     try {
         static std::mutex lock;
         static HANDLE file = INVALID_HANDLE_VALUE;
@@ -46,6 +46,7 @@ void Trace(std::string_view message, bool fault = false, bool counter = false, b
         static unsigned faults = 0;
         static unsigned counters = 0;
         static unsigned observations = 0;
+        static unsigned lifecycles = 0;
         std::lock_guard guard(lock);
         if (!attempted) {
             attempted = true;
@@ -59,8 +60,8 @@ void Trace(std::string_view message, bool fault = false, bool counter = false, b
             }
         }
         // 故障保留独立预算，普通轮询刷满后也能记录；两者都不无限增长。
-        if (observation ? observations >= 2048 : counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
-        if (observation) ++observations; else if (counter) ++counters; else if (fault) ++faults; else ++lines;
+        if (lifecycle ? lifecycles >= 256 : observation ? observations >= 2048 : counter ? counters >= 32 : fault ? faults >= 64 : lines >= 2048) return;
+        if (lifecycle) ++lifecycles; else if (observation) ++observations; else if (counter) ++counters; else if (fault) ++faults; else ++lines;
         const std::string text = "[AudastraJapi] pid=" + std::to_string(GetCurrentProcessId())
             + " tid=" + std::to_string(GetCurrentThreadId()) + " " + std::string(message.substr(0, 768)) + "\n";
         OutputDebugStringA(text.c_str());
@@ -71,6 +72,8 @@ void Trace(std::string_view message, bool fault = false, bool counter = false, b
         }
     } catch (...) { OutputDebugStringA("[AudastraJapi] diagnostic-failure\n"); }
 }
+// 高频轮询和文字观察不能挤掉换图、会话销毁的有限诊断记录。
+void TraceLifecycle(std::string_view message) { Trace(message, false, false, false, true); }
 struct Runtime {
     std::shared_ptr<OwnLua::GameImage127> image;
     Localized localized = nullptr;
@@ -110,7 +113,7 @@ struct Runtime {
         if (++epoch > INT32_MAX) { Fail("epoch exhausted"); return; }
         testEvidence.Reset(static_cast<std::uint32_t>(epoch));
         failed = false;
-        Trace("vm-reset epoch=" + std::to_string(epoch));
+        TraceLifecycle("vm-reset epoch=" + std::to_string(epoch));
     }
 };
 std::atomic<Runtime*> runtime{nullptr};
@@ -245,7 +248,7 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                     return status;
                 });
             self->vm = attached.vm;
-            Trace("vm-attach epoch=" + std::to_string(self->epoch) + (attached.vm ? " ok" : " failed"));
+            TraceLifecycle("vm-attach epoch=" + std::to_string(self->epoch) + (attached.vm ? " ok" : " failed"));
             return attached;
         }).value_or(0);
         return result;
