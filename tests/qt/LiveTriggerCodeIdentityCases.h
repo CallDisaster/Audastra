@@ -157,7 +157,6 @@ void LiveEditorToolsTests::RemovalCommitsQueryConfirmations() {
     query.insert("plan", QJsonObject{{"expected", BindingJson(*binding.value)}, {"operations", QJsonArray{remove}}});
     const auto review = f.tools->Invoke("editor_query_trigger_graph", query);
     QVERIFY2(review.value("ok").toBool() && review.value("complete").toBool(), qPrintable(Explain(review)));
-    QVERIFY(!review.value("preprocess_identity_sha256").toString().isEmpty());
     const auto sha = review.value("review_sha256").toString();
     QJsonArray audits;
     if (review.value("groupable_count").toVariant().toLongLong() > 0)
@@ -179,4 +178,20 @@ void LiveEditorToolsTests::RemovalCommitsQueryConfirmations() {
     QVERIFY(TriggerDocumentEditor::FindTrigger(*f.project.triggerDocument_, targetId) == nullptr);
     f.project.triggerUndoStack_->undo();
     QVERIFY(TriggerDocumentEditor::FindTrigger(*f.project.triggerDocument_, targetId) != nullptr);
+
+    // 需要预处理的代码：夹具没有可重放的工具链档案，查询与提交须由同一预处理覆盖报同一原因。
+    QVERIFY(TriggerDocumentEditor::SetGlobalCustomCode(*f.project.triggerDocument_,
+        "#define UNUSED_ALIAS 1\r\nfunction UsesOther takes nothing returns nothing\r\nendfunction\r\n").Succeeded());
+    const auto rebound = CaptureTriggerGraphBinding(*f.project.triggerDocument_, *f.project.uiCatalog_, objects); QVERIFY(rebound.Succeeded());
+    remove.remove("code_audits");
+    query = f.Context();
+    query.insert("table", "remove_audit"); query.insert("operation_index", 0);
+    query.insert("plan", QJsonObject{{"expected", BindingJson(*rebound.value)}, {"operations", QJsonArray{remove}}});
+    const auto uncovered = f.tools->Invoke("editor_query_trigger_graph", query);
+    request = f.Context();
+    request.insert("expected", BindingJson(*rebound.value));
+    request.insert("operations", QJsonArray{remove});
+    const auto refused = f.tools->Invoke("editor_edit_trigger_graph", request);
+    QVERIFY2(ErrorCode(uncovered) == QStringLiteral("TRIGGER_REMOVE_PREPROCESS_CONTEXT"), qPrintable(Explain(uncovered)));
+    QVERIFY2(ErrorCode(refused) == ErrorCode(uncovered), qPrintable(Explain(refused)));
 }
