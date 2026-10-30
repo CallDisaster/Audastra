@@ -19,6 +19,7 @@
 #include "TerrainQueryCommand.h"
 #include "TerrainBlightSaveCommand.h"
 #include "MapEditSaveCommand.h"
+#include "MapUiImportCommand.h"
 #include "TriggerRemovalAuditCommand.h"
 #include "ObjectModelListCommand.h"
 #include "ScriptMigrationCommand.h"
@@ -87,6 +88,7 @@ void PrintUsage() {
         << "war3-map-cli update-apply --package <zip> --manifest <json> --signature <sig> --install-dir <directory> [--baseline-manifest <json> --baseline-signature <sig>] --dry-run\n"
         << "war3-map-cli profiles\n"
         << "war3-map-cli map-runtime-query <map> <source-sha256>\n"
+        << "war3-map-cli map-ui-import <source> <source-sha> <new-map> <tool-root> <ui-root> <game-root> <plan.json> --runtime-package <sha> --approve-native-runtime\n"
         << "  map-edit-save runtime options: --runtime-mode automatic|enabled|disabled --runtime-package <sha256> --approve-native-runtime --runtime-purpose normal|internal_validation|test_run\n"
         << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author] [--init-trigger <name> --init-code <jass-line> ...] [--add-file <member> <file> ...]\n"
         << "war3-map-cli map-test <map.w3x> <war3-root> <helper-dir> [--ydwe <root>] [--lua-engine owned|ydwe] [--no-hot-reload] [--stop] [--seconds N] [--reload-after <seconds> <module> <file> ...] [--hidden] [--cloaked] [--background-play] [--press-space] [--screenshot-after <seconds> <out.tga> ...] [--click-after <seconds> <ui-x> <ui-y> ...] [--key-after <seconds> <key[+key]> ...] [--close-after <seconds>] [--exit-timeout <seconds>]\n"
@@ -466,6 +468,7 @@ int wmain(int argc, wchar_t** argv) {
         return RunMapEditSave(argc, argv);
     }
     if (command == L"map-runtime-query") return RunMapRuntimeQuery(argc, argv);
+    if (command == L"map-ui-import") return RunMapUiImport(argc, argv);
     if (command == L"profiles") {
         const auto profile = War3Map::CompatibilityProfile::Default();
         std::cout << profile.id << '\t'

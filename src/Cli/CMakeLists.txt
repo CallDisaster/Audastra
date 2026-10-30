@@ -1,4 +1,5 @@
 add_executable(war3-map-cli Main.cpp ScriptBuildCommand.cpp ScriptBuildCommand.h UiLibraryCommand.cpp UiLibraryCommand.h MapDataRoundtripCommand.cpp MapDataRoundtripCommand.h MapDataQueryCommand.cpp MapDataQueryCommand.h TerrainQueryCommand.cpp TerrainQueryCommand.h TerrainBlightSaveCommand.cpp TerrainBlightSaveCommand.h MapEditSaveCommand.cpp MapEditSaveCommand.h ObjectModelListCommand.cpp ObjectModelListCommand.h ObjectLayerCommand.cpp ObjectLayerCommand.h)
+target_sources(war3-map-cli PRIVATE MapUiImportCommand.cpp MapUiImportCommand.h)
 target_link_libraries(
     war3-map-cli
     PRIVATE
