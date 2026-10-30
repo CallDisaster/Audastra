@@ -754,7 +754,8 @@ private:
     }
 
     // 数值文字的刷新：第一次（或回到基础状态后）推全部实参，之后只推变了的，推过才提交一次。
-    // 状态记成整数：0 没推过，1 已提交，2 推了还没提交。
+    // 状态记成整数：0 没推过，1 已提交，2 推了还没提交。状态与实参用 textf 前缀、实参名带类型，
+    // 不与拼文字时的字符串变量（text）同名：旧图重新生成、取值调换次序时变量类型都不会冲突。
     Lines TextArguments(const FrameInfo& info, const TextFormat& format) {
         const std::string target = TextTarget(info);
         const auto track = [&](const std::string& name, std::string_view type, const std::string& initial) {
@@ -763,12 +764,12 @@ private:
             }
             return info.group ? "udg_" + name + "[" + std::string(kLoopIndex) + "]" : "udg_" + name;
         };
-        const std::string state = track(UiSentVariableName(d_.id, info.frame->id, PropertyKey(Property::Text)), "integer", "0");
+        const std::string state = track(UiSentVariableName(d_.id, info.frame->id, "textf"), "integer", "0");
         Lines all, changed;
         for (std::size_t k = 0; k < format.arguments.size(); ++k) {
             const auto& [value, type] = format.arguments[k];
             const bool integer = type == UiValueType::Integer;
-            const std::string sent = track(UiSentVariableName(d_.id, info.frame->id, "text" + std::to_string(k)),
+            const std::string sent = track(UiSentVariableName(d_.id, info.frame->id, "textf" + std::to_string(k) + (integer ? "i" : "r")),
                 integer ? "integer" : "real", "0");
             const Lines push{Set(sent, value), Call(integer ? "AudastraUIPushTextIntArg" : "AudastraUIPushTextArg", {target, std::to_string(k), sent})};
             Append(all, push);
@@ -855,6 +856,8 @@ private:
     };
     static constexpr std::string_view kUnsent = "AUI:unsent";
     static constexpr double kUnsentNumber = -1.0e9;
+    // 原版 war3.mpq 里全透明的贴图（每个像素 alpha 都是 0），贴图取值为空时发它。
+    static constexpr std::string_view kTransparentTexture = "UI\\Widgets\\EscMenu\\Human\\blank-background.blp";
 
     [[nodiscard]] static std::string_view PropertyKey(Property property) {
         switch (property) {
@@ -870,9 +873,11 @@ private:
         const std::string name = "udg_" + UiSentVariableName(d_.id, info.frame->id, PropertyKey(property));
         return info.group ? name + "[" + std::string(kLoopIndex) + "]" : name;
     }
-    // statements 用 SentRef 取刚记下的值，取值表达式只在变化时多算一次。贴图取值为空时不发：游戏找不到空路径会报错，
-    // 空贴图的框架由显示绑定隐藏，之后取回原值也不用重发。
-    Lines Changed(const FrameInfo& info, Property property, std::string_view type, const std::string& key, const Lines& statements) {
+    // statements 用 SentRef 取刚记下的值，取值表达式只在变化时多算一次。贴图、模型取值为空时不发路径：游戏找不到空路径
+    // 会报错；没登记的数组项在脚本里是 null，与 "" 比较不相等，所以按长度判断。贴图为空时改发 empty（透明贴图，
+    // 与预览里空贴图透明一致；不发的话没设过贴图的框架在游戏里画成绿块），记成 "" 只发一次；模型为空时保持上一个。
+    Lines Changed(const FrameInfo& info, Property property, std::string_view type, const std::string& key, const Lines& statements,
+        const Lines& empty = {}) {
         if (statements.empty()) return statements;
         const auto name = UiSentVariableName(d_.id, info.frame->id, PropertyKey(property));
         if (std::none_of(sent_.begin(), sent_.end(), [&](const Sent& sent) { return sent.variable == name; })) {
@@ -884,15 +889,24 @@ private:
         Lines body{Set(sent, key)};
         Append(body, statements);
         if (property == Property::Texture || property == Property::Model) {
-            return If({differs, Call("OperatorCompareString", {key, "OperatorNotEqualENE", Quote("")})}, body);
+            const std::string present = CompareInt(Call("StringLength", {key}), "OperatorGreater", "0");
+            if (empty.empty()) return If({differs, present}, body);
+            Lines clear{Set(sent, Quote(""))};
+            Append(clear, empty);
+            return If({present}, If({differs}, body), If({Call("OperatorCompareString", {sent, "OperatorNotEqualENE", Quote("")})}, clear));
         }
         return If({differs}, body);
     }
-    // 状态改过的属性回到基础状态时要重发，即使绑定的取值没变。
+    // 状态改过的属性回到基础状态时要重发，即使绑定的取值没变。数值文字的状态记在 textf 上。
     void Unsend(const FrameInfo& info, Property property, Lines& statements) const {
-        const auto name = UiSentVariableName(d_.id, info.frame->id, PropertyKey(property));
-        const auto found = std::find_if(sent_.begin(), sent_.end(), [&](const Sent& sent) { return sent.variable == name; });
-        if (found != sent_.end()) statements.push_back(Set(SentRef(info, property), found->initial));
+        for (const std::string_view key : {PropertyKey(property), property == Property::Text ? std::string_view("textf") : std::string_view()}) {
+            if (key.empty()) continue;
+            const auto name = UiSentVariableName(d_.id, info.frame->id, key);
+            const auto found = std::find_if(sent_.begin(), sent_.end(), [&](const Sent& sent) { return sent.variable == name; });
+            if (found == sent_.end()) continue;
+            const std::string ref = "udg_" + name;
+            statements.push_back(Set(info.group ? ref + "[" + std::string(kLoopIndex) + "]" : ref, found->initial));
+        }
     }
 
     Lines Updates(const FrameInfo& info) {
@@ -908,8 +922,10 @@ private:
         }
         if (!frame.texture.empty() && HasReferences(frame.texture)) {
             if (auto expression = TextExpression(info, TextureTemplate(frame.texture))) {
-                if (auto lines = TextureCall(info, SentRef(info, Property::Texture), true)) {
-                    Append(out, Guarded(info, Property::Texture, Changed(info, Property::Texture, "string", *expression, *lines)));
+                auto lines = TextureCall(info, SentRef(info, Property::Texture), true);
+                auto blank = TextureCall(info, Quote(kTransparentTexture), true);
+                if (lines && blank) {
+                    Append(out, Guarded(info, Property::Texture, Changed(info, Property::Texture, "string", *expression, *lines, *blank)));
                 }
             }
         }

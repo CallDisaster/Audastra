@@ -139,15 +139,15 @@ void TestGeneratedText() {
         "读条 状态 打断 cast_State_interrupt", "读条 基础状态 cast_BaseState"}, "触发器名与顺序");
     Require(plan.value->variables == std::vector<std::string>{"AUI_cast_root", "AUI_cast_bar", "AUIK_cast_bar_fill", "AUI_cast_label",
         "AUI_cast_slot", "AUIK_cast_slot_text", "AUIK_cast_slot_backdrop", "AUIK_cast_slot_pushed", "AUIV_cast_progress", "AUIV_cast_name", "AUIV_cast_charges", "AUIV_cast_shown", "AUIS_cast", "AUIC_cast", "AUIA_cast",
-        "AUIL_cast_root_visible", "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_text", "AUIL_cast_slot_text0"}, "变量名与顺序");
+        "AUIL_cast_root_visible", "AUIL_cast_bar_value", "AUIL_cast_label_text", "AUIL_cast_slot_textf", "AUIL_cast_slot_textf0i"}, "变量名与顺序");
     // 刷新只发变化的值：先和上次发的比，变了才记下并发出去；回到基础状态时状态改过的属性重新发。
     // 只有数值的文字创建时登记格式，刷新只推变了的数值再提交一次；含文字取值的照旧拼成文字比较。
-    Require(Contains(text, "    AUIL_cast_slot_text: integer[3] = 0\n") && Contains(text, "    AUIL_cast_slot_text0: integer[3] = 0\n")
+    Require(Contains(text, "    AUIL_cast_slot_textf: integer[3] = 0\n") && Contains(text, "    AUIL_cast_slot_textf0i: integer[3] = 0\n")
             && Contains(text, "OperatorCompareString(" ) && Contains(text, "OperatorNotEqualENE, udg_AUIL_cast_label_text)")
             && Contains(text, "AudastraUIPushText(udg_AUI_cast_label, udg_AUIL_cast_label_text)")
             && Contains(text, "AudastraUIRegisterTextFormat(udg_AUIK_cast_slot_text[GetForLoopIndexA()], \"{0}\")")
-            && Contains(text, "OperatorCompareInteger(udg_AUIV_cast_charges[GetForLoopIndexA()], OperatorNotEqual, udg_AUIL_cast_slot_text0[GetForLoopIndexA()])")
-            && Contains(text, "AudastraUIPushTextIntArg(udg_AUIK_cast_slot_text[GetForLoopIndexA()], 0, udg_AUIL_cast_slot_text0[GetForLoopIndexA()])")
+            && Contains(text, "OperatorCompareInteger(udg_AUIV_cast_charges[GetForLoopIndexA()], OperatorNotEqual, udg_AUIL_cast_slot_textf0i[GetForLoopIndexA()])")
+            && Contains(text, "AudastraUIPushTextIntArg(udg_AUIK_cast_slot_text[GetForLoopIndexA()], 0, udg_AUIL_cast_slot_textf0i[GetForLoopIndexA()])")
             && Contains(text, "AudastraUICommitText(udg_AUIK_cast_slot_text[GetForLoopIndexA()])")
             && !Contains(text, "I2S(udg_AUIV_cast_charges")
             && Contains(text, "OperatorNotEqual, udg_AUIL_cast_bar_value)")
@@ -208,7 +208,7 @@ void TestGeneratedText() {
         && Contains(text, "AudastraUISetColor(udg_AUI_cast_label, 255, 204, 0, 255)")
         && Contains(text, "AudastraUISetTextAlign(udg_AUI_cast_label, AudastraJustifyLeft, AudastraJustifyMiddle)"), "文字样式：\n" + text);
     // 按钮文字在模板子框架上，按实例取自己的格。
-    Require(Contains(text, "SetVariable(udg_AUIL_cast_slot_text0[GetForLoopIndexA()], udg_AUIV_cast_charges[GetForLoopIndexA()])"),
+    Require(Contains(text, "SetVariable(udg_AUIL_cast_slot_textf0i[GetForLoopIndexA()], udg_AUIV_cast_charges[GetForLoopIndexA()])"),
         "按钮文字绑定：\n" + text);
     // 有状态覆盖的属性只在当前状态不覆盖时刷新。
     Require(Contains(text, "OperatorCompareString(udg_AUIS_cast, OperatorNotEqualENE, \"interrupt\")"), "状态守卫：\n" + text);
@@ -254,20 +254,20 @@ void TestNumericText() {
     Require(plan.Succeeded(), "数值文字生成：" + First(plan.diagnostics));
     const std::string& text = plan.value->featureText;
     Require(Contains(text, "AudastraUIRegisterTextFormat(udg_AUI_hud_life, \"生命 {0:1}/{1} {{满}} {0}\")")
-            && Contains(text, "OperatorCompareReal(udg_AUIV_hud_hp, OperatorNotEqual, udg_AUIL_hud_life_text0)")
-            && Contains(text, "SetVariable(udg_AUIL_hud_life_text0, udg_AUIV_hud_hp)")
-            && Contains(text, "AudastraUIPushTextArg(udg_AUI_hud_life, 0, udg_AUIL_hud_life_text0)")
-            && Contains(text, "OperatorCompareInteger(udg_AUIV_hud_maxHp, OperatorNotEqual, udg_AUIL_hud_life_text1)")
-            && Contains(text, "AudastraUIPushTextIntArg(udg_AUI_hud_life, 1, udg_AUIL_hud_life_text1)")
-            && Contains(text, "OperatorCompareInteger(udg_AUIL_hud_life_text, OperatorEqual, 0)")
-            && Contains(text, "OperatorCompareInteger(udg_AUIL_hud_life_text, OperatorEqual, 2)")
+            && Contains(text, "OperatorCompareReal(udg_AUIV_hud_hp, OperatorNotEqual, udg_AUIL_hud_life_textf0r)")
+            && Contains(text, "SetVariable(udg_AUIL_hud_life_textf0r, udg_AUIV_hud_hp)")
+            && Contains(text, "AudastraUIPushTextArg(udg_AUI_hud_life, 0, udg_AUIL_hud_life_textf0r)")
+            && Contains(text, "OperatorCompareInteger(udg_AUIV_hud_maxHp, OperatorNotEqual, udg_AUIL_hud_life_textf1i)")
+            && Contains(text, "AudastraUIPushTextIntArg(udg_AUI_hud_life, 1, udg_AUIL_hud_life_textf1i)")
+            && Contains(text, "OperatorCompareInteger(udg_AUIL_hud_life_textf, OperatorEqual, 0)")
+            && Contains(text, "OperatorCompareInteger(udg_AUIL_hud_life_textf, OperatorEqual, 2)")
             && Contains(text, "AudastraUICommitText(udg_AUI_hud_life)")
             && !Contains(text, "AudastraUIFormatReal(udg_AUIV_hud_hp"), "数值文字只推数值：\n" + text);
     Require(Contains(text, "AudastraUIFormatInteger(udg_AUIV_hud_maxHp, 2)") && !Contains(text, "AudastraUIRegisterTextFormat(udg_AUI_hud_level")
             && !Contains(text, "AudastraUIRegisterTextFormat(udg_AUI_hud_many") && Contains(text, "AudastraUIFormatReal(udg_AUIV_hud_slots[8], -1)"),
         "含文字或超过 8 个取值照旧拼接：\n" + text);
     const std::size_t base = text.find("状态栏 基础状态 hud_BaseState");
-    Require(base != std::string::npos && text.find("SetVariable(udg_AUIL_hud_life_text, 0)", base) != std::string::npos,
+    Require(base != std::string::npos && text.find("SetVariable(udg_AUIL_hud_life_textf, 0)", base) != std::string::npos,
         "回到基础状态时从头推数值文字：\n" + text);
     Fixture f;
     const auto applied = f.Apply(text);
@@ -385,6 +385,41 @@ void TestModelFrames() {
     wrong.states[0].overrides[0].frame = "glow";
     wrong.frames[0].type = UiFrameType::Backdrop;
     Require(!GenerateUiTriggers(wrong, {}).Succeeded(), "给背景写模型拒绝");
+}
+
+// 取值模板的贴图：取值为空（没登记的数组项在脚本里是 null）时发透明贴图、只发一次，与预览里空贴图透明一致；有值时按变化发路径。
+void TestTemplatedTextures() {
+    UiDescription d;
+    d.id = "tal";
+    d.label = "天赋";
+    UiValue icon;
+    icon.id = "icon";
+    icon.type = UiValueType::String;
+    icon.size = 3;
+    d.values = {icon};
+    UiFrame cell;
+    cell.id = "cell";
+    cell.type = UiFrameType::Backdrop;
+    cell.anchors = {Anchor(FramePoint::TopLeft, UiAnchorTarget::Screen, FramePoint::TopLeft, 0.02, -0.02)};
+    cell.width = 0.03;
+    cell.height = 0.03;
+    cell.texture = "{icon[]}";
+    cell.repeat = UiRepeat{3, 0.035, 0.0};
+    d.frames = {cell};
+
+    const auto plan = GenerateUiTriggers(d, {});
+    Require(plan.Succeeded(), "取值贴图生成：" + First(plan.diagnostics));
+    const std::string& text = plan.value->featureText;
+    Require(Contains(text, "OperatorCompareInteger(StringLength(udg_AUIV_tal_icon[GetForLoopIndexA()]), OperatorGreater, 0)")
+            && Contains(text, "OperatorCompareString(udg_AUIV_tal_icon[GetForLoopIndexA()], OperatorNotEqualENE, udg_AUIL_tal_cell_texture[GetForLoopIndexA()])")
+            && Contains(text, "OperatorCompareString(udg_AUIL_tal_cell_texture[GetForLoopIndexA()], OperatorNotEqualENE, \"\")")
+            && Contains(text, "SetVariable(udg_AUIL_tal_cell_texture[GetForLoopIndexA()], \"\")")
+            && Contains(text, "\"UI\\\\Widgets\\\\EscMenu\\\\Human\\\\blank-background.blp\")")
+            && !Contains(text, "OperatorCompareString(udg_AUIV_tal_icon[GetForLoopIndexA()], OperatorNotEqualENE, \"\")"),
+        "空取值发透明贴图，按长度判断空值：\n" + text);
+    Fixture f;
+    const auto applied = f.Apply(text);
+    Require(applied.Succeeded(), "取值贴图写进触发器：" + First(applied.diagnostics) + "\n" + text);
 }
 
 // 一次执行的指令上限只够一百多个界面库调用：调用多时按块分开运行，重复框架每个实例单独运行。
@@ -680,6 +715,7 @@ int main() {
         TestRefusalsAndTemplates();
         TestScriptLibrary();
         TestModelFrames();
+        TestTemplatedTextures();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

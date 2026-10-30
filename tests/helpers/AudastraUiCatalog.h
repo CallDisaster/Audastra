@@ -39,6 +39,7 @@ inline constexpr std::string_view kBaseAction =
 inline constexpr std::string_view kBaseCall =
     "[GetForLoopIndexA]\nreturns=integer\n[GetTriggeringTrigger]\nreturns=trigger\n"
     "[I2R]\nreturns=real\n[[.args]]\ntype=integer\n[I2S]\nreturns=string\n[[.args]]\ntype=integer\n"
+    "[StringLength]\nreturns=integer\n[[.args]]\ntype=string\n"
     "[OperatorInt]\nreturns=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=integer\n"
     "[OperatorReal]\nreturns=real\n[[.args]]\ntype=real\n[[.args]]\ntype=ArithmeticOperator\n[[.args]]\ntype=real\n"
     "[OperatorString]\nreturns=string\n[[.args]]\ntype=string\n[[.args]]\ntype=string\n"
