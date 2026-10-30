@@ -137,7 +137,7 @@ bool GameUiModule::ImportDescriptionFile(const QString& path, bool withTriggers,
     // 与命令行导入一致：界面自己的变量和触发器先生成，示例触发器随后写入，同一步撤销。
     const std::string category = parsed.value->label.empty() ? parsed.value->id : parsed.value->label;
     std::vector<Trigger::GraphEditOperation> operations;
-    operations.emplace_back(Trigger::GraphApplyFeatureText{category, std::move(triggers), {}, std::nullopt});
+    operations.emplace_back(Trigger::GraphApplyFeatureText{category, std::move(triggers), "import", std::nullopt});
     QString staged;
     QString generationError;
     const auto generated = PublishDescriptionTriggers(*parsed.value, false, std::move(operations), undoLabel, [&]() -> Status {

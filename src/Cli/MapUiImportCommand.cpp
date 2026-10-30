@@ -128,7 +128,7 @@ int Import(wchar_t** argv) {
             const auto generated = Take(GameUi::GenerateUiTriggers(description));
             generatedCount += generated.triggers.size();
             batch.operations.emplace_back(
-                Trigger::GraphApplyFeatureText{std::string(GameUi::kUiTriggerCategory), generated.featureText, {}, {}});
+                Trigger::GraphApplyFeatureText{std::string(GameUi::kUiTriggerCategory), generated.featureText, "ui", {}});
             import("AudastraUI/" + description.id + ".json", GameUi::SerializeUiDescription(description));
         }
         if (item.contains("category")) {
@@ -136,7 +136,7 @@ int Import(wchar_t** argv) {
             if (category.empty() || category.size() > 256) throw std::runtime_error("MAP_UI_CATEGORY_INVALID");
         }
         if (item.contains("triggers"))
-            batch.operations.emplace_back(Trigger::GraphApplyFeatureText{category, input(item, "triggers", ".txt"), {}, {}});
+            batch.operations.emplace_back(Trigger::GraphApplyFeatureText{category, input(item, "triggers", ".txt"), "triggers", {}});
         Take(Trigger::ApplyTriggerGraphEditBatch(document, catalog, batch));
     }
 

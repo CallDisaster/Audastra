@@ -97,9 +97,9 @@ std::optional<GameUiModule::TriggerGeneration> GameUiModule::PublishDescriptionT
         });
         if (!staged) payloads.push_back({archivePath, bytes, false});
     }
-    // 生成的变量先声明，作者的触发器（extra）随后写入才能引用它们。
+    // 生成的变量先声明，作者的触发器（extra）随后写入才能引用它们。同一批里的每段文本用不同的新建记录前缀。
     std::vector<Trigger::GraphEditOperation> operations;
-    operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kUiTriggerCategory), plan.value->featureText, {}, std::nullopt});
+    operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kUiTriggerCategory), plan.value->featureText, "ui", std::nullopt});
     std::move(extra.begin(), extra.end(), std::back_inserter(operations));
     const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), undoLabel, [&]() -> Status {
         if (stage) {
