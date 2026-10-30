@@ -52,6 +52,11 @@ void NewMapGetsAutomaticMinimap() {
         request.workspace = root / "workspace";
         request.toolRoot = toolRoot;
         request.gameRoot = gameRoot;
+        request.uiRoot = root / "missing-ui";
+        const auto missingUi = CreateMapCandidate(request);
+        Require(!missingUi.Succeeded() && !std::filesystem::exists(request.target),
+            "显式缺失UI根必须拒绝，不能静默回退工具根");
+        request.uiRoot = toolRoot;
         const auto created = CreateMapCandidate(request);
         Require(created.Succeeded() && created.value, DiagnosticText(created.diagnostics).c_str());
 

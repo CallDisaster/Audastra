@@ -18,7 +18,8 @@ int RunMapCreate(int argc, wchar_t** argv) {
     // 可选：初始化触发器的自定义代码行（例如 exec-lua 入口）与随图写入的文件。
     for (; index < argc; ++index) {
         const std::wstring_view option = argv[index];
-        if (option == L"--init-trigger" && index + 1 < argc) request.options.initTriggerName = utf8(argv[++index]);
+        if (option == L"--ui-root" && index + 1 < argc) request.uiRoot = argv[++index];
+        else if (option == L"--init-trigger" && index + 1 < argc) request.options.initTriggerName = utf8(argv[++index]);
         else if (option == L"--init-code" && index + 1 < argc) request.options.initCustomScript.push_back(utf8(argv[++index]));
         else if (option == L"--add-file" && index + 2 < argc) {
             const auto member = utf8(argv[index + 1]);

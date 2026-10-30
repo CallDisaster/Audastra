@@ -5,6 +5,8 @@
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
+#include "War3MapCore/Hash.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 
@@ -14,6 +16,37 @@ template<class T> T Take(War3Map::Result<T> r) {
     return std::move(*r.value);
 }
 int wmain(int argc, wchar_t** argv) {
+    if ((argc == 4 || argc == 5) && std::wstring_view(argv[1]) == L"--ability-evidence") {
+        try {
+            const std::filesystem::path source(argv[2]);
+            const auto expected = std::filesystem::path(argv[3]).string();
+            if (Take(War3Map::Sha256File(source)) != expected) throw std::runtime_error("source identity mismatch");
+            auto archive = Take(MapArchiveSession::OpenScriptAudit(source));
+            if (argc == 5) {
+                const std::filesystem::path output(argv[4]);
+                if (output.extension()!=L".w3a" || std::filesystem::exists(output)) throw std::runtime_error("new ability-only fixture output required");
+                const auto bytes=Take(archive.ReadMember("war3map.w3a"));
+                if (bytes.size()>16*1024*1024) throw std::runtime_error("ability export budget");
+                const auto written=IO::WriteFileBytes(output,bytes);
+                if(!written.Succeeded()) throw std::runtime_error("ability export failed");
+            }
+            nlohmann::json rows = nlohmann::json::array();
+            for (const auto& object : CustomObjects(archive, ObjectData::ObjectType::Ability)) {
+                if (rows.size() >= 64) throw std::runtime_error("ability evidence budget");
+                nlohmann::json fields = nlohmann::json::array();
+                for (const auto& change : object.modifications) {
+                    if (fields.size() >= 256) throw std::runtime_error("ability field evidence budget");
+                    const auto value = ObjectData::ValueToDisplayString(change.value);
+                    if (value.size() > 4096) throw std::runtime_error("ability text evidence budget");
+                    fields.push_back({{"field",change.key.fieldId},{"level",change.key.level.value_or(0)},
+                        {"dataIndex",change.key.dataIndex.value_or(0)},{"value",value}});
+                }
+                rows.push_back({{"id",object.key.rawcode},{"parent",object.parentRawcode.value_or("")},{"fields",fields}});
+            }
+            if (Take(War3Map::Sha256File(source)) != expected) throw std::runtime_error("source changed");
+            std::cout << rows.dump(2) << '\n'; return 0;
+        } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
+    }
     if (argc != 9 && argc != 10) return 2;
     try {
         const std::filesystem::path source(argv[1]), ui(argv[2]), tool(argv[3]), gameRoot(argv[4]), out(argv[5]);

@@ -1,7 +1,8 @@
-# 只复制目录明示且摘要匹配的封装成员，批准位保持关闭。
+# 只复制目录明示且摘要匹配的封装成员；已批准包须复核绑定的发布记录。
 function Copy-PendingMapRuntimeInstallation {
     param([Parameter(Mandatory)][string]$Source,[Parameter(Mandatory)][string]$Target)
     $ErrorActionPreference='Stop'
+    . "$PSScriptRoot/RuntimePublicApproval.ps1"
     function Plain([string]$Path){
         $full=[IO.Path]::GetFullPath($Path)
         if($full -notmatch '^[A-Za-z]:[\\/]' -or $full.Substring(2).Contains(':')){throw 'RUNTIME_STAGE_PATH_INVALID'}
@@ -20,12 +21,19 @@ function Copy-PendingMapRuntimeInstallation {
     $copies=[Collections.Generic.List[object]]::new()
     foreach($entry in $catalog.packages){
         if($entry.directory -notmatch '^[A-Za-z0-9_.-]+$' -or $entry.directory -in @('.','..') -or !$seen.Add($entry.directory) -or
-            $entry.manifestSha256 -notmatch '^[0-9a-f]{64}$' -or $entry.publicDistributionApproved -isnot [bool] -or $entry.publicDistributionApproved){throw 'RUNTIME_CATALOG_INVALID_OR_ALREADY_APPROVED'}
+            $entry.manifestSha256 -notmatch '^[0-9a-f]{64}$' -or $entry.publicDistributionApproved -isnot [bool]){throw 'RUNTIME_CATALOG_INVALID'}
         $package=Plain "$sourceRoot/runtime/packages/$($entry.directory)"
         $manifest=Plain "$package/manifest.json"
         if((Get-Item $manifest).Length -gt 65536 -or (Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant() -ne $entry.manifestSha256){throw 'RUNTIME_HASH_MISMATCH'}
         $data=Get-Content -LiteralPath $manifest -Raw|ConvertFrom-Json
         if($data.schema -ne 2 -or $data.scope -ne 'public' -or $data.files.Count -ne 6){throw 'RUNTIME_PUBLIC_PACKAGE_REQUIRED'}
+        if($entry.publicDistributionApproved){
+            $approval=Plain "$package/approval.json"
+            $approvalSha=(Get-FileHash -LiteralPath $approval).Hash.ToLowerInvariant()
+            $null=Read-MapRuntimePublicApproval -ApprovalPath $approval -ManifestPath $manifest
+            if((Get-FileHash -LiteralPath $approval).Hash.ToLowerInvariant() -cne $approvalSha){throw 'RUNTIME_PUBLIC_APPROVAL_CHANGED'}
+            $copies.Add(@{source=$approval;relative="packages/$($entry.directory)/approval.json";sha=$approvalSha})
+        }
         $paths=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         $roles=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         $allowed=@{bootstrap='bootstrap.blob';payload='payload.blob';module='module.blob';client='client.j';notice=@('license.txt','origin.txt')}

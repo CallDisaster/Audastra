@@ -18,13 +18,13 @@
         CommentString("每个增减益一组：增减益、图标路径；按这里的顺序显示单位身上有的增减益")
         SetVariable(udg_AUF_Target_BuffCount, 1)
         SetVariable(udg_AUF_Target_BuffCode[1], 'BHbd')
-        SetVariable(udg_AUF_Target_BuffIcon[1], "ReplaceableTextures\\CommandButtons\\BTNBlizzard")
+        SetVariable(udg_AUF_Target_BuffIcon[1], "ReplaceableTextures\\CommandButtons\\BTNBlizzard.blp")
 触发器 目标 头像 Target_Portrait (init):
     actions:
         CommentString("每种单位一组：单位类型、头像图标路径；没登记的单位头像为空")
         SetVariable(udg_AUF_Target_TypeCount, 1)
         SetVariable(udg_AUF_Target_TypeCode[1], 'Hpal')
-        SetVariable(udg_AUF_Target_TypeIcon[1], "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin")
+        SetVariable(udg_AUF_Target_TypeIcon[1], "ReplaceableTextures\\CommandButtons\\BTNHeroPaladin.blp")
 触发器 目标 选择 Target_Pick:
     events:
         TriggerRegisterPlayerSelectionEventBJ(Player00, SelDeselOptionSel)

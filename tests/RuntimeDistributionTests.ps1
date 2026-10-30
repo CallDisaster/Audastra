@@ -32,6 +32,44 @@ try{
     Rejected {Copy-PendingMapRuntimeInstallation -Source $installed -Target "$root/staged"} 'Existing target must remain untouched'
     Rejected {& "$Tools/install-map-runtime.ps1" -FreezerExecutable $Freezer -Plan $plan -PlanSha256 ('0'*64) -OutputDirectory "$root/bad-plan"} 'Changed plan accepted'
     Check (!(Test-Path "$root/bad-plan")) 'Plan failure created output'
+    # 批准只属于这一份内容身份；待审批包不能靠目录布尔值提升。
+    $catalog.packages[0].publicDistributionApproved=$true
+    $catalog|ConvertTo-Json -Depth 5|Set-Content "$installed/runtime/catalog.json" -Encoding utf8NoBOM
+    Rejected {Copy-PendingMapRuntimeInstallation -Source $installed -Target "$root/forged"} 'Catalog flag without approval accepted'
+    $catalog.packages[0].publicDistributionApproved=$false
+    $catalog|ConvertTo-Json -Depth 5|Set-Content "$installed/runtime/catalog.json" -Encoding utf8NoBOM
+    $approvalFile="$root/approval.json"
+    $hashes=@{};foreach($role in 'bootstrap','payload','module','client'){$hashes[$role]=@($files|Where-Object {$_.role -eq $role})[0].sha256}
+    $approval=@{schema=1;id=$manifest.id;version=$manifest.version;packageSha256=$catalog.packages[0].manifestSha256;
+        decisions=@{publicDistribution='author-2026-10-27';unobfuscatedBootstrap='author-2026-10-30';wholeFileCopyOnly=$true};files=$hashes}
+    $approval|ConvertTo-Json -Depth 6|Set-Content $approvalFile -Encoding utf8NoBOM
+    $approvalSha=(Get-FileHash $approvalFile).Hash.ToLowerInvariant()
+    & "$Tools/install-map-runtime.ps1" -FreezerExecutable $Freezer -Plan $plan -PlanSha256 $digest -OutputDirectory "$root/released" -ApprovalRecord $approvalFile -ApprovalSha256 $approvalSha
+    $release=Get-Content "$root/released/install-receipt.json" -Raw|ConvertFrom-Json
+    Check ($release.publicDistributionApproved -eq $true -and $release.normalSaveAvailable -eq $true) 'Matching approval not applied'
+    Copy-PendingMapRuntimeInstallation -Source "$root/released" -Target "$root/released-stage"
+    $releaseCatalog=Get-Content "$root/released-stage/catalog.json" -Raw|ConvertFrom-Json
+    Check ($releaseCatalog.packages[0].publicDistributionApproved -eq $true) 'Portable staging lost verified approval'
+    Check ((Get-FileHash "$root/released-stage/packages/original-fixture-1.3.0/approval.json").Hash -eq $approvalSha.ToUpperInvariant()) 'Approval identity changed'
+    . "$Tools/RuntimePublicApproval.ps1"
+    foreach($field in 'bootstrap','payload','module','client'){
+        $saved=$approval.files[$field];$approval.files[$field]='0'*64
+        $approval|ConvertTo-Json -Depth 6|Set-Content "$root/bad-approval.json" -Encoding utf8NoBOM
+        Rejected {Read-MapRuntimePublicApproval -ApprovalPath "$root/bad-approval.json" -ManifestPath "$package/manifest.json"} 'Changed role approved'
+        $approval.files[$field]=$saved
+    }
+    foreach($field in 'id','version','packageSha256'){
+        $saved=$approval[$field];$approval[$field]=if($field -eq 'packageSha256'){'0'*64}else{'different'}
+        $approval|ConvertTo-Json -Depth 6|Set-Content "$root/bad-approval.json" -Encoding utf8NoBOM
+        Rejected {Read-MapRuntimePublicApproval -ApprovalPath "$root/bad-approval.json" -ManifestPath "$package/manifest.json"} 'Approval accepted for another package'
+        $approval[$field]=$saved
+    }
+    $original=Get-Content $approvalFile -Raw
+    foreach($invalid in @($original.Replace('"schema": 1','"schema": 1, "schema": 1'),$original.Replace('"schema": 1','"schema": 1, "path": "arbitrary"'),$original.Replace('author-2026-10-27','unspecified'))){
+        Set-Content "$root/bad-approval.json" $invalid -Encoding utf8NoBOM
+        Rejected {Read-MapRuntimePublicApproval -ApprovalPath "$root/bad-approval.json" -ManifestPath "$package/manifest.json"} 'Ambiguous or unbound approval accepted'
+    }
+    Rejected {& "$Tools/install-map-runtime.ps1" -FreezerExecutable $Freezer -Plan $plan -PlanSha256 $digest -OutputDirectory "$root/bad-approval-sha" -ApprovalRecord $approvalFile -ApprovalSha256 ('0'*64)} 'Approval file identity not pinned'
     [IO.File]::AppendAllText("$package/client.j",'changed')
     Rejected {Copy-PendingMapRuntimeInstallation -Source $installed -Target "$root/stale"} 'Changed client accepted'
     Check (!(Test-Path "$root/stale")) 'Incomplete source staged before verification'
