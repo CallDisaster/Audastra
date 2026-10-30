@@ -376,7 +376,7 @@ std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, s
 }
 
 std::int32_t InstallGameUiModule127(Host& host, Address base, const std::function<bool(Address, std::size_t)>& executable,
-    UiFaultObserver observer, std::shared_ptr<GameUiDataPlane> data, std::function<void(Address, Address, bool)> observePointer) {
+    UiFaultObserver observer, std::shared_ptr<GameUiDataPlane> data, std::function<void(Address, Address, bool, float, float)> observePointer) {
     GameUiEntryPoints entries;
     GameInputEntryPoints input;
     std::string error;

@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <bit>
 #include <cstdio>
 #include <mutex>
 #include <vector>
@@ -209,7 +210,7 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                         }
                         self->data = std::make_shared<GameUi::GameUiDataPlane>(std::move(context), &TraceUiFault);
                     }
-                    std::function<void(GameUi::Address, GameUi::Address, bool)> pointerObserver;
+                    std::function<void(GameUi::Address, GameUi::Address, bool, float, float)> pointerObserver;
                     if (testEvidence.Enabled()) {
                         const auto window = GetForegroundWindow();
                         DWORD process = 0;
@@ -220,7 +221,7 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                                 + " caller=" + std::to_string(GetCurrentThreadId()) + " width=" + std::to_string(client.right)
                                 + " height=" + std::to_string(client.bottom), false, false, true);
                         pointerObserver = [self, base = image.Base(), lastHit = GameUi::Address{}, lastDown = false,
-                            samples = 0u](GameUi::Address active, GameUi::Address hit, bool down) mutable {
+                            samples = 0u](GameUi::Address active, GameUi::Address hit, bool down, float queryX, float queryY) mutable {
                             if (samples >= 64 || (hit == lastHit && down == lastDown)) return;
                             lastHit = hit; lastDown = down; ++samples;
                             GameUi::Address x = 0, y = 0;
@@ -230,8 +231,10 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                             const bool cursorOk = GetCursorPos(&cursor) != FALSE;
                             Trace("ui-pointer epoch=" + std::to_string(self->epoch) + " active=" + std::to_string(active)
                                 + " hit=" + std::to_string(hit) + " down=" + std::to_string(down)
-                                + " event=" + std::to_string(event) + " x_bits=" + std::to_string(x)
-                                + " y_bits=" + std::to_string(y) + " cursor=" + std::to_string(cursorOk)
+                                + " event=" + std::to_string(event) + " cached_x_bits=" + std::to_string(x)
+                                + " cached_y_bits=" + std::to_string(y)
+                                + " query_x_bits=" + std::to_string(std::bit_cast<std::uint32_t>(queryX))
+                                + " query_y_bits=" + std::to_string(std::bit_cast<std::uint32_t>(queryY)) + " cursor=" + std::to_string(cursorOk)
                                 + " cursor_x=" + std::to_string(cursor.x) + " cursor_y=" + std::to_string(cursor.y), false, false, true);
                         };
                     }

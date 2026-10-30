@@ -191,7 +191,7 @@ struct GameUiEntryPoints {
     Address mouseEventVtable = 0;
     bool (*readCursorUi)(float&, float&) = nullptr;
     FnThisHitTest hitTestLayer = nullptr;
-    std::function<void(Address, Address, bool)> observePointer;
+    std::function<void(Address, Address, bool, float, float)> observePointer;
     Address simpleTop = 0;
 
     Address vtBackdrop = 0;

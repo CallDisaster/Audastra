@@ -653,7 +653,7 @@ PointerSnapshot GameUiLibrary::ReadPointer() {
     pointer.hovered = hovered;
     pointer.buttonDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
     if (entries_.observePointer) {
-        try { entries_.observePointer(active, hovered, pointer.buttonDown); } catch (...) {}
+        try { entries_.observePointer(active, hovered, pointer.buttonDown, x, y); } catch (...) {}
     }
     return pointer;
 }
