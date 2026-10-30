@@ -26,6 +26,8 @@ struct MapCreateRequest {
     std::filesystem::path workspace;
     std::filesystem::path toolRoot;
     std::filesystem::path gameRoot;
+    // 编译工具与函数库数据可独立提供；为空时沿用工具根。
+    std::filesystem::path uiRoot;
 };
 
 struct MapCreateReceipt {

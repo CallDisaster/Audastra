@@ -168,7 +168,7 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         if (request.target.empty() || request.workspace.empty() || request.toolRoot.empty() || request.gameRoot.empty()
             || std::filesystem::exists(request.target, error) || error)
             return CreateResult::Failure("MapCreate", "CREATE_PATH_INVALID", "需要完整数据根、不存在的目标地图与独占工作目录。");
-        auto catalog = Trigger::UiCatalog::Load(request.toolRoot);
+        auto catalog = Trigger::UiCatalog::Load(request.uiRoot.empty() ? request.toolRoot : request.uiRoot);
         if (!catalog.Succeeded() || !catalog.value) return Forward<CreateResult>(std::move(catalog.diagnostics));
         auto empty = Trigger::WtgWctCodec{}.CreateEmpty(*catalog.value);
         if (!empty.Succeeded() || !empty.value) return Forward<CreateResult>(std::move(empty.diagnostics));
@@ -208,6 +208,7 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         if (!frozen.Succeeded()) return Forward<CreateResult>(frozen.diagnostics);
         ScriptSaveInputSources sources;
         sources.layers = catalog.value->Layers(); sources.toolRoot = request.toolRoot; sources.gameRoot = request.gameRoot;
+        sources.uiRoot = request.uiRoot;
         sources.catalog = std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value));
         sources.triggers = std::make_unique<Trigger::TriggerDocument>(std::move(triggers));
         sources.scriptMember = "war3map.j";
