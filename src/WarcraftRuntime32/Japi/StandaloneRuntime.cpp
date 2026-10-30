@@ -1,6 +1,7 @@
 #include "GameSession.h"
 #include "ProcessOwner.h"
 #include "RuntimeTestWriter.h"
+#include "../GameUi/GameUiMemory.h"
 #include "HookSite.h"
 #include "../OwnLua/GameVm127.h"
 #include "../GameUi/GameUiModule.h"
@@ -264,7 +265,8 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
     }
 }
 template<class Write>
-GameUi::UiDataWrite WriteData(Runtime& self, Write&& write, const char* kind, std::int32_t frame, std::int32_t property) {
+GameUi::UiDataWrite WriteData(Runtime& self, Write&& write, const char* kind, std::int32_t frame, std::int32_t property,
+    std::uintptr_t stringObject = 0) {
     // 与字符串入口共用串行/活动深度，写入中发生 VM 清理时只失效，不销毁在栈上的消费者。
     std::lock_guard guard(self.lock);
     const auto data = self.data;
@@ -273,9 +275,19 @@ GameUi::UiDataWrite WriteData(Runtime& self, Write&& write, const char* kind, st
     ++self.depth;
     const auto result = write(*data);
     static std::atomic<unsigned> rejected{0};
-    if (result.intercepted && !result.applied && testEvidence.Enabled() && rejected.fetch_add(1) < 16)
-        Trace("ui-data-rejected kind=" + std::string(kind) + " frame=" + std::to_string(frame)
-            + " property=" + std::to_string(property) + " errors=" + data->Errors(), true);
+    if (result.intercepted && !result.applied && testEvidence.Enabled() && rejected.fetch_add(1) < 16) {
+        auto detail = "ui-data-rejected kind=" + std::string(kind) + " frame=" + std::to_string(frame)
+            + " property=" + std::to_string(property) + " errors=" + data->Errors();
+        if (std::string_view(kind) == "string") {
+            GameUi::Address linked = 0, text = 0;
+            const bool linkRead = stringObject && GameUi::Detail::ReadWord(stringObject + 8, linked);
+            const bool textRead = linkRead && linked && GameUi::Detail::ReadWord(linked + 0x1c, text);
+            detail += " object_zero=" + std::to_string(!stringObject) + " link_read=" + std::to_string(linkRead)
+                + " link_zero=" + std::to_string(!linked) + " text_read=" + std::to_string(textRead)
+                + " text_zero=" + std::to_string(!text);
+        }
+        Trace(detail, true);
+    }
     return result;
 }
 void __cdecl SaveRealHook(std::int32_t table, std::int32_t parent, std::int32_t child, const float* value) noexcept {
@@ -294,7 +306,7 @@ std::int32_t __cdecl SaveStrHook(std::int32_t table, std::int32_t parent, std::i
     if (!self || !self->saveStr) return 0;
     if (!table || table != self->boundTable.load(std::memory_order_acquire)) return self->saveStr(table, parent, child, value);
     try {
-        const auto result = WriteData(*self, [&](auto& data) { return data.SaveStr(table, parent, child, value); }, "string", parent, child);
+        const auto result = WriteData(*self, [&](auto& data) { return data.SaveStr(table, parent, child, value); }, "string", parent, child, value);
         if (result.intercepted) return result.applied ? 1 : 0;
         return self->saveStr(table, parent, child, value);
     } catch (...) { Trace("data-write dispatch exception", true); return 0; }
