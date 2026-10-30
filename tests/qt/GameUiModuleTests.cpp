@@ -757,6 +757,8 @@ void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
     QCOMPARE(steps(), before);
     choose(field(QStringLiteral("竖直对齐")), QStringLiteral("bottom"));
     QVERIFY(frame("text1")->justifyV == JustifyV::Bottom);
+    // 颜色用取色器选（双击或右键），选定的值与手写走同一检查。
+    QVERIFY(!(field(QStringLiteral("颜色"))->flags() & Qt::ItemIsEditable));
     edit(field(QStringLiteral("颜色")), QStringLiteral("#80FF0000"));
     QCOMPARE(frame("text1")->color, (std::array<double, 4>{1.0, 0.0, 0.0, 0.502}));
     QCOMPARE(field(QStringLiteral("颜色"))->text(1), QStringLiteral("#80FF0000"));

@@ -11,6 +11,7 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QColor>
+#include <QColorDialog>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
@@ -40,6 +41,7 @@ QString Text(std::string_view text) { return QString::fromUtf8(text.data(), stat
 
 constexpr int kFieldRole = Qt::UserRole + 40;
 constexpr int kResourceRole = Qt::UserRole + 41;  // 贴图、模型字段：双击打开资源选择器；值为资源类型加 1
+constexpr int kColorRole = Qt::UserRole + 42;     // 颜色字段：双击或右键打开取色器
 
 double Round4(double value) { return std::round(value * 10000.0) / 10000.0; }
 
@@ -91,6 +93,14 @@ void CollectFrames(const std::vector<UiFrame>& frames, std::vector<const UiFrame
 }
 
 // 值改为另一个取值时保留原来的换算（倍数、偏移、取反）。
+// 取色器（带透明度）：选定后写回这一行，经同一属性修改检查写入。
+void PickColor(QWidget* parent, QTreeWidgetItem* item) {
+    const QColor current = QColor::fromString(item->text(1));
+    const QColor color = QColorDialog::getColor(current.isValid() ? current : QColor(Qt::white), parent, QObject::tr("颜色"),
+        QColorDialog::ShowAlphaChannel);
+    if (color.isValid()) item->setText(1, color.name(QColor::HexArgb).toUpper());
+}
+
 QJsonValue BindingValue(const QJsonValue& previous, const QString& reference) {
     if (!previous.isObject()) return reference;
     QJsonObject binding = previous.toObject();
@@ -161,6 +171,8 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame)
         auto* color = editable(group, tr("颜色"), QStringLiteral("color"), ColorValue(frame.color));
         color->setData(1, Qt::DecorationRole, QColor::fromRgbF(static_cast<float>(frame.color[0]),
             static_cast<float>(frame.color[1]), static_cast<float>(frame.color[2]), static_cast<float>(frame.color[3])));
+        color->setFlags(color->flags() & ~Qt::ItemIsEditable);
+        color->setData(1, kColorRole, true);
         choice(group, tr("水平对齐"), QStringLiteral("justifyH"), JustifyOptions(true, raw),
             Text(std::string_view(frame.justifyH == JustifyH::Left ? "left" : frame.justifyH == JustifyH::Right ? "right" : "center")));
         choice(group, tr("竖直对齐"), QStringLiteral("justifyV"), JustifyOptions(false, raw),
@@ -447,6 +459,7 @@ void GameUiModule::InstallPropertyEditors(QTreeWidget* tree) {
     connect(tree, &QTreeWidget::itemChanged, this, &GameUiModule::OnPropertyEdited);
     connect(tree, &QTreeWidget::itemDoubleClicked, this, [this, tree](QTreeWidgetItem* item, int) {
         if (item && item->data(1, kResourceRole).toInt() > 0) OpenResourcePicker(tree, item);
+        else if (item && item->data(1, kColorRole).toBool()) PickColor(tree, item);
     });
 }
 
@@ -457,6 +470,9 @@ void GameUiModule::ShowPropertyMenu(QTreeWidget* tree, const QPoint& position) {
     if (item && item->data(1, kResourceRole).toInt() > 0) {
         const bool model = item->data(1, kResourceRole).toInt() == static_cast<int>(Services::ObjectResourceKind::Model) + 1;
         menu.addAction(model ? tr("选择模型…") : tr("选择贴图…"), this, [this, tree, item] { OpenResourcePicker(tree, item); });
+        menu.addSeparator();
+    } else if (item && item->data(1, kColorRole).toBool()) {
+        menu.addAction(tr("选择颜色…"), this, [tree, item] { PickColor(tree, item); });
         menu.addSeparator();
     }
     menu.addAction(tr("添加锚点"), this, [this] {
