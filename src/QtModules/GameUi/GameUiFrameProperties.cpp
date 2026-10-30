@@ -474,6 +474,19 @@ void GameUiModule::ShowPropertyMenu(QTreeWidget* tree, const QPoint& position) {
     } else if (item && item->data(1, kColorRole).toBool()) {
         menu.addAction(tr("选择颜色…"), this, [tree, item] { PickColor(tree, item); });
         menu.addSeparator();
+    } else if (item && item->data(1, kFieldRole).toString() == QLatin1String("text")) {
+        // 插入取值：把本界面的一个数值写成 {编号}（数组为 {编号[]}，按所在重复实例取格）接在文字后面。
+        QString id;
+        const UiFrame* frame = SelectedDescriptionFrame(&id);
+        const UiDescription* description = frame ? Description(id) : nullptr;
+        QMenu* insert = menu.addMenu(tr("插入取值"));
+        for (const auto& value : description ? description->values : std::vector<UiValue>{}) {
+            const QString reference = Text(value.id) + (value.size > 0 ? QStringLiteral("[]") : QString());
+            const QString title = value.label.empty() ? reference : QStringLiteral("%1  %2").arg(Text(value.label), reference);
+            insert->addAction(title, this, [item, reference] { item->setText(1, item->text(1) + QLatin1Char('{') + reference + QLatin1Char('}')); });
+        }
+        insert->setEnabled(!insert->isEmpty());
+        menu.addSeparator();
     }
     menu.addAction(tr("添加锚点"), this, [this] {
         QString error;
