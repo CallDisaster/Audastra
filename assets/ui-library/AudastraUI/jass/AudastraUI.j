@@ -544,8 +544,27 @@ library AudastraUI requires AudastraJapi
         call Run("setcolor", AjArgHandle(frame) + AjArgInt(red) + AjArgInt(green) + AjArgInt(blue) + AjArgInt(alpha))
     endfunction
 
+    // 路径最后一段没有扩展名时补上，与编辑器预览一致：游戏不会自己补，找不到文件的贴图会画成绿块。
+    private function WithExtension takes string path, string extension returns string
+        local integer i = StringLength(path)
+        local string c
+        if i == 0 then
+            return path
+        endif
+        loop
+            exitwhen i == 0
+            set c = SubString(path, i - 1, i)
+            if c == "." then
+                return path
+            endif
+            exitwhen c == "\\" or c == "/"
+            set i = i - 1
+        endloop
+        return path + extension
+    endfunction
+
     function AudastraUISetTexture takes integer frame, string path, boolean tile returns nothing
-        call Run("settexture", AjArgHandle(frame) + AjArgText(path) + AjArgBool(tile))
+        call Run("settexture", AjArgHandle(frame) + AjArgText(WithExtension(path, ".blp")) + AjArgBool(tile))
     endfunction
 
     function AudastraUISetValue takes integer frame, real value returns nothing
@@ -557,7 +576,7 @@ library AudastraUI requires AudastraJapi
     endfunction
 
     function AudastraUISetModel takes integer frame, string path, integer kind returns nothing
-        call Run("setmodel", AjArgHandle(frame) + AjArgText(path) + AjArgInt(kind))
+        call Run("setmodel", AjArgHandle(frame) + AjArgText(WithExtension(path, ".mdx")) + AjArgInt(kind))
     endfunction
 
     function AudastraUISetEnabled takes integer frame, boolean enabled returns nothing
@@ -604,7 +623,7 @@ library AudastraUI requires AudastraJapi
 
     function AudastraUIPushTexture takes integer frame, string path returns nothing
         if Bound() then
-            call SaveStr(dataTable, frame, 4, path)
+            call SaveStr(dataTable, frame, 4, WithExtension(path, ".blp"))
         else
             call AudastraUISetTexture(frame, path, false)
         endif
