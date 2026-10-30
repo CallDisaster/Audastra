@@ -76,12 +76,20 @@ int main(int argc, char** argv) {
         GameUi::UiValue spec; spec.id = "v"; spec.type = GameUi::UiValueType::Real; spec.defaultValue = sourceValue;
         description.values.push_back(std::move(spec));
         const auto pattern = precision < 0 ? "{v}" : "{v:" + std::to_string(precision) + "}";
-        const auto preview = GameUi::FormatUiText(description, {}, pattern);
+        const auto sourcePreview = GameUi::FormatUiText(description, {}, pattern);
+        // 格式器比较使用同一实收 binary32；作者字面量的解析差异另列，不能混算。
+        char observed[64];
+        const auto encoded = std::to_chars(observed, observed + sizeof(observed), value);
+        if (encoded.ec != std::errc{}) return 2;
+        GameUi::UiInstanceState previewState;
+        previewState.values["v"] = std::string(observed, encoded.ptr);
+        const auto preview = GameUi::FormatUiText(description, previewState, pattern);
         const bool runtimeMatch = actual && *actual == reference, previewMatch = preview == reference;
         const bool commitMatch = argc != 3 || nativeCommits.at(ordinal) == reference;
         runtimeFailures += !runtimeMatch || !commitMatch; previewFailures += !previewMatch;
         rows.push_back({{"value", sourceValue}, {"precision", precision}, {"raw_game_fallback", raw},
             {"contract_reference", reference}, {"runtime", actual.value_or("<refused>")}, {"preview", preview},
+            {"source_literal_preview", sourcePreview}, {"source_quantization_differs", sourceBits != std::bit_cast<std::uint32_t>(value)},
             {"source_literal_nearest_bits", sourceBits}, {"received_native_bits", std::bit_cast<std::uint32_t>(value)},
             {"observed_native_commit", argc == 3 ? nativeCommits.at(ordinal) : "<not observed>"},
             {"runtime_match", runtimeMatch}, {"native_commit_match", commitMatch}, {"preview_match", previewMatch}});
