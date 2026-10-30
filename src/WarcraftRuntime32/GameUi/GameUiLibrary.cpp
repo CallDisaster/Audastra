@@ -2,6 +2,10 @@
 #include "GameUiMemory.h"
 #include <atomic>
 #include <limits>
+#include <array>
+#include <cstring>
+#include <cmath>
+#include <cstddef>
 
 #include <windows.h>
 
@@ -60,7 +64,8 @@ bool Complete(const GameUiEntryPoints& e) noexcept {
         && e.fontStringSetAlignH && e.fontStringSetAlignV && e.textureSetTexture && e.statusBarSetTexture
         && e.statusBarSetValue && e.statusBarSetLimits && e.sliderSetValue && e.editBoxSetText && e.modelSetModel
         && e.controlSetEnabled && e.stringTable && e.fdfTable && e.defaultStatus && e.activeLayer
-        && e.mouseEvent && e.hitTestLayer && e.simpleTop && e.vtBackdrop && e.vtText && e.vtEditBox && e.vtSlider && e.vtModel
+        && e.mouseEvent && e.mouseEventVtable && e.readCursorUi && e.hitTestLayer && e.simpleTop
+        && e.vtBackdrop && e.vtText && e.vtEditBox && e.vtSlider && e.vtModel
         && e.vtSimpleStatusBar && e.vtSimpleTexture && e.vtSimpleFontString;
 }
 
@@ -627,8 +632,19 @@ PointerSnapshot GameUiLibrary::ReadPointer() {
     if (Ready() != UiError::None) return pointer;
     Address active = 0, hovered = 0, top = 0;
     if (!ReadWord(entries_.activeLayer, active) || !active) return pointer;
-    // 活动层不是命中结果；每次使用当前鼠标事件重新查询，不能沿用上次聚焦的框架。
-    if (Run([&] { hovered = entries_.hitTestLayer(active, 0, entries_.mouseEvent); }) != UiError::None) return pointer;
+    Address eventVtable = 0;
+    float x = 0, y = 0;
+    if (!ReadWord(entries_.mouseEvent, eventVtable) || eventVtable != entries_.mouseEventVtable
+        || !entries_.readCursorUi(x, y) || !std::isfinite(x) || !std::isfinite(y)
+        || x < 0 || x > 0.8f || y < 0 || y > 0.6f) return pointer;
+    // 全局事件可能保留旧位置。只在栈副本内填当前客户区坐标，不改游戏的事件、光标或焦点。
+    alignas(16) std::array<std::byte, 0x30> event{};
+    if (Run([&] {
+        std::memcpy(event.data(), reinterpret_cast<const void*>(entries_.mouseEvent), event.size());
+        std::memcpy(event.data() + 0x24, &x, sizeof(x));
+        std::memcpy(event.data() + 0x28, &y, sizeof(y));
+        hovered = entries_.hitTestLayer(active, 0, reinterpret_cast<Address>(event.data()));
+    }) != UiError::None) return pointer;
     // 鼠标在 Simple 系框架上时，经典层拿到的是全局 CSimpleTop，再从它取具体对象。
     if (hovered && ReadWord(entries_.simpleTop, top) && top && hovered == top) {
         Address simple = 0;

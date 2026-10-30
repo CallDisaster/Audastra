@@ -66,6 +66,7 @@ inline constexpr std::uint32_t FdfTable = 0xBB9CFC;
 inline constexpr std::uint32_t DefaultStatus = 0xB662CC;
 inline constexpr std::uint32_t ActiveLayer = 0xBB9D88;
 inline constexpr std::uint32_t MouseEvent = 0xB66308;
+inline constexpr std::uint32_t MouseEventVtable = 0x956574;
 inline constexpr std::uint32_t HitTestLayer = 0x0996E0;
 inline constexpr std::uint32_t SimpleTop = 0xBBA0D0;
 
@@ -187,6 +188,8 @@ struct GameUiEntryPoints {
     Address defaultStatus = 0;
     Address activeLayer = 0;
     Address mouseEvent = 0;
+    Address mouseEventVtable = 0;
+    bool (*readCursorUi)(float&, float&) = nullptr;
     FnThisHitTest hitTestLayer = nullptr;
     std::function<void(Address, Address, bool)> observePointer;
     Address simpleTop = 0;

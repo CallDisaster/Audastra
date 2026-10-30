@@ -2,9 +2,28 @@
 
 #include <cstdio>
 #include <limits>
+#include <cwchar>
+#include <windows.h>
 
 namespace Audastra::Runtime32::GameUi {
 namespace {
+
+bool ReadOwnUiCursor(float& x, float& y) {
+    const auto window = GetForegroundWindow();
+    DWORD process = 0;
+    const auto thread = GetWindowThreadProcessId(window, &process);
+    wchar_t name[64]{};
+    if (!window || process != GetCurrentProcessId() || thread != GetCurrentThreadId()
+        || GetAncestor(window, GA_ROOT) != window || GetWindow(window, GW_OWNER) || IsIconic(window)
+        || !GetClassNameW(window, name, 64) || std::wcscmp(name, L"Warcraft III") != 0) return false;
+    POINT point{}; RECT client{};
+    if (!GetCursorPos(&point) || !ScreenToClient(window, &point) || !GetClientRect(window, &client)
+        || client.right <= 0 || client.bottom <= 0 || point.x < 0 || point.y < 0
+        || point.x >= client.right || point.y >= client.bottom) return false;
+    x = 0.8f * static_cast<float>(point.x) / static_cast<float>(client.right);
+    y = 0.6f * (1.0f - static_cast<float>(point.y) / static_cast<float>(client.bottom));
+    return true;
+}
 
 class Resolver {
 public:
@@ -118,6 +137,8 @@ bool ResolveGameUiEntryPoints127(Address base, const std::function<bool(Address,
     r.Data(table.defaultStatus, DefaultStatus);
     r.Data(table.activeLayer, ActiveLayer);
     r.Data(table.mouseEvent, MouseEvent);
+    r.Data(table.mouseEventVtable, MouseEventVtable);
+    table.readCursorUi = &ReadOwnUiCursor;
     r.Code(table.hitTestLayer, HitTestLayer);
     r.Data(table.simpleTop, SimpleTop);
 

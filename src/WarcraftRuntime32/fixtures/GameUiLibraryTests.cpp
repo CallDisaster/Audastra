@@ -8,6 +8,7 @@
 #include <array>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -184,18 +185,29 @@ struct Tables {
     Address status = 0;
     Address hovered = 0;
     Address active = 0;
-    Address mouseEvent = 0;
+    alignas(16) std::array<std::byte, 0x30> mouseEvent{};
+    float cursorX = 0.1f, cursorY = 0.45f;
+    bool cursorValid = true, useHitGeometry = false;
     unsigned hitCalls = 0;
     bool hitFault = false;
     Address simpleTop = 0;
 } g_tables;
 
 Address __fastcall HitTest(Address self, int, Address event) {
-    Check(self == g_tables.active && event == reinterpret_cast<Address>(&g_tables.mouseEvent), "hit test uses active layer and current mouse event");
+    Check(self == g_tables.active && event != reinterpret_cast<Address>(g_tables.mouseEvent.data()), "hit test uses active layer and a private event snapshot");
     ++g_tables.hitCalls;
     if (g_tables.hitFault) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    float x = 0, y = 0;
+    std::memcpy(&x, reinterpret_cast<const void*>(event + 0x24), sizeof(x));
+    std::memcpy(&y, reinterpret_cast<const void*>(event + 0x28), sizeof(y));
+    Check(x == g_tables.cursorX && y == g_tables.cursorY, "native query receives current cursor coordinates");
+    float oldX = 0;
+    std::memcpy(&oldX, g_tables.mouseEvent.data() + 0x24, sizeof(oldX));
+    Check(oldX == 0.1f, "query never changes the game's cached event");
+    if (g_tables.useHitGeometry && (x < 0.05f || x > 0.16f || y < 0.42f || y > 0.47f)) return 0;
     return g_tables.hovered;
 }
+bool QueryCursor(float& x, float& y) { x = g_tables.cursorX; y = g_tables.cursorY; return g_tables.cursorValid; }
 
 void FillVtable(Vtable& vtable, Address height, bool classic) {
     vtable.fill(0);
@@ -269,7 +281,9 @@ GameUiEntryPoints Entries() {
     e.fdfTable = reinterpret_cast<Address>(g_tables.fdf.data());
     e.defaultStatus = reinterpret_cast<Address>(&g_tables.status);
     e.activeLayer = reinterpret_cast<Address>(&g_tables.active);
-    e.mouseEvent = reinterpret_cast<Address>(&g_tables.mouseEvent);
+    e.mouseEvent = reinterpret_cast<Address>(g_tables.mouseEvent.data());
+    e.mouseEventVtable = reinterpret_cast<Address>(vtClassic.data());
+    e.readCursorUi = &QueryCursor;
     e.hitTestLayer = &HitTest;
     e.simpleTop = reinterpret_cast<Address>(&g_tables.simpleTop);
     e.vtBackdrop = reinterpret_cast<Address>(vtBackdrop.data());
@@ -287,6 +301,10 @@ void Reset() {
     g_log.clear();
     g_frames.clear();
     g_tables = {};
+    const auto mouseVtable = reinterpret_cast<Address>(vtClassic.data());
+    std::memcpy(g_tables.mouseEvent.data(), &mouseVtable, sizeof(mouseVtable));
+    std::memcpy(g_tables.mouseEvent.data() + 0x24, &g_tables.cursorX, sizeof(float));
+    std::memcpy(g_tables.mouseEvent.data() + 0x28, &g_tables.cursorY, sizeof(float));
     g_root = NewFrame(vtClassic, 0, 0);
     g_tables.active = g_root->Self();
     g_world = NewFrame(vtClassic, 0, 0);
@@ -534,6 +552,11 @@ void PointerEvents() {
     Check(ui.ReadPointer().hovered == label->Self(), "simple top resolves to hovered simple object");
     g_tables.hovered = buttonObject->Self();
     Check(ui.ReadPointer().hovered == buttonObject->Self(), "classic hovered frame comes from live hit test");
+    g_tables.useHitGeometry = true;
+    g_tables.cursorX = 0.64f; g_tables.cursorY = 0.026f;
+    Check(ui.ReadPointer().hovered == 0, "native command button position cannot click the cached party frame");
+    g_tables.cursorX = 0.1f; g_tables.cursorY = 0.45f;
+    g_tables.useHitGeometry = false;
     g_tables.active = buttonObject->Self();
     g_tables.hovered = 0;
     Check(ui.ReadPointer().hovered == 0, "old active frame must not masquerade as a mouse hit outside the frame");
@@ -545,6 +568,9 @@ void PointerEvents() {
     events = ui.TakeEvents();
     for (const auto& event : events) Check(event.kind != kUiEventClick, "moving off a focused frame before release never clicks it");
     const auto calls = g_tables.hitCalls;
+    g_tables.cursorValid = false;
+    Check(ui.ReadPointer().hovered == 0 && g_tables.hitCalls == calls, "unrecognized or background window does not query a frame");
+    g_tables.cursorValid = true;
     g_tables.active = 0;
     Check(ui.ReadPointer().hovered == 0 && g_tables.hitCalls == calls, "no active layer does not call the engine");
     g_tables.active = buttonObject->Self();
