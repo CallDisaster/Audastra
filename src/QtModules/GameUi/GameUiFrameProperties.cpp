@@ -5,6 +5,7 @@
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/ScriptFrames.h"
+#include "Widgets/TablePopupAnchor.h"
 
 #include <QCheckBox>
 #include <QGuiApplication>
@@ -406,7 +407,7 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
     const QString target = key == QLatin1String("id") ? text : frameId;
     auto after = [this, target] {
         if (const UiFrame* selected = SelectedDescriptionFrame(); selected && Text(selected->id) == target) return;
-        if (!SelectFrame(target)) (void)SelectFrame(target + QStringLiteral("#0"));
+        SelectFrameWhenReady(target);
     };
     CommitDescriptionEdits(id, {edit}, tr("界面 %1：改 %2 的 %3").arg(id, frameId, item->text(0)), std::move(after));
 }
@@ -511,24 +512,17 @@ void GameUiModule::ShowPropertyMenu(QTreeWidget* tree, const QPoint& position) {
     menu.exec(tree->viewport()->mapToGlobal(position));
 }
 
-// 贴图、模型选择：物编的资源选择器，打开即按目录浏览游戏文件。放在 anchor（全局坐标）右侧，放不下时放到
-// leftEdge 左侧；受屏幕工作区约束。commit 返回假时选择器不关。
-void GameUiModule::ShowResourcePicker(Services::ObjectResourceKind kind, const QString& current, const QRect& anchor, int leftEdge,
-    std::function<bool(const QString&)> commit) {
-    if (!resourcePickerFactory_ || !page_) return;
-    auto* picker = new ObjectResourcePicker(Services::ObjectResourceField{kind, false, true}, current, resourcePickerFactory_(), page_);
+// 贴图、模型选择：物编的资源选择器，打开即按目录浏览游戏文件。与物编字段同一套表格浮层定位：
+// 贴所在行、受屏幕工作区约束，Esc、点到别处、换行或表格重建时关闭；commit 返回假时选择器不关。
+void GameUiModule::ShowResourcePicker(Services::ObjectResourceKind kind, const QString& current, QAbstractItemView* view,
+    const QModelIndex& index, std::function<bool(const QString&)> commit) {
+    if (!resourcePickerFactory_ || !view || !index.isValid()) return;
+    auto* picker = new ObjectResourcePicker(Services::ObjectResourceField{kind, false, true}, current, resourcePickerFactory_(), view);
     picker->setObjectName(kind == Services::ObjectResourceKind::Model ? QStringLiteral("gameUiModelPicker") : QStringLiteral("gameUiTexturePicker"));
     picker->BrowseGameFiles();
     picker->SetCommit(std::move(commit));
-    QPoint origin = anchor.topRight();
-    if (const QScreen* screen = page_->screen()) {
-        const QRect available = screen->availableGeometry();
-        if (origin.x() + picker->width() > available.right()) origin.setX(leftEdge - picker->width());
-        origin.setX(std::clamp(origin.x(), available.left(), std::max(available.left(), available.right() - picker->width())));
-        origin.setY(std::clamp(origin.y(), available.top(), std::max(available.top(), available.bottom() - picker->height())));
-    }
-    picker->move(origin);
     picker->show();
+    UiKit::AnchorTablePopup(picker, view, index);
     picker->raise();
 }
 
@@ -542,9 +536,7 @@ void GameUiModule::OpenResourcePicker(QTreeWidget* tree, QTreeWidgetItem* item) 
     const QString label = item->text(0);
     const auto kind = static_cast<Services::ObjectResourceKind>(item->data(1, kResourceRole).toInt() - 1);
     const QPointer<GameUiModule> self(this);
-    const QRect row = tree->visualItemRect(item);
-    ShowResourcePicker(kind, item->text(1), QRect(tree->viewport()->mapToGlobal(row.topLeft()), row.size()),
-        tree->mapToGlobal(QPoint(0, 0)).x(), [self, id, frameId, key, label](const QString& value) {
+    ShowResourcePicker(kind, item->text(1), tree, tree->indexFromItem(item, 1), [self, id, frameId, key, label](const QString& value) {
             if (!self) return false;
             const QString path = value.trimmed();
             const QJsonObject edit{{"op", "set_frame"}, {"frame", frameId},

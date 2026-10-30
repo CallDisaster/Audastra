@@ -268,6 +268,7 @@ void GameUiModule::RebuildScene() {
     UpdateProblems();
     emit SceneChanged();
     StartAssetsJob();
+    if (const QString pending = std::exchange(pendingSelection_, {}); !pending.isEmpty()) SelectFrameWhenReady(pending);
 }
 
 void GameUiModule::RebuildDrawList() {
@@ -417,6 +418,11 @@ bool GameUiModule::SelectFrame(const QString& name) {
     if (!found) return false;
     SelectNode(*found);
     return true;
+}
+
+void GameUiModule::SelectFrameWhenReady(const QString& name) {
+    if (SelectFrame(name) || SelectFrame(name + QStringLiteral("#0"))) return;
+    pendingSelection_ = name;
 }
 
 QImage GameUiModule::RenderImage(const QSize& size) const {

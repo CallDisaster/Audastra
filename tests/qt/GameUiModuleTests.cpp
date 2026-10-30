@@ -23,6 +23,7 @@
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QScreen>
 #include <QStandardItemModel>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -640,8 +641,8 @@ void GameUiModuleTests::GeneratesDescriptionTriggers() {
     QVERIFY(!category() && project.triggerUndoStack_->index() == 0);
 }
 
-// 从文件导入示例：描述放进待保存修改；选了一并写入时，同目录 triggers.txt 写进以显示名命名的类别，一步撤销；
-// 触发器写不进时描述也不放入。
+// 从文件导入示例：描述放进待保存修改；选了一并写入时先生成界面自己的变量和触发器，同目录 triggers.txt
+// 随后写进以显示名命名的类别（可以引用生成的变量），一步撤销；触发器写不进时描述也不放入。
 void GameUiModuleTests::ImportsDescriptionFile() {
     QTemporaryDir folder;
     QVERIFY(folder.isValid());
@@ -657,7 +658,7 @@ void GameUiModuleTests::ImportsDescriptionFile() {
     QVERIFY(write(QStringLiteral("hud/hud.json"), description("Hud")));
     QVERIFY(write(QStringLiteral("hud/triggers.txt"), QByteArrayLiteral(
         "变量:\n    AUH_Count: integer = 0\n触发器 状态栏 计数 Hud_Count:\n    events:\n        TriggerRegisterTimerEventPeriodic(1)\n"
-        "    actions:\n        SetVariable(udg_AUH_Count, 1)\n")));
+        "    actions:\n        SetVariable(udg_AUH_Count, 1)\n        SetVariable(udg_AUIC_Hud, false)\n")));
     QVERIFY(write(QStringLiteral("bad/bad.json"), QByteArrayLiteral("{}")));
     QVERIFY(write(QStringLiteral("broken/other.json"), description("Other")));
     QVERIFY(write(QStringLiteral("broken/triggers.txt"), QByteArrayLiteral(
@@ -697,6 +698,8 @@ void GameUiModuleTests::ImportsDescriptionFile() {
     }));
     const auto& variables = project.triggerDocument_->variables;
     QVERIFY(std::any_of(variables.begin(), variables.end(), [](const auto& row) { return row.name.text == "AUH_Count"; }));
+    QVERIFY(std::any_of(variables.begin(), variables.end(), [](const auto& row) { return row.name.text == "AUIC_Hud"; }));
+    QVERIFY(std::any_of(imported.begin(), imported.end(), [](const auto& row) { return row.name.text == "状态栏 创建 Hud_Create"; }));
     QCOMPARE(project.triggerUndoStack_->count(), 1);
 
     QVERIFY(!module.ImportDescriptionFile(folder.filePath(QStringLiteral("broken/other.json")), true, &error));
@@ -998,8 +1001,20 @@ void GameUiModuleTests::FrameSettingsCardAndTexturePicker() {
     auto* properties = page->findChild<QTreeWidget*>(QStringLiteral("gameUiProperties"));
     QTreeWidgetItem* texture = field(properties, QStringLiteral("贴图"));
     QVERIFY(texture && !(texture->flags() & Qt::ItemIsEditable));
+    page->resize(1200, 800);
+    page->show();
+    properties->scrollToItem(texture);
     emit properties->itemDoubleClicked(texture, 1);
     auto* picker = page->findChild<Modules::ObjectResourcePicker*>(QStringLiteral("gameUiTexturePicker"));
+    QVERIFY(picker && picker->isVisible());
+    // 与物编字段同一套表格浮层：放在屏幕工作区内，Esc 关闭，可以再打开。
+    QCoreApplication::processEvents();
+    QVERIFY(properties->screen()->availableGeometry().contains(picker->geometry()));
+    QTest::keyClick(properties, Qt::Key_Escape);
+    QVERIFY(!picker->isVisible());
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    emit properties->itemDoubleClicked(texture, 1);
+    picker = page->findChild<Modules::ObjectResourcePicker*>(QStringLiteral("gameUiTexturePicker"));
     QVERIFY(picker && picker->isVisible());
     auto* path = picker->findChild<QLineEdit*>(QStringLiteral("resourcePath"));
     QVERIFY(path);

@@ -479,10 +479,8 @@ void GameUiModule::OpenOverrideResourcePicker(int row, int column) {
     const QString description = descriptionPanelFor_;
     const int state = stateRow_;
     const QPointer<GameUiModule> self(this);
-    const QRect cell = overrideTable_->visualItemRect(item);
     ShowResourcePicker(column == 5 ? Services::ObjectResourceKind::Model : Services::ObjectResourceKind::Texture, item->text(),
-        QRect(overrideTable_->viewport()->mapToGlobal(cell.topLeft()), cell.size()), overrideTable_->mapToGlobal(QPoint(0, 0)).x(),
-        [self, key, what, description, state, row](const QString& value) {
+        overrideTable_, overrideTable_->indexFromItem(item), [self, key, what, description, state, row](const QString& value) {
             if (!self) return false;
             if (self->descriptionPanelFor_ != description || self->stateRow_ != state) {
                 self->ReportAuthoring(tr("选择期间换了界面或状态，没有写入"));

@@ -370,6 +370,13 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
         && explicitEmpty.injectedSourceSha256 == std::vector<std::string>{*hash.value}
         && VerifyMapRuntimeBoot(explicitEmpty.script, true).Succeeded(),
         "explicit runtime mode injects verified bootstrap client even before any author UI call exists");
+    // 注入目录里没有客户端：按需模式下脚本用到运行库时，在注入这一步说明缺什么，不拖到包身份核对才报不符。
+    std::filesystem::create_directories(root / "no-client");
+    boot.onlyIfUsed = true; options.jassDirs = {root / "no-client"}; options.workDir = root / "no-client-work"; validated = 0;
+    const auto missing = CompileMapScript(generated, options, {});
+    Require(!missing.Succeeded() && validated == 0 && HasCode(missing.diagnostics, "RUNTIME_CLIENT_NOT_INJECTABLE"),
+        "a runtime client absent from the injection roots is reported at the inject stage");
+    options.jassDirs = {jass}; boot.onlyIfUsed = false;
     boot.enabled = false; options.workDir = root / "disabled-empty"; validated = 0;
     const auto disabledEmpty = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
     Require(disabledEmpty.Succeeded() && validated == 0 && disabledEmpty.injectedSourceSha256.empty(),

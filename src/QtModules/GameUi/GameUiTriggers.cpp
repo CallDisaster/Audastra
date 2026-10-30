@@ -12,6 +12,7 @@
 #include <QMessageBox>
 
 #include <algorithm>
+#include <iterator>
 #include <cstring>
 
 // 界面描述 → 自然 T：生成文本由 Core（UiTriggers）给出，这里补上工作区里才有的输入
@@ -50,13 +51,21 @@ std::shared_ptr<const std::vector<std::byte>> Bytes(const std::string& text) {
 } // namespace
 
 std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescriptionTriggers(const QString& id, bool preview, QString* error) {
+    const UiDescription* description = Description(id);
+    if (!description) {
+        if (error) *error = tr("地图里没有界面描述 %1").arg(id);
+        return std::nullopt;
+    }
+    return PublishDescriptionTriggers(*description, preview, {}, tr("生成界面 %1 的触发器").arg(id), {}, error);
+}
+
+std::optional<GameUiModule::TriggerGeneration> GameUiModule::PublishDescriptionTriggers(const UiDescription& description, bool preview,
+    std::vector<Trigger::GraphEditOperation> extra, const QString& undoLabel, const std::function<Status()>& stage, QString* error) {
     const auto fail = [error](const QString& message) -> std::optional<TriggerGeneration> {
         if (error) *error = message;
         return std::nullopt;
     };
     if (!definitions_ || !definitions_->library) return fail(tr("界面定义仍在读取"));
-    const UiDescription* description = Description(id);
-    if (!description) return fail(tr("地图里没有界面描述 %1").arg(id));
     if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
     if (!project_.uiCatalog_->Find(Trigger::UiDefinitionKind::Action, "AudastraUISetPoint"))
         return fail(tr("触发器函数库里没有 AudastraUI，先在函数库里安装并启用它"));
@@ -65,8 +74,8 @@ std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescription
     UiTriggerOptions options;
     options.library = definitions_->library.get();
     if (const auto font = skin.Lookup("MasterFont", race_.toStdString(), expansion_)) options.defaultFont = font->value;
-    if (UsesMapTemplate(description->frames, *definitions_->library)) options.tocFiles = definitions_->mapTocs;
-    auto plan = GenerateUiTriggers(*description, options);
+    if (UsesMapTemplate(description.frames, *definitions_->library)) options.tocFiles = definitions_->mapTocs;
+    auto plan = GenerateUiTriggers(description, options);
     if (!plan.Succeeded()) return fail(FirstMessage(plan.diagnostics));
 
     TriggerGeneration result;
@@ -88,17 +97,21 @@ std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescription
         });
         if (!staged) payloads.push_back({archivePath, bytes, false});
     }
+    // 生成的变量先声明，作者的触发器（extra）随后写入才能引用它们。
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(kUiTriggerCategory), plan.value->featureText, {}, std::nullopt});
-    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations),
-        tr("生成界面 %1 的触发器").arg(id), [&]() -> Status {
-            if (payloads.empty()) return Status::Ok();
-            stagingOwnImport_ = true;  // 描述预览不用这两份模板，不整体重读
-            const QString problem = project_.AddImportPayloads(payloads, true, tr("界面触发器的基础模板"));
-            stagingOwnImport_ = false;
-            if (!problem.isEmpty()) return Status::Failure("GameUi", "AUI_TEMPLATE_IMPORT", problem.toStdString());
-            return Status::Ok();
-        });
+    std::move(extra.begin(), extra.end(), std::back_inserter(operations));
+    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), undoLabel, [&]() -> Status {
+        if (stage) {
+            if (auto staged = stage(); !staged.Succeeded()) return staged;
+        }
+        if (payloads.empty()) return Status::Ok();
+        stagingOwnImport_ = true;  // 描述预览不用这两份模板，不整体重读
+        const QString problem = project_.AddImportPayloads(payloads, true, tr("界面触发器的基础模板"));
+        stagingOwnImport_ = false;
+        if (!problem.isEmpty()) return Status::Failure("GameUi", "AUI_TEMPLATE_IMPORT", problem.toStdString());
+        return Status::Ok();
+    });
     if (!applied.Succeeded()) return fail(FirstMessage(applied.diagnostics));
     for (const auto& payload : payloads) result.templateFiles.append(payload.archivePath);
     return result;

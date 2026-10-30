@@ -7,6 +7,7 @@
 #include "War3MapCore/GameUi/UiSkin.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Services/MapRuntimePackage.h"
+#include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "Widgets/ObjectResourcePicker.h"
 
 #include <QHash>
@@ -37,6 +38,8 @@ class QJsonArray;
 class QLabel;
 class QLineEdit;
 class QMenu;
+class QAbstractItemView;
+class QModelIndex;
 class QPoint;
 class QPushButton;
 class QSplitter;
@@ -88,6 +91,8 @@ public:
     void SetRace(const QString& race);
     void SetExpansion(bool expansion);
     bool SelectFrame(const QString& name);
+    // 新建、导入后选中：界面树还没按新描述重建时，等重建出这个框架再选中并滚到可见。
+    void SelectFrameWhenReady(const QString& name);
     // 只显示该节点（隐藏其同级节点），父节点一并显示。
     void ShowOnly(std::uint32_t node);
     [[nodiscard]] std::uint32_t SelectedNode() const noexcept { return selected_; }
@@ -272,13 +277,16 @@ private:
     [[nodiscard]] GameUi::UiSkin MakeSkin() const;
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);
+    // 由描述生成触发器，与 extra 同一个触发器事务（同一步撤销）写入；stage 在事务里暂存别的修改（导入时的描述本身）。
+    std::optional<TriggerGeneration> PublishDescriptionTriggers(const GameUi::UiDescription& description, bool preview,
+        std::vector<Trigger::GraphEditOperation> extra, const QString& undoLabel, const std::function<Status()>& stage, QString* error);
     // 属性树“编辑”一组与设置卡片（GameUiFrameProperties.cpp）：两处用同一套字段、选择器与修改。
     void InstallPropertyEditors(QTreeWidget* tree);
     void AddEditableRows(QTreeWidgetItem* group, const GameUi::UiFrame& frame);
     void OnPropertyEdited(QTreeWidgetItem* item, int column);
     void ShowPropertyMenu(QTreeWidget* tree, const QPoint& position);
     void OpenResourcePicker(QTreeWidget* tree, QTreeWidgetItem* item);
-    void ShowResourcePicker(Services::ObjectResourceKind kind, const QString& current, const QRect& anchor, int leftEdge,
+    void ShowResourcePicker(Services::ObjectResourceKind kind, const QString& current, QAbstractItemView* view, const QModelIndex& index,
         std::function<bool(const QString&)> commit);
     void OpenOverrideResourcePicker(int row, int column);
     std::optional<StableId> CreateHandlerTrigger(const GameUi::UiDescription& description, const std::string& role, const std::string& key,
@@ -342,6 +350,8 @@ private:
     bool populating_ = false;
     std::uint32_t selected_ = GameUi::kNoNode;
     QString selectedKey_;
+    QString pendingSelection_;
+    QString propertiesKey_;
 
     std::optional<GameUi::ScriptSimulator> simulator_;
     std::optional<GameUi::SimulationResult> simulation_;

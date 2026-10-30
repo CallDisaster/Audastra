@@ -9,6 +9,7 @@
 #include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/Jass/IdentifierRewrite.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Script/MapRuntimeBoot.h"
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "../Jass/JassLexer.h"
@@ -643,7 +644,31 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
         // 显式启用即有启动依赖；按需模式仍只由真实作者调用选择库。
         const std::span<const std::string_view> required = options.mapRuntimeBoot && options.mapRuntimeBoot->enabled
             && !options.mapRuntimeBoot->onlyIfUsed ? std::span<const std::string_view>(runtimeClient) : std::span<const std::string_view>{};
+        // 运行库客户端只能由注入器从函数库取得。显式启用、或按需模式下脚本确实用到运行库时，注入目录里没有客户端
+        // 就在这里说清楚，不拖到包身份核对才报“不符”。用法分析不确定时不在此报错，仍由后面的核对把关。
+        bool clientNeeded = !required.empty();
+        if (!clientNeeded && options.mapRuntimeBoot && options.mapRuntimeBoot->enabled) {
+            const auto usage = AnalyzeMapRuntimeUsage(script);
+            clientNeeded = usage.Succeeded() && usage.value && usage.value->required;
+        }
+        const auto clientMissing = [&](const std::vector<std::filesystem::path>& roots, auto&& declares) {
+            if (!clientNeeded || declares(runtimeClient[0])) return false;
+            std::string list;
+            for (const auto& root : roots) {
+                const auto text = root.u8string();
+                list += (list.empty() ? "" : "、") + std::string(text.begin(), text.end());
+            }
+            Fail(result, "RUNTIME_CLIENT_NOT_INJECTABLE", "地图启用了界面运行库，但脚本注入目录（" + (list.empty() ? std::string("无") : list)
+                + "）里没有 AudastraUI 函数库（找不到 " + std::string(runtimeClient[0]) + "）。请在触发器的“函数库…”里安装或更新自带的 AudastraUI，"
+                "它会同时写进注入目录。");
+            stage.exitCode = 1;
+            return true;
+        };
         if (options.frameworkInputs) {
+            const auto& sources = options.frameworkInputs->injection;
+            if (clientMissing(options.frameworkInputs->entryPlan.orderedInjectionRoots, [&](std::string_view name) {
+                    return std::any_of(sources.choices.begin(), sources.choices.end(), [&](const auto& choice) { return choice.key == name; });
+                })) return result;
             auto owned = InjectScriptFramework(script, *options.frameworkInputs, injected, &frameworkView, &result.injectedSourceSha256, required);
             for (auto& diagnostic : owned.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
             if (!owned.Succeeded()) { stage.exitCode = 1; return result; }
@@ -651,6 +676,9 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
             script = std::move(*owned.value);
         } else {
             const auto table = ScanInjectTable(options.jassDirs, options.warcraftVersion == 24, result.diagnostics);
+            if (clientMissing(options.jassDirs, [&](std::string_view name) {
+                    return std::any_of(table.entries.begin(), table.entries.end(), [&](const auto& entry) { return entry.functionName == name; });
+                })) return result;
             entries = table.entries.size();
             script = InjectCode(std::move(script), table, result.diagnostics, &injected, &result.injectedSourceSha256, required);
         }

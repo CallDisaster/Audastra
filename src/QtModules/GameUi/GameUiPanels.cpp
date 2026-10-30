@@ -14,6 +14,8 @@
 #include <QMenu>
 #include <QAction>
 #include <QPushButton>
+#include <QScopeGuard>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStandardItemModel>
@@ -418,6 +420,7 @@ void GameUiModule::ShowOnly(std::uint32_t node) {
 }
 
 void GameUiModule::SelectNode(std::uint32_t node) {
+    pendingSelection_.clear();
     if (!tree_ || node >= tree_->Nodes().size() || node == kScreenNode) node = kNoNode;
     selected_ = node;
     selectedKey_ = node == kNoNode ? QString() : NodeKey(node);
@@ -445,6 +448,14 @@ void GameUiModule::UpdateProperties() {
     RefreshFrameSettings();
     if (!properties_) return;
     const QSignalBlocker block(properties_);  // 填表不算编辑
+    // 同一框架改完字段重填时停在原来的滚动位置，不跳回顶部。
+    const bool sameNode = propertiesKey_ == selectedKey_;
+    propertiesKey_ = selectedKey_;
+    const auto keepScroll = qScopeGuard([this, sameNode, scroll = properties_->verticalScrollBar()->value()] {
+        if (!sameNode) return;
+        properties_->doItemsLayout();
+        properties_->verticalScrollBar()->setValue(scroll);
+    });
     properties_->clear();
     if (!tree_ || selected_ == kNoNode || selected_ >= tree_->Nodes().size()) return;
     const FrameNode& node = tree_->Nodes()[selected_];

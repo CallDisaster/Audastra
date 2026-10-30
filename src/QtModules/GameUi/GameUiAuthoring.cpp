@@ -6,12 +6,12 @@
 #include "GameUiKindPicker.h"
 #include "Modules/ModuleHost.h"
 #include "TriggerCommands.h"
+#include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 
-#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
@@ -100,7 +100,7 @@ bool GameUiModule::CreateDescription(const QString& id, const QString& label, QS
         return false;
     }
     if (!StageDescription(std::move(*created.value), true, tr("新建界面 %1").arg(id), error)) return false;
-    (void)SelectFrame(id);
+    SelectFrameWhenReady(id);
     return true;
 }
 
@@ -127,24 +127,25 @@ bool GameUiModule::ImportDescriptionFile(const QString& path, bool withTriggers,
     const QString undoLabel = tr("导入界面 %1").arg(id);
     if (!withTriggers) {
         if (!StageDescription(std::move(*parsed.value), true, undoLabel, error)) return false;
-        (void)SelectFrame(id);
+        SelectFrameWhenReady(id);
         return true;
     }
     std::string triggers;
     if (const QString problem = read(QFileInfo(path).dir().filePath(QStringLiteral("triggers.txt")), &triggers); !problem.isEmpty()) {
         return fail(problem);
     }
-    if (!project_.uiCatalog_ || !project_.triggerDocument_) return fail(tr("当前地图没有可编辑的触发器"));
+    // 与命令行导入一致：界面自己的变量和触发器先生成，示例触发器随后写入，同一步撤销。
     const std::string category = parsed.value->label.empty() ? parsed.value->id : parsed.value->label;
     std::vector<Trigger::GraphEditOperation> operations;
     operations.emplace_back(Trigger::GraphApplyFeatureText{category, std::move(triggers), {}, std::nullopt});
     QString staged;
-    const auto applied = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), undoLabel, [&]() -> Status {
-        if (StageDescription(std::move(*parsed.value), true, undoLabel, &staged)) return Status::Ok();
+    QString generationError;
+    const auto generated = PublishDescriptionTriggers(*parsed.value, false, std::move(operations), undoLabel, [&]() -> Status {
+        if (StageDescription(*parsed.value, true, undoLabel, &staged)) return Status::Ok();
         return Status::Failure("GameUi", "AUI_IMPORT_DESCRIPTION", staged.toStdString());
-    });
-    if (!applied.Succeeded()) return fail(staged.isEmpty() ? FirstMessage(applied.diagnostics) : staged);
-    (void)SelectFrame(id);
+    }, &generationError);
+    if (!generated) return fail(staged.isEmpty() ? generationError : staged);
+    SelectFrameWhenReady(id);
     return true;
 }
 
@@ -207,7 +208,7 @@ QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QStrin
     QJsonObject edit{{"op", "add_frame"}, {"frame", FrameObject(frame)}};
     if (!parent.isEmpty()) edit.insert("parent", parent);
     if (!EditDescription(id, CompactEdits({edit}), tr("界面 %1：添加 %2").arg(id, frameId), error)) return {};
-    if (!SelectFrame(frameId)) (void)SelectFrame(frameId + QStringLiteral("#0"));
+    SelectFrameWhenReady(frameId);
     return frameId;
 }
 
@@ -328,7 +329,7 @@ bool GameUiModule::RemoveSelectedDescriptionFrame(QString* error) {
     const QString id = Text(link.description);
     const QJsonObject edit{{"op", "remove_frame"}, {"frame", Text(link.frame)}};
     if (!EditDescription(id, CompactEdits({edit}), tr("界面 %1：删除 %2").arg(id, Text(link.frame)), error)) return false;
-    (void)SelectFrame(id);
+    SelectFrameWhenReady(id);
     return true;
 }
 
@@ -414,7 +415,7 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     QAction* importAction = createMenu->addAction(tr("从文件导入…"));
     importAction->setObjectName(QStringLiteral("gameUiImportDescription"));
     connect(importAction, &QAction::triggered, this, [this] {
-        const QString examples = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("examples/game-ui"));
+        const QString examples = QString::fromStdWString((CurrentInstallationRoot() / "examples" / "game-ui").wstring());
         const QString path = QFileDialog::getOpenFileName(page_, tr("导入界面"), QDir(examples).exists() ? examples : QString(),
             tr("界面描述 (*.json)"));
         if (path.isEmpty()) return;
