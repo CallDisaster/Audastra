@@ -792,14 +792,22 @@ void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
     QCOMPARE(steps(), before);
     choose(field(QStringLiteral("竖直对齐")), QStringLiteral("bottom"));
     QVERIFY(frame("text1")->justifyV == JustifyV::Bottom);
-    // 颜色用取色器选（双击或右键），选定的值与手写走同一检查。
-    QVERIFY(!(field(QStringLiteral("颜色"))->flags() & Qt::ItemIsEditable));
-    edit(field(QStringLiteral("颜色")), QStringLiteral("#80FF0000"));
+    // 颜色用取色器选（双击或右键），选定的值与手写走同一检查；颜色行不可直接改，按与“字体”同组查找。
+    const auto color = [&field]() -> QTreeWidgetItem* {
+        QTreeWidgetItem* font = field(QStringLiteral("字体"));
+        if (!font || !font->parent()) return nullptr;
+        for (int i = 0; i < font->parent()->childCount(); ++i) {
+            if (font->parent()->child(i)->text(0) == QStringLiteral("颜色")) return font->parent()->child(i);
+        }
+        return nullptr;
+    };
+    QVERIFY(color() && !(color()->flags() & Qt::ItemIsEditable));
+    edit(color(), QStringLiteral("#80FF0000"));
     QCOMPARE(frame("text1")->color, (std::array<double, 4>{1.0, 0.0, 0.0, 0.502}));
-    QCOMPARE(field(QStringLiteral("颜色"))->text(1), QStringLiteral("#80FF0000"));
-    edit(field(QStringLiteral("颜色")), QStringLiteral("red"));
+    QCOMPARE(color()->text(1), QStringLiteral("#80FF0000"));
+    edit(color(), QStringLiteral("red"));
     QCOMPARE(frame("text1")->color[3], 0.502);
-    edit(field(QStringLiteral("颜色")), QString());
+    edit(color(), QString());
     QCOMPARE(frame("text1")->color, (std::array<double, 4>{1.0, 1.0, 1.0, 1.0}));
     edit(field(QStringLiteral("字体")), QStringLiteral("Fonts\\FRIZQT__.TTF"));
     QCOMPARE(frame("text1")->font, std::string("Fonts\\FRIZQT__.TTF"));
