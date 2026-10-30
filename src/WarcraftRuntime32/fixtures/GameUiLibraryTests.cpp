@@ -783,6 +783,9 @@ void DataPlane() {
     Check(data.SaveStr(1234, text, 3, empty.Self()).applied, "empty text retains string-command semantics");
     Check(data.SaveStr(1234, text, 3, 0).applied, "null VM string clears text like the old AjArgText path");
     Check(data.SaveStr(1234, backdrop, 4, texture.Self()).applied, "texture uses existing API with tile false");
+    VmText emptyBuffer(nullptr);
+    Check(data.SaveStr(1234, text, 3, emptyBuffer.Self()).applied,
+        "readable VM empty descriptor clears text without requiring an allocated character buffer");
     Check(data.SaveReal(1234, bar, 1, &width).applied && data.Errors() == "0|", "status bar value takes finite float pointer");
     const auto bad = [&](UiDataWrite write) { Check(write.intercepted && !write.applied, "bad owned write consumed without applying"); };
     g_log.clear();
@@ -839,10 +842,28 @@ void DataPlane() {
     bad(next.SaveBoolean(1234, text, 5, 1));
     Check(next.Errors().starts_with("1|"), "old frame token cannot be reused after rebind");
     GameUiDataPlane nullTexture({&ResolveTable, [&] { return alive; }}); nullTexture.Attach(ui);
+    const auto callsBeforeClear = g_log.size();
     Check(nullTexture.Bind(1234, 2, 2) == AJ_OK && !nullTexture.SaveStr(1234, backdrop, 4, 0).applied
-        && nullTexture.Errors().starts_with("1|"), "null texture retains empty-path refusal");
+        && !nullTexture.SaveStr(1234, backdrop, 4, emptyBuffer.Self()).applied
+        && !nullTexture.SaveStr(1234, backdrop, 4, empty.Self()).applied
+        && nullTexture.Errors().starts_with("3|") && g_log.size() == callsBeforeClear,
+        "empty textures retain explicit refusal without pretending that native fallback cleared the image");
     gate.store(5678); data.Stop();
     Check(gate.load() == 5678, "repeated stop on an old consumer cannot clear a newer binding");
+}
+
+void UnlinkedStringDataPlane() {
+    Reset(); g_raiseTable = false; g_tableObject = reinterpret_cast<Address>(g_tableWords.data());
+    GameUiLibrary ui(Entries());
+    GameUiDataPlane data({&ResolveTable, [] { return true; }});
+    data.Attach(ui);
+    const auto text = ui.Create("Text", 0, 0, 0).handle;
+    Check(data.Bind(1234, 1, 1) == AJ_OK, "bind unreadable string control");
+    VmText unlinked(""); unlinked.object[2] = 0;
+    g_log.clear();
+    const auto write = data.SaveStr(1234, text, 3, unlinked.Self());
+    Check(write.intercepted && !write.applied && data.Errors().starts_with("1|") && g_log.empty(),
+        "unlinked descriptors remain rejected without a native mutation");
 }
 
 void DataPlaneModule() {
@@ -866,6 +887,18 @@ void DataPlaneModule() {
     const auto failed = m.request;
     Check(!m.Call("audastraui.error;i:" + std::to_string(failed)).value.text.empty(), "binding reason uses failed-request error channel");
     Check(m.host.Reset(2).applied && !data->Owns(1234), "host stop clears table before module destruction");
+}
+
+void OptionalExtensionRefusal() {
+    Reset();
+    ModuleHost m;
+    Check(InstallGameUiModule(m.host, Entries(), {}, nullptr, {}, {}, false) == AJ_OK, "legacy policy installs base UI");
+    const auto frame = m.Call("audastraui.create;s:Text;d:0;i:0;i:0").value.integer;
+    Check(frame > 0 && m.Call("audastraui.textformat;d:" + std::to_string(frame) + ";s:{0}").status == AJ_UNSUPPORTED
+        && m.Call("audastraui.eventtable").status == AJ_UNSUPPORTED, "both optional extensions refuse independently");
+    Check(m.Call("audastraui.ready").value.integer == 1
+        && m.Call("audastraui.settext;d:" + std::to_string(frame) + ";s:fallback").status == AJ_OK,
+        "extension refusal retains ordinary UI text");
 }
 
 #include "GameUiTextFormatTests.h"
@@ -950,7 +983,9 @@ int main() {
         ModuleCalls();
         ModuleUnavailable();
         DataPlane();
+        UnlinkedStringDataPlane();
         DataPlaneModule();
+        OptionalExtensionRefusal();
         TextFormatContracts();
         FormattedDataPlane();
         EventTableDataPlane();
