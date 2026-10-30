@@ -13,7 +13,7 @@ template<class T> T Take(War3Map::Result<T> r) {
     return std::move(*r.value);
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 7) return 2;
+    if (argc != 9) return 2;
     try {
         const std::filesystem::path source(argv[1]), ui(argv[2]), tool(argv[3]), gameRoot(argv[4]), out(argv[5]);
         if (std::filesystem::exists(out)) throw std::runtime_error("output must be new");
@@ -23,12 +23,14 @@ int wmain(int argc, wchar_t** argv) {
         auto doc = Take(Trigger::WtgWctCodec{}.Parse(Take(archive.ReadMember("war3map.wtg")),
             Take(archive.ReadMember("war3map.wct")), catalog));
         Trigger::TriggerGraphEditBatch observations{Take(Trigger::CaptureTriggerGraphBinding(doc, catalog)), {}};
-        constexpr std::string_view oldReceipt = R"(E:\\Work\\Audastra-Validation\\ui-runtime-c9-20261027\\input-state-result.txt)";
+        const auto oldReceipt = std::filesystem::path(argv[7]).string();
+        const auto newReceipt = std::filesystem::path(argv[8]).string();
+        if (oldReceipt.empty() || newReceipt.empty()) throw std::runtime_error("explicit receipt relocation required");
         for (const auto& arg : doc.arguments) {
             auto value = arg.value.text;
             const auto at = value.find(oldReceipt);
             if (at == std::string::npos) continue;
-            value.replace(at, oldReceipt.size(), R"(C:\\Audastra\\codex-round23b\\receipts\\phase.txt)");
+            value.replace(at, oldReceipt.size(), newReceipt);
             observations.operations.emplace_back(Trigger::GraphSet{{Trigger::GraphRecordKind::Argument, arg.id, {}},
                 Trigger::GraphField::ArgumentScalar, Trigger::GraphScalarValue{arg.type, arg.value.text},
                 Trigger::GraphScalarValue{arg.type, value}});
