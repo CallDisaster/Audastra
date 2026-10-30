@@ -276,6 +276,9 @@ private:
     void OnPropertyEdited(QTreeWidgetItem* item, int column);
     void ShowPropertyMenu(QTreeWidget* tree, const QPoint& position);
     void OpenResourcePicker(QTreeWidget* tree, QTreeWidgetItem* item);
+    void ShowResourcePicker(Services::ObjectResourceKind kind, const QString& current, const QRect& anchor, int leftEdge,
+        std::function<bool(const QString&)> commit);
+    void OpenOverrideResourcePicker(int row, int column);
     void RefreshFrameSettings();
     [[nodiscard]] const GameUi::UiFrame* SelectedDescriptionFrame(QString* descriptionId = nullptr) const;
     // 选择类字段的可选项（显示文字、取值）；不是选择类字段时为空。

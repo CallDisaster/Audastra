@@ -331,6 +331,10 @@ void GameUiModule::BuildDescriptionData(QTabWidget* tabs) {
         const int row = overrideTable_->currentRow();
         if (row >= 0) ChangeDescriptionList(QStringLiteral("set"), RemoveRow(row), tr("删除状态覆盖"));
     });
+    // 贴图、模型双击打开资源选择器（与属性表同一个）。
+    connect(overrideTable_, &QTableWidget::cellDoubleClicked, this, [this](int row, int column) {
+        if (resourcePickerFactory_ && (column == 1 || column == 5)) OpenOverrideResourcePicker(row, column);
+    });
     connect(overrideTable_, &QTableWidget::itemChanged, this, [this](QTableWidgetItem* item) {
         const QString key = ColumnKey(kOverrideColumns, item->column());
         const QString text = CellValue(item);
@@ -466,6 +470,32 @@ void GameUiModule::SyncDescriptionStateRow(const UiDescription& description, boo
     if (refill) FillStateOverrides();
 }
 
+// 状态覆盖的贴图、模型：应用时改这一行覆盖；选择期间换了界面或状态就不写。
+void GameUiModule::OpenOverrideResourcePicker(int row, int column) {
+    QTableWidgetItem* item = overrideTable_ ? overrideTable_->item(row, column) : nullptr;
+    if (!item || (column != 1 && column != 5)) return;
+    const QString key = ColumnKey(kOverrideColumns, column);
+    const QString what = tr("改状态覆盖的%1").arg(ColumnLabel(kOverrideColumns, column));
+    const QString description = descriptionPanelFor_;
+    const int state = stateRow_;
+    const QPointer<GameUiModule> self(this);
+    const QRect cell = overrideTable_->visualItemRect(item);
+    ShowResourcePicker(column == 5 ? Services::ObjectResourceKind::Model : Services::ObjectResourceKind::Texture, item->text(),
+        QRect(overrideTable_->viewport()->mapToGlobal(cell.topLeft()), cell.size()), overrideTable_->mapToGlobal(QPoint(0, 0)).x(),
+        [self, key, what, description, state, row](const QString& value) {
+            if (!self) return false;
+            if (self->descriptionPanelFor_ != description || self->stateRow_ != state) {
+                self->ReportAuthoring(tr("选择期间换了界面或状态，没有写入"));
+                return false;
+            }
+            const QString text = value.trimmed();
+            self->ChangeDescriptionList(QStringLiteral("set"), AtRow(row, [key, text](QJsonObject& object, QString* error) {
+                return PutField(object, key, text, false, error);
+            }), what);
+            return true;
+        });
+}
+
 void GameUiModule::FillStateOverrides() {
     const UiDescription* description = Description(descriptionPanelFor_);
     const bool valid = description && stateRow_ >= 0 && static_cast<std::size_t>(stateRow_) < description->states.size();
@@ -480,12 +510,12 @@ void GameUiModule::FillStateOverrides() {
         const int row = overrideTable_->rowCount();
         overrideTable_->insertRow(row);
         overrideTable_->setItem(row, 0, ChoiceCell(frames, Text(entry.frame)));
-        overrideTable_->setItem(row, 1, Cell(entry.texture ? Text(*entry.texture) : QString()));
+        overrideTable_->setItem(row, 1, Cell(entry.texture ? Text(*entry.texture) : QString(), !resourcePickerFactory_));
         overrideTable_->setItem(row, 2, Cell(entry.text ? Text(*entry.text) : QString()));
         overrideTable_->setItem(row, 3, ChoiceCell(visibility,
             entry.visible ? (*entry.visible ? QStringLiteral("true") : QStringLiteral("false")) : QString()));
         overrideTable_->setItem(row, 4, Cell(entry.value ? Number(*entry.value) : QString()));
-        overrideTable_->setItem(row, 5, Cell(entry.model ? Text(*entry.model) : QString()));
+        overrideTable_->setItem(row, 5, Cell(entry.model ? Text(*entry.model) : QString(), !resourcePickerFactory_));
     }
     FitColumns(overrideTable_);
 }
