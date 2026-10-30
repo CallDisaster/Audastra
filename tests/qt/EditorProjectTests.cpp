@@ -1108,6 +1108,7 @@ private slots:
     void BoundedAssetsPreserveCurrentPrefix();
     void ObjectQueriesDistinguishMissingFromUnparsedSources();
     void TriggerChangesCannotSkipUnpreparedFramework();
+    void RestoredProjectBuildsFromCompilerRoot();
     void OwnedLuaProjectRecoveryPreservesPayloadRoleAndMapGate();
     void UnlistedTerrainReadPreservesNamedInventory();
     void UnlistedTerrainReadRejectsChangedSource();
@@ -1522,6 +1523,19 @@ void EditorProjectTests::TriggerChangesCannotSkipUnpreparedFramework() {
         QVERIFY(!job.scriptSkipped); QVERIFY(!job.script); QVERIFY(!std::filesystem::exists(job.target));
     }
     QVERIFY(ModelHasCode(*project.diagnosticsModel_, "SCRIPT_INPUT_MISSING"));
+}
+
+// 恢复的工程用内嵌定义编辑；脚本构建与代码检查的 include、注入目录仍取本机实际数据根。
+void EditorProjectTests::RestoredProjectBuildsFromCompilerRoot() {
+    EditorProject project;
+    project.activeUiDataRoot_ = L"C:/restored/definitions";
+    QCOMPARE(project.ScriptToolRoot(), project.activeUiDataRoot_);
+    project.compilerDataRoot_ = L"C:/ydwe";
+    QCOMPARE(project.ScriptToolRoot(), project.compilerDataRoot_);
+    const auto snapshot = project.CaptureCodeCheckSnapshot();
+    QVERIFY(snapshot);
+    QCOMPARE(snapshot->toolRoot, project.compilerDataRoot_);
+    QCOMPARE(snapshot->uiRoot, project.compilerDataRoot_);
 }
 
 void EditorProjectTests::ObjectQueriesDistinguishMissingFromUnparsedSources() {

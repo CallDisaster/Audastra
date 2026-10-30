@@ -18,6 +18,9 @@ foreach(_aui_relative IN LISTS _aui_sources)
     if(_aui_relative STREQUAL _aui_script)
         file(READ "${_aui_japi}" _aui_japi_text)
         file(READ "${AUDASTRA_UI_LIBRARY_SOURCE_DIR}/${_aui_relative}" _aui_ui_text)
+        # 运行库包按 SHA 锁定这份客户端；检出换行（autocrlf）不同也必须拼出同样的字节。
+        string(REPLACE "\r\n" "\n" _aui_japi_text "${_aui_japi_text}")
+        string(REPLACE "\r\n" "\n" _aui_ui_text "${_aui_ui_text}")
         set(_aui_composed "library AudastraJapi\n${_aui_japi_text}\nendlibrary\n\n${_aui_ui_text}")
         # file(CONFIGURE) 只替换 @变量@；脚本里出现 @ 就拒绝，不让内容被悄悄改写。
         # file(WRITE) 在 Windows 会改成 CRLF，这里固定 LF，与源文件一致；内容不变时不改输出时间。

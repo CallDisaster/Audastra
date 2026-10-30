@@ -804,8 +804,15 @@ struct Editor {
             for (const auto& row : doc.triggers) if (row.name.text == trigger.name) { existing = &row; ++matches; }
             GraphRecordRef ref;
             if (matches > 1 || (existing && existing->categoryId != categoryId)) {
-                collect(Fail("TRIGGER_FEATURE_TRIGGER_ELSEWHERE", matches > 1 ? "有多个同名触发器。" : "同名触发器在其他类别里；先移动或改名。"),
-                    trigger.line, what);
+                // 指明已有触发器所在类别，作者才知道去哪里移动或改名。
+                std::string where;
+                for (const auto& row : doc.triggers) if (row.name.text == trigger.name) {
+                    const auto owner = std::find_if(doc.categories.begin(), doc.categories.end(),
+                        [&](const auto& item) { return item.categoryId == row.categoryId; });
+                    where += (where.empty() ? "“" : "、“") + (owner != doc.categories.end() ? owner->name.text : std::string("?")) + "”";
+                }
+                collect(Fail("TRIGGER_FEATURE_TRIGGER_ELSEWHERE", (matches > 1 ? "有多个同名触发器，分别在类别 " : "同名触发器在类别 ")
+                    + where + " 里；先移动或改名。"), trigger.line, what);
                 continue;
             }
             if (!existing) {

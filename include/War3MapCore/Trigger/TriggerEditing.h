@@ -215,6 +215,18 @@ public:
         StableId triggerId, std::string name,
         std::span<const AtomicRenameCodeAudit> codeAudits = {});
 
+    // 改名前逐块核查 RenameTriggerAtomic 会要求审计的代码块，只读。
+    // 文本里不含旧名称（gg_trg_、Trig_、InitTrig_ 共用的部分）、没有按名称动态调用
+    // （ExecuteFunc、## 拼接、Lua 全局表查找）且不是非字面量派发参数的块，已写好放行理由；
+    // 其余标为 mayReference，理由留空，由调用方请作者确认后填写。
+    struct RenameCodeReview {
+        AtomicRenameCodeAudit audit;
+        bool mayReference = false;
+    };
+    [[nodiscard]] static Result<std::vector<RenameCodeReview>> ReviewTriggerRenameCode(
+        const TriggerDocument& document, const UiCatalog& catalog,
+        StableId triggerId, const std::string& name);
+
     // 删除整个触发器的回执（含其全部 ECA 子树快照）。
     struct TriggerRemoveReceipt {
         TriggerRecord trigger;

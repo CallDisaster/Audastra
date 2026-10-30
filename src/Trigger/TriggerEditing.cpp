@@ -1327,6 +1327,52 @@ Result<AtomicRenameReceipt> TriggerDocumentEditor::RenameTriggerAtomic(
         std::move(references), referenceValue, codeAudits);
 }
 
+Result<std::vector<TriggerDocumentEditor::RenameCodeReview>> TriggerDocumentEditor::ReviewTriggerRenameCode(
+    const TriggerDocument& document, const UiCatalog& catalog, StableId triggerId, const std::string& name) {
+    using Output = Result<std::vector<RenameCodeReview>>;
+    const auto found = std::find_if(document.triggers.begin(), document.triggers.end(),
+        [triggerId](const TriggerRecord& row) { return row.id == triggerId; });
+    if (found == document.triggers.end()) return Output::Failure("Trigger.Edit", "TRIGGER_MISSING", "找不到目标触发器。");
+    // 说明记录没有运行时符号，改名不接受代码审计。
+    if (found->type == 1) return Output::Success({});
+    const auto renamed = EditedText(found->name, name);
+    if (!renamed.Succeeded()) return {std::nullopt, renamed.diagnostics};
+    const std::string oldSymbol = TriggerDirectoryEditor::TriggerSymbol(found->name);
+    const std::string newSymbol = TriggerDirectoryEditor::TriggerSymbol(*renamed.value);
+    // 按写出字节和按 UTF-8 正文换算的脚本名都查，名称原文也查；任一出现在代码里就算可能引用。
+    std::vector<std::string> needles{TriggerDirectoryEditor::ScriptName(found->name),
+        TriggerDirectoryEditor::ScriptName(found->name.text), found->name.text};
+    std::erase_if(needles, [](const std::string& needle) { return needle.empty(); });
+    constexpr std::string_view dynamicMarkers[] = {"ExecuteFunc", "##", "_G[", "_G.", "_ENV", "rawget"};
+    std::unordered_set<StableId> unresolvedDispatch;
+    std::vector<RenameCodeReview> reviews;
+    const std::array symbols{oldSymbol};
+    const auto status = detail::VisitOpaqueCodeBlocks(document, catalog, symbols,
+        [&](AtomicRenameCodeKind kind, StableId id, const RawText& text) -> Status {
+            if (text.text.empty()) return Status::Ok();
+            const auto sha = detail::CodeBlockSha256(text);
+            if (!sha.Succeeded()) return {sha.diagnostics};
+            RenameCodeReview review;
+            review.audit = {kind, id, text.encoding, *sha.value, catalog.Sha256(), found->name.text, name, oldSymbol, newSymbol, {}};
+            const std::string_view value = text.text;
+            review.mayReference = needles.empty()
+                || std::any_of(needles.begin(), needles.end(), [&](const auto& needle) { return value.find(needle) != std::string_view::npos; })
+                || std::any_of(std::begin(dynamicMarkers), std::end(dynamicMarkers),
+                    [&](auto marker) { return value.find(marker) != std::string_view::npos; })
+                || (kind == AtomicRenameCodeKind::ArgumentCode && unresolvedDispatch.contains(id));
+            if (!review.mayReference) review.audit.reason = "编辑器核查：代码不含旧名称，也没有按名称动态调用。";
+            reviews.push_back(std::move(review));
+            return Status::Ok();
+        },
+        [&](const ArgumentNode& argument, std::string_view, bool, bool dispatch) {
+            // 派发参数不是字面量时运行期字符串无法静态判断，交作者确认。
+            if (dispatch && argument.type != 3) unresolvedDispatch.insert(argument.id);
+            return Status::Ok();
+        });
+    if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
+    return Output::Success(std::move(reviews));
+}
+
 Result<TriggerDocumentEditor::TriggerRemoveReceipt>
 TriggerDocumentEditor::RemoveTrigger(
     TriggerDocument& document,

@@ -214,6 +214,10 @@ public:
     [[nodiscard]] static bool HasUiCatalogConfig(const std::filesystem::path& candidate);
     [[nodiscard]] std::filesystem::path ResolveUiDataRoot() const;
     [[nodiscard]] std::filesystem::path UiToolRoot() const;
+    // 地图脚本构建与代码检查用的数据根：恢复的工程用内嵌定义编辑，注入目录、include 和编译器仍在本机实际数据根。
+    [[nodiscard]] std::filesystem::path ScriptToolRoot() const {
+        return compilerDataRoot_.empty() ? activeUiDataRoot_ : compilerDataRoot_;
+    }
     // 按当前 UI Catalog 合并图标映射（分类→纹理、函数→分类）并设置函数库图标的磁盘来源；
     // 不预设任何第三方库。游戏目录、UI 数据根或目录变化后调用。
     void RefreshUiIconMappings();

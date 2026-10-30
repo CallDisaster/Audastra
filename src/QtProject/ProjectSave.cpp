@@ -80,7 +80,7 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
         job->manifest_ = QJsonObject{{"format", "forge-project"}, {"version", 1},
             {"savedAt", QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
             {"sourceKind", archiveSession_ ? "archive" : "directory"},
-            {"uiRoot", Path(compilerDataRoot_.empty() ? activeUiDataRoot_ : compilerDataRoot_)},
+            {"uiRoot", Path(ScriptToolRoot())},
             {"uiSha256", Text(job->uiSha256_)}, {"recovery", recovery}};
         // 恢复时据此直接打开作者原图（逐字节等于基线时），“保存地图”才能写回原位置。
         if (archiveSession_ && !AuthorMapPath().empty()) job->manifest_["sourceMapPath"] = Path(AuthorMapPath());

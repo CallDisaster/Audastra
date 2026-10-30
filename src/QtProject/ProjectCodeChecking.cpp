@@ -24,7 +24,9 @@ struct CodeCheckRoots {
 CodeCheckRoots CaptureRoots(const EditorProject& project) {
     // 与F9读取相同的持久化键；作者未保存的设置草稿不会成为本轮来源。
     const QSettings settings;
-    return {project.UiToolRoot(), project.ResolveUiDataRoot(),
+    // 恢复的工程编辑内嵌定义；include 与注入目录仍按本机实际数据根检查，与保存一致。
+    const bool restored = !project.compilerDataRoot_.empty();
+    return {restored ? project.compilerDataRoot_ : project.UiToolRoot(), restored ? project.compilerDataRoot_ : project.ResolveUiDataRoot(),
         std::filesystem::path(settings.value(QStringLiteral("mapTest/runtimeRoot")).toString().trimmed().toStdWString()),
         std::filesystem::path(settings.value(QStringLiteral("ui/dataRoot")).toString().trimmed().toStdWString())};
 }

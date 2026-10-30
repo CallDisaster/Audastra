@@ -264,7 +264,7 @@ Status MapRuntimePackage::VerifyScriptInputs(std::span<const std::string> inject
     // client 是实际发布的合成注入文件，已经包含JAPI与界面客户端。
     // 身份来自注入器消费的那份原字节，不以之后重读同路径代替。
     if (std::count(injectedSourceSha256.begin(), injectedSourceSha256.end(), clientSha256_) != 1)
-        return Fail("RUNTIME_SCRIPT_INPUT_MISMATCH", "实际注入的JAPI/界面客户端与锁定包不符或重复；请使用该包配套的函数库后重建脚本。");
+        return Fail("RUNTIME_SCRIPT_INPUT_MISMATCH", "注入的 AudastraUI 函数库与当前运行库包不是同一版本（或注入了多份）。请在触发器的“函数库…”里更新自带的 AudastraUI 后再保存。");
     return Status::Ok();
 }
 } // namespace War3Map::Services

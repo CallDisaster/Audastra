@@ -706,6 +706,12 @@ void TestFeatureText() {
         + (linked.Succeeded() ? "" : linked.diagnostics.front().message)).c_str());
     const auto caller = std::find_if(f.doc.triggers.begin(), f.doc.triggers.end(), [](const auto& row) { return row.name.text == "Feature Caller"; });
     Require(caller != f.doc.triggers.end() && caller->ecas.size() == 1, "caller body written after both triggers exist");
+    // 同名触发器在别的类别里时，提示写出所在类别。
+    auto elsewhere = f.Batch(); elsewhere.operations.emplace_back(GraphApplyFeatureText{"Other",
+        "触发器 Feature Callee:\n    actions:\n        StoreInteger(2)\n", {}});
+    const auto moved = ApplyTriggerGraphEditBatch(f.doc, f.catalog, elsewhere);
+    Require(!moved.Succeeded() && moved.diagnostics.front().code == "TRIGGER_FEATURE_TRIGGER_ELSEWHERE"
+        && moved.diagnostics.front().message.find("类别 “Feature”") != std::string::npos, "conflict names the owning category");
 
     // 已有变量只可改初值；改类型与未知函数一次列出，各带行号；整批不落地。
     const auto before = WtgWctCodec{}.Serialize(f.doc, f.catalog);

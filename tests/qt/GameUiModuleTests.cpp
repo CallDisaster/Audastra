@@ -1010,6 +1010,9 @@ void GameUiModuleTests::FrameSettingsCardAndTexturePicker() {
     // 与物编字段同一套表格浮层：放在屏幕工作区内，Esc 关闭，可以再打开。
     QCoreApplication::processEvents();
     QVERIFY(properties->screen()->availableGeometry().contains(picker->geometry()));
+    // 显示后按内容长高（如模型预览）也重新放进工作区，底部按钮不越出屏幕。
+    picker->setMinimumHeight(std::min(picker->height() + 160, properties->screen()->availableGeometry().height()));
+    QTRY_VERIFY(properties->screen()->availableGeometry().contains(picker->geometry()));
     QTest::keyClick(properties, Qt::Key_Escape);
     QVERIFY(!picker->isVisible());
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);

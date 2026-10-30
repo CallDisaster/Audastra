@@ -171,8 +171,9 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
         if (!plan.Succeeded() || !plan.value) return ScriptRebuild::Failed;
         testScenarioPlan_ = std::move(*plan.value);
     }
-    sources.toolRoot = compilerDataRoot_.empty() ? activeUiDataRoot_ : compilerDataRoot_;
-    sources.uiRoot = activeUiDataRoot_;
+    // 恢复的工程编辑内嵌定义，但各界面层的 jass（注入与 include）只在本机数据根里，与 YDWE 按层加 include 一致。
+    sources.toolRoot = ScriptToolRoot();
+    sources.uiRoot = ScriptToolRoot();
     sources.gameRoot = war3GameRoot_;
     if (job.archive) sources.scriptMember = Script::MapScriptMemberName(*job.archive);
     // 触发器和地图初始化有修改时必须真正重建；不能把 WTG 已保存冒充游戏脚本已更新。

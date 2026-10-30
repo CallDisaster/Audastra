@@ -299,9 +299,44 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
     if (trigger == nullptr || trigger->name.text == name) {
         return;
     }
-    // 不替作者签发代码审计：自定义正文、非空 WCT 与不透明脚本仍由 Core 明确拒绝。
+    // 逐块核查不透明代码：不含旧名称、也没有按名称动态调用的块由编辑器放行；可能引用的块请作者确认，代码本身不改。
+    std::vector<Trigger::AtomicRenameCodeAudit> audits;
+    if (project_.uiCatalog_ != nullptr) {
+        auto review = Trigger::TriggerDocumentEditor::ReviewTriggerRenameCode(*document, *project_.uiCatalog_, item.triggerId, name);
+        if (!review.Succeeded()) {
+            project_.AddDiagnostics(review.diagnostics);
+            ShowStatus(tr("未重命名：%1").arg(FirstMessage(review.diagnostics, tr("代码核查失败"))), 10000);
+            return;
+        }
+        const auto doubtful = std::count_if(review.value->begin(), review.value->end(), [](const auto& row) { return row.mayReference; });
+        if (doubtful > 0) {
+            const QString title = tr("重命名触发器");
+            const QString body = tr("有 %1 段代码可能按旧名称“%2”使用这个触发器（直接写名字或按名字动态调用）。改名不会修改这些代码，需要时请手动改。")
+                .arg(doubtful).arg(U8(trigger->name.text));
+            const auto expected = trigger->name;
+            bool accepted = false;
+            if (confirm_) {
+                accepted = confirm_(title, body, {});
+            } else {
+                QMessageBox box(QMessageBox::Question, title, body, QMessageBox::NoButton, page_);
+                QPushButton* rename = box.addButton(tr("仍然改名"), QMessageBox::AcceptRole);
+                box.addButton(tr("取消"), QMessageBox::RejectRole);
+                box.setDefaultButton(qobject_cast<QPushButton*>(box.buttons().last()));
+                box.exec();
+                accepted = box.clickedButton() == rename;
+            }
+            // 对话框期间文档可能被换掉或改名；核查结果绑定的是打开对话框时的文档。
+            if (!accepted || project_.triggerDocument_.get() != document) return;
+            trigger = FindTrigger(*document, item.triggerId);
+            if (trigger == nullptr || trigger->name.text != expected.text) return;
+        }
+        for (auto& row : *review.value) {
+            if (row.audit.reason.empty()) row.audit.reason = "作者确认改名后自行处理这段代码。";
+            audits.push_back(std::move(row.audit));
+        }
+    }
     std::vector<Trigger::GraphEditOperation> operations;
-    operations.emplace_back(Trigger::GraphRename{{Trigger::GraphRecordKind::Trigger, item.triggerId, {}}, trigger->name, name, {}});
+    operations.emplace_back(Trigger::GraphRename{{Trigger::GraphRecordKind::Trigger, item.triggerId, {}}, trigger->name, name, std::move(audits)});
     const auto renamed = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("重命名触发器"));
     if (!renamed.Succeeded()) {
         project_.AddDiagnostics(renamed.diagnostics);

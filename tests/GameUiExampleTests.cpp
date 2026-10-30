@@ -9,6 +9,7 @@
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <Windows.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -38,17 +39,6 @@ std::string Read(const std::filesystem::path& path) {
     return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
 }
 
-// 读条示例登记的效果触发器由作者自己写；这里放两个只记下阶段的同名触发器。
-constexpr std::string_view kCastEffects =
-    "变量:\n"
-    "    Got: integer = 0\n"
-    "触发器 效果 读条 Bolt:\n"
-    "    actions:\n"
-    "        SetVariable(udg_Got, YDWEGetAnyTypeLocalVariable(\"阶段\"))\n"
-    "触发器 效果 引导 Ritual:\n"
-    "    actions:\n"
-    "        SetVariable(udg_Got, YDWEGetAnyTypeLocalVariable(\"跳数\"))\n";
-
 void CheckExample(const std::filesystem::path& folder) {
     const std::string name = folder.filename().string();
     const auto description = ParseUiDescription(Read(folder / (name + ".json")), name);
@@ -56,10 +46,6 @@ void CheckExample(const std::filesystem::path& folder) {
     Require(description.value->id == name, name + " 描述编号与目录同名");
 
     Fixture f;
-    if (name == "castbar") {
-        const auto effects = f.Apply("技能", std::string(kCastEffects));
-        Require(effects.Succeeded(), "读条示例的效果触发器：" + First(effects.diagnostics));
-    }
     const auto ui = GenerateUiTriggers(*description.value);
     Require(ui.Succeeded(), name + " 界面触发器：" + First(ui.diagnostics));
     const auto uiApplied = f.Apply(kUiTriggerCategory, ui.value->featureText);
@@ -75,6 +61,11 @@ void CheckExample(const std::filesystem::path& folder) {
     }
     const auto applied = f.Apply("示例", feature);
     Require(applied.Succeeded(), name + " 示例触发器写入：" + First(applied.diagnostics));
+    // 读条示例登记的效果触发器随示例一起导入，空白图直接导入不缺引用。
+    if (name == "castbar")
+        for (const auto* effect : {"效果 读条 Bolt", "效果 引导 Ritual"})
+            Require(std::any_of(f.doc.triggers.begin(), f.doc.triggers.end(), [&](const auto& row) { return row.name.text == effect; }),
+                std::string("读条示例缺少效果触发器 ") + effect);
     const std::string script = f.Script();
     // 读条示例用逆天局部变量，脚本依赖 YDWE 预处理宏，游戏声明检查不适用。
     if (name != "castbar" && AudastraUiTest::CheckWithGameScripts(f, script)) std::cout << name << " script checked against game scripts\n";

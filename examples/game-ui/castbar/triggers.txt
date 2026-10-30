@@ -34,6 +34,12 @@
     AUC_ShowNow: real = 0
     AUC_ShowRatio: real = 0
     AUC_Shown: integer = 0
+触发器 效果 读条 Bolt:
+    actions:
+        CommentString("读条完成（阶段 1）或被打断（阶段 3）时运行；在这里写技能效果，用“获取逆天局部变量”取施法单位、目标、阶段")
+触发器 效果 引导 Ritual:
+    actions:
+        CommentString("引导完成（阶段 1）、每跳（阶段 2）或被打断（阶段 3）时运行；在这里写技能效果，跳数用“获取逆天局部变量”取")
 触发器 读条 登记 Cast_Register (init):
     actions:
         CommentString("每个技能一组：技能、读条秒数、引导秒数、跳间隔（0 为不跳）、效果触发器；秒数须与物编一致")

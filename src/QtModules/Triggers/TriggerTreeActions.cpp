@@ -266,7 +266,7 @@ QString TriggerModule::ScriptRebuildNotice() {
         scriptCapabilityDetails_ = tr("当前地图已选择Lua保存档案；实际生成和检查仍在保存时执行。");
         return {};
     }
-    EnsureScriptCapability(project_.compilerDataRoot_.empty() ? project_.activeUiDataRoot_ : project_.compilerDataRoot_);
+    EnsureScriptCapability(project_.ScriptToolRoot());
     return scriptCapabilityNotice_;
 }
 

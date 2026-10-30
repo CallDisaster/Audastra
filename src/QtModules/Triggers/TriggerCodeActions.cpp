@@ -369,7 +369,7 @@ bool TriggerModule::ConvertCurrentTriggerToCustomCode() {
 
 Script::MapScriptInputs TriggerModule::CodeConversionInputs() {
     Script::MapScriptInputs inputs; inputs.triggers = project_.triggerDocument_.get(); inputs.catalog = project_.uiCatalog_.get();
-    const auto& toolRoot = project_.compilerDataRoot_.empty() ? project_.activeUiDataRoot_ : project_.compilerDataRoot_;
+    const auto toolRoot = project_.ScriptToolRoot();
     if (!toolRoot.empty()) {
         for (const auto& directory : ScriptSystemIncludes(toolRoot)) {
             std::error_code error;

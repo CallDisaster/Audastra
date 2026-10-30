@@ -181,6 +181,7 @@ private slots:
     void GuiRenameSynchronizesReferencesAndWholeUndo();
     void GuiAndMcpShareOneUndoTransaction();
     void UnsafeCodeAndDuplicateNameRejectWithoutMutation();
+    void GuiRenameAsksWhenCodeMayNameTheTrigger();
     void QueuedStaleSessionAndUndoReject();
     void FrozenGraphIdentityAndCatalogSourceGuardsReject();
     void UnboundIdentityAndRejectedFirstPublicationExposeFailure();
@@ -222,18 +223,49 @@ void TriggerRenameTests::UnsafeCodeAndDuplicateNameRejectWithoutMutation() {
     for (int kind = 0; kind < 4; ++kind) {
         Fixture f; QVERIFY2(f.Initialize(kind == 1 ? "// opaque author header\r\n" : "", kind == 2, kind == 3), qPrintable(f.error));
         const auto fingerprint = f.project.ProjectFingerprint();
+        if (kind == 1 || kind == 3) {
+            // 助手改名仍须逐块提交审计。
+            const auto response = f.tools->Invoke("editor_edit_trigger_graph", f.RenameRequest(QStringLiteral("Changed")));
+            QVERIFY(!response.value("ok").toBool());
+            QVERIFY(QString::fromUtf8(QJsonDocument(response).toJson()).contains(QStringLiteral("TRIGGER_RENAME_CODE_AUDIT_REQUIRED")));
+            QCOMPARE(f.project.triggerUndoStack_->count(), 0); QVERIFY(f.OriginalBytes());
+            // 界面改名：代码不含旧名称、也没有按名称动态调用，编辑器核查后放行，代码原样保留。
+            int asked = 0;
+            f.module->SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++asked; return false; });
+            QVERIFY(f.RenameThroughModel(QStringLiteral("Changed"))); QTRY_VERIFY(Named(f.project, "Changed"));
+            QCOMPARE(asked, 0); QCOMPARE(f.project.triggerUndoStack_->count(), 1); QVERIFY(f.ReferencesEqual("Changed"));
+            QVERIFY(f.Pair().wct == f.original.wct);
+            continue;
+        }
         const bool accepted = f.RenameThroughModel(kind == 0 ? QStringLiteral("Other") : QStringLiteral("Changed"));
         // 自定义代码触发器（kind 2）的改名排队后交代码身份服务；没有地图设置时脚本目标未知，服务拒绝。
         if (kind == 0) QVERIFY(!accepted);
         else { QVERIFY(accepted); QCoreApplication::processEvents(); }
         QCOMPARE(f.project.triggerUndoStack_->count(), 0); QVERIFY(f.OriginalBytes()); QVERIFY(f.ReferencesEqual("Init"));
         QCOMPARE(f.project.ProjectFingerprint(), fingerprint); QVERIFY(f.SourceBytes());
-        if (kind == 1 || kind == 3) {
-            const auto response = f.tools->Invoke("editor_edit_trigger_graph", f.RenameRequest(QStringLiteral("Changed")));
-            QVERIFY(!response.value("ok").toBool());
-            QVERIFY(QString::fromUtf8(QJsonDocument(response).toJson()).contains(QStringLiteral("TRIGGER_RENAME_CODE_AUDIT_REQUIRED")));
-            QCOMPARE(f.project.triggerUndoStack_->count(), 0); QVERIFY(f.OriginalBytes());
+    }
+}
+
+void TriggerRenameTests::GuiRenameAsksWhenCodeMayNameTheTrigger() {
+    // 代码按名字调用这个触发器：界面改名先请作者确认；取消不改，确认后改名且代码原样保留。
+    for (const bool answer : {false, true}) {
+        Fixture f;
+        QVERIFY2(f.Initialize("function H takes nothing returns nothing\r\ncall ExecuteFunc(\"InitTrig_Init\")\r\nendfunction\r\n"), qPrintable(f.error));
+        int asked = 0;
+        f.module->SetConfirmHandler([&](const QString&, const QString& body, const QStringList&) {
+            ++asked; return body.contains(QStringLiteral("Init")) && answer;
+        });
+        QVERIFY(f.RenameThroughModel(QStringLiteral("Changed")));
+        if (answer) {
+            QTRY_VERIFY(Named(f.project, "Changed"));
+            QCOMPARE(f.project.triggerUndoStack_->count(), 1); QVERIFY(f.ReferencesEqual("Changed"));
+            QVERIFY(f.Pair().wct == f.original.wct);
+        } else {
+            QTRY_COMPARE(asked, 1);
+            QCoreApplication::processEvents();
+            QCOMPARE(f.project.triggerUndoStack_->count(), 0); QVERIFY(f.OriginalBytes()); QVERIFY(f.ReferencesEqual("Init"));
         }
+        QCOMPARE(asked, 1);
     }
 }
 
