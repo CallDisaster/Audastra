@@ -241,9 +241,13 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                                 + " cursor_x=" + std::to_string(cursor.x) + " cursor_y=" + std::to_string(cursor.y), false, false, true);
                         };
                     }
+                    wchar_t legacy[2]{};
+                    const bool legacyUi = testEvidence.Enabled()
+                        && GetEnvironmentVariableW(L"AUDASTRA_RUNTIME_TEST_LEGACY_UI", legacy, 2) == 1 && legacy[0] == L'1';
+                    if (legacyUi) TraceLifecycle("test-ui-legacy textformat=unsupported eventtable=unsupported");
                     const auto status = GameUi::InstallGameUiModule127(host, image.Base(),
                         [&image](auto address, auto size) { return image.Executable(address, size); }, &TraceUiFault, self->data,
-                        std::move(pointerObserver));
+                        std::move(pointerObserver), !legacyUi);
                     Trace("builtin-install audastraui status=" + std::to_string(status));
                     return status;
                 });

@@ -868,6 +868,18 @@ void DataPlaneModule() {
     Check(m.host.Reset(2).applied && !data->Owns(1234), "host stop clears table before module destruction");
 }
 
+void OptionalExtensionRefusal() {
+    Reset();
+    ModuleHost m;
+    Check(InstallGameUiModule(m.host, Entries(), {}, nullptr, {}, {}, false) == AJ_OK, "legacy policy installs base UI");
+    const auto frame = m.Call("audastraui.create;s:Text;d:0;i:0;i:0").value.integer;
+    Check(frame > 0 && m.Call("audastraui.textformat;d:" + std::to_string(frame) + ";s:{0}").status == AJ_UNSUPPORTED
+        && m.Call("audastraui.eventtable").status == AJ_UNSUPPORTED, "both optional extensions refuse independently");
+    Check(m.Call("audastraui.ready").value.integer == 1
+        && m.Call("audastraui.settext;d:" + std::to_string(frame) + ";s:fallback").status == AJ_OK,
+        "extension refusal retains ordinary UI text");
+}
+
 #include "GameUiTextFormatTests.h"
 #include "GameUiDataFormatTests.h"
 
@@ -951,6 +963,7 @@ int main() {
         ModuleUnavailable();
         DataPlane();
         DataPlaneModule();
+        OptionalExtensionRefusal();
         TextFormatContracts();
         FormattedDataPlane();
         EventTableDataPlane();

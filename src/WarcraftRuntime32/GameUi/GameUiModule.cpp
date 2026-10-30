@@ -37,7 +37,7 @@ struct Instance {
     };
 
     Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver observer,
-        const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> data);
+        const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> data, bool extensions);
 
     // 失败的请求号与原因留给 audastraui.error；状态码只说明大类。
     std::int32_t Record(const AjCall& call, UiError error) noexcept {
@@ -92,6 +92,7 @@ struct Instance {
     GameInputEntryPoints inputEntries;
     std::optional<GameInput127> input;
     std::shared_ptr<GameUiDataPlane> data;
+    bool extensions = true;
     std::deque<UiFrameEvent> events;
     std::uint32_t failedRequest = 0;
     std::string failedReason;
@@ -273,10 +274,12 @@ const CommandSpec kCommands[] = {
     }},
     {"audastraui.textformat", "ds", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
         out.kind = AJ_VOID;
+        if (!s.extensions) return AJ_UNSUPPORTED;
         return s.RecordControl(c, s.data ? s.data->RegisterTextFormat(Frame(a[0]), Text(a[1])) : AJ_UNSUPPORTED);
     }},
     {"audastraui.eventtable", "", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg*, AjResult& out) -> std::int32_t {
         out.kind = AJ_VOID;
+        if (!s.extensions) return AJ_UNSUPPORTED;
         return s.RecordControl(c, s.data ? s.data->EnableEventTable() : AJ_UNSUPPORTED);
     }},
 };
@@ -344,8 +347,8 @@ std::int32_t AJ_CALL Init(const AjHost* host, const AjModule** out) {
 }
 
 Instance::Instance(const GameUiEntryPoints& entryPoints, std::string reason, UiFaultObserver faultObserver,
-    const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> dataPlane)
-    : entries(entryPoints), observer(faultObserver), unavailable(std::move(reason)), inputEntries(input), data(std::move(dataPlane)) {
+    const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> dataPlane, bool allowExtensions)
+    : entries(entryPoints), observer(faultObserver), unavailable(std::move(reason)), inputEntries(input), data(std::move(dataPlane)), extensions(allowExtensions) {
     bindings.reserve(std::size(kCommands));
     commands.reserve(std::size(kCommands));
     for (const auto& spec : kCommands)
@@ -367,8 +370,8 @@ ModuleContract GameUiModuleContract() {
 }
 
 std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, std::string unavailable,
-    UiFaultObserver observer, const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> data) {
-    auto instance = std::make_shared<Instance>(entries, std::move(unavailable), observer, input, std::move(data));
+    UiFaultObserver observer, const GameInputEntryPoints& input, std::shared_ptr<GameUiDataPlane> data, bool extensions) {
+    auto instance = std::make_shared<Instance>(entries, std::move(unavailable), observer, input, std::move(data), extensions);
     t_installing = instance.get();
     const auto status = host.Install({&Init, instance, GameUiModuleContract()});
     t_installing = nullptr;
@@ -376,7 +379,8 @@ std::int32_t InstallGameUiModule(Host& host, const GameUiEntryPoints& entries, s
 }
 
 std::int32_t InstallGameUiModule127(Host& host, Address base, const std::function<bool(Address, std::size_t)>& executable,
-    UiFaultObserver observer, std::shared_ptr<GameUiDataPlane> data, std::function<void(Address, Address, bool, float, float)> observePointer) {
+    UiFaultObserver observer, std::shared_ptr<GameUiDataPlane> data, std::function<void(Address, Address, bool, float, float)> observePointer,
+    bool extensions) {
     GameUiEntryPoints entries;
     GameInputEntryPoints input;
     std::string error;
@@ -384,7 +388,7 @@ std::int32_t InstallGameUiModule127(Host& host, Address base, const std::functio
     entries.observePointer = std::move(observePointer);
     std::string inputError;
     static_cast<void>(ResolveGameInputEntryPoints127(base, executable, input, inputError));
-    return InstallGameUiModule(host, entries, std::move(error), observer, input, std::move(data));
+    return InstallGameUiModule(host, entries, std::move(error), observer, input, std::move(data), extensions);
 }
 
 } // namespace Audastra::Runtime32::GameUi
