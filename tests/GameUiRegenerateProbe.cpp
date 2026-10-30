@@ -30,7 +30,7 @@ int wmain(int argc, wchar_t** argv) {
             auto generated = Take(GameUi::GenerateUiTriggers(description));
             std::ofstream(out / (std::string(id) + ".t"), std::ios::binary) << generated.featureText;
             Trigger::TriggerGraphEditBatch batch{Take(Trigger::CaptureTriggerGraphBinding(doc, catalog)), {}};
-            batch.operations.emplace_back(Trigger::GraphApplyFeatureText{"AudastraUI", generated.featureText, {}, {}});
+            batch.operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(GameUi::kUiTriggerCategory), generated.featureText, {}, {}});
             Take(Trigger::ApplyTriggerGraphEditBatch(doc, catalog, batch));
         }
         auto encoded = Take(Trigger::WtgWctCodec{}.Serialize(doc, catalog));
@@ -47,6 +47,9 @@ int wmain(int argc, wchar_t** argv) {
         request.abilities = CustomObjects(archive, ObjectData::ObjectType::Ability);
         request.layers = catalog.Layers(); request.toolchain.toolRoot = tool; request.toolchain.uiRoot = ui;
         request.toolchain.workDir = out / "compile";
+        request.toolchain.jassDirs.push_back(ui / "ui/AudastraUI/jass");
+        for (const auto* layer : {"japi", "ydwe", "ydtrigger"})
+            request.toolchain.jassDirs.push_back(tool / "ui" / layer / "jass");
         Script::MapRuntimeBootPlan boot; boot.payloadSha256 = std::filesystem::path(argv[6]).string();
         boot.testRunDiagnostics = true; request.toolchain.mapRuntimeBoot = boot;
         auto result = Script::BuildMapScript(request);
