@@ -211,6 +211,14 @@ std::uint32_t __cdecl LocalizedHook(std::uintptr_t object) noexcept {
                     }
                     std::function<void(GameUi::Address, GameUi::Address, bool)> pointerObserver;
                     if (testEvidence.Enabled()) {
+                        const auto window = GetForegroundWindow();
+                        DWORD process = 0;
+                        const auto thread = GetWindowThreadProcessId(window, &process);
+                        char name[80]{}; RECT client{};
+                        if (process == GetCurrentProcessId() && GetClassNameA(window, name, sizeof(name)) && GetClientRect(window, &client))
+                            Trace("ui-window class=" + std::string(name) + " thread=" + std::to_string(thread)
+                                + " caller=" + std::to_string(GetCurrentThreadId()) + " width=" + std::to_string(client.right)
+                                + " height=" + std::to_string(client.bottom), false, false, true);
                         pointerObserver = [self, base = image.Base(), lastHit = GameUi::Address{}, lastDown = false,
                             samples = 0u](GameUi::Address active, GameUi::Address hit, bool down) mutable {
                             if (samples >= 64 || (hit == lastHit && down == lastDown)) return;
