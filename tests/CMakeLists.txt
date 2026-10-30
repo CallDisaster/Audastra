@@ -5,7 +5,7 @@ target_compile_options(war3-map-ui-number-format-tests PRIVATE /utf-8 /W4 /permi
 add_test(NAME audastra-ui-number-format COMMAND war3-map-ui-number-format-tests)
 add_executable(war3-map-ui-text-contract-probe EXCLUDE_FROM_ALL GameUiTextContractProbe.cpp)
 add_executable(war3-map-ui-regenerate-probe EXCLUDE_FROM_ALL GameUiRegenerateProbe.cpp)
-target_link_libraries(war3-map-ui-regenerate-probe PRIVATE War3MapEditor::GameUi War3MapEditor::ScriptBuild War3MapEditor::UiLibrary)
+target_link_libraries(war3-map-ui-regenerate-probe PRIVATE War3MapEditor::GameUi War3MapEditor::ScriptBuild War3MapEditor::UiLibrary audastra-json)
 target_compile_definitions(war3-map-ui-regenerate-probe PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-ui-regenerate-probe PRIVATE /utf-8 /W4 /permissive-)
 target_link_libraries(war3-map-ui-text-contract-probe PRIVATE War3MapEditor::GameUi audastra-json)

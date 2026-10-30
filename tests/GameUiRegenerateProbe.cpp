@@ -6,6 +6,7 @@
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include <stdexcept>
+#include <nlohmann/json.hpp>
 
 template<class T> T Take(War3Map::Result<T> r) {
     Print(r.diagnostics);
@@ -13,7 +14,7 @@ template<class T> T Take(War3Map::Result<T> r) {
     return std::move(*r.value);
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 9) return 2;
+    if (argc != 9 && argc != 10) return 2;
     try {
         const std::filesystem::path source(argv[1]), ui(argv[2]), tool(argv[3]), gameRoot(argv[4]), out(argv[5]);
         if (std::filesystem::exists(out)) throw std::runtime_error("output must be new");
@@ -37,14 +38,45 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (!observations.operations.empty()) Take(Trigger::ApplyTriggerGraphEditBatch(doc, catalog, observations));
         auto named = Take(Mpq::MpqArchive::OpenReadOnly(source));
+        std::vector<GameUi::UiDescription> descriptions;
         for (const auto* id : {"castbar", "party"}) {
             const auto bytes = Take(named.ReadFile(std::string("AudastraUI/") + id + ".json"));
             const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-            auto description = Take(GameUi::ParseUiDescription(text, id));
+            descriptions.push_back(Take(GameUi::ParseUiDescription(text, id)));
+        }
+        std::vector<std::string> features;
+        if (argc == 10) {
+            const std::filesystem::path extra(argv[9]);
+            const auto read = [&](const std::string& name, std::string_view extension) {
+                const auto path = std::filesystem::path(name);
+                if (path.filename() != path || path.extension().string() != extension
+                    || !std::filesystem::is_regular_file(extra / path) || std::filesystem::file_size(extra / path) > 1024 * 1024)
+                    throw std::runtime_error("explicit bounded JSON/T files required");
+                std::ifstream stream(extra / path, std::ios::binary);
+                return std::string(std::istreambuf_iterator<char>(stream), {});
+            };
+            const auto plan = nlohmann::json::parse(read("plan.json", ".json"));
+            if (!plan.is_array() || plan.size() > 16) throw std::runtime_error("bounded probe plan required");
+            for (const auto& item : plan) {
+                const auto id = item.at("id").get<std::string>();
+                if (item.contains("description")) {
+                    auto d = Take(GameUi::ParseUiDescription(read(item.at("description").get<std::string>(), ".json"), id));
+                    std::erase_if(descriptions, [&](const auto& old) { return old.id == d.id; });
+                    descriptions.push_back(std::move(d));
+                }
+                if (item.contains("features")) features.push_back(read(item.at("features").get<std::string>(), ".txt"));
+            }
+        }
+        for (const auto& description : descriptions) {
             auto generated = Take(GameUi::GenerateUiTriggers(description));
-            std::ofstream(out / (std::string(id) + ".t"), std::ios::binary) << generated.featureText;
+            std::ofstream(out / (description.id + ".t"), std::ios::binary) << generated.featureText;
             Trigger::TriggerGraphEditBatch batch{Take(Trigger::CaptureTriggerGraphBinding(doc, catalog)), {}};
             batch.operations.emplace_back(Trigger::GraphApplyFeatureText{std::string(GameUi::kUiTriggerCategory), generated.featureText, {}, {}});
+            Take(Trigger::ApplyTriggerGraphEditBatch(doc, catalog, batch));
+        }
+        for (const auto& text : features) {
+            Trigger::TriggerGraphEditBatch batch{Take(Trigger::CaptureTriggerGraphBinding(doc, catalog)), {}};
+            batch.operations.emplace_back(Trigger::GraphApplyFeatureText{"验收", text, {}, {}});
             Take(Trigger::ApplyTriggerGraphEditBatch(doc, catalog, batch));
         }
         auto encoded = Take(Trigger::WtgWctCodec{}.Serialize(doc, catalog));
