@@ -967,6 +967,7 @@ private slots:
     void SavedTerrainHistoryOrdinaryBakeDropsUnreplayableEpoch();
     void IndependentProjectsDoNotShareEdits();
     void MapOnlyLibraryKeepsGlobalSettings();
+    void TriggerReloadReadsCurrentMapSource();
     void MissingImportCannotProduceSavedFingerprint();
     void RevisionLifecycleTracksSeparateSaveTargets();
     void MapDataObservationPreservesOtherScopesAndRejectsFailedTracking();
@@ -5337,6 +5338,63 @@ void EditorProjectTests::MapOnlyLibraryKeepsGlobalSettings() {
 
     QSettings{}.remove(QStringLiteral("uiLibraries"));
     QCoreApplication::setOrganizationName(organization);
+}
+
+// 保存成功后归档会话已换成刚写出的地图，展开目录仍是打开时的文件；切换数据根、改函数库后的重载必须读当前地图。
+void EditorProjectTests::TriggerReloadReadsCurrentMapSource() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto write = [&root](const QString& name, const QByteArray& bytes) {
+        QVERIFY(QDir(root.path()).mkpath(QFileInfo(root.filePath(name)).path()));
+        QFile file(root.filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(bytes);
+    };
+    write("ui/config", "base\r\n");
+    write("ui/base/action.txt", "[DoNothing]\r\ntitle=\"Do nothing\"\r\n");
+    const auto i32 = [](QByteArray& bytes, std::int32_t value) { bytes.append(reinterpret_cast<const char*>(&value), 4); };
+    const auto text = [](QByteArray& bytes, const char* value) { bytes.append(value); bytes.append('\0'); };
+    const auto wtgNamed = [&](const char* name) {
+        QByteArray wtg("WTG!");
+        i32(wtg, 7); i32(wtg, 1); i32(wtg, 1); text(wtg, "Category"); i32(wtg, 0);
+        i32(wtg, 2); i32(wtg, 0); i32(wtg, 1);
+        text(wtg, name); text(wtg, "");
+        for (const std::int32_t flag : {0, 1, 0, 0, 0, 1, 1, 2}) i32(wtg, flag);
+        text(wtg, "DoNothing"); i32(wtg, 1); i32(wtg, 0);
+        return wtg;
+    };
+    QByteArray wct;
+    i32(wct, 1); text(wct, ""); i32(wct, 0); i32(wct, 1); i32(wct, 0);
+    write("map/war3map.wtg", wtgNamed("Opened"));
+    write("map/war3map.wct", wct);
+    const auto bytes = [](const QByteArray& data) {
+        const auto* start = reinterpret_cast<const std::byte*>(data.constData());
+        return std::vector<std::byte>(start, start + data.size());
+    };
+    const auto saved = std::filesystem::path(root.filePath("saved.mpq").toStdWString());
+    QVERIFY(WriteVerifiedArchive(saved, std::vector<MapArchiveMember>{
+        {"war3map.wtg", bytes(wtgNamed("Saved"))}, {"war3map.wct", bytes(wct)}}).Succeeded());
+    auto opened = MapArchiveSession::Open(saved);
+    QVERIFY(opened.Succeeded());
+
+    EditorProject project;
+    project.projectRoot_ = std::filesystem::path(root.path().toStdWString());
+    project.activeUiDataRoot_ = project.projectRoot_;
+    project.sourceArchivePath_ = saved;
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*opened.value));
+    QVERIFY(project.LoadTriggers());
+    QVERIFY(project.triggerDocument_ != nullptr);
+    QCOMPARE(project.triggerDocument_->triggers.size(), std::size_t{1});
+    QCOMPARE(project.triggerDocument_->triggers[0].name.text, std::string("Saved"));
+    const auto source = project.ReadTriggerSource();
+    QVERIFY(source.Succeeded() && source.value && source.value->present);
+    QCOMPARE(source.value->wtg, bytes(wtgNamed("Saved")));
+
+    // 展开目录没有触发器文件时仍按“无触发器”处理，不去归档里猜。
+    QVERIFY(QFile::remove(root.filePath("map/war3map.wct")));
+    QVERIFY(!project.LoadTriggers());
+    QVERIFY(project.triggerDocument_ == nullptr);
+    QVERIFY(ModelHasCode(*project.diagnosticsModel_, "TRIGGER_FILES_MISSING"));
 }
 
 void EditorProjectTests::OwnedLuaProjectRecoveryPreservesPayloadRoleAndMapGate() {

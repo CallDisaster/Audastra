@@ -63,6 +63,34 @@ void EditorProject::ReplaceTriggerWorkspace(std::unique_ptr<Trigger::UiCatalog> 
     emit TriggerDocumentChanged();
 }
 
+Result<EditorProject::TriggerSource> EditorProject::ReadTriggerSource() const {
+    TriggerSource source;
+    const std::filesystem::path wtgPath = projectRoot_ / "map" / "war3map.wtg";
+    const std::filesystem::path wctPath = projectRoot_ / "map" / "war3map.wct";
+    std::error_code fileError;
+    // 展开目录与打开时的来源成员一致，是否有触发器按它判断；内容按当前来源读。
+    if (!std::filesystem::is_regular_file(wtgPath, fileError) || fileError ||
+        !std::filesystem::is_regular_file(wctPath, fileError) || fileError) {
+        return Result<TriggerSource>::Success(std::move(source));
+    }
+    source.present = true;
+    if (archiveSession_ || readOnlyArchive_) {
+        auto wtg = ReadMapMember("war3map.wtg");
+        if (!wtg.Succeeded() || !wtg.value) return {{}, std::move(wtg.diagnostics)};
+        auto wct = ReadMapMember("war3map.wct");
+        if (!wct.Succeeded() || !wct.value) return {{}, std::move(wct.diagnostics)};
+        source.wtg = std::move(*wtg.value);
+        source.wct = std::move(*wct.value);
+    } else {
+        auto wtg = ReadProjectFileBytes(wtgPath);
+        auto wct = ReadProjectFileBytes(wctPath);
+        if (!wtg || !wct) return Result<TriggerSource>::Failure("Trigger", "TRIGGER_READ_FAILED", "WTG 或 WCT 不可读。");
+        source.wtg = std::move(*wtg);
+        source.wct = std::move(*wct);
+    }
+    return Result<TriggerSource>::Success(std::move(source));
+}
+
 bool EditorProject::LoadTriggers() {
     if (triggerUndoStack_ != nullptr) {
         triggerUndoStack_->clear();
@@ -80,11 +108,8 @@ bool EditorProject::LoadTriggers() {
         return false;
     };
 
-    const std::filesystem::path wtgPath = projectRoot_ / "map" / "war3map.wtg";
-    const std::filesystem::path wctPath = projectRoot_ / "map" / "war3map.wct";
-    std::error_code fileError;
-    if (!std::filesystem::is_regular_file(wtgPath, fileError) || fileError ||
-        !std::filesystem::is_regular_file(wctPath, fileError) || fileError) {
+    auto source = ReadTriggerSource();
+    if (source.Succeeded() && source.value && !source.value->present) {
         AddDiagnostic(tr("信息"), tr("触发器"), tr("TRIGGER_FILES_MISSING"),
             tr("未找到完整 WTG/WCT；物体数据仍可独立使用。"));
         return fail(tr("当前工作区没有完整的 map/war3map.wtg 与 war3map.wct。"));
@@ -117,13 +142,14 @@ bool EditorProject::LoadTriggers() {
                 .arg(iconProvider_->CategoryCount()));
     }
 
-    const auto wtg = ReadProjectFileBytes(wtgPath);
-    const auto wct = ReadProjectFileBytes(wctPath);
-    if (!wtg || !wct || wtg->empty() || wct->empty()) {
+    AddDiagnostics(source.diagnostics);
+    if (!source.Succeeded() || !source.value || source.value->wtg.empty() || source.value->wct.empty()) {
         AddDiagnostic(tr("错误"), tr("触发器"), tr("TRIGGER_READ_FAILED"),
             tr("WTG 或 WCT 为空/不可读，已停止解析。"));
         return fail(tr("无法完整读取 WTG/WCT。"));
     }
+    const auto* wtg = &source.value->wtg;
+    const auto* wct = &source.value->wct;
 
     Trigger::WtgWctCodec codec;
     auto parsed = codec.Parse(*wtg, *wct, *uiCatalog_);

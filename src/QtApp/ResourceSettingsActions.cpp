@@ -285,17 +285,12 @@ void MainWindow::SelectUiDataRoot() {
 
     // 已打开项目时，切库前必须让候选 Catalog 真正解析当前 WTG/WCT。
     // config 自身可解析并不代表它包含地图正在引用的所有可选函数定义。
+    // 读当前来源（保存后就是刚写出的地图），与切换后重载解析的是同一份内容。
     if (!project_->projectRoot_.empty()) {
-        const std::filesystem::path wtgPath = project_->projectRoot_ / "map" / "war3map.wtg";
-        const std::filesystem::path wctPath = project_->projectRoot_ / "map" / "war3map.wct";
-        std::error_code wtgError;
-        std::error_code wctError;
-        if (std::filesystem::is_regular_file(wtgPath, wtgError) && !wtgError &&
-            std::filesystem::is_regular_file(wctPath, wctError) && !wctError) {
-            const std::vector<std::byte> wtg = ReadBytes(wtgPath);
-            const std::vector<std::byte> wct = ReadBytes(wctPath);
+        const auto source = project_->ReadTriggerSource();
+        if (source.Succeeded() && source.value && source.value->present) {
             auto parsed = War3Map::Trigger::WtgWctCodec{}.Parse(
-                wtg, wct, *validatedCatalog.value);
+                source.value->wtg, source.value->wct, *validatedCatalog.value);
             if (!parsed.Succeeded()) {
                 for (const auto& diagnostic : parsed.diagnostics) {
                     AddDiagnostic(

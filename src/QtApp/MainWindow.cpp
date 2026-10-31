@@ -162,7 +162,7 @@ MainWindow::MainWindow(StartupMode startupMode, QWidget* parent, const QString& 
         statusBar()->showMessage(
             triggerObserverProject->triggerDirty_
                 ? tr("触发器存在未导出的修改 · Ctrl+Z 撤销 · 源目录仍只读")
-                : tr("触发器修改已回到打开时状态 · 源目录只读"));
+                : tr("触发器没有未保存的修改"));
     });
     project_->recoveryTimer_ = new QTimer(this);
     project_->recoveryTimer_->setSingleShot(true);

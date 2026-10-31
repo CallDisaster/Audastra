@@ -224,8 +224,16 @@ public:
     // 函数目录与文档一起替换，替换前后发出 TriggerDocumentAboutToChange / TriggerDocumentChanged。
     void ReplaceTriggerWorkspace(std::unique_ptr<Trigger::UiCatalog> catalog,
         std::unique_ptr<Trigger::TriggerDocument> document);
-    // 从工作区 map/ 读取 WTG/WCT；失败原因写入 triggerStatus_，诊断写入诊断模型。
+    // 从当前来源读取 WTG/WCT（ReadTriggerSource）；失败原因写入 triggerStatus_，诊断写入诊断模型。
     bool LoadTriggers();
+    // 当前来源里的 WTG/WCT：归档地图读当前归档会话（保存成功后就是刚写出的地图），不读打开时展开的旧文件；
+    // 切换数据根、改函数库后重载都按它解析，已保存的触发器不会退回打开时的状态。工作区没有完整 WTG/WCT 时 present 为 false。
+    struct TriggerSource {
+        bool present = false;
+        std::vector<std::byte> wtg;
+        std::vector<std::byte> wct;
+    };
+    [[nodiscard]] Result<TriggerSource> ReadTriggerSource() const;
 
     // 显示文本字符串表（ProjectStrings.cpp）：YDWE 覆盖层 → 游戏 MPQ → 英文原版，触发器与物编共用。
     // 数据根或游戏目录变化后重新载入；只影响显示，不改变保存与脚本生成。
