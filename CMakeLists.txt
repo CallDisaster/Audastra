@@ -8,7 +8,7 @@ project(War3MapEditor64 VERSION ${AUD_VERSION_NUMERIC} LANGUAGES C CXX)
 set(RELEASE_OWNER "CallDisaster" CACHE STRING "Public GitHub release owner")
 set(RELEASE_REPOSITORY "Audastra" CACHE STRING "Public GitHub release repository")
 # 正式发布的更新签名公钥（公开信息）；私钥只在发布者本机，不入库。置空则禁用安装更新。
-set(UPDATE_PUBLIC_KEY_HEX "b44c85ea9fbc85c51884ac307788cdf145275935f11afa2d0ff6511c92751a26" CACHE STRING "Trusted Ed25519 public key; empty disables installation")
+set(UPDATE_PUBLIC_KEY_HEX "a8748e4de3cd9b13d603ef2c18dda8aa0ad83be9301b7196c3f0fd1ec6ae1e5b" CACHE STRING "Trusted Ed25519 public key; empty disables installation")
 set(FEEDBACK_ENDPOINT "" CACHE STRING "Public HTTPS feedback endpoint; empty disables reporting")
 set(SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
 set(OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
