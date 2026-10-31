@@ -365,6 +365,8 @@ void GameUiModule::ReportAuthoring(const QString& error) {
     authoringDiagnostics_.clear();
     if (!error.isEmpty()) {
         authoringDiagnostics_.push_back(Diagnostic{DiagnosticSeverity::Error, "GameUi", "AUI_AUTHORING", error.toStdString(), std::nullopt});
+        // 问题列表收起时只有计数在变；操作没生效要在状态栏看得见。
+        if (host_) host_->ShowStatusMessage(error.section(QLatin1Char('\n'), 0, 0), 10000);
     }
     UpdateProblems();
 }
