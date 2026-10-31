@@ -285,12 +285,12 @@ void MainWindow::SelectUiDataRoot() {
 
     // 已打开项目时，切库前必须让候选 Catalog 真正解析当前 WTG/WCT。
     // config 自身可解析并不代表它包含地图正在引用的所有可选函数定义。
-    // 读当前来源（保存后就是刚写出的地图），与切换后重载解析的是同一份内容。
+    // 读当前来源（保存后就是刚写出的地图），按切换后重载的同一函数库层序解析，
+    // 已安装并启用的函数库（不写进 config）也算在内。
     if (!project_->projectRoot_.empty()) {
         const auto source = project_->ReadTriggerSource();
         if (source.Succeeded() && source.value && source.value->present) {
-            auto parsed = War3Map::Trigger::WtgWctCodec{}.Parse(
-                source.value->wtg, source.value->wct, *validatedCatalog.value);
+            auto parsed = project_->ParseTriggersWithUiRoot(externalRoot, source.value->wtg, source.value->wct);
             if (!parsed.Succeeded()) {
                 for (const auto& diagnostic : parsed.diagnostics) {
                     AddDiagnostic(

@@ -10,7 +10,9 @@
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
+#include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/Workspace.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -968,6 +970,7 @@ private slots:
     void IndependentProjectsDoNotShareEdits();
     void MapOnlyLibraryKeepsGlobalSettings();
     void TriggerReloadReadsCurrentMapSource();
+    void DataRootCheckUsesInstalledLibraries();
     void MissingImportCannotProduceSavedFingerprint();
     void RevisionLifecycleTracksSeparateSaveTargets();
     void MapDataObservationPreservesOtherScopesAndRejectsFailedTracking();
@@ -5395,6 +5398,68 @@ void EditorProjectTests::TriggerReloadReadsCurrentMapSource() {
     QVERIFY(!project.LoadTriggers());
     QVERIFY(project.triggerDocument_ == nullptr);
     QVERIFY(ModelHasCode(*project.diagnosticsModel_, "TRIGGER_FILES_MISSING"));
+}
+
+// 安装的函数库不写进 config；切换数据根前的兼容检查必须和重载用同一层序，不能只按 config 解析。
+void EditorProjectTests::DataRootCheckUsesInstalledLibraries() {
+    const QString organization = QCoreApplication::organizationName();
+    QCoreApplication::setOrganizationName(QStringLiteral("War3MapEditor64-Tests"));
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const auto write = [&root](const QString& name, const QByteArray& bytes) {
+        QVERIFY(QDir(root.path()).mkpath(QFileInfo(root.filePath(name)).path()));
+        QFile file(root.filePath(name));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(bytes);
+    };
+    write("ui/config", "base\r\n");
+    write("ui/base/action.txt", "[DoNothing]\r\ntitle=\"Do nothing\"\r\n");
+    write("ui/lib/action.txt", "[LibraryAction]\r\ntitle=\"Library\"\r\n");
+    QByteArray wtg("WTG!");
+    const auto i32 = [](QByteArray& bytes, std::int32_t value) { bytes.append(reinterpret_cast<const char*>(&value), 4); };
+    const auto text = [](QByteArray& bytes, const char* value) { bytes.append(value); bytes.append('\0'); };
+    i32(wtg, 7); i32(wtg, 1); i32(wtg, 1); text(wtg, "Category"); i32(wtg, 0);
+    i32(wtg, 2); i32(wtg, 0); i32(wtg, 1);
+    text(wtg, "Uses library"); text(wtg, "");
+    for (const std::int32_t flag : {0, 1, 0, 0, 0, 1, 1, 2}) i32(wtg, flag);
+    text(wtg, "LibraryAction"); i32(wtg, 1); i32(wtg, 0);
+    QByteArray wct;
+    i32(wct, 1); text(wct, ""); i32(wct, 0); i32(wct, 1); i32(wct, 0);
+    const auto bytes = [](const QByteArray& data) {
+        const auto* start = reinterpret_cast<const std::byte*>(data.constData());
+        return std::vector<std::byte>(start, start + data.size());
+    };
+    const auto wtgBytes = bytes(wtg);
+    const auto wctBytes = bytes(wct);
+    const std::filesystem::path uiRoot(root.path().toStdWString());
+
+    // 只按 config 解析时缺库函数，这就是旧检查误报的来源。
+    const auto configOnly = Trigger::UiCatalog::Load(uiRoot);
+    QVERIFY(configOnly.Succeeded());
+    QVERIFY(!Trigger::WtgWctCodec{}.Parse(wtgBytes, wctBytes, *configOnly.value).Succeeded());
+
+    UiLibrary::GlobalSettings global;
+    global.packages = {{"base", true, {}}, {"lib", true, {}}};
+    EditorProject::WriteUiLibrarySettings(uiRoot, global);
+    EditorProject project;
+    QVERIFY(project.ParseTriggersWithUiRoot(uiRoot, wtgBytes, wctBytes).Succeeded());
+
+    // 本机关闭的包按仅本图启用同样能解析；检查本身不改工程状态。
+    global.packages[1].enabled = false;
+    EditorProject::WriteUiLibrarySettings(uiRoot, global);
+    QVERIFY(project.ParseTriggersWithUiRoot(uiRoot, wtgBytes, wctBytes).Succeeded());
+    QVERIFY(project.uiLibraryMapOnly_.empty());
+    QVERIFY(project.uiLibraryPackages_.empty());
+
+    // 包确实不在时仍报缺函数。
+    QVERIFY(QDir(root.filePath("ui/lib")).removeRecursively());
+    const auto missing = project.ParseTriggersWithUiRoot(uiRoot, wtgBytes, wctBytes);
+    QVERIFY(!missing.Succeeded());
+    QVERIFY(std::any_of(missing.diagnostics.begin(), missing.diagnostics.end(),
+        [](const Diagnostic& diagnostic) { return diagnostic.code == "wtg.missing-ui-definition"; }));
+
+    QSettings{}.remove(QStringLiteral("uiLibraries"));
+    QCoreApplication::setOrganizationName(organization);
 }
 
 void EditorProjectTests::OwnedLuaProjectRecoveryPreservesPayloadRoleAndMapGate() {

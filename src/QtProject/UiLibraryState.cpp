@@ -27,6 +27,48 @@ QString Text(std::string_view value) {
     return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size()));
 }
 
+bool MissesUiDefinition(const std::vector<Diagnostic>& diagnostics) {
+    return std::any_of(diagnostics.begin(), diagnostics.end(),
+        [](const Diagnostic& diagnostic) { return diagnostic.code == "wtg.missing-ui-definition"; });
+}
+
+struct LibraryRetry {
+    EditorProject::ParsedTriggers parsed;
+    std::vector<std::string> mapOnly;
+};
+
+// 地图引用了本机已关闭的包时，仅对本图启用实际用到的包后重新解析；不改工程状态。
+std::optional<LibraryRetry> RetryWithDisabledLibraries(const std::filesystem::path& uiRoot,
+    const UiLibrary::GlobalSettings& global, const std::vector<UiLibrary::PackageInfo>& packages,
+    const std::vector<std::byte>& wtg, const std::vector<std::byte>& wct) {
+    std::vector<std::string> disabled;
+    for (const auto& entry : global.packages) {
+        if (!entry.enabled) disabled.push_back(entry.id);
+    }
+    if (disabled.empty()) return std::nullopt;
+    const auto attempt = [&](const std::vector<std::string>& mapOnly) -> std::optional<EditorProject::ParsedTriggers> {
+        const auto layers = UiLibrary::EffectiveLayers(global, mapOnly, packages);
+        auto catalog = Trigger::UiCatalog::LoadLayers(uiRoot, layers);
+        if (!catalog.Succeeded()) return std::nullopt;
+        auto parsed = Trigger::WtgWctCodec{}.Parse(wtg, wct, *catalog.value);
+        if (!parsed.Succeeded()) return std::nullopt;
+        return EditorProject::ParsedTriggers{std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value)),
+            std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value))};
+    };
+    auto parsed = attempt(disabled);
+    if (!parsed) return std::nullopt;
+    // 只保留实际用到的已关闭包，避免未使用的包改变其它函数的生效来源。
+    std::vector<std::string> used;
+    for (const auto& entry : UiLibrary::ComputeMapUsage(*parsed->document, packages).packages) {
+        if (std::find(disabled.begin(), disabled.end(), entry.id) != disabled.end()) used.push_back(entry.id);
+    }
+    if (used.size() != disabled.size()) {
+        parsed = attempt(used);
+        if (!parsed) return std::nullopt;
+    }
+    return LibraryRetry{std::move(*parsed), std::move(used)};
+}
+
 } // namespace
 
 UiLibrary::GlobalSettings EditorProject::ReadUiLibrarySettings(const std::filesystem::path& uiRoot) {
@@ -66,35 +108,34 @@ Result<Trigger::UiCatalog> EditorProject::LoadEffectiveUiCatalog(const std::file
 
 std::optional<EditorProject::ParsedTriggers> EditorProject::ParseWithLocallyDisabledLibraries(
     const std::filesystem::path& uiRoot, const std::vector<std::byte>& wtg, const std::vector<std::byte>& wct) {
-    std::vector<std::string> disabled;
-    for (const auto& entry : uiLibraryGlobal_.packages) {
-        if (!entry.enabled) disabled.push_back(entry.id);
-    }
-    if (disabled.empty()) return std::nullopt;
-    const auto attempt = [&](const std::vector<std::string>& mapOnly) -> std::optional<ParsedTriggers> {
-        const auto layers = UiLibrary::EffectiveLayers(uiLibraryGlobal_, mapOnly, uiLibraryPackages_);
-        auto catalog = Trigger::UiCatalog::LoadLayers(uiRoot, layers);
-        if (!catalog.Succeeded()) return std::nullopt;
-        auto parsed = Trigger::WtgWctCodec{}.Parse(wtg, wct, *catalog.value);
-        if (!parsed.Succeeded()) return std::nullopt;
-        return ParsedTriggers{std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value)),
-            std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value))};
-    };
-    auto parsed = attempt(disabled);
-    if (!parsed) return std::nullopt;
-    // 只保留实际用到的已关闭包，避免未使用的包改变其它函数的生效来源。
-    std::vector<std::string> used;
-    for (const auto& entry : UiLibrary::ComputeMapUsage(*parsed->document, uiLibraryPackages_).packages) {
-        if (std::find(disabled.begin(), disabled.end(), entry.id) != disabled.end()) used.push_back(entry.id);
-    }
-    if (used.size() != disabled.size()) {
-        parsed = attempt(used);
-        if (!parsed) return std::nullopt;
-    }
-    uiLibraryMapOnly_ = used;
-    for (const auto& id : used) {
+    auto retried = RetryWithDisabledLibraries(uiRoot, uiLibraryGlobal_, uiLibraryPackages_, wtg, wct);
+    if (!retried) return std::nullopt;
+    uiLibraryMapOnly_ = retried->mapOnly;
+    for (const auto& id : retried->mapOnly) {
         AddDiagnostic(tr("警告"), tr("函数库"), tr("UI_LIBRARY_MAP_ONLY"),
             tr("本图使用了本机已关闭的函数库 %1，已仅对此地图启用；全局设置不变。").arg(Text(id)));
+    }
+    return std::move(retried->parsed);
+}
+
+Result<Trigger::TriggerDocument> EditorProject::ParseTriggersWithUiRoot(
+    const std::filesystem::path& uiRoot, const std::vector<std::byte>& wtg, const std::vector<std::byte>& wct) const {
+    auto discovered = UiLibrary::DiscoverPackages(uiRoot);
+    if (!discovered.value || discovered.value->empty()) {
+        auto catalog = Trigger::UiCatalog::Load(uiRoot);
+        if (!catalog.Succeeded()) return {std::nullopt, std::move(catalog.diagnostics)};
+        return Trigger::WtgWctCodec{}.Parse(wtg, wct, *catalog.value);
+    }
+    // 与 LoadEffectiveUiCatalog 同一层序：候选根的本机启用设置 + 当前仅本图启用的包。
+    const auto global = UiLibrary::ReconcileGlobal(ReadUiLibrarySettings(uiRoot), *discovered.value);
+    auto catalog = Trigger::UiCatalog::LoadLayers(
+        uiRoot, UiLibrary::EffectiveLayers(global, uiLibraryMapOnly_, *discovered.value));
+    if (!catalog.Succeeded()) return {std::nullopt, std::move(catalog.diagnostics)};
+    auto parsed = Trigger::WtgWctCodec{}.Parse(wtg, wct, *catalog.value);
+    if (!parsed.Succeeded() && MissesUiDefinition(parsed.diagnostics)) {
+        if (auto retried = RetryWithDisabledLibraries(uiRoot, global, *discovered.value, wtg, wct)) {
+            return Result<Trigger::TriggerDocument>::Success(std::move(*retried->parsed.document));
+        }
     }
     return parsed;
 }

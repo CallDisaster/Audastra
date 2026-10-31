@@ -268,6 +268,10 @@ public:
     // 地图引用了本机已关闭的包时，仅对本图启用实际用到的包后重新解析。
     [[nodiscard]] std::optional<ParsedTriggers> ParseWithLocallyDisabledLibraries(
         const std::filesystem::path& uiRoot, const std::vector<std::byte>& wtg, const std::vector<std::byte>& wct);
+    // 切换数据根前的兼容检查：按 LoadTriggers 的同一函数库规则（本机启用设置、仅本图启用、
+    // 本机已关闭但本图用到的包）用指定数据根解析给定 WTG/WCT，不改工程状态。
+    [[nodiscard]] Result<Trigger::TriggerDocument> ParseTriggersWithUiRoot(
+        const std::filesystem::path& uiRoot, const std::vector<std::byte>& wtg, const std::vector<std::byte>& wct) const;
     void RecordUiLibraryUsage();
     [[nodiscard]] QJsonArray UiLibraryUsageJson() const;
     // 保存全局设置并按新的有效层序重新载入触发器（调用方先确认放弃未保存的触发器修改）。
