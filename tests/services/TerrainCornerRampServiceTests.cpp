@@ -92,7 +92,14 @@ void FormalSaveAsAndInPlaceRetainCompleteHistory() {
 }
 } // namespace
 
+} // namespace War3Map::TerrainSaveTests
+
+#include "TerrainRampPaletteCases.h"
+
+namespace War3Map::TerrainSaveTests {
+
 void CheckTerrainCornerRampContracts() {
+    PalettePaintAndCornerShareOneSave();
     FrozenServiceCandidateRestoresOneAtomicCommand(); FormalSaveAsAndInPlaceRetainCompleteHistory();
     War3Map::TerrainInnerCornerRampServiceCases::Check();
     War3Map::TerrainWetInnerCornerRampServiceCases::Check();
