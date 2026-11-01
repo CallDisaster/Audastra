@@ -18,6 +18,7 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPointer>
+#include <QPushButton>
 #include <QStandardItemModel>
 #include <QStatusBar>
 #include <QThread>
