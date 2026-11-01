@@ -286,7 +286,8 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 // 使54AC70转查5038C0的死亡路径声明。死亡位图不进入WPM的selector3导出。
                 footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{*path, policy, rotation,
                     MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression,
-                    !death.empty() && death != "_" && !none});
+                    !death.empty() && death.size() < 260 && death.find('\0') == std::string_view::npos
+                        && death != "_" && !none});
             }
         }
         MapData::TerrainNativeObjectPathing result;

@@ -24,7 +24,7 @@ void DeadBridgeRequiresItsActualDeathDeclaration() {
         Require(fixture.edits->Redo(), "死亡桥地形保存后仍可重做");
         fixture.SaveExpected("dead-bridge-redone.w3x", fixture.ExpectedTerrain(true), deep, &wire, true);
     }
-    for (const std::string death : {"", "_", "none", "nOnE"}) {
+    for (const std::string& death : std::vector<std::string>{"", "_", "none", "nOnE", std::string(260, 'x'), std::string("x\0y", 3)}) {
         Fixture fixture; PatternedBridgeOriginal(fixture, 90.f); declare(fixture, death);
         auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
         placements.doodads.front().lifePercent = 0;
