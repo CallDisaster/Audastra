@@ -62,7 +62,7 @@ C2使用相同查询定位；旋转传数值 `facing_radians`，复制传同类1
 
 - `editor_state` 返回当前 GUI 地图会话身份、文档 generation 和编辑 revision，各编号空间分开。GUI 结果另带 `binding_token`，可代替 `project_identity`、`expected_revision` 和触发器批次的 `expected`；修改成功后返回新令牌，过期令牌按修订冲突拒绝。
 - `editor_query_trigger_graph` 和 `editor_edit_trigger_graph` 复用 Core 图 DTO/类型/guard；写操作核验实际 schema 的身份字段，整批事务进入 GUI 的一个撤销命令。它们不操作独立 stdio 的另一份地图状态。
-- `editor_save_map` 经 GUI 原保存服务写回或另存；写回仍自动备份。能力、路径和身份以当次 schema 为准。
+- `editor_save_map` 经 GUI 原保存服务写回或另存；写回仍自动备份。能力、路径和身份以当次 schema 为准。只因小地图无法按当前内容生成而失败时返回 `MINIMAP_RISK_SAVE_AVAILABLE`；先告诉作者，作者同意后再传 `keep_original_minimap: true` 保留原小地图继续保存，不要自行默认打开。
 - 主窗口设置控制查询/编辑/保存/外部操作及逐工具开关。列工具和执行均检查权限；旧客户端缓存的工具名不能绕过关闭。JSON-only HTTP 不提供 listChanged 通知流，修改设置后重新拉列表。
 - 没有开放的文件/命令执行能力不得用额外 shell 或直接改归档绕开。自然语言 T 仍是默认逻辑形式。
 

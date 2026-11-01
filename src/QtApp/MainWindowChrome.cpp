@@ -136,7 +136,8 @@ void MainWindow::BuildHeader() {
     calculateShadows->setToolTip(tr("按当前地形和装饰物模型重新计算静态阴影，然后保存地图"));
     calculateShadows->setEnabled(false);
     connect(calculateShadows, &QAction::triggered, this, [this] {
-        (void)RunMapSave({}, true, true, false, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic, true);
+        (void)RunMapSave({}, true, true, false, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic, true,
+            War3Map::Services::MapRuntimeSavePurpose::Normal, MinimapRiskSave::Ask);
     });
     RegisterCommandAction("map.terrain.shadows", calculateShadows, tr("地形"));
     testMapAction_ = MenuAction(this, "lucide/play", tr("测试"), tr("测试地图 · F9"));

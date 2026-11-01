@@ -282,8 +282,9 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
         if (project_->savingMap_) return false;
         return triggersModule_->CommitPendingEdits();
     });
-    state->tools->SetSaveHandler([this](const std::filesystem::path& path, bool inPlace) {
-        return RunMapSave(path, inPlace, true);
+    state->tools->SetSaveHandler([this](const std::filesystem::path& path, bool inPlace, bool keepOriginalMinimap) {
+        return RunMapSave(path, inPlace, true, false, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic, false,
+            War3Map::Services::MapRuntimeSavePurpose::Normal, keepOriginalMinimap ? MinimapRiskSave::Accept : MinimapRiskSave::Decline);
     });
     state->tools->SetValidationSaveHandler([this](const std::filesystem::path& path) {
         return RunMapSave(path, false, true, true, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic,

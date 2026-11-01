@@ -97,7 +97,7 @@ bool CanPreserveFor(const Diagnostic& diagnostic) {
     constexpr std::string_view allowed[]{
         std::string_view{"CLASSIC_OBJECT_CAPTURE_SPECIAL_UNRESOLVED"},
         "CLASSIC_OBJECT_CAPTURE_LAYOUT", "CLASSIC_MINIMAP_GENERATION_UNSUPPORTED",
-        "CLASSIC_MINIMAP_PLAYABLE_RECT_UNRESOLVED", "CLASSIC_MINIMAP_CLIFF_UNRESOLVED",
+        "CLASSIC_MINIMAP_PLAYABLE_RECT_UNRESOLVED", "CLASSIC_MINIMAP_CLIFF_UNRESOLVED", "CLASSIC_MINIMAP_RAMP_UNRESOLVED",
         "CLASSIC_MINIMAP_UNKNOWN_FLAGS", "CLASSIC_MINIMAP_WATER", "CLASSIC_MINIMAP_WATER_MISSING",
         "CLASSIC_MINIMAP_CLIFF_MISSING", "TERRAIN_ASSETS_UNKNOWN_GROUND", "RESOURCE_NOT_FOUND",
         "CLASSIC_MINIMAP_CONFIG_MISSING", "CLASSIC_MINIMAP_OBJECT_CATALOG_EMPTY", "CLASSIC_MINIMAP_OBJECT_MISSING",
@@ -127,7 +127,35 @@ bool CanPreserveFor(const Diagnostic& diagnostic) {
         "BLP_JPEG_WORKING_BUDGET", "BLP_JPEG_OUTPUT_BUDGET"};
     return std::find(std::begin(allowed), std::end(allowed), diagnostic.code) != std::end(allowed);
 }
+
+// 无视风险时仍拒绝：说明本次保存任务本身不一致或读不到来源的错误（来源、身份、过期、
+// 当前状态、I/O、分配、保存领域）。其余生成器内容与能力错误可以保留原小地图。
+bool CanPreserveWithRisk(const Diagnostic& diagnostic) {
+    if (CanPreserveFor(diagnostic)) return true;
+    const std::string_view code = diagnostic.code;
+    for (const std::string_view suffix : {"_STALE", "_IDENTITY", "_ALLOCATION", "_EXCEPTION", "_SOURCE", "_CURRENT", "_UNSAFE"})
+        if (code.ends_with(suffix)) return false;
+    for (const std::string_view part : {"_SOURCE_", "_CURRENT_", "FILE_READ"})
+        if (code.find(part) != std::string_view::npos) return false;
+    for (const std::string_view prefix : {"MINIMAP_PRESERVE_", "MINIMAP_SAVE_", "TERRAIN_SAVE_PLAN_", "TERRAIN_SHADOW_"})
+        if (code.starts_with(prefix)) return code == "MINIMAP_SAVE_ENCODING";
+    return !code.empty();
+}
+
+bool CanPreserve(const Diagnostic& diagnostic, TerrainMinimapPreservePolicy policy) {
+    return policy == TerrainMinimapPreservePolicy::AcceptRisk ? CanPreserveWithRisk(diagnostic) : CanPreserveFor(diagnostic);
+}
 } // namespace
+
+bool TerrainMinimapSave::RiskPreservable(const std::vector<Diagnostic>& diagnostics) {
+    bool sawError = false, needsRisk = false;
+    for (const auto& diagnostic : diagnostics) if (diagnostic.severity == DiagnosticSeverity::Error) {
+        sawError = true;
+        if (!CanPreserveWithRisk(diagnostic)) return false;
+        needsRisk |= !CanPreserveFor(diagnostic);
+    }
+    return sawError && needsRisk;
+}
 
 Status TerrainMinimapPreserveGuard::VerifyCurrent(const MapSaveTask& task,
     const MapData::MapDataEditSession& edits) const {
@@ -166,7 +194,7 @@ Status TerrainMinimapPreserveGuard::VerifyReadback(const MapSaveTask& task, cons
 Result<TerrainMinimapAutomaticPreparation> TerrainMinimapSave::PrepareAutomaticOrPreserve(
     const MapSaveTask& task, const MapData::MapDataEditSession& edits,
     const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits,
-    std::shared_ptr<const MapData::TerrainSavePlan> existingPlan) {
+    std::shared_ptr<const MapData::TerrainSavePlan> existingPlan, TerrainMinimapPreservePolicy policy) {
     using Output = Result<TerrainMinimapAutomaticPreparation>;
     try {
         Preparing(task);
@@ -189,7 +217,7 @@ Result<TerrainMinimapAutomaticPreparation> TerrainMinimapSave::PrepareAutomaticO
             return success;
         }
         Check(preserve->VerifyCurrent(task, edits));
-        return PreserveUnsupportedAutomatic(task, edits, std::move(generated.diagnostics));
+        return PreserveUnsupportedAutomatic(task, edits, std::move(generated.diagnostics), policy);
     } catch (Failure& failure) { return {std::nullopt, std::move(failure.diagnostics)}; }
     catch (const std::bad_alloc&) {
         return Output::Failure(kSubsystem, "MINIMAP_PRESERVE_ALLOCATION", "无法取得小地图保留来源，不允许降级继续保存。");
@@ -198,13 +226,14 @@ Result<TerrainMinimapAutomaticPreparation> TerrainMinimapSave::PrepareAutomaticO
 
 Result<TerrainMinimapAutomaticPreparation> TerrainMinimapSave::PreserveUnsupportedAutomatic(
     const MapSaveTask& task, const MapData::MapDataEditSession& edits,
-    std::vector<Diagnostic> diagnostics) {
+    std::vector<Diagnostic> diagnostics, TerrainMinimapPreservePolicy policy) {
     using Output = Result<TerrainMinimapAutomaticPreparation>;
     try {
-        bool sawError = false;
+        bool sawError = false, riskAccepted = false;
         for (const auto& diagnostic : diagnostics) if (diagnostic.severity == DiagnosticSeverity::Error) {
             sawError = true;
-            if (!CanPreserveFor(diagnostic)) return {std::nullopt, std::move(diagnostics)};
+            if (!CanPreserve(diagnostic, policy)) return {std::nullopt, std::move(diagnostics)};
+            riskAccepted |= !CanPreserveFor(diagnostic);
         }
         if (!sawError)
             return Output::Failure(kSubsystem, "MINIMAP_PRESERVE_REASON_REQUIRED", "保留小地图的降级需要明确的生成能力或预算错误。");
@@ -220,7 +249,11 @@ Result<TerrainMinimapAutomaticPreparation> TerrainMinimapSave::PreserveUnsupport
         for (auto& diagnostic : diagnostics)
             if (diagnostic.severity == DiagnosticSeverity::Error) diagnostic.severity = DiagnosticSeverity::Warning;
         diagnostics.push_back({DiagnosticSeverity::Warning, kSubsystem, "MINIMAP_GENERATION_SKIPPED",
-            preserve->members_[0].present || preserve->members_[1].present
+            riskAccepted
+                ? (preserve->members_[0].present || preserve->members_[1].present
+                    ? "已按选择无视小地图问题继续保存：保留原小地图，游戏里的小地图可能是修改前的样子。"
+                    : "已按选择无视小地图问题继续保存：原图缺少小地图，本次不补写。")
+            : preserve->members_[0].present || preserve->members_[1].present
                 ? "自动小地图暂不支持当前内容或超出生成预算；本次保留原小地图，继续保存其它已通过检查的编辑。"
                 : "自动小地图暂不支持当前内容或超出生成预算；原图缺少小地图，本次不补写，继续保存其它已通过检查的编辑。"});
         auto success = Output::Success({{}, std::move(preserve)});

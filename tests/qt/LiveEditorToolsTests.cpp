@@ -704,10 +704,10 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     auto request = f.Context(); request.insert("path", f.outputs.filePath("candidate.w3x"));
     const auto original = f.Fingerprint();
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_UNAVAILABLE"));
-    f.tools->SetSaveHandler([](const std::filesystem::path&, bool) { return false; });
+    f.tools->SetSaveHandler([](const std::filesystem::path&, bool, bool) { return false; });
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_REJECTED"));
     // 保存链写进诊断表的错误随拒绝一起返回。
-    f.tools->SetSaveHandler([&f](const std::filesystem::path&, bool) {
+    f.tools->SetSaveHandler([&f](const std::filesystem::path&, bool, bool) {
         f.project.AddDiagnostic(QStringLiteral("警告"), QStringLiteral("地图"), QStringLiteral("SAVE_SAMPLE_NOTE"), QStringLiteral("示例提示"));
         f.project.AddDiagnostic(QStringLiteral("错误"), QStringLiteral("地图"), QStringLiteral("SAVE_SAMPLE_REASON"), QStringLiteral("示例原因"));
         return false;
@@ -716,12 +716,12 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     const auto reasons = explained.value("diagnostics").toArray();
     QVERIFY2(reasons.size() == 2 && reasons[1].toObject().value("code").toString() == QStringLiteral("SAVE_SAMPLE_REASON")
             && reasons[1].toObject().value("message").toString() == QStringLiteral("示例原因"), qPrintable(Explain(explained)));
-    f.tools->SetSaveHandler([](const std::filesystem::path&, bool) { return true; });
+    f.tools->SetSaveHandler([](const std::filesystem::path&, bool, bool) { return true; });
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_OUTPUT_MISSING"));
     int calls = 0; QJsonObject nested;
     const auto edit = f.DescriptionRequest();
     QSignalSpy events(f.tools.get(), &LiveEditorTools::Activity);
-    f.tools->SetSaveHandler([&](const std::filesystem::path& path, bool inPlace) {
+    f.tools->SetSaveHandler([&](const std::filesystem::path& path, bool inPlace, bool) {
         ++calls; if (inPlace) return false;
         nested = f.tools->Invoke("editor_edit_trigger_graph", edit);
         // 仅检查宿主委托合同和输出 SHA，不冒称这是地图归档、脚本或游戏验收。

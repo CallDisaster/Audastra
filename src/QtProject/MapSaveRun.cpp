@@ -47,6 +47,11 @@ std::string MinimapMemberName(std::string_view name) {
     return key;
 }
 
+Services::TerrainMinimapPreservePolicy MinimapPreservePolicy(const MapSaveJob& job) {
+    return job.acceptMinimapRisk ? Services::TerrainMinimapPreservePolicy::AcceptRisk
+        : Services::TerrainMinimapPreservePolicy::ListedLimits;
+}
+
 Status InstallPreservedMinimap(MapSaveJob& job, const MapData::MapDataEditSession& edits,
     Services::TerrainMinimapAutomaticPreparation prepared) {
     if (!prepared.preserved) return Status::Ok();
@@ -234,7 +239,8 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
         if (!required.Succeeded() || !required.value) return {required.diagnostics};
         if (!*required.value && !job.terrainDerivationRequired) {
             // 静态通行已独立核对；无关物编/导入不额外取得地形能力门。
-            auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot);
+            auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot,
+                {}, {}, MinimapPreservePolicy(job));
             if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
             job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
             const auto installed = InstallPreservedMinimap(job, *edits, std::move(*prepared.value));
@@ -275,7 +281,7 @@ Status PrepareWorkerDerivedInputs(MapSaveJob& job, std::shared_ptr<const MapData
     std::shared_ptr<const Services::TerrainMinimapSave> minimap;
     if (automatic) {
         auto prepared = Services::TerrainMinimapSave::PrepareAutomaticOrPreserve(job, *edits, job.minimapGameRoot, {},
-            job.terrainSavePlan);
+            job.terrainSavePlan, MinimapPreservePolicy(job));
         if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
         job.diagnostics.insert(job.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
         minimap = prepared.value->generated;
@@ -324,8 +330,13 @@ Status PrepareWorkerDerived(MapSaveJob& job) {
         // 小地图能力不足可以保留；静态依赖/通行计划没有通过时绝不能借此降级。
         if (job.minimapChoice != Services::TerrainMinimapSaveChoice::Automatic
             || !pathingPrepared) return status;
-        auto preserved = Services::TerrainMinimapSave::PreserveUnsupportedAutomatic(job, *edits, std::move(status.diagnostics));
-        if (!preserved.Succeeded() || !preserved.value) return {std::move(preserved.diagnostics)};
+        const bool riskAvailable = !job.acceptMinimapRisk && Services::TerrainMinimapSave::RiskPreservable(status.diagnostics);
+        auto preserved = Services::TerrainMinimapSave::PreserveUnsupportedAutomatic(job, *edits, std::move(status.diagnostics),
+            MinimapPreservePolicy(job));
+        if (!preserved.Succeeded() || !preserved.value) {
+            job.minimapRiskAvailable = riskAvailable;
+            return {std::move(preserved.diagnostics)};
+        }
         const auto installed = InstallPreservedMinimap(job, *edits, std::move(*preserved.value));
         if (!installed.Succeeded()) return installed;
         status = {std::move(preserved.diagnostics)};

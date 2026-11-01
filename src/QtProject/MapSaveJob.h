@@ -58,6 +58,10 @@ struct MapSaveJob final : Services::MapSaveTask {
     std::filesystem::path minimapGameRoot;
     std::shared_ptr<const Services::TerrainMinimapSave> minimapSave;
     std::shared_ptr<const Services::TerrainMinimapPreserveGuard> minimapPreserve;
+    // 作者或 Agent 明确选择“无视风险继续保存”：小地图生成的内容与能力错误也保留原小地图。
+    bool acceptMinimapRisk = false;
+    // worker 结论：本次只因小地图生成失败而未保存，选择无视风险后可以继续。
+    bool minimapRiskAvailable = false;
     std::optional<Status> terrainReadbackStatus;
     std::string terrainReadbackArchiveSha256;
     // 阶段提示可从工作线程调用，由 UI 调用方排队到界面线程。

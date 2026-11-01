@@ -136,12 +136,16 @@ public:
     // 无模态旁路写入；仅在完整输出成功后提交来源路径、基线和脏状态。
     bool SaveMapArchiveToPath(const std::filesystem::path& outputPath,
         War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic);
+    // 只因小地图生成失败而未保存时：Ask 由作者在提示里选择是否无视风险继续；
+    // Accept 直接保留原小地图继续（Agent 明确要求时）；Decline 照常报失败。
+    enum class MinimapRiskSave { Decline, Ask, Accept };
     // 地图保存（MapSaveActions.cpp）：background 为真时在工作线程执行并显示进度框。
     bool RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot = false,
         bool testHotReload = false,
         War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic,
         bool rebuildTerrainShadow = false,
-        War3Map::Services::MapRuntimeSavePurpose runtimePurpose = War3Map::Services::MapRuntimeSavePurpose::Normal);
+        War3Map::Services::MapRuntimeSavePurpose runtimePurpose = War3Map::Services::MapRuntimeSavePurpose::Normal,
+        MinimapRiskSave minimapRisk = MinimapRiskSave::Decline);
     bool SaveEditorProjectToPath(const std::filesystem::path& outputPath, bool recovery = false);
     bool OpenEditorProjectPath(const std::filesystem::path& path);
 

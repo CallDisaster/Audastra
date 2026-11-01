@@ -415,6 +415,46 @@ void SourceStaleAndFinalMutationStillReject() {
         "能力缺失不能掩盖同批I/O错误，只有所有error均可降级时才允许保留");
 }
 
+void RampAndAcceptedRiskPreserve() {
+    const auto failure = [](const char* code) { return Status::Failure("fixture", code, "生成失败").diagnostics; };
+    {
+        // 坡道形态与悬崖一样属于生成器能力不足：普通保存直接保留原小地图。
+        Fixture fixture; MapSaveTask task; fixture.Freeze(task);
+        const auto ramp = TerrainMinimapSave::PreserveUnsupportedAutomatic(task, *fixture.edits,
+            failure("CLASSIC_MINIMAP_RAMP_UNRESOLVED"));
+        Require(ramp.Succeeded() && ramp.value && ramp.value->preserved && HasCode(ramp.diagnostics, "MINIMAP_GENERATION_SKIPPED")
+            && !TerrainMinimapSave::RiskPreservable(failure("CLASSIC_MINIMAP_RAMP_UNRESOLVED")), "未识别坡道不需要无视风险即可保留原小地图");
+    }
+    Fixture fixture; MapSaveTask task; fixture.Freeze(task);
+    const auto sourceSha = Take(Sha256File(fixture.archive.SourcePath()));
+    // 不在能力清单里的生成器错误：普通保存拒绝，作者选择无视风险后保留原小地图。
+    const auto unknown = failure("CLASSIC_MINIMAP_OBJECT_UNKNOWN");
+    Require(TerrainMinimapSave::RiskPreservable(unknown), "生成器内容错误可以由作者选择无视风险");
+    const auto listed = TerrainMinimapSave::PreserveUnsupportedAutomatic(task, *fixture.edits, unknown);
+    Require(!listed.Succeeded() && !listed.value, "未选择无视风险时仍拒绝");
+    for (const auto* code : {"MAP_SOURCE_UNSAFE", "FILE_READ_FAILED", "CLASSIC_OBJECT_CAPTURE_STALE", "MINIMAP_SAVE_SOURCE",
+            "TERRAIN_ASSETS_IDENTITY", "TERRAIN_ASSETS_W3I_CURRENT", "CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "TERRAIN_ROW_SOURCE",
+            "TERRAIN_ROW_ALLOCATION", "MINIMAP_SAVE_AUTOMATIC_EXCEPTION", "MINIMAP_PRESERVE_STALE", "TERRAIN_SAVE_PLAN_BUDGET_MISMATCH"}) {
+        Require(!TerrainMinimapSave::RiskPreservable(failure(code)), "来源、身份、过期、I/O 与保存领域错误不提供无视风险");
+        const auto refused = TerrainMinimapSave::PreserveUnsupportedAutomatic(task, *fixture.edits, failure(code),
+            TerrainMinimapPreservePolicy::AcceptRisk);
+        Require(!refused.Succeeded() && !refused.value && HasCode(refused.diagnostics, code), "无视风险也不放行任务本身的错误");
+    }
+    auto mixed = unknown;
+    mixed.push_back(failure("FILE_READ_FAILED").front());
+    Require(!TerrainMinimapSave::RiskPreservable(mixed), "同批有 I/O 错误时不提供无视风险");
+    const auto accepted = Take(TerrainMinimapSave::PreserveUnsupportedAutomatic(task, *fixture.edits, unknown,
+        TerrainMinimapPreservePolicy::AcceptRisk));
+    Require(!accepted.generated && accepted.preserved, "无视风险后保留原小地图");
+    task.beforePublish = [&] { return accepted.preserved->VerifyFrozenOutput(task); };
+    MapSaveService::Run(task);
+    Require(task.succeeded && task.nextSession && accepted.preserved->VerifyReadback(task, *task.nextSession).Succeeded(),
+        "无视风险后其它修改实际保存并回读");
+    Require(Take(task.nextSession->ReadMember("war3mapMap.blp")) == fixture.originalMinimap
+        && Take(task.nextSession->ReadMember("war3map.w3e")) == fixture.w3e
+        && Take(Sha256File(fixture.archive.SourcePath())) == sourceSha, "保留原小地图原字，来源不变");
+}
+
 void SpecialTailGeneratesAndSaves() {
     for (const bool ordinary : {false, true}) {
         // special不属于普通对象色层，但其原字仍必须随正式自动保存完整回读。
@@ -449,7 +489,7 @@ int main() {
         MissingGenerationInputsPreserveActualSave(); BudgetAndTga(); SourceStaleAndFinalMutationStillReject();
         RowScanBudgetPreservesThroughActualSave();
         MissingObjectDefinitionPreservesActualSave(); UnparseableObjectModelPreservesActualSave();
-        AmbiguousOrDamagedObjectSourcesDoNotPreserve();
+        AmbiguousOrDamagedObjectSourcesDoNotPreserve(); RampAndAcceptedRiskPreserve();
         SpecialTailGeneratesAndSaves(); return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

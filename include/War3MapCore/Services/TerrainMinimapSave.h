@@ -21,6 +21,11 @@ struct TerrainMinimapSaveLimits {
 
 class TerrainMinimapSave;
 
+// 自动生成失败时哪些错误可以降级为保留原小地图。ListedLimits 只放行明确列出的
+// 生成能力与预算不足；AcceptRisk 由作者（或 Agent）明确选择“无视风险继续保存”后使用，
+// 另放行生成器的内容与能力错误，来源、身份、过期、I/O 与保存领域错误仍然拒绝。
+enum class TerrainMinimapPreservePolicy { ListedLimits, AcceptRisk };
+
 // 自动生成能力暂不支持时，只保护本次真实来源的小地图成员；不授予地形、
 // 脚本或归档写出资格。调用方继续沿原保存链，并在发布前与回读时复核。
 class TerrainMinimapPreserveGuard final {
@@ -68,11 +73,15 @@ public:
     [[nodiscard]] static Result<TerrainMinimapAutomaticPreparation> PrepareAutomaticOrPreserve(
         const MapSaveTask& actualTask, const MapData::MapDataEditSession& edits,
         const std::filesystem::path& gameRoot, const TerrainMinimapSaveLimits& limits = {},
-        std::shared_ptr<const MapData::TerrainSavePlan> existingPlan = {});
+        std::shared_ptr<const MapData::TerrainSavePlan> existingPlan = {},
+        TerrainMinimapPreservePolicy policy = TerrainMinimapPreservePolicy::ListedLimits);
     // 调用者重建生成输入时失败也经过同一 allowlist，不自行复制错误码分类。
     [[nodiscard]] static Result<TerrainMinimapAutomaticPreparation> PreserveUnsupportedAutomatic(
         const MapSaveTask& actualTask, const MapData::MapDataEditSession& edits,
-        std::vector<Diagnostic> generationDiagnostics);
+        std::vector<Diagnostic> generationDiagnostics,
+        TerrainMinimapPreservePolicy policy = TerrainMinimapPreservePolicy::ListedLimits);
+    // 这批失败按 ListedLimits 不能降级、但作者选择无视风险后可以保留原小地图时为 true。
+    [[nodiscard]] static bool RiskPreservable(const std::vector<Diagnostic>& generationDiagnostics);
 
     // Preserve、已有TGA或Automatic判定未变化时返回null。非null时只append这一份MapBLP，
     // 并以Plan替换旧Preserve计划；W3E/WPM已在任务里，不能再次append整份计划。
