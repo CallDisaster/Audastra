@@ -97,7 +97,7 @@ void CheckRealTerrainUnitPlacementSave(const MapArchiveSession& original,
         request.terrainStrokes = {stroke};
         auto expectedUnits = baseline;
         if (operation == 0) {
-            request.placementEdit = MapEditPlacementRotation{selected, 1.25f};
+            request.placementEdit = MapEditPlacementTransform{selected, 1.25f};
             expectedUnits.units[1].rotation = 1.25f;
         } else if (operation == 1) {
             request.placementEdit = MapEditPlacementCopy{{selected}, {256, 128, 0}};
@@ -156,13 +156,13 @@ void CheckRealTerrainUnitPlacementSave(const MapArchiveSession& original,
         if (operation == 0) {
             auto bad = request; bad.expectedSourceSha256.assign(64, '0'); reject(bad, "source", "SAVE_SOURCE_STALE");
             bad = request; auto changed = selected; changed.expectedMemberSha256.assign(64, '0');
-            bad.placementEdit = MapEditPlacementRotation{changed, 1.25f}; reject(bad, "member", "SAVE_PLACEMENT_MEMBER_STALE");
+            bad.placementEdit = MapEditPlacementTransform{changed, 1.25f}; reject(bad, "member", "SAVE_PLACEMENT_MEMBER_STALE");
             bad = request; changed = selected; changed.expectedRowKey += "stale";
-            bad.placementEdit = MapEditPlacementRotation{changed, 1.25f}; reject(bad, "row", "SAVE_PLACEMENT_ROW_STALE");
+            bad.placementEdit = MapEditPlacementTransform{changed, 1.25f}; reject(bad, "row", "SAVE_PLACEMENT_ROW_STALE");
             bad = request; bad.terrainStrokes.front().followDoodads = true;
             reject(bad, "follow", "SAVE_TERRAIN_PLACEMENT_FOLLOW_CONFLICT");
             bad = request; changed = selected; changed.file = PlacementFile::Doodads;
-            bad.placementEdit = MapEditPlacementRotation{changed, 1.25f}; reject(bad, "doo", "SAVE_OPERATION_SCOPE_INVALID");
+            bad.placementEdit = MapEditPlacementTransform{changed, 1.25f}; reject(bad, "doo", "SAVE_OPERATION_SCOPE_INVALID");
         }
         Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "combined save leaves its original source untouched");
         std::cout << "terrain_units_save_passed operation=" << names[operation] << " source_sha256=" << source.SourceSha256()

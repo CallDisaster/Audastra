@@ -6,6 +6,7 @@
 
 #include <QJsonDocument>
 
+#include <array>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -85,8 +86,8 @@ struct Fixture {
                 if (!active) return Result<MapDataEditSession::EditReceipt>::Failure("Test", "PLACEMENT_ACTIVE_REQUIRED", "缺少独立活动事务。");
                 if (!plan.OriginalReplayIntent()) return Result<MapDataEditSession::EditReceipt>::Failure("Test", "PLACEMENT_ORIGINAL_REQUIRED", "来源不在原表。");
                 if (pending) {
-                    const auto* old = std::get_if<MapDataPlacementRotation>(&*pending);
-                    const auto* next = std::get_if<MapDataPlacementRotation>(&*plan.OriginalReplayIntent());
+                    const auto* old = std::get_if<MapDataPlacementTransform>(&*pending);
+                    const auto* next = std::get_if<MapDataPlacementTransform>(&*plan.OriginalReplayIntent());
                     if (!old || !next || old->source.id != next->source.id)
                         return Result<MapDataEditSession::EditReceipt>::Failure("Test", "PLACEMENT_RECIPE_CONFLICT", "独立窄配方不允许第二copy或其他原始目标。");
                 }
@@ -141,8 +142,9 @@ QJsonObject NewRecord(const char* kind, const char* id) {
 }
 void SchemaAndCopyReceiptUseOriginalRowsAndOrder() {
     const auto definitions = PlacementToolDefinitions();
-    Require(definitions.size() == 4 && definitions[0].name == "entities_rotate" && definitions[1].name == "entities_copy"
-        && definitions[2].name == "entities_create" && definitions[3].name == "entities_delete", "发现四个共用摆放工具");
+    Require(definitions.size() == 5 && definitions[0].name == "entities_rotate" && definitions[1].name == "entities_copy"
+        && definitions[2].name == "entities_create" && definitions[3].name == "entities_delete"
+        && definitions[4].name == "entities_transform", "发现五个共用摆放工具");
     for (const auto& definition : definitions) Require(definition.permission == ToolPermission::Edit
         && definition.maxRequestIdBytes == 4096 && !definition.inputSchema.value("properties").toObject().contains("member_bytes")
         && definition.inputSchema.value("properties").toObject().value("dry_run").toObject().value("type") == "boolean",
@@ -164,6 +166,45 @@ void SchemaAndCopyReceiptUseOriginalRowsAndOrder() {
     const auto changed = f.session.Replacements();
     Require(f.session.Undo() && !f.session.IsDirty() && f.session.Redo()
         && f.session.Replacements().front().data == changed.front().data, "facade复制沿原UndoRedo");
+}
+void TransformMovesAndScalesDoodadsWithinGates() {
+    Fixture f; const auto before = f.original->Doodads()->doodads[0];
+    auto request = f.Base(MapDataKind::Doodads); request.insert("source", f.Locator(MapDataKind::Doodads, 0));
+    request.insert("position", QJsonObject{{"x", 64}, {"y", -128}, {"height_offset", 5}});
+    request.insert("scale", QJsonObject{{"x", 1.5}, {"y", 1.5}, {"z", 2}});
+    const auto result = InvokePlacementTool("entities_transform", request, f.host);
+    Require(result.value("ok").toBool() && result.value("operation") == "transform"
+        && result.value("requested_scale").toObject().value("z").toDouble() == 2, "装饰物移动并缩放");
+    const auto ground = f.session.InspectTerrainPoint({64, -128}); Require(ground.Succeeded(), "采样新位置地面");
+    const auto& moved = f.current->Doodads()->doodads[0];
+    Require(moved.position == std::array<float, 3>{64, -128, float(double(ground.value->groundHeight) + 5)}
+        && moved.scale == std::array<float, 3>{1.5f, 1.5f, 2} && moved.rotation == before.rotation
+        && moved.creationId == before.creationId && moved.itemSets.size() == before.itemSets.size(),
+        "位置按新地面加偏移、缩放写入，朝向与其它字段不变");
+    Require(f.session.Undo(), "变换沿原撤销栈");
+    const auto refused = [&](MapDataKind kind, std::size_t row, QJsonObject extra) {
+        auto value = f.Base(kind); value.insert("source", f.Locator(kind, row));
+        for (auto it = extra.begin(); it != extra.end(); ++it) value.insert(it.key(), it.value());
+        return Code(InvokePlacementTool("entities_transform", value, f.host));
+    };
+    const QJsonObject two{{"x", 2}, {"y", 2}, {"z", 2}};
+    Require(refused(MapDataKind::Units, 0, {{"scale", two}}) == "MAP_PLACEMENT_SCALE_UNSUPPORTED", "单位缩放来自物编，拒绝");
+    Require(refused(MapDataKind::Units, 2, {{"position", QJsonObject{{"x", 64}, {"y", -128}, {"z", 0}}}})
+        == "MAP_PLACEMENT_START_MOVE_UNSUPPORTED", "起始位置不能经普通变换移动");
+    Require(refused(MapDataKind::Doodads, 1, {}) == "MAP_PLACEMENT_TRANSFORM_EMPTY", "空变换拒绝");
+    Require(refused(MapDataKind::Doodads, 1, {{"position", QJsonObject{{"x", 64}, {"y", -128}, {"z", 0}, {"height_offset", 0}}}})
+        == "PLACEMENT_COORDINATE_INVALID", "z 与 height_offset 只能二选一");
+    Require(refused(MapDataKind::Doodads, 1, {{"position", QJsonObject{{"x", 64}, {"y", -128}}}}) == "PLACEMENT_COORDINATE_INVALID",
+        "不给高度时不猜");
+    Require(refused(MapDataKind::Doodads, 1, {{"scale", QJsonObject{{"x", 0}, {"y", 1}, {"z", 1}}}}) == "PLACEMENT_SCALE_INVALID",
+        "零缩放拒绝");
+    Require(!refused(MapDataKind::Doodads, 1, {{"position", QJsonObject{{"x", 900000}, {"y", 0}, {"z", 0}}}}).isEmpty(),
+        "地图外的位置由地形宿主拒绝");
+    auto unit = f.Base(MapDataKind::Units); unit.insert("source", f.Locator(MapDataKind::Units, 0));
+    unit.insert("position", QJsonObject{{"x", 64}, {"y", -128}, {"z", 77}}); unit.insert("facing_radians", 1.5);
+    Require(InvokePlacementTool("entities_transform", unit, f.host).value("ok").toBool()
+        && f.current->Units()->units[0].position == std::array<float, 3>{64, -128, 77}
+        && f.current->Units()->units[0].rotation == 1.5f, "普通单位可以同时改绝对位置和朝向");
 }
 void RotationUnitsAndSpecialTailRemainExact() {
     Fixture f; const auto special = f.original->Doodads()->SerializeOriginal();
@@ -235,7 +276,7 @@ void StandaloneRecipeUsesOriginalReplayAndTransactionEnvelope() {
     Fixture rotated(true);
     Require(InvokePlacementTool("entities_rotate", rotated.Rotate(MapDataKind::Units, 0, 1.0), rotated.host).value("ok").toBool()
         && InvokePlacementTool("entities_rotate", rotated.Rotate(MapDataKind::Units, 0, 2.0), rotated.host).value("ok").toBool(), "同原行可重复绝对rotation");
-    Require(std::get<MapDataPlacementRotation>(*rotated.pending).facingRadians == 2.0f, "保留最后请求float");
+    Require(std::get<MapDataPlacementTransform>(*rotated.pending).facingRadians == 2.0f, "保留最后请求float");
     Require(InvokePlacementTool("entities_rotate", rotated.Rotate(MapDataKind::Units, 0, 0.0), rotated.host).value("ok").toBool()
         && !rotated.pending && !rotated.session.IsDirty(), "恢复原值清净差而不制造保存成功");
     Fixture mixed(true); auto region = *mixed.original->Regions(); region.entries[0].left -= 1;
@@ -413,14 +454,14 @@ void NewCommandsKeepPublicationAndStandaloneGates() {
 
 int main() {
     try {
-        SchemaAndCopyReceiptUseOriginalRowsAndOrder(); RotationUnitsAndSpecialTailRemainExact();
+        SchemaAndCopyReceiptUseOriginalRowsAndOrder(); RotationUnitsAndSpecialTailRemainExact(); TransformMovesAndScalesDoodadsWithinGates();
         InvalidLateSourceAndStaleRequestsNeverPublish(); HostDenialAndCompleteEscapedBudgetPreserveRedoAndIdentity();
         StandaloneRecipeUsesOriginalReplayAndTransactionEnvelope(); ReadOnlyAndGuiPriorAuthorChangesRemainSeparate();
         CreateFourStandardAndCustomKindsUseRealSources(); PreviewAllOperationsNeverAppliesOrConsumesIdentity();
         DeleteUsesOriginalRowsAndRejectsStaleLateSources(); CreationValidationRejectsWholeBatchBeforePublish();
         NewCommandsKeepPublicationAndStandaloneGates();
         TestRegisteredPlacementHost();
-        std::cout << "11 placement facade scenarios and actual registered host roundtrips passed\n";
+        std::cout << "12 placement facade scenarios and actual registered host roundtrips passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

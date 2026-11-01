@@ -34,7 +34,10 @@ struct PlacementMove {
     PlacementId id;
     std::array<float, 3> position{};
     std::optional<float> rotation; // 弧度；空表示不变
+    std::optional<std::array<float, 3>> scale; // 三轴缩放；空表示不变，只用于装饰物/可破坏物
 };
+// 新建与变换共用的单轴缩放范围 (0, 1000]。
+[[nodiscard]] bool ValidPlacementScale(float value) noexcept;
 
 // 移动一个或多个摆放（可跨两个文件，仍为一个事务）。坐标须有限且 |v| <= 1e6。
 // 起始位置（sloc）的坐标联动由 EditUnits 同一规则写入玩家设置。

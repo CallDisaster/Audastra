@@ -74,9 +74,12 @@ struct MapEditPlacementCopy {
     std::array<float, 3> offset{};
 };
 
-struct MapEditPlacementRotation {
+// 与 MapData::MapDataPlacementTransform 同义：三项各自可选、至少一项，未给出的保持原值。
+struct MapEditPlacementTransform {
     MapEditPlacementSource source;
-    float facingRadians = 0;
+    std::optional<float> facingRadians;
+    std::optional<std::array<float, 3>> position;
+    std::optional<std::array<float, 3>> scale;
 };
 
 struct MapEditPlacementCreate {
@@ -86,7 +89,7 @@ struct MapEditPlacementCreate {
 struct MapEditPlacementDelete {
     std::vector<MapEditPlacementSource> sources;
 };
-using MapEditPlacementOperation = std::variant<std::monostate, MapEditPlacementCopy, MapEditPlacementRotation,
+using MapEditPlacementOperation = std::variant<std::monostate, MapEditPlacementCopy, MapEditPlacementTransform,
     MapEditPlacementCreate, MapEditPlacementDelete>;
 
 struct MapEditSaveRequest {
