@@ -12,7 +12,7 @@ void ValidateDisplayOnlyParent(const ObjectRecord& parent, const NativeObjectDoc
     for (const auto& modification : parent.modifications) {
         const auto match = schema.MatchNativeField(ObjectType::Destructable, modification.key, context);
         if (!match.definition)
-            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "可破坏物标准父覆盖含未知字段：" + modification.key.fieldId);
+            Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "可破坏物标准父覆盖含未知字段，不能证明其只影响展示：" + modification.key.fieldId);
         const auto key = Text::LowerAscii(match.definition->sourceField);
         if (key != "name" && key != "minscale" && key != "maxscale" && key != "tilesets"
             && key != "colorr" && key != "colorg" && key != "colorb")

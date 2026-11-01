@@ -50,7 +50,7 @@ void DestructableParentDisplayFieldsKeepPathingAndIdentity() {
             if (mode == 6) { auto alias = fixture.metadata.back(); alias["ID"] = "Cr01"; fixture.metadata.push_back(alias); }
         }
         Check(document.AddCustomObject("C001", "S002")); fixture.Tables(); fixture.SetNative(document);
-        Rejected(fixture.Inspect({"C001"}), mode == 0 ? "TERRAIN_NATIVE_OBJECT_INHERITANCE"
+        Rejected(fixture.Inspect({"C001"}), mode == 0 || mode == 1 ? "TERRAIN_NATIVE_OBJECT_INHERITANCE"
             : (mode == 2 || mode == 3) ? "TERRAIN_NATIVE_OBJECT_PARENT_TYPE" : "TERRAIN_NATIVE_OBJECT_METADATA",
             "父相关字段、未知、错误wire、越界颜色、索引、selector及别名仍明确拒绝");
     }
