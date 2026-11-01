@@ -34,13 +34,17 @@ int RunMinimapAudit(int argc, wchar_t** argv) {
     report["phase"] = "document";
     const auto document = MapDocument::FromMembers(source.value->Members(), source.value->SourcePath());
     MapData::MapDataEditSession edits(document);
-    const std::array<std::string, 1> names{"war3map.w3e"};
+    const std::array<std::string, 2> names{"war3map.w3e", "war3map.wpm"};
     auto terrainBytes = source.value->CaptureExactMembers(names);
     if (!terrainBytes.Succeeded()) return finish(terrainBytes.diagnostics);
     if (!terrainBytes.value->front().present) return finish(Status::Failure(
         "MinimapAudit", "TERRAIN_MEMBER_MISSING", "缺少地形成员。").diagnostics);
     auto attached = edits.AttachTerrain(terrainBytes.value->front().bytes);
     if (!attached.Succeeded()) return finish(attached.diagnostics);
+    if (terrainBytes.value->at(1).present) {
+        auto pathing = edits.AttachPathing(terrainBytes.value->at(1).bytes);
+        if (!pathing.Succeeded()) return finish(pathing.diagnostics);
+    }
     report["phase"] = "terrain_capture";
     auto terrain = CaptureTerrainMinimapAssets(*source.value, edits, argv[3], {}, TerrainMinimapRangePolicy::ClassicPlayable);
     if (!terrain.Succeeded()) return finish(terrain.diagnostics);

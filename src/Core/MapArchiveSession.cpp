@@ -137,7 +137,8 @@ bool SafeTargetFilename(const std::filesystem::path& path) {
 
 bool MinimapSnapshotMember(std::string_view name) {
     static const std::set<std::string> allowed{"WAR3MAP.W3E", "WAR3MAP.W3I", "WAR3MAPUNITS.DOO", "WAR3MAP.DOO",
-        "WAR3MAP.W3U", "WAR3MAP.W3T", "WAR3MAP.W3B", "WAR3MAP.W3D", "WAR3MAP.W3A", "WAR3MAP.W3H", "WAR3MAP.W3Q", "WAR3MAP.WTS"};
+        "WAR3MAP.W3U", "WAR3MAP.W3T", "WAR3MAP.W3B", "WAR3MAP.W3D", "WAR3MAP.W3A", "WAR3MAP.W3H", "WAR3MAP.W3Q",
+        "WAR3MAP.W3R", "WAR3MAP.W3C", "WAR3MAP.WTS"};
     return allowed.contains(Canonical(name));
 }
 
@@ -146,7 +147,6 @@ bool MinimapAuditMember(std::string_view name) {
     return MinimapSnapshotMember(key) || key.ends_with(".BLP") || key.ends_with(".TGA")
         || key.ends_with(".MDX") || key.ends_with(".MDL") || key.ends_with(".SLK")
         || key == "WAR3MAP.WPM" || key == "WAR3MAP.SHD" || key == "WAR3MAP.MMP"
-        || key == "WAR3MAP.W3R" || key == "WAR3MAP.W3C"
         || key == "UI\\MISCDATA.TXT" || key == "UI\\WORLDEDITDATA.TXT";
 }
 
