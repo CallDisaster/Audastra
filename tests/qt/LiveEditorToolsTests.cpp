@@ -392,7 +392,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{95});
+    QCOMPARE(expected.size(), qsizetype{96});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;
