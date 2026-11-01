@@ -1,10 +1,10 @@
 #pragma once
 
 void AbsoluteHeightBridgeKeepsNativePathingAndWireState() {
-    for (const bool custom : {false, true}) {
+    for (const bool custom : {false, true}) for (const std::uint8_t flags : {0, 6}) {
         Fixture fixture; PatternedBridgeOriginal(fixture, 90.f, NativeValueType::Unreal, custom);
         auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
-        placements.doodads.front().flags = 6;
+        placements.doodads.front().flags = flags;
         placements.doodads.front().position[2] = 321.25f;
         const auto wire = Take(placements.Serialize()); fixture.Member("war3map.doo") = wire;
         fixture.Open(); fixture.Paint();
@@ -17,7 +17,7 @@ void AbsoluteHeightBridgeKeepsNativePathingAndWireState() {
         Require(fixture.edits->Redo(), "保留Z桥的地形修改仍可重做");
         fixture.SaveExpected("absolute-bridge-redone.w3x", fixture.ExpectedTerrain(true), deep, &wire, true);
     }
-    for (const unsigned state : {0u,1u,3u,4u,7u,31u,130u,255u,256u,306u,355u,357u,511u}) {
+    for (const unsigned state : {1u,3u,4u,7u,31u,130u,255u,256u,306u,355u,357u,511u}) {
         Fixture fixture; WalkableBridge(fixture);
         auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
         auto& bridge = placements.doodads.front();
@@ -32,7 +32,7 @@ void AbsoluteHeightBridgeKeepsNativePathingAndWireState() {
         const auto source = Take(Sha256File(fixture.archive->SourcePath()));
         const auto plan = fixture.Plan();
         Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), "TERRAIN_WALKABLE_DESTRUCTABLE_STATE"),
-            "只增加flags6存活态，未知标志和死亡/受损/越范围生命值不放开");
+            "仅增加已证标志，未知标志和无死亡声明/受损/越范围生命值不放开");
         Require(Take(Sha256File(fixture.archive->SourcePath())) == source && fixture.edits->IsDirty(),
             "状态拒绝不写原图或抹掉未保存地形");
     }

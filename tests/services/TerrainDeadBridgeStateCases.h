@@ -7,7 +7,7 @@ void DeadBridgeRequiresItsActualDeathDeclaration() {
             {"destructableID", "code", "walkable", "pathTex", "fixedRot", "pathTexDeath"},
             {{"Br01", "Br01", "0", std::string(kBridgeTexture), "0", std::move(death)}});
     };
-    for (const bool custom : {false, true}) for (const std::uint8_t flags : {2, 6}) {
+    for (const bool custom : {false, true}) for (const std::uint8_t flags : {0, 2, 6}) {
         Fixture fixture; PatternedBridgeOriginal(fixture, 90.f, NativeValueType::Unreal, custom);
         declare(fixture, "PathTextures/death-not-consumed-by-wpm.tga");
         auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
