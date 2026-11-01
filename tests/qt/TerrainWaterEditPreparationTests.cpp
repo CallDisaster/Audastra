@@ -1,5 +1,7 @@
 #include "TerrainWaterEditPreparation.h"
+#include "TerrainTextureSlotEditPreparation.h"
 #include "TerrainWaterEditFixture.h"
+#include "../TerrainCornerRampFixtures.h"
 #include "MapSaveJob.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapSettings.h"
@@ -70,6 +72,50 @@ std::vector<MapArchiveMember> SpecialWaterSaveMembers() {
 class TerrainWaterEditPreparationTests final : public QObject {
     Q_OBJECT
 private slots:
+    void PalettePaintThenCornerUsesCurrentFrozenResources() {
+        namespace C = TerrainCornerRampFixtures;
+        for (const bool cliff : {false, true}) for (const bool append : {false, true}) {
+            C::Fixture fixture;
+            if (!append) (cliff ? fixture.grid.header.cliffTilesets : fixture.grid.header.groundTilesets)
+                .push_back(cliff ? "Cl03" : "Tg03");
+            fixture.members[0].data = C::Take(MapData::SerializeMapTerrain(fixture.grid));
+            for (auto& member : fixture.members) {
+                if (member.name == "TerrainArt/Terrain.slk") member.data = WaterSlk(
+                    {"tileID", "walkable", "flyable", "buildable"},
+                    {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}, {"Tg03", "1", "1", "1"}});
+                if (member.name == "TerrainArt/CliffTypes.slk") member.data = WaterSlk(
+                    {"cliffID"}, {{"Cl01"}, {"Cl02"}, {"Cl03"}});
+            }
+            QTemporaryDir directory; QVERIFY(directory.isValid());
+            EditorProject project;
+            InstallTerrainWaterProject(project, directory.path().toStdWString(), true, fixture.members);
+            QVERIFY(project.mapEdits_->AttachPathing(fixture.members[1].data).Succeeded());
+            const Services::MapDataQueryBinding document{"mixed-ramp-qt", 1, 0, project.archiveSession_->SourceSha256()};
+            const auto binding = [&] { return WaterTake(Services::CaptureTerrainEditState(*project.mapEdits_, document)).binding; };
+            auto request = std::make_shared<TerrainWaterEditRequest>(WaterTake(CaptureTerrainWaterEditRequest(project, true)));
+            const auto frozen = WaterTake(project.mapEdits_->FreezeForSave(C::kBudget));
+            Services::TerrainTextureSlotCommand slot{append ? Services::TerrainTextureSlotOperation::Append : Services::TerrainTextureSlotOperation::Replace,
+                cliff ? MapData::TerrainTextureTable::Cliff : MapData::TerrainTextureTable::Ground,
+                1, append ? "" : cliff ? "Cl03" : "Tg03", cliff ? "Cl02" : "Tg02"};
+            auto captured = WaterTake(PrepareTerrainTextureSlotEditCapture(request, frozen, binding(), slot));
+            WaterTake(Services::ApplyTerrainEdit(*project.mapEdits_, document, captured.prepared));
+            QVERIFY(project.ObserveMapDataEdit("mixed palette"));
+            MapData::TerrainBrush paint; paint.kind = cliff ? MapData::TerrainBrushKind::CliffTexture : MapData::TerrainBrushKind::Texture;
+            paint.shape = MapData::TerrainBrushShape::Square; paint.radius = cliff ? 12 : 0;
+            if (cliff) paint.cliffTexture = 1; else { paint.groundTexture = "Tg02"; paint.variation = 0; }
+            WaterTake(project.mapEdits_->EditTerrain(paint, std::span(&fixture.point, 1), false));
+            QVERIFY(project.ObserveMapDataEdit("mixed paint"));
+            request = std::make_shared<TerrainWaterEditRequest>(WaterTake(CaptureTerrainWaterEditRequest(project, true)));
+            auto rampResources = WaterTake(LoadTerrainWaterEditResources(request));
+            MapData::TerrainBrush ramp; ramp.kind = MapData::TerrainBrushKind::CornerRamp;
+            const auto prepared = WaterTake(Services::PrepareTerrainCornerRampEdit(*project.mapEdits_, document, binding(),
+                rampResources.resources, ramp, std::span(&fixture.point, 1), false));
+            WaterTake(Services::ApplyTerrainEdit(*project.mapEdits_, document, prepared));
+            QVERIFY(project.ObserveMapDataEdit("mixed corner"));
+            const auto plan = WaterTake(Services::TerrainPathingSave::PrepareForSave(*project.archiveSession_, *project.mapEdits_, project.war3GameRoot_));
+            QVERIFY(plan.SaveGate().Succeeded());
+        }
+    }
     void OpenedAliasIdentityIsVerifiedWithoutDoodadCapture() {
         QTemporaryDir directory; QVERIFY(directory.isValid());
         EditorProject project;
