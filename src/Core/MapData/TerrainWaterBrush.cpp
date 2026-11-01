@@ -570,7 +570,7 @@ private:
     }
     void ApplyNativeRamp(const TerrainStrokePoint& point) {
         Work(64); // 三点直坡或九点拐角及紧邻几何检查，先预收其有限工作。
-        const auto reject = [&](const char* suffix, const char* message) {
+        const auto reject = [&](const char* suffix, const std::string& message) {
             Reject(std::string(brush_.straightRamp ? "TERRAIN_STRAIGHT_RAMP_" : "TERRAIN_CORNER_RAMP_") + suffix, message);
         };
         TerrainCornerRampPlan plan; std::size_t selectedCount = 9;
@@ -626,7 +626,9 @@ private:
             eachCell([&](auto x, auto y) {
                 const auto corners = classifyCell(x, y); const auto sum = weight(corners);
                 if (sum && sum <= 1 && !matches(corners))
-                    reject(before ? "BEFORE_INVALID" : "INVALID", "原版坡道live地格合法性检查未通过，整笔未修改。");
+                    reject(before ? "BEFORE_INVALID" : "INVALID", "原版坡道live地格合法性检查未通过：格("
+                        + std::to_string(x) + "," + std::to_string(y) + ")，四角="
+                        + std::string(corners.data(), corners.size()) + "，整笔未修改。");
             });
         };
         const auto checkDomain = [&](bool before) {
@@ -676,6 +678,12 @@ private:
             // 收集本次目标的完整候选域；无R净差也验证相同before/after合同。
             for (const auto index : selectedIndices) Gather(blocks, index % width_, index / width_);
             checkDomain(true); checkLiveCells(true);
+            if (joined) {
+                // 原版结束器只消费实际R位变化收集的脏块；验证域不能变成额外的修改域。
+                Work(blocks.present.size());
+                std::fill(blocks.present.begin(), blocks.present.end(), 0);
+                blocks.entries.clear();
+            }
         }
         bool changedRamp = false;
         // 5A8FD0：仅对实际R位变化点提交并按x外/y内Gather。
@@ -685,7 +693,7 @@ private:
             next.textureAndFlagsRaw = std::uint8_t(*brush_.cornerRamp
                 ? next.textureAndFlagsRaw | 0x10 : next.textureAndFlagsRaw & ~0x10);
             Commit(x, y, next); changedRamp = true;
-            if (!connected) Gather(blocks, x, y);
+            if (!connected || joined) Gather(blocks, x, y);
         }
         // 无R位净变化仍须验收同一完整接受域，不能借no-op绕过邻坡/水/模型拒绝。
         // 这些块仅供只读检查，不触发原版仅对实际变化块执行的荒芜结束器。

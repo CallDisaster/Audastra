@@ -5,13 +5,14 @@
 #include <array>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace War3Map::TerrainJoinedRampCases {
 using namespace MapData;
 inline void Require(bool value, const char* text) { if (!value) throw std::runtime_error(text); }
-template<class T> T Take(Result<T> result) {
+template<class T> T Take(Result<T> result, std::string context = {}) {
     if (!result.Succeeded() || !result.value) {
-        std::string text = "原版连接坡道夹具失败";
+        std::string text = "原版连接坡道夹具失败 " + context;
         for (const auto& diagnostic : result.diagnostics) text += " | " + diagnostic.code + ": " + diagnostic.message;
         throw std::runtime_error(text);
     }
@@ -40,7 +41,22 @@ inline TerrainBrush Brush(bool enabled = true) {
 }
 inline TerrainWaterStrokeCandidate Prepare(const TerrainGridSnapshot& source, TerrainStrokePoint point, bool enabled = true) {
     return Take(PrepareTerrainCornerRampStroke(source, Rules(), Brush(enabled), std::span(&point, 1), {}, {}, {},
-        TerrainCornerRampAlgorithm::NativeJoinedRamps));
+        TerrainCornerRampAlgorithm::NativeJoinedRamps), std::to_string(point.x) + "," + std::to_string(point.y)
+        + (enabled ? " create" : " remove"));
+}
+inline void ReferenceQuarterSelections() {
+    const auto outer = Grid(false, 0), inner = Grid(true, 0);
+    const std::array<TerrainStrokePoint, 3> outerPoints{{{32, 32}, {96, 32}, {32, 96}}};
+    const std::array<TerrainStrokePoint, 3> innerPoints{{{-32, -32}, {-96, -32}, {-32, -96}}};
+    constexpr std::array<std::size_t, 3> counts{9, 3, 3};
+    for (std::size_t i = 0; i < counts.size(); ++i) {
+        Require(Take(PlanTerrainCornerRamp(outer, outerPoints[i], TerrainCornerRampAlgorithm::NativeJoinedRamps)).selectedVertexCount == counts[i]
+            && Take(PlanTerrainCornerRamp(inner, innerPoints[i], TerrainCornerRampAlgorithm::NativeJoinedRamps)).selectedVertexCount == counts[i],
+            "原版按参考角的轴差选点，三高一低地格也有合法三点落点");
+    }
+    Require(!PlanTerrainCornerRamp(outer, {96, 96}, TerrainCornerRampAlgorithm::NativeJoinedRamps).Succeeded()
+        && !PlanTerrainCornerRamp(inner, {-96, -96}, TerrainCornerRampAlgorithm::NativeJoinedRamps).Succeeded(),
+        "两轴均无层差的对角落点不能猜测连接方向");
 }
 inline void CrossingsAndRotations() {
     for (const bool inner : {false, true}) for (unsigned rotation = 0; rotation < 4; ++rotation) {
@@ -86,5 +102,5 @@ inline void Refusals() {
     Require(!PlanTerrainCornerRamp(source, point, static_cast<TerrainCornerRampAlgorithm>(255)).Succeeded(),
         "未知算法版本仍拒绝");
 }
-inline void Run() { CrossingsAndRotations(); Refusals(); }
+inline void Run() { ReferenceQuarterSelections(); CrossingsAndRotations(); Refusals(); }
 } // namespace War3Map::TerrainJoinedRampCases

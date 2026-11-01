@@ -38,8 +38,8 @@ struct TerrainRampPlan {
     TerrainStraightRampAlgorithm algorithm = TerrainStraightRampAlgorithm::Independent);
 
 struct TerrainCornerRampPlan {
-    // x外/y内，从原版选出的高端起点向两个低端方向各延伸两格。
-    // 外角九点为1高8低；内角从对侧高端出发，九点为5高4低。
+    // 九点按x外/y内；旧算法外角为1高8低、内角为5高4低。
+    // 连接算法也可选择三点直坡，仅前selectedVertexCount个索引有效。
     std::array<std::uint32_t, 9> vertexIndices{};
     std::size_t selectedVertexCount = 9;
     std::uint32_t highX = 0, highY = 0;
