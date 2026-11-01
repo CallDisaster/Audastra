@@ -31,7 +31,7 @@ void EditorProjectTests::WetInnerCornerRampProjectColdRestoreAndNativeSave() {
         const auto frozen = project.mapEdits_->FreezeForSave(S::kBudget); QVERIFY(frozen.Succeeded());
         MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::CornerRamp; brush.value = true;
         const auto prepared = (*frozen.value)->PrepareTerrainCornerRampEdit(*rules.value, brush,
-            std::span(&fixture.point, 1), follow);
+            std::span(&fixture.point, 1), follow, {}, MapData::TerrainCornerRampAlgorithm::NativeWetCorners);
         QVERIFY2(prepared.Succeeded(), ReadDiagnosticText(prepared).c_str());
         QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(*prepared.value).Succeeded());
         QVERIFY(project.ObserveMapDataEdit("含水内角坡道工程夹具"));
