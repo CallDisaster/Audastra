@@ -1276,8 +1276,8 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     Require(f.edits->Redo(), "loaded-cache ground paint remains redoable after formal saving");
     f.SaveExpected("loaded-special-redo.w3x", changedTerrain, expected, nullptr, true);
     for (const auto point : std::array<TerrainStrokePoint, 3>{{{256,256},{512,512},{512,768}}}) {
-        Fixture near; prepare(near); paint(near, point.x, point.y);
-        const auto refused = TerrainPathingSave::PrepareForSave(*near.archive, *near.edits, near.gameRoot);
+        Fixture adjacent; prepare(adjacent); paint(adjacent, point.x, point.y);
+        const auto refused = TerrainPathingSave::PrepareForSave(*adjacent.archive, *adjacent.edits, adjacent.gameRoot);
         Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
             "special chunk and boundary-sharing chunks cannot acquire loaded-cache qualification");
     }
