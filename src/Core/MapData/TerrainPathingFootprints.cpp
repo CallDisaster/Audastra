@@ -123,8 +123,10 @@ Status TerrainPathingResources::CaptureNativeFootprints(const MemberReader& read
                 const auto found = byRawcode.find(placement.rawcode);
                 if (found == byRawcode.end()) continue; // 已由同次严格分类器解释的零贡献类型。
                 if (found->second.value->contribution == TerrainNativeFootprintContribution::WalkableTerrainSuppression
-                    && (placement.flags != 2 || placement.lifePercent != 100))
-                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_STATE", "可行走对象仅支持wire flags=2且lifePercent=100的完整生存实例："
+                    && ((placement.flags != 2 && placement.flags != 6) || placement.lifePercent != 100))
+                    // wire 0x04仅保留文件中的Z；原版的二维注册仍使用相同XY/旋转/占地。
+                    // 不改Z或标志，死亡、受损及其它未验证标志仍拒绝。
+                    Fail("TERRAIN_WALKABLE_DESTRUCTABLE_STATE", "可行走对象仅支持wire flags=2或保留高度的6，且lifePercent=100："
                         + placement.rawcode + " #" + std::to_string(placement.creationId));
                 found->second.used = true;
                 groups[found->second.path].push_back({&placement, found->second.value, after});
