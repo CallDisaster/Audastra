@@ -12,8 +12,9 @@ namespace War3Map::Render {
 [[nodiscard]] Result<std::optional<std::uint8_t>> ClassicMinimapCliffTextureAt(
     const MapData::TerrainGridSnapshot& terrain, std::uint32_t x, std::uint32_t y);
 
-// 返回原始顶点地高与原版坡道抬升：直坡64、S形坡32/64/96，高端保留原高度。
-// 未识别形态明确失败。输入必须是未额外抬升且没有运行时变形对象的原始网格。
+// 返回原始顶点地高与原版坡道抬升：直坡64、已匹配S形坡32/64/96。
+// 原版字符!、S细分-1及高端按原版零附加高度分支保留原高度。
+// 非法网格、坐标或非有限地高仍失败；输入须未额外抬升且没有运行时变形对象。
 [[nodiscard]] Result<double> ClassicMinimapGroundHeightAt(
     const MapData::TerrainGridSnapshot& terrain, std::uint32_t x, std::uint32_t y);
 

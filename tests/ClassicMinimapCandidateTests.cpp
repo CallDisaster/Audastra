@@ -256,6 +256,41 @@ void ClassicWaterDepthAndBoundaryOrdering() {
     Require(RgbaAt(edge.raw, 0, 0) == std::array<unsigned, 4>{3, 5, 9, 255}, "边界应在两次水色后混黑");
 }
 
+void NativeUnmatchedRampPixels() {
+    // 1.27a 原指令：分类 ! 和 S 细分 -1 均由 0x5A8460 的
+    // 0x5A84E4 返回零；0x5A7D70 只对 R/S 排除悬崖色。
+    // 三种原创 W3E、四向旋转。浅水颜色按原版逐通道截断，断言滤波前像素。
+    for (int shape = 0; shape < 3; ++shape) for (int rotation = 0; rotation < 4; ++rotation) {
+        auto wire = W3e(); wire.resize(45 + 7 * 7 * 7);
+        Put32(wire, 29, 7); Put32(wire, 33, 7);
+        for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) {
+            int u = x, v = y;
+            for (int turn = 0; turn < rotation; ++turn) { const auto old = u; u = 6 - v; v = old; }
+            bool ramp = u >= 2 && u <= 4 && v >= 2 && v <= 4;
+            std::uint8_t level = 2;
+            if (shape == 1) {
+                if (u == 2 && v == 2) ramp = false;
+                if ((u == 3 && v == 4) || (u == 4 && v == 3)) level = 3;
+            }
+            if (shape == 2 && u == 4 && v == 4) level = 4;
+            const auto at = 45 + static_cast<std::size_t>(y * 7 + x) * 7;
+            Put16(wire, at, 8592); Put16(wire, at + 2, 8792);
+            wire[at + 4] = static_cast<std::byte>((ramp ? 0x10 : 0) | (x == 3 && y == 3 ? 0x40 : 0));
+            wire[at + 5] = std::byte{0}; wire[at + 6] = static_cast<std::byte>(0xf0 | level);
+        }
+        auto input = Input(std::move(wire));
+        auto& colors = input.terrain.classicColors.emplace();
+        colors.cliffColors = {{10, 20, 30, 255}};
+        colors.waterConfigured = true; colors.waterColor = {20, 40, 80, 128}; colors.deepLevelPathing = 128;
+        const auto result = Take(BuildClassicMinimapCandidate(input));
+        const auto expected = shape == 2 ? std::array<unsigned, 4>{15, 30, 55, 255}
+            : std::array<unsigned, 4>{59, 79, 109, 255};
+        Require(RgbaAt(result.raw, 3, 3) == expected, "原版零附加高度/悬崖例外对应的浅水像素逐通道一致");
+        Require(result.manifest.shallowWaterTiles == 1 && result.manifest.deepWaterTiles == 0,
+            "未命中细分的S和!均保留原版水深分类");
+    }
+}
+
 void NativePlayableRectangleUsesW3iAndClamps() {
     auto input = Input(TwoGroundW3e());
     input.terrain.groundAtlases.push_back(Atlas({20, 40, 60, 255}));
@@ -295,6 +330,7 @@ int main() {
         ObjectDeclarationAndAtlasIdentityReject();
         PostprocessRandomSourceMustBeExplicit();
         ClassicWaterDepthAndBoundaryOrdering();
+        NativeUnmatchedRampPixels();
         NativePlayableRectangleUsesW3iAndClamps();
         StreamingLargePlayableAndBudgets();
         StreamingStableNoiseAndSmallGoldenOutput();

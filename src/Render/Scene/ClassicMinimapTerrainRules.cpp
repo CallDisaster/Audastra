@@ -72,7 +72,8 @@ bool OppositeRampLevelsDiffer(const Vertex* first, const Vertex* second) {
         && first->CliffLevel() != second->CliffLevel();
 }
 
-// 原版 A/B/H/L/R/S 的几何分类。独立表达邻域约束，不使用渲染预览的近似抬升。
+// 原版 A/B/H/L/R/S 的几何分类；Unknown 对应其明确返回的字符 !。
+// 该标记不是输入校验失败；取色与附加高度分别按各自原版分支消费。
 RampClass Classify(const Grid& terrain, int x, int y) {
     const auto* center = At(terrain, x, y);
     if (!center) return RampClass::Unknown;
@@ -99,11 +100,12 @@ RampClass Classify(const Grid& terrain, int x, int y) {
 }
 
 // S 形坡道由 3x3 四角 L/H 及四条边中点 R 判定：一低三高=3/4，三低一高=1/4，
-// 对角两低两高=1/2。其它形态原版返回 -1，不生成猜测的水深地高。
-std::optional<double> SaddleOffset(const Grid& terrain, int x, int y) {
+// 对角两低两高=1/2。细分返回 -1 时，原版附加高度函数 0x5A8460
+// 跳到 0x5A84E4 并读取零常量；这是明确的零附加高度，不是猜测形态。
+double SaddleOffset(const Grid& terrain, int x, int y) {
     std::array<RampClass, 9> classes{};
     for (int dx = -1; dx <= 1; ++dx) for (int dy = -1; dy <= 1; ++dy) {
-        if (!At(terrain, x + dx, y + dy)) return std::nullopt;
+        if (!At(terrain, x + dx, y + dy)) return 0.0;
         classes[static_cast<std::size_t>((dx + 1) * 3 + dy + 1)] = Classify(terrain, x + dx, y + dy);
     }
     constexpr std::array<std::array<int, 2>, 4> corners{{{0, 0}, {0, 2}, {2, 0}, {2, 2}}};
@@ -130,7 +132,7 @@ std::optional<double> SaddleOffset(const Grid& terrain, int x, int y) {
             && classes[1] == RampClass::Straight && classes[7] == RampClass::Straight
             && classes[3] == RampClass::Straight && classes[5] == RampClass::Straight) return 64.0;
     }
-    return std::nullopt;
+    return 0.0;
 }
 
 std::uint8_t CliffPalette(const Grid& terrain, int x, int y) {
@@ -163,8 +165,7 @@ Result<std::optional<std::uint8_t>> ClassicMinimapCliffTextureAt(
         bool rampSurface = false;
         for (const auto& corner : kCorners) {
             const auto shape = Classify(terrain, cx + corner[0], cy + corner[1]);
-            if (shape == RampClass::Unknown)
-                return Failure<std::optional<std::uint8_t>>("CLASSIC_MINIMAP_RAMP_UNRESOLVED", "悬崖邻格含原版未识别的坡道形态。");
+            // 原版悬崖例外只识别 R/S；! 与其余分类一样不构成例外。
             rampSurface |= shape == RampClass::Straight || shape == RampClass::Saddle;
         }
         if (rampSurface) return Output::Success(std::nullopt);
@@ -182,12 +183,9 @@ Result<double> ClassicMinimapGroundHeightAt(const Grid& terrain, std::uint32_t x
     double offset = 0;
     const auto shape = Classify(terrain, static_cast<int>(x), static_cast<int>(y));
     if (shape == RampClass::Straight) offset = 64.0;
-    else if (shape == RampClass::Saddle) {
-        const auto saddle = SaddleOffset(terrain, static_cast<int>(x), static_cast<int>(y));
-        if (!saddle) return Failure<double>("CLASSIC_MINIMAP_RAMP_UNRESOLVED", "S 形坡道未满足原版 L/H/R 邻域规则，不能猜测水深地高。");
-        offset = *saddle;
-    } else if (shape == RampClass::Unknown)
-        return Failure<double>("CLASSIC_MINIMAP_RAMP_UNRESOLVED", "坡道形态没有原版可确认的地高规则。");
+    else if (shape == RampClass::Saddle)
+        offset = SaddleOffset(terrain, static_cast<int>(x), static_cast<int>(y));
+    // ! 与普通/低端分类都走原版 0x5A84E4 的零附加高度分支。
     return Result<double>::Success(static_cast<double>(vertex.position[2]) + offset);
 }
 
