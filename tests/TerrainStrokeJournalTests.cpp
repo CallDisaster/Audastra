@@ -6,6 +6,7 @@
 #include "TerrainResizeShadowAbsenceCases.h"
 
 #include <algorithm>
+#include <array>
 #include <iostream>
 #include <limits>
 #include <source_location>
@@ -559,6 +560,29 @@ void BlockPasteHasClosedFTJDVariantAndIndependentWire() {
     other = block.intent; other.blockPaste->sourceCells.y1++;
     Require(!EqualTerrainJournalIntent(other, block.intent), "不同源范围不能混过replay对齐");
 }
+void JoinedRampVersionKeepsOldAlgorithmsExact() {
+    auto journal = Journal(); auto& stroke = journal.strokes.front();
+    stroke.intent.brush = {}; stroke.intent.brush.kind = TerrainBrushKind::CornerRamp;
+    stroke.intent.points = {{2080, 2080}}; stroke.rulesSha256.assign(64, 'c');
+    constexpr std::array<char, 5> versions{'4', '8', 'F', 'J', 'K'};
+    for (unsigned algorithm = 1; algorithm <= 5; ++algorithm) {
+        stroke.intent.cornerRampAlgorithm = static_cast<TerrainCornerRampAlgorithm>(algorithm);
+        const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+        Require(wire[3] == std::byte(versions[algorithm - 1]), "每个旧/新角坡算法保持独立规范正文版本");
+        const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+        Require(decoded.strokes.front().intent.cornerRampAlgorithm == stroke.intent.cornerRampAlgorithm
+            && Take(EncodeTerrainStrokeJournal(decoded)) == wire, "算法和原始正文精确回转");
+        if (algorithm == 5) {
+            auto downgraded = wire; downgraded[3] = std::byte{'J'};
+            Require(!DecodeTerrainStrokeJournal(downgraded).Succeeded(), "连接意图不能伪装为旧正文");
+        } else if (algorithm == 4) {
+            auto promoted = wire; promoted[3] = std::byte{'K'};
+            Require(!DecodeTerrainStrokeJournal(promoted).Succeeded(), "缺少连接意图的新正文不是旧记录别名");
+        }
+    }
+    stroke.intent.cornerRampAlgorithm = static_cast<TerrainCornerRampAlgorithm>(6);
+    Require(!EncodeTerrainStrokeJournal(journal).Succeeded(), "未知新算法继续拒绝");
+}
 } // namespace
 
 int main() {
@@ -566,6 +590,7 @@ int main() {
         StrictCodecRoundtripAndMalformedInputs(); NativeCliffVersionAndOptionsRemainExplicit();
         WaterAlgorithmVersionIsCanonicalAndLegacyBytesRemainExact();
         CornerVersionIsExplicitAndMixedAlgorithmsRemainOrdered();
+        JoinedRampVersionKeepsOldAlgorithmsExact();
         ConnectedStraightVersionIsExplicitAndLegacyBytesStayExact();
         BlockPasteHasClosedFTJDVariantAndIndependentWire();
         BoundsVersionHasIndependentPayloadAndStrictVariants();

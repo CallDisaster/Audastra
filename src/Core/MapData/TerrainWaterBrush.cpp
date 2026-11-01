@@ -589,13 +589,15 @@ private:
                 Reject(planned.diagnostics.empty() ? "TERRAIN_CORNER_RAMP_STEP" : planned.diagnostics.front().code,
                     planned.diagnostics.empty() ? "无法规划拐角坡道。" : planned.diagnostics.front().message);
             plan = *planned.value;
+            selectedCount = plan.selectedVertexCount;
         }
         const auto selectedIndices = std::span<const std::uint32_t>(plan.vertexIndices).first(selectedCount);
         const auto high = Read(plan.highX, plan.highY);
         if (high.CliffLevel() > rules_.maximumCliffLevel)
             reject("LEVEL", "坡道层级超过本次实际Terrain.MaxHeight规则。");
         auto blocks = NewBlocks();
-        const bool connected = brush_.straightRamp && brush_.straightAlgorithm == TerrainStraightRampAlgorithm::Connected;
+        const bool joined = !brush_.straightRamp && brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps;
+        const bool connected = joined || (brush_.straightRamp && brush_.straightAlgorithm == TerrainStraightRampAlgorithm::Connected);
         const auto selected = [&](std::uint32_t x, std::uint32_t y) {
             return std::find(selectedIndices.begin(), selectedIndices.end(), std::uint32_t(Index(x, y))) != selectedIndices.end();
         };
@@ -640,11 +642,12 @@ private:
                     const int sy = (int(ny) - int(plan.highY)) * plan.directionY;
                     const bool lower = plan.inner ? sx > 0 && sy > 0 : sx > 0 || sy > 0;
                     if (((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly
-                            || (plan.inner && brush_.cornerAlgorithm != TerrainCornerRampAlgorithm::NativeWetCorners)) && vertex.HasWater())
+                            || (plan.inner && brush_.cornerAlgorithm != TerrainCornerRampAlgorithm::NativeWetCorners && !joined)) && vertex.HasWater())
                         || vertex.IsBoundary() || vertex.IsMapEdge()
                         || vertex.groundHeightRaw != high.groundHeightRaw
                         || vertex.CliffTextureIndex() != high.CliffTextureIndex()
-                        || vertex.CliffLevel() != high.CliffLevel() - (lower ? 1 : 0))
+                        || (joined ? (vertex.CliffLevel() != high.CliffLevel() && vertex.CliffLevel() + 1 != high.CliffLevel())
+                            : vertex.CliffLevel() != high.CliffLevel() - (lower ? 1 : 0)))
                         reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、同悬崖材质的一级纯台阶或纯拐角，不能相交边界、其它方向或旧算法不支持的水。");
                     if (!connected) {
                         if (vertex.IsRamp() != (selected(nx, ny) && *brush_.cornerRamp))
@@ -653,6 +656,7 @@ private:
                     }
                     if (!before && selected(nx, ny) && vertex.IsRamp() != *brush_.cornerRamp)
                         reject("REQUEST", "原版补角闭包未保留请求的完整目标条带，整笔未修改。");
+                    if (joined) continue;
                     if (!vertex.IsRamp()) continue;
                     const int normal = sx + sy;
                     if (normal < 0 || normal > 2)
@@ -694,17 +698,26 @@ private:
                 reject("SPECIAL", "坡道实际处理域与特殊地形模型相交，当前不授予删除或改写资格。");
         }
         checkLiveCells(false);
-        // 5A8D10先完整扫描/去重，后统一置R；只接受闭包不越本次三/九个选点。
-        std::array<std::uint32_t, 9> additions{}; std::size_t count = 0;
+        // 单点最多3×3顶点，Gather向前扩一格并按4对齐，最多四块。
+        // 原版先收集/去重、后统一置R；新版本允许补角越出原选点，旧版本仍拒绝。
+        constexpr std::size_t maximumBlocks = 4, cellsPerBlock = 4 * 4, cornersPerCell = 4;
+        if (joined && blocks.entries.size() > maximumBlocks)
+            reject("CLOSURE_BUDGET", "单点坡道补角超出已验证的四个脏块范围，整笔未修改。");
+        std::array<std::uint32_t, maximumBlocks * cellsPerBlock * cornersPerCell> additions{}; std::size_t count = 0;
         eachCell([&](auto x, auto y) {
+            if (joined && !changedRamp) return;
             const auto corners = classifyCell(x, y);
             if (!weight(corners) || matches(corners)) return;
             for (const auto offset : {std::array{0u, 1u}, std::array{1u, 1u}, std::array{1u, 0u}, std::array{0u, 0u}}) {
                 const auto nx = x + offset[0], ny = y + offset[1];
                 if (Read(nx, ny).IsRamp()) continue;
-                if (!selected(nx, ny)) reject("CLOSURE", "原版补角闭包超出本次选点，当前形态明确拒绝。");
+                if (!joined && !selected(nx, ny)) reject("CLOSURE", "原版补角闭包超出本次选点，当前形态明确拒绝。");
                 const auto id = std::uint32_t(Index(nx, ny));
-                if (std::find(additions.begin(), additions.begin() + count, id) == additions.begin() + count) additions[count++] = id;
+                if (joined) Work(count + 1);
+                if (std::find(additions.begin(), additions.begin() + count, id) == additions.begin() + count) {
+                    if (count == additions.size()) reject("CLOSURE_BUDGET", "坡道补角顶点超过已验证上界，整笔未修改。");
+                    additions[count++] = id;
+                }
             }
         });
         for (std::size_t i = 0; i < count; ++i) {

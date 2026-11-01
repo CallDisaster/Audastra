@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 namespace War3Map::MapData {
 namespace {
@@ -17,6 +18,9 @@ bool Consistent(const TerrainGridSnapshot& terrain) {
 Result<TerrainRampPlan> Rejected(const char* code, const char* text) {
     return Result<TerrainRampPlan>::Failure("MapTerrain.Edit", code, text);
 }
+
+Result<TerrainRampPlan> PlanStraightRampGeometry(const TerrainGridSnapshot& terrain,
+    const TerrainStrokePoint& point, bool allowWater, bool joined = false);
 
 } // namespace
 
@@ -52,7 +56,8 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
         return Result<TerrainCornerRampPlan>::Failure("MapTerrain.Edit", code, text);
     };
     if (algorithm != TerrainCornerRampAlgorithm::DryOnly && algorithm != TerrainCornerRampAlgorithm::WetTerrain
-        && algorithm != TerrainCornerRampAlgorithm::NativeCorners && algorithm != TerrainCornerRampAlgorithm::NativeWetCorners)
+        && algorithm != TerrainCornerRampAlgorithm::NativeCorners && algorithm != TerrainCornerRampAlgorithm::NativeWetCorners
+        && algorithm != TerrainCornerRampAlgorithm::NativeJoinedRamps)
         return fail("TERRAIN_CORNER_RAMP_ALGORITHM", "拐角坡道算法版本未知。");
     if (!Consistent(terrain) || terrain.header.version != 11 || terrain.header.width > 2049 || terrain.header.height > 2049)
         return fail("TERRAIN_CORNER_RAMP_LAYOUT", "拐角坡道需要完整的经典W3E v11网格。");
@@ -68,10 +73,34 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
         return fail("TERRAIN_CORNER_RAMP_CANONICAL_POINT", "拐角坡道需要每轴地格内32或96世界单位的单个精确落点。");
     const double u = (point.x - header.offset[0]) / 128.0, v = (point.y - header.offset[1]) / 128.0;
     const int cellX = int(std::floor(u)), cellY = int(std::floor(v));
+    const bool joined = algorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps;
+    if (joined) {
+        const auto level = [&](int x, int y) { return int(terrain.vertices[std::size_t(y) * header.width + x].CliffLevel()); };
+        const int a = level(cellX, cellY), b = level(cellX + 1, cellY);
+        const int c = level(cellX, cellY + 1), d = level(cellX + 1, cellY + 1);
+        // 原版创建入口先按两轴层差选三点直坡或九点转角，不能把直坡强行扩成九点。
+        if ((a == c && b == d && std::abs(a - b) == 1)
+            || (a == b && c == d && std::abs(a - c) == 1)) {
+            auto straight = PlanStraightRampGeometry(terrain, point, true, true);
+            if (!straight.Succeeded() || !straight.value) return {{}, std::move(straight.diagnostics)};
+            TerrainCornerRampPlan plan;
+            std::copy(straight.value->vertexIndices.begin(), straight.value->vertexIndices.end(), plan.vertexIndices.begin());
+            plan.selectedVertexCount = 3; plan.highX = straight.value->highX; plan.highY = straight.value->highY;
+            plan.directionX = straight.value->directionX; plan.directionY = straight.value->directionY;
+            plan.footprint = straight.value->footprint;
+            return Result<TerrainCornerRampPlan>::Success(plan);
+        }
+        const int qx = u - cellX == 0.25 ? 1 : -1, qy = v - cellY == 0.25 ? 1 : -1;
+        const int rx = cellX + (qx < 0), ry = cellY + (qy < 0), reference = level(rx, ry);
+        if (std::abs(level(rx + qx, ry) - reference) != 1
+            || std::abs(level(rx, ry + qy) - reference) != 1
+            || level(rx + qx, ry + qy) == reference)
+            return fail("TERRAIN_CORNER_RAMP_STEP", "原版连接坡道需要一级直台阶或可识别转角，不能把平地或鞍形直接填成坡道。");
+    }
     int dx = u - cellX == 0.25 ? 1 : -1, dy = v - cellY == 0.25 ? 1 : -1;
     int hx = cellX + (dx < 0), hy = cellY + (dy < 0);
     bool inner = false;
-    if (algorithm == TerrainCornerRampAlgorithm::NativeCorners || algorithm == TerrainCornerRampAlgorithm::NativeWetCorners) {
+    if (algorithm == TerrainCornerRampAlgorithm::NativeCorners || algorithm == TerrainCornerRampAlgorithm::NativeWetCorners || joined) {
         const auto level = [&](int x, int y) { return int(terrain.vertices[std::size_t(y) * header.width + x].CliffLevel()); };
         const int reference = level(hx, hy);
         // 5A8FD0以光标四分区的参考角求两轴/对角差。内角是参考低端、
@@ -97,14 +126,15 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
         const auto& vertex = terrain.vertices[index];
         if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw || vertex.UnknownWaterFlags()
             || ((algorithm == TerrainCornerRampAlgorithm::DryOnly
-                || (inner && algorithm != TerrainCornerRampAlgorithm::NativeWetCorners)) && vertex.HasWater())
+                || (inner && algorithm != TerrainCornerRampAlgorithm::NativeWetCorners && !joined)) && vertex.HasWater())
             || vertex.IsBoundary() || vertex.IsMapEdge() || vertex.groundHeightRaw > 0x3fff
             || vertex.groundHeightRaw != high.groundHeightRaw
-            || vertex.CliffLevel() != high.CliffLevel() - ((inner ? x && y : x || y) ? 1 : 0))
+            || (joined ? (vertex.CliffLevel() != high.CliffLevel() && vertex.CliffLevel() + 1 != high.CliffLevel())
+                : vertex.CliffLevel() != high.CliffLevel() - ((inner ? x && y : x || y) ? 1 : 0)))
             return fail("TERRAIN_CORNER_RAMP_STEP", "拐角坡道需要等原始地高的一级纯内角或外角，不能含边界、未知位或旧算法不支持的水。");
         plan.vertexIndices[std::size_t(x * 3 + y)] = index; rampCount += vertex.IsRamp();
     }
-    if (rampCount != 0 && rampCount != 9)
+    if (!joined && rampCount != 0 && rampCount != 9)
         return fail("TERRAIN_CORNER_RAMP_EXISTING", "已有九点拐角坡道不完整，整笔未修改。");
     plan.footprint = {header.offset[0] + (hx + dx) * 128.0, header.offset[1] + (hy + dy) * 128.0, 192.0,
         std::uint32_t(std::min(hx, lx)), std::uint32_t(std::min(hy, ly)),
@@ -114,7 +144,7 @@ Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(const TerrainGridSnapshot& t
 
 namespace {
 Result<TerrainRampPlan> PlanStraightRampGeometry(const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
-    bool allowWater) {
+    bool allowWater, bool joined) {
     if (!Consistent(terrain) || terrain.header.version != 11)
         return Rejected("TERRAIN_RAMP_LAYOUT", "坡道编辑需要完整的经典 W3E v11 地形");
     const auto& header = terrain.header;
@@ -154,15 +184,16 @@ Result<TerrainRampPlan> PlanStraightRampGeometry(const TerrainGridSnapshot& terr
             if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw != 0 || (!allowWater && vertex.HasWater())
                 || vertex.IsBoundary() || vertex.IsMapEdge() || vertex.UnknownWaterFlags() != 0
                 || vertex.groundHeightRaw > 0x3fff || vertex.groundHeightRaw != rawHeight
-                || vertex.CliffLevel() != (step <= 0 ? high : low))
+                || (joined ? (vertex.CliffLevel() != high && vertex.CliffLevel() != low)
+                    : vertex.CliffLevel() != (step <= 0 ? high : low)))
                 return Rejected("TERRAIN_RAMP_NEIGHBORHOOD", "坡道需要等原始地高的直台阶，邻域不能包含边界、未知位或不同方向的层级变化，旧算法仍只支持干地");
             if (vertex.IsRamp()) {
-                if (step < 0 || step > 2)
+                if (!joined && (step < 0 || step > 2))
                     return Rejected("TERRAIN_RAMP_EXISTING", "相邻坡道超出本次直坡形态，未修改地形");
                 ++rampVertices;
             }
         }
-        if (rampVertices != 0 && rampVertices != 3)
+        if (!joined && rampVertices != 0 && rampVertices != 3)
             return Rejected("TERRAIN_RAMP_EXISTING", "相邻坡道的三点不完整，不能继续修改");
     }
     TerrainRampPlan plan;
