@@ -1241,6 +1241,9 @@ void SpecialDoodad(Fixture& f, bool dry = false) {
 }
 
 void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
+    const auto saveGate = [](Result<TerrainSavePlan> prepared) {
+        return prepared.Succeeded() && prepared.value ? prepared.value->SaveGate() : Status{std::move(prepared.diagnostics)};
+    };
     const auto prepare = [](Fixture& f) {
         SpecialDoodad(f, true);
         f.original.header.groundTilesets.push_back("Tg02");
@@ -1268,7 +1271,7 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     auto altered = finalMembers;
     altered.push_back({"TerrainArt/Terrain.slk", Slk({"tileID","walkable","flyable","buildable"},
         {{"Tg01","1","1","1"},{"Tg02","1","1","1"}})});
-    Require(!TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, altered).Succeeded(),
+    Require(!saveGate(TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, altered)).Succeeded(),
         "final resource overlay cannot acquire loaded-cache proof by retaining the old terrain type");
     f.SaveExpected("loaded-special-ground.w3x", changedTerrain, expected, nullptr, true);
     Require(f.edits->Undo(), "loaded-cache ground paint remains undoable after formal saving");
@@ -1277,17 +1280,17 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     f.SaveExpected("loaded-special-redo.w3x", changedTerrain, expected, nullptr, true);
     for (const auto point : std::array<TerrainStrokePoint, 3>{{{256,256},{512,512},{512,768}}}) {
         Fixture adjacent; prepare(adjacent); paint(adjacent, point.x, point.y);
-        const auto refused = TerrainPathingSave::PrepareForSave(*adjacent.archive, *adjacent.edits, adjacent.gameRoot);
+        const auto refused = saveGate(TerrainPathingSave::PrepareForSave(*adjacent.archive, *adjacent.edits, adjacent.gameRoot));
         Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
             "special chunk and boundary-sharing chunks cannot acquire loaded-cache qualification");
     }
     Fixture corrupt; prepare(corrupt); corrupt.Member("war3map.wpm")[16] |= std::byte{4}; corrupt.Open();
     paint(corrupt, 768, 768);
-    const auto invalid = TerrainPathingSave::PrepareForSave(*corrupt.archive, *corrupt.edits, corrupt.gameRoot);
+    const auto invalid = saveGate(TerrainPathingSave::PrepareForSave(*corrupt.archive, *corrupt.edits, corrupt.gameRoot));
     Require(!invalid.Succeeded() && HasCode(invalid, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
         "even one unexplained source bit rejects the alternative full-grid cache");
     Fixture water; prepare(water); water.Paint();
-    Require(!TerrainPathingSave::PrepareForSave(*water.archive, *water.edits, water.gameRoot).Succeeded(),
+    Require(!saveGate(TerrainPathingSave::PrepareForSave(*water.archive, *water.edits, water.gameRoot)).Succeeded(),
         "loaded-cache proof does not authorize water or geometry changes");
 }
 
