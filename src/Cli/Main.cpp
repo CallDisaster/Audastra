@@ -40,6 +40,7 @@
 #include "GameExtractCommand.h"
 #include "GameUiCommand.h"
 #include "MapRuntimeCommand.h"
+#include "MinimapAuditCommand.h"
 #include "AudastraVersion.generated.h"
 
 #include <algorithm>
@@ -88,6 +89,7 @@ void PrintUsage() {
         << "war3-map-cli update-apply --package <zip> --manifest <json> --signature <sig> --install-dir <directory> [--baseline-manifest <json> --baseline-signature <sig>] --dry-run\n"
         << "war3-map-cli profiles\n"
         << "war3-map-cli map-runtime-query <map> <source-sha256>\n"
+        << "war3-map-cli minimap-audit <map> <game-root> (read-only generation; no map output)\n"
         << "war3-map-cli map-ui-import <source> <source-sha> <new-map> <tool-root> <ui-root> <game-root> <plan.json> --runtime-package <sha> --approve-native-runtime\n"
         << "  map-edit-save runtime options: --runtime-mode automatic|enabled|disabled --runtime-package <sha256> --approve-native-runtime --runtime-purpose normal|internal_validation|test_run\n"
         << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author] [--ui-root <ui-root>] [--init-trigger <name> --init-code <jass-line> ...] [--add-file <member> <file> ...]\n"
@@ -468,6 +470,7 @@ int wmain(int argc, wchar_t** argv) {
         return RunMapEditSave(argc, argv);
     }
     if (command == L"map-runtime-query") return RunMapRuntimeQuery(argc, argv);
+    if (command == L"minimap-audit") return RunMinimapAudit(argc, argv);
     if (command == L"map-ui-import") return RunMapUiImport(argc, argv);
     if (command == L"profiles") {
         const auto profile = War3Map::CompatibilityProfile::Default();
