@@ -52,7 +52,7 @@ struct TerrainCornerRampPlan {
 // 原版任意浮点坐标的取整模拟，不向半格边界或未知形态授予资格。
 [[nodiscard]] std::optional<TerrainStrokePoint> SnapTerrainCornerRampPoint(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
-// 只查询单点几何与九点原始形态；完整dirty block/halo、实际M、special及
+// 只查询单点几何与三/九点原始形态；完整dirty block/halo、实际M、special及
 // live合法性和补角闭包由下面的owned事务核对，预览不授予提交资格。
 [[nodiscard]] Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
