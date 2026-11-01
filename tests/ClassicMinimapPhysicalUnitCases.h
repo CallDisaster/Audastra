@@ -24,8 +24,10 @@ void TestDuplicateUnitIdsOnlyGrantPhysicalMinimapReads() {
     const auto expected = Take(BuildClassicMinimapCandidate(controlAssets, FlatPostprocess()));
     Require(candidate.raw.rgba == expected.raw.rgba && candidate.manifest.blpSha256 == expected.manifest.blpSha256,
         "初始化ID不参与0x08保存像素，重复与唯一ID的实际图像逐字节相同");
-    Require(VerifyClassicMinimapObjectAssetsCurrent(assets, source, fixture.edits, {}).Succeeded()
-        && VerifyClassicMinimapObjectAssetsFrozenOutput(assets, source, {}).Succeeded(), "物理行捕获仍通过真实当前/冻结身份复核");
+    const auto current = VerifyClassicMinimapObjectAssetsCurrent(assets, source, fixture.edits, {});
+    Require(current.Succeeded(), "物理行当前来源复核：" + (current.diagnostics.empty() ? std::string{} : current.diagnostics.front().code));
+    const auto frozen = VerifyClassicMinimapObjectAssetsFrozenOutput(assets, source, {});
+    Require(frozen.Succeeded(), "物理行冻结来源复核：" + (frozen.diagnostics.empty() ? std::string{} : frozen.diagnostics.front().code));
     auto changed = Take(ParseUnitPlacements(repeated)); changed.units[0].owner = 1;
     Require(!fixture.edits.EditUnits(changed).Succeeded(), "只读小地图资格不授予重复ID单位的编辑定位");
     const auto after = Take(fixture.edits.Snapshot(MapDataKind::Units));

@@ -333,7 +333,7 @@ Status VerifyClassicMinimapObjectAssetsCurrent(const ClassicMinimapObjectAssets&
             const auto& member = current.Member(kKinds[i]); const auto& expected = snapshot.CapturedMembers()[i];
             if ((member.state != MapDataState::Missing) != expected.currentPresent)
                 Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象层存在性与捕获不同。");
-            if (expected.currentPresent && (member.state != MapDataState::Ready || member.sources.size() != 1
+            if (expected.currentPresent && (!ReadablePhysicalRows(i, member) || member.sources.size() != 1
                 || member.sources.front().data.size() != expected.currentBytes
                 || Take(Sha256(member.sources.front().data)) != expected.currentSha256))
                 Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象层正文与捕获不同。");
