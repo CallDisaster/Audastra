@@ -1244,14 +1244,14 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     const auto saveGate = [](Result<TerrainSavePlan> prepared) {
         return prepared.Succeeded() && prepared.value ? prepared.value->SaveGate() : Status{std::move(prepared.diagnostics)};
     };
-    const auto prepare = [](Fixture& f) {
-        SpecialDoodad(f, true);
+    const auto prepare = [](Fixture& f, bool dry = true) {
+        SpecialDoodad(f, dry);
         f.original.header.groundTilesets.push_back("Tg02");
         f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));
         f.Member("TerrainArt/Terrain.slk") = Slk({"tileID","walkable","flyable","buildable"},
             {{"Tg01","1","1","1"},{"Tg02","0","1","1"}});
         // 原版先生成干地缓存，再载入特殊记录；字面源并非实时special查询结果。
-        std::fill(f.Member("war3map.wpm").begin()+16, f.Member("war3map.wpm").end(), std::byte{0x51});
+        std::fill(f.Member("war3map.wpm").begin()+16, f.Member("war3map.wpm").end(), dry ? std::byte{0x51} : std::byte{0x19});
         f.Open();
     };
     const auto paint = [](Fixture& f, double x, double y) {
@@ -1290,9 +1290,16 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     const auto invalid = saveGate(TerrainPathingSave::PrepareForSave(*corrupt.archive, *corrupt.edits, corrupt.gameRoot));
     Require(!invalid.Succeeded() && HasCode(invalid, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
         "even one unexplained source bit rejects the alternative full-grid cache");
-    Fixture water; prepare(water); water.Paint();
+    Fixture water; prepare(water, false); water.Paint();
+    Require(water.edits->IsDirty(), "water rejection fixture must contain a real existing-water height change");
     Require(!saveGate(TerrainPathingSave::PrepareForSave(*water.archive, *water.edits, water.gameRoot)).Succeeded(),
-        "loaded-cache proof does not authorize water or geometry changes");
+        "loaded-cache proof does not authorize water changes");
+    Fixture geometry; prepare(geometry);
+    TerrainBrush raised; raised.kind = TerrainBrushKind::Raise; raised.radius = 0; raised.strength = 32;
+    const TerrainStrokePoint high{768,768}; Take(geometry.edits->EditTerrain(raised, std::span(&high, 1), false));
+    Require(geometry.edits->IsDirty(), "geometry rejection fixture must contain an actual height change");
+    Require(!saveGate(TerrainPathingSave::PrepareForSave(*geometry.archive, *geometry.edits, geometry.gameRoot)).Succeeded(),
+        "loaded-cache proof does not authorize geometry changes");
 }
 
 void NativeFixedRotationUsesTheNormalSaveAndUndoChain() {
