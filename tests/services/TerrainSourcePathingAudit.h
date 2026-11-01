@@ -40,16 +40,23 @@ int AuditTerrainSourcePathing(const std::filesystem::path& path, const std::stri
 
 // 独立原版诊断输入：只移除派生WPM，其余具名成员保持；不是正常保存候选。
 int PrepareTerrainSourceOracle(const std::filesystem::path& path, const std::string& expected,
-    const std::filesystem::path& target) {
+    const std::filesystem::path& target, bool withoutSpecials = false) {
     Require(!std::filesystem::exists(target), "fresh native source oracle required");
     const auto source = OpenOracleSource(path, expected);
-    const std::array<std::string, 1> removals{{"war3map.wpm"}};
-    const auto saved = Take(source.SaveCandidate(target, {}, removals));
+    const std::vector<std::string> removals = withoutSpecials ? std::vector<std::string>{} : std::vector<std::string>{"war3map.wpm"};
+    std::vector<MemberReplacement> replacements;
+    if (withoutSpecials) {
+        auto placements = Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo"))));
+        Require(!placements.specialDoodads.empty(), "diagnostic needs actual special records");
+        placements.specialDoodads.clear();
+        replacements.push_back({"war3map.doo", Take(placements.Serialize())});
+    }
+    const auto saved = Take(source.SaveCandidate(target, replacements, removals));
     const auto checked = OpenOracleSource(saved.path, Take(Sha256File(saved.path)));
-    Require(!checked.HasMember("war3map.wpm"), "oracle WPM removal failed");
+    Require(withoutSpecials || !checked.HasMember("war3map.wpm"), "oracle WPM removal failed");
     for (const auto& member : source.Members()) {
         const auto name = Text::LowerAscii(member.name);
-        if (name == "war3map.wpm" || name == "(listfile)") continue;
+        if ((!withoutSpecials && name == "war3map.wpm") || (withoutSpecials && name == "war3map.doo") || name == "(listfile)") continue;
         Require(Take(checked.ReadMember(member.name)) == member.data, "oracle changed a retained member");
     }
     Check(source.VerifySourceUnchanged());

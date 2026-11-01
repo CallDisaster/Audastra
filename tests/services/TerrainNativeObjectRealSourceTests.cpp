@@ -823,11 +823,13 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 #include "TerrainSourcePathingAudit.h"
 int wmain(int argc, wchar_t** argv) {
     if ((argc == 6 && std::wstring_view(argv[1]) == L"--terrain-pathing-source-audit")
-        || (argc == 5 && std::wstring_view(argv[1]) == L"--terrain-source-oracle-input")) {
+        || (argc == 5 && (std::wstring_view(argv[1]) == L"--terrain-source-oracle-input"
+            || std::wstring_view(argv[1]) == L"--terrain-source-without-special-input"))) {
         try {
             const std::wstring wideExpected(argv[3]);
             const std::string expected(wideExpected.begin(), wideExpected.end());
-            if (argc == 5) return PrepareTerrainSourceOracle(std::filesystem::path(argv[2]), expected, std::filesystem::path(argv[4]));
+            if (argc == 5) return PrepareTerrainSourceOracle(std::filesystem::path(argv[2]), expected, std::filesystem::path(argv[4]),
+                std::wstring_view(argv[1]) == L"--terrain-source-without-special-input");
             return AuditTerrainSourcePathing(std::filesystem::path(argv[2]), expected,
                 std::filesystem::path(argv[4]), std::filesystem::path(argv[5]));
         } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
