@@ -137,9 +137,11 @@ void BridgeNamesKeepNativeWireAndInheritanceGuards() {
         Check(document.AddOriginalObject("S001"));
         if (!emptyParent) Modification(document, "S001", "Nm90", NativeValueType::String, std::string("parent display"));
         fixture.SetNative(document);
-        if (emptyParent) Require(Take(fixture.Inspect({"N001"})).footprints.size() == 1, "合法空Original父保持已有兼容");
-        else Rejected(fixture.Inspect({"N001"}), "TERRAIN_NATIVE_OBJECT_INHERITANCE",
-            "父Name也是真实覆盖，不能因同为显示字段而猜测父覆盖继承");
+        const auto original = fixture.sources[kW3b].bytes;
+        const auto actual = Take(fixture.Inspect({"N001"}));
+        Require(actual.footprints.size() == 1 && actual.footprints.front().pathTexture == "PathTextures\\SyntheticBridge.tga"
+            && actual.footprints.front().fixedRotationDegrees == -1.f && fixture.sources[kW3b].bytes == original,
+            "空父和地址/类型明确的父Name均不改变子桥的实际占地或原生字节");
     }
     auto chain = BridgeNameFixture(); auto document = BridgeNameDocument(true, "Nm90", "display");
     Check(document.AddCustomObject("N002", "N001")); chain.SetNative(document);
