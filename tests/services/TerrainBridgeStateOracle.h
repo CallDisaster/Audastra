@@ -1,14 +1,8 @@
 #pragma once
 
-// 原创原版对照输入，不是产品保存出口；只替换唯一空DOO并移除派生WPM。
-int PrepareBridgeStateOracle(const std::filesystem::path& path, const std::string& expected,
-    const std::filesystem::path& target, std::uint8_t flags,
-    bool elevator = false, std::uint8_t life = 100, bool rampBlocker = false) {
+MapArchiveSession OpenOracleSource(const std::filesystem::path& path, const std::string& expected) {
     Require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(),
         [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }), "oracle SHA must be canonical");
-    Require(flags == 0 || flags == 2 || flags == 6, "oracle compares empty, normal and absolute-height states only");
-    Require(life == 0 || life == 100, "oracle compares explicit dead and intact states only");
-    Require(!std::filesystem::exists(target), "oracle output must be fresh");
     Require(Take(Sha256File(path)) == expected, "oracle source identity differs");
     const auto metadata = Take(Mpq::MpqArchive::OpenReadOnly(path));
     const auto files = Take(metadata.ListFilesStrict());
@@ -21,8 +15,19 @@ int PrepareBridgeStateOracle(const std::filesystem::path& path, const std::strin
         Require(!name.ends_with(".ai"), "excluded member prevents oracle preparation");
         Require(file.fileSize <= kSaveBytes - bytes, "oracle decoded member budget"); bytes += file.fileSize;
     }
-    const auto source = Take(MapArchiveSession::Open(path));
+    auto source = Take(MapArchiveSession::Open(path));
     Require(source.SourceSha256() == expected, "oracle source changed while opening");
+    return source;
+}
+
+// 原创原版对照输入，不是产品保存出口；只替换唯一空DOO并移除派生WPM。
+int PrepareBridgeStateOracle(const std::filesystem::path& path, const std::string& expected,
+    const std::filesystem::path& target, std::uint8_t flags,
+    bool elevator = false, std::uint8_t life = 100, bool rampBlocker = false) {
+    Require(flags == 0 || flags == 2 || flags == 6, "oracle compares empty, normal and absolute-height states only");
+    Require(life == 0 || life == 100, "oracle compares explicit dead and intact states only");
+    Require(!std::filesystem::exists(target), "oracle output must be fresh");
+    const auto source = OpenOracleSource(path, expected);
     const auto terrain = Take(source.ReadMember("war3map.w3e"));
     auto placements = Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo"))));
     Require(placements.recordLayout == PlacementRecordLayout::Classic && placements.doodads.empty()

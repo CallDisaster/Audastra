@@ -390,6 +390,7 @@ add_test(NAME services-terrain-saved-history COMMAND audastra-terrain-native-obj
 
 add_executable(audastra-terrain-native-object-real-tests
     TerrainNativeObjectRealSourceTests.cpp TerrainFinalInputsRealCases.h TerrainWalkableBridgeRealTests.cpp TerrainGroundBrushRealTests.cpp
+    TerrainSourcePathingAudit.h TerrainBridgeStateOracle.h TerrainSaveCorpusPointTests.h
     TerrainCategoryDirectoryRealTests.cpp TerrainExistingRampWaterRealTests.cpp TerrainPlayableBoundsRealTests.cpp TerrainShadowRealTests.cpp
     TerrainUnitPlacementRealTests.cpp TerrainCliffTransportSaveTests.cpp TerrainBoundaryRealTests.cpp TerrainRemoveWaterRealTests.cpp
     TerrainBlockSaveRealTests.cpp TerrainBlockSaveRealTests.h TerrainInnerCornerRampRealCases.h TerrainWetInnerCornerRampRealCases.h TerrainPathingAdaptersRealCases.h TerrainResizeAdaptersRealCases.h

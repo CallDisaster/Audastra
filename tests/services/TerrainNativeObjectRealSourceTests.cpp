@@ -820,7 +820,18 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 } // namespace
 
 #include "TerrainBridgeStateOracle.h"
+#include "TerrainSourcePathingAudit.h"
 int wmain(int argc, wchar_t** argv) {
+    if ((argc == 6 && std::wstring_view(argv[1]) == L"--terrain-pathing-source-audit")
+        || (argc == 5 && std::wstring_view(argv[1]) == L"--terrain-source-oracle-input")) {
+        try {
+            const std::wstring wideExpected(argv[3]);
+            const std::string expected(wideExpected.begin(), wideExpected.end());
+            if (argc == 5) return PrepareTerrainSourceOracle(std::filesystem::path(argv[2]), expected, std::filesystem::path(argv[4]));
+            return AuditTerrainSourcePathing(std::filesystem::path(argv[2]), expected,
+                std::filesystem::path(argv[4]), std::filesystem::path(argv[5]));
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     if (argc == 6 && std::wstring_view(argv[1]) == L"--ramp-blocker-oracle-input") {
         try {
             const std::wstring flags(argv[5]), wideExpected(argv[3]);
