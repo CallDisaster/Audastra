@@ -3,6 +3,43 @@
 
 namespace War3Map::ObjectData {
 using namespace NativeTerrainObjectDetail;
+namespace {
+void ValidateDisplayOnlyParent(const ObjectRecord& parent, const NativeObjectDocument& document,
+    const StandardObjectEntry& standard, const ObjectFieldSchema& schema, const Text::SlkCells& cells) {
+    ObjectFieldContext context;
+    context.rawcode = standard.key.rawcode; context.baseCode = standard.Field("code");
+    std::set<std::string_view> addresses;
+    for (const auto& modification : parent.modifications) {
+        const auto match = schema.MatchNativeField(ObjectType::Destructable, modification.key, context);
+        if (!match.definition)
+            Fail("TERRAIN_NATIVE_OBJECT_METADATA", "可破坏物标准父覆盖含未知字段：" + modification.key.fieldId);
+        const auto key = Text::LowerAscii(match.definition->sourceField);
+        if (key != "name" && key != "minscale" && key != "maxscale" && key != "tilesets"
+            && key != "colorr" && key != "colorg" && key != "colorb")
+            Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "可破坏物标准父仅允许已核实的展示字段覆盖，通行或其它字段仍拒绝：" + modification.key.fieldId);
+        const auto& field = UniqueBridgeField(cells, schema, context, key);
+        ValidateCustomBridgeSelector(field);
+        if (!match.safeToEdit || match.definition != &field || match.sourceKey != key || match.sourceIndex
+            || !field.nativeValueType || modification.key.level || modification.key.variation || modification.key.dataIndex
+            || modification.valueWasOpaque || document.ModificationValueType(parent.key, modification.key) != field.nativeValueType
+            || !addresses.emplace(field.fieldId).second)
+            Fail("TERRAIN_NATIVE_OBJECT_PARENT_TYPE", "标准父展示覆盖必须是唯一、完整且wire类型与元数据一致的零索引标量。");
+        if (key == "name" || key == "tilesets") {
+            if (field.nativeValueType != NativeValueType::String || !std::holds_alternative<std::string>(modification.value))
+                Fail("TERRAIN_NATIVE_OBJECT_PARENT_TYPE", "标准父名称和地形集覆盖必须是String。");
+        } else if (key == "minscale" || key == "maxscale") {
+            const auto* value = std::get_if<float>(&modification.value);
+            if ((field.nativeValueType != NativeValueType::Real && field.nativeValueType != NativeValueType::Unreal)
+                || !value || !std::isfinite(*value) || *value <= 0)
+                Fail("TERRAIN_NATIVE_OBJECT_PARENT_TYPE", "标准父比例范围覆盖必须是有限正F32。");
+        } else {
+            const auto* value = std::get_if<std::int32_t>(&modification.value);
+            if (field.nativeValueType != NativeValueType::Int32 || !value || *value < 0 || *value > 255)
+                Fail("TERRAIN_NATIVE_OBJECT_PARENT_TYPE", "标准父顶点颜色覆盖必须是0到255的Int32。");
+        }
+    }
+}
+}
 
 Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::span<const std::string_view> placedRawcodes,
     std::span<const std::string_view> specialRawcodes, std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
@@ -60,6 +97,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
         std::map<std::string_view, ResolvedDoodadFootprint, std::less<>> footprintPaths;
         std::map<std::string_view, std::string_view, std::less<>> specialPaths;
         std::set<std::string_view, std::less<>> validatedDoodadParents;
+        std::set<std::string_view, std::less<>> validatedDestructableParents;
         for (std::size_t row = 0; row < placedRawcodes.size() + specialRawcodes.size(); ++row) {
             const bool special = row >= placedRawcodes.size();
             const auto rawcode = special ? specialRawcodes[row - placedRawcodes.size()] : placedRawcodes[row];
@@ -162,10 +200,25 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 Fail("TERRAIN_NATIVE_STATIC_OBJECT_UNSUPPORTED", "摆放对象没有已知的唯一标准类别：" + std::string(rawcode));
             if (native && native->parentRawcode) {
                 const auto& parent = *native->parentRawcode;
-                if (standard || HasUnsupportedParentRecord(destructableIndex, parent) || doodadIndex.contains(parent)
+                const auto parentRow = destructableIndex.find(parent);
+                const auto* originalParent = parentRow == destructableIndex.end() ? nullptr : parentRow->second;
+                if (standard || (originalParent && originalParent->parentRawcode) || doodadIndex.contains(parent)
                     || catalog.Find(ObjectType::Doodad, parent))
-                    Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "仅支持父无实际字段覆盖的一层标准继承：" + std::string(rawcode));
+                    Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "可破坏物需要同类别的唯一一层标准父：" + std::string(rawcode));
                 standard = catalog.Find(ObjectType::Destructable, parent);
+                if (standard && originalParent && !originalParent->modifications.empty()
+                    && !validatedDestructableParents.contains(parent)) {
+                    // 按字段查询不会把标准父的展示覆盖当作walkable/pathTex/fixedRot覆盖；
+                    // 只验证保留其原字节，不向子对象合并未知继承或改写摆放比例。
+                    constexpr auto cacheBytes = sizeof(std::string_view) * 4;
+                    const auto count = originalParent->modifications.size();
+                    if (maximumWorkingBytes - work < cacheBytes
+                        || inputs[4]->bytes.size() > (maximumWorkingBytes - work - cacheBytes) / count / 8)
+                        Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "标准父展示字段验证超过剩余工作预算。");
+                    work += cacheBytes + inputs[4]->bytes.size() * count * 8;
+                    ValidateDisplayOnlyParent(*originalParent, *destructables, *standard, schema, metadataCells);
+                    validatedDestructableParents.emplace(parent);
+                }
             }
             if (!standard) Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "原生对象没有唯一标准父对象：" + std::string(rawcode));
             ObjectFieldContext context;
@@ -199,7 +252,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 walkable = value != "0";
             }
             if (walkable) {
-                // Custom的唯一标准父、父无实际字段覆盖和跨类别冲突已由上方逐项核实。
+                // Custom的唯一标准父、父无相关通行字段覆盖及跨类别冲突已逐项核实。
                 // 5B6B40/5B6BB0/5B6CA0只在字段缺失时将查询ID替换为5B6740返回的标准父。
                 const bool custom = native && native->parentRawcode;
                 if (standard->key.rawcode != rawcode && !custom)

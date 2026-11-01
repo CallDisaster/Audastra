@@ -374,7 +374,7 @@ target_compile_options(audastra-terrain-dual-stage-pathing-save-tests PRIVATE /W
 add_test(NAME services-terrain-dual-stage-pathing-save COMMAND audastra-terrain-dual-stage-pathing-save-tests)
 
 add_executable(audastra-native-destructable-pathing-tests
-    NativeDestructablePathingTests.cpp TerrainEmptyParentCases.h TerrainDoodadParentDisplayCases.h TerrainBridgeNameCases.h NativeTerrainDependencyCases.h)
+    NativeDestructablePathingTests.cpp TerrainEmptyParentCases.h TerrainDoodadParentDisplayCases.h TerrainDestructableParentDisplayCases.h TerrainBridgeNameCases.h NativeTerrainDependencyCases.h)
 target_link_libraries(audastra-native-destructable-pathing-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-native-destructable-pathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-native-destructable-pathing-tests PRIVATE /W4 /permissive- /utf-8)

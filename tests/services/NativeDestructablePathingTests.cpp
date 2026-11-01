@@ -1545,6 +1545,7 @@ void SpecialDoodadFieldsDoNotBorrowOrdinaryPoseRules() {
 #include "NativeDoodadNonPathFieldCases.h"
 #include "TerrainEmptyParentCases.h"
 #include "TerrainDoodadParentDisplayCases.h"
+#include "TerrainDestructableParentDisplayCases.h"
 #include "TerrainBridgeNameCases.h"
 #include "NativeTerrainDependencyCases.h"
 } // namespace
@@ -1585,6 +1586,7 @@ int main() {
         DoodadRepeatedColorFieldsPreservePathing();
         EmptyOriginalParentsKeepExactStandardInheritance();
         DoodadParentDisplayFieldsRemainTypedAndBounded();
+        DestructableParentDisplayFieldsKeepPathingAndIdentity();
         BridgeNameOverridesKeepExactPathing();
         RunNativeTerrainDependencyCases();
         std::cout << "native destructable pathing: typed fields, bounded inheritance, unique sources and rejection paths passed\n";
