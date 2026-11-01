@@ -2112,7 +2112,7 @@ void BridgeCustomRejectsUnsupportedValuesMetadataAndParents() {
     for (const unsigned mode : {0u, 1u, 2u, 3u, 4u, 5u, 6u}) {
         Fixture f; WalkableBridge(f); BridgeOriginal(f, {}, true);
         auto placements = Take(ParseDoodadPlacements(f.Member("war3map.doo")));
-        if (mode < 4) placements.doodads.front().flags = std::array<std::uint8_t, 4>{1, 3, 4, 5}[mode];
+        if (mode < 4) placements.doodads.front().flags = std::array<std::uint8_t, 4>{1, 3, 5, 7}[mode];
         else placements.doodads.front().lifePercent = std::array<std::uint8_t, 3>{0, 50, 99}[mode - 4];
         f.Member("war3map.doo") = Take(placements.Serialize());
         refuse(f, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
@@ -2326,7 +2326,7 @@ void WalkableBridgeStateAndWholeDoodadFreezeRejectBeforePublication() {
     for (const unsigned mode : {0u,1u,2u,3u,4u,5u,6u}) {
         Fixture f; WalkableBridge(f);
         auto placements=Take(ParseDoodadPlacements(f.Member("war3map.doo")));
-        if (mode<4) placements.doodads[0].flags=std::array<std::uint8_t,4>{1,3,4,5}[mode];
+        if (mode<4) placements.doodads[0].flags=std::array<std::uint8_t,4>{1,3,5,7}[mode];
         else placements.doodads[0].lifePercent=std::array<std::uint8_t,3>{0,50,99}[mode-4];
         f.Member("war3map.doo")=Take(placements.Serialize()); f.Open(); f.Paint();
         const auto sourceSha=Take(Sha256File(f.archive->SourcePath()));

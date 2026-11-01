@@ -1,7 +1,7 @@
 #pragma once
 
 void AbsoluteHeightBridgeKeepsNativePathingAndWireState() {
-    for (const bool custom : {false, true}) for (const std::uint8_t flags : {0, 6}) {
+    for (const bool custom : {false, true}) for (const std::uint8_t flags : {0, 4, 6}) {
         Fixture fixture; PatternedBridgeOriginal(fixture, 90.f, NativeValueType::Unreal, custom);
         auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
         placements.doodads.front().flags = flags;
@@ -17,7 +17,7 @@ void AbsoluteHeightBridgeKeepsNativePathingAndWireState() {
         Require(fixture.edits->Redo(), "保留Z桥的地形修改仍可重做");
         fixture.SaveExpected("absolute-bridge-redone.w3x", fixture.ExpectedTerrain(true), deep, &wire, true);
     }
-    for (const unsigned state : {1u,3u,4u,7u,31u,130u,255u,256u,306u,355u,357u,511u}) {
+    for (const unsigned state : {1u,3u,5u,7u,8u,16u,31u,130u,255u,256u,306u,355u,357u,511u}) {
         Fixture fixture; WalkableBridge(fixture);
         auto placements = Take(ParseDoodadPlacements(fixture.Member("war3map.doo")));
         auto& bridge = placements.doodads.front();
