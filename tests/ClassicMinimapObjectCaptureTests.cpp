@@ -457,10 +457,12 @@ void TestMeasuredLargeNestedUnitsAndNewCurrentMember() {
     Rejected(CaptureClassicMinimapObjectAssets(CaptureTerrain(fixture, source), source, fixture.edits, limit), "PLACEMENT_RECORD_LIMIT");
 }
 
+#include "ClassicMinimapPhysicalUnitCases.h"
 int main() {
     try {
         TestRealParsedEmptyAndTypedPixels(); TestMissingAndMismatch(); TestZeroNonzeroStaleAndBudget(); TestMovedFrom();
         TestMeasuredLargeNestedUnitsAndNewCurrentMember();
+        TestDuplicateUnitIdsOnlyGrantPhysicalMinimapReads();
         TestSpecialTailDoesNotEnterOrdinaryColorLayer();
         std::cout << "ClassicMinimapObjectCaptureTests: real capture scenarios declared\n"; return 0;
     } catch (const std::exception& error) {

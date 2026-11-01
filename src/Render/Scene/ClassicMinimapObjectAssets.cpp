@@ -169,6 +169,16 @@ void ParseObjectMember(std::size_t index, const ArchiveExactMember& source,
     facts.sourceSha256 = Take(Sha256(source.bytes));
 }
 
+bool ReadablePhysicalRows(std::size_t index, const MapMemberState& member) {
+    if (member.state == MapDataState::Ready) return true;
+    // 小地图按物理行读取；重复初始化ID不改变单位位置或类型，不授予编辑/初始化资格。
+    // 其它Partial原因以及地物层的身份问题仍维持原拒绝，正文另经完整classic parser核验。
+    return index == 0 && member.state == MapDataState::Partial && !member.diagnostics.empty()
+        && std::all_of(member.diagnostics.begin(), member.diagnostics.end(), [](const Diagnostic& diagnostic) {
+            return diagnostic.severity == DiagnosticSeverity::Warning && diagnostic.code == "MAP_IDENTITY_AMBIGUOUS";
+        });
+}
+
 void CheckCurrentMember(std::size_t index, const ArchiveExactMember& source,
     const MapData::MapDataEditSession& edits, ClassicMinimapObjectMemberFacts& facts,
     const ClassicMinimapObjectAssetLimits& limits) {
@@ -181,9 +191,9 @@ void CheckCurrentMember(std::size_t index, const ArchiveExactMember& source,
         facts.sourceAndCurrentBytesEqual = true;
         return;
     }
-    if (member.state != MapDataState::Ready || member.memberName != kMembers[index] || member.sources.size() != 1
+    if (!ReadablePhysicalRows(index, member) || member.memberName != kMembers[index] || member.sources.size() != 1
         || member.sources.front().name != kMembers[index] || member.sources.front().data != source.bytes)
-        Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象成员必须唯一Ready且与准确源字节相同。");
+        Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_MISMATCH", "当前对象成员必须具有完整物理行读取资格且与准确源字节相同。");
     if (!index) {
         if (!current.Units() || current.Units()->recordLayout != MapData::PlacementRecordLayout::Classic)
             Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前单位层不是已接通的classic布局。");
@@ -434,9 +444,9 @@ Result<ClassicMinimapObjectAssets> CaptureClassicMinimapObjectAssets(TerrainMini
             const auto& member = current.Member(kKinds[i]);
             ArchiveExactMember currentMember{kMembers[i], member.state != MapDataState::Missing, {}};
             if (currentMember.present) {
-                if (member.state != MapDataState::Ready || member.sources.size() != 1
+                if (!ReadablePhysicalRows(i, member) || member.sources.size() != 1
                     || Take(Resources::CanonicalImportPath(member.sources.front().name)) != Take(Resources::CanonicalImportPath(kMembers[i])))
-                    Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前对象层必须是唯一且可完整解析的Ready成员。");
+                    Fail("CLASSIC_OBJECT_CAPTURE_CURRENT_LAYOUT", "当前对象层必须唯一且可完整解析；单位初始化ID警告不授予编辑资格。");
                 currentMember.bytes = member.sources.front().data;
             }
             ParseObjectMember(i, currentMember, currentFacts, limits, units, doodads);

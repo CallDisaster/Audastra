@@ -498,7 +498,7 @@ foreach(render_part IN ITEMS TerrainTable TerrainMaterials TerrainTextureAtlas B
     add_test(NAME render-${render_part} COMMAND war3-map-${render_part}-tests)
 endforeach()
 
-add_executable(war3-map-ClassicMinimapObjectCapture-tests ClassicMinimapObjectCaptureTests.cpp)
+add_executable(war3-map-ClassicMinimapObjectCapture-tests ClassicMinimapObjectCaptureTests.cpp ClassicMinimapPhysicalUnitCases.h)
 target_link_libraries(war3-map-ClassicMinimapObjectCapture-tests PRIVATE War3MapEditor::RenderSupport)
 target_compile_definitions(war3-map-ClassicMinimapObjectCapture-tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-ClassicMinimapObjectCapture-tests PRIVATE /W4 /permissive- /utf-8)
