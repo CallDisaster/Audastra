@@ -278,8 +278,15 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
                 if (outputWork > maximumWorkingBytes - work)
                     Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "可行走对象占地结果超过累计剩余预算。");
                 work += outputWork;
+                const auto death = standard->Field("pathtexdeath");
+                const bool none = death.size() == 4 && (death[0] == 'n' || death[0] == 'N')
+                    && (death[1] == 'o' || death[1] == 'O') && (death[2] == 'n' || death[2] == 'N')
+                    && (death[3] == 'e' || death[3] == 'E');
+                // 549EA0/54A010/54C910应用实际生命值；5495D0在零生命时
+                // 使54AC70转查5038C0的死亡路径声明。死亡位图不进入WPM的selector3导出。
                 footprintPaths.emplace(rawcode, ResolvedDoodadFootprint{*path, policy, rotation,
-                    MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression});
+                    MapData::TerrainNativeFootprintContribution::WalkableTerrainSuppression,
+                    !death.empty() && death != "_" && !none});
             }
         }
         MapData::TerrainNativeObjectPathing result;
@@ -287,7 +294,7 @@ Result<MapData::TerrainNativeObjectPathing> InspectNativeTerrainObjects(std::spa
         result.footprints.reserve(footprintPaths.size());
         for (const auto& [rawcode, resolved] : footprintPaths) {
             result.footprints.push_back({std::string(rawcode), std::string(resolved.path), resolved.gridPolicy, resolved.rotation,
-                resolved.contribution});
+                resolved.contribution, resolved.hasDeathPathDeclaration});
         }
         result.specialFootprints.reserve(specialPaths.size());
         for (const auto& [rawcode, path] : specialPaths)

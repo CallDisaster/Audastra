@@ -507,5 +507,6 @@ struct ResolvedDoodadFootprint {
     MapData::TerrainDoodadGridPolicy gridPolicy;
     std::optional<float> rotation;
     MapData::TerrainNativeFootprintContribution contribution = MapData::TerrainNativeFootprintContribution::StaticRgbAttributes;
+    bool hasDeathPathDeclaration = false;
 };
 } // namespace War3Map::ObjectData::NativeTerrainObjectDetail

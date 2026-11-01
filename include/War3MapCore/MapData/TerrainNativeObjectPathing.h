@@ -31,6 +31,9 @@ struct TerrainNativeDoodadPathingType {
     std::optional<float> fixedRotationDegrees; // 实际fixedRot；缺失时只支持旋转无关的同色正方形。
     // 普通destructable的RGB属于selector4；walkable占地只向selector2加入控制位。
     TerrainNativeFootprintContribution contribution = TerrainNativeFootprintContribution::StaticRgbAttributes;
+    // 实际标准pathTexDeath getter是否声明非空占地；仅用于死亡态的注册门。
+    // 不表示死亡位图已捕获，也不改变保存导出只读取selector1/2的规则。
+    bool hasDeathPathDeclaration = false;
 };
 
 struct TerrainNativeObjectPathing {

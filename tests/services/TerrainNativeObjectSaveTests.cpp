@@ -2556,6 +2556,7 @@ void MixedObjectAndResourceSavesUseActualPathingDependencies() {
 #include "TerrainCliffPaletteAppendSaveCases.h"
 #include "TerrainDoodadParentDisplaySaveCases.h"
 #include "TerrainAbsoluteBridgeStateCases.h"
+#include "TerrainDeadBridgeStateCases.h"
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2605,6 +2606,7 @@ int main(int argc, char** argv) {
         CategoryCBridgeSourcesAndOldPathingStayBound();
         BridgeOriginalUsesTheNormalSaveAndUndoChain();
         AbsoluteHeightBridgeKeepsNativePathingAndWireState();
+        DeadBridgeRequiresItsActualDeathDeclaration();
         BridgeOriginalRejectsUnsupportedValuesAndMetadata();
         BridgeCustomUsesTheNormalSaveAndUndoChain();
         BridgeCustomRejectsUnsupportedValuesMetadataAndParents();
