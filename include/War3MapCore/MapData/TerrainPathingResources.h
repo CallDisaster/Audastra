@@ -134,6 +134,10 @@ private:
     friend class Services::TerrainSessionResources;
     friend class Services::TerrainHistorySave;
     friend class TerrainSavePlan;
+    // 仅保存计划在完整源WPM逐格匹配并证明远区纯贴图编辑后绑定载入缓存。
+    [[nodiscard]] Result<std::vector<std::byte>> GenerateNativeForCache(const TerrainGridSnapshot& terrain,
+        TerrainNativeStage stage, std::size_t maximumBytes, bool loadedSpecialCache) const;
+    bool nativeLoadedSpecialCache_ = false;
     TerrainPathingResources() = default;
     // 仅内部保存计划可把会话完整W3I的窄域说明修改绑定到最终身份。
     // 原始依赖仍保留真实来源SHA；外部不能自报最终SHA或验证布尔。

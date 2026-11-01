@@ -1240,6 +1240,49 @@ void SpecialDoodad(Fixture& f, bool dry = false) {
         f.Member("war3map.wpm")[16+y*32+x] = static_cast<std::byte>((dry ? dryMask : shallow)[x-8]);
 }
 
+void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
+    const auto prepare = [](Fixture& f) {
+        SpecialDoodad(f, true);
+        f.original.header.groundTilesets.push_back("Tg02");
+        f.Member("war3map.w3e") = Take(SerializeMapTerrain(f.original));
+        f.Member("TerrainArt/Terrain.slk") = Slk({"tileID","walkable","flyable","buildable"},
+            {{"Tg01","1","1","1"},{"Tg02","0","1","1"}});
+        // 原版先生成干地缓存，再载入特殊记录；字面源并非实时special查询结果。
+        std::fill(f.Member("war3map.wpm").begin()+16, f.Member("war3map.wpm").end(), std::byte{0x51});
+        f.Open();
+    };
+    const auto paint = [](Fixture& f, float x, float y) {
+        TerrainBrush brush; brush.kind = TerrainBrushKind::Texture; brush.radius = 0;
+        brush.groundTexture = "Tg02"; brush.variation = 0;
+        const TerrainStrokePoint point{x, y}; Take(f.edits->EditTerrain(brush, std::span(&point, 1), false));
+    };
+    Fixture f; prepare(f); paint(f, 768, 768);
+    auto terrain = f.original; terrain.vertices[6 * 9 + 6].textureAndFlagsRaw = 1;
+    const auto changedTerrain = Take(SerializeMapTerrain(terrain));
+    auto expected = f.Member("war3map.wpm");
+    for (unsigned y = 22; y < 26; ++y) for (unsigned x = 22; x < 26; ++x)
+        expected[16 + y * 32 + x] = std::byte{0x53};
+    f.SaveExpected("loaded-special-ground.w3x", changedTerrain, expected, nullptr, true);
+    Require(f.edits->Undo(), "loaded-cache ground paint remains undoable after formal saving");
+    f.SaveExpected("loaded-special-undo.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"), nullptr, true);
+    Require(f.edits->Redo(), "loaded-cache ground paint remains redoable after formal saving");
+    f.SaveExpected("loaded-special-redo.w3x", changedTerrain, expected, nullptr, true);
+    for (const auto point : std::array<TerrainStrokePoint, 3>{{{256,256},{512,512},{512,768}}}) {
+        Fixture near; prepare(near); paint(near, point.x, point.y);
+        const auto refused = TerrainPathingSave::PrepareForSave(*near.archive, *near.edits, near.gameRoot);
+        Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+            "special chunk and boundary-sharing chunks cannot acquire loaded-cache qualification");
+    }
+    Fixture corrupt; prepare(corrupt); corrupt.Member("war3map.wpm")[16] |= std::byte{4}; corrupt.Open();
+    paint(corrupt, 768, 768);
+    const auto invalid = TerrainPathingSave::PrepareForSave(*corrupt.archive, *corrupt.edits, corrupt.gameRoot);
+    Require(!invalid.Succeeded() && HasCode(invalid, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+        "even one unexplained source bit rejects the alternative full-grid cache");
+    Fixture water; prepare(water); water.Paint();
+    Require(!TerrainPathingSave::PrepareForSave(*water.archive, *water.edits, water.gameRoot).Succeeded(),
+        "loaded-cache proof does not authorize water or geometry changes");
+}
+
 void NativeFixedRotationUsesTheNormalSaveAndUndoChain() {
     const auto addExpected = [](Bytes& wpm, float rotation) {
         // 原创3x2 top-origin源(黑蓝绿/红青紫)，wire角0始终以2x3吸附尺寸定中心(544,544)。
@@ -2593,6 +2636,7 @@ int main(int argc, char** argv) {
         UniformDoodadRejectionDoesNotWeakenOldSaves();
         PatternedDoodadsUseTheNormalSaveAndUndoChain();
         NativeFixedRotationUsesTheNormalSaveAndUndoChain();
+        LoadedSpecialCacheOnlyAllowsDisjointGroundPainting();
         SpecialDoodadsSaveWaterGroundAndCliffs();
         SharedSpecialAndOrdinaryResourcesRoundTripOnce();
         SpecialWaterDeletionUsesTheNormalSaveAndUndoChain();

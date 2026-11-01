@@ -98,6 +98,42 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     const auto& savedIntent = *edits.originalPathingRestrictions_;
     const auto& intent = *edits.pathingRestrictions_;
     const auto cells = oldWpm.size() - 16;
+    const auto loadedSpecialCacheEligible = [&] {
+        // 55C860先建地形缓存再载入special；5F34F0仅置模型脏位。
+        // 这里只解释原版载入态，禁止把special实时查询值无条件删除。
+        if (resource.nativeSourceResources_ || sourceDoodads != currentDoodads || sourceUnits != currentUnits
+            || resource.nativeAfterBounds_ || !resource.nativeSpecialCount_[0]
+            || resource.nativeSpecialAttributes_[0] != resource.nativeSpecialAttributes_[1]) return false;
+        const auto& a = *edits.terrainOriginal_;
+        const auto& b = *edits.terrain_;
+        const auto& ah = a.header; const auto& bh = b.header;
+        if (ah.version != 11 || bh.version != 11 || ah.width != bh.width || ah.height != bh.height
+            || ah.offset != bh.offset || ah.mainTileset != bh.mainTileset
+            || ah.usesCustomTileset != bh.usesCustomTileset || ah.groundTilesets != bh.groundTilesets
+            || ah.cliffTilesets != bh.cliffTilesets || a.vertices.size() != b.vertices.size()) return false;
+        const auto& special = resource.nativeSpecialAttributes_[0];
+        const auto pathWidth = (ah.width - 1) * 4, pathHeight = (ah.height - 1) * 4;
+        if (special.size() != cells || cells != std::size_t{pathWidth} * pathHeight) return false;
+        std::size_t changes = 0;
+        for (std::size_t i = 0; i < a.vertices.size(); ++i) {
+            const auto& x = a.vertices[i]; const auto& y = b.vertices[i];
+            if (x.groundHeightRaw != y.groundHeightRaw || x.waterHeightAndFlagsRaw != y.waterHeightAndFlagsRaw
+                || x.cliffAndLayerRaw != y.cliffAndLayerRaw || ((x.textureAndFlagsRaw ^ y.textureAndFlagsRaw) & 0xf0)
+                || ((x.variationRaw ^ y.variationRaw) & 0xe0) || x.extendedTextureLayout || y.extendedTextureLayout
+                || x.textureFlagsExtensionRaw || y.textureFlagsExtensionRaw) return false;
+            if (x.textureAndFlagsRaw == y.textureAndFlagsRaw && x.variationRaw == y.variationRaw) continue;
+            if (++changes > 4096) return false; // 最多4096*1024覆盖检查，不另分配整图工作区。
+            const auto vx = static_cast<std::uint32_t>(i % ah.width), vy = static_cast<std::uint32_t>(i / ah.width);
+            // 55EE30→572800(a4=0)取顶点±1世界单位的chunk；572480每chunk四地格。
+            const auto x0 = (vx ? (vx - 1) / 4 : 0) * 16;
+            const auto y0 = (vy ? (vy - 1) / 4 : 0) * 16;
+            const auto x1 = std::min(pathWidth, (vx / 4 + 1) * 16);
+            const auto y1 = std::min(pathHeight, (vy / 4 + 1) * 16);
+            for (auto py = y0; py < y1; ++py) for (auto px = x0; px < x1; ++px)
+                if (special[std::size_t{py} * pathWidth + px] & 1) return false;
+        }
+        return true;
+    };
     // 先完整验证原图；不通过 source & ~S 反推原版贡献，S可以与地形贡献重叠。
     {
         auto original = captured.value->GenerateNative(*edits.terrainOriginal_, TerrainNativeStage::Before, limits.maximumBytes - total);
@@ -106,6 +142,21 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
             return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "原版通行重算与来源WPM或限制意图大小不一致。");
         if (!reserve(original.value->size()))
             return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "旧通行重算超过保存计划预算。");
+        const auto explainsSource = [&](const std::vector<std::byte>& generated) {
+            for (std::size_t i = 0; i < cells; ++i)
+                if ((oldWpm[i + 16] & std::byte{0xee}) != (generated[i] | savedIntent[i])) return false;
+            return true;
+        };
+        if (!explainsSource(*original.value) && loadedSpecialCacheEligible()) {
+            original.value.reset(); // 重用已计费峰值，不能同时保留两份全图。
+            original = resource.GenerateNativeForCache(*edits.terrainOriginal_, TerrainNativeStage::Before,
+                limits.maximumBytes - total, true);
+            if (!original.Succeeded() || !original.value) return {{}, std::move(original.diagnostics)};
+            if (original.value->size() != cells)
+                return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "载入缓存与完整源WPM形状不一致。");
+            // 完整逐格验证同一来源和savedS；任意额外位继续走原拒绝。
+            if (explainsSource(*original.value)) resource.nativeLoadedSpecialCache_ = true;
+        }
         const auto width = (edits.terrainOriginal_->header.width - 1) * 4;
         for (std::size_t i = 0; i < cells; ++i) {
             const auto expected = (*original.value)[i] | savedIntent[i];
