@@ -1294,12 +1294,12 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     Require(water.edits->IsDirty(), "water rejection fixture must contain a real existing-water height change");
     Require(!saveGate(TerrainPathingSave::PrepareForSave(*water.archive, *water.edits, water.gameRoot)).Succeeded(),
         "loaded-cache proof does not authorize water changes");
-    Fixture geometry; prepare(geometry);
+    Fixture geometry; prepare(geometry); paint(geometry, 768, 768);
     TerrainBrush raised; raised.kind = TerrainBrushKind::Raise; raised.radius = 0; raised.strength = 32;
     const TerrainStrokePoint high{768,768}; Take(geometry.edits->EditTerrain(raised, std::span(&high, 1), false));
     Require(geometry.edits->IsDirty(), "geometry rejection fixture must contain an actual height change");
     Require(!saveGate(TerrainPathingSave::PrepareForSave(*geometry.archive, *geometry.edits, geometry.gameRoot)).Succeeded(),
-        "loaded-cache proof does not authorize geometry changes");
+        "loaded-cache proof does not authorize combined ground and geometry changes");
 }
 
 void NativeFixedRotationUsesTheNormalSaveAndUndoChain() {
