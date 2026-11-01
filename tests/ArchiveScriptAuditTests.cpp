@@ -51,6 +51,8 @@ int main() { try {
     const auto captured = minimap.value->CaptureExactMembers(resources);
     Require(captured.Succeeded() && captured.value->at(0).present && captured.value->at(1).present
         && !captured.value->at(2).present, "minimap exact resources preserve present/missing distinction");
+    const std::array<std::string, 5> planInputs{"war3map.wpm", "war3map.shd", "war3map.mmp", "war3map.w3r", "war3map.w3c"};
+    Require(minimap.value->CaptureExactMembers(planInputs).Succeeded(), "shared terrain plan baseline members are queryable without eager reads");
     for (const auto* name : {"war3map.j", "war3map.wct", "runtime.dll", "unknown/opaque.bin", "forbidden.AI"}) {
         const std::array<std::string, 1> names{name};
         Require(!minimap.value->CaptureExactMembers(names).Succeeded()
