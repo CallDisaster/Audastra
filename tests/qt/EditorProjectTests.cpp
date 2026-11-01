@@ -2945,16 +2945,25 @@ void EditorProjectTests::FixedRotationWorkerRejectsBeforeWrite() {
 
 void EditorProjectTests::WalkableDestructableNormalSaveAndUndoRedo_data() {
     QTest::addColumn<bool>("patterned"); QTest::addColumn<bool>("textureChange"); QTest::addColumn<bool>("inPlace");
-    for (const bool patterned : {false, true}) for (const bool textureChange : {false, true}) for (const bool inPlace : {false, true}) {
-        const auto name = QString("walkable-%1-%2-%3").arg(patterned ? "black-corners" : "uniform")
+    QTest::addColumn<int>("flags");
+    for (const int flags : {0, 2, 4, 6}) for (const bool patterned : {false, true})
+        for (const bool textureChange : {false, true}) for (const bool inPlace : {false, true}) {
+        const auto name = QString("walkable-flags%1-%2-%3-%4").arg(flags).arg(patterned ? "black-corners" : "uniform")
             .arg(textureChange ? "texture" : "water").arg(inPlace ? "in-place" : "save-as").toUtf8();
-        QTest::newRow(name.constData()) << patterned << textureChange << inPlace;
+        QTest::newRow(name.constData()) << patterned << textureChange << inPlace << flags;
     }
 }
 
 void EditorProjectTests::WalkableDestructableNormalSaveAndUndoRedo() {
-    QFETCH(bool, patterned); QFETCH(bool, textureChange); QFETCH(bool, inPlace);
+    QFETCH(bool, patterned); QFETCH(bool, textureChange); QFETCH(bool, inPlace); QFETCH(int, flags);
     auto members = WalkableDestructableQtMembers(patterned); QVERIFY(!members.empty());
+    const auto member = std::find_if(members.begin(), members.end(), [](const auto& value) { return value.name == "war3map.doo"; });
+    QVERIFY(member != members.end());
+    auto placements = MapData::ParseDoodadPlacements(member->data); QVERIFY(placements.Succeeded() && placements.value);
+    QCOMPARE(placements.value->doodads.front().rawcode, std::string("Br01"));
+    placements.value->doodads.front().flags = static_cast<std::uint8_t>(flags);
+    const auto flagWire = placements.value->Serialize(); QVERIFY(flagWire.Succeeded() && flagWire.value);
+    member->data = *flagWire.value;
     // 其它rawcode的空W3B记录不能使标准桥失去资格；桥本身没有任何W3B记录。
     auto unrelated = ObjectData::NativeObjectDocument::CreateEmpty(ObjectData::ObjectType::Destructable);
     QVERIFY(unrelated.Succeeded() && unrelated.value);
@@ -3329,7 +3338,7 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite_data() {
             const auto name = QString("walkable-%1-%2").arg(scenario).arg(inPlace ? "in-place" : "save-as").toUtf8();
             QTest::newRow(name.constData()) << QString::fromLatin1(scenario) << inPlace << QString::fromLatin1(code);
         };
-        for (const auto* state : {"flags-zero", "flags-one", "flags-three", "flags-unknown", "dead", "damaged", "life-unknown"})
+        for (const auto* state : {"flags-one", "flags-three", "flags-five", "flags-eight", "flags-unknown", "dead", "damaged", "life-unknown"})
             add(state, "TERRAIN_WALKABLE_DESTRUCTABLE_STATE");
         add("follow-z", "TERRAIN_WALKABLE_DESTRUCTABLE_DOODADS_CHANGED");
         add("pathing-resource-drift", "TERRAIN_NATIVE_PAIR_RULE_CHANGED");
@@ -3344,9 +3353,10 @@ void EditorProjectTests::WalkableDestructableWorkerRejectsBeforeWrite() {
     QVERIFY(doo != members.end());
     auto placements = MapData::ParseDoodadPlacements(doo->data); QVERIFY(placements.Succeeded() && placements.value);
     auto& bridge = placements.value->doodads[0];
-    if (scenario == "flags-zero") bridge.flags = 0;
-    else if (scenario == "flags-one") bridge.flags = 1;
+    if (scenario == "flags-one") bridge.flags = 1;
     else if (scenario == "flags-three") bridge.flags = 3;
+    else if (scenario == "flags-five") bridge.flags = 5;
+    else if (scenario == "flags-eight") bridge.flags = 8;
     // >=0x20属于经典布局拒绝；0x1f可解析，才能检验未知桥状态的专用门。
     else if (scenario == "flags-unknown") bridge.flags = 0x1f;
     else if (scenario == "dead") bridge.lifePercent = 0;
