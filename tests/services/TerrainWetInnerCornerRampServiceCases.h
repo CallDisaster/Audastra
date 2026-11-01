@@ -45,23 +45,23 @@ inline void SealedCandidateAndTypedColdRestore() {
             Require(f.edits->Revision() == stableRevision, "validated wet inner no-op adds no fake history entry");
             journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
             wire = Take(EncodeTerrainStrokeJournal(journal));
-            Require(!journal.history && wire[3] == std::byte{'J'} && journal.strokes.size() == 1
-                && journal.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners
+            Require(!journal.history && wire[3] == std::byte{'K'} && journal.strokes.size() == 1
+                && journal.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps
                 && journal.strokes[0].intent.followDoodads == follow
                 && journal.strokes[0].rulesSha256 == Take(rules.WaterBrushDependencyFingerprint()),
-                "default service records FTJJ algorithm4 with actual rules and explicit placement-follow intent");
+                "default service records FTJK algorithm5 with actual rules and explicit placement-follow intent");
             const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
-            Require(Take(EncodeTerrainStrokeJournal(decoded)) == wire, "FTJJ canonical whole-wire roundtrip");
-            for (const char older : std::string_view("123456789ABCDFG")) {
+            Require(Take(EncodeTerrainStrokeJournal(decoded)) == wire, "FTJK canonical whole-wire roundtrip");
+            for (const char older : std::string_view("123456789ABCDFGJ")) {
                 auto disguised = wire; disguised[3] = std::byte(older);
-                Require(!DecodeTerrainStrokeJournal(disguised).Succeeded(), "old typed versions cannot admit algorithm4");
+                Require(!DecodeTerrainStrokeJournal(disguised).Succeeded(), "old typed versions cannot admit algorithm5");
             }
             for (const char history : std::string_view("EHI")) {
                 auto disguised = wire; disguised[3] = std::byte(history);
-                Require(!DecodeTerrainStrokeJournal(disguised).Succeeded(), "typed J body cannot masquerade as an existing history envelope");
+                Require(!DecodeTerrainStrokeJournal(disguised).Succeeded(), "typed K body cannot masquerade as an existing history envelope");
             }
             for (std::size_t size = 0; size < wire.size(); ++size)
-                Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every truncated FTJJ rejects the complete command");
+                Require(!DecodeTerrainStrokeJournal(std::span(wire).first(size)).Succeeded(), "every truncated FTJK rejects the complete command");
         }
         // 只携带原始草稿与typed记录，销毁热命令、prepared和规则owner后重新取实际来源。
         f.edits.reset();
@@ -103,19 +103,27 @@ inline void SealedCandidateAndTypedColdRestore() {
             Require(!DecodeTerrainStrokeJournal(forgedJ).Succeeded(), "FTJJ requires a real algorithm4 stroke");
             mixed.strokes.push_back(legacy.strokes[0]);
         }
+        auto legacy4 = decoded; legacy4.strokes[0].intent.cornerRampAlgorithm = TerrainCornerRampAlgorithm::NativeWetCorners;
+        const auto legacy4Wire = Take(EncodeTerrainStrokeJournal(legacy4));
+        Require(legacy4Wire[3] == std::byte{'J'} && Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(legacy4Wire)))) == legacy4Wire,
+            "explicit algorithm4 retains exact FTJJ encoding");
+        Require(TerrainPathingSave::RestoreJournal(*f.source, MapDocument::FromMembers(f.members), f.members[0].data,
+            f.members[1].data, legacy4, *raw, f.game).Succeeded(), "historical algorithm4 still restores its complete wet inner command");
+        mixed.strokes.push_back(legacy4.strokes[0]);
         const auto mixedWire = Take(EncodeTerrainStrokeJournal(mixed));
         const auto mixedDecoded = Take(DecodeTerrainStrokeJournal(mixedWire));
-        Require(mixedWire[3] == std::byte{'J'} && mixedDecoded.strokes.size() == 4
-            && mixedDecoded.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners
+        Require(mixedWire[3] == std::byte{'K'} && mixedDecoded.strokes.size() == 5
+            && mixedDecoded.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps
             && mixedDecoded.strokes[1].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::DryOnly
             && mixedDecoded.strokes[2].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::WetTerrain
             && mixedDecoded.strokes[3].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeCorners
+            && mixedDecoded.strokes[4].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners
             && !EqualTerrainJournalIntent(mixedDecoded.strokes[0].intent, mixedDecoded.strokes[3].intent)
-            && Take(EncodeTerrainStrokeJournal(mixedDecoded)) == mixedWire, "J codec keeps each mixed 4/1/2/3 intent without upgrading the old commands");
+            && Take(EncodeTerrainStrokeJournal(mixedDecoded)) == mixedWire, "K codec keeps mixed 5/1/2/3/4 intents without upgrading old commands");
         TerrainJournalStroke resize; resize.intent.resize = TerrainResizeIntent{1, {-32, -32, 64, 64}};
         resize.rulesSha256.assign(64, 'e'); mixed.strokes.push_back(std::move(resize));
         const auto resizedWire = Take(EncodeTerrainStrokeJournal(mixed));
-        Require(resizedWire[3] == std::byte{'J'} && Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(resizedWire)))) == resizedWire,
+        Require(resizedWire[3] == std::byte{'K'} && Take(EncodeTerrainStrokeJournal(Take(DecodeTerrainStrokeJournal(resizedWire)))) == resizedWire,
             "J typed version also retains prior resize variant without colliding with G or saved-history envelopes");
         auto invalid = decoded; invalid.strokes[0].intent.cornerRampAlgorithm = static_cast<TerrainCornerRampAlgorithm>(255);
         Require(!EncodeTerrainStrokeJournal(invalid).Succeeded(), "unknown future corner algorithm cannot persist");
@@ -177,10 +185,10 @@ inline void FormalSaveAsAndInPlaceRetainHistory() {
                 const auto saved = Take(captured); const auto savedWire = Take(EncodeTerrainStrokeJournal(saved));
                 const auto decoded = Take(DecodeTerrainStrokeJournal(savedWire));
                 const auto typedWire = Take(EncodeTerrainStrokeJournal(Take(TerrainHistoryBaselineJournal(decoded))));
-                Require(saved.history && savedWire[3] == std::byte{'E'} && typedWire[3] == std::byte{'J'}
+                Require(saved.history && savedWire[3] == std::byte{'E'} && typedWire[3] == std::byte{'K'}
                     && decoded.history && decoded.history->currentIndex == 1 && decoded.history->savedIndex == 1
-                    && decoded.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeWetCorners
-                    && Take(EncodeTerrainStrokeJournal(decoded)) == savedWire, "saved E envelope retains its canonical J typed body and real clean station");
+                    && decoded.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps
+                    && Take(EncodeTerrainStrokeJournal(decoded)) == savedWire, "saved E envelope retains its canonical K typed body and real clean station");
             } else Require(epochLimited(captured) && epochLimited(f.edits->ExportTerrainHistoryJournal()),
                 "later saves retain hot Undo/Redo and cannot forge a second cold history epoch");
             ++saveIndex;

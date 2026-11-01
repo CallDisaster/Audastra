@@ -1,6 +1,7 @@
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/MapData/MapPlacements.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -819,6 +820,42 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 
 int main(int argc, char** argv) {
     try {
+        // 仅供独立原版取证输入：去掉已有阻挡，避免把保留原成员误当成重新生成。
+        if (argc == 5 && std::string_view(argv[1]) == "--native-pathing-oracle-input") {
+            const auto source = IO::PathFromUtf8(argv[2]);
+            const auto target = IO::PathFromUtf8(argv[4]);
+            const std::string expected = argv[3];
+            Require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(),
+                [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }),
+                "oracle source SHA-256 must be explicit lowercase hex");
+            Require(std::filesystem::file_size(source) <= kSaveBytes, "oracle source byte budget");
+            Require(Take(Sha256File(source)) == expected, "oracle source identity changed");
+            Require(!std::filesystem::exists(target), "oracle output must be fresh");
+            {
+                const auto metadata = Take(Mpq::MpqArchive::OpenReadOnly(source));
+                const auto members = Take(metadata.ListFilesStrict());
+                Require(members.size() <= 4096, "oracle member budget");
+                for (const auto& member : members) {
+                    auto name = member.name;
+                    std::transform(name.begin(), name.end(), name.begin(),
+                        [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 'a' - 'A') : char(c); });
+                    Require(!name.ends_with(".ai"), "excluded script prevents oracle preparation");
+                }
+            }
+            const auto archive = Take(MapArchiveSession::Open(source));
+            Require(archive.SourceSha256() == expected, "oracle source changed while opening");
+            const auto terrain = Take(archive.ReadMember("war3map.w3e"));
+            Require(!Take(archive.ReadMember("war3map.wpm")).empty(), "oracle requires existing pathing");
+            const std::array<std::string, 1> removals{"war3map.wpm"};
+            const auto result = Take(archive.SaveCandidate(target, {}, removals));
+            const auto output = Take(MapArchiveSession::Open(result.path));
+            Require(Take(output.ReadMember("war3map.w3e")) == terrain, "oracle terrain must stay byte-identical");
+            Require(!output.ReadMember("war3map.wpm").Succeeded(), "oracle must not retain old pathing");
+            Require(Take(Sha256File(source)) == expected, "oracle source must remain unchanged");
+            std::cout << "native_oracle_input_sha256=" << output.SourceSha256()
+                      << "\nterrain_unchanged=true\npathing_removed=true\n";
+            return 0;
+        }
         RealSaveGroup group = RealSaveGroup::Objects;
         if (argc == 2 && std::string_view(argv[1]) == "--existing-ramps") group = RealSaveGroup::ExistingRamps;
         else if (argc == 2 && std::string_view(argv[1]) == "--wet-inner-corners") group = RealSaveGroup::WetInnerCorners;

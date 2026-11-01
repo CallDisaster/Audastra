@@ -38,9 +38,10 @@ struct TerrainRampPlan {
     TerrainStraightRampAlgorithm algorithm = TerrainStraightRampAlgorithm::Independent);
 
 struct TerrainCornerRampPlan {
-    // x外/y内，从原版选出的高端起点向两个低端方向各延伸两格。
-    // 外角九点为1高8低；内角从对侧高端出发，九点为5高4低。
+    // 九点按x外/y内；旧算法外角为1高8低、内角为5高4低。
+    // 连接算法也可选择三点直坡，仅前selectedVertexCount个索引有效。
     std::array<std::uint32_t, 9> vertexIndices{};
+    std::size_t selectedVertexCount = 9;
     std::uint32_t highX = 0, highY = 0;
     int directionX = 0, directionY = 0;
     TerrainBrushFootprint footprint;
@@ -51,18 +52,18 @@ struct TerrainCornerRampPlan {
 // 原版任意浮点坐标的取整模拟，不向半格边界或未知形态授予资格。
 [[nodiscard]] std::optional<TerrainStrokePoint> SnapTerrainCornerRampPoint(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point);
-// 只查询单点几何与九点原始形态；完整dirty block/halo、实际M、special及
+// 只查询单点几何与三/九点原始形态；完整dirty block/halo、实际M、special及
 // live合法性和补角闭包由下面的owned事务核对，预览不授予提交资格。
 [[nodiscard]] Result<TerrainCornerRampPlan> PlanTerrainCornerRamp(
     const TerrainGridSnapshot& terrain, const TerrainStrokePoint& point,
-    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeWetCorners);
+    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeJoinedRamps);
 // 新模式只接受默认brush的kind/value替换，拒绝未取证的paint/size组合。
 [[nodiscard]] bool IsCanonicalTerrainCornerRampBrush(const TerrainBrush& brush) noexcept;
 [[nodiscard]] Result<TerrainWaterStrokeCandidate> PrepareTerrainCornerRampStroke(
     const TerrainGridSnapshot& source, const TerrainWaterLoadedRules& rules, const TerrainBrush& brush,
     std::span<const TerrainStrokePoint> points, const DoodadPlacements& doodads,
     std::span<const TerrainWaterSpecialDoodadShape> specialShapes = {}, const TerrainWaterBrushLimits& limits = {},
-    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeWetCorners);
+    TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeJoinedRamps);
 
 // 基于原始层级与 ramp 位计算中点高度偏移。无可识别的插值时返回空。
 // 渲染抬升与原始地形采样共用；已经抬升的显示副本不能再次累加。

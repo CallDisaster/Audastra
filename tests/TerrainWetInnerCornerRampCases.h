@@ -9,6 +9,14 @@ namespace C = TerrainInnerCornerRampFixtures;
 using W::Require;
 using W::Take;
 
+// 这些原字节与拒绝域属于算法4，不随新命令的默认算法升级。
+inline Result<TerrainWaterStrokeCandidate> PrepareWetCornerV4(const TerrainGridSnapshot& source,
+    const TerrainWaterLoadedRules& rules, const TerrainBrush& brush, std::span<const TerrainStrokePoint> points,
+    const DoodadPlacements& doodads, std::span<const TerrainWaterSpecialDoodadShape> shapes = {},
+    const TerrainWaterBrushLimits& limits = {}, TerrainCornerRampAlgorithm algorithm = TerrainCornerRampAlgorithm::NativeWetCorners) {
+    return MapData::PrepareTerrainCornerRampStroke(source, rules, brush, points, doodads, shapes, limits, algorithm);
+}
+
 inline constexpr std::array kThresholds{W::Threshold::BelowSurface, W::Threshold::SurfaceEquality,
     W::Threshold::AboveSurface, W::Threshold::BelowDeep, W::Threshold::DeepEquality, W::Threshold::AboveDeep};
 
@@ -52,10 +60,10 @@ inline void FourDirectionsSixThresholdsAndFullStreams() {
             for (const auto old : {TerrainCornerRampAlgorithm::DryOnly, TerrainCornerRampAlgorithm::WetTerrain,
                 TerrainCornerRampAlgorithm::NativeCorners}) {
                 Rejected(PlanTerrainCornerRamp(source, point, old));
-                Rejected(PrepareTerrainCornerRampStroke(source, W::Rules(), C::Brush(), std::span(&point, 1),
+                Rejected(PrepareWetCornerV4(source, W::Rules(), C::Brush(), std::span(&point, 1),
                     doodads, {}, {}, old));
             }
-            const auto created = Take(PrepareTerrainCornerRampStroke(source, W::Rules(), C::Brush(),
+            const auto created = Take(PrepareWetCornerV4(source, W::Rules(), C::Brush(),
                 std::span(&point, 1), doodads));
             Require(created.result.changedVertices == 9 && !created.result.changed.Empty()
                 && created.result.requiresPathingRebuild && created.result.requiresObjectValidityRefresh
@@ -72,7 +80,7 @@ inline void FourDirectionsSixThresholdsAndFullStreams() {
                 const float offset = state.corner == 'R' ? 64.0f : state.corner == 'S' ? 96.0f : 0.0f;
                 Require(state.heightOffset == offset, "湿内角水查询R加64、S加96，H和其余角不加128");
             }
-            const auto noop = Take(PrepareTerrainCornerRampStroke(created.terrain, W::Rules(), C::Brush(),
+            const auto noop = Take(PrepareWetCornerV4(created.terrain, W::Rules(), C::Brush(),
                 std::span(&point, 1), doodads));
             Require(noop.result.changed.Empty() && noop.result.changedVertices == 0
                 && !noop.result.processed.Empty() && !noop.result.requiresPathingRebuild
@@ -80,13 +88,13 @@ inline void FourDirectionsSixThresholdsAndFullStreams() {
                 && Take(SerializeMapTerrain(noop.terrain)) == W::TerrainLiteral(true, options, 17, dx, dy)
                 && Take(GenerateTerrainNativePathing(PathingInput(noop.terrain, ground))) == generated,
                 "完整湿内角再次创建是验证过接受域后的完整W3E/WPM no-op");
-            const auto removed = Take(PrepareTerrainCornerRampStroke(created.terrain, W::Rules(), C::Brush(false),
+            const auto removed = Take(PrepareWetCornerV4(created.terrain, W::Rules(), C::Brush(false),
                 std::span(&point, 1), doodads));
             Require(removed.result.changedVertices == 9 && Take(SerializeMapTerrain(removed.terrain)) == original
                 && Take(GenerateTerrainNativePathing(PathingInput(removed.terrain, ground)))
                     == W::PathingPixels(false, options, 17, dx, dy)
                 && Take(removed.doodads.Serialize()) == originalDoo, "移除须恢复全部W3E/WPM，绝不重设原水位或删除DOO");
-            const auto removeNoop = Take(PrepareTerrainCornerRampStroke(source, W::Rules(), C::Brush(false),
+            const auto removeNoop = Take(PrepareWetCornerV4(source, W::Rules(), C::Brush(false),
                 std::span(&point, 1), doodads));
             Require(removeNoop.result.changed.Empty() && Take(SerializeMapTerrain(removeNoop.terrain)) == original,
                 "未创建湿内角的移除仍须完整检查并返回精确no-op");
@@ -111,7 +119,7 @@ inline void StrictSurfaceDeepThresholdsAndShoulders() {
         Require(W::WaterRaw(options) == raw[index] && W::GroundQuarter(true, 0, 0) == 385
             && W::GroundQuarter(true, 0, -1) == 257 && W::GroundQuarter(true, 1, 0) == 513,
             "水面与手写有效地高保持整数四分之一单位，不靠浮点容差掩盖相等条件");
-        const auto created = Take(PrepareTerrainCornerRampStroke(W::Grid(options), W::Rules(), C::Brush(),
+        const auto created = Take(PrepareWetCornerV4(W::Grid(options), W::Rules(), C::Brush(),
             std::span(&point, 1), doodads));
         const auto pixels = Take(GenerateTerrainNativePathing(PathingInput(created.terrain, ground)));
         // SW低地格的NE象限取S，SE象限取R；新开口东南象限取H。
@@ -147,16 +155,16 @@ inline void HaloOnlyWaterAndHistoricalAlgorithmDomains() {
         Require(Take(SerializeMapTerrain(source)) == original, "仅halo有水的源仍须逐字匹配独立原字");
         Require(PlanTerrainCornerRamp(source, point, TerrainCornerRampAlgorithm::NativeCorners).Succeeded(),
             "历史3只看九点的预览不得冒充完整halo许可");
-        Rejected(PrepareTerrainCornerRampStroke(source, W::Rules(), C::Brush(), std::span(&point, 1), doodads,
+        Rejected(PrepareWetCornerV4(source, W::Rules(), C::Brush(), std::span(&point, 1), doodads,
             {}, {}, TerrainCornerRampAlgorithm::NativeCorners));
-        const auto created = Take(PrepareTerrainCornerRampStroke(source, W::Rules(), C::Brush(), std::span(&point, 1), doodads));
+        const auto created = Take(PrepareWetCornerV4(source, W::Rules(), C::Brush(), std::span(&point, 1), doodads));
         Require(Take(SerializeMapTerrain(created.terrain)) == expected, "算法4须显式覆盖仅实际halo含水的完整内角");
-        const auto noop = Take(PrepareTerrainCornerRampStroke(created.terrain, W::Rules(), C::Brush(), std::span(&point, 1), doodads));
+        const auto noop = Take(PrepareWetCornerV4(created.terrain, W::Rules(), C::Brush(), std::span(&point, 1), doodads));
         Require(noop.result.changed.Empty() && Take(SerializeMapTerrain(noop.terrain)) == expected,
             "湿halo的完整坡道no-op仍应通过真实新算法检查");
         const auto dry = C::Grid(17, dx, dy);
         for (const auto algorithm : {TerrainCornerRampAlgorithm::NativeCorners, TerrainCornerRampAlgorithm::NativeWetCorners}) {
-            const auto result = Take(PrepareTerrainCornerRampStroke(dry, C::Rules(), C::Brush(), std::span(&point, 1), doodads,
+            const auto result = Take(PrepareWetCornerV4(dry, C::Rules(), C::Brush(), std::span(&point, 1), doodads,
                 {}, {}, algorithm));
             Require(Take(SerializeMapTerrain(result.terrain)) == C::TerrainLiteral(true, 17, dx, dy),
                 "算法3的既有干内角输出与算法4保持一致，不能改写旧域");
@@ -178,7 +186,7 @@ inline void HaloOnlyWaterAndHistoricalAlgorithmDomains() {
         Rejected(PlanTerrainCornerRamp(outer, point, TerrainCornerRampAlgorithm::DryOnly));
         for (const auto algorithm : {TerrainCornerRampAlgorithm::WetTerrain, TerrainCornerRampAlgorithm::NativeCorners,
             TerrainCornerRampAlgorithm::NativeWetCorners}) {
-            const auto result = Take(PrepareTerrainCornerRampStroke(outer, W::Rules(), C::Brush(), std::span(&point, 1), doodads,
+            const auto result = Take(PrepareWetCornerV4(outer, W::Rules(), C::Brush(), std::span(&point, 1), doodads,
                 {}, {}, algorithm));
             Require(!Take(PlanTerrainCornerRamp(outer, point, algorithm)).inner
                 && Take(SerializeMapTerrain(result.terrain)) == outerExpected,
@@ -192,7 +200,7 @@ inline void RejectsUnsafeDomainsAndBudgetsAtomically() {
     const auto reject = [&](TerrainGridSnapshot source, const TerrainWaterBrushLimits& limits = {}, bool created = false) {
         RefreshTerrainDerived(source, 0, 0, source.header.width, source.header.height);
         const auto original = Take(SerializeMapTerrain(source));
-        const auto result = PrepareTerrainCornerRampStroke(source, W::Rules(), C::Brush(!created), std::span(&point, 1), doodads,
+        const auto result = PrepareWetCornerV4(source, W::Rules(), C::Brush(!created), std::span(&point, 1), doodads,
             {}, limits);
         Rejected(result);
         Require(Take(SerializeMapTerrain(source)) == original && Take(doodads.Serialize()) == doo,
@@ -209,9 +217,9 @@ inline void RejectsUnsafeDomainsAndBudgetsAtomically() {
     limits = {}; limits.maximumWork = 1; reject(W::Grid(), limits);
     limits = {}; limits.maximumPoints = 0; reject(W::Grid(), limits);
     const auto clean = W::Grid();
-    const auto complete = Take(PrepareTerrainCornerRampStroke(clean, W::Rules(), C::Brush(), std::span(&point, 1), doodads));
+    const auto complete = Take(PrepareWetCornerV4(clean, W::Rules(), C::Brush(), std::span(&point, 1), doodads));
     limits = {}; limits.maximumWork = complete.result.work;
-    Require(PrepareTerrainCornerRampStroke(clean, W::Rules(), C::Brush(), std::span(&point, 1), doodads, {}, limits).Succeeded(),
+    Require(PrepareWetCornerV4(clean, W::Rules(), C::Brush(), std::span(&point, 1), doodads, {}, limits).Succeeded(),
         "湿内角完整前检与owned事务共享累计预算，精确工作边界通过");
     --limits.maximumWork; reject(clean, limits);
     auto malformed = complete.terrain; malformed.vertices[4 * 17 + 4].textureAndFlagsRaw |= 0x80;
@@ -224,15 +232,15 @@ inline void RejectsUnsafeDomainsAndBudgetsAtomically() {
     Rejected(GenerateTerrainNativePathing(input, fullSize - 1), "TERRAIN_NATIVE_BUDGET");
     for (const auto invalid : {TerrainStrokePoint{1024, 1056}, TerrainStrokePoint{1088, 1056},
         TerrainStrokePoint{std::numeric_limits<double>::infinity(), 1056}, TerrainStrokePoint{32, 32}})
-        Rejected(PrepareTerrainCornerRampStroke(clean, W::Rules(), C::Brush(), std::span(&invalid, 1), doodads));
+        Rejected(PrepareWetCornerV4(clean, W::Rules(), C::Brush(), std::span(&invalid, 1), doodads));
     const std::array duplicate{point, point};
-    Rejected(PrepareTerrainCornerRampStroke(clean, W::Rules(), C::Brush(), duplicate, doodads), "TERRAIN_CORNER_RAMP_BRUSH");
-    Rejected(PrepareTerrainCornerRampStroke(clean, W::Rules(), C::Brush(), std::span(&point, 1), doodads,
-        {}, {}, static_cast<TerrainCornerRampAlgorithm>(5)), "TERRAIN_CORNER_RAMP_ALGORITHM");
+    Rejected(PrepareWetCornerV4(clean, W::Rules(), C::Brush(), duplicate, doodads), "TERRAIN_CORNER_RAMP_BRUSH");
+    Rejected(PrepareWetCornerV4(clean, W::Rules(), C::Brush(), std::span(&point, 1), doodads,
+        {}, {}, static_cast<TerrainCornerRampAlgorithm>(255)), "TERRAIN_CORNER_RAMP_ALGORITHM");
     auto special = doodads; special.specialDoodads.push_back({"Spc0", 0, {8, 8}});
     const auto specialBefore = Take(special.Serialize());
     const std::array shapes{TerrainWaterSpecialDoodadShape{0, "Spc0", 0, {8, 8}, 8, 8, 9, 9, {0, 1, 1, 1}}};
-    Rejected(PrepareTerrainCornerRampStroke(clean, W::Rules(), C::Brush(), std::span(&point, 1), special, shapes),
+    Rejected(PrepareWetCornerV4(clean, W::Rules(), C::Brush(), std::span(&point, 1), special, shapes),
         "TERRAIN_CORNER_RAMP_SPECIAL");
     Require(Take(SerializeMapTerrain(clean)) == W::TerrainLiteral(false) && Take(special.Serialize()) == specialBefore,
         "special相交拒绝不能改写完整源地形或删除special尾段");
