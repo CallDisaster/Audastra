@@ -12,6 +12,7 @@ namespace War3Map::Modules {
 namespace {
 float Value(const MapData::PlacementTransform& transform, WorldPlacementProperty property) {
     return property == WorldPlacementProperty::Facing ? transform.rotation
+        : property == WorldPlacementProperty::Scale ? transform.scale[0]
         : transform.position[property == WorldPlacementProperty::X ? 0 : 1];
 }
 
@@ -46,6 +47,10 @@ bool WorldPlacementProperties::Same(WorldPlacementProperty property) const noexc
     if (transforms.empty()) return true;
     const auto first = std::bit_cast<std::uint32_t>(Value(transforms.front(), property));
     return std::all_of(transforms.begin(), transforms.end(), [first, property](const auto& transform) {
+        // 缩放按三轴统一显示：任一轴不同就算多个值。
+        if (property == WorldPlacementProperty::Scale)
+            return std::all_of(transform.scale.begin(), transform.scale.end(),
+                [first](float axis) { return std::bit_cast<std::uint32_t>(axis) == first; });
         return std::bit_cast<std::uint32_t>(Value(transform, property)) == first;
     });
 }
@@ -84,9 +89,13 @@ Result<std::vector<MapData::PlacementMove>> PlanWorldPlacementProperty(
     const MapDocument& document, const MapData::TerrainGridSnapshot& terrain,
     std::span<const MapData::PlacementId> ids, WorldPlacementProperty property, float value) {
     using Planned = Result<std::vector<MapData::PlacementMove>>;
-    if ((property != WorldPlacementProperty::X && property != WorldPlacementProperty::Y && property != WorldPlacementProperty::Facing)
-        || !std::isfinite(value) || (property != WorldPlacementProperty::Facing && std::abs(value) > 1000000.0f))
-        return Planned::Failure("World", "WORLD_PROPERTY_INVALID", "属性值不是有效的坐标或朝向");
+    const bool scale = property == WorldPlacementProperty::Scale;
+    const bool coordinate = property == WorldPlacementProperty::X || property == WorldPlacementProperty::Y;
+    if ((!coordinate && !scale && property != WorldPlacementProperty::Facing) || !std::isfinite(value)
+        || (coordinate && std::abs(value) > 1000000.0f) || (scale && !MapData::ValidPlacementScale(value)))
+        return Planned::Failure("World", "WORLD_PROPERTY_INVALID", "属性值不是有效的坐标、朝向或缩放");
+    if (scale && std::any_of(ids.begin(), ids.end(), [](const auto& id) { return id.file != MapData::PlacementFile::Doodads; }))
+        return Planned::Failure("World", "WORLD_PROPERTY_INVALID", "缩放只用于装饰物和可破坏物，整组选中项未修改");
     auto captured = CaptureWorldPlacementProperties(document, ids);
     if (!captured.Succeeded()) return {std::nullopt, std::move(captured.diagnostics)};
     std::vector<MapData::PlacementMove> moves;
@@ -95,6 +104,7 @@ Result<std::vector<MapData::PlacementMove>> PlanWorldPlacementProperty(
         const auto& source = captured.value->transforms[index];
         MapData::PlacementMove move{ids[index], source.position, std::nullopt};
         if (property == WorldPlacementProperty::Facing) move.rotation = value;
+        else if (scale) move.scale = std::array<float, 3>{value, value, value};
         else if (Value(source, property) != value) {
             move.position[property == WorldPlacementProperty::X ? 0 : 1] = value;
             auto grounded = GroundedPosition(terrain, source, move.position);

@@ -371,7 +371,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     const QStringList expected{"auxiliary_copy", "auxiliary_create", "auxiliary_delete", "auxiliary_update",
         "code.check", "create_campaign", "edit_campaign", "edit_terrain_block", "edit_terrain_bounds", "edit_terrain_resize", "edit_terrain_stroke", "edit_terrain_texture_slot", "editor_check_trigger_graph",
         "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
-        "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields",
+        "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields", "entities_transform",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read", "game_ui_description_triggers",
@@ -392,7 +392,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{95});
+    QCOMPARE(expected.size(), qsizetype{96});
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;

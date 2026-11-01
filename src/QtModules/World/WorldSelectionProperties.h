@@ -9,7 +9,7 @@
 
 namespace War3Map::Modules {
 
-enum class WorldPlacementProperty { X, Y, Facing };
+enum class WorldPlacementProperty { X, Y, Facing, Scale };
 
 // 世界动画宿主键只映射 typed 摆放身份；预览请求使用另一命名空间。
 [[nodiscard]] std::string WorldPlacementHostKey(const MapData::PlacementId& id);
@@ -27,7 +27,8 @@ struct WorldPlacementProperties {
 [[nodiscard]] Result<WorldPlacementProperties> CaptureWorldPlacementProperties(
     const MapDocument& document, std::span<const MapData::PlacementId> ids);
 
-// 输入 X/Y 为世界坐标，Facing 为弧度；先规划整个选择，不修改会话、撤销栈或磁盘。
+// 输入 X/Y 为世界坐标，Facing 为弧度，Scale 为三轴同一缩放（只用于装饰物/可破坏物）；
+// 先规划整个选择，不修改会话、撤销栈或磁盘。
 // 上层仍须核对共同选择/文档修订，随后一次调用既有 MovePlacements。
 [[nodiscard]] Result<std::vector<MapData::PlacementMove>> PlanWorldPlacementProperty(
     const MapDocument& document, const MapData::TerrainGridSnapshot& terrain,

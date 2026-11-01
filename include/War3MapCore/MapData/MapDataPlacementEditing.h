@@ -20,9 +20,12 @@ struct MapDataPlacementSource {
     std::string expectedRowKey;
     std::string expectedMemberSha256;
 };
-struct MapDataPlacementRotation {
+// 一个摆放的绝对变换；三项各自可选、至少给一项，未给出的保持原值。
+struct MapDataPlacementTransform {
     MapDataPlacementSource source;
-    float facingRadians = 0; // 绝对朝向，输入为 [0, 2π) 弧度；保留请求 float，不从结果反推。
+    std::optional<float> facingRadians; // 绝对朝向，输入为 [0, 2π) 弧度；保留请求 float，不从结果反推。
+    std::optional<std::array<float, 3>> position; // 游戏世界 XYZ 绝对值；起始位置需同步玩家设置，不接受。
+    std::optional<std::array<float, 3>> scale; // 只用于装饰物/可破坏物。
 };
 struct MapDataPlacementCopy {
     std::vector<MapDataPlacementSource> sources;
@@ -35,7 +38,7 @@ struct MapDataPlacementCreate {
 struct MapDataPlacementDelete {
     std::vector<MapDataPlacementSource> sources;
 };
-using MapDataPlacementIntent = std::variant<MapDataPlacementRotation, MapDataPlacementCopy,
+using MapDataPlacementIntent = std::variant<MapDataPlacementTransform, MapDataPlacementCopy,
     MapDataPlacementCreate, MapDataPlacementDelete>;
 [[nodiscard]] PlacementFile PlacementIntentFile(const MapDataPlacementIntent& intent);
 

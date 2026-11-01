@@ -41,7 +41,7 @@ bool UnitsOnlyPlacementOperation(const MapEditPlacementOperation& operation) {
         if constexpr (std::is_same_v<T, MapEditPlacementCopy> || std::is_same_v<T, MapEditPlacementDelete>) {
             return !value.sources.empty() && std::all_of(value.sources.begin(), value.sources.end(),
                 [](const auto& source) { return source.file == MapData::PlacementFile::Units; });
-        } else if constexpr (std::is_same_v<T, MapEditPlacementRotation>) {
+        } else if constexpr (std::is_same_v<T, MapEditPlacementTransform>) {
             return value.source.file == MapData::PlacementFile::Units;
         } else if constexpr (std::is_same_v<T, MapEditPlacementCreate>) {
             return std::holds_alternative<std::vector<MapData::UnitPlacement>>(value.records);
@@ -240,7 +240,7 @@ Status ApplyPlacementEdit(const MapEditPlacementOperation& operation, const MapD
     std::vector<MapEditMemberReceipt>& receipts) {
     std::vector<MapEditPlacementSource> sources;
     if (const auto* copy = std::get_if<MapEditPlacementCopy>(&operation)) sources = copy->sources;
-    else if (const auto* rotation = std::get_if<MapEditPlacementRotation>(&operation)) sources.push_back(rotation->source);
+    else if (const auto* transform = std::get_if<MapEditPlacementTransform>(&operation)) sources.push_back(transform->source);
     else if (const auto* removed = std::get_if<MapEditPlacementDelete>(&operation)) sources = removed->sources;
 
     std::vector<MapData::PlacementId> ids;
@@ -295,10 +295,11 @@ Status ApplyPlacementEdit(const MapEditPlacementOperation& operation, const MapD
     if (const auto* copy = std::get_if<MapEditPlacementCopy>(&operation)) {
         auto result = MapData::CopyPlacements(edits, ids, copy->offset);
         if (!result.Succeeded() || !result.value) return ForwardStatus(std::move(result.diagnostics));
-    } else if (const auto* rotation = std::get_if<MapEditPlacementRotation>(&operation)) {
+    } else if (const auto* transform = std::get_if<MapEditPlacementTransform>(&operation)) {
         auto current = MapData::FindPlacement(map, ids.front());
         if (!current.Succeeded() || !current.value) return ForwardStatus(std::move(current.diagnostics));
-        const MapData::PlacementMove move{ids.front(), current.value->position, rotation->facingRadians};
+        const MapData::PlacementMove move{ids.front(), transform->position.value_or(current.value->position),
+            transform->facingRadians, transform->scale};
         const auto status = MapData::MovePlacements(edits, std::span(&move, 1));
         if (!status.Succeeded()) return ForwardStatus(status.diagnostics);
     } else if (const auto* created = std::get_if<MapEditPlacementCreate>(&operation)) {
@@ -1211,7 +1212,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             std::visit([](const auto& operation) -> std::size_t {
                 using Operation = std::decay_t<decltype(operation)>;
                 if constexpr (std::is_same_v<Operation, std::monostate>) return 0;
-                else if constexpr (std::is_same_v<Operation, MapEditPlacementRotation>) return 1;
+                else if constexpr (std::is_same_v<Operation, MapEditPlacementTransform>) return 1;
                 else if constexpr (std::is_same_v<Operation, MapEditPlacementCreate>)
                     return std::visit([](const auto& records) { return records.size(); }, operation.records);
                 else return operation.sources.size();

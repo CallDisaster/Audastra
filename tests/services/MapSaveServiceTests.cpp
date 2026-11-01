@@ -1440,7 +1440,7 @@ void TestOptionalRealMissingMinimapUsesTheExistingSaveService() {
     MapEditSaveRequest rotationRequest = unitRequest;
     rotationRequest.targetCandidate = directory.Path() / "rotation-auto.w3x";
     rotationRequest.fieldEdits.clear();
-    rotationRequest.placementEdit = MapEditPlacementRotation{
+    rotationRequest.placementEdit = MapEditPlacementTransform{
         {MapData::PlacementFile::Units, 0, *unitKey.value, *unitMemberSha.value}, 0.75f};
     const auto rotationSaved = SaveMapEditCandidate(rotationRequest);
     Require(rotationSaved.Succeeded() && rotationSaved.value,
@@ -2484,9 +2484,9 @@ void TestPlacementSaveBindsSourceAndSharesWriter() {
         "stale row identity blocks copy before saving");
     stale = source;
     stale.expectedMemberSha256 = std::string(64, '0');
-    Require(HasCode(save(MapEditPlacementRotation{stale, 1.0f}), "SAVE_PLACEMENT_MEMBER_STALE"),
+    Require(HasCode(save(MapEditPlacementTransform{stale, 1.0f}), "SAVE_PLACEMENT_MEMBER_STALE"),
         "stale member blocks rotation before saving");
-    const auto rotated = save(MapEditPlacementRotation{source, 1.0f});
+    const auto rotated = save(MapEditPlacementTransform{source, 1.0f});
     Require(!HasCode(rotated, "SAVE_PLACEMENT_EDIT_SCOPE_INVALID"),
         "bound rotation reaches shared script preparation");
     auto unit = fixture.map->Units()->units.front(); unit.rawcode = "H001"; unit.heroLevel = 8;

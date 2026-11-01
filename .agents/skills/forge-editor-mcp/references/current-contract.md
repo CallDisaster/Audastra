@@ -35,7 +35,7 @@
 | 七类物编 | objects_list、objects_get、objects_text、objects_field_options、objects_set_fields、objects_apply_text、objects_create、objects_delete | GUI/独立入口共用 schema；rawcode区分大小写，未知引用覆盖禁止删除。独立服务的四个查询工具可用 source_map_path + expected_source_sha256 直接只读查 .w3x |
 | 变量 | variables_list、variables_get、variables_create、variables_update、variables_rename、variables_delete | 当前StableId与opaque修订；改名需要实际代码块SHA审计，未知引用删除拒绝 |
 | 实体字段 C1 | entities_query、entities_set_fields | 当前typed覆盖查询；source_index、row_key、完整成员SHA、精确raw与CAS成组绑定；doodads只读 |
-| 预放命令 C2 有限范围 | entities_rotate、entities_copy | classic普通units/doodads；绝对朝向弧度与共同XYZ偏移copy，原Undo/有限原来源保存；真实单位两类保存与回读通过，地物真实保存及整个实体CRUD尚未验收 |
+| 预放命令 C2 | entities_create、entities_delete、entities_copy、entities_rotate、entities_transform | 单位/物品写 `units`，装饰物/可破坏物写 `doodads`，单批 1–32。create 按物编 ID 新建，`height_offset` 相对当前地面；transform 改一个实例的绝对位置、朝向或缩放（各自可选、至少一项；position 给 x/y 加 z 或 height_offset 之一，须在地图内；scale 只用于地物，三轴 (0,1000]）；sloc 只能改朝向，特殊地物拒绝。dry_run 只预览；GUI 走原 Undo，独立事务只接受一批同类新建/删除/复制，或同一原行连续变换（后一次没给的分量沿用前一次）。用 MCP 摆的地物真实保存后进游戏尚未核对 |
 | 设置与字符串 D | map_settings_get/set、strings_query/set | 稳定w3i/string_id、当前成员SHA/raw/CAS；v25 literal与已有WTS shared_string显式区分；原Undo/字段保存，不创建WTS或整组D–H |
 | 已有声音 E0 | sounds_list/get/update | 原名字字节sound_id、当前成员SHA/raw/CAS；只改完整classic v1的volume/fade_in/fade_out整数，原Undo/字段保存；扩展、歧义及其它属性拒绝，真实/原版/游戏验收另记 |
 | 导入元数据 E1 | imports_list/get | 区分原IMP记录、物理成员与GUI待导入队列，绑定source/inventory及当前修订的cursor；默认64/最多128行、每页最多4096行匹配检查。保留原flags/path hex/歧义与覆盖未知；pending只reported_bytes，不读磁盘、不造SHA。只读，不提供正文。新增/删除走编辑器端口的 imports_add / imports_remove（进资源撤销栈；删除前按当前内容查路径，找到拒绝 IMPORTS_REMOVE_REFERENCED，allow_referenced=true 才删，回执 mentioned_in / unread_sources），独立服务的 archive_members_add / archive_members_remove，或 CLI archive-member-add / archive-member-remove |
@@ -48,7 +48,18 @@
 | 归档保存 | save_map_edit_candidate | 完整来源/工具/UI/overlay 输入，同一地图保存服务；保存后新身份 |
 | 展开目录导出 | export_map_candidate | 不要与归档保存工具混淆 |
 | 归档展开与导入成员 | archive_expand、archive_members_add、archive_members_remove | 独立服务，Save 权限。archive_expand 把 .w3x 具名成员写到新目录供 --workspace 使用，data_only 不写导入资源；成员增删写新候选，只改请求成员和 war3map.imp，不重建脚本；删除前按字符串查找路径出现处，找到即拒绝（MEMBER_REFERENCED），allow_referenced=true 才删，查不到不等于无引用 |
-| 地形/模型 | get_terrain_snapshot、query_terrain_block、capture_model_animation | 读取快照/区块；完成帧身份和设备证据另核 |
+| 地形读写 | get_terrain_edit_state、query_terrain_points、edit_terrain_stroke、edit_terrain_texture_slot、edit_terrain_bounds、edit_terrain_resize、edit_terrain_block | GUI 与独立入口同名同 schema、同一 Core 命令。先 get_terrain_edit_state 取 terrain_binding、贴图表和保存资格；笔划和贴图槽必须显式 dry_run；笔划 kind 含高度、平滑、噪声、贴图、荒芜、悬崖层级/贴图、直坡/转角坡、水面、边界、通行限制，坡道单点坐标与水位规则以工具描述为准。提交沿原 Undo，不自行保存：编辑器端口用 editor_save_map，独立目录用 save_map_edit_candidate |
+| 地形/模型只读 | get_terrain_snapshot、query_terrain_block、capture_model_animation | 独立目录会话读取快照/区块（编辑器端口没有这两个，用 query_terrain_points）；完成帧身份和设备证据另核 |
+| 世界视口 | world_viewport_camera_read/set、world_viewport_capture、world_viewport_capture_result | 只有编辑器端口的活动世界视口可用，独立 stdio 明确不支持；设置相机不改地图镜头对象；截图取实际完成帧，按请求 ID 取回，PNG 默认不带、最多 4MiB |
+| 区域/镜头结构 | auxiliary_create、auxiliary_update、auxiliary_copy、auxiliary_delete | 读取用 entities_query；字段名按 schema，角度为度。create 给完整已知字段，copy 给新名字（区域另给新 creation_number），未提供的原字段逐位保留 |
+| 地图自定义设置 | map_custom_settings_get、map_custom_settings_edit | 升级、科技限制、随机单位/物品表；先 summary 取 settings_binding，逐条 CAS，失败不发布前缀 |
+| 物编资源 | object_resource_state、object_resource_query、object_resource_inspect | 先取资源身份再查候选；inspect 读实际来源的图片尺寸或模型动作，不返回正文；写字段仍用 objects_set_fields |
+| 界面工作区 | game_ui_view_read/set、game_ui_description_create/read/edit/triggers、game_ui_nodes_query、game_ui_preview_set、game_ui_render、game_ui_simulate、game_ui_trigger_simulation | 描述是地图里的 `AudastraUI/<编号>` 导入文件；edit 整组检查；triggers 生成自然 T；render 出 PNG；trigger_simulation 在编辑器里跑作者自己的触发器 |
+| Lua 文件与热重载 | lua_files_list、lua_file_read、lua_file_write、lua_test_hot_reload、lua_test_reload_result | 只有编辑器端口可用；写入按 sha256 整体替换并进撤销栈；热重载只发给本编辑器启动的单人测试，不保存 |
+| 战役 | open_campaign、create_campaign、query_campaign、query_campaign_objects、edit_campaign、undo_campaign、redo_campaign、save_campaign、export_campaign_member | 经典 .w3n；另存到不存在的路径，in_place 走原子保存加备份；导出不覆盖原文件 |
+| 运行库 | map_runtime_query、map_runtime_set | 查询本图运行库设置和可信包身份；启用须明确批准固定包，不自动选包，不保存不启动 |
+| 代码检查与搜索 | code.check、project_search、editor_get_ui_catalog | code.check 异步检查 JASS/vJass/Lua5.3（submit/status/cancel）；project_search 只读全局搜索；ui catalog 读取当前触发器定义目录 |
+| 反馈与更新 | feedback.draft、feedback.list、feedback.status、update.status | 只在本机起草/读取清理后的程序问题报告，不发送；update.status 只读版本与发布信任，不联网 |
 
 这张表用于独立宿主的 stdio/本机 HTTP 工作区，不替代 tools/list 的真实结果；关闭或缺失的工具不能调用。`forge://skills/manifest` 提供此次服务捕获的 Skill 版本、逐文件 SHA 与可读 URI；资源是不可变捕获字节，文件更新后须由宿主重新注册。
 

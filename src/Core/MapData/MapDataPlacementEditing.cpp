@@ -15,7 +15,7 @@ template<class T> Result<T> Failure(const char* code, std::string text) {
 }
 template<class T, class U> Result<T> Failed(const U& result) { return {std::nullopt, result.diagnostics}; }
 std::vector<const MapDataPlacementSource*> Sources(const MapDataPlacementIntent& intent) {
-    if (const auto* rotation = std::get_if<MapDataPlacementRotation>(&intent)) return {&rotation->source};
+    if (const auto* transform = std::get_if<MapDataPlacementTransform>(&intent)) return {&transform->source};
     std::vector<const MapDataPlacementSource*> result;
     const auto append = [&](const auto& sources) { for (const auto& source : sources) result.push_back(&source); };
     if (const auto* copy = std::get_if<MapDataPlacementCopy>(&intent)) append(copy->sources);
@@ -66,10 +66,11 @@ Result<PlacementWireProjection> Projection(const MapDocument& document, MapDataK
     return measured;
 }
 Result<detail::PlacementEditCandidate> Execute(const MapDocument& document, const MapDataPlacementIntent& intent) {
-    if (const auto* rotation = std::get_if<MapDataPlacementRotation>(&intent)) {
-        auto transform = FindPlacement(document, rotation->source.id);
-        if (!transform.Succeeded()) return Failed<detail::PlacementEditCandidate>(transform);
-        const PlacementMove move{rotation->source.id, transform.value->position, rotation->facingRadians};
+    if (const auto* transform = std::get_if<MapDataPlacementTransform>(&intent)) {
+        auto current = FindPlacement(document, transform->source.id);
+        if (!current.Succeeded()) return Failed<detail::PlacementEditCandidate>(current);
+        const PlacementMove move{transform->source.id, transform->position.value_or(current.value->position),
+            transform->facingRadians, transform->scale};
         return detail::PreparePlacementMoves(document, std::span(&move, 1));
     }
     if (const auto* created = std::get_if<MapDataPlacementCreate>(&intent))
@@ -104,8 +105,8 @@ std::optional<MapDataPlacementIntent> OriginalIntent(const MapDocument& original
         source.expectedRowKey = *key.value; source.expectedMemberSha256 = *sha.value;
         return true;
     };
-    if (auto* rotation = std::get_if<MapDataPlacementRotation>(&rebound)) {
-        if (!rebind(rotation->source)) return std::nullopt;
+    if (auto* transform = std::get_if<MapDataPlacementTransform>(&rebound)) {
+        if (!rebind(transform->source)) return std::nullopt;
     } else if (auto* copy = std::get_if<MapDataPlacementCopy>(&rebound)) {
         for (auto& source : copy->sources) if (!rebind(source)) return std::nullopt;
     } else if (auto* removed = std::get_if<MapDataPlacementDelete>(&rebound)) {
@@ -136,9 +137,17 @@ struct MapDataPlacementEditingAccess {
             return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_KIND_UNSUPPORTED", "C2 只支持单位与普通地物。");
         const auto kind = Kind(file);
         if (const auto status = SourceStatus(current, kind); !status.Succeeded()) return Failed<PreparedMapDataPlacement>(status);
-        if (const auto* rotation = std::get_if<MapDataPlacementRotation>(&intent))
-            if (!std::isfinite(rotation->facingRadians) || rotation->facingRadians < 0 || rotation->facingRadians >= kTurn)
+        if (const auto* transform = std::get_if<MapDataPlacementTransform>(&intent)) {
+            if (!transform->facingRadians && !transform->position && !transform->scale)
+                return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_TRANSFORM_EMPTY", "变换须至少给出位置、朝向或缩放之一。");
+            const auto facing = transform->facingRadians;
+            if (facing && (!std::isfinite(*facing) || *facing < 0 || *facing >= kTurn))
                 return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_FACING_INVALID", "绝对朝向须为 [0, 2π) 有限弧度。");
+            if (transform->position && transform->source.id.rawcode == "sloc")
+                return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_START_MOVE_UNSUPPORTED", "起始位置需要同步玩家设置，不能经普通实体变换移动。");
+            if (transform->scale && file != PlacementFile::Doodads)
+                return Failure<PreparedMapDataPlacement>("MAP_PLACEMENT_SCALE_UNSUPPORTED", "缩放只开放装饰物和可破坏物；单位外观缩放来自物编。");
+        }
         std::vector<std::uint32_t> copied;
         const bool copy = std::holds_alternative<MapDataPlacementCopy>(intent);
         for (const auto* source : sources) {
@@ -208,7 +217,7 @@ struct MapDataPlacementEditingAccess {
 PlacementFile PlacementIntentFile(const MapDataPlacementIntent& intent) {
     return std::visit([](const auto& operation) {
         using Operation = std::decay_t<decltype(operation)>;
-        if constexpr (std::is_same_v<Operation, MapDataPlacementRotation>) return operation.source.id.file;
+        if constexpr (std::is_same_v<Operation, MapDataPlacementTransform>) return operation.source.id.file;
         else if constexpr (std::is_same_v<Operation, MapDataPlacementCreate>)
             return std::holds_alternative<std::vector<UnitPlacement>>(operation.records) ? PlacementFile::Units : PlacementFile::Doodads;
         else return operation.sources.empty() ? PlacementFile::Units : operation.sources.front().id.file;

@@ -242,7 +242,7 @@ struct Fixture {
 
     PreparedMapDataPlacement Placement(bool copying, std::uint32_t row = 0, float facing = 1.5f) {
         const auto context = Context();
-        MapDataPlacementIntent intent = MapDataPlacementRotation{Source(*context.document, row), facing};
+        MapDataPlacementIntent intent = MapDataPlacementTransform{Source(*context.document, row), facing};
         if (copying) intent = MapDataPlacementCopy{{Source(*context.document, row)}, {64.f, -32.f, 4.f}};
         auto plan = PrepareMapDataPlacement(*context.original, *context.document, intent);
         Succeeded(plan, "生产 prepared placement 必须产生完整候选"); return std::move(*plan.value);
@@ -414,6 +414,28 @@ void FieldsThenPlacementsRefuseBothCommands() {
     SameMembers(*original.document, *f.Context().document); f.SourceUntouched();
 }
 
+void RepeatedTransformsMergeIntoOneReplay() {
+    Fixture f; const auto transaction = f.Begin();
+    auto context = f.Context();
+    MapDataPlacementTransform moved{f.Source(*context.document, 0)};
+    moved.position = std::array<float, 3>{48.f, 40.f, 12.f};
+    auto first = PrepareMapDataPlacement(*context.original, *context.document, moved);
+    Succeeded(first, "只改位置的变换候选"); Succeeded(f.workspace->ApplyPlacementPlan(*first.value), "第一次只改位置");
+    context = f.Context();
+    const MapDataPlacementIntent turned = MapDataPlacementTransform{f.Source(*context.document, 0), 1.5f};
+    auto second = PrepareMapDataPlacement(*context.original, *context.document, turned);
+    Succeeded(second, "只改朝向的变换候选");
+    Succeeded(f.workspace->ApplyPlacementPlan(*second.value), "同原行第二次变换沿用前一次位置一起冻结");
+    const auto current = f.Context();
+    const auto& unit = current.document->Units()->units[0];
+    Require(unit.position == std::array<float, 3>{48.f, 40.f, 12.f}
+        && std::bit_cast<std::uint32_t>(unit.rotation) == std::bit_cast<std::uint32_t>(1.5f), "两次变换累计生效");
+    MapDataPlacementTransform merged{f.Source(*current.original, 0), 1.5f, std::array<float, 3>{48.f, 40.f, 12.f}};
+    const auto frozen = FreezeOriginalMapDataPlacement(*current.original, *current.document, merged);
+    Succeeded(frozen, "合并后的原来源意图完整重放当前候选");
+    Succeeded(f.workspace->Rollback(transaction.id, transaction.base), "变换事务 rollback");
+}
+
 void RepeatedAbsoluteRotationFreezesLastRequestedFloat() {
     Fixture f; const auto original = f.Context(); const auto transaction = f.Begin();
     const auto first = f.workspace->ApplyPlacementPlan(f.Placement(false, 0, 1.125f)); Succeeded(first, "第一绝对弧度发布");
@@ -433,8 +455,8 @@ void RepeatedAbsoluteRotationFreezesLastRequestedFloat() {
         == original.document->Member(MapDataKind::Units).sources.front().name,
         "typed rotation 必须保持原目录来源名");
     Require(last.OriginalReplayIntent().has_value(), "最后命令必须保有原来源 replay");
-    const auto& intent = std::get<MapDataPlacementRotation>(*last.OriginalReplayIntent());
-    Require(std::bit_cast<std::uint32_t>(intent.facingRadians) == std::bit_cast<std::uint32_t>(1.5f)
+    const auto& intent = std::get<MapDataPlacementTransform>(*last.OriginalReplayIntent());
+    Require(std::bit_cast<std::uint32_t>(intent.facingRadians.value_or(-1.0f)) == std::bit_cast<std::uint32_t>(1.5f)
         && intent.source.id == f.Source(*current.original, 0).id
         && intent.source.expectedMemberSha256 == f.Source(*current.original, 0).expectedMemberSha256,
         "最终保存意图须绑定原行、原 member SHA 与最后输入 float");
@@ -652,6 +674,7 @@ int main() {
         run("CreateDeleteUseOriginalSealedTransaction", CreateDeleteUseOriginalSealedTransaction);
         run("FieldsThenPlacementsRefuseBothCommands", FieldsThenPlacementsRefuseBothCommands);
         run("RepeatedAbsoluteRotationFreezesLastRequestedFloat", RepeatedAbsoluteRotationFreezesLastRequestedFloat);
+        run("RepeatedTransformsMergeIntoOneReplay", RepeatedTransformsMergeIntoOneReplay);
         run("RestoredRotationClearsRecipeAndAllowsFreshCopy", RestoredRotationClearsRecipeAndAllowsFreshCopy);
         run("RestoredRegionOverlayAllowsUnitCopyOnlyFreeze", RestoredRegionOverlayAllowsUnitCopyOnlyFreeze);
         run("RestoredUnitRotationAllowsDoodadCopyOnlyFreeze", RestoredUnitRotationAllowsDoodadCopyOnlyFreeze);

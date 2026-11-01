@@ -381,7 +381,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     request.targetCandidate = argv[7];
     std::vector<Services::MapEditPlacementSource> copySources;
     std::optional<std::array<float, 3>> copyOffset;
-    std::optional<Services::MapEditPlacementRotation> rotation;
+    std::optional<Services::MapEditPlacementTransform> rotation;
     std::size_t retainedTriggerTextBytes = 0;
     std::optional<std::string> runtimeMode, runtimePackage;
     bool approveRuntime = false, purposeSpecified = false;
@@ -648,7 +648,7 @@ int RunMapEditSave(int argc, wchar_t** argv) {
             const auto degrees = ParseNumber<float>(argv[index + 5]);
             if (!source || !degrees || !std::isfinite(*degrees) || *degrees < 0 || *degrees >= 360)
                 return Invalid("--rotate needs a bound placement and finite degrees in [0, 360)");
-            rotation = Services::MapEditPlacementRotation{
+            rotation = Services::MapEditPlacementTransform{
                 std::move(*source), static_cast<float>(double(*degrees) * std::numbers::pi_v<double> / 180.0)};
             index += 6;
         } else {

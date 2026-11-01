@@ -268,6 +268,9 @@ QWidget* WorldModule::BuildInspector() {
     fieldFacing_ = Field(placementFields_, "worldFieldFacing", 15, 1, QStringLiteral("°"));
     fieldFacing_->setRange(0, 360);
     fieldFacing_->setWrapping(true);
+    fieldScale_ = Field(placementFields_, "worldFieldScale", 0.1, 3);
+    fieldScale_->setRange(0.001, 1000);
+    fieldScale_->setToolTip(tr("三轴同时设为该值；只用于装饰物和可破坏物"));
     fieldZ_ = new QLabel(placementFields_);
     fieldZ_->setObjectName(QStringLiteral("worldFieldZ"));
     fieldZ_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
@@ -304,7 +307,7 @@ QWidget* WorldModule::BuildInspector() {
     connect(owner, &QComboBox::activated, this, [this, owner] {
         owner->setProperty("worldEdited", true); CommitUnitAttributeField(owner);
     });
-    placement->addWidget(KeyLabel(tr("摆放缩放"), placementFields_), 3, 0, 1, 4);
+    placement->addWidget(KeyLabel(tr("缩放"), placementFields_), 3, 0); placement->addWidget(fieldScale_, 3, 1, 1, 3);
     placement->addWidget(scale, 4, 0, 1, 4);
     auto* lifeKey = KeyLabel(tr("生命"), placementFields_); lifeKey->setObjectName(QStringLiteral("worldSelectionLifeLabel"));
     auto* manaKey = KeyLabel(tr("魔法"), placementFields_); manaKey->setObjectName(QStringLiteral("worldSelectionManaLabel"));
@@ -432,7 +435,7 @@ QWidget* WorldModule::BuildInspector() {
     column->addStretch(1);
     scroll->setWidget(inspectorBody_);
 
-    for (auto* spin : {fieldX_, fieldY_, fieldFacing_}) {
+    for (auto* spin : {fieldX_, fieldY_, fieldFacing_, fieldScale_}) {
         connect(spin->findChild<QLineEdit*>(), &QLineEdit::textEdited, spin, [spin] { spin->setProperty("worldEdited", true); });
         connect(spin, &QDoubleSpinBox::valueChanged, spin, [spin] { spin->setProperty("worldEdited", true); });
         connect(spin, &QDoubleSpinBox::editingFinished, this, &WorldModule::CommitPlacementFields);
@@ -575,7 +578,7 @@ void WorldModule::UpdateInspector(bool animate) {
         });
         const bool sameScale = std::all_of(properties.value->transforms.begin(), properties.value->transforms.end(),
             [&](const auto& value) { return value.scale == original.scale; });
-        scale->setText(!finiteScale ? tr("不可用：非有限缩放") : !sameScale ? tr("多个值 · 只读")
+        scale->setText(!finiteScale ? tr("不可用：非有限缩放") : !sameScale ? tr("多个值")
             : tr("%1 × %2 × %3").arg(original.scale[0],0,'g',6).arg(original.scale[1],0,'g',6).arg(original.scale[2],0,'g',6));
         std::array<QStringList, 4> storedValues; // 生命、魔法、英雄等级、所属玩家。
         bool unknownType = false;
@@ -641,9 +644,13 @@ void WorldModule::UpdateInspector(bool animate) {
         SetPlacementField(fieldY_, position[1], !properties.value->Same(WorldPlacementProperty::Y), changed, selectionRevision, mapRevision, MapKey(), generation_);
         SetPlacementField(fieldFacing_, Degrees(single && dragRotation_ ? *dragRotation_ : original.rotation),
             !properties.value->Same(WorldPlacementProperty::Facing), changed, selectionRevision, mapRevision, MapKey(), generation_);
+        SetPlacementField(fieldScale_, original.scale[0], !properties.value->Same(WorldPlacementProperty::Scale),
+            changed, selectionRevision, mapRevision, MapKey(), generation_);
         const bool editable = SelectionEditable() && project_.mapEdits_ && terrain_;
         for (auto* field : {fieldX_, fieldY_, fieldFacing_}) field->setEnabled(editable);
         if (hasStart) fieldFacing_->setEnabled(false);
+        fieldScale_->setEnabled(editable && std::all_of(selectedPlacements_.begin(), selectedPlacements_.end(),
+            [](const auto& value) { return value.file == MapData::PlacementFile::Doodads; }));
         fieldZ_->setText(tr("随地形 · 只读"));
         fieldZ_->setToolTip(single ? tr("Z：%1\n移动时保持与地表的相对高度").arg(position[2], 0, 'f', 1)
             : tr("每个摆放分别保持与地表的相对高度；手工高度只读"));
@@ -837,7 +844,7 @@ void WorldModule::CommitUnitAttributeField(QWidget* field) {
 
 void WorldModule::CommitPlacementFields() {
     auto* field = qobject_cast<QDoubleSpinBox*>(sender());
-    if (!field || (field != fieldX_ && field != fieldY_ && field != fieldFacing_)) return;
+    if (!field || (field != fieldX_ && field != fieldY_ && field != fieldFacing_ && field != fieldScale_)) return;
     if (!field->property("worldEdited").toBool()) {
         const QSignalBlocker blocker(field); field->clearFocus(); inspectorKey_.clear(); UpdateInspector();
         return; // 仅失焦不修改混合值；恢复原显示，避免spin把空文本修正成主选值。
@@ -855,11 +862,12 @@ void WorldModule::CommitPlacementFields() {
         selectionStatus_->setText(WorldDiagnosticText(captured.diagnostics));
         return;
     }
-    const auto property = field == fieldX_ ? WorldPlacementProperty::X
-        : field == fieldY_ ? WorldPlacementProperty::Y : WorldPlacementProperty::Facing;
+    const auto property = field == fieldX_ ? WorldPlacementProperty::X : field == fieldY_ ? WorldPlacementProperty::Y
+        : field == fieldScale_ ? WorldPlacementProperty::Scale : WorldPlacementProperty::Facing;
     const auto& first = captured.value->transforms.front();
     const double sourceValue = property == WorldPlacementProperty::X ? first.position[0]
-        : property == WorldPlacementProperty::Y ? first.position[1] : Degrees(first.rotation);
+        : property == WorldPlacementProperty::Y ? first.position[1]
+        : property == WorldPlacementProperty::Scale ? first.scale[0] : Degrees(first.rotation);
     if (captured.value->Same(property) && !ChangedField(field, sourceValue)) return;
     const float value = static_cast<float>(property == WorldPlacementProperty::Facing
         ? qDegreesToRadians(field->value()) : field->value());
@@ -888,10 +896,12 @@ void WorldModule::CommitPlacementFields() {
         return;
     }
     if (project_.mapEdits_->Revision() == beforeRevision) return;
-    const bool moved = property != WorldPlacementProperty::Facing;
-    const auto description = moved ? std::string("移动摆放组") : std::string("旋转摆放组");
+    const bool scaled = property == WorldPlacementProperty::Scale;
+    const bool moved = !scaled && property != WorldPlacementProperty::Facing;
+    const auto description = scaled ? std::string("缩放摆放组") : moved ? std::string("移动摆放组") : std::string("旋转摆放组");
     (void)project_.ObserveMapDataEdit(description);
-    QtProject::PushMapDataEdit(project_, (moved ? tr("移动 %1 个摆放") : tr("旋转 %1 个摆放")).arg(selectedPlacements_.size()), description);
+    QtProject::PushMapDataEdit(project_, (scaled ? tr("缩放 %1 个摆放") : moved ? tr("移动 %1 个摆放") : tr("旋转 %1 个摆放"))
+        .arg(selectedPlacements_.size()), description);
     const QSignalBlocker blocker(field); field->clearFocus(); inspectorKey_.clear(); UpdateInspector();
     if (!project_.mapDataUndoStack_) RefreshPlacements();
 }

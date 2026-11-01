@@ -75,6 +75,8 @@ Result<PlacementTransform> FindPlacement(const MapDocument& document, const Plac
     return Result<PlacementTransform>::Success(document.Doodads()->doodads[id.index]);
 }
 
+bool ValidPlacementScale(float value) noexcept { return std::isfinite(value) && value > 0 && value <= 1000.0f; }
+
 Result<detail::PlacementEditCandidate> detail::PreparePlacementMoves(const MapDocument& document,
     std::span<const PlacementMove> moves) {
     const auto fail = [](Status status) { return Result<PlacementEditCandidate>{std::nullopt, std::move(status.diagnostics)}; };
@@ -87,6 +89,10 @@ Result<detail::PlacementEditCandidate> detail::PreparePlacementMoves(const MapDo
             return fail(Failure("PLACEMENT_COORDINATE_INVALID", "摆放坐标或朝向不是有效数值，或超出 ±1000000"));
         if (move.id.file != PlacementFile::Units && move.id.file != PlacementFile::Doodads)
             return fail(Failure("PLACEMENT_FILE_UNAVAILABLE", "未知摆放文件，不能移动"));
+        // 单位外观缩放来自物编，地图记录里的缩放不开放修改。
+        if (move.scale && (move.id.file != PlacementFile::Doodads
+            || !std::all_of(move.scale->begin(), move.scale->end(), ValidPlacementScale)))
+            return fail(Failure("PLACEMENT_SCALE_INVALID", "缩放只用于装饰物和可破坏物，三轴须在 (0, 1000]"));
         if (!Matches(document, move.id)) return fail(Unavailable(move.id));
         for (std::size_t j = 0; j < i; ++j)
             if (moves[j].id == move.id) return fail(Failure("PLACEMENT_DUPLICATE", "同一摆放在一次移动中出现多次"));
@@ -105,6 +111,7 @@ Result<detail::PlacementEditCandidate> detail::PreparePlacementMoves(const MapDo
             constexpr float kTurn = 6.28318530718f;
             target.rotation = std::fmod(std::fmod(*move.rotation, kTurn) + kTurn, kTurn);
         }
+        if (move.scale) target.scale = *move.scale;
     }
     if (units) candidate.lineage.push_back(Rows(PlacementFile::Units, document.Units()->units.size(), candidate.units->units.size()));
     if (doodads) candidate.lineage.push_back(Rows(PlacementFile::Doodads, document.Doodads()->doodads.size(), candidate.doodads->doodads.size()));

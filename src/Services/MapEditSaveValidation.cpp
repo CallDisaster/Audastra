@@ -75,12 +75,17 @@ Status ValidatePlacementOperation(const MapEditPlacementOperation& operation) {
         }
         return Status::Ok();
     }
-    if (const auto* rotation = std::get_if<MapEditPlacementRotation>(&operation)) {
-        if (!validSource(rotation->source) || !std::isfinite(rotation->facingRadians)
-            || rotation->facingRadians < 0
-            || rotation->facingRadians >= static_cast<float>(2 * std::numbers::pi_v<double>)) {
+    if (const auto* transform = std::get_if<MapEditPlacementTransform>(&operation)) {
+        const auto facing = transform->facingRadians;
+        const auto finite = [](const auto& axes) {
+            return std::all_of(axes.begin(), axes.end(), [](float value) { return std::isfinite(value) && std::abs(value) <= 1'000'000.0f; });
+        };
+        if (!validSource(transform->source) || (!facing && !transform->position && !transform->scale)
+            || (facing && (!std::isfinite(*facing) || *facing < 0 || *facing >= static_cast<float>(2 * std::numbers::pi_v<double>)))
+            || (transform->position && !finite(*transform->position))
+            || (transform->scale && !std::all_of(transform->scale->begin(), transform->scale->end(), MapData::ValidPlacementScale))) {
             return Status::Failure("MapEdit.Save", "SAVE_PLACEMENT_REQUEST_INVALID",
-                "朝向修改需要绑定行和 [0, 360) 度的有限角度。");
+                "变换需要绑定行，并至少给出有限世界坐标、[0, 360) 度朝向或 (0, 1000] 缩放之一。");
         }
         return Status::Ok();
     }

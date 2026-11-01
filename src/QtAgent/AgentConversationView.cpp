@@ -447,6 +447,7 @@ public:
                 {QStringLiteral("entities_query"), QStringLiteral("查询地图实体")},
                 {QStringLiteral("entities_set_fields"), QStringLiteral("修改实体字段")},
                 {QStringLiteral("entities_rotate"), QStringLiteral("调整实体朝向")},
+                {QStringLiteral("entities_transform"), QStringLiteral("移动或缩放实体")},
                 {QStringLiteral("entities_copy"), QStringLiteral("复制预放实体")},
                 {QStringLiteral("sounds_list"), QStringLiteral("查询声音定义")},
                 {QStringLiteral("sounds_get"), QStringLiteral("读取声音定义")},

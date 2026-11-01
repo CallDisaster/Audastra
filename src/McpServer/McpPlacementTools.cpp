@@ -200,12 +200,13 @@ std::vector<ToolDefinition> PlacementToolDefinitions() {
         tool.permission = ToolPermission::Edit; tool.inputSchema = BasicSchema(std::move(properties), std::move(required));
         tool.maxRequestIdBytes = 4096; tool.maxResponseBytes = 1024U * 1024U; definitions.push_back(std::move(tool));
     };
-    auto rotate = common; rotate.insert("source", source);
-    rotate.insert("facing_radians", QJsonObject{{"type", "number"}, {"minimum", 0}, {"exclusiveMaximum", 6.283185307179586}});
+    const QJsonObject facing{{"type", "number"}, {"minimum", 0}, {"exclusiveMaximum", 6.283185307179586}};
+    auto rotate = common; rotate.insert("source", source); rotate.insert("facing_radians", facing);
     add("entities_rotate", "设置一个当前单位或普通地物的绝对朝向，facing_radians为[0,2π)弧度（与C1 facing度输入不同）；XYZ不变，sloc只改朝向不改W3I。原会话Undo/独立事务，不保存。",
         rotate, {"project_identity", "expected_revision", "kind", "expected_member_sha256", "source", "facing_radians"});
     auto copy = common; copy.insert("sources", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 32}, {"items", source}});
     const QJsonObject number{{"type", "number"}, {"minimum", -1000000}, {"maximum", 1000000}};
+    const QJsonObject scale{{"type", "number"}, {"exclusiveMinimum", 0}, {"maximum", 1000}};
     copy.insert("offset", BasicSchema({{"x", number}, {"y", number}, {"z", number}}, {"x", "y", "z"}));
     add("entities_copy", "按共同游戏世界XYZ偏移复制1..32个同类单位或普通地物，完整原生记录保留；sloc与特殊地物拒绝。GUI用当前已有行与原Undo；独立事务只接受一批原始来源，不混字段/旋转/第二复制。64MiB wire预检，不保存。",
         copy, {"project_identity", "expected_revision", "kind", "expected_member_sha256", "sources", "offset"});
@@ -215,6 +216,11 @@ std::vector<ToolDefinition> PlacementToolDefinitions() {
     auto remove = common; remove.insert("sources", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 32}, {"items", source}});
     add("entities_delete", "按当前成员SHA和完整行身份删除1..32个实例，单次事务保留原Undo；拒绝sloc和特殊地物。dry_run仅预览，不消耗命令身份，不保存。独立事务只接受一批原始来源操作。",
         remove, {"project_identity", "expected_revision", "kind", "expected_member_sha256", "sources"});
+    auto transform = common; transform.insert("source", source); transform.insert("facing_radians", facing);
+    transform.insert("position", BasicSchema({{"x", number}, {"y", number}, {"z", number}, {"height_offset", number}}, {"x", "y"}));
+    transform.insert("scale", BasicSchema({{"x", scale}, {"y", scale}, {"z", scale}}, {"x", "y", "z"}));
+    add("entities_transform", "设置一个当前单位或普通地物的绝对位置、朝向或缩放；三项各自可选、至少一项，没给的保持原值。position的x/y为游戏世界坐标且须在地图内，另给z（绝对）或height_offset（相对新位置当前地面）之一；scale只用于装饰物/可破坏物，三轴(0,1000]；起始位置只能改朝向。原会话Undo/独立事务，同一原行可连续变换，不保存。",
+        transform, {"project_identity", "expected_revision", "kind", "expected_member_sha256", "source"});
     return definitions;
 }
 
@@ -246,10 +252,11 @@ QJsonObject InvokePlacementTool(const QString& name, const QJsonObject& argument
         const auto sha = Text(arguments, "expected_member_sha256", 64);
         if (sha.size() != 64 || !std::all_of(sha.begin(), sha.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
             return Failure("ENTITY_MEMBER_STALE", "expected_member_sha256 必须为当前成员的64位小写SHA。");
-        MapDataPlacementIntent intent = MapDataPlacementRotation{};
+        MapDataPlacementIntent intent = MapDataPlacementTransform{};
         std::vector<std::uint32_t> oldIndices;
         const bool copy = name == QStringLiteral("entities_copy");
         const bool create = name == QStringLiteral("entities_create"), remove = name == QStringLiteral("entities_delete");
+        const bool transform = name == QStringLiteral("entities_transform");
         if (create) {
             if (!host.objectContext || !host.terrainPoint)
                 return Failure("ENTITY_CREATE_HOST_UNAVAILABLE", "新建需要实际物编目录与当前地形采样，不能猜测来源。");
@@ -308,10 +315,46 @@ QJsonObject InvokePlacementTool(const QString& name, const QJsonObject& argument
                     Number(offset, "y", -1000000, 1000000, false, "PLACEMENT_COORDINATE_INVALID"),
                     Number(offset, "z", -1000000, 1000000, false, "PLACEMENT_COORDINATE_INVALID")}; intent = std::move(command);
             }
+        } else if (transform) {
+            if (!arguments.value("source").isObject()) return Failure("ENTITY_ARGUMENT_TYPE", "source须为定位对象。");
+            MapDataPlacementTransform command{Source(arguments.value("source").toObject(), *context.document, kind, sha)};
+            oldIndices.push_back(command.source.id.index);
+            if (arguments.contains("facing_radians"))
+                command.facingRadians = Number(arguments, "facing_radians", 0, 6.283185307179586, true, "MAP_PLACEMENT_FACING_INVALID");
+            if (arguments.contains("position")) {
+                if (!arguments.value("position").isObject()) return Failure("ENTITY_ARGUMENT_TYPE", "position须为x/y加z或height_offset的对象。");
+                const auto position = arguments.value("position").toObject();
+                Keys(position, {{"x", QJsonObject{}}, {"y", QJsonObject{}}, {"z", QJsonObject{}}, {"height_offset", QJsonObject{}}}, {"x", "y"});
+                if (position.contains("z") == position.contains("height_offset"))
+                    return Failure("PLACEMENT_COORDINATE_INVALID", "position须且只能给z（绝对）或height_offset（相对新位置地面）之一。");
+                if (!host.terrainPoint) return Failure("ENTITY_TRANSFORM_HOST_UNAVAILABLE", "移动需要当前地形采样，不能猜测地图边界或地高。");
+                // 与新建相同：地图边界由地形宿主按原 double 检查。
+                const TerrainStrokePoint point{BoundedNumber(position, "x", -1000000, 1000000, false, "PLACEMENT_COORDINATE_INVALID"),
+                    BoundedNumber(position, "y", -1000000, 1000000, false, "PLACEMENT_COORDINATE_INVALID")};
+                const auto terrain = host.terrainPoint(point);
+                if (!terrain.Succeeded()) return Failure(terrain);
+                double z = 0;
+                if (position.contains("z")) z = Number(position, "z", -1000000, 1000000, false, "PLACEMENT_COORDINATE_INVALID");
+                else {
+                    if (terrain.value->groundHeightApproximate)
+                        return Failure("PLACEMENT_TERRAIN_APPROXIMATE", "该坡道点只有近似地高，缺少实际Terrain.MaxHeight来源，不能按地面放置。");
+                    z = double(terrain.value->groundHeight) + Number(position, "height_offset", -1000000, 1000000, false, "PLACEMENT_COORDINATE_INVALID");
+                    if (!std::isfinite(z) || std::abs(z) > 1e6) return Failure("PLACEMENT_COORDINATE_INVALID", "按地面换算后的高度超出有限世界坐标范围。");
+                }
+                command.position = std::array<float, 3>{static_cast<float>(point.x), static_cast<float>(point.y), static_cast<float>(z)};
+            }
+            if (arguments.contains("scale")) {
+                if (!arguments.value("scale").isObject()) return Failure("ENTITY_ARGUMENT_TYPE", "scale须为XYZ对象。");
+                const auto axes = arguments.value("scale").toObject();
+                Keys(axes, {{"x", QJsonObject{}}, {"y", QJsonObject{}}, {"z", QJsonObject{}}}, {"x", "y", "z"});
+                command.scale = std::array<float, 3>{Number(axes, "x", 0, 1000, false, "PLACEMENT_SCALE_INVALID"),
+                    Number(axes, "y", 0, 1000, false, "PLACEMENT_SCALE_INVALID"), Number(axes, "z", 0, 1000, false, "PLACEMENT_SCALE_INVALID")};
+            }
+            intent = std::move(command);
         } else {
             if (!arguments.value("source").isObject()) return Failure("ENTITY_ARGUMENT_TYPE", "source须为定位对象。");
             auto source = Source(arguments.value("source").toObject(), *context.document, kind, sha); oldIndices.push_back(source.id.index);
-            intent = MapDataPlacementRotation{std::move(source),
+            intent = MapDataPlacementTransform{std::move(source),
                 Number(arguments, "facing_radians", 0, 6.283185307179586, true, "MAP_PLACEMENT_FACING_INVALID")};
         }
         if (!SameIdentity(identity, Identity(host))) return Failure("ENTITY_REVISION_CONFLICT", "类型或地形校验期间修订已变化。");
@@ -321,8 +364,8 @@ QJsonObject InvokePlacementTool(const QString& name, const QJsonObject& argument
         if (copy || create) for (const auto& id : plan.value->NewIds()) newIndices.push_back(id.index);
         else if (!remove) newIndices = oldIndices;
         QJsonObject prepared; bool previewed = false;
-        const char* operation = create ? "create" : remove ? "delete" : copy ? "copy" : "rotate";
-        const char* title = create ? "新建摆放" : remove ? "删除摆放" : copy ? "复制摆放" : "绝对朝向（弧度）";
+        const char* operation = create ? "create" : remove ? "delete" : copy ? "copy" : transform ? "transform" : "rotate";
+        const char* title = create ? "新建摆放" : remove ? "删除摆放" : copy ? "复制摆放" : transform ? "位置、朝向与缩放" : "绝对朝向（弧度）";
         const auto response = [&](const MapDataEditSession::EditReceipt* receipt, const QJsonObject& hostChanges) -> Status {
             auto oldRows = Rows(plan.value->OwnedBefore(), kind, context, oldIndices), newRows = Rows(plan.value->OwnedAfter(), kind, context, newIndices);
             if (!oldRows.Succeeded()) return {oldRows.diagnostics};
@@ -337,7 +380,7 @@ QJsonObject InvokePlacementTool(const QString& name, const QJsonObject& argument
                     const auto newRow = remove ? QJsonValue(QJsonValue::Null) : QJsonValue(newArray[static_cast<qsizetype>(i)]);
                     const auto index = remove ? oldIndices[i] : newIndices[i];
                     items.append(QJsonObject{{"kind", MapKindName(kind)}, {"object_id", ""}, {"source_index", QString::number(index)},
-                        {"row_key", (remove ? oldRow : newRow).toObject().value("row_key")}, {"field", copy || create || remove ? "record" : "facing"},
+                        {"row_key", (remove ? oldRow : newRow).toObject().value("row_key")}, {"field", copy || create || remove || transform ? "record" : "facing"},
                         {"title", QString::fromUtf8(title)}, {"before", oldRow}, {"after", newRow},
                         {"target", QString::fromStdString(plan.value->After().Member(kind).memberName) + QStringLiteral(" [%1]").arg(index)}});
                 }
@@ -357,7 +400,12 @@ QJsonObject InvokePlacementTool(const QString& name, const QJsonObject& argument
                 {"creation_id", QString::number(plan.value->NewIds()[static_cast<std::size_t>(i)].creationId)},
                 {"member_sha256", QString::fromStdString(plan.value->AfterMemberSha256())}});
             prepared[dryRun ? "candidate_ids" : "new_ids"] = ids;
-            if (!copy && !create && !remove) prepared["requested_facing_radians"] = std::get<MapDataPlacementRotation>(intent).facingRadians;
+            if (const auto* requested = std::get_if<MapDataPlacementTransform>(&intent); requested && !copy && !create && !remove) {
+                if (requested->facingRadians) prepared["requested_facing_radians"] = *requested->facingRadians;
+                const auto axes = [](const std::array<float, 3>& value) { return QJsonObject{{"x", value[0]}, {"y", value[1]}, {"z", value[2]}}; };
+                if (requested->position) prepared["requested_position"] = axes(*requested->position);
+                if (requested->scale) prepared["requested_scale"] = axes(*requested->scale);
+            }
             if (receipt) {
                 prepared["session_identity"] = QString::number(receipt->SessionIdentity());
                 prepared["command_identity"] = QString::number(receipt->CommandIdentity());

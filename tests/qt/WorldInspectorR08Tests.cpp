@@ -4,6 +4,7 @@
 #include <QTest>
 
 #include <array>
+#include <bit>
 #include <cmath>
 
 using namespace War3Map;
@@ -111,6 +112,41 @@ private slots:
         QCOMPARE(group.Revision(), std::uint64_t{1});
         QVERIFY(group.Undo()); QVERIFY(!group.IsDirty());
         QVERIFY(!BuildSelectedPlacementRotationMoves(edits.Snapshot(), terrain, *rotation.value, {24, 70}).Succeeded());
+        QVERIFY(!PlanWorldPlacementProperty(document, terrain, ids, WorldPlacementProperty::Scale, 2).Succeeded());
+    }
+
+    void DoodadScaleSetsAllAxesForTheWholeGroup() {
+        auto doodads = MapData::ParseDoodadPlacements(MapDataFixtures::EmptyDoodadsV8Sub11());
+        QVERIFY(doodads.Succeeded());
+        MapData::DoodadPlacement first;
+        first.rawcode = "LTlt"; first.creationId = 3; first.flags = 2; first.lifePercent = 100;
+        first.position = {16, 20, 23}; first.scale = {1, 1, 1};
+        auto second = first; second.creationId = 4; second.position = {32, 40, 45}; second.scale = {1, 2, 3};
+        doodads.value->doodads = {first, second};
+        const auto bytes = doodads.value->Serialize(); QVERIFY(bytes.Succeeded());
+        const std::array<MapArchiveMember, 1> members{{{"war3map.doo", *bytes.value}}};
+        const auto document = MapDocument::FromMembers(members);
+        const std::array ids{MapData::MakePlacementId(MapData::PlacementFile::Doodads, 0, first),
+            MapData::MakePlacementId(MapData::PlacementFile::Doodads, 1, second)};
+        const auto values = CaptureWorldPlacementProperties(document, ids); QVERIFY(values.Succeeded());
+        QVERIFY(!values.value->Same(WorldPlacementProperty::Scale));
+        const std::array firstOnly{ids[0]};
+        QVERIFY(CaptureWorldPlacementProperties(document, firstOnly).value->Same(WorldPlacementProperty::Scale));
+        MapData::TerrainGridSnapshot terrain;
+        const auto moves = PlanWorldPlacementProperty(document, terrain, ids, WorldPlacementProperty::Scale, 1.5f);
+        QVERIFY(moves.Succeeded());
+        MapData::MapDataEditSession edits(document);
+        QVERIFY(MapData::MovePlacements(edits, *moves.value).Succeeded());
+        const auto scaled = edits.Snapshot();
+        for (std::size_t row = 0; row < 2; ++row) {
+            QCOMPARE(scaled.Doodads()->doodads[row].scale, (std::array<float, 3>{1.5f, 1.5f, 1.5f}));
+            QCOMPARE(scaled.Doodads()->doodads[row].position, document.Doodads()->doodads[row].position);
+            QCOMPARE(std::bit_cast<std::uint32_t>(scaled.Doodads()->doodads[row].rotation),
+                std::bit_cast<std::uint32_t>(document.Doodads()->doodads[row].rotation));
+        }
+        QVERIFY(edits.Undo()); QVERIFY(!edits.IsDirty());
+        for (const float bad : {0.0f, -1.0f, 1000.5f})
+            QVERIFY(!PlanWorldPlacementProperty(document, terrain, ids, WorldPlacementProperty::Scale, bad).Succeeded());
     }
 };
 

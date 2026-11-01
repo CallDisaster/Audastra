@@ -86,9 +86,9 @@ list默认64、最多128行，每页最多4096次谓词检查；大表matched_to
 
 ## 预放命令 C2 有限范围
 
-从最新 `entities_query` 取得来源修订与成员SHA。`entities_rotate` 传 `source{source_index,row_key}` 和数值 `facing_radians`，只设一个单位或普通地物的绝对朝向，有限 `[0,2π)` 弧度、XYZ不变；C1 `facing` 的普通数值文本按度解析，`f32:` raw 则保留原生弧度位值。`entities_copy` 传1–32个同类 `sources` 和数值 `offset{x,y,z}`，完整复制源记录及嵌套数据，再分配新创建编号。仅支持classic/no SkinId；特殊地物拒绝，`sloc`不能复制，朝向修改不联动W3I。发布前64MiB affected native wire预检不是总内存限制。
+从最新 `entities_query` 取得来源修订与成员SHA。移动或缩放已有实例用 `entities_transform`：`source` 加可选的 `position{x,y,z|height_offset}`、`facing_radians`、`scale{x,y,z}`（缩放只用于装饰物/可破坏物），没给的保持原值。`entities_rotate` 传 `source{source_index,row_key}` 和数值 `facing_radians`，只设一个单位或普通地物的绝对朝向，有限 `[0,2π)` 弧度、XYZ不变；C1 `facing` 的普通数值文本按度解析，`f32:` raw 则保留原生弧度位值。`entities_copy` 传1–32个同类 `sources` 和数值 `offset{x,y,z}`，完整复制源记录及嵌套数据，再分配新创建编号。仅支持classic/no SkinId；特殊地物拒绝，`sloc`不能复制，朝向修改不联动W3I。发布前64MiB affected native wire预检不是总内存限制。
 
-GUI命令继续用原会话/Undo并保留作者已有编辑，可重新查询复制后的当前行；独立入口暂只允许一次原来源copy，或同一原行重复绝对朝向并冻结最后请求float。在已有预放净差时，第二copy、copy与rotation混合及其它行rotation明确拒绝；C1净字段变化及触发器/物编混合保存也拒绝。朝向或字段全部恢复原native字节后，可清除净差并开始新的受支持命令；保存允许原成员SHA精确匹配的净零map-data覆盖，其它额外变化仍拒绝。回执 `before.rows/after.rows` 为对应源行与新行；定位只在当前快照有效，实体导航没有真实能力时不显示。独立入口先显式原事务preview/validate，再原 `save_map_edit_candidate`，保存后重开新身份；GUI继续使用原 `editor_save_map`；不得调用新脚本绕过拒绝。真实单位复制与旋转各自通过原Save/CLI整native/新HTTP服务回读；地物真实保存、HWND及游戏仍未验收，证据见夜间报告。
+GUI命令继续用原会话/Undo并保留作者已有编辑，可重新查询复制后的当前行；独立入口暂只允许一次原来源copy，或同一原行连续变换（重复绝对朝向冻结最后请求float，没给的分量沿用前一次）。在已有预放净差时，第二copy、copy与rotation混合及其它行rotation明确拒绝；C1净字段变化及触发器/物编混合保存也拒绝。朝向或字段全部恢复原native字节后，可清除净差并开始新的受支持命令；保存允许原成员SHA精确匹配的净零map-data覆盖，其它额外变化仍拒绝。回执 `before.rows/after.rows` 为对应源行与新行；定位只在当前快照有效，实体导航没有真实能力时不显示。独立入口先显式原事务preview/validate，再原 `save_map_edit_candidate`，保存后重开新身份；GUI继续使用原 `editor_save_map`；不得调用新脚本绕过拒绝。真实单位复制与旋转各自通过原Save/CLI整native/新HTTP服务回读；地物真实保存、HWND及游戏仍未验收，证据见夜间报告。
 
 ## 单位查询 C3 有限筛选
 

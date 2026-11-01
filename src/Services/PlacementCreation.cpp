@@ -56,7 +56,7 @@ Result<NewPlacementRecord> PreparePlacementCreation(const PlacementCreateRequest
     if (!std::isfinite(z) || std::abs(z) > 1e6 || std::abs(request.point.x) > 1e6 || std::abs(request.point.y) > 1e6)
         return Failure("PLACEMENT_COORDINATE_INVALID", "新建坐标超出有限世界坐标范围。");
     if (!std::isfinite(request.facingRadians) || request.facingRadians < 0 || request.facingRadians >= 6.28318530718f
-        || std::any_of(request.scale.begin(), request.scale.end(), [](float value) { return !std::isfinite(value) || value <= 0 || value > 1000; })
+        || !std::all_of(request.scale.begin(), request.scale.end(), MapData::ValidPlacementScale)
         || request.variation < 0)
         return Failure("PLACEMENT_TRANSFORM_INVALID", "朝向须为 [0,2π) 弧度、缩放须为 (0,1000]，变体须非负。");
     const bool unit = type == ObjectType::Unit;

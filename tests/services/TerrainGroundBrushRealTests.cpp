@@ -341,7 +341,7 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
             reject(missing, "SAVE_REQUEST_INVALID", "missing-terrain-sha-must-not-exist.w3x");
             auto invalidStroke = request; invalidStroke.terrainStrokes.front().points.clear();
             reject(invalidStroke, "SAVE_STROKE_POINTS", "empty-stroke-must-not-exist.w3x");
-            auto extraDomain = request; extraDomain.placementEdit = MapEditPlacementRotation{};
+            auto extraDomain = request; extraDomain.placementEdit = MapEditPlacementTransform{};
             reject(extraDomain, "SAVE_OPERATION_SCOPE_INVALID", "extra-domain-must-not-exist.w3x");
             if (renamed) {
                 auto range = request; range.fieldEdits.front().edit.field = "playable_width";

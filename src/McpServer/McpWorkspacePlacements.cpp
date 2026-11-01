@@ -15,12 +15,19 @@ MapDataKind IntentKind(const MapData::MapDataPlacementIntent& intent) {
     const auto file = MapData::PlacementIntentFile(intent);
     return file == MapData::PlacementFile::Units ? MapDataKind::Units : MapDataKind::Doodads;
 }
-bool SameRotationSource(const MapData::MapDataPlacementIntent& previous, const MapData::MapDataPlacementIntent& next) {
-    const auto* oldRotation = std::get_if<MapData::MapDataPlacementRotation>(&previous);
-    const auto* newRotation = std::get_if<MapData::MapDataPlacementRotation>(&next);
-    return oldRotation && newRotation && oldRotation->source.id == newRotation->source.id
-        && oldRotation->source.expectedRowKey == newRotation->source.expectedRowKey
-        && oldRotation->source.expectedMemberSha256 == newRotation->source.expectedMemberSha256;
+// 同一原行连续变换：后一次没给的分量沿用前一次，原来源重放才等于累计候选。
+std::optional<MapData::MapDataPlacementIntent> MergedTransform(const MapData::MapDataPlacementIntent& previous,
+    const MapData::MapDataPlacementIntent& next) {
+    const auto* prior = std::get_if<MapData::MapDataPlacementTransform>(&previous);
+    const auto* later = std::get_if<MapData::MapDataPlacementTransform>(&next);
+    if (!prior || !later || prior->source.id != later->source.id
+        || prior->source.expectedRowKey != later->source.expectedRowKey
+        || prior->source.expectedMemberSha256 != later->source.expectedMemberSha256) return std::nullopt;
+    auto merged = *later;
+    if (!merged.facingRadians) merged.facingRadians = prior->facingRadians;
+    if (!merged.position) merged.position = prior->position;
+    if (!merged.scale) merged.scale = prior->scale;
+    return merged;
 }
 bool IsMemberPath(const std::filesystem::path& path, const std::string& memberName) {
     const auto lower = [](std::string text) {
@@ -66,10 +73,13 @@ Result<MapData::MapDataEditSession::EditReceipt> McpWorkspace::ApplyPlacementPla
     const auto transactionId = activeEdit_->id;
     const auto baseRevision = activeEdit_->baseRevision;
     std::vector<MapArchiveMember> priorMembers;
+    auto replayIntent = *plan.OriginalReplayIntent();
     if (beforeIntent) {
-        if (!SameRotationSource(*beforeIntent, *plan.OriginalReplayIntent()))
+        auto merged = MergedTransform(*beforeIntent, replayIntent);
+        if (!merged)
             return Result<Receipt>::Failure("MCP", "MCP_PLACEMENT_COMBINATION_UNSUPPORTED",
-                "本原来源只支持一批同类新建、删除或复制，或同一原行重复绝对朝向；暂不组合其它预放操作。");
+                "本原来源只支持一批同类新建、删除或复制，或同一原行连续变换；暂不组合其它预放操作。");
+        replayIntent = std::move(*merged);
         const auto prior = MapData::FreezeOriginalMapDataPlacement(*initialMapData_, *before, *beforeIntent);
         if (!prior.Succeeded()) return Failed<Receipt>(prior);
         priorMembers.assign(prior.value->Members().begin(), prior.value->Members().end());
@@ -80,10 +90,10 @@ Result<MapData::MapDataEditSession::EditReceipt> McpWorkspace::ApplyPlacementPla
             return Result<Receipt>::Failure("MCP", "MCP_PLACEMENT_MIXED_FIELDS_UNSUPPORTED",
                 "独立预放事务暂不混入原来源字段净变化。");
     }
-    const auto frozen = MapData::FreezeOriginalMapDataPlacement(*initialMapData_, plan.After(), *plan.OriginalReplayIntent());
+    const auto frozen = MapData::FreezeOriginalMapDataPlacement(*initialMapData_, plan.After(), replayIntent);
     if (!frozen.Succeeded()) return Failed<Receipt>(frozen);
     auto next = plan.OwnedAfter();
-    auto intent = std::make_shared<const MapData::MapDataPlacementIntent>(*plan.OriginalReplayIntent());
+    auto intent = std::make_shared<const MapData::MapDataPlacementIntent>(std::move(replayIntent));
     auto patch = MapData::MapDataPlacementPatchCodec::Seal(*initialMapData_, *next,
         mapDataSource_->Snapshot(), *intent);
     if (!patch.Succeeded()) return Failed<Receipt>(patch);
@@ -146,8 +156,9 @@ Result<Services::MapEditSaveReceipt> McpWorkspace::ExportPlacementArchiveCandida
     };
     std::visit([&](const auto& operation) {
         using Operation = std::decay_t<decltype(operation)>;
-        if constexpr (std::is_same_v<Operation, MapData::MapDataPlacementRotation>)
-            request.placementEdit = Services::MapEditPlacementRotation{source(operation.source), operation.facingRadians};
+        if constexpr (std::is_same_v<Operation, MapData::MapDataPlacementTransform>)
+            request.placementEdit = Services::MapEditPlacementTransform{source(operation.source),
+                operation.facingRadians, operation.position, operation.scale};
         else if constexpr (std::is_same_v<Operation, MapData::MapDataPlacementCopy>) {
             Services::MapEditPlacementCopy copy;
             copy.offset = operation.offset;

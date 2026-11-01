@@ -155,7 +155,7 @@ MapDataPlacementSource Source(const MapDocument& document, PlacementFile file, s
 
 MapDataPlacementIntent Rotation(const MapDocument& document, PlacementFile file,
     std::uint32_t row, float radians) {
-    return MapDataPlacementRotation{Source(document, file, row), radians};
+    return MapDataPlacementTransform{Source(document, file, row), radians};
 }
 
 MapDataPlacementIntent Copy(const MapDocument& document, PlacementFile file,
@@ -340,7 +340,7 @@ void InvalidSourcesAndLateFailuresPublishNothing() {
     auto lateBad = std::get<MapDataPlacementCopy>(Copy(original, PlacementFile::Units, {1, 2}));
     lateBad.sources.back().expectedMemberSha256 = std::string(64, '0');
     rejected.push_back(lateBad);
-    auto wrongKey = std::get<MapDataPlacementRotation>(Rotation(original, PlacementFile::Units, 1, 2));
+    auto wrongKey = std::get<MapDataPlacementTransform>(Rotation(original, PlacementFile::Units, 1, 2));
     wrongKey.source.expectedRowKey += ":stale";
     rejected.push_back(wrongKey);
     auto wrongIdentity = wrongKey;
@@ -359,7 +359,7 @@ void InvalidSourcesAndLateFailuresPublishNothing() {
     Require(specialKey.Succeeded(), "只读特殊尾应有实际 row key");
     const MapDataPlacementSource special{{PlacementFile::Doodads, specialRow, "LTbx", 0},
         *specialKey.value, Sha(original, MapDataKind::Doodads)};
-    rejected.push_back(MapDataPlacementRotation{special, 2});
+    rejected.push_back(MapDataPlacementTransform{special, 2});
     rejected.push_back(MapDataPlacementCopy{{special}, {1, 0, 0}});
     for (const auto radians : {-1.0f, 6.28318530718f, std::numeric_limits<float>::infinity(),
         std::numeric_limits<float>::quiet_NaN()})
@@ -515,7 +515,7 @@ void OriginalReplayProvesWholeNativeAndCoalescesAbsoluteFacing() {
         && frozen.value->Members().front().data == Bytes(current, MapDataKind::Units), "原意图应精确重放完整 native");
     const auto second = Plan(original, current, Rotation(current, PlacementFile::Units, 1, 2));
     Require(second.OriginalReplayIntent().has_value(), "重复同原始目标应仍能生成 original-bound 意图");
-    const auto& last = std::get<MapDataPlacementRotation>(*second.OriginalReplayIntent());
+    const auto& last = std::get<MapDataPlacementTransform>(*second.OriginalReplayIntent());
     Require(last.facingRadians == 2 && last.source.expectedMemberSha256 == Sha(original, MapDataKind::Units)
         && last.source.id == Source(original, PlacementFile::Units, 1).id, "保存意图应保留最后输入并绑定原 SHA 与身份");
     Require(session.ApplyPreparedPlacement(second).Succeeded(), "重复 absolute facing 应在当前 revision 发布");
@@ -541,7 +541,7 @@ void OriginalReplayProvesWholeNativeAndCoalescesAbsoluteFacing() {
     frozen = FreezeOriginalMapDataPlacement(original, View(original, restored), *restore.OriginalReplayIntent());
     Require(frozen.Succeeded() && !frozen.value->HasChanges() && frozen.value->Members().empty(),
         "零净变化应生成空 freeze 而不是虚构候选成功");
-    const auto& restoredIntent = std::get<MapDataPlacementRotation>(frozen.value->Intent());
+    const auto& restoredIntent = std::get<MapDataPlacementTransform>(frozen.value->Intent());
     Require(restoredIntent.facingRadians == 0 && restoredIntent.source.expectedMemberSha256 == Sha(original, MapDataKind::Units)
         && restoredIntent.source.id == Source(original, PlacementFile::Units, 1).id,
         "清净freeze仍须保留最后请求float和可信原来源意图");

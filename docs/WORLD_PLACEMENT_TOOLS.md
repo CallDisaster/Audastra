@@ -1,7 +1,7 @@
 # 世界放置工具
 
-编辑器内置助手和独立 MCP 服务共用 `entities_create`、`entities_delete`、`entities_copy` 和
-`entities_rotate`。这些工具修改地图中的实例，不新建物编类型。先用 `objects_list` 或
+编辑器内置助手和独立 MCP 服务共用 `entities_create`、`entities_delete`、`entities_copy`、
+`entities_rotate` 和 `entities_transform`。这些工具修改地图中的实例，不新建物编类型。先用 `objects_list` 或
 `objects_get` 确认物体 ID，再用 `entities_query` 获取当前地图的修订和成员身份。
 
 这些工具都需要编辑权限。内置助手使用当前工程的地图会话和撤销栈；独立 MCP 需要通过
@@ -54,9 +54,20 @@
 普通创建和删除不支持玩家开始位置 `sloc` 或特殊地物尾部。开始位置需要与玩家设置
 同步，不能用普通单位命令代替。
 
-修改已有实例坐标使用 `entities_set_fields` 的现有坐标字段。复制使用 `entities_copy`
-的世界 XYZ 偏移；绝对旋转使用 `entities_rotate` 的弧度参数。注意原字段编辑中的
-`facing` 使用度，两种入口的单位不同。
+移动、旋转或缩放一个已有实例使用 `entities_transform`。`source` 必填，另给下面至少一项，
+没给的保持原值：
+
+- `position`：`x`、`y` 为游戏世界坐标，须在地图内；再给 `z`（绝对高度）或
+  `height_offset`（相对新位置当前地面）之一。玩家开始位置不能这样移动。
+- `facing_radians`：绝对朝向，`[0, 2π)` 弧度。
+- `scale`：三轴缩放 `{x, y, z}`，每轴大于 0 且不超过 1000，只用于装饰物和可破坏物；
+  单位外观大小来自物编。
+
+只改朝向也可以用 `entities_rotate`。复制使用 `entities_copy` 的世界 XYZ 偏移。普通单位
+也可以用 `entities_set_fields` 的 `x/y/z` 字段改绝对坐标；注意那里的 `facing` 使用度。
+
+独立 MCP 事务里，同一实例可以连续调用 `entities_transform`，后一次没给的分量沿用前一次。
+用 MCP 摆放或移动的装饰物，保存后进游戏的核对尚未完成。
 
 ## 预览、撤销与错误
 

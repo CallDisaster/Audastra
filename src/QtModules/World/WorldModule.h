@@ -432,6 +432,7 @@ private:
     QDoubleSpinBox* fieldX_ = nullptr;
     QDoubleSpinBox* fieldY_ = nullptr;
     QDoubleSpinBox* fieldFacing_ = nullptr;
+    QDoubleSpinBox* fieldScale_ = nullptr;
     QLabel* fieldZ_ = nullptr;
     QWidget* regionFields_ = nullptr;
     std::array<QDoubleSpinBox*, 4> regionBounds_{}; // 左、下、右、上
