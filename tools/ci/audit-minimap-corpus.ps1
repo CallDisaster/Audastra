@@ -36,7 +36,11 @@ foreach($hash in @($seen.Keys|Sort-Object)){
     $process=[Diagnostics.Process]::new();$process.StartInfo=$info
     if(-not $process.Start()){throw 'Could not launch the owned audit process.'}
     $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
-    $timedOut=-not $process.WaitForExit($TimeoutSeconds*1000)
+    $timedOut=$false;[long]$peak=0
+    while(-not $process.WaitForExit(200)){
+        try{$process.Refresh();$peak=[Math]::Max($peak,$process.PeakWorkingSet64)}catch{}
+        if($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds){$timedOut=$true;break}
+    }
     if($timedOut){$process.Kill($true);$process.WaitForExit()}
     $text=$stdout.GetAwaiter().GetResult();$errorText=$stderr.GetAwaiter().GetResult()
     [IO.File]::WriteAllText("$OutputDirectory/$hash.json",$text)
@@ -46,7 +50,7 @@ foreach($hash in @($seen.Keys|Sort-Object)){
     if(-not $row){$row=[pscustomobject]@{generated=$false;phase='process';diagnostics=@(@{code=$(if($timedOut){'AUDIT_TIMEOUT'}else{'AUDIT_RECEIPT_INVALID'})})}}
     if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash){throw 'Source changed during read-only corpus audit.'}
     $results+=[pscustomobject]@{sha256=$hash;generated=$row.generated;phase=$row.phase;diagnostics=$row.diagnostics;
-        exitCode=$process.ExitCode;elapsedMs=$watch.ElapsedMilliseconds;peakWorkingSetBytes=$process.PeakWorkingSet64;sourceUnchanged=$true}
+        exitCode=$process.ExitCode;elapsedMs=$watch.ElapsedMilliseconds;sampledPeakWorkingSetBytes=$peak;sourceUnchanged=$true}
     $results|ConvertTo-Json -Depth 8|Set-Content -LiteralPath "$OutputDirectory/results.json" -Encoding UTF8
     $process.Dispose()
 }
