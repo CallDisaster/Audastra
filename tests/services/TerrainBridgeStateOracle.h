@@ -2,10 +2,12 @@
 
 // 原创原版对照输入，不是产品保存出口；只替换唯一空DOO并移除派生WPM。
 int PrepareBridgeStateOracle(const std::filesystem::path& path, const std::string& expected,
-    const std::filesystem::path& target, std::uint8_t flags) {
+    const std::filesystem::path& target, std::uint8_t flags,
+    bool elevator = false, std::uint8_t life = 100) {
     Require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(),
         [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }), "oracle SHA must be canonical");
     Require(flags == 0 || flags == 2 || flags == 6, "oracle compares empty, normal and absolute-height states only");
+    Require(life == 0 || life == 100, "oracle compares explicit dead and intact states only");
     Require(!std::filesystem::exists(target), "oracle output must be fresh");
     Require(Take(Sha256File(path)) == expected, "oracle source identity differs");
     const auto metadata = Take(Mpq::MpqArchive::OpenReadOnly(path));
@@ -27,7 +29,8 @@ int PrepareBridgeStateOracle(const std::filesystem::path& path, const std::strin
         && placements.specialDoodads.empty(), "oracle needs an empty classic source object layer");
     if (flags) {
         DoodadPlacement bridge;
-        bridge.rawcode = "YT20"; bridge.creationId = 0; bridge.flags = flags; bridge.lifePercent = 100;
+        bridge.rawcode = elevator ? "DTep" : "YT20";
+        bridge.creationId = 0; bridge.flags = flags; bridge.lifePercent = life;
         bridge.position = {0.f, 0.f, 384.f}; bridge.scale = {1.f, 1.f, 1.f}; bridge.rotation = 0;
         placements.doodads.push_back(bridge);
     }

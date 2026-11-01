@@ -821,6 +821,14 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 
 #include "TerrainBridgeStateOracle.h"
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 6 && std::wstring_view(argv[1]) == L"--elevator-state-oracle-input") {
+        try {
+            const std::wstring life(argv[5]), wideExpected(argv[3]);
+            Require(life == L"0" || life == L"100", "unsupported elevator oracle state");
+            return PrepareBridgeStateOracle(std::filesystem::path(argv[2]), std::string(wideExpected.begin(), wideExpected.end()),
+                std::filesystem::path(argv[4]), 2, true, life == L"0" ? 0 : 100);
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     if (argc == 6 && std::wstring_view(argv[1]) == L"--bridge-state-oracle-input") {
         try {
             const std::wstring flags(argv[5]), wideExpected(argv[3]);
