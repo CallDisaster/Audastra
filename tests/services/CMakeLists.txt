@@ -399,6 +399,7 @@ target_link_libraries(audastra-terrain-native-object-real-tests PRIVATE War3MapE
 target_compile_definitions(audastra-terrain-native-object-real-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-terrain-native-object-real-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-terrain-native-object-real COMMAND audastra-terrain-native-object-real-tests)
+add_test(NAME services-terrain-corpus-point COMMAND audastra-terrain-native-object-real-tests --terrain-save-probe-self-test)
 set_tests_properties(services-terrain-native-object-real PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 300)
 add_test(NAME services-terrain-existing-ramp-real COMMAND audastra-terrain-native-object-real-tests --existing-ramps)
 add_test(NAME services-terrain-wet-inner-corner-real COMMAND audastra-terrain-native-object-real-tests --wet-inner-corners)

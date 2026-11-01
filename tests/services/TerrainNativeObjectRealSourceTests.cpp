@@ -38,6 +38,7 @@
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include "TerrainSaveCorpusPointTests.h"
 
 namespace {
 using namespace War3Map;
@@ -819,6 +820,35 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 } // namespace
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--terrain-save-probe-self-test") {
+        try { TerrainSaveCorpus::TestSelection(); std::cout << "corpus_point_tests=true\n"; return 0; }
+        catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
+    if (argc == 4 && std::string_view(argv[1]) == "--terrain-save-probe-point") {
+        try {
+            const auto path = IO::PathFromUtf8(argv[2]);
+            Require(Take(Sha256File(path)) == argv[3], "corpus source identity changed");
+            const auto metadata = Take(Mpq::MpqArchive::OpenReadOnly(path));
+            for (const auto& member : Take(metadata.ListFilesStrict())) {
+                auto name = member.name;
+                std::transform(name.begin(), name.end(), name.begin(),
+                    [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 'a' - 'A') : char(c); });
+                if (name.ends_with(".ai")) {
+                    std::cout << "{\"eligible\":false,\"code\":\"AUDIT_EXCLUDED_MEMBER\"}\n";
+                    return 0;
+                }
+            }
+            const auto archive = Take(MapArchiveSession::OpenMinimapAudit(path));
+            Require(archive.SourceSha256() == argv[3], "corpus source identity changed");
+            const auto terrain = Take(ParseMapTerrain(Take(archive.ReadMember("war3map.w3e"))));
+            const auto selected = TerrainSaveCorpus::Select(*terrain.Snapshot());
+            Check(archive.VerifySourceUnchanged());
+            if (!selected) { std::cout << "{\"eligible\":false,\"code\":\"NO_ELIGIBLE_POINT\"}\n"; return 0; }
+            std::cout << "{\"eligible\":true,\"x\":" << selected->x << ",\"y\":" << selected->y
+                      << ",\"texture\":\"" << selected->texture << "\"}\n";
+            return 0;
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     try {
         // 仅供独立原版取证输入：去掉已有阻挡，避免把保留原成员误当成重新生成。
         if (argc == 5 && std::string_view(argv[1]) == "--native-pathing-oracle-input") {
