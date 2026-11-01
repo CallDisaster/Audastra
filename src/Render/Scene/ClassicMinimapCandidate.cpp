@@ -336,6 +336,8 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
                     if (input.terrain.classicColors) {
                         const auto& classic = *input.terrain.classicColors;
                         if (const auto cliff = Take(ClassicMinimapCliffTextureAt(grid, x, localY))) {
+                            if (*cliff < classic.cliffColors.size() && classic.cliffColors[*cliff][3] == 0)
+                                Fail("CLASSIC_MINIMAP_CLIFF_MISSING", "实际像素需要的悬崖槽未取得代表色。");
                             if (*cliff >= classic.cliffColors.size() || classic.cliffColors[*cliff][3] != 255)
                                 Fail("CLASSIC_MINIMAP_CLIFF_COLOR", "实际悬崖类型缺少冻结的代表色。");
                             color = classic.cliffColors[*cliff]; ++output.manifest.cliffTiles;

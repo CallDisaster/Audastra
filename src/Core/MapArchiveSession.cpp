@@ -135,6 +135,21 @@ bool SafeTargetFilename(const std::filesystem::path& path) {
     return !reserved.contains(stem);
 }
 
+bool MinimapSnapshotMember(std::string_view name) {
+    static const std::set<std::string> allowed{"WAR3MAP.W3E", "WAR3MAP.W3I", "WAR3MAPUNITS.DOO", "WAR3MAP.DOO",
+        "WAR3MAP.W3U", "WAR3MAP.W3T", "WAR3MAP.W3B", "WAR3MAP.W3D", "WAR3MAP.W3A", "WAR3MAP.W3H", "WAR3MAP.W3Q",
+        "WAR3MAP.W3R", "WAR3MAP.W3C", "WAR3MAP.WTS"};
+    return allowed.contains(Canonical(name));
+}
+
+bool MinimapAuditMember(std::string_view name) {
+    const auto key = Canonical(name);
+    return MinimapSnapshotMember(key) || key.ends_with(".BLP") || key.ends_with(".TGA")
+        || key.ends_with(".MDX") || key.ends_with(".MDL") || key.ends_with(".SLK")
+        || key == "WAR3MAP.WPM" || key == "WAR3MAP.SHD" || key == "WAR3MAP.MMP"
+        || key == "UI\\MISCDATA.TXT" || key == "UI\\WORLDEDITDATA.TXT";
+}
+
 bool ScriptAuditMember(std::string_view name) {
     static const std::set<std::string> allowed{"WAR3MAP.WTG", "WAR3MAP.WCT", "WAR3MAP.W3I", "WAR3MAPUNITS.DOO", "WAR3MAP.DOO",
         "WAR3MAP.W3R", "WAR3MAP.W3C", "WAR3MAP.W3S", "WAR3MAP.WTS", "WAR3MAP.W3E", "WAR3MAP.W3U", "WAR3MAP.W3A", "WAR3MAP.W3T",
@@ -157,7 +172,11 @@ Result<MapArchiveSession> MapArchiveSession::Open(const std::filesystem::path& p
 Result<MapArchiveSession> MapArchiveSession::OpenScriptAudit(const std::filesystem::path& path) {
     return OpenImpl(path, nullptr, true);
 }
-Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::path& path, const ProjectSaveControl* control, bool scriptAuditOnly) {
+Result<MapArchiveSession> MapArchiveSession::OpenMinimapAudit(const std::filesystem::path& path) {
+    return OpenImpl(path, nullptr, true, true);
+}
+Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::path& path, const ProjectSaveControl* control,
+    bool scriptAuditOnly, bool minimapAuditOnly) {
     try {
         FileHandle source(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -199,6 +218,7 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
         if (!prefix.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(prefix.diagnostics));
         MapArchiveSession session;
         session.scriptAuditOnly_ = scriptAuditOnly;
+        session.minimapAuditOnly_ = minimapAuditOnly;
         session.sourcePath_ = std::move(*sourcePath.value);
         session.sourceSha256_ = std::move(*sha.value);
         session.volumeSerial_ = info.dwVolumeSerialNumber;
@@ -207,7 +227,7 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
         session.opaqueMemberCount_ = opaqueMembers ? opened.value->FileCount() - inventory.value->size() : 0;
         session.prefix_ = std::move(*prefix.value);
         for (const auto& member : *inventory.value) {
-            if (scriptAuditOnly && !ScriptAuditMember(member.name)) continue;
+            if (minimapAuditOnly ? !MinimapSnapshotMember(member.name) : scriptAuditOnly && !ScriptAuditMember(member.name)) continue;
             if (Mpq::IsMpqMetadataMemberName(member.name)) {
                 session.metadataMembers_.push_back(member.name);
                 continue;
@@ -241,7 +261,7 @@ bool MapArchiveSession::HasMember(std::string_view name) const {
 }
 
 Result<std::vector<std::byte>> MapArchiveSession::ReadMember(std::string_view name, const ProjectSaveControl* control) const {
-    if (scriptAuditOnly_ && !ScriptAuditMember(name)) return Result<std::vector<std::byte>>::Failure(
+    if (scriptAuditOnly_ && !(minimapAuditOnly_ ? MinimapAuditMember(name) : ScriptAuditMember(name))) return Result<std::vector<std::byte>>::Failure(
         "MapArchiveSession", "SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读脚本审计快照不读取白名单外成员。");
     const auto key = Canonical(name);
     const auto copy = [control](const std::vector<std::byte>& input) -> Result<std::vector<std::byte>> {
@@ -276,7 +296,8 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         canonicalNames.reserve(names.size());
         std::map<std::string, const MapArchiveMember*> namedSnapshots;
         for (const auto& name : names) {
-            if (scriptAuditOnly_ && !ScriptAuditMember(name)) return fail("SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读脚本审计快照不读取白名单外成员。");
+            if (scriptAuditOnly_ && !(minimapAuditOnly_ ? MinimapAuditMember(name) : ScriptAuditMember(name)))
+                return fail("SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读审计快照不读取白名单外成员。");
             if (name.size() > limits.pathBytes || name.size() > limits.totalPathBytes - paths)
                 return fail("EXACT_MEMBER_LIMIT", "明确来源请求路径超过单项或累计预算。");
             paths += name.size();

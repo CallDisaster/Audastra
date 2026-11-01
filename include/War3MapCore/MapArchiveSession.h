@@ -116,6 +116,9 @@ public:
         const ProjectSaveControl* control = nullptr);
     // 只解压脚本审计所需的固定基础/触发器/物编成员；不读取不透明导入，不能保存。
     [[nodiscard]] static Result<MapArchiveSession> OpenScriptAudit(const std::filesystem::path& path);
+    // 小地图只读诊断：仅预读固定地形/对象成员，资源按明确名字有界捕获。
+    // 不读取脚本或可执行导入，不授予任何保存资格。
+    [[nodiscard]] static Result<MapArchiveSession> OpenMinimapAudit(const std::filesystem::path& path);
     [[nodiscard]] Status VerifySourceUnchanged(const ProjectSaveControl* control = nullptr) const;
     [[nodiscard]] bool HasMember(std::string_view name) const;
     [[nodiscard]] Result<std::vector<std::byte>> ReadMember(std::string_view name,
@@ -172,7 +175,8 @@ public:
         std::span<const std::string> removals = {}) const;
 
 private:
-    [[nodiscard]] static Result<MapArchiveSession> OpenImpl(const std::filesystem::path&, const ProjectSaveControl*, bool scriptAuditOnly);
+    [[nodiscard]] static Result<MapArchiveSession> OpenImpl(const std::filesystem::path&, const ProjectSaveControl*, bool scriptAuditOnly,
+        bool minimapAuditOnly = false);
     [[nodiscard]] Result<ArchiveSaveResult> WriteCandidate(
         const std::filesystem::path& target,
         std::span<const MemberReplacement> replacements,
@@ -193,6 +197,7 @@ private:
     std::vector<std::string> metadataMembers_;
     bool opaqueMembers_ = false;
     bool scriptAuditOnly_ = false;
+    bool minimapAuditOnly_ = false;
     std::size_t opaqueMemberCount_ = 0;
 };
 

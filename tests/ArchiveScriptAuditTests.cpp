@@ -23,7 +23,9 @@ int main() { try {
     const std::vector<MapArchiveMember> members{{"war3map.wtg", Bytes("original-wtg")}, {"war3map.wct", Bytes("original-wct")},
         {"unknown/opaque.bin", Bytes("original opaque fixture")}, {"war3map.j", Bytes("generated")},
         {"war3map.w3b", Bytes("original destructable")}, {"war3map.w3d", Bytes("original doodad")},
-        {"war3map.w3h", Bytes("original buff")}, {"war3map.w3q", Bytes("original upgrade")}};
+        {"war3map.w3h", Bytes("original buff")}, {"war3map.w3q", Bytes("original upgrade")},
+        {"war3map.w3e", Bytes("original terrain")}, {"Fixture/Ground.blp", Bytes("atlas bytes")},
+        {"UI/WorldEditData.txt", Bytes("original settings")}, {"runtime.dll", Bytes("opaque binary")}};
     const auto written = WriteVerifiedArchive(source, members); Require(written.Succeeded(), "original fixture archive");
     const auto before = Sha256File(source); Require(before.Succeeded(), "source fingerprint");
     const auto audit = MapArchiveSession::OpenScriptAudit(source); Require(audit.Succeeded(), "selective audit opens");
@@ -41,6 +43,23 @@ int main() { try {
     Require(!audit.value->SaveCandidate(target, {}).Succeeded() && !std::filesystem::exists(target), "cannot save partial archive");
     Require(!audit.value->SaveInPlace({}).Succeeded(), "cannot overwrite source");
     Require(!audit.value->PreflightSave({}).Succeeded(), "cannot grant save preflight");
+    const auto minimap = MapArchiveSession::OpenMinimapAudit(source);
+    Require(minimap.Succeeded() && minimap.value->HasMember("war3map.w3e"), "minimap snapshot loads fixed terrain");
+    Require(!minimap.value->HasMember("war3map.wct") && !minimap.value->HasMember("Fixture/Ground.blp"),
+        "minimap omits scripts and does not eagerly read textures");
+    const std::array<std::string, 3> resources{"Fixture/Ground.blp", "UI/WorldEditData.txt", "missing/model.mdx"};
+    const auto captured = minimap.value->CaptureExactMembers(resources);
+    Require(captured.Succeeded() && captured.value->at(0).present && captured.value->at(1).present
+        && !captured.value->at(2).present, "minimap exact resources preserve present/missing distinction");
+    const std::array<std::string, 5> planInputs{"war3map.wpm", "war3map.shd", "war3map.mmp", "war3map.w3r", "war3map.w3c"};
+    Require(minimap.value->CaptureExactMembers(planInputs).Succeeded(), "shared terrain plan baseline members are queryable without eager reads");
+    for (const auto* name : {"war3map.j", "war3map.wct", "runtime.dll", "unknown/opaque.bin", "forbidden.AI"}) {
+        const std::array<std::string, 1> names{name};
+        Require(!minimap.value->CaptureExactMembers(names).Succeeded()
+            && !minimap.value->ReadMember(name).Succeeded(), "minimap cannot read outside resource policy");
+    }
+    Require(!minimap.value->SaveCandidate(target, {}).Succeeded() && !std::filesystem::exists(target), "minimap cannot save partial snapshot");
+    Require(!minimap.value->SaveInPlace({}).Succeeded() && !minimap.value->PreflightSave({}).Succeeded(), "minimap cannot grant writes");
     const auto after = Sha256File(source); Require(after.Succeeded() && *after.value == *before.value, "source unchanged");
     std::cout << "Script audit selective snapshot passed\n"; return 0;
 } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; } }

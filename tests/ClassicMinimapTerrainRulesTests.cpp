@@ -120,9 +120,8 @@ void UnknownRampAndMalformedInput() {
     auto grid = Grid();
     for (std::uint32_t y = 2; y <= 4; ++y)
         for (std::uint32_t x = 2; x <= 4; ++x) At(grid, x, y).textureAndFlagsRaw |= 0x10;
-    const auto unknown = ClassicMinimapGroundHeightAt(grid, 3, 3);
-    Require(!unknown.Succeeded() && !unknown.diagnostics.empty()
-        && unknown.diagnostics.front().code == "CLASSIC_MINIMAP_RAMP_UNRESOLVED", "全平坡道未知形态明确拒绝");
+    Require(Take(ClassicMinimapGroundHeightAt(grid, 3, 3)) == 100.0,
+        "全平ramp对应原版!，地高分支明确不附加高度");
     grid.header.version = 12;
     Require(!ClassicMinimapCliffTextureAt(grid, 1, 1).Succeeded(), "非经典版本拒绝");
     grid.header.version = 11;
@@ -131,6 +130,22 @@ void UnknownRampAndMalformedInput() {
     Require(!ClassicMinimapGroundHeightAt(grid, 1, 1).Succeeded(), "非有限地高拒绝");
     grid.vertices.pop_back();
     Require(!ClassicMinimapCliffTextureAt(grid, 1, 1).Succeeded(), "不完整网格拒绝");
+}
+
+void NativeUnmatchedSaddleHeight() {
+    for (int rotation = 0; rotation < 4; ++rotation) {
+        auto grid = Grid();
+        for (int y = 0; y < 7; ++y) for (int x = 0; x < 7; ++x) {
+            int u = x, v = y;
+            for (int turn = 0; turn < rotation; ++turn) { const int old = u; u = 6 - v; v = old; }
+            if (u >= 2 && u <= 4 && v >= 2 && v <= 4 && !(u == 2 && v == 2))
+                At(grid, x, y).textureAndFlagsRaw |= 0x10;
+            if ((u == 3 && v == 4) || (u == 4 && v == 3)) Level(grid, x, y, 3);
+        }
+        Require(Take(ClassicMinimapGroundHeightAt(grid, 3, 3)) == 100.0,
+            "四向未命中L/H/R细分的S遵循原版零附加高度，不误用32/64/96");
+        Require(!Take(ClassicMinimapCliffTextureAt(grid, 3, 3)), "未命中细分的S仍是原版悬崖例外");
+    }
 }
 
 } // namespace
@@ -143,6 +158,7 @@ int main() {
         StraightRampAllRotations();
         SaddleRampQuarterHeights();
         UnknownRampAndMalformedInput();
+        NativeUnmatchedSaddleHeight();
         std::cout << "ClassicMinimapTerrainRulesTests: all scenarios passed\n";
         return 0;
     } catch (const std::exception& error) {

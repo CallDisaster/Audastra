@@ -747,7 +747,9 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
                 for (const auto& id : terrain->header.cliffTilesets) {
                     if (!hasCliffs) { cliffPaths.emplace_back(); continue; }
                     const auto row = catalog.cliffs.find(id);
-                    if (row == catalog.cliffs.end()) Fail("CLASSIC_MINIMAP_CLIFF_MISSING", "CliffTypes.slk缺少当前悬崖类型。");
+                    // 原版逐像素选定悬崖槽后才请求其代表色。缺行保留不可用槽，
+                    // 不为未消费的声明槽编造颜色；实际像素消费时仍明确拒绝。
+                    if (row == catalog.cliffs.end()) { cliffPaths.emplace_back(); continue; }
                     const auto path = Canonical(row->second.declaredTexturePath);
                     cliffPaths.push_back(path);
                     if (unique.emplace(path, texturePaths.size()).second) texturePaths.push_back(path);

@@ -961,6 +961,43 @@ void TestDeclaredExteriorMapEdgeW3iFailuresAndGameWinners() {
     RequireRejected(VerifyTerrainMinimapAssetsReadback(snapshot, saved), "TERRAIN_ASSETS_FINAL_DEPENDENCY");
 }
 
+void TestUnavailableCliffSlotIsOnlyRejectedWhenConsumed() {
+    Bytes reference;
+    for (int variant = 0; variant < 3; ++variant) {
+        auto settings = W3i(); Put32(settings, 72, 0x400);
+        Fixture fixture(false, settings);
+        auto grid = *fixture.edits.Terrain();
+        if (variant) grid.header.cliffTilesets.push_back("Miss");
+        grid.vertices[3 * 9 + 3].cliffAndLayerRaw = variant == 2 ? 0x13 : 0x03;
+        fixture.w3e = Take(SerializeMapTerrain(grid));
+        MapDataEditSession edits(SettingsDocument(settings));
+        Require(edits.AttachTerrain(fixture.w3e).Succeeded() && edits.AttachPathing(fixture.wpm).Succeeded(), "绑定原创悬崖源原字");
+        auto resources = Materials();
+        resources[1].data = Slk({"cliffID", "texDir", "texFile", "cliffModelDir", "rampModelDir", "groundTile", "cliffClass"},
+            {{"CLdi", "Fixture", "Cliff", "Fixture/Cliffs", "Fixture/Ramps", "Tg01", "1"}});
+        resources.push_back({"Fixture/Cliff.blp", Blp({200, 90, 40})});
+        resources.push_back({"UI/MiscData.txt", Text("; original fixture\n")});
+        resources.push_back({"UI/WorldEditData.txt", Text("[CameraMargins]\nLeft=4\nRight=4\nBottom=2\nTop=2\n")});
+        auto source = fixture.Source("unavailable-cliff.w3x", resources);
+        auto terrain = Take(CaptureTerrainMinimapAssets(source, edits, {}, {}, TerrainMinimapRangePolicy::ClassicPlayable));
+        if (variant) Require(terrain.Input().classicColors->cliffColors[1][3] == 0, "缺行槽保持不可用，不填黑色或其它默认色");
+        auto objects = Take(CaptureClassicMinimapObjectAssets(std::move(terrain), source, edits));
+        TerrainMinimapPostprocessSettings filters; filters.noisePercent = 0;
+        auto candidate = BuildClassicMinimapCandidate(objects, filters);
+        if (variant == 2) {
+            Require(!candidate.Succeeded() && !candidate.value && std::any_of(candidate.diagnostics.begin(), candidate.diagnostics.end(),
+                [](const auto& d) { return d.code == "CLASSIC_MINIMAP_CLIFF_MISSING"; }), "真正消费缺行仍用原稳定错误码拒绝");
+        } else {
+            auto result = Take(std::move(candidate));
+            if (!variant) reference = result.raw.rgba;
+            else Require(result.raw.rgba == reference, "声明未用缺行不得影响任何原始像素，不能借默认颜色通过");
+            const auto at = (1 * 4 + 2) * 4;
+            Require(result.raw.rgba[at] == std::byte{200} && result.raw.rgba[at + 1] == std::byte{90}
+                && result.raw.rgba[at + 2] == std::byte{40}, "实际悬崖使用已捕获贴图的原版代表色");
+        }
+    }
+}
+
 void TestClassicPlayableCaptureAndDependencyReadback() {
     auto settings = W3i(); Put32(settings, 72, 0x400);
     Fixture fixture(false, settings);
@@ -1075,6 +1112,7 @@ void TestFinalSettingsCaptureUsesActualCurrentOutput() {
 int main() {
     try {
         TestClassicPlayableCaptureAndDependencyReadback();
+        TestUnavailableCliffSlotIsOnlyRejectedWhenConsumed();
         TestLargeClassicCaptureAndTypedObjectOrder();
         TestFinalSettingsCaptureUsesActualCurrentOutput();
         TestCurrentEncodedClosureAndTighterBudgets();
