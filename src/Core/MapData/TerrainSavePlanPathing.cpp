@@ -109,14 +109,13 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
             != edits.current_[MapDataEditSession::Index(MapDataKind::Settings)]) return false;
         if (resource.nativeSourceResources_) {
             if (sourceResource.dependencies_.size() != resource.dependencies_.size()) return false;
-            for (const auto& dependency : sourceResource.dependencies_) {
-                const auto found = std::find_if(resource.dependencies_.begin(), resource.dependencies_.end(),
-                    [&](const auto& other) { return dependency.name == other.name; });
-                if (found == resource.dependencies_.end() || dependency.sha256 != found->sha256
-                    || dependency.bytes != found->bytes || dependency.mapPresent != found->mapPresent
-                    || dependency.mapOnly != found->mapOnly || dependency.gameArchive != found->gameArchive
-                    || dependency.gameAbsent != found->gameAbsent) return false;
-            }
+            if (!std::equal(sourceResource.dependencies_.begin(), sourceResource.dependencies_.end(),
+                resource.dependencies_.begin(), [](const auto& a, const auto& b) {
+                    // W3E仅允许下面逐字段证明的贴图变化；两阶段全文身份仍由生成器核验。
+                    return a.name == b.name && (a.name == "war3map.w3e" || a.sha256 == b.sha256)
+                        && a.bytes == b.bytes && a.mapPresent == b.mapPresent && a.mapOnly == b.mapOnly
+                        && a.gameArchive == b.gameArchive && a.gameAbsent == b.gameAbsent;
+                })) return false;
         }
         const auto& a = *edits.terrainOriginal_;
         const auto& b = *edits.terrain_;
