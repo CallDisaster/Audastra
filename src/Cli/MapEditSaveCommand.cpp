@@ -705,8 +705,11 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     if (receipt.generatedMissingMinimap) {
         const auto& minimap = *receipt.generatedMissingMinimap;
         const bool declared = minimap.rangePolicy == Render::TerrainMinimapRangePolicy::DeclaredW3iMarginsExteriorMapEdge;
-        std::cout << "\nminimap_action=" << (declared ? "generate_missing_declared_ground_only" : "generate_missing_ground_only")
-                  << "\nminimap_range_policy=" << (declared ? "DeclaredW3iMarginsExteriorMapEdge" : "FullW3e")
+        const bool classic = minimap.rangePolicy == Render::TerrainMinimapRangePolicy::ClassicPlayable;
+        std::cout << "\nminimap_action=" << (classic ? "generate_classic_playable"
+                      : declared ? "generate_missing_declared_ground_only" : "generate_missing_ground_only")
+                  << "\nminimap_range_policy=" << (classic ? "ClassicPlayable"
+                      : declared ? "DeclaredW3iMarginsExteriorMapEdge" : "FullW3e")
                   << "\nminimap_blp_sha256=" << minimap.encodedBlpSha256
                   << "\nminimap_blp_bytes=" << minimap.encodedBlpBytes
                   << "\nminimap_decoded_mip0_rgba_sha256=" << minimap.decodedMip0RgbaSha256
