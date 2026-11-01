@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$Cli,
@@ -50,7 +51,9 @@ foreach($hash in @($seen.Keys|Sort-Object)){
     $process.Dispose()
 }
 $counts=@{}
-foreach($row in $results){foreach($code in @($row.diagnostics.code|Sort-Object -Unique)){if($code){$counts[$code]=1+$counts[$code]}}}
+foreach($row in @($results|Where-Object {-not $_.generated})){
+    foreach($code in @($row.diagnostics.code|Sort-Object -Unique)){if($code){$counts[$code]=1+$counts[$code]}}
+}
 $summary=[ordered]@{schema=1;cliSha256=(Get-FileHash -LiteralPath $cliPath).Hash.ToLowerInvariant();
     mapFiles=$inventory.Count;uniqueMaps=$seen.Count;generated=@($results|Where-Object generated).Count;
     failures=@($results|Where-Object {-not $_.generated}).Count;allSourcesUnchanged=$true;
