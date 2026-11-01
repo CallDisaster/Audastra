@@ -2,6 +2,7 @@
 
 #include "War3MapCore/MapData/TerrainRampEditing.h"
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <string>
@@ -68,10 +69,26 @@ inline void CrossingsAndRotations() {
         Require(firstPlan.selectedVertexCount == 3, "原版直台阶明确选择三点，不能填九点");
         Require(!PlanTerrainCornerRamp(source, first, TerrainCornerRampAlgorithm::NativeWetCorners).Succeeded(),
             "旧四版不因新连接能力接受直坡落点");
-        const auto a = Prepare(source, first); const auto b = Prepare(a.terrain, second);
-        const auto plan = Take(PlanTerrainCornerRamp(b.terrain, junction, TerrainCornerRampAlgorithm::NativeJoinedRamps));
+        const auto a = Prepare(source, first);
+        auto junctionSource = a.terrain;
+        const auto beforeSecond = Take(SerializeMapTerrain(a.terrain));
+        auto secondAttempt = PrepareTerrainCornerRampStroke(a.terrain, Rules(), Brush(), std::span(&second, 1), {}, {}, {},
+            TerrainCornerRampAlgorithm::NativeJoinedRamps);
+        if (inner) {
+            Require(!secondAttempt.Succeeded() && !secondAttempt.value
+                && std::any_of(secondAttempt.diagnostics.begin(), secondAttempt.diagnostics.end(),
+                    [](const auto& d) { return d.code == "TERRAIN_CORNER_RAMP_INVALID"; }),
+                "内角两条未连接细坡的LRHB形态保持原版拒绝，不能靠放宽live检查通过");
+            Require(Take(SerializeMapTerrain(a.terrain)) == beforeSecond, "非法中间形态不能污染第一条已提交坡道");
+        } else junctionSource = Take(std::move(secondAttempt)).terrain;
+        Require(!PrepareTerrainCornerRampStroke(junctionSource, Rules(), Brush(), std::span(&junction, 1), {}, {}, {},
+            TerrainCornerRampAlgorithm::NativeWetCorners).Succeeded(), "旧算法4仍拒绝相邻坡道交汇，不因新模式扩大历史接受域");
+        const auto plan = Take(PlanTerrainCornerRamp(junctionSource, junction, TerrainCornerRampAlgorithm::NativeJoinedRamps));
         Require(plan.selectedVertexCount == 9, "原版交汇转角明确选择九点");
-        const auto joined = Prepare(b.terrain, junction);
+        const auto joined = Prepare(junctionSource, junction);
+        const auto branch = Prepare(joined.terrain, second);
+        Require(Take(SerializeMapTerrain(branch.terrain)) == Take(SerializeMapTerrain(joined.terrain)),
+            "先完成转角后可接另一方向的完整条带，不重复扩张已经包含的R位");
         for (const auto index : plan.vertexIndices) Require(joined.terrain.vertices[index].IsRamp(), "连接保留请求九点R");
         for (std::size_t i = 0; i < source.vertices.size(); ++i) {
             const auto& before = source.vertices[i]; const auto& after = joined.terrain.vertices[i];
@@ -102,5 +119,15 @@ inline void Refusals() {
     Require(!PlanTerrainCornerRamp(source, point, static_cast<TerrainCornerRampAlgorithm>(255)).Succeeded(),
         "未知算法版本仍拒绝");
 }
-inline void Run() { ReferenceQuarterSelections(); CrossingsAndRotations(); Refusals(); }
+inline void KnownPartialRampCanBeCompleted() {
+    auto source = Grid(true, 0); source.vertices[17 * 33 + 16].textureAndFlagsRaw |= 0x10;
+    const auto before = Take(SerializeMapTerrain(source)); const TerrainStrokePoint point{-32, -32};
+    Require(!PrepareTerrainCornerRampStroke(source, Rules(), Brush(), std::span(&point, 1), {}, {}, {},
+        TerrainCornerRampAlgorithm::NativeWetCorners).Succeeded(), "旧版本继续拒绝部分九点");
+    const auto completed = Prepare(source, point);
+    const auto plan = Take(PlanTerrainCornerRamp(source, point, TerrainCornerRampAlgorithm::NativeJoinedRamps));
+    for (const auto index : plan.vertexIndices) Require(completed.terrain.vertices[index].IsRamp(), "已知原始R位可由显式连接操作补完整");
+    Require(Take(SerializeMapTerrain(source)) == before, "修复候选不改写其原始部分坡道");
+}
+inline void Run() { ReferenceQuarterSelections(); CrossingsAndRotations(); Refusals(); KnownPartialRampCanBeCompleted(); }
 } // namespace War3Map::TerrainJoinedRampCases

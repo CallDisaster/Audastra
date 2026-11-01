@@ -677,7 +677,8 @@ private:
         if (connected) {
             // 收集本次目标的完整候选域；无R净差也验证相同before/after合同。
             for (const auto index : selectedIndices) Gather(blocks, index % width_, index / width_);
-            checkDomain(true); checkLiveCells(true);
+            checkDomain(true);
+            if (!joined) checkLiveCells(true);
             if (joined) {
                 // 原版结束器只消费实际R位变化收集的脏块；验证域不能变成额外的修改域。
                 Work(blocks.present.size());
