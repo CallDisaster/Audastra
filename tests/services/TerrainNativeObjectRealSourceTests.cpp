@@ -819,15 +819,19 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 }
 } // namespace
 
-int main(int argc, char** argv) {
-    if (argc == 2 && std::string_view(argv[1]) == "--terrain-save-probe-self-test") {
+int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && std::wstring_view(argv[1]) == L"--terrain-save-probe-self-test") {
         try { TerrainSaveCorpus::TestSelection(); std::cout << "corpus_point_tests=true\n"; return 0; }
         catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     }
-    if (argc == 4 && std::string_view(argv[1]) == "--terrain-save-probe-point") {
+    if (argc == 4 && std::wstring_view(argv[1]) == L"--terrain-save-probe-point") {
         try {
-            const auto path = IO::PathFromUtf8(argv[2]);
-            Require(Take(Sha256File(path)) == argv[3], "corpus source identity changed");
+            const std::filesystem::path path(argv[2]);
+            const std::wstring expectedWide(argv[3]);
+            const std::string expected(expectedWide.begin(), expectedWide.end());
+            Require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(),
+                [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }), "corpus SHA must be canonical");
+            Require(Take(Sha256File(path)) == expected, "corpus source identity changed");
             const auto metadata = Take(Mpq::MpqArchive::OpenReadOnly(path));
             for (const auto& member : Take(metadata.ListFilesStrict())) {
                 auto name = member.name;
@@ -839,7 +843,7 @@ int main(int argc, char** argv) {
                 }
             }
             const auto archive = Take(MapArchiveSession::OpenMinimapAudit(path));
-            Require(archive.SourceSha256() == argv[3], "corpus source identity changed");
+            Require(archive.SourceSha256() == expected, "corpus source identity changed");
             const auto terrain = Take(ParseMapTerrain(Take(archive.ReadMember("war3map.w3e"))));
             const auto selected = TerrainSaveCorpus::Select(*terrain.Snapshot());
             Check(archive.VerifySourceUnchanged());
@@ -851,10 +855,11 @@ int main(int argc, char** argv) {
     }
     try {
         // 仅供独立原版取证输入：去掉已有阻挡，避免把保留原成员误当成重新生成。
-        if (argc == 5 && std::string_view(argv[1]) == "--native-pathing-oracle-input") {
-            const auto source = IO::PathFromUtf8(argv[2]);
-            const auto target = IO::PathFromUtf8(argv[4]);
-            const std::string expected = argv[3];
+        if (argc == 5 && std::wstring_view(argv[1]) == L"--native-pathing-oracle-input") {
+            const std::filesystem::path source(argv[2]);
+            const std::filesystem::path target(argv[4]);
+            const std::wstring expectedWide(argv[3]);
+            const std::string expected(expectedWide.begin(), expectedWide.end());
             Require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(),
                 [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }),
                 "oracle source SHA-256 must be explicit lowercase hex");
@@ -887,13 +892,13 @@ int main(int argc, char** argv) {
             return 0;
         }
         RealSaveGroup group = RealSaveGroup::Objects;
-        if (argc == 2 && std::string_view(argv[1]) == "--existing-ramps") group = RealSaveGroup::ExistingRamps;
-        else if (argc == 2 && std::string_view(argv[1]) == "--wet-inner-corners") group = RealSaveGroup::WetInnerCorners;
-        else if (argc == 2 && std::string_view(argv[1]) == "--shadows") group = RealSaveGroup::Shadows;
-        else if (argc == 2 && std::string_view(argv[1]) == "--unit-placement") group = RealSaveGroup::UnitPlacements;
-        else if (argc == 2 && std::string_view(argv[1]) == "--boundary") group = RealSaveGroup::Boundary;
-        else if (argc == 2 && std::string_view(argv[1]) == "--pathing-adapters") group = RealSaveGroup::PathingAdapters;
-        else if (argc == 2 && std::string_view(argv[1]) == "--canvas-resize") group = RealSaveGroup::CanvasResize;
+        if (argc == 2 && std::wstring_view(argv[1]) == L"--existing-ramps") group = RealSaveGroup::ExistingRamps;
+        else if (argc == 2 && std::wstring_view(argv[1]) == L"--wet-inner-corners") group = RealSaveGroup::WetInnerCorners;
+        else if (argc == 2 && std::wstring_view(argv[1]) == L"--shadows") group = RealSaveGroup::Shadows;
+        else if (argc == 2 && std::wstring_view(argv[1]) == L"--unit-placement") group = RealSaveGroup::UnitPlacements;
+        else if (argc == 2 && std::wstring_view(argv[1]) == L"--boundary") group = RealSaveGroup::Boundary;
+        else if (argc == 2 && std::wstring_view(argv[1]) == L"--pathing-adapters") group = RealSaveGroup::PathingAdapters;
+        else if (argc == 2 && std::wstring_view(argv[1]) == L"--canvas-resize") group = RealSaveGroup::CanvasResize;
         else Require(argc == 1, "expected no arguments, --existing-ramps, --wet-inner-corners, --shadows, --unit-placement, --boundary, --pathing-adapters or --canvas-resize");
         const auto tool = EnvironmentPath(L"FORGE_YDWE_ROOT");
         const auto game = EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
