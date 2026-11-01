@@ -101,9 +101,23 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     const auto loadedSpecialCacheEligible = [&] {
         // 55C860先建地形缓存再载入special；5F34F0仅置模型脏位。
         // 这里只解释原版载入态，禁止把special实时查询值无条件删除。
-        if (resource.nativeSourceResources_ || sourceDoodads != currentDoodads || sourceUnits != currentUnits
-            || resource.nativeAfterBounds_ || !resource.nativeSpecialCount_[0]
-            || resource.nativeSpecialAttributes_[0] != resource.nativeSpecialAttributes_[1]) return false;
+        if (sourceDoodads != currentDoodads || sourceUnits != currentUnits || resource.nativeAfterBounds_
+            || sourceResource.nativeAfterBounds_ || !sourceResource.nativeSpecialCount_[0]
+            || sourceResource.nativeSpecialCount_[0] != resource.nativeSpecialCount_[1]
+            || sourceResource.nativeSpecialAttributes_[0] != resource.nativeSpecialAttributes_[1]) return false;
+        if (edits.original_[MapDataEditSession::Index(MapDataKind::Settings)]
+            != edits.current_[MapDataEditSession::Index(MapDataKind::Settings)]) return false;
+        if (resource.nativeSourceResources_) {
+            if (sourceResource.dependencies_.size() != resource.dependencies_.size()) return false;
+            for (const auto& dependency : sourceResource.dependencies_) {
+                const auto found = std::find_if(resource.dependencies_.begin(), resource.dependencies_.end(),
+                    [&](const auto& other) { return dependency.name == other.name; });
+                if (found == resource.dependencies_.end() || dependency.sha256 != found->sha256
+                    || dependency.bytes != found->bytes || dependency.mapPresent != found->mapPresent
+                    || dependency.mapOnly != found->mapOnly || dependency.gameArchive != found->gameArchive
+                    || dependency.gameAbsent != found->gameAbsent) return false;
+            }
+        }
         const auto& a = *edits.terrainOriginal_;
         const auto& b = *edits.terrain_;
         const auto& ah = a.header; const auto& bh = b.header;
@@ -111,7 +125,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
             || ah.offset != bh.offset || ah.mainTileset != bh.mainTileset
             || ah.usesCustomTileset != bh.usesCustomTileset || ah.groundTilesets != bh.groundTilesets
             || ah.cliffTilesets != bh.cliffTilesets || a.vertices.size() != b.vertices.size()) return false;
-        const auto& special = resource.nativeSpecialAttributes_[0];
+        const auto& special = sourceResource.nativeSpecialAttributes_[0];
         const auto pathWidth = (ah.width - 1) * 4, pathHeight = (ah.height - 1) * 4;
         if (special.size() != cells || cells != std::size_t{pathWidth} * pathHeight) return false;
         std::size_t changes = 0;

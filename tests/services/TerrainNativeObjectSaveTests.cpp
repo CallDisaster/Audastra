@@ -1251,7 +1251,7 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
         std::fill(f.Member("war3map.wpm").begin()+16, f.Member("war3map.wpm").end(), std::byte{0x51});
         f.Open();
     };
-    const auto paint = [](Fixture& f, float x, float y) {
+    const auto paint = [](Fixture& f, double x, double y) {
         TerrainBrush brush; brush.kind = TerrainBrushKind::Texture; brush.radius = 0;
         brush.groundTexture = "Tg02"; brush.variation = 0;
         const TerrainStrokePoint point{x, y}; Take(f.edits->EditTerrain(brush, std::span(&point, 1), false));
@@ -1262,6 +1262,14 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     auto expected = f.Member("war3map.wpm");
     for (unsigned y = 22; y < 26; ++y) for (unsigned x = 22; x < 26; ++x)
         expected[16 + y * 32 + x] = std::byte{0x53};
+    const auto finalMembers = f.edits->Replacements();
+    const auto paired = Take(TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, finalMembers));
+    f.Output(paired);
+    auto altered = finalMembers;
+    altered.push_back({"TerrainArt/Terrain.slk", Slk({"tileID","walkable","flyable","buildable"},
+        {{"Tg01","1","1","1"},{"Tg02","1","1","1"}})});
+    Require(!TerrainPathingSave::PrepareForSave(*f.archive, *f.edits, f.gameRoot, {}, altered).Succeeded(),
+        "final resource overlay cannot acquire loaded-cache proof by retaining the old terrain type");
     f.SaveExpected("loaded-special-ground.w3x", changedTerrain, expected, nullptr, true);
     Require(f.edits->Undo(), "loaded-cache ground paint remains undoable after formal saving");
     f.SaveExpected("loaded-special-undo.w3x", f.Member("war3map.w3e"), f.Member("war3map.wpm"), nullptr, true);
