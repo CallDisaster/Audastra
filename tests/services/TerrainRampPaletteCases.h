@@ -4,21 +4,25 @@ namespace War3Map::TerrainSaveTests {
 namespace {
 void PalettePaintAndCornerShareOneSave() {
     using namespace TerrainCornerRampFixtures;
-    for (const bool append : {false, true}) {
+    for (const bool cliff : {false, true}) for (const bool append : {false, true}) {
         Fixture f;
-        if (!append) f.grid.header.groundTilesets.push_back("Tg03");
+        if (!append) (cliff ? f.grid.header.cliffTilesets : f.grid.header.groundTilesets).push_back(cliff ? "Cl03" : "Tg03");
         f.members[0].data = Take(SerializeMapTerrain(f.grid));
         for (auto& member : f.members) if (member.name == "TerrainArt/Terrain.slk")
             member.data = Slk({"tileID", "walkable", "flyable", "buildable"},
                 {{"Tg01", "1", "1", "1"}, {"Tg02", "1", "1", "1"}, {"Tg03", "1", "1", "1"}});
+        for (auto& member : f.members) if (member.name == "TerrainArt/CliffTypes.slk")
+            member.data = Slk({"cliffID"}, {{"Cl01"}, {"Cl02"}, {"Cl03"}});
         f.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(
             Take(WriteVerifiedArchive(f.root / "palette-source.w3x", f.members)).path)));
         f.edits = f.FreshSession();
         const auto sourceSha = f.source->SourceSha256();
         Take(TerrainPathingSave::EditTextureSlot(*f.source, *f.edits,
-            TerrainTextureTable::Ground, 1, "Tg02", f.game));
-        TerrainBrush paint; paint.kind = TerrainBrushKind::Texture;
-        paint.radius = 0; paint.groundTexture = "Tg02"; paint.variation = 0;
+            cliff ? TerrainTextureTable::Cliff : TerrainTextureTable::Ground, 1, cliff ? "Cl02" : "Tg02", f.game));
+        TerrainBrush paint; paint.kind = cliff ? TerrainBrushKind::CliffTexture : TerrainBrushKind::Texture;
+        paint.radius = cliff ? 12 : 0; paint.shape = TerrainBrushShape::Square;
+        if (cliff) paint.cliffTexture = 1;
+        else { paint.groundTexture = "Tg02"; paint.variation = 0; }
         Take(f.edits->EditTerrain(paint, std::span(&f.point, 1), false));
         const auto rules = f.Rules();
         const auto command = Take(PrepareTerrainCornerRampEdit(*f.edits, f.Document(), f.Binding(),
