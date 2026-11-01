@@ -23,7 +23,12 @@ void AbsoluteHeightBridgeKeepsNativePathingAndWireState() {
         auto& bridge = placements.doodads.front();
         if (state < 256) bridge.flags = static_cast<std::uint8_t>(state);
         else { bridge.flags = 6; bridge.lifePercent = static_cast<std::uint8_t>(state - 256); }
-        fixture.Member("war3map.doo") = Take(placements.Serialize()); fixture.Open(); fixture.Paint();
+        const auto serialized = placements.Serialize();
+        if (bridge.flags >= 0x20) {
+            Require(!serialized.Succeeded(), "布局不支持的高位标志在序列化边界拒绝");
+            continue;
+        }
+        fixture.Member("war3map.doo") = Take(serialized); fixture.Open(); fixture.Paint();
         const auto source = Take(Sha256File(fixture.archive->SourcePath()));
         const auto plan = fixture.Plan();
         Require(!plan.SaveGate().Succeeded() && HasCode(plan.SaveGate(), "TERRAIN_WALKABLE_DESTRUCTABLE_STATE"),
