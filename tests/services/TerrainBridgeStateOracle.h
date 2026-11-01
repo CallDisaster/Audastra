@@ -3,7 +3,7 @@
 // 原创原版对照输入，不是产品保存出口；只替换唯一空DOO并移除派生WPM。
 int PrepareBridgeStateOracle(const std::filesystem::path& path, const std::string& expected,
     const std::filesystem::path& target, std::uint8_t flags,
-    bool elevator = false, std::uint8_t life = 100) {
+    bool elevator = false, std::uint8_t life = 100, bool rampBlocker = false) {
     Require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(),
         [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }), "oracle SHA must be canonical");
     Require(flags == 0 || flags == 2 || flags == 6, "oracle compares empty, normal and absolute-height states only");
@@ -27,9 +27,9 @@ int PrepareBridgeStateOracle(const std::filesystem::path& path, const std::strin
     auto placements = Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo"))));
     Require(placements.recordLayout == PlacementRecordLayout::Classic && placements.doodads.empty()
         && placements.specialDoodads.empty(), "oracle needs an empty classic source object layer");
-    if (flags) {
+    if (flags || rampBlocker) {
         DoodadPlacement bridge;
-        bridge.rawcode = elevator ? "DTep" : "YT20";
+        bridge.rawcode = rampBlocker ? "DTrx" : elevator ? "DTep" : "YT20";
         bridge.creationId = 0; bridge.flags = flags; bridge.lifePercent = life;
         bridge.position = {0.f, 0.f, 384.f}; bridge.scale = {1.f, 1.f, 1.f}; bridge.rotation = 0;
         placements.doodads.push_back(bridge);
