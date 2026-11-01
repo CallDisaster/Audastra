@@ -14,7 +14,9 @@ enum class TerrainMinimapRangePolicy { FullW3e, DeclaredW3iMargins, DeclaredW3iM
 
 // 原版保存用的取色参数；资源捕获层从实际表/配置/贴图填入，不靠调用者的已验证开关。
 struct ClassicMinimapTerrainColors {
-    std::vector<std::array<std::uint8_t, 4>> cliffColors; // 与W3E cliff palette同序
+    // 与W3E cliff palette同序。alpha=0表示该槽未取得代表色，绝非默认绘制颜色；
+    // 真正消费该槽的像素必须失败，未消费的声明槽不参与取色。
+    std::vector<std::array<std::uint8_t, 4>> cliffColors;
     std::array<std::uint8_t, 4> waterColor{}; // Water.slk mm*，不是Smin_*
     double waterHeightOffset = 0;
     double deepLevelPathing = 0;
