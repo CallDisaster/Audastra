@@ -1,5 +1,6 @@
 #pragma once
 #include "War3MapCore/Resources/ImportTable.h"
+#include <bit>
 
 // 原创单对象原版对照输入；不是语料保存成功结果，不改变给定源图。
 int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::string& expected,
@@ -14,8 +15,9 @@ int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::strin
     }), "fixed-shadow fixture must be ordinary flat dry terrain");
     DoodadPlacements placements;
     DoodadPlacement placement;
-    placement.rawcode = "YS14"; placement.variation = 0; placement.position = {0, 0, 0};
-    placement.rotation = 0.75f; placement.scale = {1, 1, 1}; placement.flags = 2;
+    placement.rawcode = "YS14"; placement.variation = 0; placement.position = {model.empty() ? 0.0f : 32.0f, 0, 0};
+    placement.rotation = model.empty() ? 0.75f : std::bit_cast<float>(0x4096cbe5u);
+    placement.scale = {1, 1, 1}; placement.flags = 2;
     placement.lifePercent = 100; placement.creationId = 1; placements.doodads.push_back(placement);
     (void)game;
     Require(Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo")))).doodads.empty(),

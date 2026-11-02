@@ -9,6 +9,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -262,18 +263,21 @@ void ExplicitNonNumericAngleMarker() {
 }
 void Fixed270PreservesActualPlacementPose() {
     Fixture f;
-    const auto original = f.Capture();
+    auto normalized = f.placements;
+    normalized.doodads[2].rotation = normalized.doodads[3].rotation = std::bit_cast<float>(0x4096cbe5u);
+    std::vector<MemberReplacement> output{{"war3map.doo", Take(normalized.Serialize())}};
+    const auto original = f.Capture(output);
     const auto table = [](std::string rotation) {
-        return Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats"},
-            {{"N001", "0", "_", "0", "1", "0", "0", "-1", "0"},
-             {"C001", "1", "Fixture/Caster", "2", "1.25", "0", "0", std::move(rotation), "0"}});
+        return Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats", "pathTex"},
+            {{"N001", "0", "_", "0", "1", "0", "0", "-1", "0", "_"},
+             {"C001", "1", "Fixture/Caster", "2", "1.25", "0", "0", std::move(rotation), "0", "_"}});
     };
-    std::vector<MemberReplacement> output{{"Doodads/Doodads.slk", table("270")}};
+    output.push_back({"Doodads/Doodads.slk", table("270")});
     const auto owner = f.Capture(output);
     Require(owner->Casters().size() == 2, "270度标准角不应丢失模型实例");
     for (std::size_t index = 0; index < owner->Casters().size(); ++index) {
         const auto& caster = owner->Casters()[index];
-        Require(caster.fixedRotation == 270 && caster.placement.rotation == f.placements.doodads[index + 2].rotation
+        Require(caster.fixedRotation == 270 && caster.placement.rotation == normalized.doodads[index + 2].rotation
             && caster.nativeMatrix == original->Casters()[index].nativeMatrix,
             "固定字段不能覆盖或叠加实际摆放角；零倾斜矩阵应与自由角同姿势");
     }
@@ -281,16 +285,14 @@ void Fixed270PreservesActualPlacementPose() {
     Rejected(original->VerifySources(*f.source, output), "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
     const auto saved = Take(f.source->SaveCandidate(f.root / "fixed-270.w3x", output));
     Check(owner->VerifyReadback(Take(MapArchiveSession::Open(saved.path))));
-    auto placements = f.placements;
-    placements.doodads[2].rotation = 0;
-    output.push_back({"war3map.doo", Take(placements.Serialize())});
-    const auto changed = f.Capture(output);
-    Require(changed->Casters()[0].placement.rotation == 0
-        && changed->Casters()[0].nativeMatrix != owner->Casters()[0].nativeMatrix,
-        "实际摆放角改变时矩阵必须随之改变，不能被固定字段掩盖");
-    output.resize(1);
+    for (const auto unsupportedAngle : {0.0f, 0.75f, std::bit_cast<float>(0x4096cbe4u), std::bit_cast<float>(0x4096cbe6u)}) {
+        auto changed = normalized; changed.doodads[2].rotation = unsupportedAngle;
+        output[0].data = Take(changed.Serialize());
+        Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED");
+    }
+    output[0].data = Take(normalized.Serialize());
     for (const auto& unsupported : {"0", "90", "180", "269.99997", "270.00003", "360"}) {
-        output[0].data = table(unsupported);
+        output[1].data = table(unsupported);
         Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output),
             "TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED");
     }
