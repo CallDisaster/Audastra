@@ -63,3 +63,30 @@ int PrepareTerrainSourceOracle(const std::filesystem::path& path, const std::str
     std::cout << "oracle_input_sha256=" << checked.SourceSha256() << "\nsource_unchanged=true\n";
     return 0;
 }
+
+// 原创原版对照输入：只翻转WPM中心格的一个通行位，完整回读核对后交给原版另存。
+int PrepareTerrainPathingBitOracle(const std::filesystem::path& path, const std::string& expected,
+    const std::filesystem::path& target) {
+    Require(!std::filesystem::exists(target), "fresh pathing bit oracle required");
+    const auto source = OpenOracleSource(path, expected);
+    const auto terrain = *Take(ParseMapTerrain(Take(source.ReadMember("war3map.w3e")))).Snapshot();
+    auto bytes = Take(source.ReadMember("war3map.wpm"));
+    const auto width = static_cast<std::size_t>(terrain.header.width - 1) * 4;
+    const auto height = static_cast<std::size_t>(terrain.header.height - 1) * 4;
+    Require(width && height && width <= kSaveBytes / height && bytes.size() == 16 + width * height,
+        "original bit oracle needs a complete bounded pathing grid");
+    const auto offset = 16 + (height / 2) * width + width / 2;
+    const auto before = bytes[offset]; bytes[offset] ^= std::byte{2};
+    const std::array<MemberReplacement, 1> replacements{{{"war3map.wpm", bytes}}};
+    const auto saved = Take(source.SaveCandidate(target, replacements));
+    const auto checked = OpenOracleSource(saved.path, Take(Sha256File(saved.path)));
+    Require(Take(checked.ReadMember("war3map.wpm")) == bytes, "pathing bit oracle readback differs");
+    for (const auto& member : source.Members()) if (member.name != "war3map.wpm" && member.name != "(listfile)")
+        Require(Take(checked.ReadMember(member.name)) == member.data, "pathing bit oracle changed another member");
+    Check(source.VerifySourceUnchanged());
+    std::cout << nlohmann::json{{"source_sha256", expected}, {"input_sha256", checked.SourceSha256()},
+        {"source_unchanged", true}, {"x", width / 2}, {"y", height / 2}, {"offset", offset},
+        {"mask", 2}, {"before", std::to_integer<unsigned>(before)},
+        {"changed", std::to_integer<unsigned>(bytes[offset])}}.dump(2) << '\n';
+    return 0;
+}
