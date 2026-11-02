@@ -25,7 +25,8 @@ int main() { try {
         {"war3map.w3b", Bytes("original destructable")}, {"war3map.w3d", Bytes("original doodad")},
         {"war3map.w3h", Bytes("original buff")}, {"war3map.w3q", Bytes("original upgrade")},
         {"war3map.w3e", Bytes("original terrain")}, {"Fixture/Ground.blp", Bytes("atlas bytes")},
-        {"UI/WorldEditData.txt", Bytes("original settings")}, {"runtime.dll", Bytes("opaque binary")}};
+        {"UI/WorldEditData.txt", Bytes("original settings")}, {"Units/MiscData.txt", Bytes("original unit parameters")},
+        {"forbidden.AI", Bytes("authored opaque fixture, not executable input")}, {"runtime.dll", Bytes("opaque binary")}};
     const auto written = WriteVerifiedArchive(source, members); Require(written.Succeeded(), "original fixture archive");
     const auto before = Sha256File(source); Require(before.Succeeded(), "source fingerprint");
     const auto audit = MapArchiveSession::OpenScriptAudit(source); Require(audit.Succeeded(), "selective audit opens");
@@ -47,16 +48,20 @@ int main() { try {
     Require(minimap.Succeeded() && minimap.value->HasMember("war3map.w3e"), "minimap snapshot loads fixed terrain");
     Require(!minimap.value->HasMember("war3map.wct") && !minimap.value->HasMember("Fixture/Ground.blp"),
         "minimap omits scripts and does not eagerly read textures");
-    const std::array<std::string, 3> resources{"Fixture/Ground.blp", "UI/WorldEditData.txt", "missing/model.mdx"};
+    const std::array<std::string, 4> resources{"Fixture/Ground.blp", "UI/WorldEditData.txt", "units/miscdata.TXT", "missing/model.mdx"};
     const auto captured = minimap.value->CaptureExactMembers(resources);
     Require(captured.Succeeded() && captured.value->at(0).present && captured.value->at(1).present
-        && !captured.value->at(2).present, "minimap exact resources preserve present/missing distinction");
+        && captured.value->at(2).present && captured.value->at(2).bytes == Bytes("original unit parameters")
+        && !captured.value->at(3).present, "minimap exact resources preserve present/missing distinction and fixed unit profile");
     const std::array<std::string, 5> planInputs{"war3map.wpm", "war3map.shd", "war3map.mmp", "war3map.w3r", "war3map.w3c"};
     Require(minimap.value->CaptureExactMembers(planInputs).Succeeded(), "shared terrain plan baseline members are queryable without eager reads");
-    for (const auto* name : {"war3map.j", "war3map.wct", "runtime.dll", "unknown/opaque.bin", "forbidden.AI"}) {
+    for (const auto* name : {"war3map.j", "war3map.wct", "runtime.dll", "unknown/opaque.bin", "forbidden.AI", "Units/Unknown.txt"}) {
         const std::array<std::string, 1> names{name};
         Require(!minimap.value->CaptureExactMembers(names).Succeeded()
             && !minimap.value->ReadMember(name).Succeeded(), "minimap cannot read outside resource policy");
+        const auto rejected = minimap.value->ReadMember(name);
+        Require(!rejected.diagnostics.empty() && rejected.diagnostics.front().message.find(name) != std::string::npos,
+            "resource policy diagnostic identifies the rejected member without reading it");
     }
     Require(!minimap.value->SaveCandidate(target, {}).Succeeded() && !std::filesystem::exists(target), "minimap cannot save partial snapshot");
     Require(!minimap.value->SaveInPlace({}).Succeeded() && !minimap.value->PreflightSave({}).Succeeded(), "minimap cannot grant writes");
