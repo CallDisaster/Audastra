@@ -284,11 +284,11 @@ void MainWindow::SetupAgentWorkspace(bool readUserConfiguration) {
     });
     state->tools->SetSaveHandler([this](const std::filesystem::path& path, bool inPlace, bool keepOriginalMinimap) {
         return RunMapSave(path, inPlace, true, false, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic, false,
-            War3Map::Services::MapRuntimeSavePurpose::Normal, keepOriginalMinimap ? MinimapRiskSave::Accept : MinimapRiskSave::Decline);
+            War3Map::Services::MapRuntimeSavePurpose::Normal, keepOriginalMinimap ? MinimapRiskSave::Accept : MinimapRiskSave::Decline, true);
     });
     state->tools->SetValidationSaveHandler([this](const std::filesystem::path& path) {
         return RunMapSave(path, false, true, true, false, War3Map::Services::TerrainMinimapSaveChoice::Automatic,
-            false, War3Map::Services::MapRuntimeSavePurpose::InternalValidation);
+            false, War3Map::Services::MapRuntimeSavePurpose::InternalValidation, MinimapRiskSave::Decline, true);
     });
     state->tools->SetLuaTestHandler([this](bool submit) { return LuaTestReload(submit); });
     state->tools->SetMapTestHandler([this](const QString& name, const QJsonObject& arguments) { return MapTestTool(name, arguments); });
