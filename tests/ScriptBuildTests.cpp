@@ -318,7 +318,7 @@ void TestInject(const std::filesystem::path& root) {
     Require(diagnostics.empty(), "inject reported unexpected diagnostics");
 }
 
-void TestRuntimePipeline(const std::filesystem::path& root) {
+void TestRuntimePipeline(const std::filesystem::path& root, const std::filesystem::path& executable) {
     const auto tool = root / "tool", jass = tool / "ui" / "client" / "jass";
     WriteText(tool / "compiler" / "include" / "WaveForce.i", "// original synthetic include\n");
     WriteText(tool / "compiler" / "jass" / "24" / "common.j",
@@ -397,17 +397,21 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
     const auto disabledEmpty = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
     Require(disabledEmpty.Succeeded() && validated == 0 && disabledEmpty.injectedSourceSha256.empty(),
         "disabled runtime does not select client dependency");
-    // 只验证选择策略：原创布局声明两个不存在的可执行路径，启动必定失败。
-    // 基础输入及缺失文件身份仍由真实布局捕获/核对，不执行系统对无效映像的处理。
-    auto fallbackLayout = *layout.value;
-    fallbackLayout.jassHelperExecutable = tool / "compiler/jasshelper/clijasshelper.exe";
-    fallbackLayout.pjassExecutable = tool / "compiler/pjass/pjass-latest.exe";
-    options.layout = std::make_shared<const ScriptToolchainLayout>(std::move(fallbackLayout));
+    // 原创子进程仅返回固定失败码，验证真实布局和回退选择，不执行外部编译器。
+    const auto helper = tool / "compiler/jasshelper/clijasshelper.exe";
+    std::filesystem::create_directories(helper.parent_path());
+    Require(std::filesystem::copy_file(executable, helper), "copy original fallback fixture executable");
+    WriteText(tool / "compiler/pjass/pjass-latest.exe", "unused original checker placeholder");
+    const auto fallbackLayout = ResolveScriptToolchainLayout({tool,24,127});
+    Require(fallbackLayout.Succeeded(), "capture original fallback fixture tools");
+    options.layout = std::make_shared<const ScriptToolchainLayout>(*fallbackLayout.value);
+    options.timeout = std::chrono::seconds(5);
     const auto unsupported = "//! import \"unimplemented-fixture.j\"\nfunction main takes nothing returns nothing\nendfunction\n";
     options.workDir = root / "default-fallback";
     Require(!options.inProcessOnly, "toolchain default allows configured external fallback");
     const auto fallback = CompileMapScript(unsupported, options, {});
     Require(HasCode(fallback.diagnostics, "VJASS_FALLBACK")
+        && HasCode(fallback.diagnostics, "JASSHELPER_FAILED")
         && !HasCode(fallback.diagnostics, "SCRIPT_IN_PROCESS_BACKEND_REQUIRED")
         && std::any_of(fallback.stages.begin(), fallback.stages.end(), [](const auto& stage) { return stage.name == "jasshelper"; }),
         "default policy reaches external fallback selection");
@@ -2294,7 +2298,11 @@ void TestGenerate(const std::filesystem::path& root) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    for (int i = 1; i < argc; ++i) if (std::string_view(argv[i]) == "--scriptonly") {
+        std::cout << "original fallback selection fixture; no script evaluated\n";
+        return 2;
+    }
     const auto root = std::filesystem::temp_directory_path() / "war3-map-script-build-tests";
     try {
         std::error_code error;
@@ -2321,7 +2329,7 @@ int main() {
         TestTemplateImports(root / "imports");
         TestAbilityOrderTables(root / "order-tables");
         TestInject(root / "inject");
-        TestRuntimePipeline(root / "runtime");
+        TestRuntimePipeline(root / "runtime", std::filesystem::absolute(argv[0]));
         TestToolRoot(root / "tools");
         TestToolchainLayouts(root / "layouts");
         TestFrameworkPipeline(root / "framework");
