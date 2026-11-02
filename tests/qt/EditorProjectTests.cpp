@@ -2165,7 +2165,15 @@ void EditorProjectTests::NativePathingWorkerRebuildsAndRebinds() {
         QCOMPARE(job->nextSession->ReadMember(minimapName).value, std::optional(originalMinimap));
         if (mode == 4) QVERIFY(job->minimapPreserve && HasReadDiagnostic(*job, "MINIMAP_GENERATION_SKIPPED"));
     }
-    QVERIFY(project.CommitMapSave(*job));
+    const auto committed = project.CommitMapSave(*job);
+    QStringList commitDiagnostics;
+    if (!committed) for (int row = 0; row < project.diagnosticsModel_->rowCount(); ++row) {
+        QStringList columns;
+        for (int column = 0; column < project.diagnosticsModel_->columnCount(); ++column)
+            if (const auto* item = project.diagnosticsModel_->item(row, column)) columns.push_back(item->text());
+        commitDiagnostics.push_back(columns.join(QLatin1String(": ")));
+    }
+    QVERIFY2(committed.has_value(), qPrintable(commitDiagnostics.join(QLatin1Char('\n'))));
     QCOMPARE(project.mapEdits_->SessionIdentity(), sessionIdentity);
     QVERIFY(project.mapEdits_->TerrainSourceRevision() > sourceRevision);
     const auto point = project.mapEdits_->InspectTerrainPoint({512, 512}); QVERIFY(point.Succeeded() && point.value);
