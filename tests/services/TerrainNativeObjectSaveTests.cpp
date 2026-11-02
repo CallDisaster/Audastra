@@ -1301,6 +1301,11 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     const auto geometryRefused = saveGate(TerrainPathingSave::PrepareForSave(*geometry.archive, *geometry.edits, geometry.gameRoot));
     Require(!geometryRefused.Succeeded() && HasCode(geometryRefused, "TERRAIN_PATHING_SPECIAL_CACHE_EDIT_UNSUPPORTED"),
         "loaded-cache proof does not authorize combined ground and geometry changes");
+    Require(std::any_of(geometryRefused.diagnostics.begin(), geometryRefused.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_PATHING_SPECIAL_CACHE_EDIT_UNSUPPORTED"
+            && diagnostic.message.find("载入缓存与即时重建差异格(") != std::string::npos
+            && diagnostic.message.find("外部通行修改") == std::string::npos;
+    }), "recognized native cache must not be diagnosed as unknown external modification");
 }
 
 void NativeFixedRotationUsesTheNormalSaveAndUndoChain() {

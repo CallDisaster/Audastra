@@ -20,20 +20,23 @@ bool SameSha(std::span<const std::byte> bytes, const std::optional<std::string>&
     const auto actual = Sha256(bytes);
     return expected && actual.Succeeded() && actual.value && *actual.value == *expected;
 }
+enum class SourceCellContext { Unexplained, ResizeUnexplained, RecognizedCache };
 std::string UnexplainedCell(const TerrainHeader& header, std::size_t index, std::byte actual,
-    std::byte generated, std::byte saved, bool resize = false) {
+    std::byte generated, std::byte saved, SourceCellContext context = SourceCellContext::Unexplained) {
     const auto width = (header.width - 1) * 4;
     const auto x = index % width, y = index / width;
     const auto source = actual & std::byte{0xee};
-    return std::string(resize ? "扩裁物理源通行格(" : "源通行格(") + std::to_string(x) + "," + std::to_string(y)
-        + ")无法由当前原版规则及已保存限制解释，世界中心=("
+    const bool cache = context == SourceCellContext::RecognizedCache;
+    return std::string(cache ? "载入缓存与即时重建差异格(" : context == SourceCellContext::ResizeUnexplained ? "扩裁物理源通行格(" : "源通行格(")
+        + std::to_string(x) + "," + std::to_string(y)
+        + (cache ? ")，世界中心=(" : ")无法由当前原版规则及已保存限制解释，世界中心=(")
         + std::to_string(static_cast<double>(header.offset[0]) + (x + .5) * 32) + ","
         + std::to_string(static_cast<double>(header.offset[1]) + (y + .5) * 32)
         + ")，源位=" + std::to_string(std::to_integer<unsigned>(source))
         + "，重建位=" + std::to_string(std::to_integer<unsigned>(generated))
         + "，保存限制位=" + std::to_string(std::to_integer<unsigned>(saved))
         + "，差异位=" + std::to_string(std::to_integer<unsigned>(source ^ (generated | saved)))
-        + "；保留原图，请核对外部通行修改或尚未支持的对象规则。";
+        + (cache ? "；已匹配载入缓存，本次修改保留原图。" : "；保留原图，请核对外部通行修改或尚未支持的对象规则。");
 }
 }
 
@@ -223,7 +226,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
                     return Output::Failure(kSubsystem, "TERRAIN_PATHING_SPECIAL_CACHE_EDIT_UNSUPPORTED",
                         "整份源通行已匹配原版特殊地形初次载入缓存，但本次修改超出已支持的远区纯贴图更新范围，保留原图。"
                         + UnexplainedCell(edits.terrainOriginal_->header, firstDifference,
-                            oldWpm[firstDifference + 16], immediate, savedIntent[firstDifference]));
+                            oldWpm[firstDifference + 16], immediate, savedIntent[firstDifference], SourceCellContext::RecognizedCache));
                 resource.nativeLoadedSpecialCache_ = true;
             }
         }
@@ -304,7 +307,7 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildResizePathing(const MapDa
         for (std::size_t i = 0; i < oldCells; ++i) {
             if ((oldWpm[i + 16] & std::byte{0xee}) != ((*generated.value)[i] | savedIntent[i]))
                 return Output::Failure(kSubsystem, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
-                    UnexplainedCell(edits.terrainOriginal_->header, i, oldWpm[i + 16], (*generated.value)[i], savedIntent[i], true));
+                    UnexplainedCell(edits.terrainOriginal_->header, i, oldWpm[i + 16], (*generated.value)[i], savedIntent[i], SourceCellContext::ResizeUnexplained));
         }
     }
     auto generated = resources.GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
