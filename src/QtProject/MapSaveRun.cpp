@@ -9,6 +9,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "../Services/SaveCaptureScope.h"
 
 #include <QDateTime>
 #include <QUndoStack>
@@ -425,8 +426,11 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
     try { job.Report(tr("正在核对保存后的地形…")); } catch (...) {}
     try {
         // UI由既有worker调用；公开同步保存helper仍同步执行，不在Commit重复散列。
+        Services::Detail::SaveCaptureScope savedCapture(job, Services::Detail::SaveCaptureScope::Target::Saved);
+        const auto pinned = savedCapture.Acquire();
         job.terrainReadbackArchiveSha256 = job.nextSession->SourceSha256();
-        job.terrainReadbackStatus = job.minimapSave ? job.minimapSave->VerifyReadback(job, *job.nextSession)
+        job.terrainReadbackStatus = !pinned.Succeeded() ? pinned
+            : job.minimapSave ? job.minimapSave->VerifyReadback(job, *job.nextSession)
             : job.terrainSavePlan ? job.terrainSavePlan->VerifyReadback(*job.nextSession) : Status::Ok();
         if (job.terrainReadbackStatus->Succeeded() && job.minimapPreserve)
             job.terrainReadbackStatus = job.minimapPreserve->VerifyReadback(job, *job.nextSession);

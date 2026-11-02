@@ -433,6 +433,43 @@ void TestOptionalRealClassicV1MapSave() {
     ExerciseObjectV1MapSave(source, ObjectV1EvidenceDirectory("real"));
 }
 
+void TestSharedCaptureScopeCoversCopyAndInPlaceWithoutLeakingLocks() {
+    for (const bool inPlace : {false, true}) {
+        TempDirectory directory;
+        const auto source = Source(directory);
+        const auto before = Sha256File(source);
+        auto opened = MapArchiveSession::Open(source); Require(opened.Succeeded(), "open shared capture scope source");
+        MapSaveTask task; Require(task.FreezeArchive(*opened.value).Succeeded(), "freeze shared capture scope source");
+        task.inPlace = inPlace; task.target = inPlace ? source : directory.Path() / "scoped.w3x";
+        task.replacements = {{"war3map.wtg", Bytes("scoped-wtg")}, {"war3map.wct", Bytes("scoped-wct")}};
+        bool sawPinned = false;
+        task.prepareFinalDerived = [&](MapSaveTask& current) {
+            sawPinned = current.archive->HasSourceCaptureLease();
+            return Status::Ok();
+        };
+        MapSaveService::Run(task);
+        Require(task.succeeded && task.nextSession && sawPinned, "common copy and in-place preparation both use a verified lease");
+        Require(!task.archive->HasSourceCaptureLease() && !task.nextSession->HasSourceCaptureLease(),
+            "automatically acquired source and saved leases do not enter the interactive baseline");
+        if (inPlace) Require(Sha256File(task.backup).value == before.value, "normal in-place backup matches the complete old source");
+        const auto writer = CreateFileW(task.written.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Require(writer != INVALID_HANDLE_VALUE, "saved baseline is not left locked after common save returns");
+        CloseHandle(writer);
+    }
+    TempDirectory failureDirectory;
+    auto source = MapArchiveSession::Open(Source(failureDirectory)); Require(source.Succeeded(), "open rejected scope source");
+    MapSaveTask failed; Require(failed.FreezeArchive(*source.value).Succeeded(), "freeze rejected scope source");
+    failed.target = failureDirectory.Path() / "must-not-exist.w3x";
+    failed.prepareFinalDerived = [](MapSaveTask& current) {
+        Require(current.archive->HasSourceCaptureLease(), "failed preparation also owns a scoped lease");
+        return Status::Failure("Fixture", "FIXTURE_PREPARATION_REJECTED", "原创拒绝夹具");
+    };
+    MapSaveService::Run(failed);
+    Require(!failed.succeeded && !failed.archive->HasSourceCaptureLease() && !std::filesystem::exists(failed.target),
+        "failed preparation releases its own lease without publishing");
+}
+
 void TestFrozenSourceAndVerifiedCandidate() {
     TempDirectory directory;
     const auto source = Source(directory);
@@ -2684,6 +2721,7 @@ void TestMapCreationRejectsUnboundedOrExistingInputs() {
 
 int main() {
     try {
+        TestSharedCaptureScopeCoversCopyAndInPlaceWithoutLeakingLocks();
         War3Map::Tests::TerrainStraightRampHostValidation();
         War3Map::Tests::TerrainBlockSaveHostValidation();
         TestFrozenSourceAndVerifiedCandidate();

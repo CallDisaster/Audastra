@@ -15,6 +15,7 @@
 #include "MapSaveScriptPreservation.h"
 #include "MapRuntimeSave.h"
 #include "SaveProgressStage.h"
+#include "SaveCaptureScope.h"
 
 #include <algorithm>
 #include <exception>
@@ -438,6 +439,13 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
         const auto runtimePrepared = PrepareMapRuntimeSave(task);
         Append(task.diagnostics, runtimePrepared.diagnostics);
         if (!runtimePrepared.Succeeded()) return;
+        Detail::SaveCaptureScope sourceCapture(task, Detail::SaveCaptureScope::Target::Source);
+        Detail::SaveCaptureScope savedCapture(task, Detail::SaveCaptureScope::Target::Saved);
+        if (task.script || task.prepareFinalDerived || task.minimapMarkers || task.terrainShadow) {
+            const auto pinned = sourceCapture.Acquire();
+            Append(task.diagnostics, pinned.diagnostics);
+            if (!pinned.Succeeded()) return;
+        }
         const auto verifyObjects = [&]() {
             Detail::SaveProgressStage timing(progress, "object-resources");
             if (!task.mapObjectReferences) return true;
@@ -565,6 +573,7 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             return;
         }
         task.nextSession = std::make_unique<MapArchiveSession>(std::move(*next.value));
+        if (sourceCapture.OwnsLease()) savedCapture.AdoptCreatedLease();
         if (frozenMarkers) {
             const auto checked = frozenMarkers->VerifyReadback(*task.nextSession);
             Append(task.diagnostics, checked.diagnostics);

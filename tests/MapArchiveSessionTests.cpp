@@ -401,9 +401,6 @@ void TestExactCaptureLeaseIsOwnedAndKeepsRealReadback() {
         Require(!cancelledProof.Succeeded() && !cancelledProof.diagnostics.empty()
             && cancelledProof.diagnostics.front().code == kProjectSaveCancelledCode,
             "pinned source verification cannot bypass requested cancellation");
-        const auto inPlace = copy.SaveInPlace({});
-        Require(!inPlace.Succeeded() && inPlace.diagnostics.front().code == "SOURCE_CAPTURE_LEASE_ACTIVE",
-            "candidate-only capture lease rejects in-place replacement before side effects");
         const auto candidate = copy.SaveCandidate(directory.Path() / "leased.w3x", {});
         RequireSuccess(candidate, "leased source saves through the normal complete verification path");
         auto next = copy.AfterSave(*candidate.value, {});
@@ -421,6 +418,41 @@ void TestExactCaptureLeaseIsOwnedAndKeepsRealReadback() {
     Require(!unpinned.PinSourceForExactCaptures().Succeeded(), "new lease must hash again and reject a changed source");
     Require(!unpinned.CaptureExactMembers(std::vector<std::string>{"war3map.j"}).Succeeded(),
         "failed pin cannot leave a reusable digest behind");
+}
+
+void RequireNoSavingTemporary(const std::filesystem::path& directory);
+void TestPinnedAtomicReplaceKeepsIdentityAndVerifiedBackup() {
+    TempDirectory directory;
+    const auto source = CreateSource(directory);
+    const auto before = ReadBytes(source);
+    auto opened = MapArchiveSession::Open(source);
+    RequireSuccess(opened, "open pinned atomic source");
+    Require(opened.value->PinSourceForExactCaptures().Succeeded(), "pin source content without blocking atomic replacement");
+    const std::vector<MemberReplacement> edits{{"war3map.j", Bytes("pinned-atomic-script")}};
+    const auto saved = opened.value->SaveInPlace(edits);
+    RequireSuccess(saved, "pinned save uses the normal atomic publisher");
+    Require(ReadBytes(saved.value->backup) == before, "atomic save retains a verified complete original backup");
+    Require(!opened.value->VerifySourceUnchanged().Succeeded(), "old content lease cannot authorize the replacement file identity");
+    auto next = opened.value->AfterSave(saved.value->written, edits);
+    RequireSuccess(next, "pin the actually verified new file for readback");
+    Require(next.value->ReadMember("war3map.j").value == std::optional(Bytes("pinned-atomic-script")), "new source contains the requested script");
+    next.value->ReleaseSourceCaptureLease();
+    const auto writer = CreateFileW(source.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(writer != INVALID_HANDLE_VALUE, "releasing the saved baseline leaves no direct-write lock");
+    CloseHandle(writer);
+    RequireNoSavingTemporary(directory.Path());
+
+    TempDirectory equalDirectory;
+    const auto original = CreateSource(equalDirectory);
+    auto equal = MapArchiveSession::Open(original); RequireSuccess(equal, "open equal-byte swap source");
+    Require(equal.value->PinSourceForExactCaptures().Succeeded(), "pin equal-byte swap source");
+    const auto replacement = equalDirectory.Path() / "replacement.w3x";
+    Require(std::filesystem::copy_file(original, replacement), "create independent equal-byte replacement");
+    Require(MoveFileExW(replacement.c_str(), original.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH), "perform real atomic equal-byte replacement");
+    const auto stale = equal.value->VerifySourceUnchanged();
+    Require(!stale.Succeeded() && stale.diagnostics.front().code == "SOURCE_REPLACED", "matching bytes cannot bypass a replaced file ID");
+    Require(!equal.value->PinSourceForExactCaptures().Succeeded(), "idempotent pin also checks the current path identity");
 }
 
 void TestExactCaptureLeaseDoesNotTrustWritableMappings() {
@@ -1132,6 +1164,7 @@ int main() {
         TestOpaqueMemberPreservedByAppendOnlyPatch();
         TestExactMemberCaptureDistinguishesOpaqueMissingAndEmpty();
         TestExactCaptureLeaseIsOwnedAndKeepsRealReadback();
+        TestPinnedAtomicReplaceKeepsIdentityAndVerifiedBackup();
         TestExactCaptureLeaseDoesNotTrustWritableMappings();
         TestReservedPlatformByteAndMetadataMembers();
         TestProjectWriterAndInvalidPrefix();

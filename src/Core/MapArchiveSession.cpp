@@ -190,7 +190,7 @@ struct ArchiveExactReadLease {
     std::uint64_t id;
     ArchiveExactReadLease(const std::filesystem::path& source, const std::string& sha,
         std::uint32_t serial, std::uint64_t fileId)
-        : file(CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+        : file(CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr)),
           event(CreateEventW(nullptr, TRUE, FALSE, nullptr)), path(source), sha256(sha), volume(serial), id(fileId) {
         if (!file.Valid() || !event.Valid()) return;
@@ -221,8 +221,7 @@ Status MapArchiveSession::PinSourceForExactCaptures() {
         if (exactReadLease_) {
             if (!exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
                 return Status::Failure("MapArchiveSession", "SOURCE_LEASE_MISMATCH", "来源固定租约与会话身份不符。");
-            return exactReadLease_->Stable() ? VerifyIdentity(exactReadLease_->file.Get(), volumeSerial_, fileId_)
-                : VerifySourceUnchanged();
+            return VerifySourceUnchanged();
         }
         auto lease = std::make_shared<ArchiveExactReadLease>(sourcePath_, sourceSha256_, volumeSerial_, fileId_);
         if (!lease->file.Valid())
@@ -415,7 +414,7 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         FileHandle source(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!source.Valid()) return fail("SOURCE_LEASE_FAILED", "源归档不可读取或正在被外部写入。");
-        // 只有显式固定、仍存活的同一文件租约可复用已完整散列的来源证明。
+        // 只有显式固定、仍存活的同一文件内容租约可复用已完整散列的来源证明。
         // 新句柄仍核对卷/文件ID和实际路径；目录、预算与每个正文比较不变。
         if (exactReadLease_ && !exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
             return fail("SOURCE_LEASE_MISMATCH", "精确捕获的固定租约与来源不符。");

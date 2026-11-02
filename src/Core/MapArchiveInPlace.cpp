@@ -179,8 +179,6 @@ Result<MapBackupInspection> InspectMapBackupDirectory(const std::filesystem::pat
 Result<InPlaceSaveResult> MapArchiveSession::SaveInPlace(std::span<const MemberReplacement> replacements,
     std::span<const std::string> removals, const InPlaceSaveOptions& options) const {
     if (scriptAuditOnly_) return Result<InPlaceSaveResult>::Failure("MapArchiveSession", "SCRIPT_AUDIT_READ_ONLY", "只读脚本审计快照不能写回地图。");
-    if (exactReadLease_) return Result<InPlaceSaveResult>::Failure("MapArchiveSession", "SOURCE_CAPTURE_LEASE_ACTIVE",
-        "本会话已为候选保存固定只读来源，不能原地替换；请在候选任务结束后重新打开地图。");
     const auto directory = sourcePath_.parent_path();
     const std::wstring stem = sourcePath_.stem().wstring();
     const std::wstring extension = sourcePath_.extension().wstring();

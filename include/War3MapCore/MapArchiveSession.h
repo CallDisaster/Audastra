@@ -122,10 +122,13 @@ public:
     // 不读取脚本或可执行导入，不授予任何保存资格。
     [[nodiscard]] static Result<MapArchiveSession> OpenMinimapAudit(const std::filesystem::path& path);
     [[nodiscard]] Status VerifySourceUnchanged(const ProjectSaveControl* control = nullptr) const;
-    // 单次候选保存可显式固定来源：完整散列后持续持有禁止写入/删除的源句柄。
-    // 同一来源快照的副本共享租约，直到最后一份销毁；不能用于原地保存。
+    // 单次保存可显式固定来源内容：完整散列后持续持有禁止直接写入的源句柄。
+    // 允许原子替换；每次捕获仍核实际路径/文件ID，旧快照不承接替换后的新文件。
+    // 副本共享租约；显式释放当前副本或最后一份销毁后关闭，交互基线不应持有租约。
     // 仅精确捕获复用此不可变来源证明，成员仍真读真比，写出/回读完整散列照旧。
     [[nodiscard]] Status PinSourceForExactCaptures();
+    [[nodiscard]] bool HasSourceCaptureLease() const noexcept { return bool(exactReadLease_); }
+    void ReleaseSourceCaptureLease() noexcept { exactReadLease_.reset(); }
     [[nodiscard]] bool HasMember(std::string_view name) const;
     [[nodiscard]] Result<std::vector<std::byte>> ReadMember(std::string_view name,
         const ProjectSaveControl* control = nullptr) const;
