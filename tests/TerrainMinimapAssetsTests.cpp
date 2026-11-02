@@ -157,8 +157,8 @@ std::vector<MapArchiveMember> CreateMaterials() {
 // 沿用既有TerrainSavePlan测试的独立未压缩MPQ布局思路；listfile只列W3E/WPM，
 // 真正材质hash/块在清单之外。badTexture故意使用精确读取器明确拒绝的patch块标志。
 Bytes UnlistedArchive(std::vector<MapArchiveMember> members, bool badTexture = false,
-    std::string_view unreadableMember = "Fixture\\Ground.blp") {
-    members.push_back({"(listfile)", Text("war3map.w3e\nwar3map.wpm\n")});
+    std::string_view unreadableMember = "Fixture\\Ground.blp", bool withoutListfile = false) {
+    if (!withoutListfile) members.push_back({"(listfile)", Text("war3map.w3e\nwar3map.wpm\n")});
     const auto count = static_cast<std::uint32_t>(members.size());
     std::uint32_t hashCount = 8, payloadBytes = 0;
     while (hashCount < count * 2) hashCount *= 2;
@@ -998,13 +998,25 @@ void TestUnavailableCliffSlotIsOnlyRejectedWhenConsumed() {
     }
 }
 
-void TestClassicPlayableCaptureAndDependencyReadback() {
+std::string TestClassicPlayableCaptureAndDependencyReadback(bool withoutListfile = false) {
     auto settings = W3i(); Put32(settings, 72, 0x400);
     Fixture fixture(false, settings);
     auto resources = Materials();
     resources.push_back({"UI\\MiscData.txt", Text("; original fixture\n")});
     resources.push_back({"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=4\nRight=4\nBottom=2\nTop=2\n")});
-    auto source = fixture.Source("classic-playable.w3x", resources);
+    auto source = [&] {
+        if (!withoutListfile) return fixture.Source("classic-playable.w3x", resources);
+        resources.push_back({"war3map.w3e", fixture.w3e});
+        resources.push_back({"war3map.wpm", fixture.wpm});
+        resources.push_back({"war3map.w3i", *fixture.w3i});
+        // 原创无害正文故意标成不可解码的patch块；小地图不应请求这个成员。
+        resources.push_back({"x.ai", Text("original harmless opaque fixture")});
+        const auto path = fixture.directory.Path() / "classic-no-listfile.w3x";
+        Require(IO::WriteFileBytes(path, UnlistedArchive(resources, true, "x.ai", true)).Succeeded(),
+            "写入完整依赖但无清单的原创归档");
+        Require(!MapArchiveSession::Open(path).Succeeded(), "缺清单不取得普通保存资格");
+        return Take(MapArchiveSession::OpenMinimapAudit(path));
+    }();
     auto terrain = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::ClassicPlayable));
     Require(terrain.Input().classicColors && terrain.Input().classicColors->cameraMarginsConfigured
         && terrain.Input().classicColors->cameraMargins == std::array<double, 4>{4, 4, 2, 2},
@@ -1014,14 +1026,21 @@ void TestClassicPlayableCaptureAndDependencyReadback() {
     Require(VerifyTerrainMinimapAssetsFrozenOutput(terrain, source, {}).Succeeded(), "Classic冻结来源复核");
     const std::vector<MemberReplacement> changed{{"UI\\WorldEditData.txt", Text("[CameraMargins]\nLeft=9\n")}};
     RequireRejected(VerifyTerrainMinimapAssetsFrozenOutput(terrain, source, changed), "TERRAIN_ASSETS_FINAL_BYTES");
-    auto saved = Saved(fixture, source, "classic-readback.w3x");
-    Require(VerifyTerrainMinimapAssetsReadback(terrain, saved).Succeeded(), "Classic同源依赖输出回读");
+    if (withoutListfile) {
+        Require(!source.SaveCandidate(fixture.directory.Path() / "forbidden-save.w3x", {}).Succeeded(),
+            "完整小地图生成也不授予无清单图保存资格");
+    } else {
+        auto saved = Saved(fixture, source, "classic-readback.w3x");
+        Require(VerifyTerrainMinimapAssetsReadback(terrain, saved).Succeeded(), "Classic同源依赖输出回读");
+    }
     auto objects = Take(CaptureClassicMinimapObjectAssets(std::move(terrain), source, fixture.edits));
     TerrainMinimapPostprocessSettings filters; filters.noisePercent = 0;
     const auto candidate = Take(BuildClassicMinimapCandidate(objects, filters));
     Require(candidate.manifest.sourceRectangle == std::array<std::uint32_t, 4>{1, 2, 5, 7}
         && candidate.raw.width == 4 && candidate.raw.height == 5, "真实捕获应通到Classic可玩域逐格图");
     Require(candidate.encoded.quality == 40 && candidate.finalImage.width == 256, "实际捕获应接到单mip JPEG输出");
+    Require(source.VerifySourceUnchanged().Succeeded(), "小地图生成后原始归档不变");
+    return candidate.manifest.blpSha256;
 }
 
 void TestFinalSettingsCaptureUsesActualCurrentOutput() {
@@ -1111,7 +1130,9 @@ void TestFinalSettingsCaptureUsesActualCurrentOutput() {
 
 int main() {
     try {
-        TestClassicPlayableCaptureAndDependencyReadback();
+        Require(TestClassicPlayableCaptureAndDependencyReadback()
+            == TestClassicPlayableCaptureAndDependencyReadback(true),
+            "同一原创内容有无清单应生成相同完整BLP，且不读取不透明脚本");
         TestUnavailableCliffSlotIsOnlyRejectedWhenConsumed();
         TestLargeClassicCaptureAndTypedObjectOrder();
         TestFinalSettingsCaptureUsesActualCurrentOutput();
