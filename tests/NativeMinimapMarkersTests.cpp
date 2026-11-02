@@ -83,6 +83,11 @@ void PlayableRectangleAndAspect() {
     MapSettings settings; settings.formatVersion = 25; settings.custom.emplace(); settings.flags = 0x400;
     settings.cameraMargins = {1, 3, 2, 1};
     const auto rectangle = Take(NativeMinimapPlayableRectangle(terrain, settings));
+    settings.formatVersion = 18;
+    Require(Take(NativeMinimapPlayableRectangle(terrain, settings)) == rectangle, "v18/v25共有边距产生相同标记矩形");
+    settings.formatVersion = 28;
+    Rejected(NativeMinimapPlayableRectangle(terrain, settings), "NATIVE_MMP_PLAYABLE_LAYOUT");
+    settings.formatVersion = 25;
     Require(rectangle == std::array<std::uint32_t, 4>{1, 2, 17, 9}, "补足边距按LRBT抵消，输出普通XY矩形");
     const auto frame = Take(NativeMinimapFrame(terrain, rectangle));
     Require(frame.worldRectangle == std::array<float, 4>{-896, 512, 1152, 1408}, "内部转置布局封装为普通世界XY");

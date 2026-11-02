@@ -194,8 +194,8 @@ std::uint32_t ContentNoiseSeed(const Render::ClassicMinimapObjectAssets& assets,
             > maximumWorkingBytes)
         Fail("MINIMAP_SAVE_BUDGET", "自动小地图内容种子的设置解析超过共享工作预算。");
     const auto settings = Take(MapData::MapSettings::Parse(*input.sourceW3i));
-    if (!settings.FullyParsed() || settings.formatVersion != 25)
-        Fail("CLASSIC_MINIMAP_W3I_LAYOUT", "自动小地图噪点种子需要完整classic v25可玩区设置。");
+    if (!settings.FullyParsed() || (!settings.HasClassicLayout() && !settings.HasRocLayout()))
+        Fail("CLASSIC_MINIMAP_W3I_LAYOUT", "自动小地图噪点种子需要完整经典v18或v25可玩区设置。");
     const bool automaticBounds = (settings.flags & 0x400u) != 0;
     integer(automaticBounds ? 1u : 0u);
     if (automaticBounds) {

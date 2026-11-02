@@ -684,8 +684,9 @@ Result<TerrainMinimapAssetSnapshot> CaptureTerrainMinimapAssets(const MapArchive
                     if (settingsMember.state != MapDataState::Ready || settingsMember.memberName != "war3map.w3i"
                         || settingsMember.sources.size() != 1 || settingsMember.sources.front().data != currentBytes)
                         Fail("TERRAIN_ASSETS_W3I_CURRENT", "当前W3I必须Ready、唯一且逐字等于本次最终输出；缺失或不一致不能继续保存。");
-                    if (!current.Settings() || current.Settings()->formatVersion != 25 || !current.Settings()->FullyParsed())
-                        Fail("TERRAIN_ASSETS_W3I_LAYOUT", "小地图可玩范围仅消费完整classic v25最终W3I。");
+                    if (!current.Settings() || (!current.Settings()->HasClassicLayout() && !current.Settings()->HasRocLayout())
+                        || !current.Settings()->FullyParsed())
+                        Fail("TERRAIN_ASSETS_W3I_LAYOUT", "小地图可玩范围仅消费完整经典v18或v25最终W3I。");
                 }
                 const bool settingsChanged = finalSettings && finalSettings->data != member.bytes;
                 if (settingsChanged) {

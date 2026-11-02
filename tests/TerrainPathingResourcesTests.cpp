@@ -593,6 +593,24 @@ void NativeCaptureBindsFullRulesAndBothTerrainRevisions() {
     Require(!mismatch.Succeeded() && HasCode(mismatch.diagnostics, "TERRAIN_NATIVE_SOURCE_IDENTITY"), "before must be actual source W3E");
 }
 
+void RocNativeCaptureUsesCompleteOriginalBounds() {
+    Directory directory; Fixture fixture; NativeSources(fixture, NativeSettings());
+    for (auto& member : fixture.members) if (member.name == "war3map.w3i") {
+        // 共有头到tileset共77字节；ROC两组屏幕各三串，随后五组空计数，无TFT环境扩展。
+        member.data.resize(111); member.data[0] = std::byte{18};
+    }
+    const auto source = fixture.Write(directory.path / "roc.w3m");
+    auto after = fixture.grid; after.vertices[40].variationRaw = 1;
+    const auto captured = Take(TerrainPathingResources::CaptureNative(source, fixture.grid, after, {}, 1024 * 1024));
+    Check(captured.VerifySourceInputs(source, 1024 * 1024));
+    const auto native = Take(captured.GenerateNative(after, 1024 * 1024));
+    Require(native.size() == 1024 && std::all_of(native.begin(), native.end(), [](auto value) { return value == std::byte{0x40}; }),
+        "完整ROC设置按真实共有边界生成通行，不制造或写出TFT字段");
+    const auto settings = Take(MapSettings::Parse(Take(source.ReadMember("war3map.w3i"))));
+    Require(settings.FullyParsed() && settings.HasRocLayout() && !settings.Serialize().Succeeded(),
+        "地形只读消费v18不扩大设置写出权限");
+}
+
 void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
     Directory directory; Fixture fixture;
     fixture.grid.vertices[40].textureAndFlagsRaw = 0x10;
@@ -1009,6 +1027,7 @@ int main() {
         FinalResourcesAndGameWinnersAreRechecked();
         StoredAndDecodedBudgetsShareTheCallerAllowance();
         NativeCaptureBindsFullRulesAndBothTerrainRevisions();
+        RocNativeCaptureUsesCompleteOriginalBounds();
         DryRampCaptureBindsActualMaximumAndAllProfileSources();
         NativeWaterAndFractionalWorldBoundsUseActualSources();
         NativeChangedCliffSlotsBindActualRowsAndWinners();

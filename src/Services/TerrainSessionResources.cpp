@@ -104,7 +104,7 @@ Result<TerrainSessionResources> TerrainSessionResources::CaptureInputs(const Mem
         if (kind == MapDataKind::Units && member.state == MapDataState::Missing && member.sources.empty()) continue;
         if (member.state != MapDataState::Ready || member.sources.size() != 1
             || (kind == MapDataKind::Settings && (!snapshot.value->Settings() || !snapshot.value->Settings()->FullyParsed()
-                || snapshot.value->Settings()->formatVersion != 25))
+                || (!snapshot.value->Settings()->HasClassicLayout() && !snapshot.value->Settings()->HasRocLayout())))
             || (kind == MapDataKind::Doodads && !snapshot.value->Doodads()))
             return Failed<TerrainSessionResources>(Failure("TERRAIN_SESSION_RESOURCE_LAYOUT", "当前结构需要完整的经典设置和摆放，不能把未知当成缺失。"));
         const std::string name = kind == MapDataKind::Settings ? "war3map.w3i"

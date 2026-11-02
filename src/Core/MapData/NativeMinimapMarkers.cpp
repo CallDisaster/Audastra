@@ -18,8 +18,8 @@ Result<std::array<std::uint32_t, 4>> NativeMinimapPlayableRectangle(
     const std::optional<std::array<double, 4>>& cameraMargins) {
     using Rectangle = std::array<std::uint32_t, 4>;
     if (terrain.header.version != 11 || terrain.header.width < 2 || terrain.header.height < 2
-        || !settings.FullyParsed() || settings.formatVersion != 25)
-        return Failure<Rectangle>("NATIVE_MMP_PLAYABLE_LAYOUT", "可玩区需要完整经典v11 W3E与v25 W3I。");
+        || !settings.FullyParsed() || (!settings.HasClassicLayout() && !settings.HasRocLayout()))
+        return Failure<Rectangle>("NATIVE_MMP_PLAYABLE_LAYOUT", "可玩区需要完整经典v11 W3E与v18或v25 W3I。");
     const auto width = terrain.header.width - 1, height = terrain.header.height - 1;
     std::array<double, 4> rectangle{};
     if ((settings.flags & 0x400u) != 0) {

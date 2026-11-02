@@ -64,10 +64,10 @@ Bytes Text(std::string_view text) {
 void Put32(Bytes& bytes, std::size_t at, std::uint32_t value) {
     for (unsigned i = 0; i < 4; ++i) bytes[at + i] = static_cast<std::byte>((value >> (i * 8)) & 255);
 }
-Bytes W3i() {
+Bytes W3i(bool roc = false) {
     // 独立v25原字；8×8源tile扣L/R/B/T=[1,3,2,1]后为4×5。
-    Bytes bytes(147);
-    Put32(bytes, 0, 25); Put32(bytes, 8, 6061);
+    Bytes bytes(roc ? 111 : 147);
+    Put32(bytes, 0, roc ? 18 : 25); Put32(bytes, 8, 6061);
     Put32(bytes, 48, 1); Put32(bytes, 52, 3); Put32(bytes, 56, 2); Put32(bytes, 60, 1);
     Put32(bytes, 64, 4); Put32(bytes, 68, 5); bytes[76] = std::byte{'L'};
     return bytes;
@@ -525,6 +525,14 @@ void TestDuplicatePathsAndBudgets() {
 }
 
 void TestSourceMarginsCaptureAndCurrentGuards() {
+    {
+        Fixture roc(false, W3i(true)); const auto source = roc.Source();
+        const auto captured = Take(CaptureTerrainMinimapAssets(source, roc.edits, {}, {},
+            TerrainMinimapRangePolicy::DeclaredW3iMargins));
+        const auto candidate = Take(BuildTerrainMinimapCandidate(captured.Input()));
+        Require(candidate.manifest.w3i.formatVersion == 18 && captured.Input().sourceW3i == roc.w3i,
+            "v18捕获与候选使用同一原始设置，不借v25写出器改版");
+    }
     Fixture fixture(false, W3i()); auto source = fixture.Source();
     const auto full = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}));
     const auto captured = Take(CaptureTerrainMinimapAssets(source, fixture.edits, {}, {}, TerrainMinimapRangePolicy::DeclaredW3iMargins));

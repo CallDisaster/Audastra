@@ -67,9 +67,9 @@ Bytes Text(std::string_view text) {
 void Put32(Bytes& bytes, std::size_t at, std::uint32_t value) {
     for (unsigned shift = 0; shift < 4; ++shift) bytes[at + shift] = static_cast<std::byte>((value >> (shift * 8)) & 255);
 }
-Bytes W3i() {
+Bytes W3i(bool roc = false) {
     // 独立classic v25原字：8×8 tiles扣L/R/B/T=[1,3,2,1]后为4×5。
-    Bytes bytes(147); Put32(bytes, 0, 25); Put32(bytes, 8, 6061);
+    Bytes bytes(roc ? 111 : 147); Put32(bytes, 0, roc ? 18 : 25); Put32(bytes, 8, 6061);
     Put32(bytes, 48, 1); Put32(bytes, 52, 3); Put32(bytes, 56, 2); Put32(bytes, 60, 1);
     Put32(bytes, 64, 4); Put32(bytes, 68, 5); bytes[76] = std::byte{'L'};
     return bytes;
@@ -491,8 +491,9 @@ void AutomaticDecisionUsesExactSourceMembers() {
 }
 
 void AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace() {
+    for (const bool roc : {false, true})
     for (const auto [existing, inPlace] : {std::pair{false, false}, std::pair{true, false}, std::pair{true, true}}) {
-        auto settings = W3i(); Put32(settings, 72, 0x400); // 原版自动补足相机边距模式
+        auto settings = W3i(roc); Put32(settings, 72, 0x400); // 原版自动补足相机边距模式
         Fixture fixture(existing, false, false, settings, false, {}, true);
         if (existing) fixture.Stroke();
         MapSaveTask task; fixture.Freeze(task);
@@ -519,6 +520,7 @@ void AutomaticGeneratedBlpIsVerifiedThroughSaveCopyAndInPlace() {
         Require(prepared->VerifyReadback(task, saved).Succeeded(), "自动小地图独立Open回读真实输出");
         Require(Take(saved.ReadMember("war3mapMap.blp")) == prepared->MinimapReplacement().data,
             "自动小地图保存字节与实际生成完全一致");
+        Require(Take(saved.ReadMember("war3map.w3i")) == settings, "v18/v25地形保存不改写原设置布局");
         Require(Take(saved.ReadMember("war3map.shd")) == Text(std::string_view("\x11\x19", 2)),
             "自动小地图准入不改变SHD保存资格或原字");
         if (inPlace) Require(!task.backup.empty() && std::filesystem::exists(task.backup), "原地保存保留真实备份");

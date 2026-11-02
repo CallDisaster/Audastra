@@ -362,8 +362,8 @@ SamplingRectangle SelectRange(const TerrainMinimapInput& input, const MapData::T
     ChargeDiagnostics(manifest.memory.parsedSettingsCapacityBytes, parsed.diagnostics);
     if (manifest.memory.parsedSettingsCapacityBytes > manifest.memory.estimatedSettingsScratchBytes)
         Fail("TERRAIN_MINIMAP_BUDGET", "W3I解析实际capacity超过分配前预留。");
-    if (settings.formatVersion != 25)
-        Fail("TERRAIN_MINIMAP_W3I_POLICY_LAYOUT", "声明边距政策仅支持classic v25，不改变既有W3I解析白名单。");
+    if (!settings.HasClassicLayout() && !settings.HasRocLayout())
+        Fail("TERRAIN_MINIMAP_W3I_POLICY_LAYOUT", "声明边距政策仅支持经典v18或v25，不改变既有W3I解析白名单。");
     if (!settings.FullyParsed()) Fail("TERRAIN_MINIMAP_W3I_PARTIAL", "声明边距不消费Partial或未知尾部W3I。");
     facts.state = "Parsed"; facts.stage = "source-archive"; facts.sourceBytes = input.sourceW3i->size();
     facts.formatVersion = settings.formatVersion; facts.cameraBounds = settings.cameraBounds; facts.cameraMargins = settings.cameraMargins;

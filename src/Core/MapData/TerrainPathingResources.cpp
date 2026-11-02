@@ -808,8 +808,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 } else if (i == 1) {
                     if (!member.present) Fail("TERRAIN_NATIVE_W3I_MISSING", "原版通行需要实际来源W3I。");
                     settings = Take(MapSettings::Parse(member.bytes));
-                    if (!settings->FullyParsed() || settings->formatVersion != 25)
-                        Fail("TERRAIN_NATIVE_W3I_LAYOUT", "原版通行需要完整classic v25 W3I。");
+                    if (!settings->FullyParsed() || (!settings->HasClassicLayout() && !settings->HasRocLayout()))
+                        Fail("TERRAIN_NATIVE_W3I_LAYOUT", "原版通行需要完整经典v18或v25 W3I。");
                 } else if (i == 2) {
                     if (!member.present) Fail("TERRAIN_NATIVE_DOODADS_MISSING", "尚未证明缺失DOO等价于完整空对象集合。");
                     PlacementReadLimits placementLimits; placementLimits.maxBytes = maximumBytes;

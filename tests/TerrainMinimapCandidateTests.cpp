@@ -43,11 +43,12 @@ std::vector<std::byte> W3i(std::array<std::int32_t, 4> margins = {1, 3, 2, 1},
     for (const auto margin : margins) U32(bytes, static_cast<std::uint32_t>(margin));
     U32(bytes, static_cast<std::uint32_t>(width)); U32(bytes, static_cast<std::uint32_t>(height));
     U32(bytes, 0); bytes.push_back(std::byte{'L'}); U32(bytes, 0);
-    bytes.insert(bytes.end(), 4, std::byte{0}); U32(bytes, 0); bytes.insert(bytes.end(), 4, std::byte{0});
-    bytes.insert(bytes.end(), 16 + 4 + 4 + 1 + 1 + 4, std::byte{0}); // fog、weather、sound NUL、light、water。
+    bytes.insert(bytes.end(), version == 18 ? 3 : 4, std::byte{0}); U32(bytes, 0);
+    bytes.insert(bytes.end(), version == 18 ? 3 : 4, std::byte{0});
+    if (version != 18) bytes.insert(bytes.end(), 16 + 4 + 4 + 1 + 1 + 4, std::byte{0}); // fog、weather、sound NUL、light、water。
     if (version >= 28) U32(bytes, 0);
     if (version >= 31) { U32(bytes, 0); U32(bytes, 0); }
-    for (unsigned i = 0; i < 6; ++i) U32(bytes, 0); // players/forces及四组custom表。
+    for (unsigned i = 0; i < (version == 18 ? 5u : 6u); ++i) U32(bytes, 0); // ROC没有随机物品表。
     return bytes;
 }
 
@@ -543,6 +544,11 @@ void TestDeclaredMarginsPolicyAndRefusals() {
     Rejected(input, "TERRAIN_MINIMAP_W3I_MISSING");
     input.sourceW3i.emplace(); Rejected(input, "TERRAIN_MINIMAP_W3I_EMPTY");
     input.sourceW3i = W3i(); const auto original = Build(input);
+    input.sourceW3i = W3i({1, 3, 2, 1}, 4, 3, 18);
+    const auto roc = Build(input);
+    Require(roc.manifest.w3i.formatVersion == 18 && roc.image.rgba == original.image.rgba
+        && roc.manifest.renderExtent == original.manifest.renderExtent, "完整v18消费同一实际边距且不升级设置");
+    input.sourceW3i->push_back(std::byte{0}); Rejected(input, "TERRAIN_MINIMAP_W3I_PARTIAL");
     for (unsigned side = 0; side < 4; ++side) {
         std::array<std::int32_t, 4> margins{1, 3, 2, 1}; ++margins[side];
         input.sourceW3i = W3i(margins, side < 2 ? 3 : 4, side >= 2 ? 2 : 3);
