@@ -824,8 +824,15 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 #include "TerrainTemplateObjectAudit.h"
 #include "TerrainCorpusMovementFixture.h"
 #include "TerrainFixedShadowOracle.h"
+#include "TerrainNativeOverridesAudit.h"
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 5 && std::wstring_view(argv[1]) == L"--terrain-native-overrides-audit") {
+        try {
+            const std::wstring wide(argv[3]);
+            return AuditTerrainNativeOverrides(argv[2], std::string(wide.begin(), wide.end()), argv[4]);
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     if ((argc == 6 || argc == 7) && std::wstring_view(argv[1]) == L"--terrain-fixed-shadow-oracle") {
         try {
             const std::wstring wide(argv[3]);
