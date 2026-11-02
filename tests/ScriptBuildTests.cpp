@@ -22,6 +22,7 @@
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include "../src/ScriptBuild/YDTriggerStorage.h"
+#include "../src/ScriptBuild/ScriptSourceBinding.h"
 
 #include <cstring>
 #include <algorithm>
@@ -2278,6 +2279,21 @@ int main() {
     try {
         std::error_code error;
         std::filesystem::remove_all(root, error);
+        {
+            const auto directory = root / "source-kind" / "library.ai";
+            const std::string source = "// original ordinary J fixture\n";
+            WriteText(directory / "legal.j", source);
+            const auto bound = Detail::CaptureSourceBinding(directory, ScriptToolchainBindingKind::Directory, true, 0);
+            Require(bound.Succeeded() && bound.value->binding.kind == ScriptToolchainBindingKind::Directory,
+                "directory metadata is not an AI script text source");
+            const auto regular = Detail::CaptureSourceBinding(directory / "legal.j", ScriptToolchainBindingKind::RegularFile, true, 4096);
+            Require(regular.Succeeded() && regular.value->bytes.size() == source.size(),
+                "ordinary J in a directory with an AI suffix remains readable");
+            WriteText(root / "source-kind" / "x.ai", "// original harmless AI fixture\n");
+            const auto ai = Detail::CaptureSourceBinding(root / "source-kind" / "x.ai", ScriptToolchainBindingKind::RegularFile, true, 4096);
+            Require(!ai.Succeeded() && HasCode(ai.diagnostics, "SCRIPT_INCLUDE_AI_UNSUPPORTED"),
+                "AI regular file still refuses before capture");
+        }
         TestDeclaredSourceEncoding();
         TestStringHash();
         TestYDTriggerStorage();

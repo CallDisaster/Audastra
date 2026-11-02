@@ -50,7 +50,7 @@ bool NormalizeSourcePath(const std::filesystem::path& input, std::filesystem::pa
 Result<SourceBindingSnapshot> CaptureSourceBinding(const std::filesystem::path& input,
     ScriptToolchainBindingKind expectedKind, bool required, std::uint64_t maxBytes) {
     try {
-        if (Jass::IsAiScriptTextSource(input)) return Fail(input,
+        if (expectedKind == Kind::RegularFile && Jass::IsAiScriptTextSource(input)) return Fail(input,
             std::string(Jass::kAiScriptTextCode), std::string(Jass::kAiScriptTextMessage));
         std::filesystem::path path;
         if (!NormalizeSourcePath(input, path)) return Fail(input,
