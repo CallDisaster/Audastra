@@ -11,6 +11,7 @@
 #include "Mpq/MpqWriterInternal.h"
 
 #include <Windows.h>
+#include <winioctl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -178,6 +179,11 @@ bool ScriptAuditMember(std::string_view name) {
 
 struct ArchiveExactReadLease {
     FileHandle file;
+    FileHandle event;
+    OVERLAPPED operation{};
+    REQUEST_OPLOCK_INPUT_BUFFER input{};
+    REQUEST_OPLOCK_OUTPUT_BUFFER output{};
+    bool pending = false;
     std::filesystem::path path;
     std::string sha256;
     std::uint32_t volume;
@@ -185,7 +191,25 @@ struct ArchiveExactReadLease {
     ArchiveExactReadLease(const std::filesystem::path& source, const std::string& sha,
         std::uint32_t serial, std::uint64_t fileId)
         : file(CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
-            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)), path(source), sha256(sha), volume(serial), id(fileId) {}
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr)),
+          event(CreateEventW(nullptr, TRUE, FALSE, nullptr)), path(source), sha256(sha), volume(serial), id(fileId) {
+        if (!file.Valid() || !event.Valid()) return;
+        operation.hEvent = event.Get();
+        input.StructureVersion = REQUEST_OPLOCK_CURRENT_VERSION;
+        input.StructureLength = sizeof(input);
+        input.RequestedOplockLevel = OPLOCK_LEVEL_CACHE_READ;
+        input.Flags = REQUEST_OPLOCK_INPUT_FLAG_REQUEST;
+        pending = !DeviceIoControl(file.Get(), FSCTL_REQUEST_OPLOCK, &input, sizeof(input),
+            &output, sizeof(output), nullptr, &operation) && GetLastError() == ERROR_IO_PENDING;
+    }
+    ~ArchiveExactReadLease() {
+        if (pending) {
+            CancelIoEx(file.Get(), &operation);
+            DWORD transferred = 0;
+            (void)GetOverlappedResult(file.Get(), &operation, &transferred, TRUE);
+        }
+    }
+    bool Stable() const { return pending && WaitForSingleObject(event.Get(), 0) == WAIT_TIMEOUT; }
     bool Matches(const std::filesystem::path& source, const std::string& sha,
         std::uint32_t serial, std::uint64_t fileId) const {
         return file.Valid() && SamePath(path, source) && sha256 == sha && volume == serial && id == fileId;
@@ -197,12 +221,18 @@ Status MapArchiveSession::PinSourceForExactCaptures() {
         if (exactReadLease_) {
             if (!exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
                 return Status::Failure("MapArchiveSession", "SOURCE_LEASE_MISMATCH", "来源固定租约与会话身份不符。");
-            return VerifyIdentity(exactReadLease_->file.Get(), volumeSerial_, fileId_);
+            return exactReadLease_->Stable() ? VerifyIdentity(exactReadLease_->file.Get(), volumeSerial_, fileId_)
+                : VerifySourceUnchanged();
         }
         auto lease = std::make_shared<ArchiveExactReadLease>(sourcePath_, sourceSha256_, volumeSerial_, fileId_);
         if (!lease->file.Valid())
             return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法在本次候选保存期间只读固定来源。");
-        const auto verified = VerifyHandle(lease->file.Get(), volumeSerial_, fileId_, sourceSha256_);
+        // 只读共享模式不足以排除先前建立的可写映射。R oplock不获准或失效时，
+        // 保留逐次完整散列；不把“不支持缓存资格”变成保存拒绝。
+        FileHandle proof(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+        if (!proof.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法完整核对已固定来源。");
+        const auto verified = VerifyHandle(proof.Get(), volumeSerial_, fileId_, sourceSha256_);
         if (!verified.Succeeded()) return verified;
         const auto path = FinalPath(lease->file.Get());
         if (!path.Succeeded()) return {path.diagnostics};
@@ -375,7 +405,8 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         // 新句柄仍核对卷/文件ID和实际路径；目录、预算与每个正文比较不变。
         if (exactReadLease_ && !exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
             return fail("SOURCE_LEASE_MISMATCH", "精确捕获的固定租约与来源不符。");
-        const auto verified = exactReadLease_ ? VerifyIdentity(source.Get(), volumeSerial_, fileId_)
+        const bool reusedSourceProof = exactReadLease_ && exactReadLease_->Stable();
+        const auto verified = reusedSourceProof ? VerifyIdentity(source.Get(), volumeSerial_, fileId_)
             : VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_);
         if (!verified.Succeeded()) return ForwardFailure<Output>(verified.diagnostics);
         auto sourcePath = FinalPath(source.Get());
@@ -438,7 +469,12 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
                 return fail("EXACT_MEMBER_SNAPSHOT_MISMATCH", "明确来源与会话已有命名快照不一致：" + names[index]);
             result.push_back(std::move(member));
         }
-        // 全批次共用同一禁止写入/删除的句柄；末尾只复核身份和路径，不再次散列。
+        // 缓存资格若在本次读取间失效，返回前重新完整散列，不能带出失效的来源证明。
+        if (reusedSourceProof && !exactReadLease_->Stable()) {
+            const auto current = VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_);
+            if (!current.Succeeded()) return ForwardFailure<Output>(current.diagnostics);
+        }
+        // 全批次共用同一禁止写入/删除的句柄，末尾复核身份和路径。
         const auto identity = VerifyIdentity(source.Get(), volumeSerial_, fileId_);
         if (!identity.Succeeded()) return ForwardFailure<Output>(identity.diagnostics);
         const auto pathIdentity = VerifySourceIdentity();

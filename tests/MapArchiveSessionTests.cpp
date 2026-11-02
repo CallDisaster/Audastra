@@ -409,6 +409,42 @@ void TestExactCaptureLeaseIsOwnedAndKeepsRealReadback() {
         "failed pin cannot leave a reusable digest behind");
 }
 
+void TestExactCaptureLeaseDoesNotTrustWritableMappings() {
+    TempDirectory directory;
+    const auto source = CreateSource(directory);
+    struct Mapping {
+        HANDLE file = INVALID_HANDLE_VALUE, mapping = nullptr;
+        void* view = nullptr;
+        ~Mapping() {
+            if (view) UnmapViewOfFile(view);
+            if (mapping) CloseHandle(mapping);
+            if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        }
+    } mapped;
+    mapped.file = CreateFileW(source.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(mapped.file != INVALID_HANDLE_VALUE, "open own preexisting mapped writer");
+    LARGE_INTEGER length{}; Require(GetFileSizeEx(mapped.file, &length) && length.QuadPart > 0, "mapped source size");
+    mapped.mapping = CreateFileMappingW(mapped.file, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+    Require(mapped.mapping != nullptr, "create own writable section");
+    mapped.view = MapViewOfFile(mapped.mapping, FILE_MAP_WRITE, 0, 0, 0);
+    Require(mapped.view != nullptr, "retain an actual writable view");
+    CloseHandle(mapped.file); mapped.file = INVALID_HANDLE_VALUE;
+    auto opened = MapArchiveSession::Open(source);
+    if (!opened.Succeeded()) {
+        Require(opened.diagnostics.front().code == "SOURCE_LEASE_FAILED", "mapped writer can only prevent source lease acquisition");
+        return;
+    }
+    Require(opened.value->PinSourceForExactCaptures().Succeeded(), "unsupported read cache keeps original full hashing available");
+    auto* bytes = static_cast<volatile unsigned char*>(mapped.view);
+    const auto last = static_cast<std::size_t>(length.QuadPart - 1);
+    const auto previous = bytes[last]; bytes[last] = previous ^ 1;
+    MemoryBarrier();
+    const auto actual = opened.value->CaptureExactMembers(std::vector<std::string>{"war3map.j"});
+    Require(!actual.Succeeded() && !actual.value && actual.diagnostics.front().code == "SOURCE_CHANGED",
+        "persistent writable mapping cannot reuse a stale whole-source digest even for an unchanged queried member");
+}
+
 // 手工构造的原创归档：哈希项 locale/platform 字段取给定值，(attributes) 与 (signature)
 // 存在但不写进 (listfile)，与世界编辑器保存的地图形态一致。
 std::filesystem::path CreateMetadataSource(
@@ -1081,6 +1117,7 @@ int main() {
         TestOpaqueMemberPreservedByAppendOnlyPatch();
         TestExactMemberCaptureDistinguishesOpaqueMissingAndEmpty();
         TestExactCaptureLeaseIsOwnedAndKeepsRealReadback();
+        TestExactCaptureLeaseDoesNotTrustWritableMappings();
         TestReservedPlatformByteAndMetadataMembers();
         TestProjectWriterAndInvalidPrefix();
         TestSaveInPlaceReplacesSourceAndKeepsBackup();
