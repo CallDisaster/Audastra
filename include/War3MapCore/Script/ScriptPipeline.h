@@ -149,7 +149,7 @@ struct ToolchainOptions {
     ScriptEngine vjass = ScriptEngine::Builtin;        // 外部为 jasshelper；内置不支持时自动改用外部
     ScriptEngine checker = ScriptEngine::Builtin;      // 外部为 pjass（仅在内置 vJass 翻译成功时使用；jasshelper 自带 pjass）
     bool crossCheck = false;                           // 内置检查之后再运行 pjass，结论不一致时警告（对照验证用）
-    bool inProcessOnly = false; // 自动化只使用已捕获来源与进程内后端，禁止外部程序回退。
+    bool inProcessOnly = false; // 显式限制本次运行使用进程内后端，禁止外部程序回退。
     Jass::PreprocessCache* preprocessCache = nullptr;  // 可空；跨多次构建复用函数库文件的词法结果
     std::chrono::seconds timeout{600};
     // 每个阶段开始时调用（阶段名：inject / preprocess / wave / template / vjass / jasshelper / check / pjass）；可在工作线程上调用。

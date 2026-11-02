@@ -109,7 +109,7 @@ int RunScriptBuild(const std::filesystem::path& toolRoot, const std::filesystem:
         request.toolchain.checker = Script::ScriptEngine::External;
     }
     request.toolchain.crossCheck = engines == L"--cross-check";
-    request.toolchain.inProcessOnly = engines != L"--external" && engines != L"--cross-check";
+    request.toolchain.inProcessOnly = engines == L"--in-process-only";
     const auto result = Script::BuildMapScript(request);
     Print(result.diagnostics);
     Print(result.generated.diagnostics);

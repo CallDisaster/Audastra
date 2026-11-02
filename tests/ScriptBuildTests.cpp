@@ -397,6 +397,26 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
     const auto disabledEmpty = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
     Require(disabledEmpty.Succeeded() && validated == 0 && disabledEmpty.injectedSourceSha256.empty(),
         "disabled runtime does not select client dependency");
+    // 只验证回退选择；无效的原创exe占位不能启动任何外部程序。
+    WriteText(tool / "compiler/jasshelper/clijasshelper.exe", "original inert fixture");
+    WriteText(tool / "compiler/pjass/pjass-latest.exe", "original inert fixture");
+    const auto fallbackLayout = ResolveScriptToolchainLayout({tool,24,127});
+    Require(fallbackLayout.Succeeded(), "fallback fixture binds actual available tool paths");
+    options.layout = std::make_shared<const ScriptToolchainLayout>(*fallbackLayout.value);
+    const auto unsupported = "//! import \"unimplemented-fixture.j\"\nfunction main takes nothing returns nothing\nendfunction\n";
+    options.workDir = root / "default-fallback";
+    Require(!options.inProcessOnly, "toolchain default allows configured external fallback");
+    const auto fallback = CompileMapScript(unsupported, options, {});
+    Require(HasCode(fallback.diagnostics, "VJASS_FALLBACK")
+        && !HasCode(fallback.diagnostics, "SCRIPT_IN_PROCESS_BACKEND_REQUIRED")
+        && std::any_of(fallback.stages.begin(), fallback.stages.end(), [](const auto& stage) { return stage.name == "jasshelper"; }),
+        "default policy reaches external fallback selection");
+    options.inProcessOnly = true; options.workDir = root / "explicit-isolation";
+    const auto isolated = CompileMapScript(unsupported, options, {});
+    Require(HasCode(isolated.diagnostics, "SCRIPT_IN_PROCESS_BACKEND_REQUIRED")
+        && !HasCode(isolated.diagnostics, "VJASS_FALLBACK")
+        && std::none_of(isolated.stages.begin(), isolated.stages.end(), [](const auto& stage) { return stage.name == "jasshelper"; }),
+        "explicit isolation refuses fallback before an external stage starts");
 }
 
 // UI 根选 YDWE 根或其 ui 目录都能找到 compiler/；没有 ui/config 标记的目录不向上查找。

@@ -150,7 +150,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
         const auto firstDiagnostic = project_->diagnosticsModel_->rowCount();
         const bool saved = RunMapSave(input, false, true, true, testHotReload,
             Services::TerrainMinimapSaveChoice::Automatic, false, Services::MapRuntimeSavePurpose::Normal,
-            MinimapRiskSave::Decline, !interactive);
+            MinimapRiskSave::Decline);
         scenarioPlan = std::move(project_->testScenarioPlan_);
         project_->testScenario_.reset(); project_->testScenarioPlan_.reset();
         auto frozen = Services::FreezeMapTestWorkspace(inputDirectory);

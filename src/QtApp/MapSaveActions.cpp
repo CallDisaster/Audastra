@@ -70,7 +70,7 @@ QString ChangedMembers(const MapSaveJob& job) {
 
 bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload,
     War3Map::Services::TerrainMinimapSaveChoice minimapChoice, bool rebuildTerrainShadow,
-    War3Map::Services::MapRuntimeSavePurpose runtimePurpose, MinimapRiskSave minimapRisk, bool inProcessOnly) {
+    War3Map::Services::MapRuntimeSavePurpose runtimePurpose, MinimapRiskSave minimapRisk) {
     if (!CheckPendingTerrainCommit(testSnapshot ? tr("测试地图") : tr("保存地图"))) return false;
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
     if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
@@ -184,7 +184,6 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         return false;
     }
     job->rebuildTerrainShadow = rebuildTerrainShadow;
-    if (inProcessOnly && job->script) job->script->toolchain.inProcessOnly = true;
     job->acceptMinimapRisk = !testSnapshot && minimapRisk == MinimapRiskSave::Accept;
     // 小地图策略尚未由worker执行；测试调用方明确要求保留时沿用该策略。
     if (testSnapshot && minimapChoice == War3Map::Services::TerrainMinimapSaveChoice::Preserve)
@@ -281,7 +280,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         if (job->minimapRiskAvailable && job->written.empty()) {
             if (minimapRisk == MinimapRiskSave::Ask && confirmMinimapRisk())
                 return RunMapSave(target, inPlace, background, false, false, minimapChoice, rebuildTerrainShadow,
-                    runtimePurpose, MinimapRiskSave::Accept, inProcessOnly);
+                    runtimePurpose, MinimapRiskSave::Accept);
             if (minimapRisk == MinimapRiskSave::Decline)
                 project_->AddDiagnostic(tr("错误"), tr("地图"), QStringLiteral("MINIMAP_RISK_SAVE_AVAILABLE"),
                     tr("只有小地图无法按当前内容生成；可以无视风险继续保存（保留原小地图），Agent 保存时传 keep_original_minimap=true。"));

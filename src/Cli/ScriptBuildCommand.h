@@ -6,7 +6,8 @@
 
 // 生成整图脚本（预处理前的 WE + YDTrigger 等价输出）；地图只读。
 // 给出 compileDir 时继续走注入 → 预处理 → 模板 → vJass 翻译 → 语法检查流水线，阶段文件写入该目录。
-// engines：空为内置实现；--external 全部使用外部程序（Wave、jasshelper、pjass）；--cross-check 内置检查后再用 pjass 对照。
+// engines：空为默认内置实现及外部回退；--in-process-only禁止外部程序；
+// --external全部使用外部程序；--cross-check内置检查后再用pjass对照。
 int RunScriptBuild(const std::filesystem::path& toolRoot, const std::filesystem::path& gameRoot,
     const std::filesystem::path& mapPath, const std::filesystem::path& outputPath,
     const std::optional<std::filesystem::path>& compileDir = std::nullopt, std::wstring_view engines = {});

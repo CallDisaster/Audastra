@@ -145,7 +145,7 @@ public:
         War3Map::Services::TerrainMinimapSaveChoice minimapChoice = War3Map::Services::TerrainMinimapSaveChoice::Automatic,
         bool rebuildTerrainShadow = false,
         War3Map::Services::MapRuntimeSavePurpose runtimePurpose = War3Map::Services::MapRuntimeSavePurpose::Normal,
-        MinimapRiskSave minimapRisk = MinimapRiskSave::Decline, bool inProcessOnly = false);
+        MinimapRiskSave minimapRisk = MinimapRiskSave::Decline);
     bool SaveEditorProjectToPath(const std::filesystem::path& outputPath, bool recovery = false);
     bool OpenEditorProjectPath(const std::filesystem::path& path);
 

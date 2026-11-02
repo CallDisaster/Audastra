@@ -91,6 +91,7 @@ void PrintUsage() {
         << "war3-map-cli map-runtime-query <map> <source-sha256>\n"
         << "war3-map-cli minimap-audit <map> <game-root> (read-only generation; no map output)\n"
         << "war3-map-cli map-ui-import <source> <source-sha> <new-map> <tool-root> <ui-root> <game-root> <plan.json> --runtime-package <sha> --approve-native-runtime\n"
+        << "  map-edit-save backend: --in-process-only (explicitly disable external compilers and fallback)\n"
         << "  map-edit-save runtime options: --runtime-mode automatic|enabled|disabled --runtime-package <sha256> --approve-native-runtime --runtime-purpose normal|internal_validation|test_run\n"
         << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author] [--ui-root <ui-root>] [--init-trigger <name> --init-code <jass-line> ...] [--add-file <member> <file> ...]\n"
         << "war3-map-cli map-test <map.w3x> <war3-root> <helper-dir> [--ydwe <root>] [--lua-engine owned|ydwe] [--no-hot-reload] [--stop] [--seconds N] [--reload-after <seconds> <module> <file> ...] [--hidden] [--cloaked] [--background-play] [--press-space] [--screenshot-after <seconds> <out.tga> ...] [--click-after <seconds> <ui-x> <ui-y> ...] [--key-after <seconds> <key[+key]> ...] [--close-after <seconds>] [--exit-timeout <seconds>]\n"
@@ -155,7 +156,7 @@ void PrintUsage() {
         << "war3-map-cli wct-source-chunk <wct-file> <member-sha256> <global|block-index> <byte-offset> <limit-1..65536>\n"
         << "war3-map-cli trigger-roundtrip <ydwe-root> <war3map.wtg> <war3map.wct>\n"
         << "war3-map-cli ui-library-inspect <ydwe-root> [<war3map.wtg> <war3map.wct>]\n"
-        << "war3-map-cli script-build <ydwe-root> <war3-root> <map> <out.j> [--compile <work-dir> [--external|--cross-check]]\n"
+        << "war3-map-cli script-build <ydwe-root> <war3-root> <map> <out.j> [--compile <work-dir> [--external|--cross-check|--in-process-only]]\n"
         << "war3-map-cli script-template <ydwe-root> <war3-root> <map> <wave-output.j> <out.j>\n"
         << "war3-map-cli object-field <war3-root> <unit|item|ability> <rawcode>\n"
         << "war3-map-cli object-model-list <war3-root> <new-models.txt>\n"
@@ -498,8 +499,8 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (command == L"script-build" && (argc == 8 || argc == 9) && std::wstring_view(argv[6]) == L"--compile") {
         const std::wstring_view engines = argc == 9 ? std::wstring_view(argv[8]) : std::wstring_view{};
-        if (!engines.empty() && engines != L"--external" && engines != L"--cross-check") {
-            std::cerr << "script-build: 未知选项（可用 --external、--cross-check）\n";
+        if (!engines.empty() && engines != L"--external" && engines != L"--cross-check" && engines != L"--in-process-only") {
+            std::cerr << "script-build: 未知选项（可用 --external、--cross-check、--in-process-only）\n";
             return 1;
         }
         return RunScriptBuild(argv[2], argv[3], argv[4], argv[5], std::filesystem::path(argv[7]), engines);

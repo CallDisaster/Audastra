@@ -130,6 +130,8 @@ struct MapEditSaveRequest {
     // 仅可信宿主提供，不接受客户端函数或脚本。保存链在实际发布前再次复核。
     std::function<Status()> beforePublish;
     std::optional<ParsedTriggerCodeIdentityEdit> triggerCodeIdentity;
+    // 本次调用显式限制编译后端；普通保存沿用工具链配置和外部回退。
+    bool inProcessOnly = false;
 };
 
 struct MapEditMemberReceipt {
@@ -182,6 +184,7 @@ struct MapEditSaveReceipt {
     // 归档保存链返回不透明成员的身份；调用方不必另行提取这些成员。
     std::vector<MapEditOpaqueMemberReceipt> opaqueScriptMembers;
     std::optional<Trigger::TriggerGraphEditReceipt> codeIdentityGraph;
+    bool inProcessOnly = false;
 };
 
 // 接受一种有界领域操作，或同源的完整触发器与物编封印事务；旧触发器批次不能混用。

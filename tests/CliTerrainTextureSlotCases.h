@@ -10,6 +10,7 @@ void TerrainTextureSlotCliActuallySaves() {
         fixture.source = P::Take(source.SaveCandidate(fixture.root / "opaque-source.w3x", opaque));
     }
     auto request = fixture.Request("direct-cli");
+    Require(!request.inProcessOnly, "ordinary save request preserves configured fallback by default");
     request.terrainStrokes = {P::Command(true, M::TerrainTextureTable::Ground, 1, "", "Tg02"),
         P::Command(false, M::TerrainTextureTable::Ground, 1, "Tg02", "Tg03"),
         P::Command(true, M::TerrainTextureTable::Cliff, 1, "", "Cl02")};
@@ -22,7 +23,7 @@ void TerrainTextureSlotCliActuallySaves() {
         L"--terrain-slot-append", L"cliff", L"1", L"Cl02"};
     const auto saved = Invoke(args);
     if (saved.exitCode != 0) throw std::runtime_error(saved.error);
-    Require(saved.output.find("script_backend_policy=in_process_only") != std::string::npos
+    Require(saved.output.find("script_backend_policy=configured") != std::string::npos
         && saved.output.find("opaque_script_member_count=1") != std::string::npos
         && saved.output.find("opaque_script_member_0=x.ai") != std::string::npos,
         "CLI reports backend policy and opaque identity without extracting script contents");
@@ -30,6 +31,14 @@ void TerrainTextureSlotCliActuallySaves() {
     auto actual = P::Take(War3Map::MapArchiveSession::Open(candidate));
     for (const char* member : {"war3map.w3e", "war3map.wpm", "war3map.w3i", "war3map.doo", "unchanged.bin"})
         Require(P::Take(expected.ReadMember(member)) == P::Take(actual.ReadMember(member)), "CLI/common-service saved native members agree");
+    auto isolated = args;
+    isolated[7] = (fixture.root / "cli-isolated.w3x").wstring();
+    isolated.push_back(L"--in-process-only");
+    const auto isolatedSaved = Invoke(isolated);
+    Require(isolatedSaved.exitCode == 0 && isolatedSaved.output.find("script_backend_policy=in_process_only") != std::string::npos,
+        "explicit CLI flag is propagated into the shared receipt");
+    isolated.push_back(L"--in-process-only");
+    Rejected(Invoke(isolated), "cannot be repeated");
     args[7] = (fixture.root / "cli-stale.w3x").wstring(); args.back() = L"Miss";
     Require(Invoke(args).exitCode != 0 && !std::filesystem::exists(fixture.root / "cli-stale.w3x"), "CLI failure cannot save a prefix");
     Require(P::Take(War3Map::Sha256File(fixture.source.path)) == fixture.source.sha256, "CLI source unchanged");

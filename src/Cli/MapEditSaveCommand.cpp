@@ -393,7 +393,10 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
-        if (flag == L"--trigger-code-edit-file") {
+        if (flag == L"--in-process-only") {
+            if (request.inProcessOnly) return Invalid("--in-process-only cannot be repeated");
+            request.inProcessOnly = true; ++index;
+        } else if (flag == L"--trigger-code-edit-file") {
             if (index + 1 >= argc || request.triggerCodeIdentity) return Invalid("代码身份编辑需要唯一JSON文件参数。");
             const auto bytes = IO::ReadFileBytes(argv[index + 1], 65536);
             if (!bytes.Succeeded()) { PrintDiagnostics(bytes.diagnostics); return 1; }
@@ -707,7 +710,8 @@ int RunMapEditSave(int argc, wchar_t** argv) {
                   << "\nedited_member_" << index << "_original_sha256=" << member.originalSha256
                   << "\nedited_member_" << index << "_saved_sha256=" << member.savedSha256;
     }
-    std::cout << "\nscript_backend_policy=in_process_only\nopaque_script_member_count=" << receipt.opaqueScriptMembers.size();
+    std::cout << "\nscript_backend_policy=" << (receipt.inProcessOnly ? "in_process_only" : "configured")
+              << "\nopaque_script_member_count=" << receipt.opaqueScriptMembers.size();
     for (std::size_t index = 0; index < receipt.opaqueScriptMembers.size(); ++index) {
         const auto& member = receipt.opaqueScriptMembers[index];
         const auto prefix = "\nopaque_script_member_" + std::to_string(index);
