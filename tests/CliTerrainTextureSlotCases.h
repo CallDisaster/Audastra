@@ -54,7 +54,7 @@ void TerrainTextureSlotCliActuallySaves() {
             L"--in-process-only", L"--terrain-slot-append", L"ground", L"1", L"Tg02"};
         const auto savedMissing = Invoke(create);
         if (savedMissing.exitCode != 0) throw std::runtime_error(savedMissing.error);
-        Require(savedMissing.output.find("TERRAIN_SAVE_GENERATED_MISSING_WPM") != std::string::npos,
+        Require(savedMissing.error.find("TERRAIN_SAVE_GENERATED_MISSING_WPM") != std::string::npos,
             "CLI exposes first WPM generation from an exact missing source");
         const auto created = P::Take(War3Map::MapArchiveSession::Open(target));
         Require(!original.HasOpaqueMembers() && !P::Take(War3Map::MapArchiveSession::Open(missing.source.path)).HasMember("war3map.wpm")
