@@ -270,7 +270,7 @@ void TestAiTextSources() {
         return Result<PreprocessIncludeContent>::Success({true,
             path.filename() == "nested.j" ? "#include \"sub/../x.AI\"\n" : "legal_j\n"});
     };
-    for (const auto* name : {"x.ai", "sub/../x.AI", "sub\\..\\x.aI", "x.ai. "}) {
+    for (const auto* name : {"x.ai", "sub/../x.AI", "sub\\..\\x.aI", "x.ai. ", "x.ai::$DATA"}) {
         const auto beforePolicy = policyCalls;
         const auto result = Run("#include \"" + std::string(name) + "\"\n", options, nullptr, root);
         Require(!result.Succeeded() && HasCode(result, "SCRIPT_INCLUDE_AI_UNSUPPORTED") && aiReads == 0

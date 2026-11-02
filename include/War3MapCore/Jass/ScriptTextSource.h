@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <string>
 #include <string_view>
 
 namespace War3Map::Jass {
@@ -11,6 +12,8 @@ namespace War3Map::Jass {
     auto name = path.generic_u8string();
     std::replace(name.begin(), name.end(), u8'\\', u8'/');
     auto normalized = std::filesystem::path(name).lexically_normal().filename().u8string();
+    // Windows 数据流别名仍属于同一个宿主文件，不能借流名改变扩展名判定。
+    if (const auto stream = normalized.find(u8':'); stream != std::u8string::npos) normalized.resize(stream);
     while (!normalized.empty() && (normalized.back() == u8'.' || normalized.back() == u8' ')) normalized.pop_back();
     const auto dot = normalized.rfind(u8'.');
     if (dot == std::u8string::npos) return false;
