@@ -176,6 +176,45 @@ bool ScriptAuditMember(std::string_view name) {
 }
 } // namespace
 
+struct ArchiveExactReadLease {
+    FileHandle file;
+    std::filesystem::path path;
+    std::string sha256;
+    std::uint32_t volume;
+    std::uint64_t id;
+    ArchiveExactReadLease(const std::filesystem::path& source, const std::string& sha,
+        std::uint32_t serial, std::uint64_t fileId)
+        : file(CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)), path(source), sha256(sha), volume(serial), id(fileId) {}
+    bool Matches(const std::filesystem::path& source, const std::string& sha,
+        std::uint32_t serial, std::uint64_t fileId) const {
+        return file.Valid() && SamePath(path, source) && sha256 == sha && volume == serial && id == fileId;
+    }
+};
+
+Status MapArchiveSession::PinSourceForExactCaptures() {
+    try {
+        if (exactReadLease_) {
+            if (!exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
+                return Status::Failure("MapArchiveSession", "SOURCE_LEASE_MISMATCH", "来源固定租约与会话身份不符。");
+            return VerifyIdentity(exactReadLease_->file.Get(), volumeSerial_, fileId_);
+        }
+        auto lease = std::make_shared<ArchiveExactReadLease>(sourcePath_, sourceSha256_, volumeSerial_, fileId_);
+        if (!lease->file.Valid())
+            return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法在本次候选保存期间只读固定来源。");
+        const auto verified = VerifyHandle(lease->file.Get(), volumeSerial_, fileId_, sourceSha256_);
+        if (!verified.Succeeded()) return verified;
+        const auto path = FinalPath(lease->file.Get());
+        if (!path.Succeeded()) return {path.diagnostics};
+        if (!SamePath(*path.value, sourcePath_))
+            return Status::Failure("MapArchiveSession", "SOURCE_REPLACED", "来源固定租约的实际路径已改变。");
+        exactReadLease_ = std::move(lease);
+        return Status::Ok();
+    } catch (const std::exception&) {
+        return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法建立来源固定租约，未复用来源证明。");
+    }
+}
+
 Result<MapArchiveSession> MapArchiveSession::Open(const std::filesystem::path& path, const ProjectSaveControl* control) {
     return OpenImpl(path, control, false);
 }
@@ -332,7 +371,12 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         FileHandle source(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!source.Valid()) return fail("SOURCE_LEASE_FAILED", "源归档不可读取或正在被外部写入。");
-        const auto verified = VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_);
+        // 只有显式固定、仍存活的同一文件租约可复用已完整散列的来源证明。
+        // 新句柄仍核对卷/文件ID和实际路径；目录、预算与每个正文比较不变。
+        if (exactReadLease_ && !exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
+            return fail("SOURCE_LEASE_MISMATCH", "精确捕获的固定租约与来源不符。");
+        const auto verified = exactReadLease_ ? VerifyIdentity(source.Get(), volumeSerial_, fileId_)
+            : VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_);
         if (!verified.Succeeded()) return ForwardFailure<Output>(verified.diagnostics);
         auto sourcePath = FinalPath(source.Get());
         if (!sourcePath.Succeeded()) return ForwardFailure<Output>(std::move(sourcePath.diagnostics));
@@ -701,7 +745,14 @@ Result<MapArchiveSession> MapArchiveSession::AfterSave(const ArchiveSaveResult& 
         if (*sha.value != written.sha256) return Result<MapArchiveSession>::Failure(
             "MapArchiveSession", "SAVED_FILE_CHANGED", "保存结果的 SHA-256 与写出时不同，请重新打开地图。");
         // 匿名成员保留路径的清单与表来自源归档，校验实际产物后按新文件重建会话。
-        if (opaqueMembers_) return Open(written.path);
+        if (opaqueMembers_) {
+            auto next = Open(written.path);
+            if (next.Succeeded() && next.value && exactReadLease_) {
+                const auto pinned = next.value->PinSourceForExactCaptures();
+                if (!pinned.Succeeded()) return ForwardFailure<MapArchiveSession>(pinned.diagnostics);
+            }
+            return next;
+        }
         auto opened = Mpq::MpqArchive::OpenReadOnlyHandle(file.Get(), *path.value, OpenLimits());
         if (!opened.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(opened.diagnostics));
         auto inventory = opened.value->ListFilesStrict();
@@ -724,6 +775,10 @@ Result<MapArchiveSession> MapArchiveSession::AfterSave(const ArchiveSaveResult& 
         session.fileId_ = FileId(info);
         session.prefix_ = prefix_;
         session.listfile_ = std::move(*listfile.value);
+        if (exactReadLease_) {
+            const auto pinned = session.PinSourceForExactCaptures();
+            if (!pinned.Succeeded()) return ForwardFailure<MapArchiveSession>(pinned.diagnostics);
+        }
         return Result<MapArchiveSession>::Success(std::move(session));
     } catch (const std::exception&) {
         return Result<MapArchiveSession>::Failure("MapArchiveSession", "SNAPSHOT_FAILED", "建立保存后的会话失败。");

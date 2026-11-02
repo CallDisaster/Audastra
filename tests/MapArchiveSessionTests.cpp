@@ -330,6 +330,7 @@ void TestExactMemberCaptureDistinguishesOpaqueMissingAndEmpty() {
         Require(!session.value->DescribeExactMemberIdentities(expected, names).value, "invalid or stale expected source cannot describe members");
     const std::vector<std::vector<std::string>> invalid{{"known.bin", "KNOWN.BIN"},
         {"a/b", "a\\b"}, {"../x"}, {"(listfile)"}, {"(attributes)"}, {"(signature)"}};
+    Require(session.value->PinSourceForExactCaptures().Succeeded(), "pin the opaque source for bounded capture checks");
     for (const auto& request : invalid) Require(!session.value->CaptureExactMembers(request).value,
         "unsafe duplicate or reserved query must not produce a partial capture");
     ArchiveExactMemberLimits limits;
@@ -362,6 +363,50 @@ void TestExactMemberCaptureDistinguishesOpaqueMissingAndEmpty() {
         "empty contents have their standard SHA-256, distinct from unknown Missing identity");
     RequireSuccess(complete.value->CaptureExactMembers(std::vector<std::string>{"war3map.j"}),
         "complete named archive uses the same exact capture path");
+}
+
+void TestExactCaptureLeaseIsOwnedAndKeepsRealReadback() {
+    TempDirectory directory;
+    const auto source = CreateSource(directory);
+    auto pinned = MapArchiveSession::Open(source);
+    RequireSuccess(pinned, "open capture lease source");
+    auto unpinned = *pinned.value;
+    Require(pinned.value->PinSourceForExactCaptures().Succeeded(), "hash and pin the actual source");
+    const auto writerBlocked = [](const std::filesystem::path& path) {
+        const auto writer = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        const auto error = GetLastError();
+        if (writer != INVALID_HANDLE_VALUE) CloseHandle(writer);
+        return writer == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION;
+    };
+    {
+        auto copy = *pinned.value;
+        pinned.value.reset();
+        Require(writerBlocked(source), "copied snapshot retains the no-write source lease");
+        const auto actual = copy.CaptureExactMembers(std::vector<std::string>{"war3map.j", "absent.bin"});
+        RequireSuccess(actual, "pinned capture still reads exact actual members");
+        Require(actual.value->front().bytes == Bytes("existing-script") && !actual.value->back().present,
+            "lease preserves exact bytes and true negative presence");
+        const auto inPlace = copy.SaveInPlace({});
+        Require(!inPlace.Succeeded() && inPlace.diagnostics.front().code == "SOURCE_CAPTURE_LEASE_ACTIVE",
+            "candidate-only capture lease rejects in-place replacement before side effects");
+        const auto candidate = copy.SaveCandidate(directory.Path() / "leased.w3x", {});
+        RequireSuccess(candidate, "leased source saves through the normal complete verification path");
+        auto next = copy.AfterSave(*candidate.value, {});
+        RequireSuccess(next, "saved source is truly hashed before acquiring its own readback lease");
+        Require(writerBlocked(candidate.value->path), "saved readback source cannot change between exact checks");
+        RequireSuccess(next.value->CaptureExactMembers(std::vector<std::string>{"war3map.j"}), "read actual saved member under its lease");
+        auto forged = *candidate.value; forged.sha256.front() = forged.sha256.front() == '0' ? '1' : '0';
+        Require(!copy.AfterSave(forged, {}).Succeeded(), "pinned source does not bypass actual saved archive SHA verification");
+    }
+    {
+        std::ofstream changed(source, std::ios::binary | std::ios::app);
+        changed.put('\0');
+        Require(changed.good(), "last owned lease releases the source for an external change");
+    }
+    Require(!unpinned.PinSourceForExactCaptures().Succeeded(), "new lease must hash again and reject a changed source");
+    Require(!unpinned.CaptureExactMembers(std::vector<std::string>{"war3map.j"}).Succeeded(),
+        "failed pin cannot leave a reusable digest behind");
 }
 
 // 手工构造的原创归档：哈希项 locale/platform 字段取给定值，(attributes) 与 (signature)
@@ -1035,6 +1080,7 @@ int main() {
         TestIncompleteListAndTrailingData();
         TestOpaqueMemberPreservedByAppendOnlyPatch();
         TestExactMemberCaptureDistinguishesOpaqueMissingAndEmpty();
+        TestExactCaptureLeaseIsOwnedAndKeepsRealReadback();
         TestReservedPlatformByteAndMetadataMembers();
         TestProjectWriterAndInvalidPrefix();
         TestSaveInPlaceReplacesSourceAndKeepsBackup();

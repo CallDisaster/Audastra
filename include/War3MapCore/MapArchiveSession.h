@@ -3,6 +3,7 @@
 #include "War3MapCore/Types.h"
 
 #include <chrono>
+#include <memory>
 #include <span>
 #include <stop_token>
 #include <string_view>
@@ -10,6 +11,7 @@
 namespace War3Map {
 
 class ProjectSaveControl;
+struct ArchiveExactReadLease;
 
 struct MemberReplacement {
     std::string name;
@@ -120,6 +122,10 @@ public:
     // 不读取脚本或可执行导入，不授予任何保存资格。
     [[nodiscard]] static Result<MapArchiveSession> OpenMinimapAudit(const std::filesystem::path& path);
     [[nodiscard]] Status VerifySourceUnchanged(const ProjectSaveControl* control = nullptr) const;
+    // 单次候选保存可显式固定来源：完整散列后持续持有禁止写入/删除的源句柄。
+    // 同一来源快照的副本共享租约，直到最后一份销毁；不能用于原地保存。
+    // 仅精确捕获复用此不可变来源证明，成员仍真读真比，写出/回读完整散列照旧。
+    [[nodiscard]] Status PinSourceForExactCaptures();
     [[nodiscard]] bool HasMember(std::string_view name) const;
     [[nodiscard]] Result<std::vector<std::byte>> ReadMember(std::string_view name,
         const ProjectSaveControl* control = nullptr) const;
@@ -189,6 +195,7 @@ private:
 
     std::filesystem::path sourcePath_;
     std::string sourceSha256_;
+    std::shared_ptr<const ArchiveExactReadLease> exactReadLease_;
     std::uint32_t volumeSerial_ = 0;
     std::uint64_t fileId_ = 0;
     std::vector<std::byte> prefix_;

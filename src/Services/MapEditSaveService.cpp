@@ -696,6 +696,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (source.SourceSha256() != request.expectedSourceSha256) {
             return Fail("SAVE_SOURCE_STALE", "源归档 SHA-256 与编辑请求不符，请重新获取数据快照。");
         }
+        if (terrainRequest || shadowOnly) {
+            const auto pinned = source.PinSourceForExactCaptures();
+            if (!pinned.Succeeded()) return Forward(pinned.diagnostics);
+        }
         // 旧的显式 missing-only 入口必须在编辑/脚本准备前拒绝已有成员，
         // 包括 present-empty；最终派生阶段仍会再次核验，不能先写再发现冲突。
         if (request.minimapChoice == TerrainMinimapSaveChoice::GenerateMissingGroundOnly
