@@ -821,7 +821,15 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 
 #include "TerrainBridgeStateOracle.h"
 #include "TerrainSourcePathingAudit.h"
+#include "TerrainTemplateObjectAudit.h"
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 7 && std::wstring_view(argv[1]) == L"--template-object-source-audit") {
+        try {
+            const std::wstring wideExpected(argv[3]);
+            return AuditTerrainTemplateObjects(std::filesystem::path(argv[2]), std::string(wideExpected.begin(), wideExpected.end()),
+                std::filesystem::path(argv[4]), std::filesystem::path(argv[5]), std::filesystem::path(argv[6]));
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     if (argc == 5 && std::wstring_view(argv[1]) == L"--terrain-pathing-bit-oracle-input") {
         try {
             const std::wstring wideExpected(argv[3]);
