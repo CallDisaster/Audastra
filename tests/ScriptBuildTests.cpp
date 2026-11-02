@@ -397,14 +397,12 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
     const auto disabledEmpty = CompileMapScript("function main takes nothing returns nothing\nendfunction\n", options, {});
     Require(disabledEmpty.Succeeded() && validated == 0 && disabledEmpty.injectedSourceSha256.empty(),
         "disabled runtime does not select client dependency");
-    // 只验证回退选择；绑定路径后移除占位，避免系统尝试解释无效映像。
-    WriteText(tool / "compiler/jasshelper/clijasshelper.exe", "original inert fixture");
-    WriteText(tool / "compiler/pjass/pjass-latest.exe", "original inert fixture");
-    const auto fallbackLayout = ResolveScriptToolchainLayout({tool,24,127});
-    Require(fallbackLayout.Succeeded(), "fallback fixture binds actual available tool paths");
-    options.layout = std::make_shared<const ScriptToolchainLayout>(*fallbackLayout.value);
-    Require(std::filesystem::remove(fallbackLayout.value->jassHelperExecutable)
-        && std::filesystem::remove(fallbackLayout.value->pjassExecutable), "fixture tools removed before any launch attempt");
+    // 只验证选择策略：原创布局声明两个不存在的可执行路径，启动必定失败。
+    // 基础输入及缺失文件身份仍由真实布局捕获/核对，不执行系统对无效映像的处理。
+    auto fallbackLayout = *layout.value;
+    fallbackLayout.jassHelperExecutable = tool / "compiler/jasshelper/clijasshelper.exe";
+    fallbackLayout.pjassExecutable = tool / "compiler/pjass/pjass-latest.exe";
+    options.layout = std::make_shared<const ScriptToolchainLayout>(std::move(fallbackLayout));
     const auto unsupported = "//! import \"unimplemented-fixture.j\"\nfunction main takes nothing returns nothing\nendfunction\n";
     options.workDir = root / "default-fallback";
     Require(!options.inProcessOnly, "toolchain default allows configured external fallback");
