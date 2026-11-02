@@ -260,6 +260,41 @@ void ExplicitNonNumericAngleMarker() {
          {"C001", "1", "Fixture/Caster", "2", "1.25", "-", "-1", "0"}});
     Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_FIELD");
 }
+void Fixed270PreservesActualPlacementPose() {
+    Fixture f;
+    const auto original = f.Capture();
+    const auto table = [](std::string rotation) {
+        return Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats"},
+            {{"N001", "0", "_", "0", "1", "0", "0", "-1", "0"},
+             {"C001", "1", "Fixture/Caster", "2", "1.25", "0", "0", std::move(rotation), "0"}});
+    };
+    std::vector<MemberReplacement> output{{"Doodads/Doodads.slk", table("270")}};
+    const auto owner = f.Capture(output);
+    Require(owner->Casters().size() == 2, "270度标准角不应丢失模型实例");
+    for (std::size_t index = 0; index < owner->Casters().size(); ++index) {
+        const auto& caster = owner->Casters()[index];
+        Require(caster.fixedRotation == 270 && caster.placement.rotation == 0.75f
+            && caster.nativeMatrix == original->Casters()[index].nativeMatrix,
+            "固定字段不能覆盖或叠加实际摆放角；零倾斜矩阵应与自由角同姿势");
+    }
+    Check(owner->VerifySources(*f.source, output));
+    Rejected(original->VerifySources(*f.source, output), "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
+    const auto saved = Take(f.source->SaveCandidate(f.root / "fixed-270.w3x", output));
+    Check(owner->VerifyReadback(Take(MapArchiveSession::Open(saved.path))));
+    auto placements = f.placements;
+    placements.doodads[2].rotation = 0;
+    output.push_back({"war3map.doo", Take(placements.Serialize())});
+    const auto changed = f.Capture(output);
+    Require(changed->Casters()[0].placement.rotation == 0
+        && changed->Casters()[0].nativeMatrix != owner->Casters()[0].nativeMatrix,
+        "实际摆放角改变时矩阵必须随之改变，不能被固定字段掩盖");
+    output.resize(1);
+    for (const auto& unsupported : {"0", "90", "180", "269.99997", "270.00003", "360"}) {
+        output[0].data = table(unsupported);
+        Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output),
+            "TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED");
+    }
+}
 void EmptyAndSpecialListsRemainExplicit() {
     Fixture f; DoodadPlacements empty;
     std::vector<MemberReplacement> output{{"war3map.doo", Take(empty.Serialize())}};
@@ -500,7 +535,7 @@ int main() {
     try {
         ActualClassificationAndExactInstances(); FinalViewAndPublicationIdentity(); GameWinnerAndKnownAbsence();
         ActualTilesetAndFinalTableOverrides(); UnsupportedAndCorruptAreNotEmpty(); ExplicitNonNumericAngleMarker();
-        EmptyAndSpecialListsRemainExplicit();
+        Fixed270PreservesActualPlacementPose(); EmptyAndSpecialListsRemainExplicit();
         StrictVariationAndUniqueModelLimit(); NativeTransformAndSurfaceRefusals(); LimitsCancellationAndRealSourceDrift();
         StoredAndDecodedSourceBudgets(); BoundedDependencyVerification(); BatchedDependencyVerificationPreservesEveryFact();
         std::cout << "TerrainShadowCasterResourcesTests passed\n"; return 0;

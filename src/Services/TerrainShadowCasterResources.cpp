@@ -437,7 +437,10 @@ Result<std::shared_ptr<const TerrainShadowCasterResources>> TerrainShadowCasterR
                     const auto roll = Real(doodads.Field(placement.rawcode, "maxroll"), "maxRoll", placement.rawcode);
                     const auto fixedRotation = Real(doodads.Field(placement.rawcode, "fixedrot"), "fixedRot", placement.rawcode);
                     const auto floating = Integer(doodads.Field(placement.rawcode, "floats"), "floats", placement.rawcode);
-                    if (defaultScale < 0.01f || pitch != 0 || roll != 0 || fixedRotation >= 0 || floating != 0)
+                    // 已核的270度标准字段只约束编辑朝向；零倾斜模型矩阵仍取实例摆放角。
+                    // 不把表中角度再乘进矩阵，其它非负固定角仍保留原支持边界。
+                    if (defaultScale < 0.01f || pitch != 0 || roll != 0
+                        || (fixedRotation >= 0 && fixedRotation != 270) || floating != 0)
                         Fail("TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED", "阴影模型的缩放、倾斜或固定转角不在已接通的原版变换域：" + placement.rawcode);
                     const auto count = Integer(doodads.Field(placement.rawcode, "numvar"), "numVar", placement.rawcode);
                     if (count < 1 || count > 10 || placement.variation < 0 || placement.variation >= count)
