@@ -235,10 +235,10 @@ bool RunPreprocessor(PipelineResult& result, const ToolchainOptions& options, st
         const auto utf8 = force.u8string();
         preprocess.forceIncludes.emplace_back(utf8.begin(), utf8.end());
     }
-    // 仅占位协调使用本次实际读到的包含快照；不改变 include 搜索顺序或扩大旧框架资格。
+    // 占位协调和自动化均使用实际包含快照，缺失/失败不退回默认磁盘读取。
     std::map<std::filesystem::path, Jass::PreprocessIncludeContent> includeCache;
     std::size_t capturedBytes = 0;
-    if (placeholderIncludes) {
+    if (placeholderIncludes || options.inProcessOnly) {
         preprocess.includeProvider = [&](const std::filesystem::path& candidate) -> Result<Jass::PreprocessIncludeContent> {
             const auto path = candidate.lexically_normal();
             if (const auto found = includeCache.find(path); found != includeCache.end()) {
@@ -265,7 +265,7 @@ bool RunPreprocessor(PipelineResult& result, const ToolchainOptions& options, st
                 capturedBytes += snapshot.value->bytes.size();
                 const auto& bytes = snapshot.value->bytes;
                 if (!bytes.empty()) content.text.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-                placeholderIncludes->push_back({snapshot.value->binding.path, content.text,
+                if (placeholderIncludes) placeholderIncludes->push_back({snapshot.value->binding.path, content.text,
                     snapshot.value->binding.sha256});
             }
             includeCache.emplace(path, content);
