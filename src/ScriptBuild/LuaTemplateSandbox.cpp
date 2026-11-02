@@ -485,6 +485,7 @@ Result<TemplateTransactionOutput> RunLuaTemplate(const LuaTemplateRequest& reque
         if (host.budgetExceeded) return Fail("TEMPLATE_LIMIT", Located(host, lua_type(lua, -1) == LUA_TSTRING ? lua_tostring(lua, -1) : "模板执行超过限制"));
         failure = lua_type(lua, -1) == LUA_TSTRING ? lua_tostring(lua, -1) : "模板执行失败（未知错误）";
         auto result = Fail("TEMPLATE_LUA_ERROR", "模板执行失败：" + Located(host, failure));
+        for (auto& diagnostic : host.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
         for (std::size_t i = 0; i < host.messages.size() && i < 20; ++i)
             result.diagnostics.push_back({DiagnosticSeverity::Info, std::string(kSubsystem), "TEMPLATE_PRINT", host.messages[i], {}});
         return result;

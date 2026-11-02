@@ -1185,7 +1185,7 @@ void TestRemovalPreprocessing(const std::filesystem::path& root) {
     review = query(); Require(review.Succeeded() && !review.value->complete, "missing include incomplete");
     doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"};
     review = query(); Require(review.Succeeded() && !review.value->complete
-        && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN") != std::string::npos, "AI suffix rejected before any file read");
+        && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_INCLUDE_AI_UNSUPPORTED") != std::string::npos, "AI suffix rejected before any file read");
     doc.wct.customCode = Trigger::RawText{"#if (\n#endif\n"};
     review = query(); Require(review.Succeeded() && !review.value->complete, "failed preprocessing incomplete");
     doc.wct.customCode = Trigger::RawText{"//! textmacro Original\n"};
@@ -1293,7 +1293,7 @@ void TestModernRemovalPreprocessing(const std::filesystem::path& root) {
     WriteText(map / "dep.j", "// source-directory shadow is not a save workspace\n");
     review = query(); Require(review.Succeeded() && !review.value->complete, "source-directory shadow cannot stand in for a fresh save workspace");
     doc.wct.customCode = Trigger::RawText{"#include \"opaque.AI\"\n"}; review = query();
-    Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_AUDIT_AI_INCLUDE_FORBIDDEN") != std::string::npos, "modern AI include never read");
+    Require(review.Succeeded() && !review.value->complete && review.value->individualBlocks.front().incompleteReason.find("SCRIPT_INCLUDE_AI_UNSUPPORTED") != std::string::npos, "modern AI include never read");
     std::filesystem::remove(map / "dep.j");
     doc.wct.customCode = {};
     const auto owner = Trigger::TriggerDocumentEditor::AddTrigger(doc, *category.value, "LogicalOwner"); Require(owner.Succeeded(), "logical argument owner");
