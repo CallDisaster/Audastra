@@ -303,7 +303,12 @@ void UnselectedCliffWaterSavesAndRestoresExactSource() {
     const auto plan = unexplained.Plan();
     Require(!plan.SaveGate().Succeeded() && !plan.RebuiltPathing()
         && std::any_of(plan.SaveGate().diagnostics.begin(), plan.SaveGate().diagnostics.end(), [](const auto& diagnostic) {
-            return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED" && diagnostic.message.find("(0,0)") != std::string::npos;
+            return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED" && diagnostic.message.find("(0,0)") != std::string::npos
+                && diagnostic.message.find("世界中心=(16.000000,16.000000)") != std::string::npos
+                && diagnostic.message.find("源位=") != std::string::npos
+                && diagnostic.message.find("重建位=") != std::string::npos
+                && diagnostic.message.find("保存限制位=") != std::string::npos
+                && diagnostic.message.find("差异位=4") != std::string::npos;
         }), "known sentinel conversion still requires exact independent old G0 versus source WPM agreement");
     Require(unexplained.edits->Revision() == before && unexplained.edits->IsDirty()
         && !std::filesystem::exists(unexplained.directory / "candidate.w3x"),

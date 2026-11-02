@@ -20,6 +20,21 @@ bool SameSha(std::span<const std::byte> bytes, const std::optional<std::string>&
     const auto actual = Sha256(bytes);
     return expected && actual.Succeeded() && actual.value && *actual.value == *expected;
 }
+std::string UnexplainedCell(const TerrainHeader& header, std::size_t index, std::byte actual,
+    std::byte generated, std::byte saved, bool resize = false) {
+    const auto width = (header.width - 1) * 4;
+    const auto x = index % width, y = index / width;
+    const auto source = actual & std::byte{0xee};
+    return std::string(resize ? "扩裁物理源通行格(" : "源通行格(") + std::to_string(x) + "," + std::to_string(y)
+        + ")无法由当前原版规则及已保存限制解释，世界中心=("
+        + std::to_string(static_cast<double>(header.offset[0]) + (x + .5) * 32) + ","
+        + std::to_string(static_cast<double>(header.offset[1]) + (y + .5) * 32)
+        + ")，源位=" + std::to_string(std::to_integer<unsigned>(source))
+        + "，重建位=" + std::to_string(std::to_integer<unsigned>(generated))
+        + "，保存限制位=" + std::to_string(std::to_integer<unsigned>(saved))
+        + "，差异位=" + std::to_string(std::to_integer<unsigned>(source ^ (generated | saved)))
+        + "；保留原图，请核对外部通行修改或尚未支持的对象规则。";
+}
 }
 
 Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEditSession& edits,
@@ -200,15 +215,11 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
             // 完整逐格验证同一来源和savedS；任意额外位继续走原拒绝。
             if (explainsSource(*original.value)) resource.nativeLoadedSpecialCache_ = true;
         }
-        const auto width = (edits.terrainOriginal_->header.width - 1) * 4;
         for (std::size_t i = 0; i < cells; ++i) {
             const auto expected = (*original.value)[i] | savedIntent[i];
             if ((oldWpm[i + 16] & std::byte{0xee}) != expected)
                 return Output::Failure(kSubsystem, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
-                    "源通行格(" + std::to_string(i % width) + "," + std::to_string(i / width)
-                    + ")无法由当前原版规则及已保存限制解释，差异位="
-                    + std::to_string(std::to_integer<unsigned>((oldWpm[i + 16] & std::byte{0xee}) ^ expected))
-                    + "；保留原图，请核对外部通行修改或尚未支持的对象规则。");
+                    UnexplainedCell(edits.terrainOriginal_->header, i, oldWpm[i + 16], (*original.value)[i], savedIntent[i]));
         }
     }
     auto generated = captured.value->GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
@@ -278,12 +289,10 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildResizePathing(const MapDa
             return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "扩裁G0与物理旧WPM或savedS不属于同一形状。");
         if (!reserve(generated.value->size()))
             return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "扩裁旧通行核对超过保存预算。");
-        const auto width = (edits.terrainOriginal_->header.width - 1) * 4;
         for (std::size_t i = 0; i < oldCells; ++i) {
             if ((oldWpm[i + 16] & std::byte{0xee}) != ((*generated.value)[i] | savedIntent[i]))
                 return Output::Failure(kSubsystem, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
-                    "扩裁物理源通行格(" + std::to_string(i % width) + "," + std::to_string(i / width)
-                    + ")不能由真实旧规则及保存意图重现；保留源图。");
+                    UnexplainedCell(edits.terrainOriginal_->header, i, oldWpm[i + 16], (*generated.value)[i], savedIntent[i], true));
         }
     }
     auto generated = resources.GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
