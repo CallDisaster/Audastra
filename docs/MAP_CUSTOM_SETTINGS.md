@@ -53,6 +53,8 @@ war3-map-cli map-edit-save <source> <source-sha256> - <tool-root> <game-root> <n
 
 commands.json 是严格 UTF-8 对象，包含 `expected_member_sha256` 和 `operations` 数组。独立 MCP `save_map_edit_candidate` 对应参数为 `expected_settings_sha256` 和结构化 `settings_custom_edits` 数组，不读取客户端命令文件路径。这一独立入口一次只接受一个领域；其它编辑通过活动工程的共用会话累积后正常保存。
 
+该 CLI 请求默认按工具链配置编译；需要只使用内置后端时，可另外追加 `--in-process-only`，只影响本次调用。内置链拒绝文本包含 `.ai`，不透明地图成员仍按正常保存规则保留，详见[脚本编译说明](SCRIPT_BUILD.md)。
+
 两者都绑定源图 SHA，经现有脚本生成、检查、最终派生资源检查和独立归档回读；不允许传 W3I/脚本字节、任意成员路径或自报物编验证标记。保存前会重新验证实际物编来源，失败、源漂移或 no-op 不产生新候选；源图保持不变。
 
 ## 随机初始化范围
