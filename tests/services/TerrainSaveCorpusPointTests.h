@@ -50,7 +50,7 @@ nlohmann::json Describe(const War3Map::MapData::TerrainGridSnapshot& grid, const
         throw std::runtime_error("corpus description requires the same complete terrain and selected point");
     const auto& vertex = grid.vertices[std::size_t(point.y) * grid.header.width + point.x];
     const auto slot = vertex.CliffTextureIndex();
-    const bool palette = !grid.header.cliffTilesets.empty() && grid.header.cliffTilesets.size() <= 15;
+    const bool palette = !grid.header.cliffTilesets.empty();
     const bool available = palette && (slot == 15 || slot < grid.header.cliffTilesets.size());
     return {{"eligible", true}, {"x", point.x}, {"y", point.y}, {"texture", point.texture},
         {"world_x", double(grid.header.offset[0]) + point.x * 128.0},
