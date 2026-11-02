@@ -228,6 +228,11 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
                         + UnexplainedCell(edits.terrainOriginal_->header, firstDifference,
                             oldWpm[firstDifference + 16], immediate, savedIntent[firstDifference], SourceCellContext::RecognizedCache));
                 resource.nativeLoadedSpecialCache_ = true;
+            } else {
+                // 缓存资格失败时仍定位即时重建的首个差异，不把缓存缺少的特殊贡献当成根因。
+                return Output::Failure(kSubsystem, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
+                    UnexplainedCell(edits.terrainOriginal_->header, firstDifference,
+                        oldWpm[firstDifference + 16], immediate, savedIntent[firstDifference]));
             }
         }
         for (std::size_t i = 0; i < cells; ++i) {

@@ -1290,6 +1290,20 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     const auto invalid = saveGate(TerrainPathingSave::PrepareForSave(*corrupt.archive, *corrupt.edits, corrupt.gameRoot));
     Require(!invalid.Succeeded() && HasCode(invalid, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
         "even one unexplained source bit rejects the alternative full-grid cache");
+    Require(std::any_of(invalid.diagnostics.begin(), invalid.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED"
+            && diagnostic.message.find("源通行格(0,0)") != std::string::npos
+            && diagnostic.message.find("重建位=64") != std::string::npos;
+    }), "failed cache qualification reports the immediate generator byte at its first mismatch");
+    Fixture mixed; prepare(mixed);
+    mixed.Member("war3map.wpm")[16 + 8 * 32 + 8] = std::byte{0x11}; mixed.Open();
+    paint(mixed, 768, 768);
+    const auto mixedFailure = saveGate(TerrainPathingSave::PrepareForSave(*mixed.archive, *mixed.edits, mixed.gameRoot));
+    Require(std::any_of(mixedFailure.diagnostics.begin(), mixedFailure.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_PATHING_SOURCE_UNEXPLAINED"
+            && diagnostic.message.find("源通行格(9,8)") != std::string::npos
+            && diagnostic.message.find("重建位=8") != std::string::npos;
+    }), "mixed source refuses at immediate mismatch 9,8 rather than cache mismatch 8,8");
     Fixture water; prepare(water, false); water.Paint();
     Require(water.edits->IsDirty(), "water rejection fixture must contain a real existing-water height change");
     Require(!saveGate(TerrainPathingSave::PrepareForSave(*water.archive, *water.edits, water.gameRoot)).Succeeded(),
