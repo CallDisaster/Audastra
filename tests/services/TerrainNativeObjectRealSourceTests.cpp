@@ -892,8 +892,7 @@ int wmain(int argc, wchar_t** argv) {
             const auto selected = TerrainSaveCorpus::Select(*terrain.Snapshot());
             Check(archive.VerifySourceUnchanged());
             if (!selected) { std::cout << "{\"eligible\":false,\"code\":\"NO_ELIGIBLE_POINT\"}\n"; return 0; }
-            std::cout << "{\"eligible\":true,\"x\":" << selected->x << ",\"y\":" << selected->y
-                      << ",\"texture\":\"" << selected->texture << "\"}\n";
+            std::cout << TerrainSaveCorpus::Describe(*terrain.Snapshot(), *selected).dump() << '\n';
             return 0;
         } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     }
