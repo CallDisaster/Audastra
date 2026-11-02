@@ -12,7 +12,10 @@ int AuditTerrainSourcePathing(const std::filesystem::path& path, const std::stri
     const auto before = *Take(ParseMapTerrain(terrainBytes)).Snapshot();
     const auto rules = Take(TerrainPathingSave::CaptureNative(source, before, before, game, kSaveBytes));
     const auto native = Take(rules.GenerateNative(before, kSaveBytes));
-    const auto old = Take(source.ReadMember("war3map.wpm"));
+    const std::array<std::string, 1> pathingName{"war3map.wpm"};
+    const auto capturedPathing = Take(source.CaptureExactMembers(pathingName));
+    Require(capturedPathing.front().present, "source pathing audit requires an actual WPM");
+    const auto& old = capturedPathing.front().bytes;
     Require(old.size() == native.size() + 16, "source WPM dimensions differ from generated grid");
     std::filesystem::create_directories(output);
     auto generated = old;
@@ -60,7 +63,8 @@ int AuditTerrainSourcePathing(const std::filesystem::path& path, const std::stri
     if (source.HasMember("war3mapUnits.doo"))
         nearbyUnits = nearby(Take(ParseUnitPlacements(Take(source.ReadMember("war3mapUnits.doo")))).units);
     nlohmann::json memberDigests = nlohmann::json::object();
-    for (const auto member : {"war3map.w3e", "war3map.wpm", "war3map.doo", "war3mapUnits.doo", "war3map.w3b", "war3map.w3d"})
+    memberDigests["war3map.wpm"] = Take(Sha256(old));
+    for (const auto member : {"war3map.w3e", "war3map.doo", "war3mapUnits.doo", "war3map.w3b", "war3map.w3d"})
         if (source.HasMember(member)) memberDigests[member] = Take(Sha256(Take(source.ReadMember(member))));
     Check(source.VerifySourceUnchanged());
     const auto report = nlohmann::json{{"source_sha256", expected}, {"source_unchanged", true},
