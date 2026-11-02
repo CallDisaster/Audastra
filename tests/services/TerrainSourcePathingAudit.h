@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json.hpp>
+#include "TerrainFootprintPointAudit.h"
 
 // 只读生成诊断G0，不授予保存资格；不将不可解释的旧WPM替换进地图。
 int AuditTerrainSourcePathing(const std::filesystem::path& path, const std::string& expected,
@@ -67,10 +68,12 @@ int AuditTerrainSourcePathing(const std::filesystem::path& path, const std::stri
     for (const auto member : {"war3map.w3e", "war3map.doo", "war3mapUnits.doo", "war3map.w3b", "war3map.w3d"})
         if (source.HasMember(member)) memberDigests[member] = Take(Sha256(Take(source.ReadMember(member))));
     Check(source.VerifySourceUnchanged());
+    const auto pointAudit = samples.empty() || !source.HasMember("war3map.doo") ? nlohmann::json(nullptr)
+        : AuditFootprintPoint(source, before, game, samples.front().at("x"), samples.front().at("y"));
     const auto report = nlohmann::json{{"source_sha256", expected}, {"source_unchanged", true},
         {"width", width}, {"height", (before.header.height - 1) * 4},
         {"differences", differences}, {"samples", samples}, {"nearby_doodads", nearbyDoodads},
-        {"nearby_units", nearbyUnits}, {"member_sha256", memberDigests}, {"map_written", false}}.dump(2);
+        {"nearby_units", nearbyUnits}, {"point_audit", pointAudit}, {"member_sha256", memberDigests}, {"map_written", false}}.dump(2);
     Check(IO::WriteFileBytes(output / "report.json", std::as_bytes(std::span(report))));
     std::cout << report << '\n'; return 0;
 }
