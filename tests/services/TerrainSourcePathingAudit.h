@@ -5,7 +5,9 @@
 int AuditTerrainSourcePathing(const std::filesystem::path& path, const std::string& expected,
     const std::filesystem::path& game, const std::filesystem::path& output) {
     Require(!std::filesystem::exists(output), "fresh source audit directory required");
-    const auto source = OpenOracleSource(path, expected);
+    // 复用固定成员只读快照与有界资源延迟读取，不为诊断展开脚本或不透明引导成员。
+    const auto source = Take(MapArchiveSession::OpenMinimapAudit(path));
+    Require(expected.size() == 64 && source.SourceSha256() == expected, "source pathing audit identity differs");
     const auto terrainBytes = Take(source.ReadMember("war3map.w3e"));
     const auto before = *Take(ParseMapTerrain(terrainBytes)).Snapshot();
     const auto rules = Take(TerrainPathingSave::CaptureNative(source, before, before, game, kSaveBytes));
