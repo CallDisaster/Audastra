@@ -32,10 +32,41 @@ int AuditTerrainSourcePathing(const std::filesystem::path& path, const std::stri
             {"source", std::to_integer<unsigned>(actual)}, {"generated", std::to_integer<unsigned>(native[i])},
             {"difference", std::to_integer<unsigned>(actual ^ native[i])}});
     }
+    nlohmann::json nearbyDoodads = nlohmann::json::array(), nearbyUnits = nlohmann::json::array();
+    const auto nearby = [&](const auto& placements) {
+        nlohmann::json result = nlohmann::json::array();
+        if (samples.empty()) return result;
+        const double x = samples.front().at("world_x"), y = samples.front().at("world_y");
+        std::vector<std::pair<double, std::size_t>> order;
+        order.reserve(placements.size());
+        for (std::size_t index = 0; index < placements.size(); ++index) {
+            const auto& item = placements[index];
+            Require(std::isfinite(item.position[0]) && std::isfinite(item.position[1]), "audit placement coordinate is nonfinite");
+            const auto dx = static_cast<double>(item.position[0]) - x, dy = static_cast<double>(item.position[1]) - y;
+            order.emplace_back(dx * dx + dy * dy, index);
+        }
+        const auto count = std::min<std::size_t>(16, order.size());
+        std::partial_sort(order.begin(), order.begin() + count, order.end());
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto& item = placements[order[index].second];
+            result.push_back({{"source_row", order[index].second}, {"rawcode", item.rawcode},
+                {"creation_id", item.creationId}, {"position", item.position}, {"rotation", item.rotation},
+                {"scale", item.scale}, {"distance_squared", order[index].first}});
+        }
+        return result;
+    };
+    if (source.HasMember("war3map.doo"))
+        nearbyDoodads = nearby(Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo")))).doodads);
+    if (source.HasMember("war3mapUnits.doo"))
+        nearbyUnits = nearby(Take(ParseUnitPlacements(Take(source.ReadMember("war3mapUnits.doo")))).units);
+    nlohmann::json memberDigests = nlohmann::json::object();
+    for (const auto member : {"war3map.w3e", "war3map.wpm", "war3map.doo", "war3mapUnits.doo", "war3map.w3b", "war3map.w3d"})
+        if (source.HasMember(member)) memberDigests[member] = Take(Sha256(Take(source.ReadMember(member))));
     Check(source.VerifySourceUnchanged());
     const auto report = nlohmann::json{{"source_sha256", expected}, {"source_unchanged", true},
         {"width", width}, {"height", (before.header.height - 1) * 4},
-        {"differences", differences}, {"samples", samples}, {"map_written", false}}.dump(2);
+        {"differences", differences}, {"samples", samples}, {"nearby_doodads", nearbyDoodads},
+        {"nearby_units", nearbyUnits}, {"member_sha256", memberDigests}, {"map_written", false}}.dump(2);
     Check(IO::WriteFileBytes(output / "report.json", std::as_bytes(std::span(report))));
     std::cout << report << '\n'; return 0;
 }
