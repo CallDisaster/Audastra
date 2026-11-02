@@ -1,4 +1,5 @@
 #include "MapEditSaveCommand.h"
+#include "../Services/SaveProgressStage.h"
 #include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/IO/FileBytes.h"
 
@@ -694,12 +695,12 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     const auto timingStart = std::chrono::steady_clock::now();
     std::mutex timingMutex;
     Services::MapSaveService::Progress timingProgress;
-    if (saveTimings) timingProgress = [&](std::string_view event) {
+    if (saveTimings) timingProgress = Services::Detail::SaveTimingObserver{[&](std::string_view event) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - timingStart).count();
         const std::lock_guard lock(timingMutex);
         std::cerr << (event.starts_with("save-timing.") ? "save_timing_event=" : "save_progress_event=")
             << elapsed << '|' << event << '\n';
-    };
+    }};
     auto saved = Services::SaveMapEditCandidate(request, timingProgress);
     PrintDiagnostics(saved.diagnostics);
     if (!saved.Succeeded() || !saved.value) return 1;
