@@ -826,10 +826,11 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 #include "TerrainFixedShadowOracle.h"
 
 int wmain(int argc, wchar_t** argv) {
-    if (argc == 6 && std::wstring_view(argv[1]) == L"--terrain-fixed-shadow-oracle") {
+    if ((argc == 6 || argc == 7) && std::wstring_view(argv[1]) == L"--terrain-fixed-shadow-oracle") {
         try {
             const std::wstring wide(argv[3]);
-            return PrepareFixedShadowOracle(argv[2], std::string(wide.begin(), wide.end()), argv[4], argv[5]);
+            return PrepareFixedShadowOracle(argv[2], std::string(wide.begin(), wide.end()), argv[4], argv[5],
+                argc == 7 ? std::filesystem::path(argv[6]) : std::filesystem::path{});
         } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     }
     if (argc == 9 && std::wstring_view(argv[1]) == L"--terrain-save-movement") {

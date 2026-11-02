@@ -107,14 +107,15 @@ struct ModelWriter {
         F32(radius); F32(0); F32(0); F32(0); F32(128); F32(128); F32(128);
     }
 };
-Bytes CasterModel(bool dynamic = false, bool sequenceSphere = false) {
+Bytes CasterModel(bool dynamic = false, bool sequenceSphere = false, bool nativeTexture = false) {
     ModelWriter w;
     w.Tag("MDLX"); w.Tag("VERS"); w.U32(4); w.U32(800);
     w.Tag("MODL"); { const auto chunk = w.Begin(); w.Fixed("AuthoredSaveCaster", 80); w.Fixed("", 260);
         w.Extent(sequenceSphere ? 0.0f : 256.0f); w.U32(0); w.End(chunk); }
     w.Tag("SEQS"); { const auto chunk = w.Begin(); w.Fixed("Stand", 80); w.U32(0); w.U32(1000);
         w.F32(0); w.U32(0); w.F32(0); w.U32(0); w.Extent(256); w.End(chunk); }
-    w.Tag("TEXS"); w.U32(268); w.U32(0); w.Fixed("Fixture\\UnusedTexture.blp", 260); w.U32(0);
+    w.Tag("TEXS"); w.U32(268); w.U32(nativeTexture ? 1 : 0);
+    w.Fixed(nativeTexture ? "" : "Fixture\\UnusedTexture.blp", 260); w.U32(0);
     w.Tag("MTLS"); { const auto chunk = w.Begin(), material = w.Begin();
         w.U32(0); w.U32(0); w.Tag("LAYS"); w.U32(1); const auto layer = w.Begin();
         w.U32(0); w.U32(0); w.U32(0); w.U32(UINT32_MAX); w.U32(0); w.F32(1);
@@ -500,8 +501,16 @@ void AdmissionClonesPlanAndReadbackKeepsItsOtherMembers() {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        if (argc == 3 && std::string_view(argv[1]) == "--emit-native-static-model") {
+            const std::filesystem::path target(argv[2]);
+            Require(target.extension() == ".mdx" && !std::filesystem::exists(target),
+                "native fixture needs a fresh MDX output");
+            Check(IO::WriteFileBytes(target, CasterModel(false, false, true)));
+            return 0;
+        }
+        Require(argc == 1, "unexpected shadow fixture arguments");
         ExplicitBakeWritesCompleteLiteralShadowAndPreservesOtherMembers();
         OrdinarySaveRetainsOriginalShadowAndDoesNotNeedGameProfiles();
         ActualStaticCasterWritesLiteralNonzeroShadow();
