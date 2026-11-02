@@ -5,6 +5,7 @@
 #include "ScriptSourceBinding.h"
 
 #include "War3MapCore/Jass/JassChecker.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/Trigger/UiCallbackActions.h"
 #include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/Jass/IdentifierRewrite.h"
@@ -415,6 +416,11 @@ bool RunBuiltinVJass(PipelineResult& result, const ToolchainOptions& options, co
         for (auto& diagnostic : translated.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
         return false;
     }
+    if (options.inProcessOnly) {
+        for (auto& diagnostic : translated.diagnostics) result.diagnostics.push_back(std::move(diagnostic));
+        Fail(result, "SCRIPT_IN_PROCESS_BACKEND_REQUIRED", "本次运行只允许进程内后端；内置 vJass 翻译" + reason + "，未启动外部回退。");
+        return false;
+    }
     if (JassHelperAvailable(options)) {
         fallback = true;
         Warn(result, "VJASS_FALLBACK", "内置 vJass 翻译" + reason + "，改用 jasshelper");
@@ -560,6 +566,11 @@ PipelineResult CompileMapScript(std::string_view generated, const ToolchainOptio
     PipelineResult result;
     std::error_code error;
     auto options = requested;
+    if (options.inProcessOnly && (options.preprocessor != ScriptEngine::Builtin || options.vjass != ScriptEngine::Builtin
+            || options.checker != ScriptEngine::Builtin || options.crossCheck)) {
+        Fail(result, "SCRIPT_IN_PROCESS_BACKEND_REQUIRED", "本次运行只允许进程内预处理、翻译和检查，未启动外部工具。");
+        return result;
+    }
     // 外部工具的 cwd 是 workDir；所有路径先按调用方 cwd 固定，避免相对目录被重复拼接。
     const auto absolute = [&](std::filesystem::path& path) {
         if (path.empty()) return true;
@@ -953,6 +964,7 @@ namespace {
 using IncludeClosure = std::set<std::filesystem::path>;
 std::vector<std::filesystem::path> IncludedFiles(const std::filesystem::path& file, const std::filesystem::path& root) {
     std::vector<std::filesystem::path> result;
+    if (Jass::IsAiScriptTextSource(file)) return result;
     std::error_code error;
     const auto size = std::filesystem::file_size(file, error);
     if (error || size > 8 * 1024 * 1024) return result;

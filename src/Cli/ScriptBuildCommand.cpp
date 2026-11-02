@@ -1,4 +1,5 @@
 #include "ScriptBuildCommand.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -135,6 +136,10 @@ int RunScriptBuild(const std::filesystem::path& toolRoot, const std::filesystem:
 
 int RunScriptTemplate(const std::filesystem::path& toolRoot, const std::filesystem::path& gameRoot,
     const std::filesystem::path& mapPath, const std::filesystem::path& inputPath, const std::filesystem::path& outputPath) {
+    if (War3Map::Jass::IsAiScriptTextSource(inputPath)) {
+        std::cerr << War3Map::Jass::kAiScriptTextCode << ": " << War3Map::Jass::kAiScriptTextMessage << '\n';
+        return 1;
+    }
     auto archive = MapArchiveSession::Open(mapPath);
     if (!archive.Succeeded()) {
         Print(archive.diagnostics);

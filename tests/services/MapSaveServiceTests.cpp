@@ -94,6 +94,7 @@ std::filesystem::path Source(const TempDirectory& directory) {
         {"war3map.wct", Bytes("original-wct")},
         {"war3map.j", Bytes("original-script")},
         {"unmanaged.bin", Bytes("opaque-preserved")},
+        {"x.ai", Bytes("// original harmless opaque fixture\n")},
     };
     auto written = WriteVerifiedArchive(path, members);
     Require(written.Succeeded(), "write original source archive");
@@ -462,6 +463,9 @@ void TestFrozenSourceAndVerifiedCandidate() {
     Require(editedWtg.Succeeded() && *editedWtg.value == Bytes("edited-wtg"), "WTG replaced");
     Require(editedWct.Succeeded() && *editedWct.value == Bytes("edited-wct"), "WCT replaced");
     Require(untouched.Succeeded() && *untouched.value == Bytes("opaque-preserved"), "unknown member retained");
+    const auto opaqueAi = task.nextSession->ReadMember("x.ai");
+    Require(opaqueAi.Succeeded() && *opaqueAi.value == Bytes("// original harmless opaque fixture\n"),
+        "original harmless AI member remains opaque and unchanged through normal save");
     const auto sourceAfter = Sha256File(source);
     Require(sourceAfter.Succeeded() && *sourceAfter.value == *originalHash.value, "source archive unchanged");
 }

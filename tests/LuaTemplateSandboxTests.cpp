@@ -122,6 +122,10 @@ void TestImport() {
     Require(!escape.Succeeded(), "import path cannot leave the map directory");
     auto reserved = Run("<? import('war3map.j')('x') ?>", request);
     Require(!reserved.Succeeded(), "import cannot overwrite the map script");
+    { std::ofstream(scratch.path / "x.ai", std::ios::binary) << "// original harmless fixture\n"; }
+    auto ai = Run("<? import('data.txt')('x.ai', true) ?>", request);
+    Require(!ai.Succeeded() && Codes(ai).find("SCRIPT_INCLUDE_AI_UNSUPPORTED") != std::string::npos,
+        "template file import refuses AI before opening the original fixture");
 }
 
 struct SlkFixture {

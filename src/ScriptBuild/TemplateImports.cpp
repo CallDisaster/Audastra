@@ -1,4 +1,5 @@
 #include "TemplateImports.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Script/ScriptSaveBundle.h"
@@ -43,6 +44,11 @@ bool TemplateImportSink::Add(const std::string& member, std::string_view content
         std::string relative(content);
         std::replace(relative.begin(), relative.end(), '\\', '/');
         const std::filesystem::path file(std::u8string(relative.begin(), relative.end()));
+        if (Jass::IsAiScriptTextSource(file)) {
+            error = std::string(Jass::kAiScriptTextMessage);
+            diagnostics_.push_back({DiagnosticSeverity::Error, "Script.Template", std::string(Jass::kAiScriptTextCode), error, {}});
+            return false;
+        }
         if (relative.empty() || file.is_absolute() || file.has_root_name() || file.has_root_directory()
             || std::any_of(file.begin(), file.end(), [](const auto& part) { return part == ".."; })) {
             error = "import(" + member + ") 的文件路径必须位于地图所在目录内：" + std::string(content);

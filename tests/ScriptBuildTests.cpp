@@ -343,6 +343,21 @@ void TestRuntimePipeline(const std::filesystem::path& root) {
     };
     const auto generated = "function main takes nothing returns nothing\ncall AjInitialize()\nendfunction\n";
     const auto compiled = CompileMapScript(generated, options, {});
+    {
+        auto isolated = options;
+        isolated.inProcessOnly = true;
+        isolated.workDir = root / "isolated-import";
+        const auto refused = CompileMapScript("//! import \"x.ai\"\n" + std::string(generated), isolated, {});
+        Require(!refused.Succeeded() && HasCode(refused.diagnostics, "SCRIPT_IN_PROCESS_BACKEND_REQUIRED")
+            && std::none_of(refused.stages.begin(), refused.stages.end(), [](const auto& stage) {
+                return stage.name == "jasshelper" || stage.name == "wave" || stage.name == "pjass";
+            }), "isolated unsupported import cannot fall back to an external reader");
+        isolated.workDir = root / "isolated-external";
+        isolated.preprocessor = ScriptEngine::External;
+        const auto external = CompileMapScript(generated, isolated, {});
+        Require(!external.Succeeded() && HasCode(external.diagnostics, "SCRIPT_IN_PROCESS_BACKEND_REQUIRED")
+            && !std::filesystem::exists(isolated.workDir), "external backend rejected before workspace or reader starts");
+    }
     if (!compiled.Succeeded()) for (const auto& d : compiled.diagnostics) std::cerr << d.code << ": " << d.message << '\n';
     Require(compiled.Succeeded() && compiled.syntaxChecked && validated == 1
         && VerifyMapRuntimeBoot(compiled.script, true).Succeeded()

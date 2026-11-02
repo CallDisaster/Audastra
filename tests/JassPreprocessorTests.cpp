@@ -1,5 +1,7 @@
 #include "War3MapCore/Jass/Preprocessor.h"
 #include "War3MapCore/Jass/SourceMap.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
+#include "War3MapCore/Jass/VJass.h"
 #include "../src/Jass/PpLexer.h"
 
 #include <algorithm>
@@ -253,6 +255,44 @@ void TestPhysicalLineSplices() {
     Require(!SplicePpLines("a\\\nb",4).Succeeded(), "额外逻辑原文和位置表有界");
 }
 
+void TestAiTextSources() {
+    const auto root = std::filesystem::temp_directory_path() / "audastra-pp-ai-source-fixture";
+    WriteText(root / "x.ai", "// original harmless fixture\n");
+    std::size_t aiReads = 0, jReads = 0, policyCalls = 0;
+    PreprocessOptions options;
+    options.includeCandidatePolicy = [&](const IncludeCandidateRequest&) {
+        ++policyCalls;
+        return Result<IncludeCandidateEligibility>::Success(IncludeCandidateEligibility::Allowed);
+    };
+    options.includeProvider = [&](const std::filesystem::path& path) {
+        if (IsAiScriptTextSource(path)) ++aiReads;
+        else ++jReads;
+        return Result<PreprocessIncludeContent>::Success({true,
+            path.filename() == "nested.j" ? "#include \"sub/../x.AI\"\n" : "legal_j\n"});
+    };
+    for (const auto* name : {"x.ai", "sub/../x.AI", "sub\\..\\x.aI", "x.ai. "}) {
+        const auto beforePolicy = policyCalls;
+        const auto result = Run("#include \"" + std::string(name) + "\"\n", options, nullptr, root);
+        Require(!result.Succeeded() && HasCode(result, "SCRIPT_INCLUDE_AI_UNSUPPORTED") && aiReads == 0
+            && policyCalls == beforePolicy, "AI直接包含在策略/provider/打开之前拒绝");
+    }
+    const auto nested = Run("#include \"nested.j\"\n", options, nullptr, root);
+    Require(!nested.Succeeded() && HasCode(nested, "SCRIPT_INCLUDE_AI_UNSUPPORTED") && aiReads == 0 && jReads == 1,
+        "嵌套包含只读取合法J，未请求AI");
+    options.forceIncludes = {"x.ai"};
+    const auto forced = Run("", options, nullptr, root);
+    Require(!forced.Succeeded() && HasCode(forced, "SCRIPT_INCLUDE_AI_UNSUPPORTED") && aiReads == 0,
+        "强制包含同样在读取前拒绝");
+    options.forceIncludes.clear();
+    Require(Run("#include \"legal.j\"\n", options, nullptr, root).Succeeded(), "合法J provider包含保持正常");
+    const auto disk = Run("#include \"x.ai\"\n", {}, nullptr, root);
+    Require(!disk.Succeeded() && HasCode(disk, "SCRIPT_INCLUDE_AI_UNSUPPORTED"), "默认磁盘路径也拒绝AI");
+    const auto imported = TranslateVJass("//! import \"x.ai\"\nfunction main takes nothing returns nothing\nendfunction\n", "main.j", {});
+    Require(!imported.Succeeded() && imported.unsupported.find("import") != std::string::npos && aiReads == 0,
+        "内置vJass import明确不支持且不读文件");
+    std::filesystem::remove_all(root);
+}
+
 void TestSourceMapCompose() {
     SourceMap inner;
     const auto file = inner.AddFile("a.j");
@@ -307,10 +347,11 @@ int main() {
         TestPhysicalLineSplices();
         TestSourceMapCompose();
         TestEncodedLexer();
+        TestAiTextSources();
     } catch (const std::exception& error) {
         std::cerr << "JassPreprocessor: " << error.what() << '\n';
         return 1;
     }
-    std::cout << "JassPreprocessor: 8 scenario groups passed\n";
+    std::cout << "JassPreprocessor: 9 scenario groups passed\n";
     return 0;
 }

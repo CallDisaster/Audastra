@@ -1,4 +1,5 @@
 #include "War3MapCore/Jass/Preprocessor.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 
 #include "PpExpression.h"
 #include "PpLexer.h"
@@ -634,6 +635,12 @@ std::optional<std::filesystem::path> Engine::FindInclude(const std::string& name
     if (name.size() > 4096) budget_.Fail(CheckFailure::SourceBytes);
     includeSearchFailed_ = false;
     const std::filesystem::path relative(std::u8string(name.begin(), name.end()));
+    if (IsAiScriptTextSource(relative)) {
+        includeSearchFailed_ = true;
+        Report(DiagnosticSeverity::Error, std::string(kAiScriptTextCode), includer, line,
+            std::string(kAiScriptTextMessage));
+        return std::nullopt;
+    }
     std::error_code error;
     std::uint32_t ordinal = 0;
     std::optional<std::filesystem::path> skipped;
@@ -755,6 +762,11 @@ void Engine::IncludeFile(const std::filesystem::path& path, const FileContext& i
     std::error_code error;
     auto canonical = options_.includeProvider ? path.lexically_normal() : std::filesystem::weakly_canonical(path, error);
     if (error) canonical = path;
+    if (IsAiScriptTextSource(canonical)) {
+        Report(DiagnosticSeverity::Error, std::string(kAiScriptTextCode), includer, line,
+            std::string(kAiScriptTextMessage));
+        return;
+    }
     if (pragmaOnce_.contains(canonical)) return;
     const auto recursion = (std::min)(options_.check.maxNesting, std::size_t{128});
     const auto depthLimit = (std::min)(static_cast<std::size_t>(options_.maxIncludeDepth), recursion > 0 ? recursion - 1 : 0);
@@ -1516,6 +1528,9 @@ void Engine::Run(std::string_view mainText, const std::string& mainName, const s
 
 Result<IncludeCandidateEligibility> CheckIncludeCandidate(
     const PreprocessOptions& options, const IncludeCandidateRequest& request) {
+    if (IsAiScriptTextSource(request.candidate))
+        return Result<IncludeCandidateEligibility>::Failure("Jass.Preprocess", std::string(kAiScriptTextCode),
+            std::string(kAiScriptTextMessage));
     if (!options.includeCandidatePolicy) return Result<IncludeCandidateEligibility>::Success(IncludeCandidateEligibility::Allowed);
     try {
         auto result = options.includeCandidatePolicy(request);

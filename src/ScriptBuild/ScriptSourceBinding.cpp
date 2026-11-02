@@ -1,4 +1,5 @@
 #include "ScriptSourceBinding.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/Script/ReadOnlyScriptSource.h"
 
 #include "War3MapCore/Hash.h"
@@ -49,6 +50,8 @@ bool NormalizeSourcePath(const std::filesystem::path& input, std::filesystem::pa
 Result<SourceBindingSnapshot> CaptureSourceBinding(const std::filesystem::path& input,
     ScriptToolchainBindingKind expectedKind, bool required, std::uint64_t maxBytes) {
     try {
+        if (Jass::IsAiScriptTextSource(input)) return Fail(input,
+            std::string(Jass::kAiScriptTextCode), std::string(Jass::kAiScriptTextMessage));
         std::filesystem::path path;
         if (!NormalizeSourcePath(input, path)) return Fail(input,
             "SCRIPT_USER_SOURCE_PATH_INVALID", "来源必须是有界绝对普通路径。");

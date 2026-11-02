@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/ScriptPipeline.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/Hash.h"
@@ -101,6 +102,11 @@ std::string InjectCode(std::string script, const InjectTable& table, std::vector
         if (identifiers.contains(entry.functionName)) files.insert(entry.file);
     }
     for (const auto& file : files) {
+        if (Jass::IsAiScriptTextSource(file)) {
+            diagnostics.push_back({DiagnosticSeverity::Error, "Script.Inject", std::string(Jass::kAiScriptTextCode),
+                std::string(Jass::kAiScriptTextMessage), OriginSpan{file}});
+            continue;
+        }
         const auto text = ReadText(file);
         if (!text) {
             diagnostics.push_back({DiagnosticSeverity::Error, "Script.Inject", "INJECT_FILE_UNREADABLE", "无法读取注入文件：" + file.string(), {}});

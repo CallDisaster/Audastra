@@ -603,6 +603,8 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
     task.diagnostics.insert(task.diagnostics.end(), catalog.diagnostics.begin(), catalog.diagnostics.end());
     task.diagnostics.insert(task.diagnostics.end(), triggers.diagnostics.begin(), triggers.diagnostics.end());
     task.diagnostics.insert(task.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+    // 独立保存供自动化调用，只消费捕获来源，不启动外部编译器回退。
+    if (task.script) task.script->toolchain.inProcessOnly = true;
     return Status::Ok();
 }
 
