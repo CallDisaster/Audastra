@@ -13,15 +13,16 @@ int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::strin
     Require(std::all_of(terrain.vertices.begin(), terrain.vertices.end(), [](const auto& vertex) {
         return vertex.groundHeightRaw == 8192 && vertex.CliffLevel() == 2 && !vertex.HasWater() && !vertex.IsRamp();
     }), "fixed-shadow fixture must be ordinary flat dry terrain");
-    DoodadPlacements placements;
+    auto placements = Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo"))));
+    Require(placements.doodads.empty() && placements.specialDoodads.empty(),
+        "fixed-shadow seed must retain the original empty placement layout");
     DoodadPlacement placement;
-    placement.rawcode = "YS14"; placement.variation = 0; placement.position = {model.empty() ? 0.0f : 32.0f, 0, 0};
+    placement.rawcode = "YS14"; placement.variation = 0;
+    placement.position = model.empty() ? std::array<float, 3>{0, 0, 0} : std::array<float, 3>{64, 32, 0};
     placement.rotation = model.empty() ? 0.75f : std::bit_cast<float>(0x4096cbe5u);
     placement.scale = {1, 1, 1}; placement.flags = 2;
-    placement.lifePercent = 100; placement.creationId = 1; placements.doodads.push_back(placement);
+    placement.lifePercent = 255; placement.creationId = 1; placements.doodads.push_back(placement);
     (void)game;
-    Require(Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo")))).doodads.empty(),
-        "fixed-shadow seed must not remove script-bound original objects");
     std::vector<MemberReplacement> replacements{{"war3map.doo", Take(placements.Serialize())},
         {"war3map.shd", std::vector<std::byte>(256u * 256u, std::byte{37})}};
     if (!model.empty()) {
@@ -48,6 +49,7 @@ int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::strin
     Check(source.VerifySourceUnchanged());
     std::cout << nlohmann::json{{"source_sha256", expected}, {"oracle_sha256", readback.SourceSha256()},
         {"rawcode", placement.rawcode}, {"wire_rotation", placement.rotation},
-        {"ordinary_flat_dry", true}, {"single_caster", true}, {"authored_model", !model.empty()}}.dump() << '\n';
+        {"ordinary_flat_dry", true}, {"single_caster", true}, {"authored_model", !model.empty()},
+        {"original_editor_validated", false}}.dump() << '\n';
     return 0;
 }
