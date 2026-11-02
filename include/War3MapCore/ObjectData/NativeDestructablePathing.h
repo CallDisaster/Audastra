@@ -40,4 +40,9 @@ namespace War3Map::ObjectData {
     std::span<const std::string_view> placedRawcodes, std::span<const ArchiveExactMember> sources,
     std::size_t maximumWorkingBytes);
 
+// 仅核验标准可破坏物的七类展示覆盖，复用通行解析器的同一typed字段规则。
+// 输入精确为W3B、DestructableData和DestructableMetaData；不读取文件、不解释Custom。
+[[nodiscard]] Result<std::size_t> ValidateNativeDestructableDisplayOverrides(
+    std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes);
+
 } // namespace War3Map::ObjectData

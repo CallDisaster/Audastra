@@ -372,6 +372,40 @@ void NativeTransformAndSurfaceRefusals() {
     output[0] = {"war3map.doo", Take(placements.Serialize())};
     Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output));
 }
+
+void DestructableDisplayOverridesUseActualMetadata() {
+    Fixture f;
+    auto native = Take(NativeObjectDocument::CreateEmpty(ObjectType::Destructable));
+    Check(native.AddOriginalObject("D001"));
+    Check(native.AddModification({ObjectType::Destructable, "D001"}, {"Ab9Z"}, NativeValueType::Unreal, 1.5f));
+    const auto bytes = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(native));
+    const auto metadata = Slk({"ID", "field", "slk", "type", "index"},
+        {{"Ab9Z", "maxScale", "DestructableData", "unreal", "0"}});
+    std::vector<MemberReplacement> output{{"war3map.w3b", bytes}, {"Units/DestructableMetaData.slk", metadata}};
+    const auto original = f.Capture();
+    const auto display = f.Capture(output);
+    Require(display->Casters().size() == original->Casters().size(), "展示比例范围不覆盖实际DOO姿势或新增caster");
+    Check(display->VerifySources(*f.source, output));
+    const auto saved = Take(f.source->SaveCandidate(f.root / "display.w3x", output));
+    const auto readback = Take(MapArchiveSession::Open(saved.path));
+    Require(Take(readback.ReadMember("war3map.w3b")) == bytes, "展示覆盖wire字节原样保留");
+    Check(display->VerifyReadback(readback));
+    output[1].data = Slk({"ID", "field", "slk", "type", "index"},
+        {{"Ab9Z", "defScale", "DestructableData", "unreal", "0"}});
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED");
+    output[1].data = metadata;
+    Check(native.SetModification({ObjectType::Destructable, "D001"}, {"Ab9Z"}, 0.f));
+    output[0].data = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(native));
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED");
+    Check(native.SetModification({ObjectType::Destructable, "D001"}, {"Ab9Z"}, 1.5f));
+    Check(native.AddCustomObject("X001", "D001"));
+    output[0].data = Take(NativeObjectCodec(ObjectType::Destructable).Serialize(native));
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED");
+    output[0].data = bytes;
+    output[1].data = Slk({"ID", "field", "slk", "type", "index"},
+        {{"Ab9Z", "maxScale", "DestructableData", "unreal", "1"}});
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED");
+}
 void LimitsCancellationAndRealSourceDrift() {
     Fixture f;
     // 最终内存覆盖只消费正文，不需要MPQ存储缓冲；在此单独核正文累计预算。
@@ -553,7 +587,8 @@ int main() {
         ActualClassificationAndExactInstances(); FinalViewAndPublicationIdentity(); GameWinnerAndKnownAbsence();
         ActualTilesetAndFinalTableOverrides(); UnsupportedAndCorruptAreNotEmpty(); ExplicitNonNumericAngleMarker();
         Fixed270PreservesActualPlacementPose(); EmptyAndSpecialListsRemainExplicit();
-        StrictVariationAndUniqueModelLimit(); NativeTransformAndSurfaceRefusals(); LimitsCancellationAndRealSourceDrift();
+        StrictVariationAndUniqueModelLimit(); NativeTransformAndSurfaceRefusals(); DestructableDisplayOverridesUseActualMetadata();
+        LimitsCancellationAndRealSourceDrift();
         StoredAndDecodedSourceBudgets(); BoundedDependencyVerification(); BatchedDependencyVerificationPreservesEveryFact();
         std::cout << "TerrainShadowCasterResourcesTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

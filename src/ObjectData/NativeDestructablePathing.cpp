@@ -323,4 +323,56 @@ Result<std::size_t> ValidateNativeDestructablePathing(std::span<const std::strin
     } catch (const std::bad_alloc&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析内存分配失败。"); }
     catch (const std::length_error&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "严格对象解析容器容量不足。"); }
 }
+
+Result<std::size_t> ValidateNativeDestructableDisplayOverrides(
+    std::span<const ArchiveExactMember> sources, std::size_t maximumWorkingBytes) {
+    try {
+        constexpr std::array<std::string_view, 3> paths{
+            "war3map.w3b", "units/destructabledata.slk", "units/destructablemetadata.slk"};
+        if (sources.size() != paths.size()) Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "展示覆盖核验需要三项精确来源。");
+        std::array<const ArchiveExactMember*, 3> inputs{};
+        std::size_t work = 0;
+        for (const auto& source : sources) {
+            const auto name = Text::LowerAscii(source.name);
+            const auto found = std::find(paths.begin(), paths.end(), name);
+            if (found == paths.end() || inputs[found - paths.begin()] || (!source.present && !source.bytes.empty()))
+                Fail("TERRAIN_NATIVE_OBJECT_SOURCE", "展示覆盖来源重复、越界或缺失却携带字节。");
+            if (source.bytes.size() > (maximumWorkingBytes - work) / kWorkPerInputByte)
+                Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "展示覆盖核验超过累计工作预算。");
+            work += source.bytes.size() * kWorkPerInputByte;
+            inputs[found - paths.begin()] = &source;
+        }
+        const auto cells = UniqueTable(*inputs[2], "id");
+        UniqueTable(*inputs[1], "destructableid");
+        const auto reader = [&](const std::string& path) -> Result<std::vector<std::byte>> {
+            for (const auto* input : inputs)
+                if (Text::LowerAscii(input->name) == Text::LowerAscii(path) && input->present)
+                    return Result<std::vector<std::byte>>::Success(input->bytes);
+            return Result<std::vector<std::byte>>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_SOURCE", "请求了未捕获的展示覆盖来源。");
+        };
+        CatalogLoadOptions catalogOptions;
+        catalogOptions.sources = {{ObjectType::Destructable, {"Units/DestructableData.slk"}, {}}};
+        catalogOptions.stringFiles.clear(); catalogOptions.maximumFileBytes = kTableBytes;
+        catalogOptions.rejectInvalidPresentSources = true;
+        const auto catalog = Take(StandardObjectCatalog::Load(reader, catalogOptions));
+        ObjectFieldSchemaOptions schemaOptions;
+        schemaOptions.sources = {{ObjectType::Destructable, "Units/DestructableMetaData.slk"}};
+        schemaOptions.stringFiles.clear(); schemaOptions.worldEditDataFile.clear(); schemaOptions.unitEditorDataFile.clear();
+        schemaOptions.maximumFileBytes = kTableBytes;
+        const auto schema = Take(ObjectFieldSchema::Load(reader, schemaOptions));
+        ValidateSchemaSource(cells, schema, ObjectType::Destructable);
+        const auto owner = Native(*inputs[0], ObjectType::Destructable);
+        const auto* document = dynamic_cast<const NativeObjectDocument*>(owner.get());
+        const auto objects = Index(document);
+        for (const auto& [rawcode, object] : objects) {
+            const auto* standard = catalog.Find(ObjectType::Destructable, rawcode);
+            if (object->parentRawcode || !standard)
+                Fail("TERRAIN_NATIVE_OBJECT_INHERITANCE", "展示覆盖仅接受唯一标准对象，不解释自定义继承：" + std::string(rawcode));
+            ValidateDisplayOnlyParent(*object, *document, *standard, schema, cells);
+        }
+        return Result<std::size_t>::Success(work);
+    } catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "展示覆盖核验内存分配失败。"); }
+    catch (const std::length_error&) { return Result<std::size_t>::Failure(kSubsystem, "TERRAIN_NATIVE_OBJECT_BUDGET", "展示覆盖核验容量不足。"); }
+}
 } // namespace War3Map::ObjectData

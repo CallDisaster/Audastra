@@ -7,6 +7,7 @@
 #include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/MapData/TerrainShadowRebuild.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/ObjectData/NativeDestructablePathing.h"
 #include "War3MapCore/Render/AnimationSourceGuard.h"
 #include "War3MapCore/Render/WorldModelScene.h"
 #include "War3MapCore/Resources/ImportTable.h"
@@ -360,8 +361,24 @@ void RequireNoOverrides(Context& context, std::string_view name, ObjectData::Obj
     const auto* document = dynamic_cast<const ObjectData::NativeObjectDocument*>(parsed.document.get());
     if (!document || !document->IsStructurallySafe() || document->Version() != 2)
         Fail("TERRAIN_SHADOW_CASTER_NATIVE_FORMAT", "阴影对象表不属于完整经典v2格式：" + std::string(name));
-    if (!document->Objects().empty())
-        Fail("TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED", "阴影模型尚未解释非空原生覆盖，保留原阴影：" + std::string(name));
+    if (document->Objects().empty()) return;
+    if (type == ObjectData::ObjectType::Destructable) {
+        const std::array<std::string, 1> metadata{"Units/DestructableMetaData.slk"};
+        context.Phase(metadata, kTableBytes);
+        const auto& table = context.Required("Units/DestructableData.slk", true, kTableBytes);
+        const auto& fields = context.Required(metadata.front(), true, kTableBytes);
+        const auto bytes = file.bytes.size() + table.bytes.size() + fields.bytes.size();
+        // 在复制解析输入之前预收副本；同一typed验证器返回其完整解析工作预留。
+        context.ParseReserve(bytes, 1);
+        const std::array<ArchiveExactMember, 3> inputs{file, table, fields};
+        auto display = ObjectData::ValidateNativeDestructableDisplayOverrides(inputs,
+            context.limits.maximumWorkingBytes - context.workingBytes);
+        if (display.Succeeded() && display.value) { context.ParseReserve(*display.value, 1); return; }
+        std::string detail;
+        for (const auto& diagnostic : display.diagnostics) detail += " " + diagnostic.code + ":" + diagnostic.message;
+        Fail("TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED", "阴影对象覆盖不能证明只影响展示，保留原阴影：" + std::string(name) + detail);
+    }
+    Fail("TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED", "阴影模型尚未解释非空原生覆盖，保留原阴影：" + std::string(name));
 }
 std::int32_t Integer(std::string_view value, std::string_view field, std::string_view rawcode) {
     std::int32_t result = 0;
