@@ -227,6 +227,8 @@ Status MapArchiveSession::PinSourceForExactCaptures() {
         auto lease = std::make_shared<ArchiveExactReadLease>(sourcePath_, sourceSha256_, volumeSerial_, fileId_);
         if (!lease->file.Valid())
             return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法在本次候选保存期间只读固定来源。");
+        const auto pinnedIdentity = VerifyIdentity(lease->file.Get(), volumeSerial_, fileId_);
+        if (!pinnedIdentity.Succeeded()) return pinnedIdentity;
         // 只读共享模式不足以排除先前建立的可写映射。R oplock不获准或失效时，
         // 保留逐次完整散列；不把“不支持缓存资格”变成保存拒绝。
         FileHandle proof(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
