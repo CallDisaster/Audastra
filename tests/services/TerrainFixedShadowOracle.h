@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/Resources/ImportTable.h"
 
 // 原创单对象原版对照输入；不是语料保存成功结果，不改变给定源图。
 int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::string& expected,
@@ -24,8 +25,13 @@ int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::strin
     if (!model.empty()) {
         Require(Text::LowerAscii(model.extension().string()) == ".mdx"
             && std::filesystem::file_size(model) <= 512u * 1024u, "bounded authored MDX fixture required");
-        replacements.push_back({"Buildings/Other/CityBuildingLarge_90/CityBuildingLarge_90.mdx",
-            Take(IO::ReadFileBytes(model))});
+        const std::string member = "Buildings/Other/CityBuildingLarge_90/CityBuildingLarge_90.mdx";
+        replacements.push_back({member, Take(IO::ReadFileBytes(model))});
+        auto imports = source.HasMember("war3map.imp")
+            ? Take(Resources::ImportTable::Parse(Take(source.ReadMember("war3map.imp"))))
+            : Resources::ImportTable::CreateEmpty();
+        Check(imports.Upsert(member, [&](std::string_view name) { return source.HasMember(name); }));
+        replacements.push_back({"war3map.imp", Take(imports.Serialize())});
     }
     const auto saved = Take(source.SaveCandidate(target, replacements));
     const auto readback = OpenOracleSource(saved.path, Take(Sha256File(saved.path)));
