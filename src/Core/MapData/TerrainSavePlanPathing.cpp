@@ -403,10 +403,12 @@ Status TerrainSavePlan::CommitSaved(MapDataEditSession& edits, const MapDocument
             return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "准备保存基线失败，原编辑状态保留。");
         }
     }
-    if (sessionIdentity_ != edits.SessionIdentity() || revision_ != edits.Revision()
-        || terrainSourceRevision_ != edits.TerrainSourceRevision())
-        return Reject("TERRAIN_PATHING_COMMIT_STALE", "保存后的通行提交不属于同一会话及修订，编辑基线保持不变。");
     const bool missingPathing = members_[1].sourceState == TerrainSaveSourceState::Missing;
+    // 已有WPM沿用worker重建会话到前台的完整原字/草稿/意图核对。
+    // 缺失来源没有旧WPM可比，额外要求本次冻结会话身份，不能扩大到既有路径。
+    if (missingPathing && (sessionIdentity_ != edits.SessionIdentity() || revision_ != edits.Revision()
+        || terrainSourceRevision_ != edits.TerrainSourceRevision()))
+        return Reject("TERRAIN_PATHING_COMMIT_STALE", "缺失来源的通行提交不属于同一会话及修订，编辑基线保持不变。");
     const bool pathingMatches = missingPathing
         ? !members_[1].sourceBytes && !members_[1].sourceSha256 && !edits.pathingOriginal_ && !edits.pathing_
             && !edits.pathingProtected_ && !edits.originalPathingRestrictions_ && !edits.pathingRestrictions_
