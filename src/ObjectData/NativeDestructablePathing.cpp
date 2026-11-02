@@ -333,6 +333,8 @@ Result<std::size_t> ValidateNativeDestructableDisplayOverrides(
         std::array<const ArchiveExactMember*, 3> inputs{};
         std::size_t work = 0;
         for (const auto& source : sources) {
+            if (source.name.size() > 64 || source.bytes.size() > kTableBytes)
+                Fail("TERRAIN_NATIVE_OBJECT_BUDGET", "展示覆盖来源路径或正文超过固定表预算。");
             const auto name = Text::LowerAscii(source.name);
             const auto found = std::find(paths.begin(), paths.end(), name);
             if (found == paths.end() || inputs[found - paths.begin()] || (!source.present && !source.bytes.empty()))

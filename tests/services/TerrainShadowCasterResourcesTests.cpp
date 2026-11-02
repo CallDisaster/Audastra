@@ -392,6 +392,7 @@ void DestructableDisplayOverridesUseActualMetadata() {
     Check(display->VerifyReadback(readback));
     output[1].data = Slk({"ID", "field", "slk", "type", "index"},
         {{"Ab9Z", "defScale", "DestructableData", "unreal", "0"}});
+    Rejected(display->VerifySources(*f.source, output), "TERRAIN_SHADOW_CASTER_DEPENDENCY_STALE");
     Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED");
     output[1].data = metadata;
     Check(native.SetModification({ObjectType::Destructable, "D001"}, {"Ab9Z"}, 0.f));

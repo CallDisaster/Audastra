@@ -9,6 +9,7 @@ int AuditTerrainCliffTable(const std::filesystem::path& path, const std::string&
     Require(source.SourceSha256() == expected && expected.size() == 64, "cliff table audit source differs");
     const auto terrainBytes = Take(source.ReadMember("war3map.w3e"));
     const auto terrain = Take(ParseMapTerrain(terrainBytes)).Snapshot();
+    Require(terrain->header.cliffTilesets.size() <= 16, "bounded physical cliff slots required");
     const std::array<std::string, 1> names{"TerrainArt/CliffTypes.slk"};
     ArchiveExactMemberLimits limits; limits.memberBytes = limits.totalBytes = 2u * 1024u * 1024u;
     auto actual = Take(source.CaptureExactMembers(names, limits)).front();
