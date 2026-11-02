@@ -335,6 +335,18 @@ Status MapArchiveSession::VerifySourceUnchanged(const ProjectSaveControl* contro
     FileHandle source(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!source.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "源归档不可读取或正在被外部写入。");
+    // 来源检查可复用同次、仍有效的R租约；新句柄身份及路径仍真查。
+    // 有逐字节进度/取消观察者时保持原完整读取，不伪报缓存命中的读数字节。
+    if (!control && exactReadLease_ && exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_)
+        && exactReadLease_->Stable()) {
+        const auto identity = VerifyIdentity(source.Get(), volumeSerial_, fileId_);
+        if (!identity.Succeeded()) return identity;
+        const auto path = FinalPath(source.Get());
+        if (!path.Succeeded()) return {path.diagnostics};
+        if (!SamePath(*path.value, sourcePath_))
+            return Status::Failure("MapArchiveSession", "SOURCE_REPLACED", "来源检查的实际路径已改变。");
+        if (exactReadLease_->Stable()) return Status::Ok();
+    }
     return VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_, control);
 }
 

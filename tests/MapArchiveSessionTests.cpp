@@ -1,5 +1,6 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/ProjectSaveControl.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "../src/Core/Mpq/MpqCrypt.h"
@@ -387,6 +388,19 @@ void TestExactCaptureLeaseIsOwnedAndKeepsRealReadback() {
         RequireSuccess(actual, "pinned capture still reads exact actual members");
         Require(actual.value->front().bytes == Bytes("existing-script") && !actual.value->back().present,
             "lease preserves exact bytes and true negative presence");
+        Require(copy.VerifySourceUnchanged().Succeeded(), "same immutable lease verifies the actual source identity");
+        std::uint64_t hashBytes = 0; unsigned hashSamples = 0;
+        ProjectSaveControl observed([&](ProjectSaveStage stage, std::uint64_t bytes) {
+            if (stage == ProjectSaveStage::Hash) { hashBytes = bytes; ++hashSamples; }
+        });
+        Require(copy.VerifySourceUnchanged(&observed).Succeeded() && hashSamples >= 2
+            && hashBytes == std::filesystem::file_size(source), "observed verification retains real full-file hashing byte progress");
+        ProjectSaveControl cancelled;
+        Require(cancelled.RequestCancellation(), "request cancellation of the owned verification");
+        const auto cancelledProof = copy.VerifySourceUnchanged(&cancelled);
+        Require(!cancelledProof.Succeeded() && !cancelledProof.diagnostics.empty()
+            && cancelledProof.diagnostics.front().code == kProjectSaveCancelledCode,
+            "pinned source verification cannot bypass requested cancellation");
         const auto inPlace = copy.SaveInPlace({});
         Require(!inPlace.Succeeded() && inPlace.diagnostics.front().code == "SOURCE_CAPTURE_LEASE_ACTIVE",
             "candidate-only capture lease rejects in-place replacement before side effects");
@@ -443,6 +457,7 @@ void TestExactCaptureLeaseDoesNotTrustWritableMappings() {
     const auto actual = opened.value->CaptureExactMembers(std::vector<std::string>{"war3map.j"});
     Require(!actual.Succeeded() && !actual.value && actual.diagnostics.front().code == "SOURCE_CHANGED",
         "persistent writable mapping cannot reuse a stale whole-source digest even for an unchanged queried member");
+    Require(!opened.value->VerifySourceUnchanged().Succeeded(), "source verification also rehashes when a writable mapping prevents read-cache qualification");
 }
 
 // 手工构造的原创归档：哈希项 locale/platform 字段取给定值，(attributes) 与 (signature)
