@@ -449,7 +449,10 @@ void TestPinnedAtomicReplaceKeepsIdentityAndVerifiedBackup() {
     Require(equal.value->PinSourceForExactCaptures().Succeeded(), "pin equal-byte swap source");
     const auto replacement = equalDirectory.Path() / "replacement.w3x";
     Require(std::filesystem::copy_file(original, replacement), "create independent equal-byte replacement");
-    Require(MoveFileExW(replacement.c_str(), original.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH), "perform real atomic equal-byte replacement");
+    const bool replaced = ReplaceFileW(original.c_str(), replacement.c_str(), nullptr,
+        REPLACEFILE_WRITE_THROUGH | REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS, nullptr, nullptr) != 0;
+    const auto replaceError = replaced ? ERROR_SUCCESS : GetLastError();
+    Require(replaced, "perform the publisher's actual equal-byte replacement, Win32=" + std::to_string(replaceError));
     const auto stale = equal.value->VerifySourceUnchanged();
     Require(!stale.Succeeded() && stale.diagnostics.front().code == "SOURCE_REPLACED", "matching bytes cannot bypass a replaced file ID");
     Require(!equal.value->PinSourceForExactCaptures().Succeeded(), "idempotent pin also checks the current path identity");
