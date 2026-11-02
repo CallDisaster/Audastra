@@ -275,7 +275,7 @@ bool MapArchiveSession::HasMember(std::string_view name) const {
 
 Result<std::vector<std::byte>> MapArchiveSession::ReadMember(std::string_view name, const ProjectSaveControl* control) const {
     if (scriptAuditOnly_ && !(minimapAuditOnly_ ? MinimapAuditMember(name) : ScriptAuditMember(name))) return Result<std::vector<std::byte>>::Failure(
-        "MapArchiveSession", "SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读脚本审计快照不读取白名单外成员。");
+        "MapArchiveSession", "SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读脚本审计快照不读取白名单外成员：" + std::string(name));
     const auto key = Canonical(name);
     const auto copy = [control](const std::vector<std::byte>& input) -> Result<std::vector<std::byte>> {
         std::vector<std::byte> result(input.size());
@@ -310,7 +310,7 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         std::map<std::string, const MapArchiveMember*> namedSnapshots;
         for (const auto& name : names) {
             if (scriptAuditOnly_ && !(minimapAuditOnly_ ? MinimapAuditMember(name) : ScriptAuditMember(name)))
-                return fail("SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读审计快照不读取白名单外成员。");
+                return fail("SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读审计快照不读取白名单外成员：" + name);
             if (name.size() > limits.pathBytes || name.size() > limits.totalPathBytes - paths)
                 return fail("EXACT_MEMBER_LIMIT", "明确来源请求路径超过单项或累计预算。");
             paths += name.size();
