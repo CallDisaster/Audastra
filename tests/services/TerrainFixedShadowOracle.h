@@ -17,7 +17,7 @@ int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::strin
     placement.lifePercent = 100; placement.creationId = 1; placements.doodads.push_back(placement);
     std::vector<MemberReplacement> replacements{{"war3map.doo", Take(placements.Serialize())},
         {"war3mapUnits.doo", Take(UnitPlacements{}.Serialize())},
-        {"war3map.shd", Bytes(256u * 256u, std::byte{37})}};
+        {"war3map.shd", std::vector<std::byte>(256u * 256u, std::byte{37})}};
     const auto markers = Take(TerrainMinimapMarkers::Capture(source, game, replacements));
     Require(markers->MarkerCount() == 0, "fixed-shadow fixture has no omitted unit marker");
     replacements.push_back({"war3map.mmp", markers->Bytes()});
