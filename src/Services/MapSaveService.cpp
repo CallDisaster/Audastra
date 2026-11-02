@@ -14,6 +14,7 @@
 #include "LuaMapSaveTarget.h"
 #include "MapSaveScriptPreservation.h"
 #include "MapRuntimeSave.h"
+#include "SaveProgressStage.h"
 
 #include <algorithm>
 #include <exception>
@@ -383,6 +384,7 @@ Status MapSaveTask::FreezeArchive(const MapArchiveSession& source) {
 }
 
 void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool preflight) {
+    Detail::SaveProgressStage serviceTiming(progress, "save-service");
     if (task.executed) {
         task.succeeded = false;
         Error(task, "SAVE_TASK_ALREADY_EXECUTED", "同一冻结保存任务不能再次执行。");
@@ -432,6 +434,7 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
         Append(task.diagnostics, runtimePrepared.diagnostics);
         if (!runtimePrepared.Succeeded()) return;
         const auto verifyObjects = [&]() {
+            Detail::SaveProgressStage timing(progress, "object-resources");
             if (!task.mapObjectReferences) return true;
             const auto current = CaptureArchiveMapObjectReferences(*task.archive, task.mapObjectReferenceGameRoot,
                 task.replacements, task.removals);
@@ -442,12 +445,16 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             return verified.Succeeded();
         };
         if (!verifyObjects()) return;
-        RebuildScript(task, progress);
+        {
+            Detail::SaveProgressStage timing(progress, "script-build");
+            RebuildScript(task, progress);
+        }
         if (HasError(task.diagnostics)) return;
         const auto runtimeFinalized = FinalizeMapRuntimeSave(task);
         Append(task.diagnostics, runtimeFinalized.diagnostics);
         if (!runtimeFinalized.Succeeded()) return;
         if (task.prepareFinalDerived) {
+            Detail::SaveProgressStage timing(progress, "final-derived");
             // 消费回调，避免它的借用在任务结束后继续保留，也不能重复调用。
             auto prepare = std::move(task.prepareFinalDerived);
             task.finalDerivedActive_ = true;
@@ -474,11 +481,13 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
         const auto frozenMarkers = task.minimapMarkers;
         const auto frozenShadow = task.terrainShadow;
         if (task.beforePublish) {
+            Detail::SaveProgressStage timing(progress, "before-publish");
             const auto guard = task.beforePublish();
             Append(task.diagnostics, guard.diagnostics);
             if (!guard.Succeeded()) return;
         }
         const auto verifyDerived = [&]() {
+            Detail::SaveProgressStage timing(progress, "derived-verify");
             if (task.minimapMarkers != frozenMarkers || task.terrainShadow != frozenShadow) {
                 Error(task, "SAVE_DERIVED_OWNER_CHANGED", "发布前回调改变了派生文件来源，保存已取消。");
                 return false;
@@ -508,6 +517,7 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             return;
         }
 
+        Detail::SaveProgressStage archiveTiming(progress, "archive-write");
         ArchiveSaveResult written;
         if (task.inPlace) {
             Report(progress, "archive-in-place");
@@ -538,6 +548,8 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             task.written = written.path;
             task.memberCount = written.memberCount;
         }
+        archiveTiming.Finish();
+        Detail::SaveProgressStage reopenTiming(progress, "archive-readback");
         Report(progress, "archive-reopen");
         auto next = task.archive->AfterSave(written, task.replacements, task.removals);
         Append(task.diagnostics, next.diagnostics);

@@ -342,6 +342,18 @@ void CustomSettingsUseSharedSave() {
     auto actual = C::Take(War3Map::MapArchiveSession::Open(target)); auto expected = C::Take(War3Map::MapArchiveSession::Open(direct.targetCandidate));
     for (const auto* member : {"war3map.w3i", "war3map.j", "war3map.w3e", "war3map.wpm", "unchanged.bin"})
         Require(C::Take(actual.ReadMember(member)) == C::Take(expected.ReadMember(member)), "CLI custom settings and common save agree");
+    args[7] = (fixture.base.root / "cli-timed.w3x").wstring();
+    args.push_back(L"--save-timings");
+    const auto timed = Invoke(args);
+    Require(timed.exitCode == 0 && timed.error.find("save-timing.begin/total") != std::string::npos
+        && timed.error.find("save-timing.end/total") != std::string::npos,
+        "opt-in save timings report the complete normal transaction");
+    Require(C::Take(War3Map::IO::ReadFileBytes(target))
+        == C::Take(War3Map::IO::ReadFileBytes(fixture.base.root / "cli-timed.w3x")),
+        "timing observation must preserve the whole candidate byte for byte");
+    args.push_back(L"--save-timings");
+    Rejected(Invoke(args), "--save-timings cannot be repeated");
+    args.pop_back(); args.pop_back();
     args[7] = (fixture.base.root / "cli-no-prefix.w3x").wstring();
     C::Write(json, "{\"expected_member_sha256\":\"" + request.expectedMemberSha256 + "\",\"operations\":[{\"section\":\"upgrades\",\"op\":\"append\",\"expected_count\":1,\"value\":{\"player_mask\":1,\"id_hex\":\"52303031\",\"level\":1,\"availability\":2}}]}");
     Require(Invoke(args).exitCode != 0 && !std::filesystem::exists(fixture.base.root / "cli-no-prefix.w3x"), "CLI stale CAS does not publish");

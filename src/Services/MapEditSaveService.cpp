@@ -1,5 +1,6 @@
 #include "War3MapCore/Services/MapEditSaveService.h"
 #include "MapEditCodeIdentityInternal.h"
+#include "SaveProgressStage.h"
 #include "War3MapCore/Services/TerrainShadowBake.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
@@ -615,6 +616,8 @@ Result<Trigger::UiCatalog> ResolveMapEditCatalog(const std::filesystem::path& ro
 
 Result<MapEditSaveReceipt> SaveMapEditCandidate(
     const MapEditSaveRequest& request, const MapSaveService::Progress& progress) {
+    Detail::SaveProgressStage totalTiming(progress, "total");
+    Detail::SaveProgressStage inputTiming(progress, "open-preload");
     if (request.triggerCodeIdentity) {
         try { return SaveTriggerCodeIdentityCandidate(request, progress); }
         catch (const std::exception&) { return Result<MapEditSaveReceipt>::Failure("Trigger.CodeIdentity", "TRIGGER_CODE_PREPARE_FAILED", "无法准备代码身份保存，未写入地图候选。"); }
@@ -766,6 +769,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                     "源图准确缺少WPM；仅计算阴影时不补写通行文件，自动小地图暂不生成。"});
             }
         }
+        inputTiming.Finish();
+        Detail::SaveProgressStage editTiming(progress, "prepare-edit");
         std::optional<MapCustomSettingsValidation> customValidation;
         if (customRequest) {
             ObjectCatalogSources inputs; inputs.archive = &source; inputs.gameRoot = request.gameRoot;
@@ -1044,8 +1049,11 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (terrainReplay) task.removals = terrainReplay->Removals();
         const auto runtime = PrepareMapRuntimeInputs(task, request.runtime, request.runtimePackageSources, request.runtimeCatalogDiagnostics);
         if (!runtime.Succeeded()) return Forward(runtime.diagnostics);
+        editTiming.Finish();
+        Detail::SaveProgressStage scriptInputTiming(progress, "script-inputs");
         const auto script = PrepareScript(task, source, request, editedMembers, triggerReceipt, transactionReceipt);
         if (!script.Succeeded()) return Forward(script.diagnostics);
+        scriptInputTiming.Finish();
         // 范围是游戏初始化输入。最终W3I须走现有ScriptSaveBundle依赖，不能沿用旧SetCameraBounds。
         if (finalEdits.HasTerrainBoundsChanges() || finalEdits.HasTerrainResizeChanges()) task.preserveUnaffectedScript = false;
 
@@ -1053,9 +1061,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         // 门禁看到过期的 replacements。回调只在共用保存服务的一次最终阶段执行。
         {
             task.prepareFinalDerived = [&task, &finalEdits, &request, &terrainPlan, &minimapSave,
-                &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest](MapSaveTask&) mutable -> Status {
+                &minimapPreserve, &minimapInputFailure, nativeCaptureFailed, terrainRequest, &progress](MapSaveTask&) mutable -> Status {
                 bool staticInputsUnchanged = false;
                 if (terrainRequest) {
+                    Detail::SaveProgressStage timing(progress, "pathing");
                     auto prepared = TerrainPathingSave::PrepareForSave(*task.archive, finalEdits, request.gameRoot,
                         {}, task.replacements, task.removals);
                     if (!prepared.Succeeded() || !prepared.value) return {std::move(prepared.diagnostics)};
@@ -1103,14 +1112,17 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic
                     || request.minimapChoice == TerrainMinimapSaveChoice::Preserve) {
+                    Detail::SaveProgressStage timing(progress, "minimap-markers");
                     const auto markers = PrepareTerrainMinimapMarkers(task, request.gameRoot, &finalEdits, terrainPlan);
                     if (!markers.Succeeded()) return markers;
                 }
                 if (request.rebuildTerrainShadow) {
+                    Detail::SaveProgressStage timing(progress, "shadow");
                     const auto shadow = PrepareTerrainShadowBake(task, request.gameRoot, &finalEdits, terrainPlan);
                     if (!shadow.Succeeded()) return shadow;
                 }
                 if (request.minimapChoice == TerrainMinimapSaveChoice::Automatic) {
+                    Detail::SaveProgressStage timing(progress, "minimap");
                     auto prepared = (minimapInputFailure.empty() || (!automaticRequired && !nativeCaptureFailed))
                         ? TerrainMinimapSave::PrepareAutomaticOrPreserve(task, finalEdits, request.gameRoot, {}, terrainPlan)
                         : TerrainMinimapSave::PreserveUnsupportedAutomatic(task, finalEdits, minimapInputFailure);
@@ -1185,6 +1197,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             return Forward(std::move(task.diagnostics));
         }
         written = true;
+        Detail::SaveProgressStage readbackTiming(progress, "derived-readback");
         if (terrainPlan) {
             const auto readback = minimapSave ? minimapSave->VerifyReadback(task, *task.nextSession)
                 : terrainPlan->VerifyReadback(*task.nextSession);

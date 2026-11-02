@@ -140,6 +140,7 @@ void PrintUsage() {
         << "  map-edit-save --ui-root <ui-data-root> binds a separate UI catalog; compiler root and its safety checks stay unchanged.\n"
         << "  map-edit-save --lua-map-target <configuration> uses a SHA-bound Lua profile and checker for explicit v31 Lua saving.\n"
         << "  map-edit-save --rebuild-shadows explicitly recomputes SHD from source terrain and game resources; requires terrain SHA, may be used without strokes. Unsupported receivers/casters are rejected; ordinary save preserves SHD.\n"
+        << "  map-edit-save --save-timings reports nested save-stage boundaries in microseconds to stderr; it does not change saved members or validation.\n"
         << "  --source-encoding <absolute-file> utf8|gbk; --include-access <absolute-path> directory|file utf8|gbk|auto required|optional. Include access does not add search or injection roots.\n"
         << "  1..128 ordered terrain commands share the limit. --stroke/--water-stroke use terrain vertex indices; --corner-ramp/--straight-ramp use canonical world coordinates; --terrain-bounds changes the playable cell rectangle; --terrain-resize changes the outer cell rectangle. Object world positions stay fixed. --rebuild-shadows may be used without terrain strokes.\n"
         << "war3-map-cli archive-session-inspect <map-archive> [--expected-source-sha256 <64hex>] [--member <internal-path> ...]\n"

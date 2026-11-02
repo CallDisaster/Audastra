@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
+#include <mutex>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -389,11 +391,14 @@ int RunMapEditSave(int argc, wchar_t** argv) {
     std::optional<Services::MapEditPlacementTransform> rotation;
     std::size_t retainedTriggerTextBytes = 0;
     std::optional<std::string> runtimeMode, runtimePackage;
-    bool approveRuntime = false, purposeSpecified = false;
+    bool approveRuntime = false, purposeSpecified = false, saveTimings = false;
     for (int index = 8; index < argc;) {
         const std::wstring_view flag(argv[index]);
         std::string error;
-        if (flag == L"--in-process-only") {
+        if (flag == L"--save-timings") {
+            if (saveTimings) return Invalid("--save-timings cannot be repeated");
+            saveTimings = true; ++index;
+        } else if (flag == L"--in-process-only") {
             if (request.inProcessOnly) return Invalid("--in-process-only cannot be repeated");
             request.inProcessOnly = true; ++index;
         } else if (flag == L"--trigger-code-edit-file") {
@@ -686,7 +691,16 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         && std::holds_alternative<std::monostate>(request.placementEdit) && !request.triggerEdits
         && !request.rebuildTerrainShadow && !request.runtime.decision && !request.settingsCustomEdits && !request.triggerCodeIdentity)
         return Invalid("at least one bounded edit operation is required");
-    auto saved = Services::SaveMapEditCandidate(request);
+    const auto timingStart = std::chrono::steady_clock::now();
+    std::mutex timingMutex;
+    Services::MapSaveService::Progress timingProgress;
+    if (saveTimings) timingProgress = [&](std::string_view event) {
+        if (!event.starts_with("save-timing.")) return;
+        const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - timingStart).count();
+        const std::lock_guard lock(timingMutex);
+        std::cerr << "save_timing_event=" << elapsed << '|' << event << '\n';
+    };
+    auto saved = Services::SaveMapEditCandidate(request, timingProgress);
     PrintDiagnostics(saved.diagnostics);
     if (!saved.Succeeded() || !saved.value) return 1;
     const auto& receipt = *saved.value;
