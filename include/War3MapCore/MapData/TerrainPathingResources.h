@@ -134,7 +134,7 @@ private:
     friend class Services::TerrainSessionResources;
     friend class Services::TerrainHistorySave;
     friend class TerrainSavePlan;
-    // 仅保存计划在完整源WPM逐格匹配并证明远区纯贴图编辑后绑定载入缓存。
+    // 保存计划可只读辨识完整源WPM的载入缓存；仅证明远区纯贴图编辑后才绑定使用。
     [[nodiscard]] Result<std::vector<std::byte>> GenerateNativeForCache(const TerrainGridSnapshot& terrain,
         TerrainNativeStage stage, std::size_t maximumBytes, bool loadedSpecialCache) const;
     bool nativeLoadedSpecialCache_ = false;

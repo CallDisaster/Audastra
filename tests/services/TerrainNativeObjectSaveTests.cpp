@@ -1282,7 +1282,7 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
         Fixture adjacent; prepare(adjacent); paint(adjacent, point.x, point.y);
         Require(adjacent.edits->IsDirty(), "adjacent rejection fixture must contain an actual ground paint");
         const auto refused = saveGate(TerrainPathingSave::PrepareForSave(*adjacent.archive, *adjacent.edits, adjacent.gameRoot));
-        Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_PATHING_SOURCE_UNEXPLAINED"),
+        Require(!refused.Succeeded() && HasCode(refused, "TERRAIN_PATHING_SPECIAL_CACHE_EDIT_UNSUPPORTED"),
             "special chunk and boundary-sharing chunks cannot acquire loaded-cache qualification");
     }
     Fixture corrupt; prepare(corrupt); corrupt.Member("war3map.wpm")[16] |= std::byte{4}; corrupt.Open();
@@ -1298,7 +1298,8 @@ void LoadedSpecialCacheOnlyAllowsDisjointGroundPainting() {
     TerrainBrush raised; raised.kind = TerrainBrushKind::Raise; raised.radius = 0; raised.strength = 32;
     const TerrainStrokePoint high{768,768}; Take(geometry.edits->EditTerrain(raised, std::span(&high, 1), false));
     Require(geometry.edits->IsDirty(), "geometry rejection fixture must contain an actual height change");
-    Require(!saveGate(TerrainPathingSave::PrepareForSave(*geometry.archive, *geometry.edits, geometry.gameRoot)).Succeeded(),
+    const auto geometryRefused = saveGate(TerrainPathingSave::PrepareForSave(*geometry.archive, *geometry.edits, geometry.gameRoot));
+    Require(!geometryRefused.Succeeded() && HasCode(geometryRefused, "TERRAIN_PATHING_SPECIAL_CACHE_EDIT_UNSUPPORTED"),
         "loaded-cache proof does not authorize combined ground and geometry changes");
 }
 

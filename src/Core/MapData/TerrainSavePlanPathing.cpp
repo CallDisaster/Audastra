@@ -205,7 +205,12 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
                 if ((oldWpm[i + 16] & std::byte{0xee}) != (generated[i] | savedIntent[i])) return false;
             return true;
         };
-        if (!explainsSource(*original.value) && loadedSpecialCacheEligible()) {
+        if (!explainsSource(*original.value) && sourceResource.nativeSpecialCount_[0]) {
+            const bool cacheEditEligible = loadedSpecialCacheEligible();
+            std::size_t firstDifference = 0;
+            while (firstDifference < cells && (oldWpm[firstDifference + 16] & std::byte{0xee})
+                == ((*original.value)[firstDifference] | savedIntent[firstDifference])) ++firstDifference;
+            const auto immediate = (*original.value)[firstDifference];
             original.value.reset(); // 重用已计费峰值，不能同时保留两份全图。
             original = resource.GenerateNativeForCache(*edits.terrainOriginal_, TerrainNativeStage::Before,
                 limits.maximumBytes - total, true);
@@ -213,7 +218,14 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
             if (original.value->size() != cells)
                 return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "载入缓存与完整源WPM形状不一致。");
             // 完整逐格验证同一来源和savedS；任意额外位继续走原拒绝。
-            if (explainsSource(*original.value)) resource.nativeLoadedSpecialCache_ = true;
+            if (explainsSource(*original.value)) {
+                if (!cacheEditEligible)
+                    return Output::Failure(kSubsystem, "TERRAIN_PATHING_SPECIAL_CACHE_EDIT_UNSUPPORTED",
+                        "整份源通行已匹配原版特殊地形初次载入缓存，但本次修改超出已支持的远区纯贴图更新范围，保留原图。"
+                        + UnexplainedCell(edits.terrainOriginal_->header, firstDifference,
+                            oldWpm[firstDifference + 16], immediate, savedIntent[firstDifference]));
+                resource.nativeLoadedSpecialCache_ = true;
+            }
         }
         for (std::size_t i = 0; i < cells; ++i) {
             const auto expected = (*original.value)[i] | savedIntent[i];
