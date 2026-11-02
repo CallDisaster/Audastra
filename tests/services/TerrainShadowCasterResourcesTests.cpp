@@ -273,7 +273,7 @@ void Fixed270PreservesActualPlacementPose() {
     Require(owner->Casters().size() == 2, "270度标准角不应丢失模型实例");
     for (std::size_t index = 0; index < owner->Casters().size(); ++index) {
         const auto& caster = owner->Casters()[index];
-        Require(caster.fixedRotation == 270 && caster.placement.rotation == 0.75f
+        Require(caster.fixedRotation == 270 && caster.placement.rotation == f.placements.doodads[index + 2].rotation
             && caster.nativeMatrix == original->Casters()[index].nativeMatrix,
             "固定字段不能覆盖或叠加实际摆放角；零倾斜矩阵应与自由角同姿势");
     }

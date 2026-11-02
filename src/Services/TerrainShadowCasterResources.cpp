@@ -441,7 +441,10 @@ Result<std::shared_ptr<const TerrainShadowCasterResources>> TerrainShadowCasterR
                     // 不把表中角度再乘进矩阵，其它非负固定角仍保留原支持边界。
                     if (defaultScale < 0.01f || pitch != 0 || roll != 0
                         || (fixedRotation >= 0 && fixedRotation != 270) || floating != 0)
-                        Fail("TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED", "阴影模型的缩放、倾斜或固定转角不在已接通的原版变换域：" + placement.rawcode);
+                        Fail("TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED", "阴影模型的缩放、倾斜或固定转角不在已接通的原版变换域：" + placement.rawcode
+                            + "（defScale=" + std::to_string(defaultScale) + ", maxPitch=" + std::to_string(pitch)
+                            + ", maxRoll=" + std::to_string(roll) + ", fixedRot=" + std::to_string(fixedRotation)
+                            + ", floats=" + std::to_string(floating) + "）。");
                     const auto count = Integer(doodads.Field(placement.rawcode, "numvar"), "numVar", placement.rawcode);
                     if (count < 1 || count > 10 || placement.variation < 0 || placement.variation >= count)
                         Fail("TERRAIN_SHADOW_CASTER_VARIATION", "阴影模型变体不在已证的显式有效域中：" + placement.rawcode);
