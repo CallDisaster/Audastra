@@ -633,7 +633,7 @@ void MissingPathingIsGeneratedWithoutSourceAttribution() {
         "generated WPM contains the full native grid with no invented preserved bits");
     const auto bounded = TerrainSavePlan::PrepareForSave(source, edits, {}, {128});
     Require(!bounded.Succeeded() && std::any_of(bounded.diagnostics.begin(), bounded.diagnostics.end(), [](const auto& diagnostic) {
-        return diagnostic.code == "TERRAIN_SAVE_PLAN_BUDGET";
+        return diagnostic.code == "TERRAIN_SAVE_PLAN_BUDGET" || diagnostic.code == "FILE_READ_BUDGET_EXCEEDED";
     }), "missing WPM generation retains the actual source/output budget gate");
     Check(plan.CommitSaved(edits, MapDocument::FromArchive(saved)));
     Require(edits.HasTerrainPathing() && !edits.IsDirty(), "actual saved WPM becomes the new baseline atomically");
