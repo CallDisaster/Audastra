@@ -822,7 +822,16 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 #include "TerrainBridgeStateOracle.h"
 #include "TerrainSourcePathingAudit.h"
 #include "TerrainTemplateObjectAudit.h"
+#include "TerrainCorpusMovementFixture.h"
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 9 && std::wstring_view(argv[1]) == L"--terrain-save-movement") {
+        try {
+            const std::wstring wide(argv[3]);
+            return PrepareCorpusMovement(argv[2], std::string(wide.begin(), wide.end()), argv[4], argv[5], argv[6],
+                std::stod(argv[7]), std::stod(argv[8]));
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     if (argc == 7 && std::wstring_view(argv[1]) == L"--template-object-source-audit") {
         try {
             const std::wstring wideExpected(argv[3]);
