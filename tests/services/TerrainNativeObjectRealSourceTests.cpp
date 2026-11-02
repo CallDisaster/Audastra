@@ -828,8 +828,15 @@ int wmain(int argc, wchar_t** argv) {
     if (argc == 9 && std::wstring_view(argv[1]) == L"--terrain-save-movement") {
         try {
             const std::wstring wide(argv[3]);
+            const auto number = [](const wchar_t* text) {
+                const std::wstring input(text); std::size_t consumed = 0;
+                const auto value = std::stod(input, &consumed);
+                Require(consumed == input.size() && std::isfinite(value) && std::abs(value) <= 16777216,
+                    "movement coordinate must be one complete finite world value");
+                return value;
+            };
             return PrepareCorpusMovement(argv[2], std::string(wide.begin(), wide.end()), argv[4], argv[5], argv[6],
-                std::stod(argv[7]), std::stod(argv[8]));
+                number(argv[7]), number(argv[8]));
         } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     }
     if (argc == 7 && std::wstring_view(argv[1]) == L"--template-object-source-audit") {

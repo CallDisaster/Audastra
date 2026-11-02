@@ -51,8 +51,8 @@ public:
         const auto point = Call(argument, "location", "Location", 2);
         Value(Arg(point, 0), 3, Number(x)); Value(Arg(point, 1), 3, Number(y));
     }
-    Id Timed(Id category, std::string_view name, std::string seconds) {
-        const auto trigger = Take(Edit::AddTrigger(document, category, name));
+    Id Timed(std::int32_t category, std::string_view name, std::string seconds) {
+        const auto trigger = Take(Edit::AddTrigger(document, category, std::string(name)));
         const auto timer = Root(trigger, Kind::Event, "TriggerRegisterTimerEventSingle", 1);
         Value(Arg(timer, 0), 3, std::move(seconds)); return trigger;
     }
