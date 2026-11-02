@@ -146,6 +146,12 @@ struct MapEditMinimapReceipt {
     Render::TerrainMinimapRangePolicy rangePolicy = Render::TerrainMinimapRangePolicy::FullW3e;
 };
 
+struct MapEditOpaqueMemberReceipt {
+    std::string name;
+    std::size_t originalBytes = 0, savedBytes = 0;
+    std::string originalSha256, savedSha256;
+};
+
 struct MapEditSaveReceipt {
     std::filesystem::path candidate;
     std::string sourceSha256;
@@ -173,6 +179,8 @@ struct MapEditSaveReceipt {
     std::size_t appliedSettingsCustomEditCount = 0;
     std::optional<TriggerCodeIdentitySummary> codeIdentity;
     bool previewOnly = false;
+    // 归档保存链返回不透明成员的身份；调用方不必另行提取这些成员。
+    std::vector<MapEditOpaqueMemberReceipt> opaqueScriptMembers;
     std::optional<Trigger::TriggerGraphEditReceipt> codeIdentityGraph;
 };
 

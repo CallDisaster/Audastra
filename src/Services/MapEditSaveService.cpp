@@ -6,6 +6,7 @@
 #include "MapEditSaveValidation.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
@@ -1227,6 +1228,20 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         result.value->scriptPreserved = task.scriptPreserved;
         result.value->runtimePurpose = task.runtimePurpose;
         result.value->runtimePackaged = task.nextSession->HasMember(kMapRuntimeInstallationMember);
+        for (const auto& member : source.Members()) {
+            if (!Jass::IsAiScriptTextSource(std::filesystem::u8path(member.name))) continue;
+            const std::array<std::string, 1> names{member.name};
+            const auto before = source.DescribeExactMemberIdentities(source.SourceSha256(), names);
+            const auto after = task.nextSession->DescribeExactMemberIdentities(task.nextSession->SourceSha256(), names);
+            if (!before.Succeeded()) return Forward(before.diagnostics);
+            if (!after.Succeeded()) return Forward(after.diagnostics);
+            const auto& a = before.value->members.front();
+            const auto& b = after.value->members.front();
+            if (!a.present || !b.present || !a.byteSize || !b.byteSize || !a.sha256 || !b.sha256)
+                return Fail("SAVE_OPAQUE_MEMBER_RECEIPT_INCOMPLETE", "保存后无法取得不透明成员的完整身份。");
+            result.value->opaqueScriptMembers.push_back({member.name, static_cast<std::size_t>(*a.byteSize),
+                static_cast<std::size_t>(*b.byteSize), *a.sha256, *b.sha256});
+        }
         if (minimapSave) {
             const auto& manifest = minimapSave->Manifest();
             const auto& mip0 = minimapSave->DecodedMip0();

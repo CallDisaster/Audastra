@@ -1,4 +1,5 @@
 #include "LuaTriggerCandidateCommand.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/Services/LuaTriggerCandidate.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Hash.h"
@@ -22,6 +23,10 @@ struct Source {
     std::string sha;
 };
 std::optional<Source> Read(const std::filesystem::path& path, std::size_t limit) {
+    if (Jass::IsAiScriptTextSource(path)) {
+        std::cerr << Jass::kAiScriptTextCode << ": " << Jass::kAiScriptTextMessage << '\n';
+        return {};
+    }
     auto bytes = IO::ReadFileBytes(path, limit);
     if (!bytes.Succeeded()) { Errors(bytes.diagnostics); return {}; }
     auto sha = Sha256(*bytes.value);

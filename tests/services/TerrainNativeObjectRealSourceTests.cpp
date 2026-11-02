@@ -870,16 +870,7 @@ int wmain(int argc, wchar_t** argv) {
             Require(expected.size() == 64 && std::all_of(expected.begin(), expected.end(),
                 [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }), "corpus SHA must be canonical");
             Require(Take(Sha256File(path)) == expected, "corpus source identity changed");
-            const auto metadata = Take(Mpq::MpqArchive::OpenReadOnly(path));
-            for (const auto& member : Take(metadata.ListFilesStrict())) {
-                auto name = member.name;
-                std::transform(name.begin(), name.end(), name.begin(),
-                    [](unsigned char c) { return c >= 'A' && c <= 'Z' ? char(c + 'a' - 'A') : char(c); });
-                if (name.ends_with(".ai")) {
-                    std::cout << "{\"eligible\":false,\"code\":\"AUDIT_EXCLUDED_MEMBER\"}\n";
-                    return 0;
-                }
-            }
+            // 选点仅用固定地形白名单；其它成员由正常产品保存链透传。
             const auto archive = Take(MapArchiveSession::OpenMinimapAudit(path));
             Require(archive.SourceSha256() == expected, "corpus source identity changed");
             const auto terrain = Take(ParseMapTerrain(Take(archive.ReadMember("war3map.w3e"))));

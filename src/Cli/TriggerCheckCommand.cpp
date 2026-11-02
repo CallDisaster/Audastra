@@ -1,4 +1,5 @@
 #include "TriggerCheckCommand.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/Script/TriggerStorageCapabilities.h"
 
 #include "War3MapCore/MapArchiveSession.h"
@@ -30,6 +31,10 @@ const char* Severity(DiagnosticSeverity severity) {
 // 在内存中用文本整体替换一个触发器；失败时列出全部诊断。
 bool ReplaceTrigger(Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog, const MapArchiveSession& archive,
     const std::filesystem::path& gameRoot, const std::filesystem::path& toolRoot, std::string_view name, const std::filesystem::path& textFile) {
+    if (Jass::IsAiScriptTextSource(textFile)) {
+        std::cerr << Jass::kAiScriptTextCode << ": " << Jass::kAiScriptTextMessage << '\n';
+        return false;
+    }
     std::ifstream stream(textFile, std::ios::binary);
     if (!stream) { std::cerr << "TriggerCheck: TEXT_FILE_READ_FAILED\n"; return false; }
     const std::string text{std::istreambuf_iterator<char>(stream), {}};

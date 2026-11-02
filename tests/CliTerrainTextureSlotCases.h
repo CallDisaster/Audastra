@@ -4,6 +4,11 @@ void TerrainTextureSlotCliActuallySaves() {
     namespace P = AudastraTest::TextureSlot;
     namespace M = War3Map::MapData;
     P::Fixture fixture;
+    {
+        const auto source = P::Take(War3Map::MapArchiveSession::Open(fixture.source.path));
+        const std::vector<War3Map::MemberReplacement> opaque{{"x.ai", P::Bytes("// original harmless opaque fixture\n")}};
+        fixture.source = P::Take(source.SaveCandidate(fixture.root / "opaque-source.w3x", opaque));
+    }
     auto request = fixture.Request("direct-cli");
     request.terrainStrokes = {P::Command(true, M::TerrainTextureTable::Ground, 1, "", "Tg02"),
         P::Command(false, M::TerrainTextureTable::Ground, 1, "Tg02", "Tg03"),
@@ -17,6 +22,10 @@ void TerrainTextureSlotCliActuallySaves() {
         L"--terrain-slot-append", L"cliff", L"1", L"Cl02"};
     const auto saved = Invoke(args);
     if (saved.exitCode != 0) throw std::runtime_error(saved.error);
+    Require(saved.output.find("script_backend_policy=in_process_only") != std::string::npos
+        && saved.output.find("opaque_script_member_count=1") != std::string::npos
+        && saved.output.find("opaque_script_member_0=x.ai") != std::string::npos,
+        "CLI reports backend policy and opaque identity without extracting script contents");
     auto expected = P::Take(War3Map::MapArchiveSession::Open(request.targetCandidate));
     auto actual = P::Take(War3Map::MapArchiveSession::Open(candidate));
     for (const char* member : {"war3map.w3e", "war3map.wpm", "war3map.w3i", "war3map.doo", "unchanged.bin"})

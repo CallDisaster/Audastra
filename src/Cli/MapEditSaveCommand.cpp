@@ -1,4 +1,5 @@
 #include "MapEditSaveCommand.h"
+#include "War3MapCore/Jass/ScriptTextSource.h"
 #include "War3MapCore/IO/FileBytes.h"
 
 #include "War3MapCore/MapData/MapFields.h"
@@ -55,6 +56,10 @@ int Invalid(std::string_view detail) {
 }
 
 std::optional<std::string> ReadUtf8Text(const std::filesystem::path& path, std::string& error) {
+    if (Jass::IsAiScriptTextSource(path)) {
+        error = std::string(Jass::kAiScriptTextCode) + ": " + std::string(Jass::kAiScriptTextMessage);
+        return std::nullopt;
+    }
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input) { error = "cannot read UTF-8 text file"; return std::nullopt; }
     const auto length = input.tellg();
@@ -701,6 +706,14 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         std::cout << "\nedited_member_" << index << '=' << member.name
                   << "\nedited_member_" << index << "_original_sha256=" << member.originalSha256
                   << "\nedited_member_" << index << "_saved_sha256=" << member.savedSha256;
+    }
+    std::cout << "\nscript_backend_policy=in_process_only\nopaque_script_member_count=" << receipt.opaqueScriptMembers.size();
+    for (std::size_t index = 0; index < receipt.opaqueScriptMembers.size(); ++index) {
+        const auto& member = receipt.opaqueScriptMembers[index];
+        const auto prefix = "\nopaque_script_member_" + std::to_string(index);
+        std::cout << prefix << '=' << member.name << prefix << "_original_bytes=" << member.originalBytes
+            << prefix << "_saved_bytes=" << member.savedBytes << prefix << "_original_sha256=" << member.originalSha256
+            << prefix << "_saved_sha256=" << member.savedSha256;
     }
     if (receipt.generatedMissingMinimap) {
         const auto& minimap = *receipt.generatedMissingMinimap;
