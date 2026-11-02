@@ -1043,12 +1043,15 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     if (!TerrainDiffers(terrain, terrainOriginal_) && pathing == pathingOriginal_
         && specialDoodads_ == savedSpecialDoodads_ && !HasTerrainBoundsChanges()
         && (!terrain || doodads == original_[Index(MapDataKind::Doodads)])) return Status::Ok();
-    if (!terrain || !terrainOriginal_ || !pathing || !pathingOriginal_)
+    // 缺失来源只能由完整native保存计划生成；不能把空/损坏WPM当成缺失。
+    const bool missingPathing = nativeRebuild && !pathing && !pathingOriginal_
+        && !pathingProtected_ && !originalPathingRestrictions_ && !pathingRestrictions_ && !resizeState_;
+    if (!terrain || !terrainOriginal_ || (!missingPathing && (!pathing || !pathingOriginal_)))
         return reject("已修改地形但缺少源 W3E 或唯一可验证的 WPM，拒绝正式地图保存");
-    if (!pathingProtected_ || !originalPathingRestrictions_ || !pathingRestrictions_)
+    if (!missingPathing && (!pathingProtected_ || !originalPathingRestrictions_ || !pathingRestrictions_))
         return reject("通行修改缺少受保护来源和保存前后的独立意图，拒绝正式地图保存");
     const bool resize = resizeState_ && (!SameHeader(terrainOriginal_->header, terrain->header) || HasTerrainResizeChanges());
-    if (!resize) {
+    if (!resize && !missingPathing) {
         const auto layers = VerifyPathingRestrictionLayers(terrainOriginal_->header, *pathingOriginal_, *pathing,
             *pathingProtected_, *originalPathingRestrictions_, restrictions ? *restrictions : *pathingRestrictions_);
         if (!layers.Succeeded()) return layers;
@@ -1097,6 +1100,7 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
         return reject("地图范围已变，必须分别按旧/新W3I重算完整通行贡献。");
     if (!TerrainDiffers(terrain, terrainOriginal_)) {
         if (const auto checked = checkPlacements(); !checked.Succeeded()) return checked;
+        if (missingPathing) return Status::Ok();
         return PathingBlightDeltaMatchesTerrain(*pathingOriginal_, *pathing, *terrainOriginal_, *terrain, kPathingRestrictionBits)
             ? Status::Ok() : reject("W3E 未变，WPM 只能写入已声明的本工程通行限制变化");
     }
@@ -1201,11 +1205,12 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
     }
     // 源限制和地形贡献各自已验证；只改变普通摆放Z不会改变对象的XY通行占地。
     // 荒芜与本工程限制合并时，同样不能混入其它摆放或范围变化。
-    for (std::size_t i = kPathingHeaderBytes; !invariantChanged && i < pathing->size(); ++i)
+    for (std::size_t i = kPathingHeaderBytes; !missingPathing && !invariantChanged && i < pathing->size(); ++i)
         invariantChanged = (((*pathing)[i] ^ (*pathingOriginal_)[i]) & std::byte{kPathingRestrictionBits}) != std::byte{0};
     if (invariantChanged) {
         if (const auto checked = checkPlacements(); !checked.Succeeded()) return checked;
     }
+    if (missingPathing) return checkPlacements();
     const auto width = (terrain->header.width - 1) * 4, height = (terrain->header.height - 1) * 4;
     const auto expectedBytes = kPathingHeaderBytes + static_cast<std::size_t>(width) * height;
     if (pathing->size() != expectedBytes || pathingOriginal_->size() != expectedBytes

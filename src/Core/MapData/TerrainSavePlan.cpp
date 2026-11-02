@@ -326,14 +326,17 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     plan.revision_ = edits.Revision();
     plan.terrainSourceRevision_ = edits.TerrainSourceRevision();
     plan.terrainChanged_ = HasTerrainChanges(edits);
-    if (!edits.terrainOriginal_ || !edits.terrain_ || !edits.pathingOriginal_ || !edits.pathing_)
+    const bool missingPathing = plan.members_[1].sourceState == TerrainSaveSourceState::Missing
+        && !plan.members_[1].sourceBytes && !plan.members_[1].sourceSha256
+        && !edits.pathingOriginal_ && !edits.pathing_;
+    if (!edits.terrainOriginal_ || !edits.terrain_ || (!missingPathing && (!edits.pathingOriginal_ || !edits.pathing_)))
         return Result<TerrainSavePlan>::Failure(std::string(kSubsystem), "TERRAIN_SAVE_PLAN_BASELINE_MISSING",
             "地形保存计划需要完整附入的原始和当前 W3E/WPM。");
 
     // 用真实会话基线核对冻结来源，不接受调用方传入任意旧字节来替代原图。
     auto original = TerrainBytes(*edits.terrainOriginal_, total, limits);
     RequireStatus(MatchBytes(plan.members_[0], original, false));
-    RequireStatus(MatchBytes(plan.members_[1], *edits.pathingOriginal_, false));
+    if (!missingPathing) RequireStatus(MatchBytes(plan.members_[1], *edits.pathingOriginal_, false));
     // 原WPM等价证明只覆盖旧资源。混合物编/导入时改用完整旧WPM重现，
     // 再冻结实际静态通行依赖；不能靠文件扩展名或调用者布尔声明资源无关。
     if (finalMembers.size() > 4096 || finalRemovals.size() > 4096 - finalMembers.size())
@@ -378,7 +381,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
                 ? Reject("TERRAIN_SAVE_PLAN_PATHING_PROOF", "未取得完整的通行限制来源验证结果。")
                 : Status{proof.diagnostics};
     }
-    if (!edits.HasTerrainResizeChanges() && !plan.saveGate_.Succeeded() && sourceArchive && gameRoot
+    if (!missingPathing && !edits.HasTerrainResizeChanges() && !plan.saveGate_.Succeeded() && sourceArchive && gameRoot
         && TerrainPathingResources::Needed(*edits.terrainOriginal_, *edits.terrain_)) {
         auto resources = Take(TerrainPathingResources::Capture(*sourceArchive, *edits.terrainOriginal_, *edits.terrain_,
             *gameRoot, limits.maximumBytes - total));
@@ -388,7 +391,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)], plan.pathingResources_.get());
     }
     std::optional<std::vector<std::byte>> rebuiltPathing;
-    if ((!plan.saveGate_.Succeeded() || mixedProof || edits.HasTerrainResizeChanges()) && gameRoot && (sourceArchive || workspace || nativeCapture)) {
+    if ((missingPathing || !plan.saveGate_.Succeeded() || mixedProof || edits.HasTerrainResizeChanges()) && gameRoot && (sourceArchive || workspace || nativeCapture)) {
         auto rebuilt = plan.RebuildPathing(edits, sourceArchive, workspace, *gameRoot, limits, total, nativeCapture);
         if (!rebuilt.Succeeded() || !rebuilt.value) {
             plan.saveGate_ = rebuilt.diagnostics.empty()
@@ -406,7 +409,7 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
     plan.pathingInvariant_ = plan.pathingInvariant_ || edits.terrain_->header.groundTilesets != edits.terrainOriginal_->header.groundTilesets
         || edits.terrain_->header.cliffTilesets != edits.terrainOriginal_->header.cliffTilesets
         || edits.terrain_->header.usesCustomTileset != edits.terrainOriginal_->header.usesCustomTileset;
-    if (edits.pathing_->size() == edits.pathingOriginal_->size())
+    if (!missingPathing && edits.pathing_->size() == edits.pathingOriginal_->size())
         for (std::size_t i = 16; i < edits.pathing_->size(); ++i)
             plan.pathingInvariant_ = plan.pathingInvariant_
                 || (((*edits.pathing_)[i] ^ (*edits.pathingOriginal_)[i]) & std::byte{kPathingRestrictionBits}) != std::byte{0};
@@ -497,7 +500,14 @@ Result<TerrainSavePlan> TerrainSavePlan::Complete(TerrainSavePlan plan,
             "写出已编辑 W3E；保留原通行的修改已核对原版语义与实际输入，荒芜按原位联动。");
     }
     if (rebuiltPathing) {
-        setOutput(1, std::move(*rebuiltPathing), "按实际地形、范围和对象规则重建通行；旧输入已逐格匹配源六位，保留其它源位与本工程限制。");
+        setOutput(1, std::move(*rebuiltPathing), missingPathing
+            ? "源无 WPM，按原版规则生成；没有旧通行来源或限制意图，不作来源解释。"
+            : "按实际地形、范围和对象规则重建通行；旧输入已逐格匹配源六位，保留其它源位与本工程限制。");
+        if (missingPathing) {
+            plan.members_[1].reasonCode = "TERRAIN_SAVE_GENERATED_MISSING_WPM";
+            plan.diagnostics_.push_back({DiagnosticSeverity::Info, std::string(kSubsystem),
+                "TERRAIN_SAVE_GENERATED_MISSING_WPM", plan.members_[1].reason});
+        }
     } else if (edits.pathing_ != edits.pathingOriginal_) {
         AddBytes(edits.pathing_->size(), total, limits);
         setOutput(1, *edits.pathing_, "写出来源绑定的本工程通行限制与对应荒芜变化；原有限制、重叠限制和其它位保持，不作通用通行重建。");

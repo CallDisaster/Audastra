@@ -818,13 +818,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             originalTerrainShaValue = savedTerrainShaValue = *terrainSha.value;
         }
         if (terrainRequest) {
-            if (!source.HasMember("war3map.w3e") || !source.HasMember("war3map.wpm")) {
-                return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图必须同时包含唯一可读取的 W3E 和 WPM。");
-            }
-            auto terrainBytes = source.ReadMember("war3map.w3e");
-            auto pathingBytes = source.ReadMember("war3map.wpm");
-            if (!terrainBytes.Succeeded() || !terrainBytes.value) return Forward(std::move(terrainBytes.diagnostics));
-            if (!pathingBytes.Succeeded() || !pathingBytes.value) return Forward(std::move(pathingBytes.diagnostics));
+            auto actual = source.CaptureExactMembers(std::array<std::string, 2>{"war3map.w3e", "war3map.wpm"});
+            if (!actual.Succeeded() || !actual.value) return Forward(actual.diagnostics);
+            if (!actual.value->at(0).present)
+                return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图必须包含唯一可读取的 W3E；WPM仅在明确缺失时由完整原版规则生成。");
+            auto terrainBytes = Result<std::vector<std::byte>>::Success(std::move(actual.value->at(0).bytes));
+            // 重放接口用空span表达已核实的absence；已有空成员仍交给AttachPathing拒绝。
+            auto pathingBytes = Result<std::vector<std::byte>>::Success(std::move(actual.value->at(1).bytes));
             auto terrainSha = Sha256(*terrainBytes.value);
             if (!terrainSha.Succeeded() || !terrainSha.value) return Forward(std::move(terrainSha.diagnostics));
             if (*terrainSha.value != request.expectedTerrainSha256) {
@@ -834,8 +834,10 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             if (!edits.HasTerrainPathing()) {
                 const auto attachedTerrain = edits.AttachTerrain(*terrainBytes.value);
                 if (!attachedTerrain.Succeeded()) return Forward(attachedTerrain.diagnostics);
-                const auto attachedPathing = edits.AttachPathing(*pathingBytes.value);
-                if (!attachedPathing.Succeeded()) return Forward(attachedPathing.diagnostics);
+                if (actual.value->at(1).present) {
+                    const auto attachedPathing = edits.AttachPathing(*pathingBytes.value);
+                    if (!attachedPathing.Succeeded()) return Forward(attachedPathing.diagnostics);
+                }
             }
             const auto grid = edits.Terrain();
             if (!grid) return Fail("SAVE_TERRAIN_UNAVAILABLE", "源 W3E 无法建立地形编辑快照。");

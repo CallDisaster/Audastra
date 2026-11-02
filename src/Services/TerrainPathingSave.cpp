@@ -667,7 +667,7 @@ std::string Canonical(std::string name) {
 
 bool SourceMatches(const MapDocument& original, std::span<const std::byte> terrain,
     std::span<const std::byte> pathing, std::span<const ArchiveExactMember> actual) {
-    if (actual.size() != 10 || !actual[0].present || !actual[1].present
+    if (actual.size() != 10 || !actual[0].present || actual[1].present != !pathing.empty()
         || !std::equal(terrain.begin(), terrain.end(), actual[0].bytes.begin(), actual[0].bytes.end())
         || !std::equal(pathing.begin(), pathing.end(), actual[1].bytes.begin(), actual[1].bytes.end())) return false;
     for (const auto& state : original.Members()) {
@@ -820,8 +820,10 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
     auto candidate = std::make_unique<MapData::MapDataEditSession>(original);
     const auto attached = candidate->AttachTerrain(terrain);
     if (!attached.Succeeded()) return {{}, attached.diagnostics};
-    const auto attachedPathing = candidate->AttachPathing(pathing);
-    if (!attachedPathing.Succeeded()) return {{}, attachedPathing.diagnostics};
+    if (!pathing.empty()) {
+        const auto attachedPathing = candidate->AttachPathing(pathing);
+        if (!attachedPathing.Succeeded()) return {{}, attachedPathing.diagnostics};
+    }
     if (journal && !journal->baselinePathingLayers.empty()) {
         const auto restored = candidate->SetTerrainAndPathingDraft(terrain, pathing, journal->baselinePathingLayers);
         if (!restored.Succeeded()) return {{}, restored.diagnostics};

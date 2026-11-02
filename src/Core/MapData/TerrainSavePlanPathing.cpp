@@ -94,6 +94,36 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
     };
     if (!reserve(captured.value->CaptureBudgetBytes()))
         return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "完整通行规则超过保存计划预算。");
+    if (!edits.pathingOriginal_) {
+        if (members_[1].sourceState != TerrainSaveSourceState::Missing || members_[1].sourceBytes
+            || members_[1].sourceSha256 || edits.pathing_ || edits.pathingProtected_
+            || edits.pathingRestrictions_ || edits.originalPathingRestrictions_)
+            return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SOURCE", "缺失WPM生成必须绑定真实absence和无草稿/限制状态。");
+        const auto width = std::size_t(edits.terrain_->header.width - 1) * 4;
+        const auto height = std::size_t(edits.terrain_->header.height - 1) * 4;
+        if (!width || !height || width > 8192 || height > 8192 || width > (limits.maximumBytes - total) / height)
+            return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "缺失WPM网格超出完整生成预算。");
+        const auto cells = width * height;
+        // 生成、输出、保护层及后续独立回读临时副本在分配前预收。
+        if (!reserve(16) || cells > (limits.maximumBytes - total) / 5 || !reserve(cells * 5))
+            return Output::Failure(kSubsystem, "TERRAIN_SAVE_PLAN_BUDGET", "缺失WPM输出和回读超过保存计划预算。");
+        auto generated = captured.value->GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
+        if (!generated.Succeeded() || !generated.value) return {{}, std::move(generated.diagnostics)};
+        if (generated.value->size() != cells)
+            return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "缺失WPM生成结果与实际地形网格不一致。");
+        std::vector<std::byte> output(16 + cells), protectedSource(cells);
+        const auto integer = [&](std::size_t at, std::uint32_t value) {
+            for (unsigned i = 0; i < 4; ++i) output[at + i] = static_cast<std::byte>((value >> (i * 8)) & 255);
+        };
+        integer(0, 0x5733504d); integer(4, 0); integer(8, static_cast<std::uint32_t>(width)); integer(12, static_cast<std::uint32_t>(height));
+        for (std::size_t i = 0; i < cells; ++i) {
+            output[16 + i] = (*generated.value)[i];
+            protectedSource[i] = (*generated.value)[i] & std::byte{kPathingRestrictionBits};
+        }
+        nativePathingProtected_ = std::move(protectedSource);
+        pathingResources_ = std::make_shared<const TerrainPathingResources>(std::move(*captured.value));
+        return Output::Success(std::move(output));
+    }
     const auto& oldWpm = *edits.pathingOriginal_;
     const auto& savedIntent = *edits.originalPathingRestrictions_;
     const auto& intent = *edits.pathingRestrictions_;
@@ -282,9 +312,11 @@ Status TerrainSavePlan::InstallPathingOutput(const MapDataEditSession& edits,
     std::vector<MemberReplacement>& replacements) const {
     if (!RebuiltPathing()) return Status::Ok();
     if (!saveGate_.Succeeded()) return saveGate_;
+    const bool missingPathing = members_[1].sourceState == TerrainSaveSourceState::Missing;
     if (sessionIdentity_ != edits.SessionIdentity() || revision_ != edits.Revision()
-        || terrainSourceRevision_ != edits.TerrainSourceRevision() || !edits.pathing_
-        || !SameSha(*edits.pathing_, pathingDraftSha256_))
+        || terrainSourceRevision_ != edits.TerrainSourceRevision()
+        || (missingPathing ? edits.pathing_.has_value() || edits.pathingOriginal_.has_value()
+            : !edits.pathing_ || !SameSha(*edits.pathing_, pathingDraftSha256_)))
         return Reject("TERRAIN_SAVE_PLAN_STALE", "安装通行输出时原会话、修订或草稿已改变。");
     const auto output = std::find_if(replacements_.begin(), replacements_.end(),
         [](const auto& value) { return value.name == "war3map.wpm"; });
@@ -296,7 +328,7 @@ Status TerrainSavePlan::InstallPathingOutput(const MapDataEditSession& edits,
         if (!key.Succeeded() || !key.value) return {key.diagnostics};
         // CanonicalImportPath 统一为大写，不能漏掉已有草稿或大小写别名。
         if (*key.value != "WAR3MAP.WPM") continue;
-        if (existing != replacements.end() || it->data != *edits.pathing_)
+        if (existing != replacements.end() || !edits.pathing_ || it->data != *edits.pathing_)
             return Reject("TERRAIN_PATHING_REBUILD_CONFLICT", "最终列表存在重复或非当前草稿的WPM，拒绝覆盖。");
         existing = it;
     }
@@ -371,9 +403,17 @@ Status TerrainSavePlan::CommitSaved(MapDataEditSession& edits, const MapDocument
             return Reject("TERRAIN_SAVE_PLAN_ALLOCATION", "准备保存基线失败，原编辑状态保留。");
         }
     }
-    if (!edits.terrainOriginal_ || !edits.terrain_ || !edits.pathingOriginal_ || !edits.pathing_
-        || !edits.pathingRestrictions_ || !SameSha(*edits.pathingOriginal_, members_[1].sourceSha256)
-        || !SameSha(*edits.pathing_, pathingDraftSha256_) || !SameSha(*edits.pathingRestrictions_, pathingIntentSha256_))
+    if (sessionIdentity_ != edits.SessionIdentity() || revision_ != edits.Revision()
+        || terrainSourceRevision_ != edits.TerrainSourceRevision())
+        return Reject("TERRAIN_PATHING_COMMIT_STALE", "保存后的通行提交不属于同一会话及修订，编辑基线保持不变。");
+    const bool missingPathing = members_[1].sourceState == TerrainSaveSourceState::Missing;
+    const bool pathingMatches = missingPathing
+        ? !members_[1].sourceBytes && !members_[1].sourceSha256 && !edits.pathingOriginal_ && !edits.pathing_
+            && !edits.pathingProtected_ && !edits.originalPathingRestrictions_ && !edits.pathingRestrictions_
+        : edits.pathingOriginal_ && edits.pathing_ && edits.pathingRestrictions_
+            && SameSha(*edits.pathingOriginal_, members_[1].sourceSha256)
+            && SameSha(*edits.pathing_, pathingDraftSha256_) && SameSha(*edits.pathingRestrictions_, pathingIntentSha256_);
+    if (!edits.terrainOriginal_ || !edits.terrain_ || !pathingMatches)
         return Reject("TERRAIN_PATHING_COMMIT_STALE", "保存后的通行基线与前台来源、草稿或限制意图不一致。");
     const auto& doodads = edits.current_[MapDataEditSession::Index(MapDataKind::Doodads)];
     if (!doodads || doodads->size() != invariantMembers_[2].outputBytes

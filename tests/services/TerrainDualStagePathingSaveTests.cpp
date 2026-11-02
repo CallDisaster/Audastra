@@ -128,7 +128,9 @@ struct Fixture {
         archive = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(
             root / ("source-" + std::to_string(sequence++) + ".w3x"), members)).path)));
         edits = std::make_unique<MapDataEditSession>(MapDocument::FromMembers(members));
-        Check(edits->AttachTerrain(Member("war3map.w3e"))); Check(edits->AttachPathing(Member("war3map.wpm")));
+        Check(edits->AttachTerrain(Member("war3map.w3e")));
+        const auto pathing = std::find_if(members.begin(), members.end(), [](const auto& member) { return member.name == "war3map.wpm"; });
+        if (pathing != members.end()) Check(edits->AttachPathing(pathing->data));
     }
     void Paint() {
         TerrainBrush brush; brush.kind = TerrainBrushKind::WaterHeight; brush.shape = TerrainBrushShape::Square;
@@ -207,6 +209,24 @@ void ActualStaticTextureAndNativeOverridesSaveTogether() {
         auto redone = f.Save(redoPlan, redoOutput, Fixture::ExpectedPathing(true, 8, true));
         Require(Take(redone.ReadMember("war3map.w3e")) == f.ExpectedTerrain(true), "saved Redo retains final assets and restores full deep-water terrain");
     }
+}
+
+void MissingWpmUsesTheSameReplayAndFinalSave() {
+    Fixture f;
+    std::erase_if(f.members, [](const auto& member) { return member.name == "war3map.wpm"; }); f.Open();
+    TerrainStrokeIntent stroke; stroke.brush.kind = TerrainBrushKind::Texture; stroke.brush.radius = 0;
+    stroke.brush.groundTexture = "Tg01"; stroke.brush.variation = 1; stroke.points = {{512, 512}};
+    auto replay = Take(TerrainPathingSave::ReplayStrokes(*f.archive, MapDocument::FromMembers(f.members),
+        f.Member("war3map.w3e"), {}, std::span(&stroke, 1), f.gameRoot));
+    f.edits = std::move(replay.session);
+    Require(!f.edits->HasTerrainPathing(), "replay retains actual source absence");
+    auto output = f.edits->Replacements(); auto plan = f.Plan(output);
+    auto expected = Fixture::ExpectedPathing(false, 4, false);
+    for (std::size_t i = 16; i < expected.size(); ++i) expected[i] &= std::byte{0xee};
+    auto saved = f.Save(plan, output, expected);
+    Check(plan.CommitSaved(*f.edits, MapDocument::FromArchive(saved)));
+    Check(f.edits->VerifyTerrainPathingForSave());
+    Require(!f.edits->IsDirty(), "shared worker readback can rebase the newly created WPM");
 }
 
 void CompletedParserScratchStillHasAStrictStageBoundary() {
@@ -397,6 +417,7 @@ int main() {
         CompletedParserScratchStillHasAStrictStageBoundary();
         PairCaptureUsesAReusableExactBudgetWithBothDependencySets();
         ActualStaticTextureAndNativeOverridesSaveTogether();
+        MissingWpmUsesTheSameReplayAndFinalSave();
         NewResourcesCannotExplainAnInvalidOldSource();
         NonWalkableDestructableOverridesRemainDynamic();
         FinalDuplicateAndRemovalConflictsAreRejected();

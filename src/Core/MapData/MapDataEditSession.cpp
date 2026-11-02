@@ -898,6 +898,10 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     auto original = current_;
     const auto savedBoundary = cursor_ ? history_[cursor_ - 1] : std::shared_ptr<const Command>{};
     auto originalPathing = pathing;
+    auto restrictions = pathingRestrictions_;
+    // 真实保存首次生成的WPM成为新基线时，独立限制意图明确为空；不反推任何来源位。
+    if (pathing && !restrictions && pathing->size() >= 16)
+        restrictions = std::make_shared<const std::vector<std::byte>>(pathing->size() - 16);
     std::shared_ptr<const TerrainResizeState> savedResize = savedResizeState_;
     if (resizeState_) {
         auto updated = std::make_shared<TerrainResizeState>(*resizeState_);
@@ -906,7 +910,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
         if (writtenShadow) updated->shadow = std::move(*writtenShadow);
         else if (const auto* shadow = TerrainHistoryShadow()) updated->shadow = *shadow;
         updated->historyPathing = std::make_shared<const std::vector<std::byte>>(*pathing);
-        updated->protectedPathing = protectedPathing; updated->savedRestrictions = pathingRestrictions_;
+        updated->protectedPathing = protectedPathing; updated->savedRestrictions = restrictions;
         savedResize = std::move(updated);
     }
     auto savedSpecial = specialDoodads_;
@@ -936,6 +940,7 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     pathingOriginal_.swap(originalPathing);
     pathing_.swap(pathing);
     pathingProtected_.swap(protectedPathing);
+    pathingRestrictions_.swap(restrictions);
     states_.swap(states);
     preservedSources_.swap(preservedSources);
     terrainOriginal_ = terrain_;

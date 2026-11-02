@@ -611,6 +611,47 @@ void RocNativeCaptureUsesCompleteOriginalBounds() {
         "地形只读消费v18不扩大设置写出权限");
 }
 
+void MissingPathingIsGeneratedWithoutSourceAttribution() {
+    Directory directory; Fixture fixture; NativeSources(fixture, NativeSettings());
+    std::erase_if(fixture.members, [](const auto& member) { return member.name == "war3map.wpm"; });
+    const auto source = fixture.Write(directory.path / "missing-pathing.w3x");
+    MapDataEditSession edits(MapDocument::FromMembers(fixture.members));
+    Check(edits.AttachTerrain(fixture.terrain)); fixture.Paint(edits);
+    Require(!edits.HasTerrainPathing() && !edits.VerifyTerrainPathingForSave().Succeeded(),
+        "absence does not create a synthetic source or grant the resource-free gate");
+    auto plan = Take(TerrainSavePlan::PrepareForSave(source, edits, {})); Check(plan.SaveGate());
+    const auto& member = plan.Members()[1];
+    Require(plan.RebuiltPathing() && member.sourceState == TerrainSaveSourceState::Missing
+        && !member.sourceSha256 && !member.sourceBytes && member.reasonCode == "TERRAIN_SAVE_GENERATED_MISSING_WPM",
+        "receipt distinguishes actual absence from reconstructed source provenance");
+    auto output = edits.Replacements(); Check(plan.InstallPathingOutput(edits, output));
+    Check(plan.VerifyForSave(edits, source.SourceSha256(), output));
+    const auto saved = Take(MapArchiveSession::Open(Take(source.SaveCandidate(directory.path / "generated.w3x", output)).path));
+    Check(plan.VerifyReadback(saved));
+    const auto wpm = Take(saved.ReadMember("war3map.wpm"));
+    Require(wpm.size() == 16 + 1024 && std::all_of(wpm.begin() + 16, wpm.end(), [](auto value) { return value == std::byte{0x40}; }),
+        "generated WPM contains the full native grid with no invented preserved bits");
+    const auto bounded = TerrainSavePlan::PrepareForSave(source, edits, {}, {128});
+    Require(!bounded.Succeeded() && std::any_of(bounded.diagnostics.begin(), bounded.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.code == "TERRAIN_SAVE_PLAN_BUDGET";
+    }), "missing WPM generation retains the actual source/output budget gate");
+    Check(plan.CommitSaved(edits, MapDocument::FromArchive(saved)));
+    Require(edits.HasTerrainPathing() && !edits.IsDirty(), "actual saved WPM becomes the new baseline atomically");
+    Check(edits.VerifyTerrainPathingForSave());
+    Require(edits.Undo(), "saved texture edit can be undone after first WPM creation");
+    auto undo = Take(TerrainSavePlan::PrepareForSave(saved, edits, {})); Check(undo.SaveGate());
+    Require(edits.Redo(), "saved texture edit can be redone after first WPM creation");
+    Require(!plan.CommitSaved(edits, MapDocument::FromArchive(saved)).Succeeded(), "old creation plan cannot rebase a later revision");
+    auto conflict = output; conflict.push_back({"WAR3MAP.WPM", wpm});
+    Require(!plan.VerifyFrozenOutput(source.SourceSha256(), conflict).Succeeded(), "duplicate WPM cannot replace the generated output");
+    for (const auto bytes : {Bytes{}, Text("broken WPM")}) {
+        auto members = fixture.members; members.push_back({"war3map.wpm", bytes});
+        const auto bad = Take(MapArchiveSession::Open(Take(WriteVerifiedArchive(directory.path / (bytes.empty() ? "empty.w3x" : "bad.w3x"), members)).path));
+        MapDataEditSession unbound(MapDocument::FromMembers(members)); Check(unbound.AttachTerrain(fixture.terrain)); fixture.Paint(unbound);
+        Require(!TerrainSavePlan::PrepareForSave(bad, unbound, {}).Succeeded(), "present empty or damaged WPM is never missing");
+    }
+}
+
 void DryRampCaptureBindsActualMaximumAndAllProfileSources() {
     Directory directory; Fixture fixture;
     fixture.grid.vertices[40].textureAndFlagsRaw = 0x10;
@@ -1028,6 +1069,7 @@ int main() {
         StoredAndDecodedBudgetsShareTheCallerAllowance();
         NativeCaptureBindsFullRulesAndBothTerrainRevisions();
         RocNativeCaptureUsesCompleteOriginalBounds();
+        MissingPathingIsGeneratedWithoutSourceAttribution();
         DryRampCaptureBindsActualMaximumAndAllProfileSources();
         NativeWaterAndFractionalWorldBoundsUseActualSources();
         NativeChangedCliffSlotsBindActualRowsAndWinners();
