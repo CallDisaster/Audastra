@@ -131,6 +131,12 @@ void CustomCameraKeepsFloatWorldCoordinates() {
     const auto bounds = Take(ComputeTerrainNativePlayableBounds(f.terrain.header, f.settings, f.margins));
     Require(bounds.left == -511.75 && bounds.bottom == -255.5 && bounds.right == 512.25 && bounds.top == 383.75,
         "custom camera expansion preserves sub-tile binary32 values");
+    f.settings.formatVersion = 18;
+    const auto roc = Take(ComputeTerrainNativePlayableBounds(f.terrain.header, f.settings, f.margins));
+    Require(roc.left == bounds.left && roc.bottom == bounds.bottom && roc.right == bounds.right && roc.top == bounds.top,
+        "complete v18 uses the same read-only world rectangle");
+    Refused(ProjectTerrainPlayableBounds(f.terrain, f.settings, f.margins, f.intent), "TERRAIN_BOUNDS_LAYOUT");
+    f.settings.formatVersion = 25;
     f.settings.cameraBounds[2] = std::numeric_limits<float>::infinity();
     Refused(ComputeTerrainNativePlayableBounds(f.terrain.header, f.settings, f.margins), "TERRAIN_NATIVE_PLAYABLE_BOUNDS");
 }
