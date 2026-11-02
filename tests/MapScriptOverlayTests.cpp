@@ -266,6 +266,14 @@ void TestOverlayChangesGeneratedScript() {
     const auto removedUnits = Script::BuildMapScript(request);
     Require(removedUnits.Succeeded() && removedUnits.generated.text.find("CreateUnit(") == std::string::npos,
         "removed source placement member must not initialize the original unit");
+    {
+        std::ofstream changed(sourcePath, std::ios::binary | std::ios::app);
+        changed.put('\0');
+        Require(changed.good(), "mutate only the owned source after its snapshot");
+    }
+    const auto stale = Script::BuildMapScript(request);
+    Require(!stale.Succeeded() && HasCode(stale.diagnostics, "SOURCE_CHANGED"),
+        "batched initialization still hashes the real source before consuming captured members");
 }
 
 void TestFinalDoodadsReachJassWithoutCreatingNativeDecorationsTwice() {

@@ -29,7 +29,8 @@ bool SameMember(std::string_view left, std::string_view right) {
 }
 
 Result<std::optional<std::vector<std::byte>>> ReadEffectiveMember(const MapArchiveSession& archive,
-    std::span<const MemberReplacement> edits, std::span<const std::string> removals, std::string_view name) {
+    std::span<const MemberReplacement> edits, std::span<const std::string> removals, std::string_view name,
+    std::span<ArchiveExactMember> inputs) {
     using R = Result<std::optional<std::vector<std::byte>>>;
     const MemberReplacement* override = nullptr;
     for (const auto& member : edits) {
@@ -46,15 +47,43 @@ Result<std::optional<std::vector<std::byte>>> ReadEffectiveMember(const MapArchi
     }
     if (removed) return R::Success(std::nullopt);
     if (override) return R::Success(std::optional(override->data));
+    for (auto& input : inputs) if (SameMember(input.name, name)) {
+        if (!input.present) return R::Success(std::nullopt);
+        return R::Success(std::optional(std::move(input.bytes)));
+    }
     auto captured = archive.CaptureExactMembers(std::array<std::string, 1>{std::string(name)});
     if (!captured.Succeeded()) return {{}, captured.diagnostics};
     if (!captured.value->front().present) return R::Success(std::nullopt);
     return R::Success(std::optional(std::move(captured.value->front().bytes)));
 }
+Result<std::vector<ArchiveExactMember>> CaptureInitializationInputs(const MapArchiveSession& archive,
+    std::span<const MemberReplacement> edits, std::span<const std::string> removals) {
+    using R = Result<std::vector<ArchiveExactMember>>;
+    // 同次捕获在一个只读租约里验证来源摘要、完整目录、正负存在及逐成员字节。
+    // 快照大小仅决定是否能合批，不作为存在或内容证明；大输入及匿名来源仍走原逐项预算。
+    if (archive.HasOpaqueMembers()) return R::Success({});
+    std::vector<std::string> names;
+    std::size_t bytes = 0;
+    const ArchiveExactMemberLimits limits;
+    for (const auto* name : {"war3map.w3i", "war3mapUnits.doo", "war3map.doo", "war3map.w3r",
+            "war3map.w3c", "war3map.w3s", "war3map.wts", "war3map.w3e"}) {
+        if (std::any_of(edits.begin(), edits.end(), [&](const auto& member) { return SameMember(member.name, name); })
+            || std::any_of(removals.begin(), removals.end(), [&](const auto& member) { return SameMember(member, name); })) continue;
+        for (const auto& member : archive.Members()) if (SameMember(member.name, name)) {
+            if (member.data.size() > limits.totalBytes - bytes) return R::Success({});
+            bytes += member.data.size();
+            break;
+        }
+        names.emplace_back(name);
+    }
+    return names.empty() ? R::Success({}) : archive.CaptureExactMembers(names, limits);
+}
+
 template <typename T, typename Parser>
 std::optional<T> ParseMember(const MapArchiveSession& archive, std::span<const MemberReplacement> edits,
-    std::span<const std::string> removals, std::string_view name, Parser parser, std::vector<Diagnostic>& diagnostics) {
-    auto bytes = ReadEffectiveMember(archive, edits, removals, name);
+    std::span<const std::string> removals, std::string_view name, Parser parser, std::vector<Diagnostic>& diagnostics,
+    std::span<ArchiveExactMember> inputs = {}) {
+    auto bytes = ReadEffectiveMember(archive, edits, removals, name, inputs);
     if (!bytes.Succeeded()) { diagnostics.insert(diagnostics.end(), bytes.diagnostics.begin(), bytes.diagnostics.end()); return {}; }
     if (!bytes.value->has_value()) return {};
     auto parsed = parser(**bytes.value);
@@ -162,7 +191,11 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
         if (!bases.Succeeded()) return result;
         options.baseInputs = std::make_shared<const ScriptBaseInputs>(std::move(*bases.value));
     }
-    auto settings = ParseMember<MapData::MapSettings>(archive, edits, removals, "war3map.w3i", [](auto bytes) { return MapData::MapSettings::Parse(bytes); }, diagnostics);
+    auto initialization = CaptureInitializationInputs(archive, edits, removals);
+    diagnostics.insert(diagnostics.end(), initialization.diagnostics.begin(), initialization.diagnostics.end());
+    if (!initialization.Succeeded() || !initialization.value) return result;
+    const std::span<ArchiveExactMember> capturedInputs = *initialization.value;
+    auto settings = ParseMember<MapData::MapSettings>(archive, edits, removals, "war3map.w3i", [](auto bytes) { return MapData::MapSettings::Parse(bytes); }, diagnostics, capturedInputs);
     if (!request.selectedLuaSettings.empty()) {
         if (!luaMode) {
             diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "LUA_MAP_TARGET_MISSING",
@@ -174,17 +207,17 @@ MapScriptBuildResult BuildMapScript(const MapScriptBuildRequest& request) {
             settings = *selected.value;
         }
     }
-    auto units = ParseMember<MapData::UnitPlacements>(archive, edits, removals, "war3mapUnits.doo", [](auto bytes) { return MapData::ParseUnitPlacements(bytes); }, diagnostics);
-    auto doodads = ParseMember<MapData::DoodadPlacements>(archive, edits, removals, "war3map.doo", [](auto bytes) { return MapData::ParseDoodadPlacements(bytes); }, diagnostics);
-    auto regions = ParseMember<MapData::RegionsDocument>(archive, edits, removals, "war3map.w3r", [](auto bytes) { return MapData::ParseRegions(bytes); }, diagnostics);
-    auto cameras = ParseMember<MapData::CamerasDocument>(archive, edits, removals, "war3map.w3c", [](auto bytes) { return MapData::ParseCameras(bytes); }, diagnostics);
-    auto sounds = ParseMember<MapData::SoundsDocument>(archive, edits, removals, "war3map.w3s", [](auto bytes) { return MapData::ParseSounds(bytes); }, diagnostics);
-    auto strings = ParseMember<MapData::StringTableDocument>(archive, edits, removals, "war3map.wts", [](auto bytes) { return MapData::ParseStringTable(bytes); }, diagnostics);
+    auto units = ParseMember<MapData::UnitPlacements>(archive, edits, removals, "war3mapUnits.doo", [](auto bytes) { return MapData::ParseUnitPlacements(bytes); }, diagnostics, capturedInputs);
+    auto doodads = ParseMember<MapData::DoodadPlacements>(archive, edits, removals, "war3map.doo", [](auto bytes) { return MapData::ParseDoodadPlacements(bytes); }, diagnostics, capturedInputs);
+    auto regions = ParseMember<MapData::RegionsDocument>(archive, edits, removals, "war3map.w3r", [](auto bytes) { return MapData::ParseRegions(bytes); }, diagnostics, capturedInputs);
+    auto cameras = ParseMember<MapData::CamerasDocument>(archive, edits, removals, "war3map.w3c", [](auto bytes) { return MapData::ParseCameras(bytes); }, diagnostics, capturedInputs);
+    auto sounds = ParseMember<MapData::SoundsDocument>(archive, edits, removals, "war3map.w3s", [](auto bytes) { return MapData::ParseSounds(bytes); }, diagnostics, capturedInputs);
+    auto strings = ParseMember<MapData::StringTableDocument>(archive, edits, removals, "war3map.wts", [](auto bytes) { return MapData::ParseStringTable(bytes); }, diagnostics, capturedInputs);
     const auto terrain = ParseMember<TerrainExtent>(archive, edits, removals, "war3map.w3e", [](auto bytes) {
         const auto extent = ReadTerrainExtent(bytes);
         return extent ? Result<TerrainExtent>::Success(*extent) : Result<TerrainExtent>::Failure(
             "Script.Build", "MAP_TERRAIN_INVALID", "待保存地形没有有效的尺寸与坐标范围");
-    }, diagnostics);
+    }, diagnostics, capturedInputs);
     if (!settings) {
         diagnostics.push_back({DiagnosticSeverity::Error, "Script.Build", "MAP_SETTINGS_MISSING", "地图缺少可解析的 war3map.w3i", {}});
     }
