@@ -1,6 +1,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Script/SlkMapMemberProtocol.h"
 #include "War3MapCore/ProjectSaveControl.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
@@ -152,10 +153,11 @@ bool MinimapSnapshotMember(std::string_view name) {
 
 bool MinimapAuditMember(std::string_view name) {
     const auto key = Canonical(name);
+    if (std::any_of(MapData::kClassicProfiles.begin(), MapData::kClassicProfiles.end(),
+        [&key](const auto& profile) { return Canonical(profile.path) == key; })) return true;
     return MinimapSnapshotMember(key) || key.ends_with(".BLP") || key.ends_with(".TGA")
         || key.ends_with(".MDX") || key.ends_with(".MDL") || key.ends_with(".SLK")
-        || key == "WAR3MAP.WPM" || key == "WAR3MAP.SHD" || key == "WAR3MAP.MMP"
-        || key == "UI\\MISCDATA.TXT" || key == "UI\\WORLDEDITDATA.TXT" || key == "UNITS\\MISCDATA.TXT";
+        || key == "WAR3MAP.WPM" || key == "WAR3MAP.SHD" || key == "WAR3MAP.MMP";
 }
 
 bool ScriptAuditMember(std::string_view name) {

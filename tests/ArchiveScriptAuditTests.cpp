@@ -1,4 +1,5 @@
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapData/NativeEditorProfileInputs.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Script/SlkMapMemberProtocol.h"
 #include <Windows.h>
@@ -26,6 +27,7 @@ int main() { try {
         {"war3map.w3h", Bytes("original buff")}, {"war3map.w3q", Bytes("original upgrade")},
         {"war3map.w3e", Bytes("original terrain")}, {"Fixture/Ground.blp", Bytes("atlas bytes")},
         {"UI/WorldEditData.txt", Bytes("original settings")}, {"Units/MiscData.txt", Bytes("original unit parameters")},
+        {"Units/MiscGame.txt", Bytes("original unit game parameters")},
         {"forbidden.AI", Bytes("authored opaque fixture, not executable input")}, {"runtime.dll", Bytes("opaque binary")}};
     const auto written = WriteVerifiedArchive(source, members); Require(written.Succeeded(), "original fixture archive");
     const auto before = Sha256File(source); Require(before.Succeeded(), "source fingerprint");
@@ -48,11 +50,15 @@ int main() { try {
     Require(minimap.Succeeded() && minimap.value->HasMember("war3map.w3e"), "minimap snapshot loads fixed terrain");
     Require(!minimap.value->HasMember("war3map.wct") && !minimap.value->HasMember("Fixture/Ground.blp"),
         "minimap omits scripts and does not eagerly read textures");
-    const std::array<std::string, 4> resources{"Fixture/Ground.blp", "UI/WorldEditData.txt", "units/miscdata.TXT", "missing/model.mdx"};
+    const std::array<std::string, 5> resources{"Fixture/Ground.blp", "UI/WorldEditData.txt", "units/miscdata.TXT", "Units/MiscGame.txt", "missing/model.mdx"};
     const auto captured = minimap.value->CaptureExactMembers(resources);
     Require(captured.Succeeded() && captured.value->at(0).present && captured.value->at(1).present
         && captured.value->at(2).present && captured.value->at(2).bytes == Bytes("original unit parameters")
-        && !captured.value->at(3).present, "minimap exact resources preserve present/missing distinction and fixed unit profile");
+        && captured.value->at(3).present && captured.value->at(3).bytes == Bytes("original unit game parameters")
+        && !captured.value->at(4).present, "minimap exact resources preserve present/missing distinction and fixed unit profiles");
+    std::vector<std::string> profileNames;
+    for (const auto& profile : War3Map::MapData::kClassicProfiles) profileNames.emplace_back(profile.path);
+    Require(minimap.value->CaptureExactMembers(profileNames).Succeeded(), "complete fixed classic profile chain is queryable");
     const std::array<std::string, 5> planInputs{"war3map.wpm", "war3map.shd", "war3map.mmp", "war3map.w3r", "war3map.w3c"};
     Require(minimap.value->CaptureExactMembers(planInputs).Succeeded(), "shared terrain plan baseline members are queryable without eager reads");
     for (const auto* name : {"war3map.j", "war3map.wct", "runtime.dll", "unknown/opaque.bin", "forbidden.AI", "Units/Unknown.txt"}) {
