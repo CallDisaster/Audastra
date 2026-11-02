@@ -232,6 +232,34 @@ void UnsupportedAndCorruptAreNotEmpty() {
         {{"N001", "0", "_", "0"}, {"C001", "1tail", "Fixture/Caster", "2"}})};
     Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_FIELD");
 }
+void ExplicitNonNumericAngleMarker() {
+    Fixture f;
+    const auto table = [](std::string pitch, std::string roll) {
+        return Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats"},
+            {{"N001", "0", "_", "0", "1", "0", "0", "-1", "0"},
+             {"C001", "1", "Fixture/Caster", "2", "1.25", std::move(pitch), std::move(roll), "-1", "0"}});
+    };
+    std::vector<MemberReplacement> output{{"Doodads/Doodads.slk", table("-", "-")}};
+    const auto owner = f.Capture(output);
+    Require(owner->Casters().size() == 2 && owner->Casters()[0].maximumPitch == 0
+        && owner->Casters()[0].maximumRoll == 0 && owner->Casters()[0].defaultScale == 1.25f,
+        "明确非数值角度标记按原版typed读取取零，不改变其它实际字段");
+    Check(owner->VerifySources(*f.source, output));
+    const auto saved = Take(f.source->SaveCandidate(f.root / "angle-marker.w3x", output));
+    Check(owner->VerifyReadback(Take(MapArchiveSession::Open(saved.path))));
+    for (const auto& invalid : {"", "_", "--", "-tail", "nan", "inf", "0tail"}) {
+        output[0].data = table(invalid, "-");
+        Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_FIELD");
+        output[0].data = table("-", invalid);
+        Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_FIELD");
+    }
+    output[0].data = table("0.01", "-");
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED");
+    output[0].data = Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxRoll", "fixedRot", "floats"},
+        {{"N001", "0", "_", "0", "1", "0", "-1", "0"},
+         {"C001", "1", "Fixture/Caster", "2", "1.25", "-", "-1", "0"}});
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_FIELD");
+}
 void EmptyAndSpecialListsRemainExplicit() {
     Fixture f; DoodadPlacements empty;
     std::vector<MemberReplacement> output{{"war3map.doo", Take(empty.Serialize())}};
@@ -471,7 +499,8 @@ void BatchedDependencyVerificationPreservesEveryFact() {
 int main() {
     try {
         ActualClassificationAndExactInstances(); FinalViewAndPublicationIdentity(); GameWinnerAndKnownAbsence();
-        ActualTilesetAndFinalTableOverrides(); UnsupportedAndCorruptAreNotEmpty(); EmptyAndSpecialListsRemainExplicit();
+        ActualTilesetAndFinalTableOverrides(); UnsupportedAndCorruptAreNotEmpty(); ExplicitNonNumericAngleMarker();
+        EmptyAndSpecialListsRemainExplicit();
         StrictVariationAndUniqueModelLimit(); NativeTransformAndSurfaceRefusals(); LimitsCancellationAndRealSourceDrift();
         StoredAndDecodedSourceBudgets(); BoundedDependencyVerification(); BatchedDependencyVerificationPreservesEveryFact();
         std::cout << "TerrainShadowCasterResourcesTests passed\n"; return 0;

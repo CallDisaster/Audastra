@@ -369,6 +369,9 @@ std::int32_t Integer(std::string_view value, std::string_view field, std::string
     return result;
 }
 float Real(std::string_view value, std::string_view field, std::string_view rawcode) {
+    // 标准装饰物的角度列使用字符串'-'。原版typed读取仅消费F/I，
+    // 这个明确的非数值标记返回0；不把空、缺失或其它坏字符串当作默认值。
+    if (value == "-" && (field == "maxPitch" || field == "maxRoll")) return 0;
     float result = 0;
     const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
     if (value.empty() || parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !std::isfinite(result))
