@@ -302,10 +302,7 @@ void Fixed270PreservesActualPlacementPose() {
     footprint[16] = std::byte{24}; footprint[17] = std::byte{0x20};
     output[1].data = table("270", "Fixture/ALIGN.TGA");
     output.push_back({"Fixture/align.tga", footprint});
-    const auto aligned = f.Capture(output);
-    Check(aligned->VerifySources(*f.source, output));
-    const auto alignedFile = Take(f.source->SaveCandidate(f.root / "fixed-270-aligned.w3x", output));
-    Check(aligned->VerifyReadback(Take(MapArchiveSession::Open(alignedFile.path))));
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED");
     auto displaced = normalized; displaced.doodads[2].position[0] += 1;
     output[0].data = Take(displaced.Serialize());
     Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED");

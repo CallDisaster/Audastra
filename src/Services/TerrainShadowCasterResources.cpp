@@ -4,7 +4,6 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapData/MapTerrain.h"
 #include "War3MapCore/MapData/TerrainEditing.h"
-#include "War3MapCore/MapData/TerrainDoodadFootprint.h"
 #include "War3MapCore/MapData/TerrainShadowRebuild.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeDestructablePathing.h"
@@ -403,30 +402,15 @@ void Transform(const MapData::DoodadPlacement& placement) {
         || !std::all_of(placement.scale.begin(), placement.scale.end(), [](float x) { return std::isfinite(x); }))
         Fail("TERRAIN_SHADOW_CASTER_TRANSFORM", "阴影模型实际DOO变换包含非有限值：" + placement.rawcode);
 }
-void Fixed270Pose(Context& context, const Table& table, const MapData::TerrainGridSnapshot& terrain,
-    const MapData::DoodadPlacement& placement) {
+void Fixed270Pose(const Table& table, const MapData::DoodadPlacement& placement) {
     // 原版两个F32常量的度转弧度结果；不把数学上接近的任意角冒充已归一姿势。
     if (std::bit_cast<std::uint32_t>(placement.rotation) != 0x4096cbe5u)
         Fail("TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED", "固定270度阴影实例尚未归一到已核原版角度：" + placement.rawcode);
     const auto texture = table.Field(placement.rawcode, "pathtex");
     if (texture.empty() || texture == "_") return;
-    const auto path = Canonical(texture);
-    if (table.Field(placement.rawcode, "category") != "S" || !Text::LowerAscii(path).ends_with(".tga"))
-        Fail("TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED", "固定270度实例的实际类别或占地格式尚未接通吸附复核：" + placement.rawcode
-            + "（category=" + std::string(table.Field(placement.rawcode, "category")) + ", pathTex=" + path + "）。");
-    const std::array<std::string, 1> names{path}; context.Phase(names, kTableBytes);
-    const auto& file = context.Required(path, true, kTableBytes);
-    constexpr std::size_t scratch = 256u * 256u * 4u;
-    context.ParseReserve(scratch);
-    const auto image = Take(MapData::DecodeDoodadFootprintTgaBudgeted(file.bytes, scratch));
-    const auto rectangle = Take(MapData::QueryDoodadFootprintRectangle(terrain.header, placement, image.footprint, 2, 270.0f));
-    const auto x = static_cast<double>(terrain.header.offset[0]) + (rectangle[0] + rectangle[2]) * 16.0;
-    const auto y = static_cast<double>(terrain.header.offset[1]) + (rectangle[1] + rectangle[3]) * 16.0;
-    if (x != placement.position[0] || y != placement.position[1])
-        Fail("TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED", "固定270度实例坐标不在同源原版占地吸附点：" + placement.rawcode
-            + "（x=" + std::to_string(placement.position[0]) + ", y=" + std::to_string(placement.position[1])
-            + ", snappedX=" + std::to_string(x) + ", snappedY=" + std::to_string(y) + "）。");
-    context.workingBytes -= scratch;
+    // 占地栅格的中心不是模型载入时的XY锚点，不能用通行矩形反推模型姿势。
+    Fail("TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED", "固定270度装饰物带实际占地，载入吸附姿势尚未接通，保留原阴影："
+        + placement.rawcode + "（pathTex=" + std::string(texture) + "）。");
 }
 } // namespace
 
@@ -481,14 +465,14 @@ Result<std::shared_ptr<const TerrainShadowCasterResources>> TerrainShadowCasterR
                     const auto roll = Real(doodads.Field(placement.rawcode, "maxroll"), "maxRoll", placement.rawcode);
                     const auto fixedRotation = Real(doodads.Field(placement.rawcode, "fixedrot"), "fixedRot", placement.rawcode);
                     const auto floating = Integer(doodads.Field(placement.rawcode, "floats"), "floats", placement.rawcode);
-                    // 新接通的270度域要求wire已经符合原版载入归一与吸附；矩阵不重复叠角。
+                    // 固定角新域仅接受无占地且wire已归一的姿势；矩阵不重复叠角。
                     if (defaultScale < 0.01f || pitch != 0 || roll != 0
                         || (fixedRotation >= 0 && fixedRotation != 270) || floating != 0)
                         Fail("TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED", "阴影模型的缩放、倾斜或固定转角不在已接通的原版变换域：" + placement.rawcode
                             + "（defScale=" + std::to_string(defaultScale) + ", maxPitch=" + std::to_string(pitch)
                             + ", maxRoll=" + std::to_string(roll) + ", fixedRot=" + std::to_string(fixedRotation)
                             + ", floats=" + std::to_string(floating) + "）。");
-                    if (fixedRotation == 270) Fixed270Pose(context, doodads, *owner->terrain_, placement);
+                    if (fixedRotation == 270) Fixed270Pose(doodads, placement);
                     const auto count = Integer(doodads.Field(placement.rawcode, "numvar"), "numVar", placement.rawcode);
                     if (count < 1 || count > 10 || placement.variation < 0 || placement.variation >= count)
                         Fail("TERRAIN_SHADOW_CASTER_VARIATION", "阴影模型变体不在已证的显式有效域中：" + placement.rawcode);
