@@ -7,6 +7,7 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <ranges>
 #include <atomic>
 #include <cstring>
@@ -462,10 +463,10 @@ void TestIncompleteListAndTrailingData() {
     PutU32(bytes, 12, 0x00030000); PutU32(bytes, 16, hashPosition); PutU32(bytes, 20, blockPosition);
     PutU32(bytes, 24, 4); PutU32(bytes, 28, 1); PutU32(bytes, 32, 0x11223344);
     std::fill(bytes.begin() + hashPosition, bytes.begin() + blockPosition, std::byte{0xFF});
-    const auto bucket = crypt.HashString("opaque.bin", Mpq::MpqCrypt::HashType::TableOffset) & 3;
+    const auto bucket = crypt.HashString("war3map.w3e", Mpq::MpqCrypt::HashType::TableOffset) & 3;
     const auto entry = hashPosition + bucket * 16;
-    PutU32(bytes, entry, crypt.HashString("opaque.bin", Mpq::MpqCrypt::HashType::NameA));
-    PutU32(bytes, entry + 4, crypt.HashString("opaque.bin", Mpq::MpqCrypt::HashType::NameB));
+    PutU32(bytes, entry, crypt.HashString("war3map.w3e", Mpq::MpqCrypt::HashType::NameA));
+    PutU32(bytes, entry + 4, crypt.HashString("war3map.w3e", Mpq::MpqCrypt::HashType::NameB));
     PutU32(bytes, entry + 8, 0); PutU32(bytes, entry + 12, 0);
     crypt.EncryptBlock(bytes.data() + hashPosition, 64, crypt.HashString("(hash table)", Mpq::MpqCrypt::HashType::FileKey));
     PutU32(bytes, blockPosition, 32); PutU32(bytes, blockPosition + 4, 4);
@@ -475,8 +476,33 @@ void TestIncompleteListAndTrailingData() {
     { std::ofstream file(path, std::ios::binary); file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size()); }
     auto loose = Mpq::MpqArchive::OpenReadOnly(path);
     RequireSuccess(loose, "loose reader accepts valid no-list fixture");
-    Require(loose.value->ReadFile("opaque.bin").Succeeded(), "fixture member can be decoded");
+    Require(loose.value->ReadFile("war3map.w3e").Succeeded(), "fixture member can be decoded");
     Require(!MapArchiveSession::Open(path).Succeeded(), "incomplete inventory cannot become editable snapshot");
+    Require(!MapArchiveSession::OpenScriptAudit(path).Succeeded(), "script audit still requires listfile");
+    auto minimap = MapArchiveSession::OpenMinimapAudit(path);
+    RequireSuccess(minimap, "fixed minimap snapshot accepts absent listfile");
+    Require(minimap.value->Members().size() == 1 && minimap.value->HasMember("war3map.w3e")
+        && !minimap.value->HasMember("(listfile)"), "only fixed requested member is captured");
+    const std::array<std::string, 2> exactNames{"war3map.w3e", "war3map.wpm"};
+    auto exact = minimap.value->CaptureExactMembers(exactNames);
+    RequireSuccess(exact, "exact minimap dependencies also query without listfile");
+    Require(exact.value->at(0).present && !exact.value->at(1).present
+        && exact.value->at(0).bytes == *loose.value->ReadFile("war3map.w3e").value,
+        "exact dependency preserves content and missing state");
+    Require(!minimap.value->ReadMember("x.ai").Succeeded(), "opaque script stays outside read-only whitelist");
+    const auto refused = minimap.value->SaveCandidate(directory.Path() / "forbidden.w3x", {});
+    Require(!refused.Succeeded() && !std::filesystem::exists(directory.Path() / "forbidden.w3x"),
+        "read-only query grants no save permission");
+    Require(minimap.value->VerifySourceUnchanged().Succeeded(), "read-only source stays unchanged");
+    auto invalid = bytes;
+    const auto hashKey = crypt.HashString("(hash table)", Mpq::MpqCrypt::HashType::FileKey);
+    crypt.DecryptBlock(invalid.data() + hashPosition, 64, hashKey);
+    PutU32(invalid, entry + 8, 1); // 非零locale仍拒绝，包括明确名字的只读查询。
+    crypt.EncryptBlock(invalid.data() + hashPosition, 64, hashKey);
+    const auto invalidPath = directory.Path() / "no-listfile-invalid-locale.w3x";
+    { std::ofstream file(invalidPath, std::ios::binary); file.write(reinterpret_cast<const char*>(invalid.data()), invalid.size()); }
+    Require(!MapArchiveSession::OpenMinimapAudit(invalidPath).Succeeded(),
+        "read-only no-listfile mode retains global hash validation");
     loose.value.reset();
 
     const auto source = CreateSource(directory);

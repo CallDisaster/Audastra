@@ -170,6 +170,11 @@ public:
     // 活跃 block，同时允许其余 block 保持匿名。此结果不代表匿名内容可解码。
     [[nodiscard]] Result<std::vector<MpqStrictFileInfo>> ListFilesPreservingOpaque() const;
 
+    // 只读按明确名字查询块元数据，不依赖(listfile)，不解码正文。
+    // 保留全局hash唯一性/locale/platform/块双射校验；结果不是完整清单或写入授权。
+    [[nodiscard]] Result<std::vector<MpqStrictFileInfo>> QueryKnownFilesReadOnly(
+        std::span<const std::string> names) const;
+
     // 将源归档逐字节复制到独占打开的候选句柄，仅追加替换已列出的现有成员。
     // 原数据区、哈希表及匿名 block 不移动；不能新增成员或改变清单。
     // allowFullyNamed 显式选择同样的原字节保留路径处理完整命名归档，不解码未改成员。
@@ -208,7 +213,8 @@ private:
     explicit MpqArchive(std::unique_ptr<Impl> impl);
     [[nodiscard]] static Result<MpqArchive> OpenParsed(
         std::unique_ptr<Impl> impl, const MpqOpenLimits& limits);
-    [[nodiscard]] Result<std::vector<MpqStrictFileInfo>> ListFilesValidated(bool allowOpaque) const;
+    [[nodiscard]] Result<std::vector<MpqStrictFileInfo>> ListFilesValidated(bool allowOpaque,
+        std::optional<std::span<const std::string>> queries = {}) const;
     std::unique_ptr<Impl> impl_;
 };
 

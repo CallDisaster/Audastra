@@ -135,11 +135,19 @@ bool SafeTargetFilename(const std::filesystem::path& path) {
     return !reserved.contains(stem);
 }
 
+const std::vector<std::string>& MinimapSnapshotNames() {
+    static const std::vector<std::string> names{"war3map.w3e", "war3map.w3i", "war3mapUnits.doo", "war3map.doo",
+        "war3map.w3u", "war3map.w3t", "war3map.w3b", "war3map.w3d", "war3map.w3a", "war3map.w3h", "war3map.w3q",
+        "war3map.w3r", "war3map.w3c", "war3map.wts"};
+    return names;
+}
+
 bool MinimapSnapshotMember(std::string_view name) {
-    static const std::set<std::string> allowed{"WAR3MAP.W3E", "WAR3MAP.W3I", "WAR3MAPUNITS.DOO", "WAR3MAP.DOO",
-        "WAR3MAP.W3U", "WAR3MAP.W3T", "WAR3MAP.W3B", "WAR3MAP.W3D", "WAR3MAP.W3A", "WAR3MAP.W3H", "WAR3MAP.W3Q",
-        "WAR3MAP.W3R", "WAR3MAP.W3C", "WAR3MAP.WTS"};
-    return allowed.contains(Canonical(name));
+    const auto& names = MinimapSnapshotNames();
+    const auto key = Canonical(name);
+    return std::any_of(names.begin(), names.end(), [&key](const auto& candidate) {
+        return Canonical(candidate) == key;
+    });
 }
 
 bool MinimapAuditMember(std::string_view name) {
@@ -198,6 +206,11 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
                 return item.code == "ANONYMOUS_BLOCK_REJECTED";
             });
         if (opaqueMembers) inventory = opened.value->ListFilesPreservingOpaque();
+        // 只读小地图无需完整名字清单；缺清单时仅捕获固定成员，不推断其它块名。
+        if (minimapAuditOnly && !inventory.Succeeded() && std::any_of(
+            inventory.diagnostics.begin(), inventory.diagnostics.end(), [](const Diagnostic& item) {
+                return item.code == "LISTFILE_MISSING";
+            })) inventory = opened.value->QueryKnownFilesReadOnly(MinimapSnapshotNames());
         if (!inventory.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(inventory.diagnostics));
         LARGE_INTEGER actualSize{};
         if (!GetFileSizeEx(source.Get(), &actualSize) || actualSize.QuadPart < 0 ||
@@ -326,7 +339,8 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         auto opened = Mpq::MpqArchive::OpenReadOnlyHandle(source.Get(), sourcePath_, OpenLimits());
         if (!opened.Succeeded()) return ForwardFailure<Output>(std::move(opened.diagnostics));
         // 对正常与匿名归档采用同一全局 hash 唯一性、locale/platform 和块双射证明。
-        auto inventory = opened.value->ListFilesPreservingOpaque();
+        auto inventory = minimapAuditOnly_ ? opened.value->QueryKnownFilesReadOnly(names)
+            : opened.value->ListFilesPreservingOpaque();
         if (!inventory.Succeeded()) return ForwardFailure<Output>(std::move(inventory.diagnostics));
         const auto hashes = opened.value->HashTableEntries();
         const auto blocks = opened.value->BlockTableEntries();

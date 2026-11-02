@@ -843,21 +843,31 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesPreservingOpaque() c
     return ListFilesValidated(true);
 }
 
-Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allowOpaque) const {
-    if (!impl_->listfilePresent) {
+Result<std::vector<MpqStrictFileInfo>> MpqArchive::QueryKnownFilesReadOnly(
+    std::span<const std::string> names) const {
+    return ListFilesValidated(true, names);
+}
+
+Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allowOpaque,
+    std::optional<std::span<const std::string>> queries) const {
+    if (queries && queries->size() > impl_->strictMemberLimit) {
+        return Result<std::vector<MpqStrictFileInfo>>::Failure(
+            "Mpq", "STRICT_MEMBER_LIMIT_EXCEEDED", "explicit read-only queries exceed the bounded member inventory");
+    }
+    if (!queries && !impl_->listfilePresent) {
         return Result<std::vector<MpqStrictFileInfo>>::Failure(
             "Mpq", "LISTFILE_MISSING", "archive does not contain (listfile)");
     }
-    if (!impl_->listfileReadable) {
+    if (!queries && !impl_->listfileReadable) {
         return Result<std::vector<MpqStrictFileInfo>>::Failure(
             "Mpq", "LISTFILE_UNREADABLE", "archive (listfile) cannot be decoded");
     }
-    if (impl_->listfileEntryBudgetExceeded) {
+    if (!queries && impl_->listfileEntryBudgetExceeded) {
         return Result<std::vector<MpqStrictFileInfo>>::Failure(
             "Mpq", "LISTFILE_ENTRY_BUDGET_EXCEEDED",
             "archive (listfile) exceeds the bounded strict member inventory");
     }
-    if (!impl_->strictListfileSyntax) {
+    if (!queries && !impl_->strictListfileSyntax) {
         return Result<std::vector<MpqStrictFileInfo>>::Failure(
             "Mpq", "LISTFILE_SYNTAX_INVALID",
             "strict (listfile) requires non-empty ASCII CR/LF-delimited names without blank lines");
@@ -911,15 +921,17 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
         }
     }
 
-    std::vector<std::string> names = impl_->rawListNames;
+    std::vector<std::string> names = queries
+        ? std::vector<std::string>(queries->begin(), queries->end()) : impl_->rawListNames;
     // (listfile) 自身已读到；部分编辑器也把它写进清单，此时不能再补一次。
     const bool listfileListed = std::any_of(names.begin(), names.end(), [](const std::string& name) {
         return _stricmp(name.c_str(), "(listfile)") == 0;
     });
-    if (!listfileListed) names.emplace_back("(listfile)");
+    if (!queries && !listfileListed) names.emplace_back("(listfile)");
     // 元数据成员通常不在 (listfile) 中；存在且未被列出时按约定名补入，
     // 使严格清单仍能证明每个块都有名字。
     for (const char* metadata : {"(attributes)", "(signature)"}) {
+        if (queries) break;
         const bool listed = std::any_of(names.begin(), names.end(), [metadata](const std::string& name) {
             return _stricmp(name.c_str(), metadata) == 0;
         });
@@ -957,7 +969,7 @@ Result<std::vector<MpqStrictFileInfo>> MpqArchive::ListFilesValidated(bool allow
         if (pair == hashPairs.end()) {
             // 清单里有、归档里没有的名字（常见为早已删除的 (attributes)）：游戏按哈希找文件，这一行不指向任何内容。
             // 不补造成员，只跳过；每个块仍须由其余名字唯一命名（见下方 ANONYMOUS_BLOCK_REJECTED）。
-            if (staleNames++ == 0) firstStale = name;
+            if (!queries && staleNames++ == 0) firstStale = name;
             continue;
         }
         const HashEntry* match = pair != hashPairs.end() && pair->second.size() == 1
