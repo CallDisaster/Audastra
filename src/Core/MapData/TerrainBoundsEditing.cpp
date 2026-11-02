@@ -30,7 +30,7 @@ bool ConfigurationValid(const std::array<float, 4>& margins) {
 Result<TerrainNativePlayableBounds> ComputeTerrainNativePlayableBounds(const TerrainHeader& terrain,
     const MapSettings& settings, const std::array<float, 4>& cameraMargins) {
     if (terrain.version != 11 || terrain.width < 2 || terrain.height < 2
-        || !settings.FullyParsed() || settings.formatVersion != 25)
+        || !settings.FullyParsed() || (!settings.HasClassicLayout() && !settings.HasRocLayout()))
         return Failure<TerrainNativePlayableBounds>("TERRAIN_NATIVE_PLAYABLE_BOUNDS", "原版世界可玩范围需要完整经典W3E和W3I。");
     if (!ConfigurationValid(cameraMargins))
         return Failure<TerrainNativePlayableBounds>("TERRAIN_NATIVE_CAMERA_CONFIG", "CameraMargins必须为有界非负整数。");
