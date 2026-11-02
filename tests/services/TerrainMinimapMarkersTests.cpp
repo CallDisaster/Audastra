@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 
 namespace {
@@ -511,6 +512,19 @@ void AdapterConflictsAndFrozenSourceRemainHardFailures() {
 void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
     for (unsigned mode = 0; mode < 4; ++mode) {
         Fixture fixture; MapSaveTask task; fixture.Freeze(task); fixture.PrepareOrdinary(task);
+        std::unique_ptr<void, decltype(&CloseHandle)> writable(nullptr, &CloseHandle);
+        std::unique_ptr<void, decltype(&CloseHandle)> mapping(nullptr, &CloseHandle);
+        std::unique_ptr<void, decltype(&UnmapViewOfFile)> view(nullptr, &UnmapViewOfFile);
+        if (mode == 3) {
+            writable.reset(CreateFileW(fixture.source->SourcePath().c_str(), GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+            Require(writable.get() != INVALID_HANDLE_VALUE, "真实来源改动反例须先取得可写文件");
+            mapping.reset(CreateFileMappingW(writable.get(), nullptr, PAGE_READWRITE, 0, 0, nullptr));
+            Require(bool(mapping), "真实来源改动反例须先建立可写映射");
+            view.reset(MapViewOfFile(mapping.get(), FILE_MAP_WRITE, 0, 0, 0));
+            Require(bool(view), "真实来源改动反例须先映射实际来源字节");
+            writable.reset();
+        }
         task.beforePublish = [&]() -> Status {
             Require(task.minimapMarkers && task.InFinalDerivedStage() == false,
                 "回调必须确实位于派生完成后、归档写出前");
@@ -527,7 +541,14 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
                 const std::vector<MapArchiveMember> patch{{"UI/war3skins.txt", Text("[Default]\nTeamColor=Fixture/TeamColor\n")}};
                 Take(WriteVerifiedArchive(fixture.game / "war3patch.mpq", patch));
             } else {
-                Check(IO::WriteFileBytes(fixture.source->SourcePath(), Text("source changed after final capture")));
+                const auto direct = CreateFileW(fixture.source->SourcePath().c_str(), GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+                const auto error = GetLastError();
+                if (direct != INVALID_HANDLE_VALUE) CloseHandle(direct);
+                Require(direct == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION,
+                    "保存期间直接来源写入必须被固定句柄阻止");
+                // 已有映射仍能改实际内容，不能仅凭禁止新写句柄就复用来源摘要。
+                static_cast<std::byte*>(view.get())[0] ^= std::byte{1};
             }
             return Status::Ok();
         };
