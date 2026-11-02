@@ -510,12 +510,12 @@ void AdapterConflictsAndFrozenSourceRemainHardFailures() {
     Check(IO::WriteFileBytes(fixture.source->SourcePath(), sourceBytes));
 }
 void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
-    for (unsigned mode = 0; mode < 4; ++mode) {
+    for (unsigned mode = 0; mode < 5; ++mode) {
         Fixture fixture; MapSaveTask task; fixture.Freeze(task); fixture.PrepareOrdinary(task);
         std::unique_ptr<void, decltype(&CloseHandle)> writable(nullptr, &CloseHandle);
         std::unique_ptr<void, decltype(&CloseHandle)> mapping(nullptr, &CloseHandle);
         std::unique_ptr<void, decltype(&UnmapViewOfFile)> view(nullptr, &UnmapViewOfFile);
-        if (mode == 3) {
+        if (mode == 4) {
             writable.reset(CreateFileW(fixture.source->SourcePath().c_str(), GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
             Require(writable.get() != INVALID_HANDLE_VALUE, "真实来源改动反例须先取得可写文件");
@@ -525,7 +525,9 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
             Require(bool(view), "真实来源改动反例须先映射实际来源字节");
             writable.reset();
         }
+        bool beforePublishRan = false;
         task.beforePublish = [&]() -> Status {
+            beforePublishRan = true;
             Require(task.minimapMarkers && task.InFinalDerivedStage() == false,
                 "回调必须确实位于派生完成后、归档写出前");
             if (mode == 0) {
@@ -540,15 +542,22 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
             } else if (mode == 2) {
                 const std::vector<MapArchiveMember> patch{{"UI/war3skins.txt", Text("[Default]\nTeamColor=Fixture/TeamColor\n")}};
                 Take(WriteVerifiedArchive(fixture.game / "war3patch.mpq", patch));
-            } else {
+            } else if (mode == 3) {
                 const auto direct = CreateFileW(fixture.source->SourcePath().c_str(), GENERIC_WRITE,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
                 const auto error = GetLastError();
                 if (direct != INVALID_HANDLE_VALUE) CloseHandle(direct);
                 Require(direct == INVALID_HANDLE_VALUE && error == ERROR_SHARING_VIOLATION,
                     "保存期间直接来源写入必须被固定句柄阻止");
-                // 已有映射仍能改实际内容，不能仅凭禁止新写句柄就复用来源摘要。
-                static_cast<std::byte*>(view.get())[0] ^= std::byte{1};
+                const auto replacement = fixture.source->SourcePath().wstring() + L".changed";
+                Check(IO::WriteFileBytes(replacement, Text("source atomically replaced after final capture")));
+                Require(ReplaceFileW(fixture.source->SourcePath().c_str(), replacement.c_str(), nullptr,
+                    REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr) != FALSE,
+                    "来源改动反例必须执行真实原子替换");
+            } else {
+                // 平台若允许映射来源获取读租约，仍须核对已被映射实际改动的完整内容。
+                static_cast<volatile unsigned char*>(view.get())[0] ^= 1;
+                MemoryBarrier();
             }
             return Status::Ok();
         };
@@ -556,7 +565,10 @@ void BeforePublishCannotChangeMarkersOrConsumedDependencies() {
         Require(task.executed && !task.succeeded && !task.nextSession && task.written.empty()
             && !std::filesystem::exists(task.target), "发布前MMP/依赖/来源被改动必须在写目标之前拒绝");
         Code(task.diagnostics, mode == 0 ? "TERRAIN_MMP_OUTPUT_MISMATCH"
-            : mode == 3 ? "SOURCE_CHANGED" : "TERRAIN_MMP_DEPENDENCY_STALE");
+            : mode == 3 ? "SOURCE_REPLACED"
+            : mode == 4 ? (beforePublishRan ? "SOURCE_CHANGED" : "SOURCE_LEASE_FAILED")
+            : "TERRAIN_MMP_DEPENDENCY_STALE");
+        Require(mode == 4 || beforePublishRan, "非映射负例必须确实经过发布前回调");
         Require(std::none_of(task.diagnostics.begin(), task.diagnostics.end(), [](const auto& diagnostic) {
             return diagnostic.code == "TERRAIN_MMP_PRESERVED_UNSUPPORTED";
         }), "最后来源与输出门不得降级成自动能力警告");
