@@ -748,15 +748,15 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             if (!members.Succeeded() || !members.value) {
                 if (terrainRequest) return Forward(members.diagnostics);
                 minimapInputFailure.insert(minimapInputFailure.end(), members.diagnostics.begin(), members.diagnostics.end());
-            } else if ((*members.value)[0].present && (*members.value)[1].present) {
+            } else if ((*members.value)[0].present && ((*members.value)[1].present || !shadowOnly)) {
                 auto attached = edits.AttachTerrain((*members.value)[0].bytes);
-                if (attached.Succeeded()) attached = edits.AttachPathing((*members.value)[1].bytes);
+                if (attached.Succeeded() && (*members.value)[1].present) attached = edits.AttachPathing((*members.value)[1].bytes);
                 if (!attached.Succeeded()) {
                     if (terrainRequest) return Forward(attached.diagnostics);
                     minimapInputFailure.insert(minimapInputFailure.end(), attached.diagnostics.begin(), attached.diagnostics.end());
                 }
             } else if (terrainRequest) {
-                return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图必须同时包含唯一可读取的 W3E 和 WPM。");
+                return Fail("SAVE_TERRAIN_PATHING_MISSING", "源地图缺少唯一可读取的 W3E，不能保存地形修改。");
             } else if (shadowOnly && (*members.value)[0].present && !(*members.value)[1].present) {
                 // 独立阴影计算不消费WPM。这里只接受准确捕获证明的缺失，不能
                 // 将损坏、读取失败或未知来源当成缺失，也不为生成图像伪造WPM。
@@ -831,13 +831,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
                 return Fail("SAVE_TERRAIN_STALE", "W3E SHA-256 与编辑请求不符，请重新获取地形快照。");
             }
 
-            if (!edits.HasTerrainPathing()) {
+            if (!edits.Terrain()) {
                 const auto attachedTerrain = edits.AttachTerrain(*terrainBytes.value);
                 if (!attachedTerrain.Succeeded()) return Forward(attachedTerrain.diagnostics);
-                if (actual.value->at(1).present) {
-                    const auto attachedPathing = edits.AttachPathing(*pathingBytes.value);
-                    if (!attachedPathing.Succeeded()) return Forward(attachedPathing.diagnostics);
-                }
+            }
+            if (actual.value->at(1).present && !edits.HasTerrainPathing()) {
+                const auto attachedPathing = edits.AttachPathing(*pathingBytes.value);
+                if (!attachedPathing.Succeeded()) return Forward(attachedPathing.diagnostics);
             }
             const auto grid = edits.Terrain();
             if (!grid) return Fail("SAVE_TERRAIN_UNAVAILABLE", "源 W3E 无法建立地形编辑快照。");

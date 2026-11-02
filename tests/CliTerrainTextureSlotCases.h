@@ -42,6 +42,24 @@ void TerrainTextureSlotCliActuallySaves() {
     args[7] = (fixture.root / "cli-stale.w3x").wstring(); args.back() = L"Miss";
     Require(Invoke(args).exitCode != 0 && !std::filesystem::exists(fixture.root / "cli-stale.w3x"), "CLI failure cannot save a prefix");
     Require(P::Take(War3Map::Sha256File(fixture.source.path)) == fixture.source.sha256, "CLI source unchanged");
+    {
+        P::Fixture missing;
+        const auto original = P::Take(War3Map::MapArchiveSession::Open(missing.source.path));
+        const std::array<std::string, 1> remove{"war3map.wpm"};
+        missing.source = P::Take(original.SaveCandidate(missing.root / "without-pathing.w3x", {}, remove));
+        const auto target = missing.root / "cli-created-pathing.w3x";
+        const std::vector<std::wstring> create{L"war3-map-cli", L"map-edit-save", missing.source.path.wstring(),
+            std::wstring(missing.source.sha256.begin(), missing.source.sha256.end()),
+            std::wstring(missing.terrainSha.begin(), missing.terrainSha.end()), missing.inputs.tool.wstring(), missing.inputs.game.wstring(), target.wstring(),
+            L"--in-process-only", L"--terrain-slot-append", L"ground", L"1", L"Tg02"};
+        const auto savedMissing = Invoke(create);
+        if (savedMissing.exitCode != 0) throw std::runtime_error(savedMissing.error);
+        Require(savedMissing.output.find("TERRAIN_SAVE_GENERATED_MISSING_WPM") != std::string::npos,
+            "CLI exposes first WPM generation from an exact missing source");
+        const auto created = P::Take(War3Map::MapArchiveSession::Open(target));
+        Require(!original.HasOpaqueMembers() && !P::Take(War3Map::MapArchiveSession::Open(missing.source.path)).HasMember("war3map.wpm")
+            && created.HasMember("war3map.wpm"), "real CLI readback adds WPM while its source remains absent");
+    }
 }
 
 void TerrainTextureSlotsUseSharedOrderedSave() {
