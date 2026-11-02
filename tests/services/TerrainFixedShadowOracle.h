@@ -15,12 +15,11 @@ int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::strin
     placement.rawcode = "YS14"; placement.variation = 0; placement.position = {0, 0, 0};
     placement.rotation = 0.75f; placement.scale = {1, 1, 1}; placement.flags = 2;
     placement.lifePercent = 100; placement.creationId = 1; placements.doodads.push_back(placement);
+    (void)game;
+    Require(Take(ParseDoodadPlacements(Take(source.ReadMember("war3map.doo")))).doodads.empty(),
+        "fixed-shadow seed must not remove script-bound original objects");
     std::vector<MemberReplacement> replacements{{"war3map.doo", Take(placements.Serialize())},
-        {"war3mapUnits.doo", Take(UnitPlacements{}.Serialize())},
         {"war3map.shd", std::vector<std::byte>(256u * 256u, std::byte{37})}};
-    const auto markers = Take(TerrainMinimapMarkers::Capture(source, game, replacements));
-    Require(markers->MarkerCount() == 0, "fixed-shadow fixture has no omitted unit marker");
-    replacements.push_back({"war3map.mmp", markers->Bytes()});
     const auto saved = Take(source.SaveCandidate(target, replacements));
     const auto readback = OpenOracleSource(saved.path, Take(Sha256File(saved.path)));
     const auto observed = Take(ParseDoodadPlacements(Take(readback.ReadMember("war3map.doo"))));
@@ -29,7 +28,9 @@ int PrepareFixedShadowOracle(const std::filesystem::path& path, const std::strin
         "fixed-shadow oracle actual instance differs");
     Require(Take(readback.ReadMember("war3map.w3e")) == Take(source.ReadMember("war3map.w3e")),
         "fixed-shadow fixture must not substitute terrain");
-    Check(markers->VerifyReadback(readback)); Check(source.VerifySourceUnchanged());
+    Require(Take(readback.ReadMember("war3mapUnits.doo")) == Take(source.ReadMember("war3mapUnits.doo")),
+        "fixed-shadow seed must retain original unit identities used by triggers");
+    Check(source.VerifySourceUnchanged());
     std::cout << nlohmann::json{{"source_sha256", expected}, {"oracle_sha256", readback.SourceSha256()},
         {"rawcode", placement.rawcode}, {"wire_rotation", placement.rotation},
         {"ordinary_flat_dry", true}, {"single_caster", true}}.dump() << '\n';
