@@ -267,10 +267,10 @@ void Fixed270PreservesActualPlacementPose() {
     normalized.doodads[2].rotation = normalized.doodads[3].rotation = std::bit_cast<float>(0x4096cbe5u);
     std::vector<MemberReplacement> output{{"war3map.doo", Take(normalized.Serialize())}};
     const auto original = f.Capture(output);
-    const auto table = [](std::string rotation) {
-        return Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats", "pathTex"},
-            {{"N001", "0", "_", "0", "1", "0", "0", "-1", "0", "_"},
-             {"C001", "1", "Fixture/Caster", "2", "1.25", "0", "0", std::move(rotation), "0", "_"}});
+    const auto table = [](std::string rotation, std::string texture = "_", std::string category = "S") {
+        return Slk({"doodID", "shadow", "file", "numVar", "defScale", "maxPitch", "maxRoll", "fixedRot", "floats", "pathTex", "category"},
+            {{"N001", "0", "_", "0", "1", "0", "0", "-1", "0", "_", "S"},
+             {"C001", "1", "Fixture/Caster", "2", "1.25", "0", "0", std::move(rotation), "0", std::move(texture), std::move(category)}});
     };
     output.push_back({"Doodads/Doodads.slk", table("270")});
     const auto owner = f.Capture(output);
@@ -296,6 +296,21 @@ void Fixed270PreservesActualPlacementPose() {
         Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output),
             "TERRAIN_SHADOW_CASTER_TRANSFORM_UNSUPPORTED");
     }
+    Bytes footprint(18 + 4 * 4 * 3, std::byte{0xff});
+    std::fill_n(footprint.begin(), 18, std::byte{0});
+    footprint[2] = std::byte{2}; footprint[12] = footprint[14] = std::byte{4};
+    footprint[16] = std::byte{24}; footprint[17] = std::byte{0x20};
+    output[1].data = table("270", "Fixture/ALIGN.TGA");
+    output.push_back({"Fixture/align.tga", footprint});
+    const auto aligned = f.Capture(output);
+    Check(aligned->VerifySources(*f.source, output));
+    const auto alignedFile = Take(f.source->SaveCandidate(f.root / "fixed-270-aligned.w3x", output));
+    Check(aligned->VerifyReadback(Take(MapArchiveSession::Open(alignedFile.path))));
+    auto displaced = normalized; displaced.doodads[2].position[0] += 1;
+    output[0].data = Take(displaced.Serialize());
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED");
+    output[0].data = Take(normalized.Serialize()); output[1].data = table("270", "Fixture/ALIGN.TGA", "C");
+    Rejected(TerrainShadowCasterResources::Capture(*f.source, f.game, output), "TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED");
 }
 void EmptyAndSpecialListsRemainExplicit() {
     Fixture f; DoodadPlacements empty;

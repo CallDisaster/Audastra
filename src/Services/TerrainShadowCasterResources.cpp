@@ -394,8 +394,9 @@ void Fixed270Pose(Context& context, const Table& table, const MapData::TerrainGr
     const auto texture = table.Field(placement.rawcode, "pathtex");
     if (texture.empty() || texture == "_") return;
     const auto path = Canonical(texture);
-    if (table.Field(placement.rawcode, "category") != "S" || !path.ends_with(".tga"))
-        Fail("TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED", "固定270度实例的实际类别或占地格式尚未接通吸附复核：" + placement.rawcode);
+    if (table.Field(placement.rawcode, "category") != "S" || !Text::LowerAscii(path).ends_with(".tga"))
+        Fail("TERRAIN_SHADOW_CASTER_POSE_UNSUPPORTED", "固定270度实例的实际类别或占地格式尚未接通吸附复核：" + placement.rawcode
+            + "（category=" + std::string(table.Field(placement.rawcode, "category")) + ", pathTex=" + path + "）。");
     const std::array<std::string, 1> names{path}; context.Phase(names, kTableBytes);
     const auto& file = context.Required(path, true, kTableBytes);
     constexpr std::size_t scratch = 256u * 256u * 4u;
