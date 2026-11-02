@@ -373,6 +373,9 @@ void RequireNoOverrides(Context& context, std::string_view name, ObjectData::Obj
         auto display = ObjectData::ValidateNativeDestructableDisplayOverrides(inputs,
             context.limits.maximumWorkingBytes - context.workingBytes);
         if (display.Succeeded() && display.value) { context.ParseReserve(*display.value, 1); return; }
+        if (std::any_of(display.diagnostics.begin(), display.diagnostics.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "TERRAIN_NATIVE_OBJECT_BUDGET";
+        })) throw Failure{std::move(display.diagnostics)};
         std::string detail;
         for (const auto& diagnostic : display.diagnostics) detail += " " + diagnostic.code + ":" + diagnostic.message;
         Fail("TERRAIN_SHADOW_CASTER_NATIVE_UNSUPPORTED", "阴影对象覆盖不能证明只影响展示，保留原阴影：" + std::string(name) + detail);
