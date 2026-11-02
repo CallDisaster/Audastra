@@ -825,8 +825,15 @@ void RealResourcesUsePublicMapEditSave(const std::filesystem::path& tool, const 
 #include "TerrainCorpusMovementFixture.h"
 #include "TerrainFixedShadowOracle.h"
 #include "TerrainNativeOverridesAudit.h"
+#include "TerrainCliffTableAudit.h"
 
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 6 && std::wstring_view(argv[1]) == L"--terrain-cliff-table-audit") {
+        try {
+            const std::wstring wide(argv[3]);
+            return AuditTerrainCliffTable(argv[2], std::string(wide.begin(), wide.end()), argv[4], argv[5]);
+        } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
+    }
     if (argc == 5 && std::wstring_view(argv[1]) == L"--terrain-native-overrides-audit") {
         try {
             const std::wstring wide(argv[3]);
