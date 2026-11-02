@@ -170,7 +170,9 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
 
     const auto started = std::chrono::steady_clock::now();
     const auto firstScriptDiagnostic = task.diagnostics.size();
+    Detail::SaveProgressStage compileTiming(progress, "script-generation-compile");
     auto result = Script::BuildMapScript(request);
+    compileTiming.Finish();
     // BuildMapScript 已消费最终成员视图。合并生成物会扩容 replacements，先清除旧 span。
     request.finalSaveMembers.reset();
     Append(task.diagnostics, result.diagnostics);
@@ -306,8 +308,11 @@ void RebuildScript(MapSaveTask& task, const MapSaveService::Progress& progress) 
             if (*used.value) task.preserveUnaffectedScript = false;
         }
         // 改动不影响脚本时沿用作者原脚本：本机函数库版本不同会让重建结果与原图不同。
+        Detail::SaveProgressStage preservationTiming(progress, "script-source-preservation");
         if (auto original = ScriptPreservation::UnaffectedSourceScript(
                 task, request, result, prepared.value->members, frozen.scriptMember)) {
+            preservationTiming.Finish();
+            Detail::SaveProgressStage signaturesTiming(progress, "script-signature-diagnostics");
             ScriptPreservation::ReportSignatureChanges(*original, prepared.value->members.front().data, true,
                 task.diagnostics);
             task.scriptRebuilt = true;
