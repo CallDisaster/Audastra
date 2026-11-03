@@ -4,6 +4,7 @@
 #include "War3MapCore/Resources/ImportTable.h"
 #include <QThread>
 #include <QUndoStack>
+#include <algorithm>
 
 namespace War3Map::QtProject {
 ProjectMinimapPreview::ProjectMinimapPreview(EditorProject& project, QObject* parent)
@@ -14,10 +15,14 @@ ProjectMinimapPreview::ProjectMinimapPreview(EditorProject& project, QObject* pa
     connect(&project_, &EditorProject::MapDocumentChanged, this, changed);
     connect(&project_, &EditorProject::ImportsChanged, this, changed);
     connect(&project_, &EditorProject::SourceStateChanged, this, changed);
+    connect(&project_, &EditorProject::WorldEditStringsChanged, this, changed);
+    connect(&project_, &EditorProject::ObjectCatalogChanged, this, changed);
+    connect(&project_, &EditorProject::ObjectDocumentsReplaced, this, changed);
     connect(&project_, &EditorProject::EditTrackingBaselineChanged, this, changed);
     connect(&project_, &EditorProject::PendingTerrainCommitStateChanged, this,
         [this](bool pending) { if (!pending) Invalidate(); else { ++serial_; result_.reset(); emit Changed(); } });
     if (project_.mapDataUndoStack_) connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged, this, changed);
+    for(auto* stack:project_.objectUndoStacks_)if(stack)connect(stack,&QUndoStack::indexChanged,this,changed);
 }
 ProjectMinimapPreview::~ProjectMinimapPreview() {
     if (worker_) { disconnect(worker_, nullptr, this, nullptr); worker_->wait(); delete worker_.data(); }
@@ -67,6 +72,9 @@ void ProjectMinimapPreview::Start() {
         // 未冻结的磁盘导入不能冒充当前资源。保存后由统一来源规则重新捕获。
         if (project_.HasPendingAssetEdits()) {
             failure("MINIMAP_CURRENT_PENDING_ASSETS", "导入资源尚未保存，当前小地图暂不可用。"); return;
+        }
+        if(std::any_of(project_.objectDirty_.begin(),project_.objectDirty_.end(),[](bool dirty){return dirty;})){
+            failure("MINIMAP_CURRENT_PENDING_OBJECTS","物编修改尚未保存，当前小地图暂不可用。");return;
         }
         QtCommon::DiagnosticTimingScope freezeTiming("minimap-freeze");
         auto frozen = project_.mapEdits_->FreezeForSave(128U*1024U*1024U);
