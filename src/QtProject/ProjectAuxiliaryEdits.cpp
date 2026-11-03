@@ -21,7 +21,8 @@ Services::AuxiliaryReferenceContext CaptureAuxiliaryReferences(EditorProject& pr
         for (const auto& member : project.archiveSession_->Members()) inspect(member.name);
         if (project.archiveSession_->HasOpaqueMembers()) result.opaqueScriptSources.push_back("未命名归档成员");
     } else if (project.directorySnapshot_) {
-        for (const auto& file : project.directorySnapshot_->Snapshot().files) inspect(file.relativePath.generic_string());
+        for (const auto& file : project.directorySnapshot_->Snapshot().files)
+            Services::ObserveAuxiliaryScriptSource(result, file.relativePath.generic_string(), true);
     } else if (project.readOnlyArchive_) result.opaqueScriptSources.push_back("只读归档未建立完整成员清单");
     for (const auto& pending : project.pendingImports_) inspect(pending.archivePath.toStdString());
     result.readScript = [&project](const std::string& name) -> Result<std::vector<std::byte>> {

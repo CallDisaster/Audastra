@@ -32,7 +32,7 @@ private:
 };
 
 // UI/独立宿主与保存链共用脚本覆盖分类，不把动态脚本/匿名来源解释为无引用。
-void ObserveAuxiliaryScriptSource(AuxiliaryReferenceContext& context, std::string name);
+void ObserveAuxiliaryScriptSource(AuxiliaryReferenceContext& context, std::string name, bool directoryLayout = false);
 
 // expectedMembers 只冻结本次实际编辑的 W3R/W3C；模板合并后仍须唯一、未删除且字节相同。
 // 未冻结的成员不受此门限制，不能把正常模板资源导入一并禁止。

@@ -115,11 +115,13 @@ void DirectorySealMissingAndAliasGate() {
     Need(Code((*frozen.value)->Seal(source), "AUX_TRANSACTION_SOURCE_STALE"), "existing alias cannot be treated as missing");
     source.files.push_back({std::filesystem::path("map/war3map.w3r"), 0, 0, std::string(64, 'b')});
     Need(Code((*frozen.value)->Seal(source), "AUX_TRANSACTION_SOURCE_AMBIGUOUS"), "root/map collision refuses guessing");
-    AuxiliaryReferenceContext refs; ObserveAuxiliaryScriptSource(refs, "map/scripts/war3map.j");
+    AuxiliaryReferenceContext refs; ObserveAuxiliaryScriptSource(refs, "map/scripts/war3map.j", true);
     ObserveAuxiliaryScriptSource(refs, "war3map.j"); ObserveAuxiliaryScriptSource(refs, "map/custom/Owned.LUA");
     Need(refs.opaqueScriptSources.size() == 1, "generated JASS excluded, external Lua stays opaque");
     ObserveAuxiliaryScriptSource(refs, "map/blackbox.AI");
     Need(refs.opaqueScriptSources.size() == 2, "AI is tracked only by member name and grants no negative reference proof");
+    ObserveAuxiliaryScriptSource(refs, "map/war3map.j");
+    Need(refs.opaqueScriptSources.size() == 3, "archive map directory is not a generated root alias");
 }
 void SaveServiceRechecksSourceBeforeToolchain() {
     Scratch scratch; History h;

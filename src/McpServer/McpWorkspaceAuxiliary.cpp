@@ -39,7 +39,7 @@ template<class T, class U> Result<T> Failed(const U& source) { return {{}, sourc
 Services::AuxiliaryReferenceContext McpWorkspace::AuxiliaryReferences() const {
     Services::AuxiliaryReferenceContext refs{&VisibleDocument(), true, {}};
     if (mapDataSource_) for (const auto& file : mapDataSource_->Snapshot().files)
-        Services::ObserveAuxiliaryScriptSource(refs, file.relativePath.generic_string());
+        Services::ObserveAuxiliaryScriptSource(refs, file.relativePath.generic_string(), true);
     else refs.opaqueScriptSources.push_back("地图数据来源尚未捕获");
     refs.readScript = [this](const std::string& name) -> Result<std::vector<std::byte>> {
         if (!mapDataSource_) return Result<std::vector<std::byte>>::Failure("MapData.Auxiliary", "AUX_SCRIPT_REFERENCES_UNKNOWN", "目录来源未捕获。");
