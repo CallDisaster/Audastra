@@ -704,10 +704,10 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     auto request = f.Context(); request.insert("path", f.outputs.filePath("candidate.w3x"));
     const auto original = f.Fingerprint();
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_UNAVAILABLE"));
-    f.tools->SetSaveHandler([](const std::filesystem::path&, bool, bool) { return false; });
+    f.tools->SetSaveHandler([](const std::filesystem::path&, bool, bool, bool) { return false; });
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_REJECTED"));
     // 保存链写进诊断表的错误随拒绝一起返回。
-    f.tools->SetSaveHandler([&f](const std::filesystem::path&, bool, bool) {
+    f.tools->SetSaveHandler([&f](const std::filesystem::path&, bool, bool, bool) {
         f.project.AddDiagnostic(QStringLiteral("警告"), QStringLiteral("地图"), QStringLiteral("SAVE_SAMPLE_NOTE"), QStringLiteral("示例提示"));
         f.project.AddDiagnostic(QStringLiteral("错误"), QStringLiteral("地图"), QStringLiteral("SAVE_SAMPLE_REASON"), QStringLiteral("示例原因"));
         return false;
@@ -716,12 +716,14 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     const auto reasons = explained.value("diagnostics").toArray();
     QVERIFY2(reasons.size() == 2 && reasons[1].toObject().value("code").toString() == QStringLiteral("SAVE_SAMPLE_REASON")
             && reasons[1].toObject().value("message").toString() == QStringLiteral("示例原因"), qPrintable(Explain(explained)));
-    f.tools->SetSaveHandler([](const std::filesystem::path&, bool, bool) { return true; });
+    f.tools->SetSaveHandler([](const std::filesystem::path&, bool, bool, bool) { return true; });
     QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", request)), QStringLiteral("LIVE_EDITOR_SAVE_OUTPUT_MISSING"));
     int calls = 0; QJsonObject nested;
     const auto edit = f.DescriptionRequest();
     QSignalSpy events(f.tools.get(), &LiveEditorTools::Activity);
-    f.tools->SetSaveHandler([&](const std::filesystem::path& path, bool inPlace, bool) {
+    bool delegatedShadow = true;
+    f.tools->SetSaveHandler([&](const std::filesystem::path& path, bool inPlace, bool, bool rebuildShadow) {
+        delegatedShadow = rebuildShadow;
         ++calls; if (inPlace) return false;
         nested = f.tools->Invoke("editor_edit_trigger_graph", edit);
         // 仅检查宿主委托合同和输出 SHA，不冒称这是地图归档、脚本或游戏验收。
@@ -734,6 +736,7 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     QCOMPARE(saved.value("sha256").toString(), QString::fromStdString(*sha.value));
     QCOMPARE(saved.value("save_evidence").toString(), QStringLiteral("host-common-save-handler"));
     QVERIFY(!saved.value("game_verified").toBool()); QCOMPARE(calls, 1);
+    QVERIFY(!delegatedShadow);
     QCOMPARE(ChangeEvents(events), 1);
     const auto fileChange = saved.value("changes").toObject();
     QCOMPARE(fileChange.value("files").toInt(), 1);
@@ -759,6 +762,17 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     QVERIFY2(copied.value("ok").toBool(), qPrintable(Explain(copied)));
     QVERIFY(!copied.value("project_baseline_changed").toBool()); QCOMPARE(validationCalls, 1); QCOMPARE(calls, 1);
     QCOMPARE(f.Fingerprint(), original); QVERIFY(f.project.directorySnapshot_->VerifyUnchanged().Succeeded());
+    auto shadow = f.Context(); shadow.insert("path", f.outputs.filePath("shadow.w3x"));
+    shadow.insert("rebuild_terrain_shadow", "true");
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", shadow)), QStringLiteral("LIVE_EDITOR_SAVE_ARGUMENT"));
+    shadow.insert("rebuild_terrain_shadow", true);
+    const auto rebuilt = f.tools->Invoke("editor_save_map", shadow);
+    QVERIFY2(rebuilt.value("ok").toBool(), qPrintable(Explain(rebuilt)));
+    QVERIFY(delegatedShadow); QCOMPARE(calls, 2);
+    validation.insert("path", f.outputs.filePath("validation-shadow.w3x"));
+    validation.insert("rebuild_terrain_shadow", true);
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", validation)), QStringLiteral("LIVE_EDITOR_SAVE_ARGUMENT"));
+    QCOMPARE(validationCalls, 1);
 }
 
 void LiveEditorToolsTests::ActivityReportsRealRecordsAndBoundedExamples() {

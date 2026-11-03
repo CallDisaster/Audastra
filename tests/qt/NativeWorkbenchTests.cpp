@@ -5587,7 +5587,7 @@ void NativeWorkbenchTests::LiveEditorNaturalTUsesActualGuiUndoAndLuaMapSave() {
     int saveCalls = 0;
     std::filesystem::path delegatedPath;
     bool delegatedInPlace = true;
-    tools.SetSaveHandler([&](const std::filesystem::path& path, bool inPlace, bool) {
+    tools.SetSaveHandler([&](const std::filesystem::path& path, bool inPlace, bool, bool) {
         ++saveCalls; delegatedPath = path; delegatedInPlace = inPlace;
         // 真正 Qt Prepare -> 脚本生成/真实 Lua 检查 -> 归档写出/回读 -> Commit。
         // 不以回调桩、手写 Lua 或直接 MPQ 替换代替原地图保存。

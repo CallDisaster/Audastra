@@ -36,7 +36,7 @@ public:
     explicit LiveEditorTools(QtProject::EditorProject& project, QObject* parent = nullptr);
     ~LiveEditorTools() override;
     [[nodiscard]] Mcp::McpServer& Server() noexcept;
-    void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool, bool)> handler);
+    void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool, bool, bool)> handler);
     void SetValidationSaveHandler(std::function<bool(const std::filesystem::path&)> handler);
     void SetBeforeWrite(std::function<bool()> handler);
     void SetLuaTestHandler(std::function<QJsonObject(bool submit)> handler);

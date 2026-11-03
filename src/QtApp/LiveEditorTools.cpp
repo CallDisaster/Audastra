@@ -397,7 +397,7 @@ public:
     }
 
     Mcp::McpServer& Server() noexcept { return server_; }
-    void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool, bool)> handler) { save_ = std::move(handler); }
+    void SetSaveHandler(std::function<bool(const std::filesystem::path&, bool, bool, bool)> handler) { save_ = std::move(handler); }
     void SetValidationSaveHandler(std::function<bool(const std::filesystem::path&)> handler) { validationSave_ = std::move(handler); }
     void SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { luaTest_ = std::move(handler); }
     void SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { mapTest_ = std::move(handler); }
@@ -1317,7 +1317,11 @@ private:
                 return Mcp::Failure("LIVE_EDITOR_SAVE_ARGUMENT", "keep_original_minimap 须为布尔值。");
             if (validation && keepMinimap.toBool(false))
                 return Mcp::Failure("LIVE_EDITOR_SAVE_ARGUMENT", "内部验收副本不接受 keep_original_minimap。");
-            const bool succeeded = validation ? validationSave_(path) : save_(path, inPlace, keepMinimap.toBool(false));
+            const auto shadow = arguments.value("rebuild_terrain_shadow");
+            if ((!shadow.isUndefined() && !shadow.isBool()) || (validation && shadow.toBool(false)))
+                return Mcp::Failure("LIVE_EDITOR_SAVE_ARGUMENT", "rebuild_terrain_shadow 须为布尔值，且仅支持正常地图保存。");
+            const bool succeeded = validation ? validationSave_(path)
+                : save_(path, inPlace, keepMinimap.toBool(false), shadow.toBool(false));
             if (!succeeded) {
                 // 保存链写进诊断表的错误一并带回，Agent 不用看界面也知道原因。
                 Status rejected = Status::Failure("MCP", "LIVE_EDITOR_SAVE_REJECTED", "原地图保存服务拒绝写出。");
@@ -1894,8 +1898,9 @@ private:
         auto save = IdentityProperties(); save.insert("path", StringSchema()); save.insert("in_place", QJsonObject{{"type", "boolean"}, {"default", false}});
         save.insert("runtime_purpose", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"normal", "internal_validation"}}, {"default", "normal"}});
         save.insert("keep_original_minimap", QJsonObject{{"type", "boolean"}, {"default", false}});
+        save.insert("rebuild_terrain_shadow", QJsonObject{{"type", "boolean"}, {"default", false}});
         AddTool("editor_save_map", "通过原编辑器地图保存服务写回或另存；只因小地图无法生成而失败（MINIMAP_RISK_SAVE_AVAILABLE）时，"
-            "作者同意后可传 keep_original_minimap=true 保留原小地图继续保存", Mcp::ToolPermission::Save,
+            "作者同意后可传 keep_original_minimap=true 保留原小地图继续保存；rebuild_terrain_shadow=true 通过同一保存链重算阴影", Mcp::ToolPermission::Save,
             Schema(save, {"project_identity", "expected_revision"}), [this](const QJsonObject& arguments) { return Save(arguments); });
         auto catalog = IdentityProperties();
         catalog.insert("kind", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"event", "condition", "action", "call"}}});
@@ -1910,7 +1915,7 @@ private:
     LiveEditorTools& owner_;
     QPointer<LiveEditorTools> ownerHandle_;
     Mcp::McpServer server_;
-    std::function<bool(const std::filesystem::path&, bool, bool)> save_;
+    std::function<bool(const std::filesystem::path&, bool, bool, bool)> save_;
     std::function<bool(const std::filesystem::path&)> validationSave_;
     std::function<bool()> beforeWrite_;
     std::function<QJsonObject(bool)> luaTest_;
@@ -1939,7 +1944,7 @@ LiveEditorTools::LiveEditorTools(QtProject::EditorProject& project, QObject* par
     : QObject(parent), impl_(std::make_shared<Impl>(project, *this)) {}
 LiveEditorTools::~LiveEditorTools() = default;
 Mcp::McpServer& LiveEditorTools::Server() noexcept { return impl_->Server(); }
-void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
+void LiveEditorTools::SetSaveHandler(std::function<bool(const std::filesystem::path&, bool, bool, bool)> handler) { impl_->SetSaveHandler(std::move(handler)); }
 void LiveEditorTools::SetValidationSaveHandler(std::function<bool(const std::filesystem::path&)> handler) { impl_->SetValidationSaveHandler(std::move(handler)); }
 void LiveEditorTools::SetLuaTestHandler(std::function<QJsonObject(bool)> handler) { impl_->SetLuaTestHandler(std::move(handler)); }
 void LiveEditorTools::SetMapTestHandler(std::function<QJsonObject(const QString&, const QJsonObject&)> handler) { impl_->SetMapTestHandler(std::move(handler)); }

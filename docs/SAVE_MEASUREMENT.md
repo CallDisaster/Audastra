@@ -16,3 +16,5 @@ war3-map-editor.exe --settings-profile measurement --diagnostic-timings --open-m
 计时仅增加诊断输出，不跳过编译、来源检查、成员预算、写后回读或提交检查。嵌套阶段的耗时包含子阶段，不能重复相加。打开地图的计时不包含应用启动前的等待；启动耗时应由启动程序另外记录。
 
 CLI的`map-edit-save --save-timings`使用同一保存服务阶段，但不包含编辑器界面绑定和提交阶段。比较两种入口时应固定源文件、函数库和工具链、修改请求、输出方式及机器负载，并比较真实候选内容。
+
+活动编辑器的`editor_save_map`可显式传`rebuild_terrain_shadow: true`，在正常保存时重算阴影；默认关闭。这个选项不能用于内部验收副本用途，保存资格和拒绝诊断仍由原服务决定。
