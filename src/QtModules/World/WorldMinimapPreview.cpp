@@ -25,9 +25,11 @@ public:
     }
 protected:
     void paintEvent(QPaintEvent* event) override {
-        QLabel::paintEvent(event);
+        Q_UNUSED(event);
+        const auto rect=ImageRect(); QPainter p(this);p.fillRect(this->rect(),Qt::black);
+        p.setRenderHint(QPainter::SmoothPixmapTransform);if(!pixmap().isNull())p.drawPixmap(rect.toRect(),pixmap());
         if(outline.isEmpty())return;
-        const auto rect=ImageRect(); QPainter p(this); p.setClipRect(rect);
+        p.setClipRect(rect);
         QPolygonF points; for(const auto& point:outline) points<<QPointF(rect.left()+point.x()*rect.width(),rect.top()+point.y()*rect.height());
         p.setPen(QPen(Qt::white,1.5));p.setBrush(Qt::NoBrush);p.drawPolygon(points);
     }
@@ -69,7 +71,8 @@ void WorldMinimapPreview::Display(){
     image_->clear();image_->outline.clear();setProperty("sourceSha256",QString());setProperty("rgbaSha256",QString());
     const auto& result=preview_.ResultValue();
     QString state;
-    if(project_.sourceChangeSuspected_||project_.sourceChangeConfirmed_)state=tr("地图文件已变化");
+    if(!project_.archiveSession_&&!project_.mapEdits_)state={};
+    else if(project_.sourceChangeSuspected_||project_.sourceChangeConfirmed_)state=tr("地图文件已变化");
     else if(preview_.Pending())state=tr("读取中…");
     else if(!result || !result->Succeeded()){
         state=project_.sourceChangeSuspected_||project_.sourceChangeConfirmed_?tr("地图文件已变化"):tr("当前不可用");

@@ -38,7 +38,10 @@ void ProjectMinimapPreview::Start() {
             "Minimap.Preview",std::move(code),std::move(message)));
         pending_ = false; timing_.reset(); project_.AddDiagnostics(result_->diagnostics); emit Changed();
     };
-    if (!project_.archiveSession_) { failure("MINIMAP_CURRENT_SOURCE", "当前小地图需要已打开的地图归档。"); return; }
+    if (!project_.archiveSession_) {
+        if(!project_.mapEdits_){result_.reset();pending_=false;emit Changed();return;}
+        failure("MINIMAP_CURRENT_SOURCE", "当前小地图需要已打开的地图归档。"); return;
+    }
     if (project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) {
         failure("MINIMAP_PREVIEW_STALE", "地图文件已变化，请重新打开。"); return;
     }
