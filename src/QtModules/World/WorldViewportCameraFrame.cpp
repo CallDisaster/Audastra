@@ -49,12 +49,29 @@ void WorldViewport::SubmitCamera() {
         ClearCoordinates(tr("视角更新失败，无法选取坐标"), true);
     }
     ScheduleHover();
+    emit MinimapCameraChanged();
     if (!pickingSuspended_ && animationScene_)
         emit AnimationCameraChanged();
 }
 
 void WorldViewport::ResetCamera() {
     camera_ = homeCamera_; SubmitCamera();
+}
+
+std::vector<std::array<double, 2>> WorldViewport::MinimapCameraOutline() const {
+    const auto frame = ReadPickingFrame();
+    if (!frame.Succeeded()) return {};
+    std::vector<std::array<double, 2>> result;
+    const double w = frame.value->physicalWidth - 1, h = frame.value->physicalHeight - 1;
+    for (const auto point : {Render::PhysicalViewPoint{0,0}, {w,0}, {w,h}, {0,h}}) {
+        const auto ray = Render::MakeViewRay(*frame.value, point);
+        if (!ray.Succeeded() || std::abs(ray.value->ray.direction[2]) < 1e-9) return {};
+        const auto t = (camera_.targetZ - ray.value->ray.origin[2]) / ray.value->ray.direction[2];
+        if (t < 0 || t > ray.value->maxDistance) return {};
+        result.push_back({ray.value->ray.origin[0] + t*ray.value->ray.direction[0],
+            ray.value->ray.origin[1] + t*ray.value->ray.direction[1]});
+    }
+    return result;
 }
 
 Result<War3RenderCameraV2> WorldViewport::ReadCamera(std::uint64_t expectedRevision) const {

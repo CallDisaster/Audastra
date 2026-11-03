@@ -165,6 +165,8 @@ public:
     // Camera() 是当前请求状态；完成帧实际使用的相机只以 CaptureCompletedFrame 回执为准。
     [[nodiscard]] War3RenderCameraV2 Camera() const noexcept { return camera_; }
     [[nodiscard]] Result<War3RenderCameraV2> ReadCamera(std::uint64_t expectedRevision) const;
+    // 当前完成帧四角在相机目标高度平面的投影；射线不相交时不画范围框。
+    [[nodiscard]] std::vector<std::array<double, 2>> MinimapCameraOutline() const;
     [[nodiscard]] Status CheckCameraChange(const War3RenderCameraV2& camera, std::uint64_t expectedRevision) const;
     // 供服务层使用的修订绑定相机命令；成功仅表示已提交给渲染器，仍须等待完成帧。
     [[nodiscard]] Status SetCamera(const War3RenderCameraV2& camera, std::uint64_t expectedRevision);
@@ -194,6 +196,7 @@ public:
     [[nodiscard]] std::size_t ModelInstanceCount() const noexcept { return models_ ? models_->instances.size() : 0; }
 
 signals:
+    void MinimapCameraChanged();
     void PluginFailed(const War3Map::Modules::RenderPluginFailure& failure);
     void MeasurementFrameAccepted(); // 只在显式测量期间发送；观察者只留紧凑身份，不触发编辑。
     void AnimationTransformsChanged(); // UI 变换编辑转交同一动画服务，不退回静态槽。

@@ -270,7 +270,7 @@ QWidget* WorldModule::BuildToolPanel() {
     toolStack_->addWidget(BuildPlacePage());
     toolStack_->addWidget(BuildTerrainPage());
     column->addWidget(toolStack_, 1);
-    column->addWidget(new WorldMinimapPreview(project_, panel));
+    column->addWidget(new WorldMinimapPreview(project_, panel, viewport_));
     return panel;
 }
 

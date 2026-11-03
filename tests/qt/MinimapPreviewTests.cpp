@@ -15,6 +15,7 @@
 #include <QSettings>
 #include <QStandardItemModel>
 #include <QTest>
+#include <QTabBar>
 #include <QUndoStack>
 
 using namespace War3Map;
@@ -58,6 +59,7 @@ private slots:
     void MissingCorruptBudgetAndStale();
     void ViewFollowsUndoSaveSourceAndSwitch();
     void ViewKeepsFailureDetailsInDiagnostics();
+    void CurrentDefaultsAndStaleRequest();
 };
 
 void MinimapPreviewTests::SharedPixelsAndCliExport() try {
@@ -88,6 +90,27 @@ void MinimapPreviewTests::SharedPixelsAndCliExport() try {
     QVERIFY(!Services::ExportMinimapPreviewPpm(result, ppm).Succeeded());
     QCOMPARE(F::Take(Sha256File(path)), sha);
 } catch (const std::exception& error) { QFAIL(error.what()); }
+void MinimapPreviewTests::CurrentDefaultsAndStaleRequest() try {
+    F::Fixture fixture;auto members=fixture.members;members.push_back({"war3mapMap.blp",ImageBytes()});
+    const auto path=F::Take(WriteVerifiedArchive(fixture.root/"stale.w3x",members)).path;
+    QtProject::EditorProject project;Install(project,path,members);
+    Modules::WorldMinimapPreview view(project);view.show();
+    auto* source=view.findChild<QTabBar*>("worldMinimapSource");QVERIFY(source);QCOMPARE(source->currentIndex(),0);
+    QtProject::ProjectMinimapPreview controller(project);
+    QtProject::MinimapPreviewOptions options;options.current=false;controller.Request(options);
+    QTRY_VERIFY_WITH_TIMEOUT(controller.ResultValue()&&controller.ResultValue()->Succeeded(),15000);
+    const auto oldSha=controller.ResultValue()->value->rgbaSha256;
+    controller.Request(options,true); // 尚未完成的请求不能在换来源后发布。
+    auto other=members;other.back().data=ImageBytes(true);
+    const auto next=F::Take(WriteVerifiedArchive(fixture.root/"next.w3x",other)).path;
+    Install(project,next,other);project.MapDocumentChanged();
+    QVERIFY(!controller.ResultValue());
+    QTRY_VERIFY_WITH_TIMEOUT(controller.ResultValue()&&controller.ResultValue()->Succeeded(),15000);
+    QVERIFY(controller.ResultValue()->value->rgbaSha256!=oldSha);
+    QCOMPARE(controller.ResultValue()->value->sourceSha256,project.archiveSession_->SourceSha256());
+    QTRY_COMPARE_WITH_TIMEOUT(view.findChild<QLabel*>("worldMinimapState")->text(),QString("当前不可用"),15000);
+    QVERIFY(view.property("rgbaSha256").toString().isEmpty());
+} catch(const std::exception& error){QFAIL(error.what());}
 
 void MinimapPreviewTests::MissingCorruptBudgetAndStale() try {
     F::Fixture fixture;
@@ -119,7 +142,7 @@ void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {
     const auto path = F::Take(WriteVerifiedArchive(fixture.root / "view.w3x", members)).path;
     QtProject::EditorProject project; Install(project, path, members);
     auto pending = project.BeginPendingTerrainCommit();
-    Modules::WorldMinimapPreview view(project); view.show();
+    Modules::WorldMinimapPreview view(project); view.show();view.findChild<QTabBar*>("worldMinimapSource")->setCurrentIndex(1);
     auto* state = view.findChild<QLabel*>("worldMinimapState"); QVERIFY(state);
     QTest::qWait(30);
     QVERIFY(view.property("rgbaSha256").toString().isEmpty());
@@ -137,9 +160,9 @@ void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {
         undo = std::make_unique<QtProject::MapDataEditCommand>(project, receipt, "test raise", "test raise"); return Status::Ok();
     });
     QVERIFY(applied.Succeeded()); project.mapDataUndoStack_->push(undo.release());
-    QVERIFY(state->text().contains("未保存")); QCOMPARE(view.property("rgbaSha256"), original);
-    project.mapDataUndoStack_->undo(); QVERIFY(!project.mapEdits_->IsDirty()); QVERIFY(!state->text().contains("未保存"));
-    project.mapDataUndoStack_->redo(); QVERIFY(state->text().contains("未保存"));
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("未保存"),15000); QCOMPARE(view.property("rgbaSha256"), original);
+    project.mapDataUndoStack_->undo(); QVERIFY(!project.mapEdits_->IsDirty()); QTRY_VERIFY_WITH_TIMEOUT(state->text().isEmpty(),15000);
+    project.mapDataUndoStack_->redo(); QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("未保存"),15000);
     // 原创视图夹具安装新基线；真实正常保存/回读另由语料及专用窗口验收覆盖。
     members.back().data = ImageBytes(true);
     const auto next = F::Take(WriteVerifiedArchive(fixture.root / "saved-result.w3x", members)).path;
@@ -161,9 +184,9 @@ void MinimapPreviewTests::ViewKeepsFailureDetailsInDiagnostics() try {
     members.push_back({"war3mapMap.blp", F::Text("invalid BLP")});
     const auto path = F::Take(WriteVerifiedArchive(fixture.root / "broken-view.w3x", members)).path;
     QtProject::EditorProject project; Install(project, path, members);
-    Modules::WorldMinimapPreview view(project); view.show();
+    Modules::WorldMinimapPreview view(project); view.show();view.findChild<QTabBar*>("worldMinimapSource")->setCurrentIndex(1);
     auto* state = view.findChild<QLabel*>("worldMinimapState"); QVERIFY(state);
-    QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("读取失败"), 15000);
+    QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("当前不可用"), 15000);
     QVERIFY(!state->text().contains("MINIMAP_PREVIEW"));
     bool found = false;
     for (int row = 0; row < project.diagnosticsModel_->rowCount(); ++row)

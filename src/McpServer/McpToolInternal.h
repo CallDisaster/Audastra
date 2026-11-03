@@ -2,6 +2,7 @@
 
 #include "McpServer.h"
 #include "McpWorkspace.h"
+#include "War3MapCore/Services/MinimapPreview.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -42,6 +43,8 @@ void RegisterReadOnlyTools(McpServer& server);
 void RegisterArchiveIdentityTools(McpServer& server);
 void RegisterMinimapPreviewTool(McpServer& server);
 [[nodiscard]] ToolDefinition MinimapPreviewToolDefinition();
+QJsonObject MinimapPreviewJson(const Services::MinimapPreview& value, bool includeRgba);
+Result<Services::CurrentMinimapPreviewInput> ParseMinimapPreviewArguments(const QJsonObject& arguments);
 void RegisterArchiveMemberTools(McpServer& server);
 void RegisterImportTools(McpServer& server);
 void RegisterProjectSearchTools(McpServer& server);

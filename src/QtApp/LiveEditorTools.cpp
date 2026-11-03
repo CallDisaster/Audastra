@@ -24,6 +24,7 @@
 #include "ProjectRemovalCodeAudit.h"
 #include "McpTriggerCodeIdentity.h"
 #include "ProjectObjectCatalog.h"
+#include "ProjectMinimapPreview.h"
 #include "McpMapRuntimeTools.h"
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
@@ -1679,6 +1680,23 @@ private:
             AddTool(definition.name, definition.description, definition.permission, definition.inputSchema,
                 [this, handler = definition.handler](const QJsonObject& arguments) {
                     if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
+                    if(arguments.value("source").toString("saved")=="current"){
+                        const auto check=CheckContext(arguments,false,false);if(!check["ok"].toBool())return check;
+                        const auto path=Mcp::ParseAbsolutePath(arguments,"source_path");if(!path.Succeeded())return Mcp::Failure(path);
+                        if(!project_.archiveSession_ || path.value->lexically_normal()!=project_.sourceArchivePath_.lexically_normal()
+                            || arguments["expected_source_sha256"].toString().toStdString()!=project_.archiveSession_->SourceSha256())
+                            return Mcp::Failure("MINIMAP_PREVIEW_STALE","来源与活动工程不一致。");
+                        auto input=Mcp::ParseMinimapPreviewArguments(arguments);if(!input.Succeeded())return Mcp::Failure(input);
+                        if(arguments.contains("game_root"))return Mcp::Failure("MINIMAP_PREVIEW_ARGUMENT","活动工程只使用已配置的游戏目录。");
+                        QtProject::MinimapPreviewOptions options;options.layers=input.value->layers;
+                        options.units=input.value->units;options.starts=input.value->starts;options.icons=input.value->icons;
+                        auto& preview=QtProject::AgentMinimapPreview(project_);preview.Request(options);
+                        if(preview.Pending())return QJsonObject{{"ok",true},{"pending",true},{"read_only",true},
+                            {"document_revision",QString::number(project_.editRevision_.Revision())}};
+                        if(!preview.ResultValue())return Mcp::Failure("MINIMAP_PREVIEW_PENDING","当前预览未就绪。");
+                        if(!preview.ResultValue()->Succeeded())return Mcp::Failure(*preview.ResultValue());
+                        return Mcp::MinimapPreviewJson(*preview.ResultValue()->value,arguments["include_rgba"].toBool());
+                    }
                     return handler(arguments).toObject();
                 }, definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
