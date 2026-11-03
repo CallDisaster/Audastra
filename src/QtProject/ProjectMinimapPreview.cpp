@@ -20,7 +20,7 @@ ProjectMinimapPreview::ProjectMinimapPreview(EditorProject& project, QObject* pa
     connect(&project_, &EditorProject::ObjectDocumentsReplaced, this, changed);
     connect(&project_, &EditorProject::EditTrackingBaselineChanged, this, changed);
     connect(&project_, &EditorProject::PendingTerrainCommitStateChanged, this,
-        [this](bool pending) { if (!pending) Invalidate(); else { ++serial_; result_.reset(); emit Changed(); } });
+        [this](bool pending) { if (!pending) Invalidate(); else { ++serial_; result_.reset(); pending_ = requested_; emit Changed(); } });
     if (project_.mapDataUndoStack_) connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged, this, changed);
     for(auto* stack:project_.objectUndoStacks_)if(stack)connect(stack,&QUndoStack::indexChanged,this,changed);
 }

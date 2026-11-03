@@ -68,12 +68,23 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project,QWidg
 }
 void WorldMinimapPreview::Refresh(bool force){preview_.Request(options_,force);}
 void WorldMinimapPreview::Display(){
-    image_->clear();image_->outline.clear();setProperty("sourceSha256",QString());setProperty("rgbaSha256",QString());
+    const bool keepPrevious = preview_.Pending() && options_.current && displayedCurrent_
+        && !image_->pixmap().isNull() && project_.archiveSession_
+        && displayedGeneration_ == project_.editRevision_.Generation()
+        && property("sourceSha256").toString().toStdString() == project_.archiveSession_->SourceSha256()
+        && !project_.sourceChangeSuspected_ && !project_.sourceChangeConfirmed_;
+    if (!keepPrevious) {
+        image_->clear();
+        setProperty("sourceSha256", QString());
+        setProperty("rgbaSha256", QString());
+    }
+    image_->outline.clear();
+    setProperty("updating", preview_.Pending());
     const auto& result=preview_.ResultValue();
     QString state;
     if(!project_.archiveSession_&&!project_.mapEdits_)state={};
     else if(project_.sourceChangeSuspected_||project_.sourceChangeConfirmed_)state=tr("地图文件已变化");
-    else if(preview_.Pending())state=tr("读取中…");
+    else if(preview_.Pending())state=keepPrevious?tr("更新中…"):tr("读取中…");
     else if(!result || !result->Succeeded()){
         state=project_.sourceChangeSuspected_||project_.sourceChangeConfirmed_?tr("地图文件已变化"):tr("当前不可用");
     }else{
@@ -86,6 +97,8 @@ void WorldMinimapPreview::Display(){
         }
         setProperty("sourceSha256",QString::fromStdString(value.sourceSha256));setProperty("rgbaSha256",QString::fromStdString(value.rgbaSha256));
         setProperty("documentRevision",qulonglong(value.documentRevision));setProperty("generationMilliseconds",value.generationMilliseconds);
+        displayedGeneration_ = project_.editRevision_.Generation();
+        displayedCurrent_ = value.current;
     }
     state_->setText(state);state_->setVisible(!state.isEmpty());Outline();
 }

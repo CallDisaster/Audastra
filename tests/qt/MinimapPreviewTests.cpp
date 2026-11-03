@@ -6,7 +6,9 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "../TerrainCornerRampFixtures.h"
+#include "../support/MinimapPreviewFixture.h"
 #include <QApplication>
+#include <QAction>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -44,7 +46,10 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& pat
     project.archiveSession_ = std::make_shared<MapArchiveSession>(F::Take(MapArchiveSession::Open(path)));
     project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromArchive(*project.archiveSession_));
     project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
-    F::Require(project.mapEdits_->AttachTerrain(members[0].data).Succeeded(), "preview attach terrain");
+    const auto terrain = std::find_if(members.begin(), members.end(), [](const auto& member) {
+        return member.name == "war3map.w3e";
+    });
+    F::Require(terrain != members.end() && project.mapEdits_->AttachTerrain(terrain->data).Succeeded(), "preview attach terrain");
     project.mapDataUndoStack_->clear(); project.ResetEditTracking();
 }
 }
@@ -60,6 +65,7 @@ private slots:
     void ViewFollowsUndoSaveSourceAndSwitch();
     void ViewKeepsFailureDetailsInDiagnostics();
     void CurrentDefaultsAndStaleRequest();
+    void CurrentKeepsPixelsUntilReplacementAndClearsFailures();
 };
 
 void MinimapPreviewTests::SharedPixelsAndCliExport() try {
@@ -137,6 +143,56 @@ void MinimapPreviewTests::MissingCorruptBudgetAndStale() try {
         const auto output = F::Take(WriteVerifiedArchive(fixture.root / ("bad" + std::to_string(type) + ".w3x"), members));
         QVERIFY(!Services::OpenMinimapPreview(output.path, output.sha256).Succeeded());
     }
+} catch (const std::exception& error) { QFAIL(error.what()); }
+
+void MinimapPreviewTests::CurrentKeepsPixelsUntilReplacementAndClearsFailures() try {
+    F::Fixture fixture;
+    auto members = Tests::MinimapPreviewFixtures::MapMembers();
+    const auto path = F::Take(WriteVerifiedArchive(fixture.root / "retain-current.w3x", members)).path;
+    QtProject::EditorProject project;
+    Install(project, path, members);
+    project.war3GameRoot_ = fixture.game;
+    Modules::WorldMinimapPreview view(project);
+    view.show();
+    auto* state = view.findChild<QLabel*>("worldMinimapState");
+    auto* image = view.findChild<QLabel*>("worldMinimapImage");
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(), 15000);
+    const auto before = view.property("rgbaSha256");
+    const auto beforePixmap = image->pixmap().cacheKey();
+    auto pending = project.BeginPendingTerrainCommit();
+    QCOMPARE(state->text(), QString("更新中…"));
+    QCOMPARE(view.property("rgbaSha256"), before);
+    QCOMPARE(image->pixmap().cacheKey(), beforePixmap);
+    QTest::qWait(600);
+    QCOMPARE(image->pixmap().cacheKey(), beforePixmap);
+    MapData::TerrainBrush brush;
+    brush.kind = MapData::TerrainBrushKind::Raise;
+    brush.radius = 0;
+    brush.strength = 64;
+    const std::array<MapData::TerrainStrokePoint, 1> points{{{4 * 128, 4 * 128}}};
+    auto plan = F::Take(project.mapEdits_->PrepareTerrainEdit(brush, points, false));
+    std::unique_ptr<QtProject::MapDataEditCommand> undo;
+    QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(plan, [&](const auto& receipt) {
+        undo = std::make_unique<QtProject::MapDataEditCommand>(project, receipt, "raise", "raise");
+        return Status::Ok();
+    }).Succeeded());
+    project.mapDataUndoStack_->push(undo.release());
+    QCOMPARE(view.property("rgbaSha256"), before);
+    pending.reset();
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty()
+        && view.property("rgbaSha256") != before, 15000);
+    QVERIFY(!view.property("updating").toBool());
+    QAction* pathing = nullptr;
+    for (auto* action : view.findChildren<QAction*>()) {
+        if (action->text() == "通行") pathing = action;
+    }
+    QVERIFY(pathing);
+    pathing->setChecked(true);
+    QCOMPARE(state->text(), QString("更新中…"));
+    QVERIFY(!image->pixmap().isNull());
+    QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("当前不可用"), 15000);
+    QVERIFY(image->pixmap().isNull());
+    QVERIFY(view.property("rgbaSha256").toString().isEmpty());
 } catch (const std::exception& error) { QFAIL(error.what()); }
 
 void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {

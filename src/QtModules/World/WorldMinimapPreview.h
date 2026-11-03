@@ -30,5 +30,7 @@ private:
     QTabBar* source_ = nullptr;
     QToolButton* layers_ = nullptr;
     QtProject::MinimapPreviewOptions options_;
+    std::uint64_t displayedGeneration_ = 0;
+    bool displayedCurrent_ = false;
 };
 } // namespace War3Map::Modules
