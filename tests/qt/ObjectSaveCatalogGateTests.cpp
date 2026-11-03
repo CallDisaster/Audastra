@@ -2,6 +2,7 @@
 #include "MapSaveJob.h"
 #include "ProjectObjectCatalog.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Game/WorldEditStrings.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "../MapDataFixtures.h"
@@ -223,6 +224,31 @@ void PreparedCatalogIsBoundToArchiveAndOverlay() {
         fixture.Unchanged();
     }
 }
+
+void RejectedCommitReleasesPreparedInputs() {
+    using namespace QtProject;
+    for (int path = 0; path != 3; ++path) {
+        Fixture fixture;
+        std::weak_ptr<const Game::WorldEditStrings> lifetime;
+        {
+            auto strings = std::make_shared<const Game::WorldEditStrings>();
+            lifetime = strings;
+            StagePreparedProjectObjectCatalog(*fixture.project, PrepareProjectObjectCatalog(
+                *fixture.project->archiveSession_, fixture.game, std::move(strings)));
+        }
+        Require(!lifetime.expired(), "staged preparation retains its owned inputs");
+        MapSaveJob job;
+        job.minimapChoice = Services::TerrainMinimapSaveChoice::Preserve;
+        if (path == 0) job.testCopyOnly = true;
+        if (path == 2) {
+            job.succeeded = true;
+            job.nextSession = std::make_unique<MapArchiveSession>(*fixture.project->archiveSession_);
+        }
+        Require(!fixture.project->CommitMapSave(job), "invalid commit must remain rejected");
+        Require(lifetime.expired(), "every rejected commit immediately releases its staged directory");
+        fixture.Unchanged();
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -241,6 +267,7 @@ int main(int argc, char** argv) {
         FrozenTaskChecksEveryChangedNativeObject();
         FrozenTaskRejectsSameBytesAtChangedGameSourceIdentity();
         PreparedCatalogIsBoundToArchiveAndOverlay();
+        RejectedCommitReleasesPreparedInputs();
         std::cout << "object save catalog gates passed\n";
         return 0;
     } catch (const std::exception& error) {

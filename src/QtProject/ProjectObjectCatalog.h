@@ -25,6 +25,7 @@ private:
     const MapArchiveSession& archive, const std::filesystem::path& gameRoot,
     std::shared_ptr<const Game::WorldEditStrings> strings);
 void StagePreparedProjectObjectCatalog(EditorProject& project, PreparedProjectObjectCatalog prepared);
+void DiscardPreparedProjectObjectCatalog(EditorProject& project) noexcept;
 
 // 值对象拥有最终覆盖/删除；Sources()借用的span只在此对象存活期间有效。
 struct ProjectObjectCatalogSources {

@@ -200,6 +200,10 @@ void StagePreparedProjectObjectCatalog(EditorProject& project, PreparedProjectOb
     project.objectCatalogState_->prepared = std::move(prepared);
 }
 
+void DiscardPreparedProjectObjectCatalog(EditorProject& project) noexcept {
+    if (project.objectCatalogState_) project.objectCatalogState_->prepared = {};
+}
+
 Status EnsureProjectObjectCatalog(EditorProject& project, bool force) {
     if (project.war3GameRoot_.empty() && !project.objectCatalogState_ && !project.archiveSession_
         && !project.readOnlyArchive_ && !project.directorySnapshot_ && !project.campaignScope_) return Status::Ok();

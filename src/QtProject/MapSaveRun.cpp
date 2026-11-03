@@ -4,6 +4,7 @@
 #include "War3MapCore/Services/TerrainShadowBake.h"
 #include "War3MapCore/Services/TerrainHistorySave.h"
 #include "MapSaveJob.h"
+#include "ProjectObjectCatalog.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapDocument.h"
@@ -14,6 +15,7 @@
 #include "../QtCommon/DiagnosticTimings.h"
 
 #include <QDateTime>
+#include <QScopeGuard>
 #include <QUndoStack>
 
 #include <algorithm>
@@ -456,6 +458,8 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
 }
 
 std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
+    // 预备目录只属于本次提交；任何拒绝或异常都不能把它留给后来的操作。
+    const auto discardPrepared = qScopeGuard([this] { DiscardPreparedProjectObjectCatalog(*this); });
     AddDiagnostics(job.diagnostics);
     if (job.testCopyOnly || job.runtimePurpose != Services::MapRuntimeSavePurpose::Normal) {
         AddDiagnostic(tr("错误"), tr("地图"), tr("SAVE_TEST_COPY_COMMIT_REJECTED"),
