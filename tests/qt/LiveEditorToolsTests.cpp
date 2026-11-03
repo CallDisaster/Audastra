@@ -400,7 +400,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     for (const auto& value : f.tools->Tools()) {
         const auto tool = value.toObject();
         if (tool.value("name") == previewDefinition.name)
-            QCOMPARE(tool.value("inputSchema").toObject(), previewDefinition.inputSchema);
+            QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(previewDefinition.inputSchema));
     }
     namespace PreviewFixture = TerrainCornerRampFixtures;
     PreviewFixture::Fixture preview;
@@ -429,6 +429,11 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         QVERIFY(!details.contains("rgba_base64")); QVERIFY(details.value("rgba_returned").toBool());
     }
     QVERIFY(sawPreview);
+    auto currentPreview=previewArguments;currentPreview.insert("source","current");
+    currentPreview.insert("binding_token",f.tools->Invoke("editor_state",{}).value("binding_token"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("query_minimap_preview",currentPreview)),QString("MINIMAP_PREVIEW_STALE"));
+    currentPreview["binding_token"]="expired";
+    QCOMPARE(ErrorCode(f.tools->Invoke("query_minimap_preview",currentPreview)),QString("LIVE_EDITOR_REVISION_CONFLICT"));
     f.project.savingMap_ = true;
     QCOMPARE(ErrorCode(f.tools->Invoke("query_minimap_preview", previewArguments)), QString("LIVE_EDITOR_BUSY"));
     f.project.savingMap_ = false;
