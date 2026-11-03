@@ -35,10 +35,12 @@ void WorldModuleTests::TerrainModelReloadKeepsCommittedEdits() {
     auto* player = module.AnimationPlayer(); QVERIFY(player);
     if (initialLoad) {
         // 不分派Qt完成通知：即使CPU已结束，旧读取结果也只能在本笔提交后到达。
+        module.Refresh(); // show原本排队首次读取；本行显式开始，仍不分派其完成通知。
         QVERIFY(module.PlaybackDiagnosticSnapshot()["terrain_load"].toObject()["worker_running"].toBool());
         MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Raise;
         brush.shape = MapData::TerrainBrushShape::Square; brush.size = 1; brush.strength = 32;
-        const std::array<MapData::TerrainStrokePoint, 1> point{{{0, 0}}};
+        const auto& vertex = original->vertices.front();
+        const std::array<MapData::TerrainStrokePoint, 1> point{{{vertex.position[0], vertex.position[1]}}};
         QVERIFY(project.mapEdits_->EditTerrain(brush, point, false).Succeeded());
     } else {
         QTRY_VERIFY_WITH_TIMEOUT(player->Ready() && module.Viewport()->HasAnimationScene(), 10000);
