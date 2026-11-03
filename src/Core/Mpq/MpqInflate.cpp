@@ -39,6 +39,8 @@ struct BitReader {
 struct Huffman {
     std::array<int, 16> count{};
     std::vector<int> symbol;
+    static constexpr int kPrefixBits = 9;
+    std::array<std::uint16_t, 1 << kPrefixBits> prefix{};
 
     void Build(const int* lengths, int n) {
         count.fill(0);
@@ -56,9 +58,47 @@ struct Huffman {
                 symbol[static_cast<std::size_t>(offsets[lengths[i]]++)] = i;
             }
         }
+        // 仅缓存无重叠的规范短码；不完整表的空洞及长码仍走原逐位解码。
+        // 过订阅表保持原来的失败路径，不能用覆盖表项改变坏流的解释。
+        prefix.fill(0);
+        int remaining = 1;
+        for (int len = 1; len <= 15; ++len) {
+            remaining = (remaining << 1) - count[len];
+            if (remaining < 0) return;
+        }
+        std::array<int, 16> next{};
+        for (int len = 1; len <= 15; ++len)
+            next[len] = (next[len - 1] + count[len - 1]) << 1;
+        for (int i = 0; i < n; ++i) {
+            const int len = lengths[i];
+            if (!len || len > kPrefixBits) continue;
+            const int code = next[len]++;
+            int reversed = 0;
+            for (int bit = 0; bit < len; ++bit) reversed = (reversed << 1) | ((code >> bit) & 1);
+            const auto entry = static_cast<std::uint16_t>((i << 4) | len);
+            for (int index = reversed; index < static_cast<int>(prefix.size()); index += 1 << len)
+                prefix[index] = entry;
+        }
     }
 
     int Decode(BitReader& br) const noexcept {
+        // 查看而不预先消费后续字节，避免跨到 stored 块后破坏字节对齐；
+        // 尾部不足九位时保留逐位路径，合法短结束码不要求额外填充。
+        auto bits = br.buf;
+        auto available = br.cnt;
+        auto position = br.pos;
+        while (available < kPrefixBits && position < br.in.size()) {
+            bits |= static_cast<std::uint32_t>(static_cast<unsigned char>(br.in[position++])) << available;
+            available += 8;
+        }
+        if (available >= kPrefixBits && !br.error) {
+            const auto entry = prefix[bits & (prefix.size() - 1)];
+            const int length = entry & 15;
+            if (length) {
+                (void)br.GetBits(length);
+                return entry >> 4;
+            }
+        }
         int code = 0;
         int first = 0;
         int index = 0;

@@ -9,6 +9,12 @@ target_compile_definitions(war3-map-mpq-tests PRIVATE NOMINMAX UNICODE _UNICODE 
 target_compile_options(war3-map-mpq-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME mpq-reader COMMAND war3-map-mpq-tests)
 
+add_executable(war3-map-inflate-prefix-tests MpqInflatePrefixTests.cpp)
+target_include_directories(war3-map-inflate-prefix-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Core")
+target_link_libraries(war3-map-inflate-prefix-tests PRIVATE War3MapEditor::Core)
+target_compile_options(war3-map-inflate-prefix-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME mpq-inflate-prefix COMMAND war3-map-inflate-prefix-tests)
+
 add_executable(war3-map-mpq-audio-tests MpqAudioDecodeTests.cpp)
 target_include_directories(war3-map-mpq-audio-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/Core")
 target_link_libraries(war3-map-mpq-audio-tests PRIVATE War3MapEditor::Core)
