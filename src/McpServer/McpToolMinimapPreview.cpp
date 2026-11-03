@@ -5,6 +5,7 @@
 namespace War3Map::Mcp {
 Result<Services::CurrentMinimapPreviewInput> ParseMinimapPreviewArguments(const QJsonObject& args) {
     using R=Result<Services::CurrentMinimapPreviewInput>; Services::CurrentMinimapPreviewInput input;
+    if(args.contains("source")&&!args["source"].isString())return R::Failure("Minimap.Preview","MINIMAP_PREVIEW_ARGUMENT","source须为字符串。");
     const auto source=args.value("source").toString("saved");
     if(source!="saved"&&source!="current")return R::Failure("Minimap.Preview","MINIMAP_PREVIEW_ARGUMENT","source须为current或saved。");
     for(const auto* key:{"include_rgba","units","starts","icons"})

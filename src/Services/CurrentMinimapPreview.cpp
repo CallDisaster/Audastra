@@ -59,6 +59,8 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
             return std::move(file->bytes);
         };
         Render::ClassicMinimapViewOptions view; view.layers = input.layers;
+        Image::BlpDecodeLimits extraDecode;extraDecode.maxInputBytes=4U*1024U*1024U;
+        extraDecode.maxDimension=1024;extraDecode.maxWorkingBytes=32U*1024U*1024U;
         if (input.layers & 0x400u) {
             const auto configBytes = extra("UI/WorldEditData.txt");
             const auto profile = Text::ParseProfile(std::string_view(reinterpret_cast<const char*>(configBytes.data()), configBytes.size()));
@@ -69,7 +71,7 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
             if (comma == value.npos) Fail("MINIMAP_CURRENT_BLIGHT", "荒芜纹理定义不完整。");
             auto path = Text::TrimCWhitespaceCopy(value.substr(comma + 1));
             if (!Text::LowerAscii(path).ends_with(".blp")) path += ".blp";
-            auto image = Take(Image::DecodeBlpBudgeted(extra(path), {})).image;
+            auto image = Take(Image::DecodeBlpBudgeted(extra(path), extraDecode)).image;
             // 原版荒芜代表色是整张纹理RGB整数均色；与TeamColor共用已有均色器。
             const auto bgra = Take(MapData::AverageNativeMinimapTeamColor(image.rgba));
             view.blightColor = {bgra[2], bgra[1], bgra[0], 255};
@@ -123,7 +125,7 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                 if(unit.owner<0||unit.owner>=16) Fail("MINIMAP_CURRENT_PLAYER", "单位玩家编号无法解释。");
                 auto& color=colors[unit.owner];
                 if(!color){char path[80];std::snprintf(path,sizeof(path),"ReplaceableTextures/TeamColor/TeamColor%02d.blp",unit.owner);
-                    auto image=Take(Image::DecodeBlpBudgeted(extra(path),{})).image;color=Take(MapData::AverageNativeMinimapTeamColor(image.rgba));}
+                    auto image=Take(Image::DecodeBlpBudgeted(extra(path),extraDecode)).image;color=Take(MapData::AverageNativeMinimapTeamColor(image.rgba));}
                 const MapData::NativeMinimapMarkerCandidate marker{0,{unit.position[0],unit.position[1]},*color};
                 const auto dots=Take(MapData::BuildNativeMinimapMarkers(frame,std::span(&marker,1)));
                 drawDot(dots.records[0].positionRaw[0],dots.records[0].positionRaw[1],*color);

@@ -75,6 +75,8 @@ void MinimapPreviewTests::SharedPixelsAndCliExport() try {
     QJsonObject args{{"source_path", QString::fromStdWString(path.wstring())},
         {"expected_source_sha256", QString::fromStdString(sha)}, {"include_rgba", true}};
     const auto reply = Call(server, args); QVERIFY(reply["ok"].toBool());
+    auto invalid=args;invalid["source"]=true;QVERIFY(!Call(server,invalid)["ok"].toBool());
+    invalid=args;invalid["layers"]=4;QVERIFY(!Call(server,invalid)["ok"].toBool());
     QCOMPARE(reply["rgba_sha256"].toString().toStdString(), result.rgbaSha256);
     const auto rgba = QByteArray::fromBase64(reply["rgba_base64"].toString().toLatin1());
     QCOMPARE(rgba, QByteArray(reinterpret_cast<const char*>(result.image.rgba.data()), result.image.rgba.size()));

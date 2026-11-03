@@ -76,17 +76,20 @@ void ProjectMinimapPreview::Start() {
         }
     }
     auto result=std::make_shared<Result<Services::MinimapPreview>>();
+    const auto sessionIdentity=current.edits?current.edits->SessionIdentity():0;
+    const auto sessionRevision=current.edits?current.edits->Revision():0;
     worker_=QThread::create([current=std::move(current),saved=std::move(saved),options,result,revision] {
         try { *result=options.current?Services::GenerateCurrentMinimapPreview(current):Services::DecodeMinimapPreview(saved);
             if(result->value) result->value->documentRevision=revision;
         } catch(...) { *result=Result<Services::MinimapPreview>::Failure("Minimap.Preview","MINIMAP_PREVIEW_EXCEPTION","小地图预览未完成。"); }
     });
     auto* thread=worker_.data();
-    connect(thread,&QThread::finished,this,[this,result,archive,path,game,generation,revision,serial] {
+    connect(thread,&QThread::finished,this,[this,result,archive,path,game,generation,revision,serial,sessionIdentity,sessionRevision] {
         worker_=nullptr;
         if(serial!=serial_ || generation!=project_.editRevision_.Generation() || revision!=project_.editRevision_.Revision()
             || archive!=project_.archiveSession_ || path!=project_.sourceArchivePath_ || game!=project_.war3GameRoot_
             || project_.HasPendingTerrainCommit() || project_.savingMap_
+            || (sessionIdentity && (!project_.mapEdits_ || project_.mapEdits_->SessionIdentity()!=sessionIdentity || project_.mapEdits_->Revision()!=sessionRevision))
             || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) { debounce_.start();return; }
         result_=result;pending_=false;
         if(!result->Succeeded())project_.AddDiagnostics(result->diagnostics);
