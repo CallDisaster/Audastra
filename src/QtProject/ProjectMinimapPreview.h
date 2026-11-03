@@ -4,6 +4,7 @@
 #include <QPointer>
 #include <QTimer>
 class QThread;
+namespace War3Map::QtCommon { class DiagnosticTimingScope; }
 namespace War3Map::QtProject {
 class EditorProject;
 struct MinimapPreviewOptions {
@@ -34,6 +35,7 @@ private:
     QTimer debounce_;
     QPointer<QThread> worker_;
     std::shared_ptr<const Result<Services::MinimapPreview>> result_;
+    std::unique_ptr<QtCommon::DiagnosticTimingScope> timing_;
 };
 ProjectMinimapPreview& AgentMinimapPreview(EditorProject& project);
 } // namespace War3Map::QtProject

@@ -1,5 +1,6 @@
 #include "ProjectMinimapPreview.h"
 #include "EditorProject.h"
+#include "../QtCommon/DiagnosticTimings.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include <QThread>
 #include <QUndoStack>
@@ -35,7 +36,7 @@ void ProjectMinimapPreview::Start() {
     const auto failure = [this](std::string code, std::string message) {
         result_ = std::make_shared<Result<Services::MinimapPreview>>(Result<Services::MinimapPreview>::Failure(
             "Minimap.Preview",std::move(code),std::move(message)));
-        pending_ = false; project_.AddDiagnostics(result_->diagnostics); emit Changed();
+        pending_ = false; timing_.reset(); project_.AddDiagnostics(result_->diagnostics); emit Changed();
     };
     if (!project_.archiveSession_) { failure("MINIMAP_CURRENT_SOURCE", "当前小地图需要已打开的地图归档。"); return; }
     if (project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) {
@@ -49,6 +50,7 @@ void ProjectMinimapPreview::Start() {
     const auto options = options_;
     Services::CurrentMinimapPreviewInput current;
     Services::MinimapPreviewInput saved; saved.sourceSha256 = archive->SourceSha256();
+    timing_=std::make_unique<QtCommon::DiagnosticTimingScope>("minimap-total");
     if (options.current) {
         if (!project_.mapEdits_ || !project_.mapEdits_->Terrain()) {
             failure("MINIMAP_CURRENT_SOURCE", "当前地形未就绪。"); return;
@@ -57,10 +59,12 @@ void ProjectMinimapPreview::Start() {
         if (project_.HasPendingAssetEdits()) {
             failure("MINIMAP_CURRENT_PENDING_ASSETS", "导入资源尚未保存，当前小地图暂不可用。"); return;
         }
+        QtCommon::DiagnosticTimingScope freezeTiming("minimap-freeze");
         auto frozen = project_.mapEdits_->FreezeForSave(128U*1024U*1024U);
+        freezeTiming.Finish();
         if (!frozen.Succeeded()) {
             result_ = std::make_shared<Result<Services::MinimapPreview>>(Result<Services::MinimapPreview>{{},std::move(frozen.diagnostics)});
-            pending_=false; project_.AddDiagnostics(result_->diagnostics); emit Changed(); return;
+            pending_=false; timing_.reset(); project_.AddDiagnostics(result_->diagnostics); emit Changed(); return;
         }
         current.archive=archive; current.edits=*frozen.value; current.gameRoot=game; current.documentRevision=revision;
         current.layers=options.layers; current.units=options.units; current.starts=options.starts; current.icons=options.icons;
@@ -79,6 +83,7 @@ void ProjectMinimapPreview::Start() {
     const auto sessionIdentity=current.edits?current.edits->SessionIdentity():0;
     const auto sessionRevision=current.edits?current.edits->Revision():0;
     worker_=QThread::create([current=std::move(current),saved=std::move(saved),options,result,revision] {
+        QtCommon::DiagnosticTimingScope generationTiming("minimap-generate");
         try { *result=options.current?Services::GenerateCurrentMinimapPreview(current):Services::DecodeMinimapPreview(saved);
             if(result->value) result->value->documentRevision=revision;
         } catch(...) { *result=Result<Services::MinimapPreview>::Failure("Minimap.Preview","MINIMAP_PREVIEW_EXCEPTION","小地图预览未完成。"); }
@@ -86,6 +91,7 @@ void ProjectMinimapPreview::Start() {
     auto* thread=worker_.data();
     connect(thread,&QThread::finished,this,[this,result,archive,path,game,generation,revision,serial,sessionIdentity,sessionRevision] {
         worker_=nullptr;
+        timing_.reset();
         if(serial!=serial_ || generation!=project_.editRevision_.Generation() || revision!=project_.editRevision_.Revision()
             || archive!=project_.archiveSession_ || path!=project_.sourceArchivePath_ || game!=project_.war3GameRoot_
             || project_.HasPendingTerrainCommit() || project_.savingMap_

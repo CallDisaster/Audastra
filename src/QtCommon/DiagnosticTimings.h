@@ -63,7 +63,7 @@ public:
     explicit DiagnosticTimingScope(std::string_view name) noexcept
         : name_(name), enabled_(DiagnosticTimingsEnabled()) {
         if (enabled_ && TimingDetail::IsUiThread() && TimingDetail::heartbeat.operation.empty()
-            && (name == "open-total" || name == "save-total")) {
+            && (name == "open-total" || name == "save-total" || name == "minimap-total")) {
             TimingDetail::heartbeat = {name, TimingDetail::Clock::now(), 0}; heartbeatOwner_ = true;
         }
         Notify("begin/");
