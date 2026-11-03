@@ -60,16 +60,17 @@ Status ExportMinimapPreviewPpm(const MinimapPreview& preview, const std::filesys
     }
     // CREATE_NEW与独占句柄保护作者文件；失败只删除本次新建的文件对象。
     HANDLE file = CreateFileW(output.c_str(), GENERIC_WRITE | DELETE, 0, nullptr, CREATE_NEW,
-        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+        FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) return Status::Failure("Minimap.Preview",
         "MINIMAP_PREVIEW_OUTPUT", "预览输出须为可写且尚不存在的新文件。");
     DWORD written = 0;
     const bool wrote = WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr)
         && written == bytes.size() && FlushFileBuffers(file);
-    FILE_DISPOSITION_INFO keep{};
-    const bool kept = wrote && SetFileInformationByHandle(file, FileDispositionInfo, &keep, sizeof keep);
+    FILE_DISPOSITION_INFO discard{TRUE};
+    const bool removed = !wrote && SetFileInformationByHandle(file, FileDispositionInfo, &discard, sizeof discard);
     CloseHandle(file);
-    if (!kept) return Status::Failure("Minimap.Preview", "MINIMAP_PREVIEW_OUTPUT", "预览副本未完整写出，已撤回本次新建文件。");
+    if (!wrote) return Status::Failure("Minimap.Preview", "MINIMAP_PREVIEW_OUTPUT",
+        removed ? "预览副本未完整写出，已撤回本次新建文件。" : "预览副本未完整写出，无法撤回新建文件，请检查输出路径。");
     return Status::Ok();
 }
 } // namespace War3Map::Services
