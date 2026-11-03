@@ -30,6 +30,8 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     connect(&project_, &QtProject::EditorProject::MapDocumentChanged, this, [this] { Refresh(); });
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] { Refresh(); });
     connect(&project_, &QtProject::EditorProject::SourceStateChanged, this, [this] { Refresh(); });
+    connect(&project_, &QtProject::EditorProject::PendingTerrainCommitStateChanged,
+        this, [this](bool pending) { if (!pending) Refresh(); });
     connect(&project_, &QtProject::EditorProject::EditTrackingBaselineChanged, this, [this] { UpdateStatus(); });
     if (project_.mapDataUndoStack_) connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged,
         this, [this] { UpdateStatus(); });
@@ -42,43 +44,49 @@ WorldMinimapPreview::~WorldMinimapPreview() {
 
 void WorldMinimapPreview::Clear(const QString& reason) {
     loadedSha_.clear(); present_ = false; image_->clear(); state_->setText(reason);
+    state_->setVisible(!reason.isEmpty());
     setProperty("sourceSha256", QString()); setProperty("rgbaSha256", QString());
 }
 
 void WorldMinimapPreview::UpdateStatus() {
     if (loadedSha_.isEmpty()) return;
-    if (!present_) { state_->setText(tr("地图中没有已保存的小地图底图")); return; }
+    if (!present_) { state_->setText(tr("没有小地图")); state_->show(); return; }
     state_->setText((project_.HasPendingCandidateEdits() || project_.HasPendingAssetEdits()
         || (project_.mapEdits_ && project_.mapEdits_->IsDirty()))
-        ? tr("地图有未保存修改；此图仅含已保存内容") : tr("实际已保存底图 · 不含图标"));
+        ? tr("有未保存修改") : QString());
+    state_->setVisible(!state_->text().isEmpty());
 }
 
 void WorldMinimapPreview::Refresh() {
-    if (worker_) { pending_ = true; Clear(tr("正在核对小地图来源…")); return; }
-    if (project_.savingMap_ || project_.HasPendingTerrainCommit()) {
+    if (worker_) { pending_ = true; Clear(tr("读取中…")); return; }
+    if (project_.savingMap_) {
         QTimer::singleShot(100, this, [this] { Refresh(); }); return;
     }
-    if (!project_.archiveSession_) { Clear(tr("请打开地图归档以查看已保存底图")); return; }
+    if (project_.HasPendingTerrainCommit()) return;
+    if (!project_.archiveSession_) { Clear({}); return; }
     if (project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) {
-        Clear(tr("地图来源待核验，预览已清除")); return;
+        Clear(tr("地图文件已变化")); return;
     }
     const auto path = project_.sourceArchivePath_;
     const auto sha = project_.archiveSession_->SourceSha256();
     const auto generation = project_.editRevision_.Generation();
     if (loadedSha_ == QString::fromStdString(sha)) { UpdateStatus(); return; }
-    Clear(tr("正在读取已保存底图…")); refresh_->setEnabled(false);
+    Clear(tr("读取中…")); refresh_->setEnabled(false);
     // 只冻结打开时已经核验的底图。后台不重新持有磁盘源句柄，不妨碍原地保存。
     Services::MinimapPreviewInput input; input.sourceSha256 = sha;
     for (const auto& member : project_.archiveSession_->Members()) {
         const auto key = Resources::CanonicalImportPath(member.name);
         if (!key.Succeeded() || *key.value != "WAR3MAPMAP.BLP") continue;
         if (member.data.size() > 4U * 1024U * 1024U) {
-            refresh_->setEnabled(true); Clear(tr("MINIMAP_PREVIEW_BUDGET: 底图超过4MiB预算")); return;
+            project_.AddDiagnostic(tr("错误"), "Minimap.Preview", "MINIMAP_PREVIEW_BUDGET", tr("底图超过4MiB输入预算。"));
+            refresh_->setEnabled(true); Clear(tr("读取失败")); return;
         }
         input.member = member.data; break;
     }
     if (!input.member && project_.archiveSession_->HasOpaqueMembers()) {
-        refresh_->setEnabled(true); Clear(tr("打开快照未列出底图，匿名成员使缺失状态未确定；请用精确归档查询")); return;
+        project_.AddDiagnostic(tr("警告"), "Minimap.Preview", "MINIMAP_PREVIEW_UNCERTAIN",
+            tr("打开快照未列出底图，匿名成员使缺失状态未确定；可用精确归档查询确认。"));
+        refresh_->setEnabled(true); Clear(tr("无法确认是否有小地图")); return;
     }
     auto result = std::make_shared<Result<Services::MinimapPreview>>();
     worker_ = QThread::create([input = std::move(input), result] {
@@ -96,11 +104,8 @@ void WorldMinimapPreview::Refresh() {
             pending_ = false; Refresh(); return;
         }
         if (!result->Succeeded()) {
-            QString reason = tr("小地图预览失败");
-            for (const auto& diagnostic : result->diagnostics) if (diagnostic.severity == DiagnosticSeverity::Error) {
-                reason = QString::fromStdString(diagnostic.code + ": " + diagnostic.message); break;
-            }
-            Clear(reason); return;
+            project_.AddDiagnostics(result->diagnostics);
+            Clear(tr("读取失败")); return;
         }
         const auto& value = *result->value; present_ = value.present;
         loadedSha_ = QString::fromStdString(sha); setProperty("sourceSha256", loadedSha_);

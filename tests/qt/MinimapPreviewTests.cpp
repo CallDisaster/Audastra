@@ -13,6 +13,7 @@
 #include <QProcess>
 #include <QPushButton>
 #include <QSettings>
+#include <QStandardItemModel>
 #include <QTest>
 #include <QUndoStack>
 
@@ -56,6 +57,7 @@ private slots:
     void SharedPixelsAndCliExport();
     void MissingCorruptBudgetAndStale();
     void ViewFollowsUndoSaveSourceAndSwitch();
+    void ViewKeepsFailureDetailsInDiagnostics();
 };
 
 void MinimapPreviewTests::SharedPixelsAndCliExport() try {
@@ -116,9 +118,14 @@ void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {
     F::Fixture fixture; auto members = fixture.members; members.push_back({"war3mapMap.blp", ImageBytes()});
     const auto path = F::Take(WriteVerifiedArchive(fixture.root / "view.w3x", members)).path;
     QtProject::EditorProject project; Install(project, path, members);
+    auto pending = project.BeginPendingTerrainCommit();
     Modules::WorldMinimapPreview view(project); view.show();
     auto* state = view.findChild<QLabel*>("worldMinimapState"); QVERIFY(state);
+    QTest::qWait(30);
+    QVERIFY(view.property("rgbaSha256").toString().isEmpty());
+    pending.reset();
     QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(), 15000);
+    QCOMPARE(state->text(), QString()); QVERIFY(state->isHidden());
     const auto original = view.property("rgbaSha256");
     QCOMPARE(project.mapDataUndoStack_->count(), 0); QVERIFY(!project.mapEdits_->IsDirty());
     MapData::TerrainBrush brush; brush.kind = MapData::TerrainBrushKind::Raise; brush.radius = 0;
@@ -142,10 +149,28 @@ void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {
     QCOMPARE(view.property("sourceSha256").toString().toStdString(), project.archiveSession_->SourceSha256());
     project.sourceChangeSuspected_ = true; project.SourceStateChanged();
     QVERIFY(view.property("rgbaSha256").toString().isEmpty());
+    QCOMPARE(state->text(), QString("地图文件已变化"));
     project.sourceChangeSuspected_ = false;
     Install(project, fixture.source->SourcePath(), fixture.members); project.MapDocumentChanged();
-    QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("没有已保存"), 15000);
+    QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("没有小地图"), 15000);
     QVERIFY(view.findChild<QLabel*>("worldMinimapImage")->pixmap().isNull());
+} catch (const std::exception& error) { QFAIL(error.what()); }
+
+void MinimapPreviewTests::ViewKeepsFailureDetailsInDiagnostics() try {
+    F::Fixture fixture; auto members = fixture.members;
+    members.push_back({"war3mapMap.blp", F::Text("invalid BLP")});
+    const auto path = F::Take(WriteVerifiedArchive(fixture.root / "broken-view.w3x", members)).path;
+    QtProject::EditorProject project; Install(project, path, members);
+    Modules::WorldMinimapPreview view(project); view.show();
+    auto* state = view.findChild<QLabel*>("worldMinimapState"); QVERIFY(state);
+    QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("读取失败"), 15000);
+    QVERIFY(!state->text().contains("MINIMAP_PREVIEW"));
+    bool found = false;
+    for (int row = 0; row < project.diagnosticsModel_->rowCount(); ++row)
+        if (project.diagnosticsModel_->item(row, 2)->text() == "MINIMAP_PREVIEW_INVALID") {
+            QVERIFY(!project.diagnosticsModel_->item(row, 3)->text().isEmpty()); found = true;
+        }
+    QVERIFY(found);
 } catch (const std::exception& error) { QFAIL(error.what()); }
 QTEST_MAIN(MinimapPreviewTests)
 #include "MinimapPreviewTests.moc"
