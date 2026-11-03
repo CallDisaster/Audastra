@@ -326,7 +326,7 @@ void TestOptionalRealLuaTutorialCreate() {
 }
 
 // 改动不影响脚本时沿用作者原脚本，避免本机函数库版本不同改写 war3map.j；触发器有改动才写入重建结果。
-void TestOptionalRealScriptPreservation() {
+void TestOptionalRealScriptPreservation(bool withTemplate = false) {
     const auto ydwe = ObjectV1EnvironmentPath(L"FORGE_YDWE_ROOT");
     const auto game = ObjectV1EnvironmentPath(L"FORGE_WORLD_GAME_ROOT");
     if (ydwe.empty() || game.empty()) {
@@ -338,6 +338,8 @@ void TestOptionalRealScriptPreservation() {
     create.options.name = "Script preservation fixture";
     create.options.initTriggerName = "Init";
     create.options.initCustomScript = {"call DoNothing()"};
+    if (withTemplate)
+        create.options.initCustomScript = {"call SetPlayerState(Player(0), PLAYER_STATE_RESOURCE_GOLD, <?=1 + 2?>)"};
     create.target = scratch.Path() / "created.w3x";
     create.workspace = scratch.Path() / "create-work";
     create.toolRoot = ydwe; create.gameRoot = game;
@@ -2729,6 +2731,7 @@ int main() {
         TestOptionalRealClassicV1MapSave();
         TestOptionalRealLuaTutorialCreate();
         TestOptionalRealScriptPreservation();
+        TestOptionalRealScriptPreservation(true);
         TestIncompleteScriptInputDoesNotWriteCandidate();
         TestIndependentUiPreparationGate();
         TestSharedPerFileEncodingDeclarations();

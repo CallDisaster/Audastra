@@ -114,15 +114,21 @@ std::optional<std::vector<std::byte>> UnaffectedSourceScript(const MapSaveTask& 
     source.units = std::move(*units);
     source.items = std::move(*items);
     source.abilities = std::move(*abilityRecords);
-    const auto regenerated = Script::BuildMapScript(source);
-    if (!regenerated.generated.Succeeded() || regenerated.generated.text != built.generated.text) return std::nullopt;
-    if (pipeline.templateWholeChunk || pipeline.templateExpressions > 0) {
+    const bool templates = pipeline.templateWholeChunk || pipeline.templateExpressions > 0;
+    // 档案已冻结时，完整构建里的生成器用相同输入；借用这一次实际生成结果作比较。
+    // 未冻结档案时 compile=false 的 include 解析路径不同，仍保留原单独生成核对。
+    if (!templates || !source.toolchain.layout) {
+        const auto regenerated = Script::BuildMapScript(source);
+        if (!regenerated.generated.Succeeded() || regenerated.generated.text != built.generated.text) return std::nullopt;
+    }
+    if (templates) {
         // 模板还会读物编（slk 库、技能命令串）：用源地图状态完整构建一次，最终脚本相同才算不受影响。
         source.compile = true;
         source.toolchain.workDir = request.toolchain.workDir / "source-check";
         const auto full = Script::BuildMapScript(source);
         const auto* script = full.FinalScript();
-        if (!full.pipeline || !script || *script != pipeline.script
+        if (!full.generated.Succeeded() || full.generated.text != built.generated.text
+            || !full.pipeline || !script || *script != pipeline.script
             || !full.pipeline->objectMembers.empty() || !full.pipeline->templateImports.empty())
             return std::nullopt;
     }
