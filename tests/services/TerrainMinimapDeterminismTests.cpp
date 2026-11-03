@@ -104,30 +104,45 @@ void DeterministicGeneratedBytes() {
     Take(WriteVerifiedArchive(firstPath, members));
     Session first(firstPath, members);
     const auto baseline = Generate(first, gameRoot, directory.Path() / "first-output.w3x");
-    const auto preview = [&](Session& session,std::uint64_t revision) {
-        CurrentMinimapPreviewInput input;input.archive=std::make_shared<MapArchiveSession>(Take(MapArchiveSession::Open(firstPath)));
-        input.edits=Take(session.edits.FreezeForSave(128U*1024U*1024U));input.gameRoot=gameRoot;input.documentRevision=revision;
+    const auto preview = [&](Session& session, std::uint64_t revision) {
+        CurrentMinimapPreviewInput input;
+        input.archive = std::make_shared<MapArchiveSession>(Take(MapArchiveSession::Open(firstPath)));
+        input.edits = Take(session.edits.FreezeForSave(128U * 1024U * 1024U));
+        input.gameRoot = gameRoot;
+        input.documentRevision = revision;
         return Take(GenerateCurrentMinimapPreview(input));
     };
-    const auto viewBefore=preview(first,7);
-    Require(viewBefore.current && viewBefore.documentRevision==7 && viewBefore.image.rgba==Take(Image::DecodeBlp(baseline.blp)).rgba,
-        "只读当前视图与真实保存编码解码像素逐字节相同");
-    Require(!first.edits.IsDirty(),"只读生成不产生编辑");
-    const auto saved=directory.Path()/"preview-saved.w3x";
-    auto savedMembers=members;savedMembers.push_back({"war3mapMap.blp",baseline.blp});Take(WriteVerifiedArchive(saved,savedMembers));
-    const auto savedSha=Take(Sha256File(saved));
-    const auto savedView=Take(OpenMinimapPreview(saved,savedSha));
-    Require(savedView.image.rgba==viewBefore.image.rgba,"保存后当前与已保存像素一致");
-    Session previewEdits(firstPath,members);
-    TerrainBrush brush;brush.kind=TerrainBrushKind::Raise;brush.radius=1;brush.strength=64;
-    const std::array<TerrainStrokePoint,1> points{{{384,384}}};
-    const auto plan=Take(previewEdits.edits.PrepareTerrainEdit(brush,points,false));
-    Require(previewEdits.edits.ApplyPreparedTerrainEdit(plan,[](const auto&){return Status::Ok();}).Succeeded(),"应用原创未保存高度笔");
-    const auto editedView=preview(previewEdits,8);
-    Require(editedView.rgbaSha256!=viewBefore.rgbaSha256,"未保存地形变化影响当前视图");
-    Require(Take(OpenMinimapPreview(saved,savedSha)).rgbaSha256==savedView.rgbaSha256,"未保存修改不影响已保存视图");
-    const auto edited=Generate(previewEdits,gameRoot,directory.Path()/"edited-preview.w3x");
-    Require(editedView.image.rgba==Take(Image::DecodeBlp(edited.blp)).rgba,"含未保存修改的视图仍与保存服务像素相同");
+    const auto viewBefore = preview(first, 7);
+    Require(viewBefore.current && viewBefore.documentRevision == 7 &&
+                viewBefore.image.rgba == Take(Image::DecodeBlp(baseline.blp)).rgba,
+            "只读当前视图与真实保存编码解码像素逐字节相同");
+    Require(!first.edits.IsDirty(), "只读生成不产生编辑");
+    const auto saved = directory.Path() / "preview-saved.w3x";
+    auto savedMembers = members;
+    savedMembers.push_back({"war3mapMap.blp", baseline.blp});
+    Take(WriteVerifiedArchive(saved, savedMembers));
+    const auto savedSha = Take(Sha256File(saved));
+    const auto savedView = Take(OpenMinimapPreview(saved, savedSha));
+    Require(savedView.image.rgba == viewBefore.image.rgba, "保存后当前与已保存像素一致");
+    Session previewEdits(firstPath, members);
+    TerrainBrush brush;
+    brush.kind = TerrainBrushKind::Raise;
+    brush.radius = 1;
+    brush.strength = 64;
+    const std::array<TerrainStrokePoint, 1> points{{{384, 384}}};
+    const auto plan = Take(previewEdits.edits.PrepareTerrainEdit(brush, points, false));
+    Require(previewEdits.edits
+                .ApplyPreparedTerrainEdit(plan,
+                                          [](const auto &) {
+                                              return Status::Ok();
+                                          })
+                .Succeeded(),
+            "应用原创未保存高度笔");
+    const auto editedView = preview(previewEdits, 8);
+    Require(editedView.rgbaSha256 != viewBefore.rgbaSha256, "未保存地形变化影响当前视图");
+    Require(Take(OpenMinimapPreview(saved, savedSha)).rgbaSha256 == savedView.rgbaSha256, "未保存修改不影响已保存视图");
+    const auto edited = Generate(previewEdits, gameRoot, directory.Path() / "edited-preview.w3x");
+    Require(editedView.image.rgba == Take(Image::DecodeBlp(edited.blp)).rgba, "含未保存修改的视图仍与保存服务像素相同");
     Same(baseline, Generate(first, gameRoot, directory.Path() / "other-output.w3x"), "同会话连续生成和不同另存目标必须逐字节一致");
     Session independent(firstPath, members);
     Same(baseline, Generate(independent, gameRoot, directory.Path() / "independent-output.w3x"), "独立编辑会话不能改变固定噪点");

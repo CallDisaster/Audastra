@@ -52,7 +52,8 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& pat
     const auto terrain = std::find_if(members.begin(), members.end(), [](const auto& member) {
         return member.name == "war3map.w3e";
     });
-    F::Require(terrain != members.end() && project.mapEdits_->AttachTerrain(terrain->data).Succeeded(), "preview attach terrain");
+    F::Require(terrain != members.end() && project.mapEdits_->AttachTerrain(terrain->data).Succeeded(),
+               "preview attach terrain");
     project.mapDataUndoStack_->clear(); project.ResetEditTracking();
 }
 }
@@ -84,9 +85,14 @@ void MinimapPreviewTests::SharedPixelsAndCliExport() try {
     Mcp::McpServer server; Mcp::RegisterMinimapPreviewTool(server);
     QJsonObject args{{"source_path", QString::fromStdWString(path.wstring())},
         {"expected_source_sha256", QString::fromStdString(sha)}, {"include_rgba", true}};
-    const auto reply = Call(server, args); QVERIFY(reply["ok"].toBool());
-    auto invalid=args;invalid["source"]=true;QVERIFY(!Call(server,invalid)["ok"].toBool());
-    invalid=args;invalid["layers"]=4;QVERIFY(!Call(server,invalid)["ok"].toBool());
+    const auto reply = Call(server, args);
+    QVERIFY(reply["ok"].toBool());
+    auto invalid = args;
+    invalid["source"] = true;
+    QVERIFY(!Call(server, invalid)["ok"].toBool());
+    invalid = args;
+    invalid["layers"] = 4;
+    QVERIFY(!Call(server, invalid)["ok"].toBool());
     QCOMPARE(reply["rgba_sha256"].toString().toStdString(), result.rgbaSha256);
     const auto rgba = QByteArray::fromBase64(reply["rgba_base64"].toString().toLatin1());
     QCOMPARE(rgba, QByteArray(reinterpret_cast<const char*>(result.image.rgba.data()), result.image.rgba.size()));
@@ -98,31 +104,46 @@ void MinimapPreviewTests::SharedPixelsAndCliExport() try {
     QCOMPARE(output["rgba_sha256"].toString(), reply["rgba_sha256"].toString());
     const auto bytes = F::Take(IO::ReadFileBytes(ppm));
     const auto header = F::Text("P6\n2 2\n255\n");
-    QVERIFY(std::equal(header.begin(), header.end(), bytes.begin())); QCOMPARE(bytes.size(), header.size() + 12);
+    QVERIFY(std::equal(header.begin(), header.end(), bytes.begin()));
+    QCOMPARE(bytes.size(), header.size() + 12);
     QVERIFY(!Services::ExportMinimapPreviewPpm(result, ppm).Succeeded());
     QCOMPARE(F::Take(Sha256File(path)), sha);
-} catch (const std::exception& error) { QFAIL(error.what()); }
+} catch (const std::exception& error) {
+    QFAIL(error.what());
+}
 void MinimapPreviewTests::CurrentDefaultsAndStaleRequest() try {
-    F::Fixture fixture;auto members=fixture.members;members.push_back({"war3mapMap.blp",ImageBytes()});
-    const auto path=F::Take(WriteVerifiedArchive(fixture.root/"stale.w3x",members)).path;
-    QtProject::EditorProject project;Install(project,path,members);
-    Modules::WorldMinimapPreview view(project);view.show();
-    auto* source=view.findChild<QTabBar*>("worldMinimapSource");QVERIFY(source);QCOMPARE(source->currentIndex(),0);
+    F::Fixture fixture;
+    auto members = fixture.members;
+    members.push_back({"war3mapMap.blp", ImageBytes()});
+    const auto path = F::Take(WriteVerifiedArchive(fixture.root / "stale.w3x", members)).path;
+    QtProject::EditorProject project;
+    Install(project, path, members);
+    Modules::WorldMinimapPreview view(project);
+    view.show();
+    auto* source = view.findChild<QTabBar*>("worldMinimapSource");
+    QVERIFY(source);
+    QCOMPARE(source->currentIndex(), 0);
     QtProject::ProjectMinimapPreview controller(project);
-    QtProject::MinimapPreviewOptions options;options.current=false;controller.Request(options);
-    QTRY_VERIFY_WITH_TIMEOUT(controller.ResultValue()&&controller.ResultValue()->Succeeded(),15000);
-    const auto oldSha=controller.ResultValue()->value->rgbaSha256;
-    controller.Request(options,true); // 尚未完成的请求不能在换来源后发布。
-    auto other=members;other.back().data=ImageBytes(true);
-    const auto next=F::Take(WriteVerifiedArchive(fixture.root/"next.w3x",other)).path;
-    Install(project,next,other);project.MapDocumentChanged();
+    QtProject::MinimapPreviewOptions options;
+    options.current = false;
+    controller.Request(options);
+    QTRY_VERIFY_WITH_TIMEOUT(controller.ResultValue() && controller.ResultValue()->Succeeded(), 15000);
+    const auto oldSha = controller.ResultValue()->value->rgbaSha256;
+    controller.Request(options, true); // 尚未完成的请求不能在换来源后发布。
+    auto other = members;
+    other.back().data = ImageBytes(true);
+    const auto next = F::Take(WriteVerifiedArchive(fixture.root / "next.w3x", other)).path;
+    Install(project, next, other);
+    project.MapDocumentChanged();
     QVERIFY(!controller.ResultValue());
-    QTRY_VERIFY_WITH_TIMEOUT(controller.ResultValue()&&controller.ResultValue()->Succeeded(),15000);
-    QVERIFY(controller.ResultValue()->value->rgbaSha256!=oldSha);
-    QCOMPARE(controller.ResultValue()->value->sourceSha256,project.archiveSession_->SourceSha256());
-    QTRY_COMPARE_WITH_TIMEOUT(view.findChild<QLabel*>("worldMinimapState")->text(),QString("当前不可用"),15000);
+    QTRY_VERIFY_WITH_TIMEOUT(controller.ResultValue() && controller.ResultValue()->Succeeded(), 15000);
+    QVERIFY(controller.ResultValue()->value->rgbaSha256 != oldSha);
+    QCOMPARE(controller.ResultValue()->value->sourceSha256, project.archiveSession_->SourceSha256());
+    QTRY_COMPARE_WITH_TIMEOUT(view.findChild<QLabel *>("worldMinimapState")->text(), QString("当前不可用"), 15000);
     QVERIFY(view.property("rgbaSha256").toString().isEmpty());
-} catch(const std::exception& error){QFAIL(error.what());}
+} catch (const std::exception& error) {
+    QFAIL(error.what());
+}
 
 void MinimapPreviewTests::MissingCorruptBudgetAndStale() try {
     F::Fixture fixture;
@@ -136,18 +157,25 @@ void MinimapPreviewTests::MissingCorruptBudgetAndStale() try {
     for (int type = 0; type != 4; ++type) {
         auto members = fixture.members;
         std::vector<std::byte> blob;
-        if (type == 1) blob = F::Text("not a BLP");
-        if (type == 2) blob.resize(4U * 1024U * 1024U + 1);
+        if (type == 1)
+            blob = F::Text("not a BLP");
+        if (type == 2)
+            blob.resize(4U * 1024U * 1024U + 1);
         if (type == 3) {
-            Image::DecodedImage oversized; oversized.width = 1024; oversized.height = 1;
+            Image::DecodedImage oversized;
+            oversized.width = 1024;
+            oversized.height = 1;
             oversized.rgba.resize(1024 * 4, std::byte{255});
             blob = F::Take(Image::EncodeBlpPaletted(oversized));
         }
         members.push_back({"war3mapMap.blp", std::move(blob)});
-        const auto output = F::Take(WriteVerifiedArchive(fixture.root / ("bad" + std::to_string(type) + ".w3x"), members));
+        const auto output =
+            F::Take(WriteVerifiedArchive(fixture.root / ("bad" + std::to_string(type) + ".w3x"), members));
         QVERIFY(!Services::OpenMinimapPreview(output.path, output.sha256).Succeeded());
     }
-} catch (const std::exception& error) { QFAIL(error.what()); }
+} catch (const std::exception& error) {
+    QFAIL(error.what());
+}
 
 void MinimapPreviewTests::CurrentKeepsPixelsUntilReplacementAndClearsFailures() try {
     F::Fixture fixture;
@@ -176,19 +204,24 @@ void MinimapPreviewTests::CurrentKeepsPixelsUntilReplacementAndClearsFailures() 
     const std::array<MapData::TerrainStrokePoint, 1> points{{{4 * 128, 4 * 128}}};
     auto plan = F::Take(project.mapEdits_->PrepareTerrainEdit(brush, points, false));
     std::unique_ptr<QtProject::MapDataEditCommand> undo;
-    QVERIFY(project.mapEdits_->ApplyPreparedTerrainEdit(plan, [&](const auto& receipt) {
-        undo = std::make_unique<QtProject::MapDataEditCommand>(project, receipt, "raise", "raise");
-        return Status::Ok();
-    }).Succeeded());
+    QVERIFY(project.mapEdits_
+                ->ApplyPreparedTerrainEdit(plan,
+                                           [&](const auto& receipt) {
+                                               undo = std::make_unique<QtProject::MapDataEditCommand>(project, receipt,
+                                                                                                      "raise", "raise");
+                                               return Status::Ok();
+                                           })
+                .Succeeded());
     project.mapDataUndoStack_->push(undo.release());
     QCOMPARE(view.property("rgbaSha256"), before);
     pending.reset();
-    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty()
-        && view.property("rgbaSha256") != before, 15000);
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty() && view.property("rgbaSha256") != before,
+                             15000);
     QVERIFY(!view.property("updating").toBool());
     QAction* pathing = nullptr;
     for (auto* action : view.findChildren<QAction*>()) {
-        if (action->text() == "通行") pathing = action;
+        if (action->text() == "通行")
+            pathing = action;
     }
     QVERIFY(pathing);
     pathing->setChecked(true);
@@ -197,7 +230,9 @@ void MinimapPreviewTests::CurrentKeepsPixelsUntilReplacementAndClearsFailures() 
     QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("当前不可用"), 15000);
     QVERIFY(image->pixmap().isNull());
     QVERIFY(view.property("rgbaSha256").toString().isEmpty());
-} catch (const std::exception& error) { QFAIL(error.what()); }
+} catch (const std::exception& error) {
+    QFAIL(error.what());
+}
 
 void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     F::Fixture fixture;
@@ -211,12 +246,13 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     placement.scale = {1, 1, 1};
     doodads.doodads.push_back(placement);
     members.push_back({"war3map.doo", F::Take(doodads.Serialize())});
-    members.push_back({"Doodads/Doodads.slk", M::Slk(
-        {"doodID", "code", "showInMM", "useMMColor", "MMRed", "MMGreen", "MMBlue", "file", "pathTex", "numVar"},
-        {{"Doo0", "Doo0", "1", "1", "10", "20", "30", "FixtureBox", "_", "1"}})});
+    members.push_back(
+        {"Doodads/Doodads.slk",
+         M::Slk({"doodID", "code", "showInMM", "useMMColor", "MMRed", "MMGreen", "MMBlue", "file", "pathTex", "numVar"},
+                {{"Doo0", "Doo0", "1", "1", "10", "20", "30", "FixtureBox", "_", "1"}})});
     members.push_back({"Units/DestructableData.slk", M::Slk({"destructableID", "code"})});
-    members.push_back({"Doodads/DoodadMetaData.slk", M::Slk(
-        {"ID", "field", "slk", "type", "repeat", "index"}, {{"Mmr0", "MMRed", "DoodadData", "int", "0", "0"}})});
+    members.push_back({"Doodads/DoodadMetaData.slk", M::Slk({"ID", "field", "slk", "type", "repeat", "index"},
+                                                            {{"Mmr0", "MMRed", "DoodadData", "int", "0", "0"}})});
     members.push_back({"Units/DestructableMetaData.slk", M::Slk({"ID", "field", "slk", "type", "repeat", "index"})});
     auto native = F::Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
     const ObjectKey key{ObjectType::Doodad, "Doo0"};
@@ -245,10 +281,11 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     QVERIFY(lni->SetModification(key, modification, std::int32_t{220}).Succeeded());
     project.objectDirty_[5] = true;
     project.ObjectDocumentsReplaced();
-    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty()
-        && view.property("rgbaSha256") != before, 15000);
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty() && view.property("rgbaSha256") != before,
+                             15000);
     QVERIFY(project.objectDirty_[5]);
-    QCOMPARE(std::get<std::int32_t>(project.nativeObjectDocuments_[5]->Objects().front().modifications.front().value), 10);
+    QCOMPARE(std::get<std::int32_t>(project.nativeObjectDocuments_[5]->Objects().front().modifications.front().value),
+             10);
     QVERIFY(ApplyLniChangesToNative(native, *lni).Succeeded());
     const auto frozenObject = F::Take(NativeObjectCodec(ObjectType::Doodad).Serialize(native));
     Services::MapSaveTask task;
@@ -256,22 +293,27 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     task.target = fixture.root / "object-saved.w3x";
     task.replacements.push_back({"war3map.w3d", frozenObject});
     const auto minimap = F::Take(Services::TerrainMinimapSave::Prepare(task, *project.mapEdits_, fixture.game,
-        Services::TerrainMinimapSaveChoice::Automatic));
+                                                                       Services::TerrainMinimapSaveChoice::Automatic));
     QVERIFY(minimap);
     auto savedMembers = members;
     savedMembers.back().data = frozenObject;
     savedMembers.push_back(minimap->MinimapReplacement());
     const auto saved = F::Take(WriteVerifiedArchive(fixture.root / "object-saved.w3x", savedMembers));
-    QCOMPARE(view.property("rgbaSha256").toString().toStdString(), F::Take(Services::OpenMinimapPreview(saved.path, saved.sha256)).rgbaSha256);
+    QCOMPARE(view.property("rgbaSha256").toString().toStdString(),
+             F::Take(Services::OpenMinimapPreview(saved.path, saved.sha256)).rgbaSha256);
     QCOMPARE(F::Take(project.archiveSession_->ReadMember("war3map.w3d")), members.back().data);
-} catch (const std::exception& error) { QFAIL(error.what()); }
+} catch (const std::exception& error) {
+    QFAIL(error.what());
+}
 
 void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {
     F::Fixture fixture; auto members = fixture.members; members.push_back({"war3mapMap.blp", ImageBytes()});
     const auto path = F::Take(WriteVerifiedArchive(fixture.root / "view.w3x", members)).path;
     QtProject::EditorProject project; Install(project, path, members);
     auto pending = project.BeginPendingTerrainCommit();
-    Modules::WorldMinimapPreview view(project); view.show();view.findChild<QTabBar*>("worldMinimapSource")->setCurrentIndex(1);
+    Modules::WorldMinimapPreview view(project);
+    view.show();
+    view.findChild<QTabBar *>("worldMinimapSource")->setCurrentIndex(1);
     auto* state = view.findChild<QLabel*>("worldMinimapState"); QVERIFY(state);
     QTest::qWait(30);
     QVERIFY(view.property("rgbaSha256").toString().isEmpty());
@@ -289,9 +331,13 @@ void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {
         undo = std::make_unique<QtProject::MapDataEditCommand>(project, receipt, "test raise", "test raise"); return Status::Ok();
     });
     QVERIFY(applied.Succeeded()); project.mapDataUndoStack_->push(undo.release());
-    QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("未保存"),15000); QCOMPARE(view.property("rgbaSha256"), original);
-    project.mapDataUndoStack_->undo(); QVERIFY(!project.mapEdits_->IsDirty()); QTRY_VERIFY_WITH_TIMEOUT(state->text().isEmpty(),15000);
-    project.mapDataUndoStack_->redo(); QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("未保存"),15000);
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("未保存"), 15000);
+    QCOMPARE(view.property("rgbaSha256"), original);
+    project.mapDataUndoStack_->undo();
+    QVERIFY(!project.mapEdits_->IsDirty());
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().isEmpty(), 15000);
+    project.mapDataUndoStack_->redo();
+    QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("未保存"), 15000);
     // 原创视图夹具安装新基线；真实正常保存/回读另由语料及专用窗口验收覆盖。
     members.back().data = ImageBytes(true);
     const auto next = F::Take(WriteVerifiedArchive(fixture.root / "saved-result.w3x", members)).path;
@@ -313,7 +359,9 @@ void MinimapPreviewTests::ViewKeepsFailureDetailsInDiagnostics() try {
     members.push_back({"war3mapMap.blp", F::Text("invalid BLP")});
     const auto path = F::Take(WriteVerifiedArchive(fixture.root / "broken-view.w3x", members)).path;
     QtProject::EditorProject project; Install(project, path, members);
-    Modules::WorldMinimapPreview view(project); view.show();view.findChild<QTabBar*>("worldMinimapSource")->setCurrentIndex(1);
+    Modules::WorldMinimapPreview view(project);
+    view.show();
+    view.findChild<QTabBar *>("worldMinimapSource")->setCurrentIndex(1);
     auto* state = view.findChild<QLabel*>("worldMinimapState"); QVERIFY(state);
     QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("当前不可用"), 15000);
     QVERIFY(!state->text().contains("MINIMAP_PREVIEW"));

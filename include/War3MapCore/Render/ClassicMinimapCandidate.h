@@ -24,8 +24,8 @@ class ClassicMinimapObjectAssets;
 struct ClassicMinimapViewOptions {
     std::uint32_t layers = 0x8b;
     std::optional<std::array<std::uint8_t, 4>> blightColor;
-    std::function<Status(Image::DecodedImage&, const std::array<std::uint32_t, 4>&,
-        const MapData::TerrainHeader&)> overlay;
+    std::function<Status(Image::DecodedImage&, const std::array<std::uint32_t, 4>&, const MapData::TerrainHeader&)>
+        overlay;
 };
 
 // 旧纯算法入口只接收 caller 声明的 Missing/Empty 一致性字段。

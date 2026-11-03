@@ -4,7 +4,9 @@
 #include <QPointer>
 #include <QTimer>
 class QThread;
-namespace War3Map::QtCommon { class DiagnosticTimingScope; }
+namespace War3Map::QtCommon {
+class DiagnosticTimingScope;
+}
 namespace War3Map::QtProject {
 class EditorProject;
 struct MinimapPreviewOptions {
@@ -16,16 +18,23 @@ struct MinimapPreviewOptions {
 // GUI只冻结文档；资源捕获、散列、栅格化和解码均在一个有界worker中执行。
 class ProjectMinimapPreview final : public QObject {
     Q_OBJECT
-public:
+  public:
     explicit ProjectMinimapPreview(EditorProject& project, QObject* parent = nullptr);
     ~ProjectMinimapPreview() override;
     void Request(MinimapPreviewOptions options, bool force = false);
-    [[nodiscard]] const std::shared_ptr<const Result<Services::MinimapPreview>>& ResultValue() const { return result_; }
-    [[nodiscard]] bool Pending() const { return pending_; }
-    [[nodiscard]] MinimapPreviewOptions Options() const { return options_; }
-signals:
+    [[nodiscard]] const std::shared_ptr<const Result<Services::MinimapPreview>>& ResultValue() const {
+        return result_;
+    }
+    [[nodiscard]] bool Pending() const {
+        return pending_;
+    }
+    [[nodiscard]] MinimapPreviewOptions Options() const {
+        return options_;
+    }
+  signals:
     void Changed();
-private:
+
+  private:
     void Invalidate();
     void Start();
     EditorProject& project_;
@@ -38,5 +47,5 @@ private:
     std::shared_ptr<const Result<Services::MinimapPreview>> result_;
     std::unique_ptr<QtCommon::DiagnosticTimingScope> timing_;
 };
-ProjectMinimapPreview& AgentMinimapPreview(EditorProject& project);
+ProjectMinimapPreview &AgentMinimapPreview(EditorProject &project);
 } // namespace War3Map::QtProject

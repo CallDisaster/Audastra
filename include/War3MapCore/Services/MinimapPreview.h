@@ -45,11 +45,14 @@ struct CurrentMinimapPreviewInput {
 // 只读生成；只消费宿主拥有的不可变快照，不写归档、不产生编辑/撤销修订。
 [[nodiscard]] Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreviewInput& input);
 [[nodiscard]] Result<MinimapPreview> OpenCurrentMinimapPreview(const std::filesystem::path& source,
-    std::string_view expectedSourceSha256, const std::filesystem::path& gameRoot,
-    std::uint32_t layers = 0x8b, bool units = false, bool starts = false, bool icons = false);
+                                                               std::string_view expectedSourceSha256,
+                                                               const std::filesystem::path& gameRoot,
+                                                               std::uint32_t layers = 0x8b, bool units = false,
+                                                               bool starts = false, bool icons = false);
 // 与自动保存共用同内容噪点种子，默认图层的当前/保存图可逐像素比较。
 [[nodiscard]] Result<std::uint32_t> MinimapContentNoiseSeed(const Render::ClassicMinimapObjectAssets& assets,
-    const Render::TerrainMinimapPostprocessSettings& settings, std::size_t maximumWorkingBytes);
+                                                            const Render::TerrainMinimapPostprocessSettings& settings,
+                                                            std::size_t maximumWorkingBytes);
 
 [[nodiscard]] Result<MinimapPreview> DecodeMinimapPreview(const MinimapPreviewInput& input);
 

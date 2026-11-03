@@ -60,16 +60,19 @@ void WorldViewport::ResetCamera() {
 
 std::vector<std::array<double, 2>> WorldViewport::MinimapCameraOutline() const {
     const auto frame = ReadPickingFrame();
-    if (!frame.Succeeded()) return {};
+    if (!frame.Succeeded())
+        return {};
     std::vector<std::array<double, 2>> result;
     const double w = frame.value->physicalWidth - 1, h = frame.value->physicalHeight - 1;
-    for (const auto point : {Render::PhysicalViewPoint{0,0}, {w,0}, {w,h}, {0,h}}) {
+    for (const auto point : {Render::PhysicalViewPoint{0, 0}, {w, 0}, {w, h}, {0, h}}) {
         const auto ray = Render::MakeViewRay(*frame.value, point);
-        if (!ray.Succeeded() || std::abs(ray.value->ray.direction[2]) < 1e-9) return {};
+        if (!ray.Succeeded() || std::abs(ray.value->ray.direction[2]) < 1e-9)
+            return {};
         const auto t = (camera_.targetZ - ray.value->ray.origin[2]) / ray.value->ray.direction[2];
-        if (t < 0 || t > ray.value->maxDistance) return {};
-        result.push_back({ray.value->ray.origin[0] + t*ray.value->ray.direction[0],
-            ray.value->ray.origin[1] + t*ray.value->ray.direction[1]});
+        if (t < 0 || t > ray.value->maxDistance)
+            return {};
+        result.push_back({ray.value->ray.origin[0] + t * ray.value->ray.direction[0],
+                          ray.value->ray.origin[1] + t * ray.value->ray.direction[1]});
     }
     return result;
 }
