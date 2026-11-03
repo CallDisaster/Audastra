@@ -10,6 +10,8 @@
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "../Services/SaveCaptureScope.h"
+#include "../Services/SaveProgressStage.h"
+#include "../QtCommon/DiagnosticTimings.h"
 
 #include <QDateTime>
 #include <QUndoStack>
@@ -410,6 +412,7 @@ void InstallMapSaveDerivedPreparation(MapSaveJob& job) {
 }
 
 void EditorProject::RunMapSave(MapSaveJob& job) {
+    QtCommon::DiagnosticTimingScope workerTiming("save-worker");
     // Run拒绝重复执行时，也不能留下上次的Passed结果供本次提交复用。
     job.terrainReadbackStatus.reset();
     job.terrainReadbackArchiveSha256.clear();
@@ -420,11 +423,17 @@ void EditorProject::RunMapSave(MapSaveJob& job) {
         return;
     }
     InstallMapSaveDerivedPreparation(job);
-    Services::MapSaveService::Run(job, [&job](std::string_view stage) { job.Report(StageText(stage)); });
+    Services::MapSaveService::Progress progress = [&job](std::string_view stage) {
+        QtCommon::DiagnosticTimingEvent(stage);
+        if (!stage.starts_with("save-timing.")) job.Report(StageText(stage));
+    };
+    if (QtCommon::DiagnosticTimingsEnabled()) progress = Services::Detail::SaveTimingObserver{std::move(progress)};
+    Services::MapSaveService::Run(job, progress);
     if (!job.succeeded || !job.nextSession || (!job.terrainSavePlan && !job.minimapPreserve)) return;
     // 展示回调沿用通用保存服务的合同，异常不能改变实际写出或回读资格。
     try { job.Report(tr("正在核对保存后的地形…")); } catch (...) {}
     try {
+        QtCommon::DiagnosticTimingScope readbackTiming("save-editor-readback");
         // UI由既有worker调用；公开同步保存helper仍同步执行，不在Commit重复散列。
         Services::Detail::SaveCaptureScope savedCapture(job, Services::Detail::SaveCaptureScope::Target::Saved);
         const auto pinned = savedCapture.Acquire();

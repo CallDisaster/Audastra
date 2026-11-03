@@ -24,7 +24,15 @@
 
 namespace {
 int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
-    War3Map::QtApp::ConfigureApplicationIdentity();
+    const QStringList arguments = application.arguments();
+    const auto profileIndex = arguments.indexOf(QStringLiteral("--settings-profile"));
+    QString settingsProfile;
+    if (profileIndex >= 0) {
+        if (arguments.count(QStringLiteral("--settings-profile")) != 1 || profileIndex + 1 >= arguments.size()) return 1;
+        settingsProfile = arguments[profileIndex + 1];
+        if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")).match(settingsProfile).hasMatch()) return 1;
+    }
+    War3Map::QtApp::ConfigureApplicationIdentity(settingsProfile);
 
     // Qt 自带对话框和标准按钮跟随系统中文；业务文案仍由源码中的中文 tr() 提供。
     // qt_*.qm 是元目录，覆盖 qtbase 与多媒体等模块。
@@ -40,7 +48,6 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         }
     }
 
-    const QStringList arguments = application.arguments();
     const auto healthValue = [&](const QString& name) -> QString {
         const auto index = arguments.indexOf(name);
         return arguments.count(name) == 1 && index + 1 < arguments.size() ? arguments[index + 1] : QString{};

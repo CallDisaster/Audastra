@@ -1445,6 +1445,17 @@ void NativeWorkbenchTests::ApplicationIdentityUsesAudastraWithoutMigration() {
     QCOMPARE(image.size(), QSize(512, 512));
     QCOMPARE(image.pixelColor(0, 0).alpha(), 0);
     QVERIFY(image.pixelColor(256, 256).alpha() > 0);
+    const auto defaultSettings = QSettings{}.fileName();
+    const auto defaultConfig = QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
+    const auto defaultCredentials = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    War3Map::QtApp::ConfigureApplicationIdentity(QStringLiteral("diagnostic-test"));
+    QCOMPARE(QGuiApplication::applicationDisplayName(), QStringLiteral("Audastra"));
+    QVERIFY(QSettings{}.fileName() != defaultSettings);
+    QVERIFY(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) != defaultConfig);
+    QVERIFY(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation) != defaultCredentials);
+    War3Map::QtApp::ConfigureApplicationIdentity();
+    QCOMPARE(QSettings{}.fileName(), defaultSettings);
+    QCOMPARE(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation), defaultConfig);
 }
 
 void NativeWorkbenchTests::WindowTitleTracksMapSaveUndoAndClose() {

@@ -8,8 +8,9 @@
 namespace War3Map::QtApp {
 
 // 产品身份决定 Qt 的设置与数据目录；本地开发版改名不迁移或删除旧目录。
-inline void ConfigureApplicationIdentity() {
-    QCoreApplication::setApplicationName(QStringLiteral("Audastra"));
+inline void ConfigureApplicationIdentity(const QString& settingsProfile = {}) {
+    QCoreApplication::setApplicationName(settingsProfile.isEmpty() ? QStringLiteral("Audastra")
+        : QStringLiteral("Audastra-") + settingsProfile);
     QGuiApplication::setApplicationDisplayName(QStringLiteral("Audastra"));
     QGuiApplication::setWindowIcon(UiKit::ApplicationIcon());
     QCoreApplication::setOrganizationName(QStringLiteral("CallDisaster"));

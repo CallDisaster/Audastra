@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "AppHelpers.h"
+#include "DiagnosticTimings.h"
 #include "AssetsModule.h"
 #include "ObjectModule.h"
 #include "TriggerModule.h"
@@ -158,6 +159,7 @@ bool MainWindow::OpenUserMapArchivePath(const std::filesystem::path& archivePath
 }
 
 bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
+    War3Map::QtCommon::DiagnosticTimingScope totalTiming("open-total");
     if (QString::fromStdWString(archivePath.extension().wstring()).compare(".w3n", Qt::CaseInsensitive) == 0)
         return OpenCampaignPath(archivePath);
     if (project_->savingMap_ || changesChecking_) {
@@ -171,8 +173,12 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         return false;
     }
     setCursor(Qt::WaitCursor);
+    War3Map::QtCommon::DiagnosticTimingScope snapshotTiming("open-archive-snapshot");
     auto snapshot = War3Map::MapArchiveSession::Open(archivePath);
+    snapshotTiming.Finish();
+    War3Map::QtCommon::DiagnosticTimingScope workspaceTiming("open-readonly-workspace");
     auto opened = War3Map::MpqWorkspace::OpenReadOnly(archivePath);
+    workspaceTiming.Finish();
     if (!opened.Succeeded() || !opened.value.has_value()) {
         unsetCursor();
         for (const auto& diagnostic : opened.diagnostics) {
@@ -196,7 +202,9 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         return false;
     }
     const std::filesystem::path workDir(workspace->path().toStdWString());
+    War3Map::QtCommon::DiagnosticTimingScope extractTiming("open-extract-map-data");
     const War3Map::Status extractStatus = opened.value->ExtractMapData(workDir);
+    extractTiming.Finish();
     unsetCursor();
     if (!extractStatus.Succeeded()) {
         for (const auto& diagnostic : extractStatus.diagnostics)
@@ -205,6 +213,7 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         return false;
     }
 
+    War3Map::QtCommon::DiagnosticTimingScope objectsTiming("open-native-objects");
     // 将提取的 native 物体文件转换为 LNI 工作格式，供物体编辑器消费。
     // 同时保留 native 基线文档：另存为时把 LNI 编辑差异回灌写回。
     std::vector<War3Map::Diagnostic> importDiagnostics;
@@ -256,7 +265,10 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         }
     }
 
+    objectsTiming.Finish();
+    War3Map::QtCommon::DiagnosticTimingScope verifyTiming("open-source-verify");
     const auto sourceStatus = opened.value->VerifyUnchanged();
+    verifyTiming.Finish();
     if (!sourceStatus.Succeeded() || (snapshot.Succeeded() && snapshot.value
         && snapshot.value->SourceSha256() != opened.value->SourceSha256())) {
         AddDiagnostic(tr("错误"), tr("地图"), tr("MAP_SOURCE_CHANGED"),
@@ -269,7 +281,10 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
     else binding.readOnly = std::make_shared<const War3Map::MpqWorkspace>(std::move(*opened.value));
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());
+    War3Map::QtCommon::DiagnosticTimingScope bindTiming("open-bind-workspace");
     const bool openedOk = OpenWorkspacePathImpl(workDir, &binding);
+    bindTiming.Finish();
+    War3Map::QtCommon::DiagnosticTimingScope refreshTiming("open-final-refresh");
     if (!liveWindow || !liveProject || liveWindow->project_.get() != liveProject.data()) return false;
     if (openedOk) {
         SetProjectTitle(QString::fromStdWString(archivePath.filename().wstring()),

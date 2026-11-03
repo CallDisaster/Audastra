@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "AppHelpers.h"
+#include "DiagnosticTimings.h"
 #include "CampaignModule.h"
 
 #include "MapSaveJob.h"
@@ -71,6 +72,8 @@ QString ChangedMembers(const MapSaveJob& job) {
 bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, bool background, bool testSnapshot, bool testHotReload,
     War3Map::Services::TerrainMinimapSaveChoice minimapChoice, bool rebuildTerrainShadow,
     War3Map::Services::MapRuntimeSavePurpose runtimePurpose, MinimapRiskSave minimapRisk) {
+    War3Map::QtCommon::DiagnosticTimingScope totalTiming("save-total");
+    War3Map::QtCommon::DiagnosticTimingScope prepareTiming("save-prepare");
     if (!CheckPendingTerrainCommit(testSnapshot ? tr("测试地图") : tr("保存地图"))) return false;
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
     if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
@@ -196,6 +199,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         }
         job->script->luaTestOptions.testHotReload = true;
     }
+    prepareTiming.Finish();
     project_->savingMap_ = true;
     UpdateExportAvailability();
     const auto execute = [reporter = programIssueReporter_](MapSaveJob& task) {
@@ -274,6 +278,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         }
         return true;
     }
+    War3Map::QtCommon::DiagnosticTimingScope commitTiming("save-commit");
     const auto saved = project_->CommitMapSave(*job);
     UpdateEditDirtyFlags();
     if (!saved) {
