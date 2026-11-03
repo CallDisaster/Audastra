@@ -3,6 +3,7 @@
 #include "PendingImportPayload.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/ProjectSaveControl.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include <QThread>

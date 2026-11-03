@@ -4,6 +4,7 @@
 #include "War3MapCore/MapData/NativeMinimapMarkers.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/ProjectSaveControl.h"
 #include "War3MapCore/Text/TextUtil.h"
 
 #include <algorithm>
