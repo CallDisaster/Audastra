@@ -21,6 +21,7 @@
 #include "WorldAuxiliaryDialog.h"
 #include "WorldStartLocations.h"
 #include "ProjectAuxiliaryEdits.h"
+#include "Commands/MapDataCommands.h"
 #include "TerrainWaterEditFixture.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -810,6 +811,8 @@ private slots:
     void PlaybackSnapshotKeepsServiceAndRetainedPictureDistinct();
     void TerrainLoadSnapshotPreservesFailureAndClearsOnRefresh_data();
     void TerrainLoadSnapshotPreservesFailureAndClearsOnRefresh();
+    void TerrainModelReloadKeepsCommittedEdits_data();
+    void TerrainModelReloadKeepsCommittedEdits();
     void TerrainOnlySceneRequiresKnownEmptyPlacements_data();
     void TerrainOnlySceneRequiresKnownEmptyPlacements();
     void TerrainOnlySceneRejectsStaleSourceAndRefresh();
@@ -5418,6 +5421,7 @@ void WorldModuleTests::ShadowRelationMemoTracksAttachGenerationsAndSessionIdenti
 #include "TerrainStraightRampWorldCases.h"
 #include "TerrainConnectedRampWorldCases.h"
 #include "TerrainBlockWorldCases.h"
+#include "WorldTerrainModelReloadCases.h"
 
 int main(int argc, char** argv) {
     if (qEnvironmentVariable("FORGE_H1_CAPTURE_DIR").isEmpty()) qputenv("QT_QPA_PLATFORM", "offscreen");
