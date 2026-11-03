@@ -187,6 +187,41 @@ inline void BeforeAndFailureAtomicity() {
         && !PrepareTerrainStraightRampStroke(source, Rules(), brush, std::span(&edge, 1), doodads,
             {}, {}, TerrainStraightRampAlgorithm::Connected).Succeeded(), "三点存在不等于完整dirty加halo在地图内");
 }
+
+inline void LowerPlaneMayKeepAbsentCliffPalette() {
+    const DoodadPlacements doodads;
+    for (const auto direction : {std::array{1, 0}, std::array{0, 1}, std::array{-1, 0}, std::array{0, -1}}) {
+        const auto dx = direction[0], dy = direction[1];
+        auto source = Grid(dx, dy, {});
+        for (int y = 0; y < 33; ++y) {
+            for (int x = 0; x < 33; ++x) {
+                auto& vertex = source.vertices[std::size_t(y) * 33 + x];
+                vertex.waterHeightAndFlagsRaw = 8192;
+                vertex.variationRaw = 0;
+                if ((x - 16) * dx + (y - 16) * dy >= 2) {
+                    vertex.cliffAndLayerRaw |= 0xf0;
+                }
+            }
+        }
+        RefreshTerrainDerived(source, 0, 0, 33, 33);
+        const auto point = Point(dx, dy);
+        TerrainBrush brush;
+        brush.kind = TerrainBrushKind::StraightRamp;
+        const auto candidate = Take(PrepareTerrainStraightRampStroke(source, Rules(), brush,
+            std::span(&point, 1), doodads, {}, {}, TerrainStraightRampAlgorithm::Connected));
+        auto expected = source;
+        for (int normal = 0; normal < 3; ++normal) {
+            At(expected, normal, 0, dx, dy).textureAndFlagsRaw |= 0x10;
+        }
+        Require(Take(SerializeMapTerrain(candidate.terrain)) == Take(SerializeMapTerrain(expected)),
+            "原版直坡法向原字：只增加三点R，坡脚8192/8192/0/f2保留槽15");
+        auto invalid = source;
+        At(invalid, -3, 0, dx, dy).cliffAndLayerRaw |= 0xf0;
+        Require(!PrepareTerrainStraightRampStroke(invalid, Rules(), brush, std::span(&point, 1),
+            doodads, {}, {}, TerrainStraightRampAlgorithm::Connected).Succeeded(),
+            "高层槽15没有原版允许证据，继续拒绝");
+    }
+}
 inline void WetBlightFinisherAndSpecial() {
     const DoodadPlacements empty; const auto point = Point(1, 0);
     TerrainBrush brush; brush.kind = TerrainBrushKind::StraightRamp;
@@ -207,5 +242,5 @@ inline void WetBlightFinisherAndSpecial() {
     Require(!failed.Succeeded() && !failed.value && Take(SerializeMapTerrain(source)) == before,
         "Connected不得借相邻坡道删除受影响special或改写其原始字段");
 }
-inline void Run() { FourDirectionsAndWetLiterals(); BeforeAndFailureAtomicity(); WetBlightFinisherAndSpecial(); }
+inline void Run() { FourDirectionsAndWetLiterals(); BeforeAndFailureAtomicity(); LowerPlaneMayKeepAbsentCliffPalette(); WetBlightFinisherAndSpecial(); }
 } // namespace War3Map::TerrainConnectedStraightRampCases

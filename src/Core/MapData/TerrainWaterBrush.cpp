@@ -643,14 +643,19 @@ private:
                     const int sx = (int(nx) - int(plan.highX)) * plan.directionX;
                     const int sy = (int(ny) - int(plan.highY)) * plan.directionY;
                     const bool lower = plan.inner ? sx > 0 && sy > 0 : sx > 0 || sy > 0;
+                    // 原版直坡产物在坡脚保留15（无悬崖）；仅允许低层平面上的该槽。
+                    const bool absentLowerCliff = brush_.straightRamp && lower && vertex.CliffTextureIndex() == 15;
                     if (((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly
                             || (plan.inner && brush_.cornerAlgorithm != TerrainCornerRampAlgorithm::NativeWetCorners && !joined)) && vertex.HasWater())
                         || vertex.IsBoundary() || vertex.IsMapEdge()
                         || vertex.groundHeightRaw != high.groundHeightRaw
-                        || vertex.CliffTextureIndex() != high.CliffTextureIndex()
+                        || (vertex.CliffTextureIndex() != high.CliffTextureIndex() && !absentLowerCliff)
                         || (joined ? (vertex.CliffLevel() != high.CliffLevel() && vertex.CliffLevel() + 1 != high.CliffLevel())
                             : vertex.CliffLevel() != high.CliffLevel() - (lower ? 1 : 0)))
-                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、同悬崖材质的一级纯台阶或纯拐角，不能相交边界、其它方向或旧算法不支持的水。");
+                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、兼容悬崖材质的一级纯台阶或纯拐角，不能相交边界、其它方向或旧算法不支持的水；顶点("
+                            + std::to_string(nx) + "," + std::to_string(ny) + ")实际层级=" + std::to_string(vertex.CliffLevel())
+                            + "，预期=" + std::to_string(high.CliffLevel() - (lower ? 1 : 0))
+                            + "，悬崖槽=" + std::to_string(vertex.CliffTextureIndex()) + "，高点槽=" + std::to_string(high.CliffTextureIndex()) + "。");
                     if (!connected) {
                         if (vertex.IsRamp() != (selected(nx, ny) && *brush_.cornerRamp))
                             reject("DOMAIN", "独立坡道的实际脏块及halo不能相交其它旧坡道。");
