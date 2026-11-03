@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "../QtCommon/OwnedWork.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "MapSaveJob.h"
 
@@ -187,8 +188,11 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
 
     job.preserveUnaffectedScript = !testScenarioPlan_;
     optionsTiming.Finish();
-    QtCommon::DiagnosticTimingScope captureTiming("save-prepare-script-capture");
-    auto prepared = Services::PrepareScriptSaveInputs(job, std::move(sources));
+    // job和sources均已自持有深副本；worker不读取this、QSettings或当前工程文档。
+    auto prepared = QtCommon::RunOwnedWork([&job, sources = std::move(sources)]() mutable {
+        QtCommon::DiagnosticTimingScope captureTiming("save-prepare-script-capture");
+        return Services::PrepareScriptSaveInputs(job, std::move(sources));
+    });
     AddDiagnostics(prepared.diagnostics);
     if (!prepared.Succeeded() || !prepared.value) return ScriptRebuild::Failed;
     return *prepared.value == Services::ScriptSavePreparationState::Skipped

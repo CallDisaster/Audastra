@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "AppHelpers.h"
 #include "../QtCommon/DiagnosticTimings.h"
+#include "../QtCommon/OwnedWork.h"
 #include "CampaignModule.h"
 
 #include "MapSaveJob.h"
@@ -25,6 +26,7 @@
 #include <QStatusBar>
 #include <QThread>
 #include <QTimer>
+#include <QScopeGuard>
 
 #include <memory>
 #include <algorithm>
@@ -179,6 +181,16 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             tr("测试运行必须生成独立副本，不能写回当前地图。"));
         reportFailure(tr("测试副本路径不支持")); return false;
     }
+    // 准备和提交也会等待纯计算worker。忙门必须覆盖整个保存，禁止重入保存、切图和关闭。
+    project_->savingMap_ = true;
+    UpdateExportAvailability();
+    const QPointer<MainWindow> saveWindow(this);
+    auto savingGuard = qScopeGuard([saveWindow] {
+        if (!saveWindow) return;
+        saveWindow->project_->savingMap_ = false;
+        saveWindow->UpdateExportAvailability();
+    });
+    War3Map::QtCommon::OwnedWorkScope ownedWork(background);
     auto job = testSnapshot || testHotReload ? project_->PrepareMapTestCopy(target,
         runtimePurpose == War3Map::Services::MapRuntimeSavePurpose::Normal ? War3Map::Services::MapRuntimeSavePurpose::TestRun : runtimePurpose)
         : project_->PrepareMapSave(target, inPlace, minimapChoice);
@@ -203,8 +215,6 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         job->script->luaTestOptions.testHotReload = true;
     }
     prepareTiming.Finish();
-    project_->savingMap_ = true;
-    UpdateExportAvailability();
     const auto execute = [reporter = programIssueReporter_](MapSaveJob& task) {
         const auto failed = [&](bool standardException) {
             task.succeeded = false;
@@ -247,8 +257,6 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     } else {
         execute(*job);
     }
-    project_->savingMap_ = false;
-    UpdateExportAvailability();
     if (testSnapshot) {
         project_->AddDiagnostics(job->diagnostics);
         const auto diagnosticCount = job->diagnostics.size();
@@ -286,9 +294,12 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     UpdateEditDirtyFlags();
     if (!saved) {
         if (job->minimapRiskAvailable && job->written.empty()) {
-            if (minimapRisk == MinimapRiskSave::Ask && confirmMinimapRisk())
+            if (minimapRisk == MinimapRiskSave::Ask && confirmMinimapRisk()) {
+                project_->savingMap_ = false;
+                savingGuard.dismiss();
                 return RunMapSave(target, inPlace, background, false, false, minimapChoice, rebuildTerrainShadow,
                     runtimePurpose, MinimapRiskSave::Accept);
+            }
             if (minimapRisk == MinimapRiskSave::Decline)
                 project_->AddDiagnostic(tr("错误"), tr("地图"), QStringLiteral("MINIMAP_RISK_SAVE_AVAILABLE"),
                     tr("只有小地图无法按当前内容生成；可以无视风险继续保存（保留原小地图），Agent 保存时传 keep_original_minimap=true。"));

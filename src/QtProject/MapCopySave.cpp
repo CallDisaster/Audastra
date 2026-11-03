@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "../QtCommon/OwnedWork.h"
 #include "MapSaveJob.h"
 #include "MapSavePreferences.h"
 #include "PendingImportPayload.h"
@@ -598,7 +599,12 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         classification.replacements = job->replacements;
         classification.removals = job->removals;
         classification.overlayIdentity = job->sourceSha256;
-        auto references = Services::CaptureArchiveMapObjectReferences(*job->archive, war3GameRoot_, job->replacements, job->removals, &classification);
+        // 捕获只借用本次job的独占快照，UI在join前不访问它；不借用当前工程。
+        auto references = QtCommon::RunOwnedWork([&task = *job, classification = std::move(classification), gameRoot = war3GameRoot_] {
+            QtCommon::DiagnosticTimingScope captureTiming("save-prepare-object-reference-capture");
+            return Services::CaptureArchiveMapObjectReferences(*task.archive, gameRoot,
+                task.replacements, task.removals, &classification);
+        }, !campaignScope_); // 战役仍借用活动服务，保持同步，不能把它当作冻结输入。
         AddDiagnostics(references.diagnostics);
         if (!references.Succeeded() || !references.value)
             return fail(tr("REPACK_MAP_OBJECT_REFERENCES_UNAVAILABLE"), tr("无法冻结当前T使用的预放对象来源。"));

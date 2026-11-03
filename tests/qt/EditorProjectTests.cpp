@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "../../src/QtCommon/OwnedWork.h"
 #include "ProjectOpen.h"
 #include "ProjectObjectCatalog.h"
 #include "AssetOwnedPayload.h"
@@ -38,6 +39,7 @@
 #include "../support/TerrainBoundsFixture.h"
 
 #include <QCoreApplication>
+#include <QTimer>
 #include <QGuiApplication>
 #include <QFile>
 #include <QFileInfo>
@@ -1697,15 +1699,23 @@ void EditorProjectTests::SaveCommitRejectsRevisionDrift() {
         auto job = project.PrepareMapSave(inPlace ? std::filesystem::path{} : target, inPlace);
         QVERIFY(job && job->preparedRevision);
 
-        // 模拟后台保存的嵌套事件循环中到达的编辑：任务只持有准备时的成员视图。
-        auto settings = *project.mapDocument_->Settings();
-        settings.mapName = "Late edit";
-        QVERIFY(project.mapEdits_->EditSettings(settings).Succeeded());
-        QVERIFY(project.ObserveEditState("保存期间修改地图名称"));
+        // 真正的嵌套事件循环中到达编辑；worker只读取任务独占的准备时快照。
+        bool arrived = false;
+        QTimer::singleShot(0, &project, [&] {
+            auto settings = *project.mapDocument_->Settings();
+            settings.mapName = "Late edit";
+            arrived = project.mapEdits_->EditSettings(settings).Succeeded()
+                && project.ObserveEditState("保存期间修改地图名称");
+        });
+        QtCommon::OwnedWorkScope owned(true);
+        QVERIFY(QtCommon::RunOwnedWork([task = job.get()] {
+            EditorProject::RunMapSave(*task);
+            return task->succeeded;
+        }));
+        QVERIFY(arrived);
         const auto lateScopes = project.editRevision_.Current();
         QVERIFY(project.HasUnsavedMapChanges());
 
-        EditorProject::RunMapSave(*job);
         QVERIFY(job->succeeded && job->nextSession && std::filesystem::exists(job->written));
         QVERIFY(!project.CommitMapSave(*job).has_value());
         QVERIFY(project.sourceArchivePath_ == source && project.mapEdits_ && project.mapEdits_->IsDirty());
@@ -1865,6 +1875,7 @@ void EditorProjectTests::TerrainSavePrepareStillRequiresToolchain() {
     QCOMPARE(project.editRevision_.Baseline(EditSaveTarget::Map)->scopes, baseline->scopes);
     QCOMPARE(Sha256File(source).value, originalSha.value);
 }
+
 
 void EditorProjectTests::PathingIntentNativeSaveKeepsProjectState_data() {
     QTest::addColumn<bool>("inPlace"); QTest::addColumn<bool>("lateEdit"); QTest::addColumn<bool>("blight");
