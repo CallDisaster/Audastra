@@ -3,7 +3,6 @@
 #include "MapSavePreferences.h"
 #include "PendingImportPayload.h"
 #include "ProjectObjectCatalog.h"
-#include "../Services/SaveCaptureScope.h"
 
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
@@ -617,14 +616,6 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     // 有任何修改时重建游戏脚本：物编与导入的声音也会进入地图初始化代码。执行阶段通过语法检查才写入，
     // 未通过则中止保存；工具链不可用时沿用源脚本并警告。
     if (hasChanges) {
-        // 只在同次前台脚本输入捕获期间复用完整核对的来源证明；
-        // 作用域结束立即释放，不把自动租约留在交互工程或返回的任务里。
-        Services::Detail::SaveCaptureScope sourceCapture(*job, Services::Detail::SaveCaptureScope::Target::Source);
-        const auto pinned = sourceCapture.Acquire();
-        if (!pinned.Succeeded()) {
-            AddDiagnostics(pinned.diagnostics);
-            return fail(tr("SAVE_SCRIPT_SOURCE_CAPTURE_FAILED"), tr("无法固定本次脚本输入来源，已中止保存。"));
-        }
         if (PrepareScriptRebuild(*job) == ScriptRebuild::Failed) {
             return fail(tr("REPACK_SCRIPT_REJECTED"), tr("无法准备游戏脚本重建，已中止保存；详见构建诊断。"));
         }

@@ -13,7 +13,6 @@
 #include <QTemporaryDir>
 #include <algorithm>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 
 namespace {
@@ -117,8 +116,6 @@ void DirtyGameEditsCannotAcquireReadOnlyMapWriteback() {
 void FrozenTaskOwnsSourcesAndChecksFinalTableChanges() {
     Fixture fixture; fixture.Dirty(); auto job = fixture.Prepare();
     Require(job && job->beforePublish, "ordinary game-based edit freezes an owned publication gate");
-    Require(!job->archive->HasSourceCaptureLease() && !fixture.project->archiveSession_->HasSourceCaptureLease(),
-        "foreground preparation releases its own proof before returning the task and leaves the interactive source unlocked");
     fixture.project.reset();
     Require(job->beforePublish().Succeeded(), "frozen gate survives destruction of the originating project");
     job->replacements.push_back({"Units/UnitData.slk", Tests::ObjectBytes(Tests::ObjectTable({
@@ -128,31 +125,6 @@ void FrozenTaskOwnsSourcesAndChecksFinalTableChanges() {
         "final template-style map table cannot grant native writeback to the frozen dirty edit");
     job->replacements.pop_back();
     Require(job->beforePublish().Succeeded(), "removing only the rejected synthetic change restores original eligibility");
-    fixture.Unchanged();
-}
-
-void PreparationDoesNotReleaseCallerLease() {
-    Fixture fixture; fixture.Dirty();
-    Require(fixture.project->archiveSession_->PinSourceForExactCaptures().Succeeded(), "caller pins its original source");
-    auto job = fixture.Prepare();
-    Require(job && job->archive->HasSourceCaptureLease() && fixture.project->archiveSession_->HasSourceCaptureLease(),
-        "foreground preparation borrows an explicit caller proof without releasing it");
-    job->archive->ReleaseSourceCaptureLease();
-    fixture.project->archiveSession_->ReleaseSourceCaptureLease();
-    fixture.Unchanged();
-}
-
-void FailedScriptPreparationReleasesItsLease() {
-    Fixture fixture; fixture.Dirty();
-    const auto declaration = fixture.source.parent_path() / "invalid-script-declarations.json";
-    { std::ofstream output(declaration); output << "[]"; Require(bool(output), "write original invalid declaration"); }
-    QSettings settings;
-    settings.setValue("script/sourceEncodingsFile", QString::fromStdWString(declaration.wstring()));
-    auto job = fixture.Prepare();
-    settings.remove("script/sourceEncodingsFile");
-    Require(!job && ProjectHasCode(*fixture.project, u"SCRIPT_SOURCE_ENCODINGS_FILE_INVALID"),
-        "actual script preparation failure keeps its precise refusal diagnostic");
-    Require(!fixture.project->archiveSession_->HasSourceCaptureLease(), "failed preparation leaves no interactive lease");
     fixture.Unchanged();
 }
 
@@ -208,8 +180,6 @@ int main(int argc, char** argv) {
         qunsetenv("FORGE_SCRIPT_SOURCE_ENCODINGS_FILE"); // 仅清除此独立测试进程的继承设置。
         DirtyGameEditsCannotAcquireReadOnlyMapWriteback();
         FrozenTaskOwnsSourcesAndChecksFinalTableChanges();
-        PreparationDoesNotReleaseCallerLease();
-        FailedScriptPreparationReleasesItsLease();
         FrozenTaskChecksEveryChangedNativeObject();
         FrozenTaskRejectsSameBytesAtChangedGameSourceIdentity();
         std::cout << "object save catalog gates passed\n";
