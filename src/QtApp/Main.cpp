@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "ApplicationIdentity.h"
+#include "../QtCommon/DiagnosticTimings.h"
 #include "ProgramIssueApplication.h"
 #include "McpProductTools.h"
 #include "War3MapCore/Update/UpdateInstaller.h"
@@ -28,10 +29,17 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     const auto profileIndex = arguments.indexOf(QStringLiteral("--settings-profile"));
     QString settingsProfile;
     if (profileIndex >= 0) {
-        if (arguments.count(QStringLiteral("--settings-profile")) != 1 || profileIndex + 1 >= arguments.size()) return 1;
+        if (arguments.count(QStringLiteral("--settings-profile")) != 1 || profileIndex + 1 >= arguments.size()) {
+            QTextStream(stderr) << "SETTINGS_PROFILE_INVALID: --settings-profile 需要且仅允许一个名称。\n"; return 1;
+        }
         settingsProfile = arguments[profileIndex + 1];
-        if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")).match(settingsProfile).hasMatch()) return 1;
+        if (!QRegularExpression(QStringLiteral("^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$")).match(settingsProfile).hasMatch()) {
+            QTextStream(stderr) << "SETTINGS_PROFILE_INVALID: 名称须为1至48位ASCII字母、数字、下划线或连字符，首位须为字母或数字。\n"; return 1;
+        }
     }
+    War3Map::QtCommon::ConfigureDiagnosticTimings(arguments.contains(QStringLiteral("--diagnostic-timings")));
+    War3Map::QtCommon::StartDiagnosticHeartbeat(&application);
+    const bool saveInProcessOnly = arguments.contains(QStringLiteral("--in-process-only"));
     War3Map::QtApp::ConfigureApplicationIdentity(settingsProfile);
 
     // Qt 自带对话框和标准按钮跟随系统中文；业务文案仍由源码中的中文 tr() 提供。
@@ -166,6 +174,7 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         if (captureUiRequested)
             War3Map::UiKit::ApplyApplicationFont(War3Map::UiKit::LoadFonts(War3Map::UiKit::DefaultFontDirectory()));
         MainWindow probeWindow(startupCapture ? MainWindow::StartupMode::StartupProbe : MainWindow::StartupMode::HeadlessProbe);
+        probeWindow.SetSaveInProcessOnly(saveInProcessOnly);
         // 资源根只在本次探针内生效，不写入用户设置。
         if (const auto uiRoot = pathOption(u"--ui-root"); !uiRoot.empty() && !probeWindow.UseUiDataRoot(uiRoot)) {
             return 3;
@@ -307,6 +316,7 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     if (!backgroundValid || (backgroundOption >= 0 && (backgroundSeconds < 1 || backgroundSeconds > 3600))) return 1;
     if (cameraTour && backgroundOption < 0) return 1;
     MainWindow window(measurementOption >= 0 ? MainWindow::StartupMode::HeadlessProbe : MainWindow::StartupMode::Normal);
+    window.SetSaveInProcessOnly(saveInProcessOnly);
     // 与探针共用会话级 UI 根；不改作者全局设置，旧版目录同样由 Catalog 解析。
     const qsizetype uiRootOption = arguments.indexOf(QStringLiteral("--ui-root"));
     if (uiRootOption >= 0 && uiRootOption + 1 < arguments.size()) {

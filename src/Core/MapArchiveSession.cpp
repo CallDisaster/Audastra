@@ -246,8 +246,25 @@ Status MapArchiveSession::PinSourceForExactCaptures() {
     }
 }
 
-Result<MapArchiveSession> MapArchiveSession::Open(const std::filesystem::path& path, const ProjectSaveControl* control) {
-    return OpenImpl(path, control, false);
+namespace {
+class ArchiveOpenPhase {
+public:
+    ArchiveOpenPhase(const MapArchiveSession::OpenObserver& observer, std::string_view name)
+        : observer_(observer), name_(name) { Notify("begin/"); }
+    ~ArchiveOpenPhase() { Finish(); }
+    void Finish() noexcept { if (!finished_) { Notify("end/"); finished_ = true; } }
+private:
+    void Notify(std::string_view prefix) noexcept {
+        if (observer_) try { observer_(std::string(prefix) + std::string(name_)); } catch (...) {}
+    }
+    const MapArchiveSession::OpenObserver& observer_;
+    std::string_view name_;
+    bool finished_ = false;
+};
+}
+Result<MapArchiveSession> MapArchiveSession::Open(const std::filesystem::path& path, const ProjectSaveControl* control,
+    const OpenObserver& observer) {
+    return OpenImpl(path, control, false, false, observer);
 }
 Result<MapArchiveSession> MapArchiveSession::OpenScriptAudit(const std::filesystem::path& path) {
     return OpenImpl(path, nullptr, true);
@@ -256,7 +273,7 @@ Result<MapArchiveSession> MapArchiveSession::OpenMinimapAudit(const std::filesys
     return OpenImpl(path, nullptr, true, true);
 }
 Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::path& path, const ProjectSaveControl* control,
-    bool scriptAuditOnly, bool minimapAuditOnly) {
+    bool scriptAuditOnly, bool minimapAuditOnly, const OpenObserver& observer) {
     try {
         FileHandle source(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -268,8 +285,11 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
         }
         auto sourcePath = FinalPath(source.Get());
         if (!sourcePath.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(sourcePath.diagnostics));
+        ArchiveOpenPhase shaTiming(observer, "open-snapshot-source-sha");
         auto sha = Sha256Handle(source.Get(), control);
+        shaTiming.Finish();
         if (!sha.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(sha.diagnostics));
+        ArchiveOpenPhase inventoryTiming(observer, "open-snapshot-inventory");
         auto opened = Mpq::MpqArchive::OpenReadOnlyHandle(source.Get(), *sourcePath.value, OpenLimits());
         if (!opened.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(opened.diagnostics));
         auto inventory = opened.value->ListFilesStrict();
@@ -301,6 +321,7 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
         }
         auto prefix = opened.value->ReadArchivePrefix();
         if (!prefix.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(prefix.diagnostics));
+        inventoryTiming.Finish();
         MapArchiveSession session;
         session.scriptAuditOnly_ = scriptAuditOnly;
         session.minimapAuditOnly_ = minimapAuditOnly;
@@ -311,6 +332,7 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
         session.opaqueMembers_ = opaqueMembers;
         session.opaqueMemberCount_ = opaqueMembers ? opened.value->FileCount() - inventory.value->size() : 0;
         session.prefix_ = std::move(*prefix.value);
+        ArchiveOpenPhase decodeTiming(observer, "open-snapshot-decode-members");
         for (const auto& member : *inventory.value) {
             if (minimapAuditOnly ? !MinimapSnapshotMember(member.name) : scriptAuditOnly && !ScriptAuditMember(member.name)) continue;
             if (Mpq::IsMpqMetadataMemberName(member.name)) {
@@ -322,6 +344,8 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
             if (Canonical(member.name) == "(LISTFILE)") session.listfile_ = std::move(*bytes.value);
             else session.members_.push_back({member.name, std::move(*bytes.value)});
         }
+        decodeTiming.Finish();
+        ArchiveOpenPhase verifyTiming(observer, "open-snapshot-final-verify");
         const auto verified = VerifyHandle(source.Get(), session.volumeSerial_, session.fileId_, session.sourceSha256_, control);
         if (!verified.Succeeded()) return ForwardFailure<MapArchiveSession>(verified.diagnostics);
         return Result<MapArchiveSession>::Success(std::move(session));

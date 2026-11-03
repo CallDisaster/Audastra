@@ -174,7 +174,10 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
     }
     setCursor(Qt::WaitCursor);
     War3Map::QtCommon::DiagnosticTimingScope snapshotTiming("open-archive-snapshot");
-    auto snapshot = War3Map::MapArchiveSession::Open(archivePath);
+    War3Map::MapArchiveSession::OpenObserver observer;
+    if (War3Map::QtCommon::DiagnosticTimingsEnabled())
+        observer = [](std::string_view event) { War3Map::QtCommon::DiagnosticTimingEvent(event); };
+    auto snapshot = War3Map::MapArchiveSession::Open(archivePath, nullptr, observer);
     snapshotTiming.Finish();
     War3Map::QtCommon::DiagnosticTimingScope workspaceTiming("open-readonly-workspace");
     auto opened = War3Map::MpqWorkspace::OpenReadOnly(archivePath);
@@ -351,6 +354,7 @@ bool MainWindow::OpenWorkspacePath(const std::filesystem::path& path) {
 }
 
 bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, ArchiveOpenBinding* archive) {
+    War3Map::QtCommon::DiagnosticTimingScope directoryTiming("open-bind-directory-snapshot");
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());
     if (project_->savingMap_ || changesChecking_) return false;
@@ -361,6 +365,7 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
         return false;
     }
     auto snapshot = War3Map::DirectoryWorkspace::Open(path);
+    directoryTiming.Finish();
     if (!snapshot.Succeeded() || !snapshot.value) {
         AddDiagnostic(tr("错误"), tr("工程"), tr("WORKSPACE_SNAPSHOT_FAILED"), tr("不能完整读取工作区，当前编辑保持不变"));
         return false;
@@ -370,7 +375,9 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
     }
     if (!liveWindow || !liveProject || liveWindow->project_.get() != liveProject.data()) return false;
     setCursor(Qt::WaitCursor);
+    War3Map::QtCommon::DiagnosticTimingScope resetTiming("open-bind-reset");
     ResetProjectState();
+    resetTiming.Finish();
     if (!liveWindow || !liveProject || liveWindow->project_.get() != liveProject.data()) return false;
     if (archive) {
         project_->mapWorkspace_ = std::move(archive->workspace);
@@ -378,6 +385,7 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
         project_->archiveSession_ = std::move(archive->session);
         project_->readOnlyArchive_ = std::move(archive->readOnly);
         project_->nativeObjectDocuments_ = std::move(archive->nativeBaselines);
+        War3Map::QtCommon::DiagnosticTimingScope iconTiming("open-bind-icons");
         project_->iconProvider_->SetMapArchive(project_->sourceArchivePath_);
     }
     project_->directorySnapshot_ = std::make_unique<War3Map::DirectoryWorkspace>(std::move(*snapshot.value));
@@ -395,6 +403,7 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
         return false;
     }
 
+    War3Map::QtCommon::DiagnosticTimingScope objectsTiming("open-bind-lni");
     std::size_t objectCount = 0;
     std::size_t loadedTypes = 0;
     for (std::size_t index = 0; index < kObjectTypes.size(); ++index) {
@@ -444,6 +453,7 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
         ++loadedTypes;
     }
 
+    objectsTiming.Finish();
     SetProjectTitle(QFileInfo(selected).fileName(), QDir::toNativeSeparators(selected));
     AddDiagnostic(
         tr("信息"),
@@ -452,9 +462,14 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
         tr("已只读打开工作区；载入 %1/7 类 LNI，共 %2 个对象。")
             .arg(loadedTypes)
             .arg(objectCount));
+    War3Map::QtCommon::DiagnosticTimingScope triggersTiming("open-bind-triggers");
     project_->LoadTriggers();
+    triggersTiming.Finish();
     UpdateExportAvailability();
+    War3Map::QtCommon::DiagnosticTimingScope mapTiming("open-bind-map-data");
     LoadMapData();
+    mapTiming.Finish();
+    War3Map::QtCommon::DiagnosticTimingScope viewsTiming("open-bind-views");
     ActivateModule(project_->triggerDocument_ != nullptr ? "triggers" : "objects");
     objectsModule_->SelectFirstType();
     objectsModule_->UpdateObjectReferenceEntries();
@@ -473,9 +488,14 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
     }
     unsetCursor();
     UpdateBreadcrumb();
+    viewsTiming.Finish();
+    War3Map::QtCommon::DiagnosticTimingScope watchTiming("open-bind-watch");
     RefreshProjectWatch();
+    watchTiming.Finish();
     if (!liveWindow || !liveProject || liveWindow->project_.get() != liveProject.data()) return false;
+    War3Map::QtCommon::DiagnosticTimingScope trackingTiming("open-bind-edit-tracking");
     ResetEditTracking();
+    trackingTiming.Finish();
     if (!liveWindow || !liveProject || liveWindow->project_.get() != liveProject.data()) return false;
     UpdateStatusBar();
     UpdateExportAvailability();

@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "../QtCommon/DiagnosticTimings.h"
 #include "MapSaveJob.h"
 
 #include "War3MapCore/MapData/MapDataEditSession.h"
@@ -97,6 +98,7 @@ Result<ScriptSourceDeclarations> ReadSourceDeclarations(const QString& fileName)
 } // namespace
 
 EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job) {
+    QtCommon::DiagnosticTimingScope declarationsTiming("save-prepare-script-declarations");
     Services::ScriptSaveInputSources sources;
     if (luaMapTarget_) {
         if (luaMapTargetSource_ != sourceArchivePath_) {
@@ -124,6 +126,8 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
         scriptSourceEncodingsFile_.clear();
     }
     sources.sourceEncodings = scriptSourceEncodings_;
+    declarationsTiming.Finish();
+    QtCommon::DiagnosticTimingScope cloneTiming("save-prepare-script-clones");
     sources.includeAccess = scriptSourceIncludeAccess_;
     if (triggerDocument_) sources.triggers = std::make_unique<Trigger::TriggerDocument>(*triggerDocument_);
     if (uiCatalog_) sources.catalog = std::make_unique<Trigger::UiCatalog>(*uiCatalog_);
@@ -171,6 +175,8 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
         if (!plan.Succeeded() || !plan.value) return ScriptRebuild::Failed;
         testScenarioPlan_ = std::move(*plan.value);
     }
+    cloneTiming.Finish();
+    QtCommon::DiagnosticTimingScope optionsTiming("save-prepare-script-options");
     // 恢复的工程编辑内嵌定义，但各界面层的 jass（注入与 include）只在本机数据根里，与 YDWE 按层加 include 一致。
     sources.toolRoot = ScriptToolRoot();
     sources.uiRoot = ScriptToolRoot();
@@ -180,6 +186,8 @@ EditorProject::ScriptRebuild EditorProject::PrepareScriptRebuild(MapSaveJob& job
     sources.allowMissingToolchain = !testScenarioPlan_ && !triggerDirty_ && !(mapEdits_ && mapEdits_->IsDirty());
 
     job.preserveUnaffectedScript = !testScenarioPlan_;
+    optionsTiming.Finish();
+    QtCommon::DiagnosticTimingScope captureTiming("save-prepare-script-capture");
     auto prepared = Services::PrepareScriptSaveInputs(job, std::move(sources));
     AddDiagnostics(prepared.diagnostics);
     if (!prepared.Succeeded() || !prepared.value) return ScriptRebuild::Failed;

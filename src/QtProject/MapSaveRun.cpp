@@ -515,6 +515,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     if (!job.preparedRevision) {
         return rejectStaleCommit(tr("SAVE_REVISION_BINDING_MISSING"), tr("保存任务缺少冻结的编辑修订身份"));
     }
+    QtCommon::DiagnosticTimingScope revisionTiming("save-commit-revision");
     if (!ObserveEditState("地图保存提交前复核")) {
         return rejectStaleCommit(tr("SAVE_REVISION_UNAVAILABLE"), tr("无法复核当前编辑修订"));
     }
@@ -524,9 +525,11 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         return rejectStaleCommit(tr("SAVE_REVISION_CHANGED"), tr("保存期间工程编辑状态发生变化"));
     }
     // 先准备会分配内存的新文档和来源路径，地形基线提交后只交换现成对象。
+    revisionTiming.Finish();
     // 会话本身不可复制或换址，Core在原会话内原子提交并保留撤销回执身份。
     std::unique_ptr<MapDocument> preparedDocument;
     std::filesystem::path nextSourcePath, nextLuaSource;
+    QtCommon::DiagnosticTimingScope documentTiming("save-commit-document");
     try {
         nextSourcePath = job.written;
         if (luaMapTarget_) nextLuaSource = job.written;
@@ -539,6 +542,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         return rejectStaleCommit(tr("TERRAIN_PATHING_COMMIT_PREPARATION"), tr("无法准备保存后的地图文档，前台编辑基线未改变"));
     }
 
+    documentTiming.Finish();
     MapCopySaveResult result;
     result.target = job.written;
     result.memberCount = job.memberCount;
@@ -549,12 +553,14 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     result.backup = job.backup;
     result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - job.started).count();
     if (preparedDocument) {
+        QtCommon::DiagnosticTimingScope terrainTiming("save-commit-terrain");
         const auto committed = job.terrainSavePlan->CommitSaved(*mapEdits_, *preparedDocument);
         if (!committed.Succeeded()) {
             AddDiagnostics(committed.diagnostics);
             return rejectStaleCommit(tr("TERRAIN_PATHING_COMMIT_STALE"), tr("无法将实际通行输出绑定到前台编辑基线"));
         }
     }
+    QtCommon::DiagnosticTimingScope bindTiming("save-commit-bind");
     // 唯一提交点。后续保存以新文件为来源，包含此前已保存的物编及导入资源。
     if (job.inPlace) {
         // 写回替换了被监视的源文件；这是自己的操作，不提示“来源已变化”。
@@ -590,6 +596,8 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
                 QString::fromUtf8(diagnostic.code), QString::fromUtf8(diagnostic.message));
         emit MapDocumentChanged();
     } else LoadMapDocument(true);
+    bindTiming.Finish();
+    QtCommon::DiagnosticTimingScope historyTiming("save-commit-history");
     if (job.terrainHistorySaveLease && mapEdits_) {
         try {
             const auto history = mapEdits_->CommitTerrainHistorySave(*job.terrainHistorySaveLease);
@@ -607,6 +615,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         for (auto& diagnostic : warning.diagnostics) diagnostic.severity = DiagnosticSeverity::Warning;
         AddDiagnostics(warning.diagnostics);
     }
+    historyTiming.Finish();
     restoredTriggerOverlay_ = false;
     triggerDirty_ = false;
     objectDirty_.fill(false);
@@ -618,17 +627,23 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     for (auto* stack : objectUndoStacks_) {
         if (stack) stack->setClean();
     }
+    QtCommon::DiagnosticTimingScope baselineTiming("save-commit-baseline");
     CommitMapEditBaseline();
+    baselineTiming.Finish();
     if (generatedObjects) emit ObjectDocumentsReplaced();
+    QtCommon::DiagnosticTimingScope watchTiming("save-commit-watch");
     RefreshProjectWatch();
+    watchTiming.Finish();
     const auto diagnosticCount = job.diagnostics.size();
     Services::FinalizeScriptWorkspace(job);
     if (job.diagnostics.size() > diagnosticCount) {
         AddDiagnostics(std::vector<Diagnostic>(job.diagnostics.begin() + diagnosticCount, job.diagnostics.end()));
     }
+    QtCommon::DiagnosticTimingScope iconTiming("save-commit-icons");
     if (iconProvider_ && !iconProvider_->SetMapArchive(sourceArchivePath_)) {
         AddDiagnostic(tr("警告"), tr("资源"), tr("SAVED_ICON_LAYER_UNAVAILABLE"), tr("地图已保存，但地图图标层未能重新挂载。"));
     }
+    iconTiming.Finish();
     const QString target = QString::fromStdWString(job.written.wstring());
     if (job.inPlace) {
         AddDiagnostic(tr("信息"), tr("地图"), tr("MAP_SAVED"),

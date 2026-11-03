@@ -3,6 +3,7 @@
 #include "MapSavePreferences.h"
 #include "PendingImportPayload.h"
 #include "ProjectObjectCatalog.h"
+#include "../QtCommon/DiagnosticTimings.h"
 
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
@@ -298,10 +299,12 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         return fail(tr("REPACK_SOURCE_MISMATCH"), tr("地图来源不可达或与当前归档快照不一致。"));
     }
     // 源图未被外部修改的完整核对（散列整个归档）放在执行阶段：写出候选前与替换前各核对一次。
+    QtCommon::DiagnosticTimingScope revisionTiming("save-prepare-revision");
     if (!ObserveEditState("另存地图前核对")) {
         return fail(tr("SAVE_REVISION_UNAVAILABLE"), tr("无法确认编辑修订和导入文件快照；地图保存已中止"));
     }
     const auto frozenGeneration = editRevision_.Generation();
+    revisionTiming.Finish();
     const auto frozenRevision = editRevision_.Revision();
     const auto frozenScopes = editRevision_.Current();
     if (editRevision_.Generation() != frozenGeneration || editRevision_.Revision() != frozenRevision) {
@@ -328,11 +331,14 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         job->inPlaceOptions = *options.value;
     }
     // 后台保存不借用可能被工程切换释放的源快照。冻结失败只转存返回诊断一次。
+    QtCommon::DiagnosticTimingScope archiveTiming("save-prepare-freeze-archive");
     const auto frozenArchive = job->FreezeArchive(*archiveSession_);
+    archiveTiming.Finish();
     if (!frozenArchive.Succeeded()) {
         AddDiagnostics(frozenArchive.diagnostics);
         return nullptr;
     }
+    QtCommon::DiagnosticTimingScope terrainTiming("save-prepare-freeze-terrain");
     if (mapEdits_) {
         // 打开时已附入真实W3E/WPM。净地形不变的物编/导入也需要同一会话事实，
         // 是否重建由最终worker的实际依赖差异决定；冻结本身不检查占地能力。
@@ -358,6 +364,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         }
     }
     job->triggerChanges = triggerDirty_;
+    terrainTiming.Finish();
     auto& replacements = job->replacements;
     const auto replaceMember = [&replacements](const std::string& name, std::vector<std::byte> bytes) {
         replacements.push_back({name, std::move(bytes)});
@@ -577,6 +584,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     // 带测试场景的副本和运行库批准变化都需要重建本次脚本。
     const bool hasChanges = triggerDirty_ || objectChanges || editsImports || runtimeChanged || (mapEdits_ && mapEdits_->IsDirty())
         || luaMapTarget_ || testScenario_;
+    QtCommon::DiagnosticTimingScope referencesTiming("save-prepare-object-references");
     const auto objectNames = triggerDocument_ && hasChanges ? ActivePreplacedNames(*triggerDocument_)
         : Result<std::vector<std::string>>::Success({});
     AddDiagnostics(objectNames.diagnostics);
@@ -613,9 +621,11 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         }
     }
 
+    referencesTiming.Finish();
     // 有任何修改时重建游戏脚本：物编与导入的声音也会进入地图初始化代码。执行阶段通过语法检查才写入，
     // 未通过则中止保存；工具链不可用时沿用源脚本并警告。
     if (hasChanges) {
+        QtCommon::DiagnosticTimingScope scriptTiming("save-prepare-script-inputs");
         if (PrepareScriptRebuild(*job) == ScriptRebuild::Failed) {
             return fail(tr("REPACK_SCRIPT_REJECTED"), tr("无法准备游戏脚本重建，已中止保存；详见构建诊断。"));
         }
@@ -623,6 +633,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
         if (mapEdits_ && (mapEdits_->HasTerrainBoundsChanges() || mapEdits_->HasTerrainResizeChanges()))
             job->preserveUnaffectedScript = false;
     }
+    QtCommon::DiagnosticTimingScope frozenTiming("save-prepare-final-revision");
     if (!ObserveEditState("冻结地图保存输入")) {
         return fail(tr("SAVE_REVISION_UNAVAILABLE"), tr("无法复核冻结后的编辑修订，地图保存已中止。"));
     }

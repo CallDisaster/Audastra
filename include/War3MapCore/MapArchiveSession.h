@@ -3,6 +3,7 @@
 #include "War3MapCore/Types.h"
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <span>
 #include <stop_token>
@@ -114,8 +115,9 @@ struct MapBackupInspection {
 // 此服务证明候选原始字节未丢失，不代表脚本编译、编辑器真保存或游戏运行通过。
 class MapArchiveSession {
 public:
+    using OpenObserver = std::function<void(std::string_view)>;
     [[nodiscard]] static Result<MapArchiveSession> Open(const std::filesystem::path& path,
-        const ProjectSaveControl* control = nullptr);
+        const ProjectSaveControl* control = nullptr, const OpenObserver& observer = {});
     // 只解压脚本审计所需的固定基础/触发器/物编成员；不读取不透明导入，不能保存。
     [[nodiscard]] static Result<MapArchiveSession> OpenScriptAudit(const std::filesystem::path& path);
     // 小地图只读诊断：仅预读固定地形/对象成员，资源按明确名字有界捕获。
@@ -185,7 +187,7 @@ public:
 
 private:
     [[nodiscard]] static Result<MapArchiveSession> OpenImpl(const std::filesystem::path&, const ProjectSaveControl*, bool scriptAuditOnly,
-        bool minimapAuditOnly = false);
+        bool minimapAuditOnly = false, const OpenObserver& observer = {});
     [[nodiscard]] Result<ArchiveSaveResult> WriteCandidate(
         const std::filesystem::path& target,
         std::span<const MemberReplacement> replacements,

@@ -187,7 +187,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("地图未保存：保存准备未通过"));
         return false;
     }
-    if (job->script && QCoreApplication::arguments().contains(QStringLiteral("--in-process-only")))
+    if (job->script && saveInProcessOnly_)
         job->script->toolchain.inProcessOnly = true;
     job->rebuildTerrainShadow = rebuildTerrainShadow;
     job->acceptMinimapRisk = !testSnapshot && minimapRisk == MinimapRiskSave::Accept;

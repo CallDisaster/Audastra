@@ -118,6 +118,7 @@ public:
 
     // 自动化和命令行入口使用同一条只读打开路径，不绕过 GUI 的安全门禁。
     bool OpenWorkspacePath(const std::filesystem::path& path);
+    void SetSaveInProcessOnly(bool enabled) noexcept { saveInProcessOnly_ = enabled; }
     void ActivateModule(const War3Map::Shell::ModuleId& id) override;
     void Navigate(const War3Map::Shell::NavigationTarget& target) override;
 
@@ -365,6 +366,7 @@ private:
     QPushButton* projectNoticeDismiss_ = nullptr;
     [[nodiscard]] std::string ProjectFingerprint() const;
     StartupMode startupMode_ = StartupMode::Normal;
+    bool saveInProcessOnly_ = false;
     War3Map::QtProject::LegacyMapBackupCheck* legacyMapBackupCheck_ = nullptr;
     bool autoRecoveryEnabled_ = true;
     bool writingRecovery_ = false;

@@ -1156,11 +1156,31 @@ void TestAfterSaveMatchesReopenedSession() {
     Require(!changed.Succeeded() && changed.diagnostics.front().code == "SAVED_FILE_CHANGED", "changed result is refused");
 }
 
+void TestOpenObserverCannotChangeQualification() {
+    TempDirectory scratch;
+    const auto path = scratch.Path() / "observer.mpq";
+    const std::vector<MapArchiveMember> members{{"fixture.bin", Bytes("original bounded payload")}};
+    Require(WriteVerifiedArchive(path, members).Succeeded(), "write observer fixture");
+    const auto plain = MapArchiveSession::Open(path); RequireSuccess(plain, "plain observer fixture");
+    std::vector<std::string> events;
+    const auto observed = MapArchiveSession::Open(path, nullptr, [&](std::string_view event) { events.emplace_back(event); });
+    RequireSuccess(observed, "observed fixture");
+    Require(events == std::vector<std::string>{"begin/open-snapshot-source-sha", "end/open-snapshot-source-sha",
+        "begin/open-snapshot-inventory", "end/open-snapshot-inventory", "begin/open-snapshot-decode-members",
+        "end/open-snapshot-decode-members", "begin/open-snapshot-final-verify", "end/open-snapshot-final-verify"},
+        "observed phases are balanced and ordered");
+    Require(plain.value->SourceSha256() == observed.value->SourceSha256()
+        && observed.value->ReadMember("fixture.bin").value == std::optional{Bytes("original bounded payload")},
+        "observer preserves actual identity and decoded bytes");
+    const auto throwing = MapArchiveSession::Open(path, nullptr, [](std::string_view) { throw std::runtime_error("observer"); });
+    RequireSuccess(throwing, "throwing observer does not alter intake");
+}
 } // namespace
 
 int main() {
     try {
         TestCompleteRoundTripAndIndependentBaseline();
+        TestOpenObserverCannotChangeQualification();
         TestRejectedChangesLeaveSessionAndFilesUntouched();
         TestExternalSourceChangeAndReplacement();
         TestIncompleteListAndTrailingData();
