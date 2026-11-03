@@ -515,6 +515,7 @@ set_tests_properties(qt-terrain-water-edit PROPERTIES TIMEOUT 60
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
 qt_add_executable(war3-map-world-module-tests WorldModuleTests.cpp WorldCliffPaletteAppendCases.h
+    WorldTerrainModelReloadCases.h
     TerrainStraightRampWorldCases.h TerrainConnectedRampWorldCases.h TerrainBlockWorldCases.h
     ../TerrainStraightRampFixtures.h ../TerrainConnectedRampFixtures.h ../TerrainBlockFixtures.h)
 
