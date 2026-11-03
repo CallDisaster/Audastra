@@ -24,9 +24,15 @@ ProjectMinimapPreview::~ProjectMinimapPreview() {
 }
 void ProjectMinimapPreview::Request(MinimapPreviewOptions options, bool force) {
     if (!force && requested_ && options == options_) return;
+    if(force)result_.reset();
     options_ = options; requested_ = true; Invalidate();
 }
 void ProjectMinimapPreview::Invalidate() {
+    if(requested_&&!options_.current&&result_&&result_->Succeeded()&&!result_->value->current
+        &&project_.archiveSession_&&result_->value->sourceSha256==project_.archiveSession_->SourceSha256()
+        &&!project_.sourceChangeSuspected_&&!project_.sourceChangeConfirmed_){
+        ++serial_;pending_=false;emit Changed();return;
+    }
     ++serial_; result_.reset(); pending_ = requested_; emit Changed();
     if (requested_) debounce_.start();
 }
