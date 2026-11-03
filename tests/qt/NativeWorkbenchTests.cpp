@@ -6814,10 +6814,11 @@ void NativeWorkbenchTests::FrozenRecoveryKeepsLaterEditsAndRejectsNewSession() {
     auto stale = window.project_->PrepareProjectSave(NativePath(fixture.filePath("stale.forge")), true); QVERIFY(stale.Succeeded());
     bool discardedOwnedFixture = false;
     QTimer discardConfirmation;
-    discardConfirmation.setSingleShot(true);
+    discardConfirmation.setInterval(1);
     connect(&discardConfirmation, &QTimer::timeout, &window, [&] {
         auto* dialog = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
         if (!dialog) return;
+        discardConfirmation.stop();
         for (auto* button : dialog->buttons()) {
             if (dialog->buttonRole(button) == QMessageBox::DestructiveRole) {
                 discardedOwnedFixture = true;
@@ -6827,8 +6828,9 @@ void NativeWorkbenchTests::FrozenRecoveryKeepsLaterEditsAndRejectsNewSession() {
         }
         dialog->reject();
     });
-    discardConfirmation.start(0);
+    discardConfirmation.start();
     QVERIFY(window.OpenMapArchivePath(other));
+    discardConfirmation.stop();
     QVERIFY(discardedOwnedFixture);
     const auto newGeneration = window.project_->editRevision_.Generation();
     War3Map::QtProject::EditorProject::RunProjectSave(**stale.value);
