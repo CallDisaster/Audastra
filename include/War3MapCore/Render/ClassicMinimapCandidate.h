@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <string>
 
 namespace War3Map::Render {
@@ -18,6 +19,14 @@ namespace War3Map::Render {
 enum class ClassicMinimapMemberState { Unknown, Missing, Empty, ParsedEmpty, Parsed };
 
 class ClassicMinimapObjectAssets;
+
+// 只读编辑视图；保存入口固定使用默认0x8B，不消费调用者的显示回调。
+struct ClassicMinimapViewOptions {
+    std::uint32_t layers = 0x8b;
+    std::optional<std::array<std::uint8_t, 4>> blightColor;
+    std::function<Status(Image::DecodedImage&, const std::array<std::uint32_t, 4>&,
+        const MapData::TerrainHeader&)> overlay;
+};
 
 // 旧纯算法入口只接收 caller 声明的 Missing/Empty 一致性字段。
 // ParsedEmpty/Parsed 必须来自实际对象捕获；对象资源和当前修订由保存服务复核。
@@ -111,5 +120,9 @@ struct ClassicMinimapCandidate {
     const ClassicMinimapObjectAssets& assets,
     const TerrainMinimapPostprocessSettings& postprocess = {},
     const ClassicMinimapCandidateLimits& limits = {});
+
+[[nodiscard]] Result<ClassicMinimapCandidate> BuildClassicMinimapView(
+    const ClassicMinimapObjectAssets& assets, const ClassicMinimapViewOptions& view,
+    const TerrainMinimapPostprocessSettings& postprocess = {}, const ClassicMinimapCandidateLimits& limits = {});
 
 } // namespace War3Map::Render

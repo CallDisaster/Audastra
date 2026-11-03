@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/Services/MinimapPreview.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 
 #include "War3MapCore/Hash.h"
@@ -242,6 +243,13 @@ std::uint32_t ContentNoiseSeed(const Render::ClassicMinimapObjectAssets& assets,
     return seed;
 }
 } // namespace
+
+Result<std::uint32_t> MinimapContentNoiseSeed(const Render::ClassicMinimapObjectAssets& assets,
+    const Render::TerrainMinimapPostprocessSettings& settings, std::size_t maximumWorkingBytes) {
+    try { return Result<std::uint32_t>::Success(ContentNoiseSeed(assets, settings, maximumWorkingBytes)); }
+    catch (Failure& failure) { return {{}, std::move(failure.diagnostics)}; }
+    catch (const std::bad_alloc&) { return Result<std::uint32_t>::Failure("Minimap.Preview", "MINIMAP_PREVIEW_BUDGET", "内容种子预算不足。"); }
+}
 
 Result<bool> TerrainMinimapSave::RequiresAutomaticGeneration(const MapSaveTask& task) {
     try {

@@ -34,6 +34,7 @@ struct InputView {
     const TerrainMinimapPostprocessSettings& postprocess;
     const ClassicMinimapObjectAssets* captured = nullptr; // 仅下方typed入口可提供，非public解锁参数
     std::size_t additionalRetainedBytes = 0;
+    const ClassicMinimapViewOptions* view = nullptr;
 };
 
 [[noreturn]] void Fail(const char* code, const char* message) { throw Failure{code, message}; }
@@ -271,7 +272,8 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
         if (header.version != 11 || header.groundTilesets.empty() || header.groundTilesets.size() > 16)
             Fail("CLASSIC_MINIMAP_TERRAIN", "Classic候选只接受有界classic v11地面网格。");
         const auto tileWidth = header.width - 1, tileHeight = header.height - 1;
-        const auto rectangle = PlayableRectangle(input.terrain, header);
+        const auto rectangle = input.view && !(input.view->layers & 0x80u)
+            ? std::array<std::uint32_t, 4>{0, 0, tileWidth, tileHeight} : PlayableRectangle(input.terrain, header);
         const auto imageWidth = rectangle[2] - rectangle[0], imageHeight = rectangle[3] - rectangle[1];
         const auto tileCount = source.TileCount();
         if (input.terrain.rangePolicy == TerrainMinimapRangePolicy::FullW3e && tileCount > limits.maxTiles)
@@ -333,16 +335,23 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
                     if (sw.GroundVariation()) output.manifest.ignoredVariationSeen = true;
                     const auto index = sw.GroundTextureIndex();
                     auto color = index < colors.size() ? colors[index] : std::array<std::uint8_t, 4>{0, 0, 0, 255};
+                    const auto layers = input.view ? input.view->layers : 0x8bu;
+                    if (!(layers & 1u)) color = {0, 0, 0, 255};
                     if (input.terrain.classicColors) {
                         const auto& classic = *input.terrain.classicColors;
-                        if (const auto cliff = Take(ClassicMinimapCliffTextureAt(grid, x, localY))) {
+                        if (const auto cliff = (layers & 1u) ? Take(ClassicMinimapCliffTextureAt(grid, x, localY)) : std::nullopt) {
                             if (*cliff < classic.cliffColors.size() && classic.cliffColors[*cliff][3] == 0)
                                 Fail("CLASSIC_MINIMAP_CLIFF_MISSING", "实际像素需要的悬崖槽未取得代表色。");
                             if (*cliff >= classic.cliffColors.size() || classic.cliffColors[*cliff][3] != 255)
                                 Fail("CLASSIC_MINIMAP_CLIFF_COLOR", "实际悬崖类型缺少冻结的代表色。");
                             color = classic.cliffColors[*cliff]; ++output.manifest.cliffTiles;
                         }
-                        if (sw.HasWater()) {
+                        if (sw.IsBlight() && (layers & 0x400u)) {
+                            if (!input.view || !input.view->blightColor) Fail("MINIMAP_VIEW_BLIGHT_SOURCE", "荒芜图层缺少实际纹理均色。");
+                            // 悬崖优先于荒芜；两者都未选中时保留黑底。
+                            if (!(layers & 1u) || !Take(ClassicMinimapCliffTextureAt(grid, x, localY))) color = *input.view->blightColor;
+                        }
+                        if (sw.HasWater() && (layers & 2u)) {
                             if (!std::isfinite(classic.deepLevelPathing) || classic.deepLevelPathing < 0
                                 || !std::isfinite(classic.waterHeightOffset))
                                 Fail("CLASSIC_MINIMAP_WATER_CONFIG", "水色配置的高度或深度无效。");
@@ -368,11 +377,18 @@ Result<ClassicMinimapCandidate> Build(const InputView& input,
                 }
                 return Status::Ok();
             }));
-        if (input.captured) {
+        if (input.captured && (!input.view || (input.view->layers & 8u))) {
             for (const auto& pixel : input.captured->ObjectLayer().pixels) {
                 if (pixel.x < rectangle[0] || pixel.x >= rectangle[2] || pixel.y < rectangle[1] || pixel.y >= rectangle[3]) continue;
                 SetRgba(output.raw, static_cast<std::size_t>(pixel.y - rectangle[1]) * imageWidth + pixel.x - rectangle[0], pixel.color);
                 ++output.manifest.objectPixels;
+            }
+        }
+        if (input.view && input.view->overlay) {
+            const auto overlaid = input.view->overlay(output.raw, rectangle, header);
+            if (!overlaid.Succeeded()) {
+                if (overlaid.diagnostics.empty()) Fail("MINIMAP_VIEW_OVERLAY", "叠加未完成。");
+                Fail(overlaid.diagnostics.front().code.c_str(), overlaid.diagnostics.front().message.c_str());
             }
         }
         output.manifest.rawRgbaSha256 = Take(Sha256(output.raw.rgba));
@@ -413,6 +429,12 @@ Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinima
 
 Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinimapObjectAssets& assets,
     const TerrainMinimapPostprocessSettings& postprocess, const ClassicMinimapCandidateLimits& limits) {
+    return BuildClassicMinimapView(assets, {}, postprocess, limits);
+}
+
+Result<ClassicMinimapCandidate> BuildClassicMinimapView(const ClassicMinimapObjectAssets& assets,
+    const ClassicMinimapViewOptions& view, const TerrainMinimapPostprocessSettings& postprocess,
+    const ClassicMinimapCandidateLimits& limits) {
     try {
         ValidateLimits(limits);
         if (!assets.captured_ || !Sha(assets.identitySha256_) || !Sha(assets.terrain_.IdentitySha256()))
@@ -424,7 +446,7 @@ Result<ClassicMinimapCandidate> BuildClassicMinimapCandidate(const ClassicMinima
         auto extra = assets.facts_.retainedTerrainCapacityBytes - inputCapacity;
         Add(extra, assets.facts_.retainedAuxiliaryCapacityBytes);
         return Build({assets.terrain_.Input(), assets.domain_, assets.terrain_.Binding().terrainSourceRevision, postprocess,
-            &assets, extra}, limits);
+            &assets, extra, &view}, limits);
     } catch (const Failure& failure) {
         return FailureResult(failure.code, failure.message);
     } catch (const std::bad_alloc&) {
