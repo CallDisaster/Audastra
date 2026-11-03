@@ -1612,7 +1612,10 @@ private:
                 details.remove("image");
                 details.insert("image_returned", true);
             }
-            if (details.remove("rgba_base64")) details.insert("rgba_returned", true);
+            if (details.contains("rgba_base64")) {
+                details.remove("rgba_base64");
+                details.insert("rgba_returned", true);
+            }
             emit owner->Activity(QJsonObject{{"type", "tool_end"}, {"id", id}, {"tool_name", toolName}, {"title", toolTitle},
                 {"success", result.value("ok").toBool()}, {"is_error", !result.value("ok").toBool()},
                 {"elapsed_ms", timer.elapsed()}, {"details", details}});
