@@ -764,7 +764,8 @@ void LiveEditorToolsTests::HostSaveMustProduceActualOutput() {
     QCOMPARE(f.Fingerprint(), original); QVERIFY(f.project.directorySnapshot_->VerifyUnchanged().Succeeded());
     auto shadow = f.Context(); shadow.insert("path", f.outputs.filePath("shadow.w3x"));
     shadow.insert("rebuild_terrain_shadow", "true");
-    QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", shadow)), QStringLiteral("LIVE_EDITOR_SAVE_ARGUMENT"));
+    QCOMPARE(ErrorCode(f.tools->Invoke("editor_save_map", shadow)), QStringLiteral("LIVE_EDITOR_RPC_ERROR"));
+    QCOMPARE(calls, 1); QVERIFY(!delegatedShadow);
     shadow.insert("rebuild_terrain_shadow", true);
     const auto rebuilt = f.tools->Invoke("editor_save_map", shadow);
     QVERIFY2(rebuilt.value("ok").toBool(), qPrintable(Explain(rebuilt)));
