@@ -232,12 +232,16 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     auto* lni = dynamic_cast<LniObjectDocument*>(parsed.document.release());
     QVERIFY(lni);
     project.objectDocuments_[5].reset(lni);
-    project.nativeObjectDocuments_[5] = std::make_unique<NativeObjectDocument>(native);
+    auto parsedNative = NativeObjectCodec(ObjectType::Doodad).Parse(members.back().data);
+    auto* baseline = dynamic_cast<NativeObjectDocument*>(parsedNative.document.release());
+    QVERIFY(baseline);
+    project.nativeObjectDocuments_[5].reset(baseline);
+    native = *baseline;
     Modules::WorldMinimapPreview view(project);
     view.show();
     QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(), 15000);
     const auto before = view.property("rgbaSha256");
-    const auto modification = native.Objects().front().modifications.front().key;
+    const auto modification = lni->Objects().front().modifications.front().key;
     QVERIFY(lni->SetModification(key, modification, std::int32_t{220}).Succeeded());
     project.objectDirty_[5] = true;
     project.ObjectDocumentsReplaced();
@@ -249,6 +253,7 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     const auto frozenObject = F::Take(NativeObjectCodec(ObjectType::Doodad).Serialize(native));
     Services::MapSaveTask task;
     QVERIFY(task.FreezeArchive(*project.archiveSession_).Succeeded());
+    task.target = fixture.root / "object-saved.w3x";
     task.replacements.push_back({"war3map.w3d", frozenObject});
     const auto minimap = F::Take(Services::TerrainMinimapSave::Prepare(task, *project.mapEdits_, fixture.game,
         Services::TerrainMinimapSaveChoice::Automatic));
