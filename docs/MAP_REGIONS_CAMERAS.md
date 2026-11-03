@@ -16,6 +16,10 @@
 
 删除或更名之前会检查触发器参数、变量初值和传送门目标。已有引用需先修改；自定义代码、外部脚本或未完整读取的触发器无法证明没有引用时，会拒绝删除或更名并说明覆盖缺口。移动边界、目标位置及其它属性不需要更改脚本变量名，可以继续编辑。
 
+新建、复制会单独核对新名称产生的脚本变量。导入的 `.j`、`.lua` 按相应语言的词法检查：同名标识符报 `AUX_SCRIPT_SYMBOL_CONFLICT`；仅在字符串或注释出现则列入诊断，不视为标识符冲突。无编码声明的导入只接受严格 UTF-8（含 ASCII）；读取失败、编码不明、未闭合文本、未展开指令或超出预算仍报 `AUX_SCRIPT_REFERENCES_UNKNOWN`。单份脚本上限 2 MiB，全部脚本上限 16 MiB，来源上限 4096 项。
+
+AI 成员只按名称分类，不读取正文。它运行于独立全局环境，不参与新增地图全局变量的同名检查；依据见 [JASS Tools 手册的 Inter-Script Communication](https://jass.sourceforge.net/doc/library.shtml)。未命名成员无法证明不参与脚本编译或运行时继续拒绝新增。这些规则只适用于新增符号，删除和改名仍采用上述保守引用检查。MCP 的 `script_source_checks` 返回已检查来源和不计入原因；UI、CLI 和 MCP 使用相同服务。
+
 MCP 的 `entities_query` 返回原成员 SHA 和行身份；区域、镜头结构操作使用 `auxiliary_create`、`auxiliary_update`、`auxiliary_copy`、`auxiliary_delete`。每次带上 `project_identity`、`expected_revision`、`kind`（`regions` 或 `cameras`）及 `expected_member_sha256`；已确认成员缺席时填 `missing`。更新、复制和删除还需 `source.source_index`（十进制字符串）及 `source.row_key`。这些身份只适用于查询时的同一修订；命令返回后应使用返回的新修订和结果行身份，或重新查询。
 
 `auxiliary_create` 的 `fields` 必须包含完整已知属性。区域为 `name`、`creation_number`、`left`、`bottom`、`right`、`top`、`weather_id`、`ambient_sound` 和三个整数的 `color_bgr`（B、G、R）。镜头为 `name`、`target_x`、`target_y`、`z_offset`、`rotation`、`angle_of_attack`、`target_distance`、`roll`、`field_of_view`、`far_clipping_plane`，角度单位是度。`auxiliary_update` 只提供需要改变的字段，未提供的原生名称、浮点位模式、区域第四颜色字节和镜头第十槽保持原值。`auxiliary_copy` 先完整复制原记录，再应用 `fields`；必须明确提供新 `name`，复制区域还必须提供新 `creation_number`。创建编号重复、名称对应的脚本符号重复、已有引用和引用覆盖不足都沿界面的同一服务检查。
