@@ -104,6 +104,9 @@ void WorldModule::RememberCreatedPlacements(std::span<const MapData::PlacementId
 bool WorldModule::StagePlacementInstances(const MapDocument& document, const WorldPlacementRefreshTimings& refresh) {
     if (!animation_ || !instanceRegistry_ || !stagedInstanceRegistry_ || !instanceRevisionGate_
         || !project_.mapEdits_ || !viewport_->HasInstanceRosterSupport()) return false;
+    // 地形重建可能保留旧父画面，但清掉动画服务；旧登记不能代替可求增量的服务基线。
+    // 返回原完整模型准备路径，让已提交数据重新建立服务及登记，而非吞掉本次刷新。
+    if (!animation_->Scene() || !animation_->Frame()) return false;
     const auto revision = project_.mapEdits_->Revision();
     if (stagedInstanceRegistry_->Binding().editRevision == revision) {
         if (!pendingPlacements_.Entries().empty()) {
@@ -212,6 +215,13 @@ bool WorldModule::StagePlacementInstances(const MapDocument& document, const Wor
 void WorldModule::QueuePlacementInstances() {
     if (!animation_ || animation_->InstancesBusy() || !instanceRegistry_ || !stagedInstanceRegistry_
         || instanceRegistry_->Binding() == stagedInstanceRegistry_->Binding()) return;
+    const auto baseScene = animation_->Scene();
+    if (!baseScene || !animation_->Frame()) {
+        // 完成通知排队后也可能失去服务；仍由统一刷新协调在途地形/模型与完整重建。
+        placementsDirty_ = true;
+        RefreshPlacements();
+        return;
+    }
     auto candidate = stagedInstanceRegistry_;
     // 下方只同步读取，最终重排后的render数组才交给worker独立持有；不先复制整表再复制一次。
     const auto& requests = stagedRequests_;
@@ -243,7 +253,7 @@ void WorldModule::QueuePlacementInstances() {
     };
     // CPU增量保留旧请求顺序，新增追加；显隐必须按新服务的同一身份序列构造。
     std::vector<War3RenderCore::InstanceIdentity> nextIdentities;
-    const auto& oldSpecs = animation_->Scene()->specs;
+    const auto& oldSpecs = baseScene->specs;
     nextIdentities.reserve(oldSpecs.size() + change.delta.additions.size());
     for (const auto& old : oldSpecs) if (requestsByIdentity.contains(old.identity.value)) nextIdentities.push_back(old.identity);
     for (const auto& added : change.delta.additions) nextIdentities.push_back(added.identity);
