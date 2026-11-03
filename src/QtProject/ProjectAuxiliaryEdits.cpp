@@ -95,6 +95,7 @@ Result<AuxiliaryEditResult> ApplyAuxiliaryEditWithResult(EditorProject& project,
     PushMapDataEdit(project, label, "编辑区域或镜头");
     (void)project.ObserveMapDataEdit("编辑区域或镜头");
     emit project.MapDocumentChanged();
+    project.AddDiagnostics(plan.diagnostics);
     auto output = Result<AuxiliaryEditResult>::Success(std::move(result));
     output.diagnostics = plan.diagnostics;
     return output;

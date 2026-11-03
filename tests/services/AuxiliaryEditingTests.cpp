@@ -312,6 +312,6 @@ int main() {
         ReferenceChecksAtPublishAndUnknownPreservation();
         DirectoryAliasesKeepSourceGuards();
         ImportedCreationChecks();
-        std::cout << "AuxiliaryEditing: 6 scenario groups passed\n"; return 0;
+        std::cout << "AuxiliaryEditing: 7 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
