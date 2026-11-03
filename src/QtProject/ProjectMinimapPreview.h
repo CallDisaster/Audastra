@@ -34,6 +34,7 @@ private:
     std::uint64_t serial_ = 0;
     QTimer debounce_;
     QPointer<QThread> worker_;
+    std::shared_ptr<ProjectSaveControl> control_;
     std::shared_ptr<const Result<Services::MinimapPreview>> result_;
     std::unique_ptr<QtCommon::DiagnosticTimingScope> timing_;
 };

@@ -123,12 +123,15 @@ public:
     // 小地图只读诊断：仅预读固定地形/对象成员，资源按明确名字有界捕获。
     // 不读取脚本或可执行导入，不授予任何保存资格。
     [[nodiscard]] static Result<MapArchiveSession> OpenMinimapAudit(const std::filesystem::path& path);
+    // 仅复制小地图固定数据成员；不复制脚本/引导正文，不继承保存资格或交互基线租约。
+    [[nodiscard]] Result<MapArchiveSession> FreezeMinimapSnapshot(const ProjectSaveControl* control = nullptr,
+        const OpenObserver& observer = {}) const;
     [[nodiscard]] Status VerifySourceUnchanged(const ProjectSaveControl* control = nullptr) const;
     // 单次保存可显式固定来源内容：完整散列后持续持有禁止直接写入的源句柄。
     // 允许原子替换；每次捕获仍核实际路径/文件ID，旧快照不承接替换后的新文件。
     // 副本共享租约；显式释放当前副本或最后一份销毁后关闭，交互基线不应持有租约。
     // 仅精确捕获复用此不可变来源证明，成员仍真读真比，写出/回读完整散列照旧。
-    [[nodiscard]] Status PinSourceForExactCaptures();
+    [[nodiscard]] Status PinSourceForExactCaptures(const ProjectSaveControl* control = nullptr);
     [[nodiscard]] bool HasSourceCaptureLease() const noexcept { return bool(exactReadLease_); }
     void ReleaseSourceCaptureLease() noexcept { exactReadLease_.reset(); }
     [[nodiscard]] bool HasMember(std::string_view name) const;

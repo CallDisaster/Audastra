@@ -23,11 +23,12 @@ ProjectMinimapPreview::ProjectMinimapPreview(EditorProject& project, QObject* pa
     connect(&project_, &EditorProject::ObjectDocumentsReplaced, this, changed);
     connect(&project_, &EditorProject::EditTrackingBaselineChanged, this, changed);
     connect(&project_, &EditorProject::PendingTerrainCommitStateChanged, this,
-        [this](bool pending) { if (!pending) Invalidate(); else { ++serial_; result_.reset(); pending_ = requested_; emit Changed(); } });
+        [this](bool pending) { if (!pending) Invalidate(); else { if (control_) (void)control_->RequestCancellation(); ++serial_; result_.reset(); pending_ = requested_; emit Changed(); } });
     if (project_.mapDataUndoStack_) connect(project_.mapDataUndoStack_, &QUndoStack::indexChanged, this, changed);
     for(auto* stack:project_.objectUndoStacks_)if(stack)connect(stack,&QUndoStack::indexChanged,this,changed);
 }
 ProjectMinimapPreview::~ProjectMinimapPreview() {
+    if (control_) (void)control_->RequestCancellation();
     if (worker_) { disconnect(worker_, nullptr, this, nullptr); worker_->wait(); delete worker_.data(); }
 }
 void ProjectMinimapPreview::Request(MinimapPreviewOptions options, bool force) {
@@ -36,6 +37,7 @@ void ProjectMinimapPreview::Request(MinimapPreviewOptions options, bool force) {
     options_ = options; requested_ = true; Invalidate();
 }
 void ProjectMinimapPreview::Invalidate() {
+    if (control_) (void)control_->RequestCancellation();
     if(requested_&&!options_.current&&result_&&result_->Succeeded()&&!result_->value->current
         &&project_.archiveSession_&&result_->value->sourceSha256==project_.archiveSession_->SourceSha256()
         &&!project_.sourceChangeSuspected_&&!project_.sourceChangeConfirmed_){
@@ -158,6 +160,8 @@ void ProjectMinimapPreview::Start() {
             failure("MINIMAP_PREVIEW_UNCERTAIN","无法从不完整成员清单确认底图缺失。");return;
         }
     }
+    control_ = std::make_shared<ProjectSaveControl>();
+    current.control = control_;
     auto result=std::make_shared<Result<Services::MinimapPreview>>();
     const auto sessionIdentity=current.edits?current.edits->SessionIdentity():0;
     const auto sessionRevision=current.edits?current.edits->Revision():0;

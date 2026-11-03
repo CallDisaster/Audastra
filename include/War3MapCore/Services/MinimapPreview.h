@@ -40,6 +40,7 @@ struct CurrentMinimapPreviewInput {
     bool units = false, starts = false, icons = false;
     std::vector<MemberReplacement> replacements;
     std::vector<std::string> removals;
+    std::shared_ptr<ProjectSaveControl> control;
 };
 // 只读生成；只消费宿主拥有的不可变快照，不写归档、不产生编辑/撤销修订。
 [[nodiscard]] Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreviewInput& input);

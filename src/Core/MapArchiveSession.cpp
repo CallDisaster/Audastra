@@ -216,12 +216,12 @@ struct ArchiveExactReadLease {
     }
 };
 
-Status MapArchiveSession::PinSourceForExactCaptures() {
+Status MapArchiveSession::PinSourceForExactCaptures(const ProjectSaveControl* control) {
     try {
         if (exactReadLease_) {
             if (!exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
                 return Status::Failure("MapArchiveSession", "SOURCE_LEASE_MISMATCH", "来源固定租约与会话身份不符。");
-            return VerifySourceUnchanged();
+            return VerifySourceUnchanged(control);
         }
         auto lease = std::make_shared<ArchiveExactReadLease>(sourcePath_, sourceSha256_, volumeSerial_, fileId_);
         if (!lease->file.Valid())
@@ -233,7 +233,7 @@ Status MapArchiveSession::PinSourceForExactCaptures() {
         FileHandle proof(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
         if (!proof.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "无法完整核对已固定来源。");
-        const auto verified = VerifyHandle(proof.Get(), volumeSerial_, fileId_, sourceSha256_);
+        const auto verified = VerifyHandle(proof.Get(), volumeSerial_, fileId_, sourceSha256_, control);
         if (!verified.Succeeded()) return verified;
         const auto path = FinalPath(lease->file.Get());
         if (!path.Succeeded()) return {path.diagnostics};
@@ -271,6 +271,40 @@ Result<MapArchiveSession> MapArchiveSession::OpenScriptAudit(const std::filesyst
 }
 Result<MapArchiveSession> MapArchiveSession::OpenMinimapAudit(const std::filesystem::path& path) {
     return OpenImpl(path, nullptr, true, true);
+}
+Result<MapArchiveSession> MapArchiveSession::FreezeMinimapSnapshot(const ProjectSaveControl* control,
+    const OpenObserver& observer) const {
+    try {
+        if (control && !control->Checkpoint(ProjectSaveStage::Copy)) return {{}, ProjectSaveCancelledStatus().diagnostics};
+        MapArchiveSession result;
+        result.sourcePath_ = sourcePath_;
+        result.sourceSha256_ = sourceSha256_;
+        result.volumeSerial_ = volumeSerial_;
+        result.fileId_ = fileId_;
+        result.metadataMembers_ = metadataMembers_;
+        result.opaqueMembers_ = opaqueMembers_;
+        result.opaqueMemberCount_ = opaqueMemberCount_;
+        result.scriptAuditOnly_ = true;
+        result.minimapAuditOnly_ = true;
+        std::size_t bytes = 0;
+        constexpr std::size_t maximumBytes = 128U * 1024U * 1024U;
+        for (const auto& member : members_) {
+            if (!MinimapSnapshotMember(member.name)) continue;
+            if (member.data.size() > maximumBytes - bytes) {
+                return Result<MapArchiveSession>::Failure("Minimap.Preview", "MINIMAP_PREVIEW_BUDGET", "小地图固定快照超过128MiB。");
+            }
+            if (observer) observer("minimap-snapshot-copy/" + member.name);
+            MapArchiveMember copy;
+            copy.name = member.name;
+            copy.data.resize(member.data.size());
+            if (!CopyProjectSaveBytes(copy.data, member.data, control)) return {{}, ProjectSaveCancelledStatus().diagnostics};
+            bytes += copy.data.size();
+            result.members_.push_back(std::move(copy));
+        }
+        return Result<MapArchiveSession>::Success(std::move(result));
+    } catch (const std::bad_alloc&) {
+        return Result<MapArchiveSession>::Failure("Minimap.Preview", "MINIMAP_PREVIEW_BUDGET", "无法分配小地图固定快照。");
+    }
 }
 Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::path& path, const ProjectSaveControl* control,
     bool scriptAuditOnly, bool minimapAuditOnly, const OpenObserver& observer) {

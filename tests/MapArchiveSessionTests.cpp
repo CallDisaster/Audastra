@@ -1223,11 +1223,43 @@ void TestOpenObserverCannotChangeQualification() {
     const auto throwing = MapArchiveSession::Open(path, nullptr, [](std::string_view) { throw std::runtime_error("observer"); });
     RequireSuccess(throwing, "throwing observer does not alter intake");
 }
+void TestMinimapSnapshotIsBoundedAndCancellable() {
+    TempDirectory scratch;
+    const auto path = scratch.Path() / "minimap.mpq";
+    // 原创无害夹具；观察器断言该成员从未进入小地图复制分发。
+    const std::vector<MapArchiveMember> members{
+        {"x.ai", Bytes("fixture only")}, {"war3map.w3e", Bytes("terrain fixture")},
+        {"unrelated.bin", Bytes("not a minimap input")}};
+    Require(WriteVerifiedArchive(path, members).Succeeded(), "write minimap snapshot fixture");
+    auto source = MapArchiveSession::Open(path);
+    RequireSuccess(source, "open minimap snapshot fixture");
+    std::vector<std::string> observed;
+    auto frozen = source.value->FreezeMinimapSnapshot(nullptr,
+        [&](std::string_view name) { observed.emplace_back(name); });
+    RequireSuccess(frozen, "freeze minimap source");
+    Require(observed == std::vector<std::string>{"minimap-snapshot-copy/war3map.w3e"},
+        "minimap snapshot never dispatches unrelated or guide members");
+    Require(frozen.value->Members().size() == 1
+        && frozen.value->Members()[0].data == Bytes("terrain fixture")
+        && frozen.value->SourceSha256() == source.value->SourceSha256(), "snapshot owns bounded input and source identity");
+    Require(frozen.value->PinSourceForExactCaptures().Succeeded(), "snapshot can hold its own source lease");
+    ProjectSaveControl cancelled;
+    Require(cancelled.RequestCancellation(), "cancel minimap work");
+    const auto copy = source.value->FreezeMinimapSnapshot(&cancelled);
+    Require(!copy.Succeeded() && copy.diagnostics.front().code == kProjectSaveCancelledCode,
+        "cancelled minimap copy stops before dispatch");
+    auto other = source.value->FreezeMinimapSnapshot();
+    RequireSuccess(other, "second independent snapshot");
+    const auto pinned = other.value->PinSourceForExactCaptures(&cancelled);
+    Require(!pinned.Succeeded() && pinned.diagnostics.front().code == kProjectSaveCancelledCode,
+        "source hash can be cancelled without qualifying a lease");
+}
 } // namespace
 
 int main() {
     try {
         TestCompleteRoundTripAndIndependentBaseline();
+        TestMinimapSnapshotIsBoundedAndCancellable();
         TestOpenObserverCannotChangeQualification();
         TestRejectedChangesLeaveSessionAndFilesUntouched();
         TestExternalSourceChangeAndReplacement();

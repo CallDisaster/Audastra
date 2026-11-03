@@ -25,6 +25,11 @@ void Check(Status value) { if (!value.Succeeded()) throw Failure{std::move(value
 Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreviewInput& input) {
     const auto start = std::chrono::steady_clock::now();
     try {
+        const auto checkpoint = [&] {
+            if (input.control && !input.control->Checkpoint(ProjectSaveStage::Copy))
+                throw Failure{ProjectSaveCancelledStatus().diagnostics};
+        };
+        checkpoint();
         if (!input.archive || !input.edits || !input.edits->Terrain()) Fail("MINIMAP_CURRENT_SOURCE", "当前地形未就绪。");
         if (input.layers & ~0x4afu) Fail("MINIMAP_CURRENT_LAYERS", "小地图图层参数无效。");
         // 通行位的配色需独立原版证据；不能从位号猜颜色后冒充原版。
@@ -37,6 +42,9 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                 Fail("MINIMAP_PREVIEW_BUDGET","显示资源覆盖超过128MiB预算。");
             overlayBytes+=member.data.size();
         }
+        auto source = Take(input.archive->FreezeMinimapSnapshot(input.control.get()));
+        Check(source.PinSourceForExactCaptures(input.control.get()));
+        checkpoint();
         auto replacements = input.replacements;
         for (auto& member : input.edits->Replacements()) {
             const auto key = Text::LowerAscii(member.name);
@@ -44,15 +52,18 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
             if (duplicate != replacements.end()) Fail("MINIMAP_CURRENT_OVERLAY_CONFLICT", "导入覆盖与当前文档重复：" + member.name);
             replacements.push_back({std::move(member.name), std::move(member.data)});
         }
-        auto terrain = Take(Render::CaptureTerrainMinimapAssets(*input.archive, *input.edits, input.gameRoot, {},
+        auto terrain = Take(Render::CaptureTerrainMinimapAssets(source, *input.edits, input.gameRoot, {},
             Render::TerrainMinimapRangePolicy::ClassicPlayable, replacements, input.removals));
-        auto assets = Take(Render::CaptureClassicMinimapObjectAssets(std::move(terrain), *input.archive, *input.edits, {}, replacements, input.removals));
+        checkpoint();
+        auto assets = Take(Render::CaptureClassicMinimapObjectAssets(std::move(terrain), source, *input.edits, {}, replacements, input.removals));
+        checkpoint();
         const auto document = input.edits->Snapshot();
         const auto grid = input.edits->Terrain();
-        ObjectCatalogSources sources; sources.archive = input.archive.get(); sources.gameRoot = input.gameRoot;
+        ObjectCatalogSources sources; sources.archive = &source; sources.gameRoot = input.gameRoot;
         sources.replacements = replacements; sources.removals = input.removals;
         std::size_t extraBytes = 0;
         const auto extra = [&](std::string name) {
+            checkpoint();
             const auto lower = Text::LowerAscii(name);
             if (lower != "ui/worldeditdata.txt" && lower != "ui\\worldeditdata.txt"
                 && !(lower.ends_with(".blp") && (lower.starts_with("terrainart") || lower.starts_with("replaceabletextures"))))
@@ -114,7 +125,9 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
         };
         Render::TerrainMinimapPostprocessSettings post;
         post.noiseSeed = Take(MinimapContentNoiseSeed(assets, post, 128U * 1024U * 1024U));
+        checkpoint();
         auto candidate = Take(Render::BuildClassicMinimapView(assets, view, post));
+        checkpoint();
         MinimapPreview output; output.current = output.present = true; output.sourceSha256 = input.archive->SourceSha256();
         output.documentRevision = input.documentRevision; output.layers = input.layers;
         output.sourceRectangle = candidate.manifest.sourceRectangle; output.terrainOffset = grid->header.offset;
@@ -150,7 +163,8 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                 Check(captured.Verify());}
         }
         output.rgbaSha256 = Take(Sha256(output.image.rgba));
-        Check(input.archive->VerifySourceUnchanged());
+        Check(source.VerifySourceUnchanged());
+        checkpoint();
         output.generationMilliseconds = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
         return Result<MinimapPreview>::Success(std::move(output));
     } catch (Failure& failure) { return {{},std::move(failure.diagnostics)}; }
