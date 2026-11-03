@@ -1,6 +1,6 @@
 #include "MainWindow.h"
 #include "AppHelpers.h"
-#include "DiagnosticTimings.h"
+#include "../QtCommon/DiagnosticTimings.h"
 #include "AssetsModule.h"
 #include "ObjectModule.h"
 #include "TriggerModule.h"
