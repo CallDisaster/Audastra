@@ -5,6 +5,7 @@
 #include "CampaignModule.h"
 
 #include "MapSaveJob.h"
+#include "ProjectObjectCatalog.h"
 #include "ProgramIssueReporter.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Services/LuaTestReloadController.h"
@@ -215,7 +216,10 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         job->script->luaTestOptions.testHotReload = true;
     }
     prepareTiming.Finish();
-    const auto execute = [reporter = programIssueReporter_](MapSaveJob& task) {
+    War3Map::QtProject::PreparedProjectObjectCatalog preparedCatalog;
+    const auto execute = [reporter = programIssueReporter_, &preparedCatalog,
+        gameRoot = project_->war3GameRoot_, strings = project_->CurrentWorldEditStrings(),
+        prepareCatalog = !testSnapshot && !project_->campaignScope_](MapSaveJob& task) {
         const auto failed = [&](bool standardException) {
             task.succeeded = false;
             if (reporter) (void)reporter->UnhandledException(War3Map::QtFeedback::ExceptionBoundary::SaveWorker, standardException);
@@ -226,7 +230,11 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             } catch (...) {
             }
         };
-        try { EditorProject::RunMapSave(task); }
+        try {
+            EditorProject::RunMapSave(task);
+            if (prepareCatalog && task.succeeded && task.nextSession)
+                preparedCatalog = War3Map::QtProject::PrepareProjectObjectCatalog(*task.nextSession, gameRoot, strings);
+        }
         catch (const std::exception&) { failed(true); }
         catch (...) { failed(false); }
     };
@@ -290,6 +298,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         return true;
     }
     War3Map::QtCommon::DiagnosticTimingScope commitTiming("save-commit");
+    War3Map::QtProject::StagePreparedProjectObjectCatalog(*project_, std::move(preparedCatalog));
     const auto saved = project_->CommitMapSave(*job);
     UpdateEditDirtyFlags();
     if (!saved) {

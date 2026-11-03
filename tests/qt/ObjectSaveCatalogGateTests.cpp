@@ -165,6 +165,64 @@ void FrozenTaskRejectsSameBytesAtChangedGameSourceIdentity() {
     Require(!job->beforePublish().Succeeded(), "same bytes at a new game file identity revoke frozen write authority");
     fixture.Unchanged();
 }
+
+void PreparedCatalogIsBoundToArchiveAndOverlay() {
+    using namespace QtProject;
+    {
+        Fixture fixture;
+        auto next = std::make_unique<MapArchiveSession>(*fixture.project->archiveSession_);
+        auto prepared = PrepareProjectObjectCatalog(*next, fixture.game, fixture.project->CurrentWorldEditStrings());
+        fixture.project->archiveSession_ = std::move(next);
+        StagePreparedProjectObjectCatalog(*fixture.project, std::move(prepared));
+        Require(EnsureProjectObjectCatalog(*fixture.project).Succeeded(), "install actual prepared same-source catalog");
+        const auto* entry = fixture.project->standardCatalog_->Find(ObjectType::Unit, "u001");
+        Require(entry && entry->displayName == "Game base" && entry->nativeOverridesSupported,
+            "prepared directory keeps actual names and write eligibility");
+        fixture.Dirty(); Require(bool(fixture.Prepare()), "ordinary save gate accepts actual prepared game source");
+        fixture.Unchanged();
+    }
+    {
+        Fixture fixture;
+        auto prepared = PrepareProjectObjectCatalog(*fixture.project->archiveSession_, fixture.game,
+            fixture.project->CurrentWorldEditStrings());
+        const auto other = fixture.source.parent_path() / "other.w3x";
+        const std::vector<MapArchiveMember> members{{"Units/UnitData.slk", Tests::ObjectBytes(Tests::ObjectTable({
+            {{"ID", "u001"}, {"Name", "Other map"}, {"HP", "200"}}}))}};
+        Require(WriteVerifiedArchive(other, members).Succeeded(), "write independent other map");
+        auto opened = MapArchiveSession::Open(other); Require(opened.Succeeded(), "open other map");
+        fixture.project->archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*opened.value));
+        fixture.project->sourceArchivePath_ = other;
+        StagePreparedProjectObjectCatalog(*fixture.project, std::move(prepared));
+        Require(EnsureProjectObjectCatalog(*fixture.project).Succeeded(), "stale preparation falls back to real other map");
+        const auto* entry = fixture.project->standardCatalog_->Find(ObjectType::Unit, "u001");
+        Require(entry && entry->displayName == "Other map" && !entry->nativeOverridesSupported,
+            "other archive cannot reuse game-only prepared qualification");
+    }
+    {
+        Fixture fixture;
+        auto next = std::make_unique<MapArchiveSession>(*fixture.project->archiveSession_);
+        auto prepared = PrepareProjectObjectCatalog(*next, fixture.game, fixture.project->CurrentWorldEditStrings());
+        fixture.project->archiveSession_ = std::move(next);
+        fixture.Dirty(); fixture.ImportReadOnlyProfile(false);
+        StagePreparedProjectObjectCatalog(*fixture.project, std::move(prepared));
+        Require(!fixture.Prepare() && ProjectHasCode(*fixture.project, u"OBJECT_CATALOG_READ_ONLY"),
+            "pending overlay cannot borrow prepared game-base write authority");
+        fixture.Unchanged();
+    }
+    {
+        Fixture fixture;
+        auto next = std::make_unique<MapArchiveSession>(*fixture.project->archiveSession_);
+        auto prepared = PrepareProjectObjectCatalog(*next, fixture.game, fixture.project->CurrentWorldEditStrings());
+        fixture.project->archiveSession_ = std::move(next);
+        const auto old = fixture.game / "old-war3.mpq";
+        std::filesystem::rename(fixture.game / "war3.mpq", old);
+        std::filesystem::copy_file(old, fixture.game / "war3.mpq");
+        StagePreparedProjectObjectCatalog(*fixture.project, std::move(prepared));
+        Require(!EnsureProjectObjectCatalog(*fixture.project).Succeeded() && !fixture.project->standardCatalog_,
+            "prepared catalog still checks actual captured filesystem identities");
+        fixture.Unchanged();
+    }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -182,6 +240,7 @@ int main(int argc, char** argv) {
         FrozenTaskOwnsSourcesAndChecksFinalTableChanges();
         FrozenTaskChecksEveryChangedNativeObject();
         FrozenTaskRejectsSameBytesAtChangedGameSourceIdentity();
+        PreparedCatalogIsBoundToArchiveAndOverlay();
         std::cout << "object save catalog gates passed\n";
         return 0;
     } catch (const std::exception& error) {

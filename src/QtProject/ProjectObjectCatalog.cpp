@@ -1,5 +1,6 @@
 #include "ProjectObjectCatalog.h"
 #include "EditorProject.h"
+#include "../QtCommon/DiagnosticTimings.h"
 
 #include "War3MapCore/Game/WorldEditStrings.h"
 #include "War3MapCore/Hash.h"
@@ -156,6 +157,29 @@ Result<ProjectObjectCatalogSources> CaptureProjectObjectCatalogSources(const Edi
     return Output::Success(std::move(result));
 }
 
+struct PreparedProjectObjectCatalog::State {
+    const MapArchiveSession* archive = nullptr; // 仅比身份，不解引用。
+    std::string archiveSha;
+    std::filesystem::path archivePath;
+    std::filesystem::path gameRoot;
+    std::shared_ptr<const Game::WorldEditStrings> strings;
+    Result<ObjectData::EffectiveObjectCatalog> loaded;
+};
+
+PreparedProjectObjectCatalog PrepareProjectObjectCatalog(const MapArchiveSession& archive,
+    const std::filesystem::path& gameRoot, std::shared_ptr<const Game::WorldEditStrings> strings) {
+    QtCommon::DiagnosticTimingScope timing("prepare-effective-object-catalog");
+    auto state = std::make_shared<PreparedProjectObjectCatalog::State>();
+    state->archive = &archive; state->archiveSha = archive.SourceSha256();
+    state->archivePath = archive.SourcePath();
+    state->gameRoot = gameRoot; state->strings = std::move(strings);
+    Services::ObjectCatalogSources source; source.archive = &archive; source.gameRoot = gameRoot;
+    ObjectData::CatalogLoadOptions options; options.strings = state->strings.get();
+    state->loaded = Services::LoadEffectiveObjectCatalog(source, options);
+    PreparedProjectObjectCatalog result; result.state_ = std::move(state);
+    return result;
+}
+
 class ProjectObjectCatalogState {
 public:
     const MapArchiveSession* archive = nullptr;
@@ -168,7 +192,13 @@ public:
     AssetState assets;
     std::shared_ptr<const ObjectData::EffectiveObjectCatalog> catalog;
     bool refreshing = false;
+    PreparedProjectObjectCatalog prepared;
 };
+
+void StagePreparedProjectObjectCatalog(EditorProject& project, PreparedProjectObjectCatalog prepared) {
+    if (!project.objectCatalogState_) project.objectCatalogState_ = std::make_shared<ProjectObjectCatalogState>();
+    project.objectCatalogState_->prepared = std::move(prepared);
+}
 
 Status EnsureProjectObjectCatalog(EditorProject& project, bool force) {
     if (project.war3GameRoot_.empty() && !project.objectCatalogState_ && !project.archiveSession_
@@ -196,10 +226,29 @@ Status EnsureProjectObjectCatalog(EditorProject& project, bool force) {
     emit project.ObjectCatalogAboutToChange();
     struct Notify { EditorProject& project; ~Notify() { emit project.ObjectCatalogChanged(); } } notify{project};
     project.standardCatalog_.reset(); state.catalog.reset();
-    const auto source = CaptureProjectObjectCatalogSources(project);
-    if (!source.Succeeded()) return {source.diagnostics};
-    ObjectData::CatalogLoadOptions options; options.strings = strings.get();
-    auto loaded = Services::LoadEffectiveObjectCatalog(source.value->Sources(), options);
+    auto prepared = std::move(state.prepared);
+    state.prepared = {};
+    const bool preparedMatches = !force && prepared.state_ && project.archiveSession_
+        && prepared.state_->archive == project.archiveSession_.get()
+        && prepared.state_->archiveSha == project.archiveSession_->SourceSha256()
+        && prepared.state_->archivePath == project.archiveSession_->SourcePath()
+        && prepared.state_->gameRoot == project.war3GameRoot_ && prepared.state_->strings == strings
+        && !project.readOnlyArchive_ && !project.campaignScope_ && assets.imports.empty() && assets.edits.empty()
+        && !project.sourceChangeSuspected_ && !project.sourceChangeConfirmed_;
+    auto loaded = [&]() -> Result<ObjectData::EffectiveObjectCatalog> {
+        if (preparedMatches) {
+            // 只复用同一次真实捕获；目录自身仍复核所有已捕获来源。
+            const auto& captured = prepared.state_->loaded;
+            if (!captured.Succeeded() || !captured.value) return {{}, captured.diagnostics};
+            const auto verified = captured.value->VerifyCapturedSources();
+            if (!verified.Succeeded()) return {{}, verified.diagnostics};
+            return captured;
+        }
+        const auto source = CaptureProjectObjectCatalogSources(project);
+        if (!source.Succeeded()) return {{}, source.diagnostics};
+        ObjectData::CatalogLoadOptions options; options.strings = strings.get();
+        return Services::LoadEffectiveObjectCatalog(source.value->Sources(), options);
+    }();
     if (!loaded.Succeeded()) return {loaded.diagnostics};
     state.archive = project.archiveSession_.get(); state.readOnly = project.readOnlyArchive_.get();
     state.directory = project.directorySnapshot_.get(); state.campaign = project.campaignScope_.get();

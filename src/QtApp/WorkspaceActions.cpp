@@ -8,6 +8,7 @@
 #include "VariablesModule.h"
 #include <QTemporaryDir>
 #include "TriggerCommands.h"
+#include "ProjectObjectCatalog.h"
 
 #include "War3MapCore/CompatibilityProfile.h"
 #include "War3MapCore/EditorSession.h"
@@ -118,6 +119,7 @@ struct MainWindow::ArchiveOpenBinding {
     std::shared_ptr<const War3Map::MpqWorkspace> readOnly;
     std::array<std::unique_ptr<War3Map::ObjectData::NativeObjectDocument>, 7> nativeBaselines;
     std::unique_ptr<QTemporaryDir> workspace;
+    War3Map::QtProject::PreparedProjectObjectCatalog catalog;
 };
 
 void MainWindow::OpenWorkspace() {
@@ -188,7 +190,8 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
     };
     // 文件路径按值捕获；归档、投影、物编和诊断全部由worker创建并独占。
     // 这里不读取project、控件或设置；join后才装回UI。
-    auto intake = War3Map::QtCommon::RunOwnedWork([archivePath]() -> Intake {
+    auto intake = War3Map::QtCommon::RunOwnedWork([archivePath, gameRoot = project_->war3GameRoot_,
+        strings = project_->CurrentWorldEditStrings(), prepareCatalog = !project_->campaignScope_]() -> Intake {
         Intake result;
         War3Map::QtCommon::DiagnosticTimingScope snapshotTiming("open-archive-snapshot");
         War3Map::MapArchiveSession::OpenObserver observer;
@@ -290,6 +293,8 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         if (snapshot.Succeeded() && snapshot.value)
             binding.session = std::make_unique<War3Map::MapArchiveSession>(std::move(*snapshot.value));
         else binding.readOnly = std::make_shared<const War3Map::MpqWorkspace>(std::move(*opened.value));
+        if (binding.session && prepareCatalog)
+            binding.catalog = War3Map::QtProject::PrepareProjectObjectCatalog(*binding.session, gameRoot, strings);
         result.binding = std::move(binding);
         result.diagnostics = std::move(snapshot.diagnostics);
         result.diagnostics.insert(result.diagnostics.end(), extractStatus.diagnostics.begin(), extractStatus.diagnostics.end());
@@ -393,6 +398,7 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
     project_->directorySnapshot_ = std::make_unique<War3Map::DirectoryWorkspace>(std::move(*snapshot.value));
     project_->diagnosticsModel_->removeRows(0, project_->diagnosticsModel_->rowCount());
     project_->projectRoot_ = path;
+    if (archive) War3Map::QtProject::StagePreparedProjectObjectCatalog(*project_, std::move(archive->catalog));
     project_->iconProvider_->SetMapResourceDirectory(project_->projectRoot_ / "resource");
     const QString selected = QString::fromStdWString(project_->projectRoot_.wstring());
     const War3Map::CompatibilityProfile profile = War3Map::CompatibilityProfile::Default();
