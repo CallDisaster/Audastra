@@ -303,6 +303,11 @@ void ImportedCreationChecks() {
     Need(Code(AuxiliaryEditing::Prepare(source, request, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "read failure not empty code");
     refs.opaqueScriptSources = {"blackbox.ai"};
     Need(AuxiliaryEditing::Prepare(source, request, refs).Succeeded(), "AI alone does not require reader");
+    refs.opaqueScriptSources.push_back("unreadable.j");
+    const auto failure = AuxiliaryEditing::Prepare(source, request, refs);
+    Need(!failure.Succeeded() && failure.diagnostics.front().code == "AUX_SCRIPT_REFERENCES_UNKNOWN",
+        "refusal remains the leading UI diagnostic after an excluded source note");
+    refs.opaqueScriptSources = {"blackbox.ai"};
     auto remove = Request(*source, MapDataKind::Regions, AuxiliaryEditAction::Delete);
     Need(Code(AuxiliaryEditing::Prepare(source, remove, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "deletion remains conservative with AI");
 }

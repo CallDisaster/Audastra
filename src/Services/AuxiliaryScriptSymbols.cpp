@@ -16,7 +16,7 @@ Status CheckAuxiliaryCreatedScriptSymbol(const AuxiliaryReferenceContext& contex
     const auto unknown = [&](const std::string& name, std::string reason) {
         auto failure = Status::Failure("MapData.Auxiliary", "AUX_SCRIPT_REFERENCES_UNKNOWN",
             "不能核对新增符号 " + std::string(symbol) + "：" + name + "（" + reason + "）。删除和更名的限制保持不变。");
-        failure.diagnostics.insert(failure.diagnostics.begin(), result.diagnostics.begin(), result.diagnostics.end());
+        failure.diagnostics.insert(failure.diagnostics.end(), result.diagnostics.begin(), result.diagnostics.end());
         return failure;
     };
     std::size_t total = 0;
@@ -82,7 +82,7 @@ Status CheckAuxiliaryCreatedScriptSymbol(const AuxiliaryReferenceContext& contex
         if (conflict) {
             auto failure = Status::Failure("MapData.Auxiliary", "AUX_SCRIPT_SYMBOL_CONFLICT",
                 name + " 中已有同名标识符 " + std::string(symbol) + "。");
-            failure.diagnostics.insert(failure.diagnostics.begin(), result.diagnostics.begin(), result.diagnostics.end());
+            failure.diagnostics.insert(failure.diagnostics.end(), result.diagnostics.begin(), result.diagnostics.end());
             return failure;
         }
         if (incomplete) return unknown(name, "存在未闭合文本、执行字节或未展开指令");
