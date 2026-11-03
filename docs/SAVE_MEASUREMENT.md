@@ -1,14 +1,15 @@
 # 打开与保存耗时测量
 
-编辑器支持两个显式诊断参数。没有这些参数时，设置位置、界面和保存流程保持原样。
+编辑器支持以下显式测量参数。没有这些参数时，设置位置、界面和保存流程保持原样。
 
 - `--settings-profile measurement`：使用独立的设置、助手配置和凭据目录。配置名限1–48个英文字母、数字、下划线或连字符，首字符为字母或数字。窗口仍显示Audastra；不会复制、迁移或删除默认配置。适合在同一Windows用户下启动专用测量实例。
 - `--diagnostic-timings`：向标准错误写入`editor_timing_event=微秒|事件`。时间使用本进程的单调时钟；记录打开快照、工作区、提取、物编转换、来源复核、绑定、刷新，以及保存准备、工作线程、服务内部阶段、额外回读和提交。服务阶段以`save-timing.begin/`与`save-timing.end/`配对，其余阶段以`begin/`与`end/`配对。
+- `--in-process-only`：本实例的地图保存显式使用进程内脚本后端，不回退到外部编译程序。普通启动仍使用所配置的工具链。
 
 例如，以独立配置打开一份自己的地图副本：
 
 ```text
-war3-map-editor.exe --settings-profile measurement --diagnostic-timings --open-map sample.w3x
+war3-map-editor.exe --settings-profile measurement --diagnostic-timings --in-process-only --open-map sample.w3x
 ```
 
 需要采集输出时，由启动程序重定向标准错误。配置和权限应在该专用实例中设置；MCP调用仍遵守实际工具schema、当前工程身份和修订检查。

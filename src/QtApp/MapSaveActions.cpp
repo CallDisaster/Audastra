@@ -13,6 +13,7 @@
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
 
+#include <QCoreApplication>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QMetaObject>
@@ -186,6 +187,8 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("地图未保存：保存准备未通过"));
         return false;
     }
+    if (job->script && QCoreApplication::arguments().contains(QStringLiteral("--in-process-only")))
+        job->script->toolchain.inProcessOnly = true;
     job->rebuildTerrainShadow = rebuildTerrainShadow;
     job->acceptMinimapRisk = !testSnapshot && minimapRisk == MinimapRiskSave::Accept;
     // 小地图策略尚未由worker执行；测试调用方明确要求保留时沿用该策略。
