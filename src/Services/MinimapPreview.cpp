@@ -6,27 +6,23 @@
 #include <array>
 
 namespace War3Map::Services {
-Result<MinimapPreview> CaptureMinimapPreview(const MapArchiveSession& source, std::string_view expected) {
+Result<MinimapPreview> DecodeMinimapPreview(const MinimapPreviewInput& input) {
     using Output = Result<MinimapPreview>;
+    const auto& expected = input.sourceSha256;
     if (expected.size() != 64 || !std::all_of(expected.begin(), expected.end(), [](char c) {
         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
     })) return Output::Failure("Minimap.Preview", "MINIMAP_PREVIEW_IDENTITY", "须提供小写的完整源地图SHA-256。");
-    if (expected != source.SourceSha256()) return Output::Failure("Minimap.Preview",
-        "MINIMAP_PREVIEW_STALE", "小地图预览来源已变化，请重新取得地图身份。");
-    const std::array<std::string, 1> names{"war3mapMap.blp"};
-    ArchiveExactMemberLimits limits; limits.memberCount = 1;
-    limits.memberBytes = limits.totalBytes = 4U * 1024U * 1024U;
-    auto bytes = source.CaptureExactMembers(names, limits);
-    if (!bytes.Succeeded()) return {{}, std::move(bytes.diagnostics)};
-    MinimapPreview result; result.sourceSha256 = source.SourceSha256();
-    if (!bytes.value->front().present) return Output::Success(std::move(result));
+    MinimapPreview result; result.sourceSha256 = expected;
+    if (!input.member) return Output::Success(std::move(result));
     result.present = true;
-    auto sha = Sha256(bytes.value->front().bytes);
+    if (input.member->size() > 4U * 1024U * 1024U) return Output::Failure("Minimap.Preview",
+        "MINIMAP_PREVIEW_BUDGET", "已保存的小地图超过4MiB输入预算。");
+    auto sha = Sha256(*input.member);
     if (!sha.Succeeded()) return {{}, std::move(sha.diagnostics)};
     result.memberSha256 = std::move(*sha.value);
     Image::BlpDecodeLimits decode; decode.maxDimension = 512;
-    decode.maxInputBytes = limits.memberBytes; decode.maxWorkingBytes = 64U * 1024U * 1024U;
-    auto image = Image::DecodeBlpBudgeted(bytes.value->front().bytes, decode);
+    decode.maxInputBytes = 4U * 1024U * 1024U; decode.maxWorkingBytes = 64U * 1024U * 1024U;
+    auto image = Image::DecodeBlpBudgeted(*input.member, decode);
     if (!image.Succeeded()) {
         auto failure = Output::Failure("Minimap.Preview", "MINIMAP_PREVIEW_INVALID",
             "已保存的小地图无法在预览预算内解码；没有使用空图或其它地图替代。");
@@ -38,6 +34,19 @@ Result<MinimapPreview> CaptureMinimapPreview(const MapArchiveSession& source, st
     if (!rgbaSha.Succeeded()) return {{}, std::move(rgbaSha.diagnostics)};
     result.rgbaSha256 = std::move(*rgbaSha.value);
     return Output::Success(std::move(result));
+}
+
+Result<MinimapPreview> CaptureMinimapPreview(const MapArchiveSession& source, std::string_view expected) {
+    if (expected != source.SourceSha256()) return Result<MinimapPreview>::Failure("Minimap.Preview",
+        "MINIMAP_PREVIEW_STALE", "小地图预览来源已变化，请重新取得地图身份。");
+    const std::array<std::string, 1> names{"war3mapMap.blp"};
+    ArchiveExactMemberLimits limits; limits.memberCount = 1;
+    limits.memberBytes = limits.totalBytes = 4U * 1024U * 1024U;
+    auto bytes = source.CaptureExactMembers(names, limits);
+    if (!bytes.Succeeded()) return {{}, std::move(bytes.diagnostics)};
+    MinimapPreviewInput input; input.sourceSha256 = std::string(expected);
+    if (bytes.value->front().present) input.member = std::move(bytes.value->front().bytes);
+    return DecodeMinimapPreview(input);
 }
 
 Result<MinimapPreview> OpenMinimapPreview(const std::filesystem::path& path, std::string_view expected) {

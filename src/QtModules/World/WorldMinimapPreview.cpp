@@ -2,6 +2,7 @@
 #include "EditorProject.h"
 #include "War3MapCore/Services/MinimapPreview.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/Resources/ImportTable.h"
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
@@ -66,9 +67,22 @@ void WorldMinimapPreview::Refresh() {
     const auto generation = project_.editRevision_.Generation();
     if (loadedSha_ == QString::fromStdString(sha)) { UpdateStatus(); return; }
     Clear(tr("正在读取已保存底图…")); refresh_->setEnabled(false);
+    // 只冻结打开时已经核验的底图。后台不重新持有磁盘源句柄，不妨碍原地保存。
+    Services::MinimapPreviewInput input; input.sourceSha256 = sha;
+    for (const auto& member : project_.archiveSession_->Members()) {
+        const auto key = Resources::CanonicalImportPath(member.name);
+        if (!key.Succeeded() || *key.value != "WAR3MAPMAP.BLP") continue;
+        if (member.data.size() > 4U * 1024U * 1024U) {
+            refresh_->setEnabled(true); Clear(tr("MINIMAP_PREVIEW_BUDGET: 底图超过4MiB预算")); return;
+        }
+        input.member = member.data; break;
+    }
+    if (!input.member && project_.archiveSession_->HasOpaqueMembers()) {
+        refresh_->setEnabled(true); Clear(tr("打开快照未列出底图，匿名成员使缺失状态未确定；请用精确归档查询")); return;
+    }
     auto result = std::make_shared<Result<Services::MinimapPreview>>();
-    worker_ = QThread::create([path, sha, result] {
-        try { *result = Services::OpenMinimapPreview(path, sha); }
+    worker_ = QThread::create([input = std::move(input), result] {
+        try { *result = Services::DecodeMinimapPreview(input); }
         catch (...) { *result = Result<Services::MinimapPreview>::Failure("Minimap.Preview",
             "MINIMAP_PREVIEW_EXCEPTION", "小地图预览未完成，原地图未修改。"); }
     });

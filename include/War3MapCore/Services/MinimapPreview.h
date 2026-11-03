@@ -5,6 +5,13 @@
 
 namespace War3Map::Services {
 
+// 宿主拥有的已打开快照字节。此值不是来源授权或保存资格。
+// nullopt仅用于宿主已证明缺失；不完整清单不能据此填成缺失。
+struct MinimapPreviewInput {
+    std::string sourceSha256;
+    std::optional<std::vector<std::byte>> member;
+};
+
 // 实际归档中的已保存底图，不生成、不合成图标、不代替保存资格。
 struct MinimapPreview {
     std::string sourceSha256;
@@ -13,6 +20,8 @@ struct MinimapPreview {
     std::string rgbaSha256;
     Image::DecodedImage image;
 };
+
+[[nodiscard]] Result<MinimapPreview> DecodeMinimapPreview(const MinimapPreviewInput& input);
 
 // 唯一读取名war3mapMap.blp，含无listfile的精确查询；缺失与坏图严格区分。
 // 输入最多4MiB，图边长最多512，解码工作预算64MiB；不缩放或猜测图片方向。
