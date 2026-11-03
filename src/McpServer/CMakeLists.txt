@@ -58,6 +58,7 @@ if(TARGET Qt6::Core)
         McpToolReadOnly.cpp
         McpToolProjectSearch.cpp McpProjectSearchTools.cpp McpProjectSearchTools.h
         McpToolArchiveIdentity.cpp
+        McpToolMinimapPreview.cpp
         McpToolArchiveMembers.cpp
         McpToolWarVK.cpp
         McpToolEdit.cpp

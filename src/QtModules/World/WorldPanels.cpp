@@ -1,6 +1,7 @@
 // 世界视图的界面框架：顶栏工具分段、左侧工具面板（场景目录 / 摆放；地形笔刷页见 WorldTerrainPanel.cpp）、状态栏，
 // 以及它们与视口、编辑交互的连接。只做呈现与输入转发；地图修改仍经 WorldModuleEditing.cpp 提交。
 #include "WorldModule.h"
+#include "WorldMinimapPreview.h"
 #include "WorldPanelWidgets.h"
 #include "WorldViewport.h"
 #include "WorldAnimationPlayer.h"
@@ -269,6 +270,7 @@ QWidget* WorldModule::BuildToolPanel() {
     toolStack_->addWidget(BuildPlacePage());
     toolStack_->addWidget(BuildTerrainPage());
     column->addWidget(toolStack_, 1);
+    column->addWidget(new WorldMinimapPreview(project_, panel));
     return panel;
 }
 

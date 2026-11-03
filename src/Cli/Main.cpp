@@ -41,6 +41,7 @@
 #include "GameUiCommand.h"
 #include "MapRuntimeCommand.h"
 #include "MinimapAuditCommand.h"
+#include "MinimapPreviewCommand.h"
 #include "AudastraVersion.generated.h"
 
 #include <algorithm>
@@ -109,6 +110,7 @@ void PrintUsage() {
         << "  --trigger only returns that trigger's ecas or arguments, in tree order; row numbers stay table-wide.\n"
         << "war3-map-cli lua-trigger-candidate <wtg-file> <wct-file> <ui-root> <target-tsv> <inspect|input-revision> [--sources <script-sha> <line-or-0> <offset> <limit>]\n"
         << "war3-map-cli terrain-snapshot <map-archive>\n"
+        << "war3-map-cli minimap-preview <map-archive> <expected-source-sha256> [<new-preview.ppm>]\n"
         << "war3-map-cli terrain-block <map-archive> <source-sha256> <terrain-sha256> <x> <y> <width> <height>\n"
         << "war3-map-cli terrain-blight-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <vertex-x> <vertex-y> <radius-0..16> <set|clear> <new-candidate.w3x> [--layer <id> ...]\n"
         << "war3-map-cli map-edit-save <source-map> <source-sha256> <terrain-sha256> <ydwe-root> <war3-root> <new-candidate.w3x> --stroke <raise|lower|smooth|texture|water-height|ramp|boundary> <circle|square> <vertex-x> <vertex-y> <radius-0..16;ramp:0> <strength|rawcode|water-height|ramp/boundary:true/false> [--stroke ...] [--layer <id> ...]\n"
@@ -473,6 +475,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (command == L"map-runtime-query") return RunMapRuntimeQuery(argc, argv);
     if (command == L"minimap-audit") return RunMinimapAudit(argc, argv);
+    if (command == L"minimap-preview") return RunMinimapPreview(argc, argv);
     if (command == L"map-ui-import") return RunMapUiImport(argc, argv);
     if (command == L"profiles") {
         const auto profile = War3Map::CompatibilityProfile::Default();

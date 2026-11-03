@@ -29,6 +29,7 @@ void RegisterAllTools(McpServer& server) {
     RegisterGameUiTools(server);
     RegisterReadOnlyTools(server);
     RegisterArchiveIdentityTools(server);
+    RegisterMinimapPreviewTool(server);
     RegisterArchiveMemberTools(server);
     RegisterImportTools(server);
     RegisterObjectResourceTools(server);

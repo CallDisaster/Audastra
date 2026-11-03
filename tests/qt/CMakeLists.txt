@@ -1096,3 +1096,13 @@ add_test(NAME qt-object-colour-preview-real COMMAND war3-map-object-colour-previ
 set_tests_properties(qt-object-colour-preview-real PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
+qt_add_executable(audastra-minimap-preview-tests MinimapPreviewTests.cpp)
+target_link_libraries(audastra-minimap-preview-tests PRIVATE War3MapEditor::QtModuleWorld
+    War3MapEditor::McpProtocol Qt6::Test Qt6::Widgets)
+target_compile_options(audastra-minimap-preview-tests PRIVATE /W4 /permissive- /utf-8)
+target_compile_definitions(audastra-minimap-preview-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN
+    AUDASTRA_PREVIEW_CLI="$<TARGET_FILE:war3-map-cli>")
+add_dependencies(audastra-minimap-preview-tests war3-map-cli)
+add_test(NAME qt-minimap-preview COMMAND audastra-minimap-preview-tests)
+set_tests_properties(qt-minimap-preview PROPERTIES TIMEOUT 120 ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
