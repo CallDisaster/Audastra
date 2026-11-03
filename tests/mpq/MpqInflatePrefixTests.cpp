@@ -1,9 +1,11 @@
 #include "Mpq/MpqDecompress.h"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
+#include <thread>
 
 namespace {
 using Bytes = std::vector<std::byte>;
@@ -83,9 +85,24 @@ void BackReferences() {
         Check(War3Map::Mpq::Deflate(expected), expected);
     }
 }
+void ConcurrentFirstUse() {
+    std::atomic<unsigned> ready = 0;
+    std::atomic<bool> passed = true;
+    std::array<std::thread, 4> threads;
+    for (auto& thread : threads) thread = std::thread([&] {
+        ++ready;
+        while (ready != threads.size()) std::this_thread::yield();
+        for (unsigned i = 0; i < 128; ++i) {
+            const auto result = War3Map::Mpq::Inflate(Bytes{std::byte{3}, std::byte{0}}, 0);
+            if (!result.Succeeded() || !result.value || !result.value->empty()) passed = false;
+        }
+    });
+    for (auto& thread : threads) thread.join();
+    Require(passed, "immutable fixed table concurrent decode failed");
+}
 }
 int main() {
-    try { FixedAndStored(); DynamicLongCode(); BackReferences(); }
+    try { ConcurrentFirstUse(); FixedAndStored(); DynamicLongCode(); BackReferences(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     return 0;
 }

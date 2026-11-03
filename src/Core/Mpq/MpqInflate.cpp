@@ -291,10 +291,13 @@ Result<std::vector<std::byte>> Inflate(
             }
             br.pos += static_cast<std::size_t>(len);
         } else if (type == 1) {
-            Huffman litLen;
-            Huffman dist;
-            BuildFixedTables(litLen, dist);
-            if (!InflateBlock(br, litLen, dist, out)) {
+            // 固定码表与文件、位流和线程无关；只共享构造后不可变的表。
+            struct FixedTables {
+                Huffman litLen, dist;
+                FixedTables() { BuildFixedTables(litLen, dist); }
+            };
+            static const FixedTables tables;
+            if (!InflateBlock(br, tables.litLen, tables.dist, out)) {
                 return Result<std::vector<std::byte>>::Failure(
                     "Mpq", "INFLATE_FAILED", "fixed Huffman block decode failed");
             }
