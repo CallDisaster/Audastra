@@ -5,6 +5,9 @@
 #include "War3MapCore/Services/MinimapPreview.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/Services/TerrainMinimapSave.h"
 #include "../TerrainCornerRampFixtures.h"
 #include "../support/MinimapPreviewFixture.h"
 #include <QApplication>
@@ -66,6 +69,7 @@ private slots:
     void ViewKeepsFailureDetailsInDiagnostics();
     void CurrentDefaultsAndStaleRequest();
     void CurrentKeepsPixelsUntilReplacementAndClearsFailures();
+    void UnsavedObjectColorUsesFrozenNativeProjection();
 };
 
 void MinimapPreviewTests::SharedPixelsAndCliExport() try {
@@ -193,6 +197,68 @@ void MinimapPreviewTests::CurrentKeepsPixelsUntilReplacementAndClearsFailures() 
     QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("当前不可用"), 15000);
     QVERIFY(image->pixmap().isNull());
     QVERIFY(view.property("rgbaSha256").toString().isEmpty());
+} catch (const std::exception& error) { QFAIL(error.what()); }
+
+void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
+    F::Fixture fixture;
+    namespace M = Tests::MinimapPreviewFixtures;
+    using namespace ObjectData;
+    auto members = M::MapMembers();
+    MapData::DoodadPlacements doodads;
+    MapData::DoodadPlacement placement;
+    placement.rawcode = "Doo0";
+    placement.position = {4 * 128, 4 * 128, 0};
+    placement.scale = {1, 1, 1};
+    doodads.doodads.push_back(placement);
+    members.push_back({"war3map.doo", F::Take(doodads.Serialize())});
+    members.push_back({"Doodads/Doodads.slk", M::Slk(
+        {"doodID", "code", "showInMM", "useMMColor", "MMRed", "MMGreen", "MMBlue", "file", "pathTex", "numVar"},
+        {{"Doo0", "Doo0", "1", "1", "10", "20", "30", "FixtureBox", "_", "1"}})});
+    members.push_back({"Units/DestructableData.slk", M::Slk({"destructableID", "code"})});
+    members.push_back({"Doodads/DoodadMetaData.slk", M::Slk(
+        {"ID", "field", "slk", "type", "repeat", "index"}, {{"Mmr0", "MMRed", "DoodadData", "int", "0", "0"}})});
+    members.push_back({"Units/DestructableMetaData.slk", M::Slk({"ID", "field", "slk", "type", "repeat", "index"})});
+    auto native = F::Take(NativeObjectDocument::CreateEmpty(ObjectType::Doodad));
+    const ObjectKey key{ObjectType::Doodad, "Doo0"};
+    QVERIFY(native.AddOriginalObject("Doo0").Succeeded());
+    QVERIFY(native.AddModification(key, {"Mmr0"}, NativeValueType::Int32, std::int32_t{10}).Succeeded());
+    members.push_back({"war3map.w3d", F::Take(NativeObjectCodec(ObjectType::Doodad).Serialize(native))});
+    const auto path = F::Take(WriteVerifiedArchive(fixture.root / "object-current.w3x", members)).path;
+    QtProject::EditorProject project;
+    Install(project, path, members);
+    project.war3GameRoot_ = fixture.game;
+    auto converted = F::Take(ConvertNativeObjectDataToLni(ObjectType::Doodad, members.back().data));
+    auto parsed = LniObjectCodec(ObjectType::Doodad).Parse(converted);
+    auto* lni = dynamic_cast<LniObjectDocument*>(parsed.document.release());
+    QVERIFY(lni);
+    project.objectDocuments_[5].reset(lni);
+    project.nativeObjectDocuments_[5] = std::make_unique<NativeObjectDocument>(native);
+    Modules::WorldMinimapPreview view(project);
+    view.show();
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(), 15000);
+    const auto before = view.property("rgbaSha256");
+    const auto modification = native.Objects().front().modifications.front().key;
+    QVERIFY(lni->SetModification(key, modification, std::int32_t{220}).Succeeded());
+    project.objectDirty_[5] = true;
+    project.ObjectDocumentsReplaced();
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty()
+        && view.property("rgbaSha256") != before, 15000);
+    QVERIFY(project.objectDirty_[5]);
+    QCOMPARE(std::get<std::int32_t>(project.nativeObjectDocuments_[5]->Objects().front().modifications.front().value), 10);
+    QVERIFY(ApplyLniChangesToNative(native, *lni).Succeeded());
+    const auto frozenObject = F::Take(NativeObjectCodec(ObjectType::Doodad).Serialize(native));
+    Services::MapSaveTask task;
+    QVERIFY(task.FreezeArchive(*project.archiveSession_).Succeeded());
+    task.replacements.push_back({"war3map.w3d", frozenObject});
+    const auto minimap = F::Take(Services::TerrainMinimapSave::Prepare(task, *project.mapEdits_, fixture.game,
+        Services::TerrainMinimapSaveChoice::Automatic));
+    QVERIFY(minimap);
+    auto savedMembers = members;
+    savedMembers.back().data = frozenObject;
+    savedMembers.push_back(minimap->MinimapReplacement());
+    const auto saved = F::Take(WriteVerifiedArchive(fixture.root / "object-saved.w3x", savedMembers));
+    QCOMPARE(view.property("rgbaSha256").toString().toStdString(), F::Take(Services::OpenMinimapPreview(saved.path, saved.sha256)).rgbaSha256);
+    QCOMPARE(F::Take(project.archiveSession_->ReadMember("war3map.w3d")), members.back().data);
 } catch (const std::exception& error) { QFAIL(error.what()); }
 
 void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {

@@ -1,7 +1,10 @@
 #include "ProjectMinimapPreview.h"
 #include "EditorProject.h"
+#include "PendingImportPayload.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/ObjectData/ObjectImport.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include <QThread>
 #include <QUndoStack>
 #include <algorithm>
@@ -69,14 +72,73 @@ void ProjectMinimapPreview::Start() {
         if (!project_.mapEdits_ || !project_.mapEdits_->Terrain()) {
             failure("MINIMAP_CURRENT_SOURCE", "当前地形未就绪。"); return;
         }
-        // 未冻结的磁盘导入不能冒充当前资源。保存后由统一来源规则重新捕获。
-        if (project_.HasPendingAssetEdits()) {
-            failure("MINIMAP_CURRENT_PENDING_ASSETS", "导入资源尚未保存，当前小地图暂不可用。"); return;
-        }
-        if(std::any_of(project_.objectDirty_.begin(),project_.objectDirty_.end(),[](bool dirty){return dirty;})){
-            failure("MINIMAP_CURRENT_PENDING_OBJECTS","物编修改尚未保存，当前小地图暂不可用。");return;
-        }
         QtCommon::DiagnosticTimingScope freezeTiming("minimap-freeze");
+        constexpr std::size_t maximumOverlayBytes = 128U * 1024U * 1024U;
+        std::size_t overlayBytes = 0;
+        if (!project_.assetEdits_.empty()) {
+            failure("MINIMAP_CURRENT_PENDING_ASSETS", "资源路径修改尚未冻结。");
+            return;
+        }
+        const auto scopes = project_.editRevision_.Current();
+        for (std::size_t index = 0; index < project_.pendingImports_.size(); ++index) {
+            const auto& entry = project_.pendingImports_[index];
+            if (entry.archivePath.endsWith(".ai", Qt::CaseInsensitive)
+                || entry.diskPath.endsWith(".ai", Qt::CaseInsensitive)) {
+                failure("MINIMAP_CURRENT_PENDING_ASSETS", "引导资源不能作为小地图覆盖。");
+                return;
+            }
+            if (!entry.ownedPayload) {
+                failure("MINIMAP_CURRENT_PENDING_ASSETS", "磁盘导入尚未冻结。");
+                return;
+            }
+            const auto expected = scopes.find("imports/" + std::to_string(index));
+            if (expected == scopes.end() || expected->second.size() < 64 || entry.size < 0
+                || std::uint64_t(entry.size) > maximumOverlayBytes - overlayBytes) {
+                failure("MINIMAP_PREVIEW_BUDGET", "资源覆盖缺少身份或超过预算。");
+                return;
+            }
+            auto bytes = ReadFrozenPendingImport(entry, std::string_view(expected->second).substr(expected->second.size() - 64));
+            if (!bytes.Succeeded()) {
+                project_.AddDiagnostics(bytes.diagnostics);
+                failure("MINIMAP_CURRENT_PENDING_ASSETS", "资源覆盖身份已变化。");
+                return;
+            }
+            overlayBytes += bytes.value->size();
+            current.replacements.push_back({entry.archivePath.toStdString(), std::move(*bytes.value)});
+        }
+        for (std::size_t index = 0; index < project_.objectDirty_.size(); ++index) {
+            if (!project_.objectDirty_[index]) continue;
+            const auto& baseline = project_.nativeObjectDocuments_[index];
+            const auto& edited = project_.objectDocuments_[index];
+            if (!baseline || !edited) {
+                failure("MINIMAP_CURRENT_OBJECT_BASELINE", "物编基线未就绪。");
+                return;
+            }
+            const auto type = baseline->Type();
+            if (edited->Objects().empty() && !archive->HasMember(ObjectData::NativeFileName(type))) continue;
+            auto native = *baseline;
+            // 与保存使用同一回灌和序列化入口；仅修改本次私有副本。
+            const auto applied = ObjectData::ApplyLniChangesToNative(native, *edited,
+                project_.objectFieldSchema_.get(), project_.standardCatalog_.get());
+            if (!applied.Succeeded()) {
+                project_.AddDiagnostics(applied.diagnostics);
+                failure("MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能冻结。");
+                return;
+            }
+            auto encoded = ObjectData::NativeObjectCodec(type).Serialize(native);
+            if (!encoded.Succeeded()) {
+                project_.AddDiagnostics(encoded.diagnostics);
+                failure("MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能序列化。");
+                return;
+            }
+            if (encoded.value->size() > 8U * 1024U * 1024U
+                || encoded.value->size() > maximumOverlayBytes - overlayBytes) {
+                failure("MINIMAP_PREVIEW_BUDGET", "物编覆盖超过预算。");
+                return;
+            }
+            overlayBytes += encoded.value->size();
+            current.replacements.push_back({std::string(ObjectData::NativeFileName(type)), std::move(*encoded.value)});
+        }
         auto frozen = project_.mapEdits_->FreezeForSave(128U*1024U*1024U);
         freezeTiming.Finish();
         if (!frozen.Succeeded()) {
