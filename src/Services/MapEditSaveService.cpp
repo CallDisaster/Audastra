@@ -445,6 +445,14 @@ Status PrepareScript(MapSaveTask& task, const MapArchiveSession& source,
         AuxiliaryReferenceContext refs{&*triggers.value, true, {}};
         for (const auto& member : source.Members()) ObserveAuxiliaryScriptSource(refs, member.name);
         if (source.HasOpaqueMembers()) refs.opaqueScriptSources.push_back("未命名归档成员");
+        refs.readScript = [&source](const std::string& name) -> Result<std::vector<std::byte>> {
+            ArchiveExactMemberLimits limits; limits.memberBytes = limits.totalBytes = 2U * 1024U * 1024U;
+            const std::array<std::string, 1> names{name};
+            auto captured = source.CaptureExactMembers(names, limits);
+            if (!captured.Succeeded()) return {{}, captured.diagnostics};
+            if (captured.value->front().present) return Result<std::vector<std::byte>>::Success(std::move(captured.value->front().bytes));
+            return Result<std::vector<std::byte>>::Failure("MapData.Auxiliary", "AUX_SCRIPT_REFERENCES_UNKNOWN", "脚本来源缺失或超过预算。");
+        };
         const auto verified = snapshot.VerifyAgainst(original, refs);
         if (!verified.Succeeded()) return verified;
         for (const auto& member : snapshot.Members()) {

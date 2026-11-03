@@ -3,6 +3,7 @@
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 
 #include <memory>
+#include <functional>
 #include <variant>
 
 namespace War3Map::Trigger { class TriggerDocument; }
@@ -28,7 +29,12 @@ struct AuxiliaryReferenceContext {
     bool completeTriggerSource = false;
     // 外部脚本尚无完整静态引用证明；AI成员仅按名字记录，始终不读取或执行内容。
     std::vector<std::string> opaqueScriptSources;
+    // 仅新增时按白名单请求 .j/.lua；删除、更名仍使用上面的保守覆盖。
+    std::function<Result<std::vector<std::byte>>(const std::string&)> readScript;
 };
+
+[[nodiscard]] Status CheckAuxiliaryCreatedScriptSymbol(
+    const AuxiliaryReferenceContext& context, std::string_view symbol);
 
 class AuxiliaryEditing;
 class PreparedAuxiliaryEdit {

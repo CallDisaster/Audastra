@@ -198,6 +198,10 @@ QJsonObject InvokeAuxiliaryTool(const QString& name, const QJsonObject& argument
             {"changed", plan.value->HasChanges()}, {"dry_run", dry}, {"applied", false}, {"saved", false}, {"runtime_verified", false},
             {"before_member_sha256", QString::fromStdString(request.expectedMemberSha256)}, {"after_member_sha256", QString::fromStdString(*member.value)},
             {"locator_scope", "snapshot-revision"}, {"angle_unit", "degrees"}};
+        QJsonArray sourceChecks;
+        for (const auto& diagnostic : plan.diagnostics) sourceChecks.append(QJsonObject{
+            {"code", QString::fromStdString(diagnostic.code)}, {"message", QString::fromStdString(diagnostic.message)}});
+        result.insert("script_source_checks", sourceChecks);
         if (!remove) {
             const auto row = request.action == AuxiliaryEditAction::Create
                 ? (request.kind == MapDataKind::Regions ? plan.value->After().Regions()->entries.size() : plan.value->After().Cameras()->entries.size()) - 1

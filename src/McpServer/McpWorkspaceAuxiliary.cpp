@@ -2,6 +2,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
+#include "War3MapCore/Script/ReadOnlyScriptSource.h"
 
 #include <algorithm>
 #include <limits>
@@ -40,6 +41,17 @@ Services::AuxiliaryReferenceContext McpWorkspace::AuxiliaryReferences() const {
     if (mapDataSource_) for (const auto& file : mapDataSource_->Snapshot().files)
         Services::ObserveAuxiliaryScriptSource(refs, file.relativePath.generic_string());
     else refs.opaqueScriptSources.push_back("地图数据来源尚未捕获");
+    refs.readScript = [this](const std::string& name) -> Result<std::vector<std::byte>> {
+        if (!mapDataSource_) return Result<std::vector<std::byte>>::Failure("MapData.Auxiliary", "AUX_SCRIPT_REFERENCES_UNKNOWN", "目录来源未捕获。");
+        const auto& snapshot = mapDataSource_->Snapshot();
+        for (const auto& file : snapshot.files) if (file.relativePath.generic_string() == name) {
+            auto read = Script::CaptureReadOnlyScriptSource(snapshot.root / file.relativePath, true, 2U * 1024U * 1024U);
+            if (!read.Succeeded()) return {{}, read.diagnostics};
+            if (read.value->binding.sha256 != file.sha256 || read.value->binding.bytes != file.size) break;
+            return Result<std::vector<std::byte>>::Success(std::move(read.value->bytes));
+        }
+        return Result<std::vector<std::byte>>::Failure("MapData.Auxiliary", "AUX_SCRIPT_REFERENCES_UNKNOWN", "目录脚本来源已变化或缺失。");
+    };
     return refs;
 }
 

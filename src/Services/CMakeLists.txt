@@ -23,6 +23,7 @@ add_library(War3MapServices STATIC
     PlacementCreation.cpp
     ProjectReferenceIndex.cpp
     AuxiliaryEditing.cpp
+    AuxiliaryScriptSymbols.cpp
     MapCustomSettingsEditing.cpp
     MapCustomSettingsReferences.cpp
     MapCustomSettingsJson.cpp

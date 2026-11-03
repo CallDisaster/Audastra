@@ -266,11 +266,52 @@ void ReferenceChecksAtPublishAndUnknownPreservation() {
     Need(AuxiliaryEditing::Prepare(unknown, cameraUpdate, refs).Succeeded(), "unknown tenth slot is not assigned an unproven coordinate range");
 }
 } // namespace
+void ImportedCreationChecks() {
+    auto source = Source(); Trigger::TriggerDocument triggers;
+    AuxiliaryReferenceContext refs{&triggers, true, {"custom/test.j", "blackbox.AI"}};
+    std::string text = "function External takes nothing returns nothing\nendfunction\n";
+    unsigned reads = 0;
+    refs.readScript = [&](const std::string& name) {
+        Need(!name.ends_with(".AI"), "AI must never reach text reader"); ++reads;
+        std::vector<std::byte> bytes(text.size());
+        std::transform(text.begin(), text.end(), bytes.begin(), [](char c) { return std::byte(static_cast<unsigned char>(c)); });
+        return Result<std::vector<std::byte>>::Success(std::move(bytes));
+    };
+    auto request = Request(*source, MapDataKind::Regions, AuxiliaryEditAction::Create);
+    request.record = Region("New", 2);
+    auto plan = AuxiliaryEditing::Prepare(source, request, refs);
+    Need(plan.Succeeded() && reads == 1 && Code(plan, "AUX_SCRIPT_AI_SEPARATE_GLOBALS"), "external script without collision and unread AI permit creation");
+    text = "set gg_rct_New = null\n";
+    MapDataEditSession session(*source);
+    Need(Code(AuxiliaryEditing::Apply(session, *plan.value, refs), "AUX_SCRIPT_SYMBOL_CONFLICT") && !session.IsDirty(), "changed imported code is rechecked before apply");
+    text = "// gg_rct_New\ncall BJDebugMsg(\"gg_rct_New\")\n";
+    plan = AuxiliaryEditing::Prepare(source, request, refs);
+    Need(plan.Succeeded() && Code(plan, "AUX_SCRIPT_SYMBOL_CHECKED"), "JASS literals/comments are diagnostic only");
+    refs.opaqueScriptSources[0] = "test.lua";
+    text = "-- gg_rct_New\nlocal s = [=[gg_rct_New]=]\n";
+    Need(AuxiliaryEditing::Prepare(source, request, refs).Succeeded(), "Lua long string/comment not identifiers");
+    text = "gg_rct_New = nil";
+    Need(Code(AuxiliaryEditing::Prepare(source, request, refs), "AUX_SCRIPT_SYMBOL_CONFLICT"), "Lua identifier blocks creation");
+    text = "local s = 'unterminated";
+    Need(Code(AuxiliaryEditing::Prepare(source, request, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "incomplete Lua stays refused");
+    text = "-- valid\n"; text += char(0xff);
+    Need(Code(AuxiliaryEditing::Prepare(source, request, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "unknown encoding stays refused");
+    refs.opaqueScriptSources = {"未命名归档成员"}; reads = 0;
+    Need(Code(AuxiliaryEditing::Prepare(source, request, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN") && !reads, "anonymous source not assumed inactive");
+    refs.opaqueScriptSources = {"test.j"};
+    refs.readScript = [](const std::string&) { return Result<std::vector<std::byte>>::Failure("Test", "READ_FAILED", "failure"); };
+    Need(Code(AuxiliaryEditing::Prepare(source, request, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "read failure not empty code");
+    refs.opaqueScriptSources = {"blackbox.ai"};
+    Need(AuxiliaryEditing::Prepare(source, request, refs).Succeeded(), "AI alone does not require reader");
+    auto remove = Request(*source, MapDataKind::Regions, AuxiliaryEditAction::Delete);
+    Need(Code(AuxiliaryEditing::Prepare(source, remove, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "deletion remains conservative with AI");
+}
 int main() {
     try {
         CompleteCrudAndRecovery(); IdentityAndUnknownSources(); ReferencesAndCollisions(); InvalidUpdatesAndAtomicPublish();
         ReferenceChecksAtPublishAndUnknownPreservation();
         DirectoryAliasesKeepSourceGuards();
+        ImportedCreationChecks();
         std::cout << "AuxiliaryEditing: 6 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

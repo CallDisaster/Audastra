@@ -1,5 +1,6 @@
 #include "ProjectAuxiliaryEdits.h"
 #include "EditorProject.h"
+#include "AssetOwnedPayload.h"
 #include "Commands/MapDataCommands.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
@@ -23,6 +24,11 @@ Services::AuxiliaryReferenceContext CaptureAuxiliaryReferences(EditorProject& pr
         for (const auto& file : project.directorySnapshot_->Snapshot().files) inspect(file.relativePath.generic_string());
     } else if (project.readOnlyArchive_) result.opaqueScriptSources.push_back("只读归档未建立完整成员清单");
     for (const auto& pending : project.pendingImports_) inspect(pending.archivePath.toStdString());
+    result.readScript = [&project](const std::string& name) -> Result<std::vector<std::byte>> {
+        const auto owned = ReadOwnedAsset(project, QString::fromStdString(name), 2U * 1024U * 1024U);
+        if (!owned.Succeeded()) return {{}, owned.diagnostics};
+        return Result<std::vector<std::byte>>::Success(*owned.value->bytes);
+    };
     return result;
 }
 
@@ -89,7 +95,9 @@ Result<AuxiliaryEditResult> ApplyAuxiliaryEditWithResult(EditorProject& project,
     PushMapDataEdit(project, label, "编辑区域或镜头");
     (void)project.ObserveMapDataEdit("编辑区域或镜头");
     emit project.MapDocumentChanged();
-    return Result<AuxiliaryEditResult>::Success(std::move(result));
+    auto output = Result<AuxiliaryEditResult>::Success(std::move(result));
+    output.diagnostics = plan.diagnostics;
+    return output;
 }
 
 Status ApplyAuxiliaryEdit(EditorProject& project, Services::AuxiliaryEditRequest request, const QString& label) {

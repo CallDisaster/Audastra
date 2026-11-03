@@ -126,9 +126,8 @@ Status CheckReferences(const MapDocument& current, const AuxiliaryEditRequest& r
 Status CheckCreatedSymbol(const AuxiliaryReferenceContext& context, const std::string& symbol) {
     if (!context.completeTriggerSource || !context.triggers)
         return Bad("AUX_REFERENCE_COVERAGE", "触发器来源尚未完整读取，无法核对新增脚本符号 " + symbol + "。");
-    if (!context.opaqueScriptSources.empty())
-        return Bad("AUX_SCRIPT_REFERENCES_UNKNOWN", "外部或未命名脚本尚未建立完整符号索引，不能证明新符号 "
-            + symbol + " 不冲突；范围和其它属性仍可编辑。");
+    const auto external = CheckAuxiliaryCreatedScriptSymbol(context, symbol);
+    if (!external.Succeeded()) return external;
     const auto mentions = [&](std::string_view text) { return text.find(symbol) != text.npos; };
     if (mentions(context.triggers->wct.customCode.text)
         || std::any_of(context.triggers->triggers.begin(), context.triggers->triggers.end(),
@@ -142,7 +141,7 @@ Status CheckCreatedSymbol(const AuxiliaryReferenceContext& context, const std::s
                 return Bad("AUX_SCRIPT_SYMBOL_CONFLICT", "自定义脚本动作已使用新增符号 " + symbol + "，请先核对名称。");
         }
     }
-    return Status::Ok();
+    return external;
 }
 Status CheckReferenceTransition(const MapDocument& current, const AuxiliaryEditRequest& request,
     const AuxiliaryReferenceContext& references) {
@@ -260,8 +259,10 @@ Result<PreparedAuxiliaryEdit> AuxiliaryEditing::Prepare(std::shared_ptr<const Ma
     if (after.value->Member(request.kind).state != MapDataState::Ready)
         return fail(Bad("AUX_OUTPUT_UNSAFE", "修改后的区域或镜头无法完整读取。"));
     const bool changed = !SameMember(current->Member(request.kind), after.value->Member(request.kind));
-    return Result<PreparedAuxiliaryEdit>::Success(PreparedAuxiliaryEdit(std::move(request), std::move(current),
+    auto result = Result<PreparedAuxiliaryEdit>::Success(PreparedAuxiliaryEdit(std::move(request), std::move(current),
         std::make_shared<const MapDocument>(std::move(*after.value)), changed));
+    result.diagnostics = referenced.diagnostics;
+    return result;
 }
 
 Status AuxiliaryEditing::Apply(MapDataEditSession& session, const PreparedAuxiliaryEdit& plan,
