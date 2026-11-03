@@ -122,7 +122,9 @@ private:
         const ClassicMinimapObjectAssets&, const TerrainMinimapPostprocessSettings&,
         const ClassicMinimapCandidateLimits&);
     friend Result<ClassicMinimapCandidate> BuildClassicMinimapView(const ClassicMinimapObjectAssets&,
-        const ClassicMinimapViewOptions&, const TerrainMinimapPostprocessSettings&, const ClassicMinimapCandidateLimits&);
+                                                                   const ClassicMinimapViewOptions&,
+                                                                   const TerrainMinimapPostprocessSettings&,
+                                                                   const ClassicMinimapCandidateLimits&);
 };
 
 [[nodiscard]] Status VerifyClassicMinimapObjectAssetsCurrent(const ClassicMinimapObjectAssets& snapshot,
