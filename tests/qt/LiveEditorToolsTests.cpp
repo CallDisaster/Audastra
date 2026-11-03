@@ -312,6 +312,7 @@ class LiveEditorToolsTests final : public QObject {
     Q_OBJECT
 private slots:
     void OnlyLiveToolsAndActualCatalogAreExposed();
+    void ActiveSavedMinimapIsAsynchronousAndReadOnly();
     void RuntimeToolsRequireExplicitConsentAndShareUndo();
     void CampaignToolsShareSchemasAndPolicy();
     void BatchKeepsDocumentAndExistingUndoCommands();
@@ -532,6 +533,31 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     QCOMPARE(f.Context(), context);
     QCOMPARE(f.project.triggerUndoStack_->count(), 0);
 }
+
+void LiveEditorToolsTests::ActiveSavedMinimapIsAsynchronousAndReadOnly() try {
+    Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
+    namespace P = TerrainCornerRampFixtures;
+    P::Fixture preview; auto members=preview.members;
+    Image::DecodedImage image; image.width=image.height=2; image.rgba.resize(16,std::byte{255});
+    members.push_back({"war3mapMap.blp",P::Take(Image::EncodeBlpPaletted(image))});
+    const auto archive=P::Take(WriteVerifiedArchive(preview.root/"active.w3x",members));
+    f.project.directorySnapshot_.reset(); f.project.sourceArchivePath_=archive.path;
+    f.project.archiveSession_=std::make_shared<MapArchiveSession>(P::Take(MapArchiveSession::Open(archive.path)));
+    f.project.mapDocument_=std::make_unique<MapDocument>(MapDocument::FromArchive(*f.project.archiveSession_));
+    f.project.ResetEditTracking();
+    const auto revision=f.project.editRevision_.Revision(); const auto undo=f.project.mapDataUndoStack_->count();
+    const QJsonObject args{{"source_path",QString::fromStdWString(archive.path.wstring())},
+        {"expected_source_sha256",QString::fromStdString(archive.sha256)},{"source","saved"},{"include_rgba",true}};
+    auto result=f.tools->Invoke("query_minimap_preview",args);
+    QVERIFY(result["ok"].toBool()); QVERIFY(result["pending"].toBool());
+    QTRY_VERIFY_WITH_TIMEOUT((result=f.tools->Invoke("query_minimap_preview",args),!result["pending"].toBool()),15000);
+    QVERIFY2(result["ok"].toBool(),qPrintable(Explain(result))); QVERIFY(!result["rgba_base64"].toString().isEmpty());
+    QCOMPARE(result["rgba_sha256"].toString().toStdString(),P::Take(Services::OpenMinimapPreview(archive.path,archive.sha256)).rgbaSha256);
+    QCOMPARE(result["document_revision"].toString(),QString::number(revision));
+    QCOMPARE(f.project.editRevision_.Revision(),revision); QCOMPARE(f.project.mapDataUndoStack_->count(),undo);
+    auto invalid=args;invalid.insert("layers",139);
+    QCOMPARE(ErrorCode(f.tools->Invoke("query_minimap_preview",invalid)),QString("MINIMAP_PREVIEW_ARGUMENT"));
+} catch(const std::exception& error) { QFAIL(error.what()); }
 
 void LiveEditorToolsTests::CampaignToolsShareSchemasAndPolicy() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));

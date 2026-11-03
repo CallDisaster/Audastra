@@ -24,6 +24,8 @@ war3-map-cli minimap-preview sample.w3x <完整小写源SHA-256> current.ppm --s
 
 活动编辑器和独立MCP均提供`query_minimap_preview`，接受绝对`source_path`、`expected_source_sha256`、`source=current|saved`（兼容默认saved），以及默认关闭的`include_rgba`。current可选`layers`整数位、`units/starts/icons`布尔值。独立入口current按指定文件生成，可传`game_root`，文档修订为0；活动工程current须带`project_identity/expected_revision`，路径及SHA须匹配工程，游戏目录使用宿主设置，返回当前文档修订，后台未完成时`pending=true`，可稍后查询。保存或写命令执行中会拒绝查询。saved不接受图层或游戏目录参数，不读取未保存覆盖或切换工程。
 
+活动工程自身的saved查询也复用已捕获归档并在后台解码，首次返回`pending`时须稍后查询；返回的文档修订表示此次查询上下文，像素身份仍由源SHA和成员SHA标明。其它文件的saved查询保留独立只读入口。
+
 默认只返回元数据；显式请求像素时返回`rgba8_top_down`，响应最多2MiB，活动日志不复制像素正文。客户端应按图像处理，勿把传输数据打印成日志或写入说明文档。
 
 三个入口共用同一个BLP解码和像素身份服务。单底图输入上限4MiB、边长上限512、解码工作量上限64MiB；没有为了预览静默缩小原图。归档来源打开与精确捕获仍保留其各自的校验和预算。无可读listfile时，CLI/MCP仍按固定底图名精确查询；缺失、空文件、格式损坏与读取失败分别处理。该只读结果不授予保存资格，也不构成原版编辑器或游戏验收。
