@@ -29,6 +29,14 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
         if (input.layers & ~0x4afu) Fail("MINIMAP_CURRENT_LAYERS", "小地图图层参数无效。");
         // 通行位的配色需独立原版证据；不能从位号猜颜色后冒充原版。
         if (input.layers & 4u) Fail("MINIMAP_CURRENT_PATHING_UNVERIFIED", "通行层的原版配色尚未核定。");
+        if(input.replacements.size()>8192||input.removals.size()>8192)Fail("MINIMAP_PREVIEW_BUDGET","显示资源覆盖超过数量预算。");
+        std::size_t overlayBytes=0;
+        for(const auto& member:input.replacements){
+            if(Text::LowerAscii(member.name).ends_with(".ai"))Fail("MINIMAP_CURRENT_RESOURCE","引导成员不能作为小地图资源覆盖。");
+            if(member.name.size()>260 || member.data.size()>128U*1024U*1024U-overlayBytes)
+                Fail("MINIMAP_PREVIEW_BUDGET","显示资源覆盖超过128MiB预算。");
+            overlayBytes+=member.data.size();
+        }
         auto replacements = input.replacements;
         for (auto& member : input.edits->Replacements()) {
             const auto key = Text::LowerAscii(member.name);
@@ -111,6 +119,7 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
         output.image = Take(Image::DecodeBlp(candidate.encoded.bytes));
         if (input.units || input.starts || input.icons) {
             const auto drawDot = [&](int x, int y, std::array<std::uint8_t,4> bgra) {
+                if(x < -1 || x > 256 || y < -1 || y > 256)return;
                 for (int dy=-1;dy<=1;++dy) for(int dx=-1;dx<=1;++dx) {
                     if(x+dx<0||x+dx>=256||y+dy<0||y+dy>=256) continue;
                     const auto at=(static_cast<std::size_t>(y+dy)*256+x+dx)*4;
