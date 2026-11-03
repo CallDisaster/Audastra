@@ -8916,13 +8916,18 @@ void NativeWorkbenchTests::ArchiveWorkspaceCancellationAndFailureKeepActiveOwner
     QVERIFY(ChangeHealth(window, 777));
     QObject cancellation;
     bool cancelled = false;
-    QTimer::singleShot(0, &cancellation, [&] {
+    QTimer cancelPrompt;
+    cancelPrompt.setInterval(1);
+    QObject::connect(&cancelPrompt, &QTimer::timeout, &cancellation, [&] {
         if (auto* prompt = qobject_cast<QMessageBox*>(QApplication::activeModalWidget())) {
             cancelled = true;
+            cancelPrompt.stop();
             prompt->reject();
         }
     });
+    cancelPrompt.start(); // 打开期间也处理事件；必须等真正的确认框，不能提前消费一次性定时器。
     QVERIFY(!window.OpenMapArchivePath(second));
+    cancelPrompt.stop();
     QVERIFY(cancelled);
     QCOMPARE(directories(), before); // 切换取消只回收本次新建目录。
     QVERIFY(window.project_->projectRoot_ == active);
