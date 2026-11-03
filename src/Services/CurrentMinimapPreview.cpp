@@ -95,7 +95,12 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                 if (!std::isfinite(region.left) || !std::isfinite(region.right) || !std::isfinite(region.top)
                     || !std::isfinite(region.bottom) || region.left >= region.right || region.bottom >= region.top)
                     return Status::Failure("Minimap.Preview", "MINIMAP_CURRENT_REGIONS", "区域边界无效。");
-                for (std::uint32_t y = 0; y < raw.height; ++y) for (std::uint32_t x = 0; x < raw.width; ++x) {
+                const auto edge=[](float coordinate,float offset,std::uint32_t start,std::uint32_t limit){
+                    return static_cast<std::uint32_t>(std::clamp(std::ceil((double(coordinate)-offset)/128.0-start),0.0,double(limit)));
+                };
+                const auto x0=edge(region.left,header.offset[0],rectangle[0],raw.width),x1=edge(region.right,header.offset[0],rectangle[0],raw.width);
+                const auto y0=edge(region.bottom,header.offset[1],rectangle[1],raw.height),y1=edge(region.top,header.offset[1],rectangle[1],raw.height);
+                for (std::uint32_t y = y0; y < y1; ++y) for (std::uint32_t x = x0; x < x1; ++x) {
                     if (++work > 8U * 1024U * 1024U) return Status::Failure("Minimap.Preview", "MINIMAP_PREVIEW_BUDGET", "区域叠加超过工作预算。");
                     const auto wx = header.offset[0] + static_cast<double>(rectangle[0] + x) * 128;
                     const auto wy = header.offset[1] + static_cast<double>(rectangle[1] + y) * 128;
