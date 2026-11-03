@@ -813,6 +813,16 @@ Result<MapArchiveSession> MapArchiveSession::AfterSave(const ArchiveSaveResult& 
         if (!path.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(path.diagnostics));
         if (!SamePath(*path.value, written.path)) return Result<MapArchiveSession>::Failure(
             "MapArchiveSession", "SAVED_FILE_CHANGED", "保存结果的路径与写出时不同，请重新打开地图。");
+        // 缓存资格必须先于本轮真实完整散列取得。散列后的同一R租约仅供
+        // 下一会话的精确捕获复用；不获准、身份不符或中途失效仍走原完整核对。
+        std::shared_ptr<ArchiveExactReadLease> savedLease;
+        if (exactReadLease_ && !opaqueMembers_) {
+            auto candidate = std::make_shared<ArchiveExactReadLease>(*path.value, written.sha256,
+                info.dwVolumeSerialNumber, FileId(info));
+            if (candidate->file.Valid() && candidate->Stable()
+                && VerifyIdentity(candidate->file.Get(), info.dwVolumeSerialNumber, FileId(info)).Succeeded())
+                savedLease = std::move(candidate);
+        }
         auto sha = Sha256Handle(file.Get());
         if (!sha.Succeeded()) return ForwardFailure<MapArchiveSession>(std::move(sha.diagnostics));
         if (*sha.value != written.sha256) return Result<MapArchiveSession>::Failure(
@@ -849,6 +859,10 @@ Result<MapArchiveSession> MapArchiveSession::AfterSave(const ArchiveSaveResult& 
         session.prefix_ = prefix_;
         session.listfile_ = std::move(*listfile.value);
         if (exactReadLease_) {
+            if (savedLease && savedLease->Stable()
+                && savedLease->Matches(session.sourcePath_, session.sourceSha256_, session.volumeSerial_, session.fileId_))
+                session.exactReadLease_ = std::move(savedLease);
+            // 仍检查新句柄、卷/文件ID和实际命名路径；缓存失效时此入口重新全量散列。
             const auto pinned = session.PinSourceForExactCaptures();
             if (!pinned.Succeeded()) return ForwardFailure<MapArchiveSession>(pinned.diagnostics);
         }

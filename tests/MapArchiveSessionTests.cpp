@@ -409,6 +409,14 @@ void TestExactCaptureLeaseIsOwnedAndKeepsRealReadback() {
         RequireSuccess(next.value->CaptureExactMembers(std::vector<std::string>{"war3map.j"}), "read actual saved member under its lease");
         auto forged = *candidate.value; forged.sha256.front() = forged.sha256.front() == '0' ? '1' : '0';
         Require(!copy.AfterSave(forged, {}).Succeeded(), "pinned source does not bypass actual saved archive SHA verification");
+        const auto equalReplacement = directory.Path() / "equal-saved.w3x";
+        Require(std::filesystem::copy_file(candidate.value->path, equalReplacement), "copy equal saved bytes");
+        Require(ReplaceFileW(candidate.value->path.c_str(), equalReplacement.c_str(), nullptr,
+            REPLACEFILE_WRITE_THROUGH | REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS, nullptr, nullptr) != 0,
+            "replace actual saved path while readback proof is held");
+        Require(!next.value->VerifySourceUnchanged().Succeeded()
+            && !next.value->CaptureExactMembers(std::vector<std::string>{"war3map.j"}).Succeeded(),
+            "saved readback proof cannot follow an equal-byte replacement at a new file ID");
     }
     {
         std::ofstream changed(source, std::ios::binary | std::ios::app);
@@ -493,6 +501,46 @@ void TestExactCaptureLeaseDoesNotTrustWritableMappings() {
     Require(!actual.Succeeded() && !actual.value && actual.diagnostics.front().code == "SOURCE_CHANGED",
         "persistent writable mapping cannot reuse a stale whole-source digest even for an unchanged queried member");
     Require(!opened.value->VerifySourceUnchanged().Succeeded(), "source verification also rehashes when a writable mapping prevents read-cache qualification");
+}
+
+void TestSavedCaptureLeaseDoesNotTrustWritableMappings() {
+    TempDirectory directory;
+    auto source = MapArchiveSession::Open(CreateSource(directory)); RequireSuccess(source, "open saved mapping source");
+    Require(source.value->PinSourceForExactCaptures().Succeeded(), "pin original source before saved mapping test");
+    const auto written = source.value->SaveCandidate(directory.Path() / "saved.w3x", {});
+    RequireSuccess(written, "write real saved mapping candidate");
+    struct Mapping {
+        HANDLE file = INVALID_HANDLE_VALUE, section = nullptr;
+        void* view = nullptr;
+        ~Mapping() {
+            if (view) UnmapViewOfFile(view);
+            if (section) CloseHandle(section);
+            if (file != INVALID_HANDLE_VALUE) CloseHandle(file);
+        }
+    } mapped;
+    mapped.file = CreateFileW(written.value->path.c_str(), GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    Require(mapped.file != INVALID_HANDLE_VALUE, "open saved candidate writable section source");
+    mapped.section = CreateFileMappingW(mapped.file, nullptr, PAGE_READWRITE, 0, 0, nullptr);
+    Require(mapped.section != nullptr, "create saved candidate writable section");
+    mapped.view = MapViewOfFile(mapped.section, FILE_MAP_WRITE, 0, 0, 0);
+    Require(mapped.view != nullptr, "retain saved candidate writable view");
+    CloseHandle(mapped.file); mapped.file = INVALID_HANDLE_VALUE;
+    auto next = source.value->AfterSave(*written.value, {});
+    if (!next.Succeeded()) {
+        Require(next.diagnostics.front().code == "SOURCE_LEASE_FAILED", "mapping can prevent readback lease acquisition");
+        return;
+    }
+    auto* bytes = static_cast<volatile unsigned char*>(mapped.view);
+    bytes[128] = bytes[128] ^ 1; // 只改原创外头，不改变被查询成员。
+    MemoryBarrier();
+    const auto capture = next.value->CaptureExactMembers(std::vector<std::string>{"war3map.j"});
+    Require(!capture.Succeeded() && !capture.value && capture.diagnostics.front().code == "SOURCE_CHANGED",
+        "saved cache still hashes when a preexisting writable mapping prevents proof qualification");
+    next.value.reset();
+    const auto tampered = source.value->AfterSave(*written.value, {});
+    Require(!tampered.Succeeded() && !tampered.value && tampered.diagnostics.front().code == "SAVED_FILE_CHANGED",
+        "actual full saved SHA remains mandatory even when the receipt supplies the lease label");
 }
 
 // 手工构造的原创归档：哈希项 locale/platform 字段取给定值，(attributes) 与 (signature)
@@ -1189,6 +1237,7 @@ int main() {
         TestExactCaptureLeaseIsOwnedAndKeepsRealReadback();
         TestPinnedAtomicReplaceKeepsIdentityAndVerifiedBackup();
         TestExactCaptureLeaseDoesNotTrustWritableMappings();
+        TestSavedCaptureLeaseDoesNotTrustWritableMappings();
         TestReservedPlatformByteAndMetadataMembers();
         TestProjectWriterAndInvalidPrefix();
         TestSaveInPlaceReplacesSourceAndKeepsBackup();
