@@ -49,12 +49,16 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& pat
 class MinimapPreviewTests final : public QObject {
     Q_OBJECT
 private slots:
+    void initTestCase() {
+        QCoreApplication::setOrganizationName("Audastra-MinimapPreview-Tests");
+        QCoreApplication::setApplicationName("MinimapPreviewTests");
+    }
     void SharedPixelsAndCliExport();
     void MissingCorruptBudgetAndStale();
     void ViewFollowsUndoSaveSourceAndSwitch();
 };
 
-void MinimapPreviewTests::SharedPixelsAndCliExport() {
+void MinimapPreviewTests::SharedPixelsAndCliExport() try {
     F::Fixture fixture; auto members = fixture.members;
     members.push_back({"war3mapMap.blp", ImageBytes()});
     const auto path = F::Take(WriteVerifiedArchive(fixture.root / "preview.w3x", members)).path;
@@ -81,9 +85,9 @@ void MinimapPreviewTests::SharedPixelsAndCliExport() {
     QVERIFY(std::equal(header.begin(), header.end(), bytes.begin())); QCOMPARE(bytes.size(), header.size() + 12);
     QVERIFY(!Services::ExportMinimapPreviewPpm(result, ppm).Succeeded());
     QCOMPARE(F::Take(Sha256File(path)), sha);
-}
+} catch (const std::exception& error) { QFAIL(error.what()); }
 
-void MinimapPreviewTests::MissingCorruptBudgetAndStale() {
+void MinimapPreviewTests::MissingCorruptBudgetAndStale() try {
     F::Fixture fixture;
     const auto sha = fixture.source->SourceSha256();
     QVERIFY(!F::Take(Services::CaptureMinimapPreview(*fixture.source, sha)).present);
@@ -103,9 +107,9 @@ void MinimapPreviewTests::MissingCorruptBudgetAndStale() {
         const auto output = F::Take(WriteVerifiedArchive(fixture.root / ("bad" + std::to_string(type) + ".w3x"), members));
         QVERIFY(!Services::OpenMinimapPreview(output.path, output.sha256).Succeeded());
     }
-}
+} catch (const std::exception& error) { QFAIL(error.what()); }
 
-void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() {
+void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() try {
     F::Fixture fixture; auto members = fixture.members; members.push_back({"war3mapMap.blp", ImageBytes()});
     const auto path = F::Take(WriteVerifiedArchive(fixture.root / "view.w3x", members)).path;
     QtProject::EditorProject project; Install(project, path, members);
@@ -139,6 +143,6 @@ void MinimapPreviewTests::ViewFollowsUndoSaveSourceAndSwitch() {
     Install(project, fixture.source->SourcePath(), fixture.members); project.MapDocumentChanged();
     QTRY_VERIFY_WITH_TIMEOUT(state->text().contains("没有已保存"), 15000);
     QVERIFY(view.findChild<QLabel*>("worldMinimapImage")->pixmap().isNull());
-}
+} catch (const std::exception& error) { QFAIL(error.what()); }
 QTEST_MAIN(MinimapPreviewTests)
 #include "MinimapPreviewTests.moc"
