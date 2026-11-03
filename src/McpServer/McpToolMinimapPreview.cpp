@@ -47,6 +47,7 @@ ToolDefinition MinimapPreviewToolDefinition() {
         {"layers",QJsonObject{{"type","integer"},{"minimum",0},{"maximum",0x4af}}},
         {"units",QJsonObject{{"type","boolean"}}},{"starts",QJsonObject{{"type","boolean"}}},{"icons",QJsonObject{{"type","boolean"}}},
         {"project_identity",QJsonObject{{"type","string"}}}, {"expected_revision",QJsonObject{{"type","string"}}},
+        {"binding_token",QJsonObject{{"type","string"},{"maxLength",128}}},
         {"include_rgba", QJsonObject{{"type", "boolean"}, {"default", false}}}},
         {"source_path", "expected_source_sha256"});
     tool.handler = [](const QJsonObject& arguments) -> QJsonValue {
