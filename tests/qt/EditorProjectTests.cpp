@@ -1692,6 +1692,7 @@ void EditorProjectTests::SaveCommitRejectsRevisionDrift() {
         project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*opened.value));
         project.LoadMapDocument();
         QVERIFY(project.mapDocument_ && project.mapDocument_->Settings() && project.mapEdits_);
+        const auto savedName = project.mapDocument_->Settings()->mapName;
         project.ResetEditTracking();
         const auto baseline = project.editRevision_.Baseline(EditSaveTarget::Map);
         QVERIFY(baseline.has_value());
@@ -1717,6 +1718,9 @@ void EditorProjectTests::SaveCommitRejectsRevisionDrift() {
         QVERIFY(project.HasUnsavedMapChanges());
 
         QVERIFY(job->succeeded && job->nextSession && std::filesystem::exists(job->written));
+        const auto writtenDocument = MapDocument::FromArchive(*job->nextSession);
+        QVERIFY(writtenDocument.Settings());
+        QCOMPARE(writtenDocument.Settings()->mapName, savedName);
         QVERIFY(!project.CommitMapSave(*job).has_value());
         QVERIFY(project.sourceArchivePath_ == source && project.mapEdits_ && project.mapEdits_->IsDirty());
         QCOMPARE(project.editRevision_.Current(), lateScopes);

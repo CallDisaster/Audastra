@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "../QtCommon/DiagnosticTimings.h"
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapDocument.h"
@@ -18,6 +19,7 @@ void EditorProject::LoadMapDocument(bool afterMapSave) {
         AddDiagnostic(error ? tr("错误") : tr("警告"), tr("地图数据"),
             QString::fromUtf8(diagnostic.code), QString::fromUtf8(diagnostic.message));
     };
+    QtCommon::DiagnosticTimingScope documentTiming("map-data-document-parse");
     mapDocument_.reset();
     if (archiveSession_) {
         mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromArchive(*archiveSession_));
@@ -30,6 +32,8 @@ void EditorProject::LoadMapDocument(bool afterMapSave) {
         for (const auto& diagnostic : read.diagnostics) report(diagnostic, true);
         if (read.Succeeded()) mapDocument_ = std::make_unique<MapDocument>(std::move(*read.value));
     }
+    documentTiming.Finish();
+    QtCommon::DiagnosticTimingScope terrainTiming("map-data-terrain-attach");
     if (mapDocument_) {
         if (afterMapSave && mapEdits_) mapEdits_->CommitSaved(*mapDocument_);
         else {
@@ -52,6 +56,8 @@ void EditorProject::LoadMapDocument(bool afterMapSave) {
             report(diagnostic, diagnostic.severity == DiagnosticSeverity::Error);
         }
     } else mapEdits_.reset();
+    terrainTiming.Finish();
+    QtCommon::DiagnosticTimingScope notifyTiming("map-data-notify");
     emit MapDocumentChanged();
 }
 

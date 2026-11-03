@@ -594,6 +594,7 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
         for (const auto& diagnostic : mapDocument_->Diagnostics())
             AddDiagnostic(diagnostic.severity == DiagnosticSeverity::Error ? tr("错误") : tr("警告"), tr("地图数据"),
                 QString::fromUtf8(diagnostic.code), QString::fromUtf8(diagnostic.message));
+        QtCommon::DiagnosticTimingScope notifyTiming("save-commit-document-notify");
         emit MapDocumentChanged();
     } else LoadMapDocument(true);
     bindTiming.Finish();
@@ -621,7 +622,10 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     objectDirty_.fill(false);
     pendingImports_.clear();
     assetEdits_.clear();
-    NotifyImportsChanged();
+    {
+        QtCommon::DiagnosticTimingScope notifyTiming("save-commit-import-notify");
+        NotifyImportsChanged();
+    }
     if (triggerUndoStack_) triggerUndoStack_->setClean();
     if (mapDataUndoStack_) mapDataUndoStack_->setClean();
     for (auto* stack : objectUndoStacks_) {

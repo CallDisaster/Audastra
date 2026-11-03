@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "AppHelpers.h"
 #include "../QtCommon/DiagnosticTimings.h"
+#include "../QtCommon/OwnedWork.h"
 #include "AssetsModule.h"
 #include "ObjectModule.h"
 #include "TriggerModule.h"
@@ -59,6 +60,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
+#include <QScopeGuard>
 #include <QShortcut>
 #include <QSizePolicy>
 #include <QSplitter>
@@ -173,115 +175,137 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         return false;
     }
     setCursor(Qt::WaitCursor);
-    War3Map::QtCommon::DiagnosticTimingScope snapshotTiming("open-archive-snapshot");
-    War3Map::MapArchiveSession::OpenObserver observer;
-    if (War3Map::QtCommon::DiagnosticTimingsEnabled())
-        observer = [](std::string_view event) { War3Map::QtCommon::DiagnosticTimingEvent(event); };
-    auto snapshot = War3Map::MapArchiveSession::Open(archivePath, nullptr, observer);
-    snapshotTiming.Finish();
-    War3Map::QtCommon::DiagnosticTimingScope workspaceTiming("open-readonly-workspace");
-    auto opened = War3Map::MpqWorkspace::OpenReadOnly(archivePath);
-    workspaceTiming.Finish();
-    if (!opened.Succeeded() || !opened.value.has_value()) {
-        unsetCursor();
-        for (const auto& diagnostic : opened.diagnostics) {
-            AddDiagnostic(
-                tr("错误"), Utf8(diagnostic.subsystem), Utf8(diagnostic.code),
-                Utf8(diagnostic.message));
+    project_->savingMap_ = true;
+    const QPointer<MainWindow> intakeWindow(this);
+    const auto intakeGuard = qScopeGuard([intakeWindow] {
+        if (intakeWindow) { intakeWindow->project_->savingMap_ = false; intakeWindow->unsetCursor(); }
+    });
+    War3Map::QtCommon::OwnedWorkScope ownedWork(true);
+    struct Intake {
+        ArchiveOpenBinding binding;
+        std::vector<War3Map::Diagnostic> diagnostics;
+        bool ready = false;
+    };
+    // 文件路径按值捕获；归档、投影、物编和诊断全部由worker创建并独占。
+    // 这里不读取project、控件或设置；join后才装回UI。
+    auto intake = War3Map::QtCommon::RunOwnedWork([archivePath]() -> Intake {
+        Intake result;
+        War3Map::QtCommon::DiagnosticTimingScope snapshotTiming("open-archive-snapshot");
+        War3Map::MapArchiveSession::OpenObserver observer;
+        if (War3Map::QtCommon::DiagnosticTimingsEnabled())
+            observer = [](std::string_view event) { War3Map::QtCommon::DiagnosticTimingEvent(event); };
+        auto snapshot = War3Map::MapArchiveSession::Open(archivePath, nullptr, observer);
+        snapshotTiming.Finish();
+        War3Map::QtCommon::DiagnosticTimingScope workspaceTiming("open-readonly-workspace");
+        auto opened = War3Map::MpqWorkspace::OpenReadOnly(archivePath);
+        workspaceTiming.Finish();
+        if (!opened.Succeeded() || !opened.value.has_value()) {
+            result.diagnostics = std::move(opened.diagnostics);
+            for (auto& diagnostic : result.diagnostics) diagnostic.severity = War3Map::DiagnosticSeverity::Error;
+            result.diagnostics.push_back({War3Map::DiagnosticSeverity::Error, "地图", "MPQ_OPEN_FAILED",
+                "无法解析地图归档，可能不是有效的 w3x/w3m。"});
+            return result;
         }
-        AddDiagnostic(
-            tr("错误"), tr("地图"), tr("MPQ_OPEN_FAILED"),
-            tr("无法解析地图归档，可能不是有效的 w3x/w3m。"));
-        return false;
-    }
 
-    // 源归档只读：提取到临时工作目录后走标准目录管线。
-    auto workspace = std::make_unique<QTemporaryDir>(
-        QDir::temp().filePath(QStringLiteral("War3MapEditor64-map-XXXXXX")));
-    if (!workspace->isValid()) {
-        unsetCursor();
-        AddDiagnostic(tr("错误"), tr("地图"), tr("MAP_WORKSPACE_CREATE_FAILED"),
-            tr("无法创建独立地图工作目录，当前编辑保持不变：%1").arg(workspace->errorString()));
-        return false;
-    }
-    const std::filesystem::path workDir(workspace->path().toStdWString());
-    War3Map::QtCommon::DiagnosticTimingScope extractTiming("open-extract-map-data");
-    const War3Map::Status extractStatus = opened.value->ExtractMapData(workDir);
-    extractTiming.Finish();
+        // 源归档只读：提取到临时工作目录后走标准目录管线。
+        auto workspace = std::make_unique<QTemporaryDir>(
+            QDir::temp().filePath(QStringLiteral("War3MapEditor64-map-XXXXXX")));
+        if (!workspace->isValid()) {
+            result.diagnostics.push_back({War3Map::DiagnosticSeverity::Error, "地图", "MAP_WORKSPACE_CREATE_FAILED",
+                "无法创建独立地图工作目录，当前编辑保持不变：" + workspace->errorString().toStdString()});
+            return result;
+        }
+        const std::filesystem::path workDir(workspace->path().toStdWString());
+        War3Map::QtCommon::DiagnosticTimingScope extractTiming("open-extract-map-data");
+        const War3Map::Status extractStatus = opened.value->ExtractMapData(workDir);
+        extractTiming.Finish();
+        if (!extractStatus.Succeeded()) {
+            result.diagnostics = extractStatus.diagnostics;
+            return result;
+        }
+
+        War3Map::QtCommon::DiagnosticTimingScope objectsTiming("open-native-objects");
+        // 将提取的 native 物体文件转换为 LNI 工作格式，供物体编辑器消费。
+        // 同时保留 native 基线文档：另存为时把 LNI 编辑差异回灌写回。
+        std::vector<War3Map::Diagnostic> importDiagnostics;
+        std::array<std::unique_ptr<War3Map::ObjectData::NativeObjectDocument>, 7> nativeBaselines;
+        for (std::size_t index = 0; index < kObjectTypes.size(); ++index) {
+            const auto type = kObjectTypes[index];
+            const std::filesystem::path nativePath =
+                workDir / "map" / std::string(War3Map::ObjectData::NativeFileName(type));
+            std::error_code fileError;
+            if (!std::filesystem::is_regular_file(nativePath, fileError) || fileError) {
+                continue;
+            }
+            const std::vector<std::byte> nativeBytes = ReadBytes(nativePath);
+            // 解析 native 并保留基线文档。
+            War3Map::ObjectData::NativeObjectCodec nativeCodec(type);
+            auto nativeParsed = nativeCodec.Parse(nativeBytes);
+            importDiagnostics.insert(
+                importDiagnostics.end(),
+                nativeParsed.diagnostics.begin(),
+                nativeParsed.diagnostics.end());
+            if (!nativeParsed.Succeeded() || nativeParsed.document == nullptr) {
+                continue;
+            }
+            auto* nativeDoc = dynamic_cast<War3Map::ObjectData::NativeObjectDocument*>(
+                nativeParsed.document.get());
+            if (nativeDoc == nullptr) {
+                continue;
+            }
+            nativeParsed.document.release();
+            nativeBaselines[index].reset(nativeDoc);
+            // 渲染为 LNI 写入工作区 table/。
+            auto rendered = War3Map::ObjectData::RenderObjectRecordsToLni(
+                type, nativeBaselines[index]->Objects());
+            importDiagnostics.insert(
+                importDiagnostics.end(),
+                rendered.diagnostics.begin(),
+                rendered.diagnostics.end());
+            if (!rendered.Succeeded() || !rendered.value.has_value()) {
+                continue;
+            }
+            const std::filesystem::path lniPath =
+                workDir / "table" / std::string(War3Map::ObjectData::LniFileName(type));
+            std::filesystem::create_directories(lniPath.parent_path(), fileError);
+            std::ofstream lniOut(lniPath, std::ios::binary);
+            if (lniOut) {
+                lniOut.write(
+                    reinterpret_cast<const char*>(rendered.value->data()),
+                    static_cast<std::streamsize>(rendered.value->size()));
+            }
+        }
+
+        objectsTiming.Finish();
+        War3Map::QtCommon::DiagnosticTimingScope verifyTiming("open-source-verify");
+        const auto sourceStatus = opened.value->VerifyUnchanged();
+        verifyTiming.Finish();
+        if (!sourceStatus.Succeeded() || (snapshot.Succeeded() && snapshot.value
+            && snapshot.value->SourceSha256() != opened.value->SourceSha256())) {
+            result.diagnostics.push_back({War3Map::DiagnosticSeverity::Error, "地图", "MAP_SOURCE_CHANGED",
+                "打开地图期间来源发生变化，当前编辑保持不变。"});
+            return result;
+        }
+        ArchiveOpenBinding binding{archivePath, {}, {}, std::move(nativeBaselines), std::move(workspace)};
+        if (snapshot.Succeeded() && snapshot.value)
+            binding.session = std::make_unique<War3Map::MapArchiveSession>(std::move(*snapshot.value));
+        else binding.readOnly = std::make_shared<const War3Map::MpqWorkspace>(std::move(*opened.value));
+        result.binding = std::move(binding);
+        result.diagnostics = std::move(snapshot.diagnostics);
+        result.diagnostics.insert(result.diagnostics.end(), extractStatus.diagnostics.begin(), extractStatus.diagnostics.end());
+        result.diagnostics.insert(result.diagnostics.end(), importDiagnostics.begin(), importDiagnostics.end());
+        result.ready = true;
+        return result;
+    });
+    if (!intakeWindow) return false;
+    project_->savingMap_ = false;
     unsetCursor();
-    if (!extractStatus.Succeeded()) {
-        for (const auto& diagnostic : extractStatus.diagnostics)
-            AddDiagnostic(DiagnosticLevel(diagnostic.severity), Utf8(diagnostic.subsystem),
-                Utf8(diagnostic.code), Utf8(diagnostic.message));
+    if (!intake.ready) {
+        project_->AddDiagnostics(intake.diagnostics);
         return false;
     }
-
-    War3Map::QtCommon::DiagnosticTimingScope objectsTiming("open-native-objects");
-    // 将提取的 native 物体文件转换为 LNI 工作格式，供物体编辑器消费。
-    // 同时保留 native 基线文档：另存为时把 LNI 编辑差异回灌写回。
-    std::vector<War3Map::Diagnostic> importDiagnostics;
-    std::array<std::unique_ptr<War3Map::ObjectData::NativeObjectDocument>, 7> nativeBaselines;
-    for (std::size_t index = 0; index < kObjectTypes.size(); ++index) {
-        const auto type = kObjectTypes[index];
-        const std::filesystem::path nativePath =
-            workDir / "map" / std::string(War3Map::ObjectData::NativeFileName(type));
-        std::error_code fileError;
-        if (!std::filesystem::is_regular_file(nativePath, fileError) || fileError) {
-            continue;
-        }
-        const std::vector<std::byte> nativeBytes = ReadBytes(nativePath);
-        // 解析 native 并保留基线文档。
-        War3Map::ObjectData::NativeObjectCodec nativeCodec(type);
-        auto nativeParsed = nativeCodec.Parse(nativeBytes);
-        importDiagnostics.insert(
-            importDiagnostics.end(),
-            nativeParsed.diagnostics.begin(),
-            nativeParsed.diagnostics.end());
-        if (!nativeParsed.Succeeded() || nativeParsed.document == nullptr) {
-            continue;
-        }
-        auto* nativeDoc = dynamic_cast<War3Map::ObjectData::NativeObjectDocument*>(
-            nativeParsed.document.get());
-        if (nativeDoc == nullptr) {
-            continue;
-        }
-        nativeParsed.document.release();
-        nativeBaselines[index].reset(nativeDoc);
-        // 渲染为 LNI 写入工作区 table/。
-        auto rendered = War3Map::ObjectData::RenderObjectRecordsToLni(
-            type, nativeBaselines[index]->Objects());
-        importDiagnostics.insert(
-            importDiagnostics.end(),
-            rendered.diagnostics.begin(),
-            rendered.diagnostics.end());
-        if (!rendered.Succeeded() || !rendered.value.has_value()) {
-            continue;
-        }
-        const std::filesystem::path lniPath =
-            workDir / "table" / std::string(War3Map::ObjectData::LniFileName(type));
-        std::filesystem::create_directories(lniPath.parent_path(), fileError);
-        std::ofstream lniOut(lniPath, std::ios::binary);
-        if (lniOut) {
-            lniOut.write(
-                reinterpret_cast<const char*>(rendered.value->data()),
-                static_cast<std::streamsize>(rendered.value->size()));
-        }
-    }
-
-    objectsTiming.Finish();
-    War3Map::QtCommon::DiagnosticTimingScope verifyTiming("open-source-verify");
-    const auto sourceStatus = opened.value->VerifyUnchanged();
-    verifyTiming.Finish();
-    if (!sourceStatus.Succeeded() || (snapshot.Succeeded() && snapshot.value
-        && snapshot.value->SourceSha256() != opened.value->SourceSha256())) {
-        AddDiagnostic(tr("错误"), tr("地图"), tr("MAP_SOURCE_CHANGED"),
-            tr("打开地图期间来源发生变化，当前编辑保持不变。"));
-        return false;
-    }
-    ArchiveOpenBinding binding{archivePath, {}, {}, std::move(nativeBaselines), std::move(workspace)};
-    if (snapshot.Succeeded() && snapshot.value)
-        binding.session = std::make_unique<War3Map::MapArchiveSession>(std::move(*snapshot.value));
-    else binding.readOnly = std::make_shared<const War3Map::MpqWorkspace>(std::move(*opened.value));
+    auto& binding = intake.binding;
+    const std::filesystem::path workDir(binding.workspace->path().toStdWString());
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());
     War3Map::QtCommon::DiagnosticTimingScope bindTiming("open-bind-workspace");
@@ -307,30 +331,8 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
         AddDiagnostic(tr("警告"), tr("地图归档"), tr("MPQ_OPAQUE_MEMBERS_PRESERVED"),
             tr("资源清单不完整：%1 个未命名成员已保留。此地图的候选仅能替换已有的具名成员。")
                 .arg(project_->archiveSession_->OpaqueMemberCount()));
-    for (const auto& diagnostic : snapshot.diagnostics)
+    for (const auto& diagnostic : intake.diagnostics)
         AddDiagnostic(DiagnosticLevel(diagnostic.severity), Utf8(diagnostic.subsystem), Utf8(diagnostic.code), Utf8(diagnostic.message));
-    for (const auto& diagnostic : extractStatus.diagnostics) {
-        const QString level =
-            diagnostic.severity == War3Map::DiagnosticSeverity::Error
-                ? tr("错误")
-                : (diagnostic.severity == War3Map::DiagnosticSeverity::Warning
-                       ? tr("警告")
-                       : tr("信息"));
-        AddDiagnostic(
-            level, Utf8(diagnostic.subsystem), Utf8(diagnostic.code),
-            Utf8(diagnostic.message));
-    }
-    for (const auto& diagnostic : importDiagnostics) {
-        const QString level =
-            diagnostic.severity == War3Map::DiagnosticSeverity::Error
-                ? tr("错误")
-                : (diagnostic.severity == War3Map::DiagnosticSeverity::Warning
-                       ? tr("警告")
-                       : tr("信息"));
-        AddDiagnostic(
-            level, Utf8(diagnostic.subsystem), Utf8(diagnostic.code),
-            Utf8(diagnostic.message));
-    }
     if (openedOk) {
         statusBar()->showMessage(
             tr("已打开 %1").arg(QString::fromStdWString(archivePath.filename().wstring())),
