@@ -71,6 +71,7 @@ private slots:
     void CurrentDefaultsAndStaleRequest();
     void CurrentKeepsPixelsUntilReplacementAndClearsFailures();
     void UnsavedObjectColorUsesFrozenNativeProjection();
+    void OwnedImportUsesFrozenPayloadAndRejectsDiskSource();
 };
 
 void MinimapPreviewTests::SharedPixelsAndCliExport() try {
@@ -302,6 +303,42 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     QCOMPARE(view.property("rgbaSha256").toString().toStdString(),
              F::Take(Services::OpenMinimapPreview(saved.path, saved.sha256)).rgbaSha256);
     QCOMPARE(F::Take(project.archiveSession_->ReadMember("war3map.w3d")), members.back().data);
+} catch (const std::exception& error) {
+    QFAIL(error.what());
+}
+
+void MinimapPreviewTests::OwnedImportUsesFrozenPayloadAndRejectsDiskSource() try {
+    F::Fixture fixture;
+    namespace M = Tests::MinimapPreviewFixtures;
+    auto members = M::MapMembers();
+    const auto path = F::Take(WriteVerifiedArchive(fixture.root / "owned-current.w3x", members)).path;
+    QtProject::EditorProject project;
+    Install(project, path, members);
+    project.war3GameRoot_ = fixture.game;
+    Modules::WorldMinimapPreview view(project);
+    view.show();
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(), 15000);
+    const auto before = view.property("rgbaSha256");
+    std::vector<QtProject::EditorProject::ImportPayload> payloads{
+        {"Fixture/Ground.blp", std::make_shared<const std::vector<std::byte>>(M::Atlas(220))}};
+    QVERIFY(project.AddImportPayloads(payloads, true, "原创贴图覆盖").isEmpty());
+    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty()
+        && view.property("rgbaSha256") != before, 15000);
+    const auto owner = project.pendingImports_.front().ownedPayload;
+    QVERIFY(owner);
+    const auto imported = view.property("rgbaSha256");
+    QCOMPARE(F::Take(project.archiveSession_->ReadMember("Fixture/Ground.blp")),
+        std::optional{M::Atlas()});
+    project.pendingImports_.front().ownedPayload.reset();
+    project.pendingImports_.front().diskPath = QString::fromStdWString((fixture.root / "never-open.blp").wstring());
+    project.ImportsChanged();
+    auto* state = view.findChild<QLabel*>("worldMinimapState");
+    QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("当前不可用"), 15000);
+    QVERIFY(view.property("rgbaSha256").toString().isEmpty());
+    project.pendingImports_.front().ownedPayload = owner;
+    project.pendingImports_.front().diskPath.clear();
+    project.ImportsChanged();
+    QTRY_COMPARE_WITH_TIMEOUT(view.property("rgbaSha256"), imported, 15000);
 } catch (const std::exception& error) {
     QFAIL(error.what());
 }
