@@ -40,7 +40,9 @@ auto RunOwnedWork(Function function, bool eligible = true) -> std::invoke_result
         }));
     QObject::connect(worker.get(), &QThread::finished, &loop, &QEventLoop::quit);
     worker->start(QThread::LowPriority);
-    loop.exec();
+    // 准备期间不让用户输入跨过尚未完成的UI快照；重绘、定时器、进度及
+    // 排队请求仍处理。输入只延后，不丢弃；排队写命令仍由宿主忙门拒绝。
+    loop.exec(QEventLoop::ExcludeUserInputEvents);
     worker->wait();
     if (failure) std::rethrow_exception(failure);
     return std::move(*result);
