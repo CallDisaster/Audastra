@@ -50,6 +50,13 @@ Result<MinimapPreview> CaptureMinimapPreview(const MapArchiveSession& source, st
 }
 
 Result<MinimapPreview> OpenMinimapPreview(const std::filesystem::path& path, std::string_view expected) {
+    auto extension = path.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t c) {
+        return c >= L'A' && c <= L'Z' ? c + (L'a' - L'A') : c;
+    });
+    if (path.native().find(L'\0') != std::wstring::npos || (extension != L".w3x" && extension != L".w3m"))
+        return Result<MinimapPreview>::Failure("Minimap.Preview", "MINIMAP_PREVIEW_SOURCE_TYPE",
+            "预览来源须为w3x或w3m地图归档；不会打开其它类型的文件。");
     // 只读专用打开保留完整来源证明，不要求本次读取具有地图写出资格。
     auto source = MapArchiveSession::OpenMinimapAudit(path);
     if (!source.Succeeded()) return {{}, std::move(source.diagnostics)};

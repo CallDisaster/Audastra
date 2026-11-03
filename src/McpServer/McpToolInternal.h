@@ -41,6 +41,7 @@ QJsonObject BasicSchema(QJsonObject properties = {}, QJsonArray required = {});
 void RegisterReadOnlyTools(McpServer& server);
 void RegisterArchiveIdentityTools(McpServer& server);
 void RegisterMinimapPreviewTool(McpServer& server);
+[[nodiscard]] ToolDefinition MinimapPreviewToolDefinition();
 void RegisterArchiveMemberTools(McpServer& server);
 void RegisterImportTools(McpServer& server);
 void RegisterProjectSearchTools(McpServer& server);

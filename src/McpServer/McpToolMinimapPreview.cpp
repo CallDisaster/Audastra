@@ -3,7 +3,7 @@
 #include <QByteArray>
 
 namespace War3Map::Mcp {
-void RegisterMinimapPreviewTool(McpServer& server) {
+ToolDefinition MinimapPreviewToolDefinition() {
     ToolDefinition tool;
     tool.name = "query_minimap_preview";
     tool.description = "只读查看独立源地图中实际已保存的小地图底图；不生成、不改地图，不含工作区未保存编辑或图标。缺失单独报告，损坏拒绝。";
@@ -36,6 +36,9 @@ void RegisterMinimapPreviewTool(McpServer& server) {
         }
         return result;
     };
-    server.RegisterTool(std::move(tool));
+    return tool;
+}
+void RegisterMinimapPreviewTool(McpServer& server) {
+    server.RegisterTool(MinimapPreviewToolDefinition());
 }
 } // namespace War3Map::Mcp

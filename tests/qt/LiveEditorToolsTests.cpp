@@ -13,6 +13,8 @@
 #include "Theme/ThemeManager.h"
 #include "../support/MapCustomSettingsFixture.h"
 #include "McpMapRuntimeTools.h"
+#include "McpToolInternal.h"
+#include "War3MapCore/Services/MinimapPreview.h"
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
 #include "McpPlacementTools.h"
@@ -384,7 +386,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "object_resource_inspect", "object_resource_query", "object_resource_state",
         "objects_apply_text", "objects_create", "objects_delete", "objects_field_options", "objects_get", "objects_list", "objects_set_fields",
         "objects_text",
-        "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "query_terrain_points", "redo_campaign", "save_campaign",
+        "open_campaign", "project_search", "query_campaign", "query_campaign_objects", "query_minimap_preview", "query_terrain_points", "redo_campaign", "save_campaign",
         "sounds_get", "sounds_list", "sounds_update",
         "strings_query", "strings_set",
         "undo_campaign", "update.status",
@@ -392,7 +394,44 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{96});
+    QCOMPARE(expected.size(), qsizetype{97});
+    const auto previewDefinition = Mcp::MinimapPreviewToolDefinition();
+    QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
+    for (const auto& value : f.tools->Tools()) {
+        const auto tool = value.toObject();
+        if (tool.value("name") == previewDefinition.name)
+            QCOMPARE(tool.value("inputSchema").toObject(), previewDefinition.inputSchema);
+    }
+    namespace PreviewFixture = TerrainCornerRampFixtures;
+    PreviewFixture::Fixture preview;
+    Image::DecodedImage image; image.width = image.height = 2;
+    image.rgba.resize(16, std::byte{255});
+    auto members = preview.members;
+    members.push_back({"war3mapMap.blp", PreviewFixture::Take(Image::EncodeBlpPaletted(image))});
+    const auto archive = PreviewFixture::Take(WriteVerifiedArchive(preview.root / "preview.w3x", members));
+    const auto beforeRevision = f.project.editRevision_.Revision();
+    const auto beforeUndoCount = f.project.mapDataUndoStack_->count();
+    QSignalSpy previewEvents(f.tools.get(), &LiveEditorTools::Activity);
+    const QJsonObject previewArguments{{"source_path", QString::fromStdWString(archive.path.wstring())},
+        {"expected_source_sha256", QString::fromStdString(archive.sha256)}, {"include_rgba", true}};
+    const auto previewResult = f.tools->Invoke("query_minimap_preview", previewArguments);
+    QVERIFY(previewResult.value("ok").toBool());
+    QVERIFY(!previewResult.value("rgba_base64").toString().isEmpty());
+    QCOMPARE(previewResult.value("rgba_sha256").toString().toStdString(),
+        PreviewFixture::Take(Services::OpenMinimapPreview(archive.path, archive.sha256)).rgbaSha256);
+    QCOMPARE(f.project.editRevision_.Revision(), beforeRevision);
+    QCOMPARE(f.project.mapDataUndoStack_->count(), beforeUndoCount);
+    bool sawPreview = false;
+    for (const auto& event : previewEvents) {
+        const auto row = event[0].toJsonObject();
+        if (row.value("type") != "tool_end") continue;
+        sawPreview = true; const auto details = row.value("details").toObject();
+        QVERIFY(!details.contains("rgba_base64")); QVERIFY(details.value("rgba_returned").toBool());
+    }
+    QVERIFY(sawPreview);
+    f.project.savingMap_ = true;
+    QCOMPARE(ErrorCode(f.tools->Invoke("query_minimap_preview", previewArguments)), QString("LIVE_EDITOR_BUSY"));
+    f.project.savingMap_ = false;
     for (const auto& definition : Mcp::AuxiliaryToolDefinitions()) {
         QCOMPARE(definition.permission, Mcp::ToolPermission::Edit);
         int matches = 0;

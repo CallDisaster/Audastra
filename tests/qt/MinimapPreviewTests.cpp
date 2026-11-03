@@ -89,6 +89,9 @@ void MinimapPreviewTests::SharedPixelsAndCliExport() try {
 
 void MinimapPreviewTests::MissingCorruptBudgetAndStale() try {
     F::Fixture fixture;
+    const auto denied = Services::OpenMinimapPreview(fixture.root / "never-open.AI", std::string(64, 'a'));
+    QVERIFY(!denied.Succeeded());
+    QCOMPARE(denied.diagnostics.front().code, std::string("MINIMAP_PREVIEW_SOURCE_TYPE"));
     const auto sha = fixture.source->SourceSha256();
     QVERIFY(!F::Take(Services::CaptureMinimapPreview(*fixture.source, sha)).present);
     QVERIFY(!Services::CaptureMinimapPreview(*fixture.source, std::string(64, 'a')).Succeeded());

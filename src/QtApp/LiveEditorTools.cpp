@@ -1606,12 +1606,13 @@ private:
             }
             catch (const std::exception& failure) { result = Mcp::Failure("LIVE_EDITOR_EXCEPTION", failure.what()); }
             if (!owner) return result;
-            // PNG仅交付请求方；活动日志不再次复制Base64正文。
+            // 图像仅交付请求方；活动日志不再次复制像素传输正文。
             auto details = result;
             if (details.contains("image")) {
                 details.remove("image");
                 details.insert("image_returned", true);
             }
+            if (details.remove("rgba_base64")) details.insert("rgba_returned", true);
             emit owner->Activity(QJsonObject{{"type", "tool_end"}, {"id", id}, {"tool_name", toolName}, {"title", toolTitle},
                 {"success", result.value("ok").toBool()}, {"is_error", !result.value("ok").toBool()},
                 {"elapsed_ms", timer.elapsed()}, {"details", details}});
@@ -1670,6 +1671,14 @@ private:
     }
 
     void RegisterTools() {
+        {
+            const auto definition = Mcp::MinimapPreviewToolDefinition();
+            AddTool(definition.name, definition.description, definition.permission, definition.inputSchema,
+                [this, handler = definition.handler](const QJsonObject& arguments) {
+                    if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
+                    return handler(arguments).toObject();
+                }, definition.maxRequestIdBytes, definition.maxResponseBytes);
+        }
         for (auto definition : Mcp::MapRuntimeToolDefinitions()) {
             const auto name = definition.name;
             AddTool(name, definition.description, definition.permission, definition.inputSchema,
