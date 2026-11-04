@@ -56,6 +56,14 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& pat
                "preview attach terrain");
     project.mapDataUndoStack_->clear(); project.ResetEditTracking();
 }
+QByteArray PreviewDiagnostics(const QtProject::EditorProject& project) {
+    QStringList details;
+    for (int row = 0; row < project.diagnosticsModel_->rowCount(); ++row) {
+        details << project.diagnosticsModel_->item(row, 2)->text()
+            + ": " + project.diagnosticsModel_->item(row, 3)->text();
+    }
+    return details.join('\n').toUtf8();
+}
 }
 class MinimapPreviewTests final : public QObject {
     Q_OBJECT
@@ -189,7 +197,8 @@ void MinimapPreviewTests::CurrentKeepsPixelsUntilReplacementAndClearsFailures() 
     view.show();
     auto* state = view.findChild<QLabel*>("worldMinimapState");
     auto* image = view.findChild<QLabel*>("worldMinimapImage");
-    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(), 15000);
+    QTRY_VERIFY2_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(),
+        PreviewDiagnostics(project).constData(), 15000);
     const auto before = view.property("rgbaSha256");
     const auto beforePixmap = image->pixmap().cacheKey();
     auto pending = project.BeginPendingTerrainCommit();
@@ -276,7 +285,8 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     native = *baseline;
     Modules::WorldMinimapPreview view(project);
     view.show();
-    QTRY_VERIFY_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(), 15000);
+    QTRY_VERIFY2_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty(),
+        PreviewDiagnostics(project).constData(), 15000);
     const auto before = view.property("rgbaSha256");
     const auto modification = lni->Objects().front().modifications.front().key;
     QVERIFY(lni->SetModification(key, modification, std::int32_t{220}).Succeeded());
