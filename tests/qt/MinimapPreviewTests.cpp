@@ -54,6 +54,12 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& pat
     });
     F::Require(terrain != members.end() && project.mapEdits_->AttachTerrain(terrain->data).Succeeded(),
                "preview attach terrain");
+    const auto pathing = std::find_if(members.begin(), members.end(), [](const auto& member) {
+        return member.name == "war3map.wpm";
+    });
+    if (pathing != members.end()) {
+        F::Require(project.mapEdits_->AttachPathing(pathing->data).Succeeded(), "preview attach pathing baseline");
+    }
     project.mapDataUndoStack_->clear(); project.ResetEditTracking();
 }
 QByteArray PreviewDiagnostics(const QtProject::EditorProject& project) {
