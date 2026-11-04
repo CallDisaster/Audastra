@@ -255,6 +255,12 @@ void MinimapPreviewTests::UnsavedObjectColorUsesFrozenNativeProjection() try {
     namespace M = Tests::MinimapPreviewFixtures;
     using namespace ObjectData;
     auto members = M::MapMembers();
+    const auto configuration = std::find_if(members.begin(), members.end(), [](const auto& member) {
+        return member.name == "UI\\WorldEditData.txt";
+    });
+    QVERIFY(configuration != members.end());
+    configuration->data = M::Text("[CameraMargins]\nLeft=0\nRight=0\nBottom=0\nTop=0\n"
+        "[WorldEditArt]\nInvalidModel=Fixture\\Invalid.mdx\n");
     MapData::DoodadPlacements doodads;
     MapData::DoodadPlacement placement;
     placement.rawcode = "Doo0";
