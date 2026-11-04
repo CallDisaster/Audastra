@@ -14,7 +14,7 @@
 
 namespace War3Map::Modules {
 class MinimapCanvas final : public QLabel {
-  public:
+public:
     explicit MinimapCanvas(QWidget* parent) : QLabel(parent) {
     }
     std::function<void(QPointF)> pan;
@@ -27,7 +27,7 @@ class MinimapCanvas final : public QLabel {
         return QRectF(QPointF((width() - size.width()) / 2.0, (height() - size.height()) / 2.0), size);
     }
 
-  protected:
+protected:
     void paintEvent(QPaintEvent* event) override {
         Q_UNUSED(event);
         const auto rect = ImageRect();

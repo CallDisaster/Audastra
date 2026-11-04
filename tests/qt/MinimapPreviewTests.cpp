@@ -45,7 +45,8 @@ QJsonObject Call(Mcp::McpServer& server, const QJsonObject& args) {
 }
 void Install(QtProject::EditorProject& project, const std::filesystem::path& path,
     const std::vector<MapArchiveMember>& members) {
-    project.sourceArchivePath_ = path; project.projectRoot_ = path.parent_path();
+    project.sourceArchivePath_ = path;
+    project.projectRoot_ = path.parent_path();
     project.archiveSession_ = std::make_shared<MapArchiveSession>(F::Take(MapArchiveSession::Open(path)));
     project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromArchive(*project.archiveSession_));
     project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
@@ -60,7 +61,8 @@ void Install(QtProject::EditorProject& project, const std::filesystem::path& pat
     if (pathing != members.end()) {
         F::Require(project.mapEdits_->AttachPathing(pathing->data).Succeeded(), "preview attach pathing baseline");
     }
-    project.mapDataUndoStack_->clear(); project.ResetEditTracking();
+    project.mapDataUndoStack_->clear();
+    project.ResetEditTracking();
 }
 QByteArray PreviewDiagnostics(const QtProject::EditorProject& project) {
     QStringList details;
