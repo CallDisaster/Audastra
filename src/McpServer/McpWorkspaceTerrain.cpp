@@ -59,6 +59,13 @@ Result<std::vector<std::byte>> ReadSource(const WorkspaceSnapshot& source, const
     return bytes;
 }
 
+bool NeedsRealtimePathing(std::span<const MapData::TerrainStrokeIntent> strokes) {
+    return std::any_of(strokes.begin(), strokes.end(), [](const auto& stroke) {
+        return stroke.waterBrush || stroke.brush.kind == MapData::TerrainBrushKind::CliffLevel
+            || stroke.brush.kind == MapData::TerrainBrushKind::Blight;
+    });
+}
+
 Result<std::shared_ptr<McpTerrainOverlay>> Replay(const MapDocument& original,
     const McpTerrainWorkspaceState& source, const std::vector<MapData::TerrainStrokeIntent>& strokes,
     const WorkspaceSnapshot& snapshot, const std::filesystem::path& gameRoot) {
@@ -66,7 +73,7 @@ Result<std::shared_ptr<McpTerrainOverlay>> Replay(const MapDocument& original,
         auto replayed = Services::TerrainPathingSave::ReplayStrokes(snapshot, original,
             source.terrain, source.pathing, strokes, gameRoot);
         if (!replayed.Succeeded() || !replayed.value) return Failed<std::shared_ptr<McpTerrainOverlay>>(replayed);
-        if (replayed.value->session->HasTerrainPathing()) {
+        if (NeedsRealtimePathing(strokes) && replayed.value->session->HasTerrainPathing()) {
             const Services::TerrainReplayLimits limits;
             auto retained = replayed.value->session->MeasureTerrainJournalDraft(
                 limits.maximumCandidateBytes, limits.maximumWork);
@@ -359,7 +366,9 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     auto sealed = Services::TerrainPathingSave::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
         mapDataSource_->Snapshot(), (*candidate.value)->edits, strokes, gameRoot_);
     if (!sealed.Succeeded()) return Failed<Receipt>(sealed);
-    const auto livePlan = Services::TerrainPathingSave::WithRealtimeCandidate(plan, overlay->edits, (*candidate.value)->edits);
+    const auto livePlan = NeedsRealtimePathing(strokes)
+        ? Services::TerrainPathingSave::WithRealtimeCandidate(plan, overlay->edits, (*candidate.value)->edits)
+        : Result<Services::PreparedTerrainEdit>::Success(plan);
     if (!livePlan.Succeeded()) return Failed<Receipt>(livePlan);
     if (toolEpoch_ == (std::numeric_limits<std::uint64_t>::max)()
         || activeEdit_->generation == (std::numeric_limits<std::uint64_t>::max)())
