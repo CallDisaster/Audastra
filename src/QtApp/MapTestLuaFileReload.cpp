@@ -1,11 +1,15 @@
 #include "MainWindow.h"
 #include "TriggerModule.h"
+#include "TriggerLuaScripts.h"
 #include "AssetOwnedPayload.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/Runtime/LuaModuleNames.h"
 #include "War3MapCore/Services/LuaTestMailboxSession.h"
 
 #include <QJsonObject>
+#include <QAction>
+#include <QStyle>
+#include <QToolButton>
 
 // 作者手写 Lua 的测试热重载（YDWE 约定：脚本里 Cheat("exec-lua: \"main\"") 加载地图内 .lua）。
 // 测试启动时记录每个 .lua 文件的 SHA；热重载只发送之后改过并已应用的文件，按 “module:<模块名>”
@@ -32,10 +36,54 @@ std::string ModuleName(const QString& path) {
 
 void MainWindow::SnapshotLuaFileBaseline() {
     luaFileBaseline_.clear(); luaFileQueue_.clear(); luaFileSequence_ = 0; luaFileLastMessage_.clear();
+    luaFileReloadStopped_ = false; luaFileDiffRevision_.reset(); luaFileChangedPaths_.clear();
     for (const auto& entry : project_->AssetEntries()) {
         if (!IsLuaPath(entry.path) || entry.ambiguous) continue;
         const auto read = War3Map::QtProject::ReadOwnedAsset(*project_, entry.path);
         if (read.Succeeded()) luaFileBaseline_[War3Map::QtProject::EditorProject::AssetKey(entry.path)] = read.value->sha256;
+    }
+}
+
+bool MainWindow::LuaFileDiffersFromBaseline(const QString& path, const std::string& sha256) const {
+    const auto baseline = luaFileBaseline_.find(War3Map::QtProject::EditorProject::AssetKey(path));
+    return baseline == luaFileBaseline_.end() || baseline->second != sha256;
+}
+
+void MainWindow::RememberReloadedLuaFile(const QString& path, const std::string& sha256) {
+    luaFileBaseline_[War3Map::QtProject::EditorProject::AssetKey(path)] = sha256;
+    luaFileDiffRevision_.reset();
+}
+
+void MainWindow::UpdateLuaReloadPending() {
+    if (!luaReloadAction_) return;
+    QStringList paths;
+    if (luaFileReload_ && !luaFileReloadStopped_ && luaRuntimeMailbox_ && LuaTestSessionCurrent()) {
+        const std::array<std::uint64_t, 2> revision{project_->editRevision_.Generation(), project_->editRevision_.Revision()};
+        if (luaFileDiffRevision_ != revision) {
+            luaFileChangedPaths_.clear();
+            for (const auto& entry : project_->AssetEntries()) {
+                if (!IsLuaPath(entry.path)) continue;
+                const auto read = War3Map::QtProject::ReadOwnedAsset(*project_, entry.path);
+                if (entry.ambiguous || !read.Succeeded() || LuaFileDiffersFromBaseline(entry.path, read.value->sha256))
+                    luaFileChangedPaths_.push_back(entry.path);
+            }
+            luaFileDiffRevision_ = revision;
+        }
+        paths = luaFileChangedPaths_;
+        if (const auto* scripts = triggersModule_->LuaScripts(); scripts && scripts->HasPendingDraft()
+            && !paths.contains(scripts->SelectedPath())) paths.push_back(scripts->SelectedPath());
+    }
+    const bool pending = !paths.empty();
+    luaReloadAction_->setProperty("luaReloadPending", pending);
+    auto tooltip = tr("热重载当前 Lua 测试");
+    if (pending) tooltip += tr("\n待发送：%1").arg(paths.mid(0, 16).join(QStringLiteral("、")));
+    if (paths.size() > 16) tooltip += tr("等 %1 个文件").arg(paths.size());
+    luaReloadAction_->setToolTip(tooltip);
+    for (auto* object : luaReloadAction_->associatedObjects()) {
+        auto* button = qobject_cast<QToolButton*>(object);
+        if (!button || button->property("luaReloadPending").toBool() == pending) continue;
+        button->setProperty("luaReloadPending", pending);
+        button->style()->unpolish(button); button->style()->polish(button); button->update();
     }
 }
 
@@ -66,13 +114,14 @@ QJsonObject MainWindow::LuaFileReload(bool submit) {
         return true;
     };
     if (stopped) {
+        luaFileReloadStopped_ = true;
         luaFileQueue_.clear(); state = "stopped"; message = tr("本次测试游戏已退出。");
     } else if (!luaFileQueue_.empty()) {
         // 已有文件在等待游戏确认：只推进队列，不接受新的发送。
         if (snapshot.state == Services::LuaTestReloadState::Complete && snapshot.sequence == luaFileSequence_) {
             const auto done = luaFileQueue_.front();
             if (snapshot.resultCode == Runtime::LuaReloadResult::Success) {
-                luaFileBaseline_[War3Map::QtProject::EditorProject::AssetKey(done.path)] = done.sha256;
+                RememberReloadedLuaFile(done.path, done.sha256);
                 luaFileQueue_.erase(luaFileQueue_.begin());
                 state = "succeeded"; message = tr("已热重载 %1").arg(done.path);
                 if (!luaFileQueue_.empty()) (void)send();
@@ -99,9 +148,7 @@ QJsonObject MainWindow::LuaFileReload(bool submit) {
                 return Failure("LUA_RELOAD_READ", tr("无法读取 %1：%2").arg(entry.path,
                     read.diagnostics.empty() ? QString{} : QString::fromStdString(read.diagnostics.back().message)));
             }
-            const auto key = War3Map::QtProject::EditorProject::AssetKey(entry.path);
-            const auto baseline = luaFileBaseline_.find(key);
-            if (baseline != luaFileBaseline_.end() && baseline->second == read.value->sha256) continue;
+            if (!LuaFileDiffersFromBaseline(entry.path, read.value->sha256)) continue;
             LuaFilePending file{entry.path, ModuleName(entry.path), {}, read.value->sha256};
             if (file.module.empty())
                 return Failure("LUA_RELOAD_MODULE_NAME", tr("%1 的路径不能作为 Lua 模块名（只能用字母、数字、中文等，目录用 \\ 分隔）。").arg(entry.path));

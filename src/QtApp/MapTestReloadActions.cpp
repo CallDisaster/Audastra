@@ -89,6 +89,7 @@ QJsonObject MainWindow::LuaTestReload(bool submit) {
     if (luaFileReload_) {
         if (submit && project_->savingMap_) return Failure("LUA_RELOAD_BUSY", "保存或测试准备正在进行，请稍后重试。");
         const auto result = LuaFileReload(submit);
+        UpdateLuaReloadPending();
         if (submit) {
             ShowStatusMessage(result.value("message").toString());
             if (luaReloadPoll_ && result.value("state").toString() == "pending") luaReloadPoll_->start();

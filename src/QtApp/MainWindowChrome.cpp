@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "TriggerLuaScripts.h"
 #include "AudastraVersion.generated.h"
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
@@ -57,6 +58,8 @@ void MainWindow::ConnectModules() {
         UpdateExportAvailability();
     });
     connect(triggersModule_, &War3Map::Modules::TriggerModule::DraftEdited, this, &MainWindow::ScheduleRecovery);
+    connect(triggersModule_->LuaScripts(), &War3Map::Modules::TriggerLuaScripts::DraftEdited,
+        this, &MainWindow::UpdateLuaReloadPending);
     connect(triggersModule_, &War3Map::Modules::TriggerModule::UiRootRequested, this, &MainWindow::SelectUiDataRoot);
     connect(objectsModule_, &War3Map::Modules::ObjectModule::DocumentEdited, this, [this]() {
         UpdateEditDirtyFlags();

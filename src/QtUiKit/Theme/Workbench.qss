@@ -321,6 +321,7 @@ QToolButton#moduleChip:disabled { color: @disabled; background: transparent; }
 QToolButton#headerAction { background: transparent; border: 1px solid transparent; border-radius: @radius; padding: 5px; }
 QToolButton#headerAction:hover { background: @hover; }
 QToolButton#headerAction:pressed { background: @selection; }
+QToolButton#headerAction[luaReloadPending="true"] { color: @accent; background: @accentSoft; border-color: @accentLine; }
 QToolButton#headerAction::menu-indicator { image: none; width: 0; }
 QStackedWidget#shellMain { background: @bg; }
 QFrame#shellSide { background: @bg; border: 0; border-left: 1px solid @line; }

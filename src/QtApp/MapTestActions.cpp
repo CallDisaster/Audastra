@@ -330,6 +330,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
             luaFileReload_ = false; luaFileQueue_.clear();
             mapTestLease_.reset();
             if (luaReloadAction_) luaReloadAction_->setEnabled(false);
+            UpdateLuaReloadPending();
         }
         // 末次诊断查询先完成，随后才允许清理持有生命周期锁核验大图。
         // 否则后台清理先获锁时，GUI上的邮箱归属查询会等待整图SHA。

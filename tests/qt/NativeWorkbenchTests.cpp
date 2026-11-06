@@ -6480,19 +6480,42 @@ void NativeWorkbenchTests::HandwrittenLuaReloadStaysAvailableAfterApply() {
     window.luaTestSource_ = window.project_->sourceArchivePath_;
     window.luaFileReload_ = true; window.SnapshotLuaFileBaseline(); window.UpdateExportAvailability();
     QVERIFY(window.luaReloadAction_->isEnabled());
+    QVERIFY(!window.luaReloadAction_->property("luaReloadPending").toBool());
     auto* scripts = window.triggersModule_->LuaScripts(); QVERIFY(scripts);
     auto* tabs = window.triggersModule_->Widget()->findChild<QTabWidget*>("triggerWorkspaceTabs"); QVERIFY(tabs);
     tabs->setCurrentWidget(scripts); QVERIFY(scripts->SelectScript("Scripts\\Reload.lua"));
-    scripts->Editor()->SetText(QStringLiteral("return 2\n")); QVERIFY(scripts->CommitPendingDraft());
+    scripts->Editor()->SetText(QStringLiteral("return 2\n"));
+    QTRY_VERIFY(scripts->HasPendingDraft());
+    QTRY_VERIFY(window.luaReloadAction_->property("luaReloadPending").toBool());
+    QVERIFY(window.luaReloadAction_->toolTip().contains(QStringLiteral("Scripts\\Reload.lua")));
+    QVERIFY(scripts->CommitPendingDraft());
     // 测试开始后地图修订身份变了（其它编辑或重新载入）：手写 Lua 文件仍按内容比对热重载。
     window.luaTestGeneration_ = window.project_->editRevision_.Generation() + 1; window.UpdateExportAvailability();
     QCoreApplication::processEvents();
     QVERIFY2(window.luaReloadAction_->isEnabled(), "应用草稿后热重载按钮被禁用");
+    QVERIFY(window.luaReloadAction_->property("luaReloadPending").toBool());
     const auto query = window.LuaTestReload(false);
     QVERIFY2(query.value("ok").toBool(), qPrintable(query.value("message").toString()));
     // 游戏未进入地图时明确说明还在初始化，而不是“请先启动测试”。
     const auto submit = window.LuaTestReload(true);
     QCOMPARE(submit.value("code").toString(), QStringLiteral("LUA_RELOAD_NOT_READY"));
+    QVERIFY(window.luaReloadAction_->property("luaReloadPending").toBool());
+    // 同一成功ACK入口更新的是已确认正文SHA。仍有新草稿时不能误清强调。
+    const auto sent = War3Map::QtProject::ReadOwnedAsset(*window.project_, QStringLiteral("Scripts\\Reload.lua"));
+    QVERIFY(sent.Succeeded());
+    scripts->Editor()->SetText(QStringLiteral("return 3\n"));
+    QTRY_VERIFY(scripts->HasPendingDraft());
+    window.RememberReloadedLuaFile(QStringLiteral("Scripts\\Reload.lua"), sent.value->sha256);
+    window.UpdateLuaReloadPending();
+    QVERIFY(window.luaReloadAction_->property("luaReloadPending").toBool());
+    scripts->DiscardPendingDraft(); window.UpdateLuaReloadPending();
+    QVERIFY(!window.luaReloadAction_->property("luaReloadPending").toBool());
+    scripts->Editor()->SetText(QStringLiteral("return 4\n"));
+    QTRY_VERIFY(window.luaReloadAction_->property("luaReloadPending").toBool());
+    window.luaFileReloadStopped_ = true; window.UpdateExportAvailability();
+    QVERIFY(!window.luaReloadAction_->property("luaReloadPending").toBool());
+    QVERIFY(!window.luaReloadAction_->isEnabled());
+    window.luaFileReloadStopped_ = false;
     // 换到别的地图后不能再向这一局发送。
     window.luaTestSource_ = NativePath(fixture.filePath("other.w3x")); window.UpdateExportAvailability();
     QVERIFY(!window.luaReloadAction_->isEnabled());
