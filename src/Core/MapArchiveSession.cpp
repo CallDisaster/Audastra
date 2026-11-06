@@ -307,8 +307,10 @@ Result<MapArchiveSession> MapArchiveSession::FreezeMinimapSnapshot(const Project
     }
 }
 
-Result<MapArchiveSession> MapArchiveSession::FreezeTerrainReadSource() const {
+Result<MapArchiveSession> MapArchiveSession::FreezeTerrainReadSource(std::shared_ptr<const MapArchiveSession> sourceOwner) const {
     try {
+        if (!sourceOwner || sourceOwner.get() != this)
+            return Result<MapArchiveSession>::Failure("Terrain.Edit", "TERRAIN_SOURCE_LEASE_OWNER", "只读来源必须持有本次原快照。");
         MapArchiveSession result;
         result.sourcePath_ = sourcePath_;
         result.sourceSha256_ = sourceSha256_;
@@ -317,6 +319,7 @@ Result<MapArchiveSession> MapArchiveSession::FreezeTerrainReadSource() const {
         result.scriptAuditOnly_ = true;
         result.minimapAuditOnly_ = true;
         result.terrainAuditOnly_ = true;
+        result.namedSnapshotOwner_ = namedSnapshotOwner_ ? namedSnapshotOwner_ : std::move(sourceOwner);
         const auto pinned = result.PinSourceForExactCaptures();
         if (!pinned.Succeeded()) return {{}, pinned.diagnostics};
         return Result<MapArchiveSession>::Success(std::move(result));
@@ -450,7 +453,8 @@ Status MapArchiveSession::VerifySourceUnchanged(const ProjectSaveControl* contro
 bool MapArchiveSession::HasMember(std::string_view name) const {
     const auto key = Canonical(name);
     if (key == "(LISTFILE)") return !scriptAuditOnly_;
-    return std::any_of(members_.begin(), members_.end(), [&key](const auto& member) {
+    const auto& snapshots = namedSnapshotOwner_ ? namedSnapshotOwner_->members_ : members_;
+    return std::any_of(snapshots.begin(), snapshots.end(), [&key](const auto& member) {
         return Canonical(member.name) == key;
     });
 }
@@ -465,10 +469,11 @@ Result<std::vector<std::byte>> MapArchiveSession::ReadMember(std::string_view na
         return Result<std::vector<std::byte>>::Success(std::move(result));
     };
     if (key == "(LISTFILE)") return copy(listfile_);
-    const auto found = std::find_if(members_.begin(), members_.end(), [&key](const auto& member) {
+    const auto& snapshots = namedSnapshotOwner_ ? namedSnapshotOwner_->members_ : members_;
+    const auto found = std::find_if(snapshots.begin(), snapshots.end(), [&key](const auto& member) {
         return Canonical(member.name) == key;
     });
-    if (found == members_.end()) return Result<std::vector<std::byte>>::Failure(
+    if (found == snapshots.end()) return Result<std::vector<std::byte>>::Failure(
         "MapArchiveSession", "MEMBER_MISSING", "归档快照中没有成员：" + std::string(name));
     return copy(found->data);
 }
@@ -505,7 +510,8 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
             canonicalNames.push_back(std::move(*canonical.value));
         }
         // 只为本次查询记录已有内存祖先，不把匿名查询补进原会话清单。
-        for (const auto& member : members_) {
+        const auto& snapshots = namedSnapshotOwner_ ? namedSnapshotOwner_->members_ : members_;
+        for (const auto& member : snapshots) {
             const auto found = namedSnapshots.find(Canonical(member.name));
             if (found != namedSnapshots.end()) found->second = &member;
         }

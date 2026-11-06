@@ -98,14 +98,15 @@ void TestTerrainReadSourceIsScopedAndCannotSave() {
     members.push_back({"war3map.w3e", Bytes("synthetic terrain wire")});
     members.push_back({"UI/MiscData.txt", Bytes("[Terrain]\nMaxSlope=90\n")});
     RequireSuccess(WriteVerifiedArchive(path, members), "write terrain source fixture");
-    const auto original = MapArchiveSession::Open(path);
+    auto original = MapArchiveSession::Open(path);
     RequireSuccess(original, "open full source snapshot");
-    auto view = original.value->FreezeTerrainReadSource();
+    auto owner = std::make_shared<const MapArchiveSession>(std::move(*original.value));
+    auto view = owner->FreezeTerrainReadSource(owner);
     RequireSuccess(view, "freeze one terrain read source");
     Require(view.value->Members().empty() && view.value->HasSourceCaptureLease()
-        && view.value->SourceSha256() == original.value->SourceSha256(), "read source owns identity and lease without body snapshots");
+        && view.value->SourceSha256() == owner->SourceSha256(), "read source owns identity and lease without body snapshots");
     Require(view.value->TerrainReadSourceBudgetBytes() > 8192 && view.value->TerrainReadSourceBudgetBytes() < 65536
-        && original.value->TerrainReadSourceBudgetBytes() == 0, "new source lease has an explicit bounded ownership charge");
+        && owner->TerrainReadSourceBudgetBytes() == 0, "new source lease has an explicit bounded ownership charge");
     const std::array names{std::string("war3map.w3e"), std::string("UI/MiscData.txt"), std::string("war3map.wpm")};
     const auto captured = view.value->CaptureExactMembers(names);
     RequireSuccess(captured, "read only explicit terrain inputs");

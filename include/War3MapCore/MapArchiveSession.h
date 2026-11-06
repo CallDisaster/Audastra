@@ -128,7 +128,7 @@ public:
         const OpenObserver& observer = {}) const;
     // 地形编辑的一次只读来源：不复制任何成员正文，精确读取白名单输入；
     // 完整核对原文件后持有R租约，每次仍核路径/文件ID。不能用于地图写出或切基线。
-    [[nodiscard]] Result<MapArchiveSession> FreezeTerrainReadSource() const;
+    [[nodiscard]] Result<MapArchiveSession> FreezeTerrainReadSource(std::shared_ptr<const MapArchiveSession> sourceOwner) const;
     // 仅计上述新建只读来源的身份/租约驻留上界；普通宿主基线在外层拥有，不在这里重复计费。
     [[nodiscard]] std::size_t TerrainReadSourceBudgetBytes() const noexcept;
     [[nodiscard]] bool HasSameSourceIdentity(const MapArchiveSession& other) const noexcept;
@@ -211,6 +211,7 @@ private:
     std::filesystem::path sourcePath_;
     std::string sourceSha256_;
     std::shared_ptr<const ArchiveExactReadLease> exactReadLease_;
+    std::shared_ptr<const MapArchiveSession> namedSnapshotOwner_;
     std::uint32_t volumeSerial_ = 0;
     std::uint64_t fileId_ = 0;
     std::vector<std::byte> prefix_;
