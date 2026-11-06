@@ -17,9 +17,9 @@ struct Field {
 };
 // CGameUI构造349FA0、350110、CInfoBar构造380F40及物品面板381BF0的写入。
 constexpr Field kFields[] = {
-    {"consoleui", 0x428, &GameUiEntryPoints::vtSimpleFrame},
-    {"resourcebarframe", 0x3CC, &GameUiEntryPoints::vtSimpleFrame},
-    {"upperbuttonbarframe", 0x3D0, &GameUiEntryPoints::vtSimpleFrame},
+    {"consoleui", 0x428, &GameUiEntryPoints::vtConsole},
+    {"resourcebarframe", 0x3CC, &GameUiEntryPoints::vtResourceBar},
+    {"upperbuttonbarframe", 0x3D0, &GameUiEntryPoints::vtUpperButtonBar},
     {"Minimap", 0x3C0, &GameUiEntryPoints::vtMinimap}, {"Portrait", 0x3F4, &GameUiEntryPoints::vtPortrait},
     {"CommandBar", 0x3C8, &GameUiEntryPoints::vtCommandBar}, {"InfoBar", 0x3C4, &GameUiEntryPoints::vtInfoBar},
     {"HeroBar", 0x3DC, &GameUiEntryPoints::vtHeroBar}, {"TimeOfDay", 0x3F8, &GameUiEntryPoints::vtTimeOfDay},

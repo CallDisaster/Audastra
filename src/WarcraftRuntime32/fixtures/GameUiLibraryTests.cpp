@@ -977,6 +977,14 @@ void OriginalParts() {
     entries.vtInfoBar = reinterpret_cast<Address>(vtSimple.data());
     entries.vtInventory = entries.vtInfoBar;
     entries.vtCommandButton = entries.vtInfoBar;
+    auto consoleTable = vtSimple, resourceTable = vtSimple, upperTable = vtSimple;
+    entries.vtConsole = reinterpret_cast<Address>(consoleTable.data());
+    entries.vtResourceBar = reinterpret_cast<Address>(resourceTable.data());
+    entries.vtUpperButtonBar = reinterpret_cast<Address>(upperTable.data());
+    auto* console = NewFrame(consoleTable, 0, 0);
+    auto* resource = NewFrame(resourceTable, 0, 0);
+    auto* upper = NewFrame(upperTable, 0, 0);
+    g_root->Set(0x428, console->Self()); g_root->Set(0x3CC, resource->Self()); g_root->Set(0x3D0, upper->Self());
     auto* minimap = NewFrame(vtClassic, 0, 0);
     const auto layout = minimap->Self() + Layout127::ClassicLayout;
     const auto putFloat = [&](Address at, float value) { std::memcpy(reinterpret_cast<void*>(at), &value, sizeof(value)); };
@@ -991,6 +999,11 @@ void OriginalParts() {
     info->Set(0x148, panel->Self()); panel->Set(0x12C, 6);
     panel->Set(0x130, reinterpret_cast<Address>(slots.data()));
     GameUiLibrary ui(entries);
+    Check(ui.Original("consoleui").error == UiError::None && ui.Original("resourcebarframe").error == UiError::None &&
+        ui.Original("upperbuttonbarframe").error == UiError::None, "template roots verify their concrete factory-derived types");
+    resource->vtable = reinterpret_cast<Address>(vtSimple.data());
+    Check(ui.Original("resourcebarframe").error == UiError::Unsupported, "a base-class vtable does not qualify a derived original");
+    resource->vtable = entries.vtResourceBar;
     Check(ui.Original("Minimap").error == UiError::None && ui.Original("InventoryButton6").error == UiError::None, "original verified fields and bounded inventory vector");
     Check(ui.Original("InventoryButton7").error == UiError::Unsupported && ui.Original("not_a_node").error == UiError::Unsupported, "unknown original fields refuse");
     g_log.clear();

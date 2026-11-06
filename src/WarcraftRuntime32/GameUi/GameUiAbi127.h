@@ -213,6 +213,9 @@ struct GameUiEntryPoints {
     Address vtSimpleButton = 0;
     Address vtCommandButton = 0;
     Address vtSimpleFrame = 0;
+    Address vtConsole = 0;
+    Address vtResourceBar = 0;
+    Address vtUpperButtonBar = 0;
 };
 
 // 按 Game.dll 基址解析。executable 核对每个函数入口确实落在已映射的代码段（由 GameImage127 提供）。
