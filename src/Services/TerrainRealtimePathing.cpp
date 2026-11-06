@@ -29,6 +29,10 @@ auto RealtimeFactory(std::shared_ptr<const Source> source, std::filesystem::path
         for (const auto& member : *members)
             if (!reserve(member.name.capacity() + 1) || !reserve(member.data.capacity()))
                 return fail("TERRAIN_REALTIME_PATHING_BUDGET", "实时通行的物编覆盖超过预算。");
+        if constexpr (std::is_same_v<Source, MapArchiveSession>) {
+            if (!reserve(source->TerrainReadSourceBudgetBytes()))
+                return fail("TERRAIN_REALTIME_PATHING_BUDGET", "只读来源租约超过实时通行预算。");
+        }
         if constexpr (std::is_same_v<Source, WorkspaceSnapshot>) {
             if (source->files.capacity() > limits.maximumBytes / sizeof(WorkspaceFile)
                 || !reserve(sizeof(WorkspaceSnapshot) + source->files.capacity() * sizeof(WorkspaceFile))

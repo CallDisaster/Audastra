@@ -126,6 +126,11 @@ public:
     // 仅复制小地图固定数据成员；不复制脚本/引导正文，不继承保存资格或交互基线租约。
     [[nodiscard]] Result<MapArchiveSession> FreezeMinimapSnapshot(const ProjectSaveControl* control = nullptr,
         const OpenObserver& observer = {}) const;
+    // 地形编辑的一次只读来源：不复制任何成员正文，精确读取白名单输入；
+    // 完整核对原文件后持有R租约，每次仍核路径/文件ID。不能用于地图写出或切基线。
+    [[nodiscard]] Result<MapArchiveSession> FreezeTerrainReadSource() const;
+    // 仅计上述新建只读来源的身份/租约驻留上界；普通宿主基线在外层拥有，不在这里重复计费。
+    [[nodiscard]] std::size_t TerrainReadSourceBudgetBytes() const noexcept;
     [[nodiscard]] Status VerifySourceUnchanged(const ProjectSaveControl* control = nullptr) const;
     // 单次保存可显式固定来源内容：完整散列后持续持有禁止直接写入的源句柄。
     // 允许原子替换；每次捕获仍核实际路径/文件ID，旧快照不承接替换后的新文件。
@@ -189,6 +194,7 @@ public:
         std::span<const std::string> removals = {}) const;
 
 private:
+    [[nodiscard]] bool AuditMemberAllowed(std::string_view name) const;
     [[nodiscard]] static Result<MapArchiveSession> OpenImpl(const std::filesystem::path&, const ProjectSaveControl*, bool scriptAuditOnly,
         bool minimapAuditOnly = false, const OpenObserver& observer = {});
     [[nodiscard]] Result<ArchiveSaveResult> WriteCandidate(
@@ -213,6 +219,7 @@ private:
     bool opaqueMembers_ = false;
     bool scriptAuditOnly_ = false;
     bool minimapAuditOnly_ = false;
+    bool terrainAuditOnly_ = false;
     std::size_t opaqueMemberCount_ = 0;
 };
 

@@ -91,6 +91,40 @@ void RequireNoTemporary(const std::filesystem::path& directory) {
     }
 }
 
+void TestTerrainReadSourceIsScopedAndCannotSave() {
+    TempDirectory directory;
+    const auto path = directory.Path() / "terrain-source.w3x";
+    auto members = Members();
+    members.push_back({"war3map.w3e", Bytes("synthetic terrain wire")});
+    members.push_back({"UI/MiscData.txt", Bytes("[Terrain]\nMaxSlope=90\n")});
+    RequireSuccess(WriteVerifiedArchive(path, members), "write terrain source fixture");
+    const auto original = MapArchiveSession::Open(path);
+    RequireSuccess(original, "open full source snapshot");
+    const auto view = original.value->FreezeTerrainReadSource();
+    RequireSuccess(view, "freeze one terrain read source");
+    Require(view.value->Members().empty() && view.value->HasSourceCaptureLease()
+        && view.value->SourceSha256() == original.value->SourceSha256(), "read source owns identity and lease without body snapshots");
+    Require(view.value->TerrainReadSourceBudgetBytes() > 8192 && view.value->TerrainReadSourceBudgetBytes() < 65536
+        && original.value->TerrainReadSourceBudgetBytes() == 0, "new source lease has an explicit bounded ownership charge");
+    const std::array names{std::string("war3map.w3e"), std::string("UI/MiscData.txt"), std::string("war3map.wpm")};
+    const auto captured = view.value->CaptureExactMembers(names);
+    RequireSuccess(captured, "read only explicit terrain inputs");
+    Require(captured.value->at(0).bytes == Bytes("synthetic terrain wire")
+        && captured.value->at(1).bytes == Bytes("[Terrain]\nMaxSlope=90\n")
+        && !captured.value->at(2).present, "actual presence, absence and byte identities remain distinct");
+    Require(!view.value->ReadMember("war3map.j").Succeeded()
+        && !view.value->CaptureExactMembers(std::array{std::string("war3map.j")}).Succeeded(),
+        "terrain read view cannot read authored script inputs");
+    Require(!view.value->SaveCandidate(directory.Path() / "forbidden.w3x", {}).Succeeded()
+        && !std::filesystem::exists(directory.Path() / "forbidden.w3x"), "read view does not grant map writing");
+    const auto replacement = directory.Path() / "replaced.w3x";
+    members.back().data = Bytes("[Terrain]\nMaxSlope=75\n");
+    RequireSuccess(WriteVerifiedArchive(replacement, members), "write replacement source fixture");
+    Require(MoveFileExW(replacement.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0,
+        "external atomic replacement remains observable while read lease lives");
+    Require(!view.value->CaptureExactMembers(names).Succeeded(), "replaced source cannot reuse old lease proof");
+}
+
 void TestCompleteRoundTripAndIndependentBaseline() {
     TempDirectory directory;
     const auto source = CreateSource(directory);
@@ -1262,6 +1296,7 @@ int main() {
         TestMinimapSnapshotIsBoundedAndCancellable();
         TestOpenObserverCannotChangeQualification();
         TestRejectedChangesLeaveSessionAndFilesUntouched();
+        TestTerrainReadSourceIsScopedAndCannotSave();
         TestExternalSourceChangeAndReplacement();
         TestIncompleteListAndTrailingData();
         TestOpaqueMemberPreservedByAppendOnlyPatch();

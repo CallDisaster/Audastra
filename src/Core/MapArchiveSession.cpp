@@ -306,6 +306,41 @@ Result<MapArchiveSession> MapArchiveSession::FreezeMinimapSnapshot(const Project
         return Result<MapArchiveSession>::Failure("Minimap.Preview", "MINIMAP_PREVIEW_BUDGET", "无法分配小地图固定快照。");
     }
 }
+
+Result<MapArchiveSession> MapArchiveSession::FreezeTerrainReadSource() const {
+    try {
+        MapArchiveSession result;
+        result.sourcePath_ = sourcePath_;
+        result.sourceSha256_ = sourceSha256_;
+        result.volumeSerial_ = volumeSerial_;
+        result.fileId_ = fileId_;
+        result.scriptAuditOnly_ = true;
+        result.minimapAuditOnly_ = true;
+        result.terrainAuditOnly_ = true;
+        const auto pinned = result.PinSourceForExactCaptures();
+        if (!pinned.Succeeded()) return {{}, pinned.diagnostics};
+        return Result<MapArchiveSession>::Success(std::move(result));
+    } catch (const std::exception&) {
+        return Result<MapArchiveSession>::Failure("Terrain.Edit", "TERRAIN_SOURCE_LEASE_FAILED", "无法冻结地形编辑的只读来源。");
+    }
+}
+
+std::size_t MapArchiveSession::TerrainReadSourceBudgetBytes() const noexcept {
+    if (!terrainAuditOnly_) return 0;
+    // 实际路径与SHA在身份、租约及核验临时值中的复制一并预收，不缓存成员正文。
+    return sizeof(MapArchiveSession) + 8192 + sourcePath_.native().capacity()
+        * sizeof(std::filesystem::path::value_type) * 8 + sourceSha256_.capacity() * 4;
+}
+
+bool MapArchiveSession::AuditMemberAllowed(std::string_view name) const {
+    if (!scriptAuditOnly_) return true;
+    if (terrainAuditOnly_) {
+        const auto key = Canonical(name);
+        return MinimapAuditMember(key) || key == "UI\\MISCDATA.TXT" || key == "UI\\WORLDEDITDATA.TXT";
+    }
+    return minimapAuditOnly_ ? MinimapAuditMember(name) : ScriptAuditMember(name);
+}
+
 Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::path& path, const ProjectSaveControl* control,
     bool scriptAuditOnly, bool minimapAuditOnly, const OpenObserver& observer) {
     try {
@@ -416,7 +451,7 @@ bool MapArchiveSession::HasMember(std::string_view name) const {
 }
 
 Result<std::vector<std::byte>> MapArchiveSession::ReadMember(std::string_view name, const ProjectSaveControl* control) const {
-    if (scriptAuditOnly_ && !(minimapAuditOnly_ ? MinimapAuditMember(name) : ScriptAuditMember(name))) return Result<std::vector<std::byte>>::Failure(
+    if (!AuditMemberAllowed(name)) return Result<std::vector<std::byte>>::Failure(
         "MapArchiveSession", "SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读脚本审计快照不读取白名单外成员：" + std::string(name));
     const auto key = Canonical(name);
     const auto copy = [control](const std::vector<std::byte>& input) -> Result<std::vector<std::byte>> {
@@ -451,7 +486,7 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         canonicalNames.reserve(names.size());
         std::map<std::string, const MapArchiveMember*> namedSnapshots;
         for (const auto& name : names) {
-            if (scriptAuditOnly_ && !(minimapAuditOnly_ ? MinimapAuditMember(name) : ScriptAuditMember(name)))
+            if (!AuditMemberAllowed(name))
                 return fail("SCRIPT_AUDIT_MEMBER_FORBIDDEN", "只读审计快照不读取白名单外成员：" + name);
             if (name.size() > limits.pathBytes || name.size() > limits.totalPathBytes - paths)
                 return fail("EXACT_MEMBER_LIMIT", "明确来源请求路径超过单项或累计预算。");
