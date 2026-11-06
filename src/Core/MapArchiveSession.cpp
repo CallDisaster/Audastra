@@ -193,7 +193,7 @@ struct ArchiveExactReadLease {
     std::string sha256;
     std::uint32_t volume;
     std::uint64_t id;
-    // 必须最后析构：请求线程结束并回收IRP之后，OVERLAPPED和句柄才可销毁。
+    // 最后声明以优先析构：请求线程结束并回收IRP之后，OVERLAPPED和句柄才可销毁。
     std::jthread issuer;
     ArchiveExactReadLease(const std::filesystem::path& source, const std::string& sha,
         std::uint32_t serial, std::uint64_t fileId)
