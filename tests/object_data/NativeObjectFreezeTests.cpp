@@ -44,6 +44,13 @@ int main() {
     options.maximumBytes = expected.value->size();
     check(FreezeNativeObjectChanges(*baseline.value, *editable, nullptr, nullptr, options).value.has_value(),
         "exact byte budget is accepted");
+    options.outputType = ObjectType::Item;
+    options.serializationFailure = {"CALLER_CODEC", "caller codec"};
+    rejected = FreezeNativeObjectChanges(*baseline.value, *editable, nullptr, nullptr, options);
+    check(!rejected.value && rejected.stage == NativeObjectFreezeStage::Serialization
+        && rejected.failure.code == "CALLER_CODEC" && !rejected.serializationDiagnostics.empty(),
+        "caller output category still rejects a misplaced native document");
+    options.outputType.reset();
     auto wrong = LniObjectCodec(ObjectType::Item).Parse(std::span<const std::byte>{});
     auto* wrongType = dynamic_cast<LniObjectDocument*>(wrong.document.get());
     if (!wrongType) return 1;

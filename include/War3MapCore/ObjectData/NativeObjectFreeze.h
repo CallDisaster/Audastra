@@ -17,6 +17,7 @@ struct NativeObjectFreezeFailure {
 
 struct NativeObjectFreezeOptions {
     std::size_t maximumBytes = std::numeric_limits<std::size_t>::max();
+    std::optional<ObjectType> outputType;
     NativeObjectFreezeFailure projectionFailure;
     NativeObjectFreezeFailure serializationFailure;
     NativeObjectFreezeFailure budgetFailure;

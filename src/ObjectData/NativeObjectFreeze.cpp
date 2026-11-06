@@ -18,7 +18,7 @@ NativeObjectFreezeResult FreezeNativeObjectChanges(
         return result;
     }
     result.stage = NativeObjectFreezeStage::Serialization;
-    auto encoded = NativeObjectCodec(native.Type()).Serialize(native);
+    auto encoded = NativeObjectCodec(options.outputType.value_or(native.Type())).Serialize(native);
     const bool serialized = encoded.Succeeded() && encoded.value.has_value();
     result.serializationDiagnostics = std::move(encoded.diagnostics);
     if (!serialized) {

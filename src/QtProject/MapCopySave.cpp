@@ -446,8 +446,9 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             if (!writable.Succeeded()) return nullptr;
         }
         ObjectData::NativeObjectFreezeOptions options;
-        options.projectionFailure = {"REPACK_OBJECT_REJECTED", "物体数据回灌未通过，已中止另存。"};
-        options.serializationFailure = {"REPACK_OBJECT_ENCODE_FAILED", "物体数据序列化未通过，已中止另存。"};
+        options.outputType = type;
+        options.projectionFailure = {tr("REPACK_OBJECT_REJECTED").toStdString(), tr("物体数据回灌未通过，已中止另存。").toStdString()};
+        options.serializationFailure = {tr("REPACK_OBJECT_ENCODE_FAILED").toStdString(), tr("物体数据序列化未通过，已中止另存。").toStdString()};
         auto frozen = ObjectData::FreezeNativeObjectChanges(std::move(*nextBaselines[index]),
             *objectDocuments_[index], objectFieldSchema_.get(), standardCatalog_.get(), options);
         AddDiagnostics(frozen.projectionDiagnostics);

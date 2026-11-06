@@ -99,8 +99,10 @@ bool CampaignModule::CommitShared() {
         if (!shared_->nativeObjectDocuments_[i] || !shared_->objectDocuments_[i]) {
             Notice(tr("共享物编缺少可编辑的原生基线，草稿保留。")); return false;
         }
+        ObjectData::NativeObjectFreezeOptions options;
+        options.outputType = static_cast<ObjectData::ObjectType>(i);
         auto frozen = ObjectData::FreezeNativeObjectChanges(*shared_->nativeObjectDocuments_[i],
-            *shared_->objectDocuments_[i], shared_->objectFieldSchema_.get(), shared_->standardCatalog_.get());
+            *shared_->objectDocuments_[i], shared_->objectFieldSchema_.get(), shared_->standardCatalog_.get(), options);
         if (!frozen.value) return Failed(frozen.stage == ObjectData::NativeObjectFreezeStage::Projection
             ? frozen.projectionDiagnostics : frozen.serializationDiagnostics);
         command.replacements.push_back({Services::CampaignSession::ObjectMember(static_cast<ObjectData::ObjectType>(i)), std::move(frozen.value->bytes)});

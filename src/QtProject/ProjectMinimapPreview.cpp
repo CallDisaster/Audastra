@@ -171,6 +171,7 @@ void ProjectMinimapPreview::Start() {
             if (edited->Objects().empty() && !archive->HasMember(ObjectData::NativeFileName(type)))
                 continue;
             ObjectData::NativeObjectFreezeOptions options;
+            options.outputType = type;
             options.maximumBytes = std::min<std::size_t>(8U * 1024U * 1024U, maximumOverlayBytes - overlayBytes);
             options.projectionFailure = {"MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能冻结。"};
             options.serializationFailure = {"MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能序列化。"};
