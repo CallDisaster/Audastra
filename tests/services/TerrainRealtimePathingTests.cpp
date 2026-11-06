@@ -67,7 +67,7 @@ void WaterBlightCliffAndHistoryKeepSaveBytes() {
     TerrainBrush blight;
     blight.kind = TerrainBrushKind::Blight;
     blight.shape = TerrainBrushShape::Square;
-    blight.radius = 128;
+    blight.radius = 2;
     blight.value = true;
     Take(fixture.edits->EditTerrain(blight, points));
     Take(reference->EditTerrain(blight, points));
@@ -98,7 +98,7 @@ void PureBlightAndRejectedBudgetAreAtomic() {
     TerrainPathingSave::BindRealtimePathing(*fixture.edits, source, fixture.game);
     TerrainBrush brush;
     brush.kind = TerrainBrushKind::Blight;
-    brush.radius = 128;
+    brush.radius = 2;
     brush.value = true;
     const std::array points{TerrainStrokePoint{3072, 3072}};
     Take(fixture.edits->EditTerrain(brush, points));
@@ -126,7 +126,7 @@ void DirectoryCandidateUsesSameLayerAndRejectsDrift() {
     const auto workspace = Take(DirectoryWorkspace::Open(directory));
     TerrainBrush brush;
     brush.kind = TerrainBrushKind::Blight;
-    brush.radius = 128;
+    brush.radius = 2;
     brush.value = true;
     const std::array points{TerrainStrokePoint{3072, 3072}};
     Take(fixture.edits->EditTerrain(brush, points));
