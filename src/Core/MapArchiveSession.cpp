@@ -490,6 +490,7 @@ Result<std::vector<std::byte>> MapArchiveSession::ReadMember(std::string_view na
 
 Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
     std::span<const std::string> names, const ArchiveExactMemberLimits& limits) const {
+    DiagnosticTrace::Scope timing("core-map-exact-capture");
     using Output = std::vector<ArchiveExactMember>;
     const auto fail = [](std::string code, std::string message) {
         return Result<Output>::Failure("MapArchiveSession", std::move(code), std::move(message));

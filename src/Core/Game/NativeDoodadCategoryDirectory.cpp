@@ -1,4 +1,5 @@
 #include "War3MapCore/Game/NativeDoodadCategoryDirectory.h"
+#include "War3MapCore/DiagnosticTrace.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Hash.h"
@@ -231,6 +232,7 @@ void MergeCategories(std::span<const std::byte> bytes, std::map<std::string, std
 
 Result<NativeDoodadCategoryDirectory> NativeDoodadCategoryDirectory::Capture(
     const std::filesystem::path& gameRoot, NativeEditorStartupRules rules, std::size_t maximumBytes) {
+    DiagnosticTrace::Scope timing("core-category-capture");
     return CaptureWithProfiles(gameRoot, rules, maximumBytes, {});
 }
 

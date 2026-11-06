@@ -717,6 +717,7 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
     const std::filesystem::path& gameRoot, std::size_t maximumBytes, bool native,
     const NativeObjectValidator* validator, const std::vector<std::byte>* currentDoodads, bool sourceObjectsOnly, bool resizeSpatial) {
+    DiagnosticTrace::Scope timing("core-pathing-resource-capture");
     return Guard<TerrainPathingResources>([&] {
         TerrainPathingResources result;
         result.resizeSpatial_ = resizeSpatial;

@@ -268,6 +268,7 @@ Result<std::vector<std::byte>> GameDataSource::ReadFileBounded(
 
 Result<GameFileContents> GameDataSource::ReadFileBoundedWithSource(
     const std::string& name, std::size_t maxBytes) const {
+    DiagnosticTrace::Scope timing("core-game-member-read");
     for (std::size_t index = 0; index < archives_.size(); ++index) {
         if (archives_[index]->HasFile(name)) {
             auto read = archives_[index]->ReadFileBounded(name, maxBytes);
