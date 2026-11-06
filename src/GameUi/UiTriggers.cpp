@@ -150,13 +150,13 @@ public:
                 Segment segment;
                 Lines& body = segment.frames.emplace_back();
                 const auto name = Quote(change.name);
-                if (change.scale) body.push_back(Call("AudastraUISetOriginalScale", {name, Real(*change.scale)}));
                 if (change.position) {
                     const auto& a = *change.position;
                     const auto point = static_cast<std::size_t>(a.point), target = static_cast<std::size_t>(a.targetPoint);
                     body.push_back(Call("AudastraUISetOriginalPosition", {name, std::string(kAnchors[point]),
                         Real(kScreenPoints[target][0] + a.x), Real(kScreenPoints[target][1] + a.y)}));
                 }
+                if (change.scale) body.push_back(Call("AudastraUISetOriginalScale", {name, Real(*change.scale)}));
                 if (change.alpha) body.push_back(Call("AudastraUISetOriginalAlpha", {name, std::to_string(*change.alpha)}));
                 if (change.visible) body.push_back(Call("AudastraUISetOriginalVisible", {name, *change.visible ? "true" : "false"}));
                 originalSegments.push_back(std::move(segment));

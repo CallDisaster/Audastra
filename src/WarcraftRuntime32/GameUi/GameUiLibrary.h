@@ -178,6 +178,8 @@ private:
         std::optional<bool> visible;
         struct Position { int point; float x; float y; float width; float height; };
         std::optional<Position> position;
+        struct Size { float width; float height; };
+        std::optional<Size> baselineSize;
         std::optional<float> scale;
         std::optional<int> alpha;
     };

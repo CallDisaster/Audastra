@@ -1012,9 +1012,11 @@ void OriginalParts() {
             return line.starts_with("clear ") || line.starts_with("abs ") || line.starts_with("width ") || line.starts_with("height ");
         }), "unresolved dimensions do not remove anchors or change size");
     minimap->Set(Layout127::ClassicLayout + 0x54, 1);
+    Check(ui.SetOriginalScale("Minimap", 1.2f) == UiError::None, "scale can precede position");
+    putFloat(layout + 0x60, 4.0f);
     Check(ui.SetOriginalVisible("Minimap", false) == UiError::None && ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::None &&
         ui.SetOriginalScale("Minimap", 1.2f) == UiError::None && ui.SetOriginalAlpha("Minimap", 128) == UiError::None, "original properties recorded");
-    Check(Logged("width " + Hex(layout) + " 0.200") && Logged("height " + Hex(layout) + " 0.100"), "two-anchor resolved rectangle preserves unscaled dimensions before clear");
+    Check(Logged("width " + Hex(layout) + " 0.200") && Logged("height " + Hex(layout) + " 0.100"), "two-anchor dimensions remain from before scale, not a new scale with a stale rectangle");
     g_log.clear();
     Check(ui.RefreshOriginals() == UiError::None && Logged("scale " + Hex(minimap->Self() + 0xB4) + " 1.200"), "reapply on game thread");
     minimap->vtable = reinterpret_cast<Address>(vtSimple.data());

@@ -125,6 +125,8 @@ UiError GameUiLibrary::SetOriginalPosition(std::string_view name, int point, flo
     float width = 0, height = 0;
     if (previous != originals_.end() && previous->position) {
         width = previous->position->width; height = previous->position->height;
+    } else if (previous != originals_.end() && previous->baselineSize) {
+        width = previous->baselineSize->width; height = previous->baselineSize->height;
     } else if (!OriginalDimensions(LayoutOf(*slot), width, height)) {
         originalProblem_ = "原版界面 " + std::string(name) + "：尚无有效布局尺寸，未修改锚点";
         return UiError::NotFound;
@@ -139,8 +141,19 @@ UiError GameUiLibrary::SetOriginalPosition(std::string_view name, int point, flo
 UiError GameUiLibrary::SetOriginalScale(std::string_view name, float value) {
     if (!std::isfinite(value) || value < .1f || value > 4) return UiError::BadArgument;
     const auto frame = Original(name); if (frame.error != UiError::None) return frame.error;
+    // 初次缩放前的矩形可能依赖两角锚定；布局尚未重算时，不再用新scale除旧缓存矩形。
+    std::optional<OriginalState::Size> baseline;
+    UiError error{};
+    if (const auto* slot = Resolve(frame.handle, error)) {
+        float width = 0, height = 0;
+        if (OriginalDimensions(LayoutOf(*slot), width, height)) baseline = OriginalState::Size{width, height};
+    }
     const auto status = SetScale(frame.handle, value);
-    if (status == UiError::None) OriginalSettings(name).scale = value;
+    if (status == UiError::None) {
+        auto& settings = OriginalSettings(name);
+        settings.scale = value;
+        if (!settings.baselineSize && baseline) settings.baselineSize = baseline;
+    }
     return status;
 }
 UiError GameUiLibrary::SetOriginalAlpha(std::string_view name, int value) {
