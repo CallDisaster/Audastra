@@ -1,4 +1,5 @@
 #include "LiveEditorTools.h"
+#include "../QtCommon/DiagnosticTimings.h"
 #include "LiveEditorAuxiliaryTools.h"
 #include "McpLuaTestTools.h"
 #include "McpLuaFileTools.h"
@@ -1045,6 +1046,7 @@ private:
                 if (!frozen.Succeeded() || !frozen.value) return {std::move(frozen.diagnostics)};
                 realtimeFrozen = std::move(*frozen.value);
                 auto captured = RunLiveBoundsWorker<Result<std::shared_ptr<const MapArchiveSession>>>([frozen = realtimeFrozen] {
+                    QtCommon::DiagnosticTimingScope timing("terrain-live-source-lease");
                     return Services::TerrainPathingSave::CaptureRealtimeReadSource(*frozen);
                 });
                 if (!captured.Succeeded() || !captured.value) return {std::move(captured.diagnostics)};
@@ -1057,6 +1059,7 @@ private:
                 if (!prepared.Succeeded()) return {{}, prepared.diagnostics};
                 return RunLiveBoundsWorker<Result<QtProject::TerrainWaterEditCapture>>(
                     [request = std::move(request), source = realtimeReadSource] {
+                        QtCommon::DiagnosticTimingScope timing("terrain-live-water-load");
                         return QtProject::LoadTerrainWaterEditResources(request, {}, source);
                     });
             };
@@ -1100,6 +1103,7 @@ private:
                     waterCapture->request->enforceWaterLimits))
                     return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "水刷实际来源或会话已变化。");
                 const auto verified = RunLiveBoundsWorker<Status>([capture = waterCapture, source = realtimeReadSource] {
+                    QtCommon::DiagnosticTimingScope timing("terrain-live-water-verify");
                     return QtProject::VerifyTerrainWaterEditResources(*capture, source);
                 });
                 if (!verified.Succeeded()) return verified;
@@ -1302,13 +1306,16 @@ private:
                     if (!ready.Succeeded()) return {{}, ready.diagnostics};
                     qualified = RunLiveBoundsWorker<Result<Services::PreparedTerrainEdit>>(
                         [frozen = realtimeFrozen, plan, source = realtimeReadSource, bytes = realtimeCopied] {
+                            QtCommon::DiagnosticTimingScope timing("terrain-live-native-prepare");
                             return Services::TerrainPathingSave::CompleteRealtimeTerrainEdit(*frozen, plan, source, bytes);
                         });
                     if (!qualified.Succeeded()) return {{}, std::move(qualified.diagnostics)};
                 }
                 if (!boundsProject || !ownerHandle_ || project_.mapEdits_.get() != current.value->session)
                     return Result<MapData::TerrainStrokeResult>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "后台通行准备期间活动会话已变化。");
+                QtCommon::DiagnosticTimingScope commitTiming("terrain-live-commit");
                 const auto applied = Services::ApplyTerrainEdit(*project_.mapEdits_, current.value->document, *qualified.value, validate);
+                commitTiming.Finish();
                 if (!applied.Succeeded()) return applied;
                 (void)project_.ObserveMapDataEdit("MCP 修改地形");
                 // 原世界页监听此撤销栈的 indexChanged，按同一地形快照增量重建；不发整图重新加载信号。
