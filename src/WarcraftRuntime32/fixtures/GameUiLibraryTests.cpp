@@ -1007,6 +1007,11 @@ void OriginalParts() {
     Check(ui.Original("Minimap").error == UiError::None && ui.Original("InventoryButton6").error == UiError::None, "original verified fields and bounded inventory vector");
     Check(ui.Original("InventoryButton7").error == UiError::Unsupported && ui.Original("not_a_node").error == UiError::Unsupported, "unknown original fields refuse");
     g_log.clear();
+    Check(ui.SetOriginalPosition("ChatMessage", 4, .4f, .35f) == UiError::Unsupported &&
+        ui.SetOriginalScale("ChatMessage", 1.2f) == UiError::Unsupported &&
+        ui.SetOriginalVisible("ChatMessage", false) == UiError::Unsupported && g_log.empty(),
+        "unqualified message layouts refuse before any game call");
+    g_log.clear();
     Check(ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::NotFound &&
         std::none_of(g_log.begin(), g_log.end(), [](const auto& line) {
             return line.starts_with("clear ") || line.starts_with("abs ") || line.starts_with("width ") || line.starts_with("height ");

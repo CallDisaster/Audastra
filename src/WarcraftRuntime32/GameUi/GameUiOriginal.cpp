@@ -61,6 +61,12 @@ UiCreated GameUiLibrary::Original(std::string_view name) {
         return {0, error};
     };
     if (const auto ready = Ready(); ready != UiError::None) return fail(ready);
+    // 消息框有独立的生命周期；通用布局调整尚未通过实机验收，不向其分派布局调用。
+    if (name == "ChatMessage" || name == "Message" || name == "UnitMessage" || name == "TopMessage") {
+        const auto result = fail(UiError::Unsupported);
+        originalProblem_ += "（消息框布局未通过验收）";
+        return result;
+    }
     if (name == "WorldFrame") {
         const auto found = World();
         return found.error == UiError::None ? found : fail(found.error);
