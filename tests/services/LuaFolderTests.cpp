@@ -81,6 +81,13 @@ void ReconcileAndMetadata() {
     Temp temp;
     const auto folder = temp.root / "external";
     std::filesystem::create_directory(folder);
+    auto lowerDrive = folder.wstring();
+    if (lowerDrive[0] >= L'A' && lowerDrive[0] <= L'Z') lowerDrive[0] += L'a' - L'A';
+    const auto caseLink = EncodeLuaFolderLink(std::filesystem::path(lowerDrive), temp.root / "case.w3x");
+    Good(caseLink, "same drive with different case");
+    const auto casePath = DecodeLuaFolderLink(*caseLink.value, temp.root / "case.w3x");
+    Good(casePath, "case link round trip");
+    Require(casePath.value->has_value() && std::filesystem::equivalent(**casePath.value, folder), "relative encoding never aliases map directory");
     const auto a = Bytes("return 'map'");
     std::vector<LuaFolderFile> map{{"lessons/reload.lua", *Sha256(a).value, std::make_shared<const std::vector<std::byte>>(a)}};
     auto empty = CaptureLuaFolder(folder);

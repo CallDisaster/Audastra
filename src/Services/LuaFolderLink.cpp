@@ -76,12 +76,17 @@ Result<std::vector<std::byte>> EncodeLuaFolderLink(const std::filesystem::path& 
         const auto root = std::filesystem::absolute(folder).lexically_normal();
         const auto parent = std::filesystem::absolute(map).parent_path().lexically_normal();
         auto value = root;
-        if (Key(Utf8(root.root_name())) == Key(Utf8(parent.root_name()))) value = root.lexically_relative(parent);
-        if (value.empty()) value = ".";
+        if (Key(Utf8(root.root_name())) == Key(Utf8(parent.root_name()))) {
+            // 盘符大小写不能使lexically_relative失败后被误写成地图所在目录。
+            const auto sameDriveRoot = parent.root_name() / root.root_directory() / root.relative_path();
+            value = sameDriveRoot.lexically_relative(parent);
+            if (value.empty()) throw std::runtime_error("cannot form relative path");
+        }
         const auto text = Json{{"schema", 1}, {"path", Utf8(value)}}.dump();
         const auto* bytes = reinterpret_cast<const std::byte*>(text.data());
         auto decoded = DecodeLuaFolderLink(std::span(bytes, text.size()), map);
         if (!decoded.Succeeded()) return {std::nullopt, decoded.diagnostics};
+        if (!*decoded.value || Key(Utf8(**decoded.value)) != Key(Utf8(root))) throw std::runtime_error("path round trip changed target");
         return Result<std::vector<std::byte>>::Success({bytes, bytes + text.size()});
     } catch (...) { return Result<std::vector<std::byte>>::Failure("LuaFolder", "LUA_FOLDER_METADATA_INVALID", "无法编码Lua文件夹关联路径。"); }
 }
