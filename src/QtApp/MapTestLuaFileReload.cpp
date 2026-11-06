@@ -162,8 +162,13 @@ QJsonObject MainWindow::LuaFileReload(bool submit) {
     } else if (submit) {
         if (snapshot.state == Services::LuaTestReloadState::Starting)
             return Failure("LUA_RELOAD_NOT_READY", tr("游戏中的 Lua 环境还在初始化，请进入地图后再热重载。"));
-        if (project_->LuaFolderSource().Active()) {
+        if (project_->LuaFolderSource().Linked()) {
             project_->LuaFolderSource().Refresh();
+            const auto& folder = project_->LuaFolderSource();
+            if (!folder.Active() && !folder.Missing()) {
+                const auto& diagnostics = folder.Diagnostics();
+                return Failure("LUA_RELOAD_READ", diagnostics.empty() ? tr("外部Lua来源不可用。") : QString::fromStdString(diagnostics.front().message));
+            }
             if (triggersModule_->LuaScripts()->HasPendingDraft())
                 return Failure("LUA_RELOAD_DRAFT_INVALID", tr("编辑器仍有未应用草稿，请先处理草稿或外部冲突。"));
         }

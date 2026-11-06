@@ -252,6 +252,13 @@ public:
     // 按游戏目录与变量表缓存；没有游戏目录时只含 Lua 标准库。
     [[nodiscard]] std::shared_ptr<const Lua::ApiCatalog> LuaRuntimeCatalog();
     [[nodiscard]] ProjectLuaFolder& LuaFolderSource() const;
+    struct LuaFolderSaveConsent {
+        std::string deletionSha256;
+        bool allowPrompt = true;
+    };
+    // 单次宿主调用的临时确认，不进入地图设置、工程持久化或撤销历史。
+    [[nodiscard]] LuaFolderSaveConsent& LuaSaveConsent() noexcept { return luaFolderSaveConsent_; }
+    [[nodiscard]] const LuaFolderSaveConsent& LuaSaveConsent() const noexcept { return luaFolderSaveConsent_; }
     [[nodiscard]] bool IsCodeCheckBindingCurrent(std::string_view binding) const;
     void AdoptCodeCheckIndex(std::shared_ptr<const Services::CodeCheckResult> index);
     [[nodiscard]] std::shared_ptr<const Services::CodeCheckResult> CurrentCodeCheckIndex() const;
@@ -602,8 +609,7 @@ private:
     std::string luaRuntimeCatalogKey_;
     std::unique_ptr<ProjectLuaFolder> luaFolderSource_;
     // 单次宿主请求的删除确认，不写入地图或工程，不授予未来保存资格。
-    std::string luaFolderDeletionApproval_;
-    bool luaFolderDeletionPromptAllowed_ = true;
+    LuaFolderSaveConsent luaFolderSaveConsent_;
     mutable std::uint64_t contentCacheEpoch_ = 0;
     mutable std::uint64_t contentCacheEditGeneration_ = (std::numeric_limits<std::uint64_t>::max)();
     mutable std::uint64_t contentCacheEditRevision_ = (std::numeric_limits<std::uint64_t>::max)();

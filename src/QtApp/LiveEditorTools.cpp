@@ -1349,8 +1349,8 @@ private:
 
     QJsonObject Save(const QJsonObject& arguments) {
         return Write(arguments, false, [&] {
-            QScopedValueRollback approval(project_.luaFolderDeletionApproval_, arguments.value("lua_delete_sha256").toString().toStdString());
-            QScopedValueRollback prompt(project_.luaFolderDeletionPromptAllowed_, false);
+            QScopedValueRollback approval(project_.LuaSaveConsent().deletionSha256, arguments.value("lua_delete_sha256").toString().toStdString());
+            QScopedValueRollback prompt(project_.LuaSaveConsent().allowPrompt, false);
             const auto purpose = arguments.value("runtime_purpose").toString("normal");
             if (purpose != "normal" && purpose != "internal_validation") return Mcp::Failure("RUNTIME_SAVE_PURPOSE_INVALID", "活动保存只支持normal或internal_validation。");
             const bool validation = purpose == "internal_validation";
@@ -1625,8 +1625,8 @@ private:
                 {"changes", QJsonObject{{"files", removed.size()}, {"items", items}}}};
         }
         if (!mapTest_) return Mcp::Failure("MAP_TEST_UNAVAILABLE", "宿主尚未接通地图测试。");
-        QScopedValueRollback approval(project_.luaFolderDeletionApproval_, arguments.value("lua_delete_sha256").toString().toStdString());
-        QScopedValueRollback allowPrompt(project_.luaFolderDeletionPromptAllowed_, false);
+        QScopedValueRollback approval(project_.LuaSaveConsent().deletionSha256, arguments.value("lua_delete_sha256").toString().toStdString());
+        QScopedValueRollback allowPrompt(project_.LuaSaveConsent().allowPrompt, false);
         auto result = mapTest_(name, arguments);
         if (result.value("ok").toBool() || result.contains("diagnostics")) return result;
         // 宿主只给 code/message 时转成统一的失败格式，保留其余字段（如已执行步骤的输出）。

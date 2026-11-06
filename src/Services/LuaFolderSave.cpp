@@ -128,6 +128,7 @@ Status PrepareLuaFolderTestInput(MapTestRequest& request, const std::filesystem:
     if (!frozen.Succeeded()) return frozen;
     task.target = request.workspace.parent_path() / "lua-folder-input.w3x";
     task.testCopyOnly = true;
+    task.runtimePurpose = MapRuntimeSavePurpose::TestRun;
     task.luaFolderOverride = overrideFolder;
     task.luaFolderDeletionApproval = std::move(deletionApproval);
     MapSaveService::Run(task);

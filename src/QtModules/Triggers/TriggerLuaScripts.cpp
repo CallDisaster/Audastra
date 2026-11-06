@@ -184,6 +184,10 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
             if (!current.Succeeded() || current.value->sha256 != source_->sha256) Status(tr("外部文件已改变，草稿保留"));
             return;
         }
+        if (folder.Linked() && !folder.Missing() && !folder.Active()) {
+            editableSource_ = false; editor_->SetEditable(false); UpdateDraftState();
+            return;
+        }
         if (current.Succeeded()) LoadAcceptedScript(*current.value);
         else {
             source_.reset(); selectedPath_.clear(); editableSource_ = false; suppress_ = true;
@@ -296,6 +300,9 @@ bool TriggerLuaScripts::SelectScript(const QString& path) {
 }
 bool TriggerLuaScripts::CreateScript(const QString& path, const QString& initialText) {
     if (!CommitPendingDraft()) return false;
+    if (const auto& folder = project_.LuaFolderSource(); folder.Linked() && !folder.Missing() && !folder.Active()) {
+        Status(tr("外部Lua来源不可用，请先重新连接")); return false;
+    }
     if (project_.LuaFolderSource().Active()) {
         publishing_ = true;
         const auto problem = QtProject::WriteLuaScript(project_, path, initialText, {}, tr("新建外部Lua"));
@@ -318,6 +325,9 @@ bool TriggerLuaScripts::CreateScript(const QString& path, const QString& initial
 }
 bool TriggerLuaScripts::RenameScript(const QString& path, const QString& newPath) {
     if (!CommitPendingDraft()) return false;
+    if (const auto& folder = project_.LuaFolderSource(); folder.Linked() && !folder.Missing() && !folder.Active()) {
+        Status(tr("外部Lua来源不可用，请先重新连接")); return false;
+    }
     if (!newPath.endsWith(".lua", Qt::CaseInsensitive)) { Status(tr("扩展名必须是 .lua")); return false; }
     if (auto& folder = project_.LuaFolderSource(); folder.Active()) {
         const auto read = QtProject::ReadOwnedAsset(project_, path);
@@ -337,6 +347,9 @@ bool TriggerLuaScripts::RenameScript(const QString& path, const QString& newPath
 }
 bool TriggerLuaScripts::DeleteScript(const QString& path) {
     if (!CommitPendingDraft()) return false;
+    if (const auto& folder = project_.LuaFolderSource(); folder.Linked() && !folder.Missing() && !folder.Active()) {
+        Status(tr("外部Lua来源不可用，请先重新连接")); return false;
+    }
     if (auto& folder = project_.LuaFolderSource(); folder.Active()) {
         const auto read = QtProject::ReadOwnedAsset(project_, path);
         if (!read.Succeeded()) { Status(Problem(read.diagnostics)); return false; }

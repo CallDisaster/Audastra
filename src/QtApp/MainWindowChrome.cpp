@@ -80,8 +80,10 @@ void MainWindow::ConnectModules() {
         UpdateLuaReloadPending();
         if (project_->LuaFolderSource().Missing()) ShowStatusMessage(tr("外部文件夹不存在，使用地图内Lua"));
         if (luaFileReload_ && luaAutoReloadAction_ && luaAutoReloadAction_->isChecked()
-              && !triggersModule_->LuaScripts()->HasPendingDraft())
+              && !triggersModule_->LuaScripts()->HasPendingDraft()) {
               luaFileAutoReloadPending_ = true;
+              if (luaReloadPoll_ && !luaReloadPoll_->isActive()) luaReloadPoll_->start();
+          }
     });
     connect(this, &ShellWindow::CurrentModuleChanged, this, [this](const War3Map::Shell::ModuleId& id) {
         UpdateBreadcrumb();

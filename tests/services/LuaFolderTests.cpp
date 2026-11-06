@@ -135,6 +135,14 @@ void SaveRoundTripAndMissingFallback() {
     Require(task.nextSession->ReadMember("lessons/reload.lua").value == std::optional(Bytes("return 'new'")), "folder bytes saved");
     Require(!task.nextSession->HasMember("deleted.lua"), "confirmed removal read back");
     Require(*Sha256File(source).value == originalHash, "source map untouched");
+    MapSaveTask changedDuringSave;
+    Good(changedDuringSave.FreezeArchive(*archive.value), "freeze racing save");
+    changedDuringSave.target = temp.root / "racing.w3x";
+    changedDuringSave.luaFolderDeletionApproval = *approval.value;
+    changedDuringSave.beforePublish = [&] { Put(folder / "appeared.lua", "return 8"); return Status::Ok(); };
+    MapSaveService::Run(changedDuringSave);
+    Require(!changedDuringSave.succeeded && !std::filesystem::exists(changedDuringSave.target), "changed set never publishes mixed snapshot");
+    std::filesystem::remove(folder / "appeared.lua");
     Good(WriteLuaFolderFile(folder, "lessons/reload.lua", Bytes("return 'after save'"), task.luaFolderSnapshot->files[0].sha256), "save releases folder lease");
     std::filesystem::rename(folder, temp.root / "renamed");
     MapSaveTask missing;

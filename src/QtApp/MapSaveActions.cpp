@@ -207,9 +207,9 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         reportFailure(tr("Lua来源未通过检查")); return false;
     }
     if (!luaDeletions.value->first.empty()) {
-        auto approval = project_->luaFolderDeletionApproval_;
+        auto approval = project_->LuaSaveConsent().deletionSha256;
         if (approval != luaDeletions.value->second) {
-            if (!project_->luaFolderDeletionPromptAllowed_ || !background) {
+            if (!project_->LuaSaveConsent().allowPrompt || !background) {
                 project_->AddDiagnostic(tr("错误"), tr("Lua"), "LUA_FOLDER_DELETE_CONFIRM_REQUIRED",
                     tr("保存将删除地图Lua；请先审阅删除项并提供确认SHA：%1").arg(QString::fromStdString(luaDeletions.value->second)));
                 return false;
