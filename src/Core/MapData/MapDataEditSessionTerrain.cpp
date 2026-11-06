@@ -822,8 +822,9 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
             "地形候选不属于当前会话、修订或来源，请重新预览。");
     auto command = *plan.command_;
     std::function<Status()> verifyRealtime;
-    const bool rebuildRealtime = plan.waterBrush_ || plan.brush_.kind == TerrainBrushKind::CliffLevel
-        || plan.brush_.kind == TerrainBrushKind::Blight || realtimeNativePathing_ || realtimePathingUnavailable_;
+    const bool rebuildRealtime = plan.brush_.kind != TerrainBrushKind::PathingRestriction
+        && (plan.waterBrush_ || plan.brush_.kind == TerrainBrushKind::CliffLevel
+            || plan.brush_.kind == TerrainBrushKind::Blight || realtimeNativePathing_ || realtimePathingUnavailable_);
     if (realtimePathingBuilder_ && rebuildRealtime && plan.HasChanges()) {
         auto rebuilt = realtimePathingBuilder_(*this, plan);
         if (!rebuilt.Succeeded() || !rebuilt.value) return {{}, std::move(rebuilt.diagnostics)};

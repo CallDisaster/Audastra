@@ -6,6 +6,20 @@ namespace {
 using namespace War3Map;
 using namespace War3Map::TerrainCornerRampFixtures;
 
+void EqualPathing(const Bytes& actual, const Bytes& expected, const char* message) {
+    if (actual == expected) return;
+    std::string details = message;
+    details += ": actual=" + std::to_string(actual.size()) + ", expected=" + std::to_string(expected.size());
+    for (std::size_t index = 0; index < std::min(actual.size(), expected.size()); ++index) {
+        if (actual[index] == expected[index]) continue;
+        details += ", first_byte=" + std::to_string(index) + ", actual="
+            + std::to_string(std::to_integer<unsigned>(actual[index])) + ", expected="
+            + std::to_string(std::to_integer<unsigned>(expected[index]));
+        break;
+    }
+    throw std::runtime_error(details);
+}
+
 Bytes SavedPathing(const Fixture& fixture, const MapDataEditSession& session) {
     auto plan = Take(TerrainPathingSave::PrepareForSave(*fixture.source, session, fixture.game));
     Require(plan.SaveGate().Succeeded(), "真实保存门通过");
@@ -37,9 +51,10 @@ void WaterBlightCliffAndHistoryKeepSaveBytes() {
     std::vector<Bytes> history{fixture.members[1].data};
     const std::array points{TerrainStrokePoint{3072, 3072}};
     const auto check = [&] {
+        std::cout << "Checking stroke " << history.size() << '\n';
         const auto actual = SavedPathing(fixture, *fixture.edits);
-        Require(actual == SavedPathing(fixture, *reference), "有实时层与旧保存时重建WPM逐字节相同");
-        Require(QueriedPathing(fixture) == actual, "实时逐格查询等于最终保存WPM");
+        EqualPathing(actual, SavedPathing(fixture, *reference), "有实时层与旧保存时重建WPM逐字节相同");
+        EqualPathing(QueriedPathing(fixture), actual, "实时逐格查询等于最终保存WPM");
         history.push_back(actual);
     };
     const auto rules = fixture.Rules();

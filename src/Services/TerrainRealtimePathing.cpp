@@ -1,6 +1,7 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
 
 #include <exception>
+#include <type_traits>
 
 namespace War3Map::Services {
 using Session = MapData::MapDataEditSession;

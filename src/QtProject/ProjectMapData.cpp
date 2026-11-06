@@ -5,9 +5,11 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/NativeObjectFreeze.h"
+#include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Workspace.h"
+#include <algorithm>
 #include <array>
 #include <QDir>
 #include <QUndoStack>
