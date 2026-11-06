@@ -22,8 +22,8 @@ Bytes QueriedPathing(const Fixture& fixture) {
         for (std::uint32_t x = 0; x < width; ++x) {
             const auto sampled = Take(fixture.edits->InspectTerrainPoint(
                 {header.offset[0] + x * 32 + 16, header.offset[1] + y * 32 + 16}));
-            Require(sampled.pathingState == TerrainPathingState::Available, "实时逐格查询可用");
-            result[16 + y * width + x] = std::byte(sampled.pathingFlags);
+            Require(sampled.pathingState == TerrainPathingState::Available && sampled.pathingFlags, "实时逐格查询可用");
+            result[16 + y * width + x] = std::byte(*sampled.pathingFlags);
         }
     }
     return result;

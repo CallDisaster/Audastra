@@ -992,6 +992,12 @@ void WorldModule::FinishTerrainStroke() {
     if (!strokeBase_ || !project_.mapEdits_ || project_.mapEdits_->Terrain() != strokeBase_ || strokePoints_.empty()) {
         CancelTerrainStroke(); return;
     }
+    const auto realtime = project_.ConfigureRealtimeTerrainPathing();
+    if (!realtime.Succeeded()) {
+        CancelTerrainStroke();
+        selectionStatus_->setText(WorldDiagnosticText(realtime.diagnostics));
+        return;
+    }
     const auto before = project_.mapEdits_->Revision();
     const bool pathing = strokeBrush_.kind == MapData::TerrainBrushKind::PathingRestriction;
     const bool water = strokeWaterBrush_.has_value();

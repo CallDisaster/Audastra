@@ -5,26 +5,61 @@
 namespace War3Map::Services {
 using Session = MapData::MapDataEditSession;
 
+namespace {
+template<class Source>
+auto RealtimeFactory(std::shared_ptr<const Source> source, std::filesystem::path gameRoot,
+    std::vector<MemberReplacement> finalMembers) {
+    auto members = std::make_shared<const std::vector<MemberReplacement>>(std::move(finalMembers));
+    return [source, gameRoot = std::move(gameRoot), members](const auto& current, const auto& limits) {
+        const auto fail = [](const char* code, const char* message) {
+            return Result<MapData::TerrainSavePlan>::Failure("Terrain.Edit", code, message);
+        };
+        if (!source) return fail("TERRAIN_REALTIME_PATHING_SOURCE", "实时通行缺少实际来源。");
+        auto bounded = limits;
+        if (members->capacity() > limits.maximumBytes / sizeof(MemberReplacement))
+            return fail("TERRAIN_REALTIME_PATHING_BUDGET", "实时通行的覆盖元数据超过预算。");
+        std::size_t retained = members->capacity() * sizeof(MemberReplacement);
+        const auto reserve = [&](std::size_t bytes) {
+            if (retained >= limits.maximumBytes || bytes > limits.maximumBytes - retained) return false;
+            retained += bytes;
+            return true;
+        };
+        for (const auto& member : *members)
+            if (!reserve(member.name.capacity() + 1) || !reserve(member.data.capacity()))
+                return fail("TERRAIN_REALTIME_PATHING_BUDGET", "实时通行的物编覆盖超过预算。");
+        if constexpr (std::is_same_v<Source, WorkspaceSnapshot>) {
+            if (source->files.capacity() > limits.maximumBytes / sizeof(WorkspaceFile)
+                || !reserve(sizeof(WorkspaceSnapshot) + source->files.capacity() * sizeof(WorkspaceFile))
+                || !reserve(source->root.native().capacity() * sizeof(std::filesystem::path::value_type))
+                || !reserve(source->aggregateSha256.capacity()))
+                return fail("TERRAIN_REALTIME_PATHING_BUDGET", "目录来源清单超过实时通行预算。");
+            for (const auto& file : source->files)
+                if (!reserve(file.relativePath.native().capacity() * sizeof(std::filesystem::path::value_type))
+                    || !reserve(file.sha256.capacity()))
+                    return fail("TERRAIN_REALTIME_PATHING_BUDGET", "目录来源名称超过实时通行预算。");
+        }
+        if (retained >= limits.maximumBytes)
+            return fail("TERRAIN_REALTIME_PATHING_BUDGET", "覆盖没有留下通行重建预算。");
+        bounded.maximumBytes -= retained;
+        return TerrainPathingSave::PrepareForSave(*source, current, gameRoot, bounded, *members);
+    };
+}
+} // namespace
+
 void TerrainPathingSave::BindRealtimePathing(Session& edits,
     std::shared_ptr<const MapArchiveSession> source, const std::filesystem::path& gameRoot,
-    std::size_t maximumBytes) {
+    std::size_t maximumBytes, std::vector<MemberReplacement> finalMembers) {
     BindRealtimeBuilder(edits,
-        [source, gameRoot](const auto& current, const auto& limits) {
-            if (!source) return Result<MapData::TerrainSavePlan>::Failure("Terrain.Edit",
-                "TERRAIN_REALTIME_PATHING_SOURCE", "实时通行缺少实际归档来源。");
-            return PrepareForSave(*source, current, gameRoot, limits);
-        }, [source](const auto& plan, const auto& limits) {
+        RealtimeFactory(source, gameRoot, std::move(finalMembers)), [source](const auto& plan, const auto& limits) {
             return plan.VerifySourceInputs(*source, limits);
         }, maximumBytes);
 }
 
 void TerrainPathingSave::BindRealtimePathing(Session& edits, const WorkspaceSnapshot& source,
-    const std::filesystem::path& gameRoot, std::size_t maximumBytes) {
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes, std::vector<MemberReplacement> finalMembers) {
     auto owned = std::make_shared<const WorkspaceSnapshot>(source);
     BindRealtimeBuilder(edits,
-        [owned, gameRoot](const auto& current, const auto& limits) {
-            return PrepareForSave(*owned, current, gameRoot, limits);
-        }, [owned](const auto& plan, const auto& limits) {
+        RealtimeFactory(owned, gameRoot, std::move(finalMembers)), [owned](const auto& plan, const auto& limits) {
             return plan.VerifySourceInputs(*owned, limits);
         }, maximumBytes);
 }

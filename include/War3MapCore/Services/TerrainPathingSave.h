@@ -36,10 +36,12 @@ public:
     // 仅宿主绑定真实来源；闭包只持有不可变来源和配置，不借用Qt工程。
     static void BindRealtimePathing(MapData::MapDataEditSession& edits,
         std::shared_ptr<const MapArchiveSession> source, const std::filesystem::path& gameRoot,
-        std::size_t maximumBytes = 64u * 1024u * 1024u);
+        std::size_t maximumBytes = 64u * 1024u * 1024u,
+        std::vector<MemberReplacement> finalMembers = {});
     static void BindRealtimePathing(MapData::MapDataEditSession& edits,
         const WorkspaceSnapshot& source, const std::filesystem::path& gameRoot,
-        std::size_t maximumBytes = 64u * 1024u * 1024u);
+        std::size_t maximumBytes = 64u * 1024u * 1024u,
+        std::vector<MemberReplacement> finalMembers = {});
     // 既有槽替换与Ground表尾追加调用Core同一命令；实际source、规则winner和当前DOO捕获成功才记录FTJ6。
     // 调用方应在worker冻结来源和修订；此函数会读取来源与游戏表，不宜在GUI线程调用。
     [[nodiscard]] static Result<MapData::TerrainStrokeResult> EditTextureSlot(const MapArchiveSession& source,

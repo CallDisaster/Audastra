@@ -284,6 +284,8 @@ public:
 
     // 地图数据（ProjectMapData.cpp）：按当前来源重新读取只读地图文档。
     void LoadMapDocument(bool afterMapSave = false);
+    // 落笔前冻结当前物编覆盖；后台候选只保留这些值与不可变来源，不借用工程。
+    [[nodiscard]] Status ConfigureRealtimeTerrainPathing();
     // 从当前来源（归档会话或展开目录）读取地图成员；来源不明确时报错，不在多个来源间猜测。
     [[nodiscard]] Result<std::vector<std::byte>> ReadMapMember(const std::string& name) const;
     // 只用于当前已打开地图；保持自然语言T，明确选择完整Lua保存后端。

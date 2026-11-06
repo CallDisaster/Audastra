@@ -1008,10 +1008,14 @@ private:
     }
 
     QJsonObject TerrainTool(const QString& name, const QJsonObject& arguments, bool write) {
-        const auto context = [this]() -> Result<Mcp::TerrainEditToolContext> {
+        const auto context = [this, write]() -> Result<Mcp::TerrainEditToolContext> {
             if (!project_.mapEdits_ || !project_.mapEdits_->Terrain())
                 return Result<Mcp::TerrainEditToolContext>::Failure("QtApp.Live", "LIVE_EDITOR_TERRAIN_UNAVAILABLE",
                     "当前地图没有可读取的原地形会话。");
+            if (write) {
+                const auto realtime = project_.ConfigureRealtimeTerrainPathing();
+                if (!realtime.Succeeded()) return {{}, realtime.diagnostics};
+            }
             const auto identity = State();
             return Result<Mcp::TerrainEditToolContext>::Success({project_.mapEdits_.get(),
                 {projectIdentity_.toStdString(), generation_, project_.editRevision_.Revision(),

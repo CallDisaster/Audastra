@@ -4,6 +4,8 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/ObjectData/NativeObjectFreeze.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Workspace.h"
 #include <array>
@@ -12,6 +14,48 @@
 
 // 地图数据（地图信息、放置物、区域、镜头、声音等）：按当前来源重新读取只读文档。
 namespace War3Map::QtProject {
+
+Status EditorProject::ConfigureRealtimeTerrainPathing() {
+    const auto fail = [](const char* code, const char* message) {
+        return Status::Failure("Terrain.Edit", code, message);
+    };
+    if (!mapEdits_ || !mapEdits_->Terrain())
+        return fail("TERRAIN_REALTIME_PATHING_SOURCE", "当前没有可编辑的地形会话。");
+    if (sourceChangeSuspected_ || sourceChangeConfirmed_)
+        return fail("TERRAIN_REALTIME_PATHING_SOURCE_CHANGED", "地图来源可能已变化，请先重新核对来源。");
+    if (HasPendingAssetEdits())
+        return fail("TERRAIN_REALTIME_PATHING_PENDING_ASSETS", "资源修改尚未冻结，请先保存或撤销资源修改。");
+    constexpr std::size_t maximumBytes = 64u * 1024u * 1024u;
+    std::size_t owned = 0;
+    std::vector<MemberReplacement> members;
+    for (std::size_t index = 0; index < objectDirty_.size(); ++index) {
+        if (!objectDirty_[index]) continue;
+        const auto& native = nativeObjectDocuments_[index];
+        const auto& edited = objectDocuments_[index];
+        if (!native || !edited)
+            return fail("TERRAIN_REALTIME_PATHING_OBJECT_BASELINE", "物编基线尚未就绪，不能推测当前通行。");
+        const auto type = native->Type();
+        if (edited->Objects().empty() && archiveSession_ && !archiveSession_->HasMember(ObjectData::NativeFileName(type)))
+            continue;
+        ObjectData::NativeObjectFreezeOptions options;
+        options.outputType = type;
+        options.maximumBytes = std::min<std::size_t>(8u * 1024u * 1024u, maximumBytes - owned);
+        options.projectionFailure = {"TERRAIN_REALTIME_PATHING_OBJECT_FREEZE", "物编修改未能冻结。"};
+        options.serializationFailure = {"TERRAIN_REALTIME_PATHING_OBJECT_FREEZE", "物编修改未能序列化。"};
+        options.budgetFailure = {"TERRAIN_REALTIME_PATHING_BUDGET", "物编覆盖超过实时通行预算。"};
+        auto frozen = ObjectData::FreezeNativeObjectChanges(*native, *edited,
+            objectFieldSchema_.get(), standardCatalog_.get(), options);
+        if (!frozen.value) return fail(frozen.failure.code.c_str(), frozen.failure.message.c_str());
+        owned += frozen.value->bytes.capacity();
+        members.push_back({std::string(ObjectData::NativeFileName(type)), std::move(frozen.value->bytes)});
+    }
+    if (archiveSession_)
+        Services::TerrainPathingSave::BindRealtimePathing(*mapEdits_, archiveSession_, war3GameRoot_, maximumBytes, std::move(members));
+    else if (sourceArchivePath_.empty() && directorySnapshot_)
+        Services::TerrainPathingSave::BindRealtimePathing(*mapEdits_, directorySnapshot_->Snapshot(), war3GameRoot_, maximumBytes, std::move(members));
+    else return fail("TERRAIN_REALTIME_PATHING_SOURCE", "当前地形缺少匹配的归档或目录来源。");
+    return Status::Ok();
+}
 
 void EditorProject::LoadMapDocument(bool afterMapSave) {
     if (!afterMapSave && mapDataUndoStack_) mapDataUndoStack_->clear();
