@@ -44,6 +44,18 @@ Bytes QueriedPathing(const Fixture& fixture) {
     return result;
 }
 
+Bytes FullNativeReference(const Fixture& fixture) {
+    // 故意直接走完整生成器，独立于保存计划的脏区裁片路径。
+    auto resources = Take(TerrainPathingSave::CaptureNative(*fixture.source, fixture.grid,
+        *fixture.edits->Terrain(), fixture.game, 64u * 1024u * 1024u));
+    const auto generated = Take(resources.GenerateNative(*fixture.edits->Terrain(), TerrainNativeStage::After, 64u * 1024u * 1024u));
+    auto expected = fixture.members[1].data;
+    Require(expected.size() == generated.size() + 16, "完整原生参考形状");
+    for (std::size_t i = 0; i < generated.size(); ++i)
+        expected[i + 16] = (expected[i + 16] & std::byte{0x11}) | generated[i];
+    return expected;
+}
+
 void WaterBlightCliffAndHistoryKeepSaveBytes() {
     Fixture fixture;
     auto reference = fixture.FreshSession();
@@ -54,6 +66,7 @@ void WaterBlightCliffAndHistoryKeepSaveBytes() {
     const auto check = [&] {
         std::cout << "Checking stroke " << history.size() << '\n';
         const auto actual = SavedPathing(fixture, *fixture.edits);
+        EqualPathing(actual, FullNativeReference(fixture), "脏区保存WPM与完整原生生成器逐字节相同");
         EqualPathing(actual, SavedPathing(fixture, *reference), "有实时层与旧保存时重建WPM逐字节相同");
         EqualPathing(QueriedPathing(fixture), actual, "实时逐格查询等于最终保存WPM");
         history.push_back(actual);

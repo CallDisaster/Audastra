@@ -21,6 +21,31 @@ bool SameSha(std::span<const std::byte> bytes, const std::optional<std::string>&
     return expected && actual.Succeeded() && actual.value && *actual.value == *expected;
 }
 enum class SourceCellContext { Unexplained, ResizeUnexplained, RecognizedCache };
+std::optional<TerrainCellRect> NativeDirtyCells(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after) {
+    const auto& a = before.header; const auto& b = after.header;
+    if (a.version != b.version || a.mainTileset != b.mainTileset || a.usesCustomTileset != b.usesCustomTileset
+        || a.width != b.width || a.height != b.height || a.offset != b.offset
+        || a.groundTilesets != b.groundTilesets || a.cliffTilesets != b.cliffTilesets
+        || a.width < 2 || a.height < 2 || before.vertices.size() != after.vertices.size()) return {};
+    std::uint32_t x0 = a.width, y0 = a.height, x1 = 0, y1 = 0;
+    bool changed = false;
+    for (std::size_t i = 0; i < before.vertices.size(); ++i) {
+        const auto& old = before.vertices[i]; const auto& next = after.vertices[i];
+        // R/S分类会消费更远的邻域；没有局部影响范围证明时保持原全量路径。
+        if (old.IsRamp() || next.IsRamp()) return {};
+        if (old.groundHeightRaw == next.groundHeightRaw && old.waterHeightAndFlagsRaw == next.waterHeightAndFlagsRaw
+            && old.textureAndFlagsRaw == next.textureAndFlagsRaw && old.variationRaw == next.variationRaw
+            && old.cliffAndLayerRaw == next.cliffAndLayerRaw && old.extendedTextureLayout == next.extendedTextureLayout
+            && old.textureFlagsExtensionRaw == next.textureFlagsExtensionRaw) continue;
+        changed = true;
+        const auto x = std::uint32_t(i % a.width), y = std::uint32_t(i / a.width);
+        x0 = std::min(x0, x); y0 = std::min(y0, y); x1 = std::max(x1, x); y1 = std::max(y1, y);
+    }
+    if (!changed) return {};
+    // 无R/S时生成器只读每个地格四角；一个变化顶点影响其西南/东南/西北/东北四格。
+    return TerrainCellRect{x0 ? x0 - 1 : 0, y0 ? y0 - 1 : 0,
+        std::min(x1 + 1, a.width - 1), std::min(y1 + 1, a.height - 1)};
+}
 std::string UnexplainedCell(const TerrainHeader& header, std::size_t index, std::byte actual,
     std::byte generated, std::byte saved, SourceCellContext context = SourceCellContext::Unexplained) {
     const auto width = (header.width - 1) * 4;
@@ -195,6 +220,20 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
         }
         return true;
     };
+    std::optional<TerrainCellRect> dirty;
+    if (!nativeDependenciesChanged_ && !resource.nativeSourceResources_ && !resource.RequiresFullNativeRegion()
+        && sourceDoodads == currentDoodads && sourceUnits == currentUnits
+        && edits.original_[MapDataEditSession::Index(MapDataKind::Settings)] == edits.current_[MapDataEditSession::Index(MapDataKind::Settings)]
+        && (!resource.nativeAfterStaticAttributes_ || *resource.nativeAfterStaticAttributes_ == resource.nativeStaticAttributes_))
+        dirty = NativeDirtyCells(*edits.terrainOriginal_, *edits.terrain_);
+    // 区域临时输出也预收；不足时保留原全量算法及预算资格，不新增拒绝。
+    if (dirty) {
+        const auto cropBytes = std::size_t(dirty->x1 - dirty->x0) * (dirty->y1 - dirty->y0) * 16;
+        const auto remaining = limits.maximumBytes - total;
+        if (remaining < 16 || cells > (remaining - 16) / 4 || cropBytes > remaining - 16 - cells * 4) dirty.reset();
+        else total += cropBytes;
+    }
+    std::vector<std::byte> unchangedNative;
     // 先完整验证原图；不通过 source & ~S 反推原版贡献，S可以与地形贡献重叠。
     {
         auto original = captured.value->GenerateNative(*edits.terrainOriginal_, TerrainNativeStage::Before, limits.maximumBytes - total);
@@ -241,8 +280,20 @@ Result<std::vector<std::byte>> TerrainSavePlan::RebuildPathing(const MapDataEdit
                 return Output::Failure(kSubsystem, "TERRAIN_PATHING_SOURCE_UNEXPLAINED",
                     UnexplainedCell(edits.terrainOriginal_->header, i, oldWpm[i + 16], (*original.value)[i], savedIntent[i]));
         }
+        if (dirty) unchangedNative = std::move(*original.value);
     }
-    auto generated = captured.value->GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
+    auto generated = Output::Success(std::move(unchangedNative));
+    if (dirty) {
+        auto crop = captured.value->GenerateNativeRegion(*edits.terrain_, TerrainNativeStage::After, *dirty, limits.maximumBytes - total);
+        if (!crop.Succeeded() || !crop.value) return {{}, std::move(crop.diagnostics)};
+        const auto fullWidth = std::size_t(edits.terrain_->header.width - 1) * 4;
+        const auto rowBytes = std::size_t(dirty->x1 - dirty->x0) * 4, rows = std::size_t(dirty->y1 - dirty->y0) * 4;
+        if (crop.value->size() != rowBytes * rows || generated.value->size() != cells)
+            return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "区域原生通行与完整网格不一致。");
+        for (std::size_t row = 0; row < rows; ++row)
+            std::copy_n(crop.value->begin() + row * rowBytes, rowBytes,
+                generated.value->begin() + (dirty->y0 * 4 + row) * fullWidth + dirty->x0 * 4);
+    } else generated = captured.value->GenerateNative(*edits.terrain_, TerrainNativeStage::After, limits.maximumBytes - total);
     if (!generated.Succeeded() || !generated.value) return {{}, std::move(generated.diagnostics)};
     if (generated.value->size() != cells)
         return Output::Failure(kSubsystem, "TERRAIN_PATHING_REBUILD_SHAPE", "新通行重算与来源网格大小不一致。");
