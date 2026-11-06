@@ -4,6 +4,7 @@
 #include "MapSavePreferences.h"
 #include "PendingImportPayload.h"
 #include "ProjectObjectCatalog.h"
+#include "ProjectLuaFolder.h"
 #include "../QtCommon/DiagnosticTimings.h"
 
 #include "War3MapCore/Image/BlpImage.h"
@@ -198,6 +199,7 @@ std::filesystem::path EditorProject::AuthorMapPath() const {
 bool EditorProject::HasUnsavedMapChanges() const {
     // 待提交操作也不能让测试入口误用旧地图；它仍不冒充已提交的修订。
     if (HasPendingTerrainCommit()) return true;
+    if (LuaFolderSource().HasMapChanges()) return true;
     // 标题/退出使用同一可信Map修订；相同raw字节仍可能有待保存的可撤销前缀。
     // 不能在Ctrl+S入口将其误判为空而使脏状态永远无法提交。
     if (editTrackingReady_ && !editTrackingFailed_ && editRevision_.IsDirty(EditSaveTarget::Map)) return true;

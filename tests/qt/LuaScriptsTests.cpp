@@ -105,12 +105,14 @@ private slots:
         const auto review = source.Review(root); QVERIFY(review.Succeeded()); QVERIFY(review.value->emptyDirectory);
         QVERIFY(source.Associate(*review.value, Services::LuaFolderChoice::Map).Succeeded());
         QVERIFY(source.Active()); QCOMPARE(project.AssetUndoStack()->count(), 1);
+        QVERIFY(!source.HasMapChanges());
         const auto file = folder + "/lessons/reload.lua";
         QVERIFY(QFileInfo::exists(file));
         Modules::TriggerLuaScripts scripts(project); scripts.show(); QVERIFY(scripts.SelectScript("lessons\\reload.lua"));
         auto put = [&](const QByteArray& body) { QFile out(file); if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false; return out.write(body) == body.size(); };
         QVERIFY(put("return 2\r\n"));
         QTRY_VERIFY_WITH_TIMEOUT(scripts.Editor()->toPlainText().contains("return 2"), 5000);
+        QVERIFY(source.HasMapChanges());
         scripts.Editor()->setPlainText("return 3\n"); QVERIFY(scripts.HasPendingDraft());
         QVERIFY(put("return 4\r\n"));
         source.Refresh(); QVERIFY(scripts.Editor()->toPlainText().contains("return 3"));

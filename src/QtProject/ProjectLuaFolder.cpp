@@ -53,10 +53,12 @@ ProjectLuaFolder::ProjectLuaFolder(EditorProject& project) : QObject(&project), 
 
 void ProjectLuaFolder::Refresh(bool force) {
     if (refreshing_) return;
+    if (project_.savingMap_) { debounce_.start(250); return; }
     QScopedValueRollback guard(refreshing_, true);
     const auto oldIdentity = snapshot_ ? snapshot_->sha256 : std::string{};
     const auto oldRoot = root_;
     const bool wasMissing = Missing();
+    const bool wasDifferent = mapDifferent_;
     const auto metadata = Metadata(project_);
     std::string sha;
     std::filesystem::path root;
@@ -69,10 +71,15 @@ void ProjectLuaFolder::Refresh(bool force) {
         if (!link.Succeeded()) diagnostics = link.diagnostics;
         else if (*link.value) root = **link.value;
     }
-    if (!force && sha == metadataSha_ && mapPath_ == project_.sourceArchivePath_ && diagnostics.empty()) return;
+    const auto mapSha = project_.archiveSession_ ? project_.archiveSession_->SourceSha256() : std::string{};
+    const auto generation = project_.editRevision_.Generation(), revision = project_.editRevision_.Revision();
+    if (!force && sha == metadataSha_ && mapPath_ == project_.sourceArchivePath_ && diagnostics.empty()
+        && mapSha == mapSha_ && generation == generation_ && revision == revision_) return;
     if (!watcher_.files().isEmpty()) watcher_.removePaths(watcher_.files());
     if (!watcher_.directories().isEmpty()) watcher_.removePaths(watcher_.directories());
     metadataSha_ = sha;
+    mapSha_ = mapSha; generation_ = generation; revision_ = revision;
+    mapDifferent_ = false;
     root_ = root;
     mapPath_ = project_.sourceArchivePath_;
     snapshot_.reset();
@@ -92,6 +99,12 @@ void ProjectLuaFolder::Refresh(bool force) {
                 for (const auto& file : snapshot_->files) paths.push_back(QString::fromStdWString((root / std::filesystem::u8path(file.path)).wstring()));
                 const auto failed = watcher_.addPaths(paths);
                 if (!failed.isEmpty()) debounce_.start(1000);
+                const auto map = MapFiles(project_);
+                if (!map.Succeeded()) { mapDifferent_ = true; diagnostics.insert(diagnostics.end(), map.diagnostics.begin(), map.diagnostics.end()); }
+                else {
+                    const auto diff = Services::CompareLuaFolder(*map.value, *snapshot_);
+                    mapDifferent_ = !diff.mapOnly.empty() || !diff.folderOnly.empty() || !diff.different.empty();
+                }
             }
         }
     }
@@ -101,7 +114,7 @@ void ProjectLuaFolder::Refresh(bool force) {
     diagnostics_ = std::move(diagnostics);
     if (changed && !diagnostics_.empty()) project_.AddDiagnostics(diagnostics_);
     if (oldIdentity != (snapshot_ ? snapshot_->sha256 : std::string{}) || oldRoot != root_
-        || wasMissing != Missing() || changed) emit project_.LuaSourceChanged();
+        || wasMissing != Missing() || wasDifferent != mapDifferent_ || changed) emit project_.LuaSourceChanged();
 }
 
 Result<LuaFolderReview> ProjectLuaFolder::Review(const std::filesystem::path& root) const {

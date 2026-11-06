@@ -24,6 +24,7 @@ public:
     [[nodiscard]] bool Linked() const { return !metadataSha_.empty() || !root_.empty(); }
     [[nodiscard]] bool Active() const { return snapshot_.has_value() && !snapshot_->missing; }
     [[nodiscard]] bool Missing() const { return snapshot_.has_value() && snapshot_->missing; }
+    [[nodiscard]] bool HasMapChanges() const { return Active() && mapDifferent_; }
     [[nodiscard]] const std::filesystem::path& Root() const { return root_; }
     [[nodiscard]] const std::optional<Services::LuaFolderSnapshot>& Snapshot() const { return snapshot_; }
     [[nodiscard]] const std::vector<Diagnostic>& Diagnostics() const { return diagnostics_; }
@@ -37,6 +38,9 @@ private:
     QTimer debounce_;
     std::filesystem::path root_, mapPath_;
     std::string metadataSha_;
+    std::string mapSha_;
+    std::uint64_t generation_ = 0, revision_ = 0;
+    bool mapDifferent_ = false;
     std::optional<Services::LuaFolderSnapshot> snapshot_;
     std::vector<Diagnostic> diagnostics_;
     bool refreshing_ = false;

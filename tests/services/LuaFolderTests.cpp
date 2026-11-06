@@ -1,6 +1,7 @@
 #include "War3MapCore/Services/LuaFolder.h"
 #include "War3MapCore/Services/LuaFolderSave.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/MapTestService.h"
 #include "War3MapCore/Hash.h"
 
 #include <Windows.h>
@@ -144,6 +145,15 @@ void SaveRoundTripAndMissingFallback() {
     Require(!changedDuringSave.succeeded && !std::filesystem::exists(changedDuringSave.target), "changed set never publishes mixed snapshot");
     std::filesystem::remove(folder / "appeared.lua");
     Good(WriteLuaFolderFile(folder, "lessons/reload.lua", Bytes("return 'after save'"), task.luaFolderSnapshot->files[0].sha256), "save releases folder lease");
+    MapTestRequest request;
+    request.inputMap = task.written; request.sourceMap = source;
+    request.expectedInputSha256 = task.nextSession->SourceSha256();
+    request.workspace = temp.root / "test-work/prepared";
+    std::filesystem::create_directory(request.workspace.parent_path());
+    Good(PrepareLuaFolderTestInput(request), "CLI test uses shared snapshot save entrance");
+    auto testMap = MapArchiveSession::Open(request.inputMap); Good(testMap, "reopen test snapshot");
+    Require(testMap.value->ReadMember("lessons/reload.lua").value == std::optional(Bytes("return 'after save'"))
+        && request.sourceMap == source && request.inputMap != task.written, "test gets current external bytes without changing author map identity");
     std::filesystem::rename(folder, temp.root / "renamed");
     MapSaveTask missing;
     Good(missing.FreezeArchive(*task.nextSession), "freeze missing folder fallback");

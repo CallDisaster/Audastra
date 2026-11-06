@@ -397,6 +397,7 @@ void MainWindow::SaveMapInPlace() {
         SaveNotice(*this, true, false, tr("代码草稿未能提交，地图未保存"), {tr("请查看触发器模块中的诊断；当前编辑仍然保留。")});
         return;
     }
+    project_->LuaFolderSource().Refresh();
     if (!project_->HasUnsavedMapChanges() && !project_->luaMapTarget_) {
         statusBar()->showMessage(tr("没有需要保存的地图修改"), 5000);
         return;

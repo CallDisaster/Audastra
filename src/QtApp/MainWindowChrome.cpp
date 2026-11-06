@@ -76,6 +76,7 @@ void MainWindow::ConnectModules() {
     connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsEdited, this, &MainWindow::ScheduleRecovery);
     connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsChanged, this, &MainWindow::UpdateLuaReloadPending);
     connect(project_.get(), &War3Map::QtProject::EditorProject::LuaSourceChanged, this, [this] {
+          UpdateEditDirtyFlags();
         luaFileDiffRevision_.reset();
         UpdateLuaReloadPending();
         if (project_->LuaFolderSource().Missing()) ShowStatusMessage(tr("外部文件夹不存在，使用地图内Lua"));
