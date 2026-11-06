@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "TriggerLuaScripts.h"
+#include "ProjectLuaFolder.h"
 #include "AudastraVersion.generated.h"
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
@@ -74,6 +75,14 @@ void MainWindow::ConnectModules() {
     connect(objectsModule_, &War3Map::Modules::ObjectModule::ContextChanged, this, &MainWindow::UpdateBreadcrumb);
     connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsEdited, this, &MainWindow::ScheduleRecovery);
     connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsChanged, this, &MainWindow::UpdateLuaReloadPending);
+    connect(project_.get(), &War3Map::QtProject::EditorProject::LuaSourceChanged, this, [this] {
+        luaFileDiffRevision_.reset();
+        UpdateLuaReloadPending();
+        if (project_->LuaFolderSource().Missing()) ShowStatusMessage(tr("外部文件夹不存在，使用地图内Lua"));
+        if (luaFileReload_ && luaAutoReloadAction_ && luaAutoReloadAction_->isChecked()
+              && !triggersModule_->LuaScripts()->HasPendingDraft())
+              luaFileAutoReloadPending_ = true;
+    });
     connect(this, &ShellWindow::CurrentModuleChanged, this, [this](const War3Map::Shell::ModuleId& id) {
         UpdateBreadcrumb();
         if (id == "variables") RefreshVariablesPage();

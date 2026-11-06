@@ -19,6 +19,7 @@
 #include "TerrainQueryCommand.h"
 #include "TerrainBlightSaveCommand.h"
 #include "MapEditSaveCommand.h"
+#include "LuaFolderCommand.h"
 #include "MapUiImportCommand.h"
 #include "TriggerRemovalAuditCommand.h"
 #include "ObjectModelListCommand.h"
@@ -403,6 +404,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (command == L"map-create") return RunMapCreate(argc, argv);
     if (command == L"map-test") return RunMapTest(argc, argv);
+    if (command == L"lua-folder") return RunLuaFolder(argc, argv);
     if (command == L"wtg-source-inspect" && (argc == 5 ||
             (argc == 7 && std::wstring_view(argv[5]) == L"--max-nodes" && argv[6][0])))
         return RunWtgSourceInspect(argv[2], Utf8Argument(argv[3]), argv[4], argc == 7 ? Utf8Argument(argv[6]) : "");

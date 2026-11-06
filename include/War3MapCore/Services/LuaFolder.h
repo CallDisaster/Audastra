@@ -55,5 +55,8 @@ struct LuaFolderDifference {
     const std::filesystem::path& folder, const std::filesystem::path& map);
 [[nodiscard]] Result<std::optional<std::filesystem::path>> ReadLuaFolderLink(const MapArchiveSession& archive,
     std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {});
+// 只打开固定元数据或显式Lua成员；只读CLI/测试入口不为查询解码其它导入载荷。
+[[nodiscard]] Result<std::optional<std::filesystem::path>> ReadLuaFolderLinkFile(const std::filesystem::path& map);
+[[nodiscard]] Result<std::vector<LuaFolderFile>> CaptureMapLuaFiles(const std::filesystem::path& map);
 
 } // namespace War3Map::Services

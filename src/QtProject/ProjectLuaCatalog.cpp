@@ -1,6 +1,7 @@
 #include "EditorProject.h"
 #include "AssetOwnedPayload.h"
 #include "ProjectLuaModules.h"
+#include "ProjectLuaFolder.h"
 
 #include <QStringDecoder>
 #include <algorithm>
@@ -51,8 +52,8 @@ std::shared_ptr<const LuaModuleTexts> CaptureLuaModules(const EditorProject& pro
     constexpr std::size_t kTotalBytes = 16 * 1024 * 1024;
     auto modules = std::make_shared<LuaModuleTexts>();
     std::size_t total = 0;
-    for (const auto& entry : project.AssetEntries()) {
-        if (entry.ambiguous || EditorProject::AssetKey(entry.path) == EditorProject::AssetKey(current)) continue;
+    for (const auto& entry : ListLuaScripts(project)) {
+        if (EditorProject::AssetKey(entry.path) == EditorProject::AssetKey(current)) continue;
         auto name = LuaModuleName(entry.path);
         if (name.empty()) continue;
         const auto read = ReadOwnedAsset(project, entry.path);
@@ -66,6 +67,12 @@ std::shared_ptr<const LuaModuleTexts> CaptureLuaModules(const EditorProject& pro
 
 std::vector<LuaScriptEntry> ListLuaScripts(const EditorProject& project) {
     std::vector<LuaScriptEntry> scripts;
+    const auto& folder = project.LuaFolderSource();
+    if (folder.Linked() && !folder.Missing()) {
+        if (folder.Active()) for (const auto& file : folder.Snapshot()->files)
+            scripts.push_back({QString::fromStdString(file.path), QObject::tr("外部文件"), static_cast<qint64>(file.bytes->size())});
+        return scripts;
+    }
     for (const auto& entry : project.AssetEntries()) {
         if (!entry.path.endsWith(QStringLiteral(".lua"), Qt::CaseInsensitive)) continue;
         scripts.push_back({entry.path, entry.ambiguous ? QObject::tr("来源歧义") : entry.runtimeLuaDraft ? QObject::tr("工程草稿")
@@ -97,6 +104,25 @@ Result<LuaScriptText> ReadLuaScript(const EditorProject& project, const QString&
 QString WriteLuaScript(EditorProject& project, const QString& path, QString text,
     const std::string& expectedSha256, const QString& label) {
     if (!path.endsWith(QStringLiteral(".lua"), Qt::CaseInsensitive)) return QObject::tr("只能写入 .lua 文件。");
+    auto& folder = project.LuaFolderSource();
+    if (folder.Linked() && !folder.Missing()) {
+        if (!folder.Active()) return QObject::tr("外部Lua来源不可用，请查看问题列表或重新连接。");
+        const auto current = ReadOwnedAsset(project, path);
+        if (current.Succeeded()) {
+            const auto& bytes = *current.value->bytes;
+            const QByteArray old(reinterpret_cast<const char*>(bytes.data()), static_cast<qsizetype>(bytes.size()));
+            if (old.contains("\r\n") && !QByteArray(old).replace("\r\n", "").contains('\n')) {
+                text.replace(QStringLiteral("\r\n"), QStringLiteral("\n")); text.replace(QStringLiteral("\n"), QStringLiteral("\r\n"));
+            }
+        }
+        const auto utf8 = text.toUtf8();
+        const auto* start = reinterpret_cast<const std::byte*>(utf8.constData());
+        const auto written = Services::WriteLuaFolderFile(folder.Root(), path.toStdString(),
+            std::span(start, static_cast<std::size_t>(utf8.size())), expectedSha256);
+        if (!written.Succeeded()) return QString::fromStdString(written.diagnostics.front().code + " · " + written.diagnostics.front().message);
+        folder.Refresh();
+        return {};
+    }
     const auto entries = project.AssetEntries();
     const auto existing = std::find_if(entries.begin(), entries.end(),
         [&](const auto& entry) { return EditorProject::AssetKey(entry.path) == EditorProject::AssetKey(path); });

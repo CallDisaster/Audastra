@@ -1,5 +1,6 @@
 #include "EditorProject.h"
 #include "ProjectObjectCatalog.h"
+#include "ProjectLuaFolder.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -31,6 +32,7 @@ EditorProject::EditorProject()
     mapDataUndoStack_->setUndoLimit(128);
     assetUndoStack_ = new QUndoStack(this);
     assetUndoStack_->setUndoLimit(128);
+    luaFolderSource_ = std::make_unique<ProjectLuaFolder>(*this);
     projectWatch_->setObjectName("projectSourceWatcher");
     InitializeDiagnostics();
     (void)ReloadInstalledMapRuntimeCatalog();
@@ -61,12 +63,15 @@ EditorProject::EditorProject()
 }
 
 EditorProject::~EditorProject() {
+    luaFolderSource_.reset();
     delete assetUndoStack_; assetUndoStack_ = nullptr;
     for (const auto& stack : contentCacheStacks_) if (stack) disconnect(stack.data(), nullptr, this, nullptr);
     // 在文档成员销毁之前停止外部来源事件；QObject 随后负责销毁子监视器。
     projectWatch_->blockSignals(true);
     disconnect(projectWatch_, nullptr, this, nullptr);
 }
+
+ProjectLuaFolder& EditorProject::LuaFolderSource() const { return *luaFolderSource_; }
 
 std::unique_ptr<QObject> EditorProject::BeginPendingTerrainCommit() {
     auto token = std::make_unique<QObject>();

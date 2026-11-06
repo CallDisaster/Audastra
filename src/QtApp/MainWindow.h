@@ -248,7 +248,7 @@ private:
     void RunMapCreate(War3Map::Services::MapCreateOptions options, const QString& output);
     // 作者手写 Lua（exec-lua 入口）的热重载：按文件把测试开始后改过的 .lua 送进游戏。
     QJsonObject LuaFileReload(bool submit);
-    void SnapshotLuaFileBaseline();
+    void SnapshotLuaFileBaseline(const std::filesystem::path& frozenMap = {});
     bool LuaFileDiffersFromBaseline(const QString& path, const std::string& sha256) const;
     void RememberReloadedLuaFile(const QString& path, const std::string& sha256);
     void UpdateLuaReloadPending();
@@ -358,6 +358,7 @@ private:
     struct LuaFilePending { QString path; std::string module, source, sha256; };
     bool luaFileReload_ = false;
     bool luaFileReloadStopped_ = false;
+    bool luaFileAutoReloadPending_ = false;
     std::optional<std::array<std::uint64_t, 2>> luaFileDiffRevision_;
     QStringList luaFileChangedPaths_;
     std::map<QString, std::string> luaFileBaseline_; // AssetKey → 游戏中当前正文的 SHA

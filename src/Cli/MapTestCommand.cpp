@@ -4,6 +4,10 @@
 #include "War3MapCore/Script/MapTestToolchain.h"
 #include "War3MapCore/Services/LuaTestMailboxSession.h"
 #include "War3MapCore/Services/MapTestWorkspace.h"
+#include "War3MapCore/Services/LuaFolderSave.h"
+#include "War3MapCore/Runtime/LuaModuleNames.h"
+#include "War3MapCore/Resources/ImportTable.h"
+#include <cwctype>
 
 #include <Windows.h>
 #include <nlohmann/json.hpp>
@@ -47,6 +51,8 @@ int RunMapTest(int argc, wchar_t** argv) {
     if (argc < 5) return 2;
     const std::filesystem::path map = argv[2], game = argv[3], helpers = argv[4];
     std::filesystem::path ydwe;
+    std::filesystem::path luaFolderOverride;
+    std::string luaDeletionApproval;
     double seconds = 60;
     double exitTimeout = 120;
     auto engine = Services::MapTestLuaEngine::Owned;
@@ -58,6 +64,8 @@ int RunMapTest(int argc, wchar_t** argv) {
     for (int index = 5; index < argc; ++index) {
         const std::wstring option = argv[index];
         if (option == L"--ydwe" && index + 1 < argc) ydwe = argv[++index];
+        else if (option == L"--lua-folder" && index + 1 < argc && luaFolderOverride.empty()) luaFolderOverride = argv[++index];
+        else if (option == L"--confirm-lua-deletions" && index + 1 < argc && luaDeletionApproval.empty()) luaDeletionApproval = Utf8(argv[++index]);
         else if (option == L"--seconds" && index + 1 < argc) seconds = Number(argv[++index]);
         else if (option == L"--exit-timeout" && index + 1 < argc) exitTimeout = Number(argv[++index]);
         else if (option == L"--lua-engine" && index + 1 < argc) {
@@ -88,6 +96,9 @@ int RunMapTest(int argc, wchar_t** argv) {
         else if (option == L"--close-after" && index + 1 < argc) {
             if (closeRequested) return 2; closeRequested = true;
             events.push_back({Number(argv[++index]), {Script::MapTestInputKind::Close}});
+        }
+        else if (option == L"--reload-module-after" && index + 2 < argc) {
+            reloads.push_back({Number(argv[index + 1]), Utf8(argv[index + 2]), {}}); index += 2;
         }
         else if (option == L"--reload-after" && index + 3 < argc) {
             Reload reload;
@@ -126,6 +137,8 @@ int RunMapTest(int argc, wchar_t** argv) {
     request.runtimeBridge = std::filesystem::absolute(helpers) / "audastra-warcraft-launcher.exe";
     request.runtimeBootstrap = std::filesystem::absolute(helpers) / "audastra-warcraft-bootstrap.dll";
     request.handwrittenLuaEngine = engine; request.handwrittenLuaHotReload = hotReload;
+    const auto luaInput = Services::PrepareLuaFolderTestInput(request, luaFolderOverride, luaDeletionApproval);
+    if (!luaInput.Succeeded()) { Print(luaInput.diagnostics); return 1; }
     const auto progress = [](std::string_view stage) { std::cout << "stage=" << stage << '\n'; };
     auto artifact = Services::PrepareMapTest(request, {}, progress);
     Print(artifact.diagnostics);
@@ -304,7 +317,34 @@ int RunMapTest(int argc, wchar_t** argv) {
                     if (reload.sent || elapsed() < reload.after || snapshot.state == Services::LuaTestReloadState::Starting
                         || snapshot.state == Services::LuaTestReloadState::Queued || snapshot.state == Services::LuaTestReloadState::Running)
                         continue;
-                    const auto bytes = War3Map::IO::ReadFileBytes(reload.file, 1024 * 1024);
+                    auto bytes = [&]() -> War3Map::Result<std::vector<std::byte>> {
+                        if (!reload.file.empty()) {
+                            auto extension = reload.file.extension().wstring();
+                              std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+                            if (extension == L".ai") return War3Map::Result<std::vector<std::byte>>::Failure("LuaFolder", "SCRIPT_SOURCE_EXTENSION_DENIED", "引导成员不能作为Lua文本来源。");
+                            return War3Map::IO::ReadFileBytes(reload.file, 1024 * 1024);
+                        }
+                        auto link = Services::ReadLuaFolderLinkFile(map);
+                        if (!link.Succeeded()) return {std::nullopt, link.diagnostics};
+                        const auto folder = luaFolderOverride.empty() ? *link.value : std::optional(luaFolderOverride);
+                          auto files = War3Map::Result<std::vector<Services::LuaFolderFile>>::Success({});
+                          bool fromFolder = false;
+                        if (folder) {
+                            const auto captured = Services::CaptureLuaFolder(*folder, true);
+                            if (!captured.Succeeded()) return {std::nullopt, captured.diagnostics};
+                              if (!captured.value->missing) { files.value = captured.value->files; fromFolder = true; }
+                        }
+                          if (!fromFolder) files = Services::CaptureMapLuaFiles(map);
+                        if (!files.Succeeded()) return {std::nullopt, files.diagnostics};
+                        auto wanted = Audastra::Runtime32::LuaModuleMember(reload.module);
+                          const auto wantedKey = War3Map::Resources::CanonicalImportPath(wanted);
+                          if (!wantedKey.Succeeded()) return {std::nullopt, wantedKey.diagnostics};
+                        const auto found = std::find_if(files.value->begin(), files.value->end(), [&](const auto& file) {
+                              return War3Map::Resources::CanonicalImportPath(file.path).value == wantedKey.value;
+                        });
+                        if (found == files.value->end()) return War3Map::Result<std::vector<std::byte>>::Failure("LuaFolder", "LUA_FOLDER_FILE_MISSING", "当前Lua来源没有热重载模块：" + reload.module);
+                        return War3Map::Result<std::vector<std::byte>>::Success(*found->bytes);
+                    }();
                     if (!bytes.Succeeded()) { Print(bytes.diagnostics); reload.sent = true; continue; }
                     const std::string source(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
                     const auto sent = Services::SubmitLuaTestReload(*receipt.luaMailbox, {"module:" + reload.module, source});

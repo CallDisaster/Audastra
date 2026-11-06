@@ -399,6 +399,12 @@ int RunMapEditSave(int argc, wchar_t** argv) {
         if (flag == L"--save-timings") {
             if (saveTimings) return Invalid("--save-timings cannot be repeated");
             saveTimings = true; ++index;
+        } else if (flag == L"--lua-folder") {
+            if (index + 1 >= argc || !request.luaFolderOverride.empty()) return Invalid("--lua-folder needs one directory");
+            request.luaFolderOverride = argv[index + 1]; index += 2;
+        } else if (flag == L"--confirm-lua-deletions") {
+            if (index + 1 >= argc || !request.luaFolderDeletionApproval.empty()) return Invalid("--confirm-lua-deletions needs one reviewed SHA");
+            request.luaFolderDeletionApproval = Utf8Argument(argv[index + 1]); index += 2;
         } else if (flag == L"--in-process-only") {
             if (request.inProcessOnly) return Invalid("--in-process-only cannot be repeated");
             request.inProcessOnly = true; ++index;

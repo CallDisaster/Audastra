@@ -1,5 +1,6 @@
 #include "War3MapCore/Services/LuaFolderSave.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/MapTestService.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
@@ -111,5 +112,28 @@ Status VerifyLuaFolderSaved(const MapSaveTask& task, const MapArchiveSession& sa
     for (const auto& path : task.luaFolderDeletedFiles) if (saved.HasMember(path))
         return Status::Failure("LuaFolder", "LUA_FOLDER_READBACK", path + "：已确认删除的Lua仍在地图中。");
     return Status::Ok();
+}
+
+Status PrepareLuaFolderTestInput(MapTestRequest& request, const std::filesystem::path& overrideFolder,
+    std::string deletionApproval) {
+    const auto link = ReadLuaFolderLinkFile(request.inputMap);
+    if (!link.Succeeded()) return {link.diagnostics};
+    if (!*link.value && overrideFolder.empty()) return Status::Ok();
+    const auto source = MapArchiveSession::Open(request.inputMap);
+    if (!source.Succeeded()) return {source.diagnostics};
+    if (source.value->SourceSha256() != request.expectedInputSha256)
+        return Status::Failure("LuaFolder", "LUA_FOLDER_MAP_CHANGED", "测试输入地图SHA已改变，未启动。");
+    MapSaveTask task;
+    const auto frozen = task.FreezeArchive(*source.value);
+    if (!frozen.Succeeded()) return frozen;
+    task.target = request.workspace.parent_path() / "lua-folder-input.w3x";
+    task.testCopyOnly = true;
+    task.luaFolderOverride = overrideFolder;
+    task.luaFolderDeletionApproval = std::move(deletionApproval);
+    MapSaveService::Run(task);
+    if (!task.succeeded) return {task.diagnostics};
+    request.inputMap = task.written;
+    request.expectedInputSha256 = task.nextSession->SourceSha256();
+    return {task.diagnostics};
 }
 } // namespace War3Map::Services

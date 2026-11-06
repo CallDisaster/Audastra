@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "ProjectLuaFolder.h"
 #include "AppHelpers.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "../QtCommon/OwnedWork.h"
@@ -199,6 +200,30 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         UpdateEditDirtyFlags();
         reportFailure(tr("地图未保存：保存准备未通过"));
         return false;
+    }
+    const auto luaDeletions = project_->LuaFolderSource().Deletions();
+    if (!luaDeletions.Succeeded()) {
+        project_->AddDiagnostics(luaDeletions.diagnostics);
+        reportFailure(tr("Lua来源未通过检查")); return false;
+    }
+    if (!luaDeletions.value->first.empty()) {
+        auto approval = project_->luaFolderDeletionApproval_;
+        if (approval != luaDeletions.value->second) {
+            if (!project_->luaFolderDeletionPromptAllowed_ || !background) {
+                project_->AddDiagnostic(tr("错误"), tr("Lua"), "LUA_FOLDER_DELETE_CONFIRM_REQUIRED",
+                    tr("保存将删除地图Lua；请先审阅删除项并提供确认SHA：%1").arg(QString::fromStdString(luaDeletions.value->second)));
+                return false;
+            }
+            QStringList files;
+            for (const auto& file : luaDeletions.value->first) files.push_back(QString::fromStdString(file));
+            QMessageBox question(QMessageBox::Warning, tr("确认删除地图Lua"),
+                tr("文件夹中已没有下列Lua文件，保存地图时将删除：\n%1").arg(files.join('\n')),
+                QMessageBox::Yes | QMessageBox::Cancel, this);
+            question.setDefaultButton(QMessageBox::Cancel);
+            if (question.exec() != QMessageBox::Yes) return false;
+            approval = luaDeletions.value->second;
+        }
+        job->luaFolderDeletionApproval = std::move(approval);
     }
     if (job->script && saveInProcessOnly_)
         job->script->toolchain.inProcessOnly = true;

@@ -12,6 +12,9 @@
 #include "TerrainResizeEditPreparation.h"
 #include "TerrainTextureSlotEditPreparation.h"
 #include "ProjectLuaModules.h"
+#include "ProjectLuaFolder.h"
+#include "War3MapCore/Services/LuaFolderSave.h"
+#include <QScopedValueRollback>
 #include "ObjectNames.h"
 #include "McpResources.h"
 #include "McpToolInternal.h"
@@ -472,6 +475,7 @@ private:
         const auto sourceSha = project_.archiveSession_ ? project_.archiveSession_->SourceSha256() :
             project_.directorySnapshot_ ? project_.directorySnapshot_->Snapshot().aggregateSha256 : std::string{};
         return {{"ok", true}, {"scope", "gui-live-document"}, {"project_identity", projectIdentity_},
+            {"lua_source", QtProject::LuaFolderSourceInfo(project_)},
             {"document_generation", QString::number(generation_)}, {"revision", QString::number(project_.editRevision_.Revision())},
             {"opened", opened}, {"busy", busy_ || project_.savingMap_},
             {"edit_tracking_ready", project_.editTrackingReady_ && !project_.editTrackingFailed_},
@@ -1345,6 +1349,8 @@ private:
 
     QJsonObject Save(const QJsonObject& arguments) {
         return Write(arguments, false, [&] {
+            QScopedValueRollback approval(project_.luaFolderDeletionApproval_, arguments.value("lua_delete_sha256").toString().toStdString());
+            QScopedValueRollback prompt(project_.luaFolderDeletionPromptAllowed_, false);
             const auto purpose = arguments.value("runtime_purpose").toString("normal");
             if (purpose != "normal" && purpose != "internal_validation") return Mcp::Failure("RUNTIME_SAVE_PURPOSE_INVALID", "活动保存只支持normal或internal_validation。");
             const bool validation = purpose == "internal_validation";
@@ -1423,8 +1429,40 @@ private:
 
     // 参数已由 InvokeLuaFileTool 校验；写入已在 Write 门内。
     QJsonObject LuaFile(const QString& name, const QJsonObject& arguments) {
+        project_.LuaFolderSource().Refresh();
         const auto path = arguments.value("path").toString();
+        if (name == "lua_folder_review" || name == "lua_folder_link") {
+            const auto review = project_.LuaFolderSource().Review(std::filesystem::path(arguments.value("folder_path").toString().toStdWString()));
+            if (!review.Succeeded()) return Mcp::Failure(review);
+            if (name == "lua_folder_link") {
+                if (arguments.value("expected_folder_sha256").toString().toStdString() != review.value->folder.sha256)
+                    return Mcp::Failure("LUA_FOLDER_CHANGED", "审阅后文件夹已改变，请重新审阅差异。");
+                const auto text = arguments.value("choice").toString();
+                const auto choice = text == "folder" ? Services::LuaFolderChoice::Folder : text == "map" ? Services::LuaFolderChoice::Map : Services::LuaFolderChoice::Cancel;
+                if (choice == Services::LuaFolderChoice::Cancel) return QJsonObject{{"ok", true}, {"cancelled", true}, {"map_undo", false}, {"disk_written", false}};
+                const auto applied = project_.LuaFolderSource().Associate(*review.value, choice);
+                if (!applied.Succeeded()) return Mcp::Failure(applied);
+            }
+            const auto array = [](const auto& values) { QJsonArray result; for (const auto& value : values) result.append(QString::fromStdString(value)); return result; };
+            const auto deletion = Services::LuaFolderDeletionIdentity(review.value->map, review.value->folder);
+            if (!deletion.Succeeded()) return Mcp::Failure(deletion);
+            return QJsonObject{{"ok", true}, {"folder_sha256", QString::fromStdString(review.value->folder.sha256)},
+                {"delete_confirmation_sha256", QString::fromStdString(*deletion.value)},
+                {"map_only", array(review.value->difference.mapOnly)}, {"folder_only", array(review.value->difference.folderOnly)}, {"different", array(review.value->difference.different)},
+                {"empty_directory", review.value->emptyDirectory}, {"lua_source", QtProject::LuaFolderSourceInfo(project_)}, {"disk_writes_in_map_undo", false}};
+        }
+        if (name == "lua_folder_unlink") {
+            const auto result = project_.LuaFolderSource().Unlink();
+            return result.Succeeded() ? QJsonObject{{"ok", true}, {"lua_source", QtProject::LuaFolderSourceInfo(project_)}, {"map_undo", true}} : Mcp::Failure(result);
+        }
+        if (name == "lua_folder_reconnect") {
+            project_.LuaFolderSource().Refresh();
+            return QJsonObject{{"ok", true}, {"lua_source", QtProject::LuaFolderSourceInfo(project_)}};
+        }
         if (name == "lua_files_list") {
+            const auto& source = project_.LuaFolderSource();
+            if (source.Linked() && !source.Missing() && !source.Active())
+                return Mcp::Failure(War3Map::Status{source.Diagnostics()});
             const auto rows = QtProject::ListLuaScripts(project_);
             if (rows.size() > 2147483647u)
                 return Mcp::Failure("LUA_FILES_CATALOG_BUDGET", "Lua目录条目超出分页索引容量，未返回不完整前缀。");
@@ -1453,13 +1491,11 @@ private:
                 {"sha256", QString::fromStdString(read.value->sha256)}, {"revision", QString::number(project_.editRevision_.Revision())}};
         }
         if (name == "lua_file_write") {
-            const auto entries = project_.AssetEntries();
+            const auto entries = QtProject::ListLuaScripts(project_);
             const auto key = QtProject::EditorProject::AssetKey(path);
             const auto existing = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) {
                 return QtProject::EditorProject::AssetKey(entry.path) == key;
             });
-            if (existing != entries.end() && existing->ambiguous)
-                return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "该 Lua 路径有多份来源，未写入。");
             const auto before = QtProject::ReadLuaScript(project_, path);
             if (existing != entries.end()) {
                 if (!before.Succeeded()) return Mcp::Failure(before);
@@ -1468,11 +1504,13 @@ private:
             } else {
                 if (!project_.archiveSession_)
                     return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "当前来源不能证明 Lua 路径不存在，未按新文件写入。");
-                const std::array<std::string, 1> names{path.toStdString()};
-                const auto exact = project_.archiveSession_->CaptureExactMembers(names);
-                if (!exact.Succeeded()) return Mcp::Failure(exact);
-                if (exact.value->size() != 1 || exact.value->front().present)
-                    return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "归档中的 Lua 路径不能证明不存在，未按新文件写入。");
+                if (!project_.LuaFolderSource().Active()) {
+                    const std::array<std::string, 1> names{path.toStdString()};
+                    const auto exact = project_.archiveSession_->CaptureExactMembers(names);
+                    if (!exact.Succeeded()) return Mcp::Failure(exact);
+                    if (exact.value->size() != 1 || exact.value->front().present)
+                        return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "归档中的 Lua 路径不能证明不存在，未按新文件写入。");
+                }
             }
             const QJsonValue previous = existing != entries.end()
                 ? QJsonValue(QString::fromStdString(before.value->sha256)) : QJsonValue(QJsonValue::Null);
@@ -1487,6 +1525,7 @@ private:
             const QJsonObject item{{"kind", "lua"}, {"object_id", ""}, {"title", path}, {"target", path},
                 {"before", previous}, {"after", sha}};
             return QJsonObject{{"ok", true}, {"path", path}, {"sha256", sha}, {"created", existing == entries.end()}, {"saved", false},
+                {"disk_written", project_.LuaFolderSource().Active()}, {"map_undo", !project_.LuaFolderSource().Active()},
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"changes", QJsonObject{{"files", 1}, {"items", QJsonArray{item}}}}};
         }
@@ -1586,6 +1625,8 @@ private:
                 {"changes", QJsonObject{{"files", removed.size()}, {"items", items}}}};
         }
         if (!mapTest_) return Mcp::Failure("MAP_TEST_UNAVAILABLE", "宿主尚未接通地图测试。");
+        QScopedValueRollback approval(project_.luaFolderDeletionApproval_, arguments.value("lua_delete_sha256").toString().toStdString());
+        QScopedValueRollback allowPrompt(project_.luaFolderDeletionPromptAllowed_, false);
         auto result = mapTest_(name, arguments);
         if (result.value("ok").toBool() || result.contains("diagnostics")) return result;
         // 宿主只给 code/message 时转成统一的失败格式，保留其余字段（如已执行步骤的输出）。
@@ -1834,7 +1875,8 @@ private:
                 [this, name](const QJsonObject& args) -> QJsonObject {
                     const Mcp::LuaFileToolHost host{[this](const QString& tool, const QJsonObject& arguments) { return LuaFile(tool, arguments); }};
                     // 写入走共同写门：先提交界面草稿，再核对工程身份与修订。
-                    if (name == "lua_file_write" || name == "imports_add" || name == "imports_remove")
+                    if (name == "lua_file_write" || name == "imports_add" || name == "imports_remove" || name == "lua_folder_unlink"
+                        || (name == "lua_folder_link" && args.value("choice") != QJsonValue("cancel")))
                         return Write(args, false, [&] { return Mcp::InvokeLuaFileTool(name, args, host); });
                     if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图保存或另一个写命令正在执行。");
                     const auto check = CheckContext(args, false, false);
@@ -2024,6 +2066,7 @@ private:
         save.insert("runtime_purpose", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"normal", "internal_validation"}}, {"default", "normal"}});
         save.insert("keep_original_minimap", QJsonObject{{"type", "boolean"}, {"default", false}});
         save.insert("rebuild_terrain_shadow", QJsonObject{{"type", "boolean"}, {"default", false}});
+        save.insert("lua_delete_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}});
         AddTool("editor_save_map", "通过原编辑器地图保存服务写回或另存；只因小地图无法生成而失败（MINIMAP_RISK_SAVE_AVAILABLE）时，"
             "作者同意后可传 keep_original_minimap=true 保留原小地图继续保存；rebuild_terrain_shadow=true 通过同一保存链重算阴影", Mcp::ToolPermission::Save,
             Schema(save, {"project_identity", "expected_revision"}), [this](const QJsonObject& arguments) { return Save(arguments); });

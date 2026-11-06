@@ -1032,6 +1032,8 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         if (!pathingGate.Succeeded()) return Forward(pathingGate.diagnostics);
 
         MapSaveTask task;
+        task.luaFolderOverride = request.luaFolderOverride;
+        task.luaFolderDeletionApproval = request.luaFolderDeletionApproval;
         task.beforePublish = request.beforePublish;
         if (customValidation) task.beforePublish = [validation = *customValidation, previous = std::move(task.beforePublish)] {
             if (previous) { auto status = previous(); if (!status.Succeeded()) return status; }

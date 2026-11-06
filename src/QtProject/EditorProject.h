@@ -76,6 +76,7 @@ class TriggerGraphScalarEditReceipt;
 } // namespace War3Map
 
 namespace War3Map::QtProject {
+class ProjectLuaFolder;
 
 class TriggerGraphSnapshotUndoCommand;
 class ProjectObjectCatalogState;
@@ -250,6 +251,7 @@ public:
     // 编辑器自带 Lua 环境的接口目录（ProjectLuaCatalog.cpp）：游戏 common.j / blizzard.j 加地图变量。
     // 按游戏目录与变量表缓存；没有游戏目录时只含 Lua 标准库。
     [[nodiscard]] std::shared_ptr<const Lua::ApiCatalog> LuaRuntimeCatalog();
+    [[nodiscard]] ProjectLuaFolder& LuaFolderSource() const;
     [[nodiscard]] bool IsCodeCheckBindingCurrent(std::string_view binding) const;
     void AdoptCodeCheckIndex(std::shared_ptr<const Services::CodeCheckResult> index);
     [[nodiscard]] std::shared_ptr<const Services::CodeCheckResult> CurrentCodeCheckIndex() const;
@@ -433,6 +435,7 @@ public:
     [[nodiscard]] bool IsEditTrackingUiBaselineCurrent(std::uint64_t generation, std::uint64_t revision) const;
 
 signals:
+    void LuaSourceChanged();
     void PendingTerrainCommitStateChanged(bool pending);
     void ObjectDocumentsAboutToReplace();
     void ObjectDocumentsReplaced();
@@ -597,6 +600,10 @@ private:
     std::optional<std::filesystem::path> luaRuntimeScriptsRoot_;
     std::shared_ptr<const Lua::ApiCatalog> luaRuntimeCatalog_;
     std::string luaRuntimeCatalogKey_;
+    std::unique_ptr<ProjectLuaFolder> luaFolderSource_;
+    // 单次宿主请求的删除确认，不写入地图或工程，不授予未来保存资格。
+    std::string luaFolderDeletionApproval_;
+    bool luaFolderDeletionPromptAllowed_ = true;
     mutable std::uint64_t contentCacheEpoch_ = 0;
     mutable std::uint64_t contentCacheEditGeneration_ = (std::numeric_limits<std::uint64_t>::max)();
     mutable std::uint64_t contentCacheEditRevision_ = (std::numeric_limits<std::uint64_t>::max)();

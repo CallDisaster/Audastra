@@ -60,7 +60,8 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         required.prepend("expected_revision"); required.prepend("project_identity");
         tool.inputSchema = BasicSchema(properties, QJsonArray::fromStringList(required));
         tool.maxRequestIdBytes = 128;
-        tool.maxResponseBytes = std::strcmp(name, "lua_file_read") == 0 ? 3 * 1024 * 1024 : 64 * 1024;
+        tool.maxResponseBytes = std::strcmp(name, "lua_file_read") == 0 ? 3 * 1024 * 1024
+            : std::strncmp(name, "lua_folder_", 11) == 0 ? 2 * 1024 * 1024 : 64 * 1024;
         result.push_back(std::move(tool));
     };
     const QJsonObject path{{"type", "string"}, {"maxLength", 260}};
@@ -68,9 +69,17 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         {{"offset", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", kMaxLuaPageIndex}, {"default", 0}}},
             {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", kMaxLuaPageLimit}, {"default", 64}}}}, {});
     add("lua_file_read", "读取一个地图 Lua 文件的正文和字节身份（sha256）", ToolPermission::Query, {{"path", path}}, {"path"});
-    add("lua_file_write", "新建或整体替换一个地图 Lua 文件，进入撤销栈；替换已有文件时必须给出读取时的 sha256", ToolPermission::Edit,
+    add("lua_file_write", "写当前来源的Lua；关联时直接写文件夹且不进地图撤销，否则作为地图资源事务。替换须给出读取时sha256", ToolPermission::Edit,
         {{"path", path}, {"text", QJsonObject{{"type", "string"}, {"maxLength", kMaxLuaText}}},
             {"expected_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}}}}, {"path", "text"});
+    const QJsonObject folderPath{{"type", "string"}, {"maxLength", 4096}};
+    add("lua_folder_review", "审阅外部Lua文件夹与当前地图的差异，不改文件；返回文件夹SHA和三类路径，链接和点目录不导入", ToolPermission::Query,
+        {{"folder_path", folderPath}}, {"folder_path"});
+    add("lua_folder_link", "按审阅SHA及明确的folder/map/cancel选择关联Lua文件夹；空目录导出地图Lua。关联可撤销，外部写盘不进入地图撤销", ToolPermission::External,
+        {{"folder_path", folderPath}, {"expected_folder_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}}},
+            {"choice", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"folder", "map", "cancel"}}}}}, {"folder_path", "expected_folder_sha256", "choice"});
+    add("lua_folder_unlink", "取消Lua文件夹关联，进入地图撤销栈，不删除外部文件", ToolPermission::Edit, {}, {});
+    add("lua_folder_reconnect", "重新读取现有关联及外部Lua文件；缺目录回退地图，保留关联", ToolPermission::Query, {}, {});
     add("imports_add", "把本机文件导入地图（模型、贴图、声音等），进入资源撤销栈，保存地图时写入；"
         "一次1..32个，单个不超过64 MiB。地图里已有同路径文件时须 replace_existing=true。Lua 文件请用 lua_file_write", ToolPermission::Edit,
         {{"files", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", kMaxImportFiles},
@@ -95,7 +104,8 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
         {{"scenario", QJsonObject{{"type", "string"}, {"maxLength", 65536}}},
             {"reads", QJsonObject{{"type", "array"}, {"maxItems", 32}, {"items", QJsonObject{{"type", "string"}, {"maxLength", 160}}}}},
             {"start_seconds", QJsonObject{{"type", "number"}, {"minimum", 0}, {"maximum", 600}, {"default", 1}}},
-            {"visible", QJsonObject{{"type", "boolean"}, {"default", false}}}}, {});
+            {"visible", QJsonObject{{"type", "boolean"}, {"default", false}}},
+            {"lua_delete_sha256", QJsonObject{{"type", "string"}, {"pattern", "^[0-9a-f]{64}$"}}}}, {});
     add("map_test_result", "读回本次测试场景写出的结果：记录行、断言通过/失败数、读取的变量、是否已开始与执行完"
         "（游戏写入的资源路径只给 loaded_files 个数）；场景开始前每 2 秒给测试游戏发空格越过“按任意键继续”；"
         "未执行完时在 wait_ms 内等待。另返回本次运行库只读证据（会话/地图/进程/VM身份、载入、握手、超时或身份拒绝及时间）；没有场景时也可查询运行库证据", ToolPermission::External,
@@ -115,18 +125,29 @@ std::vector<ToolDefinition> LuaFileToolDefinitions() {
 QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, const LuaFileToolHost& host) {
     QStringList allowed{"project_identity", "expected_revision"};
     if (name == "lua_files_list") allowed << "offset" << "limit";
+    else if (name == "lua_folder_review") allowed << "folder_path";
+    else if (name == "lua_folder_link") allowed << "folder_path" << "expected_folder_sha256" << "choice";
+    else if (name == "lua_folder_unlink" || name == "lua_folder_reconnect") {}
     else if (name == "lua_file_read") allowed << "path";
     else if (name == "lua_file_write") allowed << "path" << "text" << "expected_sha256";
     else if (name == "imports_add") allowed << "files" << "replace_existing";
     else if (name == "imports_remove") allowed << "archive_paths" << "allow_referenced";
     else if (name == "map_test_eval") allowed << "actions" << "reads" << "wait_ms";
-    else if (name == "map_test_start") allowed << "scenario" << "reads" << "start_seconds" << "visible";
+    else if (name == "map_test_start") allowed << "scenario" << "reads" << "start_seconds" << "visible" << "lua_delete_sha256";
     else if (name == "map_test_result") allowed << "wait_ms";
     else if (name != "lua_files_list" && name != "map_test_stop" && name != "map_test_capture")
         return Failure("LUA_FILE_TOOL_UNKNOWN", "未知 Lua 文件工具。");
     for (auto it = args.begin(); it != args.end(); ++it)
         if (!allowed.contains(it.key())) return Failure("LUA_FILE_ARGUMENT_INVALID", "不接受的参数：" + it.key().toStdString());
     const auto identity = args.value("project_identity");
+    if (name == "lua_folder_review" || name == "lua_folder_link") {
+        const auto path = args.value("folder_path");
+        if (!path.isString() || path.toString().isEmpty() || path.toString().size() > 4096 || path.toString().contains(QChar::Null))
+            return Failure("LUA_FOLDER_ARGUMENT", "folder_path须为非空本机目录。");
+        if (name == "lua_folder_link" && (!QStringList{"folder", "map", "cancel"}.contains(args.value("choice").toString())
+            || !QRegularExpression("^[0-9a-f]{64}$").match(args.value("expected_folder_sha256").toString()).hasMatch()))
+            return Failure("LUA_FOLDER_ARGUMENT", "须给出审阅得到的文件夹SHA及明确选择。");
+    }
     if (!identity.isString() || identity.toString().isEmpty() || identity.toString().size() > 128
         || identity.toString().contains(QChar::Null) || !ParseUnsignedId(args, "expected_revision", true).Succeeded())
         return Failure("LUA_FILE_ARGUMENT_INVALID", "需要当前工程身份和编辑修订。");

@@ -1,4 +1,5 @@
 #include "AssetOwnedPayload.h"
+#include "ProjectLuaFolder.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -20,6 +21,29 @@ template<class T> Result<T> Failed(std::string code, std::string message) {
 }
 
 Result<OwnedAssetSource> ReadOwnedAsset(const EditorProject& project, const QString& path, std::size_t maxBytes) {
+    const auto& folder = project.LuaFolderSource();
+    if (!path.endsWith(".lua", Qt::CaseInsensitive) || !folder.Linked() || folder.Missing())
+        return ReadOwnedMapAsset(project, path, maxBytes);
+    if (!folder.Active()) return Failed<OwnedAssetSource>("LUA_FOLDER_UNAVAILABLE", "外部Lua来源不可用，请查看问题列表或重新连接。");
+    const auto& files = folder.Snapshot()->files;
+    const auto found = std::find_if(files.begin(), files.end(), [&](const auto& file) {
+        return EditorProject::AssetKey(QString::fromStdString(file.path)) == EditorProject::AssetKey(path);
+    });
+    if (found == files.end() || found->bytes->size() > maxBytes)
+        return Failed<OwnedAssetSource>("LUA_FOLDER_FILE_MISSING", path.toStdString() + "：关联文件夹中没有此文件或超出读取预算。");
+    OwnedAssetSource source;
+    source.path = QString::fromStdString(found->path);
+    source.bytes = found->bytes;
+    source.sha256 = found->sha256;
+    source.externalLuaRoot = folder.Root();
+    source.archive = project.archiveSession_.get(); source.directory = project.directorySnapshot_.get();
+    source.sourcePath = project.sourceArchivePath_; source.projectPath = project.projectFilePath_;
+    source.sourceSha256 = source.archive ? source.archive->SourceSha256() : std::string{};
+    source.generation = project.editRevision_.Generation();
+    return Result<OwnedAssetSource>::Success(std::move(source));
+}
+
+Result<OwnedAssetSource> ReadOwnedMapAsset(const EditorProject& project, const QString& path, std::size_t maxBytes) {
     const auto entries = project.AssetEntries();
     const auto key = EditorProject::AssetKey(path);
     const auto found = std::find_if(entries.begin(), entries.end(), [&](const auto& entry) { return EditorProject::AssetKey(entry.path) == key; });
@@ -100,7 +124,7 @@ Status VerifyOwnedAsset(const EditorProject& project, const OwnedAssetSource& so
         return stale("当前来源内容身份已改变。");
     const auto current = ReadOwnedAsset(project, source.path);
     if (!current.Succeeded()) return {current.diagnostics};
-    if (current.value->path != source.path || current.value->sha256 != source.sha256
+    if (current.value->path != source.path || current.value->sha256 != source.sha256 || current.value->externalLuaRoot != source.externalLuaRoot
         || current.value->runtimeLuaDraft != source.runtimeLuaDraft)
         return Status::Failure("Asset.Lua", "ASSET_SOURCE_STALE", "Lua 文件的路径或正文已在其他页面修改；草稿仍保留，请放弃或重新载入。");
     return Status::Ok();

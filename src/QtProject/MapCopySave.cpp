@@ -335,6 +335,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     // 后台保存不借用可能被工程切换释放的源快照。冻结失败只转存返回诊断一次。
     QtCommon::DiagnosticTimingScope archiveTiming("save-prepare-freeze-archive");
     const auto frozenArchive = job->FreezeArchive(*archiveSession_);
+    job->luaFolderDeletionApproval = luaFolderDeletionApproval_;
     archiveTiming.Finish();
     if (!frozenArchive.Succeeded()) {
         AddDiagnostics(frozenArchive.diagnostics);

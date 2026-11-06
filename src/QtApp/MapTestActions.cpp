@@ -266,7 +266,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     const bool handwrittenLua = !ownedLua && launched.value->luaMailbox && !launched.value->luaEntryModules.empty();
     if (handwrittenLua && launched.value->luaHotReload) {
         luaFileReload_ = true;
-        SnapshotLuaFileBaseline();
+        SnapshotLuaFileBaseline(artifact.value->testMap);
     }
     if (testHotReload && launched.value->luaMailbox && luaTestGenerated_ && !luaTestMapBinding_.empty()) {
         luaReloadController_ = std::make_shared<Services::LuaTestReloadController>(launched.value->luaMailbox,

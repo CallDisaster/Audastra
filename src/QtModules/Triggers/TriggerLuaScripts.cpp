@@ -2,6 +2,7 @@
 
 #include "TriggerCodeChecking.h"
 #include "LuaCodeAssist.h"
+#include "ProjectLuaFolder.h"
 #include "War3MapCore/Services/LuaRuntimeCatalog.h"
 #include "Widgets/CodeView.h"
 #include "Widgets/CodeProblemsView.h"
@@ -9,6 +10,7 @@
 #include "War3MapCore/Workspace.h"
 
 #include <QHBoxLayout>
+#include <QFileDialog>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -50,6 +52,49 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     };
     auto* create = button("luaNewScript", tr("新建")); auto* rename = button("luaRenameScript", tr("改名")); auto* remove = button("luaDeleteScript", tr("删除"));
     directoryLayout->addLayout(buttons);
+    auto* folderActions = new QHBoxLayout;
+    auto* associate = new QPushButton(tr("关联外部文件夹…"), directoryPane);
+    auto* unlink = new QPushButton(tr("取消关联"), directoryPane);
+    auto* reconnect = new QPushButton(tr("重新连接"), directoryPane);
+    associate->setObjectName("luaLinkFolder"); unlink->setObjectName("luaUnlinkFolder"); reconnect->setObjectName("luaReconnectFolder");
+    folderActions->addWidget(associate); folderActions->addWidget(unlink); folderActions->addWidget(reconnect);
+    directoryLayout->addLayout(folderActions);
+    connect(associate, &QPushButton::clicked, this, [this] {
+        if (!CommitPendingDraft()) return;
+        const auto path = QFileDialog::getExistingDirectory(this, tr("关联外部Lua文件夹"));
+        if (path.isEmpty()) return;
+        auto& folder = project_.LuaFolderSource();
+        const auto review = folder.Review(std::filesystem::path(path.toStdWString()));
+        if (!review.Succeeded()) { Status(Problem(review.diagnostics)); return; }
+        auto choice = Services::LuaFolderChoice::Map;
+        if (!review.value->emptyDirectory) {
+            const auto& diff = review.value->difference;
+            QMessageBox dialog(QMessageBox::Question, tr("选择Lua来源"),
+                tr("只在地图：%1　只在文件夹：%2　内容不同：%3\n写入文件夹的修改不随地图撤销。")
+                    .arg(diff.mapOnly.size()).arg(diff.folderOnly.size()).arg(diff.different.size()), QMessageBox::NoButton, this);
+            QStringList details;
+            const auto section = [&](const QString& title, const auto& paths) {
+                details << title;
+                for (const auto& item : paths) details << QString::fromStdString(item);
+            };
+            section(tr("只在地图"), diff.mapOnly); section(tr("只在文件夹"), diff.folderOnly); section(tr("内容不同"), diff.different);
+            dialog.setDetailedText(details.join('\n'));
+            auto* disk = dialog.addButton(tr("以文件夹为准"), QMessageBox::AcceptRole);
+            auto* map = dialog.addButton(tr("以地图为准"), QMessageBox::DestructiveRole);
+            dialog.addButton(QMessageBox::Cancel); dialog.exec();
+            if (dialog.clickedButton() == disk) choice = Services::LuaFolderChoice::Folder;
+            else if (dialog.clickedButton() != map) return;
+        }
+        const auto applied = folder.Associate(*review.value, choice);
+        if (!applied.Succeeded()) Status(Problem(applied.diagnostics));
+        else Status(tr("已关联外部文件夹"));
+    });
+    connect(unlink, &QPushButton::clicked, this, [this] {
+        if (!CommitPendingDraft()) return;
+        const auto result = project_.LuaFolderSource().Unlink();
+        Status(result.Succeeded() ? tr("已取消关联") : Problem(result.diagnostics));
+    });
+    connect(reconnect, &QPushButton::clicked, this, [this] { project_.LuaFolderSource().Refresh(); });
     directory_ = new QTreeWidget(directoryPane); directory_->setObjectName("luaScriptDirectory");
     directory_->setHeaderLabels({tr("Lua 脚本"), tr("状态")}); directory_->setRootIsDecorated(false);
     directory_->setUniformRowHeights(true); directoryLayout->addWidget(directory_, 1);
@@ -101,6 +146,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     });
     connect(&project_, &QtProject::EditorProject::ImportsChanged, this, [this] {
         RefreshDirectory();
+        if (project_.LuaFolderSource().Active()) return;
         if (publishing_ || selectedPath_.isEmpty()) return;
         if (HasPendingDraft()) return;
         const auto entries = project_.AssetEntries();
@@ -127,6 +173,23 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
         if (project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) return;
         (void)LoadScript(selectedPath_);
     });
+    connect(&project_, &QtProject::EditorProject::LuaSourceChanged, this, [this] {
+        RefreshDirectory();
+        const auto& folder = project_.LuaFolderSource();
+        if (folder.Missing()) Status(tr("外部文件夹不存在，使用地图内Lua"));
+        else if (folder.Linked() && !folder.Active()) Status(tr("外部Lua不可用"));
+        if (publishing_ || selectedPath_.isEmpty()) return;
+        const auto current = QtProject::ReadOwnedAsset(project_, selectedPath_);
+        if (HasPendingDraft()) {
+            if (!current.Succeeded() || current.value->sha256 != source_->sha256) Status(tr("外部文件已改变，草稿保留"));
+            return;
+        }
+        if (current.Succeeded()) LoadAcceptedScript(*current.value);
+        else {
+            source_.reset(); selectedPath_.clear(); editableSource_ = false; suppress_ = true;
+            editor_->SetEditable(false); editor_->SetText({}); suppress_ = false; UpdateDraftState();
+        }
+    });
     RefreshDirectory(); UpdateDraftState();
 }
 
@@ -146,6 +209,8 @@ void TriggerLuaScripts::UpdateDraftState() {
     if (!selected) { sourceNote_->clear(); sourceNote_->setToolTip({}); }
 }
 void TriggerLuaScripts::RefreshDirectory() {
+    if (auto* button = findChild<QPushButton*>("luaUnlinkFolder")) button->setEnabled(project_.LuaFolderSource().Linked());
+    if (auto* button = findChild<QPushButton*>("luaReconnectFolder")) button->setEnabled(project_.LuaFolderSource().Linked());
     QSignalBlocker block(directory_); directory_->clear();
     for (const auto& entry : QtProject::ListLuaScripts(project_)) {
         auto* item = new QTreeWidgetItem(directory_, {entry.path, entry.state});
@@ -168,6 +233,10 @@ bool TriggerLuaScripts::SelectAcceptedScript(QtProject::OwnedAssetSource source)
         || source.generation != project_.editRevision_.Generation()
         || (source.archive ? source.archive->SourceSha256() != source.sourceSha256
             : source.directory && source.directory->Snapshot().aggregateSha256 != source.sourceSha256)) return false;
+    if (!source.externalLuaRoot.empty()) {
+        if (!QtProject::VerifyOwnedAsset(project_, source).Succeeded()) return false;
+        LoadAcceptedScript(std::move(source)); RefreshDirectory(); return true;
+    }
     const auto entries = project_.AssetEntries();
     const auto entry = std::find_if(entries.begin(), entries.end(), [&](const auto& item) { return item.path == source.path; });
     if (entry == entries.end() || entry->ambiguous || !source.bytes || source.bytes->size() > QtProject::kOwnedLuaAssetBytes) return false;
@@ -227,6 +296,13 @@ bool TriggerLuaScripts::SelectScript(const QString& path) {
 }
 bool TriggerLuaScripts::CreateScript(const QString& path, const QString& initialText) {
     if (!CommitPendingDraft()) return false;
+    if (project_.LuaFolderSource().Active()) {
+        publishing_ = true;
+        const auto problem = QtProject::WriteLuaScript(project_, path, initialText, {}, tr("新建外部Lua"));
+        publishing_ = false;
+        if (!problem.isEmpty()) { Status(problem); return false; }
+        RefreshDirectory(); return LoadScript(path);
+    }
     if (project_.directorySnapshot_ && !project_.archiveSession_) { Status(tr("目录扫描不完整，不能新建")); return false; }
     const auto bytes = initialText.toUtf8();
     const auto problem = project_.RecordAssetEdit(tr("新建 Lua 脚本草稿"), [&](QtProject::AssetState& candidate) -> QString {
@@ -243,6 +319,16 @@ bool TriggerLuaScripts::CreateScript(const QString& path, const QString& initial
 bool TriggerLuaScripts::RenameScript(const QString& path, const QString& newPath) {
     if (!CommitPendingDraft()) return false;
     if (!newPath.endsWith(".lua", Qt::CaseInsensitive)) { Status(tr("扩展名必须是 .lua")); return false; }
+    if (auto& folder = project_.LuaFolderSource(); folder.Active()) {
+        const auto read = QtProject::ReadOwnedAsset(project_, path);
+        if (!read.Succeeded()) { Status(Problem(read.diagnostics)); return false; }
+        publishing_ = true;
+        const auto result = Services::RenameLuaFolderFile(folder.Root(), {path.toStdString(), read.value->sha256, read.value->bytes}, newPath.toStdString());
+        if (result.Succeeded()) folder.Refresh();
+        publishing_ = false;
+        if (!result.Succeeded()) { Status(Problem(result.diagnostics)); return false; }
+        RefreshDirectory(); return LoadScript(newPath);
+    }
     publishing_ = true;
     const auto problem = project_.RecordAssetEdit(tr("重命名 Lua 脚本"), [&](QtProject::AssetState& candidate) { return project_.MoveAsset(candidate, path, newPath); });
     publishing_ = false;
@@ -251,6 +337,13 @@ bool TriggerLuaScripts::RenameScript(const QString& path, const QString& newPath
 }
 bool TriggerLuaScripts::DeleteScript(const QString& path) {
     if (!CommitPendingDraft()) return false;
+    if (auto& folder = project_.LuaFolderSource(); folder.Active()) {
+        const auto read = QtProject::ReadOwnedAsset(project_, path);
+        if (!read.Succeeded()) { Status(Problem(read.diagnostics)); return false; }
+        const auto result = Services::RemoveLuaFolderFile(folder.Root(), {path.toStdString(), read.value->sha256, read.value->bytes});
+        if (!result.Succeeded()) { Status(Problem(result.diagnostics)); return false; }
+        folder.Refresh(); return true;
+    }
     publishing_ = true;
     const auto problem = project_.RecordAssetEdit(tr("删除 Lua 脚本"), [&](QtProject::AssetState& candidate) { return project_.RemoveAsset(candidate, path); });
     publishing_ = false;
@@ -263,11 +356,24 @@ bool TriggerLuaScripts::DeleteScript(const QString& path) {
 }
 bool TriggerLuaScripts::CommitPendingDraft() {
     if (!HasPendingDraft()) return true;
+    if (!source_->externalLuaRoot.empty()) project_.LuaFolderSource().Refresh();
     // 工程草稿保留未完成代码；后台语法诊断与地图写出门禁独立核对。
+    auto expected = source_->sha256;
     const auto verified = QtProject::VerifyOwnedAsset(project_, *source_);
-    if (!verified.Succeeded()) { Status(Problem(verified.diagnostics)); return false; }
+    if (!verified.Succeeded()) {
+        if (source_->externalLuaRoot.empty()) { Status(Problem(verified.diagnostics)); return false; }
+        QMessageBox dialog(QMessageBox::Warning, tr("Lua文件冲突"), tr("外部文件已改变，选择保留哪一份。"), QMessageBox::NoButton, this);
+        auto* draft = dialog.addButton(tr("保留编辑器草稿"), QMessageBox::AcceptRole);
+        auto* disk = dialog.addButton(tr("使用外部文件"), QMessageBox::DestructiveRole);
+        dialog.addButton(QMessageBox::Cancel); dialog.exec();
+        if (dialog.clickedButton() == disk) { DiscardPendingDraft(); return true; }
+        if (dialog.clickedButton() != draft) return false;
+        const auto current = QtProject::ReadOwnedAsset(project_, selectedPath_);
+        if (!current.Succeeded() || current.value->externalLuaRoot != source_->externalLuaRoot) { Status(tr("来源已改变，请重新选择文件")); return false; }
+        expected = current.value->sha256;
+    }
     publishing_ = true;
-    const auto problem = QtProject::WriteLuaScript(project_, selectedPath_, editor_->toPlainText(), {}, tr("编辑 Lua 脚本草稿"));
+    const auto problem = QtProject::WriteLuaScript(project_, selectedPath_, editor_->toPlainText(), expected, tr("编辑 Lua 脚本草稿"));
     publishing_ = false;
     if (!problem.isEmpty()) { Status(problem); return false; }
     const auto path = selectedPath_; RefreshDirectory(); (void)LoadScript(path);

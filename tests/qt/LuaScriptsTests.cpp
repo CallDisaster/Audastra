@@ -2,6 +2,8 @@
 #include "TriggerModule.h"
 #include "AssetsModule.h"
 #include "AssetOwnedPayload.h"
+#include "ProjectLuaFolder.h"
+#include "ProjectLuaModules.h"
 #include "EditorProject.h"
 #include "MapSaveJob.h"
 #include "Theme/ThemeManager.h"
@@ -36,6 +38,8 @@
 #include <QStandardItemModel>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QTimer>
+#include <QMessageBox>
 #include <QTextCharFormat>
 #include <QFontInfo>
 #include <QFontMetricsF>
@@ -85,6 +89,49 @@ class LuaScriptsTests final : public QObject {
     Q_OBJECT
 private slots:
     void initTestCase() { UiKit::ThemeManager theme; theme.ApplyTheme("graphite"); }
+    void ExternalFolderTransactionWatcherAndDraftConflict() {
+        QTemporaryDir directory; QVERIFY(directory.isValid());
+        QtProject::EditorProject project;
+        const auto path = std::filesystem::path(directory.filePath("linked.w3x").toStdWString());
+        QVERIFY(Mpq::WriteMpqArchive(path, {{"war3map.w3i", Bytes("synthetic"), false},
+            {"lessons\\reload.lua", Bytes("return 1\r\n"), false}}).Succeeded());
+        auto archive = MapArchiveSession::Open(path); QVERIFY(archive.Succeeded());
+        project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+        project.sourceArchivePath_ = path; project.projectRoot_ = directory.path().toStdWString(); project.ResetEditTracking();
+        const auto folder = directory.filePath("scripts"); QVERIFY(QDir().mkdir(folder));
+        const auto root = std::filesystem::path(folder.toStdWString());
+        auto& source = project.LuaFolderSource();
+        const auto review = source.Review(root); QVERIFY(review.Succeeded()); QVERIFY(review.value->emptyDirectory);
+        QVERIFY(source.Associate(*review.value, Services::LuaFolderChoice::Map).Succeeded());
+        QVERIFY(source.Active()); QCOMPARE(project.AssetUndoStack()->count(), 1);
+        const auto file = folder + "/lessons/reload.lua";
+        QVERIFY(QFileInfo::exists(file));
+        Modules::TriggerLuaScripts scripts(project); scripts.show(); QVERIFY(scripts.SelectScript("lessons\\reload.lua"));
+        auto put = [&](const QByteArray& body) { QFile out(file); if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false; return out.write(body) == body.size(); };
+        QVERIFY(put("return 2\r\n"));
+        QTRY_VERIFY_WITH_TIMEOUT(scripts.Editor()->toPlainText().contains("return 2"), 5000);
+        scripts.Editor()->setPlainText("return 3\n"); QVERIFY(scripts.HasPendingDraft());
+        QVERIFY(put("return 4\r\n"));
+        source.Refresh(); QVERIFY(scripts.Editor()->toPlainText().contains("return 3"));
+        // 取消冲突保留草稿及磁盘；随后显式保留草稿才写盘。
+        QTimer::singleShot(0, [] { for (auto* widget : QApplication::topLevelWidgets()) if (auto* box = qobject_cast<QMessageBox*>(widget)) box->reject(); });
+        QVERIFY(!scripts.CommitPendingDraft()); QVERIFY(scripts.HasPendingDraft());
+        QTimer::singleShot(0, [] { for (auto* widget : QApplication::topLevelWidgets()) if (auto* box = qobject_cast<QMessageBox*>(widget))
+            for (auto* button : box->buttons()) if (button->text().contains(QStringLiteral("保留编辑器"))) button->click(); });
+        QVERIFY(scripts.CommitPendingDraft()); QVERIFY(!scripts.HasPendingDraft());
+        QFile output(file); QVERIFY(output.open(QIODevice::ReadOnly)); QCOMPARE(output.readAll(), QByteArray("return 3\r\n")); output.close();
+        QCOMPARE(project.AssetUndoStack()->count(), 1);
+        QVERIFY(source.Unlink().Succeeded()); QVERIFY(!source.Linked()); QCOMPARE(project.AssetUndoStack()->count(), 2);
+        project.AssetUndoStack()->undo(); QVERIFY(source.Active());
+        project.AssetUndoStack()->undo(); QVERIFY(!source.Linked());
+        project.AssetUndoStack()->redo(); QVERIFY(source.Active());
+        QVERIFY(QDir().rename(folder, folder + "-hidden")); source.Refresh(); QVERIFY(source.Missing());
+        const auto fallback = QtProject::ReadLuaScript(project, "lessons\\reload.lua"); QVERIFY(fallback.Succeeded());
+        QVERIFY(fallback.value->text.contains("return 1"));
+        QVERIFY(QDir().rename(folder + "-hidden", folder)); source.Refresh(); QVERIFY(source.Active());
+        const auto restored = QtProject::ReadLuaScript(project, "lessons\\reload.lua"); QVERIFY(restored.Succeeded());
+        QVERIFY(restored.value->text.contains("return 3"));
+    }
     void OriginalLuaDiagnosticVisualAndProblemNavigation() {
         const auto directory = qEnvironmentVariable("WAR3_CODE_ERRORS_CAPTURE_DIR");
         if (directory.isEmpty()) QSKIP("Opt-in original Qt diagnostic capture; compile-only, no game execution.");

@@ -94,6 +94,8 @@ using MapEditPlacementOperation = std::variant<std::monostate, MapEditPlacementC
 
 struct MapEditSaveRequest {
     std::filesystem::path sourceMap;
+    std::filesystem::path luaFolderOverride;
+    std::string luaFolderDeletionApproval;
     std::filesystem::path targetCandidate;
     std::filesystem::path toolRoot;
     std::filesystem::path uiRoot; // 可由宿主明确分离；为空时兼容既有 toolRoot 同时提供 UI 的调用

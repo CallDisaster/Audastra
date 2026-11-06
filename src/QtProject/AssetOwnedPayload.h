@@ -18,10 +18,13 @@ struct OwnedAssetSource {
     std::string sourceSha256;
     std::uint64_t generation = 0;
     bool runtimeLuaDraft = false;
+    std::filesystem::path externalLuaRoot;
 };
 
 // 仅读一个明确有效资源，不提取整图，不改作者磁盘来源。载荷与来源身份由返回值自持有。
 [[nodiscard]] Result<OwnedAssetSource> ReadOwnedAsset(const EditorProject& project, const QString& path,
+    std::size_t maxBytes = kOwnedLuaAssetBytes);
+[[nodiscard]] Result<OwnedAssetSource> ReadOwnedMapAsset(const EditorProject& project, const QString& path,
     std::size_t maxBytes = kOwnedLuaAssetBytes);
 [[nodiscard]] Status VerifyOwnedAsset(const EditorProject& project, const OwnedAssetSource& source);
 // 在 private AssetState 中规划，与普通资源导入同一份队列；发布由 RecordAssetEdit 共同负责。

@@ -1,5 +1,6 @@
 #include "War3MapCore/Services/LuaFolder.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Mpq/MpqArchive.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -59,6 +60,7 @@ Result<std::optional<std::filesystem::path>> DecodeLuaFolderLink(std::span<const
         if (value.empty() || value.size() > 4096 || value.find('\0') != value.npos) throw std::runtime_error("metadata path");
         auto path = std::filesystem::u8path(value);
         if (path.has_root_name() && !path.is_absolute()) throw std::runtime_error("drive relative path");
+        if (path.is_relative() && map.empty()) throw std::runtime_error("relative path without map anchor");
         if (path.is_relative()) path = std::filesystem::absolute(map).parent_path() / path;
         path = path.lexically_normal();
         if (path.root_name().wstring().size() != 2 || path.root_name().wstring()[1] != L':') throw std::runtime_error("local path required");
@@ -70,6 +72,7 @@ Result<std::optional<std::filesystem::path>> DecodeLuaFolderLink(std::span<const
 
 Result<std::vector<std::byte>> EncodeLuaFolderLink(const std::filesystem::path& folder, const std::filesystem::path& map) {
     try {
+        if (map.empty() || folder.empty()) throw std::runtime_error("missing path anchor");
         const auto root = std::filesystem::absolute(folder).lexically_normal();
         const auto parent = std::filesystem::absolute(map).parent_path().lexically_normal();
         auto value = root;
@@ -114,6 +117,39 @@ Result<std::vector<LuaFolderFile>> CaptureMapLuaFiles(const MapArchiveSession& a
         const auto sha = Sha256(bytes);
         if (!sha.Succeeded()) return {std::nullopt, sha.diagnostics};
         result.push_back({name, *sha.value, std::make_shared<const std::vector<std::byte>>(std::move(bytes))});
+    }
+    return Output::Success(std::move(result));
+}
+
+Result<std::optional<std::filesystem::path>> ReadLuaFolderLinkFile(const std::filesystem::path& path) {
+    const auto map = Mpq::MpqArchive::OpenReadOnly(path);
+    if (!map.Succeeded()) return {std::nullopt, map.diagnostics};
+    if (!map.value->HasFile(kLuaFolderMember)) return Result<std::optional<std::filesystem::path>>::Success(std::nullopt);
+    const auto bytes = map.value->ReadFileBounded(kLuaFolderMember, 8192);
+    return bytes.Succeeded() ? DecodeLuaFolderLink(*bytes.value, path)
+        : Result<std::optional<std::filesystem::path>>{std::nullopt, bytes.diagnostics};
+}
+
+Result<std::vector<LuaFolderFile>> CaptureMapLuaFiles(const std::filesystem::path& path) {
+    using Output = Result<std::vector<LuaFolderFile>>;
+    const auto map = Mpq::MpqArchive::OpenReadOnly(path);
+    if (!map.Succeeded()) return {std::nullopt, map.diagnostics};
+    const auto names = map.value->ListFilesStrict();
+    if (!names.Succeeded()) return {std::nullopt, names.diagnostics};
+    std::vector<LuaFolderFile> result;
+    std::size_t total = 0;
+    for (const auto& file : *names.value) {
+        if (!IsAuthorLuaMember(file.name)) continue;
+        const auto bytes = map.value->ReadFileBounded(file.name, 2u * 1024u * 1024u);
+        if (!bytes.Succeeded()) return {std::nullopt, bytes.diagnostics};
+        const auto valid = ValidateLuaFolderFile(file.name, *bytes.value, false);
+        if (!valid.Succeeded()) return {std::nullopt, valid.diagnostics};
+        total += bytes.value->size();
+        if (result.size() == kLuaFolderFiles || total > kLuaFolderTotalBytes)
+            return Output::Failure("LuaFolder", "LUA_FOLDER_TOTAL_BUDGET", file.name + "：地图Lua超过4096文件或32 MiB。");
+        const auto hash = Sha256(*bytes.value);
+        if (!hash.Succeeded()) return {std::nullopt, hash.diagnostics};
+        result.push_back({file.name, *hash.value, std::make_shared<const std::vector<std::byte>>(*bytes.value)});
     }
     return Output::Success(std::move(result));
 }
