@@ -26,6 +26,13 @@ endif()
 
 add_test(NAME native-object-data-synthetic COMMAND War3MapNativeObjectDataTests)
 
+add_executable(War3MapNativeObjectFreezeTests NativeObjectFreezeTests.cpp)
+target_link_libraries(War3MapNativeObjectFreezeTests PRIVATE War3MapEditor::ObjectData)
+if(MSVC)
+    target_compile_options(War3MapNativeObjectFreezeTests PRIVATE /W4 /permissive- /utf-8)
+endif()
+add_test(NAME native-object-freeze-synthetic COMMAND War3MapNativeObjectFreezeTests)
+
 add_executable(War3MapStandardObjectCatalogTests StandardObjectCatalogTests.cpp)
 target_link_libraries(War3MapStandardObjectCatalogTests PRIVATE War3MapEditor::ObjectData)
 if(MSVC)

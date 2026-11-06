@@ -7,6 +7,7 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/ObjectData/NativeObjectFreeze.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
@@ -98,12 +99,11 @@ bool CampaignModule::CommitShared() {
         if (!shared_->nativeObjectDocuments_[i] || !shared_->objectDocuments_[i]) {
             Notice(tr("共享物编缺少可编辑的原生基线，草稿保留。")); return false;
         }
-        auto native = *shared_->nativeObjectDocuments_[i];
-        const auto applied = ObjectData::ApplyLniChangesToNative(native, *shared_->objectDocuments_[i], shared_->objectFieldSchema_.get(), shared_->standardCatalog_.get());
-        if (!applied.Succeeded()) return Failed(applied.diagnostics);
-        auto bytes = ObjectData::NativeObjectCodec(static_cast<ObjectData::ObjectType>(i)).Serialize(native);
-        if (!bytes.Succeeded() || !bytes.value) return Failed(bytes.diagnostics);
-        command.replacements.push_back({Services::CampaignSession::ObjectMember(static_cast<ObjectData::ObjectType>(i)), std::move(*bytes.value)});
+        auto frozen = ObjectData::FreezeNativeObjectChanges(*shared_->nativeObjectDocuments_[i],
+            *shared_->objectDocuments_[i], shared_->objectFieldSchema_.get(), shared_->standardCatalog_.get());
+        if (!frozen.value) return Failed(frozen.stage == ObjectData::NativeObjectFreezeStage::Projection
+            ? frozen.projectionDiagnostics : frozen.serializationDiagnostics);
+        command.replacements.push_back({Services::CampaignSession::ObjectMember(static_cast<ObjectData::ObjectType>(i)), std::move(frozen.value->bytes)});
     }
     for (const auto& edit : shared_->assetEdits_) {
         if (!edit.to.isEmpty()) {

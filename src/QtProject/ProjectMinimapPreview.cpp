@@ -4,8 +4,7 @@
 #include "../QtCommon/DiagnosticTimings.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/ProjectSaveControl.h"
-#include "War3MapCore/ObjectData/ObjectImport.h"
-#include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/ObjectData/NativeObjectFreeze.h"
 #include <QThread>
 #include <QUndoStack>
 #include <algorithm>
@@ -171,28 +170,23 @@ void ProjectMinimapPreview::Start() {
             const auto type = baseline->Type();
             if (edited->Objects().empty() && !archive->HasMember(ObjectData::NativeFileName(type)))
                 continue;
-            auto native = *baseline;
-            // 与保存使用同一回灌和序列化入口；仅修改本次私有副本。
-            const auto applied = ObjectData::ApplyLniChangesToNative(native, *edited, project_.objectFieldSchema_.get(),
-                                                                     project_.standardCatalog_.get());
-            if (!applied.Succeeded()) {
-                project_.AddDiagnostics(applied.diagnostics);
-                failure("MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能冻结。");
+            ObjectData::NativeObjectFreezeOptions options;
+            options.maximumBytes = std::min<std::size_t>(8U * 1024U * 1024U, maximumOverlayBytes - overlayBytes);
+            options.projectionFailure = {"MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能冻结。"};
+            options.serializationFailure = {"MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能序列化。"};
+            options.budgetFailure = {"MINIMAP_PREVIEW_BUDGET", "物编覆盖超过预算。"};
+            auto frozen = ObjectData::FreezeNativeObjectChanges(*baseline, *edited,
+                project_.objectFieldSchema_.get(), project_.standardCatalog_.get(), options);
+            if (!frozen.value) {
+                if (frozen.stage == ObjectData::NativeObjectFreezeStage::Projection)
+                    project_.AddDiagnostics(frozen.projectionDiagnostics);
+                else if (frozen.stage == ObjectData::NativeObjectFreezeStage::Serialization)
+                    project_.AddDiagnostics(frozen.serializationDiagnostics);
+                failure(std::move(frozen.failure.code), std::move(frozen.failure.message));
                 return;
             }
-            auto encoded = ObjectData::NativeObjectCodec(type).Serialize(native);
-            if (!encoded.Succeeded()) {
-                project_.AddDiagnostics(encoded.diagnostics);
-                failure("MINIMAP_CURRENT_OBJECT_FREEZE", "物编修改未能序列化。");
-                return;
-            }
-            if (encoded.value->size() > 8U * 1024U * 1024U ||
-                encoded.value->size() > maximumOverlayBytes - overlayBytes) {
-                failure("MINIMAP_PREVIEW_BUDGET", "物编覆盖超过预算。");
-                return;
-            }
-            overlayBytes += encoded.value->size();
-            current.replacements.push_back({std::string(ObjectData::NativeFileName(type)), std::move(*encoded.value)});
+            overlayBytes += frozen.value->bytes.size();
+            current.replacements.push_back({std::string(ObjectData::NativeFileName(type)), std::move(frozen.value->bytes)});
         }
         auto frozen = project_.mapEdits_->FreezeForSave(128U * 1024U * 1024U);
         freezeTiming.Finish();

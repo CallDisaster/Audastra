@@ -13,6 +13,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/ObjectData/NativeObjectFreeze.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Resources/ImportTable.h"
@@ -444,18 +445,17 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             AddDiagnostics(writable.diagnostics);
             if (!writable.Succeeded()) return nullptr;
         }
-        const auto applied = ObjectData::ApplyLniChangesToNative(
-            *nextBaselines[index], *objectDocuments_[index], objectFieldSchema_.get(), standardCatalog_.get());
-        AddDiagnostics(applied.diagnostics);
-        if (!applied.Succeeded()) {
-            return fail(tr("REPACK_OBJECT_REJECTED"), tr("物体数据回灌未通过，已中止另存。"));
-        }
-        auto encoded = ObjectData::NativeObjectCodec(type).Serialize(*nextBaselines[index]);
-        AddDiagnostics(encoded.diagnostics);
-        if (!encoded.Succeeded() || !encoded.value) {
-            return fail(tr("REPACK_OBJECT_ENCODE_FAILED"), tr("物体数据序列化未通过，已中止另存。"));
-        }
-        replaceMember(std::string(ObjectData::NativeFileName(type)), std::move(*encoded.value));
+        ObjectData::NativeObjectFreezeOptions options;
+        options.projectionFailure = {"REPACK_OBJECT_REJECTED", "物体数据回灌未通过，已中止另存。"};
+        options.serializationFailure = {"REPACK_OBJECT_ENCODE_FAILED", "物体数据序列化未通过，已中止另存。"};
+        auto frozen = ObjectData::FreezeNativeObjectChanges(std::move(*nextBaselines[index]),
+            *objectDocuments_[index], objectFieldSchema_.get(), standardCatalog_.get(), options);
+        AddDiagnostics(frozen.projectionDiagnostics);
+        AddDiagnostics(frozen.serializationDiagnostics);
+        if (!frozen.value)
+            return fail(QString::fromStdString(frozen.failure.code), QString::fromStdString(frozen.failure.message));
+        *nextBaselines[index] = std::move(frozen.value->document);
+        replaceMember(std::string(ObjectData::NativeFileName(type)), std::move(frozen.value->bytes));
     }
 
     auto importTable = Resources::ImportTable::CreateEmpty();
