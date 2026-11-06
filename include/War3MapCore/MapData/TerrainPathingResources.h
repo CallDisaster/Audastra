@@ -88,6 +88,12 @@ public:
         std::size_t maximumBytes) const;
     [[nodiscard]] Result<std::vector<std::byte>> GenerateNative(const TerrainGridSnapshot& terrain,
         TerrainNativeStage stage, std::size_t maximumBytes) const;
+    [[nodiscard]] Result<std::vector<std::byte>> GenerateNativeRegion(const TerrainGridSnapshot& terrain,
+        TerrainNativeStage stage, const TerrainCellRect& cells, std::size_t maximumBytes) const;
+    [[nodiscard]] bool RequiresFullNativeRegion() const noexcept {
+        return nativeSpecialCount_[0] || nativeSpecialCount_[1] || nativeLoadedSpecialCache_
+            || (nativeSourceResources_ && nativeSourceResources_->RequiresFullNativeRegion());
+    }
     [[nodiscard]] std::span<const TerrainWaterSpecialDoodadShape> WaterSpecialShapes() const noexcept { return waterSpecialShapes_; }
     [[nodiscard]] Status VerifyWaterBrushDoodads(const DoodadPlacements& doodads, std::span<const std::byte> source = {}) const;
     [[nodiscard]] bool EquivalentGround(std::string_view before, std::string_view after) const;
@@ -136,7 +142,8 @@ private:
     friend class TerrainSavePlan;
     // 保存计划可只读辨识完整源WPM的载入缓存；仅证明远区纯贴图编辑后才绑定使用。
     [[nodiscard]] Result<std::vector<std::byte>> GenerateNativeForCache(const TerrainGridSnapshot& terrain,
-        TerrainNativeStage stage, std::size_t maximumBytes, bool loadedSpecialCache) const;
+        TerrainNativeStage stage, std::size_t maximumBytes, bool loadedSpecialCache,
+        const TerrainCellRect* region = nullptr) const;
     bool nativeLoadedSpecialCache_ = false;
     TerrainPathingResources() = default;
     // 仅内部保存计划可把会话完整W3I的窄域说明修改绑定到最终身份。

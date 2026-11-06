@@ -332,6 +332,13 @@ target_compile_options(audastra-terrain-block-paste-service-tests PRIVATE /W4 /p
 add_test(NAME services-terrain-block-paste COMMAND audastra-terrain-block-paste-service-tests)
 set_tests_properties(services-terrain-block-paste PROPERTIES TIMEOUT 60)
 
+add_executable(audastra-terrain-realtime-pathing-tests TerrainRealtimePathingTests.cpp)
+target_link_libraries(audastra-terrain-realtime-pathing-tests PRIVATE War3MapEditor::Services)
+target_compile_definitions(audastra-terrain-realtime-pathing-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(audastra-terrain-realtime-pathing-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-terrain-realtime-pathing COMMAND audastra-terrain-realtime-pathing-tests)
+set_tests_properties(services-terrain-realtime-pathing PROPERTIES TIMEOUT 60)
+
 add_executable(audastra-terrain-resize-resources-tests TerrainResizeResourcesTests.cpp TerrainSessionResourcesCases.h ../support/TerrainResizeFixture.h)
 target_link_libraries(audastra-terrain-resize-resources-tests PRIVATE War3MapEditor::Services)
 target_compile_definitions(audastra-terrain-resize-resources-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

@@ -481,7 +481,7 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
         for (const auto& table : {&grid->header.groundTilesets, &grid->header.cliffTilesets})
             for (const auto& id : *table) if (!add(cost.comparisonWork, maximumWork, id.size())) return fail();
     }
-    if (!bytes(pathingOriginal_) || !bytes(pathing_) || !bytes(pathingProtected_)
+    if (!bytes(pathingOriginal_) || !bytes(pathing_) || !bytes(realtimeNativePathing_, false) || !bytes(pathingProtected_)
         || !bytes(originalPathingRestrictions_) || !bytes(pathingRestrictions_)) return fail();
     // expected可来自API宿主。已有raw历史也计驻留，不能先克隆巨型DOO/WTS再报不符。
     if (history_.size() > 4096) return fail();
@@ -504,6 +504,7 @@ Result<MapDataEditSession::TerrainJournalDraftCost> MapDataEditSession::MeasureT
             if (!add(cost.retainedBytes, maximumBytes, chunk.before.capacity())
                 || !add(cost.retainedBytes, maximumBytes, chunk.after.capacity())) return fail();
         if (!bytes(command->pathingBefore, false) || !bytes(command->pathingAfter, false)
+            || !bytes(command->nativePathingBefore, false) || !bytes(command->nativePathingAfter, false)
             || !bytes(command->restrictionBefore, false) || !bytes(command->restrictionAfter, false)) return fail();
         if (command->terrainStroke) {
             const auto& stroke = *command->terrainStroke;
@@ -748,6 +749,8 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
     prepared.points_.assign(points.begin(), points.end());
     prepared.followDoodads_ = followDoodads;
     prepared.waterPreparationWork_ = nativeFollowWork;
+    if ((realtimePathingBuilder_ || realtimeNativePathing_) && pathing_)
+        prepared.realtimePathingBytes_ = (pathing_->size() - 16) * 2;
     prepared.command_ = std::make_shared<const Command>(std::move(command));
     return Result<PreparedTerrainEdit>::Success(std::move(prepared));
 }
@@ -776,6 +779,7 @@ std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() cons
     add(command_->changes.capacity(), sizeof(MemberChange));
     for (const auto& change : command_->changes) { raw(change.before); raw(change.after); }
     raw(command_->pathingBefore); raw(command_->pathingAfter);
+    add(realtimePathingBytes_);
     raw(command_->restrictionBefore); raw(command_->restrictionAfter);
     for (const auto* restrictions : {&command_->restrictionBefore, &command_->restrictionAfter})
         if (*restrictions) add(sizeof(std::vector<std::byte>) + 64);
@@ -817,6 +821,23 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
         return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_EDIT_STALE",
             "地形候选不属于当前会话、修订或来源，请重新预览。");
     auto command = *plan.command_;
+    std::function<Status()> verifyRealtime;
+    const bool rebuildRealtime = plan.waterBrush_ || plan.brush_.kind == TerrainBrushKind::CliffLevel
+        || plan.brush_.kind == TerrainBrushKind::Blight || realtimeNativePathing_ || realtimePathingUnavailable_;
+    if (realtimePathingBuilder_ && rebuildRealtime && plan.HasChanges()) {
+        auto rebuilt = realtimePathingBuilder_(*this, plan);
+        if (!rebuilt.Succeeded() || !rebuilt.value) return {{}, std::move(rebuilt.diagnostics)};
+        if (!rebuilt.value->nativeLayer || !pathing_ || rebuilt.value->nativeLayer->size() + 16 != pathing_->size()
+            || rebuilt.value->nativeLayer->capacity() * 2 > plan.realtimePathingBytes_)
+            return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_REALTIME_PATHING_BUDGET",
+                "实时通行输出形状或保留容量不符合本笔预收预算，尚未提交。");
+        command.nativePathingTouched = true;
+        command.nativePathingBefore = rebuilt.value->beforeNativeLayer ? rebuilt.value->beforeNativeLayer : realtimeNativePathing_;
+        command.nativePathingAfter = std::move(rebuilt.value->nativeLayer);
+        command.nativePathingUnavailableBefore = rebuilt.value->beforeNativeLayer ? false : realtimePathingUnavailable_;
+        command.nativePathingUnavailableAfter = false;
+        verifyRealtime = std::move(rebuilt.value->verifySources);
+    }
     // 超出持久化域不影响原始编辑。不能截断/拆笔或持久化caller锚点冒充来源。
     bool expressible = plan.blockPaste_ || (!plan.points_.empty() && plan.points_.size() <= 4096);
     TerrainJournalStroke stroke;
@@ -870,7 +891,16 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
         }
     }
     if (expressible) command.terrainStroke = std::move(stroke);
-    const auto status = CommitCommand(std::move(command), prepublish);
+    if (plan.sessionIdentity_ != sessionIdentity_ || plan.revision_ != revision_
+        || plan.sourceRevision_ != terrainSourceRevision_ || plan.before_ != terrain_)
+        return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_EDIT_STALE", "实时通行准备期间会话已变化，未提交。");
+    const auto status = CommitCommand(std::move(command), [&](const EditReceipt& receipt) {
+        if (verifyRealtime) {
+            const auto verified = verifyRealtime();
+            if (!verified.Succeeded()) return verified;
+        }
+        return prepublish ? prepublish(receipt) : Status::Ok();
+    });
     if (!status.Succeeded()) return {{}, status.diagnostics};
     return Result<TerrainStrokeResult>::Success(plan.changed_);
 }

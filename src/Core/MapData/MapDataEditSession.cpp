@@ -157,6 +157,17 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
         (!value.logicalIdentity && nextCommandIdentity_ == std::numeric_limits<std::uint64_t>::max()))
         return Status::Failure("MapData.Edit", "MAP_EDIT_ID_EXHAUSTED", "编辑修订或命令身份已用尽。");
     const bool newIdentity = !value.logicalIdentity;
+    if (!value.nativePathingTouched && realtimeNativePathing_
+        && ((!value.terrain.empty() || value.headerAfter || value.fullTerrainAfter || value.boundsAfter || value.resizeAfter)
+            || (value.pathingAfter && !value.restrictionAfter)
+            || std::any_of(value.changes.begin(), value.changes.end(), [](const auto& change) {
+                return change.kind == MapDataKind::Units || change.kind == MapDataKind::Doodads;
+            }))) {
+        value.nativePathingTouched = true;
+        value.nativePathingBefore = realtimeNativePathing_;
+        value.nativePathingUnavailableBefore = realtimePathingUnavailable_;
+        value.nativePathingUnavailableAfter = true;
+    }
     if (newIdentity) { value.sessionIdentity = sessionIdentity_; value.logicalIdentity = nextCommandIdentity_; }
     if (value.sessionIdentity != sessionIdentity_)
         return Status::Failure("MapData.Edit", "MAP_EDIT_RECEIPT_INVALID", "命令来源不是当前地图会话。");
@@ -241,6 +252,10 @@ Status MapDataEditSession::CommitCommand(Command value, const std::function<Stat
     if (command->specialAfter) specialDoodads_ = command->specialAfter;
     if (command->startsAfter) startLocations_ = command->startsAfter;
     if (command->pathingAfter) pathing_.swap(nextPathing);
+    if (command->nativePathingTouched) {
+        realtimeNativePathing_ = command->nativePathingAfter;
+        realtimePathingUnavailable_ = command->nativePathingUnavailableAfter;
+    }
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
     cursor_ = history_.size();
     const auto beforeRevision = revision_;
@@ -677,6 +692,13 @@ Status MapDataEditSession::Replay(const EditReceipt& receipt, bool forward) {
         command.restrictionBefore = expected;
         command.restrictionAfter = forward ? source.restrictionAfter : source.restrictionBefore;
     }
+    if (source.nativePathingTouched) {
+        command.nativePathingTouched = true;
+        command.nativePathingBefore = realtimeNativePathing_;
+        command.nativePathingUnavailableBefore = realtimePathingUnavailable_;
+        command.nativePathingAfter = forward ? source.nativePathingAfter : source.nativePathingBefore;
+        command.nativePathingUnavailableAfter = forward ? source.nativePathingUnavailableAfter : source.nativePathingUnavailableBefore;
+    }
     return CommitCommand(std::move(command));
 }
 
@@ -714,6 +736,10 @@ void MapDataEditSession::Restore(const Command& command, bool forward) {
     if (command.boundsAfter) boundsState_ = forward ? command.boundsAfter : command.boundsBefore;
     if (command.startsAfter) startLocations_ = forward ? command.startsAfter : command.startsBefore;
     if (command.pathingAfter) pathing_.swap(nextPathing);
+    if (command.nativePathingTouched) {
+        realtimeNativePathing_ = forward ? command.nativePathingAfter : command.nativePathingBefore;
+        realtimePathingUnavailable_ = forward ? command.nativePathingUnavailableAfter : command.nativePathingUnavailableBefore;
+    }
     if (nextRestrictions) pathingRestrictions_.swap(nextRestrictions);
 }
 
@@ -783,7 +809,9 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
       resizeState_(source.resizeState_), savedResizeState_(source.savedResizeState_),
       resizeDraftState_(source.resizeDraftState_),
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_), pathingOriginal_(source.pathingOriginal_),
-      pathing_(source.pathing_), pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
+      pathing_(source.pathing_), realtimeNativePathing_(source.realtimeNativePathing_),
+      realtimePathingUnavailable_(source.realtimePathingUnavailable_), realtimePathingBuilder_(source.realtimePathingBuilder_),
+      pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
       originalPathingRestrictions_(source.originalPathingRestrictions_) {}
 
 std::shared_ptr<const MapDataEditSession> MapDataEditSession::FreezeForSave() const {
@@ -939,6 +967,8 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
     terrainJournalSavedCursor_ = cursor_;
     pathingOriginal_.swap(originalPathing);
     pathing_.swap(pathing);
+    realtimeNativePathing_.reset();
+    realtimePathingUnavailable_ = false;
     pathingProtected_.swap(protectedPathing);
     pathingRestrictions_.swap(restrictions);
     states_.swap(states);

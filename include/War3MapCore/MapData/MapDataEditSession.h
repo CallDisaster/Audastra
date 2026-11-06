@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace War3Map::Services { class AuxiliaryEditing; class TerrainHistorySave; class MapCustomSettingsEditing; }
+namespace War3Map::Services { class AuxiliaryEditing; class TerrainHistorySave; class MapCustomSettingsEditing; class TerrainPathingSave; }
 
 namespace War3Map::MapData {
 namespace detail { struct PlacementEditingAccess; struct TerrainInspectionAccess; struct MapDataFieldEditingAccess; }
@@ -47,6 +47,7 @@ class MapDataEditSession {
     friend class TerrainNativeDoodadsProof;
     friend class Services::AuxiliaryEditing;
     friend class Services::MapCustomSettingsEditing;
+    friend class Services::TerrainPathingSave;
     struct Command;
     struct TerrainBoundsState;
     struct TerrainStartLocationsState;
@@ -127,6 +128,7 @@ public:
     private:
         friend class MapDataEditSession;
         PreparedTerrainEdit() = default;
+        friend class Services::TerrainPathingSave;
         std::shared_ptr<const Command> command_;
         std::shared_ptr<const TerrainGridSnapshot> before_;
         std::shared_ptr<const TerrainGridSnapshot> after_;
@@ -145,6 +147,7 @@ public:
         std::optional<TerrainBlockPasteIntent> blockPaste_;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
+        std::size_t realtimePathingBytes_ = 0;
         std::vector<TerrainStrokePoint> points_;
         bool followDoodads_ = false;
     };
@@ -190,6 +193,11 @@ public:
         std::size_t preparationBytes_ = 0, preparationWork_ = 0;
     };
     explicit MapDataEditSession(const MapDocument& source);
+    struct RealtimePathingResult {
+        std::shared_ptr<const std::vector<std::byte>> beforeNativeLayer;
+        std::shared_ptr<const std::vector<std::byte>> nativeLayer;
+        std::function<Status()> verifySources;
+    };
     MapDataEditSession(const MapDataEditSession&) = delete; // 会话身份与回执地址不能被复制。
     // 只冻结真实会话的保存输入；不提供可编辑副本，不从持久化字节恢复私有事务身份。
     [[nodiscard]] std::shared_ptr<const MapDataEditSession> FreezeForSave() const;
@@ -447,6 +455,9 @@ private:
         std::shared_ptr<const TerrainGridSnapshot> fullTerrainBefore, fullTerrainAfter;
         std::shared_ptr<const TerrainResizeState> resizeBefore, resizeAfter;
         std::shared_ptr<const TerrainResizeState> resizeDraftBefore, resizeDraftAfter;
+        bool nativePathingTouched = false;
+        std::shared_ptr<const std::vector<std::byte>> nativePathingBefore, nativePathingAfter;
+        bool nativePathingUnavailableBefore = false, nativePathingUnavailableAfter = false;
     };
     struct TerrainHistoryState {
         std::shared_ptr<const MapDataEditSession> baseline;
@@ -563,6 +574,10 @@ private:
     std::shared_ptr<const TerrainGridSnapshot> terrain_;
     std::optional<std::vector<std::byte>> pathingOriginal_;
     std::optional<std::vector<std::byte>> pathing_;
+    // 查看层只保存共用生成器的原生贡献，不能授予保存资格。
+    std::shared_ptr<const std::vector<std::byte>> realtimeNativePathing_;
+    bool realtimePathingUnavailable_ = false;
+    std::function<Result<RealtimePathingResult>(const MapDataEditSession&, const PreparedTerrainEdit&)> realtimePathingBuilder_;
     // 首次从真实 WPM 捕获；地图保存不会把本工程新增限制升级为受保护来源。
     std::shared_ptr<const std::vector<std::byte>> pathingProtected_;
     std::shared_ptr<const std::vector<std::byte>> pathingRestrictions_, originalPathingRestrictions_;

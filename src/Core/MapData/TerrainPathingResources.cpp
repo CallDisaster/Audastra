@@ -1306,11 +1306,16 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNative(const Ter
     return GenerateNativeForCache(terrain, stage, maximumBytes, nativeLoadedSpecialCache_);
 }
 
+Result<std::vector<std::byte>> TerrainPathingResources::GenerateNativeRegion(const TerrainGridSnapshot& terrain,
+    TerrainNativeStage stage, const TerrainCellRect& cells, std::size_t maximumBytes) const {
+    return GenerateNativeForCache(terrain, stage, maximumBytes, nativeLoadedSpecialCache_, &cells);
+}
+
 Result<std::vector<std::byte>> TerrainPathingResources::GenerateNativeForCache(const TerrainGridSnapshot& terrain,
-    TerrainNativeStage stage, std::size_t maximumBytes, bool loadedSpecialCache) const {
+    TerrainNativeStage stage, std::size_t maximumBytes, bool loadedSpecialCache, const TerrainCellRect* region) const {
     return Guard<std::vector<std::byte>>([&] {
         if (nativeSourceResources_ && stage == TerrainNativeStage::Before)
-            return Take(nativeSourceResources_->GenerateNativeForCache(terrain, TerrainNativeStage::Before, maximumBytes, loadedSpecialCache));
+            return Take(nativeSourceResources_->GenerateNativeForCache(terrain, TerrainNativeStage::Before, maximumBytes, loadedSpecialCache, region));
         const auto index = stage == TerrainNativeStage::Before ? 0u : 1u;
         if (!nativeBounds_ || (stage != TerrainNativeStage::Before && stage != TerrainNativeStage::After))
             Fail("TERRAIN_NATIVE_INPUT_UNAVAILABLE", "未捕获完整原版阶段输入。");
@@ -1329,7 +1334,8 @@ Result<std::vector<std::byte>> TerrainPathingResources::GenerateNativeForCache(c
             input.specialDoodadCount = nativeSpecialCount_[index]; input.specialAttributes = nativeSpecialAttributes_[index];
         }
         input.maximumCliffLevel = nativeMaximumCliffLevel_;
-        return Take(GenerateTerrainNativePathing(input, maximumBytes));
+        return region ? Take(GenerateTerrainNativePathingRegion(input, *region, maximumBytes))
+                      : Take(GenerateTerrainNativePathing(input, maximumBytes));
     });
 }
 

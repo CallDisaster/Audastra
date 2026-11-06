@@ -33,6 +33,13 @@ struct TerrainReplayCandidate {
 // 仍由同一个TerrainSavePlan逐格验证旧WPM、安装输出和核对最终回读。
 class TerrainPathingSave {
 public:
+    // 仅宿主绑定真实来源；闭包只持有不可变来源和配置，不借用Qt工程。
+    static void BindRealtimePathing(MapData::MapDataEditSession& edits,
+        std::shared_ptr<const MapArchiveSession> source, const std::filesystem::path& gameRoot,
+        std::size_t maximumBytes = 64u * 1024u * 1024u);
+    static void BindRealtimePathing(MapData::MapDataEditSession& edits,
+        const WorkspaceSnapshot& source, const std::filesystem::path& gameRoot,
+        std::size_t maximumBytes = 64u * 1024u * 1024u);
     // 既有槽替换与Ground表尾追加调用Core同一命令；实际source、规则winner和当前DOO捕获成功才记录FTJ6。
     // 调用方应在worker冻结来源和修订；此函数会读取来源与游戏表，不宜在GUI线程调用。
     [[nodiscard]] static Result<MapData::TerrainStrokeResult> EditTextureSlot(const MapArchiveSession& source,
@@ -142,6 +149,15 @@ private:
         const MapData::MapDataEditSession& edits, const std::filesystem::path& gameRoot,
         const MapData::TerrainSavePlanLimits& limits, std::span<const MemberReplacement> finalMembers,
         std::span<const std::string> finalRemovals, bool nativeDependenciesChanged);
+    using RealtimePlanFactory = std::function<Result<MapData::TerrainSavePlan>(
+        const MapData::MapDataEditSession&, const MapData::TerrainSavePlanLimits&)>;
+    using RealtimeVerifier = std::function<Status(const MapData::TerrainSavePlan&,
+        const MapData::TerrainSavePlanLimits&)>;
+    static void BindRealtimeBuilder(MapData::MapDataEditSession& edits,
+        RealtimePlanFactory plan, RealtimeVerifier verify, std::size_t maximumBytes);
+    [[nodiscard]] static Result<MapData::MapDataEditSession::RealtimePathingResult> PrepareRealtimePathing(
+        const MapData::MapDataEditSession& edits, const MapData::MapDataEditSession::PreparedTerrainEdit& prepared,
+        const RealtimePlanFactory& plan, const RealtimeVerifier& verify, std::size_t maximumBytes);
 };
 
 } // namespace War3Map::Services

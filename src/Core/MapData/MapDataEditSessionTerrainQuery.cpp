@@ -37,7 +37,7 @@ Result<TerrainPointSample> MapDataEditSession::InspectTerrainPoint(const Terrain
     const auto ground = output.vertex.GroundTextureIndex(), cliff = output.vertex.CliffTextureIndex();
     if (ground < terrain_->header.groundTilesets.size()) output.groundTexture = terrain_->header.groundTilesets[ground];
     if (cliff != 15 && cliff < terrain_->header.cliffTilesets.size()) output.cliffTexture = terrain_->header.cliffTilesets[cliff];
-    if (pathing_) {
+    if (pathing_ && !realtimePathingUnavailable_) {
         const auto width = (terrain_->header.width - 1) * 4;
         const auto height = (terrain_->header.height - 1) * 4;
         const auto x = std::floor(u * 4), y = std::floor(v * 4);
@@ -51,6 +51,12 @@ Result<TerrainPointSample> MapDataEditSession::InspectTerrainPoint(const Terrain
                 return Result<TerrainPointSample>::Failure("MapData.Edit", "MAP_PATHING_SHAPE_CHANGED", "当前 WPM 长度与地形不一致。");
             output.pathingState = TerrainPathingState::Available;
             output.pathingFlags = std::to_integer<std::uint8_t>((*pathing_)[index]);
+            if (realtimeNativePathing_) {
+                if (realtimeNativePathing_->size() + 16 != pathing_->size())
+                    return Result<TerrainPointSample>::Failure("MapData.Edit", "TERRAIN_REALTIME_PATHING_SHAPE", "实时通行层形状已变化。");
+                output.pathingFlags = std::to_integer<std::uint8_t>(((*pathing_)[index] & std::byte{0x11})
+                    | (*realtimeNativePathing_)[index - 16] | (*pathingRestrictions_)[index - 16]);
+            }
             if (pathingOriginal_ && index < pathingOriginal_->size()) {
                 output.originalPathingFlags = std::to_integer<std::uint8_t>((*pathingOriginal_)[index]);
                 output.addedPathingRestrictions = std::to_integer<std::uint8_t>((*pathingRestrictions_)[index - 16]);
