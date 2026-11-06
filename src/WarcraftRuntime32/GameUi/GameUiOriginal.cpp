@@ -55,12 +55,12 @@ bool OriginalDimensions(Address layout, float& width, float& height) {
 }
 
 UiCreated GameUiLibrary::Original(std::string_view name) {
-    if (const auto ready = Ready(); ready != UiError::None) return {0, ready};
     originalProblem_.clear();
     const auto fail = [&](UiError error) -> UiCreated {
         originalProblem_ = "原版界面 " + std::string(name) + "：" + std::string(UiErrorText(error));
         return {0, error};
     };
+    if (const auto ready = Ready(); ready != UiError::None) return fail(ready);
     if (name == "WorldFrame") {
         const auto found = World();
         return found.error == UiError::None ? found : fail(found.error);
@@ -116,6 +116,7 @@ UiError GameUiLibrary::SetOriginalVisible(std::string_view name, bool value) {
     return status;
 }
 UiError GameUiLibrary::SetOriginalPosition(std::string_view name, int point, float x, float y) {
+    originalProblem_.clear();
     if (point < 0 || point > 8 || !std::isfinite(x) || !std::isfinite(y) || std::abs(x) > 3 || std::abs(y) > 3) return UiError::BadArgument;
     const auto frame = Original(name); if (frame.error != UiError::None) return frame.error;
     UiError error{};
@@ -139,6 +140,7 @@ UiError GameUiLibrary::SetOriginalPosition(std::string_view name, int point, flo
     return status;
 }
 UiError GameUiLibrary::SetOriginalScale(std::string_view name, float value) {
+    originalProblem_.clear();
     if (!std::isfinite(value) || value < .1f || value > 4) return UiError::BadArgument;
     const auto frame = Original(name); if (frame.error != UiError::None) return frame.error;
     // 初次缩放前的矩形可能依赖两角锚定；布局尚未重算时，不再用新scale除旧缓存矩形。
@@ -157,6 +159,7 @@ UiError GameUiLibrary::SetOriginalScale(std::string_view name, float value) {
     return status;
 }
 UiError GameUiLibrary::SetOriginalAlpha(std::string_view name, int value) {
+    originalProblem_.clear();
     if (value < 0 || value > 255) return UiError::BadArgument;
     const auto frame = Original(name); if (frame.error != UiError::None) return frame.error;
     const auto status = SetAlpha(frame.handle, value);
@@ -164,6 +167,7 @@ UiError GameUiLibrary::SetOriginalAlpha(std::string_view name, int value) {
     return status;
 }
 UiError GameUiLibrary::RefreshOriginals() {
+    originalProblem_.clear();
     if (const auto ready = Ready(); ready != UiError::None) return ready;
     UiError first = UiError::None;
     std::string reason;

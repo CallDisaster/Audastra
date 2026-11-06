@@ -1021,6 +1021,7 @@ void OriginalParts() {
     Check(ui.RefreshOriginals() == UiError::None && Logged("scale " + Hex(minimap->Self() + 0xB4) + " 1.200"), "reapply on game thread");
     minimap->vtable = reinterpret_cast<Address>(vtSimple.data());
     Check(ui.RefreshOriginals() == UiError::Unsupported && !ui.Faulted(), "changed original vtable refuses before game call");
+    Check(ui.SetOriginalScale("Portrait", 0) == UiError::BadArgument && ui.LastOriginalProblem().empty(), "argument validation cannot reuse another original node's failure reason");
     minimap->vtable = entries.vtMinimap;
     Check(ui.RefreshOriginals() == UiError::None, "temporary missing original can recover");
     panel->Set(0x12C, 7);
