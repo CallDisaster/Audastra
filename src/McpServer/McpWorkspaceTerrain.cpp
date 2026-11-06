@@ -66,6 +66,29 @@ Result<std::shared_ptr<McpTerrainOverlay>> Replay(const MapDocument& original,
         auto replayed = Services::TerrainPathingSave::ReplayStrokes(snapshot, original,
             source.terrain, source.pathing, strokes, gameRoot);
         if (!replayed.Succeeded() || !replayed.value) return Failed<std::shared_ptr<McpTerrainOverlay>>(replayed);
+        if (replayed.value->session->HasTerrainPathing()) {
+            const Services::TerrainReplayLimits limits;
+            auto retained = replayed.value->session->MeasureTerrainJournalDraft(
+                limits.maximumCandidateBytes, limits.maximumWork);
+            if (!retained.Succeeded() || !retained.value) return Failed<std::shared_ptr<McpTerrainOverlay>>(retained);
+            std::size_t resources = 0;
+            const auto reserve = [&](std::size_t bytes) {
+                if (bytes > limits.maximumResourceBytes - resources) return false;
+                resources += bytes;
+                return true;
+            };
+            bool bounded = true;
+            for (const auto& owner : replayed.value->waterOwners) bounded = bounded && reserve(owner.OwnedCapacityBytes());
+            for (const auto& owner : replayed.value->resizeOwners) bounded = bounded && reserve(owner.OwnedCapacityBytes());
+            if (!bounded || resources >= limits.maximumResourceBytes || retained.value->retainedBytes >= limits.maximumCandidateBytes)
+                return Result<std::shared_ptr<McpTerrainOverlay>>::Failure("MCP", "TERRAIN_REALTIME_PATHING_BUDGET",
+                    "重放候选没有留下实时通行的资源或候选预算，未发布事务。");
+            const auto maximum = std::min({std::size_t{64u * 1024u * 1024u}, limits.maximumResourceBytes - resources,
+                limits.maximumCandidateBytes - retained.value->retainedBytes});
+            const auto refreshed = Services::TerrainPathingSave::RefreshRealtimePathing(
+                *replayed.value->session, snapshot, gameRoot, maximum);
+            if (!refreshed.Succeeded()) return Failed<std::shared_ptr<McpTerrainOverlay>>(refreshed);
+        }
         auto overlay = std::make_shared<McpTerrainOverlay>(std::move(*replayed.value));
         overlay->strokes = strokes;
         return Result<std::shared_ptr<McpTerrainOverlay>>::Success(std::move(overlay));

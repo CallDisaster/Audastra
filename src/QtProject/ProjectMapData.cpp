@@ -48,6 +48,8 @@ Status EditorProject::ConfigureRealtimeTerrainPathing() {
         auto frozen = ObjectData::FreezeNativeObjectChanges(*native, *edited,
             objectFieldSchema_.get(), standardCatalog_.get(), options);
         if (!frozen.value) return fail(frozen.failure.code.c_str(), frozen.failure.message.c_str());
+        if (frozen.value->bytes.capacity() > maximumBytes - owned)
+            return fail("TERRAIN_REALTIME_PATHING_BUDGET", "物编覆盖保留容量超过实时通行预算。");
         owned += frozen.value->bytes.capacity();
         members.push_back({std::string(ObjectData::NativeFileName(type)), std::move(frozen.value->bytes)});
     }

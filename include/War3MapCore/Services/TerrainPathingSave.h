@@ -42,6 +42,11 @@ public:
         const WorkspaceSnapshot& source, const std::filesystem::path& gameRoot,
         std::size_t maximumBytes = 64u * 1024u * 1024u,
         std::vector<MemberReplacement> finalMembers = {});
+    // 仅用于尚未发布的目录重放候选：重放的整个笔画序列是外层事务，查询层随候选发布。
+    // 不消费编辑修订或改变保存资格；源漂移/预算失败时外层须丢弃整个候选。
+    [[nodiscard]] static Status RefreshRealtimePathing(MapData::MapDataEditSession& candidate,
+        const WorkspaceSnapshot& source, const std::filesystem::path& gameRoot,
+        std::size_t maximumBytes = 64u * 1024u * 1024u);
     // 既有槽替换与Ground表尾追加调用Core同一命令；实际source、规则winner和当前DOO捕获成功才记录FTJ6。
     // 调用方应在worker冻结来源和修订；此函数会读取来源与游戏表，不宜在GUI线程调用。
     [[nodiscard]] static Result<MapData::TerrainStrokeResult> EditTextureSlot(const MapArchiveSession& source,
@@ -155,6 +160,10 @@ private:
         const MapData::MapDataEditSession&, const MapData::TerrainSavePlanLimits&)>;
     using RealtimeVerifier = std::function<Status(const MapData::TerrainSavePlan&,
         const MapData::TerrainSavePlanLimits&)>;
+    [[nodiscard]] static Result<std::shared_ptr<const std::vector<std::byte>>> CaptureRealtimeLayer(
+        const MapData::MapDataEditSession& edits, const RealtimePlanFactory& plan,
+        const RealtimeVerifier& verify, std::size_t maximumBytes, std::size_t& retained,
+        std::function<Status()>& verifySources);
     static void BindRealtimeBuilder(MapData::MapDataEditSession& edits,
         RealtimePlanFactory plan, RealtimeVerifier verify, std::size_t maximumBytes);
     [[nodiscard]] static Result<MapData::MapDataEditSession::RealtimePathingResult> PrepareRealtimePathing(

@@ -1,5 +1,6 @@
 #include "../TerrainCornerRampFixtures.h"
 
+#include <fstream>
 #include <iostream>
 
 namespace {
@@ -107,9 +108,42 @@ void PureBlightAndRejectedBudgetAreAtomic() {
     const auto before = Take(SerializeMapTerrain(*fixture.edits->Terrain()));
     const auto revision = fixture.edits->Revision();
     Require(!fixture.edits->EditTerrain(brush, points).Succeeded(), "预算不足拒绝整笔");
-    Require(fixture.edits->Revision() == revision && !fixture.edits->CanUndo()
+    Require(fixture.edits->Revision() == revision && !fixture.edits->CanUndo() && fixture.edits->CanRedo()
         && Take(SerializeMapTerrain(*fixture.edits->Terrain())) == before
         && QueriedPathing(fixture) == fixture.members[1].data, "失败不发布地形、通行或历史前缀");
+}
+
+void DirectoryCandidateUsesSameLayerAndRejectsDrift() {
+    Fixture fixture;
+    const auto directory = fixture.root / "workspace";
+    for (const auto& member : fixture.members) {
+        const auto path = directory / std::filesystem::path(member.name);
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path, std::ios::binary);
+        output.write(reinterpret_cast<const char*>(member.data.data()), static_cast<std::streamsize>(member.data.size()));
+        Require(output.good(), "写入原创目录夹具");
+    }
+    const auto workspace = Take(DirectoryWorkspace::Open(directory));
+    TerrainBrush brush;
+    brush.kind = TerrainBrushKind::Blight;
+    brush.radius = 128;
+    brush.value = true;
+    const std::array points{TerrainStrokePoint{3072, 3072}};
+    Take(fixture.edits->EditTerrain(brush, points));
+    const auto revision = fixture.edits->Revision();
+    Require(TerrainPathingSave::RefreshRealtimePathing(*fixture.edits, workspace.Snapshot(), fixture.game).Succeeded(),
+        "目录重放的未发布候选更新派生层");
+    EqualPathing(QueriedPathing(fixture), SavedPathing(fixture, *fixture.edits), "目录与归档共用保存WPM");
+    Require(fixture.edits->Revision() == revision, "只读派生刷新不消费编辑修订");
+    const auto before = QueriedPathing(fixture);
+    {
+        std::ofstream output(directory / "TerrainArt/Terrain.slk", std::ios::binary | std::ios::app);
+        output << "\n// changed fixture source\n";
+        Require(output.good(), "制造真实来源漂移");
+    }
+    Require(!TerrainPathingSave::RefreshRealtimePathing(*fixture.edits, workspace.Snapshot(), fixture.game).Succeeded()
+        && fixture.edits->Revision() == revision && QueriedPathing(fixture) == before,
+        "目录来源漂移不能发布派生层或消费修订");
 }
 } // namespace
 
@@ -117,6 +151,7 @@ int main() {
     try {
         WaterBlightCliffAndHistoryKeepSaveBytes();
         PureBlightAndRejectedBudgetAreAtomic();
+        DirectoryCandidateUsesSameLayerAndRejectsDrift();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

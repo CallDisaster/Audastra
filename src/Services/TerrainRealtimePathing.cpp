@@ -73,6 +73,73 @@ void TerrainPathingSave::BindRealtimeBuilder(Session& edits, RealtimePlanFactory
     };
 }
 
+Result<std::shared_ptr<const std::vector<std::byte>>> TerrainPathingSave::CaptureRealtimeLayer(
+    const Session& current, const RealtimePlanFactory& factory, const RealtimeVerifier& verify,
+    std::size_t maximumBytes, std::size_t& retained, std::function<Status()>& verifySources) {
+    using Layer = Result<std::shared_ptr<const std::vector<std::byte>>>;
+    MapData::TerrainSavePlanLimits limits;
+    limits.maximumBytes = maximumBytes - retained;
+    auto plan = factory(current, limits);
+    if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
+    if (!plan.value->SaveGate().Succeeded()) return {{}, plan.value->SaveGate().diagnostics};
+    const auto cells = current.pathing_->size() - 16;
+    const auto* wire = &*current.pathing_;
+    for (const auto& member : plan.value->Replacements())
+        if (member.name == "war3map.wpm") wire = &member.data;
+    const auto* native = plan.value->nativePathingProtected_.empty()
+        ? current.pathingProtected_.get() : &plan.value->nativePathingProtected_;
+    if (wire->size() != cells + 16 || !native || native->size() != cells)
+        return Layer::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_SHAPE", "保存派生通行与当前网格不一致。");
+    auto layer = std::make_shared<std::vector<std::byte>>(*native);
+    // 保存保护层只含0x0e限制位；水深、荒芜和其余原生派生位来自最终WPM。
+    for (std::size_t index = 0; index < cells; ++index)
+        (*layer)[index] |= (*wire)[index + 16] & std::byte{0xe0};
+    const auto owned = plan.value->OwnedCapacityBytes();
+    if (owned > maximumBytes - retained)
+        return Layer::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_BUDGET", "实时通行的保存规则驻留超过预算。");
+    const auto checked = verify(*plan.value, limits);
+    if (!checked.Succeeded()) return {{}, checked.diagnostics};
+    auto owner = std::make_shared<const MapData::TerrainSavePlan>(std::move(*plan.value));
+    auto previous = std::move(verifySources);
+    verifySources = [owner, verify, limits, previous = std::move(previous)] {
+        if (previous) {
+            const auto checked = previous();
+            if (!checked.Succeeded()) return checked;
+        }
+        return verify(*owner, limits);
+    };
+    retained += owned;
+    return Layer::Success(std::move(layer));
+}
+
+Status TerrainPathingSave::RefreshRealtimePathing(Session& candidate, const WorkspaceSnapshot& source,
+    const std::filesystem::path& gameRoot, std::size_t maximumBytes) try {
+    if (!maximumBytes || maximumBytes > 64u * 1024u * 1024u || !candidate.pathing_
+        || candidate.pathing_->size() < 16 || candidate.pathing_->size() - 16 >= maximumBytes)
+        return Status::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_BUDGET", "目录候选的实时通行需要完整WPM和有界剩余预算。");
+    auto owned = std::make_shared<const WorkspaceSnapshot>(source);
+    const auto factory = RealtimeFactory(owned, gameRoot, {});
+    const RealtimeVerifier verify = [owned](const auto& plan, const auto& limits) {
+        return plan.VerifySourceInputs(*owned, limits);
+    };
+    std::size_t retained = candidate.pathing_->size() - 16;
+    if (candidate.realtimeNativePathing_) {
+        if (candidate.realtimeNativePathing_->capacity() >= maximumBytes - retained)
+            return Status::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_BUDGET", "已有实时层没有留下刷新预算。");
+        retained += candidate.realtimeNativePathing_->capacity();
+    }
+    std::function<Status()> verifySources;
+    auto layer = CaptureRealtimeLayer(candidate, factory, verify, maximumBytes, retained, verifySources);
+    if (!layer.Succeeded() || !layer.value) return {std::move(layer.diagnostics)};
+    const auto checked = verifySources();
+    if (!checked.Succeeded()) return checked;
+    candidate.realtimeNativePathing_ = std::move(*layer.value);
+    candidate.realtimePathingUnavailable_ = false;
+    return Status::Ok();
+} catch (const std::exception&) {
+    return Status::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_PREPARATION", "目录候选的实时通行准备失败，未发布候选。");
+}
+
 Result<Session::RealtimePathingResult> TerrainPathingSave::PrepareRealtimePathing(
     const Session& edits, const Session::PreparedTerrainEdit& prepared,
     const RealtimePlanFactory& factory, const RealtimeVerifier& verify, std::size_t maximumBytes) try {
@@ -88,39 +155,7 @@ Result<Session::RealtimePathingResult> TerrainPathingSave::PrepareRealtimePathin
     std::size_t retained = cells * 2;
     Session::RealtimePathingResult result;
     const auto capture = [&](const Session& current) -> Result<std::shared_ptr<const std::vector<std::byte>>> {
-        using Layer = Result<std::shared_ptr<const std::vector<std::byte>>>;
-        MapData::TerrainSavePlanLimits limits;
-        limits.maximumBytes = maximumBytes - retained;
-        auto plan = factory(current, limits);
-        if (!plan.Succeeded() || !plan.value) return {{}, std::move(plan.diagnostics)};
-        if (!plan.value->SaveGate().Succeeded()) return {{}, plan.value->SaveGate().diagnostics};
-        const auto* wire = &*current.pathing_;
-        for (const auto& member : plan.value->Replacements())
-            if (member.name == "war3map.wpm") wire = &member.data;
-        const auto& native = plan.value->nativePathingProtected_.empty()
-            ? current.pathingProtected_ : std::make_shared<const std::vector<std::byte>>(plan.value->nativePathingProtected_);
-        if (wire->size() != cells + 16 || !native || native->size() != cells)
-            return Layer::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_SHAPE", "保存派生通行与当前网格不一致。");
-        auto layer = std::make_shared<std::vector<std::byte>>(*native);
-        // 保存保护层只含0x0e限制位；水深、荒芜和其余原生派生位来自最终WPM。
-        for (std::size_t index = 0; index < cells; ++index)
-            (*layer)[index] |= (*wire)[index + 16] & std::byte{0xe0};
-        const auto owned = plan.value->OwnedCapacityBytes();
-        if (owned > maximumBytes - retained)
-            return Layer::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_BUDGET", "实时通行的保存规则驻留超过预算。");
-        const auto checked = verify(*plan.value, limits);
-        if (!checked.Succeeded()) return {{}, checked.diagnostics};
-        auto owner = std::make_shared<const MapData::TerrainSavePlan>(std::move(*plan.value));
-        auto previous = std::move(result.verifySources);
-        result.verifySources = [owner, verify, limits, previous = std::move(previous)] {
-            if (previous) {
-                const auto checked = previous();
-                if (!checked.Succeeded()) return checked;
-            }
-            return verify(*owner, limits);
-        };
-        retained += owned;
-        return Layer::Success(std::move(layer));
+        return CaptureRealtimeLayer(current, factory, verify, maximumBytes, retained, result.verifySources);
     };
     if ((!edits.realtimeNativePathing_ && MapData::TerrainSavePlan::HasTerrainChanges(edits))
         || edits.realtimePathingUnavailable_) {
