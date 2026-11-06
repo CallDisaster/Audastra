@@ -55,6 +55,8 @@ public:
     // worker入口，输入必须是GUI已经冻结的会话。只准备候选，不修改活动会话。
     [[nodiscard]] static Result<std::shared_ptr<const MapArchiveSession>> CaptureRealtimeReadSource(
         const MapData::MapDataEditSession& frozen);
+    [[nodiscard]] static bool NeedsRealtimePathing(const MapData::MapDataEditSession& current,
+        const PreparedTerrainEdit& prepared) noexcept;
     [[nodiscard]] static Result<MapData::MapDataEditSession::PreparedTerrainEdit> CompleteRealtimeTerrainEdit(
         const MapData::MapDataEditSession& frozen, const MapData::MapDataEditSession::PreparedTerrainEdit& geometry,
         std::shared_ptr<const MapArchiveSession> readSource = {}, std::size_t additionalOwnedBytes = 0);

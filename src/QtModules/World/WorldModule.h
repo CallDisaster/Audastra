@@ -623,6 +623,8 @@ private:
         std::vector<MapData::TerrainStrokePoint> points;
         bool resumeBrush = false;
         std::shared_ptr<const MapData::MapDataEditSession> frozen;
+        std::size_t frozenBytes = 0;
+        std::shared_ptr<const QtProject::TerrainWaterEditRequest> sourceRequest;
     };
     std::shared_ptr<const WaterBrushCommit> waterCommit_;
     std::unique_ptr<QObject> waterCommitToken_;

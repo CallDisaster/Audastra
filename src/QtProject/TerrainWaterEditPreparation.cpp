@@ -178,7 +178,7 @@ bool TerrainWaterEditRequestCurrent(const EditorProject& project, const TerrainW
 }
 
 Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<const TerrainWaterEditRequest> request,
-    std::shared_ptr<const MapData::TerrainGridSnapshot> prospective) {
+    std::shared_ptr<const MapData::TerrainGridSnapshot> prospective, std::shared_ptr<const MapArchiveSession> readSource) {
     using Capture = Result<TerrainWaterEditCapture>;
     if (!request || !request->terrain || !request->doodadsCaptured || !request->maximumBytes || request->maximumBytes > kMaximumBytes)
         return Capture::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_INVALID", "水刷来源请求无效。");
@@ -186,65 +186,79 @@ Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<co
         const auto target = prospective ? std::move(prospective) : request->terrain;
         const auto path = VerifyTerrainWaterEditRequestSourcePath(*request);
         if (!path.Succeeded()) return {std::nullopt, path.diagnostics};
+        if (readSource && (!request->archive || !readSource->HasSourceCaptureLease()
+            || !request->archive->HasSameSourceIdentity(*readSource)))
+            return Capture::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_CHANGED", "只读来源不属于本笔冻结的原文件身份。");
+        const auto retained = readSource ? readSource->TerrainReadSourceBudgetBytes() : 0;
+        if (retained >= request->maximumBytes)
+            return Capture::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_BUDGET", "只读来源没有留下地形规则读取预算。");
+        const auto maximumBytes = request->maximumBytes - retained;
+        const auto archive = readSource ? std::move(readSource) : request->archive;
         if (request->structureSnapshot) {
-            auto view = request->archive
-                ? Services::TerrainSessionResources::Capture(request->archive, request->structureSnapshot, request->gameRoot,
-                    request->maximumBytes, request->structureRetainedBytes)
+            auto view = archive
+                ? Services::TerrainSessionResources::Capture(archive, request->structureSnapshot, request->gameRoot,
+                    maximumBytes, request->structureRetainedBytes)
                 : Services::TerrainSessionResources::Capture(*request->directory, request->structureSnapshot, request->gameRoot,
-                    request->maximumBytes, request->structureRetainedBytes);
+                    maximumBytes, request->structureRetainedBytes);
             if (!view.Succeeded() || !view.value) return {{}, std::move(view.diagnostics)};
-            auto resources = view.value->CaptureWater(*target, request->enforceWaterLimits, request->maximumBytes);
+            auto resources = view.value->CaptureWater(*target, request->enforceWaterLimits, maximumBytes);
             if (!resources.Succeeded() || !resources.value) return {{}, std::move(resources.diagnostics)};
-            const auto verified = view.value->Verify(*resources.value, request->maximumBytes);
+            const auto verified = view.value->Verify(*resources.value, maximumBytes);
             if (!verified.Succeeded()) return {{}, verified.diagnostics};
-            return Capture::Success({std::move(request), std::move(*resources.value), std::move(*view.value)});
+            return Capture::Success({std::move(request), std::move(*resources.value), std::move(*view.value), maximumBytes});
         }
-        const auto archive = request->archive;
         Result<std::vector<std::byte>> bytes;
         if (!request->archivePath.empty()) {
             if (!archive || archive->SourcePath() != request->sourcePath || archive->SourceSha256() != request->sourceSha256)
                 return Capture::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_CHANGED", "地图归档已变化，请重新打开地图。");
             const std::array<std::string, 1> names{"war3map.w3e"};
             ArchiveExactMemberLimits limits;
-            limits.totalBytes = request->maximumBytes;
-            limits.memberBytes = request->maximumBytes;
+            limits.totalBytes = maximumBytes;
+            limits.memberBytes = maximumBytes;
             auto captured = archive->CaptureExactMembers(names, limits);
             if (!captured.Succeeded()) return {std::nullopt, std::move(captured.diagnostics)};
             if (captured.value->empty() || !captured.value->front().present)
                 return Capture::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_MISSING", "地图归档缺少war3map.w3e。");
             bytes = Result<std::vector<std::byte>>::Success(std::move(captured.value->front().bytes));
-        } else if (request->directory) bytes = ReadDirectoryTerrain(*request->directory, request->maximumBytes);
+        } else if (request->directory) bytes = ReadDirectoryTerrain(*request->directory, maximumBytes);
         else return Capture::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_REQUIRED", "水刷缺少真实来源。");
         if (!bytes.Succeeded()) return {std::nullopt, std::move(bytes.diagnostics)};
         auto terrain = MapData::ParseMapTerrain(*bytes.value);
         if (!terrain.Succeeded()) return {std::nullopt, std::move(terrain.diagnostics)};
         auto resources = archive
             ? Services::TerrainPathingSave::CaptureWaterBrushRules(*archive, *terrain.value->Snapshot(),
-                *target, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes)
+                *target, request->doodads, request->gameRoot, request->enforceWaterLimits, maximumBytes)
             : Services::TerrainPathingSave::CaptureWaterBrushRules(*request->directory, *terrain.value->Snapshot(),
-                *target, request->doodads, request->gameRoot, request->enforceWaterLimits, request->maximumBytes);
+                *target, request->doodads, request->gameRoot, request->enforceWaterLimits, maximumBytes);
         if (!resources.Succeeded()) return {std::nullopt, std::move(resources.diagnostics)};
         const auto input = resources.value->VerifyWaterBrushInput(*terrain.value->Snapshot(), *target);
         if (!input.Succeeded()) return {std::nullopt, input.diagnostics};
-        const auto verified = archive ? resources.value->VerifySourceInputs(*archive, request->maximumBytes)
-                                      : resources.value->VerifySourceInputs(*request->directory, request->maximumBytes);
+        const auto verified = archive ? resources.value->VerifySourceInputs(*archive, maximumBytes)
+                                      : resources.value->VerifySourceInputs(*request->directory, maximumBytes);
         if (!verified.Succeeded()) return {std::nullopt, verified.diagnostics};
-        return Capture::Success({std::move(request), std::move(*resources.value)});
+        return Capture::Success({std::move(request), std::move(*resources.value), {}, maximumBytes});
     } catch (const std::exception&) {
         return Capture::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_FAILED", "水刷资源读取或分配失败，本次未修改地形。");
     }
 }
 
-Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture) {
+Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture, std::shared_ptr<const MapArchiveSession> readSource) {
     if (!capture.request || !capture.resources.WaterBrushRules())
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_INVALID", "水刷缺少捕获的真实规则。");
     try {
         const auto& request = *capture.request;
         const auto path = VerifyTerrainWaterEditRequestSourcePath(request);
         if (!path.Succeeded()) return path;
-        if (capture.structureResources) return capture.structureResources->Verify(capture.resources, request.maximumBytes);
-        if (request.archive) return capture.resources.VerifySourceInputs(*request.archive, request.maximumBytes);
-        if (request.directory) return capture.resources.VerifySourceInputs(*request.directory, request.maximumBytes);
+        if (readSource && (!request.archive || !readSource->HasSourceCaptureLease()
+            || !request.archive->HasSameSourceIdentity(*readSource)))
+            return Status::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_CHANGED", "本笔复核的只读来源身份已变化。");
+        const auto maximumBytes = capture.maximumBytes ? capture.maximumBytes : request.maximumBytes;
+        if (maximumBytes > request.maximumBytes)
+            return Status::Failure("Terrain.Water", "TERRAIN_WATER_CAPTURE_BUDGET", "复核不能放宽捕获时的规则预算。");
+        if (capture.structureResources) return capture.structureResources->Verify(capture.resources, maximumBytes);
+        if (readSource) return capture.resources.VerifySourceInputs(*readSource, maximumBytes);
+        if (request.archive) return capture.resources.VerifySourceInputs(*request.archive, maximumBytes);
+        if (request.directory) return capture.resources.VerifySourceInputs(*request.directory, maximumBytes);
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_SOURCE_REQUIRED", "水刷缺少真实来源。");
     } catch (const std::exception&) {
         return Status::Failure("Terrain.Water", "TERRAIN_WATER_VERIFY_FAILED", "水刷来源复核失败，本笔未提交。");

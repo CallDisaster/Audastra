@@ -285,6 +285,7 @@ public:
     [[nodiscard]] Result<PathingRestrictionPreview> QueryPathingRestrictions(std::size_t maximumCells = 4096) const;
     [[nodiscard]] std::shared_ptr<const TerrainGridSnapshot> Terrain() const noexcept { return terrain_; }
     [[nodiscard]] bool HasTerrainPathing() const noexcept { return pathing_.has_value(); }
+    [[nodiscard]] bool HasRealtimePathingView() const noexcept { return bool(realtimeNativePathing_) || realtimePathingUnavailable_; }
     // 附上来源或保存为新基线会变化；这些操作不消耗正常编辑/撤销 Revision。
     [[nodiscard]] std::uint64_t TerrainSourceRevision() const noexcept { return terrainSourceRevision_; }
     // actualMaximumCliffLevel由宿主同地图实际规则owner提供；缺少时坡道高度明确报告为近似。

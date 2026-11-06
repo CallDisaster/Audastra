@@ -135,7 +135,12 @@ void WorldModule::PasteTerrainBlock(double x, double y) {
     if (!WaterBrushCaptureCurrent()) {
         QueueWaterBrushCapture(); terrainBlockStatus_->setText(tr("正在读取实际地形规则，请就绪后重新单击")); return;
     }
-    auto frozen = project_.mapEdits_->FreezeForSave(MapData::TerrainWaterBrushLimits{}.maximumCandidateBytes);
+    const auto configured = project_.ConfigureRealtimeTerrainPathing();
+    if (!configured.Succeeded()) {
+        terrainBlockStatus_->setText(tr("未粘贴：%1").arg(WorldDiagnosticText(configured.diagnostics))); return;
+    }
+    std::size_t frozenBytes = 0;
+    auto frozen = project_.mapEdits_->FreezeForSave(64u * 1024u * 1024u, &frozenBytes);
     if (!frozen.Succeeded() || !frozen.value) {
         terrainBlockStatus_->setText(tr("未粘贴：%1").arg(WorldDiagnosticText(frozen.diagnostics))); return;
     }
@@ -147,7 +152,7 @@ void WorldModule::PasteTerrainBlock(double x, double y) {
     // 保持地形面板；视口待最终地形呈现后才恢复框选，准备期间不接受旧地面手势。
     terrainBlockSelecting_ = true;
     if (terrainToggle_) terrainToggle_->setEnabled(false);
-    waterCommit_ = std::make_shared<WaterBrushCommit>(WaterBrushCommit{capture, intent, {}, false, std::move(*frozen.value)});
+    waterCommit_ = std::make_shared<WaterBrushCommit>(WaterBrushCommit{capture, intent, {}, false, std::move(*frozen.value), frozenBytes, {}});
     waterCommitToken_ = project_.BeginPendingTerrainCommit();
     waterCommitPending_ = true; ++terrainRenderSerial_; pendingTerrainRender_.reset();
     terrainBlockStatus_->setText(tr("正在准备地形块；源区域已变化时会拒绝，可重新复制"));

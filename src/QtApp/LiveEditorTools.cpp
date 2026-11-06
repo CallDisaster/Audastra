@@ -1008,11 +1008,14 @@ private:
     }
 
     QJsonObject TerrainTool(const QString& name, const QJsonObject& arguments, bool write) {
-        const auto context = [this, write]() -> Result<Mcp::TerrainEditToolContext> {
+        const auto context = [this, write, &arguments]() -> Result<Mcp::TerrainEditToolContext> {
             if (!project_.mapEdits_ || !project_.mapEdits_->Terrain())
                 return Result<Mcp::TerrainEditToolContext>::Failure("QtApp.Live", "LIVE_EDITOR_TERRAIN_UNAVAILABLE",
                     "当前地图没有可读取的原地形会话。");
-            if (write) {
+            const auto brush = arguments.value("brush").toObject().value("kind").toString();
+            if (write && (project_.mapEdits_->HasRealtimePathingView() || brush == "shallow_water"
+                || brush == "deep_water" || brush == "cliff_level" || brush == "blight"
+                || brush == "corner_ramp" || brush == "straight_ramp")) {
                 const auto realtime = project_.ConfigureRealtimeTerrainPathing();
                 if (!realtime.Succeeded()) return {{}, realtime.diagnostics};
             }
@@ -1023,14 +1026,40 @@ private:
         };
         const auto invoke = [&] {
             Mcp::TerrainEditToolHost host;
-            std::optional<QtProject::TerrainWaterEditCapture> waterCapture;
+            std::shared_ptr<const QtProject::TerrainWaterEditCapture> waterCapture;
+            std::shared_ptr<const MapData::MapDataEditSession> realtimeFrozen;
+            std::shared_ptr<const MapArchiveSession> realtimeReadSource;
+            std::size_t realtimeCopied = 0;
             std::shared_ptr<const LiveBoundsPreparation> boundsCapture;
             std::shared_ptr<const QtProject::TerrainResizeEditCapture> resizeCapture;
             bool boundsPublishing = false;
             bool resizePublishing = false;
             const QPointer<EditorProject> boundsProject(&project_);
-            QScopedValueRollback<bool> boundsLease(busy_, busy_ || name == QStringLiteral("edit_terrain_bounds")
+            QScopedValueRollback<bool> boundsLease(busy_, busy_ || write || name == QStringLiteral("edit_terrain_bounds")
                 || name == QStringLiteral("edit_terrain_resize") || name == QStringLiteral("edit_terrain_texture_slot"));
+            std::unique_ptr<QObject> terrainCommit;
+            if (write) terrainCommit = project_.BeginPendingTerrainCommit();
+            const auto prepareReadSource = [&](const MapData::MapDataEditSession& current) -> Status {
+                if (realtimeFrozen || !current.HasTerrainPathing()) return Status::Ok();
+                auto frozen = current.FreezeForSave(64u * 1024u * 1024u, &realtimeCopied);
+                if (!frozen.Succeeded() || !frozen.value) return {std::move(frozen.diagnostics)};
+                realtimeFrozen = std::move(*frozen.value);
+                auto captured = RunLiveBoundsWorker<Result<std::shared_ptr<const MapArchiveSession>>>([frozen = realtimeFrozen] {
+                    return Services::TerrainPathingSave::CaptureRealtimeReadSource(*frozen);
+                });
+                if (!captured.Succeeded() || !captured.value) return {std::move(captured.diagnostics)};
+                realtimeReadSource = std::move(*captured.value);
+                return Status::Ok();
+            };
+            const auto loadWater = [&](const Mcp::TerrainEditToolContext& current,
+                std::shared_ptr<const QtProject::TerrainWaterEditRequest> request) -> Result<QtProject::TerrainWaterEditCapture> {
+                const auto prepared = prepareReadSource(*current.session);
+                if (!prepared.Succeeded()) return {{}, prepared.diagnostics};
+                return RunLiveBoundsWorker<Result<QtProject::TerrainWaterEditCapture>>(
+                    [request = std::move(request), source = realtimeReadSource] {
+                        return QtProject::LoadTerrainWaterEditResources(request, {}, source);
+                    });
+            };
             host.identity = [this] { return State(); };
             host.context = context;
             host.prepareTextureSlot = [this, &waterCapture, boundsProject](const Mcp::TerrainEditToolContext& current,
@@ -1050,76 +1079,83 @@ private:
                 if (!captured.Succeeded()) return {{}, std::move(captured.diagnostics)};
                 if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *owned, true))
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "贴图槽后台准备期间工程或会话已变化。");
-                waterCapture = std::move(captured.value->resources);
+                waterCapture = std::make_shared<const QtProject::TerrainWaterEditCapture>(std::move(captured.value->resources));
                 return Result<Services::PreparedTerrainEdit>::Success(std::move(captured.value->prepared));
             };
-            host.prepareWater = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+            host.prepareWater = [this, &waterCapture, &loadWater](const Mcp::TerrainEditToolContext& current, const auto& binding,
                 const auto& options, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
                 auto request = QtProject::CaptureTerrainWaterEditRequest(project_, options.enforceWaterLimits);
                 if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
-                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                auto loaded = loadWater(current,
                     std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
                 if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
-                waterCapture = std::move(*loaded.value);
+                waterCapture = std::make_shared<const QtProject::TerrainWaterEditCapture>(std::move(*loaded.value));
                 if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, options.enforceWaterLimits))
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "水刷准备期间来源或会话已经变化。");
                 return Services::PrepareTerrainWaterEdit(*current.session, current.document, binding,
                     waterCapture->resources, options, points, follow);
             };
-            host.verifyWater = [this, &waterCapture] {
+            host.verifyWater = [this, &waterCapture, &realtimeReadSource, boundsProject] {
                 if (!waterCapture || !QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request,
                     waterCapture->request->enforceWaterLimits))
                     return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "水刷实际来源或会话已变化。");
-                return QtProject::VerifyTerrainWaterEditResources(*waterCapture);
+                const auto verified = RunLiveBoundsWorker<Status>([capture = waterCapture, source = realtimeReadSource] {
+                    return QtProject::VerifyTerrainWaterEditResources(*capture, source);
+                });
+                if (!verified.Succeeded()) return verified;
+                if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request,
+                    waterCapture->request->enforceWaterLimits))
+                    return Status::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "地形来源后台复核期间会话已变化。");
+                return Status::Ok();
             };
-            host.prepareCliff = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+            host.prepareCliff = [this, &waterCapture, &loadWater](const Mcp::TerrainEditToolContext& current, const auto& binding,
                 const MapData::TerrainBrush& brush, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
                 auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
                 if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
-                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                auto loaded = loadWater(current,
                     std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
                 if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
-                waterCapture = std::move(*loaded.value);
+                waterCapture = std::make_shared<const QtProject::TerrainWaterEditCapture>(std::move(*loaded.value));
                 if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, true))
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "悬崖准备期间来源或会话已经变化。");
                 return Services::PrepareTerrainCliffEdit(*current.session, current.document, binding,
                     waterCapture->resources, brush, points, follow);
             };
-            host.prepareCornerRamp = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+            host.prepareCornerRamp = [this, &waterCapture, &loadWater](const Mcp::TerrainEditToolContext& current, const auto& binding,
                 const MapData::TerrainBrush& brush, auto points, bool follow) -> Result<Services::PreparedTerrainEdit> {
                 auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
                 if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
-                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                auto loaded = loadWater(current,
                     std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
                 if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
-                waterCapture = std::move(*loaded.value);
+                waterCapture = std::make_shared<const QtProject::TerrainWaterEditCapture>(std::move(*loaded.value));
                 if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, true))
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "角坡准备期间来源或会话已经变化。");
                 return Services::PrepareTerrainCornerRampEdit(*current.session, current.document, binding,
                     waterCapture->resources, brush, points, follow);
             };
-            host.prepareStraightRamp = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+            host.prepareStraightRamp = [this, &waterCapture, &loadWater](const Mcp::TerrainEditToolContext& current, const auto& binding,
                 const MapData::TerrainBrush& brush, auto points, bool follow,
                 MapData::TerrainStraightRampAlgorithm algorithm) -> Result<Services::PreparedTerrainEdit> {
                 auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
                 if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
-                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                auto loaded = loadWater(current,
                     std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
                 if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
-                waterCapture = std::move(*loaded.value);
+                waterCapture = std::make_shared<const QtProject::TerrainWaterEditCapture>(std::move(*loaded.value));
                 if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, true))
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "直坡准备期间来源或会话已经变化。");
                 return Services::PrepareTerrainStraightRampEdit(*current.session, current.document, binding,
                     waterCapture->resources, brush, points, follow, {}, algorithm);
             };
-            host.prepareBlock = [this, &waterCapture](const Mcp::TerrainEditToolContext& current, const auto& binding,
+            host.prepareBlock = [this, &waterCapture, &loadWater](const Mcp::TerrainEditToolContext& current, const auto& binding,
                 const MapData::TerrainBlockPasteIntent& intent, bool follow) -> Result<Services::PreparedTerrainEdit> {
                 auto request = QtProject::CaptureTerrainWaterEditRequest(project_, true);
                 if (!request.Succeeded() || !request.value) return {{}, request.diagnostics};
-                auto loaded = QtProject::LoadTerrainWaterEditResources(
+                auto loaded = loadWater(current,
                     std::make_shared<const QtProject::TerrainWaterEditRequest>(std::move(*request.value)));
                 if (!loaded.Succeeded() || !loaded.value) return {{}, loaded.diagnostics};
-                waterCapture = std::move(*loaded.value);
+                waterCapture = std::make_shared<const QtProject::TerrainWaterEditCapture>(std::move(*loaded.value));
                 if (!QtProject::TerrainWaterEditRequestCurrent(project_, *waterCapture->request, true))
                     return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "地形块准备期间来源或会话已经变化。");
                 return Services::PrepareTerrainBlockPasteEdit(*current.session, current.document, binding,
@@ -1252,7 +1288,7 @@ private:
                 if (ownerHandle_) emit owner_.Changed();
                 return applied;
             };
-            host.apply = [this, &context](const Services::PreparedTerrainEdit& plan,
+            host.apply = [this, &context, &prepareReadSource, &realtimeFrozen, &realtimeReadSource, &realtimeCopied, boundsProject](const Services::PreparedTerrainEdit& plan,
                 const std::function<Status(const MapData::MapDataEditSession::EditReceipt&)>& validate)
                 -> Result<MapData::TerrainStrokeResult> {
                 if (!project_.mapEdits_ || !project_.mapDataUndoStack_)
@@ -1260,7 +1296,19 @@ private:
                         "当前地图没有共用地图数据撤销栈。");
                 const auto current = context();
                 if (!current.Succeeded()) return {{}, current.diagnostics};
-                const auto applied = Services::ApplyTerrainEdit(*project_.mapEdits_, current.value->document, plan, validate);
+                auto qualified = Result<Services::PreparedTerrainEdit>::Success(plan);
+                if (Services::TerrainPathingSave::NeedsRealtimePathing(*current.value->session, plan)) {
+                    const auto ready = prepareReadSource(*current.value->session);
+                    if (!ready.Succeeded()) return {{}, ready.diagnostics};
+                    qualified = RunLiveBoundsWorker<Result<Services::PreparedTerrainEdit>>(
+                        [frozen = realtimeFrozen, plan, source = realtimeReadSource, bytes = realtimeCopied] {
+                            return Services::TerrainPathingSave::CompleteRealtimeTerrainEdit(*frozen, plan, source, bytes);
+                        });
+                    if (!qualified.Succeeded()) return {{}, std::move(qualified.diagnostics)};
+                }
+                if (!boundsProject || !ownerHandle_ || project_.mapEdits_.get() != current.value->session)
+                    return Result<MapData::TerrainStrokeResult>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "后台通行准备期间活动会话已变化。");
+                const auto applied = Services::ApplyTerrainEdit(*project_.mapEdits_, current.value->document, *qualified.value, validate);
                 if (!applied.Succeeded()) return applied;
                 (void)project_.ObserveMapDataEdit("MCP 修改地形");
                 // 原世界页监听此撤销栈的 indexChanged，按同一地形快照增量重建；不发整图重新加载信号。

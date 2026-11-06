@@ -30,6 +30,7 @@ struct TerrainWaterEditCapture {
     std::shared_ptr<const TerrainWaterEditRequest> request;
     MapData::TerrainPathingResources resources;
     std::optional<Services::TerrainSessionResources> structureResources;
+    std::size_t maximumBytes = 0;
 };
 
 [[nodiscard]] Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(
@@ -43,7 +44,9 @@ struct TerrainWaterEditCapture {
 // 后台入口：归档和目录使用同一个Core规则捕获，不读取渲染缓存或注册表。
 [[nodiscard]] Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(
     std::shared_ptr<const TerrainWaterEditRequest> request,
-    std::shared_ptr<const MapData::TerrainGridSnapshot> prospective = {});
+    std::shared_ptr<const MapData::TerrainGridSnapshot> prospective = {},
+    std::shared_ptr<const MapArchiveSession> readSource = {});
 // 每笔松手时在后台复核实际map/game winner、缺失项与loose覆盖，再回GUI提交。
-[[nodiscard]] Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture);
+[[nodiscard]] Status VerifyTerrainWaterEditResources(const TerrainWaterEditCapture& capture,
+    std::shared_ptr<const MapArchiveSession> readSource = {});
 } // namespace War3Map::QtProject

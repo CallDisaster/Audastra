@@ -7,6 +7,10 @@
 namespace War3Map::Services {
 using Session = MapData::MapDataEditSession;
 
+bool TerrainPathingSave::NeedsRealtimePathing(const Session& current, const PreparedTerrainEdit& prepared) noexcept {
+    return current.NeedsRealtimePathing(prepared.Plan());
+}
+
 Result<std::shared_ptr<const MapArchiveSession>> TerrainPathingSave::CaptureRealtimeReadSource(const Session& frozen) {
     using Output = Result<std::shared_ptr<const MapArchiveSession>>;
     const auto& binding = frozen.realtimePathingBinding_;
@@ -57,12 +61,15 @@ Result<Session::PreparedTerrainEdit> TerrainPathingSave::CompleteRealtimeTerrain
         }
         return result;
     };
-    const auto applied = worker->ApplyPreparedTerrainEdit(geometry);
+    auto budgetedGeometry = geometry;
+    if (worker->pathing_ && worker->pathing_->size() >= 16)
+        budgetedGeometry.realtimePathingBytes_ = (worker->pathing_->size() - 16) * 2;
+    const auto applied = worker->ApplyPreparedTerrainEdit(budgetedGeometry);
     if (!applied.Succeeded()) return {{}, applied.diagnostics};
     const auto& command = worker->lastApplied_.command_;
     if (!command || !command->nativePathingTouched || !command->nativePathingAfter || !*verifier)
         return Output::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_PREPARATION", "后台没有完成整笔通行与地形候选。");
-    auto result = geometry;
+    auto result = std::move(budgetedGeometry);
     auto qualified = *command;
     // 私有重放不得消费活动会话的命令身份；实际提交仍由原CommitCommand分配。
     qualified.logicalIdentity = 0;
