@@ -14,6 +14,7 @@
 #include "LuaMapSaveTarget.h"
 #include "MapSaveScriptPreservation.h"
 #include "MapRuntimeSave.h"
+#include "War3MapCore/Services/LuaFolderSave.h"
 #include "SaveProgressStage.h"
 #include "SaveCaptureScope.h"
 
@@ -398,6 +399,10 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
     }
     task.executed = true;
     task.succeeded = false;
+    struct LuaLeaseRelease {
+        MapSaveTask& task;
+        ~LuaLeaseRelease() { if (task.luaFolderSnapshot) task.luaFolderSnapshot->lease.reset(); }
+    } luaLeaseRelease{task};
     bool archiveWritten = false;
     try {
         if (!task.archive || task.sourcePath.empty() || task.sourceSha256.size() != 64 ||
@@ -436,6 +441,9 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             }
         }
         if (RejectUnsupportedMapFormat(task)) return;
+        const auto luaFolder = PrepareLuaFolderSave(task);
+        Append(task.diagnostics, luaFolder.diagnostics);
+        if (!luaFolder.Succeeded()) return;
         const auto runtimePrepared = PrepareMapRuntimeSave(task);
         Append(task.diagnostics, runtimePrepared.diagnostics);
         if (!runtimePrepared.Succeeded()) return;
@@ -573,6 +581,9 @@ void MapSaveService::Execute(MapSaveTask& task, const Progress& progress, bool p
             return;
         }
         task.nextSession = std::make_unique<MapArchiveSession>(std::move(*next.value));
+        const auto luaReadback = VerifyLuaFolderSaved(task, *task.nextSession);
+        Append(task.diagnostics, luaReadback.diagnostics);
+        if (!luaReadback.Succeeded()) return;
         if (sourceCapture.OwnsLease()) savedCapture.AdoptCreatedLease();
         if (frozenMarkers) {
             const auto checked = frozenMarkers->VerifyReadback(*task.nextSession);

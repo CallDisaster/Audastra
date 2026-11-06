@@ -1,5 +1,8 @@
 # 服务层：跨模块的只读查询（工程级引用索引等）。只依赖 Core / 格式库，不依赖 Qt。
 add_library(War3MapServices STATIC
+    LuaFolder.cpp
+    LuaFolderLink.cpp
+    LuaFolderSave.cpp
     MinimapPreview.cpp
     CurrentMinimapPreview.cpp
     TriggerCodeIdentityEditing.cpp

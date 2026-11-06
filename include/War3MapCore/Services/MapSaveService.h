@@ -25,6 +25,7 @@
 #include <vector>
 
 namespace War3Map::Services {
+struct LuaFolderSnapshot;
 
 class ObjectTransactionSnapshot;
 class TerrainMinimapMarkers;
@@ -79,6 +80,10 @@ struct MapSaveTask {
     std::string sourceSha256;
     std::vector<MemberReplacement> replacements;
     std::vector<std::string> removals;
+    std::filesystem::path luaFolderOverride;
+    std::string luaFolderDeletionApproval;
+    std::shared_ptr<LuaFolderSnapshot> luaFolderSnapshot;
+    std::vector<std::string> luaFolderDeletedFiles;
     std::array<std::unique_ptr<ObjectData::NativeObjectDocument>, kMapSaveObjectTypeCount> nextBaselines;
     std::array<std::unique_ptr<ObjectData::LniObjectDocument>, kMapSaveObjectTypeCount> generatedObjectBaselines;
     bool triggerChanges = false;
