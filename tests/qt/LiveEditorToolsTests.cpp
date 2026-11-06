@@ -383,6 +383,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
+        "lua_folder_link", "lua_folder_reconnect", "lua_folder_review", "lua_folder_unlink",
         "lua_test_hot_reload", "lua_test_reload_result",
         "map_custom_settings_edit", "map_custom_settings_get", "map_runtime_query", "map_runtime_set", "map_settings_get", "map_settings_set", "map_test_capture", "map_test_eval", "map_test_result", "map_test_start", "map_test_stop",
         "object_resource_inspect", "object_resource_query", "object_resource_state",

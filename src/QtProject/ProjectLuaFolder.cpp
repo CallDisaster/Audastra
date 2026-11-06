@@ -78,7 +78,11 @@ void ProjectLuaFolder::Refresh(bool force) {
     snapshot_.reset();
     if (!root.empty()) {
         auto snapshot = Services::CaptureLuaFolder(root);
-        if (!snapshot.Succeeded()) diagnostics = snapshot.diagnostics;
+        if (!snapshot.Succeeded()) {
+            diagnostics = snapshot.diagnostics;
+            // 非法编辑中的文件仍须在外部修好后恢复；失败不能丢失后续保存通知。
+            debounce_.start(1000);
+        }
         else {
             snapshot_ = std::move(*snapshot.value);
             if (snapshot_->missing) diagnostics.push_back({DiagnosticSeverity::Warning, "LuaFolder", "LUA_FOLDER_MISSING", "外部文件夹不存在，使用地图内Lua。"});

@@ -93,8 +93,9 @@ private slots:
         QTemporaryDir directory; QVERIFY(directory.isValid());
         QtProject::EditorProject project;
         const auto path = std::filesystem::path(directory.filePath("linked.w3x").toStdWString());
-        QVERIFY(Mpq::WriteMpqArchive(path, {{"war3map.w3i", Bytes("synthetic"), false},
-            {"lessons\\reload.lua", Bytes("return 1\r\n"), false}}).Succeeded());
+        const std::vector<Mpq::MpqBuildFile> files{{"war3map.w3i", Bytes("synthetic"), false},
+            {"lessons\\reload.lua", Bytes("return 1\r\n"), false}};
+        QVERIFY(Mpq::WriteMpqArchive(path, files).Succeeded());
         auto archive = MapArchiveSession::Open(path); QVERIFY(archive.Succeeded());
         project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
         project.sourceArchivePath_ = path; project.projectRoot_ = directory.path().toStdWString(); project.ResetEditTracking();
@@ -131,6 +132,9 @@ private slots:
         QVERIFY(QDir().rename(folder + "-hidden", folder)); source.Refresh(); QVERIFY(source.Active());
         const auto restored = QtProject::ReadLuaScript(project, "lessons\\reload.lua"); QVERIFY(restored.Succeeded());
         QVERIFY(restored.value->text.contains("return 3"));
+        QVERIFY(put(QByteArray("return '\xff'", 10))); source.Refresh(); QVERIFY(!source.Active());
+        QVERIFY(put("return 5\n")); QTRY_VERIFY_WITH_TIMEOUT(source.Active(), 5000);
+        QTRY_VERIFY_WITH_TIMEOUT(scripts.Editor()->toPlainText().contains("return 5"), 5000);
     }
     void OriginalLuaDiagnosticVisualAndProblemNavigation() {
         const auto directory = qEnvironmentVariable("WAR3_CODE_ERRORS_CAPTURE_DIR");

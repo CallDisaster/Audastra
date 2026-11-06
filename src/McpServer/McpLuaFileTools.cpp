@@ -180,6 +180,10 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
     }
     if (name == "map_test_start" && args.contains("visible") && !args.value("visible").isBool())
         return Failure("MAP_TEST_ARGUMENT_INVALID", "visible 必须是 true 或 false。");
+    if (name == "map_test_start" && args.contains("lua_delete_sha256")
+        && (!args.value("lua_delete_sha256").isString()
+            || !QRegularExpression("^[0-9a-f]{64}$").match(args.value("lua_delete_sha256").toString()).hasMatch()))
+        return Failure("LUA_FOLDER_ARGUMENT", "lua_delete_sha256须为已审阅删除集合的64位小写SHA。");
     if (name == "map_test_result" && args.contains("wait_ms") && !ValidPageNumber(args.value("wait_ms"), 0, 600000))
         return Failure("MAP_TEST_ARGUMENT_INVALID", "wait_ms 必须是0..600000的整数。");
     if (name == "lua_file_write") {

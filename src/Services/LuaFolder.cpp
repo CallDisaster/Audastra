@@ -286,17 +286,27 @@ Status ReconcileLuaFolder(const LuaFolderSnapshot& reviewed, std::span<const Lua
     if (!verified.Succeeded()) return verified;
     if (choice == LuaFolderChoice::Folder) return Status::Ok();
     std::map<std::string, const LuaFolderFile*> remaining;
+    std::vector<std::string> written;
+    const auto partial = [&](Status status) {
+        if (!written.empty() && !status.diagnostics.empty()) {
+            status.diagnostics.front().message += "；以下文件已写盘，不随地图撤销：";
+            for (const auto& path : written) status.diagnostics.front().message += "\n" + path;
+        }
+        return status;
+    };
     for (const auto& file : reviewed.files) remaining.emplace(Key(file.path), &file);
     for (const auto& file : map) {
         const auto found = remaining.find(Key(file.path));
         const auto write = WriteLuaFolderFile(reviewed.root, file.path, *file.bytes,
             found == remaining.end() ? std::string_view{} : std::string_view(found->second->sha256));
-        if (!write.Succeeded()) return write;
+        if (!write.Succeeded()) return partial(write);
+        written.push_back(file.path);
         if (found != remaining.end()) remaining.erase(found);
     }
     for (const auto& [key, file] : remaining) {
         const auto removed = RemoveLuaFolderFile(reviewed.root, *file);
-        if (!removed.Succeeded()) return removed;
+        if (!removed.Succeeded()) return partial(removed);
+        written.push_back(file->path + "（已删除）");
     }
     return Status::Ok();
 }
