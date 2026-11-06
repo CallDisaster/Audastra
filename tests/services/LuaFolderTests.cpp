@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <algorithm>
 
 namespace {
 using namespace War3Map;
@@ -92,6 +93,12 @@ void ReconcileAndMetadata() {
     std::vector<LuaFolderFile> map{{"lessons/reload.lua", *Sha256(a).value, std::make_shared<const std::vector<std::byte>>(a)}};
     auto empty = CaptureLuaFolder(folder);
     Good(empty, "empty review");
+    auto two = map; two.push_back({"b.lua", map[0].sha256, map[0].bytes});
+    const auto identity = LuaFolderDeletionIdentity(two, *empty.value); Good(identity, "delete set identity");
+    std::reverse(two.begin(), two.end());
+    auto caseRoot = *empty.value; caseRoot.root = std::filesystem::path(lowerDrive);
+    const auto reversed = LuaFolderDeletionIdentity(two, caseRoot); Good(reversed, "delete set identity across adapters");
+    Require(identity.value == reversed.value, "confirmation is independent of row order and drive letter case");
     Good(ReconcileLuaFolder(*empty.value, map, LuaFolderChoice::Map), "empty exports map modules");
     Put(folder / "lessons/reload.lua", "return 'disk'");
     Put(folder / "extra.lua", "return 2");

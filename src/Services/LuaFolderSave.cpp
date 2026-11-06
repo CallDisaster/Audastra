@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
 
 namespace War3Map::Services {
 namespace {
@@ -23,12 +24,13 @@ void Replace(MapSaveTask& task, std::string name, std::vector<std::byte> bytes) 
 Result<std::string> LuaFolderDeletionIdentity(std::span<const LuaFolderFile> map, const LuaFolderSnapshot& folder) {
     const auto diff = CompareLuaFolder(map, folder);
     if (folder.missing || diff.mapOnly.empty()) return Result<std::string>::Success({});
-    auto identity = folder.root.generic_u8string();
-    identity += u8"\nlua-folder-deletions-v1\n";
-    for (const auto& file : map) if (std::find(diff.mapOnly.begin(), diff.mapOnly.end(), file.path) != diff.mapOnly.end()) {
-        const auto value = Key(file.path) + ':' + file.sha256 + '\n';
-        identity.append(reinterpret_cast<const char8_t*>(value.data()), value.size());
-    }
+    const auto root = folder.root.generic_u8string();
+    std::string identity = Key(std::string(root.begin(), root.end())) + "\nlua-folder-deletions-v1\n";
+    std::set<std::string> deleted(diff.mapOnly.begin(), diff.mapOnly.end());
+    std::vector<std::string> entries;
+    for (const auto& file : map) if (deleted.contains(file.path)) entries.push_back(Key(file.path) + ':' + file.sha256 + '\n');
+    std::sort(entries.begin(), entries.end());
+    for (const auto& entry : entries) identity += entry;
     return Sha256(std::as_bytes(std::span(identity)));
 }
 
