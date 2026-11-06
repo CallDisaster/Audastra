@@ -139,7 +139,6 @@ public:
     // 仅精确捕获复用此不可变来源证明，成员仍真读真比，写出/回读完整散列照旧。
     [[nodiscard]] Status PinSourceForExactCaptures(const ProjectSaveControl* control = nullptr);
     [[nodiscard]] bool HasSourceCaptureLease() const noexcept { return bool(exactReadLease_); }
-    [[nodiscard]] bool HasReusableSourceCaptureProof() const noexcept;
     void ReleaseSourceCaptureLease() noexcept { exactReadLease_.reset(); }
     [[nodiscard]] bool HasMember(std::string_view name) const;
     [[nodiscard]] Result<std::vector<std::byte>> ReadMember(std::string_view name,

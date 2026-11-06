@@ -1051,8 +1051,6 @@ private:
                 });
                 if (!captured.Succeeded() || !captured.value) return {std::move(captured.diagnostics)};
                 realtimeReadSource = std::move(*captured.value);
-                QtCommon::DiagnosticTimingEvent(realtimeReadSource && realtimeReadSource->HasReusableSourceCaptureProof()
-                    ? "terrain-live-proof-reusable" : "terrain-live-proof-full-read");
                 return Status::Ok();
             };
             const auto loadWater = [&](const Mcp::TerrainEditToolContext& current,
