@@ -73,6 +73,7 @@ void MainWindow::ConnectModules() {
     connect(objectsModule_, &War3Map::Modules::ObjectModule::GameRootRequested, this, &MainWindow::SelectGameRoot);
     connect(objectsModule_, &War3Map::Modules::ObjectModule::ContextChanged, this, &MainWindow::UpdateBreadcrumb);
     connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsEdited, this, &MainWindow::ScheduleRecovery);
+    connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsChanged, this, &MainWindow::UpdateLuaReloadPending);
     connect(this, &ShellWindow::CurrentModuleChanged, this, [this](const War3Map::Shell::ModuleId& id) {
         UpdateBreadcrumb();
         if (id == "variables") RefreshVariablesPage();
