@@ -40,7 +40,10 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     }
     War3Map::QtCommon::ConfigureDiagnosticTimings(arguments.contains(QStringLiteral("--diagnostic-timings")));
     if (War3Map::QtCommon::DiagnosticTimingsEnabled())
-        War3Map::DiagnosticTrace::Configure(War3Map::QtCommon::DiagnosticTimingEvent);
+        War3Map::DiagnosticTrace::Configure([](std::string_view event) {
+            War3Map::QtCommon::DiagnosticTimingEvent(std::string(event) + ";thread="
+                + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())));
+        });
     War3Map::QtCommon::StartDiagnosticHeartbeat(&application);
     const bool saveInProcessOnly = arguments.contains(QStringLiteral("--in-process-only"));
     War3Map::QtApp::ConfigureApplicationIdentity(settingsProfile);

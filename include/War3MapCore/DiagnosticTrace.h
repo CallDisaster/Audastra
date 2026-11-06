@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace War3Map::DiagnosticTrace {
 using Observer = std::function<void(std::string_view)>;
