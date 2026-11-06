@@ -169,7 +169,8 @@ void TestReadProofOutlivesItsRequestingThread() {
     TempDirectory directory;
     const auto path = directory.Path() / "terrain-source.w3x";
     const auto body = Bytes("synthetic terrain wire");
-    RequireSuccess(WriteVerifiedArchive(path, {{"war3map.w3e", body}}), "write worker source");
+    const std::array members{MapArchiveMember{"war3map.w3e", body}};
+    RequireSuccess(WriteVerifiedArchive(path, members), "write worker source");
     auto original = MapArchiveSession::Open(path);
     RequireSuccess(original, "open worker source");
     auto owner = std::make_shared<const MapArchiveSession>(std::move(*original.value));
