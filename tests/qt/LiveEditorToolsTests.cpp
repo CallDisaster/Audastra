@@ -1529,7 +1529,8 @@ void LiveEditorToolsTests::RealtimePathingQuerySharesCommittedWorkerAndUndo() {
     auto args = f.Context();
     args["terrain_binding"] = state.value("terrain_binding");
     args["points"] = QJsonArray{QJsonObject{{"x", 3072}, {"y", 3072}}};
-    args["brush"] = QJsonObject{{"kind", "shallow_water"}, {"shape", "square"}, {"size", 2},
+    // 查询点放在浅水内部；size2会让此地格的另一侧仍在未刷的高层上，额外带0x02悬崖限制。
+    args["brush"] = QJsonObject{{"kind", "shallow_water"}, {"shape", "square"}, {"size", 4},
         {"cliff_texture", 0}, {"seed", 7}, {"enforce_water_limits", true}};
     args["dry_run"] = false;
     args["follow_doodads"] = false;
