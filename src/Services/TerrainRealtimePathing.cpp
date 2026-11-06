@@ -102,8 +102,9 @@ Result<Session::RealtimePathingResult> TerrainPathingSave::PrepareRealtimePathin
         if (wire->size() != cells + 16 || !native || native->size() != cells)
             return Layer::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_SHAPE", "保存派生通行与当前网格不一致。");
         auto layer = std::make_shared<std::vector<std::byte>>(*native);
+        // 保存保护层只含0x0e限制位；水深、荒芜和其余原生派生位来自最终WPM。
         for (std::size_t index = 0; index < cells; ++index)
-            (*layer)[index] |= (*wire)[index + 16] & std::byte{0x20};
+            (*layer)[index] |= (*wire)[index + 16] & std::byte{0xe0};
         const auto owned = plan.value->OwnedCapacityBytes();
         if (owned > maximumBytes - retained)
             return Layer::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_BUDGET", "实时通行的保存规则驻留超过预算。");
