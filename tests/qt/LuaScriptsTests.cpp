@@ -124,6 +124,11 @@ private slots:
         QVERIFY(scripts.CommitPendingDraft()); QVERIFY(!scripts.HasPendingDraft());
         QFile output(file); QVERIFY(output.open(QIODevice::ReadOnly)); QCOMPARE(output.readAll(), QByteArray("return 3\r\n")); output.close();
         QCOMPARE(project.AssetUndoStack()->count(), 1);
+        scripts.Editor()->setPlainText("return 6\n"); QVERIFY(put("return 7\r\n")); source.Refresh();
+        QTimer::singleShot(0, [] { for (auto* widget : QApplication::topLevelWidgets()) if (auto* box = qobject_cast<QMessageBox*>(widget))
+            for (auto* button : box->buttons()) if (button->text().contains(QStringLiteral("使用外部"))) button->click(); });
+        QVERIFY(scripts.CommitPendingDraft()); QVERIFY(!scripts.HasPendingDraft());
+        QVERIFY(scripts.Editor()->toPlainText().contains("return 7")); QCOMPARE(project.AssetUndoStack()->count(), 1);
         QVERIFY(source.Unlink().Succeeded()); QVERIFY(!source.Linked()); QCOMPARE(project.AssetUndoStack()->count(), 2);
         project.AssetUndoStack()->undo(); QVERIFY(source.Active());
         project.AssetUndoStack()->undo(); QVERIFY(!source.Linked());
@@ -133,8 +138,10 @@ private slots:
         QVERIFY(fallback.value->text.contains("return 1"));
         QVERIFY(QDir().rename(folder + "-hidden", folder)); source.Refresh(); QVERIFY(source.Active());
         const auto restored = QtProject::ReadLuaScript(project, "lessons\\reload.lua"); QVERIFY(restored.Succeeded());
-        QVERIFY(restored.value->text.contains("return 3"));
+        QVERIFY(restored.value->text.contains("return 7"));
         QVERIFY(put(QByteArray("return '\xff'", 10))); source.Refresh(); QVERIFY(!source.Active());
+        const auto assets = project.CaptureAssets();
+        QVERIFY(!scripts.CreateScript("unavailable.lua", "return 9\n")); QVERIFY(project.CaptureAssets() == assets);
         QVERIFY(put("return 5\n")); QTRY_VERIFY_WITH_TIMEOUT(source.Active(), 5000);
         QTRY_VERIFY_WITH_TIMEOUT(scripts.Editor()->toPlainText().contains("return 5"), 5000);
     }
