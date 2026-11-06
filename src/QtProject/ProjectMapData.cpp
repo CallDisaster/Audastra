@@ -23,6 +23,8 @@ Status EditorProject::ConfigureRealtimeTerrainPathing() {
     };
     if (!mapEdits_ || !mapEdits_->Terrain())
         return fail("TERRAIN_REALTIME_PATHING_SOURCE", "当前没有可编辑的地形会话。");
+    // 没有可读WPM时仍沿用原地形编辑/保存资格，查询明确不可用，不能捏造源通行位。
+    if (!mapEdits_->HasTerrainPathing()) return Status::Ok();
     if (sourceChangeSuspected_ || sourceChangeConfirmed_)
         return fail("TERRAIN_REALTIME_PATHING_SOURCE_CHANGED", "地图来源可能已变化，请先重新核对来源。");
     if (HasPendingAssetEdits())
