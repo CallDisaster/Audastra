@@ -252,6 +252,7 @@ Result<MapDataEditSession::PreparedTerrainEdit> MapDataEditSession::PrepareTerra
             prepared.value->waterResult_ = candidate.value->result;
             prepared.value->waterPreparationWork_ = work;
             prepared.value->waterPreparationBytes_ = finalBytes;
+            prepared.value->waterPreparationLimit_ = limits.maximumCandidateBytes;
         }
         return prepared;
     } catch (const std::bad_alloc&) {

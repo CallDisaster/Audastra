@@ -100,7 +100,7 @@ void TestTerrainReadSourceIsScopedAndCannotSave() {
     RequireSuccess(WriteVerifiedArchive(path, members), "write terrain source fixture");
     const auto original = MapArchiveSession::Open(path);
     RequireSuccess(original, "open full source snapshot");
-    const auto view = original.value->FreezeTerrainReadSource();
+    auto view = original.value->FreezeTerrainReadSource();
     RequireSuccess(view, "freeze one terrain read source");
     Require(view.value->Members().empty() && view.value->HasSourceCaptureLease()
         && view.value->SourceSha256() == original.value->SourceSha256(), "read source owns identity and lease without body snapshots");
@@ -120,8 +120,11 @@ void TestTerrainReadSourceIsScopedAndCannotSave() {
     const auto replacement = directory.Path() / "replaced.w3x";
     members.back().data = Bytes("[Terrain]\nMaxSlope=75\n");
     RequireSuccess(WriteVerifiedArchive(replacement, members), "write replacement source fixture");
-    Require(MoveFileExW(replacement.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0,
-        "external atomic replacement remains observable while read lease lives");
+    view.value->ReleaseSourceCaptureLease();
+    const bool replaced = ReplaceFileW(path.c_str(), replacement.c_str(), nullptr,
+        REPLACEFILE_WRITE_THROUGH | REPLACEFILE_IGNORE_MERGE_ERRORS | REPLACEFILE_IGNORE_ACL_ERRORS, nullptr, nullptr) != 0;
+    const auto error = replaced ? ERROR_SUCCESS : GetLastError();
+    Require(replaced, "replace after the bounded read operation, Win32=" + std::to_string(error));
     Require(!view.value->CaptureExactMembers(names).Succeeded(), "replaced source cannot reuse old lease proof");
 }
 

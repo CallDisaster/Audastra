@@ -92,6 +92,52 @@ void WaterBlightCliffAndHistoryKeepSaveBytes() {
     }
 }
 
+void WorkerPreparationKeepsRealCommandIdentityAndRejectsStale() {
+    Fixture fixture;
+    const auto source = std::shared_ptr<const MapArchiveSession>(fixture.source.get(), [](const auto*) {});
+    TerrainPathingSave::BindRealtimePathing(*fixture.edits, source, fixture.game);
+    const std::array points{TerrainStrokePoint{3072, 3072}};
+    const auto rules = fixture.Rules();
+    const TerrainWaterBrush water{TerrainWaterBrushKind::Shallow, TerrainBrushShape::Square, 2, 0, 7,
+        Take(CaptureTerrainWaterStrokeAnchor(*fixture.edits->Terrain(), points.front()))};
+    const auto geometry = Take(fixture.edits->PrepareTerrainWaterEdit(rules, water, points, false));
+    std::size_t copied = 0;
+    auto frozen = Take(fixture.edits->FreezeForSave(kBudget, &copied));
+    auto readSource = Take(TerrainPathingSave::CaptureRealtimeReadSource(*frozen));
+    Require(readSource && readSource->HasSourceCaptureLease() && readSource->HasSameSourceIdentity(*source)
+        && !source->HasSourceCaptureLease(), "worker独占来源租约，活动基线不被固定");
+    auto prepared = Take(TerrainPathingSave::CompleteRealtimeTerrainEdit(*frozen, geometry, readSource, copied));
+    Require(fixture.edits->Revision() == 0 && !fixture.edits->CanUndo(), "后台准备不消费修订或撤销身份");
+    Take(fixture.edits->ApplyPreparedTerrainEdit(prepared));
+    const auto first = fixture.edits->LastAppliedEdit().CommandIdentity();
+    EqualPathing(QueriedPathing(fixture), SavedPathing(fixture, *fixture.edits), "worker浅水查询等于保存WPM");
+    TerrainBrush brush;
+    brush.kind = TerrainBrushKind::Blight;
+    brush.radius = 2;
+    brush.value = true;
+    const auto blight = Take(fixture.edits->PrepareTerrainEdit(brush, points));
+    frozen = Take(fixture.edits->FreezeForSave(kBudget, &copied));
+    prepared = Take(TerrainPathingSave::CompleteRealtimeTerrainEdit(*frozen, blight, readSource, copied));
+    Take(fixture.edits->ApplyPreparedTerrainEdit(prepared));
+    Require(fixture.edits->LastAppliedEdit().CommandIdentity() == first + 1,
+        "私有重放没有占用或重复使用真实命令身份");
+    EqualPathing(QueriedPathing(fixture), SavedPathing(fixture, *fixture.edits), "worker荒芜查询等于保存WPM");
+    brush.value = false;
+    const auto next = Take(fixture.edits->PrepareTerrainEdit(brush, points));
+    frozen = Take(fixture.edits->FreezeForSave(kBudget, &copied));
+    Fixture other;
+    const auto otherSource = std::shared_ptr<const MapArchiveSession>(other.source.get(), [](const auto*) {});
+    TerrainPathingSave::BindRealtimePathing(*other.edits, otherSource, other.game);
+    const auto wrongSource = Take(TerrainPathingSave::CaptureRealtimeReadSource(*other.edits));
+    Require(!TerrainPathingSave::CompleteRealtimeTerrainEdit(*frozen, next, wrongSource, copied).Succeeded(),
+        "另一个文件即使内容相同也不能借租约替代原来源");
+    const auto pending = Take(TerrainPathingSave::CompleteRealtimeTerrainEdit(*frozen, next, readSource, copied));
+    Require(fixture.edits->Undo(), "制造实际修订漂移");
+    const auto before = QueriedPathing(fixture);
+    Require(!fixture.edits->ApplyPreparedTerrainEdit(pending).Succeeded() && QueriedPathing(fixture) == before,
+        "过期worker结果不提交派生层或地形");
+}
+
 void PureBlightAndRejectedBudgetAreAtomic() {
     Fixture fixture;
     const auto source = std::shared_ptr<const MapArchiveSession>(fixture.source.get(), [](const auto*) {});
@@ -162,6 +208,7 @@ void DirectoryCandidateUsesSameLayerAndRejectsDrift() {
 int main() {
     try {
         WaterBlightCliffAndHistoryKeepSaveBytes();
+        WorkerPreparationKeepsRealCommandIdentityAndRejectsStale();
         PureBlightAndRejectedBudgetAreAtomic();
         DirectoryCandidateUsesSameLayerAndRejectsDrift();
         return 0;

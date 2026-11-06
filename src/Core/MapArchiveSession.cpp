@@ -325,6 +325,11 @@ Result<MapArchiveSession> MapArchiveSession::FreezeTerrainReadSource() const {
     }
 }
 
+bool MapArchiveSession::HasSameSourceIdentity(const MapArchiveSession& other) const noexcept {
+    return volumeSerial_ == other.volumeSerial_ && fileId_ == other.fileId_
+        && sourceSha256_ == other.sourceSha256_ && SamePath(sourcePath_, other.sourcePath_);
+}
+
 std::size_t MapArchiveSession::TerrainReadSourceBudgetBytes() const noexcept {
     if (!terrainAuditOnly_) return 0;
     // 实际路径与SHA在身份、租约及核验临时值中的复制一并预收，不缓存成员正文。

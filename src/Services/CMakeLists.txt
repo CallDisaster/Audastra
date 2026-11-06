@@ -83,6 +83,8 @@ add_library(War3MapServices STATIC
     TerrainPathingRestrictionCandidate.cpp
     TerrainPathingSave.cpp
     TerrainRealtimePathing.cpp
+    TerrainRealtimeWorker.cpp
+    TerrainRealtimeInternal.h
     TerrainHistoryRestore.cpp
     TerrainHistorySave.cpp
     TerrainReplayInternal.h

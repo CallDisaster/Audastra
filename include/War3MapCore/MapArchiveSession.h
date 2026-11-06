@@ -131,6 +131,7 @@ public:
     [[nodiscard]] Result<MapArchiveSession> FreezeTerrainReadSource() const;
     // 仅计上述新建只读来源的身份/租约驻留上界；普通宿主基线在外层拥有，不在这里重复计费。
     [[nodiscard]] std::size_t TerrainReadSourceBudgetBytes() const noexcept;
+    [[nodiscard]] bool HasSameSourceIdentity(const MapArchiveSession& other) const noexcept;
     [[nodiscard]] Status VerifySourceUnchanged(const ProjectSaveControl* control = nullptr) const;
     // 单次保存可显式固定来源内容：完整散列后持续持有禁止直接写入的源句柄。
     // 允许原子替换；每次捕获仍核实际路径/文件ID，旧快照不承接替换后的新文件。

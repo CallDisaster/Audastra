@@ -811,6 +811,7 @@ MapDataEditSession::MapDataEditSession(const MapDataEditSession& source, SaveSna
       terrainOriginal_(source.terrainOriginal_), terrain_(source.terrain_), pathingOriginal_(source.pathingOriginal_),
       pathing_(source.pathing_), realtimeNativePathing_(source.realtimeNativePathing_),
       realtimePathingUnavailable_(source.realtimePathingUnavailable_), realtimePathingBuilder_(source.realtimePathingBuilder_),
+      realtimePathingBinding_(source.realtimePathingBinding_),
       pathingProtected_(source.pathingProtected_), pathingRestrictions_(source.pathingRestrictions_),
       originalPathingRestrictions_(source.originalPathingRestrictions_) {}
 

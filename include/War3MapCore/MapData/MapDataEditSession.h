@@ -20,7 +20,7 @@
 #include <utility>
 #include <vector>
 
-namespace War3Map::Services { class AuxiliaryEditing; class TerrainHistorySave; class MapCustomSettingsEditing; class TerrainPathingSave; }
+namespace War3Map::Services { class AuxiliaryEditing; class TerrainHistorySave; class MapCustomSettingsEditing; class TerrainPathingSave; struct TerrainRealtimeBinding; }
 
 namespace War3Map::MapData {
 namespace detail { struct PlacementEditingAccess; struct TerrainInspectionAccess; struct MapDataFieldEditingAccess; }
@@ -91,6 +91,7 @@ public:
         [[nodiscard]] std::optional<std::span<const std::byte>> PlacementMemberBytes(MapDataKind kind, bool after) const noexcept;
     private:
         friend class MapDataEditSession;
+        friend class Services::TerrainPathingSave;
         EditReceipt(std::shared_ptr<const Command> command, const MapDataEditSession* session,
             std::uint64_t before, std::uint64_t after, bool appliedForward = true, bool restoring = false)
             : command_(std::move(command)), session_(session), beforeRevision_(before), afterRevision_(after), appliedForward_(appliedForward), restoring_(restoring) {}
@@ -147,7 +148,11 @@ public:
         std::optional<TerrainBlockPasteIntent> blockPaste_;
         std::size_t waterPreparationWork_ = 0;
         std::size_t waterPreparationBytes_ = 0;
+        std::size_t waterPreparationLimit_ = TerrainWaterBrushLimits{}.maximumCandidateBytes;
         std::size_t realtimePathingBytes_ = 0;
+        bool realtimePrepared_ = false;
+        std::function<Status()> realtimeVerifier_;
+        std::shared_ptr<const MapArchiveSession> realtimeReadSource_;
         std::vector<TerrainStrokePoint> points_;
         bool followDoodads_ = false;
     };
@@ -578,6 +583,8 @@ private:
     std::shared_ptr<const std::vector<std::byte>> realtimeNativePathing_;
     bool realtimePathingUnavailable_ = false;
     std::function<Result<RealtimePathingResult>(const MapDataEditSession&, const PreparedTerrainEdit&)> realtimePathingBuilder_;
+    std::shared_ptr<const Services::TerrainRealtimeBinding> realtimePathingBinding_;
+    [[nodiscard]] bool NeedsRealtimePathing(const PreparedTerrainEdit& prepared) const noexcept;
     // 首次从真实 WPM 捕获；地图保存不会把本工程新增限制升级为受保护来源。
     std::shared_ptr<const std::vector<std::byte>> pathingProtected_;
     std::shared_ptr<const std::vector<std::byte>> pathingRestrictions_, originalPathingRestrictions_;

@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/MapDataEditSession.h"
+#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/TerrainEditInspection.h"
 #include "MapDataEditSessionTerrainInternal.h"
 #include "TerrainPaletteEditInternal.h"
@@ -814,6 +815,12 @@ std::size_t MapDataEditSession::PreparedTerrainEdit::RetainedCommandBytes() cons
     return bytes;
 }
 
+bool MapDataEditSession::NeedsRealtimePathing(const PreparedTerrainEdit& plan) const noexcept {
+    return realtimePathingBuilder_ && plan.HasChanges() && plan.brush_.kind != TerrainBrushKind::PathingRestriction
+        && (plan.waterBrush_ || plan.brush_.kind == TerrainBrushKind::CliffLevel
+            || plan.brush_.kind == TerrainBrushKind::Blight || realtimeNativePathing_ || realtimePathingUnavailable_);
+}
+
 Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const PreparedTerrainEdit& plan,
     const std::function<Status(const EditReceipt&)>& prepublish) {
     if (!plan.command_ || plan.sessionIdentity_ != sessionIdentity_ || plan.revision_ != revision_
@@ -821,11 +828,11 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
         return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_EDIT_STALE",
             "地形候选不属于当前会话、修订或来源，请重新预览。");
     auto command = *plan.command_;
-    std::function<Status()> verifyRealtime;
-    const bool rebuildRealtime = plan.brush_.kind != TerrainBrushKind::PathingRestriction
-        && (plan.waterBrush_ || plan.brush_.kind == TerrainBrushKind::CliffLevel
-            || plan.brush_.kind == TerrainBrushKind::Blight || realtimeNativePathing_ || realtimePathingUnavailable_);
-    if (realtimePathingBuilder_ && rebuildRealtime && plan.HasChanges()) {
+    std::function<Status()> verifyRealtime = plan.realtimeVerifier_;
+    if (plan.realtimePrepared_ && (!command.nativePathingTouched || !command.nativePathingAfter || !verifyRealtime))
+        return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_REALTIME_PATHING_PREPARATION",
+            "后台通行候选缺少完整的派生层或来源复核，未提交。");
+    if (!plan.realtimePrepared_ && NeedsRealtimePathing(plan)) {
         auto rebuilt = realtimePathingBuilder_(*this, plan);
         if (!rebuilt.Succeeded() || !rebuilt.value) return {{}, std::move(rebuilt.diagnostics)};
         if (!rebuilt.value->nativeLayer || !pathing_ || rebuilt.value->nativeLayer->size() + 16 != pathing_->size()
@@ -896,6 +903,10 @@ Result<TerrainStrokeResult> MapDataEditSession::ApplyPreparedTerrainEdit(const P
         || plan.sourceRevision_ != terrainSourceRevision_ || plan.before_ != terrain_)
         return Result<TerrainStrokeResult>::Failure("MapData.Edit", "TERRAIN_EDIT_STALE", "实时通行准备期间会话已变化，未提交。");
     const auto status = CommitCommand(std::move(command), [&](const EditReceipt& receipt) {
+        if (plan.realtimeReadSource_) {
+            const auto checked = plan.realtimeReadSource_->VerifySourceUnchanged();
+            if (!checked.Succeeded()) return checked;
+        }
         if (verifyRealtime) {
             const auto verified = verifyRealtime();
             if (!verified.Succeeded()) return verified;

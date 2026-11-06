@@ -1,6 +1,8 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/Services/TerrainEditService.h"
+#include "TerrainRealtimeInternal.h"
 
+#include <algorithm>
 #include <exception>
 #include <type_traits>
 
@@ -10,8 +12,8 @@ using Session = MapData::MapDataEditSession;
 namespace {
 template<class Source>
 auto RealtimeFactory(std::shared_ptr<const Source> source, std::filesystem::path gameRoot,
-    std::vector<MemberReplacement> finalMembers) {
-    auto members = std::make_shared<const std::vector<MemberReplacement>>(std::move(finalMembers));
+    std::shared_ptr<const std::vector<MemberReplacement>> members) {
+    if (!members) members = std::make_shared<const std::vector<MemberReplacement>>();
     return [source, gameRoot = std::move(gameRoot), members](const auto& current, const auto& limits) {
         const auto fail = [](const char* code, const char* message) {
             return Result<MapData::TerrainSavePlan>::Failure("Terrain.Edit", code, message);
@@ -55,19 +57,37 @@ auto RealtimeFactory(std::shared_ptr<const Source> source, std::filesystem::path
 void TerrainPathingSave::BindRealtimePathing(Session& edits,
     std::shared_ptr<const MapArchiveSession> source, const std::filesystem::path& gameRoot,
     std::size_t maximumBytes, std::vector<MemberReplacement> finalMembers) {
-    BindRealtimeBuilder(edits,
-        RealtimeFactory(source, gameRoot, std::move(finalMembers)), [source](const auto& plan, const auto& limits) {
-            return plan.VerifySourceInputs(*source, limits);
-        }, maximumBytes);
+    auto binding = std::make_shared<TerrainRealtimeBinding>();
+    binding->archive = std::move(source);
+    binding->gameRoot = gameRoot;
+    binding->maximumBytes = maximumBytes;
+    binding->members = std::make_shared<const std::vector<MemberReplacement>>(std::move(finalMembers));
+    InstallRealtimeBinding(edits, std::move(binding));
 }
 
 void TerrainPathingSave::BindRealtimePathing(Session& edits, const WorkspaceSnapshot& source,
     const std::filesystem::path& gameRoot, std::size_t maximumBytes, std::vector<MemberReplacement> finalMembers) {
-    auto owned = std::make_shared<const WorkspaceSnapshot>(source);
-    BindRealtimeBuilder(edits,
-        RealtimeFactory(owned, gameRoot, std::move(finalMembers)), [owned](const auto& plan, const auto& limits) {
-            return plan.VerifySourceInputs(*owned, limits);
-        }, maximumBytes);
+    auto binding = std::make_shared<TerrainRealtimeBinding>();
+    binding->directory = std::make_shared<const WorkspaceSnapshot>(source);
+    binding->gameRoot = gameRoot;
+    binding->maximumBytes = maximumBytes;
+    binding->members = std::make_shared<const std::vector<MemberReplacement>>(std::move(finalMembers));
+    InstallRealtimeBinding(edits, std::move(binding));
+}
+
+void TerrainPathingSave::InstallRealtimeBinding(Session& edits, std::shared_ptr<const TerrainRealtimeBinding> binding) {
+    edits.realtimePathingBinding_ = binding;
+    if (binding->archive) {
+        BindRealtimeBuilder(edits, RealtimeFactory(binding->archive, binding->gameRoot, binding->members),
+            [source = binding->archive](const auto& plan, const auto& limits) {
+                return plan.VerifySourceInputs(*source, limits);
+            }, binding->maximumBytes);
+    } else {
+        BindRealtimeBuilder(edits, RealtimeFactory(binding->directory, binding->gameRoot, binding->members),
+            [source = binding->directory](const auto& plan, const auto& limits) {
+                return plan.VerifySourceInputs(*source, limits);
+            }, binding->maximumBytes);
+    }
 }
 
 void TerrainPathingSave::BindRealtimeBuilder(Session& edits, RealtimePlanFactory plan,
@@ -190,6 +210,9 @@ Result<Session::RealtimePathingResult> TerrainPathingSave::PrepareRealtimePathin
     if (!edits.pathing_ || !edits.pathingOriginal_ || edits.pathing_->size() < 16)
         return failure("TERRAIN_REALTIME_PATHING_SOURCE", "实时通行需要唯一的原生WPM来源。");
     const auto cells = edits.pathing_->size() - 16;
+    if (prepared.waterPreparationBytes_ >= prepared.waterPreparationLimit_)
+        return failure("TERRAIN_REALTIME_PATHING_BUDGET", "本笔地形候选没有留下实时通行预算。");
+    maximumBytes = std::min(maximumBytes, prepared.waterPreparationLimit_ - prepared.waterPreparationBytes_);
     if (!maximumBytes || maximumBytes > 64u * 1024u * 1024u || cells > maximumBytes / 2)
         return failure("TERRAIN_REALTIME_PATHING_BUDGET", "实时通行前后态超过本次预算。");
     std::size_t retained = cells * 2;
