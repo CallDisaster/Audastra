@@ -1529,7 +1529,7 @@ void LiveEditorToolsTests::RealtimePathingQuerySharesCommittedWorkerAndUndo() {
     auto args = f.Context();
     args["terrain_binding"] = state.value("terrain_binding");
     args["points"] = QJsonArray{QJsonObject{{"x", 3072}, {"y", 3072}}};
-    // 查询点放在浅水内部；size2会让此地格的另一侧仍在未刷的高层上，额外带0x02悬崖限制。
+    // 查询点放在水域内部，避免悬崖边缘贡献干扰水深阈值断言。
     args["brush"] = QJsonObject{{"kind", "shallow_water"}, {"shape", "square"}, {"size", 4},
         {"cliff_texture", 0}, {"seed", 7}, {"enforce_water_limits", true}};
     args["dry_run"] = false;
@@ -1541,7 +1541,14 @@ void LiveEditorToolsTests::RealtimePathingQuerySharesCommittedWorkerAndUndo() {
     QVERIFY(!f.project.archiveSession_->HasSourceCaptureLease());
     const auto sample = session->InspectTerrainPoint({3072, 3072});
     QVERIFY(sample.Succeeded());
-    QCOMPARE(sample.value->pathingFlags, std::optional<std::uint8_t>{0x19});
+    const auto& vertex = session->Terrain()->vertices[24 * 33 + 24];
+    QCOMPARE(vertex.groundHeightRaw, std::uint16_t{8320});
+    QCOMPARE(vertex.CliffLevel(), std::uint8_t{1});
+    QCOMPARE(vertex.waterHeightAndFlagsRaw & 0x3fff, 8320);
+    QVERIFY(vertex.HasWater());
+    // 地面32-128=-96，水面32，深128恰好达到夹具DeepLevelPathing=128。
+    // 因而有0x02不可走位；另有水0x08和应保留的源0x11。
+    QCOMPARE(sample.value->pathingFlags, std::optional<std::uint8_t>{0x1b});
     const auto plan = Services::TerrainPathingSave::PrepareForSave(*f.project.archiveSession_, *session, source.game);
     QVERIFY(plan.Succeeded() && plan.value->SaveGate().Succeeded());
     const auto pathing = std::find_if(plan.value->Replacements().begin(), plan.value->Replacements().end(),
@@ -1555,11 +1562,11 @@ void LiveEditorToolsTests::RealtimePathingQuerySharesCommittedWorkerAndUndo() {
     query["points"] = args.value("points");
     const auto read = f.tools->Invoke("query_terrain_points", query);
     QVERIFY2(read.value("ok").toBool(), qPrintable(Explain(read)));
-    QCOMPARE(read.value("points").toArray().first().toObject().value("pathing").toObject().value("raw_flags").toInt(), 0x19);
+    QCOMPARE(read.value("points").toArray().first().toObject().value("pathing").toObject().value("raw_flags").toInt(), 0x1b);
     f.project.mapDataUndoStack_->undo();
     QCOMPARE(session->InspectTerrainPoint({3072, 3072}).value->pathingFlags, std::optional<std::uint8_t>{0x51});
     f.project.mapDataUndoStack_->redo();
-    QCOMPARE(session->InspectTerrainPoint({3072, 3072}).value->pathingFlags, std::optional<std::uint8_t>{0x19});
+    QCOMPARE(session->InspectTerrainPoint({3072, 3072}).value->pathingFlags, std::optional<std::uint8_t>{0x1b});
     QCOMPARE(f.project.mapEdits_.get(), session);
 }
 
