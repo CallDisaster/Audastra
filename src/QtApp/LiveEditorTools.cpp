@@ -1482,7 +1482,8 @@ private:
                 {"project_identity", projectIdentity_}, {"revision", QString::number(project_.editRevision_.Revision())},
                 {"offset", offset}, {"limit", limit}, {"total", total},
                 {"next_offset", complete ? QJsonValue(QJsonValue::Null) : QJsonValue(offset + count)},
-                {"complete", complete}, {"scope", "captured-assets-and-overlay"}, {"source_checked_in_this_call", false}};
+                {"complete", complete}, {"scope", source.Active() ? "external-lua-snapshot" : "captured-assets-and-overlay"},
+                {"source_checked_in_this_call", source.Active()}, {"lua_source", QtProject::LuaFolderSourceInfo(project_)}};
         }
         if (name == "lua_file_read") {
             auto read = QtProject::ReadLuaScript(project_, path);
