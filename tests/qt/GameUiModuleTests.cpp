@@ -158,7 +158,8 @@ void GameUiModuleTests::OriginAndClipboardTransactions() {
     QVERIFY(module.Tree()->Nodes()[module.SelectedNode()].hidden);
     QVERIFY2(module.MoveOriginNode(module.SelectedNode(), .02, .03, &error), qPrintable(error));
     const auto rect = module.Tree()->Nodes()[module.SelectedNode()].rect;
-    QVERIFY(std::abs(rect.left - oldRect.left - .02) < .00001);
+    // 画布拖动按0.0001屏幕单位吸附，原版初始坐标可能有五位小数。
+    QVERIFY(std::abs(rect.left - oldRect.left - .02) < .000051);
     QVERIFY2(module.RestoreOriginNode(QStringLiteral("Minimap"), &error), qPrintable(error));
     QVERIFY(module.Description(QStringLiteral("OriginalUi"))->origins.empty());
     QVERIFY(!module.Tree()->Nodes()[module.SelectedNode()].hidden);

@@ -65,7 +65,9 @@ std::vector<Diagnostic> ApplyUiOriginsPreview(FrameTree& tree, const UiDescripti
         if (it->layout != LayoutState::Placed) continue;
         const auto original = it->rect;
         const double scale = change.scale.value_or(1);
-        double left = original.left, bottom = original.bottom;
+        const auto pivot = it->anchors.empty() ? static_cast<unsigned>(FramePoint::BottomLeft) : static_cast<unsigned>(it->anchors.front().point);
+        double left = original.left + original.Width() * x[pivot] * (1 - scale);
+        double bottom = original.bottom + original.Height() * y[pivot] * (1 - scale);
         if (change.position) {
             const auto& a = *change.position;
             const auto p = static_cast<unsigned>(a.point), r = static_cast<unsigned>(a.targetPoint);

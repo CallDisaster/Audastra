@@ -567,6 +567,13 @@ void TestOrigins() {
     const auto found = std::find_if(tree.Nodes().begin(), tree.Nodes().end(), [](const auto& node) { return node.name == "Minimap"; });
     Require(found != tree.Nodes().end() && found->hidden && std::abs(found->rect.right - .79) < .00001 &&
         std::abs(found->rect.top - .58) < .00001 && std::abs(found->previewOpacity - 128.0 / 255) < .00001, "preview hidden placement alpha");
+    FrameTree scaleTree; scaleTree.AddGameCodeAreas(); (void)scaleTree.Layout();
+    UiDescription scaleOnly; scaleOnly.id = "scale";
+    UiOriginAdjustment clock; clock.name = "TimeOfDay"; clock.scale = 1.2; scaleOnly.origins.push_back(clock);
+    Require(ApplyUiOriginsPreview(scaleTree, scaleOnly).empty(), "scale-only preview applies");
+    const auto time = std::find_if(scaleTree.Nodes().begin(), scaleTree.Nodes().end(), [](const auto& node) { return node.name == "TimeOfDay"; });
+    Require(time != scaleTree.Nodes().end() && std::abs(time->rect.top - .6) < .00001 &&
+        std::abs((time->rect.left + time->rect.right) / 2 - .4) < .00001, "scale preserves original top anchor");
 }
 
 int main() {
