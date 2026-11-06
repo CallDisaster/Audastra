@@ -601,6 +601,34 @@ private:
         const auto selected = [&](std::uint32_t x, std::uint32_t y) {
             return std::find(selectedIndices.begin(), selectedIndices.end(), std::uint32_t(Index(x, y))) != selectedIndices.end();
         };
+        // 原版尺寸3/5方形高台：5/9点高层、一道同材质低层边圈，再外侧为15号槽。
+        // 只在无限台阶域不匹配时识别完整方台；不把任意混合层级当作局部域。
+        std::optional<std::array<std::uint32_t, 4>> finitePlateau;
+        bool finitePlateauChecked = false;
+        const auto findFinitePlateau = [&]() -> std::optional<std::array<std::uint32_t, 4>> {
+            if (!brush_.straightRamp || !high.CliffLevel() || high.CliffTextureIndex() == 15) return {};
+            int x0 = int(plan.highX), x1 = x0, y0 = int(plan.highY), y1 = y0;
+            const auto sameLevel = [&](int x, int y) {
+                Work(); return Read(std::uint32_t(x), std::uint32_t(y)).CliffLevel() == high.CliffLevel();
+            };
+            while (x0 > 0 && x1 - x0 < 9 && sameLevel(x0 - 1, int(plan.highY))) --x0;
+            while (x1 + 1 < int(width_) && x1 - x0 < 9 && sameLevel(x1 + 1, int(plan.highY))) ++x1;
+            while (y0 > 0 && y1 - y0 < 9 && sameLevel(int(plan.highX), y0 - 1)) --y0;
+            while (y1 + 1 < int(height_) && y1 - y0 < 9 && sameLevel(int(plan.highX), y1 + 1)) ++y1;
+            const int size = x1 - x0 + 1;
+            if ((size != 5 && size != 9) || y1 - y0 + 1 != size
+                || x0 < 2 || y0 < 2 || x1 + 2 >= int(width_) || y1 + 2 >= int(height_)) return {};
+            for (int y = y0 - 2; y <= y1 + 2; ++y) for (int x = x0 - 2; x <= x1 + 2; ++x) {
+                Work(); const auto& v = Read(std::uint32_t(x), std::uint32_t(y));
+                const bool inside = x >= x0 && x <= x1 && y >= y0 && y <= y1;
+                const bool rim = x >= x0 - 1 && x <= x1 + 1 && y >= y0 - 1 && y <= y1 + 1;
+                if (v.CliffLevel() != high.CliffLevel() - (inside ? 0 : 1)
+                    || v.CliffTextureIndex() != (rim ? high.CliffTextureIndex() : 15)
+                    || v.groundHeightRaw != high.groundHeightRaw || v.HasWater() || v.IsBoundary() || v.IsMapEdge()
+                    || (v.IsRamp() && !selected(std::uint32_t(x), std::uint32_t(y)))) return {};
+            }
+            return std::array{std::uint32_t(x0), std::uint32_t(y0), std::uint32_t(x1), std::uint32_t(y1)};
+        };
         constexpr std::array<std::string_view, 24> patterns{
             "HRAA","RHAA","AARH","AAHR","AHRA","ARHA","HAAR","RAAH",
             "HRAB","RHBA","BARH","ABHR","BHRA","ARHB","HBAR","RABH",
@@ -642,7 +670,15 @@ private:
                     const auto& vertex = Read(nx, ny);
                     const int sx = (int(nx) - int(plan.highX)) * plan.directionX;
                     const int sy = (int(ny) - int(plan.highY)) * plan.directionY;
-                    const bool lower = plan.inner ? sx > 0 && sy > 0 : sx > 0 || sy > 0;
+                    const bool planeLower = plan.inner ? sx > 0 && sy > 0 : sx > 0 || sy > 0;
+                    if (brush_.straightRamp && !finitePlateauChecked
+                        && vertex.CliffLevel() != high.CliffLevel() - (planeLower ? 1 : 0)) {
+                        finitePlateauChecked = true; finitePlateau = findFinitePlateau();
+                    }
+                    const bool lower = finitePlateau
+                        ? nx < (*finitePlateau)[0] || ny < (*finitePlateau)[1]
+                            || nx > (*finitePlateau)[2] || ny > (*finitePlateau)[3]
+                        : planeLower;
                     // 原版直坡产物在坡脚保留15（无悬崖）；仅允许低层平面上的该槽。
                     const bool absentLowerCliff = brush_.straightRamp && lower && vertex.CliffTextureIndex() == 15;
                     if (((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly

@@ -2,6 +2,7 @@
 #include "../src/Core/MapData/TerrainWaterBrushInternal.h"
 #include "MapDataFixtures.h"
 #include "TerrainJoinedRampCases.h"
+#include "TerrainFinitePlateauCases.h"
 
 #include <algorithm>
 #include <cmath>
@@ -605,6 +606,7 @@ void HeightFalloffIndependentBoundaries() {
 int main() {
     try {
         War3Map::TerrainJoinedRampCases::Run();
+        War3Map::TerrainFinitePlateauCases::Run();
         OwnedCandidateMatchesApplyAndPreservesInput();
         DryAnchorAndExactCoupling(); WetAnchorExactStepAndFixedStroke(); ExistingRampAnchorsKeepRawBaseAndCompleteGroundSeparate(); WaterLimitsAndOrderedShore();
         AtomicFailureAndLocalDomain(); PropagationAndDepthBudget(); SpecialDoodadDeletesFirstMiddleAndLast();
