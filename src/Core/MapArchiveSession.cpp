@@ -450,6 +450,11 @@ Status MapArchiveSession::VerifySourceUnchanged(const ProjectSaveControl* contro
     return VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_, control);
 }
 
+bool MapArchiveSession::HasReusableSourceCaptureProof() const noexcept {
+    return exactReadLease_ && exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_)
+        && exactReadLease_->Stable();
+}
+
 bool MapArchiveSession::HasMember(std::string_view name) const {
     const auto key = Canonical(name);
     if (key == "(LISTFILE)") return !scriptAuditOnly_;
