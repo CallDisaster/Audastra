@@ -1,5 +1,6 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/DiagnosticTrace.h"
 #include "War3MapCore/ProjectSaveControl.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
@@ -17,6 +18,7 @@
 #include <iostream>
 #include <map>
 #include <stdexcept>
+#include <thread>
 
 namespace {
 
@@ -161,6 +163,34 @@ void TestCompleteRoundTripAndIndependentBaseline() {
     }
     Require(reopened.value->ReadMember("war3map.w3t").value == std::optional(Bytes("new-object-member")), "new member persists");
     RequireNoTemporary(directory.Path());
+}
+
+void TestReadProofOutlivesItsRequestingThread() {
+    TempDirectory directory;
+    const auto path = directory.Path() / "terrain-source.w3x";
+    const auto body = Bytes("synthetic terrain wire");
+    RequireSuccess(WriteVerifiedArchive(path, {{"war3map.w3e", body}}), "write worker source");
+    auto original = MapArchiveSession::Open(path);
+    RequireSuccess(original, "open worker source");
+    auto owner = std::make_shared<const MapArchiveSession>(std::move(*original.value));
+    Result<MapArchiveSession> view;
+    std::thread worker([&] { view = owner->FreezeTerrainReadSource(owner); });
+    worker.join();
+    RequireSuccess(view, "read source survives worker completion");
+    const bool granted = std::ranges::any_of(view.diagnostics, [](const auto& item) {
+        return item.code == "TERRAIN_READ_SOURCE_PROOF_STATUS" && item.message.find("reusable=1") != std::string::npos;
+    });
+    std::atomic<unsigned> reused{0}, full{0};
+    DiagnosticTrace::Configure([&](std::string_view event) {
+        if (event == "core-map-exact-proof-reused") ++reused;
+        if (event == "core-map-exact-proof-full-read") ++full;
+    });
+    struct ResetTrace { ~ResetTrace() { DiagnosticTrace::Configure({}); } } reset;
+    const auto captured = view.value->CaptureExactMembers(std::array{std::string("war3map.w3e")});
+    RequireSuccess(captured, "capture on a different thread");
+    Require(captured.value->at(0).bytes == body, "worker handoff preserves exact member verification");
+    Require(granted ? reused == 1 && full == 0 : full == 1,
+        "granted read proof must remain reusable after the requesting thread exits; unsupported leases rehash");
 }
 
 void TestRejectedChangesLeaveSessionAndFilesUntouched() {
@@ -1301,6 +1331,7 @@ int main() {
         TestOpenObserverCannotChangeQualification();
         TestRejectedChangesLeaveSessionAndFilesUntouched();
         TestTerrainReadSourceIsScopedAndCannotSave();
+        TestReadProofOutlivesItsRequestingThread();
         TestExternalSourceChangeAndReplacement();
         TestIncompleteListAndTrailingData();
         TestOpaqueMemberPreservedByAppendOnlyPatch();

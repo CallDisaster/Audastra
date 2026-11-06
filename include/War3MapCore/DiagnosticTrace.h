@@ -10,7 +10,9 @@
 namespace War3Map::DiagnosticTrace {
 using Observer = std::function<void(std::string_view)>;
 inline std::atomic<std::shared_ptr<const Observer>> observer;
-inline void Configure(Observer sink) { observer.store(std::make_shared<const Observer>(std::move(sink))); }
+inline void Configure(Observer sink) {
+    observer.store(sink ? std::make_shared<const Observer>(std::move(sink)) : nullptr);
+}
 inline void Event(std::string_view name) noexcept {
     if (const auto sink = observer.load()) try { (*sink)(name); } catch (...) {}
 }
