@@ -137,6 +137,12 @@ private slots:
         QVERIFY(source.Unlink().Succeeded());
         QVERIFY(QDir().rename(folder, folder + "-hidden"));
         project.AssetUndoStack()->undo(); source.Refresh(); QVERIFY(source.Missing());
+        source.Refresh();
+        project.AddDiagnostics({{DiagnosticSeverity::Warning, "LuaFolder", "LUA_FOLDER_MISSING", "保存时使用地图内Lua。"}});
+        int missingWarnings = 0;
+        for (int row = 0; row < project.diagnosticsModel_->rowCount(); ++row)
+            if (project.diagnosticsModel_->index(row, 2).data().toString() == QStringLiteral("LUA_FOLDER_MISSING")) ++missingWarnings;
+        QCOMPARE(missingWarnings, 1);
         const auto fallback = QtProject::ReadLuaScript(project, "lessons\\reload.lua"); QVERIFY(fallback.Succeeded());
         QVERIFY(fallback.value->text.contains("return 1"));
         QVERIFY(QDir().rename(folder + "-hidden", folder)); source.Refresh(); QVERIFY(source.Active());

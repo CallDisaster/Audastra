@@ -25,6 +25,10 @@ void EditorProject::ClearDiagnostics() {
 
 void EditorProject::AddDiagnostic(const QString& level, const QString& subsystem,
     const QString& code, const QString& message) {
+    if (code == QLatin1String("LUA_FOLDER_MISSING")) {
+        for (int row = 0; row < diagnosticsModel_->rowCount(); ++row)
+            if (diagnosticsModel_->index(row, 2).data().toString() == code) return;
+    }
     QList<QStandardItem*> row;
     row << new QStandardItem(level) << new QStandardItem(subsystem)
         << new QStandardItem(code) << new QStandardItem(message);
