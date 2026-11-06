@@ -1499,6 +1499,9 @@ private:
             });
             const auto before = QtProject::ReadLuaScript(project_, path);
             if (existing != entries.end()) {
+                if (std::any_of(before.diagnostics.begin(), before.diagnostics.end(), [](const auto& diagnostic) {
+                    return diagnostic.code == "ASSET_SOURCE_AMBIGUOUS";
+                })) return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "该路径有多份来源，未选择其中一份覆盖。");
                 if (!before.Succeeded()) return Mcp::Failure(before);
                 if (!arguments.contains("expected_sha256"))
                     return Mcp::Failure("LUA_FILE_WRITE_REJECTED", "替换已有 Lua 文件必须给出读取时的 sha256。");
