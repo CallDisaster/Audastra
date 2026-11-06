@@ -39,6 +39,7 @@ public:
     [[nodiscard]] const MapData::MapDataEditSession::PreparedTerrainEdit& Plan() const noexcept { return plan_; }
     [[nodiscard]] const std::optional<MapData::TerrainWaterStrokeOptions>& WaterOptions() const noexcept { return waterOptions_; }
 private:
+    friend class TerrainPathingSave;
     PreparedTerrainEdit(TerrainEditBinding binding, MapData::MapDataEditSession::PreparedTerrainEdit plan)
         : binding_(std::move(binding)), plan_(std::move(plan)) {}
     TerrainEditBinding binding_;

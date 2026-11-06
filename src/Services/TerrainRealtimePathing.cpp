@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/TerrainPathingSave.h"
+#include "War3MapCore/Services/TerrainEditService.h"
 
 #include <exception>
 #include <type_traits>
@@ -138,6 +139,41 @@ Status TerrainPathingSave::RefreshRealtimePathing(Session& candidate, const Work
     return Status::Ok();
 } catch (const std::exception&) {
     return Status::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_PREPARATION", "目录候选的实时通行准备失败，未发布候选。");
+}
+
+Result<PreparedTerrainEdit> TerrainPathingSave::WithRealtimeCandidate(const PreparedTerrainEdit& prepared,
+    const Session& current, const Session& candidate, std::size_t maximumBytes) try {
+    using Output = Result<PreparedTerrainEdit>;
+    if (!maximumBytes || maximumBytes > 64u * 1024u * 1024u || !prepared.Plan().HasChanges() || candidate.realtimePathingUnavailable_
+        || !candidate.realtimeNativePathing_ || !current.pathing_
+        || candidate.realtimeNativePathing_->size() + 16 != current.pathing_->size())
+        return Output::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_SHAPE", "重放候选没有同形的已核实时通行层。");
+    const auto afterBytes = candidate.realtimeNativePathing_->capacity();
+    const auto beforeBytes = current.realtimeNativePathing_ ? current.realtimeNativePathing_->capacity() : 0;
+    if (afterBytes >= maximumBytes || beforeBytes >= maximumBytes - afterBytes)
+        return Output::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_BUDGET", "重放通行前后态超过本次预算。");
+    auto frozen = current.FreezeForSave(maximumBytes - afterBytes - beforeBytes);
+    if (!frozen.Succeeded() || !frozen.value) return {{}, std::move(frozen.diagnostics)};
+    auto shadow = std::const_pointer_cast<Session>(std::move(*frozen.value));
+    shadow->realtimePathingBuilder_ = {};
+    const auto applied = shadow->ApplyPreparedTerrainEdit(prepared.Plan());
+    if (!applied.Succeeded()) return {{}, applied.diagnostics};
+    if (!shadow->MatchesTerrainJournalDraft(candidate))
+        return Output::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_CANDIDATE_MISMATCH",
+            "同一密封命令与实际来源重放候选的完整草稿不一致，不能接入派生层。");
+    auto result = prepared;
+    auto command = *result.plan_.command_;
+    command.nativePathingTouched = true;
+    command.nativePathingBefore = current.realtimeNativePathing_;
+    command.nativePathingAfter = candidate.realtimeNativePathing_;
+    command.nativePathingUnavailableBefore = current.realtimePathingUnavailable_;
+    command.nativePathingUnavailableAfter = false;
+    result.plan_.realtimePathingBytes_ = afterBytes + beforeBytes;
+    result.plan_.command_ = std::make_shared<const Session::Command>(std::move(command));
+    return Output::Success(std::move(result));
+} catch (const std::exception&) {
+    return Result<PreparedTerrainEdit>::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_PREPARATION",
+        "接入重放通行层失败，目录事务未发布。");
 }
 
 Result<Session::RealtimePathingResult> TerrainPathingSave::PrepareRealtimePathing(

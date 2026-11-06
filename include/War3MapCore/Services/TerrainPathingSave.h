@@ -9,6 +9,7 @@
 namespace War3Map::Services {
 
 class TerrainSessionResources;
+class PreparedTerrainEdit;
 
 struct TerrainReplayLimits {
     // 只能收紧。资源owner保留到最终复核；工作与历史按序列累计，候选另核临时峰值。
@@ -47,6 +48,9 @@ public:
     [[nodiscard]] static Status RefreshRealtimePathing(MapData::MapDataEditSession& candidate,
         const WorkspaceSnapshot& source, const std::filesystem::path& gameRoot,
         std::size_t maximumBytes = 64u * 1024u * 1024u);
+    [[nodiscard]] static Result<PreparedTerrainEdit> WithRealtimeCandidate(
+        const PreparedTerrainEdit& prepared, const MapData::MapDataEditSession& current,
+        const MapData::MapDataEditSession& candidate, std::size_t maximumBytes = 64u * 1024u * 1024u);
     // 既有槽替换与Ground表尾追加调用Core同一命令；实际source、规则winner和当前DOO捕获成功才记录FTJ6。
     // 调用方应在worker冻结来源和修订；此函数会读取来源与游戏表，不宜在GUI线程调用。
     [[nodiscard]] static Result<MapData::TerrainStrokeResult> EditTextureSlot(const MapArchiveSession& source,

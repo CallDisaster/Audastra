@@ -129,12 +129,24 @@ void DirectoryCandidateUsesSameLayerAndRejectsDrift() {
     brush.radius = 2;
     brush.value = true;
     const std::array points{TerrainStrokePoint{3072, 3072}};
-    Take(fixture.edits->EditTerrain(brush, points));
-    const auto revision = fixture.edits->Revision();
-    Require(TerrainPathingSave::RefreshRealtimePathing(*fixture.edits, workspace.Snapshot(), fixture.game).Succeeded(),
+    const auto prepared = Take(PrepareTerrainEdit(*fixture.edits, fixture.Document(), fixture.Binding(), brush, points));
+    auto candidate = fixture.FreshSession();
+    Take(candidate->EditTerrain(brush, points));
+    Require(TerrainPathingSave::RefreshRealtimePathing(*candidate, workspace.Snapshot(), fixture.game).Succeeded(),
         "目录重放的未发布候选更新派生层");
+    const auto qualified = Take(TerrainPathingSave::WithRealtimeCandidate(prepared, *fixture.edits, *candidate));
+    Take(ApplyTerrainEdit(*fixture.edits, fixture.Document(), qualified));
+    const auto revision = fixture.edits->Revision();
     EqualPathing(QueriedPathing(fixture), SavedPathing(fixture, *fixture.edits), "目录与归档共用保存WPM");
-    Require(fixture.edits->Revision() == revision, "只读派生刷新不消费编辑修订");
+    Require(fixture.edits->Undo(), "密封目录候选撤销");
+    EqualPathing(QueriedPathing(fixture), fixture.members[1].data, "目录候选通行与地形一起撤销");
+    Require(fixture.edits->Redo(), "密封目录候选重做");
+    EqualPathing(QueriedPathing(fixture), SavedPathing(fixture, *fixture.edits), "目录候选通行与地形一起重做");
+    const auto afterHistory = fixture.edits->Revision();
+    Require(afterHistory == revision + 2, "仅撤销和重做推进编辑修订");
+    Require(TerrainPathingSave::RefreshRealtimePathing(*fixture.edits, workspace.Snapshot(), fixture.game).Succeeded(),
+        "目录只读刷新可重复");
+    Require(fixture.edits->Revision() == afterHistory, "只读派生刷新不消费编辑修订");
     const auto before = QueriedPathing(fixture);
     {
         std::ofstream output(directory / "TerrainArt/Terrain.slk", std::ios::binary | std::ios::app);
@@ -142,7 +154,7 @@ void DirectoryCandidateUsesSameLayerAndRejectsDrift() {
         Require(output.good(), "制造真实来源漂移");
     }
     Require(!TerrainPathingSave::RefreshRealtimePathing(*fixture.edits, workspace.Snapshot(), fixture.game).Succeeded()
-        && fixture.edits->Revision() == revision && QueriedPathing(fixture) == before,
+        && fixture.edits->Revision() == afterHistory && QueriedPathing(fixture) == before,
         "目录来源漂移不能发布派生层或消费修订");
 }
 } // namespace

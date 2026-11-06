@@ -359,6 +359,8 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     auto sealed = Services::TerrainPathingSave::Seal(*initialMapData_, terrainState_->terrain, terrainState_->pathing,
         mapDataSource_->Snapshot(), (*candidate.value)->edits, strokes, gameRoot_);
     if (!sealed.Succeeded()) return Failed<Receipt>(sealed);
+    const auto livePlan = Services::TerrainPathingSave::WithRealtimeCandidate(plan, overlay->edits, (*candidate.value)->edits);
+    if (!livePlan.Succeeded()) return Failed<Receipt>(livePlan);
     if (toolEpoch_ == (std::numeric_limits<std::uint64_t>::max)()
         || activeEdit_->generation == (std::numeric_limits<std::uint64_t>::max)())
         return Result<Receipt>::Failure("MCP", "MCP_TERRAIN_REVISION_EXHAUSTED", "地形事务修订已用尽，请重新打开工作区。");
@@ -367,7 +369,7 @@ Result<MapData::TerrainStrokeResult> McpWorkspace::ApplyTerrainPlan(const Servic
     const auto base = activeEdit_->baseRevision;
     publishing_ = true;
     struct Lease { bool& flag; ~Lease() { flag = false; } } lease{publishing_};
-    const auto applied = Services::ApplyTerrainEdit(overlay->edits, binding, plan, [&](const auto& receipt) {
+    const auto applied = Services::ApplyTerrainEdit(overlay->edits, binding, *livePlan.value, [&](const auto& receipt) {
         if (prepublish) {
             const auto accepted = prepublish(receipt);
             if (!accepted.Succeeded()) return accepted;
