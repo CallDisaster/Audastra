@@ -19,7 +19,9 @@ Result<std::shared_ptr<const MapArchiveSession>> TerrainPathingSave::CaptureReal
         return Output::Failure("Terrain.Edit", "TERRAIN_REALTIME_PATHING_SOURCE", "后台通行缺少实际归档来源。");
     auto source = binding->archive->FreezeTerrainReadSource(binding->archive);
     if (!source.Succeeded() || !source.value) return {{}, std::move(source.diagnostics)};
-    return Output::Success(std::make_shared<const MapArchiveSession>(std::move(*source.value)));
+    auto captured = Output::Success(std::make_shared<const MapArchiveSession>(std::move(*source.value)));
+    captured.diagnostics = std::move(source.diagnostics);
+    return captured;
 }
 
 Result<Session::PreparedTerrainEdit> TerrainPathingSave::CompleteRealtimeTerrainEdit(const Session& frozen,

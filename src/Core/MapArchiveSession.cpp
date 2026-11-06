@@ -184,6 +184,7 @@ struct ArchiveExactReadLease {
     REQUEST_OPLOCK_INPUT_BUFFER input{};
     REQUEST_OPLOCK_OUTPUT_BUFFER output{};
     bool pending = false;
+    DWORD requestError = ERROR_SUCCESS;
     std::filesystem::path path;
     std::string sha256;
     std::uint32_t volume;
@@ -199,8 +200,10 @@ struct ArchiveExactReadLease {
         input.StructureLength = sizeof(input);
         input.RequestedOplockLevel = OPLOCK_LEVEL_CACHE_READ;
         input.Flags = REQUEST_OPLOCK_INPUT_FLAG_REQUEST;
-        pending = !DeviceIoControl(file.Get(), FSCTL_REQUEST_OPLOCK, &input, sizeof(input),
-            &output, sizeof(output), nullptr, &operation) && GetLastError() == ERROR_IO_PENDING;
+        const auto requested = DeviceIoControl(file.Get(), FSCTL_REQUEST_OPLOCK, &input, sizeof(input),
+            &output, sizeof(output), nullptr, &operation);
+        requestError = requested ? ERROR_SUCCESS : GetLastError();
+        pending = !requested && requestError == ERROR_IO_PENDING;
     }
     ~ArchiveExactReadLease() {
         if (pending) {
@@ -322,7 +325,12 @@ Result<MapArchiveSession> MapArchiveSession::FreezeTerrainReadSource(std::shared
         result.namedSnapshotOwner_ = namedSnapshotOwner_ ? namedSnapshotOwner_ : std::move(sourceOwner);
         const auto pinned = result.PinSourceForExactCaptures();
         if (!pinned.Succeeded()) return {{}, pinned.diagnostics};
-        return Result<MapArchiveSession>::Success(std::move(result));
+        const auto& lease = result.exactReadLease_;
+        const auto observation = "pending=" + std::to_string(lease->pending)
+            + ";error=" + std::to_string(lease->requestError) + ";reusable=" + std::to_string(lease->Stable());
+        auto captured = Result<MapArchiveSession>::Success(std::move(result));
+        captured.diagnostics.push_back({DiagnosticSeverity::Info, "Terrain.Edit", "TERRAIN_READ_SOURCE_PROOF_STATUS", observation});
+        return captured;
     } catch (const std::exception&) {
         return Result<MapArchiveSession>::Failure("Terrain.Edit", "TERRAIN_SOURCE_LEASE_FAILED", "无法冻结地形编辑的只读来源。");
     }

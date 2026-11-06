@@ -1050,6 +1050,9 @@ private:
                     return Services::TerrainPathingSave::CaptureRealtimeReadSource(*frozen);
                 });
                 if (!captured.Succeeded() || !captured.value) return {std::move(captured.diagnostics)};
+                for (const auto& diagnostic : captured.diagnostics)
+                    if (diagnostic.code == "TERRAIN_READ_SOURCE_PROOF_STATUS")
+                        QtCommon::DiagnosticTimingEvent("terrain-live-source-proof/" + diagnostic.message);
                 realtimeReadSource = std::move(*captured.value);
                 return Status::Ok();
             };
