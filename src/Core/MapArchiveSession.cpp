@@ -23,7 +23,9 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <semaphore>
 #include <set>
+#include <thread>
 
 namespace War3Map {
 namespace {
@@ -181,6 +183,7 @@ bool ScriptAuditMember(std::string_view name) {
 struct ArchiveExactReadLease {
     FileHandle file;
     FileHandle event;
+    FileHandle stopEvent;
     OVERLAPPED operation{};
     REQUEST_OPLOCK_INPUT_BUFFER input{};
     REQUEST_OPLOCK_OUTPUT_BUFFER output{};
@@ -190,27 +193,43 @@ struct ArchiveExactReadLease {
     std::string sha256;
     std::uint32_t volume;
     std::uint64_t id;
+    // 必须最后析构：请求线程结束并回收IRP之后，OVERLAPPED和句柄才可销毁。
+    std::jthread issuer;
     ArchiveExactReadLease(const std::filesystem::path& source, const std::string& sha,
         std::uint32_t serial, std::uint64_t fileId)
         : file(CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr)),
-          event(CreateEventW(nullptr, TRUE, FALSE, nullptr)), path(source), sha256(sha), volume(serial), id(fileId) {
-        if (!file.Valid() || !event.Valid()) return;
+          event(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+          stopEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+          path(source), sha256(sha), volume(serial), id(fileId) {
+        if (!file.Valid() || !event.Valid() || !stopEvent.Valid()) return;
         operation.hEvent = event.Get();
         input.StructureVersion = REQUEST_OPLOCK_CURRENT_VERSION;
         input.StructureLength = sizeof(input);
         input.RequestedOplockLevel = OPLOCK_LEVEL_CACHE_READ;
         input.Flags = REQUEST_OPLOCK_INPUT_FLAG_REQUEST;
-        const auto requested = DeviceIoControl(file.Get(), FSCTL_REQUEST_OPLOCK, &input, sizeof(input),
-            &output, sizeof(output), nullptr, &operation);
-        requestError = requested ? ERROR_SUCCESS : GetLastError();
-        pending = !requested && requestError == ERROR_IO_PENDING;
-    }
-    ~ArchiveExactReadLease() {
-        if (pending) {
+        std::binary_semaphore ready(0);
+        issuer = std::jthread([this, &ready](std::stop_token stop) {
+            // 异步请求属于发起线程。租约跨worker交接时，发起线程仍须存活。
+            std::stop_callback onStop(stop, [this] { SetEvent(stopEvent.Get()); });
+            const auto requested = DeviceIoControl(file.Get(), FSCTL_REQUEST_OPLOCK, &input, sizeof(input),
+                &output, sizeof(output), nullptr, &operation);
+            requestError = requested ? ERROR_SUCCESS : GetLastError();
+            pending = !requested && requestError == ERROR_IO_PENDING;
+            ready.release();
+            if (!pending) return;
+            const HANDLE events[]{event.Get(), stopEvent.Get()};
+            (void)WaitForMultipleObjects(2, events, FALSE, INFINITE);
             CancelIoEx(file.Get(), &operation);
             DWORD transferred = 0;
             (void)GetOverlappedResult(file.Get(), &operation, &transferred, TRUE);
+        });
+        ready.acquire();
+    }
+    ~ArchiveExactReadLease() {
+        if (issuer.joinable()) {
+            issuer.request_stop();
+            issuer.join();
         }
     }
     bool Stable() const { return pending && WaitForSingleObject(event.Get(), 0) == WAIT_TIMEOUT; }
