@@ -1,4 +1,5 @@
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/DiagnosticTrace.h"
 #include "War3MapCore/Script/SlkMapMemberProtocol.h"
 #include "War3MapCore/ProjectSaveControl.h"
 #include "War3MapCore/MapData/NativeEditorProfileInputs.h"
@@ -440,6 +441,7 @@ Result<MapArchiveSession> MapArchiveSession::OpenImpl(const std::filesystem::pat
 }
 
 Status MapArchiveSession::VerifySourceUnchanged(const ProjectSaveControl* control) const {
+    DiagnosticTrace::Scope timing(terrainAuditOnly_ ? "core-terrain-source-verify" : "core-archive-source-verify");
     FileHandle source(CreateFileW(sourcePath_.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!source.Valid()) return Status::Failure("MapArchiveSession", "SOURCE_LEASE_FAILED", "源归档不可读取或正在被外部写入。");
@@ -531,6 +533,7 @@ Result<std::vector<ArchiveExactMember>> MapArchiveSession::CaptureExactMembers(
         if (exactReadLease_ && !exactReadLease_->Matches(sourcePath_, sourceSha256_, volumeSerial_, fileId_))
             return fail("SOURCE_LEASE_MISMATCH", "精确捕获的固定租约与来源不符。");
         const bool reusedSourceProof = exactReadLease_ && exactReadLease_->Stable();
+        DiagnosticTrace::Event(reusedSourceProof ? "core-map-exact-proof-reused" : "core-map-exact-proof-full-read");
         const auto verified = reusedSourceProof ? VerifyIdentity(source.Get(), volumeSerial_, fileId_)
             : VerifyHandle(source.Get(), volumeSerial_, fileId_, sourceSha256_);
         if (!verified.Succeeded()) return ForwardFailure<Output>(verified.diagnostics);

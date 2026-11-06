@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 #include "ApplicationIdentity.h"
 #include "../QtCommon/DiagnosticTimings.h"
+#include "War3MapCore/DiagnosticTrace.h"
 #include "ProgramIssueApplication.h"
 #include "McpProductTools.h"
 #include "War3MapCore/Update/UpdateInstaller.h"
@@ -38,6 +39,8 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         }
     }
     War3Map::QtCommon::ConfigureDiagnosticTimings(arguments.contains(QStringLiteral("--diagnostic-timings")));
+    if (War3Map::QtCommon::DiagnosticTimingsEnabled())
+        War3Map::DiagnosticTrace::Configure(War3Map::QtCommon::DiagnosticTimingEvent);
     War3Map::QtCommon::StartDiagnosticHeartbeat(&application);
     const bool saveInProcessOnly = arguments.contains(QStringLiteral("--in-process-only"));
     War3Map::QtApp::ConfigureApplicationIdentity(settingsProfile);

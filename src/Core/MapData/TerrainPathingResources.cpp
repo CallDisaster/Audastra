@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainPathingResources.h"
+#include "War3MapCore/DiagnosticTrace.h"
 #include "TerrainPaletteEditInternal.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
@@ -1486,6 +1487,7 @@ Status TerrainPathingResources::VerifyReadbackMembers(const MemberReader& reader
 }
 
 Status TerrainPathingResources::VerifyGameDependencies(std::size_t remainingBytes) const {
+    DiagnosticTrace::Scope timing("core-game-dependencies-verify");
     auto checked = Guard<bool>([&] {
         std::optional<Game::GameDataSource> game;
         for (const auto& dependency : dependencies_) {

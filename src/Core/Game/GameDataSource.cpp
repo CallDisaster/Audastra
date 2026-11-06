@@ -1,4 +1,5 @@
 #include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/DiagnosticTrace.h"
 #include "War3MapCore/Game/SoundInfoTables.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Resources/ImportTable.h"
@@ -146,6 +147,7 @@ Result<GameDataSource> GameDataSource::MountStrict(const std::filesystem::path& 
 
 Result<GameDataSource> GameDataSource::MountStrict(const std::filesystem::path& war3Root,
     std::uint8_t mainTileset) {
+    DiagnosticTrace::Scope timing("core-game-mount-tileset");
     if (mainTileset < 'A' || mainTileset > 'Z')
         return Result<GameDataSource>::Failure("Game.DataSource", "tileset-invalid",
             "地形集必须是 W3E 的大写 ASCII 地形集字节。");
@@ -181,6 +183,7 @@ Result<GameDataSource> GameDataSource::MountStrict(const std::filesystem::path& 
 }
 
 Result<GameDataSource> GameDataSource::MountImpl(const std::filesystem::path& war3Root, bool strict) {
+    DiagnosticTrace::Scope timing("core-game-mount");
     std::error_code ec;
     if (!std::filesystem::is_directory(war3Root, ec)) {
         return Result<GameDataSource>::Failure(
