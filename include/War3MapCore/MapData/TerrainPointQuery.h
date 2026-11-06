@@ -15,7 +15,7 @@ struct TerrainPointSample {
     std::optional<std::string> groundTexture, cliffTexture; // 无解析表项或悬崖哨兵时为空。
     TerrainPathingState pathingState = TerrainPathingState::Unavailable;
     std::uint32_t pathingX = 0, pathingY = 0;
-    std::optional<std::uint8_t> pathingFlags; // 当前静态 WPM 原始位，不等于游戏动态寻路结果。
+    std::optional<std::uint8_t> pathingFlags; // 当前静态通行位（含未保存派生层），不等于游戏动态寻路结果。
     std::optional<std::uint8_t> originalPathingFlags;
     std::uint8_t addedPathingRestrictions = 0; // 本工程声明的 0x02/0x04/0x08，包含与来源限制重叠的意图。
     bool groundHeightApproximate = false; // 缺实际层级规则且本点插值涉及坡道；不得用于精确摆放。

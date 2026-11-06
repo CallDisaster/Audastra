@@ -341,6 +341,7 @@ private slots:
     void AuxiliaryReentryProjectReplacementAndSourceDrift();
     void TerrainToolsKeepSessionPreviewAndOriginalUndo();
     void WaterToolsCaptureActualResourcesAndKeepOriginalUndo();
+    void RealtimePathingQuerySharesCommittedWorkerAndUndo();
     void BoundsToolsCaptureActualResourcesAndKeepOriginalUndo();
     void BoundsPreparationRejectsConcurrentRevision();
     void TerrainBlockToolsUseCapturedResourcesCasAndOriginalUndo();
@@ -1505,6 +1506,60 @@ void LiveEditorToolsTests::TerrainToolsKeepSessionPreviewAndOriginalUndo() {
     QVERIFY(WriteFile(f.source.filePath("map/war3map.w3e"), Bytes(altered)));
     QVERIFY(!f.tools->Invoke("get_terrain_edit_state", {}).value("ok").toBool());
     QCOMPARE(session->InspectTerrainPoint({0, 0}).value->groundHeight, 16.f); QCOMPARE(undo->count(), 1);
+}
+
+void LiveEditorToolsTests::RealtimePathingQuerySharesCommittedWorkerAndUndo() {
+    Fixture f;
+    QVERIFY2(f.Initialize(), qPrintable(f.error));
+    War3Map::TerrainCornerRampFixtures::Fixture source;
+    f.project.sourceArchivePath_ = source.source->SourcePath();
+    auto archive = MapArchiveSession::Open(f.project.sourceArchivePath_);
+    QVERIFY(archive.Succeeded());
+    f.project.archiveSession_ = std::make_shared<MapArchiveSession>(std::move(*archive.value));
+    f.project.war3GameRoot_ = source.game;
+    f.project.LoadMapDocument();
+    f.project.ResetEditTracking();
+    auto* session = f.project.mapEdits_.get();
+    QVERIFY(session && session->HasTerrainPathing());
+    const auto initial = session->InspectTerrainPoint({3072, 3072});
+    QVERIFY(initial.Succeeded());
+    QCOMPARE(initial.value->pathingFlags, std::optional<std::uint8_t>{0x51});
+    auto state = f.tools->Invoke("get_terrain_edit_state", {});
+    QVERIFY2(state.value("ok").toBool(), qPrintable(Explain(state)));
+    auto args = f.Context();
+    args["terrain_binding"] = state.value("terrain_binding");
+    args["points"] = QJsonArray{QJsonObject{{"x", 3072}, {"y", 3072}}};
+    args["brush"] = QJsonObject{{"kind", "shallow_water"}, {"shape", "square"}, {"size", 2},
+        {"cliff_texture", 0}, {"seed", 7}, {"enforce_water_limits", true}};
+    args["dry_run"] = false;
+    args["follow_doodads"] = false;
+    const auto applied = f.tools->Invoke("edit_terrain_stroke", args);
+    QVERIFY2(applied.value("ok").toBool(), qPrintable(Explain(applied)));
+    QVERIFY(applied.value("applied").toBool());
+    QVERIFY(!f.project.HasPendingTerrainCommit());
+    QVERIFY(!f.project.archiveSession_->HasSourceCaptureLease());
+    const auto sample = session->InspectTerrainPoint({3072, 3072});
+    QVERIFY(sample.Succeeded());
+    QCOMPARE(sample.value->pathingFlags, std::optional<std::uint8_t>{0x19});
+    const auto plan = Services::TerrainPathingSave::PrepareForSave(*f.project.archiveSession_, *session, source.game);
+    QVERIFY(plan.Succeeded() && plan.value->SaveGate().Succeeded());
+    const auto pathing = std::find_if(plan.value->Replacements().begin(), plan.value->Replacements().end(),
+        [](const auto& member) { return member.name == "war3map.wpm"; });
+    QVERIFY(pathing != plan.value->Replacements().end());
+    const auto index = 16 + std::size_t{sample.value->pathingY} * 128 + sample.value->pathingX;
+    QCOMPARE(std::to_integer<std::uint8_t>(pathing->data.at(index)), *sample.value->pathingFlags);
+    state = f.tools->Invoke("get_terrain_edit_state", {});
+    auto query = f.Context();
+    query["terrain_binding"] = state.value("terrain_binding");
+    query["points"] = args.value("points");
+    const auto read = f.tools->Invoke("query_terrain_points", query);
+    QVERIFY2(read.value("ok").toBool(), qPrintable(Explain(read)));
+    QCOMPARE(read.value("points").toArray().first().toObject().value("pathing").toObject().value("raw_flags").toInt(), 0x19);
+    f.project.mapDataUndoStack_->undo();
+    QCOMPARE(session->InspectTerrainPoint({3072, 3072}).value->pathingFlags, std::optional<std::uint8_t>{0x51});
+    f.project.mapDataUndoStack_->redo();
+    QCOMPARE(session->InspectTerrainPoint({3072, 3072}).value->pathingFlags, std::optional<std::uint8_t>{0x19});
+    QCOMPARE(f.project.mapEdits_.get(), session);
 }
 
 void LiveEditorToolsTests::WaterToolsCaptureActualResourcesAndKeepOriginalUndo() {
