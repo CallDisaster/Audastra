@@ -96,6 +96,7 @@ private slots:
     void KindPickerCreatesTypedFrames();
     void FrameSettingsCardAndTexturePicker();
     void TriggerSimulationRunsAuthorTriggers();
+    void OriginAndClipboardTransactions();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -141,6 +142,49 @@ void GameUiModuleTests::BuildsSceneFromDefinitions() {
     bool rawGroup = false;
     for (int i = 0; i < properties->topLevelItemCount(); ++i) rawGroup = rawGroup || properties->topLevelItem(i)->text(0) == QStringLiteral("原始字段");
     QVERIFY(rawGroup);
+}
+
+void GameUiModuleTests::OriginAndClipboardTransactions() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY(module.SelectFrame(QStringLiteral("Minimap")));
+    const auto oldRect = module.Tree()->Nodes()[module.SelectedNode()].rect;
+    QVERIFY2(module.EditOriginNode(QStringLiteral("Minimap"), {{"visible", false}, {"scale", 1.2}}, &error), qPrintable(error));
+    QVERIFY(module.Description(QStringLiteral("OriginalUi")));
+    QCOMPARE(module.Description(QStringLiteral("OriginalUi"))->origins.size(), std::size_t{1});
+    QVERIFY(module.Tree()->Nodes()[module.SelectedNode()].hidden);
+    QVERIFY2(module.MoveOriginNode(module.SelectedNode(), .02, .03, &error), qPrintable(error));
+    const auto rect = module.Tree()->Nodes()[module.SelectedNode()].rect;
+    QVERIFY(std::abs(rect.left - oldRect.left - .02) < .00001);
+    QVERIFY2(module.RestoreOriginNode(QStringLiteral("Minimap"), &error), qPrintable(error));
+    QVERIFY(module.Description(QStringLiteral("OriginalUi"))->origins.empty());
+    QVERIFY(!module.Tree()->Nodes()[module.SelectedNode()].hidden);
+    QVERIFY(std::abs(module.Tree()->Nodes()[module.SelectedNode()].rect.left - oldRect.left) < .00001);
+    const auto originPayload = [&]() {
+        for (const auto& asset : project.AssetEntries()) if (asset.path.compare(QStringLiteral("AudastraUI\\OriginalUi.json"), Qt::CaseInsensitive) == 0) return asset.ownedPayload;
+        return std::shared_ptr<const std::vector<std::byte>>{};
+    };
+    QVERIFY(originPayload()); const auto restored = *originPayload();
+    QVERIFY2(module.CreateDescription(QStringLiteral("Own"), {}, &error), qPrintable(error));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("button"), &error), QStringLiteral("button1"));
+    QVERIFY2(module.CopySelectedDescriptionFrame(&error), qPrintable(error));
+    QVERIFY(module.SelectFrame(QStringLiteral("Own")));
+    QVERIFY2(module.PasteDescriptionFrame(&error), qPrintable(error));
+    QVERIFY(FindUiFrame(*module.Description(QStringLiteral("Own")), "button1_copy"));
+    QVERIFY2(module.CreateDescription(QStringLiteral("Other"), {}, &error), qPrintable(error));
+    QVERIFY2(module.PasteDescriptionFrame(&error), qPrintable(error));
+    QVERIFY(FindUiFrame(*module.Description(QStringLiteral("Other")), "button1"));
+    QVERIFY(!module.CopyOriginTemplate(*module.Tree()->FindByName("Minimap"), &error));
+    QVERIFY2(module.CopyOriginTemplate(*module.Tree()->FindByName("ConsoleUI"), &error), qPrintable(error));
+    QVERIFY(module.Description(QStringLiteral("CopiedUi")));
+    QVERIFY2(module.EditOriginNode(QStringLiteral("Minimap"), {{"visible", false}}, &error), qPrintable(error));
+    const auto hidden = *originPayload();
+    project.AssetUndoStack()->undo(); QCOMPARE(*originPayload(), restored);
+    project.AssetUndoStack()->redo(); QCOMPARE(*originPayload(), hidden);
+    Q_UNUSED(page);
 }
 
 void GameUiModuleTests::RootsRaceAndVisibility() {

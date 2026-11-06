@@ -88,4 +88,16 @@ std::vector<Diagnostic> ApplyUiOriginsPreview(FrameTree& tree, const UiDescripti
     }
     return diagnostics;
 }
+
+std::vector<Diagnostic> CheckUiOriginSupport(const UiDescription& description) {
+    std::vector<Diagnostic> result;
+    for (const auto& change : description.origins) {
+        const auto* part = FindUiOriginPart(change.name);
+        if (!part || (change.visible && !part->visibility) || (change.position && !part->position) ||
+            (change.scale && !part->scale) || (change.alpha && !part->alpha)) {
+            result.push_back(detail::MakeUiError("AUI_ORIGIN_UNSUPPORTED", "原版节点 " + change.name + " 的调整不支持：" + (part ? part->reason : "没有该节点")));
+        }
+    }
+    return result;
+}
 } // namespace War3Map::GameUi

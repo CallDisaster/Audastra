@@ -108,6 +108,8 @@ void GameUiLibrary::ResetSession() noexcept {
     events_.clear();
     buttonDown_ = false;
     gameRoot_ = 0;
+    originals_.clear();
+    originalProblem_.clear();
 }
 
 UiError GameUiLibrary::Ready() const noexcept {

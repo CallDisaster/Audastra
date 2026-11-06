@@ -3,6 +3,7 @@
 #include "GameUiAbi127.h"
 
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -80,6 +81,13 @@ public:
     [[nodiscard]] UiCreated Root();
     [[nodiscard]] UiCreated World();
     [[nodiscard]] UiCreated Find(std::string_view name, int context);
+    [[nodiscard]] UiCreated Original(std::string_view name);
+    [[nodiscard]] UiError SetOriginalVisible(std::string_view name, bool visible);
+    [[nodiscard]] UiError SetOriginalPosition(std::string_view name, int point, float x, float y);
+    [[nodiscard]] UiError SetOriginalScale(std::string_view name, float scale);
+    [[nodiscard]] UiError SetOriginalAlpha(std::string_view name, int alpha);
+    [[nodiscard]] UiError RefreshOriginals();
+    [[nodiscard]] const std::string& LastOriginalProblem() const noexcept { return originalProblem_; }
     // 普通模板：parent为0时挂GameUI。Simple模板：0或GameUI根token表示游戏的默认Simple根，其他父必须是Simple。
     [[nodiscard]] UiCreated Create(std::string_view templateName, FrameHandle parent, int level, int context);
     [[nodiscard]] UiCreated CreateSimple(std::string_view templateName, FrameHandle parent, int context);
@@ -165,6 +173,17 @@ private:
     std::unordered_map<Address, std::uint16_t> byObject_;
     std::unordered_map<FrameHandle, std::uint16_t> byToken_;
     std::vector<UiFrameEvent> events_;
+    struct OriginalState {
+        std::string name;
+        std::optional<bool> visible;
+        struct Position { int point; float x; float y; };
+        std::optional<Position> position;
+        std::optional<float> scale;
+        std::optional<int> alpha;
+    };
+    [[nodiscard]] OriginalState& OriginalSettings(std::string_view name);
+    std::vector<OriginalState> originals_;
+    std::string originalProblem_;
 };
 
 } // namespace Audastra::Runtime32::GameUi

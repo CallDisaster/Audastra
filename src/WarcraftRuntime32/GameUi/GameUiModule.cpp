@@ -48,6 +48,13 @@ struct Instance {
         return StatusOf(error);
     }
 
+    std::int32_t OriginalResult(const AjCall& call, UiError error, std::string_view name) {
+        const auto result = Record(call, error);
+        if (error != UiError::None) failedReason = !ui->LastOriginalProblem().empty() ? ui->LastOriginalProblem()
+            : "原版界面 " + std::string(name) + "：" + std::string(UiErrorText(error));
+        return result;
+    }
+
     std::int32_t RecordInput(const AjCall& call, const UnitClickResult& result) {
         if (result.status != AJ_OK) {
             failedRequest = call.request;
@@ -281,6 +288,25 @@ const CommandSpec kCommands[] = {
         out.kind = AJ_VOID;
         if (!s.extensions) return AJ_UNSUPPORTED;
         return s.RecordControl(c, s.data ? s.data->EnableEventTable() : AJ_UNSUPPORTED);
+    }},
+    {"audastraui.original", "s", AJ_HANDLE, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        const auto frame = s.ui->Original(Text(a[0])); out.kind = AJ_HANDLE; out.integer = frame.handle;
+        return s.OriginalResult(c, frame.error, Text(a[0]));
+    }},
+    {"audastraui.originalshow", "sb", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID; return s.OriginalResult(c, s.ui->SetOriginalVisible(Text(a[0]), Flag(a[1])), Text(a[0]));
+    }},
+    {"audastraui.originalposition", "sirr", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID; return s.OriginalResult(c, s.ui->SetOriginalPosition(Text(a[0]), a[1].integer, a[2].real, a[3].real), Text(a[0]));
+    }},
+    {"audastraui.originalscale", "sr", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID; return s.OriginalResult(c, s.ui->SetOriginalScale(Text(a[0]), a[1].real), Text(a[0]));
+    }},
+    {"audastraui.originalalpha", "si", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg* a, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID; return s.OriginalResult(c, s.ui->SetOriginalAlpha(Text(a[0]), a[1].integer), Text(a[0]));
+    }},
+    {"audastraui.originalrefresh", "", AJ_VOID, [](Instance& s, const AjCall& c, const AjArg*, AjResult& out) -> std::int32_t {
+        out.kind = AJ_VOID; return s.OriginalResult(c, s.ui->RefreshOriginals(), "刷新");
     }},
 };
 

@@ -5,6 +5,16 @@ comment = "玩家没装运行库或游戏版本不受支持时为假。"
 category = TC_AudastraUI
 returns = boolean
 
+[AudastraUIOriginalFrame]
+title = "原版界面框架"
+description = "原版界面 ${节点}"
+comment = "用原版节点的稳定标识取框架。不可用返回空框架，并保留原因；不能删除游戏自己的框架。"
+category = TC_AudastraUI
+returns = AudastraFrame
+[[.args]]
+type = string
+default = "\"Minimap\""
+
 [AudastraUILastError]
 title = "界面库最近错误"
 description = "AudastraUI 最近一次错误"

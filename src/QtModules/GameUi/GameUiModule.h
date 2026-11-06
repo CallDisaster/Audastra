@@ -159,6 +159,12 @@ public:
     bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
     bool CopySelectedDescriptionFrame(QString* error = nullptr);
     bool PasteDescriptionFrame(QString* error = nullptr);
+    [[nodiscard]] QString OriginNodeName(std::uint32_t node) const;
+    [[nodiscard]] QString OriginDescriptionId(const QString& name) const;
+    bool EditOriginNode(const QString& name, const QJsonObject& fields, QString* error = nullptr);
+    bool RestoreOriginNode(const QString& name, QString* error = nullptr);
+    bool MoveOriginNode(std::uint32_t node, double dx, double dy, QString* error = nullptr);
+    bool CopyOriginTemplate(std::uint32_t node, QString* error = nullptr);
     // 给所选描述框架加一个锚点（取第一个没用过的对齐点）、删去第 index 个锚点。
     bool AddDescriptionAnchor(QString* error = nullptr);
     bool RemoveDescriptionAnchor(int index, QString* error = nullptr);
@@ -276,6 +282,8 @@ private:
     void AddNewDescriptionForm(QMenu* menu);
     // 画布与节点树的右键菜单：新建界面描述、创建界面、删除，节点树另有只显示、全部显示、移除根界面。
     void ShowContextMenu(std::uint32_t node, std::optional<QPointF> at, const QPoint& global, bool fromTree);
+    void AddOriginProperties();
+    bool OnOriginPropertyEdited(QTreeWidgetItem* item);
     [[nodiscard]] GameUi::UiSkin MakeSkin() const;
     void UpdateAuthoringControls();
     bool StageDescription(GameUi::UiDescription description, bool create, const QString& undoLabel, QString* error);

@@ -2,6 +2,7 @@
 
 #include "War3MapCore/GameUi/FrameTree.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 #include "FeatureTextWriter.h"
 #include "UiDescriptionText.h"
 
@@ -127,6 +128,7 @@ public:
         if (!d_.states.empty()) variable(UiStateVariableName(d_.id), "string", 0, "\"\"");
         variable(UiCreatedVariableName(d_.id), "boolean", 0, "false");
         variable(UiAttemptVariableName(d_.id), "integer", 0, "0");
+        if (!d_.origins.empty()) variable("AUI_OA_" + d_.id, "integer", 0, "0");
         for (const auto& sent : sent_) variable(sent.variable, sent.type, sent.size, sent.initial);
 
         auto trigger = [&](const std::string& name, const Lines& events, const Lines& actions) { text.Trigger(name, events, actions); };
@@ -134,6 +136,34 @@ public:
         auto named = [&](std::string_view role, const std::string& key) { return UiTriggerName(d_, role, key); };
         trigger(named("创建", "Create"), {Call("TriggerRegisterTimerEventPeriodic", {Real(kUiConnectSeconds)})}, create);
         trigger(named("更新", "Update"), {}, refresh);
+        if (!d_.origins.empty()) {
+            const auto supported = CheckUiOriginSupport(d_);
+            if (!supported.empty()) { Result<UiTriggerPlan> refused; refused.diagnostics = supported; return refused; }
+            const std::string counter = "udg_AUI_OA_" + d_.id;
+            Lines original = Header();
+            original.push_back(Set(counter, Int(counter, "OperatorAdd", "1")));
+            Append(original, If({CompareInt(counter, "OperatorGreater", std::to_string(kUiConnectAttempts))}, {disable, Call("ReturnAction")}));
+            Append(original, If({Call("OperatorCompareBoolean", {Call("AudastraUIIsReady"), "OperatorEqualENE", "false"})}, {Call("ReturnAction")}));
+            original.push_back(disable);
+            std::vector<Segment> originalSegments;
+            for (const auto& change : d_.origins) {
+                Segment segment;
+                Lines& body = segment.frames.emplace_back();
+                const auto name = Quote(change.name);
+                if (change.scale) body.push_back(Call("AudastraUISetOriginalScale", {name, Real(*change.scale)}));
+                if (change.position) {
+                    const auto& a = *change.position;
+                    const auto point = static_cast<std::size_t>(a.point), target = static_cast<std::size_t>(a.targetPoint);
+                    body.push_back(Call("AudastraUISetOriginalPosition", {name, std::string(kAnchors[point]),
+                        Real(kScreenPoints[target][0] + a.x), Real(kScreenPoints[target][1] + a.y)}));
+                }
+                if (change.alpha) body.push_back(Call("AudastraUISetOriginalAlpha", {name, std::to_string(*change.alpha)}));
+                if (change.visible) body.push_back(Call("AudastraUISetOriginalVisible", {name, *change.visible ? "true" : "false"}));
+                originalSegments.push_back(std::move(segment));
+            }
+            Append(original, Requests(originalSegments) > kThreadRequests ? Threaded(originalSegments, "原版调整", "OriginalPart") : Inline(originalSegments));
+            trigger(named("原版界面调整", "Original"), {Call("TriggerRegisterTimerEventPeriodic", {Real(kUiConnectSeconds)})}, original);
+        }
         for (auto& [chunkName, body] : chunks_) {
             Lines actions = Header();
             Append(actions, body);

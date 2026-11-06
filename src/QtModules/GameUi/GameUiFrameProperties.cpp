@@ -237,6 +237,10 @@ const UiFrame* GameUiModule::SelectedDescriptionFrame(QString* descriptionId) co
 }
 
 QList<std::pair<QString, QString>> GameUiModule::PropertyChoices(const QString& key) const {
+    if (key == "origin:visible") return {{tr("原样"), ""}, {tr("显示"), "true"}, {tr("隐藏"), "false"}};
+    if (key == "origin:point" || key == "origin:toPoint") {
+        auto result = PointOptions(false); result.prepend({tr("原样"), ""}); return result;
+    }
     const bool raw = rawFields_ && rawFields_->isChecked();
     QString id;
     const UiFrame* frame = SelectedDescriptionFrame(&id);
@@ -300,6 +304,7 @@ bool GameUiModule::PropertyFreeText(const QString& key) const {
 
 void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
     if (column != 1 || !item) return;
+    if (OnOriginPropertyEdited(item)) return;
     const QString key = item->data(1, kFieldRole).toString();
     QString id;
     const UiFrame* frame = key.isEmpty() ? nullptr : SelectedDescriptionFrame(&id);

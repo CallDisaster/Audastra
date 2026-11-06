@@ -318,7 +318,8 @@ void GameUiModule::BuildPage() {
     connect(canvas_, &GameUiCanvas::NodeClicked, this, [this](std::uint32_t node) { SelectNode(node); });
     connect(canvas_, &GameUiCanvas::NodeDragged, this, [this](std::uint32_t node, double dx, double dy) {
         QString error;
-        if (!MoveDescriptionFrame(node, dx, dy, &error)) ReportAuthoring(error);
+        const bool ok = OriginNodeName(node).isEmpty() ? MoveDescriptionFrame(node, dx, dy, &error) : MoveOriginNode(node, dx, dy, &error);
+        if (!ok) ReportAuthoring(error);
     });
     connect(rawFields_, &QCheckBox::toggled, this, &GameUiModule::UpdateProperties);
     InstallPropertyEditors(properties_);
@@ -470,6 +471,7 @@ void GameUiModule::UpdateProperties() {
     properties_->clear();
     if (!tree_ || selected_ == kNoNode || selected_ >= tree_->Nodes().size()) return;
     const FrameNode& node = tree_->Nodes()[selected_];
+    AddOriginProperties();
     const auto group = [this](const QString& title) {
         auto* item = new QTreeWidgetItem(properties_, {title});
         item->setFirstColumnSpanned(true);

@@ -70,6 +70,13 @@ bool GameUiModule::StageDescription(UiDescription description, bool create, cons
     const auto existing = std::find_if(files.begin(), files.end(),
         [&](const GameUiDescriptionFile& file) { return file.description.id == description.id; });
     if (create && existing != files.end()) return fail(tr("界面 %1 已存在").arg(Text(description.id)));
+    for (const auto& other : files) {
+        if (other.description.id == description.id) continue;
+        for (const auto& change : description.origins) {
+            if (std::any_of(other.description.origins.begin(), other.description.origins.end(), [&](const auto& previous) { return previous.name == change.name; }))
+                return fail(tr("原版节点 %1 已由界面 %2 调整").arg(Text(change.name), Text(other.description.id)));
+        }
+    }
     const QString path = existing != files.end() ? Text(existing->path) : Text(UiDescriptionMemberPath(description.id));
     const std::string text = SerializeUiDescription(description);
     auto bytes = std::make_shared<std::vector<std::byte>>(text.size());
@@ -291,6 +298,7 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
     if (item) SelectNode(node);
     const bool isFrame = item && item->uiFrame && !item->uiFrame->frame.empty();
     QMenu menu(page_);
+    menu.setToolTipsVisible(true);
     QAction* create = menu.addAction(tr("创建界面…"), this, [this, node, at, global] { (void)OpenKindPicker(node, at, global); });
     create->setEnabled(definitions_ && !definitions_->descriptions.empty());
     AddNewDescriptionForm(menu.addMenu(tr("新建界面描述")));
@@ -305,6 +313,18 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
     }
     if (definitions_ && !definitions_->descriptions.empty()) {
         menu.addAction(tr("粘贴"), this, [this] { QString error; if (!PasteDescriptionFrame(&error)) ReportAuthoring(error); });
+    }
+    const QString originName = OriginNodeName(node);
+    if (!originName.isEmpty()) {
+        menu.addSeparator();
+        menu.addAction(tr("隐藏"), this, [this, originName] { QString error; if (!EditOriginNode(originName, {{"visible", false}}, &error)) ReportAuthoring(error); });
+        menu.addAction(tr("恢复原样"), this, [this, originName] { QString error; if (!RestoreOriginNode(originName, &error)) ReportAuthoring(error); });
+    }
+    if (item && !item->uiFrame && !item->scriptFrame) {
+        auto* copy = menu.addAction(tr("复制为自己的界面"), this, [this, node] { QString error; if (!CopyOriginTemplate(node, &error)) ReportAuthoring(error); });
+        const bool canCopy = definitions_ && definitions_->library && item->codeLabel.empty() && definitions_->library->FindTemplate(item->name).has_value();
+        copy->setEnabled(canCopy);
+        if (!canCopy) copy->setToolTip(tr("此节点由游戏代码创建，或没有可复制的模板"));
     }
     if (fromTree && item) {
         menu.addSeparator();
@@ -505,9 +525,11 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
     generateTriggersButton_->setObjectName(QStringLiteral("gameUiGenerateTriggers"));
     connect(generateTriggersButton_, &QPushButton::clicked, this, [this] {
         const FrameNode* node = tree_ && selected_ < tree_->Nodes().size() ? &tree_->Nodes()[selected_] : nullptr;
-        if (!node || !node->uiFrame) return;
+        if (!node) return;
+        const auto descriptionId = node->uiFrame ? Text(node->uiFrame->description) : OriginDescriptionId(OriginNodeName(selected_));
+        if (descriptionId.isEmpty()) return;
         QString error;
-        const auto generated = GenerateDescriptionTriggers(Text(node->uiFrame->description), false, &error);
+        const auto generated = GenerateDescriptionTriggers(descriptionId, false, &error);
         if (!generated) {
             ReportAuthoring(error);
             return;
@@ -529,8 +551,9 @@ void GameUiModule::UpdateAuthoringControls() {
     const bool isFrame = inDescription && !node->uiFrame->frame.empty();
     if (addFrameButton_) addFrameButton_->setEnabled(inDescription);
     if (removeFrameButton_) removeFrameButton_->setEnabled(isFrame);
-    if (generateTriggersButton_) generateTriggersButton_->setEnabled(inDescription);
-    if (canvas_) canvas_->SetDraggable(isFrame);
+    const bool isOrigin = !OriginNodeName(selected_).isEmpty();
+    if (generateTriggersButton_) generateTriggersButton_->setEnabled(inDescription || (isOrigin && !OriginDescriptionId(OriginNodeName(selected_)).isEmpty()));
+    if (canvas_) canvas_->SetDraggable(isFrame || isOrigin);
 }
 
 void GameUiModule::CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel,

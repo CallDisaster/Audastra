@@ -6,6 +6,54 @@ category = TC_AudastraUI
 [[.args]]
 type = string
 
+[AudastraUISetOriginalVisible]
+title = "调整原版界面显示"
+description = "设置原版节点 ${节点} 显示为 ${显示}"
+comment = "只调整本机界面；运行库不可用或节点不存在时不操作，最近错误保留原因。"
+category = TC_AudastraUI
+[[.args]]
+type = string
+[[.args]]
+type = boolean
+default = "true"
+
+[AudastraUISetOriginalPosition]
+title = "调整原版界面位置"
+description = "把原版节点 ${节点} 的 ${锚点} 放在 (${X}, ${Y})"
+comment = "屏幕宽0.8、高0.6，原点在左下；本方已成功记录的调整会在游戏重排后重放。"
+category = TC_AudastraUI
+[[.args]]
+type = string
+[[.args]]
+type = AudastraAnchor
+default = "AudastraAnchorCenter"
+[[.args]]
+type = real
+[[.args]]
+type = real
+
+[AudastraUISetOriginalScale]
+title = "调整原版界面缩放"
+description = "设置原版节点 ${节点} 的缩放为 ${比例}"
+comment = "允许0.1至4；具体部件支持范围以编辑器部件表为准。"
+category = TC_AudastraUI
+[[.args]]
+type = string
+[[.args]]
+type = real
+default = "1"
+
+[AudastraUISetOriginalAlpha]
+title = "调整原版界面透明度"
+description = "设置原版节点 ${节点} 的不透明度为 ${不透明度}"
+comment = "0全透明，255不透明；不可用时保留错误而不替换游戏功能。"
+category = TC_AudastraUI
+[[.args]]
+type = string
+[[.args]]
+type = integer
+default = "255"
+
 [AudastraUISetPoint]
 title = "设置相对锚点"
 description = "把 ${框架} 的 ${锚点} 对齐到 ${目标框架} 的 ${目标锚点}，偏移 (${X}, ${Y})"

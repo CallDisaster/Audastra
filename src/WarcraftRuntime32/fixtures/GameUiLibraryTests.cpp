@@ -50,7 +50,7 @@ bool Logged(const std::string& line) {
 
 struct FakeFrame {
     Address vtable = 0;
-    std::array<unsigned char, 0x400> body{};
+    std::array<unsigned char, 0x500> body{};
     Address At(std::uint32_t offset) const { return *reinterpret_cast<const Address*>(reinterpret_cast<const unsigned char*>(this) + offset); }
     void Set(std::uint32_t offset, Address value) { *reinterpret_cast<Address*>(reinterpret_cast<unsigned char*>(this) + offset) = value; }
     Address Self() const { return reinterpret_cast<Address>(this); }
@@ -642,7 +642,7 @@ void ModuleCalls() {
     Check(m.Call("module.load;s:audastraui").status == AJ_OK, "map-side load finds the active built-in module");
     Check(m.Call("module.load;s:other").status == AJ_UNSUPPORTED, "no loader: maps cannot pull other modules");
     Check(m.Call("module.info;s:audastraui").value.text
-        == "audastraui|1.3.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
+        == "audastraui|1.4.0|1|active|" + std::to_string(GameUiModuleContract().commands.size()), "module info");
 
     auto r = m.Call("audastraui.ready");
     Check(r.status == AJ_OK && r.value.kind == AJ_BOOL && r.value.integer == 1, "ready with complete entries and game UI");
@@ -968,6 +968,41 @@ void ScriptMatchesModule() {
 
 } // namespace
 
+void OriginalParts() {
+    Reset();
+    auto entries = Entries();
+    entries.vtMinimap = reinterpret_cast<Address>(vtClassic.data());
+    entries.vtPortrait = entries.vtMinimap;
+    entries.vtInfoBar = reinterpret_cast<Address>(vtSimple.data());
+    entries.vtInventory = entries.vtInfoBar;
+    entries.vtCommandButton = entries.vtInfoBar;
+    auto* minimap = NewFrame(vtClassic, 0, 0);
+    auto* info = NewFrame(vtSimple, 0, 0);
+    auto* panel = NewFrame(vtSimple, 0, 0);
+    auto* slot = NewFrame(vtSimple, 0, 0);
+    std::array<Address, 12> slots{}; slots[11] = slot->Self();
+    g_root->Set(0x3C0, minimap->Self()); g_root->Set(0x3C4, info->Self());
+    info->Set(0x148, panel->Self()); panel->Set(0x12C, 6);
+    panel->Set(0x130, reinterpret_cast<Address>(slots.data()));
+    GameUiLibrary ui(entries);
+    Check(ui.Original("Minimap").error == UiError::None && ui.Original("InventoryButton6").error == UiError::None, "original verified fields and bounded inventory vector");
+    Check(ui.Original("InventoryButton7").error == UiError::Unsupported && ui.Original("not_a_node").error == UiError::Unsupported, "unknown original fields refuse");
+    Check(ui.SetOriginalVisible("Minimap", false) == UiError::None && ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::None &&
+        ui.SetOriginalScale("Minimap", 1.2f) == UiError::None && ui.SetOriginalAlpha("Minimap", 128) == UiError::None, "original properties recorded");
+    g_log.clear();
+    Check(ui.RefreshOriginals() == UiError::None && Logged("scale " + Hex(minimap->Self() + 0xB4) + " 1.200"), "reapply on game thread");
+    minimap->vtable = reinterpret_cast<Address>(vtSimple.data());
+    Check(ui.RefreshOriginals() == UiError::Unsupported && !ui.Faulted(), "changed original vtable refuses before game call");
+    minimap->vtable = entries.vtMinimap;
+    Check(ui.RefreshOriginals() == UiError::None, "temporary missing original can recover");
+    panel->Set(0x12C, 7);
+    Check(ui.Original("InventoryButton6").error == UiError::NotFound && !ui.Faulted(), "unknown inventory count refuses");
+    g_root->Set(0x3C0, 1);
+    Check(ui.Original("Minimap").error == UiError::Unsupported && !ui.Faulted(), "unreadable original pointer safely refused");
+    ui.ResetSession(); g_log.clear();
+    Check(ui.RefreshOriginals() == UiError::None && g_log.empty(), "session reset clears original replay state");
+}
+
 int main() {
     try {
         IncompleteTable();
@@ -994,6 +1029,7 @@ int main() {
         FormattedDataCapacity();
         TextObservationIsolation();
         ScriptMatchesModule();
+        OriginalParts();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         for (const auto& line : g_log) std::cerr << "  " << line << "\n";

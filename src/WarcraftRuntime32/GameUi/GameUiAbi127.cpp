@@ -161,9 +161,20 @@ bool ResolveGameUiEntryPoints127(Address base, const std::function<bool(Address,
     r.Data(table.vtSimpleTexture, VtSimpleTexture);
     r.Data(table.vtSimpleFontString, VtSimpleFontString);
 
+    // 同一映像的构造函数写表及RTTI交叉核对；取原版字段时还须匹配对象虚表。
+    r.Data(table.vtMinimap, 0x99244C);
+    r.Data(table.vtPortrait, 0x9922FC);
+    r.Data(table.vtCommandBar, 0x990030);
+    r.Data(table.vtInfoBar, 0x99197C);
+    r.Data(table.vtInventory, 0x991900);
+    r.Data(table.vtHeroBar, 0x990ED8);
+    r.Data(table.vtTimeOfDay, 0x994620);
+    r.Data(table.vtMessage, 0x95CF38);
+    r.Data(table.vtSimpleButton, 0x95C9A4);
+    r.Data(table.vtCommandButton, 0x98F6A8);
     if (!r.Ok()) {
         char text[96]{};
-        std::snprintf(text, sizeof(text), "Game.dll 偏移 0x%06X 不在可执行代码段，界面库不可用。", r.Failed());
+        std::snprintf(text, sizeof(text), "Game.dll 偏移 0x%06X 不在已核验映像范围，界面库不可用。", r.Failed());
         error = text;
         return false;
     }

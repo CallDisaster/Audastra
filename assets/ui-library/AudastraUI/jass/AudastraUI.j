@@ -18,6 +18,7 @@ library AudastraUI requires AudastraJapi
         private integer connectStatus = -1
         private integer failedStatus = 0
         private integer failedRequest = 0
+        private timer originalTimer = null
         // 界面数据面：高频刷新写进这张表，运行库在游戏线程里直接改框架，不拼请求串。
         // -1 还没绑定；0 已绑定；其他为上次绑定失败的 JAPI 状态。
         private hashtable dataTable = null
@@ -849,4 +850,43 @@ library AudastraUI requires AudastraJapi
         return result
     endfunction
 
+    // 原版节点可能在选择、菜单或窗口尺寸变化后重新排布；在游戏线程重放本方已成功记录的调整。
+    private function RefreshOriginalUi takes nothing returns nothing
+        call Run("originalrefresh", "")
+    endfunction
+
+    private function StartOriginalRefresh takes nothing returns nothing
+        if originalTimer == null then
+            set originalTimer = CreateTimer()
+            call TimerStart(originalTimer, 0.10, true, function RefreshOriginalUi)
+        endif
+    endfunction
+
+    function AudastraUIOriginalFrame takes string name returns integer
+        return Frame("original", AjArgText(name))
+    endfunction
+
+    function AudastraUISetOriginalVisible takes string name, boolean visible returns nothing
+        if Run("originalshow", AjArgText(name) + AjArgBool(visible)) then
+            call StartOriginalRefresh()
+        endif
+    endfunction
+
+    function AudastraUISetOriginalPosition takes string name, integer point, real x, real y returns nothing
+        if Run("originalposition", AjArgText(name) + AjArgInt(point) + AjArgReal(x) + AjArgReal(y)) then
+            call StartOriginalRefresh()
+        endif
+    endfunction
+
+    function AudastraUISetOriginalScale takes string name, real scale returns nothing
+        if Run("originalscale", AjArgText(name) + AjArgReal(scale)) then
+            call StartOriginalRefresh()
+        endif
+    endfunction
+
+    function AudastraUISetOriginalAlpha takes string name, integer alpha returns nothing
+        if Run("originalalpha", AjArgText(name) + AjArgInt(alpha)) then
+            call StartOriginalRefresh()
+        endif
+    endfunction
 endlibrary
