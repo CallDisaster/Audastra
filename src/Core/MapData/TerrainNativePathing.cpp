@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainBlockEditing.h"
 #include "TerrainPaletteEditInternal.h"
 
 #include <algorithm>
@@ -425,8 +426,10 @@ bool IsNativeTerrainCliffSentinelTransition(
     return true;
 }
 
-Result<std::vector<std::byte>> GenerateTerrainNativePathing(
-    const TerrainNativePathingInput& input, std::size_t maximumBytes) {
+namespace {
+Result<std::vector<std::byte>> GeneratePathing(
+    const TerrainNativePathingInput& input, std::size_t maximumBytes,
+    const std::optional<TerrainCellRect>& region) {
     return Guard<std::vector<std::byte>>([&] {
         if (!input.terrain) Fail("TERRAIN_NATIVE_INPUT", "缺少通行生成所需的完整地形网格。");
         const auto& terrain = *input.terrain;
@@ -440,9 +443,19 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
             Fail("TERRAIN_NATIVE_DIMENSIONS", "地形顶点数量与声明宽高不一致。");
         const auto width = (columns - 1) * 4;
         const auto height = (rows - 1) * 4;
-        if (height > kMaximumCells / width || height > maximumBytes / width)
+        if (height > kMaximumCells / width)
             Fail("TERRAIN_NATIVE_BUDGET", "完整通行网格超过本次保存剩余预算。");
         const auto cells = width * height;
+        const TerrainCellRect rectangle = region.value_or(TerrainCellRect{0, 0,
+            static_cast<std::uint32_t>(columns - 1), static_cast<std::uint32_t>(rows - 1)});
+        if (rectangle.x0 >= rectangle.x1 || rectangle.y0 >= rectangle.y1
+            || rectangle.x1 >= columns || rectangle.y1 >= rows)
+            Fail("TERRAIN_NATIVE_REGION", "通行更新区域必须是完整网格内的非空半开地格矩形。");
+        const auto outputWidth = static_cast<std::size_t>(rectangle.x1 - rectangle.x0) * 4;
+        const auto outputHeight = static_cast<std::size_t>(rectangle.y1 - rectangle.y0) * 4;
+        if (outputHeight > maximumBytes / outputWidth)
+            Fail("TERRAIN_NATIVE_BUDGET", "完整通行网格超过本次保存剩余预算。");
+        const auto outputCells = outputWidth * outputHeight;
         const auto& bounds = input.playableBounds;
         if (!FiniteCoordinate(bounds.left) || !FiniteCoordinate(bounds.bottom)
             || !FiniteCoordinate(bounds.right) || !FiniteCoordinate(bounds.top)
@@ -478,12 +491,13 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
         const auto palette = ReadPalette(terrain, input.groundRules);
         std::vector<char> labels;
         if (ramp) {
-            if (terrain.vertices.size() > maximumBytes - cells)
+            if (terrain.vertices.size() > maximumBytes - outputCells)
                 Fail("TERRAIN_NATIVE_BUDGET", "完整通行网格及坡道角分类超过本次保存剩余预算。");
-            labels = RampLabels(terrain, *input.maximumCliffLevel, maximumBytes - cells);
+            labels = RampLabels(terrain, *input.maximumCliffLevel, maximumBytes - outputCells);
         }
-        std::vector<std::byte> result(cells);
-        for (std::size_t y = 0; y + 1 < rows; ++y) for (std::size_t x = 0; x + 1 < columns; ++x) {
+        std::vector<std::byte> result(outputCells);
+        for (std::size_t y = rectangle.y0; y < rectangle.y1; ++y)
+        for (std::size_t x = rectangle.x0; x < rectangle.x1; ++x) {
             const auto sw = y * columns + x;
             const std::array<const TerrainVertex*, 4> corners{
                 &terrain.vertices[sw], &terrain.vertices[sw + 1],
@@ -536,11 +550,25 @@ Result<std::vector<std::byte>> GenerateTerrainNativePathing(
                         if (water[corner].depth != 0) mask |= 0x08;
                     }
                 }
-                result[output] = static_cast<std::byte>(EncodeStatic(objects) | ((objects & 0x40) ? 0 : mask));
+                const auto localOutput = ((y - rectangle.y0) * 4 + localY) * outputWidth
+                    + (x - rectangle.x0) * 4 + localX;
+                result[localOutput] = static_cast<std::byte>(EncodeStatic(objects) | ((objects & 0x40) ? 0 : mask));
             }
         }
         return result;
     });
+}
+
+} // namespace
+
+Result<std::vector<std::byte>> GenerateTerrainNativePathing(
+    const TerrainNativePathingInput& input, std::size_t maximumBytes) {
+    return GeneratePathing(input, maximumBytes, std::nullopt);
+}
+
+Result<std::vector<std::byte>> GenerateTerrainNativePathingRegion(
+    const TerrainNativePathingInput& input, const TerrainCellRect& cells, std::size_t maximumBytes) {
+    return GeneratePathing(input, maximumBytes, cells);
 }
 
 } // namespace War3Map::MapData

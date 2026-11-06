@@ -1,4 +1,5 @@
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainBlockEditing.h"
 
 #include <algorithm>
 #include <array>
@@ -646,6 +647,34 @@ void ValidationIsBoundedAndRejectsUnknownRules() {
 }
 } // namespace
 
+namespace {
+void RegionsMatchFullNativeOutput() {
+    Fixture fixture(7, 6);
+    fixture.Wet(8256);
+    fixture.objects.resize(24 * 20);
+    fixture.objects[10 * 24 + 15] = 0x40;
+    fixture.grid.vertices[2 * 7 + 3].textureAndFlagsRaw |= 0x20;
+    fixture.grid.vertices[3 * 7 + 4].cliffAndLayerRaw = 3;
+    const auto full = Take(fixture.Generate());
+    for (const TerrainCellRect region : {TerrainCellRect{0, 0, 1, 1}, TerrainCellRect{2, 1, 5, 4}, TerrainCellRect{5, 4, 6, 5}}) {
+        const auto width = (region.x1 - region.x0) * 4;
+        const auto height = (region.y1 - region.y0) * 4;
+        const auto patch = Take(GenerateTerrainNativePathingRegion(fixture.Input(), region, width * height));
+        Require(patch.size() == width * height, "region has exact cropped output size");
+        for (std::size_t y = 0; y < height; ++y)
+            for (std::size_t x = 0; x < width; ++x)
+                Require(patch[y * width + x] == full[(region.y0 * 4 + y) * 24 + region.x0 * 4 + x],
+                    "regional water/cliff/blight/static output equals full save generator byte for byte");
+        Refused(GenerateTerrainNativePathingRegion(fixture.Input(), region, width * height - 1), "TERRAIN_NATIVE_BUDGET");
+    }
+    Refused(GenerateTerrainNativePathingRegion(fixture.Input(), {1, 1, 1, 2}), "TERRAIN_NATIVE_REGION");
+    fixture.grid.vertices.back().groundHeightRaw |= 0x4000;
+    const auto invalidFull = fixture.Generate();
+    const auto invalidRegion = GenerateTerrainNativePathingRegion(fixture.Input(), {0, 0, 1, 1});
+    Require(!invalidFull.Succeeded() && !invalidRegion.Succeeded(), "unknown input outside dirty rectangle remains rejected");
+}
+} // namespace
+
 int main() {
     try {
         DryRampCornerRulesHaveLiteralOracles();
@@ -663,6 +692,7 @@ int main() {
         StaticSuppressionIncludesBlightAndBoundaries();
         InvalidPaletteSlotAndZeroSentinelAreDistinct();
         ValidationIsBoundedAndRejectsUnknownRules();
+        RegionsMatchFullNativeOutput();
         std::cout << "TerrainNativePathingTests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -7,6 +7,8 @@
 
 namespace War3Map::MapData {
 
+struct TerrainCellRect;
+
 // 原版通行使用未取整的轴对齐世界范围。四数须为实际 binary32 值；
 // 包含判断保留原版正/反投影及 float 落点，不是普通四边比较，
 // 也不使用小地图的整数地格裁剪范围。X 跨度目前须可精确表示为
@@ -100,5 +102,11 @@ struct TerrainNativePathingInput {
 // 未知字段、不完整规则或未闭合的坐标/范围精度明确失败，绝不返回部分网格。
 [[nodiscard]] Result<std::vector<std::byte>> GenerateTerrainNativePathing(
     const TerrainNativePathingInput& input, std::size_t maximumBytes = 64 * 1024 * 1024);
+
+// 与完整保存生成共用计算和完整输入验证，仅输出半开地格矩形内的4×4通行格。
+// 返回紧密row-major字节；不带WPM头，不授予来源或保存资格。
+[[nodiscard]] Result<std::vector<std::byte>> GenerateTerrainNativePathingRegion(
+    const TerrainNativePathingInput& input, const TerrainCellRect& cells,
+    std::size_t maximumBytes = 64 * 1024 * 1024);
 
 } // namespace War3Map::MapData
