@@ -172,6 +172,7 @@ bool ResolveGameUiEntryPoints127(Address base, const std::function<bool(Address,
     r.Data(table.vtMessage, 0x95CF38);
     r.Data(table.vtSimpleButton, 0x95C9A4);
     r.Data(table.vtCommandButton, 0x98F6A8);
+    r.Data(table.vtSimpleFrame, 0x95C8A4);
     if (!r.Ok()) {
         char text[96]{};
         std::snprintf(text, sizeof(text), "Game.dll 偏移 0x%06X 不在已核验映像范围，界面库不可用。", r.Failed());

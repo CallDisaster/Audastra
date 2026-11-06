@@ -2,6 +2,7 @@
 
 #include "GameUiAuthoringJson.h"
 #include "GameUiModule.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
@@ -279,6 +280,10 @@ QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect
         {"type", Text(node.frameType)}, {"layout", LayoutName(node.layout)},
         {"parent", node.parent == kScreenNode || node.parent == kNoNode ? QJsonValue() : QJsonValue(static_cast<qint64>(node.parent))}};
     if (!node.codeLabel.empty()) row.insert("code_area", Text(node.codeLabel));
+    if (!node.uiFrame && !node.scriptFrame) if (const auto* original = FindUiOriginPart(node.name)) {
+        row.insert("original", QJsonObject{{"name", Text(original->name)}, {"visibility", original->visibility},
+            {"position", original->position}, {"scale", original->scale}, {"alpha", original->alpha}, {"reason", Text(original->reason)}});
+    }
     if (node.codePlaced) row.insert("placed_by", "game-code");
     if (node.scriptFrame && plan && *node.scriptFrame < plan->frames.size()) {
         const ScriptFrame& frame = plan->frames[*node.scriptFrame];

@@ -108,8 +108,11 @@ void GameUiModule::AddOriginProperties() {
         support->setToolTip(1, Text(part->reason));
     }
     const auto row = [&](const QString& label, const QString& key, const QString& value) {
-        auto* item = new QTreeWidgetItem(group, {label, value});
-        item->setData(1, kFieldRole, "origin:" + key); item->setFlags(item->flags() | Qt::ItemIsEditable);
+        const auto options = PropertyChoices("origin:" + key);
+        auto* item = new QTreeWidgetItem(group, {label, options.isEmpty() ? value : GameUiChoiceLabel(options, value)});
+        item->setData(1, kFieldRole, "origin:" + key);
+        if (!options.isEmpty()) item->setData(1, kGameUiChoiceRole, value);
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
     };
     const auto visible = current.contains("visible") ? (current["visible"].toBool() ? QStringLiteral("true") : QStringLiteral("false")) : QString();
     row(tr("显示"), "visible", visible);
