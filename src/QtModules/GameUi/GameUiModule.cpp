@@ -1,4 +1,5 @@
 #include "GameUiModule.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 
 #include "GameUiTriggerSimulation.h"
 
@@ -251,6 +252,10 @@ void GameUiModule::RebuildScene() {
         }
         const auto layout = tree->Layout();
         sceneDiagnostics_.insert(sceneDiagnostics_.end(), layout.begin(), layout.end());
+        for (const auto& file : definitions_->descriptions) {
+            const auto adjusted = ApplyUiOriginsPreview(*tree, file.description);
+            sceneDiagnostics_.insert(sceneDiagnostics_.end(), adjusted.begin(), adjusted.end());
+        }
         tree_ = std::move(tree);
     }
     selected_ = kNoNode;

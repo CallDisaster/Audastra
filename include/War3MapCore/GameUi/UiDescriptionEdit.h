@@ -14,6 +14,7 @@
 //   {"op": "set_frame", "frame": "fill", "fields": {"width": 0.2, "texture": "X", "value": null}}     null 删除该字段；
 //       改 id 时同步改锚点、状态与事件里的引用；children 用 add/move/remove 改
 //   {"op": "move_frame", "frame": "fill", "parent": null, "index": 2}
+//   {"op": "paste_frame", "clipboard": {完整的复制子树描述}, "parent": null, "index": 2}
 //   {"op": "remove_frame", "frame": "fill"}   连同子框架；指向它们的状态覆盖与事件一并删除，锚点引用须先改掉
 //   {"op": "rename_value", "from": "hp", "to": "health"}   框架的取值与文字模板（含状态覆盖文字）一并改
 //   {"op": "set_values" | "set_states" | "set_events", "values" | "states" | "events": [...]}   整体替换；
@@ -22,6 +23,12 @@
 namespace War3Map::GameUi {
 
 [[nodiscard]] Result<UiDescription> ApplyUiEdits(const UiDescription& base, std::string_view edits);
+
+// 剪贴板使用同一严格描述格式。只复制选中子树及其数值、状态、事件和模拟初始值；
+// 跨子树锚点须先改为父级或屏幕引用。粘贴自动分配冲突编号并同步所有内部引用。
+[[nodiscard]] Result<std::string> CopyUiFrame(const UiDescription& source, std::string_view frame);
+[[nodiscard]] Result<UiDescription> PasteUiFrame(const UiDescription& target, std::string_view clipboard,
+    std::string_view parent = {}, std::optional<std::size_t> index = std::nullopt);
 
 // 新建只有编号与显示名的空描述。
 [[nodiscard]] Result<UiDescription> NewUiDescription(std::string_view id, std::string_view label);

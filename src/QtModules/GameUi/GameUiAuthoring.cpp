@@ -297,10 +297,14 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
     if (isFrame) {
         menu.addSeparator();
         menu.addAction(tr("设置界面…"), this, [this, node, global] { (void)OpenFrameSettings(node, global); });
+        menu.addAction(tr("复制"), this, [this] { QString error; if (!CopySelectedDescriptionFrame(&error)) ReportAuthoring(error); });
         menu.addAction(tr("删除"), this, [this] {
             QString error;
             if (!RemoveSelectedDescriptionFrame(&error) && !error.isEmpty()) ReportAuthoring(error);
         });
+    }
+    if (definitions_ && !definitions_->descriptions.empty()) {
+        menu.addAction(tr("粘贴"), this, [this] { QString error; if (!PasteDescriptionFrame(&error)) ReportAuthoring(error); });
     }
     if (fromTree && item) {
         menu.addSeparator();

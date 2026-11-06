@@ -157,6 +157,8 @@ public:
     // 贴图字段用物编同一个资源选择器（游戏文件、导入文件、自定义路径，带预览）；没有时贴图字段直接手写。
     void SetResourcePickerFactory(ObjectResourcePickerFactory factory) { resourcePickerFactory_ = std::move(factory); }
     bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
+    bool CopySelectedDescriptionFrame(QString* error = nullptr);
+    bool PasteDescriptionFrame(QString* error = nullptr);
     // 给所选描述框架加一个锚点（取第一个没用过的对齐点）、删去第 index 个锚点。
     bool AddDescriptionAnchor(QString* error = nullptr);
     bool RemoveDescriptionAnchor(int index, QString* error = nullptr);

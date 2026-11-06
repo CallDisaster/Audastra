@@ -184,6 +184,17 @@ struct UiSimulation {
     friend bool operator==(const UiSimulation&, const UiSimulation&) = default;
 };
 
+// 游戏自己的节点：空属性保持原样，位置使用屏幕锚点及偏移。
+// 这里只存作者意图；能否在目标版本生效由生成器的部件能力表判断。
+struct UiOriginAdjustment {
+    std::string name;
+    std::optional<bool> visible;
+    std::optional<UiAnchor> position;
+    std::optional<double> scale;
+    std::optional<std::uint32_t> alpha;
+    friend bool operator==(const UiOriginAdjustment&, const UiOriginAdjustment&) = default;
+};
+
 struct UiDescription {
     std::string id;
     std::string label;
@@ -192,6 +203,7 @@ struct UiDescription {
     std::vector<UiState> states;
     std::vector<UiEvent> events;
     UiSimulation simulation;
+    std::vector<UiOriginAdjustment> origins;
 
     friend bool operator==(const UiDescription&, const UiDescription&) = default;
 };

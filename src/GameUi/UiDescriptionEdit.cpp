@@ -1,4 +1,5 @@
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 
 #include "UiDescriptionText.h"
 #include "../Core/Serialization/StrictJson.h"
@@ -64,7 +65,9 @@ public:
         if (!edit.is_object() || !edit.contains("op") || !edit["op"].is_string()) return Fail("每一步须是带 op 的对象");
         const std::string op = edit["op"].get<std::string>();
         if (op == "set_description") return Keys(edit, {"op", "label"}) && SetDescription(edit);
+        if (op == "set_origin" || op == "remove_origin") return Origin(edit, op == "remove_origin");
         if (op == "add_frame") return Keys(edit, {"op", "parent", "index", "frame"}) && AddFrame(edit);
+        if (op == "paste_frame") return Keys(edit, {"op", "parent", "index", "clipboard"}) && PasteFrame(edit);
         if (op == "set_frame") return Keys(edit, {"op", "frame", "fields"}) && SetFrame(edit);
         if (op == "move_frame") return Keys(edit, {"op", "frame", "parent", "index"}) && MoveFrame(edit);
         if (op == "remove_frame") return Keys(edit, {"op", "frame"}) && RemoveFrame(edit);
@@ -140,6 +143,23 @@ private:
         return true;
     }
 
+    bool Origin(const Json& edit, bool remove) {
+        if (!Keys(edit, remove ? std::initializer_list<std::string_view>{"op", "name"} : std::initializer_list<std::string_view>{"op", "origin"})) return false;
+        if (remove ? (!edit.contains("name") || !edit["name"].is_string()) :
+            (!edit.contains("origin") || !edit["origin"].is_object() || !edit["origin"].contains("name") || !edit["origin"]["name"].is_string())) return Fail("缺少原版节点name");
+        const auto name = remove ? edit["name"].get<std::string>() : edit["origin"]["name"].get<std::string>();
+        const auto* part = FindUiOriginPart(name);
+        if (!part || part->name != name) return Fail("不是原版节点的规范标识：" + name);
+        if (!document_.contains("origins")) document_["origins"] = Json::array();
+        auto& list = document_["origins"];
+        auto found = std::find_if(list.begin(), list.end(), [&](const auto& item) { return Is(item["name"], name); });
+        if (remove) { if (found != list.end()) list.erase(found); }
+        else if (found != list.end()) *found = edit["origin"];
+        else list.push_back(edit["origin"]);
+        if (list.empty()) document_.erase("origins");
+        return true;
+    }
+
     bool AddFrame(const Json& edit) {
         if (!edit.contains("frame") || !edit["frame"].is_object()) return Fail("frame 应为框架对象");
         const Json& frame = edit["frame"];
@@ -178,6 +198,20 @@ private:
             }
             frame[key] = item.value();
         }
+        return true;
+    }
+
+    bool PasteFrame(const Json& edit) {
+        if (!edit.contains("clipboard") || !edit["clipboard"].is_object()) return Fail("clipboard 应为界面剪贴板对象");
+        if (edit.contains("parent") && !edit["parent"].is_null() && !edit["parent"].is_string()) return Fail("parent 应为框架编号或 null");
+        if (edit.contains("index") && (!edit["index"].is_number_integer() || edit["index"].get<std::int64_t>() < 0)) return Fail("index 应为非负整数");
+        auto base = ParseUiDescription(document_.dump());
+        if (!base.value) { diagnostics = std::move(base.diagnostics); return false; }
+        const std::string parent = edit.contains("parent") && edit["parent"].is_string() ? edit["parent"].get<std::string>() : "";
+        const std::optional<std::size_t> index = edit.contains("index") ? std::optional<std::size_t>(edit["index"].get<std::size_t>()) : std::nullopt;
+        auto pasted = PasteUiFrame(*base.value, edit["clipboard"].dump(), parent, index);
+        if (!pasted.value) { diagnostics = std::move(pasted.diagnostics); return false; }
+        document_ = Json::parse(SerializeUiDescription(*pasted.value));
         return true;
     }
 

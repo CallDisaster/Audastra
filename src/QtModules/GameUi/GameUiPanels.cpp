@@ -324,6 +324,17 @@ void GameUiModule::BuildPage() {
     InstallPropertyEditors(properties_);
     // Delete 删除所选的描述框架（节点树与画布上都可用）。
     for (QWidget* target : std::initializer_list<QWidget*>{nodes_, canvas_}) {
+        for (const auto& entry : {std::pair{QKeySequence::Copy, true}, std::pair{QKeySequence::Paste, false}}) {
+            auto* action = new QAction(target);
+            action->setShortcut(QKeySequence(entry.first));
+            action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            target->addAction(action);
+            connect(action, &QAction::triggered, this, [this, copy = entry.second] {
+                QString error;
+                const bool ok = copy ? CopySelectedDescriptionFrame(&error) : PasteDescriptionFrame(&error);
+                if (!ok && !error.isEmpty()) ReportAuthoring(error);
+            });
+        }
         auto* remove = new QAction(target);
         remove->setShortcut(QKeySequence::Delete);
         remove->setShortcutContext(Qt::WidgetWithChildrenShortcut);

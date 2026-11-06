@@ -1,4 +1,5 @@
 #include "War3MapCore/GameUi/UiDescription.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 
 #include "War3MapCore/Text/TextUtil.h"
 #include "UiDescriptionText.h"
@@ -522,7 +523,7 @@ Result<UiDescription> ParseUiDescription(std::string_view text, std::string_view
     const Json& json = *parsed.value;
     Reader reader(source);
     UiDescription description;
-    if (reader.Object(json, "", {"format", "version", "id", "label", "values", "frames", "states", "events", "simulation"})) {
+    if (reader.Object(json, "", {"format", "version", "id", "label", "values", "frames", "states", "events", "simulation", "origins"})) {
         const auto format = reader.String(json, "format", "", true);
         if (format && *format != kUiDescriptionFormat) reader.Error("/format", "AUI_FORMAT", "不是 audastra.ui 界面描述");
         const auto version = reader.Count(json, "version", "", true, 1, 1000);
@@ -531,6 +532,31 @@ Result<UiDescription> ParseUiDescription(std::string_view text, std::string_view
         }
         description.id = reader.String(json, "id", "", true).value_or("");
         description.label = reader.String(json, "label", "", false).value_or("");
+        if (const Json* origins = reader.Array(json, "origins", "", UiOriginParts().size())) {
+            for (std::size_t i = 0; i < origins->size(); ++i) {
+                const auto& item = (*origins)[i];
+                const std::string path = "/origins/" + std::to_string(i);
+                if (!reader.Object(item, path, {"name", "visible", "position", "scale", "alpha"})) continue;
+                UiOriginAdjustment change;
+                change.name = reader.String(item, "name", path, true).value_or("");
+                change.visible = reader.Bool(item, "visible", path, false);
+                change.scale = reader.Number(item, "scale", path, false, 0.1, 4.0);
+                change.alpha = reader.Count(item, "alpha", path, false, 0, 255);
+                if (const auto* position = reader.Field(item, "position", path, false)) {
+                    const auto at = path + "/position";
+                    if (reader.Object(*position, at, {"point", "toPoint", "x", "y"})) {
+                        UiAnchor anchor;
+                        anchor.target = UiAnchorTarget::Screen;
+                        anchor.point = reader.Point(*position, "point", at, true).value_or(FramePoint::Center);
+                        anchor.targetPoint = reader.Point(*position, "toPoint", at, false).value_or(anchor.point);
+                        anchor.x = reader.Number(*position, "x", at, false, -2, 2).value_or(0);
+                        anchor.y = reader.Number(*position, "y", at, false, -2, 2).value_or(0);
+                        change.position = anchor;
+                    }
+                }
+                description.origins.push_back(std::move(change));
+            }
+        }
         if (const Json* values = reader.Array(json, "values", "", kMaxValues)) {
             for (std::size_t i = 0; i < values->size(); ++i) ReadValue(reader, (*values)[i], "/values/" + std::to_string(i), description.values);
         }
@@ -574,6 +600,27 @@ std::string SerializeUiDescription(const UiDescription& description) {
     json["version"] = kUiDescriptionVersion;
     json["id"] = description.id;
     if (!description.label.empty()) json["label"] = description.label;
+    if (!description.origins.empty()) {
+        OrderedJson origins = OrderedJson::array();
+        for (const auto& change : description.origins) {
+            OrderedJson item;
+            item["name"] = change.name;
+            if (change.visible) item["visible"] = *change.visible;
+            if (change.position) {
+                const auto& a = *change.position;
+                OrderedJson position;
+                position["point"] = FramePointName(a.point);
+                if (a.targetPoint != a.point) position["toPoint"] = FramePointName(a.targetPoint);
+                if (a.x != 0) position["x"] = Num(a.x);
+                if (a.y != 0) position["y"] = Num(a.y);
+                item["position"] = std::move(position);
+            }
+            if (change.scale) item["scale"] = Num(*change.scale);
+            if (change.alpha) item["alpha"] = *change.alpha;
+            origins.push_back(std::move(item));
+        }
+        json["origins"] = std::move(origins);
+    }
     if (!description.values.empty()) {
         OrderedJson values = OrderedJson::array();
         for (const auto& value : description.values) {

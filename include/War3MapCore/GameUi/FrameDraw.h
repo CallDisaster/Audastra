@@ -51,6 +51,7 @@ enum class DrawKind : std::uint8_t { Image, Text, CodeArea };
 
 struct FrameDrawCommand {
     std::uint32_t node = kNoNode;
+    float opacity = 1.0f;
     DrawKind kind = DrawKind::Image;
     ImageDraw image;  // CodeArea 只用其中的 rect
     TextDraw text;

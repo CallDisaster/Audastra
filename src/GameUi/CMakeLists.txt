@@ -18,9 +18,11 @@ add_library(War3MapGameUi STATIC
     TriggerSimulation.cpp
     UiDescription.cpp
     UiDescriptionCheck.cpp
+    UiDescriptionClipboard.cpp
     UiDescriptionEdit.cpp
     UiDescriptionText.cpp
     UiDescriptionTree.cpp
+    UiOrigins.cpp
     UiFrameKinds.cpp
     UiSkin.cpp
     UiTriggers.cpp)

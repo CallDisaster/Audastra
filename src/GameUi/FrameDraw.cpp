@@ -72,6 +72,7 @@ public:
 
     FrameDrawList Run() {
         for (const std::uint32_t root : tree_.Nodes()[kScreenNode].children) Visit(root);
+        for (auto& command : list_.commands) command.opacity = Node(command.node).previewOpacity;
         return std::move(list_);
     }
 

@@ -1,6 +1,7 @@
 #include "War3MapCore/GameUi/UiDescription.h"
 
 #include "War3MapCore/GameUi/GameCodeLayout.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 #include "UiDescriptionText.h"
 
 #include <algorithm>
@@ -40,6 +41,8 @@ public:
         CheckStates();
         CheckEvents();
         CheckSimulation();
+        const auto origins = ValidateUiOrigins(description_);
+        diagnostics_.insert(diagnostics_.end(), origins.begin(), origins.end());
         return std::move(diagnostics_);
     }
 

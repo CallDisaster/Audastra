@@ -188,9 +188,12 @@ void GameUiCanvas::PaintScene(QPainter& painter, const QRectF& screen, bool over
     painter.save();
     painter.setClipRect(screen);
     for (const auto& command : list_.commands) {
+        painter.save();
+        painter.setOpacity(command.opacity);
         if (command.kind == DrawKind::Image) PaintImage(painter, screen, command, hits);
         else if (command.kind == DrawKind::Text) PaintText(painter, screen, command, hits);
         else PaintCodeArea(painter, screen, command, hits);
+        painter.restore();
     }
     painter.restore();
     if (overlays) PaintOverlays(painter, screen);

@@ -1,6 +1,7 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "GameUiTestSupport.h"
 
@@ -512,6 +513,62 @@ void TestSimulation() {
         ("removed values drop their start values: " + First(removed.diagnostics)).c_str());
 }
 
+void TestClipboard() {
+    const auto parsed = ParseUiDescription(R"({"format":"audastra.ui","version":1,"id":"source",
+      "values":[{"id":"amount","type":"real","default":0.5},{"id":"unused","type":"string"}],
+      "frames":[{"id":"button","type":"button","text":"{amount:2} {{amount}}","width":0.1,"height":0.03,
+        "children":[{"id":"bar","type":"bar","width":0.1,"height":0.01,"value":"amount",
+          "anchors":[{"point":"CENTER","to":"button"}]}]}],
+      "states":[{"id":"active","set":[{"frame":"button","text":"{amount:1}"}]}],
+      "events":[{"id":"click","frame":"button","on":"click"}],"simulation":{"values":{"amount":0.7}}})");
+    Require(parsed.Succeeded(), "clipboard original fixture");
+    const auto copied = CopyUiFrame(*parsed.value, "button");
+    Require(copied.Succeeded(), "copy subtree");
+    const auto packet = ParseUiDescription(*copied.value);
+    Require(packet.Succeeded() && packet.value->values.size() == 1, "copy only referenced values");
+    const auto pasted = PasteUiFrame(*parsed.value, *copied.value);
+    Require(pasted.Succeeded(), "paste same description");
+    const auto* button = FindUiFrame(*pasted.value, "button_copy");
+    const auto* bar = FindUiFrame(*pasted.value, "bar_copy");
+    Require(button && bar && button->text == "{amount_copy:2} {{amount}}" &&
+        bar->value.binding->value == "amount_copy" && bar->anchors[0].targetId == "button_copy", "frame and value references remapped");
+    Require(pasted.value->events.back().id == "click_copy" && pasted.value->events.back().frame == "button_copy" &&
+        pasted.value->states.back().id == "active_copy" && pasted.value->states.back().overrides[0].text == "{amount_copy:1}" &&
+        pasted.value->simulation.values.at("amount_copy") == "0.7", "state event and simulation remapped");
+    const auto third = PasteUiFrame(*pasted.value, *copied.value);
+    Require(third.Succeeded() && FindUiFrame(*third.value, "button_copy2"), "repeated paste allocates deterministic ids");
+    UiDescription other; other.id = "other";
+    const auto cross = PasteUiFrame(other, *copied.value);
+    Require(cross.Succeeded() && cross.value->events[0].frame == "button" && FindUiValue(*cross.value, "amount"), "cross description paste");
+    Require(!CopyUiFrame(*parsed.value, "bar").Succeeded(), "external anchor explicitly rejected");
+    Require(!PasteUiFrame(other, *copied.value, "missing").Succeeded(), "invalid parent refuses whole paste");
+    Require(!PasteUiFrame(other, "{}").Succeeded(), "invalid clipboard refused");
+    const std::string edit = "[{\"op\":\"paste_frame\",\"clipboard\":" + *copied.value + "}]";
+    const auto shared = ApplyUiEdits(*parsed.value, edit);
+    Require(shared.Succeeded() && SerializeUiDescription(*shared.value) == SerializeUiDescription(*pasted.value), "MCP edit uses same paste service");
+    Require(!FindUiFrame(*parsed.value, "button_copy"), "source description immutable");
+}
+
+void TestOrigins() {
+    const auto parsed = ParseUiDescription(R"({"format":"audastra.ui","version":1,"id":"origin",
+      "origins":[{"name":"Minimap","visible":false,"position":{"point":"TOPRIGHT","x":-0.01,"y":-0.02},"scale":1.2,"alpha":128}]})");
+    Require(parsed.Succeeded(), "origin description parsed");
+    const auto text = SerializeUiDescription(*parsed.value);
+    const auto round = ParseUiDescription(text);
+    Require(round.Succeeded() && *round.value == *parsed.value && SerializeUiDescription(*round.value) == text, "origin canonical round trip");
+    const auto restored = ApplyUiEdits(*round.value, R"([{"op":"remove_origin","name":"Minimap"}])");
+    Require(restored.Succeeded() && restored.value->origins.empty() && SerializeUiDescription(*restored.value).find("origins") == std::string::npos, "restore omits all overrides");
+    Require(!ParseUiDescription(R"({"format":"audastra.ui","version":1,"id":"x","origins":[{"name":"not_an_original","visible":false}]})").Succeeded(), "unknown original rejected");
+    Require(!ApplyUiEdits(*restored.value, R"([{"op":"set_origin","origin":{"name":"Minimap","scale":0}}])").Succeeded(), "invalid origin scale refuses edit");
+    FrameTree tree;
+    tree.AddGameCodeAreas();
+    (void)tree.Layout();
+    Require(ApplyUiOriginsPreview(tree, *parsed.value).empty(), "origin preview applies");
+    const auto found = std::find_if(tree.Nodes().begin(), tree.Nodes().end(), [](const auto& node) { return node.name == "Minimap"; });
+    Require(found != tree.Nodes().end() && found->hidden && std::abs(found->rect.right - .79) < .00001 &&
+        std::abs(found->rect.top - .58) < .00001 && std::abs(found->previewOpacity - 128.0 / 255) < .00001, "preview hidden placement alpha");
+}
+
 int main() {
     try {
         TestRoundTrip();
@@ -525,6 +582,8 @@ int main() {
         TestEdits();
         TestSimulation();
         TestModel();
+        TestClipboard();
+        TestOrigins();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;
