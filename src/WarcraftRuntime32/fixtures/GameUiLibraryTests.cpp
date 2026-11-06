@@ -977,6 +977,11 @@ void OriginalParts() {
     entries.vtInventory = entries.vtInfoBar;
     entries.vtCommandButton = entries.vtInfoBar;
     auto* minimap = NewFrame(vtClassic, 0, 0);
+    const auto layout = minimap->Self() + Layout127::ClassicLayout;
+    const auto putFloat = [&](Address at, float value) { std::memcpy(reinterpret_cast<void*>(at), &value, sizeof(value)); };
+    putFloat(layout + 0x60, 2.0f);
+    putFloat(layout + 0x44, .1f); putFloat(layout + 0x48, .2f);
+    putFloat(layout + 0x4C, .5f); putFloat(layout + 0x50, .4f);
     auto* info = NewFrame(vtSimple, 0, 0);
     auto* panel = NewFrame(vtSimple, 0, 0);
     auto* slot = NewFrame(vtSimple, 0, 0);
@@ -987,8 +992,12 @@ void OriginalParts() {
     GameUiLibrary ui(entries);
     Check(ui.Original("Minimap").error == UiError::None && ui.Original("InventoryButton6").error == UiError::None, "original verified fields and bounded inventory vector");
     Check(ui.Original("InventoryButton7").error == UiError::Unsupported && ui.Original("not_a_node").error == UiError::Unsupported, "unknown original fields refuse");
+    g_log.clear();
+    Check(ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::NotFound && g_log.empty(), "unresolved dimensions do not remove anchors");
+    minimap->Set(Layout127::ClassicLayout + 0x54, 1);
     Check(ui.SetOriginalVisible("Minimap", false) == UiError::None && ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::None &&
         ui.SetOriginalScale("Minimap", 1.2f) == UiError::None && ui.SetOriginalAlpha("Minimap", 128) == UiError::None, "original properties recorded");
+    Check(Logged("width " + Hex(layout) + " 0.200") && Logged("height " + Hex(layout) + " 0.100"), "two-anchor resolved rectangle preserves unscaled dimensions before clear");
     g_log.clear();
     Check(ui.RefreshOriginals() == UiError::None && Logged("scale " + Hex(minimap->Self() + 0xB4) + " 1.200"), "reapply on game thread");
     minimap->vtable = reinterpret_cast<Address>(vtSimple.data());

@@ -176,7 +176,7 @@ private:
     struct OriginalState {
         std::string name;
         std::optional<bool> visible;
-        struct Position { int point; float x; float y; };
+        struct Position { int point; float x; float y; float width; float height; };
         std::optional<Position> position;
         std::optional<float> scale;
         std::optional<int> alpha;

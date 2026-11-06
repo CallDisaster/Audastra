@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <cstdio>
 
 namespace Audastra::Runtime32::GameUi {
 namespace {
@@ -27,6 +29,29 @@ constexpr Field kFields[] = {
     {"MinimapButton3", 0x410, &GameUiEntryPoints::vtSimpleButton}, {"MinimapButton4", 0x414, &GameUiEntryPoints::vtSimpleButton},
     {"MinimapButton5", 0x418, &GameUiEntryPoints::vtSimpleButton}};
 constexpr const char* kInventory[] = {"InventoryButton1", "InventoryButton2", "InventoryButton3", "InventoryButton4", "InventoryButton5", "InventoryButton6"};
+
+bool ReadFloat(Address at, float& value) {
+    Address bits = 0;
+    if (!ReadWord(at, bits)) return false;
+    value = std::bit_cast<float>(static_cast<std::uint32_t>(bits));
+    return std::isfinite(value);
+}
+// CLayout复制矩形0BCE10、差值0BD343..0BD34D及缩放尺寸0BCDF0/0BCE40。
+// 两角锚定的框架可能没有显式宽高；清锚前保留已解出的未缩放尺寸。
+bool OriginalDimensions(Address layout, float& width, float& height) {
+    float scale = 0;
+    if (!ReadFloat(layout + 0x60, scale) || scale <= 0 || scale > 16 ||
+        !ReadFloat(layout + 0x58, width) || !ReadFloat(layout + 0x5C, height)) return false;
+    if (width <= 0 || height <= 0) {
+        Address resolved = 0;
+        std::array<float, 4> rect{};
+        if (!ReadWord(layout + 0x54, resolved) || !resolved) return false;
+        for (unsigned i = 0; i != rect.size(); ++i) if (!ReadFloat(layout + 0x44 + 4 * i, rect[i])) return false;
+        if (width <= 0) width = (rect[2] - rect[0]) / scale;
+        if (height <= 0) height = (rect[3] - rect[1]) / scale;
+    }
+    return std::isfinite(width) && std::isfinite(height) && width > 0 && height > 0 && width <= 4 && height <= 4;
+}
 }
 
 UiCreated GameUiLibrary::Original(std::string_view name) {
@@ -45,14 +70,26 @@ UiCreated GameUiLibrary::Original(std::string_view name) {
     if (field == std::end(kFields) && inventory == std::end(kInventory)) return fail(UiError::Unsupported);
     const auto root = Root();
     if (root.error != UiError::None) return fail(root.error);
+    std::string mismatch;
     const auto verify = [&](Address object, Address expected) {
         Address actual = 0;
-        return object && expected && ReadWord(object, actual) && actual == expected;
+        if (!object || !expected || !ReadWord(object, actual)) return false;
+        if (actual == expected) return true;
+        const auto base = entries_.vtSimpleFrame >= 0x95C8A4 ? entries_.vtSimpleFrame - 0x95C8A4 : 0;
+        if (base && actual >= base && actual - base < 0x1000000 && expected >= base) {
+            char text[96]{};
+            std::snprintf(text, sizeof(text), " (type RVA=%06X, expected=%06X)",
+                static_cast<unsigned>(actual - base), static_cast<unsigned>(expected - base));
+            mismatch = text;
+        }
+        return false;
     };
     Address object = 0;
     if (field != std::end(kFields)) {
         if (!ReadWord(gameRoot_ + field->offset, object) || !object) return fail(UiError::NotFound);
-        if (!verify(object, entries_.*(field->vtable))) return fail(UiError::Unsupported);
+        if (!verify(object, entries_.*(field->vtable))) {
+            const auto result = fail(UiError::Unsupported); originalProblem_ += mismatch; return result;
+        }
     } else {
         Address info = 0, panel = 0, count = 0, data = 0;
         if (!ReadWord(gameRoot_ + 0x3C4, info) || !verify(info, entries_.vtInfoBar) ||
@@ -81,9 +118,22 @@ UiError GameUiLibrary::SetOriginalVisible(std::string_view name, bool value) {
 UiError GameUiLibrary::SetOriginalPosition(std::string_view name, int point, float x, float y) {
     if (point < 0 || point > 8 || !std::isfinite(x) || !std::isfinite(y) || std::abs(x) > 3 || std::abs(y) > 3) return UiError::BadArgument;
     const auto frame = Original(name); if (frame.error != UiError::None) return frame.error;
-    auto status = ClearPoints(frame.handle);
+    UiError error{};
+    const auto* slot = Resolve(frame.handle, error);
+    if (!slot) return error;
+    const auto previous = std::find_if(originals_.begin(), originals_.end(), [&](const auto& state) { return state.name == name; });
+    float width = 0, height = 0;
+    if (previous != originals_.end() && previous->position) {
+        width = previous->position->width; height = previous->position->height;
+    } else if (!OriginalDimensions(LayoutOf(*slot), width, height)) {
+        originalProblem_ = "原版界面 " + std::string(name) + "：尚无有效布局尺寸，未修改锚点";
+        return UiError::NotFound;
+    }
+    auto status = SetWidth(frame.handle, width);
+    if (status == UiError::None) status = SetHeight(frame.handle, height);
+    if (status == UiError::None) status = ClearPoints(frame.handle);
     if (status == UiError::None) status = SetAbsPoint(frame.handle, point, x, y);
-    if (status == UiError::None) OriginalSettings(name).position = OriginalState::Position{point, x, y};
+    if (status == UiError::None) OriginalSettings(name).position = OriginalState::Position{point, x, y, width, height};
     return status;
 }
 UiError GameUiLibrary::SetOriginalScale(std::string_view name, float value) {
@@ -109,7 +159,9 @@ UiError GameUiLibrary::RefreshOriginals() {
         auto status = frame.error;
         if (status == UiError::None && state.scale) status = SetScale(frame.handle, *state.scale);
         if (status == UiError::None && state.position) {
-            status = ClearPoints(frame.handle);
+            status = SetWidth(frame.handle, state.position->width);
+            if (status == UiError::None) status = SetHeight(frame.handle, state.position->height);
+            if (status == UiError::None) status = ClearPoints(frame.handle);
             if (status == UiError::None) status = SetAbsPoint(frame.handle, state.position->point, state.position->x, state.position->y);
         }
         if (status == UiError::None && state.alpha) status = SetAlpha(frame.handle, *state.alpha);
