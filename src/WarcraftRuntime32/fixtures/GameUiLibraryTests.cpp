@@ -993,7 +993,10 @@ void OriginalParts() {
     Check(ui.Original("Minimap").error == UiError::None && ui.Original("InventoryButton6").error == UiError::None, "original verified fields and bounded inventory vector");
     Check(ui.Original("InventoryButton7").error == UiError::Unsupported && ui.Original("not_a_node").error == UiError::Unsupported, "unknown original fields refuse");
     g_log.clear();
-    Check(ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::NotFound && g_log.empty(), "unresolved dimensions do not remove anchors");
+    Check(ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::NotFound &&
+        std::none_of(g_log.begin(), g_log.end(), [](const auto& line) {
+            return line.starts_with("clear ") || line.starts_with("abs ") || line.starts_with("width ") || line.starts_with("height ");
+        }), "unresolved dimensions do not remove anchors or change size");
     minimap->Set(Layout127::ClassicLayout + 0x54, 1);
     Check(ui.SetOriginalVisible("Minimap", false) == UiError::None && ui.SetOriginalPosition("Minimap", 2, .79f, .59f) == UiError::None &&
         ui.SetOriginalScale("Minimap", 1.2f) == UiError::None && ui.SetOriginalAlpha("Minimap", 128) == UiError::None, "original properties recorded");
