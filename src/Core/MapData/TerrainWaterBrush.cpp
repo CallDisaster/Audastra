@@ -688,7 +688,7 @@ private:
                         || (vertex.CliffTextureIndex() != high.CliffTextureIndex() && !absentLowerCliff)
                         || (joined ? (vertex.CliffLevel() != high.CliffLevel() && vertex.CliffLevel() + 1 != high.CliffLevel())
                             : vertex.CliffLevel() != high.CliffLevel() - (lower ? 1 : 0)))
-                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、兼容悬崖材质的一级纯台阶或纯拐角，不能相交边界、其它方向或旧算法不支持的水；顶点("
+                        reject(before ? "BEFORE_DOMAIN" : "DOMAIN", "坡道实际脏块及halo需等地高、兼容悬崖材质的一级纯台阶、已核实方台或纯拐角，不能相交边界、其它方向或旧算法不支持的水；顶点("
                             + std::to_string(nx) + "," + std::to_string(ny) + ")实际层级=" + std::to_string(vertex.CliffLevel())
                             + "，预期=" + std::to_string(high.CliffLevel() - (lower ? 1 : 0))
                             + "，悬崖槽=" + std::to_string(vertex.CliffTextureIndex()) + "，高点槽=" + std::to_string(high.CliffTextureIndex()) + "。");
