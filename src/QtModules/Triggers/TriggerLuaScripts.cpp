@@ -178,6 +178,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
         const auto& folder = project_.LuaFolderSource();
         if (folder.Missing()) Status(tr("外部文件夹不存在，使用地图内Lua"));
         else if (folder.Linked() && !folder.Active()) Status(tr("外部Lua不可用"));
+        else Status({});
         if (publishing_ || selectedPath_.isEmpty()) return;
         const auto current = QtProject::ReadOwnedAsset(project_, selectedPath_);
         if (HasPendingDraft()) {

@@ -148,6 +148,7 @@ private slots:
         QVERIFY(QDir().rename(folder + "-hidden", folder)); source.Refresh(); QVERIFY(source.Active());
         const auto restored = QtProject::ReadLuaScript(project, "lessons\\reload.lua"); QVERIFY(restored.Succeeded());
         QVERIFY(restored.value->text.contains("return 7"));
+        QVERIFY(!scripts.StatusText().contains(QStringLiteral("不存在")));
         QVERIFY(put(QByteArray("return '\xff'", 10))); source.Refresh(); QVERIFY(!source.Active());
         const auto assets = project.CaptureAssets();
         QVERIFY(!scripts.CreateScript("unavailable.lua", "return 9\n")); QVERIFY(project.CaptureAssets() == assets);
