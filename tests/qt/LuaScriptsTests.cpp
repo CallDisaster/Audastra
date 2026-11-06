@@ -133,7 +133,10 @@ private slots:
         project.AssetUndoStack()->undo(); QVERIFY(source.Active());
         project.AssetUndoStack()->undo(); QVERIFY(!source.Linked());
         project.AssetUndoStack()->redo(); QVERIFY(source.Active());
-        QVERIFY(QDir().rename(folder, folder + "-hidden")); source.Refresh(); QVERIFY(source.Missing());
+        // Windows目录通知句柄可能阻止直接改名。先解除监视，再恢复同一关联，模拟重开时缺路径。
+        QVERIFY(source.Unlink().Succeeded());
+        QVERIFY(QDir().rename(folder, folder + "-hidden"));
+        project.AssetUndoStack()->undo(); source.Refresh(); QVERIFY(source.Missing());
         const auto fallback = QtProject::ReadLuaScript(project, "lessons\\reload.lua"); QVERIFY(fallback.Succeeded());
         QVERIFY(fallback.value->text.contains("return 1"));
         QVERIFY(QDir().rename(folder + "-hidden", folder)); source.Refresh(); QVERIFY(source.Active());
