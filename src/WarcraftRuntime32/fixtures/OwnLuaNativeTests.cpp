@@ -335,7 +335,8 @@ void PoolLifetimes() {
     for(std::uint32_t i=1;i<=NativePoolLedger::kMaximumLive;++i)Check(ledger.Created(i)!=nullptr,"bounded live pool allocation");
     Check(!ledger.CanCreate() && !ledger.Created(5000),"pool tracking budget enforced");
     old=ledger.Borrow(1);ledger.Clear();Check(!old->alive && ledger.CanCreate(),"VM detach invalidates before number reuse");
-    auto provider=std::make_shared<FixtureProvider>();LuaHost host({},provider);Success(host.Initialize(),"pool fixture host");
+    auto provider=std::make_shared<FixtureProvider>();LuaHost host({});Success(host.Initialize(),"pool fixture host");
+    Success(host.BindNatives(provider),"pool fixture provider");
     Success(host.Execute("j=require('jass.common'); p=j.Pool(); assert(rawequal(p,j.Pool()) and j.UsePool(p)==1); j.DestroyPool(p)","@pool.lua"),"pool aliases and explicit destroy");
     auto calls=provider->calls;
     Check(!host.Execute("j.UsePool(p)","@pool-stale.lua").Succeeded() && provider->calls==calls,"stale pool rejected before provider");

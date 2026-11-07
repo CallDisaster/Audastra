@@ -21,7 +21,7 @@ Result<std::optional<ProjectBuildState>> ReadProjectBuildState(const MapArchiveS
     if(!map.HasMember(kBuildStateMember))return Output::Success(std::nullopt);
     const std::array<std::string,1> names{std::string(kBuildStateMember)};
     ArchiveExactMemberLimits limits;limits.memberCount=1;limits.memberBytes=4096;limits.totalBytes=4096;
-    const auto captured=map.CaptureExactMembers(map.SourceSha256(),names,limits);
+    const auto captured=map.CaptureExactMembers(names,limits);
     if(!captured.Succeeded())return {std::nullopt,captured.diagnostics};
     try {
         const auto& bytes=captured.value->front().bytes;
