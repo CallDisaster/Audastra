@@ -1,4 +1,5 @@
 #include "BuildInternal.h"
+#include "War3MapCore/HLua/ProjectConfiguration.h"
 #include "War3MapCore/Services/ObjectCatalogSources.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
@@ -60,7 +61,9 @@ void Replace(Services::MapSaveTask& task, std::string name, std::vector<std::byt
 }
 }
 Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const std::filesystem::path& root,const std::filesystem::path& gameRoot) {
-    auto framework = HLuaFrameworkLocator::Capture(location);
+    const auto resolved = ResolveProjectFramework(root, location);
+    if (!resolved.Succeeded()) return {std::nullopt, resolved.diagnostics};
+    auto framework = HLuaFrameworkLocator::Capture(*resolved.value);
     if (!framework.Succeeded()) return {std::nullopt, std::move(framework.diagnostics)};
     auto project = HLuaProjectScanner::Capture(root);
     if (!project.Succeeded()) return {std::nullopt, std::move(project.diagnostics)};
@@ -70,9 +73,15 @@ Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const s
     return Result<InspectReceipt>::Success(std::move(receipt));
 }
 
-static Output BuildProjectImpl(const BuildRequest& request, const Services::MapSaveService::Progress& progress,
+static Output BuildProjectImpl(const BuildRequest& input, const Services::MapSaveService::Progress& progress,
     std::vector<Diagnostic>& unwrittenWarnings) {
     try {
+        auto request = input;
+        const auto configuration = ReadProjectConfiguration(request.project);
+        if (!configuration.Succeeded()) return {std::nullopt, configuration.diagnostics};
+        const auto resolved = ResolveProjectFramework(request.project, request.framework);
+        if (!resolved.Succeeded()) return {std::nullopt, resolved.diagnostics};
+        request.framework = *resolved.value;
         if (request.idsOnly && (request.gameRoot.empty() || request.workspace.empty())) {
             auto framework = HLuaFrameworkLocator::Capture(request.framework);
             if (!framework.Succeeded()) return {std::nullopt, std::move(framework.diagnostics)};
@@ -87,6 +96,8 @@ static Output BuildProjectImpl(const BuildRequest& request, const Services::MapS
             auto verified=HLuaFrameworkLocator::Verify(*framework.value);
             if (!verified.Succeeded()) return {std::nullopt,std::move(verified.diagnostics)};
             verified=Services::VerifyLuaFolder(project.value->source);
+            if (!verified.Succeeded()) return {std::nullopt,std::move(verified.diagnostics)};
+            verified=VerifyProjectConfiguration(request.project, *configuration.value);
             if (!verified.Succeeded()) return {std::nullopt,std::move(verified.diagnostics)};
             BuildReceipt receipt; receipt.inputs = Inspected(*framework.value, *project.value);
             receipt.objects = std::move(hslk.value->objects); receipt.console = std::move(hslk.value->console);
@@ -167,7 +178,8 @@ static Output BuildProjectImpl(const BuildRequest& request, const Services::MapS
             Replace(task, std::string(NativeFileName(type)), {snapshot.value->get()->EncodedNative().begin(), snapshot.value->get()->EncodedNative().end()});
         }
         const auto verifyInputs = [&]() -> Status {
-            auto checked = HLuaFrameworkLocator::Verify(*framework.value); if (!checked.Succeeded()) return checked;
+            auto checked = VerifyProjectConfiguration(request.project, *configuration.value); if (!checked.Succeeded()) return checked;
+            checked = HLuaFrameworkLocator::Verify(*framework.value); if (!checked.Succeeded()) return checked;
             checked = Services::VerifyLuaFolder(project.value->source); if (!checked.Succeeded()) return checked;
             checked = Detail::VerifyTree(base.value->files,base.value->treeRoot); if (!checked.Succeeded()) return checked;
             return catalog.value->VerifyCapturedSources();

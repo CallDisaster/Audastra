@@ -3,6 +3,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Lua/LuaModuleScan.h"
 #include "War3MapCore/HLua/Test.h"
+#include "War3MapCore/HLua/ProjectConfiguration.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "../../src/HLua/BuildInternal.h"
 #include <Windows.h>
@@ -146,7 +147,38 @@ void ExtraFrameworkModules() {
     Need(!Detail::RuntimeMembers(framework,project,output,BuildTarget::Test).Succeeded(),"extra framework/project collision is still refused");
 }
 }
+void ConfigurationAndReload() {
+    const auto root = std::filesystem::temp_directory_path() /
+        ("audastra-hlua-config-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+    Need(std::filesystem::create_directory(root), "unique configuration fixture");
+    struct Cleanup { std::filesystem::path path; ~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);} } cleanup{root};
+    auto config = ReadProjectConfiguration(root); Good(config); Need(!config.value->recognized, "ordinary Lua folder");
+    std::ofstream(root / "main.lua") << "function main() end";
+    std::filesystem::create_directory(root / "hslk");
+    config = ReadProjectConfiguration(root); Good(config); Need(config.value->recognized && config.value->sha256.empty(), "h-lua recognized without config");
+    Need(!ResolveProjectFramework(root).Succeeded(), "missing framework reported");
+    FrameworkLocation application{root / "app",{},{}}, explicitLocation{root / "explicit",{}, {}};
+    auto resolved = ResolveProjectFramework(root,{},application); Good(resolved); Need(resolved.value->repository==application.repository,"application default");
+    resolved=ResolveProjectFramework(root,explicitLocation,application);Good(resolved);Need(resolved.value->repository==explicitLocation.repository,"request precedence");
+    Good(ConfigureProjectFramework(root,{},""));
+    Need(!VerifyProjectConfiguration(root,*config.value).Succeeded(),"new sidecar invalidates in-flight operation");
+    Need(!ConfigureProjectFramework(root,{},"").Succeeded(),"configuration CAS prevents overwrite");
+    config=ReadProjectConfiguration(root);Good(config);Good(ConfigureProjectFramework(root,{},config.value->sha256));
+    std::ofstream(root/".audastra-hlua.json",std::ios::trunc)<<"{\"schema\":1,\"schema\":1,\"framework\":\"\"}";
+    Need(!ReadProjectConfiguration(root).Succeeded(),"duplicate config key refused");
+    Need(!ResolveProjectFramework(root,explicitLocation).Succeeded(),"bad sidecar not bypassed by explicit path");
+    std::ofstream(root/".audastra-hlua.json",std::ios::trunc)<<"{\"schema\":true,\"framework\":\"\"}";
+    Need(!ReadProjectConfiguration(root).Succeeded(),"boolean schema refused");
+    ProjectSnapshot project;
+    File(project.source,"main.lua","function main() end"); File(project.source,"scripts/hello.lua","print('one')");
+    File(project.source,"hslk/unit.lua","hslk_unit{Name='one'}");project.runtimeFiles={0,1};project.hslkFiles={2};
+    auto initial=PrepareReload(project,"");Good(initial);Need(initial.value->rebuildRequired && initial.value->authorModules.empty(),"no build baseline refuses reload");
+    auto reload=PrepareReload(project,initial.value->hslkSha256);Good(reload);Need(!reload.value->rebuildRequired && reload.value->authorModules.size()==2,"author modules only");
+    project.source.files.pop_back();File(project.source,"hslk/unit.lua","hslk_unit{Name='two'}");
+    reload=PrepareReload(project,initial.value->hslkSha256);Good(reload);Need(reload.value->rebuildRequired && reload.value->authorModules.empty(),"hslk change sends nothing");
+    project.runtimeFiles={0,2};Need(!PrepareReload(project,reload.value->hslkSha256).Succeeded(),"overlap refused");
+}
 int main() {
-    try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); TestSourceAudit(); ExtraFrameworkModules(); std::cout << "HLua core fixtures passed\n"; return 0; }
+    try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); TestSourceAudit(); ExtraFrameworkModules(); ConfigurationAndReload(); std::cout << "HLua core fixtures passed\n"; return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

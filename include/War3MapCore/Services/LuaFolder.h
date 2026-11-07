@@ -43,6 +43,10 @@ struct LuaFolderDifference {
 // 写盘不进入地图撤销栈。已有文件在同一排他写句柄中核对SHA并写入，不留核对/替换竞态窗口。
 [[nodiscard]] Status WriteLuaFolderFile(const std::filesystem::path& root, std::string_view path,
     std::span<const std::byte> bytes, std::string_view expectedSha256);
+// 固定工程配置成员；复用同一目录租约、普通文件及CAS/失败恢复，不接受任意非Lua成员名。
+[[nodiscard]] Result<std::optional<LuaFolderFile>> ReadHLuaFolderConfiguration(const std::filesystem::path& root);
+[[nodiscard]] Status WriteHLuaFolderConfiguration(const std::filesystem::path& root,
+    std::span<const std::byte> bytes, std::string_view expectedSha256);
 [[nodiscard]] Status RemoveLuaFolderFile(const std::filesystem::path& root, const LuaFolderFile& expected);
 [[nodiscard]] Status RenameLuaFolderFile(const std::filesystem::path& root,
     const LuaFolderFile& expected, std::string_view newPath);

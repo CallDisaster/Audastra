@@ -233,10 +233,13 @@ LuaFolderDifference CompareLuaFolder(std::span<const LuaFolderFile> map, const L
     return diff;
 }
 
-Status WriteLuaFolderFile(const std::filesystem::path& root, std::string_view name,
-    std::span<const std::byte> bytes, std::string_view expectedSha256) {
+static Status WriteFolderDocument(const std::filesystem::path& root, std::string_view name,
+    std::span<const std::byte> bytes, std::string_view expectedSha256, bool configuration) {
     try {
-        Check(ValidateLuaFolderFile(name, bytes, false));
+        if (configuration) {
+            if (name != ".audastra-hlua.json" || bytes.empty() || bytes.size() > 8192)
+                return Status::Failure("HLua", "HLUA_CONFIG_INVALID", "h-lua工程配置超过预算或成员名不符。");
+        } else Check(ValidateLuaFolderFile(name, bytes, false));
         const auto relative = std::filesystem::u8path(name);
         const auto path = root / relative;
         Handles directories;
@@ -253,6 +256,30 @@ Status WriteLuaFolderFile(const std::filesystem::path& root, std::string_view na
         return Status::Ok();
     } catch (const Failure& error) { return Error(error); }
     catch (...) { return Status::Failure("LuaFolder", "LUA_FOLDER_IO", std::string(name) + "：无法写入Lua文件。"); }
+}
+
+Status WriteLuaFolderFile(const std::filesystem::path& root, std::string_view name,
+    std::span<const std::byte> bytes, std::string_view expectedSha256) {
+    return WriteFolderDocument(root, name, bytes, expectedSha256, false);
+}
+Status WriteHLuaFolderConfiguration(const std::filesystem::path& root, std::span<const std::byte> bytes, std::string_view expectedSha256) {
+    return WriteFolderDocument(root, ".audastra-hlua.json", bytes, expectedSha256, true);
+}
+Result<std::optional<LuaFolderFile>> ReadHLuaFolderConfiguration(const std::filesystem::path& root) {
+    try {
+        Handles directories; PinDirectories(root, directories);
+        const auto path = root / L".audastra-hlua.json";
+        const auto attributes = GetFileAttributesW(path.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND)
+            return Result<std::optional<LuaFolderFile>>::Success(std::nullopt);
+        auto handle = Open(path, GENERIC_READ, OPEN_EXISTING, false);
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(handle->value, &size) || size.QuadPart <= 0 || size.QuadPart > 8192)
+            Fail("HLUA_CONFIG_INVALID", path, "配置必须是1–8192字节的普通文件。");
+        auto bytes = std::make_shared<const std::vector<std::byte>>(Read(handle->value, path));
+        return Result<std::optional<LuaFolderFile>>::Success(LuaFolderFile{".audastra-hlua.json", Hash(*bytes), bytes});
+    } catch (const Failure& error) { return {std::nullopt, Error(error).diagnostics}; }
+    catch (...) { return Result<std::optional<LuaFolderFile>>::Failure("HLua", "HLUA_CONFIG_IO", "无法读取工程配置。"); }
 }
 
 Status RemoveLuaFolderFile(const std::filesystem::path& root, const LuaFolderFile& expected) {
