@@ -17,10 +17,15 @@ struct Temp {
     Temp() { Check(std::filesystem::create_directory(root), "fixture directory"); }
     ~Temp() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
 };
-void Archive(const std::filesystem::path& path, std::string_view source) {
+void Archive(const std::filesystem::path& path, std::string_view source, bool withBlizzard = true) {
     const std::vector<std::byte> bytes{reinterpret_cast<const std::byte*>(source.data()),
         reinterpret_cast<const std::byte*>(source.data() + source.size())};
-    const std::vector<War3Map::Mpq::MpqBuildFile> members{{"scripts\\common.j", bytes}};
+    std::vector<War3Map::Mpq::MpqBuildFile> members{{"scripts\\common.j", bytes}};
+    if (withBlizzard) {
+        constexpr std::string_view blizzard="globals\ninteger FixtureBlizzard=0\nendglobals\n";
+        members.push_back({"scripts\\blizzard.j", {reinterpret_cast<const std::byte*>(blizzard.data()),
+            reinterpret_cast<const std::byte*>(blizzard.data()+blizzard.size())}});
+    }
     Check(War3Map::Mpq::WriteMpqArchive(path, members).Succeeded(), "write original common fixture");
 }
 void ParseAndSources() {
@@ -71,7 +76,8 @@ constant native Example takes widget w returns nothing
     Archive(temp.root / "war3patch.mpq", "type frompatch extends handle");
     auto loaded = NativeTypeHierarchy::ReadGame(temp.root);
     Check(loaded.types && loaded.types->IsA("frompatch", "handle")
-        && !loaded.types->IsA("frombase", "handle") && loaded.sourceArchive == "war3patch.mpq",
+        && !loaded.types->IsA("frombase", "handle") && loaded.sourceArchive == "war3patch.mpq"
+        && loaded.types->Global("FixtureBlizzard"),
         "actual highest-priority complete source, without merging incompatible type tables");
     std::filesystem::remove(temp.root / "war3patch.mpq");
     loaded = NativeTypeHierarchy::ReadGame(temp.root);
@@ -82,6 +88,11 @@ constant native Example takes widget w returns nothing
     std::filesystem::remove(temp.root / "war3patch.mpq");
     std::ofstream bad(temp.root / "war3patch.mpq", std::ios::binary); bad << "corrupt fixture"; bad.close();
     Check(!NativeTypeHierarchy::ReadGame(temp.root).types, "corrupt high-priority archive never falls back");
+    Temp missing;
+    Archive(missing.root / "war3.mpq", "type onlycommon extends handle", false);
+    const auto incomplete=NativeTypeHierarchy::ReadGame(missing.root);
+    Check(!incomplete.types && incomplete.error.find("Blizzard.j")!=std::string::npos,
+        "global lookup now requires Blizzard declarations; missing input is never silently ignored");
 }
 void ProductionIdentityGates() {
     Check(!GameVm127::OpenAtScriptEntry(static_cast<HMODULE>(nullptr), 1).vm, "null game refused without ABI access");
