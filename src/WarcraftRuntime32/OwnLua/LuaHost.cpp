@@ -489,7 +489,7 @@ LuaHostResult LuaHost::Execute(std::string_view source, std::string_view chunkNa
     return self.Run(source, chunkName, Impl::RunKind::Chunk);
 }
 LuaHostResult LuaHost::ExecuteModule(std::string_view module,std::uint32_t startupMilliseconds) {
-    if(startupMilliseconds>5000) return Failure(LuaReloadResult::InvalidRequest,"Lua 启动时间预算不能超过5000毫秒。");
+    if(startupMilliseconds>10000) return Failure(LuaReloadResult::InvalidRequest,"Lua 启动时间预算不能超过10000毫秒。");
     if (LuaModuleMember(module).empty()) return Failure(LuaReloadResult::InvalidRequest, "Lua 入口模块不是有效的地图内成员。");
     return impl_->Run({}, module, Impl::RunKind::Module,startupMilliseconds);
 }
@@ -506,7 +506,7 @@ LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
     auto& self = *impl_;
     if (!self.state || self.thread != GetCurrentThreadId() || self.executing || self.natives || !provider || !provider->Generation())
         return Failure(LuaReloadResult::NotReady, "Lua native 提供者未就绪、线程不符或已经绑定。");
-    self.natives = std::make_unique<LuaNativeBindings>(std::move(provider), self.callbacks);
+    self.natives = std::make_unique<LuaNativeBindings>(std::move(provider), self.callbacks,[host=&self]{return host->Expired();});
     self.budgetExceeded = false;
     lua_pushcfunction(self.state, Impl::InitializeNatives);
     const int code = lua_pcall(self.state, 0, 0, 0);

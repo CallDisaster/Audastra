@@ -244,7 +244,7 @@ void StartupBudgetIsScoped() {
     const auto stats=host.LastExecutionStatistics();
     Check(stats.elapsedMilliseconds>=10 && stats.peakMemoryBytes>0 && stats.loadedModules==1,"measured startup statistics");
     Check(host.ExecuteModule("second").code==LuaReloadResult::BudgetExceeded,"startup allowance does not extend subsequent work");
-    Check(host.ExecuteModule("third",5001).code==LuaReloadResult::InvalidRequest,"startup hard limit");
+    Check(host.ExecuteModule("third",10001).code==LuaReloadResult::InvalidRequest,"startup hard limit");
 }
 
 void MailboxExecutesRealLua() {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NativeProvider.h"
+#include <functional>
 
 struct lua_State;
 
@@ -9,7 +10,7 @@ namespace Audastra::Runtime32::OwnLua {
 class LuaCallbacks;
 class LuaNativeBindings final {
 public:
-    LuaNativeBindings(std::shared_ptr<NativeProvider> provider, LuaCallbacks& callbacks);
+    LuaNativeBindings(std::shared_ptr<NativeProvider> provider, LuaCallbacks& callbacks, std::function<bool()> expired = {});
     // 必须在 lua_pcall 内调用；宿主拥有本实例直到 lua_close 完成。
     void Install(lua_State* lua);
     // 初始化base库时安装，提前保存rawset的脚本也不能绕过后来绑定的宿主表保护。
@@ -38,6 +39,7 @@ private:
     std::shared_ptr<NativeProvider> provider_;
     LuaCallbacks& callbacks_;
     std::uint64_t generation_ = 0;
+    std::function<bool()> expired_;
 };
 
 } // namespace Audastra::Runtime32::OwnLua

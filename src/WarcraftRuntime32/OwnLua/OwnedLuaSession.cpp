@@ -115,7 +115,7 @@ public:
         }
         ++executionDepth;
         // 入口会首次预读模型/技能；普通回调与热重载仍保持原有250毫秒预算。
-        auto result = host->ExecuteModule(name,5000);
+        auto result = host->ExecuteModule(name,10000);
         const auto measured=host->LastExecutionStatistics();
         result.message += "\nLUA_ENTRY_STATS module="+std::string(name.substr(0,240))+" elapsed_ms="+std::to_string(measured.elapsedMilliseconds)
             +" instructions="+std::to_string(measured.instructionsUsed)+" peak_bytes="+std::to_string(measured.peakMemoryBytes)

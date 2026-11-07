@@ -58,6 +58,8 @@ war3-map-cli hlua-test D:/Projects/MyMap --framework D:/Frameworks/h-lua `
 
 外部调试器、未实现的 jass 模块和框架对缺失能力的具体反应，应在测试信息里查看。打包成功不代表这些功能可用。控制台输出、运行时错误、截图和物体状态才是进入作者 `main()` 的证据。
 
+入口模块的冷启动时间预算为 10000 毫秒，指令预算仍为 200 万，内存仍为 64 MiB；普通回调与热重载保持 250 毫秒。入口回执的 `LUA_ENTRY_STATS` 记录实测耗时、指令数、峰值内存、读取字节及模块数。首次预读模型/技能的同步游戏调用本身无法被 Lua 指令 hook 抢占，每次 native 前后仍检查预算；这不是硬实时中断保证。
+
 ## MCP 与共用服务
 
 `hlua_inspect`、`hlua_ids`、`hlua_build`、`hlua_new`、`hlua_test` 调用无 Qt 的 `War3Map::HLua` 服务。工具接受明确工程/框架/底图/游戏/输出路径，不接受 shell 命令或任意 PID。ID 输出默认 128 项，可用 offset/limit。测试返回本工具创建的 session_id；`hlua_test_result`、`hlua_test_stop` 要求该身份，只查询或结束本工具的测试租约。普通编辑器地图测试与 CLI 经过同一物编资料冻结和测试准备服务。

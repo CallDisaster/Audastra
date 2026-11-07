@@ -48,8 +48,8 @@ private:
 };
 }
 
-LuaNativeBindings::LuaNativeBindings(std::shared_ptr<NativeProvider> provider, LuaCallbacks& callbacks)
-    : provider_(std::move(provider)), callbacks_(callbacks), generation_(provider_ ? provider_->Generation() : 0) {}
+LuaNativeBindings::LuaNativeBindings(std::shared_ptr<NativeProvider> provider, LuaCallbacks& callbacks,std::function<bool()> expired)
+    : provider_(std::move(provider)), callbacks_(callbacks), generation_(provider_ ? provider_->Generation() : 0), expired_(std::move(expired)) {}
 
 bool LuaNativeBindings::ValidHandle(const NativeHandle& handle, std::string_view expected) const noexcept {
     return (handle.kind == NativeHandleKind::Reference || handle.kind == NativeHandleKind::Scalar)
@@ -65,7 +65,12 @@ std::optional<NativeSignature> LuaNativeBindings::Signature(std::string_view nam
     return {};
 }
 NativeCallResult LuaNativeBindings::CallProvider(std::string_view name, std::span<const NativeValue> arguments) {
-    try { return provider_->Invoke(name, arguments); }
+    try {
+        if(expired_ && expired_()) return {false,{},"执行预算已耗尽，未调用此 native。"};
+        auto result=provider_->Invoke(name,arguments);
+        if(expired_ && expired_()) return {false,{},"native 返回时执行预算已耗尽；已发生的副作用没有回滚。"};
+        return result;
+    }
     catch (const std::exception& error) { return {false, {}, std::string("native 提供者异常：") + error.what()}; }
     catch (...) { return {false, {}, "native 提供者发生未知异常。"}; }
 }

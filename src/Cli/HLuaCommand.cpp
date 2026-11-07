@@ -53,7 +53,7 @@ int RunHLua(int argc, wchar_t** argv) {
             else if (option == L"--expected-project") request.expectedProjectSha256 = Utf8(value);
             else if (option == L"--offset" || option == L"--limit") {
                 std::size_t end = 0; const auto number = std::stoull(value, &end);
-                if (end != std::wstring_view(value).size() || number > 65536) return Bad();
+                if (end != std::wstring_view(value).size() || number > 65536 || (option==L"--limit" && (!number || number>128))) return Bad();
                 (option == L"--offset" ? offset : limit) = static_cast<std::size_t>(number);
             } else if (option == L"--target") {
                 const std::wstring target = value;
