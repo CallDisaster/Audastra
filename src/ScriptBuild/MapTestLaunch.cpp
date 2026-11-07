@@ -485,11 +485,20 @@ Result<std::filesystem::path> MapTestLaunchLease::RequestGameScreenshot(std::uin
         if (!id) return fail("MAP_TEST_SCREENSHOT_NO_GAME", "本次测试的游戏进程还没启动或已经退出。");
         // 按编号重开后核对创建时间、Job 归属和映像路径，不会截到复用编号的其他进程。
         process = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION | SYNCHRONIZE, FALSE, id);
+        if (!process) return fail("MAP_TEST_SCREENSHOT_PROCESS_ACCESS", "本次游戏已由原句柄确认，但无法取得截图访问权限（pid="
+            + std::to_string(id) + "，Win32=" + std::to_string(GetLastError()) + "）；未将权限失败当作身份不符。");
         FILETIME actual{}, exited{}, kernel{}, user{}; BOOL belongs = FALSE;
-        if (!process || !GetProcessTimes(process, &actual, &exited, &kernel, &user) || CompareFileTime(&actual, &created) != 0
-            || !IsProcessInJob(process, impl_->job, &belongs) || !belongs || !Impl::ImageMatches(process, impl_->gameImage)) {
-            if (process) CloseHandle(process);
-            return fail("MAP_TEST_SCREENSHOT_NO_GAME", "无法确认本次测试的游戏进程身份。");
+        std::string stage;
+        DWORD error = ERROR_SUCCESS;
+        if (!GetProcessTimes(process, &actual, &exited, &kernel, &user)) { stage = "creation_time_query"; error = GetLastError(); }
+        else if (CompareFileTime(&actual, &created) != 0) stage = "creation_time_changed";
+        else if (!IsProcessInJob(process, impl_->job, &belongs)) { stage = "job_query"; error = GetLastError(); }
+        else if (!belongs) stage = "job_changed";
+        else if (!Impl::ImageMatches(process, impl_->gameImage)) { stage = "image_path"; error = GetLastError(); }
+        if (!stage.empty()) {
+            CloseHandle(process);
+            return fail("MAP_TEST_SCREENSHOT_NO_GAME", "无法确认本次测试的游戏进程身份（pid=" + std::to_string(id)
+                + "，stage=" + stage + "，Win32=" + std::to_string(error) + "）。");
         }
     }
     struct Owned { HANDLE value; ~Owned() { CloseHandle(value); } } owned{process};
