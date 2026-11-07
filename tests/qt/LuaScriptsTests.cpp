@@ -118,6 +118,7 @@ private slots:
         auto* button=bar.AddAction(&reload,100);
         bar.AddAction(&other);
         QtCommon::ApplyLuaReloadButtonState(*button,reload.text(),true,true);
+        bar.show();QCoreApplication::processEvents();
         bar.Refresh();
         QCOMPARE(button->toolButtonStyle(),Qt::ToolButtonTextBesideIcon);
         QCOMPARE(button->text(),QStringLiteral("需重新构建"));
