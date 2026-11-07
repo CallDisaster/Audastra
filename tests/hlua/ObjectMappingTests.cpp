@@ -40,14 +40,16 @@ void TestHLuaObjectMapping() {
         {{"ID","ubpx"},{"field","Buttonpos"},{"slk","Profile"},{"type","int"},{"index","0"}},
         {{"ID","ubpy"},{"field","Buttonpos"},{"slk","Profile"},{"type","int"},{"index","1"}},
         {{"ID","uxf1"},{"field","Fx"},{"slk","Profile"},{"type","string"},{"index","0"}},
-        {{"ID","uxf2"},{"field","Fx"},{"slk","Profile"},{"type","string"},{"index","1"}}});
+        {{"ID","uxf2"},{"field","Fx"},{"slk","Profile"},{"type","string"},{"index","1"}},
+        {{"ID","ucr1"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","0"}},
+        {{"ID","ucr2"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","1"}}});
     files["ability-meta.slk"] = Slk({
         {{"ID","atp1"},{"field","Tip"},{"slk","Profile"},{"type","string"},{"repeat","4"},{"index","0"}},
         {{"ID","Hbz1"},{"field","Data"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"},{"data","1"},{"useSpecific","AHbz"}},
         {{"ID","acdn"},{"field","Cool"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"}}});
     files["units.slk"] = Slk({{{"ID","hfoo"},{"code","hfoo"},{"Name","Parent"}},
         {{"ID","hbar"},{"code","hbar"},{"Name","Missing components"}}});
-    files["units.txt"] = "[hfoo]\nFx=,\nButtonpos=0,0\n";
+    files["units.txt"] = "[hfoo]\nFx=,\nButtonpos=0,0\nCurve=0.1,0.1\n";
     files["abilities.slk"] = Slk({{{"ID","AHbz"},{"code","AHbz"},{"Name","Ability parent"}}});
     files["abilities.txt"]="[AHbz]\nTip=\"first, note\",second\n";
     const auto read = [&](const std::string& path) {
@@ -117,7 +119,7 @@ void TestHLuaObjectMapping() {
 
     const auto redundant = [&](std::string_view fields, const LniObjectDocument& baseline,
         std::string_view parent = "hfoo") {
-        auto input = ParseF6ObjectIni(ObjectType::Unit, "[v010]\n_parent=\"" + std::string(parent) + "\"\n" + std::string(fields), "original.ini:7");
+        auto input = ParseF6ObjectIni(ObjectType::Unit, "[v010]\n_parent=\"" + std::string(parent) + "\"\n" + std::string(fields), "original.ini");
         Good(input);
         return ApplyHslkObjects(ObjectType::Unit, baseline, *input.value, *schema.value, *standard.value);
     };
@@ -125,7 +127,7 @@ void TestHLuaObjectMapping() {
     Need(accepted.value->Objects().front().modifications.empty(), "redundant alias adds no native field");
     Need(accepted.diagnostics.size() == 1 && accepted.diagnostics.front().severity == DiagnosticSeverity::Warning
         && accepted.diagnostics.front().code == "HLUA_REDUNDANT_INDEXED_FIELD"
-        && accepted.diagnostics.front().message.find("original.ini:7:3") != std::string::npos
+        && accepted.diagnostics.front().message.find("original.ini:3") != std::string::npos
         && accepted.diagnostics.front().message.find("fx_2=[]") != std::string::npos, "one located warning includes every effective index");
     auto different = redundant("Fx=\"changed\"\n", empty(ObjectType::Unit));
     Need(!different.Succeeded() && different.diagnostics.front().message.find("fx_1, fx_2") != std::string::npos,
@@ -135,6 +137,8 @@ void TestHLuaObjectMapping() {
     Need(!redundant("Fx={\"\"}\n", empty(ObjectType::Unit)).Succeeded(), "one-element array is not a scalar alias");
     Good(redundant("Buttonpos=0\n", empty(ObjectType::Unit)));
     Need(!redundant("Buttonpos=1\n", empty(ObjectType::Unit)).Succeeded(), "numeric alias does not broadcast");
+    Need(!redundant("Curve=0.1\n", empty(ObjectType::Unit)).Succeeded(), "float32 rounding cannot prove exact scalar equality");
+    Good(redundant("Curve=0.10000000149011612\n", empty(ObjectType::Unit)));
     auto parentInput = ParseF6ObjectIni(ObjectType::Unit, "[v009]\n_parent=\"hfoo\"\nFx_1=\"inherited\"\nFx_2=\"inherited\"\n", "parent.ini"); Good(parentInput);
     auto customParent = ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *parentInput.value, *schema.value, *standard.value); Good(customParent);
     Good(redundant("Fx=\"inherited\"\n", *customParent.value, "v009"));

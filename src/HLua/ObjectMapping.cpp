@@ -55,6 +55,15 @@ std::string AtomText(const FieldAtom& atom) {
     auto value = ValueFor(atom, NativeValueType::String);
     return value.Succeeded() ? std::get<std::string>(*value.value) : "[无法表示]";
 }
+std::string IndexedHints(const HslkObject& object, ObjectType type, const ObjectFieldSchema& schema) {
+    std::set<std::string> keys;
+    for (const auto& field : object.fields) for (const auto& definition : schema.Definitions())
+        if (definition.objectType == type && LniName(definition, schema, false) == Text::LowerAscii(field.name)
+            && LniName(definition, schema) != Text::LowerAscii(field.name)) keys.insert(LniName(definition, schema));
+    std::string text;
+    for (const auto& key : keys) { if (!text.empty()) text += ", "; text += key; }
+    return text.empty() ? "" : "；未带下标的声明不能代替缺失父值，请改用带下标的键：" + text;
+}
 Result<IndexedFieldAudit> RedundantField(const HslkObject& object, const HslkField& field,
     std::span<const ObjectFieldDefinition* const> definitions,
     const Services::ObjectCommandContext& source) {
@@ -128,7 +137,8 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const Ln
             if (!seen.insert(baseId).second || seen.size() > 128)
                 return Fail<LniObjectDocument>("HLUA_PARENT_INVALID", "父链循环或超过128层：" + object.id);
             const auto* record = output.FindObject({type, baseId});
-            if (!record || !record->parentRawcode) return Fail<LniObjectDocument>("HLUA_PARENT_MISSING", "标准父对象不可用：" + baseId);
+            if (!record || !record->parentRawcode) return Fail<LniObjectDocument>("HLUA_PARENT_MISSING",
+                object.source + "：标准父对象不可用：" + baseId + IndexedHints(object, type, schema));
             baseId = *record->parentRawcode; parent = standard.Find(type, baseId);
         }
         auto writable = Services::VerifyObjectWriteSource(source, object.parent);
