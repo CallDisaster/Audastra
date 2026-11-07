@@ -6,6 +6,9 @@
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Text/TextUtil.h"
 #include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/Services/MapTestWorkspace.h"
+#include "War3MapCore/VerifiedFile.h"
+#include <Windows.h>
 #include <algorithm>
 
 namespace War3Map::Services {
@@ -60,9 +63,20 @@ Result<MapTestArtifact> PrepareLuaAwareMapTest(const MapTestRequest& request,
     if (!verified.Succeeded()) return {std::nullopt, std::move(verified.diagnostics)};
     const auto size = data.value->size();
     const std::vector<MemberReplacement> members{{std::string(Audastra::Runtime32::kLuaObjectSnapshotMember), std::move(*data.value)}};
-    auto saved = source.value->SaveCandidate(prepared.value->workspace / "lua-object-test.w3x", members);
+    // 测试目录由清理租约持有 DELETE 句柄。归档发布另取完整祖先租约，
+    // 因此先在独占临时目录完成原保存/回读，再按测试副本合同复制；不放宽任何租约。
+    const auto staging=std::filesystem::temp_directory_path()/(L"audastra-lua-objects-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+    if(!std::filesystem::create_directory(staging)) return Result<MapTestArtifact>::Failure("Lua.ObjectSnapshot","LUA_SLK_WORKSPACE","无法创建独占物编资料候选目录。");
+    auto saved = source.value->SaveCandidate(staging / "object-data.w3x", members);
     if (!saved.Succeeded()) return {std::nullopt, std::move(saved.diagnostics)};
-    prepared.value->testMap = saved.value->path; prepared.value->testMapSha256 = saved.value->sha256;
+    auto lease=FreezeMapTestWorkspace(staging);
+    if(!lease.Succeeded()) return {std::nullopt,std::move(lease.diagnostics)};
+    struct Cleanup { std::shared_ptr<MapTestWorkspaceLease> lease; ~Cleanup(){(void)lease->Cleanup(true);} } cleanup{*lease.value};
+    const auto target=prepared.value->workspace/"lua-object-test.w3x";
+    if(!CopyFileW(saved.value->path.c_str(),target.c_str(),TRUE)) return Result<MapTestArtifact>::Failure("Lua.ObjectSnapshot","LUA_SLK_COPY_FAILED","冻结物编测试副本复制失败。");
+    auto copied=ReadVerifiedFile(target,saved.value->sha256,request.maxMapBytes);
+    if(!copied.Succeeded()) return {std::nullopt,std::move(copied.diagnostics)};
+    prepared.value->testMap = target; prepared.value->testMapSha256 = saved.value->sha256;
     prepared.diagnostics.push_back({DiagnosticSeverity::Info, "Lua.ObjectSnapshot", "LUA_SLK_SNAPSHOT_READY",
         "jass.slk 使用本次测试图的冻结物编资料（" + std::to_string(size) + "字节），来源含地图原生覆盖与有效数据表。"});
     return prepared;

@@ -65,7 +65,15 @@ Result<std::vector<TreeFile>> CaptureTree(const std::filesystem::path& root) {
     std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
     return Output::Success(std::move(files));
 }
-Status VerifyTree(std::span<const TreeFile> files) {
+Status VerifyTree(std::span<const TreeFile> files,const std::filesystem::path& root) {
+    if(!root.empty()) {
+        auto current=CaptureTree(root);
+        if(!current.Succeeded()) return {std::move(current.diagnostics)};
+        if(current.value->size()!=files.size()) return Status::Failure("HLua","HLUA_INPUT_CHANGED","地图来源目录成员已改变。");
+        for(std::size_t i=0;i<files.size();++i) if(files[i].name!=current.value->at(i).name || files[i].sha256!=current.value->at(i).sha256)
+            return Status::Failure("HLua","HLUA_INPUT_CHANGED","地图来源目录成员或内容已改变。");
+        return Status::Ok();
+    }
     for (const auto& file : files) {
         const auto attr = GetFileAttributesW(file.source.c_str());
         if (attr == INVALID_FILE_ATTRIBUTES || (attr & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)))
@@ -89,6 +97,7 @@ Result<BaseSnapshot> CaptureBase(const BuildRequest& request) {
     auto tree = CaptureTree(request.project / "map");
     if (!tree.Succeeded()) return {std::nullopt, std::move(tree.diagnostics)};
     output.files = std::move(*tree.value);
+    output.treeRoot=std::filesystem::absolute(request.project/"map");
     std::vector<MapArchiveMember> members;
     std::vector<std::byte> importsIni;
     bool settings = false;

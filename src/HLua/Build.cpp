@@ -196,7 +196,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         task.beforePublish = [&]() -> Status {
             auto checked = HLuaFrameworkLocator::Verify(*framework.value); if (!checked.Succeeded()) return checked;
             checked = Services::VerifyLuaFolder(project.value->source); if (!checked.Succeeded()) return checked;
-            checked = Detail::VerifyTree(base.value->files); if (!checked.Succeeded()) return checked;
+            checked = Detail::VerifyTree(base.value->files,base.value->treeRoot); if (!checked.Succeeded()) return checked;
             return catalog.value->VerifyCapturedSources();
         };
         Services::MapSaveService::Run(task, progress);

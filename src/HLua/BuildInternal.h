@@ -8,11 +8,12 @@ struct BaseSnapshot {
     MapArchiveSession archive;
     std::vector<HslkObject> f6Objects;
     std::vector<TreeFile> files;
+    std::filesystem::path treeRoot;
     std::string inputSha256;
     std::vector<Diagnostic> diagnostics;
 };
 [[nodiscard]] Result<std::vector<TreeFile>> CaptureTree(const std::filesystem::path& root);
-[[nodiscard]] Status VerifyTree(std::span<const TreeFile> files);
+[[nodiscard]] Status VerifyTree(std::span<const TreeFile> files, const std::filesystem::path& root = {});
 [[nodiscard]] Result<BaseSnapshot> CaptureBase(const BuildRequest& request);
 [[nodiscard]] Result<std::vector<std::string>> CaptureExistingIds(const BuildRequest& request);
 [[nodiscard]] Result<std::vector<MapArchiveMember>> RuntimeMembers(const FrameworkSnapshot& framework,
