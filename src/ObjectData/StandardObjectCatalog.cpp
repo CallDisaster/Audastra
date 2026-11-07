@@ -75,7 +75,7 @@ std::string_view Text(const std::vector<std::byte>& bytes) {
 }
 
 // 只处理目录使用的 SYLK C/X/Y/K 记录；F/P/B 等格式记录不影响语义单元格。
-Result<Rows> ParseSlk(std::string_view text) {
+Result<Rows> ParseSlk(std::string_view text, std::set<std::string>* repeatedRows = nullptr) {
     auto parsed = War3Map::Text::ParseSlkCells(text, War3Map::Text::SlkCellMode::CatalogStrict);
     if (!parsed.Succeeded() || !parsed.value) {
         Result<Rows> failed;
@@ -89,6 +89,7 @@ Result<Rows> ParseSlk(std::string_view text) {
         if (rowIndex == 1) continue;
         const auto id = row.find(1);
         if (id == row.end() || id->second.size() != 4) continue;
+        if (repeatedRows && rows.contains(id->second)) repeatedRows->insert(id->second);
         auto& fields = rows[id->second];
         for (const auto& [column, value] : row) {
             const auto header = headers.find(column);
@@ -98,7 +99,12 @@ Result<Rows> ParseSlk(std::string_view text) {
     return Result<Rows>::Success(std::move(rows));
 }
 
-Result<Rows> ParseProfile(std::string_view text, bool rejectInvalid, std::string_view path) {
+struct ProfileCoverage {
+    bool complete = true;
+    std::set<std::string> repeatedSections;
+};
+Result<Rows> ParseProfile(std::string_view text, bool rejectInvalid, std::string_view path,
+    ProfileCoverage* coverage = nullptr) {
     Rows rows;
     std::string section;
     std::size_t lineNumber = 0;
@@ -114,12 +120,24 @@ Result<Rows> ParseProfile(std::string_view text, bool rejectInvalid, std::string
                 return Result<Rows>::Failure("Object.Catalog", "OBJECT_CATALOG_PROFILE_SYNTAX",
                     std::string(path) + " 第 " + std::to_string(lineNumber) + " 行的 section 头缺少右方括号 ]。");
             section = closing == std::string_view::npos ? std::string{} : std::string(War3Map::Text::TrimCWhitespace(line.substr(1, closing - 1)));
+            if (coverage) {
+                if (closing == std::string_view::npos || section.empty()) coverage->complete = false;
+                if (!rows.try_emplace(section).second) coverage->repeatedSections.insert(section);
+                if (closing != std::string_view::npos) {
+                    const auto tail = War3Map::Text::TrimCWhitespace(line.substr(closing + 1));
+                    if (!tail.empty() && !tail.starts_with("//") && !tail.starts_with(';')) coverage->complete = false;
+                }
+            }
             continue;
         }
         const auto equals = line.find('=');
-        if (equals == std::string_view::npos) continue;
+        if (equals == std::string_view::npos) { if (coverage) coverage->complete = false; continue; }
         const auto key = War3Map::Text::TrimCWhitespace(line.substr(0, equals));
-        if (key.empty()) continue;
+        if (key.empty()) { if (coverage) coverage->complete = false; continue; }
+        if (coverage) {
+            if (section.empty()) coverage->complete = false;
+            else if (rows[section].contains(War3Map::Text::LowerAscii(key))) coverage->repeatedSections.insert(section);
+        }
         // 保留 CSV/路径/转义符，显示名称和图标再独立取首项。
         rows[section][War3Map::Text::LowerAscii(key)] = std::string(War3Map::Text::TrimCWhitespace(line.substr(equals + 1)));
     }
@@ -247,6 +265,7 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
     StandardObjectCatalog catalog;
     std::vector<Diagnostic> diagnostics;
     std::unordered_map<std::string, Rows> profileCache;
+    std::unordered_map<std::string, ProfileCoverage> profileCoverage;
     auto warn = [&](std::string code, std::string message) {
         diagnostics.push_back({DiagnosticSeverity::Warning, "Object.Catalog", std::move(code), std::move(message), std::nullopt});
     };
@@ -294,12 +313,15 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
         std::map<std::string, StandardObjectEntry> entries;
         Rows presentationProfiles;
         Rows presentationProfileSources;
+        bool completeSources = options.rejectInvalidPresentSources;
+        std::set<std::string> ambiguousRows;
         for (std::size_t table = 0; table < spec.slkFiles.size(); ++table) {
             const auto& path = spec.slkFiles[table];
             const auto bytes = read(path, true);
-            if (!bytes) continue;
-            auto parsed = ParseSlk(Text(*bytes));
+            if (!bytes) { completeSources = false; continue; }
+            auto parsed = ParseSlk(Text(*bytes), &ambiguousRows);
             if (!parsed.Succeeded()) {
+                completeSources = false;
                 if (options.rejectInvalidPresentSources) {
                     diagnostics.push_back({DiagnosticSeverity::Error, "Object.Catalog", "OBJECT_CATALOG_PARSE_FAILED",
                         "已命中的物编表无法解析：" + path, std::nullopt});
@@ -323,11 +345,15 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
         for (const auto& path : spec.profileFiles) {
             if (!profileCache.contains(path)) {
                 const auto bytes = read(path, false);
-                auto parsed = bytes ? ParseProfile(Text(*bytes), options.rejectInvalidPresentSources, path)
+                auto& coverage = profileCoverage[path];
+                if (!bytes) coverage.complete = false;
+                auto parsed = bytes ? ParseProfile(Text(*bytes), options.rejectInvalidPresentSources, path, &coverage)
                     : Result<Rows>::Success({});
-                if (!parsed.Succeeded()) diagnostics.insert(diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end());
+                if (!parsed.Succeeded()) { coverage.complete = false; diagnostics.insert(diagnostics.end(), parsed.diagnostics.begin(), parsed.diagnostics.end()); }
                 profileCache[path] = parsed.Succeeded() ? std::move(*parsed.value) : Rows{};
             }
+            completeSources = completeSources && profileCoverage.at(path).complete;
+            ambiguousRows.insert(profileCoverage.at(path).repeatedSections.begin(), profileCoverage.at(path).repeatedSections.end());
             for (const auto& [id, fields] : profileCache.at(path)) {
                 if (id.size() == 4) {
                     for (const auto& [key, value] : fields) {
@@ -342,10 +368,15 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
                     found->second.fieldSourceFiles[key] = path;
                 }
                 found->second.sourceFiles.push_back(path);
+                found->second.profileSectionFiles.push_back(path);
             }
         }
         std::size_t unresolved = 0;
         for (auto& [id, entry] : entries) {
+            entry.completeProfileAndSlk = completeSources && !ambiguousRows.contains(id) && !entry.profileSectionFiles.empty()
+                && std::all_of(spec.slkFiles.begin(), spec.slkFiles.end(), [&](const auto& path) {
+                    return std::find(entry.sourceFiles.begin(), entry.sourceFiles.end(), path) != entry.sourceFiles.end();
+                });
             const auto name = PresentationValue(entry, spec.nameFields, spec.presentationParentField, entries, presentationProfiles, presentationProfileSources);
             entry.displayName = Resolve(name.value, strings, options.strings);
             entry.nameSourceRawcode = name.rawcode;
@@ -363,6 +394,7 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
                 Get(entry.fields, "useineditor") != "0" && Get(entry.fields, "hiddenineditor") != "1";
             const auto key = IndexKey(entry.key.type, id);
             if (const auto existing = catalog.index_.find(key); existing != catalog.index_.end()) {
+                entry.completeProfileAndSlk = false;
                 catalog.entries_[existing->second] = entry;
             } else {
                 catalog.index_[key] = catalog.entries_.size();

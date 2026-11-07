@@ -4,6 +4,14 @@ h-lua 为 AGPL-3.0，由用户提供。Audastra 不附带框架、SDK 默认表�
 
 多 index 字段应使用 metadata 给出的带下标键。Audastra 另有一条兼容策略：未带下标的单值只有在每个下标的实际有效值（包括父链和本物体显式 `_N` 字段）都与它完全相同时，才作为冗余声明忽略，并逐处警告。不会选一个下标或广播。数组、未知父值、任一下标不同仍拒绝，并列出带下标键名。这是 Audastra 的策略，不是外部转换器规则。构建回执包含 `redundant_indexed_fields`；`hlua-ids` 提供 `--game` 和 `--workspace` 时同时做字段验证并列出同一证据，否则 `field_mapping_checked=false`，仅证明 ID 分配与回放。
 
+<a id="profile-text-default-evidence"></a>
+
+### 缺省文本字段的原版核对
+
+兼容记录 `we127a-profile-text-empty-v1`：经典 1.27a（Game.dll 1.27.0.52240）的原版专用实例中，标准 Hpal 的攻击 1/攻击 2 投射物图像均显示“没有”，原始数据显示两处 Missileart 为空。其完整 HumanUnitFunc profile 节没有 Missileart 键。从 Hpal 派生 H000，在原版模型对话框选择自定义并提交空路径，再正常保存；生成的 w3u 是版本 2、24 字节，只有 `H000 ← Hpal`，修改项为 0，没有 ua2m 覆盖。原版编辑器 SHA-256 为 `811130e637b4885c08c3c8cb707d0e02a7692ddcddc4c1d57c783c3379ef4b90`；w3u SHA-256 为 `d305cf68ba5ce16d7d79c78873daf770732ad9ccbd556a8dc167def2d1481a71`。这份说明给出可复现实验和产物身份；游戏数据、截图及地图不随编辑器分发。
+
+据此，只有标准父物体的 profile 节和全部 SLK 行已完整、严格读入且无重复/歧义，该 profile 又没有该键时，才把非列表、非引用的文本字段缺省值视为空串。数字和布尔不适用；profile 键已存在但缺少某个分量时也不适用。读取失败、缺文件、缺节、未解释行和自定义父物体不获此资格。每处诊断注明“缺省按空串”，回执以 `defaulted_text_empty`、`default_evidence` 关联本核对记录。未满足条件时继续拒绝。
+
 ## 命令行
 
 以下路径均为示例。输出地图和工作目录必须尚不存在，命令不会覆盖源工程或现有地图。

@@ -43,14 +43,17 @@ void TestHLuaObjectMapping() {
         {{"ID","uxf1"},{"field","Fx"},{"slk","Profile"},{"type","string"},{"index","0"}},
         {{"ID","uxf2"},{"field","Fx"},{"slk","Profile"},{"type","string"},{"index","1"}},
         {{"ID","ucr1"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","0"}},
-        {{"ID","ucr2"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","1"}}});
+        {{"ID","ucr2"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","1"}},
+        {{"ID","utg1"},{"field","Tags"},{"slk","Profile"},{"type","stringList"},{"index","0"}},
+        {{"ID","utg2"},{"field","Tags"},{"slk","Profile"},{"type","stringList"},{"index","1"}}});
     files["ability-meta.slk"] = Slk({
         {{"ID","atp1"},{"field","Tip"},{"slk","Profile"},{"type","string"},{"repeat","4"},{"index","0"}},
         {{"ID","Hbz1"},{"field","Data"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"},{"data","1"},{"useSpecific","AHbz"}},
         {{"ID","acdn"},{"field","Cool"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"}}});
     files["units.slk"] = Slk({{{"ID","hfoo"},{"code","hfoo"},{"Name","Parent"}},
-        {{"ID","hbar"},{"code","hbar"},{"Name","Missing components"}}});
-    files["units.txt"] = "[hfoo]\nFx=,\nButtonpos=0,0\nCurve=0.1,0.1\n";
+        {{"ID","hbar"},{"code","hbar"},{"Name","Missing components"}},
+        {{"ID","hdef"},{"code","hdef"},{"Name","Complete empty profile"}}});
+    files["units.txt"] = "[hfoo]\nFx=,\nButtonpos=0,0\nCurve=0.1,0.1\n[hdef]\n";
     files["abilities.slk"] = Slk({{{"ID","AHbz"},{"code","AHbz"},{"Name","Ability parent"}}});
     files["abilities.txt"]="[AHbz]\nTip=\"first, note\",second\n";
     const auto read = [&](const std::string& path) {
@@ -167,4 +170,43 @@ void TestHLuaObjectMapping() {
     auditInput.value->front().fields.push_back({"unknown", {1.0}, false});
     Need(!ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits).Succeeded()
         && audits.size() == 1, "failed mapping never publishes partial audit records");
+
+    auto strictOptions = catalogOptions; strictOptions.rejectInvalidPresentSources = true;
+    auto strictCatalog = StandardObjectCatalog::Load(read, strictOptions); Good(strictCatalog);
+    Need(strictCatalog.value->Find(ObjectType::Unit, "hdef")->completeProfileAndSlk, "strict complete empty section is retained as presence");
+    auto defaultInput = ParseF6ObjectIni(ObjectType::Unit, "[v020]\n_parent=\"hdef\"\nFx=\"\"\n", "default.ini"); Good(defaultInput);
+    const auto mapped = [&](const StandardObjectCatalog& catalog) {
+        return ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *defaultInput.value, *schema.value, catalog);
+    };
+    auto defaulted = mapped(*strictCatalog.value); Good(defaulted);
+    Need(defaulted.value->Objects().front().modifications.empty()
+        && defaulted.diagnostics.front().message.find("缺省按空串") != std::string::npos
+        && defaulted.diagnostics.front().message.find("docs/HLUA_PROJECTS.md#profile-text-default-evidence") != std::string::npos,
+        "absent text in complete standard profile is empty with evidence, no native override");
+    Need(!mapped(*standard.value).Succeeded(), "permissive or incomplete source does not grant missing text defaults");
+    defaultInput.value->front().fields.front().values = {std::string("nonempty")};
+    Need(!mapped(*strictCatalog.value).Succeeded(), "absent standard text does not equal nonempty scalar");
+    defaultInput.value->front().fields.front() = {"Buttonpos", {0.0}, false};
+    Need(!mapped(*strictCatalog.value).Succeeded(), "missing numeric profile field never defaults to zero");
+    defaultInput.value->front().fields.front() = {"Tags", {std::string{}}, false};
+    Need(!mapped(*strictCatalog.value).Succeeded(), "missing list field is not a text scalar default");
+    defaultInput.value->front().fields.front() = {"Fx", {std::string{}}, false};
+    const auto cleanProfile = files["units.txt"];
+    files["units.txt"] = cleanProfile + "Fx=\"\"\n";
+    auto shortValue = StandardObjectCatalog::Load(read, strictOptions); Good(shortValue);
+    Need(!mapped(*shortValue.value).Succeeded(), "present key with missing indexed component is not absent key");
+    files["units.txt"] = cleanProfile + "[hdef]\n";
+    auto duplicate = StandardObjectCatalog::Load(read, strictOptions); Good(duplicate);
+    Need(!mapped(*duplicate.value).Succeeded(), "repeated section does not grant absent defaults");
+    files["units.txt"] = cleanProfile + "unknown line\n";
+    auto partial = StandardObjectCatalog::Load(read, strictOptions); Good(partial);
+    Need(!mapped(*partial.value).Succeeded(), "uninterpreted profile line does not grant complete source");
+    files["units.txt"] = cleanProfile;
+    auto multiOptions = strictOptions; multiOptions.sources.push_back(strictOptions.sources.front());
+    auto multi = StandardObjectCatalog::Load(read, multiOptions); Good(multi);
+    Need(!mapped(*multi.value).Succeeded(), "multiple catalog definitions do not grant missing defaults");
+    auto unreadable = StandardObjectCatalog::Load([&](const std::string& path) {
+        return path == "units.txt" ? Result<std::vector<std::byte>>::Failure("Test", "read-failed", "unreadable") : read(path);
+    }, strictOptions);
+    Need(!unreadable.Succeeded(), "failed profile read is not an empty complete profile");
 }

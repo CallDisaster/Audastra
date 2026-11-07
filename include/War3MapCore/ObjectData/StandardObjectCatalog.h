@@ -34,6 +34,10 @@ struct StandardObjectEntry {
     bool editorVisible = true;
     // 地图/战役表仅授予读取资格；尚未验证其 SLK/profile 写回链，不能自动创建原生覆盖。
     bool nativeOverridesSupported = true;
+    // 只表示本对象的 profile 节和全部 SLK 行来自完整、严格解析且无重复的输入。
+    // 不把没有 profile 节、缺文件或读取失败的目录当成空字段。
+    bool completeProfileAndSlk = false;
+    std::vector<std::string> profileSectionFiles;
 
     [[nodiscard]] std::string_view Field(std::string_view name) const;
 };

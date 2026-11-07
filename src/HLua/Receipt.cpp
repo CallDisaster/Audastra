@@ -46,7 +46,8 @@ std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset, st
         Json indices = Json::array();
         for (const auto& index : audit.indices) indices.push_back({{"field", Display(index.field, 240)},
             {"native_id", index.nativeId}, {"effective_value", Display(index.effectiveValue, 4096)},
-            {"effective_value_truncated", index.effectiveValue.size() > 4096}, {"value_source", Display(index.valueSource, 240)}});
+            {"effective_value_truncated", index.effectiveValue.size() > 4096}, {"value_source", Display(index.valueSource, 1024)},
+            {"defaulted_text_empty", index.defaultedTextEmpty}, {"default_evidence", index.defaultEvidence}});
         audits.push_back({{"class", audit.objectClass}, {"id", audit.id}, {"source", Display(audit.source, 1024)},
             {"field", Display(audit.field, 240)}, {"declared_value", Display(audit.declaredValue, 4096)},
             {"declared_value_truncated", audit.declaredValue.size() > 4096}, {"indices", std::move(indices)}});

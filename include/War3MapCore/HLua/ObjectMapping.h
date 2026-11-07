@@ -8,6 +8,8 @@
 namespace War3Map::HLua {
 struct IndexedFieldValue {
     std::string field, nativeId, effectiveValue, valueSource;
+    bool defaultedTextEmpty = false;
+    std::string defaultEvidence;
 };
 struct IndexedFieldAudit {
     std::string objectClass, id, source, field, declaredValue;

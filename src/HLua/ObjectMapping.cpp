@@ -90,11 +90,35 @@ Result<IndexedFieldAudit> RedundantField(const HslkObject& object, const HslkFie
             return row.key.fieldId == definition->fieldId && row.definition == definition;
         });
         const auto indexName = LniName(*definition, *source.schema) + " (" + definition->fieldId + ")";
-        if (found == rows.value->end()) return rejected(indexName + " 没有可确认的实际有效值；父物体=" + object.parent);
-        if (!found->editable || !found->value) return rejected(indexName + " 的实际有效值不可靠；来源="
-            + found->valueSource + "；原因=" + found->reason);
+        std::optional<Value> effective;
+        std::string valueSource;
+        bool defaulted = false;
+        if (found == rows.value->end()) {
+            const auto* parent = source.standard->Find(source.type, object.parent);
+            bool profileKeyPresent = false;
+            if (parent) {
+                const auto origin = parent->fieldSourceFiles.find(Text::LowerAscii(definition->sourceField));
+                profileKeyPresent = origin != parent->fieldSourceFiles.end()
+                    && std::find(parent->profileSectionFiles.begin(), parent->profileSectionFiles.end(), origin->second) != parent->profileSectionFiles.end();
+            }
+            const bool unknownOverride = std::any_of(rows.value->begin(), rows.value->end(), [&](const auto& row) {
+                return row.key.fieldId == definition->fieldId;
+            });
+            if (!parent || !parent->nativeOverridesSupported || !parent->completeProfileAndSlk || profileKeyPresent || unknownOverride
+                || Text::LowerAscii(definition->sourceTable) != "profile" || *definition->nativeValueType != NativeValueType::String
+                || definition->isList || !definition->referenceTypes.empty())
+                return rejected(indexName + " 没有可确认的实际有效值；父物体=" + object.parent
+                    + "；未满足完整标准父物体的缺省文本条件（数字、列表和不完整分量不适用）");
+            effective = std::string{}; defaulted = true;
+            valueSource = "standard-profile-default-empty:" + object.parent;
+            for (const auto& path : parent->profileSectionFiles) valueSource += ';' + path;
+        } else {
+            if (!found->editable || !found->value) return rejected(indexName + " 的实际有效值不可靠；来源="
+                + found->valueSource + "；原因=" + found->reason);
+            effective = found->value; valueSource = found->valueSource;
+        }
         const auto expected = ValueFor(field.values.front(), *definition->nativeValueType);
-        if (!expected.Succeeded() || *expected.value != *found->value)
+        if (!expected.Succeeded() || *expected.value != *effective)
             return rejected("与 " + LniName(*definition, *source.schema) + " 的实际有效值不同");
         // 数字相等使用精确比较；不能靠写成 float32 后的舍入碰巧相同放行。
         if (*definition->nativeValueType != NativeValueType::String) {
@@ -106,12 +130,13 @@ Result<IndexedFieldAudit> RedundantField(const HslkObject& object, const HslkFie
                 if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
                     return rejected("冗余数值声明不能借空文本或解析回退证明相等");
             }
-            const double effective = std::holds_alternative<float>(*found->value)
-                ? static_cast<double>(std::get<float>(*found->value)) : static_cast<double>(std::get<std::int32_t>(*found->value));
-            if (declared != effective) return rejected("原始数值与实际有效值不完全相同");
+            const double actual = std::holds_alternative<float>(*effective)
+                ? static_cast<double>(std::get<float>(*effective)) : static_cast<double>(std::get<std::int32_t>(*effective));
+            if (declared != actual) return rejected("原始数值与实际有效值不完全相同");
         }
         audit.indices.push_back({LniName(*definition, *source.schema), definition->fieldId,
-            ValueToDisplayString(*found->value), found->valueSource});
+            ValueToDisplayString(*effective), std::move(valueSource), defaulted,
+            defaulted ? "docs/HLUA_PROJECTS.md#profile-text-default-evidence" : ""});
     }
     return Result<IndexedFieldAudit>::Success(std::move(audit));
 }
@@ -231,6 +256,7 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const Ln
         for (const auto& index : audit.indices) {
             if (!values.empty()) values += ", ";
             values += index.field + "=[" + index.effectiveValue + "] (" + index.valueSource + ")";
+            if (index.defaultedTextEmpty) values += "；缺省按空串；原版核对证据：" + index.defaultEvidence;
         }
         result.diagnostics.push_back({DiagnosticSeverity::Warning, "HLua", "HLUA_REDUNDANT_INDEXED_FIELD",
             audit.source + "：" + audit.id + "." + audit.field + "=[" + audit.declaredValue
