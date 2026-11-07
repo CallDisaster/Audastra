@@ -124,7 +124,7 @@ void MainWindow::UpdateLuaReloadPending() {
     luaReloadAction_->setToolTip(tooltip);
     for (auto* object : luaReloadAction_->associatedObjects()) {
         auto* button = qobject_cast<QToolButton*>(object);
-        if(button)QtCommon::ApplyLuaReloadButtonState(*button,luaReloadAction_->text(),pending,rebuild);
+        if(button)War3Map::QtCommon::ApplyLuaReloadButtonState(*button,luaReloadAction_->text(),pending,rebuild);
     }
 }
 
