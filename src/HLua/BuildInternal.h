@@ -13,6 +13,7 @@ struct BaseSnapshot {
 [[nodiscard]] Result<std::vector<TreeFile>> CaptureTree(const std::filesystem::path& root);
 [[nodiscard]] Status VerifyTree(std::span<const TreeFile> files);
 [[nodiscard]] Result<BaseSnapshot> CaptureBase(const BuildRequest& request);
+[[nodiscard]] Result<std::vector<std::string>> CaptureExistingIds(const BuildRequest& request);
 [[nodiscard]] Result<std::vector<MapArchiveMember>> RuntimeMembers(const FrameworkSnapshot& framework,
     const ProjectSnapshot& project, const HslkOutput& hslk, BuildTarget target);
 [[nodiscard]] Status CheckScript(const MapArchiveSession& archive, std::string_view script,

@@ -68,9 +68,9 @@ int RunHLua(int argc, wchar_t** argv) {
             if (!created.Succeeded()) return Failed(created.diagnostics);
             std::cout << "created=true\nbase_sha256=" << created.value->sha256 << "\n"; return 0;
         }
-        if (request.workspace.empty()) return Bad();
         if (command == L"hlua-ids") request.idsOnly = true;
         else if (command != L"hlua-build" && command != L"hlua-test") return Bad();
+        if (!request.idsOnly && request.workspace.empty()) return Bad();
         if (command == L"hlua-test" && (helpers.empty() || request.mode != HLua::BuildTarget::Test)) return Bad();
         auto result = HLua::BuildProject(request);
         if (!result.Succeeded()) return Failed(result.diagnostics);

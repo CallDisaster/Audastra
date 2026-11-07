@@ -6,6 +6,7 @@
 #include "War3MapCore/MapData/LniMapSettings.h"
 #include "War3MapCore/Text/LniData.h"
 #include "War3MapCore/Text/TextUtil.h"
+#include "War3MapCore/ObjectData/NativeObjectCodec.h"
 #include <Windows.h>
 #include <algorithm>
 #include <charconv>
@@ -175,5 +176,35 @@ Result<BaseSnapshot> CaptureBase(const BuildRequest& request) {
         output.archive = std::move(*archive.value);
         return Output::Success(std::move(output));
     } catch (const std::exception& e) { return Fail<BaseSnapshot>("HLUA_BASE_READ", e.what()); }
+}
+Result<std::vector<std::string>> CaptureExistingIds(const BuildRequest& request) {
+    std::set<std::string> ids;
+    if (!request.baseMap.empty()) {
+        auto archive = MapArchiveSession::OpenScriptAudit(request.baseMap);
+        if (!archive.Succeeded()) return {std::nullopt, std::move(archive.diagnostics)};
+        for (unsigned i = 0; i < 7; ++i) {
+            const auto type = static_cast<ObjectData::ObjectType>(i);
+            const auto member = ObjectData::NativeFileName(type);
+            if (!archive.value->HasMember(member)) continue;
+            auto bytes = archive.value->ReadMember(member);
+            if (!bytes.Succeeded()) return {std::nullopt, std::move(bytes.diagnostics)};
+            auto parsed = ObjectData::NativeObjectCodec(type).Parse(*bytes.value);
+            const auto* document = parsed.Succeeded() ? dynamic_cast<ObjectData::NativeObjectDocument*>(parsed.document.get()) : nullptr;
+            if (!document || !document->IsStructurallySafe()) return {std::nullopt, std::move(parsed.diagnostics)};
+            for (const auto& record : document->Objects()) ids.insert(record.key.rawcode);
+        }
+    } else if (std::filesystem::is_directory(request.project / "map/slk")) {
+        auto files = CaptureTree(request.project / "map/slk");
+        if (!files.Succeeded()) return {std::nullopt, std::move(files.diagnostics)};
+        for (const auto& file : *files.value) {
+            const auto type = ObjectData::ObjectTypeFromLniFileName(file.name);
+            if (!type) continue;
+            auto objects = ParseF6ObjectIni(*type, {reinterpret_cast<const char*>(file.bytes.data()), file.bytes.size()}, file.name, request.limits);
+            if (!objects.Succeeded()) return {std::nullopt, std::move(objects.diagnostics)};
+            for (const auto& object : *objects.value) if (!ids.insert(object.id).second)
+                return Fail<std::vector<std::string>>("HLUA_ID_CONFLICT", "F6 各类表之间存在重复 ID：" + object.id);
+        }
+    }
+    return Result<std::vector<std::string>>::Success({ids.begin(), ids.end()});
 }
 } // namespace War3Map::HLua::Detail
