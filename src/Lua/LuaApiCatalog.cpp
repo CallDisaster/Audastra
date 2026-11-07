@@ -191,7 +191,7 @@ void AddRuntimeModules(ApiCatalog& catalog, OwnedRuntimeInput& input) {
     }, true, true};
     ApiModule console{"jass.console", "控制台。", {
         Value("jass.console", "enable", ApiKind::Field, "boolean", "是否打开控制台输出。"),
-        Function("jass.console", "write", "text:string", "", "将 UTF-8 文本写入本次测试回执，不自动添加换行。"),
+        Function("jass.console", "write", "...", "", "将各参数经 tostring 转为 UTF-8 文本，制表分隔并换行，输出到本次测试回执。"),
     }, true, true};
     ApiModule debug{"jass.debug", "本次 VM 的句柄诊断。", {
         Function("jass.debug", "handlemax", "", "integer", "当前反向句柄表的槽位数量。"),

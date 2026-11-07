@@ -82,7 +82,7 @@ void RegisterHLuaTools(McpServer& server) {
             auto& request = *parsed.value;
             if (command == "hlua_inspect") {
                 auto result = HLua::InspectProject(request.framework,request.project,request.gameRoot);
-                return result.Succeeded() ? Json(HLua::InspectReceiptJson(*result.value)) : Failure(result);
+                return result.Succeeded() ? Json(HLua::InspectReceiptJson(*result.value,args.value("offset").toInt(0),args.value("limit").toInt(128))) : Failure(result);
             }
             if (command == "hlua_new") {
                 auto toolRoot = ParseAbsolutePath(args,"tool_root");

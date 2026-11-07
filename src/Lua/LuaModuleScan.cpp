@@ -5,9 +5,20 @@ namespace War3Map::Lua {
 std::vector<ExternalCapability> ScanLiteralMemberLookups(std::string_view source,std::string_view table) {
     const auto tokens=Detail::Tokenize(source,false,4*1024*1024);
     std::vector<ExternalCapability> output;
-    for(std::size_t i=0;i+3<tokens.size();++i) if(tokens[i].kind==Detail::TokenKind::Name && tokens[i].Text(source)==table
-        && tokens[i+1].Text(source)=="[" && tokens[i+2].kind==Detail::TokenKind::String && !tokens[i+2].unterminated
-        && tokens[i+3].Text(source)=="]") output.push_back({Detail::StringValue(tokens[i+2].Text(source)),tokens[i].line});
+    for(std::size_t i=0;i+2<tokens.size();++i) if(tokens[i].kind==Detail::TokenKind::Name && tokens[i].Text(source)==table) {
+        if(tokens[i+1].Text(source)=="." && tokens[i+2].kind==Detail::TokenKind::Name) output.push_back({std::string(tokens[i+2].Text(source)),tokens[i].line});
+        else if(i+3<tokens.size() && tokens[i+1].Text(source)=="[" && tokens[i+2].kind==Detail::TokenKind::String && !tokens[i+2].unterminated
+            && tokens[i+3].Text(source)=="]") output.push_back({Detail::StringValue(tokens[i+2].Text(source)),tokens[i].line});
+    }
+    return output;
+}
+std::vector<ExternalCapability> ScanLiteralCallArguments(std::string_view source,std::string_view table,std::string_view method) {
+    const auto tokens=Detail::Tokenize(source,false,4*1024*1024);
+    std::vector<ExternalCapability> output;
+    for(std::size_t i=0;i+4<tokens.size();++i) if(tokens[i].kind==Detail::TokenKind::Name && tokens[i].Text(source)==table
+        && tokens[i+1].Text(source)=="." && tokens[i+2].Text(source)==method && tokens[i+3].Text(source)=="("
+        && tokens[i+4].kind==Detail::TokenKind::String && !tokens[i+4].unterminated)
+        output.push_back({Detail::StringValue(tokens[i+4].Text(source)),tokens[i].line});
     return output;
 }
 std::vector<ExternalCapability> ScanExternalCapabilities(std::string_view source) {

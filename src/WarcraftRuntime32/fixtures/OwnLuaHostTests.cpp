@@ -183,7 +183,9 @@ void HLuaStartupLibraries() {
         local rt=require('jass.runtime')
         local console=require('jass.console')
         rt.console=true
+        assert(tostring(1.0)=='1' and tostring(1/2)=='0.5' and tostring(9223372036854775807)=='9223372036854775807')
         console.write('console text', '\n')
+        console.write(true,false,nil,setmetatable({},{__tostring=function() return 'custom' end}))
         rt.debugger=4279
         assert(rt.debugger==nil)
         assert(not pcall(rawset,rt,'debugger',4279) and not pcall(rawset,console,'write',function() end))
@@ -203,6 +205,7 @@ void HLuaStartupLibraries() {
         assert(not pcall(os.date,'%q') and not pcall(os.date,'%'))
     )lua", "@startup-libraries.lua"), "bounded startup interfaces");
     Check(host.ConsoleText().find("console text") != std::string_view::npos, "console.write test channel");
+    Check(host.ConsoleText().find("true\tfalse\tnil\tcustom\n") != std::string_view::npos,"console.write converts values with separators and newline");
     Check(host.ConsoleText().find("LUA_DEBUGGER_UNSUPPORTED") != std::string_view::npos, "debugger limitation explicit");
     const auto text = host.ConsoleText();
     const auto first = text.find("LUA_JAPI_UNSUPPORTED");

@@ -21,7 +21,15 @@ InspectReceipt Inspected(const FrameworkSnapshot& framework, const ProjectSnapsh
     for (const auto& file : framework.runtime.files)
         for (const auto& module : Lua::ScanModuleRequires(LuaText(file)))
             if (!module.dynamic && module.name.starts_with("jass.")) required.insert(module.name);
-    return {framework.sha256, project.source.sha256, project.runtimeFiles.size(), project.hslkFiles.size(), {required.begin(), required.end()}};
+    InspectReceipt receipt{framework.sha256, project.source.sha256, project.runtimeFiles.size(), project.hslkFiles.size(), {required.begin(), required.end()}};
+    std::set<std::string> japi;
+    const auto scan=[&](const Services::LuaFolderSnapshot& source){for(const auto& file:source.files) {
+        const auto text=LuaText(file);
+        for(const auto& item:Lua::ScanLiteralMemberLookups(text,"JassJapi")) japi.insert(item.name);
+        for(const auto& item:Lua::ScanLiteralCallArguments(text,"hjapi","exec")) japi.insert(item.name);
+    }};
+    scan(framework.runtime);scan(project.source);
+    receipt.japiNames.assign(japi.begin(),japi.end());return receipt;
 }
 Status CheckCommon(InspectReceipt& receipt,const FrameworkSnapshot& framework,const std::filesystem::path& gameRoot) {
     if(gameRoot.empty()) return Status::Ok();

@@ -8,6 +8,7 @@
 #include "War3MapCore/Runtime/LuaObjectSnapshot.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include "War3MapCore/Lua/YdweRawcode.h"
+#include "War3MapCore/Lua/NumberText.h"
 
 // 此独立 Lua 库全体以 C++ 编译，使用上游支持的异常展开，不能包 extern "C"。
 #include <lua.h>
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cmath>
 #include <exception>
 #include <limits>
 #include <unordered_map>
@@ -113,9 +115,12 @@ struct LuaHost::Impl {
         auto& self = Host(lua);
         if (!self.behavior.ConsoleEnabled()) return 0;
         const int count = lua_gettop(lua);
+        lua_getglobal(lua,"tostring"); const int converter=lua_absindex(lua,-1);
         for (int index = 1; index <= count; ++index) {
             std::size_t size = 0;
-            const auto* text = luaL_tolstring(lua, index, &size);
+            lua_pushvalue(lua,converter);lua_pushvalue(lua,index);lua_call(lua,1,1);
+            const auto* text=lua_tolstring(lua,-1,&size);
+            if(!text) return luaL_error(lua,"console.write 的 tostring 转换没有返回文本。");
             if (self.console.size() < kConsoleBytes) {
                 if (index > 1) self.console += '\t';
                 const std::string_view value(text, size);
@@ -132,15 +137,7 @@ struct LuaHost::Impl {
         return 0;
     }
     static int ConsoleWrite(lua_State* lua) {
-        auto& self = Host(lua);
-        if (!self.behavior.ConsoleEnabled()) return 0;
-        for (int index = 1; index <= lua_gettop(lua); ++index) {
-            std::size_t size = 0; const auto* text = luaL_checklstring(lua, index, &size);
-            const std::string_view value(text, size);
-            if (!LuaMailboxUtf8(value)) return luaL_error(lua, "console.write 需要 UTF-8 文本。");
-            self.console.append(value.substr(0, LuaMailboxUtf8Prefix(value, kConsoleBytes - self.console.size())));
-        }
-        return 0;
+        return Print(lua);
     }
     static int Diagnostic(lua_State* lua) {
         auto& self = Host(lua); std::size_t size = 0;
@@ -276,6 +273,17 @@ struct LuaHost::Impl {
     }
     static int InitializeLibraries(lua_State* lua) {
         luaL_requiref(lua, "_G", luaopen_base, 1); lua_pop(lua, 1);
+        lua_getglobal(lua,"tostring");
+        lua_pushcclosure(lua,[](lua_State* L)->int {
+            if(lua_type(L,1)==LUA_TNUMBER && std::isfinite(lua_tonumber(L,1))) {
+                char bytes[64];
+                const auto result=lua_isinteger(L,1) ? War3Map::Lua::NumberText(bytes,static_cast<std::int64_t>(lua_tointeger(L,1)))
+                    : War3Map::Lua::NumberText(bytes,lua_tonumber(L,1));
+                if(result.ec!=std::errc{}) return luaL_error(L,"无法格式化 Lua 数字。");
+                lua_pushlstring(L,bytes,result.ptr-bytes);return 1;
+            }
+            lua_pushvalue(L,lua_upvalueindex(1));lua_pushvalue(L,1);lua_call(L,1,1);return 1;
+        },1);lua_setglobal(lua,"tostring");
         luaL_requiref(lua, "table", luaopen_table, 1); lua_pop(lua, 1);
         luaL_requiref(lua, "string", luaopen_string, 1); lua_pop(lua, 1);
         luaL_requiref(lua, "math", luaopen_math, 1); lua_pop(lua, 1);

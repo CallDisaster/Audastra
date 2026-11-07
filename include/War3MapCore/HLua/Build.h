@@ -24,6 +24,7 @@ struct InspectReceipt {
     std::string commonSha256;
     std::size_t commonNamesChecked=0;
     std::vector<std::string> missingCommonNames;
+    std::vector<std::string> japiNames;
 };
 struct BuildReceipt {
     InspectReceipt inputs;
@@ -43,7 +44,7 @@ struct BuildReceipt {
     const std::filesystem::path& project, const std::filesystem::path& gameRoot = {});
 [[nodiscard]] Result<BuildReceipt> BuildProject(const BuildRequest& request,
     const Services::MapSaveService::Progress& progress = {});
-[[nodiscard]] std::string InspectReceiptJson(const InspectReceipt& receipt);
+[[nodiscard]] std::string InspectReceiptJson(const InspectReceipt& receipt,std::size_t offset=0,std::size_t limit=128);
 [[nodiscard]] std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset = 0,
     std::size_t limit = 128);
 struct NewProjectRequest {

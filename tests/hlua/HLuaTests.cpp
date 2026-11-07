@@ -53,6 +53,7 @@ void Lexical() {
     Need(modules.size() == 2 && modules[0].name == "jass.slk" && modules[1].dynamic, "require lexical evidence");
     const auto external = Lua::ScanExternalCapabilities("-- io.open('ignored')\nlocal s='os.execute()'; os['execute']('x'); package.loadlib('x'); io.open('x')");
     Need(external.size() == 3 && external[0].line == 2, "external capability evidence ignores comments and strings");
+    Need(Lua::ScanLiteralCallArguments("-- helper.exec('ignored')\nhelper.exec('FixtureNative')","helper","exec").size()==1,"literal call evidence");
     auto sites = Lua::FindEmptyTableInitializers("-- ids={}\nlocal ids = { }\nprint('ids={}')", "ids");
     Need(sites.size() == 1, "only initializer code");
 }
@@ -80,6 +81,7 @@ void Sandbox() {
     auto framework = FixtureFramework();
     ProjectSnapshot project;
     File(project.source, "hslk/spec.lua", "assert(io==nil and os==nil and package==nil and load==nil)\n"
+        "assert(math.type(1)=='integer' and math.type(1.0)=='float' and tostring(1.0)=='1' and tostring(1/2)=='0.5')\n"
         "hslk_unit{Name='Test unit',HP=0.13799999999999998,Art='path\\\\file',Buttonpos_1=0}\n"
         "hslk_item{Name='Test item',Cool={0.125,0.001}}\n");
     project.hslkFiles = {0};
@@ -91,6 +93,8 @@ void Sandbox() {
     Need(hp != fields.end() && std::get<double>(hp->values.front()) == 0.13799999999999998, "no decimal truncation");
     project.source.files.clear(); File(project.source, "hslk/spec.lua", "hslk_unit{Name=true}");
     Need(!EvaluateHslk(framework, project, {}).Succeeded(), "boolean refused");
+    project.source.files.clear(); File(project.source,"hslk/spec.lua","hslk_unit{HP=9007199254740993}");
+    Need(!EvaluateHslk(framework,project,{}).Succeeded(),"integer is not silently rounded to double");
     project.source.files.clear(); File(project.source, "hslk/spec.lua", "hslk_unit{Name={{'nested'}}}");
     Need(!EvaluateHslk(framework, project, {}).Succeeded(), "nested array refused");
     project.source.files.clear(); File(project.source, "hslk/spec.lua", "while true do end");

@@ -11,21 +11,27 @@ std::string Display(std::string_view text, std::size_t maximum) {
     if (!Audastra::Runtime32::LuaMailboxUtf8(text)) return "[非UTF-8文本，保留在原生产物中]";
     return std::string(text.substr(0,Audastra::Runtime32::LuaMailboxUtf8Prefix(text,maximum)));
 }
-Json InspectJson(const InspectReceipt& receipt) {
+Json InspectJson(const InspectReceipt& receipt,std::size_t offset=0,std::size_t limit=128) {
     Json modules=Json::array();
+    Json japi=Json::array();
+    const auto start=std::min(offset,receipt.japiNames.size()),count=std::min({std::size_t{128},limit,receipt.japiNames.size()-start});
+    for(std::size_t i=start;i<start+count;++i) japi.push_back(Display(receipt.japiNames[i],240));
     Json missing=Json::array();
     for(std::size_t i=0;i<std::min<std::size_t>(128,receipt.missingCommonNames.size());++i) missing.push_back(Display(receipt.missingCommonNames[i],240));
     for (std::size_t i=0;i<std::min<std::size_t>(32,receipt.jassModules.size());++i) modules.push_back(Display(receipt.jassModules[i],240));
     return {{"framework_sha256", receipt.frameworkSha256}, {"project_sha256", receipt.projectSha256},
         {"runtime_files", receipt.runtimeFiles}, {"hslk_files", receipt.hslkFiles}, {"jass_modules", std::move(modules)},
-        {"jass_module_count",receipt.jassModules.size()},{"common_sha256",receipt.commonSha256},
+        {"jass_module_count",receipt.jassModules.size()},{"japi_literal_names",std::move(japi)},
+        {"japi_literal_name_count",receipt.japiNames.size()},{"japi_offset",start},
+        {"japi_next_offset",start+count<receipt.japiNames.size() ? Json(start+count) : Json(nullptr)},
+        {"japi_names_complete",false},{"common_sha256",receipt.commonSha256},
         {"common_names_checked",receipt.commonNamesChecked},{"common_missing_names",std::move(missing)},
         {"common_missing_count",receipt.missingCommonNames.size()},
         {"common_missing_policy","未知名称不会伪造函数；启动查询或调用时明确诊断。"}};
 }
 }
-std::string InspectReceiptJson(const InspectReceipt& receipt) {
-    auto result = InspectJson(receipt); result["ok"] = true;
+std::string InspectReceiptJson(const InspectReceipt& receipt,std::size_t offset,std::size_t limit) {
+    auto result = InspectJson(receipt,offset,limit); result["ok"] = true;
     result["framework_license"] = "用户提供的 h-lua 为 AGPL-3.0；编辑器不分发该框架。";
     return result.dump(2);
 }

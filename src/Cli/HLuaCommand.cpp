@@ -64,7 +64,7 @@ int RunHLua(int argc, wchar_t** argv) {
         if (command == L"hlua-inspect") {
             auto result = HLua::InspectProject(request.framework, request.project, request.gameRoot);
             if (!result.Succeeded()) return Failed(result.diagnostics);
-            std::cout << HLua::InspectReceiptJson(*result.value) << '\n'; return 0;
+            std::cout << HLua::InspectReceiptJson(*result.value,offset,limit) << '\n'; return 0;
         }
         if (command == L"hlua-new") {
             auto created = HLua::CreateProject({request.framework, request.project, tool, request.gameRoot, ui});

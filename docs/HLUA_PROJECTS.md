@@ -16,6 +16,8 @@ war3-map-cli hlua-build D:/Projects/MyMap --framework D:/Frameworks/h-lua `
 
 框架目录可以替换成一对 `--runtime-framework <运行期目录> --build-framework <构建期目录>`；不能与 `--framework` 同传。框架缺文件、链接、无效 UTF-8、Lua 语法和模块重名都有明确拒绝。静态 require 使用与 Lua 编辑服务相同的词法扫描器，动态 require 仍须游戏验证。
 
+`hlua-inspect --game <游戏目录>` 还会把用户 engine 中的字面 native 名称逐项对实际 common.j 声明核对并记录 SHA。预计的 japi 名称按字面访问与框架分发调用查询，使用相同 offset/limit 分页；动态名称始终保留“不完整”的声明。构建与自带环境的数字 tostring 共用最短往返规则，整数不附加 `.0`；构建期数值字段中的整数超出 double 的精确整数范围时拒绝，避免 Lua 5.1/5.3 差异被静默舍入。
+
 默认底图来自工程的 `map/w3x`、`map/slk`、`map/resource`。也可以用 `--base D:/Maps/Base.w3x`。已有地图沿归档保存服务透传未知资源；目录构建在打开前拒绝引导成员。不通过 Lua、脚本预处理或模块加载器解释引导内容。
 
 `hlua-new <新目录> --framework <目录> --tool <已安装工具数据根> --game <游戏目录> [--ui-root <定义目录>]` 使用 Audastra 自己的地图创建服务生成 `base.w3x` 和原创 `main.lua`。后续构建显式传 `--base <新目录>/base.w3x`。
@@ -51,12 +53,14 @@ war3-map-cli hlua-test D:/Projects/MyMap --framework D:/Frameworks/h-lua `
 | `jass.globals` | 当前 VM 的有类型标量读取/写入；常量、数组、code、失效代际及未声明类型拒绝 |
 | `jass.debug` | `handlemax()` 返回句柄表槽数；`handledef()` 返回 reference 和可确认的 type，无效句柄返回 nil |
 | `jass.runtime` | console 控制测试输出；debugger 端口设置识别后明确报告未实现，不监听网络；原 sleep/handle_level 限制仍生效 |
-| `jass.console.write` | UTF-8 文本进入本次测试回执/问题列表，不自动补换行；输出有界 |
+| `jass.console.write` | 参数经 tostring 转为 UTF-8 文本，制表分隔并换行，进入本次测试回执/问题列表；输出有界 |
 | `collectgarbage` | 只支持 collect 和 count（KiB） |
 | `os` | 只支持 date、time、clock；date 格式/结果有界，年份 1970–3000；没有文件、环境或进程接口 |
 | `debug.traceback` | 非文本且非 nil 参数原样返回；不提供线程、注册表或任意内存访问 |
 
 外部调试器、未实现的 jass 模块和框架对缺失能力的具体反应，应在测试信息里查看。打包成功不代表这些功能可用。控制台输出、运行时错误、截图和物体状态才是进入作者 `main()` 的证据。
+
+原生参数保持类型检查：boolean 参数需要 boolean，整数不能含小数，字符串必须为有界 UTF-8，句柄必须属于当前有效 VM。条件/过滤器回调返回 nil 时按 false 处理，其它非 boolean 返回值拒绝；等待类、文件访问和地图切换 native 仍未开放。这不是对外部引擎全部转换行为的模拟。
 
 入口模块的冷启动时间预算为 10000 毫秒，指令预算仍为 200 万，内存仍为 64 MiB；普通回调与热重载保持 250 毫秒。入口回执的 `LUA_ENTRY_STATS` 记录实测耗时、指令数、峰值内存、读取字节及模块数。首次预读模型/技能的同步游戏调用本身无法被 Lua 指令 hook 抢占，每次 native 前后仍检查预算；这不是硬实时中断保证。
 
@@ -71,3 +75,4 @@ war3-map-cli hlua-test D:/Projects/MyMap --framework D:/Frameworks/h-lua `
 - [w3x2lni 字段命名](https://github.com/sumneko/w3x2lni/blob/master/script/prebuilt/metadata.lua)；其当前 [许可证为 GPL-3.0](https://github.com/sumneko/w3x2lni/blob/master/LICENSE.txt)。
 - [原生字段输出](https://github.com/sumneko/w3x2lni/blob/master/script/core/slk/backend_obj.lua) 与 [空数字处理](https://github.com/actboy168/w3xparser/blob/master/src/main.cpp)；w3xparser 为 Apache-2.0。仅实现空文本为零，不继承错误文本静默转零、溢出回零或整数字段截断。
 - [jass2lua 接口语义](https://github.com/actboy168/jass2lua/blob/master/lua-engine.md) 与 [Lua 5.3 手册](https://www.lua.org/manual/5.3/manual.html)。
+- YDWE 公开源码中的 [控制台参数转换与分隔](https://github.com/actboy168/YDWE/blob/master/Development/Plugin/Warcraft3/yd_lua_engine/lua_engine/libs_console.cpp)、[回调结果转换](https://github.com/actboy168/YDWE/blob/master/Development/Plugin/Warcraft3/yd_lua_engine/lua_engine/callback.cpp) 和 [boolean 的 nil 语义](https://github.com/actboy168/YDWE/blob/master/Development/Plugin/Warcraft3/yd_lua_engine/lua_engine/jassbind.cpp)。仅取接口事实，没有复制 GPL 实现。

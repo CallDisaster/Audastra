@@ -1,4 +1,5 @@
 #include "HslkSandbox.h"
+#include "War3MapCore/Lua/NumberText.h"
 #include <lauxlib.h>
 #include <lualib.h>
 #include <algorithm>
@@ -78,7 +79,7 @@ Status HslkSandbox::Initialize() {
             if (lua_type(S, 1) == LUA_TNUMBER) {
                 char text[64]; const auto number = lua_tonumber(S, 1);
                 if (!std::isfinite(number)) return luaL_error(S, "构建数字必须有限。");
-                auto end = std::to_chars(text, text + sizeof(text), number, std::chars_format::general);
+                auto end = lua_isinteger(S,1) ? Lua::NumberText(text,static_cast<std::int64_t>(lua_tointeger(S,1))) : Lua::NumberText(text,number);
                 if (end.ec != std::errc{}) return luaL_error(S, "无法格式化构建数字。");
                 lua_pushlstring(S, text, end.ptr - text); return 1;
             }
@@ -162,6 +163,8 @@ int HslkSandbox::Extract(lua_State* L) {
         host.fieldBytes_ += sizeof(FieldAtom);
         if (host.fieldBytes_ > host.limits_.fieldBytes) luaL_error(L, "HLUA_FIELD_BUDGET: 生成字段超过预算。");
         if (lua_type(L, index) == LUA_TNUMBER) {
+            if(lua_isinteger(L,index) && (lua_tointeger(L,index)>9007199254740992LL || lua_tointeger(L,index)<-9007199254740992LL))
+                luaL_error(L,"物编整数超出 Lua 5.1 double 的精确整数范围，未静默舍入。");
             const auto number = lua_tonumber(L, index);
             if (!std::isfinite(number)) luaL_error(L, "物编数字必须有限。");
             return number;
