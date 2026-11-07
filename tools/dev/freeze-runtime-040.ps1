@@ -28,8 +28,8 @@ function Role([string]$Name, [string]$Path) {
 }
 function Cache-Source([string]$Directory, [string]$Expected, [string]$Platform = '') {
     $cache = Join-Path $Directory 'CMakeCache.txt'
-    $home = @(Select-String -LiteralPath $cache -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=')
-    if ($home.Count -ne 1 -or [IO.Path]::GetFullPath(($home[0].Line -split '=', 2)[1]) -ine $Expected) {
+    $cacheSources = @(Select-String -LiteralPath $cache -Pattern '^CMAKE_HOME_DIRECTORY:INTERNAL=')
+    if ($cacheSources.Count -ne 1 -or [IO.Path]::GetFullPath(($cacheSources[0].Line -split '=', 2)[1]) -ine $Expected) {
         throw 'RUNTIME_FREEZE_BUILD_SOURCE_MISMATCH'
     }
     if ($Platform) {
