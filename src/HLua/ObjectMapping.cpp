@@ -89,8 +89,10 @@ Result<IndexedFieldAudit> RedundantField(const HslkObject& object, const HslkFie
         const auto found = std::find_if(rows.value->begin(), rows.value->end(), [&](const auto& row) {
             return row.key.fieldId == definition->fieldId && row.definition == definition;
         });
-        if (found == rows.value->end() || !found->editable || !found->value)
-            return rejected("某个下标的实际有效值缺失或不可靠");
+        const auto indexName = LniName(*definition, *source.schema) + " (" + definition->fieldId + ")";
+        if (found == rows.value->end()) return rejected(indexName + " 没有可确认的实际有效值；父物体=" + object.parent);
+        if (!found->editable || !found->value) return rejected(indexName + " 的实际有效值不可靠；来源="
+            + found->valueSource + "；原因=" + found->reason);
         const auto expected = ValueFor(field.values.front(), *definition->nativeValueType);
         if (!expected.Succeeded() || *expected.value != *found->value)
             return rejected("与 " + LniName(*definition, *source.schema) + " 的实际有效值不同");

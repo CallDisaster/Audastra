@@ -146,7 +146,9 @@ void TestHLuaObjectMapping() {
     Need(!redundant("Fx=\"\"\n", *customParent.value, "v009").Succeeded(), "custom parent overrides are not replaced by standard defaults");
     Need(!redundant("Fx=\"inherited\"\nFx_2=\"changed\"\n", *customParent.value, "v009").Succeeded(), "own override wins across parent chain");
     Need(!redundant("Fx=\"\"\n", empty(ObjectType::Unit), "xxxx").Succeeded(), "missing parent remains rejected");
-    Need(!redundant("Fx=\"\"\nFx_1=\"\"\n", empty(ObjectType::Unit), "hbar").Succeeded(), "missing second effective value is not assumed empty");
+    const auto absent = redundant("Fx=\"\"\nFx_1=\"\"\n", empty(ObjectType::Unit), "hbar");
+    Need(!absent.Succeeded() && absent.diagnostics.front().message.find("fx_2 (uxf2)") != std::string::npos,
+        "missing second effective value is not assumed empty and diagnostic names the exact index");
     auto auditInput = ParseF6ObjectIni(ObjectType::Unit, "[v011]\n_parent=\"hfoo\"\nFx=\"\"\n", "audit.ini:3"); Good(auditInput);
     std::vector<IndexedFieldAudit> audits;
     auto audited = ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits); Good(audited);
