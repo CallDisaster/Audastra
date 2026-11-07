@@ -1,4 +1,5 @@
 #include "War3MapCore/HLua/ObjectMapping.h"
+#include "War3MapCore/HLua/Build.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Text/LniData.h"
 #include "War3MapCore/Services/LuaObjectSnapshot.h"
@@ -150,6 +151,14 @@ void TestHLuaObjectMapping() {
     std::vector<IndexedFieldAudit> audits;
     auto audited = ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits); Good(audited);
     Need(audits.size() == 1 && audits.front().indices.size() == 2 && audits.front().indices[1].valueSource == "standard:hfoo", "structured ID receipt audit preserves source and all indices");
+    BuildReceipt receipt; receipt.fieldMappingChecked = true; receipt.redundantIndexedFields = audits;
+    const auto json = BuildReceiptJson(receipt);
+    Need(json.find("\"field_mapping_checked\": true") != std::string::npos
+        && json.find("\"field\": \"fx_2\"") != std::string::npos
+        && json.find("standard:hfoo") != std::string::npos, "ID receipt exposes checked compatibility evidence");
+    const auto nextPage = BuildReceiptJson(receipt, 1);
+    Need(nextPage.find("\"redundant_indexed_field_count\": 1") != std::string::npos
+        && nextPage.find("\"redundant_indexed_fields\": []") != std::string::npos, "audit pages retain total without repeating prior entries");
     auditInput.value->front().fields.push_back({"unknown", {1.0}, false});
     Need(!ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits).Succeeded()
         && audits.size() == 1, "failed mapping never publishes partial audit records");
