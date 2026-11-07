@@ -10,6 +10,7 @@
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
 
 #include <QDir>
@@ -317,7 +318,10 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
     const QString originName = OriginNodeName(node);
     if (!originName.isEmpty()) {
         menu.addSeparator();
-        menu.addAction(tr("隐藏"), this, [this, originName] { QString error; if (!EditOriginNode(originName, {{"visible", false}}, &error)) ReportAuthoring(error); });
+        auto* hide = menu.addAction(tr("隐藏"), this, [this, originName] { QString error; if (!EditOriginNode(originName, {{"visible", false}}, &error)) ReportAuthoring(error); });
+        const auto* part = FindUiOriginPart(originName.toStdString());
+        hide->setEnabled(part && part->visibility);
+        if (part && !part->visibility) hide->setToolTip(Text(part->reason));
         menu.addAction(tr("恢复原样"), this, [this, originName] { QString error; if (!RestoreOriginNode(originName, &error)) ReportAuthoring(error); });
     }
     if (item && !item->uiFrame && !item->scriptFrame) {
@@ -553,7 +557,8 @@ void GameUiModule::UpdateAuthoringControls() {
     if (removeFrameButton_) removeFrameButton_->setEnabled(isFrame);
     const bool isOrigin = !OriginNodeName(selected_).isEmpty();
     if (generateTriggersButton_) generateTriggersButton_->setEnabled(inDescription || (isOrigin && !OriginDescriptionId(OriginNodeName(selected_)).isEmpty()));
-    if (canvas_) canvas_->SetDraggable(isFrame || isOrigin);
+    const auto* origin = isOrigin ? FindUiOriginPart(OriginNodeName(selected_).toStdString()) : nullptr;
+    if (canvas_) canvas_->SetDraggable(isFrame || (origin && origin->position));
 }
 
 void GameUiModule::CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel,

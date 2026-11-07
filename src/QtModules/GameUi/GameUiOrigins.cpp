@@ -53,6 +53,14 @@ bool GameUiModule::EditOriginNode(const QString& name, const QJsonObject& fields
     for (auto it = fields.begin(); it != fields.end(); ++it) {
         if (it.value().isNull()) origin.remove(it.key()); else origin[it.key()] = it.value();
     }
+    // 缩放会连带原版锚点的偏移。保留当前画布中心，作为同一笔可撤销的显式定位。
+    if (part->scaleRequiresPosition && fields.contains("scale") && !fields["scale"].isNull() && !origin.contains("position") && tree_) {
+        for (const auto& node : tree_->Nodes()) if (OriginNodeName(node.id) == name && node.layout == LayoutState::Placed) {
+            origin["position"] = QJsonObject{{"point", "CENTER"}, {"toPoint", "BOTTOMLEFT"},
+                {"x", (node.rect.left + node.rect.right) / 2}, {"y", (node.rect.bottom + node.rect.top) / 2}};
+            break;
+        }
+    }
     const QJsonObject edit = origin.size() == 1 ? QJsonObject{{"op", "remove_origin"}, {"name", name}} : QJsonObject{{"op", "set_origin"}, {"origin", origin}};
     auto changed = ApplyUiEdits(base, CompactEdits({edit}).toStdString());
     if (!changed.value) { if (error) *error = Text(changed.diagnostics.front().message); return false; }
@@ -69,6 +77,10 @@ bool GameUiModule::RestoreOriginNode(const QString& name, QString* error) {
 bool GameUiModule::MoveOriginNode(std::uint32_t node, double dx, double dy, QString* error) {
     const auto name = OriginNodeName(node);
     if (name.isEmpty() || tree_->Nodes()[node].layout != LayoutState::Placed) { if (error) *error = tr("此节点没有可调整的位置"); return false; }
+    if (const auto* part = FindUiOriginPart(name.toStdString()); !part || !part->position) {
+        if (error) *error = tr("此原版节点不支持移动：%1").arg(part ? Text(part->reason) : name);
+        return false;
+    }
     const auto rect = tree_->Nodes()[node].rect;
     return EditOriginNode(name, {{"position", QJsonObject{{"point", "BOTTOMLEFT"}, {"x", std::round((rect.left + dx) * 10000) / 10000},
         {"y", std::round((rect.bottom + dy) * 10000) / 10000}}}}, error);
@@ -108,6 +120,13 @@ void GameUiModule::AddOriginProperties() {
         support->setToolTip(1, Text(part->reason));
     }
     const auto row = [&](const QString& label, const QString& key, const QString& value) {
+        const auto* part = FindUiOriginPart(name.toStdString());
+        const bool supported = part && (key == "visible" ? part->visibility : key == "scale" ? part->scale : key == "alpha" ? part->alpha : part->position);
+        if (!supported) {
+            auto* item = new QTreeWidgetItem(group, {label, value.isEmpty() ? tr("不支持") : tr("%1（不支持）").arg(value)});
+            item->setToolTip(1, part ? Text(part->reason) : tr("没有该节点"));
+            return;
+        }
         const auto options = PropertyChoices("origin:" + key);
         auto* item = new QTreeWidgetItem(group, {label, options.isEmpty() ? value : GameUiChoiceLabel(options, value)});
         item->setData(1, kFieldRole, "origin:" + key);

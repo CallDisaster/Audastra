@@ -105,7 +105,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
                 "set_description{label}；add_frame{parent?,index?,frame}；set_frame{frame,fields}（null 删除字段，改 id 同步引用）；"
                 "move_frame{frame,parent,index?}；remove_frame{frame}；rename_value{from,to}（同步框架取值、文字与贴图模板）；set_values{values}、set_states{states}、set_events{events}（整体替换）；"
                 "paste_frame{clipboard,parent?,index?}（clipboard为一个框架子树的完整audastra.ui描述，含所需数值/状态/事件，冲突编号和内部引用自动更新）；"
-                "set_origin{origin:{name,visible?,position?:{point,toPoint?,x?,y?},scale?,alpha?}}、remove_origin{name}（原版节点稳定标识、屏幕锚点；生成以实机能力表为准）；"
+                "set_origin{origin:{name,visible?,position?:{point,toPoint?,x?,y?},scale?,alpha?}}、remove_origin{name}（原版节点稳定标识、屏幕锚点；生成以实机能力表为准，scale_requires_position为真时缩放须附显式位置）；"
                 "set_simulation{simulation:{timers:[{id,label,period,repeat}],values:{编号或编号[下标]:起始值}}}（编辑器模拟用，游戏不读）。"
                 "框架与字段按 audastra.ui 写法（新框架可照 game_ui_view_read 的 frame_kinds[].frame 默认外观写）：type 为 panel/backdrop/text/bar/button/template/model（model 写 model 模型路径，可写 {编号} 按数值换模型），anchors 为 {point,to,toPoint,x,y}，"
                 "to 为 parent、screen、框架编号或 game:区域标识；value/visible 可写 编号、编号[] 或 编号[下标]（visible 取文字数值时非空为显示），"

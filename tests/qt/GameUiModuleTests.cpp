@@ -97,6 +97,7 @@ private slots:
     void FrameSettingsCardAndTexturePicker();
     void TriggerSimulationRunsAuthorTriggers();
     void OriginAndClipboardTransactions();
+    void OriginalScalePinsPosition();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -186,6 +187,23 @@ void GameUiModuleTests::OriginAndClipboardTransactions() {
     project.AssetUndoStack()->undo(); QCOMPARE(*originPayload(), restored);
     project.AssetUndoStack()->redo(); QCOMPARE(*originPayload(), hidden);
     Q_UNUSED(page);
+}
+
+void GameUiModuleTests::OriginalScalePinsPosition() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(module.SelectFrame(QStringLiteral("Portrait")));
+    const auto rect = module.Tree()->Nodes()[module.SelectedNode()].rect;
+    QString error;
+    QVERIFY2(module.EditOriginNode(QStringLiteral("Portrait"), {{"scale", 1.2}}, &error), qPrintable(error));
+    const auto& change = module.Description(QStringLiteral("OriginalUi"))->origins.front();
+    QCOMPARE(change.name, std::string("Portrait")); QVERIFY(change.position);
+    QCOMPARE(change.position->targetPoint, FramePoint::BottomLeft);
+    QVERIFY(std::abs(change.position->x - (rect.left + rect.right) / 2) < .00001);
+    project.AssetUndoStack()->undo();
+    QTRY_VERIFY(!module.Description(QStringLiteral("OriginalUi")) || module.Description(QStringLiteral("OriginalUi"))->origins.empty());
 }
 
 void GameUiModuleTests::RootsRaceAndVisibility() {

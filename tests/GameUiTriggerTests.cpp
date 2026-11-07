@@ -2,6 +2,7 @@
 #include "War3MapCore/GameUi/FrameDefinition.h"
 #include "War3MapCore/GameUi/FrameLibrary.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
+#include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/Jass/JassChecker.h"
 #include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -465,6 +466,36 @@ void TestThreadedCreation() {
         "调用少时照旧写在一个创建触发器里：\n" + (small.Succeeded() ? small.value->featureText : First(small.diagnostics)));
 }
 
+void TestOriginalAdjustments() {
+    UiDescription d; d.id = "originals"; d.label = "原版布局";
+    UiOriginAdjustment resources; resources.name = "resourcebarframe"; resources.visible = false;
+    UiOriginAdjustment minimap; minimap.name = "Minimap";
+    minimap.position = UiAnchor{FramePoint::TopRight, UiAnchorTarget::Screen, {}, FramePoint::TopRight, -.01, -.02};
+    UiOriginAdjustment portrait; portrait.name = "Portrait"; portrait.scale = 1.2;
+    portrait.position = UiAnchor{FramePoint::BottomLeft, UiAnchorTarget::Screen, {}, FramePoint::BottomLeft, .2075, .030625};
+    d.origins = {resources, minimap, portrait};
+    const auto plan = GenerateUiTriggers(d);
+    Require(plan.Succeeded(), "原版调整生成：" + First(plan.diagnostics));
+    const auto& text = plan.value->featureText;
+    Require(Contains(text, "AudastraUISetOriginalVisible(\"resourcebarframe\", false)") &&
+        Contains(text, "AudastraUISetOriginalPosition(\"Minimap\", AudastraAnchorTopRight, 0.79, 0.58)") &&
+        Contains(text, "AudastraUISetOriginalScale(\"Portrait\", 1.2)") && Contains(text, "udg_AUI_OA_originals"),
+        "稳定名字、屏幕坐标与独立轮询预算写入普通动作");
+    Require(text.find("AudastraUISetOriginalPosition(\"Portrait\"") < text.find("AudastraUISetOriginalScale(\"Portrait\""),
+        "显式定位先于缩放，避免原版锚点偏移被缩放");
+    Fixture fixture;
+    Require(fixture.Apply(text).Succeeded(), "原版调整走共用自然T入口");
+    const auto wire = WtgWctCodec{}.Serialize(fixture.doc, fixture.catalog);
+    Require(wire.Succeeded() && WtgWctCodec{}.Parse(wire.value->wtg, wire.value->wct, fixture.catalog).Succeeded(), "原版调整WTG/WCT回读");
+    d.origins = {portrait}; d.origins.front().position.reset();
+    Require(!GenerateUiTriggers(d).Succeeded() && Contains(First(GenerateUiTriggers(d).diagnostics), "显式位置"), "需要定位的缩放拒绝无位置输入");
+    minimap.scale = 1.2; d.origins = {minimap};
+    const auto refused = GenerateUiTriggers(d);
+    Require(!refused.Succeeded() && Contains(First(refused.diagnostics), "缩放"), "未通过的属性生成前拒绝，并定位到属性");
+    UiOriginAdjustment chat; chat.name = "ChatMessage"; chat.visible = false; d.origins = {chat};
+    Require(!GenerateUiTriggers(d).Succeeded(), "消息框未通过验收不能生成");
+}
+
 void TestAppliedThroughSharedChain() {
     Fixture f;
     UiTriggerOptions options;
@@ -712,6 +743,7 @@ int main() {
         TestUntexturedFrames();
         TestThreadedCreation();
         TestAppliedThroughSharedChain();
+        TestOriginalAdjustments();
         TestRefusalsAndTemplates();
         TestScriptLibrary();
         TestModelFrames();

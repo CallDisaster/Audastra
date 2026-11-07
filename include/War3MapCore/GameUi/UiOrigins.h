@@ -12,7 +12,8 @@ struct UiOriginPart {
     bool position = false;
     bool scale = false;
     bool alpha = false;
-    std::string reason = "尚无1.27a游戏验收证据";
+    std::string reason = "不支持：未通过1.27a游戏验收";
+    bool scaleRequiresPosition = false;
 };
 [[nodiscard]] const std::vector<UiOriginPart>& UiOriginParts();
 [[nodiscard]] const UiOriginPart* FindUiOriginPart(std::string_view name);

@@ -282,7 +282,8 @@ QJsonObject NodeJson(const FrameTree& tree, const FrameNode& node, double aspect
     if (!node.codeLabel.empty()) row.insert("code_area", Text(node.codeLabel));
     if (!node.uiFrame && !node.scriptFrame) if (const auto* original = FindUiOriginPart(node.name)) {
         row.insert("original", QJsonObject{{"name", Text(original->name)}, {"visibility", original->visibility},
-            {"position", original->position}, {"scale", original->scale}, {"alpha", original->alpha}, {"reason", Text(original->reason)}});
+            {"position", original->position}, {"scale", original->scale}, {"alpha", original->alpha}, {"reason", Text(original->reason)},
+            {"scale_requires_position", original->scaleRequiresPosition}});
     }
     if (node.codePlaced) row.insert("placed_by", "game-code");
     if (node.scriptFrame && plan && *node.scriptFrame < plan->frames.size()) {

@@ -574,6 +574,20 @@ void TestOrigins() {
     const auto time = std::find_if(scaleTree.Nodes().begin(), scaleTree.Nodes().end(), [](const auto& node) { return node.name == "TimeOfDay"; });
     Require(time != scaleTree.Nodes().end() && std::abs(time->rect.top - .6) < .00001 &&
         std::abs((time->rect.left + time->rect.right) / 2 - .4) < .00001, "scale preserves original top anchor");
+    FrameTree infoTree; infoTree.AddGameCodeAreas(); (void)infoTree.Layout();
+    const auto infoId = infoTree.FindCodeArea("InfoBar"), slotId = infoTree.FindCodeArea("InventoryButton1");
+    Require(infoId && slotId, "native inventory preview nodes");
+    const auto before = infoTree.Nodes()[*slotId].rect, infoBefore = infoTree.Nodes()[*infoId].rect;
+    UiDescription info; info.id = "info";
+    UiOriginAdjustment moved; moved.name = "InfoBar"; moved.scale = 1.2; moved.visible = false;
+    moved.position = UiAnchor{FramePoint::Center, UiAnchorTarget::Screen, {}, FramePoint::BottomLeft, .4, .32};
+    info.origins.push_back(moved);
+    Require(ApplyUiOriginsPreview(infoTree, info).empty(), "info parent preview transform");
+    const auto& after = infoTree.Nodes()[*slotId];
+    const double left = .4 - infoBefore.Width() * 1.2 / 2;
+    Require(std::abs(after.rect.left - (left + (before.left - infoBefore.left) * 1.2)) < .00001 &&
+        std::abs(after.rect.Width() - before.Width() * 1.2) < .00001 && after.hidden,
+        "six native inventory buttons follow their runtime info parent despite the flat preview registry");
 }
 
 int main() {
