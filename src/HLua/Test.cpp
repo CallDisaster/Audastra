@@ -65,7 +65,7 @@ Result<std::shared_ptr<TestSession>> StartProjectTest(const TestRequest& request
     if (!prepared.Succeeded()) return {std::nullopt, std::move(prepared.diagnostics)};
     auto refresh = (*frozen.value)->Refresh();
     if (!refresh.Succeeded()) return {std::nullopt, std::move(refresh.diagnostics)};
-    prepared.value->cloakedWindow = request.cloaked; prepared.value->hiddenDesktop = request.cloaked; prepared.value->backgroundPlay = request.cloaked;
+    prepared.value->cloakedWindow = request.cloaked; prepared.value->hiddenDesktop = false; prepared.value->backgroundPlay = request.cloaked;
     auto launched = Script::LaunchMapTest(*prepared.value);
     if (!launched.Succeeded()) return {std::nullopt, std::move(launched.diagnostics)};
     auto session = std::make_shared<TestSession>(); session->build_ = std::move(*built.value);

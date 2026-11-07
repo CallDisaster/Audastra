@@ -66,7 +66,7 @@ war3-map-cli hlua-test D:/Projects/MyMap --framework D:/Frameworks/h-lua `
 
 ## MCP 与共用服务
 
-`hlua_inspect`、`hlua_ids`、`hlua_build`、`hlua_new`、`hlua_test` 调用无 Qt 的 `War3Map::HLua` 服务。工具接受明确工程/框架/底图/游戏/输出路径，不接受 shell 命令或任意 PID。ID 输出默认 128 项，可用 offset/limit。测试返回本工具创建的 session_id；`hlua_test_result`、`hlua_test_stop` 要求该身份，只查询或结束本工具的测试租约。普通编辑器地图测试与 CLI 经过同一物编资料冻结和测试准备服务。
+`hlua_inspect`、`hlua_ids`、`hlua_build`、`hlua_new`、`hlua_test` 调用无 Qt 的 `War3Map::HLua` 服务。工具接受明确工程/框架/底图/游戏/输出路径，不接受 shell 命令或任意 PID。ID 输出默认 128 项，可用 offset/limit。测试返回本工具创建的 session_id；`hlua_test_result`、`hlua_test_stop` 要求该身份，只查询或结束本工具的测试租约。`hlua_test_continue` 用同一身份向测试窗口发送一次开局空格；窗口未就绪或输入未确认时返回 `input_sent=false`，客户端可以稍后重试。它不抢焦点，也不移动真实鼠标。其余计划输入/截图使用 CLI 的 `map-test` 合同。普通编辑器地图测试与 CLI 经过同一物编资料冻结和测试准备服务。
 
 ## 格式依据
 

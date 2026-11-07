@@ -127,14 +127,21 @@ void RegisterHLuaTools(McpServer& server) {
         };
         server.RegisterTool(std::move(tool));
     }
-    for (const auto name : {"hlua_test_result","hlua_test_stop"}) {
-        ToolDefinition tool; tool.name=name; tool.permission=QString(name)=="hlua_test_stop" ? ToolPermission::External : ToolPermission::Query;
-        tool.description="只查询或结束本工具启动且会话身份相符的测试；不枚举或结束其他游戏。";
+    for (const auto name : {"hlua_test_result","hlua_test_stop","hlua_test_continue"}) {
+        ToolDefinition tool; tool.name=name; tool.permission=QString(name)=="hlua_test_result" ? ToolPermission::Query : ToolPermission::External;
+        tool.description=QString(name)=="hlua_test_continue" ? "向本工具持有的测试会话发送一次开局空格；窗口尚未就绪或输入未确认时返回input_sent=false，不使用前台输入。"
+            : "只查询或结束本工具启动且会话身份相符的测试；不枚举或结束其他游戏。";
         tool.inputSchema=BasicSchema({{"session_id",QJsonObject{{"type","string"},{"minLength",36},{"maxLength",36}}}},{"session_id"});
         tool.maxRequestIdBytes=128; tool.maxResponseBytes=64*1024;
-        tool.handler=[context,stop=QString(name)=="hlua_test_stop"](const QJsonObject& args)->QJsonValue {
+        tool.handler=[context,stop=QString(name)=="hlua_test_stop",advance=QString(name)=="hlua_test_continue"](const QJsonObject& args)->QJsonValue {
             if (args.size()!=1 || args.value("session_id").toString()!=context->identity || !context->session)
                 return Failure("HLUA_TEST_IDENTITY","测试会话身份不符。");
+            if(advance) {
+                const auto& lease=context->session->Launch().lease;
+                if(!lease || !lease->IsActive()) return Failure("HLUA_TEST_NOT_ACTIVE","本次测试已退出，未发送输入。");
+                const bool sent=lease->PressSpace();
+                auto response=State(*context);response.insert("input_sent",sent);return response;
+            }
             if (stop) { auto result=context->session->Stop(); if (!result.Succeeded()) return Failure(result); }
             auto response=State(*context);
             if (!context->session->Launch().lease->IsActive()) {

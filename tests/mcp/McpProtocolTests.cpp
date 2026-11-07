@@ -104,7 +104,7 @@ void TestToolSurface() {
             "feedback.draft", "feedback.list", "feedback.status", "update.status",
             "lua_test_hot_reload", "lua_test_reload_result",
             "lua_files_list", "lua_file_read", "lua_file_write", "map_test_start",
-            "hlua_inspect", "hlua_ids", "hlua_build", "hlua_new", "hlua_test", "hlua_test_result", "hlua_test_stop",
+            "hlua_inspect", "hlua_ids", "hlua_build", "hlua_new", "hlua_test", "hlua_test_result", "hlua_test_stop", "hlua_test_continue",
             "object_resource_state", "object_resource_query", "object_resource_inspect", "query_map_runtime", "map_runtime_query", "map_runtime_set"}) {
         Expect(names.contains(required), "required safe MCP tool is missing");
     }
