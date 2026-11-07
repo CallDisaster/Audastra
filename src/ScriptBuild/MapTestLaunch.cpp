@@ -464,6 +464,10 @@ Result<std::filesystem::path> MapTestLaunchLease::RequestGameScreenshot(std::uin
     };
 #ifdef _WIN32
     if (!impl_) return fail("MAP_TEST_SCREENSHOT_ENDED", "测试启动记录无效。");
+    if (impl_->cloaked) return detail::RequestGame127KeyScreenshot(impl_->gameImage.parent_path(), timeoutMs, [this] {
+        const auto sent = SendTestInput({MapTestInputKind::Key, 0, 0, {VK_SNAPSHOT}});
+        return sent.Succeeded() ? Status::Ok() : Status{sent.diagnostics};
+    });
     HANDLE process = nullptr;
     {
         std::lock_guard stateLock(impl_->lifecycle);

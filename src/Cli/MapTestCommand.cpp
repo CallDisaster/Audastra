@@ -395,5 +395,11 @@ int RunMapTest(int argc, wchar_t** argv) {
         << "\nworkspace_cleanup=" << (files.Succeeded() ? "true" : "false") << std::endl;
     const bool missed = std::any_of(events.begin(), events.end(), [](const auto& event) { return !event.done; });
     if (missed) std::cout << "scheduled_events_incomplete=true\n";
+    if (exitStarted) std::cout << "normal_exit_result=" << nlohmann::json{
+        {"requested",true},{"last_stage",exitStage},{"unforced",!stopped},{"exit_known",exitKnown},
+        {"game_exit_zero",gameExitZero && exitKnown}, {"workspace_clean",cleaned.Succeeded() && files.Succeeded()},
+        {"confirmation_disposition",exitStage.find("transport_unconfirmed") != std::string::npos
+            ? (exitKnown && gameExitZero && !stopped ? "unacknowledged_but_original_game_exited_zero" : "unacknowledged_exit_not_proven")
+            : "transport_completed_or_game_already_exited"}}.dump() << std::endl;
     return !inputFailed && !shotFailed && !missed && cleaned.Succeeded() && files.Succeeded() && exitKnown && gameExitZero ? 0 : 1;
 }

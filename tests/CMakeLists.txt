@@ -190,6 +190,13 @@ add_test(NAME services-map-test-input-window COMMAND war3-map-test-launch-tests 
 set_tests_properties(services-map-test-input-contract PROPERTIES TIMEOUT 15)
 set_tests_properties(services-map-test-input-window PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77)
 
+add_executable(war3-map-test-screenshot-files-tests services/GameScreenshotFilesTests.cpp)
+target_link_libraries(war3-map-test-screenshot-files-tests PRIVATE War3MapEditor::ScriptBuild)
+target_compile_definitions(war3-map-test-screenshot-files-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-map-test-screenshot-files-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME services-map-test-screenshot-files COMMAND war3-map-test-screenshot-files-tests)
+set_tests_properties(services-map-test-screenshot-files PROPERTIES TIMEOUT 15)
+
 add_executable(war3-map-test-runtime-tests services/MapTestRuntimeTests.cpp)
 target_link_libraries(war3-map-test-runtime-tests PRIVATE War3MapEditor::ScriptBuild)
 target_compile_definitions(war3-map-test-runtime-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)

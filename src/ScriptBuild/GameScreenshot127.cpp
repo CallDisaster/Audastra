@@ -10,6 +10,7 @@
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
+#include <tlhelp32.h>
 #endif
 
 namespace War3Map::Script::detail {
@@ -53,6 +54,16 @@ bool Write(HANDLE process, std::uintptr_t address, std::uint32_t value) {
     SIZE_T written = 0;
     return WriteProcessMemory(process, reinterpret_cast<LPVOID>(address), &value, sizeof(value), &written) && written == sizeof(value);
 }
+Result<std::shared_ptr<void>> OpenScreenshotImage(const std::filesystem::path& expected) {
+    const auto handle = CreateFileW(expected.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    const auto lease = std::shared_ptr<void>(handle, [](void* h) { if (h != INVALID_HANDLE_VALUE) CloseHandle(h); });
+    BY_HANDLE_FILE_INFORMATION info{};
+    const auto hash = handle == INVALID_HANDLE_VALUE ? Result<std::string>{} : Sha256Handle(handle);
+    if (!hash.Succeeded() || *hash.value != "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"
+        || !GetFileInformationByHandle(handle, &info) || info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))
+        return Fail<std::shared_ptr<void>>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "截图只支持已核验完整身份的经典1.27a Game.dll。");
+    return Result<std::shared_ptr<void>>::Success(lease);
+}
 #endif
 
 } // namespace
@@ -62,13 +73,10 @@ Result<VerifiedScreenshot127> QualifyGame127Screenshot(void* processHandle, std:
     const auto process = static_cast<HANDLE>(processHandle);
     // 只向已知映像的数据槽置位，不执行入口代码。入口可能已由其他合法组件改写，
     // 因此身份取自持有只读租约的完整磁盘映像、映射PE头和目标数据页，不能仅凭跳转指令猜版本。
-    const auto handle = CreateFileW(expected.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
-    const auto image = std::shared_ptr<void>(handle, [](void* h) { if (h != INVALID_HANDLE_VALUE) CloseHandle(h); });
-    BY_HANDLE_FILE_INFORMATION info{};
-    const auto hash = handle == INVALID_HANDLE_VALUE ? Result<std::string>{} : Sha256Handle(handle);
-    if (!hash.Succeeded() || *hash.value != "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"
-        || !GetFileInformationByHandle(handle, &info) || info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))
-        return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "截图只支持已核验完整身份的经典1.27a Game.dll。");
+    const auto opened = OpenScreenshotImage(expected);
+    if (!opened.Succeeded()) return {std::nullopt, opened.diagnostics};
+    const auto image = *opened.value;
+    const auto handle = static_cast<HANDLE>(image.get());
     std::array<unsigned char, 1024> header{};
     std::array<unsigned char, 1024> diskHeader{}; LARGE_INTEGER zero{}; DWORD headerBytes = 0;
     if (!SetFilePointerEx(handle, zero, nullptr, FILE_BEGIN)
@@ -111,6 +119,80 @@ Result<VerifiedScreenshot127> QualifyGame127Screenshot(void* processHandle, std:
 #else
     (void)processHandle; (void)base; (void)expected;
     return Fail<VerifiedScreenshot127>("MAP_TEST_SCREENSHOT_UNSUPPORTED", "当前平台不支持游戏截图。");
+#endif
+}
+
+Result<std::filesystem::path> CollectNativeGameScreenshot(const std::filesystem::path& directory,
+    std::uint32_t timeoutMs, const std::function<Status()>& request) {
+#ifdef _WIN32
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    const auto attrs = GetFileAttributesW(directory.c_str());
+    if (ec || attrs == INVALID_FILE_ATTRIBUTES || attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+        return Fail("MAP_TEST_SCREENSHOT_DIRECTORY", "截图目录不可确认或是重解析点。");
+    const auto before = Screenshots(directory);
+    const auto sent = request();
+    if (!sent.Succeeded()) return {std::nullopt, sent.diagnostics};
+    const auto started = GetTickCount64();
+    do {
+        std::optional<std::filesystem::path> completed;
+        for (const auto& name : Screenshots(directory)) {
+            if (before.contains(name)) continue;
+            const auto path = directory / name;
+            const auto file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (file == INVALID_HANDLE_VALUE) continue;
+            BY_HANDLE_FILE_INFORMATION info{}; std::array<unsigned char,18> header{}; DWORD count = 0;
+            bool valid = GetFileInformationByHandle(file, &info) && !(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+                && ReadFile(file, header.data(), static_cast<DWORD>(header.size()), &count, nullptr) && count == header.size()
+                && header[1] == 0 && header[2] == 2 && (header[16] == 24 || header[16] == 32);
+            const auto width = static_cast<unsigned>(header[12]) + 256u * header[13];
+            const auto height = static_cast<unsigned>(header[14]) + 256u * header[15];
+            const auto bytes = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) + info.nFileSizeLow;
+            valid = valid && width && height && width <= 16384 && height <= 16384 && bytes <= 256u * 1024u * 1024u
+                && bytes >= 18u + header[0] + static_cast<std::uint64_t>(width) * height * (header[16] / 8);
+            CloseHandle(file);
+            if (!valid) continue;
+            if (completed) return Fail("MAP_TEST_SCREENSHOT_AMBIGUOUS", "本次请求产生多张新截图，未选择其中一张冒充确定帧。");
+            completed = path;
+        }
+        if (completed) return Result<std::filesystem::path>::Success(*completed);
+        Sleep(25);
+    } while (GetTickCount64() - started < timeoutMs);
+    return Fail("MAP_TEST_SCREENSHOT_TIMEOUT", "游戏已收到本次原生截图键，但没有写出可确认的新TGA。");
+#else
+    (void)directory;(void)timeoutMs;(void)request;
+    return Fail("MAP_TEST_SCREENSHOT_UNSUPPORTED", "当前平台不支持游戏截图。");
+#endif
+}
+
+Result<std::filesystem::path> RequestGame127KeyScreenshot(const std::filesystem::path& gameRoot,
+    std::uint32_t timeoutMs, const std::function<Status()>& request) {
+#ifdef _WIN32
+    const auto image = OpenScreenshotImage(gameRoot / L"Game.dll");
+    if (!image.Succeeded()) return {std::nullopt, image.diagnostics};
+    const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return Fail("MAP_TEST_SCREENSHOT_PROCESS_QUERY", "无法确认截图目录是否只有一个游戏写入者。");
+    struct Snapshot { HANDLE value; ~Snapshot() { CloseHandle(value); } } processSnapshot{snapshot};
+    PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry); unsigned games = 0;
+    bool complete = Process32FirstW(snapshot, &entry) != FALSE;
+    if (complete) do {
+        if (CompareStringOrdinal(entry.szExeFile, -1, L"war3.exe", -1, TRUE) != CSTR_EQUAL) continue;
+        const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+        std::array<wchar_t,32768> path{}; DWORD length = static_cast<DWORD>(path.size());
+        const bool read = process && QueryFullProcessImageNameW(process, 0, path.data(), &length);
+        if (process) CloseHandle(process);
+        if (!read) { complete = false; break; }
+        if (CompareStringOrdinal(path.data(), static_cast<int>(length), (gameRoot / L"war3.exe").c_str(), -1, TRUE) == CSTR_EQUAL) ++games;
+    } while (Process32NextW(snapshot, &entry));
+    if (complete && GetLastError() != ERROR_NO_MORE_FILES) complete = false;
+    if (!complete || games != 1) return Fail("MAP_TEST_SCREENSHOT_AMBIGUOUS", "同一游戏目录的截图写入进程不唯一或来源不可读，未采集。");
+    auto result = CollectNativeGameScreenshot(gameRoot / L"Screenshots", timeoutMs, request);
+    if (result.Succeeded()) result.diagnostics.push_back({DiagnosticSeverity::Info, "Map.Test", "MAP_TEST_SCREENSHOT_NATIVE_KEY",
+        "完整1.27a磁盘身份已核验；经本次进程/创建时间/Job/窗口输入租约发送原生截图键，采集游戏新写TGA；未请求进程内存权限。", {}});
+    return result;
+#else
+    (void)gameRoot;(void)timeoutMs;(void)request;
+    return Fail("MAP_TEST_SCREENSHOT_UNSUPPORTED", "当前平台不支持游戏截图。");
 #endif
 }
 

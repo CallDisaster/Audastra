@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <functional>
 
 namespace War3Map::Script::detail {
 
@@ -16,6 +17,12 @@ namespace War3Map::Script::detail {
 // 返回游戏在 gameRoot\Screenshots 下新写的 TGA，调用方读完后删除。
 [[nodiscard]] Result<std::filesystem::path> RequestGame127Screenshot(void* process,
     const std::filesystem::path& gameRoot, std::uint32_t timeoutMs);
+// 原生截图键通过调用方的原进程/窗口输入租约发送，不需要重新取得进程内存写权限。
+[[nodiscard]] Result<std::filesystem::path> RequestGame127KeyScreenshot(const std::filesystem::path& gameRoot,
+    std::uint32_t timeoutMs, const std::function<Status()>& request);
+// 内部文件收集器：只接受请求后新建且已结束写入的普通TGA，旧截图不能顶替本次画面。
+[[nodiscard]] Result<std::filesystem::path> CollectNativeGameScreenshot(const std::filesystem::path& directory,
+    std::uint32_t timeoutMs, const std::function<Status()>& request);
 
 struct VerifiedScreenshot127 {
     std::uintptr_t flag = 0;
