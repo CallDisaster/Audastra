@@ -139,6 +139,8 @@ void TestHLuaObjectMapping() {
     auto accepted = redundant("Fx=\"\"\n", empty(ObjectType::Unit)); Good(accepted);
     Need(!redundant("Special=\"value\"\n", empty(ObjectType::Unit)).Succeeded(),
         "known field inapplicable to this parent cannot be skipped as absent");
+    Need(!redundant("Fx_3=\"value\"\n", empty(ObjectType::Unit)).Succeeded(),
+        "invalid indexed family member is rejected instead of skipped");
     Need(accepted.value->Objects().front().modifications.empty(), "redundant alias adds no native field");
     Need(accepted.diagnostics.size() == 1 && accepted.diagnostics.front().severity == DiagnosticSeverity::Warning
         && accepted.diagnostics.front().code == "HLUA_REDUNDANT_INDEXED_FIELD"

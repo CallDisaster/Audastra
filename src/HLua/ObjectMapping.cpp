@@ -147,10 +147,14 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjectsImpl(ObjectType type, cons
     std::vector<IndexedFieldAudit> audits;
     std::map<std::string, std::vector<const ObjectFieldDefinition*>> fieldsByName;
     std::set<std::string> baseNames;
+    std::set<std::string> indexedFamilies;
     std::map<std::string, std::set<std::string>> otherClasses;
     for (const auto& definition : schema.Definitions()) {
         const auto base = LniName(definition, schema, false);
-        if (definition.objectType == type) baseNames.insert(base);
+        if (definition.objectType == type) {
+            baseNames.insert(base);
+            if (LniName(definition, schema) != base) indexedFamilies.insert(base);
+        }
         else {
             otherClasses[base].insert(std::string(ToString(definition.objectType)));
             otherClasses[LniName(definition, schema)].insert(std::string(ToString(definition.objectType)));
@@ -206,6 +210,12 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjectsImpl(ObjectType type, cons
                         continue;
                     }
                     const auto name = Text::LowerAscii(field.name);
+                    const auto separator = name.find_last_of('_');
+                    if (separator != name.npos && indexedFamilies.contains(name.substr(0, separator))
+                        && separator + 1 < name.size() && std::all_of(name.begin() + separator + 1, name.end(),
+                            [](char c) { return c >= '0' && c <= '9'; }))
+                        return Fail<LniObjectDocument>("HLUA_FIELD_UNMAPPED", (field.source.empty() ? object.source : field.source)
+                            + "：" + object.id + "." + field.name + "：已知下标字段族没有此下标，未按未知字段跳过。");
                     if (!baseNames.contains(name) && !schema.MetadataComplete(type))
                         return Fail<LniObjectDocument>("HLUA_METADATA_INCOMPLETE", (field.source.empty() ? object.source : field.source)
                             + "：" + object.id + "." + field.name + "：本类型metadata不完整或有重复，无法证明字段不存在，未跳过。");
