@@ -159,7 +159,7 @@ void RuntimeBehaviorModules() {
     Check(host.ConsoleText().find("visible-output") != std::string::npos && host.ConsoleText().find("hidden-output") == std::string::npos,
         "console disable changes actual output");
     Check(host.Execute("console.enable=1", "@console-type.lua").code == LuaReloadResult::RuntimeError, "console strict boolean");
-    Check(host.Execute("console.write('unknown')", "@console-unknown.lua").message.find("jass.console.write") != std::string::npos,
+    Check(host.Execute("console.read(function() end)", "@console-unknown.lua").message.find("jass.console.read") != std::string::npos,
         "unverified console API refused by name");
     Success(host.Execute("local value={}; assert(debug.traceback(value,1)==value and debug.traceback(false)==false and debug.traceback(3)==3)", "@trace-value.lua"), "non-text traceback identity");
     for (const auto module : {"jass.debug", "jass.slk", "jass.message", "jass.hook"}) {

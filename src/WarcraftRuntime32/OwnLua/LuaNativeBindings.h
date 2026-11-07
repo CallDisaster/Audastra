@@ -19,6 +19,10 @@ private:
     static int Lookup(lua_State* lua);
     static int LookupGlobal(lua_State* lua);
     static int RejectGlobalWrite(lua_State* lua);
+    static int WriteGlobal(lua_State* lua);
+    static int LookupDebug(lua_State* lua);
+    static int HandleMaximum(lua_State* lua);
+    static int HandleDefinition(lua_State* lua);
     static int RawSet(lua_State* lua);
     static int Call(lua_State* lua);
     static int CollectHandle(lua_State* lua);
@@ -27,6 +31,7 @@ private:
     void PushHandle(lua_State* lua, const NativeHandle& handle);
     int PushValue(lua_State* lua, const NativeType& type, const NativeValue& value, const char* name);
     int ReadGlobal(lua_State* lua, std::string_view name);
+    NativeValue ReadValue(lua_State* lua, int stack, const NativeType& type, const char* name);
     [[nodiscard]] bool ValidHandle(const NativeHandle& handle, std::string_view expected) const noexcept;
     [[nodiscard]] std::optional<NativeSignature> Signature(std::string_view name, std::string& error) const;
     [[nodiscard]] NativeCallResult CallProvider(std::string_view name, std::span<const NativeValue> arguments);

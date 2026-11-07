@@ -75,6 +75,15 @@ public:
         const auto found = globals.find(name);
         return found == globals.end() ? NativeCallResult{false, {}, "fixture global absent"} : NativeCallResult{true, found->second, {}};
     }
+    NativeCallResult WriteGlobal(std::string_view name, const NativeValue& value) override {
+        const auto declaration = LookupGlobal(name);
+        if (!declaration || declaration->constant || declaration->array) return {false, {}, "fixture declaration not writable"};
+        globals[std::string(name)] = value; return {true, {}, {}};
+    }
+    std::optional<std::uint32_t> HandleMaximum() const override { return 64; }
+    std::optional<NativeHandleDefinition> HandleDefinition(std::uint32_t id) const override {
+        return id == 42 ? std::optional<NativeHandleDefinition>{{3, "tmr "}} : std::nullopt;
+    }
     bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept override {
         const bool known = actual == "timer" || actual == "unit" || actual == "handle" || actual == "playercolor" || actual == "race";
         return known && (actual == expected || expected == "handle");
@@ -277,6 +286,12 @@ void GlobalReads() {
         Check(!host.Execute(source, "@global-rejected.lua").Succeeded(), "unsupported reads and all writes explicitly refused");
     Check(before == provider->globalReads && std::get<bool>(provider->globals["FixtureFlag"])
         && std::get<std::int32_t>(provider->globals["Integer"]) == 17, "rejected access never calls provider or shadows a global");
+    Success(host.Execute("g.FixtureFlag=false; g.FixtureText='changed'; g.FixtureReal=0.125; g.FixtureTimer=nil; "
+        "assert(g.FixtureFlag==false and g.FixtureText=='changed' and g.FixtureReal==0.125 and g.FixtureTimer==nil)", "@global-write.lua"), "typed writes reach provider without shadow fields");
+    for (const auto source : {"g.FixtureFlag=1", "g.FixtureReal='bad'", "g.FixtureTimer=42", "g.Integer=9", "g.FixtureArray=1", "g.Unknown=1"})
+        Check(!host.Execute(source, "@global-write-rejected.lua").Succeeded(), "invalid and constant writes rejected");
+    Success(host.Execute("local d=require('jass.debug'); assert(d.handlemax()==64); local v=d.handledef(42); "
+        "assert(v.reference==3 and v.type=='tmr ' and d.handledef(1)==nil)", "@handle-definition.lua"), "actual provider handle diagnostics");
     for (const auto source : {"return g.FixtureBad", "return g.FixtureAbsent"})
         Check(!host.Execute(source, "@global-provider.lua").Succeeded(), "bad global provider value refused");
     provider->throwGlobalLookup = true;

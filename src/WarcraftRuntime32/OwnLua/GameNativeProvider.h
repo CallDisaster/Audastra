@@ -17,6 +17,9 @@ public:
     [[nodiscard]] std::optional<NativeSignature> Lookup(std::string_view name) const override;
     [[nodiscard]] std::optional<NativeGlobalDeclaration> LookupGlobal(std::string_view name) const override;
     [[nodiscard]] NativeCallResult ReadGlobal(std::string_view name) override;
+    [[nodiscard]] NativeCallResult WriteGlobal(std::string_view name, const NativeValue& value) override;
+    [[nodiscard]] std::optional<std::uint32_t> HandleMaximum() const override;
+    [[nodiscard]] std::optional<NativeHandleDefinition> HandleDefinition(std::uint32_t id) const override;
     [[nodiscard]] bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept override;
     [[nodiscard]] std::optional<NativeCallbackReturn> CallbackReturn(std::string_view name, std::size_t argument) const override;
     [[nodiscard]] NativeCallResult Invoke(std::string_view name, std::span<const NativeValue> arguments) override;

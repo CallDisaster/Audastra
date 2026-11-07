@@ -103,6 +103,50 @@ NativeCallResult GameNativeProvider::ReadGlobal(std::string_view name) {
     default: return Failure("VM 全局类型尚未实现。");
     }
 }
+std::optional<std::uint32_t> GameNativeProvider::HandleMaximum() const { return Generation() ? vm_->HandleMaximum() : std::nullopt; }
+std::optional<NativeHandleDefinition> GameNativeProvider::HandleDefinition(std::uint32_t id) const { return Generation() ? vm_->HandleDefinition(id) : std::nullopt; }
+NativeCallResult GameNativeProvider::WriteGlobal(std::string_view name, const NativeValue& value) {
+    const auto declaration = LookupGlobal(name);
+    if (!declaration || declaration->constant || declaration->array)
+        return Failure("全局写入需要本局可信的非常量标量声明。");
+    const auto old = vm_->ReadGlobal(name);
+    if (!old) return Failure("全局变量不在当前地图 VM 中。");
+    const auto kind = declaration->type.kind;
+    std::uint32_t word = 0, expected = 0;
+    bool newString = false, newHandle = false, reference = false;
+    if (kind == NativeKind::Integer && std::holds_alternative<std::int32_t>(value)) {
+        expected = 4; word = std::bit_cast<std::uint32_t>(std::get<std::int32_t>(value));
+    } else if (kind == NativeKind::Real && std::holds_alternative<float>(value) && std::isfinite(std::get<float>(value))) {
+        expected = 5; word = std::bit_cast<std::uint32_t>(std::get<float>(value));
+    } else if (kind == NativeKind::Boolean && std::holds_alternative<bool>(value)) {
+        expected = 8; word = std::get<bool>(value) ? 1 : 0;
+    } else if (kind == NativeKind::String) {
+        expected = 6;
+        if (const auto* text = std::get_if<std::string>(&value)) {
+            auto interned = vm_->InternString(*text);
+            if (!interned) return Failure("无法为全局文本取得本局字符串引用。");
+            word = *interned; newString = true;
+        } else if (!std::holds_alternative<std::monostate>(value)) return Failure("文本全局需要文本或 nil。");
+    } else if (kind == NativeKind::Handle) {
+        if (declaration->type.handleType == "handle") return Failure("抽象 handle 全局缺少具体引用种类，拒绝写入。");
+        expected = 7;
+        reference = IsHandleType(declaration->type.handleType, "agent") || declaration->type.handleType == "triggeraction";
+        if (const auto* handle = std::get_if<NativeHandle>(&value)) {
+            if (handle->generation != Generation() || !handle->owner || !handle->owner->Alive()
+                || !IsHandleType(handle->type, declaration->type.handleType)) return Failure("全局 handle 代际或具体类型不符。");
+            word = handle->value;
+            if (reference && word) { if (!vm_->RetainHandle(word)) return Failure("无法持有全局 handle 引用。"); newHandle = true; }
+        } else if (!std::holds_alternative<std::monostate>(value)) return Failure("handle 全局需要本局对象或 nil。");
+    } else return Failure("全局值类型不符；数组与 code 写入尚不支持。");
+    if (!vm_->WriteGlobalWord(name, expected, word)) {
+        if (newString) vm_->ReleaseString(word);
+        if (newHandle) vm_->ReleaseHandle(word, vm_->HandleObject(word));
+        return Failure("全局身份或 VM 类型改变，未写入。");
+    }
+    if (kind == NativeKind::String && old->value) vm_->ReleaseString(old->value);
+    if (reference && old->value) vm_->ReleaseHandle(old->value, vm_->HandleObject(old->value));
+    return {true, {}, {}};
+}
 NativeCallResult GameNativeProvider::ReadHandle(std::uint32_t value, const NativeType& declared) {
     const auto& type = declared.handleType;
     if (!IsHandleType(type, type) || type == "handle") return Failure("handle 缺少可信具体类型。");

@@ -142,7 +142,94 @@ int LuaNativeBindings::LookupGlobal(lua_State* lua) {
     return Bindings(lua).ReadGlobal(lua, {value, size});
 }
 int LuaNativeBindings::RejectGlobalWrite(lua_State* lua) {
-    return luaL_error(lua, "自有 Lua 运行时尚未实现 JASS 全局写入；未修改变量，也未建立 Lua 遮蔽字段。");
+    return luaL_error(lua, "宿主表不接受直接赋值或 rawset；全局写入须经过 jass.globals 的类型与代际检查。");
+}
+int LuaNativeBindings::WriteGlobal(lua_State* lua) {
+    auto& self = Bindings(lua);
+    if (self.provider_->Generation() != self.generation_) return luaL_error(lua, "JASS 全局所属地图代际已经结束。");
+    if (lua_type(lua, 2) != LUA_TSTRING) return luaL_error(lua, "全局写入需要名称文本。");
+    std::size_t size = 0; const auto* key = lua_tolstring(lua, 2, &size);
+    if (!NativeIdentifier({key, size})) return luaL_error(lua, "全局名称无效。");
+    const std::string name(key, size);
+    std::optional<NativeGlobalDeclaration> declaration;
+    std::string error;
+    try { declaration = self.provider_->LookupGlobal(name); }
+    catch (const std::exception& failure) { error = failure.what(); }
+    if (!error.empty()) return luaL_error(lua, "全局 %s 的声明查询失败：%s", name.c_str(), error.c_str());
+    if (!declaration || declaration->constant || declaration->array || declaration->type.kind == NativeKind::Code)
+        return luaL_error(lua, "全局 %s 没有可写的可信标量声明；数组、code 和常量不支持写入。", name.c_str());
+    auto value = self.ReadValue(lua, 3, declaration->type, name.c_str());
+    NativeCallResult result;
+    try { result = self.provider_->WriteGlobal(name, value); }
+    catch (const std::exception& error) { result.error = error.what(); }
+    if (!result.succeeded || self.provider_->Generation() != self.generation_)
+        return luaL_error(lua, "全局 %s 写入失败：%s", name.c_str(), result.error.c_str());
+    return 0;
+}
+int LuaNativeBindings::LookupDebug(lua_State* lua) {
+    const auto name = std::string_view(luaL_checkstring(lua, 2));
+    auto function = name == "handlemax" ? HandleMaximum : name == "handledef" ? HandleDefinition : nullptr;
+    if (!function) return luaL_error(lua, "jass.debug.%s 尚未实现。", std::string(name).c_str());
+    lua_pushlightuserdata(lua, &Bindings(lua)); lua_pushcclosure(lua, function, 1); return 1;
+}
+int LuaNativeBindings::HandleMaximum(lua_State* lua) {
+    auto& self = Bindings(lua);
+    if (self.provider_->Generation() != self.generation_) return luaL_error(lua, "调试查询所属地图代际已经结束。");
+    const auto maximum = self.provider_->HandleMaximum();
+    if (!maximum) return luaL_error(lua, "jass.debug.handlemax 缺少已确认的 VM 句柄表。");
+    lua_pushinteger(lua, *maximum); return 1;
+}
+int LuaNativeBindings::HandleDefinition(lua_State* lua) {
+    auto& self = Bindings(lua);
+    if (self.provider_->Generation() != self.generation_) return luaL_error(lua, "调试查询所属地图代际已经结束。");
+    std::uint32_t id = 0;
+    if (auto* handle = GetHandle(lua, 1)) {
+        if (handle->bindings != &self || !self.ValidHandle(handle->Value(), handle->Value().type)) return luaL_error(lua, "handledef 需要本局有效对象。");
+        id = handle->Value().value;
+    } else {
+        int valid = 0; const auto value = lua_tointegerx(lua, 1, &valid);
+        if (lua_type(lua, 1) != LUA_TNUMBER || !valid || value < 0 || value > UINT32_MAX) { lua_pushnil(lua); return 1; }
+        id = static_cast<std::uint32_t>(value);
+    }
+    const auto definition = self.provider_->HandleDefinition(id);
+    if (!definition) { lua_pushnil(lua); return 1; }
+    lua_newtable(lua); lua_pushinteger(lua, definition->reference); lua_setfield(lua, -2, "reference");
+    if (definition->type) { lua_pushlstring(lua, definition->type->data(), definition->type->size()); lua_setfield(lua, -2, "type"); }
+    return 1;
+}
+
+NativeValue LuaNativeBindings::ReadValue(lua_State* lua, int stack, const NativeType& type, const char* name) {
+    switch (type.kind) {
+    case NativeKind::Integer: {
+        int valid = 0; const auto value = lua_tointegerx(lua, stack, &valid);
+        if (lua_type(lua, stack) != LUA_TNUMBER || !valid || value < INT32_MIN || value > INT32_MAX)
+            luaL_error(lua, "%s 第%d参数需要 int32 整数。", name, stack);
+        return static_cast<std::int32_t>(value);
+    }
+    case NativeKind::Real: {
+        const auto number = lua_tonumber(lua, stack); const auto value = static_cast<float>(number);
+        if (lua_type(lua, stack) != LUA_TNUMBER || !std::isfinite(number) || !std::isfinite(value)) luaL_error(lua, "%s 第%d参数需要有限 float32。", name, stack);
+        return value;
+    }
+    case NativeKind::Boolean:
+        if (!lua_isboolean(lua, stack)) luaL_error(lua, "%s 第%d参数需要 boolean。", name, stack);
+        return lua_toboolean(lua, stack) != 0;
+    case NativeKind::String: {
+        if (lua_isnil(lua, stack)) return std::monostate{};
+        if (lua_type(lua, stack) != LUA_TSTRING) luaL_error(lua, "%s 第%d参数需要 string 或 nil。", name, stack);
+        std::size_t size = 0; const auto* text = lua_tolstring(lua, stack, &size);
+        if (size > 1024 * 1024 || !LuaMailboxUtf8({text, size})) luaL_error(lua, "%s 第%d参数需要有界 UTF-8 文本。", name, stack);
+        return std::string(text, size);
+    }
+    case NativeKind::Handle: {
+        if (lua_isnil(lua, stack)) return std::monostate{};
+        auto* handle = GetHandle(lua, stack);
+        if (!handle || handle->bindings != this || !ValidHandle(handle->Value(), type.handleType))
+            luaL_error(lua, "%s 第%d参数需要本局有效的 %s handle。", name, stack, type.handleType.c_str());
+        return handle->Value();
+    }
+    default: luaL_error(lua, "%s 的值类型尚不支持。", name); return {};
+    }
 }
 int LuaNativeBindings::RawSet(lua_State* lua) {
     luaL_checktype(lua, 1, LUA_TTABLE); luaL_checkany(lua, 2); luaL_checkany(lua, 3);
@@ -200,37 +287,9 @@ int LuaNativeBindings::Call(lua_State* lua) {
         const auto& type = signature->arguments[index];
         const int stack = static_cast<int>(index + 1);
         switch (type.kind) {
-        case NativeKind::Integer: {
-            int integral = 0; const auto value = lua_tointegerx(lua, stack, &integral);
-            if (lua_type(lua, stack) != LUA_TNUMBER || !integral || value < std::numeric_limits<std::int32_t>::min()
-                || value > std::numeric_limits<std::int32_t>::max())
-                return luaL_error(lua, "native %s 第%d参数需要 int32 整数。", name, stack);
-            arguments.emplace_back(static_cast<std::int32_t>(value)); break;
-        }
-        case NativeKind::Real: {
-            const auto number = lua_tonumber(lua, stack); const auto value = static_cast<float>(number);
-            if (lua_type(lua, stack) != LUA_TNUMBER || !std::isfinite(number) || !std::isfinite(value))
-                return luaL_error(lua, "native %s 第%d参数需要有限 float32。", name, stack);
-            arguments.emplace_back(value); break;
-        }
-        case NativeKind::Boolean:
-            if (lua_type(lua, stack) != LUA_TBOOLEAN) return luaL_error(lua, "native %s 第%d参数需要 boolean。", name, stack);
-            arguments.emplace_back(lua_toboolean(lua, stack) != 0); break;
-        case NativeKind::String: {
-            if (lua_isnil(lua, stack)) { arguments.emplace_back(std::monostate{}); break; }
-            if (lua_type(lua, stack) != LUA_TSTRING) return luaL_error(lua, "native %s 第%d参数需要 string 或 nil。", name, stack);
-            std::size_t size = 0; const auto* value = lua_tolstring(lua, stack, &size);
-            if (size > 1024 * 1024 || !LuaMailboxUtf8({value, size}))
-                return luaL_error(lua, "native %s 第%d参数不是有效的有界 UTF-8 字符串。", name, stack);
-            arguments.emplace_back(std::string(value, size)); break;
-        }
-        case NativeKind::Handle: {
-            if (lua_isnil(lua, stack)) { arguments.emplace_back(std::monostate{}); break; }
-            auto* handle = GetHandle(lua, stack);
-            if (!handle || handle->bindings != &self || !self.ValidHandle(handle->Value(), type.handleType))
-                return luaL_error(lua, "native %s 第%d参数需要本局有效的 %s handle。", name, stack, type.handleType.c_str());
-            arguments.emplace_back(handle->Value()); break;
-        }
+        case NativeKind::Integer: case NativeKind::Real: case NativeKind::Boolean:
+        case NativeKind::String: case NativeKind::Handle:
+            arguments.push_back(self.ReadValue(lua, stack, type, name)); break;
         case NativeKind::Code: {
             std::optional<NativeCallbackReturn> returns;
             std::string callbackError;
@@ -308,9 +367,15 @@ void LuaNativeBindings::Install(lua_State* lua) {
     lua_newtable(lua); lua_newtable(lua);
     lua_pushboolean(lua, true); lua_rawsetp(lua, -2, &globalTableGuardKey);
     lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, LookupGlobal, 1); lua_setfield(lua, -2, "__index");
-    lua_pushcfunction(lua, RejectGlobalWrite); lua_setfield(lua, -2, "__newindex");
+    lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, WriteGlobal, 1); lua_setfield(lua, -2, "__newindex");
     lua_pushliteral(lua, "jass.globals"); lua_setfield(lua, -2, "__metatable"); lua_setmetatable(lua, -2);
-    lua_setfield(lua, -2, "jass.globals"); lua_pop(lua, 1);
+    lua_setfield(lua, -2, "jass.globals");
+    lua_newtable(lua); lua_newtable(lua);
+    lua_pushboolean(lua, true); lua_rawsetp(lua, -2, &globalTableGuardKey);
+    lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, LookupDebug, 1); lua_setfield(lua, -2, "__index");
+    lua_pushcfunction(lua, RejectGlobalWrite); lua_setfield(lua, -2, "__newindex");
+    lua_pushliteral(lua, "jass.debug"); lua_setfield(lua, -2, "__metatable"); lua_setmetatable(lua, -2);
+    lua_setfield(lua, -2, "jass.debug"); lua_pop(lua, 1);
 }
 
 } // namespace Audastra::Runtime32::OwnLua

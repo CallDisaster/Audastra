@@ -239,5 +239,71 @@ std::optional<GameVm127::GlobalValue> GameVm127::ReadGlobal(std::string_view nam
     if (fault) impl_->active = false;
     return found && Alive() ? std::optional<GlobalValue>(value) : std::nullopt;
 }
+bool GameVm127::WriteGlobalWord(std::string_view name, std::uint32_t expectedType, std::uint32_t value) const {
+    if (!Alive() || !NativeIdentifier(name) || expectedType < 4 || expectedType > 8) return false;
+    const std::string terminated(name);
+    const auto write = [](std::uintptr_t base, std::uintptr_t vm, const char* key, std::uint32_t type,
+        std::uint32_t value, bool& fault) noexcept {
+        __try {
+            const auto table = Word(vm + 0x285c);
+            if (!table) return false;
+            const auto record = reinterpret_cast<std::uintptr_t(__thiscall*)(std::uintptr_t, const char*)>(base + 0x7e5820)(table, key);
+            if (!record || Word(record + 0x1c) != type || (Word(record + 0x18) != type && Word(record + 0x18) != 2)) return false;
+            *reinterpret_cast<std::uint32_t*>(record + 0x20) = value;
+            *reinterpret_cast<std::uint32_t*>(record + 0x18) = type;
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { fault = true; return false; }
+    };
+    bool fault = false;
+    const auto success = write(impl_->base, impl_->identity.vm, terminated.c_str(), expectedType, value, fault);
+    if (fault) impl_->active = false;
+    return success && Alive();
+}
+std::optional<std::uint32_t> GameVm127::HandleMaximum() const noexcept {
+    if (!Alive()) return {};
+    __try {
+        const auto count = Word(impl_->identity.state + 0x198);
+        if (count <= 0x1000000) return static_cast<std::uint32_t>(count);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { impl_->active = false; }
+    return {};
+}
+std::optional<NativeHandleDefinition> GameVm127::HandleDefinition(std::uint32_t id) const {
+    const auto maximum = HandleMaximum();
+    if (!maximum || id < kFirstHandle || id - kFirstHandle >= *maximum) return {};
+    struct Raw { std::uint32_t reference = 0, type = 0; bool objectPresent = false; } raw;
+    const auto read = [](const Impl* impl, std::uint32_t id, Raw& raw) noexcept {
+      __try {
+        const auto row = Word(impl->identity.state + 0x19c) + 12 * (id - kFirstHandle);
+        raw.reference = static_cast<std::uint32_t>(Word(row));
+        const auto object = Word(row + 4); raw.objectPresent = object != 0;
+        if (object) {
+            auto function = Word(Word(object) + 0x1c);
+            // 只识别此映像内原始的常量类标识 getter；未知实现不执行。
+            for (unsigned hop = 0; hop < 8; ++hop) {
+                if (function < impl->base || !impl->image->Executable(function, 6)) return false;
+                std::array<unsigned char, 6> original{};
+                if (!impl->image->OriginalCode(static_cast<std::uint32_t>(function - impl->base), original)
+                    || std::memcmp(original.data(), reinterpret_cast<const void*>(function), original.size())) return false;
+                if (original[0] == 0xb8 && original[5] == 0xc3) {
+                    std::memcpy(&raw.type, original.data() + 1, 4); break;
+                }
+                if (original[0] != 0xe9) return false;
+                std::int32_t relative = 0; std::memcpy(&relative, original.data() + 1, 4);
+                function = static_cast<std::uintptr_t>(static_cast<std::intptr_t>(function + 5) + relative);
+            }
+            if (!raw.type) return false;
+        }
+        return true;
+      } __except (EXCEPTION_EXECUTE_HANDLER) { impl->active = false; return false; }
+    };
+    if (!read(impl_.get(), id, raw)) return {};
+    NativeHandleDefinition output; output.reference = raw.reference;
+    if (raw.objectPresent) {
+        std::string name(4, '\0');
+        for (unsigned i = 0; i < 4; ++i) name[i] = static_cast<char>((raw.type >> (24 - 8 * i)) & 255);
+        output.type = std::move(name);
+    }
+    return output;
+}
 
 } // namespace Audastra::Runtime32::OwnLua

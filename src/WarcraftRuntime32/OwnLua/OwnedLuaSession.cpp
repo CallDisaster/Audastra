@@ -197,6 +197,11 @@ bool InstallOwnedLuaSession(std::shared_ptr<GameImage127> image, OwnedLuaSession
     if (!archive.archive) { error = std::move(archive.error); return false; }
     auto types = NativeTypeHierarchy::ReadGame(image->Path().parent_path());
     if (!types.types) { error = std::move(types.error); return false; }
+    auto script = archive.archive->Read("war3map.j", 4u * 1024u * 1024u);
+    if (!script.found && script.error.empty()) script = archive.archive->Read("Scripts/war3map.j", 4u * 1024u * 1024u);
+    if (!script.found || !script.error.empty()) { error = "无法取得冻结地图全局声明：" + script.error; return false; }
+    types = types.types->WithGlobals(script.source);
+    if (!types.types) { error = std::move(types.error); return false; }
     auto owned = std::make_unique<Session>();
     owned->config = std::move(config); owned->events = std::move(events);
     owned->archive = std::move(archive.archive); owned->types = std::move(types.types);

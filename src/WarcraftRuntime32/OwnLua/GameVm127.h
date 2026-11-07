@@ -53,6 +53,9 @@ public:
     [[nodiscard]] std::optional<NativeCodeOwner> CodeOwner(std::uint32_t handle) const noexcept;
     [[nodiscard]] bool CodeOwnerAlive(const NativeCodeOwner& owner) const noexcept;
     [[nodiscard]] std::optional<GlobalValue> ReadGlobal(std::string_view name) const;
+    [[nodiscard]] bool WriteGlobalWord(std::string_view name, std::uint32_t expectedType, std::uint32_t value) const;
+    [[nodiscard]] std::optional<std::uint32_t> HandleMaximum() const noexcept;
+    [[nodiscard]] std::optional<NativeHandleDefinition> HandleDefinition(std::uint32_t id) const;
 private:
     struct Impl;
     explicit GameVm127(std::unique_ptr<Impl> impl);

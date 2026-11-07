@@ -47,6 +47,10 @@ struct NativeCallResult {
     NativeValue value;
     std::string error;
 };
+struct NativeHandleDefinition {
+    std::uint32_t reference = 0;
+    std::optional<std::string> type;
+};
 
 class NativeProvider {
 public:
@@ -56,6 +60,9 @@ public:
     // 全局声明来自同一受信脚本来源；没有声明时不能仅凭 VM 中的数值猜类型。
     [[nodiscard]] virtual std::optional<NativeGlobalDeclaration> LookupGlobal(std::string_view) const { return {}; }
     [[nodiscard]] virtual NativeCallResult ReadGlobal(std::string_view) { return {false, {}, "全局读取尚未实现。"}; }
+    [[nodiscard]] virtual NativeCallResult WriteGlobal(std::string_view, const NativeValue&) { return {false, {}, "全局写入尚未实现。"}; }
+    [[nodiscard]] virtual std::optional<std::uint32_t> HandleMaximum() const { return {}; }
+    [[nodiscard]] virtual std::optional<NativeHandleDefinition> HandleDefinition(std::uint32_t) const { return {}; }
     // 只能根据已取得的真实类型父链判断；未知子类型不能猜成 handle 兼容。
     [[nodiscard]] virtual bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept = 0;
     // 原生 C 签名不包含 code 返回类型，必须由经过核验的调用行为提供，未知时拒绝。

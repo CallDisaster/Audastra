@@ -22,6 +22,7 @@ public:
     [[nodiscard]] static NativeTypesResult ReadGame(const std::filesystem::path& gameRoot);
     // 仅解析显式来源；生产调用者应使用上面的游戏 MPQ 读取入口。
     [[nodiscard]] static NativeTypesResult Parse(std::string_view commonSource);
+    [[nodiscard]] NativeTypesResult WithGlobals(std::string_view source) const;
     [[nodiscard]] bool IsA(std::string_view actual, std::string_view expected) const noexcept;
     [[nodiscard]] std::size_t Size() const noexcept { return parents_.size(); }
     [[nodiscard]] std::optional<NativeGlobalDeclaration> Global(std::string_view name) const;
