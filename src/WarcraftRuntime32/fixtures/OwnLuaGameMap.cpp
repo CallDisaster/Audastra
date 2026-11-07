@@ -19,7 +19,8 @@ std::vector<std::byte> Bytes(std::string_view text) {
 // 不执行游戏、不改源地图、不提供普遍的经典 Lua 保存资格。
 int wmain(int argc, wchar_t** argv) {
     try {
-        Check(argc == 5, "usage: own-lua-game-map <generated-seed.w3x> <seed-sha256> <fixture.lua> <new-map.w3x>");
+        const bool jassProbe=argc==6 && std::wstring_view(argv[5])==L"--jass-probe";
+        Check(argc == 5 || jassProbe, "usage: own-lua-game-map <generated-seed.w3x> <seed-sha256> <fixture.lua> <new-map.w3x> [--jass-probe]");
         const std::filesystem::path seed(argv[1]), source(argv[3]), output(argv[4]);
         const std::wstring expectedWide(argv[2]);
         std::string expected;
@@ -29,6 +30,10 @@ int wmain(int argc, wchar_t** argv) {
         }
         Check(LuaMailboxHex(expected, 64) && PlainPath(seed) && PlainPath(source) && PlainPath(output)
             && !std::filesystem::exists(output), "explicit seed identity and new output required");
+        Check(source.extension()==(jassProbe?L".j":L".lua"),"fixture has explicit script role");
+        std::ifstream input(source, std::ios::binary);
+        const std::string fixture(std::istreambuf_iterator<char>(input), {});
+        Check(input.is_open() && !fixture.empty() && fixture.size() <= 64 * 1024 && LuaMailboxUtf8(fixture),"bounded original fixture");
         Handle file(OpenLockedFile(seed));
         Check(file.value != INVALID_HANDLE_VALUE && Sha256(file.value, 4 * 1024 * 1024) == expected, "generated seed identity mismatch");
         auto opened = War3Map::Mpq::MpqArchive::OpenReadOnlyHandle(file.value, seed);
@@ -52,15 +57,21 @@ int wmain(int argc, wchar_t** argv) {
                 const auto main = text.find("function main takes nothing returns nothing");
                 const auto end = main == std::string::npos ? std::string::npos : text.find("endfunction", main);
                 Check(end != std::string::npos && text.find("exec-lua:") == std::string::npos, "original generated main entry");
-                text.insert(end, "    call Cheat(\"exec-lua: \\\"runtime_fixture\\\"\")\n");
+                if(jassProbe) {
+                    constexpr std::string_view split="// AUD_NATIVE_PROBE_FUNCTIONS";
+                    const auto marker=fixture.find(split);
+                    const auto globalsEnd=text.find("endglobals");
+                    Check(marker!=std::string::npos && globalsEnd<main && fixture.find("function AudastraNativeHandleProbe takes nothing returns nothing")!=std::string::npos,
+                        "explicit original native probe sections");
+                    text.insert(end,"    call TimerStart(CreateTimer(), 1.0, false, function AudastraNativeHandleProbe)\n");
+                    text.insert(main,fixture.substr(marker+split.size())+"\n");
+                    text.insert(globalsEnd,fixture.substr(0,marker)+"\n");
+                } else text.insert(end, "    call Cheat(\"exec-lua: \\\"runtime_fixture\\\"\")\n");
                 *contents.value = Bytes(text);
             }
             members.push_back({entry.name, std::move(*contents.value)});
         }
-        std::ifstream input(source, std::ios::binary);
-        const std::string lua(std::istreambuf_iterator<char>(input), {});
-        Check(input.is_open() && !lua.empty() && lua.size() <= 64 * 1024 && LuaMailboxUtf8(lua), "bounded original Lua fixture");
-        members.push_back({"runtime_fixture.lua", Bytes(lua)});
+        if(!jassProbe)members.push_back({"runtime_fixture.lua", Bytes(fixture)});
         std::array<std::byte, 512> prefix{};
         LARGE_INTEGER zero{}; DWORD bytes = 0;
         Check(SetFilePointerEx(file.value, zero, nullptr, FILE_BEGIN)
