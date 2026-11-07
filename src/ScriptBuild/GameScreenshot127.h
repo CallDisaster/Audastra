@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <functional>
+#include <span>
 
 namespace War3Map::Script::detail {
 
@@ -23,6 +24,9 @@ namespace War3Map::Script::detail {
 // 内部文件收集器：只接受请求后新建且已结束写入的普通TGA，旧截图不能顶替本次画面。
 [[nodiscard]] Result<std::filesystem::path> CollectNativeGameScreenshot(const std::filesystem::path& directory,
     std::uint32_t timeoutMs, const std::function<Status()>& request);
+struct ScreenshotWriter { std::uint32_t processId = 0; bool querySucceeded = false, sameImage = false; };
+[[nodiscard]] Status VerifyNativeScreenshotWriters(std::uint32_t originalProcessId, bool enumerationComplete,
+    std::span<const ScreenshotWriter> writers);
 
 struct VerifiedScreenshot127 {
     std::uintptr_t flag = 0;

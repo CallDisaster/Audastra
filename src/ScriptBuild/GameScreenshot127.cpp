@@ -172,26 +172,26 @@ Result<std::filesystem::path> RequestGame127KeyScreenshot(const std::filesystem:
     if (!image.Succeeded()) return {std::nullopt, image.diagnostics};
     auto result = CollectNativeGameScreenshot(gameRoot / L"Screenshots", timeoutMs, [&]() -> Status {
     const auto sent = request();
-    if (!sent.Succeeded() || !sent.value || !*sent.value) return {sent.diagnostics};
+    if (!sent.Succeeded()) return sent.diagnostics.empty()
+        ? Status::Failure("Map.Test", "MAP_TEST_SCREENSHOT_INPUT", "截图键没有可确认的发送结果。") : Status{sent.diagnostics};
     const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) return Status::Failure("Map.Test", "MAP_TEST_SCREENSHOT_PROCESS_QUERY", "无法确认截图目录是否只有一个游戏写入者。");
     struct Snapshot { HANDLE value; ~Snapshot() { CloseHandle(value); } } processSnapshot{snapshot};
-    PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry); unsigned games = 0;
+    PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry); std::vector<ScreenshotWriter> writers;
     bool complete = Process32FirstW(snapshot, &entry) != FALSE;
     if (complete) do {
         if (CompareStringOrdinal(entry.szExeFile, -1, L"war3.exe", -1, TRUE) != CSTR_EQUAL) continue;
         // 本进程已由发送者持有的原句柄验证；不能再依赖后来被拒绝的新OpenProcess。
-        if (entry.th32ProcessID == *sent.value) { ++games; continue; }
+        if (entry.th32ProcessID == *sent.value) { writers.push_back({entry.th32ProcessID,false,false}); continue; }
         const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
         std::array<wchar_t,32768> path{}; DWORD length = static_cast<DWORD>(path.size());
         const bool read = process && QueryFullProcessImageNameW(process, 0, path.data(), &length);
         if (process) CloseHandle(process);
-        if (!read) { complete = false; break; }
-        if (CompareStringOrdinal(path.data(), static_cast<int>(length), (gameRoot / L"war3.exe").c_str(), -1, TRUE) == CSTR_EQUAL) ++games;
+        writers.push_back({entry.th32ProcessID, read, read && CompareStringOrdinal(path.data(), static_cast<int>(length),
+            (gameRoot / L"war3.exe").c_str(), -1, TRUE) == CSTR_EQUAL});
     } while (Process32NextW(snapshot, &entry));
     if (complete && GetLastError() != ERROR_NO_MORE_FILES) complete = false;
-    if (!complete || games != 1) return Status::Failure("Map.Test", "MAP_TEST_SCREENSHOT_AMBIGUOUS", "同一游戏目录的截图写入进程不唯一或来源不可读，未采集。");
-    return Status::Ok();
+    return VerifyNativeScreenshotWriters(*sent.value, complete, writers);
     });
     if (result.Succeeded()) result.diagnostics.push_back({DiagnosticSeverity::Info, "Map.Test", "MAP_TEST_SCREENSHOT_NATIVE_KEY",
         "完整1.27a磁盘身份已核验；经本次进程/创建时间/Job/窗口输入租约发送原生截图键，采集游戏新写TGA；未请求进程内存权限。", {}});
@@ -200,6 +200,18 @@ Result<std::filesystem::path> RequestGame127KeyScreenshot(const std::filesystem:
     (void)gameRoot;(void)timeoutMs;(void)request;
     return Fail("MAP_TEST_SCREENSHOT_UNSUPPORTED", "当前平台不支持游戏截图。");
 #endif
+}
+
+Status VerifyNativeScreenshotWriters(std::uint32_t originalProcessId, bool complete, std::span<const ScreenshotWriter> writers) {
+    unsigned original = 0, others = 0;
+    for (const auto& writer : writers) {
+        if (writer.processId == originalProcessId) ++original;
+        else if (!writer.querySucceeded) complete = false;
+        else if (writer.sameImage) ++others;
+    }
+    if (!originalProcessId || !complete || original != 1 || others)
+        return Status::Failure("Map.Test", "MAP_TEST_SCREENSHOT_AMBIGUOUS", "同一游戏目录的截图写入进程不唯一或来源不可读，未采集。");
+    return Status::Ok();
 }
 
 Result<std::filesystem::path> RequestGame127Screenshot(void* processHandle, const std::filesystem::path& gameRoot, std::uint32_t timeoutMs) {

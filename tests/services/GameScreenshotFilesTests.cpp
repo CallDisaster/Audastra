@@ -16,6 +16,17 @@ int main() {
     using namespace War3Map;
     auto root=std::filesystem::temp_directory_path() / (L"audastra-shot-files-" + std::to_wstring(GetCurrentProcessId()));
     try {
+        using Script::detail::ScreenshotWriter;
+        const std::array own{ScreenshotWriter{42,false,false}};
+        Need(Script::detail::VerifyNativeScreenshotWriters(42,true,own).Succeeded(), "original verified handle remains authoritative when reopen denied");
+        const std::array foreign{ScreenshotWriter{42,false,false},ScreenshotWriter{43,false,false}};
+        Need(!Script::detail::VerifyNativeScreenshotWriters(42,true,foreign).Succeeded(), "unknown other writer is not trusted");
+        const std::array another{ScreenshotWriter{42,false,false},ScreenshotWriter{43,true,true}};
+        Need(!Script::detail::VerifyNativeScreenshotWriters(42,true,another).Succeeded(), "same-image second game makes attribution ambiguous");
+        const std::array different{ScreenshotWriter{42,false,false},ScreenshotWriter{43,true,false}};
+        Need(Script::detail::VerifyNativeScreenshotWriters(42,true,different).Succeeded()
+            && !Script::detail::VerifyNativeScreenshotWriters(42,false,own).Succeeded()
+            && !Script::detail::VerifyNativeScreenshotWriters(99,true,own).Succeeded(), "other-directory game is independent; partial enumeration and absent original rejected");
         Need(std::filesystem::create_directory(root), "fresh screenshot fixture");
         Tga(root / "old.tga");
         auto none=Script::detail::CollectNativeGameScreenshot(root,25,[]{return Status::Ok();});
