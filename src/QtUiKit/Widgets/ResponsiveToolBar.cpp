@@ -77,7 +77,7 @@ struct ButtonState {
 void SetCompact(ButtonState& state, bool compact) {
     auto* button = state.button.data();
     if (!button) return;
-    compact = compact && !button->icon().isNull();
+    compact = compact && !button->icon().isNull() && !button->property("toolbarKeepText").toBool();
     button->setAccessibleName(state.text);
     if (button->toolTip().isEmpty()) button->setToolTip(state.text);
     if (auto* tool = qobject_cast<QToolButton*>(button)) {
@@ -250,7 +250,7 @@ void ResponsiveToolBar::Refresh() {
     auto collapse = [&](bool lowOnly) {
         for (auto it = candidates.rbegin(); it != candidates.rend() && required() > available; ++it) {
             auto* entry = *it;
-            const bool keep = entry->widget->property("headerKeepIcon").toBool();
+            const bool keep = entry->widget->property("headerKeepIcon").toBool() || entry->widget->property("toolbarKeepText").toBool();
             if (entry->overflow || (lowOnly && (entry->priority >= 100 || keep))) continue;
             entry->overflow = true; entry->widget->hide();
         }

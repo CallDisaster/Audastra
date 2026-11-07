@@ -11,6 +11,7 @@
 #include "Widgets/CodeAssistPopup.h"
 #include "Widgets/CodeProblemsView.h"
 #include "Widgets/ProblemList.h"
+#include "Widgets/ResponsiveToolBar.h"
 #include "Modules/ModuleHost.h"
 
 #include "War3MapCore/Hash.h"
@@ -108,6 +109,22 @@ private slots:
         QCOMPARE(button.toolButtonStyle(),Qt::ToolButtonIconOnly);
         QCOMPARE(button.text(),QStringLiteral("热重载 Lua"));
         QVERIFY(!button.property("luaReloadPending").toBool() && !button.property("hluaRebuildRequired").toBool());
+    }
+    void RebuildLabelSurvivesCompactHeaderLayout() {
+        UiKit::ResponsiveToolBar bar;bar.resize(180,42);
+        QPixmap pixels(16,16);pixels.fill(Qt::white);
+        QAction reload(QIcon(pixels),QStringLiteral("热重载 Lua"),&bar);
+        QAction other(QIcon(pixels),QString(80,QChar('x')),&bar);
+        auto* button=bar.AddAction(&reload,100);
+        bar.AddAction(&other);
+        QtCommon::ApplyLuaReloadButtonState(*button,reload.text(),true,true);
+        bar.Refresh();
+        QCOMPARE(button->toolButtonStyle(),Qt::ToolButtonTextBesideIcon);
+        QCOMPARE(button->text(),QStringLiteral("需重新构建"));
+        QVERIFY(!button->isHidden());
+        QtCommon::ApplyLuaReloadButtonState(*button,reload.text(),false,false);bar.Refresh();
+        QCOMPARE(button->toolButtonStyle(),Qt::ToolButtonIconOnly);
+        QVERIFY(!button->property("toolbarKeepText").toBool());
     }
     void HLuaRecognitionKeepsUnavailableActionsDisabled() {
         QTemporaryDir directory;QVERIFY(directory.isValid());

@@ -13,6 +13,7 @@ inline void ApplyLuaReloadButtonState(QToolButton& button,const QString& actionT
         && button.text()==text && button.toolButtonStyle()==style)return;
     button.setProperty("luaReloadPending",pending);
     button.setProperty("hluaRebuildRequired",rebuild);
+    button.setProperty("toolbarKeepText",rebuild);
     button.setToolButtonStyle(style);button.setText(text);
     button.style()->unpolish(&button);button.style()->polish(&button);
     button.updateGeometry();button.update();
