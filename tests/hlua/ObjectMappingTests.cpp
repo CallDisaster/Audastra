@@ -201,6 +201,11 @@ void TestHLuaObjectMapping() {
     itemInput.value->front().fields.pop_back();
     Need(!ApplyHslkObjects(ObjectType::Item, empty(ObjectType::Item), *itemInput.value, *incompleteSchema.value, *standard.value).Succeeded(),
         "incomplete metadata cannot prove a field absent");
+    auto duplicateSchemaOptions = schemaOptions;
+    duplicateSchemaOptions.sources.push_back(duplicateSchemaOptions.sources.back());
+    auto duplicateSchema = ObjectFieldSchema::Load(read, duplicateSchemaOptions); Good(duplicateSchema);
+    Need(!ApplyHslkObjects(ObjectType::Item, empty(ObjectType::Item), *itemInput.value, *duplicateSchema.value, *standard.value).Succeeded(),
+        "duplicate metadata sources cannot prove a field absent");
     Need(!ParseF6ObjectIni(ObjectType::Item,"[I000]\nrace=true\n","item.ini").Succeeded()
         && !ParseF6ObjectIni(ObjectType::Item,"[I000]\nrace={{1}}\n","item.ini").Succeeded(), "unknown fields do not bypass boolean or nested rejection");
 

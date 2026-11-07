@@ -311,7 +311,10 @@ Result<ObjectFieldSchema> ObjectFieldSchema::Load(const FileReader& reader, cons
             field.sort = Get(metadata, "sort"); field.isList = War3Map::Text::LowerAscii(field.valueType).ends_with("list") || War3Map::Text::LowerAscii(field.valueType).starts_with("pathinglist");
             field.referenceTypes = ReferenceTypes(field.valueType); field.nativeValueType = StorageType(field);
             const auto key = Index(field.objectType, field.fieldId);
-            if (const auto old = schema.nativeIndex_.find(key); old != schema.nativeIndex_.end()) schema.definitions_[old->second] = std::move(field);
+            if (const auto old = schema.nativeIndex_.find(key); old != schema.nativeIndex_.end()) {
+                schema.metadataComplete_[typeIndex] = false;
+                schema.definitions_[old->second] = std::move(field);
+            }
             else { schema.nativeIndex_[key] = schema.definitions_.size(); schema.definitions_.push_back(std::move(field)); }
         }
     }
