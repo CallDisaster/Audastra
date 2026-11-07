@@ -54,6 +54,25 @@ void ExpectInvalidParams(
         message);
 }
 
+void TestHLuaArgumentTypes() {
+    War3Map::Mcp::McpServer server;
+    War3Map::Mcp::RegisterAllTools(server);
+    QTemporaryDir temp; Expect(temp.isValid(),"original empty h-lua fixture root");
+    for(const auto& invalid:std::vector<QJsonObject>{{{"target",7}},{{"engine",false}},{{"cloaked",1}},
+        {{"helper_root",false}},{{"offset",false}},{{"engine","unknown"}}}) {
+        QJsonObject args{{"project_path",temp.path()+"/not-opened"}};
+        for(auto it=invalid.begin();it!=invalid.end();++it) args.insert(it.key(),it.value());
+        const auto response=server.HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc","2.0"},{"id",1},
+            {"method","tools/call"},{"params",QJsonObject{{"name","hlua_build"},{"arguments",args}}}}).toJson(QJsonDocument::Compact));
+        Expect(response && !response->error,"typed h-lua rejection reaches domain handler");
+        const auto content=response->result.toObject().value("content").toArray();
+        Expect(!content.isEmpty(),"typed h-lua rejection body");
+        const auto body=QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object();
+        Expect(!body.value("ok").toBool(true) && body.value("diagnostics").toArray()[0].toObject().value("code")=="HLUA_ARGUMENT",
+            "invalid h-lua types do not default to test or owned before touching inputs");
+        Expect(!std::filesystem::exists(std::filesystem::path((temp.path()+"/not-opened").toStdWString())),"invalid request leaves original fixture untouched");
+    }
+}
 void TestToolSurface() {
     War3Map::Mcp::McpServer server;
     War3Map::Mcp::RegisterAllTools(server);
@@ -1201,7 +1220,7 @@ int main() {
         Expect(!Mcp::DecodeMapRuntimeSaveOptions(injectedRuntime).Succeeded(), "independent runtime cannot accept a package path");
         injectedRuntime = runtime; injectedRuntime["runtime_purpose"] = "public_release";
         Expect(!Mcp::DecodeMapRuntimeSaveOptions(injectedRuntime).Succeeded(), "unknown purpose cannot grant distribution approval");
-        TestToolSurface();
+        TestToolSurface(); TestHLuaArgumentTypes();
         TestLuaListPagingProtocol();
         TestArchiveMemberIdentities();
         TestArchiveMapDataQuery();

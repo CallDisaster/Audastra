@@ -17,6 +17,13 @@ Result<HLua::BuildRequest> Parse(const QJsonObject& args) {
         "tool_root","ui_root","helper_root","ydwe_root","engine","cloaked"};
     for (auto it = args.begin(); it != args.end(); ++it) if (!allowed.contains(it.key()))
         return Output::Failure("HLua", "HLUA_ARGUMENT", "h-lua 工具不接受额外字段。");
+    for (auto it=args.begin();it!=args.end();++it) {
+        if(it.key()=="offset" || it.key()=="limit") continue;
+        if(it.key()=="cloaked" ? !it.value().isBool() : !it.value().isString())
+            return Output::Failure("HLua","HLUA_ARGUMENT","h-lua 参数类型与工具定义不符；没有选择默认构建或环境。");
+    }
+    if(args.contains("engine") && args.value("engine")!="owned" && args.value("engine")!="ydwe")
+        return Output::Failure("HLua","HLUA_ARGUMENT","未知 Lua 环境。");
     HLua::BuildRequest request;
     for (const auto name : {"offset","limit"}) if (args.contains(name)) {
         const auto value=args.value(name);
