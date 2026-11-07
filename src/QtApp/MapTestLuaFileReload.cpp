@@ -4,6 +4,7 @@
 #include "AssetOwnedPayload.h"
 #include "ProjectLuaModules.h"
 #include "ProjectLuaFolder.h"
+#include "../QtCommon/LuaReloadButtonState.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Resources/ImportTable.h"
@@ -116,15 +117,14 @@ void MainWindow::UpdateLuaReloadPending() {
     const bool pending = !paths.empty() || hluaRebuildRequired_;
     if(HasHLuaProject())luaReloadAction_->setText(hluaRebuildRequired_?tr("热重载 Lua（需重新构建）"):tr("热重载 Lua"));
     luaReloadAction_->setProperty("luaReloadPending", pending);
-    auto tooltip = tr("热重载当前 Lua 测试");
-    if (pending) tooltip += tr("\n待发送：%1").arg(paths.mid(0, 16).join(QStringLiteral("、")));
+    const bool rebuild=HasHLuaProject() && hluaRebuildRequired_;
+    auto tooltip = rebuild?tr("hslk 已改变，请重新构建并启动测试；未发送模块。"):tr("热重载当前 Lua 测试");
+    if (!rebuild && pending) tooltip += tr("\n待发送：%1").arg(paths.mid(0, 16).join(QStringLiteral("、")));
     if (paths.size() > 16) tooltip += tr("等 %1 个文件").arg(paths.size());
     luaReloadAction_->setToolTip(tooltip);
     for (auto* object : luaReloadAction_->associatedObjects()) {
         auto* button = qobject_cast<QToolButton*>(object);
-        if (!button || button->property("luaReloadPending").toBool() == pending) continue;
-        button->setProperty("luaReloadPending", pending);
-        button->style()->unpolish(button); button->style()->polish(button); button->update();
+        if(button)QtCommon::ApplyLuaReloadButtonState(*button,luaReloadAction_->text(),pending,rebuild);
     }
 }
 

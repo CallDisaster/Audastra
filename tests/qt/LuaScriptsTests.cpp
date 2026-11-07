@@ -19,6 +19,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/HLua/ProjectConfiguration.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
+#include "../../src/QtCommon/LuaReloadButtonState.h"
 
 #include <QApplication>
 #include "Fonts/FontLoader.h"
@@ -92,6 +93,20 @@ public:
 class LuaScriptsTests final : public QObject {
     Q_OBJECT
 private slots:
+    void ReloadButtonShowsRebuildStateEvenWhenAlreadyPending() {
+        QToolButton button;button.setText(QStringLiteral("热重载 Lua"));
+        QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua"),true,false);
+        const auto compactWidth=button.sizeHint().width();
+        QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua（需重新构建）"),true,true);
+        QCOMPARE(button.toolButtonStyle(),Qt::ToolButtonTextBesideIcon);
+        QCOMPARE(button.text(),QStringLiteral("需重新构建"));
+        QVERIFY(button.sizeHint().width()>compactWidth);
+        QVERIFY(button.property("hluaRebuildRequired").toBool());
+        QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua"),false,false);
+        QCOMPARE(button.toolButtonStyle(),Qt::ToolButtonIconOnly);
+        QCOMPARE(button.text(),QStringLiteral("热重载 Lua"));
+        QVERIFY(!button.property("luaReloadPending").toBool() && !button.property("hluaRebuildRequired").toBool());
+    }
     void HLuaRecognitionKeepsUnavailableActionsDisabled() {
         QTemporaryDir directory;QVERIFY(directory.isValid());
         QtProject::EditorProject project;
