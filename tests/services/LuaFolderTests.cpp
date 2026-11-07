@@ -178,8 +178,35 @@ void SaveRoundTripAndMissingFallback() {
     std::filesystem::rename(temp.root / "renamed", folder);
     Good(CaptureLuaFolder(folder), "restored folder reconnects");
 }
+void GeneratedModulesKeepFinalFolderAnchor() {
+    Temp temp;const auto folder=temp.root/"author";
+    Put(folder/"main.lua","return 'author'");Put(folder/"hslk/data.lua","return {}");
+    auto captured=CaptureLuaFolder(folder);Good(captured,"generated source snapshot");
+    const auto source=temp.root/"base/source.w3x";std::filesystem::create_directory(source.parent_path());
+    const auto link=EncodeLuaFolderLink(folder,source);Good(link,"base association");
+    const std::vector<MapArchiveMember> members{{"main.lua",Bytes("return 'generated'")},
+        {"framework.lua",Bytes("return 'framework'")},{std::string(kLuaFolderMember),*link.value}};
+    Good(WriteVerifiedArchive(source,members),"generated base");
+    auto archive=MapArchiveSession::Open(source);Good(archive,"generated archive");
+    const auto output=temp.root/"published/result.w3x";
+    MapSaveTask task;Good(task.FreezeArchive(*archive.value),"generated task");
+    task.target=temp.root/"staged.w3x";
+    task.generatedLuaFolderLink=MapSaveTask::GeneratedLuaFolderLink{std::make_shared<const LuaFolderSnapshot>(*captured.value),output};
+    task.beforePublish=[]{return Status::Ok();};
+    MapSaveService::Run(task);Require(task.succeeded,"generated save and readback");
+    const auto actual=task.nextSession->ReadMember(kLuaFolderMember);Good(actual,"generated link readback");
+    const auto decoded=DecodeLuaFolderLink(*actual.value,output);Good(decoded,"final anchor decode");
+    Require(**decoded.value==folder,"metadata binds final destination rather than base or stage");
+    Require(task.nextSession->ReadMember("main.lua").value==std::optional(Bytes("return 'generated'"))
+        && task.nextSession->HasMember("framework.lua"),"source folder does not erase generated composition");
+    MapSaveTask racing;Good(racing.FreezeArchive(*archive.value),"generated racing task");
+    racing.target=temp.root/"racing-generated.w3x";racing.generatedLuaFolderLink=task.generatedLuaFolderLink;
+    racing.beforePublish=[&]{Put(folder/"hslk/data.lua","return {changed=true}");return Status::Ok();};
+    MapSaveService::Run(racing);
+    Require(!racing.succeeded && !std::filesystem::exists(racing.target),"generated source change refuses publication");
+}
 }
 int main() {
-    try { SnapshotAndWrites(); ReconcileAndMetadata(); SaveRoundTripAndMissingFallback(); std::cout << "Lua folder: all scenarios passed\n"; return 0; }
+    try { SnapshotAndWrites(); ReconcileAndMetadata(); SaveRoundTripAndMissingFallback(); GeneratedModulesKeepFinalFolderAnchor(); std::cout << "Lua folder: all scenarios passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

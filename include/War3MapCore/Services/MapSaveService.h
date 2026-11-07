@@ -83,6 +83,13 @@ struct MapSaveTask {
     std::filesystem::path luaFolderOverride;
     std::string luaFolderDeletionApproval;
     std::shared_ptr<LuaFolderSnapshot> luaFolderSnapshot;
+    // 生成器已冻结作者源并完成模块组合时，只保存关联，不再用源目录覆盖生成模块。
+    // 最终路径与暂存路径分开；仍核对源快照、发布前身份和关联成员回读。
+    struct GeneratedLuaFolderLink {
+        std::shared_ptr<const LuaFolderSnapshot> source;
+        std::filesystem::path output;
+    };
+    std::optional<GeneratedLuaFolderLink> generatedLuaFolderLink;
     std::vector<std::string> luaFolderDeletedFiles;
     std::array<std::unique_ptr<ObjectData::NativeObjectDocument>, kMapSaveObjectTypeCount> nextBaselines;
     std::array<std::unique_ptr<ObjectData::LniObjectDocument>, kMapSaveObjectTypeCount> generatedObjectBaselines;

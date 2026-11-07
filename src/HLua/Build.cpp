@@ -233,9 +233,8 @@ static Output BuildProjectImpl(const BuildRequest& input, const Services::MapSav
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
         Replace(task, scriptMember, Bytes(*entry.value));
         if(request.retainFolderLink) {
-            auto link=Services::EncodeLuaFolderLink(request.project,request.target);
-            if(!link.Succeeded())return {std::nullopt,link.diagnostics};
-            Replace(task,std::string(Services::kLuaFolderMember),std::move(*link.value));
+            task.generatedLuaFolderLink=Services::MapSaveTask::GeneratedLuaFolderLink{
+                std::make_shared<const Services::LuaFolderSnapshot>(project.value->source),request.target};
             auto state=EncodeProjectBuildState({project.value->source.sha256,framework.value->sha256,configuration.value->sha256});
             if(!state.Succeeded())return {std::nullopt,state.diagnostics};
             Replace(task,std::string(kBuildStateMember),std::move(*state.value));

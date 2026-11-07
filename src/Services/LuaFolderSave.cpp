@@ -35,6 +35,19 @@ Result<std::string> LuaFolderDeletionIdentity(std::span<const LuaFolderFile> map
 }
 
 Status PrepareLuaFolderSave(MapSaveTask& task) {
+    if(task.generatedLuaFolderLink) {
+        const auto& generated=*task.generatedLuaFolderLink;
+        if(!generated.source || generated.source->root.empty() || generated.source->missing || generated.output.empty()
+            || !task.luaFolderOverride.empty() || !task.luaFolderDeletionApproval.empty() || !task.beforePublish)
+            return Status::Failure("LuaFolder","LUA_FOLDER_GENERATED_INPUT","生成模块的源快照、最终路径或发布核对不完整。");
+        auto current=VerifyLuaFolder(*generated.source);if(!current.Succeeded())return current;
+        const auto metadata=EncodeLuaFolderLink(generated.source->root,generated.output);
+        if(!metadata.Succeeded())return {metadata.diagnostics};
+        Replace(task,std::string(kLuaFolderMember),*metadata.value);
+        const auto previous=std::move(task.beforePublish);const auto source=generated.source;
+        task.beforePublish=[previous,source]{const auto checked=previous();return checked.Succeeded()?VerifyLuaFolder(*source):checked;};
+        return Status::Ok();
+    }
     const auto link = ReadLuaFolderLink(*task.archive, task.replacements, task.removals);
     if (!link.Succeeded()) return {link.diagnostics};
     if (!*link.value && task.luaFolderOverride.empty()) return Status::Ok();
@@ -103,6 +116,15 @@ Status PrepareLuaFolderSave(MapSaveTask& task) {
 }
 
 Status VerifyLuaFolderSaved(const MapSaveTask& task, const MapArchiveSession& saved) {
+    if(task.generatedLuaFolderLink) {
+        const auto& generated=*task.generatedLuaFolderLink;
+        const auto expected=EncodeLuaFolderLink(generated.source->root,generated.output);
+        if(!expected.Succeeded())return {expected.diagnostics};
+        const auto actual=saved.ReadMember(kLuaFolderMember);
+        if(!actual.Succeeded())return {actual.diagnostics};
+        if(*actual.value!=*expected.value)return Status::Failure("LuaFolder","LUA_FOLDER_READBACK","生成地图的外部源关联回读不符。");
+        return VerifyLuaFolder(*generated.source);
+    }
     if (!task.luaFolderSnapshot || task.luaFolderSnapshot->missing) return Status::Ok();
     for (const auto& file : task.luaFolderSnapshot->files) {
         const auto read = saved.ReadMember(file.path);
