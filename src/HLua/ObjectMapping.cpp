@@ -206,6 +206,9 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjectsImpl(ObjectType type, cons
                         continue;
                     }
                     const auto name = Text::LowerAscii(field.name);
+                    if (!baseNames.contains(name) && !schema.MetadataComplete(type))
+                        return Fail<LniObjectDocument>("HLUA_METADATA_INCOMPLETE", (field.source.empty() ? object.source : field.source)
+                            + "：" + object.id + "." + field.name + "：本类型metadata不完整或有重复，无法证明字段不存在，未跳过。");
                     if (!baseNames.contains(name) && schema.MetadataComplete(type)) {
                         if (field.values.empty()) return Fail<LniObjectDocument>("HLUA_FIELD_ARRAY", "未写入字段也不能使用无值数组：" + field.name);
                         for (const auto& atom : field.values) {

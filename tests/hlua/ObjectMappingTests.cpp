@@ -199,7 +199,8 @@ void TestHLuaObjectMapping() {
     missingSchemaOptions.sources.push_back({ObjectType::Item,"missing-meta.slk"});
     auto incompleteSchema = ObjectFieldSchema::Load(read, missingSchemaOptions); Good(incompleteSchema);
     itemInput.value->front().fields.pop_back();
-    Need(!ApplyHslkObjects(ObjectType::Item, empty(ObjectType::Item), *itemInput.value, *incompleteSchema.value, *standard.value).Succeeded(),
+    auto unproven = ApplyHslkObjects(ObjectType::Item, empty(ObjectType::Item), *itemInput.value, *incompleteSchema.value, *standard.value);
+    Need(!unproven.Succeeded() && unproven.diagnostics.front().code == "HLUA_METADATA_INCOMPLETE",
         "incomplete metadata cannot prove a field absent");
     auto duplicateSchemaOptions = schemaOptions;
     duplicateSchemaOptions.sources.push_back(duplicateSchemaOptions.sources.back());
