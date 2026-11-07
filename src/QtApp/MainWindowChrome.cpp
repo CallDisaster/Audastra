@@ -348,6 +348,8 @@ void MainWindow::BuildDiagnosticsView() {
     });
     connect(project_.get(), &War3Map::QtProject::EditorProject::TriggerDocumentChanged, this, &MainWindow::RefreshRuntimeCompatibility);
     connect(project_.get(), &War3Map::QtProject::EditorProject::UiLibrariesChanged, this, &MainWindow::RefreshRuntimeCompatibility);
+    connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsChanged, this, &MainWindow::RefreshRuntimeCompatibility);
+    connect(project_.get(), &War3Map::QtProject::EditorProject::ImportsEdited, this, &MainWindow::RefreshRuntimeCompatibility);
     connect(project_.get(), &War3Map::QtProject::EditorProject::EditTrackingBaselineChanged, this, &MainWindow::RefreshRuntimeCompatibility);
     dock->setWidget(list);
     addDockWidget(Qt::BottomDockWidgetArea, dock);
