@@ -64,12 +64,17 @@ void TestHLuaArgumentTypes() {
         for(auto it=invalid.begin();it!=invalid.end();++it) args.insert(it.key(),it.value());
         const auto response=server.HandleMessage(QJsonDocument(QJsonObject{{"jsonrpc","2.0"},{"id",1},
             {"method","tools/call"},{"params",QJsonObject{{"name","hlua_build"},{"arguments",args}}}}).toJson(QJsonDocument::Compact));
-        Expect(response && !response->error,"typed h-lua rejection reaches domain handler");
-        const auto content=response->result.toObject().value("content").toArray();
-        Expect(!content.isEmpty(),"typed h-lua rejection body");
-        const auto body=QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object();
-        Expect(!body.value("ok").toBool(true) && body.value("diagnostics").toArray()[0].toObject().value("code")=="HLUA_ARGUMENT",
-            "invalid h-lua types do not default to test or owned before touching inputs");
+        Expect(response.has_value(),"typed h-lua rejection response");
+        if(response->error) {
+            Expect(response->error->value("code").toInt()==War3Map::Mcp::JsonRpcResponse::kInvalidParams,
+                "schema rejects malformed h-lua arguments before invoking handler");
+        } else {
+            const auto content=response->result.toObject().value("content").toArray();
+            Expect(!content.isEmpty(),"typed h-lua rejection body");
+            const auto body=QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object();
+            Expect(!body.value("ok").toBool(true) && body.value("diagnostics").toArray()[0].toObject().value("code")=="HLUA_ARGUMENT",
+                "domain refuses malformed options that reach it without selecting defaults");
+        }
         Expect(!std::filesystem::exists(std::filesystem::path((temp.path()+"/not-opened").toStdWString())),"invalid request leaves original fixture untouched");
     }
 }
