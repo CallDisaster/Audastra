@@ -155,6 +155,7 @@ target_include_directories(war3-map-live-editor-tools-tests PRIVATE "${PROJECT_S
 target_link_libraries(war3-map-live-editor-tools-tests PRIVATE War3MapEditor::QtProject War3MapEditor::McpProtocol War3MapEditor::ObjectResourceAdapter Qt6::Test)
 target_compile_definitions(war3-map-live-editor-tools-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-live-editor-tools-tests PRIVATE /W4 /permissive- /utf-8)
+target_compile_definitions(war3-map-live-editor-tools-tests PRIVATE AUDASTRA_TEST_BUNDLED_CLIENT="${AUDASTRA_UI_LIBRARY_BUNDLE_DIR}/AudastraUI/jass/AudastraUI.j")
 war3map_deploy_qt_runtime(war3-map-live-editor-tools-tests)
 add_test(NAME qt-live-editor-tools COMMAND war3-map-live-editor-tools-tests
     -o "${CMAKE_CURRENT_BINARY_DIR}/qt-live-editor-tools-$<CONFIG>.qtest.txt" -txt)

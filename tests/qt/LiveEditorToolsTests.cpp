@@ -2951,16 +2951,32 @@ void LiveEditorToolsTests::RuntimeToolsRequireExplicitConsentAndShareUndo() {
     add("payload.blob", "warvk_runtime.blp", "payload", "original payload fixture");
     add("notice.txt", "audastra/runtime/licenses/fixture.txt", "notice", "original notice fixture");
     add("client.j", "", "client", "original synthetic client");
-    const QJsonObject manifest{{"schema", 1}, {"id", "original-test"}, {"version", "1.0.0"}, {"abi", 0x20000},
+    QJsonObject manifest{{"schema", 1}, {"id", "original-test"}, {"version", "1.0.0"}, {"abi", 0x20000},
         {"scope", "internal"}, {"gameSha256", "e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"}, {"files", files}};
     QVERIFY(WriteFile(QString::fromStdWString((root / "manifest.json").wstring()), QJsonDocument(manifest).toJson(QJsonDocument::Compact)));
-    const auto identity = Sha256File(root / "manifest.json"); QVERIFY(identity.Succeeded());
+    auto identity = Sha256File(root / "manifest.json"); QVERIFY(identity.Succeeded());
     f.project.runtimePackageSources_ = {{root, *identity.value, false}};
     const auto available = f.tools->Invoke("map_runtime_query", {}); QVERIFY(available.value("ok").toBool());
     QVERIFY(!available.value("approved").toBool());
     const auto package = available.value("packages").toArray().first().toObject();
     QVERIFY(package.value("internal_only").toBool()); QVERIFY(package.value("available").toBool());
     QVERIFY(!package.contains("root")); QVERIFY(!package.contains("path"));
+    QCOMPARE(package.value("classification").toString(), "legacy"); QVERIFY(!package.value("selectable").toBool());
+    enable.insert("package_sha256", QString::fromStdString(*identity.value));
+    QCOMPARE(ErrorCode(f.tools->Invoke("map_runtime_set", enable)), QString("RUNTIME_LEGACY_SELECTION_REJECTED"));
+    QCOMPARE(f.project.editRevision_.Revision(), oldRevision); QCOMPARE(f.project.triggerUndoStack_->count(), 0);
+    QFile client(QStringLiteral(AUDASTRA_TEST_BUNDLED_CLIENT)); QVERIFY(client.open(QIODevice::ReadOnly));
+    const auto bytes = client.readAll(); QVERIFY(WriteFile(QString::fromStdWString((root / "client.j").wstring()), bytes));
+    auto binding = files.last().toObject(); binding["size"] = bytes.size();
+    binding["sha256"] = QString::fromStdString(*Sha256File(root / "client.j").value); files[files.size() - 1] = binding;
+    manifest["files"] = files;
+    QVERIFY(WriteFile(QString::fromStdWString((root / "manifest.json").wstring()), QJsonDocument(manifest).toJson(QJsonDocument::Compact)));
+    identity = Sha256File(root / "manifest.json"); QVERIFY(identity.Succeeded());
+    f.project.runtimePackageSources_ = {{root, *identity.value, false}};
+    const auto current = f.tools->Invoke("map_runtime_query", {});
+    QVERIFY(current.value("ok").toBool());
+    const auto currentPackage = current.value("packages").toArray().first().toObject();
+    QCOMPARE(currentPackage.value("classification").toString(), "current"); QVERIFY(currentPackage.value("selectable").toBool());
     enable.insert("package_sha256", QString::fromStdString(*identity.value));
     const auto enabled = f.tools->Invoke("map_runtime_set", enable);
     QVERIFY2(enabled.value("ok").toBool(), qPrintable(Explain(enabled))); QVERIFY(enabled.value("approved").toBool());
