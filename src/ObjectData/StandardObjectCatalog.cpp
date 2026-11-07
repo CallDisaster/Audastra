@@ -364,6 +364,10 @@ Result<StandardObjectCatalog> StandardObjectCatalog::Load(
                 const auto found = entries.find(id);
                 if (found == entries.end()) continue;
                 for (const auto& [key, value] : fields) {
+                    const auto previous = found->second.fieldSourceFiles.find(key);
+                    if (previous != found->second.fieldSourceFiles.end()
+                        && std::find(found->second.profileSectionFiles.begin(), found->second.profileSectionFiles.end(), previous->second)
+                            != found->second.profileSectionFiles.end()) ambiguousRows.insert(id);
                     found->second.fields[key] = value;
                     found->second.fieldSourceFiles[key] = path;
                 }

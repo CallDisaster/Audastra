@@ -183,6 +183,14 @@ void TestHLuaObjectMapping() {
         && defaulted.diagnostics.front().message.find("缺省按空串") != std::string::npos
         && defaulted.diagnostics.front().message.find("docs/HLUA_PROJECTS.md#profile-text-default-evidence") != std::string::npos,
         "absent text in complete standard profile is empty with evidence, no native override");
+    std::vector<IndexedFieldAudit> defaultAudits;
+    Good(ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *defaultInput.value,
+        *schema.value, *strictCatalog.value, &defaultAudits));
+    BuildReceipt defaultReceipt; defaultReceipt.redundantIndexedFields = defaultAudits;
+    const auto defaultJson = BuildReceiptJson(defaultReceipt);
+    Need(defaultJson.find("\"defaulted_text_empty\": true") != std::string::npos
+        && defaultJson.find("docs/HLUA_PROJECTS.md#profile-text-default-evidence") != std::string::npos,
+        "structured receipt preserves the default permission and native evidence path");
     Need(!mapped(*standard.value).Succeeded(), "permissive or incomplete source does not grant missing text defaults");
     defaultInput.value->front().fields.front().values = {std::string("nonempty")};
     Need(!mapped(*strictCatalog.value).Succeeded(), "absent standard text does not equal nonempty scalar");
@@ -205,6 +213,19 @@ void TestHLuaObjectMapping() {
     auto multiOptions = strictOptions; multiOptions.sources.push_back(strictOptions.sources.front());
     auto multi = StandardObjectCatalog::Load(read, multiOptions); Good(multi);
     Need(!mapped(*multi.value).Succeeded(), "multiple catalog definitions do not grant missing defaults");
+    auto splitOptions = strictOptions; splitOptions.sources.front().profileFiles.push_back("more.txt");
+    files["units.txt"] = cleanProfile + "Name=Complete\n";
+    files["more.txt"] = "[hdef]\nOther=split source\n";
+    auto split = StandardObjectCatalog::Load(read, splitOptions); Good(split);
+    Good(mapped(*split.value));
+    files["more.txt"] += "Name=Complete\n";
+    auto overlapping = StandardObjectCatalog::Load(read, splitOptions); Good(overlapping);
+    Need(!mapped(*overlapping.value).Succeeded(), "overlapping profile keys are not a unique source even when equal");
+    files["units.txt"] = cleanProfile;
+    auto rowOptions = strictOptions; rowOptions.sources.front().slkFiles.push_back("extra.slk");
+    files["extra.slk"] = Slk({{{"ID","hfoo"}}});
+    auto missingRow = StandardObjectCatalog::Load(read, rowOptions); Good(missingRow);
+    Need(!mapped(*missingRow.value).Succeeded(), "parent row absent from one required SLK is incomplete");
     auto unreadable = StandardObjectCatalog::Load([&](const std::string& path) {
         return path == "units.txt" ? Result<std::vector<std::byte>>::Failure("Test", "read-failed", "unreadable") : read(path);
     }, strictOptions);
