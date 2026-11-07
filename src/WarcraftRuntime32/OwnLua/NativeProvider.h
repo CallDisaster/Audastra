@@ -7,7 +7,8 @@
 
 namespace Audastra::Runtime32::OwnLua {
 
-// 生产拥有者持有真实VM代际；agent管理引用，池编号仅管理已观察到的生命期。失效地图不再调用native。
+// 生产拥有者持有真实VM代际；agent管理引用，Pool管理已观察到的生命期。
+// Ordinal仅保留native返回的序号，不持有游戏对象，也不检测销毁或到期；失效地图不再调用native。
 // 原创 fixture 可另作提供者，但不能将其存在当成真实游戏提供者已经实现。
 class NativeHandleOwner {
 public:
@@ -15,13 +16,22 @@ public:
     [[nodiscard]] virtual bool Alive() const noexcept = 0;
 };
 
-enum class NativeHandleKind { Reference, Scalar, Pool };
+enum class NativeHandleKind { Reference, Scalar, Pool, Ordinal };
+[[nodiscard]] inline bool NativeOrdinalType(std::string_view type) noexcept { return type == "texttag"; }
+[[nodiscard]] inline bool UsesWeatherEffect(const NativeSignature& signature) noexcept {
+    if (signature.returns.kind == NativeKind::Handle && signature.returns.handleType == "weathereffect") return true;
+    for (const auto& argument : signature.arguments)
+        if (argument.kind == NativeKind::Handle && argument.handleType == "weathereffect") return true;
+    return false;
+}
+inline constexpr char kTextTagNativeOnly[] = "texttag序号只能由本局native返回取得，不能用整数、nil或JASS全局原始值构造。";
+inline constexpr char kWeatherEffectRefused[] = "weathereffect尚未支持：原版无效天气模板ID会崩溃，当前未建立有效ID核验，未调用native。";
 struct NativeHandle {
     std::uint32_t value = 0;
     std::uint64_t generation = 0;
     std::string type;
     std::shared_ptr<NativeHandleOwner> owner;
-    // ConvertPlayerColor(0) 等返回有效的零值常量；不能将其当作 agent/null 或跨类型合并。
+    // Scalar的枚举常量和Ordinal的序号都可能为0；不能当作agent/null或跨类型合并。
     NativeHandleKind kind = NativeHandleKind::Reference;
 };
 

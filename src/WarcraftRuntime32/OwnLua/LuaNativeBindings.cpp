@@ -52,8 +52,9 @@ LuaNativeBindings::LuaNativeBindings(std::shared_ptr<NativeProvider> provider, L
     : provider_(std::move(provider)), callbacks_(callbacks), generation_(provider_ ? provider_->Generation() : 0), expired_(std::move(expired)) {}
 
 bool LuaNativeBindings::ValidHandle(const NativeHandle& handle, std::string_view expected) const noexcept {
-    return (handle.kind == NativeHandleKind::Reference || handle.kind == NativeHandleKind::Scalar || handle.kind == NativeHandleKind::Pool)
-        && (handle.value || handle.kind == NativeHandleKind::Scalar)
+    const bool ordinal = handle.kind == NativeHandleKind::Ordinal && NativeOrdinalType(handle.type);
+    return (handle.kind == NativeHandleKind::Reference || handle.kind == NativeHandleKind::Scalar || handle.kind == NativeHandleKind::Pool || ordinal)
+        && (handle.value || handle.kind == NativeHandleKind::Scalar || ordinal)
         && handle.generation == generation_ && provider_->Generation() == generation_
         && handle.owner && handle.owner->Alive() && NativeIdentifier(handle.type)
         && provider_->IsHandleType(handle.type, expected);
@@ -101,7 +102,8 @@ int LuaNativeBindings::DescribeHandle(lua_State* lua) {
 }
 void LuaNativeBindings::PushHandle(lua_State* lua, const NativeHandle& value) {
     const auto key = value.kind == NativeHandleKind::Reference ? "reference:" + std::to_string(value.value)
-        : (value.kind==NativeHandleKind::Pool ? "pool:" : "scalar:") + value.type + ":" + std::to_string(value.value);
+        : (value.kind==NativeHandleKind::Pool ? "pool:" : value.kind==NativeHandleKind::Ordinal ? "ordinal:" : "scalar:")
+            + value.type + ":" + std::to_string(value.value);
     lua_rawgetp(lua, LUA_REGISTRYINDEX, &handleCacheKey);
     lua_pushlstring(lua, key.data(), key.size()); lua_rawget(lua, -2);
     if (auto* cached = GetHandle(lua, -1); cached && cached->bindings == this
@@ -227,7 +229,11 @@ NativeValue LuaNativeBindings::ReadValue(lua_State* lua, int stack, const Native
         return std::string(text, size);
     }
     case NativeKind::Handle: {
-        if (lua_isnil(lua, stack)) return std::monostate{};
+        if (type.handleType == "weathereffect") luaL_error(lua, "%s", kWeatherEffectRefused);
+        if (lua_isnil(lua, stack)) {
+            if (NativeOrdinalType(type.handleType)) luaL_error(lua, "%s", kTextTagNativeOnly);
+            return std::monostate{};
+        }
         auto* handle = GetHandle(lua, stack);
         if (!handle || handle->bindings != this || !ValidHandle(handle->Value(), type.handleType))
             luaL_error(lua, "%s 第%d参数需要本局有效的 %s handle。", name, stack, type.handleType.c_str());
@@ -266,6 +272,10 @@ int LuaNativeBindings::ReadGlobal(lua_State* lua, std::string_view key) {
         error.empty() ? "未知名称或尚未提供此脚本来源。" : error.c_str());
     if (declaration->array || declaration->type.kind == NativeKind::Code || declaration->type.kind == NativeKind::Nothing)
         return luaL_error(lua, "JASS 全局 %s 的数组或 code 转换尚未实现。", name.c_str());
+    if (declaration->type.kind == NativeKind::Handle) {
+        if (NativeOrdinalType(declaration->type.handleType)) return luaL_error(lua, "%s", kTextTagNativeOnly);
+        if (declaration->type.handleType == "weathereffect") return luaL_error(lua, "%s", kWeatherEffectRefused);
+    }
     NativeCallResult result;
     try { result = provider_->ReadGlobal(name); }
     catch (const std::exception& exception) { result.error = exception.what(); }
@@ -282,6 +292,7 @@ int LuaNativeBindings::Call(lua_State* lua) {
     const auto signature = self.Signature(name, lookupError);
     if (!signature || signature->arguments.size() > 32) return luaL_error(lua, "native %s 的可信签名不可用：%s", name,
         lookupError.empty() ? "尚未注册。" : lookupError.c_str());
+    if (UsesWeatherEffect(*signature)) return luaL_error(lua, "%s", kWeatherEffectRefused);
     if (signature->returns.kind == NativeKind::Code)
         return luaL_error(lua, "native %s 返回 code 的转换尚未实现，未调用 native。", name);
     if (lua_gettop(lua) != static_cast<int>(signature->arguments.size()))

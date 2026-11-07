@@ -84,6 +84,10 @@ NativeCallResult GameNativeProvider::ReadGlobal(std::string_view name) {
     if (!declaration) return Failure("全局变量没有同一游戏来源的可信声明。");
     if (declaration->array || declaration->type.kind == NativeKind::Code)
         return Failure("全局数组与 code 值的生命周期桥尚未实现。");
+    if (declaration->type.kind == NativeKind::Handle) {
+        if (NativeOrdinalType(declaration->type.handleType)) return Failure(kTextTagNativeOnly);
+        if (declaration->type.handleType == "weathereffect") return Failure(kWeatherEffectRefused);
+    }
     const auto raw = vm_->ReadGlobal(name);
     if (!raw) return Failure("当前地图 VM 中没有有效的全局变量记录。");
     const auto kind = declaration->type.kind;
@@ -137,6 +141,8 @@ NativeCallResult GameNativeProvider::WriteGlobal(std::string_view name, const Na
             word = *interned; newString = true;
         } else if (!std::holds_alternative<std::monostate>(value)) return Failure("文本全局需要文本或 nil。");
     } else if (kind == NativeKind::Handle) {
+        if (declaration->type.handleType == "weathereffect") return Failure(kWeatherEffectRefused);
+        if (NativeOrdinalType(declaration->type.handleType) && !std::holds_alternative<NativeHandle>(value)) return Failure(kTextTagNativeOnly);
         if (declaration->type.handleType == "handle") return Failure("抽象 handle 全局缺少具体引用种类，拒绝写入。");
         expected = 7;
         reference = IsHandleType(declaration->type.handleType, "agent") || declaration->type.handleType == "triggeraction";
@@ -178,7 +184,8 @@ NativeCallResult GameNativeProvider::ReadHandle(std::uint32_t value, const Nativ
         }
     }
     const bool reference = IsHandleType(type, "agent") || type == "triggeraction";
-    if (!reference && !scalarTypes_.contains(type)) return Failure("此非 agent 对象尚未建立生命周期桥。");
+    const bool ordinal = NativeOrdinalType(type);
+    if (!reference && !ordinal && !scalarTypes_.contains(type)) return Failure("此非 agent 对象尚未建立生命周期桥。");
     if (reference && !value) return {true, {}, {}};
     const auto object = reference ? vm_->HandleObject(value) : 0;
     if (reference && (!object || !vm_->RetainHandle(value))) return Failure("无法持有有效的游戏 agent 引用。");
@@ -186,7 +193,7 @@ NativeCallResult GameNativeProvider::ReadHandle(std::uint32_t value, const Nativ
     try { owner = std::make_shared<HandleOwner>(vm_, value, object); }
     catch (...) { if (reference) vm_->ReleaseHandle(value, object); throw; }
     return {true, NativeHandle{value, Generation(), type, std::move(owner),
-        reference ? NativeHandleKind::Reference : NativeHandleKind::Scalar}, {}};
+        reference ? NativeHandleKind::Reference : ordinal ? NativeHandleKind::Ordinal : NativeHandleKind::Scalar}, {}};
 }
 bool GameNativeProvider::IsHandleType(std::string_view actual, std::string_view expected) const noexcept {
     return types_ && types_->IsA(actual, expected);
@@ -215,12 +222,14 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
     if (!entry || entry->signature.arguments.size() != supplied.size() || supplied.size() > 32)
         return Failure("实际 native 登记缺失或参数数量不符。");
     const auto& signature = entry->signature;
+    if (UsesWeatherEffect(signature)) return Failure(kWeatherEffectRefused);
     if (codes_) codes_->Sweep();
     if (signature.returns.kind == NativeKind::Code) return Failure("native code 返回值尚未建立生命周期桥。");
     // TriggerAddAction 返回的声明类型虽是 handle，已核对 native 仍通过真实 agent→slot 路径返回。
     const bool actionObject = signature.returns.kind == NativeKind::Handle && signature.returns.handleType == "triggeraction";
     if (signature.returns.kind == NativeKind::Handle && !IsHandleType(signature.returns.handleType, "agent")
-        && !actionObject && signature.returns.handleType!="lightning" && !scalarTypes_.contains(signature.returns.handleType))
+        && !actionObject && signature.returns.handleType!="lightning" && !NativeOrdinalType(signature.returns.handleType)
+        && !scalarTypes_.contains(signature.returns.handleType))
         return Failure("此非 agent 对象尚未建立销毁与句柄复用的生命周期桥，未调用 native。");
     const bool createLightning=name=="AddLightning" || name=="AddLightningEx";
     if(createLightning && (signature.returns.kind!=NativeKind::Handle || signature.returns.handleType!="lightning"))
@@ -258,7 +267,10 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
             args.words[index] = static_cast<std::uint32_t>(object); break;
         }
         case NativeKind::Handle: {
-            if (std::holds_alternative<std::monostate>(value)) break;
+            if (std::holds_alternative<std::monostate>(value)) {
+                if (NativeOrdinalType(expected.handleType)) return Failure(kTextTagNativeOnly);
+                break;
+            }
             const auto* handle = std::get_if<NativeHandle>(&value);
             if (!handle || handle->generation != Generation() || !handle->owner || !handle->owner->Alive()
                 || !IsHandleType(handle->type, expected.handleType)) return Failure("native handle 不属于当前有效地图或类型不符。");

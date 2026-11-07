@@ -43,6 +43,13 @@ public:
 private:
     std::shared_ptr<NativePoolLedger::Life> life_;
 };
+class FixtureOrdinalOwner final : public NativeHandleOwner {
+public:
+    explicit FixtureOrdinalOwner(std::shared_ptr<bool> vmAlive) : vmAlive_(std::move(vmAlive)) {}
+    bool Alive() const noexcept override { return *vmAlive_; }
+private:
+    std::shared_ptr<bool> vmAlive_;
+};
 
 // 原创类型与生命周期提供者。cdecl fixture 只验证调用桥，不表示已接通 Game.dll VM。
 class FixtureProvider final : public NativeProvider {
@@ -57,6 +64,8 @@ public:
     std::map<std::string, NativeValue, std::less<>> globals;
     std::shared_ptr<HandleLife> timer = std::make_shared<HandleLife>();
     std::shared_ptr<HandleLife> unit = std::make_shared<HandleLife>();
+    std::shared_ptr<bool> ordinalVmAlive = std::make_shared<bool>(true);
+    std::size_t tagDestroys = 0;
     NativePoolLedger pool;
     const std::map<std::string, std::string, std::less<>> signatures{
         {"Integer", "(I)I"}, {"Real", "(RR)R"}, {"Boolean", "(B)B"}, {"String", "(S)S"},
@@ -66,7 +75,9 @@ public:
         {"WrongResult", "()I"}, {"WrongHandle", "()Htimer;"}, {"StaleHandle", "()Htimer;"},
         {"BadReal", "()R"}, {"BadString", "()S"}, {"Throw", "(Htimer;)V"}, {"Fail", "()V"},
         {"Red", "()Hplayercolor;"}, {"ZeroRace", "()Hrace;"}, {"ColorValue", "(Hplayercolor;)I"},
-        {"Pool", "()Hlightning;"},{"NewPool","()Hlightning;"},{"UsePool","(Hlightning;)I"},{"DestroyPool","(Hlightning;)V"}
+        {"Pool", "()Hlightning;"},{"NewPool","()Hlightning;"},{"UsePool","(Hlightning;)I"},{"DestroyPool","(Hlightning;)V"},
+        {"TagZero", "()Htexttag;"}, {"Tag", "()Htexttag;"}, {"UseTag", "(Htexttag;)I"}, {"DestroyTag", "(Htexttag;)V"},
+        {"Weather", "()Hweathereffect;"}, {"UseWeather", "(Hweathereffect;)V"}
     };
     std::uint64_t Generation() const noexcept override { return generation; }
     std::optional<NativeSignature> Lookup(std::string_view name) const override {
@@ -95,7 +106,8 @@ public:
         return id == 42 ? std::optional<NativeHandleDefinition>{{3, "tmr "}} : std::nullopt;
     }
     bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept override {
-        const bool known = actual == "timer" || actual == "unit" || actual == "handle" || actual == "playercolor" || actual == "race" || actual=="lightning";
+        const bool known = actual == "timer" || actual == "unit" || actual == "handle" || actual == "playercolor" || actual == "race"
+            || actual=="lightning" || actual=="texttag" || actual=="weathereffect";
         return known && (actual == expected || expected == "handle");
     }
     NativeHandle Handle(std::uint32_t value, std::string type, const std::shared_ptr<HandleLife>& life) {
@@ -103,6 +115,11 @@ public:
     }
     NativeCallResult Invoke(std::string_view name, std::span<const NativeValue> args) override {
         ++calls;
+        if (name == "Tag" || name == "TagZero")
+            return {true, NativeHandle{name == "Tag" ? 7u : 0u, generation, "texttag",
+                std::make_shared<FixtureOrdinalOwner>(ordinalVmAlive), NativeHandleKind::Ordinal}, {}};
+        if (name == "UseTag") return {true, static_cast<std::int32_t>(std::get<NativeHandle>(args[0]).value), {}};
+        if (name == "DestroyTag") { ++tagDestroys; return {true, {}, {}}; }
         if(name=="Pool" || name=="NewPool") {
             auto life=pool.Borrow(1);if(name=="NewPool" || !life)life=pool.Created(1);
             return {true,NativeHandle{1,generation,"lightning",std::make_shared<FixturePoolOwner>(std::move(life)),NativeHandleKind::Pool},{}};
@@ -344,9 +361,57 @@ void PoolLifetimes() {
     calls=provider->calls;++provider->generation;
     Check(!host.Execute("j.UsePool(q)","@pool-epoch.lua").Succeeded() && provider->calls==calls,"old VM pool rejected before provider");
 }
+void OrdinalSemantics() {
+    auto provider = std::make_shared<FixtureProvider>();
+    provider->globalDeclarations = {
+        {"RawTag", {{NativeKind::Handle, "texttag"}, false, false}},
+        {"RawWeather", {{NativeKind::Handle, "weathereffect"}, false, false}}
+    };
+    provider->globals = {{"RawTag", std::int32_t{0}}, {"RawWeather", std::int32_t{0}}};
+    {
+        LuaHost host({}); Success(host.Initialize(), "ordinal host initialize");
+        Success(host.BindNatives(provider), "ordinal provider");
+        Success(host.Execute("j=require('jass.common'); g=require('jass.globals'); "
+            "z=j.TagZero(); t=j.Tag(); assert(type(z)=='userdata' and z~=nil and j.UseTag(z)==0); "
+            "assert(j.UseTag(t)==7 and rawequal(z,j.TagZero())); "
+            "j.DestroyTag(z); assert(j.UseTag(z)==0 and rawequal(z,j.TagZero())); "
+            "j.DestroyTag(t); reused=j.Tag(); assert(rawequal(t,reused) and j.UseTag(t)==7)",
+            "@ordinal-native.lua"), "native zero and stale ordinal retain JASS value semantics");
+        Check(provider->tagDestroys == 2 && provider->timer->references == 0 && provider->unit->references == 0,
+            "ordinal does not use reference owners or native object lifetime ledger");
+        Success(host.Execute("unrelated=j.Timer()", "@ordinal-other-type.lua"), "prepare unrelated handle");
+        for (const auto source : {"j.UseTag(0)", "j.UseTag(7)", "j.UseTag(nil)", "j.UseTag(unrelated)",
+                "g.RawTag=nil", "g.RawTag=0"}) {
+            const auto calls = provider->calls;
+            const auto result = host.Execute(source, "@ordinal-forgery.lua");
+            Check(!result.Succeeded() && result.message.find("ordinal-forgery.lua") != std::string::npos,
+                "ordinal forgery and unrelated type report source position");
+            Check(provider->calls == calls, "invalid ordinal never invokes provider");
+        }
+        const auto reads = provider->globalReads;
+        for (const auto source : {"return g.RawTag", "return j.RawTag", "return g.RawWeather"})
+            Check(!host.Execute(source, "@ordinal-global.lua").Succeeded(), "raw globals cannot mint ordinal values");
+        Check(provider->globalReads == reads, "raw ordinal global rejected before provider read");
+        for (const auto source : {"j.Weather()", "j.UseWeather(nil)", "j.UseWeather(z)"}) {
+            const auto calls = provider->calls;
+            const auto result = host.Execute(source, "@weather-refused.lua");
+            Check(!result.Succeeded() && result.message.find("weathereffect") != std::string::npos
+                && provider->calls == calls, "weather creation and consumers rejected before native, including nil");
+        }
+        const auto destroyed = provider->tagDestroys;
+        Success(host.Execute("z=nil; t=nil; reused=nil; collectgarbage('collect')", "@ordinal-gc.lua"), "ordinal GC");
+        Check(provider->tagDestroys == destroyed, "Lua GC does not destroy native ordinal objects");
+        Success(host.Execute("old=j.TagZero()", "@ordinal-old.lua"), "ordinal before VM change");
+        const auto calls = provider->calls; ++provider->generation;
+        Check(!host.Execute("j.UseTag(old)", "@ordinal-epoch.lua").Succeeded() && provider->calls == calls,
+            "old VM ordinal refused before native");
+    }
+    Check(provider->tagDestroys == 2 && provider->timer->references == 0 && provider->unit->references == 0,
+        "lua_close does not call native destroy or retain ordinal game references");
+}
 int main() {
     try {
-        NativeCalls(); RegistrationPhases(); ConversionAndLifetimes(); GlobalReads(); PoolLifetimes();
+        NativeCalls(); RegistrationPhases(); ConversionAndLifetimes(); GlobalReads(); PoolLifetimes(); OrdinalSemantics();
         std::cout << "Own Lua native conversions passed; original cdecl/handle fixture only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
