@@ -28,6 +28,7 @@ struct ApplicationServicePreferences {
     std::optional<QString> mapBackupDirectory;
     std::optional<int> mapBackupLimit;
     std::optional<QString> mapTestRuntimeRoot;
+    std::optional<QString> hluaFrameworkRoot;
     std::optional<bool> mapTestSlk;
     std::optional<bool> recoveryEnabled;
     std::optional<int> recoveryIntervalMinutes;

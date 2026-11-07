@@ -177,6 +177,20 @@ void ConfigurationAndReload() {
     project.source.files.pop_back();File(project.source,"hslk/unit.lua","hslk_unit{Name='two'}");
     reload=PrepareReload(project,initial.value->hslkSha256);Good(reload);Need(reload.value->rebuildRequired && reload.value->authorModules.empty(),"hslk change sends nothing");
     project.runtimeFiles={0,2};Need(!PrepareReload(project,reload.value->hslkSha256).Succeeded(),"overlap refused");
+    const auto bytes=[](std::string_view text){return std::vector<std::byte>(reinterpret_cast<const std::byte*>(text.data()),reinterpret_cast<const std::byte*>(text.data()+text.size()));};
+    const auto oldMap=root/"existing.w3x",candidate=root/"candidate.w3x";
+    const std::vector<Mpq::MpqBuildFile> oldFiles{{"war3map.j",bytes("old")},{"obsolete.txt",bytes("old member")}};
+    const std::vector<Mpq::MpqBuildFile> newFiles{{"war3map.j",bytes("new")},{"fresh.txt",bytes("new member")}};
+    Good(Mpq::WriteMpqArchive(oldMap,oldFiles));
+    Good(Mpq::WriteMpqArchive(candidate,newFiles));
+    const auto oldSha=Sha256File(oldMap);Good(oldSha);
+    Need(!PublishBuildOutput(candidate,oldMap,std::string(64,'0')).Succeeded(),"stale target not replaced");
+    auto unchanged=Sha256File(oldMap);Good(unchanged);Need(*unchanged.value==*oldSha.value,"stale refusal is atomic");
+    Good(PublishBuildOutput(candidate,oldMap,*oldSha.value));
+    const auto saved=MapArchiveSession::Open(oldMap);Good(saved);
+    Need(saved.value->HasMember("fresh.txt") && !saved.value->HasMember("obsolete.txt"),"whole verified candidate published with removals");
+    const auto text=saved.value->ReadMember("war3map.j");Good(text);Need(*text.value==bytes("new"),"replacement content readback");
+    Need(std::filesystem::is_directory(root/"War3MapEditor Backups"),"replacement uses normal backup service");
 }
 int main() {
     try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); TestSourceAudit(); ExtraFrameworkModules(); ConfigurationAndReload(); std::cout << "HLua core fixtures passed\n"; return 0; }

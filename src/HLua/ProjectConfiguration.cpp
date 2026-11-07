@@ -7,9 +7,8 @@ namespace War3Map::HLua {
 namespace {
 bool Specified(const FrameworkLocation& value) { return !value.repository.empty() || !value.runtime.empty() || !value.build.empty(); }
 }
-Result<ProjectConfiguration> ReadProjectConfiguration(const std::filesystem::path& project) {
+Result<bool> RecognizeProject(const std::filesystem::path& project) {
     try {
-        ProjectConfiguration result;
         std::error_code ec;
         const bool main = std::filesystem::is_regular_file(project / L"main.lua", ec);
         if (ec && ec != std::errc::no_such_file_or_directory) throw std::runtime_error("main metadata");
@@ -17,7 +16,15 @@ Result<ProjectConfiguration> ReadProjectConfiguration(const std::filesystem::pat
         if (ec && ec != std::errc::no_such_file_or_directory) throw std::runtime_error("hslk metadata");
         ec.clear(); const bool map = std::filesystem::is_directory(project / L"map/w3x", ec);
         if (ec && ec != std::errc::no_such_file_or_directory) throw std::runtime_error("map metadata");
-        result.recognized = main && (hslk || map);
+        return Result<bool>::Success(main && (hslk || map));
+    } catch (...) {return Result<bool>::Failure("HLua","HLUA_PROJECT_IO","无法确认h-lua工程目录结构。");}
+}
+Result<ProjectConfiguration> ReadProjectConfiguration(const std::filesystem::path& project) {
+    try {
+        ProjectConfiguration result;
+        const auto recognized=RecognizeProject(project);
+        if(!recognized.Succeeded())return {std::nullopt,recognized.diagnostics};
+        result.recognized=*recognized.value;
         if (!result.recognized) return Result<ProjectConfiguration>::Success(std::move(result));
         auto file = Services::ReadHLuaFolderConfiguration(project);
         if (!file.Succeeded()) return {std::nullopt, file.diagnostics};

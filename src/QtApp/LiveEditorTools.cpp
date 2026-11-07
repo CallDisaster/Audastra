@@ -476,6 +476,7 @@ private:
             project_.directorySnapshot_ ? project_.directorySnapshot_->Snapshot().aggregateSha256 : std::string{};
         return {{"ok", true}, {"scope", "gui-live-document"}, {"project_identity", projectIdentity_},
             {"lua_source", QtProject::LuaFolderSourceInfo(project_)},
+            {"hlua_project", QtProject::HLuaFolderSourceInfo(project_)},
             {"document_generation", QString::number(generation_)}, {"revision", QString::number(project_.editRevision_.Revision())},
             {"opened", opened}, {"busy", busy_ || project_.savingMap_},
             {"edit_tracking_ready", project_.editTrackingReady_ && !project_.editTrackingFailed_},

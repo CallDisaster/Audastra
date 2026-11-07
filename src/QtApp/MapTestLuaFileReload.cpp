@@ -10,6 +10,9 @@
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/Runtime/LuaModuleNames.h"
 #include "War3MapCore/Services/LuaTestMailboxSession.h"
+#include "War3MapCore/HLua/Project.h"
+#include "War3MapCore/HLua/ProjectConfiguration.h"
+#include <QSettings>
 
 #include <QJsonObject>
 #include <QAction>
@@ -50,6 +53,7 @@ void MainWindow::SnapshotLuaFileBaseline(const std::filesystem::path& frozenMap)
         if (files.Succeeded()) for (const auto& file : *files.value) {
             if (!QString::fromStdString(file.name).endsWith(".lua", Qt::CaseInsensitive)
                 || War3Map::Resources::IsEditorManagedMemberPath(file.name)) continue;
+            if(HasHLuaProject() && !hluaAuthorPaths_.contains(War3Map::QtProject::EditorProject::AssetKey(QString::fromStdString(file.name)).toStdString()))continue;
             const auto bytes = map.value->ReadFileBounded(file.name, War3Map::QtProject::kOwnedLuaAssetBytes);
             if (!bytes.Succeeded()) continue;
             const auto hash = War3Map::Sha256(*bytes.value);
@@ -76,14 +80,26 @@ void MainWindow::RememberReloadedLuaFile(const QString& path, const std::string&
 
 void MainWindow::UpdateLuaReloadPending() {
     if (!luaReloadAction_) return;
+    if(!luaFileReload_ || luaFileReloadStopped_ || !LuaTestSessionCurrent())hluaRebuildRequired_=false;
     QStringList paths;
     if (luaFileReload_ && !luaFileReloadStopped_ && luaRuntimeMailbox_ && LuaTestSessionCurrent()) {
         const std::array<std::uint64_t, 2> revision{project_->editRevision_.Generation(), project_->editRevision_.Revision()};
         if (luaFileDiffRevision_ != revision) {
             luaFileChangedPaths_.clear();
+            hluaRebuildRequired_=false;
+            std::set<std::string> hluaPaths;
+            if(HasHLuaProject()) {
+                const auto source=War3Map::HLua::HLuaProjectScanner::Capture(project_->LuaFolderSource().Root());
+                const auto plan=source.Succeeded()?War3Map::HLua::PrepareReload(*source.value,hluaBuiltHslkSha256_)
+                    : War3Map::Result<War3Map::HLua::ReloadPlan>{std::nullopt,source.diagnostics};
+                hluaRebuildRequired_=!plan.Succeeded() || plan.value->rebuildRequired;
+                if(plan.Succeeded())for(const auto& file:plan.value->authorModules)hluaPaths.insert(
+                    War3Map::QtProject::EditorProject::AssetKey(QString::fromStdString(file.path)).toStdString());
+            }
             std::set<QString> present;
             for (const auto& entry : War3Map::QtProject::ListLuaScripts(*project_)) {
                 if (!IsLuaPath(entry.path)) continue;
+                if(HasHLuaProject() && !hluaPaths.contains(War3Map::QtProject::EditorProject::AssetKey(entry.path).toStdString()))continue;
                 present.insert(War3Map::QtProject::EditorProject::AssetKey(entry.path));
                 const auto read = War3Map::QtProject::ReadOwnedAsset(*project_, entry.path);
                 if (!read.Succeeded() || LuaFileDiffersFromBaseline(entry.path, read.value->sha256))
@@ -97,7 +113,8 @@ void MainWindow::UpdateLuaReloadPending() {
         if (const auto* scripts = triggersModule_->LuaScripts(); scripts && scripts->HasPendingDraft()
             && !paths.contains(scripts->SelectedPath())) paths.push_back(scripts->SelectedPath());
     }
-    const bool pending = !paths.empty();
+    const bool pending = !paths.empty() || hluaRebuildRequired_;
+    if(HasHLuaProject())luaReloadAction_->setText(hluaRebuildRequired_?tr("热重载 Lua（需重新构建）"):tr("热重载 Lua"));
     luaReloadAction_->setProperty("luaReloadPending", pending);
     auto tooltip = tr("热重载当前 Lua 测试");
     if (pending) tooltip += tr("\n待发送：%1").arg(paths.mid(0, 16).join(QStringLiteral("、")));
@@ -175,7 +192,24 @@ QJsonObject MainWindow::LuaFileReload(bool submit) {
         if (!triggersModule_->CommitPendingEdits())
             return Failure("LUA_RELOAD_DRAFT_INVALID", tr("代码草稿未能提交，没有发送任何文件。"));
         std::vector<LuaFilePending> changed;
-        const auto available = War3Map::QtProject::ListLuaScripts(*project_);
+        auto available = War3Map::QtProject::ListLuaScripts(*project_);
+        if(HasHLuaProject()) {
+            QSettings settings;
+            const auto location=War3Map::HLua::ResolveProjectFramework(project_->LuaFolderSource().Root(),{},
+                {std::filesystem::path(settings.value("hlua/frameworkRoot").toString().toStdWString()),{},{}});
+            const auto framework=location.Succeeded()?War3Map::HLua::HLuaFrameworkLocator::Capture(*location.value)
+                :War3Map::Result<War3Map::HLua::FrameworkSnapshot>{std::nullopt,location.diagnostics};
+            if(!framework.Succeeded() || framework.value->sha256!=hluaBuiltFrameworkSha256_)
+                return Failure("HLUA_REBUILD_REQUIRED",tr("h-lua 框架目录或内容已改变，需重新构建测试图；未发送模块。"));
+            const auto source=War3Map::HLua::HLuaProjectScanner::Capture(project_->LuaFolderSource().Root());
+            if(!source.Succeeded())return Failure("HLUA_RELOAD_SOURCE",tr("无法冻结作者模块，未发送任何文件。"));
+            const auto plan=War3Map::HLua::PrepareReload(*source.value,hluaBuiltHslkSha256_);
+            if(!plan.Succeeded() || plan.value->rebuildRequired)
+                return Failure("HLUA_REBUILD_REQUIRED",tr("hslk 已改变或构建身份不完整，需重新构建测试图；未发送模块。"));
+            std::set<QString> allowed;
+            for(const auto& file:plan.value->authorModules)allowed.insert(War3Map::QtProject::EditorProject::AssetKey(QString::fromStdString(file.path)));
+            std::erase_if(available,[&](const auto& entry){return !allowed.contains(War3Map::QtProject::EditorProject::AssetKey(entry.path));});
+        }
         for (const auto& [path, sha] : luaFileBaseline_) if (Services::IsAuthorLuaMember(path.toStdString())
             && std::none_of(available.begin(), available.end(), [&](const auto& entry) {
                 return War3Map::QtProject::EditorProject::AssetKey(entry.path) == path;

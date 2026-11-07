@@ -7,6 +7,7 @@ struct ProjectConfiguration {
     std::string sha256;
     std::filesystem::path frameworkOverride;
 };
+[[nodiscard]] Result<bool> RecognizeProject(const std::filesystem::path& project);
 [[nodiscard]] Result<ProjectConfiguration> ReadProjectConfiguration(const std::filesystem::path& project);
 [[nodiscard]] Status ConfigureProjectFramework(const std::filesystem::path& project,
     const std::filesystem::path& framework, std::string_view expectedConfigurationSha256);

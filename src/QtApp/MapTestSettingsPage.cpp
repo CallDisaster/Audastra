@@ -1,4 +1,5 @@
 #include "MapTestSettingsPage.h"
+#include "War3MapCore/HLua/Framework.h"
 #include "../QtCommon/LocalConsentPreference.h"
 #include "../QtCommon/MapBackupPaths.h"
 #include "MapBackupMigrationService.h"
@@ -110,6 +111,9 @@ MapTestSettingsPage::MapTestSettingsPage(
     slkEnabled_->setObjectName(QStringLiteral("mapTestSlkEnabled"));
     slkEnabled_->setChecked(QtCommon::ReadExplicitLocalConsent(stored, QStringLiteral("mapTest/slkEnabled")));
     testForm->addRow(slkEnabled_);
+    hluaFrameworkRoot_=new QLineEdit(stored.value("hlua/frameworkRoot").toString(),testGroup);
+    hluaFrameworkRoot_->setObjectName("hluaFrameworkRoot");
+    testForm->addRow(tr("h-lua 框架目录"),DirectoryRow(hluaFrameworkRoot_,"hluaFrameworkRootBrowse",tr("选择 h-lua 框架目录"),installationRoot,testGroup));
     layout->addWidget(testGroup);
 
     auto* backupGroup = new QGroupBox(tr("地图备份"), this);
@@ -178,6 +182,12 @@ MapTestSettingsPage::MapTestSettingsPage(
 bool MapTestSettingsPage::Validate(QString* error) const {
     if (error) error->clear();
     if (!ValidateDirectory(runtimeRoot_->text(), tr("扩展运行时目录"), error)) return false;
+    if (!ValidateDirectory(hluaFrameworkRoot_->text(),tr("h-lua 框架目录"),error)) return false;
+    const auto framework=hluaFrameworkRoot_->text().trimmed();
+    if(!framework.isEmpty()) {
+        const auto checked=HLua::HLuaFrameworkLocator::Capture({std::filesystem::path(framework.toStdWString()),{},{}});
+        if(!checked.Succeeded()) {if(error)*error=QString::fromStdString(checked.diagnostics.front().message);return false;}
+    }
     const auto directory = QtCommon::ResolveMapBackupDirectory(backupDirectory_->text(), genericDataRoot_);
     if (!directory.Succeeded()) {
         if (error) *error = QString::fromUtf8(directory.diagnostics.front().message);
@@ -210,6 +220,7 @@ Agent::ApplicationServicePreferences MapTestSettingsPage::Preferences() const {
     preferences.mapBackupDirectory = backupDirectory_->text().trimmed();
     preferences.mapBackupLimit = backupLimit_->value();
     preferences.mapTestRuntimeRoot = runtimeRoot_->text().trimmed();
+    preferences.hluaFrameworkRoot = hluaFrameworkRoot_->text().trimmed();
     preferences.mapTestSlk = slkEnabled_->isChecked();
     return preferences;
 }

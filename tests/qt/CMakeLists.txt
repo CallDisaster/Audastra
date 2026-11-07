@@ -780,7 +780,7 @@ qt_add_executable(war3-map-test-settings-tests MapTestSettingsTests.cpp
     "${PROJECT_SOURCE_DIR}/src/QtApp/MapTestSettingsPage.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtProject/MapSavePreferences.cpp")
 target_include_directories(war3-map-test-settings-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
-target_link_libraries(war3-map-test-settings-tests PRIVATE War3MapEditor::QtAgent War3MapEditor::Core Qt6::Test)
+target_link_libraries(war3-map-test-settings-tests PRIVATE War3MapEditor::QtAgent War3MapEditor::Core War3MapEditor::HLua Qt6::Test)
 target_compile_options(war3-map-test-settings-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME qt-map-test-settings COMMAND war3-map-test-settings-tests)
 war3map_deploy_fonts(war3-map-test-settings-tests)
@@ -802,7 +802,7 @@ qt_add_executable(war3-map-settings-layout-tests SettingsLayoutTests.cpp
     "${PROJECT_SOURCE_DIR}/src/QtApp/RecoverySettingsPage.cpp"
     "${PROJECT_SOURCE_DIR}/src/QtApp/WorldEffectsSettingsPage.cpp")
 target_include_directories(war3-map-settings-layout-tests PRIVATE "${PROJECT_SOURCE_DIR}/src/QtApp")
-target_link_libraries(war3-map-settings-layout-tests PRIVATE War3MapEditor::QtAgent War3MapEditor::Core War3MapEditor::QtUpdate Qt6::Test)
+target_link_libraries(war3-map-settings-layout-tests PRIVATE War3MapEditor::QtAgent War3MapEditor::Core War3MapEditor::HLua War3MapEditor::QtUpdate Qt6::Test)
 target_compile_options(war3-map-settings-layout-tests PRIVATE /W4 /permissive- /utf-8)
 war3map_deploy_fonts(war3-map-settings-layout-tests)
 add_test(NAME qt-settings-layout COMMAND war3-map-settings-layout-tests)

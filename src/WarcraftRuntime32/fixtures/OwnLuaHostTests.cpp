@@ -121,6 +121,7 @@ void BudgetsAndRandom() {
     Success(second.Execute("math.randomseed(11); local ignored=math.random(); math.randomseed(7); assert(math.random(1,100)>=1)", "@separate.lua"), "separate random state");
     Success(host.Execute("math.randomseed(7); assert(math.random(1,100)==randomValue)", "@repeat.lua"), "reproducible per-host random");
     Check(host.ConsoleText().find("预算后仍可执行") != std::string_view::npos, "bounded console captured");
+    Check(host.ConsoleText().find("recover.lua:1:") != std::string_view::npos,"console includes actual Lua source and line");
 }
 
 void RuntimeBehaviorModules() {

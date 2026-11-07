@@ -8,6 +8,7 @@
 class QLabel;
 class QPushButton;
 class QTreeWidget;
+class QToolBar;
 namespace War3Map::UiKit { class CodeView; class CodeProblemsView; }
 
 namespace War3Map::Modules {
@@ -30,10 +31,12 @@ public:
     bool RenameScript(const QString& path, const QString& newPath);
     bool DeleteScript(const QString& path);
     void RefreshDirectory();
+    void RefreshHLuaToolbar();
 
 signals:
     void DraftEdited();
     void RevealAssetRequested(const QString& path);
+    void HLuaActionRequested(const QString& action);
 
 private:
     friend class TriggerModule;
@@ -49,6 +52,7 @@ private:
     UiKit::CodeProblemsView* problems_ = nullptr;
     QLabel* status_ = nullptr;
     QLabel* sourceNote_ = nullptr;
+    QToolBar* hluaToolbar_ = nullptr;
     QPushButton* apply_ = nullptr;
     QPushButton* discard_ = nullptr;
     QString selectedPath_, baselineText_;

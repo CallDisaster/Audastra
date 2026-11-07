@@ -152,6 +152,7 @@ void MapTestSettingsTests::DefaultsAndPlaceholders() {
     auto* limit = page.findChild<QSpinBox*>(QStringLiteral("mapBackupLimit"));
     auto* slk = page.findChild<QCheckBox*>(QStringLiteral("mapTestSlkEnabled"));
     QVERIFY(backup); QVERIFY(runtime); QVERIFY(limit); QVERIFY(slk);
+    const auto* framework=page.findChild<QLineEdit*>("hluaFrameworkRoot");QVERIFY(framework);QVERIFY(framework->text().isEmpty());
     QCOMPARE(backup->placeholderText(), QDir::toNativeSeparators(QDir(localData).filePath(QStringLiteral("Audastra/backups"))));
     QVERIFY(!page.findChild<QLineEdit*>(QStringLiteral("mapTestSlkToolRoot")));
     QCOMPARE(runtime->placeholderText(), QStringLiteral("留空使用已配置的本机 YDWE 目录"));

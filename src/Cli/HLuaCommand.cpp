@@ -51,6 +51,7 @@ int RunHLua(int argc, wchar_t** argv) {
             else if (option == L"--helpers") helpers = value;
             else if (option == L"--engine") { engine=value; if(engine!=L"owned" && engine!=L"ydwe") return Bad(); }
             else if (option == L"--expected-project") request.expectedProjectSha256 = Utf8(value);
+            else if (option == L"--replace-sha256") request.expectedTargetSha256 = Utf8(value);
             else if (option == L"--offset" || option == L"--limit") {
                 std::size_t end = 0; const auto number = std::stoull(value, &end);
                 if (end != std::wstring_view(value).size() || number > 65536 || (option==L"--limit" && (!number || number>128))) return Bad();

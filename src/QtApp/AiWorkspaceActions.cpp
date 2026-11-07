@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "TriggerModule.h"
+#include "TriggerLuaScripts.h"
 #include "CampaignModule.h"
 #include "LiveEditorTools.h"
 #include "AgentController.h"
@@ -672,6 +674,7 @@ void MainWindow::ShowApplicationSettings() {
             settings, dialog.ApplicationSettings(), error, {}, services);
     });
     if (dialog.exec() != QDialog::Accepted) return;
+    triggersModule_->LuaScripts()->RefreshHLuaToolbar();
     ApplyRecoveryPreferences(War3Map::Agent::LoadRecoveryPreferences(QSettings{}));
     if (worldModule_) worldModule_->ApplyEffectQualityFromSettings();
     QString productError;

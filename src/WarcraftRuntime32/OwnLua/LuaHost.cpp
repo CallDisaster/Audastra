@@ -115,6 +115,14 @@ struct LuaHost::Impl {
         auto& self = Host(lua);
         if (!self.behavior.ConsoleEnabled()) return 0;
         const int count = lua_gettop(lua);
+        luaL_where(lua,1);
+        std::size_t locationBytes=0;
+        const auto* location=lua_tolstring(lua,-1,&locationBytes);
+        if(location && self.console.size()<kConsoleBytes) {
+            const std::string_view prefix(location,locationBytes);
+            if(LuaMailboxUtf8(prefix))self.console.append(prefix.substr(0,LuaMailboxUtf8Prefix(prefix,kConsoleBytes-self.console.size())));
+        }
+        lua_pop(lua,1);
         lua_getglobal(lua,"tostring"); const int converter=lua_absindex(lua,-1);
         for (int index = 1; index <= count; ++index) {
             std::size_t size = 0;

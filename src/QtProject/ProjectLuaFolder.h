@@ -8,6 +8,7 @@
 namespace War3Map::QtProject {
 class EditorProject;
 [[nodiscard]] QJsonObject LuaFolderSourceInfo(const EditorProject& project);
+[[nodiscard]] QJsonObject HLuaFolderSourceInfo(const EditorProject& project);
 
 struct LuaFolderReview {
     Services::LuaFolderSnapshot folder;

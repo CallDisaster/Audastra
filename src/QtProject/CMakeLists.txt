@@ -84,6 +84,7 @@ target_link_libraries(War3MapQtProject
         War3MapEditor::ScriptBuild
         War3MapEditor::UiLibrary
         War3MapEditor::Services
+        War3MapEditor::HLua
         Qt6::Core
         Qt6::Gui)
 # 编辑器自带的触发器函数库包（AudastraUI），作者确认后装进数据根；包内容由 cmake/AudastraUiLibraryBundle.cmake 生成。

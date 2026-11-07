@@ -374,6 +374,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
 }
 
 void MainWindow::SaveMapInPlace() {
+    if(HasHLuaProject()){(void)SaveHLuaMap(false);return;}
     if (CurrentModule() == "campaign" && campaignModule_->Session()) { (void)campaignModule_->Save(); return; }
     if (!CheckPendingTerrainCommit(tr("保存地图"))) return;
     if (project_->archiveSession_ == nullptr) {
@@ -407,6 +408,7 @@ void MainWindow::SaveMapInPlace() {
 }
 
 bool MainWindow::SaveAsMapArchive(War3Map::Services::TerrainMinimapSaveChoice minimapChoice) {
+    if(HasHLuaProject())return SaveHLuaMap(true);
     if (CurrentModule() == "campaign" && campaignModule_->Session()) {
         if (minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Preserve
             && minimapChoice != War3Map::Services::TerrainMinimapSaveChoice::Automatic) return false;

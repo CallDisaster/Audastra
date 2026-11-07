@@ -35,6 +35,7 @@ namespace War3Map::Script { class MapTestLaunchLease; }
 namespace War3Map::Services { struct MapCreateOptions; }
 namespace War3Map::Agent { struct RecoveryPreferences; }
 namespace War3Map::QtProject { class LegacyMapBackupCheck; }
+namespace War3Map::HLua { enum class BuildTarget; }
 
 class QCloseEvent;
 class QDialog;
@@ -252,6 +253,11 @@ private:
     bool LuaFileDiffersFromBaseline(const QString& path, const std::string& sha256) const;
     void RememberReloadedLuaFile(const QString& path, const std::string& sha256);
     void UpdateLuaReloadPending();
+    [[nodiscard]] bool HasHLuaProject() const;
+    void HLuaAction(const QString& action);
+    bool BuildHLuaMap(const std::filesystem::path& target, War3Map::HLua::BuildTarget mode,
+        bool retainLink = false, bool idsOnly = false, bool showIds = false);
+    bool SaveHLuaMap(bool choosePath);
     void PollLuaTestReload();
     void SaveEditorProject();
     void SaveEditorProjectAs();
@@ -365,6 +371,11 @@ private:
     std::vector<LuaFilePending> luaFileQueue_;       // 首项为已发送、等待游戏确认的文件
     std::uint32_t luaFileSequence_ = 0;
     QString luaFileLastMessage_;
+    std::filesystem::path hluaOutputPath_;
+    std::string hluaBuiltHslkSha256_;
+    std::string hluaBuiltFrameworkSha256_;
+    std::set<std::string> hluaAuthorPaths_;
+    bool hluaRebuildRequired_ = false;
     QAction* exportAction_ = nullptr;
     QAction* mapDataAction_ = nullptr;
     QToolBar* projectNoticeBar_ = nullptr;

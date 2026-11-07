@@ -1,4 +1,6 @@
 #include "ProjectLuaFolder.h"
+#include "War3MapCore/HLua/ProjectConfiguration.h"
+#include <QSettings>
 #include "EditorProject.h"
 #include "AssetOwnedPayload.h"
 #include "PendingImportPayload.h"
@@ -193,5 +195,35 @@ QJsonObject LuaFolderSourceInfo(const EditorProject& project) {
         {"path", QString::fromStdWString((folder.Active() ? folder.Root() : project.sourceArchivePath_).wstring())},
         {"folder_path", QString::fromStdWString(folder.Root().wstring())},
         {"snapshot_sha256", folder.Snapshot() ? QString::fromStdString(folder.Snapshot()->sha256) : QString{}}};
+}
+QJsonObject HLuaFolderSourceInfo(const EditorProject& project) {
+    const auto& folder = project.LuaFolderSource();
+    QJsonObject result{{"recognized",false},{"available",false}};
+    if (!folder.Active()) return result;
+    const auto recognized=HLua::RecognizeProject(folder.Root());
+    result.insert("recognized",recognized.Succeeded() && *recognized.value);
+    const auto config = HLua::ReadProjectConfiguration(folder.Root());
+    const auto fail = [&](const auto& diagnostics) {
+        if (!diagnostics.empty()) {
+            result.insert("code",QString::fromStdString(diagnostics.front().code));
+            result.insert("reason",QString::fromStdString(diagnostics.front().message));
+        }
+        return result;
+    };
+    if (!config.Succeeded()) return fail(config.diagnostics);
+    result.insert("recognized",config.value->recognized);
+    if (!config.value->recognized) return result;
+    result.insert("configuration_sha256",QString::fromStdString(config.value->sha256));
+    QSettings settings;
+    const auto application = std::filesystem::path(settings.value("hlua/frameworkRoot").toString().toStdWString());
+    const auto resolved = HLua::ResolveProjectFramework(folder.Root(),{}, {application,{},{}});
+    if (!resolved.Succeeded()) return fail(resolved.diagnostics);
+    result.insert("framework_root",QString::fromStdWString(resolved.value->repository.wstring()));
+    result.insert("framework_override",!config.value->frameworkOverride.empty());
+    const auto framework = HLua::HLuaFrameworkLocator::Capture(*resolved.value);
+    if (!framework.Succeeded()) return fail(framework.diagnostics);
+    result.insert("framework_sha256",QString::fromStdString(framework.value->sha256));
+    result.insert("available",true);
+    return result;
 }
 } // namespace War3Map::QtProject

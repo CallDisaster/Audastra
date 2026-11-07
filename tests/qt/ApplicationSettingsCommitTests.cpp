@@ -595,6 +595,7 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     services.mapBackupDirectory = directory.filePath(QStringLiteral("new-backups"));
     services.mapBackupLimit = 0;
     services.mapTestRuntimeRoot = directory.filePath(QStringLiteral("runtime"));
+    services.hluaFrameworkRoot = directory.filePath(QStringLiteral("framework"));
     services.mapTestSlk = true;
     std::vector<MapBackupMigrationRequest> requests;
     MapBackupMigrationDispatch migration;
@@ -645,6 +646,7 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     QCOMPARE(preferences.value(QStringLiteral("mapSave/backupLimit")).toInt(), 0);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/slkToolRoot")).toString(), originalSlkTool);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/runtimeRoot")).toString(), *services.mapTestRuntimeRoot);
+    QCOMPARE(preferences.value(QStringLiteral("hlua/frameworkRoot")).toString(), *services.hluaFrameworkRoot);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/ydweRoot")).toString(), legacyYdwe);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/slkEnabled")).toBool(), true);
     QVERIFY(!QDir(*services.mapBackupDirectory).exists());

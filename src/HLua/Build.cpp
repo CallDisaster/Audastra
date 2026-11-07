@@ -107,9 +107,10 @@ static Output BuildProjectImpl(const BuildRequest& input, const Services::MapSav
                 "此名称与 ID 表只验证分配和回放；提供游戏数据与独占工作目录后，才能核对字段兼容和逐处冗余声明。", {}});
             return Output::Success(std::move(receipt));
         }
-        if ((!request.idsOnly && (request.target.empty() || std::filesystem::exists(request.target)))
+        const bool replaceTarget=!request.expectedTargetSha256.empty();
+        if ((!request.idsOnly && (request.target.empty() || (std::filesystem::exists(request.target) != replaceTarget)))
             || request.workspace.empty() || request.gameRoot.empty() || std::filesystem::exists(request.workspace))
-            return Output::Failure("HLua", "HLUA_OUTPUT_PATH", "构建需要游戏数据、不存在的目标地图和独占工作目录。");
+            return Output::Failure("HLua", "HLUA_OUTPUT_PATH", "构建需要游戏数据、独占工作目录；已有目标必须明确提供它的SHA-256。");
         auto framework = HLuaFrameworkLocator::Capture(request.framework);
         if (!framework.Succeeded()) return {std::nullopt, std::move(framework.diagnostics)};
         auto project = HLuaProjectScanner::Capture(request.project);
@@ -146,7 +147,7 @@ static Output BuildProjectImpl(const BuildRequest& input, const Services::MapSav
         auto& hslk = *evaluated.value;
         std::vector<HslkObject> all = base.value->f6Objects;
         all.insert(all.end(), hslk.objects.begin(), hslk.objects.end());
-        Services::MapSaveTask task; task.target = request.target;
+        Services::MapSaveTask task; task.target = replaceTarget ? request.workspace / L"built.w3x" : request.target;
         task.diagnostics = base.value->diagnostics;
         std::vector<IndexedFieldAudit> redundantFields;
         std::vector<UnwrittenField> unwrittenFields;
@@ -231,6 +232,13 @@ static Output BuildProjectImpl(const BuildRequest& input, const Services::MapSav
         status = Detail::CheckScript(*task.archive, *entry.value, *game.value);
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
         Replace(task, scriptMember, Bytes(*entry.value));
+        if(request.retainFolderLink) {
+            auto link=Services::EncodeLuaFolderLink(request.project,request.target);
+            if(!link.Succeeded())return {std::nullopt,link.diagnostics};
+            Replace(task,std::string(Services::kLuaFolderMember),std::move(*link.value));
+        } else if(task.archive->HasMember(Services::kLuaFolderMember)) {
+            task.removals.push_back(std::string(Services::kLuaFolderMember));
+        }
         if (request.mode == BuildTarget::Dist) {
             SlkOptimizerInput input;
             input.schema = &*schema.value;
@@ -251,6 +259,12 @@ static Output BuildProjectImpl(const BuildRequest& input, const Services::MapSav
         Services::MapSaveService::Run(task, progress);
         PrioritizeUnwritten(task.diagnostics);
         if (!task.succeeded) return {std::nullopt, std::move(task.diagnostics)};
+        if(replaceTarget) {
+            status=verifyInputs();if(!status.Succeeded())return {std::nullopt,status.diagnostics};
+            status=PublishBuildOutput(task.written,request.target,request.expectedTargetSha256);
+            if(!status.Succeeded())return {std::nullopt,status.diagnostics};
+            task.written=request.target;
+        }
         auto hash = Sha256File(task.written);
         if (!hash.Succeeded()) return {std::nullopt, std::move(hash.diagnostics)};
         BuildReceipt receipt;

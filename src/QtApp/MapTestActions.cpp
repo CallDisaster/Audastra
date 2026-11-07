@@ -9,6 +9,7 @@
 #include "../QtCommon/LocalConsentPreference.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/HLua/Test.h"
 #include "War3MapCore/Services/MapTestWorkspace.h"
 #include "War3MapCore/Script/MapTestToolchain.h"
 
@@ -71,6 +72,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     }
     if (!project_->archiveSession_ || project_->sourceArchivePath_.empty()) return busy(tr("请先打开一张地图，再运行测试。"));
     QSettings settings;
+    const bool hlua=HasHLuaProject();
     const bool ownedLua = project_->luaMapTarget_
         && project_->luaMapTarget_->dialect == Script::LuaMapSaveDialect::Classic127YDWE;
     const bool testHotReload = ownedLua && settings.value("mapTest/hotReloadEnabled", true).toBool();
@@ -119,7 +121,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
         return fail(tr("地图测试未启动"), tr("代码草稿未能提交，请查看触发器模块中的诊断。原图和当前编辑均保留。"));
     }
     const bool scenario = pendingMapTestScenario_.has_value();
-    const bool snapshot = scenario || project_->HasUnsavedMapChanges() || project_->luaMapTarget_
+    const bool snapshot = hlua || scenario || project_->HasUnsavedMapChanges() || project_->luaMapTarget_
         || settingsModule_->HasPendingDraft() || soundsModule_->HasPendingDraft();
     auto input = project_->sourceArchivePath_;
     std::optional<Services::MapTestScenarioPlan> scenarioPlan;
@@ -149,7 +151,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
         input = inputDirectory / L"input.w3x";
         project_->testScenario_ = pendingMapTestScenario_;
         const auto firstDiagnostic = project_->diagnosticsModel_->rowCount();
-        const bool saved = RunMapSave(input, false, true, true, testHotReload,
+        const bool saved = hlua ? BuildHLuaMap(input,War3Map::HLua::BuildTarget::Test) : RunMapSave(input, false, true, true, testHotReload,
             Services::TerrainMinimapSaveChoice::Automatic, false, Services::MapRuntimeSavePurpose::Normal,
             MinimapRiskSave::Decline);
         scenarioPlan = std::move(project_->testScenarioPlan_);
@@ -217,7 +219,11 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
                 else request.expectedInputSha256 = *sha.value;
             }
             if (!request.expectedInputSha256.empty())
-                artifact = Services::PrepareLuaAwareMapTest(request, Script::OptimizeMapTestSlk, update);
+            {
+                const auto permitted=hlua?War3Map::HLua::ValidateTestEngineSources(request.inputMap,request.expectedInputSha256,request.handwrittenLuaEngine):War3Map::Status::Ok();
+                if(!permitted.Succeeded())artifact.diagnostics=permitted.diagnostics;
+                else artifact = Services::PrepareLuaAwareMapTest(request, Script::OptimizeMapTestSlk, update);
+            }
             update("freeze");
             workspaceReady = (*workspace.value)->Refresh();
             if (artifact.Succeeded() && workspaceReady.Succeeded()) {

@@ -61,6 +61,8 @@ void MainWindow::ConnectModules() {
     connect(triggersModule_, &War3Map::Modules::TriggerModule::DraftEdited, this, &MainWindow::ScheduleRecovery);
     connect(triggersModule_->LuaScripts(), &War3Map::Modules::TriggerLuaScripts::DraftEdited,
         this, &MainWindow::UpdateLuaReloadPending);
+    connect(triggersModule_->LuaScripts(), &War3Map::Modules::TriggerLuaScripts::HLuaActionRequested,
+        this, &MainWindow::HLuaAction);
     connect(triggersModule_, &War3Map::Modules::TriggerModule::UiRootRequested, this, &MainWindow::SelectUiDataRoot);
     connect(objectsModule_, &War3Map::Modules::ObjectModule::DocumentEdited, this, [this]() {
         UpdateEditDirtyFlags();

@@ -35,6 +35,7 @@ private:
     QLineEdit* backupDirectory_ = nullptr;
     QSpinBox* backupLimit_ = nullptr;
     QLineEdit* runtimeRoot_ = nullptr;
+    QLineEdit* hluaFrameworkRoot_ = nullptr;
     QCheckBox* slkEnabled_ = nullptr;
     QLabel* legacyBackupInspection_ = nullptr;
     QPushButton* legacyBackupBrowse_ = nullptr;

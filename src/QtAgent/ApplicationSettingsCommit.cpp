@@ -152,7 +152,7 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
         && !Update::ParseSemanticVersion(services.updateSkippedVersion->toStdString()).Succeeded())
         return Fail(error, QStringLiteral("跳过版本必须是有效的语义版本号。"));
     if (!preferences.group().isEmpty()) return Fail(error, QStringLiteral("应用设置提交要求根group的QSettings。"));
-    for (const auto* path : {&services.mapBackupDirectory, &services.mapTestRuntimeRoot}) {
+    for (const auto* path : {&services.mapBackupDirectory, &services.mapTestRuntimeRoot, &services.hluaFrameworkRoot}) {
         if (!*path || (*path)->isEmpty()) continue;
         if ((*path)->size() > 4096 || !QDir::isAbsolutePath(QDir::fromNativeSeparators(**path))
             || std::any_of((*path)->begin(), (*path)->end(), [](QChar c) { return c.unicode() < 32; }))
@@ -198,6 +198,7 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
     if (services.mapBackupDirectory) keys.push_back({QStringLiteral("mapSave/backupDirectory"), {}, *services.mapBackupDirectory});
     if (services.mapBackupLimit) keys.push_back({QStringLiteral("mapSave/backupLimit"), {}, *services.mapBackupLimit});
     if (services.mapTestRuntimeRoot) keys.push_back({QStringLiteral("mapTest/runtimeRoot"), {}, *services.mapTestRuntimeRoot});
+    if (services.hluaFrameworkRoot) keys.push_back({QStringLiteral("hlua/frameworkRoot"), {}, *services.hluaFrameworkRoot});
     if (services.mapTestSlk) keys.push_back({QStringLiteral("mapTest/slkEnabled"), {}, *services.mapTestSlk});
     if (services.recoveryEnabled) keys.push_back({QString::fromLatin1(kRecoveryEnabledSettingsKey), {}, *services.recoveryEnabled});
     if (services.recoveryIntervalMinutes) keys.push_back({QString::fromLatin1(kRecoveryIntervalSettingsKey), {}, *services.recoveryIntervalMinutes});

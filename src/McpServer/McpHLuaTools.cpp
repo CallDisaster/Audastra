@@ -14,7 +14,7 @@ Result<HLua::BuildRequest> Parse(const QJsonObject& args) {
     using Output = Result<HLua::BuildRequest>;
     const QStringList allowed{"project_path","framework_root","runtime_root","build_root","base_map_path",
         "output_path","workspace_path","game_root","target","expected_project_sha256","offset","limit",
-        "tool_root","ui_root","helper_root","ydwe_root","engine","cloaked"};
+        "tool_root","ui_root","helper_root","ydwe_root","engine","cloaked","replace_sha256"};
     for (auto it = args.begin(); it != args.end(); ++it) if (!allowed.contains(it.key()))
         return Output::Failure("HLua", "HLUA_ARGUMENT", "h-lua 工具不接受额外字段。");
     for (auto it=args.begin();it!=args.end();++it) {
@@ -49,6 +49,10 @@ Result<HLua::BuildRequest> Parse(const QJsonObject& args) {
         request.expectedProjectSha256 = args.value("expected_project_sha256").toString().toStdString();
         if (!IsLowerHexSha256(request.expectedProjectSha256)) return Output::Failure("HLua", "HLUA_ARGUMENT", "工程SHA-256无效。");
     }
+    if(args.contains("replace_sha256")) {
+        request.expectedTargetSha256=args.value("replace_sha256").toString().toStdString();
+        if(!IsLowerHexSha256(request.expectedTargetSha256))return Output::Failure("HLua","HLUA_ARGUMENT","替换目标SHA-256无效。");
+    }
     return Output::Success(std::move(request));
 }
 QJsonObject State(const Context& context) {
@@ -73,6 +77,7 @@ void RegisterHLuaTools(McpServer& server) {
         {"base_map_path",path},{"output_path",path},{"workspace_path",path},{"game_root",path},{"tool_root",path},{"ui_root",path},
         {"helper_root",path},{"ydwe_root",path},{"target",QJsonObject{{"type","string"},{"enum",QJsonArray{"test","build","dist"}}}},
         {"expected_project_sha256",QJsonObject{{"type","string"},{"pattern","^[0-9a-f]{64}$"}}},
+        {"replace_sha256",QJsonObject{{"type","string"},{"pattern","^[0-9a-f]{64}$"}}},
         {"offset",QJsonObject{{"type","integer"},{"minimum",0},{"maximum",65536}}},
         {"limit",QJsonObject{{"type","integer"},{"minimum",1},{"maximum",128}}},
         {"engine",QJsonObject{{"type","string"},{"enum",QJsonArray{"owned","ydwe"}}}},

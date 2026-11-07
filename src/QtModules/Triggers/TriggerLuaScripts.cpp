@@ -22,6 +22,8 @@
 #include <QTreeWidget>
 #include <QUndoStack>
 #include <QVBoxLayout>
+#include <QToolBar>
+#include <QAction>
 
 #include <algorithm>
 #include <utility>
@@ -43,6 +45,18 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
     : QWidget(parent), project_(project) {
     setObjectName("triggerLuaScripts");
     auto* layout = new QVBoxLayout(this); layout->setContentsMargins(0, 0, 0, 0); layout->setSpacing(8);
+    hluaToolbar_ = new QToolBar(tr("h-lua 工程"), this);
+    hluaToolbar_->setObjectName("hluaProjectToolbar");
+    for (const auto& entry : {std::pair{"inspect",tr("检查")},std::pair{"test-build",tr("构建测试图")},
+        std::pair{"test",tr("测试")},std::pair{"build",tr("构建")},std::pair{"dist",tr("发布版")},
+        std::pair{"ids",tr("名称与 ID 表")},std::pair{"framework",tr("工程框架…")}}) {
+        auto* action=hluaToolbar_->addAction(entry.second);
+        action->setObjectName(QStringLiteral("hlua-")+QString::fromLatin1(entry.first));
+        action->setData(QString::fromLatin1(entry.first));
+        connect(action,&QAction::triggered,this,[this,key=QString::fromLatin1(entry.first)]{emit HLuaActionRequested(key);});
+    }
+    layout->addWidget(hluaToolbar_);hluaToolbar_->hide();
+    connect(&project_, &QtProject::EditorProject::LuaSourceChanged,this,&TriggerLuaScripts::RefreshHLuaToolbar);
     auto* splitter = new QSplitter(this);
     auto* directoryPane = new QWidget(splitter); auto* directoryLayout = new QVBoxLayout(directoryPane);
     directoryLayout->setContentsMargins(0, 0, 8, 0);
@@ -88,6 +102,7 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
         const auto applied = folder.Associate(*review.value, choice);
         if (!applied.Succeeded()) Status(Problem(applied.diagnostics));
         else Status(tr("已关联外部文件夹"));
+        RefreshHLuaToolbar();
     });
     connect(unlink, &QPushButton::clicked, this, [this] {
         if (!CommitPendingDraft()) return;
@@ -196,6 +211,15 @@ TriggerLuaScripts::TriggerLuaScripts(QtProject::EditorProject& project, QWidget*
         }
     });
     RefreshDirectory(); UpdateDraftState();
+}
+
+void TriggerLuaScripts::RefreshHLuaToolbar() {
+    const auto state=QtProject::HLuaFolderSourceInfo(project_);
+    hluaToolbar_->setVisible(state.value("recognized").toBool());
+    for(auto* action:hluaToolbar_->actions()) {
+        action->setEnabled(action->data()=="framework" || state.value("available").toBool());
+        action->setToolTip(action->isEnabled()?action->text():state.value("reason").toString());
+    }
 }
 
 QString TriggerLuaScripts::StatusText() const { return status_->text(); }

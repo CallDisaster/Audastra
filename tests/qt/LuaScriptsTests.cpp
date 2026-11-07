@@ -44,6 +44,9 @@
 #include <QFontInfo>
 #include <QFontMetricsF>
 #include <QUndoStack>
+#include <QSettings>
+#include <QToolBar>
+#include <QAction>
 
 #include <algorithm>
 
@@ -88,6 +91,28 @@ public:
 class LuaScriptsTests final : public QObject {
     Q_OBJECT
 private slots:
+    void HLuaRecognitionKeepsUnavailableActionsDisabled() {
+        QTemporaryDir directory;QVERIFY(directory.isValid());
+        QtProject::EditorProject project;QVERIFY(OpenMap(directory,project));
+        const auto root=directory.filePath("project");QVERIFY(QDir().mkpath(root+"/hslk"));
+        QFile file(root+"/main.lua");QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write("function main() end\n"),20);file.close();
+        auto& folder=project.LuaFolderSource();const auto review=folder.Review(std::filesystem::path(root.toStdWString()));
+        QVERIFY(review.Succeeded());QVERIFY(folder.Associate(*review.value,Services::LuaFolderChoice::Folder).Succeeded());
+        QSettings settings;const bool present=settings.contains("hlua/frameworkRoot");const auto old=settings.value("hlua/frameworkRoot");
+        settings.remove("hlua/frameworkRoot");
+        Modules::TriggerLuaScripts scripts(project);scripts.RefreshHLuaToolbar();
+        const auto state=QtProject::HLuaFolderSourceInfo(project);
+        QVERIFY(state.value("recognized").toBool());QVERIFY(!state.value("available").toBool());
+        QCOMPARE(state.value("code").toString(),"HLUA_FRAMEWORK_UNSET");
+        auto* toolbar=scripts.findChild<QToolBar*>("hluaProjectToolbar");QVERIFY(toolbar);QVERIFY(!toolbar->isHidden());
+        QSignalSpy actions(&scripts,&Modules::TriggerLuaScripts::HLuaActionRequested);
+        for(auto* action:toolbar->actions()) {
+            if(action->data()=="framework"){QVERIFY(action->isEnabled());action->trigger();}
+            else {QVERIFY(!action->isEnabled());QVERIFY(!action->toolTip().isEmpty());}
+        }
+        QCOMPARE(actions.size(),1);QCOMPARE(actions.front().front().toString(),"framework");
+        if(present)settings.setValue("hlua/frameworkRoot",old);else settings.remove("hlua/frameworkRoot");
+    }
     void initTestCase() { UiKit::ThemeManager theme; theme.ApplyTheme("graphite"); }
     void ExternalFolderTransactionWatcherAndDraftConflict() {
         QTemporaryDir directory; QVERIFY(directory.isValid());

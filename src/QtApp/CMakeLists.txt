@@ -46,6 +46,7 @@ qt_add_executable(war3-map-editor WIN32
     WorldEffectsSettingsPage.cpp
     WorldEffectsSettingsPage.h
     LuaMapSaveActions.cpp
+    HLuaProjectActions.cpp
     MapCreateActions.cpp
     WorkspaceActions.cpp
     AppHelpers.h

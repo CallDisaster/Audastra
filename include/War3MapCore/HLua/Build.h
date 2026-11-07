@@ -16,6 +16,9 @@ struct BuildRequest {
     bool idsOnly = false;
     HslkLimits limits;
     std::string expectedProjectSha256;
+    // 非空表示调用方明确批准替换这个已核对的目标；仍走共用备份、回读和原子写回。
+    std::string expectedTargetSha256;
+    bool retainFolderLink = false;
 };
 struct InspectReceipt {
     std::string frameworkSha256, projectSha256;
@@ -47,6 +50,8 @@ struct BuildReceipt {
     const std::filesystem::path& project, const std::filesystem::path& gameRoot = {});
 [[nodiscard]] Result<BuildReceipt> BuildProject(const BuildRequest& request,
     const Services::MapSaveService::Progress& progress = {});
+[[nodiscard]] Status PublishBuildOutput(const std::filesystem::path& candidate,
+    const std::filesystem::path& target, std::string_view expectedTargetSha256);
 [[nodiscard]] std::string InspectReceiptJson(const InspectReceipt& receipt,std::size_t offset=0,std::size_t limit=128);
 [[nodiscard]] std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset = 0,
     std::size_t limit = 128);
