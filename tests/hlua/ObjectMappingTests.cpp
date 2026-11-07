@@ -46,7 +46,8 @@ void TestHLuaObjectMapping() {
         {{"ID","ucr2"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","1"}},
         {{"ID","utg1"},{"field","Tags"},{"slk","Profile"},{"type","stringList"},{"index","0"}},
         {{"ID","utg2"},{"field","Tags"},{"slk","Profile"},{"type","stringList"},{"index","1"}},
-        {{"ID","urac"},{"field","Race"},{"slk","UnitData"},{"type","string"}}});
+        {{"ID","urac"},{"field","Race"},{"slk","UnitData"},{"type","string"}},
+        {{"ID","uspc"},{"field","Special"},{"slk","UnitData"},{"type","string"},{"useSpecific","hdef"}}});
     files["item-meta.slk"] = Slk({
         {{"ID","inam"},{"field","Name"},{"slk","Profile"},{"type","string"},{"useItem","1"},{"index","0"}},
         {{"ID","iuse"},{"field","Uses"},{"slk","ItemData"},{"type","int"},{"useItem","1"}}});
@@ -136,6 +137,8 @@ void TestHLuaObjectMapping() {
         return ApplyHslkObjects(ObjectType::Unit, baseline, *input.value, *schema.value, *standard.value);
     };
     auto accepted = redundant("Fx=\"\"\n", empty(ObjectType::Unit)); Good(accepted);
+    Need(!redundant("Special=\"value\"\n", empty(ObjectType::Unit)).Succeeded(),
+        "known field inapplicable to this parent cannot be skipped as absent");
     Need(accepted.value->Objects().front().modifications.empty(), "redundant alias adds no native field");
     Need(accepted.diagnostics.size() == 1 && accepted.diagnostics.front().severity == DiagnosticSeverity::Warning
         && accepted.diagnostics.front().code == "HLUA_REDUNDANT_INDEXED_FIELD"
