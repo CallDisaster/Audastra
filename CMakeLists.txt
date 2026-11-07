@@ -87,6 +87,7 @@ include(cmake/AudastraUiLibraryBundle.cmake)
 add_subdirectory(src/UiLibrary)
 add_subdirectory(src/GameUi)
 add_subdirectory(src/Services)
+add_subdirectory(src/HLua)
 # 静态库存工具仅供显式审计，便携发行不附带本机运行库或该工具。
 add_executable(audastra-lua-api-inventory EXCLUDE_FROM_ALL tools/runtime/DumpRuntimeLuaApi.cpp)
 target_link_libraries(audastra-lua-api-inventory PRIVATE War3MapEditor::RuntimeLuaApi audastra-json)

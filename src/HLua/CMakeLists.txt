@@ -1,0 +1,7 @@
+add_library(War3MapHLua STATIC Framework.cpp Project.cpp IdAllocator.cpp HslkSandbox.cpp Hslk.cpp)
+add_library(War3MapEditor::HLua ALIAS War3MapHLua)
+target_include_directories(War3MapHLua PUBLIC "${PROJECT_SOURCE_DIR}/include")
+target_link_libraries(War3MapHLua PUBLIC War3MapEditor::Services)
+target_link_libraries(War3MapHLua PRIVATE audastra-lua53-sandbox audastra-json)
+target_compile_definitions(War3MapHLua PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(War3MapHLua PRIVATE /W4 /permissive- /utf-8)

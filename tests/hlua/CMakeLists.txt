@@ -1,0 +1,6 @@
+add_executable(war3-hlua-tests HLuaTests.cpp)
+target_link_libraries(war3-hlua-tests PRIVATE War3MapEditor::HLua)
+target_compile_definitions(war3-hlua-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-hlua-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME hlua-core COMMAND war3-hlua-tests)
+set_tests_properties(hlua-core PROPERTIES TIMEOUT 60)
