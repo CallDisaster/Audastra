@@ -6,6 +6,7 @@
 #include "SoundsModule.h"
 #include "War3MapCore/HLua/Build.h"
 #include "War3MapCore/HLua/ProjectConfiguration.h"
+#include "War3MapCore/Script/MapTestToolchain.h"
 #include "War3MapCore/Hash.h"
 #include <QDialog>
 #include <QDir>
@@ -95,12 +96,15 @@ bool MainWindow::BuildHLuaMap(const std::filesystem::path& target, HLua::BuildTa
         .arg(QString::fromStdString(HLua::BuildReceiptJson(*result.value,0,128))));
     if(!idsOnly) {
         hluaLastOutputSha256_=result.value->outputSha256;
-        hluaBuiltFrameworkSha256_=result.value->inputs.frameworkSha256;
-        const auto plan=HLua::PrepareReload(*sources.value,"");
-        if(plan.Succeeded())hluaBuiltHslkSha256_=plan.value->hslkSha256;
-        hluaAuthorPaths_.clear();
-        for(const auto index:sources.value->runtimeFiles)hluaAuthorPaths_.insert(
-            War3Map::QtProject::EditorProject::AssetKey(QString::fromStdString(sources.value->source.files[index].path)).toStdString());
+        // 活动游戏仍使用上次测试的资料；另构建产物不能把其重载基线推进到新 hslk。
+        if(!mapTestLease_ || !mapTestLease_->IsActive() || !luaRuntimeMailbox_ || !LuaTestSessionCurrent()) {
+            hluaBuiltFrameworkSha256_=result.value->inputs.frameworkSha256;
+            const auto plan=HLua::PrepareReload(*sources.value,"");
+            if(plan.Succeeded())hluaBuiltHslkSha256_=plan.value->hslkSha256;
+            hluaAuthorPaths_.clear();
+            for(const auto index:sources.value->runtimeFiles)hluaAuthorPaths_.insert(
+                War3Map::QtProject::EditorProject::AssetKey(QString::fromStdString(sources.value->source.files[index].path)).toStdString());
+        }
         ShowStatusMessage(tr("h-lua 构建完成：%1").arg(QString::fromStdWString(result.value->output.wstring())));
     } else if(showIds) {
         QDialog dialog(this);dialog.setWindowTitle(tr("名称与 ID 表"));dialog.setObjectName("hluaIdTable");dialog.resize(780,520);
