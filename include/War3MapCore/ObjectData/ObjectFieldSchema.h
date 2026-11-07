@@ -3,6 +3,7 @@
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
 
 #include <functional>
+#include <array>
 #include <unordered_map>
 
 namespace War3Map::Game {
@@ -97,6 +98,7 @@ public:
         const FileReader& reader, const ObjectFieldSchemaOptions& options = {});
     [[nodiscard]] static std::vector<ObjectFieldSchemaSource> DefaultSources();
     [[nodiscard]] std::span<const ObjectFieldDefinition> Definitions() const noexcept { return definitions_; }
+    [[nodiscard]] bool MetadataComplete(ObjectType type) const noexcept { return metadataComplete_[static_cast<unsigned>(type)]; }
     [[nodiscard]] const ObjectFieldDefinition* FindNative(ObjectType type, std::string_view fieldId) const;
     [[nodiscard]] bool AppliesTo(const ObjectFieldDefinition& definition, const ObjectFieldContext& context) const;
 
@@ -110,6 +112,7 @@ public:
 private:
     std::vector<ObjectFieldDefinition> definitions_;
     std::unordered_map<std::string, std::size_t> nativeIndex_;
+    std::array<bool, 7> metadataComplete_{};
 };
 
 } // namespace War3Map::ObjectData

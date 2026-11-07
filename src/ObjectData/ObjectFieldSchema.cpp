@@ -62,7 +62,7 @@ std::string_view Text(const std::vector<std::byte>& bytes) {
     return text;
 }
 Rows Profile(std::string_view text) { return War3Map::Text::ParseProfile(text); }
-Result<Rows> Slk(std::string_view text) {
+Result<Rows> Slk(std::string_view text, bool* complete = nullptr) {
     if (!text.starts_with("ID;")) return Result<Rows>::Failure("Object.Schema", "metadata-header", "metadata SLK 文件头无效。");
     std::map<int, std::map<int, std::string>> cells;
     int x = 1, y = 1;
@@ -91,7 +91,9 @@ Result<Rows> Slk(std::string_view text) {
     }
     Rows result;
     for (const auto& [rowNumber, row] : cells) {
-        if (rowNumber == 1 || !row.contains(1) || row.at(1).size() != 4) continue;
+        if (rowNumber == 1) continue;
+        if (!row.contains(1) || row.at(1).size() != 4) { if (complete) *complete = false; continue; }
+        if (complete && result.contains(row.at(1))) *complete = false;
         auto& fields = result[row.at(1)];
         for (const auto& [column, value] : row) {
             const auto header = cells.at(1).find(column);
@@ -263,24 +265,31 @@ Result<ObjectFieldSchema> ObjectFieldSchema::Load(const FileReader& reader, cons
         }
     }
     std::unordered_map<std::string, Rows> tables;
+    std::unordered_map<std::string, bool> tableComplete;
+    std::array<bool, 7> seenTypes{};
     for (const auto& source : options.sources.empty() ? DefaultSources() : options.sources) {
+        const auto typeIndex = static_cast<unsigned>(source.type);
+        if (!seenTypes[typeIndex]) { schema.metadataComplete_[typeIndex] = true; seenTypes[typeIndex] = true; }
         if (!tables.contains(source.metadataFile)) {
             const auto bytes = read(source.metadataFile, true);
-            if (!bytes) { tables[source.metadataFile] = {}; continue; }
-            auto parsed = Slk(Text(*bytes));
+            bool complete = true;
+            auto parsed = bytes ? Slk(Text(*bytes), &complete) : Result<Rows>::Success({});
+            tableComplete[source.metadataFile] = bytes && complete && parsed.Succeeded() && !parsed.value->empty();
             if (!parsed.Succeeded()) {
                 diagnostics.push_back({DiagnosticSeverity::Warning, "Object.Schema", "metadata-invalid", "无效 metadata: " + source.metadataFile, std::nullopt});
-                tables[source.metadataFile] = {}; continue;
+                tables[source.metadataFile] = {};
+            } else {
+                tables[source.metadataFile] = std::move(*parsed.value);
             }
-            tables[source.metadataFile] = std::move(*parsed.value);
         }
+        schema.metadataComplete_[typeIndex] = schema.metadataComplete_[typeIndex] && tableComplete[source.metadataFile];
         for (const auto& [id, metadata] : tables.at(source.metadataFile)) {
             if (source.type == ObjectType::Item && !Flag(metadata, "useitem")) continue;
             if (source.type == ObjectType::Unit && !Flag(metadata, "useunit") && !Flag(metadata, "usehero") && !Flag(metadata, "usebuilding")) continue;
             ObjectFieldDefinition field;
             field.objectType = source.type; field.fieldId = id; field.metadata = metadata;
             field.sourceField = Get(metadata, "field"); field.sourceTable = Get(metadata, "slk");
-            if (field.sourceField.empty() || field.sourceTable.empty()) continue;
+            if (field.sourceField.empty() || field.sourceTable.empty()) { schema.metadataComplete_[typeIndex] = false; continue; }
             field.displayNameToken = Get(metadata, "displayname");
             field.displayName = DisplayLabel(Resolve(field.displayNameToken, strings, options.strings));
             field.displayNameResolved = !field.displayName.empty() && !field.displayName.starts_with("WESTRING_");

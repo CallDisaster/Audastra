@@ -140,13 +140,22 @@ Result<IndexedFieldAudit> RedundantField(const HslkObject& object, const HslkFie
     }
     return Result<IndexedFieldAudit>::Success(std::move(audit));
 }
-}
-Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const LniObjectDocument& baseline,
+Result<ObjectData::LniObjectDocument> ApplyHslkObjectsImpl(ObjectType type, const LniObjectDocument& baseline,
     std::span<const HslkObject> objects, const ObjectFieldSchema& schema, const StandardObjectCatalog& standard,
-    std::vector<IndexedFieldAudit>* redundantFields) {
+    std::vector<IndexedFieldAudit>* redundantFields, std::vector<UnwrittenField>& unwritten) {
     LniObjectDocument output = baseline;
     std::vector<IndexedFieldAudit> audits;
     std::map<std::string, std::vector<const ObjectFieldDefinition*>> fieldsByName;
+    std::set<std::string> baseNames;
+    std::map<std::string, std::set<std::string>> otherClasses;
+    for (const auto& definition : schema.Definitions()) {
+        const auto base = LniName(definition, schema, false);
+        if (definition.objectType == type) baseNames.insert(base);
+        else {
+            otherClasses[base].insert(std::string(ToString(definition.objectType)));
+            otherClasses[LniName(definition, schema)].insert(std::string(ToString(definition.objectType)));
+        }
+    }
     for (const auto& definition : schema.Definitions()) if (definition.objectType == type)
         fieldsByName[LniName(definition, schema)].push_back(&definition);
     Services::ObjectCommandContext source; source.type = type; source.document = &output; source.schema = &schema; source.standard = &standard;
@@ -194,6 +203,20 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const Ln
                     if (!indexed.empty()) {
                         std::sort(indexed.begin(), indexed.end(), [](const auto* a, const auto* b) { return a->index < b->index; });
                         pending.emplace_back(&field, std::move(indexed));
+                        continue;
+                    }
+                    const auto name = Text::LowerAscii(field.name);
+                    if (!baseNames.contains(name) && schema.MetadataComplete(type)) {
+                        if (field.values.empty()) return Fail<LniObjectDocument>("HLUA_FIELD_ARRAY", "未写入字段也不能使用无值数组：" + field.name);
+                        for (const auto& atom : field.values) {
+                            if (const auto* number = std::get_if<double>(&atom); number && !std::isfinite(*number))
+                                return Fail<LniObjectDocument>("HLUA_FIELD_VALUE", "未写入字段的数字必须有限：" + field.name);
+                            if (const auto* text = std::get_if<std::string>(&atom); text && text->find('\0') != text->npos)
+                                return Fail<LniObjectDocument>("HLUA_FIELD_VALUE", "未写入字段的文本不能含NUL：" + field.name);
+                        }
+                        const auto& classes = otherClasses[name];
+                        unwritten.push_back({object.objectClass, object.id, field.source.empty() ? object.source : field.source,
+                            field.name, {classes.begin(), classes.end()}});
                         continue;
                     }
                 }
@@ -263,6 +286,31 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const Ln
             + "] 与每个下标实际有效值完全相同，按本方兼容策略保留结果、不写冗余声明：" + values, {}});
     }
     if (redundantFields) redundantFields->insert(redundantFields->end(), audits.begin(), audits.end());
+    return result;
+}
+std::string ClassLabel(std::string_view type) {
+    if (type == "unit") return "单位";
+    if (type == "item") return "物品";
+    if (type == "ability") return "技能";
+    if (type == "buff") return "魔法效果";
+    if (type == "upgrade") return "科技";
+    if (type == "doodad") return "装饰物";
+    return "可破坏物";
+}
+}
+Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const LniObjectDocument& baseline,
+    std::span<const HslkObject> objects, const ObjectFieldSchema& schema, const StandardObjectCatalog& standard,
+    std::vector<IndexedFieldAudit>* redundantFields, std::vector<UnwrittenField>* unwrittenFields) {
+    std::vector<UnwrittenField> unwritten;
+    auto result = ApplyHslkObjectsImpl(type, baseline, objects, schema, standard, redundantFields, unwritten);
+    std::vector<Diagnostic> warnings;
+    for (const auto& field : unwritten) {
+        std::string message = field.source + "：" + field.id + "." + field.field + "：该类型没有这个字段，未写入物编。";
+        for (const auto& other : field.otherObjectClasses) message += ClassLabel(other) + "有此字段，" + ClassLabel(field.objectClass) + "没有。";
+        warnings.push_back({DiagnosticSeverity::Warning, "HLua", "HLUA_FIELD_NOT_WRITTEN", std::move(message), {}});
+    }
+    result.diagnostics.insert(result.diagnostics.begin(), warnings.begin(), warnings.end());
+    if (result.Succeeded() && unwrittenFields) unwrittenFields->insert(unwrittenFields->end(), unwritten.begin(), unwritten.end());
     return result;
 }
 } // namespace War3Map::HLua

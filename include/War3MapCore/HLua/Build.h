@@ -40,6 +40,7 @@ struct BuildReceipt {
     std::vector<Diagnostic> diagnostics;
     bool fieldMappingChecked = false;
     std::vector<IndexedFieldAudit> redundantIndexedFields;
+    std::vector<UnwrittenField> unwrittenFields;
 };
 
 [[nodiscard]] Result<InspectReceipt> InspectProject(const FrameworkLocation& framework,

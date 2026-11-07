@@ -15,6 +15,9 @@ namespace War3Map::HLua {
 namespace {
 using namespace ObjectData;
 using Output = Result<BuildReceipt>;
+void PrioritizeUnwritten(std::vector<Diagnostic>& diagnostics) {
+    std::stable_partition(diagnostics.begin(), diagnostics.end(), [](const auto& d) { return d.code == "HLUA_FIELD_NOT_WRITTEN"; });
+}
 std::vector<std::byte> Bytes(std::string_view text) { return {reinterpret_cast<const std::byte*>(text.data()), reinterpret_cast<const std::byte*>(text.data() + text.size())}; }
 InspectReceipt Inspected(const FrameworkSnapshot& framework, const ProjectSnapshot& project) {
     std::set<std::string> required(project.jassModules.begin(), project.jassModules.end());
@@ -134,14 +137,19 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         Services::MapSaveTask task; task.target = request.target;
         task.diagnostics = base.value->diagnostics;
         std::vector<IndexedFieldAudit> redundantFields;
+        std::vector<UnwrittenField> unwrittenFields;
         auto status = task.FreezeArchive(base.value->archive);
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
         task.testCopyOnly = request.mode == BuildTarget::Test;
         for (std::size_t i = 0; i < baselines.size(); ++i) {
             const auto type = static_cast<ObjectType>(i);
             if (std::none_of(all.begin(), all.end(), [&](const auto& object) { return object.objectClass == ToString(type); })) continue;
-            auto edited = ApplyHslkObjects(type, baselines[i], all, *schema.value, catalog.value->Catalog(), &redundantFields);
-            if (!edited.Succeeded()) return {std::nullopt, std::move(edited.diagnostics)};
+            auto edited = ApplyHslkObjects(type, baselines[i], all, *schema.value, catalog.value->Catalog(), &redundantFields, &unwrittenFields);
+            if (!edited.Succeeded()) {
+                for (const auto& d : task.diagnostics) if (d.code == "HLUA_FIELD_NOT_WRITTEN") edited.diagnostics.push_back(d);
+                PrioritizeUnwritten(edited.diagnostics);
+                return {std::nullopt, std::move(edited.diagnostics)};
+            }
             task.diagnostics.insert(task.diagnostics.end(), edited.diagnostics.begin(), edited.diagnostics.end());
             std::optional<std::vector<std::byte>> original;
             if (task.archive->HasMember(NativeFileName(type))) {
@@ -162,6 +170,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             checked = Detail::VerifyTree(base.value->files,base.value->treeRoot); if (!checked.Succeeded()) return checked;
             return catalog.value->VerifyCapturedSources();
         };
+        PrioritizeUnwritten(task.diagnostics);
         if (request.idsOnly) {
             status = verifyInputs();
             if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
@@ -170,6 +179,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             receipt.objects = std::move(hslk.objects); receipt.console = std::move(hslk.console);
             receipt.idReplayPassed = hslk.replayPassed; receipt.fieldMappingChecked = true;
             receipt.redundantIndexedFields = std::move(redundantFields);
+            receipt.unwrittenFields = std::move(unwrittenFields);
             receipt.peakLuaBytes = hslk.peakMemoryBytes; receipt.luaInstructions = hslk.instructions;
             receipt.diagnostics = task.diagnostics;
             auto result = Output::Success(std::move(receipt)); result.diagnostics = std::move(task.diagnostics); return result;
@@ -225,6 +235,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         }
         task.beforePublish = verifyInputs;
         Services::MapSaveService::Run(task, progress);
+        PrioritizeUnwritten(task.diagnostics);
         if (!task.succeeded) return {std::nullopt, std::move(task.diagnostics)};
         auto hash = Sha256File(task.written);
         if (!hash.Succeeded()) return {std::nullopt, std::move(hash.diagnostics)};
@@ -236,6 +247,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         receipt.peakLuaBytes = hslk.peakMemoryBytes; receipt.luaInstructions = hslk.instructions;
         receipt.diagnostics = task.diagnostics;
         receipt.fieldMappingChecked = true; receipt.redundantIndexedFields = std::move(redundantFields);
+        receipt.unwrittenFields = std::move(unwrittenFields);
         receipt.differences = {"所有目标把 Lua 放入地图，不写入本机 package.path。", "数值直接编码原生 float32，不保留两位小数。",
             "字符串和数组经领域文档编码，保留引号、反斜杠与换行。", "布尔、嵌套数组、ID 冲突/溢出明确拒绝。",
             "缺少真实 InitGlobals 调用时拒绝出图。", "不复制或删除游戏目录中的插件。", "构建使用有界 Lua 5.3；tostring 的数值采用最短往返文本。"};

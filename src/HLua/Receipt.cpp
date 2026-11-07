@@ -39,6 +39,16 @@ std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset, st
     Json objects = Json::array();
     Json diagnostics = Json::array();
     Json audits = Json::array();
+    Json unwritten = Json::array();
+    const auto unwrittenBegin = std::min(offset, receipt.unwrittenFields.size());
+    const auto unwrittenCount = std::min({limit, std::size_t{1024}, receipt.unwrittenFields.size() - unwrittenBegin});
+    for (std::size_t i = unwrittenBegin; i < unwrittenBegin + unwrittenCount; ++i) {
+        const auto& field = receipt.unwrittenFields[i];
+        unwritten.push_back({{"class", field.objectClass}, {"id", field.id}, {"source", Display(field.source, 1024)},
+            {"source_truncated", field.source.size() > 1024}, {"field", Display(field.field, 240)},
+            {"field_truncated", field.field.size() > 240}, {"reason", "该类型没有这个字段"},
+            {"other_object_classes", field.otherObjectClasses}});
+    }
     const auto auditBegin = std::min(offset, receipt.redundantIndexedFields.size());
     const auto auditCount = std::min({limit, std::size_t{1024}, receipt.redundantIndexedFields.size() - auditBegin});
     for (std::size_t i = auditBegin; i < auditBegin + auditCount; ++i) {
@@ -72,6 +82,9 @@ std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset, st
         {"sdk_differences",receipt.differences},{"console",Display(receipt.console,4096)},
         {"diagnostics",std::move(diagnostics)},{"diagnostic_count",receipt.diagnostics.size()},
         {"field_mapping_checked", receipt.fieldMappingChecked}, {"redundant_indexed_fields", std::move(audits)},
+        {"unwritten_fields_title", "未写入的字段"}, {"unwritten_fields", std::move(unwritten)},
+        {"unwritten_field_count", receipt.unwrittenFields.size()}, {"unwritten_offset", unwrittenBegin},
+        {"unwritten_next_offset", unwrittenBegin + unwrittenCount < receipt.unwrittenFields.size() ? Json(unwrittenBegin + unwrittenCount) : Json(nullptr)},
         {"redundant_indexed_field_count", receipt.redundantIndexedFields.size()}, {"audit_offset", auditBegin},
         {"audit_next_offset", auditBegin + auditCount < receipt.redundantIndexedFields.size() ? Json(auditBegin + auditCount) : Json(nullptr)},
         {"original_editor_verified",false},{"game_verified",false}};

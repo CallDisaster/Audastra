@@ -45,7 +45,13 @@ void TestHLuaObjectMapping() {
         {{"ID","ucr1"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","0"}},
         {{"ID","ucr2"},{"field","Curve"},{"slk","Profile"},{"type","real"},{"index","1"}},
         {{"ID","utg1"},{"field","Tags"},{"slk","Profile"},{"type","stringList"},{"index","0"}},
-        {{"ID","utg2"},{"field","Tags"},{"slk","Profile"},{"type","stringList"},{"index","1"}}});
+        {{"ID","utg2"},{"field","Tags"},{"slk","Profile"},{"type","stringList"},{"index","1"}},
+        {{"ID","urac"},{"field","Race"},{"slk","UnitData"},{"type","string"}}});
+    files["item-meta.slk"] = Slk({
+        {{"ID","inam"},{"field","Name"},{"slk","Profile"},{"type","string"},{"useItem","1"},{"index","0"}},
+        {{"ID","iuse"},{"field","Uses"},{"slk","ItemData"},{"type","int"},{"useItem","1"}}});
+    files["items.slk"] = Slk({{{"ID","gold"},{"code","gold"},{"Name","Item parent"}}});
+    files["items.txt"] = "[gold]\nName=Item parent\n";
     files["ability-meta.slk"] = Slk({
         {{"ID","atp1"},{"field","Tip"},{"slk","Profile"},{"type","string"},{"repeat","4"},{"index","0"}},
         {{"ID","Hbz1"},{"field","Data"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"},{"data","1"},{"useSpecific","AHbz"}},
@@ -62,12 +68,13 @@ void TestHLuaObjectMapping() {
             : Result<std::vector<std::byte>>::Success(Bytes(found->second));
     };
     ObjectFieldSchemaOptions schemaOptions;
-    schemaOptions.sources = {{ObjectType::Unit,"unit-meta.slk"},{ObjectType::Ability,"ability-meta.slk"}};
+    schemaOptions.sources = {{ObjectType::Unit,"unit-meta.slk"},{ObjectType::Ability,"ability-meta.slk"},{ObjectType::Item,"item-meta.slk"}};
     schemaOptions.stringFiles.clear();
     auto schema = ObjectFieldSchema::Load(read, schemaOptions); Good(schema);
     CatalogLoadOptions catalogOptions;
     catalogOptions.sources = {{ObjectType::Unit,{"units.slk"},{"units.txt"}},{ObjectType::Ability,{"abilities.slk"},{"abilities.txt"}}};
     catalogOptions.stringFiles.clear();
+    catalogOptions.sources.push_back({ObjectType::Item,{"items.slk"},{"items.txt"}});
     auto standard = StandardObjectCatalog::Load(read, catalogOptions); Good(standard);
     const auto empty = [](ObjectType type) {
         auto parsed = LniObjectCodec(type).Parse({});
@@ -119,7 +126,8 @@ void TestHLuaObjectMapping() {
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName={{1}}\n","unit.ini").Succeeded(), "nested rejected");
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName={2=1}\n","unit.ini").Succeeded(), "sparse rejected");
     unit.value->front().fields.push_back({"unknown", {1.0}, false});
-    Need(!ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *unit.value, *schema.value, *standard.value).Succeeded(), "unknown not dropped");
+    auto omitted = ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *unit.value, *schema.value, *standard.value); Good(omitted);
+    Need(omitted.diagnostics.front().code == "HLUA_FIELD_NOT_WRITTEN", "absent field is explicitly warned first");
 
     const auto redundant = [&](std::string_view fields, const LniObjectDocument& baseline,
         std::string_view parent = "hfoo") {
@@ -167,9 +175,34 @@ void TestHLuaObjectMapping() {
     const auto located = ParseF6ObjectIni(ObjectType::Unit,
         std::string(4096, '\n') + "[v012]\n_parent=\"hfoo\"\nFx=\"\"\n", "block.ini"); Good(located);
     Need(located.value->front().fields.front().source == "block.ini:4099", "bounded line index locates a field beyond a block boundary");
-    auditInput.value->front().fields.push_back({"unknown", {1.0}, false});
+    auditInput.value->front().fields.push_back({"scale", {std::string("invalid number")}, false});
     Need(!ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits).Succeeded()
         && audits.size() == 1, "failed mapping never publishes partial audit records");
+
+    auto itemInput = ParseF6ObjectIni(ObjectType::Item, "[I000]\n_parent=\"gold\"\nrace=\"human\"\nnAmE=\"Named\"\n", "item.ini"); Good(itemInput);
+    std::vector<UnwrittenField> unwritten;
+    auto itemResult = ApplyHslkObjects(ObjectType::Item, empty(ObjectType::Item), *itemInput.value, *schema.value, *standard.value, nullptr, &unwritten); Good(itemResult);
+    Need(itemResult.value->Objects().front().modifications.size() == 1 && unwritten.size() == 1
+        && unwritten.front().source == "item.ini:3" && unwritten.front().otherObjectClasses == std::vector<std::string>{"unit"}
+        && itemResult.diagnostics.front().message.find("单位有此字段，物品没有") != std::string::npos,
+        "foreign class field skipped with located warning, mixed case known field still written");
+    BuildReceipt omittedReceipt; omittedReceipt.unwrittenFields = unwritten;
+    Need(BuildReceiptJson(omittedReceipt).find("\"unwritten_field_count\": 1") != std::string::npos
+        && BuildReceiptJson(omittedReceipt).find("未写入的字段") != std::string::npos
+        && BuildReceiptJson(omittedReceipt, 1).find("\"unwritten_fields\": []") != std::string::npos,
+        "unwritten receipt has a separate paged section and total");
+    itemInput.value->front().fields.push_back({"Uses", {std::string("text")}, false});
+    auto itemFailed = ApplyHslkObjects(ObjectType::Item, empty(ObjectType::Item), *itemInput.value, *schema.value, *standard.value, nullptr, &unwritten);
+    Need(!itemFailed.Succeeded() && unwritten.size() == 1 && itemFailed.diagnostics.front().code == "HLUA_FIELD_NOT_WRITTEN",
+        "known numeric text still rejected, warnings retained and no partial audit published");
+    auto missingSchemaOptions = schemaOptions;
+    missingSchemaOptions.sources.push_back({ObjectType::Item,"missing-meta.slk"});
+    auto incompleteSchema = ObjectFieldSchema::Load(read, missingSchemaOptions); Good(incompleteSchema);
+    itemInput.value->front().fields.pop_back();
+    Need(!ApplyHslkObjects(ObjectType::Item, empty(ObjectType::Item), *itemInput.value, *incompleteSchema.value, *standard.value).Succeeded(),
+        "incomplete metadata cannot prove a field absent");
+    Need(!ParseF6ObjectIni(ObjectType::Item,"[I000]\nrace=true\n","item.ini").Succeeded()
+        && !ParseF6ObjectIni(ObjectType::Item,"[I000]\nrace={{1}}\n","item.ini").Succeeded(), "unknown fields do not bypass boolean or nested rejection");
 
     auto strictOptions = catalogOptions; strictOptions.rejectInvalidPresentSources = true;
     auto strictCatalog = StandardObjectCatalog::Load(read, strictOptions); Good(strictCatalog);
