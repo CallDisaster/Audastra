@@ -4,6 +4,7 @@
 #include "War3MapCore/Lua/LuaModuleScan.h"
 #include "War3MapCore/HLua/Test.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
+#include "../../src/HLua/BuildInternal.h"
 #include <Windows.h>
 #include <algorithm>
 #include <fstream>
@@ -129,8 +130,23 @@ void TestSourceAudit() {
         Need(!ValidateTestEngineSources(map,std::string(64,'0'),Services::MapTestLuaEngine::Owned).Succeeded(),"stale source fails before engine selection");
     }
 }
+void ExtraFrameworkModules() {
+    auto framework=FixtureFramework();
+    File(framework.runtime,"builtIn/console/test.lua","return {}\n");
+    File(framework.runtime,"user-helper/extra.lua","return {original=true}\n");
+    ProjectSnapshot project;
+    File(project.source,"main.lua","require('user-helper.extra')\nfunction main() end\n");
+    project.runtimeFiles={0};
+    HslkOutput output; output.injectedSlk="local ids={}\n";
+    auto members=Detail::RuntimeMembers(framework,project,output,BuildTarget::Test); Good(members);
+    const auto found=std::find_if(members.value->begin(),members.value->end(),[](const auto& member){return member.name=="user-helper/extra.lua";});
+    Need(found!=members.value->end() && std::string(reinterpret_cast<const char*>(found->data.data()),found->data.size())=="return {original=true}\n",
+        "framework extra modules are packed verbatim instead of silently dropping unfamiliar directories");
+    File(project.source,"user-helper/extra.lua","return 'collision'\n");project.runtimeFiles.push_back(1);
+    Need(!Detail::RuntimeMembers(framework,project,output,BuildTarget::Test).Succeeded(),"extra framework/project collision is still refused");
+}
 }
 int main() {
-    try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); TestSourceAudit(); std::cout << "HLua core fixtures passed\n"; return 0; }
+    try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); TestSourceAudit(); ExtraFrameworkModules(); std::cout << "HLua core fixtures passed\n"; return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

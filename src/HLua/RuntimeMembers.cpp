@@ -30,8 +30,6 @@ Result<std::vector<MapArchiveMember>> RuntimeMembers(const FrameworkSnapshot& fr
     };
     for (const auto& file : framework.runtime.files) {
         auto path = file.path; for (auto& c : path) if (c == '\\') c = '/';
-        if (path != "h-lua.lua" && !path.starts_with("const/") && !path.starts_with("foundation/")
-            && !path.starts_with("lib/") && !path.starts_with("builtIn/") && !path.starts_with("slk/")) continue;
         if (path.starts_with("const/")) groups[0].push_back(Module(path));
         else if (path.starts_with("foundation/")) groups[1].push_back(Module(path));
         if (path.starts_with("slk/")) {
