@@ -99,6 +99,7 @@ private slots:
         QToolButton button;button.setText(QStringLiteral("热重载 Lua"));
         QPixmap icon(16,16);icon.fill(Qt::white);button.setIcon(QIcon(icon));
         QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua"),true,false);
+        button.setToolButtonStyle(Qt::ToolButtonIconOnly);
         const auto compactWidth=button.sizeHint().width();
         QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua（需重新构建）"),true,true);
         QCOMPARE(button.toolButtonStyle(),Qt::ToolButtonTextBesideIcon);
