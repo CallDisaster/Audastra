@@ -2,6 +2,7 @@
 #include <QCoreApplication>
 #include <QStyle>
 #include <QToolButton>
+#include <QVariant>
 
 namespace War3Map::QtCommon {
 inline void ApplyLuaReloadButtonState(QToolButton& button,const QString& actionText,bool pending,bool rebuild) {
