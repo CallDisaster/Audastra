@@ -18,8 +18,14 @@ Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, st
     }
     if (parsed.value->fields.size() > limits.objects) return Output::Failure("HLua", "HLUA_OBJECT_BUDGET", "F6 物体数超过预算。");
     std::vector<HslkObject> output;
-    std::vector<std::size_t> newlines;
-    for (std::size_t i = 0; i < text.size(); ++i) if (text[i] == '\n') newlines.push_back(i);
+    // 每块只记一个行计数，防止大量空行放大诊断索引的内存。
+    constexpr std::size_t lineBlockBytes = 4096;
+    std::vector<std::size_t> lineCounts{0};
+    std::size_t lines = 0;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\n') ++lines;
+        if ((i + 1) % lineBlockBytes == 0) lineCounts.push_back(lines);
+    }
     const auto atom = [](const Text::LniDataValue& value) -> Result<FieldAtom> {
         if (value.kind == Text::LniDataValue::Kind::String) return Result<FieldAtom>::Success(value.text);
         if (value.kind != Text::LniDataValue::Kind::Number)
@@ -44,8 +50,10 @@ Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, st
             }
             if (name.starts_with('_')) continue;
             HslkField field; field.name = name;
-            field.source = std::string(source) + ':' + std::to_string(1 +
-                (std::lower_bound(newlines.begin(), newlines.end(), value.offset) - newlines.begin()));
+            const auto offset = std::min(value.offset, text.size());
+            const auto block = offset / lineBlockBytes;
+            field.source = std::string(source) + ':' + std::to_string(1 + lineCounts[block] +
+                std::count(text.begin() + block * lineBlockBytes, text.begin() + offset, '\n'));
             field.array = value.kind == Text::LniDataValue::Kind::Table;
             if (field.array) {
                 for (std::size_t i = 1; i <= value.fields.size(); ++i) {

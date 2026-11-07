@@ -161,6 +161,9 @@ void TestHLuaObjectMapping() {
     const auto nextPage = BuildReceiptJson(receipt, 1);
     Need(nextPage.find("\"redundant_indexed_field_count\": 1") != std::string::npos
         && nextPage.find("\"redundant_indexed_fields\": []") != std::string::npos, "audit pages retain total without repeating prior entries");
+    const auto located = ParseF6ObjectIni(ObjectType::Unit,
+        std::string(4096, '\n') + "[v012]\n_parent=\"hfoo\"\nFx=\"\"\n", "block.ini"); Good(located);
+    Need(located.value->front().fields.front().source == "block.ini:4099", "bounded line index locates a field beyond a block boundary");
     auditInput.value->front().fields.push_back({"unknown", {1.0}, false});
     Need(!ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits).Succeeded()
         && audits.size() == 1, "failed mapping never publishes partial audit records");
