@@ -7,7 +7,7 @@
 
 namespace Audastra::Runtime32::OwnLua {
 
-// 生产拥有者必须持有真实 VM 引用，并在同一地图代际释放；失效地图不能再调用 native。
+// 生产拥有者持有真实VM代际；agent管理引用，池编号仅管理已观察到的生命期。失效地图不再调用native。
 // 原创 fixture 可另作提供者，但不能将其存在当成真实游戏提供者已经实现。
 class NativeHandleOwner {
 public:
@@ -15,7 +15,7 @@ public:
     [[nodiscard]] virtual bool Alive() const noexcept = 0;
 };
 
-enum class NativeHandleKind { Reference, Scalar };
+enum class NativeHandleKind { Reference, Scalar, Pool };
 struct NativeHandle {
     std::uint32_t value = 0;
     std::uint64_t generation = 0;

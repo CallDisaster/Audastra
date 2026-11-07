@@ -3,6 +3,7 @@
 #include "NativeProvider.h"
 #include "NativeRegistry.h"
 #include "NativeTypeHierarchy.h"
+#include "NativePoolLedger.h"
 #include "GameVm127.h"
 #include <set>
 
@@ -27,11 +28,12 @@ public:
     void BeforeVmDestroy(std::uintptr_t vm) noexcept;
     [[nodiscard]] std::uint64_t InvocationCount() const noexcept { return invocationCount_; }
 private:
-    [[nodiscard]] NativeCallResult ReadHandle(std::uint32_t value, const NativeType& type);
+    [[nodiscard]] NativeCallResult ReadHandle(std::uint32_t value, const NativeType& type, bool created = false);
     std::shared_ptr<GameVm127> vm_;
     std::shared_ptr<const NativeRegistry> registry_;
     std::shared_ptr<const NativeTypeHierarchy> types_;
     std::set<std::string, std::less<>> scalarTypes_;
+    NativePoolLedger lightning_;
     std::unique_ptr<NativeCodeRegistry> codes_;
     std::uint64_t callbackFailures_ = 0;
     std::uint64_t invocationCount_ = 0;

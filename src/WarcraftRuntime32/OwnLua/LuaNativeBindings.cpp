@@ -52,7 +52,7 @@ LuaNativeBindings::LuaNativeBindings(std::shared_ptr<NativeProvider> provider, L
     : provider_(std::move(provider)), callbacks_(callbacks), generation_(provider_ ? provider_->Generation() : 0), expired_(std::move(expired)) {}
 
 bool LuaNativeBindings::ValidHandle(const NativeHandle& handle, std::string_view expected) const noexcept {
-    return (handle.kind == NativeHandleKind::Reference || handle.kind == NativeHandleKind::Scalar)
+    return (handle.kind == NativeHandleKind::Reference || handle.kind == NativeHandleKind::Scalar || handle.kind == NativeHandleKind::Pool)
         && (handle.value || handle.kind == NativeHandleKind::Scalar)
         && handle.generation == generation_ && provider_->Generation() == generation_
         && handle.owner && handle.owner->Alive() && NativeIdentifier(handle.type)
@@ -101,7 +101,7 @@ int LuaNativeBindings::DescribeHandle(lua_State* lua) {
 }
 void LuaNativeBindings::PushHandle(lua_State* lua, const NativeHandle& value) {
     const auto key = value.kind == NativeHandleKind::Reference ? "reference:" + std::to_string(value.value)
-        : "scalar:" + value.type + ":" + std::to_string(value.value);
+        : (value.kind==NativeHandleKind::Pool ? "pool:" : "scalar:") + value.type + ":" + std::to_string(value.value);
     lua_rawgetp(lua, LUA_REGISTRYINDEX, &handleCacheKey);
     lua_pushlstring(lua, key.data(), key.size()); lua_rawget(lua, -2);
     if (auto* cached = GetHandle(lua, -1); cached && cached->bindings == this

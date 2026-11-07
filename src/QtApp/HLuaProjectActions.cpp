@@ -38,6 +38,10 @@ bool MainWindow::HasHLuaProject() const {
 }
 bool MainWindow::BuildHLuaMap(const std::filesystem::path& target, HLua::BuildTarget mode, bool retainLink, bool idsOnly, bool showIds) {
     if(project_->savingMap_ || !HasHLuaProject() || !triggersModule_->CommitPendingEdits())return false;
+    if(project_->luaMapTarget_) {
+        project_->AddDiagnostic(tr("错误"),"HLua","HLUA_TARGET_CONFLICT",tr("当前地图还有 Lua 保存档案。请先清除该档案，再构建 h-lua 工程。"));
+        return false;
+    }
     QSettings settings;
     HLua::BuildRequest request;
     request.project=project_->LuaFolderSource().Root();request.target=target;request.mode=mode;
@@ -100,7 +104,7 @@ bool MainWindow::BuildHLuaMap(const std::filesystem::path& target, HLua::BuildTa
                 QString::fromStdString(object.parent),QString::fromStdString(object.source)};
             for(int col=0;col<values.size();++col)table->setItem(row,col,new QTableWidgetItem(values[col]));}
         table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);layout->addWidget(table);dialog.exec();
-    }
+    } else ShowStatusMessage(tr("h-lua 检查通过：%1 个物体，ID 回放通过").arg(result.value->objects.size()));
     return true;
 }
 bool MainWindow::SaveHLuaMap(bool choosePath) {

@@ -29,11 +29,20 @@ private:
     std::uintptr_t object_;
 };
 struct Arguments {
+    // 此结构只管理native参数的字符串临时引用；池编号由独立拥有者管理。
     const GameVm127& vm;
     std::array<std::uint32_t, 32> words{};
     std::array<float, 32> reals{};
     std::array<std::uint32_t, 32> strings{};
     ~Arguments() { for (const auto id : strings) if (id) vm.ReleaseString(id); }
+};
+class PoolOwner final : public NativeHandleOwner {
+public:
+    PoolOwner(std::shared_ptr<GameVm127> vm,std::shared_ptr<NativePoolLedger::Life> life):vm_(std::move(vm)),life_(std::move(life)){}
+    bool Alive() const noexcept override{return vm_->Alive() && life_->alive;}
+private:
+    std::shared_ptr<GameVm127> vm_;
+    std::shared_ptr<NativePoolLedger::Life> life_;
 };
 bool Unsupported(std::string_view name) {
     // coroutine 与另开地图/任意文件输入输出未接入此受限宿主。未知能力明确拒绝。
@@ -147,9 +156,27 @@ NativeCallResult GameNativeProvider::WriteGlobal(std::string_view name, const Na
     if (reference && old->value) vm_->ReleaseHandle(old->value, vm_->HandleObject(old->value));
     return {true, {}, {}};
 }
-NativeCallResult GameNativeProvider::ReadHandle(std::uint32_t value, const NativeType& declared) {
+NativeCallResult GameNativeProvider::ReadHandle(std::uint32_t value, const NativeType& declared, bool created) {
     const auto& type = declared.handleType;
     if (!IsHandleType(type, type) || type == "handle") return Failure("handle 缺少可信具体类型。");
+    if(type=="lightning") {
+        if(!value)return {true,{},{}};
+        try {
+            auto life=created?lightning_.Created(value):lightning_.Borrow(value);
+            if(!life || !life->alive)return Failure("lightning不属于本方已观察到的当前生命期，未借用外部池编号。");
+            return {true,NativeHandle{value,Generation(),type,std::make_shared<PoolOwner>(vm_,std::move(life)),NativeHandleKind::Pool},{}};
+        } catch(...) {
+            if(created) {
+                lightning_.Destroyed(value);
+                const auto* destroy=registry_->Find("DestroyLightning");
+                const std::array<std::uint32_t,1> word{value};
+                if(!destroy || destroy->signature.arguments.size()!=1 || destroy->signature.arguments[0].kind!=NativeKind::Handle
+                    || destroy->signature.arguments[0].handleType!="lightning" || destroy->signature.returns.kind!=NativeKind::Boolean
+                    || !InvokeNativeX86(destroy->function,word).succeeded)vm_->Invalidate();
+            }
+            throw;
+        }
+    }
     const bool reference = IsHandleType(type, "agent") || type == "triggeraction";
     if (!reference && !scalarTypes_.contains(type)) return Failure("此非 agent 对象尚未建立生命周期桥。");
     if (reference && !value) return {true, {}, {}};
@@ -179,7 +206,7 @@ std::optional<NativeCallbackResult> GameNativeProvider::DispatchCode(std::uint32
     return result;
 }
 void GameNativeProvider::BeforeVmDestroy(std::uintptr_t vm) noexcept {
-    if (vm_ && vm_->IsMainVm(vm)) { vm_->Invalidate(); codes_.reset(); }
+    if (vm_ && vm_->IsMainVm(vm)) { vm_->Invalidate(); codes_.reset();lightning_.Clear(); }
 }
 NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<const NativeValue> supplied) {
     if (!Generation()) return Failure("游戏 native 提供者所属线程、地图代际或来源已经失效。");
@@ -193,8 +220,12 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
     // TriggerAddAction 返回的声明类型虽是 handle，已核对 native 仍通过真实 agent→slot 路径返回。
     const bool actionObject = signature.returns.kind == NativeKind::Handle && signature.returns.handleType == "triggeraction";
     if (signature.returns.kind == NativeKind::Handle && !IsHandleType(signature.returns.handleType, "agent")
-        && !actionObject && !scalarTypes_.contains(signature.returns.handleType))
+        && !actionObject && signature.returns.handleType!="lightning" && !scalarTypes_.contains(signature.returns.handleType))
         return Failure("此非 agent 对象尚未建立销毁与句柄复用的生命周期桥，未调用 native。");
+    const bool createLightning=name=="AddLightning" || name=="AddLightningEx";
+    if(createLightning && (signature.returns.kind!=NativeKind::Handle || signature.returns.handleType!="lightning"))
+        return Failure("lightning创建声明与已核对的返回类型不符，未调用native。");
+    if(createLightning && !lightning_.CanCreate())return Failure("lightning生命期账本达到4096个存活对象预算，未创建更多对象。");
     Arguments args{*vm_};
     std::shared_ptr<NativeCodeLease> callbackLease;
     std::optional<NativeCodeOwner> timerOwner;
@@ -256,6 +287,9 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
     }
     ++invocationCount_;
     if (!vm_->Alive()) return Failure("native 返回时地图 VM 已经结束或变化。");
+    if(name=="DestroyLightning" && !supplied.empty()) {
+        if(const auto* handle=std::get_if<NativeHandle>(&supplied.front()))lightning_.Destroyed(handle->value);
+    }
     if (callbackLease && (timerOwner || name == "Condition" || name == "Filter" || name == "TriggerAddAction")) {
         const auto owner = timerOwner ? timerOwner : vm_->CodeOwner(call.value);
         if (!owner || !codes_->RetainFor(*owner, callbackLease)) {
@@ -280,7 +314,7 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
         vm_->ReleaseString(call.value);
         return text ? NativeCallResult{true, *text, {}} : Failure("游戏 native 返回无效或超预算字符串。");
     }
-    case NativeKind::Handle: return ReadHandle(call.value, signature.returns);
+    case NativeKind::Handle: return ReadHandle(call.value, signature.returns,createLightning);
     case NativeKind::Code: return Failure("native code 返回值尚未接通。");
     }
     return Failure("native 返回类型未知。");

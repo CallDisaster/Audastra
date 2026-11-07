@@ -2,6 +2,7 @@
 #include "../OwnLua/NativeCallX86.h"
 #include "../OwnLua/NativeProvider.h"
 #include "../OwnLua/NativeRegistry.h"
+#include "../OwnLua/NativePoolLedger.h"
 
 #include <windows.h>
 #include <array>
@@ -35,6 +36,13 @@ public:
 private:
     std::shared_ptr<HandleLife> life_;
 };
+class FixturePoolOwner final : public NativeHandleOwner {
+public:
+    explicit FixturePoolOwner(std::shared_ptr<NativePoolLedger::Life> life):life_(std::move(life)){}
+    bool Alive() const noexcept override{return life_->alive;}
+private:
+    std::shared_ptr<NativePoolLedger::Life> life_;
+};
 
 // 原创类型与生命周期提供者。cdecl fixture 只验证调用桥，不表示已接通 Game.dll VM。
 class FixtureProvider final : public NativeProvider {
@@ -49,6 +57,7 @@ public:
     std::map<std::string, NativeValue, std::less<>> globals;
     std::shared_ptr<HandleLife> timer = std::make_shared<HandleLife>();
     std::shared_ptr<HandleLife> unit = std::make_shared<HandleLife>();
+    NativePoolLedger pool;
     const std::map<std::string, std::string, std::less<>> signatures{
         {"Integer", "(I)I"}, {"Real", "(RR)R"}, {"Boolean", "(B)B"}, {"String", "(S)S"},
         {"Handle", "()Hhandle;"}, {"Timer", "()Htimer;"}, {"Unit", "()Hunit;"},
@@ -56,7 +65,8 @@ public:
         {"Callback", "(C)V"}, {"ReturnedCode", "()C"}, {"Void", "()V"},
         {"WrongResult", "()I"}, {"WrongHandle", "()Htimer;"}, {"StaleHandle", "()Htimer;"},
         {"BadReal", "()R"}, {"BadString", "()S"}, {"Throw", "(Htimer;)V"}, {"Fail", "()V"},
-        {"Red", "()Hplayercolor;"}, {"ZeroRace", "()Hrace;"}, {"ColorValue", "(Hplayercolor;)I"}
+        {"Red", "()Hplayercolor;"}, {"ZeroRace", "()Hrace;"}, {"ColorValue", "(Hplayercolor;)I"},
+        {"Pool", "()Hlightning;"},{"NewPool","()Hlightning;"},{"UsePool","(Hlightning;)I"},{"DestroyPool","(Hlightning;)V"}
     };
     std::uint64_t Generation() const noexcept override { return generation; }
     std::optional<NativeSignature> Lookup(std::string_view name) const override {
@@ -85,7 +95,7 @@ public:
         return id == 42 ? std::optional<NativeHandleDefinition>{{3, "tmr "}} : std::nullopt;
     }
     bool IsHandleType(std::string_view actual, std::string_view expected) const noexcept override {
-        const bool known = actual == "timer" || actual == "unit" || actual == "handle" || actual == "playercolor" || actual == "race";
+        const bool known = actual == "timer" || actual == "unit" || actual == "handle" || actual == "playercolor" || actual == "race" || actual=="lightning";
         return known && (actual == expected || expected == "handle");
     }
     NativeHandle Handle(std::uint32_t value, std::string type, const std::shared_ptr<HandleLife>& life) {
@@ -93,6 +103,12 @@ public:
     }
     NativeCallResult Invoke(std::string_view name, std::span<const NativeValue> args) override {
         ++calls;
+        if(name=="Pool" || name=="NewPool") {
+            auto life=pool.Borrow(1);if(name=="NewPool" || !life)life=pool.Created(1);
+            return {true,NativeHandle{1,generation,"lightning",std::make_shared<FixturePoolOwner>(std::move(life)),NativeHandleKind::Pool},{}};
+        }
+        if(name=="UsePool")return {true,static_cast<std::int32_t>(std::get<NativeHandle>(args[0]).value),{}};
+        if(name=="DestroyPool"){pool.Destroyed(std::get<NativeHandle>(args[0]).value);return {true,{},{}};}
         if (name == "Integer" || name == "String" || name == "Boolean") return {true, args[0], {}};
         if (name == "Red" || name == "ZeroRace") {
             auto handle = Handle(0, name == "Red" ? "playercolor" : "race", unit);
@@ -310,9 +326,26 @@ void GlobalReads() {
 }
 }
 
+void PoolLifetimes() {
+    NativePoolLedger ledger;
+    Check(!ledger.Created(0) && !ledger.Borrow(7),"zero/foreign pool id is not borrowed");
+    auto old=ledger.Created(1);Check(old && ledger.Borrow(1)==old,"created pool state shared by aliases");
+    auto replacement=ledger.Created(1);Check(!old->alive && replacement->alive,"same number never revives previous life");
+    ledger.Destroyed(1);Check(!replacement->alive && !ledger.Borrow(1),"explicit destroy invalidates every alias");
+    for(std::uint32_t i=1;i<=NativePoolLedger::kMaximumLive;++i)Check(ledger.Created(i)!=nullptr,"bounded live pool allocation");
+    Check(!ledger.CanCreate() && !ledger.Created(5000),"pool tracking budget enforced");
+    old=ledger.Borrow(1);ledger.Clear();Check(!old->alive && ledger.CanCreate(),"VM detach invalidates before number reuse");
+    auto provider=std::make_shared<FixtureProvider>();LuaHost host({},provider);Success(host.Initialize(),"pool fixture host");
+    Success(host.Execute("j=require('jass.common'); p=j.Pool(); assert(rawequal(p,j.Pool()) and j.UsePool(p)==1); j.DestroyPool(p)","@pool.lua"),"pool aliases and explicit destroy");
+    auto calls=provider->calls;
+    Check(!host.Execute("j.UsePool(p)","@pool-stale.lua").Succeeded() && provider->calls==calls,"stale pool rejected before provider");
+    Success(host.Execute("q=j.NewPool(); assert(not rawequal(p,q) and p~=q and j.UsePool(q)==1)","@pool-reuse.lua"),"pool number reuse creates distinct userdata");
+    calls=provider->calls;++provider->generation;
+    Check(!host.Execute("j.UsePool(q)","@pool-epoch.lua").Succeeded() && provider->calls==calls,"old VM pool rejected before provider");
+}
 int main() {
     try {
-        NativeCalls(); RegistrationPhases(); ConversionAndLifetimes(); GlobalReads();
+        NativeCalls(); RegistrationPhases(); ConversionAndLifetimes(); GlobalReads(); PoolLifetimes();
         std::cout << "Own Lua native conversions passed; original cdecl/handle fixture only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
