@@ -14,6 +14,7 @@ Result<Services::MapCreateReceipt> CreateProject(const NewProjectRequest& reques
     Services::MapCreateRequest create;
     create.target = request.directory / "base.w3x"; create.workspace = request.directory / "map-create";
     create.gameRoot = request.gameRoot; create.toolRoot = request.toolRoot; create.uiRoot = request.uiRoot;
+    create.inProcessOnly = true;
     create.options.name = IO::PathUtf8(request.directory.filename());
     auto created = Services::CreateMapCandidate(create);
     if (!created.Succeeded()) return created;

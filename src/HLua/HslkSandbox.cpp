@@ -124,7 +124,13 @@ int HslkSandbox::AllocateId(lua_State* L) {
     if (!result.Succeeded()) return luaL_error(L, "%s: %s", result.diagnostics.front().code.c_str(), result.diagnostics.front().message.c_str());
     lua_pushlstring(L, result.value->data(), result.value->size()); return 1;
 }
-void HslkSandbox::InstallAllocator() { lua_pushcfunction(lua_, AllocateId); lua_setglobal(lua_, "SLK_ID"); }
+Status HslkSandbox::InstallAllocator() {
+    lua_pushcfunction(lua_, [](lua_State* L) -> int {
+        lua_pushcfunction(L, AllocateId); lua_setglobal(L, "SLK_ID"); return 0;
+    });
+    if (lua_pcall(lua_, 0, 0, 0) != LUA_OK) return Error("HLUA_BUILD_INTERFACE");
+    return Status::Ok();
+}
 
 int HslkSandbox::Extract(lua_State* L) {
     auto& host = Host(L);

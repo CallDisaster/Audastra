@@ -28,6 +28,7 @@ struct MapCreateRequest {
     std::filesystem::path gameRoot;
     // 编译工具与函数库数据可独立提供；为空时沿用工具根。
     std::filesystem::path uiRoot;
+    bool inProcessOnly = false;
 };
 
 struct MapCreateReceipt {

@@ -17,7 +17,7 @@ public:
     Status Run(std::string_view text, std::string_view name);
     Status CallText(const char* function, std::string_view text);
     Status ReadObjects(std::vector<HslkObject>& output);
-    void InstallAllocator();
+    Status InstallAllocator();
     lua_State* State() const { return lua_; }
     std::string console;
     std::string source;

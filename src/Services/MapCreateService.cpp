@@ -216,6 +216,7 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         if (!prepared.Succeeded() || !prepared.value || *prepared.value != ScriptSavePreparationState::Ready)
             return Forward<CreateResult>(prepared.diagnostics);
         task.diagnostics.insert(task.diagnostics.end(), prepared.diagnostics.begin(), prepared.diagnostics.end());
+        if (task.script) task.script->toolchain.inProcessOnly = request.inProcessOnly;
         std::shared_ptr<const TerrainMinimapSave> minimapSave;
         std::shared_ptr<const TerrainMinimapPreserveGuard> minimapPreserve;
         task.prepareFinalDerived = [&task, &minimapEdits, &request, &minimapSave, &minimapPreserve](MapSaveTask&) -> Status {

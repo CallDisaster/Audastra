@@ -73,7 +73,8 @@ Result<HslkOutput> EvaluateHslk(const FrameworkSnapshot& framework, const Projec
             status = RunFile(host, framework.build, name);
             if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
         }
-        host.InstallAllocator();
+        status = host.InstallAllocator();
+        if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
         for (const auto name : {"setter.lua", "slk.lua"}) {
             status = RunFile(host, framework.build, name);
             if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
