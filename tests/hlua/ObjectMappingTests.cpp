@@ -89,6 +89,11 @@ void TestHLuaObjectMapping() {
           "assert(data.unit.v000.Buttonpos == '0,2'); assert(data.ability.K000.DataA1 == '0.125'); "
           "assert(data.ability.K000.Cool2 == '4'); assert(data.misc.Misc.Original == 'unchanged') ?>";
     Good(Script::RunLuaTemplate(check));
+    auto blank=ParseF6ObjectIni(ObjectType::Unit,"[v001]\n_parent=\"hfoo\"\nscale=\"\"\n", "blank.ini"); Good(blank);
+    auto zero=ApplyHslkObjects(ObjectType::Unit,empty(ObjectType::Unit),*blank.value,*schema.value,*standard.value); Good(zero);
+    Need(std::get<float>(zero.value->Objects().front().modifications.front().value)==0.0f,"explicit empty LNI numeric is zero");
+    blank.value->front().fields.front().values={std::string("not a number")};
+    Need(!ApplyHslkObjects(ObjectType::Unit,empty(ObjectType::Unit),*blank.value,*schema.value,*standard.value).Succeeded(),"invalid numeric never becomes zero");
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName=true\n","unit.ini").Succeeded(), "boolean rejected");
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName={{1}}\n","unit.ini").Succeeded(), "nested rejected");
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName={2=1}\n","unit.ini").Succeeded(), "sparse rejected");

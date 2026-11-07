@@ -35,8 +35,11 @@ Result<Value> ValueFor(const FieldAtom& atom, NativeValueType type) {
     if (const auto* value = std::get_if<double>(&atom)) number = *value;
     else {
         const auto& text = std::get<std::string>(atom);
-        auto end = std::from_chars(text.data(), text.data() + text.size(), number);
-        if (end.ec != std::errc{} || end.ptr != text.data() + text.size()) return Fail<Value>("HLUA_FIELD_VALUE", "数值字段含非数字文本。");
+        // LNI 的显式空数值表示零；不把其它非法文本或缺失字段当成零。
+        if (!text.empty()) {
+            auto end = std::from_chars(text.data(), text.data() + text.size(), number);
+            if (end.ec != std::errc{} || end.ptr != text.data() + text.size()) return Fail<Value>("HLUA_FIELD_VALUE", "数值字段含非数字文本。");
+        }
     }
     if (!std::isfinite(number)) return Fail<Value>("HLUA_FIELD_VALUE", "数值字段必须有限。");
     if (type == NativeValueType::Int32) {
