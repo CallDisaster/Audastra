@@ -70,7 +70,8 @@ Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const s
     return Result<InspectReceipt>::Success(std::move(receipt));
 }
 
-Output BuildProject(const BuildRequest& request, const Services::MapSaveService::Progress& progress) {
+static Output BuildProjectImpl(const BuildRequest& request, const Services::MapSaveService::Progress& progress,
+    std::vector<Diagnostic>& unwrittenWarnings) {
     try {
         if (request.idsOnly && (request.gameRoot.empty() || request.workspace.empty())) {
             auto framework = HLuaFrameworkLocator::Capture(request.framework);
@@ -145,6 +146,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             const auto type = static_cast<ObjectType>(i);
             if (std::none_of(all.begin(), all.end(), [&](const auto& object) { return object.objectClass == ToString(type); })) continue;
             auto edited = ApplyHslkObjects(type, baselines[i], all, *schema.value, catalog.value->Catalog(), &redundantFields, &unwrittenFields);
+            for (const auto& d : edited.diagnostics) if (d.code == "HLUA_FIELD_NOT_WRITTEN") unwrittenWarnings.push_back(d);
             if (!edited.Succeeded()) {
                 for (const auto& d : task.diagnostics) if (d.code == "HLUA_FIELD_NOT_WRITTEN") edited.diagnostics.push_back(d);
                 PrioritizeUnwritten(edited.diagnostics);
@@ -253,5 +255,14 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             "缺少真实 InitGlobals 调用时拒绝出图。", "不复制或删除游戏目录中的插件。", "构建使用有界 Lua 5.3；tostring 的数值采用最短往返文本。"};
         auto result = Output::Success(std::move(receipt)); result.diagnostics = std::move(task.diagnostics); return result;
     } catch (const std::exception& e) { return Output::Failure("HLua", "HLUA_BUILD_FAILED", e.what()); }
+}
+Output BuildProject(const BuildRequest& request, const Services::MapSaveService::Progress& progress) {
+    std::vector<Diagnostic> unwrittenWarnings;
+    auto result = BuildProjectImpl(request, progress, unwrittenWarnings);
+    if (!result.Succeeded()) {
+        for (auto& d : result.diagnostics) if (d.code != "HLUA_FIELD_NOT_WRITTEN") unwrittenWarnings.push_back(std::move(d));
+        result.diagnostics = std::move(unwrittenWarnings);
+    }
+    return result;
 }
 } // namespace War3Map::HLua
