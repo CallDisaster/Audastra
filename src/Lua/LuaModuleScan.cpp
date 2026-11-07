@@ -2,6 +2,14 @@
 #include "LuaLexer.h"
 
 namespace War3Map::Lua {
+std::vector<ExternalCapability> ScanLiteralMemberLookups(std::string_view source,std::string_view table) {
+    const auto tokens=Detail::Tokenize(source,false,4*1024*1024);
+    std::vector<ExternalCapability> output;
+    for(std::size_t i=0;i+3<tokens.size();++i) if(tokens[i].kind==Detail::TokenKind::Name && tokens[i].Text(source)==table
+        && tokens[i+1].Text(source)=="[" && tokens[i+2].kind==Detail::TokenKind::String && !tokens[i+2].unterminated
+        && tokens[i+3].Text(source)=="]") output.push_back({Detail::StringValue(tokens[i+2].Text(source)),tokens[i].line});
+    return output;
+}
 std::vector<ExternalCapability> ScanExternalCapabilities(std::string_view source) {
     const auto tokens = Detail::Tokenize(source, false, 4 * 1024 * 1024);
     std::vector<ExternalCapability> output;

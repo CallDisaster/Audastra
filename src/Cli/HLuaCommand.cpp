@@ -62,7 +62,7 @@ int RunHLua(int argc, wchar_t** argv) {
             } else return Bad();
         }
         if (command == L"hlua-inspect") {
-            auto result = HLua::InspectProject(request.framework, request.project);
+            auto result = HLua::InspectProject(request.framework, request.project, request.gameRoot);
             if (!result.Succeeded()) return Failed(result.diagnostics);
             std::cout << HLua::InspectReceiptJson(*result.value) << '\n'; return 0;
         }

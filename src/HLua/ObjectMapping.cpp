@@ -64,6 +64,7 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const Ln
         const ObjectKey key{type, object.id};
         const bool original = object.parent == object.id;
         if (output.FindObject(key)) return Fail<LniObjectDocument>("HLUA_ID_CONFLICT", "物体已经存在：" + object.id);
+        if (!original && standard.Find(type,object.id)) return Fail<LniObjectDocument>("HLUA_ID_CONFLICT", "新物体 ID 已被标准物体占用：" + object.id);
         const auto* parent = standard.Find(type, object.parent);
         // 自定义父链由共用事务验证；字段适用性必须追到确定的标准终点。
         std::string baseId = object.parent;
@@ -90,8 +91,16 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const Ln
             const auto known = fieldsByName.find(Text::LowerAscii(field.name));
             if (known != fieldsByName.end()) for (const auto* definition : known->second)
                 if (schema.AppliesTo(*definition, context)) candidates.push_back(definition);
-            if (candidates.size() != 1 || !candidates.front()->nativeValueType)
-                return Fail<LniObjectDocument>("HLUA_FIELD_UNMAPPED", object.id + "." + field.name + "：字段未知、歧义或没有可靠原生类型。");
+            if (candidates.size() != 1 || !candidates.front()->nativeValueType) {
+                std::string hints;
+                const auto wanted=Text::LowerAscii(field.name);
+                unsigned count=0;
+                for(const auto& [name,definitions]:fieldsByName) if(name.starts_with(wanted) && name!=wanted && count++<8) {
+                    if(!hints.empty()) hints+=", "; hints+=name;
+                }
+                return Fail<LniObjectDocument>("HLUA_FIELD_UNMAPPED", object.source+"："+object.id + "." + field.name
+                    + "：字段未知、歧义或没有可靠原生类型。"+(hints.empty() ? "" : "本机 metadata 中的相近键："+hints+"；未自动替换。"));
+            }
             const auto& definition = *candidates.front();
             std::vector<FieldAtom> values = field.values;
             if (definition.repeat == 0 && field.array) {

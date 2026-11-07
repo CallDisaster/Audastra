@@ -13,10 +13,15 @@ std::string Display(std::string_view text, std::size_t maximum) {
 }
 Json InspectJson(const InspectReceipt& receipt) {
     Json modules=Json::array();
+    Json missing=Json::array();
+    for(std::size_t i=0;i<std::min<std::size_t>(128,receipt.missingCommonNames.size());++i) missing.push_back(Display(receipt.missingCommonNames[i],240));
     for (std::size_t i=0;i<std::min<std::size_t>(32,receipt.jassModules.size());++i) modules.push_back(Display(receipt.jassModules[i],240));
     return {{"framework_sha256", receipt.frameworkSha256}, {"project_sha256", receipt.projectSha256},
         {"runtime_files", receipt.runtimeFiles}, {"hslk_files", receipt.hslkFiles}, {"jass_modules", std::move(modules)},
-        {"jass_module_count",receipt.jassModules.size()}};
+        {"jass_module_count",receipt.jassModules.size()},{"common_sha256",receipt.commonSha256},
+        {"common_names_checked",receipt.commonNamesChecked},{"common_missing_names",std::move(missing)},
+        {"common_missing_count",receipt.missingCommonNames.size()},
+        {"common_missing_policy","未知名称不会伪造函数；启动查询或调用时明确诊断。"}};
 }
 }
 std::string InspectReceiptJson(const InspectReceipt& receipt) {

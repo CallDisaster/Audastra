@@ -21,6 +21,9 @@ struct InspectReceipt {
     std::string frameworkSha256, projectSha256;
     std::size_t runtimeFiles = 0, hslkFiles = 0;
     std::vector<std::string> jassModules;
+    std::string commonSha256;
+    std::size_t commonNamesChecked=0;
+    std::vector<std::string> missingCommonNames;
 };
 struct BuildReceipt {
     InspectReceipt inputs;
@@ -37,7 +40,7 @@ struct BuildReceipt {
 };
 
 [[nodiscard]] Result<InspectReceipt> InspectProject(const FrameworkLocation& framework,
-    const std::filesystem::path& project);
+    const std::filesystem::path& project, const std::filesystem::path& gameRoot = {});
 [[nodiscard]] Result<BuildReceipt> BuildProject(const BuildRequest& request,
     const Services::MapSaveService::Progress& progress = {});
 [[nodiscard]] std::string InspectReceiptJson(const InspectReceipt& receipt);

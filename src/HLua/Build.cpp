@@ -6,6 +6,8 @@
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Lua/LuaModuleScan.h"
+#include "War3MapCore/Services/LuaRuntimeCatalog.h"
+#include "War3MapCore/Jass/JassDeclarationIndex.h"
 #include <algorithm>
 #include <set>
 
@@ -21,6 +23,24 @@ InspectReceipt Inspected(const FrameworkSnapshot& framework, const ProjectSnapsh
             if (!module.dynamic && module.name.starts_with("jass.")) required.insert(module.name);
     return {framework.sha256, project.source.sha256, project.runtimeFiles.size(), project.hslkFiles.size(), {required.begin(), required.end()}};
 }
+Status CheckCommon(InspectReceipt& receipt,const FrameworkSnapshot& framework,const std::filesystem::path& gameRoot) {
+    if(gameRoot.empty()) return Status::Ok();
+    auto scripts=Services::ReadGameLuaRuntimeScripts(gameRoot);
+    if(!scripts.Succeeded()) return {std::move(scripts.diagnostics)};
+    const std::array<Jass::JassSource,1> sources{{{"common.j",scripts.value->common}}};
+    const auto index=Jass::IndexJassDeclarations(sources);
+    if(!index.completed) return Status::Failure("HLua","HLUA_COMMON_INCOMPLETE","实际 common.j 声明索引未完成："+index.reason);
+    std::set<std::string> natives,lookups;
+    for(const auto& symbol:index.symbols) if(symbol.kind==Jass::DeclarationKind::Native) natives.insert(symbol.name);
+    const auto* engine=FindLuaFile(framework.runtime,"builtIn/engine.lua");
+    if(!engine) return Status::Failure("HLua","HLUA_FRAMEWORK_FILE_MISSING","框架 engine 文件缺失。");
+    for(const auto& item:Lua::ScanLiteralMemberLookups(LuaText(*engine),"JassCommon")) lookups.insert(item.name);
+    receipt.commonNamesChecked=lookups.size();
+    for(const auto& name:lookups) if(!natives.contains(name)) receipt.missingCommonNames.push_back(name);
+    auto sha=Sha256Text(scripts.value->common);if(!sha.Succeeded()) return {std::move(sha.diagnostics)};
+    receipt.commonSha256=*sha.value;
+    return Status::Ok();
+}
 void Replace(Services::MapSaveTask& task, std::string name, std::vector<std::byte> bytes) {
     const auto key = Resources::CanonicalImportPath(name);
     for (auto& item : task.replacements)
@@ -28,12 +48,15 @@ void Replace(Services::MapSaveTask& task, std::string name, std::vector<std::byt
     task.replacements.push_back({std::move(name), std::move(bytes)});
 }
 }
-Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const std::filesystem::path& root) {
+Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const std::filesystem::path& root,const std::filesystem::path& gameRoot) {
     auto framework = HLuaFrameworkLocator::Capture(location);
     if (!framework.Succeeded()) return {std::nullopt, std::move(framework.diagnostics)};
     auto project = HLuaProjectScanner::Capture(root);
     if (!project.Succeeded()) return {std::nullopt, std::move(project.diagnostics)};
-    return Result<InspectReceipt>::Success(Inspected(*framework.value, *project.value));
+    auto receipt=Inspected(*framework.value,*project.value);
+    auto checked=CheckCommon(receipt,*framework.value,gameRoot);
+    if(!checked.Succeeded()) return {std::nullopt,std::move(checked.diagnostics)};
+    return Result<InspectReceipt>::Success(std::move(receipt));
 }
 
 Output BuildProject(const BuildRequest& request, const Services::MapSaveService::Progress& progress) {
@@ -68,6 +91,9 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         if (!project.Succeeded()) return {std::nullopt, std::move(project.diagnostics)};
         if (!request.expectedProjectSha256.empty() && request.expectedProjectSha256 != project.value->source.sha256)
             return Output::Failure("HLua", "HLUA_PROJECT_CHANGED", "工程 Lua 身份已改变，请重新检查。");
+        auto checkedInputs=Inspected(*framework.value,*project.value);
+        auto common=CheckCommon(checkedInputs,*framework.value,request.gameRoot);
+        if(!common.Succeeded()) return {std::nullopt,std::move(common.diagnostics)};
         if (!std::filesystem::create_directory(request.workspace)) return Output::Failure("HLua", "HLUA_OUTPUT_PATH", "无法创建独占工作目录。");
         if (progress) progress("hlua-base");
         auto base = Detail::CaptureBase(request);
@@ -178,7 +204,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         auto hash = Sha256File(task.written);
         if (!hash.Succeeded()) return {std::nullopt, std::move(hash.diagnostics)};
         BuildReceipt receipt;
-        receipt.inputs = Inspected(*framework.value, *project.value);
+        receipt.inputs = std::move(checkedInputs);
         receipt.baseSha256 = base.value->inputSha256; receipt.outputSha256 = *hash.value; receipt.output = task.written;
         receipt.objects = std::move(hslk.objects); receipt.console = std::move(hslk.console);
         receipt.idReplayPassed = hslk.replayPassed; receipt.archiveReadbackPassed = true;

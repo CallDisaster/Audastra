@@ -81,7 +81,7 @@ void RegisterHLuaTools(McpServer& server) {
             if (!parsed.Succeeded()) return Failure(parsed);
             auto& request = *parsed.value;
             if (command == "hlua_inspect") {
-                auto result = HLua::InspectProject(request.framework,request.project);
+                auto result = HLua::InspectProject(request.framework,request.project,request.gameRoot);
                 return result.Succeeded() ? Json(HLua::InspectReceiptJson(*result.value)) : Failure(result);
             }
             if (command == "hlua_new") {

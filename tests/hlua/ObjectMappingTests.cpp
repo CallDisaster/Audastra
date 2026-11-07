@@ -40,10 +40,12 @@ void TestHLuaObjectMapping() {
         {{"ID","ubpx"},{"field","Buttonpos"},{"slk","Profile"},{"type","int"},{"index","0"}},
         {{"ID","ubpy"},{"field","Buttonpos"},{"slk","Profile"},{"type","int"},{"index","1"}}});
     files["ability-meta.slk"] = Slk({
+        {{"ID","atp1"},{"field","Tip"},{"slk","Profile"},{"type","string"},{"repeat","4"},{"index","0"}},
         {{"ID","Hbz1"},{"field","Data"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"},{"data","1"},{"useSpecific","AHbz"}},
         {{"ID","acdn"},{"field","Cool"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"}}});
     files["units.slk"] = Slk({{{"ID","hfoo"},{"code","hfoo"},{"Name","Parent"}}});
     files["abilities.slk"] = Slk({{{"ID","AHbz"},{"code","AHbz"},{"Name","Ability parent"}}});
+    files["abilities.txt"]="[AHbz]\nTip=\"first, note\",second\n";
     const auto read = [&](const std::string& path) {
         const auto found = files.find(path);
         return found == files.end() ? Result<std::vector<std::byte>>::Failure("Test", "missing", path)
@@ -54,7 +56,7 @@ void TestHLuaObjectMapping() {
     schemaOptions.stringFiles.clear();
     auto schema = ObjectFieldSchema::Load(read, schemaOptions); Good(schema);
     CatalogLoadOptions catalogOptions;
-    catalogOptions.sources = {{ObjectType::Unit,{"units.slk"},{}},{ObjectType::Ability,{"abilities.slk"},{}}};
+    catalogOptions.sources = {{ObjectType::Unit,{"units.slk"},{}},{ObjectType::Ability,{"abilities.slk"},{"abilities.txt"}}};
     catalogOptions.stringFiles.clear();
     auto standard = StandardObjectCatalog::Load(read, catalogOptions); Good(standard);
     const auto empty = [](ObjectType type) {
@@ -77,10 +79,12 @@ void TestHLuaObjectMapping() {
     auto encoded = Services::ObjectTransactionSnapshot::Freeze(*staged.value, std::nullopt, std::string(64,'a'), &*schema.value, &*standard.value); Good(encoded);
     const auto* skill = encoded.value->get()->CandidateNative().FindObject({ObjectType::Ability,"K000"});
     Need(skill && skill->modifications.size() == 4, "data letter and repeat addresses");
+    ability.value->front().fields.push_back({"Tip",{std::string("line\none"),std::string("quote \"two\"")},true});
+    auto rich=ApplyHslkObjects(ObjectType::Ability,empty(ObjectType::Ability),*ability.value,*schema.value,*standard.value); Good(rich);
     Services::LuaObjectSnapshotSources snapshot;
     snapshot.schema = &*schema.value; snapshot.standard = &*standard.value;
     snapshot.documents[static_cast<unsigned>(ObjectType::Unit)] = &*edited.value;
-    snapshot.documents[static_cast<unsigned>(ObjectType::Ability)] = &*staged.value;
+    snapshot.documents[static_cast<unsigned>(ObjectType::Ability)] = &*rich.value;
     snapshot.misc = {{"Misc", {{"Original", "unchanged"}}}};
     auto frozen = Services::BuildLuaObjectSnapshot(snapshot); Good(frozen);
     Script::LuaTemplateRequest check;
@@ -88,6 +92,11 @@ void TestHLuaObjectMapping() {
         + "\nend)(); assert(data.unit.v000.Name == 'line \\\"one\\\"\\nline two'); "
           "assert(data.unit.v000.Buttonpos == '0,2'); assert(data.ability.K000.DataA1 == '0.125'); "
           "assert(data.ability.K000.Cool2 == '4'); assert(data.misc.Misc.Original == 'unchanged') ?>";
+    Good(Script::RunLuaTemplate(check));
+    check.preprocessed="<? local data=(function()\n"+std::string(reinterpret_cast<const char*>(frozen.value->data()),frozen.value->size())
+        +"\nend)(); assert(data.ability.AHbz.Tip1=='first, note' and data.ability.AHbz.Tip2=='second'); "
+         "assert(data.ability.K000.Tip1=='line\\none' and data.ability.K000.Tip==data.ability.K000.Tip1); "
+         "assert(data.ability.K000.Tip2==[=[quote \"two\"]=]) ?>";
     Good(Script::RunLuaTemplate(check));
     auto blank=ParseF6ObjectIni(ObjectType::Unit,"[v001]\n_parent=\"hfoo\"\nscale=\"\"\n", "blank.ini"); Good(blank);
     auto zero=ApplyHslkObjects(ObjectType::Unit,empty(ObjectType::Unit),*blank.value,*schema.value,*standard.value); Good(zero);
