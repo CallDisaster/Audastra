@@ -88,15 +88,17 @@ void TestHLuaObjectMapping() {
     snapshot.misc = {{"Misc", {{"Original", "unchanged"}}}};
     auto frozen = Services::BuildLuaObjectSnapshot(snapshot); Good(frozen);
     Script::LuaTemplateRequest check;
-    check.preprocessed = "<? local data=(function()\n" + std::string(reinterpret_cast<const char*>(frozen.value->data()), frozen.value->size())
+    std::string chunk = "<? local data=(function()\n" + std::string(reinterpret_cast<const char*>(frozen.value->data()), frozen.value->size())
         + "\nend)(); assert(data.unit.v000.Name == 'line \\\"one\\\"\\nline two'); "
           "assert(data.unit.v000.Buttonpos == '0,2'); assert(data.ability.K000.DataA1 == '0.125'); "
           "assert(data.ability.K000.Cool2 == '4'); assert(data.misc.Misc.Original == 'unchanged') ?>";
+    check.preprocessed=chunk;
     Good(Script::RunLuaTemplate(check));
-    check.preprocessed="<? local data=(function()\n"+std::string(reinterpret_cast<const char*>(frozen.value->data()),frozen.value->size())
+    chunk="<? local data=(function()\n"+std::string(reinterpret_cast<const char*>(frozen.value->data()),frozen.value->size())
         +"\nend)(); assert(data.ability.AHbz.Tip1=='first, note' and data.ability.AHbz.Tip2=='second'); "
          "assert(data.ability.K000.Tip1=='line\\none' and data.ability.K000.Tip==data.ability.K000.Tip1); "
          "assert(data.ability.K000.Tip2==[=[quote \"two\"]=]) ?>";
+    check.preprocessed=chunk;
     Good(Script::RunLuaTemplate(check));
     auto blank=ParseF6ObjectIni(ObjectType::Unit,"[v001]\n_parent=\"hfoo\"\nscale=\"\"\n", "blank.ini"); Good(blank);
     auto zero=ApplyHslkObjects(ObjectType::Unit,empty(ObjectType::Unit),*blank.value,*schema.value,*standard.value); Good(zero);
