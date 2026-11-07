@@ -36,6 +36,7 @@
 #include <QLabel>
 #include <QTreeView>
 #include <QPushButton>
+#include <QPixmap>
 #include <QTabWidget>
 #include <QStandardItemModel>
 #include <QTemporaryDir>
@@ -95,6 +96,7 @@ class LuaScriptsTests final : public QObject {
 private slots:
     void ReloadButtonShowsRebuildStateEvenWhenAlreadyPending() {
         QToolButton button;button.setText(QStringLiteral("热重载 Lua"));
+        QPixmap icon(16,16);icon.fill(Qt::white);button.setIcon(QIcon(icon));
         QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua"),true,false);
         const auto compactWidth=button.sizeHint().width();
         QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua（需重新构建）"),true,true);
