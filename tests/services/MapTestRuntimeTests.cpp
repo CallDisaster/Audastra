@@ -501,7 +501,7 @@ void HandwrittenLuaEntriesSelectRuntime() {
     const auto hasCode = [](const auto& result, std::string_view code) {
         return std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [&](const auto& item) { return item.code == code; });
     };
-    auto map = fixture.Artifact(members(entry, {{"main.lua", Bytes("local u = require 'lib.util'\nlocal id = |hfoo|\n")},
+    auto map = fixture.Artifact(members(entry, {{"main.lua", Bytes("local u = require 'lib.util'\nlocal japi=require 'jass.japi'\nlocal id = |hfoo|\n")},
         {"lib\\util.lua", Bytes("return {}\n")}}));
     helpers(map);
     auto plan = Script::BuildIndependentMapTestLaunchPlan(map);
@@ -513,6 +513,7 @@ void HandwrittenLuaEntriesSelectRuntime() {
     plan = Script::BuildIndependentMapTestLaunchPlan(map);
     Success(plan, "handwritten Lua without hot reload");
     Require(plan.value->useOwnedLuaRuntime && !plan.value->enableLuaHotReload, "hot reload preference respected");
+    Require(hasCode(plan,"MAP_TEST_LUA_OPTIONAL_EXTENSIONS"),"owned extension limit is reported only for the selected engine");
 
     auto missing = fixture.Artifact(members(entry, {}));
     helpers(missing);
@@ -539,6 +540,8 @@ void HandwrittenLuaEntriesSelectRuntime() {
     plan = Script::BuildIndependentMapTestLaunchPlan(map);
     Success(plan, "YDWE engine preference uses the readonly configured YDWE tree");
     Require(!plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot == fixture.runtime, "YDWE engine selected");
+    Require(hasCode(plan,"MAP_TEST_LUA_YDWE") && !hasCode(plan,"MAP_TEST_LUA_OPTIONAL_EXTENSIONS"),
+        "external engine selection is explained without the unrelated owned capability warning");
 
     auto extension = fixture.Artifact(members(Script("    call EXNative()\n    call Cheat(\"exec-lua: \\\"main\\\"\")",
         "native EXNative takes nothing returns nothing\n"), {{"main.lua", Bytes("return 1\n")}}));

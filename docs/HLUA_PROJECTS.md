@@ -32,7 +32,7 @@ war3-map-cli hlua-test D:/Projects/MyMap --framework D:/Frameworks/h-lua `
   --screenshot-after 60 D:/Builds/MyMap-shot.tga --close-after 80
 ```
 
-`$AudastraInstall` 为已安装 Audastra 的目录。分隔符后的参数采用 `map-test` 的现有合同，包括计划输入、截图、关闭、热重载。只操作本次测试持有的进程。`--engine ydwe` 使用用户已安装的数据根，并须在分隔符后给 `--ydwe <目录>`；启动前扫描地图中所有 Lua 的 `io`、`os.execute`、`package.loadlib` 访问，发现则拒绝。此检查不证明动态代码完整性，也不会自动切到更宽松环境。
+`$AudastraInstall` 为已安装 Audastra 的目录。分隔符后的参数采用 `map-test` 的现有合同，包括计划输入、截图、关闭、热重载。只操作本次测试持有的进程。`--engine ydwe` 使用用户已安装的数据根，并须在分隔符后给 `--ydwe <目录>`。所有 h-lua 测试先扫描地图中全部 Lua 的 `io`、`os.execute`、`package.loadlib` 访问，发现则拒绝；回执记文件数、地图身份和请求环境。这样已有地图因扩展 JASS 接口选择外部环境时也不能绕过扫描。此检查不证明动态代码完整性，环境选择与回退原因另列于测试信息。
 
 ## 数据与诊断
 

@@ -21,7 +21,8 @@ Status TestSession::Cleanup() {
     return workspace_ ? workspace_->Cleanup(true) : Status::Ok();
 }
 Status ValidateTestEngineSources(const std::filesystem::path& map, std::string_view expectedSha256, Services::MapTestLuaEngine engine) {
-    if (engine == Services::MapTestLuaEngine::Ydwe) {
+    // 在选择运行环境之前统一核对，旧的扩展接口回退路径也不能绕过此门。
+    {
         auto archive = MapArchiveSession::Open(map);
         if (!archive.Succeeded()) return {std::move(archive.diagnostics)};
         if (archive.value->SourceSha256()!=expectedSha256) return Status::Failure("HLua","HLUA_TEST_SOURCE_CHANGED","测试源地图身份已改变。");
@@ -30,11 +31,16 @@ Status ValidateTestEngineSources(const std::filesystem::path& map, std::string_v
         for (const auto& file : *files.value) {
             const std::string_view text(reinterpret_cast<const char*>(file.bytes->data()), file.bytes->size());
             const auto uses = Lua::ScanExternalCapabilities(text);
-            if (!uses.empty()) return Status::Failure("HLua", "HLUA_YDWE_EXTERNAL_CAPABILITY",
+            if (!uses.empty()) return Status::Failure("HLua", "HLUA_TEST_EXTERNAL_CAPABILITY",
                 file.path + ':' + std::to_string(uses.front().line) + "：发现外部能力访问 " + uses.front().name + "，未启动宽松引擎。");
         }
+        Status result;
+        result.diagnostics.push_back({DiagnosticSeverity::Info,"HLua","HLUA_TEST_SOURCE_AUDIT",
+            "已扫描 " + std::to_string(files.value->size()) + " 份 Lua；io、os.execute、package.loadlib 字面访问为 0；地图 SHA-256="
+            + std::string(expectedSha256) + "；请求环境=" + (engine==Services::MapTestLuaEngine::Ydwe ? "ydwe" : "owned")
+            + "。动态代码不作为完整性证明。",{}});
+        return result;
     }
-    return Status::Ok();
 }
 Result<std::shared_ptr<TestSession>> StartProjectTest(const TestRequest& request) {
     using Output = Result<std::shared_ptr<TestSession>>;
@@ -65,6 +71,8 @@ Result<std::shared_ptr<TestSession>> StartProjectTest(const TestRequest& request
     auto session = std::make_shared<TestSession>(); session->build_ = std::move(*built.value);
     session->launch_ = std::move(*launched.value); session->workspace_ = std::move(*frozen.value);
     auto result = Output::Success(std::move(session));
-    result.diagnostics = std::move(prepared.diagnostics); return result;
+    result.diagnostics = std::move(prepared.diagnostics);
+    result.diagnostics.insert(result.diagnostics.end(),permitted.diagnostics.begin(),permitted.diagnostics.end());
+    return result;
 }
 } // namespace War3Map::HLua

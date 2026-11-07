@@ -623,8 +623,6 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             std::string list;
             for (const auto& module : requirements.value->luaModules) { if (!list.empty()) list += "、"; list += module; }
             notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_LUA_REQUIRE_MODULES", "Lua 词法依赖：" + list + "；动态 require 不作为完整性证明。"});
-            if (requirements.value->luaModules.contains("jass.japi")) notes.push_back({DiagnosticSeverity::Warning,
-                "Map.Test.Runtime", "MAP_TEST_LUA_OPTIONAL_EXTENSIONS", "自带环境的 jass.japi 不实现 Dz/EX；相关伤害、属性、同步和帧界面不可用。"});
         }
         const auto& entries = requirements.value->luaEntries;
         if (!selected.useOwnedLuaRuntime && !entries.empty()) {
@@ -640,6 +638,9 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                     + (selected.enableLuaHotReload ? "；修改 Lua 文件并应用后，可用“热重载”送进游戏。" : "。"), std::nullopt});
             } else {
                 handwrittenYdwe = true;
+                if (selected.handwrittenLuaEngine == Services::MapTestLuaEngine::Ydwe)
+                    notes.push_back({DiagnosticSeverity::Info,"Map.Test.Runtime","MAP_TEST_LUA_YDWE",
+                        "作者选择 YDWE 的 Lua 环境加载模块 " + modules + "；本次不使用自带环境，不能热重载。",{}});
                 if (selected.handwrittenLuaEngine == Services::MapTestLuaEngine::Owned)
                     notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "MAP_TEST_LUA_YDWE_FALLBACK",
                         (required ? "地图还用到原版游戏没有的接口 " + requirements.value->missing.begin()->substr(0, 80)
@@ -648,6 +649,8 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             }
         }
         if (selected.useOwnedLuaRuntime) {
+            if (requirements.value->luaModules.contains("jass.japi")) notes.push_back({DiagnosticSeverity::Warning,
+                "Map.Test.Runtime", "MAP_TEST_LUA_OPTIONAL_EXTENSIONS", "自带环境的 jass.japi 不实现 Dz/EX；相关伤害、属性、同步和帧界面不可用。"});
             if (required)
                 return Failure<LaunchPlan>("MAP_TEST_OWN_LUA_EXTENSION_UNSUPPORTED",
                     "经典 Lua 入口引用了所选原版游戏没有的接口：" + requirements.value->missing.begin()->substr(0, 80)

@@ -84,6 +84,7 @@ int RunHLua(int argc, wchar_t** argv) {
         const auto permitted=HLua::ValidateTestEngineSources(result.value->output,result.value->outputSha256,
             broad ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned);
         if(!permitted.Succeeded()) return Failed(permitted.diagnostics);
+        for(const auto& diagnostic:permitted.diagnostics) std::cout << diagnostic.code << ": " << diagnostic.message << '\n';
         std::vector<std::wstring> args{argv[0], L"map-test", result.value->output.wstring(), request.gameRoot.wstring(), helpers.wstring()};
         args.insert(args.end(),{L"--lua-engine",engine});
         args.insert(args.end(), testOptions.begin(), testOptions.end());

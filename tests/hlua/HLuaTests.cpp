@@ -2,6 +2,8 @@
 #include "War3MapCore/HLua/IdAllocator.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Lua/LuaModuleScan.h"
+#include "War3MapCore/HLua/Test.h"
+#include "War3MapCore/Mpq/MpqWriter.h"
 #include <Windows.h>
 #include <algorithm>
 #include <fstream>
@@ -106,8 +108,29 @@ void Sandbox() {
     File(framework.runtime, "slk/slk.lua", "local hslk_cli_ids={}\nHSLK_CLI_H_IDS={}\nHSLK_CLI_H_IDI=1\nfunction hslk_unit(t) end");
     Need(!EvaluateHslk(framework, project, {}).Succeeded(), "replay count mismatch");
 }
+void TestSourceAudit() {
+    const auto root=std::filesystem::temp_directory_path()/
+        ("audastra-hlua-audit-"+std::to_string(GetCurrentProcessId())+"-"+std::to_string(GetTickCount64()));
+    Need(std::filesystem::create_directory(root),"exclusive original fixture directory");
+    struct Cleanup { std::filesystem::path path; ~Cleanup(){std::error_code ec;std::filesystem::remove_all(path,ec);} } cleanup{root};
+    const auto bytes=[](std::string_view text){return std::vector<std::byte>(reinterpret_cast<const std::byte*>(text.data()),
+        reinterpret_cast<const std::byte*>(text.data()+text.size()));};
+    for(const auto unsafe:{false,true}) {
+        const auto map=root/(unsafe ? "unsafe.w3x" : "safe.w3x");
+        const std::vector<Mpq::MpqBuildFile> files{{"main.lua",bytes("return require 'lib.helper'")},
+            {"lib/helper.lua",bytes(unsafe ? "local x=os['execute']; return x" : "-- io.open('comment')\nreturn 'os.execute()'")}};
+        Good(Mpq::WriteMpqArchive(map,files)); auto sha=Sha256File(map); Good(sha);
+        for(const auto engine:{Services::MapTestLuaEngine::Owned,Services::MapTestLuaEngine::Ydwe}) {
+            const auto result=ValidateTestEngineSources(map,*sha.value,engine);
+            Need(result.Succeeded()!=unsafe,"all requested engines pass the same source gate before a possible engine fallback");
+            Need(!result.diagnostics.empty() && result.diagnostics.front().code==
+                (unsafe ? "HLUA_TEST_EXTERNAL_CAPABILITY" : "HLUA_TEST_SOURCE_AUDIT"),"source audit is reviewable in receipt");
+        }
+        Need(!ValidateTestEngineSources(map,std::string(64,'0'),Services::MapTestLuaEngine::Owned).Succeeded(),"stale source fails before engine selection");
+    }
+}
 }
 int main() {
-    try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); std::cout << "HLua core fixtures passed\n"; return 0; }
+    try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); TestSourceAudit(); std::cout << "HLua core fixtures passed\n"; return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

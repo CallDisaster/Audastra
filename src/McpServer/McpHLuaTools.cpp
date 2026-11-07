@@ -108,7 +108,8 @@ void RegisterHLuaTools(McpServer& server) {
                 auto result=HLua::StartProjectTest(test);
                 if (!result.Succeeded()) return Failure(result);
                 context->session=std::move(*result.value); context->identity=QUuid::createUuid().toString(QUuid::WithoutBraces);
-                auto response=State(*context); response.insert("build",Json(HLua::BuildReceiptJson(context->session->Build()))); return response;
+                auto response=State(*context); response.insert("build",Json(HLua::BuildReceiptJson(context->session->Build())));
+                response.insert("diagnostics",DiagnosticsJson(result.diagnostics).value("diagnostics")); return response;
             }
             request.idsOnly = command == "hlua_ids";
             auto result = HLua::BuildProject(request);
