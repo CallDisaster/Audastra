@@ -41,6 +41,8 @@ struct LuaHost::Impl {
     std::uint32_t random = 0x41d05327;
     bool executing = false, budgetExceeded = false;
     bool missingJapiReported = false;
+    std::size_t executionPeakMemory=0;
+    LuaHostStatistics lastStatistics;
     std::uint32_t callbackDepth = 0;
     std::string console;
     std::string_view requestedModule;
@@ -65,6 +67,7 @@ struct LuaHost::Impl {
         auto* next = std::realloc(pointer, size);
         if (!next) { self.budgetExceeded = true; return nullptr; }
         self.memory = self.memory - oldSize + size;
+        self.executionPeakMemory=std::max(self.executionPeakMemory,self.memory);
         return next;
     }
     static int Traceback(lua_State* lua) {
@@ -369,10 +372,13 @@ struct LuaHost::Impl {
             return Failure(LuaReloadResult::NotReady, "Lua 宿主尚未就绪、线程不符或正处于执行中。");
         callbacks.Drain();
         executing = true; budgetExceeded = false;
+        executionPeakMemory=memory;
         instructionsLeft = limits.instructions; started = GetTickCount64();
         struct Execution {
             Impl& host;
             ~Execution() {
+                host.lastStatistics={GetTickCount64()-host.started,host.limits.instructions-host.instructionsLeft,
+                    host.executionPeakMemory,host.totalRead,host.readModules.size()};
                 lua_sethook(host.state, nullptr, 0, 0); lua_settop(host.state, 0);
                 host.executing = false; host.requestedModule = {}; host.reloadSource = {};
             }
@@ -505,6 +511,7 @@ LuaHostResult LuaHost::BindNatives(std::shared_ptr<NativeProvider> provider) {
 }
 std::size_t LuaHost::MemoryBytes() const noexcept { return impl_->memory; }
 std::size_t LuaHost::CallbackCount() const noexcept { return impl_->callbacks.Count(); }
+LuaHostStatistics LuaHost::LastExecutionStatistics() const noexcept { return impl_->lastStatistics; }
 std::string_view LuaHost::ConsoleText() const noexcept { return impl_->console; }
 void LuaHost::ClearConsole() noexcept { impl_->console.clear(); }
 

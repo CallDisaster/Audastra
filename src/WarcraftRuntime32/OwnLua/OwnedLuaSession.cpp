@@ -114,7 +114,11 @@ public:
             Fatal("Lua 模块入口发生重入、线程变化或地图代际变化。"); return;
         }
         ++executionDepth;
-        const auto result = host->ExecuteModule(name);
+        auto result = host->ExecuteModule(name);
+        const auto measured=host->LastExecutionStatistics();
+        result.message += "\nLUA_ENTRY_STATS module="+std::string(name.substr(0,240))+" elapsed_ms="+std::to_string(measured.elapsedMilliseconds)
+            +" instructions="+std::to_string(measured.instructionsUsed)+" peak_bytes="+std::to_string(measured.peakMemoryBytes)
+            +" source_bytes="+std::to_string(measured.loadedModuleBytes)+" modules="+std::to_string(measured.loadedModules);
         --executionDepth;
         if (result.Succeeded()) ++observation.modules;
         Report(result);

@@ -33,6 +33,10 @@ struct LuaHostResult {
     std::string message;
     [[nodiscard]] bool Succeeded() const noexcept { return code == LuaReloadResult::Success; }
 };
+struct LuaHostStatistics {
+    std::uint64_t elapsedMilliseconds=0, instructionsUsed=0;
+    std::size_t peakMemoryBytes=0, loadedModuleBytes=0, loadedModules=0;
+};
 
 class LuaHost final {
 public:
@@ -49,6 +53,7 @@ public:
     [[nodiscard]] LuaHostResult ReloadModule(std::string_view module, std::string_view source);
     [[nodiscard]] std::size_t MemoryBytes() const noexcept;
     [[nodiscard]] std::size_t CallbackCount() const noexcept;
+    [[nodiscard]] LuaHostStatistics LastExecutionStatistics() const noexcept;
     [[nodiscard]] std::string_view ConsoleText() const noexcept;
     // 已转发的打印清空，长时间测试不会因 16 KiB 上限而丢掉后续输出。
     void ClearConsole() noexcept;
