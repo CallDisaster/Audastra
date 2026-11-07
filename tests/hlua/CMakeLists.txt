@@ -1,4 +1,4 @@
-add_executable(war3-hlua-tests HLuaTests.cpp)
+add_executable(war3-hlua-tests HLuaTests.cpp ObjectMappingTests.cpp)
 target_link_libraries(war3-hlua-tests PRIVATE War3MapEditor::HLua)
 target_compile_definitions(war3-hlua-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-hlua-tests PRIVATE /W4 /permissive- /utf-8)

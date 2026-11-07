@@ -8,6 +8,7 @@
 #include <iostream>
 #include <stdexcept>
 
+void TestHLuaObjectMapping();
 namespace {
 using namespace War3Map;
 using namespace War3Map::HLua;
@@ -100,6 +101,6 @@ void Sandbox() {
 }
 }
 int main() {
-    try { Ids(); Lexical(); Sandbox(); std::cout << "HLua core fixtures passed\n"; return 0; }
+    try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); std::cout << "HLua core fixtures passed\n"; return 0; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

@@ -1,0 +1,40 @@
+#pragma once
+#include "War3MapCore/HLua/ObjectMapping.h"
+#include "War3MapCore/Services/MapSaveService.h"
+
+namespace War3Map::HLua {
+enum class BuildTarget { Test, Build, Dist };
+struct BuildRequest {
+    FrameworkLocation framework;
+    std::filesystem::path project;
+    std::filesystem::path baseMap; // 空路径使用工程内 map 三件套。
+    std::filesystem::path target;
+    std::filesystem::path workspace; // 必须不存在；失败证据由调用方保留。
+    std::filesystem::path gameRoot;
+    BuildTarget mode = BuildTarget::Test;
+    HslkLimits limits;
+    std::string expectedProjectSha256;
+};
+struct InspectReceipt {
+    std::string frameworkSha256, projectSha256;
+    std::size_t runtimeFiles = 0, hslkFiles = 0;
+    std::vector<std::string> jassModules;
+};
+struct BuildReceipt {
+    InspectReceipt inputs;
+    std::string baseSha256, outputSha256;
+    std::filesystem::path output;
+    std::vector<HslkObject> objects;
+    std::vector<std::string> differences;
+    std::string console;
+    bool idReplayPassed = false;
+    bool archiveReadbackPassed = false;
+    std::size_t peakLuaBytes = 0;
+    std::uint64_t luaInstructions = 0;
+};
+
+[[nodiscard]] Result<InspectReceipt> InspectProject(const FrameworkLocation& framework,
+    const std::filesystem::path& project);
+[[nodiscard]] Result<BuildReceipt> BuildProject(const BuildRequest& request,
+    const Services::MapSaveService::Progress& progress = {});
+} // namespace War3Map::HLua

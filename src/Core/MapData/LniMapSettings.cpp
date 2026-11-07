@@ -1,5 +1,6 @@
 #include "War3MapCore/MapData/LniMapSettings.h"
 #include "War3MapCore/Text/TextUtil.h"
+#include "War3MapCore/Text/LniData.h"
 
 #include <algorithm>
 #include <charconv>
@@ -54,13 +55,7 @@ std::string Key(std::string_view key) {
     return std::string(key);
 }
 
-struct Value {
-    enum class Kind { Number, String, Table } kind = Kind::Table;
-    std::string text;
-    std::map<std::string, Value> fields;
-    std::size_t offset = 0;
-    bool used = false;
-};
+using Value = War3Map::Text::LniDataValue;
 
 struct ParseFailure : std::runtime_error {
     std::string code;
@@ -71,7 +66,8 @@ struct ParseFailure : std::runtime_error {
 
 class Reader {
 public:
-    explicit Reader(std::string_view input) : input_(input) {
+    explicit Reader(std::string_view input,
+        std::function<std::string(std::string_view)> normalize = Key) : input_(input), normalize_(std::move(normalize)) {
         if (input_.starts_with("\xef\xbb\xbf")) position_ = 3;
     }
     Value Read() {
@@ -88,7 +84,7 @@ public:
                 auto name = War3Map::Text::TrimLineWhitespace(input_.substr(begin, end - begin));
                 if (name.empty()) Fail("LNI_SYNTAX", "节名称不能为空。");
                 position_ = end + 1;
-                auto [it, inserted] = root.fields.emplace(Key(name), Value{});
+                auto [it, inserted] = root.fields.emplace(Normalize(name), Value{});
                 if (!inserted) Fail("LNI_DUPLICATE", "重复或别名冲突的节：" + std::string(name));
                 section = &it->second; section->offset = begin;
                 EndLine();
@@ -97,7 +93,7 @@ public:
                 const auto name = Identifier();
                 Horizontal(); Expect('=');
                 auto value = ReadValue(0);
-                if (!section->fields.emplace(Key(name), std::move(value)).second)
+                if (!section->fields.emplace(Normalize(name), std::move(value)).second)
                     Fail("LNI_DUPLICATE", "重复或别名冲突的字段：" + name);
                 EndLine();
             }
@@ -105,6 +101,7 @@ public:
         return root;
     }
 private:
+    std::string Normalize(std::string_view key) const { return normalize_ ? normalize_(key) : std::string(key); }
     [[noreturn]] void Fail(std::string code, std::string message) const {
         throw ParseFailure(std::move(code), std::move(message), position_);
     }
@@ -197,7 +194,7 @@ private:
                 if (first >= 0x80 || (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z')
                     || (first >= '0' && first <= '9') || first == '_') {
                     auto candidate = Identifier(); Horizontal();
-                    if (Take('=')) key = Key(candidate); else position_ = begin;
+                    if (Take('=')) key = Normalize(candidate); else position_ = begin;
                 }
                 if (key.empty()) key = std::to_string(implicitIndex++);
                 auto child = ReadValue(depth + 1);
@@ -224,6 +221,7 @@ private:
         return value;
     }
     std::string_view input_;
+    std::function<std::string(std::string_view)> normalize_;
     std::size_t position_ = 0;
     std::size_t nodes_ = 0;
 };
@@ -428,3 +426,21 @@ Result<LniMapSettings> ParseLniMapSettings(std::span<const std::byte> data) {
 }
 
 } // namespace War3Map::MapData
+
+namespace War3Map::Text {
+Result<LniDataValue> ParseLniData(std::span<const std::byte> data,
+    const std::function<std::string(std::string_view)>& normalizeKey) {
+    if (data.size() > MapData::maxBytes)
+        return Result<LniDataValue>::Failure("Text.LNI", "LNI_BUDGET", "LNI 数据超过16 MiB预算。");
+    try {
+        const std::string_view text(reinterpret_cast<const char*>(data.data()), data.size());
+        if (text.find('\0') != text.npos)
+            throw MapData::ParseFailure("LNI_SYNTAX", "LNI 原文含未转义的零字节。", text.find('\0'));
+        return Result<LniDataValue>::Success(MapData::Reader(text, normalizeKey).Read());
+    } catch (const MapData::ParseFailure& failure) {
+        auto result = Result<LniDataValue>::Failure("Text.LNI", failure.code, failure.what());
+        result.diagnostics.front().origin = OriginSpan{{}, failure.offset, 1, {}};
+        return result;
+    }
+}
+} // namespace War3Map::Text
