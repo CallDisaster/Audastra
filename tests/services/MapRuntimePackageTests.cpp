@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -30,9 +31,10 @@ bool Code(const auto& result, std::string_view code) {
     for (const auto& item : result.diagnostics) if (item.code == code) return true;
     return false;
 }
+std::atomic_uint64_t fixtureSequence{0};
 struct Fixture {
     std::filesystem::path root = std::filesystem::temp_directory_path() / ("audastra-runtime-package-"
-        + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+        + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()) + "-" + std::to_string(++fixtureSequence));
     nlohmann::json manifest;
     MapRuntimePackageSource source;
     explicit Fixture(bool bundledClient = false) {
