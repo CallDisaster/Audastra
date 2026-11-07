@@ -16,6 +16,8 @@ target_sources(war3-map-cli PRIVATE ScriptMigrationCommand.cpp ScriptMigrationCo
 target_sources(war3-map-cli PRIVATE MapCreateCommand.cpp MapCreateCommand.h)
 target_sources(war3-map-cli PRIVATE MapTestCommand.cpp MapTestCommand.h)
 target_sources(war3-map-cli PRIVATE LuaFolderCommand.cpp LuaFolderCommand.h)
+target_sources(war3-map-cli PRIVATE HLuaCommand.cpp HLuaCommand.h)
+target_link_libraries(war3-map-cli PRIVATE War3MapEditor::HLua)
 target_sources(war3-map-cli PRIVATE WctSourceCommand.cpp WctSourceCommand.h)
 target_sources(war3-map-cli PRIVATE WtgSourceCommand.cpp WtgSourceCommand.h)
 target_sources(war3-map-cli PRIVATE TriggerTextCommand.cpp TriggerTextCommand.h)

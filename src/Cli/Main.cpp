@@ -20,6 +20,7 @@
 #include "TerrainBlightSaveCommand.h"
 #include "MapEditSaveCommand.h"
 #include "LuaFolderCommand.h"
+#include "HLuaCommand.h"
 #include "MapUiImportCommand.h"
 #include "TriggerRemovalAuditCommand.h"
 #include "ObjectModelListCommand.h"
@@ -96,6 +97,8 @@ void PrintUsage() {
         << "  map-edit-save backend: --in-process-only (explicitly disable external compilers and fallback)\n"
         << "  map-edit-save / map-test Lua source: --lua-folder <directory> --confirm-lua-deletions <reviewed-sha256>\n"
         << "war3-map-cli lua-folder inspect <map> [folder] | read <map> <member.lua>\n"
+        << "war3-map-cli hlua-inspect|hlua-ids|hlua-build|hlua-test <project> --framework <root> [--base <map>] --game <root> --workspace <new-dir> [--output <new-map>] [--target test|build|dist]\n"
+        << "war3-map-cli hlua-new <new-directory> --framework <root> --tool <root> --game <root> [--ui-root <root>]\n"
         << "war3-map-cli lua-folder link <map> <map-sha> <output> <folder> <reviewed-folder-sha> folder|map|cancel\n"
         << "war3-map-cli lua-folder unlink <map> <map-sha> <output> | save <map> <map-sha> <output> [--lua-folder <directory>] [--confirm-lua-deletions <sha>]\n"
         << "war3-map-cli lua-folder write <map> <map-sha> <member.lua> <input.lua> <file-sha|new> <output>\n"
@@ -411,6 +414,8 @@ int wmain(int argc, wchar_t** argv) {
     if (command == L"map-create") return RunMapCreate(argc, argv);
     if (command == L"map-test") return RunMapTest(argc, argv);
     if (command == L"lua-folder") return RunLuaFolder(argc, argv);
+    if (command == L"hlua-inspect" || command == L"hlua-build" || command == L"hlua-ids"
+        || command == L"hlua-test" || command == L"hlua-new") return RunHLua(argc, argv);
     if (command == L"wtg-source-inspect" && (argc == 5 ||
             (argc == 7 && std::wstring_view(argv[5]) == L"--max-nodes" && argv[6][0])))
         return RunWtgSourceInspect(argv[2], Utf8Argument(argv[3]), argv[4], argc == 7 ? Utf8Argument(argv[6]) : "");

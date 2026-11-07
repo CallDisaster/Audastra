@@ -1,6 +1,7 @@
 add_library(War3MapHLua STATIC Framework.cpp Project.cpp IdAllocator.cpp HslkSandbox.cpp Hslk.cpp)
 target_sources(War3MapHLua PRIVATE ObjectMapping.cpp F6ObjectIni.cpp)
 target_sources(War3MapHLua PRIVATE BuildSources.cpp Build.cpp RuntimeMembers.cpp)
+target_sources(War3MapHLua PRIVATE Receipt.cpp NewProject.cpp)
 add_library(War3MapEditor::HLua ALIAS War3MapHLua)
 target_include_directories(War3MapHLua PUBLIC "${PROJECT_SOURCE_DIR}/include")
 target_link_libraries(War3MapHLua PUBLIC War3MapEditor::Services)

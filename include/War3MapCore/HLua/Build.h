@@ -1,6 +1,7 @@
 #pragma once
 #include "War3MapCore/HLua/ObjectMapping.h"
 #include "War3MapCore/Services/MapSaveService.h"
+#include "War3MapCore/Services/MapCreateService.h"
 
 namespace War3Map::HLua {
 enum class BuildTarget { Test, Build, Dist };
@@ -12,6 +13,7 @@ struct BuildRequest {
     std::filesystem::path workspace; // 必须不存在；失败证据由调用方保留。
     std::filesystem::path gameRoot;
     BuildTarget mode = BuildTarget::Test;
+    bool idsOnly = false;
     HslkLimits limits;
     std::string expectedProjectSha256;
 };
@@ -37,4 +39,13 @@ struct BuildReceipt {
     const std::filesystem::path& project);
 [[nodiscard]] Result<BuildReceipt> BuildProject(const BuildRequest& request,
     const Services::MapSaveService::Progress& progress = {});
+[[nodiscard]] std::string InspectReceiptJson(const InspectReceipt& receipt);
+[[nodiscard]] std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset = 0,
+    std::size_t limit = 128);
+struct NewProjectRequest {
+    FrameworkLocation framework;
+    std::filesystem::path directory;
+    std::filesystem::path toolRoot, gameRoot, uiRoot;
+};
+[[nodiscard]] Result<Services::MapCreateReceipt> CreateProject(const NewProjectRequest& request);
 } // namespace War3Map::HLua

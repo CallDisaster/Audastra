@@ -52,8 +52,8 @@ Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const s
 
 Output BuildProject(const BuildRequest& request, const Services::MapSaveService::Progress& progress) {
     try {
-        if (request.target.empty() || request.workspace.empty() || request.gameRoot.empty()
-            || std::filesystem::exists(request.target) || std::filesystem::exists(request.workspace))
+        if ((!request.idsOnly && (request.target.empty() || std::filesystem::exists(request.target)))
+            || request.workspace.empty() || request.gameRoot.empty() || std::filesystem::exists(request.workspace))
             return Output::Failure("HLua", "HLUA_OUTPUT_PATH", "构建需要游戏数据、不存在的目标地图和独占工作目录。");
         auto framework = HLuaFrameworkLocator::Capture(request.framework);
         if (!framework.Succeeded()) return {std::nullopt, std::move(framework.diagnostics)};
@@ -87,6 +87,13 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         auto evaluated = EvaluateHslk(*framework.value, *project.value, existing, request.limits);
         if (!evaluated.Succeeded()) return {std::nullopt, std::move(evaluated.diagnostics)};
         auto& hslk = *evaluated.value;
+        if (request.idsOnly) {
+            BuildReceipt receipt; receipt.inputs = Inspected(*framework.value, *project.value);
+            receipt.baseSha256 = base.value->inputSha256; receipt.objects = std::move(hslk.objects);
+            receipt.console = std::move(hslk.console); receipt.idReplayPassed = hslk.replayPassed;
+            receipt.peakLuaBytes = hslk.peakMemoryBytes; receipt.luaInstructions = hslk.instructions;
+            return Output::Success(std::move(receipt));
+        }
         std::vector<HslkObject> all = base.value->f6Objects;
         all.insert(all.end(), hslk.objects.begin(), hslk.objects.end());
         Services::MapSaveTask task; task.target = request.target;

@@ -1,6 +1,7 @@
 #include "War3MapCore/HLua/ObjectMapping.h"
 #include "War3MapCore/Text/LniData.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include <charconv>
 #include <cmath>
 
@@ -11,7 +12,7 @@ Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, st
     if (!Audastra::Runtime32::LuaMailboxUtf8(text)) return Output::Failure("HLua", "HLUA_LNI_ENCODING", "F6 INI 必须是 UTF-8：" + std::string(source));
     auto parsed = Text::ParseLniData({reinterpret_cast<const std::byte*>(text.data()), text.size()});
     if (!parsed.Succeeded()) {
-        for (auto& d : parsed.diagnostics) { d.message = std::string(source) + "：" + d.message; if (d.origin) d.origin->source = std::filesystem::u8path(source); }
+        for (auto& d : parsed.diagnostics) { d.message = std::string(source) + "：" + d.message; if (d.origin) d.origin->source = IO::PathFromUtf8(source); }
         return {std::nullopt, std::move(parsed.diagnostics)};
     }
     if (parsed.value->fields.size() > limits.objects) return Output::Failure("HLua", "HLUA_OBJECT_BUDGET", "F6 物体数超过预算。");
