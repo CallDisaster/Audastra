@@ -27,7 +27,7 @@ int Time(lua_State* L) {
     value.tm_hour = field("hour", 12); value.tm_min = field("min", 0); value.tm_sec = field("sec", 0);
     lua_getfield(L, 1, "isdst"); value.tm_isdst = lua_isnil(L, -1) ? -1 : lua_toboolean(L, -1); lua_pop(L, 1);
     const auto time = std::mktime(&value);
-    if (time == static_cast<std::time_t>(-1)) return luaL_error(L, "os.time 无法表示该时间。");
+    if (time < 0 || time > 32535215999LL) return luaL_error(L, "os.time 无法在1970..3000范围内表示该时间。");
     lua_pushvalue(L, 1);
     Integer(L, "year", value.tm_year + 1900); Integer(L, "month", value.tm_mon + 1); Integer(L, "day", value.tm_mday);
     Integer(L, "hour", value.tm_hour); Integer(L, "min", value.tm_min); Integer(L, "sec", value.tm_sec);

@@ -1,4 +1,5 @@
 #include "LuaBehaviorModules.h"
+#include "LuaNativeBindings.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 #include <lua.h>
@@ -103,7 +104,7 @@ void LuaBehaviorModules::Install(lua_State* lua, LuaFunction consoleWrite, LuaFu
         lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, read, 1); lua_setfield(lua, -2, "__index");
         lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, write, 1); lua_setfield(lua, -2, "__newindex");
         lua_pushstring(lua, name); lua_setfield(lua, -2, "__metatable");
-        lua_setmetatable(lua, -2); lua_setfield(lua, -2, name);
+        lua_setmetatable(lua, -2); LuaNativeBindings::ProtectHostTable(lua,-1); lua_setfield(lua, -2, name);
     };
     module("jass.runtime", ReadRuntime, WriteRuntime);
     module("jass.console", ReadConsole, WriteConsole);

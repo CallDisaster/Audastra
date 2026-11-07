@@ -186,6 +186,7 @@ void HLuaStartupLibraries() {
         console.write('console text', '\n')
         rt.debugger=4279
         assert(rt.debugger==nil)
+        assert(not pcall(rawset,rt,'debugger',4279) and not pcall(rawset,console,'write',function() end))
         local api=require('jass.japi')
         assert(api.EXUnimplemented==nil and api.DzUnimplemented==nil)
         assert(not pcall(rawset,api,'EXUnimplemented',function() return true end))
