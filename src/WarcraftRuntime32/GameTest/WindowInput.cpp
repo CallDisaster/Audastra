@@ -13,7 +13,8 @@ using namespace War3Map::Runtime;
 std::atomic<bool> endpointStarting{false};
 std::atomic<bool> exitRequested{false};
 std::atomic<unsigned> exitFaults{0};
-HANDLE exitTrace = INVALID_HANDLE_VALUE;
+std::atomic<HANDLE> exitTrace{INVALID_HANDLE_VALUE};
+wchar_t exitTracePath[32768]{};
 
 void TraceExitAddress(const char* kind, unsigned code, void* address) noexcept {
     MEMORY_BASIC_INFORMATION region{}; char path[512]{};
@@ -28,10 +29,14 @@ void TraceExitAddress(const char* kind, unsigned code, void* address) noexcept {
 }
 LONG CALLBACK ObserveExitFault(EXCEPTION_POINTERS* fault) noexcept {
     if (!fault || !fault->ExceptionRecord || !exitRequested.load() || fault->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION
-        || exitTrace == INVALID_HANDLE_VALUE || exitFaults.fetch_add(1) >= 16) return EXCEPTION_CONTINUE_SEARCH;
+        || !exitTracePath[0]) return EXCEPTION_CONTINUE_SEARCH;
     thread_local bool reporting = false;
     if (reporting) return EXCEPTION_CONTINUE_SEARCH;
     reporting = true;
+    const auto index=exitFaults.fetch_add(1);
+    if(index>=16){reporting=false;return EXCEPTION_CONTINUE_SEARCH;}
+    if(index==0) exitTrace.store(CreateFileW(exitTracePath,FILE_APPEND_DATA,FILE_SHARE_READ,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(exitTrace.load()==INVALID_HANDLE_VALUE){reporting=false;return EXCEPTION_CONTINUE_SEARCH;}
     TraceExitAddress("exception", fault->ExceptionRecord->ExceptionCode, fault->ExceptionRecord->ExceptionAddress);
     void* frames[12]{}; const auto count = CaptureStackBackTrace(0, 12, frames, nullptr);
     for (USHORT index = 0; index < count; ++index) TraceExitAddress("stack", index, frames[index]);
@@ -201,12 +206,12 @@ LRESULT CALLBACK EndpointProc(HWND endpoint, UINT message, WPARAM wparam, LPARAM
 }
 DWORD WINAPI EndpointThread(void*) {
     // 仅测试控制端存在时、且已请求退出后记录异常元数据；不读取指令或业务内存，不处理异常。
-    wchar_t temporary[32768]{}, path[32768]{};
+    wchar_t temporary[32768]{};
     const auto length = GetTempPathW(32768, temporary);
-    if (length && length < 32768 && swprintf_s(path, L"%lsaudastra-test-exit-%lu-%llu.log", temporary,
+    if (length && length < 32768 && swprintf_s(exitTracePath, L"%lsaudastra-test-exit-%lu-%llu.log", temporary,
         GetCurrentProcessId(), GetTickCount64()) > 0) {
-        exitTrace = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (exitTrace != INVALID_HANDLE_VALUE) (void)AddVectoredExceptionHandler(0, ObserveExitFault);
+        // 正常退出不生成空文件，避免在冻结测试副本里引入无关成员。
+        (void)AddVectoredExceptionHandler(0, ObserveExitFault);
     }
     WNDCLASSW type{}; type.lpfnWndProc = EndpointProc; type.hInstance = GetModuleHandleW(nullptr);
     type.lpszClassName = kWindowInputEndpointClass;

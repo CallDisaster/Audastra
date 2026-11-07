@@ -367,22 +367,25 @@ struct LuaHost::Impl {
         return Require(lua);
     }
     enum class RunKind { Chunk, Module, Reload };
-    LuaHostResult Run(std::string_view source, std::string_view name, RunKind kind) {
+    LuaHostResult Run(std::string_view source, std::string_view name, RunKind kind, std::uint32_t startupMilliseconds=0) {
         if (!state || !thread || GetCurrentThreadId() != thread || executing)
             return Failure(LuaReloadResult::NotReady, "Lua 宿主尚未就绪、线程不符或正处于执行中。");
         callbacks.Drain();
+        const auto previousMilliseconds=limits.milliseconds;
+        if(startupMilliseconds) limits.milliseconds=startupMilliseconds;
         executing = true; budgetExceeded = false;
         executionPeakMemory=memory;
         instructionsLeft = limits.instructions; started = GetTickCount64();
         struct Execution {
-            Impl& host;
+            Impl& host; std::uint32_t previousMilliseconds;
             ~Execution() {
                 host.lastStatistics={GetTickCount64()-host.started,host.limits.instructions-host.instructionsLeft,
                     host.executionPeakMemory,host.totalRead,host.readModules.size()};
                 lua_sethook(host.state, nullptr, 0, 0); lua_settop(host.state, 0);
                 host.executing = false; host.requestedModule = {}; host.reloadSource = {};
+                host.limits.milliseconds=previousMilliseconds;
             }
-        } execution{*this};
+        } execution{*this,previousMilliseconds};
         lua_pushcfunction(state, Traceback);
         if (kind == RunKind::Module) {
             requestedModule = name;
@@ -485,9 +488,10 @@ LuaHostResult LuaHost::Execute(std::string_view source, std::string_view chunkNa
         return Failure(LuaReloadResult::InvalidRequest, "Lua 代码或名称不是有效的有界 UTF-8 文本。");
     return self.Run(source, chunkName, Impl::RunKind::Chunk);
 }
-LuaHostResult LuaHost::ExecuteModule(std::string_view module) {
+LuaHostResult LuaHost::ExecuteModule(std::string_view module,std::uint32_t startupMilliseconds) {
+    if(startupMilliseconds>5000) return Failure(LuaReloadResult::InvalidRequest,"Lua 启动时间预算不能超过5000毫秒。");
     if (LuaModuleMember(module).empty()) return Failure(LuaReloadResult::InvalidRequest, "Lua 入口模块不是有效的地图内成员。");
-    return impl_->Run({}, module, Impl::RunKind::Module);
+    return impl_->Run({}, module, Impl::RunKind::Module,startupMilliseconds);
 }
 LuaHostResult LuaHost::ReloadModule(std::string_view module, std::string_view source) {
     if (LuaModuleMember(module) == kLuaObjectSnapshotMember)

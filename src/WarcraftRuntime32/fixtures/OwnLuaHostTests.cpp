@@ -235,6 +235,16 @@ void FrozenObjectData() {
     Check(reads==1, "snapshot module cached once");
     Check(!host.ReloadModule("audastra.test.object-data", "return {}").Succeeded(), "frozen data cannot hot reload");
 }
+void StartupBudgetIsScoped() {
+    LuaHostLimits limits;limits.milliseconds=1;
+    LuaHost host([](std::string_view,std::size_t) {Sleep(10);return LuaModuleRead{true,"return {}",{}};},limits);
+    Success(host.Initialize(),"scoped startup budget host");
+    Success(host.ExecuteModule("first",5000),"explicit bounded startup allowance");
+    const auto stats=host.LastExecutionStatistics();
+    Check(stats.elapsedMilliseconds>=10 && stats.peakMemoryBytes>0 && stats.loadedModules==1,"measured startup statistics");
+    Check(host.ExecuteModule("second").code==LuaReloadResult::BudgetExceeded,"startup allowance does not extend subsequent work");
+    Check(host.ExecuteModule("third",5001).code==LuaReloadResult::InvalidRequest,"startup hard limit");
+}
 
 void MailboxExecutesRealLua() {
     auto mailbox = std::make_unique<LuaTestMailbox>();
@@ -310,7 +320,7 @@ void ModuleHotReload() {
 int main() {
     try {
         TextOnlyAndSandbox(); ArchiveModules(); ClassicEntrySyntax(); BudgetsAndRandom(); RuntimeBehaviorModules(); MailboxExecutesRealLua();
-        ModuleHotReload(); HLuaStartupLibraries(); FrozenObjectData();
+        ModuleHotReload(); HLuaStartupLibraries(); FrozenObjectData(); StartupBudgetIsScoped();
         std::cout << "Own Lua 5.3 host passed; original in-memory archive/native-free fixture; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
