@@ -60,7 +60,16 @@ pwsh tools/dev/install-map-runtime.ps1 `
 
 可先不带记录冻结待审批目录，再按其清单及各角色身份制作记录，使用同一计划和记录安装到另一全新目录；封装来源路径不参与清单身份，文件内容必须相同。安装回执、便携包、正常保存、干净安装和游戏验收分别保留证据，静态夹具通过不代表这些出口已通过。
 
-切换已装运行库的地图时，正常保存先按原包身份核对原成员的所有权，宿主仍须能找到原来的可信包。原包缺席返回 `RUNTIME_PACKAGE_MISSING`；旧内部包用于这一步核验时不会取得再分发资格。最终输出继续核对所选新包的公开批准及合成客户端身份，客户端不符返回 `RUNTIME_SCRIPT_INPUT_MISMATCH`。迁移来源目录与正式安装目录应分别记录；便携打包仍要求所携带包的客户端与内置函数库一致，不隐式放宽这些条件。
+切换已装运行库的地图时，正常保存先按原包身份核对原成员的所有权，宿主仍须能找到原来的可信包。原包缺席返回 `RUNTIME_PACKAGE_MISSING`，提示已知公开版本或短身份，需要使用携带该包的安装。旧内部包只作原所有权核验，不会取得再分发资格。
+
+从 0.3.x 升级的安装同时携带公开 0.3.0 包与当前 0.4.0 包。便携打包的 `-MapRuntimeInstallationRoot` 必须提供恰好一个客户端匹配内置 AudastraUI 的当前包；显式参数 `-LegacyMapRuntimeInstallationRoot` 接受旧版安装根数组。只有这些显式旧版来源可以使用不同的客户端，而且必须同时具有有效的 `approval.json` 与 `publicDistributionApproved=true`。目录总数仍不超过16，包身份或目标目录重复均拒绝。清单和文件逐字节复制，不为旧包改版本、来源说明或摘要。示例参数：
+
+```powershell
+-MapRuntimeInstallationRoot <current-public-installation> `
+-LegacyMapRuntimeInstallationRoot @('<legacy-public-installation>')
+```
+
+合并后只有一份安装根 `runtime/catalog.json`。更新包从便携清单取得文件，两版都进入更新载荷。当前/旧版分类由程序内置客户端 SHA 决定，与活动数据目录无关；新启用只能选当前包，地图已有的旧锁定身份可以继续选择。地图使用旧包且实际注入客户端仍匹配时，正常保存保持旧包；若实际客户端匹配目录中的当前包，返回 `RUNTIME_UPGRADE_REQUIRED` 并给出两边版本和明确切换建议，不自动升级。反方向或未知/重复输入继续返回 `RUNTIME_SCRIPT_INPUT_MISMATCH`，提示更新配套函数库。选择新包和授予本工程原生代码批准仍沿同一事务，不能跳过旧成员核验，也不能留下部分输出。
 
 0.4.0 发布来源使用 `acc5755fec7ad6fb2f788b2264537130e83c8afc`。在该提交的干净检出中构建两个 Win32 Release 目标，并由正常 CMake 配置生成合成客户端，然后可使用来源绑定的冻结脚本：
 
