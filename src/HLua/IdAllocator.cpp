@@ -5,7 +5,7 @@ namespace War3Map::HLua {
 namespace {
 bool Rawcode(std::string_view id) {
     return id.size() == 4 && !(id.front() >= '0' && id.front() <= '9')
-        && std::all_of(id.begin(), id.end(), [](unsigned char c) { return c >= 0x21 && c <= 0x7e; });
+        && std::all_of(id.begin(), id.end(), [](unsigned char c) { return c >= 0x21 && c <= 0x7e && c!='[' && c!=']'; });
 }
 char Prefix(std::string_view type) {
     if (type == "ability") return 'K';

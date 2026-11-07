@@ -22,6 +22,7 @@ public:
     std::string console;
     std::string source;
     IdAllocator ids;
+    std::map<std::string, std::string> objectSources;
     std::size_t peak = 0;
     std::uint64_t instructions = 0;
 private:

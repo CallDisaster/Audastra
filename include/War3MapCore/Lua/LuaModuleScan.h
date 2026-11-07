@@ -17,4 +17,6 @@ struct EmptyTableInitializer { std::size_t begin = 0, end = 0; };
 // 词法证据，不执行代码；局部遮蔽和动态表达式不能当作依赖完整性证明。
 [[nodiscard]] std::vector<ModuleRequire> ScanModuleRequires(std::string_view source,
     std::size_t maxTokens = 4 * 1024 * 1024);
+struct ExternalCapability { std::string name; std::uint32_t line = 0; };
+[[nodiscard]] std::vector<ExternalCapability> ScanExternalCapabilities(std::string_view source);
 } // namespace War3Map::Lua

@@ -28,8 +28,11 @@ Result<ProjectSnapshot> HLuaProjectScanner::Capture(const std::filesystem::path&
                 return Result<ProjectSnapshot>::Failure("HLua", "HLUA_MODULE_COLLISION", "作者模块占用了框架成员名：" + file.path);
             result.runtimeFiles.push_back(i);
         }
-        for (const auto& item : Lua::ScanModuleRequires(LuaText(file)))
+        for (const auto& item : Lua::ScanModuleRequires(LuaText(file))) {
+            if (!item.dynamic && Audastra::Runtime32::LuaModuleMember(item.name).empty())
+                return Result<ProjectSnapshot>::Failure("HLua","HLUA_MODULE_NAME",file.path+':'+std::to_string(item.line)+"：require 模块名不是安全的 UTF-8 相对名字。");
             if (!item.dynamic && item.name.starts_with("jass.")) modules.insert(item.name);
+        }
     }
     result.jassModules.assign(modules.begin(), modules.end());
     return Result<ProjectSnapshot>::Success(std::move(result));

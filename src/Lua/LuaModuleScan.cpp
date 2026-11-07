@@ -2,6 +2,22 @@
 #include "LuaLexer.h"
 
 namespace War3Map::Lua {
+std::vector<ExternalCapability> ScanExternalCapabilities(std::string_view source) {
+    const auto tokens = Detail::Tokenize(source, false, 4 * 1024 * 1024);
+    std::vector<ExternalCapability> output;
+    for (std::size_t i = 0; i < tokens.size(); ++i) {
+        if (tokens[i].kind != Detail::TokenKind::Name) continue;
+        const auto name = tokens[i].Text(source);
+        if (name == "io") output.push_back({"io", tokens[i].line});
+        if ((name != "os" && name != "package") || i + 2 >= tokens.size()) continue;
+        const auto separator = tokens[i + 1].Text(source);
+        const auto member = tokens[i + 2].kind == Detail::TokenKind::String
+            ? Detail::StringValue(tokens[i + 2].Text(source)) : std::string(tokens[i + 2].Text(source));
+        if ((separator == "." || separator == "[") && ((name == "os" && member == "execute") || (name == "package" && member == "loadlib")))
+            output.push_back({std::string(name) + '.' + member, tokens[i].line});
+    }
+    return output;
+}
 std::vector<EmptyTableInitializer> FindEmptyTableInitializers(std::string_view source, std::string_view variable) {
     const auto tokens = Detail::Tokenize(source, false, 4 * 1024 * 1024);
     std::vector<EmptyTableInitializer> output;

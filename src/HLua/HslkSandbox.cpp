@@ -95,7 +95,12 @@ Status HslkSandbox::Run(std::string_view text, std::string_view name) {
     source = name;
     const std::string chunk = "@" + std::string(name);
     if (luaL_loadbufferx(lua_, text.data(), text.size(), chunk.c_str(), "t") != LUA_OK) return Error("HLUA_SYNTAX");
-    if (lua_pcall(lua_, 0, 0, 0) != LUA_OK) return Error("HLUA_BUILD_EXECUTION");
+    lua_pushcfunction(lua_, [](lua_State* L) -> int {
+        luaL_traceback(L,L,lua_type(L,1)==LUA_TSTRING ? lua_tostring(L,1) : "构建抛出非文本错误。",1); return 1;
+    });
+    lua_insert(lua_,-2);
+    if (lua_pcall(lua_, 0, 0, 1) != LUA_OK) return Error("HLUA_BUILD_EXECUTION");
+    lua_pop(lua_,1);
     return exceeded_ ? Status::Failure("HLua", "HLUA_SANDBOX_LIMIT", "构建预算已耗尽。") : Status::Ok();
 }
 Status HslkSandbox::CallText(const char* function, std::string_view text) {
@@ -122,6 +127,16 @@ int HslkSandbox::AllocateId(lua_State* L) {
     };
     auto result = host.ids.Allocate(field("_class"), field("_parent"), field("_id_force", true));
     if (!result.Succeeded()) return luaL_error(L, "%s: %s", result.diagnostics.front().code.c_str(), result.diagnostics.front().message.c_str());
+    std::string origin=host.source;
+    for (int level=1;level<32;++level) {
+        lua_Debug frame{};
+        if (!lua_getstack(L,level,&frame) || !lua_getinfo(L,"Sl",&frame)) break;
+        const std::string_view name=frame.source ? frame.source : "";
+        if (name.starts_with("@hslk/") || name.starts_with("@hslk\\")) {
+            origin=std::string(name.substr(1))+':'+std::to_string(frame.currentline); break;
+        }
+    }
+    host.objectSources.emplace(*result.value,std::move(origin));
     lua_pushlstring(L, result.value->data(), result.value->size()); return 1;
 }
 Status HslkSandbox::InstallAllocator() {
@@ -160,6 +175,7 @@ int HslkSandbox::Extract(lua_State* L) {
     for (std::size_t i = 1; i <= count; ++i) {
         lua_rawgeti(L, -1, i); luaL_checktype(L, -1, LUA_TTABLE);
         HslkObject object; object.id = string(-1, "_id"); object.parent = string(-1, "_parent"); object.objectClass = string(-1, "_class");
+        if (host.objectSources.contains(object.id)) object.source=host.objectSources.at(object.id);
         lua_pushnil(L);
         while (lua_next(L, -2)) {
             if (lua_type(L, -2) != LUA_TSTRING) return luaL_error(L, "物编字段名必须是文本。");

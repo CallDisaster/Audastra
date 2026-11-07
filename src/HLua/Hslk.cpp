@@ -88,6 +88,11 @@ Result<HslkOutput> EvaluateHslk(const FrameworkSnapshot& framework, const Projec
         HslkOutput output;
         status = host.ReadObjects(output.objects);
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
+        for(const auto& object:output.objects) {
+            bool supported=false;
+            for(unsigned i=0;i<7;++i) if(object.objectClass==ObjectData::ToString(static_cast<ObjectData::ObjectType>(i))) supported=true;
+            if(!supported) return Result<HslkOutput>::Failure("HLua","HLUA_OBJECT_CLASS_UNSUPPORTED",object.source+"：未知物编类别 "+object.objectClass);
+        }
         output.generatedIds.assign(host.ids.Allocated().begin(), host.ids.Allocated().end());
         if (output.objects.size() != output.generatedIds.size())
             return Result<HslkOutput>::Failure("HLua", "HLUA_BUILD_ID_MISMATCH", "登记物体数与 ID 分配次数不一致。");

@@ -1,6 +1,7 @@
 #include "HLuaCommand.h"
 #include "MapTestCommand.h"
 #include "War3MapCore/HLua/Build.h"
+#include "War3MapCore/HLua/Test.h"
 #include "War3MapCore/Services/MapCreateService.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include <Windows.h>
@@ -30,6 +31,7 @@ int RunHLua(int argc, wchar_t** argv) {
     std::filesystem::path tool, ui, helpers;
     std::size_t offset = 0, limit = 128;
     std::vector<std::wstring> testOptions;
+    std::wstring engine=L"owned";
     std::set<std::wstring> seen;
     try {
         for (int i = 3; i < argc; ++i) {
@@ -47,6 +49,7 @@ int RunHLua(int argc, wchar_t** argv) {
             else if (option == L"--tool") tool = value;
             else if (option == L"--ui-root") ui = value;
             else if (option == L"--helpers") helpers = value;
+            else if (option == L"--engine") { engine=value; if(engine!=L"owned" && engine!=L"ydwe") return Bad(); }
             else if (option == L"--expected-project") request.expectedProjectSha256 = Utf8(value);
             else if (option == L"--offset" || option == L"--limit") {
                 std::size_t end = 0; const auto number = std::stoull(value, &end);
@@ -76,7 +79,13 @@ int RunHLua(int argc, wchar_t** argv) {
         if (!result.Succeeded()) return Failed(result.diagnostics);
         std::cout << HLua::BuildReceiptJson(*result.value, offset, limit) << '\n' << std::flush;
         if (command != L"hlua-test") return 0;
+        bool broad=engine==L"ydwe";
+        for(std::size_t i=0;i+1<testOptions.size();++i) if(testOptions[i]==L"--lua-engine" && testOptions[i+1]==L"ydwe") broad=true;
+        const auto permitted=HLua::ValidateTestEngineSources(result.value->output,result.value->outputSha256,
+            broad ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned);
+        if(!permitted.Succeeded()) return Failed(permitted.diagnostics);
         std::vector<std::wstring> args{argv[0], L"map-test", result.value->output.wstring(), request.gameRoot.wstring(), helpers.wstring()};
+        args.insert(args.end(),{L"--lua-engine",engine});
         args.insert(args.end(), testOptions.begin(), testOptions.end());
         std::vector<wchar_t*> pointers; for (auto& arg : args) pointers.push_back(arg.data());
         return RunMapTest(static_cast<int>(pointers.size()), pointers.data());

@@ -90,6 +90,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         std::vector<HslkObject> all = base.value->f6Objects;
         all.insert(all.end(), hslk.objects.begin(), hslk.objects.end());
         Services::MapSaveTask task; task.target = request.target;
+        task.diagnostics = base.value->diagnostics;
         auto status = task.FreezeArchive(base.value->archive);
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
         task.testCopyOnly = request.mode == BuildTarget::Test;
@@ -176,6 +177,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         receipt.objects = std::move(hslk.objects); receipt.console = std::move(hslk.console);
         receipt.idReplayPassed = hslk.replayPassed; receipt.archiveReadbackPassed = true;
         receipt.peakLuaBytes = hslk.peakMemoryBytes; receipt.luaInstructions = hslk.instructions;
+        receipt.diagnostics = task.diagnostics;
         receipt.differences = {"所有目标把 Lua 放入地图，不写入本机 package.path。", "数值直接编码原生 float32，不保留两位小数。",
             "字符串和数组经领域文档编码，保留引号、反斜杠与换行。", "布尔、嵌套数组、ID 冲突/溢出明确拒绝。",
             "缺少真实 InitGlobals 调用时拒绝出图。", "不复制或删除游戏目录中的插件。", "构建使用有界 Lua 5.3；tostring 的数值采用最短往返文本。"};

@@ -69,6 +69,8 @@ void InstallLuaTimeLibrary(lua_State* L) {
     lua_newtable(L);
     lua_pushcfunction(L, Date); lua_setfield(L, -2, "date");
     lua_pushcfunction(L, Time); lua_setfield(L, -2, "time");
-    lua_pushcfunction(L, Clock); lua_setfield(L, -2, "clock"); lua_setglobal(L, "os");
+    lua_pushcfunction(L, Clock); lua_setfield(L, -2, "clock");
+    luaL_getsubtable(L,LUA_REGISTRYINDEX,LUA_LOADED_TABLE); lua_pushvalue(L,-2); lua_setfield(L,-2,"os"); lua_pop(L,1);
+    lua_setglobal(L, "os");
 }
 } // namespace Audastra::Runtime32::OwnLua

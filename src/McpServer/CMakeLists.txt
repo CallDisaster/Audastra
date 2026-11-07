@@ -37,6 +37,7 @@ if(TARGET Qt6::Core)
         McpMapDataTools.cpp
         McpMapCustomSettingsTools.cpp McpMapCustomSettingsTools.h
         McpMapRuntimeTools.cpp McpMapRuntimeTools.h
+        McpHLuaTools.cpp McpHLuaTools.h
         McpAuxiliaryTools.cpp McpAuxiliaryTools.h McpToolAuxiliary.cpp
         McpProductTools.cpp
         McpCodeCheckTools.cpp
@@ -77,6 +78,7 @@ if(TARGET Qt6::Core)
             War3MapEditor::ObjectData
             War3MapEditor::RenderSupport
             War3MapEditor::Services
+            War3MapEditor::HLua
             Qt6::Core
             Qt6::Network)
     target_compile_definitions(

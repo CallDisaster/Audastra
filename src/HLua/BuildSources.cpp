@@ -157,7 +157,9 @@ Result<BaseSnapshot> CaptureBase(const BuildRequest& request) {
                 if (found == list.fields.end() || found->second.kind != Text::LniDataValue::Kind::String)
                     return Fail<BaseSnapshot>("HLUA_IMPORT_INCOMPLETE", "imp.ini 必须是连续的路径文本数组。");
                 const auto canonical = Resources::CanonicalImportPath(found->second.text);
-                if (!canonical.Succeeded() || !names.contains(*canonical.value)) return Fail<BaseSnapshot>("HLUA_IMPORT_MISSING", "imp.ini 指向不存在或不安全的成员：" + found->second.text);
+                if (!canonical.Succeeded()) return {std::nullopt, std::move(canonical.diagnostics)};
+                if (!names.contains(*canonical.value)) output.diagnostics.push_back({DiagnosticSeverity::Warning,
+                    "HLua", "HLUA_IMPORT_MEMBER_MISSING", "原样保留 imp.ini 中的孤立导入记录；没有生成资源内容：" + found->second.text});
                 const auto inserted = imports.Upsert(found->second.text);
                 if (!inserted.Succeeded()) return {std::nullopt, inserted.diagnostics};
             }

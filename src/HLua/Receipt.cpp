@@ -1,14 +1,22 @@
 #include "War3MapCore/HLua/Build.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 
 namespace War3Map::HLua {
 namespace {
 using Json = nlohmann::json;
+std::string Display(std::string_view text, std::size_t maximum) {
+    if (!Audastra::Runtime32::LuaMailboxUtf8(text)) return "[非UTF-8文本，保留在原生产物中]";
+    return std::string(text.substr(0,Audastra::Runtime32::LuaMailboxUtf8Prefix(text,maximum)));
+}
 Json InspectJson(const InspectReceipt& receipt) {
+    Json modules=Json::array();
+    for (std::size_t i=0;i<std::min<std::size_t>(32,receipt.jassModules.size());++i) modules.push_back(Display(receipt.jassModules[i],240));
     return {{"framework_sha256", receipt.frameworkSha256}, {"project_sha256", receipt.projectSha256},
-        {"runtime_files", receipt.runtimeFiles}, {"hslk_files", receipt.hslkFiles}, {"jass_modules", receipt.jassModules}};
+        {"runtime_files", receipt.runtimeFiles}, {"hslk_files", receipt.hslkFiles}, {"jass_modules", std::move(modules)},
+        {"jass_module_count",receipt.jassModules.size()}};
 }
 }
 std::string InspectReceiptJson(const InspectReceipt& receipt) {
@@ -18,11 +26,17 @@ std::string InspectReceiptJson(const InspectReceipt& receipt) {
 }
 std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset, std::size_t limit) {
     Json objects = Json::array();
+    Json diagnostics = Json::array();
+    for (std::size_t i = 0; i < std::min<std::size_t>(64, receipt.diagnostics.size()); ++i) {
+        const auto& value = receipt.diagnostics[i];
+        diagnostics.push_back({{"code",Display(value.code,128)},{"message",Display(value.message,512)}});
+    }
     const auto begin = std::min(offset, receipt.objects.size());
     const auto count = std::min({limit, std::size_t{1024}, receipt.objects.size() - begin});
     for (std::size_t i = begin; i < begin + count; ++i) {
         const auto& object = receipt.objects[i];
-        objects.push_back({{"class",object.objectClass},{"id",object.id},{"parent",object.parent},{"name",object.name}});
+        objects.push_back({{"class",object.objectClass},{"id",object.id},{"parent",object.parent},{"name",Display(object.name,128)},
+            {"name_truncated",object.name.size()>128},{"name_utf8",Audastra::Runtime32::LuaMailboxUtf8(object.name)}});
     }
     Json result{{"ok",true},{"inputs",InspectJson(receipt.inputs)},{"base_sha256",receipt.baseSha256},
         {"output",receipt.output.empty() ? Json(nullptr) : Json(IO::GenericPathUtf8(receipt.output))},
@@ -30,7 +44,8 @@ std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset, st
         {"offset",begin},{"next_offset",begin + count < receipt.objects.size() ? Json(begin + count) : Json(nullptr)},
         {"id_replay_passed",receipt.idReplayPassed},{"archive_readback_passed",receipt.archiveReadbackPassed},
         {"peak_lua_bytes",receipt.peakLuaBytes},{"lua_instructions",receipt.luaInstructions},
-        {"sdk_differences",receipt.differences},{"console",receipt.console},
+        {"sdk_differences",receipt.differences},{"console",Display(receipt.console,4096)},
+        {"diagnostics",std::move(diagnostics)},{"diagnostic_count",receipt.diagnostics.size()},
         {"original_editor_verified",false},{"game_verified",false}};
     return result.dump(2);
 }

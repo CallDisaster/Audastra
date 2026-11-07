@@ -193,7 +193,7 @@ Status CheckHandwrittenLua(const Mpq::MpqArchive& map, const std::vector<Mpq::Mp
         add(member);
     }
     for (const auto& file : files) {
-        if (LowerAscii(file.name) == LowerAscii(Audastra::Runtime32::kLuaObjectSnapshotMember)) continue;
+        if (LowerAscii(file.name) == LowerAscii(std::string(Audastra::Runtime32::kLuaObjectSnapshotMember))) continue;
         if (file.name.size() < 4 || LowerAscii(file.name.substr(file.name.size() - 4)) != ".lua") continue;
         add(file.name);
         if (names.size() > 4096)
