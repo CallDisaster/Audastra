@@ -377,7 +377,8 @@ bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, Archiv
         AddDiagnostic(tr("错误"), tr("工程"), tr("WORKSPACE_SNAPSHOT_FAILED"), tr("不能完整读取工作区，当前编辑保持不变"));
         return false;
     }
-    if (!ConfirmDiscardPendingEdits(tr("打开其他项目"))) {
+    const bool savedHLua=archive && archive->session && HLuaOutputAdoptionCurrent(archive->sourcePath,archive->session->SourceSha256());
+    if (!savedHLua && !ConfirmDiscardPendingEdits(tr("打开其他项目"))) {
         return false;
     }
     if (!liveWindow || !liveProject || liveWindow->project_.get() != liveProject.data()) return false;

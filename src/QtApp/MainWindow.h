@@ -258,6 +258,7 @@ private:
     bool BuildHLuaMap(const std::filesystem::path& target, War3Map::HLua::BuildTarget mode,
         bool retainLink = false, bool idsOnly = false, bool showIds = false);
     bool SaveHLuaMap(bool choosePath);
+    [[nodiscard]] bool HLuaOutputAdoptionCurrent(const std::filesystem::path& output, std::string_view sha256) const;
     void PollLuaTestReload();
     void SaveEditorProject();
     void SaveEditorProjectAs();
@@ -372,6 +373,13 @@ private:
     std::uint32_t luaFileSequence_ = 0;
     QString luaFileLastMessage_;
     std::filesystem::path hluaOutputPath_;
+    std::string hluaLastOutputSha256_;
+    struct HLuaOutputAdoption {
+        std::filesystem::path path;
+        std::string sha256;
+        std::uint64_t generation=0,revision=0;
+    };
+    std::optional<HLuaOutputAdoption> hluaOutputAdoption_;
     std::string hluaBuiltHslkSha256_;
     std::string hluaBuiltFrameworkSha256_;
     std::set<std::string> hluaAuthorPaths_;

@@ -363,6 +363,7 @@ void MainWindow::UpdateStatusBar() {
 
 void MainWindow::ResetProjectState() {
     hluaOutputPath_.clear();hluaBuiltHslkSha256_.clear();hluaAuthorPaths_.clear();
+    hluaLastOutputSha256_.clear();hluaBuiltFrameworkSha256_.clear();hluaRebuildRequired_=false;
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());
     ResetNavigationHistory();

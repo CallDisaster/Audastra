@@ -17,6 +17,7 @@
 #include "War3MapCore/Workspace.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/HLua/ProjectConfiguration.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 
 #include <QApplication>
@@ -103,7 +104,14 @@ private slots:
         const auto root=directory.filePath("project");QVERIFY(QDir().mkpath(root+"/hslk"));
         QFile file(root+"/main.lua");QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write("function main() end\n"),20);file.close();
         auto& folder=project.LuaFolderSource();const auto review=folder.Review(std::filesystem::path(root.toStdWString()));
-        QVERIFY(review.Succeeded());QVERIFY(folder.Associate(*review.value,Services::LuaFolderChoice::Folder).Succeeded());
+        QVERIFY(review.Succeeded());QVERIFY(!folder.Associate(*review.value,Services::LuaFolderChoice::Map).Succeeded());
+        QVERIFY(QFileInfo::exists(root+"/main.lua"));
+        QVERIFY(folder.Associate(*review.value,Services::LuaFolderChoice::Folder).Succeeded());
+        QVERIFY(QtProject::ValidateHLuaHostEdits(project).Succeeded());
+        project.triggerDirty_=true;QVERIFY(!QtProject::ValidateHLuaHostEdits(project).Succeeded());project.triggerDirty_=false;
+        project.objectDirty_[0]=true;QVERIFY(!QtProject::ValidateHLuaHostEdits(project).Succeeded());project.objectDirty_[0]=false;
+        project.pendingImports_.push_back({"other.dat",{},1,Payload("x"),false});
+        QVERIFY(!QtProject::ValidateHLuaHostEdits(project).Succeeded());project.pendingImports_.pop_back();
         QSettings settings;const bool present=settings.contains("hlua/frameworkRoot");const auto old=settings.value("hlua/frameworkRoot");
         settings.remove("hlua/frameworkRoot");
         Modules::TriggerLuaScripts scripts(project);scripts.RefreshHLuaToolbar();
@@ -118,6 +126,19 @@ private slots:
         }
         QCOMPARE(actions.size(),1);QCOMPARE(actions.front().front().toString(),"framework");
         if(present)settings.setValue("hlua/frameworkRoot",old);else settings.remove("hlua/frameworkRoot");
+        const auto output=std::filesystem::path(directory.filePath("built.w3x").toStdWString());
+        const auto marker=HLua::EncodeProjectBuildState({folder.Snapshot()->sha256,std::string(64,'b'),""});QVERIFY(marker.Succeeded());
+        const auto link=Services::EncodeLuaFolderLink(std::filesystem::path(root.toStdWString()),output);QVERIFY(link.Succeeded());
+        const std::vector<Mpq::MpqBuildFile> built{{"war3map.w3i",Bytes("synthetic"),false},
+            {std::string(HLua::kBuildStateMember),*marker.value,false},{std::string(Services::kLuaFolderMember),*link.value,false},
+            {"main.lua",Bytes("function main() end\n"),false},{"lib/original-fixture.lua",Bytes("return {}"),false}};
+        QVERIFY(Mpq::WriteMpqArchive(output,built).Succeeded());
+        auto saved=MapArchiveSession::Open(output);QVERIFY(saved.Succeeded());
+        project.pendingImports_.clear();project.assetEdits_.clear();project.AssetUndoStack()->clear();
+        project.archiveSession_=std::make_unique<MapArchiveSession>(std::move(*saved.value));project.sourceArchivePath_=output;
+        folder.Refresh();QVERIFY(folder.Active());QVERIFY(!folder.HasMapChanges());
+        QVERIFY(file.open(QIODevice::WriteOnly|QIODevice::Append));file.write("-- author edit\n");file.close();
+        folder.Refresh();QVERIFY(folder.HasMapChanges());
     }
     void initTestCase() { UiKit::ThemeManager theme; theme.ApplyTheme("graphite"); }
     void ExternalFolderTransactionWatcherAndDraftConflict() {

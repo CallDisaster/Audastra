@@ -2,6 +2,8 @@
 #include "TriggerModule.h"
 #include "TriggerLuaScripts.h"
 #include "ProjectLuaFolder.h"
+#include "MapSettingsModule.h"
+#include "SoundsModule.h"
 #include "War3MapCore/HLua/Build.h"
 #include "War3MapCore/HLua/ProjectConfiguration.h"
 #include "War3MapCore/Hash.h"
@@ -41,6 +43,11 @@ bool MainWindow::BuildHLuaMap(const std::filesystem::path& target, HLua::BuildTa
     if(project_->luaMapTarget_) {
         project_->AddDiagnostic(tr("错误"),"HLua","HLUA_TARGET_CONFLICT",tr("当前地图还有 Lua 保存档案。请先清除该档案，再构建 h-lua 工程。"));
         return false;
+    }
+    const auto host=War3Map::QtProject::ValidateHLuaHostEdits(*project_);
+    if(!host.Succeeded()){project_->AddDiagnostics(host.diagnostics);ShowStatusMessage(QString::fromStdString(host.diagnostics.front().message));return false;}
+    if(settingsModule_->HasPendingDraft() || soundsModule_->HasPendingDraft()) {
+        project_->AddDiagnostic(tr("错误"),"HLua","HLUA_HOST_EDITS_UNSUPPORTED",tr("地图设置或声音仍有未纳入h-lua源工程的草稿，未构建或放弃草稿。"));return false;
     }
     QSettings settings;
     HLua::BuildRequest request;
@@ -87,6 +94,7 @@ bool MainWindow::BuildHLuaMap(const std::filesystem::path& target, HLua::BuildTa
         tr("名称与 ID 表：%1 个物体，分配回放%2。%3").arg(result.value->objects.size()).arg(result.value->idReplayPassed?tr("通过"):tr("未通过"))
         .arg(QString::fromStdString(HLua::BuildReceiptJson(*result.value,0,128))));
     if(!idsOnly) {
+        hluaLastOutputSha256_=result.value->outputSha256;
         hluaBuiltFrameworkSha256_=result.value->inputs.frameworkSha256;
         const auto plan=HLua::PrepareReload(*sources.value,"");
         if(plan.Succeeded())hluaBuiltHslkSha256_=plan.value->hslkSha256;
@@ -116,12 +124,20 @@ bool MainWindow::SaveHLuaMap(bool choosePath) {
         if(file.isEmpty())return false;
         target=Path(file);
     }
+    const auto generation=project_->editRevision_.Generation(),revision=project_->editRevision_.Revision();
     if(!BuildHLuaMap(target,HLua::BuildTarget::Build,true))return false;
-    hluaOutputPath_=target;
+    const HLuaOutputAdoption adoption{std::filesystem::absolute(target).lexically_normal(),hluaLastOutputSha256_,generation,revision};
+    QScopedValueRollback<std::optional<HLuaOutputAdoption>> reviewed(hluaOutputAdoption_,adoption);
     // 使用正常打开链建立新基线，包含外部源关联；不让旧底图继续充当已保存地图。
     const bool opened=OpenMapArchivePath(target);
     if(opened)hluaOutputPath_=target;
     return opened;
+}
+bool MainWindow::HLuaOutputAdoptionCurrent(const std::filesystem::path& output,std::string_view sha) const {
+    if(!hluaOutputAdoption_ || hluaOutputAdoption_->path!=std::filesystem::absolute(output).lexically_normal()
+        || hluaOutputAdoption_->sha256!=sha || hluaOutputAdoption_->generation!=project_->editRevision_.Generation()
+        || hluaOutputAdoption_->revision!=project_->editRevision_.Revision())return false;
+    return War3Map::QtProject::ValidateHLuaHostEdits(*project_).Succeeded();
 }
 void MainWindow::HLuaAction(const QString& action) {
     if(project_->savingMap_ || !HasHLuaProject())return;

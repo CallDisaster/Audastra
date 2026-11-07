@@ -2,10 +2,39 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include <nlohmann/json.hpp>
 #include <set>
+#include <algorithm>
+#include <array>
 
 namespace War3Map::HLua {
 namespace {
 bool Specified(const FrameworkLocation& value) { return !value.repository.empty() || !value.runtime.empty() || !value.build.empty(); }
+bool Hash(std::string_view value){return value.size()==64 && std::all_of(value.begin(),value.end(),[](char c){return (c>='0'&&c<='9')||(c>='a'&&c<='f');});}
+}
+Result<std::vector<std::byte>> EncodeProjectBuildState(const ProjectBuildState& state) {
+    if(!Hash(state.projectSha256) || !Hash(state.frameworkSha256) || (!state.configurationSha256.empty() && !Hash(state.configurationSha256)))
+        return Result<std::vector<std::byte>>::Failure("HLua","HLUA_BUILD_STATE_INVALID","h-lua构建身份不完整。");
+    const auto text=nlohmann::json{{"schema",1},{"project",state.projectSha256},{"framework",state.frameworkSha256},{"configuration",state.configurationSha256}}.dump();
+    return Result<std::vector<std::byte>>::Success({reinterpret_cast<const std::byte*>(text.data()),reinterpret_cast<const std::byte*>(text.data()+text.size())});
+}
+Result<std::optional<ProjectBuildState>> ReadProjectBuildState(const MapArchiveSession& map) {
+    using Output=Result<std::optional<ProjectBuildState>>;
+    if(!map.HasMember(kBuildStateMember))return Output::Success(std::nullopt);
+    const std::array<std::string,1> names{std::string(kBuildStateMember)};
+    ArchiveExactMemberLimits limits;limits.memberCount=1;limits.memberBytes=4096;limits.totalBytes=4096;
+    const auto captured=map.CaptureExactMembers(map.SourceSha256(),names,limits);
+    if(!captured.Succeeded())return {std::nullopt,captured.diagnostics};
+    try {
+        const auto& bytes=captured.value->front().bytes;
+        if(!captured.value->front().present || bytes.empty())throw std::runtime_error("missing build state");
+        std::set<std::string> keys;
+        const auto* text=reinterpret_cast<const char*>(bytes.data());
+        auto json=nlohmann::json::parse(text,text+bytes.size(),[&](int depth,auto event,auto& value){
+            if(depth>1 || (event==nlohmann::json::parse_event_t::key && !keys.insert(value.template get<std::string>()).second))throw std::runtime_error("build state shape");return true;});
+        if(!json.is_object() || json.size()!=4 || !json.at("schema").is_number_integer() || json.at("schema")!=1)throw std::runtime_error("build state schema");
+        ProjectBuildState state{json.at("project").get<std::string>(),json.at("framework").get<std::string>(),json.at("configuration").get<std::string>()};
+        if(!EncodeProjectBuildState(state).Succeeded())throw std::runtime_error("build identity");
+        return Output::Success(std::move(state));
+    }catch(...){return Output::Failure("HLua","HLUA_BUILD_STATE_INVALID","地图中的h-lua构建身份无效，未当成已同步。");}
 }
 Result<bool> RecognizeProject(const std::filesystem::path& project) {
     try {

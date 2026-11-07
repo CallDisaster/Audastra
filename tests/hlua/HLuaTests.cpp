@@ -191,6 +191,16 @@ void ConfigurationAndReload() {
     Need(saved.value->HasMember("fresh.txt") && !saved.value->HasMember("obsolete.txt"),"whole verified candidate published with removals");
     const auto text=saved.value->ReadMember("war3map.j");Good(text);Need(*text.value==bytes("new"),"replacement content readback");
     Need(std::filesystem::is_directory(root/"War3MapEditor Backups"),"replacement uses normal backup service");
+    const auto marker=EncodeProjectBuildState({std::string(64,'a'),std::string(64,'b'),""});Good(marker);
+    const auto marked=root/"marked.w3x";
+    const std::vector<Mpq::MpqBuildFile> metadata{{std::string(kBuildStateMember),*marker.value}};
+    Good(Mpq::WriteMpqArchive(marked,metadata));auto map=MapArchiveSession::Open(marked);Good(map);
+    auto state=ReadProjectBuildState(*map.value);Good(state);Need(state.value->has_value() && (**state.value).projectSha256==std::string(64,'a'),"build state strict roundtrip");
+    Need(!EncodeProjectBuildState({"bad",std::string(64,'b'),""}).Succeeded(),"bad build identity refused");
+    const auto corrupt=root/"marker-corrupt.w3x";
+    const std::vector<Mpq::MpqBuildFile> badMetadata{{std::string(kBuildStateMember),bytes("{\"schema\":true}")}};
+    Good(Mpq::WriteMpqArchive(corrupt,badMetadata));auto badMap=MapArchiveSession::Open(corrupt);Good(badMap);
+    Need(!ReadProjectBuildState(*badMap.value).Succeeded(),"corrupt marker never means synchronized");
 }
 int main() {
     try { Ids(); Lexical(); Sandbox(); TestHLuaObjectMapping(); TestSourceAudit(); ExtraFrameworkModules(); ConfigurationAndReload(); std::cout << "HLua core fixtures passed\n"; return 0; }

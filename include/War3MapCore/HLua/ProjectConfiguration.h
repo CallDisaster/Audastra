@@ -7,6 +7,10 @@ struct ProjectConfiguration {
     std::string sha256;
     std::filesystem::path frameworkOverride;
 };
+inline constexpr std::string_view kBuildStateMember="audastra/editor/hlua-build.json";
+struct ProjectBuildState {std::string projectSha256,frameworkSha256,configurationSha256;};
+[[nodiscard]] Result<std::vector<std::byte>> EncodeProjectBuildState(const ProjectBuildState& state);
+[[nodiscard]] Result<std::optional<ProjectBuildState>> ReadProjectBuildState(const MapArchiveSession& map);
 [[nodiscard]] Result<bool> RecognizeProject(const std::filesystem::path& project);
 [[nodiscard]] Result<ProjectConfiguration> ReadProjectConfiguration(const std::filesystem::path& project);
 [[nodiscard]] Status ConfigureProjectFramework(const std::filesystem::path& project,

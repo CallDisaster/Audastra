@@ -236,9 +236,13 @@ static Output BuildProjectImpl(const BuildRequest& input, const Services::MapSav
             auto link=Services::EncodeLuaFolderLink(request.project,request.target);
             if(!link.Succeeded())return {std::nullopt,link.diagnostics};
             Replace(task,std::string(Services::kLuaFolderMember),std::move(*link.value));
+            auto state=EncodeProjectBuildState({project.value->source.sha256,framework.value->sha256,configuration.value->sha256});
+            if(!state.Succeeded())return {std::nullopt,state.diagnostics};
+            Replace(task,std::string(kBuildStateMember),std::move(*state.value));
         } else if(task.archive->HasMember(Services::kLuaFolderMember)) {
             task.removals.push_back(std::string(Services::kLuaFolderMember));
         }
+        if(!request.retainFolderLink && task.archive->HasMember(kBuildStateMember))task.removals.push_back(std::string(kBuildStateMember));
         if (request.mode == BuildTarget::Dist) {
             SlkOptimizerInput input;
             input.schema = &*schema.value;

@@ -18,7 +18,7 @@ int Failed(const std::vector<Diagnostic>& diagnostics) {
 int Bad() {
     std::cerr << "HLUA_ARGUMENT: hlua-inspect|hlua-build|hlua-ids|hlua-test <project> --framework <root> "
         "[--runtime-framework <root> --build-framework <root>] [--base <map>] --game <root> --workspace <new-dir> "
-        "[--output <new-map>] [--target test|build|dist] [--expected-project <sha>] [--offset N --limit N] "
+        "[--output <map>] [--replace-sha256 <sha>] [--target test|build|dist] [--expected-project <sha>] [--offset N --limit N] "
         "[--helpers <dir> -- <map-test options>]\n"
         "hlua-new <new-directory> --framework <root> --tool <root> --game <root> [--ui-root <root>]\n";
     return 2;

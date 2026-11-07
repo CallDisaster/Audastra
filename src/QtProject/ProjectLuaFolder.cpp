@@ -8,6 +8,7 @@
 #include "War3MapCore/Services/LuaFolderSave.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/MapData/MapDataEditSession.h"
 
 #include <QScopedValueRollback>
 #include <algorithm>
@@ -101,11 +102,18 @@ void ProjectLuaFolder::Refresh(bool force) {
                 for (const auto& file : snapshot_->files) paths.push_back(QString::fromStdWString((root / std::filesystem::u8path(file.path)).wstring()));
                 const auto failed = watcher_.addPaths(paths);
                 if (!failed.isEmpty()) debounce_.start(1000);
-                const auto map = MapFiles(project_);
-                if (!map.Succeeded()) { mapDifferent_ = true; diagnostics.insert(diagnostics.end(), map.diagnostics.begin(), map.diagnostics.end()); }
+                const auto config=HLua::ReadProjectConfiguration(root);
+                if(!config.Succeeded()){mapDifferent_=true;diagnostics.insert(diagnostics.end(),config.diagnostics.begin(),config.diagnostics.end());}
+                else if(config.value->recognized && project_.archiveSession_) {
+                    const auto state=HLua::ReadProjectBuildState(*project_.archiveSession_);
+                    mapDifferent_=!state.Succeeded() || !*state.value || (**state.value).projectSha256!=snapshot_->sha256
+                        || (**state.value).configurationSha256!=config.value->sha256;
+                    if(!state.Succeeded())diagnostics.insert(diagnostics.end(),state.diagnostics.begin(),state.diagnostics.end());
+                } else if(config.value->recognized)mapDifferent_=true;
                 else {
-                    const auto diff = Services::CompareLuaFolder(*map.value, *snapshot_);
-                    mapDifferent_ = !diff.mapOnly.empty() || !diff.folderOnly.empty() || !diff.different.empty();
+                    const auto map=MapFiles(project_);
+                    if(!map.Succeeded()){mapDifferent_=true;diagnostics.insert(diagnostics.end(),map.diagnostics.begin(),map.diagnostics.end());}
+                    else {const auto diff=Services::CompareLuaFolder(*map.value,*snapshot_);mapDifferent_=!diff.mapOnly.empty() || !diff.folderOnly.empty() || !diff.different.empty();}
                 }
             }
         }
@@ -141,6 +149,10 @@ Result<LuaFolderReview> ProjectLuaFolder::Review(const std::filesystem::path& ro
 
 Status ProjectLuaFolder::Associate(const LuaFolderReview& review, Services::LuaFolderChoice choice) {
     if (choice == Services::LuaFolderChoice::Cancel) return Status::Failure("LuaFolder", "LUA_FOLDER_CANCELLED", "已取消关联。");
+    const auto kind=HLua::RecognizeProject(review.folder.root);
+    if(!kind.Succeeded())return {kind.diagnostics};
+    if(*kind.value && choice==Services::LuaFolderChoice::Map)
+        return Status::Failure("HLua","HLUA_SOURCE_CHOICE","h-lua源工程不能用地图运行期模块覆盖；请选择以文件夹为准。");
     const auto metadata = Services::EncodeLuaFolderLink(review.folder.root, project_.sourceArchivePath_);
     if (!metadata.Succeeded()) return {metadata.diagnostics};
     const auto before = project_.CaptureAssets();
@@ -225,5 +237,14 @@ QJsonObject HLuaFolderSourceInfo(const EditorProject& project) {
     result.insert("framework_sha256",QString::fromStdString(framework.value->sha256));
     result.insert("available",true);
     return result;
+}
+Status ValidateHLuaHostEdits(const EditorProject& project) {
+    const auto fail=[] {return Status::Failure("HLua","HLUA_HOST_EDITS_UNSUPPORTED",
+        "当前地图有尚未纳入h-lua外部源工程的触发器、物编、地形或资源修改；请先保存在编辑器工程，或同步到h-lua底图/源文件。没有发布产物或放弃当前编辑。");};
+    if(project.HasPendingTerrainCommit() || project.triggerDirty_ || (project.mapEdits_ && project.mapEdits_->IsDirty())
+        || std::any_of(project.objectDirty_.begin(),project.objectDirty_.end(),[](bool value){return value;}) || !project.assetEdits_.empty())return fail();
+    const auto link=EditorProject::AssetKey(QString::fromUtf8(Services::kLuaFolderMember.data(),Services::kLuaFolderMember.size()));
+    for(const auto& item:project.pendingImports_)if(EditorProject::AssetKey(item.archivePath)!=link)return fail();
+    return Status::Ok();
 }
 } // namespace War3Map::QtProject

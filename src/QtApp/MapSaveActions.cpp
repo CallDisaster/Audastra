@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "War3MapCore/HLua/Build.h"
 #include "ProjectLuaFolder.h"
 #include "AppHelpers.h"
 #include "../QtCommon/DiagnosticTimings.h"
@@ -431,6 +432,10 @@ bool MainWindow::SaveAsMapArchive(War3Map::Services::TerrainMinimapSaveChoice mi
 
 bool MainWindow::SaveMapArchiveToPath(const std::filesystem::path& outputPath,
     War3Map::Services::TerrainMinimapSaveChoice minimapChoice) {
+    if(HasHLuaProject()) {
+        if(outputPath.empty()){project_->AddDiagnostic(tr("错误"),"HLua","HLUA_OUTPUT_PATH",tr("h-lua保存需要明确的输出地图路径，未默认覆盖底图。"));return false;}
+        return BuildHLuaMap(outputPath,War3Map::HLua::BuildTarget::Build,true);
+    }
     // 同步执行（无界面探针与测试使用），不显示模态窗口。
     return RunMapSave(outputPath, false, false, false, false, minimapChoice);
 }
