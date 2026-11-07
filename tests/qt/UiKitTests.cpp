@@ -7,6 +7,9 @@
 #include "Widgets/CommandPalette.h"
 #include "Widgets/ChangesPanel.h"
 #include "Widgets/PopoverSurface.h"
+#include "Widgets/ProblemList.h"
+#include <QStandardItemModel>
+#include <QTreeView>
 #include "Widgets/RoundedPopups.h"
 
 #include <QApplication>
@@ -79,6 +82,7 @@ class UiKitTests final : public QObject {
     Q_OBJECT
 
 private slots:
+    void problemListActionUsesSourceIdentity();
     void styleSheetsResolveEveryToken();
     void unknownThemeFallsBackToDefault();
     void paletteFollowsTokens();
@@ -108,6 +112,29 @@ private slots:
     void popoverTogglesAndDismissesFromChildKeyboard();
     void markdownTypographyUsesQuietCodeAndEvenRhythm();
 };
+
+void UiKitTests::problemListActionUsesSourceIdentity() {
+    QStandardItemModel model;
+    model.setHorizontalHeaderLabels({"level", "subsystem", "code", "message"});
+    model.appendRow({new QStandardItem("info"), new QStandardItem("source"), new QStandardItem("ignored"), new QStandardItem("hidden row")});
+    model.appendRow({new QStandardItem("error"), new QStandardItem("source"), new QStandardItem("upgrade"), new QStandardItem("version mismatch")});
+    model.item(1, 3)->setData("Switch and save", ProblemList::ActionRole);
+    ProblemList list;
+    list.SetSourceModel(&model, [](const QAbstractItemModel&, int row) { return row == 0 ? ProblemSeverity::Info : ProblemSeverity::Error; });
+    list.SetShown(ProblemSeverity::Info, false);
+    list.resize(1000, 200); list.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&list));
+    auto* view = list.View();
+    const auto action = view->model()->index(0, 3);
+    const auto rect = view->visualRect(action);
+    QVERIFY(rect.width() > 200);
+    QSignalSpy activated(&list, &ProblemList::Activated);
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(rect.right() - 30, rect.center().y()));
+    QCOMPARE(activated.size(), 1);
+    const auto source = qvariant_cast<QModelIndex>(activated.front().front());
+    QCOMPARE(source.model(), &model); QCOMPARE(source.row(), 1);
+    QCOMPARE(source.siblingAtColumn(2).data().toString(), "upgrade");
+}
 
 void UiKitTests::styleSheetsResolveEveryToken() {
     static const QRegularExpression unresolved(QStringLiteral("@[A-Za-z]"));

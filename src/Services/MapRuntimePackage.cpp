@@ -134,6 +134,8 @@ Result<std::vector<MapRuntimePackageInfo>> QueryMapRuntimePackages(std::span<con
             info.id = value.Id(); info.version = value.Version(); info.payloadSha256 = value.PayloadSha256();
             info.internalOnly = value.InternalOnly(); info.available = true;
             info.modulePayloadSha256 = value.ModulePayloadSha256();
+            info.clientSha256 = value.ClientSha256();
+            info.current = value.ClientSha256() == BundledMapRuntimeClientSha256();
         } else info.diagnostics = package.diagnostics;
         result.push_back(std::move(info));
     }

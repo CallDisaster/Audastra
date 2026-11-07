@@ -341,6 +341,14 @@ void MainWindow::BuildDiagnosticsView() {
     list->SetSourceModel(project_->diagnosticsModel_, [](const QAbstractItemModel& model, int row) {
         return War3Map::UiKit::ProblemList::SeverityFromText(model.index(row, 0).data().toString());
     });
+    connect(list, &War3Map::UiKit::ProblemList::Activated, this, [this](const QModelIndex& index) {
+        if (index.siblingAtColumn(1).data().toString() == tr("地图运行库")
+            && index.siblingAtColumn(2).data().toString() == QLatin1String("RUNTIME_UPGRADE_REQUIRED"))
+            ApplyRuntimeUpgrade([this] { SaveMapInPlace(); });
+    });
+    connect(project_.get(), &War3Map::QtProject::EditorProject::TriggerDocumentChanged, this, &MainWindow::RefreshRuntimeCompatibility);
+    connect(project_.get(), &War3Map::QtProject::EditorProject::UiLibrariesChanged, this, &MainWindow::RefreshRuntimeCompatibility);
+    connect(project_.get(), &War3Map::QtProject::EditorProject::EditTrackingBaselineChanged, this, &MainWindow::RefreshRuntimeCompatibility);
     dock->setWidget(list);
     addDockWidget(Qt::BottomDockWidgetArea, dock);
     resizeDocks({dock}, {170}, Qt::Vertical);

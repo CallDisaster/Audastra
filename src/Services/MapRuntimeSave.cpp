@@ -1,5 +1,6 @@
 #include "MapRuntimeSave.h"
 #include "MapRuntimeJson.h"
+#include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Script/MapRuntimeBoot.h"
@@ -77,7 +78,7 @@ Result<std::shared_ptr<const MapRuntimePackage>> Package(const MapSaveTask& task
         if (selected) return Result<std::shared_ptr<const MapRuntimePackage>>::Failure("MapRuntime", "RUNTIME_PACKAGE_CONFLICT", "可信包目录存在重复内容身份。");
         selected = &source;
     }
-    if (!selected) return Result<std::shared_ptr<const MapRuntimePackage>>::Failure("MapRuntime", "RUNTIME_PACKAGE_MISSING", "本机可信目录缺少地图锁定的运行库包；未改用最新版。");
+    if (!selected) return Result<std::shared_ptr<const MapRuntimePackage>>::Failure("MapRuntime", "RUNTIME_PACKAGE_MISSING", MissingMapRuntimePackageMessage(identity));
     return MapRuntimePackage::Capture(*selected, purpose.value_or(task.runtimePurpose));
 }
 }
@@ -181,7 +182,7 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
                 if (selected) return Result<std::string>::Failure("MapRuntime", "RUNTIME_PACKAGE_CONFLICT", "可信目录中重复包身份。");
                 selected = &source;
             }
-            if (!selected) return Result<std::string>::Failure("MapRuntime", "RUNTIME_PACKAGE_MISSING", "本机缺少已锁定运行库包。");
+            if (!selected) return Result<std::string>::Failure("MapRuntime", "RUNTIME_PACKAGE_MISSING", MissingMapRuntimePackageMessage(state->settings.packageSha256));
             auto captured = MapRuntimePackage::Capture(*selected, purpose);
             if (!captured.Succeeded()) { Result<std::string> failed; failed.diagnostics = captured.diagnostics; return failed; }
             state->package = *captured.value;
@@ -196,9 +197,10 @@ Status PrepareMapRuntimeSave(MapSaveTask& task) {
             state->moduleLoader = loader;
             return Result<std::string>::Success(state->package->ModulePayloadSha256());
         };
-        boot.verifyScriptInputs = [state](std::span<const std::string> hashes) {
+        boot.verifyScriptInputs = [state, sources = task.runtimePackageSources](std::span<const std::string> hashes) {
             if (!state->package) return Fail("RUNTIME_PACKAGE_MISSING", "脚本输入校验缺少已捕获包。");
-            return state->package->VerifyScriptInputs(hashes);
+            const auto compatibility = QueryMapRuntimeCompatibility(*state->package, hashes, sources);
+            return Status{compatibility.Succeeded() ? compatibility.value->diagnostics : compatibility.diagnostics};
         };
         // 已安装地图的关闭/更新都要重建；不能被WTG/WCT未变的旧脚本分支吞掉。
         if (!state->previousIdentity.empty() || state->settings.mode == MapRuntimeMode::Enabled) task.preserveUnaffectedScript = false;
@@ -277,8 +279,9 @@ Status FinalizeMapRuntimeSave(MapSaveTask& task) {
             ? state.package->ModulePayloadSha256() : state.package->PayloadSha256());
         if (!identity.Succeeded()) return identity;
         if (task.scriptRebuilt) {
-            const auto inputs = state.package->VerifyScriptInputs(task.scriptInjectedSourceSha256);
-            if (!inputs.Succeeded()) return inputs;
+            const auto inputs = QueryMapRuntimeCompatibility(*state.package, task.scriptInjectedSourceSha256, task.runtimePackageSources);
+            if (!inputs.Succeeded()) return {inputs.diagnostics};
+            if (!inputs.value->diagnostics.empty()) return {inputs.value->diagnostics};
         } else if (state.previousIdentity != state.package->Identity() || state.previousScriptSha256 != state.scriptSha256) {
             return Fail("RUNTIME_SCRIPT_REBUILD_REQUIRED", "运行库包或主脚本已变化，必须使用该包配套客户端经过共用脚本构建，不能复用旧注入身份。");
         }

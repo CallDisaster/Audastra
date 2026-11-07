@@ -35,7 +35,7 @@ struct Fixture {
         + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
     nlohmann::json manifest;
     MapRuntimePackageSource source;
-    Fixture() {
+    explicit Fixture(bool bundledClient = false) {
         Require(std::filesystem::create_directory(root), "private fixture directory");
         manifest = {{"schema",1},{"id","test-package"},{"version","1.0.0"},{"abi",0x20000},
             {"gameSha256","e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"},
@@ -44,7 +44,13 @@ struct Fixture {
         Add("boot.blob", "warvk_loader_raw.ai", "bootstrap", "opaque synthetic bootstrap bytes");
         Add("payload.blob", "warvk_runtime.blp", "payload", "opaque synthetic payload bytes");
         Add("notice.blob", "audastra/runtime/licenses/source.txt", "notice", "original fixture notice");
-        Add("client.j", "", "client", "original synthetic client source bytes");
+        std::string client = "original synthetic client source bytes";
+        if (bundledClient) {
+            const auto bytes = IO::ReadFileBytes(AUDASTRA_TEST_BUNDLED_CLIENT, 1024 * 1024);
+            Require(bytes.Succeeded(), "read built-in non-AI client fixture");
+            client.assign(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
+        }
+        Add("client.j", "", "client", client);
         source.root = root; Save();
     }
     ~Fixture() { std::error_code error; std::filesystem::remove_all(root, error); }
@@ -96,7 +102,7 @@ void WriteHiddenArchive(const std::filesystem::path& path, std::vector<MapArchiv
     Require(IO::WriteFileBytes(path,bytes).Succeeded(), "write original hidden-member fixture");
 }
 void Preparation() {
-    Fixture f;
+    Fixture f(true);
     const std::vector<MapRuntimePackageSource> sources{f.source};
     const MapRuntimeSettings selected{MapRuntimeMode::Enabled, f.source.manifestSha256};
     Require(Code(ValidateMapRuntimeDecision({selected, false}, sources), "RUNTIME_CONSENT_REQUIRED"), "source declaration cannot grant consent");
@@ -150,6 +156,71 @@ void Preparation() {
     // 临时目录可能带 8.3 短名（ADMINI~1），安装根按展开后的路径返回。
     Require(InstallationRootFromExecutableDirectory(bin) == std::filesystem::canonical(f.root), "portable bin uses adjacent release manifest");
     Require(!CurrentInstallationRoot().empty(), "current executable installation root does not use request paths");
+}
+void LegacyCompatibility() {
+    Fixture oldPackage, currentPackage(true);
+    oldPackage.manifest["version"] = "0.3.0";
+    currentPackage.manifest["version"] = "0.4.0";
+    oldPackage.manifest["files"][2]["member"] = "audastra/runtime/licenses/legacy.txt";
+    for (auto* fixture : {&oldPackage, &currentPackage}) {
+        fixture->manifest["scope"] = "public"; fixture->Save(); fixture->source.publicDistributionApproved = true;
+    }
+    const std::vector<MapRuntimePackageSource> sources{oldPackage.source, currentPackage.source};
+    const auto old = *MapRuntimePackage::Capture(oldPackage.source, MapRuntimeSavePurpose::Normal).value;
+    const auto current = *MapRuntimePackage::Capture(currentPackage.source, MapRuntimeSavePurpose::Normal).value;
+    const auto packages = QueryMapRuntimePackages(sources);
+    Require(packages.Succeeded() && !packages.value->at(0).current && packages.value->at(1).current,
+        "classification uses bundled client identity independent of data root or ordering");
+    Require(ValidateMapRuntimeSelection(current->Identity(), {}, sources).Succeeded(), "new map can choose current");
+    Require(Code(ValidateMapRuntimeSelection(old->Identity(), {}, sources), "RUNTIME_LEGACY_SELECTION_REJECTED"), "new map cannot choose legacy");
+    Require(ValidateMapRuntimeSelection(old->Identity(), old->Identity(), sources).Succeeded(), "locked legacy remains selectable");
+    const auto matching = QueryMapRuntimeCompatibility(*old, std::vector<std::string>{old->ClientSha256()}, sources);
+    Require(matching.Succeeded() && matching.value->diagnostics.empty(), "old map plus old library stays valid");
+    const auto upgrade = QueryMapRuntimeCompatibility(*old, std::vector<std::string>{current->ClientSha256()}, sources);
+    Require(upgrade.Succeeded() && upgrade.value->action == MapRuntimeCompatibilityAction::SwitchRuntime
+        && upgrade.value->lockedVersion == "0.3.0" && upgrade.value->libraryVersion == "0.4.0"
+        && upgrade.value->suggestedPackageSha256 == current->Identity()
+        && upgrade.value->diagnostics.front().code == "RUNTIME_UPGRADE_REQUIRED", "new library suggests explicit runtime switch");
+    const auto reverse = QueryMapRuntimeCompatibility(*current, std::vector<std::string>{old->ClientSha256()}, sources);
+    Require(reverse.Succeeded() && reverse.value->action == MapRuntimeCompatibilityAction::UpdateLibrary
+        && reverse.value->diagnostics.front().code == "RUNTIME_SCRIPT_INPUT_MISMATCH", "reverse mismatch still updates library");
+    const auto duplicate = QueryMapRuntimeCompatibility(*old,
+        std::vector<std::string>{current->ClientSha256(), current->ClientSha256()}, sources);
+    Require(duplicate.Succeeded() && duplicate.value->action == MapRuntimeCompatibilityAction::UpdateLibrary, "duplicate input cannot grant upgrade");
+    Require(MissingMapRuntimePackageMessage("4f7cd50b95973d7780b8d7762a0d3a803b6a37c2d3e8ac8a8914c2b879f11b91").find("0.3.0") != std::string::npos,
+        "missing published identity reports version without granting trust");
+    const std::string clean = "globals\nstring AjExpectedRuntimeIdentity = \"\"\nendglobals\nfunction main takes nothing returns nothing\ncall AjInitialize()\nendfunction\n";
+    const auto source = oldPackage.root / "legacy-source.w3x";
+    Require(WriteVerifiedArchive(source, std::vector<MapArchiveMember>{{"war3map.j",Bytes(clean)},
+        {std::string(kMapRuntimeSettingsMember),*SerializeMapRuntimeSettings({MapRuntimeMode::Enabled,old->Identity()}).value},
+        {"author.bin",Bytes("unchanged author bytes")}}).Succeeded(), "original legacy source");
+    auto baseline = *MapArchiveSession::Open(source).value;
+    unsigned iteration = 0;
+    for (const auto& selected : {old, old, current}) {
+        Script::MapRuntimeBootPlan boot; boot.payloadSha256 = selected->PayloadSha256();
+        const auto built = Script::ApplyMapRuntimeBoot(clean,boot); Require(built.Succeeded(), "original runtime boot");
+        MapSaveTask task; Require(task.FreezeArchive(baseline).Succeeded(), "freeze legacy source for normal save");
+        task.target = oldPackage.root / ("legacy-result-" + std::to_string(++iteration) + ".w3x");
+        task.runtimePackageSources = sources; task.runtimeApprovedPackageSha256 = selected->Identity();
+        const auto before = ReadMapRuntimeSettings(baseline);
+        if (before.value->packageSha256 != selected->Identity()) task.replacements.push_back({std::string(kMapRuntimeSettingsMember),
+            *SerializeMapRuntimeSettings({MapRuntimeMode::Enabled,selected->Identity()}).value});
+        task.replacements.push_back({"war3map.j",Bytes(*built.value)}); task.scriptRebuilt = true;
+        task.scriptInjectedSourceSha256 = {selected->ClientSha256()};
+        MapSaveService::Run(task);
+        if (!task.succeeded) for (const auto& diagnostic : task.diagnostics) std::cerr << diagnostic.code << ": " << diagnostic.message << '\n';
+        Require(task.succeeded, "normal old save, repeated old save and explicit current migration succeed");
+        baseline = *MapArchiveSession::Open(task.target).value;
+        Require(ReadMapRuntimeSettings(baseline).value->packageSha256 == selected->Identity(), "save keeps explicitly selected version");
+        Require(baseline.ReadMember("author.bin").value == Bytes("unchanged author bytes"), "author bytes survive migration");
+    }
+    Require(!baseline.HasMember("audastra/runtime/licenses/legacy.txt"), "migration removes owned obsolete legacy member");
+    const auto receipt = baseline.ReadMember(kMapRuntimeInstallationMember);
+    Require(receipt.Succeeded() && nlohmann::json::parse(std::string_view(reinterpret_cast<const char*>(receipt.value->data()), receipt.value->size()))["packageSha256"] == current->Identity(), "receipt moves to current");
+    MapSaveTask missing; Require(missing.FreezeArchive(baseline).Succeeded(), "freeze missing package case");
+    missing.target = oldPackage.root / "missing-not-written.w3x"; missing.runtimePackageSources = {oldPackage.source};
+    MapSaveService::Run(missing);
+    Require(!missing.succeeded && Code(missing,"RUNTIME_PACKAGE_MISSING") && !std::filesystem::exists(missing.target), "missing original cannot write partial output");
 }
 void Settings() {
     MapRuntimeSettings initial;
@@ -646,7 +717,7 @@ void LuaPolicy() {
 }
 }
 int main() {
-    try { Settings(); Preparation(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); DiagnosticSaveRoundTrip(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); ModulePackageAndSave(); LuaPolicy(); }
+    try { Settings(); Preparation(); LegacyCompatibility(); Catalog(); Package(); MissingAndPublic(); PackageNegativeBoundaries(); DiagnosticSaveRoundTrip(); SaveRoundTrip(); SaveGates(); UnknownOwnership(); ModulePackageAndSave(); LuaPolicy(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
     std::cout << "runtime settings and package tests passed\n";
 }

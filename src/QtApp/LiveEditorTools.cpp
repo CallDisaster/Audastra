@@ -1757,7 +1757,10 @@ private:
                         {"id", QString::fromStdString(package.id)}, {"version", QString::fromStdString(package.version)},
                         {"payload_sha256", QString::fromStdString(package.payloadSha256)},
                         {"module_payload_sha256", QString::fromStdString(package.modulePayloadSha256)}, {"internal_only", package.internalOnly},
-                        {"available", package.available}, {"diagnostics", diagnostics}});
+                        {"available", package.available}, {"diagnostics", diagnostics},
+                        {"classification", package.current ? "current" : "legacy"},
+                        {"client_sha256", QString::fromStdString(package.clientSha256)},
+                        {"selectable", package.available && (package.current || package.packageSha256 == state.value->settings.packageSha256)}});
                 }
                 result.insert("packages", packages);
                 return result;

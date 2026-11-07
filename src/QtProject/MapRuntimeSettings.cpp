@@ -90,6 +90,11 @@ Status EditorProject::PrepareMapRuntimeSettings(AssetState& state, const Setting
     const auto validated = Services::ValidateMapRuntimeDecision({settings, settings.mode != Services::MapRuntimeMode::Disabled},
         runtimePackageSources_, runtimeCatalogDiagnostics_);
     if (!validated.Succeeded()) return validated;
+    if (settings.mode != Services::MapRuntimeMode::Disabled) {
+        const auto selection = Services::ValidateMapRuntimeSelection(settings.packageSha256,
+            previous.value->packageSha256, runtimePackageSources_);
+        if (!selection.Succeeded()) return selection;
+    }
     auto candidate = state;
     if (*previous.value != settings) {
         std::vector<ImportPayload> payloads{{QString::fromUtf8(Services::kMapRuntimeSettingsMember),

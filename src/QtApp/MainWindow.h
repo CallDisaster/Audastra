@@ -36,6 +36,7 @@ namespace War3Map::Services { struct MapCreateOptions; }
 namespace War3Map::Agent { struct RecoveryPreferences; }
 namespace War3Map::QtProject { class LegacyMapBackupCheck; }
 namespace War3Map::HLua { enum class BuildTarget; }
+class QMessageBox;
 
 class QCloseEvent;
 class QDialog;
@@ -231,6 +232,14 @@ private:
     void CreateNewMap();
     void SaveAsMap();
     void SaveMapInPlace();
+    void RefreshRuntimeCompatibility();
+    bool ApplyRuntimeUpgrade(const std::function<void()>& save);
+    void ConfigureRuntimeUpgradeNotice(QMessageBox* notice, std::function<void()> save);
+    std::function<void()> runtimeCompatibilityReady_;
+    War3Map::Services::MapRuntimeCompatibility runtimeCompatibility_;
+    std::string runtimeCompatibilityLockedIdentity_;
+    std::uint64_t runtimeCompatibilityGeneration_ = 0, runtimeCompatibilitySerial_ = 0;
+    bool runtimeCompatibilityRunning_ = false;
     void TestMap();
     // 启动单人测试；成功返回空串，否则返回原因。interactive 为 false 时不弹窗（供助手调用）。
     QString StartMapTest(bool interactive, bool hiddenDesktop = false);

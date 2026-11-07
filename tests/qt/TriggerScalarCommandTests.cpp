@@ -154,7 +154,7 @@ struct Fixture {
         using namespace Services;
         const auto packageRoot = root / "runtime-package";
         QJsonArray files;
-        const auto add = [&](const char* path, const char* member, const char* role, const char* text) {
+        const auto add = [&](const char* path, const char* member, const char* role, std::string_view text) {
             Write(packageRoot / path, text);
             const auto sha = Take(Sha256File(packageRoot / path));
             files.append(QJsonObject{{"path",path},{"member",member},{"role",role},
@@ -163,7 +163,10 @@ struct Fixture {
         add("boot.blob","warvk_loader_raw.ai","bootstrap","original opaque boot fixture");
         add("payload.blob","warvk_runtime.blp","payload","original opaque payload fixture");
         add("notice.txt","audastra/runtime/licenses/fixture.txt","notice","original source notice");
-        add("client.j","","client","original synthetic client");
+        QFile client(QStringLiteral(AUDASTRA_TEST_BUNDLED_CLIENT));
+        Require(client.open(QIODevice::ReadOnly), "built-in non-AI client fixture");
+        const auto clientBytes = client.readAll();
+        add("client.j","","client",std::string_view(clientBytes.constData(), clientBytes.size()));
         const QJsonObject manifest{{"schema",1},{"id","original-test"},{"version","1.0.0"},{"abi",0x20000},
             {"scope","internal"},{"gameSha256","e04d1716603c075eb0c8e1e21cf1093a664adc5249efab396bfa08d7b09d0c3a"},{"files",files}};
         Write(packageRoot / "manifest.json",QJsonDocument(manifest).toJson(QJsonDocument::Compact).toStdString());

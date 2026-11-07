@@ -41,10 +41,10 @@ using War3Map::QtProject::MapSaveJob;
 
 namespace {
 using AppDetail::DiagnosticLines;
-void SaveNotice(QMainWindow& window, bool interactive, bool success, const QString& summary, const QStringList& details,
+QMessageBox* SaveNotice(QMainWindow& window, bool interactive, bool success, const QString& summary, const QStringList& details,
     const QStringList& warnings = {}) {
     window.statusBar()->showMessage(summary); // 保留结果，不能一秒后悄然消失。
-    if (!interactive) return;
+    if (!interactive) return nullptr;
     if (auto* previous = window.findChild<QMessageBox*>(QStringLiteral("mapSaveResult"))) previous->close();
     auto* result = new QMessageBox(success ? QMessageBox::Information : QMessageBox::Warning,
         QObject::tr("地图保存结果"), summary, QMessageBox::Ok, &window);
@@ -55,6 +55,7 @@ void SaveNotice(QMainWindow& window, bool interactive, bool success, const QStri
     if (!warnings.isEmpty()) result->setDetailedText(QObject::tr("警告（%1 条）\n").arg(warnings.size()) + warnings.join(QLatin1Char('\n')));
     result->setWindowModality(Qt::NonModal);
     result->show();
+    return result;
 }
 QString ChangedMembers(const MapSaveJob& job) {
     const std::pair<const char*, const char*> known[] = {
@@ -129,7 +130,15 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
         const auto failureSummary = job && !job->written.empty()
             ? tr("文件已写出，但保存结果未被接受；当前编辑仍未保存")
             : errors.isEmpty() ? summary : tr("地图未保存：%1").arg(errors.back().section(QLatin1Char('\n'), 0, 0));
-        SaveNotice(*this, notify, false, failureSummary, details, warnings);
+        bool upgrade = false;
+        for (int row = firstDiagnostic; row < project_->diagnosticsModel_->rowCount(); ++row)
+            upgrade = upgrade || project_->diagnosticsModel_->index(row, 2).data().toString() == QLatin1String("RUNTIME_UPGRADE_REQUIRED");
+        auto* notice = SaveNotice(*this, notify || (background && upgrade), false, failureSummary, details, warnings);
+        if (notice && upgrade) ConfigureRuntimeUpgradeNotice(notice, [=, this] {
+            if (testSnapshot) {
+                if (RunMapSave(project_->sourceArchivePath_, true, true)) TestMap();
+            } else RunMapSave(target, inPlace, background, false, false, minimapChoice, rebuildTerrainShadow, runtimePurpose, minimapRisk);
+        });
     };
     // 只有小地图生成失败时由作者决定是否无视风险：其它修改照常写出，小地图保留原图。
     const auto confirmMinimapRisk = [&] {

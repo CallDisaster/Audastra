@@ -732,6 +732,7 @@ target_link_libraries(war3-map-runtime-boot-tests PRIVATE War3MapEditor::ScriptB
 target_compile_options(war3-map-runtime-boot-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME script-map-runtime-boot COMMAND war3-map-runtime-boot-tests)
 target_link_libraries(war3-map-runtime-package-tests PRIVATE War3MapEditor::Services audastra-json)
+  target_compile_definitions(war3-map-runtime-package-tests PRIVATE AUDASTRA_TEST_BUNDLED_CLIENT="${AUDASTRA_UI_LIBRARY_BUNDLE_DIR}/AudastraUI/jass/AudastraUI.j")
 target_compile_definitions(war3-map-runtime-package-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-runtime-package-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-map-runtime-package COMMAND war3-map-runtime-package-tests)

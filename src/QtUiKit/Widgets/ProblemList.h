@@ -20,6 +20,7 @@ enum class ProblemSeverity { Error, Warning, Info };
 class ProblemList final : public QWidget {
     Q_OBJECT
 public:
+    static constexpr int ActionRole = Qt::UserRole + 513;
     using SeverityOf = std::function<ProblemSeverity(const QAbstractItemModel& model, int row)>;
 
     explicit ProblemList(QWidget* parent = nullptr);

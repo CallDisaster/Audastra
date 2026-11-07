@@ -1053,6 +1053,7 @@ target_link_libraries(war3-map-trigger-scalar-command-tests PRIVATE
     War3MapEditor::QtProject Qt6::Test Qt6::Widgets)
 target_compile_definitions(war3-map-trigger-scalar-command-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-trigger-scalar-command-tests PRIVATE /W4 /permissive- /utf-8)
+target_compile_definitions(war3-map-trigger-scalar-command-tests PRIVATE AUDASTRA_TEST_BUNDLED_CLIENT="${AUDASTRA_UI_LIBRARY_BUNDLE_DIR}/AudastraUI/jass/AudastraUI.j")
 war3map_deploy_fonts(war3-map-trigger-scalar-command-tests)
 add_test(NAME qt-trigger-scalar-command COMMAND war3-map-trigger-scalar-command-tests -o -,txt)
 set_tests_properties(qt-trigger-scalar-command PROPERTIES TIMEOUT 60

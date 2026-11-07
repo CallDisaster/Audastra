@@ -34,6 +34,7 @@ qt_add_executable(war3-map-editor WIN32
     MainWindowChanges.cpp
     ResourceSettingsActions.cpp
     MapSaveActions.cpp
+    MapRuntimeActions.cpp
     MapTestActions.cpp
     MapTestAgentActions.cpp
     WindowFrameCapture.cpp WindowFrameCapture.h

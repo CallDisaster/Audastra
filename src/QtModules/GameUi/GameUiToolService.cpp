@@ -98,7 +98,9 @@ QJsonObject RuntimeJson(const GameUiModule& module) {
     for (const auto& package : requirement.packages) {
         if (!package.available) continue;
         packages.append(QJsonObject{{"package_sha256", Text(package.packageSha256)}, {"id", Text(package.id)},
-            {"version", Text(package.version)}, {"internal_only", package.internalOnly}});
+            {"version", Text(package.version)}, {"internal_only", package.internalOnly},
+            {"classification", package.current ? "current" : "legacy"}, {"client_sha256", Text(package.clientSha256)},
+            {"selectable", package.current || package.packageSha256 == requirement.settings.packageSha256}});
     }
     QJsonObject result{{"approved", requirement.approved}, {"packages", packages}};
     if (!requirement.problem.isEmpty()) result.insert("problem", requirement.problem);

@@ -5,6 +5,10 @@
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QApplication>
+#include <QMouseEvent>
+#include <QStyledItemDelegate>
+#include <QStyleOptionButton>
 #include <QSortFilterProxyModel>
 #include <QTimer>
 #include <QToolButton>
@@ -33,6 +37,37 @@ protected:
 };
 
 namespace {
+class ActionDelegate final : public QStyledItemDelegate {
+public:
+    std::function<void(const QModelIndex&)> activate;
+    using QStyledItemDelegate::QStyledItemDelegate;
+    static QRect ButtonRect(const QStyleOptionViewItem& option, const QString& label) {
+        const int width = option.fontMetrics.horizontalAdvance(label) + 24;
+        return {option.rect.right() - width, option.rect.top() + 1, width, option.rect.height() - 2};
+    }
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        const auto label = index.data(ProblemList::ActionRole).toString();
+        auto textOption = option;
+        if (!label.isEmpty()) textOption.rect.setRight(ButtonRect(option, label).left() - 4);
+        QStyledItemDelegate::paint(painter, textOption, index);
+        if (!label.isEmpty()) {
+            QStyleOptionButton button;
+            button.rect = ButtonRect(option, label); button.text = label; button.state = QStyle::State_Enabled;
+            QApplication::style()->drawControl(QStyle::CE_PushButton, &button, painter);
+        }
+    }
+    bool editorEvent(QEvent* event, QAbstractItemModel*, const QStyleOptionViewItem& option, const QModelIndex& index) override {
+        const auto label = index.data(ProblemList::ActionRole).toString();
+        if (!label.isEmpty() && event->type() == QEvent::MouseButtonRelease) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton && ButtonRect(option, label).contains(mouse->position().toPoint())) {
+                if (activate) activate(index);
+                return true;
+            }
+        }
+        return false;
+    }
+};
 struct ToggleSpec { const char* name; const char* icon; const char* color; const char* label; };
 constexpr std::array<ToggleSpec, 3> kToggles{{
     {"problemErrors", "lucide/circle-x", "#f85149", QT_TRANSLATE_NOOP("War3Map::UiKit::ProblemList", "错误")},
@@ -82,6 +117,9 @@ ProblemList::ProblemList(QWidget* parent) : QWidget(parent) {
     connect(view_, &QTreeView::activated, this, [this](const QModelIndex& index) {
         emit Activated(filter_->mapToSource(index));
     });
+    auto* actions = new ActionDelegate(view_);
+    actions->activate = [this](const QModelIndex& index) { emit Activated(filter_->mapToSource(index)); };
+    view_->setItemDelegateForColumn(3, actions);
 
     countTimer_ = new QTimer(this);
     countTimer_->setSingleShot(true);

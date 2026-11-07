@@ -42,6 +42,7 @@ public:
     [[nodiscard]] const std::string& Version() const noexcept { return version_; }
     [[nodiscard]] const std::string& PayloadSha256() const noexcept { return payloadSha256_; }
     [[nodiscard]] const std::string& ModulePayloadSha256() const noexcept { return modulePayloadSha256_; }
+    [[nodiscard]] const std::string& ClientSha256() const noexcept { return clientSha256_; }
     [[nodiscard]] bool InternalOnly() const noexcept { return internalOnly_; }
     [[nodiscard]] const std::vector<MemberReplacement>& Members() const noexcept { return members_; }
 private:

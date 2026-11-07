@@ -197,12 +197,14 @@ void GameUiModule::OfferMapRuntime() {
     if (!requirement.problem.isEmpty()) return report("AUI_RUNTIME_STATE", requirement.problem);
     std::vector<const Services::MapRuntimePackageInfo*> usable;
     for (const auto& package : requirement.packages) {
-        if (package.available) usable.push_back(&package);
+        if (package.available && (package.current || package.packageSha256 == requirement.settings.packageSha256)) usable.push_back(&package);
     }
     if (usable.empty()) {
         return report("AUI_RUNTIME_MISSING", tr("界面触发器要用 Audastra 运行库，本机没有安装可用的运行库包，测试运行和保存会拒绝"));
     }
-    const auto label = [](const Services::MapRuntimePackageInfo& package) { return Text(package.id) + QLatin1Char(' ') + Text(package.version); };
+    const auto label = [](const Services::MapRuntimePackageInfo& package) {
+        return Text(package.id) + QLatin1Char(' ') + Text(package.version) + (package.current ? tr("（当前）") : tr("（旧版）"));
+    };
     // 地图里已锁定的包优先；有多个可选时让作者挑。
     const auto locked = std::find_if(usable.begin(), usable.end(),
         [&](const auto* package) { return package->packageSha256 == requirement.settings.packageSha256; });

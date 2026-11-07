@@ -36,7 +36,7 @@ Status ValidateMapRuntimeDecision(const MapRuntimeDecision& decision, std::span<
         if (selected) return Status::Failure("MapRuntime", "RUNTIME_PACKAGE_CONFLICT", "可信目录存在重复包身份。");
         selected = &source;
     }
-    if (!selected) return Status::Failure("MapRuntime", "RUNTIME_PACKAGE_MISSING", "本机缺少所选可信包；不使用地图路径或最新版代替。");
+    if (!selected) return Status::Failure("MapRuntime", "RUNTIME_PACKAGE_MISSING", MissingMapRuntimePackageMessage(settings.packageSha256));
     const auto captured = MapRuntimePackage::Capture(*selected, MapRuntimeSavePurpose::InternalValidation);
     return {captured.diagnostics};
 }
@@ -58,6 +58,11 @@ Status PrepareMapRuntimeInputs(MapSaveTask& task, const MapRuntimeSaveOptions& o
         if (!checked.Succeeded()) return checked;
         const auto before = ReadMapRuntimeSettings(*task.archive);
         if (!before.Succeeded()) return {before.diagnostics};
+        if (options.decision->settings.mode != MapRuntimeMode::Disabled) {
+            const auto selection = ValidateMapRuntimeSelection(options.decision->settings.packageSha256,
+                before.value->packageSha256, sources);
+            if (!selection.Succeeded()) return selection;
+        }
         const auto settingsKey = Resources::CanonicalImportPath(kMapRuntimeSettingsMember);
         for (const auto& item : task.replacements) {
             const auto key = Resources::CanonicalImportPath(item.name);
@@ -107,6 +112,9 @@ std::string SerializeMapRuntimeArchiveState(const MapRuntimeArchiveState& state)
         packages.push_back({{"package_sha256", package.packageSha256}, {"id", package.id}, {"version", package.version},
             {"payload_sha256", package.payloadSha256}, {"module_payload_sha256", package.modulePayloadSha256}, {"internal_only", package.internalOnly},
             {"available", package.available}, {"diagnostics", diagnostics}});
+        packages.back()["classification"] = package.current ? "current" : "legacy";
+        packages.back()["client_sha256"] = package.clientSha256;
+        packages.back()["selectable"] = package.available && (package.current || package.packageSha256 == state.settings.packageSha256);
     }
     return Json{{"ok", true}, {"source_sha256", state.sourceSha256}, {"approved", false},
         {"mode", state.settings.mode == MapRuntimeMode::Automatic ? "automatic" : state.settings.mode == MapRuntimeMode::Enabled ? "enabled" : "disabled"},

@@ -48,6 +48,7 @@ add_library(War3MapServices STATIC
     ObjectTransactionSaveGuards.cpp
     MapSaveService.cpp
     MapRuntimePackage.cpp
+    MapRuntimeCompatibility.cpp
     MapRuntimePreparation.cpp
     MapRuntimeSave.cpp
     MapSaveScriptPreservation.cpp
@@ -106,6 +107,9 @@ target_link_libraries(War3MapServices PUBLIC War3MapEditor::RenderSupport)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::Lua)
 target_link_libraries(War3MapServices PUBLIC War3MapEditor::RuntimeLuaApi)
 target_compile_definitions(War3MapServices PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+file(SHA256 "${AUDASTRA_UI_LIBRARY_BUNDLE_DIR}/AudastraUI/jass/AudastraUI.j" AUDASTRA_BUNDLED_RUNTIME_CLIENT_SHA256)
+configure_file(MapRuntimeBuildIdentity.h.in "${CMAKE_CURRENT_BINARY_DIR}/MapRuntimeBuildIdentity.h" @ONLY)
+target_include_directories(War3MapServices PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 if(MSVC)
     target_compile_options(War3MapServices PRIVATE /W4 /permissive- /utf-8)
 endif()
