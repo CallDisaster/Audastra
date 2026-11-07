@@ -19,7 +19,7 @@ namespace War3Map::Script::detail {
     const std::filesystem::path& gameRoot, std::uint32_t timeoutMs);
 // 原生截图键通过调用方的原进程/窗口输入租约发送，不需要重新取得进程内存写权限。
 [[nodiscard]] Result<std::filesystem::path> RequestGame127KeyScreenshot(const std::filesystem::path& gameRoot,
-    std::uint32_t timeoutMs, const std::function<Status()>& request);
+    std::uint32_t timeoutMs, const std::function<Result<std::uint32_t>()>& request);
 // 内部文件收集器：只接受请求后新建且已结束写入的普通TGA，旧截图不能顶替本次画面。
 [[nodiscard]] Result<std::filesystem::path> CollectNativeGameScreenshot(const std::filesystem::path& directory,
     std::uint32_t timeoutMs, const std::function<Status()>& request);

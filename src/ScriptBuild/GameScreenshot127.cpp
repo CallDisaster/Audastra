@@ -166,17 +166,22 @@ Result<std::filesystem::path> CollectNativeGameScreenshot(const std::filesystem:
 }
 
 Result<std::filesystem::path> RequestGame127KeyScreenshot(const std::filesystem::path& gameRoot,
-    std::uint32_t timeoutMs, const std::function<Status()>& request) {
+    std::uint32_t timeoutMs, const std::function<Result<std::uint32_t>()>& request) {
 #ifdef _WIN32
     const auto image = OpenScreenshotImage(gameRoot / L"Game.dll");
     if (!image.Succeeded()) return {std::nullopt, image.diagnostics};
+    auto result = CollectNativeGameScreenshot(gameRoot / L"Screenshots", timeoutMs, [&]() -> Status {
+    const auto sent = request();
+    if (!sent.Succeeded() || !sent.value || !*sent.value) return {sent.diagnostics};
     const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) return Fail("MAP_TEST_SCREENSHOT_PROCESS_QUERY", "无法确认截图目录是否只有一个游戏写入者。");
+    if (snapshot == INVALID_HANDLE_VALUE) return Status::Failure("Map.Test", "MAP_TEST_SCREENSHOT_PROCESS_QUERY", "无法确认截图目录是否只有一个游戏写入者。");
     struct Snapshot { HANDLE value; ~Snapshot() { CloseHandle(value); } } processSnapshot{snapshot};
     PROCESSENTRY32W entry{}; entry.dwSize = sizeof(entry); unsigned games = 0;
     bool complete = Process32FirstW(snapshot, &entry) != FALSE;
     if (complete) do {
         if (CompareStringOrdinal(entry.szExeFile, -1, L"war3.exe", -1, TRUE) != CSTR_EQUAL) continue;
+        // 本进程已由发送者持有的原句柄验证；不能再依赖后来被拒绝的新OpenProcess。
+        if (entry.th32ProcessID == *sent.value) { ++games; continue; }
         const auto process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
         std::array<wchar_t,32768> path{}; DWORD length = static_cast<DWORD>(path.size());
         const bool read = process && QueryFullProcessImageNameW(process, 0, path.data(), &length);
@@ -185,8 +190,9 @@ Result<std::filesystem::path> RequestGame127KeyScreenshot(const std::filesystem:
         if (CompareStringOrdinal(path.data(), static_cast<int>(length), (gameRoot / L"war3.exe").c_str(), -1, TRUE) == CSTR_EQUAL) ++games;
     } while (Process32NextW(snapshot, &entry));
     if (complete && GetLastError() != ERROR_NO_MORE_FILES) complete = false;
-    if (!complete || games != 1) return Fail("MAP_TEST_SCREENSHOT_AMBIGUOUS", "同一游戏目录的截图写入进程不唯一或来源不可读，未采集。");
-    auto result = CollectNativeGameScreenshot(gameRoot / L"Screenshots", timeoutMs, request);
+    if (!complete || games != 1) return Status::Failure("Map.Test", "MAP_TEST_SCREENSHOT_AMBIGUOUS", "同一游戏目录的截图写入进程不唯一或来源不可读，未采集。");
+    return Status::Ok();
+    });
     if (result.Succeeded()) result.diagnostics.push_back({DiagnosticSeverity::Info, "Map.Test", "MAP_TEST_SCREENSHOT_NATIVE_KEY",
         "完整1.27a磁盘身份已核验；经本次进程/创建时间/Job/窗口输入租约发送原生截图键，采集游戏新写TGA；未请求进程内存权限。", {}});
     return result;
