@@ -722,6 +722,10 @@ if(AUDASTRA_RUNTIME_TEST_PWSH)
         -File "${CMAKE_CURRENT_SOURCE_DIR}/RuntimeDistributionTests.ps1"
         -Freezer "$<TARGET_FILE:audastra-runtime-package-freezer>" -Tools "${PROJECT_SOURCE_DIR}/tools/dev")
     set_tests_properties(services-runtime-distribution-pipeline PROPERTIES TIMEOUT 120)
+    add_test(NAME services-runtime-legacy-distribution COMMAND "${AUDASTRA_RUNTIME_TEST_PWSH}" -NoProfile
+        -File "${CMAKE_CURRENT_SOURCE_DIR}/RuntimeLegacyDistributionTests.ps1"
+        -Freezer "$<TARGET_FILE:audastra-runtime-package-freezer>" -Tools "${PROJECT_SOURCE_DIR}/tools/dev")
+    set_tests_properties(services-runtime-legacy-distribution PROPERTIES TIMEOUT 120)
 endif()
 add_executable(war3-map-runtime-boot-tests MapRuntimeBootTests.cpp RuntimeModuleBootTests.cpp)
 target_link_libraries(war3-map-runtime-boot-tests PRIVATE War3MapEditor::ScriptBuild)

@@ -10,6 +10,7 @@ param(
     [string]$NodeExecutable = '',
     [string]$NodeLicense = '',
     [string]$MapRuntimeInstallationRoot = '',
+    [string[]]$LegacyMapRuntimeInstallationRoot = @(),
     [string]$UiLibraryBundleDirectory = '',
     [string]$UpdateOutputDirectory = '',
     [string]$MinimumDirectUpgrade = '',
@@ -73,6 +74,11 @@ if ($LASTEXITCODE -ne 0 -or $versionInfo.product -ne 'Audastra' -or $versionInfo
 $dirty = @(& git -C $repo status --porcelain)
 if ($LASTEXITCODE -ne 0 -or $dirty.Count) { throw 'Commit the source checkpoint before packaging' }
 
+. "$PSScriptRoot/StageMapRuntime.ps1"
+$bundle = if ($UiLibraryBundleDirectory) { $UiLibraryBundleDirectory } else { Join-Path (Split-Path $binaries -Parent) 'ui-library' }
+$mapRuntimePlan = Get-MapRuntimeDistributionStagePlan -CurrentSource $MapRuntimeInstallationRoot `
+    -LegacySources $LegacyMapRuntimeInstallationRoot -BundledClient (Join-Path $bundle 'AudastraUI/jass/AudastraUI.j')
+
 $bin = Join-Path $output 'bin'
 $licenses = Join-Path $output 'licenses'
 New-Item -ItemType Directory -Path $bin, $licenses | Out-Null
@@ -90,20 +96,7 @@ if ($LASTEXITCODE -ne 0) { throw "windeployqt failed: $LASTEXITCODE (partial out
 "[Paths]`nPrefix = .`nPlugins = plugins`nTranslations = translations`n" |
     Set-Content -LiteralPath "$bin/qt.conf" -Encoding ascii
 $runtimeFiles | Copy-Item -Destination $bin
-if ($MapRuntimeInstallationRoot) {
-    . "$PSScriptRoot/StageMapRuntime.ps1"
-    Copy-PendingMapRuntimeInstallation -Source $MapRuntimeInstallationRoot -Target "$output/runtime"
-    # 作者从“函数库…”装进数据根的 AudastraUI 来自编辑器内置包；运行库包锁定的客户端必须与它逐字节相同，否则另存被身份核对拒绝。
-    $bundle = if ($UiLibraryBundleDirectory) { $UiLibraryBundleDirectory } else { Join-Path (Split-Path $binaries -Parent) 'ui-library' }
-    $bundleClient = Join-Path $bundle 'AudastraUI/jass/AudastraUI.j'
-    if (!(Test-Path -LiteralPath $bundleClient -PathType Leaf)) { throw "Missing built AudastraUI library: $bundleClient" }
-    $bundleSha = (Get-FileHash -LiteralPath $bundleClient -Algorithm SHA256).Hash
-    foreach ($client in @(Get-ChildItem -LiteralPath "$output/runtime/packages" -Filter 'client.j' -File -Recurse)) {
-        if ((Get-FileHash -LiteralPath $client.FullName -Algorithm SHA256).Hash -ne $bundleSha) {
-            throw "Runtime package client differs from the AudastraUI library built into this editor; re-freeze the package from $bundleClient"
-        }
-    }
-}
+Write-MapRuntimeInstallationStagePlan -Plan $mapRuntimePlan -Target "$output/runtime"
 New-Item -ItemType Directory -Path "$bin/fonts", "$licenses/fonts", "$licenses/Qt" | Out-Null
 $fonts | Copy-Item -Destination "$bin/fonts"
 Copy-Item -Path "$repo/third_party/fonts/LICENSES/*" -Destination "$licenses/fonts" -Recurse
