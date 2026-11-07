@@ -24,11 +24,11 @@ void TextOnlyAndSandbox() {
     Success(host.Initialize(), "initialize");
     Success(host.Execute("value = 1; assert(type(string.sub) == 'function'); assert(require('math') == math)", "@first.lua"), "base libraries");
     Success(host.Execute("value = value + 1; assert(value == 2); assert(_VERSION == 'Lua 5.3')", "@second.lua"), "persistent state");
-    Success(host.Execute("assert(io == nil and os == nil and package == nil and coroutine == nil); assert(string.dump == nil); assert(type(debug.traceback)=='function' and debug.getregistry==nil and debug.getupvalue==nil)", "@sandbox.lua"), "no external capabilities");
+    Success(host.Execute("assert(io == nil and os.execute == nil and os.remove == nil and os.getenv == nil and package == nil and coroutine == nil); assert(string.dump == nil); assert(type(debug.traceback)=='function' and debug.getregistry==nil and debug.getupvalue==nil)", "@sandbox.lua"), "no external capabilities");
     Success(host.Execute("local t=setmetatable({}, {__index=function() return 7 end}); assert(t.value==7)", "@class.lua"), "ordinary metatables allowed");
     Check(host.Execute("setmetatable({}, {__gc=function() while true do end end})", "@finalizer.lua").code == LuaReloadResult::RuntimeError,
         "unbounded author finalizers refused before registration");
-    for (const auto name : {"load", "loadfile", "dofile", "collectgarbage"}) {
+    for (const auto name : {"load", "loadfile", "dofile"}) {
         const auto result = host.Execute(std::string(name) + "('return 1')", "@disabled.lua");
         Check(result.code == LuaReloadResult::RuntimeError && result.message.find(name) != std::string::npos, "disabled capability names itself");
     }
@@ -161,8 +161,8 @@ void RuntimeBehaviorModules() {
     Check(host.Execute("console.enable=1", "@console-type.lua").code == LuaReloadResult::RuntimeError, "console strict boolean");
     Check(host.Execute("console.write('unknown')", "@console-unknown.lua").message.find("jass.console.write") != std::string::npos,
         "unverified console API refused by name");
-    Check(host.Execute("debug.traceback({},1)", "@thread.lua").code == LuaReloadResult::RuntimeError, "no arbitrary stack/thread access");
-    for (const auto module : {"jass.japi", "jass.debug", "jass.slk", "jass.message", "jass.hook"}) {
+    Success(host.Execute("local value={}; assert(debug.traceback(value,1)==value and debug.traceback(false)==false and debug.traceback(3)==3)", "@trace-value.lua"), "non-text traceback identity");
+    for (const auto module : {"jass.debug", "jass.slk", "jass.message", "jass.hook"}) {
         const auto rejected = host.Execute(std::string("require('") + module + "')", "@unimplemented.lua");
         Check(rejected.code == LuaReloadResult::RuntimeError && rejected.message.find(module) != std::string::npos,
             "remaining modules explicit without stub behavior");
@@ -174,6 +174,38 @@ void RuntimeBehaviorModules() {
     Check(budget.message.find("preserved") != std::string::npos && budget.message.find("jass.runtime.error_handle") != std::string::npos,
         "handler inherits execution budget and cannot hang host");
     Success(bounded.Execute("runtime.error_handle=nil; value=1", "@after-handler.lua"), "failed handler unwinds host");
+}
+
+void HLuaStartupLibraries() {
+    LuaHost host({}); Success(host.Initialize(), "startup libraries initialize");
+    Success(host.Execute(R"lua(
+        local rt=require('jass.runtime')
+        local console=require('jass.console')
+        rt.console=true
+        console.write('console text', '\n')
+        rt.debugger=4279
+        assert(rt.debugger==nil)
+        local api=require('jass.japi')
+        assert(api.EXUnimplemented==nil and api.DzUnimplemented==nil)
+        assert(not pcall(rawset,api,'EXUnimplemented',function() return true end))
+        assert(api.EXUnimplemented==nil)
+        assert(type(collectgarbage('count'))=='number' and collectgarbage('count')>0)
+        local t={}; for i=1,100 do t[i]={i} end; t=nil
+        assert(collectgarbage('collect')==0)
+        assert(not pcall(collectgarbage,'stop'))
+        assert(type(os.clock())=='number')
+        local date=os.date('!*t',0)
+        assert(date.year==1970 and date.month==1 and date.day==1)
+        assert(os.date('!%Y-%m-%d %H:%M:%S',0)=='1970-01-01 00:00:00')
+        assert(type(os.time({year=2026,month=1,day=1}))=='number')
+        assert(not pcall(os.date,'%q') and not pcall(os.date,'%'))
+    )lua", "@startup-libraries.lua"), "bounded startup interfaces");
+    Check(host.ConsoleText().find("console text") != std::string_view::npos, "console.write test channel");
+    Check(host.ConsoleText().find("LUA_DEBUGGER_UNSUPPORTED") != std::string_view::npos, "debugger limitation explicit");
+    const auto text = host.ConsoleText();
+    const auto first = text.find("LUA_JAPI_UNSUPPORTED");
+    Check(first != std::string_view::npos && text.find("LUA_JAPI_UNSUPPORTED", first + 1) == std::string_view::npos,
+        "missing extension reported once without fake function");
 }
 
 void MailboxExecutesRealLua() {
@@ -250,7 +282,7 @@ void ModuleHotReload() {
 int main() {
     try {
         TextOnlyAndSandbox(); ArchiveModules(); ClassicEntrySyntax(); BudgetsAndRandom(); RuntimeBehaviorModules(); MailboxExecutesRealLua();
-        ModuleHotReload();
+        ModuleHotReload(); HLuaStartupLibraries();
         std::cout << "Own Lua 5.3 host passed; original in-memory archive/native-free fixture; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

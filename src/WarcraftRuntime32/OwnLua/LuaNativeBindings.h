@@ -14,6 +14,7 @@ public:
     void Install(lua_State* lua);
     // 初始化base库时安装，提前保存rawset的脚本也不能绕过后来绑定的宿主表保护。
     static void InstallTableWriteGuard(lua_State* lua);
+    static void ProtectHostTable(lua_State* lua, int index);
 private:
     static int Lookup(lua_State* lua);
     static int LookupGlobal(lua_State* lua);

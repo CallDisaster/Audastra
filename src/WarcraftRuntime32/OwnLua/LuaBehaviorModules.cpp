@@ -32,6 +32,8 @@ int LuaBehaviorModules::ReadRuntime(lua_State* lua) {
         if (self.errorHandler_ == LUA_NOREF) lua_pushnil(lua);
         else lua_rawgeti(lua, LUA_REGISTRYINDEX, self.errorHandler_);
     } else if (key == "handle_level") lua_pushinteger(lua, 2);
+    else if (key == "console") lua_pushboolean(lua, self.consoleEnabled_);
+    else if (key == "debugger") lua_pushnil(lua);
     else if (key == "catch_crash") lua_pushboolean(lua, true);
     else if (key == "sleep") lua_pushboolean(lua, false);
     else return luaL_error(lua, "自有 Lua 运行时尚未实现 jass.runtime.%s。", std::string(key).c_str());
@@ -46,6 +48,18 @@ int LuaBehaviorModules::WriteRuntime(lua_State* lua) {
         const int next = lua_isnil(lua, 3) ? (lua_pop(lua, 1), LUA_NOREF) : luaL_ref(lua, LUA_REGISTRYINDEX);
         if (self.errorHandler_ != LUA_NOREF) luaL_unref(lua, LUA_REGISTRYINDEX, self.errorHandler_);
         self.errorHandler_ = next;
+    } else if (key == "console") {
+        if (!lua_isboolean(lua, 3)) return luaL_error(lua, "jass.runtime.console 需要 boolean。");
+        self.consoleEnabled_ = lua_toboolean(lua, 3) != 0;
+    } else if (key == "debugger") {
+        if (!lua_isinteger(lua, 3) || lua_tointeger(lua, 3) < 0 || lua_tointeger(lua, 3) > 65535)
+            return luaL_error(lua, "jass.runtime.debugger 需要0..65535的端口整数。");
+        if (lua_tointeger(lua, 3) && !self.debuggerReported_ && self.diagnostic_) {
+            self.debuggerReported_ = true;
+            lua_pushcfunction(lua, self.diagnostic_);
+            lua_pushliteral(lua, "LUA_DEBUGGER_UNSUPPORTED: 已识别调试端口请求；自带环境未启动网络调试器。\n");
+            lua_call(lua, 1, 0);
+        }
     } else if (key == "handle_level") {
         if (!lua_isinteger(lua, 3) || lua_tointeger(lua, 3) != 2)
             return luaL_error(lua, "jass.runtime.handle_level 当前仅支持 2（持有引用的 userdata）。");
@@ -59,6 +73,7 @@ int LuaBehaviorModules::WriteRuntime(lua_State* lua) {
     return 0;
 }
 int LuaBehaviorModules::ReadConsole(lua_State* lua) {
+    if (Key(lua) == "write" && Self(lua).consoleWrite_) { lua_pushcfunction(lua, Self(lua).consoleWrite_); return 1; }
     if (Key(lua) != "enable") return luaL_error(lua, "自有 Lua 运行时尚未实现 jass.console.%s。", std::string(Key(lua)).c_str());
     lua_pushboolean(lua, Self(lua).consoleEnabled_);
     return 1;
@@ -72,14 +87,16 @@ int LuaBehaviorModules::WriteConsole(lua_State* lua) {
 int LuaBehaviorModules::Traceback(lua_State* lua) {
     // 只开放当前栈；不接受 thread、registry、upvalue 或任意内存访问。
     const int count = lua_gettop(lua);
-    if (count > 2 || (count && !lua_isnil(lua, 1) && lua_type(lua, 1) != LUA_TSTRING))
+    if (count && !lua_isnil(lua, 1) && lua_type(lua, 1) != LUA_TSTRING) { lua_pushvalue(lua, 1); return 1; }
+    if (count > 2)
         return luaL_error(lua, "debug.traceback 只接受可选的文本和栈层数。");
     const auto level = count > 1 ? luaL_checkinteger(lua, 2) : 1;
     if (level < 0 || level > 64) return luaL_error(lua, "debug.traceback 栈层数必须在 0 到 64 之间。");
     luaL_traceback(lua, lua, count ? lua_tostring(lua, 1) : nullptr, static_cast<int>(level));
     return 1;
 }
-void LuaBehaviorModules::Install(lua_State* lua) {
+void LuaBehaviorModules::Install(lua_State* lua, LuaFunction consoleWrite, LuaFunction diagnostic) {
+    consoleWrite_ = consoleWrite; diagnostic_ = diagnostic;
     luaL_getsubtable(lua, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
     const auto module = [this, lua](const char* name, lua_CFunction read, lua_CFunction write) {
         lua_newtable(lua); lua_newtable(lua);

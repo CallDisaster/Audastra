@@ -157,6 +157,11 @@ int LuaNativeBindings::RawSet(lua_State* lua) {
 void LuaNativeBindings::InstallTableWriteGuard(lua_State* lua) {
     lua_pushcfunction(lua, RawSet); lua_setglobal(lua, "rawset");
 }
+void LuaNativeBindings::ProtectHostTable(lua_State* lua, int index) {
+    index = lua_absindex(lua, index);
+    if (!lua_getmetatable(lua, index)) luaL_error(lua, "宿主表缺少受保护元表。");
+    lua_pushboolean(lua, true); lua_rawsetp(lua, -2, &globalTableGuardKey); lua_pop(lua, 1);
+}
 int LuaNativeBindings::ReadGlobal(lua_State* lua, std::string_view key) {
     if (provider_->Generation() != generation_) return luaL_error(lua, "JASS 全局变量所属地图代际已经结束。");
     const std::string name(key);

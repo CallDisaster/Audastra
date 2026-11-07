@@ -3,6 +3,7 @@
 #include "LuaCallbacks.h"
 #include "LuaBehaviorModules.h"
 #include "LuaModulePath.h"
+#include "LuaTimeLibrary.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include "War3MapCore/Lua/YdweRawcode.h"
 
@@ -37,6 +38,7 @@ struct LuaHost::Impl {
     std::uint64_t instructionsLeft = 0, started = 0;
     std::uint32_t random = 0x41d05327;
     bool executing = false, budgetExceeded = false;
+    bool missingJapiReported = false;
     std::uint32_t callbackDepth = 0;
     std::string console;
     std::string_view requestedModule;
@@ -123,6 +125,42 @@ struct LuaHost::Impl {
         }
         if (self.console.size() < kConsoleBytes) self.console += '\n';
         return 0;
+    }
+    static int ConsoleWrite(lua_State* lua) {
+        auto& self = Host(lua);
+        if (!self.behavior.ConsoleEnabled()) return 0;
+        for (int index = 1; index <= lua_gettop(lua); ++index) {
+            std::size_t size = 0; const auto* text = luaL_checklstring(lua, index, &size);
+            const std::string_view value(text, size);
+            if (!LuaMailboxUtf8(value)) return luaL_error(lua, "console.write 需要 UTF-8 文本。");
+            self.console.append(value.substr(0, LuaMailboxUtf8Prefix(value, kConsoleBytes - self.console.size())));
+        }
+        return 0;
+    }
+    static int Diagnostic(lua_State* lua) {
+        auto& self = Host(lua); std::size_t size = 0;
+        const auto* text = luaL_checklstring(lua, 1, &size);
+        const std::string_view value(text, size);
+        if (LuaMailboxUtf8(value)) self.console.append(value.substr(0, LuaMailboxUtf8Prefix(value, kConsoleBytes - self.console.size())));
+        return 0;
+    }
+    static int MissingJapi(lua_State* lua) {
+        auto& self = Host(lua);
+        if (!self.missingJapiReported) {
+            self.missingJapiReported = true;
+            lua_pushcfunction(lua, Diagnostic);
+            lua_pushliteral(lua, "LUA_JAPI_UNSUPPORTED: 此环境未实现 Dz/EX 扩展；相关伤害、属性、同步和帧界面功能不可用。\n");
+            lua_call(lua, 1, 0);
+        }
+        lua_pushnil(lua); return 1;
+    }
+    static int CollectGarbage(lua_State* lua) {
+        const std::string_view operation(luaL_optstring(lua, 1, "collect"));
+        if (operation == "collect") { lua_gc(lua, LUA_GCCOLLECT, 0); lua_pushinteger(lua, 0); return 1; }
+        if (operation == "count") {
+            lua_pushnumber(lua, lua_gc(lua, LUA_GCCOUNT, 0) + lua_gc(lua, LUA_GCCOUNTB, 0) / 1024.0); return 1;
+        }
+        return luaL_error(lua, "collectgarbage 只支持 collect 和 count。");
     }
     std::uint32_t NextRandom() noexcept {
         random ^= random << 13; random ^= random >> 17; random ^= random << 5;
@@ -214,7 +252,9 @@ struct LuaHost::Impl {
         luaL_requiref(lua, "string", luaopen_string, 1); lua_pop(lua, 1);
         luaL_requiref(lua, "math", luaopen_math, 1); lua_pop(lua, 1);
         luaL_requiref(lua, "utf8", luaopen_utf8, 1); lua_pop(lua, 1);
-        for (const auto name : {"dofile", "loadfile", "load", "collectgarbage"}) Disable(lua, name);
+        for (const auto name : {"dofile", "loadfile", "load"}) Disable(lua, name);
+        lua_pushcfunction(lua, CollectGarbage); lua_setglobal(lua, "collectgarbage");
+        InstallLuaTimeLibrary(lua);
         lua_getglobal(lua, "setmetatable"); lua_pushcclosure(lua, SetMetatable, 1); lua_setglobal(lua, "setmetatable");
         LuaNativeBindings::InstallTableWriteGuard(lua);
         lua_getglobal(lua, "string"); lua_pushnil(lua); lua_setfield(lua, -2, "dump"); lua_pop(lua, 1);
@@ -225,7 +265,14 @@ struct LuaHost::Impl {
         lua_pushcfunction(lua, Require); lua_setglobal(lua, "require");
         luaL_getsubtable(lua, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
         lua_rawsetp(lua, LUA_REGISTRYINDEX, &loadedModulesKey);
-        Host(lua).behavior.Install(lua);
+        Host(lua).behavior.Install(lua, ConsoleWrite, Diagnostic);
+        luaL_getsubtable(lua, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
+        lua_newtable(lua); lua_newtable(lua);
+        lua_pushcfunction(lua, MissingJapi); lua_setfield(lua, -2, "__index");
+        lua_pushcfunction(lua, [](lua_State* L) -> int { return luaL_error(L, "jass.japi 是只读能力表。"); }); lua_setfield(lua, -2, "__newindex");
+        lua_pushliteral(lua, "jass.japi"); lua_setfield(lua, -2, "__metatable"); lua_setmetatable(lua, -2);
+        LuaNativeBindings::ProtectHostTable(lua, -1);
+        lua_setfield(lua, -2, "jass.japi"); lua_pop(lua, 1);
         return 0;
     }
     static int InitializeNatives(lua_State* lua) { Host(lua).natives->Install(lua); return 0; }
