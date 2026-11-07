@@ -69,7 +69,7 @@ Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const s
 
 Output BuildProject(const BuildRequest& request, const Services::MapSaveService::Progress& progress) {
     try {
-        if (request.idsOnly) {
+        if (request.idsOnly && (request.gameRoot.empty() || request.workspace.empty())) {
             auto framework = HLuaFrameworkLocator::Capture(request.framework);
             if (!framework.Succeeded()) return {std::nullopt, std::move(framework.diagnostics)};
             auto project = HLuaProjectScanner::Capture(request.project);
@@ -88,6 +88,8 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             receipt.objects = std::move(hslk.value->objects); receipt.console = std::move(hslk.value->console);
             receipt.idReplayPassed = hslk.value->replayPassed;
             receipt.peakLuaBytes = hslk.value->peakMemoryBytes; receipt.luaInstructions = hslk.value->instructions;
+            receipt.diagnostics.push_back({DiagnosticSeverity::Warning, "HLua", "HLUA_IDS_MAPPING_UNCHECKED",
+                "此名称与 ID 表只验证分配和回放；提供游戏数据与独占工作目录后，才能核对字段兼容和逐处冗余声明。", {}});
             return Output::Success(std::move(receipt));
         }
         if ((!request.idsOnly && (request.target.empty() || std::filesystem::exists(request.target)))
@@ -131,14 +133,16 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         all.insert(all.end(), hslk.objects.begin(), hslk.objects.end());
         Services::MapSaveTask task; task.target = request.target;
         task.diagnostics = base.value->diagnostics;
+        std::vector<IndexedFieldAudit> redundantFields;
         auto status = task.FreezeArchive(base.value->archive);
         if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
         task.testCopyOnly = request.mode == BuildTarget::Test;
         for (std::size_t i = 0; i < baselines.size(); ++i) {
             const auto type = static_cast<ObjectType>(i);
             if (std::none_of(all.begin(), all.end(), [&](const auto& object) { return object.objectClass == ToString(type); })) continue;
-            auto edited = ApplyHslkObjects(type, baselines[i], all, *schema.value, catalog.value->Catalog());
+            auto edited = ApplyHslkObjects(type, baselines[i], all, *schema.value, catalog.value->Catalog(), &redundantFields);
             if (!edited.Succeeded()) return {std::nullopt, std::move(edited.diagnostics)};
+            task.diagnostics.insert(task.diagnostics.end(), edited.diagnostics.begin(), edited.diagnostics.end());
             std::optional<std::vector<std::byte>> original;
             if (task.archive->HasMember(NativeFileName(type))) {
                 auto bytes = task.archive->ReadMember(NativeFileName(type));
@@ -151,6 +155,24 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             if (!snapshot.Succeeded()) return {std::nullopt, std::move(snapshot.diagnostics)};
             task.objectTransactions.push_back(*snapshot.value);
             Replace(task, std::string(NativeFileName(type)), {snapshot.value->get()->EncodedNative().begin(), snapshot.value->get()->EncodedNative().end()});
+        }
+        const auto verifyInputs = [&]() -> Status {
+            auto checked = HLuaFrameworkLocator::Verify(*framework.value); if (!checked.Succeeded()) return checked;
+            checked = Services::VerifyLuaFolder(project.value->source); if (!checked.Succeeded()) return checked;
+            checked = Detail::VerifyTree(base.value->files,base.value->treeRoot); if (!checked.Succeeded()) return checked;
+            return catalog.value->VerifyCapturedSources();
+        };
+        if (request.idsOnly) {
+            status = verifyInputs();
+            if (!status.Succeeded()) return {std::nullopt, std::move(status.diagnostics)};
+            BuildReceipt receipt;
+            receipt.inputs = std::move(checkedInputs); receipt.baseSha256 = base.value->inputSha256;
+            receipt.objects = std::move(hslk.objects); receipt.console = std::move(hslk.console);
+            receipt.idReplayPassed = hslk.replayPassed; receipt.fieldMappingChecked = true;
+            receipt.redundantIndexedFields = std::move(redundantFields);
+            receipt.peakLuaBytes = hslk.peakMemoryBytes; receipt.luaInstructions = hslk.instructions;
+            receipt.diagnostics = task.diagnostics;
+            auto result = Output::Success(std::move(receipt)); result.diagnostics = std::move(task.diagnostics); return result;
         }
         auto runtime = Detail::RuntimeMembers(*framework.value, *project.value, hslk, request.mode);
         if (!runtime.Succeeded()) return {std::nullopt, std::move(runtime.diagnostics)};
@@ -201,12 +223,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             if (!optimized.Succeeded()) return {std::nullopt, std::move(optimized.diagnostics)};
             for (auto& member : optimized.value->replacements) Replace(task, std::move(member.name), std::move(member.bytes));
         }
-        task.beforePublish = [&]() -> Status {
-            auto checked = HLuaFrameworkLocator::Verify(*framework.value); if (!checked.Succeeded()) return checked;
-            checked = Services::VerifyLuaFolder(project.value->source); if (!checked.Succeeded()) return checked;
-            checked = Detail::VerifyTree(base.value->files,base.value->treeRoot); if (!checked.Succeeded()) return checked;
-            return catalog.value->VerifyCapturedSources();
-        };
+        task.beforePublish = verifyInputs;
         Services::MapSaveService::Run(task, progress);
         if (!task.succeeded) return {std::nullopt, std::move(task.diagnostics)};
         auto hash = Sha256File(task.written);
@@ -218,6 +235,7 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         receipt.idReplayPassed = hslk.replayPassed; receipt.archiveReadbackPassed = true;
         receipt.peakLuaBytes = hslk.peakMemoryBytes; receipt.luaInstructions = hslk.instructions;
         receipt.diagnostics = task.diagnostics;
+        receipt.fieldMappingChecked = true; receipt.redundantIndexedFields = std::move(redundantFields);
         receipt.differences = {"所有目标把 Lua 放入地图，不写入本机 package.path。", "数值直接编码原生 float32，不保留两位小数。",
             "字符串和数组经领域文档编码，保留引号、反斜杠与换行。", "布尔、嵌套数组、ID 冲突/溢出明确拒绝。",
             "缺少真实 InitGlobals 调用时拒绝出图。", "不复制或删除游戏目录中的插件。", "构建使用有界 Lua 5.3；tostring 的数值采用最短往返文本。"};

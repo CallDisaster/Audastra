@@ -8,7 +8,7 @@
 namespace War3Map::HLua {
 
 using FieldAtom = std::variant<double, std::string>;
-struct HslkField { std::string name; std::vector<FieldAtom> values; bool array = false; };
+struct HslkField { std::string name; std::vector<FieldAtom> values; bool array = false; std::string source; };
 struct HslkObject {
     std::string objectClass, id, parent, name, source;
     std::vector<HslkField> fields;

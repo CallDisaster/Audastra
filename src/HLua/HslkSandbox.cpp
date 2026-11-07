@@ -186,6 +186,7 @@ int HslkSandbox::Extract(lua_State* L) {
             std::string name(key, size);
             if (!name.empty() && name.front() != '_') {
                 HslkField field; field.name = std::move(name);
+                field.source = object.source;
                 host.fieldBytes_ += field.name.size() + sizeof(HslkField);
                 if (host.fieldBytes_ > host.limits_.fieldBytes) return luaL_error(L, "生成字段超过预算。");
                 if (lua_istable(L, -1)) {

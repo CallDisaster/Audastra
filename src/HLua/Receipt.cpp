@@ -38,6 +38,19 @@ std::string InspectReceiptJson(const InspectReceipt& receipt,std::size_t offset,
 std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset, std::size_t limit) {
     Json objects = Json::array();
     Json diagnostics = Json::array();
+    Json audits = Json::array();
+    const auto auditBegin = std::min(offset, receipt.redundantIndexedFields.size());
+    const auto auditCount = std::min({limit, std::size_t{1024}, receipt.redundantIndexedFields.size() - auditBegin});
+    for (std::size_t i = auditBegin; i < auditBegin + auditCount; ++i) {
+        const auto& audit = receipt.redundantIndexedFields[i];
+        Json indices = Json::array();
+        for (const auto& index : audit.indices) indices.push_back({{"field", Display(index.field, 240)},
+            {"native_id", index.nativeId}, {"effective_value", Display(index.effectiveValue, 4096)},
+            {"effective_value_truncated", index.effectiveValue.size() > 4096}, {"value_source", Display(index.valueSource, 240)}});
+        audits.push_back({{"class", audit.objectClass}, {"id", audit.id}, {"source", Display(audit.source, 1024)},
+            {"field", Display(audit.field, 240)}, {"declared_value", Display(audit.declaredValue, 4096)},
+            {"declared_value_truncated", audit.declaredValue.size() > 4096}, {"indices", std::move(indices)}});
+    }
     for (std::size_t i = 0; i < std::min<std::size_t>(64, receipt.diagnostics.size()); ++i) {
         const auto& value = receipt.diagnostics[i];
         diagnostics.push_back({{"code",Display(value.code,128)},{"message",Display(value.message,512)}});
@@ -57,6 +70,9 @@ std::string BuildReceiptJson(const BuildReceipt& receipt, std::size_t offset, st
         {"peak_lua_bytes",receipt.peakLuaBytes},{"lua_instructions",receipt.luaInstructions},
         {"sdk_differences",receipt.differences},{"console",Display(receipt.console,4096)},
         {"diagnostics",std::move(diagnostics)},{"diagnostic_count",receipt.diagnostics.size()},
+        {"field_mapping_checked", receipt.fieldMappingChecked}, {"redundant_indexed_fields", std::move(audits)},
+        {"redundant_indexed_field_count", receipt.redundantIndexedFields.size()}, {"audit_offset", auditBegin},
+        {"audit_next_offset", auditBegin + auditCount < receipt.redundantIndexedFields.size() ? Json(auditBegin + auditCount) : Json(nullptr)},
         {"original_editor_verified",false},{"game_verified",false}};
     return result.dump(2);
 }

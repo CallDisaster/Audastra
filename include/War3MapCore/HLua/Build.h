@@ -38,6 +38,8 @@ struct BuildReceipt {
     std::size_t peakLuaBytes = 0;
     std::uint64_t luaInstructions = 0;
     std::vector<Diagnostic> diagnostics;
+    bool fieldMappingChecked = false;
+    std::vector<IndexedFieldAudit> redundantIndexedFields;
 };
 
 [[nodiscard]] Result<InspectReceipt> InspectProject(const FrameworkLocation& framework,

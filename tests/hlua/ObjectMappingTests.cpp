@@ -38,12 +38,16 @@ void TestHLuaObjectMapping() {
         {{"ID","unam"},{"field","Name"},{"slk","Profile"},{"type","string"},{"index","0"}},
         {{"ID","ussc"},{"field","scale"},{"slk","UnitUI"},{"type","real"}},
         {{"ID","ubpx"},{"field","Buttonpos"},{"slk","Profile"},{"type","int"},{"index","0"}},
-        {{"ID","ubpy"},{"field","Buttonpos"},{"slk","Profile"},{"type","int"},{"index","1"}}});
+        {{"ID","ubpy"},{"field","Buttonpos"},{"slk","Profile"},{"type","int"},{"index","1"}},
+        {{"ID","uxf1"},{"field","Fx"},{"slk","Profile"},{"type","string"},{"index","0"}},
+        {{"ID","uxf2"},{"field","Fx"},{"slk","Profile"},{"type","string"},{"index","1"}}});
     files["ability-meta.slk"] = Slk({
         {{"ID","atp1"},{"field","Tip"},{"slk","Profile"},{"type","string"},{"repeat","4"},{"index","0"}},
         {{"ID","Hbz1"},{"field","Data"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"},{"data","1"},{"useSpecific","AHbz"}},
         {{"ID","acdn"},{"field","Cool"},{"slk","AbilityData"},{"type","unreal"},{"repeat","4"}}});
-    files["units.slk"] = Slk({{{"ID","hfoo"},{"code","hfoo"},{"Name","Parent"}}});
+    files["units.slk"] = Slk({{{"ID","hfoo"},{"code","hfoo"},{"Name","Parent"}},
+        {{"ID","hbar"},{"code","hbar"},{"Name","Missing components"}}});
+    files["units.txt"] = "[hfoo]\nFx=,\nButtonpos=0,0\n";
     files["abilities.slk"] = Slk({{{"ID","AHbz"},{"code","AHbz"},{"Name","Ability parent"}}});
     files["abilities.txt"]="[AHbz]\nTip=\"first, note\",second\n";
     const auto read = [&](const std::string& path) {
@@ -56,7 +60,7 @@ void TestHLuaObjectMapping() {
     schemaOptions.stringFiles.clear();
     auto schema = ObjectFieldSchema::Load(read, schemaOptions); Good(schema);
     CatalogLoadOptions catalogOptions;
-    catalogOptions.sources = {{ObjectType::Unit,{"units.slk"},{}},{ObjectType::Ability,{"abilities.slk"},{"abilities.txt"}}};
+    catalogOptions.sources = {{ObjectType::Unit,{"units.slk"},{"units.txt"}},{ObjectType::Ability,{"abilities.slk"},{"abilities.txt"}}};
     catalogOptions.stringFiles.clear();
     auto standard = StandardObjectCatalog::Load(read, catalogOptions); Good(standard);
     const auto empty = [](ObjectType type) {
@@ -110,4 +114,39 @@ void TestHLuaObjectMapping() {
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName={2=1}\n","unit.ini").Succeeded(), "sparse rejected");
     unit.value->front().fields.push_back({"unknown", {1.0}, false});
     Need(!ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *unit.value, *schema.value, *standard.value).Succeeded(), "unknown not dropped");
+
+    const auto redundant = [&](std::string_view fields, const LniObjectDocument& baseline,
+        std::string_view parent = "hfoo") {
+        auto input = ParseF6ObjectIni(ObjectType::Unit, "[v010]\n_parent=\"" + std::string(parent) + "\"\n" + std::string(fields), "original.ini:7");
+        Good(input);
+        return ApplyHslkObjects(ObjectType::Unit, baseline, *input.value, *schema.value, *standard.value);
+    };
+    auto accepted = redundant("Fx=\"\"\n", empty(ObjectType::Unit)); Good(accepted);
+    Need(accepted.value->Objects().front().modifications.empty(), "redundant alias adds no native field");
+    Need(accepted.diagnostics.size() == 1 && accepted.diagnostics.front().severity == DiagnosticSeverity::Warning
+        && accepted.diagnostics.front().code == "HLUA_REDUNDANT_INDEXED_FIELD"
+        && accepted.diagnostics.front().message.find("original.ini:7:3") != std::string::npos
+        && accepted.diagnostics.front().message.find("fx_2=[]") != std::string::npos, "one located warning includes every effective index");
+    auto different = redundant("Fx=\"changed\"\n", empty(ObjectType::Unit));
+    Need(!different.Succeeded() && different.diagnostics.front().message.find("fx_1, fx_2") != std::string::npos,
+        "different scalar rejected with explicit key names");
+    Need(!redundant("Fx=\"\"\nFx_2=\"changed\"\n", empty(ObjectType::Unit)).Succeeded(), "own explicit second value participates before alias check");
+    Good(redundant("Fx_2=\"\"\nFx=\"\"\n", empty(ObjectType::Unit)));
+    Need(!redundant("Fx={\"\"}\n", empty(ObjectType::Unit)).Succeeded(), "one-element array is not a scalar alias");
+    Good(redundant("Buttonpos=0\n", empty(ObjectType::Unit)));
+    Need(!redundant("Buttonpos=1\n", empty(ObjectType::Unit)).Succeeded(), "numeric alias does not broadcast");
+    auto parentInput = ParseF6ObjectIni(ObjectType::Unit, "[v009]\n_parent=\"hfoo\"\nFx_1=\"inherited\"\nFx_2=\"inherited\"\n", "parent.ini"); Good(parentInput);
+    auto customParent = ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *parentInput.value, *schema.value, *standard.value); Good(customParent);
+    Good(redundant("Fx=\"inherited\"\n", *customParent.value, "v009"));
+    Need(!redundant("Fx=\"\"\n", *customParent.value, "v009").Succeeded(), "custom parent overrides are not replaced by standard defaults");
+    Need(!redundant("Fx=\"inherited\"\nFx_2=\"changed\"\n", *customParent.value, "v009").Succeeded(), "own override wins across parent chain");
+    Need(!redundant("Fx=\"\"\n", empty(ObjectType::Unit), "xxxx").Succeeded(), "missing parent remains rejected");
+    Need(!redundant("Fx=\"\"\nFx_1=\"\"\n", empty(ObjectType::Unit), "hbar").Succeeded(), "missing second effective value is not assumed empty");
+    auto auditInput = ParseF6ObjectIni(ObjectType::Unit, "[v011]\n_parent=\"hfoo\"\nFx=\"\"\n", "audit.ini:3"); Good(auditInput);
+    std::vector<IndexedFieldAudit> audits;
+    auto audited = ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits); Good(audited);
+    Need(audits.size() == 1 && audits.front().indices.size() == 2 && audits.front().indices[1].valueSource == "standard:hfoo", "structured ID receipt audit preserves source and all indices");
+    auditInput.value->front().fields.push_back({"unknown", {1.0}, false});
+    Need(!ApplyHslkObjects(ObjectType::Unit, empty(ObjectType::Unit), *auditInput.value, *schema.value, *standard.value, &audits).Succeeded()
+        && audits.size() == 1, "failed mapping never publishes partial audit records");
 }

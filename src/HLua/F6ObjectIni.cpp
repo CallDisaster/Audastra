@@ -4,6 +4,7 @@
 #include "War3MapCore/IO/FileBytes.h"
 #include <charconv>
 #include <cmath>
+#include <algorithm>
 
 namespace War3Map::HLua {
 Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, std::string_view text,
@@ -41,6 +42,8 @@ Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, st
             }
             if (name.starts_with('_')) continue;
             HslkField field; field.name = name;
+            field.source = std::string(source) + ':' + std::to_string(1 + std::count(text.begin(),
+                text.begin() + std::min(value.offset, text.size()), '\n'));
             field.array = value.kind == Text::LniDataValue::Kind::Table;
             if (field.array) {
                 for (std::size_t i = 1; i <= value.fields.size(); ++i) {
