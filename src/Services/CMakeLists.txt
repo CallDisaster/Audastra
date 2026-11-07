@@ -3,6 +3,8 @@ add_library(War3MapServices STATIC
     LuaFolder.cpp
     LuaFolderLink.cpp
     LuaFolderSave.cpp
+    LuaObjectSnapshot.cpp
+    LuaObjectTest.cpp
     MinimapPreview.cpp
     CurrentMinimapPreview.cpp
     TriggerCodeIdentityEditing.cpp

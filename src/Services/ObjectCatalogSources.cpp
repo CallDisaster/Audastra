@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/ObjectCatalogSources.h"
+#include "War3MapCore/ObjectData/ObjectImport.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/IO/FileBytes.h"
@@ -14,6 +15,27 @@
 #include <set>
 
 namespace War3Map::Services {
+Result<std::array<ObjectData::LniObjectDocument, 7>> ReadMapNativeObjectInputs(const MapArchiveSession& archive) {
+    using namespace ObjectData;
+    using Output = Result<std::array<LniObjectDocument, 7>>;
+    std::array<LniObjectDocument, 7> output;
+    for (unsigned i = 0; i < 7; ++i) {
+        const auto type = static_cast<ObjectType>(i);
+        std::vector<std::byte> text;
+        if (archive.HasMember(NativeFileName(type))) {
+            auto bytes = archive.ReadMember(NativeFileName(type));
+            if (!bytes.Succeeded()) return {std::nullopt, std::move(bytes.diagnostics)};
+            auto converted = ConvertNativeObjectDataToLni(type, *bytes.value);
+            if (!converted.Succeeded()) return {std::nullopt, std::move(converted.diagnostics)};
+            text = std::move(*converted.value);
+        }
+        auto parsed = LniObjectCodec(type).Parse(text);
+        auto* document = parsed.Succeeded() ? dynamic_cast<LniObjectDocument*>(parsed.document.get()) : nullptr;
+        if (!document || !document->IsStructurallySafe()) return {std::nullopt, std::move(parsed.diagnostics)};
+        output[i] = std::move(*document);
+    }
+    return Output::Success(std::move(output));
+}
 namespace {
 using namespace ObjectData;
 using namespace Resources;

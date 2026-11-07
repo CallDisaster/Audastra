@@ -1,4 +1,5 @@
 #include "../OwnLua/LuaHost.h"
+#include "War3MapCore/Runtime/LuaObjectSnapshot.h"
 #include "../OwnLua/LuaMailboxRuntime.h"
 #include "../OwnLua/LuaEntryCommand.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
@@ -207,6 +208,33 @@ void HLuaStartupLibraries() {
     Check(first != std::string_view::npos && text.find("LUA_JAPI_UNSUPPORTED", first + 1) == std::string_view::npos,
         "missing extension reported once without fake function");
 }
+void FrozenObjectData() {
+    using namespace Audastra::Runtime32;
+    unsigned reads = 0;
+    LuaHost host([&](std::string_view member, std::size_t maximum) {
+        Check(member == kLuaObjectSnapshotMember && maximum == kLuaObjectSnapshotBytes, "fixed frozen data reader");
+        ++reads;
+        return LuaModuleRead{true, "return {unit={v000={Name='Original',HP='125'}},misc={Misc={Value='0.125'}}}", {}};
+    });
+    Success(host.Initialize(), "frozen data host");
+    Success(host.Execute(R"lua(
+        local slk=require('jass.slk')
+        assert(slk==require('jass.slk'))
+        assert(slk.unit.v000.Name=='Original' and slk.unit.v000.HP=='125')
+        assert(slk.unit.unknown==nil and slk.misc.Misc.Value=='0.125')
+        assert(not pcall(function() slk.unit.v000.HP='1' end))
+        assert(not pcall(rawset,slk.unit.v000,'HP','1'))
+        local count=0
+        for key,value in pairs(slk.unit) do
+            count=count+1; assert(key=='v000' and value.HP=='125')
+            assert(not pcall(rawset,value,'HP','2'))
+        end
+        assert(count==1 and slk.unit.v000.HP=='125')
+        assert(not pcall(require,'audastra.test.object-data'))
+    )lua", "@frozen-data.lua"), "immutable values and safe iteration");
+    Check(reads==1, "snapshot module cached once");
+    Check(!host.ReloadModule("audastra.test.object-data", "return {}").Succeeded(), "frozen data cannot hot reload");
+}
 
 void MailboxExecutesRealLua() {
     auto mailbox = std::make_unique<LuaTestMailbox>();
@@ -282,7 +310,7 @@ void ModuleHotReload() {
 int main() {
     try {
         TextOnlyAndSandbox(); ArchiveModules(); ClassicEntrySyntax(); BudgetsAndRandom(); RuntimeBehaviorModules(); MailboxExecutesRealLua();
-        ModuleHotReload(); HLuaStartupLibraries();
+        ModuleHotReload(); HLuaStartupLibraries(); FrozenObjectData();
         std::cout << "Own Lua 5.3 host passed; original in-memory archive/native-free fixture; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

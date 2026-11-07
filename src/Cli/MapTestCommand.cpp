@@ -5,6 +5,7 @@
 #include "War3MapCore/Services/LuaTestMailboxSession.h"
 #include "War3MapCore/Services/MapTestWorkspace.h"
 #include "War3MapCore/Services/LuaFolderSave.h"
+#include "War3MapCore/Services/LuaObjectSnapshot.h"
 #include "War3MapCore/Runtime/LuaModuleNames.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include <cwctype>
@@ -140,7 +141,7 @@ int RunMapTest(int argc, wchar_t** argv) {
     const auto luaInput = Services::PrepareLuaFolderTestInput(request, luaFolderOverride, luaDeletionApproval);
     if (!luaInput.Succeeded()) { Print(luaInput.diagnostics); return 1; }
     const auto progress = [](std::string_view stage) { std::cout << "stage=" << stage << '\n'; };
-    auto artifact = Services::PrepareMapTest(request, {}, progress);
+    auto artifact = Services::PrepareLuaAwareMapTest(request, {}, progress);
     Print(artifact.diagnostics);
     if (!artifact.Succeeded() || !artifact.value) return 1;
     const auto refreshed = (*workspace.value)->Refresh();

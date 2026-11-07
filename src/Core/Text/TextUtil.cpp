@@ -85,7 +85,7 @@ std::vector<std::string_view> SplitPlain(std::string_view text, char separator) 
     return parts;
 }
 
-void VisitProfileFields(std::string_view text, const ProfileFieldVisitor& visitor) {
+void VisitProfileFields(std::string_view text, const ProfileFieldVisitor& visitor, bool foldCase) {
     std::string section;
     while (!text.empty()) {
         const auto newline = text.find('\n');
@@ -94,9 +94,11 @@ void VisitProfileFields(std::string_view text, const ProfileFieldVisitor& visito
         if (line.empty() || line.starts_with("//") || line.front() == ';') continue;
         if (line.front() == '[') {
             const auto closing = line.find(']');
-            section = closing == std::string_view::npos ? std::string{} : LowerAscii(TrimCWhitespace(line.substr(1, closing - 1)));
+            const auto name = closing == std::string_view::npos ? std::string_view{} : TrimCWhitespace(line.substr(1, closing - 1));
+            section = foldCase ? LowerAscii(name) : std::string(name);
         } else if (const auto equals = line.find('='); equals != std::string_view::npos) {
-            visitor(section, LowerAscii(TrimCWhitespace(line.substr(0, equals))), TrimCWhitespace(line.substr(equals + 1)));
+            const auto key = TrimCWhitespace(line.substr(0, equals));
+            visitor(section, foldCase ? LowerAscii(key) : std::string(key), TrimCWhitespace(line.substr(equals + 1)));
         }
     }
 }

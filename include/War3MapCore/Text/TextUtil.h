@@ -34,7 +34,7 @@ namespace War3Map::Text {
 using ProfileSections = std::map<std::string, std::unordered_map<std::string, std::string>>;
 // 按文件顺序访问原始字段，保留重复定义；view 仅在回调期间有效，规范化规则同 ParseProfile。
 using ProfileFieldVisitor = std::function<void(std::string_view section, std::string_view key, std::string_view value)>;
-void VisitProfileFields(std::string_view text, const ProfileFieldVisitor& visitor);
+void VisitProfileFields(std::string_view text, const ProfileFieldVisitor& visitor, bool foldCase = true);
 [[nodiscard]] ProfileSections ParseProfile(std::string_view text);
 
 } // namespace War3Map::Text

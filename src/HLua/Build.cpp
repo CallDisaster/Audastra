@@ -27,20 +27,6 @@ void Replace(Services::MapSaveTask& task, std::string name, std::vector<std::byt
         if (Resources::CanonicalImportPath(item.name).value == key.value) { item.data = std::move(bytes); return; }
     task.replacements.push_back({std::move(name), std::move(bytes)});
 }
-Result<LniObjectDocument> Baseline(ObjectType type, const MapArchiveSession& archive) {
-    std::vector<std::byte> text;
-    if (archive.HasMember(NativeFileName(type))) {
-        auto bytes = archive.ReadMember(NativeFileName(type));
-        if (!bytes.Succeeded()) return {std::nullopt, std::move(bytes.diagnostics)};
-        auto converted = ConvertNativeObjectDataToLni(type, *bytes.value);
-        if (!converted.Succeeded()) return {std::nullopt, std::move(converted.diagnostics)};
-        text = std::move(*converted.value);
-    }
-    auto parsed = LniObjectCodec(type).Parse(text);
-    auto* document = parsed.Succeeded() ? dynamic_cast<LniObjectDocument*>(parsed.document.get()) : nullptr;
-    if (!document || !document->IsStructurallySafe()) return {std::nullopt, std::move(parsed.diagnostics)};
-    return Result<LniObjectDocument>::Success(*document);
-}
 }
 Result<InspectReceipt> InspectProject(const FrameworkLocation& location, const std::filesystem::path& root) {
     auto framework = HLuaFrameworkLocator::Capture(location);
@@ -87,12 +73,11 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
         Services::ObjectCatalogSources catalogSources; catalogSources.archive = &base.value->archive; catalogSources.gameRoot = request.gameRoot;
         auto catalog = Services::LoadEffectiveObjectCatalog(catalogSources);
         if (!catalog.Succeeded()) return {std::nullopt, std::move(catalog.diagnostics)};
-        std::array<LniObjectDocument, 7> baselines;
+        auto nativeInputs = Services::ReadMapNativeObjectInputs(base.value->archive);
+        if (!nativeInputs.Succeeded()) return {std::nullopt, std::move(nativeInputs.diagnostics)};
+        auto baselines = std::move(*nativeInputs.value);
         std::set<std::string> occupied;
         for (std::size_t i = 0; i < baselines.size(); ++i) {
-            auto baseline = Baseline(static_cast<ObjectType>(i), base.value->archive);
-            if (!baseline.Succeeded()) return {std::nullopt, std::move(baseline.diagnostics)};
-            baselines[i] = std::move(*baseline.value);
             for (const auto& object : baselines[i].Objects()) occupied.insert(object.key.rawcode);
         }
         for (const auto& object : base.value->f6Objects) if (!occupied.insert(object.id).second)

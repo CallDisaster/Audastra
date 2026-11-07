@@ -2,6 +2,7 @@
 #include "../RuntimeFiles.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
+#include "War3MapCore/Runtime/LuaObjectSnapshot.h"
 
 #include <mutex>
 
@@ -64,7 +65,8 @@ LuaArchiveOpen LuaMapArchive::Open(const std::filesystem::path& map, std::string
 }
 
 LuaModuleRead LuaMapArchive::Read(std::string_view member, std::size_t maxBytes) const {
-    if (!ValidMember(member) || !maxBytes || maxBytes > kModuleBytes)
+    const auto limit = member == kLuaObjectSnapshotMember ? kLuaObjectSnapshotBytes : kModuleBytes;
+    if (!ValidMember(member) || !maxBytes || maxBytes > limit)
         return {false, {}, "Lua 地图成员路径或读取预算无效。"};
     try {
         std::lock_guard lock(impl_->mutex);

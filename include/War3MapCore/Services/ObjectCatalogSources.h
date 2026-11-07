@@ -2,6 +2,8 @@
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/EffectiveObjectCatalog.h"
+#include "War3MapCore/ObjectData/LniObjectCodec.h"
+#include <array>
 
 #include <memory>
 
@@ -46,5 +48,6 @@ private:
     const ObjectCatalogSources& sources, const ObjectData::CatalogLoadOptions& options = {});
 [[nodiscard]] Status VerifyEffectiveObjectCatalog(const ObjectData::EffectiveObjectCatalog& expected,
     const ObjectCatalogSources& sources);
+[[nodiscard]] Result<std::array<ObjectData::LniObjectDocument, 7>> ReadMapNativeObjectInputs(const MapArchiveSession& archive);
 
 } // namespace War3Map::Services

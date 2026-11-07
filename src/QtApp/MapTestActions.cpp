@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "War3MapCore/Services/LuaObjectSnapshot.h"
 #include "AppHelpers.h"
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
@@ -216,7 +217,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
                 else request.expectedInputSha256 = *sha.value;
             }
             if (!request.expectedInputSha256.empty())
-                artifact = Services::PrepareMapTest(request, Script::OptimizeMapTestSlk, update);
+                artifact = Services::PrepareLuaAwareMapTest(request, Script::OptimizeMapTestSlk, update);
             update("freeze");
             workspaceReady = (*workspace.value)->Refresh();
             if (artifact.Succeeded() && workspaceReady.Succeeded()) {
@@ -340,4 +341,3 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     cleanup->start();
     return {};
 }
-

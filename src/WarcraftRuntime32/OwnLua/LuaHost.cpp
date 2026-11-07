@@ -4,6 +4,8 @@
 #include "LuaBehaviorModules.h"
 #include "LuaModulePath.h"
 #include "LuaTimeLibrary.h"
+#include "LuaReadOnlyData.h"
+#include "War3MapCore/Runtime/LuaObjectSnapshot.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include "War3MapCore/Lua/YdweRawcode.h"
 
@@ -162,6 +164,24 @@ struct LuaHost::Impl {
         }
         return luaL_error(lua, "collectgarbage 只支持 collect 和 count。");
     }
+    static int ObjectSnapshot(lua_State* lua) {
+        auto& self = Host(lua);
+        const std::string member(kLuaObjectSnapshotMember);
+        if (self.loading.contains(member)) return luaL_error(lua, "jass.slk 的冻结资料出现循环载入。");
+        self.loading.insert(member);
+        struct Release { Impl& host; const std::string& member; ~Release() { host.loading.erase(member); } } release{self, member};
+        const auto data = self.ReadModule(member, kLuaObjectSnapshotBytes);
+        if (!data.found || !data.error.empty()) return luaL_error(lua, "jass.slk 缺少本次测试图的冻结资料：%s", data.error.c_str());
+        if (data.source.size() > kLuaObjectSnapshotBytes || data.source.size() > self.limits.totalModuleBytes - self.totalRead
+            || self.readModules.size() >= self.limits.moduleCount) return luaL_error(lua, "jass.slk 冻结资料超过读取预算。");
+        self.totalRead += data.source.size(); self.readModules.insert(member);
+        if (!LuaMailboxUtf8(data.source)) return luaL_error(lua, "jass.slk 冻结资料不是 UTF-8 文本。");
+        if (luaL_loadbufferx(lua, data.source.data(), data.source.size(), "@audastra/test/object-data.lua", "t") != LUA_OK) return lua_error(lua);
+        if (self.Expired()) return luaL_error(lua, "jass.slk 资料编译超过时间预算。");
+        lua_call(lua, 0, 1);
+        if (!lua_istable(lua, -1)) return luaL_error(lua, "jass.slk 冻结资料没有返回对象表。");
+        PushLuaReadOnlyData(lua, -1); lua_remove(lua, -2); return 1;
+    }
     std::uint32_t NextRandom() noexcept {
         random ^= random << 13; random ^= random >> 17; random ^= random << 5;
         return random;
@@ -194,9 +214,9 @@ struct LuaHost::Impl {
         const std::string_view text = rawcodes ? std::string_view(*rawcodes) : source;
         return luaL_loadbufferx(lua, text.data(), text.size(), chunk, "t");
     }
-    LuaModuleRead ReadModule(std::string_view member) {
+    LuaModuleRead ReadModule(std::string_view member, std::size_t maximum = 0) {
         if (const auto found = overrides.find(std::string(member)); found != overrides.end()) return {true, found->second, {}};
-        try { return reader ? reader(member, limits.sourceBytes) : LuaModuleRead{false, {}, "未配置地图归档读取器。"}; }
+        try { return reader ? reader(member, maximum ? maximum : limits.sourceBytes) : LuaModuleRead{false, {}, "未配置地图归档读取器。"}; }
         catch (const std::exception& error) { return {false, {}, error.what()}; }
         catch (...) { return {false, {}, "读取地图 Lua 模块时发生异常。"}; }
     }
@@ -217,7 +237,12 @@ struct LuaHost::Impl {
         lua_getfield(lua, -1, member.c_str());
         if (lua_toboolean(lua, -1)) return 1;
         lua_pop(lua, 1);
+        if (name == "jass.slk") {
+            ObjectSnapshot(lua);
+            lua_pushvalue(lua, -1); lua_setfield(lua, -3, name.c_str()); return 1;
+        }
         if (name.starts_with("jass.")) return luaL_error(lua, "自有 Lua 运行时尚未实现模块 %s。", name.c_str());
+        if (member == kLuaObjectSnapshotMember) return luaL_error(lua, "测试物编资料只通过 jass.slk 访问。");
         if (self.loading.contains(member)) return luaL_error(lua, "Lua 模块循环依赖：%s。", name.c_str());
         if (self.loading.size() >= self.limits.requireDepth || self.readModules.size() >= self.limits.moduleCount
             || self.totalRead >= self.limits.totalModuleBytes) {
@@ -459,6 +484,8 @@ LuaHostResult LuaHost::ExecuteModule(std::string_view module) {
     return impl_->Run({}, module, Impl::RunKind::Module);
 }
 LuaHostResult LuaHost::ReloadModule(std::string_view module, std::string_view source) {
+    if (LuaModuleMember(module) == kLuaObjectSnapshotMember)
+        return Failure(LuaReloadResult::InvalidRequest, "冻结的物编快照不能热重载。");
     auto& self = *impl_;
     if (LuaModuleMember(module).empty()) return Failure(LuaReloadResult::InvalidRequest, "热重载的模块名不是有效的地图内成员。");
     if (source.empty() || source.size() > self.limits.sourceBytes || !LuaMailboxUtf8(source))

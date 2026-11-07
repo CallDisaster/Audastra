@@ -12,6 +12,8 @@
 #include "War3MapCore/Services/ClassicLuaMapSources.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/Runtime/LuaModuleNames.h"
+#include "War3MapCore/Runtime/LuaObjectSnapshot.h"
+#include "War3MapCore/Lua/LuaModuleScan.h"
 
 #include <algorithm>
 #include <array>
@@ -140,6 +142,7 @@ struct RuntimeRequirement {
     std::set<std::string, std::less<>> missing;
     std::vector<std::string> luaEntries; // 脚本里 Cheat("exec-lua: ...") 的模块，按出现顺序
     std::vector<std::string> nonUtf8Lua; // 自带 Lua 环境只接受 UTF-8 正文
+    std::set<std::string> luaModules;
 };
 
 std::string JassStringValue(std::string_view literal) {
@@ -190,6 +193,7 @@ Status CheckHandwrittenLua(const Mpq::MpqArchive& map, const std::vector<Mpq::Mp
         add(member);
     }
     for (const auto& file : files) {
+        if (LowerAscii(file.name) == LowerAscii(Audastra::Runtime32::kLuaObjectSnapshotMember)) continue;
         if (file.name.size() < 4 || LowerAscii(file.name.substr(file.name.size() - 4)) != ".lua") continue;
         add(file.name);
         if (names.size() > 4096)
@@ -204,6 +208,11 @@ Status CheckHandwrittenLua(const Mpq::MpqArchive& map, const std::vector<Mpq::Mp
         if (total > 32u * 1024u * 1024u)
             return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_BUDGET", "地图里的 Lua 文件合计超过 32 MiB。");
         const auto text = View(*read.value);
+        for (const auto& module : Lua::ScanModuleRequires(text)) if (!module.dynamic && module.name.starts_with("jass.")) {
+            if (module.name.size() > 240 || requirement.luaModules.size() >= 256)
+                return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_MODULE_BUDGET", "jass 模块依赖名或数量超过预算。");
+            requirement.luaModules.insert(module.name);
+        }
         if (!Audastra::Runtime32::LuaMailboxUtf8(text)) requirement.nonUtf8Lua.push_back(name);
         const auto syntax = Lua::CheckSyntax(text, "@" + name);
         if (syntax.Succeeded()) continue;
@@ -610,6 +619,13 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         std::vector<Diagnostic> notes;
         // 作者手写 Lua 必须有 Lua 运行环境才会执行；普通游戏会把 exec-lua 当作无效作弊码忽略。
         bool handwrittenYdwe = false;
+        if (!requirements.value->luaModules.empty()) {
+            std::string list;
+            for (const auto& module : requirements.value->luaModules) { if (!list.empty()) list += "、"; list += module; }
+            notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_LUA_REQUIRE_MODULES", "Lua 词法依赖：" + list + "；动态 require 不作为完整性证明。"});
+            if (requirements.value->luaModules.contains("jass.japi")) notes.push_back({DiagnosticSeverity::Warning,
+                "Map.Test.Runtime", "MAP_TEST_LUA_OPTIONAL_EXTENSIONS", "自带环境的 jass.japi 不实现 Dz/EX；相关伤害、属性、同步和帧界面不可用。"});
+        }
         const auto& entries = requirements.value->luaEntries;
         if (!selected.useOwnedLuaRuntime && !entries.empty()) {
             std::string modules;

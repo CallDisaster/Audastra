@@ -4,6 +4,7 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
 #include "War3MapCore/Runtime/LuaModuleNames.h"
+#include "War3MapCore/Runtime/LuaObjectSnapshot.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
 #include <Windows.h>
@@ -133,6 +134,7 @@ class LuaFolderReadLease { public: Handles handles; };
 
 bool IsAuthorLuaMember(std::string_view path) {
     const auto key = Key(std::string(path));
+    if (key == Key(std::string(Audastra::Runtime32::kLuaObjectSnapshotMember))) return false;
     if (!key.ends_with(".lua") || Resources::IsEditorManagedMemberPath(key)) return false;
     return std::none_of(kClassicLuaGeneratedMembers.begin(), kClassicLuaGeneratedMembers.end(),
         [&](auto generated) { return key == Key(std::string(generated)); });

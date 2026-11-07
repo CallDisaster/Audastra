@@ -1,6 +1,8 @@
 #include "War3MapCore/HLua/ObjectMapping.h"
 #include "War3MapCore/Services/ObjectTransactionSnapshot.h"
 #include "War3MapCore/Text/LniData.h"
+#include "War3MapCore/Services/LuaObjectSnapshot.h"
+#include "War3MapCore/Script/LuaTemplateSandbox.h"
 #include <algorithm>
 #include <map>
 #include <stdexcept>
@@ -75,6 +77,18 @@ void TestHLuaObjectMapping() {
     auto encoded = Services::ObjectTransactionSnapshot::Freeze(*staged.value, std::nullopt, std::string(64,'a'), &*schema.value, &*standard.value); Good(encoded);
     const auto* skill = encoded.value->get()->CandidateNative().FindObject({ObjectType::Ability,"K000"});
     Need(skill && skill->modifications.size() == 4, "data letter and repeat addresses");
+    Services::LuaObjectSnapshotSources snapshot;
+    snapshot.schema = &*schema.value; snapshot.standard = &*standard.value;
+    snapshot.documents[static_cast<unsigned>(ObjectType::Unit)] = &*edited.value;
+    snapshot.documents[static_cast<unsigned>(ObjectType::Ability)] = &*staged.value;
+    snapshot.misc = {{"Misc", {{"Original", "unchanged"}}}};
+    auto frozen = Services::BuildLuaObjectSnapshot(snapshot); Good(frozen);
+    Script::LuaTemplateRequest check;
+    check.preprocessed = "<? local data=(function()\n" + std::string(reinterpret_cast<const char*>(frozen.value->data()), frozen.value->size())
+        + "\nend)(); assert(data.unit.v000.Name == 'line \\\"one\\\"\\nline two'); "
+          "assert(data.unit.v000.Buttonpos == '0,2'); assert(data.ability.K000.DataA1 == '0.125'); "
+          "assert(data.ability.K000.Cool2 == '4'); assert(data.misc.Misc.Original == 'unchanged') ?>";
+    Good(Script::RunLuaTemplate(check));
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName=true\n","unit.ini").Succeeded(), "boolean rejected");
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName={{1}}\n","unit.ini").Succeeded(), "nested rejected");
     Need(!ParseF6ObjectIni(ObjectType::Unit,"[v000]\nName={2=1}\n","unit.ini").Succeeded(), "sparse rejected");
