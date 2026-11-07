@@ -27,12 +27,12 @@ war3-map-cli hlua-build D:/Projects/MyMap --framework D:/Frameworks/h-lua `
 ```powershell
 war3-map-cli hlua-test D:/Projects/MyMap --framework D:/Frameworks/h-lua `
   --game D:/Games/War3 --workspace D:/Builds/MyMap-run `
-  --output D:/Builds/MyMap-run.w3x --helpers D:/Apps/Audastra `
+  --output D:/Builds/MyMap-run.w3x --helpers $AudastraInstall `
   --engine owned -- --cloaked --press-space --seconds 90 `
   --screenshot-after 60 D:/Builds/MyMap-shot.tga --close-after 80
 ```
 
-分隔符后的参数采用 `map-test` 的现有合同，包括计划输入、截图、关闭、热重载。只操作本次测试持有的进程。`--engine ydwe` 使用用户已安装的数据根，并须在分隔符后给 `--ydwe <目录>`；启动前扫描地图中所有 Lua 的 `io`、`os.execute`、`package.loadlib` 访问，发现则拒绝。此检查不证明动态代码完整性，也不会自动切到更宽松环境。
+`$AudastraInstall` 为已安装 Audastra 的目录。分隔符后的参数采用 `map-test` 的现有合同，包括计划输入、截图、关闭、热重载。只操作本次测试持有的进程。`--engine ydwe` 使用用户已安装的数据根，并须在分隔符后给 `--ydwe <目录>`；启动前扫描地图中所有 Lua 的 `io`、`os.execute`、`package.loadlib` 访问，发现则拒绝。此检查不证明动态代码完整性，也不会自动切到更宽松环境。
 
 ## 数据与诊断
 
@@ -51,7 +51,7 @@ war3-map-cli hlua-test D:/Projects/MyMap --framework D:/Frameworks/h-lua `
 | `jass.slk` | 本次测试图有效物编的冻结只读视图，七类对象及 misc；WE 字段名，值为字符串，缺失为 nil；不能 rawset 或热重载资料成员 |
 | `jass.japi` | 未实现名字返回 nil，并记录一次缺失诊断；没有 Dz/EX 伤害、属性、同步、帧界面能力 |
 | `jass.globals` | 当前 VM 的有类型标量读取/写入；常量、数组、code、失效代际及未声明类型拒绝 |
-| `jass.debug` | `handlemax()` 返回句柄表槽数；`handledef()` 返回 reference 和可确认的 type，无效句柄返回 nil |
+| `jass.debug` | `handlemax()` 返回句柄表槽数；`handledef()` 返回 reference 和可确认的 type；低于句柄范围或越界返回 nil，范围内空槽仅有 reference 字段 |
 | `jass.runtime` | console 控制测试输出；debugger 端口设置识别后明确报告未实现，不监听网络；原 sleep/handle_level 限制仍生效 |
 | `jass.console.write` | 参数经 tostring 转为 UTF-8 文本，制表分隔并换行，进入本次测试回执/问题列表；输出有界 |
 | `collectgarbage` | 只支持 collect 和 count（KiB） |
