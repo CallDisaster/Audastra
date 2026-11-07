@@ -93,7 +93,13 @@ class LuaScriptsTests final : public QObject {
 private slots:
     void HLuaRecognitionKeepsUnavailableActionsDisabled() {
         QTemporaryDir directory;QVERIFY(directory.isValid());
-        QtProject::EditorProject project;QVERIFY(OpenMap(directory,project));
+        QtProject::EditorProject project;
+        const auto map=std::filesystem::path(directory.filePath("hlua-original.w3x").toStdWString());
+        const std::vector<Mpq::MpqBuildFile> files{{"war3map.w3i",Bytes("synthetic"),false}};
+        QVERIFY(Mpq::WriteMpqArchive(map,files).Succeeded());
+        auto archive=MapArchiveSession::Open(map);QVERIFY(archive.Succeeded());
+        project.archiveSession_=std::make_unique<MapArchiveSession>(std::move(*archive.value));
+        project.sourceArchivePath_=map;project.projectRoot_=directory.path().toStdWString();project.ResetEditTracking();
         const auto root=directory.filePath("project");QVERIFY(QDir().mkpath(root+"/hslk"));
         QFile file(root+"/main.lua");QVERIFY(file.open(QIODevice::WriteOnly));QCOMPARE(file.write("function main() end\n"),20);file.close();
         auto& folder=project.LuaFolderSource();const auto review=folder.Review(std::filesystem::path(root.toStdWString()));
