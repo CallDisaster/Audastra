@@ -106,7 +106,7 @@ private slots:
         QVERIFY(button.sizeHint().width()>compactWidth);
         QVERIFY(button.property("hluaRebuildRequired").toBool());
         QtCommon::ApplyLuaReloadButtonState(button,QStringLiteral("热重载 Lua"),false,false);
-        QCOMPARE(button.toolButtonStyle(),Qt::ToolButtonIconOnly);
+        QCOMPARE(button.toolButtonStyle(),Qt::ToolButtonTextBesideIcon);
         QCOMPARE(button.text(),QStringLiteral("热重载 Lua"));
         QVERIFY(!button.property("luaReloadPending").toBool() && !button.property("hluaRebuildRequired").toBool());
     }
