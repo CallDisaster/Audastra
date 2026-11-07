@@ -37,12 +37,12 @@ ApiModule StandardTable(std::string name, std::string documentation, std::vector
     return module;
 }
 
-// 自有运行时开放的标准库：base、table、string、math、utf8，以及只含 traceback 的 debug。
-// dofile/loadfile/load/collectgarbage/string.dump 被移除，io/os/coroutine/package 没有安装。
+// 补全只列实际开放的能力；文件、进程和网络能力没有安装。
 void AddStandardLibrary(ApiCatalog& catalog) {
     auto& globals = catalog.globals;
     for (auto member : {
         Function("", "assert", "v:any, message:string", "any", "v 为 false 或 nil 时抛出错误，否则返回全部参数。"),
+        Function("", "collectgarbage", "operation:string", "number", "只支持 collect（完整回收）和 count（当前 Lua 内存 KiB）。"),
         Function("", "error", "message:any, level:integer", "", "抛出错误。"),
         Function("", "getmetatable", "object:any", "table", "取得元表。"),
         Function("", "ipairs", "t:table", "function", "按 1、2、3… 顺序遍历数组部分。"),
@@ -130,9 +130,14 @@ void AddStandardLibrary(ApiCatalog& catalog) {
         Function("utf8", "offset", "s:string, n:integer, i:integer", "integer", "第 n 个字符的字节位置。"),
     }));
     catalog.modules.emplace("debug", StandardTable("debug", "调试（只开放 traceback）。", {
-        Function("debug", "traceback", "message:string, level:integer", "string", "取得当前调用栈文本。"),
+        Function("debug", "traceback", "message:any, level:integer", "any", "取得当前调用栈文本；非文本且非 nil 的参数原样返回。"),
     }));
-    for (const auto* name : {"string", "table", "math", "utf8", "debug"}) {
+    catalog.modules.emplace("os", StandardTable("os", "只开放有界的时间查询；没有文件、进程和环境变量接口。", {
+        Function("os", "clock", "", "number", "进程使用的 CPU 秒数。"),
+        Function("os", "date", "format:string, time:integer", "any", "格式化本地或 UTC 时间，支持 *t；格式和时间范围受运行库限制。"),
+        Function("os", "time", "date:table", "integer", "当前时间或年月日表对应的秒数；表中字段按本地时区规范化。"),
+    }));
+    for (const auto* name : {"string", "table", "math", "utf8", "debug", "os"}) {
         auto member = Value("", name, ApiKind::Module, "table", catalog.modules.at(name).documentation);
         member.table = name;
         globals.push_back(std::move(member));
@@ -164,7 +169,7 @@ void AddRuntimeModules(ApiCatalog& catalog, OwnedRuntimeInput& input) {
     common.members.erase(std::unique(common.members.begin(), common.members.end(),
         [](const auto& left, const auto& right) { return left.name == right.name; }), common.members.end());
 
-    ApiModule globals{"jass.globals", "JASS 全局变量（blizzard.j 与地图变量），只读。", {}, false, true};
+    ApiModule globals{"jass.globals", "当前 VM 的 JASS 全局变量；可写受支持的非恒定标量，数组与 code 明确拒绝。", {}, false, true};
     for (auto& global : input.otherGlobals) {
         catalog.jassGlobals.insert(global.name);
         auto member = Value("jass.globals", std::move(global.name), global.constant ? ApiKind::Constant : ApiKind::Variable,
@@ -178,17 +183,30 @@ void AddRuntimeModules(ApiCatalog& catalog, OwnedRuntimeInput& input) {
 
     ApiModule runtime{"jass.runtime", "运行时选项。", {
         Value("jass.runtime", "catch_crash", ApiKind::Field, "boolean", "只能为 true：脚本让游戏状态失效时停止本次测试。"),
+        Value("jass.runtime", "console", ApiKind::Field, "boolean", "是否启用本次测试的控制台输出。"),
+        Value("jass.runtime", "debugger", ApiKind::Field, "integer", "接受端口设置并报告尚不支持调试服务；不会监听端口。"),
         Value("jass.runtime", "error_handle", ApiKind::Field, "function", "Lua 错误回调：function(message) … end，设为 nil 取消。"),
         Value("jass.runtime", "handle_level", ApiKind::Field, "integer", "只支持 2：handle 以持有引用的 userdata 传递。"),
         Value("jass.runtime", "sleep", ApiKind::Field, "boolean", "只能为 false：等待类 native 会被拒绝。"),
     }, true, true};
     ApiModule console{"jass.console", "控制台。", {
         Value("jass.console", "enable", ApiKind::Field, "boolean", "是否打开控制台输出。"),
+        Function("jass.console", "write", "text:string", "", "将 UTF-8 文本写入本次测试回执，不自动添加换行。"),
     }, true, true};
+    ApiModule debug{"jass.debug", "本次 VM 的句柄诊断。", {
+        Function("jass.debug", "handlemax", "", "integer", "当前反向句柄表的槽位数量。"),
+        Function("jass.debug", "handledef", "handle:integer", "table", "返回 reference 和可识别的 type；无效句柄返回 nil。"),
+    }, true, true};
+    ApiModule slk{"jass.slk", "冻结测试图的有效物编；七类对象和 misc，只读字符串字段，缺失返回 nil。", {}, false, true};
+    ApiModule japi{"jass.japi", "扩展函数尚未实现；查找返回 nil，并在测试中记录能力缺失。", {}, false, true};
+    Sort(runtime.members); Sort(console.members); Sort(debug.members);
     catalog.modules.emplace(common.name, std::move(common));
     catalog.modules.emplace(globals.name, std::move(globals));
     catalog.modules.emplace(runtime.name, std::move(runtime));
     catalog.modules.emplace(console.name, std::move(console));
+    catalog.modules.emplace(debug.name, std::move(debug));
+    catalog.modules.emplace(slk.name, std::move(slk));
+    catalog.modules.emplace(japi.name, std::move(japi));
 }
 } // namespace
 

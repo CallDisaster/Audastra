@@ -43,10 +43,16 @@ Output BuildProject(const BuildRequest& request, const Services::MapSaveService:
             if (!framework.Succeeded()) return {std::nullopt, std::move(framework.diagnostics)};
             auto project = HLuaProjectScanner::Capture(request.project);
             if (!project.Succeeded()) return {std::nullopt, std::move(project.diagnostics)};
+            if (!request.expectedProjectSha256.empty() && request.expectedProjectSha256 != project.value->source.sha256)
+                return Output::Failure("HLua", "HLUA_PROJECT_CHANGED", "工程 Lua 身份已改变，请重新检查。");
             auto existing = Detail::CaptureExistingIds(request);
             if (!existing.Succeeded()) return {std::nullopt, std::move(existing.diagnostics)};
             auto hslk = EvaluateHslk(*framework.value, *project.value, *existing.value, request.limits);
             if (!hslk.Succeeded()) return {std::nullopt, std::move(hslk.diagnostics)};
+            auto verified=HLuaFrameworkLocator::Verify(*framework.value);
+            if (!verified.Succeeded()) return {std::nullopt,std::move(verified.diagnostics)};
+            verified=Services::VerifyLuaFolder(project.value->source);
+            if (!verified.Succeeded()) return {std::nullopt,std::move(verified.diagnostics)};
             BuildReceipt receipt; receipt.inputs = Inspected(*framework.value, *project.value);
             receipt.objects = std::move(hslk.value->objects); receipt.console = std::move(hslk.value->console);
             receipt.idReplayPassed = hslk.value->replayPassed;

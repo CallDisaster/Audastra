@@ -70,6 +70,11 @@ void CatalogFromDeclarations() {
     Require(common && common->Find("CreateUnit") && common->Find("PLAYER_NEUTRAL_AGGRESSIVE"), "common.j members missing");
     Require(common->Find("CreateUnit")->documentation == "创建单位", "Comment above native not used as documentation");
     Require(!common->Find("FixtureHelper"), "blizzard.j function was presented as native");
+    Require(catalog->Global("collectgarbage") && catalog->Module("os")->Find("date")
+        && !catalog->Module("os")->Find("execute"), "bounded time and garbage collection catalog");
+    Require(catalog->Module("jass.console")->Find("write") && catalog->Module("jass.debug")->Find("handledef")
+        && catalog->Module("jass.runtime")->Find("debugger") && catalog->Module("jass.slk")
+        && catalog->Module("jass.japi") && !catalog->Module("jass.japi")->closed, "startup modules match actual host");
     Require(catalog->Extends("unit", "handle") && !catalog->Extends("player", "widget"), "Type parents wrong");
     const auto runtime = Services::OwnedRuntimeSemantics(*catalog);
     Require(runtime.verified && runtime.commonLookupVerified && runtime.commonArguments.at("CreateUnit") == 5

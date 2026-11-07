@@ -32,6 +32,7 @@ void Ids() {
     auto hero = ids.Allocate("unit", "Hpal"); Good(hero); Need(*hero.value == "V002", "shared unit counter");
     auto item = ids.Allocate("item", "ratf"); Good(item); Need(*item.value == "I001", "item collision");
     Need(!ids.Allocate("item", "ratf", "1234").Succeeded(), "numeric first forced id");
+    Need(!ids.Allocate("item", "ratf", "I[00").Succeeded(), "section syntax is not a rawcode");
     Need(!ids.Allocate("item", "ratf", "I001").Succeeded(), "forced conflict");
     Need(!ids.Allocate("item", "", "A001").Succeeded(), "parent required");
     IdAllocator full({});
@@ -50,6 +51,8 @@ void Lexical() {
     auto again = InsertLuaEntry(*multiple.value); Good(again); Need(*again.value == *multiple.value, "all actual calls");
     const auto modules = Lua::ScanModuleRequires("-- require 'bad'\nlocal x=require('jass.slk'); require(dynamic); t.require('skip')");
     Need(modules.size() == 2 && modules[0].name == "jass.slk" && modules[1].dynamic, "require lexical evidence");
+    const auto external = Lua::ScanExternalCapabilities("-- io.open('ignored')\nlocal s='os.execute()'; os['execute']('x'); package.loadlib('x'); io.open('x')");
+    Need(external.size() == 3 && external[0].line == 2, "external capability evidence ignores comments and strings");
     auto sites = Lua::FindEmptyTableInitializers("-- ids={}\nlocal ids = { }\nprint('ids={}')", "ids");
     Need(sites.size() == 1, "only initializer code");
 }

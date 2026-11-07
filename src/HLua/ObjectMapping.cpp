@@ -117,7 +117,11 @@ Result<ObjectData::LniObjectDocument> ApplyHslkObjects(ObjectType type, const Ln
                     + std::to_string(address.dataIndex.value_or(0)) + ':' + std::to_string(address.variation.value_or(0));
                 if (!addresses.insert(identity).second) return Fail<LniObjectDocument>("HLUA_FIELD_DUPLICATE", "字段地址重复：" + object.id + "." + field.name);
                 auto value = ValueFor(values[i], *definition.nativeValueType);
-                if (!value.Succeeded()) return {std::nullopt, std::move(value.diagnostics)};
+                if (!value.Succeeded()) {
+                    for (auto& diagnostic : value.diagnostics) diagnostic.message = object.source + "：" + object.id + "." + field.name
+                        + '[' + std::to_string(i + 1) + "] -> " + definition.fieldId + "：" + diagnostic.message;
+                    return {std::nullopt, std::move(value.diagnostics)};
+                }
                 const auto applied = output.SetModification(key, address, std::move(*value.value));
                 if (!applied.Succeeded()) return {std::nullopt, applied.diagnostics};
             }
