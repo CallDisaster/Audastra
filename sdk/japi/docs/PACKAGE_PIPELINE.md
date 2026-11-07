@@ -59,3 +59,16 @@ pwsh tools/dev/install-map-runtime.ps1 `
 记录只用于可信发布打包环境，不是地图内自授权或任意包批准开关。id/version、清单摘要和四角色摘要须与冻结结果完全一致，清单同时绑定许可与来源文件。记录不匹配、未知字段、重复字段、缺角色均拒绝。脚本首先核对记录自身的传入 SHA；冻结后再次核对并复制为包内 `approval.json`，只有此时才写两个批准位为 true。没有记录和没有同时传摘要时不隐式批准。开发/测试默认保持关闭。该记录不替代代码签名、更新签名或作者每张地图的首次启用确认。
 
 可先不带记录冻结待审批目录，再按其清单及各角色身份制作记录，使用同一计划和记录安装到另一全新目录；封装来源路径不参与清单身份，文件内容必须相同。安装回执、便携包、正常保存、干净安装和游戏验收分别保留证据，静态夹具通过不代表这些出口已通过。
+
+0.4.0 发布来源使用 `acc5755fec7ad6fb2f788b2264537130e83c8afc`。在该提交的干净检出中构建两个 Win32 Release 目标，并由正常 CMake 配置生成合成客户端，然后可使用来源绑定的冻结脚本：
+
+```powershell
+pwsh tools/dev/freeze-runtime-040.ps1 `
+  -SourceRoot <clean-release-checkout> `
+  -BuildRoot <desktop-build-directory> `
+  -RuntimeBuildRoot <Win32-runtime-build-directory> `
+  -OpaqueInputDirectory <approved-opaque-input-directory> `
+  -OutputDirectory <new-output-directory>
+```
+
+脚本本身可位于后续的打包脚本检出，`SourceRoot` 仍须是上述发布提交。它复核构建缓存的来源与 Win32 平台，用既有决定生成绑定新文件身份的批准记录；引导与许可证只整文件复制、核大小与摘要。`freeze-summary.json` 给出客户端、清单、批准记录与安装目录身份。来源文件在冻结时记录已经完成的核对，游戏结果另以最终 `packageSha256` 绑定验收回执，验收后不能重写来源文件而悄悄改变包身份。
