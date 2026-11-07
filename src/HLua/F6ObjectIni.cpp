@@ -18,6 +18,8 @@ Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, st
     }
     if (parsed.value->fields.size() > limits.objects) return Output::Failure("HLua", "HLUA_OBJECT_BUDGET", "F6 物体数超过预算。");
     std::vector<HslkObject> output;
+    std::vector<std::size_t> newlines;
+    for (std::size_t i = 0; i < text.size(); ++i) if (text[i] == '\n') newlines.push_back(i);
     const auto atom = [](const Text::LniDataValue& value) -> Result<FieldAtom> {
         if (value.kind == Text::LniDataValue::Kind::String) return Result<FieldAtom>::Success(value.text);
         if (value.kind != Text::LniDataValue::Kind::Number)
@@ -42,8 +44,8 @@ Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, st
             }
             if (name.starts_with('_')) continue;
             HslkField field; field.name = name;
-            field.source = std::string(source) + ':' + std::to_string(1 + std::count(text.begin(),
-                text.begin() + std::min(value.offset, text.size()), '\n'));
+            field.source = std::string(source) + ':' + std::to_string(1 +
+                (std::lower_bound(newlines.begin(), newlines.end(), value.offset) - newlines.begin()));
             field.array = value.kind == Text::LniDataValue::Kind::Table;
             if (field.array) {
                 for (std::size_t i = 1; i <= value.fields.size(); ++i) {
@@ -58,7 +60,7 @@ Result<std::vector<HslkObject>> ParseF6ObjectIni(ObjectData::ObjectType type, st
                 if (!item.Succeeded()) return {std::nullopt, std::move(item.diagnostics)};
                 field.values.push_back(std::move(*item.value));
             }
-            bytes += sizeof(HslkField) + name.size();
+            bytes += sizeof(HslkField) + name.size() + field.source.size();
             for (const auto& item : field.values) bytes += sizeof(FieldAtom) + (std::holds_alternative<std::string>(item) ? std::get<std::string>(item).size() : 0);
             if (bytes > limits.fieldBytes) return Output::Failure("HLua", "HLUA_FIELD_BUDGET", "F6 字段超过字节预算。");
             object.fields.push_back(std::move(field));
