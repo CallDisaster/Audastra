@@ -39,7 +39,7 @@ int wmain(int argc, wchar_t** argv) {
         auto opened = War3Map::Mpq::MpqArchive::OpenReadOnlyHandle(file.value, seed);
         Check(opened.Succeeded(), "read generated seed MPQ");
         const std::set<std::string> allowed{"war3map.w3i", "war3map.w3e", "war3map.wpm", "war3mapUnits.doo",
-            "war3map.doo", "war3map.wtg", "war3map.wct", "war3map.w3r", "war3map.w3c", "war3map.wts", "war3map.shd", "war3map.j"};
+            "war3map.doo", "war3map.wtg", "war3map.wct", "war3map.w3r", "war3map.w3c", "war3map.wts", "war3map.shd", "war3map.j", "war3mapMap.blp"};
         auto names = opened.value->ListFilesStrict();
         Check(names.Succeeded() && names.value->size() <= allowed.size() + 1, "fixture seed member scope");
         std::vector<War3Map::Mpq::MpqBuildFile> members;
