@@ -242,7 +242,12 @@ void FrozenObjectData() {
 }
 void StartupBudgetIsScoped() {
     LuaHostLimits limits;limits.milliseconds=1;
-    LuaHost host([](std::string_view,std::size_t) {Sleep(10);return LuaModuleRead{true,"return {}",{}};},limits);
+    LuaHost host([](std::string_view,std::size_t) {
+        // Sleep 的实际等待可能短于请求值；让夹具在被测时钟上确实跨过统计阈值。
+        const auto started=GetTickCount64();
+        do {Sleep(1);} while(GetTickCount64()-started<20);
+        return LuaModuleRead{true,"return {}",{}};
+    },limits);
     Success(host.Initialize(),"scoped startup budget host");
     Success(host.ExecuteModule("first",5000),"explicit bounded startup allowance");
     const auto stats=host.LastExecutionStatistics();
