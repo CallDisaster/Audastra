@@ -308,7 +308,7 @@ private:
     [[nodiscard]] bool PropertyFreeText(const QString& key) const;
     void ReportAuthoring(const QString& error);
     // 生成成功后：本工程还没批准运行库时问作者一次，没有可用包时在问题列表里说明。
-    void OfferMapRuntime();
+    void OfferMapRuntime(bool choosePackage = false);
     void OnItemChanged(QTreeWidgetItem* item, int column);
     [[nodiscard]] QString NodeKey(std::uint32_t node) const;
 
@@ -403,6 +403,7 @@ private:
     QPushButton* addFrameButton_ = nullptr;
     QPushButton* removeFrameButton_ = nullptr;
     QPushButton* generateTriggersButton_ = nullptr;
+    QPushButton* runtimeSettingsButton_ = nullptr;
     ObjectResourcePickerFactory resourcePickerFactory_;
     QPointer<QFrame> settingsCard_;
     QPointer<QTreeWidget> settingsFields_;

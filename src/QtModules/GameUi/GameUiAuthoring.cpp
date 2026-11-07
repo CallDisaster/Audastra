@@ -545,8 +545,11 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
         }
         OfferMapRuntime();
     });
+    runtimeSettingsButton_ = new QPushButton(tr("运行库…"), toolbar);
+    runtimeSettingsButton_->setObjectName(QStringLiteral("gameUiRuntimeSettings"));
+    connect(runtimeSettingsButton_, &QPushButton::clicked, this, [this] { OfferMapRuntime(true); });
     UpdateAuthoringControls();
-    return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_};
+    return {newDescriptionButton_, addFrameButton_, removeFrameButton_, generateTriggersButton_, runtimeSettingsButton_};
 }
 
 void GameUiModule::UpdateAuthoringControls() {
@@ -557,6 +560,7 @@ void GameUiModule::UpdateAuthoringControls() {
     if (removeFrameButton_) removeFrameButton_->setEnabled(isFrame);
     const bool isOrigin = !OriginNodeName(selected_).isEmpty();
     if (generateTriggersButton_) generateTriggersButton_->setEnabled(inDescription || (isOrigin && !OriginDescriptionId(OriginNodeName(selected_)).isEmpty()));
+    if (runtimeSettingsButton_) runtimeSettingsButton_->setEnabled(project_.editTrackingReady_ && !project_.savingMap_);
     const auto* origin = isOrigin ? FindUiOriginPart(OriginNodeName(selected_).toStdString()) : nullptr;
     if (canvas_) canvas_->SetDraggable(isFrame || (origin && origin->position));
 }

@@ -185,11 +185,13 @@ GameUiModule::RuntimeRequirement GameUiModule::QueryRuntimeRequirement() const {
     return result;
 }
 
-void GameUiModule::OfferMapRuntime() {
+void GameUiModule::OfferMapRuntime(bool choosePackage) {
+    if (project_.savingMap_) return;
     const auto generation = project_.editRevision_.Generation();
-    if (runtimeOfferDeclined_ == generation) return;
+    const auto revision = project_.editRevision_.Revision();
+    if (!choosePackage && runtimeOfferDeclined_ == generation) return;
     const auto requirement = QueryRuntimeRequirement();
-    if (requirement.approved) return;
+    if (!choosePackage && requirement.approved) return;
     const auto report = [this](const char* code, const QString& message) {
         authoringDiagnostics_.push_back(Diagnostic{DiagnosticSeverity::Warning, "GameUi", code, message.toStdString(), std::nullopt});
         UpdateProblems();
@@ -209,11 +211,12 @@ void GameUiModule::OfferMapRuntime() {
     const auto locked = std::find_if(usable.begin(), usable.end(),
         [&](const auto* package) { return package->packageSha256 == requirement.settings.packageSha256; });
     const Services::MapRuntimePackageInfo* chosen = locked != usable.end() ? *locked : usable.front();
-    if (locked == usable.end() && usable.size() > 1) {
+    if ((choosePackage || locked == usable.end()) && usable.size() > 1) {
         QStringList items;
         for (const auto* package : usable) items.append(label(*package));
         bool picked = false;
-        const auto item = QInputDialog::getItem(page_, tr("启用运行库"), tr("运行库包"), items, 0, false, &picked);
+        const auto initial = static_cast<int>(std::distance(usable.begin(), std::find(usable.begin(), usable.end(), chosen)));
+        const auto item = QInputDialog::getItem(page_, tr("地图运行库"), tr("运行库包"), items, initial, false, &picked);
         if (!picked) {
             runtimeOfferDeclined_ = generation;
             return;
@@ -223,11 +226,13 @@ void GameUiModule::OfferMapRuntime() {
     QString text = tr("界面触发器要用 Audastra 运行库：地图会带上原生代码（DLL），只支持经典版 1.27a。\n\n包：%1\nDLL：%2")
                        .arg(label(*chosen), Text(chosen->payloadSha256).left(16));
     if (chosen->internalOnly) text += tr("\n\n这个包只能用于测试运行和内部验收副本，正常保存会拒绝。");
-    text += tr("\n\n为本图启用？");
+    text += choosePackage ? tr("\n\n为本图使用这个包？") : tr("\n\n为本图启用？");
     if (QMessageBox::question(page_, tr("启用运行库"), text) != QMessageBox::Yes) {
         runtimeOfferDeclined_ = generation;
         return;
     }
+    if (project_.editRevision_.Generation() != generation || project_.editRevision_.Revision() != revision)
+        return report("RUNTIME_REVISION_STALE", tr("确认期间工程修订已变化，请重新选择运行库包"));
     const auto mode = requirement.settings.mode == Services::MapRuntimeMode::Disabled ? Services::MapRuntimeMode::Automatic
                                                                                       : requirement.settings.mode;
     const auto applied = QtProject::PublishMapRuntimeSettings(project_, {mode, chosen->packageSha256}, tr("启用地图运行库"));
