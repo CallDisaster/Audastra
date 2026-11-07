@@ -78,6 +78,10 @@ assert(j.Sync(function() return not j.Run(2) end))
         Check(scheduler->Run(1).succeeded && scheduler->Run(1).succeeded, "async action runs twice");
         const auto condition = scheduler->Run(2);
         Check(condition.succeeded && condition.booleanValue, "async condition sees retained lexical scope");
+        Success(host.Execute("j.StoreCondition(9,function() end)","@nil-condition.lua"),"capture condition with no return");
+        const auto absent=scheduler->Run(9);
+        Check(absent.succeeded && !absent.booleanValue,"nil boolean callback is false");
+        Success(host.Execute("j.Remove(9)","@nil-condition-cleanup.lua"),"remove nil condition");
         Success(host.Execute("assert(observed==2)", "@read-back.lua"), "async writes preserved");
         Success(host.Execute("j.StoreAction(1,function() j.Remove(1); after_remove=true end); j.Run(1); assert(after_remove)", "@self-remove.lua"), "self removal is safe");
         Check(host.CallbackCount() == 1 && !scheduler->callbacks.contains(1), "self removal releases closure");

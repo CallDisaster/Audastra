@@ -437,8 +437,8 @@ struct LuaHost::Impl {
             return {false, false, std::move(error)};
         }
         if (Expired()) return {false, false, "Lua 回调超出预算；已发生的副作用没有回滚。"};
-        if (returns == NativeCallbackReturn::Boolean && !lua_isboolean(state, -1))
-            return {false, false, "Lua 条件／过滤器回调必须返回 boolean。"};
+        if (returns == NativeCallbackReturn::Boolean && !lua_isboolean(state, -1) && !lua_isnil(state,-1))
+            return {false, false, "Lua 条件／过滤器回调必须返回 boolean 或 nil（false）。"};
         return {true, returns == NativeCallbackReturn::Boolean && lua_toboolean(state, -1) != 0, {}};
     }
     LuaHostResult Error(int code, LuaReloadResult fallback) {

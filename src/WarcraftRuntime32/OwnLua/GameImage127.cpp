@@ -3,8 +3,11 @@
 #include "../RuntimeFiles.h"
 
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <vector>
+#include <map>
+#include <mutex>
 
 namespace Audastra::Runtime32::OwnLua {
 namespace {
@@ -44,6 +47,8 @@ struct GameImage127::Impl {
     Handle mapping;
     const unsigned char* disk = nullptr;
     std::size_t diskBytes = 0;
+    mutable std::mutex originalMutex;
+    mutable std::map<std::uint32_t,std::array<unsigned char,6>> originalGetters;
     Impl(HANDLE file, std::filesystem::path source, std::uintptr_t mapped, ImageHeader shape)
         : lease(file), path(std::move(source)), base(mapped), header(shape) {}
     ~Impl() { if (disk) UnmapViewOfFile(disk); }
@@ -99,7 +104,16 @@ bool GameImage127::Matches(std::uintptr_t rva, std::span<const unsigned char> by
     return SameBytes(impl_->base + rva, bytes.data(), bytes.size());
 }
 bool GameImage127::OriginalCode(std::uint32_t rva, std::span<unsigned char> bytes) const noexcept {
-    return Executable(impl_->base + rva, bytes.size()) && Pe32OriginalCode({impl_->disk, impl_->diskBytes},
-        static_cast<std::uint32_t>(impl_->base), rva, bytes);
+    if(!Executable(impl_->base+rva,bytes.size())) return false;
+    if(bytes.size()!=6) return Pe32OriginalCode({impl_->disk,impl_->diskBytes},static_cast<std::uint32_t>(impl_->base),rva,bytes);
+    try {
+        // 只缓存同一锁定文件/基址的原始字节；当前页权限及当前字节仍由每次调用核对。
+        std::lock_guard lock(impl_->originalMutex);
+        const auto old=impl_->originalGetters.find(rva);
+        if(old!=impl_->originalGetters.end()) {std::copy(old->second.begin(),old->second.end(),bytes.begin());return true;}
+        if(!Pe32OriginalCode({impl_->disk,impl_->diskBytes},static_cast<std::uint32_t>(impl_->base),rva,bytes)) return false;
+        if(impl_->originalGetters.size()<512){std::array<unsigned char,6> data{};std::copy(bytes.begin(),bytes.end(),data.begin());impl_->originalGetters.emplace(rva,data);}
+        return true;
+    }catch(...){return false;}
 }
 } // namespace Audastra::Runtime32::OwnLua
