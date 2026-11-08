@@ -341,7 +341,7 @@ void MainWindow::BuildDiagnosticsView() {
     list->SetSourceModel(project_->diagnosticsModel_, [](const QAbstractItemModel& model, int row) {
         return War3Map::UiKit::ProblemList::SeverityFromText(model.index(row, 0).data().toString());
     });
-    connect(list, &War3Map::UiKit::ProblemList::Activated, this, [this](const QModelIndex& index) {
+    connect(list, &War3Map::UiKit::ProblemList::ActionTriggered, this, [this](const QModelIndex& index) {
         if (index.siblingAtColumn(1).data().toString() == tr("地图运行库")
             && index.siblingAtColumn(2).data().toString() == QLatin1String("RUNTIME_UPGRADE_REQUIRED"))
             ApplyRuntimeUpgrade([this] { SaveMapInPlace(); });

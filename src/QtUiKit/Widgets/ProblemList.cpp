@@ -118,7 +118,7 @@ ProblemList::ProblemList(QWidget* parent) : QWidget(parent) {
         emit Activated(filter_->mapToSource(index));
     });
     auto* actions = new ActionDelegate(view_);
-    actions->activate = [this](const QModelIndex& index) { emit Activated(filter_->mapToSource(index)); };
+    actions->activate = [this](const QModelIndex& index) { emit ActionTriggered(filter_->mapToSource(index)); };
     view_->setItemDelegateForColumn(3, actions);
 
     countTimer_ = new QTimer(this);

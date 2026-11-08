@@ -128,7 +128,12 @@ void UiKitTests::problemListActionUsesSourceIdentity() {
     const auto action = view->model()->index(0, 3);
     const auto rect = view->visualRect(action);
     QVERIFY(rect.width() > 200);
-    QSignalSpy activated(&list, &ProblemList::Activated);
+    QSignalSpy activated(&list, &ProblemList::ActionTriggered);
+    QSignalSpy rowActivated(&list, &ProblemList::Activated);
+    // 双击文字区只算查看这一行，不能触发行内操作。
+    QTest::mouseDClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(rect.left() + 10, rect.center().y()));
+    QCOMPARE(activated.size(), 0);
+    QCOMPARE(rowActivated.size(), 1);
     QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, QPoint(rect.right() - 30, rect.center().y()));
     QCOMPARE(activated.size(), 1);
     const auto source = qvariant_cast<QModelIndex>(activated.front().front());

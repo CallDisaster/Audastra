@@ -36,6 +36,8 @@ public:
 
 signals:
     void Activated(const QModelIndex& sourceIndex);
+    // 只在点中行内操作按钮时发出；双击或回车整行仍只发 Activated。
+    void ActionTriggered(const QModelIndex& sourceIndex);
     // 计数刷新后发出，供状态栏等处显示“N 错误 · M 警告”。
     void CountsChanged();
 
