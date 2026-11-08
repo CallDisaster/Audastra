@@ -10,6 +10,7 @@
 #include "../../src/Services/MapRuntimeSave.h"
 #include "War3MapCore/MapData/MapSettings.h"
 #include "War3MapCore/Resources/ImportTable.h"
+#include "War3MapCore/Trigger/UiCatalog.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include <nlohmann/json.hpp>
@@ -189,6 +190,34 @@ void LegacyCompatibility() {
     const auto duplicate = QueryMapRuntimeCompatibility(*old,
         std::vector<std::string>{current->ClientSha256(), current->ClientSha256()}, sources);
     Require(duplicate.Succeeded() && duplicate.value->action == MapRuntimeCompatibilityAction::UpdateLibrary, "duplicate input cannot grant upgrade");
+    const auto tool = oldPackage.root / "modern-tool", ui = tool / "ui", map = oldPackage.root / "map";
+    std::filesystem::create_directories(map);
+    const auto write = [&](const std::filesystem::path& path, std::span<const std::byte> bytes) {
+        std::filesystem::create_directories(path.parent_path());
+        Require(IO::WriteFileBytes(path, bytes).Succeeded(), "write original modern library context");
+    };
+    write(ui / "config", Bytes("base\n"));
+    write(ui / "base/define.txt", Bytes("[TriggerTypes]\ninteger=0,1,1,Integer,integer\n"));
+    write(ui / "base/jass/Runtime.cfg", Bytes("AudastraUIIsReady\n"));
+    write(ui / "base/jass/Runtime.j", *IO::ReadFileBytes(oldPackage.root / "client.j", 1024 * 1024).value);
+    write(tool / "compiler/include/WaveForce.i", Bytes("// original forced input\n"));
+    for (const auto* file : {"common.j", "blizzard.j"})
+        write(tool / "compiler/jass/24" / file, Bytes("// original base script\n"));
+    const auto catalog = Trigger::UiCatalog::Load(ui);
+    Require(catalog.Succeeded(), "load original modern catalog");
+    const MapRuntimeSettings lockedOld{MapRuntimeMode::Enabled, old->Identity()};
+    const auto oldLibrary = QueryMapRuntimeLibraryCompatibility(lockedOld, sources, tool, ui, map, *catalog.value);
+    Require(oldLibrary.Succeeded() && oldLibrary.value->diagnostics.empty(), "modern old library does not enter legacy share layout capture");
+    write(ui / "base/jass/Runtime.j", *IO::ReadFileBytes(currentPackage.root / "client.j", 1024 * 1024).value);
+    const auto newLibrary = QueryMapRuntimeLibraryCompatibility(lockedOld, sources, tool, ui, map, *catalog.value);
+    Require(newLibrary.Succeeded() && newLibrary.value->action == MapRuntimeCompatibilityAction::SwitchRuntime
+        && newLibrary.value->libraryVersion == "0.4.0", "modern actual selected client offers explicit upgrade");
+    const auto matchingCurrent = QueryMapRuntimeLibraryCompatibility({MapRuntimeMode::Enabled, current->Identity()}, sources, tool, ui, map, *catalog.value);
+    Require(matchingCurrent.Succeeded() && matchingCurrent.value->diagnostics.empty(), "modern current library matches current map");
+    write(ui / "base/jass/Runtime.j", *IO::ReadFileBytes(oldPackage.root / "client.j", 1024 * 1024).value);
+    const auto libraryReverse = QueryMapRuntimeLibraryCompatibility({MapRuntimeMode::Enabled, current->Identity()}, sources, tool, ui, map, *catalog.value);
+    Require(libraryReverse.Succeeded() && libraryReverse.value->action == MapRuntimeCompatibilityAction::UpdateLibrary,
+        "modern reverse mismatch retains library update action");
     Require(MissingMapRuntimePackageMessage("4f7cd50b95973d7780b8d7762a0d3a803b6a37c2d3e8ac8a8914c2b879f11b91").find("0.3.0") != std::string::npos,
         "missing published identity reports version without granting trust");
     const std::string clean = "globals\nstring AjExpectedRuntimeIdentity = \"\"\nendglobals\nfunction main takes nothing returns nothing\ncall AjInitialize()\nendfunction\n";

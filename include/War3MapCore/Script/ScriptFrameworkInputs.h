@@ -17,6 +17,11 @@ struct ScriptFrameworkInputs {
     std::vector<ScriptToolchainFileBinding> uiBindings;
 };
 
+// 按实际布局冻结注入来源；现代目录与旧框架复用各自保存链的入口计划。
+[[nodiscard]] Result<ScriptFrameworkInputs> CaptureMapScriptFrameworkInputs(
+    const ScriptToolchainLayout& layout, const Trigger::UiCatalog& catalog,
+    const std::filesystem::path& uiRoot, const std::filesystem::path& mapDirectory);
+
 [[nodiscard]] Result<ScriptToolchainProfile> MakeLegacyFrameworkProfile(
     const ScriptToolchainLayout& layout, const Trigger::UiCatalog& catalog,
     const std::filesystem::path& uiRoot, const std::filesystem::path& mapDirectory);

@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/ScriptFrameworkInputs.h"
+#include "War3MapCore/Script/ScriptUserSourceRequest.h"
 
 #include "ScriptSourceBinding.h"
 #include "War3MapCore/Hash.h"
@@ -307,6 +308,26 @@ static void AddFrameworkPlugins(ScriptToolchainProfile& profile, const ScriptToo
             "XG_AutoAttr_GetAttrNum", "XG_AutoAttr_GetAttrKey", "XG_AutoAttr_GetAttrVal"}});
     if (exists(layout.root / "jass" / "XueYue" / "Calls" / "GetHeroMainAttr.j"))
         profile.unsupportedPlugins.push_back({"GetHeroMainAttr", {"XG_GetHeroMainAttr"}});
+}
+
+Result<ScriptFrameworkInputs> CaptureMapScriptFrameworkInputs(const ScriptToolchainLayout& layout,
+    const Trigger::UiCatalog& catalog, const std::filesystem::path& uiRoot,
+    const std::filesystem::path& mapDirectory) {
+    if (layout.kind != ScriptToolchainLayoutKind::Modern) {
+        auto profile = MakeLegacyFrameworkProfile(layout, catalog, uiRoot, mapDirectory);
+        if (!profile.Succeeded()) return {{}, profile.diagnostics};
+        return CaptureScriptFrameworkInputs(std::move(*profile.value), layout, catalog);
+    }
+    const auto request = MakeModernUserSourceRequest(layout, catalog, uiRoot, mapDirectory);
+    auto entry = CaptureScriptUserSourcePlan(request);
+    if (!entry.Succeeded()) return {{}, entry.diagnostics};
+    auto injection = CaptureScriptInjectionSources(*entry.value, request, !layout.allowReturnBug);
+    if (!injection.Succeeded()) return {{}, injection.diagnostics};
+    if (const auto verified = VerifyScriptToolchainLayout(layout); !verified.Succeeded()) return {{}, verified.diagnostics};
+    ScriptFrameworkInputs inputs;
+    inputs.layout = layout; inputs.catalog = catalog;
+    inputs.entryPlan = std::move(*entry.value); inputs.injection = std::move(*injection.value);
+    return Result<ScriptFrameworkInputs>::Success(std::move(inputs));
 }
 
 Result<ScriptToolchainProfile> MakeLegacyFrameworkProfile(const ScriptToolchainLayout& layout,

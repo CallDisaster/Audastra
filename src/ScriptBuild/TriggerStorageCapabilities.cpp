@@ -31,23 +31,9 @@ Result<std::shared_ptr<const Trigger::TriggerStorageCapabilities>> CaptureMapTri
     };
     const auto layout = ResolveScriptToolchainLayout({toolRoot});
     if (!layout.Succeeded()) return incomplete(layout.diagnostics);
-    ScriptFrameworkInputs capturedInputs;
-    if (layout.value->kind == ScriptToolchainLayoutKind::Modern) {
-        const auto request = MakeModernUserSourceRequest(*layout.value, catalog, uiRoot, mapDirectory);
-        auto entry = CaptureScriptUserSourcePlan(request);
-        if (!entry.Succeeded()) return incomplete(entry.diagnostics);
-        auto injection = CaptureScriptInjectionSources(*entry.value, request, !layout.value->allowReturnBug);
-        if (!injection.Succeeded()) return incomplete(injection.diagnostics);
-        capturedInputs.layout = *layout.value; capturedInputs.catalog = catalog;
-        capturedInputs.entryPlan = std::move(*entry.value); capturedInputs.injection = std::move(*injection.value);
-    } else {
-        auto profile = MakeLegacyFrameworkProfile(*layout.value, catalog, uiRoot, mapDirectory);
-        if (!profile.Succeeded()) return incomplete(profile.diagnostics);
-        auto inputs = CaptureScriptFrameworkInputs(std::move(*profile.value), *layout.value, catalog);
-        if (!inputs.Succeeded()) return incomplete(inputs.diagnostics);
-        capturedInputs = std::move(*inputs.value);
-    }
-    auto result = CaptureTriggerStorageCapabilities(capturedInputs, storageTypes);
+    auto capturedInputs = CaptureMapScriptFrameworkInputs(*layout.value, catalog, uiRoot, mapDirectory);
+    if (!capturedInputs.Succeeded()) return incomplete(capturedInputs.diagnostics);
+    auto result = CaptureTriggerStorageCapabilities(*capturedInputs.value, storageTypes);
     if (!result.Succeeded()) return incomplete(result.diagnostics);
     if (const auto verified = VerifyScriptToolchainLayout(*layout.value); !verified.Succeeded()) return {std::nullopt, verified.diagnostics};
     return result;

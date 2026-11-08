@@ -78,10 +78,8 @@ Result<MapRuntimeCompatibility> QueryMapRuntimeLibraryCompatibility(const MapRun
     if (!locked.Succeeded()) return {{}, locked.diagnostics};
     const auto capability = QueryScriptRebuildCapability(toolRoot, uiRoot);
     if (!capability.layout) return {{}, capability.diagnostics};
-    auto profile = Script::MakeLegacyFrameworkProfile(*capability.layout, catalog,
+    const auto framework = Script::CaptureMapScriptFrameworkInputs(*capability.layout, catalog,
         Trigger::UiCatalog::ResolveUiRoot(uiRoot), mapDirectory);
-    if (!profile.Succeeded()) return {{}, profile.diagnostics};
-    const auto framework = Script::CaptureScriptFrameworkInputs(std::move(*profile.value), *capability.layout, catalog);
     if (!framework.Succeeded()) return {{}, framework.diagnostics};
     std::vector<std::string> hashes;
     for (const auto& choice : framework.value->injection.choices)
