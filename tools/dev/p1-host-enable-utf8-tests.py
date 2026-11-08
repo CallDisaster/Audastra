@@ -201,7 +201,22 @@ class HostBomTests(unittest.TestCase):
         try:
             os.symlink(self.host, link, target_is_directory=True)
         except OSError as exc:
-            self.fail(f"本环境无法完成 required reparse fixture: {exc}")
+            if os.name != "nt" or getattr(exc, "winerror", None) != 1314:
+                self.fail(f"本环境无法完成 required reparse fixture: {exc}")
+            # 受限令牌仍须用真实NTFS重解析点覆盖同一拒绝门，不能跳过安全断言。
+            try:
+                import _winapi
+                _winapi.CreateJunction(str(self.host), str(link))
+            except (ImportError, AttributeError, OSError) as junction_error:
+                self.fail(f"本环境无法完成 required reparse fixture: {junction_error}")
+            self.assertEqual(link.lstat().st_reparse_tag, 0xA0000003)
+            self.assertEqual(link.resolve(), self.host.resolve())
+            print("required_reparse_fixture=ntfs_directory_junction", flush=True)
+        else:
+            self.assertTrue(link.is_symlink())
+            print("required_reparse_fixture=directory_symlink", flush=True)
+        if os.name == "nt":
+            self.assertTrue(link.lstat().st_file_attributes & 0x400)
         self.assert_rejected_without_reader_write(host=link)
         self.assertFalse(self.backup.exists())
 
