@@ -18,6 +18,7 @@ ToolPopupDismissal::~ToolPopupDismissal() { StopWatching(); }
 
 void ToolPopupDismissal::Open(QWidget* focus) {
     if (!window_) return;
+    ++openGeneration_;
     StartWatching();
     window_->show();
     window_->raise();
@@ -70,8 +71,11 @@ bool ToolPopupDismissal::eventFilter(QObject* watched, QEvent* event) {
         const QPoint global = static_cast<QMouseEvent*>(event)->globalPosition().toPoint();
         if (window_->frameGeometry().contains(global)) break;
         if (auto* popup = QApplication::activePopupWidget(); popup && Inside(popup) && popup->frameGeometry().contains(global)) break;
+        const bool onToggleAnchor = toggleAnchor_ && (widget == toggleAnchor_ || toggleAnchor_->isAncestorOf(widget));
         Dismiss(Reason::OutsideClick);
-        break; // 不吞点击：点到的控件照常响应。
+        // 其他外部点击不吞：点到的控件照常响应；点开关控件只收起。
+        if (onToggleAnchor) return true;
+        break;
     }
     case QEvent::KeyPress:
         if (static_cast<QKeyEvent*>(event)->key() == Qt::Key_Escape && !composing_ && Inside(watched)) {
@@ -85,9 +89,10 @@ bool ToolPopupDismissal::eventFilter(QObject* watched, QEvent* event) {
     case QEvent::ApplicationStateChange:
         if (watched != qApp || static_cast<QApplicationStateChangeEvent*>(event)->applicationState() == Qt::ApplicationActive) break;
         // 输入法候选窗可能短暂抢走激活；回到事件循环后应用仍失活且不在组字才收起。
-        QTimer::singleShot(0, this, [this] {
-            if (window_ && window_->isVisible() && !composing_ && QApplication::applicationState() != Qt::ApplicationActive)
-                Dismiss(Reason::Deactivated);
+        // 期间重新打开过的浮层不受上一次失活影响。
+        QTimer::singleShot(0, this, [this, generation = openGeneration_] {
+            if (generation != openGeneration_ || !window_ || !window_->isVisible() || composing_) return;
+            if (QApplication::applicationState() != Qt::ApplicationActive) Dismiss(Reason::Deactivated);
         });
         break;
     default:

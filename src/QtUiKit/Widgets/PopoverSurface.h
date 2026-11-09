@@ -10,8 +10,10 @@ class QShowEvent;
 
 namespace War3Map::UiKit {
 
+class ToolPopupDismissal;
+
 // 轻量浮层：内容只负责布局和交互，圆角、阴影与屏幕定位共用 UiKit 表面规则。
-// Qt::Popup 保留原生的点击外部关闭；不用于需要输入法的命令面板。
+// 窗口是可激活的工具窗口，内容里的输入框可以用输入法；点外部、Esc、应用失活收起，再点锚点只收起。
 class PopoverSurface final : public QFrame {
     Q_OBJECT
 public:
@@ -54,6 +56,7 @@ private:
     QPointer<QWidget> anchorWindow_;
     QPointer<QWidget> previousFocus_;
     QPropertyAnimation* fade_ = nullptr;
+    ToolPopupDismissal* dismissal_ = nullptr;
     PreferredSide side_ = PreferredSide::Below;
     Qt::Alignment alignment_ = Qt::AlignLeft;
     bool reducedMotion_ = false;

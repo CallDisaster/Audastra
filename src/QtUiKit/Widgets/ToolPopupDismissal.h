@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QPointer>
 
+#include <cstdint>
 #include <functional>
 
 class QWidget;
@@ -27,6 +28,8 @@ public:
 
     // 显示、置前、激活浮层并把焦点交给 focus（为空时交给浮层）。
     void Open(QWidget* focus = nullptr);
+    // 打开浮层的开关控件：再点它只收起，这次点击不再传给它，免得它立即重新打开浮层。
+    void SetToggleAnchor(QWidget* anchor) { toggleAnchor_ = anchor; }
     // 浮层内输入框是否正处于输入法组字状态。
     [[nodiscard]] bool Composing() const noexcept { return composing_; }
 
@@ -40,7 +43,9 @@ private:
     [[nodiscard]] bool Inside(const QObject* object) const;
 
     QPointer<QWidget> window_;
+    QPointer<QWidget> toggleAnchor_;
     std::function<void(Reason)> dismiss_;
+    std::uint64_t openGeneration_ = 0;
     bool watching_ = false;
     bool composing_ = false;
 };

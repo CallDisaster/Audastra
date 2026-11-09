@@ -2,6 +2,7 @@
 
 #include "Widgets/Motion.h"
 #include "Widgets/RoundedPopups.h"
+#include "Widgets/ToolPopupDismissal.h"
 
 #include <QApplication>
 #include <QEvent>
@@ -20,11 +21,10 @@
 namespace War3Map::UiKit {
 
 PopoverSurface::PopoverSurface(QWidget* parent)
-    : QFrame(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint) {
+    : QFrame(parent, kToolPopupWindowFlags | Qt::NoDropShadowWindowHint) {
     setObjectName(QStringLiteral("uikitPopoverSurface"));
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_NoSystemBackground);
-    setAttribute(Qt::WA_NoMouseReplay);
     setAttribute(Qt::WA_OpaquePaintEvent, false);
     setAutoFillBackground(false);
     setFrameShape(QFrame::NoFrame);
@@ -45,12 +45,14 @@ PopoverSurface::PopoverSurface(QWidget* parent)
     fade_ = new QPropertyAnimation(this, "windowOpacity", this);
     fade_->setDuration(120);
     fade_->setEasingCurve(QEasingCurve::OutCubic);
-    // 子内容取得焦点时仍由浮层处理 Esc。
-    if (qApp) qApp->installEventFilter(this);
+    // 内容里可能有输入框（例如会话改名）：用可激活的工具窗口才能输入中文；点外部、Esc 收起走共用规则。
+    dismissal_ = new ToolPopupDismissal(*this, [this](ToolPopupDismissal::Reason) { Dismiss(); });
+    installEventFilter(this);
 }
 
 PopoverSurface::~PopoverSurface() {
     if (anchor_) anchor_->removeEventFilter(this);
+    if (anchorWindow_) anchorWindow_->removeEventFilter(this);
 }
 
 void PopoverSurface::SetContentWidget(QWidget* content) {
@@ -104,19 +106,21 @@ void PopoverSurface::ShowAnchored(QWidget* anchor, PreferredSide side, Qt::Align
     if (!anchor) return;
     if (anchor_ != anchor) {
         if (anchor_) anchor_->removeEventFilter(this);
+        if (anchorWindow_) anchorWindow_->removeEventFilter(this);
         anchor_ = anchor;
         anchorWindow_ = anchor->window();
         anchor_->installEventFilter(this);
+        if (anchorWindow_ != anchor_) anchorWindow_->installEventFilter(this);
+        dismissal_->SetToggleAnchor(anchor);
     }
     side_ = side;
     alignment_ = alignment;
-    previousFocus_ = QApplication::focusWidget();
+    if (!isVisible()) previousFocus_ = QApplication::focusWidget();
     PositionAtAnchor();
-    show();
-    raise();
+    QWidget* focus = this;
     if (QWidget* first = content_->nextInFocusChain(); first && first != this && isAncestorOf(first)
-        && first->focusPolicy() != Qt::NoFocus) first->setFocus(Qt::PopupFocusReason);
-    else setFocus(Qt::PopupFocusReason);
+        && first->focusPolicy() != Qt::NoFocus) focus = first;
+    dismissal_->Open(focus);
 }
 
 void PopoverSurface::ToggleAnchored(QWidget* anchor, PreferredSide side, Qt::Alignment alignment) {
@@ -144,24 +148,6 @@ void PopoverSurface::Dismiss() { hide(); }
 
 bool PopoverSurface::eventFilter(QObject* watched, QEvent* event) {
     if (watched == this && isVisible() && event->type() == QEvent::LayoutRequest) PositionAtAnchor();
-    if (isVisible() && event->type() == QEvent::MouseButtonPress) {
-        auto* widget = qobject_cast<QWidget*>(watched);
-        if (widget && widget != this && !isAncestorOf(widget)) {
-            const bool wasAnchor = widget == anchor_ || (anchor_ && anchor_->isAncestorOf(widget));
-            Dismiss();
-            // 再点锚点只收起，避免 Popup 的点击重放把它立即重新打开。
-            if (wasAnchor) return true;
-        }
-    }
-    if (isVisible() && event->type() == QEvent::KeyPress) {
-        auto* key = static_cast<QKeyEvent*>(event);
-        auto* widget = qobject_cast<QWidget*>(watched);
-        if (key->key() == Qt::Key_Escape && widget && (widget == this || isAncestorOf(widget))) {
-            Dismiss();
-            key->accept();
-            return true;
-        }
-    }
     if ((watched == anchor_ || watched == anchorWindow_) && isVisible()) {
         if (event->type() == QEvent::Hide || event->type() == QEvent::Close) Dismiss();
         else if (event->type() == QEvent::Move || event->type() == QEvent::Resize) PositionAtAnchor();
@@ -183,7 +169,11 @@ void PopoverSurface::hideEvent(QHideEvent* event) {
     fade_->stop();
     setWindowOpacity(1.0);
     QFrame::hideEvent(event);
-    if (previousFocus_ && previousFocus_->isVisible()) previousFocus_->setFocus(Qt::PopupFocusReason);
+    if (previousFocus_ && previousFocus_->isVisible()) {
+        // 浮层是独立的活动窗口：收起后把激活交还给原来的窗口再恢复焦点。
+        if (QApplication::applicationState() == Qt::ApplicationActive) previousFocus_->window()->activateWindow();
+        previousFocus_->setFocus(Qt::PopupFocusReason);
+    }
     previousFocus_.clear();
     emit dismissed();
 }

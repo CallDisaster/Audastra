@@ -347,8 +347,19 @@ void UiKitTests::toolPopupAcceptsInputMethodAndDismissesLikePopup() {
     QVERIFY(!popup.isVisible());
     QCOMPARE(clicks.count(), 1);
     QCOMPARE(reasons, QList<ToolPopupDismissal::Reason>{ToolPopupDismissal::Reason::OutsideClick});
+    // 再次打开同一个浮层：仍能激活并把焦点交给输入框。
+    const auto state = [&] {
+        const QWidget* active = QApplication::activeWindow();
+        const QWidget* focus = QApplication::focusWidget();
+        return QStringLiteral("visible=%1 active=%2 focus=%3 state=%4 reasons=%5")
+            .arg(popup.isVisible())
+            .arg(active == &popup ? QStringLiteral("popup") : active == &host ? QStringLiteral("host") : active ? QStringLiteral("other") : QStringLiteral("null"))
+            .arg(focus == edit ? QStringLiteral("edit") : focus == inside ? QStringLiteral("inside") : focus == outside ? QStringLiteral("outside") : focus ? QStringLiteral("other") : QStringLiteral("null"))
+            .arg(static_cast<int>(QApplication::applicationState()))
+            .arg(reasons.size());
+    };
     dismissal->Open(edit);
-    QTRY_VERIFY(edit->hasFocus());
+    QTRY_VERIFY2(QApplication::activeWindow() == &popup && edit->hasFocus(), qPrintable(state()));
     QTest::keyClick(edit, Qt::Key_Escape);
     QVERIFY(!popup.isVisible());
     QCOMPARE(reasons.back(), ToolPopupDismissal::Reason::Escape);
@@ -782,6 +793,15 @@ void UiKitTests::popoverTogglesAndDismissesFromChildKeyboard() {
     QTest::mouseClick(outside, Qt::LeftButton);
     QVERIFY(!surface.isVisible());
     QCOMPARE(dismissed.count(), 3);
+    // 可激活的工具窗口（内容里的输入框能用输入法）；再点锚点只收起，点击不传给锚点。
+    QCOMPARE(surface.windowType(), Qt::Tool);
+    QSignalSpy anchorClicks(anchor, &QPushButton::clicked);
+    surface.ShowAnchored(anchor);
+    QTRY_VERIFY(QApplication::activeWindow() == &surface);
+    QTest::mouseClick(anchor, Qt::LeftButton);
+    QVERIFY(!surface.isVisible());
+    QCOMPARE(dismissed.count(), 4);
+    QCOMPARE(anchorClicks.count(), 0);
 }
 
 void UiKitTests::markdownTypographyUsesQuietCodeAndEvenRhythm() {
