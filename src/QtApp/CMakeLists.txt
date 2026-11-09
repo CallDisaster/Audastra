@@ -146,6 +146,8 @@ add_custom_command(TARGET war3-map-editor POST_BUILD
     VERBATIM)
 
 target_compile_definitions(war3-map-editor PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+# C++/WinRT 默认把出错位置的源文件绝对路径编进程序；发布包不能带构建机路径。
+target_compile_definitions(war3-map-editor PRIVATE WINRT_NO_SOURCE_LOCATION)
 if(AUDASTRA_DEV_SOURCE_FALLBACKS)
     target_compile_definitions(war3-map-editor PRIVATE WAR3MAP_AGENT_SKILL_SOURCE_DIR="${PROJECT_SOURCE_DIR}/.agents/skills")
 endif()
