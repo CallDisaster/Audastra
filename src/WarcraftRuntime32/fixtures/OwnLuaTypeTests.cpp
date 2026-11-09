@@ -4,6 +4,7 @@
 #include "War3MapCore/Mpq/MpqWriter.h"
 
 #include <windows.h>
+#include <array>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
@@ -108,9 +109,55 @@ void ProductionIdentityGates() {
     std::string error;
     Check(!InstallGameNativeObserver({}, {}, error) && !error.empty(), "observer never patches without verified image and lifecycle handlers");
 }
+void WeatherSources() {
+    Temp temp;
+    const auto add = ParseNativeSignature("(Hrect;I)Hweathereffect;").value();
+    const auto check = [&](const WeatherTemplates& table, std::int32_t id) {
+        const std::array<NativeValue, 2> args{NativeHandle{1, 1, "rect", {}}, id};
+        return table.CheckCall("AddWeatherEffect", add, args);
+    };
+    constexpr std::string_view header = "ID;P\nC;X1;Y1;K\"effectID\"\n";
+    const auto valid = std::string(header) + "C;X1;Y2;K\"R053\"\nE\n";
+    const auto override = std::string(header) + "C;X1;Y2;K\"O053\"\nE\n";
+    constexpr std::int32_t gameId = 0x52303533, mapId = 0x4f303533;
+    const auto absent = [](std::string_view, std::size_t) { return LuaModuleRead{}; };
+    Archive(temp.root / "war3.mpq", "type weatherfixture extends handle");
+    const auto missing = WeatherTemplates::Read(absent, temp.root);
+    const auto missingError = check(missing, gameId);
+    Check(missingError.find("缺失") != std::string::npos && missingError.find(std::to_string(gameId)) != std::string::npos,
+        "missing game weather table fails closed with requested ID");
+    const std::vector<War3Map::Mpq::MpqBuildFile> members{{"TerrainArt\\Weather.slk",
+        {reinterpret_cast<const std::byte*>(valid.data()), reinterpret_cast<const std::byte*>(valid.data() + valid.size())}}};
+    Check(War3Map::Mpq::WriteMpqArchive(temp.root / "war3patch.mpq", members).Succeeded(), "write original weather fixture");
+    const auto game = WeatherTemplates::Read(absent, temp.root);
+    Check(check(game, gameId).empty(), "accept ID in effective game SLK");
+    Check(check(game, 0).find("天气编号 0 被拒绝") != std::string::npos, "unknown template zero is refused before invocation");
+    Check(!game.CheckCall("UnknownWeatherProducer", add, {}).empty(), "other producers cannot create weather ordinals");
+    const std::array<NativeValue, 2> nullRect{std::monostate{}, gameId};
+    Check(game.CheckCall("AddWeatherEffect", add, nullRect).find("rect") != std::string::npos,
+        "valid template cannot bypass null rect gate");
+    const auto map = WeatherTemplates::Read([&](std::string_view name, std::size_t bytes) {
+        Check(name == "TerrainArt\\Weather.slk" && bytes == 1024 * 1024, "only bounded weather member selected");
+        return LuaModuleRead{true, override, {}};
+    }, temp.root);
+    Check(check(map, mapId).empty() && !check(map, gameId).empty(), "map override replaces rather than merges game table");
+    for (const auto& corrupt : {std::string{}, valid + "C;X1;Y3;K\"O053\"\n",
+        std::string(header) + "C;X1;Y2;K\"O053\"\nC;X1;Y3;K\"O053\"\nE\n",
+        std::string(header) + "C;X1;Y2;K\"O053\"\nC;X2;Y3;K\"missing ID\"\nE\n"}) {
+        const auto table = WeatherTemplates::Read([&](std::string_view, std::size_t) {
+            return LuaModuleRead{true, corrupt, {}};
+        }, temp.root);
+        Check(check(table, mapId).find("无效") != std::string::npos && !check(table, gameId).empty(),
+            "corrupt map table never permits partial IDs or falls back");
+    }
+    const auto unreadable = WeatherTemplates::Read([](std::string_view, std::size_t) {
+        return LuaModuleRead{false, {}, "fixture read error"};
+    }, temp.root);
+    Check(check(unreadable, gameId).find("fixture read error") != std::string::npos, "failed map read blocks game fallback");
+}
 }
 
 int main() {
-    try { ParseAndSources(); ProductionIdentityGates(); std::cout << "own Lua type source tests passed\n"; return 0; }
+    try { ParseAndSources(); ProductionIdentityGates(); WeatherSources(); std::cout << "own Lua type and weather source tests passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -17,7 +17,9 @@ public:
 };
 
 enum class NativeHandleKind { Reference, Scalar, Pool, Ordinal };
-[[nodiscard]] inline bool NativeOrdinalType(std::string_view type) noexcept { return type == "texttag"; }
+[[nodiscard]] inline bool NativeOrdinalType(std::string_view type) noexcept {
+    return type == "texttag" || type == "weathereffect";
+}
 [[nodiscard]] inline bool UsesWeatherEffect(const NativeSignature& signature) noexcept {
     if (signature.returns.kind == NativeKind::Handle && signature.returns.handleType == "weathereffect") return true;
     for (const auto& argument : signature.arguments)
@@ -25,7 +27,11 @@ enum class NativeHandleKind { Reference, Scalar, Pool, Ordinal };
     return false;
 }
 inline constexpr char kTextTagNativeOnly[] = "texttag序号只能由本局native返回取得，不能用整数、nil或JASS全局原始值构造。";
-inline constexpr char kWeatherEffectRefused[] = "weathereffect尚未支持：原版无效天气模板ID会崩溃，当前未建立有效ID核验，未调用native。";
+[[nodiscard]] inline const char* NativeOrdinalOnlyDiagnostic(std::string_view type) noexcept {
+    return type == "weathereffect"
+        ? "weathereffect 序号只能由本局 AddWeatherEffect 返回取得，不能用整数、nil 或 JASS 全局原始值构造。"
+        : kTextTagNativeOnly;
+}
 struct NativeHandle {
     std::uint32_t value = 0;
     std::uint64_t generation = 0;

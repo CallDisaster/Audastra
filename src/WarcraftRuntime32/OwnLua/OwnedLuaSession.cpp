@@ -29,6 +29,7 @@ public:
     OwnedLuaObservation observation;
     std::shared_ptr<LuaMapArchive> archive;
     std::shared_ptr<const NativeTypeHierarchy> types;
+    WeatherTemplates weather;
     std::shared_ptr<GameVm127> vm;
     std::shared_ptr<GameNativeProvider> natives;
     std::unique_ptr<LuaHost> host;
@@ -85,7 +86,7 @@ public:
         });
         auto initialized = host->Initialize();
         if (!initialized.Succeeded()) { Fatal(initialized.message); return false; }
-        natives = std::make_shared<GameNativeProvider>(vm, context.registry, types, context.codeDispatchReady);
+        natives = std::make_shared<GameNativeProvider>(vm, context.registry, types, context.codeDispatchReady, std::move(weather));
         initialized = host->BindNatives(natives);
         if (!initialized.Succeeded()) { Fatal(initialized.message); return false; }
         {
@@ -210,6 +211,9 @@ bool InstallOwnedLuaSession(std::shared_ptr<GameImage127> image, OwnedLuaSession
     auto owned = std::make_unique<Session>();
     owned->config = std::move(config); owned->events = std::move(events);
     owned->archive = std::move(archive.archive); owned->types = std::move(types.types);
+    owned->weather = WeatherTemplates::Read([source = owned->archive](std::string_view member, std::size_t maxBytes) {
+        return source->Read(member, maxBytes);
+    }, image->Path().parent_path());
     auto* self = owned.get();
     if (self->config.experimentalJapi)
         self->japi = std::make_unique<Japi::NativeSession>([self](auto error) { self->events.fatal(error); });

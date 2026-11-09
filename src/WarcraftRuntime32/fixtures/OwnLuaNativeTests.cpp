@@ -120,6 +120,15 @@ public:
                 std::make_shared<FixtureOrdinalOwner>(ordinalVmAlive), NativeHandleKind::Ordinal}, {}};
         if (name == "UseTag") return {true, static_cast<std::int32_t>(std::get<NativeHandle>(args[0]).value), {}};
         if (name == "DestroyTag") { ++tagDestroys; return {true, {}, {}}; }
+        if (name == "Weather")
+            return {true, NativeHandle{0, generation, "weathereffect",
+                std::make_shared<FixtureOrdinalOwner>(ordinalVmAlive), NativeHandleKind::Ordinal}, {}};
+        if (name == "UseWeather") {
+            const auto& weather = std::get<NativeHandle>(args[0]);
+            Check(weather.value == 0 && weather.kind == NativeHandleKind::Ordinal && weather.type == "weathereffect",
+                "zero-valued weather ordinal reaches provider unchanged");
+            return {true, {}, {}};
+        }
         if(name=="Pool" || name=="NewPool") {
             auto life=pool.Borrow(1);if(name=="NewPool" || !life)life=pool.Created(1);
             return {true,NativeHandle{1,generation,"lightning",std::make_shared<FixturePoolOwner>(std::move(life)),NativeHandleKind::Pool},{}};
@@ -392,11 +401,14 @@ void OrdinalSemantics() {
         for (const auto source : {"return g.RawTag", "return j.RawTag", "return g.RawWeather"})
             Check(!host.Execute(source, "@ordinal-global.lua").Succeeded(), "raw globals cannot mint ordinal values");
         Check(provider->globalReads == reads, "raw ordinal global rejected before provider read");
-        for (const auto source : {"j.Weather()", "j.UseWeather(nil)", "j.UseWeather(z)"}) {
+        Success(host.Execute("weather=j.Weather(); assert(type(weather)=='userdata' and not rawequal(z,weather)); "
+            "assert(rawequal(weather,j.Weather())); j.UseWeather(weather)", "@weather-native.lua"),
+            "native-produced weather ordinal zero roundtrips with a distinct Lua type");
+        for (const auto source : {"j.UseWeather(0)", "j.UseWeather(nil)", "j.UseWeather(z)", "j.UseWeather(unrelated)"}) {
             const auto calls = provider->calls;
             const auto result = host.Execute(source, "@weather-refused.lua");
             Check(!result.Succeeded() && result.message.find("weathereffect") != std::string::npos
-                && provider->calls == calls, "weather creation and consumers rejected before native, including nil");
+                && provider->calls == calls, "weather consumer rejects forged and unrelated values before provider");
         }
         const auto destroyed = provider->tagDestroys;
         Success(host.Execute("z=nil; t=nil; reused=nil; collectgarbage('collect')", "@ordinal-gc.lua"), "ordinal GC");
@@ -405,6 +417,8 @@ void OrdinalSemantics() {
         const auto calls = provider->calls; ++provider->generation;
         Check(!host.Execute("j.UseTag(old)", "@ordinal-epoch.lua").Succeeded() && provider->calls == calls,
             "old VM ordinal refused before native");
+        Check(!host.Execute("j.UseWeather(weather)", "@weather-epoch.lua").Succeeded() && provider->calls == calls,
+            "old VM weather ordinal refused before native");
     }
     Check(provider->tagDestroys == 2 && provider->timer->references == 0 && provider->unit->references == 0,
         "lua_close does not call native destroy or retain ordinal game references");

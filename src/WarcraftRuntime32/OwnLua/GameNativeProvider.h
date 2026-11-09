@@ -5,6 +5,7 @@
 #include "NativeTypeHierarchy.h"
 #include "NativePoolLedger.h"
 #include "GameVm127.h"
+#include "WeatherTemplates.h"
 #include <set>
 
 namespace Audastra::Runtime32::OwnLua {
@@ -13,7 +14,7 @@ namespace Audastra::Runtime32::OwnLua {
 class GameNativeProvider final : public NativeProvider {
 public:
     GameNativeProvider(std::shared_ptr<GameVm127> vm, std::shared_ptr<const NativeRegistry> registry,
-        std::shared_ptr<const NativeTypeHierarchy> types, bool codeDispatchReady = false);
+        std::shared_ptr<const NativeTypeHierarchy> types, bool codeDispatchReady = false, WeatherTemplates weather = {});
     [[nodiscard]] std::uint64_t Generation() const noexcept override;
     [[nodiscard]] std::optional<NativeSignature> Lookup(std::string_view name) const override;
     [[nodiscard]] std::optional<NativeGlobalDeclaration> LookupGlobal(std::string_view name) const override;
@@ -32,6 +33,7 @@ private:
     std::shared_ptr<GameVm127> vm_;
     std::shared_ptr<const NativeRegistry> registry_;
     std::shared_ptr<const NativeTypeHierarchy> types_;
+    WeatherTemplates weather_;
     std::set<std::string, std::less<>> scalarTypes_;
     NativePoolLedger lightning_;
     std::unique_ptr<NativeCodeRegistry> codes_;

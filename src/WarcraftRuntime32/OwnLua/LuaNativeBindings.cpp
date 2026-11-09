@@ -229,9 +229,8 @@ NativeValue LuaNativeBindings::ReadValue(lua_State* lua, int stack, const Native
         return std::string(text, size);
     }
     case NativeKind::Handle: {
-        if (type.handleType == "weathereffect") luaL_error(lua, "%s", kWeatherEffectRefused);
         if (lua_isnil(lua, stack)) {
-            if (NativeOrdinalType(type.handleType)) luaL_error(lua, "%s", kTextTagNativeOnly);
+            if (NativeOrdinalType(type.handleType)) luaL_error(lua, "%s", NativeOrdinalOnlyDiagnostic(type.handleType));
             return std::monostate{};
         }
         auto* handle = GetHandle(lua, stack);
@@ -273,8 +272,8 @@ int LuaNativeBindings::ReadGlobal(lua_State* lua, std::string_view key) {
     if (declaration->array || declaration->type.kind == NativeKind::Code || declaration->type.kind == NativeKind::Nothing)
         return luaL_error(lua, "JASS 全局 %s 的数组或 code 转换尚未实现。", name.c_str());
     if (declaration->type.kind == NativeKind::Handle) {
-        if (NativeOrdinalType(declaration->type.handleType)) return luaL_error(lua, "%s", kTextTagNativeOnly);
-        if (declaration->type.handleType == "weathereffect") return luaL_error(lua, "%s", kWeatherEffectRefused);
+        if (NativeOrdinalType(declaration->type.handleType))
+            return luaL_error(lua, "%s", NativeOrdinalOnlyDiagnostic(declaration->type.handleType));
     }
     NativeCallResult result;
     try { result = provider_->ReadGlobal(name); }
@@ -292,7 +291,6 @@ int LuaNativeBindings::Call(lua_State* lua) {
     const auto signature = self.Signature(name, lookupError);
     if (!signature || signature->arguments.size() > 32) return luaL_error(lua, "native %s 的可信签名不可用：%s", name,
         lookupError.empty() ? "尚未注册。" : lookupError.c_str());
-    if (UsesWeatherEffect(*signature)) return luaL_error(lua, "%s", kWeatherEffectRefused);
     if (signature->returns.kind == NativeKind::Code)
         return luaL_error(lua, "native %s 返回 code 的转换尚未实现，未调用 native。", name);
     if (lua_gettop(lua) != static_cast<int>(signature->arguments.size()))

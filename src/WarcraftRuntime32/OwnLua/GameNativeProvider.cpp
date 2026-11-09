@@ -58,7 +58,8 @@ bool Unsupported(std::string_view name) {
 }
 
 GameNativeProvider::GameNativeProvider(std::shared_ptr<GameVm127> vm, std::shared_ptr<const NativeRegistry> registry,
-    std::shared_ptr<const NativeTypeHierarchy> types, bool codeDispatchReady) : vm_(std::move(vm)), registry_(std::move(registry)), types_(std::move(types)) {
+    std::shared_ptr<const NativeTypeHierarchy> types, bool codeDispatchReady, WeatherTemplates weather)
+    : vm_(std::move(vm)), registry_(std::move(registry)), types_(std::move(types)), weather_(std::move(weather)) {
     if (!Generation()) return;
     if (codeDispatchReady) codes_ = std::make_unique<NativeCodeRegistry>(std::make_shared<GameCodeBackend>(vm_));
     for (const auto& [name, entry] : registry_->Entries()) {
@@ -85,8 +86,8 @@ NativeCallResult GameNativeProvider::ReadGlobal(std::string_view name) {
     if (declaration->array || declaration->type.kind == NativeKind::Code)
         return Failure("全局数组与 code 值的生命周期桥尚未实现。");
     if (declaration->type.kind == NativeKind::Handle) {
-        if (NativeOrdinalType(declaration->type.handleType)) return Failure(kTextTagNativeOnly);
-        if (declaration->type.handleType == "weathereffect") return Failure(kWeatherEffectRefused);
+        if (NativeOrdinalType(declaration->type.handleType))
+            return Failure(NativeOrdinalOnlyDiagnostic(declaration->type.handleType));
     }
     const auto raw = vm_->ReadGlobal(name);
     if (!raw) return Failure("当前地图 VM 中没有有效的全局变量记录。");
@@ -141,7 +142,7 @@ NativeCallResult GameNativeProvider::WriteGlobal(std::string_view name, const Na
             word = *interned; newString = true;
         } else if (!std::holds_alternative<std::monostate>(value)) return Failure("文本全局需要文本或 nil。");
     } else if (kind == NativeKind::Handle) {
-        if (declaration->type.handleType == "weathereffect") return Failure(kWeatherEffectRefused);
+        if (declaration->type.handleType == "weathereffect") return Failure("weathereffect 不支持 JASS 全局写入，请在 Lua 中保存 native 返回值。");
         if (NativeOrdinalType(declaration->type.handleType) && !std::holds_alternative<NativeHandle>(value)) return Failure(kTextTagNativeOnly);
         if (declaration->type.handleType == "handle") return Failure("抽象 handle 全局缺少具体引用种类，拒绝写入。");
         expected = 7;
@@ -222,7 +223,7 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
     if (!entry || entry->signature.arguments.size() != supplied.size() || supplied.size() > 32)
         return Failure("实际 native 登记缺失或参数数量不符。");
     const auto& signature = entry->signature;
-    if (UsesWeatherEffect(signature)) return Failure(kWeatherEffectRefused);
+    if (auto error = weather_.CheckCall(name, signature, supplied); !error.empty()) return Failure(std::move(error));
     if (codes_) codes_->Sweep();
     if (signature.returns.kind == NativeKind::Code) return Failure("native code 返回值尚未建立生命周期桥。");
     // TriggerAddAction 返回的声明类型虽是 handle，已核对 native 仍通过真实 agent→slot 路径返回。
@@ -268,12 +269,14 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
         }
         case NativeKind::Handle: {
             if (std::holds_alternative<std::monostate>(value)) {
-                if (NativeOrdinalType(expected.handleType)) return Failure(kTextTagNativeOnly);
+                if (NativeOrdinalType(expected.handleType)) return Failure(NativeOrdinalOnlyDiagnostic(expected.handleType));
                 break;
             }
             const auto* handle = std::get_if<NativeHandle>(&value);
             if (!handle || handle->generation != Generation() || !handle->owner || !handle->owner->Alive()
-                || !IsHandleType(handle->type, expected.handleType)) return Failure("native handle 不属于当前有效地图或类型不符。");
+                || !IsHandleType(handle->type, expected.handleType)
+                || (NativeOrdinalType(expected.handleType) && handle->kind != NativeHandleKind::Ordinal))
+                return Failure("native handle 不属于当前有效地图或类型不符。");
             args.words[index] = handle->value; break;
         }
         case NativeKind::Code: {
