@@ -2,6 +2,7 @@
 
 #include "TriggerUiText.h"
 #include "Widgets/ElidedLabel.h"
+#include "Widgets/ToolPopupDismissal.h"
 #include "Icons/SvgIcons.h"
 
 #include "War3MapCore/Trigger/TriggerPresentation.h"
@@ -45,7 +46,7 @@ TriggerValuePanel::TriggerValuePanel(const Trigger::TriggerDocument& document, c
     War3Map::StableId ecaId, std::size_t position, ObjectLister objects,
     TriggerFunctionList::CategoryIcon categoryIcon, QWidget* parent,
     std::shared_ptr<const Trigger::MapObjectReferenceSnapshot> mapObjects, QString mapObjectFailure)
-    : QFrame(parent, Qt::Popup),
+    : QFrame(parent, War3Map::UiKit::kToolPopupWindowFlags),
       document_(document),
       catalog_(catalog),
       mapObjects_(std::move(mapObjects)),
@@ -56,7 +57,10 @@ TriggerValuePanel::TriggerValuePanel(const Trigger::TriggerDocument& document, c
     setObjectName("triggerValuePanel");
     setFrameShape(QFrame::StyledPanel);
     setAttribute(Qt::WA_DeleteOnClose);
+    setWindowModality(Qt::NonModal);
     setMinimumSize(420, 320);
+    // 搜索框和文本框要能用输入法打中文：不用 Qt::Popup，点外部 / Esc 收起由共用规则处理。
+    dismissal_ = new War3Map::UiKit::ToolPopupDismissal(*this, [this](War3Map::UiKit::ToolPopupDismissal::Reason) { close(); });
 
     // 参数、声明类型与解析后的期望类型；局部变量按所在触发器收集。
     QString label;
@@ -555,6 +559,10 @@ void TriggerValuePanel::Choose(const TriggerValueChoice& choice) {
 bool TriggerValuePanel::eventFilter(QObject* watched, QEvent* event) {
     if (event->type() == QEvent::KeyPress) {
         auto* key = static_cast<QKeyEvent*>(event);
+        // 输入法组字时的回车、上下键归输入法，不使用选中项也不移动列表。
+        const bool navigation = key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter ||
+            key->key() == Qt::Key_Down || key->key() == Qt::Key_Up;
+        if (navigation && dismissal_->Composing()) return QFrame::eventFilter(watched, event);
         if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
             if (watched == literalText_ && !(key->modifiers() & Qt::ControlModifier))
                 return QFrame::eventFilter(watched, event);
@@ -595,7 +603,5 @@ void TriggerValuePanel::ShowAt(const QRect& anchor) {
         origin.setX(std::clamp(origin.x(), available.left(), std::max(available.left(), available.right() - width())));
     }
     move(origin);
-    show();
-    if (literalText_ && page_ == Page::Value) literalText_->setFocus();
-    else search_->setFocus();
+    dismissal_->Open(literalText_ && page_ == Page::Value ? static_cast<QWidget*>(literalText_) : search_);
 }

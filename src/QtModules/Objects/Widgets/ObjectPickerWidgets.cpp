@@ -1,6 +1,7 @@
 #include "Widgets/ObjectCatalogWidgets.h"
 #include "Widgets/ObjectCatalogDetail.h"
 #include "Widgets/RoundedPopups.h"
+#include "Widgets/ToolPopupDismissal.h"
 
 namespace War3Map::QtApp {
 using namespace CatalogDetail;
@@ -8,9 +9,13 @@ using namespace CatalogDetail;
 // 非模态对象选择弹层与有序对象列表。
 
 ObjectPickerPopup::ObjectPickerPopup(IconProvider* icons, QWidget* parent)
-    : QFrame(parent, Qt::Tool | Qt::FramelessWindowHint) {
+    : QFrame(parent, War3Map::UiKit::kToolPopupWindowFlags) {
     setObjectName(QStringLiteral("objectPickerPopup"));
     setWindowModality(Qt::NonModal);
+    dismissal_ = new War3Map::UiKit::ToolPopupDismissal(*this, [this](War3Map::UiKit::ToolPopupDismissal::Reason reason) {
+        hide();
+        if (reason == War3Map::UiKit::ToolPopupDismissal::Reason::Escape && anchor_) anchor_->setFocus(Qt::PopupFocusReason);
+    });
     setFrameShape(QFrame::NoFrame);
     setAccessibleName(QStringLiteral("对象选择器"));
     auto* layout = new QVBoxLayout(this);
@@ -69,14 +74,17 @@ void ObjectPickerPopup::OpenAt(QWidget* anchor) {
         return;
     }
     anchor_ = anchor;
+    // 锚点所在窗口移动或缩放时跟随重新定位。
+    if (anchorWindow_ != anchor->window()) {
+        if (anchorWindow_) anchorWindow_->removeEventFilter(this);
+        anchorWindow_ = anchor->window();
+        anchorWindow_->installEventFilter(this);
+    }
     PositionAtAnchor();
-    qApp->installEventFilter(this);
-    show();
+    dismissal_->Open();
     // QSplitter 在子目录真正显示后才刷新隐藏栏/筛选行的尺寸约束。
     // 再按当前布局定位，避免首次 show 仍沿用显示前缓存的窗口最小宽度。
     PositionAtAnchor();
-    raise();
-    activateWindow();
     catalog_->FocusSearch();
 }
 
@@ -113,45 +121,12 @@ void ObjectPickerPopup::PositionAtAnchor() {
 }
 
 bool ObjectPickerPopup::eventFilter(QObject* watched, QEvent* event) {
-    if (!isVisible()) {
-        return QFrame::eventFilter(watched, event);
-    }
-    if (event->type() == QEvent::MouseButtonPress) {
-        const auto* mouse = static_cast<QMouseEvent*>(event);
-        auto* widget = qobject_cast<QWidget*>(watched);
-        auto* activePopup = QApplication::activePopupWidget();
-        const bool ownNativePopup = activePopup && isAncestorOf(activePopup) &&
-            activePopup->frameGeometry().contains(mouse->globalPosition().toPoint());
-        // 下拉框是独立原生 popup；允许其接受选择，不把它误判为外点。
-        const bool childPopup = ownNativePopup || (widget && (isAncestorOf(widget) || widget == this));
-        if (!childPopup && !frameGeometry().contains(mouse->globalPosition().toPoint())) {
-            hide();
-            return false;
-        }
-    }
-    if (event->type() == QEvent::KeyPress) {
-        const auto* key = static_cast<QKeyEvent*>(event);
-        if (key->key() == Qt::Key_Escape) {
-            hide();
-            if (anchor_) {
-                anchor_->setFocus(Qt::PopupFocusReason);
-            }
-            return true;
-        }
-    }
-    if (event->type() == QEvent::ApplicationDeactivate) {
-        hide();
-    }
-    if (anchor_ && watched == anchor_->window() &&
+    // 点外部、Esc、应用失活由 ToolPopupDismissal 收起；这里只跟随锚点窗口。
+    if (isVisible() && anchor_ && watched == anchorWindow_ &&
         (event->type() == QEvent::Move || event->type() == QEvent::Resize)) {
         PositionAtAnchor();
     }
     return QFrame::eventFilter(watched, event);
-}
-
-void ObjectPickerPopup::hideEvent(QHideEvent* event) {
-    qApp->removeEventFilter(this);
-    QFrame::hideEvent(event);
 }
 
 OrderedObjectListWidget::OrderedObjectListWidget(IconProvider* icons, QWidget* parent)

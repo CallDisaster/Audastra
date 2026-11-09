@@ -24,6 +24,8 @@ class QPushButton;
 class QTabBar;
 class QIcon;
 
+namespace War3Map::UiKit { class ToolPopupDismissal; }
+
 // 取值面板的选择结果。valueKind：0 预设，1 变量，2 函数，3 直接值。
 struct TriggerValueChoice {
     std::int32_t valueKind = 3;
@@ -45,7 +47,8 @@ struct TriggerValueObject {
 // 取值面板（对应原型 SharedValuePicker）：点击语句中的参数后贴在参数下方的非模态浮层。
 // 期望类型由类型系统解析（YDWE 的 Null / typename / objecttype、原版 SetVariable），各页始终可用：
 //   预设 / 变量（全局变量 + YDWE 局部变量 loc_ / loop_）/ 函数（含 AnyReturnType）/ 值或物体。
-// 当前值独立显示于顶部；函数参数可以从该区编辑，也可直接换成其他来源。Enter 使用，Esc 关闭。
+// 当前值独立显示于顶部；函数参数可以从该区编辑，也可直接换成其他来源。Enter 使用，Esc 或点外部关闭。
+// 窗口是可激活的工具窗口而不是 Qt::Popup，搜索框和文本框才能用输入法输入中文。
 class TriggerValuePanel final : public QFrame {
 public:
     using ObjectLister = std::function<std::vector<TriggerValueObject>(const std::string& uiType)>;
@@ -118,6 +121,7 @@ private:
     QLabel* note_ = nullptr;
     QPushButton* create_ = nullptr;
     QPushButton* editCallButton_ = nullptr;
+    War3Map::UiKit::ToolPopupDismissal* dismissal_ = nullptr;
     std::function<void(const TriggerValueChoice&)> chosen_;
     std::function<void(War3Map::StableId)> editCall_;
     // 面板底部“新建变量并使用”按钮当前的动作。

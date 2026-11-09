@@ -41,6 +41,7 @@
 #include <QDir>
 #include <QFile>
 #include <QHeaderView>
+#include <QInputMethodEvent>
 #include <QInputDialog>
 #include <QJsonArray>
 #include <QKeyEvent>
@@ -53,6 +54,7 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPersistentModelIndex>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -297,8 +299,8 @@ std::vector<std::byte> StructureWct() {
 }
 
 
-// 触发器 Values：SetValue(变量 Hero, 预设 PresetTen)；全局变量 Hero(unit)、Count(integer)。
-std::vector<std::byte> ValueWtg() {
+// 触发器 Values：actions 条 SetValue(变量 Hero, 预设 PresetTen)；全局变量 Hero(unit)、Count(integer)。
+std::vector<std::byte> ValueWtg(int actions = 1) {
     Bytes w;
     for (const char c : std::string_view("WTG!")) w.data.push_back(static_cast<std::byte>(c));
     w.I32(7);
@@ -310,11 +312,13 @@ std::vector<std::byte> ValueWtg() {
     w.Text("Count"); w.Text("integer"); w.I32(1); w.I32(0); w.I32(1); w.I32(0); w.Text("");
     w.I32(1);
     w.Text("Values"); w.Text(""); w.I32(0); w.I32(1); w.I32(0); w.I32(0); w.I32(0); w.I32(1);
-    w.I32(1);
-    w.I32(2); w.Text("SetValue"); w.I32(1);
-    w.I32(1); w.Text("Hero"); w.I32(0); w.I32(0);
-    w.I32(0); w.Text("PresetTen"); w.I32(0); w.I32(0);
-    w.I32(0);
+    w.I32(actions);
+    for (int action = 0; action < actions; ++action) {
+        w.I32(2); w.Text("SetValue"); w.I32(1);
+        w.I32(1); w.Text("Hero"); w.I32(0); w.I32(0);
+        w.I32(0); w.Text("PresetTen"); w.I32(0); w.I32(0);
+        w.I32(0);
+    }
     return std::move(w.data);
 }
 
@@ -363,6 +367,7 @@ private slots:
     void StatementsMoveAndFillEmptyBranches();
     void CallbackActionShowsActionBranch();
     void ValuePanelEditsParameters();
+    void ValuePanelTypesChineseAndKeepsLogicPosition();
     void BlueprintLaysOutAndSyncs();
     void CommentEntriesAndConditionNode();
     void UneditedTriggerCommentPreservesOriginalNewlines();
@@ -2058,6 +2063,105 @@ void TriggerModuleTests::StatementsMoveAndFillEmptyBranches() {
     module.MoveSelectedEca(1);
     QCOMPARE(roots(), (std::vector<std::string>{"IfThenElseMultiple", "PlainAction"}));
     QCOMPARE(project.triggerUndoStack_->index(), 1); // 到末尾的第二次下移没有入栈
+}
+
+void TriggerModuleTests::ValuePanelTypesChineseAndKeepsLogicPosition() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "define.txt",
+        "[TriggerParams]\nPresetTen=0,integer,10,十\nPresetTwenty=0,integer,20,二十\n");
+    WriteUtf8(ui / "ui" / "base" / "action.txt",
+        "[SetValue]\ntitle=\"Set\"\ndescription=\"设置 ${单位} 的数值为 ${数值}\"\n"
+        "[[.args]]\ntype=unit\n[[.args]]\ntype=integer\n");
+    WriteUtf8(ui / "ui" / "base" / "call.txt",
+        "[UnitOf]\ntitle=\"编号单位\"\ndescription=\"编号 ${编号} 的单位\"\nreturns=unit\n[[.args]]\ntype=integer\n");
+    auto catalog = Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    auto parsed = Trigger::WtgWctCodec{}.Parse(ValueWtg(60), StructureWct(), *catalog.value);
+    QVERIFY2(parsed.Succeeded(), parsed.diagnostics.empty() ? "" : parsed.diagnostics.front().message.c_str());
+    // 最后一条语句的单位参数挂一个带参数的函数；改这个函数自己的参数时，逻辑树里没有它的行。
+    auto& parsedDocument = *parsed.value;
+    const auto& lastRow = parsedDocument.ecaNodes[parsedDocument.triggers.front().ecas.back()];
+    const StableId last = lastRow.id;
+    const auto appended = Trigger::TriggerDocumentEditor::AppendArgumentCall(parsedDocument, *catalog.value,
+        parsedDocument.argumentNodes[lastRow.arguments[0]].id, "unit", "UnitOf");
+    QVERIFY(appended.Succeeded() && appended.value);
+    const StableId nested = appended.value->rootEcaId;
+
+    QtProject::EditorProject project;
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value));
+    const auto argument = [&project](StableId eca, std::size_t position) -> std::string {
+        const auto& document = *project.triggerDocument_;
+        for (const auto& node : document.ecaNodes) {
+            if (node.id == eca && position < node.arguments.size()) return document.argumentNodes[node.arguments[position]].value.text;
+        }
+        return "<missing>";
+    };
+    Modules::TriggerModule module(project);
+    QWidget* page = module.Widget();
+    page->resize(1200, 420);
+    page->show();
+    QVERIFY(module.Reveal({"triggers", "trigger", "Values", {}}));
+    auto* view = page->findChild<QTreeView*>(QStringLiteral("triggerLogicTree"));
+    auto* model = dynamic_cast<TriggerEcaModel*>(view->model());
+    QApplication::processEvents();
+    view->setCurrentIndex(model->IndexForStableId(last));
+    view->scrollToBottom();
+    QApplication::processEvents();
+    const int bottom = view->verticalScrollBar()->value();
+    QVERIFY(bottom > 0);
+    const auto currentRow = [view] { return view->currentIndex().data(TriggerEcaModel::StableIdRole).toULongLong(); };
+
+    // 取值面板是会激活的工具窗口：Windows 输入法只把组字送到活动窗口，Qt::Popup 打不了中文。
+    module.OpenValuePanel(last, 1, QRect(page->mapToGlobal(QPoint(40, 300)), QSize(30, 16)));
+    QPointer<TriggerValuePanel> panel = module.ValuePanel();
+    QVERIFY(panel);
+    QCOMPARE(panel->windowType(), Qt::Tool);
+    auto* search = panel->findChild<QLineEdit*>(QStringLiteral("valuePanelSearch"));
+    auto* list = panel->findChild<QListWidget*>(QStringLiteral("valuePanelList"));
+    QTRY_VERIFY(QApplication::activeWindow() == panel.data() && search->hasFocus());
+    QVERIFY(search->testAttribute(Qt::WA_InputMethodEnabled));
+    // 组字中的回车、Esc 归输入法：不使用选中项，面板不关。
+    QInputMethodEvent preedit(QStringLiteral("ershi"), {});
+    QApplication::sendEvent(search, &preedit);
+    QTest::keyClick(search, Qt::Key_Return);
+    QTest::keyClick(search, Qt::Key_Escape);
+    QVERIFY(panel && panel->isVisible());
+    QCOMPARE(project.triggerUndoStack_->index(), 0);
+    QInputMethodEvent commit;
+    commit.setCommitString(QStringLiteral("二十"));
+    QApplication::sendEvent(search, &commit);
+    QCOMPARE(search->text(), QStringLiteral("二十"));
+    QTRY_COMPARE(list->count(), 1);
+    QTest::keyClick(search, Qt::Key_Return);
+    QTRY_COMPARE(argument(last, 1), std::string("PresetTwenty"));
+    QApplication::processEvents();
+    // 应用后逻辑树不动：仍在原语句、原滚动位置。
+    QCOMPARE(currentRow(), last);
+    QCOMPARE(view->verticalScrollBar()->value(), bottom);
+
+    // 改嵌套函数自己的参数：刷新时找不到它的行，也要留在原语句上，不跳回第一行。
+    module.OpenValuePanel(nested, 0, QRect(page->mapToGlobal(QPoint(40, 300)), QSize(30, 16)));
+    panel = module.ValuePanel();
+    QVERIFY(panel);
+    auto* tabs = panel->findChild<QTabBar*>(QStringLiteral("valuePanelTabs"));
+    search = panel->findChild<QLineEdit*>(QStringLiteral("valuePanelSearch"));
+    list = panel->findChild<QListWidget*>(QStringLiteral("valuePanelList"));
+    for (int tab = 0; tab < tabs->count(); ++tab) {
+        if (tabs->tabText(tab) == QStringLiteral("值")) tabs->setCurrentIndex(tab);
+    }
+    QCOMPARE(tabs->tabText(tabs->currentIndex()), QStringLiteral("值"));
+    search->setText(QStringLiteral("7"));
+    QTRY_COMPARE(list->count(), 1);
+    panel->Apply();
+    QTRY_COMPARE(argument(nested, 0), std::string("7"));
+    QApplication::processEvents();
+    QCOMPARE(currentRow(), last);
+    QCOMPARE(view->verticalScrollBar()->value(), bottom);
 }
 
 void TriggerModuleTests::ValuePanelEditsParameters() {

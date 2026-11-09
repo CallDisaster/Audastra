@@ -11,6 +11,7 @@
 #include <QStandardItemModel>
 #include <QTreeView>
 #include "Widgets/RoundedPopups.h"
+#include "Widgets/ToolPopupDismissal.h"
 
 #include <QApplication>
 #include <QFileInfo>
@@ -27,6 +28,7 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QInputMethodEvent>
+#include <QLineEdit>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QRegularExpression>
@@ -92,6 +94,7 @@ private slots:
     void bundledFontsTakePriority();
     void commandPaletteKeyboardAndDisabledRows();
     void commandPaletteProviderBoundsAndFailures();
+    void toolPopupAcceptsInputMethodAndDismissesLikePopup();
     void changesPanelGroupsAndCallbacks();
     void changesPanelBoundsAndHostActions();
     void codeViewLoadsLargeScriptsAsync();
@@ -299,6 +302,56 @@ void UiKitTests::commandPaletteKeyboardAndDisabledRows() {
     search->clear(); commit.setCommitString(QStringLiteral("暗影")); QApplication::sendEvent(search, &commit);
     QCOMPARE(received, QStringLiteral("暗影"));
     parent.activateWindow(); origin.setFocus(); QTRY_VERIFY(!palette.isVisible()); QTRY_VERIFY(origin.hasFocus());
+}
+
+void UiKitTests::toolPopupAcceptsInputMethodAndDismissesLikePopup() {
+    QWidget host;
+    auto* hostLayout = new QVBoxLayout(&host);
+    auto* outside = new QPushButton(QStringLiteral("外部"), &host);
+    hostLayout->addWidget(outside);
+    host.setGeometry(20, 40, 200, 120);
+    host.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&host));
+    QFrame popup(&host, kToolPopupWindowFlags);
+    auto* layout = new QVBoxLayout(&popup);
+    auto* edit = new QLineEdit(&popup);
+    auto* inside = new QPushButton(QStringLiteral("内部"), &popup);
+    layout->addWidget(edit);
+    layout->addWidget(inside);
+    popup.setGeometry(320, 40, 200, 120);
+    QList<ToolPopupDismissal::Reason> reasons;
+    auto* dismissal = new ToolPopupDismissal(popup, [&](ToolPopupDismissal::Reason reason) {
+        reasons.push_back(reason);
+        popup.hide();
+    });
+    dismissal->Open(edit);
+    // 工具窗口会成为活动窗口，输入法组字才能送进浮层的输入框。
+    QCOMPARE(popup.windowType(), Qt::Tool);
+    QTRY_VERIFY(QApplication::activeWindow() == &popup && edit->hasFocus());
+    QInputMethodEvent preedit(QStringLiteral("zhong"), {});
+    QApplication::sendEvent(edit, &preedit);
+    QVERIFY(dismissal->Composing());
+    QTest::keyClick(edit, Qt::Key_Escape);
+    QVERIFY(popup.isVisible());
+    QInputMethodEvent commit;
+    commit.setCommitString(QStringLiteral("中文"));
+    QApplication::sendEvent(edit, &commit);
+    QVERIFY(!dismissal->Composing());
+    QCOMPARE(edit->text(), QStringLiteral("中文"));
+    QTest::mouseClick(inside, Qt::LeftButton);
+    QVERIFY(popup.isVisible());
+    QVERIFY(reasons.isEmpty());
+    // 点外部收起，被点的控件照常收到这次点击。
+    QSignalSpy clicks(outside, &QPushButton::clicked);
+    QTest::mouseClick(outside, Qt::LeftButton);
+    QVERIFY(!popup.isVisible());
+    QCOMPARE(clicks.count(), 1);
+    QCOMPARE(reasons, QList<ToolPopupDismissal::Reason>{ToolPopupDismissal::Reason::OutsideClick});
+    dismissal->Open(edit);
+    QTRY_VERIFY(edit->hasFocus());
+    QTest::keyClick(edit, Qt::Key_Escape);
+    QVERIFY(!popup.isVisible());
+    QCOMPARE(reasons.back(), ToolPopupDismissal::Reason::Escape);
 }
 
 void UiKitTests::commandPaletteProviderBoundsAndFailures() {

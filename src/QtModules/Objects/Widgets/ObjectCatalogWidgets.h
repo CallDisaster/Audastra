@@ -9,6 +9,8 @@
 
 #include <optional>
 
+namespace War3Map::UiKit { class ToolPopupDismissal; }
+
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -107,13 +109,14 @@ signals:
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
-    void hideEvent(QHideEvent* event) override;
 
 private:
     void PositionAtAnchor();
     ObjectCatalogWidget* catalog_ = nullptr;
     QLabel* title_ = nullptr;
     QPointer<QWidget> anchor_;
+    QPointer<QWidget> anchorWindow_;
+    War3Map::UiKit::ToolPopupDismissal* dismissal_ = nullptr;
 };
 
 // 固定对象有序列表；不引入运行时变量/函数，也不直接写物编文档。

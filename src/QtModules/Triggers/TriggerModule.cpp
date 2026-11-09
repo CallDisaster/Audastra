@@ -578,19 +578,35 @@ void TriggerModule::RefreshEditor(StableId preferredEcaId) {
     UpdateSummary();
     RefreshCodeFromDocument();
     if (showingGlobalCode_) return;
+    // 重建模型会清空逻辑树的滚动和选中；同一触发器内改参数后保持原位置，不跳回第一行。
+    const StableId shownTrigger = displayedTrigger_;
+    const QVariant shownRow = ecaView_->currentIndex().data(TriggerEcaModel::StableIdRole);
+    const int shownScroll = ecaView_->verticalScrollBar()->value();
+    const int shownHorizontal = ecaView_->horizontalScrollBar()->value();
     if (!HasPendingCodeDraft()) ShowSelectedTrigger();
     const auto* trigger = CurrentTrigger();
+    const bool sameTrigger = trigger != nullptr && shownTrigger != 0 && trigger->id == shownTrigger;
     ecaModel_->SetDocument(project_.triggerDocument_.get(), project_.uiCatalog_.get());
     ecaModel_->SetTrigger(trigger == nullptr ? 0 : trigger->id);
     PopulateProperties(trigger);
     ecaView_->expandAll(); // 全部展开：三段分组头 + 各级嵌套函数体（If/Loop/ForEach）
     QModelIndex selection = preferredEcaId == 0 ? QModelIndex{} : ecaModel_->IndexForStableId(preferredEcaId);
+    // 嵌套函数调用不是树中的行（例如在参数对话框里改了函数自己的参数）：留在原来选中的语句上。
+    if (!selection.isValid() && sameTrigger && shownRow.isValid()) {
+        selection = ecaModel_->IndexForStableId(shownRow.toULongLong());
+    }
     if (!selection.isValid() && ecaModel_->rowCount() > 0) {
         selection = ecaModel_->index(0, 0);
     }
     if (selection.isValid()) {
         ecaView_->setCurrentIndex(selection);
-        ecaView_->scrollTo(selection, QAbstractItemView::PositionAtCenter);
+        if (sameTrigger) {
+            ecaView_->verticalScrollBar()->setValue(shownScroll);
+            ecaView_->horizontalScrollBar()->setValue(shownHorizontal);
+            ecaView_->scrollTo(selection, QAbstractItemView::EnsureVisible);
+        } else {
+            ecaView_->scrollTo(selection, QAbstractItemView::PositionAtCenter);
+        }
     }
     const QPointer<TriggerModule> self(this);
     const QPointer<QtProject::EditorProject> project(&project_);

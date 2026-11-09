@@ -37,6 +37,7 @@ qt_add_library(War3MapQtUiKit STATIC
     Widgets/Motion.h
     Widgets/PopoverSurface.cpp
     Widgets/PopoverSurface.h
+    Widgets/ToolPopupDismissal.cpp Widgets/ToolPopupDismissal.h
     Widgets/RoundedPopups.cpp
     Widgets/RoundedPopups.h
     Widgets/SearchField.cpp
