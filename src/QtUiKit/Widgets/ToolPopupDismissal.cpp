@@ -6,6 +6,7 @@
 #include <QMouseEvent>
 #include <QTimer>
 #include <QWidget>
+#include <QWindow>
 
 namespace War3Map::UiKit {
 
@@ -59,7 +60,18 @@ bool ToolPopupDismissal::eventFilter(QObject* watched, QEvent* event) {
     const auto type = event->type();
     if (watched == window_) {
         if (type == QEvent::Show) StartWatching();
-        else if (type == QEvent::Hide) StopWatching();
+        else if (type == QEvent::Hide) {
+            // 同一事件会经过应用级和窗口级两次过滤，只处理第一次。
+            const bool wasWatching = watching_;
+            StopWatching();
+            // 收起的是焦点窗口（Esc、选中后关闭）时把激活交还所属窗口；点到别的窗口时那个窗口已先激活，不抢。
+            // 按底层焦点窗口判断：隐藏时 Qt 可能已先清空 activeWindow，但焦点窗口仍是浮层。
+            const QWindow* handle = window_->windowHandle();
+            const bool focused = QApplication::activeWindow() == window_ || (handle && QGuiApplication::focusWindow() == handle);
+            if (wasWatching && focused && QApplication::applicationState() == Qt::ApplicationActive) {
+                if (QWidget* owner = window_->parentWidget()) owner->window()->activateWindow();
+            }
+        }
     }
     if (!watching_ || !window_->isVisible()) return false;
     switch (type) {
