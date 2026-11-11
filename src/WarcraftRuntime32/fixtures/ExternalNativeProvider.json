@@ -1,6 +1,7 @@
 {
   "schema": 1,
   "id": "audastra_fixture",
+  "abi": "audastra-native-provider-v1",
   "modules": [
     {
       "file": "audastra-external-native-fixture.dll",

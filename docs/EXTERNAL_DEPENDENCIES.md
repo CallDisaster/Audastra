@@ -18,6 +18,7 @@ war3-map-cli map-test demo.w3x "D:/Games/Warcraft" "D:/Audastra/bin" --external-
 {
   "schema": 1,
   "id": "example_provider",
+  "abi": "audastra-native-provider-v1",
   "modules": [
     {"file": "example-support.dll", "entry": "", "natives": {}},
     {

@@ -764,6 +764,8 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         plan.value->luaEntryModules = entries;
         plan.diagnostics.insert(plan.diagnostics.end(), notes.begin(), notes.end());
         if (!selected.runtimeRoot.empty()) {
+            if (required) plan.diagnostics.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime",
+                "MAP_TEST_LEGACY_NATIVE_UNVERIFIED", "旧 YDWE 路径按六 DLL 兼容布局启动，无法逐接口核验其实际注册。"});
             std::size_t index = 0;
             for (const auto& [name, initialize] : {std::pair{"ydbase.dll", false}, std::pair{"lua53.dll", false},
                     std::pair{"ydwar3.dll", false}, std::pair{"yd_loader.dll", false},

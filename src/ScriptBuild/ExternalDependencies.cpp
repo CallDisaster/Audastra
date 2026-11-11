@@ -108,7 +108,8 @@ ExternalDependencyProvider InspectProvider(const fs::path& manifest, std::size_t
     provider.manifest = manifest;
     try {
         const auto descriptor = ReadDescriptor(manifest);
-        if (!ExactKeys(descriptor, {"schema", "id", "modules"}) || descriptor.at("schema") != 1)
+        if (!ExactKeys(descriptor, {"schema", "id", "abi", "modules"}) || descriptor.at("schema") != 1
+            || descriptor.at("abi") != "audastra-native-provider-v1")
             throw std::runtime_error("schema");
         provider.id = descriptor.at("id").get<std::string>();
         if (!Native::NativeIdentifier(provider.id)) throw std::runtime_error("id");
@@ -171,7 +172,7 @@ ExternalDependencyProvider InspectProvider(const fs::path& manifest, std::size_t
         provider.usable = provider.diagnostics.empty();
     } catch (const std::exception&) {
         Problem(provider, "EXTERNAL_DEPENDENCY_MANIFEST", "提供者声明无效：" + IO::PathUtf8(manifest) +
-            "。请核对 schema、模块顺序、文件名、入口和 native 签名。");
+            "。请核对 schema、abi、模块顺序、文件名、入口和 native 签名。");
     }
     return provider;
 }

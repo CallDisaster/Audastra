@@ -191,11 +191,11 @@ void ExternalDependencyCatalog() {
     auto status = Services::QueryExternalDependencies(directory);
     Success(status, "query an absent external dependency directory without creating it");
     Require(!status.value->exists && !std::filesystem::exists(directory), "status is read-only");
-    Success(Services::EnsureExternalDependenciesDirectory(directory), "create empty external dependency directory on request");
+    Require(Services::EnsureExternalDependenciesDirectory(directory).Succeeded(), "create empty external dependency directory on request");
     const auto provider = directory / "original";
     Write(directory / "unlisted.dll", Pe(true, true));
     Write(provider / "original.dll", Pe(true, true));
-    Write(provider / "provider.json", Bytes(R"json({"schema":1,"id":"original","modules":[
+    Write(provider / "provider.json", Bytes(R"json({"schema":1,"id":"original","abi":"audastra-native-provider-v1","modules":[
         {"file":"original.dll","entry":"Initialize","natives":{"AudastraFixtureAdd":"(I)I"}}]})json"));
     status = Services::QueryExternalDependencies(directory);
     Success(status, "read external dependency status");
@@ -916,9 +916,75 @@ void OptionalRealNativeMapPlan() {
         << "; source SHA256=" << *originalSha.value << "; selected game=" << IO::PathUtf8(game)
         << "; no launch, DLL execution, GPU, registry or game-directory writes\n";
 }
+void WriteProviderGameFixtures(const std::filesystem::path& seed, std::string_view expectedSha,
+    const std::filesystem::path& directory) {
+    const auto sha = Sha256File(seed);
+    Success(sha, "verify owned seed");
+    Require(*sha.value == expectedSha, "seed identity differs");
+    const auto listed = Mpq::MpqArchive::OpenReadOnly(seed);
+    Success(listed, "open owned seed archive");
+    const auto entries = listed.value->ListFilesStrict();
+    Success(entries, "list only seed names");
+    for (const auto& entry : *entries.value) {
+        auto name = entry.name;
+        for (auto& ch : name) if (ch >= 'A' && ch <= 'Z') ch += 'a' - 'A';
+        Require(!name.ends_with(".ai") && !name.ends_with(".dll"), "seed has executable members");
+    }
+    const auto original = MapArchiveSession::Open(seed);
+    Success(original, "open owned fixture seed");
+    const auto source = original.value->ReadMember("war3map.j");
+    Success(source, "read seed entry script");
+    const std::string base(reinterpret_cast<const char*>(source.value->data()), source.value->size());
+    Require(std::filesystem::create_directory(directory), "use fresh fixture output directory");
+    const auto make = [&](const char* file, std::string_view declarations, std::string_view body,
+        std::string_view lua = {}) {
+        std::string script = base;
+        constexpr std::string_view main = "function main takes nothing returns nothing";
+        const auto mainStart = script.find(main);
+        Require(mainStart != std::string::npos, "seed main entry missing");
+        const auto mainEnd = script.find("endfunction", mainStart + main.size());
+        Require(mainEnd != std::string::npos, "seed main end missing");
+        script.insert(mainEnd, "    call TimerStart(CreateTimer(), 3., false, function AudastraFixtureDisplay)\r\n");
+        script.insert(mainStart, "function AudastraFixtureDisplay takes nothing returns nothing\r\n" +
+            std::string(body) + "\r\nendfunction\r\n\r\n");
+        if (!declarations.empty()) {
+            const auto globalEnd = script.find("endglobals");
+            Require(globalEnd != std::string::npos && globalEnd < mainStart, "seed globals end missing");
+            script.insert(globalEnd + std::string_view("endglobals").size(), "\r\n" + std::string(declarations));
+        }
+        std::vector<MemberReplacement> replacements{{"war3map.j", Bytes(script)}};
+        if (!lua.empty()) replacements.push_back({"script\\provider.lua", Bytes(lua)});
+        const auto result = original.value->SaveCandidate(directory / file, replacements);
+        Success(result, "save test fixture without changing seed");
+        std::cout << file << '\t' << result.value->sha256 << '\n';
+    };
+    make("provider-jass.w3x", "native AudastraFixtureAdd takes integer value returns integer\r\n"
+        "native AudastraFixturePlayer takes player value returns player\r\n",
+        "    call DisplayTimedTextToPlayer(Player(0), 0., 0., 90., \"R54 JASS RESULT \" + "
+        "I2S(AudastraFixtureAdd(35)) + \" / PLAYER \" + I2S(GetPlayerId(AudastraFixturePlayer(Player(0)))))");
+    make("provider-lua.w3x", {}, R"JASS(    call Cheat("exec-lua: \"provider\""))JASS", R"LUA(
+local ext = require("jass.japi")
+local jass = require("jass.common")
+local value = ext.AudastraFixtureAdd(35)
+local player = ext.AudastraFixturePlayer(jass.Player(0))
+local id = jass.GetPlayerId(player)
+local ok, error = pcall(ext.AudastraFixtureCallback, function() end)
+assert(not ok and tostring(error):find("code", 1, true))
+assert(value == 42 and id == 0)
+local proof = "R54 LUA RESULT " .. value .. " / PLAYER " .. id .. " / CALLBACK REFUSED"
+jass.DisplayTimedTextToPlayer(jass.Player(0), 0, 0, 90, proof)
+print(proof)
+)LUA");
+}
 } // namespace
-int main() {
+int wmain(int argc, wchar_t** argv) {
     try {
+        if (argc == 5 && std::wstring_view(argv[1]) == L"--make-provider-fixtures") {
+            const std::wstring_view expected(argv[3]);
+            WriteProviderGameFixtures(argv[2], std::string(expected.begin(), expected.end()), argv[4]);
+            return 0;
+        }
+        Require(argc == 1, "unexpected runtime test arguments");
         Services::MapTestArtifact owned;
         owned.enableLuaHotReload = true;
         FailureCode(Script::BuildIndependentMapTestLaunchPlan(owned), "MAP_TEST_LUA_RELOAD_RUNTIME", "reload needs explicit owned runtime before inspecting map");
