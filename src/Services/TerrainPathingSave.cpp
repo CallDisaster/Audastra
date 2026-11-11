@@ -709,7 +709,7 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
     std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
     const TerrainReplayLimits& limits, const std::string& sha, const MemberReader& reader,
-    const MapData::TerrainStrokeJournal* journal, Accounting* accounting) {
+    const MapData::TerrainStrokeJournal* journal, Accounting* accounting, bool atHistoryOrigin) {
     using Output = Result<TerrainReplayCandidate>;
     const auto mismatch = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_SOURCE_MISMATCH", "原始W3E/WPM、地图成员或已证缺失项与实际来源不一致。"); };
     const auto budgetFailure = [] { return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_BUDGET", "实际来源、会话基线或累计重放预算超限。"); };
@@ -732,10 +732,15 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
         || !limits.maximumWork || limits.maximumWork > hard.maximumWork
         || !limits.maximumCandidateBytes || limits.maximumCandidateBytes > hard.maximumCandidateBytes)
         return Output::Failure("Terrain.Replay", "TERRAIN_REPLAY_LIMITS", "重放预算只能收紧且不能为零。");
-    if (strokes.empty() || strokes.size() > 128)
+    if ((strokes.empty() && !atHistoryOrigin) || strokes.size() > 128)
         return Output::Failure("Terrain.Replay", "TERRAIN_PATCH_STROKE_BUDGET", "地形重放需要1到128笔原始命令。");
-    const auto aligned = ValidateJournalReplayAlignment(strokes, journal);
-    if (!aligned.Succeeded()) return {{}, aligned.diagnostics};
+    if (atHistoryOrigin) {
+        if (!journal || !accounting || !strokes.empty() || !journal->strokes.empty())
+            return Output::Failure("Terrain.Replay", "TERRAIN_HISTORY_ORIGIN", "起始保存位置必须有已验证的来源记录且没有已应用笔划。");
+    } else {
+        const auto aligned = ValidateJournalReplayAlignment(strokes, journal);
+        if (!aligned.Succeeded()) return {{}, aligned.diagnostics};
+    }
     std::size_t points = 0;
     std::size_t inputIndex = 0;
     for (const auto& stroke : strokes) {
@@ -853,13 +858,17 @@ Result<TerrainReplayCandidate> CreateReplay(const ResourceSource& source, const 
     Accounting localAccounting;
     auto& budget = accounting ? *accounting : localAccounting;
     budget.limits = remainingLimits;
-    auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, budget, sha, journal, &receipts, &resizeOwners, &sessionOwners);
-    if (!replayed.Succeeded() || !replayed.value) return {{}, replayed.diagnostics};
+    std::vector<MapData::TerrainPathingResources> owners;
+    if (!atHistoryOrigin) {
+        auto replayed = Replay(source, *candidate, *baseline, pathing.size(), strokes, gameRoot, budget, sha, journal, &receipts, &resizeOwners, &sessionOwners);
+        if (!replayed.Succeeded() || !replayed.value) return {{}, replayed.diagnostics};
+        owners = std::move(*replayed.value);
+    }
     auto finalSource = reader(names, sourceLimits);
     if (!finalSource.Succeeded() || !finalSource.value) return sourceReadFailure(std::move(finalSource.diagnostics));
     if (!SourceMatches(original, terrain, pathing, *finalSource.value)) return mismatch();
     const auto currentIndex = receipts.size();
-    return Output::Success({std::move(candidate), std::move(*replayed.value), std::move(receipts), currentIndex, 0,
+    return Output::Success({std::move(candidate), std::move(owners), std::move(receipts), currentIndex, 0,
         std::move(resizeOwners), std::move(sessionOwners)});
 }
 

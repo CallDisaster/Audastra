@@ -526,7 +526,7 @@ private:
         std::span<const std::byte> after) const;
     [[nodiscard]] Status VerifyTerrainSpecialDoodadProvenance(
         const DoodadPlacements& before, const DoodadPlacements& after) const;
-    [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers, bool retainOrdinary = false) const;
+    [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournalInternal(bool baselineLayers) const;
     [[nodiscard]] Status PrepareUnits(const UnitPlacements& value, std::vector<MemberChange>& changes,
         bool allowLinkedSettings = true, Command* linkedOwner = nullptr) const;
     void InitializeTerrainStartLocations(const MapDocument&);

@@ -258,7 +258,7 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
     auto candidate = TerrainReplayDetail::CreateReplay(historicalResources, oldDocument,
         history.baselineMembers[0].bytes, history.baselineMembers[1].bytes,
         std::span(preparation.value->intents).first(savedIndex), gameRoot, remaining, prefix.sourceSha256,
-        historicalReader, &prefix, &accounting);
+        historicalReader, &prefix, &accounting, savedIndex == 0);
     if (!candidate.Succeeded() || !candidate.value) return HistoryFailure(std::move(candidate.diagnostics));
     const auto prefixOwnerCount = candidate.value->waterOwners.size();
     const auto prefixResizeOwnerCount = candidate.value->resizeOwners.size();

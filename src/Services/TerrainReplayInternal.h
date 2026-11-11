@@ -55,6 +55,7 @@ struct DraftPreparation {
     const MapDocument& original, std::span<const std::byte> terrain, std::span<const std::byte> pathing,
     std::span<const MapData::TerrainStrokeIntent> strokes, const std::filesystem::path& gameRoot,
     const TerrainReplayLimits& limits, const std::string& sha, const MemberReader& reader,
-    const MapData::TerrainStrokeJournal* journal = nullptr, Accounting* accounting = nullptr);
+    const MapData::TerrainStrokeJournal* journal = nullptr, Accounting* accounting = nullptr,
+    bool atHistoryOrigin = false);
 
 } // namespace War3Map::Services::TerrainReplayDetail
