@@ -825,7 +825,7 @@ void TriggerValueTests::ExistingTriggersAreListedForTriggerParameters() {
     QVERIFY(FindValue(list, QStringLiteral("NULLTrigger")) >= 0);
     const int init = FindValue(list, QStringLiteral("gg_trg_Init"));
     QVERIFY(init >= 0);
-    QCOMPARE(list->item(init)->text(), QStringLiteral("Init"));
+    QCOMPARE(list->item(init)->text(), QStringLiteral("Init　触发器"));
     const auto chinese = QString::fromStdString(Trigger::TriggerDirectoryEditor::TriggerSymbol(document.triggers.back().name));
     QVERIFY(chinese.startsWith(QStringLiteral("gg_trg_9_0_8_")));
     QVERIFY(FindValue(list, chinese) >= 0);
