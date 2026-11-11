@@ -298,7 +298,7 @@ void NativeFoldJoinsAcrossAnInnerCornerWithUnpaintedLowGround() {
     const auto doodads = *ParseDoodadPlacements(MapDataFixtures::EmptyDoodadsV8Sub11()).value;
     const auto brush = TerrainBrush{.kind = TerrainBrushKind::CornerRamp};
     const auto rules = CornerRules();
-    const TerrainStrokePoint straight{160, -352}, inner{224, -224};
+    const TerrainStrokePoint straight{160, -352}, inner{224, -224}, outer{160, -544};
     const auto candidate = [&](const TerrainGridSnapshot& terrain, const TerrainStrokePoint& at) {
         return PrepareTerrainCornerRampStroke(terrain, rules, brush, std::span(&at, 1), doodads);
     };
@@ -314,6 +314,12 @@ void NativeFoldJoinsAcrossAnInnerCornerWithUnpaintedLowGround() {
     Require(second.Succeeded() && second.value, "stock fold continues across the inner corner");
     Require(*SerializeMapTerrain(second.value->terrain).value == *SerializeMapTerrain(expected).value,
         "stock corner continuation sets the six observed additional R bits");
+    for (unsigned y = 26; y <= 28; ++y) for (unsigned x = 33; x <= 35; ++x)
+        expected.vertices[y * 65 + x].textureAndFlagsRaw |= 0x10;
+    const auto third = candidate(second.value->terrain, outer);
+    Require(third.Succeeded() && third.value, "stock fold continues through the opposite turn at the outer corner");
+    Require(*SerializeMapTerrain(third.value->terrain).value == *SerializeMapTerrain(expected).value,
+        "the opposite turn only sets the nine additional R bits observed in stock");
 
     auto unpaintedHigh = source;
     unpaintedHigh.vertices[29 * 65 + 32].cliffAndLayerRaw = 0xf3;
