@@ -7,6 +7,7 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QStringList>
 #include <QVector>
 
 #include <array>
@@ -117,9 +118,15 @@ private:
     void RefreshObjectDocument(int typeIndex, const QString& preferredRawcode);
     void CommitObjectCreation(int typeIndex, ObjectData::LniObjectDocument next,
         const QString& rawcode, const QString& label);
-    [[nodiscard]] QString SuggestObjectId(int typeIndex, const QString& baseRawcode) const;
+    // occupied 非空时按该候选文档查重（批量复制时已分配的新 ID 不会重复给出）。
+    [[nodiscard]] QString SuggestObjectId(int typeIndex, const QString& baseRawcode,
+        const ObjectData::LniObjectDocument* occupied = nullptr) const;
     bool CreateObjectFromBase(int typeIndex, const QString& baseRawcode, const QString& rawcode, const QString& name);
     bool CloneCustomObject(int typeIndex, const QString& sourceRawcode, const QString& newRawcode);
+    // 多个自定义物体一次复制：自动分配空闲 ID，一条撤销；任一失败整批不改，返回空。
+    QStringList CloneCustomObjects(int typeIndex, const QStringList& sourceRawcodes);
+    // 目录多选中可复制的自定义物体（按目录顺序）。
+    [[nodiscard]] QStringList SelectedCustomObjects() const;
     void DuplicateSelectedCustomObject();
     void EditSelectedStandardObject();
     bool CommitStandardFieldValue(const QString& rawcode, const QString& sourceField, const QString& value);

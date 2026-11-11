@@ -311,12 +311,70 @@ void ImportedCreationChecks() {
     auto remove = Request(*source, MapDataKind::Regions, AuxiliaryEditAction::Delete);
     Need(Code(AuxiliaryEditing::Prepare(source, remove, refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "deletion remains conservative with AI");
 }
+// 批量删除：区域与镜头混合为一个会话命令；重复、空批次、非删除请求、任一引用与准备后新增的引用都整批拒绝。
+// 声音删除检查：T 参数、区域环境音、触发器来源完整性与自定义脚本覆盖。
+void BatchDeletionAndSoundRemoval() {
+    std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}};
+    auto rain = Region("Second", 2); rain.ambientSound = "gg_snd_Rain";
+    RegionsDocument regions{5, {Region("First", 1), rain, Region("Third", 3)}, {}};
+    CamerasDocument cameras{0, {Camera("First"), Camera("Second")}, {}};
+    members.push_back({"war3map.w3r", *regions.Serialize().value});
+    members.push_back({"war3map.w3c", *cameras.Serialize().value});
+    const auto source = std::make_shared<const MapDocument>(MapDocument::FromMembers(members));
+    Need(source->Regions() && source->Cameras(), "batch deletion fixture parses");
+    Trigger::TriggerDocument triggers; AuxiliaryReferenceContext refs{&triggers, true, {}};
+    const std::vector<AuxiliaryEditRequest> requests{Request(*source, MapDataKind::Regions, AuxiliaryEditAction::Delete, 0),
+        Request(*source, MapDataKind::Regions, AuxiliaryEditAction::Delete, 2),
+        Request(*source, MapDataKind::Cameras, AuxiliaryEditAction::Delete, 1)};
+    MapDataEditSession session(*source);
+    auto plan = AuxiliaryEditing::PrepareDeletion(source, requests, refs);
+    Need(plan.Succeeded() && AuxiliaryEditing::ApplyDeletion(session, *plan.value, refs).Succeeded(), "mixed region and camera batch deletion");
+    Need(session.Revision() == 1 && session.Snapshot().Regions()->entries.size() == 1
+        && session.Snapshot().Regions()->entries[0].name == "Second" && session.Snapshot().Cameras()->entries.size() == 1
+        && session.Snapshot().Cameras()->entries[0].name == "First", "batch removes the chosen rows of both tables in one command");
+    Need(session.Undo() && !session.IsDirty() && session.Snapshot().Regions()->entries.size() == 3
+        && session.Snapshot().Cameras()->entries.size() == 2, "one undo restores both tables");
+    Need(session.Redo() && session.Snapshot().Regions()->entries.size() == 1, "one redo removes both again");
+
+    auto duplicate = requests; duplicate.push_back(requests.front());
+    Need(Code(AuxiliaryEditing::PrepareDeletion(source, duplicate, refs), "AUX_DELETE_DUPLICATE"), "duplicate rows rejected");
+    Need(Code(AuxiliaryEditing::PrepareDeletion(source, {}, refs), "AUX_DELETE_EMPTY"), "empty batch rejected");
+    auto update = Request(*source, MapDataKind::Regions, AuxiliaryEditAction::Update); update.record = source->Regions()->entries[0];
+    Need(Code(AuxiliaryEditing::PrepareDeletion(source, {update}, refs), "AUX_DELETE_REQUEST"), "non-delete request rejected");
+    auto stale = requests; stale[1].expectedRowKey += "old";
+    Need(Code(AuxiliaryEditing::PrepareDeletion(source, stale, refs), "AUX_ROW_STALE"), "one stale row rejects the batch");
+    Trigger::ArgumentNode arg; arg.type = 1; arg.value.text = "gg_cam_Second"; triggers.argumentNodes.push_back(arg);
+    Need(Code(AuxiliaryEditing::PrepareDeletion(source, requests, refs), "AUX_REFERENCED"), "one referenced row rejects the batch");
+    triggers.argumentNodes.clear();
+    plan = AuxiliaryEditing::PrepareDeletion(source, requests, refs); Need(plan.Succeeded(), "prepare before reference appears");
+    triggers.argumentNodes.push_back(arg);
+    MapDataEditSession fresh(*source);
+    Need(Code(AuxiliaryEditing::ApplyDeletion(fresh, *plan.value, refs), "AUX_REFERENCED") && !fresh.IsDirty(),
+        "reference added after prepare is caught at publish without partial change");
+    triggers.argumentNodes.clear();
+    auto other = *source->Regions(); other.entries[0].top += 1;
+    Need(fresh.EditRegions(other).Succeeded() && Code(AuxiliaryEditing::ApplyDeletion(fresh, *plan.value, refs), "AUX_PLAN_STALE"),
+        "changed source rejects the prepared batch");
+
+    Need(Code(CheckSoundRemoval(*source, "Rain", refs), "SOUND_REGION_REFERENCE"), "region ambient sound protects its definition");
+    Need(CheckSoundRemoval(*source, "Thunder", refs).Succeeded(), "unreferenced sound may be removed with complete sources");
+    Trigger::ArgumentNode sound; sound.type = 1; sound.value.text = "gg_snd_Thunder"; triggers.argumentNodes.push_back(sound);
+    Need(Code(CheckSoundRemoval(*source, "Thunder", refs), "AUX_REFERENCED"), "trigger parameter protects sound definition");
+    triggers.argumentNodes.clear(); triggers.wct.customCode.text = "call PlaySoundBJ(gg_snd_Thunder)";
+    Need(Code(CheckSoundRemoval(*source, "Thunder", refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "custom script cannot prove no sound references");
+    triggers.wct.customCode.text.clear(); refs.completeTriggerSource = false;
+    Need(Code(CheckSoundRemoval(*source, "Thunder", refs), "AUX_REFERENCE_COVERAGE"), "unloaded triggers cannot authorize sound removal");
+    refs.completeTriggerSource = true; refs.opaqueScriptSources = {"blackbox.ai"};
+    Need(Code(CheckSoundRemoval(*source, "Thunder", refs), "AUX_SCRIPT_REFERENCES_UNKNOWN"), "opaque AI member keeps sound removal conservative");
+}
+
 int main() {
     try {
         CompleteCrudAndRecovery(); IdentityAndUnknownSources(); ReferencesAndCollisions(); InvalidUpdatesAndAtomicPublish();
         ReferenceChecksAtPublishAndUnknownPreservation();
         DirectoryAliasesKeepSourceGuards();
         ImportedCreationChecks();
-        std::cout << "AuxiliaryEditing: 7 scenario groups passed\n"; return 0;
+        BatchDeletionAndSoundRemoval();
+        std::cout << "AuxiliaryEditing: 8 scenario groups passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

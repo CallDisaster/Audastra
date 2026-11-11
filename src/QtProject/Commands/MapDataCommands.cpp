@@ -14,6 +14,11 @@ MapDataEditCommand::MapDataEditCommand(EditorProject& project, MapData::MapDataE
     : QUndoCommand(std::move(text)), project_(project), receipt_(std::move(receipt)), description_(std::move(description)) {}
 
 MapDataEditCommand::MapDataEditCommand(EditorProject& project, MapData::MapDataEditSession::EditReceipt receipt,
+    QString text, std::string description, QUndoCommand* parent)
+    : QUndoCommand(std::move(text), parent), project_(project), receipt_(std::move(receipt)),
+      description_(std::move(description)) {}
+
+MapDataEditCommand::MapDataEditCommand(EditorProject& project, MapData::MapDataEditSession::EditReceipt receipt,
     QString text, std::string description, std::shared_ptr<HistoryInstallation> installation)
     : MapDataEditCommand(project, std::move(receipt), std::move(text), std::move(description)) {
     installation_ = std::move(installation);

@@ -28,6 +28,9 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <functional>
+
 namespace War3Map::Modules {
 namespace {
 
@@ -204,7 +207,8 @@ QTableWidget* MakeTable(const QString& name, int columns, QWidget* parent) {
     table->setObjectName(name);
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Ctrl/Shift 多选后可一次删除；双击仍修改所点的行。
+    table->setSelectionMode(QAbstractItemView::ExtendedSelection);
     table->verticalHeader()->hide();
     table->verticalHeader()->setDefaultSectionSize(28);
     table->horizontalHeader()->setDefaultAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -508,29 +512,42 @@ void MapTechPage::EditRow(Section section, int row) {
                 if (!key.Succeeded()) return QString::fromStdString(key.diagnostics.front().message);
                 command.expectedKey = *key.value;
             }
-            return commit_(std::move(command), label);
+            return commit_({std::move(command)}, label);
         }, window());
     dialog.exec();
 }
 
 void MapTechPage::DeleteRow(Section section) {
     const bool upgrade = section == Section::Upgrades;
-    const int row = (upgrade ? upgrades_ : restrictions_)->currentRow();
+    auto* table = upgrade ? upgrades_ : restrictions_;
     const auto& custom = *settings_.custom;
-    if (row < 0 || row >= static_cast<int>(upgrade ? custom.upgrades.size() : custom.techRestrictions.size())) return;
-    const Services::MapCustomSettingsValue previous = upgrade
-        ? Services::MapCustomSettingsValue{custom.upgrades[static_cast<std::size_t>(row)]}
-        : Services::MapCustomSettingsValue{custom.techRestrictions[static_cast<std::size_t>(row)]};
-    const auto key = Services::MapCustomSettingsEditing::RecordKey(section, previous, settings_.formatVersion);
+    const int count = static_cast<int>(upgrade ? custom.upgrades.size() : custom.techRestrictions.size());
+    std::vector<int> rows;
+    for (const auto& index : table->selectionModel()->selectedRows()) rows.push_back(index.row());
+    if (rows.empty()) rows.push_back(table->currentRow());
+    // 从后往前删，前面的下标在同一批次里保持不变。
+    std::sort(rows.begin(), rows.end(), std::greater<>());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    if (rows.back() < 0 || rows.front() >= count) return;
+    std::vector<Services::MapCustomSettingsCommand> commands;
     QString problem;
-    if (!key.Succeeded()) problem = QString::fromStdString(key.diagnostics.front().message);
-    else {
+    for (const int row : rows) {
+        const Services::MapCustomSettingsValue previous = upgrade
+            ? Services::MapCustomSettingsValue{custom.upgrades[static_cast<std::size_t>(row)]}
+            : Services::MapCustomSettingsValue{custom.techRestrictions[static_cast<std::size_t>(row)]};
+        const auto key = Services::MapCustomSettingsEditing::RecordKey(section, previous, settings_.formatVersion);
+        if (!key.Succeeded()) { problem = QString::fromStdString(key.diagnostics.front().message); break; }
         Services::MapCustomSettingsCommand command;
         command.section = section;
         command.action = Action::Delete;
         command.index = static_cast<std::uint32_t>(row);
         command.expectedKey = *key.value;
-        problem = commit_(std::move(command), upgrade ? tr("删除升级可用性") : tr("删除科技限制"));
+        commands.push_back(std::move(command));
+    }
+    if (problem.isEmpty()) {
+        const auto size = static_cast<int>(commands.size());
+        problem = commit_(std::move(commands), size == 1 ? (upgrade ? tr("删除升级可用性") : tr("删除科技限制"))
+            : (upgrade ? tr("删除 %1 条升级可用性") : tr("删除 %1 条科技限制")).arg(size));
     }
     problem_->setText(problem);
     problem_->setVisible(!problem.isEmpty());
@@ -592,7 +609,7 @@ void MapTechPage::EditRandom(Section section, int index) {
             command.expectedKey = *key.value;
         }
         command.value = std::move(value);
-        return commit_(std::move(command), label);
+        return commit_({std::move(command)}, label);
     };
     const RandomObjectName nameOf = [this](const MapData::SettingsRawcode& id) { return ObjectName(id); };
     if (items) {
@@ -625,7 +642,7 @@ void MapTechPage::DeleteRandom() {
         command.action = Action::Delete;
         command.number = items ? custom.randomItems[position].number : custom.randomUnits[position].number;
         command.expectedKey = *key.value;
-        problem = commit_(std::move(command), items ? tr("删除随机物品表") : tr("删除随机单位组"));
+        problem = commit_({std::move(command)}, items ? tr("删除随机物品表") : tr("删除随机单位组"));
     }
     problem_->setText(problem);
     problem_->setVisible(!problem.isEmpty());
@@ -635,8 +652,9 @@ MapTechPage::Commit MapTechPage::ProjectCommit(QtProject::EditorProject& project
     std::function<QString()> blocked, std::function<void(const QString&)> report) {
     QPointer<QtProject::EditorProject> guard(&project);
     QPointer<QObject> owner(context);
-    return [guard, owner, blocked, report](Services::MapCustomSettingsCommand command, const QString& label) -> QString {
+    return [guard, owner, blocked, report](std::vector<Services::MapCustomSettingsCommand> commands, const QString& label) -> QString {
         if (!guard || !owner) return QObject::tr("地图已关闭。");
+        if (commands.empty()) return {};
         if (blocked) if (const auto reason = blocked(); !reason.isEmpty()) return reason;
         auto* session = guard->MapEdits();
         if (!session) return QObject::tr("当前没有打开地图。");
@@ -647,7 +665,7 @@ MapTechPage::Commit MapTechPage::ProjectCommit(QtProject::EditorProject& project
         if (!validation.Succeeded()) return FirstProblem(validation.diagnostics);
         Services::MapCustomSettingsEditRequest request;
         request.expectedMemberSha256 = *identity.value;
-        request.operations.push_back(std::move(command));
+        request.operations = std::move(commands);
         auto plan = Services::MapCustomSettingsEditing::Prepare(current, request, *validation.value);
         if (!plan.Succeeded()) return FirstProblem(plan.diagnostics);
         if (!plan.value->HasChanges()) return {};

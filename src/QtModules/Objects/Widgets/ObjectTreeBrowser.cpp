@@ -91,7 +91,8 @@ ObjectTreeBrowser::ObjectTreeBrowser(IconProvider* icons, QWidget* parent)
     view_->setUniformRowHeights(true);
     view_->setIndentation(16);
     view_->setIconSize(QSize(24, 24));
-    view_->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Ctrl 单击切换、Shift 连续范围；当前项驱动字段面板，批量操作取全部选中。
+    view_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     view_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     view_->setContextMenuPolicy(Qt::CustomContextMenu);
     layout->addWidget(view_, 1);
@@ -112,8 +113,9 @@ ObjectTreeBrowser::ObjectTreeBrowser(IconProvider* icons, QWidget* parent)
     });
     connect(showIds_, &QCheckBox::toggled, this, [this] {
         const auto current = Current();
+        const auto selected = SelectedObjects();
         Rebuild();
-        if (current) Select(current->first, current->second);
+        SelectObjects(selected, current);
     });
     connect(view_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& current) {
         if (silent_ || current.data(kKindRole).toInt() != 2) return;
@@ -129,20 +131,25 @@ ObjectTreeBrowser::ObjectTreeBrowser(IconProvider* icons, QWidget* parent)
     });
     connect(view_, &QTreeView::customContextMenuRequested, this, [this](const QPoint& pos) {
         const QModelIndex index = view_->indexAt(pos);
-        if (index.isValid()) view_->setCurrentIndex(index);
+        // 与资源管理器一致：右键已选项保留多选，右键其他项只选它。
+        if (index.isValid())
+            view_->selectionModel()->setCurrentIndex(index, view_->selectionModel()->isSelected(index)
+                ? QItemSelectionModel::NoUpdate : QItemSelectionModel::ClearAndSelect);
         emit ContextMenuRequested(view_->viewport()->mapToGlobal(pos));
     });
 }
 
 void ObjectTreeBrowser::SetObjects(const QString& typeKey, const QString& standardRoot, const QString& customRoot,
     std::vector<Object> objects) {
-    const auto current = typeKey == typeKey_ ? Current() : std::nullopt;
+    const bool sameType = typeKey == typeKey_;
+    const auto current = sameType ? Current() : std::nullopt;
+    const auto selected = sameType ? SelectedObjects() : std::vector<std::pair<QString, bool>>{};
     typeKey_ = typeKey;
     standardRoot_ = standardRoot;
     customRoot_ = customRoot;
     objects_ = std::move(objects);
     Rebuild();
-    if (current) Select(current->first, current->second);
+    SelectObjects(selected, current);
 }
 
 void ObjectTreeBrowser::Rebuild() {
@@ -242,9 +249,7 @@ void ObjectTreeBrowser::UpdateFolderIcon(const QModelIndex& proxyIndex, bool exp
     (void)expanded;
 }
 
-void ObjectTreeBrowser::Select(const QString& id, bool custom) {
-    const bool previous = silent_;
-    silent_ = true;
+QModelIndex ObjectTreeBrowser::FindProxy(const QString& id, bool custom) const {
     QModelIndex found;
     const std::function<bool(const QModelIndex&)> walk = [&](const QModelIndex& parent) {
         for (int row = 0; row < model_->rowCount(parent); ++row) {
@@ -261,16 +266,47 @@ void ObjectTreeBrowser::Select(const QString& id, bool custom) {
         return false;
     };
     walk({});
-    const QModelIndex proxy = filter_->mapFromSource(found);
-    if (proxy.isValid()) {
-        view_->setCurrentIndex(proxy);
-        view_->scrollTo(proxy); // 会展开所在文件夹
-        for (QModelIndex parent = proxy.parent(); parent.isValid(); parent = parent.parent()) {
-            expanded_[typeKey_].insert(parent.data(kKeyRole).toString());
-        }
-    } else {
+    return filter_->mapFromSource(found);
+}
+
+void ObjectTreeBrowser::MakeCurrent(const QModelIndex& proxy, bool keepSelection) {
+    // 直接经选择模型设置，不受当时按住的修饰键影响。
+    view_->selectionModel()->setCurrentIndex(proxy, keepSelection ? QItemSelectionModel::NoUpdate
+        : QItemSelectionModel::ClearAndSelect);
+    view_->scrollTo(proxy); // 会展开所在文件夹
+    for (QModelIndex parent = proxy.parent(); parent.isValid(); parent = parent.parent()) {
+        expanded_[typeKey_].insert(parent.data(kKeyRole).toString());
+    }
+}
+
+void ObjectTreeBrowser::Select(const QString& id, bool custom) {
+    const bool previous = silent_;
+    silent_ = true;
+    const QModelIndex proxy = FindProxy(id, custom);
+    // 已在多选中的项只改当前项，保留多选。
+    if (proxy.isValid()) MakeCurrent(proxy, view_->selectionModel()->isSelected(proxy));
+    else {
         view_->selectionModel()->clearCurrentIndex();
         view_->clearSelection();
+    }
+    silent_ = previous;
+}
+
+void ObjectTreeBrowser::SelectObjects(const std::vector<std::pair<QString, bool>>& objects,
+    const std::optional<std::pair<QString, bool>>& current) {
+    const bool previous = silent_;
+    silent_ = true;
+    auto* selection = view_->selectionModel();
+    selection->clearSelection();
+    bool any = false;
+    for (const auto& [id, custom] : objects) {
+        const QModelIndex proxy = FindProxy(id, custom);
+        if (proxy.isValid()) { selection->select(proxy, QItemSelectionModel::Select); any = true; }
+    }
+    if (current) {
+        const QModelIndex proxy = FindProxy(current->first, current->second);
+        if (proxy.isValid()) MakeCurrent(proxy, any);
+        else if (!any) selection->clearCurrentIndex();
     }
     silent_ = previous;
 }
@@ -279,6 +315,22 @@ std::optional<std::pair<QString, bool>> ObjectTreeBrowser::Current() const {
     const QModelIndex index = view_->currentIndex();
     if (!index.isValid() || index.data(kKindRole).toInt() != 2) return std::nullopt;
     return std::make_pair(index.data(kIdRole).toString(), index.data(kCustomRole).toBool());
+}
+
+std::vector<std::pair<QString, bool>> ObjectTreeBrowser::SelectedObjects() const {
+    std::vector<std::pair<QString, bool>> objects;
+    // 按目录的显示顺序收集，文件夹行不算物体。
+    const std::function<void(const QModelIndex&)> walk = [&](const QModelIndex& parent) {
+        for (int row = 0; row < filter_->rowCount(parent); ++row) {
+            const QModelIndex index = filter_->index(row, 0, parent);
+            if (index.data(kKindRole).toInt() == 2) {
+                if (view_->selectionModel()->isSelected(index))
+                    objects.emplace_back(index.data(kIdRole).toString(), index.data(kCustomRole).toBool());
+            } else walk(index);
+        }
+    };
+    walk({});
+    return objects;
 }
 
 void ObjectTreeBrowser::SetSearchText(const QString& text) {

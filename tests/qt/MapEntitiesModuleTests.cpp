@@ -41,6 +41,7 @@ private slots:
     void NavigationBookmarkPreservesTypedIdentityAndScroll();
     void NavigationBookmarkBlocksModalDraft();
     void AuxiliaryCrudUsesSharedUndoAndReferences();
+    void AuxiliaryMultiDeleteIsOneUndo();
     void AuxiliaryDialogsKeepCapturedProjectBinding();
 };
 
@@ -204,6 +205,52 @@ void MapEntitiesModuleTests::AuxiliaryCrudUsesSharedUndoAndReferences() {
     QVERIFY(!module.EditCell(MapDataKind::Regions, 0, "name", "Renamed").Succeeded());
     QVERIFY(module.EditCell(MapDataKind::Regions, 0, "left", "-64").Succeeded());
     tabs->setCurrentIndex(0); QVERIFY(add->isHidden() && remove->isHidden());
+}
+
+void MapEntitiesModuleTests::AuxiliaryMultiDeleteIsOneUndo() {
+    QtProject::EditorProject project;
+    MapData::RegionRecord first{}; first.name = "AreaA"; first.creationNumber = 1; first.right = first.top = 128;
+    auto second = first; second.name = "AreaB"; second.creationNumber = 2;
+    auto third = first; third.name = "AreaC"; third.creationNumber = 3;
+    const auto regions = MapData::RegionsDocument{5, {first, second, third}, {}}.Serialize();
+    QVERIFY(regions.Succeeded());
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3map.w3r", *regions.value}};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
+    Modules::MapEntitiesModule module(project);
+    auto* page = module.Widget();
+    auto* tabs = page->findChild<QTabWidget*>();
+    auto* table = page->findChild<QTableWidget*>(QStringLiteral("mapEntitiesTable2"));
+    auto* remove = page->findChild<QPushButton*>("mapEntitiesDeleteAuxiliary");
+    QVERIFY(tabs && table && remove);
+    tabs->setCurrentIndex(2);
+    QCOMPARE(table->rowCount(), 3);
+    // Ctrl 多选第 1、3 行后删除：一条撤销，撤销后恢复原顺序。
+    auto* selection = table->selectionModel();
+    selection->setCurrentIndex(table->model()->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    selection->setCurrentIndex(table->model()->index(2, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    const auto count = module.UndoStack()->count();
+    remove->click();
+    QCOMPARE(module.UndoStack()->count(), count + 1);
+    auto left = project.mapEdits_->Snapshot();
+    QCOMPARE(left.Regions()->entries.size(), std::size_t{1});
+    QCOMPARE(left.Regions()->entries[0].name, std::string("AreaB"));
+    module.UndoStack()->undo();
+    left = project.mapEdits_->Snapshot();
+    QCOMPARE(left.Regions()->entries.size(), std::size_t{3});
+    QCOMPARE(left.Regions()->entries[2].name, std::string("AreaC"));
+    module.UndoStack()->redo();
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{1});
+    module.UndoStack()->undo();
+    // 任一行仍被引用时整批不改。
+    Trigger::ArgumentNode arg; arg.type = 1; arg.value.text = "gg_rct_AreaC";
+    project.triggerDocument_->argumentNodes.push_back(arg);
+    const auto refused = module.UndoStack()->count();
+    QVERIFY(!module.DeleteAuxiliaryRows(MapDataKind::Regions, {0, 2}).Succeeded());
+    QCOMPARE(module.UndoStack()->count(), refused);
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{3});
 }
 
 void MapEntitiesModuleTests::AuxiliaryDialogsKeepCapturedProjectBinding() {

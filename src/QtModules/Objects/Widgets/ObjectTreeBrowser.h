@@ -2,12 +2,14 @@
 
 #include <QHash>
 #include <QIcon>
+#include <QModelIndex>
 #include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 class QLineEdit;
@@ -46,9 +48,14 @@ public:
     // 换类别（typeKey 用于分别记住各类别的展开状态）或刷新同一类别；保持当前选中与展开状态。
     void SetObjects(const QString& typeKey, const QString& standardRoot, const QString& customRoot,
         std::vector<Object> objects);
-    // 选中（不发出 ObjectSelected）；找不到时清除选中。
+    // 设为当前项（不发出 ObjectSelected）：已在多选中时保留多选，否则只选它；找不到时清除选中。
     void Select(const QString& id, bool custom);
+    // 按 (ID, 是否自定义) 恢复多选与当前项（不发出 ObjectSelected）；找不到的忽略。
+    void SelectObjects(const std::vector<std::pair<QString, bool>>& objects,
+        const std::optional<std::pair<QString, bool>>& current);
+    // 当前项驱动字段面板；SelectedObjects 是 Ctrl/Shift 多选的全部物体（按目录顺序）。
     [[nodiscard]] std::optional<std::pair<QString, bool>> Current() const;
+    [[nodiscard]] std::vector<std::pair<QString, bool>> SelectedObjects() const;
     void SetSearchText(const QString& text);
     void SetShowIds(bool enabled);
     [[nodiscard]] bool ShowIds() const;
@@ -64,6 +71,8 @@ private:
     void RestoreExpansion();
     void UpdateFolderIcon(const QModelIndex& proxyIndex, bool expanded);
     [[nodiscard]] QString FolderKey(const QStandardItem* item) const;
+    [[nodiscard]] QModelIndex FindProxy(const QString& id, bool custom) const;
+    void MakeCurrent(const QModelIndex& proxy, bool keepSelection);
 
     IconProvider* icons_ = nullptr;
     QLineEdit* search_ = nullptr;

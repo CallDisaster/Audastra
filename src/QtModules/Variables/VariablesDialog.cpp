@@ -46,7 +46,8 @@ VariablesDialog::VariablesDialog(
     table_->verticalHeader()->setDefaultSectionSize(32);
     table_->setShowGrid(false);
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table_->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Ctrl 单击切换、Shift 连续范围；属性与重命名作用于当前行，删除作用于全部选中。
+    table_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     // 名称、类型等一眼看完；各列可拖动调整宽度，最后一列（初始值）填满剩余空间。
     War3Map::UiKit::ConfigureResizableColumns(table_->horizontalHeader(), {240, 110, 60, 90});
@@ -80,13 +81,8 @@ VariablesDialog::VariablesDialog(
     connect(renameButton_, &QPushButton::clicked, this, &VariablesDialog::RenameSelected);
     connect(removeButton_, &QPushButton::clicked, this, &VariablesDialog::RemoveSelected);
     connect(closeButton, &QPushButton::clicked, this, &QDialog::accept);
-    connect(table_->selectionModel(), &QItemSelectionModel::selectionChanged,
-            this, [this]() {
-                const bool has = SelectedRow().has_value();
-                propertiesButton_->setEnabled(has && GraphEditingReady());
-                renameButton_->setEnabled(has);
-                removeButton_->setEnabled(has);
-            });
+    connect(table_->selectionModel(), &QItemSelectionModel::selectionChanged, this, &VariablesDialog::UpdateButtons);
+    connect(table_->selectionModel(), &QItemSelectionModel::currentRowChanged, this, &VariablesDialog::UpdateButtons);
     RebuildList();
     if (undoStack_) {
         connect(undoStack_, &QUndoStack::indexChanged, this, [this]() { RebuildList(); });
@@ -118,10 +114,13 @@ bool VariablesDialog::GraphEditingReady() const {
 
 void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) {
     const int previousRow = table_->currentRow();
-    if (!preferredId && previousRow >= 0) {
-        if (const auto* name = table_->item(previousRow, 0)) {
-            preferredId = name->data(Qt::UserRole).toULongLong();
-        }
+    // 未指定时按稳定 ID 保留多选与当前行；指定时（新建/修改后）只选中该变量。
+    std::vector<War3Map::StableId> keep;
+    if (!preferredId) {
+        for (const auto row : SelectedRows())
+            if (const auto* name = table_->item(static_cast<int>(row), 0)) keep.push_back(name->data(Qt::UserRole).toULongLong());
+        if (previousRow >= 0)
+            if (const auto* name = table_->item(previousRow, 0)) preferredId = name->data(Qt::UserRole).toULongLong();
     }
     const QSignalBlocker selectionBlocker(table_->selectionModel());
     table_->setRowCount(0);
@@ -131,6 +130,7 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
         removeButton_->setEnabled(false);
         return;
     }
+    std::vector<int> keptRows;
     int selectedRow = -1;
     // 类型列默认显示函数库里的中文名，“显示原始字段”时显示类型名。
     std::optional<War3Map::Trigger::TriggerTypeSystem> types;
@@ -145,6 +145,7 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
         name->setData(Qt::UserRole, QVariant::fromValue<qulonglong>(variable.id));
         table_->setItem(r, 0, name);
         if (preferredId && variable.id == *preferredId) selectedRow = r;
+        if (std::find(keep.begin(), keep.end(), variable.id) != keep.end()) keptRows.push_back(r);
         auto* type = new QTableWidgetItem(QString::fromUtf8(variable.typeName.text));
         if (types) {
             type->setText(QString::fromStdString(types->DisplayName(variable.typeName.text)));
@@ -163,24 +164,43 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
         }
         table_->setItem(r, 4, initial);
     }
+    if (selectedRow < 0 && !keptRows.empty()) selectedRow = keptRows.front();
     if (selectedRow < 0 && table_->rowCount() > 0) {
         selectedRow = std::clamp(previousRow, 0, table_->rowCount() - 1);
     }
-    if (selectedRow >= 0) {
-        table_->setCurrentCell(selectedRow, 0);
-        table_->selectRow(selectedRow);
-    }
-    propertiesButton_->setEnabled(selectedRow >= 0 && GraphEditingReady());
-    renameButton_->setEnabled(selectedRow >= 0);
-    removeButton_->setEnabled(selectedRow >= 0);
+    // 直接经选择模型设置，不受当时按住的修饰键影响。
+    auto* selection = table_->selectionModel();
+    selection->clearSelection();
+    for (const int row : keptRows)
+        selection->select(table_->model()->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    if (selectedRow >= 0)
+        selection->setCurrentIndex(table_->model()->index(selectedRow, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    UpdateButtons();
+}
+
+void VariablesDialog::UpdateButtons() {
+    const bool current = SelectedRow().has_value();
+    propertiesButton_->setEnabled(current && GraphEditingReady());
+    renameButton_->setEnabled(current);
+    removeButton_->setEnabled(!SelectedRows().empty());
 }
 
 std::optional<std::size_t> VariablesDialog::SelectedRow() const {
-    const auto items = table_->selectedItems();
-    if (items.isEmpty()) {
-        return std::nullopt;
-    }
-    return static_cast<std::size_t>(items.first()->row());
+    if (document_ == nullptr) return std::nullopt;
+    const int current = table_->currentRow();
+    if (current >= 0 && static_cast<std::size_t>(current) < document_->variables.size()
+        && table_->selectionModel()->isRowSelected(current, {})) return static_cast<std::size_t>(current);
+    const auto rows = SelectedRows();
+    if (rows.empty()) return std::nullopt;
+    return rows.front();
+}
+
+std::vector<std::size_t> VariablesDialog::SelectedRows() const {
+    std::vector<std::size_t> rows;
+    for (const auto& index : table_->selectionModel()->selectedRows())
+        rows.push_back(static_cast<std::size_t>(index.row()));
+    std::sort(rows.begin(), rows.end());
+    return rows;
 }
 
 namespace {
@@ -362,36 +382,50 @@ void VariablesDialog::RenameSelected() {
 }
 
 void VariablesDialog::RemoveSelected() {
-    const auto row = SelectedRow();
-    if (document_ == nullptr || undoStack_ == nullptr || !row.has_value() ||
-        *row >= document_->variables.size()) {
+    const auto rows = SelectedRows();
+    if (document_ == nullptr || undoStack_ == nullptr || rows.empty() ||
+        rows.back() >= document_->variables.size()) {
         return;
     }
-    const War3Map::Trigger::VariableRecord record = document_->variables[*row];
+    std::vector<War3Map::Trigger::VariableRecord> records;
+    std::vector<War3Map::StableId> ids;
+    for (const auto row : rows) {
+        records.push_back(document_->variables[row]);
+        ids.push_back(document_->variables[row].id);
+    }
+    // 多选时一次查全部引用、一次确认；有引用或没能查全时与单个删除同样列出后由作者决定。
     RemovalReview review;
     if (removalCheck_) {
-        auto checked = removalCheck_(record);
+        auto checked = removalCheck_(records);
         if (!checked) return;
         review = std::move(*checked);
     }
-    QMessageBox box(QMessageBox::Question, tr("删除变量"),
-        review.references != 0
-            ? tr("变量“%1”被引用 %2 处，删除后这些位置会变成无效引用（可撤销）。").arg(QString::fromUtf8(record.name.text)).arg(review.references)
-            : tr("确定删除变量“%1”吗？引用它的脚本将不再编译（可撤销）。").arg(QString::fromUtf8(record.name.text)),
-        QMessageBox::Yes | QMessageBox::No, this);
+    const QString name = QString::fromUtf8(records.front().name.text);
+    QString question;
+    if (records.size() == 1) {
+        question = review.references != 0
+            ? tr("变量“%1”被引用 %2 处，删除后这些位置会变成无效引用（可撤销）。").arg(name).arg(review.references)
+            : tr("确定删除变量“%1”吗？引用它的脚本将不再编译（可撤销）。").arg(name);
+    } else {
+        question = review.references != 0
+            ? tr("选中的 %1 个变量共被引用 %2 处，删除后这些位置会变成无效引用（可撤销）。").arg(records.size()).arg(review.references)
+            : tr("确定删除选中的 %1 个变量吗？引用它们的脚本将不再编译（可撤销）。").arg(records.size());
+    }
+    QMessageBox box(QMessageBox::Question, tr("删除变量"), question, QMessageBox::Yes | QMessageBox::No, this);
     if (!review.incomplete.isEmpty()) review.lines << tr("没能全部检查：%1").arg(review.incomplete);
     if (!review.lines.isEmpty()) box.setInformativeText(review.lines.join('\n'));
     box.setDefaultButton(QMessageBox::No);
     if (box.exec() != QMessageBox::Yes) {
         return;
     }
-    const War3Map::Status removed =
-        War3Map::Trigger::TriggerDocumentEditor::RemoveVariable(
-            *document_, record.name.text);
-    if (!removed.Succeeded()) {
+    War3Map::Status removed;
+    auto command = RemoveVariables(*document_, ids,
+        records.size() == 1 ? tr("删除变量") : tr("删除 %1 个变量").arg(records.size()), removed);
+    if (!command) {
+        if (!removed.diagnostics.empty())
+            QMessageBox::warning(this, tr("无法删除变量"), QString::fromUtf8(removed.diagnostics.front().message));
         return;
     }
-    undoStack_->push(new RemoveVariableUndoCommand(
-        document_, record, *row, tr("删除变量")));
+    undoStack_->push(command.release());
     RebuildList();
 }

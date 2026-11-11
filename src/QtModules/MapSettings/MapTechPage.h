@@ -3,6 +3,7 @@
 #include "War3MapCore/Services/MapCustomSettingsEditing.h"
 #include <QWidget>
 #include <functional>
+#include <vector>
 #include <optional>
 #include <utility>
 class QLabel;
@@ -18,7 +19,8 @@ namespace War3Map::Modules {
 class MapTechPage final : public QWidget {
 public:
     // 返回空表示命令已准备好并将提交；否则为原因，调用方保留表单。
-    using Commit = std::function<QString(War3Map::Services::MapCustomSettingsCommand, const QString& label)>;
+    // 一次提交的全部命令（如多选删除）进入同一请求，生成一条撤销。
+    using Commit = std::function<QString(std::vector<War3Map::Services::MapCustomSettingsCommand>, const QString& label)>;
     // readOnly 非空时只列出，不提供添加/修改/删除。
     MapTechPage(QtProject::EditorProject& project, const MapData::MapSettings& settings, bool raw,
         const QString& readOnly, const QString& randomReadOnly, Commit commit, QWidget* parent = nullptr);

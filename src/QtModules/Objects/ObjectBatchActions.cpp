@@ -5,6 +5,7 @@
 #include "ProjectObjectCatalog.h"
 #include "ObjectModels.h"
 #include "ObjectModelsDetail.h"
+#include "Widgets/ObjectTreeBrowser.h"
 #include "War3MapCore/ObjectData/ObjectBatchEdit.h"
 #include "War3MapCore/ObjectData/ObjectImport.h"
 
@@ -17,6 +18,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSet>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -157,8 +159,15 @@ void ObjectModule::BatchEditObjects() {
     auto* layout = new QVBoxLayout(&dialog);
     auto* objects = new QListWidget(&dialog);
     objects->setObjectName("batchObjectList");
-    const QString currentId = objectListView_ && objectListView_->currentIndex().isValid()
-        ? objectListView_->currentIndex().data(Qt::UserRole).toString() : QString{};
+    // 预先勾选目录树里多选的地图对象；没有多选时沿用列表当前项。
+    QSet<QString> preselected;
+    if (objectTree_) {
+        for (const auto& selected : objectTree_->SelectedObjects()) {
+            if (document->FindObject({type, selected.first.toStdString()})) preselected.insert(selected.first);
+        }
+    }
+    if (preselected.isEmpty() && objectListView_ && objectListView_->currentIndex().isValid())
+        preselected.insert(objectListView_->currentIndex().data(Qt::UserRole).toString());
     for (const auto& record : document->Objects()) {
         const auto presentation = ResolveProjectObjectPresentation(*project_, record.key);
         auto* item = new QListWidgetItem(tr("%1  ·  %2")
@@ -169,7 +178,7 @@ void ObjectModule::BatchEditObjects() {
         if (!showRawFields_->isChecked()) item->setIcon(project_->iconProvider_->IconForTexture(presentation.iconPath));
         item->setData(Qt::UserRole, U8(record.key.rawcode));
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(U8(record.key.rawcode) == currentId ? Qt::Checked : Qt::Unchecked);
+        item->setCheckState(preselected.contains(U8(record.key.rawcode)) ? Qt::Checked : Qt::Unchecked);
     }
     layout->addWidget(objects, 1);
     auto* form = new QFormLayout;

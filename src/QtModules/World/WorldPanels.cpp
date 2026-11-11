@@ -59,7 +59,7 @@ namespace {
 
 using namespace WorldUi;
 
-// Qt 默认 Ctrl 是切换选择。这里只规整输入，并在原生输入完成后转交共用选择服务，
+// 沿用 Qt/Windows 列表习惯（Ctrl 切换、Shift 连续范围），原生输入完成后把这次的增减转交共用选择服务，
 // 避免服务回显在 selectionChanged 栈内重置 Qt 当前项与范围选择锚点。
 class OutlinerInputView final : public QTreeView {
 public:
@@ -79,13 +79,10 @@ public:
 protected:
     QItemSelectionModel::SelectionFlags selectionCommand(const QModelIndex& index, const QEvent* event) const override {
         auto flags = QTreeView::selectionCommand(index, event);
-        if (!inputActive_ || flags == QItemSelectionModel::NoUpdate) return flags;
-        if (modifiers_.testFlag(Qt::ControlModifier))
-            return QItemSelectionModel::Deselect | (flags & QItemSelectionModel::Rows);
-        if (modifiers_.testFlag(Qt::ShiftModifier)) {
-            flags &= ~(QItemSelectionModel::Clear | QItemSelectionModel::Toggle | QItemSelectionModel::Deselect);
-            flags |= QItemSelectionModel::Select;
-        }
+        // 只按 Shift 时以锚点到当前项的连续范围替换选择（Ctrl+Shift 才并入已选），与资源管理器一致。
+        if (inputActive_ && modifiers_.testFlag(Qt::ShiftModifier) && !modifiers_.testFlag(Qt::ControlModifier)
+            && flags.testFlag(QItemSelectionModel::Current))
+            flags |= QItemSelectionModel::Clear;
         return flags;
     }
     void mousePressEvent(QMouseEvent* event) override {
@@ -351,14 +348,26 @@ QWidget* WorldModule::BuildSelectPage() {
     inputView->commitInput = [this](const QItemSelection& added, const QItemSelection& removed,
         Qt::KeyboardModifiers modifiers, const QPersistentModelIndex& current) {
         if (!worldSelection_.Version() || outlinerModel_->Version() != worldSelection_.Version()) return;
-        const auto mode = modifiers.testFlag(Qt::ControlModifier) ? Services::SelectionMode::Subtract
-            : modifiers.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add : Services::SelectionMode::Replace;
+        // 不按修饰键时以目录选择替换；按 Ctrl/Shift 时只把这次实际增减的行转成切换，
+        // 目录尚未载入的已选对象保持不动。
+        const bool plain = !modifiers.testFlag(Qt::ControlModifier) && !modifiers.testFlag(Qt::ShiftModifier);
+        const auto mode = plain ? Services::SelectionMode::Replace : Services::SelectionMode::Toggle;
+        std::vector<Services::WorldObjectId> before;
+        if (!plain)
+            if (const auto snapshot = worldSelection_.Snapshot(SelectionContext(), *worldSelection_.Version()); snapshot.Succeeded())
+                before = snapshot.value->selected;
+        const auto wasSelected = [&before](const Services::WorldObjectId& id) {
+            return std::find(before.begin(), before.end(), id) != before.end();
+        };
         std::vector<Services::WorldObjectId> ids;
-        const auto indexes = mode == Services::SelectionMode::Replace ? outliner_->selectionModel()->selectedRows()
-            : (mode == Services::SelectionMode::Add ? added : removed).indexes();
-        for (const auto& index : indexes)
-            if (index.column() == 0)
-                if (const auto* row = outlinerModel_->RowAt(index); row && row->id) ids.push_back(*row->id);
+        const auto collect = [&](const QModelIndexList& indexes, bool selecting) {
+            for (const auto& index : indexes)
+                if (index.column() == 0)
+                    if (const auto* row = outlinerModel_->RowAt(index); row && row->id
+                        && (plain || wasSelected(*row->id) != selecting)) ids.push_back(*row->id);
+        };
+        if (plain) collect(outliner_->selectionModel()->selectedRows(), true);
+        else { collect(added.indexes(), true); collect(removed.indexes(), false); }
         (void)SelectObjects(ids, mode);
         // 服务保有 primary；Qt 导航当前项独立，不被已选范围的最后一个身份覆盖。
         if (current.isValid() && current.model() == outlinerModel_) {
@@ -517,9 +526,7 @@ void WorldModule::ConnectEditing() {
     connect(viewport_, &WorldViewport::BugPlaceholderClicked, this,
         [this](const MapData::PlacementId& owner, int modifiers) {
             const std::array<Services::WorldObjectId, 1> ids{owner};
-            const auto keys = Qt::KeyboardModifiers(modifiers);
-            (void)SelectObjects(ids, keys.testFlag(Qt::ControlModifier) ? Services::SelectionMode::Subtract
-                : keys.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add : Services::SelectionMode::Replace);
+            (void)SelectObjects(ids, ViewportSelectionMode(Qt::KeyboardModifiers(modifiers)));
         });
     connect(viewport_, &WorldViewport::InstancesBoxSelected, this, &WorldModule::SelectBox);
     connect(viewport_, &WorldViewport::TerrainBlockSelected, this, &WorldModule::SelectTerrainBlock);

@@ -136,13 +136,15 @@ void ObjectModule::CommitObjectCreation(int index, LniObjectDocument next,
         std::move(next), label, [this, index, rawcode]() { RefreshObjectDocument(index, rawcode); }));
 }
 
-QString ObjectModule::SuggestObjectId(int index, const QString& baseRawcode) const {
+QString ObjectModule::SuggestObjectId(int index, const QString& baseRawcode,
+    const LniObjectDocument* occupied) const {
     const auto type = static_cast<ObjectType>(index);
+    const auto* document = occupied ? occupied : project_->objectDocuments_[index].get();
     const QChar prefix = baseRawcode.isEmpty() ? QChar('X') : baseRawcode.front();
     for (int counter = 0; counter < 46656; ++counter) {
         const auto candidate = prefix + QString::number(counter, 36).toUpper().rightJustified(3, QChar('0'));
         if (project_->standardCatalog_ && project_->standardCatalog_->Find(type, candidate.toStdString())) continue;
-        if (project_->objectDocuments_[index] && project_->objectDocuments_[index]->FindObject({type, candidate.toStdString()})) continue;
+        if (document && document->FindObject({type, candidate.toStdString()})) continue;
         return candidate;
     }
     return {};
@@ -203,8 +205,61 @@ bool ObjectModule::CloneCustomObject(int index, const QString& sourceRawcode,
     return true;
 }
 
+QStringList ObjectModule::CloneCustomObjects(int index, const QStringList& sourceRawcodes) {
+    if (index < 0 || index >= static_cast<int>(project_->objectDocuments_.size()) || !project_->standardCatalog_
+        || sourceRawcodes.isEmpty() || !EnsureObjectDocument(index)) return {};
+    const auto type = static_cast<ObjectType>(index);
+    // 全部在同一候选文档里复制并分配 ID，最后只提交一条撤销记录。
+    auto next = *project_->objectDocuments_[index];
+    QStringList created;
+    for (const auto& sourceRawcode : sourceRawcodes) {
+        const ObjectKey source{type, sourceRawcode.toStdString()};
+        if (!WritableBase(*project_, type, source.rawcode)) return {};
+        const auto* original = next.FindObject(source);
+        if (!original || !original->parentRawcode) return {};
+        const QString newRawcode = SuggestObjectId(index, sourceRawcode, &next);
+        if (newRawcode.isEmpty()) return {};
+        const auto cloned = next.CloneCustomObject(source, newRawcode.toStdString());
+        if (!cloned.Succeeded()) {
+            for (const auto& diagnostic : cloned.diagnostics)
+                project_->AddDiagnostic(tr("错误"), tr("物体"), U8(diagnostic.code), U8(diagnostic.message));
+            return {};
+        }
+        created << newRawcode;
+    }
+    CommitObjectCreation(index, std::move(next), created.front(), tr("复制 %1 个自定义物体").arg(created.size()));
+    SelectMapObject(index, created.front());
+    if (objectTree_) {
+        std::vector<std::pair<QString, bool>> objects;
+        for (const auto& rawcode : created) objects.emplace_back(rawcode, true);
+        objectTree_->SelectObjects(objects, objects.front());
+    }
+    ShowStatus(tr("已复制 %1 个自定义物体 · 可一次撤销").arg(created.size()), 5000);
+    return created;
+}
+
+QStringList ObjectModule::SelectedCustomObjects() const {
+    QStringList sources;
+    const int index = currentObjectType_;
+    if (!objectTree_ || index < 0 || index >= static_cast<int>(project_->objectDocuments_.size())) return sources;
+    const auto* document = project_->objectDocuments_[index].get();
+    if (!document) return sources;
+    const auto type = static_cast<ObjectType>(index);
+    for (const auto& [id, custom] : objectTree_->SelectedObjects()) {
+        const auto* record = custom ? document->FindObject({type, id.toStdString()}) : nullptr;
+        if (record && record->parentRawcode) sources << id;
+    }
+    return sources;
+}
+
 void ObjectModule::DuplicateSelectedCustomObject() {
     const int index = currentObjectType_;
+    // 目录里多选了几个自定义物体时一起复制，ID 自动分配；单个时仍让作者确认新 ID。
+    if (const auto sources = SelectedCustomObjects(); sources.size() > 1) {
+        if (CloneCustomObjects(index, sources).isEmpty())
+            ShowStatus(tr("复制失败 · 查看诊断"), 7000);
+        return;
+    }
     if (index < 0 || index >= static_cast<int>(project_->objectDocuments_.size())
         || !objectListView_ || !objectFilter_ || !project_->objectDocuments_[index]) return;
     const QModelIndex selected = objectListView_->currentIndex();

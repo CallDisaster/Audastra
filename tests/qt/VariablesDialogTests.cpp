@@ -50,6 +50,7 @@ private slots:
     void RenameReferencesIsOneUndoTransaction();
     void UnsupportedReferenceRename();
     void AddRemoveAndUndoRefreshSelection();
+    void MultiSelectRemoveIsOneUndo();
 };
 
 void VariablesDialogTests::EmbeddedEscapePreservesWorkspace() {
@@ -164,6 +165,57 @@ void VariablesDialogTests::AddRemoveAndUndoRefreshSelection() {
     stack.redo();
     QCOMPARE(Table(editor)->rowCount(), 2);
     QVERIFY(Button(editor, "removeVariableButton")->isEnabled());
+}
+
+void VariablesDialogTests::MultiSelectRemoveIsOneUndo() {
+    TriggerDocument document;
+    for (const char* name : {"Alpha", "Beta", "Gamma", "Delta"})
+        QVERIFY(TriggerDocumentEditor::AddVariable(document, name, "integer", false).Succeeded());
+    const auto betaId = document.variables[1].id;
+    QUndoStack stack;
+    VariablesDialog editor(&document, &stack, nullptr, true);
+    editor.show();
+    auto* table = Table(editor);
+    QVERIFY(table != nullptr);
+    QCOMPARE(table->selectionMode(), QAbstractItemView::ExtendedSelection);
+    // Ctrl 多选第 1、3 行；当前行驱动单项按钮。
+    auto* selection = table->selectionModel();
+    selection->setCurrentIndex(table->model()->index(0, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    selection->setCurrentIndex(table->model()->index(2, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QCOMPARE(selection->selectedRows().size(), qsizetype{2});
+    QVERIFY(Button(editor, "renameVariableButton")->isEnabled());
+    QVERIFY(Button(editor, "removeVariableButton")->isEnabled());
+    QString question;
+    QTimer::singleShot(0, qApp, [&question] {
+        auto* confirm = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        QVERIFY(confirm != nullptr);
+        question = confirm->text();
+        confirm->button(QMessageBox::Yes)->click();
+    });
+    Button(editor, "removeVariableButton")->click();
+    QVERIFY(question.contains(QStringLiteral("2 个变量")));
+    QCOMPARE(stack.count(), 1);
+    QCOMPARE(document.variables.size(), std::size_t{2});
+    QCOMPARE(document.variables[0].name.text, std::string("Beta"));
+    QCOMPARE(document.variables[1].name.text, std::string("Delta"));
+    stack.undo();
+    QCOMPARE(document.variables.size(), std::size_t{4});
+    QCOMPARE(document.variables[0].name.text, std::string("Alpha"));
+    QCOMPARE(document.variables[2].name.text, std::string("Gamma"));
+    QCOMPARE(table->rowCount(), 4);
+    stack.redo();
+    QCOMPARE(document.variables.size(), std::size_t{2});
+    stack.undo();
+    // 刷新后按稳定 ID 保留多选与当前行。
+    selection->setCurrentIndex(table->model()->index(1, 0), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    selection->setCurrentIndex(table->model()->index(3, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QVERIFY(TriggerDocumentEditor::AddVariable(document, "Epsilon", "integer", false).Succeeded());
+    stack.push(new QUndoCommand(QStringLiteral("刷新")));
+    QCOMPARE(table->rowCount(), 5);
+    QCOMPARE(table->selectionModel()->selectedRows().size(), qsizetype{2});
+    QCOMPARE(table->item(table->currentRow(), 0)->text(), QStringLiteral("Delta"));
+    QVERIFY(table->selectionModel()->isRowSelected(1, {}));
+    QCOMPARE(table->item(1, 0)->data(Qt::UserRole).toULongLong(), betaId);
 }
 
 int main(int argc, char** argv) {

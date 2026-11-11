@@ -85,6 +85,35 @@ void SelectionAndEditorState() {
     Require(selection.Bind(context).Succeeded() && !selection.Snapshot(context, closed).Succeeded(),
         "clear/rebind of same document cannot reuse retired editor revision");
 }
+void ToggleAndMixedDelete() {
+    auto units = Units(); auto doc = Document(units); auto query = CaptureMapDataSnapshot(doc, Binding(), false);
+    Require(query.Succeeded(), "capture toggle fixture"); Sources sources;
+    WorldSelectionContext context{&doc, &*query.value, Binding(), 5, sources.views, nullptr, ProjectSearchState::Missing};
+    WorldSelection selection; Require(selection.Bind(context).Succeeded(), "bind toggle fixture");
+    const std::array<WorldObjectId, 2> ids{MapData::MakePlacementId(MapData::PlacementFile::Units, 0, units.units[0]),
+        MapData::MakePlacementId(MapData::PlacementFile::Units, 1, units.units[1])};
+    auto result = selection.Select(context, *selection.Version(), SelectionMode::Replace, std::span(ids).first(1));
+    Require(result.Succeeded(), "replace before toggle");
+    result = selection.Select(context, *selection.Version(), SelectionMode::Toggle, ids);
+    Require(result.Succeeded() && result.value->selected.size() == 1 && result.value->selected[0] == ids[1]
+        && result.value->primary == ids[1], "Ctrl toggle removes selected, adds unselected and makes the added one primary");
+    result = selection.Select(context, *selection.Version(), SelectionMode::Toggle, std::span(ids).last(1));
+    Require(result.Succeeded() && result.value->selected.empty() && !result.value->primary, "toggling the only object clears selection");
+    const std::array<WorldObjectId, 2> twice{ids[0], ids[0]};
+    result = selection.Select(context, *selection.Version(), SelectionMode::Toggle, twice);
+    Require(result.Succeeded() && result.value->selected.size() == 1, "duplicate ids in one toggle batch judge against the prior selection");
+    auto page = selection.QueryObjects(context, *selection.Version(), MapDataKind::Regions);
+    Require(page.Succeeded() && page.value->rows.size() == 1 && page.value->rows[0].id, "query region identity");
+    const std::array<WorldObjectId, 2> mixed{ids[0], *page.value->rows[0].id};
+    result = selection.Select(context, *selection.Version(), SelectionMode::Replace, mixed);
+    Require(result.Succeeded() && result.value->selected.size() == 2, "mixed placement and region selection");
+    Require(!selection.EditStatus(context, *selection.Version()).Succeeded(), "mixed auxiliary selection has no shared property edit");
+    Require(selection.DeleteStatus(context, *selection.Version()).Succeeded(), "mixed auxiliary selection may be deleted as one transaction");
+    const WorldEditorFlagEdit lock{ids[1], {true, true}};
+    Require(selection.SetEditorFlags(context, *selection.Version(), std::span(&lock, 1)).Succeeded(), "lock second placement");
+    Require(!selection.Select(context, *selection.Version(), SelectionMode::Toggle, std::span(ids).last(1)).Succeeded(),
+        "toggle cannot add a locked object");
+}
 void QueriesAndTypedIdentity() {
     const auto units = Units(); const auto doc = Document(units); auto query = CaptureMapDataSnapshot(doc, Binding(), false); Sources sources;
     Require(query.Succeeded(), "capture typed query fixture");
@@ -134,6 +163,6 @@ void PartialSourceRemainsInspectable() {
 }
 }
 int main() {
-    try { SelectionAndEditorState(); QueriesAndTypedIdentity(); PartialSourceRemainsInspectable(); std::cout << "WorldSelection tests passed\n"; return 0; }
+    try { SelectionAndEditorState(); ToggleAndMixedDelete(); QueriesAndTypedIdentity(); PartialSourceRemainsInspectable(); std::cout << "WorldSelection tests passed\n"; return 0; }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

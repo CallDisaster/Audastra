@@ -874,6 +874,7 @@ private slots:
     void AuxiliaryFormPreservesNativeBytes();
     void AuxiliaryResultRejectsStaleSessionAndCoverage();
     void WorldAuxiliaryCrudUsesSharedService();
+    void OutlinerCtrlToggleAndMixedDeleteIsOneUndo();
     void OutlinerPagingRestoresAuxiliarySelection_data();
     void OutlinerPagingRestoresAuxiliarySelection();
     void WorldAuxiliaryDialogRejectsChangedMap();
@@ -4602,6 +4603,54 @@ void WorldModuleTests::AuxiliaryResultRejectsStaleSessionAndCoverage() {
     project.sourceChangeSuspected_ = false; project.sourceChangeConfirmed_ = true;
     QVERIFY(!QtProject::AuxiliaryEditBindingCurrent(project, camera.value->binding));
     QCOMPARE(project.mapEdits_->Revision(), revision); project.sourceChangeConfirmed_ = false;
+}
+
+void WorldModuleTests::OutlinerCtrlToggleAndMixedDeleteIsOneUndo() {
+    // 视口：Shift 加选，只按 Ctrl 切换，不按为替换。
+    QVERIFY(ViewportSelectionMode(Qt::NoModifier) == Services::SelectionMode::Replace);
+    QVERIFY(ViewportSelectionMode(Qt::ShiftModifier) == Services::SelectionMode::Add);
+    QVERIFY(ViewportSelectionMode(Qt::ControlModifier) == Services::SelectionMode::Toggle);
+    QVERIFY(ViewportSelectionMode(Qt::ControlModifier | Qt::ShiftModifier) == Services::SelectionMode::Add);
+
+    QTemporaryDir directory; QVERIFY(directory.isValid());
+    const MapData::RegionRecord region{0, 0, 128, 128, "RegionOne", 17, {}, "", {10, 20, 30, 77}};
+    const MapData::CameraRecord camera{256, 256, 7, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
+    QtProject::EditorProject project; QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    BackendState state; activeBackend = &state; WorldModule module(project, &modelBackend);
+    auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
+    auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
+    auto* model = dynamic_cast<WorldOutlinerModel*>(outliner->model()); QVERIFY(model);
+    const Services::WorldObjectId regionId = MapData::MakeRegionId(0, region), cameraId = MapData::MakeCameraId(0, camera);
+    QTRY_VERIFY(FindWorldObject(*model, regionId).isValid() && FindWorldObject(*model, cameraId).isValid());
+    const auto selected = [&](const Services::WorldObjectId& id) {
+        const auto index = model->Find(id);
+        return index.isValid() && outliner->selectionModel()->isSelected(index);
+    };
+    // 目录：单击替换，Ctrl 单击切换加入 / 移出。
+    QVERIFY(SelectAuxiliaryRow(*page, regionId));
+    QTRY_VERIFY(selected(regionId) && !selected(cameraId));
+    QVERIFY(SelectAuxiliaryRow(*page, cameraId, Qt::ControlModifier));
+    QTRY_VERIFY(selected(regionId) && selected(cameraId));
+    QVERIFY(SelectAuxiliaryRow(*page, cameraId, Qt::ControlModifier));
+    QTRY_VERIFY(selected(regionId) && !selected(cameraId));
+    QVERIFY(SelectAuxiliaryRow(*page, cameraId, Qt::ControlModifier));
+    QTRY_VERIFY(selected(regionId) && selected(cameraId));
+    // 混选不能一起改属性，但可以一起删除，且只占一条撤销。
+    auto* properties = page->findChild<QPushButton*>("worldAuxiliaryProperties"); QVERIFY(properties);
+    auto* remove = page->findChild<QPushButton*>("worldDeleteAuxiliary"); QVERIFY(remove);
+    QTRY_VERIFY(remove->isEnabled() && !properties->isEnabled());
+    const auto count = project.mapDataUndoStack_->count();
+    remove->click();
+    QCOMPARE(project.mapDataUndoStack_->count(), count + 1);
+    QVERIFY(project.mapEdits_->Snapshot().Regions()->entries.empty());
+    QVERIFY(project.mapEdits_->Snapshot().Cameras()->entries.empty());
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{1});
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{1});
+    QVERIFY(!project.mapEdits_->IsDirty());
+    project.mapDataUndoStack_->redo();
+    QVERIFY(project.mapEdits_->Snapshot().Regions()->entries.empty());
+    QVERIFY(project.mapEdits_->Snapshot().Cameras()->entries.empty());
 }
 
 void WorldModuleTests::WorldAuxiliaryCrudUsesSharedService() {

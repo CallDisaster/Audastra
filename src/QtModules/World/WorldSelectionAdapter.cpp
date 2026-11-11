@@ -125,15 +125,24 @@ bool WorldModule::SelectObjects(std::span<const Services::WorldObjectId> ids, Se
     return true;
 }
 
-bool WorldModule::SelectionEditable() const {
-    if ((viewport_ && !viewport_->ModelPresentationCurrent()) || project_.savingMap_
+bool WorldModule::SelectionBoundToCurrentMap() const {
+    return !((viewport_ && !viewport_->ModelPresentationCurrent()) || project_.savingMap_
         || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_
         || !selectionMapData_ || !worldSelection_.Version() || !project_.mapEdits_
         || selectionSessionIdentity_ != project_.mapEdits_->SessionIdentity()
         || selectionMapKey_ != MapKey() || selectionMapData_->Binding().generation != std::max<std::uint64_t>(1, project_.editRevision_.Generation())
         || selectionMapData_->Binding().revision != project_.mapEdits_->Revision()
-        || selectionBoundCatalogRevision_ != selectionCatalogRevision_) return false;
-    return worldSelection_.EditStatus(SelectionContext(), *worldSelection_.Version()).Succeeded();
+        || selectionBoundCatalogRevision_ != selectionCatalogRevision_);
+}
+
+bool WorldModule::SelectionEditable() const {
+    return SelectionBoundToCurrentMap()
+        && worldSelection_.EditStatus(SelectionContext(), *worldSelection_.Version()).Succeeded();
+}
+
+bool WorldModule::SelectionDeletable() const {
+    return SelectionBoundToCurrentMap()
+        && worldSelection_.DeleteStatus(SelectionContext(), *worldSelection_.Version()).Succeeded();
 }
 
 std::uint64_t WorldModule::SelectionRevision() const {
@@ -234,8 +243,9 @@ void WorldModule::ActivateOutlinerItem(const QModelIndex& index, bool center) {
     const auto id = *row->id;
     const auto position = row->positionWorld;
     const auto modifiers = QApplication::keyboardModifiers();
-    const auto mode = modifiers.testFlag(Qt::ControlModifier) ? Services::SelectionMode::Subtract
-        : modifiers.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add : Services::SelectionMode::Replace;
+    // Shift 并入目录中已选范围；只按 Ctrl 切换此项。
+    const auto mode = modifiers.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add
+        : modifiers.testFlag(Qt::ControlModifier) ? Services::SelectionMode::Toggle : Services::SelectionMode::Replace;
     std::vector<Services::WorldObjectId> range;
     if (mode == Services::SelectionMode::Add && outliner_->selectionModel())
         for (const auto& selected : outliner_->selectionModel()->selectedRows())

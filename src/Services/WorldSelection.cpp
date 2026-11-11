@@ -244,10 +244,18 @@ Result<WorldSelectionSnapshot> WorldSelection::Snapshot(const WorldSelectionCont
 }
 Status WorldSelection::EditStatus(const WorldSelectionContext& context,
     const WorldSelectionVersion& expected) const {
+    return CheckWritable(context, expected, false);
+}
+Status WorldSelection::DeleteStatus(const WorldSelectionContext& context,
+    const WorldSelectionVersion& expected) const {
+    return CheckWritable(context, expected, true);
+}
+Status WorldSelection::CheckWritable(const WorldSelectionContext& context,
+    const WorldSelectionVersion& expected, bool allowMixed) const {
     const auto snapshot = Snapshot(context, expected);
     if (!snapshot.Succeeded()) return {snapshot.diagnostics};
     if (snapshot.value->selected.empty()) return Invalid("WORLD_SELECTION_EMPTY", "没有可编辑的场景选择。");
-    if (snapshot.value->selected.size() > 1
+    if (!allowMixed && snapshot.value->selected.size() > 1
         && std::any_of(snapshot.value->selected.begin(), snapshot.value->selected.end(),
             [](const auto& id) { return !std::holds_alternative<MapData::PlacementId>(id); }))
         return Invalid("WORLD_SELECTION_MIXED", "辅助对象混选没有共同编辑事务，请单独选择区域或镜头。");
@@ -278,23 +286,33 @@ Result<WorldSelectionSnapshot> WorldSelection::Select(const WorldSelectionContex
     const WorldSelectionVersion& expected, SelectionMode mode, std::span<const WorldObjectId> ids) {
     const auto status = Check(context, expected); if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
     const auto before = Snapshot(context, expected); if (!before.Succeeded()) return before;
-    if (ids.size() > MaxSelection || (mode != SelectionMode::Replace && mode != SelectionMode::Add && mode != SelectionMode::Subtract))
+    if (ids.size() > MaxSelection || (mode != SelectionMode::Replace && mode != SelectionMode::Add
+        && mode != SelectionMode::Subtract && mode != SelectionMode::Toggle))
         return Failure<WorldSelectionSnapshot>("WORLD_SELECTION_LIMIT", "选择操作无效或对象数超过4096。");
+    // 切换按调用前的选择判定，同一批里重复的身份不会来回翻转。
+    const auto wasSelected = [this](const WorldObjectId& id) {
+        return std::find(selected_.begin(), selected_.end(), id) != selected_.end();
+    };
+    const auto removes = [&](const WorldObjectId& id) {
+        return mode == SelectionMode::Subtract || (mode == SelectionMode::Toggle && wasSelected(id));
+    };
     for (const auto& id : ids) {
         if (!ValidId(*context.document, id)) return Failure<WorldSelectionSnapshot>("WORLD_SELECTION_ID_STALE", "选择对象的完整身份与当前地图不符。");
         const auto flags = Flags(id);
-        if (mode != SelectionMode::Subtract && (!flags.visible || flags.locked))
+        if (!removes(id) && (!flags.visible || flags.locked))
             return Failure<WorldSelectionSnapshot>("WORLD_SELECTION_DISABLED", "隐藏或锁定对象不能加入编辑选择。");
     }
     auto next = mode == SelectionMode::Replace ? std::vector<WorldObjectId>{} : selected_;
+    std::optional<WorldObjectId> added;
     for (const auto& id : ids) {
         const auto found = std::find(next.begin(), next.end(), id);
-        if (mode == SelectionMode::Subtract) { if (found != next.end()) next.erase(found); }
-        else if (found == next.end()) next.push_back(id);
+        if (removes(id)) { if (found != next.end()) next.erase(found); }
+        else if (found == next.end()) { next.push_back(id); added = id; }
     }
     if (next.size() > MaxSelection) return Failure<WorldSelectionSnapshot>("WORLD_SELECTION_LIMIT", "合并选择超过4096个对象。");
     std::optional<WorldObjectId> primary = primary_;
-    if (mode != SelectionMode::Subtract && !ids.empty()) primary = ids.back();
+    if ((mode == SelectionMode::Replace || mode == SelectionMode::Add) && !ids.empty()) primary = ids.back();
+    if (mode == SelectionMode::Toggle && added) primary = added;
     if (!primary || std::find(next.begin(), next.end(), *primary) == next.end()) primary = next.empty() ? std::nullopt : std::optional(next.back());
     if (next != selected_ || primary != primary_) {
         if (version_->editorRevision == std::numeric_limits<std::uint64_t>::max()) return Failure<WorldSelectionSnapshot>("WORLD_SELECTION_REVISION", "编辑器选择修订已耗尽。");

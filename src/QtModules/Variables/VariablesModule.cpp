@@ -85,11 +85,16 @@ void VariablesModule::Refresh() {
                 return Status{QtProject::PublishTriggerGraphOperations(project_, std::move(operations), label).diagnostics};
             }});
         // 删除前与 Agent 删除门禁同一审计：触发器参数、代码里的直接引用和按名使用。
-        editor_->SetRemovalCheck([this](const Trigger::VariableRecord& record) -> std::optional<VariablesDialog::RemovalReview> {
-            Trigger::GraphRemove remove;
-            remove.target = {Trigger::GraphRecordKind::Variable, record.id, {}};
-            remove.expectedName = record.name.text;
-            const auto audit = QtProject::RemovalCodeAudit::Prepare(project_, {remove}, {});
+        editor_->SetRemovalCheck([this](const std::vector<Trigger::VariableRecord>& records) -> std::optional<VariablesDialog::RemovalReview> {
+            // 多选删除时一次审计全部目标，引用合计后一起列出。
+            std::vector<Trigger::GraphRemove> targets;
+            for (const auto& record : records) {
+                Trigger::GraphRemove remove;
+                remove.target = {Trigger::GraphRecordKind::Variable, record.id, {}};
+                remove.expectedName = record.name.text;
+                targets.push_back(std::move(remove));
+            }
+            const auto audit = QtProject::RemovalCodeAudit::Prepare(project_, std::move(targets), {});
             std::optional<QtProject::RemovalCodeNotice> result;
             const bool finished = UiKit::RunBlockingTask(page_, tr("正在检查变量的引用…"), tr("取消删除"),
                 [&](const UiKit::BlockingTaskControl& control) { result = audit.Run({}, *control.stop); });

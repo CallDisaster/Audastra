@@ -5,6 +5,7 @@
 #include "EditorProject.h"
 #include "ObjectNames.h"
 #include "Commands/MapDataCommands.h"
+#include "ProjectAuxiliaryEdits.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Game/SoundChannels.h"
@@ -16,10 +17,12 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Script/MapScript.h"
+#include "War3MapCore/Services/AuxiliaryEditing.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 
 #include <QAbstractItemModel>
+#include <QAction>
 #include <QAudioOutput>
 #include <QByteArray>
 #include <QBuffer>
@@ -40,6 +43,8 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QHash>
+#include <QSet>
 #include <QComboBox>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -407,6 +412,9 @@ void SoundsModule::BuildPage() {
     auto* duplicate = new QPushButton(tr("复制定义"), definitions);
     duplicate->setObjectName("soundDuplicateDefinition");
     heading->addWidget(duplicate);
+    auto* remove = new QPushButton(tr("删除定义"), definitions);
+    remove->setObjectName("soundDeleteDefinition");
+    heading->addWidget(remove);
     middle->addLayout(heading);
     definitionsTable_ = new QTableWidget(definitions);
     ConfigureWrappedTable(definitionsTable_);
@@ -430,7 +438,8 @@ void SoundsModule::BuildPage() {
     definitionsTable_->verticalHeader()->hide();
     definitions->setMinimumWidth(520);
     definitionsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    definitionsTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Ctrl/Shift 多选用于批量复制与删除；属性区始终显示当前行。
+    definitionsTable_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     definitionsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     middle->addWidget(definitionsTable_, 1);
 
@@ -555,17 +564,37 @@ void SoundsModule::BuildPage() {
         fields_[1]->setText(resourceRows_[static_cast<std::size_t>(row)].path);
     });
     connect(duplicate, &QPushButton::clicked, this, [this] {
-        const int row = definitionsTable_->currentRow();
-        if (row < 0) return;
-        const auto status = DuplicateDefinition(static_cast<std::size_t>(row));
+        const auto rows = SelectedDefinitionRows();
+        if (rows.empty()) return;
+        const auto status = DuplicateDefinitions(rows);
         if (!status.Succeeded()) ShowStatus(Issue(status), true);
     });
+    const auto removeSelected = [this] {
+        const auto rows = SelectedDefinitionRows();
+        if (rows.empty()) return;
+        const auto status = DeleteDefinitions(rows);
+        if (!status.Succeeded()) ShowStatus(Issue(status), true);
+        else ShowStatus(tr("已删除 %1 个声音定义 · 可撤销").arg(rows.size()));
+    };
+    connect(remove, &QPushButton::clicked, this, removeSelected);
+    auto* removeKey = new QAction(tr("删除定义"), definitionsTable_);
+    removeKey->setShortcut(QKeySequence::Delete);
+    removeKey->setShortcutContext(Qt::WidgetShortcut);
+    definitionsTable_->addAction(removeKey);
+    connect(removeKey, &QAction::triggered, this, removeSelected);
     connect(definitionsTable_, &QTableWidget::currentCellChanged, this,
         [this](int row, int, int previous, int) {
             if (loading_) return;
             if (draftChanged_ && previous >= 0 && row != previous) {
-                QSignalBlocker blocker(definitionsTable_);
-                definitionsTable_->selectRow(previous);
+                // 直接经选择模型恢复，不受按住的 Ctrl/Shift 影响；鼠标按下随后还会改选中，事件结束后再恢复一次。
+                const auto restore = [this, previous] {
+                    if (!draftChanged_ || previous >= definitionsTable_->rowCount()) return;
+                    QSignalBlocker blocker(definitionsTable_);
+                    definitionsTable_->selectionModel()->setCurrentIndex(definitionsTable_->model()->index(previous, 0),
+                        QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+                };
+                restore();
+                QTimer::singleShot(0, definitionsTable_, restore);
                 ShowStatus(tr("先应用或放弃当前修改，再切换定义"), true);
                 return;
             }
@@ -628,6 +657,22 @@ void SoundsModule::RebuildDefinitions() {
     if (!definitionsTable_) return;
     loading_ = true;
     QSignalBlocker blocker(definitionsTable_);
+    // 多选按“定义名 + 同名序号”保留（复制后改选新副本）；当前行仍由 selectedDefinition_ 决定。
+    const auto identity = [](QHash<QByteArray, int>& seen, const QByteArray& name) {
+        return name + '\0' + QByteArray::number(seen[name]++);
+    };
+    std::vector<int> keep = std::exchange(pendingSelection_, {});
+    QSet<QByteArray> keptNames;
+    if (keep.empty()) {
+        QHash<QByteArray, int> seen;
+        for (int row = 0; row < definitionsTable_->rowCount(); ++row) {
+            const auto* item = definitionsTable_->item(row, 0);
+            if (!item) continue;
+            const auto key = identity(seen, item->data(Qt::UserRole).toByteArray());
+            if (definitionsTable_->selectionModel()->isRowSelected(row)) keptNames.insert(key);
+        }
+    }
+    QHash<QByteArray, int> seen;
     const auto* sounds = visibleSounds_ ? &*visibleSounds_ : nullptr;
     definitionsTable_->setRowCount(sounds ? static_cast<int>(sounds->entries.size()) : 0);
     if (sounds) for (int row = 0; row < definitionsTable_->rowCount(); ++row) {
@@ -644,12 +689,22 @@ void SoundsModule::RebuildDefinitions() {
             auto* item = new QTableWidgetItem(columns[column]);
             item->setToolTip(column == 0 ? rawText(entry.name) + (name.reason.empty() ? QString{} : "\n" + Text(name.reason))
                 : column == 1 ? rawText(entry.filePath) + (path.reason.empty() ? QString{} : "\n" + Text(path.reason)) : columns[column]);
+            if (column == 0) item->setData(Qt::UserRole, QByteArray::fromStdString(entry.name));
             definitionsTable_->setItem(row, column, item);
         }
+        if (keptNames.contains(identity(seen, QByteArray::fromStdString(entry.name)))) keep.push_back(row);
     }
     if (selectedDefinition_ < 0 || selectedDefinition_ >= definitionsTable_->rowCount())
         selectedDefinition_ = definitionsTable_->rowCount() ? 0 : -1;
-    if (selectedDefinition_ >= 0) definitionsTable_->selectRow(selectedDefinition_);
+    // 经选择模型设置，避免 Ctrl+Z 等仍按着修饰键时被当成切换选中。
+    auto* selection = definitionsTable_->selectionModel();
+    selection->clearSelection();
+    for (const int row : keep)
+        if (row >= 0 && row < definitionsTable_->rowCount())
+            selection->select(definitionsTable_->model()->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    if (selectedDefinition_ >= 0)
+        selection->setCurrentIndex(definitionsTable_->model()->index(selectedDefinition_, 0),
+            QItemSelectionModel::Select | QItemSelectionModel::Rows);
     loading_ = false;
 }
 
@@ -1029,25 +1084,80 @@ Status SoundsModule::AddDefinition(std::string name, std::string filePath) {
     return Commit(document, before, tr("新建声音定义"));
 }
 
-Status SoundsModule::DuplicateDefinition(std::size_t row) {
+Status SoundsModule::DuplicateDefinition(std::size_t row) { return DuplicateDefinitions({row}); }
+
+std::vector<std::size_t> SoundsModule::SelectedDefinitionRows() const {
+    std::vector<std::size_t> rows;
+    if (!definitionsTable_) return rows;
+    for (const auto& index : definitionsTable_->selectionModel()->selectedRows())
+        rows.push_back(static_cast<std::size_t>(index.row()));
+    if (rows.empty() && definitionsTable_->currentRow() >= 0)
+        rows.push_back(static_cast<std::size_t>(definitionsTable_->currentRow()));
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+Status SoundsModule::DuplicateDefinitions(std::vector<std::size_t> rows) {
     if (draftChanged_) return Bad("SOUND_DRAFT_PENDING", "先应用或放弃当前属性修改");
     auto* edits = project_.MapEdits();
     if (!edits) return Bad("SOUND_NO_PROJECT", "尚未打开地图数据");
     const auto snapshot = edits->Snapshot();
-    if (!snapshot.Sounds() || row >= snapshot.Sounds()->entries.size())
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    if (!snapshot.Sounds() || rows.empty() || rows.back() >= snapshot.Sounds()->entries.size())
         return Bad("SOUND_ROW_INVALID", "声音定义行不存在");
     auto document = *snapshot.Sounds();
     const auto before = document.Serialize();
     if (!before.Succeeded() || !before.value) return Status{before.diagnostics};
-    auto copy = document.entries[row];
-    const auto base = copy.name + "_Copy";
-    copy.name = base;
-    for (unsigned index = 2; std::any_of(document.entries.begin(), document.entries.end(),
-        [&](const auto& entry) { return entry.name == copy.name; }); ++index)
-        copy.name = base + std::to_string(index);
-    selectedDefinition_ = static_cast<int>(document.entries.size());
-    document.entries.push_back(std::move(copy));
-    return Commit(document, *before.value, tr("复制声音定义"));
+    const auto first = document.entries.size();
+    for (const auto row : rows) {
+        auto copy = document.entries[row];
+        const auto base = copy.name + "_Copy";
+        copy.name = base;
+        for (unsigned index = 2; std::any_of(document.entries.begin(), document.entries.end(),
+            [&](const auto& entry) { return entry.name == copy.name; }); ++index)
+            copy.name = base + std::to_string(index);
+        document.entries.push_back(std::move(copy));
+    }
+    const int previous = selectedDefinition_;
+    selectedDefinition_ = static_cast<int>(first);
+    if (definitionsTable_)
+        for (std::size_t row = first; row < document.entries.size(); ++row) pendingSelection_.push_back(static_cast<int>(row));
+    const auto status = Commit(document, *before.value,
+        rows.size() == 1 ? tr("复制声音定义") : tr("复制 %1 个声音定义").arg(rows.size()));
+    if (!status.Succeeded()) { selectedDefinition_ = previous; pendingSelection_.clear(); }
+    return status;
+}
+
+Status SoundsModule::DeleteDefinitions(std::vector<std::size_t> rows) {
+    if (draftChanged_) return Bad("SOUND_DRAFT_PENDING", "先应用或放弃当前属性修改");
+    auto* edits = project_.MapEdits();
+    if (!edits) return Bad("SOUND_NO_PROJECT", "尚未打开地图数据");
+    const auto snapshot = edits->Snapshot();
+    if (snapshot.Member(MapDataKind::Sounds).state != MapDataState::Ready || !snapshot.Sounds())
+        return Bad("SOUND_SOURCE_UNSAFE", "声音定义来源损坏或不明确，不能删除");
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    if (rows.empty() || rows.back() >= snapshot.Sounds()->entries.size())
+        return Bad("SOUND_ROW_INVALID", "声音定义行不存在");
+    auto document = *snapshot.Sounds();
+    const auto before = document.Serialize();
+    if (!before.Succeeded() || !before.value) return Status{before.diagnostics};
+    // 与区域/镜头删除同一引用门禁：T 参数、引用索引、区域环境音及脚本覆盖；无法确认即拒绝。
+    const auto references = QtProject::CaptureAuxiliaryReferences(project_);
+    for (const auto row : rows) {
+        const auto checked = Services::CheckSoundRemoval(snapshot, document.entries[row].name, references);
+        if (!checked.Succeeded()) return checked;
+    }
+    for (auto row = rows.rbegin(); row != rows.rend(); ++row)
+        document.entries.erase(document.entries.begin() + static_cast<std::ptrdiff_t>(*row));
+    const int previous = selectedDefinition_;
+    selectedDefinition_ = document.entries.empty() ? -1
+        : static_cast<int>(std::min(rows.front(), document.entries.size() - 1));
+    const auto status = Commit(document, *before.value,
+        rows.size() == 1 ? tr("删除声音定义") : tr("删除 %1 个声音定义").arg(rows.size()));
+    if (!status.Succeeded()) selectedDefinition_ = previous;
+    return status;
 }
 
 Status SoundsModule::ApplyInspector() {

@@ -186,15 +186,19 @@ void WorldModule::PresentSelection() {
     UpdateOverlay(); UpdateSelectionText();
 }
 
+Services::SelectionMode ViewportSelectionMode(Qt::KeyboardModifiers modifiers) noexcept {
+    if (modifiers.testFlag(Qt::ShiftModifier)) return Services::SelectionMode::Add;
+    if (modifiers.testFlag(Qt::ControlModifier)) return Services::SelectionMode::Toggle;
+    return Services::SelectionMode::Replace;
+}
+
 void WorldModule::SelectInstance(int instance, int modifiers) {
     std::vector<Services::WorldObjectId> ids;
     if (instance >= 0 && scene_ && static_cast<std::size_t>(instance) < scene_->instanceRequests.size()) {
         const auto request = scene_->instanceRequests[static_cast<std::size_t>(instance)];
         if (request < placementIds_.size()) ids.emplace_back(placementIds_[request]);
     }
-    const auto keys = Qt::KeyboardModifiers(modifiers);
-    (void)SelectObjects(ids, keys.testFlag(Qt::ControlModifier) ? Services::SelectionMode::Subtract
-        : keys.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add : Services::SelectionMode::Replace);
+    (void)SelectObjects(ids, ViewportSelectionMode(Qt::KeyboardModifiers(modifiers)));
 }
 
 void WorldModule::SelectBox(const QVector<int>& instances, int modifiers) {
@@ -204,9 +208,7 @@ void WorldModule::SelectBox(const QVector<int>& instances, int modifiers) {
         const auto request = scene_->instanceRequests[static_cast<std::size_t>(instance)];
         if (request < placementIds_.size()) ids.emplace_back(placementIds_[request]);
     }
-    const auto keys = Qt::KeyboardModifiers(modifiers);
-    (void)SelectObjects(ids, keys.testFlag(Qt::ControlModifier) ? Services::SelectionMode::Subtract
-        : keys.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add : Services::SelectionMode::Replace);
+    (void)SelectObjects(ids, ViewportSelectionMode(Qt::KeyboardModifiers(modifiers)));
 }
 
 void WorldModule::SelectGround(double x, double y, int modifiers) {
@@ -238,10 +240,8 @@ void WorldModule::SelectGround(double x, double y, int modifiers) {
             if (!candidate || area < smallest) { smallest = area; candidate = id; }
         }
     }
-    const auto keys = Qt::KeyboardModifiers(modifiers);
     (void)SelectObjects(candidate ? std::span(&*candidate, 1) : std::span<const Services::WorldObjectId>{},
-        keys.testFlag(Qt::ControlModifier) ? Services::SelectionMode::Subtract
-        : keys.testFlag(Qt::ShiftModifier) ? Services::SelectionMode::Add : Services::SelectionMode::Replace);
+        ViewportSelectionMode(Qt::KeyboardModifiers(modifiers)));
 }
 
 bool WorldModule::HandleAt(double x, double y) const {
@@ -463,11 +463,20 @@ void WorldModule::FinishDrag() {
 }
 
 void WorldModule::DeleteSelection() {
-    if (!SelectionEditable()) return;
-    if (selectedRegion_ || selectedCamera_) {
+    if (!SelectionDeletable()) return;
+    const auto snapshot = worldSelection_.Snapshot(SelectionContext(), *worldSelection_.Version());
+    if (!snapshot.Succeeded()) return;
+    // 选择里有区域或镜头时（含与摆放混选）走共用删除事务，合成一次撤销。
+    if (std::any_of(snapshot.value->selected.begin(), snapshot.value->selected.end(),
+            [](const auto& id) { return !std::holds_alternative<MapData::PlacementId>(id); })) {
         DeleteSelectedAuxiliary();
         return;
     }
+    DeletePlacementSelection();
+}
+
+void WorldModule::DeletePlacementSelection() {
+    if (!SelectionEditable()) return;
     if (selectedPlacements_.empty() || !project_.mapEdits_) return;
     const auto status = MapData::DeletePlacements(*project_.mapEdits_, selectedPlacements_);
     if (!status.Succeeded()) {

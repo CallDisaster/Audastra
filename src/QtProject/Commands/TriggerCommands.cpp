@@ -501,6 +501,40 @@ void RemoveVariableUndoCommand::redo() {
     }
 }
 
+std::unique_ptr<QUndoCommand> RemoveVariables(War3Map::Trigger::TriggerDocument& document,
+    const std::vector<War3Map::StableId>& ids, const QString& text, War3Map::Status& status) {
+    struct Target {
+        std::size_t row = 0;
+        War3Map::Trigger::VariableRecord record;
+    };
+    std::vector<Target> targets;
+    for (const auto id : ids) {
+        const auto found = std::find_if(document.variables.begin(), document.variables.end(),
+            [id](const War3Map::Trigger::VariableRecord& variable) { return variable.id == id; });
+        if (found == document.variables.end()) {
+            status = War3Map::Status::Failure("Trigger.Variables", "VARIABLE_MISSING", "要删除的变量已不存在，请重新选择。");
+            return nullptr;
+        }
+        const auto row = static_cast<std::size_t>(found - document.variables.begin());
+        if (std::none_of(targets.begin(), targets.end(), [row](const Target& target) { return target.row == row; }))
+            targets.push_back({row, *found});
+    }
+    // 先删行号大的，前面的行号不随删除移动；撤销按相反顺序插回原位置。
+    std::sort(targets.begin(), targets.end(), [](const Target& left, const Target& right) { return left.row > right.row; });
+    auto group = std::make_unique<QUndoCommand>(text);
+    std::vector<RemoveVariableUndoCommand*> removed;
+    for (auto& target : targets) {
+        status = War3Map::Trigger::TriggerDocumentEditor::RemoveVariable(document, target.record.name.text);
+        if (!status.Succeeded()) {
+            for (auto step = removed.rbegin(); step != removed.rend(); ++step) (*step)->undo();
+            return nullptr;
+        }
+        removed.push_back(new RemoveVariableUndoCommand(&document, std::move(target.record), target.row, text, group.get()));
+    }
+    status = War3Map::Status::Ok();
+    return group;
+}
+
 PasteEcaUndoCommand::PasteEcaUndoCommand(
     War3Map::Trigger::TriggerDocument* document,
     const War3Map::Trigger::UiCatalog* catalog,

@@ -39,6 +39,8 @@ public:
     [[nodiscard]] Status CreateAuxiliary(MapData::RegionRecord record);
     [[nodiscard]] Status CreateAuxiliary(MapData::CameraRecord record);
     [[nodiscard]] Status DeleteAuxiliary(MapDataKind kind, std::size_t row);
+    // 多行一起删除（同类区域或镜头），一次撤销；任一行有引用或身份变化则整批不改。
+    [[nodiscard]] Status DeleteAuxiliaryRows(MapDataKind kind, std::vector<std::size_t> rows);
 
 private:
     void EditSelected(int category, int row, int column);

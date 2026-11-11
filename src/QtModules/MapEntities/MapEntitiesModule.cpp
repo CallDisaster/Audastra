@@ -234,8 +234,15 @@ QWidget* MapEntitiesModule::Widget() {
     connect(add, &QPushButton::clicked, this, &MapEntitiesModule::AddAuxiliary);
     connect(remove, &QPushButton::clicked, this, [this] {
         const int category = tabs_->currentIndex();
-        if (category < 2 || category > 3 || tables_[category]->currentRow() < 0) return;
-        ShowError(DeleteAuxiliary(kKinds[category], static_cast<std::size_t>(tables_[category]->currentRow())));
+        if (category < 2 || category > 3) return;
+        // 删除全部选中的行（Ctrl/Shift 多选），一次撤销恢复。
+        std::vector<std::size_t> rows;
+        for (const auto& index : tables_[category]->selectionModel()->selectedRows())
+            rows.push_back(static_cast<std::size_t>(index.row()));
+        if (rows.empty() && tables_[category]->currentRow() >= 0)
+            rows.push_back(static_cast<std::size_t>(tables_[category]->currentRow()));
+        if (rows.empty()) return;
+        ShowError(DeleteAuxiliaryRows(kKinds[category], std::move(rows)));
     });
     layout->addWidget(tabs_, 1);
     Refresh();
@@ -250,6 +257,13 @@ void MapEntitiesModule::Refresh() {
     for (int kind = 0; kind < 4; ++kind) {
         auto* table = tables_[kind];
         const int selected = table->currentRow();
+        // 刷新后按对象身份恢复多选和当前行；身份已变化时退回原行号。
+        QList<QJsonObject> selectedIds;
+        QJsonObject currentId;
+        for (const auto& index : table->selectionModel()->selectedRows())
+            if (const auto* item = table->item(index.row(), 0)) selectedIds.push_back(item->data(Qt::UserRole + 20).toJsonObject());
+        if (const auto* item = selected >= 0 ? table->item(selected, 0) : nullptr)
+            currentId = item->data(Qt::UserRole + 20).toJsonObject();
         table->setRowCount(0);
         const auto append = [table](const QStringList& cells, const QString& rawcode = {},
             const QString& iconPath = {}, const QString& issue = {}, const QString& nameReference = {}) {
@@ -307,7 +321,22 @@ void MapEntitiesModule::Refresh() {
             const auto id = WorldNavigation::At(snapshot, kind, static_cast<std::uint32_t>(row));
             if (id) table->item(row, 0)->setData(Qt::UserRole + 20, WorldNavigation::Encode(*id));
         }
-        if (selected >= 0 && selected < table->rowCount()) table->selectRow(selected);
+        int restoredCurrent = -1;
+        bool restored = false;
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const auto encoded = table->item(row, 0)->data(Qt::UserRole + 20).toJsonObject();
+            if (encoded.isEmpty()) continue;
+            if (selectedIds.contains(encoded)) {
+                table->selectionModel()->select(table->model()->index(row, 0),
+                    QItemSelectionModel::Select | QItemSelectionModel::Rows);
+                restored = true;
+            }
+            if (!currentId.isEmpty() && encoded == currentId) restoredCurrent = row;
+        }
+        if (restored) {
+            if (restoredCurrent < 0) restoredCurrent = table->selectionModel()->selectedRows().front().row();
+            table->selectionModel()->setCurrentIndex(table->model()->index(restoredCurrent, 0), QItemSelectionModel::NoUpdate);
+        } else if (selected >= 0 && selected < table->rowCount()) table->selectRow(selected);
     }
     RefreshVisibleIcons(tabs_->currentIndex());
 }
@@ -489,6 +518,30 @@ Status MapEntitiesModule::DeleteAuxiliary(MapDataKind kind, std::size_t row) {
     request.kind = kind; request.action = Services::AuxiliaryEditAction::Delete;
     request.sourceIndex = row; request.expectedRowKey = *key.value; request.expectedMemberSha256 = *identity.value;
     return QtProject::ApplyAuxiliaryEdit(project_, std::move(request), tr("删除区域或镜头"));
+}
+
+Status MapEntitiesModule::DeleteAuxiliaryRows(MapDataKind kind, std::vector<std::size_t> rows) {
+    if (!project_.mapEdits_) return Failure("MAP_SOURCE_MISSING", "尚未打开地图数据");
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    if (rows.empty()) return Status::Ok();
+    if (rows.size() == 1) return DeleteAuxiliary(kind, rows.front());
+    const auto binding = QtProject::CaptureAuxiliaryEditBinding(project_);
+    if (!binding.Succeeded()) return {binding.diagnostics};
+    const auto current = project_.mapEdits_->Snapshot();
+    const auto identity = Services::AuxiliaryEditing::MemberIdentity(current, kind);
+    if (!identity.Succeeded()) return {identity.diagnostics};
+    std::vector<Services::AuxiliaryEditRequest> requests;
+    for (const auto row : rows) {
+        const auto key = MapData::MapFieldRowKey(current, kind, row);
+        if (!key.Succeeded()) return {key.diagnostics};
+        Services::AuxiliaryEditRequest request;
+        request.kind = kind; request.action = Services::AuxiliaryEditAction::Delete;
+        request.sourceIndex = row; request.expectedRowKey = *key.value; request.expectedMemberSha256 = *identity.value;
+        requests.push_back(std::move(request));
+    }
+    return QtProject::ApplyAuxiliaryDeletion(project_, *binding.value, std::move(requests),
+        kind == MapDataKind::Regions ? tr("删除 %1 个区域").arg(rows.size()) : tr("删除 %1 个镜头").arg(rows.size()));
 }
 
 void MapEntitiesModule::ShowError(const Status& status) {

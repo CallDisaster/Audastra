@@ -145,13 +145,46 @@ void WorldModule::EditSelectedAuxiliary() {
 }
 
 void WorldModule::DeleteSelectedAuxiliary() {
-    if (!SelectionEditable()) return;
+    if (!SelectionDeletable()) return;
+    const auto snapshot = worldSelection_.Snapshot(SelectionContext(), *worldSelection_.Version());
+    if (!snapshot.Succeeded()) { Report(project_, selectionStatus_, snapshot.diagnostics); return; }
+    std::vector<MapData::PlacementId> placements;
+    std::vector<MapData::RegionId> regions;
+    std::vector<MapData::CameraId> cameras;
+    for (const auto& id : snapshot.value->selected) {
+        if (const auto* placement = std::get_if<MapData::PlacementId>(&id)) placements.push_back(*placement);
+        else if (const auto* region = std::get_if<MapData::RegionId>(&id)) regions.push_back(*region);
+        else if (const auto* camera = std::get_if<MapData::CameraId>(&id)) cameras.push_back(*camera);
+    }
+    if (regions.empty() && cameras.empty()) { DeletePlacementSelection(); return; }
     const auto binding = QtProject::CaptureAuxiliaryEditBinding(project_);
     if (!binding.Succeeded()) { Report(project_, selectionStatus_, binding.diagnostics); return; }
-    auto request = ExistingRequest(project_.mapEdits_->Snapshot(), selectedRegion_, selectedCamera_);
-    if (!request.Succeeded()) { Report(project_, selectionStatus_, request.diagnostics); return; }
-    request.value->action = Services::AuxiliaryEditAction::Delete; request.value->record = std::monostate{};
-    SubmitAuxiliary(std::move(*request.value), *binding.value, tr("删除区域或镜头"));
+    const auto source = project_.mapEdits_->Snapshot();
+    std::vector<Services::AuxiliaryEditRequest> requests;
+    const auto add = [&](const std::optional<MapData::RegionId>& region, const std::optional<MapData::CameraId>& camera) {
+        auto request = ExistingRequest(source, region, camera);
+        if (!request.Succeeded()) { Report(project_, selectionStatus_, request.diagnostics); return false; }
+        request.value->action = Services::AuxiliaryEditAction::Delete; request.value->record = std::monostate{};
+        requests.push_back(std::move(*request.value));
+        return true;
+    };
+    for (const auto& region : regions) if (!add(region, std::nullopt)) return;
+    for (const auto& camera : cameras) if (!add(std::nullopt, camera)) return;
+    if (placements.empty() && requests.size() == 1) {
+        SubmitAuxiliary(std::move(requests.front()), *binding.value, tr("删除区域或镜头"));
+        return;
+    }
+    // 多个区域/镜头或与摆放混选：同一共用删除命令，一次撤销恢复全部。
+    const auto total = placements.size() + requests.size();
+    const auto status = QtProject::DeleteWorldObjects(project_, *binding.value, placements, std::move(requests),
+        tr("删除 %1 个对象").arg(total));
+    if (!status.Succeeded()) {
+        Report(project_, selectionStatus_, status.diagnostics);
+        return;
+    }
+    CaptureAuxiliary(project_.mapEdits_->Snapshot());
+    ClearSelection();
+    RefreshOutliner(); UpdateOverlay(); UpdateSelectionText(); UpdateAuxiliaryActions();
 }
 
 void WorldModule::DuplicateSelectedAuxiliary() {
@@ -178,8 +211,11 @@ void WorldModule::UpdateAuxiliaryActions() {
     if (!page_) return;
     const bool available = QtProject::CaptureAuxiliaryEditBinding(project_).Succeeded();
     const bool auxiliary = available && (selectedRegion_ || selectedCamera_) && SelectionEditable();
-    for (const char* name : {"worldAuxiliaryProperties", "worldAuxiliaryInspectorProperties", "worldDeleteAuxiliary"})
+    for (const char* name : {"worldAuxiliaryProperties", "worldAuxiliaryInspectorProperties"})
         if (auto* button = page_->findChild<QPushButton*>(QLatin1String(name))) button->setEnabled(auxiliary);
+    // 删除作用于全部选中的对象（可多选区域、镜头并与摆放混选）。
+    if (auto* button = page_->findChild<QPushButton*>(QStringLiteral("worldDeleteAuxiliary")))
+        button->setEnabled(available && SelectionDeletable());
     if (auto* button = page_->findChild<QPushButton*>(QStringLiteral("worldDuplicateAuxiliary")))
         button->setEnabled(available && SelectionEditable() && std::none_of(selectedPlacements_.begin(), selectedPlacements_.end(),
             [](const auto& id) { return id.file == MapData::PlacementFile::Units && id.rawcode == "sloc"; }));

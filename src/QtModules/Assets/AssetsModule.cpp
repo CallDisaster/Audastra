@@ -203,7 +203,7 @@ QWidget* AssetsModule::Widget() {
         const QStringList selected = SelectedPaths();
         if (!selected.isEmpty()) EditProperties(selected.front());
     });
-    connect(deleteButton, &QPushButton::clicked, this, [this]() { (void)DeleteAssets(SelectedPaths()); });
+    connect(deleteButton, &QPushButton::clicked, this, [this]() { (void)DeleteSelection(); });
     connect(tree_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex& current) {
         // 树里点选文件夹：只刷新列表与路径栏（不在树的信号里重建树本身）。
         if (rebuilding_ || !current.isValid()) return;

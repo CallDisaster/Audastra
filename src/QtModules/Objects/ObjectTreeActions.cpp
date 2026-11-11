@@ -128,10 +128,19 @@ void ObjectModule::ShowObjectTreeMenu(const QPoint& globalPos) {
     references->setEnabled(current.has_value() && host_ != nullptr);
     menu.addSeparator();
     QAction* create = menu.addAction(tr("新建自定义物体…"));
-    QAction* clone = menu.addAction(tr("复制自定义物体"));
-    clone->setEnabled(record != nullptr && record->parentRawcode.has_value());
+    const auto customSelection = SelectedCustomObjects();
+    QAction* clone = menu.addAction(customSelection.size() > 1
+        ? tr("复制 %1 个自定义物体").arg(customSelection.size()) : tr("复制自定义物体"));
+    clone->setEnabled(customSelection.size() > 1 || (record != nullptr && record->parentRawcode.has_value()));
     QAction* modify = nullptr;
     if (current && record == nullptr) modify = menu.addAction(tr("修改此对象"));
+    // 多选了两个以上地图对象时提供批量修改，对话框预先勾选这些对象。
+    qsizetype mapSelection = 0;
+    if (document != nullptr) {
+        for (const auto& selected : objectTree_->SelectedObjects())
+            if (document->FindObject({type, selected.first.toStdString()}) != nullptr) ++mapSelection;
+    }
+    QAction* batch = mapSelection > 1 ? menu.addAction(tr("批量修改 %1 个物体…").arg(mapSelection)) : nullptr;
     menu.addSeparator();
     QAction* remove = menu.addAction(tr("删除"));
     remove->setEnabled(false);
@@ -149,6 +158,8 @@ void ObjectModule::ShowObjectTreeMenu(const QPoint& globalPos) {
         DuplicateSelectedCustomObject();
     } else if (chosen == modify) {
         EditSelectedStandardObject();
+    } else if (chosen == batch) {
+        BatchEditObjects();
     }
 }
 

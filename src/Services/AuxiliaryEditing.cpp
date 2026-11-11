@@ -6,8 +6,11 @@
 #include "War3MapCore/Trigger/TriggerDocument.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
+#include <functional>
+#include <optional>
 #include <set>
 #include <type_traits>
 
@@ -82,34 +85,25 @@ Status CheckRecord(const CameraRecord& record, const MapDocument&, const CameraR
         return Bad("CAMERA_RANGE_INVALID", "镜头距离不得为负，视野须在 0 与 180 度之间，远裁剪须为正数。");
     return Status::Ok();
 }
-Status CheckReferences(const MapDocument& current, const AuxiliaryEditRequest& request, std::string_view oldName,
+// 已知引用：原参数池与共用引用索引。
+Status KnownReferences(const MapDocument& current, const std::vector<std::string>& tokens, const std::string& symbol,
     const AuxiliaryReferenceContext& context) {
-    const std::string symbol = Symbol(request.kind, oldName);
-    const std::string prefix = request.kind == MapDataKind::Regions ? "gg_rct_" : "gg_cam_";
-    const std::vector<std::string> tokens{symbol, prefix + std::string(oldName)};
-    if (context.triggers) {
-        // 同时检查原参数池，不能把索引的深度/损坏边覆盖范围当作无引用证明。
-        for (const auto& argument : context.triggers->argumentNodes) {
-            const auto value = Text::TrimHorizontal(argument.value.text);
-            if (std::any_of(tokens.begin(), tokens.end(), [&](const auto& token) { return value == token; }))
-                return Bad("AUX_REFERENCED", "触发器参数仍引用 " + symbol + "，请先修改引用后再删除或更名。");
-        }
-        ProjectReferenceInputs inputs; inputs.triggers = context.triggers; inputs.map = &current;
-        const auto index = ProjectReferenceIndex::Build(inputs);
-        const auto usages = index.UsagesOf(tokens);
-        if (!usages.empty()) return Bad("AUX_REFERENCED", "仍有触发器或变量引用 " + symbol + "："
-            + usages.front()->owner + "。请先修改这些引用，再删除或更名。");
+    if (!context.triggers) return Status::Ok();
+    // 同时检查原参数池，不能把索引的深度/损坏边覆盖范围当作无引用证明。
+    for (const auto& argument : context.triggers->argumentNodes) {
+        const auto value = Text::TrimHorizontal(argument.value.text);
+        if (std::any_of(tokens.begin(), tokens.end(), [&](const auto& token) { return value == token; }))
+            return Bad("AUX_REFERENCED", "触发器参数仍引用 " + symbol + "，请先修改引用后再删除或更名。");
     }
-    if (request.kind == MapDataKind::Regions && request.action == AuxiliaryEditAction::Delete) {
-        const auto creation = current.Regions()->entries[static_cast<std::size_t>(request.sourceIndex)].creationNumber;
-        const auto state = current.Member(MapDataKind::Units).state;
-        if (state != MapDataState::Missing && (state != MapDataState::Ready || !current.Units()))
-            return Bad("AUX_REFERENCE_COVERAGE", "单位表未完整解析，无法核对传送门对区域的引用。");
-        if (current.Units()) for (const auto& unit : current.Units()->units)
-            if (unit.waygateRegionId == creation)
-                return Bad("REGION_WAYGATE_REFERENCE", "区域仍被传送门目标引用（单位创建编号 "
-                    + std::to_string(unit.creationId) + "），请先修改该目标。");
-    }
+    ProjectReferenceInputs inputs; inputs.triggers = context.triggers; inputs.map = &current;
+    const auto index = ProjectReferenceIndex::Build(inputs);
+    const auto usages = index.UsagesOf(tokens);
+    if (!usages.empty()) return Bad("AUX_REFERENCED", "仍有触发器或变量引用 " + symbol + "："
+        + usages.front()->owner + "。请先修改这些引用，再删除或更名。");
+    return Status::Ok();
+}
+// 引用覆盖：触发器来源须完整读取，且没有自定义或外部脚本；否则静态索引不能证明没有引用。
+Status ReferenceCoverage(const std::string& symbol, const AuxiliaryReferenceContext& context, std::string_view keep) {
     if (!context.completeTriggerSource || !context.triggers)
         return Bad("AUX_REFERENCE_COVERAGE", "触发器来源尚未完整读取，无法确认删除或更名的影响。");
     const auto& triggers = *context.triggers;
@@ -120,8 +114,27 @@ Status CheckReferences(const MapDocument& current, const AuxiliaryEditRequest& r
             return eca.name.text == "CustomScriptCode";
         }) || !context.opaqueScriptSources.empty();
     if (opaque) return Bad("AUX_SCRIPT_REFERENCES_UNKNOWN", "存在自定义或外部脚本，静态 T 索引不能证明没有引用 "
-        + symbol + "；请先消除或明确迁移脚本中的引用。范围和其它属性仍可编辑。");
+        + symbol + "；请先消除或明确迁移脚本中的引用。" + std::string(keep));
     return Status::Ok();
+}
+Status CheckReferences(const MapDocument& current, const AuxiliaryEditRequest& request, std::string_view oldName,
+    const AuxiliaryReferenceContext& context) {
+    const std::string symbol = Symbol(request.kind, oldName);
+    const std::string prefix = request.kind == MapDataKind::Regions ? "gg_rct_" : "gg_cam_";
+    const std::vector<std::string> tokens{symbol, prefix + std::string(oldName)};
+    const auto known = KnownReferences(current, tokens, symbol, context);
+    if (!known.Succeeded()) return known;
+    if (request.kind == MapDataKind::Regions && request.action == AuxiliaryEditAction::Delete) {
+        const auto creation = current.Regions()->entries[static_cast<std::size_t>(request.sourceIndex)].creationNumber;
+        const auto state = current.Member(MapDataKind::Units).state;
+        if (state != MapDataState::Missing && (state != MapDataState::Ready || !current.Units()))
+            return Bad("AUX_REFERENCE_COVERAGE", "单位表未完整解析，无法核对传送门对区域的引用。");
+        if (current.Units()) for (const auto& unit : current.Units()->units)
+            if (unit.waygateRegionId == creation)
+                return Bad("REGION_WAYGATE_REFERENCE", "区域仍被传送门目标引用（单位创建编号 "
+                    + std::to_string(unit.creationId) + "），请先修改该目标。");
+    }
+    return ReferenceCoverage(symbol, context, "范围和其它属性仍可编辑。");
 }
 Status CheckCreatedSymbol(const AuxiliaryReferenceContext& context, const std::string& symbol) {
     if (!context.completeTriggerSource || !context.triggers)
@@ -160,6 +173,23 @@ Status CheckReferenceTransition(const MapDocument& current, const AuxiliaryEditR
     return Status::Ok();
 }
 } // namespace
+
+Status CheckSoundRemoval(const MapDocument& current, std::string_view soundName, const AuxiliaryReferenceContext& context) {
+    const std::string name(soundName);
+    const std::string symbol = name.starts_with("gg_snd_") ? name : "gg_snd_" + Text::ObjectScriptName(name);
+    std::vector<std::string> tokens{symbol};
+    if (name != symbol) tokens.push_back(name);
+    const auto known = KnownReferences(current, tokens, symbol, context);
+    if (!known.Succeeded()) return known;
+    // 区域环境音按声音变量名引用；区域表读不全时不能当作没有引用。
+    const auto& regions = current.Member(MapDataKind::Regions);
+    if (regions.state != MapDataState::Missing && (regions.state != MapDataState::Ready || !current.Regions()))
+        return Bad("AUX_REFERENCE_COVERAGE", "区域表未完整解析，无法核对区域环境音对 " + symbol + " 的引用。");
+    if (current.Regions()) for (const auto& region : current.Regions()->entries)
+        if (region.ambientSound == symbol)
+            return Bad("SOUND_REGION_REFERENCE", "区域“" + region.name + "”的环境音仍使用 " + symbol + "，请先修改该区域。");
+    return ReferenceCoverage(symbol, context, {});
+}
 
 bool AuxiliaryEditing::AreEquivalentMapSources(const MapDocument& left, const MapDocument& right) {
     for (std::size_t i = 0; i < left.Members().size(); ++i)
@@ -277,6 +307,93 @@ Status AuxiliaryEditing::Apply(MapDataEditSession& session, const PreparedAuxili
     const auto prepared = session.Prepare(plan.Kind(), Result<std::vector<std::byte>>::Success(
         plan.After().Member(plan.Kind()).sources.front().data), command.changes);
     if (!prepared.Succeeded()) return prepared;
+    return session.CommitCommand(std::move(command), [&](const auto& receipt) {
+        return validator ? validator(plan.Before(), plan.After(), receipt) : Status::Ok();
+    });
+}
+
+Result<PreparedAuxiliaryDeletion> AuxiliaryEditing::PrepareDeletion(std::shared_ptr<const MapDocument> current,
+    std::vector<AuxiliaryEditRequest> requests, const AuxiliaryReferenceContext& references) {
+    using Output = Result<PreparedAuxiliaryDeletion>;
+    const auto fail = [](const Status& status) { return Output{std::nullopt, status.diagnostics}; };
+    if (!current) return fail(Bad("AUX_SOURCE_UNAVAILABLE", "当前地图数据不可用。"));
+    if (requests.empty()) return fail(Bad("AUX_DELETE_EMPTY", "没有要删除的区域或镜头。"));
+    if (requests.size() > 4096) return fail(Bad("AUX_DELETE_LIMIT", "一次最多删除 4096 个区域或镜头。"));
+    std::array<std::vector<std::uint64_t>, 2> rows; // 0 区域，1 镜头
+    std::array<std::optional<std::string>, 2> identities; // 每类成员只序列化并计算一次指纹
+    for (const auto& request : requests) {
+        if (request.action != AuxiliaryEditAction::Delete || !std::holds_alternative<std::monostate>(request.record)
+            || (request.kind != MapDataKind::Regions && request.kind != MapDataKind::Cameras))
+            return fail(Bad("AUX_DELETE_REQUEST", "批量删除只接受区域或镜头的删除请求。"));
+        const std::size_t slot = request.kind == MapDataKind::Regions ? 0 : 1;
+        if (!identities[slot]) {
+            const auto identity = MemberIdentity(*current, request.kind);
+            if (!identity.Succeeded()) return {std::nullopt, identity.diagnostics};
+            identities[slot] = *identity.value;
+        }
+        if (*identities[slot] != request.expectedMemberSha256)
+            return fail(Bad("AUX_MEMBER_STALE", "区域或镜头成员已变化，请重新查询。"));
+        if (*identities[slot] == "missing") return fail(Bad("AUX_ROW_MISSING", "成员缺席，不能修改或删除记录。"));
+        const auto row = MapFieldRowKey(*current, request.kind, request.sourceIndex);
+        if (!row.Succeeded() || !row.value || *row.value != request.expectedRowKey)
+            return fail(Bad("AUX_ROW_STALE", "区域或镜头行身份已变化，请重新选择。"));
+        auto& list = rows[slot];
+        if (std::find(list.begin(), list.end(), request.sourceIndex) != list.end())
+            return fail(Bad("AUX_DELETE_DUPLICATE", "同一区域或镜头在删除请求中重复出现。"));
+        list.push_back(request.sourceIndex);
+        const auto referenced = CheckReferenceTransition(*current, request, references);
+        if (!referenced.Succeeded()) return fail(referenced);
+    }
+    std::vector<MapArchiveMember> replacements;
+    const auto erase = [&](auto table, std::vector<std::uint64_t> indices, const char* member) -> Status {
+        using Record = typename decltype(table.entries)::value_type;
+        if constexpr (std::is_same_v<Record, RegionRecord>) {
+            if (table.version != 5) return Bad("AUX_LAYOUT_UNSUPPORTED", "只支持经典 v5 区域表。");
+        } else if (table.version != 0 || table.layout != CameraLayout::Classic)
+            return Bad("AUX_LAYOUT_UNSUPPORTED", "只支持来源已证明为经典布局的镜头表。");
+        // 从后往前删，前面的行号不随删除移动。
+        std::sort(indices.begin(), indices.end(), std::greater<>());
+        for (const auto index : indices) table.entries.erase(table.entries.begin() + static_cast<std::ptrdiff_t>(index));
+        const auto serialized = table.Serialize();
+        if (!serialized.Succeeded()) return {serialized.diagnostics};
+        replacements.push_back({member, *serialized.value});
+        return Status::Ok();
+    };
+    if (!rows[0].empty()) {
+        const auto erased = erase(current->Regions().value_or(RegionsDocument{}), rows[0], "war3map.w3r");
+        if (!erased.Succeeded()) return fail(erased);
+    }
+    if (!rows[1].empty()) {
+        const auto erased = erase(current->Cameras().value_or(CamerasDocument{}), rows[1], "war3map.w3c");
+        if (!erased.Succeeded()) return fail(erased);
+    }
+    auto after = ProjectMapData(*current, replacements);
+    if (!after.Succeeded()) return {std::nullopt, after.diagnostics};
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        if (!rows[i].empty() && after.value->Member(i == 0 ? MapDataKind::Regions : MapDataKind::Cameras).state != MapDataState::Ready)
+            return fail(Bad("AUX_OUTPUT_UNSAFE", "删除后的区域或镜头无法完整读取。"));
+    return Output::Success(PreparedAuxiliaryDeletion(std::move(requests), std::move(current),
+        std::make_shared<const MapDocument>(std::move(*after.value))));
+}
+
+Status AuxiliaryEditing::ApplyDeletion(MapDataEditSession& session, const PreparedAuxiliaryDeletion& plan,
+    const AuxiliaryReferenceContext& references, const MapDataPublishValidator& validator) {
+    const auto current = session.Snapshot();
+    if (!AreEquivalentMapSources(current, plan.Before()))
+        return Bad("AUX_PLAN_STALE", "区域/镜头命令的来源已变化，不能覆盖新编辑。");
+    // 提交时重新核对引用：准备之后新增的 T/脚本引用不能借旧检查通过。
+    for (const auto& request : plan.Requests()) {
+        const auto referenced = CheckReferenceTransition(current, request, references);
+        if (!referenced.Succeeded()) return referenced;
+    }
+    MapDataEditSession::Command command;
+    for (const auto kind : {MapDataKind::Regions, MapDataKind::Cameras}) {
+        if (std::none_of(plan.Requests().begin(), plan.Requests().end(), [kind](const auto& request) { return request.kind == kind; }))
+            continue;
+        const auto prepared = session.Prepare(kind, Result<std::vector<std::byte>>::Success(
+            plan.After().Member(kind).sources.front().data), command.changes);
+        if (!prepared.Succeeded()) return prepared;
+    }
     return session.CommitCommand(std::move(command), [&](const auto& receipt) {
         return validator ? validator(plan.Before(), plan.After(), receipt) : Status::Ok();
     });

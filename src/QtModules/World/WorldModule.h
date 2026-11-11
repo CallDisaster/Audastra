@@ -82,6 +82,9 @@ using WorldTerrainMesh = Render::TerrainPreviewMesh;
 [[nodiscard]] Result<WorldTerrainMesh> BuildWorldTerrainMesh(const MapData::TerrainGridSnapshot& terrain);
 // 诊断列表中第一条错误的文本（没有错误时给通用说明）。
 [[nodiscard]] QString WorldDiagnosticText(const std::vector<Diagnostic>& diagnostics);
+// 视口单击/框选的修饰键：Shift 加选，只按 Ctrl 切换（已选移出、未选加入），都不按为替换。
+// 框选同理：Ctrl 框选切换框内对象（与资源管理器 Ctrl 框选一致）。
+[[nodiscard]] Services::SelectionMode ViewportSelectionMode(Qt::KeyboardModifiers modifiers) noexcept;
 
 struct WorldModelDiagnosticsCapture {
     QImage image;
@@ -206,6 +209,9 @@ private:
     void ApplySelectionSnapshot(const Services::WorldSelectionSnapshot& snapshot);
     bool SelectObjects(std::span<const Services::WorldObjectId> ids, Services::SelectionMode mode);
     [[nodiscard]] bool SelectionEditable() const;
+    // 删除可混选区域、镜头与摆放；其余身份与来源条件同 SelectionEditable。
+    [[nodiscard]] bool SelectionDeletable() const;
+    [[nodiscard]] bool SelectionBoundToCurrentMap() const;
     [[nodiscard]] std::uint64_t SelectionRevision() const;
     void SelectAllWorldObjects();
     void NudgeSelection(double dx, double dy);
@@ -295,6 +301,7 @@ private:
     void FinishDrag();
     void CancelDrag();
     void DeleteSelection();
+    void DeletePlacementSelection();
     void DuplicateSelectedAuxiliary();
     void CreateAuxiliary(MapDataKind kind);
     void EditSelectedAuxiliary();

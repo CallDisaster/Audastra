@@ -36,7 +36,26 @@ struct AuxiliaryReferenceContext {
 [[nodiscard]] Status CheckAuxiliaryCreatedScriptSymbol(
     const AuxiliaryReferenceContext& context, std::string_view symbol);
 
+// 删除声音定义前的共用引用检查：T 参数与引用索引中的定义名/gg_snd_ 变量、区域环境音，
+// 以及触发器来源与自定义/外部脚本覆盖；有引用或无法确认时拒绝，静态未检出不等于没有引用。
+[[nodiscard]] Status CheckSoundRemoval(const MapDocument& current, std::string_view soundName,
+    const AuxiliaryReferenceContext& context);
+
 class AuxiliaryEditing;
+// 区域/镜头批量删除的不可伪造候选：全部行身份与引用已通过，只能向原来源提交为一个事务。
+class PreparedAuxiliaryDeletion {
+public:
+    [[nodiscard]] const std::vector<AuxiliaryEditRequest>& Requests() const noexcept { return requests_; }
+    [[nodiscard]] const MapDocument& Before() const noexcept { return *before_; }
+    [[nodiscard]] const MapDocument& After() const noexcept { return *after_; }
+private:
+    friend class AuxiliaryEditing;
+    PreparedAuxiliaryDeletion(std::vector<AuxiliaryEditRequest> requests, std::shared_ptr<const MapDocument> before,
+        std::shared_ptr<const MapDocument> after)
+        : requests_(std::move(requests)), before_(std::move(before)), after_(std::move(after)) {}
+    std::vector<AuxiliaryEditRequest> requests_;
+    std::shared_ptr<const MapDocument> before_, after_;
+};
 class PreparedAuxiliaryEdit {
 public:
     [[nodiscard]] MapDataKind Kind() const noexcept { return request_.kind; }
@@ -66,6 +85,12 @@ public:
         AuxiliaryEditRequest request, const AuxiliaryReferenceContext& references);
     // 提交时必须重新捕获当前引用来源；准备结果不能授权覆盖随后新增的 T/脚本引用。
     [[nodiscard]] static Status Apply(MapData::MapDataEditSession& session, const PreparedAuxiliaryEdit& plan,
+        const AuxiliaryReferenceContext& references, const MapData::MapDataPublishValidator& validator = {});
+    // 一次删除多条区域/镜头（两类可混合）：每条按单条删除的同一身份与引用规则核对，
+    // 任一不符整批拒绝；提交为一个会话命令，撤销一次恢复全部。
+    [[nodiscard]] static Result<PreparedAuxiliaryDeletion> PrepareDeletion(std::shared_ptr<const MapDocument> current,
+        std::vector<AuxiliaryEditRequest> requests, const AuxiliaryReferenceContext& references);
+    [[nodiscard]] static Status ApplyDeletion(MapData::MapDataEditSession& session, const PreparedAuxiliaryDeletion& plan,
         const AuxiliaryReferenceContext& references, const MapData::MapDataPublishValidator& validator = {});
     [[nodiscard]] static Result<std::string> MemberIdentity(const MapDocument& document, MapDataKind kind);
 };

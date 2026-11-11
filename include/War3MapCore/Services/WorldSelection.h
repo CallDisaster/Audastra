@@ -11,7 +11,8 @@ namespace War3Map::Services {
 using WorldObjectId = std::variant<MapData::PlacementId, MapData::RegionId, MapData::CameraId>;
 enum class WorldCategory : std::uint8_t { Unit, Item, Destructable, Doodad, Region, Camera, StartLocation, Unknown };
 enum class WorldTypeState : std::uint8_t { Known, Missing, Ambiguous, Unavailable, Partial };
-enum class SelectionMode : std::uint8_t { Replace, Add, Subtract };
+// Toggle：按调用前的选择逐个切换，已选的移出、未选的加入（Windows 列表 Ctrl 单击与 Ctrl 框选）。
+enum class SelectionMode : std::uint8_t { Replace, Add, Subtract, Toggle };
 
 struct WorldSelectionVersion {
     MapDataQueryBinding document;
@@ -95,6 +96,10 @@ public:
     // 多个辅助对象或辅助对象与摆放混选没有共同事务，不能拆成多次 Undo。
     [[nodiscard]] Status EditStatus(const WorldSelectionContext& context,
         const WorldSelectionVersion& expected) const;
+    // 删除与编辑同样核对身份、显隐/锁定和完整来源；区域、镜头与摆放可以混选，
+    // 由宿主的共用删除事务合成一次撤销（属性编辑仍按 EditStatus 拒绝混选）。
+    [[nodiscard]] Status DeleteStatus(const WorldSelectionContext& context,
+        const WorldSelectionVersion& expected) const;
     [[nodiscard]] Result<WorldSelectionSnapshot> Select(const WorldSelectionContext& context,
         const WorldSelectionVersion& expected, SelectionMode mode, std::span<const WorldObjectId> ids);
     [[nodiscard]] Result<WorldSelectionSnapshot> SetEditorFlags(const WorldSelectionContext& context,
@@ -109,6 +114,8 @@ public:
 
 private:
     [[nodiscard]] Status Check(const WorldSelectionContext& context, const WorldSelectionVersion& expected) const;
+    [[nodiscard]] Status CheckWritable(const WorldSelectionContext& context, const WorldSelectionVersion& expected,
+        bool allowMixed) const;
     std::optional<WorldSelectionVersion> version_;
     std::uint64_t retiredRevision_ = 0; // Clear 后再次绑定同一文档也不能复用旧 editorRevision。
     std::vector<WorldObjectId> selected_;

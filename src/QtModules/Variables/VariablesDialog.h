@@ -6,6 +6,7 @@
 #include <QStringList>
 #include <functional>
 #include <optional>
+#include <vector>
 class QUndoStack;
 class QTableWidget;
 class QPushButton;
@@ -33,9 +34,10 @@ public:
         std::function<War3Map::Status(std::vector<War3Map::Trigger::GraphEditOperation>, const QString&)> publish;
     };
     void SetGraphEditing(GraphEditing editing);
-    // 删除前查代码里的引用：返回要列在确认框里的行，返回空表示不删（取消或期间地图有变化）。未设置时只确认一次。
+    // 删除前查代码里的引用（多选时一次查全部）：返回要列在确认框里的行，返回空表示不删（取消或期间地图有变化）。
+    // 未设置时只确认一次。
     struct RemovalReview { QStringList lines; std::size_t references = 0; QString incomplete; };
-    using RemovalCheck = std::function<std::optional<RemovalReview>(const War3Map::Trigger::VariableRecord&)>;
+    using RemovalCheck = std::function<std::optional<RemovalReview>(const std::vector<War3Map::Trigger::VariableRecord>&)>;
     void SetRemovalCheck(RemovalCheck check) { removalCheck_ = std::move(check); }
 
 private:
@@ -45,7 +47,11 @@ private:
     [[nodiscard]] bool GraphEditingReady() const;
     void RenameSelected();
     void RemoveSelected();
+    void UpdateButtons();
+    // 当前行：属性、重命名等单项操作的对象。
     [[nodiscard]] std::optional<std::size_t> SelectedRow() const;
+    // 全部选中的行（升序）：删除等批量操作的对象。
+    [[nodiscard]] std::vector<std::size_t> SelectedRows() const;
 
     War3Map::Trigger::TriggerDocument* document_ = nullptr;
     QUndoStack* undoStack_ = nullptr;

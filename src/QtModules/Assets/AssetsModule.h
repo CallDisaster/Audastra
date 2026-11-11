@@ -57,6 +57,8 @@ public:
     QString RenameAsset(const QString& path, const QString& newPath);
     QString RenameFolder(const QString& folder, const QString& newName);
     QString DeleteAssets(const QStringList& paths);
+    // 删除列表中选中的全部行：文件，以及选中文件夹里的全部资源（一条撤销）；选中的空文件夹从视图移除。
+    QString DeleteSelection();
     void NewFolder(const QString& name);
     // 双击 / F2：导入文件属性对话框。
     void EditProperties(const QString& path);

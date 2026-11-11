@@ -6,7 +6,10 @@
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/Services/AuxiliaryTransaction.h"
 
+#include <QUndoStack>
+
 #include <algorithm>
+#include <memory>
 
 namespace War3Map::QtProject {
 
@@ -107,5 +110,67 @@ Status ApplyAuxiliaryEdit(EditorProject& project, Services::AuxiliaryEditRequest
     if (!binding.Succeeded()) return {binding.diagnostics};
     const auto result = ApplyAuxiliaryEditWithResult(project, *binding.value, std::move(request), label);
     return {result.diagnostics};
+}
+
+namespace {
+Status StaleBinding() {
+    return Status::Failure("MapData.Auxiliary", "AUX_PROJECT_STALE",
+        "地图来源、编辑会话或修订已变化，或正在保存；请重新选择后再删除。");
+}
+// 发布前再核对一次工程身份；回执未通过时会话不留下任何修改。
+MapData::MapDataPublishValidator BindingValidator(const EditorProject& project, const AuxiliaryEditBinding& expected) {
+    return [&project, expected](const MapDocument&, const MapDocument&, const MapData::MapDataEditSession::EditReceipt&) {
+        return AuxiliaryEditBindingCurrent(project, expected) ? Status::Ok()
+            : Status::Failure("MapData.Auxiliary", "AUX_PROJECT_STALE", "区域/镜头发布前工程身份已变化。");
+    };
+}
+} // namespace
+
+Status ApplyAuxiliaryDeletion(EditorProject& project, const AuxiliaryEditBinding& expected,
+    std::vector<Services::AuxiliaryEditRequest> requests, const QString& label) {
+    return DeleteWorldObjects(project, expected, {}, std::move(requests), label);
+}
+
+Status DeleteWorldObjects(EditorProject& project, const AuxiliaryEditBinding& expected,
+    std::span<const MapData::PlacementId> placements, std::vector<Services::AuxiliaryEditRequest> auxiliary,
+    const QString& label) {
+    if (!AuxiliaryEditBindingCurrent(project, expected)) return StaleBinding();
+    if (placements.empty() && auxiliary.empty()) return Status::Ok();
+    if (auxiliary.empty()) {
+        const auto status = MapData::DeletePlacements(*project.mapEdits_, placements);
+        if (!status.Succeeded()) return status;
+        (void)project.ObserveMapDataEdit("删除摆放");
+        PushMapDataEdit(project, label, "删除摆放");
+        return Status::Ok();
+    }
+    // 先纯检查两类删除：摆放身份/起始位置规则与区域镜头的引用，任一拒绝都不发布。
+    const auto snapshot = std::make_shared<const MapDocument>(project.mapEdits_->Snapshot());
+    if (!placements.empty()) {
+        const auto checked = MapData::detail::PreparePlacementDeletions(*snapshot, placements);
+        if (!checked.Succeeded()) return {checked.diagnostics};
+    }
+    const auto plan = Services::AuxiliaryEditing::PrepareDeletion(snapshot, std::move(auxiliary),
+        CaptureAuxiliaryReferences(project));
+    if (!plan.Succeeded()) return {plan.diagnostics};
+    const auto applied = Services::AuxiliaryEditing::ApplyDeletion(*project.mapEdits_, *plan.value,
+        CaptureAuxiliaryReferences(project), BindingValidator(project, expected));
+    if (!applied.Succeeded()) return applied;
+    auto group = std::make_unique<QUndoCommand>(label);
+    auto* auxiliaryStep = new MapDataEditCommand(project, project.mapEdits_->LastEdit(), label,
+        "删除区域或镜头", group.get());
+    (void)project.ObserveMapDataEdit("删除区域或镜头");
+    if (!placements.empty()) {
+        const auto status = MapData::DeletePlacements(*project.mapEdits_, placements);
+        if (!status.Succeeded()) {
+            auxiliaryStep->undo(); // 按回执逆向重放，地图回到删除前。
+            emit project.MapDocumentChanged();
+            return status;
+        }
+        new MapDataEditCommand(project, project.mapEdits_->LastEdit(), label, "删除摆放", group.get());
+        (void)project.ObserveMapDataEdit("删除摆放");
+    }
+    project.mapDataUndoStack_->push(group.release());
+    emit project.MapDocumentChanged();
+    return Status::Ok();
 }
 } // namespace War3Map::QtProject

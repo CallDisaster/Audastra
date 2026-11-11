@@ -33,6 +33,7 @@
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTimer>
+#include <QTreeView>
 #include <QUndoStack>
 #include <QVBoxLayout>
 
@@ -116,6 +117,7 @@ private slots:
     void GeneratedDocumentReplacementPreservesSelectionAndRebindsUndo();
     void MapFieldNamesUseSharedStringResolutionWithoutWritingRawValues();
     void RealAudastraBatchNamesReadOnlyProjection();
+    void TreeMultiSelectClonesAsOneUndoAndPrefillsBatch();
 };
 
 void ObjectDirectEditTests::RealAudastraBatchNamesReadOnlyProjection() {
@@ -480,6 +482,63 @@ void ObjectDirectEditTests::GeneratedDocumentReplacementPreservesSelectionAndReb
     emit project.ObjectDocumentsReplaced();
     QCOMPARE(module.objectListView_->currentIndex().data(Qt::UserRole).toString(), QStringLiteral("hfoo"));
     QVERIFY(!project.objectUndoStacks_[0]->canUndo());
+}
+
+void ObjectDirectEditTests::TreeMultiSelectClonesAsOneUndoAndPrefillsBatch() {
+    War3Map::QtProject::EditorProject project;
+    QVERIFY(InstallSyntheticDefinitions(project));
+    auto parsed = LniObjectCodec(ObjectType::Unit).Parse(Bytes("[h001]\n_parent=\"hfoo\"\n[h002]\n_parent=\"hrif\"\n"));
+    QVERIFY(parsed.Succeeded());
+    project.objectDocuments_[0].reset(dynamic_cast<LniObjectDocument*>(parsed.document.release()));
+    QVERIFY(project.objectDocuments_[0]);
+    project.objectUndoStacks_[0] = new QUndoStack(&project);
+    War3Map::Modules::ObjectModule module(project);
+    (void)module.Widget();
+    module.objectFieldModel_->SetContext(project.standardCatalog_.get(), project.objectFieldSchema_.get());
+    module.UpdateObjectReferenceEntries();
+    module.ShowObjectType(0);
+    module.SelectMapObject(0, QStringLiteral("h001"));
+    auto* tree = module.objectTree_;
+    QVERIFY(tree);
+    QCOMPARE(tree->View()->selectionMode(), QAbstractItemView::ExtendedSelection);
+    // Ctrl 多选两个自定义物体；当前项仍驱动字段面板。
+    tree->SelectObjects({{QStringLiteral("h001"), true}, {QStringLiteral("h002"), true}}, std::pair{QStringLiteral("h002"), true});
+    QCOMPARE(tree->SelectedObjects().size(), std::size_t{2});
+    QCOMPARE(tree->Current()->first, QStringLiteral("h002"));
+    auto sources = module.SelectedCustomObjects();
+    sources.sort();
+    QCOMPARE(sources, QStringList({QStringLiteral("h001"), QStringLiteral("h002")}));
+
+    // 批量修改对话框预先勾选目录多选的对象。
+    QStringList checked;
+    QTimer::singleShot(0, &module, [&checked] {
+        auto* dialog = qobject_cast<QDialog*>(QApplication::activeModalWidget());
+        if (!dialog) return;
+        if (auto* objects = dialog->findChild<QListWidget*>("batchObjectList"))
+            for (int row = 0; row < objects->count(); ++row)
+                if (objects->item(row)->checkState() == Qt::Checked) checked << objects->item(row)->data(Qt::UserRole).toString();
+        dialog->reject();
+    });
+    module.BatchEditObjects();
+    checked.sort();
+    QCOMPARE(checked, QStringList({QStringLiteral("h001"), QStringLiteral("h002")}));
+
+    // 一次复制多个：自动分配不冲突的新 ID，一条撤销。
+    const auto created = module.CloneCustomObjects(0, sources);
+    QCOMPARE(created.size(), qsizetype{2});
+    QVERIFY(created[0] != created[1]);
+    QCOMPARE(project.objectUndoStacks_[0]->count(), 1);
+    for (const auto& id : created) {
+        QVERIFY(!sources.contains(id));
+        const auto* record = project.objectDocuments_[0]->FindObject({ObjectType::Unit, id.toStdString()});
+        QVERIFY(record && record->parentRawcode);
+    }
+    QCOMPARE(tree->SelectedObjects().size(), std::size_t{2});
+    project.objectUndoStacks_[0]->undo();
+    for (const auto& id : created) QVERIFY(!project.objectDocuments_[0]->FindObject({ObjectType::Unit, id.toStdString()}));
+    QVERIFY(project.objectDocuments_[0]->FindObject({ObjectType::Unit, "h001"}));
+    project.objectUndoStacks_[0]->redo();
+    QCOMPARE(project.objectDocuments_[0]->Objects().size(), std::size_t{4});
 }
 
 QTEST_MAIN(ObjectDirectEditTests)

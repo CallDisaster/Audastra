@@ -58,6 +58,9 @@ public:
     [[nodiscard]] Status EditField(std::size_t row, std::string_view field, std::string_view value);
     [[nodiscard]] Status AddDefinition(std::string name, std::string filePath);
     [[nodiscard]] Status DuplicateDefinition(std::size_t row);
+    // 多选的定义一次复制 / 删除，各为一条撤销。删除前逐个核对引用，有引用或无法确认时整批拒绝。
+    [[nodiscard]] Status DuplicateDefinitions(std::vector<std::size_t> rows);
+    [[nodiscard]] Status DeleteDefinitions(std::vector<std::size_t> rows);
     [[nodiscard]] bool HasPendingDraft() const noexcept { return draftChanged_; }
     [[nodiscard]] bool ApplyPendingDraft();
     void DiscardPendingDraft();
@@ -80,6 +83,8 @@ private:
     void RebuildResources();
     [[nodiscard]] std::vector<ResourceRow> ResourceCatalogRows() const;
     void RebuildDefinitions();
+    // 表格中选中的定义行（升序）；没有选中时取当前行。
+    [[nodiscard]] std::vector<std::size_t> SelectedDefinitionRows() const;
     void LoadInspector();
     // 通道与 EAX 下拉框跟随隐藏的文本框（草稿、提交与“默认”仍走该文本框）。
     QComboBox* AttachChoice(QWidget* row, QHBoxLayout* layout, QLineEdit* editor, const char* name);
@@ -132,6 +137,8 @@ private:
     bool loading_ = false;
     bool draftChanged_ = false;
     int selectedDefinition_ = -1;
+    // 复制后下次重建表格时要选中的行；为空时按定义名保留原多选。
+    std::vector<int> pendingSelection_;
 };
 
 } // namespace War3Map::Modules

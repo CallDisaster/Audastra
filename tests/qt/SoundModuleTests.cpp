@@ -8,6 +8,7 @@
 #include "War3MapCore/MapData/MapDataFieldEditing.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
+#include "War3MapCore/Trigger/TriggerDocument.h"
 
 #include <QApplication>
 #include <QAbstractItemDelegate>
@@ -104,7 +105,92 @@ private slots:
     void NavigationRejectsStaleRevisionAndIdenticalDefinitions();
     void NavigationRejectsPerDefinitionAndAggregateByteBudgets();
     void ChannelChoiceUsesGameNamesAndWritesThroughField();
+    void MultiSelectDuplicateAndDeleteUseOneUndoAndReferenceGate();
 };
+
+void SoundModuleTests::MultiSelectDuplicateAndDeleteUseOneUndoAndReferenceGate() {
+    QtProject::EditorProject project;
+    auto rain = OriginalSound(); rain.name = "Rain";
+    auto wind = OriginalSound(); wind.name = "Wind";
+    const auto sounds = MapData::SoundsDocument{1, {OriginalSound(), rain, wind}, {}}.Serialize();
+    MapData::RegionRecord area{}; area.name = "Storm"; area.creationNumber = 1; area.right = area.top = 128;
+    area.ambientSound = "gg_snd_Rain";
+    const auto regions = MapData::RegionsDocument{5, {area}, {}}.Serialize();
+    QVERIFY(sounds.Succeeded() && regions.Succeeded());
+    const std::vector<MapArchiveMember> members{{"war3map.w3s", *sounds.value}, {"war3map.w3r", *regions.value}};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    Modules::SoundsModule module(project);
+    auto* page = module.Widget();
+    auto* table = page->findChild<QTableWidget*>("soundDefinitionsTable");
+    auto* duplicate = page->findChild<QPushButton*>("soundDuplicateDefinition");
+    auto* remove = page->findChild<QPushButton*>("soundDeleteDefinition");
+    auto* volume = page->findChild<QLineEdit*>("soundField_volume");
+    QVERIFY(table && duplicate && remove && volume);
+    QCOMPARE(table->selectionMode(), QAbstractItemView::ExtendedSelection);
+    auto* selection = table->selectionModel();
+    const auto choose = [table, selection](std::initializer_list<int> rows) {
+        bool first = true;
+        for (const int row : rows) {
+            selection->setCurrentIndex(table->model()->index(row, 0), (first ? QItemSelectionModel::ClearAndSelect
+                : QItemSelectionModel::Select) | QItemSelectionModel::Rows);
+            first = false;
+        }
+    };
+
+    // Ctrl 多选两条后复制：一条撤销，新副本被选中，当前行为第一个副本。
+    choose({0, 2});
+    duplicate->click();
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    auto current = project.mapEdits_->Snapshot().Sounds();
+    QCOMPARE(current->entries.size(), std::size_t{5});
+    QCOMPARE(current->entries[3].name, std::string("Thunder_Copy"));
+    QCOMPARE(current->entries[4].name, std::string("Wind_Copy"));
+    QCOMPARE(table->selectionModel()->selectedRows().size(), qsizetype{2});
+    QCOMPARE(table->currentRow(), 3);
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{3});
+    project.mapDataUndoStack_->redo();
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{5});
+
+    // 触发器来源未读取时不能证明没有引用：拒绝且不留历史。
+    QVERIFY(!module.DeleteDefinitions({3, 4}).Succeeded());
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
+    // 区域环境音仍使用 Rain：同批任一被引用则整批不删。
+    QVERIFY(!module.DeleteDefinitions({1, 3}).Succeeded());
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{5});
+    Trigger::ArgumentNode argument; argument.type = 1; argument.value.text = "gg_snd_Wind_Copy";
+    project.triggerDocument_->argumentNodes.push_back(argument);
+    QVERIFY(!module.DeleteDefinitions({3, 4}).Succeeded());
+    QCOMPARE(project.mapDataUndoStack_->count(), 1);
+    project.triggerDocument_->argumentNodes.clear();
+
+    choose({3, 4});
+    remove->click();
+    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    current = project.mapEdits_->Snapshot().Sounds();
+    QCOMPARE(current->entries.size(), std::size_t{3});
+    QCOMPARE(current->entries[2].name, std::string("Wind"));
+    project.mapDataUndoStack_->undo();
+    QCOMPARE(project.mapEdits_->Snapshot().Sounds()->entries.size(), std::size_t{5});
+
+    // 未应用的属性修改仍阻止切换定义与批量操作。
+    choose({1});
+    volume->setText(QStringLiteral("42"));
+    QVERIFY(module.HasPendingDraft());
+    selection->setCurrentIndex(table->model()->index(2, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    QCOMPARE(table->currentRow(), 1);
+    QCoreApplication::processEvents();
+    QCOMPARE(table->currentRow(), 1);
+    QCOMPARE(table->selectionModel()->selectedRows().size(), qsizetype{1});
+    QVERIFY(!module.DuplicateDefinitions({0}).Succeeded());
+    QVERIFY(!module.DeleteDefinitions({0}).Succeeded());
+    QCOMPARE(project.mapDataUndoStack_->count(), 2);
+    QCOMPARE(volume->text(), QStringLiteral("42"));
+    module.DiscardPendingDraft();
+    QVERIFY(!module.HasPendingDraft());
+}
 
 void SoundModuleTests::NavigationUsesDefinitionIdentityAndBlocksDraft() {
     QtProject::EditorProject project;

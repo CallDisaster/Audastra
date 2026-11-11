@@ -12,14 +12,18 @@
 #include <QDropEvent>
 #include <QFileDialog>
 #include <QInputDialog>
+#include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMimeData>
 #include <QScrollArea>
+#include <QSet>
 #include <QTreeView>
 #include <QUndoCommand>
 #include <QUndoStack>
+
+#include <algorithm>
 
 // 资源操作：导入、移动、改名、删除、新建文件夹，全部经 Record 登记撤销；拖放与右键菜单。
 namespace War3Map::Modules {
@@ -105,6 +109,35 @@ QString AssetsModule::DeleteAssets(const QStringList& paths) {
     return result;
 }
 
+QString AssetsModule::DeleteSelection() {
+    QStringList paths = SelectedPaths();
+    QStringList folders;
+    if (files_) {
+        for (const QModelIndex& index : files_->selectionModel()->selectedRows(0))
+            if (index.data(kKindRole).toInt() == 0) folders << index.data(kPathRole).toString();
+    }
+    if (!folders.isEmpty()) {
+        const auto inSelectedFolder = [&folders](const QString& path) {
+            return std::any_of(folders.begin(), folders.end(), [&path](const QString& folder) { return InFolder(path, folder); });
+        };
+        QSet<QString> seen;
+        for (const QString& path : paths) seen.insert(Normalized(path).toLower());
+        for (const auto& entry : project_.AssetEntries()) {
+            const QString path = Normalized(entry.path);
+            if (inSelectedFolder(path) && !seen.contains(path.toLower())) {
+                seen.insert(path.toLower());
+                paths << path;
+            }
+        }
+        emptyFolders_.removeIf([&inSelectedFolder](const QString& empty) { return inSelectedFolder(empty); });
+    }
+    if (paths.isEmpty()) {
+        if (!folders.isEmpty()) Refresh();
+        return {};
+    }
+    return DeleteAssets(paths);
+}
+
 void AssetsModule::NewFolder(const QString& name) {
     (void)Widget();
     QString folderName = name;
@@ -165,10 +198,15 @@ void AssetsModule::ShowContextMenu(const QPoint& pos) {
     if (!onTree && index.isValid() && !onFolder) {
         const QString path = index.siblingAtColumn(0).data(kPathRole).toString();
         menu.addAction(tr("属性…"), this, [this, path]() { EditProperties(path); })->setShortcut(QKeySequence(Qt::Key_F2));
-        menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/copy")), tr("复制完整路径"), this, [path]() {
-            QApplication::clipboard()->setText(path);
+        menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/copy")), tr("复制完整路径"), this, [this, view, path]() {
+            // 右键的是多选中的一行时复制全部选中行的路径，每行一个，按列表顺序。
+            QModelIndexList rows = view->selectionModel()->selectedRows(0);
+            std::sort(rows.begin(), rows.end(), [](const QModelIndex& left, const QModelIndex& right) { return left.row() < right.row(); });
+            QStringList paths;
+            for (const QModelIndex& row : rows) paths << row.data(kPathRole).toString();
+            QApplication::clipboard()->setText(paths.contains(path) ? paths.join(QLatin1Char('\n')) : path);
         });
-        menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/trash-2")), tr("删除"), this, [this]() { (void)DeleteAssets(SelectedPaths()); })
+        menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/trash-2")), tr("删除"), this, [this]() { (void)DeleteSelection(); })
             ->setShortcut(QKeySequence::Delete);
         menu.addSeparator();
     }
@@ -264,7 +302,7 @@ bool AssetsModule::eventFilter(QObject* watched, QEvent* event) {
             return true;
         }
         if (key->matches(QKeySequence::Delete)) {
-            (void)DeleteAssets(SelectedPaths());
+            (void)DeleteSelection();
             return true;
         }
         if (key->key() == Qt::Key_Backspace) {

@@ -370,7 +370,7 @@ QWidget* WorldModule::BuildInspector() {
     deleteSelected_->setProperty("danger", true);
     deleteSelected_->setIconSize(QSize(14, 14));
     deleteSelected_->setCursor(Qt::PointingHandCursor);
-    deleteSelected_->setToolTip(tr("删除选中的摆放（Delete），可撤销"));
+    deleteSelected_->setToolTip(tr("删除选中的对象（Delete），可撤销"));
     actions->addWidget(openDefinition_, 1); actions->addWidget(deleteSelected_, 1);
     cardColumn->addLayout(actions);
     auto* properties = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/settings-2")), tr("完整属性"), card);
@@ -508,7 +508,8 @@ void WorldModule::UpdateInspector(bool animate) {
         const bool changed = key != inspectorKey_; inspectorKey_ = key;
         selectionEmpty_->hide(); selectionCard_->show();
         placementFields_->hide(); regionFields_->hide(); cameraFields_->hide();
-        openDefinition_->hide(); deleteSelected_->hide();
+        // 混选不能一起编辑属性，但可以一起删除（同一撤销步骤）。
+        openDefinition_->hide(); deleteSelected_->setVisible(SelectionDeletable());
         if (unitPreview) unitPreview->ClearSelection();
         selectionTitle_->setText(tr("已选 %1 个对象").arg(selected.size()));
         QStringList counts;

@@ -280,8 +280,8 @@ void LiveEditorToolsTests::TechPageBuildsRandomTableCommands() {
     const auto settings = *fixture.project.MapEdits()->Snapshot().Settings();
     std::vector<War3Map::Services::MapCustomSettingsCommand> commands;
     War3Map::Modules::MapTechPage page(fixture.project, settings, false, {}, {},
-        [&](War3Map::Services::MapCustomSettingsCommand command, const QString&) {
-            commands.push_back(std::move(command));
+        [&](std::vector<War3Map::Services::MapCustomSettingsCommand> batch, const QString&) {
+            for (auto& command : batch) commands.push_back(std::move(command));
             return QString{};
         });
     page.resize(1000, 760);

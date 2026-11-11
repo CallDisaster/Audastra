@@ -19,6 +19,9 @@ class MapDataEditCommand final : public QUndoCommand {
 public:
     MapDataEditCommand(EditorProject& project, MapData::MapDataEditSession::EditReceipt receipt, QString text,
         std::string description);
+    // 作为组合撤销步骤的子命令：多个会话事务合成一次撤销/重做（按相反顺序撤销）。
+    MapDataEditCommand(EditorProject& project, MapData::MapDataEditSession::EditReceipt receipt, QString text,
+        std::string description, QUndoCommand* parent);
     void undo() override { Apply(false); }
     void redo() override;
 

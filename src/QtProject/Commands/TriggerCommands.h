@@ -182,6 +182,11 @@ private:
     bool firstRedo_ = true;
 };
 
+// 一次删除多个全局变量（按稳定 ID）：从行号大的往小删，合成一条撤销记录，撤销时按原行号插回。
+// 任一变量删除失败时把已删的全部插回并返回空，status 带出原因；成功时由调用方推入撤销栈。
+[[nodiscard]] std::unique_ptr<QUndoCommand> RemoveVariables(War3Map::Trigger::TriggerDocument& document,
+    const std::vector<War3Map::StableId>& ids, const QString& text, War3Map::Status& status);
+
 struct TriggerArgumentChange {
     War3Map::StableId argumentId = 0;
     War3Map::Trigger::ArgumentNode before;
