@@ -45,20 +45,20 @@ inline constexpr std::array<ThemeTokens, 3> kThemes{{
     {"graphite", "石墨", true, {
         {20, 20, 22, 255}, // bg
         {25, 26, 29, 255}, // panel
-        {34, 36, 40, 255}, // raised
-        {43, 46, 52, 255}, // hover
-        {45, 48, 55, 255}, // line
-        {237, 237, 239, 255}, // text
+        {34, 36, 41, 255}, // raised
+        {43, 46, 53, 255}, // hover
+        {42, 45, 52, 255}, // line
+        {238, 240, 244, 255}, // text
         {213, 216, 222, 255}, // textBody
         {159, 227, 196, 255}, // inlineCodeAccent
-        {143, 148, 158, 255}, // muted
-        {108, 113, 123, 255}, // dim
+        {142, 147, 158, 255}, // muted
+        {107, 112, 123, 255}, // dim
         {85, 89, 99, 255}, // disabled
         {110, 231, 183, 255}, // accent
-        {110, 231, 183, 26}, // accentSoft
-        {61, 133, 104, 255}, // accentLine
-        {31, 55, 46, 255}, // selection
-        {60, 64, 72, 255}, // scrollbar
+        {110, 231, 183, 34}, // accentSoft
+        {59, 130, 102, 255}, // accentLine
+        {40, 44, 52, 255}, // selection
+        {59, 63, 72, 255}, // scrollbar
         {234, 179, 100, 255}, // amber
         {192, 132, 252, 255}, // violet
         {96, 165, 250, 255}, // blue
@@ -136,7 +136,7 @@ inline constexpr int kShadowDialog = 12;
 inline constexpr int kPopoverPadding = 6;
 inline constexpr int kMenuItemHeight = 32;
 inline constexpr int kRowHeight = 28;
-inline constexpr int kHeaderHeight = 48;
+inline constexpr int kHeaderHeight = 44;
 } // namespace Size
 
 namespace Weight {

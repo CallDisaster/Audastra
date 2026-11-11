@@ -53,9 +53,7 @@ HeaderBar::HeaderBar(QWidget* parent)
 }
 
 void HeaderBar::SetProjectTitle(const QString& title, const QString& tooltip) {
-    const int textBudget = std::max(36, project_->maximumWidth() - 18);
-    const QString elided = project_->fontMetrics().elidedText(title, Qt::ElideMiddle, textBudget);
-    project_->setText(elided);
+    project_->setText(title);
     project_->setToolTip(tooltip.isEmpty() ? title : tooltip);
 }
 

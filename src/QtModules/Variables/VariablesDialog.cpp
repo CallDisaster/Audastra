@@ -1,5 +1,6 @@
 #include "VariablesDialog.h"
 
+#include "Icons/SvgIcons.h"
 #include "Widgets/ColumnLayout.h"
 #include "TriggerCommands.h"
 #include <QAbstractItemView>
@@ -33,12 +34,49 @@ VariablesDialog::VariablesDialog(
       embedded_(embedded) {
     if (embedded) setWindowFlags(Qt::Widget);
     setWindowTitle(tr("变量管理"));
-    resize(520, 420);
+    resize(560, 440);
     auto* layout = new QVBoxLayout(this);
+    if (embedded) {
+        layout->setContentsMargins(0, 4, 0, 0);
+        layout->setSpacing(8);
+    } else {
+        layout->setContentsMargins(14, 12, 14, 12);
+        layout->setSpacing(10);
+    }
+
+    auto* buttons = new QHBoxLayout;
+    buttons->setContentsMargins(0, 0, 0, 0);
+    buttons->setSpacing(6);
+    auto* addButton = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("新建变量…"), this);
+    addButton->setObjectName(QStringLiteral("addVariableButton"));
+    addButton->setIconSize(QSize(14, 14));
+    addButton->setCursor(Qt::PointingHandCursor);
+    propertiesButton_ = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/sliders-horizontal")), tr("属性…"), this);
+    propertiesButton_->setObjectName(QStringLiteral("variablePropertiesButton"));
+    propertiesButton_->setIconSize(QSize(14, 14));
+    propertiesButton_->setCursor(Qt::PointingHandCursor);
+    renameButton_ = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/pencil")), tr("重命名…"), this);
+    renameButton_->setObjectName(QStringLiteral("renameVariableButton"));
+    renameButton_->setIconSize(QSize(14, 14));
+    renameButton_->setCursor(Qt::PointingHandCursor);
+    removeButton_ = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/trash-2")), tr("删除"), this);
+    removeButton_->setObjectName(QStringLiteral("removeVariableButton"));
+    removeButton_->setIconSize(QSize(14, 14));
+    removeButton_->setCursor(Qt::PointingHandCursor);
+    propertiesButton_->setEnabled(false);
+    renameButton_->setEnabled(false);
+    removeButton_->setEnabled(false);
+    buttons->addWidget(addButton);
+    buttons->addWidget(propertiesButton_);
+    buttons->addWidget(renameButton_);
+    buttons->addWidget(removeButton_);
+    buttons->addStretch();
     auto* rawValues = new QCheckBox(tr("显示原始字段"), this);
     rawValues->setObjectName("variableRawValues");
-    layout->addWidget(rawValues);
     connect(rawValues, &QCheckBox::toggled, this, [this](bool raw) { showRawValues_ = raw; RebuildList(); });
+    buttons->addWidget(rawValues);
+    layout->addLayout(buttons);
+
     table_ = new QTableWidget(0, 5, this);
     table_->setObjectName(QStringLiteral("globalVariablesTable"));
     table_->setHorizontalHeaderLabels({tr("名称"), tr("类型"), tr("数组"), tr("初始化数量"), tr("初始值")});
@@ -52,27 +90,16 @@ VariablesDialog::VariablesDialog(
     War3Map::UiKit::ConfigureResizableColumns(table_->horizontalHeader(), {240, 110, 60, 90});
     layout->addWidget(table_, 1);
 
-    auto* buttons = new QHBoxLayout;
-    auto* addButton = new QPushButton(tr("新建变量…"));
-    addButton->setObjectName(QStringLiteral("addVariableButton"));
-    propertiesButton_ = new QPushButton(tr("属性…"));
-    propertiesButton_->setObjectName(QStringLiteral("variablePropertiesButton"));
-    renameButton_ = new QPushButton(tr("重命名…"));
-    renameButton_->setObjectName(QStringLiteral("renameVariableButton"));
-    removeButton_ = new QPushButton(tr("删除"));
-    removeButton_->setObjectName(QStringLiteral("removeVariableButton"));
-    auto* closeButton = new QPushButton(tr("关闭"));
-    propertiesButton_->setEnabled(false);
-    renameButton_->setEnabled(false);
-    removeButton_->setEnabled(false);
-    buttons->addWidget(addButton);
-    buttons->addWidget(propertiesButton_);
-    buttons->addWidget(renameButton_);
-    buttons->addWidget(removeButton_);
-    buttons->addStretch();
-    if (!embedded) buttons->addWidget(closeButton);
-    else { closeButton->setParent(this); closeButton->hide(); }
-    layout->addLayout(buttons);
+    auto* closeButton = new QPushButton(tr("关闭"), this);
+    if (!embedded) {
+        auto* footer = new QHBoxLayout;
+        footer->setContentsMargins(0, 0, 0, 0);
+        footer->addStretch();
+        footer->addWidget(closeButton);
+        layout->addLayout(footer);
+    } else {
+        closeButton->hide();
+    }
 
     connect(addButton, &QPushButton::clicked, this, &VariablesDialog::AddVariable);
     connect(propertiesButton_, &QPushButton::clicked, this, &VariablesDialog::EditSelected);

@@ -40,6 +40,7 @@
 #include <QMouseEvent>
 #include <QPersistentModelIndex>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSettings>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -321,6 +322,7 @@ QWidget* WorldModule::BuildToolPanel() {
     toolSubtitle_ = new QLabel(header);
     toolSubtitle_->setObjectName(QStringLiteral("worldPanelSubtitle"));
     titles->addWidget(toolTitle_); titles->addWidget(toolSubtitle_);
+    header->hide(); // 副标题统一同步至停靠栏紧凑标题行，消除重复“场景目录”标题层叠。
     column->addWidget(header);
     toolStack_ = new QStackedWidget(panel);
     toolStack_->setObjectName(QStringLiteral("worldToolStack"));
@@ -372,13 +374,25 @@ QWidget* WorldModule::BuildSelectPage() {
     outliner_->setItemDelegateForColumn(1, flagDelegate);
     outliner_->setItemDelegateForColumn(2, flagDelegate);
     column->addWidget(outliner_, 1);
-    auto* more = new QPushButton(tr("继续读取场景"), page);
-    more->setObjectName(QStringLiteral("worldOutlinerMore"));
-    column->addWidget(more);
+    auto* metaRow = new QHBoxLayout;
+    metaRow->setContentsMargins(2, 0, 2, 0);
+    metaRow->setSpacing(6);
     outlinerStatus_ = new QLabel(page);
     outlinerStatus_->setObjectName(QStringLiteral("worldOutlinerStatus"));
     outlinerStatus_->setWordWrap(true);
-    column->addWidget(outlinerStatus_);
+    metaRow->addWidget(outlinerStatus_, 1);
+    auto* more = new QPushButton(tr("继续读取"), page);
+    more->setObjectName(QStringLiteral("worldOutlinerMore"));
+    more->setToolTip(tr("继续分页读取场景对象"));
+    more->setCursor(Qt::PointingHandCursor);
+    metaRow->addWidget(more, 0);
+    const auto syncMoreVisibility = [this, more] {
+        more->setVisible(outlinerModel_ && outlinerModel_->canFetchMore({}));
+    };
+    syncMoreVisibility();
+    connect(outlinerModel_, &QAbstractItemModel::modelReset, page, syncMoreVisibility);
+    connect(outlinerModel_, &QAbstractItemModel::rowsInserted, page, syncMoreVisibility);
+    column->addLayout(metaRow);
     auto* commands = new UiKit::ResponsiveToolBar(page);
     commands->setObjectName(QStringLiteral("worldAuxiliaryCommands"));
     auto* create = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("新建"), commands);
@@ -395,7 +409,6 @@ QWidget* WorldModule::BuildSelectPage() {
     connect(properties, &QPushButton::clicked, this, &WorldModule::EditSelectedAuxiliary);
     auto* duplicate = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/copy")), tr("副本"), commands);
     duplicate->setObjectName(QStringLiteral("worldDuplicateAuxiliary"));
-    duplicate->setProperty("worldToggle", true);
     duplicate->setToolTip(tr("当前所选对象一次复制；未支持的混合类别保持只读"));
     commands->AddWidget(duplicate, 50);
     auto* remove = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/trash-2")), tr("删除"), commands);
@@ -434,15 +447,17 @@ QWidget* WorldModule::BuildSelectPage() {
     });
     // QTreeView 也会自动分页；核心选择可以先于对应目录行存在。
     // 每页结束后再读取当前同文档快照，不在 begin/endInsertRows 调用栈里同步。
-    connect(outlinerModel_, &WorldOutlinerModel::PageLoaded, this, [this] {
+    connect(outlinerModel_, &WorldOutlinerModel::PageLoaded, this, [this, syncMoreVisibility] {
         outliner_->expandAll();
         outlinerStatus_->setText(outlinerModel_->StatusText());
+        syncMoreVisibility();
         SyncOutlinerSelection();
     }, Qt::QueuedConnection);
-    connect(more, &QPushButton::clicked, this, [this] {
+    connect(more, &QPushButton::clicked, this, [this, syncMoreVisibility] {
         if (outlinerModel_->canFetchMore({})) outlinerModel_->fetchMore({});
         outliner_->expandAll();
         outlinerStatus_->setText(outlinerModel_->StatusText());
+        syncMoreVisibility();
         SyncOutlinerSelection();
     });
     connect(duplicate, &QPushButton::clicked, this, &WorldModule::DuplicateSelection);
@@ -480,7 +495,7 @@ void WorldModule::BuildStatusBar(QVBoxLayout* layout) {
     row->setContentsMargins(12, 0, 12, 0); row->setSpacing(10);
     rendererDot_ = new QLabel(bar);
     rendererDot_->setObjectName(QStringLiteral("worldRendererDot"));
-    rendererDot_->setFixedSize(7, 7);
+    rendererDot_->setFixedSize(8, 8);
     rendererStatus_ = new QLabel(viewport_->StatusText(), bar);
     rendererStatus_->setObjectName(QStringLiteral("worldRendererStatus"));
     terrainStatus_ = new UiKit::ElidedLabel(tr("打开地图以查看地形"), bar);
@@ -737,6 +752,20 @@ void WorldModule::UpdateToolState() {
 
 void WorldModule::UpdateToolHint() {
     if (!selectionStatus_ || !toolSubtitle_) return;
+    const auto syncDockHeader = qScopeGuard([this] {
+        if (!toolDock_ || !toolTitle_ || !toolSubtitle_) return;
+        if (auto* label = toolDock_->findChild<QLabel*>(QStringLiteral("worldDockTitleLabel"))) {
+            const bool tabbed = worldDockHost_ && !toolDock_->isFloating()
+                && !worldDockHost_->tabifiedDockWidgets(toolDock_).isEmpty();
+            const QString sub = toolSubtitle_->text();
+            if (tabbed && CurrentTool() == Tool::Select) {
+                label->setText(sub);
+            } else {
+                label->setText(sub.isEmpty() ? toolTitle_->text()
+                    : QStringLiteral("%1 · %2").arg(toolTitle_->text(), sub));
+            }
+        }
+    });
     if (terrainBlockSelecting_ || terrainBlockPasting_) {
         toolSubtitle_->setText(terrainBlockPasting_ ? tr("地形块粘贴 · 绝对高度") : tr("拖动框选地形 · Ctrl+C / Ctrl+V"));
         return;

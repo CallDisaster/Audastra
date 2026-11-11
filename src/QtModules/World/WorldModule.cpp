@@ -25,6 +25,7 @@
 #include "War3MapCore/MapData/TerrainRampEditing.h"
 #include "War3MapCore/Render/SceneEnvironment.h"
 
+#include "Icons/SvgIcons.h"
 #include "Widgets/ElidedLabel.h"
 
 #include <QFile>
@@ -32,6 +33,7 @@
 #include <QEvent>
 #include <QCheckBox>
 #include <QElapsedTimer>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QLabel>
@@ -44,6 +46,7 @@
 #include <QMainWindow>
 #include <QTabWidget>
 #include <QThread>
+#include <QToolButton>
 #include <QTreeView>
 #include <QTimer>
 #include <QUndoStack>
@@ -325,6 +328,32 @@ QWidget* WorldModule::Widget() {
     const auto dock = [this](const char* name, const QString& title, QWidget* widget, Qt::DockWidgetArea area) {
         auto* result = new QDockWidget(title, worldDockHost_); result->setObjectName(QLatin1String(name));
         result->setAllowedAreas(Qt::AllDockWidgetAreas); result->setWidget(widget);
+        auto* titleBar = new QWidget(result);
+        titleBar->setObjectName(QStringLiteral("worldDockTitleBar"));
+        titleBar->setFixedHeight(28);
+        auto* barRow = new QHBoxLayout(titleBar);
+        barRow->setContentsMargins(12, 0, 6, 0);
+        barRow->setSpacing(4);
+        auto* label = new UiKit::ElidedLabel(title, titleBar);
+        label->setObjectName(QStringLiteral("worldDockTitleLabel"));
+        barRow->addWidget(label, 1);
+        auto* floatBtn = new QToolButton(titleBar);
+        floatBtn->setObjectName(QStringLiteral("worldDockTitleButton"));
+        floatBtn->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/app-window")));
+        floatBtn->setIconSize(QSize(13, 13));
+        floatBtn->setFixedSize(20, 20);
+        floatBtn->setToolTip(tr("浮动或停靠面板"));
+        connect(floatBtn, &QToolButton::clicked, result, [result] { result->setFloating(!result->isFloating()); });
+        barRow->addWidget(floatBtn);
+        auto* closeBtn = new QToolButton(titleBar);
+        closeBtn->setObjectName(QStringLiteral("worldDockTitleButton"));
+        closeBtn->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/x")));
+        closeBtn->setIconSize(QSize(13, 13));
+        closeBtn->setFixedSize(20, 20);
+        closeBtn->setToolTip(tr("隐藏面板"));
+        connect(closeBtn, &QToolButton::clicked, result, &QDockWidget::close);
+        barRow->addWidget(closeBtn);
+        result->setTitleBarWidget(titleBar);
         worldDockHost_->addDockWidget(area, result); return result;
     };
     toolDock_ = dock("worldToolDock", tr("场景目录"), BuildToolPanel(), Qt::LeftDockWidgetArea);
@@ -332,6 +361,19 @@ QWidget* WorldModule::Widget() {
     assetDock_ = dock("worldAssetDock", tr("资源浏览器"), assetBrowser_, Qt::LeftDockWidgetArea);
     inspectorDock_ = dock("worldInspectorDock", tr("属性"), BuildInspector(), Qt::RightDockWidgetArea);
     worldDockHost_->tabifyDockWidget(toolDock_, assetDock_); toolDock_->raise();
+    const auto syncAssetDockTitle = [this] {
+        if (!assetDock_ || !worldDockHost_) return;
+        if (auto* label = assetDock_->findChild<QLabel*>(QStringLiteral("worldDockTitleLabel"))) {
+            const bool tabbed = !assetDock_->isFloating() && !worldDockHost_->tabifiedDockWidgets(assetDock_).isEmpty();
+            label->setText(tabbed ? tr("按分类浏览模型与物体") : assetDock_->windowTitle());
+        }
+    };
+    syncAssetDockTitle();
+    connect(assetDock_, &QDockWidget::topLevelChanged, assetDock_, syncAssetDockTitle);
+    connect(assetDock_, &QDockWidget::dockLocationChanged, assetDock_, syncAssetDockTitle);
+    connect(toolDock_, &QDockWidget::topLevelChanged, this, &WorldModule::UpdateToolHint);
+    connect(toolDock_, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea) { UpdateToolHint(); });
+    UpdateToolHint();
     worldDockHost_->resizeDocks({toolDock_, inspectorDock_}, {264, 292}, Qt::Horizontal);
     assetBrowser_->SetVerticalDock(true);
     connect(assetDock_, &QDockWidget::dockLocationChanged, assetBrowser_, [this](Qt::DockWidgetArea area) {

@@ -12,6 +12,7 @@
 #include "Widgets/PopoverSurface.h"
 #include "Widgets/SearchField.h"
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QCloseEvent>
 #include <QComboBox>
@@ -311,6 +312,8 @@ struct AgentWindow::Private {
     ContextRing* ring = nullptr;
     UiKit::PopoverSurface* contextPopover = nullptr;
     QLabel* contextHeading = nullptr;
+    QLabel* contextSourceBadge = nullptr;
+    ContextSegmentBar* popoverSegmentBar = nullptr;
     QLabel* contextFraction = nullptr;
     QLabel* contextTokens = nullptr;
     QLabel* contextBreakdown = nullptr;
@@ -1117,9 +1120,9 @@ void AgentWindow::Private::Build() {
     permissions->setAccessibleName(QStringLiteral("访问权限"));
     permissionMenu = new QMenu(permissions);
     permissionMenu->setObjectName(QStringLiteral("agentPermissionMenu"));
-    auto* menuTitle = new QLabel(QStringLiteral("助手可以做什么？"));
+    auto* menuTitle = new QLabel(QStringLiteral("模式"));
     menuTitle->setObjectName(QStringLiteral("agentPermissionMenuTitle"));
-    menuTitle->setContentsMargins(14, 8, 14, 4);
+    menuTitle->setContentsMargins(14, 7, 14, 3);
     auto* titleAction = new QWidgetAction(permissionMenu);
     titleAction->setDefaultWidget(menuTitle);
     titleAction->setEnabled(false);
@@ -1277,7 +1280,7 @@ void AgentWindow::Private::ApplyAgentStyleSheet() {
         "QListWidget#agentSidebarSessionList { background:transparent; border:0; outline:0; }"
         "QListWidget#agentSidebarSessionList::item { border-radius:7px; padding:0; margin:1px 0; border:1px solid transparent; }"
         "QListWidget#agentSidebarSessionList::item:hover { background:%3; }"
-        "QListWidget#agentSidebarSessionList::item:selected { background:%3; border-color:%5; }"
+        "QListWidget#agentSidebarSessionList::item:selected { background:%13; border-color:transparent; }"
         "QLabel#agentSidebarStatusDot { border-radius:3px; background:%9; }"
         "QLabel#agentSidebarStatusDot[ready=\"true\"] { background:%10; }"
         "QLabel#agentSidebarAccount { font-size:12px; color:%8; }"
@@ -1386,12 +1389,16 @@ void AgentWindow::Private::ApplyAgentStyleSheet() {
         "QComboBox#agentModel:hover, QComboBox#agentModel:on { background:%4; color:%6; }"
         "QComboBox#agentModel::drop-down { border:0; width:22px; }"
         "QComboBox#agentModel QAbstractItemView { background:%3; color:%6; border:1px solid %5; border-radius:10px; padding:4px;"
-        " font-size:12px; selection-background-color:%13; outline:0; }"
+        " min-width:196px; font-size:12px; selection-background-color:%13; selection-color:%6; outline:0; }"
         "QMenu#agentPermissionMenu { background:%3; color:%6; border:1px solid %5; border-radius:12px; padding:4px 0 6px 0; }"
-        "QLabel#agentPermissionMenuTitle { font-size:12px; color:%8; }"
+        "QLabel#agentPermissionMenuTitle { font-size:11px; font-weight:600; color:%8; }"
         "QLabel#agentPermissionTitle { font-size:13px; font-weight:500; color:%6; }"
         "QLabel#agentPermissionTitle[warning=\"true\"] { color:%14; }"
-        "QLabel#agentPermissionDetail { font-size:12px; color:%8; }"
+        "QLabel#agentPermissionDetail { font-size:11px; color:%8; }"
+        "QLabel#agentContextHeading { font-size:12px; color:%8; }"
+        "QLabel#agentContextSourceBadge { font-size:11px; color:%9; }"
+        "QLabel#agentContextFraction { font-size:13px; font-weight:500; color:%6; }"
+        "QLabel#agentContextTokens { font-size:12px; color:%8; }"
         "QPushButton#agentSend { border:1px solid transparent; border-radius:15px; padding:0; background:%6;"
         " min-width:30px; max-width:30px; min-height:30px; max-height:30px; }"
         "QPushButton#agentSend:hover { background:%10; }"
@@ -1658,31 +1665,39 @@ void AgentWindow::Private::FilterSidebarSessions() {
 }
 
 void AgentWindow::Private::BuildContextPopover() {
-    // 与 Codex 一致的小卡片：三行居中，只回答“用了多少”。明细（输入/输出/缓存、上限来源、压缩说明）
-    // 放在卡片的悬停提示里，不堆成说明文字。
+    // 悬浮用量卡片（对齐 Claude Code 用量浮层）：标题 + 来源、比例进度条与 token 统计。
     contextPopover = new UiKit::PopoverSurface(q);
     contextPopover->setObjectName(QStringLiteral("agentContextPopover"));
     auto* content = contextPopover->ContentWidget();
+    content->setMinimumWidth(256);
     auto* layout = new QVBoxLayout(content);
-    layout->setContentsMargins(10, 4, 10, 4);
-    layout->setSpacing(2);
-    const auto line = [content, layout](const QString& name, int pixelSize, bool muted) {
-        auto* label = new QLabel(content);
-        label->setObjectName(name);
-        label->setAlignment(Qt::AlignHCenter);
-        QFont font = label->font(); font.setPixelSize(pixelSize); label->setFont(font);
-        if (muted) {
-            QPalette palette = label->palette();
-            palette.setColor(QPalette::WindowText, palette.color(QPalette::PlaceholderText));
-            label->setPalette(palette);
-        }
-        layout->addWidget(label);
-        return label;
-    };
-    contextHeading = line(QStringLiteral("agentContextHeading"), 12, true);
-    contextHeading->setText(QStringLiteral("上下文窗口："));
-    contextFraction = line(QStringLiteral("agentContextFraction"), 13, false);
-    contextTokens = line(QStringLiteral("agentContextTokens"), 13, false);
+    layout->setContentsMargins(10, 6, 10, 6);
+    layout->setSpacing(6);
+
+    auto* topRow = new QHBoxLayout;
+    topRow->setContentsMargins(0, 0, 0, 0);
+    topRow->setSpacing(8);
+    contextHeading = new QLabel(QStringLiteral("上下文窗口"), content);
+    contextHeading->setObjectName(QStringLiteral("agentContextHeading"));
+    topRow->addWidget(contextHeading);
+    topRow->addStretch();
+    contextSourceBadge = new QLabel(content);
+    contextSourceBadge->setObjectName(QStringLiteral("agentContextSourceBadge"));
+    topRow->addWidget(contextSourceBadge);
+    layout->addLayout(topRow);
+
+    contextFraction = new QLabel(content);
+    contextFraction->setObjectName(QStringLiteral("agentContextFraction"));
+    layout->addWidget(contextFraction);
+
+    popoverSegmentBar = new ContextSegmentBar(content);
+    popoverSegmentBar->setFixedHeight(6);
+    layout->addWidget(popoverSegmentBar);
+
+    contextTokens = new QLabel(content);
+    contextTokens->setObjectName(QStringLiteral("agentContextTokens"));
+    layout->addWidget(contextTokens);
+
     // 明细只进提示文字；对象保留给测试和无障碍读取。
     contextBreakdown = new QLabel(content);
     contextBreakdown->setObjectName(QStringLiteral("agentContextBreakdown"));
@@ -1704,6 +1719,11 @@ void AgentWindow::Private::UpdateContext() {
         contextFraction->setText(QStringLiteral("暂无用量数据"));
         contextTokens->setText(limit > 0 ? QStringLiteral("上限 %1 tokens").arg(FormatTokens(limit)) : QStringLiteral("尚未选择模型"));
     }
+    if (contextSourceBadge) {
+        contextSourceBadge->setText(limit > 0
+            ? (ring->IsEstimated() ? QStringLiteral("估算上限") : ring->Source())
+            : QString());
+    }
     QStringList details;
     const std::array<QPair<QString, QString>, 3> fields{{
         {QStringLiteral("input_tokens"), QStringLiteral("输入")}, {QStringLiteral("output_tokens"), QStringLiteral("输出")},
@@ -1715,6 +1735,23 @@ void AgentWindow::Private::UpdateContext() {
     }
     contextBreakdown->setText(details.join(QStringLiteral(" · ")));
     contextSource->setText(limit > 0 ? QStringLiteral("上限来源：%1%2").arg(ring->Source(), ring->IsEstimated() ? QStringLiteral("（估算）") : QString()) : QString());
+
+    const bool hasInput = IsExactCount(actualUsage.value(QStringLiteral("input_tokens")));
+    const bool hasOutput = IsExactCount(actualUsage.value(QStringLiteral("output_tokens")));
+    const QJsonValue cacheField = IsExactCount(actualUsage.value(QStringLiteral("cache_read_tokens")))
+        ? actualUsage.value(QStringLiteral("cache_read_tokens"))
+        : actualUsage.value(QStringLiteral("cached_tokens"));
+    const bool hasCache = IsExactCount(cacheField);
+    const qint64 inputTotal = hasInput ? Count(actualUsage.value(QStringLiteral("input_tokens"))) : 0;
+    const qint64 cacheRead = hasCache ? Count(cacheField) : 0;
+    const qint64 outputTotal = hasOutput ? Count(actualUsage.value(QStringLiteral("output_tokens"))) : 0;
+    const qint64 uncachedInput = hasInput ? std::max<qint64>(0, inputTotal - std::min(inputTotal, cacheRead))
+        : (used >= 0 ? std::max<qint64>(0, used - cacheRead - outputTotal) : 0);
+
+    if (popoverSegmentBar) {
+        popoverSegmentBar->SetBreakdown(limit, used, uncachedInput, cacheRead, outputTotal);
+    }
+
     QStringList tip;
     if (used >= 0 && limit > 0) tip.append(QStringLiteral("%1 / %2 tokens").arg(QLocale().toString(used), QLocale().toString(limit)));
     if (!details.isEmpty()) tip.append(contextBreakdown->text());
@@ -1725,18 +1762,6 @@ void AgentWindow::Private::UpdateContext() {
 
     // 同步更新右侧检查栏的真实上下文分段条与四项明细
     if (inspectorSegmentBar) {
-        const bool hasInput = IsExactCount(actualUsage.value(QStringLiteral("input_tokens")));
-        const bool hasOutput = IsExactCount(actualUsage.value(QStringLiteral("output_tokens")));
-        const QJsonValue cacheField = IsExactCount(actualUsage.value(QStringLiteral("cache_read_tokens")))
-            ? actualUsage.value(QStringLiteral("cache_read_tokens"))
-            : actualUsage.value(QStringLiteral("cached_tokens"));
-        const bool hasCache = IsExactCount(cacheField);
-        const qint64 inputTotal = hasInput ? Count(actualUsage.value(QStringLiteral("input_tokens"))) : 0;
-        const qint64 cacheRead = hasCache ? Count(cacheField) : 0;
-        const qint64 outputTotal = hasOutput ? Count(actualUsage.value(QStringLiteral("output_tokens"))) : 0;
-        const qint64 uncachedInput = hasInput ? std::max<qint64>(0, inputTotal - std::min(inputTotal, cacheRead))
-            : (used >= 0 ? std::max<qint64>(0, used - cacheRead - outputTotal) : 0);
-
         inspectorSegmentBar->SetBreakdown(limit, used, uncachedInput, cacheRead, outputTotal);
         if (inspectorContextSource) {
             inspectorContextSource->setText(limit > 0
@@ -1941,8 +1966,17 @@ void AgentWindow::Private::ModelChanged() {
     // 宽度跟随当前模型名，只占所需位置；过长名称省略显示，完整名在提示里。
     QFont font = models->font();
     font.setPixelSize(12);
-    const int textWidth = QFontMetrics(font).horizontalAdvance(models->currentText());
+    const QFontMetrics metrics(font);
+    const int textWidth = metrics.horizontalAdvance(models->currentText());
     models->setFixedWidth(std::clamp(textWidth + 56, 96, 240));
+    if (QAbstractItemView* popupView = models->view()) {
+        popupView->setTextElideMode(Qt::ElideNone);
+        int popupWidth = 196;
+        for (int i = 0; i < models->count(); ++i) {
+            popupWidth = std::max(popupWidth, metrics.horizontalAdvance(models->itemText(i)) + 56);
+        }
+        popupView->setMinimumWidth(std::clamp(popupWidth, 196, 320));
+    }
     const QVariantMap selected = models->currentData().toMap();
     context->clear();
     ring->SetLimit(0, true, QString());

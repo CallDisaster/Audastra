@@ -87,8 +87,10 @@ protected:
 private:
     QLabel* icon_ = nullptr;
     QLabel* title_ = nullptr;
+    QLabel* description_ = nullptr;
     QLabel* check_ = nullptr;
     bool hovered_ = false;
+    bool checked_ = false;
 };
 
 [[nodiscard]] QString FormatTokens(qint64 tokens);

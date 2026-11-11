@@ -203,30 +203,40 @@ PermissionOption::PermissionOption(const QIcon& icon, const QString& title, cons
     setAttribute(Qt::WA_Hover);
     setCursor(Qt::PointingHandCursor);
     setAccessibleName(title);
-    // 单行：图标、标题、勾选三者垂直居中；说明只放悬停提示，菜单本身不堆小字。
     setToolTip(description);
     auto* row = new QHBoxLayout(this);
-    row->setContentsMargins(14, 0, 14, 0);
+    row->setContentsMargins(14, 5, 14, 5);
     row->setSpacing(10);
     icon_ = new QLabel(this);
-    icon_->setPixmap(icon.pixmap(16, 16));
+    icon_->setPixmap(icon.pixmap(15, 15));
     icon_->setFixedSize(16, 16);
     icon_->setAlignment(Qt::AlignCenter);
     row->addWidget(icon_, 0, Qt::AlignVCenter);
+    auto* textColumn = new QVBoxLayout;
+    textColumn->setContentsMargins(0, 0, 0, 0);
+    textColumn->setSpacing(1);
     title_ = new QLabel(title, this);
     title_->setObjectName(QStringLiteral("agentPermissionTitle"));
-    row->addWidget(title_, 1, Qt::AlignVCenter);
+    textColumn->addWidget(title_);
+    description_ = new QLabel(description, this);
+    description_->setObjectName(QStringLiteral("agentPermissionDetail"));
+    textColumn->addWidget(description_);
+    row->addLayout(textColumn, 1);
     check_ = new QLabel(this);
     check_->setFixedSize(16, 16);
-    check_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/check")).pixmap(16, 16));
+    check_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/check"), QColor(110, 231, 183)).pixmap(15, 15));
     check_->setVisible(false);
     QSizePolicy keep = check_->sizePolicy(); keep.setRetainSizeWhenHidden(true); check_->setSizePolicy(keep);
     row->addWidget(check_, 0, Qt::AlignVCenter);
-    setFixedHeight(36);
-    setMinimumWidth(200);
+    setFixedHeight(48);
+    setMinimumWidth(252);
 }
 
-void PermissionOption::SetChecked(bool checked) { check_->setVisible(checked); }
+void PermissionOption::SetChecked(bool checked) {
+    checked_ = checked;
+    check_->setVisible(checked);
+    update();
+}
 
 void PermissionOption::SetWarning(bool warning) {
     title_->setProperty("warning", warning);
@@ -241,14 +251,14 @@ void PermissionOption::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void PermissionOption::paintEvent(QPaintEvent*) {
-    if (!hovered_) return;
+    if (!hovered_ && !checked_) return;
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    QColor hover = palette().color(QPalette::Text);
-    hover.setAlpha(16);
+    QColor fill = palette().color(QPalette::Text);
+    fill.setAlpha(hovered_ ? 20 : 10);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(hover);
-    painter.drawRoundedRect(QRectF(rect()).adjusted(4, 1, -4, -1), 8, 8);
+    painter.setBrush(fill);
+    painter.drawRoundedRect(QRectF(rect()).adjusted(5, 2, -5, -2), 8, 8);
 }
 
 } // namespace War3Map::Agent
