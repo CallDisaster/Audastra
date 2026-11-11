@@ -2646,6 +2646,7 @@ int main(int argc, char** argv) {
         if (argc > 1) {
             if (argc != 2 || std::string_view(argv[1]) != "--history") return 2;
             TerrainHistorySavedStationRestoresBothSidesAndFormalSaving();
+            TerrainHistoryRetainsOrdinaryEditsAcrossThreeSaves();
             TerrainHistorySavedStationRejectsEpochSourceAndRawTampering();
             TerrainHistoryDirectoryRestoresPostStationSuffixAndRedo();
             std::cout << "Saved terrain history service tests passed\n"; return 0;

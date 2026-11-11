@@ -150,6 +150,15 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
             if (!Charge(remaining.maximumCandidateBytes, edit->inserted.capacity()) || !Charge(remaining.maximumWork, edit->inserted.size()))
                 return Failure("TERRAIN_REPLAY_BUDGET", "历史起点副本超过恢复预算。");
         }
+        if (!Charge(remaining.maximumCandidateBytes, stroke.ordinaryMembers.capacity(), sizeof(MapData::MapMemberJournalEdit)))
+            return Failure("TERRAIN_REPLAY_BUDGET", "普通地图数据历史元数据超过恢复预算。");
+        for (const auto& record : stroke.ordinaryMembers) {
+            const auto& delta = record.delta;
+            if (!textCopy(delta.beforeSha256) || !textCopy(delta.afterSha256)
+                || !Charge(remaining.maximumCandidateBytes, delta.inserted.capacity())
+                || !Charge(remaining.maximumWork, delta.inserted.size()))
+                return Failure("TERRAIN_REPLAY_BUDGET", "普通地图数据历史副本超过恢复预算。");
+        }
     }
     // 初次/最终来源读取与其比较副本共存；把读取帽也收紧到已扣除历史正文后的余额，
     // 不能先读完大成员才发现三份实际来源驻留已超出小预算。
@@ -335,7 +344,7 @@ Result<TerrainReplayCandidate> TerrainPathingSave::RestoreHistoryJournal(const M
             return Failure("TERRAIN_REPLAY_BUDGET", "保存站epoch冻结没有剩余克隆或扫描预算。");
         // Core在FreezeForSave前先核这个实际剩余帽，成功后再将epoch常驻量纳入
         // 同一后缀账本；不能只在取得大克隆之后才检查它的容量。
-        auto lease = edits.PrepareTerrainHistoryForSave(leaseBudget);
+        auto lease = edits.PrepareTerrainHistoryForSave(leaseBudget, savedIndex == 0);
         if (!lease.Succeeded() || !lease.value) return HistoryFailure(std::move(lease.diagnostics));
         // 旧保存站按同一已核历史reader冻结，不能等恢复后resize再借当前物理SHD。
         // 仅FTJH确实携带旧SHD时补绑定；旧FTJE缺席材料不伪装为absence。

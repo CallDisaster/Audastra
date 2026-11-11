@@ -74,14 +74,8 @@ void EditorProjectTests::WetInnerCornerRampProjectColdRestoreAndNativeSave() {
         job->terrainSessionSnapshot = restored.mapEdits_->FreezeForSave(); job->minimapGameRoot = game;
         job->inPlace = inPlace; job->inPlaceOptions.backupDirectory = fixture.root / "backups";
         auto history = restored.mapEdits_->PrepareTerrainHistoryForSave();
-        if (state == 0) {
-            QVERIFY2(history.Succeeded() && history.value, ReadDiagnosticText(history).c_str());
-            job->terrainHistorySaveLease = std::move(*history.value);
-        } else {
-            QVERIFY(!history.Succeeded() && HasReadDiagnostic(history, "TERRAIN_HISTORY_EPOCH_LIMIT"));
-            job->terrainHistoryWarning = "草稿已完整保留；当前地形历史不能绑定到一座保存站，跨保存点撤销的冷恢复不可用。"
-                "（TERRAIN_HISTORY_EPOCH_LIMIT）";
-        }
+        QVERIFY2(history.Succeeded() && history.value, ReadDiagnosticText(history).c_str());
+        job->terrainHistorySaveLease = std::move(*history.value);
         InstallMapSaveDerivedPreparation(*job); EditorProject::RunMapSave(*job);
         QVERIFY2(job->succeeded, ReadDiagnosticText(*job).c_str());
         QVERIFY(job->terrainSavePlan && job->terrainReadbackStatus && job->terrainReadbackStatus->Succeeded());
@@ -110,33 +104,22 @@ void EditorProjectTests::WetInnerCornerRampProjectColdRestoreAndNativeSave() {
         if (state == 1) {
             QCOMPARE(undo.index(), 0); QVERIFY(!undo.canUndo() && undo.canRedo());
             const auto exported = restored.mapEdits_->ExportTerrainHistoryJournal();
-            QVERIFY(!exported.Succeeded() && HasReadDiagnostic(exported, "TERRAIN_HISTORY_EPOCH_LIMIT"));
-            const auto draft = TerrainJournalDraftBytes(*restored.mapEdits_);
-            const auto restrictions = restored.mapEdits_->SerializePathingRestrictionDraft(); QVERIFY(restrictions.Succeeded());
-            const auto fallbackForge = std::filesystem::path(projectFiles.filePath("wet-inner-second-save-draft.forge").toStdWString());
-            const auto draftSaved = restored.SaveProjectToPath(fallbackForge);
-            QVERIFY2(draftSaved.Succeeded(), ReadDiagnosticText(draftSaved).c_str());
-            QVERIFY(HasReadDiagnostic(draftSaved, "TERRAIN_JOURNAL_DRAFT_ONLY"));
-            const auto container = MapArchiveSession::Open(fallbackForge); QVERIFY(container.Succeeded());
-            QVERIFY(!container.value->HasMember("overlay/editor/terrain-strokes.bin"));
-            auto cold = PrepareProjectOpen(fallbackForge, game); QVERIFY2(cold.Succeeded(), ReadDiagnosticText(cold).c_str());
-            QVERIFY(HasReadDiagnostic(cold, "TERRAIN_JOURNAL_DRAFT_ONLY"));
-            QVERIFY((*cold.value)->terrainReceipts.empty() && !(*cold.value)->terrainSavedIndex);
-            QCOMPARE(TerrainJournalDraftBytes(*(*cold.value)->mapDataEdits), draft);
-            QCOMPARE((*cold.value)->mapDataEdits->SerializePathingRestrictionDraft().value, restrictions.value);
+            QVERIFY2(exported.Succeeded(), ReadDiagnosticText(exported).c_str());
+            QCOMPARE(exported.value->history->savedIndex, 0u);
+            const auto forge = std::filesystem::path(projectFiles.filePath("second-saved-history.forge").toStdWString());
+            const auto saved = restored.SaveProjectToPath(forge);
+            QVERIFY2(saved.Succeeded(), ReadDiagnosticText(saved).c_str());
+            auto cold = PrepareProjectOpen(forge, game);
+            QVERIFY2(cold.Succeeded(), ReadDiagnosticText(cold).c_str());
+            QVERIFY2(HasReadDiagnostic(cold, "TERRAIN_JOURNAL_RESTORED"), ReadDiagnosticText(cold).c_str());
+            QCOMPARE((*cold.value)->terrainReceipts.size(), std::size_t{1});
+            QCOMPARE((*cold.value)->terrainSavedIndex, std::optional<std::size_t>{0});
             EditorProject coldProject; QUndoStack coldUndo; coldProject.mapDataUndoStack_ = &coldUndo;
             QVERIFY(BindPreparedTerrainJournal(coldProject, **cold.value, game));
-            QCOMPARE(coldUndo.count(), 0); QVERIFY(!coldUndo.canUndo() && !coldUndo.canRedo());
+            QCOMPARE(coldUndo.count(), 1); QVERIFY(coldUndo.isClean() && coldUndo.canRedo());
             fixture.CheckState(*coldProject.mapEdits_, false, follow);
-            const auto inspection = MapData::CaptureTerrainEditInspection(*coldProject.archiveSession_, *coldProject.mapEdits_);
-            QVERIFY2(inspection.Succeeded(), ReadDiagnosticText(inspection).c_str());
-            QVERIFY(inspection.value->Members()[0].current && inspection.value->Members()[1].current);
-            QCOMPARE(*inspection.value->Members()[0].current, fixture.TerrainLiteral(false));
-            QCOMPARE(*inspection.value->Members()[1].current, fixture.PathingLiteral(false));
-            QCOMPARE(restored.mapEdits_->SessionIdentity(), identity); QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 0);
-            undo.redo(); fixture.CheckState(*restored.mapEdits_, true, follow);
-            undo.undo(); fixture.CheckState(*restored.mapEdits_, false, follow);
-            QVERIFY(undo.canRedo()); QCOMPARE(Sha256File(target).value, std::optional(actual.value->SourceSha256()));
+            coldUndo.redo(); QVERIFY(!coldUndo.isClean());
+            fixture.CheckState(*coldProject.mapEdits_, true, follow);
         }
     }
 }

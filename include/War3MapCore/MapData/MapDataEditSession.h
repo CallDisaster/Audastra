@@ -255,9 +255,10 @@ public:
     // 返回值本身不授予special谱系，恢复必须经owned replay工厂。
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainStrokeJournal() const;
     [[nodiscard]] Result<TerrainHistorySaveLease> PrepareTerrainHistoryForSave(
-        std::size_t maximumBytes = TerrainJournalMaximumBytes) const;
+        std::size_t maximumBytes = TerrainJournalMaximumBytes, bool restoringAtOrigin = false) const;
     // 仅真实保存回读/CAS及CommitSaved成功之后安装；失败不能反向否定已完成的地图保存。
     [[nodiscard]] Status CommitTerrainHistorySave(const TerrainHistorySaveLease& prepared);
+    [[nodiscard]] Status ReplayMapMemberJournal(std::span<const MapMemberJournalEdit> records);
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainHistoryJournal(
         std::size_t maximumBytes = TerrainJournalMaximumBytes) const;
     [[nodiscard]] Status VerifyTerrainJournalBaseline(std::span<const ArchiveExactMember> actual) const;
@@ -479,7 +480,7 @@ private:
     [[nodiscard]] Result<TerrainHistoryLine> CaptureTerrainHistoryLine(std::size_t maximumBytes) const;
     [[nodiscard]] std::string TerrainHistoryStateFingerprint() const;
     [[nodiscard]] Result<TerrainStrokeJournal> ExportTerrainJournalCommands(
-        std::span<const std::shared_ptr<const Command>> commands, bool baselineLayers) const;
+        std::span<const std::shared_ptr<const Command>> commands, bool baselineLayers, bool retainOrdinary = false) const;
     [[nodiscard]] Result<std::vector<ArchiveExactMember>> TerrainHistoryBaselineMembers(std::size_t maximumBytes) const;
     [[nodiscard]] Status Apply(MapDataKind kind, Result<std::vector<std::byte>> serialized);
     [[nodiscard]] Status Prepare(MapDataKind kind, Result<std::vector<std::byte>> serialized,

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/MapArchiveSession.h"
+#include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/TerrainStrokeIntent.h"
 #include "War3MapCore/MapData/TerrainDoodadsJournal.h"
 #include "War3MapCore/MapData/TerrainUnitsJournal.h"
@@ -24,6 +25,16 @@ struct TerrainJournalMember {
     std::string sha256;
     std::uint64_t bytes = 0;
 };
+// 一个普通地图数据事务可以同时更新W3I和WTS。摆放和空间联动继续使用原有记录。
+struct MapMemberJournalEdit {
+    MapDataKind kind;
+    bool beforePresent;
+    TerrainPlacementJournalDelta delta;
+};
+struct FrozenMapMemberJournalEdit {
+    MapDataKind kind;
+    std::shared_ptr<const std::vector<std::byte>> before, after;
+};
 struct TerrainJournalStroke {
     TerrainStrokeIntent intent;
     // FTJ7独立普通DOO记录；intent必须完全中性，不进入公共笔刷请求域。
@@ -36,6 +47,8 @@ struct TerrainJournalStroke {
     // FTJA仅承载真实PrepareUnits产生的Units+W3I起始位置复合命令。
     std::optional<TerrainStartLocationsJournalEdit> startLocations;
     std::optional<FrozenTerrainStartLocationsJournalEdit> frozenStartLocations;
+    std::vector<MapMemberJournalEdit> ordinaryMembers;
+    std::vector<FrozenMapMemberJournalEdit> frozenOrdinaryMembers;
     // FTJ6新增独立palette变体，复用实际owner的完整规则/来源摘要；不携带验证位。
     // 水算法由intent.waterBrush.algorithm显式决定：FTJ1/2固定v1，FTJ3/4逐水笔记录v1/v2。
     // FTJ4沿用FTJ3正文布局，新增独立CornerRamp=13，必需单点/实际规则与完整DOO摘要。
@@ -49,7 +62,7 @@ struct TerrainJournalStroke {
     // 仅新原版CliffLevel；与digest成对。FTJ1旧悬崖保持旧算法，不能静默升级。
     std::optional<bool> cliffEnforceWaterLimits;
 };
-// FTJE只承载一座真实保存站的线性历史。旧结构字节只是重放输入，
+// 保存站索引指向当前物理地图，完整线性历史从最早受支持的来源开始。旧结构字节只是重放输入，
 // 当前物理来源身份仍在外层members；不能从这些字节安装私有命令或保存资格。
 struct TerrainJournalHistory {
     std::vector<ArchiveExactMember> baselineMembers;
@@ -73,6 +86,7 @@ struct TerrainStrokeJournal {
 };
 
 [[nodiscard]] Status ValidateTerrainStrokeJournal(const TerrainStrokeJournal& journal);
+[[nodiscard]] Status ValidateMapMemberJournalEdit(const MapMemberJournalEdit& edit);
 // Services后台补来源身份后调用；累计预收codec/扫描/中段容量，成功后释放全部冻结别名。
 [[nodiscard]] Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal);
 [[nodiscard]] Status MaterializeTerrainJournalHistory(TerrainStrokeJournal& journal);

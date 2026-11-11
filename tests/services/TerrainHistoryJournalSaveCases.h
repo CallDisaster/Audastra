@@ -77,6 +77,43 @@ void TerrainHistorySavedStationRestoresBothSidesAndFormalSaving() {
     }
 }
 
+void TerrainHistoryRetainsOrdinaryEditsAcrossThreeSaves() {
+    Fixture f; HistorySaveStation(f);
+    const auto unchangedTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto unchangedPathing = Take(f.archive->ReadMember("war3map.wpm"));
+    const auto unchangedDoodads = Take(OrdinaryCurrent(f).Serialize());
+    auto regions = f.edits->Snapshot().Regions().value_or(RegionsDocument{});
+    const auto originalRegionCount = regions.entries.size();
+    regions.entries.push_back({0, 0, 128, 128, "original region A", 19, {}, "", {}});
+    for (int save = 2; save <= 3; ++save) {
+        if (save == 3) regions.entries.back().name = "original region B";
+        Check(f.edits->EditRegions(regions));
+        const auto lease = Take(f.edits->PrepareTerrainHistoryForSave());
+        f.SaveExpected(save == 2 ? "mixed-save-2.w3x" : "mixed-save-3.w3x", unchangedTerrain,
+            unchangedPathing, &unchangedDoodads, true);
+        Check(f.edits->CommitTerrainHistorySave(lease));
+    }
+    auto journal = Take(TerrainPathingSave::CaptureJournal(*f.archive, *f.edits));
+    Require(journal.history->savedIndex == 4 && journal.strokes.size() == 4
+        && journal.strokes[2].ordinaryMembers.size() == 1 && journal.strokes[3].ordinaryMembers.size() == 1,
+        "mixed history retains original terrain and placement plus two later ordinary edits");
+    journal = Take(DecodeTerrainStrokeJournal(Take(EncodeTerrainStrokeJournal(journal))));
+    auto raw = HistoryRawDraft(f);
+    auto restored = Take(TerrainPathingSave::RestoreJournal(*f.archive, MapDocument::FromArchive(*f.archive),
+        unchangedTerrain, unchangedPathing, journal, *raw, f.gameRoot));
+    Check(restored.session->Replay(restored.receipts[3], false));
+    Require(restored.session->Snapshot().Regions()->entries.back().name == "original region A",
+        "cold undo returns to the region version of the second save");
+    Check(restored.session->Replay(restored.receipts[2], false));
+    const auto priorRegions = restored.session->Snapshot().Regions();
+    Require((priorRegions ? priorRegions->entries.size() : 0) == originalRegionCount,
+        "cold undo restores the member presence and original region rows");
+    Check(restored.session->Replay(restored.receipts[2], true));
+    Check(restored.session->Replay(restored.receipts[3], true));
+    Require(!restored.session->IsDirty() && restored.session->MatchesTerrainJournalDraft(*raw),
+        "cold redo reaches the third physical save with exact draft bytes");
+}
+
 void TerrainHistorySavedStationRejectsEpochSourceAndRawTampering() {
     Fixture f; HistorySaveStation(f); Require(f.edits->Undo(), "make a before-station cold draft");
     const auto activeTerrain = Take(SerializeMapTerrain(*f.edits->Terrain()));

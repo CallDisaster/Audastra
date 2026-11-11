@@ -30,6 +30,19 @@ bool Rawcode(std::string_view value) {
     return value.size() == 4 && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= 32 && c <= 126; });
 }
 bool ValidStroke(const TerrainJournalStroke& stroke, std::size_t& points) {
+    if (!stroke.frozenOrdinaryMembers.empty()) return false;
+    if (!stroke.ordinaryMembers.empty()) {
+        if (stroke.ordinaryMembers.size() > 5 || stroke.units || stroke.frozenUnits || stroke.ordinaryDoodads
+            || stroke.frozenDoodads || stroke.startLocations || stroke.frozenStartLocations
+            || !IsTerrainDoodadsJournalPlaceholder(stroke.intent) || !stroke.rulesSha256.empty() || stroke.cliffEnforceWaterLimits)
+            return false;
+        auto previous = std::optional<MapDataKind>{};
+        for (const auto& edit : stroke.ordinaryMembers) {
+            if ((previous && *previous >= edit.kind) || !ValidateMapMemberJournalEdit(edit).Succeeded()) return false;
+            previous = edit.kind;
+        }
+        return true;
+    }
     if ((stroke.intent.brush.kind != TerrainBrushKind::CornerRamp || stroke.intent.waterBrush
             || stroke.intent.bounds || stroke.intent.palette || stroke.intent.blockPaste || stroke.intent.resize || stroke.ordinaryDoodads || stroke.frozenDoodads
             || stroke.units || stroke.frozenUnits || stroke.startLocations || stroke.frozenStartLocations)
@@ -151,6 +164,10 @@ template<class Journal> bool Valid(const Journal& journal) {
             if (stroke.startLocations->settings.inserted.size() > available) return false;
             available -= stroke.startLocations->settings.inserted.size();
         }
+        for (const auto& edit : stroke.ordinaryMembers) {
+            if (edit.delta.inserted.size() > available) return false;
+            available -= edit.delta.inserted.size();
+        }
     }
     return true;
 }
@@ -254,8 +271,10 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
             [](const auto& stroke) { return stroke.intent.resize.has_value(); });
         const bool orientedBlocks = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.blockPaste && !stroke.intent.blockPaste->orientation.Identity(); });
+        const bool mapMembers = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return !stroke.ordinaryMembers.empty(); });
         // FTJE/H/I由保存站history外层占用；FTJJ/FTJK分别绑定含水内角/连接算法；FTJL起地形块带朝向。
-        const unsigned version = orientedBlocks ? 21 : joinedRamps ? 20 : nativeWetCorners ? 19 : resizes ? 16 : nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
+        const unsigned version = mapMembers ? 22 : orientedBlocks ? 21 : joinedRamps ? 20 : nativeWetCorners ? 19 : resizes ? 16 : nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
             : cornerRamps ? 4 : nativeWater ? 3 : nativeCliffs ? 2 : 1;
         wire.Number(0x004a5446u | ((version >= 10 ? std::uint32_t('A') + version - 10 : std::uint32_t('0') + version) << 24), 4);
         wire.Text(journal.sourceSha256);
@@ -267,7 +286,18 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
         wire.Number(journal.strokes.size(), 4);
         for (const auto& stroke : journal.strokes) {
             if (version >= 5) {
-                wire.Number(stroke.intent.resize ? 7 : stroke.intent.blockPaste ? 6 : stroke.startLocations ? 5 : stroke.units ? 4 : stroke.ordinaryDoodads ? 3 : stroke.intent.palette ? 2 : stroke.intent.bounds ? 1 : 0, 1);
+                wire.Number(!stroke.ordinaryMembers.empty() ? 8 : stroke.intent.resize ? 7 : stroke.intent.blockPaste ? 6 : stroke.startLocations ? 5 : stroke.units ? 4 : stroke.ordinaryDoodads ? 3 : stroke.intent.palette ? 2 : stroke.intent.bounds ? 1 : 0, 1);
+                if (!stroke.ordinaryMembers.empty()) {
+                    wire.Number(stroke.ordinaryMembers.size(), 1);
+                    for (const auto& record : stroke.ordinaryMembers) {
+                        const auto& delta = record.delta;
+                        wire.Number(static_cast<unsigned>(record.kind), 1); wire.Number(record.beforePresent, 1);
+                        wire.Text(delta.beforeSha256); wire.Text(delta.afterSha256);
+                        wire.Number(delta.beforeBytes, 4); wire.Number(delta.afterBytes, 4);
+                        wire.Number(delta.prefixBytes, 4); wire.Number(delta.removedBytes, 4); wire.Bytes(delta.inserted);
+                    }
+                    continue;
+                }
                 if (stroke.intent.resize) {
                     const auto& resize = *stroke.intent.resize; const auto& r = resize.canvas;
                     wire.Number(resize.algorithm, 1);
@@ -359,7 +389,7 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto magic = reader.Number(4);
         if ((magic & 0x00ffffffu) != 0x004a5446u
-            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F' && (magic >> 24) != 'G' && (magic >> 24) != 'J' && (magic >> 24) != 'K' && (magic >> 24) != 'L'
+            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F' && (magic >> 24) != 'G' && (magic >> 24) != 'J' && (magic >> 24) != 'K' && (magic >> 24) != 'L' && (magic >> 24) != 'M'
                 && ((magic >> 24) < '1' || (magic >> 24) > '9')))
             return Failed<TerrainStrokeJournal>();
         const auto version = (magic >> 24) >= 'A' ? static_cast<unsigned>((magic >> 24) - 'A') + 10u
@@ -383,7 +413,23 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             TerrainJournalStroke stroke; auto& intent = stroke.intent; auto& brush = intent.brush;
             if (hasVariants) {
                 const auto kind = reader.Number(1);
-                if (kind > (version >= 16 ? 7u : version >= 13 ? 6u : hasStarts ? 5u : hasUnits ? 4u : hasDoodads ? 3u : hasPalette ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
+                if (kind > (version >= 22 ? 8u : version >= 16 ? 7u : version >= 13 ? 6u : hasStarts ? 5u : hasUnits ? 4u : hasDoodads ? 3u : hasPalette ? 2u : 1u)) return Failed<TerrainStrokeJournal>();
+                if (kind == 8) {
+                    const auto members = reader.Number(1);
+                    if (!members || members > 5) return Failed<TerrainStrokeJournal>();
+                    for (std::size_t j = 0; j < members; ++j) {
+                        MapMemberJournalEdit record{};
+                        record.kind = static_cast<MapDataKind>(reader.Number(1)); record.beforePresent = reader.Bool();
+                        auto& delta = record.delta;
+                        delta.beforeSha256 = reader.Text(64); delta.afterSha256 = reader.Text(64);
+                        delta.beforeBytes = static_cast<std::uint32_t>(reader.Number(4)); delta.afterBytes = static_cast<std::uint32_t>(reader.Number(4));
+                        delta.prefixBytes = static_cast<std::uint32_t>(reader.Number(4)); delta.removedBytes = static_cast<std::uint32_t>(reader.Number(4));
+                        const auto inserted = reader.Bytes(TerrainJournalMaximumBytes);
+                        delta.inserted.assign(inserted.begin(), inserted.end());
+                        stroke.ordinaryMembers.push_back(std::move(record));
+                    }
+                    journal.strokes.push_back(std::move(stroke)); continue;
+                }
                 if (kind == 7) {
                     TerrainResizeIntent resize; resize.algorithm = static_cast<std::uint8_t>(reader.Number(1));
                     resize.canvas.west = std::bit_cast<std::int32_t>(static_cast<std::uint32_t>(reader.Number(4)));
@@ -565,6 +611,9 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
             return Failed<TerrainStrokeJournal>();
         if (version == 21 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.blockPaste && !stroke.intent.blockPaste->orientation.Identity(); }))
+            return Failed<TerrainStrokeJournal>();
+        if (version == 22 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return !stroke.ordinaryMembers.empty(); }))
             return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }

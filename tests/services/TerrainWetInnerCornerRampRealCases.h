@@ -236,16 +236,11 @@ inline void Check(const MapArchiveSession& original, const std::filesystem::path
         verifyTerrain(true);
         Require(edits.Undo(), "actual wet inner cold command Undo"); verifyTerrain(false);
         Require(edits.Redo(), "actual wet inner cold command Redo"); verifyTerrain(true);
-        const auto identity = edits.SessionIdentity(); std::size_t saveIndex = 0;
+        const auto identity = edits.SessionIdentity();
         const auto save = [&](bool created, const char* phase) {
             verifyTerrain(created);
             const auto lease = edits.PrepareTerrainHistoryForSave();
-            const auto epochLimited = [](const auto& result) {
-                return !result.Succeeded() && !result.value && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
-                    [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_HISTORY_EPOCH_LIMIT"; });
-            };
-            Require(saveIndex == 0 ? lease.Succeeded() && lease.value.has_value() : epochLimited(lease),
-                "wet inner first station freezes history; later saved edited epochs keep the explicit cold-history limit");
+            Require(lease.Succeeded() && lease.value.has_value(), "each verified map save can update the history station");
             const auto plan = Take(TerrainPathingSave::PrepareForSave(current, edits, game)); Check(plan.SaveGate());
             MapSaveTask task; Check(task.FreezeArchive(current)); task.target = scenario / phase;
             task.replacements = edits.Replacements(); task.removals = edits.Removals();
@@ -269,7 +264,7 @@ inline void Check(const MapArchiveSession& original, const std::filesystem::path
             Check(plan.CommitSaved(edits, MapDocument::FromArchive(readback)));
             Require(!edits.IsDirty() && edits.SessionIdentity() == identity && edits.Revision() == revision
                 && edits.TerrainSourceRevision() == sourceRevision + 1, "wet inner successful save rebases source without losing live Undo/Redo");
-            if (saveIndex == 0) Check(edits.CommitTerrainHistorySave(*lease.value));
+            Check(edits.CommitTerrainHistorySave(*lease.value));
             std::cout << "playable_real_wet_inner_corner_save_passed scene=" << name << " phase=" << phase << " created=" << created
                 << " source_sha256=" << current.SourceSha256() << " candidate_sha256=" << readback.SourceSha256()
                 << " w3e_sha256=" << Take(Sha256(created ? afterBytes : beforeBytes)) << " wpm_sha256=" << Take(Sha256(created ? newWpm : oldWpm))
@@ -281,7 +276,7 @@ inline void Check(const MapArchiveSession& original, const std::filesystem::path
                 << " actual_surface=" << surface << " target_surface=" << target << " exact_equality=" << exactEquality
                 << " expected_complete_w3e_literal=true expected_complete_wpm_literal=true expected_uses_native_generator=false"
                 << " source_unchanged=true native_editor_verified=false game_verified=false\n";
-            verifySources(); sources.emplace_back(readback.SourcePath(), readback.SourceSha256()); current = std::move(readback); ++saveIndex;
+            verifySources(); sources.emplace_back(readback.SourcePath(), readback.SourceSha256()); current = std::move(readback);
         };
         save(true, "session-created.w3x");
         Require(edits.Undo() && !edits.CanUndo(), "wet inner Undo survives actual save"); save(false, "session-undone.w3x");

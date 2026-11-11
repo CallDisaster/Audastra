@@ -1,6 +1,19 @@
 #include "War3MapCore/MapData/TerrainStrokeJournal.h"
+#include "TerrainJournalDelta.h"
 
 namespace War3Map::MapData {
+
+Status ValidateMapMemberJournalEdit(const MapMemberJournalEdit& edit) {
+    switch (edit.kind) {
+    case MapDataKind::Settings: case MapDataKind::Regions: case MapDataKind::Cameras:
+    case MapDataKind::Sounds: case MapDataKind::Strings: break;
+    default:
+        return Status::Failure("MapData.History", "MAP_HISTORY_MEMBER_KIND", "普通地图数据历史不允许写入这种成员。");
+    }
+    if (!edit.beforePresent && edit.delta.beforeBytes)
+        return Status::Failure("MapData.History", "MAP_HISTORY_MEMBER_DELTA", "缺席的旧成员不能携带长度。");
+    return Detail::ValidatePlacementDelta(edit.delta, 0, "MAP_HISTORY_MEMBER_DELTA");
+}
 
 Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
     constexpr auto maximum = TerrainJournalMaximumBytes;
@@ -39,7 +52,8 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
     for (const auto& stroke : journal.strokes) {
         const auto variants = unsigned(stroke.frozenDoodads.has_value()) + unsigned(stroke.ordinaryDoodads.has_value())
             + unsigned(stroke.frozenUnits.has_value()) + unsigned(stroke.units.has_value())
-            + unsigned(stroke.frozenStartLocations.has_value()) + unsigned(stroke.startLocations.has_value());
+            + unsigned(stroke.frozenStartLocations.has_value()) + unsigned(stroke.startLocations.has_value())
+            + unsigned(!stroke.ordinaryMembers.empty()) + unsigned(!stroke.frozenOrdinaryMembers.empty());
         if (!variants) continue;
         if (variants != 1 || !IsTerrainDoodadsJournalPlaceholder(stroke.intent)
             || !stroke.rulesSha256.empty() || stroke.cliffEnforceWaterLimits) return fail();
@@ -65,6 +79,18 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
             if (edit.settings.inserted.size() > available) return fail();
             available -= edit.settings.inserted.size();
         }
+        if (stroke.ordinaryMembers.size() > 5 || stroke.frozenOrdinaryMembers.size() > 5) return fail();
+        for (const auto& edit : stroke.ordinaryMembers)
+            if (!ValidateMapMemberJournalEdit(edit).Succeeded() || edit.delta.inserted.size() > available) return fail();
+            else available -= edit.delta.inserted.size();
+        for (const auto& edit : stroke.frozenOrdinaryMembers) {
+            if (!edit.after) return fail();
+            for (const auto& bytes : {edit.before, edit.after}) if (bytes) {
+                if (bytes->capacity() > maximum - frozenBytes || bytes->size() > remainingWork / 4) return fail();
+                frozenBytes += bytes->capacity();
+                remainingWork -= bytes->size() * 4;
+            }
+        }
     }
     // 冻结Command连同谱系最多64MiB、codec峰值64MiB、最终wire/baseline各64MiB，
     // 与原来的512MiB工程候选帽一致。逐项释放别名，不再回UI读取活动历史。
@@ -88,6 +114,16 @@ Status MaterializeTerrainJournalPlacements(TerrainStrokeJournal& journal) {
             if (!edit.Succeeded() || !edit.value) return {edit.diagnostics};
             available -= edit.value->units.inserted.size() + edit.value->settings.inserted.size();
             stroke.startLocations = std::move(*edit.value); stroke.frozenStartLocations.reset();
+        } else if (!stroke.frozenOrdinaryMembers.empty()) {
+            for (const auto& frozen : stroke.frozenOrdinaryMembers) {
+                auto delta = Detail::BuildPlacementDelta<TerrainPlacementJournalDelta>(
+                    frozen.before ? std::span<const std::byte>(*frozen.before) : std::span<const std::byte>{},
+                    *frozen.after, available, 0, "MAP_HISTORY_MEMBER_DELTA");
+                if (!delta.Succeeded() || !delta.value) return {delta.diagnostics};
+                available -= delta.value->inserted.size();
+                stroke.ordinaryMembers.push_back({frozen.kind, bool(frozen.before), std::move(*delta.value)});
+            }
+            stroke.frozenOrdinaryMembers.clear();
         }
     }
     return Status::Ok();

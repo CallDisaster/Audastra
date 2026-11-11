@@ -140,15 +140,10 @@ inline void FormalSaveAsAndInPlaceRetainHistory() {
         const auto identity = f.edits->SessionIdentity();
         Take(ApplyTerrainEdit(*f.edits, f.Document(), Prepare(f, true, follow)));
         std::size_t saveIndex = 0;
-        const auto epochLimited = [](const auto& result) {
-            return !result.Succeeded() && !result.value && std::any_of(result.diagnostics.begin(), result.diagnostics.end(),
-                [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_HISTORY_EPOCH_LIMIT"; });
-        };
         const auto save = [&](bool created, const char* target) {
             f.CheckState(*f.edits, created, follow);
             const auto historyLease = f.edits->PrepareTerrainHistoryForSave();
-            Require(saveIndex == 0 ? historyLease.Succeeded() && historyLease.value.has_value() : epochLimited(historyLease),
-                "wet inner first save freezes actual history station; further epochs remain explicitly unavailable");
+            Require(historyLease.Succeeded() && historyLease.value.has_value(), "each verified map save can update the history station");
             const auto plan = Take(TerrainPathingSave::PrepareForSave(*f.source, *f.edits, f.game));
             Require(plan.SaveGate().Succeeded(), "wet inner formal save compares actual full native G0/G1");
             MapSaveTask task; Require(task.FreezeArchive(*f.source).Succeeded(), "wet inner formal save freezes exact physical archive");
@@ -178,7 +173,7 @@ inline void FormalSaveAsAndInPlaceRetainHistory() {
             Require(plan.CommitSaved(*f.edits, MapDocument::FromArchive(actual)).Succeeded() && !f.edits->IsDirty()
                 && f.edits->SessionIdentity() == identity && f.edits->Revision() == revision
                 && f.edits->TerrainSourceRevision() == sourceRevision + 1, "wet inner commit preserves hot history identity and only advances physical source revision");
-            if (saveIndex == 0) Require(f.edits->CommitTerrainHistorySave(*historyLease.value).Succeeded(), "wet inner first readback commits the real same-revision history station");
+            Require(f.edits->CommitTerrainHistorySave(*historyLease.value).Succeeded(), "wet inner first readback commits the real same-revision history station");
             f.source = std::make_unique<MapArchiveSession>(std::move(actual));
             const auto captured = TerrainPathingSave::CaptureJournal(*f.source, *f.edits);
             if (saveIndex == 0) {
@@ -189,8 +184,7 @@ inline void FormalSaveAsAndInPlaceRetainHistory() {
                     && decoded.history && decoded.history->currentIndex == 1 && decoded.history->savedIndex == 1
                     && decoded.strokes[0].intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps
                     && Take(EncodeTerrainStrokeJournal(decoded)) == savedWire, "saved E envelope retains its canonical K typed body and real clean station");
-            } else Require(epochLimited(captured) && epochLimited(f.edits->ExportTerrainHistoryJournal()),
-                "later saves retain hot Undo/Redo and cannot forge a second cold history epoch");
+            } else Require(Take(captured).history->savedIndex == (created ? 1u : 0u), "later save records the actual clean position");
             ++saveIndex;
         };
         save(true, "wet-inner-created.w3x");

@@ -361,7 +361,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             } else if (history.diagnostics.empty() || !std::all_of(history.diagnostics.begin(), history.diagnostics.end(), [](const auto& diagnostic) {
                 return diagnostic.code == "TERRAIN_HISTORY_NOT_AVAILABLE";
             })) {
-                job->terrainHistoryWarning = "草稿已完整保留；当前地形历史不能绑定到一座保存站，跨保存点撤销的冷恢复不可用。";
+                job->terrainHistoryWarning = "草稿已完整保留；当前地形历史不能绑定到本次地图保存，跨保存点撤销的冷恢复不可用。";
                 if (!history.diagnostics.empty()) job->terrainHistoryWarning += "（" + history.diagnostics.front().code + "）";
             }
         } catch (const std::exception&) {

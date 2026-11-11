@@ -1019,7 +1019,7 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
 }
 
 Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainJournalCommands(
-    std::span<const std::shared_ptr<const Command>> active, bool baselineLayers) const {
+    std::span<const std::shared_ptr<const Command>> active, bool baselineLayers, bool retainOrdinary) const {
     using Output = Result<TerrainStrokeJournal>;
     const auto fail = [](const char* code) {
         return Output::Failure("Terrain.Journal", code, "草稿已保留；当前历史含无法完整重放的命令或超过历史预算。");
@@ -1110,12 +1110,35 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainJournalCommands(
                 else ordinary.frozenUnits = freeze.template operator()<FrozenTerrainUnitsJournalEdit>();
                 journal.strokes.push_back(std::move(ordinary)); continue;
             }
+            if (retainOrdinary && !command->changes.empty() && command->terrain.empty()
+                && !command->headerBefore && !command->headerAfter && !command->pathingBefore && !command->pathingAfter
+                && !command->restrictionBefore && !command->restrictionAfter && !command->placements
+                && !command->specialBefore && !command->specialAfter && !command->boundsBefore && !command->boundsAfter
+                && !command->startsBefore && !command->startsAfter && !command->resizeBefore && !command->resizeAfter) {
+                TerrainJournalStroke ordinary;
+                if (4096 + sizeof(Command) > TerrainJournalMaximumBytes - frozenBytes) return fail("TERRAIN_JOURNAL_BUDGET");
+                frozenBytes += 4096 + sizeof(Command);
+                for (const auto& change : command->changes) {
+                    if (!change.after || change.kind == MapDataKind::Units || change.kind == MapDataKind::Doodads)
+                        return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
+                    for (const auto* value : {&change.before, &change.after}) if (*value) {
+                        if ((*value)->capacity() > TerrainJournalMaximumBytes - frozenBytes) return fail("TERRAIN_JOURNAL_BUDGET");
+                        frozenBytes += (*value)->capacity();
+                    }
+                    ordinary.frozenOrdinaryMembers.push_back({change.kind,
+                        change.before ? std::shared_ptr<const std::vector<std::byte>>(command, &*change.before) : nullptr,
+                        std::shared_ptr<const std::vector<std::byte>>(command, &*change.after)});
+                }
+                std::sort(ordinary.frozenOrdinaryMembers.begin(), ordinary.frozenOrdinaryMembers.end(),
+                    [](const auto& a, const auto& b) { return a.kind < b.kind; });
+                journal.strokes.push_back(std::move(ordinary)); continue;
+            }
             // 四说明字段不影响资源/地形重放。正文已由raw W3I保存，不能重复序列化
             // 进typed记录，更不能把任意其它设置或WTS事务当作说明修改跳过。
             if (command->changes.size() == 1 && command->changes.front().kind == MapDataKind::Settings
                 && command->terrain.empty() && !command->headerAfter && !command->pathingAfter
                 && !command->restrictionAfter && !command->placements && !command->specialAfter
-                && !command->boundsAfter && ValidateTerrainSettingsPathingChange(
+                && !command->boundsAfter && !retainOrdinary && ValidateTerrainSettingsPathingChange(
                     command->changes.front().before, command->changes.front().after).Succeeded()) continue;
             return fail("TERRAIN_JOURNAL_HISTORY_UNEXPRESSIBLE");
         }

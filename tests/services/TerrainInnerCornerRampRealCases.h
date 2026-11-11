@@ -215,12 +215,7 @@ inline void Check(const MapArchiveSession& original, const std::filesystem::path
     const auto save = [&](bool created, const char* name) {
         verifyTerrain(created);
         const auto historyLease = edits.PrepareTerrainHistoryForSave();
-        const auto epochLimited = [](const auto& result) {
-            return !result.Succeeded() && !result.value && std::any_of(result.diagnostics.begin(),
-                result.diagnostics.end(), [](const auto& diagnostic) { return diagnostic.code == "TERRAIN_HISTORY_EPOCH_LIMIT"; });
-        };
-        Require(saveIndex == 0 ? historyLease.Succeeded() && historyLease.value.has_value() : epochLimited(historyLease),
-            "actual inner first save freezes a real station; further edited epochs explicitly have no cold history lease");
+        Require(historyLease.Succeeded() && historyLease.value.has_value(), "each verified map save can update the history station");
         const auto plan = Take(TerrainPathingSave::PrepareForSave(current, edits, game)); Check(plan.SaveGate());
         MapSaveTask task; Check(task.FreezeArchive(current)); task.target = scenario / name;
         task.replacements = edits.Replacements(); task.removals = edits.Removals();
@@ -244,7 +239,7 @@ inline void Check(const MapArchiveSession& original, const std::filesystem::path
         Check(plan.CommitSaved(edits, MapDocument::FromArchive(readback)));
         Require(!edits.IsDirty() && edits.SessionIdentity() == identity && edits.Revision() == revision
             && edits.TerrainSourceRevision() == sourceRevision + 1, "real inner saving rebases physical source without discarding Undo/Redo or consuming edit revision");
-        if (saveIndex == 0) Check(edits.CommitTerrainHistorySave(*historyLease.value));
+        Check(edits.CommitTerrainHistorySave(*historyLease.value));
         verifySources();
         const auto captured = TerrainPathingSave::CaptureJournal(readback, edits);
         if (saveIndex == 0) {
@@ -259,8 +254,7 @@ inline void Check(const MapArchiveSession& original, const std::filesystem::path
                 && Take(EncodeTerrainStrokeJournal(decoded)) == wire,
                 "real inner first station cold-decodes complete FTJE containing canonical NativeCorners3 typed F");
         } else {
-            Require(epochLimited(captured) && epochLimited(edits.ExportTerrainHistoryJournal()),
-                "actual saved Undo/Redo keeps complete map bytes but cannot impersonate a single-station cold history");
+            Require(Take(captured).history->savedIndex == (created ? 1u : 0u), "later save records the actual clean position");
         }
         std::cout << "playable_real_inner_corner_save_passed phase=" << name << " created=" << created
             << " source_sha256=" << current.SourceSha256() << " candidate_sha256=" << readback.SourceSha256()
@@ -270,7 +264,7 @@ inline void Check(const MapArchiveSession& original, const std::filesystem::path
             << " actual_terrain_container=" << table.archiveName << " actual_terrain_sha256=" << Take(Sha256(table.bytes))
             << " actual_camera_margins=" << margins[0] << ',' << margins[1] << ',' << margins[2] << ',' << margins[3]
             << " expected_complete_w3e_literal=true expected_complete_wpm_literal=true expected_uses_native_generator=false"
-            << " cold_history_available=" << (saveIndex == 0) << " source_unchanged=true native_editor_verified=false game_verified=false\n";
+            << " cold_history_available=" << true << " source_unchanged=true native_editor_verified=false game_verified=false\n";
         sources.emplace_back(readback.SourcePath(), readback.SourceSha256()); current = std::move(readback);
         ++saveIndex;
     };

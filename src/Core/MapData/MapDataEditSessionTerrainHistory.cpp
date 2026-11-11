@@ -2,6 +2,7 @@
 #include "War3MapCore/MapData/PathingRestrictionEditing.h"
 #include "War3MapCore/Hash.h"
 #include "TerrainHistorySourceShadow.h"
+#include "TerrainJournalDelta.h"
 
 #include <algorithm>
 #include <cctype>
@@ -25,7 +26,7 @@ std::string HistoryName(std::string name) {
 Result<MapDataEditSession::TerrainHistoryLine> MapDataEditSession::CaptureTerrainHistoryLine(std::size_t maximumBytes) const {
     using Output = Result<TerrainHistoryLine>;
     const auto fail = [](const char* code) { return HistoryFailure<TerrainHistoryLine>(code,
-        "草稿已保留；地形历史不在一座保存站的完整线性typed窗口内，未恢复部分撤销栈。"); };
+        "草稿已保留；无法验证完整地形撤销历史，未恢复部分撤销栈。"); };
     if (!maximumBytes || maximumBytes > TerrainJournalMaximumBytes || cursor_ > history_.size()
         || history_.size() > 4096) return fail("TERRAIN_HISTORY_BUDGET");
     const auto cost = MeasureTerrainJournalDraft(maximumBytes, 64u * 1024u * 1024u);
@@ -64,7 +65,7 @@ Result<MapDataEditSession::TerrainHistoryLine> MapDataEditSession::CaptureTerrai
             })) return fail("TERRAIN_HISTORY_BRANCH");
         line.currentIndex = currentPrefix.size();
         // 每个栈槽必须恰好对应一个真实typed命令；四说明字段可另合并，不能偷占Qt索引。
-        auto prefix = ExportTerrainJournalCommands(line.commands, false);
+        auto prefix = ExportTerrainJournalCommands(line.commands, false, true);
         if (!prefix.Succeeded() || !prefix.value || prefix.value->strokes.size() != line.commands.size())
             return fail("TERRAIN_HISTORY_UNEXPRESSIBLE");
         return Output::Success(std::move(line));
@@ -72,25 +73,20 @@ Result<MapDataEditSession::TerrainHistoryLine> MapDataEditSession::CaptureTerrai
       catch (const std::length_error&) { return fail("TERRAIN_HISTORY_BUDGET"); }
 }
 
-Result<MapDataEditSession::TerrainHistorySaveLease> MapDataEditSession::PrepareTerrainHistoryForSave(std::size_t maximumBytes) const {
+Result<MapDataEditSession::TerrainHistorySaveLease> MapDataEditSession::PrepareTerrainHistoryForSave(
+    std::size_t maximumBytes, bool restoringAtOrigin) const {
     using Output = Result<TerrainHistorySaveLease>;
     const auto fail = [](const char* code, const char* message) { return HistoryFailure<TerrainHistorySaveLease>(code, message); };
-    if (!terrainOriginal_ || !pathingOriginal_ || history_.empty())
+    if (!terrainOriginal_ || !pathingOriginal_ || (history_.empty() && !restoringAtOrigin))
         return fail("TERRAIN_HISTORY_NOT_AVAILABLE", "没有需要冻结的地形typed历史。");
     if (!maximumBytes || maximumBytes > TerrainJournalMaximumBytes)
         return fail("TERRAIN_HISTORY_BUDGET", "历史冻结预算只能在64MiB内收紧且不能为零。");
     auto line = CaptureTerrainHistoryLine(maximumBytes);
     if (!line.Succeeded() || !line.value) return {{}, line.diagnostics};
-    if (line.value->commands.empty())
+    if (line.value->commands.empty() && !restoringAtOrigin)
         return fail("TERRAIN_HISTORY_NOT_AVAILABLE", "保存站之前没有可恢复的typed命令。");
-    if (!terrainHistoryEpoch_ && line.value->currentIndex != line.value->commands.size())
-        return fail("TERRAIN_HISTORY_SAVE_REDO", "草稿已保留；首次保存前已有旧epoch的Redo命令，本版未把它重绑定为新来源笔划。");
-    if (terrainHistoryEpoch_ && (terrainHistoryEpoch_->savedSourceRevision != terrainSourceRevision_
-        || IsDirty() || line.value->currentIndex != terrainHistoryEpoch_->savedIndex
-        || terrainHistoryEpoch_->savedIndex > line.value->commands.size()
-        || !std::equal(terrainHistoryEpoch_->savedCommands.begin(), terrainHistoryEpoch_->savedCommands.end(),
-            line.value->commands.begin(), [](const auto& a, const auto& b) { return a->logicalIdentity == b->logicalIdentity; })))
-        return fail("TERRAIN_HISTORY_EPOCH_LIMIT", "草稿已保留；本版只恢复一座地图保存站，第二旧epoch未保存为typed撤销历史。");
+    if (terrainHistoryEpoch_ && terrainHistoryEpoch_->savedSourceRevision != terrainSourceRevision_)
+        return fail("TERRAIN_HISTORY_SOURCE_GAP", "草稿已保留；上一次实际地图保存缺少可核验的历史，无法重新接续更早的撤销位置。");
     const auto cost = MeasureTerrainJournalDraft(maximumBytes, 64u * 1024u * 1024u);
     constexpr std::size_t overhead = 16u * 1024u;
     if (!cost.Succeeded() || !cost.value || maximumBytes < overhead
@@ -140,7 +136,7 @@ Status MapDataEditSession::CommitTerrainHistorySave(const TerrainHistorySaveLeas
             || expectedShadow->present != actualShadow->present || expectedShadow->bytes != actualShadow->bytes)
             return fail("TERRAIN_HISTORY_EPOCH_LIMIT");
     }
-    if (lease.previousEpoch_) {
+    if (lease.previousEpoch_ && !lease.checkpoint_->IsDirty()) {
         const auto sameLayer = [](const auto& a, const auto& b) { return bool(a) == bool(b) && (!a || *a == *b); };
         // 未编辑的重复保存只有真实读回基线完全相同才能保留原station；
         // 资源/物编变化导致WPM或P不同，也不能仅凭IsDirty=false假称同一epoch。
@@ -161,17 +157,17 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainHistoryJournal(std
     if (!terrainHistoryEpoch_) return fail("TERRAIN_HISTORY_NOT_AVAILABLE", "当前会话没有一座已冻结的地图保存站。");
     const auto& epoch = *terrainHistoryEpoch_;
     if (terrainSourceRevision_ != epoch.savedSourceRevision)
-        return fail("TERRAIN_HISTORY_EPOCH_LIMIT", "草稿已保留；历史已跨第二旧epoch，不能恢复为一座保存站撤销栈。");
+        return fail("TERRAIN_HISTORY_SOURCE_GAP", "草稿已保留；最近一次地图保存未能建立可核验的历史锚点。");
     if (!maximumBytes || maximumBytes > TerrainJournalMaximumBytes || epoch.retainedBytes > maximumBytes)
         return fail("TERRAIN_HISTORY_BUDGET", "冻结历史超过64MiB或宿主收紧的预算。");
     auto line = CaptureTerrainHistoryLine(maximumBytes - epoch.retainedBytes);
     if (!line.Succeeded() || !line.value) return {{}, line.diagnostics};
-    if (!epoch.savedIndex || epoch.savedIndex > line.value->commands.size()
+    if (epoch.savedIndex > line.value->commands.size()
         || epoch.savedCommands.size() != epoch.savedIndex
         || !std::equal(epoch.savedCommands.begin(), epoch.savedCommands.end(), line.value->commands.begin(), [](const auto& a, const auto& b) {
             return a->sessionIdentity == b->sessionIdentity && a->logicalIdentity == b->logicalIdentity;
         })) return fail("TERRAIN_HISTORY_BRANCH", "草稿已保留；保存站所在旧分支已被新编辑截断，未伪造clean位置。");
-    auto journal = ExportTerrainJournalCommands(line.value->commands, true);
+    auto journal = ExportTerrainJournalCommands(line.value->commands, true, true);
     if (!journal.Succeeded() || !journal.value) return journal;
     TerrainJournalHistory history;
     history.savedIndex = static_cast<std::uint32_t>(epoch.savedIndex);
@@ -183,9 +179,38 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainHistoryJournal(std
     return journal;
 }
 
+Status MapDataEditSession::ReplayMapMemberJournal(std::span<const MapMemberJournalEdit> records) {
+    if (records.empty() || records.size() > 5)
+        return Status::Failure("MapData.History", "MAP_HISTORY_MEMBER_COUNT", "普通地图数据历史事务的成员数量无效。");
+    std::vector<MemberChange> changes;
+    for (const auto& record : records) {
+        const auto valid = ValidateMapMemberJournalEdit(record);
+        if (!valid.Succeeded()) return valid;
+        if (!changes.empty() && changes.back().kind >= record.kind)
+            return Status::Failure("MapData.History", "MAP_HISTORY_MEMBER_ORDER", "普通地图数据历史的成员重复或顺序无效。");
+        const auto& current = current_[static_cast<std::size_t>(record.kind)];
+        if (bool(current) != record.beforePresent)
+            return Status::Failure("MapData.History", "MAP_HISTORY_MEMBER_STALE", "地图数据历史中的成员存在性与当前会话不同。");
+        auto next = Detail::ApplyPlacementDelta(current ? std::span<const std::byte>(*current) : std::span<const std::byte>{},
+            record.delta, 0, "MAP_HISTORY_MEMBER_DELTA", "MAP_HISTORY_MEMBER_STALE", "MAP_HISTORY_MEMBER_OUTPUT");
+        if (!next.Succeeded() || !next.value) return {next.diagnostics};
+        if (record.kind == MapDataKind::Settings && startLocations_) {
+            const auto parsed = MapSettings::Parse(*next.value);
+            if (!parsed.Succeeded() || !parsed.value || !startLocations_->MatchesPlayers(*parsed.value))
+                return Status::Failure("MapData.History", "MAP_HISTORY_START_LOCATIONS", "改动起始位置的历史必须使用原有联动记录。");
+        }
+        const auto prior = changes.size();
+        const auto prepared = Prepare(record.kind, std::move(next), changes);
+        if (!prepared.Succeeded()) return prepared;
+        if (prior == changes.size())
+            return Status::Failure("MapData.History", "MAP_HISTORY_NO_CHANGE", "地图数据历史中包含空编辑。");
+    }
+    return Commit(std::move(changes));
+}
+
 std::string MapDataEditSession::TerrainHistoryStateFingerprint() const {
     if (!terrainHistoryEpoch_) return {};
-    if (terrainSourceRevision_ != terrainHistoryEpoch_->savedSourceRevision) return "FTJE:TERRAIN_HISTORY_EPOCH_LIMIT";
+    if (terrainSourceRevision_ != terrainHistoryEpoch_->savedSourceRevision) return "FTJE:TERRAIN_HISTORY_SOURCE_GAP";
     auto line = CaptureTerrainHistoryLine(TerrainJournalMaximumBytes);
     if (!line.Succeeded() || !line.value)
         return "FTJE:" + (line.diagnostics.empty() ? std::string{"unavailable"} : line.diagnostics.front().code);

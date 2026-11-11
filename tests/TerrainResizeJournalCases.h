@@ -272,7 +272,7 @@ inline void RepeatedHistorySaveChecksActualShadow(bool sourceShadowPresent) {
         fixture.archive = std::make_unique<MapArchiveSession>(std::move(saved));
     };
     save(false, 0); save(false, 1); save(true, 2);
-    Require(HasCode({fixture.edits->ExportTerrainHistoryJournal().diagnostics}, "TERRAIN_HISTORY_EPOCH_LIMIT"),
+    Require(HasCode({fixture.edits->ExportTerrainHistoryJournal().diagnostics}, "TERRAIN_HISTORY_SOURCE_GAP"),
         "changed station shadow never exports an FTJH that cannot reconstruct physical source");
 }
 

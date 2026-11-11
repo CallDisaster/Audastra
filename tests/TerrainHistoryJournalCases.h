@@ -40,11 +40,19 @@ void HistoryLeaseBindsTheRealSessionRevisionAndOneSavedEpoch() {
     Require(!f.session.ExportTerrainHistoryJournal(1).Succeeded()
         && Take(SerializeMapTerrain(*f.session.Terrain())) == before, "history budget refusal preserves the complete raw draft");
     f.Raise(48);
-    Require(HasHistoryCode(f.session.PrepareTerrainHistoryForSave(), "TERRAIN_HISTORY_EPOCH_LIMIT"),
-        "second actual edited save cannot be represented as one station");
+    const auto second = Take(f.session.PrepareTerrainHistoryForSave());
     f.session.CommitSaved(f.session.Snapshot());
-    Require(HasHistoryCode(f.session.ExportTerrainHistoryJournal(), "TERRAIN_HISTORY_EPOCH_LIMIT"),
-        "a second successful save does not silently reuse the first epoch's physical source");
+    Require(f.session.CommitTerrainHistorySave(second).Succeeded(), "edited save advances the station");
+    const auto history = Take(f.session.ExportTerrainHistoryJournal());
+    Require(history.history->savedIndex == 3 && history.strokes.size() == 3,
+        "second edited save retains every command and advances the verified clean position");
+    Require(f.session.Undo() && f.session.Undo() && f.session.Undo() && !f.session.Undo(),
+        "two edited saves retain undo through opening terrain");
+    const auto third = Take(f.session.PrepareTerrainHistoryForSave());
+    f.session.CommitSaved(f.session.Snapshot());
+    Require(f.session.CommitTerrainHistorySave(third).Succeeded()
+        && Take(f.session.ExportTerrainHistoryJournal()).history->savedIndex == 0
+        && f.session.Redo() && f.session.IsDirty(), "save at the origin keeps the full redo branch");
 }
 
 void HistoryLinearStackKeepsCoreQtUndoRedoAndFullOldBaseline() {
@@ -137,17 +145,17 @@ void HistoryLinearStackKeepsCoreQtUndoRedoAndFullOldBaseline() {
 
 void HistoryRejectsBrokenSavedBranchRawCommandsAndMovedAliases() {
     SessionFixture redo; redo.Raise(); redo.Raise(32); Require(redo.session.Undo(), "first-save redo fixture");
-    Require(HasHistoryCode(redo.session.PrepareTerrainHistoryForSave(), "TERRAIN_HISTORY_SAVE_REDO"),
-        "pre-existing old-epoch redo at the first save is explicit rather than rehashing its original rules");
+    Require(redo.session.PrepareTerrainHistoryForSave().Succeeded(),
+        "first save with a redo tail keeps the original commands");
     Require(redo.session.Undo()
-        && HasHistoryCode(redo.session.PrepareTerrainHistoryForSave(), "TERRAIN_HISTORY_SAVE_REDO"),
-        "an entirely undone old-epoch redo stack is not silently called absent history");
+        && redo.session.PrepareTerrainHistoryForSave().Succeeded(),
+        "first save at the origin still captures the redo stack");
     SessionFixture f; f.Raise(); const auto first = f.session.LastEdit(); f.Raise(32); const auto second = f.session.LastEdit();
     const auto lease = Take(f.session.PrepareTerrainHistoryForSave());
     f.session.CommitSaved(f.session.Snapshot()); Require(f.session.CommitTerrainHistorySave(lease).Succeeded(), "save branch fixture");
     Require(f.session.Replay(second, false).Succeeded() && f.session.Replay(first, false).Succeeded()
-        && HasHistoryCode(f.session.PrepareTerrainHistoryForSave(), "TERRAIN_HISTORY_EPOCH_LIMIT"),
-        "saving after undo to zero is an explicit second epoch, never optional missing history");
+        && f.session.PrepareTerrainHistoryForSave().Succeeded(),
+        "saving after undo to zero can establish a new clean position");
     Require(f.session.Replay(first, true).Succeeded() && f.session.Replay(second, true).Succeeded(), "return to saved branch before branch test");
     Require(f.session.Replay(second, false).Succeeded(), "undo to branch ancestor");
     f.Raise(48);
@@ -185,7 +193,7 @@ void HistoryCodecRejectsTruncationIndicesOldVersionsAndTampering() {
     }
     for (unsigned badIndex = 0; badIndex < 4; ++badIndex) {
         auto invalid = journal;
-        if (badIndex == 0) invalid.history->savedIndex = 0;
+        if (badIndex == 0) invalid.history->savedIndex = std::numeric_limits<std::uint32_t>::max();
         if (badIndex == 1) invalid.history->savedIndex = 2;
         if (badIndex == 2) invalid.history->currentIndex = 2;
         if (badIndex == 3) invalid.history->currentIndex = std::numeric_limits<std::uint32_t>::max();

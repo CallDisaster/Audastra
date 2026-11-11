@@ -19,7 +19,7 @@ std::uint32_t HistoryMagic(const TerrainStrokeJournal& journal) {
 }
 template<class T> Result<T> InvalidHistory() {
     return Result<T>::Failure("Terrain.History", "TERRAIN_HISTORY_INVALID",
-        "FTJE一座保存站记录的版本、结构、索引、历史成员或累计预算无效，未恢复任何命令。");
+        "地形保存历史的版本、结构、索引、历史成员或累计预算无效，未恢复任何命令。");
 }
 bool Sha(std::string_view value) {
     return value.size() == 64 && std::all_of(value.begin(), value.end(), [](char c) {
@@ -62,7 +62,7 @@ bool HistoryShape(const TerrainStrokeJournal& journal) {
     if (!journal.history) return false;
     const auto& history = *journal.history;
     if (HasResize(journal) && !history.baselineShadow) return false;
-    if (history.frozenBaseline || history.frozenSourceShadow || history.frozenRetainedBytes || !history.savedIndex
+    if (history.frozenBaseline || history.frozenSourceShadow || history.frozenRetainedBytes
         || history.savedIndex > journal.strokes.size() || history.currentIndex > journal.strokes.size()
         || history.baselineMembers.size() != TerrainJournalMemberNames.size()
         || journal.strokes.empty() || journal.strokes.size() > 128) return false;
@@ -92,6 +92,10 @@ bool HistoryShape(const TerrainStrokeJournal& journal) {
             if (!delta) continue;
             if (delta->inserted.size() > remaining) return false;
             remaining -= delta->inserted.size();
+        }
+        for (const auto& edit : stroke.ordinaryMembers) {
+            if (edit.delta.inserted.size() > remaining) return false;
+            remaining -= edit.delta.inserted.size();
         }
     }
     return true;
