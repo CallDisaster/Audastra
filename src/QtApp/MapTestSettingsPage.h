@@ -28,6 +28,7 @@ public:
     void SetLegacyBackupDirectoryRequestedHandler(std::function<void(QString)> handler);
 
 private:
+    QString installationRoot_;
     QString legacyBackupInspectionText_;
     QString backupMigrationText_;
     bool backupMigrationBusy_ = false;

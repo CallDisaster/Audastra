@@ -93,7 +93,7 @@ MapTestSettingsPage::MapTestSettingsPage(const QString& installationRoot, QWidge
 
 MapTestSettingsPage::MapTestSettingsPage(
     const QString& installationRoot, const QString& genericDataRoot, QWidget* parent)
-    : QWidget(parent), genericDataRoot_(genericDataRoot) {
+    : QWidget(parent), installationRoot_(installationRoot), genericDataRoot_(genericDataRoot) {
     setObjectName(QStringLiteral("mapTestSettingsPage"));
     QSettings stored;
     auto* layout = new QVBoxLayout(this);
@@ -208,7 +208,7 @@ bool MapTestSettingsPage::Validate(QString* error) const {
     const auto dependencies = externalDependencies_->text().trimmed();
     if (!dependencies.isEmpty()) {
         const auto validation = Services::ValidateExternalDependenciesDirectory(dependencies.toStdWString(),
-            std::filesystem::path(QtCommon::InstallationRoot().toStdWString()) / L"test-maps");
+            std::filesystem::path(installationRoot_.toStdWString()) / L"test-maps");
         if (!validation.Succeeded()) {
             if (error) *error = QString::fromStdString(validation.diagnostics.front().message);
             return false;
