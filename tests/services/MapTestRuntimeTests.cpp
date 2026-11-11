@@ -265,8 +265,8 @@ void ExternalDependencyCatalog() {
         bytes.insert(bytes.end(), evidence.begin(), evidence.end());
         Write(builtin / relative, bytes);
     }
-    Write(directory / "kkwe" / "插件" / "version.dll", Pe(true));
-    Write(directory / "kkwe" / "插件" / "dz_w3_plugin.dll", Pe(true));
+    Write(directory / "kkwe" / L"插件" / "version.dll", Pe(true));
+    Write(directory / "kkwe" / L"插件" / "dz_w3_plugin.dll", Pe(true));
     status = Services::QueryExternalDependencies(directory);
     Success(status, "unrelated files and directories do not exhaust provider budget");
     // 重复键已使原来的描述整体失效，因此原 DLL 与根目录未声明 DLL 都应报告。
