@@ -792,18 +792,10 @@ void TriggerValueTests::ExistingTriggersAreListedForTriggerParameters() {
     QTemporaryDir root;
     QVERIFY(root.isValid());
     const std::filesystem::path ui = root.path().toStdWString();
-    WriteUtf8(ui / "ui" / "config", "base
-");
-    WriteUtf8(ui / "ui" / "base" / "define.txt", "[TriggerTypes]
-integer=0,1,1,整数
-trigger=0,1,1,触发器
-");
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "define.txt", "[TriggerTypes]\ninteger=0,1,1,整数\ntrigger=0,1,1,触发器\n");
     WriteUtf8(ui / "ui" / "base" / "action.txt",
-        "[RunTrig]
-description=\"运行 ${触发器}\"
-[[.args]]
-type=trigger
-");
+        "[RunTrig]\ndescription=\"运行 ${触发器}\"\n[[.args]]\ntype=trigger\n");
     const auto catalog = Trigger::UiCatalog::Load(ui);
     QVERIFY(catalog.Succeeded());
     Trigger::TriggerDocument document;
