@@ -80,6 +80,7 @@ add_library(War3MapServices STATIC
     TerrainBlightSaveService.cpp
     TerrainMinimapSave.cpp
     TerrainMinimapMarkers.cpp
+    MinimapMarkerEdits.cpp
     TerrainMinimapMarkersSave.cpp
     TerrainShadowCasterResources.cpp
     TerrainShadowReceiverResources.cpp

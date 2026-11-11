@@ -64,6 +64,7 @@ qt_add_library(War3MapQtProject STATIC
     ProjectQuerySources.cpp
     ProjectSummary.cpp
     ProjectMinimapPreview.cpp ProjectMinimapPreview.h
+    ProjectMinimapMarkers.cpp
     UiLibraryState.cpp
     UiLibraryWatch.cpp
     BundledUiLibrary.cpp BundledUiLibrary.h

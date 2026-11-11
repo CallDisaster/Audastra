@@ -7,6 +7,7 @@
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Services/CampaignService.h"
+#include "War3MapCore/Services/MapEditSaveService.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/Render/MdxPose.h"
@@ -184,6 +185,10 @@ void PrintUsage() {
         << "  --tileset: strict game-only JSON source and member SHA256, max 64 MiB; excludes map/session overrides\n"
         << "war3-map-cli game-ui-inspect <war3-root> [--race <race>] [--classic] [--map <map>] [--frame <name>]...\n"
         << "war3-map-cli mpq-list <archive> [name-filter]\n"
+        << "war3-map-cli campaign-list <source.w3n>\n"
+        << "war3-map-cli campaign-remove <source.w3n> <source-sha256> <candidate.w3n> <map|button> <id>...\n"
+        << "war3-map-cli minimap-marker-list <source.w3x>\n"
+        << "war3-map-cli minimap-marker-edit <source.w3x> <source-sha256> <marker-revision> <ydwe-root> <war3-root> <candidate.w3x> <add type x y bgra-hex | move row x y | remove row>\n"
         << "war3-map-cli mpq-extract <archive> <internal\\path> <out-file>\n"
         << "war3-map-cli blp-decode <in.blp> <out.ppm>\n"
         << "war3-map-cli mdx-inspect <in.mdx>\n"
@@ -239,6 +244,70 @@ int RunCampaignRemoval(int argc, wchar_t** argv) {
     const auto saved = session.Save(session.Revision(), argv[4], false);
     if (!saved.Succeeded()) { PrintDiagnostics(saved.diagnostics); return 1; }
     std::cout << "candidate_sha256=" << saved.value->written.sha256 << '\n';
+    return 0;
+}
+
+int RunMinimapMarkers(int argc, wchar_t** argv) {
+    using namespace War3Map;
+    using namespace War3Map::Services;
+    if (std::wstring_view(argv[1]) == L"minimap-marker-list") {
+        if (argc != 3) return 2;
+        auto source = MapArchiveSession::OpenMinimapAudit(argv[2]);
+        if (!source.Succeeded() || !source.value) { PrintDiagnostics(source.diagnostics); return 1; }
+        auto state = MinimapMarkerEdits::Read(*source.value);
+        if (!state.Succeeded() || !state.value) { PrintDiagnostics(state.diagnostics); return 1; }
+        auto view = state.value->View();
+        if (!view.Succeeded() || !view.value) { PrintDiagnostics(view.diagnostics); return 1; }
+        std::cout << "source_sha256=" << source.value->SourceSha256() << "\nmarker_revision=" << view.value->revision
+            << "\nlegacy_preserved=" << (view.value->legacy ? "true" : "false") << "\n";
+        for (std::size_t i = 0; i < view.value->records.size(); ++i) {
+            const auto& item = view.value->records[i];
+            std::cout << i << '\t' << item.typeRaw << '\t' << item.positionRaw[0] << '\t' << item.positionRaw[1];
+            for (const auto channel : item.colorBgra) std::cout << '\t' << static_cast<unsigned>(channel);
+            std::cout << '\t' << static_cast<int>(view.value->origins[i]) << '\n';
+        }
+        return 0;
+    }
+    if (argc < 10) return 2;
+    const std::wstring_view action = argv[8];
+    MinimapMarkerEdit edit{};
+    const auto first = ParseUnsignedArgument(argv[9]);
+    if (!first || *first > 65535) return 2;
+    if (action == L"remove" && argc == 10) {
+        edit.operation = MinimapMarkerOperation::Remove;
+        edit.row = static_cast<std::size_t>(*first);
+    } else if ((action == L"add" && argc == 13) || (action == L"move" && argc == 12)) {
+        const auto x = ParseUnsignedArgument(argv[10]), y = ParseUnsignedArgument(argv[11]);
+        if (!x || !y || *x > 255 || *y > 255) return 2;
+        edit.value.positionRaw = {static_cast<std::int32_t>(*x), static_cast<std::int32_t>(*y)};
+        if (action == L"add") {
+            if (*first > 2) return 2;
+            const auto hex = Utf8Argument(argv[12]);
+            if (hex.size() != 8) return 2;
+            for (std::size_t c = 0; c < 4; ++c) {
+                unsigned byte = 0;
+                const auto* start = hex.data() + c * 2;
+                const auto [end, error] = std::from_chars(start, start + 2, byte, 16);
+                if (error != std::errc{} || end != start + 2) return 2;
+                edit.value.colorBgra[c] = static_cast<std::uint8_t>(byte);
+            }
+            edit.operation = MinimapMarkerOperation::Add;
+            edit.value.typeRaw = static_cast<std::int32_t>(*first);
+        } else {
+            edit.operation = MinimapMarkerOperation::Move;
+            edit.row = static_cast<std::size_t>(*first);
+        }
+    } else return 2;
+    MapEditSaveRequest request;
+    request.sourceMap = argv[2]; request.expectedSourceSha256 = Utf8Argument(argv[3]);
+    request.minimapMarkerRevision = Utf8Argument(argv[4]); request.toolRoot = argv[5];
+    request.gameRoot = argv[6]; request.targetCandidate = argv[7];
+    request.inProcessOnly = true;
+    request.minimapMarkerEdits.push_back(edit);
+    const auto saved = SaveMapEditCandidate(request);
+    PrintDiagnostics(saved.diagnostics);
+    if (!saved.Succeeded() || !saved.value) return 1;
+    std::cout << "candidate_sha256=" << saved.value->candidateSha256 << '\n';
     return 0;
 }
 
@@ -393,6 +462,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (command == L"archive-session-inspect") return RunArchiveInspectCommand(argc, argv);
     if (command == L"campaign-list" || command == L"campaign-remove") return RunCampaignRemoval(argc, argv);
+    if (command == L"minimap-marker-list" || command == L"minimap-marker-edit") return RunMinimapMarkers(argc, argv);
     if (command == L"archive-member-add") return War3Map::Cli::RunArchiveMemberAdd(argc, argv);
     if (command == L"archive-member-remove") return War3Map::Cli::RunArchiveMemberRemove(argc, argv);
     if (command == L"archive-expand") return War3Map::Cli::RunArchiveExpand(argc, argv);

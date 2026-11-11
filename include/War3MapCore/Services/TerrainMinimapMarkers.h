@@ -2,6 +2,7 @@
 
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/NativeMinimapMarkers.h"
+#include "War3MapCore/Services/MinimapMarkerEdits.h"
 
 #include <memory>
 
@@ -35,9 +36,14 @@ public:
         const MapArchiveSession& source, const std::filesystem::path& gameRoot,
         std::span<const MemberReplacement> replacements = {}, std::span<const std::string> removals = {},
         const TerrainMinimapMarkerLimits& limits = {});
+    // Compose trusted native output and typed author edits before any write.
+    [[nodiscard]] static Result<std::shared_ptr<const TerrainMinimapMarkers>> Compose(
+        const MapArchiveSession& source, MinimapMarkerEdits edits,
+        const std::shared_ptr<const TerrainMinimapMarkers>& generated);
     [[nodiscard]] const std::vector<std::byte>& Bytes() const noexcept { return bytes_; }
     [[nodiscard]] std::span<const TerrainMinimapMarkerDependency> Dependencies() const noexcept { return inputs_; }
     [[nodiscard]] std::size_t MarkerCount() const noexcept { return markerCount_; }
+    [[nodiscard]] const std::vector<std::byte>& ProvenanceBytes() const noexcept { return provenance_; }
     // 保存编排实现；仅将本owner实际生成的正文送入同修订地形计划，不接caller字节。
     [[nodiscard]] Status AdmitToPlan(MapData::TerrainSavePlan& plan,
         const MapData::MapDataEditSession& edits) const;
@@ -53,6 +59,9 @@ private:
     TerrainMinimapMarkerLimits limits_;
     std::vector<TerrainMinimapMarkerDependency> inputs_;
     std::vector<std::byte> bytes_;
+    std::vector<std::byte> provenance_;
+    std::optional<MinimapMarkerEdits> authored_;
+    bool verifyGeneration_ = true;
     std::size_t markerCount_ = 0;
 };
 

@@ -1,4 +1,5 @@
 #include "WorldMinimapPreview.h"
+#include "WorldMinimapMarkerDialog.h"
 #include "WorldViewport.h"
 #include "EditorProject.h"
 #include <QHBoxLayout>
@@ -81,6 +82,8 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     layers_->setMenu(menu);
     layers_->setPopupMode(QToolButton::InstantPopup);
     row->addWidget(layers_);
+    menu->addAction(tr("编辑图标…"), this, [this] { OpenMinimapMarkerDialog(project_, this); });
+    menu->addSeparator();
     const auto layer = [&](const char* name, std::uint32_t bit) {
         auto* action = menu->addAction(tr(name));
         action->setCheckable(true);

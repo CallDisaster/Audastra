@@ -2019,6 +2019,71 @@ private:
                 [this, name, write](const QJsonObject& arguments) { return TerrainTool(name, arguments, write); },
                 definition.maxRequestIdBytes, definition.maxResponseBytes);
         }
+        {
+            auto queryMarkers = IdentityProperties();
+            queryMarkers.insert("offset", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 65536}});
+            AddTool("editor_query_minimap_markers", "列出当前小地图图标的原始类型、坐标、BGRA 和来源，每页最多 256 条。",
+                Mcp::ToolPermission::Query, Schema(queryMarkers, {"project_identity", "expected_revision"}),
+                [this](const QJsonObject& arguments) -> QJsonObject {
+                    if (busy_ || project_.savingMap_) return Mcp::Failure("LIVE_EDITOR_BUSY", "地图写任务正在执行。");
+                    const auto check = CheckContext(arguments, false, false);
+                    if (!check.value("ok").toBool()) return check;
+                    const int offset = arguments.contains("offset") ? arguments.value("offset").toInt(-1) : 0;
+                    if (offset < 0 || offset > 65536) return Mcp::Failure("MINIMAP_MARKER_VALUE", "offset 超出范围。");
+                    const auto view = project_.QueryMinimapMarkers();
+                    if (!view.Succeeded() || !view.value) return Mcp::Failure(view);
+                    QJsonArray rows;
+                    const auto count = view.value->records.size();
+                    const auto end = std::min(count, static_cast<std::size_t>(offset) + 256);
+                    for (auto i = static_cast<std::size_t>(offset); i < end; ++i) {
+                        const auto& marker = view.value->records[i];
+                        QJsonArray bgra;
+                        for (auto byte : marker.colorBgra) bgra.append(static_cast<int>(byte));
+                        rows.append(QJsonObject{{"row", int(i)}, {"type", marker.typeRaw},
+                            {"x", marker.positionRaw[0]}, {"y", marker.positionRaw[1]}, {"bgra", bgra},
+                            {"origin", view.value->origins[i] == Services::MinimapMarkerOrigin::Generated ? "generated" :
+                                view.value->origins[i] == Services::MinimapMarkerOrigin::Author ? "author" : "legacy"}});
+                    }
+                    return {{"ok", true}, {"count", int(count)}, {"rows", rows}, {"next_offset", int(end)},
+                        {"legacy_preserved", view.value->legacy}, {"marker_revision", QString::fromStdString(view.value->revision)}};
+                });
+            auto editMarkers = IdentityProperties();
+            editMarkers.insert("operation", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"add", "move", "remove"}}});
+            editMarkers.insert("marker_revision", QJsonObject{{"type", "string"}, {"minLength", 64}, {"maxLength", 64}});
+            for (auto key : {"row", "type", "x", "y"}) editMarkers.insert(key, QJsonObject{{"type", "integer"}, {"minimum", 0}});
+            editMarkers.insert("bgra", QJsonObject{{"type", "array"}, {"minItems", 4}, {"maxItems", 4},
+                {"items", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 255}}}});
+            AddTool("editor_edit_minimap_marker", "按查询所得图标修订增删移一个图标，使用编辑器的资源撤销栈。",
+                Mcp::ToolPermission::Edit, Schema(editMarkers, {"project_identity", "expected_revision", "marker_revision", "operation"}),
+                [this](const QJsonObject& arguments) {
+                    return Write(arguments, false, [&]() -> QJsonObject {
+                        using namespace Services;
+                        MinimapMarkerEdit edit{};
+                        const auto operation = arguments.value("operation").toString();
+                        const auto row = arguments.value("row").toInt(-1);
+                        if (operation == "add") edit.operation = MinimapMarkerOperation::Add;
+                        else if (operation == "move" && row >= 0) edit.operation = MinimapMarkerOperation::Move;
+                        else if (operation == "remove" && row >= 0) edit.operation = MinimapMarkerOperation::Remove;
+                        else return Mcp::Failure("MINIMAP_MARKER_VALUE", "操作不明或缺少有效行号。");
+                        edit.row = row < 0 ? 0 : static_cast<std::size_t>(row);
+                        edit.value.typeRaw = arguments.value("type").toInt(-1);
+                        edit.value.positionRaw = {arguments.value("x").toInt(-1), arguments.value("y").toInt(-1)};
+                        if (edit.operation == MinimapMarkerOperation::Add) {
+                            const auto color = arguments.value("bgra").toArray();
+                            if (color.size() != 4) return Mcp::Failure("MINIMAP_MARKER_VALUE", "BGRA 需要四个整数。");
+                            for (int i = 0; i < 4; ++i) {
+                                const auto byte = color[i].toInt(-1);
+                                if (byte < 0 || byte > 255) return Mcp::Failure("MINIMAP_MARKER_VALUE", "BGRA 每项须在 0 至 255 内。");
+                                edit.value.colorBgra[i] = static_cast<std::uint8_t>(byte);
+                            }
+                        }
+                        const auto status = project_.EditMinimapMarkers(arguments.value("marker_revision").toString().toStdString(),
+                            std::span(&edit, 1));
+                        if (!status.Succeeded()) return Mcp::Failure(status);
+                        return {{"ok", true}, {"revision", QString::number(project_.editRevision_.Revision())}};
+                    });
+                });
+        }
         for (auto definition : Mcp::ObjectToolDefinitions()) {
             const auto name = definition.name;
             const bool write = definition.permission == Mcp::ToolPermission::Edit;

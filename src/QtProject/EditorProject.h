@@ -1,4 +1,5 @@
 #pragma once
+#include "War3MapCore/Services/MinimapMarkerEdits.h"
 
 #include "Icons/IconProvider.h"
 
@@ -417,6 +418,8 @@ public:
     [[nodiscard]] static QString AssetKey(const QString& path);
     [[nodiscard]] AssetState CaptureAssets() const;
     [[nodiscard]] QUndoStack* AssetUndoStack() const noexcept { return assetUndoStack_; }
+    [[nodiscard]] Result<Services::MinimapMarkerView> QueryMinimapMarkers() const;
+    [[nodiscard]] Status EditMinimapMarkers(std::string_view revision, std::span<const Services::MinimapMarkerEdit> edits);
     [[nodiscard]] QString RecordAssetEdit(const QString& label,
         const std::function<QString(AssetState&)>& prepare);
     // 收据已准备好的完整状态通过一次 swap 发布；正文保存仍走原导入队列。
