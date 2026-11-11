@@ -375,7 +375,8 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     Fixture f; QVERIFY2(f.Initialize(), qPrintable(f.error));
     const QStringList expected{"auxiliary_copy", "auxiliary_create", "auxiliary_delete", "auxiliary_update",
         "code.check", "create_campaign", "edit_campaign", "edit_terrain_block", "edit_terrain_bounds", "edit_terrain_resize", "edit_terrain_stroke", "edit_terrain_texture_slot", "editor_check_trigger_graph",
-        "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_trigger_graph", "editor_save_map", "editor_state",
+        "editor_edit_minimap_marker", "editor_edit_trigger_graph", "editor_get_ui_catalog", "editor_query_minimap_markers",
+        "editor_query_trigger_graph", "editor_save_map", "editor_state",
         "entities_copy", "entities_create", "entities_delete", "entities_query", "entities_rotate", "entities_set_fields", "entities_transform",
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
@@ -398,13 +399,18 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{101});
+    QCOMPARE(expected.size(), qsizetype{103});
     const auto previewDefinition = Mcp::MinimapPreviewToolDefinition();
     QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
     for (const auto& value : f.tools->Tools()) {
         const auto tool = value.toObject();
         if (tool.value("name") == previewDefinition.name)
             QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(previewDefinition.inputSchema));
+        if (tool.value("name") == "editor_edit_minimap_marker") {
+            const auto schema = tool.value("inputSchema").toObject();
+            QVERIFY(schema.value("required").toArray().contains(QStringLiteral("marker_revision")));
+            QVERIFY(schema.value("required").toArray().contains(QStringLiteral("operation")));
+        }
     }
     namespace PreviewFixture = TerrainCornerRampFixtures;
     PreviewFixture::Fixture preview;
