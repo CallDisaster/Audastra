@@ -547,10 +547,13 @@ std::string LniObjectDocument::Render() const {
 }
 
 std::string LniObjectDocument::DocumentFingerprint() const {
+    return FingerprintRendered(Render());
+}
+
+std::string LniObjectDocument::FingerprintRendered(std::string_view rendered) const {
     constexpr std::uint64_t offsetBasis = 14695981039346656037ull;
     constexpr std::uint64_t prime = 1099511628211ull;
     std::uint64_t hash = offsetBasis;
-    const std::string rendered = Render();
     for (const unsigned char byte : rendered) {
         hash ^= byte;
         hash *= prime;
@@ -1343,6 +1346,17 @@ Status LniObjectCodec::Validate(const CodecDocument& document) const {
 
 Result<std::vector<std::byte>> LniObjectCodec::Serialize(
     const CodecDocument& document) const {
+    return SerializeImpl(document, nullptr);
+}
+
+Result<std::vector<std::byte>> LniObjectCodec::SerializeWithFingerprint(
+    const LniObjectDocument& document, std::string& fingerprint) const {
+    fingerprint.clear();
+    return SerializeImpl(document, &fingerprint);
+}
+
+Result<std::vector<std::byte>> LniObjectCodec::SerializeImpl(
+    const CodecDocument& document, std::string* fingerprint) const {
     const Status validation = Validate(document);
     if (!validation.Succeeded()) {
         Result<std::vector<std::byte>> result;
@@ -1360,6 +1374,7 @@ Result<std::vector<std::byte>> LniObjectCodec::Serialize(
         }
     }
     if (hasLegacyMarker) {
+        if (fingerprint) *fingerprint = lni.DocumentFingerprint();
         // 只在重新写出时迁移历史私有格式；原文和调用者持有的文档不变。
         LniObjectDocument migrated = lni;
         for (const ObjectRecord& record : lni.objects_) {
@@ -1378,6 +1393,7 @@ Result<std::vector<std::byte>> LniObjectCodec::Serialize(
         rendered = migrated.Render();
     } else {
         rendered = lni.Render();
+        if (fingerprint) *fingerprint = lni.FingerprintRendered(rendered);
     }
     std::vector<std::byte> bytes(rendered.size());
     std::transform(

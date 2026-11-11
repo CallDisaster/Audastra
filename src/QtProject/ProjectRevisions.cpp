@@ -192,12 +192,23 @@ void EditorProject::ObserveObjectEdit(int typeIndex) {
     auto current = editRevision_.Current();
     const auto key = ObjectScope(typeIndex);
     const auto baseline = editRevision_.Baseline(EditSaveTarget::Map);
+    std::optional<std::vector<std::byte>> encoding;
     if (!document || (baseline && !baseline->scopes.contains(key) && document->Objects().empty())) current.erase(key);
-    else current[key] = document->DocumentFingerprint();
+    else {
+        std::string fingerprint;
+        if (documentUndoHistory_->NeedsCapture(std::size_t(typeIndex) + 1)) {
+            auto serialized = ObjectData::LniObjectCodec(document->Type()).SerializeWithFingerprint(*document, fingerprint);
+            if (serialized.Succeeded()) encoding = std::move(serialized.value);
+        }
+        current[key] = fingerprint.empty() ? document->DocumentFingerprint() : std::move(fingerprint);
+    }
     // 物编操作只计算当前类别，不反复序列化整个触发器目录。
     const auto status = editRevision_.Observe(std::move(current), "修改物体数据");
     if (!status.Succeeded()) editTrackingFailed_ = true;
-    else UpdateEditDirtyFlags();
+    else {
+        documentUndoHistory_->RecordObject(typeIndex, encoding ? &*encoding : nullptr);
+        UpdateEditDirtyFlags();
+    }
 }
 
 Status EditorProject::ReplayScalarAndObserve(Trigger::TriggerDocument* expectedDocument,
@@ -323,14 +334,20 @@ void EditorProject::ObserveTriggerEdit() {
     const auto known = std::exchange(knownTriggerFingerprint_, std::nullopt);
     if (!editTrackingReady_) return;
     auto current = editRevision_.Current();
+    std::optional<Trigger::EncodedTriggerDocument> encoding;
     if (triggerDocument_) {
         if (!uiCatalog_) { editTrackingFailed_ = true; return; }
         std::optional<std::string> value;
+        const auto capture = [&] {
+            const bool share = documentUndoHistory_->NeedsCapture(0);
+            if (share) encoding.emplace();
+            return ProjectDocumentHistory::TriggerFingerprint(*this, share ? &*encoding : nullptr);
+        };
         if (known && known->document == triggerDocument_.get() && known->stack == triggerUndoStack_
             && triggerUndoStack_ && known->index == triggerUndoStack_->index()) {
             value = known->value;
             if (Trigger::TriggerCodeEditor::FullReplayVerificationEnabled()) {
-                const auto actual = CaptureTriggerFingerprint();
+                const auto actual = capture();
                 if (!actual || *actual != *value) {
                     editTrackingFailed_ = true;
                     AddDiagnostic(tr("错误"), tr("编辑修订"), QStringLiteral("TRIGGER_KNOWN_FINGERPRINT_MISMATCH"),
@@ -338,13 +355,16 @@ void EditorProject::ObserveTriggerEdit() {
                     return;
                 }
             }
-        } else value = CaptureTriggerFingerprint();
+        } else value = capture();
         if (!value) { editTrackingFailed_ = true; return; }
         current["triggers"] = *value;
     } else current.erase("triggers");
     const auto status = editRevision_.Observe(std::move(current), "修改触发器或变量");
     if (!status.Succeeded()) editTrackingFailed_ = true;
-    else UpdateEditDirtyFlags();
+    else {
+        documentUndoHistory_->RecordTrigger(encoding ? &*encoding : nullptr);
+        UpdateEditDirtyFlags();
+    }
 }
 
 void EditorProject::UpdateEditDirtyFlags() {

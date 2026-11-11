@@ -3,6 +3,7 @@
 #include "EditorProject.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
+#include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
@@ -76,37 +77,60 @@ std::size_t ProjectDocumentHistory::State::Bytes() const noexcept {
     return std::size_t(first.size() + second.size() + extra.size() + assets.size()) + 256;
 }
 
-std::optional<ProjectDocumentHistory::State> ProjectDocumentHistory::Capture(std::size_t scope) const {
+std::optional<QByteArray> ProjectDocumentHistory::Context(std::size_t scope) const {
+    QByteArray bytes;
+    if (!scope) {
+        // 联动导入或运行库批准的命令不能只恢复一半。
+        for (const auto& [name, value] : project_.editRevision_.Current()) {
+            if (!name.starts_with("assets/") && !name.starts_with("imports/") && name != "runtime/approval") continue;
+            bytes += QByteArray::fromStdString(name);
+            bytes += '\0';
+            bytes += QByteArray::fromStdString(value);
+            bytes += '\0';
+        }
+    } else if (const auto& object = project_.objectDocuments_[scope - 1]) {
+        for (const auto& source : object->CloneSources()) {
+            if (source.newRawcode.size() != 4 || source.sourceRawcode.size() != 4) return {};
+            bytes += QByteArray::fromStdString(source.newRawcode + source.sourceRawcode);
+        }
+    }
+    return bytes;
+}
+
+std::optional<ProjectDocumentHistory::State> ProjectDocumentHistory::Capture(std::size_t scope, Encoding bytes) const {
     State state;
+    auto context = Context(scope);
+    if (!context) return {};
     if (!scope) {
         if (!project_.triggerDocument_ || !project_.uiCatalog_) return {};
-        const auto encoded = Trigger::WtgWctCodec{}.EncodeForIdentity(*project_.triggerDocument_);
-        if (!encoded.Succeeded() || !encoded.value
-            || encoded.value->wtg.size() > MaximumBytes || encoded.value->wct.size() > MaximumBytes - encoded.value->wtg.size())
+        std::optional<Trigger::EncodedTriggerDocument> owned;
+        if (!bytes.trigger) {
+            auto encoded = Trigger::WtgWctCodec{}.EncodeForIdentity(*project_.triggerDocument_);
+            if (!encoded.Succeeded() || !encoded.value) return {};
+            owned = std::move(encoded.value);
+            bytes.trigger = &*owned;
+        }
+        if (bytes.trigger->wtg.size() > MaximumBytes || bytes.trigger->wct.size() > MaximumBytes - bytes.trigger->wtg.size())
             return {};
-        state.first = Array(encoded.value->wtg); state.second = Array(encoded.value->wct);
+        state.first = Array(bytes.trigger->wtg); state.second = Array(bytes.trigger->wct);
         if (!project_.guiConversionSnapshots_.Empty()) {
             const auto snapshot = project_.guiConversionSnapshots_.Serialize(*project_.triggerDocument_, *project_.uiCatalog_, Source(project_));
             if (!snapshot.Succeeded() || !snapshot.value || snapshot.value->size() > MaximumBytes - std::size_t(state.first.size() + state.second.size()))
                 return {};
             state.extra = Array(*snapshot.value);
         }
-        // 会联动导入或运行库批准的命令不能只恢复一半。资源历史由原命令持有。
-        for (const auto& [name, value] : project_.editRevision_.Current()) {
-            if (!name.starts_with("assets/") && !name.starts_with("imports/") && name != "runtime/approval") continue;
-            state.assets += QByteArray::fromStdString(name);
-            state.assets += '\0';
-            state.assets += QByteArray::fromStdString(value);
-            state.assets += '\0';
-        }
+        state.assets = std::move(*context);
     } else if (const auto& object = project_.objectDocuments_[scope - 1]) {
-        const auto encoded = LniObjectCodec(object->Type()).Serialize(*object);
-        if (!encoded.Succeeded() || !encoded.value || encoded.value->size() > MaximumBytes) return {};
-        state.first = Array(*encoded.value);
-        for (const auto& source : object->CloneSources()) {
-            if (source.newRawcode.size() != 4 || source.sourceRawcode.size() != 4) return {};
-            state.extra += QByteArray::fromStdString(source.newRawcode + source.sourceRawcode);
+        std::optional<std::vector<std::byte>> owned;
+        if (!bytes.object) {
+            auto encoded = LniObjectCodec(object->Type()).Serialize(*object);
+            if (!encoded.Succeeded() || !encoded.value) return {};
+            owned = std::move(encoded.value);
+            bytes.object = &*owned;
         }
+        if (bytes.object->size() > MaximumBytes) return {};
+        state.first = Array(*bytes.object);
+        state.extra = std::move(*context);
     }
     if (state.Bytes() > MaximumBytes) return {};
     return state;
@@ -121,9 +145,15 @@ void ProjectDocumentHistory::Attach(std::size_t scope, QUndoStack* stack) {
     for (int i = 0; i < stack->count(); ++i) track.commands.push_back(stack->command(i));
     track.index = std::size_t(stack->index());
     track.states.resize(track.commands.size() + 1);
-    track.states[track.index] = Capture(scope);
+    track.states[track.index] = Capture(scope, {});
     track.connection = QObject::connect(stack, &QUndoStack::indexChanged, &project_,
-        [this, scope] { if (!installing_) Observe(scope); });
+        [this, scope, stack] {
+            const auto index = stack->index();
+            // 可合并的命令可能在相同游标发布新值，指针列表不能证明该值没变。
+            const bool merged = index > 0 && std::size_t(index) == tracks_[scope].index
+                && stack->command(index - 1)->id() >= 0;
+            Observe(scope, {}, merged);
+        });
     EnforceBudget(scope, track.index);
 }
 void ProjectDocumentHistory::Reset() {
@@ -153,14 +183,48 @@ void ProjectDocumentHistory::ReportLimit(std::size_t scope) {
     project_.AddDiagnostics(Warning("PROJECT_UNDO_LIMIT",
         ScopeName(scope) + "达到撤销预算。当前会话最早可撤销的操作为“" + oldest + "”。").diagnostics);
 }
-void ProjectDocumentHistory::Observe(std::size_t scope) {
+bool ProjectDocumentHistory::MatchesStack(const Track& track) const {
+    if (!track.stack || std::size_t(track.stack->count()) != track.commands.size()) return false;
+    for (int i = 0; i < track.stack->count(); ++i)
+        if (track.stack->command(i) != track.commands[i]) return false;
+    return true;
+}
+
+bool ProjectDocumentHistory::ContextMatches(std::size_t scope, const State& state) const {
+    const auto current = Context(scope);
+    return current && *current == (scope ? state.extra : state.assets);
+}
+
+bool ProjectDocumentHistory::NeedsCapture(std::size_t scope) const {
+    const auto& track = tracks_[scope];
+    if (installing_ || !track.stack) return false;
+    if (!MatchesStack(track)) return true;
+    const auto index = std::size_t(track.stack->index());
+    if (index == track.index) return false;
+    return !track.states[index] || Trigger::TriggerCodeEditor::FullReplayVerificationEnabled()
+        || !ContextMatches(scope, *track.states[index]);
+}
+
+void ProjectDocumentHistory::RecordTrigger(const Trigger::EncodedTriggerDocument* bytes) {
+    Observe(0, {bytes, nullptr});
+}
+
+void ProjectDocumentHistory::RecordObject(std::size_t type, const std::vector<std::byte>* bytes) {
+    Observe(type + 1, {nullptr, bytes});
+}
+
+void ProjectDocumentHistory::Observe(std::size_t scope, Encoding bytes, bool refresh) {
     auto& track = tracks_[scope];
     auto* stack = track.stack.data();
-    if (!stack) return;
-    std::vector<const QUndoCommand*> commands;
-    for (int i = 0; i < stack->count(); ++i) commands.push_back(stack->command(i));
+    if (installing_ || !stack) return;
+    const bool sameCommands = MatchesStack(track);
     const auto index = std::size_t(stack->index());
-    if (commands != track.commands) {
+    if (!refresh && sameCommands && index == track.index) return;
+    const bool reuse = !refresh && sameCommands && track.states[index]
+        && ContextMatches(scope, *track.states[index]);
+    if (!sameCommands) {
+        std::vector<const QUndoCommand*> commands;
+        for (int i = 0; i < stack->count(); ++i) commands.push_back(stack->command(i));
         std::vector<std::optional<State>> states(commands.size() + 1);
         if (!commands.empty()) {
             const auto first = std::find(track.commands.begin(), track.commands.end(), commands.front());
@@ -182,8 +246,18 @@ void ProjectDocumentHistory::Observe(std::size_t scope) {
         track.commands = std::move(commands);
     }
     track.index = index;
-    track.states[index] = Capture(scope);
     ++revision_;
+    if (reuse) {
+        if (Trigger::TriggerCodeEditor::FullReplayVerificationEnabled() && Capture(scope, bytes) != track.states[index]) {
+            track.states[index].reset();
+            project_.editTrackingFailed_ = true;
+            project_.AddDiagnostic(QObject::tr("错误"), QObject::tr("工程历史"),
+                QStringLiteral("PROJECT_UNDO_HISTORY_MISMATCH"),
+                QObject::tr("完整核验：撤销或重做后的文档与已记录的状态不一致。"));
+        }
+        return;
+    }
+    track.states[index] = Capture(scope, bytes);
     EnforceBudget(scope, index);
 }
 void ProjectDocumentHistory::EnforceBudget(std::size_t keepScope, std::size_t keepIndex) {
@@ -202,7 +276,7 @@ void ProjectDocumentHistory::EnforceBudget(std::size_t keepScope, std::size_t ke
 }
 void ProjectDocumentHistory::RefreshSavedObjects() {
     for (std::size_t scope = 1; scope < tracks_.size(); ++scope)
-        if (tracks_[scope].stack && tracks_[scope].stack->count()) Observe(scope);
+        if (tracks_[scope].stack && tracks_[scope].stack->count()) Observe(scope, {}, true);
 }
 
 Result<std::vector<std::byte>> ProjectDocumentHistory::Freeze() const {
@@ -214,7 +288,7 @@ Result<std::vector<std::byte>> ProjectDocumentHistory::Freeze() const {
         const auto& track = tracks_[scope];
         const auto* stack = track.stack.data();
         if (!stack || stack->count() == 0 || track.index >= track.states.size()) continue;
-        const auto current = Capture(scope);
+        const auto current = Capture(scope, {});
         const auto matches = [&](std::size_t index) {
             return current && track.states[index] && current->assets == track.states[index]->assets;
         };
@@ -346,7 +420,7 @@ Status ProjectDocumentHistory::Install(std::span<const std::byte> bytes) {
             if (in.status() != QDataStream::Ok || scope >= tracks_.size() || !count || count > kMaximumCommands
                 || index > count || (clean != 255 && clean > count) || (!tapes.empty() && tapes.back().scope >= scope))
                 return reject("工程撤销栈数量、范围或索引无效");
-            const auto current = Capture(scope);
+            const auto current = Capture(scope, {});
             const auto* stack = scope == 0 ? project_.triggerUndoStack_ : project_.objectUndoStacks_[scope - 1];
             if (!current || !stack || stack->count() || (stack->undoLimit() > 0 && count > stack->undoLimit()))
                 return reject("当前工程缺少可安装的撤销栈");

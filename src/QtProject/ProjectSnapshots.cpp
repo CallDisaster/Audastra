@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "ProjectDocumentHistory.h"
 #include "PendingImportPayload.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -23,15 +24,21 @@ QByteArray Array(const std::vector<std::byte>& bytes) {
 } // namespace
 
 std::optional<std::string> EditorProject::CaptureTriggerFingerprint() const {
-    if (!triggerDocument_ || !uiCatalog_) return {};
+    return ProjectDocumentHistory::TriggerFingerprint(*this);
+}
+
+std::optional<std::string> ProjectDocumentHistory::TriggerFingerprint(const EditorProject& project,
+    Trigger::EncodedTriggerDocument* bytes) {
+    if (!project.triggerDocument_ || !project.uiCatalog_) return {};
     // 指纹只识别内容是否相同，字节与保存写出完全一致；函数库合法性由编辑命令与保存门禁负责，
     // 这里不再每次重复整图校验。
-    const auto encoded = Trigger::WtgWctCodec{}.EncodeForIdentity(*triggerDocument_);
+    auto encoded = Trigger::WtgWctCodec{}.EncodeForIdentity(*project.triggerDocument_);
     if (!encoded.Succeeded() || !encoded.value) return {};
     const auto wtg = Sha256(encoded.value->wtg);
     const auto wct = Sha256(encoded.value->wct);
     if (!wtg.Succeeded() || !wct.Succeeded()) return {};
-    return *wtg.value + ":" + *wct.value + ":" + uiCatalog_->Sha256();
+    if (bytes) *bytes = std::move(*encoded.value);
+    return *wtg.value + ":" + *wct.value + ":" + project.uiCatalog_->Sha256();
 }
 
 std::optional<EditScopeSnapshot> EditorProject::CaptureEditScopes(const AssetState* candidateAssets) const {

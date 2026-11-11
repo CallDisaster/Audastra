@@ -17,6 +17,8 @@
 class QUndoCommand;
 class QUndoStack;
 
+namespace War3Map::Trigger { struct EncodedTriggerDocument; }
+
 namespace War3Map::QtProject {
 class EditorProject;
 
@@ -31,6 +33,11 @@ public:
     void Reset();
     void ResetTriggers();
     void RefreshSavedObjects();
+    [[nodiscard]] bool NeedsCapture(std::size_t scope) const;
+    static std::optional<std::string> TriggerFingerprint(const EditorProject& project,
+        Trigger::EncodedTriggerDocument* bytes = nullptr);
+    void RecordTrigger(const Trigger::EncodedTriggerDocument* bytes);
+    void RecordObject(std::size_t type, const std::vector<std::byte>* bytes);
     [[nodiscard]] std::uint64_t Revision() const noexcept { return revision_; }
     [[nodiscard]] Result<std::vector<std::byte>> Freeze() const;
     [[nodiscard]] Status Install(std::span<const std::byte> bytes);
@@ -52,9 +59,16 @@ private:
         bool limitReported = false;
     };
 
-    [[nodiscard]] std::optional<State> Capture(std::size_t scope) const;
+    struct Encoding {
+        const Trigger::EncodedTriggerDocument* trigger = nullptr;
+        const std::vector<std::byte>* object = nullptr;
+    };
+    [[nodiscard]] std::optional<State> Capture(std::size_t scope, Encoding bytes) const;
+    [[nodiscard]] std::optional<QByteArray> Context(std::size_t scope) const;
+    [[nodiscard]] bool MatchesStack(const Track& track) const;
+    [[nodiscard]] bool ContextMatches(std::size_t scope, const State& state) const;
     void Attach(std::size_t scope, QUndoStack* stack);
-    void Observe(std::size_t scope);
+    void Observe(std::size_t scope, Encoding bytes, bool refresh = false);
     void EnforceBudget(std::size_t keepScope, std::size_t keepIndex);
     void ReportLimit(std::size_t scope);
 

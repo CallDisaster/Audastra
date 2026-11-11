@@ -10,6 +10,7 @@
 #include "Commands/ObjectSnapshotCommand.h"
 #include "Commands/TriggerCommands.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
+#include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Script/ScriptSaveBundle.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -1036,6 +1037,7 @@ private slots:
     void GeneratedObjectsSurviveCommitAndSecondSave();
     void NativeCloneOriginsSurviveProjectRestore();
     void ObjectAndTriggerUndoSurviveProjectReopen();
+    void DocumentUndoFullVerificationRejectsMismatchedReplay();
     void PendingNativeCloneOriginsSurviveMissingOrEmptyMember();
     void SaveCommitRejectsRevisionDrift();
     void TerrainSaveReadbackGatesCommit_data();
@@ -1486,6 +1488,36 @@ void EditorProjectTests::ObjectAndTriggerUndoSurviveProjectReopen() {
     QCOMPARE(objects.count(), 3);
     QCOMPARE(objects.text(0), QStringLiteral("Object 2"));
     QVERIFY(ModelHasCode(*hot.diagnosticsModel_, QStringLiteral("PROJECT_UNDO_LIMIT")));
+}
+
+void EditorProjectTests::DocumentUndoFullVerificationRejectsMismatchedReplay() {
+    using namespace ObjectData;
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    QUndoStack stack;
+    EditorProject project; QVERIFY(LoadFixture(project, fixture.path()));
+    project.objectUndoStacks_[0] = &stack;
+    QObject::connect(&stack, &QUndoStack::indexChanged, &project, [&] { project.ObserveObjectEdit(0); });
+    project.ResetEditTracking();
+    struct RestoreVerification {
+        ~RestoreVerification() { Trigger::TriggerCodeEditor::SetFullReplayVerification(std::nullopt); }
+    } restoreVerification;
+    Trigger::TriggerCodeEditor::SetFullReplayVerification(true);
+    auto& document = *project.objectDocuments_[0];
+    const auto baseline = document.DocumentFingerprint();
+    auto next = document;
+    QVERIFY(next.SetModification({ObjectType::Unit, "hfoo"}, {"uhpm"}, std::int32_t(421)).Succeeded());
+    const auto changed = next.DocumentFingerprint();
+    bool failUndo = false;
+    stack.push(new ObjectSnapshotCommand(document, std::move(next), [&](const auto& state) {
+        if (!failUndo) document = state;
+    }, QStringLiteral("Test object field")));
+    QCOMPARE(document.DocumentFingerprint(), changed);
+    stack.undo(); QCOMPARE(document.DocumentFingerprint(), baseline);
+    stack.redo(); QCOMPARE(document.DocumentFingerprint(), changed);
+    QVERIFY(!ModelHasCode(*project.diagnosticsModel_, QStringLiteral("PROJECT_UNDO_HISTORY_MISMATCH")));
+    failUndo = true;
+    stack.undo(); QCOMPARE(document.DocumentFingerprint(), changed);
+    QVERIFY(ModelHasCode(*project.diagnosticsModel_, QStringLiteral("PROJECT_UNDO_HISTORY_MISMATCH")));
 }
 
 void EditorProjectTests::NativeCloneOriginsSurviveProjectRestore() {

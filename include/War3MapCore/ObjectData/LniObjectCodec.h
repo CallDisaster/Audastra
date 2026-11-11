@@ -88,6 +88,7 @@ private:
     };
 
     [[nodiscard]] std::string Render() const;
+    [[nodiscard]] std::string FingerprintRendered(std::string_view rendered) const;
     [[nodiscard]] Status RequireEditable(std::string_view operation) const;
     [[nodiscard]] Status AppendObject(const std::string& rawcode,
         const std::optional<std::string>& parentRawcode);
@@ -114,6 +115,8 @@ public:
     [[nodiscard]] Status Validate(const CodecDocument& document) const override;
     [[nodiscard]] Result<std::vector<std::byte>> Serialize(
         const CodecDocument& document) const override;
+    [[nodiscard]] Result<std::vector<std::byte>> SerializeWithFingerprint(
+        const LniObjectDocument& document, std::string& fingerprint) const;
     [[nodiscard]] SemanticDiff Diff(
         const CodecDocument& before,
         const CodecDocument& after) const override;
@@ -125,6 +128,8 @@ public:
         std::string summary) const;
 
 private:
+    [[nodiscard]] Result<std::vector<std::byte>> SerializeImpl(
+        const CodecDocument& document, std::string* fingerprint) const;
     ObjectType type_;
 };
 
