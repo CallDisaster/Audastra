@@ -598,15 +598,22 @@ private:
         auto blocks = NewBlocks();
         const bool joined = !brush_.straightRamp && brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps;
         const bool connected = joined || (brush_.straightRamp && brush_.straightAlgorithm == TerrainStraightRampAlgorithm::Connected);
-        bool hasHigherDryTier = joined && selectedCount == 3;
-        for (int side = -1; hasHigherDryTier && side <= 1; ++side) {
-            const int x = int(plan.highX) - plan.directionX - side * plan.directionY;
-            const int y = int(plan.highY) - plan.directionY + side * plan.directionX;
-            if (!Inside(x, y)) { hasHigherDryTier = false; break; }
-            const auto& vertex = Read(std::uint32_t(x), std::uint32_t(y));
-            hasHigherDryTier = vertex.CliffLevel() == high.CliffLevel() + 1 && !vertex.IsRamp()
-                && !vertex.HasWater() && vertex.groundHeightRaw == high.groundHeightRaw
-                && vertex.CliffTextureIndex() == high.CliffTextureIndex();
+        const auto dryTierRow = [&](int distance, int level) {
+            for (int side = -1; side <= 1; ++side) {
+                const int x = int(plan.highX) - distance * plan.directionX - side * plan.directionY;
+                const int y = int(plan.highY) - distance * plan.directionY + side * plan.directionX;
+                if (!Inside(x, y)) return false;
+                const auto& vertex = Read(std::uint32_t(x), std::uint32_t(y));
+                if (vertex.CliffLevel() != level || vertex.IsRamp() || vertex.HasWater()
+                    || vertex.groundHeightRaw != high.groundHeightRaw || vertex.CliffTextureIndex() != high.CliffTextureIndex())
+                    return false;
+            }
+            return true;
+        };
+        int higherTierAt = 0;
+        if (joined && selectedCount == 3) {
+            if (dryTierRow(1, high.CliffLevel() + 1)) higherTierAt = 1;
+            else if (dryTierRow(1, high.CliffLevel()) && dryTierRow(2, high.CliffLevel() + 1)) higherTierAt = 2;
         }
         const auto selected = [&](std::uint32_t x, std::uint32_t y) {
             return std::find(selectedIndices.begin(), selectedIndices.end(), std::uint32_t(Index(x, y))) != selectedIndices.end();
@@ -696,8 +703,8 @@ private:
                             || (joined && vertex.CliffLevel() + 1 == high.CliffLevel()));
                     // 原版可在二级梯田的下缘画一级直坡。下一层只能在高点背面，
                     // 不能参与本次三点条带或带入另一条坡道的R位。
-                    const bool dryTierBehindStraight = hasHigherDryTier
-                        && sx + sy < 0 && vertex.CliffLevel() == high.CliffLevel() + 1
+                    const bool dryTierBehindStraight = higherTierAt
+                        && sx + sy <= -higherTierAt && vertex.CliffLevel() == high.CliffLevel() + 1
                         && !vertex.IsRamp() && !vertex.HasWater();
                     if (((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly
                             || (plan.inner && brush_.cornerAlgorithm != TerrainCornerRampAlgorithm::NativeWetCorners && !joined)) && vertex.HasWater())

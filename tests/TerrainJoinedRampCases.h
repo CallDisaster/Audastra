@@ -130,20 +130,22 @@ inline void KnownPartialRampCanBeCompleted() {
     Require(Take(SerializeMapTerrain(source)) == before, "修复候选不改写其原始部分坡道");
 }
 inline void StraightRampBelowAnotherDryTier() {
-    auto source = Grid(false, 0);
-    for (unsigned y = 0; y < 33; ++y) for (unsigned x = 0; x < 33; ++x)
-        source.vertices[y * 33 + x].cliffAndLayerRaw = y >= 17 ? 4 : y == 16 ? 3 : 2;
-    RefreshTerrainDerived(source, 0, 0, 33, 33);
     const TerrainStrokePoint point{-96, -96};
-    auto expected = source;
-    for (unsigned y = 14; y <= 16; ++y) expected.vertices[y * 33 + 15].textureAndFlagsRaw |= 0x10;
-    const auto prepared = Prepare(source, point);
-    Require(Take(SerializeMapTerrain(prepared.terrain)) == Take(SerializeMapTerrain(expected)),
-        "下缘直坡只写原版三个R位，背后的下一层不加入本次笔划");
-    source.vertices[14 * 33 + 14].cliffAndLayerRaw = 4;
-    const auto wrongSide = PrepareTerrainCornerRampStroke(source, Rules(), Brush(), std::span(&point, 1), {}, {}, {},
-        TerrainCornerRampAlgorithm::NativeJoinedRamps);
-    Require(!wrongSide.Succeeded(), "额外高层必须在直坡高点背面");
+    for (unsigned nextTier : {17u, 18u}) {
+        auto source = Grid(false, 0);
+        for (unsigned y = 0; y < 33; ++y) for (unsigned x = 0; x < 33; ++x)
+            source.vertices[y * 33 + x].cliffAndLayerRaw = y >= nextTier ? 4 : y >= 16 ? 3 : 2;
+        RefreshTerrainDerived(source, 0, 0, 33, 33);
+        auto expected = source;
+        for (unsigned y = 14; y <= 16; ++y) expected.vertices[y * 33 + 15].textureAndFlagsRaw |= 0x10;
+        const auto prepared = Prepare(source, point);
+        Require(Take(SerializeMapTerrain(prepared.terrain)) == Take(SerializeMapTerrain(expected)),
+            "下缘直坡只写原版三个R位，背后的下一层不加入本次笔划");
+        source.vertices[14 * 33 + 14].cliffAndLayerRaw = 4;
+        const auto wrongSide = PrepareTerrainCornerRampStroke(source, Rules(), Brush(), std::span(&point, 1), {}, {}, {},
+            TerrainCornerRampAlgorithm::NativeJoinedRamps);
+        Require(!wrongSide.Succeeded(), "额外高层必须在直坡高点背面");
+    }
 }
 inline void Run() {
     ReferenceQuarterSelections(); CrossingsAndRotations(); Refusals(); KnownPartialRampCanBeCompleted();
