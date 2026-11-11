@@ -9,6 +9,7 @@
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerVariableReference.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
@@ -237,6 +238,7 @@ private slots:
     void AppliedVariableAndLiteralCurrentCardsPreserveDocument();
     void YdweLocalsAndReplacingCalls();
     void PreplacedReferencesUseCaptureTypesAndUndo();
+    void ExistingTriggersAreListedForTriggerParameters();
     void PreplacedCaptureUsesCurrentOverlays();
     void MissingReferenceSourcesKeepOrdinaryParametersEditable();
 };
@@ -784,6 +786,78 @@ void TriggerValueTests::YdweLocalsAndReplacingCalls() {
         project.triggerUndoStack_->undo(); QVERIFY(encode() == beforeBoolean);
     }
     panel = open(3, 5); QCOMPARE(rows(panel), QStringList{QStringLiteral("使用“”")}); panel->close();
+}
+
+void TriggerValueTests::ExistingTriggersAreListedForTriggerParameters() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base
+");
+    WriteUtf8(ui / "ui" / "base" / "define.txt", "[TriggerTypes]
+integer=0,1,1,整数
+trigger=0,1,1,触发器
+");
+    WriteUtf8(ui / "ui" / "base" / "action.txt",
+        "[RunTrig]
+description=\"运行 ${触发器}\"
+[[.args]]
+type=trigger
+");
+    const auto catalog = Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    Trigger::TriggerDocument document;
+    Trigger::EcaNode action;
+    action.id = 1; action.sourceTriggerId = 3; action.type = 2; action.name.text = "RunTrig"; action.arguments = {0};
+    document.ecaNodes = {action};
+    Trigger::ArgumentNode argument;
+    argument.id = 10; argument.type = 3;
+    document.argumentNodes = {argument};
+    const auto trigger = [&](StableId id, const char* name, std::int32_t type, std::int32_t enabled) {
+        Trigger::TriggerRecord record; record.id = id; record.name.text = name; record.type = type; record.enabled = enabled;
+        document.triggers.push_back(record);
+    };
+    trigger(3, "Init", 0, 1);
+    trigger(4, "说明", 1, 1);           // 注释不生成全局。
+    trigger(5, "Off", 0, 0);            // 禁用的不生成全局。
+    trigger(6, "A b", 0, 1);            // 与下一个同为 gg_trg_A_b，提交时也会被拒绝。
+    trigger(7, "A_b", 0, 1);
+    trigger(8, "9-0-8 莫格莱尼", 0, 1);
+    Trigger::VariableRecord variable;
+    variable.id = 20; variable.name.text = "NULLTrigger"; variable.typeName.text = "trigger";
+    document.variables.push_back(variable);
+    TriggerValuePanel panel(document, *catalog.value, 1, 0, {});
+    panel.setAttribute(Qt::WA_DeleteOnClose, false);
+    auto* list = Variables(&panel);
+    QVERIFY(list);
+    QVERIFY(FindValue(list, QStringLiteral("NULLTrigger")) >= 0);
+    const int init = FindValue(list, QStringLiteral("gg_trg_Init"));
+    QVERIFY(init >= 0);
+    QCOMPARE(list->item(init)->text(), QStringLiteral("Init"));
+    const auto chinese = QString::fromStdString(Trigger::TriggerDirectoryEditor::TriggerSymbol(document.triggers.back().name));
+    QVERIFY(chinese.startsWith(QStringLiteral("gg_trg_9_0_8_")));
+    QVERIFY(FindValue(list, chinese) >= 0);
+    const auto comment = QString::fromStdString(Trigger::TriggerDirectoryEditor::TriggerSymbol(document.triggers[1].name));
+    for (const auto& hidden : {comment, QStringLiteral("gg_trg_Off"), QStringLiteral("gg_trg_A_b")})
+        QCOMPARE(FindValue(list, hidden), -1);
+    QVERIFY(panel.findChild<QLabel*>(QStringLiteral("valuePanelNote"))->text().contains(QStringLiteral("2 个触发器的脚本名重复")));
+    // 名称和脚本名都能搜索。
+    auto* search = panel.findChild<QLineEdit*>(QStringLiteral("valuePanelSearch"));
+    search->setText(QStringLiteral("莫格莱尼"));
+    QVERIFY(FindValue(list, chinese) >= 0 && FindValue(list, QStringLiteral("gg_trg_Init")) < 0);
+    search->setText(QStringLiteral("gg_trg_Init"));
+    QVERIFY(FindValue(list, QStringLiteral("gg_trg_Init")) >= 0);
+    // 选中后交出的是变量类引用，提交时由同一解析认作生成的触发器全局。
+    list->setCurrentRow(FindValue(list, QStringLiteral("gg_trg_Init")));
+    std::optional<TriggerValueChoice> chosen;
+    panel.SetChosen([&](const auto& value) { chosen = value; });
+    panel.Apply();
+    QVERIFY(chosen.has_value());
+    QCOMPARE(chosen->valueKind, 1);
+    QCOMPARE(chosen->value, std::string("gg_trg_Init"));
+    QVERIFY(chosen->mapObjectSnapshotIdentity.empty());
+    const auto resolved = Trigger::ResolveVariableReference(document, chosen->value);
+    QVERIFY(resolved.Succeeded() && resolved.value->kind == Trigger::VariableReferenceKind::GeneratedTrigger);
 }
 
 void TriggerValueTests::PreplacedReferencesUseCaptureTypesAndUndo() {

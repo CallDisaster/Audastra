@@ -8,6 +8,7 @@
 #include "War3MapCore/Trigger/TriggerPresentation.h"
 #include "War3MapCore/Trigger/MapObjectReferences.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
+#include "War3MapCore/Trigger/TriggerDirectory.h"
 
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -22,6 +23,8 @@
 #include <QSizeGrip>
 #include <QTabBar>
 #include <QVBoxLayout>
+
+#include <map>
 
 using namespace TriggerUiText;
 namespace Trigger = War3Map::Trigger;
@@ -407,6 +410,22 @@ void TriggerValuePanel::RebuildVariables(const QString& query) {
                 .arg(detail, Utf8(object.memberName), Utf8(object.classificationSource)));
         }
     }
+    // 地图里已有的触发器：与脚本生成和 ResolveVariableReference 同一资格（注释、禁用的不生成全局）。
+    // 生成名冲突的提交时也会被拒绝，这里不列出；只读引用，左值不列。
+    std::size_t clashingTriggers = 0;
+    if (!writableTarget_ && !anyGlobal && types_->Accepts(type_, "trigger")) {
+        std::map<std::string, std::size_t> owners;
+        for (const auto& trigger : document_.triggers)
+            if (trigger.type == 0 && trigger.enabled != 0) ++owners[Trigger::TriggerDirectoryEditor::TriggerSymbol(trigger.name)];
+        for (const auto& trigger : document_.triggers) {
+            if (trigger.type != 0 || trigger.enabled == 0) continue;
+            const auto symbol = Trigger::TriggerDirectoryEditor::TriggerSymbol(trigger.name);
+            if (owners[symbol] != 1) { ++clashingTriggers; continue; }
+            const QString name = Utf8(trigger.name.text), value = Utf8(symbol);
+            if (!matches(name) && !matches(value)) continue;
+            Item(list_, name, tr("触发器"), 1, value)->setToolTip(value);
+        }
+    }
     // YDWE 局部变量（本触发器）：选择后生成 loc_ / loop_ 读取函数。
     const bool hasGetter = catalog_.Find(Trigger::UiDefinitionKind::Call, Trigger::kLocalGet) != nullptr;
     const bool hasLoop = catalog_.Find(Trigger::UiDefinitionKind::Call, Trigger::kLoopLocalGet) != nullptr;
@@ -422,6 +441,9 @@ void TriggerValuePanel::RebuildVariables(const QString& query) {
     if (list_->count() == 0) note_->setText(query.isEmpty() ? tr("没有该类型的变量") : tr("没有匹配的变量"));
     if (arrays != 0) {
         note_->setText(note_->text() + tr(" 另有 %1 个数组变量 · F2").arg(arrays));
+    }
+    if (clashingTriggers != 0) {
+        note_->setText(note_->text() + tr(" %1 个触发器的脚本名重复，不能引用").arg(clashingTriggers));
     }
     if (!writableTarget_ && !mapObjectFailure_.isEmpty() &&
         (types_->Accepts(type_, "unit") || types_->Accepts(type_, "item"))) {
