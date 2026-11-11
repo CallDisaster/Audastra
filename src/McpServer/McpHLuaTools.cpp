@@ -3,6 +3,7 @@
 #include "War3MapCore/HLua/Test.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include <QJsonDocument>
+#include <QSettings>
 #include <QUuid>
 #include <map>
 
@@ -111,6 +112,8 @@ void RegisterHLuaTools(McpServer& server) {
                 auto helper = ParseAbsolutePath(args,"helper_root");
                 if (!helper.Succeeded()) return Failure(helper);
                 HLua::TestRequest test; test.build=request; test.helpers=*helper.value;
+                test.externalDependenciesDirectory = std::filesystem::path(
+                    QSettings().value(QStringLiteral("mapTest/externalDependenciesDirectory")).toString().trimmed().toStdWString());
                 const auto engine=args.value("engine").toString("owned");
                 if (engine!="owned" && engine!="ydwe") return Failure("HLUA_ARGUMENT","未知 Lua 环境。");
                 test.engine=engine=="owned" ? Services::MapTestLuaEngine::Owned : Services::MapTestLuaEngine::Ydwe;

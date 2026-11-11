@@ -1,4 +1,5 @@
 #include "War3MapCore/HLua/Test.h"
+#include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/Services/LuaObjectSnapshot.h"
 #include "War3MapCore/Services/LuaFolder.h"
 #include "War3MapCore/Lua/LuaModuleScan.h"
@@ -59,6 +60,8 @@ Result<std::shared_ptr<TestSession>> StartProjectTest(const TestRequest& request
     run.expectedInputSha256 = built.value->outputSha256;
     run.gameRoot = std::filesystem::absolute(request.build.gameRoot); run.workspace = root / "prepared";
     run.handwrittenLuaEngine = request.engine; run.runtimeYdweRoot = request.ydweRoot;
+    run.externalDependenciesDirectory = Services::ExternalDependenciesDirectory(CurrentInstallationRoot(),
+        request.externalDependenciesDirectory);
     run.runtimeBridge = std::filesystem::absolute(request.helpers) / "audastra-warcraft-launcher.exe";
     run.runtimeBootstrap = std::filesystem::absolute(request.helpers) / "audastra-warcraft-bootstrap.dll";
     auto prepared = Services::PrepareLuaAwareMapTest(run);
@@ -72,6 +75,7 @@ Result<std::shared_ptr<TestSession>> StartProjectTest(const TestRequest& request
     session->launch_ = std::move(*launched.value); session->workspace_ = std::move(*frozen.value);
     auto result = Output::Success(std::move(session));
     result.diagnostics = std::move(prepared.diagnostics);
+    result.diagnostics.insert(result.diagnostics.end(), launched.diagnostics.begin(), launched.diagnostics.end());
     result.diagnostics.insert(result.diagnostics.end(),permitted.diagnostics.begin(),permitted.diagnostics.end());
     return result;
 }

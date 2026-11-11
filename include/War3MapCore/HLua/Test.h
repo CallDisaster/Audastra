@@ -10,6 +10,7 @@ struct TestRequest {
     std::filesystem::path helpers, ydweRoot;
     Services::MapTestLuaEngine engine = Services::MapTestLuaEngine::Owned;
     bool cloaked = true;
+    std::filesystem::path externalDependenciesDirectory;
 };
 class TestSession final {
 public:
