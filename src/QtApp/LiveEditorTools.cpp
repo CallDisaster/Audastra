@@ -1088,8 +1088,10 @@ private:
                     return QtProject::PrepareTerrainTextureSlotEditCapture(owned, frozen, binding, command);
                 });
                 if (!captured.Succeeded()) return {{}, std::move(captured.diagnostics)};
-                if (!boundsProject || !ownerHandle_ || !QtProject::TerrainWaterEditRequestCurrent(project_, *owned, true))
-                    return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE", "贴图槽后台准备期间工程或会话已变化。");
+                const auto mismatch = !boundsProject || !ownerHandle_ ? "owner" : QtProject::TerrainWaterEditRequestMismatch(project_, *owned, true);
+                if (*mismatch)
+                    return Result<Services::PreparedTerrainEdit>::Failure("QtApp.Live", "TERRAIN_EDIT_STALE",
+                        std::string("贴图槽后台准备期间工程或会话已变化。变化条件：") + mismatch);
                 waterCapture = std::make_shared<const QtProject::TerrainWaterEditCapture>(std::move(captured.value->resources));
                 return Result<Services::PreparedTerrainEdit>::Success(std::move(captured.value->prepared));
             };

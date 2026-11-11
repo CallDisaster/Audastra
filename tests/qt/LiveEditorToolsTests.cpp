@@ -17,6 +17,7 @@
 #include "War3MapCore/Services/MinimapPreview.h"
 #include "McpImportTools.h"
 #include "McpObjectResourceTools.h"
+#include <QFileSystemWatcher>
 #include "McpPlacementTools.h"
 #include "McpAuxiliaryTools.h"
 #include "ProjectAuxiliaryEdits.h"
