@@ -284,9 +284,20 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
         }
         std::size_t providerArgChars = 0;
         const auto wideAscii = [](std::string_view ascii) { return std::wstring(ascii.begin(), ascii.end()); };
+        if (artifact.externalYdweProvider) {
+            plan.arguments.insert(plan.arguments.end(), {L"--provider-abi", L"ydwe-initialize"});
+            for (const auto& [name, signature] : artifact.externalYdweRequiredNatives) {
+                if (signature.empty())
+                    return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_NATIVE_SIGNATURE", "YDWE 自带 Lua 需要地图声明的实际签名：" + name);
+                auto native = wideAscii(name) + L"|" + wideAscii(signature);
+                providerArgChars += native.size() + 30;
+                plan.arguments.insert(plan.arguments.end(), {L"--provider-required-native", std::move(native)});
+            }
+        }
         for (std::size_t index = 0; index < artifact.externalDependencyFiles.size(); ++index) {
             const auto& file = artifact.externalDependencyFiles[index];
-            auto spec = wideAscii(file.sha256) + L"|" + wideAscii(file.entry) + L"|" + file.path.wstring();
+            auto spec = wideAscii(file.sha256) + L"|" + wideAscii(file.entry) + L"|" + wideAscii(file.providerId)
+                + L"|" + file.path.wstring();
             providerArgChars += spec.size() + 24;
             plan.arguments.insert(plan.arguments.end(), {L"--provider-module", std::move(spec)});
             for (const auto& [name, signature] : file.natives) {

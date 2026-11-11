@@ -515,9 +515,16 @@ struct RunReceipt {
                 if (i) json += ',';
                 const auto& provider = evidence->providerModules[i];
                 json += "{\"path\":" + Json(Utf8(provider.file.path)) + ",\"entry\":" + Json(provider.entry)
+                    + ",\"providerId\":" + Json(provider.providerId)
                     + ",\"expectedSha256\":" + Json(provider.file.expectedSha256) + ",\"sha256\":" + Json(provider.file.actualSha256)
                     + ",\"loaded\":" + flag(provider.file.loaded != 0)
                     + ",\"initializeCalled\":" + flag(provider.file.initializeCalled != 0) + '}';
+            }
+            json += "],\"providerAbi\":" + Json(evidence->providerYdwe ? "ydwe-initialize" : "audastra-native-provider-v1");
+            json += ",\"providerObservedNatives\":[";
+            for (LONG i = 0; i < (std::min)(evidence->providerObservedCount, static_cast<LONG>(kProviderNativeLimit)); ++i) {
+                if (i) json += ',';
+                json += Json(evidence->providerObservedNames[i].data());
             }
             json += ']';
         }
@@ -584,7 +591,8 @@ int Run(int argc, wchar_t** argv) {
     std::filesystem::path probeScript;
     std::wstring expectedProbeScriptSha;
     std::vector<std::filesystem::path> nonfatalBlockedPaths;
-    std::vector<std::wstring> providerModuleSpecs, providerNativeSpecs;
+    std::vector<std::wstring> providerModuleSpecs, providerNativeSpecs, providerRequiredSpecs;
+    bool ydweProvider = false;
     DWORD probeTimeout = 45000;
     bool probeTimeoutSpecified = false;
     for (int index = 1; index < argc; index += 2) {
@@ -598,6 +606,10 @@ int Run(int argc, wchar_t** argv) {
             providerModuleSpecs.emplace_back(argv[index + 1]);
         else if (key == L"--provider-native" && providerNativeSpecs.size() < kProviderNativeLimit)
             providerNativeSpecs.emplace_back(argv[index + 1]);
+        else if (key == L"--provider-required-native" && providerRequiredSpecs.size() < kProviderNativeLimit)
+            providerRequiredSpecs.emplace_back(argv[index + 1]);
+        else if (key == L"--provider-abi" && !ydweProvider && std::wstring_view(argv[index + 1]) == L"ydwe-initialize")
+            ydweProvider = true;
         else if (key == L"--runtime-layout" && !layoutSpecified) {
             const std::wstring value(argv[index + 1]);
             if (value == L"ydwe-tree") layout = RuntimeLayout::YdweTree;
@@ -690,7 +702,9 @@ int Run(int argc, wchar_t** argv) {
     if (bare && (!runtime.empty() || layoutSpecified || !probeNonce.empty())) return 64;
     if ((described && (!runtime.empty() || layoutSpecified || !probeNonce.empty() || providerModuleSpecs.empty()))
         || ((!described && !owned) && !providerModuleSpecs.empty())
-        || (providerModuleSpecs.empty() != providerNativeSpecs.empty())) return 64;
+        || (!ydweProvider && providerModuleSpecs.empty() != providerNativeSpecs.empty())
+        || (ydweProvider && ((!owned && !described) || providerModuleSpecs.size() != kModules.size() || !providerNativeSpecs.empty()))
+        || (!providerRequiredSpecs.empty() && (!ydweProvider || !owned))) return 64;
     const bool probe = !probeNonce.empty();
     const auto lowercaseHex = [](const std::wstring& value, std::size_t length) {
         return value.size() == length && std::all_of(value.begin(), value.end(), [](wchar_t c) { return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f'); });
@@ -787,6 +801,7 @@ int Run(int argc, wchar_t** argv) {
     wcscpy_s(shared->runtimeRoot, runtime.c_str());
     shared->runtimeLayout = layout;
     shared->runtimeMode = mode;
+    shared->providerYdwe = ydweProvider ? 1 : 0;
     shared->backgroundPlay = backgroundPlay ? 1 : 0;
     shared->cloakWindow = windowCloak ? 1 : 0;
     shared->muteSound = noSound ? 1 : 0;
@@ -840,12 +855,19 @@ int Run(int argc, wchar_t** argv) {
         return std::all_of(value.begin(), value.end(), [](wchar_t ch) { return ch >= 0x21 && ch <= 0x7e; });
     };
     for (const auto& spec : providerModuleSpecs) {
-        const auto [sha, entry, pathText] = parts(spec);
-        auto path = std::filesystem::path(pathText).lexically_normal();
+        const auto split = spec.rfind(L'|');
+        if (split == spec.npos) return fail("external-provider-plan", ERROR_INVALID_DATA);
+        const auto [sha, entry, providerId] = parts(spec.substr(0, split));
+        auto path = std::filesystem::path(spec.substr(split + 1)).lexically_normal();
         path.make_preferred();
         if (!lowercaseHex(sha, 64) || entry.size() > 128 || !ascii(entry) || !PlainPath(path)
-            || !EqualPath(path.extension().wstring(), L".dll") || EqualPath(path.filename().wstring(), L"Game.dll"))
+            || providerId.empty() || providerId.size() > 128 || !ascii(providerId)
+            || !EqualPath(path.extension().wstring(), L".dll") || EqualPath(path.filename().wstring(), L"Game.dll")
+            || EqualPath(path.filename().wstring(), L"Storm.dll"))
             return fail("external-provider-plan", ERROR_INVALID_DATA);
+        if (ydweProvider && (!EqualPath(path.filename().wstring(), kModules[shared->providerModuleCount])
+            || entry != (shared->providerModuleCount >= 4 ? L"Initialize" : L"") || providerId != L"YDWE-EX"))
+            return fail("external-provider-ydwe-layout", ERROR_INVALID_DATA);
         for (DWORD i = 0; i < shared->providerModuleCount; ++i)
             if (EqualPath(std::filesystem::path(shared->providerModules[i].file.path).filename().wstring(), path.filename().wstring()))
                 return fail("external-provider-plan-duplicate", ERROR_INVALID_DATA);
@@ -853,19 +875,22 @@ int Run(int argc, wchar_t** argv) {
         wcscpy_s(module.file.path, path.c_str());
         strcpy_s(module.file.expectedSha256, Utf8(sha).c_str());
         strcpy_s(module.entry, Utf8(entry).c_str());
+        strcpy_s(module.providerId, Utf8(providerId).c_str());
         auto file = std::make_unique<Handle>(OpenLockedFile(path));
         if (file->value == INVALID_HANDLE_VALUE || !IsX86Image(file->value) ||
             Sha256(file->value, 32u * 1024u * 1024u) != module.file.expectedSha256)
             return fail("external-provider-file-identity", ERROR_CRC);
         runtimeFiles.push_back(std::move(file));
     }
+    for (const auto& spec : providerRequiredSpecs) providerNativeSpecs.push_back(L"8|" + spec);
     for (const auto& spec : providerNativeSpecs) {
         const auto [index, name, signature] = parts(spec);
-        if (index.size() != 1 || index.front() < L'0' || index.front() > L'7' || name.empty() || name.size() > 128
+        if (index.size() != 1 || index.front() < L'0' || index.front() > L'8' || name.empty() || name.size() > 128
             || !ascii(name) || signature.empty() || signature.size() > 1024 || !ascii(signature))
             return fail("external-provider-native-plan", ERROR_INVALID_DATA);
         const auto moduleIndex = static_cast<DWORD>(index.front() - L'0');
-        if (moduleIndex >= shared->providerModuleCount || !shared->providerModules[moduleIndex].entry[0])
+        if (ydweProvider ? moduleIndex != kProviderModuleLimit
+            : (moduleIndex >= shared->providerModuleCount || !shared->providerModules[moduleIndex].entry[0]))
             return fail("external-provider-native-module", ERROR_INVALID_DATA);
         const auto nativeName = Utf8(name);
         for (DWORD i = 0; i < shared->providerNativeCount; ++i)
@@ -974,7 +999,7 @@ int Run(int argc, wchar_t** argv) {
         || (noSound && !shared->muteSoundInstalled)) {
         if (!shared->failed) { result.stage = "runtime-initialization-unconfirmed"; result.error = ERROR_INVALID_DATA; }
         result.bridgeExit = kRuntimeFailure;
-    } else if (shared->providerModuleCount && !shared->providerRegistrationsVerified) {
+    } else if (shared->providerModuleCount && !shared->providerRegistrationsVerified && (!shared->providerYdwe || owned)) {
         result.stage = "external-provider-registration-unconfirmed"; result.bridgeExit = kRuntimeFailure;
     } else if (owned && (!shared->ownedLua.modules || shared->ownedLua.errors)) {
         result.stage = "owned-lua-entry-unconfirmed-or-failed"; result.bridgeExit = kRuntimeFailure;

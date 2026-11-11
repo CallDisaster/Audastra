@@ -219,14 +219,66 @@ void ExternalDependencyCatalog() {
         "native AudastraFixtureAdd takes integer i returns integer\n"))}, {"scripts/original.dll", Pe(true, true)},
         {"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}});
     map.externalDependenciesDirectory = directory;
-    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "EXTERNAL_DEPENDENCY_MAP_DLL", "map DLL cannot be a provider");
+    fixture.Runtime(map);
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "EXTERNAL_DEPENDENCY_GAME",
+        "full coverage chooses provider path with the genuine game identity gate");
+    auto partial = fixture.Artifact(Script("call AudastraFixtureAdd(1)",
+        "native AudastraFixtureAdd takes integer i returns integer\nnative MissingOther takes nothing returns nothing\n"));
+    partial.externalDependenciesDirectory = directory;
+    fixture.Runtime(partial);
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(partial), "EXTERNAL_DEPENDENCY_NATIVE_MISSING",
+        "usable partial coverage reports the missing native");
     fixture.Unchanged(map);
 
-    Write(provider / "provider.json", Bytes(R"json({"schema":1,"schema":1,"id":"original","modules":[]})json"));
+    Write(provider / "provider.json", Bytes(R"json({"schema":1,"schema":1,"id":"original",
+        "abi":"audastra-native-provider-v1","modules":[
+        {"file":"original.dll","entry":"Initialize","natives":{"AudastraFixtureAdd":"(I)I"}}]})json"));
     status = Services::QueryExternalDependencies(directory);
     Success(status, "malformed provider is visible in status");
     Require(status.value->providers.size() == 1 && !status.value->providers.front().usable,
         "duplicate manifest keys are rejected");
+    auto fallback = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(fallback, "broken descriptor leaves explicit old path intact");
+    Require(fallback.value->runtimeRoot == fixture.runtime, "old runtime selected");
+    const auto containsCode = [](const auto& diagnostics, std::string_view code) {
+        return std::any_of(diagnostics.begin(), diagnostics.end(), [&](const auto& diagnostic) { return diagnostic.code == code; });
+    };
+    Require(containsCode(fallback.diagnostics, "EXTERNAL_DEPENDENCY_MAP_DLL"), "embedded DLL is named in a nonblocking warning");
+    map.externalDependenciesDirectory = L"/relative-root";
+    fallback = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(fallback, "invalid directory is only a warning with the old path available");
+    Require(containsCode(fallback.diagnostics, "EXTERNAL_DEPENDENCY_DIRECTORY_UNAVAILABLE"), "directory failure carried to launch");
+    map.runtimeRoot.clear();
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "EXTERNAL_DEPENDENCY_DIRECTORY",
+        "required map with no fallback reports why the external directory is unavailable");
+
+    for (unsigned i = 0; i < 520; ++i) Write(directory / ("notes-" + std::to_string(i)), Bytes("unrelated"));
+    Write(directory / "unrelated" / "nested.dll", Pe(true));
+    auto known = map;
+    fixture.Runtime(known, Services::MapTestRuntimeLayout::YdweTree);
+    const auto builtin = directory / "legacy";
+    for (const auto* relative : {"bin/ydbase.dll", "bin/lua53.dll", "bin/ydwar3.dll",
+            "plugin/warcraft3/yd_loader.dll", "plugin/warcraft3/yd_jass_api.dll", "plugin/warcraft3/yd_lua_engine.dll"}) {
+        auto bytes = Pe(true, std::string_view(relative).find("api.dll") != std::string_view::npos ||
+            std::string_view(relative).find("engine.dll") != std::string_view::npos);
+        const auto evidence = Bytes(std::string_view("\0EXFixtureTest\0", 15));
+        bytes.insert(bytes.end(), evidence.begin(), evidence.end());
+        Write(builtin / relative, bytes);
+    }
+    Write(directory / "kkwe" / "插件" / "version.dll", Pe(true));
+    Write(directory / "kkwe" / "插件" / "dz_w3_plugin.dll", Pe(true));
+    status = Services::QueryExternalDependencies(directory);
+    Success(status, "unrelated files and directories do not exhaust provider budget");
+    Require(status.value->providers.size() == 3 && status.value->undescribedDllCount == 1 &&
+        std::find(status.value->unrecognizedDirectories.begin(), status.value->unrecognizedDirectories.end(),
+            directory / "unrelated") != status.value->unrecognizedDirectories.end(), "known layouts and unscanned directories have separate status");
+    const auto ydwe = std::find_if(status.value->providers.begin(), status.value->providers.end(),
+        [](const auto& item) { return item.kind == Services::ExternalDependencyKind::Ydwe; });
+    Require(ydwe != status.value->providers.end() && ydwe->usable && ydwe->ydweTree && ydwe->files.size() == 6 &&
+        ydwe->files[4].candidateNatives == std::vector<std::string>{"EXFixtureTest"}, "recognize PE-verified YDWE and candidate strings");
+    const auto dz = std::find_if(status.value->providers.begin(), status.value->providers.end(),
+        [](const auto& item) { return item.kind == Services::ExternalDependencyKind::KkweDz; });
+    Require(dz != status.value->providers.end() && !dz->usable && dz->files.size() == 2, "Dz status does not authorize loading");
 }
 
 void OwnedLuaSourcesAndComponents() {
@@ -545,14 +597,16 @@ void HandwrittenLuaEntriesSelectRuntime() {
     const auto hasCode = [](const auto& result, std::string_view code) {
         return std::any_of(result.diagnostics.begin(), result.diagnostics.end(), [&](const auto& item) { return item.code == code; });
     };
-    auto map = fixture.Artifact(members(entry, {{"main.lua", Bytes("local u = require 'lib.util'\nlocal japi=require 'jass.japi'\nlocal id = |hfoo|\n")},
+    auto map = fixture.Artifact(members(entry, {{"main.lua", Bytes("local u = require 'lib.util'\nlocal japi=require 'jass.japi'\nif japi.DzGetMouseX then local x=japi.DzGetMouseX() end\nlocal id = |hfoo|\n")},
         {"lib\\util.lua", Bytes("return {}\n")}}));
     helpers(map);
+    map.externalDependenciesDirectory = fixture.root / "empty-dependencies";
     auto plan = Script::BuildIndependentMapTestLaunchPlan(map);
     Success(plan, "handwritten exec-lua map selects the built-in Lua runtime");
     Require(plan.value->useOwnedLuaRuntime && plan.value->enableLuaHotReload && plan.value->runtimeRoot.empty()
         && plan.value->luaEntryModules == std::vector<std::string>{"main"} && hasCode(plan, "MAP_TEST_LUA_OWNED"),
         "exec-lua entry is detected, hot reload follows the preference, and no YDWE DLL is needed");
+    fixture.Runtime(map, Services::MapTestRuntimeLayout::YdweTree, true);
     map.handwrittenLuaHotReload = false;
     plan = Script::BuildIndependentMapTestLaunchPlan(map);
     Success(plan, "handwritten Lua without hot reload");
@@ -578,6 +632,7 @@ void HandwrittenLuaEntriesSelectRuntime() {
         "maps without exec-lua keep direct native launch and their .lua members are not interpreted");
 
     map.handwrittenLuaEngine = Services::MapTestLuaEngine::Ydwe;
+    map.runtimeYdweRoot.clear();
     FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_LUA_RUNTIME_REQUIRED",
         "YDWE engine preference needs a configured YDWE instead of silently launching the plain game");
     fixture.Runtime(map, Services::MapTestRuntimeLayout::YdweTree, true);
@@ -973,6 +1028,15 @@ local ok, error = pcall(ext.AudastraFixtureCallback, function() end)
 assert(not ok and tostring(error):find("code", 1, true))
 assert(value == 42 and id == 0)
 local proof = "R54 LUA RESULT " .. value .. " / PLAYER " .. id .. " / CALLBACK REFUSED"
+jass.DisplayTimedTextToPlayer(jass.Player(0), 0, 0, 90, proof)
+print(proof)
+)LUA");
+    make("provider-optional.w3x", {}, R"JASS(    call Cheat("exec-lua: \"provider\""))JASS", R"LUA(
+local japi = require("jass.japi")
+local jass = require("jass.common")
+local value = japi.DzGetMouseX
+assert(value == nil)
+local proof = "R54B OPTIONAL RESULT: NIL, MAP STARTED"
 jass.DisplayTimedTextToPlayer(jass.Player(0), 0, 0, 90, proof)
 print(proof)
 )LUA");

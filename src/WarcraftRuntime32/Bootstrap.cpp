@@ -68,6 +68,7 @@ void InitializeOwnedRuntime(HMODULE game, OwnLua::NativeExtensionHooks extension
     config.mapPath = owned.mapPath; config.mapSha256 = owned.mapSha256;
     config.nonce = owned.nonce; config.mailbox = mailbox; config.hotReload = owned.hotReload != 0;
     config.experimentalJapi = AUD_JAPI_BRIDGE_EXPERIMENTAL != 0;
+    if (extensions.registerAll) extensions.failure = ProviderFailure;
     config.extensions = std::move(extensions);
     // 内置界面库：用同一份已核验的 Game.dll 映像解析入口，作为 audastraui 模块装进每个新 Host。
     config.japiModules = [](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
@@ -84,7 +85,6 @@ void InitializeOwnedRuntime(HMODULE game, OwnLua::NativeExtensionHooks extension
     };
     events.fatal = [record](std::string_view message) {
         record(message);
-        if (evidence->providerModuleCount && !evidence->providerRegistrationsVerified) ProviderFailure(message);
         Fail("owned-lua-session-failed", ERROR_INVALID_DATA);
     };
     std::string error;
@@ -194,18 +194,23 @@ void ObserveModule(HMODULE loaded, bool requestedGame) {
         auto* providers = evidence->providerModuleCount ? new RuntimeNativeProviders(*evidence) : nullptr;
         if (evidence->runtimeMode == RuntimeMode::OwnedLua) {
             InitializeOwnedRuntime(loaded, providers ? providers->Hooks() : OwnLua::NativeExtensionHooks{});
-        } else if (providers) {
+        } else if (providers && !evidence->providerYdwe) {
             auto image = OwnLua::GameImage127::Open(loaded);
             if (!image.image) ProviderFailure(image.error);
             OwnLua::GameNativeHandlers handlers;
-            handlers.failure = ProviderFailure;
+            handlers.failure = [](std::string_view) { Fail("native-observer-failed", ERROR_INVALID_DATA); };
             handlers.extensions = providers->Hooks();
+            handlers.extensions.failure = ProviderFailure;
             std::string error;
             if (!OwnLua::InstallGameNativeObserver(std::move(image.image), std::move(handlers), error)) ProviderFailure(error);
         }
         if (providers) {
             const auto error = providers->Load();
             if (!error.empty()) ProviderFailure(error);
+            if (evidence->providerYdwe && evidence->runtimeMode == RuntimeMode::ExternalProviders) {
+                const auto initialize = providers->InitializeYdwe();
+                if (!initialize.empty()) ProviderFailure(initialize);
+            }
         }
         InterlockedExchange(&evidence->runtimeInitialized, 1);
     } catch (...) { Fail("runtime-cpp-exception", ERROR_UNHANDLED_EXCEPTION); }

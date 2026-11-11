@@ -139,7 +139,8 @@ int RunMapTest(int argc, wchar_t** argv) {
     request.expectedInputSha256 = *sha.value;
     request.gameRoot = std::filesystem::absolute(game); request.workspace = run / "prepared";
     request.runtimeYdweRoot = ydwe;
-    request.externalDependenciesDirectory = Services::ExternalDependenciesDirectory(War3Map::CurrentInstallationRoot(), dependencies);
+    request.externalDependenciesDirectory = Services::ExternalDependenciesDirectory(War3Map::CurrentInstallationRoot(),
+        dependencies.empty() ? War3Map::ReadEditorExternalDependenciesSetting() : dependencies);
     request.runtimeBridge = std::filesystem::absolute(helpers) / "audastra-warcraft-launcher.exe";
     request.runtimeBootstrap = std::filesystem::absolute(helpers) / "audastra-warcraft-bootstrap.dll";
     request.handwrittenLuaEngine = engine; request.handwrittenLuaHotReload = hotReload;
@@ -412,7 +413,7 @@ int RunMapTest(int argc, wchar_t** argv) {
 int RunExternalDependenciesStatus(int argc, wchar_t** argv) {
     if (argc > 3) return 2;
     const auto directory = Services::ExternalDependenciesDirectory(War3Map::CurrentInstallationRoot(),
-        argc == 3 ? std::filesystem::path(argv[2]) : std::filesystem::path{});
+        argc == 3 ? std::filesystem::path(argv[2]) : War3Map::ReadEditorExternalDependenciesSetting());
     const auto status = Services::QueryExternalDependencies(directory);
     if (!status.Succeeded()) { Print(status.diagnostics); return 1; }
     std::cout << Services::ExternalDependenciesJson(*status.value) << '\n';

@@ -1,4 +1,5 @@
 #include "McpLuaFileTools.h"
+#include "../QtCommon/ApplicationPaths.h"
 #include "McpToolInternal.h"
 #include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/Services/ExternalDependencies.h"
@@ -7,6 +8,7 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 #include <QSettings>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -236,19 +238,81 @@ void RegisterLuaFileTools(McpServer& server) {
     ToolDefinition dependencies;
     dependencies.name = QStringLiteral("external_dependencies_status");
     dependencies.description = QStringLiteral("只读检查本机地图测试外部依赖目录及声明，不加载 DLL。");
-    dependencies.inputSchema = {{QStringLiteral("type"), QStringLiteral("object")},
-        {QStringLiteral("properties"), QJsonObject{}}, {QStringLiteral("additionalProperties"), false}};
+    const auto number = [](int minimum, int maximum) {
+        return QJsonObject{{"type", "integer"}, {"minimum", minimum}, {"maximum", maximum}};
+    };
+    dependencies.inputSchema = {{"type", "object"}, {"additionalProperties", false},
+        {"properties", QJsonObject{{"offset", number(0, kMaxLuaPageIndex)}, {"limit", number(1, 128)}}}};
     dependencies.maxResponseBytes = 64 * 1024;
     dependencies.handler = [](const QJsonObject& args) {
-        if (!args.isEmpty()) return Failure("EXTERNAL_DEPENDENCY_ARGUMENT", "状态查询使用本机配置。");
-        const auto configured = QSettings().value(QStringLiteral("mapTest/externalDependenciesDirectory")).toString().trimmed();
+        for (const auto& key : args.keys()) {
+            if (key != "offset" && key != "limit") return Failure("EXTERNAL_DEPENDENCY_ARGUMENT", "只接受分页参数。");
+            if (!ValidPageNumber(args.value(key), key == "offset" ? 0 : 1, key == "offset" ? kMaxLuaPageIndex : 128))
+                return Failure("EXTERNAL_DEPENDENCY_ARGUMENT", "外部依赖状态分页参数超出范围。");
+        }
+        const auto offset = args.value("offset").toInt(0);
+        const auto limit = args.value("limit").toInt(32);
+        const auto configured = QtCommon::OpenEditorSettings().value(QString::fromLatin1(kExternalDependenciesSettingsKey)).toString().trimmed();
         const auto directory = Services::ExternalDependenciesDirectory(CurrentInstallationRoot(),
             std::filesystem::path(configured.toStdWString()));
         const auto status = Services::QueryExternalDependencies(directory);
         if (!status.Succeeded()) return Failure(status.diagnostics.front().code, status.diagnostics.front().message);
         const auto text = Services::ExternalDependenciesJson(*status.value);
         auto result = QJsonDocument::fromJson(QByteArray::fromStdString(text)).object();
-        result.insert(QStringLiteral("ok"), true);
+        const auto providers = result.take("providers").toArray();
+        const auto unknown = result.take("unrecognized_directories").toArray();
+        const auto ignored = result.take("undescribed_dlls").toArray();
+        QJsonArray rows;
+        qint64 seen = 0;
+        qsizetype bytes = 0;
+        bool pageFull = false;
+        const auto add = [&](QJsonObject row) {
+            if (seen++ < offset || pageFull) return;
+            const auto encoded = QJsonDocument(QJsonArray{QString::fromUtf8(QJsonDocument(row).toJson(QJsonDocument::Compact))})
+                .toJson(QJsonDocument::Compact).size();
+            if (rows.size() >= limit || bytes + encoded > 48 * 1024) {
+                pageFull = true;
+                return;
+            }
+            bytes += encoded;
+            rows.append(std::move(row));
+        };
+        for (qint64 i = 0; i < providers.size(); ++i) {
+            auto provider = providers[i].toObject();
+            const auto modules = provider.take("modules").toArray();
+            const auto issues = provider.take("issues").toArray();
+            provider.insert("kind", "provider");
+            provider.insert("provider_index", i);
+            add(std::move(provider));
+            for (qint64 j = 0; j < modules.size(); ++j) {
+                auto module = modules[j].toObject();
+                const auto natives = module.take("natives").toObject();
+                const auto imports = module.take("imports").toArray();
+                module.insert("kind", "module");
+                module.insert("provider_index", i);
+                module.insert("module_index", j);
+                add(std::move(module));
+                for (const auto& name : imports)
+                    add({{"kind", "import"}, {"provider_index", i}, {"module_index", j}, {"name", name}});
+                for (auto it = natives.begin(); it != natives.end(); ++it)
+                    add({{"kind", "native"}, {"provider_index", i}, {"module_index", j}, {"name", it.key()}, {"signature", it.value()}});
+            }
+            for (const auto& issue : issues) {
+                auto row = issue.toObject();
+                row.insert("kind", "issue"); row.insert("provider_index", i);
+                add(std::move(row));
+            }
+        }
+        for (const auto& item : ignored) add({{"kind", "undescribed_dll"}, {"path", item}});
+        for (const auto& item : unknown) add({{"kind", "unrecognized_directory"}, {"path", item}});
+        if (rows.isEmpty() && offset < seen)
+            return Failure("EXTERNAL_DEPENDENCY_RESPONSE_BUDGET", "该条状态超过响应预算。");
+        const auto next = std::min<qint64>(offset + rows.size(), seen);
+        result.insert("rows", std::move(rows));
+        result.insert("offset", offset);
+        result.insert("total", seen);
+        result.insert("next_offset", next < seen ? QJsonValue(next) : QJsonValue(QJsonValue::Null));
+        result.insert("ok", true);
         return result;
     };
     server.RegisterTool(std::move(dependencies));

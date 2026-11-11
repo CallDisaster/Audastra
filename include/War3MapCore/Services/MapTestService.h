@@ -70,6 +70,8 @@ struct MapTestArtifact {
     bool cloakedWindow = false;
     std::filesystem::path externalDependenciesDirectory;
     std::vector<ExternalDependencyFile> externalDependencyFiles;
+    bool externalYdweProvider = false;
+    ExternalNativeRequirements externalYdweRequiredNatives;
 };
 
 struct MapTestSlkRequest {

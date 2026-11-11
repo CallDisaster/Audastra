@@ -1,4 +1,5 @@
 #include "McpProductTools.h"
+#include "../QtCommon/ApplicationPaths.h"
 #include "../QtCommon/LocalConsentPreference.h"
 #include "McpToolInternal.h"
 #include "AudastraVersion.generated.h"
@@ -186,7 +187,7 @@ Result<std::shared_ptr<FeedbackQueue>> ApplicationFeedbackQueue() {
     if (generic.isEmpty()) return Result<std::shared_ptr<FeedbackQueue>>::Failure("Feedback", "FEEDBACK_DATA_DIRECTORY", "无法定位本机应用数据目录。");
     PrivacyContext context;
     context.paths.push_back({PathRole::User, QDir::homePath().toUtf8().toStdString()});
-    QSettings preferences(QSettings::defaultFormat(), QSettings::UserScope, "CallDisaster", "Audastra");
+    auto preferences = War3Map::QtCommon::OpenEditorSettings();
     const auto gameRoot = preferences.value("war3/gameRoot").toString();
     const auto ydweRoot = preferences.value("ui/dataRoot").toString();
     if (!gameRoot.isEmpty()) context.paths.push_back({PathRole::Game, gameRoot.toUtf8().toStdString()});

@@ -35,6 +35,10 @@ BOOL WINAPI Add(void* context, std::uintptr_t address, const char* name, const c
         return FALSE;
     }
 }
+bool CallLegacy(FARPROC entry) {
+    __try { reinterpret_cast<void (WINAPI*)()>(entry)(); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 BOOL Call(RegisterTestNatives entry, void* context) {
     __try { return entry(Add, context); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return FALSE; }
@@ -42,6 +46,15 @@ BOOL Call(RegisterTestNatives entry, void* context) {
 } // namespace
 
 std::string RuntimeNativeProviders::Load() {
+    if (const auto storm = GetModuleHandleW(L"Storm.dll")) {
+        const auto expected = std::filesystem::path(evidence_.gameModule.path).parent_path() / L"Storm.dll";
+        std::array<wchar_t, kPathCapacity> path{};
+        const auto size = GetModuleFileNameW(storm, path.data(), static_cast<DWORD>(path.size()));
+        Handle lease(OpenLockedFile(expected));
+        if (!size || size >= path.size() || !EqualPath(path.data(), expected.wstring()) ||
+            lease.value == INVALID_HANDLE_VALUE || !IsX86Image(lease.value))
+            return "已加载的 Storm.dll 不属于本次核验的游戏目录。";
+    }
     for (DWORD i = 0; i < evidence_.providerModuleCount; ++i) {
         auto& record = evidence_.providerModules[i];
         auto expected = std::filesystem::path(record.file.path).lexically_normal();
@@ -79,6 +92,12 @@ OwnLua::NativeExtensionHooks RuntimeNativeProviders::Hooks() {
 }
 
 std::string RuntimeNativeProviders::Validate(std::uintptr_t address, std::string_view name, std::string_view signature) const {
+    if (evidence_.providerYdwe) {
+        for (const auto module : modules_) {
+            if (ImageCode(module, address) && OwnLua::NativeIdentifier(name) && OwnLua::ParseNativeSignature(signature)) return {};
+        }
+        return "YDWE Initialize 中的 native 无法核对模块地址或签名：" + std::string(name);
+    }
     for (DWORD i = 0; i < evidence_.providerNativeCount; ++i) {
         const auto& expected = evidence_.providerNatives[i];
         if (name != expected.name) continue;
@@ -92,7 +111,19 @@ std::string RuntimeNativeProviders::Validate(std::uintptr_t address, std::string
     return "未声明的外部 native 登记：" + std::string(name);
 }
 
+std::string RuntimeNativeProviders::InitializeYdwe() {
+    for (DWORD i = 0; i < evidence_.providerModuleCount; ++i) {
+        auto& record = evidence_.providerModules[i];
+        if (!record.entry[0] || record.file.initializeCalled) continue;
+        const auto entry = GetProcAddress(modules_[i], record.entry);
+        if (!ImageCode(modules_[i], reinterpret_cast<std::uintptr_t>(entry)) || !CallLegacy(entry))
+            return "YDWE Initialize 入口失效或执行失败。";
+        InterlockedExchange(&record.file.initializeCalled, 1);
+    }
+    return {};
+}
 std::string RuntimeNativeProviders::Register(const OwnLua::RegisterObservedNative& add) {
+    if (evidence_.providerYdwe) return InitializeYdwe();
     if (active) return "提供者登记发生重入。";
     for (DWORD i = 0; i < evidence_.providerModuleCount; ++i) {
         auto& record = evidence_.providerModules[i];
@@ -118,8 +149,18 @@ std::string RuntimeNativeProviders::Verify(const OwnLua::NativeRegistry& registr
         if (!actual || !actual->external) {
             if (!missing.empty()) missing += "、";
             missing += expected.name;
+        } else if (evidence_.providerYdwe && OwnLua::ParseNativeSignature(expected.signature) != actual->signature) {
+            return "YDWE 登记签名与地图声明不符：" + std::string(expected.name);
         }
     }
+    LONG count = 0;
+    for (const auto& [name, registration] : registry.Entries()) {
+        if (!registration.external) continue;
+        if (count >= static_cast<LONG>(kProviderNativeLimit)) return "外部实际登记数超过预算。";
+        auto& text = evidence_.providerObservedNames[count++];
+        strcpy_s(text.data(), text.size(), name.c_str());
+    }
+    InterlockedExchange(&evidence_.providerObservedCount, count);
     if (!missing.empty()) return "提供者登记不完整，缺少：" + missing;
     InterlockedExchange(&evidence_.providerRegistrationsVerified, 1);
     return {};

@@ -3,6 +3,7 @@
 #include "RuntimePeInspection.h"
 #include "../Core/Serialization/StrictJson.h"
 #include "../WarcraftRuntime32/OwnLua/NativeSignature.h"
+#include "../WarcraftRuntime32/RuntimeProtocol.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 
@@ -70,6 +71,9 @@ bool LeafDll(std::string_view name) {
             (c >= '0' && c <= '9') || c == '-' || c == '_';
     });
 }
+bool GameImport(std::string_view name) {
+    return name == "game.dll" || name == "storm.dll";
+}
 bool SystemImport(std::string_view name) {
     if (!LeafDll(name)) return false;
     if (name.starts_with("api-ms-win-") || name.starts_with("ext-ms-win-")) return true;
@@ -103,9 +107,109 @@ Json ReadDescriptor(const fs::path& path) {
     return std::move(*descriptor.value);
 }
 
+void InspectFile(ExternalDependencyProvider& provider, ExternalDependencyFile& file, std::size_t& remaining,
+    std::string_view candidatePrefix = {}) {
+    file.providerId = provider.id;
+    std::error_code ec;
+    const auto size = NoReparse(file.path) && fs::is_regular_file(file.path, ec) ? fs::file_size(file.path, ec) : 0;
+    if (!size || ec || size > kDllLimit || size > remaining) {
+        Problem(provider, "EXTERNAL_DEPENDENCY_FILE", "文件缺失、经重解析路径或超出预算：" + IO::PathUtf8(file.path));
+        return;
+    }
+    const auto bytes = IO::ReadFileBytes(file.path, static_cast<std::size_t>(size));
+    if (!bytes.Succeeded() || bytes.value->size() != size) {
+        Problem(provider, "EXTERNAL_DEPENDENCY_FILE", "无法读取 DLL：" + IO::PathUtf8(file.path));
+        return;
+    }
+    remaining -= bytes.value->size();
+    const auto sha = Sha256(*bytes.value);
+    if (sha.Succeeded()) file.sha256 = *sha.value;
+    else Problem(provider, "EXTERNAL_DEPENDENCY_SHA", "无法计算文件身份：" + IO::PathUtf8(file.path));
+    const auto pe = Script::InspectExternalDependencyPe(*bytes.value, file.entry);
+    file.peValid = pe.Succeeded();
+    if (!file.peValid) {
+        for (const auto& item : pe.diagnostics)
+            Problem(provider, item.code, IO::PathUtf8(file.path.filename()) + "：" + item.message);
+        return;
+    }
+    file.imports = *pe.value;
+    if (candidatePrefix.empty()) return;
+    const std::string_view raw(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
+    std::set<std::string> found;
+    for (auto offset = raw.find(candidatePrefix); offset != raw.npos; offset = raw.find(candidatePrefix, offset + 1)) {
+        if (offset && raw[offset - 1] != '\0') continue;
+        const auto end = raw.find('\0', offset);
+        if (end == raw.npos || end - offset < 4 || end - offset > 128) continue;
+        const auto name = raw.substr(offset, end - offset);
+        if (name[2] >= 'A' && name[2] <= 'Z' && Native::NativeIdentifier(name)) found.emplace(name);
+        if (found.size() == kExternalDependencyNativeLimit) break;
+    }
+    file.candidateNatives.assign(found.begin(), found.end());
+}
+
+using Audastra::Runtime32::kModules;
+using Audastra::Runtime32::RuntimeLayout;
+using Audastra::Runtime32::ModuleRelativePath;
+bool Present(const fs::path& path) {
+    std::error_code error;
+    return fs::exists(path, error);
+}
+bool KnownYdwe(const fs::path& root, RuntimeLayout layout) {
+    for (std::size_t i = 0; i < kModules.size(); ++i)
+        if (Present(root / ModuleRelativePath(layout, i))) return true;
+    return false;
+}
+bool KnownDz(const fs::path& root) {
+    return Present(root / L"dz_w3_plugin.dll");
+}
+bool Inspectable(const fs::path& root) {
+    return Present(root / L"provider.json") || KnownDz(root) || KnownDz(root / L"插件")
+        || KnownYdwe(root, RuntimeLayout::Flat) || KnownYdwe(root, RuntimeLayout::YdweTree);
+}
+void InspectBuiltins(ExternalDependenciesStatus& status, const fs::path& root, std::size_t& remaining) {
+    for (const auto layout : {RuntimeLayout::Flat, RuntimeLayout::YdweTree}) {
+        if (!KnownYdwe(root, layout)) continue;
+        ExternalDependencyProvider provider;
+        provider.id = "YDWE-EX";
+        provider.kind = ExternalDependencyKind::Ydwe;
+        provider.root = root;
+        provider.ydweTree = layout == RuntimeLayout::YdweTree;
+        for (std::size_t i = 0; i < kModules.size(); ++i) {
+            auto& file = provider.files.emplace_back();
+            file.path = root / ModuleRelativePath(layout, i);
+            if (i >= 4) file.entry = "Initialize";
+            InspectFile(provider, file, remaining, i >= 4 ? "EX" : "");
+            for (const auto& name : file.imports) {
+                const auto local = std::find_if(kModules.begin(), kModules.begin() + i,
+                    [&](const wchar_t* earlier) { return name == IO::PathUtf8(fs::path(earlier)); });
+                if (local == kModules.begin() + i && !SystemImport(name) && !GameImport(name))
+                    Problem(provider, "EXTERNAL_DEPENDENCY_IMPORT_MISSING", IO::PathUtf8(file.path.filename()) + " 需要 " + name + "。");
+            }
+        }
+        provider.usable = provider.diagnostics.empty();
+        status.providers.push_back(std::move(provider));
+    }
+    for (const auto& directory : {root, root / L"插件"}) {
+        if (!KnownDz(directory)) continue;
+        ExternalDependencyProvider provider;
+        provider.id = "KKWE-Dz";
+        provider.kind = ExternalDependencyKind::KkweDz;
+        provider.root = directory;
+        for (const auto* name : {L"version.dll", L"dz_w3_plugin.dll"}) {
+            auto& file = provider.files.emplace_back();
+            file.path = directory / name;
+            InspectFile(provider, file, remaining, "Dz");
+        }
+        Problem(provider, "EXTERNAL_DEPENDENCY_DZ_OFFLINE_UNVERIFIED",
+            "识别到 KKWE Dz 布局；独立离线注册尚未核验，当前只报告状态。");
+        status.providers.push_back(std::move(provider));
+    }
+}
+
 ExternalDependencyProvider InspectProvider(const fs::path& manifest, std::size_t& remaining) {
     ExternalDependencyProvider provider;
     provider.manifest = manifest;
+    provider.root = manifest.parent_path();
     try {
         const auto descriptor = ReadDescriptor(manifest);
         if (!ExactKeys(descriptor, {"schema", "id", "abi", "modules"}) || descriptor.at("schema") != 1
@@ -121,10 +225,11 @@ ExternalDependencyProvider InspectProvider(const fs::path& manifest, std::size_t
             if (!ExactKeys(module, {"file", "entry", "natives"})) throw std::runtime_error("module keys");
             const auto filename = module.at("file").get<std::string>();
             const auto key = Lower(filename);
-            if (!LeafDll(filename) || earlier.contains(key) || SystemImport(key) || key == "game.dll")
+            if (!LeafDll(filename) || earlier.contains(key) || SystemImport(key) || GameImport(key))
                 throw std::runtime_error("module name");
             auto& file = provider.files.emplace_back();
             file.path = manifest.parent_path() / filename;
+            file.providerId = provider.id;
             file.entry = module.at("entry").get<std::string>();
             const auto& declared = module.at("natives");
             if (!declared.is_object() || declared.empty() != file.entry.empty() ||
@@ -136,36 +241,11 @@ ExternalDependencyProvider InspectProvider(const fs::path& manifest, std::size_t
                     throw std::runtime_error("native signature or count");
                 file.natives.emplace(name, signature);
             }
-            std::error_code ec;
-            const auto size = NoReparse(file.path) && fs::is_regular_file(file.path, ec) ? fs::file_size(file.path, ec) : 0;
-            if (!size || ec || size > kDllLimit || size > remaining) {
-                Problem(provider, "EXTERNAL_DEPENDENCY_FILE", "文件缺失、经重解析路径或超出预算：" + IO::PathUtf8(file.path));
-                earlier.insert(key);
-                continue;
+            InspectFile(provider, file, remaining);
+            if (file.peValid) for (const auto& name : file.imports) {
+                if (!earlier.contains(name) && !SystemImport(name) && !GameImport(name))
+                    Problem(provider, "EXTERNAL_DEPENDENCY_IMPORT_MISSING", filename + " 需要先声明并加载 " + name + "。");
             }
-            const auto bytes = IO::ReadFileBytes(file.path, static_cast<std::size_t>(size));
-            if (!bytes.Succeeded() || bytes.value->size() != size) {
-                Problem(provider, "EXTERNAL_DEPENDENCY_FILE", "无法读取 DLL：" + IO::PathUtf8(file.path));
-                earlier.insert(key);
-                continue;
-            }
-            remaining -= bytes.value->size();
-            const auto sha = Sha256(*bytes.value);
-            if (sha.Succeeded()) file.sha256 = *sha.value;
-            const auto pe = Script::InspectExternalDependencyPe(*bytes.value, file.entry);
-            file.peValid = pe.Succeeded();
-            if (!file.peValid) {
-                for (const auto& item : pe.diagnostics)
-                    Problem(provider, item.code, filename + "：" + item.message);
-            } else {
-                file.imports = *pe.value;
-                for (const auto& name : file.imports) {
-                    if (!earlier.contains(name) && !SystemImport(name))
-                        Problem(provider, "EXTERNAL_DEPENDENCY_IMPORT_MISSING",
-                            filename + " 需要先声明并加载 " + name + "。");
-                }
-            }
-            if (file.sha256.empty()) Problem(provider, "EXTERNAL_DEPENDENCY_SHA", "无法计算文件身份：" + filename);
             earlier.insert(key);
         }
         if (natives.empty()) throw std::runtime_error("no natives");
@@ -182,9 +262,18 @@ fs::path ExternalDependenciesDirectory(const fs::path& installation, const fs::p
     return configured.empty() ? installation / kExternalDependenciesDirectory : configured;
 }
 
+Status ValidateExternalDependenciesDirectory(const fs::path& directory) {
+    std::error_code ec;
+    if (!SafeLocalPath(directory) || !NoReparse(directory) ||
+        (fs::exists(directory, ec) && !fs::is_directory(directory, ec)) || ec)
+        return Status::Failure("Map.Test.ExternalDependencies", "EXTERNAL_DEPENDENCY_DIRECTORY",
+            "请选择普通的本机绝对目录；不支持网络、联接或云占位路径：" + IO::PathUtf8(directory));
+    return Status::Ok();
+}
+
 Status EnsureExternalDependenciesDirectory(const fs::path& directory) {
-    if (!SafeLocalPath(directory) || !NoReparse(directory))
-        return Status::Failure("Map.Test.ExternalDependencies", "EXTERNAL_DEPENDENCY_DIRECTORY", "请选择普通的本机绝对目录。");
+    const auto validation = ValidateExternalDependenciesDirectory(directory);
+    if (!validation.Succeeded()) return validation;
     std::error_code ec;
     if (fs::is_directory(directory, ec)) return Status::Ok();
     ec.clear();
@@ -195,8 +284,8 @@ Status EnsureExternalDependenciesDirectory(const fs::path& directory) {
 
 Result<ExternalDependenciesStatus> QueryExternalDependencies(const fs::path& directory) {
     using R = ExternalDependenciesStatus;
-    if (!SafeLocalPath(directory) || !NoReparse(directory))
-        return Fail<R>("EXTERNAL_DEPENDENCY_DIRECTORY", "外部依赖目录不是普通本机绝对目录。");
+    const auto validation = ValidateExternalDependenciesDirectory(directory);
+    if (!validation.Succeeded()) return {std::nullopt, validation.diagnostics};
     try {
         R status;
         status.directory = directory;
@@ -210,24 +299,35 @@ Result<ExternalDependenciesStatus> QueryExternalDependencies(const fs::path& dir
         for (std::size_t i = 0; i < directories.size(); ++i) {
             const auto current = directories[i];
             const auto manifest = current / L"provider.json";
-            if (fs::exists(manifest)) {
-                auto provider = InspectProvider(manifest, remaining);
-                for (const auto& file : provider.files) described.insert(Lower(IO::PathUtf8(file.path)));
-                status.providers.push_back(std::move(provider));
-            }
+            const auto first = status.providers.size();
+            if (fs::exists(manifest)) status.providers.push_back(InspectProvider(manifest, remaining));
+            InspectBuiltins(status, current, remaining);
+            entries += status.providers.size() - first;
+            if (entries > kEntryLimit) return Fail<R>("EXTERNAL_DEPENDENCY_BUDGET", "外部依赖提供者超过 512 项。");
+            for (auto j = first; j < status.providers.size(); ++j)
+                for (const auto& file : status.providers[j].files) described.insert(Lower(IO::PathUtf8(file.path)));
             for (const auto& item : fs::directory_iterator(current)) {
-                if (++entries > kEntryLimit) return Fail<R>("EXTERNAL_DEPENDENCY_BUDGET", "外部依赖目录条目超过 512 项。");
                 if (!NoReparse(item.path())) continue;
-                if (i == 0 && item.is_directory()) directories.push_back(item.path());
+                if (i == 0 && item.is_directory()) {
+                    if (Inspectable(item.path()) && !(KnownDz(current / L"插件") && item.path() == current / L"插件"))
+                        directories.push_back(item.path());
+                    else if (status.unrecognizedDirectories.size() < kEntryLimit) status.unrecognizedDirectories.push_back(item.path());
+                }
                 if (item.is_regular_file() && Lower(IO::PathUtf8(item.path().extension())) == ".dll" &&
-                    !described.contains(Lower(IO::PathUtf8(item.path())))) status.undescribedDlls.push_back(item.path());
+                    !described.contains(Lower(IO::PathUtf8(item.path())))) {
+                    ++status.undescribedDllCount;
+                    if (status.undescribedDlls.size() < kEntryLimit) status.undescribedDlls.push_back(item.path());
+                }
             }
         }
-        std::sort(status.providers.begin(), status.providers.end(), [](const auto& a, const auto& b) { return a.manifest < b.manifest; });
+        std::stable_sort(status.providers.begin(), status.providers.end(), [](const auto& a, const auto& b) {
+            return a.root < b.root;
+        });
         std::sort(status.undescribedDlls.begin(), status.undescribedDlls.end());
         std::map<std::string, std::size_t, std::less<>> ids;
-        for (const auto& provider : status.providers) if (!provider.id.empty()) ++ids[provider.id];
-        for (auto& provider : status.providers) if (!provider.id.empty() && ids[provider.id] > 1) {
+        for (const auto& provider : status.providers)
+            if (provider.usable && provider.kind == ExternalDependencyKind::Declared) ++ids[provider.id];
+        for (auto& provider : status.providers) if (provider.usable && ids[provider.id] > 1) {
             provider.usable = false;
             Problem(provider, "EXTERNAL_DEPENDENCY_ID_CONFLICT", "提供者 ID 重复：" + provider.id);
         }
@@ -247,7 +347,7 @@ Result<std::vector<ExternalDependencyFile>> SelectExternalDependencyFiles(
         std::optional<std::size_t> match;
         for (std::size_t index = 0; index < status.providers.size(); ++index) {
             const auto& provider = status.providers[index];
-            if (!provider.usable) continue;
+            if (!provider.usable || provider.kind != ExternalDependencyKind::Declared) continue;
             for (const auto& file : provider.files) {
                 const auto found = file.natives.find(name);
                 if (found == file.natives.end()) continue;
@@ -286,19 +386,23 @@ Result<std::vector<ExternalDependencyFile>> SelectExternalDependencyFiles(
 }
 
 std::string ExternalDependenciesJson(const ExternalDependenciesStatus& status) {
-    Json providers = Json::array(), ignored = Json::array();
+    Json providers = Json::array(), ignored = Json::array(), unknown = Json::array();
+    for (const auto& path : status.unrecognizedDirectories) unknown.push_back(IO::PathUtf8(path));
     for (const auto& path : status.undescribedDlls) ignored.push_back(IO::PathUtf8(path));
     for (const auto& provider : status.providers) {
         Json files = Json::array(), issues = Json::array();
         for (const auto& file : provider.files)
             files.push_back({{"path", IO::PathUtf8(file.path)}, {"sha256", file.sha256}, {"entry", file.entry},
-                {"pe_valid", file.peValid}, {"imports", file.imports}, {"natives", file.natives}});
+                {"pe_valid", file.peValid}, {"imports", file.imports}, {"natives", file.natives}, {"candidate_natives", file.candidateNatives}});
         for (const auto& issue : provider.diagnostics)
             issues.push_back({{"code", issue.code}, {"message", issue.message}});
         providers.push_back({{"id", provider.id}, {"manifest", IO::PathUtf8(provider.manifest)},
-            {"usable", provider.usable}, {"modules", files}, {"issues", issues}});
+            {"layout", provider.kind == ExternalDependencyKind::Ydwe ? (provider.ydweTree ? "ydwe-tree" : "ydwe-flat")
+                : provider.kind == ExternalDependencyKind::KkweDz ? "kkwe-dz" : "declared"},
+            {"root", IO::PathUtf8(provider.root)}, {"usable", provider.usable}, {"modules", files}, {"issues", issues}});
     }
     return Json{{"directory", IO::PathUtf8(status.directory)}, {"exists", status.exists},
-        {"providers", providers}, {"undescribed_dlls", ignored}}.dump();
+        {"providers", providers}, {"undescribed_dlls", ignored},
+        {"undescribed_dll_count", status.undescribedDllCount}, {"unrecognized_directories", unknown}}.dump();
 }
 } // namespace War3Map::Services

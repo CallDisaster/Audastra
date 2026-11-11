@@ -1,4 +1,5 @@
 #include "McpServer.h"
+#include "../QtCommon/ApplicationPaths.h"
 #include "McpTools.h"
 #include "McpResources.h"
 #include "McpProductTools.h"
@@ -52,7 +53,7 @@ int main(int argc, char* argv[]) {
     War3Map::Mcp::McpServer server;
     server.SetCampaignBackupOptionsProvider([] {
         // 独立 MCP 的应用名不同于 GUI，明确只读产品的同一份备份配置。
-        const QSettings preferences(QSettings::defaultFormat(), QSettings::UserScope, "CallDisaster", "Audastra");
+        const auto preferences = War3Map::QtCommon::OpenEditorSettings();
         return War3Map::QtCommon::ReadMapInPlaceSaveOptions(preferences,
             QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation));
     });

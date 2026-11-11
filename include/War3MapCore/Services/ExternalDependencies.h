@@ -20,7 +20,11 @@ struct ExternalDependencyFile {
     std::vector<std::string> imports;
     std::map<std::string, std::string, std::less<>> natives;
     bool peValid = false;
+    std::string providerId;
+    std::vector<std::string> candidateNatives;
 };
+
+enum class ExternalDependencyKind { Declared, Ydwe, KkweDz };
 
 struct ExternalDependencyProvider {
     std::string id;
@@ -28,6 +32,9 @@ struct ExternalDependencyProvider {
     std::vector<ExternalDependencyFile> files;
     std::vector<Diagnostic> diagnostics;
     bool usable = false;
+    ExternalDependencyKind kind = ExternalDependencyKind::Declared;
+    std::filesystem::path root;
+    bool ydweTree = false;
 };
 
 struct ExternalDependenciesStatus {
@@ -35,12 +42,15 @@ struct ExternalDependenciesStatus {
     bool exists = false;
     std::vector<ExternalDependencyProvider> providers;
     std::vector<std::filesystem::path> undescribedDlls;
+    std::vector<std::filesystem::path> unrecognizedDirectories;
+    std::size_t undescribedDllCount = 0;
 };
 
 using ExternalNativeRequirements = std::map<std::string, std::string, std::less<>>;
 
 [[nodiscard]] std::filesystem::path ExternalDependenciesDirectory(
     const std::filesystem::path& installation, const std::filesystem::path& configured);
+[[nodiscard]] Status ValidateExternalDependenciesDirectory(const std::filesystem::path& directory);
 [[nodiscard]] Status EnsureExternalDependenciesDirectory(const std::filesystem::path& directory);
 [[nodiscard]] Result<ExternalDependenciesStatus> QueryExternalDependencies(const std::filesystem::path& directory);
 // 空签名表示只能从脚本取得名字。每个完整提供者按声明顺序载入。

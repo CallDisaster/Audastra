@@ -115,6 +115,16 @@ std::uint32_t __cdecl ObserveLocalizedString(std::uintptr_t stringObject) noexce
             std::string_view(bytes.data(), size));
     } catch (...) { self->Fail("处理游戏 JAPI 字符串入口时发生异常。"); return 0; }
 }
+thread_local bool observingProvider = false;
+struct ProviderScope {
+    ProviderScope() { observingProvider = true; }
+    ~ProviderScope() { observingProvider = false; }
+};
+void ReportRegistrationFailure(Observer& self, std::string_view message, bool provider) {
+    if (provider && self.handlers.extensions.failure) self.handlers.extensions.failure(message);
+    self.Fail(message);
+}
+
 int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, const char* signature) noexcept {
     auto* self = observer.load();
     if (!self || !self->registerNative) return 0;
@@ -126,10 +136,12 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
         const auto executable = self->image->Executable(function);
         const auto nameReadable = CopyText(name, copiedName);
         const auto signatureReadable = CopyText(signature, copiedSignature);
-        if (!nameReadable || !signatureReadable || (!executable && !self->handlers.extensions.validate)) {
-            self->Fail("native 登记输入不能读取或不属于已核验映像：address-in-image=" + std::to_string(executable)
+        const bool provider = observingProvider;
+        if (!nameReadable || !signatureReadable || (!provider && !executable) ||
+            (provider && !self->handlers.extensions.validate)) {
+            ReportRegistrationFailure(*self, "native 登记输入不能读取或不属于已核验映像：address-in-image=" + std::to_string(executable)
                 + "; name-readable=" + std::to_string(nameReadable) + "; signature-readable=" + std::to_string(signatureReadable)
-                + "; address=" + std::to_string(function));
+                + "; address=" + std::to_string(function), provider);
             return 0;
         } else {
             std::string failure;
@@ -149,17 +161,17 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                         + "; caller-rva=" + std::to_string(self->image->Executable(caller) ? caller - self->image->Base() : 0);
                 } else {
                     auto& current = found->second;
-                    if (!executable) failure = self->handlers.extensions.validate(function, copiedName.data(), copiedSignature.data());
-                    if (failure.empty() && !current.registry->Observe(copiedName.data(), copiedSignature.data(), function, !executable)) {
+                    if (provider) failure = self->handlers.extensions.validate(function, copiedName.data(), copiedSignature.data());
+                    if (failure.empty() && !current.registry->Observe(copiedName.data(), copiedSignature.data(), function, provider)) {
                         failure = std::string(current.registry->Error()) + "; thread=" + std::to_string(GetCurrentThreadId())
                             + "; generation=" + std::to_string(current.generation) + "; collecting=true";
-                    } else if (failure.empty() && executable && self->handlers.module && std::string_view(copiedName.data()) == "Cheat") {
+                    } else if (failure.empty() && !provider && self->handlers.module && std::string_view(copiedName.data()) == "Cheat") {
                         if (std::string_view(copiedSignature.data()) != "(S)V") failure = "Cheat 实际签名与已核对的地图入口不符。";
                         else {
                             current.cheat = reinterpret_cast<CheatFunction>(function);
                             registered = reinterpret_cast<std::uintptr_t>(&ObserveCheat);
                         }
-                    } else if (failure.empty() && executable && self->handlers.localizedString && std::string_view(copiedName.data()) == "GetLocalizedString") {
+                    } else if (failure.empty() && !provider && self->handlers.localizedString && std::string_view(copiedName.data()) == "GetLocalizedString") {
                         if (std::string_view(copiedSignature.data()) != "(S)S")
                             failure = "GetLocalizedString 实际签名与字符串桥不符。";
                         else {
@@ -169,9 +181,11 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                     }
                 }
             }
-            if (!failure.empty()) { self->Fail(failure); return 0; }
+            if (!failure.empty()) { ReportRegistrationFailure(*self, failure, provider); return 0; }
         }
-    } catch (...) { self->Fail("读取实际 native 登记时发生异常。"); return 0; }
+    } catch (...) {
+        ReportRegistrationFailure(*self, "读取实际 native 登记时发生异常。", observingProvider); return 0;
+    }
     return self->registerNative(registered, name, signature);
 }
 void __cdecl ObserveInitialize() noexcept {
@@ -191,16 +205,19 @@ void __cdecl ObserveInitialize() noexcept {
                 }
             }
         }
-        if (!accepted) self->Fail("native 初始化嵌套、线程数或代际超出范围。");
-    } catch (...) { self->Fail("准备实际 native 登记观察时发生异常。"); }
+        if (!accepted) { self->Fail("native 初始化嵌套、线程数或代际超出范围。"); return; }
+    } catch (...) { self->Fail("准备实际 native 登记观察时发生异常。"); return; }
     self->initialize();
+    if (self->failed) return;
     try {
         bool ready = false;
         if (self->handlers.extensions.registerAll) {
+            ProviderScope scope;
             const auto error = self->handlers.extensions.registerAll([](auto address, auto name, auto signature) {
                 ObserveRegistration(address, name, signature);
             });
-            if (!error.empty()) { self->Fail(error); return; }
+            if (!error.empty()) { ReportRegistrationFailure(*self, error, true); return; }
+            if (self->failed) return;
         }
         std::string verification;
         {
@@ -214,7 +231,8 @@ void __cdecl ObserveInitialize() noexcept {
                     && (!self->handlers.localizedString || current.localizedString) && current.registry && current.registry->CompleteStock();
             }
         }
-        if (!ready) self->Fail(verification.empty() ? "完整 native 初始化未产生有效的登记。" : verification);
+        if (!verification.empty()) ReportRegistrationFailure(*self, verification, true);
+        else if (!ready) self->Fail("完整 native 初始化未产生有效的登记。");
     } catch (...) { self->Fail("完成实际 native 登记观察时发生异常。"); }
 }
 int __cdecl ObserveSupplement() noexcept {

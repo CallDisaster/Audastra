@@ -624,6 +624,10 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration));
     QCOMPARE(Read(preferences.fileName()), originalIni);
     services.mapBackupDirectory = directory.filePath(QStringLiteral("new-backups"));
+    services.externalDependenciesDirectory = QStringLiteral("/not-a-local-drive");
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration));
+    QCOMPARE(Read(preferences.fileName()), originalIni);
+    services.externalDependenciesDirectory = directory.filePath(QStringLiteral("external-dependencies"));
     for (auto* path : {&services.mapTestRuntimeRoot}) {
         const auto valid = **path;
         const QStringList invalidDirectories{QStringLiteral("relative/tool"), QString(4097, QChar(u'a')),
@@ -646,6 +650,7 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     QCOMPARE(preferences.value(QStringLiteral("mapSave/backupLimit")).toInt(), 0);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/slkToolRoot")).toString(), originalSlkTool);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/runtimeRoot")).toString(), *services.mapTestRuntimeRoot);
+    QCOMPARE(preferences.value(QStringLiteral("mapTest/externalDependenciesDirectory")).toString(), *services.externalDependenciesDirectory);
     QCOMPARE(preferences.value(QStringLiteral("hlua/frameworkRoot")).toString(), *services.hluaFrameworkRoot);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/ydweRoot")).toString(), legacyYdwe);
     QCOMPARE(preferences.value(QStringLiteral("mapTest/slkEnabled")).toBool(), true);

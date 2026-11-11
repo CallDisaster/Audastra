@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSettings>
+#include "War3MapCore/Services/ExternalDependencies.h"
 #include <QStringList>
 #include <QVariant>
 #include <QUrl>
@@ -152,8 +153,11 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
         && !Update::ParseSemanticVersion(services.updateSkippedVersion->toStdString()).Succeeded())
         return Fail(error, QStringLiteral("跳过版本必须是有效的语义版本号。"));
     if (!preferences.group().isEmpty()) return Fail(error, QStringLiteral("应用设置提交要求根group的QSettings。"));
-    for (const auto* path : {&services.mapBackupDirectory, &services.mapTestRuntimeRoot, &services.hluaFrameworkRoot,
-            &services.externalDependenciesDirectory}) {
+    if (services.externalDependenciesDirectory && !services.externalDependenciesDirectory->isEmpty()) {
+        const auto validation = Services::ValidateExternalDependenciesDirectory(services.externalDependenciesDirectory->toStdWString());
+        if (!validation.Succeeded()) return Fail(error, QString::fromStdString(validation.diagnostics.front().message));
+    }
+    for (const auto* path : {&services.mapBackupDirectory, &services.mapTestRuntimeRoot, &services.hluaFrameworkRoot}) {
         if (!*path || (*path)->isEmpty()) continue;
         if ((*path)->size() > 4096 || !QDir::isAbsolutePath(QDir::fromNativeSeparators(**path))
             || std::any_of((*path)->begin(), (*path)->end(), [](QChar c) { return c.unicode() < 32; }))

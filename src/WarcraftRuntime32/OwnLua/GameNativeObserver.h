@@ -17,6 +17,7 @@ struct NativeExtensionHooks {
     std::function<std::string(std::uintptr_t, std::string_view, std::string_view)> validate;
     std::function<std::string(const RegisterObservedNative&)> registerAll;
     std::function<std::string(const NativeRegistry&)> verify;
+    std::function<void(std::string_view)> failure;
 };
 struct GameNativeHandlers {
     // 回调都在触发该动作的游戏线程调用；调用方不能在其中另建脚本执行线程。

@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 9;
+inline constexpr std::uint32_t kVersion = 10;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -54,6 +54,7 @@ inline constexpr std::size_t kProviderNativeLimit = 256;
 struct ProviderModuleEvidence {
     ModuleEvidence file;
     char entry[129]{};
+    char providerId[129]{};
 };
 struct ProviderNativeEvidence {
     std::uint32_t moduleIndex = 0;
@@ -112,6 +113,9 @@ struct SharedEvidence {
     DWORD providerModuleCount = 0;
     DWORD providerNativeCount = 0;
     LONG providerRegistrationsVerified = 0;
+    LONG providerYdwe = 0;
+    LONG providerObservedCount = 0;
+    std::array<std::array<char, 129>, kProviderNativeLimit> providerObservedNames{};
     char providerFailureText[4096]{};
     std::array<ProviderModuleEvidence, kProviderModuleLimit> providerModules{};
     std::array<ProviderNativeEvidence, kProviderNativeLimit> providerNatives{};

@@ -205,7 +205,14 @@ MapTestSettingsPage::MapTestSettingsPage(
 }
 
 bool MapTestSettingsPage::Validate(QString* error) const {
-    if (!ValidateDirectory(externalDependencies_->text(), tr("外部依赖目录"), error)) return false;
+    const auto dependencies = externalDependencies_->text().trimmed();
+    if (!dependencies.isEmpty()) {
+        const auto validation = Services::ValidateExternalDependenciesDirectory(dependencies.toStdWString());
+        if (!validation.Succeeded()) {
+            if (error) *error = QString::fromStdString(validation.diagnostics.front().message);
+            return false;
+        }
+    }
     if (error) error->clear();
     if (!ValidateDirectory(runtimeRoot_->text(), tr("扩展运行时目录"), error)) return false;
     if (!ValidateDirectory(hluaFrameworkRoot_->text(),tr("h-lua 框架目录"),error)) return false;
