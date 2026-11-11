@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 using namespace Audastra::Runtime32;
+namespace Audastra::Runtime32::OwnLua { bool CheckNativeObserverFixtures(); }
 namespace {
 void Check(bool value, const char* detail) {
     if (!value) throw std::runtime_error(detail);
@@ -15,6 +16,7 @@ void Check(bool value, const char* detail) {
 int wmain(int argc, wchar_t** argv) {
     try {
         Check(argc == 2, "fixture DLL path required");
+        Check(OwnLua::CheckNativeObserverFixtures(), "real observer enforces scope, phase, source, and terminal failure");
         const auto path = std::filesystem::absolute(argv[1]);
         Handle file(OpenLockedFile(path));
         Check(file.value != INVALID_HANDLE_VALUE && IsX86Image(file.value), "original x86 fixture");

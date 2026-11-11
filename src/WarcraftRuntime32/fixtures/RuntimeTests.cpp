@@ -190,7 +190,7 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     const std::filesystem::path& fakeGame, const std::filesystem::path& fakeRuntime,
     const char* name, bool expectSuccess, bool missingPlugin, bool missingInitialize, bool noGame,
     std::wstring_view loadFlavor = {}, bool unicodeDirectory = false,
-    RuntimeLayout layout = RuntimeLayout::Flat, bool explicitLayout = false) {
+    RuntimeLayout layout = RuntimeLayout::Flat, bool explicitLayout = false, bool knownProvider = false) {
     std::wstring directoryName(name, name + std::strlen(name));
     if (unicodeDirectory) directoryName = L"宽字符路径-" + directoryName;
     const auto work = base / directoryName;
@@ -222,10 +222,21 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     remember(work / relative);
     const auto receipt = work / L"receipt.json";
     auto command = Quote(launcher.wstring()) + L" --game " + Quote((work / L"war3.exe").wstring())
-        + L" --map " + Quote(relative) + L" --runtime " + Quote(runtime.wstring())
+        + L" --map " + Quote(relative)
         + L" --bootstrap " + Quote(bootstrap.wstring()) + L" --receipt " + Quote(receipt.wstring());
-    if (layout == RuntimeLayout::YdweTree || explicitLayout)
-        command += layout == RuntimeLayout::YdweTree ? L" --runtime-layout ydwe-tree" : L" --runtime-layout flat";
+    if (knownProvider) {
+        command += L" --runtime-mode external-providers --provider-abi ydwe-initialize";
+        for (std::size_t index = 0; index < kModules.size(); ++index) {
+            const auto path = runtime / ModuleRelativePath(layout, index);
+            const auto sha = FileHash(path);
+            command += L" --provider-module " + Quote(std::wstring(sha.begin(), sha.end())
+                + (index >= 4 ? L"|Initialize|" : L"||") + L"YDWE-EX|" + path.wstring());
+        }
+    } else {
+        command += L" --runtime " + Quote(runtime.wstring());
+        if (layout == RuntimeLayout::YdweTree || explicitLayout)
+            command += layout == RuntimeLayout::YdweTree ? L" --runtime-layout ydwe-tree" : L" --runtime-layout flat";
+    }
     // Job只拥有本测试新建的原创控制台进程；不启动/捕获作者游戏。
     Handle job(CreateJobObjectW(nullptr, nullptr));
     Require(job.value != nullptr, "fixture job");
@@ -249,8 +260,15 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     const auto text = Read(receipt);
     Require(text.find("\"schema\":\"audastra-warcraft-launch-v1\"") != std::string::npos, "receipt schema");
     Require(text.find("\"gameRuntimeVerified\":false") != std::string::npos, "fixture cannot claim gameplay");
-    Require(text.find(layout == RuntimeLayout::YdweTree ? "\"runtimeLayout\":\"ydwe-tree\"" : "\"runtimeLayout\":\"flat\"")
+    Require(text.find(layout == RuntimeLayout::YdweTree && !knownProvider ? "\"runtimeLayout\":\"ydwe-tree\"" : "\"runtimeLayout\":\"flat\"")
         != std::string::npos, "receipt reports the exact selected runtime layout");
+    if (knownProvider) {
+        Require(text.find("\"runtimeMode\":\"external-providers\"") != std::string::npos &&
+            text.find("\"providerAbi\":\"ydwe-initialize\"") != std::string::npos &&
+            text.find("\"providerId\":\"YDWE-EX\"") != std::string::npos &&
+            text.find("\"providerRegistrationsVerified\":false") != std::string::npos,
+            "known-provider receipt confirms ABI and identity without claiming JASS registration");
+    }
     if (expectSuccess) {
         Require(exit == 0, "valid runtime bridge exit");
         Require(text.find("\"runtimeInitialized\":true") != std::string::npos, "runtime initialized");
@@ -549,7 +567,7 @@ int wmain(int argc, wchar_t** argv) {
         Require(std::filesystem::create_directory(base), "unique root");
         const std::filesystem::path launcher(argv[1]), bootstrap(argv[2]), war3(argv[3]), game(argv[4]), runtime(argv[5]);
         if (onlyProbeCase) {
-            std::cout << "FILTERED diagnostic 1 case: probe-blocked-duplicate; this is not the default 33-case suite.\n";
+            std::cout << "FILTERED diagnostic 1 case: probe-blocked-duplicate; this is not the default 34-case suite.\n";
             ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-duplicate", false);
             std::cout << "FILTERED 1/1 original diagnostic fixture passed; not a full-suite result.\n";
             return 0;
@@ -568,6 +586,8 @@ int wmain(int argc, wchar_t** argv) {
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-hook-and-initialize", true, false, false, false, {}, true, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-plugin", false, true, false, false, {}, false, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-initialize", false, false, true, false, {}, false, RuntimeLayout::YdweTree);
+        Case(base, launcher, bootstrap, war3, game, runtime, "known-provider-mode", true, false, false, false,
+            {}, false, RuntimeLayout::YdweTree, false, true);
         BareCase(base, launcher, bootstrap, war3, game, "bare-mode", BareHook::None);
         BareCase(base, launcher, bootstrap, war3, game, "bare-background-play-identity", BareHook::BackgroundPlay);
         BareCase(base, launcher, bootstrap, war3, game, "bare-window-cloak", BareHook::WindowCloak);
@@ -590,7 +610,7 @@ int wmain(int argc, wchar_t** argv) {
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-short-duplicate", false);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-capacity", false);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-invalid", false);
-        std::cout << "33/33 original console fixtures passed; no Warcraft/YDWE/GUI/GPU executed.\n";
+        std::cout << "34/34 original console fixtures passed; no Warcraft/YDWE/GUI/GPU executed.\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }
 }

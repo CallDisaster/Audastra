@@ -72,6 +72,8 @@ struct ParseOptions {
     ModuleResolver resolve;
     std::function<bool(std::string_view)> moduleExists; // 为空表示无法判断
     bool warnings = false;
+    std::size_t maxTokens = (std::numeric_limits<std::size_t>::max)();
+    std::function<void(std::string_view, std::uint32_t)> japiLookup;
 };
 
 [[nodiscard]] std::shared_ptr<Model> ParseModel(std::string_view source, const ParseOptions& options);

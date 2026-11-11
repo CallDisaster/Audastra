@@ -9,6 +9,8 @@
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include <QScopeGuard>
+#include <QSettings>
+#include "../../src/QtCommon/ApplicationPaths.h"
 #include "War3MapCore/Mpq/MpqWriter.h"
 #include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
@@ -77,6 +79,41 @@ void TestHLuaArgumentTypes() {
         }
         Expect(!std::filesystem::exists(std::filesystem::path((temp.path()+"/not-opened").toStdWString())),"invalid request leaves original fixture untouched");
     }
+}
+void TestExternalDependencyStatus() {
+    QTemporaryDir settings;
+    QTemporaryDir inventory;
+    Expect(settings.isValid() && inventory.isValid(), "external dependency fixture directories");
+    const auto old = QSettings::defaultFormat();
+    QSettings::setDefaultFormat(QSettings::IniFormat);
+    QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
+    const auto restore = qScopeGuard([&] { QSettings::setDefaultFormat(old); });
+    {
+        auto preferences = War3Map::QtCommon::OpenEditorSettings();
+        preferences.setValue(QString::fromLatin1(War3Map::kExternalDependenciesSettingsKey), inventory.path());
+        preferences.sync();
+        Expect(preferences.status() == QSettings::NoError, "persist isolated editor settings");
+    }
+    for (const auto* name : {"first.dll", "second.dll"})
+        std::ofstream(std::filesystem::path(inventory.path().toStdWString()) / name) << "undescribed original fixture";
+    War3Map::Mcp::McpServer server;
+    War3Map::Mcp::RegisterAllTools(server);
+    const auto query = [&](int offset) {
+        const auto request = QJsonObject{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+            {"params", QJsonObject{{"name", "external_dependencies_status"},
+                {"arguments", QJsonObject{{"offset", offset}, {"limit", 1}}}}}};
+        const auto reply = server.HandleMessage(QJsonDocument(request).toJson(QJsonDocument::Compact));
+        Expect(reply.has_value() && !reply->error, "external dependency page reply");
+        const auto content = reply->result.toObject().value("content").toArray();
+        Expect(content.size() == 1, "external dependency result envelope");
+        return QJsonDocument::fromJson(content[0].toObject().value("text").toString().toUtf8()).object();
+    };
+    const auto first = query(0);
+    const auto second = query(1);
+    Expect(first.value("ok").toBool() && first.value("next_offset").toInt() == 1 &&
+        first.value("rows").toArray().size() == 1 && second.value("rows").toArray().size() == 1 &&
+        second.value("next_offset").isNull() && first.value("total").toInt() == 2,
+        "MCP uses the editor product settings and returns independent status pages");
 }
 void TestToolSurface() {
     War3Map::Mcp::McpServer server;
@@ -1225,7 +1262,7 @@ int main() {
         Expect(!Mcp::DecodeMapRuntimeSaveOptions(injectedRuntime).Succeeded(), "independent runtime cannot accept a package path");
         injectedRuntime = runtime; injectedRuntime["runtime_purpose"] = "public_release";
         Expect(!Mcp::DecodeMapRuntimeSaveOptions(injectedRuntime).Succeeded(), "unknown purpose cannot grant distribution approval");
-        TestToolSurface(); TestHLuaArgumentTypes();
+        TestToolSurface(); TestHLuaArgumentTypes(); TestExternalDependencyStatus();
         TestLuaListPagingProtocol();
         TestArchiveMemberIdentities();
         TestArchiveMapDataQuery();

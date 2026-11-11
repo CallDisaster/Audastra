@@ -288,12 +288,15 @@ void RegisterLuaFileTools(McpServer& server) {
                 auto module = modules[j].toObject();
                 const auto natives = module.take("natives").toObject();
                 const auto imports = module.take("imports").toArray();
+                const auto candidates = module.take("candidate_natives").toArray();
                 module.insert("kind", "module");
                 module.insert("provider_index", i);
                 module.insert("module_index", j);
                 add(std::move(module));
                 for (const auto& name : imports)
                     add({{"kind", "import"}, {"provider_index", i}, {"module_index", j}, {"name", name}});
+                for (const auto& name : candidates)
+                    add({{"kind", "native_candidate"}, {"provider_index", i}, {"module_index", j}, {"name", name}});
                 for (auto it = natives.begin(); it != natives.end(); ++it)
                     add({{"kind", "native"}, {"provider_index", i}, {"module_index", j}, {"name", it.key()}, {"signature", it.value()}});
             }

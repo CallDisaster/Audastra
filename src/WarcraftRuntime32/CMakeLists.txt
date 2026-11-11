@@ -76,10 +76,12 @@ if(BUILD_TESTING)
     target_compile_options(audastra-external-native-fixture PRIVATE /W4 /permissive-)
     add_executable(audastra-external-native-provider-tests fixtures/ExternalNativeProviderTests.cpp
         RuntimeNativeProviders.cpp OwnLua/NativeRegistry.cpp OwnLua/NativeSignature.cpp)
+    target_sources(audastra-external-native-provider-tests PRIVATE OwnLua/GameNativeObserver.cpp)
     target_include_directories(audastra-external-native-provider-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
-    target_compile_definitions(audastra-external-native-provider-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-    target_compile_options(audastra-external-native-provider-tests PRIVATE /W4 /permissive-)
-    target_link_libraries(audastra-external-native-provider-tests PRIVATE bcrypt)
+    target_compile_definitions(audastra-external-native-provider-tests PRIVATE
+        UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX AUDASTRA_TEST_NATIVE_OBSERVER)
+    target_compile_options(audastra-external-native-provider-tests PRIVATE /utf-8 /W4 /permissive-)
+    target_link_libraries(audastra-external-native-provider-tests PRIVATE audastra-own-lua-game audastra-detours bcrypt)
     add_dependencies(audastra-external-native-provider-tests audastra-external-native-fixture)
     add_test(NAME audastra-external-native-provider COMMAND audastra-external-native-provider-tests
         $<TARGET_FILE:audastra-external-native-fixture>)

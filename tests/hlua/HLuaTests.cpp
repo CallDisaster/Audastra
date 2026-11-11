@@ -55,6 +55,13 @@ void Lexical() {
     auto again = InsertLuaEntry(*multiple.value); Good(again); Need(*again.value == *multiple.value, "all actual calls");
     const auto modules = Lua::ScanModuleRequires("-- require 'bad'\nlocal x=require('jass.slk'); require(dynamic); t.require('skip')");
     Need(modules.size() == 2 && modules[0].name == "jass.slk" && modules[1].dynamic, "require lexical evidence");
+    const auto lookups = Lua::ScanJapiNativeLookups(
+        "local japi = require 'jass.japi'\nlocal ext = japi\nlocal x = ext.AudastraFirst\n"
+        "do local ext = {}; local ignored = ext.Shadowed end\n"
+        "local y = ext['AudastraSecond']\nlocal ignored = ext['']\n"
+        "local function f(require) return require('jass.japi').NotTheBuiltin end\n");
+    Need(lookups.size() == 2 && lookups[0].name == "AudastraFirst" && lookups[0].line == 3 &&
+        lookups[1].name == "AudastraSecond", "JAPI lookup follows aliases and respects lexical shadows");
     const auto external = Lua::ScanExternalCapabilities("-- io.open('ignored')\nlocal s='os.execute()'; os['execute']('x'); package.loadlib('x'); io.open('x')");
     Need(external.size() == 3 && external[0].line == 2, "external capability evidence ignores comments and strings");
     Need(Lua::ScanLiteralCallArguments("-- helper.exec('ignored')\nhelper.exec('FixtureNative')","helper","exec").size()==1,"literal call evidence");

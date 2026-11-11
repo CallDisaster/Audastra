@@ -223,7 +223,8 @@ Status CheckHandwrittenLua(const Mpq::MpqArchive& map, const std::vector<Mpq::Mp
         if (total > 32u * 1024u * 1024u)
             return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_BUDGET", "地图里的 Lua 文件合计超过 32 MiB。");
         const auto text = View(*read.value);
-        if (scanOwnedLookups && !requirement.luaNativeBudgetExceeded) {
+        if (!Audastra::Runtime32::LuaMailboxUtf8(text)) requirement.nonUtf8Lua.push_back(name);
+        if (scanOwnedLookups && requirement.nonUtf8Lua.empty() && !requirement.luaNativeBudgetExceeded) {
             for (const auto& lookup : Lua::ScanJapiNativeLookups(text)) {
                 if (lookup.name.empty() || requirement.luaNatives.contains(lookup.name)) continue;
                 if (lookup.name.size() > 128 || requirement.luaNatives.size() >= Services::kExternalDependencyNativeLimit) {
@@ -239,7 +240,6 @@ Status CheckHandwrittenLua(const Mpq::MpqArchive& map, const std::vector<Mpq::Mp
                 return Status::Failure("Map.Test.Runtime", "MAP_TEST_LUA_MODULE_BUDGET", "jass 模块依赖名或数量超过预算。");
             requirement.luaModules.insert(module.name);
         }
-        if (!Audastra::Runtime32::LuaMailboxUtf8(text)) requirement.nonUtf8Lua.push_back(name);
         const auto syntax = Lua::CheckSyntax(text, "@" + name);
         if (syntax.Succeeded()) continue;
         const auto first = syntax.diagnostics.empty() ? Lua::SyntaxDiagnostic{"LUA_SYNTAX", "语法检查未完成。", 0}
@@ -761,6 +761,15 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         } else if (required && !providerIssues.empty() && !wantsYdweLua &&
             (described || selected.useOwnedLuaRuntime ||
                 (selected.runtimeRoot.empty() && selected.runtimeYdweRoot.empty()))) {
+            if (!described && !providerIssues.empty()) {
+                std::string names;
+                for (const auto& name : requirements.value->missing) {
+                    if (!names.empty()) names += "、";
+                    names += name;
+                    if (names.size() >= 4096) break;
+                }
+                providerIssues.front().message += " 本图需要：" + names + "。";
+            }
             return {std::nullopt, std::move(providerIssues)};
         }
         // 作者手写 Lua 必须有 Lua 运行环境才会执行；普通游戏会把 exec-lua 当作无效作弊码忽略。
@@ -848,7 +857,11 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                     path /= index < 3 ? "bin" : "plugin/warcraft3";
                 ++index;
                 const auto status = CheckRuntimePe(path / name, true, initialize);
-                if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
+                if (!status.Succeeded()) {
+                    auto diagnostics = status.diagnostics;
+                    diagnostics.insert(diagnostics.end(), notes.begin(), notes.end());
+                    return {std::nullopt, std::move(diagnostics)};
+                }
             }
         }
         if (selected.useOwnedLuaRuntime || !selected.runtimeRoot.empty() || covered) {

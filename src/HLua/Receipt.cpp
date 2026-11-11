@@ -25,7 +25,7 @@ Json InspectJson(const InspectReceipt& receipt,std::size_t offset=0,std::size_t 
         {"japi_literal_name_count",receipt.japiNames.size()},{"japi_offset",start},
         {"japi_next_offset",start+count<receipt.japiNames.size() ? Json(start+count) : Json(nullptr)},
         {"japi_names_complete",false},
-        {"japi_names_scope","literal_lookups_only"},
+        {"japi_names_scope","optional_literal_lookups_only"},
         {"japi_runtime_verification","selected_provider_registration_receipt"},
         {"common_sha256",receipt.commonSha256},
         {"common_names_checked",receipt.commonNamesChecked},{"common_missing_names",std::move(missing)},

@@ -39,6 +39,15 @@ struct Observer {
     std::map<DWORD, ThreadRegistration> threads;
     std::uint64_t generation = 0;
     std::atomic<bool> failed{false};
+#ifdef AUDASTRA_TEST_NATIVE_OBSERVER
+    std::uintptr_t fixtureGameCode = 0;
+#endif
+    bool IsGameCode(std::uintptr_t address) const {
+#ifdef AUDASTRA_TEST_NATIVE_OBSERVER
+        if (!image) return address == fixtureGameCode;
+#endif
+        return image->Executable(address);
+    }
     void Fail(std::string_view error) noexcept {
         failed = true;
         try { if (handlers.failure) handlers.failure(error); } catch (...) {}
@@ -127,13 +136,13 @@ void ReportRegistrationFailure(Observer& self, std::string_view message, bool pr
 
 int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, const char* signature) noexcept {
     auto* self = observer.load();
-    if (!self || !self->registerNative) return 0;
+    if (!self || !self->registerNative || self->failed) return 0;
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     auto registered = function;
     try {
         std::array<char, 256> copiedName{};
         std::array<char, 4096> copiedSignature{};
-        const auto executable = self->image->Executable(function);
+        const auto executable = self->IsGameCode(function);
         const auto nameReadable = CopyText(name, copiedName);
         const auto signatureReadable = CopyText(signature, copiedSignature);
         const bool provider = observingProvider;
@@ -157,8 +166,8 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                         + "; generation=" + std::to_string(current ? current->generation : 0)
                         + "; collecting=" + std::to_string(current && current->registry && current->registry->Collecting())
                         + "; ready=" + std::to_string(current && current->registry && current->registry->Ready())
-                        + "; caller-in-image=" + std::to_string(self->image->Executable(caller))
-                        + "; caller-rva=" + std::to_string(self->image->Executable(caller) ? caller - self->image->Base() : 0);
+                        + "; caller-in-image=" + std::to_string(self->IsGameCode(caller))
+                        + "; caller-rva=" + std::to_string(self->image && self->IsGameCode(caller) ? caller - self->image->Base() : 0);
                 } else {
                     auto& current = found->second;
                     if (provider) failure = self->handlers.extensions.validate(function, copiedName.data(), copiedSignature.data());
@@ -245,7 +254,10 @@ int __cdecl ObserveSupplement() noexcept {
         if (!self->failed && found != self->threads.end() && (!self->handlers.module || found->second.cheat) && found->second.registry)
             accepted = found->second.registry->BeginSupplement();
     } catch (...) { self->Fail("准备原版补充 native 登记时发生异常。"); }
-    if (!accepted) self->Fail("原版补充 native 登记不在同线程完整 stock 初始化之后，或已交给 Lua。");
+    if (!accepted) {
+        self->Fail("原版补充 native 登记不在同线程完整 stock 初始化之后，或已交给 Lua。");
+        return 0;
+    }
     // 原版先做辅助初始化，再尾跳转到124条补充登记；保留其调用约定、返回值和原始转发。
     const auto result = self->supplement();
     try {
@@ -336,4 +348,56 @@ bool InstallGameNativeObserver(std::shared_ptr<GameImage127> image, GameNativeHa
     owned.release();
     return true;
 }
+
+#ifdef AUDASTRA_TEST_NATIVE_OBSERVER
+int __fastcall FixtureObserveForward(std::uintptr_t, const char*, const char*) { return 1; }
+bool CheckNativeObserverFixtures() {
+    constexpr std::uintptr_t gameAddress = 0x1000, providerAddress = 0x2000;
+    struct ResetObserver {
+        ~ResetObserver() { observer = nullptr; }
+    };
+    for (const auto scenario : {0, 1, 2}) {
+        Observer fixture;
+        ResetObserver reset;
+        observer = &fixture;
+        fixture.fixtureGameCode = gameAddress;
+        fixture.registerNative = FixtureObserveForward;
+        fixture.initialize = +[] { ObserveRegistration(gameAddress, "StockFixture", "()V"); };
+        bool registrationScopeObserved = false;
+        bool providerFailure = false, stockFailure = false;
+        fixture.handlers.failure = [&](auto) { stockFailure = true; };
+        fixture.handlers.extensions.failure = [&](auto) { providerFailure = true; };
+        fixture.handlers.extensions.validate = [&](auto address, auto name, auto signature) -> std::string {
+            return address == providerAddress && name == "OriginalFixture" && signature == "()V" ? "" : "origin or declaration";
+        };
+        fixture.handlers.extensions.registerAll = [&](const auto& add) -> std::string {
+            const auto& stock = fixture.threads.at(GetCurrentThreadId()).registry;
+            registrationScopeObserved = stock->Collecting() && !stock->Ready();
+            if (scenario == 1) {
+                add(gameAddress, "UnexpectedName", "()V");
+                add(providerAddress, "OriginalFixture", "()V");
+            } else add(providerAddress, "OriginalFixture", "()V");
+            return {};
+        };
+        fixture.handlers.extensions.verify = [&](const auto& registry) -> std::string {
+            const auto* entry = registry.Find("OriginalFixture");
+            return entry && entry->external ? "" : "missing fixture entry";
+        };
+        if (scenario == 2) {
+            if (ObserveRegistration(providerAddress, "OriginalFixture", "()V") != 0 ||
+                !fixture.failed || !stockFailure || providerFailure) return false;
+            continue;
+        }
+        ObserveInitialize();
+        if (!registrationScopeObserved) return false;
+        const auto& registry = fixture.threads.at(GetCurrentThreadId()).registry;
+        if (scenario == 1) {
+            if (!fixture.failed || !providerFailure || registry->Find("UnexpectedName") ||
+                registry->Find("OriginalFixture") || registry->Ready()) return false;
+        } else if (fixture.failed || stockFailure || providerFailure || !registry->Ready() ||
+            !registry->Find("StockFixture") || !registry->Find("OriginalFixture")) return false;
+    }
+    return true;
+}
+#endif
 } // namespace Audastra::Runtime32::OwnLua

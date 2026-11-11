@@ -281,6 +281,34 @@ void ExternalDependencyCatalog() {
     Require(dz != status.value->providers.end() && !dz->usable && dz->files.size() == 2, "Dz status does not authorize loading");
 }
 
+void CheckOriginalProviderPlan(const std::filesystem::path& originalGame) {
+    Fixture fixture;
+    std::filesystem::copy_file(originalGame / L"Game.dll", fixture.game / L"Game.dll",
+        std::filesystem::copy_options::overwrite_existing);
+    const auto dependency = fixture.root / "deps";
+    Write(dependency / "original.dll", Pe(true, true));
+    Write(dependency / "provider.json", Bytes(R"json({"schema":1,"id":"original","abi":"audastra-native-provider-v1","modules":[
+        {"file":"original.dll","entry":"Initialize","natives":{"AudastraFixtureAdd":"(I)I"}}]})json"));
+    auto artifact = fixture.Artifact(Script("call AudastraFixtureAdd(1)",
+        "native AudastraFixtureAdd takes integer i returns integer\n"));
+    fixture.Runtime(artifact);
+    artifact.externalDependenciesDirectory = dependency;
+    const auto launch = Script::BuildIndependentMapTestLaunchPlan(artifact);
+    Success(launch, "provider overrides the old setting with a verified original Game.dll identity");
+    const auto& arguments = launch.value->arguments;
+    const auto argument = [&](std::wstring_view option) {
+        const auto it = std::find(arguments.begin(), arguments.end(), option);
+        Require(it != arguments.end() && std::next(it) != arguments.end(), "expected launch argument");
+        return *std::next(it);
+    };
+    Require(argument(L"--runtime-mode") == L"external-providers" &&
+        argument(L"--provider-native") == L"0|AudastraFixtureAdd|(I)I" &&
+        argument(L"--provider-module").ends_with(L"|Initialize|original|" + (dependency / "original.dll").wstring()),
+        "plan carries provider mode, ID, module, and exact native signature");
+    Require(launch.value->runtimeRoot.empty(), "new provider does not mix old DLLs");
+    fixture.Unchanged(artifact);
+}
+
 void OwnedLuaSourcesAndComponents() {
     Fixture fixture;
     const auto members = [](std::string_view lua = "return true\n", std::string jass = Script("")) {
@@ -612,6 +640,19 @@ void HandwrittenLuaEntriesSelectRuntime() {
     Success(plan, "handwritten Lua without hot reload");
     Require(plan.value->useOwnedLuaRuntime && !plan.value->enableLuaHotReload, "hot reload preference respected");
     Require(hasCode(plan,"MAP_TEST_LUA_OPTIONAL_EXTENSIONS"),"owned extension limit is reported only for the selected engine");
+
+    std::string many = "local japi = require 'jass.japi'\nlocal value\n";
+    for (unsigned i = 0; i < 256; ++i) many += "value = japi.Test" + std::to_string(i) + "\n";
+    many += "value = japi.Test255\nvalue = japi['']\n";
+    auto exactBudget = fixture.Artifact(members(entry, {{"main.lua", Bytes(many)}}));
+    helpers(exactBudget);
+    Success(Script::BuildIndependentMapTestLaunchPlan(exactBudget), "duplicate and empty key do not exhaust the distinct owned budget");
+    many += "value = japi.Test256\n";
+    auto overBudget = fixture.Artifact(members(entry, {{"main.lua", Bytes(many)}}));
+    fixture.Runtime(overBudget);
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(overBudget), "MAP_TEST_LUA_MODULE_BUDGET", "distinct owned lookup budget");
+    overBudget.handwrittenLuaEngine = Services::MapTestLuaEngine::Ydwe;
+    Success(Script::BuildIndependentMapTestLaunchPlan(overBudget), "the YDWE engine does not use the owned lookup budget");
 
     auto missing = fixture.Artifact(members(entry, {}));
     helpers(missing);
@@ -1040,10 +1081,30 @@ local proof = "R54B OPTIONAL RESULT: NIL, MAP STARTED"
 jass.DisplayTimedTextToPlayer(jass.Player(0), 0, 0, 90, proof)
 print(proof)
 )LUA");
+    const std::string_view exDeclaration = "native EXGetUnitAbility takes unit whichUnit, integer abilityId returns ability\r\n";
+    make("ydwe-ex-jass.w3x", exDeclaration,
+        "    local unit hero = CreateUnit(Player(0), 'Hpal', 0., 0., 0.)\r\n"
+        "    call UnitAddAbility(hero, 'AHhb')\r\n"
+        "    if EXGetUnitAbility(hero, 'AHhb') != null then\r\n"
+        "        call DisplayTimedTextToPlayer(Player(0), 0., 0., 90., \"R54B EX JASS: ABILITY FOUND\")\r\n"
+        "    endif");
+    make("ydwe-ex-lua.w3x", exDeclaration, R"JASS(    call Cheat("exec-lua: \"provider\""))JASS", R"LUA(
+local ext = require("jass.japi")
+local jass = require("jass.common")
+local hero = jass.CreateUnit(jass.Player(0), |Hpal|, 0, 0, 0)
+jass.UnitAddAbility(hero, |AHhb|)
+assert(ext.EXGetUnitAbility(hero, |AHhb|))
+jass.DisplayTimedTextToPlayer(jass.Player(0), 0, 0, 90, "R54B EX LUA: ABILITY FOUND")
+)LUA");
 }
 } // namespace
 int wmain(int argc, wchar_t** argv) {
     try {
+        if (argc == 3 && std::wstring_view(argv[1]) == L"--check-original-provider-plan") {
+            CheckOriginalProviderPlan(argv[2]);
+            std::cout << "Original Game.dll identity, provider arguments, and unchanged source verified. No game started.\n";
+            return 0;
+        }
         if (argc == 5 && std::wstring_view(argv[1]) == L"--make-provider-fixtures") {
             const std::wstring_view expected(argv[3]);
             WriteProviderGameFixtures(argv[2], std::string(expected.begin(), expected.end()), argv[4]);

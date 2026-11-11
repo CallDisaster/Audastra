@@ -64,8 +64,10 @@ std::optional<std::string> Mismatch(const Type& argument, std::string_view param
 
 class Parser {
 public:
-    Parser(std::string_view source, const ParseOptions& options, Model& model, std::vector<Token> comments, bool warn)
-        : source_(source), options_(options), model_(model), tokens_(model.tokens), comments_(std::move(comments)), warn_(warn) {}
+    Parser(std::string_view source, const ParseOptions& options, Model& model, std::vector<Token> comments,
+        bool warn, bool collectLookups = false)
+        : source_(source), options_(options), model_(model), tokens_(model.tokens), comments_(std::move(comments)),
+          warn_(warn), collectLookups_(collectLookups) {}
 
     void Run() {
         OpenScope();
@@ -84,6 +86,7 @@ private:
     const std::vector<Token>& tokens_;
     std::vector<Token> comments_;
     bool warn_ = false;
+    bool collectLookups_ = false;
     std::size_t position_ = 0;
     std::vector<std::size_t> active_;
     std::vector<std::size_t> scopes_;
@@ -618,6 +621,11 @@ private:
     // 访问 jass.* 模块上不存在的成员。
     void CheckMember(const Type& owner, std::string_view key, std::uint32_t begin, std::uint32_t end) {
         if (owner.kind != TypeKind::Module || !options_.catalog) return;
+        if (collectLookups_ && options_.japiLookup && owner.name == "jass.japi" && !key.empty()) {
+            const auto line = std::upper_bound(model_.lineStarts.begin(), model_.lineStarts.end(), begin)
+                - model_.lineStarts.begin();
+            options_.japiLookup(key, static_cast<std::uint32_t>(line));
+        }
         const auto* module = options_.catalog->Module(owner.name);
         if (!module || !module->closed || module->Find(key)) return;
         if (owner.name == "jass.common") {
@@ -702,7 +710,7 @@ Type MemberOf(const Type& base, std::string_view name, const ApiCatalog* catalog
 }
 
 std::shared_ptr<Model> ParseModel(std::string_view source, const ParseOptions& options) {
-    auto all = Tokenize(source, true);
+    auto all = Tokenize(source, true, options.maxTokens);
     std::vector<Token> comments;
     auto model = std::make_shared<Model>();
     model->lineStarts.push_back(0);
@@ -718,7 +726,7 @@ std::shared_ptr<Model> ParseModel(std::string_view source, const ParseOptions& o
         Parser(source, options, first, comments, false).Run();
         model->globals = std::move(first.globals);
     }
-    Parser(source, options, *model, std::move(comments), options.warnings).Run();
+    Parser(source, options, *model, std::move(comments), options.warnings, true).Run();
     return model;
 }
 
