@@ -7,6 +7,7 @@
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <QDataStream>
+#include <QIODevice>
 #include <QSignalBlocker>
 #include <QUndoStack>
 
