@@ -27,6 +27,8 @@ Result<Services::MinimapMarkerView> EditorProject::QueryMinimapMarkers() const {
 }
 
 Status EditorProject::EditMinimapMarkers(std::string_view revision, std::span<const Services::MinimapMarkerEdit> edits) {
+    if (savingMap_)
+        return Status::Failure("Minimap.MarkerEdits", "MINIMAP_MARKER_BUSY", "地图正在保存。");
     if (!archiveSession_ || sourceChangeSuspected_ || sourceChangeConfirmed_)
         return Status::Failure("Minimap.MarkerEdits", "MINIMAP_MARKER_STALE", "地图未打开或已变化，请重新打开。");
     auto state = Read(*archiveSession_, CaptureAssets());

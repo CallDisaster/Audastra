@@ -27,6 +27,7 @@ void OpenMinimapMarkerDialog(QtProject::EditorProject& project, QWidget* parent)
     auto* model = new QStringListModel(list);
     list->setModel(model);
     list->setUniformItemSizes(true);
+    list->setEditTriggers(QAbstractItemView::NoEditTriggers);
     layout->addWidget(list);
     auto* form = new QFormLayout;
     layout->addLayout(form);
