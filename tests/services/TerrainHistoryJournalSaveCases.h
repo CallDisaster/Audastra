@@ -90,7 +90,7 @@ void TerrainHistoryRetainsOrdinaryEditsAcrossThreeSaves() {
         Check(f.edits->EditRegions(regions));
         const auto lease = Take(f.edits->PrepareTerrainHistoryForSave());
         f.SaveExpected(save == 2 ? "mixed-save-2.w3x" : "mixed-save-3.w3x", unchangedTerrain,
-            unchangedPathing, &unchangedDoodads, true);
+            unchangedPathing, &unchangedDoodads, true, false);
         Check(f.edits->CommitTerrainHistorySave(lease));
     }
     auto journal = Take(TerrainPathingSave::CaptureJournal(*f.archive, *f.edits));

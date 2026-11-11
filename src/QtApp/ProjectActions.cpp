@@ -184,6 +184,8 @@ bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
         project_->projectFilePath_ = candidate.sourcePath;
         project_->projectFileSha256_ = candidate.sourceSha256;
     }
+    const auto documents = project_->InstallDocumentUndoHistory(candidate.documentUndoHistory);
+    prepared.diagnostics.insert(prepared.diagnostics.end(), documents.diagnostics.begin(), documents.diagnostics.end());
     RefreshProjectWatch();
     // 此时所有文档、导入、工程身份和编辑基线均已恢复，允许观察者读取最终状态。
     War3Map::QtProject::NotifyRestoredMapDataHistoryState(*project_);

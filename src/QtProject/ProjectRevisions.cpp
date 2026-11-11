@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "ProjectDocumentHistory.h"
 #include "ProjectQuerySources.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
@@ -119,6 +120,7 @@ void EditorProject::ResetEditTracking() {
     editTrackingFailed_ = !current.has_value();
     if (!current) return;
     editTrackingReady_ = editRevision_.Reset(*current, *current, *current).Succeeded();
+    documentUndoHistory_->Reset();
     if (editTrackingReady_) { CaptureContentChangesBaseline(); UpdateEditDirtyFlags(); }
     if (!editTrackingReady_ || editTrackingFailed_) return;
     try {
@@ -182,10 +184,13 @@ bool EditorProject::ObserveMapDataEdit(const std::string& description) {
 }
 
 void EditorProject::ObserveObjectEdit(int typeIndex) {
-    if (!editTrackingReady_ || typeIndex < 0 || typeIndex >= 7) return;
+    if (typeIndex < 0 || typeIndex >= 7) return;
+    const auto& document = objectDocuments_[typeIndex];
+    const auto& native = nativeObjectDocuments_[typeIndex];
+    if (document && native) document->DropSavedCloneSources(*native);
+    if (!editTrackingReady_) return;
     auto current = editRevision_.Current();
     const auto key = ObjectScope(typeIndex);
-    const auto& document = objectDocuments_[typeIndex];
     const auto baseline = editRevision_.Baseline(EditSaveTarget::Map);
     if (!document || (baseline && !baseline->scopes.contains(key) && document->Objects().empty())) current.erase(key);
     else current[key] = document->DocumentFingerprint();
@@ -362,6 +367,7 @@ void EditorProject::CommitMapEditBaseline() {
     const auto ticket = editRevision_.BeginSave(EditSaveTarget::Map);
     if (!ticket.Succeeded()) return;
     if (!editRevision_.CompleteSave(*ticket.value, true).Succeeded()) return;
+    documentUndoHistory_->RefreshSavedObjects();
     CaptureContentChangesBaseline();
     UpdateEditDirtyFlags();
 }

@@ -21,6 +21,7 @@ qt_add_library(War3MapQtProject STATIC
     Commands/TriggerDirectoryCommands.cpp
     Commands/TriggerDirectoryCommands.h
     ProjectSnapshots.cpp
+    ProjectDocumentHistory.cpp ProjectDocumentHistory.h
     ProjectRevisions.cpp
     ProjectSourceWatch.cpp
     ProjectSourceChecks.cpp

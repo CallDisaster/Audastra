@@ -67,6 +67,7 @@ private:
 
     std::uint64_t generation_ = 0;
     std::uint64_t revision_ = 0;
+    std::uint64_t documentUndoRevision_ = 0;
     EditScopeSnapshot scopes_;
     std::string fingerprint_;
     std::filesystem::path sourceRoot_;
@@ -84,6 +85,7 @@ private:
     std::optional<MapData::TerrainStrokeJournal> terrainJournalPrefix_;
     std::shared_ptr<const MapData::MapDataEditSession> terrainJournalBaseline_;
     std::vector<std::byte> terrainJournalPayload_;
+    std::vector<std::byte> documentUndoPayload_;
     std::vector<MapArchiveMember> overlays_;
     std::vector<Import> imports_;
     std::vector<NativeBaseline> nativeBaselines_;

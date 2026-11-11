@@ -581,15 +581,14 @@ std::optional<MapCopySaveResult> EditorProject::CommitMapSave(MapSaveJob& job) {
     if (generatedObjects) emit ObjectDocumentsAboutToReplace();
     for (std::size_t i = 0; i < kObjectTypeCount; ++i) {
         if (!job.generatedObjectBaselines[i]) continue;
-        // 旧撤销命令保存旧文档地址；只清理被生成结果替换的类别，不能留悬空命令。
-        if (objectUndoStacks_[i]) objectUndoStacks_[i]->clear();
-        objectDocuments_[i] = std::move(job.generatedObjectBaselines[i]);
+        // 保存更新值对象，既有撤销回执仍指向当前工程中的同一份文档。
+        if (objectDocuments_[i]) *objectDocuments_[i] = std::move(*job.generatedObjectBaselines[i]);
+        else objectDocuments_[i] = std::move(job.generatedObjectBaselines[i]);
     }
     nativeObjectDocuments_ = std::move(job.nextBaselines);
     for (std::size_t i = 0; i < kObjectTypeCount; ++i) {
         if (!objectDocuments_[i] || objectDocuments_[i]->CloneSources().empty()) continue;
-        // 新 native 基线已经包含这些克隆；旧撤销快照仍绑定旧基线，不能再恢复临时来源。
-        if (objectUndoStacks_[i]) objectUndoStacks_[i]->clear();
+        // 读回确认了本次实际写出的克隆。撤销时再按当时的native基线核对旧快照。
         objectDocuments_[i]->ClearCloneSources();
     }
     // MapDocumentChanged 的名称/实例观察者也必须看到本次最终物编，而不是旧对象表。

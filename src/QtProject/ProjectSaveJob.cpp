@@ -1,4 +1,5 @@
 #include "ProjectSaveJob.h"
+#include "ProjectDocumentHistory.h"
 #include "PendingImportPayload.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
@@ -76,6 +77,7 @@ void ProjectSaveJob::ReleaseRunLeases() noexcept {
     terrainJournalPrefix_.reset();
     terrainJournalBaseline_.reset();
     terrainJournalPayload_.clear();
+    documentUndoPayload_.clear();
     manifest_ = {};
     if (recovery_) ReleaseCommitLeases();
 }
@@ -210,6 +212,18 @@ void EditorProject::RunProjectSave(ProjectSaveJob& job) {
                     KeepTerrainJournalWarning(job.manifest_, job.warnings_,
                         tr("草稿已完整保留；工程容量预算不足，前向笔划及水刷来源未恢复。"));
                     job.terrainJournalPayload_.clear();
+                }
+            }
+            if (!job.documentUndoPayload_.empty()) {
+                const auto manifestBytes = static_cast<std::uint64_t>(QJsonDocument(job.manifest_).toJson(QJsonDocument::Compact).size());
+                const auto size = job.documentUndoPayload_.size();
+                if (size <= kProjectBytes - total && manifestBytes <= kProjectBytes - total - size) {
+                    if (!append(ProjectDocumentHistory::Member, std::move(job.documentUndoPayload_)))
+                        return Failed(tr("工程超过容量限制"));
+                } else {
+                    job.manifest_.remove("documentUndoSha256");
+                    job.warnings_.push_back({DiagnosticSeverity::Warning, "Project.History", "PROJECT_UNDO_HISTORY_LIMIT",
+                        "工程容量不足以恢复触发器和物编的撤销记录，最早可恢复到本次保存的草稿。"});
                 }
             }
             // 新journal警告不能挤掉原本恰能保存的raw；返回warning仍由调用方展示。

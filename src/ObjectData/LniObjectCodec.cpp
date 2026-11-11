@@ -861,6 +861,15 @@ void LniObjectDocument::ClearCloneSources() noexcept {
     cloneSources_.clear();
 }
 
+void LniObjectDocument::DropSavedCloneSources(const NativeObjectDocument& baseline) {
+    if (baseline.Type() != Type() || cloneSources_.empty()) return;
+    std::erase_if(cloneSources_, [&](const auto& source) {
+        const auto* editable = FindObject({Type(), source.newRawcode});
+        const auto* saved = baseline.FindObject({Type(), source.newRawcode});
+        return editable && saved && editable->parentRawcode == saved->parentRawcode;
+    });
+}
+
 Status LniObjectDocument::PrepareNativeClones(NativeObjectDocument& nativeDocument) const {
     if (cloneSources_.empty()) return Status::Ok();
     const auto plan = PlanNativeCloneProjection(nativeDocument, *this);

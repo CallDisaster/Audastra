@@ -1,6 +1,7 @@
 #include "EditorProject.h"
 #include "ProjectObjectCatalog.h"
 #include "ProjectLuaFolder.h"
+#include "ProjectDocumentHistory.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -32,6 +33,7 @@ EditorProject::EditorProject()
     mapDataUndoStack_->setUndoLimit(128);
     assetUndoStack_ = new QUndoStack(this);
     assetUndoStack_->setUndoLimit(128);
+    documentUndoHistory_ = std::make_unique<ProjectDocumentHistory>(*this);
     luaFolderSource_ = std::make_unique<ProjectLuaFolder>(*this);
     projectWatch_->setObjectName("projectSourceWatcher");
     InitializeDiagnostics();
@@ -63,12 +65,17 @@ EditorProject::EditorProject()
 }
 
 EditorProject::~EditorProject() {
+    documentUndoHistory_.reset();
     luaFolderSource_.reset();
     delete assetUndoStack_; assetUndoStack_ = nullptr;
     for (const auto& stack : contentCacheStacks_) if (stack) disconnect(stack.data(), nullptr, this, nullptr);
     // 在文档成员销毁之前停止外部来源事件；QObject 随后负责销毁子监视器。
     projectWatch_->blockSignals(true);
     disconnect(projectWatch_, nullptr, this, nullptr);
+}
+
+Status EditorProject::InstallDocumentUndoHistory(std::span<const std::byte> bytes) {
+    return documentUndoHistory_->Install(bytes);
 }
 
 ProjectLuaFolder& EditorProject::LuaFolderSource() const { return *luaFolderSource_; }

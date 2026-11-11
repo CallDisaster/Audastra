@@ -77,6 +77,7 @@ class TriggerGraphScalarEditReceipt;
 
 namespace War3Map::QtProject {
 class ProjectLuaFolder;
+class ProjectDocumentHistory;
 
 class TriggerGraphSnapshotUndoCommand;
 class ProjectObjectCatalogState;
@@ -171,6 +172,7 @@ public:
 
     // 不依赖任何窗口的编辑修订生命周期；保存输出验证成功后才提交地图基线。
     void ResetEditTracking();
+    [[nodiscard]] Status InstallDocumentUndoHistory(std::span<const std::byte> bytes);
     [[nodiscard]] bool ObserveEditState(const std::string& description);
     // 仅用于已知只修改公共地图成员的事务；保存/恢复边界仍用完整ObserveEditState。
     [[nodiscard]] bool ObserveMapDataEdit(const std::string& description);
@@ -575,6 +577,7 @@ public:
 
 private:
     friend class AssetStateCommand;
+    std::unique_ptr<ProjectDocumentHistory> documentUndoHistory_;
     [[nodiscard]] Result<std::shared_ptr<PreparedAssetStateEdit>> PrepareAssetStateEditImpl(AssetState candidate,
         std::uint64_t expectedGeneration, std::uint64_t expectedRevision, std::string description,
         EditOperation operation, const AssetState* sealedReceipt);

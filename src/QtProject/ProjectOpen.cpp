@@ -1,5 +1,6 @@
 #include "ProjectOpen.h"
 #include "ProjectFileIO.h"
+#include "ProjectDocumentHistory.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapDocument.h"
@@ -491,6 +492,22 @@ Result<std::unique_ptr<PreparedProjectOpen>> PrepareProjectOpen(const std::files
     if (workspace && !workspace->VerifyUnchanged().Succeeded())
         return fail(QObject::tr("工程目录基线在恢复期间发生变化，请重新打开工程"));
     auto candidate = std::make_unique<PreparedProjectOpen>();
+    const bool hasDocumentUndo = archive.HasMember(ProjectDocumentHistory::Member);
+    if (hasDocumentUndo != manifest.contains("documentUndoSha256"))
+        return fail(QObject::tr("工程撤销记录与清单不一致"));
+    if (hasDocumentUndo) {
+        const std::array<std::string, 1> names{ProjectDocumentHistory::Member};
+        ArchiveExactMemberLimits limits;
+        limits.memberBytes = limits.totalBytes = ProjectDocumentHistory::MaximumBytes;
+        auto members = archive.CaptureExactMembers(names, limits);
+        if (!members.Succeeded() || !members.value || members.value->size() != 1 || !members.value->front().present)
+            return fail(QObject::tr("工程撤销记录不可读或超过容量"));
+        auto& payload = members.value->front().bytes;
+        const auto digest = Sha256(payload);
+        if (!digest.Succeeded() || !digest.value || Text(*digest.value) != manifest["documentUndoSha256"].toString())
+            return fail(QObject::tr("工程撤销记录指纹不一致"));
+        candidate->documentUndoHistory = std::move(payload);
+    }
     candidate->extraction = std::move(extraction);
     candidate->root = root;
     candidate->sourcePath = archive.SourcePath();

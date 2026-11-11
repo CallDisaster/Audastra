@@ -1,5 +1,6 @@
 #include "EditorProject.h"
 #include "ProjectSaveJob.h"
+#include "ProjectDocumentHistory.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/Services/TerrainPathingSave.h"
@@ -239,6 +240,15 @@ Result<std::unique_ptr<ProjectSaveJob>> EditorProject::PrepareProjectSave(
         if (!runtimeApprovedPackageSha256_.empty())
             job->manifest_["runtimeApproval"] = QJsonObject{{"schema",1},{"packageSha256",Text(runtimeApprovedPackageSha256_)},
                 {"sourceSha256",Text(job->sourceSha256_)}};
+        job->documentUndoRevision_ = documentUndoHistory_->Revision();
+        auto history = documentUndoHistory_->Freeze();
+        job->warnings_.insert(job->warnings_.end(), history.diagnostics.begin(), history.diagnostics.end());
+        if (history.value && !history.value->empty()) {
+            const auto digest = Sha256(*history.value);
+            if (!digest.Succeeded() || !digest.value) return fail(tr("无法计算工程撤销记录的指纹"));
+            job->documentUndoPayload_ = std::move(*history.value);
+            job->manifest_["documentUndoSha256"] = Text(*digest.value);
+        }
         QJsonArray edits;
         for (auto* stack : objectUndoStacks_)
             if (stack) for (int i = 0; i < stack->index(); ++i) edits.push_back(stack->text(i));
@@ -324,6 +334,7 @@ Result<ProjectSaveResult> EditorProject::CommitProjectSave(ProjectSaveJob& job) 
         if (!ObserveEditState("工程保存提交前复核") || editRevision_.Generation() != job.generation_
             || editRevision_.Revision() != job.revision_ || editRevision_.Current() != job.scopes_
             || ProjectFingerprint() != job.fingerprint_
+            || documentUndoHistory_->Revision() != job.documentUndoRevision_
             || (uiCatalog_ ? uiCatalog_->Sha256() : std::string{}) != job.uiSha256_) {
             (void)endManual(false);
             return reject("PROJECT_SAVE_REVISION_CHANGED", tr("工程已写出，但保存期间编辑状态发生变化；当前编辑未标记为已保存。"));

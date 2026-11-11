@@ -38,6 +38,7 @@ struct PreparedProjectOpen {
     std::size_t terrainCurrentIndex = 0;
     std::optional<std::size_t> terrainSavedIndex;
     std::string terrainJournalWarning;
+    std::vector<std::byte> documentUndoHistory;
 
     [[nodiscard]] std::filesystem::path BaselinePath() const;
 };

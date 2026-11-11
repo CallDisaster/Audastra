@@ -1,4 +1,5 @@
 #include "EditorProject.h"
+#include "ProjectDocumentHistory.h"
 
 #include "ProjectFileIO.h"
 
@@ -60,6 +61,7 @@ void EditorProject::ReplaceTriggerWorkspace(std::unique_ptr<Trigger::UiCatalog> 
     if (catalog) ApplyWorldEditStrings(*catalog);
     triggerDocument_ = std::move(document);
     uiCatalog_ = std::move(catalog);
+    documentUndoHistory_->ResetTriggers();
     emit TriggerDocumentChanged();
 }
 

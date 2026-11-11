@@ -60,6 +60,8 @@ public:
         const StandardObjectCatalog* standardCatalog = nullptr);
     // 仅在成功切换到已包含新对象的地图基线后丢弃临时来源。
     void ClearCloneSources() noexcept;
+    // 从撤销快照恢复时，只保留当前实际原生基线尚未拥有的克隆来源。
+    void DropSavedCloneSources(const NativeObjectDocument& baseline);
     [[nodiscard]] Status DeleteObject(
         const ObjectKey& object,
         const DeletionAuditToken& token);
