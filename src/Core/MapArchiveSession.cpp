@@ -161,7 +161,8 @@ bool MinimapAuditMember(std::string_view name) {
         [&key](const auto& profile) { return Canonical(profile.path) == key; })) return true;
     return MinimapSnapshotMember(key) || key.ends_with(".BLP") || key.ends_with(".TGA")
         || key.ends_with(".MDX") || key.ends_with(".MDL") || key.ends_with(".SLK")
-        || key == "WAR3MAP.WPM" || key == "WAR3MAP.SHD" || key == "WAR3MAP.MMP";
+        || key == "WAR3MAP.WPM" || key == "WAR3MAP.SHD" || key == "WAR3MAP.MMP"
+        || key == "AUDASTRA\\MINIMAP-MARKERS.BIN";
 }
 
 bool ScriptAuditMember(std::string_view name) {

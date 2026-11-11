@@ -456,7 +456,7 @@ void AuthorMarkersKeepIdentityThroughRegenerationAndLegacySave() {
     MapSaveTask next;
     fixture.Freeze(next, "author-second.w3x"); fixture.PrepareOrdinary(next); MapSaveService::Run(next);
     if (!next.succeeded) Check({next.diagnostics});
-    const auto roundtrip = Take(MapArchiveSession::Open(next.target));
+    const auto roundtrip = Take(MapArchiveSession::OpenMinimapAudit(next.target));
     Require(Take(Take(MinimapMarkerEdits::Read(roundtrip)).View()).records == saved.records,
         "second automatic save retains explicit edits");
 
