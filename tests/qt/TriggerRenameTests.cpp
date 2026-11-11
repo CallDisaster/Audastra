@@ -328,7 +328,7 @@ void TriggerRenameTests::LiteralCommentAndLookalikeCodeStaysClean() {
     // 固定文字调用别的函数、注释里的旧名、只是名字里带 _G/_ENV 的标识符，都不算引用：两条路径都直接改名。
     Fixture f;
     QVERIFY2(f.Initialize("// gg_trg_Init 旧注释\r\nfunction H takes nothing returns nothing\r\n    call ExecuteFunc(\"Other\")\r\n"
-        "    set udg_HERO_G[1] = null\r\n    set MY_ENV = \"x\"\r\n    /* InitTrig_Init */\r\nendfunction\r\n"), qPrintable(f.error));
+        "    set udg_HERO_G[1] = null\r\n    set MY_ENV = \"x\"\r\n    call BJDebugMsg(\"Init done\")\r\n    /* InitTrig_Init */\r\nendfunction\r\n"), qPrintable(f.error));
     const auto reviews = Take(TriggerDocumentEditor::ReviewTriggerRenameCode(*f.project.triggerDocument_, *f.project.uiCatalog_, f.target, "Changed"));
     QCOMPARE(reviews.size(), std::size_t{1});
     QVERIFY(reviews.front().evidence == TriggerDocumentEditor::RenameEvidence::None);

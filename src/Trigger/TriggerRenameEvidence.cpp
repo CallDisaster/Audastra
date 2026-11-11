@@ -84,8 +84,9 @@ private:
     }
     // 生成的触发器符号与函数名：gg_trg_S、InitTrig_S、Trig_S_Actions/_Conditions/_FuncNNN…。
     bool NamesTrigger(std::string_view text, bool inString) const {
-        if (inString && !oldName_.empty() && (text == oldName_ || (oldName_.size() >= 4 && text.find(oldName_) != std::string_view::npos)))
-            return true;
+        // 编辑器名称在运行期不存在，只有整串等于原名时才保守地算（可能是按名称登记的表键）；
+        // "初始化完成" 这类只是包含原名的提示文字不算。
+        if (inString && !oldName_.empty() && text == oldName_) return true;
         for (const auto& script : scripts_) {
             const std::array exact{"gg_trg_" + script, "InitTrig_" + script};
             const std::string generated = "Trig_" + script + "_";
