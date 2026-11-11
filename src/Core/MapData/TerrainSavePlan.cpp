@@ -23,6 +23,7 @@ constexpr std::array<std::string_view, 12> kInvariantNames{
     "war3map.w3i", "war3mapUnits.doo", "war3map.doo", "war3map.w3u", "war3map.w3t",
     "war3map.w3b", "war3map.w3d", "war3map.w3a", "war3map.w3h", "war3map.w3q", "war3map.w3r", "war3map.w3c"};
 constexpr std::string_view kSubsystem = "Terrain.SavePlan";
+constexpr std::string_view kMarkerProvenance = "audastra/minimap-markers.bin";
 
 std::vector<std::string> ExactNames() {
     std::vector<std::string> names;
@@ -52,6 +53,13 @@ std::string Canonical(std::string_view value) {
         return c == '\\' ? '/' : static_cast<char>(std::tolower(c));
     });
     return name;
+}
+
+const MemberReplacement* FrozenMarkerProvenance(std::span<const MemberReplacement> planOutputs) {
+    const auto found = std::find_if(planOutputs.begin(), planOutputs.end(), [](const auto& output) {
+        return Canonical(output.name) == kMarkerProvenance;
+    });
+    return found == planOutputs.end() ? nullptr : &*found;
 }
 
 bool ValidSha(std::string_view sha) {
@@ -768,6 +776,18 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
     if (sourceSha256 != sourceSha256_)
         return Reject("TERRAIN_SAVE_PLAN_SOURCE_MISMATCH", "保存任务不是地形计划冻结的来源。");
     if (!saveGate_.Succeeded()) return saveGate_;
+    const auto* provenance = FrozenMarkerProvenance(replacements_);
+    if (provenance) {
+        const MemberReplacement* actual = nullptr;
+        for (const auto& replacement : replacements) if (Canonical(replacement.name) == kMarkerProvenance) {
+            if (actual) return Reject("TERRAIN_SAVE_PLAN_DUPLICATE", "图标归属被重复覆盖。");
+            actual = &replacement;
+        }
+        if (!actual || actual->data != provenance->data || std::any_of(removals.begin(), removals.end(), [](const auto& name) {
+                return Canonical(name) == kMarkerProvenance;
+            }))
+            return Reject("TERRAIN_SAVE_PLAN_MARKER_PROVENANCE_MISMATCH", "最终图标归属与本次封存不符。");
+    }
     for (const auto& member : members_) {
         const auto key = Canonical(member.name);
         std::size_t removedCount = 0;
@@ -824,7 +844,8 @@ Status TerrainSavePlan::VerifyFrozenOutput(std::string_view sourceSha256,
             }
         }
         const auto frozenInput = [&](const std::string& name) {
-            return std::any_of(members_.begin(), members_.end(), [&](const auto& member) { return Canonical(member.name) == name; })
+            return (provenance && name == kMarkerProvenance)
+                || std::any_of(members_.begin(), members_.end(), [&](const auto& member) { return Canonical(member.name) == name; })
                 || std::any_of(invariantMembers_.begin(), invariantMembers_.end(), [&](const auto& member) { return Canonical(member.name) == name; });
         };
         for (const auto& replacement : replacements) {
@@ -848,9 +869,11 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
     if (!saveGate_.Succeeded()) return saveGate_;
     if (readLimits.maximumBytes > TerrainSavePlanLimits{}.maximumBytes)
         return Reject("TERRAIN_SAVE_PLAN_BUDGET", "地形五成员回读只能收紧64MiB读取预算。");
-    const auto names = ExactNames();
+    auto names = ExactNames();
+    const auto* provenance = FrozenMarkerProvenance(replacements_);
+    if (provenance) names.push_back(provenance->name);
     ArchiveExactMemberLimits limits;
-    limits.memberCount = kNames.size() + kInvariantNames.size();
+    limits.memberCount = names.size();
     limits.memberBytes = limits.totalBytes = readLimits.maximumBytes;
     const auto captured = saved.CaptureExactMembers(names, limits);
     if (!captured.Succeeded() || !captured.value) return {captured.diagnostics};
@@ -867,6 +890,8 @@ Status TerrainSavePlan::VerifyReadback(const MapArchiveSession& saved, const Ter
     }
     if (capacity > readLimits.maximumBytes * 3 + 64 * 1024)
         return Reject("TERRAIN_SAVE_PLAN_BUDGET", "五成员回读实际capacity超过预收工作上界。");
+    if (provenance && (!captured.value->back().present || captured.value->back().bytes != provenance->data))
+        return Reject("TERRAIN_SAVE_PLAN_MARKER_PROVENANCE_MISMATCH", "回读图标归属与本次封存不符。");
     for (std::size_t index = 0; index < members_.size(); ++index) {
         const auto& member = members_[index];
         const auto& actual = (*captured.value)[index];

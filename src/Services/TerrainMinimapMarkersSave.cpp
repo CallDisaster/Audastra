@@ -8,6 +8,7 @@
 #include <array>
 #include <cctype>
 #include <iterator>
+#include <new>
 
 namespace War3Map::Services {
 namespace {
@@ -55,9 +56,23 @@ Status TerrainMinimapMarkers::AdmitToPlan(MapData::TerrainSavePlan& plan,
     const auto terrain = std::find_if(inputs_.begin(), inputs_.end(), [](const auto& input) { return input.name == "WAR3MAP.W3E"; });
     if (verifyGeneration_ && (terrain == inputs_.end() || terrain->sha256 != plan.Members()[0].outputSha256))
         return Status::Failure("Terrain.MinimapMarkers", "TERRAIN_MMP_DEPENDENCY_STALE", "图标未绑定地形计划的最终W3E。");
-    if (plan.cumulativeBytes_ > plan.maximumBytes_ || bytes_.size() > plan.maximumBytes_ - plan.cumulativeBytes_)
+    if (plan.cumulativeBytes_ > plan.maximumBytes_ || bytes_.size() > plan.maximumBytes_ - plan.cumulativeBytes_
+        || provenance_.size() > plan.maximumBytes_ - plan.cumulativeBytes_ - bytes_.size())
         return Status::Failure("Terrain.MinimapMarkers", "TERRAIN_MMP_BUDGET", "图标输出超过地形保存计划剩余预算。");
-    return plan.AdmitGeneratedMarkers(edits, bytes_);
+    if (provenance_.empty()) return plan.AdmitGeneratedMarkers(edits, bytes_);
+    if (std::any_of(plan.replacements_.begin(), plan.replacements_.end(), [](const auto& member) { return IsProvenance(member.name); }))
+        return Status::Failure("Terrain.MinimapMarkers", "TERRAIN_MMP_FINAL_CONFLICT", "同次地形计划不能重复封存图标归属。");
+    try {
+        MemberReplacement companion{kMinimapMarkerProvenance, provenance_};
+        plan.replacements_.reserve(plan.replacements_.size() + 2);
+        const auto admitted = plan.AdmitGeneratedMarkers(edits, bytes_);
+        if (!admitted.Succeeded()) return admitted;
+        plan.replacements_.push_back(std::move(companion));
+        plan.cumulativeBytes_ += provenance_.size();
+        return Status::Ok();
+    } catch (const std::bad_alloc&) {
+        return Status::Failure("Terrain.MinimapMarkers", "TERRAIN_MMP_ALLOCATION", "无法冻结图标归属输出。");
+    }
 }
 
 Status PrepareTerrainMinimapMarkers(MapSaveTask& task, const std::filesystem::path& gameRoot,

@@ -23,7 +23,7 @@ inline QJsonObject Request(Fixture& fixture, QJsonObject command, bool dryRun) {
 }
 }
 
-void LiveEditorToolsTests::TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo() {
+void LiveEditorToolsTests::TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo() try {
     namespace P = AudastraTest::TextureSlot;
     for (const bool ground : {true, false}) {
         P::Fixture native; Fixture f;
@@ -109,7 +109,7 @@ void LiveEditorToolsTests::TextureSlotToolsCaptureActualResourcesAndKeepOriginal
         QVERIFY(WriteFile(f.source.filePath("map/source-drift.txt"), "changed after capture"));
         QVERIFY(!f.tools->Invoke("edit_terrain_texture_slot", driftRequest).value("ok").toBool()); QCOMPARE(undo->count(), 3);
     }
-}
+} catch (const std::exception& error) { QFAIL(error.what()); }
 
 void LiveEditorToolsTests::TextureSlotPreparationRejectsConcurrentRevision() {
     namespace P = AudastraTest::TextureSlot;

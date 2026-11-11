@@ -481,6 +481,13 @@ void PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate() {
         "真实capture的canonical W3E允许把MMP安装进同一地形计划");
     Require(plan->Members()[3].outputBytes == task.minimapMarkers->Bytes().size(), "计划记录完整MMP输出大小");
     Check(plan->VerifyForSave(*edits, task.sourceSha256, task.replacements));
+    auto tampered = task.replacements;
+    auto sidecar = std::find_if(tampered.begin(), tampered.end(), [](const auto& entry) { return entry.name == kMinimapMarkerProvenance; });
+    Require(sidecar != tampered.end() && !sidecar->data.empty(), "terrain plan owns the actual marker provenance bytes");
+    sidecar->data.back() ^= std::byte{1};
+    Rejected(plan->VerifyForSave(*edits, task.sourceSha256, tampered), "TERRAIN_SAVE_PLAN_MARKER_PROVENANCE_MISMATCH");
+    tampered.erase(sidecar);
+    Rejected(plan->VerifyForSave(*edits, task.sourceSha256, tampered), "TERRAIN_SAVE_PLAN_MARKER_PROVENANCE_MISMATCH");
     task.beforePublish = [&] { return plan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals); };
     MapSaveService::Run(task);
     if (!task.succeeded) Check({task.diagnostics});
