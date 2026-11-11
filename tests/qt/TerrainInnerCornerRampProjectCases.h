@@ -90,6 +90,21 @@ void EditorProjectTests::InnerCornerRampProjectColdRestoreAndNativeSave() {
         QCOMPARE(undo.count(), 1);
         if (state == 1) {
             QCOMPARE(undo.index(), 0); QVERIFY(!undo.canUndo() && undo.canRedo());
+            const auto checkOriginalMembers = [&](EditorProject& project) {
+                const auto inspection = MapData::CaptureTerrainEditInspection(*project.archiveSession_, *project.mapEdits_);
+                QVERIFY2(inspection.Succeeded(), ReadDiagnosticText(inspection).c_str());
+                QVERIFY(inspection.value->Members()[0].current && inspection.value->Members()[1].current);
+                QCOMPARE(*inspection.value->Members()[0].current, fixture.TerrainLiteral(false));
+                QCOMPARE(*inspection.value->Members()[1].current, S::Fixture::PathingLiteral(false));
+            };
+            undo.redo(); QVERIFY(!undo.isClean() && restored.HasUnsavedMapChanges());
+            fixture.CheckState(*restored.mapEdits_, true);
+            undo.undo(); QVERIFY(undo.isClean() && !restored.HasUnsavedMapChanges());
+            fixture.CheckState(*restored.mapEdits_, false);
+            checkOriginalMembers(restored);
+            QCOMPARE(restored.mapEdits_->SessionIdentity(), identity);
+            QCOMPARE(undo.count(), 1); QCOMPARE(undo.index(), 0); QVERIFY(undo.canRedo());
+            QCOMPARE(Sha256File(target).value, std::optional(actual.value->SourceSha256()));
             const auto exported = restored.mapEdits_->ExportTerrainHistoryJournal();
             QVERIFY2(exported.Succeeded(), ReadDiagnosticText(exported).c_str());
             QCOMPARE(exported.value->history->savedIndex, 0u);
@@ -105,8 +120,12 @@ void EditorProjectTests::InnerCornerRampProjectColdRestoreAndNativeSave() {
             QVERIFY(BindPreparedTerrainJournal(coldProject, **cold.value, game));
             QCOMPARE(coldUndo.count(), 1); QVERIFY(coldUndo.isClean() && coldUndo.canRedo());
             fixture.CheckState(*coldProject.mapEdits_, false);
+            checkOriginalMembers(coldProject);
             coldUndo.redo(); QVERIFY(!coldUndo.isClean());
             fixture.CheckState(*coldProject.mapEdits_, true);
+            coldUndo.undo(); QVERIFY(coldUndo.isClean() && !coldProject.HasUnsavedMapChanges());
+            fixture.CheckState(*coldProject.mapEdits_, false);
+            checkOriginalMembers(coldProject);
         }
     }
 }
