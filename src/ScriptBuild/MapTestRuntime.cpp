@@ -842,7 +842,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             } else {
                 message = "此地图用 exec-lua 加载 Lua，需要 YDWE 的 Lua 引擎。请";
             }
-            message += "在设置中配置本机 YDWE 目录或包含六个 DLL 的独立运行时目录。";
+            message += "在设置中配置本机 YDWE 目录或包含六个 DLL 的独立运行时目录，无需启动 YDWE。";
             if (handwrittenYdwe && !required)
                 message += " 也可在地图测试设置中改用 Audastra 自带 Lua 环境。";
             auto rejected = Failure<LaunchPlan>(std::move(primaryCode), std::move(message));
