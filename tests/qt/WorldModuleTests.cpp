@@ -647,13 +647,16 @@ bool BindTerrain(WorldViewport& viewport, std::shared_ptr<const MapData::Terrain
 }
 
 bool InstallAuxiliaryEditFixture(QtProject::EditorProject& project, const QString& root,
-    const MapData::RegionRecord& region, const MapData::CameraRecord& camera) {
+    const MapData::RegionRecord& region, const MapData::CameraRecord& camera,
+    const std::vector<MapData::CameraRecord>& moreCameras = {}) {
     auto grid = FlatGrid(5, 5);
     grid->header.mainTileset = 'A';
     grid->header.groundTilesets = {"Ldrt"}; grid->header.cliffTilesets = {"Cldi"};
     const auto terrain = MapData::SerializeMapTerrain(*grid);
     const auto regions = MapData::RegionsDocument{5, {region}, {}}.Serialize();
-    const auto cameras = MapData::CamerasDocument{0, {camera}, {}}.Serialize();
+    std::vector<MapData::CameraRecord> cameraRows{camera};
+    cameraRows.insert(cameraRows.end(), moreCameras.begin(), moreCameras.end());
+    const auto cameras = MapData::CamerasDocument{0, cameraRows, {}}.Serialize();
     if (!terrain.Succeeded() || !regions.Succeeded() || !cameras.Succeeded()) return false;
     if (!Write(root + "/war3map.w3e", QByteArray(reinterpret_cast<const char*>(terrain.value->data()),
         static_cast<qsizetype>(terrain.value->size())))) return false;
@@ -4615,7 +4618,10 @@ void WorldModuleTests::OutlinerCtrlToggleAndMixedDeleteIsOneUndo() {
     QTemporaryDir directory; QVERIFY(directory.isValid());
     const MapData::RegionRecord region{0, 0, 128, 128, "RegionOne", 17, {}, "", {10, 20, 30, 77}};
     const MapData::CameraRecord camera{256, 256, 7, 0, 0, 1650, 0, 70, 5000, 100, "CameraOne"};
-    QtProject::EditorProject project; QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera));
+    const MapData::CameraRecord kept{512, 512, 7, 0, 0, 1650, 0, 70, 5000, 100, "CameraKept"};
+    // 留一个镜头：没有经典 W3I 时空镜头表无法证明布局，单个删除同样拒绝。
+    QtProject::EditorProject project;
+    QVERIFY(InstallAuxiliaryEditFixture(project, directory.path(), region, camera, {kept}));
     BackendState state; activeBackend = &state; WorldModule module(project, &modelBackend);
     auto* page = module.Widget(); state.viewport = module.Viewport(); page->resize(1200, 760); page->show();
     auto* outliner = page->findChild<QTreeView*>("worldOutliner"); QVERIFY(outliner);
@@ -4641,16 +4647,21 @@ void WorldModuleTests::OutlinerCtrlToggleAndMixedDeleteIsOneUndo() {
     QTRY_VERIFY(remove->isEnabled() && !properties->isEnabled());
     const auto count = project.mapDataUndoStack_->count();
     remove->click();
-    QCOMPARE(project.mapDataUndoStack_->count(), count + 1);
+    QString problems;
+    for (int row = 0; row < project.diagnosticsModel_->rowCount(); ++row)
+        problems += project.diagnosticsModel_->index(row, 2).data().toString() + QLatin1Char(' ')
+            + project.diagnosticsModel_->index(row, 3).data().toString() + QLatin1Char('\n');
+    QVERIFY2(project.mapDataUndoStack_->count() == count + 1, qPrintable(problems));
     QVERIFY(project.mapEdits_->Snapshot().Regions()->entries.empty());
-    QVERIFY(project.mapEdits_->Snapshot().Cameras()->entries.empty());
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{1});
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries[0].name, std::string("CameraKept"));
     project.mapDataUndoStack_->undo();
     QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{1});
-    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{1});
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{2});
     QVERIFY(!project.mapEdits_->IsDirty());
     project.mapDataUndoStack_->redo();
     QVERIFY(project.mapEdits_->Snapshot().Regions()->entries.empty());
-    QVERIFY(project.mapEdits_->Snapshot().Cameras()->entries.empty());
+    QCOMPARE(project.mapEdits_->Snapshot().Cameras()->entries.size(), std::size_t{1});
 }
 
 void WorldModuleTests::WorldAuxiliaryCrudUsesSharedService() {
