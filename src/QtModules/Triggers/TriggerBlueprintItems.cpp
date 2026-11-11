@@ -4,6 +4,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QGraphicsSceneHoverEvent>
 #include <QGraphicsTextItem>
+#include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
@@ -159,29 +160,61 @@ void BlueprintNode::paint(QPainter* painter, const QStyleOptionGraphicsItem*, QW
     const QPalette palette = widget != nullptr ? widget->palette() : QPalette{};
     const QRectF bounds = boundingRect();
     painter->setRenderHint(QPainter::Antialiasing);
-    painter->setPen(QPen(isSelected() ? palette.color(QPalette::Highlight) : palette.color(QPalette::Mid), isSelected() ? 2 : 1));
-    painter->setBrush(palette.color(QPalette::Base));
-    painter->drawRoundedRect(bounds.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
+
+    const QRectF card = bounds.adjusted(0.5, 0.5, -0.5, -0.5);
+    const QColor surface = palette.color(QPalette::AlternateBase);
+    const QColor border = isSelected() ? palette.color(QPalette::Accent) : palette.color(QPalette::Mid);
+    painter->setPen(QPen(border, isSelected() ? 1.8 : 1.0));
+    painter->setBrush(surface);
+    painter->drawRoundedRect(card, 8, 8);
+
+    // 顶部标题带：左深右浅渐变，只圆上方两角，底部留细分隔线。
     QPainterPath header;
-    header.addRoundedRect(QRectF(1, 1, kNodeWidth - 2, kNodeHeader), 5, 5);
-    QColor band = color_;
-    band.setAlpha(60);
+    const QRectF headerRect(card.left() + 0.5, card.top() + 0.5, card.width() - 1.0, kNodeHeader);
+    header.moveTo(headerRect.left(), headerRect.bottom());
+    header.lineTo(headerRect.left(), headerRect.top() + 7.5);
+    header.quadTo(headerRect.left(), headerRect.top(), headerRect.left() + 7.5, headerRect.top());
+    header.lineTo(headerRect.right() - 7.5, headerRect.top());
+    header.quadTo(headerRect.right(), headerRect.top(), headerRect.right(), headerRect.top() + 7.5);
+    header.lineTo(headerRect.right(), headerRect.bottom());
+    header.closeSubpath();
+
+    QLinearGradient band(headerRect.topLeft(), headerRect.topRight());
+    QColor bandStart = color_;
+    bandStart.setAlpha(isSelected() ? 72 : 52);
+    QColor bandEnd = color_;
+    bandEnd.setAlpha(isSelected() ? 28 : 14);
+    band.setColorAt(0.0, bandStart);
+    band.setColorAt(1.0, bandEnd);
     painter->fillPath(header, band);
+
+    QColor headerDivider = color_;
+    headerDivider.setAlpha(55);
+    painter->setPen(QPen(headerDivider, 1.0));
+    painter->drawLine(QPointF(card.left() + 1.0, headerRect.bottom()), QPointF(card.right() - 1.0, headerRect.bottom()));
+
+    QFont titleFont = painter->font();
+    titleFont.setWeight(QFont::Medium);
+    painter->save();
+    painter->setFont(titleFont);
     painter->setPen(color_);
-    painter->drawText(QRectF(10, 1, kNodeWidth - 90, kNodeHeader), Qt::AlignVCenter | Qt::AlignLeft, title_);
+    painter->drawText(QRectF(11, 1, kNodeWidth - 92, kNodeHeader), Qt::AlignVCenter | Qt::AlignLeft, title_);
+    painter->restore();
+
     painter->setPen(palette.color(QPalette::PlaceholderText));
-    painter->drawText(QRectF(kNodeWidth - 90, 1, 72, kNodeHeader), Qt::AlignVCenter | Qt::AlignRight,
+    painter->drawText(QRectF(kNodeWidth - 90, 1, 74, kNodeHeader), Qt::AlignVCenter | Qt::AlignRight,
         enabled_ ? kind_ : QObject::tr("已禁用"));
+
     // 分支行：分隔线 + 右对齐的分支名（端口画在右边缘上）。
     double row = kNodeHeader + bodyHeight_ + 4;
     for (const BlueprintPin* pin : pins_) {
         if (pin->Kind() != PinKind::Branch) continue;
         QColor line = palette.color(QPalette::Mid);
-        line.setAlpha(80);
+        line.setAlpha(95);
         painter->setPen(line);
-        painter->drawLine(QPointF(8, row), QPointF(kNodeWidth - 8, row));
+        painter->drawLine(QPointF(10, row), QPointF(kNodeWidth - 10, row));
         painter->setPen(pin->Color());
-        painter->drawText(QRectF(8, row, kNodeWidth - 24, kBranchRow), Qt::AlignVCenter | Qt::AlignRight, pin->Label());
+        painter->drawText(QRectF(10, row, kNodeWidth - 26, kBranchRow), Qt::AlignVCenter | Qt::AlignRight, pin->Label());
         row += kBranchRow;
     }
 }

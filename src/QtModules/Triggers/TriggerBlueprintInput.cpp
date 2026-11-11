@@ -241,14 +241,30 @@ void TriggerBlueprint::drawBackground(QPainter* painter, const QRectF& rect) {
     if (transform().m11() < 0.5) {
         return; // 缩得很小时不画网格，避免大量点
     }
-    // 点阵网格（24 单位），与原型画布一致。
-    QColor dot = palette().color(QPalette::Mid);
-    dot.setAlpha(90);
-    painter->setPen(QPen(dot, 0));
+    // 双层点阵网格（24 单位细点 + 120 单位主锚点），兼顾秩序感与通透感。
+    QColor minorDot = palette().color(QPalette::Mid);
+    minorDot.setAlpha(75);
+    QColor majorDot = palette().color(QPalette::Mid);
+    majorDot.setAlpha(155);
     const double step = 24;
-    for (double x = std::floor(rect.left() / step) * step; x < rect.right(); x += step) {
-        for (double y = std::floor(rect.top() / step) * step; y < rect.bottom(); y += step) {
-            painter->drawPoint(QPointF(x, y));
+    const long long leftIdx = static_cast<long long>(std::floor(rect.left() / step));
+    const long long rightIdx = static_cast<long long>(std::ceil(rect.right() / step));
+    const long long topIdx = static_cast<long long>(std::floor(rect.top() / step));
+    const long long bottomIdx = static_cast<long long>(std::ceil(rect.bottom() / step));
+    painter->setPen(QPen(minorDot, 0));
+    for (long long ix = leftIdx; ix <= rightIdx; ++ix) {
+        const double x = ix * step;
+        for (long long iy = topIdx; iy <= bottomIdx; ++iy) {
+            if (ix % 5 == 0 && iy % 5 == 0) continue;
+            painter->drawPoint(QPointF(x, iy * step));
+        }
+    }
+    painter->setPen(QPen(majorDot, 2.0, Qt::SolidLine, Qt::RoundCap));
+    for (long long ix = leftIdx; ix <= rightIdx; ++ix) {
+        if (ix % 5 != 0) continue;
+        const double x = ix * step;
+        for (long long iy = topIdx; iy <= bottomIdx; ++iy) {
+            if (iy % 5 == 0) painter->drawPoint(QPointF(x, iy * step));
         }
     }
 }

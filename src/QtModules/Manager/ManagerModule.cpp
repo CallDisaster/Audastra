@@ -5,8 +5,10 @@
 #include <QCheckBox>
 
 #include "EditorProject.h"
+#include "Icons/SvgIcons.h"
 #include "Modules/ModuleHost.h"
 #include "Widgets/ColumnLayout.h"
+#include "Widgets/SearchField.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
@@ -125,28 +127,50 @@ void ManagerModule::BuildPage() {
     page_->setObjectName("objectManager");
     page_->installEventFilter(this);
     auto* layout = new QHBoxLayout(page_);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(10);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
+    static constexpr std::array<const char*, static_cast<std::size_t>(Page::Count)> kPageIcons{{
+        "lucide/layout-dashboard",
+        "lucide/users",
+        "lucide/box",
+        "lucide/shield",
+        "lucide/trees",
+        "lucide/zap",
+        "lucide/sparkles",
+        "lucide/arrow-up",
+        "lucide/list-tree",
+        "lucide/code-xml",
+        "lucide/variable",
+    }};
     pages_ = new QListWidget(page_);
     pages_->setObjectName("managerPages");
-    pages_->setFixedWidth(128);
-    for (int index = 0; index < static_cast<int>(Page::Count); ++index) pages_->addItem(Manager::PageLabel(static_cast<Page>(index)));
+    pages_->setFixedWidth(148);
+    pages_->setIconSize(QSize(15, 15));
+    for (int index = 0; index < static_cast<int>(Page::Count); ++index) {
+        auto* item = new QListWidgetItem(
+            UiKit::SvgIcon(QString::fromLatin1(kPageIcons[static_cast<std::size_t>(index)])),
+            Manager::PageLabel(static_cast<Page>(index)));
+        pages_->addItem(item);
+    }
     layout->addWidget(pages_);
 
     auto* splitter = new QSplitter(page_);
+    splitter->setHandleWidth(1);
     splitter->setChildrenCollapsible(false);
     auto* center = new QWidget(splitter);
     auto* centerLayout = new QVBoxLayout(center);
-    centerLayout->setContentsMargins(0, 0, 0, 0);
-    centerLayout->setSpacing(6);
+    centerLayout->setContentsMargins(12, 10, 10, 10);
+    centerLayout->setSpacing(8);
     auto* toolbar = new QHBoxLayout;
+    toolbar->setSpacing(8);
     filter_ = new QComboBox(center);
     filter_->setObjectName("managerFilter");
     search_ = new QLineEdit(center);
     search_->setObjectName("managerSearch");
     search_->setPlaceholderText(tr("搜索名称、ID"));
     search_->setClearButtonEnabled(true);
+    UiKit::InstallSearchIcon(search_);
     count_ = new QLabel(center);
     count_->setObjectName("paneHint");
     toolbar->addWidget(filter_);
@@ -174,10 +198,11 @@ void ManagerModule::BuildPage() {
 
     auto* detail = new QWidget(splitter);
     auto* detailLayout = new QVBoxLayout(detail);
-    detailLayout->setContentsMargins(8, 0, 0, 0);
-    detailLayout->setSpacing(4);
+    detailLayout->setContentsMargins(10, 10, 12, 10);
+    detailLayout->setSpacing(6);
     auto* heading = new QHBoxLayout;
     auto* titles = new QVBoxLayout;
+    titles->setSpacing(2);
     detailTitle_ = new QLabel(detail);
     detailTitle_->setObjectName("paneTitle");
     detailSubtitle_ = new QLabel(detail);
@@ -187,6 +212,7 @@ void ManagerModule::BuildPage() {
     heading->addLayout(titles, 1);
     openButton_ = new QPushButton(tr("打开"), detail);
     openButton_->setObjectName("managerOpen");
+    openButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")));
     heading->addWidget(openButton_);
     detailLayout->addLayout(heading);
     detailWarning_ = new QLabel(detail);

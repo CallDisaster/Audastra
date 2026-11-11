@@ -175,7 +175,10 @@ void TriggerBlueprint::AddWire(Pin* from, Pin* to, const QColor& color) {
     if (from == nullptr || to == nullptr) return;
     // 进入输入端口时向下；进入右侧端口时向右。
     const QPointF arrive = to->Kind() == PinKind::In ? QPointF(0, 1) : QPointF(1, 0);
-    auto* wire = scene_->addPath(ExecWire(from->scenePos(), from->Direction(), to->scenePos(), arrive), QPen(color, 2));
+    QColor wireColor = color;
+    wireColor.setAlpha(220);
+    auto* wire = scene_->addPath(ExecWire(from->scenePos(), from->Direction(), to->scenePos(), arrive),
+        QPen(wireColor, 2.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     wire->setZValue(-1);
     from->SetConnected(true);
     to->SetConnected(true);

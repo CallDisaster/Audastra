@@ -20,6 +20,7 @@
 #include "War3MapCore/Render/TerrainPicking.h"
 #include "Widgets/SearchField.h"
 
+#include <QApplication>
 #include <QButtonGroup>
 #include <QAction>
 #include <QComboBox>
@@ -46,6 +47,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTreeView>
 #include <QVariantAnimation>
 #include <QVBoxLayout>
@@ -126,6 +128,63 @@ private:
     QPersistentModelIndex plainPress_;
     Qt::KeyboardModifiers modifiers_;
     QItemSelection added_, removed_;
+};
+
+// 场景大纲显隐与锁定列：将原生复选框绘制为清晰的状态图标，仍读写同一 CheckStateRole。
+class OutlinerFlagDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        const QSize base = QStyledItemDelegate::sizeHint(option, index);
+        return {std::max(28, base.width()), std::max(24, base.height())};
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        QStyleOptionViewItem opt = option;
+        initStyleOption(&opt, index);
+        const bool checkable = (index.flags() & Qt::ItemIsUserCheckable) != 0;
+        opt.text.clear();
+        opt.features &= ~QStyleOptionViewItem::HasCheckIndicator;
+        QStyle* style = opt.widget ? opt.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, opt.widget);
+        if (!checkable) return;
+
+        const bool checked = index.data(Qt::CheckStateRole).toInt() == Qt::Checked;
+        const bool hovered = (opt.state & QStyle::State_MouseOver) != 0;
+        const QRect iconRect(opt.rect.center().x() - 7, opt.rect.center().y() - 7, 14, 14);
+        if (index.column() == 1) {
+            const QColor tint = checked
+                ? opt.palette.color(hovered ? QPalette::Text : QPalette::PlaceholderText)
+                : opt.palette.color(QPalette::PlaceholderText).darker(125);
+            UiKit::SvgIcon(checked ? QStringLiteral("lucide/eye") : QStringLiteral("lucide/eye-off"), tint)
+                .paint(painter, iconRect);
+        } else if (index.column() == 2) {
+            if (!checked && !hovered) return;
+            QColor tint = checked ? QColor(0xea, 0xb3, 0x64) : opt.palette.color(QPalette::PlaceholderText);
+            if (!checked) tint.setAlpha(110);
+            UiKit::SvgIcon(QStringLiteral("lucide/lock"), tint).paint(painter, iconRect);
+        }
+    }
+
+    bool editorEvent(QEvent* event, QAbstractItemModel* model,
+        const QStyleOptionViewItem& option, const QModelIndex& index) override {
+        if (!model || !(index.flags() & Qt::ItemIsUserCheckable) || !(index.flags() & Qt::ItemIsEnabled)) return false;
+        if (event->type() == QEvent::MouseButtonRelease) {
+            const auto* mouse = static_cast<QMouseEvent*>(event);
+            if (mouse->button() == Qt::LeftButton && option.rect.contains(mouse->position().toPoint())) {
+                const int next = index.data(Qt::CheckStateRole).toInt() == Qt::Checked ? Qt::Unchecked : Qt::Checked;
+                return model->setData(index, next, Qt::CheckStateRole);
+            }
+        } else if (event->type() == QEvent::KeyPress) {
+            const auto key = static_cast<QKeyEvent*>(event)->key();
+            if (key == Qt::Key_Space || key == Qt::Key_Select) {
+                const int next = index.data(Qt::CheckStateRole).toInt() == Qt::Checked ? Qt::Unchecked : Qt::Checked;
+                return model->setData(index, next, Qt::CheckStateRole);
+            }
+        }
+        return false;
+    }
 };
 
 QPushButton* ToolButton(QWidget* parent, const char* name, const char* icon, const QString& text, const QString& tip) {
@@ -309,6 +368,9 @@ QWidget* WorldModule::BuildSelectPage() {
     outliner_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     outliner_->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     outliner_->header()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    auto* flagDelegate = new OutlinerFlagDelegate(outliner_);
+    outliner_->setItemDelegateForColumn(1, flagDelegate);
+    outliner_->setItemDelegateForColumn(2, flagDelegate);
     column->addWidget(outliner_, 1);
     auto* more = new QPushButton(tr("继续读取场景"), page);
     more->setObjectName(QStringLiteral("worldOutlinerMore"));

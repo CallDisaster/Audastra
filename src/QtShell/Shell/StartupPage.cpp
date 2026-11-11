@@ -99,10 +99,13 @@ StartupPage::StartupPage(QAction* openMapAction, QAction* createMapAction, QWidg
     auto* open = addAction(openMapAction, QStringLiteral("startupOpenMap"), tr("打开地图"));
     // 仅强调主操作；颜色取当前主题调色板，状态/焦点仍由共享 UIKit 样式负责。
     open->setStyleSheet(QStringLiteral(
-        "QToolButton#startupOpenMap:enabled { background: palette(highlight); color: palette(link); border-color: palette(mid); }"
+        "QToolButton#startupOpenMap:enabled { background: palette(highlight); color: palette(link); border: 1px solid palette(mid); font-weight: 500; }"
         "QToolButton#startupOpenMap:hover:enabled, QToolButton#startupOpenMap:focus:enabled { border-color: palette(link); }"));
     column->addSpacing(8);
     auto* create = addAction(createMapAction, QStringLiteral("startupCreateMap"), tr("新建地图"));
+    create->setStyleSheet(QStringLiteral(
+        "QToolButton#startupCreateMap:enabled { background: palette(button); color: palette(text); border: 1px solid palette(mid); }"
+        "QToolButton#startupCreateMap:hover:enabled, QToolButton#startupCreateMap:focus:enabled { background: palette(light); border-color: palette(link); }"));
     setTabOrder(open, create);
     setFocusProxy(open);
 

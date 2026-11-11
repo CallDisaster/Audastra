@@ -45,6 +45,27 @@ private:
     bool pressed_ = false;
 };
 
+// 右侧检查栏的彩色分段上下文用量条：按输入、缓存命中、模型输出与剩余容量绘制圆角比例条。
+class ContextSegmentBar final : public QWidget {
+    Q_OBJECT
+
+public:
+    explicit ContextSegmentBar(QWidget* parent = nullptr);
+
+    void SetBreakdown(qint64 limit, qint64 used, qint64 uncachedInput, qint64 cachedRead, qint64 output);
+    [[nodiscard]] QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent* event) override;
+
+private:
+    qint64 limit_ = 0;
+    qint64 used_ = -1;
+    qint64 uncachedInput_ = 0;
+    qint64 cachedRead_ = 0;
+    qint64 output_ = 0;
+};
+
 // 权限菜单中的一项：图标、标题、说明，右侧勾选。仿照 Codex 的批准方式菜单。
 class PermissionOption final : public QWidget {
     Q_OBJECT

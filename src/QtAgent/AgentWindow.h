@@ -54,6 +54,7 @@ protected:
     void showEvent(QShowEvent* event) override;
     void hideEvent(QHideEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void changeEvent(QEvent* event) override;
 
 private:
     struct Private;

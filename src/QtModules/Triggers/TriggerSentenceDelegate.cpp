@@ -140,14 +140,30 @@ void TriggerSentenceDelegate::paint(QPainter* painter, const QStyleOptionViewIte
     for (std::size_t i = 0; i < layout.spans.size(); ++i) {
         const Span& span = layout.spans[i];
         if (span.begin > cursor) draw(layout.text.mid(cursor, span.begin - cursor), base);
+        const int spanStart = x;
+        const QString part = span.length > 0 ? layout.text.mid(span.begin, span.length) : QStringLiteral("  ");
+        const int spanWidth = (span.icon.isNull() ? 0 : 20) + metrics.horizontalAdvance(part) + (span.badge ? 16 : 0);
+        {
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            QColor pillFill = span.empty ? missing : token;
+            pillFill.setAlpha(span.empty ? 32 : (selected ? 36 : 24));
+            const QRectF pillRect(std::max(layout.textRect.left(), spanStart - 2), layout.textRect.top() + 2,
+                spanWidth + 4, std::max(12, layout.textRect.height() - 4));
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(pillFill);
+            painter->drawRoundedRect(pillRect, 4.0, 4.0);
+            painter->restore();
+        }
         if (!span.icon.isNull()) {
             span.icon.paint(painter, QRect(x, layout.textRect.center().y() - 8, 16, 16));
             x += 20;
         }
         const int left = x;
-        const QString part = span.length > 0 ? layout.text.mid(span.begin, span.length) : QStringLiteral("  ");
         draw(part, span.empty ? missing : token);
-        painter->setPen(QPen(span.empty ? missing : token, 1, span.call ? Qt::SolidLine : Qt::DotLine));
+        QColor underline = span.empty ? missing : token;
+        underline.setAlpha(span.empty ? 220 : 165);
+        painter->setPen(QPen(underline, 1, span.call ? Qt::SolidLine : Qt::DotLine));
         if (span.empty) {
             WavyLine(painter, left, x, baseline + 3);
         } else {
@@ -155,10 +171,16 @@ void TriggerSentenceDelegate::paint(QPainter* painter, const QStyleOptionViewIte
         }
         if (span.badge) {
             const QRect badge(x + 2, layout.textRect.center().y() - 6, 12, 12);
-            painter->setPen(QPen(token, 1));
-            painter->drawRoundedRect(badge, 2, 2);
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            QColor badgeColor = token;
+            badgeColor.setAlpha(190);
+            painter->setPen(QPen(badgeColor, 1));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(badge, 2.5, 2.5);
             painter->drawLine(badge.left() + 3, badge.top() + 4, badge.right() - 3, badge.top() + 4);
             painter->drawLine(badge.left() + 3, badge.top() + 8, badge.right() - 3, badge.top() + 8);
+            painter->restore();
             x += 16;
         }
         cursor = span.begin + span.length;
