@@ -813,6 +813,14 @@ void HandwrittenLuaEntriesSelectRuntime() {
     Require(!plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot == fixture.runtime &&
         hasCode(plan, "MAP_TEST_LUA_YDWE_FALLBACK") && hasCode(plan, "EXTERNAL_DEPENDENCY_YDWE_SELECTED"),
         "folder YDWE never joins owned Lua");
+    auto optionalEx = fixture.Artifact(members(entry, {{"main.lua", Bytes(
+        "local japi = require 'jass.japi'\nassert(japi.EXNative == nil)\n")}}));
+    helpers(optionalEx);
+    optionalEx.externalDependenciesDirectory = fixture.runtime;
+    plan = Script::BuildIndependentMapTestLaunchPlan(optionalEx);
+    Success(plan, "a statically recognized EX name is still optional without a map declaration");
+    Require(plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot.empty() &&
+        !hasCode(plan, "EXTERNAL_DEPENDENCY_YDWE_SELECTED"), "optional EX lookup never starts the legacy chain");
     auto gbk = fixture.Artifact(members(entry, {{"main.lua", Bytes("-- \xB2\xE2\xCA\xD4\nreturn 1\n")}}));
     fixture.Runtime(gbk, Services::MapTestRuntimeLayout::YdweTree, true);
     plan = Script::BuildIndependentMapTestLaunchPlan(gbk);
