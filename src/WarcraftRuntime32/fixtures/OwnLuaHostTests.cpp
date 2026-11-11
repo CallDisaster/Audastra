@@ -267,6 +267,7 @@ void MailboxExecutesRealLua() {
     for (std::uint32_t seq = 1; seq <= 20; ++seq) {
         mailbox->state = static_cast<LONG>(LuaMailboxState::Writing);
         mailbox->requestSequence = seq;
+        mailbox->requestGeneration = mailbox->generation;
         std::memcpy(mailbox->requestNonce, nonce.c_str(), nonce.size() + 1);
         std::memcpy(mailbox->requestMapSha256, sha.c_str(), sha.size() + 1);
         const std::string name = "@reload.lua";

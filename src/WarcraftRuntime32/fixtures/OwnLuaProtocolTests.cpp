@@ -42,6 +42,7 @@ void Signature() {
 void Publish(LuaTestMailbox& channel, std::uint32_t seq, std::string_view text = "value = 1") {
     channel.state = static_cast<LONG>(LuaMailboxState::Writing);
     channel.requestSequence = seq;
+    channel.requestGeneration = channel.generation;
     std::memcpy(channel.requestNonce, channel.sessionNonce, sizeof(channel.sessionNonce));
     std::memcpy(channel.requestMapSha256, channel.mapSha256, sizeof(channel.mapSha256));
     constexpr char name[] = "@hot-reload/原创.lua";

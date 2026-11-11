@@ -84,6 +84,41 @@ void DiagnosticsWithoutReload() {
         "last error remains readable after proven process exit");
 }
 
+void NewGenerationRejectsOldRequests() {
+    Fixture fixture;
+    const auto request = SubmitLuaTestReload(*fixture.session, {"@first.lua", "error('old request must not run')"});
+    Check(request.Succeeded(), "queue first-generation request");
+    Check(fixture.runtime->Report(LuaReloadResult::Success, "first VM"), "observe first VM");
+    Check(fixture.runtime->RetireForRestart(), "retire first VM");
+    Check(!fixture.runtime->Take() && !CancelLuaTestReload(*fixture.session, *request.value).Succeeded()
+        && !SubmitLuaTestReload(*fixture.session, {"@during.lua", "return 1"}).Succeeded(),
+        "old requests and new publishers cannot run during the gap");
+    OwnLua::LuaMailboxRuntime next(*fixture.mailbox);
+    Check(!next.Attach(fixture.inherited->Nonce(), std::string(64, 'b'), 2)
+        && !next.Attach(fixture.inherited->Nonce(), fixture.session->MapSha256(), 3),
+        "wrong archive and skipped generations cannot take over");
+    Check(next.Attach(fixture.inherited->Nonce(), fixture.session->MapSha256(), 2), "fresh mailbox generation attaches");
+    const auto fresh = QueryLuaTestReload(*fixture.session);
+    Check(fresh.Succeeded() && fresh.value->generation == 2 && fresh.value->sequence == 0
+        && fresh.value->state == LuaTestReloadState::Idle && !next.Take(), "old payload is not visible to the second VM");
+    fixture.runtime->Stop();
+    Check(!fixture.runtime->Report(LuaReloadResult::Success, "old callback")
+        && !QueryLuaTestReload(*fixture.session, *request.value).Succeeded()
+        && !CancelLuaTestReload(*fixture.session, *request.value).Succeeded(), "old receiver and editor request are invalid");
+    const auto newer = SubmitLuaTestReload(*fixture.session, {"@second.lua", "return 2"});
+    Check(newer.Succeeded() && *newer.value > *request.value && fixture.mailbox->requestGeneration == 2,
+        "second VM receives a newly identified request");
+    const auto accepted = next.Take();
+    Check(accepted && accepted->source == "return 2", "fresh request reached second VM");
+    Check(!fixture.runtime->Complete(*newer.value, LuaReloadResult::Success, "stale ACK")
+        && next.Complete(*newer.value, LuaReloadResult::Success, "new VM"), "only the new VM owns the ACK");
+    Check(next.Report(LuaReloadResult::Success, "second VM"), "observe second VM");
+    const auto finished = QueryLuaTestReload(*fixture.session, *newer.value);
+    Check(finished.Succeeded() && finished.value->message == "new VM"
+        && finished.value->runtimeDiagnosticSequence == 2 && finished.value->runtimeMessage == "second VM",
+        "new acknowledgment and monotonic observation");
+}
+
 void RejectionsAndUnknown() {
     Fixture fixture;
     Check(!SubmitLuaTestReload(*fixture.session, {"@bad.lua", std::string("a\0b", 3)}).Succeeded(), "NUL refused");
@@ -217,7 +252,8 @@ void RuntimeDiagnostics() {
 
 int main() {
     try {
-        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8(); FinalAcknowledgment(); RuntimeDiagnostics(); DiagnosticsWithoutReload();
+        Lifecycle(); RejectionsAndUnknown(); ConcurrencyAndUtf8(); FinalAcknowledgment(); RuntimeDiagnostics();
+        DiagnosticsWithoutReload(); NewGenerationRejectsOldRequests();
         std::cout << "Lua mailbox service fixture passed; simulated receiver only; game_evidence=0\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

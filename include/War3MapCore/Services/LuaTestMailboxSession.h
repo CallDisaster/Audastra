@@ -38,6 +38,7 @@ struct LuaTestReloadSnapshot {
     LuaTestReloadState state = LuaTestReloadState::Starting;
     Audastra::Runtime32::LuaRuntimeState runtimeState = Audastra::Runtime32::LuaRuntimeState::Starting;
     std::uint32_t sequence = 0;
+    std::int32_t generation = 0;
     Audastra::Runtime32::LuaReloadResult resultCode = Audastra::Runtime32::LuaReloadResult::NotReady;
     std::string message;
     bool resultTruncated = false;

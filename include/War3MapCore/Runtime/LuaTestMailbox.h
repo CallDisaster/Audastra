@@ -7,13 +7,13 @@
 namespace Audastra::Runtime32 {
 
 inline constexpr std::uint32_t kLuaMailboxMagic = 0x414c5541;
-inline constexpr std::uint32_t kLuaMailboxVersion = 3; // 3：chunk 名 "module:<名>" 表示模块热重载。
+inline constexpr std::uint32_t kLuaMailboxVersion = 4; // 4：请求绑定本局邮箱代际。
 inline constexpr std::size_t kLuaReloadSourceCapacity = 1024 * 1024;
 inline constexpr std::size_t kLuaReloadResultCapacity = 16 * 1024;
 inline constexpr std::size_t kLuaReloadChunkCapacity = 256;
 
 enum class LuaMailboxState : std::int32_t {
-    Empty, Writing, Ready, Running, Complete, Stopped
+    Empty, Writing, Ready, Running, Complete, Stopped, Resetting
 };
 enum class LuaRuntimeState : std::int32_t { Starting, Ready, Failed, Stopped };
 enum class LuaReloadResult : std::uint32_t {
@@ -54,6 +54,9 @@ struct alignas(4) LuaTestMailbox {
     std::uint32_t runtimeDiagnosticBytes = 0;
     std::uint32_t runtimeDiagnosticTruncated = 0;
     char runtimeDiagnosticText[kLuaReloadResultCapacity]{};
+    // 匿名映射随进程持有；每个 VM 取得新代际，旧请求序号不能跨代生效。
+    std::int32_t generation = 0;
+    std::int32_t requestGeneration = 0;
 };
 
 static_assert(std::is_standard_layout_v<LuaTestMailbox>);
@@ -65,6 +68,7 @@ static_assert(offsetof(LuaTestMailbox, chunkName) == 252);
 static_assert(offsetof(LuaTestMailbox, source) == 508);
 static_assert(offsetof(LuaTestMailbox, runtimeDiagnosticRevision) == 1065468);
 static_assert(offsetof(LuaTestMailbox, runtimeDiagnosticText) == 1065488);
-static_assert(sizeof(LuaTestMailbox) == 1081872);
+static_assert(offsetof(LuaTestMailbox, generation) == 1081872);
+static_assert(sizeof(LuaTestMailbox) == 1081880);
 
 } // namespace Audastra::Runtime32

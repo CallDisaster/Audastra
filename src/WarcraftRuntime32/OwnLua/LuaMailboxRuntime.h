@@ -17,10 +17,13 @@ struct LuaReloadChunk {
 class LuaMailboxRuntime {
 public:
     explicit LuaMailboxRuntime(LuaTestMailbox& mailbox) noexcept : mailbox_(mailbox) {}
-    [[nodiscard]] bool Attach(std::string_view sessionNonce, std::string_view mapSha256) noexcept;
+    // 第二次附着只由已经证明新 VM 地图身份的调用者使用。
+    [[nodiscard]] bool Attach(std::string_view sessionNonce, std::string_view mapSha256,
+        std::int32_t generation = 1) noexcept;
     [[nodiscard]] std::optional<LuaReloadChunk> Take();
     [[nodiscard]] bool Complete(std::uint32_t sequence, LuaReloadResult result, std::string_view message) noexcept;
     [[nodiscard]] bool Report(LuaReloadResult result, std::string_view message) noexcept;
+    [[nodiscard]] bool RetireForRestart() noexcept;
     void Stop() noexcept;
 private:
     [[nodiscard]] bool Identity() const noexcept;
@@ -31,6 +34,8 @@ private:
     std::uint32_t threadId_ = 0;
     std::uint32_t lastSequence_ = 0;
     std::uint32_t diagnosticSequence_ = 0;
+    std::int32_t generation_ = 0;
+    bool retired_ = false;
 };
 
 } // namespace Audastra::Runtime32::OwnLua

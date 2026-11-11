@@ -74,6 +74,7 @@ struct LuaTestMailboxSession::Impl {
     std::string nonce, sha;
     std::mutex mutex;
     std::uint32_t lastSequence = 0;
+    std::int32_t lastGeneration = 0;
     RuntimeDiagnostic diagnostic;
     detail::LuaTestProcessVerifier verify;
     bool enableReload = true;
@@ -130,7 +131,8 @@ static Result<std::uint32_t> Submit(LuaTestMailboxSession& session, const LuaTes
     if (!impl.enableReload)
         return Failure<std::uint32_t>("LUA_TEST_RELOAD_DISABLED", "本次测试未开启热重载；运行时诊断仍可查询。");
     if (!impl.Identity()) return Failure<std::uint32_t>("LUA_TEST_IDENTITY", "Lua 测试会话或地图身份已变化。");
-    if (Read(mailbox.runtimeState) != static_cast<LONG>(LuaRuntimeState::Ready)
+    const auto generation = Read(mailbox.generation);
+    if (generation <= 0 || Read(mailbox.runtimeState) != static_cast<LONG>(LuaRuntimeState::Ready)
         || impl.Ownership() != detail::LuaTestProcessOwnership::OwnedRunning)
         return Failure<std::uint32_t>("LUA_TEST_NOT_READY", "本次测试运行时或原进程归属尚未确认，不能发送代码。");
     if (impl.lastSequence == std::numeric_limits<std::uint32_t>::max())
@@ -139,8 +141,15 @@ static Result<std::uint32_t> Submit(LuaTestMailboxSession& session, const LuaTes
     if ((from != LuaMailboxState::Empty && from != LuaMailboxState::Complete)
         || !Change(mailbox.state, from, LuaMailboxState::Writing))
         return Failure<std::uint32_t>("LUA_TEST_BUSY", "上一份热重载仍待处理，不能覆盖其代码或结果。");
+    if (Read(mailbox.generation) != generation || Read(mailbox.runtimeState) != static_cast<LONG>(LuaRuntimeState::Ready)) {
+        // 新代可能恰好在本次占位之前发布。还原原槽；当前提交未写入任何请求。
+        Store(mailbox.state, from);
+        return Failure<std::uint32_t>("LUA_TEST_NOT_READY", "Lua 邮箱已换局，未发送热重载。");
+    }
     const auto sequence = ++impl.lastSequence;
+    impl.lastGeneration = generation;
     mailbox.requestSequence = sequence;
+    mailbox.requestGeneration = generation;
     std::memcpy(mailbox.requestNonce, impl.nonce.c_str(), impl.nonce.size() + 1);
     std::memcpy(mailbox.requestMapSha256, impl.sha.c_str(), impl.sha.size() + 1);
     mailbox.chunkNameBytes = static_cast<std::uint32_t>(request.chunkName.size());
@@ -161,10 +170,12 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     std::lock_guard lock(impl.mutex);
     auto& mailbox = *impl.mailbox;
     if (!impl.Identity()) return Failure<LuaTestReloadSnapshot>("LUA_TEST_IDENTITY", "Lua 测试会话或地图身份已变化。");
-    if (sequence && sequence != impl.lastSequence)
+    const auto generation = Read(mailbox.generation);
+    if (sequence && (sequence != impl.lastSequence || generation != impl.lastGeneration))
         return Failure<LuaTestReloadSnapshot>("LUA_TEST_SEQUENCE", "这份热重载请求已过期，不能使用其他序号的结果。");
     LuaTestReloadSnapshot snapshot;
-    snapshot.sequence = impl.lastSequence;
+    snapshot.sequence = generation == impl.lastGeneration ? impl.lastSequence : 0;
+    snapshot.generation = generation;
     const auto runtime = Read(mailbox.runtimeState);
     if (runtime < static_cast<LONG>(LuaRuntimeState::Starting) || runtime > static_cast<LONG>(LuaRuntimeState::Stopped))
         return Failure<LuaTestReloadSnapshot>("LUA_TEST_RUNTIME_STATE", "Lua 测试运行时状态无效。");
@@ -184,7 +195,8 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     if (state == LuaMailboxState::Complete || (state == LuaMailboxState::Stopped && mailbox.resultSequence)) {
         // Complete / Stop 由运行时 release 发布。Stop只改状态，仍须核验并读取已发布的末次ACK；
         // 没有resultSequence的中断请求不能冒认为完成，编辑器互斥也禁止此时另一Submit覆盖正文。
-        if (!impl.lastSequence || mailbox.requestSequence != impl.lastSequence || mailbox.resultSequence != impl.lastSequence
+        if (generation <= 0 || impl.lastGeneration != generation || mailbox.requestGeneration != generation
+            || !impl.lastSequence || mailbox.requestSequence != impl.lastSequence || mailbox.resultSequence != impl.lastSequence
             || std::memcmp(mailbox.requestNonce, impl.nonce.c_str(), impl.nonce.size() + 1)
             || std::memcmp(mailbox.requestMapSha256, impl.sha.c_str(), impl.sha.size() + 1)
             || mailbox.resultBytes >= kLuaReloadResultCapacity || mailbox.resultTruncated > 1
@@ -204,6 +216,8 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     } else if (state == LuaMailboxState::Empty) snapshot.state = LuaTestReloadState::Idle;
     else if (state == LuaMailboxState::Ready) snapshot.state = LuaTestReloadState::Queued;
     else return Failure<LuaTestReloadSnapshot>("LUA_TEST_MAILBOX_STATE", "Lua 测试邮箱状态无效。");
+    if (Read(mailbox.generation) != generation)
+        return Failure<LuaTestReloadSnapshot>("LUA_TEST_NOT_READY", "读取期间 Lua 邮箱已换局，请重新查询。");
     return Result<LuaTestReloadSnapshot>::Success(std::move(snapshot));
 }
 
@@ -211,10 +225,17 @@ static Status Cancel(LuaTestMailboxSession& session, std::uint32_t sequence) {
     auto& impl = *session.impl_;
     std::lock_guard lock(impl.mutex);
     auto& mailbox = *impl.mailbox;
-    if (!sequence || sequence != impl.lastSequence || !impl.Identity())
+    const auto generation = Read(mailbox.generation);
+    if (!sequence || sequence != impl.lastSequence || generation != impl.lastGeneration
+        || Read(mailbox.runtimeState) != static_cast<LONG>(LuaRuntimeState::Ready) || !impl.Identity())
         return Status::Failure("Lua.Test", "LUA_TEST_SEQUENCE", "热重载身份或序号不符，取消请求已拒绝。");
     if (!Change(mailbox.state, LuaMailboxState::Ready, LuaMailboxState::Writing))
         return Status::Failure("Lua.Test", "LUA_TEST_CANCEL_TOO_LATE", "请求已开始执行或已经结束，不能假报取消。");
+    if (Read(mailbox.generation) != generation || mailbox.requestGeneration != generation
+        || Read(mailbox.runtimeState) != static_cast<LONG>(LuaRuntimeState::Ready)) {
+        Store(mailbox.state, LuaMailboxState::Ready);
+        return Status::Failure("Lua.Test", "LUA_TEST_SEQUENCE", "Lua 邮箱已换局，旧请求不能取消当前代。");
+    }
     mailbox.resultCode = LuaReloadResult::Cancelled;
     mailbox.resultSequence = sequence;
     mailbox.resultBytes = 0;
