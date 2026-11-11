@@ -20,6 +20,8 @@ public:
     [[nodiscard]] bool Executable(std::uintptr_t address, std::size_t bytes = 1) const noexcept;
     [[nodiscard]] bool Matches(std::uintptr_t rva, std::span<const unsigned char> bytes) const noexcept;
     [[nodiscard]] bool OriginalCode(std::uint32_t rva, std::span<unsigned char> bytes) const noexcept;
+    // 只在已知原版归档 ABI 下返回活动地图的独立文件句柄；失败不回退到启动路径。
+    [[nodiscard]] HANDLE DuplicateActiveMapFile() const;
 private:
     struct Impl;
     explicit GameImage127(std::unique_ptr<Impl> impl);

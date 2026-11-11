@@ -41,6 +41,13 @@ void ArchiveIdentityAndHost() {
         auto opened = LuaMapArchive::Open(map, sha);
         if (!opened.archive) throw std::runtime_error("open: " + opened.error);
         auto& archive = *opened.archive;
+        const auto twinPath = temp.root / "equal-bytes-different-file.w3x";
+        Check(std::filesystem::copy_file(map, twinPath), "make independent equal-content map");
+        Handle current(OpenLockedFile(map)), twin(OpenLockedFile(twinPath));
+        Check(Hash(twinPath) == sha && archive.IsSameFrozenFile(current.value),
+            "another game handle of the exact frozen file is verified");
+        Check(!archive.IsSameFrozenFile(twin.value) && !archive.IsSameFrozenFile(INVALID_HANDLE_VALUE)
+            && !archive.IsSameFrozenFile(nullptr), "equal bytes, missing owner and invalid handle cannot authorize another map");
         Check(archive.Read("MAIN.LUA", 4096).found, "MPQ lookup uses actual case-insensitive member hash");
         Check(archive.Read("lib\\value.lua", 4096).source == "return 41", "MPQ slash canonicalization");
         const auto empty = archive.Read("empty.lua", 4096);

@@ -5,10 +5,12 @@
 #include "LuaMailboxRuntime.h"
 #include "LuaMapArchive.h"
 #include "../Japi/GameSession.h"
+#include "../RuntimeFiles.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 
 #include <array>
 #include <atomic>
+#include <limits>
 #include <utility>
 
 namespace Audastra::Runtime32::OwnLua {
@@ -37,6 +39,9 @@ public:
     std::unique_ptr<Japi::NativeSession> japi;
     NativeValue timer;
     bool stopped = false;
+    bool awaitingRestart = false;
+    std::int32_t mailboxGeneration = 0;
+    std::uint64_t previousRegistration = 0;
     unsigned executionDepth = 0;
     unsigned callbackDepth = 0;
     std::atomic<DWORD> threadId{0};
@@ -63,7 +68,10 @@ public:
     }
     void Fatal(std::string_view error) {
         ++observation.errors;
-        if (mailbox) (void)mailbox->Report(LuaReloadResult::HostFailure, error);
+        if (mailbox) {
+            if (awaitingRestart) mailbox->FailRestart(error);
+            else (void)mailbox->Report(LuaReloadResult::HostFailure, error);
+        }
         if (vm) vm->Invalidate();
         stopped = true;
         if (mailbox) mailbox->Stop();
@@ -73,20 +81,40 @@ public:
     }
     bool Start(const GameNativeContext& context) {
         if (stopped || !context.codeDispatchReady) { Fatal("自有 Lua 会话已停止或 code 桥未就绪。"); return false; }
+        if (awaitingRestart) {
+            if (context.registrationGeneration <= previousRegistration || !context.image) {
+                Fatal("LUA_TEST_RESTART_VM_UNVERIFIED：重开没有提供新的有效 native 登记代际，已阻止执行 Lua。");
+                return false;
+            }
+            const Handle activeMap(context.image->DuplicateActiveMapFile());
+            if (!archive->IsSameFrozenFile(activeMap.value)) {
+                Fatal("LUA_TEST_RESTART_MAP_UNVERIFIED：新 VM 的活动归档无法核对为本次冻结的地图文件与 SHA，已阻止执行 Lua。");
+                return false;
+            }
+        }
+        if (mailboxGeneration == (std::numeric_limits<std::int32_t>::max)()) {
+            Fatal("Lua 邮箱代际已用尽，请重新启动测试。"); return false;
+        }
         auto opened = GameVm127::OpenAtScriptEntry(context.image, context.registrationGeneration);
         if (!opened.vm) { Fatal(opened.error); return false; }
         vm = std::move(opened.vm);
         observation.threadId = GetCurrentThreadId();
         threadId.store(observation.threadId);
         observation.nativeCount = static_cast<std::uint32_t>(context.registry->Entries().size());
-        mailbox = std::make_unique<LuaMailboxRuntime>(*config.mailbox);
-        if (!mailbox->Attach(config.nonce, config.mapSha256)) { Fatal("自有 Lua 邮箱无法与原测试身份附着。"); return false; }
+        auto freshMailbox = std::make_unique<LuaMailboxRuntime>(*config.mailbox);
+        if (!freshMailbox->Attach(config.nonce, config.mapSha256, mailboxGeneration + 1)) {
+            Fatal("自有 Lua 邮箱无法与当前地图代际附着。"); return false;
+        }
+        ++mailboxGeneration;
+        previousRegistration = context.registrationGeneration;
+        awaitingRestart = false;
+        mailbox = std::move(freshMailbox);
         host = std::make_unique<LuaHost>([source = archive](std::string_view member, std::size_t maxBytes) {
             return source->Read(member, maxBytes);
         });
         auto initialized = host->Initialize();
         if (!initialized.Succeeded()) { Fatal(initialized.message); return false; }
-        natives = std::make_shared<GameNativeProvider>(vm, context.registry, types, context.codeDispatchReady, std::move(weather));
+        natives = std::make_shared<GameNativeProvider>(vm, context.registry, types, context.codeDispatchReady, weather);
         initialized = host->BindNatives(natives);
         if (!initialized.Succeeded()) { Fatal(initialized.message); return false; }
         {
@@ -157,7 +185,7 @@ public:
     std::optional<NativeCallbackResult> Code(std::uint32_t vmIndex, std::uint32_t code, bool parameters) {
         // native登记及code表属于线程TLS；尚未附着或其它线程的JASS不属于本会话。
         if (GetCurrentThreadId() != threadId.load()) return {};
-        if (!natives) return {};
+        if (!natives || stopped || awaitingRestart) return {};
         ++callbackDepth;
         auto result = natives->DispatchCode(vmIndex, code, parameters);
         --callbackDepth;
@@ -179,11 +207,13 @@ public:
         if (!vm || !vm->IsMainVm(destroying)) return;
         if (executionDepth || callbackDepth) { Fatal("游戏在 Lua 执行期间销毁其所属 VM。"); return; }
         // VM 尚未析构，先让 Lua 释放自己持有的原句柄，再使 provider/code 失效。
-        stopped = true;
-        if (mailbox) mailbox->Stop();
+        if (stopped || !mailbox || !mailbox->RetireForRestart()) { Fatal("无法安全结束旧游戏 VM 的 Lua 邮箱。"); return; }
+        awaitingRestart = true;
         host.reset();
         timer = {};
         natives->BeforeVmDestroy(destroying);
+        natives.reset();
+        vm.reset();
         observation.ready = false;
         Publish();
     }

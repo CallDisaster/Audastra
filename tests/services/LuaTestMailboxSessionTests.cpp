@@ -91,6 +91,7 @@ void NewGenerationRejectsOldRequests() {
     Check(fixture.runtime->Report(LuaReloadResult::Success, "first VM"), "observe first VM");
     Check(fixture.runtime->RetireForRestart(), "retire first VM");
     Check(!fixture.runtime->Take() && !CancelLuaTestReload(*fixture.session, *request.value).Succeeded()
+        && !QueryLuaTestReload(*fixture.session, *request.value).Succeeded()
         && !SubmitLuaTestReload(*fixture.session, {"@during.lua", "return 1"}).Succeeded(),
         "old requests and new publishers cannot run during the gap");
     OwnLua::LuaMailboxRuntime next(*fixture.mailbox);
@@ -117,6 +118,14 @@ void NewGenerationRejectsOldRequests() {
     Check(finished.Succeeded() && finished.value->message == "new VM"
         && finished.value->runtimeDiagnosticSequence == 2 && finished.value->runtimeMessage == "second VM",
         "new acknowledgment and monotonic observation");
+    Check(next.RetireForRestart(), "retire second VM before an unverified map");
+    next.FailRestart("LUA_TEST_RESTART_MAP_UNVERIFIED");
+    OwnLua::LuaMailboxRuntime forbidden(*fixture.mailbox);
+    const auto refused = QueryLuaTestReload(*fixture.session);
+    Check(!forbidden.Attach(fixture.inherited->Nonce(), fixture.session->MapSha256(), 3)
+        && refused.Succeeded() && refused.value->runtimeState == LuaRuntimeState::Stopped
+        && refused.value->runtimeMessage == "LUA_TEST_RESTART_MAP_UNVERIFIED",
+        "unverified next map cannot attach and retains the refusal reason");
 }
 
 void RejectionsAndUnknown() {

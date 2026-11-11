@@ -180,7 +180,15 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     if (runtime < static_cast<LONG>(LuaRuntimeState::Starting) || runtime > static_cast<LONG>(LuaRuntimeState::Stopped))
         return Failure<LuaTestReloadSnapshot>("LUA_TEST_RUNTIME_STATE", "Lua 测试运行时状态无效。");
     snapshot.runtimeState = static_cast<LuaRuntimeState>(runtime);
-    if (snapshot.runtimeState == LuaRuntimeState::Starting) return Result<LuaTestReloadSnapshot>::Success(snapshot);
+    if (snapshot.runtimeState == LuaRuntimeState::Starting) {
+        if (sequence) return Failure<LuaTestReloadSnapshot>("LUA_TEST_SEQUENCE", "旧 Lua 会话已退出，不能查询它的热重载请求。");
+        snapshot.sequence = 0;
+        if (generation > 0 && impl.Ownership() == detail::LuaTestProcessOwnership::OwnedExited) {
+            snapshot.runtimeState = LuaRuntimeState::Stopped;
+            snapshot.state = LuaTestReloadState::Stopped;
+        }
+        return Result<LuaTestReloadSnapshot>::Success(snapshot);
+    }
     const auto ownership = impl.Ownership();
     if (ownership == detail::LuaTestProcessOwnership::Unconfirmed)
         return Failure<LuaTestReloadSnapshot>("LUA_TEST_PROCESS_UNCONFIRMED", "Lua 运行时尚未与本次启动的原进程身份对应。");
@@ -192,7 +200,8 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     snapshot.runtimeMessage = impl.diagnostic.message;
     snapshot.runtimeDiagnosticTruncated = impl.diagnostic.truncated;
     const auto state = static_cast<LuaMailboxState>(Read(mailbox.state));
-    if (state == LuaMailboxState::Complete || (state == LuaMailboxState::Stopped && mailbox.resultSequence)) {
+    if (state == LuaMailboxState::Complete || (state == LuaMailboxState::Stopped
+        && generation == impl.lastGeneration && mailbox.resultSequence)) {
         // Complete / Stop 由运行时 release 发布。Stop只改状态，仍须核验并读取已发布的末次ACK；
         // 没有resultSequence的中断请求不能冒认为完成，编辑器互斥也禁止此时另一Submit覆盖正文。
         if (generation <= 0 || impl.lastGeneration != generation || mailbox.requestGeneration != generation
@@ -216,7 +225,8 @@ static Result<LuaTestReloadSnapshot> Query(LuaTestMailboxSession& session, std::
     } else if (state == LuaMailboxState::Empty) snapshot.state = LuaTestReloadState::Idle;
     else if (state == LuaMailboxState::Ready) snapshot.state = LuaTestReloadState::Queued;
     else return Failure<LuaTestReloadSnapshot>("LUA_TEST_MAILBOX_STATE", "Lua 测试邮箱状态无效。");
-    if (Read(mailbox.generation) != generation)
+    if (Read(mailbox.generation) != generation
+        || (generation > 0 && Read(mailbox.runtimeState) == static_cast<LONG>(LuaRuntimeState::Starting)))
         return Failure<LuaTestReloadSnapshot>("LUA_TEST_NOT_READY", "读取期间 Lua 邮箱已换局，请重新查询。");
     return Result<LuaTestReloadSnapshot>::Success(std::move(snapshot));
 }

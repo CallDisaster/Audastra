@@ -116,4 +116,60 @@ bool GameImage127::OriginalCode(std::uint32_t rva, std::span<unsigned char> byte
         return true;
     }catch(...){return false;}
 }
+
+HANDLE GameImage127::DuplicateActiveMapFile() const {
+    constexpr std::uint32_t archiveGetter = 0x770f50, mapArchiveOpen = 0x76ed90, activeSlot = 0xbee150;
+    constexpr std::uint32_t stormHandleInstruction = 0x1e494, archiveFileOffset = 0x10c;
+    constexpr char stormSha[] = "f8f519cfaa6275a5172a014f0abed2212284390a33f1194677155a7d408e63eb";
+    constexpr std::array<unsigned char, 21> stormCode{
+        0x8b,0x86,0x0c,0x01,0x00,0x00,0x83,0xf8,0xff,0x74,0x10,
+        0x83,0xbe,0x4c,0x01,0x00,0x00,0x00,0x75,0x07,0x50};
+    std::array<unsigned char, 6> getter{};
+    std::array<unsigned char, 0x72> loader{};
+    if (!OriginalCode(archiveGetter, getter) || !Matches(archiveGetter, getter)
+        || !OriginalCode(mapArchiveOpen, loader) || !Matches(mapArchiveOpen, loader))
+        return INVALID_HANDLE_VALUE;
+    // 0x76ed90 将成功打开的当前地图归档放入 getter 返回的首槽。实机同图重开
+    // 会释放并重新设置这个槽；第二槽用于另一类归档，不作为活动地图来源。
+    std::uint32_t slot = 0;
+    std::memcpy(&slot, getter.data() + 1, sizeof(slot));
+    if (getter.front() != 0xb8 || getter.back() != 0xc3 || slot != Base() + activeSlot)
+        return INVALID_HANDLE_VALUE;
+    const auto storm = GetModuleHandleW(L"Storm.dll");
+    std::array<wchar_t, 4096> stormPath{};
+    const auto length = storm ? GetModuleFileNameW(storm, stormPath.data(), static_cast<DWORD>(stormPath.size())) : 0;
+    if (!length || length >= stormPath.size()
+        || !EqualPath(std::wstring(stormPath.data(), length), (Path().parent_path() / L"Storm.dll").wstring()))
+        return INVALID_HANDLE_VALUE;
+    const auto stormInstruction = reinterpret_cast<std::uintptr_t>(storm) + stormHandleInstruction;
+    MEMORY_BASIC_INFORMATION memory{};
+    if (!VirtualQuery(reinterpret_cast<const void*>(stormInstruction), &memory, sizeof(memory))
+        || memory.AllocationBase != storm || memory.Type != MEM_IMAGE || memory.State != MEM_COMMIT
+        || !SameBytes(stormInstruction, stormCode.data(), stormCode.size()))
+        return INVALID_HANDLE_VALUE;
+    Handle stormLease(OpenLockedFile(stormPath.data()));
+    if (stormLease.value == INVALID_HANDLE_VALUE || Sha256(stormLease.value, 1024 * 1024) != stormSha)
+        return INVALID_HANDLE_VALUE;
+    const auto process = GetCurrentProcess();
+    const auto read = [&](std::uintptr_t address, std::uint32_t& value) {
+        SIZE_T bytes = 0;
+        return ReadProcessMemory(process, reinterpret_cast<const void*>(address), &value, sizeof(value), &bytes)
+            && bytes == sizeof(value);
+    };
+    std::uint32_t archive = 0, file = 0;
+    if (!read(slot, archive) || archive < 0x10000 || archive > UINT32_MAX - archiveFileOffset - sizeof(file)
+        || !read(archive + archiveFileOffset, file) || !file || file == UINT32_MAX)
+        return INVALID_HANDLE_VALUE;
+    Handle duplicate;
+    if (!DuplicateHandle(process, reinterpret_cast<HANDLE>(std::uintptr_t(file)), process,
+        &duplicate.value, 0, FALSE, DUPLICATE_SAME_ACCESS) || GetFileType(duplicate.value) != FILE_TYPE_DISK)
+        return INVALID_HANDLE_VALUE;
+    std::uint32_t currentArchive = 0, currentFile = 0;
+    if (!read(slot, currentArchive) || currentArchive != archive
+        || !read(archive + archiveFileOffset, currentFile) || currentFile != file)
+        return INVALID_HANDLE_VALUE;
+    const auto result = duplicate.value;
+    duplicate.value = INVALID_HANDLE_VALUE;
+    return result;
+}
 } // namespace Audastra::Runtime32::OwnLua

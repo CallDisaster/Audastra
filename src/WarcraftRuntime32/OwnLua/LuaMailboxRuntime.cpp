@@ -35,11 +35,8 @@ bool LuaMailboxRuntime::Attach(std::string_view nonce, std::string_view sha, std
             || state == static_cast<LONG>(LuaMailboxState::Writing) || state == static_cast<LONG>(LuaMailboxState::Running)
             || InterlockedCompareExchange(reinterpret_cast<volatile LONG*>(&mailbox_.state),
                 static_cast<LONG>(LuaMailboxState::Resetting), state) != state) return false;
-        mailbox_.requestSequence = mailbox_.resultSequence = 0;
-        mailbox_.requestGeneration = 0;
-        mailbox_.chunkNameBytes = mailbox_.sourceBytes = mailbox_.resultBytes = 0;
-        mailbox_.resultTruncated = 0;
-        mailbox_.resultCode = LuaReloadResult::NotReady;
+        // 不擦写旧 ACK 的普通内存：宿主可能已开始读取它。代际和 Empty
+        // 发布后旧槽不再可达，下次 Submit 在宿主互斥下覆盖这些字段。
         // 诊断槽是进程日志，保留单调序号；它不是可执行请求或 ACK。
         diagnosticSequence_ = mailbox_.runtimeDiagnosticSequence;
     }
@@ -159,6 +156,14 @@ bool LuaMailboxRuntime::RetireForRestart() noexcept {
     Store(mailbox_.runtimeState, static_cast<LONG>(LuaRuntimeState::Starting));
     retired_ = true;
     return true;
+}
+
+void LuaMailboxRuntime::FailRestart(std::string_view message) noexcept {
+    if (!retired_ || threadId_ != GetCurrentThreadId() || !Identity()
+        || Read(mailbox_.runtimeState) != static_cast<LONG>(LuaRuntimeState::Starting)) return;
+    retired_ = false;
+    (void)Report(LuaReloadResult::HostFailure, message);
+    Stop();
 }
 
 } // namespace Audastra::Runtime32::OwnLua

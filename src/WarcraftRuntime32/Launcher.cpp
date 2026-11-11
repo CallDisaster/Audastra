@@ -479,6 +479,9 @@ struct RunReceipt {
             json += ",\"modules\":" + std::to_string(owned.modules) + ",\"callbacks\":" + std::to_string(owned.callbacks);
             json += ",\"polls\":" + std::to_string(owned.polls) + ",\"nativeCalls\":" + std::to_string(owned.nativeCalls);
             json += ",\"errors\":" + std::to_string(owned.errors) + ",\"failureText\":" + Json(owned.failureText);
+            if (luaMailbox && LuaMailboxHeader(*luaMailbox))
+                json += ",\"generation\":" + std::to_string(InterlockedCompareExchange(
+                    reinterpret_cast<volatile LONG*>(&luaMailbox->generation), 0, 0));
             const bool stable = luaMailbox && LuaMailboxHeader(*luaMailbox) && !(luaMailbox->runtimeDiagnosticRevision & 1)
                 && luaMailbox->runtimeDiagnosticSequence == luaMailbox->runtimeDiagnosticRevision / 2
                 && luaMailbox->runtimeDiagnosticBytes < kLuaReloadResultCapacity

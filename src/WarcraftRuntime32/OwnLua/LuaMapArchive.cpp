@@ -5,6 +5,7 @@
 #include "War3MapCore/Runtime/LuaObjectSnapshot.h"
 
 #include <mutex>
+#include <cstring>
 
 namespace Audastra::Runtime32::OwnLua {
 namespace {
@@ -78,6 +79,20 @@ LuaModuleRead LuaMapArchive::Read(std::string_view member, std::size_t maxBytes)
         return {true, std::move(text), {}};
     } catch (const std::exception& error) { return {false, {}, std::string("无法读取 Lua 地图成员：") + error.what()}; }
     catch (...) { return {false, {}, "无法读取 Lua 地图成员：宿主发生未知异常。"}; }
+}
+
+bool LuaMapArchive::IsSameFrozenFile(HANDLE activeFile) const noexcept {
+    // Open 已核对完整 SHA，并持续持有禁止写入及替换的租约。同一个内核文件身份
+    // 因此绑定同一份已冻结字节；不修改游戏文件指针，也不把相同内容的另一文件当作原件。
+    FILE_ID_INFO expected{}, active{};
+    if (!activeFile || activeFile == INVALID_HANDLE_VALUE || GetFileType(activeFile) != FILE_TYPE_DISK
+        || !GetFileInformationByHandleEx(impl_->file.value, FileIdInfo, &expected, sizeof(expected))
+        || !GetFileInformationByHandleEx(activeFile, FileIdInfo, &active, sizeof(active)))
+        return false;
+    constexpr FILE_ID_128 empty{};
+    return expected.VolumeSerialNumber == active.VolumeSerialNumber
+        && std::memcmp(&expected.FileId, &empty, sizeof(empty)) != 0
+        && std::memcmp(&expected.FileId, &active.FileId, sizeof(expected.FileId)) == 0;
 }
 
 } // namespace Audastra::Runtime32::OwnLua

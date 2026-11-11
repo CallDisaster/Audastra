@@ -24,6 +24,7 @@ public:
     [[nodiscard]] bool Complete(std::uint32_t sequence, LuaReloadResult result, std::string_view message) noexcept;
     [[nodiscard]] bool Report(LuaReloadResult result, std::string_view message) noexcept;
     [[nodiscard]] bool RetireForRestart() noexcept;
+    void FailRestart(std::string_view message) noexcept;
     void Stop() noexcept;
 private:
     [[nodiscard]] bool Identity() const noexcept;

@@ -2,6 +2,7 @@
 
 #include "LuaHost.h"
 #include <filesystem>
+#include <windows.h>
 
 namespace Audastra::Runtime32::OwnLua {
 
@@ -16,6 +17,7 @@ public:
     [[nodiscard]] static LuaArchiveOpen Open(const std::filesystem::path& map,
         std::string_view expectedSha256);
     [[nodiscard]] LuaModuleRead Read(std::string_view member, std::size_t maxBytes) const;
+    [[nodiscard]] bool IsSameFrozenFile(HANDLE activeFile) const noexcept;
 private:
     struct Impl;
     explicit LuaMapArchive(std::unique_ptr<Impl> impl);
