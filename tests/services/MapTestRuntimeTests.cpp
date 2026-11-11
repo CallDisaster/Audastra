@@ -269,7 +269,8 @@ void ExternalDependencyCatalog() {
     Write(directory / "kkwe" / "插件" / "dz_w3_plugin.dll", Pe(true));
     status = Services::QueryExternalDependencies(directory);
     Success(status, "unrelated files and directories do not exhaust provider budget");
-    Require(status.value->providers.size() == 3 && status.value->undescribedDllCount == 1 &&
+    // 重复键已使原来的描述整体失效，因此原 DLL 与根目录未声明 DLL 都应报告。
+    Require(status.value->providers.size() == 3 && status.value->undescribedDllCount == 2 &&
         std::find(status.value->unrecognizedDirectories.begin(), status.value->unrecognizedDirectories.end(),
             directory / "unrelated") != status.value->unrecognizedDirectories.end(), "known layouts and unscanned directories have separate status");
     const auto ydwe = std::find_if(status.value->providers.begin(), status.value->providers.end(),
@@ -355,9 +356,19 @@ void OwnedLuaSourcesAndComponents() {
         "MAP_TEST_SCRIPT_BUDGET", "module over actual four-MiB runtime reader limit refused before launch");
     changed = members(); changed.back().data[0] = std::byte{31};
     FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(changed)), "MAP_TEST_OWN_LUA_CLASSIC_REQUIRED", "newer or malformed settings cannot select classic runtime");
-    FailureCode(Script::BuildIndependentMapTestLaunchPlan(artifact(members("return true\n",
-        Script("    call ExternalFixtureNative()", "native ExternalFixtureNative takes nothing returns nothing\n")))),
-        "MAP_TEST_OWN_LUA_EXTENSION_UNSUPPORTED", "owned mode refuses extension natives instead of falling back to six DLLs");
+    auto generatedWithExtension = artifact(members("return true\n",
+        Script("    call ExternalFixtureNative()", "native ExternalFixtureNative takes nothing returns nothing\n")));
+    generatedWithExtension.externalDependenciesDirectory = fixture.root / "original-provider";
+    Write(generatedWithExtension.externalDependenciesDirectory / "fixture.dll", Pe(true, true));
+    Write(generatedWithExtension.externalDependenciesDirectory / "provider.json", Bytes(R"json(
+        {"schema":1,"id":"original","abi":"audastra-native-provider-v1","modules":[
+        {"file":"fixture.dll","entry":"Initialize","natives":{"ExternalFixtureNative":"()V"}}]})json"));
+    const auto compatibleProvider = Services::QueryExternalDependencies(generatedWithExtension.externalDependenciesDirectory);
+    Success(compatibleProvider, "inspect original fixture provider for the classic binding negative");
+    Success(Services::SelectExternalDependencyFiles(*compatibleProvider.value, {{"ExternalFixtureNative", "()V"}}),
+        "provider completely covers the classic map's declaration");
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(generatedWithExtension),
+        "MAP_TEST_OWN_LUA_EXTENSION_UNSUPPORTED", "classic globals refuse external natives even with a matching provider");
     Write(map.runtimeBootstrap, Pe(true, false, 0x8664));
     FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_RUNTIME_PE", "owned bootstrap must be x86");
     fixture.Unchanged(map);
