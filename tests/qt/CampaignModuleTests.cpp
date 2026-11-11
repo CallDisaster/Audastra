@@ -11,6 +11,7 @@
 #include <QDialogButtonBox>
 #include <QFile>
 #include <QLabel>
+#include <QItemSelectionModel>
 #include <QLineEdit>
 #include <QCheckBox>
 #include <QPushButton>
@@ -58,6 +59,7 @@ class CampaignModuleTests final : public QObject {
     Q_OBJECT
 private slots:
     void PagesSettingsAndSharedHistory();
+    void SelectedChaptersAreRemovedInOneUndoStep();
     void SharedObjectsUseCampaignStringsAndSameSaveService();
     void ChapterMustBeExplicitlyReturnedBeforeCampaignSave();
     void ChapterSaveAsFollowsNewSource();
@@ -80,6 +82,52 @@ void CampaignModuleTests::PagesSettingsAndSharedHistory() {
     QCOMPARE(module.Session()->Info().name, std::string("Edited Campaign")); QVERIFY(module.UndoStack()->canUndo());
     module.UndoStack()->undo(); QCOMPARE(module.Session()->Info().name, std::string{});
     module.UndoStack()->redo(); QCOMPARE(module.Session()->Info().name, std::string("Edited Campaign"));
+}
+
+void CampaignModuleTests::SelectedChaptersAreRemovedInOneUndoStep() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    auto session = MenuFixture(root, "chapters.w3x");
+    QVERIFY(session);
+    for (const auto* path : {"Chapter2.w3x", "Chapter3.w3x"}) {
+        Services::CampaignCommand add;
+        add.operation = Services::CampaignOperation::AddMap;
+        add.path = path;
+        add.mapSource = Path(root, "chapters.w3x");
+        QVERIFY(session->Apply(session->Revision(), add).Succeeded());
+    }
+    QtProject::EditorProject project;
+    Modules::CampaignModule module(project);
+    auto* page = module.Widget();
+    module.SetSession(session);
+    auto* maps = page->findChild<QTableWidget*>("campaignMaps");
+    auto* buttons = page->findChild<QTableWidget*>("campaignButtons");
+    auto* remove = page->findChild<QPushButton*>("removeCampaignMap");
+    QVERIFY(maps && buttons && remove);
+    QCOMPARE(maps->selectionMode(), QAbstractItemView::ExtendedSelection);
+    QCOMPARE(buttons->selectionMode(), QAbstractItemView::ExtendedSelection);
+    const auto revision = session->Revision();
+    const auto index = module.UndoStack()->index();
+    const auto select = [&](int row) {
+        maps->selectionModel()->select(maps->model()->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    };
+    select(0); select(1);
+    remove->click();
+    QVERIFY(session->Revision() == revision);
+    QCOMPARE(module.UndoStack()->index(), index);
+    QCOMPARE(maps->rowCount(), 3);
+    maps->clearSelection();
+    select(1); select(2);
+    remove->click();
+    QCOMPARE(session->Revision().document, revision.document);
+    QCOMPARE(session->Revision().revision, revision.revision + 1);
+    QCOMPARE(module.UndoStack()->index(), index + 1);
+    QCOMPARE(maps->rowCount(), 1);
+    module.UndoStack()->undo();
+    QCOMPARE(maps->rowCount(), 3);
+    module.UndoStack()->redo();
+    QCOMPARE(maps->rowCount(), 1);
+    QCOMPARE(session->Info().maps.front().path, std::string("Chapter1.w3x"));
 }
 
 void CampaignModuleTests::SharedObjectsUseCampaignStringsAndSameSaveService() {
