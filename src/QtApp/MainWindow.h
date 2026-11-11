@@ -378,6 +378,8 @@ private:
     std::optional<std::array<std::uint64_t, 2>> luaFileDiffRevision_;
     QStringList luaFileChangedPaths_;
     std::map<QString, std::string> luaFileBaseline_; // AssetKey → 游戏中当前正文的 SHA
+    std::map<QString, std::string> luaFileFrozenBaseline_;
+    std::int32_t luaFileVmGeneration_ = 0;
     std::vector<LuaFilePending> luaFileQueue_;       // 首项为已发送、等待游戏确认的文件
     std::uint32_t luaFileSequence_ = 0;
     QString luaFileLastMessage_;

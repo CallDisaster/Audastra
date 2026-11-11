@@ -197,6 +197,38 @@ void Controller(const std::filesystem::path& root) {
     mailbox.running = false;
     Require(controller.Poll().value->outcome == Services::LuaReloadOutcome::Stopped, "owned exit not observed");
 }
+void ControllerUsesFrozenBaselineAfterRestart(const std::filesystem::path& root) {
+    using Outcome = Services::LuaReloadOutcome;
+    using Code = Audastra::Runtime32::LuaReloadResult;
+    Fixture fixture(root); MailboxFixture mailbox;
+    const auto frozen = fixture.Generate();
+    Services::LuaTestReloadController controller(mailbox.session, frozen, "map-facts");
+    fixture.document.argumentNodes[fixture.amount].value.text = "17";
+    const auto edited = fixture.Generate();
+    const auto first = controller.Submit(edited, "map-facts");
+    Require(first.Succeeded() && mailbox.runtime->Take().has_value()
+        && mailbox.runtime->Complete(first.value->sequence, Code::Success, "old VM"), "old generation accepted the edit");
+    Require(controller.Poll().value->baselineScriptSha256 == edited.scriptSha256, "old VM baseline did not advance");
+    fixture.document.argumentNodes[fixture.amount].value.text = "18";
+    Require(controller.Submit(fixture.Generate(), "map-facts").Succeeded(), "second old request queued");
+    Require(mailbox.runtime->RetireForRestart(), "old VM retired");
+    Require(controller.Poll().value->outcome == Outcome::Ready, "old pending request did not retire");
+
+    Audastra::Runtime32::OwnLua::LuaMailboxRuntime next(*mailbox.view);
+    Require(next.Attach(mailbox.inherited->Nonce(), mailbox.session->MapSha256(), 2), "fresh VM fixture attaches");
+    Require(!Services::SubmitLuaTestReload(*mailbox.session, {"@stale.lua", "return 1", 1}).Succeeded()
+        && !next.Take(), "stale generation cannot enqueue a patch in the new slot");
+    const auto restarted = controller.Poll();
+    Require(restarted.Succeeded() && restarted.value->baselineScriptSha256 == frozen.scriptSha256
+        && restarted.value->sequence == 0, "new VM resumes from the frozen source without an old ACK");
+    const auto resent = controller.Submit(edited, "map-facts");
+    const auto request = next.Take();
+    Require(resent.Succeeded() && resent.value->outcome == Outcome::Pending && request
+        && request->sequence == resent.value->sequence, "the previous edit is again a real difference");
+    Host fresh; fresh.Run(frozen.text); fresh.Run("InitGlobals(); InitCustomTriggers()"); fresh.Run(request->source);
+    fresh.Run("ConditionalTriggerExecute(gg_trg_F42); assert(recorded==17)");
+}
+
 void FinalAckAfterExit(const std::filesystem::path& root) {
     Fixture fixture(root);
     const auto baseline = fixture.Generate();
@@ -439,7 +471,8 @@ int main() {
     try {
         const auto root = std::filesystem::temp_directory_path() / ("audastra-reload-fixture-" + std::to_string(GetCurrentProcessId()));
         Eval(root / "eval");
-        Check(root); Controller(root / "controller"); FinalAckAfterExit(root / "final-ack");
+        Check(root); Controller(root / "controller"); ControllerUsesFrozenBaselineAfterRestart(root / "restart");
+        FinalAckAfterExit(root / "final-ack");
         FrozenBindings(root / "bindings"); MapFacts(root); std::filesystem::remove_all(root);
         std::cout << "Lua test generation/diff and 20 original offline host updates passed; game evidence=0\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

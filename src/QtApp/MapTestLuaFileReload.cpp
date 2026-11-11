@@ -46,6 +46,7 @@ std::string ModuleName(const QString& path) {
 
 void MainWindow::SnapshotLuaFileBaseline(const std::filesystem::path& frozenMap) {
     luaFileBaseline_.clear(); luaFileQueue_.clear(); luaFileSequence_ = 0; luaFileLastMessage_.clear();
+    luaFileFrozenBaseline_.clear(); luaFileVmGeneration_ = 0;
     luaFileReloadStopped_ = false; luaFileAutoReloadPending_ = false; luaFileDiffRevision_.reset(); luaFileChangedPaths_.clear();
     if (project_->LuaFolderSource().Linked() && !frozenMap.empty()) {
         const auto map = War3Map::Mpq::MpqArchive::OpenReadOnly(frozenMap);
@@ -60,6 +61,7 @@ void MainWindow::SnapshotLuaFileBaseline(const std::filesystem::path& frozenMap)
             const auto hash = War3Map::Sha256(*bytes.value);
             if (hash.Succeeded()) luaFileBaseline_[War3Map::QtProject::EditorProject::AssetKey(QString::fromStdString(file.name))] = *hash.value;
         }
+        luaFileFrozenBaseline_ = luaFileBaseline_;
         return;
     }
     for (const auto& entry : War3Map::QtProject::ListLuaScripts(*project_)) {
@@ -67,6 +69,7 @@ void MainWindow::SnapshotLuaFileBaseline(const std::filesystem::path& frozenMap)
         const auto read = War3Map::QtProject::ReadOwnedAsset(*project_, entry.path);
         if (read.Succeeded()) luaFileBaseline_[War3Map::QtProject::EditorProject::AssetKey(entry.path)] = read.value->sha256;
     }
+    luaFileFrozenBaseline_ = luaFileBaseline_;
 }
 
 bool MainWindow::LuaFileDiffersFromBaseline(const QString& path, const std::string& sha256) const {
@@ -130,7 +133,7 @@ void MainWindow::UpdateLuaReloadPending() {
 
 QJsonObject MainWindow::LuaFileReload(bool submit) {
     if (!luaRuntimeMailbox_) return Failure("LUA_RELOAD_NO_SESSION", tr("请先启动使用 Audastra 自带 Lua 环境的地图测试。"));
-    const auto query = Services::QueryLuaTestReload(*luaRuntimeMailbox_, luaFileQueue_.empty() ? 0 : luaFileSequence_);
+    const auto query = Services::QueryLuaTestReload(*luaRuntimeMailbox_);
     if (!query.Succeeded() || !query.value) {
         const auto& last = query.diagnostics;
         return Failure(last.empty() ? "LUA_RELOAD_INCOMPLETE" : QString::fromStdString(last.back().code),
@@ -139,11 +142,27 @@ QJsonObject MainWindow::LuaFileReload(bool submit) {
     const auto& snapshot = *query.value;
     QString state = "ready";
     QString message = luaFileLastMessage_;
+    if (snapshot.generation > 0 && snapshot.generation != luaFileVmGeneration_) {
+        const auto previous = luaFileVmGeneration_;
+        luaFileVmGeneration_ = snapshot.generation;
+        if (previous) {
+            luaFileBaseline_ = luaFileFrozenBaseline_;
+            luaFileQueue_.clear(); luaFileSequence_ = 0; luaFileAutoReloadPending_ = false;
+            luaFileDiffRevision_.reset();
+            message = tr("地图已重开，待发送文件已按冻结副本重新计算。");
+            UpdateLuaReloadPending();
+        }
+    }
+    if (snapshot.state == Services::LuaTestReloadState::Starting && !luaFileQueue_.empty()) {
+        luaFileQueue_.clear(); luaFileSequence_ = 0; luaFileAutoReloadPending_ = false;
+        message = tr("游戏正在重开，旧局热重载请求已作废。");
+    }
     const bool stopped = snapshot.state == Services::LuaTestReloadState::Stopped
         || (!snapshot.processActive && snapshot.state != Services::LuaTestReloadState::Starting);
     const auto send = [&]() -> bool {
         const auto& next = luaFileQueue_.front();
-        const auto sent = Services::SubmitLuaTestReload(*luaRuntimeMailbox_, {"module:" + next.module, next.source});
+        const auto sent = Services::SubmitLuaTestReload(*luaRuntimeMailbox_,
+            {"module:" + next.module, next.source, snapshot.generation});
         if (!sent.Succeeded() || !sent.value) {
             luaFileQueue_.clear();
             state = "failed";

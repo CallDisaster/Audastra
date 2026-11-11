@@ -30,6 +30,8 @@ private:
 struct LuaTestReloadRequest {
     std::string chunkName;
     std::string source;
+    // 根据当前游戏内容生成的差异必须绑定它所针对的 VM；0 表示正文不依赖前态。
+    std::int32_t expectedGeneration = 0;
 };
 
 enum class LuaTestReloadState { Starting, Idle, Queued, Running, Complete, Stopped };

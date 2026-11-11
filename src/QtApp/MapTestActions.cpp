@@ -80,6 +80,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     luaTestInstalledBindings_.reset();
     luaRuntimeMailbox_.reset();
     luaFileReload_ = false; luaFileQueue_.clear(); luaFileBaseline_.clear();
+    luaFileFrozenBaseline_.clear(); luaFileVmGeneration_ = 0;
     luaRuntimeDiagnosticSequence_ = 0; luaReloadLastStatus_.clear();
     if (luaReloadPoll_) luaReloadPoll_->stop();
     // 新一轮测试开始后，上一轮的场景结果不再作数；这一轮没启动成功时读结果也不会拿到旧结果。

@@ -162,7 +162,9 @@ void MainWindow::PollLuaTestReload() {
     const auto result = LuaTestReload(false);
     // 游戏可能先发布就绪、Job观察器后捕获原句柄。只等待本局归属确认，
     // 不读取未确认回执、不放行发送；实际终态仍交同一租约的清理流程报告。
-    if (!result.value("ok").toBool() && result.value("code").toString() == QLatin1String("LUA_TEST_PROCESS_UNCONFIRMED")
+    const auto code = result.value("code").toString();
+    if (!result.value("ok").toBool() && (code == QLatin1String("LUA_TEST_PROCESS_UNCONFIRMED")
+        || code == QLatin1String("LUA_TEST_NOT_READY"))
         && lease && mapTestLease_ == lease && LuaTestSessionCurrent()
         && lease->IsActive()) return;
     if (!result.value("ok").toBool() || result.value("state").toString() == "stopped") {

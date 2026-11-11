@@ -132,6 +132,8 @@ static Result<std::uint32_t> Submit(LuaTestMailboxSession& session, const LuaTes
         return Failure<std::uint32_t>("LUA_TEST_RELOAD_DISABLED", "本次测试未开启热重载；运行时诊断仍可查询。");
     if (!impl.Identity()) return Failure<std::uint32_t>("LUA_TEST_IDENTITY", "Lua 测试会话或地图身份已变化。");
     const auto generation = Read(mailbox.generation);
+    if (request.expectedGeneration && generation != request.expectedGeneration)
+        return Failure<std::uint32_t>("LUA_TEST_NOT_READY", "Lua 邮箱已换局，未发送针对旧代的热重载。");
     if (generation <= 0 || Read(mailbox.runtimeState) != static_cast<LONG>(LuaRuntimeState::Ready)
         || impl.Ownership() != detail::LuaTestProcessOwnership::OwnedRunning)
         return Failure<std::uint32_t>("LUA_TEST_NOT_READY", "本次测试运行时或原进程归属尚未确认，不能发送代码。");

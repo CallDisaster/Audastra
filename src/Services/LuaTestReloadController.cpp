@@ -12,7 +12,8 @@ namespace War3Map::Services {
 struct LuaTestReloadController::State {
     std::mutex mutex;
     std::shared_ptr<LuaTestMailboxSession> mailbox;
-    Script::LuaTriggerUnit baseline;
+    std::shared_ptr<const Script::LuaTriggerUnit> baseline, frozen;
+    std::int32_t generation = 0;
     std::optional<std::set<std::string>> installedBindings;
     bool bindingsValid = true;
     std::string binding;
@@ -20,6 +21,22 @@ struct LuaTestReloadController::State {
     Script::LuaTestReloadPatch patch;
     LuaReloadControllerSnapshot snapshot;
     std::chrono::steady_clock::time_point started;
+    void ObserveGeneration(const LuaTestReloadSnapshot& result) {
+        if (result.generation > 0 && result.generation != generation) {
+            if (generation) {
+                baseline = frozen;
+                pending.reset(); patch = {};
+                snapshot = {LuaReloadOutcome::Ready, 0, "地图已重开，从冻结脚本重新计算热重载差异。",
+                    baseline->scriptSha256};
+            }
+            generation = result.generation;
+        }
+        if (result.state == LuaTestReloadState::Starting && pending) {
+            pending.reset(); patch = {};
+            snapshot = {LuaReloadOutcome::Ready, 0, "游戏正在重开，旧局热重载请求已作废。",
+                baseline->scriptSha256};
+        }
+    }
     void MarkStopped() {
         if (snapshot.outcome != LuaReloadOutcome::Stopped) {
             const bool acknowledged = snapshot.outcome == LuaReloadOutcome::Succeeded
@@ -34,7 +51,9 @@ struct LuaTestReloadController::State {
 LuaTestReloadController::LuaTestReloadController(std::shared_ptr<LuaTestMailboxSession> mailbox,
     Script::LuaTriggerUnit baseline, std::string binding,
     std::optional<std::vector<std::string>> installedBindings) : state_(std::make_unique<State>()) {
-    state_->mailbox = std::move(mailbox); state_->baseline = std::move(baseline); state_->binding = std::move(binding);
+    state_->mailbox = std::move(mailbox);
+    state_->baseline = state_->frozen = std::make_shared<const Script::LuaTriggerUnit>(std::move(baseline));
+    state_->binding = std::move(binding);
     if (installedBindings) {
         auto& installed = state_->installedBindings.emplace();
         // 与完整Lua生成器的API4096、常量4096、全局65536上限一致，不缩小大图资格。
@@ -44,7 +63,7 @@ LuaTestReloadController::LuaTestReloadController(std::shared_ptr<LuaTestMailboxS
             installed.insert(name);
         }
     }
-    state_->snapshot.baselineScriptSha256 = state_->baseline.scriptSha256;
+    state_->snapshot.baselineScriptSha256 = state_->baseline->scriptSha256;
 }
 LuaTestReloadController::~LuaTestReloadController() = default;
 
@@ -53,10 +72,13 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Submit(Script::LuaT
     std::lock_guard guard(state_->mutex);
     auto& state = *state_;
     if (!state.mailbox) return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_NO_SESSION", "没有本编辑器启动的 Lua 测试会话。");
+    const auto live = QueryLuaTestReload(*state.mailbox);
+    if (!live.Succeeded() || !live.value) return {std::nullopt, live.diagnostics};
+    state.ObserveGeneration(*live.value);
     if (state.pending) return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_PENDING", "上一份差异仍在等待游戏结果，请先查询结果。");
     if (state.snapshot.outcome == LuaReloadOutcome::RestartRequired || state.snapshot.outcome == LuaReloadOutcome::Stopped)
         return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_RESTART_REQUIRED", "本局状态不能可靠继续，请重新测试。");
-    auto prepared = Script::PrepareLuaTestReload(state.baseline, current, state.binding, binding, syntax);
+    auto prepared = Script::PrepareLuaTestReload(*state.baseline, current, state.binding, binding, syntax);
     if (!prepared.Succeeded() || !prepared.value) return {std::nullopt, std::move(prepared.diagnostics)};
     if (!state.bindingsValid)
         return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_BINDINGS_INVALID",
@@ -69,8 +91,6 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Submit(Script::LuaT
     }
     if (prepared.value->source.empty()) {
         // 无差异也不能绕过真实会话身份和终态；共享API调用方不一定先Poll。
-        const auto live = QueryLuaTestReload(*state.mailbox);
-        if (!live.Succeeded() || !live.value) return {std::nullopt, live.diagnostics};
         if (live.value->state == LuaTestReloadState::Starting)
             return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_TEST_NOT_READY",
                 "测试运行时仍在初始化，尚不能确认热重载。");
@@ -80,15 +100,15 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Submit(Script::LuaT
             return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_RESTART_REQUIRED",
                 "本次测试会话已经结束，请重新测试。");
         }
-        state.baseline = std::move(current);
-        state.snapshot = {LuaReloadOutcome::NoChanges, 0, "没有需要执行的触发器差异。", state.baseline.scriptSha256};
+        state.baseline = std::make_shared<const Script::LuaTriggerUnit>(std::move(current));
+        state.snapshot = {LuaReloadOutcome::NoChanges, 0, "没有需要执行的触发器差异。", state.baseline->scriptSha256};
         return Result<LuaReloadControllerSnapshot>::Success(state.snapshot);
     }
-    auto queued = SubmitLuaTestReload(*state.mailbox, {"@Audastra/test-reload.lua", prepared.value->source});
+    auto queued = SubmitLuaTestReload(*state.mailbox, {"@Audastra/test-reload.lua", prepared.value->source, live.value->generation});
     if (!queued.Succeeded() || !queued.value) return {std::nullopt, std::move(queued.diagnostics)};
     state.patch = std::move(*prepared.value); state.pending = std::move(current);
     state.started = std::chrono::steady_clock::now();
-    state.snapshot = {LuaReloadOutcome::Pending, *queued.value, "差异已发送，正在等待游戏确认。", state.baseline.scriptSha256};
+    state.snapshot = {LuaReloadOutcome::Pending, *queued.value, "差异已发送，正在等待游戏确认。", state.baseline->scriptSha256};
     return Result<LuaReloadControllerSnapshot>::Success(state.snapshot);
 }
 
@@ -96,9 +116,10 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Poll() {
     std::lock_guard guard(state_->mutex);
     auto& state = *state_;
     if (!state.mailbox) return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_NO_SESSION", "没有本编辑器启动的 Lua 测试会话。");
-    const auto queried = QueryLuaTestReload(*state.mailbox, state.pending ? state.snapshot.sequence : 0);
+    const auto queried = QueryLuaTestReload(*state.mailbox);
     if (!queried.Succeeded() || !queried.value) return {std::nullopt, queried.diagnostics};
     const auto& result = *queried.value;
+    state.ObserveGeneration(result);
     state.snapshot.runtimeDiagnosticSequence = result.runtimeDiagnosticSequence;
     state.snapshot.runtimeDiagnosticCode = result.runtimeDiagnosticCode;
     state.snapshot.runtimeMessage = result.runtimeMessage;
@@ -112,8 +133,8 @@ Result<LuaReloadControllerSnapshot> LuaTestReloadController::Poll() {
                 return Result<LuaReloadControllerSnapshot>::Failure("Lua.Test", "LUA_RELOAD_ACK_MISMATCH", "游戏回执序号不属于本次差异，基线没有前推。");
             state.snapshot.message = result.message;
             if (result.resultCode == Audastra::Runtime32::LuaReloadResult::Success) {
-                state.baseline = std::move(*state.pending);
-                state.snapshot.baselineScriptSha256 = state.baseline.scriptSha256;
+                state.baseline = std::make_shared<const Script::LuaTriggerUnit>(std::move(*state.pending));
+                state.snapshot.baselineScriptSha256 = state.baseline->scriptSha256;
                 state.snapshot.outcome = LuaReloadOutcome::Succeeded;
             } else {
                 // 编译错误未执行；其他错误可能已改变全局函数或销毁旧句柄，不能假报回滚。

@@ -313,8 +313,10 @@ QJsonObject MainWindow::MapTestSteps(const QJsonObject& arguments) {
     if (!chunk.Succeeded() || !chunk.value) return Failure(chunk.diagnostics, "MAP_TEST_STEPS_GENERATION");
 
     const auto before = Services::QueryLuaTestReload(*luaRuntimeMailbox_);
-    const auto diagnosticBefore = before.Succeeded() && before.value ? before.value->runtimeDiagnosticSequence : 0;
-    const auto submitted = Services::SubmitLuaTestReload(*luaRuntimeMailbox_, {"audastra-agent-steps", *chunk.value});
+    if (!before.Succeeded() || !before.value) return Failure(before.diagnostics, "MAP_TEST_STEPS_SUBMIT");
+    const auto diagnosticBefore = before.value->runtimeDiagnosticSequence;
+    const auto submitted = Services::SubmitLuaTestReload(*luaRuntimeMailbox_,
+        {"audastra-agent-steps", *chunk.value, before.value->generation});
     if (!submitted.Succeeded() || !submitted.value) return Failure(submitted.diagnostics, "MAP_TEST_STEPS_SUBMIT");
     const auto sequence = *submitted.value;
     std::optional<Services::LuaTestReloadSnapshot> done;

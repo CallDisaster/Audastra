@@ -353,7 +353,8 @@ int RunMapTest(int argc, wchar_t** argv) {
                     }();
                     if (!bytes.Succeeded()) { Print(bytes.diagnostics); reload.sent = true; continue; }
                     const std::string source(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
-                    const auto sent = Services::SubmitLuaTestReload(*receipt.luaMailbox, {"module:" + reload.module, source});
+                    const auto sent = Services::SubmitLuaTestReload(*receipt.luaMailbox,
+                        {"module:" + reload.module, source, snapshot.generation});
                     reload.sent = true;
                     if (!sent.Succeeded() || !sent.value) { Print(sent.diagnostics); continue; }
                     reload.sequence = *sent.value;
