@@ -1190,7 +1190,11 @@ void WriteProviderGameFixtures(const std::filesystem::path& seed, std::string_vi
         "native AudastraFixturePlayer takes player value returns player\r\n",
         "    call DisplayTimedTextToPlayer(Player(0), 0., 0., 90., \"R54 JASS RESULT \" + "
         "I2S(AudastraFixtureAdd(35)) + \" / PLAYER \" + I2S(GetPlayerId(AudastraFixturePlayer(Player(0)))))");
-    make("provider-lua.w3x", {}, R"JASS(    call Cheat("exec-lua: \"provider\""))JASS", R"LUA(
+    // 自带 Lua 仅以地图声明选择提供者；这里声明 Lua 入口真正需要的三项接口。
+    make("provider-lua.w3x", "native AudastraFixtureAdd takes integer value returns integer\r\n"
+        "native AudastraFixturePlayer takes player value returns player\r\n"
+        "native AudastraFixtureCallback takes code callback returns integer\r\n",
+        R"JASS(    call Cheat("exec-lua: \"provider\""))JASS", R"LUA(
 local ext = require("jass.japi")
 local jass = require("jass.common")
 local value = ext.AudastraFixtureAdd(35)
