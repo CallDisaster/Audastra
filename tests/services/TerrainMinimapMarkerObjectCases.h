@@ -125,7 +125,10 @@ void FinalItemDependencyChangesCannotPublishOrBecomeWarnings() {
 }
 void UnknownItemParentPreservesMarkersAndUnrelatedSave() {
     Fixture fixture; const auto original = ExpectedObjectMarkers({{1, 128, 128}, {0, 0, 192}});
+    const auto state = Take(MinimapMarkerEdits::Read(*fixture.source));
+    const auto projection = Take(state.Project(original));
     fixture.members.push_back({"war3map.mmp", original});
+    fixture.members.push_back({kMinimapMarkerProvenance, projection.provenance});
     const auto items = ItemIdentityWire({}, {{"Ci01", "No??"}});
     fixture.members.push_back({"war3map.w3t", items});
     fixture.units.units.push_back(Unit("Ci01", 15, 0, 0, 9)); fixture.UpdateUnits();

@@ -113,11 +113,13 @@ Result<MinimapMarkerEdits> MinimapMarkerEdits::Read(const MapArchiveSession& arc
         const auto files = Take(archive.CaptureExactMembers(names, limits));
         const auto& native = files[0];
         const auto& metadata = files[1];
-        auto original = native.present ? ParseMmp(native.bytes) : Rows{};
+        // A missing or empty member contains no records to reclassify. A
+        // nonempty member must still pass the native codec before any edit.
+        auto original = native.present && !native.bytes.empty() ? ParseMmp(native.bytes) : Rows{};
         MinimapMarkerEdits output;
         output.archiveIdentity_ = archive.SourceSha256();
         output.sourceIdentity_ = Take(Sha256(native.bytes));
-        Document state{!native.present, output.sourceIdentity_, std::move(original), {}, {}};
+        Document state{original.empty(), output.sourceIdentity_, std::move(original), {}, {}};
         if (metadata.present) {
             auto loaded = Decode(metadata.bytes, false);
             if (!native.present || loaded.identity != state.identity ||
