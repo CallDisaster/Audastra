@@ -184,9 +184,11 @@ StableId Eca(const QtProject::EditorProject& project, std::string_view name) {
     return 0;
 }
 
-// 像用户一样选中若干行：第一行为当前项，其余 Ctrl 追加。
+// 像用户一样选中若干行：第一行为当前项（只选它），其余 Ctrl 追加。
+// 不用 view->setCurrentIndex：QTest 的 Ctrl 组合键之后 QGuiApplication::keyboardModifiers() 会停在 Ctrl，
+// 扩展多选下它会变成反选。模块自己的程序选择不受此影响（见 Reveal 后的断言）。
 void SelectRows(QTreeView* view, const QModelIndexList& rows) {
-    view->setCurrentIndex(rows.front());
+    view->selectionModel()->setCurrentIndex(rows.front(), QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     for (qsizetype index = 1; index < rows.size(); ++index) {
         view->selectionModel()->select(rows[index], QItemSelectionModel::Select | QItemSelectionModel::Rows);
     }

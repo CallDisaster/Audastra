@@ -67,13 +67,23 @@ inline std::int32_t SnapshotRootType(const Trigger::TriggerDocumentEditor::EcaSu
     return snapshot.ecas.empty() ? 2 : snapshot.ecas.front().type;
 }
 
+// 由程序设定当前项并只选中这一行。扩展多选下 QAbstractItemView::setCurrentIndex 按此刻按住的 Ctrl / Shift
+// 决定改选区的方式（按着 Ctrl+V / Ctrl+D 时结果会被追加或反选），所以先照常设当前项（同时更新 Shift 锚点），
+// 再明确只选这一行。
+inline void SelectOnly(QAbstractItemView& view, const QModelIndex& index) {
+    view.setCurrentIndex(index);
+    if (index.isValid() && view.selectionModel() != nullptr) {
+        view.selectionModel()->select(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    }
+}
+
 // 右键：点在已选中的行上保留整个选区，只移动当前项；否则改为只选该行。
 inline void FocusForContextMenu(QAbstractItemView& view, const QModelIndex& index) {
     if (!index.isValid()) return;
     if (view.selectionModel()->isSelected(index)) {
         view.selectionModel()->setCurrentIndex(index, QItemSelectionModel::NoUpdate);
     } else {
-        view.setCurrentIndex(index);
+        SelectOnly(view, index);
     }
 }
 

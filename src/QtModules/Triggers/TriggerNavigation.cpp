@@ -1,4 +1,5 @@
 #include "TriggerModule.h"
+#include "TriggerActionHelpers.h"
 #include "TriggerLuaScripts.h"
 #include "TriggerModels.h"
 #include "TriggerBlueprint.h"
@@ -237,7 +238,8 @@ Shell::NavigationRestoreResult TriggerModule::RestoreNavigationBookmark(const QJ
         if (!showingMapScript_) return Result::Invalid;
         view = mapScriptView_;
     } else if (mode == QLatin1String("category")) {
-        explorerView_->setCurrentIndex(filter_->mapFromSource(explorerModel_->IndexForCategoryId(state.value("category").toInt())));
+        TriggerActions::SelectOnly(*explorerView_,
+            filter_->mapFromSource(explorerModel_->IndexForCategoryId(state.value("category").toInt())));
         ShowSelectedTrigger();
     } else {
         SelectTrigger(*triggerId); ShowSelectedTrigger();

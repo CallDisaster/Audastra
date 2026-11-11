@@ -1,4 +1,5 @@
 #include "TriggerModule.h"
+#include "TriggerActionHelpers.h"
 #include "TriggerLuaScripts.h"
 
 #include "EditorProject.h"
@@ -307,7 +308,7 @@ void TriggerModule::BindDocument() {
         if (filter_->rowCount(category) == 0) {
             continue;
         }
-        explorerView_->setCurrentIndex(filter_->index(0, 0, category));
+        TriggerActions::SelectOnly(*explorerView_, filter_->index(0, 0, category));
         break;
     }
     if (!pendingViewState_.isEmpty()) {
@@ -406,7 +407,7 @@ void TriggerModule::SelectTrigger(StableId triggerId) {
         return;
     }
     const QModelIndex proxy = filter_->mapFromSource(source);
-    explorerView_->setCurrentIndex(proxy);
+    TriggerActions::SelectOnly(*explorerView_, proxy);
     explorerView_->scrollTo(proxy);
 }
 
@@ -452,7 +453,7 @@ void TriggerModule::ShowSelectedTrigger() {
     PopulateProperties(trigger);
     if (trigger != nullptr && ecaModel_->rowCount() > 0) {
         ecaView_->expandAll();
-        ecaView_->setCurrentIndex(ecaModel_->index(0, 0));
+        TriggerActions::SelectOnly(*ecaView_, ecaModel_->index(0, 0));
     }
     SyncBlueprint();
 }

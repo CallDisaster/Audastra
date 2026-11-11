@@ -55,14 +55,14 @@ void ForEachRow(const QAbstractItemModel& model, const QModelIndex& parent, cons
     }
 }
 
-// 按选区与当前项设置视图：只有当前项时与 setCurrentIndex 相同（同时更新 Shift 锚点）。
-void ApplySelection(QAbstractItemView& view, QItemSelection wanted, const QModelIndex& focus, bool onlyFocus) {
+// 按选区与当前项设置视图，结果与此刻按住的修饰键无关；当前项同时成为 Shift 锚点。
+void ApplySelection(QAbstractItemView& view, const QItemSelection& wanted, const QModelIndex& focus, bool onlyFocus) {
     if (onlyFocus) {
-        if (focus.isValid()) view.setCurrentIndex(focus);
+        if (focus.isValid()) TriggerActions::SelectOnly(view, focus);
         return;
     }
+    if (focus.isValid()) view.setCurrentIndex(focus);
     view.selectionModel()->select(wanted, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
-    if (focus.isValid()) view.selectionModel()->setCurrentIndex(focus, QItemSelectionModel::NoUpdate);
 }
 
 } // namespace
