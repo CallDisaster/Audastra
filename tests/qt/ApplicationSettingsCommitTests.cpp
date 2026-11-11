@@ -2,6 +2,7 @@
 #include "ApplicationSettingsTransfer.h"
 #include "AgentSettingsDialog.h"
 #include "AgentSettingsStore.h"
+#include "../../src/QtCommon/ApplicationPaths.h"
 
 #include <QApplication>
 #include <QDir>
@@ -627,7 +628,11 @@ void ApplicationSettingsCommitTests::mapTestAndBackupPreferencesCommitOrRollback
     services.externalDependenciesDirectory = QStringLiteral("/not-a-local-drive");
     QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration));
     QCOMPARE(Read(preferences.fileName()), originalIni);
-    services.externalDependenciesDirectory = directory.filePath(QStringLiteral("external-dependencies"));
+    services.externalDependenciesDirectory = War3Map::QtCommon::InstallationRoot();
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services, migration));
+    QVERIFY(error.contains(QStringLiteral("test-maps")));
+    QCOMPARE(Read(preferences.fileName()), originalIni);
+    services.externalDependenciesDirectory = directory.filePath(QStringLiteral("external-dependencies/"));
     for (auto* path : {&services.mapTestRuntimeRoot}) {
         const auto valid = **path;
         const QStringList invalidDirectories{QStringLiteral("relative/tool"), QString(4097, QChar(u'a')),
