@@ -44,9 +44,10 @@ public:
     [[nodiscard]] bool UsesGenerator() const noexcept { return managed_; }
     [[nodiscard]] bool ShouldWrite() const noexcept { return managed_ || pending_; }
     [[nodiscard]] bool HasPending() const noexcept { return pending_; }
+    [[nodiscard]] bool HasStoredProvenance() const noexcept { return stored_; }
 
 private:
-    bool managed_ = false, pending_ = false;
+    bool managed_ = false, pending_ = false, stored_ = false;
     std::string sourceIdentity_, archiveIdentity_;
     std::vector<MapData::MinimapMarkerRecord> visibleGenerated_, author_, suppressed_;
 };

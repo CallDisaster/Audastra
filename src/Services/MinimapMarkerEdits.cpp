@@ -126,6 +126,7 @@ Result<MinimapMarkerEdits> MinimapMarkerEdits::Read(const MapArchiveSession& arc
                 Join(loaded.visible, loaded.author) != state.visible)
                 Fail(kConflict, "当前图标与归属记录不符；保留地图中的原图标。");
             state = std::move(loaded);
+            output.stored_ = true;
         }
         if (!pending.empty()) {
             auto staged = Decode(pending, true);

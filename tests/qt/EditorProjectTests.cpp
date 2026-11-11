@@ -3690,6 +3690,11 @@ void EditorProjectTests::TerrainShadowWorkerOrdinarySavePreserves() {
     QVERIFY(std::none_of(job->replacements.begin(), job->replacements.end(),
         [](const auto& member) { return member.name == "war3map.shd"; }));
     auto saved = MapArchiveSession::Open(target); QVERIFY(saved.Succeeded() && saved.value);
+    if (caster) {
+        QVERIFY(HasReadDiagnostic(*job, "TERRAIN_MMP_PROVENANCE_DEFERRED"));
+        QVERIFY(!saved.value->ReadMember("audastra/minimap-markers.bin").value);
+        QVERIFY(saved.value->ReadMember("war3map.mmp").value);
+    }
     for (const auto& member : members) if (member.name != "war3map.mmp")
         QCOMPARE(saved.value->ReadMember(member.name).value, std::optional(member.data));
     QVERIFY(!HasReadDiagnostic(*job, "TERRAIN_SHADOW_LIGHT")

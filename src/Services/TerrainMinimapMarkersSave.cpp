@@ -1,6 +1,7 @@
 #include "War3MapCore/Services/TerrainMinimapMarkersSave.h"
 
 #include "War3MapCore/Services/TerrainMinimapMarkers.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Resources/ImportTable.h"
 
@@ -125,9 +126,27 @@ Status PrepareTerrainMinimapMarkers(MapSaveTask& task, const std::filesystem::pa
             if (!editsState.value->HasPending()) return Status::Ok();
         }
     }
+    const bool firstAutomaticProvenance = !plan && generated && !editsState.value->HasPending()
+        && !editsState.value->HasStoredProvenance();
     auto composed = TerrainMinimapMarkers::Compose(*task.archive, std::move(*editsState.value), generated);
     if (!composed.Succeeded() || !composed.value) return {std::move(composed.diagnostics)};
     auto owner = std::move(*composed.value);
+    if (firstAutomaticProvenance) {
+        // 首次登记自动图标是可选的；旧对象无法描述通行依赖时，不把新成员带进普通保存。
+        // 最终保存仍按真实输出清单复核通行，实际图标仍按生成来源和回读核对。
+        const std::array metadata{MemberReplacement{kMinimapMarkerProvenance, owner->ProvenanceBytes()}};
+        const auto admissible = TerrainPathingSave::VerifyUnchangedFinalInputs(*task.archive, nullptr,
+            gameRoot, {}, metadata, {});
+        if (!admissible.Succeeded()) {
+            const bool unavailable = std::all_of(admissible.diagnostics.begin(), admissible.diagnostics.end(),
+                [](const auto& note) { return note.severity != DiagnosticSeverity::Error
+                    || note.code == "TERRAIN_NATIVE_DEPENDENCY_TYPE" || note.code == "TERRAIN_FINAL_INPUTS_CHANGED"; });
+            if (!unavailable) return admissible;
+            task.diagnostics.push_back({DiagnosticSeverity::Warning, "Terrain.MinimapMarkers",
+                "TERRAIN_MMP_PROVENANCE_DEFERRED", "无法确认首次登记不影响静态通行，本次仅重建小地图图标。"});
+            owner = std::move(generated);
+        }
+    }
     auto nextPlan = plan;
     if (plan) {
         if (!edits) return Status::Failure("Terrain.MinimapMarkers", "TERRAIN_MMP_SAVE_STAGE", "地形计划缺少当前会话。");
@@ -146,7 +165,8 @@ Status PrepareTerrainMinimapMarkers(MapSaveTask& task, const std::filesystem::pa
     // 原版 MMP 和归属一起安装、一起回读。
     std::erase_if(task.replacements, [](const auto& member) { return IsProvenance(member.name); });
     task.replacements.push_back({"war3map.mmp", owner->Bytes()});
-    task.replacements.push_back({kMinimapMarkerProvenance, owner->ProvenanceBytes()});
+    if (!owner->ProvenanceBytes().empty())
+        task.replacements.push_back({kMinimapMarkerProvenance, owner->ProvenanceBytes()});
     const auto checked = owner->VerifyFrozenOutput(*task.archive, task.replacements, task.removals);
     if (!checked.Succeeded()) return checked;
     task.minimapMarkers = std::move(owner); plan = std::move(nextPlan);
