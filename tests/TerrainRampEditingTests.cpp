@@ -274,6 +274,52 @@ void NativeCornerBlightOnlyUsesRampFinisher() {
         "corner only adds nine R bits and applies ramp blight finisher to actual dirty blocks");
 }
 
+void NativeFoldJoinsAcrossAnInnerCornerWithUnpaintedLowGround() {
+    auto source = Corner();
+    source.header.width = source.header.height = 65;
+    source.header.offset = {-4096, -4096};
+    source.vertices.assign(65 * 65, {});
+    for (auto& v : source.vertices) {
+        v.groundHeightRaw = v.waterHeightAndFlagsRaw = 8192;
+        v.cliffAndLayerRaw = 0xf2;
+    }
+    // 原版方笔抬高后切一个缺口。# 是高层，. 是有悬崖材质的低层，- 是低层15号槽。
+    constexpr std::array<std::string_view, 17> nativeLevels{
+        "-------------------", "-------------------", "-------------------",
+        "-----............--", "-----.####...###.--", "-----.####...###.--", "-----.####...###.--",
+        "-----.##########..-", "-----.###########.-", "-----...#########.-", "-------.#########.-",
+        "-------.#########.-", "-------.#########.-", "-------.#########.-", "-------.#########.-",
+        "-------.#########.-", "-------.#########.-"};
+    for (unsigned y = 0; y < nativeLevels.size(); ++y) for (unsigned x = 0; x < nativeLevels[y].size(); ++x) {
+        const char terrain = nativeLevels[y][x];
+        source.vertices[(24 + y) * 65 + 24 + x].cliffAndLayerRaw = terrain == '#' ? 3 : terrain == '.' ? 2 : 0xf2;
+    }
+    RefreshTerrainDerived(source, 0, 0, 65, 65);
+    const auto doodads = *ParseDoodadPlacements(MapDataFixtures::EmptyDoodadsV8Sub11()).value;
+    const auto brush = TerrainBrush{.kind = TerrainBrushKind::CornerRamp};
+    const auto rules = CornerRules();
+    const TerrainStrokePoint straight{160, -352}, inner{224, -224};
+    const auto candidate = [&](const TerrainGridSnapshot& terrain, const TerrainStrokePoint& at) {
+        return PrepareTerrainCornerRampStroke(terrain, rules, brush, std::span(&at, 1), doodads);
+    };
+    auto expected = source;
+    for (unsigned x = 33; x <= 35; ++x) expected.vertices[29 * 65 + x].textureAndFlagsRaw |= 0x10;
+    const auto first = candidate(source, straight);
+    Require(first.Succeeded() && first.value, "stock fold straight section accepts unpainted low ground");
+    Require(*SerializeMapTerrain(first.value->terrain).value == *SerializeMapTerrain(expected).value,
+        "stock straight section only sets the three observed R bits");
+    for (unsigned y = 30; y <= 31; ++y) for (unsigned x = 33; x <= 35; ++x)
+        expected.vertices[y * 65 + x].textureAndFlagsRaw |= 0x10;
+    const auto second = candidate(first.value->terrain, inner);
+    Require(second.Succeeded() && second.value, "stock fold continues across the inner corner");
+    Require(*SerializeMapTerrain(second.value->terrain).value == *SerializeMapTerrain(expected).value,
+        "stock corner continuation sets the six observed additional R bits");
+
+    auto unpaintedHigh = source;
+    unpaintedHigh.vertices[29 * 65 + 32].cliffAndLayerRaw = 0xf3;
+    Require(!candidate(unpaintedHigh, straight).Succeeded(), "unpainted high ground is still rejected");
+}
+
 } // namespace
 
 #include "TerrainInnerCornerRampCases.h"
@@ -284,11 +330,11 @@ int main() {
         FourDirectionsAndExactBytes(); WholeStrokeRejectsBeforeMutation();
         AdjacentStripsAndSampling(); SharedSessionUndoAndDoodadFollow();
         NativeCornerFourDirectionsAndLiteralCompleteOutput(); NativeCornerUnsupportedDomainsRejectAtomically();
-        NativeCornerBlightOnlyUsesRampFinisher();
+        NativeCornerBlightOnlyUsesRampFinisher(); NativeFoldJoinsAcrossAnInnerCornerWithUnpaintedLowGround();
         War3Map::TerrainConnectedStraightRampCases::Run();
         War3Map::TerrainInnerCornerRampCases::Check();
         War3Map::TerrainWetInnerCornerRampCases::Check();
-        std::cout << "TerrainRampEditing: 11 scenario groups passed\n";
+        std::cout << "TerrainRampEditing: 12 scenario groups passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "TerrainRampEditing: " << error.what() << '\n';

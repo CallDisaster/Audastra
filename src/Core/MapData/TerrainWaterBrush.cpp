@@ -679,8 +679,11 @@ private:
                         ? nx < (*finitePlateau)[0] || ny < (*finitePlateau)[1]
                             || nx > (*finitePlateau)[2] || ny > (*finitePlateau)[3]
                         : planeLower;
-                    // 原版直坡产物在坡脚保留15（无悬崖）；仅允许低层平面上的该槽。
-                    const bool absentLowerCliff = brush_.straightRamp && lower && vertex.CliffTextureIndex() == 15;
+                    // 原版折线坡道经过内角时，脏块外圈的实际低层仍保留15（无悬崖）。
+                    // 连接坡道不以单个落点的平面推断低层；高层和旧算法仍按原规则核对。
+                    const bool absentLowerCliff = vertex.CliffTextureIndex() == 15
+                        && ((brush_.straightRamp && lower)
+                            || (joined && vertex.CliffLevel() + 1 == high.CliffLevel()));
                     if (((brush_.cornerAlgorithm == TerrainCornerRampAlgorithm::DryOnly
                             || (plan.inner && brush_.cornerAlgorithm != TerrainCornerRampAlgorithm::NativeWetCorners && !joined)) && vertex.HasWater())
                         || vertex.IsBoundary() || vertex.IsMapEdge()
