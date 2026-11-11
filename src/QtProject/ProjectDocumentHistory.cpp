@@ -6,7 +6,6 @@
 #include "War3MapCore/Trigger/TriggerCodec.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
-#include <QBuffer>
 #include <QDataStream>
 #include <QSignalBlocker>
 #include <QUndoStack>
@@ -70,6 +69,7 @@ private:
 ProjectDocumentHistory::ProjectDocumentHistory(EditorProject& project) : project_(project) {}
 ProjectDocumentHistory::~ProjectDocumentHistory() {
     for (auto& track : tracks_) QObject::disconnect(track.connection);
+    QObject::disconnect(mapConnection_);
 }
 std::size_t ProjectDocumentHistory::State::Bytes() const noexcept {
     return std::size_t(first.size() + second.size() + extra.size() + assets.size()) + 256;
@@ -128,6 +128,16 @@ void ProjectDocumentHistory::Attach(std::size_t scope, QUndoStack* stack) {
 void ProjectDocumentHistory::Reset() {
     Attach(0, project_.triggerUndoStack_);
     for (std::size_t i = 0; i < project_.objectUndoStacks_.size(); ++i) Attach(i + 1, project_.objectUndoStacks_[i]);
+    QObject::disconnect(mapConnection_);
+    auto* map = project_.mapDataUndoStack_;
+    firstMapCommand_ = map && map->count() ? map->command(0) : nullptr;
+    if (map) mapConnection_ = QObject::connect(map, &QUndoStack::indexChanged, &project_, [this, map] {
+        const auto* previous = firstMapCommand_;
+        firstMapCommand_ = map->count() ? map->command(0) : nullptr;
+        if (previous && firstMapCommand_ != previous && map->undoLimit() > 0 && map->count() == map->undoLimit())
+            project_.AddDiagnostics(Warning("PROJECT_UNDO_LIMIT", "地图数据与地形达到撤销预算，最早可撤销的操作为“"
+                + map->text(0).toStdString() + "”。").diagnostics);
+    });
     ++revision_;
 }
 void ProjectDocumentHistory::ResetTriggers() {

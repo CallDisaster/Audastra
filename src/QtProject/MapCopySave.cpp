@@ -363,6 +363,9 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             })) {
                 job->terrainHistoryWarning = "草稿已完整保留；当前地形历史不能绑定到本次地图保存，跨保存点撤销的冷恢复不可用。";
                 if (!history.diagnostics.empty()) job->terrainHistoryWarning += "（" + history.diagnostics.front().code + "）";
+                if (!history.diagnostics.empty() && history.diagnostics.front().code == "TERRAIN_HISTORY_BUDGET"
+                    && mapDataUndoStack_ && mapDataUndoStack_->count())
+                    job->terrainHistoryWarning += "当前会话最早可撤销到“" + mapDataUndoStack_->text(0).toStdString() + "”之前。";
             }
         } catch (const std::exception&) {
             job->terrainHistoryWarning = "草稿已完整保留；地形历史冻结超出可用预算，跨保存点撤销的冷恢复不可用。";

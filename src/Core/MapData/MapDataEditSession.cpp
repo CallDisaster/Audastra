@@ -985,10 +985,10 @@ void MapDataEditSession::CommitSavedBaseline(const MapDocument& saved,
 }
 
 Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournal() const {
-    return ExportTerrainStrokeJournalInternal(true);
+    return ExportTerrainStrokeJournalInternal(true, true);
 }
 
-Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInternal(bool baselineLayers) const {
+Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInternal(bool baselineLayers, bool retainOrdinary) const {
     using Output = Result<TerrainStrokeJournal>;
     const auto fail = [](const char* code) {
         return Output::Failure("Terrain.Journal", code, "草稿已保留；当前历史不能表达为保存基线后的完整前向笔划，水刷来源未恢复。");
@@ -1015,7 +1015,7 @@ Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainStrokeJournalInter
         }
     }
     if (active.size() > 128) return fail("TERRAIN_JOURNAL_BUDGET");
-    return ExportTerrainJournalCommands(active, baselineLayers);
+    return ExportTerrainJournalCommands(active, baselineLayers, retainOrdinary);
 }
 
 Result<TerrainStrokeJournal> MapDataEditSession::ExportTerrainJournalCommands(

@@ -1420,6 +1420,7 @@ void EditorProjectTests::ObjectAndTriggerUndoSurviveProjectReopen() {
     QVERIFY(write(ui + "/ui/config", "base\n"));
     QVERIFY(write(ui + "/ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n[TriggerParams]\n"));
     QUndoStack objects, triggers;
+    objects.setUndoLimit(3);
     EditorProject hot; QVERIFY(LoadFixture(hot, source));
     hot.objectUndoStacks_[0] = &objects; hot.triggerUndoStack_ = &triggers;
     hot.activeUiDataRoot_ = std::filesystem::path(ui.toStdWString());
@@ -1444,6 +1445,10 @@ void EditorProjectTests::ObjectAndTriggerUndoSurviveProjectReopen() {
         QCOMPARE(saved.value->backupPath.has_value(), step > 1);
     }
     const auto thirdObject = hot.objectDocuments_[0]->DocumentFingerprint();
+    const auto occupied = fixture.filePath("occupied.forge");
+    QVERIFY(write(occupied, "original non-project file"));
+    QVERIFY(!hot.SaveProjectToPath(std::filesystem::path(occupied.toStdWString())).Succeeded());
+    QCOMPARE(objects.index(), 3); QCOMPARE(triggers.index(), 3);
     objects.undo(); triggers.undo(); hot.ObserveTriggerEdit();
     const auto middleObject = hot.objectDocuments_[0]->DocumentFingerprint();
     QVERIFY(middleObject != initialObject && middleObject != thirdObject);
@@ -1472,6 +1477,15 @@ void EditorProjectTests::ObjectAndTriggerUndoSurviveProjectReopen() {
     QCOMPARE(cold.objectDocuments_[0]->DocumentFingerprint(), initialObject);
     QVERIFY(cold.triggerDocument_->variables.empty());
     QVERIFY(cold.HasUnsavedMapChanges());
+    objects.redo();
+    auto fourth = *hot.objectDocuments_[0];
+    QVERIFY(fourth.SetModification({ObjectType::Unit, "hfoo"}, {"uhpm"}, std::int32_t(424)).Succeeded());
+    objects.push(new ObjectSnapshotCommand(*hot.objectDocuments_[0], std::move(fourth), [&](const auto& value) {
+        *hot.objectDocuments_[0] = value; hot.ObserveObjectEdit(0);
+    }, QStringLiteral("Object 4")));
+    QCOMPARE(objects.count(), 3);
+    QCOMPARE(objects.text(0), QStringLiteral("Object 2"));
+    QVERIFY(ModelHasCode(*hot.diagnosticsModel_, QStringLiteral("PROJECT_UNDO_LIMIT")));
 }
 
 void EditorProjectTests::NativeCloneOriginsSurviveProjectRestore() {
@@ -1503,6 +1517,7 @@ void EditorProjectTests::NativeCloneOriginsSurviveProjectRestore() {
     QVERIFY(InstallOwnedGameBase(project, ObjectType::Unit, "Eevi"));
     project.ResetEditTracking();
     auto& edited = *project.objectDocuments_[0];
+    const auto beforeCloning = edited;
     QVERIFY(edited.CloneCustomObject({ObjectType::Unit, "E000"}, "E001").Succeeded());
     QVERIFY(edited.CloneCustomObject({ObjectType::Unit, "E001"}, "E002").Succeeded());
     QVERIFY(edited.SetModification({ObjectType::Unit, "E002"}, {"udef"}, 7.0f).Succeeded());
@@ -1568,12 +1583,25 @@ void EditorProjectTests::NativeCloneOriginsSurviveProjectRestore() {
     const auto legacyPath = writeManifest(legacy); QVERIFY(!legacyPath.empty());
     const auto legacyOpened = PrepareProjectOpen(legacyPath); QVERIFY(legacyOpened.Succeeded());
     QVERIFY((*legacyOpened.value)->objects[0]->CloneSources().empty());
-    undo.push(new QUndoCommand("pre-save clone snapshot"));
+    undo.push(new ObjectSnapshotCommand(beforeCloning, edited, [&](const auto& value) {
+        *project.objectDocuments_[0] = value; project.ObserveObjectEdit(0);
+    }, QStringLiteral("Clone original fixture objects")));
     const auto mapCandidate = std::filesystem::path(root.filePath("cloned.mpq").toStdWString());
     QVERIFY(project.SaveMapCopy(mapCandidate).has_value());
     QVERIFY(project.objectDocuments_[0]->CloneSources().empty());
     QCOMPARE(undo.count(), 1);
     QVERIFY(!project.HasUnsavedMapChanges());
+    undo.undo();
+    QVERIFY(project.HasUnsavedMapChanges());
+    QVERIFY(!project.objectDocuments_[0]->FindObject({ObjectType::Unit, "E001"}));
+    const auto undoPath = std::filesystem::path(root.filePath("cloned-undone.mpq").toStdWString());
+    QVERIFY(project.SaveMapCopy(undoPath).has_value());
+    auto undone = MapArchiveSession::Open(undoPath); QVERIFY(undone.Succeeded());
+    QCOMPARE(undone.value->ReadMember("war3map.w3u").value, nativeBytes.value);
+    QVERIFY(!project.HasUnsavedMapChanges());
+    undo.redo();
+    QVERIFY(project.HasUnsavedMapChanges());
+    QVERIFY(project.objectDocuments_[0]->FindObject({ObjectType::Unit, "E002"}));
     const auto second = std::filesystem::path(root.filePath("cloned-second.mpq").toStdWString());
     QVERIFY(project.SaveMapCopy(second).has_value());
     QVERIFY(!project.HasUnsavedMapChanges());

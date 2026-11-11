@@ -60,6 +60,8 @@ private:
 
     EditorProject& project_;
     std::array<Track, 8> tracks_;
+    QMetaObject::Connection mapConnection_;
+    const QUndoCommand* firstMapCommand_ = nullptr;
     std::uint64_t revision_ = 0;
     bool installing_ = false;
 };
