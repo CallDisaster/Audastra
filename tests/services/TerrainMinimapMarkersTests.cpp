@@ -547,7 +547,8 @@ void AdapterConflictsAndFrozenSourceRemainHardFailures() {
     Check(PrepareTerrainMinimapMarkers(twice, fixture.game, nullptr, noPlan));
     const auto bytes = twice.minimapMarkers->Bytes();
     Rejected(PrepareTerrainMinimapMarkers(twice, fixture.game, nullptr, noPlan), "TERRAIN_MMP_FINAL_CONFLICT");
-    Require(twice.replacements.size() == 1 && twice.replacements.front().data == bytes, "重复准备不能覆盖第一次完整输出");
+    Require(twice.replacements.size() == 2 && twice.replacements.front().data == bytes &&
+        twice.replacements.back().data == twice.minimapMarkers->ProvenanceBytes(), "重复准备不能覆盖第一次完整输出");
     MapSaveTask stale; fixture.Freeze(stale); stale.sourceSha256[0] ^= 1;
     Rejected(PrepareTerrainMinimapMarkers(stale, fixture.game, nullptr, noPlan), "TERRAIN_MMP_SOURCE_STALE");
     Require(!stale.minimapMarkers && stale.replacements.empty(), "错误来源身份绝不能降级为保留警告");

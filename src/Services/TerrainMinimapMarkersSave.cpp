@@ -20,6 +20,15 @@ bool IsProvenance(std::string_view name) {
     const auto key = Resources::CanonicalImportPath(name);
     return key.Succeeded() && key.value && *key.value == "AUDASTRA\\MINIMAP-MARKERS.BIN";
 }
+bool CanPreserveUnverifiedMarkers(const Diagnostic& diagnostic) {
+    constexpr std::string_view codes[]{
+        "MINIMAP_MARKER_PROVENANCE", "MINIMAP_MARKER_VERSION", "MINIMAP_MARKER_NEGATIVE_COUNT",
+        "MINIMAP_MARKER_TRUNCATED", "MINIMAP_MARKER_TRAILING_DATA", "MINIMAP_MARKER_BYTE_LIMIT",
+        "MINIMAP_MARKER_COUNT_LIMIT", "MINIMAP_MARKER_ALLOCATION", "MINIMAP_MARKER_BUDGET"
+    };
+    return diagnostic.severity != DiagnosticSeverity::Error ||
+        std::find(std::begin(codes), std::end(codes), diagnostic.code) != std::end(codes);
+}
 bool Unsupported(const Diagnostic& diagnostic) {
     constexpr std::string_view codes[]{
         "TERRAIN_MMP_BUDGET", "TERRAIN_MMP_ALLOCATION", "TERRAIN_MMP_GAME_ROOT", "TERRAIN_MMP_SOURCE_MISSING",
@@ -71,7 +80,10 @@ Status PrepareTerrainMinimapMarkers(MapSaveTask& task, const std::filesystem::pa
         std::span<const std::byte>(pending->data);
     auto editsState = MinimapMarkerEdits::Read(*task.archive, staged);
     if (!editsState.Succeeded() || !editsState.value) {
-        if (!staged.empty()) return {std::move(editsState.diagnostics)};
+        if (editsState.diagnostics.empty())
+            return Status::Failure("Terrain.MinimapMarkers", "TERRAIN_MMP_CAPTURE_EMPTY", "图标捕获未返回结果或诊断。");
+        if (!staged.empty() || !std::all_of(editsState.diagnostics.begin(), editsState.diagnostics.end(), CanPreserveUnverifiedMarkers))
+            return {std::move(editsState.diagnostics)};
         for (const auto& diagnostic : editsState.diagnostics)
             task.diagnostics.push_back({DiagnosticSeverity::Warning, "Terrain.MinimapMarkers",
                 "TERRAIN_MMP_PRESERVED_UNVERIFIED", "保留原小地图图标：" + diagnostic.code + "：" + diagnostic.message});
