@@ -252,8 +252,10 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
             [](const auto& stroke) { return stroke.intent.blockPaste.has_value(); });
         const bool resizes = std::any_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.resize.has_value(); });
-        // FTJE/H/I由保存站history外层占用；FTJJ/FTJK分别绑定含水内角/连接算法。
-        const unsigned version = joinedRamps ? 20 : nativeWetCorners ? 19 : resizes ? 16 : nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
+        const bool orientedBlocks = std::any_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.blockPaste && !stroke.intent.blockPaste->orientation.Identity(); });
+        // FTJE/H/I由保存站history外层占用；FTJJ/FTJK分别绑定含水内角/连接算法；FTJL起地形块带朝向。
+        const unsigned version = orientedBlocks ? 21 : joinedRamps ? 20 : nativeWetCorners ? 19 : resizes ? 16 : nativeCorners ? 15 : blocks ? 13 : connectedStraights ? 12 : straightRamps ? 11 : starts ? 10 : units ? 9 : wetCorners ? 8 : doodads ? 7 : palettes ? 6 : bounds ? 5
             : cornerRamps ? 4 : nativeWater ? 3 : nativeCliffs ? 2 : 1;
         wire.Number(0x004a5446u | ((version >= 10 ? std::uint32_t('A') + version - 10 : std::uint32_t('0') + version) << 24), 4);
         wire.Text(journal.sourceSha256);
@@ -274,7 +276,9 @@ Result<std::vector<std::byte>> EncodeTerrainStrokeJournal(const TerrainStrokeJou
                 }
                 if (stroke.intent.blockPaste) {
                     const auto& block = *stroke.intent.blockPaste; const auto& r = block.sourceCells;
-                    wire.Number(block.algorithm, 1); wire.Number(r.x0, 4); wire.Number(r.y0, 4);
+                    wire.Number(block.algorithm, 1);
+                    if (version >= 21) wire.Number(block.orientation.quarterTurns | (block.orientation.mirrorX ? 4u : 0u), 1);
+                    wire.Number(r.x0, 4); wire.Number(r.y0, 4);
                     wire.Number(r.x1, 4); wire.Number(r.y1, 4);
                     wire.Number(block.destinationVertex[0], 4); wire.Number(block.destinationVertex[1], 4);
                     wire.Text(block.expectedBlockSha256); wire.Number(stroke.intent.followDoodads, 1);
@@ -355,7 +359,7 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         Reader reader{bytes}; TerrainStrokeJournal journal;
         const auto magic = reader.Number(4);
         if ((magic & 0x00ffffffu) != 0x004a5446u
-            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F' && (magic >> 24) != 'G' && (magic >> 24) != 'J' && (magic >> 24) != 'K'
+            || ((magic >> 24) != 'A' && (magic >> 24) != 'B' && (magic >> 24) != 'C' && (magic >> 24) != 'D' && (magic >> 24) != 'F' && (magic >> 24) != 'G' && (magic >> 24) != 'J' && (magic >> 24) != 'K' && (magic >> 24) != 'L'
                 && ((magic >> 24) < '1' || (magic >> 24) > '9')))
             return Failed<TerrainStrokeJournal>();
         const auto version = (magic >> 24) >= 'A' ? static_cast<unsigned>((magic >> 24) - 'A') + 10u
@@ -391,6 +395,11 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
                 }
                 if (kind == 6) {
                     TerrainBlockPasteIntent block; block.algorithm = static_cast<std::uint8_t>(reader.Number(1));
+                    if (version >= 21) {
+                        const auto packed = reader.Number(1);
+                        if (packed > 7) return Failed<TerrainStrokeJournal>();
+                        block.orientation = {static_cast<std::uint8_t>(packed & 3), (packed & 4) != 0};
+                    }
                     block.sourceCells.x0 = static_cast<std::uint32_t>(reader.Number(4));
                     block.sourceCells.y0 = static_cast<std::uint32_t>(reader.Number(4));
                     block.sourceCells.x1 = static_cast<std::uint32_t>(reader.Number(4));
@@ -553,6 +562,9 @@ Result<TerrainStrokeJournal> DecodeTerrainStrokeJournal(std::span<const std::byt
         if (version == 20 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
             [](const auto& stroke) { return stroke.intent.brush.kind == TerrainBrushKind::CornerRamp
                 && stroke.intent.cornerRampAlgorithm == TerrainCornerRampAlgorithm::NativeJoinedRamps; }))
+            return Failed<TerrainStrokeJournal>();
+        if (version == 21 && std::none_of(journal.strokes.begin(), journal.strokes.end(),
+            [](const auto& stroke) { return stroke.intent.blockPaste && !stroke.intent.blockPaste->orientation.Identity(); }))
             return Failed<TerrainStrokeJournal>();
         return Result<TerrainStrokeJournal>::Success(std::move(journal));
     } catch (const std::bad_alloc&) { return Failed<TerrainStrokeJournal>(); }

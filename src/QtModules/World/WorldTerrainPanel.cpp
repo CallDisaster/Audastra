@@ -207,12 +207,32 @@ QWidget* WorldModule::BuildTerrainPage() {
     terrainBlockPaste_->setObjectName(QStringLiteral("worldTerrainBlockPaste"));
     blockTools->addWidget(terrainBlockSelect_); blockTools->addWidget(terrainBlockCopy_); blockTools->addWidget(terrainBlockPaste_);
     column->addLayout(blockTools);
+    auto* blockOrientation = new QHBoxLayout;
+    terrainBlockRotateLeft_ = new QPushButton(tr("左转90°"), terrainPalette_);
+    terrainBlockRotateRight_ = new QPushButton(tr("右转90°"), terrainPalette_);
+    terrainBlockFlipEastWest_ = new QPushButton(tr("左右翻转"), terrainPalette_);
+    terrainBlockFlipNorthSouth_ = new QPushButton(tr("上下翻转"), terrainPalette_);
+    terrainBlockRotateLeft_->setObjectName(QStringLiteral("worldTerrainBlockRotateLeft"));
+    terrainBlockRotateRight_->setObjectName(QStringLiteral("worldTerrainBlockRotateRight"));
+    terrainBlockFlipEastWest_->setObjectName(QStringLiteral("worldTerrainBlockFlipEastWest"));
+    terrainBlockFlipNorthSouth_->setObjectName(QStringLiteral("worldTerrainBlockFlipNorthSouth"));
+    for (auto* button : {terrainBlockRotateLeft_, terrainBlockRotateRight_, terrainBlockFlipEastWest_, terrainBlockFlipNorthSouth_})
+        blockOrientation->addWidget(button);
+    column->addLayout(blockOrientation);
     terrainBlockStatus_ = new QLabel(tr("同图复制 · 绝对高度；源块变化须重新复制"), terrainPalette_);
     terrainBlockStatus_->setObjectName(QStringLiteral("worldTerrainBlockStatus"));
     terrainBlockStatus_->setWordWrap(true); column->addWidget(terrainBlockStatus_);
     connect(terrainBlockSelect_, &QPushButton::clicked, this, &WorldModule::StartTerrainBlockSelection);
     connect(terrainBlockCopy_, &QPushButton::clicked, this, &WorldModule::CopyTerrainBlock);
     connect(terrainBlockPaste_, &QPushButton::clicked, this, &WorldModule::StartTerrainBlockPaste);
+    connect(terrainBlockRotateLeft_, &QPushButton::clicked, this,
+        [this] { ReorientTerrainBlock(terrainBlockOrientation_.CounterClockwise()); });
+    connect(terrainBlockRotateRight_, &QPushButton::clicked, this,
+        [this] { ReorientTerrainBlock(terrainBlockOrientation_.Clockwise()); });
+    connect(terrainBlockFlipEastWest_, &QPushButton::clicked, this,
+        [this] { ReorientTerrainBlock(terrainBlockOrientation_.FlippedEastWest()); });
+    connect(terrainBlockFlipNorthSouth_, &QPushButton::clicked, this,
+        [this] { ReorientTerrainBlock(terrainBlockOrientation_.FlippedNorthSouth()); });
 
     // 笔刷种类：地形剖面图标网格
     column->addWidget(SectionLabel(tr("笔刷"), terrainPalette_));

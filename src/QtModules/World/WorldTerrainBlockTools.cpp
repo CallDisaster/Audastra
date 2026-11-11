@@ -28,6 +28,17 @@ std::optional<std::array<std::uint32_t, 2>> BlockCellAt(const MapData::TerrainGr
     if (gx < 0 || gy < 0 || gx >= terrain.header.width - 1 || gy >= terrain.header.height - 1) return {};
     return std::array<std::uint32_t, 2>{static_cast<std::uint32_t>(gx), static_cast<std::uint32_t>(gy)};
 }
+
+QString OrientationText(const MapData::TerrainBlockOrientation& orientation) {
+    if (orientation.Identity()) return QObject::tr("原方向");
+    static const std::array<const char*, 4> turns{"", "左转90°", "转180°", "右转90°"};
+    QString text = orientation.mirrorX ? QObject::tr("左右翻转") : QString();
+    if (orientation.quarterTurns) {
+        if (!text.isEmpty()) text += QStringLiteral("后");
+        text += QObject::tr(turns[orientation.quarterTurns % 4]);
+    }
+    return text;
+}
 } // namespace
 
 bool WorldModule::TerrainBlockClipboardCurrent() const {
@@ -90,7 +101,8 @@ void WorldModule::CopyTerrainBlock() {
     }
     terrainBlockClipboard_ = TerrainBlockClipboard{*terrainBlockSelection_, *fingerprint.value, MapKey(),
         project_.mapEdits_->SessionIdentity(), project_.mapEdits_->TerrainSourceRevision(), rawTerrain_->header};
-    terrainBlockStatus_->setText(tr("已复制源区域 · Ctrl+V粘贴；绝对高度，源块变化须重新复制"));
+    terrainBlockOrientation_ = {};
+    terrainBlockStatus_->setText(tr("已复制源区域 · Ctrl+V粘贴，可先旋转或翻转；绝对高度，源块变化须重新复制"));
 }
 
 void WorldModule::StartTerrainBlockPaste() {
@@ -106,18 +118,36 @@ void WorldModule::StartTerrainBlockPaste() {
     terrainBlockSelecting_ = false; terrainBlockPasting_ = true;
     viewport_->SetTerrainBlockSelection(false); viewport_->SetBrushMode(false); viewport_->SetPlacing(true);
     ClearSelection(); UpdateToolState(); QueueWaterBrushCapture(); viewport_->setFocus();
-    terrainBlockStatus_->setText(tr("目标轮廓尚未提交 · 单击粘贴，Esc取消；绝对高度，源块变化须重新复制"));
+    terrainBlockStatus_->setText(tr("目标轮廓尚未提交（%1）· 单击粘贴，Esc取消；绝对高度，源块变化须重新复制")
+        .arg(OrientationText(terrainBlockOrientation_)));
     if (const auto& hover = viewport_->HoverCoordinate()) HoverTerrainBlock(hover->position[0], hover->position[1]);
+}
+
+void WorldModule::ReorientTerrainBlock(MapData::TerrainBlockOrientation orientation) {
+    if (!terrainBlockClipboard_) { terrainBlockStatus_->setText(tr("请先框选并复制地形，再旋转或翻转")); return; }
+    terrainBlockOrientation_ = orientation;
+    if (!terrainBlockPasting_) {
+        terrainBlockStatus_->setText(tr("粘贴方向：%1 · Ctrl+V粘贴").arg(OrientationText(orientation))); return;
+    }
+    terrainBlockStatus_->setText(tr("目标轮廓尚未提交（%1）· 单击粘贴，Esc取消；绝对高度，源块变化须重新复制")
+        .arg(OrientationText(orientation)));
+    if (viewport_) {
+        viewport_->setFocus();
+        if (const auto& hover = viewport_->HoverCoordinate()) { HoverTerrainBlock(hover->position[0], hover->position[1]); return; }
+    }
+    UpdateOverlay();
 }
 
 void WorldModule::HoverTerrainBlock(double x, double y) {
     terrainBlockDestination_.reset();
     if (terrainBlockPasting_ && TerrainBlockClipboardCurrent() && rawTerrain_) {
         const auto destination = BlockCellAt(*rawTerrain_, x, y);
-        const auto& cells = terrainBlockClipboard_->cells;
-        if (destination && (*destination)[0] + cells.x1 - cells.x0 < rawTerrain_->header.width
-            && (*destination)[1] + cells.y1 - cells.y0 < rawTerrain_->header.height)
-            terrainBlockDestination_ = destination;
+        if (destination) {
+            const auto target = MapData::TerrainBlockPasteTarget(MapData::MakeTerrainBlockPasteIntent(
+                terrainBlockClipboard_->cells, *destination, {}, terrainBlockOrientation_));
+            if (target.x1 < rawTerrain_->header.width && target.y1 < rawTerrain_->header.height)
+                terrainBlockDestination_ = destination;
+        }
     }
     UpdateOverlay();
 }
@@ -146,7 +176,8 @@ void WorldModule::PasteTerrainBlock(double x, double y) {
     }
     const auto capture = waterCapture_;
     const auto& copied = *terrainBlockClipboard_;
-    const MapData::TerrainBlockPasteIntent intent{1, copied.cells, *terrainBlockDestination_, copied.fingerprint};
+    const auto intent = MapData::MakeTerrainBlockPasteIntent(copied.cells, *terrainBlockDestination_,
+        copied.fingerprint, terrainBlockOrientation_);
     // 先退出交互，再发布后台事务；SetChecked/SetPlacing的取消信号不能取消新任务。
     StopTerrainBlockTool();
     // 保持地形面板；视口待最终地形呈现后才恢复框选，准备期间不接受旧地面手势。
@@ -168,12 +199,29 @@ void WorldModule::AppendTerrainBlockOverlay(std::vector<War3RenderOverlayLineV2>
         Render::AppendGroundRectangle(lines, terrain_.get(), origin[0] + cells.x0 * size, origin[1] + cells.y0 * size,
             origin[0] + cells.x1 * size, origin[1] + cells.y1 * size, color, 6.0f);
     };
-    if (terrainBlockSelection_) append(*terrainBlockSelection_, {0.36f, 0.92f, 0.68f});
+    // 源块西南角地格和它在目标里的位置各画一个小方块，旋转/翻转后能看出对应关系。
+    const auto corner = [&](const MapData::TerrainCellRect& cells, std::array<std::uint32_t, 2> vertex, const Render::OverlayColor& color) {
+        const auto x = std::min(vertex[0], cells.x1 - 1), y = std::min(vertex[1], cells.y1 - 1);
+        append({x, y, x + 1, y + 1}, color);
+    };
+    if (terrainBlockSelection_) {
+        append(*terrainBlockSelection_, {0.36f, 0.92f, 0.68f});
+        if (terrainBlockClipboard_ && terrainBlockClipboard_->cells == *terrainBlockSelection_)
+            corner(*terrainBlockSelection_, {terrainBlockSelection_->x0, terrainBlockSelection_->y0}, {0.36f, 0.92f, 0.68f});
+    }
     if (terrainBlockPasting_ && TerrainBlockClipboardCurrent() && terrainBlockDestination_) {
         const auto& source = terrainBlockClipboard_->cells;
-        const auto& destination = *terrainBlockDestination_;
-        append({destination[0], destination[1], destination[0] + source.x1 - source.x0,
-            destination[1] + source.y1 - source.y0}, {0.95f, 0.78f, 0.32f});
+        const auto intent = MapData::MakeTerrainBlockPasteIntent(source, *terrainBlockDestination_, {}, terrainBlockOrientation_);
+        const auto target = MapData::TerrainBlockPasteTarget(intent);
+        append(target, {0.95f, 0.78f, 0.32f});
+        // 源西南角地格的四个顶点落到目标后，取最小者即该地格在目标里的西南角。
+        std::array<std::uint32_t, 2> lowest{target.x1, target.y1};
+        for (const auto dy : {0u, 1u}) for (const auto dx : {0u, 1u}) {
+            const auto placed = MapData::TerrainBlockOrientVertex(source.x1 - source.x0, source.y1 - source.y0,
+                terrainBlockOrientation_, dx, dy);
+            lowest[0] = std::min(lowest[0], target.x0 + placed[0]); lowest[1] = std::min(lowest[1], target.y0 + placed[1]);
+        }
+        corner(target, lowest, {0.95f, 0.78f, 0.32f});
     }
 }
 

@@ -52,7 +52,8 @@ bool EqualTerrainJournalIntent(const TerrainStrokeIntent& a, const TerrainStroke
         const auto& p = *a.blockPaste; const auto& q = *b.blockPaste;
         if (p.algorithm != q.algorithm || p.sourceCells.x0 != q.sourceCells.x0 || p.sourceCells.y0 != q.sourceCells.y0
             || p.sourceCells.x1 != q.sourceCells.x1 || p.sourceCells.y1 != q.sourceCells.y1
-            || p.destinationVertex != q.destinationVertex || p.expectedBlockSha256 != q.expectedBlockSha256) return false;
+            || p.destinationVertex != q.destinationVertex || p.expectedBlockSha256 != q.expectedBlockSha256
+            || p.orientation != q.orientation) return false;
     }
     return true;
 }

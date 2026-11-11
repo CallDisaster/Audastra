@@ -114,6 +114,48 @@ void WorldModuleTests::TerrainBlockPasteFreezesSourceAndUsesSharedUndo() {
     QCOMPARE(Sha256File(fixture.source->SourcePath()).value, sourceSha.value);
 }
 
+void WorldModuleTests::TerrainBlockOrientedPasteUsesRotateAndFlipButtons() {
+    TerrainBlockFixtures::BlockFixture fixture;
+    QtProject::EditorProject project; InstallBlockWorldProject(project, fixture);
+    BackendState state; activeBackend = &state; WorldModule module(project, &backend);
+    auto* page = module.Widget(); auto* viewport = module.Viewport(); state.viewport = viewport;
+    page->resize(900, 600); page->show(); QTRY_COMPARE(viewport->VertexCount(), std::size_t{1089});
+    auto* select = page->findChild<QPushButton*>("worldTerrainBlockSelect");
+    auto* copy = page->findChild<QPushButton*>("worldTerrainBlockCopy");
+    auto* paste = page->findChild<QPushButton*>("worldTerrainBlockPaste");
+    auto* left = page->findChild<QPushButton*>("worldTerrainBlockRotateLeft");
+    auto* flip = page->findChild<QPushButton*>("worldTerrainBlockFlipEastWest");
+    auto* resources = page->findChild<QLabel*>("worldTerrainWaterBrushStatus");
+    auto* status = page->findChild<QLabel*>("worldTerrainBlockStatus");
+    QVERIFY(select && copy && paste && left && flip && resources && status);
+    left->click(); QVERIFY(status->text().contains(QStringLiteral("请先框选")));
+    QTRY_VERIFY(select->isEnabled()); select->click();
+    viewport->TerrainBlockSelected(513, 513, 1023, 1023); copy->click();
+    paste->click(); QTRY_VERIFY(resources->property("ready").toBool());
+    // 左转90°后再左右翻转 = 先翻转、再逆时针转三次（右转90°）。
+    left->click(); flip->click();
+    QVERIFY(status->text().contains(QStringLiteral("左右翻转后右转90°")));
+    QVERIFY(viewport->Placing());
+    viewport->PlaceRequested(2561, 2561, false);
+    QTRY_COMPARE(project.mapDataUndoStack_->count(), 1);
+    const auto& before = fixture.grid; const auto& after = *project.mapEdits_->Terrain();
+    const MapData::TerrainBlockOrientation expected{3, true};
+    for (std::uint32_t y = 0; y <= 4; ++y) for (std::uint32_t x = 0; x <= 4; ++x) {
+        const auto placed = MapData::TerrainBlockOrientVertex(4, 4, expected, x, y);
+        const auto& source = before.vertices[(4 + y) * 33 + 4 + x];
+        const auto& target = after.vertices[(20 + placed[1]) * 33 + 20 + placed[0]];
+        QCOMPARE(target.groundHeightRaw, source.groundHeightRaw);
+        QCOMPARE(target.waterHeightAndFlagsRaw, source.waterHeightAndFlagsRaw);
+        QCOMPARE(target.textureAndFlagsRaw, source.textureAndFlagsRaw);
+        QCOMPARE(target.cliffAndLayerRaw, source.cliffAndLayerRaw);
+    }
+    // 重新复制后方向回到原方向。
+    QTRY_VERIFY(viewport->TerrainBlockSelection());
+    copy->click(); QVERIFY(status->text().contains(QStringLiteral("已复制")));
+    paste->click(); QTRY_VERIFY(resources->property("ready").toBool());
+    QVERIFY(status->text().contains(QStringLiteral("原方向")));
+}
+
 void WorldModuleTests::TerrainBlockPasteRejectsChangedSourceAndPendingCas() {
     TerrainBlockFixtures::BlockFixture fixture;
     QtProject::EditorProject project; InstallBlockWorldProject(project, fixture);

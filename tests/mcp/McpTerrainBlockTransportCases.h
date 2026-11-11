@@ -42,4 +42,23 @@ void TerrainBlockFacadeCapturesItsOwnSourceDigest() {
     invalid = request; invalid["expected_revision"] = "1";
     code(InvokeTerrainEditTool("edit_terrain_block", invalid, host), "TERRAIN_EDIT_STALE");
     Expect(calls == 1, "bad rectangle and stale identity cannot capture a source or prepare");
+
+    // 朝向：先东西翻转再逆时针转；3x2源块转一次后目标为2x3，结果回报实际目标范围。
+    unsigned orientedCalls = 0;
+    host.prepareBlock = [&](const auto&, const auto&, const TerrainBlockPasteIntent& intent, bool) {
+        ++orientedCalls;
+        Expect(intent.algorithm == 2 && intent.orientation == TerrainBlockOrientation{1, true}
+            && TerrainBlockPasteTarget(intent).x1 == 12 && TerrainBlockPasteTarget(intent).y1 == 14,
+            "rotation_ccw and mirror_x reach the shared intent with algorithm 2 and a swapped target");
+        return Result<PreparedTerrainEdit>::Failure("Test", "BLOCK_PREPARE_SENTINEL", "actual captured owner sentinel");
+    };
+    auto oriented = request; oriented["rotation_ccw"] = 1; oriented["mirror_x"] = true;
+    code(InvokeTerrainEditTool("edit_terrain_block", oriented, host), "BLOCK_PREPARE_SENTINEL");
+    invalid = oriented; invalid["rotation_ccw"] = 4;
+    code(InvokeTerrainEditTool("edit_terrain_block", invalid, host), "TERRAIN_ARGUMENT_NUMBER");
+    invalid = oriented; invalid["mirror_x"] = 1;
+    code(InvokeTerrainEditTool("edit_terrain_block", invalid, host), "TERRAIN_ARGUMENT_TYPE");
+    invalid = oriented; invalid["destination_y"] = 2046;
+    code(InvokeTerrainEditTool("edit_terrain_block", invalid, host), "TERRAIN_BLOCK_RECTANGLE");
+    Expect(orientedCalls == 1, "invalid orientation or a swapped target past the edge never prepares");
 }

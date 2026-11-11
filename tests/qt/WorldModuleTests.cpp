@@ -863,6 +863,7 @@ private slots:
     void TerrainConnectedRampRejectsStaleStroke();
     void TerrainBlockSelectionUsesCompletedGroundWithoutModels();
     void TerrainBlockPasteFreezesSourceAndUsesSharedUndo();
+    void TerrainBlockOrientedPasteUsesRotateAndFlipButtons();
     void TerrainBlockPasteRejectsChangedSourceAndPendingCas();
     void TerrainBlockCancellationKeepsClipboardAndReloadClearsIt();
     void TerrainBoundaryMarksAndRestores_data();

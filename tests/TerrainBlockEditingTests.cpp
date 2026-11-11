@@ -1,5 +1,6 @@
 #include "TerrainBlockFixtures.h"
 #include "War3MapCore/MapData/TerrainNativePathing.h"
+#include "War3MapCore/MapData/TerrainStrokeJournal.h"
 
 #include <iostream>
 #include <limits>
@@ -253,6 +254,114 @@ void SessionSourceCasBudgetAndSingleHistory() {
     Require(HasCode(f.edits->ApplyPreparedTerrainEdit(fresh), "TERRAIN_EDIT_STALE"), "same-data source rebasing invalidates an old block plan");
 }
 
+bool SameRaw(const TerrainVertex& a, const TerrainVertex& b) {
+    return a.groundHeightRaw == b.groundHeightRaw && a.waterHeightAndFlagsRaw == b.waterHeightAndFlagsRaw
+        && a.textureAndFlagsRaw == b.textureAndFlagsRaw && a.variationRaw == b.variationRaw && a.cliffAndLayerRaw == b.cliffAndLayerRaw;
+}
+
+void OrientedPastesMapEveryVertex() {
+    BlockFixture f; const auto resources = f.Rules(); const auto& rules = *resources.WaterBrushRules();
+    // 非方形4x2地格源块（5x3顶点），每个顶点高度唯一，便于逐点核对落点。
+    auto source = f.grid;
+    for (auto& vertex : source.vertices) vertex.cliffAndLayerRaw = 0xf2;
+    const TerrainCellRect cells{4, 4, 8, 6};
+    for (unsigned y = 0; y <= 2; ++y) for (unsigned x = 0; x <= 4; ++x)
+        source.vertices[(4 + y) * 33 + 4 + x].groundHeightRaw = std::uint16_t(8192 + 16 * (y * 5 + x));
+    const auto sha = Take(CaptureTerrainBlockFingerprint(source, cells));
+    // 独立写出的逆映射：目标内(tx,ty)取源内哪个顶点。俯视逆时针，先东西翻转后旋转。
+    const auto from = [](unsigned index, unsigned tx, unsigned ty) -> std::array<unsigned, 2> {
+        switch (index) {
+        case 0: return {tx, ty};
+        case 1: return {ty, 2 - tx};
+        case 2: return {4 - tx, 2 - ty};
+        case 3: return {4 - ty, tx};
+        case 4: return {4 - tx, ty};
+        case 5: return {4 - ty, 2 - tx};
+        case 6: return {tx, 2 - ty};
+        default: return {ty, tx};
+        }
+    };
+    for (unsigned index = 0; index < 8; ++index) {
+        const TerrainBlockOrientation orientation{std::uint8_t(index % 4), index >= 4};
+        const auto intent = MakeTerrainBlockPasteIntent(cells, {20, 20}, sha, orientation);
+        const bool swapped = index % 2 != 0;
+        const auto target = TerrainBlockPasteTarget(intent);
+        Require(intent.algorithm == (index ? 2 : 1) && ValidateTerrainBlockPasteIntent(intent).Succeeded()
+            && target.x0 == 20 && target.y0 == 20 && target.x1 == 20 + (swapped ? 2u : 4u) && target.y1 == 20 + (swapped ? 4u : 2u),
+            "orientation picks its unique algorithm and odd quarter turns swap the target extent");
+        const auto candidate = Take(PrepareTerrainBlockPasteStroke(source, rules, intent));
+        for (unsigned y = 0; y < 33; ++y) for (unsigned x = 0; x < 33; ++x) {
+            const auto& actual = candidate.terrain.vertices[y * 33 + x];
+            if (x >= target.x0 && x <= target.x1 && y >= target.y0 && y <= target.y1) {
+                const auto origin = from(index, x - target.x0, y - target.y0);
+                Require(SameRaw(actual, source.vertices[(4 + origin[1]) * 33 + 4 + origin[0]]),
+                    "every oriented target vertex carries all raw fields of its independently mapped source vertex");
+            } else Require(SameRaw(actual, source.vertices[y * 33 + x]), "vertices outside the oriented target stay exact");
+        }
+    }
+    // 宽高互换后同一目标点可能越过2048外缘；算法2也不能裁剪。
+    auto edge = MakeTerrainBlockPasteIntent({0, 0, 4, 2}, {2046, 0}, sha, {1, false});
+    Require(ValidateTerrainBlockPasteIntent(edge).Succeeded(), "swapped 2x4 target fits at x=2046");
+    edge.orientation = {}; edge.algorithm = 1;
+    Require(!ValidateTerrainBlockPasteIntent(edge).Succeeded(), "unswapped 4x2 target overflows the 2048 edge at x=2046");
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        auto malformed = MakeTerrainBlockPasteIntent(cells, {20, 20}, sha, {1, false});
+        if (mode == 0) malformed.algorithm = 1;
+        if (mode == 1) malformed.orientation.quarterTurns = 4;
+        if (mode == 2) { malformed.orientation = {}; malformed.algorithm = 2; }
+        Require(!ValidateTerrainBlockPasteIntent(malformed).Succeeded()
+            && !PrepareTerrainBlockPasteStroke(source, rules, malformed).Succeeded(),
+            "orientation and algorithm must agree; a fifth quarter turn is not a second spelling");
+    }
+    // 界面按钮组合：在当前朝向之后再做一次俯视操作，与对落点直接施加该操作一致。
+    for (unsigned index = 0; index < 8; ++index) {
+        const TerrainBlockOrientation current{std::uint8_t(index % 4), index >= 4};
+        const unsigned w = current.quarterTurns % 2 ? 2 : 4, h = current.quarterTurns % 2 ? 4 : 2;
+        for (unsigned op = 0; op < 4; ++op) {
+            const auto next = op == 0 ? current.CounterClockwise() : op == 1 ? current.Clockwise()
+                : op == 2 ? current.FlippedEastWest() : current.FlippedNorthSouth();
+            Require(next.Valid(), "composed orientation stays canonical");
+            for (unsigned y = 0; y <= 2; ++y) for (unsigned x = 0; x <= 4; ++x) {
+                const auto q = TerrainBlockOrientVertex(4, 2, current, x, y);
+                const std::array<std::uint32_t, 2> expected = op == 0 ? std::array<std::uint32_t, 2>{h - q[1], q[0]}
+                    : op == 1 ? std::array<std::uint32_t, 2>{q[1], w - q[0]}
+                    : op == 2 ? std::array<std::uint32_t, 2>{w - q[0], q[1]} : std::array<std::uint32_t, 2>{q[0], h - q[1]};
+                Require(TerrainBlockOrientVertex(4, 2, next, x, y) == expected,
+                    "rotate/flip buttons compose exactly like applying the top-down operation to the placed block");
+            }
+        }
+    }
+}
+
+void OrientedSessionJournalAndUndo() {
+    BlockFixture f; const auto resources = f.Rules(); const auto identity = f.Intent();
+    const auto oriented = MakeTerrainBlockPasteIntent(identity.sourceCells, identity.destinationVertex,
+        identity.expectedBlockSha256, TerrainBlockOrientation{1, true});
+    const auto expected = Take(PrepareTerrainBlockPasteStroke(f.grid, *resources.WaterBrushRules(), oriented));
+    Require(expected.result.changedVertices > 0, "oriented fixture paste changes the target");
+    const auto before = Take(SerializeMapTerrain(*f.edits->Terrain()));
+    const auto plan = Take(f.edits->PrepareTerrainBlockPasteEdit(resources, oriented, false));
+    Require(plan.BlockPasteIntent() && *plan.BlockPasteIntent() == oriented, "session freezes the exact oriented intent");
+    Take(f.edits->ApplyPreparedTerrainEdit(plan));
+    Require(Take(SerializeMapTerrain(*f.edits->Terrain())) == Take(SerializeMapTerrain(expected.terrain)),
+        "session apply publishes the same oriented W3E as the core candidate");
+    const auto journal = Take(TerrainPathingSave::CaptureJournal(*f.source, *f.edits));
+    Require(journal.strokes.size() == 1 && journal.strokes[0].intent.blockPaste == oriented,
+        "journal keeps orientation and algorithm 2");
+    const auto wire = Take(EncodeTerrainStrokeJournal(journal));
+    Require(wire.size() > 4 && wire[3] == std::byte{'L'}, "an oriented block raises the stroke journal to FTJL");
+    const auto decoded = Take(DecodeTerrainStrokeJournal(wire));
+    Require(decoded.strokes.size() == 1 && decoded.strokes[0].intent.blockPaste == oriented
+        && Take(EncodeTerrainStrokeJournal(decoded)) == wire, "FTJL round-trips the oriented block byte for byte");
+    Require(f.edits->Undo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == before, "oriented block Undo restores exact W3E");
+    Require(f.edits->Redo() && Take(SerializeMapTerrain(*f.edits->Terrain())) == Take(SerializeMapTerrain(expected.terrain)),
+        "oriented block Redo republishes the same W3E");
+    BlockFixture g;
+    Take(g.edits->ApplyPreparedTerrainEdit(Take(g.edits->PrepareTerrainBlockPasteEdit(g.Rules(), g.Intent(), false))));
+    const auto plainWire = Take(EncodeTerrainStrokeJournal(Take(TerrainPathingSave::CaptureJournal(*g.source, *g.edits))));
+    Require(plainWire.size() > 4 && plainWire[3] == std::byte{'D'}, "unrotated blocks keep the older FTJD wire");
+}
+
 void FormalSaveReadbackAndSavedUndoRedo() {
     for (const bool inPlace : {false, true}) for (const bool follow : {false, true}) {
         BlockFixture f; const auto originalPath = f.source->SourcePath(); const auto originalSha = f.source->SourceSha256();
@@ -297,6 +406,7 @@ int main() {
     try {
         IndependentCompleteGridsAndFrozenOverlap(); HashIdentityAndAllRejectedDomainsStayAtomic();
         ActualSpecialShapeAndBudgets(); SessionSourceCasBudgetAndSingleHistory(); FormalSaveReadbackAndSavedUndoRedo();
+        OrientedPastesMapEveryVertex(); OrientedSessionJournalAndUndo();
         std::cout << "TerrainBlockEditingTests passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

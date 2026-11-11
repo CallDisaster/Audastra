@@ -265,6 +265,7 @@ private:
     void StartTerrainBlockPaste();
     void PasteTerrainBlock(double x, double y);
     void HoverTerrainBlock(double x, double y);
+    void ReorientTerrainBlock(MapData::TerrainBlockOrientation orientation);
     void StopTerrainBlockTool(bool clearClipboard = false);
     [[nodiscard]] bool TerrainBlockClipboardCurrent() const;
     void AppendTerrainBlockOverlay(std::vector<War3RenderOverlayLineV2>& lines) const;
@@ -398,6 +399,10 @@ private:
     QPushButton* terrainBlockSelect_ = nullptr;
     QPushButton* terrainBlockCopy_ = nullptr;
     QPushButton* terrainBlockPaste_ = nullptr;
+    QPushButton* terrainBlockRotateLeft_ = nullptr;
+    QPushButton* terrainBlockRotateRight_ = nullptr;
+    QPushButton* terrainBlockFlipEastWest_ = nullptr;
+    QPushButton* terrainBlockFlipNorthSouth_ = nullptr;
     QLabel* terrainBlockStatus_ = nullptr;
     QWidget* terrainRampSection_ = nullptr;
     QButtonGroup* terrainRampModes_ = nullptr;
@@ -578,6 +583,7 @@ private:
     std::optional<TerrainBlockClipboard> terrainBlockClipboard_;
     std::optional<MapData::TerrainCellRect> terrainBlockSelection_;
     std::optional<std::array<std::uint32_t, 2>> terrainBlockDestination_;
+    MapData::TerrainBlockOrientation terrainBlockOrientation_;
     bool terrainBlockSelecting_ = false, terrainBlockPasting_ = false;
     std::array<float, 3> clipboardAnchor_{};
     std::optional<std::array<float, 3>> previewHover_;

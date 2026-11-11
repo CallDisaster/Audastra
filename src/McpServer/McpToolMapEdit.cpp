@@ -132,23 +132,35 @@ std::optional<Services::MapEditTerrainStroke> ParseTerrainStroke(const QJsonObje
         return result;
     }
     if (kind.toString() == "block_copy") {
-        if (!OnlyFields(object, {"kind", "source_x", "source_y", "width", "height", "destination_x", "destination_y"}, error))
+        if (!OnlyFields(object, {"kind", "source_x", "source_y", "width", "height", "destination_x", "destination_y",
+                "rotation_ccw", "mirror_x"}, error))
             return std::nullopt;
         const auto sx = Integer(object, "source_x", error), sy = Integer(object, "source_y", error),
             width = Integer(object, "width", error), height = Integer(object, "height", error),
             dx = Integer(object, "destination_x", error), dy = Integer(object, "destination_y", error);
         if (!sx || !sy || !width || !height || !dx || !dy) return std::nullopt;
-        if (*sx < 0 || *sy < 0 || *width < 1 || *height < 1 || *dx < 0 || *dy < 0
+        std::optional<std::int32_t> turns = 0;
+        if (object.contains(QStringLiteral("rotation_ccw"))) turns = Integer(object, "rotation_ccw", error);
+        if (!turns) return std::nullopt;
+        const auto mirror = object.value(QStringLiteral("mirror_x"));
+        if (!mirror.isUndefined() && !mirror.isBool()) {
+            error = Failure("MCP_MAP_EDIT_BLOCK_INVALID", "地形复制的mirror_x必须是布尔值。");
+            return std::nullopt;
+        }
+        const bool swapped = *turns % 2 != 0;
+        const auto targetWidth = swapped ? *height : *width, targetHeight = swapped ? *width : *height;
+        if (*sx < 0 || *sy < 0 || *width < 1 || *height < 1 || *dx < 0 || *dy < 0 || *turns < 0 || *turns > 3
             || *sx > 2048 || *sy > 2048 || *width > MapData::TerrainBlockMaximumSide || *height > MapData::TerrainBlockMaximumSide || *dx > 2048 || *dy > 2048
-            || *sx + *width > 2048 || *sy + *height > 2048 || *dx + *width > 2048 || *dy + *height > 2048) {
-            error = Failure("MCP_MAP_EDIT_BLOCK_INVALID", "地形复制需要0..2048内非空源/目标地格半开矩形，每边不超过256地格。");
+            || *sx + *width > 2048 || *sy + *height > 2048 || *dx + targetWidth > 2048 || *dy + targetHeight > 2048) {
+            error = Failure("MCP_MAP_EDIT_BLOCK_INVALID", "地形复制需要0..2048内非空源/目标地格半开矩形，每边不超过256地格，rotation_ccw为0..3。");
             return std::nullopt;
         }
         Services::MapEditTerrainStroke result;
-        result.blockPaste = MapData::TerrainBlockPasteIntent{1,
+        result.blockPaste = MapData::MakeTerrainBlockPasteIntent(
             {static_cast<std::uint32_t>(*sx), static_cast<std::uint32_t>(*sy),
                 static_cast<std::uint32_t>(*sx + *width), static_cast<std::uint32_t>(*sy + *height)},
-            {static_cast<std::uint32_t>(*dx), static_cast<std::uint32_t>(*dy)}, {}};
+            {static_cast<std::uint32_t>(*dx), static_cast<std::uint32_t>(*dy)}, {},
+            {static_cast<std::uint8_t>(*turns), mirror.toBool(false)});
         return result;
     }
     if (kind.toString() == "canvas_resize") {
@@ -806,8 +818,10 @@ QJsonObject TerrainStrokeSchema() {
         blockCopyProperties.insert(index, QJsonObject{{"type", "integer"}, {"minimum", extent ? 1 : 0},
             {"maximum", extent ? static_cast<int>(MapData::TerrainBlockMaximumSide) : 2048}});
     }
+    blockCopyProperties.insert("rotation_ccw", QJsonObject{{"type", "integer"}, {"minimum", 0}, {"maximum", 3}});
+    blockCopyProperties.insert("mirror_x", QJsonObject{{"type", "boolean"}});
     auto blockCopy = BasicSchema(blockCopyProperties, {"kind", "source_x", "source_y", "width", "height", "destination_x", "destination_y"});
-    blockCopy["description"] = "同图绝对原始值复制，包括东/北顶点，不旋转缩放；必须是唯一地形命令，源摘要由服务捕获。拒绝坡道、边界、MapEdge和特殊装饰物，悬崖与水沿实际规则。";
+    blockCopy["description"] = "同图绝对原始值复制，包括东/北顶点，不缩放；可选mirror_x先东西翻转，rotation_ccw再俯视逆时针转0..3个90度，奇数时目标宽高互换；必须是唯一地形命令，源摘要由服务捕获。拒绝坡道、边界、MapEdge和特殊装饰物，悬崖与水沿实际规则。";
     QJsonArray variants{BasicSchema(height, heightRequired),
         BasicSchema(smooth, heightRequired), BasicSchema(blight, blightRequired), BasicSchema(boundary, boundaryRequired),
         BasicSchema(ramp, rampRequired), corner, straight, bounds, resize, blockCopy, pathingSchema,

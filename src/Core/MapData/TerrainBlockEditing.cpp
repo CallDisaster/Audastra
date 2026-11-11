@@ -7,6 +7,7 @@
 #include <cmath>
 #include <new>
 #include <stdexcept>
+#include <utility>
 
 namespace War3Map::MapData {
 namespace {
@@ -68,11 +69,6 @@ void Grid(const TerrainGridSnapshot& grid, Budget& budget) {
                 Fail("TERRAIN_BLOCK_PALETTE", "地形块贴图表不是已知四字节rawcode。");
         }
     }
-}
-TerrainCellRect Destination(const TerrainBlockPasteIntent& intent) {
-    return {intent.destinationVertex[0], intent.destinationVertex[1],
-        intent.destinationVertex[0] + intent.sourceCells.x1 - intent.sourceCells.x0,
-        intent.destinationVertex[1] + intent.sourceCells.y1 - intent.sourceCells.y0};
 }
 TerrainCellRect Halo(const TerrainGridSnapshot& grid, const TerrainCellRect& cells) {
     if (!Rectangle(cells) || cells.x0 < 2 || cells.y0 < 2
@@ -199,14 +195,40 @@ template<class T, class Function> Result<T> Guard(Function function) {
 }
 } // namespace
 
+TerrainBlockPasteIntent MakeTerrainBlockPasteIntent(const TerrainCellRect& sourceCells,
+    std::array<std::uint32_t, 2> destinationVertex, std::string expectedBlockSha256, TerrainBlockOrientation orientation) {
+    return {std::uint8_t(orientation.Identity() ? 1 : 2), sourceCells, destinationVertex, std::move(expectedBlockSha256), orientation};
+}
+
+TerrainCellRect TerrainBlockPasteTarget(const TerrainBlockPasteIntent& intent) noexcept {
+    const auto width = intent.sourceCells.x1 - intent.sourceCells.x0, height = intent.sourceCells.y1 - intent.sourceCells.y0;
+    const bool swapped = intent.orientation.quarterTurns % 2 != 0;
+    return {intent.destinationVertex[0], intent.destinationVertex[1],
+        intent.destinationVertex[0] + (swapped ? height : width), intent.destinationVertex[1] + (swapped ? width : height)};
+}
+
+std::array<std::uint32_t, 2> TerrainBlockOrientVertex(std::uint32_t width, std::uint32_t height,
+    TerrainBlockOrientation orientation, std::uint32_t x, std::uint32_t y) noexcept {
+    if (orientation.mirrorX) x = width - x;
+    for (unsigned turn = 0; turn < orientation.quarterTurns % 4u; ++turn) {
+        // 逆时针90度：(x,y)在w×h框内落到(h-y,x)，新框为h×w。
+        const auto rotated = height - y; y = x; x = rotated; std::swap(width, height);
+    }
+    return {x, y};
+}
+
 Status ValidateTerrainBlockPasteIntent(const TerrainBlockPasteIntent& intent) {
-    if (intent.algorithm != 1 || !Rectangle(intent.sourceCells)
-        || intent.destinationVertex[0] > 2048 - (intent.sourceCells.x1 - intent.sourceCells.x0)
-        || intent.destinationVertex[1] > 2048 - (intent.sourceCells.y1 - intent.sourceCells.y0)
+    const auto target = TerrainBlockPasteTarget(intent);
+    const bool algorithmMatches = intent.orientation.Valid()
+        && ((intent.algorithm == 1 && intent.orientation.Identity()) || (intent.algorithm == 2 && !intent.orientation.Identity()));
+    if (!algorithmMatches || !Rectangle(intent.sourceCells)
+        || intent.destinationVertex[0] > 2048 - (target.x1 - target.x0)
+        || intent.destinationVertex[1] > 2048 - (target.y1 - target.y0)
         || intent.expectedBlockSha256.size() != 64
         || std::any_of(intent.expectedBlockSha256.begin(), intent.expectedBlockSha256.end(), [](char c) {
             return !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'));
-        })) return Status::Failure("Terrain.Block", "TERRAIN_BLOCK_INTENT", "地形块意图需要算法1、有效有界矩形、目标及小写SHA-256。");
+        })) return Status::Failure("Terrain.Block", "TERRAIN_BLOCK_INTENT",
+            "地形块意图需要与朝向对应的算法（原朝向为1，旋转或镜像为2）、有效有界矩形、目标及小写SHA-256。");
     return Status::Ok();
 }
 
@@ -226,7 +248,7 @@ Result<TerrainBlockStrokeCandidate> PrepareTerrainBlockPasteStroke(const Terrain
         Limits(limits); Check(ValidateTerrainBlockPasteIntent(intent)); Budget budget{limits}; Grid(source, budget);
         if (rules.maximumCliffLevel > 14 || rules.groundRules.size() > 256 || rules.availableCliffTilesets.size() > 256)
             Fail("TERRAIN_BLOCK_RULES", "地形块需要实际有限地形规则。");
-        const auto target = Destination(intent), sourceHalo = Halo(source, intent.sourceCells), targetHalo = Halo(source, target);
+        const auto target = TerrainBlockPasteTarget(intent), sourceHalo = Halo(source, intent.sourceCells), targetHalo = Halo(source, target);
         Domain(source, sourceHalo, budget, rules.maximumCliffLevel, &rules);
         Domain(source, targetHalo, budget, rules.maximumCliffLevel, &rules);
         Specials(source, specialShapes, sourceHalo, targetHalo, budget);
@@ -240,7 +262,9 @@ Result<TerrainBlockStrokeCandidate> PrepareTerrainBlockPasteStroke(const Terrain
         TerrainBlockStrokeCandidate candidate; candidate.terrain = source;
         const auto width = intent.sourceCells.x1 - intent.sourceCells.x0, height = intent.sourceCells.y1 - intent.sourceCells.y0;
         for (std::uint32_t y = 0; y <= height; ++y) for (std::uint32_t x = 0; x <= width; ++x) {
-            budget.Work(2); const auto dx = target.x0 + x, dy = target.y0 + y;
+            budget.Work(2);
+            const auto placed = TerrainBlockOrientVertex(width, height, intent.orientation, x, y);
+            const auto dx = target.x0 + placed[0], dy = target.y0 + placed[1];
             // 始终从冻结before读取；相邻行和同图重叠不会读到已经写过的目标。
             const auto& original = At(source, intent.sourceCells.x0 + x, intent.sourceCells.y0 + y);
             auto& next = candidate.terrain.vertices[std::size_t(dy) * source.header.width + dx];

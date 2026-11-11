@@ -281,7 +281,9 @@ std::vector<ToolDefinition> TerrainEditToolDefinitions() {
     }
     block.insert("dry_run", QJsonObject{{"type", "boolean"}});
     block.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
-    add("edit_terrain_block", "预览或提交同图地形块复制。整数地格半开源矩形包括东/北顶点，绝对复制原始值，不旋转缩放；服务在同一CAS中捕获真实源块摘要并在准备时复核，重叠时先冻结源。拒绝坡道、边界、MapEdge和特殊装饰物，普通悬崖与水使用实际规则。提交沿原事务与Undo，不自行保存，不接受原始字节或客户端规则。",
+    block.insert("rotation_ccw", IntegerSchema(0, 3));
+    block.insert("mirror_x", QJsonObject{{"type", "boolean"}});
+    add("edit_terrain_block", "预览或提交同图地形块复制。整数地格半开源矩形包括东/北顶点，绝对复制原始值，不缩放；可选mirror_x先东西翻转源块，rotation_ccw再俯视逆时针转0..3个90度（奇数时目标宽高互换，destination为目标西南角，结果target_cells）；服务在同一CAS中捕获真实源块摘要并在准备时复核，重叠时先冻结源。拒绝坡道、边界、MapEdge和特殊装饰物，普通悬崖与水使用实际规则。提交沿原事务与Undo，不自行保存，不接受原始字节或客户端规则。",
         block, {"project_identity", "expected_revision", "terrain_binding", "source_x", "source_y", "width", "height", "destination_x", "destination_y", "dry_run"}, ToolPermission::Edit);
     auto edit = identity; edit.insert("terrain_binding", binding); edit.insert("points", points(4096)); edit.insert("brush", brush);
     edit.insert("dry_run", QJsonObject{{"type", "boolean"}}); edit.insert("follow_doodads", QJsonObject{{"type", "boolean"}});
@@ -450,20 +452,28 @@ QJsonObject InvokeTerrainEditTool(const QString& name, const QJsonObject& argume
             const auto height = static_cast<std::uint32_t>(Number(arguments, "height", 1, MapData::TerrainBlockMaximumSide, true));
             const auto dx = static_cast<std::uint32_t>(Number(arguments, "destination_x", 0, 2048, true));
             const auto dy = static_cast<std::uint32_t>(Number(arguments, "destination_y", 0, 2048, true));
-            if (sx + width > 2048 || sy + height > 2048 || dx + width > 2048 || dy + height > 2048)
+            const MapData::TerrainBlockOrientation orientation{
+                static_cast<std::uint8_t>(arguments.contains(QStringLiteral("rotation_ccw")) ? Number(arguments, "rotation_ccw", 0, 3, true) : 0),
+                Boolean(arguments, "mirror_x", false)};
+            const bool swapped = orientation.quarterTurns % 2 != 0;
+            if (sx + width > 2048 || sy + height > 2048
+                || dx + (swapped ? height : width) > 2048 || dy + (swapped ? width : height) > 2048)
                 return Failure("TERRAIN_BLOCK_RECTANGLE", "源和目标需要0..2048内非空整数地格半开矩形。");
             if (!host.prepareBlock || !host.verifyWater)
                 return Failure("TERRAIN_BLOCK_HOST_UNAVAILABLE", "宿主未接入地形块实际规则捕获和提交前来源复核。");
             const MapData::TerrainCellRect rect{sx, sy, sx + width, sy + height};
             const auto fingerprint = Services::CaptureTerrainBlockFingerprint(*context.session, context.document, binding, rect);
             if (!fingerprint.Succeeded() || !fingerprint.value) return Failure(fingerprint);
-            const MapData::TerrainBlockPasteIntent intent{1, rect, {dx, dy}, *fingerprint.value};
+            const auto intent = MapData::MakeTerrainBlockPasteIntent(rect, {dx, dy}, *fingerprint.value, orientation);
+            const auto target = MapData::TerrainBlockPasteTarget(intent);
             const auto prepared = host.prepareBlock(context, binding, intent, Boolean(arguments, "follow_doodads", false));
             if (!prepared.Succeeded() || !prepared.value) return Failure(prepared);
             const auto verified = host.verifyWater(); if (!verified.Succeeded()) return Failure(verified);
             const bool dryRun = Boolean(arguments, "dry_run", true);
             QJsonObject body{{"ok", true}, {"dry_run", dryRun}, {"applied", false}, {"binding_before", bindingJson},
                 {"source_block_sha256", QString::fromStdString(*fingerprint.value)}, {"scope", Scope(context)},
+                {"target_cells", QJsonObject{{"x0", static_cast<double>(target.x0)}, {"y0", static_cast<double>(target.y0)},
+                    {"x1", static_cast<double>(target.x1)}, {"y1", static_cast<double>(target.y1)}}},
                 {"changes", ChangedJson(prepared.value->Plan())},
                 {"terrain_pathing_gate", GateJson(prepared.value->Plan().TerrainPathingGate())}, {"map_saved", false}};
             const auto budget = BodyBudget(body); if (!budget.Succeeded()) return Failure(budget);

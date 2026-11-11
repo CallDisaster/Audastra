@@ -576,9 +576,26 @@ int RunMapEditSave(int argc, wchar_t** argv) {
                 || values[4] + values[2] > 2048 || values[5] + values[3] > 2048)
                 return Invalid("--terrain-copy requires nonempty source and destination cell rectangles within 0..2048, at most 256 cells per side");
             Services::MapEditTerrainStroke copy;
-            copy.blockPaste = MapData::TerrainBlockPasteIntent{1,
-                {values[0], values[1], values[0] + values[2], values[1] + values[3]}, {values[4], values[5]}, {}};
+            copy.blockPaste = MapData::MakeTerrainBlockPasteIntent(
+                {values[0], values[1], values[0] + values[2], values[1] + values[3]}, {values[4], values[5]}, {});
             request.terrainStrokes.push_back(std::move(copy)); index += 7;
+        } else if (flag == L"--terrain-copy-rotate" || flag == L"--terrain-copy-mirror") {
+            // 朝向只修饰紧邻的--terrain-copy；先东西翻转，再俯视逆时针转90度倍数。
+            if (request.terrainStrokes.size() != 1 || !request.terrainStrokes.back().blockPaste)
+                return Invalid("--terrain-copy-rotate/--terrain-copy-mirror must follow --terrain-copy");
+            auto& block = *request.terrainStrokes.back().blockPaste;
+            auto orientation = block.orientation;
+            if (flag == L"--terrain-copy-mirror") { orientation.mirrorX = true; index += 1; }
+            else {
+                if (index + 1 >= argc) return Invalid("--terrain-copy-rotate requires 0..3 counterclockwise quarter turns");
+                const auto turns = ParseNumber<std::uint32_t>(argv[index + 1]);
+                if (!turns || *turns > 3) return Invalid("--terrain-copy-rotate requires 0..3 counterclockwise quarter turns");
+                orientation.quarterTurns = static_cast<std::uint8_t>(*turns); index += 2;
+            }
+            block = MapData::MakeTerrainBlockPasteIntent(block.sourceCells, block.destinationVertex, {}, orientation);
+            const auto target = MapData::TerrainBlockPasteTarget(block);
+            if (target.x1 > 2048 || target.y1 > 2048)
+                return Invalid("--terrain-copy rotated destination rectangle must stay within 0..2048");
         } else if (flag == L"--terrain-resize") {
             if (index + 4 >= argc) return Invalid("--terrain-resize requires west south east north relative cell edges");
             if (request.terrainStrokes.size() >= 128) return Invalid("at most 128 terrain strokes are allowed");
