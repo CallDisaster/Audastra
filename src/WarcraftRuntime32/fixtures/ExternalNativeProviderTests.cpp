@@ -6,7 +6,7 @@
 #include <stdexcept>
 
 using namespace Audastra::Runtime32;
-namespace Audastra::Runtime32::OwnLua { bool CheckNativeObserverFixtures(); }
+namespace Audastra::Runtime32::OwnLua { bool CheckNativeObserverFixtures(const NativeExtensionHooks& real); }
 namespace {
 void Check(bool value, const char* detail) {
     if (!value) throw std::runtime_error(detail);
@@ -16,7 +16,6 @@ void Check(bool value, const char* detail) {
 int wmain(int argc, wchar_t** argv) {
     try {
         Check(argc == 2, "fixture DLL path required");
-        Check(OwnLua::CheckNativeObserverFixtures(), "real observer enforces scope, phase, source, and terminal failure");
         const auto path = std::filesystem::absolute(argv[1]);
         Handle file(OpenLockedFile(path));
         Check(file.value != INVALID_HANDLE_VALUE && IsX86Image(file.value), "original x86 fixture");
@@ -40,6 +39,10 @@ int wmain(int argc, wchar_t** argv) {
         if (!load.empty()) throw std::runtime_error(load);
         Check(module.file.loaded && module.file.actualSha256 == sha, "loaded original by declared identity");
         const auto hooks = provider.Hooks();
+        Check(OwnLua::CheckNativeObserverFixtures(hooks),
+            "real observer and provider enforce scope, phase, source, terminal failure and second generation");
+        Check(evidence->providerVerifiedInitializations == 2,
+            "the actual provider entry was verified on each native initialization");
         Check(!hooks.validate(reinterpret_cast<std::uintptr_t>(&Check), names[0], signatures[0]).empty(),
             "reject addresses outside the declared provider");
         const auto run = [&](std::string& rejected, OwnLua::NativeRegistry& registry) {

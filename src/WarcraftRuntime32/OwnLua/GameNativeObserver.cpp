@@ -1,6 +1,7 @@
 #include "GameNativeObserver.h"
 #include "GameVm127.h"
 #include "LuaEntryCommand.h"
+#include "../RuntimeFiles.h"
 #include "audastra_japi.h"
 
 #include <detours.h>
@@ -150,7 +151,7 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
             (provider && !self->handlers.extensions.validate)) {
             ReportRegistrationFailure(*self, "native 登记输入不能读取或不属于已核验映像：address-in-image=" + std::to_string(executable)
                 + "; name-readable=" + std::to_string(nameReadable) + "; signature-readable=" + std::to_string(signatureReadable)
-                + "; address=" + std::to_string(function), provider);
+                + "; native=" + (nameReadable ? copiedName.data() : "<不可读>") + DescribeNativeAddress(function), provider);
             return 0;
         } else {
             std::string failure;
@@ -190,7 +191,11 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                     }
                 }
             }
-            if (!failure.empty()) { ReportRegistrationFailure(*self, failure, provider); return 0; }
+            if (!failure.empty()) {
+                if (!provider) failure += DescribeNativeAddress(function);
+                ReportRegistrationFailure(*self, failure, provider);
+                return 0;
+            }
         }
     } catch (...) {
         ReportRegistrationFailure(*self, "读取实际 native 登记时发生异常。", observingProvider); return 0;
@@ -351,12 +356,12 @@ bool InstallGameNativeObserver(std::shared_ptr<GameImage127> image, GameNativeHa
 
 #ifdef AUDASTRA_TEST_NATIVE_OBSERVER
 int __fastcall FixtureObserveForward(std::uintptr_t, const char*, const char*) { return 1; }
-bool CheckNativeObserverFixtures() {
-    constexpr std::uintptr_t gameAddress = 0x1000, providerAddress = 0x2000;
+bool CheckNativeObserverFixtures(const NativeExtensionHooks& real) {
+    constexpr std::uintptr_t gameAddress = 0x1000;
     struct ResetObserver {
         ~ResetObserver() { observer = nullptr; }
     };
-    for (const auto scenario : {0, 1, 2}) {
+    for (const auto scenario : {0, 1, 2, 3}) {
         Observer fixture;
         ResetObserver reset;
         observer = &fixture;
@@ -364,38 +369,51 @@ bool CheckNativeObserverFixtures() {
         fixture.registerNative = FixtureObserveForward;
         fixture.initialize = +[] { ObserveRegistration(gameAddress, "StockFixture", "()V"); };
         bool registrationScopeObserved = false;
-        bool providerFailure = false, stockFailure = false;
-        fixture.handlers.failure = [&](auto) { stockFailure = true; };
-        fixture.handlers.extensions.failure = [&](auto) { providerFailure = true; };
-        fixture.handlers.extensions.validate = [&](auto address, auto name, auto signature) -> std::string {
-            return address == providerAddress && name == "OriginalFixture" && signature == "()V" ? "" : "origin or declaration";
-        };
+        std::string providerFailure, stockFailure;
+        fixture.handlers.failure = [&](auto error) { stockFailure = error; };
+        fixture.handlers.extensions = real;
+        fixture.handlers.extensions.failure = [&](auto error) { providerFailure = error; };
+        if (scenario == 3) {
+            fixture.handlers.module = [](const auto&, auto) {};
+            fixture.initialize = +[] { ObserveRegistration(gameAddress, "Cheat", "()V"); };
+        }
         fixture.handlers.extensions.registerAll = [&](const auto& add) -> std::string {
             const auto& stock = fixture.threads.at(GetCurrentThreadId()).registry;
             registrationScopeObserved = stock->Collecting() && !stock->Ready();
             if (scenario == 1) {
                 add(gameAddress, "UnexpectedName", "()V");
-                add(providerAddress, "OriginalFixture", "()V");
-            } else add(providerAddress, "OriginalFixture", "()V");
-            return {};
-        };
-        fixture.handlers.extensions.verify = [&](const auto& registry) -> std::string {
-            const auto* entry = registry.Find("OriginalFixture");
-            return entry && entry->external ? "" : "missing fixture entry";
+            }
+            return real.registerAll(add);
         };
         if (scenario == 2) {
-            if (ObserveRegistration(providerAddress, "OriginalFixture", "()V") != 0 ||
-                !fixture.failed || !stockFailure || providerFailure) return false;
+            if (ObserveRegistration(gameAddress, "StockFixture", "()V") != 0 ||
+                !fixture.failed || stockFailure.find("initialization-scope") == stockFailure.npos ||
+                stockFailure.find("StockFixture") == stockFailure.npos || !providerFailure.empty()) return false;
             continue;
         }
         ObserveInitialize();
+        if (scenario == 3) {
+            if (!fixture.failed || stockFailure.find("Cheat") == stockFailure.npos ||
+                !providerFailure.empty() || registrationScopeObserved) return false;
+            continue;
+        }
         if (!registrationScopeObserved) return false;
-        const auto& registry = fixture.threads.at(GetCurrentThreadId()).registry;
+        const auto current = [&]() -> const ThreadRegistration& { return fixture.threads.at(GetCurrentThreadId()); };
+        const auto registry = current().registry;
         if (scenario == 1) {
-            if (!fixture.failed || !providerFailure || registry->Find("UnexpectedName") ||
-                registry->Find("OriginalFixture") || registry->Ready()) return false;
-        } else if (fixture.failed || stockFailure || providerFailure || !registry->Ready() ||
-            !registry->Find("StockFixture") || !registry->Find("OriginalFixture")) return false;
+            if (!fixture.failed || providerFailure.find("UnexpectedName") == providerFailure.npos ||
+                providerFailure.find("4096") == providerFailure.npos || registry->Find("UnexpectedName") ||
+                registry->Find("AudastraFixtureAdd") || registry->Ready()) return false;
+        } else {
+            if (fixture.failed || !stockFailure.empty() || !providerFailure.empty() || !registry->Ready() ||
+                !registry->Find("StockFixture") || !registry->Find("AudastraFixtureAdd")) return false;
+            const auto firstGeneration = current().generation;
+            registrationScopeObserved = false;
+            ObserveInitialize();
+            if (fixture.failed || !registrationScopeObserved || current().generation != firstGeneration + 1 ||
+                current().registry == registry || !current().registry->Ready() ||
+                !current().registry->Find("AudastraFixtureAdd")) return false;
+        }
     }
     return true;
 }

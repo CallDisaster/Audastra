@@ -207,7 +207,8 @@ MapTestSettingsPage::MapTestSettingsPage(
 bool MapTestSettingsPage::Validate(QString* error) const {
     const auto dependencies = externalDependencies_->text().trimmed();
     if (!dependencies.isEmpty()) {
-        const auto validation = Services::ValidateExternalDependenciesDirectory(dependencies.toStdWString());
+        const auto validation = Services::ValidateExternalDependenciesDirectory(dependencies.toStdWString(),
+            std::filesystem::path(QtCommon::InstallationRoot().toStdWString()) / L"test-maps");
         if (!validation.Succeeded()) {
             if (error) *error = QString::fromStdString(validation.diagnostics.front().message);
             return false;

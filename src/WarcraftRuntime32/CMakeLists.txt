@@ -249,14 +249,15 @@ if(BUILD_TESTING)
     set_tests_properties(audastra-game-input PROPERTIES TIMEOUT 30)
     add_executable(audastra-own-lua-launch-tests fixtures/OwnLuaLaunchTests.cpp)
     add_dependencies(audastra-own-lua-launch-tests audastra-warcraft-launcher audastra-warcraft-bootstrap
-        audastra-runtime-fixture-war3 audastra-runtime-fixture-game)
+        audastra-runtime-fixture-war3 audastra-runtime-fixture-game audastra-external-native-fixture)
     target_include_directories(audastra-own-lua-launch-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
     target_compile_definitions(audastra-own-lua-launch-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
     target_compile_options(audastra-own-lua-launch-tests PRIVATE /utf-8 /W4 /permissive-)
     target_link_libraries(audastra-own-lua-launch-tests PRIVATE bcrypt)
     add_test(NAME audastra-own-lua-launch COMMAND audastra-own-lua-launch-tests
         $<TARGET_FILE:audastra-warcraft-launcher> $<TARGET_FILE:audastra-warcraft-bootstrap>
-        $<TARGET_FILE:audastra-runtime-fixture-war3> $<TARGET_FILE:audastra-runtime-fixture-game>)
+        $<TARGET_FILE:audastra-runtime-fixture-war3> $<TARGET_FILE:audastra-runtime-fixture-game>
+        $<TARGET_FILE:audastra-external-native-fixture>)
     set_tests_properties(audastra-own-lua-launch PROPERTIES TIMEOUT 60)
     # 显式 hidden-window 取证独立运行；默认33-case suite不启用窗口。
     add_executable(audastra-runtime-witness-tests fixtures/WitnessTests.cpp)

@@ -74,7 +74,7 @@ public:
         while (!AtEnd()) {
             const auto before = position_;
             Block();
-            if (position_ == before) ++position_; // 多余的 end / until 等，跳过继续
+            if (position_ == before) { model_.recovered = true; ++position_; } // 多余的 end / until 等，跳过继续
         }
         CloseScope(static_cast<std::uint32_t>(source_.size()));
     }
@@ -102,7 +102,7 @@ private:
     bool AtEnd() const { return Peek().kind == TokenKind::End; }
     bool Check(std::string_view text) const { return Peek().Is(source_, text); }
     bool Accept(std::string_view text) { if (!Check(text)) return false; ++position_; return true; }
-    void Expect(std::string_view text) { (void)Accept(text); }
+    void Expect(std::string_view text) { if (!Accept(text)) model_.recovered = true; }
     bool BlockEnd() const {
         return AtEnd() || Check("end") || Check("else") || Check("elseif") || Check("until");
     }
@@ -111,7 +111,11 @@ private:
         Parser& parser;
         explicit DepthGuard(Parser& owner) : parser(owner) { ++parser.depth_; }
         ~DepthGuard() { --parser.depth_; }
-        [[nodiscard]] bool Exceeded() const { return parser.depth_ > kDepthLimit; }
+        [[nodiscard]] bool Exceeded() const {
+            if (parser.depth_ <= kDepthLimit) return false;
+            parser.model_.recovered = true;
+            return true;
+        }
     };
 
     // ── 诊断 ──
@@ -710,7 +714,7 @@ Type MemberOf(const Type& base, std::string_view name, const ApiCatalog* catalog
 }
 
 std::shared_ptr<Model> ParseModel(std::string_view source, const ParseOptions& options) {
-    auto all = Tokenize(source, true, options.maxTokens);
+    auto all = Tokenize(source, options.includeComments, options.maxTokens);
     std::vector<Token> comments;
     auto model = std::make_shared<Model>();
     model->lineStarts.push_back(0);
@@ -725,6 +729,7 @@ std::shared_ptr<Model> ParseModel(std::string_view source, const ParseOptions& o
         first.tokens = model->tokens; first.lineStarts = model->lineStarts;
         Parser(source, options, first, comments, false).Run();
         model->globals = std::move(first.globals);
+        model->recovered = first.recovered;
     }
     Parser(source, options, *model, std::move(comments), options.warnings, true).Run();
     return model;

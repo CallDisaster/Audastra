@@ -190,7 +190,7 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     const std::filesystem::path& fakeGame, const std::filesystem::path& fakeRuntime,
     const char* name, bool expectSuccess, bool missingPlugin, bool missingInitialize, bool noGame,
     std::wstring_view loadFlavor = {}, bool unicodeDirectory = false,
-    RuntimeLayout layout = RuntimeLayout::Flat, bool explicitLayout = false, bool knownProvider = false) {
+    RuntimeLayout layout = RuntimeLayout::Flat, bool explicitLayout = false) {
     std::wstring directoryName(name, name + std::strlen(name));
     if (unicodeDirectory) directoryName = L"宽字符路径-" + directoryName;
     const auto work = base / directoryName;
@@ -224,19 +224,9 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     auto command = Quote(launcher.wstring()) + L" --game " + Quote((work / L"war3.exe").wstring())
         + L" --map " + Quote(relative)
         + L" --bootstrap " + Quote(bootstrap.wstring()) + L" --receipt " + Quote(receipt.wstring());
-    if (knownProvider) {
-        command += L" --runtime-mode external-providers --provider-abi ydwe-initialize";
-        for (std::size_t index = 0; index < kModules.size(); ++index) {
-            const auto path = runtime / ModuleRelativePath(layout, index);
-            const auto sha = FileHash(path);
-            command += L" --provider-module " + Quote(std::wstring(sha.begin(), sha.end())
-                + (index >= 4 ? L"|Initialize|" : L"||") + L"YDWE-EX|" + path.wstring());
-        }
-    } else {
-        command += L" --runtime " + Quote(runtime.wstring());
-        if (layout == RuntimeLayout::YdweTree || explicitLayout)
-            command += layout == RuntimeLayout::YdweTree ? L" --runtime-layout ydwe-tree" : L" --runtime-layout flat";
-    }
+    command += L" --runtime " + Quote(runtime.wstring());
+    if (layout == RuntimeLayout::YdweTree || explicitLayout)
+        command += layout == RuntimeLayout::YdweTree ? L" --runtime-layout ydwe-tree" : L" --runtime-layout flat";
     // Job只拥有本测试新建的原创控制台进程；不启动/捕获作者游戏。
     Handle job(CreateJobObjectW(nullptr, nullptr));
     Require(job.value != nullptr, "fixture job");
@@ -260,15 +250,8 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     const auto text = Read(receipt);
     Require(text.find("\"schema\":\"audastra-warcraft-launch-v1\"") != std::string::npos, "receipt schema");
     Require(text.find("\"gameRuntimeVerified\":false") != std::string::npos, "fixture cannot claim gameplay");
-    Require(text.find(layout == RuntimeLayout::YdweTree && !knownProvider ? "\"runtimeLayout\":\"ydwe-tree\"" : "\"runtimeLayout\":\"flat\"")
+    Require(text.find(layout == RuntimeLayout::YdweTree ? "\"runtimeLayout\":\"ydwe-tree\"" : "\"runtimeLayout\":\"flat\"")
         != std::string::npos, "receipt reports the exact selected runtime layout");
-    if (knownProvider) {
-        Require(text.find("\"runtimeMode\":\"external-providers\"") != std::string::npos &&
-            text.find("\"providerAbi\":\"ydwe-initialize\"") != std::string::npos &&
-            text.find("\"providerId\":\"YDWE-EX\"") != std::string::npos &&
-            text.find("\"providerRegistrationsVerified\":false") != std::string::npos,
-            "known-provider receipt confirms ABI and identity without claiming JASS registration");
-    }
     if (expectSuccess) {
         Require(exit == 0, "valid runtime bridge exit");
         Require(text.find("\"runtimeInitialized\":true") != std::string::npos, "runtime initialized");
@@ -586,8 +569,6 @@ int wmain(int argc, wchar_t** argv) {
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-hook-and-initialize", true, false, false, false, {}, true, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-plugin", false, true, false, false, {}, false, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-initialize", false, false, true, false, {}, false, RuntimeLayout::YdweTree);
-        Case(base, launcher, bootstrap, war3, game, runtime, "known-provider-mode", true, false, false, false,
-            {}, false, RuntimeLayout::YdweTree, false, true);
         BareCase(base, launcher, bootstrap, war3, game, "bare-mode", BareHook::None);
         BareCase(base, launcher, bootstrap, war3, game, "bare-background-play-identity", BareHook::BackgroundPlay);
         BareCase(base, launcher, bootstrap, war3, game, "bare-window-cloak", BareHook::WindowCloak);

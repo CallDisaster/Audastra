@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/MapTestToolchain.h"
+#include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -189,6 +190,11 @@ struct Fixture {
 void ExternalDependencyCatalog() {
     Fixture fixture;
     const auto directory = Services::ExternalDependenciesDirectory(fixture.root, {});
+    Require(Services::ValidateExternalDependenciesDirectory(directory / L"").Succeeded(),
+        "trailing separator is accepted");
+    Require(!Services::ValidateExternalDependenciesDirectory(fixture.root / L"", fixture.root / "test-maps").Succeeded() &&
+        Services::ValidateExternalDependenciesDirectory(directory, fixture.root / "test-maps").Succeeded(),
+        "test workspace ancestor refused but a sibling directory is permitted");
     auto status = Services::QueryExternalDependencies(directory);
     Success(status, "query an absent external dependency directory without creating it");
     Require(!status.value->exists && !std::filesystem::exists(directory), "status is read-only");
@@ -207,6 +213,13 @@ void ExternalDependencyCatalog() {
     Success(selected, "resolve an exact native signature");
     Require(selected.value->size() == 1 && selected.value->front().path == provider / "original.dll" &&
         selected.value->front().sha256 == *Sha256File(provider / "original.dll").value, "plan binds only the expected file SHA");
+    const auto args = Services::BuildMapTestProviderArguments(*selected.value, false);
+    Success(args, "plan command fragment uses only covered modules without requiring a real Game.dll");
+    Require(args.value->size() == 6 && args.value->at(0) == L"--runtime-mode" &&
+        args.value->at(1) == L"external-providers" && args.value->at(2) == L"--provider-module" &&
+        args.value->at(3).ends_with((provider / "original.dll").wstring()) &&
+        args.value->at(4) == L"--provider-native" && args.value->at(5) == L"0|AudastraFixtureAdd|(I)I",
+        "mode, module and native arguments match the default CTest fixture");
     FailureCode(Services::SelectExternalDependencyFiles(*status.value, {{"AudastraFixtureAdd", "(S)I"}}),
         "EXTERNAL_DEPENDENCY_NATIVE_SIGNATURE", "map signature mismatch stops selection");
     const auto missing = Services::SelectExternalDependencyFiles(*status.value, {{"MissingAlpha", ""}, {"MissingBeta", ""}});
@@ -226,8 +239,12 @@ void ExternalDependencyCatalog() {
         "native AudastraFixtureAdd takes integer i returns integer\nnative MissingOther takes nothing returns nothing\n"));
     partial.externalDependenciesDirectory = directory;
     fixture.Runtime(partial);
+    const auto partialFallback = Script::BuildIndependentMapTestLaunchPlan(partial);
+    Success(partialFallback, "partial coverage cannot suppress the existing explicit runtime");
+    Require(partialFallback.value->runtimeRoot == fixture.runtime, "partial provider not loaded");
+    partial.runtimeRoot.clear();
     FailureCode(Script::BuildIndependentMapTestLaunchPlan(partial), "EXTERNAL_DEPENDENCY_NATIVE_MISSING",
-        "usable partial coverage reports the missing native");
+        "partial coverage with no fallback reports the missing native");
     fixture.Unchanged(map);
 
     Write(provider / "provider.json", Bytes(R"json({"schema":1,"schema":1,"id":"original",
@@ -277,9 +294,74 @@ void ExternalDependencyCatalog() {
         [](const auto& item) { return item.kind == Services::ExternalDependencyKind::Ydwe; });
     Require(ydwe != status.value->providers.end() && ydwe->usable && ydwe->ydweTree && ydwe->files.size() == 6 &&
         ydwe->files[4].candidateNatives == std::vector<std::string>{"EXFixtureTest"}, "recognize PE-verified YDWE and candidate strings");
+    const auto treeStatus = Services::QueryExternalDependencies(builtin / L"");
+    Success(treeStatus, "a YDWE installation can be selected directly");
+    Require(treeStatus.value->providers.size() == 1 && treeStatus.value->unrecognizedDirectories.empty(),
+        "bin and plugin belong to the single YDWE installation and are not rescanned");
     const auto dz = std::find_if(status.value->providers.begin(), status.value->providers.end(),
         [](const auto& item) { return item.kind == Services::ExternalDependencyKind::KkweDz; });
     Require(dz != status.value->providers.end() && !dz->usable && dz->files.size() == 2, "Dz status does not authorize loading");
+
+    Write(provider / "provider.json", Bytes(R"json({"schema":1,"id":"original","abi":"audastra-native-provider-v1","modules":[
+        {"file":"original.dll","entry":"Initialize","natives":{"AudastraFixtureAdd":"(I)I"}}]})json"));
+    auto legacy = fixture.Artifact(Script("call EXFixtureTest()", "native EXFixtureTest takes nothing returns nothing\n"));
+    fixture.Runtime(legacy, Services::MapTestRuntimeLayout::YdweTree, true);
+    legacy.externalDependenciesDirectory = directory;
+    auto legacyPlan = Script::BuildIndependentMapTestLaunchPlan(legacy);
+    Success(legacyPlan, "an unrelated declared provider does not prevent legacy JASS on synthetic Game.dll");
+    Require(legacyPlan.value->runtimeRoot == builtin && containsCode(legacyPlan.diagnostics, "EXTERNAL_DEPENDENCY_YDWE_SELECTED") &&
+        std::find(legacyPlan.value->arguments.begin(), legacyPlan.value->arguments.end(), L"--provider-module") == legacyPlan.value->arguments.end(),
+        "folder layout beats the derived UI location and uses the old runtime arguments");
+    fixture.Runtime(legacy, Services::MapTestRuntimeLayout::YdweTree);
+    legacyPlan = Script::BuildIndependentMapTestLaunchPlan(legacy);
+    Success(legacyPlan, "explicit runtime takes precedence over the matching folder layout");
+    Require(legacyPlan.value->runtimeRoot == fixture.runtime, "explicit runtime selected");
+}
+
+void CliAndHLuaDependencyPreferences() {
+    Fixture fixture;
+    struct RegistryScope {
+        HKEY root = nullptr;
+        bool overrideActive = false;
+        std::wstring name;
+        ~RegistryScope() {
+            if (overrideActive) RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+            if (root) {
+                RegCloseKey(root);
+                RegDeleteTreeW(HKEY_CURRENT_USER, name.c_str());
+            }
+        }
+    } registry;
+    registry.name = L"Software\\Audastra-Test-External-" + std::to_wstring(GetCurrentProcessId())
+        + L"-" + std::to_wstring(GetTickCount64());
+    DWORD disposition = 0;
+    const auto opened = RegCreateKeyExW(HKEY_CURRENT_USER, registry.name.c_str(), 0, nullptr,
+        REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &registry.root, &disposition);
+    if (disposition != REG_CREATED_NEW_KEY && registry.root) {
+        RegCloseKey(registry.root);
+        registry.root = nullptr;
+    }
+    Require(opened == ERROR_SUCCESS && registry.root, "create exclusive transient registry fixture");
+    Require(RegOverridePredefKey(HKEY_CURRENT_USER, registry.root) == ERROR_SUCCESS, "isolate native registry in this process");
+    registry.overrideActive = true;
+    const auto configured = fixture.root / "configured-dependencies";
+    const auto value = L"  " + configured.wstring() + L"  ";
+    struct SettingsKey { HKEY value = nullptr; ~SettingsKey() { if (value) RegCloseKey(value); } } settings;
+    Require(RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\CallDisaster\\Audastra\\mapTest", 0, nullptr,
+        REG_OPTION_VOLATILE, KEY_ALL_ACCESS, nullptr, &settings.value, nullptr) == ERROR_SUCCESS,
+        "create actual editor settings path in the isolated hive");
+    Require(RegSetValueExW(settings.value, L"externalDependenciesDirectory", 0, REG_SZ,
+        reinterpret_cast<const BYTE*>(value.c_str()), static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)))
+        == ERROR_SUCCESS, "seed the isolated settings value");
+    Require(Services::ResolveCliExternalDependenciesDirectory() == configured,
+        "CLI map test/status and h-lua share the editor's native registry setting");
+    const auto explicitDirectory = fixture.root / "explicit-dependencies";
+    Require(Services::ResolveCliExternalDependenciesDirectory(explicitDirectory) == explicitDirectory,
+        "an explicit CLI or h-lua path overrides editor settings");
+    Require(RegDeleteValueW(settings.value, L"externalDependenciesDirectory") == ERROR_SUCCESS,
+        "clear only the process-isolated test value");
+    Require(Services::ResolveCliExternalDependenciesDirectory() ==
+        Services::ExternalDependenciesDirectory(CurrentInstallationRoot(), {}), "absent setting uses installation default");
 }
 
 void CheckOriginalProviderPlan(const std::filesystem::path& originalGame) {
@@ -651,6 +733,14 @@ void HandwrittenLuaEntriesSelectRuntime() {
     Success(plan, "handwritten Lua without hot reload");
     Require(plan.value->useOwnedLuaRuntime && !plan.value->enableLuaHotReload, "hot reload preference respected");
     Require(hasCode(plan,"MAP_TEST_LUA_OPTIONAL_EXTENSIONS"),"owned extension limit is reported only for the selected engine");
+    Write(map.externalDependenciesDirectory / "optional.dll", Pe(true, true));
+    Write(map.externalDependenciesDirectory / "provider.json", Bytes(R"json({"schema":1,"id":"optional","abi":"audastra-native-provider-v1","modules":[
+        {"file":"optional.dll","entry":"Initialize","natives":{"DzGetMouseX":"()I"}}]})json"));
+    plan = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(plan, "matching optional name alone never activates the declared provider");
+    Require(plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot.empty() &&
+        hasCode(plan, "MAP_TEST_LUA_OPTIONAL_EXTENSIONS") && !hasCode(plan, "EXTERNAL_DEPENDENCY_SELECTED"),
+        "no provider is loaded and owned Lua stays selected");
 
     std::string many = "local japi = require 'jass.japi'\nlocal value\n";
     for (unsigned i = 0; i < 256; ++i) many += "value = japi.Test" + std::to_string(i) + "\n";
@@ -661,7 +751,16 @@ void HandwrittenLuaEntriesSelectRuntime() {
     many += "value = japi.Test256\n";
     auto overBudget = fixture.Artifact(members(entry, {{"main.lua", Bytes(many)}}));
     fixture.Runtime(overBudget);
-    FailureCode(Script::BuildIndependentMapTestLaunchPlan(overBudget), "MAP_TEST_LUA_MODULE_BUDGET", "distinct owned lookup budget");
+    const auto warning = Script::BuildIndependentMapTestLaunchPlan(overBudget);
+    Success(warning, "distinct optional lookup budget does not block startup");
+    Require(warning.value->useOwnedLuaRuntime && hasCode(warning, "MAP_TEST_LUA_OPTIONAL_SCAN_INCOMPLETE"),
+        "optional budget gives a warning");
+    auto longKey = fixture.Artifact(members(entry, {{"main.lua", Bytes("local japi = require 'jass.japi'\nreturn japi['"
+        + std::string(129, 'x') + "']\n")}}));
+    helpers(longKey);
+    const auto longKeyPlan = Script::BuildIndependentMapTestLaunchPlan(longKey);
+    Success(longKeyPlan, "oversize optional key does not block startup");
+    Require(hasCode(longKeyPlan, "MAP_TEST_LUA_OPTIONAL_SCAN_INCOMPLETE"), "long optional key reports incomplete scan");
     overBudget.handwrittenLuaEngine = Services::MapTestLuaEngine::Ydwe;
     Success(Script::BuildIndependentMapTestLaunchPlan(overBudget), "the YDWE engine does not use the owned lookup budget");
 
@@ -701,6 +800,19 @@ void HandwrittenLuaEntriesSelectRuntime() {
     Success(plan, "extension natives fall back to the YDWE Lua engine");
     Require(!plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot == fixture.runtime && hasCode(plan, "MAP_TEST_LUA_YDWE_FALLBACK"),
         "fallback is explained instead of silently dropping hot reload");
+    for (const auto* name : {"yd_jass_api.dll", "yd_lua_engine.dll"}) {
+        auto dll = Pe(true, true);
+        const auto evidence = Bytes(std::string_view("\0EXNative\0", 10));
+        dll.insert(dll.end(), evidence.begin(), evidence.end());
+        Write(fixture.runtime / "plugin/warcraft3" / name, dll);
+    }
+    extension.runtimeYdweRoot.clear();
+    extension.externalDependenciesDirectory = fixture.runtime;
+    plan = Script::BuildIndependentMapTestLaunchPlan(extension);
+    Success(plan, "folder YDWE supports the required native via the legacy Lua engine");
+    Require(!plan.value->useOwnedLuaRuntime && plan.value->runtimeRoot == fixture.runtime &&
+        hasCode(plan, "MAP_TEST_LUA_YDWE_FALLBACK") && hasCode(plan, "EXTERNAL_DEPENDENCY_YDWE_SELECTED"),
+        "folder YDWE never joins owned Lua");
     auto gbk = fixture.Artifact(members(entry, {{"main.lua", Bytes("-- \xB2\xE2\xCA\xD4\nreturn 1\n")}}));
     fixture.Runtime(gbk, Services::MapTestRuntimeLayout::YdweTree, true);
     plan = Script::BuildIndependentMapTestLaunchPlan(gbk);
@@ -1127,14 +1239,15 @@ int wmain(int argc, wchar_t** argv) {
         FailureCode(Script::BuildIndependentMapTestLaunchPlan(owned), "MAP_TEST_LUA_RELOAD_RUNTIME", "reload needs explicit owned runtime before inspecting map");
         owned.useOwnedLuaRuntime = true;
         Require(!Script::BuildIndependentMapTestLaunchPlan(owned).Succeeded(), "owned runtime needs a real frozen map and cannot fall back");
-        ExternalDependencyCatalog(); OwnedLuaSourcesAndComponents(); NativeMapsNeedNoToolsOrRuntime(); LexicalTextAndLocalPrefixesAreNotExtensions();
+        ExternalDependencyCatalog(); CliAndHLuaDependencyPreferences();
+        OwnedLuaSourcesAndComponents(); NativeMapsNeedNoToolsOrRuntime(); LexicalTextAndLocalPrefixesAreNotExtensions();
         CompiledJassOpaqueBytesPreserveRuntimeClassification(); CompiledJassByteRawcodesAndMalformedBoundaries();
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();
         YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions();
         UnusedUiPreferencesCannotBlockNativeMaps();
         LuaMapsAreExplicitRuntimeInputs(); HandwrittenLuaEntriesSelectRuntime(); MissingMalformedAndOversizeScriptsStopPlanning();
         AnonymousScriptFlagsAreCheckedBeforeDecoding();
-        std::cout << "Independent map runtime preflight fixtures passed; no YDWE, registry, game, DLL execution or GPU used\n";
+        std::cout << "Independent map runtime preflight fixtures passed; registry settings were process-isolated; no game or DLL executed\n";
         OptionalRealNativeMapPlan();
         OptionalCapturedCompiledScriptPlan();
         OptionalRealExtensionMapPlan();

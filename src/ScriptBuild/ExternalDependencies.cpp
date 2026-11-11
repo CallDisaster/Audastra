@@ -5,6 +5,7 @@
 #include "../WarcraftRuntime32/OwnLua/NativeSignature.h"
 #include "../WarcraftRuntime32/RuntimeProtocol.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/IO/FileBytes.h"
 
 #include <nlohmann/json.hpp>
@@ -42,6 +43,22 @@ bool SafeLocalPath(const fs::path& path) {
         if (value.empty() || value.back() == L'.' || value.back() == L' ' ||
             value.find_first_of(L":\"|?*<>") != std::wstring::npos ||
             std::any_of(value.begin(), value.end(), [](wchar_t ch) { return ch < 0x20; })) return false;
+    }
+    return true;
+}
+fs::path WithoutTrailingSeparator(fs::path path) {
+    if (path.has_relative_path() && path.filename().empty()) path = path.parent_path();
+    return path;
+}
+bool ContainsDirectory(fs::path directory, const fs::path& child) {
+    auto normalizedChild = WithoutTrailingSeparator(child);
+    directory.make_preferred();
+    normalizedChild.make_preferred();
+    auto part = normalizedChild.begin();
+    for (const auto& component : directory) {
+        if (part == normalizedChild.end() ||
+            CompareStringOrdinal(component.c_str(), -1, part->c_str(), -1, TRUE) != CSTR_EQUAL) return false;
+        ++part;
     }
     return true;
 }
@@ -225,7 +242,10 @@ ExternalDependencyProvider InspectProvider(const fs::path& manifest, std::size_t
             if (!ExactKeys(module, {"file", "entry", "natives"})) throw std::runtime_error("module keys");
             const auto filename = module.at("file").get<std::string>();
             const auto key = Lower(filename);
-            if (!LeafDll(filename) || earlier.contains(key) || SystemImport(key) || GameImport(key))
+            const auto legacyName = std::any_of(kModules.begin(), kModules.end(), [&](const auto* legacy) {
+                return key == IO::PathUtf8(fs::path(legacy));
+            });
+            if (!LeafDll(filename) || earlier.contains(key) || SystemImport(key) || GameImport(key) || legacyName)
                 throw std::runtime_error("module name");
             auto& file = provider.files.emplace_back();
             file.path = manifest.parent_path() / filename;
@@ -261,17 +281,28 @@ ExternalDependencyProvider InspectProvider(const fs::path& manifest, std::size_t
 fs::path ExternalDependenciesDirectory(const fs::path& installation, const fs::path& configured) {
     return configured.empty() ? installation / kExternalDependenciesDirectory : configured;
 }
+fs::path ResolveCliExternalDependenciesDirectory(const fs::path& explicitDirectory) {
+    if (!explicitDirectory.empty()) return explicitDirectory;
+    const auto configured = ReadEditorExternalDependenciesSetting();
+    return configured.empty() ? ExternalDependenciesDirectory(CurrentInstallationRoot(), {}) : configured;
+}
 
-Status ValidateExternalDependenciesDirectory(const fs::path& directory) {
+Status ValidateExternalDependenciesDirectory(const fs::path& input, const fs::path& testWorkspaceRoot) {
+    const auto directory = WithoutTrailingSeparator(input);
     std::error_code ec;
     if (!SafeLocalPath(directory) || !NoReparse(directory) ||
         (fs::exists(directory, ec) && !fs::is_directory(directory, ec)) || ec)
         return Status::Failure("Map.Test.ExternalDependencies", "EXTERNAL_DEPENDENCY_DIRECTORY",
-            "请选择普通的本机绝对目录；不支持网络、联接或云占位路径：" + IO::PathUtf8(directory));
+            "外部依赖目录不可用：" + IO::PathUtf8(directory)
+            + "。目录须为可访问的本机绝对目录，不能经过网络、联接或 OneDrive 等云占位路径。请在地图测试设置中改选本机普通文件夹。");
+    if (!testWorkspaceRoot.empty() && ContainsDirectory(directory, testWorkspaceRoot))
+        return Status::Failure("Map.Test.ExternalDependencies", "EXTERNAL_DEPENDENCY_DIRECTORY_OVERLAP",
+            "外部依赖目录不能是 test-maps 测试工作目录或其上级；请选择独立文件夹，避免把测试副本写入依赖目录。");
     return Status::Ok();
 }
 
-Status EnsureExternalDependenciesDirectory(const fs::path& directory) {
+Status EnsureExternalDependenciesDirectory(const fs::path& input) {
+    const auto directory = WithoutTrailingSeparator(input);
     const auto validation = ValidateExternalDependenciesDirectory(directory);
     if (!validation.Succeeded()) return validation;
     std::error_code ec;
@@ -282,8 +313,9 @@ Status EnsureExternalDependenciesDirectory(const fs::path& directory) {
     return Status::Ok();
 }
 
-Result<ExternalDependenciesStatus> QueryExternalDependencies(const fs::path& directory) {
+Result<ExternalDependenciesStatus> QueryExternalDependencies(const fs::path& input) {
     using R = ExternalDependenciesStatus;
+    const auto directory = WithoutTrailingSeparator(input);
     const auto validation = ValidateExternalDependenciesDirectory(directory);
     if (!validation.Succeeded()) return {std::nullopt, validation.diagnostics};
     try {
@@ -298,6 +330,7 @@ Result<ExternalDependenciesStatus> QueryExternalDependencies(const fs::path& dir
         std::set<std::string> described;
         for (std::size_t i = 0; i < directories.size(); ++i) {
             const auto current = directories[i];
+            const bool ownsYdweTree = KnownYdwe(current, RuntimeLayout::YdweTree);
             const auto manifest = current / L"provider.json";
             const auto first = status.providers.size();
             if (fs::exists(manifest)) status.providers.push_back(InspectProvider(manifest, remaining));
@@ -309,7 +342,10 @@ Result<ExternalDependenciesStatus> QueryExternalDependencies(const fs::path& dir
             for (const auto& item : fs::directory_iterator(current)) {
                 if (!NoReparse(item.path())) continue;
                 if (i == 0 && item.is_directory()) {
-                    if (Inspectable(item.path()) && !(KnownDz(current / L"插件") && item.path() == current / L"插件"))
+                    const auto leaf = Lower(IO::PathUtf8(item.path().filename()));
+                    if ((ownsYdweTree && (leaf == "bin" || leaf == "plugin")) ||
+                        (leaf == "插件" && KnownDz(current / L"插件"))) continue;
+                    if (Inspectable(item.path()))
                         directories.push_back(item.path());
                     else if (status.unrecognizedDirectories.size() < kEntryLimit) status.unrecognizedDirectories.push_back(item.path());
                 }
@@ -363,12 +399,13 @@ Result<std::vector<ExternalDependencyFile>> SelectExternalDependencyFiles(
     }
     if (!missing.empty()) {
         std::string names;
-        for (const auto& name : missing) { if (!names.empty()) names += "、"; names += name; }
-        std::string message = "外部依赖目录 " + IO::PathUtf8(status.directory) + " 缺少可用声明：" + names + "。";
-        for (const auto& provider : status.providers)
-            for (const auto& issue : provider.diagnostics)
-                if (message.size() < 8192) message += " " + issue.message;
-        return Fail<R>("EXTERNAL_DEPENDENCY_NATIVE_MISSING", std::move(message));
+        for (const auto& name : missing) {
+            if (names.size() >= 4096) { names += "等"; break; }
+            if (!names.empty()) names += "、";
+            names += name;
+        }
+        return Fail<R>("EXTERNAL_DEPENDENCY_NATIVE_MISSING",
+            "本图需要 " + names + "，外部依赖目录里没有可用文件提供这些接口。");
     }
     R selected;
     std::set<std::string> modules, natives;

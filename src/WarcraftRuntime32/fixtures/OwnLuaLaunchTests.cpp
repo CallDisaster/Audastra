@@ -104,8 +104,33 @@ struct Fixture {
 
 int wmain(int argc, wchar_t** argv) {
     try {
-        Check(argc == 5, "fixture arguments");
+        Check(argc == 6, "fixture arguments");
         Fixture fixture(argv);
+        const auto provider = fixture.root / L"original-provider.dll";
+        Check(std::filesystem::copy_file(argv[5], provider), "copy original declared provider fixture");
+        fixture.Record(provider);
+        const auto providerSha = fixture.files.back().second;
+        const auto module = L" --provider-module " + Quote(std::wstring(providerSha.begin(), providerSha.end())
+            + L"|RegisterFixture|original|" + provider.wstring());
+        const auto declaration = module + L" --provider-native \"0|AudastraFixtureAdd|(I)I\"";
+        const auto jassProvider = fixture.Run(L" --runtime-mode external-providers" + declaration);
+        Check(jassProvider.exit == kRuntimeFailure &&
+            jassProvider.receipt.find("\"runtimeMode\":\"external-providers\"") != std::string::npos &&
+            jassProvider.receipt.find("\"providerId\":\"original\"") != std::string::npos &&
+            jassProvider.receipt.find("\"nativeObserverFailureText\":") != std::string::npos &&
+            jassProvider.receipt.find("native-observer-game-identity") != std::string::npos,
+            "JASS plan reaches observer identity failure with the reason and without blaming provider registration");
+        const auto luaProvider = fixture.Run(fixture.Owned() + declaration);
+        Check(luaProvider.exit == kRuntimeFailure &&
+            luaProvider.receipt.find("\"runtimeMode\":\"owned-lua\"") != std::string::npos &&
+            luaProvider.receipt.find("\"providerId\":\"original\"") != std::string::npos &&
+            luaProvider.receipt.find("owned-lua-game-identity") != std::string::npos &&
+            luaProvider.receipt.find("external-provider-registration") == std::string::npos,
+            "owned Lua provider arguments reach the separate game identity failure");
+        const auto mixed = fixture.Run(fixture.Owned() + declaration + L" --provider-abi ydwe-initialize");
+        const auto incomplete = fixture.Run(L" --runtime-mode external-providers" + module);
+        Check(mixed.exit == 64 && mixed.receipt.empty() && incomplete.exit == 64 && incomplete.receipt.empty(),
+            "invalid provider combinations fail at argument parsing before receipt or game creation");
         const auto defaultDisplay = std::filesystem::path(L"Maps\\Audastra\\default-display.w3x");
         Check(std::filesystem::copy_file(fixture.root / Fixture::map, fixture.root / defaultDisplay), "original default display fixture map");
         fixture.Record(fixture.root / defaultDisplay);

@@ -7,10 +7,8 @@ extern "C" int StartFakeGame() {
     if (!shared) return 43;
     // 裸模式不加载任何扩展插件；其余模式要求两个插件都真正初始化。
     const bool bare = shared->runtimeMode == Audastra::Runtime32::RuntimeMode::Bare;
-    const bool knownProvider = shared->runtimeMode == Audastra::Runtime32::RuntimeMode::ExternalProviders && shared->providerYdwe;
     const auto success = shared->hookInstalled && shared->gameObserved && shared->runtimeInitialized
-        && (knownProvider ? shared->fixturePluginBits == 3 && shared->providerModules[4].file.initializeCalled
-            && shared->providerModules[5].file.initializeCalled && !shared->providerRegistrationsVerified : bare ? shared->fixturePluginBits == 0 && !shared->modules[4].initializeCalled && !shared->modules[5].initializeCalled
+        && (bare ? shared->fixturePluginBits == 0 && !shared->modules[4].initializeCalled && !shared->modules[5].initializeCalled
             : shared->fixturePluginBits == 3 && shared->modules[4].initializeCalled && shared->modules[5].initializeCalled);
     if (success && shared->probeEnabled) {
         if (!shared->probeWriteGuardInstalled || !shared->probeObserverInstalled) return 61;

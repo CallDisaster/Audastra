@@ -41,11 +41,15 @@ bool CallInitialize(FARPROC function) {
     __try { reinterpret_cast<void (WINAPI*)()>(function)(); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+template<std::size_t N>
+void RecordFailure(char (&text)[N], std::string_view message) {
+    if (!LuaMailboxUtf8(message)) message = "诊断文本不是有效 UTF-8。";
+    const auto count = LuaMailboxUtf8Prefix(message, N - 1);
+    std::memcpy(text, message.data(), count);
+    text[count] = 0;
+}
 [[noreturn]] void ProviderFailure(std::string_view message) {
-    if (!LuaMailboxUtf8(message)) message = "提供者登记失败。";
-    const auto count = LuaMailboxUtf8Prefix(message, sizeof(evidence->providerFailureText) - 1);
-    std::memcpy(evidence->providerFailureText, message.data(), count);
-    evidence->providerFailureText[count] = 0;
+    RecordFailure(evidence->providerFailureText, message);
     Fail("external-provider-registration", ERROR_INVALID_DATA);
 }
 void InitializeOwnedRuntime(HMODULE game, OwnLua::NativeExtensionHooks extensions) {
@@ -194,22 +198,26 @@ void ObserveModule(HMODULE loaded, bool requestedGame) {
         auto* providers = evidence->providerModuleCount ? new RuntimeNativeProviders(*evidence) : nullptr;
         if (evidence->runtimeMode == RuntimeMode::OwnedLua) {
             InitializeOwnedRuntime(loaded, providers ? providers->Hooks() : OwnLua::NativeExtensionHooks{});
-        } else if (providers && !evidence->providerYdwe) {
+        } else if (providers) {
             auto image = OwnLua::GameImage127::Open(loaded);
-            if (!image.image) ProviderFailure(image.error);
+            const auto failObserver = [](std::string_view message, const char* stage) {
+                RecordFailure(evidence->nativeObserverFailureText, message);
+                Fail(stage, ERROR_INVALID_DATA);
+            };
+            if (!image.image) failObserver(image.error, "native-observer-game-identity");
             OwnLua::GameNativeHandlers handlers;
-            handlers.failure = [](std::string_view) { Fail("native-observer-failed", ERROR_INVALID_DATA); };
+            handlers.failure = [failObserver](std::string_view message) { failObserver(message, "native-observer-failed"); };
             handlers.extensions = providers->Hooks();
             handlers.extensions.failure = ProviderFailure;
             std::string error;
-            if (!OwnLua::InstallGameNativeObserver(std::move(image.image), std::move(handlers), error)) ProviderFailure(error);
+            if (!OwnLua::InstallGameNativeObserver(std::move(image.image), std::move(handlers), error))
+                failObserver(error, "native-observer-install");
         }
         if (providers) {
             const auto error = providers->Load();
-            if (!error.empty()) ProviderFailure(error);
-            if (evidence->providerYdwe && evidence->runtimeMode == RuntimeMode::ExternalProviders) {
-                const auto initialize = providers->InitializeYdwe();
-                if (!initialize.empty()) ProviderFailure(initialize);
+            if (!error.empty()) {
+                RecordFailure(evidence->providerFailureText, error);
+                Fail("external-provider-load", ERROR_INVALID_DATA);
             }
         }
         InterlockedExchange(&evidence->runtimeInitialized, 1);

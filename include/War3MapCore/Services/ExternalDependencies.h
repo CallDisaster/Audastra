@@ -50,7 +50,11 @@ using ExternalNativeRequirements = std::map<std::string, std::string, std::less<
 
 [[nodiscard]] std::filesystem::path ExternalDependenciesDirectory(
     const std::filesystem::path& installation, const std::filesystem::path& configured);
-[[nodiscard]] Status ValidateExternalDependenciesDirectory(const std::filesystem::path& directory);
+// 命令行地图测试和 h-lua 共用原生设置；显式目录优先。
+[[nodiscard]] std::filesystem::path ResolveCliExternalDependenciesDirectory(
+    const std::filesystem::path& explicitDirectory = {});
+[[nodiscard]] Status ValidateExternalDependenciesDirectory(const std::filesystem::path& directory,
+    const std::filesystem::path& testWorkspaceRoot = {});
 [[nodiscard]] Status EnsureExternalDependenciesDirectory(const std::filesystem::path& directory);
 [[nodiscard]] Result<ExternalDependenciesStatus> QueryExternalDependencies(const std::filesystem::path& directory);
 // 空签名表示只能从脚本取得名字。每个完整提供者按声明顺序载入。

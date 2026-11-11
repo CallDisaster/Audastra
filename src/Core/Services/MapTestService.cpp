@@ -25,7 +25,8 @@ std::wstring Lower(std::wstring value) {
 }
 bool Within(const std::filesystem::path& path, const std::filesystem::path& root) {
     const auto a = Lower(path.generic_wstring()), b = Lower(root.generic_wstring());
-    return a == b || (a.size() > b.size() && a.compare(0, b.size(), b) == 0 && a[b.size()] == L'/');
+    return a == b || (!b.empty() && a.size() > b.size() && a.compare(0, b.size(), b) == 0
+        && (b.back() == L'/' || a[b.size()] == L'/'));
 }
 bool OrdinaryAncestors(const std::filesystem::path& path) {
     auto current = path;
@@ -79,6 +80,31 @@ std::filesystem::path MapTestYdweInstallRoot(const std::filesystem::path& config
     return root;
 }
 
+Result<std::vector<std::wstring>> BuildMapTestProviderArguments(
+    const std::vector<ExternalDependencyFile>& files, bool ownedLua) {
+    using Args = std::vector<std::wstring>;
+    Args arguments;
+    if (files.empty()) return Result<Args>::Success(std::move(arguments));
+    if (!ownedLua) arguments = {L"--runtime-mode", L"external-providers"};
+    std::size_t chars = 0;
+    const auto wideAscii = [](std::string_view ascii) { return std::wstring(ascii.begin(), ascii.end()); };
+    for (std::size_t index = 0; index < files.size(); ++index) {
+        const auto& file = files[index];
+        auto spec = wideAscii(file.sha256) + L"|" + wideAscii(file.entry) + L"|" + wideAscii(file.providerId)
+            + L"|" + file.path.wstring();
+        chars += spec.size() + 24;
+        arguments.insert(arguments.end(), {L"--provider-module", std::move(spec)});
+        for (const auto& [name, signature] : file.natives) {
+            auto native = std::to_wstring(index) + L"|" + wideAscii(name) + L"|" + wideAscii(signature);
+            chars += native.size() + 24;
+            arguments.insert(arguments.end(), {L"--provider-native", std::move(native)});
+        }
+    }
+    if (chars > 20000)
+        return Fail<Args>("EXTERNAL_DEPENDENCY_BUDGET", "提供者启动参数超过 Windows 命令行安全预算。");
+    return Result<Args>::Success(std::move(arguments));
+}
+
 Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     const MapTestSlkConverter& converter, const MapTestProgress& progress) {
     if (request.enableLuaHotReload && !request.useOwnedLuaRuntime)
@@ -102,13 +128,19 @@ Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     }
     const auto ydwe = !request.useOwnedLuaRuntime && runtime.empty() ? request.runtimeYdweRoot : std::filesystem::path{};
     // 未使用的旧 UI 设置不应阻止普通地图。此处仅保护输出目录；实际加载时再严格核对路径。
-    for (const auto& configured : {MapTestYdweInstallRoot(ydwe), ydwe, request.externalDependenciesDirectory}) {
+    for (const auto& configured : {MapTestYdweInstallRoot(ydwe), ydwe}) {
         if (configured.empty() || !configured.is_absolute()) continue;
         const auto resolved = std::filesystem::weakly_canonical(configured, ec);
         if (ec) continue;
         // UI 子目录可能重定向到共享数据，同时保护原设置的安装根与解析后的只读数据根。
         if (Within(workspace, resolved))
             return Fail<MapTestArtifact>("MAP_TEST_WORKSPACE", "独占测试目录不能位于本机 YDWE 安装或数据目录内。");
+    }
+    if (request.externalDependenciesDirectory.is_absolute()) {
+        const auto resolved = std::filesystem::weakly_canonical(request.externalDependenciesDirectory, ec);
+        if (!ec && Within(workspace, resolved))
+            return Fail<MapTestArtifact>("EXTERNAL_DEPENDENCY_DIRECTORY_OVERLAP",
+                "外部依赖目录不能是测试工作目录或其上级；请改选独立的外部依赖目录。");
     }
     if (Within(workspace, game) || (!runtime.empty() && Within(workspace, runtime)))
         return Fail<MapTestArtifact>("MAP_TEST_WORKSPACE", "独占测试目录不能位于游戏或工具安装内。");
@@ -271,43 +303,18 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
             // 启动器只接受显式 enabled；省略选项才是其关闭合同。
             if (artifact.enableLuaHotReload)
                 plan.arguments.insert(plan.arguments.end(), {L"--lua-hot-reload", L"enabled"});
-        } else if (described) {
-            plan.arguments.insert(plan.arguments.end(), {L"--runtime-mode", L"external-providers"});
-        } else if (bare) {
+        } else if (!described && bare) {
             plan.arguments.insert(plan.arguments.end(), {L"--runtime-mode", L"bare"});
-        } else {
+        } else if (!described) {
             plan.arguments.insert(plan.arguments.end(), {L"--runtime", artifact.runtimeRoot.wstring()});
         }
         if (!artifact.useOwnedLuaRuntime && !bare && artifact.runtimeLayout == MapTestRuntimeLayout::YdweTree) {
             plan.arguments.push_back(L"--runtime-layout");
             plan.arguments.push_back(L"ydwe-tree");
         }
-        std::size_t providerArgChars = 0;
-        const auto wideAscii = [](std::string_view ascii) { return std::wstring(ascii.begin(), ascii.end()); };
-        if (artifact.externalYdweProvider) {
-            plan.arguments.insert(plan.arguments.end(), {L"--provider-abi", L"ydwe-initialize"});
-            for (const auto& [name, signature] : artifact.externalYdweRequiredNatives) {
-                if (signature.empty())
-                    return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_NATIVE_SIGNATURE", "YDWE 自带 Lua 需要地图声明的实际签名：" + name);
-                auto native = wideAscii(name) + L"|" + wideAscii(signature);
-                providerArgChars += native.size() + 30;
-                plan.arguments.insert(plan.arguments.end(), {L"--provider-required-native", std::move(native)});
-            }
-        }
-        for (std::size_t index = 0; index < artifact.externalDependencyFiles.size(); ++index) {
-            const auto& file = artifact.externalDependencyFiles[index];
-            auto spec = wideAscii(file.sha256) + L"|" + wideAscii(file.entry) + L"|" + wideAscii(file.providerId)
-                + L"|" + file.path.wstring();
-            providerArgChars += spec.size() + 24;
-            plan.arguments.insert(plan.arguments.end(), {L"--provider-module", std::move(spec)});
-            for (const auto& [name, signature] : file.natives) {
-                auto native = std::to_wstring(index) + L"|" + wideAscii(name) + L"|" + wideAscii(signature);
-                providerArgChars += native.size() + 24;
-                plan.arguments.insert(plan.arguments.end(), {L"--provider-native", std::move(native)});
-            }
-        }
-        if (providerArgChars > 20000)
-            return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_BUDGET", "提供者启动参数超过 Windows 命令行安全预算。");
+        auto provider = BuildMapTestProviderArguments(artifact.externalDependencyFiles, artifact.useOwnedLuaRuntime);
+        if (!provider.Succeeded()) return {std::nullopt, std::move(provider.diagnostics)};
+        plan.arguments.insert(plan.arguments.end(), provider.value->begin(), provider.value->end());
         if (plan.backgroundPlay) plan.arguments.insert(plan.arguments.end(), {L"--background-play", L"enabled"});
         if (plan.cloakedWindow) plan.arguments.insert(plan.arguments.end(), {L"--window-cloak", L"enabled"});
         // 看不见的后台测试不出声。经典 1.27a 不认 -nosound（会连带丢掉 -loadfile），

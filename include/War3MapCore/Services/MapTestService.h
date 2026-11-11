@@ -70,8 +70,6 @@ struct MapTestArtifact {
     bool cloakedWindow = false;
     std::filesystem::path externalDependenciesDirectory;
     std::vector<ExternalDependencyFile> externalDependencyFiles;
-    bool externalYdweProvider = false;
-    ExternalNativeRequirements externalYdweRequiredNatives;
 };
 
 struct MapTestSlkRequest {
@@ -123,5 +121,9 @@ struct MapTestLaunchPlan {
 
 // 核验所选游戏和本轮短路径复制目标；不启动进程、不写安装配置或注册表。
 [[nodiscard]] Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact);
+
+// 仅生成已选提供者的启动参数；不核验游戏身份，也不发起进程。
+[[nodiscard]] Result<std::vector<std::wstring>> BuildMapTestProviderArguments(
+    const std::vector<ExternalDependencyFile>& files, bool ownedLua);
 
 } // namespace War3Map::Services

@@ -21,6 +21,11 @@ struct ExternalCapability { std::string name; std::uint32_t line = 0; };
 [[nodiscard]] std::vector<ExternalCapability> ScanExternalCapabilities(std::string_view source);
 [[nodiscard]] std::vector<ExternalCapability> ScanLiteralMemberLookups(std::string_view source, std::string_view table);
 // 读取解析器能确定的 jass.japi 字面量成员和局部别名。动态键和间接转发无法证明完整性。
-[[nodiscard]] std::vector<ExternalCapability> ScanJapiNativeLookups(std::string_view source);
+struct JapiLookupScan {
+    std::vector<ExternalCapability> lookups;
+    bool complete = true;
+};
+[[nodiscard]] JapiLookupScan ScanJapiNativeLookups(std::string_view source,
+    std::size_t maxTokens = 4 * 1024 * 1024);
 [[nodiscard]] std::vector<ExternalCapability> ScanLiteralCallArguments(std::string_view source,std::string_view table,std::string_view method);
 } // namespace War3Map::Lua

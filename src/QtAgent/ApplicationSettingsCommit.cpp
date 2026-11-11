@@ -4,6 +4,7 @@
 #include "ApplicationSettingsTransfer.h"
 #include "War3MapCore/Update/SemanticVersion.h"
 #include "../QtCommon/MapBackupPaths.h"
+#include "../QtCommon/ApplicationPaths.h"
 
 #include <QFile>
 #include <QDir>
@@ -154,7 +155,8 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
         return Fail(error, QStringLiteral("跳过版本必须是有效的语义版本号。"));
     if (!preferences.group().isEmpty()) return Fail(error, QStringLiteral("应用设置提交要求根group的QSettings。"));
     if (services.externalDependenciesDirectory && !services.externalDependenciesDirectory->isEmpty()) {
-        const auto validation = Services::ValidateExternalDependenciesDirectory(services.externalDependenciesDirectory->toStdWString());
+        const auto validation = Services::ValidateExternalDependenciesDirectory(services.externalDependenciesDirectory->toStdWString(),
+            std::filesystem::path(QtCommon::InstallationRoot().toStdWString()) / L"test-maps");
         if (!validation.Succeeded()) return Fail(error, QString::fromStdString(validation.diagnostics.front().message));
     }
     for (const auto* path : {&services.mapBackupDirectory, &services.mapTestRuntimeRoot, &services.hluaFrameworkRoot}) {

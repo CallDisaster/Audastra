@@ -60,8 +60,18 @@ void Lexical() {
         "do local ext = {}; local ignored = ext.Shadowed end\n"
         "local y = ext['AudastraSecond']\nlocal ignored = ext['']\n"
         "local function f(require) return require('jass.japi').NotTheBuiltin end\n");
-    Need(lookups.size() == 2 && lookups[0].name == "AudastraFirst" && lookups[0].line == 3 &&
-        lookups[1].name == "AudastraSecond", "JAPI lookup follows aliases and respects lexical shadows");
+    Need(lookups.complete && lookups.lookups.size() == 2 && lookups.lookups[0].name == "AudastraFirst" &&
+        lookups.lookups[0].line == 3 && lookups.lookups[1].name == "AudastraSecond",
+        "JAPI lookup follows aliases and respects lexical shadows");
+    std::string commentHeavy;
+    for (unsigned i = 0; i < 40; ++i) commentHeavy += "-- ignored lookup\n";
+    commentHeavy += "local japi = require 'jass.japi'\nlocal x = japi.First";
+    const auto withinBudget = Lua::ScanJapiNativeLookups(commentHeavy, 24);
+    Need(withinBudget.complete && withinBudget.lookups.size() == 1 && withinBudget.lookups[0].line == 42,
+        "comments do not consume the optional token budget");
+    Need(!Lua::ScanJapiNativeLookups(commentHeavy, 3).complete &&
+        !Lua::ScanJapiNativeLookups("local function f() return 1").complete,
+        "lexical budget and parser recovery are reported as incomplete evidence");
     const auto external = Lua::ScanExternalCapabilities("-- io.open('ignored')\nlocal s='os.execute()'; os['execute']('x'); package.loadlib('x'); io.open('x')");
     Need(external.size() == 3 && external[0].line == 2, "external capability evidence ignores comments and strings");
     Need(Lua::ScanLiteralCallArguments("-- helper.exec('ignored')\nhelper.exec('FixtureNative')","helper","exec").size()==1,"literal call evidence");

@@ -18,6 +18,7 @@ struct Registration {
     const OwnLua::RegisterObservedNative& add;
     HMODULE module;
     bool rejected = false;
+    std::uintptr_t rejectedAddress = 0;
 };
 thread_local Registration* active = nullptr;
 
@@ -25,6 +26,7 @@ BOOL WINAPI Add(void* context, std::uintptr_t address, const char* name, const c
     if (!active || active != context) return FALSE;
     if (!ImageCode(active->module, address)) {
         active->rejected = true;
+        active->rejectedAddress = address;
         return FALSE;
     }
     try {
@@ -34,10 +36,6 @@ BOOL WINAPI Add(void* context, std::uintptr_t address, const char* name, const c
         active->rejected = true;
         return FALSE;
     }
-}
-bool CallLegacy(FARPROC entry) {
-    __try { reinterpret_cast<void (WINAPI*)()>(entry)(); return true; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 BOOL Call(RegisterTestNatives entry, void* context) {
     __try { return entry(Add, context); }
@@ -92,39 +90,24 @@ OwnLua::NativeExtensionHooks RuntimeNativeProviders::Hooks() {
 }
 
 std::string RuntimeNativeProviders::Validate(std::uintptr_t address, std::string_view name, std::string_view signature) const {
-    if (evidence_.providerYdwe) {
-        for (const auto module : modules_) {
-            if (ImageCode(module, address) && OwnLua::NativeIdentifier(name) && OwnLua::ParseNativeSignature(signature)) return {};
-        }
-        return "YDWE Initialize 中的 native 无法核对模块地址或签名：" + std::string(name);
-    }
     for (DWORD i = 0; i < evidence_.providerNativeCount; ++i) {
         const auto& expected = evidence_.providerNatives[i];
         if (name != expected.name) continue;
         if (expected.moduleIndex >= evidence_.providerModuleCount || !ImageCode(modules_[expected.moduleIndex], address))
-            return "native 注册地址不在声明的提供者 DLL 中：" + std::string(name);
+            return "native " + std::string(name) + " 的注册地址不在声明的提供者 DLL 中"
+                + DescribeNativeAddress(address) + "。";
         const auto actual = OwnLua::ParseNativeSignature(signature);
         if (!actual || actual != OwnLua::ParseNativeSignature(expected.signature))
-            return "native " + std::string(name) + " 注册签名不符。声明 " + expected.signature + "，实际 " + std::string(signature) + "。";
+            return "native " + std::string(name) + " 注册签名不符：声明 " + expected.signature + "，实际 "
+                + std::string(signature) + DescribeNativeAddress(address) + "。";
         return {};
     }
-    return "未声明的外部 native 登记：" + std::string(name);
+    return "未声明的外部 native 登记：" + std::string(name) + DescribeNativeAddress(address) + "。";
 }
 
-std::string RuntimeNativeProviders::InitializeYdwe() {
-    for (DWORD i = 0; i < evidence_.providerModuleCount; ++i) {
-        auto& record = evidence_.providerModules[i];
-        if (!record.entry[0] || record.file.initializeCalled) continue;
-        const auto entry = GetProcAddress(modules_[i], record.entry);
-        if (!ImageCode(modules_[i], reinterpret_cast<std::uintptr_t>(entry)) || !CallLegacy(entry))
-            return "YDWE Initialize 入口失效或执行失败。";
-        InterlockedExchange(&record.file.initializeCalled, 1);
-    }
-    return {};
-}
 std::string RuntimeNativeProviders::Register(const OwnLua::RegisterObservedNative& add) {
-    if (evidence_.providerYdwe) return InitializeYdwe();
     if (active) return "提供者登记发生重入。";
+    InterlockedExchange(&evidence_.providerRegistrationsVerified, 0);
     for (DWORD i = 0; i < evidence_.providerModuleCount; ++i) {
         auto& record = evidence_.providerModules[i];
         if (!record.entry[0]) continue;
@@ -135,7 +118,9 @@ std::string RuntimeNativeProviders::Register(const OwnLua::RegisterObservedNativ
         const auto ok = Call(reinterpret_cast<RegisterTestNatives>(entry), &registration);
         active = nullptr;
         if (!ok || registration.rejected)
-            return "提供者登记入口失败，或回调地址不属于该提供者：" + std::string(record.entry);
+            return "提供者 " + std::string(record.providerId) + " 的登记入口 " + record.entry
+                + (registration.rejected ? " 拒绝回调" + DescribeNativeAddress(registration.rejectedAddress)
+                    : " 返回失败或发生异常") + "。";
         InterlockedExchange(&record.file.initializeCalled, 1);
     }
     return {};
@@ -149,8 +134,6 @@ std::string RuntimeNativeProviders::Verify(const OwnLua::NativeRegistry& registr
         if (!actual || !actual->external) {
             if (!missing.empty()) missing += "、";
             missing += expected.name;
-        } else if (evidence_.providerYdwe && OwnLua::ParseNativeSignature(expected.signature) != actual->signature) {
-            return "YDWE 登记签名与地图声明不符：" + std::string(expected.name);
         }
     }
     LONG count = 0;
@@ -163,6 +146,7 @@ std::string RuntimeNativeProviders::Verify(const OwnLua::NativeRegistry& registr
     InterlockedExchange(&evidence_.providerObservedCount, count);
     if (!missing.empty()) return "提供者登记不完整，缺少：" + missing;
     InterlockedExchange(&evidence_.providerRegistrationsVerified, 1);
+    InterlockedIncrement(&evidence_.providerVerifiedInitializations);
     return {};
 }
 } // namespace Audastra::Runtime32

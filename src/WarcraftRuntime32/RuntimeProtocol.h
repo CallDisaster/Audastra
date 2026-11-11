@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 10;
+inline constexpr std::uint32_t kVersion = 11;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -102,6 +102,7 @@ struct SharedEvidence {
     LONG muteSoundInstalled = 0;
     DWORD errorWin32 = 0;
     char errorStage[96]{};
+    char nativeObserverFailureText[4096]{};
     // 原创无窗口fixture只用于证明跨进程Initialize确实执行；生产插件不写此字段。
     LONG fixturePluginBits = 0;
     LONG fixtureInitializeDelayMs = 0;
@@ -113,7 +114,7 @@ struct SharedEvidence {
     DWORD providerModuleCount = 0;
     DWORD providerNativeCount = 0;
     LONG providerRegistrationsVerified = 0;
-    LONG providerYdwe = 0;
+    LONG providerVerifiedInitializations = 0;
     LONG providerObservedCount = 0;
     std::array<std::array<char, 129>, kProviderNativeLimit> providerObservedNames{};
     char providerFailureText[4096]{};

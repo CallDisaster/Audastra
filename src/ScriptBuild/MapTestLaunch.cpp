@@ -551,6 +551,9 @@ Status MapTestLaunchLease::Cleanup() {
                     const auto providerFailure = report.find("providerFailureText");
                     if (providerFailure != report.end() && providerFailure->is_string() && !providerFailure->get_ref<const std::string&>().empty())
                         detail += " " + providerFailure->get<std::string>().substr(0, 4096);
+                    const auto observerFailure = report.find("nativeObserverFailureText");
+                    if (observerFailure != report.end() && observerFailure->is_string() && !observerFailure->get_ref<const std::string&>().empty())
+                        detail += " " + observerFailure->get<std::string>().substr(0, 4096);
                     const auto owned = report.find("ownedLua");
                     if (owned != report.end() && owned->is_object()) {
                         const auto failure = owned->find("failureText");

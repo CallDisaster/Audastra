@@ -62,6 +62,7 @@ struct Model {
     Type exports;
     std::vector<CodeWarning> warnings;
     std::vector<std::uint32_t> lineStarts;
+    bool recovered = false;
 };
 
 // require 地图模块时取得该模块导出的类型（带缓存与循环保护）。
@@ -74,6 +75,7 @@ struct ParseOptions {
     bool warnings = false;
     std::size_t maxTokens = (std::numeric_limits<std::size_t>::max)();
     std::function<void(std::string_view, std::uint32_t)> japiLookup;
+    bool includeComments = true;
 };
 
 [[nodiscard]] std::shared_ptr<Model> ParseModel(std::string_view source, const ParseOptions& options);

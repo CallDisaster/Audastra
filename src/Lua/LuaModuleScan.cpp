@@ -1,15 +1,22 @@
 #include "War3MapCore/Lua/LuaModuleScan.h"
 #include "LuaCodeModelInternal.h"
+#include <stdexcept>
 
 namespace War3Map::Lua {
-std::vector<ExternalCapability> ScanJapiNativeLookups(std::string_view source) {
+JapiLookupScan ScanJapiNativeLookups(std::string_view source, std::size_t maxTokens) {
     static const auto catalog = BuildOwnedRuntimeCatalog({});
-    std::vector<ExternalCapability> output;
+    JapiLookupScan output;
     Detail::ParseOptions options;
     options.catalog = catalog.get();
-    options.maxTokens = 4 * 1024 * 1024;
-    options.japiLookup = [&](auto name, auto line) { output.push_back({std::string(name), line}); };
-    (void)Detail::ParseModel(source, options);
+    options.maxTokens = maxTokens;
+    options.includeComments = false;
+    options.japiLookup = [&](auto name, auto line) { output.lookups.push_back({std::string(name), line}); };
+    try {
+        const auto model = Detail::ParseModel(source, options);
+        output.complete = !model->recovered;
+    } catch (const std::length_error&) {
+        output.complete = false;
+    }
     return output;
 }
 std::vector<ExternalCapability> ScanLiteralMemberLookups(std::string_view source,std::string_view table) {

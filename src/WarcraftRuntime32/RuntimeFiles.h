@@ -86,4 +86,20 @@ inline bool EqualPath(std::wstring left, std::wstring right) {
     std::transform(right.begin(), right.end(), right.begin(), lower);
     return left == right;
 }
+inline std::string DescribeNativeAddress(std::uintptr_t address) {
+    MEMORY_BASIC_INFORMATION page{};
+    std::array<wchar_t, 4096> path{};
+    const auto length = address && VirtualQuery(reinterpret_cast<const void*>(address), &page, sizeof(page)) &&
+        page.Type == MEM_IMAGE && page.AllocationBase
+        ? GetModuleFileNameW(static_cast<HMODULE>(page.AllocationBase), path.data(), static_cast<DWORD>(path.size())) : 0;
+    std::string module = "未知映像";
+    if (length && length < path.size()) {
+        const auto size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(length), nullptr, 0, nullptr, nullptr);
+        if (size > 0) {
+            module.resize(size);
+            WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path.data(), static_cast<int>(length), module.data(), size, nullptr, nullptr);
+        }
+    }
+    return "；地址=" + std::to_string(address) + "，实际模块=" + module;
+}
 } // namespace Audastra::Runtime32
