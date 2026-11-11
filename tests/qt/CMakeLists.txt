@@ -694,6 +694,15 @@ set_tests_properties(qt-trigger-module PROPERTIES TIMEOUT 40
     ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
 
+# 触发器编辑器的 Windows 式多选：目录与传统视图的批量删除、复制粘贴、拖放、允许，一步撤销与选区保留。
+qt_add_executable(war3-map-trigger-multiselect-tests TriggerMultiSelectTests.cpp)
+target_link_libraries(war3-map-trigger-multiselect-tests PRIVATE War3MapEditor::QtModuleTriggers Qt6::Test)
+target_compile_options(war3-map-trigger-multiselect-tests PRIVATE /W4 /permissive- /utf-8)
+add_test(NAME qt-trigger-multiselect COMMAND war3-map-trigger-multiselect-tests)
+set_tests_properties(qt-trigger-multiselect PROPERTIES TIMEOUT 60
+    ENVIRONMENT_MODIFICATION
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>;QT_PLUGIN_PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>/../plugins")
+
 # 取值面板对 YDWE 函数的支持：局部变量、Null 跟随 typename、AnyReturnType、scriptcode、替换函数参数。
 qt_add_executable(war3-map-trigger-value-tests TriggerValueTests.cpp)
 target_link_libraries(war3-map-trigger-value-tests PRIVATE War3MapEditor::QtModuleTriggers Qt6::Test)

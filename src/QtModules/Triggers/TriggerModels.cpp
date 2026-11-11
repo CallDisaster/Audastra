@@ -4,9 +4,12 @@
 #include "Icons/IconProvider.h"
 #include "Icons/SvgIcons.h"
 
+#include "War3MapCore/Trigger/TriggerSelection.h"
+
 #include <QGuiApplication>
 #include <QMimeData>
 #include <QPalette>
+#include <QSet>
 
 using namespace TriggerModelsDetail;
 
@@ -425,17 +428,26 @@ QStringList TriggerExplorerModel::mimeTypes() const {
 }
 
 QMimeData* TriggerExplorerModel::mimeData(const QModelIndexList& indexes) const {
+    // 多选拖动：每个选中项一行（同一行的两列只记一次）。
+    QStringList lines;
+    QSet<QString> seen;
     for (const QModelIndex& modelIndex : indexes) {
         const auto item = ItemAt(modelIndex);
         if (!item) continue;
-        auto* data = new QMimeData;
         const QString text = item->category
             ? QStringLiteral("category:%1").arg(item->categoryId)
             : QStringLiteral("trigger:%1").arg(item->triggerId);
-        data->setData(QString::fromLatin1(kDirectoryMime), text.toLatin1());
-        return data;
+        if (!seen.contains(text)) {
+            seen.insert(text);
+            lines << text;
+        }
     }
-    return nullptr;
+    if (lines.isEmpty()) {
+        return nullptr;
+    }
+    auto* data = new QMimeData;
+    data->setData(QString::fromLatin1(kDirectoryMime), lines.join(QLatin1Char('\n')).toLatin1());
+    return data;
 }
 
 Qt::DropActions TriggerExplorerModel::supportedDragActions() const {
@@ -446,28 +458,36 @@ Qt::DropActions TriggerExplorerModel::supportedDropActions() const {
     return Qt::MoveAction;
 }
 
-std::optional<TriggerDirectoryItem> TriggerExplorerModel::DecodeMime(const QMimeData* data) const {
+std::vector<TriggerDirectoryItem> TriggerExplorerModel::DecodeMime(const QMimeData* data) const {
+    std::vector<TriggerDirectoryItem> items;
     if (data == nullptr || document_ == nullptr) {
-        return std::nullopt;
+        return items;
     }
     const QString text = QString::fromLatin1(data->data(QString::fromLatin1(kDirectoryMime)));
-    const qsizetype colon = text.indexOf(':');
-    if (colon <= 0) {
-        return std::nullopt;
-    }
-    bool ok = false;
-    if (text.left(colon) == QLatin1String("category")) {
-        const int categoryId = text.mid(colon + 1).toInt(&ok);
-        if (ok && IndexForCategoryId(categoryId).isValid()) return TriggerDirectoryItem{true, 0, categoryId};
-    } else if (text.left(colon) == QLatin1String("trigger")) {
-        const War3Map::StableId id = text.mid(colon + 1).toULongLong(&ok);
-        if (ok) {
-            for (const auto& trigger : document_->triggers) {
-                if (trigger.id == id) return TriggerDirectoryItem{false, id, trigger.categoryId};
+    for (const QString& line : text.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const qsizetype colon = line.indexOf(':');
+        std::optional<TriggerDirectoryItem> item;
+        bool ok = false;
+        if (colon > 0 && line.left(colon) == QLatin1String("category")) {
+            const int categoryId = line.mid(colon + 1).toInt(&ok);
+            if (ok && IndexForCategoryId(categoryId).isValid()) item = TriggerDirectoryItem{true, 0, categoryId};
+        } else if (colon > 0 && line.left(colon) == QLatin1String("trigger")) {
+            const War3Map::StableId id = line.mid(colon + 1).toULongLong(&ok);
+            if (ok) {
+                for (const auto& trigger : document_->triggers) {
+                    if (trigger.id == id) {
+                        item = TriggerDirectoryItem{false, id, trigger.categoryId};
+                        break;
+                    }
+                }
             }
         }
+        if (!item) {
+            return {};
+        }
+        items.push_back(*item);
     }
-    return std::nullopt;
+    return items;
 }
 
 std::optional<TriggerDirectoryMove> TriggerExplorerModel::ResolveDrop(
@@ -510,13 +530,78 @@ std::optional<TriggerDirectoryMove> TriggerExplorerModel::ResolveDrop(
     return TriggerDirectoryMove{source, *categoryId, before, std::nullopt};
 }
 
+std::optional<TriggerDirectoryMove> TriggerExplorerModel::ResolveMultiDrop(
+    const std::vector<TriggerDirectoryItem>& sources, int row, const QModelIndex& parentIndex) const {
+    if (document_ == nullptr || sources.empty()) {
+        return std::nullopt;
+    }
+    if (sources.size() == 1) {
+        return ResolveDrop(sources.front(), row, parentIndex);
+    }
+    std::vector<std::int32_t> categoryIds;
+    std::vector<War3Map::StableId> triggerIds;
+    for (const auto& source : sources) {
+        if (source.category) categoryIds.push_back(source.categoryId);
+        else triggerIds.push_back(source.triggerId);
+    }
+    const auto selection = War3Map::Trigger::NormalizeDirectorySelection(*document_, categoryIds, triggerIds);
+    if (!selection.categories.empty() && !selection.triggers.empty()) {
+        return std::nullopt; // 类别只在顶层排序，不能和单独的触发器一起放到同一位置
+    }
+    std::vector<TriggerDirectoryItem> items;
+    for (const std::int32_t categoryId : selection.categories) items.push_back({true, 0, categoryId});
+    for (const War3Map::StableId triggerId : selection.triggers) {
+        for (const auto& trigger : document_->triggers) {
+            if (trigger.id == triggerId) {
+                items.push_back({false, triggerId, trigger.categoryId});
+                break;
+            }
+        }
+    }
+    if (items.size() <= 1) {
+        return items.empty() ? std::nullopt : ResolveDrop(items.front(), row, parentIndex);
+    }
+    // 放置位置与单项相同；落在被拖动的项上时由移动顺延到其后第一个不移动的项。
+    const QModelIndex target = parentIndex.isValid() ? parentIndex.siblingAtColumn(0) : QModelIndex{};
+    TriggerDirectoryMove move{items.front(), items.front().categoryId, 0, std::nullopt, items};
+    if (items.front().category) {
+        if (!target.isValid()) {
+            if (row >= 0 && row < static_cast<int>(groups_.size()) && !groups_[static_cast<std::size_t>(row)].synthetic) {
+                move.beforeCategoryId = groups_[static_cast<std::size_t>(row)].categoryId;
+            }
+        } else if (const auto item = ItemAt(target)) {
+            move.beforeCategoryId = item->categoryId;
+        } else {
+            return std::nullopt;
+        }
+        return move;
+    }
+    if (!target.isValid()) {
+        return std::nullopt; // 触发器不能放在类别之间
+    }
+    if (const auto* trigger = TriggerAt(target)) {
+        move.targetCategoryId = trigger->categoryId;
+        move.beforeTriggerId = trigger->id;
+        return move;
+    }
+    const auto categoryId = CategoryIdAt(target);
+    if (!categoryId) {
+        return std::nullopt;
+    }
+    move.targetCategoryId = *categoryId;
+    const auto& indices = groups_[DecodedIndex(target)].triggerIndices;
+    if (row >= 0 && row < static_cast<int>(indices.size())) {
+        move.beforeTriggerId = document_->triggers[indices[static_cast<std::size_t>(row)]].id;
+    }
+    return move;
+}
+
 bool TriggerExplorerModel::canDropMimeData(const QMimeData* data, Qt::DropAction action,
     int row, int, const QModelIndex& parentIndex) const {
     if (action != Qt::MoveAction) {
         return false;
     }
-    const auto source = DecodeMime(data);
-    return source && ResolveDrop(*source, row, parentIndex).has_value();
+    return ResolveMultiDrop(DecodeMime(data), row, parentIndex).has_value();
 }
 
 bool TriggerExplorerModel::dropMimeData(const QMimeData* data, Qt::DropAction action,
@@ -524,8 +609,7 @@ bool TriggerExplorerModel::dropMimeData(const QMimeData* data, Qt::DropAction ac
     if (action != Qt::MoveAction || !moveHandler_) {
         return false;
     }
-    const auto source = DecodeMime(data);
-    const auto move = source ? ResolveDrop(*source, row, parentIndex) : std::nullopt;
+    const auto move = ResolveMultiDrop(DecodeMime(data), row, parentIndex);
     if (!move) {
         return false;
     }

@@ -38,6 +38,8 @@ struct TriggerDirectoryMove {
     std::int32_t targetCategoryId = 0;
     War3Map::StableId beforeTriggerId = 0;
     std::optional<std::int32_t> beforeCategoryId;
+    // 多选一起移动的全部项（目录显示顺序，第一项即 source）；为空时只移动 source。
+    std::vector<TriggerDirectoryItem> sources;
 };
 
 // 触发器目录（原版“类别 / 触发器”）：两列（名称、状态标记），支持就地重命名与拖放排序。
@@ -109,6 +111,9 @@ public:
     // 拖放语义（供测试直接调用）：parent/row 与 QAbstractItemView 的放置位置一致。
     [[nodiscard]] std::optional<TriggerDirectoryMove> ResolveDrop(
         const TriggerDirectoryItem& source, int row, const QModelIndex& parent) const;
+    // 多选拖放：选中类别代表其中的触发器；类别只能和类别一起移动，触发器只能和触发器一起移动。
+    [[nodiscard]] std::optional<TriggerDirectoryMove> ResolveMultiDrop(
+        const std::vector<TriggerDirectoryItem>& sources, int row, const QModelIndex& parent) const;
 
 private:
     struct CategoryGroup {
@@ -120,7 +125,8 @@ private:
 
     [[nodiscard]] static bool IsTriggerIndex(const QModelIndex& index) noexcept;
     [[nodiscard]] static std::size_t DecodedIndex(const QModelIndex& index) noexcept;
-    [[nodiscard]] std::optional<TriggerDirectoryItem> DecodeMime(const QMimeData* data) const;
+    // 拖动数据里的全部项；任一项无效时整体无效（返回空）。
+    [[nodiscard]] std::vector<TriggerDirectoryItem> DecodeMime(const QMimeData* data) const;
 
     const War3Map::Trigger::TriggerDocument* document_ = nullptr;
     std::vector<CategoryGroup> groups_;
@@ -160,6 +166,8 @@ struct EcaMoveRequest {
     War3Map::StableId ecaId = 0;
     EcaSlot slot;
     War3Map::StableId beforeEcaId = 0;
+    // 多选一起移动的全部语句（显示顺序，第一项即 ecaId）；为空时只移动 ecaId。
+    std::vector<War3Map::StableId> ecaIds;
 };
 
 class TriggerEcaModel final : public QAbstractItemModel {
@@ -211,6 +219,9 @@ public:
     // 拖放语义（供测试直接调用）：parent/row 与 QAbstractItemView 的放置位置一致。
     [[nodiscard]] std::optional<EcaMoveRequest> ResolveDrop(
         War3Map::StableId ecaId, int row, const QModelIndex& parent) const;
+    // 多选拖放：祖先也被拖动的语句随祖先移动；每条语句都要适合放置位置，且不能移入任何被拖动语句的子块。
+    [[nodiscard]] std::optional<EcaMoveRequest> ResolveMultiDrop(
+        const std::vector<War3Map::StableId>& ecaIds, int row, const QModelIndex& parent) const;
 
     [[nodiscard]] QModelIndex index(
         int row,
@@ -235,6 +246,16 @@ public:
         int row, int column, const QModelIndex& parent) override;
 
 private:
+    // 放置位置：分支与插入点（before = 0 为末尾），slotParent 为分支所属语句的节点下标（根为无效值）。
+    struct DropTarget {
+        EcaSlot slot;
+        War3Map::StableId before = 0;
+        std::uint32_t slotParent = 0xffffffffU;
+    };
+    [[nodiscard]] std::optional<DropTarget> ResolveDropTarget(int row, const QModelIndex& parent) const;
+    // 节点 source 的类型适合 target，且 target 不在它的子块里。
+    [[nodiscard]] bool CanDropInto(std::size_t source, const DropTarget& target) const;
+    [[nodiscard]] std::vector<War3Map::StableId> DecodeEcaMime(const QMimeData* data) const;
     // 函数体内按 childId（分支号）划分的角色分组：0=If 条件/循环体、1=Then、2=Else。
     // 声明的分支即使没有子节点也存在（children 为空）。
     struct RoleGroup {

@@ -1,6 +1,7 @@
 #include "TriggerModule.h"
 
 #include "EditorProject.h"
+#include "TriggerActionHelpers.h"
 #include "TriggerCommands.h"
 #include "TriggerDialogs.h"
 #include "TriggerBlueprint.h"
@@ -21,14 +22,11 @@
 
 // ECA 节点编辑：新增、参数、删除、复制 / 剪切 / 粘贴与右键菜单。
 // 每次改动先在文档上执行，再做整图验证；验证不过立即回滚，只有通过的修改才入撤销栈。
+// 选中多条语句时，删除 / 复制 / 粘贴转到 TriggerEcaBatch.cpp 的批量实现。
 namespace War3Map::Modules {
 namespace {
 
 using Editor = Trigger::TriggerDocumentEditor;
-
-QString FirstMessage(const std::vector<Diagnostic>& diagnostics, const QString& fallback) {
-    return diagnostics.empty() ? fallback : QString::fromUtf8(diagnostics.front().message);
-}
 
 } // namespace
 
@@ -50,11 +48,8 @@ void TriggerModule::BuildShortcuts() {
     bind(QKeySequence::Copy, [this]() { CopySelectedEca(false); });
     bind(QKeySequence::Cut, [this]() { CopySelectedEca(true); });
     bind(QKeySequence::Paste, [this]() { PasteEca(); });
-    // Ctrl+D 快速复制节点（复制 + 立即粘贴到原节点后）。
-    bind(QKeySequence(Qt::CTRL | Qt::Key_D), [this]() {
-        CopySelectedEca(false);
-        PasteEca();
-    });
+    // Ctrl+D 快速复制节点（复制 + 立即粘贴到原节点后；多选时每段之后各放一份）。
+    bind(QKeySequence(Qt::CTRL | Qt::Key_D), [this]() { DuplicateSelectedEca(); });
     // Alt+↑↓ 在同一分支内重排（原型传统视图）。
     bind(QKeySequence(Qt::ALT | Qt::Key_Up), [this]() { MoveSelectedEca(-1); });
     bind(QKeySequence(Qt::ALT | Qt::Key_Down), [this]() { MoveSelectedEca(1); });
@@ -82,18 +77,26 @@ void TriggerModule::AddEcaCommands(
     }
     const auto bind = [&actions](QAction* action, std::function<void()> run) { actions.emplace_back(action, std::move(run)); };
     const bool enabled = eca->enabled != 0;
+    // 在选区内的语句上打开菜单：允许 / 禁用与删除作用于整个选区。
+    const auto rows = SelectedEcaRowIds();
+    const bool multi = rows.size() > 1 && std::find(rows.begin(), rows.end(), ecaId) != rows.end();
     QAction* edit = menu.addAction(tr("编辑参数…"));
     edit->setShortcut(QKeySequence(Qt::Key_F2));
     edit->setShortcutVisibleInContextMenu(true);
     edit->setEnabled(!eca->uiSource.empty() && !eca->arguments.empty());
     bind(edit, [this, ecaId]() { EditEcaParameters(ecaId); });
-    QAction* toggle = menu.addAction(enabled ? tr("禁用") : tr("启用"));
+    QAction* toggle = menu.addAction(!multi ? (enabled ? tr("禁用") : tr("启用"))
+        : (enabled ? tr("禁用 %1 条语句") : tr("启用 %1 条语句")).arg(rows.size()));
     toggle->setToolTip(tr("禁用后该语句显示为灰字，不会编译进脚本"));
-    bind(toggle, [this, document, ecaId, enabled]() {
-        project_.triggerUndoStack_->push(new SetEcaEnabledUndoCommand(
-            document, ecaId, enabled, !enabled, enabled ? tr("禁用语句") : tr("启用语句")));
-        RefreshEditor(ecaId);
-    });
+    if (multi) {
+        bind(toggle, [this, enabled]() { SetSelectedEcaEnabled(!enabled); });
+    } else {
+        bind(toggle, [this, document, ecaId, enabled]() {
+            project_.triggerUndoStack_->push(new SetEcaEnabledUndoCommand(
+                document, ecaId, enabled, !enabled, enabled ? tr("禁用语句") : tr("启用语句")));
+            RefreshEditor(ecaId);
+        });
+    }
     menu.addSeparator();
     const auto shortcut = [&menu, &bind](const QString& text, const QKeySequence& key, std::function<void()> run) {
         QAction* action = menu.addAction(text);
@@ -104,8 +107,8 @@ void TriggerModule::AddEcaCommands(
     };
     shortcut(tr("复制"), QKeySequence::Copy, [this]() { CopySelectedEca(false); });
     shortcut(tr("剪切"), QKeySequence::Cut, [this]() { CopySelectedEca(true); });
-    shortcut(tr("粘贴"), QKeySequence::Paste, [this]() { PasteEca(); })->setEnabled(clipboard_.has_value());
-    shortcut(tr("创建副本"), QKeySequence(Qt::CTRL | Qt::Key_D), [this]() { CopySelectedEca(false); PasteEca(); });
+    shortcut(tr("粘贴"), QKeySequence::Paste, [this]() { PasteEca(); })->setEnabled(!clipboard_.empty());
+    shortcut(tr("创建副本"), QKeySequence(Qt::CTRL | Qt::Key_D), [this]() { DuplicateSelectedEca(); });
     menu.addSeparator();
     const bool blueprint = BlueprintVisible();
     bind(menu.addAction(blueprint ? tr("在传统视图中定位") : tr("在蓝图中定位")), [this, blueprint, ecaId]() {
@@ -113,7 +116,8 @@ void TriggerModule::AddEcaCommands(
         if (!blueprint) Blueprint()->Select(ecaId);
         else ecaView_->scrollTo(ecaModel_->IndexForStableId(ecaId), QAbstractItemView::PositionAtCenter);
     });
-    shortcut(tr("删除"), QKeySequence::Delete, [this]() { DeleteSelectedEca(); })
+    const std::size_t removing = multi ? SelectedEcaIds().size() : 1;
+    shortcut(removing > 1 ? tr("删除 %1 条语句").arg(removing) : tr("删除"), QKeySequence::Delete, [this]() { DeleteSelectedEca(); })
         ->setToolTip(tr("删除该语句及其整个子块（可撤销）"));
 }
 
@@ -122,9 +126,7 @@ void TriggerModule::ShowEcaMenuAt(const QModelIndex& index, const QPoint& global
     if (document == nullptr || project_.triggerUndoStack_ == nullptr) {
         return;
     }
-    if (index.isValid()) {
-        ecaView_->setCurrentIndex(index); // 右键即选中
-    }
+    TriggerActions::FocusForContextMenu(*ecaView_, index); // 右键即选中；点在选区内保留选区
     QMenu menu(page_);
     std::vector<std::pair<QAction*, std::function<void()>>> actions;
     const auto* eca = ecaModel_->EcaAt(index);
@@ -188,11 +190,15 @@ void TriggerModule::DeleteSelectedEca() {
     if (document == nullptr || project_.uiCatalog_ == nullptr || project_.triggerUndoStack_ == nullptr) {
         return;
     }
-    const auto* eca = ecaModel_->EcaAt(ecaView_->currentIndex());
-    if (eca == nullptr) {
+    const auto selected = SelectedEcaIds();
+    if (selected.empty()) {
         return; // 分组头 / 角色头或空白：无可删除节点
     }
-    const StableId ecaId = eca->id;
+    if (selected.size() > 1) {
+        DeleteEcas(selected);
+        return;
+    }
+    const StableId ecaId = selected.front();
     auto removed = Editor::RemoveEcaSubtree(*document, ecaId);
     if (!removed.Succeeded()) {
         project_.AddDiagnostics(removed.diagnostics);
@@ -214,18 +220,24 @@ void TriggerModule::CopySelectedEca(bool cut) {
     if (document == nullptr) {
         return;
     }
-    const auto* eca = ecaModel_->EcaAt(ecaView_->currentIndex());
-    if (eca == nullptr) {
+    const auto selected = SelectedEcaIds();
+    if (selected.empty()) {
         ShowStatus(tr("请先选中一个节点再复制。"), 5000);
         return;
     }
-    auto snapshot = Editor::CopyEcaSubtree(*document, eca->id);
-    if (!snapshot.Succeeded()) {
-        ShowStatus(tr("无法复制该节点。"), 8000);
-        return;
+    // 多选按显示顺序复制，粘贴时保持这个顺序。
+    std::vector<Editor::EcaSubtreeSnapshot> copies;
+    std::size_t nodeCount = 0;
+    for (const StableId id : selected) {
+        auto snapshot = Editor::CopyEcaSubtree(*document, id);
+        if (!snapshot.Succeeded()) {
+            ShowStatus(tr("无法复制该节点。"), 8000);
+            return;
+        }
+        nodeCount += snapshot.value->ecas.size();
+        copies.push_back(std::move(*snapshot.value));
     }
-    const std::size_t nodeCount = snapshot.value->ecas.size();
-    clipboard_ = std::move(*snapshot.value);
+    clipboard_ = std::move(copies);
     ShowStatus(cut ? tr("已剪切 %1 个节点，Ctrl+V 粘贴。").arg(nodeCount) : tr("已复制 %1 个节点，Ctrl+V 粘贴。").arg(nodeCount), 6000);
     if (cut) {
         DeleteSelectedEca();
@@ -235,7 +247,7 @@ void TriggerModule::CopySelectedEca(bool cut) {
 void TriggerModule::PasteEca() {
     auto* document = project_.triggerDocument_.get();
     if (document == nullptr || project_.uiCatalog_ == nullptr || project_.triggerUndoStack_ == nullptr ||
-        !clipboard_.has_value()) {
+        clipboard_.empty()) {
         return;
     }
     const QModelIndex selected = ecaView_->currentIndex();
@@ -244,13 +256,19 @@ void TriggerModule::PasteEca() {
         ShowStatus(tr("请先选中粘贴位置"), 6000);
         return;
     }
+    if (clipboard_.size() > 1) {
+        EcaPastePlan plan{eca->id, {}};
+        for (const auto& snapshot : clipboard_) plan.snapshots.push_back(&snapshot);
+        (void)PasteEcaPlans({plan}, tr("粘贴 %1 条语句").arg(clipboard_.size()));
+        return;
+    }
     // 兄弟语义：粘贴到当前节点之后，分支号（childId）与当前节点一致。
     const auto placement = Editor::LocateEcaPlacement(*document, eca->id);
     if (!placement.found) {
         return;
     }
     const auto childId = eca->childId;
-    auto paste = Editor::PasteEcaSubtree(*document, *project_.uiCatalog_, *clipboard_,
+    auto paste = Editor::PasteEcaSubtree(*document, *project_.uiCatalog_, clipboard_.front(),
         placement.parentTriggerId, placement.parentEcaId, placement.row + 1, childId);
     if (!paste.Succeeded()) {
         project_.AddDiagnostics(paste.diagnostics);
@@ -261,7 +279,7 @@ void TriggerModule::PasteEca() {
         QMessageBox::warning(page_, tr("无法粘贴"), tr("粘贴后未通过 WTG/WCT 图验证，修改已经回滚。"));
         return;
     }
-    project_.triggerUndoStack_->push(new PasteEcaUndoCommand(document, project_.uiCatalog_.get(), *clipboard_,
+    project_.triggerUndoStack_->push(new PasteEcaUndoCommand(document, project_.uiCatalog_.get(), clipboard_.front(),
         placement.parentTriggerId, placement.parentEcaId, placement.row + 1, childId,
         paste.value->rootEcaId, tr("粘贴节点")));
     RefreshEditor(paste.value->rootEcaId);

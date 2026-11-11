@@ -46,6 +46,7 @@ add_library(War3MapTrigger STATIC
     WtgSource.cpp
     TriggerDataText.cpp
     TriggerDirectory.cpp
+    TriggerSelection.cpp
     TriggerEcaMove.cpp
     TriggerBlocks.cpp
     TriggerEditing.cpp

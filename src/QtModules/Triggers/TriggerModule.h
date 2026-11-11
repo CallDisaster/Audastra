@@ -7,6 +7,7 @@
 #include "War3MapCore/Trigger/TriggerCodeEditing.h"
 #include "War3MapCore/Trigger/GuiConversionSnapshots.h"
 #include "War3MapCore/Trigger/TriggerPresentation.h"
+#include "War3MapCore/Trigger/TriggerSelection.h"
 #include "War3MapCore/Types.h"
 
 #include <QIcon>
@@ -130,7 +131,31 @@ public:
     // 就地重命名：校验失败返回 false 并在状态栏说明；通过后排队执行（不在模型回调中重置模型）。
     bool RenameDirectoryItem(const TriggerDirectoryItem& item, const QString& name);
 
+    // 多选（TriggerSelectionView.cpp）：Windows 式 Ctrl / Shift 选取。当前项仍决定属性区、重命名与参数编辑，
+    // 批量命令作用于整个选区：选中的类别代表其中全部触发器，选中的块语句代表其中的子语句。
+    // 选区按稳定 ID 记住，目录与逻辑区刷新、撤销后仍保留。
+    [[nodiscard]] std::vector<TriggerDirectoryItem> SelectedDirectoryItems() const;
+    // 选中这些项（目录显示顺序无关），第一项为当前项。
+    void SelectDirectoryItems(const std::vector<TriggerDirectoryItem>& items);
+    // 选中的语句（显示顺序，祖先也被选中时只保留祖先，分组头 / 分支头不算）；没有选区时为当前语句。
+    [[nodiscard]] std::vector<StableId> SelectedEcaIds() const;
+    // 选中这些语句，第一条为当前语句。
+    void SelectEcas(const std::vector<StableId>& ecaIds);
+    // 目录批量（TriggerDirectoryBatch.cpp）：剪切在粘贴时移动；允许 / 初始打开对选中的全部触发器生效（注释条目除外）。
+    void CutSelectedTriggers();
+    void SetSelectedTriggerFlags(std::optional<bool> enabled, std::optional<bool> initiallyOn);
+
+    // 语句批量（TriggerEcaActions.cpp / TriggerEcaBatch.cpp）：都作用于选中的语句，每次操作一步撤销。
+    void DeleteSelectedEca();
+    void CopySelectedEca(bool cut);
+    // 粘贴到当前语句之后（同一分支）；块语句分支不接受的语句类型整体拒绝。
+    void PasteEca();
+    // 副本放在各段选中语句之后。
+    void DuplicateSelectedEca();
+    void SetSelectedEcaEnabled(bool enabled);
+
     // 语句结构（TriggerEcaStructure.cpp）：对应原型传统视图的上移 / 下移、拖放、添加到子块。
+    // 多选时只能整体移动同一分支里相邻的一段语句。
     void MoveSelectedEca(int delta);
     void ApplyEcaMove(const EcaMoveRequest& request);
     // 在位置 slot 中 beforeEcaId 之前（0 = 末尾）插入语句；返回新语句的稳定 ID（失败为 0）。
@@ -204,13 +229,17 @@ private:
     void AddDirectoryTrigger(bool comment);
     void DeleteCategory(std::int32_t categoryId);
     void PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std::int32_t categoryId, StableId afterTriggerId);
+    // 粘贴出的触发器名称：原名加“ 副本”，重名时编号。
+    [[nodiscard]] std::string PasteTriggerName(const std::string& base) const;
     void SetTriggerFlags(StableId triggerId, bool enabled, bool initiallyOn, const QString& label);
     // 把触发器里旧版本编辑器写法的触发器引用改成 WE 写法（LegacyTriggerReferences.h），一条撤销命令。
     void FixLegacyTriggerReferences(StableId triggerId);
     void PushDirectoryChange(Trigger::TriggerDirectoryLayout before, const QString& label);
     void ApplyRename(const TriggerDirectoryItem& item, const std::string& name);
     // 自定义代码触发器的改名、复制：走与 Agent 共用的代码身份服务（同步 InitTrig 与代码里的生成符号），一条撤销命令。
-    bool ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name, std::int32_t categoryId, StableId afterTriggerId);
+    // 成功时返回结果触发器（复制为新触发器，改名为原触发器）。
+    std::optional<StableId> ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name,
+        std::int32_t categoryId, StableId afterTriggerId);
     // 这些触发器（gg_trg_ 名称）在它们之外的引用：最多渲染 8 行，total 为总数。
     [[nodiscard]] QStringList TriggerReferenceLines(const std::vector<StableId>& triggerIds, std::size_t& total) const;
     [[nodiscard]] bool Confirm(const QString& title, const QString& body, const QStringList& references);
@@ -245,9 +274,6 @@ private:
     void AddEcaCommands(QMenu& menu, StableId ecaId, std::vector<std::pair<QAction*, std::function<void()>>>& actions);
     void AddEca(int ecaType);
     void EditSelectedEca();
-    void DeleteSelectedEca();
-    void CopySelectedEca(bool cut);
-    void PasteEca();
     void EditEcaParameters(StableId ecaId);
     // 应用一组参数修改（先挂接函数、再改标量），整图验证不过全部回滚；prefix 为同一撤销宏中先压入的命令。
     bool ApplyArgumentEdits(StableId ecaId, const std::vector<TriggerArgumentEditRequest>& requests, const QString& label,
@@ -261,6 +287,45 @@ private:
     void AddEcaStructureMenu(QMenu& menu, const QModelIndex& index, std::vector<std::pair<QAction*, std::function<void()>>>& actions);
     // 编辑后的整图验证；失败时写诊断并返回 false，调用方负责回滚。
     [[nodiscard]] bool ValidateOrReport();
+
+    // 多选（TriggerSelectionView.cpp）
+    void ConfigureMultiSelection();
+    void OnExplorerCurrentChanged(const QModelIndex& current);
+    void CaptureExplorerSelection();
+    void CaptureEcaSelection();
+    // 按记住的稳定 ID 恢复选区，current 为当前项；选区只有当前项时与单选行为相同。
+    void RestoreExplorerSelection(const QModelIndex& current);
+    void RestoreEcaSelection(const QModelIndex& current);
+    [[nodiscard]] Trigger::DirectorySelection NormalizedDirectorySelection() const;
+    // 选区代表的全部触发器（目录显示顺序）。
+    [[nodiscard]] std::vector<StableId> SelectedTriggerIds() const;
+    // 选中的全部语句行（含被选中祖先之下单独选中的子语句），用于允许 / 禁用。
+    [[nodiscard]] std::vector<StableId> SelectedEcaRowIds() const;
+    // Shift 单独点击或 Shift+方向键：从锚点重新选一段（不保留之前 Ctrl 选的项）；Ctrl+A 全选。
+    bool HandleSelectionInput(QObject* watched, QEvent* event);
+
+    // 目录批量（TriggerDirectoryBatch.cpp）
+    struct TriggerPasteGroup {
+        std::int32_t categoryId = 0;
+        StableId afterTriggerId = 0;
+        std::vector<Trigger::TriggerSnapshot> snapshots;
+    };
+    void AddDirectorySelectionActions(QMenu& menu, const std::vector<TriggerDirectoryItem>& items,
+        std::vector<std::pair<QAction*, std::function<void()>>>& actions);
+    void DeleteDirectoryItems(const std::vector<TriggerDirectoryItem>& items);
+    void PasteTriggerGroups(std::vector<TriggerPasteGroup> groups, const QString& label);
+    void PasteCutTriggers();
+    void ApplyDirectoryMoves(const TriggerDirectoryMove& move);
+
+    // 语句批量（TriggerEcaBatch.cpp）
+    struct EcaPastePlan {
+        StableId anchorEcaId = 0; // 粘贴到它之后、同一分支
+        std::vector<const Trigger::TriggerDocumentEditor::EcaSubtreeSnapshot*> snapshots;
+    };
+    void DeleteEcas(const std::vector<StableId>& ecaIds);
+    bool PasteEcaPlans(const std::vector<EcaPastePlan>& plans, const QString& label);
+    void MoveSelectedEcaBlock(int delta);
+    void ApplyEcaMoves(const EcaMoveRequest& request);
 
     // 地图脚本 war3map.j 只读查看（TriggerMapScript.cpp）
     void BuildMapScriptView(QWidget* pane, QVBoxLayout* layout);
@@ -374,10 +439,19 @@ private:
     bool suppressPropertySignals_ = false;
     StableId propertyTriggerId_ = 0;
     QString propertyCommentBaseline_;
-    // ECA 子树剪贴板（应用内）。
-    std::optional<Trigger::TriggerDocumentEditor::EcaSubtreeSnapshot> clipboard_;
-    // 触发器剪贴板：整个触发器的快照，源触发器删除后仍可粘贴。
-    std::optional<Trigger::TriggerSnapshot> triggerClipboard_;
+    // ECA 子树剪贴板（应用内），多选时按显示顺序。
+    std::vector<Trigger::TriggerDocumentEditor::EcaSubtreeSnapshot> clipboard_;
+    // 触发器剪贴板：整个触发器的快照（目录顺序），源触发器删除后仍可粘贴。
+    std::vector<Trigger::TriggerSnapshot> triggerClipboard_;
+    // 剪切的触发器：粘贴时移到当前类别（文档在粘贴前不变）。
+    std::vector<StableId> triggerCut_;
+    // 多选：目录与逻辑区按稳定 ID 记住的选区；恢复期间的选区变化不回写。
+    Trigger::DirectorySelection explorerSelection_;
+    std::vector<StableId> ecaSelection_;
+    bool restoringExplorerSelection_ = false;
+    bool restoringEcaSelection_ = false;
+    // 撤销 / 重做后的刷新：保留多选，不因当前语句改选。
+    bool keepEcaSelection_ = false;
     // 折叠的类别（按 categoryId）；刷新目录后据此恢复。默认全部展开，与原型一致。
     std::set<std::int32_t> collapsedCategories_;
     bool refreshingExplorer_ = false;

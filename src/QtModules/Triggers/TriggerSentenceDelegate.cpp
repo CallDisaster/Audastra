@@ -207,7 +207,8 @@ bool TriggerSentenceDelegate::editorEvent(QEvent* event, QAbstractItemModel* mod
     const QStyleOptionViewItem& option, const QModelIndex& index) {
     if (event->type() == QEvent::MouseButtonRelease && activate_) {
         auto* mouse = static_cast<QMouseEvent*>(event);
-        if (mouse->button() == Qt::LeftButton) {
+        // Ctrl / Shift 点击只改选区，不打开取值面板。
+        if (mouse->button() == Qt::LeftButton && !(mouse->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) {
             if (const auto token = TokenAt(option, index, mouse->position().toPoint())) {
                 const auto* view = qobject_cast<const QAbstractItemView*>(option.widget);
                 const QRect global = view != nullptr

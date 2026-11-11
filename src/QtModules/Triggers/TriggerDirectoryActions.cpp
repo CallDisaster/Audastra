@@ -1,6 +1,7 @@
 #include "TriggerModule.h"
 
 #include "EditorProject.h"
+#include "TriggerActionHelpers.h"
 #include "TriggerCommands.h"
 #include "TriggerDirectoryCommands.h"
 #include "TriggerModels.h"
@@ -32,39 +33,17 @@ namespace {
 
 using Directory = Trigger::TriggerDirectoryEditor;
 using Editor = Trigger::TriggerDocumentEditor;
+using TriggerActions::FindTrigger;
+using TriggerActions::FirstMessage;
+using TriggerActions::NextInCategory;
 
 QString U8(const std::string& text) {
     return QString::fromUtf8(text);
 }
 
-QString FirstMessage(const std::vector<Diagnostic>& diagnostics, const QString& fallback) {
-    return diagnostics.empty() ? fallback : QString::fromUtf8(diagnostics.front().message);
-}
-
 // 与保存链、名称解析和物体管理器使用同一套中文/标点字节转换规则。
 std::string TriggerToken(const std::string& name) {
     return "gg_trg_" + Directory::ScriptName(name);
-}
-
-const Trigger::TriggerRecord* FindTrigger(const Trigger::TriggerDocument& document, StableId id) {
-    for (const auto& trigger : document.triggers) {
-        if (trigger.id == id) return &trigger;
-    }
-    return nullptr;
-}
-
-// 同类别中紧随其后的触发器；没有时返回 0（表示放到类别末尾）。
-StableId NextInCategory(const Trigger::TriggerDocument& document, StableId triggerId) {
-    bool seen = false;
-    std::int32_t categoryId = 0;
-    for (const auto& trigger : document.triggers) {
-        if (seen && trigger.categoryId == categoryId) return trigger.id;
-        if (trigger.id == triggerId) {
-            seen = true;
-            categoryId = trigger.categoryId;
-        }
-    }
-    return 0;
 }
 
 // 删除后的选中项：同类别的下一个，其次上一个，都没有时停在类别上。
@@ -118,7 +97,9 @@ void TriggerModule::SelectDirectoryItem(const TriggerDirectoryItem& item, bool e
     }
     if (!CommitPendingEdits()) return;
     selectionCategory_ = item.categoryId;
+    explorerSelection_ = {};
     if (item.category) {
+        explorerSelection_.categories.push_back(item.categoryId);
         selectedTrigger_ = 0;
         selectedCategory_ = item.categoryId;
     } else {
@@ -378,17 +359,17 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
     RefreshExplorer();
 }
 
-bool TriggerModule::ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name, std::int32_t categoryId,
-    StableId afterTriggerId) {
+std::optional<StableId> TriggerModule::ApplyCustomCodeIdentity(bool copy, StableId triggerId, const std::string& name,
+    std::int32_t categoryId, StableId afterTriggerId) {
     const QString verb = copy ? tr("复制") : tr("重命名");
     const auto fail = [&](const std::vector<Diagnostic>& diagnostics, const QString& fallback) {
         project_.AddDiagnostics(diagnostics);
         ShowStatus(tr("未%1：%2").arg(verb, FirstMessage(diagnostics, fallback)), 10000);
-        return false;
+        return std::optional<StableId>{};
     };
     auto* document = project_.triggerDocument_.get();
     const auto* trigger = document ? FindTrigger(*document, triggerId) : nullptr;
-    if (trigger == nullptr || project_.uiCatalog_ == nullptr) return false;
+    if (trigger == nullptr || project_.uiCatalog_ == nullptr) return std::nullopt;
     const auto context = QtProject::CaptureProjectTriggerCodeIdentityContext(project_);
     if (!context.Succeeded()) return fail(context.diagnostics, tr("无法确认触发器来源"));
     const auto binding = Trigger::CaptureTriggerGraphBinding(*document, *project_.uiCatalog_, context.value->mapObjects);
@@ -416,9 +397,10 @@ bool TriggerModule::ApplyCustomCodeIdentity(bool copy, StableId triggerId, const
         copy ? tr("复制自定义代码触发器") : tr("重命名自定义代码触发器"));
     if (!applied.Succeeded()) return fail(applied.diagnostics, tr("发布失败"));
     const auto& summary = prepared.value->Summary();
-    RefreshExplorer(copy ? summary.resultId : triggerId);
+    const StableId resultId = copy ? summary.resultId : triggerId;
+    RefreshExplorer(resultId);
     ShowStatus(tr("已%1为 %2，同步了 %3 处生成符号 · Ctrl+Z 撤销").arg(verb, U8(name)).arg(summary.changedReferences), 6000);
-    return true;
+    return resultId;
 }
 
 QStringList TriggerModule::TriggerReferenceLines(const std::vector<StableId>& triggerIds, std::size_t& total) const {
@@ -509,8 +491,11 @@ std::optional<QtProject::RemovalCodeNotice> TriggerModule::CheckRemovalCode(cons
 }
 
 void TriggerModule::DeleteCurrentItem() {
-    if (const auto item = CurrentDirectoryItem()) {
-        DeleteDirectoryItem(*item);
+    const auto items = SelectedDirectoryItems();
+    if (items.size() == 1) {
+        DeleteDirectoryItem(items.front());
+    } else if (items.size() > 1) {
+        DeleteDirectoryItems(items);
     }
 }
 
@@ -643,23 +628,33 @@ void TriggerModule::DeleteCategory(std::int32_t categoryId) {
 
 void TriggerModule::CopyCurrentTrigger() {
     if (!CommitPendingEdits()) return;
-    const auto item = CurrentDirectoryItem();
     const auto* document = project_.triggerDocument_.get();
-    if (!item || item->category || document == nullptr) {
+    const auto triggerIds = SelectedTriggerIds();
+    if (triggerIds.empty() || document == nullptr) {
         return;
     }
-    auto copied = Directory::CopyTrigger(*document, item->triggerId);
-    if (!copied.Succeeded()) {
-        project_.AddDiagnostics(copied.diagnostics);
-        return;
+    std::vector<Trigger::TriggerSnapshot> copies;
+    for (const StableId id : triggerIds) {
+        auto copied = Directory::CopyTrigger(*document, id);
+        if (!copied.Succeeded()) {
+            project_.AddDiagnostics(copied.diagnostics);
+            return;
+        }
+        copies.push_back(std::move(*copied.value));
     }
-    ShowStatus(tr("已复制触发器 %1").arg(U8(copied.value->trigger.name.text)), 4000);
-    triggerClipboard_ = std::move(*copied.value);
+    ShowStatus(copies.size() == 1 ? tr("已复制触发器 %1").arg(U8(copies.front().trigger.name.text))
+                                  : tr("已复制 %1 个触发器").arg(copies.size()), 4000);
+    triggerCut_.clear();
+    triggerClipboard_ = std::move(copies);
 }
 
 void TriggerModule::PasteTrigger() {
     if (!CommitPendingEdits()) return;
-    if (!triggerClipboard_) {
+    if (!triggerCut_.empty()) {
+        PasteCutTriggers();
+        return;
+    }
+    if (triggerClipboard_.empty()) {
         ShowStatus(tr("剪贴板里没有触发器；先在目录中按 Ctrl+C 复制。"), 4000);
         return;
     }
@@ -668,22 +663,50 @@ void TriggerModule::PasteTrigger() {
         return;
     }
     const auto item = CurrentDirectoryItem();
-    PasteSnapshot(*triggerClipboard_, *categoryId, item && !item->category ? item->triggerId : 0);
+    const StableId after = item && !item->category ? item->triggerId : 0;
+    if (triggerClipboard_.size() == 1) {
+        PasteSnapshot(triggerClipboard_.front(), *categoryId, after);
+        return;
+    }
+    PasteTriggerGroups({{*categoryId, after, triggerClipboard_}}, tr("粘贴 %1 个触发器").arg(triggerClipboard_.size()));
 }
 
 void TriggerModule::DuplicateCurrentTrigger() {
     if (!CommitPendingEdits()) return;
-    const auto item = CurrentDirectoryItem();
     const auto* document = project_.triggerDocument_.get();
-    if (!item || item->category || document == nullptr) {
+    const auto triggerIds = SelectedTriggerIds();
+    if (triggerIds.empty() || document == nullptr) {
         return;
     }
-    auto copied = Directory::CopyTrigger(*document, item->triggerId);
-    if (!copied.Succeeded()) {
-        project_.AddDiagnostics(copied.diagnostics);
+    // 副本放在各类别里最后一个选中的触发器之后，保持选中顺序。
+    std::vector<TriggerPasteGroup> groups;
+    for (const StableId id : triggerIds) {
+        const auto* trigger = FindTrigger(*document, id);
+        auto copied = trigger == nullptr ? Result<Trigger::TriggerSnapshot>{} : Directory::CopyTrigger(*document, id);
+        if (trigger == nullptr || !copied.Succeeded()) {
+            project_.AddDiagnostics(copied.diagnostics);
+            return;
+        }
+        if (groups.empty() || groups.back().categoryId != trigger->categoryId) {
+            groups.push_back({trigger->categoryId, id, {}});
+        }
+        groups.back().afterTriggerId = id;
+        groups.back().snapshots.push_back(std::move(*copied.value));
+    }
+    if (triggerIds.size() == 1) {
+        PasteSnapshot(groups.front().snapshots.front(), groups.front().categoryId, groups.front().afterTriggerId);
         return;
     }
-    PasteSnapshot(*copied.value, item->categoryId, item->triggerId);
+    PasteTriggerGroups(std::move(groups), tr("创建 %1 个触发器的副本").arg(triggerIds.size()));
+}
+
+std::string TriggerModule::PasteTriggerName(const std::string& base) const {
+    const auto* document = project_.triggerDocument_.get();
+    std::string name = base + tr(" 副本").toStdString();
+    if (document != nullptr && !Directory::ValidateTriggerName(*document, name).Succeeded()) {
+        name = Directory::UniqueTriggerName(*document, name);
+    }
+    return name;
 }
 
 void TriggerModule::PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std::int32_t categoryId, StableId afterTriggerId) {
@@ -692,19 +715,13 @@ void TriggerModule::PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std:
     if (document == nullptr || project_.uiCatalog_ == nullptr || project_.triggerUndoStack_ == nullptr) {
         return;
     }
-    std::string name = snapshot.trigger.name.text + tr(" 副本").toStdString();
-    if (!Directory::ValidateTriggerName(*document, name).Succeeded()) {
-        name = Directory::UniqueTriggerName(*document, name);
-    }
+    const std::string name = PasteTriggerName(snapshot.trigger.name.text);
     if (snapshot.trigger.customTextFlag != 0) {
-        // 代码身份服务复制的是本图里现有的触发器：剪贴板里的必须就是它、且正文没改过，不能拿别处的正文冒充。
-        const auto* source = FindTrigger(*document, snapshot.trigger.id);
-        if (source == nullptr || source->customTextFlag == 0 || source->name.text != snapshot.trigger.name.text
-            || source->customText.text != snapshot.trigger.customText.text || source->customText.encoding != snapshot.trigger.customText.encoding) {
+        if (!TriggerActions::CustomSourceIsCurrent(*document, snapshot)) {
             ShowStatus(tr("只能复制本地图里现有、复制后没改过的自定义代码触发器；请重新选中它再复制。"), 10000);
             return;
         }
-        (void)ApplyCustomCodeIdentity(true, source->id, name, categoryId, afterTriggerId);
+        (void)ApplyCustomCodeIdentity(true, snapshot.trigger.id, name, categoryId, afterTriggerId);
         return;
     }
     auto pasted = Directory::PasteTrigger(*document, *project_.uiCatalog_, snapshot, categoryId, name, afterTriggerId);
@@ -723,6 +740,10 @@ void TriggerModule::PasteSnapshot(const Trigger::TriggerSnapshot& snapshot, std:
 }
 
 void TriggerModule::ApplyDirectoryMove(const TriggerDirectoryMove& move) {
+    if (move.sources.size() > 1) {
+        ApplyDirectoryMoves(move);
+        return;
+    }
     if (!CommitPendingEdits()) return;
     auto* document = project_.triggerDocument_.get();
     if (document == nullptr || project_.triggerUndoStack_ == nullptr) {
@@ -736,10 +757,7 @@ void TriggerModule::ApplyDirectoryMove(const TriggerDirectoryMove& move) {
         project_.AddDiagnostics(moved.diagnostics);
         return;
     }
-    const auto after = Directory::CaptureLayout(*document);
-    if (after.triggers == before.triggers &&
-        std::equal(after.categories.begin(), after.categories.end(), before.categories.begin(), before.categories.end(),
-            [](const auto& left, const auto& right) { return left.categoryId == right.categoryId; })) {
+    if (TriggerActions::SameDirectoryLayout(before, Directory::CaptureLayout(*document))) {
         return; // 放回原处：不入栈
     }
     PushDirectoryChange(std::move(before), move.source.category ? tr("移动类别") : tr("移动触发器"));

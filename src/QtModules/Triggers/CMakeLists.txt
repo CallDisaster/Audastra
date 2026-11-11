@@ -3,11 +3,15 @@ qt_add_library(War3MapQtModuleTriggers STATIC
     TriggerModule.cpp TriggerModule.h
     TriggerModulePage.cpp
     TriggerDirectoryActions.cpp
+    TriggerDirectoryBatch.cpp
+    TriggerSelectionView.cpp
+    TriggerActionHelpers.h
     TriggerCodeActions.cpp
     TriggerCodeChecking.cpp TriggerCodeChecking.h
     TriggerLuaScripts.cpp TriggerLuaScripts.h
     LuaCodeAssist.cpp LuaCodeAssist.h
     TriggerEcaActions.cpp
+    TriggerEcaBatch.cpp
     TriggerEcaStructure.cpp
     TriggerValueActions.cpp
     TriggerBlueprint.cpp TriggerBlueprint.h

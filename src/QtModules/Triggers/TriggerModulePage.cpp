@@ -445,7 +445,7 @@ void TriggerModule::BuildPage() {
         options.referenceResolver = referenceResolver_;
         options.showRawValues = raw;
         ecaModel_->SetPresentationOptions(std::move(options));
-        if (id) ecaView_->setCurrentIndex(ecaModel_->IndexForStableId(id));
+        if (id) RestoreEcaSelection(ecaModel_->IndexForStableId(id));
         SyncBlueprint();
     });
     connect(commentEdit_, &QPlainTextEdit::textChanged, this, [this]() {
@@ -512,30 +512,7 @@ void TriggerModule::BuildPage() {
         });
     }
     connect(explorerView_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
-        [this](const QModelIndex& current, const QModelIndex&) {
-            if (refreshingExplorer_) {
-                return;
-            }
-            const auto item = explorerModel_->ItemAt(filter_->mapToSource(current));
-            if (!CommitPendingEdits()) {
-                const QSignalBlocker blocker(explorerView_->selectionModel());
-                const auto previous = selectedTrigger_ ? explorerModel_->IndexForTriggerId(selectedTrigger_)
-                    : selectedCategory_ ? explorerModel_->IndexForCategoryId(*selectedCategory_) : QModelIndex{};
-                explorerView_->setCurrentIndex(filter_->mapFromSource(previous));
-                return;
-            }
-            selectedTrigger_ = item && !item->category ? item->triggerId : 0;
-            selectedCategory_ = item && item->category ? std::optional<std::int32_t>(item->categoryId) : std::nullopt;
-            if (item) selectionCategory_ = item->categoryId;
-            {
-                // 提交可能重置目录模型；按已捕获的稳定身份恢复这次导航的目标。
-                const QSignalBlocker blocker(explorerView_->selectionModel());
-                const auto source = selectedTrigger_ ? explorerModel_->IndexForTriggerId(selectedTrigger_)
-                    : selectedCategory_ ? explorerModel_->IndexForCategoryId(*selectedCategory_) : QModelIndex{};
-                explorerView_->setCurrentIndex(filter_->mapFromSource(source));
-            }
-            ShowSelectedTrigger();
-        });
+        [this](const QModelIndex& current, const QModelIndex&) { OnExplorerCurrentChanged(current); });
     explorerView_->installEventFilter(this);
     connect(ecaView_->selectionModel(), &QItemSelectionModel::currentRowChanged, this,
         [this](const QModelIndex&, const QModelIndex&) { ShowSelectedEca(); });

@@ -6,6 +6,7 @@
 #include "TriggerDialogs.h"
 #include "TriggerDirectoryCommands.h"
 #include "TriggerModels.h"
+#include "TriggerModelsDetail.h"
 
 #include "War3MapCore/Trigger/UiCatalog.h"
 
@@ -31,17 +32,15 @@ Trigger::UiDefinitionKind KindOf(std::int32_t type) {
     }
 }
 
-QString KindName(std::int32_t type) {
-    switch (type) {
-    case 0: return QObject::tr("事件");
-    case 1: return QObject::tr("条件");
-    default: return QObject::tr("动作");
-    }
-}
+using TriggerModelsDetail::EcaKindName;
 
 } // namespace
 
 void TriggerModule::ApplyEcaMove(const EcaMoveRequest& request) {
+    if (request.ecaIds.size() > 1) {
+        ApplyEcaMoves(request);
+        return;
+    }
     auto* document = project_.triggerDocument_.get();
     const auto* trigger = CurrentTrigger();
     if (document == nullptr || trigger == nullptr || project_.uiCatalog_ == nullptr || project_.triggerUndoStack_ == nullptr) {
@@ -65,11 +64,15 @@ void TriggerModule::ApplyEcaMove(const EcaMoveRequest& request) {
 }
 
 void TriggerModule::MoveSelectedEca(int delta) {
-    const auto* eca = ecaModel_->EcaAt(ecaView_->currentIndex());
-    if (eca == nullptr || delta == 0) {
+    const auto selected = SelectedEcaIds();
+    if (selected.empty() || delta == 0) {
         return;
     }
-    const StableId id = eca->id;
+    if (selected.size() > 1) {
+        MoveSelectedEcaBlock(delta);
+        return;
+    }
+    const StableId id = selected.front();
     const auto slot = ecaModel_->SlotOf(id);
     const auto siblings = ecaModel_->SiblingsOf(id);
     const auto at = std::find(siblings.begin(), siblings.end(), id);
@@ -121,7 +124,7 @@ StableId TriggerModule::InsertEca(const EcaSlot& slot, StableId beforeEcaId, con
         ShowStatus(tr("新增语句没有通过 WTG/WCT 图验证，已回滚。"), 8000);
         return 0;
     }
-    const QString label = tr("新增%1").arg(KindName(slot.type));
+    const QString label = tr("新增%1").arg(EcaKindName(slot.type));
     auto* stack = project_.triggerUndoStack_;
     stack->beginMacro(label);
     stack->push(new AppendEcaUndoCommand(document, std::move(*appended.value), label));
@@ -152,7 +155,7 @@ void TriggerModule::AddEcaStructureMenu(
     const auto bind = [&actions](QAction* action, std::function<void()> run) { actions.emplace_back(action, std::move(run)); };
     // 分组头 / 分支头：添加到这里。
     if (const auto slot = ecaModel_->SlotAt(index)) {
-        bind(menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("添加%1到“%2”…").arg(KindName(slot->type), slot->label)),
+        bind(menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("添加%1到“%2”…").arg(EcaKindName(slot->type), slot->label)),
             [this, slot = *slot]() { ChooseAndInsertEca(slot, 0); });
         return;
     }
@@ -166,7 +169,7 @@ void TriggerModule::AddEcaStructureMenu(
     const auto at = std::find(siblings.begin(), siblings.end(), id);
     if (slot) {
         const StableId next = at != siblings.end() && at + 1 != siblings.end() ? *(at + 1) : 0;
-        bind(menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("在之后添加%1…").arg(KindName(slot->type))),
+        bind(menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("在之后添加%1…").arg(EcaKindName(slot->type))),
             [this, slot = *slot, next]() { ChooseAndInsertEca(slot, next); });
     }
     const auto branches = ecaModel_->BranchesOf(id);
@@ -176,15 +179,29 @@ void TriggerModule::AddEcaStructureMenu(
             bind(into->addAction(branch.label), [this, branch]() { ChooseAndInsertEca(branch, 0); });
         }
     }
+    bool canUp = at != siblings.end() && at != siblings.begin();
+    bool canDown = at != siblings.end() && at + 1 != siblings.end();
+    // 多选：只有同一分支里相邻的一段语句能整体上移 / 下移。
+    const auto* document = project_.triggerDocument_.get();
+    if (const auto selected = SelectedEcaIds(); document != nullptr && selected.size() > 1) {
+        const auto selection = Trigger::NormalizeEcaSelection(*document, displayedTrigger_, selected);
+        canUp = canDown = false;
+        if (selection.runs.size() == 1) {
+            const auto& run = selection.runs.front();
+            const auto row = Trigger::EcaSlotSiblings(*document, displayedTrigger_, run.slot);
+            canUp = !row.empty() && row.front() != run.ids.front();
+            canDown = !row.empty() && row.back() != run.ids.back();
+        }
+    }
     QAction* up = menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/chevron-up")), tr("上移"));
     up->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Up));
     up->setShortcutVisibleInContextMenu(true);
-    up->setEnabled(at != siblings.end() && at != siblings.begin());
+    up->setEnabled(canUp);
     bind(up, [this]() { MoveSelectedEca(-1); });
     QAction* down = menu.addAction(UiKit::SvgIcon(QStringLiteral("lucide/chevron-down")), tr("下移"));
     down->setShortcut(QKeySequence(Qt::ALT | Qt::Key_Down));
     down->setShortcutVisibleInContextMenu(true);
-    down->setEnabled(at != siblings.end() && at + 1 != siblings.end());
+    down->setEnabled(canDown);
     bind(down, [this]() { MoveSelectedEca(1); });
 }
 

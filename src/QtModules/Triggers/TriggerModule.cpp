@@ -205,6 +205,7 @@ Shell::ModuleInfo TriggerModule::Info() const {
 QWidget* TriggerModule::Widget() {
     if (!page_) {
         BuildPage();
+        ConfigureMultiSelection();
         BuildShortcuts();
         BindDocument();
     }
@@ -258,7 +259,10 @@ void TriggerModule::ReleaseDocument() {
     codeTools_->hide(); codeProblems_->hide();
     ecaView_->setVisible(!BlueprintVisible());
     blueprint_->SetSource(nullptr, nullptr, {});
-    clipboard_.reset();
+    clipboard_.clear();
+    triggerCut_.clear();
+    explorerSelection_ = {};
+    ecaSelection_.clear();
     if (valuePanel_) valuePanel_->close(); // 面板引用旧文档
     selectedTrigger_ = 0;
     selectedCategory_.reset();
@@ -282,7 +286,10 @@ void TriggerModule::BindDocument() {
     }
     UpdateSummary();
     collapsedCategories_.clear();
-    triggerClipboard_.reset();
+    triggerClipboard_.clear();
+    triggerCut_.clear();
+    explorerSelection_ = {};
+    ecaSelection_.clear();
     auto* document = project_.triggerDocument_.get();
     if (document == nullptr) {
         if (!pendingViewState_.isEmpty()) {
@@ -568,6 +575,7 @@ void TriggerModule::RefreshAfterUndo() {
     if (displayedTrigger_ != shown) {
         return; // 原触发器已不存在（例如撤销了新建），RefreshExplorer 已改显示其他项
     }
+    const QScopedValueRollback keepSelection(keepEcaSelection_, true);
     RefreshEditor(ecaId.isValid() ? ecaId.toULongLong() : 0);
 }
 
@@ -583,6 +591,8 @@ void TriggerModule::RefreshEditor(StableId preferredEcaId) {
     const QVariant shownRow = ecaView_->currentIndex().data(TriggerEcaModel::StableIdRole);
     const int shownScroll = ecaView_->verticalScrollBar()->value();
     const int shownHorizontal = ecaView_->horizontalScrollBar()->value();
+    // 模型重建期间的选区变化不回写多选；最后按稳定 ID 恢复。
+    const QScopedValueRollback keepEcaRows(restoringEcaSelection_, true);
     if (!HasPendingCodeDraft()) ShowSelectedTrigger();
     const auto* trigger = CurrentTrigger();
     const bool sameTrigger = trigger != nullptr && shownTrigger != 0 && trigger->id == shownTrigger;
@@ -591,6 +601,11 @@ void TriggerModule::RefreshEditor(StableId preferredEcaId) {
     PopulateProperties(trigger);
     ecaView_->expandAll(); // 全部展开：三段分组头 + 各级嵌套函数体（If/Loop/ForEach）
     QModelIndex selection = preferredEcaId == 0 ? QModelIndex{} : ecaModel_->IndexForStableId(preferredEcaId);
+    // 指定了新的当前语句（插入、粘贴等之后）且它不在多选里：改为只选它。
+    if (selection.isValid() && !keepEcaSelection_
+        && std::find(ecaSelection_.begin(), ecaSelection_.end(), preferredEcaId) == ecaSelection_.end()) {
+        ecaSelection_ = {preferredEcaId};
+    }
     // 嵌套函数调用不是树中的行（例如在参数对话框里改了函数自己的参数）：留在原来选中的语句上。
     if (!selection.isValid() && sameTrigger && shownRow.isValid()) {
         selection = ecaModel_->IndexForStableId(shownRow.toULongLong());
@@ -598,8 +613,11 @@ void TriggerModule::RefreshEditor(StableId preferredEcaId) {
     if (!selection.isValid() && ecaModel_->rowCount() > 0) {
         selection = ecaModel_->index(0, 0);
     }
+    if (!selection.isValid()) {
+        ecaSelection_.clear();
+    }
     if (selection.isValid()) {
-        ecaView_->setCurrentIndex(selection);
+        RestoreEcaSelection(selection);
         if (sameTrigger) {
             ecaView_->verticalScrollBar()->setValue(shownScroll);
             ecaView_->horizontalScrollBar()->setValue(shownHorizontal);
@@ -682,6 +700,9 @@ bool TriggerModule::eventFilter(QObject* watched, QEvent* event) {
             logicColumnsUpdateQueued_ = false;
             UpdateLogicColumns();
         });
+    }
+    if (HandleSelectionInput(watched, event)) {
+        return true;
     }
     if (watched == explorerView_ && HandleExplorerKey(event)) {
         return true;

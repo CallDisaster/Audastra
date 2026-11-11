@@ -3,6 +3,7 @@
 
 #include "EditorProject.h"
 #include "Icons/SvgIcons.h"
+#include "TriggerActionHelpers.h"
 #include "TriggerModels.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
@@ -52,9 +53,7 @@ void TriggerModule::ShowTreeContextMenu(const QPoint& pos) {
         return;
     }
     const QModelIndex proxyIndex = explorerView_->indexAt(pos);
-    if (proxyIndex.isValid()) {
-        explorerView_->setCurrentIndex(proxyIndex); // 右键即选中（原型行为）
-    }
+    TriggerActions::FocusForContextMenu(*explorerView_, proxyIndex); // 右键即选中（原型行为）；点在选区内保留选区
     const auto item = proxyIndex.isValid() ? explorerModel_->ItemAt(filter_->mapToSource(proxyIndex)) : std::nullopt;
     QMenu menu(page_);
     menu.setObjectName("triggerDirectoryContextMenu");
@@ -65,8 +64,10 @@ void TriggerModule::ShowTreeContextMenu(const QPoint& pos) {
         action->setShortcutVisibleInContextMenu(true);
         return action;
     };
-    const QString pasteText = triggerClipboard_
-        ? tr("粘贴 %1").arg(QString::fromUtf8(triggerClipboard_->trigger.name.text)) : tr("粘贴");
+    const std::size_t pending = triggerCut_.empty() ? triggerClipboard_.size() : triggerCut_.size();
+    const QString pasteText = pending == 0 ? tr("粘贴")
+        : triggerCut_.empty() && pending == 1 ? tr("粘贴 %1").arg(QString::fromUtf8(triggerClipboard_.front().trigger.name.text))
+        : tr("粘贴 %1 个触发器").arg(pending);
     std::vector<std::pair<QAction*, std::function<void()>>> actions;
     const auto bind = [&actions](QAction* action, std::function<void()> run) { actions.emplace_back(action, std::move(run)); };
     AddNewItemActions(menu);
@@ -75,9 +76,12 @@ void TriggerModule::ShowTreeContextMenu(const QPoint& pos) {
     for (auto* action : menu.actions()) action->setShortcutVisibleInContextMenu(true);
     menu.addSeparator();
 
-    if (!item || item->category) {
+    if (proxyIndex.isValid() && explorerView_->selectionModel()->selectedRows(0).size() > 1) {
+        // 在多选的某一项上右键：命令作用于整个选区。
+        AddDirectorySelectionActions(menu, SelectedDirectoryItems(), actions);
+    } else if (!item || item->category) {
         QAction* paste = add("lucide/copy", pasteText, QKeySequence::Paste);
-        paste->setEnabled(triggerClipboard_.has_value() && item.has_value());
+        paste->setEnabled(pending != 0 && item.has_value());
         bind(paste, [this]() { PasteTrigger(); });
         if (item) {
             menu.addSeparator();
@@ -97,8 +101,9 @@ void TriggerModule::ShowTreeContextMenu(const QPoint& pos) {
         bind(convert, [this] { (void)ConvertCurrentTriggerToCustomCode(); });
         bind(add("lucide/copy", tr("创建副本"), QKeySequence(Qt::CTRL | Qt::Key_D)), [this]() { DuplicateCurrentTrigger(); });
         bind(add("lucide/copy", tr("复制"), QKeySequence::Copy), [this]() { CopyCurrentTrigger(); });
+        bind(add("lucide/copy", tr("剪切"), QKeySequence::Cut), [this]() { CutSelectedTriggers(); });
         QAction* paste = add("lucide/copy", pasteText, QKeySequence::Paste);
-        paste->setEnabled(triggerClipboard_.has_value());
+        paste->setEnabled(pending != 0);
         bind(paste, [this]() { PasteTrigger(); });
         bind(add("lucide/pencil", tr("重命名"), QKeySequence(Qt::Key_F2)),
             [this, proxyIndex]() { explorerView_->edit(proxyIndex.siblingAtColumn(0)); });
@@ -162,6 +167,7 @@ bool TriggerModule::HandleExplorerKey(QEvent* event) {
     else if ((plain && key->key() == Qt::Key_Insert) || (ctrl && key->key() == Qt::Key_T)) run = [this]() { NewTrigger(); };
     else if (ctrl && key->key() == Qt::Key_G) run = [this]() { NewCategory(); };
     else if (ctrl && key->key() == Qt::Key_C) run = [this]() { CopyCurrentTrigger(); };
+    else if (ctrl && key->key() == Qt::Key_X) run = [this]() { CutSelectedTriggers(); };
     else if (ctrl && key->key() == Qt::Key_V) run = [this]() { PasteTrigger(); };
     else if (ctrl && key->key() == Qt::Key_D) run = [this]() { DuplicateCurrentTrigger(); };
     else if (plain && (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)) {
@@ -192,6 +198,7 @@ void TriggerModule::RefreshExplorer(StableId selectTriggerId) {
     if (selectTriggerId != 0) {
         selectedTrigger_ = selectTriggerId;
         selectedCategory_.reset();
+        explorerSelection_ = {{}, {selectTriggerId}};
     }
     refreshingExplorer_ = true;
     const int scroll = explorerView_->verticalScrollBar()->value();
@@ -207,15 +214,14 @@ void TriggerModule::RefreshExplorer(StableId selectTriggerId) {
         // 已被删除（例如撤销了新建）：退回到它所在的类别。
         selectedTrigger_ = 0;
         selectedCategory_.reset();
+        explorerSelection_ = {};
         if (selectionCategory_) {
             source = explorerModel_->IndexForCategoryId(*selectionCategory_);
             if (source.isValid()) selectedCategory_ = selectionCategory_;
         }
     }
     const QModelIndex proxy = filter_->mapFromSource(source);
-    if (proxy.isValid()) {
-        explorerView_->setCurrentIndex(proxy);
-    }
+    RestoreExplorerSelection(proxy);
     explorerView_->verticalScrollBar()->setValue(scroll);
     if (proxy.isValid() && selectTriggerId != 0) {
         explorerView_->scrollTo(proxy);
