@@ -806,10 +806,6 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                 notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "MAP_TEST_LUA_OPTIONAL_EXTENSIONS",
                     unavailable.empty() ? "本次没有选中 jass.japi 提供者；动态接口查找可能为空。"
                     : "这些可选 jass.japi 接口没有匹配的提供者，查询将返回 nil：" + unavailable + "。"});
-            if (required && !covered)
-                return Failure<LaunchPlan>("MAP_TEST_OWN_LUA_EXTENSION_UNSUPPORTED",
-                    "经典 Lua 入口引用了所选原版游戏没有的接口：" + requirements.value->missing.begin()->substr(0, 80)
-                    + "。自有运行时不会自动改用外部扩展 DLL。");
             selected.runtimeRoot.clear(); selected.runtimeYdweRoot.clear();
         }
         const bool extension = (required && !covered) || handwrittenYdwe;

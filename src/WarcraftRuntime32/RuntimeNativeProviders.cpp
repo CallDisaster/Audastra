@@ -19,21 +19,35 @@ struct Registration {
     HMODULE module;
     bool rejected = false;
     std::uintptr_t rejectedAddress = 0;
+    char rejectedName[129]{};
 };
 thread_local Registration* active = nullptr;
+
+void RecordRejection(Registration& registration, std::uintptr_t address, const char* name) noexcept {
+    if (registration.rejected) return;
+    registration.rejected = true;
+    registration.rejectedAddress = address;
+    __try {
+        if (!name) return;
+        for (std::size_t index = 0; index < sizeof(registration.rejectedName); ++index) {
+            registration.rejectedName[index] = name[index];
+            if (!registration.rejectedName[index]) return;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    registration.rejectedName[0] = 0;
+}
 
 BOOL WINAPI Add(void* context, std::uintptr_t address, const char* name, const char* signature) noexcept {
     if (!active || active != context) return FALSE;
     if (!ImageCode(active->module, address)) {
-        active->rejected = true;
-        active->rejectedAddress = address;
+        RecordRejection(*active, address, name);
         return FALSE;
     }
     try {
         active->add(address, name, signature);
         return TRUE;
     } catch (...) {
-        active->rejected = true;
+        RecordRejection(*active, address, name);
         return FALSE;
     }
 }
@@ -117,10 +131,14 @@ std::string RuntimeNativeProviders::Register(const OwnLua::RegisterObservedNativ
         active = &registration;
         const auto ok = Call(reinterpret_cast<RegisterTestNatives>(entry), &registration);
         active = nullptr;
-        if (!ok || registration.rejected)
+        if (!ok || registration.rejected) {
+            const std::string name = OwnLua::NativeIdentifier(registration.rejectedName)
+                ? registration.rejectedName : "<名称不可核验>";
             return "提供者 " + std::string(record.providerId) + " 的登记入口 " + record.entry
-                + (registration.rejected ? " 拒绝回调" + DescribeNativeAddress(registration.rejectedAddress)
+                + (registration.rejected ? " 拒绝 native " + name + "：回调来源不符或登记异常"
+                    + DescribeNativeAddress(registration.rejectedAddress)
                     : " 返回失败或发生异常") + "。";
+        }
         InterlockedExchange(&record.file.initializeCalled, 1);
     }
     return {};
