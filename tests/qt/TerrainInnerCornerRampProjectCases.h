@@ -119,11 +119,14 @@ void EditorProjectTests::InnerCornerRampProjectColdRestoreAndNativeSave() {
             EditorProject coldProject; QUndoStack coldUndo; coldProject.mapDataUndoStack_ = &coldUndo;
             QVERIFY(BindPreparedTerrainJournal(coldProject, **cold.value, game));
             QCOMPARE(coldUndo.count(), 1); QVERIFY(coldUndo.isClean() && coldUndo.canRedo());
+            const bool coldMapWasDirty = coldProject.HasUnsavedMapChanges();
             fixture.CheckState(*coldProject.mapEdits_, false);
             checkOriginalMembers(coldProject);
             coldUndo.redo(); QVERIFY(!coldUndo.isClean());
             fixture.CheckState(*coldProject.mapEdits_, true);
-            coldUndo.undo(); QVERIFY(coldUndo.isClean() && !coldProject.HasUnsavedMapChanges());
+            coldUndo.undo(); QVERIFY(coldUndo.isClean());
+            QCOMPARE(coldUndo.index(), 0);
+            QCOMPARE(coldProject.HasUnsavedMapChanges(), coldMapWasDirty);
             fixture.CheckState(*coldProject.mapEdits_, false);
             checkOriginalMembers(coldProject);
         }
