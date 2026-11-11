@@ -5,6 +5,7 @@
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Services/ClassicLuaMapSources.h"
+#include "War3MapCore/Runtime/LuaModuleNames.h"
 #include "../MapDataFixtures.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
 
@@ -953,7 +954,7 @@ void WriteProviderGameFixtures(const std::filesystem::path& seed, std::string_vi
             script.insert(globalEnd + std::string_view("endglobals").size(), "\r\n" + std::string(declarations));
         }
         std::vector<MemberReplacement> replacements{{"war3map.j", Bytes(script)}};
-        if (!lua.empty()) replacements.push_back({"script\\provider.lua", Bytes(lua)});
+        if (!lua.empty()) replacements.push_back({Audastra::Runtime32::LuaModuleMember("provider"), Bytes(lua)});
         const auto result = original.value->SaveCandidate(directory / file, replacements);
         Success(result, "save test fixture without changing seed");
         std::cout << file << '\t' << result.value->sha256 << '\n';
