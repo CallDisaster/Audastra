@@ -1,4 +1,5 @@
 #include "../RuntimeFiles.h"
+#include "../RuntimeProtocol.h"
 #include "War3MapCore/Runtime/LuaTestMailbox.h"
 #include <fstream>
 #include <iostream>
