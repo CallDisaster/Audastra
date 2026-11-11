@@ -680,6 +680,21 @@ void RemovedRampFootRequiresTheEntireStraightStrip() {
     bad = dry;
     bad.vertices[3 * 9 + 3].waterHeightAndFlagsRaw |= 0x8000;
     Require(!IsNativeTerrainRemovedRampSentinelTransition(bad, wet, foot), "unknown source flags cannot pass");
+    auto partial = dry;
+    partial.vertices[foot].textureAndFlagsRaw = 0x40;
+    partial.vertices[foot].waterHeightAndFlagsRaw = 8448;
+    partial.vertices[foot].cliffAndLayerRaw = 1;
+    partial.vertices[4 * 9 + 4].textureAndFlagsRaw &= ~0x10;
+    partial.vertices[5 * 9 + 4].textureAndFlagsRaw &= ~0x10;
+    for (unsigned x = 3; x <= 5; ++x) partial.vertices[5 * 9 + x].cliffAndLayerRaw = 2;
+    const auto dryNeighbor = 3 * 9 + 3;
+    partial.vertices[dryNeighbor].cliffAndLayerRaw = 2;
+    Require(IsNativeTerrainRemovedRampSentinelTransition(dry, partial, foot)
+        && IsNativeTerrainRemovedRampSentinelTransition(partial, dry, dryNeighbor),
+        "one flooded foot plus a complete cliff retreat matches the stock removal");
+    partial.vertices[5 * 9 + 5].cliffAndLayerRaw = 3;
+    Require(!IsNativeTerrainRemovedRampSentinelTransition(dry, partial, foot),
+        "the partial flood exception does not accept a remaining high cliff side");
     auto lowered = dry;
     for (unsigned y = 3; y <= 5; ++y) lowered.vertices[y * 9 + 4].textureAndFlagsRaw &= ~0x10;
     lowered.vertices[foot].cliffAndLayerRaw = 2;

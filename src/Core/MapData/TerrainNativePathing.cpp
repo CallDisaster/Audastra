@@ -406,6 +406,7 @@ bool RemovedDryStraightStrip(const TerrainGridSnapshot& dry, const TerrainGridSn
         // 低、低、高的三点条带；两侧必须是相同台阶，不能借这条规则接受转角或连接坡。
         for (int position = 0; position < 2; ++position) {
             bool matches = true;
+            bool fullWater = flooded, footWater = true, loweredMiddle = !flooded;
             for (int step = 0; step < 3 && matches; ++step) {
                 const int sx = x + (step - position) * dx, sy = y + (step - position) * dy;
                 if (sx < 1 || sy < 1 || sx + 1 >= width || sy + 1 >= height) { matches = false; break; }
@@ -413,22 +414,33 @@ bool RemovedDryStraightStrip(const TerrainGridSnapshot& dry, const TerrainGridSn
                 const auto& source = dry.vertices[at];
                 const auto& output = changed.vertices[at];
                 const auto level = lowLevel + (step == 2);
-                // 浅水淹没三点；单点降低只动坡道中点层级，两者都清掉整条R位。
-                const bool resultingShape = flooded ? output.HasWater() && output.CliffLevel() == lowLevel - 1
-                    && output.waterHeightAndFlagsRaw == waterHeight
-                    : !output.HasWater() && output.CliffLevel() == level - (step == 1)
-                    && output.waterHeightAndFlagsRaw == source.waterHeightAndFlagsRaw;
+                const bool dryOutput = !output.HasWater() && output.waterHeightAndFlagsRaw == source.waterHeightAndFlagsRaw;
+                const bool wetOutput = output.HasWater() && output.CliffLevel() == lowLevel - 1;
+                fullWater = fullWater && wetOutput && output.waterHeightAndFlagsRaw == waterHeight;
+                loweredMiddle = loweredMiddle && dryOutput && output.CliffLevel() == level - (step == 1);
+                // 最小浅水笔只淹低端时，原版仍清除三点R位；高端与两侧崖缘退到低层。
+                footWater = footWater && (step == 0
+                    ? wetOutput && (!flooded || output.waterHeightAndFlagsRaw == waterHeight)
+                    : dryOutput && output.CliffLevel() == lowLevel);
                 matches = ValidCliffSentinelVertex(dry, source) && ValidCliffSentinelVertex(changed, output)
                     && source.IsRamp() && !source.HasWater() && source.CliffLevel() == level
-                    && !output.IsRamp() && resultingShape && output.groundHeightRaw == source.groundHeightRaw;
+                    && !output.IsRamp() && output.groundHeightRaw == source.groundHeightRaw;
                 for (const int side : {-1, 1}) {
-                    const auto& neighbor = dry.vertices[std::size_t(sy + side * dx) * width + sx - side * dy];
+                    const auto neighborIndex = std::size_t(sy + side * dx) * width + sx - side * dy;
+                    const auto& neighbor = dry.vertices[neighborIndex];
                     matches = matches && ValidCliffSentinelVertex(dry, neighbor) && !neighbor.IsRamp()
                         && !neighbor.HasWater() && neighbor.CliffLevel() == level
                         && neighbor.groundHeightRaw == source.groundHeightRaw;
+                    if (step == 2 && footWater) {
+                        const auto& movedEdge = changed.vertices[neighborIndex];
+                        footWater = ValidCliffSentinelVertex(changed, movedEdge) && !movedEdge.IsRamp()
+                            && !movedEdge.HasWater() && movedEdge.CliffLevel() == lowLevel
+                            && movedEdge.groundHeightRaw == neighbor.groundHeightRaw
+                            && movedEdge.waterHeightAndFlagsRaw == neighbor.waterHeightAndFlagsRaw;
+                    }
                 }
             }
-            if (matches) return true;
+            if (matches && (fullWater || footWater || loweredMiddle)) return true;
         }
     }
     return false;
