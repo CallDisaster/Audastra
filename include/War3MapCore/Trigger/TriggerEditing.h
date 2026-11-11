@@ -215,17 +215,29 @@ public:
         StableId triggerId, std::string name,
         std::span<const AtomicRenameCodeAudit> codeAudits = {});
 
-    // 改名前逐块核查 RenameTriggerAtomic 会要求审计的代码块，只读。
-    // 文本里不含旧名称（gg_trg_、Trig_、InitTrig_ 共用的部分）、没有按名称动态调用
-    // （ExecuteFunc、## 拼接、Lua 全局表查找）且不是非字面量派发参数的块，已写好放行理由；
-    // 其余标为 mayReference，理由留空，由调用方请作者确认后填写。
+    // 改名前逐块核查 RenameTriggerAtomic 会要求审计的代码块，只读、按词法。
+    // NameUse：代码里写着旧名称或它生成的 gg_trg_/Trig_/InitTrig_ 名字（含 ExecuteFunc 的固定文字参数）；
+    // DynamicLookup：没写旧名称，但有按名称动态查找（ExecuteFunc 非固定文字参数、## 拼接生成名前缀、
+    // Lua 全局表动态查找）或非字面量派发参数，可能在运行时按名字找到它。
+    // None 的块已写好编辑器放行理由；其余理由留空，由调用方请作者确认或说明后填写。
+    enum class RenameEvidence : std::uint8_t { None, NameUse, DynamicLookup };
     struct RenameCodeReview {
         AtomicRenameCodeAudit audit;
-        bool mayReference = false;
+        bool mayReference = false;          // evidence != None
+        RenameEvidence evidence = RenameEvidence::None;
+        std::string location;               // 给人看的位置：全局代码、触发器“X”的自定义代码……
+        std::size_t line = 0;               // 证据所在行（1 起）；派发参数为 0
+        std::string excerpt;                // 该行原文，最多 160 字节
     };
     [[nodiscard]] static Result<std::vector<RenameCodeReview>> ReviewTriggerRenameCode(
         const TriggerDocument& document, const UiCatalog& catalog,
         StableId triggerId, const std::string& name);
+    // 调用方已给的审计原样保留；没给审计、编辑器核查无证据的块补编辑器审计；
+    // 有证据却没给审计的块逐块报 TRIGGER_RENAME_CODE_AUDIT_REQUIRED（位置、行号、原文和审计字段）。
+    [[nodiscard]] static Result<std::vector<AtomicRenameCodeAudit>> CompleteTriggerRenameAudits(
+        const TriggerDocument& document, const UiCatalog& catalog,
+        StableId triggerId, const std::string& name,
+        std::span<const AtomicRenameCodeAudit> provided);
 
     // 删除整个触发器的回执（含其全部 ECA 子树快照）。
     struct TriggerRemoveReceipt {

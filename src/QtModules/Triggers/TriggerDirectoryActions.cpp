@@ -299,8 +299,14 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
     if (trigger == nullptr || trigger->name.text == name) {
         return;
     }
-    // 逐块核查不透明代码：不含旧名称、也没有按名称动态调用的块由编辑器放行；可能引用的块请作者确认，代码本身不改。
+    // 逐块核查不透明代码，代码本身不改：
+    // - 直接按旧名称使用（gg_trg_X、Trig_X_Actions、ExecuteFunc("InitTrig_X")…）的块请作者确认；
+    // - 只是按名称动态调用（ExecuteFunc(s) 等）的块无法静态判断，不打断改名，改完在问题列表提醒；
+    // - 其余块由编辑器放行。
+    using Evidence = Trigger::TriggerDocumentEditor::RenameEvidence;
     std::vector<Trigger::AtomicRenameCodeAudit> audits;
+    std::vector<Trigger::TriggerDocumentEditor::RenameCodeReview> dynamicBlocks;
+    const std::string oldName = trigger->name.text;
     if (project_.uiCatalog_ != nullptr) {
         auto review = Trigger::TriggerDocumentEditor::ReviewTriggerRenameCode(*document, *project_.uiCatalog_, item.triggerId, name);
         if (!review.Succeeded()) {
@@ -308,11 +314,21 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
             ShowStatus(tr("未重命名：%1").arg(FirstMessage(review.diagnostics, tr("代码核查失败"))), 10000);
             return;
         }
-        const auto doubtful = std::count_if(review.value->begin(), review.value->end(), [](const auto& row) { return row.mayReference; });
-        if (doubtful > 0) {
+        QStringList named;
+        for (const auto& row : *review.value) {
+            if (row.evidence != Evidence::NameUse) continue;
+            QString line = U8(row.location);
+            if (row.line != 0) line += tr(" 第 %1 行").arg(row.line);
+            if (!row.excerpt.empty()) line += QStringLiteral("：") + U8(row.excerpt);
+            named.push_back(line);
+        }
+        if (!named.isEmpty()) {
             const QString title = tr("重命名触发器");
-            const QString body = tr("有 %1 段代码可能按旧名称“%2”使用这个触发器（直接写名字或按名字动态调用）。改名不会修改这些代码，需要时请手动改。")
-                .arg(doubtful).arg(U8(trigger->name.text));
+            constexpr qsizetype shown = 6;
+            QString list = QStringLiteral("• ") + QStringList(named.mid(0, shown)).join(QStringLiteral("\n• "));
+            if (named.size() > shown) list += tr("\n……另有 %1 处").arg(named.size() - shown);
+            const QString body = tr("这些代码按旧名称“%1”使用这个触发器，改名不会修改它们，需要时请手动改：\n\n%2")
+                .arg(U8(oldName), list);
             const auto expected = trigger->name;
             bool accepted = false;
             if (confirm_) {
@@ -331,7 +347,11 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
             if (trigger == nullptr || trigger->name.text != expected.text) return;
         }
         for (auto& row : *review.value) {
-            if (row.audit.reason.empty()) row.audit.reason = "作者确认改名后自行处理这段代码。";
+            if (row.evidence == Evidence::NameUse) row.audit.reason = "作者确认改名后自行处理这段代码。";
+            if (row.evidence == Evidence::DynamicLookup) {
+                row.audit.reason = "编辑器核查：按名称动态调用，无法静态判断；改名后已在问题列表提醒作者。";
+                dynamicBlocks.push_back(row);
+            }
             audits.push_back(std::move(row.audit));
         }
     }
@@ -342,6 +362,18 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
         project_.AddDiagnostics(renamed.diagnostics);
         ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("引用同步校验失败"))), 10000);
         return;
+    }
+    if (!dynamicBlocks.empty()) {
+        std::vector<Diagnostic> warnings;
+        for (const auto& row : dynamicBlocks) {
+            std::string message = "触发器“" + oldName + "”已改名为“" + name + "”。" + row.location;
+            if (row.line != 0) message += " 第 " + std::to_string(row.line) + " 行";
+            message += "按名称动态调用";
+            if (!row.excerpt.empty()) message += "（" + row.excerpt + "）";
+            message += "，如果它会调用这个触发器，请手动改。";
+            warnings.push_back(Diagnostic{DiagnosticSeverity::Warning, "Trigger.Edit", "TRIGGER_RENAME_DYNAMIC_LOOKUP", std::move(message), std::nullopt});
+        }
+        project_.AddDiagnostics(warnings);
     }
     RefreshExplorer();
 }

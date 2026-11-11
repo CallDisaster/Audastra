@@ -27,6 +27,7 @@
 #include <QJsonDocument>
 #include <QSortFilterProxyModel>
 #include <QSettings>
+#include <QStandardItemModel>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QTreeView>
@@ -88,6 +89,18 @@ bool Write(const std::filesystem::path& path, std::span<const std::byte> bytes) 
     return file.open(QIODevice::WriteOnly) && file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<qint64>(bytes.size())) == static_cast<qint64>(bytes.size());
 }
 bool Write(const std::filesystem::path& path, std::string_view text) { return Write(path, Bytes(text)); }
+bool HasDiagnostic(const EditorProject& project, const char* code) {
+    const auto* model = project.diagnosticsModel_;
+    for (int row = 0; model && row < model->rowCount(); ++row)
+        if (model->item(row, 2)->text() == QLatin1String(code)) return true;
+    return false;
+}
+QString DiagnosticText(const EditorProject& project, const char* code) {
+    const auto* model = project.diagnosticsModel_;
+    for (int row = 0; model && row < model->rowCount(); ++row)
+        if (model->item(row, 2)->text() == QLatin1String(code)) return model->item(row, 3)->text();
+    return {};
+}
 const TriggerRecord* Named(const EditorProject& project, std::string_view name) {
     const auto& rows = project.triggerDocument_->triggers;
     const auto it = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.name.text == name; });
@@ -182,6 +195,8 @@ private slots:
     void GuiAndMcpShareOneUndoTransaction();
     void UnsafeCodeAndDuplicateNameRejectWithoutMutation();
     void GuiRenameAsksWhenCodeMayNameTheTrigger();
+    void DynamicLookupWarnsWithoutAsking();
+    void LiteralCommentAndLookalikeCodeStaysClean();
     void QueuedStaleSessionAndUndoReject();
     void FrozenGraphIdentityAndCatalogSourceGuardsReject();
     void UnboundIdentityAndRejectedFirstPublicationExposeFailure();
@@ -224,17 +239,18 @@ void TriggerRenameTests::UnsafeCodeAndDuplicateNameRejectWithoutMutation() {
         Fixture f; QVERIFY2(f.Initialize(kind == 1 ? "// opaque author header\r\n" : "", kind == 2, kind == 3), qPrintable(f.error));
         const auto fingerprint = f.project.ProjectFingerprint();
         if (kind == 1 || kind == 3) {
-            // 助手改名仍须逐块提交审计。
+            // 代码不含旧名称、也没有按名称动态调用：助手和界面改名都由编辑器核查后放行，代码原样保留。
             const auto response = f.tools->Invoke("editor_edit_trigger_graph", f.RenameRequest(QStringLiteral("Changed")));
-            QVERIFY(!response.value("ok").toBool());
-            QVERIFY(QString::fromUtf8(QJsonDocument(response).toJson()).contains(QStringLiteral("TRIGGER_RENAME_CODE_AUDIT_REQUIRED")));
-            QCOMPARE(f.project.triggerUndoStack_->count(), 0); QVERIFY(f.OriginalBytes());
-            // 界面改名：代码不含旧名称、也没有按名称动态调用，编辑器核查后放行，代码原样保留。
+            QVERIFY2(response.value("ok").toBool(), qPrintable(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact))));
+            QVERIFY(Named(f.project, "Changed")); QCOMPARE(f.project.triggerUndoStack_->count(), 1);
+            QVERIFY(f.ReferencesEqual("Changed")); QVERIFY(f.Pair().wct == f.original.wct);
+            f.project.triggerUndoStack_->undo(); QVERIFY(f.OriginalBytes());
             int asked = 0;
             f.module->SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++asked; return false; });
             QVERIFY(f.RenameThroughModel(QStringLiteral("Changed"))); QTRY_VERIFY(Named(f.project, "Changed"));
             QCOMPARE(asked, 0); QCOMPARE(f.project.triggerUndoStack_->count(), 1); QVERIFY(f.ReferencesEqual("Changed"));
             QVERIFY(f.Pair().wct == f.original.wct);
+            QVERIFY(!HasDiagnostic(f.project, "TRIGGER_RENAME_DYNAMIC_LOOKUP"));
             continue;
         }
         const bool accepted = f.RenameThroughModel(kind == 0 ? QStringLiteral("Other") : QStringLiteral("Changed"));
@@ -267,6 +283,62 @@ void TriggerRenameTests::GuiRenameAsksWhenCodeMayNameTheTrigger() {
         }
         QCOMPARE(asked, 1);
     }
+}
+
+void TriggerRenameTests::DynamicLookupWarnsWithoutAsking() {
+    // 全局代码只是按名称动态调用：界面改名不打断，改完在问题列表警告；助手改名报出位置、原文和审计字段，补审计后通过。
+    Fixture f;
+    QVERIFY2(f.Initialize("function H takes string s returns nothing\r\n    call ExecuteFunc(s)\r\nendfunction\r\n"), qPrintable(f.error));
+    auto request = f.RenameRequest(QStringLiteral("Changed"));
+    const auto rejected = f.tools->Invoke("editor_edit_trigger_graph", request);
+    const auto text = QString::fromUtf8(QJsonDocument(rejected).toJson(QJsonDocument::Compact));
+    QVERIFY(!rejected.value("ok").toBool());
+    QVERIFY2(text.contains(QStringLiteral("TRIGGER_RENAME_CODE_AUDIT_REQUIRED")) && text.contains(QStringLiteral("全局代码 第 2 行"))
+        && text.contains(QStringLiteral("call ExecuteFunc(s)")) && text.contains(QStringLiteral("kind=global_custom_code"))
+        && text.contains(QStringLiteral("source_sha256=")), qPrintable(text));
+    QCOMPARE(f.project.triggerUndoStack_->count(), 0); QVERIFY(f.OriginalBytes());
+    const auto reviews = Take(TriggerDocumentEditor::ReviewTriggerRenameCode(*f.project.triggerDocument_, *f.project.uiCatalog_, f.target, "Changed"));
+    QCOMPARE(reviews.size(), std::size_t{1});
+    QVERIFY(reviews.front().evidence == TriggerDocumentEditor::RenameEvidence::DynamicLookup);
+    QCOMPARE(reviews.front().line, std::size_t{2});
+    QCOMPARE(reviews.front().excerpt, std::string("call ExecuteFunc(s)"));
+    const auto& a = reviews.front().audit;
+    const char* encoding = a.encoding == TextEncoding::Utf8Bom ? "utf8_bom" : a.encoding == TextEncoding::Gb18030 ? "gb18030"
+        : a.encoding == TextEncoding::Latin1 ? "latin1" : "utf8";
+    const QJsonObject audit{{"kind", "global_custom_code"}, {"id", "0"}, {"encoding", encoding},
+        {"source_sha256", QString::fromStdString(a.sourceSha256)}, {"ui_catalog_sha256", QString::fromStdString(a.uiCatalogSha256)},
+        {"old_name", "Init"}, {"new_name", "Changed"}, {"old_symbol", QString::fromStdString(a.oldSymbol)},
+        {"new_symbol", QString::fromStdString(a.newSymbol)}, {"reason", "H 只执行调用方传入的固定函数名，不会拼出本触发器。"}};
+    auto operations = request.value("operations").toArray();
+    auto operation = operations.first().toObject(); operation.insert("code_audits", QJsonArray{audit});
+    operations.replace(0, operation); request.insert("operations", operations);
+    const auto accepted = f.tools->Invoke("editor_edit_trigger_graph", request);
+    QVERIFY2(accepted.value("ok").toBool(), qPrintable(QString::fromUtf8(QJsonDocument(accepted).toJson(QJsonDocument::Compact))));
+    QVERIFY(Named(f.project, "Changed")); QVERIFY(f.Pair().wct == f.original.wct);
+    f.project.triggerUndoStack_->undo(); QVERIFY(f.OriginalBytes());
+    int asked = 0;
+    f.module->SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++asked; return false; });
+    QVERIFY(f.RenameThroughModel(QStringLiteral("Changed"))); QTRY_VERIFY(Named(f.project, "Changed"));
+    QCOMPARE(asked, 0); QVERIFY(f.ReferencesEqual("Changed")); QVERIFY(f.Pair().wct == f.original.wct);
+    const auto warning = DiagnosticText(f.project, "TRIGGER_RENAME_DYNAMIC_LOOKUP");
+    QVERIFY2(warning.contains(QStringLiteral("全局代码 第 2 行")) && warning.contains(QStringLiteral("call ExecuteFunc(s)")), qPrintable(warning));
+}
+
+void TriggerRenameTests::LiteralCommentAndLookalikeCodeStaysClean() {
+    // 固定文字调用别的函数、注释里的旧名、只是名字里带 _G/_ENV 的标识符，都不算引用：两条路径都直接改名。
+    Fixture f;
+    QVERIFY2(f.Initialize("// gg_trg_Init 旧注释\r\nfunction H takes nothing returns nothing\r\n    call ExecuteFunc(\"Other\")\r\n"
+        "    set udg_HERO_G[1] = null\r\n    set MY_ENV = \"x\"\r\n    /* InitTrig_Init */\r\nendfunction\r\n"), qPrintable(f.error));
+    const auto reviews = Take(TriggerDocumentEditor::ReviewTriggerRenameCode(*f.project.triggerDocument_, *f.project.uiCatalog_, f.target, "Changed"));
+    QCOMPARE(reviews.size(), std::size_t{1});
+    QVERIFY(reviews.front().evidence == TriggerDocumentEditor::RenameEvidence::None);
+    const auto response = f.tools->Invoke("editor_edit_trigger_graph", f.RenameRequest(QStringLiteral("Changed")));
+    QVERIFY2(response.value("ok").toBool(), qPrintable(QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact))));
+    f.project.triggerUndoStack_->undo(); QVERIFY(f.OriginalBytes());
+    int asked = 0;
+    f.module->SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++asked; return false; });
+    QVERIFY(f.RenameThroughModel(QStringLiteral("Changed"))); QTRY_VERIFY(Named(f.project, "Changed"));
+    QCOMPARE(asked, 0); QVERIFY(!HasDiagnostic(f.project, "TRIGGER_RENAME_DYNAMIC_LOOKUP"));
 }
 
 void TriggerRenameTests::QueuedStaleSessionAndUndoReject() {
