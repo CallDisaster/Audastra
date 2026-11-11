@@ -18,6 +18,7 @@ public:
     static void ProtectHostTable(lua_State* lua, int index);
 private:
     static int Lookup(lua_State* lua);
+    static int LookupJapi(lua_State* lua);
     static int LookupGlobal(lua_State* lua);
     static int RejectGlobalWrite(lua_State* lua);
     static int WriteGlobal(lua_State* lua);

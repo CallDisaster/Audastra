@@ -1,6 +1,6 @@
 #pragma once
 
-#include "GameImage127.h"
+#include "GameNativeObserver.h"
 #include "War3MapCore/Runtime/LuaTestMailbox.h"
 #include <functional>
 
@@ -17,6 +17,7 @@ struct OwnedLuaSessionConfig {
     bool experimentalJapi = false; // 未通过真实游戏验收，默认不改派字符串 native。
     // 运行时自带的 JAPI 模块（界面库等），每个新 VM 的 Host 建好后装入；只在 experimentalJapi 时使用。
     std::function<std::int32_t(const GameImage127&, audastra::japi::Host&)> japiModules;
+    NativeExtensionHooks extensions;
 };
 
 struct OwnedLuaObservation {

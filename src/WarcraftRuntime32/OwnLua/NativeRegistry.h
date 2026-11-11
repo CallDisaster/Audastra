@@ -9,6 +9,7 @@ struct NativeRegistration {
     std::string name;
     NativeSignature signature;
     std::uintptr_t function = 0;
+    bool external = false;
 };
 
 [[nodiscard]] std::string DescribeNativeRegistration(std::size_t acceptedEntries, std::string_view name,
@@ -17,7 +18,7 @@ struct NativeRegistration {
 // 由经过 SHA 身份检查的游戏注册观察器填充。不是硬编码 native 地址表。
 class NativeRegistry final {
 public:
-    [[nodiscard]] bool Observe(std::string_view name, std::string_view signature, std::uintptr_t function);
+    [[nodiscard]] bool Observe(std::string_view name, std::string_view signature, std::uintptr_t function, bool external = false);
     // 原版分 stock 与补充两个明确阶段；任何阶段错误会使整个快照失效。
     [[nodiscard]] bool CompleteStock();
     [[nodiscard]] bool BeginSupplement();

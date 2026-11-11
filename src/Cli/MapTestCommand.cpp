@@ -1,4 +1,5 @@
 #include "MapTestCommand.h"
+#include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/IO/FileBytes.h"
 #include "War3MapCore/Script/MapTestToolchain.h"
@@ -52,6 +53,7 @@ int RunMapTest(int argc, wchar_t** argv) {
     if (argc < 5) return 2;
     const std::filesystem::path map = argv[2], game = argv[3], helpers = argv[4];
     std::filesystem::path ydwe;
+    std::filesystem::path dependencies;
     std::filesystem::path luaFolderOverride;
     std::string luaDeletionApproval;
     double seconds = 60;
@@ -65,6 +67,8 @@ int RunMapTest(int argc, wchar_t** argv) {
     for (int index = 5; index < argc; ++index) {
         const std::wstring option = argv[index];
         if (option == L"--ydwe" && index + 1 < argc) ydwe = argv[++index];
+        else if (option == L"--external-dependencies" && index + 1 < argc && dependencies.empty() && *argv[index + 1])
+            dependencies = argv[++index];
         else if (option == L"--lua-folder" && index + 1 < argc && luaFolderOverride.empty()) luaFolderOverride = argv[++index];
         else if (option == L"--confirm-lua-deletions" && index + 1 < argc && luaDeletionApproval.empty()) luaDeletionApproval = Utf8(argv[++index]);
         else if (option == L"--seconds" && index + 1 < argc) seconds = Number(argv[++index]);
@@ -135,6 +139,7 @@ int RunMapTest(int argc, wchar_t** argv) {
     request.expectedInputSha256 = *sha.value;
     request.gameRoot = std::filesystem::absolute(game); request.workspace = run / "prepared";
     request.runtimeYdweRoot = ydwe;
+    request.externalDependenciesDirectory = Services::ExternalDependenciesDirectory(War3Map::CurrentInstallationRoot(), dependencies);
     request.runtimeBridge = std::filesystem::absolute(helpers) / "audastra-warcraft-launcher.exe";
     request.runtimeBootstrap = std::filesystem::absolute(helpers) / "audastra-warcraft-bootstrap.dll";
     request.handwrittenLuaEngine = engine; request.handwrittenLuaHotReload = hotReload;
@@ -402,4 +407,14 @@ int RunMapTest(int argc, wchar_t** argv) {
             ? (exitKnown && gameExitZero && !stopped ? "unacknowledged_but_original_game_exited_zero" : "unacknowledged_exit_not_proven")
             : "transport_completed_or_game_already_exited"}}.dump() << std::endl;
     return !inputFailed && !shotFailed && !missed && cleaned.Succeeded() && files.Succeeded() && exitKnown && gameExitZero ? 0 : 1;
+}
+
+int RunExternalDependenciesStatus(int argc, wchar_t** argv) {
+    if (argc > 3) return 2;
+    const auto directory = Services::ExternalDependenciesDirectory(War3Map::CurrentInstallationRoot(),
+        argc == 3 ? std::filesystem::path(argv[2]) : std::filesystem::path{});
+    const auto status = Services::QueryExternalDependencies(directory);
+    if (!status.Succeeded()) { Print(status.diagnostics); return 1; }
+    std::cout << Services::ExternalDependenciesJson(*status.value) << '\n';
+    return 0;
 }

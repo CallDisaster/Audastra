@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "audastra_fixture",
+  "modules": [
+    {
+      "file": "audastra-external-native-fixture.dll",
+      "entry": "RegisterFixture",
+      "natives": {
+        "AudastraFixtureAdd": "(I)I",
+        "AudastraFixturePlayer": "(Hplayer;)Hplayer;",
+        "AudastraFixtureCallback": "(C)I"
+      }
+    }
+  ]
+}

@@ -96,7 +96,7 @@ endfunction
 - 结果字符串写进宿主提供的固定缓冲区，禁止返回栈指针／共享静态字符串指针。
 - `requestStop → pollStopped → destroy → FreeLibrary`：没有证明线程全部退出，就保持 DLL 与上下文。宿主销毁时仍未停止的模块被隔离保留到进程结束，不强制卸载。
 - DLL 是全信任原生代码。摘要允许清单不是沙箱，C++ 异常捕获也不能隔离访问违例或进程破坏。
-- 本 SDK 不提供任意游戏内存读写、任意 native 调用、网络同步、第三方通讯兼容、自动地图打包或现有 UI 对象 API。
+- 本 SDK 的能力范围见本页接口。Audastra 地图测试的外部 native 来自 [用户配置的提供者](../../docs/EXTERNAL_DEPENDENCIES.md)，由用户自行放入外部依赖目录并提供声明，发行包不附带这些 DLL。该入口使用游戏的 native 登记。
 
 ## 数值与字符串
 

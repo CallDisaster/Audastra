@@ -36,6 +36,7 @@ option(AUD_JAPI_BRIDGE_EXPERIMENTAL "Opt in to unqualified JAPI string bridge in
 add_executable(audastra-warcraft-launcher Launcher.cpp)
 target_include_directories(audastra-warcraft-launcher PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
 add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def RuntimeLuaProbe.cpp RuntimeLuaProbe.h
+    RuntimeNativeProviders.cpp
     GameTest/BackgroundPlay127.cpp
     GameTest/CloakedWindow.cpp
     GameTest/WindowInput.cpp
@@ -70,6 +71,9 @@ endforeach()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_library(audastra-external-native-fixture SHARED fixtures/ExternalNativeFixture.cpp fixtures/ExternalNativeFixture.def)
+    target_include_directories(audastra-external-native-fixture PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
+    target_compile_options(audastra-external-native-fixture PRIVATE /W4 /permissive-)
     add_executable(audastra-ui-number-format-tests fixtures/UiNumberFormatTests.cpp)
     target_include_directories(audastra-ui-number-format-tests PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../../include")
     target_compile_options(audastra-ui-number-format-tests PRIVATE /utf-8 /W4 /permissive-)

@@ -24,7 +24,10 @@ Json InspectJson(const InspectReceipt& receipt,std::size_t offset=0,std::size_t 
         {"jass_module_count",receipt.jassModules.size()},{"japi_literal_names",std::move(japi)},
         {"japi_literal_name_count",receipt.japiNames.size()},{"japi_offset",start},
         {"japi_next_offset",start+count<receipt.japiNames.size() ? Json(start+count) : Json(nullptr)},
-        {"japi_names_complete",false},{"common_sha256",receipt.commonSha256},
+        {"japi_names_complete",false},
+        {"japi_names_scope","literal_lookups_only"},
+        {"japi_runtime_verification","selected_provider_registration_receipt"},
+        {"common_sha256",receipt.commonSha256},
         {"common_names_checked",receipt.commonNamesChecked},{"common_missing_names",std::move(missing)},
         {"common_missing_count",receipt.missingCommonNames.size()},
         {"common_missing_policy","未知名称不会伪造函数；启动查询或调用时明确诊断。"}};

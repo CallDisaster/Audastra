@@ -159,7 +159,7 @@ struct LuaHost::Impl {
         if (!self.missingJapiReported) {
             self.missingJapiReported = true;
             lua_pushcfunction(lua, Diagnostic);
-            lua_pushliteral(lua, "LUA_JAPI_UNSUPPORTED: 此环境未实现 Dz/EX 扩展；相关伤害、属性、同步和帧界面功能不可用。\n");
+            lua_pushliteral(lua, "LUA_JAPI_UNSUPPORTED: 本次会话没有登记所查的外部 native。请检查提供者声明和加载结果。\n");
             lua_call(lua, 1, 0);
         }
         lua_pushnil(lua); return 1;

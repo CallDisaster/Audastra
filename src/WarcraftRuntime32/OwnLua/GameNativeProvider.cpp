@@ -72,6 +72,11 @@ GameNativeProvider::GameNativeProvider(std::shared_ptr<GameVm127> vm, std::share
 std::uint64_t GameNativeProvider::Generation() const noexcept {
     return vm_ && registry_ && registry_->Valid() && registry_->Sealed() && types_ ? vm_->Generation() : 0;
 }
+bool GameNativeProvider::IsExternal(std::string_view name) const noexcept {
+    const auto* entry = registry_->Find(name);
+    return entry && entry->external;
+}
+
 std::optional<NativeSignature> GameNativeProvider::Lookup(std::string_view name) const {
     if (!Generation()) return {};
     const auto* entry = registry_->Find(name);
@@ -280,6 +285,7 @@ NativeCallResult GameNativeProvider::Invoke(std::string_view name, std::span<con
             args.words[index] = handle->value; break;
         }
         case NativeKind::Code: {
+            if (entry->external) return Failure("外部 native 的 code 回调尚不支持，未调用 native。");
             const auto returns = CallbackReturn(name, index);
             if (!returns) return Failure("此 native 的 code 消费方式尚未核对，未调用 native。");
             if (std::holds_alternative<std::monostate>(value)) break;

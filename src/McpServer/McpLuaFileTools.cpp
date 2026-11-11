@@ -1,9 +1,12 @@
 #include "McpLuaFileTools.h"
 #include "McpToolInternal.h"
+#include "War3MapCore/ApplicationPaths.h"
+#include "War3MapCore/Services/ExternalDependencies.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QRegularExpression>
+#include <QSettings>
 #include <cmath>
 #include <cstring>
 
@@ -230,6 +233,25 @@ QJsonObject InvokeLuaFileTool(const QString& name, const QJsonObject& args, cons
 }
 
 void RegisterLuaFileTools(McpServer& server) {
+    ToolDefinition dependencies;
+    dependencies.name = QStringLiteral("external_dependencies_status");
+    dependencies.description = QStringLiteral("只读检查本机地图测试外部依赖目录及声明，不加载 DLL。");
+    dependencies.inputSchema = {{QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"), QJsonObject{}}, {QStringLiteral("additionalProperties"), false}};
+    dependencies.maxResponseBytes = 64 * 1024;
+    dependencies.handler = [](const QJsonObject& args) {
+        if (!args.isEmpty()) return Failure("EXTERNAL_DEPENDENCY_ARGUMENT", "状态查询使用本机配置。");
+        const auto configured = QSettings().value(QStringLiteral("mapTest/externalDependenciesDirectory")).toString().trimmed();
+        const auto directory = Services::ExternalDependenciesDirectory(CurrentInstallationRoot(),
+            std::filesystem::path(configured.toStdWString()));
+        const auto status = Services::QueryExternalDependencies(directory);
+        if (!status.Succeeded()) return Failure(status.diagnostics.front().code, status.diagnostics.front().message);
+        const auto text = Services::ExternalDependenciesJson(*status.value);
+        auto result = QJsonDocument::fromJson(QByteArray::fromStdString(text)).object();
+        result.insert(QStringLiteral("ok"), true);
+        return result;
+    };
+    server.RegisterTool(std::move(dependencies));
     for (auto tool : LuaFileToolDefinitions()) {
         const auto name = tool.name;
         // 独立服务没有打开的地图：保留同一份清单与参数，但在说明里标明只能通过编辑器端口执行。

@@ -20,5 +20,7 @@ struct EmptyTableInitializer { std::size_t begin = 0, end = 0; };
 struct ExternalCapability { std::string name; std::uint32_t line = 0; };
 [[nodiscard]] std::vector<ExternalCapability> ScanExternalCapabilities(std::string_view source);
 [[nodiscard]] std::vector<ExternalCapability> ScanLiteralMemberLookups(std::string_view source, std::string_view table);
+// 词法检查简单 require 别名和直接访问。动态键、间接转发和遮蔽不构成完整依赖证明。
+[[nodiscard]] std::vector<ExternalCapability> ScanJapiNativeLookups(std::string_view source);
 [[nodiscard]] std::vector<ExternalCapability> ScanLiteralCallArguments(std::string_view source,std::string_view table,std::string_view method);
 } // namespace War3Map::Lua

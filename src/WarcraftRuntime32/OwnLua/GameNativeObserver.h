@@ -12,6 +12,12 @@ struct GameNativeContext {
     std::uint64_t registrationGeneration = 0;
     bool codeDispatchReady = false;
 };
+using RegisterObservedNative = std::function<void(std::uintptr_t, const char*, const char*)>;
+struct NativeExtensionHooks {
+    std::function<std::string(std::uintptr_t, std::string_view, std::string_view)> validate;
+    std::function<std::string(const RegisterObservedNative&)> registerAll;
+    std::function<std::string(const NativeRegistry&)> verify;
+};
 struct GameNativeHandlers {
     // 回调都在触发该动作的游戏线程调用；调用方不能在其中另建脚本执行线程。
     std::function<void()> reset;
@@ -21,6 +27,7 @@ struct GameNativeHandlers {
     std::function<void(std::string_view error)> failure;
     // 可选实验桥；仅传入自有前缀的有界字节，返回带 VM 引用的 string ID。
     std::function<std::uint32_t(const GameNativeContext&, std::string_view)> localizedString;
+    NativeExtensionHooks extensions;
 };
 
 // 仅由新建游戏的 bootstrap 在 Game.dll LoadLibrary 返回后、游戏入口执行前安装一次。

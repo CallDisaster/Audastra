@@ -1,7 +1,40 @@
 #include "War3MapCore/Lua/LuaModuleScan.h"
 #include "LuaLexer.h"
+#include <set>
 
 namespace War3Map::Lua {
+std::vector<ExternalCapability> ScanJapiNativeLookups(std::string_view source) {
+    const auto tokens = Detail::Tokenize(source, false, 4 * 1024 * 1024);
+    std::set<std::string_view> aliases;
+    std::vector<ExternalCapability> output;
+    const auto text = [&](std::size_t i) { return tokens[i].Text(source); };
+    const auto literal = [&](std::size_t i) {
+        return tokens[i].kind == Detail::TokenKind::String && !tokens[i].unterminated;
+    };
+    const auto member = [&](std::size_t i, std::uint32_t line) {
+        if (i + 1 < tokens.size() && text(i) == "." && tokens[i + 1].kind == Detail::TokenKind::Name)
+            output.push_back({std::string(text(i + 1)), line});
+        else if (i + 2 < tokens.size() && text(i) == "[" && literal(i + 1) && text(i + 2) == "]")
+            output.push_back({Detail::StringValue(text(i + 1)), line});
+    };
+    for (std::size_t i = 0; i + 1 < tokens.size(); ++i) {
+        if (text(i) == "require" && (!i || (text(i - 1) != "." && text(i - 1) != ":"))) {
+            const bool parenthesized = text(i + 1) == "(";
+            const auto arg = i + (parenthesized ? 2 : 1);
+            if (arg >= tokens.size() || !literal(arg) || Detail::StringValue(text(arg)) != "jass.japi") continue;
+            const auto end = arg + (parenthesized ? 2 : 1);
+            if (parenthesized && (arg + 1 >= tokens.size() || text(arg + 1) != ")")) continue;
+            member(end, tokens[i].line);
+            if (i >= 2 && text(i - 1) == "=" && tokens[i - 2].kind == Detail::TokenKind::Name &&
+                (end >= tokens.size() || (text(end) != "." && text(end) != "[")))
+                aliases.insert(text(i - 2));
+        }
+    }
+    for (std::size_t i = 0; i + 1 < tokens.size(); ++i)
+        if (tokens[i].kind == Detail::TokenKind::Name && aliases.contains(text(i)) &&
+            (!i || (text(i - 1) != "." && text(i - 1) != ":"))) member(i + 1, tokens[i].line);
+    return output;
+}
 std::vector<ExternalCapability> ScanLiteralMemberLookups(std::string_view source,std::string_view table) {
     const auto tokens=Detail::Tokenize(source,false,4*1024*1024);
     std::vector<ExternalCapability> output;

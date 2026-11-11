@@ -33,6 +33,7 @@ struct ApplicationServicePreferences {
     std::optional<bool> recoveryEnabled;
     std::optional<int> recoveryIntervalMinutes;
     std::optional<QString> worldEffectQuality;
+    std::optional<QString> externalDependenciesDirectory;
 };
 
 class ApplicationSettingsCommit final {

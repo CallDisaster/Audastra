@@ -548,6 +548,9 @@ Status MapTestLaunchLease::Cleanup() {
                     const auto stage = report.find("errorStage"), error = report.find("errorWin32");
                     if (stage != report.end() && stage->is_string() && error != report.end() && error->is_number_unsigned())
                         detail += " 独立运行时阶段=" + stage->get<std::string>() + "，Win32=" + std::to_string(error->get<unsigned>()) + "。";
+                    const auto providerFailure = report.find("providerFailureText");
+                    if (providerFailure != report.end() && providerFailure->is_string() && !providerFailure->get_ref<const std::string&>().empty())
+                        detail += " " + providerFailure->get<std::string>().substr(0, 4096);
                     const auto owned = report.find("ownedLua");
                     if (owned != report.end() && owned->is_object()) {
                         const auto failure = owned->find("failureText");

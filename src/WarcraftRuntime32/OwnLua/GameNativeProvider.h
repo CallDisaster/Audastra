@@ -17,6 +17,7 @@ public:
         std::shared_ptr<const NativeTypeHierarchy> types, bool codeDispatchReady = false, WeatherTemplates weather = {});
     [[nodiscard]] std::uint64_t Generation() const noexcept override;
     [[nodiscard]] std::optional<NativeSignature> Lookup(std::string_view name) const override;
+    [[nodiscard]] bool IsExternal(std::string_view name) const noexcept override;
     [[nodiscard]] std::optional<NativeGlobalDeclaration> LookupGlobal(std::string_view name) const override;
     [[nodiscard]] NativeCallResult ReadGlobal(std::string_view name) override;
     [[nodiscard]] NativeCallResult WriteGlobal(std::string_view name, const NativeValue& value) override;

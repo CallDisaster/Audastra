@@ -54,7 +54,7 @@ h-lua 的构建输入来自外部工程，不自动把编辑器中尚未同步�
 
 test 带测试期控制台，build 写原生物编，dist 使用同一物编优化服务输出 SLK。修改作者 `scripts/` 或 `main.lua` 后，热重载只发送工程扫描器确认的作者模块；不发送框架、hslk 或地图资源。`hslk/` 或框架身份改变时要求重新构建，不发送热重载。删除模块仍须重新测试以清除旧模块。
 
-自带环境尚未实现 DzAPI 和 EX 系列。texttag 与 weathereffect 保留 native 返回的不透明序号，天气创建需要核对模板编号。lightning 支持本方创建、借用已登记别名和显式销毁，范围见下节。未知 japi 名称查询返回 nil 并记诊断，依赖它们的伤害、属性、同步和帧界面需要相应实现。AGPL 框架由用户自行提供。
+自带环境的 `jass.japi` 提供本次游戏已核验登记的外部 native，见 [外部依赖目录](EXTERNAL_DEPENDENCIES.md)。`japi_names_complete=false` 表示构建回执只记录可辨认的字面量名称。动态查询与注册结果以实际测试回执为准，未登记的查找返回 nil 并记录诊断。texttag 与 weathereffect 保留 native 返回的不透明序号，天气创建需要核对模板编号。lightning 支持本方创建、借用已登记别名和显式销毁，范围见下节。AGPL 框架由用户自行提供。
 
 ### 非 agent 句柄的覆盖范围
 

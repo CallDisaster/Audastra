@@ -31,7 +31,7 @@ std::string DescribeNativeRegistration(std::size_t acceptedEntries, std::string_
         + "; signature=" + DiagnosticText(signature, 192) + "; address=" + Address(function);
 }
 
-bool NativeRegistry::Observe(std::string_view name, std::string_view signatureText, std::uintptr_t function) {
+bool NativeRegistry::Observe(std::string_view name, std::string_view signatureText, std::uintptr_t function, bool external) {
     if (failed_) return false;
     const auto fail = [&](const char* gate, const char* message) {
         failed_ = true;
@@ -47,12 +47,12 @@ bool NativeRegistry::Observe(std::string_view name, std::string_view signatureTe
     if (!function) return fail("address", "native 注册地址无效。");
     const auto found = entries_.find(name);
     if (found != entries_.end()) {
-        if (found->second.function == function && found->second.signature == *signature) return true;
+        if (found->second.function == function && found->second.signature == *signature && found->second.external == external) return true;
         return fail("changed-registration", "同名 native 注册内容发生变化，不能继续使用旧绑定。");
     }
     if (entries_.size() >= 8192) return fail("entry-budget", "native 注册数量超出上限。");
     std::string key(name);
-    entries_.emplace(key, NativeRegistration{key, *signature, function});
+    entries_.emplace(key, NativeRegistration{key, *signature, function, external});
     return true;
 }
 

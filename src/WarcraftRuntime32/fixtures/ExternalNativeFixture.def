@@ -1,0 +1,4 @@
+EXPORTS
+    RegisterFixture=_RegisterFixture@8
+    RegisterFixtureWrongSignature=_RegisterFixtureWrongSignature@8
+    RegisterFixtureMissing=_RegisterFixtureMissing@8

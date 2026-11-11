@@ -1,6 +1,7 @@
 #include "RuntimeProtocol.h"
 #include "RuntimeFiles.h"
 #include "RuntimeLuaProbe.h"
+#include "RuntimeNativeProviders.h"
 #include "OwnLua/OwnedLuaSession.h"
 #include "GameUi/GameUiModule.h"
 #include "GameTest/BackgroundPlay127.h"
@@ -40,7 +41,14 @@ bool CallInitialize(FARPROC function) {
     __try { reinterpret_cast<void (WINAPI*)()>(function)(); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
-void InitializeOwnedRuntime(HMODULE game) {
+[[noreturn]] void ProviderFailure(std::string_view message) {
+    if (!LuaMailboxUtf8(message)) message = "提供者登记失败。";
+    const auto count = LuaMailboxUtf8Prefix(message, sizeof(evidence->providerFailureText) - 1);
+    std::memcpy(evidence->providerFailureText, message.data(), count);
+    evidence->providerFailureText[count] = 0;
+    Fail("external-provider-registration", ERROR_INVALID_DATA);
+}
+void InitializeOwnedRuntime(HMODULE game, OwnLua::NativeExtensionHooks extensions) {
     auto& owned = evidence->ownedLua;
     const auto record = [&owned](std::string_view message) {
         if (!LuaMailboxUtf8(message)) message = "自有 Lua 启动失败。";
@@ -60,6 +68,7 @@ void InitializeOwnedRuntime(HMODULE game) {
     config.mapPath = owned.mapPath; config.mapSha256 = owned.mapSha256;
     config.nonce = owned.nonce; config.mailbox = mailbox; config.hotReload = owned.hotReload != 0;
     config.experimentalJapi = AUD_JAPI_BRIDGE_EXPERIMENTAL != 0;
+    config.extensions = std::move(extensions);
     // 内置界面库：用同一份已核验的 Game.dll 映像解析入口，作为 audastraui 模块装进每个新 Host。
     config.japiModules = [](const OwnLua::GameImage127& image, audastra::japi::Host& host) {
         return GameUi::InstallGameUiModule127(host, image.Base(),
@@ -73,7 +82,11 @@ void InitializeOwnedRuntime(HMODULE game) {
         owned.nativeCalls = state.nativeCalls;
         InterlockedExchange(&owned.ready, state.ready ? 1 : 0);
     };
-    events.fatal = [record](std::string_view message) { record(message); Fail("owned-lua-session-failed", ERROR_INVALID_DATA); };
+    events.fatal = [record](std::string_view message) {
+        record(message);
+        if (evidence->providerModuleCount && !evidence->providerRegistrationsVerified) ProviderFailure(message);
+        Fail("owned-lua-session-failed", ERROR_INVALID_DATA);
+    };
     std::string error;
     if (!OwnLua::InstallOwnedLuaSession(std::move(image.image), std::move(config), std::move(events), error)) {
         record(error);
@@ -82,7 +95,6 @@ void InitializeOwnedRuntime(HMODULE game) {
     }
     // 成功后映射与已安装会话由当前测试进程共同持有，不在 loader lock 下析构。
     InterlockedExchange(&owned.observerInstalled, 1);
-    InterlockedExchange(&evidence->runtimeInitialized, 1);
 }
 // 后台运行钩子与运行库模式无关：在 Game.dll 入口执行前装好，装不上就结束这次测试，不让游戏在后台停住。
 void InstallBackgroundPlay(HMODULE game) {
@@ -174,9 +186,28 @@ void ObserveModule(HMODULE loaded, bool requestedGame) {
         if (evidence->cloakWindow) InstallCloakedWindow();
         if (evidence->muteSound) InstallMutedSound();
         if (evidence->backgroundPlay) InstallBackgroundPlay(loaded);
-        if (evidence->runtimeMode == RuntimeMode::OwnedLua) InitializeOwnedRuntime(loaded);
-        else if (evidence->runtimeMode == RuntimeMode::Bare) InterlockedExchange(&evidence->runtimeInitialized, 1);
-        else InitializeRuntime();
+        if (evidence->runtimeMode == RuntimeMode::ExternalYdwe) {
+            InitializeRuntime();
+            return;
+        }
+        // 提供者和回调随本次进程持有，原生模式不替换 Lua 或 JAPI 入口。
+        auto* providers = evidence->providerModuleCount ? new RuntimeNativeProviders(*evidence) : nullptr;
+        if (evidence->runtimeMode == RuntimeMode::OwnedLua) {
+            InitializeOwnedRuntime(loaded, providers ? providers->Hooks() : OwnLua::NativeExtensionHooks{});
+        } else if (providers) {
+            auto image = OwnLua::GameImage127::Open(loaded);
+            if (!image.image) ProviderFailure(image.error);
+            OwnLua::GameNativeHandlers handlers;
+            handlers.failure = ProviderFailure;
+            handlers.extensions = providers->Hooks();
+            std::string error;
+            if (!OwnLua::InstallGameNativeObserver(std::move(image.image), std::move(handlers), error)) ProviderFailure(error);
+        }
+        if (providers) {
+            const auto error = providers->Load();
+            if (!error.empty()) ProviderFailure(error);
+        }
+        InterlockedExchange(&evidence->runtimeInitialized, 1);
     } catch (...) { Fail("runtime-cpp-exception", ERROR_UNHANDLED_EXCEPTION); }
 }
 HMODULE WINAPI ObserveLoadLibraryA(LPCSTR name) {

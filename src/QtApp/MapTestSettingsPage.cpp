@@ -1,17 +1,20 @@
 #include "MapTestSettingsPage.h"
 #include "War3MapCore/HLua/Framework.h"
+#include "War3MapCore/Services/ExternalDependencies.h"
 #include "../QtCommon/LocalConsentPreference.h"
 #include "../QtCommon/MapBackupPaths.h"
 #include "MapBackupMigrationService.h"
 
 #include <QCheckBox>
 #include <QDir>
+#include <QDesktopServices>
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QPointer>
 #include <QSettings>
@@ -19,6 +22,7 @@
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QVBoxLayout>
+#include <QUrl>
 #include <QScopeGuard>
 
 #include <algorithm>
@@ -107,6 +111,27 @@ MapTestSettingsPage::MapTestSettingsPage(
     runtimeRoot_->setPlaceholderText(tr("留空使用已配置的本机 YDWE 目录"));
     testForm->addRow(tr("扩展运行时目录（可选）"), DirectoryRow(runtimeRoot_, QStringLiteral("mapTestRuntimeRootBrowse"),
         tr("选择扩展运行时目录"), installationRoot, testGroup));
+    const auto defaultDependencies = Services::ExternalDependenciesDirectory(
+        std::filesystem::path(installationRoot.toStdWString()), {});
+    externalDependencies_ = new QLineEdit(stored.value(QStringLiteral("mapTest/externalDependenciesDirectory")).toString(), testGroup);
+    externalDependencies_->setObjectName(QStringLiteral("mapTestExternalDependenciesDirectory"));
+    externalDependencies_->setPlaceholderText(QString::fromStdWString(defaultDependencies.wstring()));
+    auto* dependencyRow = DirectoryRow(externalDependencies_, QStringLiteral("mapTestExternalDependenciesBrowse"),
+        tr("选择外部依赖目录"), installationRoot, testGroup);
+    auto* openDependencies = new QPushButton(tr("打开文件夹"), dependencyRow);
+    openDependencies->setAutoDefault(false);
+    static_cast<QHBoxLayout*>(dependencyRow->layout())->addWidget(openDependencies);
+    connect(openDependencies, &QPushButton::clicked, this, [this, defaultDependencies] {
+        const auto text = externalDependencies_->text().trimmed();
+        const auto directory = text.isEmpty() ? defaultDependencies : std::filesystem::path(text.toStdWString());
+        const auto created = Services::EnsureExternalDependenciesDirectory(directory);
+        if (!created.Succeeded()) {
+            QMessageBox::warning(this, tr("外部依赖目录"), QString::fromStdString(created.diagnostics.front().message));
+            return;
+        }
+        QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdWString(directory.wstring())));
+    });
+    testForm->addRow(tr("外部依赖目录"), dependencyRow);
     slkEnabled_ = new QCheckBox(tr("测试时启用 SLK 优化"), testGroup);
     slkEnabled_->setObjectName(QStringLiteral("mapTestSlkEnabled"));
     slkEnabled_->setChecked(QtCommon::ReadExplicitLocalConsent(stored, QStringLiteral("mapTest/slkEnabled")));
@@ -180,6 +205,7 @@ MapTestSettingsPage::MapTestSettingsPage(
 }
 
 bool MapTestSettingsPage::Validate(QString* error) const {
+    if (!ValidateDirectory(externalDependencies_->text(), tr("外部依赖目录"), error)) return false;
     if (error) error->clear();
     if (!ValidateDirectory(runtimeRoot_->text(), tr("扩展运行时目录"), error)) return false;
     if (!ValidateDirectory(hluaFrameworkRoot_->text(),tr("h-lua 框架目录"),error)) return false;
@@ -220,6 +246,7 @@ Agent::ApplicationServicePreferences MapTestSettingsPage::Preferences() const {
     preferences.mapBackupDirectory = backupDirectory_->text().trimmed();
     preferences.mapBackupLimit = backupLimit_->value();
     preferences.mapTestRuntimeRoot = runtimeRoot_->text().trimmed();
+    preferences.externalDependenciesDirectory = externalDependencies_->text().trimmed();
     preferences.hluaFrameworkRoot = hluaFrameworkRoot_->text().trimmed();
     preferences.mapTestSlk = slkEnabled_->isChecked();
     return preferences;

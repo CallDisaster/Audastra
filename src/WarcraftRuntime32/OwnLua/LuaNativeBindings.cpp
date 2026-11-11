@@ -134,6 +134,7 @@ int LuaNativeBindings::Lookup(lua_State* lua) {
     const std::string name(value, size);
     if (!NativeIdentifier(name)) return luaL_error(lua, "jass.common 的查询名称无效。");
     std::string error;
+    if (self.provider_->IsExternal(name)) { lua_pushnil(lua); return 1; }
     if (!self.Signature(name, error)) {
         if (!error.empty()) return luaL_error(lua, "jass.common 无法查询 native %s：%s", name.c_str(), error.c_str());
         return self.ReadGlobal(lua, name);
@@ -142,6 +143,24 @@ int LuaNativeBindings::Lookup(lua_State* lua) {
     lua_pushcclosure(lua, Call, 2);
     return 1;
 }
+int LuaNativeBindings::LookupJapi(lua_State* lua) {
+    auto& self = Bindings(lua);
+    if (self.provider_->Generation() != self.generation_) return luaL_error(lua, "jass.japi 所属地图代际已经结束。");
+    if (lua_type(lua, 2) != LUA_TSTRING) return luaL_error(lua, "jass.japi 需要 native 名称文本。");
+    std::size_t size = 0;
+    const auto* name = lua_tolstring(lua, 2, &size);
+    if (!NativeIdentifier({name, size})) return luaL_error(lua, "jass.japi 的查询名称无效。");
+    if (!self.provider_->IsExternal({name, size})) {
+        lua_pushvalue(lua, lua_upvalueindex(2));
+        lua_pushvalue(lua, 1); lua_pushvalue(lua, 2);
+        lua_call(lua, 2, 1);
+        return 1;
+    }
+    lua_pushlightuserdata(lua, &self); lua_pushvalue(lua, 2);
+    lua_pushcclosure(lua, Call, 2);
+    return 1;
+}
+
 int LuaNativeBindings::LookupGlobal(lua_State* lua) {
     if (lua_type(lua, 2) != LUA_TSTRING) return luaL_error(lua, "jass.globals 需要全局名称文本。");
     std::size_t size = 0; const auto* value = lua_tolstring(lua, 2, &size);
@@ -305,6 +324,7 @@ int LuaNativeBindings::Call(lua_State* lua) {
         case NativeKind::String: case NativeKind::Handle:
             arguments.push_back(self.ReadValue(lua, stack, type, name)); break;
         case NativeKind::Code: {
+            if (self.provider_->IsExternal(name)) return luaL_error(lua, "外部 native %s 的 code 回调尚不支持，未调用 native。", name);
             std::optional<NativeCallbackReturn> returns;
             std::string callbackError;
             try { returns = self.provider_->CallbackReturn(name, index); }
@@ -372,6 +392,13 @@ void LuaNativeBindings::Install(lua_State* lua) {
     lua_pushliteral(lua, "v"); lua_setfield(lua, -2, "__mode"); lua_setmetatable(lua, -2);
     lua_rawsetp(lua, LUA_REGISTRYINDEX, &handleCacheKey);
     luaL_getsubtable(lua, LUA_REGISTRYINDEX, LUA_LOADED_TABLE);
+    lua_getfield(lua, -1, "jass.japi");
+    if (!lua_getmetatable(lua, -1)) luaL_error(lua, "缺少 jass.japi 宿主元表。");
+    lua_pushlightuserdata(lua, this);
+    lua_getfield(lua, -2, "__index");
+    lua_pushcclosure(lua, LookupJapi, 2);
+    lua_setfield(lua, -2, "__index");
+    lua_pop(lua, 2);
     lua_newtable(lua); lua_newtable(lua);
     lua_pushboolean(lua, true); lua_rawsetp(lua, -2, &globalTableGuardKey);
     lua_pushlightuserdata(lua, this); lua_pushcclosure(lua, Lookup, 1); lua_setfield(lua, -2, "__index");

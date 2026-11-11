@@ -103,6 +103,8 @@ void PrintUsage() {
         << "war3-map-cli lua-folder unlink <map> <map-sha> <output> | save <map> <map-sha> <output> [--lua-folder <directory>] [--confirm-lua-deletions <sha>]\n"
         << "war3-map-cli lua-folder write <map> <map-sha> <member.lua> <input.lua> <file-sha|new> <output>\n"
         << "  map-test linked-module reload: --reload-module-after <seconds> <module>\n"
+        << "  map-test extension selection: --external-dependencies <absolute-directory>\n"
+        << "war3-map-cli external-dependencies-status [absolute-directory]\n"
         << "  map-edit-save runtime options: --runtime-mode automatic|enabled|disabled --runtime-package <sha256> --approve-native-runtime --runtime-purpose normal|internal_validation|test_run\n"
         << "war3-map-cli map-create <profile> <new-map.w3x> <new-work-directory> <ydwe-root> <war3-root> <name> [author] [--ui-root <ui-root>] [--init-trigger <name> --init-code <jass-line> ...] [--add-file <member> <file> ...]\n"
         << "war3-map-cli map-test <map.w3x> <war3-root> <helper-dir> [--ydwe <root>] [--lua-engine owned|ydwe] [--no-hot-reload] [--stop] [--seconds N] [--reload-after <seconds> <module> <file> ...] [--hidden] [--cloaked] [--background-play] [--press-space] [--screenshot-after <seconds> <out.tga> ...] [--click-after <seconds> <ui-x> <ui-y> ...] [--key-after <seconds> <key[+key]> ...] [--close-after <seconds>] [--exit-timeout <seconds>]\n"
@@ -413,6 +415,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     if (command == L"map-create") return RunMapCreate(argc, argv);
     if (command == L"map-test") return RunMapTest(argc, argv);
+    if (command == L"external-dependencies-status") return RunExternalDependenciesStatus(argc, argv);
     if (command == L"lua-folder") return RunLuaFolder(argc, argv);
     if (command == L"hlua-inspect" || command == L"hlua-build" || command == L"hlua-ids"
         || command == L"hlua-test" || command == L"hlua-new") return RunHLua(argc, argv);

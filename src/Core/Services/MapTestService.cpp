@@ -102,7 +102,7 @@ Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     }
     const auto ydwe = !request.useOwnedLuaRuntime && runtime.empty() ? request.runtimeYdweRoot : std::filesystem::path{};
     // 未使用的旧 UI 设置不应阻止普通地图。此处仅保护输出目录；实际加载时再严格核对路径。
-    for (const auto& configured : {MapTestYdweInstallRoot(ydwe), ydwe}) {
+    for (const auto& configured : {MapTestYdweInstallRoot(ydwe), ydwe, request.externalDependenciesDirectory}) {
         if (configured.empty() || !configured.is_absolute()) continue;
         const auto resolved = std::filesystem::weakly_canonical(configured, ec);
         if (ec) continue;
@@ -170,6 +170,7 @@ Result<MapTestArtifact> PrepareMapTest(const MapTestRequest& request,
     prepared.value->enableLuaHotReload = request.enableLuaHotReload;
     prepared.value->handwrittenLuaEngine = request.handwrittenLuaEngine;
     prepared.value->handwrittenLuaHotReload = request.handwrittenLuaHotReload;
+    prepared.value->externalDependenciesDirectory = request.externalDependenciesDirectory;
     prepared.diagnostics.insert(prepared.diagnostics.end(), slkNotes.begin(), slkNotes.end());
     return prepared;
 }
@@ -234,7 +235,10 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
     if (plan.cloakedWindow) plan.hiddenDesktop = false;
     const bool silent = artifact.hiddenDesktop || plan.cloakedWindow;
     plan.arguments = {L"-window", L"-loadfile", relative.wstring()};
-    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || plan.backgroundPlay) {
+    const bool described = !artifact.externalDependencyFiles.empty();
+    if (described && (!artifact.runtimeRoot.empty() || plan.gameModuleSha256 != kMapTestGame127ModuleSha256))
+        return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_GAME", "已声明提供者需要已核验的 1.27a，不能与旧 YDWE 路径混装。");
+    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || described || plan.backgroundPlay) {
         // 裸模式：地图不需要扩展运行库，只为后台运行钩子经过启动器。
         const bool bare = !artifact.useOwnedLuaRuntime && artifact.runtimeRoot.empty();
         if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree)
@@ -267,6 +271,8 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
             // 启动器只接受显式 enabled；省略选项才是其关闭合同。
             if (artifact.enableLuaHotReload)
                 plan.arguments.insert(plan.arguments.end(), {L"--lua-hot-reload", L"enabled"});
+        } else if (described) {
+            plan.arguments.insert(plan.arguments.end(), {L"--runtime-mode", L"external-providers"});
         } else if (bare) {
             plan.arguments.insert(plan.arguments.end(), {L"--runtime-mode", L"bare"});
         } else {
@@ -276,6 +282,21 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
             plan.arguments.push_back(L"--runtime-layout");
             plan.arguments.push_back(L"ydwe-tree");
         }
+        std::size_t providerArgChars = 0;
+        const auto wideAscii = [](std::string_view ascii) { return std::wstring(ascii.begin(), ascii.end()); };
+        for (std::size_t index = 0; index < artifact.externalDependencyFiles.size(); ++index) {
+            const auto& file = artifact.externalDependencyFiles[index];
+            auto spec = wideAscii(file.sha256) + L"|" + wideAscii(file.entry) + L"|" + file.path.wstring();
+            providerArgChars += spec.size() + 24;
+            plan.arguments.insert(plan.arguments.end(), {L"--provider-module", std::move(spec)});
+            for (const auto& [name, signature] : file.natives) {
+                auto native = std::to_wstring(index) + L"|" + wideAscii(name) + L"|" + wideAscii(signature);
+                providerArgChars += native.size() + 24;
+                plan.arguments.insert(plan.arguments.end(), {L"--provider-native", std::move(native)});
+            }
+        }
+        if (providerArgChars > 20000)
+            return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_BUDGET", "提供者启动参数超过 Windows 命令行安全预算。");
         if (plan.backgroundPlay) plan.arguments.insert(plan.arguments.end(), {L"--background-play", L"enabled"});
         if (plan.cloakedWindow) plan.arguments.insert(plan.arguments.end(), {L"--window-cloak", L"enabled"});
         // 看不见的后台测试不出声。经典 1.27a 不认 -nosound（会连带丢掉 -loadfile），

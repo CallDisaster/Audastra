@@ -223,6 +223,7 @@ bool InstallOwnedLuaSession(std::shared_ptr<GameImage127> image, OwnedLuaSession
     handlers.code = [self](auto vm, auto code, auto parameters) { return self->Code(vm, code, parameters); };
     handlers.beforeVmDestroy = [self](auto vm) { self->BeforeVmDestroy(vm); };
     handlers.failure = [self](auto message) { self->Fatal(message); };
+    handlers.extensions = self->config.extensions;
     if (self->japi) handlers.localizedString = [self](const auto& context, auto input) {
         return Japi::DispatchGameString(*self->japi, context, input, self->config.japiModules);
     };

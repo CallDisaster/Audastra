@@ -126,10 +126,11 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
         const auto executable = self->image->Executable(function);
         const auto nameReadable = CopyText(name, copiedName);
         const auto signatureReadable = CopyText(signature, copiedSignature);
-        if (!executable || !nameReadable || !signatureReadable) {
+        if (!nameReadable || !signatureReadable || (!executable && !self->handlers.extensions.validate)) {
             self->Fail("native 登记输入不能读取或不属于已核验映像：address-in-image=" + std::to_string(executable)
                 + "; name-readable=" + std::to_string(nameReadable) + "; signature-readable=" + std::to_string(signatureReadable)
                 + "; address=" + std::to_string(function));
+            return 0;
         } else {
             std::string failure;
             {
@@ -148,16 +149,17 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                         + "; caller-rva=" + std::to_string(self->image->Executable(caller) ? caller - self->image->Base() : 0);
                 } else {
                     auto& current = found->second;
-                    if (!current.registry->Observe(copiedName.data(), copiedSignature.data(), function)) {
+                    if (!executable) failure = self->handlers.extensions.validate(function, copiedName.data(), copiedSignature.data());
+                    if (failure.empty() && !current.registry->Observe(copiedName.data(), copiedSignature.data(), function, !executable)) {
                         failure = std::string(current.registry->Error()) + "; thread=" + std::to_string(GetCurrentThreadId())
                             + "; generation=" + std::to_string(current.generation) + "; collecting=true";
-                    } else if (std::string_view(copiedName.data()) == "Cheat") {
+                    } else if (failure.empty() && executable && self->handlers.module && std::string_view(copiedName.data()) == "Cheat") {
                         if (std::string_view(copiedSignature.data()) != "(S)V") failure = "Cheat 实际签名与已核对的地图入口不符。";
                         else {
                             current.cheat = reinterpret_cast<CheatFunction>(function);
                             registered = reinterpret_cast<std::uintptr_t>(&ObserveCheat);
                         }
-                    } else if (self->handlers.localizedString && std::string_view(copiedName.data()) == "GetLocalizedString") {
+                    } else if (failure.empty() && executable && self->handlers.localizedString && std::string_view(copiedName.data()) == "GetLocalizedString") {
                         if (std::string_view(copiedSignature.data()) != "(S)S")
                             failure = "GetLocalizedString 实际签名与字符串桥不符。";
                         else {
@@ -167,9 +169,9 @@ int __fastcall ObserveRegistration(std::uintptr_t function, const char* name, co
                     }
                 }
             }
-            if (!failure.empty()) self->Fail(failure);
+            if (!failure.empty()) { self->Fail(failure); return 0; }
         }
-    } catch (...) { self->Fail("读取实际 native 登记时发生异常。"); }
+    } catch (...) { self->Fail("读取实际 native 登记时发生异常。"); return 0; }
     return self->registerNative(registered, name, signature);
 }
 void __cdecl ObserveInitialize() noexcept {
@@ -194,16 +196,25 @@ void __cdecl ObserveInitialize() noexcept {
     self->initialize();
     try {
         bool ready = false;
+        if (self->handlers.extensions.registerAll) {
+            const auto error = self->handlers.extensions.registerAll([](auto address, auto name, auto signature) {
+                ObserveRegistration(address, name, signature);
+            });
+            if (!error.empty()) { self->Fail(error); return; }
+        }
+        std::string verification;
         {
             std::lock_guard lock(self->mutex);
             const auto found = self->threads.find(GetCurrentThreadId());
             if (found != self->threads.end()) {
                 auto& current = found->second;
-                ready = !self->failed && current.cheat && (!self->handlers.localizedString || current.localizedString)
-                    && current.registry && current.registry->CompleteStock();
+                if (current.registry && self->handlers.extensions.verify)
+                    verification = self->handlers.extensions.verify(*current.registry);
+                ready = verification.empty() && !self->failed && (!self->handlers.module || current.cheat)
+                    && (!self->handlers.localizedString || current.localizedString) && current.registry && current.registry->CompleteStock();
             }
         }
-        if (!ready) self->Fail("完整 native 初始化未产生有效的 Lua 入口登记。");
+        if (!ready) self->Fail(verification.empty() ? "完整 native 初始化未产生有效的登记。" : verification);
     } catch (...) { self->Fail("完成实际 native 登记观察时发生异常。"); }
 }
 int __cdecl ObserveSupplement() noexcept {
@@ -213,7 +224,7 @@ int __cdecl ObserveSupplement() noexcept {
     try {
         std::lock_guard lock(self->mutex);
         const auto found = self->threads.find(GetCurrentThreadId());
-        if (!self->failed && found != self->threads.end() && found->second.cheat && found->second.registry)
+        if (!self->failed && found != self->threads.end() && (!self->handlers.module || found->second.cheat) && found->second.registry)
             accepted = found->second.registry->BeginSupplement();
     } catch (...) { self->Fail("准备原版补充 native 登记时发生异常。"); }
     if (!accepted) self->Fail("原版补充 native 登记不在同线程完整 stock 初始化之后，或已交给 Lua。");
@@ -263,7 +274,10 @@ std::uintptr_t __fastcall ObserveVmDestroy(std::uintptr_t vm, std::uintptr_t) no
 }
 
 bool InstallGameNativeObserver(std::shared_ptr<GameImage127> image, GameNativeHandlers handlers, std::string& error) {
-    if (!image || !handlers.module || !handlers.reset || !handlers.failure || !handlers.code || !handlers.beforeVmDestroy) {
+    const bool ownedLua = static_cast<bool>(handlers.module);
+    if (!image || !handlers.failure ||
+        (ownedLua && (!handlers.reset || !handlers.code || !handlers.beforeVmDestroy)) ||
+        (!ownedLua && !handlers.extensions.registerAll)) {
         error = "游戏 native 观察器缺少来源或生命周期处理器。"; return false;
     }
     // 入口固定字节均已在命中 SHA 的映像中只读核对；不覆盖未知第三方已有 hook。
@@ -274,7 +288,7 @@ bool InstallGameNativeObserver(std::shared_ptr<GameImage127> image, GameNativeHa
     constexpr unsigned char destroy[]{0x55, 0x8b, 0xec, 0x6a, 0xff};
     if (!image->Matches(kRegisterRva, registration) || !image->Matches(kInitializeRva, initialization)
         || !image->Matches(kSupplementRva, supplement)
-        || !image->Matches(kRunRva, run) || !image->Matches(kDestroyVmRva, destroy)) {
+        || (ownedLua && (!image->Matches(kRunRva, run) || !image->Matches(kDestroyVmRva, destroy)))) {
         error = "Game.dll 的 native 观察入口已变化，拒绝覆盖。"; return false;
     }
     auto owned = std::make_unique<Observer>();
@@ -292,8 +306,8 @@ bool InstallGameNativeObserver(std::shared_ptr<GameImage127> image, GameNativeHa
         if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->registerNative), ObserveRegistration);
         if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->initialize), ObserveInitialize);
         if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->supplement), ObserveSupplement);
-        if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->run), ObserveRun);
-        if (code == NO_ERROR) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->destroyVm), ObserveVmDestroy);
+        if (code == NO_ERROR && ownedLua) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->run), ObserveRun);
+        if (code == NO_ERROR && ownedLua) code = DetourAttach(reinterpret_cast<PVOID*>(&owned->destroyVm), ObserveVmDestroy);
         if (code == NO_ERROR) code = DetourTransactionCommit();
         else DetourTransactionAbort();
     }

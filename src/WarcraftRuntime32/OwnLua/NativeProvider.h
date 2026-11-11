@@ -73,6 +73,7 @@ public:
     virtual ~NativeProvider() = default;
     [[nodiscard]] virtual std::uint64_t Generation() const noexcept = 0;
     [[nodiscard]] virtual std::optional<NativeSignature> Lookup(std::string_view name) const = 0;
+    [[nodiscard]] virtual bool IsExternal(std::string_view) const noexcept { return false; }
     // 全局声明来自同一受信脚本来源；没有声明时不能仅凭 VM 中的数值猜类型。
     [[nodiscard]] virtual std::optional<NativeGlobalDeclaration> LookupGlobal(std::string_view) const { return {}; }
     [[nodiscard]] virtual NativeCallResult ReadGlobal(std::string_view) { return {false, {}, "全局读取尚未实现。"}; }

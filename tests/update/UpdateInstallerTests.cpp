@@ -195,6 +195,9 @@ struct Fixture {
         Write(request.installDirectory / L"logs/local.log", "original log");
         Write(request.installDirectory / L"feedback/local.json", "original private feedback");
         Write(request.installDirectory / L"作者数据/地图.w3x", "original private author bytes");
+        Write(request.installDirectory / L"外部依赖/fixture/provider.json", "original local provider declaration");
+        Write(request.installDirectory / L"外部依赖/fixture/local.dll", "original opaque local dependency bytes");
+        std::filesystem::create_directories(request.installDirectory / L"外部依赖/empty");
         Write(request.installDirectory / L"readonly-user.txt", "original readonly user bytes");
         SetFileAttributesW((request.installDirectory / L"readonly-user.txt").c_str(), FILE_ATTRIBUTE_READONLY);
         std::filesystem::create_directories(request.installDirectory / L"user-empty/inner");
@@ -237,6 +240,7 @@ struct Fixture {
             Check(hash.Succeeded() && *hash.value == file.sha256, context);
         }
         Check(std::filesystem::is_directory(request.installDirectory / L"user-empty/inner"), "empty nested user directories retained");
+        Check(std::filesystem::is_directory(request.installDirectory / L"外部依赖/empty"), "external dependency directory retained");
         Check((GetFileAttributesW((request.installDirectory / L"readonly-user.txt").c_str()) & FILE_ATTRIBUTE_READONLY) != 0,
             "readonly user attribute retained");
     }

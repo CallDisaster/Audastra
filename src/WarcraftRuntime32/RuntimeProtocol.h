@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 8;
+inline constexpr std::uint32_t kVersion = 9;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -20,9 +20,10 @@ inline constexpr std::array<const wchar_t*, 6> kModules = {
     L"ydbase.dll", L"lua53.dll", L"ydwar3.dll", L"yd_loader.dll", L"yd_jass_api.dll", L"yd_lua_engine.dll"};
 enum class RuntimeLayout : std::uint32_t { Flat = 0, YdweTree = 1 };
 // Bare：不加载扩展运行库，只装测试钩子（如后台运行）。
-enum class RuntimeMode : std::uint32_t { ExternalYdwe = 0, OwnedLua = 1, Bare = 2 };
+enum class RuntimeMode : std::uint32_t { ExternalYdwe = 0, OwnedLua = 1, Bare = 2, ExternalProviders = 3 };
 inline bool ValidMode(RuntimeMode mode) {
-    return mode == RuntimeMode::ExternalYdwe || mode == RuntimeMode::OwnedLua || mode == RuntimeMode::Bare;
+    return mode == RuntimeMode::ExternalYdwe || mode == RuntimeMode::OwnedLua || mode == RuntimeMode::Bare
+        || mode == RuntimeMode::ExternalProviders;
 }
 inline bool ValidLayout(RuntimeLayout layout) {
     return layout == RuntimeLayout::Flat || layout == RuntimeLayout::YdweTree;
@@ -47,6 +48,17 @@ struct BlockedWriteEvidence {
     DWORD status = 0;
     LONG nonfatal = 0;
     LONG ready = 0;
+};
+inline constexpr std::size_t kProviderModuleLimit = 8;
+inline constexpr std::size_t kProviderNativeLimit = 256;
+struct ProviderModuleEvidence {
+    ModuleEvidence file;
+    char entry[129]{};
+};
+struct ProviderNativeEvidence {
+    std::uint32_t moduleIndex = 0;
+    char name[129]{};
+    char signature[1025]{};
 };
 struct OwnedLuaEvidence {
     wchar_t mapPath[kPathCapacity]{};
@@ -97,6 +109,12 @@ struct SharedEvidence {
     LONG fixtureConcurrentWaitObserved = 0;
     ModuleEvidence gameModule{};
     std::array<ModuleEvidence, kModules.size()> modules{};
+    DWORD providerModuleCount = 0;
+    DWORD providerNativeCount = 0;
+    LONG providerRegistrationsVerified = 0;
+    char providerFailureText[4096]{};
+    std::array<ProviderModuleEvidence, kProviderModuleLimit> providerModules{};
+    std::array<ProviderNativeEvidence, kProviderNativeLimit> providerNatives{};
     // 自有元数据探针的匿名 IPC；默认关闭，普通 F9 不观察 Lua 或限制文件写出。
     LONG probeEnabled = 0;
     char probeNonce[33]{};
@@ -129,7 +147,8 @@ inline SharedEvidence* OpenChannel() {
     if (!end || *end || value == 0) return nullptr;
     auto* shared = static_cast<SharedEvidence*>(MapViewOfFile(reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(value)), FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedEvidence)));
     if (shared && (shared->magic != kMagic || shared->version != kVersion || !ValidLayout(shared->runtimeLayout)
-        || !ValidMode(shared->runtimeMode))) { UnmapViewOfFile(shared); return nullptr; }
+        || !ValidMode(shared->runtimeMode) || shared->providerModuleCount > kProviderModuleLimit
+        || shared->providerNativeCount > kProviderNativeLimit)) { UnmapViewOfFile(shared); return nullptr; }
     return shared;
 }
 } // namespace Audastra::Runtime32

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "War3MapCore/Types.h"
+#include "War3MapCore/Services/ExternalDependencies.h"
 
 #include <functional>
 #include <string>
@@ -39,6 +40,7 @@ struct MapTestRequest {
     bool enableLuaHotReload = false;
     MapTestLuaEngine handwrittenLuaEngine = MapTestLuaEngine::Owned;
     bool handwrittenLuaHotReload = true;
+    std::filesystem::path externalDependenciesDirectory;
 };
 
 struct MapTestArtifact {
@@ -66,6 +68,8 @@ struct MapTestArtifact {
     // 看不见但照常绘制：游戏留在用户桌面上，窗口隐身、不进任务栏、不激活，能截图。
     // 自动要求后台运行能力（1.27a）；身份不符则拒绝，不能静默切换到不可见桌面。
     bool cloakedWindow = false;
+    std::filesystem::path externalDependenciesDirectory;
+    std::vector<ExternalDependencyFile> externalDependencyFiles;
 };
 
 struct MapTestSlkRequest {

@@ -185,6 +185,49 @@ struct Fixture {
     }
 };
 
+void ExternalDependencyCatalog() {
+    Fixture fixture;
+    const auto directory = Services::ExternalDependenciesDirectory(fixture.root, {});
+    auto status = Services::QueryExternalDependencies(directory);
+    Success(status, "query an absent external dependency directory without creating it");
+    Require(!status.value->exists && !std::filesystem::exists(directory), "status is read-only");
+    Success(Services::EnsureExternalDependenciesDirectory(directory), "create empty external dependency directory on request");
+    const auto provider = directory / "original";
+    Write(directory / "unlisted.dll", Pe(true, true));
+    Write(provider / "original.dll", Pe(true, true));
+    Write(provider / "provider.json", Bytes(R"json({"schema":1,"id":"original","modules":[
+        {"file":"original.dll","entry":"Initialize","natives":{"AudastraFixtureAdd":"(I)I"}}]})json"));
+    status = Services::QueryExternalDependencies(directory);
+    Success(status, "read external dependency status");
+    Require(status.value->providers.size() == 1 && status.value->providers.front().usable &&
+        status.value->undescribedDlls.size() == 1 && status.value->undescribedDlls.front().filename() == "unlisted.dll",
+        "only a described PE is eligible");
+    const auto selected = Services::SelectExternalDependencyFiles(*status.value, {{"AudastraFixtureAdd", "(I)I"}});
+    Success(selected, "resolve an exact native signature");
+    Require(selected.value->size() == 1 && selected.value->front().path == provider / "original.dll" &&
+        selected.value->front().sha256 == *Sha256File(provider / "original.dll").value, "plan binds only the expected file SHA");
+    FailureCode(Services::SelectExternalDependencyFiles(*status.value, {{"AudastraFixtureAdd", "(S)I"}}),
+        "EXTERNAL_DEPENDENCY_NATIVE_SIGNATURE", "map signature mismatch stops selection");
+    const auto missing = Services::SelectExternalDependencyFiles(*status.value, {{"MissingAlpha", ""}, {"MissingBeta", ""}});
+    FailureCode(missing, "EXTERNAL_DEPENDENCY_NATIVE_MISSING", "missing names stop selection");
+    Require(missing.diagnostics.front().message.find("MissingAlpha") != std::string::npos &&
+        missing.diagnostics.front().message.find("MissingBeta") != std::string::npos,
+        "all missing names appear in the diagnostic");
+
+    auto map = fixture.Artifact({{"war3map.j", Bytes(Script("call AudastraFixtureAdd(1)",
+        "native AudastraFixtureAdd takes integer i returns integer\n"))}, {"scripts/original.dll", Pe(true, true)},
+        {"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}});
+    map.externalDependenciesDirectory = directory;
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "EXTERNAL_DEPENDENCY_MAP_DLL", "map DLL cannot be a provider");
+    fixture.Unchanged(map);
+
+    Write(provider / "provider.json", Bytes(R"json({"schema":1,"schema":1,"id":"original","modules":[]})json"));
+    status = Services::QueryExternalDependencies(directory);
+    Success(status, "malformed provider is visible in status");
+    Require(status.value->providers.size() == 1 && !status.value->providers.front().usable,
+        "duplicate manifest keys are rejected");
+}
+
 void OwnedLuaSourcesAndComponents() {
     Fixture fixture;
     const auto members = [](std::string_view lua = "return true\n", std::string jass = Script("")) {
@@ -881,7 +924,7 @@ int main() {
         FailureCode(Script::BuildIndependentMapTestLaunchPlan(owned), "MAP_TEST_LUA_RELOAD_RUNTIME", "reload needs explicit owned runtime before inspecting map");
         owned.useOwnedLuaRuntime = true;
         Require(!Script::BuildIndependentMapTestLaunchPlan(owned).Succeeded(), "owned runtime needs a real frozen map and cannot fall back");
-        OwnedLuaSourcesAndComponents(); NativeMapsNeedNoToolsOrRuntime(); LexicalTextAndLocalPrefixesAreNotExtensions();
+        ExternalDependencyCatalog(); OwnedLuaSourcesAndComponents(); NativeMapsNeedNoToolsOrRuntime(); LexicalTextAndLocalPrefixesAreNotExtensions();
         CompiledJassOpaqueBytesPreserveRuntimeClassification(); CompiledJassByteRawcodesAndMalformedBoundaries();
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();
         YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions();

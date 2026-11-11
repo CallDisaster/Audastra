@@ -79,6 +79,7 @@ if(TARGET Qt6::Core)
             War3MapEditor::RenderSupport
             War3MapEditor::Services
             War3MapEditor::HLua
+            War3MapEditor::ScriptBuild
             Qt6::Core
             Qt6::Network)
     target_compile_definitions(

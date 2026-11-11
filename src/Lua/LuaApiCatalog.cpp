@@ -198,7 +198,7 @@ void AddRuntimeModules(ApiCatalog& catalog, OwnedRuntimeInput& input) {
         Function("jass.debug", "handledef", "handle:integer", "table", "返回 reference 和可识别的 type；无效句柄返回 nil。"),
     }, true, true};
     ApiModule slk{"jass.slk", "冻结测试图的有效物编；七类对象和 misc，只读字符串字段，缺失返回 nil。", {}, false, true};
-    ApiModule japi{"jass.japi", "扩展函数尚未实现；查找返回 nil，并在测试中记录能力缺失。", {}, false, true};
+    ApiModule japi{"jass.japi", "提供已选中且在游戏中通过注册核验的外部 native。未登记名称返回 nil 并记录诊断。", {}, false, true};
     Sort(runtime.members); Sort(console.members); Sort(debug.members);
     catalog.modules.emplace(common.name, std::move(common));
     catalog.modules.emplace(globals.name, std::move(globals));

@@ -180,6 +180,9 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     request.sourceMap = project_->sourceArchivePath_;
     request.gameRoot = std::filesystem::path(gameRoot.toStdWString());
     request.runtimeRoot = std::filesystem::path(runtimeRoot.toStdWString());
+    request.externalDependenciesDirectory = Services::ExternalDependenciesDirectory(
+        std::filesystem::path(QtCommon::InstallationRoot().toStdWString()),
+        std::filesystem::path(settings.value(QStringLiteral("mapTest/externalDependenciesDirectory")).toString().trimmed().toStdWString()));
     request.runtimeYdweRoot = std::filesystem::path(runtimeYdweRoot.toStdWString());
     const QDir program(QCoreApplication::applicationDirPath());
     request.runtimeBridge = std::filesystem::path(program.filePath(QStringLiteral("audastra-warcraft-launcher.exe")).toStdWString());
