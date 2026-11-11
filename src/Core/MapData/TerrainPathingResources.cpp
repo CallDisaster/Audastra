@@ -744,7 +744,8 @@ Result<TerrainPathingResources> TerrainPathingResources::CaptureInputs(const Mem
                 if (oldSlot == newSlot && oldVertex.CliffVariation() == newVertex.CliffVariation()) continue;
                 const bool oldKnown = oldSlot < 15 && oldSlot < before.header.cliffTilesets.size();
                 const bool newKnown = newSlot < 15 && newSlot < after.header.cliffTilesets.size();
-                if ((!oldKnown || !newKnown) && native && !IsNativeTerrainCliffSentinelTransition(before, after, i))
+                if ((!oldKnown || !newKnown) && native && !IsNativeTerrainCliffSentinelTransition(before, after, i)
+                    && !IsNativeTerrainRemovedRampSentinelTransition(before, after, i))
                     Fail("TERRAIN_NATIVE_CLIFF_SLOT",
                         "悬崖材质变化需要实际有效旧/新槽；15号哨兵仅由完整原版重建核实：顶点" + std::to_string(i));
                 // 轻量捕获不为非法槽补造行，也不提前截断既有哨兵重建流程；

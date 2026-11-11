@@ -1215,8 +1215,9 @@ Status MapDataEditSession::VerifyTerrainCandidateForSave(
                     || ((before.CliffTextureIndex() >= oldHeader.cliffTilesets.size()
                         || after.CliffTextureIndex() >= newHeader.cliffTilesets.size()
                         || before.CliffTextureIndex() >= 15 || after.CliffTextureIndex() >= 15)
-                        && !IsNativeTerrainCliffSentinelTransition(*terrainOriginal_, *terrain, index))))
-                return reject("悬崖修改需要有效槽和0到2变体；未选材质哨兵只允许无坡道、边界或未知字段的平地完整邻域互转");
+                        && !IsNativeTerrainCliffSentinelTransition(*terrainOriginal_, *terrain, index)
+                        && !IsNativeTerrainRemovedRampSentinelTransition(*terrainOriginal_, *terrain, index))))
+                return reject("悬崖修改需要有效槽和0到2变体；未选材质哨兵只允许已核对的完整平地或已移除的干直坡坡脚互转");
             if (before.groundHeightRaw != after.groundHeightRaw
                 && ((before.groundHeightRaw | after.groundHeightRaw) & 0xc000) != 0)
                 return reject("高度修改超出现有14位可写范围，未知wire高度位必须原样保留");

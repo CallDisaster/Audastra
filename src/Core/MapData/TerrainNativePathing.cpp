@@ -9,6 +9,7 @@
 #include <new>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 namespace War3Map::MapData {
 namespace {
@@ -389,8 +390,52 @@ Result<TerrainNativeRampState> QueryNativeTerrainRamp(const TerrainGridSnapshot&
     });
 }
 
-bool IsNativeTerrainCliffSentinelTransition(
-    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::size_t index) noexcept {
+namespace {
+bool ValidCliffSentinelVertex(const TerrainGridSnapshot& grid, const TerrainVertex& v) noexcept {
+    return !v.extendedTextureLayout && !v.textureFlagsExtensionRaw && !(v.groundHeightRaw & 0xc000)
+        && !v.UnknownWaterFlags() && !v.IsBoundary() && !v.IsMapEdge()
+        && v.CliffLevel() <= 14 && v.CliffVariation() <= 2
+        && (v.CliffTextureIndex() == 15 || v.CliffTextureIndex() < grid.header.cliffTilesets.size());
+}
+
+bool RemovedDryStraightStrip(const TerrainGridSnapshot& dry, const TerrainGridSnapshot& changed,
+    int x, int y, int lowLevel, bool flooded, std::uint16_t waterHeight) noexcept {
+    const int width = int(dry.header.width), height = int(dry.header.height);
+    constexpr std::array directions{std::pair{1, 0}, std::pair{-1, 0}, std::pair{0, 1}, std::pair{0, -1}};
+    for (const auto& [dx, dy] : directions) {
+        // 低、低、高的三点条带；两侧必须是相同台阶，不能借这条规则接受转角或连接坡。
+        for (int position = 0; position < 2; ++position) {
+            bool matches = true;
+            for (int step = 0; step < 3 && matches; ++step) {
+                const int sx = x + (step - position) * dx, sy = y + (step - position) * dy;
+                if (sx < 1 || sy < 1 || sx + 1 >= width || sy + 1 >= height) { matches = false; break; }
+                const auto at = std::size_t(sy) * width + sx;
+                const auto& source = dry.vertices[at];
+                const auto& output = changed.vertices[at];
+                const auto level = lowLevel + (step == 2);
+                // 浅水淹没三点；单点降低只动坡道中点层级，两者都清掉整条R位。
+                const bool resultingShape = flooded ? output.HasWater() && output.CliffLevel() == lowLevel - 1
+                    && output.waterHeightAndFlagsRaw == waterHeight
+                    : !output.HasWater() && output.CliffLevel() == level - (step == 1)
+                    && output.waterHeightAndFlagsRaw == source.waterHeightAndFlagsRaw;
+                matches = ValidCliffSentinelVertex(dry, source) && ValidCliffSentinelVertex(changed, output)
+                    && source.IsRamp() && !source.HasWater() && source.CliffLevel() == level
+                    && !output.IsRamp() && resultingShape && output.groundHeightRaw == source.groundHeightRaw;
+                for (const int side : {-1, 1}) {
+                    const auto& neighbor = dry.vertices[std::size_t(sy + side * dx) * width + sx - side * dy];
+                    matches = matches && ValidCliffSentinelVertex(dry, neighbor) && !neighbor.IsRamp()
+                        && !neighbor.HasWater() && neighbor.CliffLevel() == level
+                        && neighbor.groundHeightRaw == source.groundHeightRaw;
+                }
+            }
+            if (matches) return true;
+        }
+    }
+    return false;
+}
+
+bool CliffSentinelTransition(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::size_t index, bool removedRampFoot) noexcept {
     const auto& header = before.header;
     if (header.version != 11 || after.header.version != 11
         || header.width < 3 || header.height < 3 || header.width > 2049 || header.height > 2049
@@ -408,22 +453,39 @@ bool IsNativeTerrainCliffSentinelTransition(
     const auto x = index % header.width, y = index / header.width;
     if (x == 0 || y == 0 || x + 1 >= header.width || y + 1 >= header.height) return false;
     const auto& sentinel = oldSlot == 15 ? before : after;
-    const auto level = sentinel.vertices[index].CliffLevel();
+    const auto& foot = sentinel.vertices[index];
+    const auto& output = concrete.vertices[index];
+    const auto level = foot.CliffLevel();
+    const bool flooded = output.HasWater();
+    if (removedRampFoot && (!level || foot.HasWater() || output.CliffLevel() + flooded != level
+        || (!flooded && output.waterHeightAndFlagsRaw != foot.waterHeightAndFlagsRaw)
+        || foot.groundHeightRaw != output.groundHeightRaw))
+        return false;
+    bool oldRamp = false;
     for (auto ny = y - 1; ny <= y + 1; ++ny) for (auto nx = x - 1; nx <= x + 1; ++nx) {
         const auto at = ny * header.width + nx;
         // 四个相邻地格全部平等价于其九个角点层级相同；只看轴向四邻会漏掉对角悬崖。
         if (sentinel.vertices[at].CliffLevel() != level) return false;
-        for (const auto* grid : {&before, &after}) {
-            const auto& vertex = grid->vertices[at];
-            if (vertex.extendedTextureLayout || vertex.textureFlagsExtensionRaw != 0
-                || (vertex.groundHeightRaw & 0xc000) != 0 || vertex.UnknownWaterFlags() != 0
-                || vertex.IsRamp() || vertex.IsBoundary() || vertex.IsMapEdge()
-                || vertex.CliffLevel() > 14 || vertex.CliffVariation() > 2
-                || (vertex.CliffTextureIndex() != 15 && vertex.CliffTextureIndex() >= grid->header.cliffTilesets.size()))
-                return false;
-        }
+        if (!ValidCliffSentinelVertex(sentinel, sentinel.vertices[at])
+            || !ValidCliffSentinelVertex(concrete, concrete.vertices[at]) || concrete.vertices[at].IsRamp())
+            return false;
+        if (!sentinel.vertices[at].IsRamp()) continue;
+        if (!removedRampFoot || !RemovedDryStraightStrip(sentinel, concrete, int(nx), int(ny), level,
+            flooded, output.waterHeightAndFlagsRaw)) return false;
+        oldRamp = true;
     }
-    return true;
+    return !removedRampFoot || oldRamp;
+}
+} // namespace
+
+bool IsNativeTerrainCliffSentinelTransition(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::size_t index) noexcept {
+    return CliffSentinelTransition(before, after, index, false);
+}
+
+bool IsNativeTerrainRemovedRampSentinelTransition(const TerrainGridSnapshot& before, const TerrainGridSnapshot& after,
+    std::size_t index) noexcept {
+    return CliffSentinelTransition(before, after, index, true);
 }
 
 namespace {

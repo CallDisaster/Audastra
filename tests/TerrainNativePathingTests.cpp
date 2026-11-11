@@ -648,6 +648,49 @@ void ValidationIsBoundedAndRejectsUnknownRules() {
 } // namespace
 
 namespace {
+void RemovedRampFootRequiresTheEntireStraightStrip() {
+    Fixture fixture(9, 9);
+    auto& dry = fixture.grid;
+    dry.header.cliffTilesets = {"CLdi"};
+    for (unsigned y = 0; y < 9; ++y) for (unsigned x = 0; x < 9; ++x)
+        dry.vertices[y * 9 + x].cliffAndLayerRaw = y < 4 ? 0xf2 : y == 4 ? 2 : 3;
+    for (unsigned y = 3; y <= 5; ++y) dry.vertices[y * 9 + 4].textureAndFlagsRaw |= 0x10;
+    auto wet = dry;
+    for (unsigned y = 2; y <= 6; ++y) for (unsigned x = 2; x <= 6; ++x) {
+        auto& v = wet.vertices[y * 9 + x];
+        v.textureAndFlagsRaw = 0x40;
+        v.waterHeightAndFlagsRaw = 8448;
+        v.cliffAndLayerRaw = 1;
+    }
+    const auto foot = 3 * 9 + 4;
+    Require(!IsNativeTerrainCliffSentinelTransition(dry, wet, foot),
+        "ordinary flat-only transitions must still reject a neighboring ramp");
+    Require(IsNativeTerrainRemovedRampSentinelTransition(dry, wet, foot)
+        && IsNativeTerrainRemovedRampSentinelTransition(wet, dry, foot),
+        "the completely flooded straight ramp foot can be saved and undone");
+    auto bad = wet;
+    bad.vertices[5 * 9 + 4].textureAndFlagsRaw |= 0x10;
+    Require(!IsNativeTerrainRemovedRampSentinelTransition(dry, bad, foot), "a surviving ramp head cannot pass");
+    bad = wet;
+    ++bad.vertices[5 * 9 + 4].waterHeightAndFlagsRaw;
+    Require(!IsNativeTerrainRemovedRampSentinelTransition(dry, bad, foot), "a different water plane cannot pass");
+    bad = dry;
+    bad.vertices[5 * 9 + 5].cliffAndLayerRaw = 2;
+    Require(!IsNativeTerrainRemovedRampSentinelTransition(bad, wet, foot), "a corner is not a straight strip");
+    bad = dry;
+    bad.vertices[3 * 9 + 3].waterHeightAndFlagsRaw |= 0x8000;
+    Require(!IsNativeTerrainRemovedRampSentinelTransition(bad, wet, foot), "unknown source flags cannot pass");
+    auto lowered = dry;
+    for (unsigned y = 3; y <= 5; ++y) lowered.vertices[y * 9 + 4].textureAndFlagsRaw &= ~0x10;
+    lowered.vertices[foot].cliffAndLayerRaw = 2;
+    lowered.vertices[4 * 9 + 4].cliffAndLayerRaw = 1;
+    Require(IsNativeTerrainRemovedRampSentinelTransition(dry, lowered, foot)
+        && IsNativeTerrainRemovedRampSentinelTransition(lowered, dry, foot),
+        "lowering just the middle vertex clears the same ramp and permits undo");
+    lowered.vertices[4 * 9 + 4].cliffAndLayerRaw = 2;
+    Require(!IsNativeTerrainRemovedRampSentinelTransition(dry, lowered, foot), "bare R-bit deletion grants no material change");
+}
+
 void RegionsMatchFullNativeOutput() {
     Fixture fixture(7, 6);
     fixture.Wet(8256);
@@ -681,6 +724,7 @@ int main() {
         DryRampCellsUseCornerWeightsAndExistingLayers();
         WetRampOffsetsAndStrictWaterHaveLiteralOracles();
         CliffSentinelTransitionsRequireFlatKnownNeighborhoods();
+        RemovedRampFootRequiresTheEntireStraightStrip();
         SixModesUseTheirDistinctRules();
         NearestVertexDiffersFromTileOwner();
         StrictWaterRequiresAllFourCorners();

@@ -74,6 +74,10 @@ struct TerrainNativeRampState {
 [[nodiscard]] bool IsNativeTerrainCliffSentinelTransition(
     const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::size_t index) noexcept;
 
+// 完整原版通行重建还可核对被降一级笔刷或水刷移除的干直坡坡脚；普通块粘贴不使用此例外。
+[[nodiscard]] bool IsNativeTerrainRemovedRampSentinelTransition(
+    const TerrainGridSnapshot& before, const TerrainGridSnapshot& after, std::size_t index) noexcept;
+
 struct TerrainNativePathingInput {
     const TerrainGridSnapshot* terrain = nullptr;
     TerrainNativePlayableBounds playableBounds;
