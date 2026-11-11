@@ -34,6 +34,7 @@ struct CampaignCommand {
     std::filesystem::path mapSource;
     std::vector<MemberReplacement> replacements; // 共享物编/资源批次；不允许任意内部成员。
     std::vector<std::string> removals;
+    std::vector<StableId> ids; // RemoveMap / RemoveButton 批次，与 id 互斥。
 };
 
 struct CampaignMemberInfo {
@@ -61,6 +62,7 @@ public:
     [[nodiscard]] CampaignRevision Revision() const;
     [[nodiscard]] const Campaign::CampaignInfo& Info() const noexcept { return state_.info; }
     [[nodiscard]] const std::filesystem::path& SourcePath() const noexcept;
+    [[nodiscard]] std::string_view SourceSha256() const noexcept;
     [[nodiscard]] const std::vector<Diagnostic>& Diagnostics() const noexcept { return diagnostics_; }
     [[nodiscard]] bool Dirty() const { return edits_.IsDirty(EditSaveTarget::Map); }
     [[nodiscard]] bool CanUndo() const noexcept { return cursor_ != 0; }

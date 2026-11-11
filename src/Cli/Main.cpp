@@ -6,6 +6,7 @@
 #include "War3MapCore/Game/GameDataSource.h"
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/IO/FileBytes.h"
+#include "War3MapCore/Services/CampaignService.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
 #include "War3MapCore/Render/MdxModel.h"
 #include "War3MapCore/Render/MdxPose.h"
@@ -203,6 +204,44 @@ std::optional<std::uint64_t> ParseUnsignedArgument(std::wstring_view argument) {
     return value;
 }
 
+int RunCampaignRemoval(int argc, wchar_t** argv) {
+    using namespace War3Map::Services;
+    const bool list = std::wstring_view(argv[1]) == L"campaign-list";
+    if ((list && argc != 3) || (!list && (argc < 7 || argc > 4102))) {
+        std::cerr << "campaign-list <source.w3n>\n"
+            "campaign-remove <source.w3n> <source-sha256> <candidate.w3n> <map|button> <id>...\n";
+        return 2;
+    }
+    const auto opened = CampaignSession::Open(argv[2]);
+    if (!opened.Succeeded()) { PrintDiagnostics(opened.diagnostics); return 1; }
+    auto& session = **opened.value;
+    if (list) {
+        std::cout << "source_sha256=" << session.SourceSha256() << '\n';
+        for (const auto& map : session.Info().maps) std::cout << "map\t" << map.id << '\t' << map.path << '\n';
+        for (const auto& button : session.Info().buttons) std::cout << "button\t" << button.id << '\t' << button.mapPath << '\n';
+        return 0;
+    }
+    if (session.SourceSha256() != Utf8Argument(argv[3])) {
+        std::cerr << "CAMPAIGN_SOURCE_STALE: source SHA-256 does not match\n";
+        return 1;
+    }
+    const std::wstring_view kind = argv[5];
+    if (kind != L"map" && kind != L"button") return 2;
+    CampaignCommand command;
+    command.operation = kind == L"map" ? CampaignOperation::RemoveMap : CampaignOperation::RemoveButton;
+    for (int i = 6; i < argc; ++i) {
+        const auto id = ParseUnsignedArgument(argv[i]);
+        if (!id || !*id) { std::cerr << "CAMPAIGN_REMOVE_IDS: invalid decimal identity\n"; return 2; }
+        command.ids.push_back(*id);
+    }
+    const auto removed = session.Apply(session.Revision(), command);
+    if (!removed.Succeeded()) { PrintDiagnostics(removed.diagnostics); return 1; }
+    const auto saved = session.Save(session.Revision(), argv[4], false);
+    if (!saved.Succeeded()) { PrintDiagnostics(saved.diagnostics); return 1; }
+    std::cout << "candidate_sha256=" << saved.value->written.sha256 << '\n';
+    return 0;
+}
+
 std::optional<War3Map::ObjectData::ObjectType> ParseObjectType(
     const std::wstring& name) {
     using War3Map::ObjectData::ObjectType;
@@ -353,6 +392,7 @@ int wmain(int argc, wchar_t** argv) {
         return 0;
     }
     if (command == L"archive-session-inspect") return RunArchiveInspectCommand(argc, argv);
+    if (command == L"campaign-list" || command == L"campaign-remove") return RunCampaignRemoval(argc, argv);
     if (command == L"archive-member-add") return War3Map::Cli::RunArchiveMemberAdd(argc, argv);
     if (command == L"archive-member-remove") return War3Map::Cli::RunArchiveMemberRemove(argc, argv);
     if (command == L"archive-expand") return War3Map::Cli::RunArchiveExpand(argc, argv);

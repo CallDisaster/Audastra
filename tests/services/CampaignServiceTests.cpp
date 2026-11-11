@@ -144,6 +144,45 @@ void NoPartial(const std::filesystem::path& root) {
     for (const auto& entry : std::filesystem::directory_iterator(root))
         Require(!entry.path().filename().wstring().starts_with(L".forge-candidate-"), "failed publication left a temporary archive");
 }
+void BatchRemovalUsesOneHistoryEntry() {
+    TemporaryDirectory temporary;
+    const auto chapter = Chapter(temporary.path, "source.w3x", "original chapter");
+    auto session = CampaignSession::Create();
+    const auto one = AddMap(*session, chapter, "one.w3x");
+    const auto two = AddMap(*session, chapter, "two.w3x");
+    const auto three = AddMap(*session, chapter, "three.w3x");
+    const auto menu = AddButton(*session, "three.w3x", "Third chapter");
+    CampaignCommand batch;
+    batch.operation = CampaignOperation::RemoveMap;
+    batch.ids = {one, three};
+    const auto revision = session->Revision();
+    const auto history = session->HistorySize();
+    const auto rejected = session->Apply(revision, batch);
+    Require(!rejected.Succeeded() && !rejected.diagnostics.empty()
+        && rejected.diagnostics.front().code == "CAMPAIGN_MAP_REFERENCED", "one referenced chapter rejects the batch");
+    Require(session->Revision() == revision && session->HistorySize() == history && session->Info().maps.size() == 3,
+        "rejected batch has no partial changes");
+    batch.ids = {two, two};
+    Require(!session->Apply(revision, batch).Succeeded() && session->Revision() == revision, "duplicate ids reject without mutation");
+    batch.ids = {one, two};
+    (void)Good(session->Apply(revision, batch));
+    Require(session->HistorySize() == history + 1 && session->Info().maps.size() == 1
+        && session->Info().maps.front().id == three && session->Info().buttons.front().id == menu,
+        "one edit removes the two chapters and leaves the survivor and its button");
+    Good(session->Undo(session->Revision()));
+    Require(session->Info().maps.size() == 3 && session->Info().maps[0].id == one && session->Info().maps[1].id == two,
+        "one undo restores both chapters in order");
+    Good(session->Redo(session->Revision()));
+    const auto path = temporary.path / "batch.w3n";
+    const auto saved = Good(session->Save(session->Revision(), path, false));
+    auto reopened = Good(CampaignSession::Open(path));
+    Require(reopened->SourceSha256() == saved.written.sha256 && reopened->Info().maps.size() == 1
+        && reopened->Info().maps.front().path == "three.w3x", "saved campaign reopens with exact survivor");
+    Require(!reopened->ReadMember(reopened->Revision(), "one.w3x").Succeeded()
+        && !reopened->ReadMember(reopened->Revision(), "two.w3x").Succeeded()
+        && Good(reopened->ReadMember(reopened->Revision(), "three.w3x")) == Read(chapter),
+        "removed chapters absent from MPQ and survivor retained byte for byte");
+}
 void EditingIdentityHistoryAndFailure() {
     TemporaryDirectory temporary;
     const auto first = Chapter(temporary.path, "first.w3x", "chapter one");
@@ -306,7 +345,8 @@ void OpaqueHeaderAndChangedSource() {
 
 int main() {
     try {
-        CodecRoundTripAndRejection(); EditingIdentityHistoryAndFailure(); SharedDataHeaderAndSaveUndo(); OpaqueHeaderAndChangedSource();
+        CodecRoundTripAndRejection(); EditingIdentityHistoryAndFailure(); BatchRemovalUsesOneHistoryEntry();
+        SharedDataHeaderAndSaveUndo(); OpaqueHeaderAndChangedSource();
         std::cout << "Campaign codec, identity, shared data, header, atomic save and history checks passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

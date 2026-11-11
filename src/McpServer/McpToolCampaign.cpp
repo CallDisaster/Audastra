@@ -223,7 +223,9 @@ std::vector<ToolDefinition> CampaignToolDefinitions(McpServer& server) {
             return result;
         });
     add("edit_campaign", "通过同一事务编辑战役设置、章节、菜单、资源及共享物编。set_object_field 修改精确既有字段；replace_shared_objects 导入一类原生物编。旧修订拒绝。", ToolPermission::Edit,
-        BasicSchema({{"document", text}, {"revision", text}, {"operation", text}, {"id", text}, {"position", integer},
+        BasicSchema({{"document", text}, {"revision", text}, {"operation", text}, {"id", text},
+            {"ids", QJsonObject{{"type", "array"}, {"items", text}, {"minItems", 1}, {"maxItems", 4096},
+                {"description", "remove_map / remove_button 的批量身份，与 id 互斥。"}}}, {"position", integer},
             {"path", text}, {"source_path", text}, {"name", text}, {"difficulty", text}, {"author", text}, {"description", text},
             {"chapter_title", text}, {"map_title", text}, {"visible", QJsonObject{{"type", "boolean"}}},
             {"background_id", QJsonObject{{"type", "integer"}}}, {"background_path", text}, {"minimap_path", text},
@@ -237,6 +239,17 @@ std::vector<ToolDefinition> CampaignToolDefinitions(McpServer& server) {
             Services::CampaignCommand command; const auto operation = p["operation"].toString();
             command.id = Number(p["id"]).value_or(0); command.path = Utf8(p["path"]);
             if (p.contains("id") && !Number(p["id"])) return Failure("CAMPAIGN_ID_INVALID", "id 必须是十进制字符串。");
+            if (p.contains("ids")) {
+                const auto values = p["ids"].toArray();
+                if (p.contains("id") || values.isEmpty() || values.size() > 4096
+                    || (operation != "remove_map" && operation != "remove_button"))
+                    return Failure("CAMPAIGN_REMOVE_IDS", "批量移除须指定 ids，且不能同时指定 id。");
+                for (const auto& value : values) {
+                    const auto id = Number(value);
+                    if (!id || !*id) return Failure("CAMPAIGN_REMOVE_IDS", "ids 必须为非零十进制字符串。");
+                    command.ids.push_back(*id);
+                }
+            }
             if (p.contains("position") && (!p["position"].isDouble() || p["position"].toDouble(-1) < 0 || p["position"].toDouble() > 4096 || std::floor(p["position"].toDouble()) != p["position"].toDouble()))
                 return Failure("CAMPAIGN_POSITION_INVALID", "position 必须是有效整数。");
             command.position = static_cast<std::size_t>(p["position"].toInt());

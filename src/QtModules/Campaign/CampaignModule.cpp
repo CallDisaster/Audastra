@@ -155,7 +155,7 @@ void CampaignModule::BuildPage() {
             : QStringList{tr("地图身份"), tr("地图路径"), tr("菜单入口数")});
         table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
         table->horizontalHeader()->setStretchLastSection(true); table->setSelectionBehavior(QAbstractItemView::SelectRows);
-        table->setSelectionMode(QAbstractItemView::SingleSelection); table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->setSelectionMode(QAbstractItemView::ExtendedSelection); table->setEditTriggers(QAbstractItemView::NoEditTriggers);
         area->addWidget(table); tabs_->addTab(container, menu ? tr("菜单") : tr("章节"));
         if (menu) buttons_ = table; else maps_ = table;
         connect(table, &QTableWidget::cellDoubleClicked, this, [this, menu](int, int) { if (menu) EditButton(false); else (void)OpenChapter(SelectedId(false)); });

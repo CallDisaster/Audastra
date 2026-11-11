@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QScopedValueRollback>
 #include <QTableWidget>
+#include <QItemSelectionModel>
 #include <QTemporaryDir>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -106,9 +107,17 @@ void CampaignModule::EditButton(bool create) {
     (void)dialog.exec();
 }
 void CampaignModule::RemoveSelection(bool menu) {
+    const auto table = menu ? buttons_ : maps_;
+    if (!table || !table->selectionModel()) return;
     Services::CampaignCommand command;
     command.operation = menu ? Services::CampaignOperation::RemoveButton : Services::CampaignOperation::RemoveMap;
-    command.id = SelectedId(menu); if (command.id) (void)ApplyCommand(command);
+    for (const auto& row : table->selectionModel()->selectedRows(0)) {
+        bool ok = false;
+        const auto id = row.data().toULongLong(&ok);
+        if (!ok || !id) { Notice(tr("选中项的身份无效，请重新选择。")); return; }
+        command.ids.push_back(id);
+    }
+    if (!command.ids.empty()) (void)ApplyCommand(command);
 }
 void CampaignModule::MoveSelection(bool menu, int delta) {
     const auto table = menu ? buttons_ : maps_; if (!table || table->currentRow() < 0) return;
