@@ -7,6 +7,7 @@ if(WAR3MAPEDITOR_BUILD_TESTS)
     set(runtime_targets audastra-runtime-fixture-tests audastra-runtime-witness-tests
         audastra-window-input-isolation-tests
         audastra-external-native-provider-tests
+        audastra-ui-number-format-tests audastra-hook-chain-tests audastra-module-entry-tests
         audastra-own-lua-protocol-tests audastra-own-lua-host-tests audastra-own-lua-native-tests
         audastra-own-lua-archive-tests audastra-own-lua-callback-tests audastra-own-lua-type-tests
         audastra-own-lua-code-tests audastra-own-lua-launch-tests audastra-game-ui-tests audastra-game-input-tests audastra-japi-runtime-tests
