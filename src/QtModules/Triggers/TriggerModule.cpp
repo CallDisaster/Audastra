@@ -462,7 +462,7 @@ void TriggerModule::ShowSelectedEca() {
     const QModelIndex index = ecaView_->currentIndex();
     const auto* eca = ecaModel_->EcaAt(index);
     editEcaButton_->setEnabled(eca != nullptr && !eca->uiSource.empty());
-    if (eca != nullptr && !syncingSelection_ && BlueprintVisible()) {
+    if (eca != nullptr && !syncingSelection_ && !restoringEcaSelection_ && BlueprintVisible()) {
         blueprint_->Select(eca->id);
     }
 }

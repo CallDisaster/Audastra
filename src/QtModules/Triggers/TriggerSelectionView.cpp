@@ -1,6 +1,7 @@
 #include "TriggerModule.h"
 
 #include "EditorProject.h"
+#include "TriggerBlueprint.h"
 #include "TriggerActionHelpers.h"
 #include "TriggerModels.h"
 
@@ -263,8 +264,8 @@ std::vector<StableId> TriggerModule::SelectedEcaIds() const {
     if (document == nullptr || displayedTrigger_ == 0 || !page_) {
         return {};
     }
-    // 蓝图只有一个当前语句；传统视图按选区。
-    std::vector<StableId> ids = BlueprintVisible() ? std::vector<StableId>{} : ecaSelection_;
+    if (BlueprintVisible()) return Trigger::NormalizeEcaSelection(*document, displayedTrigger_, blueprint_->SelectedEcas()).ids;
+    std::vector<StableId> ids = ecaSelection_;
     if (ids.empty()) {
         if (const auto* eca = ecaModel_->EcaAt(ecaView_->currentIndex())) ids.push_back(eca->id);
     }
@@ -276,7 +277,8 @@ std::vector<StableId> TriggerModule::SelectedEcaRowIds() const {
     if (document == nullptr || displayedTrigger_ == 0 || !page_) {
         return {};
     }
-    std::vector<StableId> ids = BlueprintVisible() ? std::vector<StableId>{} : ecaSelection_;
+    if (BlueprintVisible()) return blueprint_->SelectedEcas();
+    std::vector<StableId> ids = ecaSelection_;
     if (ids.empty()) {
         if (const auto* eca = ecaModel_->EcaAt(ecaView_->currentIndex())) ids.push_back(eca->id);
     }
@@ -290,6 +292,7 @@ void TriggerModule::SelectEcas(const std::vector<StableId>& ecaIds) {
     }
     ecaSelection_ = ecaIds;
     RestoreEcaSelection(ecaModel_->IndexForStableId(ecaIds.front()));
+    if (BlueprintVisible()) blueprint_->SetSelection(ecaSelection_, ecaIds.front(), true);
 }
 
 bool TriggerModule::HandleSelectionInput(QObject* watched, QEvent* event) {

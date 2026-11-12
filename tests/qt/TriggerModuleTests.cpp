@@ -2428,10 +2428,72 @@ void TriggerModuleTests::BlueprintLaysOutAndSyncs() {
     QCOMPARE(blueprint->NodeCount(), std::size_t{5});
     Snapshot(page, "trigger-blueprint");
 
+    blueprint->Fit();
+    const auto nodePoint = [&](StableId id) {
+        return blueprint->mapFromScene(blueprint->NodeRect(id).topLeft() + QPointF(45, 12));
+    };
+    QTest::mouseClick(canvas, Qt::LeftButton, {}, nodePoint(plain));
+    const auto hiddenRows = view->selectionModel()->selectedRows();
+    QTest::mouseClick(canvas, Qt::LeftButton, Qt::ControlModifier, nodePoint(then));
+    QCOMPARE(blueprint->SelectedEcas().size(), std::size_t{2});
+    QCOMPARE(view->selectionModel()->selectedRows(), hiddenRows);
+    QTest::mouseClick(canvas, Qt::LeftButton, Qt::ShiftModifier, nodePoint(plain));
+    QCOMPARE(blueprint->SelectedEca(), then);
+    QCOMPARE(blueprint->SelectedEcas().size(), std::size_t{1});
+    QTest::mouseClick(canvas, Qt::LeftButton, Qt::ShiftModifier, nodePoint(plain));
+    QCOMPARE(blueprint->SelectedEcas().size(), std::size_t{2});
+
+    const int beforeGroup = project.triggerUndoStack_->index();
+    drag(blueprint->PinViewPos(plain, QStringLiteral("输入")), blueprint->PinViewPos(block, QStringLiteral("否则 - 动作")));
+    QCOMPARE(project.triggerUndoStack_->index(), beforeGroup + 1);
+    QCOMPARE(parentOf(plain), block);
+    QCOMPARE(Trigger::TriggerDocumentEditor::FindEca(document, then)->childId.value_or(-1), 2);
+    project.triggerUndoStack_->undo();
+    QCOMPARE(parentOf(plain), StableId{0});
+    QCOMPARE(Trigger::TriggerDocumentEditor::FindEca(document, then)->childId.value_or(-1), 1);
+
+    // 从左侧空白框到根动作的标题内，不卷入右侧分支，也不平移。
+    blueprint->Fit();
+    const auto plainBox = blueprint->NodeRect(plain);
+    const auto blockBox = blueprint->NodeRect(block);
+    drag(blueprint->mapFromScene(plainBox.topLeft() - QPointF(25, 7)),
+        blueprint->mapFromScene(blockBox.topLeft() + QPointF(50, 12)));
+    auto boxed = blueprint->SelectedEcas();
+    QCOMPARE(boxed.size(), std::size_t{2});
+    QVERIFY(std::ranges::find(boxed, plain) != boxed.end());
+    QVERIFY(std::ranges::find(boxed, block) != boxed.end());
+    const int beforeEnabled = project.triggerUndoStack_->index();
+    module.SetSelectedEcaEnabled(false);
+    QCOMPARE(project.triggerUndoStack_->index(), beforeEnabled + 1);
+    QVERIFY(!Trigger::TriggerDocumentEditor::FindEca(document, plain)->enabled);
+    QVERIFY(!Trigger::TriggerDocumentEditor::FindEca(document, block)->enabled);
+    project.triggerUndoStack_->undo();
+    QVERIFY(Trigger::TriggerDocumentEditor::FindEca(document, plain)->enabled);
+    QVERIFY(Trigger::TriggerDocumentEditor::FindEca(document, block)->enabled);
+
+    module.SelectEcas({plain, block});
+    module.CopySelectedEca(false);
+    const int beforePaste = project.triggerUndoStack_->index();
+    module.PasteEca();
+    QCOMPARE(project.triggerUndoStack_->index(), beforePaste + 1);
+    QCOMPARE(blueprint->SelectedEcas().size(), std::size_t{2});
+    project.triggerUndoStack_->undo();
+    QCOMPARE(blueprint->NodeCount(), std::size_t{5});
+    module.SelectEcas({plain, then});
+    const int beforeDelete = project.triggerUndoStack_->index();
+    module.DeleteSelectedEca();
+    QCOMPARE(project.triggerUndoStack_->index(), beforeDelete + 1);
+    QVERIFY(!Trigger::TriggerDocumentEditor::FindEca(document, plain));
+    QVERIFY(!Trigger::TriggerDocumentEditor::FindEca(document, then));
+    project.triggerUndoStack_->undo();
+    QCOMPARE(blueprint->NodeCount(), std::size_t{5});
+    module.SelectEcas({plain, block});
+
     // 视图状态记住蓝图。
     QCOMPARE(module.SaveViewState()["view"].toString(), QStringLiteral("blueprint"));
     module.SetBlueprintVisible(false);
     QVERIFY(view->isVisible() && !blueprint->isVisible());
+    QCOMPARE(view->selectionModel()->selectedRows().size(), 2);
     view->expandAll();
     Snapshot(page, "trigger-traditional");
 }

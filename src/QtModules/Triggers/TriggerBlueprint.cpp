@@ -79,20 +79,13 @@ TriggerBlueprint::TriggerBlueprint(QWidget* parent)
     setObjectName("triggerBlueprint");
     setScene(scene_);
     setRenderHints(QPainter::Antialiasing | QPainter::TextAntialiasing);
-    setDragMode(QGraphicsView::ScrollHandDrag);
+    setDragMode(QGraphicsView::NoDrag);
     setTransformationAnchor(QGraphicsView::AnchorUnderMouse);
     setViewportUpdateMode(QGraphicsView::SmartViewportUpdate);
     setFocusPolicy(Qt::StrongFocus);
     // 缩放比例挂在视图本身而不是视口上：视口的子控件会随滚动一起移动。
     zoomLabel_ = new QLabel(this);
     zoomLabel_->setObjectName("blueprintZoom");
-    connect(scene_, &QGraphicsScene::selectionChanged, this, [this]() {
-        if (selecting_ || !callbacks_.selected) return;
-        const auto items = scene_->selectedItems();
-        if (!items.isEmpty()) {
-            if (auto* node = dynamic_cast<Node*>(items.front()); node != nullptr && node->Id() != 0) callbacks_.selected(node->Id());
-        }
-    });
     UpdateZoomLabel();
 }
 
@@ -108,6 +101,8 @@ void TriggerBlueprint::SetSource(const War3Map::Trigger::TriggerDocument* docume
     catalog_ = catalog;
     triggerId_ = 0;
     fitted_ = false;
+    CancelViewGesture();
+    selectionFocus_ = 0;
     dragPin_ = nullptr;
     dragWire_ = nullptr;
     nodes_.clear();
@@ -251,8 +246,9 @@ TriggerBlueprint::Placed TriggerBlueprint::LayoutChain(
 void TriggerBlueprint::ShowTrigger(War3Map::StableId triggerId) {
     const bool sameTrigger = triggerId == triggerId_ && fitted_;
     const QPointF center = mapToScene(viewport()->rect().center());
-    const War3Map::StableId selected = SelectedEca();
-    selecting_ = true;
+    const auto selected = sameTrigger ? SelectedEcas() : std::vector<War3Map::StableId>{};
+    const auto focus = sameTrigger ? SelectedEca() : 0;
+    CancelViewGesture();
     dragPin_ = nullptr;
     dragWire_ = nullptr;
     scene_->clear();
@@ -309,30 +305,44 @@ void TriggerBlueprint::ShowTrigger(War3Map::StableId triggerId) {
         if (chain.first != nullptr) AddWire(flow, chain.first->FindPin(PinKind::In), KindColor(2, false));
     }
     scene_->setSceneRect(scene_->itemsBoundingRect().adjusted(-80, -80, 400, 300));
-    selecting_ = false;
     if (sameTrigger) {
         centerOn(center);
     } else {
         Fit();
     }
-    if (selected != 0) Select(selected, false);
+    SetSelection(selected, focus);
 }
 
 void TriggerBlueprint::Select(War3Map::StableId ecaId, bool center) {
-    selecting_ = true;
+    SetSelection(ecaId ? std::vector{ecaId} : std::vector<War3Map::StableId>{}, ecaId, center);
+}
+
+void TriggerBlueprint::SetSelection(const std::vector<War3Map::StableId>& ids, War3Map::StableId focus, bool center) {
     scene_->clearSelection();
-    if (const auto found = nodes_.find(ecaId); found != nodes_.end()) {
-        found->second->setSelected(true);
-        if (center) ensureVisible(found->second, 60, 60);
+    selectionFocus_ = 0;
+    for (const auto id : ids) {
+        if (const auto found = nodes_.find(id); found != nodes_.end()) {
+            found->second->setSelected(true);
+            if (!selectionFocus_ || id == focus) selectionFocus_ = id;
+        }
     }
-    selecting_ = false;
+    if (center && selectionFocus_) ensureVisible(nodes_.at(selectionFocus_), 60, 60);
+}
+
+std::vector<War3Map::StableId> TriggerBlueprint::SelectedEcas() const {
+    std::vector<War3Map::StableId> ids;
+    for (const auto* item : scene_->selectedItems()) {
+        if (const auto* node = dynamic_cast<const Node*>(item); node && node->Id()) ids.push_back(node->Id());
+    }
+    std::ranges::sort(ids);
+    return ids;
 }
 
 War3Map::StableId TriggerBlueprint::SelectedEca() const {
-    const auto items = scene_->selectedItems();
-    if (items.isEmpty()) return 0;
-    const auto* node = dynamic_cast<const Node*>(items.front());
-    return node == nullptr ? 0 : node->Id();
+    if (const auto found = nodes_.find(selectionFocus_); found != nodes_.end() && found->second->isSelected())
+        return selectionFocus_;
+    const auto ids = SelectedEcas();
+    return ids.empty() ? 0 : ids.front();
 }
 
 void TriggerBlueprint::Fit() {

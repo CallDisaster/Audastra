@@ -16,6 +16,7 @@
 class QGraphicsPathItem;
 class QGraphicsScene;
 class QLabel;
+class QRubberBand;
 
 // 蓝图视图（对应原型 TriggerCanvas）。WTG 不保存节点坐标，蓝图按语句结构自动布局：
 // 事件 → 触发条件 → 动作链纵向排列；块语句的每个分支（则 / 否则 / 循环 / 参数 / 条件）是节点右侧的输出端口，
@@ -26,7 +27,7 @@ class TriggerBlueprint final : public QGraphicsView {
 public:
     using PinTarget = TriggerBlueprintDetail::PinTarget;
     struct Callbacks {
-        std::function<void(War3Map::StableId ecaId)> selected;
+        std::function<void(const std::vector<War3Map::StableId>& ids, War3Map::StableId focus)> selected;
         // 点击节点里的参数记号：参数序号与记号附近的全局矩形。
         std::function<void(War3Map::StableId ecaId, std::size_t position, const QRect& anchor)> argument;
         // Scalar arguments edit inside the node. Returning false keeps the full value panel.
@@ -52,6 +53,8 @@ public:
     // 按当前文档重建布局；保持缩放，尽量保持视口中心。
     void ShowTrigger(War3Map::StableId triggerId);
     void Select(War3Map::StableId ecaId, bool center = true);
+    void SetSelection(const std::vector<War3Map::StableId>& ids, War3Map::StableId focus, bool center = false);
+    [[nodiscard]] std::vector<War3Map::StableId> SelectedEcas() const;
     [[nodiscard]] War3Map::StableId SelectedEca() const;
     void Fit();
     void ZoomBy(double factor);
@@ -74,6 +77,8 @@ public:
 protected:
     void wheelEvent(QWheelEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -101,6 +106,8 @@ private:
     [[nodiscard]] Node* ProbeNode(War3Map::StableId ecaId) const;
     [[nodiscard]] std::vector<PinTarget> RootTargets() const;
     void FinishPinDrag(const QPoint& viewPos);
+    void PublishSelection();
+    void CancelViewGesture();
     void UpdateZoomLabel();
 
     QGraphicsScene* scene_ = nullptr;
@@ -114,7 +121,14 @@ private:
     std::unordered_map<War3Map::StableId, Node*> nodes_;
     std::size_t wires_ = 0;
     bool fitted_ = false;
-    bool selecting_ = false;
+    War3Map::StableId selectionFocus_ = 0;
+    QRubberBand* rubberBand_ = nullptr;
+    QPoint gestureOrigin_;
+    QPoint panLast_;
+    Qt::MouseButton panButton_ = Qt::NoButton;
+    bool spaceDown_ = false;
+    bool rubberToggle_ = false;
+    bool multiClick_ = false;
     // 正在从端口拉线。
     Pin* dragPin_ = nullptr;
     QPoint dragStart_;
