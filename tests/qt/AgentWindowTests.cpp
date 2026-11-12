@@ -83,6 +83,13 @@ QTreeWidgetItem* FindDetail(QTreeWidget* tree, const QString& title) {
     return nullptr;
 }
 
+QLabel* FindLabel(const QWidget& root, const QString& accessibleName) {
+    for (auto* label : root.findChildren<QLabel*>()) {
+        if (label->accessibleName() == accessibleName) return label;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 class AgentWindowTests final : public QObject {
@@ -123,6 +130,10 @@ private slots:
     void legacyHistoryMigrationIsReadOnlyAndDoesNotResurrectArchive();
     void controllerRestoresSelectedConversationsWithoutNetwork();
     void contextPopoverUsesActualUsageAndKeyboard();
+    void connectorRowsShowOnlyReportedServiceState();
+    void usageWithoutBreakdownIsNotAttributedToInput();
+    void stoppedAndUnresolvedToolsAreNotCountedAsSuccess();
+    void sharedThemeAndLabelsWithoutHintText();
 };
 
 void AgentWindowTests::initTestCase() {
@@ -1321,6 +1332,226 @@ void AgentWindowTests::contextPopoverUsesActualUsageAndKeyboard() {
     QCOMPARE(fraction->text(), QStringLiteral("暂无用量数据"));
     QVERIFY(!breakdown->isVisible());
     QTest::keyClick(popup, Qt::Key_Escape);
+}
+
+void AgentWindowTests::connectorRowsShowOnlyReportedServiceState() {
+    AgentWindow window;
+    auto settings = TestSettings();
+    settings.mcpEnabled = true;
+    settings.disabledTools = {QStringLiteral("objects_delete"), QStringLiteral("removed_tool")};
+    window.SetSettings(settings);
+    auto* builtin = FindLabel(window, QStringLiteral("编辑器内置工具状态"));
+    auto* mcp = window.findChild<QPushButton*>(QStringLiteral("agentInspectorLinkBtn"));
+    const auto dots = window.findChildren<QLabel*>(QStringLiteral("agentConnectorDot"));
+    QVERIFY(builtin && mcp);
+    QCOMPARE(dots.size(), 2);
+    // 宿主推送实际状态之前，不按设置显示“已就绪”、端口或绿点。
+    QCOMPARE(builtin->text(), QStringLiteral("—"));
+    QCOMPARE(mcp->text(), QStringLiteral("—"));
+    QVERIFY(!dots.at(0)->property("active").toBool());
+    QVERIFY(!dots.at(1)->property("active").toBool());
+
+    AgentConnectorStatus status;
+    status.mcpListening = false;
+    status.mcpError = QStringLiteral("端口已被占用");
+    status.registeredTools = 12;
+    status.disabledTools = 1;
+    window.SetConnectorStatus(status);
+    QCOMPARE(builtin->text(), QStringLiteral("禁用 1 项"));
+    QVERIFY(dots.at(0)->property("active").toBool());
+    QCOMPARE(mcp->text(), QStringLiteral("未运行 · 配置"));
+    QCOMPARE(mcp->toolTip(), status.mcpError);
+    QVERIFY(!dots.at(1)->property("active").toBool());
+
+    // 监听地址取实际端点，而不是设置里的端口。
+    status.mcpListening = true;
+    status.mcpEndpoint = QStringLiteral("http://127.0.0.1:18564/mcp");
+    status.mcpError.clear();
+    status.disabledTools = 0;
+    window.SetConnectorStatus(status);
+    QCOMPARE(builtin->text(), QStringLiteral("已就绪"));
+    QCOMPARE(mcp->text(), QStringLiteral("127.0.0.1:18564"));
+    QVERIFY(dots.at(1)->property("active").toBool());
+
+    status.disabledTools = status.registeredTools;
+    window.SetConnectorStatus(status);
+    QCOMPARE(builtin->text(), QStringLiteral("全部禁用"));
+    QVERIFY(!dots.at(0)->property("active").toBool());
+
+    settings.aiEnabled = false;
+    window.SetSettings(settings);
+    QCOMPARE(builtin->text(), QStringLiteral("未启用"));
+    QVERIFY(!dots.at(0)->property("active").toBool());
+    QCOMPARE(mcp->text(), QStringLiteral("127.0.0.1:18564"));
+}
+
+void AgentWindowTests::usageWithoutBreakdownIsNotAttributedToInput() {
+    AgentWindow window;
+    auto settings = TestSettings();
+    settings.providers[0].models[0].contextOverride = 258000;
+    window.SetSettings(settings);
+    auto* input = FindLabel(window, QStringLiteral("输入上下文 用量"));
+    auto* inputShare = FindLabel(window, QStringLiteral("输入上下文 占比"));
+    auto* cache = FindLabel(window, QStringLiteral("缓存命中 用量"));
+    auto* output = FindLabel(window, QStringLiteral("模型输出 用量"));
+    auto* remaining = FindLabel(window, QStringLiteral("剩余空间 用量"));
+    auto* remainingShare = FindLabel(window, QStringLiteral("剩余空间 占比"));
+    auto* fraction = window.findChild<QLabel*>(QStringLiteral("agentContextFraction"));
+    QVERIFY(input && inputShare && cache && output && remaining && remainingShare && fraction);
+    // 用量未知时剩余空间同样未知，不显示整份上限；与弹出卡片一致。
+    QCOMPARE(remaining->text(), QStringLiteral("—"));
+    QCOMPARE(remainingShare->text(), QStringLiteral("—"));
+    QCOMPARE(fraction->text(), QStringLiteral("暂无用量数据"));
+
+    // 提供商只给总量：分项全部未知，不把总量算成“输入上下文”。
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("usage")}, {QStringLiteral("total_tokens"), 100000}});
+    QCOMPARE(fraction->text(), QStringLiteral("已用 39%（剩余 61%）"));
+    QCOMPARE(input->text(), QStringLiteral("—"));
+    QCOMPARE(inputShare->text(), QStringLiteral("—"));
+    QCOMPARE(cache->text(), QStringLiteral("—"));
+    QCOMPARE(output->text(), QStringLiteral("—"));
+    QCOMPARE(remaining->text(), QStringLiteral("158K"));
+    QCOMPARE(remainingShare->text(), QStringLiteral("61%"));
+
+    // 输入减去缓存命中；缓存字段兼容 cached_tokens。
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("usage")}, {QStringLiteral("available"), true},
+        {QStringLiteral("context_tokens"), 192000}, {QStringLiteral("input_tokens"), 180000},
+        {QStringLiteral("output_tokens"), 12000}, {QStringLiteral("cached_tokens"), 120000}});
+    QCOMPARE(input->text(), QStringLiteral("60K"));
+    QCOMPARE(inputShare->text(), QStringLiteral("23%"));
+    QCOMPARE(cache->text(), QStringLiteral("120K"));
+    QCOMPARE(output->text(), QStringLiteral("12K"));
+    QCOMPARE(remaining->text(), QStringLiteral("66K"));
+    QVERIFY(window.findChild<QLabel*>(QStringLiteral("agentContextBreakdown"))->text().contains(QStringLiteral("缓存命中 120K")));
+
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("usage")}, {QStringLiteral("available"), false}});
+    for (auto* label : {input, inputShare, cache, output, remaining, remainingShare}) QCOMPARE(label->text(), QStringLiteral("—"));
+    QCOMPARE(fraction->text(), QStringLiteral("暂无用量数据"));
+
+    // 图例色块与检查栏分段条取同一份主题令牌配色。
+    const auto swatches = window.findChildren<QFrame*>(QStringLiteral("agentContextSwatch"));
+    QCOMPARE(swatches.size(), 4);
+    ContextSegmentBar* bar = nullptr;
+    for (auto* candidate : window.findChildren<ContextSegmentBar*>()) {
+        if (candidate->parentWidget() == swatches.front()->parentWidget()) bar = candidate;
+    }
+    QVERIFY(bar);
+    const ContextSegmentColors colors = ResolveContextSegmentColors(War3Map::UiKit::ThemeManager::ThemeForWidget(bar));
+    const QList<QColor> expected{colors.input, colors.cache, colors.output, colors.remaining};
+    for (qsizetype i = 0; i < expected.size(); ++i) {
+        QVERIFY2(swatches.at(i)->styleSheet().contains(expected.at(i).name()), qPrintable(swatches.at(i)->styleSheet()));
+    }
+}
+
+void AgentWindowTests::stoppedAndUnresolvedToolsAreNotCountedAsSuccess() {
+    QVERIFY(ClassifyToolState(QStringLiteral("运行中")) == ToolStateKind::Running);
+    QVERIFY(ClassifyToolState(QStringLiteral("成功")) == ToolStateKind::Ok);
+    QVERIFY(ClassifyToolState(QStringLiteral("失败（历史）")) == ToolStateKind::Error);
+    QVERIFY(ClassifyToolState(QStringLiteral("已停止")) == ToolStateKind::Stopped);
+    QVERIFY(ClassifyToolState(QStringLiteral("未收到结果")) == ToolStateKind::UnknownResult);
+    QVERIFY(ClassifyToolState(QStringLiteral("已结束（历史）")) == ToolStateKind::Done);
+    QCOMPARE(ToolStateKindName(ToolStateKind::UnknownResult), QStringLiteral("unknown"));
+
+    AgentWindow window;
+    window.SetSettings(TestSettings());
+    auto* badge = FindLabel(window, QStringLiteral("工具活动统计"));
+    QVERIFY(badge);
+    QCOMPARE(badge->text(), QStringLiteral("空闲"));
+    const auto tool = [](const char* type, const char* id) {
+        return QJsonObject{{QStringLiteral("type"), QString::fromLatin1(type)}, {QStringLiteral("id"), QString::fromLatin1(id)},
+            {QStringLiteral("tool_name"), QStringLiteral("editor_state")}};
+    };
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("run_start")}});
+    window.AppendEvent(tool("tool_start", "ok-1"));
+    window.AppendEvent(tool("tool_start", "stop-1"));
+    QCOMPARE(badge->text(), QStringLiteral("运行中 2"));
+    QJsonObject succeeded = tool("tool_end", "ok-1");
+    succeeded.insert(QStringLiteral("success"), true);
+    window.AppendEvent(succeeded);
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("run_end")}, {QStringLiteral("cancelled"), true}});
+    // 停止的调用不算完成。
+    QCOMPARE(badge->text(), QStringLiteral("完成 1 · 停止 1"));
+
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("run_start")}});
+    window.AppendEvent(tool("tool_start", "lost-1"));
+    QJsonObject failed = tool("tool_end", "fail-1");
+    failed.insert(QStringLiteral("success"), false);
+    window.AppendEvent(failed);
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("run_end")}});
+    QCOMPARE(badge->text(), QStringLiteral("完成 1 · 失败 1 · 停止 1 · 无结果 1"));
+
+    // 检查栏圆点与会话工具行用同一分类，停止与未收到结果都不是 ok。
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QStringList dotKinds;
+    for (auto* dot : window.findChildren<QLabel*>(QStringLiteral("agentInspectorToolDot")))
+        dotKinds << dot->property("stateKind").toString();
+    dotKinds.sort();
+    const QStringList expected{QStringLiteral("error"), QStringLiteral("ok"), QStringLiteral("stopped"), QStringLiteral("unknown")};
+    QCOMPARE(dotKinds, expected);
+    QStringList rowKinds;
+    for (auto* state : window.findChildren<QLabel*>(QStringLiteral("agentToolState")))
+        rowKinds << state->property("statusKind").toString();
+    rowKinds.sort();
+    QCOMPARE(rowKinds, expected);
+}
+
+void AgentWindowTests::sharedThemeAndLabelsWithoutHintText() {
+    // 共用主题解析：透明底色沿父控件向上找；面板/浮起色也能精确识别主题。
+    const auto& paper = War3Map::UiKit::ThemeManager::Theme(QStringLiteral("paper"));
+    const auto& midnight = War3Map::UiKit::ThemeManager::Theme(QStringLiteral("midnight"));
+    QWidget host;
+    QPalette hostPalette = host.palette();
+    hostPalette.setColor(QPalette::Window, War3Map::UiKit::ToQColor(paper.colors.bg));
+    host.setPalette(hostPalette);
+    auto* transparent = new QWidget(&host);
+    QPalette clear = transparent->palette();
+    clear.setColor(QPalette::Window, QColor(Qt::transparent));
+    transparent->setPalette(clear);
+    QVERIFY(War3Map::UiKit::ThemeManager::ThemeForWidget(transparent).id == paper.id);
+    auto* card = new QWidget(&host);
+    QPalette raised = card->palette();
+    raised.setColor(QPalette::Window, War3Map::UiKit::ToQColor(midnight.colors.raised));
+    card->setPalette(raised);
+    QVERIFY(War3Map::UiKit::ThemeManager::ThemeForWidget(card).id == midnight.id);
+
+    // 工具简称只有一份实现：已知工具映射中文名，空白折叠，空标题退回“工具调用”。
+    const QJsonObject call{{QStringLiteral("tool_name"), QStringLiteral("editor_save_map")},
+        {QStringLiteral("title"), QStringLiteral("保存当前地图并回读结果。").repeated(6)}};
+    QCOMPARE(ShortToolLabel(call), QStringLiteral("保存地图"));
+    QCOMPARE(ShortToolLabel(QJsonObject{{QStringLiteral("title"), QStringLiteral("  多余\n空白 ")}}), QStringLiteral("多余 空白"));
+    QCOMPARE(ShortToolLabel(QJsonObject{}), QStringLiteral("工具调用"));
+
+    AgentWindow window;
+    window.SetSettings(TestSettings());
+    // 空白页只有图标与短标题，不加说明小字。
+    QVERIFY(window.findChild<QLabel*>(QStringLiteral("agentEmptyTitle")));
+    QVERIFY(!window.findChild<QLabel*>(QStringLiteral("agentEmptyHint")));
+    // 权限菜单只显示标题，说明只在悬停提示里。
+    const auto options = window.findChildren<PermissionOption*>();
+    QCOMPARE(options.size(), qsizetype(4));
+    for (auto* option : options) {
+        QVERIFY(!option->toolTip().isEmpty());
+        for (auto* label : option->findChildren<QLabel*>()) QVERIFY(label->text() != option->toolTip());
+    }
+
+    // 无法解析的会话时间如实显示“时间未知”，不写“刚刚”。
+    window.AppendEvent({{QStringLiteral("type"), QStringLiteral("conversations")},
+        {QStringLiteral("selected_id"), QStringLiteral("s1")},
+        {QStringLiteral("sessions"), QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("s1")},
+            {QStringLiteral("title"), QStringLiteral("会话一")}, {QStringLiteral("updated_at"), QStringLiteral("不是时间")}}}}});
+    auto* sidebar = window.findChild<QListWidget*>(QStringLiteral("agentSidebarSessionList"));
+    QVERIFY(sidebar);
+    QCOMPARE(sidebar->count(), 1);
+    QCOMPARE(sidebar->item(0)->data(Qt::UserRole + 2).toString(), QStringLiteral("时间未知"));
+
+    // 修订行只显示实际修订身份，不拿地图摘要冒充。
+    auto* revision = FindLabel(window, QStringLiteral("地图修订"));
+    QVERIFY(revision);
+    window.SetActiveMap(QStringLiteral("测试地图.w3x"), QString());
+    window.SetMapSummary(QStringLiteral("已修改 3 项"));
+    QCOMPARE(revision->text(), QStringLiteral("—"));
+    window.SetActiveMap(QStringLiteral("测试地图.w3x"), QStringLiteral("D:/maps/测试地图.w3x|7"));
+    QCOMPARE(revision->text(), QStringLiteral("D:/maps/测试地图.w3x|7"));
 }
 
 QTEST_MAIN(AgentWindowTests)

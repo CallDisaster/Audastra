@@ -8,6 +8,8 @@
 #include <QString>
 #include <QStringList>
 
+class QWidget;
+
 namespace War3Map::UiKit {
 
 [[nodiscard]] QColor ToQColor(Tokens::Color color);
@@ -26,6 +28,13 @@ public:
     [[nodiscard]] static QString ThemeLabel(const QString& id);
     // 未知 ID 返回默认主题，保证调用方总能拿到完整令牌。
     [[nodiscard]] static const Tokens::ThemeTokens& Theme(const QString& id);
+    // 由控件调色板找回当前主题令牌（PaletteFor 把 QPalette::Window 设为 bg）；
+    // 未套主题的调色板按明暗退回浅色或默认主题。供需要调色板之外令牌（textBody、inlineCodeAccent 等）的控件使用。
+    [[nodiscard]] static const Tokens::ThemeTokens& ThemeForPalette(const QPalette& palette);
+    // 同上，但从控件向上找第一个不透明的窗口底色（样式表常把子控件底色设为透明）。
+    [[nodiscard]] static const Tokens::ThemeTokens& ThemeForWidget(const QWidget* widget);
+    // 按窗口底色识别主题：先精确匹配各主题底色，再匹配面板/浮起色，最后按明暗回退。
+    [[nodiscard]] static const Tokens::ThemeTokens& ThemeForColor(const QColor& window);
 
     [[nodiscard]] QString CurrentThemeId() const;
     [[nodiscard]] const Tokens::ThemeTokens& Current() const;

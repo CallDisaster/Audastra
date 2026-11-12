@@ -1,15 +1,25 @@
 #include "HelpDialog.h"
 #include "Icons/SvgIcons.h"
+#include "Theme/ThemeManager.h"
 #include "Widgets/SearchField.h"
 
+#include <QEvent>
 #include <QFile>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QScrollBar>
 #include <QSplitter>
+#include <QTextBlock>
 #include <QTextBrowser>
+#include <QTextCursor>
 #include <QTextDocument>
+#include <QTimer>
 #include <QVBoxLayout>
+
+#include <functional>
+#include <utility>
+#include <vector>
 
 namespace {
 constexpr auto kHelpResource = ":/audastra/help/help.zh-CN.md";
@@ -19,6 +29,76 @@ QString SectionTitle(const QString& section) {
     const auto line = section.section(QLatin1Char('\n'), 0, 0);
     return line.startsWith(QStringLiteral("## ")) ? line.mid(3).trimmed() : line.trimmed();
 }
+
+// 帮助正文按当前主题令牌着色。setMarkdown 走 Markdown 导入而不是 HTML 导入，
+// 文档默认样式表对它不起作用，所以载入后直接改字符与块格式：
+// 标题 @text、正文 @textBody、行内代码 @inlineCodeAccent（不加底色）、代码块 @text 配 @raised 底、链接 @accent。
+void ApplyThemeColors(QTextDocument& document, const War3Map::UiKit::Tokens::ThemeTokens& theme) {
+    using War3Map::UiKit::ToQColor;
+    const auto& c = theme.colors;
+    struct Span { int position; int length; QColor color; };
+    std::vector<Span> spans;
+    std::vector<int> codeBlocks;
+    // 先收集再修改：合并格式会拆分或合并片段，不能边遍历边改。
+    for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
+        const QTextBlockFormat blockFormat = block.blockFormat();
+        const bool codeBlock = blockFormat.hasProperty(QTextFormat::BlockCodeFence)
+            || blockFormat.hasProperty(QTextFormat::BlockCodeLanguage);
+        const bool heading = blockFormat.headingLevel() > 0;
+        if (codeBlock) codeBlocks.push_back(block.position());
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            if (!fragment.isValid()) continue;
+            const QTextCharFormat format = fragment.charFormat();
+            const QColor color = format.isAnchor() ? ToQColor(c.accent)
+                : codeBlock ? ToQColor(c.text)
+                : format.fontFixedPitch() ? ToQColor(c.inlineCodeAccent)
+                : heading ? ToQColor(c.text) : ToQColor(c.textBody);
+            spans.push_back({fragment.position(), fragment.length(), color});
+        }
+    }
+    QTextCursor cursor(&document);
+    cursor.beginEditBlock();
+    for (const auto& span : spans) {
+        QTextCharFormat format;
+        format.setForeground(span.color);
+        cursor.setPosition(span.position);
+        cursor.setPosition(span.position + span.length, QTextCursor::KeepAnchor);
+        cursor.mergeCharFormat(format);
+    }
+    for (const int position : codeBlocks) {
+        QTextBlockFormat format;
+        format.setBackground(ToQColor(c.raised));
+        cursor.setPosition(position);
+        cursor.mergeBlockFormat(format);
+    }
+    cursor.endEditBlock();
+}
+
+// 调色板变化（切换主题）后合并成一次回调，在事件循环里重新着色，不在样式抛光过程中改文档。
+class PaletteWatcher final : public QObject {
+public:
+    PaletteWatcher(QWidget& target, std::function<void()> changed)
+        : QObject(&target), changed_(std::move(changed)) {
+        target.installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (event->type() == QEvent::PaletteChange && !pending_) {
+            pending_ = true;
+            QTimer::singleShot(0, this, [this] {
+                pending_ = false;
+                changed_();
+            });
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    std::function<void()> changed_;
+    bool pending_ = false;
+};
 }
 
 QStringList HelpDialog::SplitSections(const QString& markdown) {
@@ -67,11 +147,14 @@ HelpDialog::HelpDialog(QWidget* parent) : QDialog(parent) {
     page_->setObjectName(QStringLiteral("helpPage"));
     page_->setOpenExternalLinks(true);
     page_->document()->setDocumentMargin(14);
-    page_->document()->setDefaultStyleSheet(QStringLiteral(
-        "h2 { color: #e8eaed; margin-top: 4px; margin-bottom: 10px; }"
-        "h3 { color: #e8eaed; margin-top: 14px; margin-bottom: 6px; }"
-        "p, li { color: #d5d8de; line-height: 155%; }"
-        "code { background-color: #22252b; color: #8ae0b3; }"));
+    // 切换主题后按新令牌重新着色当前节，保留滚动位置。
+    new PaletteWatcher(*page_, [this] {
+        if (sections_.isEmpty()) return;
+        const int scroll = page_->verticalScrollBar()->value();
+        const auto* item = topics_->currentItem();
+        ShowSection(item ? item->data(kSectionRole).toInt() : -1);
+        page_->verticalScrollBar()->setValue(scroll);
+    });
     splitter->addWidget(side);
     splitter->addWidget(page_);
     splitter->setStretchFactor(1, 1);
@@ -118,4 +201,5 @@ void HelpDialog::Filter(const QString& text) {
 void HelpDialog::ShowSection(int row) {
     if (row < 0 || row >= sections_.size()) { page_->clear(); return; }
     page_->setMarkdown(sections_[row]);
+    ApplyThemeColors(*page_->document(), War3Map::UiKit::ThemeManager::ThemeForPalette(page_->palette()));
 }

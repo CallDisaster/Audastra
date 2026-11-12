@@ -1,5 +1,6 @@
 #include "AgentConversationView.h"
 #include "AgentLayoutDiagnostics.h"
+#include "ComposerWidgets.h"
 
 #include "Fonts/FontLoader.h"
 #include "Icons/SvgIcons.h"
@@ -249,11 +250,7 @@ private:
 
     void Render(bool math) {
         UiKit::MarkdownTheme theme;
-        const QPalette colors = palette();
-        const auto* tokens = &UiKit::ThemeManager::Theme(colors.color(QPalette::Window).lightness() > 128
-            ? QStringLiteral("paper") : QStringLiteral("graphite"));
-        for (const auto& candidate : UiKit::Tokens::kThemes)
-            if (UiKit::ToQColor(candidate.colors.bg) == colors.color(QPalette::Window)) { tokens = &candidate; break; }
+        const auto* tokens = &UiKit::ThemeManager::ThemeForWidget(this);
         theme.text = UiKit::ToQColor(tokens->colors.textBody);
         theme.headingText = UiKit::ToQColor(tokens->colors.text);
         theme.inlineCodeAccent = UiKit::ToQColor(tokens->colors.inlineCodeAccent);
@@ -435,76 +432,32 @@ public:
 
     void Update(const QJsonObject& event, const QString& state, const QString& duration) {
         event_ = event;
-        QString title = event.value(QStringLiteral("title")).toString();
-        const QString originalTitle = title;
-        const auto toolName = event.value(QStringLiteral("tool_name")).toString();
-        if (!change_ && !toolName.isEmpty()) {
-            // MCP description 是完整使用说明；工具卡只显示简短操作名，原说明在展开区保留。
-            static const QHash<QString, QString> labels{
-                {QStringLiteral("editor_state"), QStringLiteral("读取编辑器状态")},
-                {QStringLiteral("objects_list"), QStringLiteral("查找物编对象")},
-                {QStringLiteral("objects_get"), QStringLiteral("读取对象字段")},
-                {QStringLiteral("objects_text"), QStringLiteral("读取对象字段文本")},
-                {QStringLiteral("objects_set_fields"), QStringLiteral("修改对象字段")},
-                {QStringLiteral("objects_apply_text"), QStringLiteral("按文本修改对象字段")},
-                {QStringLiteral("objects_create"), QStringLiteral("创建物编对象")},
-                {QStringLiteral("objects_delete"), QStringLiteral("删除物编对象")},
-                {QStringLiteral("objects_field_options"), QStringLiteral("查询字段选项")},
-                {QStringLiteral("variables_list"), QStringLiteral("浏览变量")},
-                {QStringLiteral("variables_get"), QStringLiteral("读取变量")},
-                {QStringLiteral("variables_create"), QStringLiteral("创建变量")},
-                {QStringLiteral("variables_update"), QStringLiteral("修改变量")},
-                {QStringLiteral("variables_rename"), QStringLiteral("重命名变量")},
-                {QStringLiteral("variables_delete"), QStringLiteral("删除变量")},
-                {QStringLiteral("entities_query"), QStringLiteral("查询地图实体")},
-                {QStringLiteral("entities_set_fields"), QStringLiteral("修改实体字段")},
-                {QStringLiteral("entities_rotate"), QStringLiteral("调整实体朝向")},
-                {QStringLiteral("entities_transform"), QStringLiteral("移动或缩放实体")},
-                {QStringLiteral("entities_copy"), QStringLiteral("复制预放实体")},
-                {QStringLiteral("sounds_list"), QStringLiteral("查询声音定义")},
-                {QStringLiteral("sounds_get"), QStringLiteral("读取声音定义")},
-                {QStringLiteral("sounds_update"), QStringLiteral("修改声音参数")},
-                {QStringLiteral("imports_list"), QStringLiteral("查询导入资源")},
-                {QStringLiteral("imports_get"), QStringLiteral("读取导入信息")},
-                {QStringLiteral("editor_query_trigger_graph"), QStringLiteral("查询触发器结构")},
-                {QStringLiteral("editor_edit_trigger_graph"), QStringLiteral("编辑触发器")},
-                {QStringLiteral("editor_get_ui_catalog"), QStringLiteral("查询触发器函数库")},
-                {QStringLiteral("editor_save_map"), QStringLiteral("保存地图")},
-                {QStringLiteral("editor_true_save"), QStringLiteral("原版编辑器保存")}
-            };
-            title = labels.value(toolName, title.size() > 40 || title.contains(QLatin1Char('\n')) || title.isEmpty() ? toolName : title);
-        }
-        if (title.isEmpty()) title = toolName;
-        if (title.isEmpty()) title = event.value(QStringLiteral("target")).toString();
-        // 改动行压缩完整对象名；普通工具标题继续由 ElidedLabel 按实际宽度省略。
-        // 仅收缩改动行展示文字；event_、悬停提示和展开详情保留原始名称与值。
+        const QString originalTitle = event.value(QStringLiteral("title")).toString();
+        QString title;
         if (change_) {
+            // 改动行压缩完整对象名；event_、悬停提示和展开详情保留原始名称与值。
+            title = originalTitle;
+            if (title.isEmpty()) title = event.value(QStringLiteral("tool_name")).toString();
+            if (title.isEmpty()) title = event.value(QStringLiteral("target")).toString();
             title = title.simplified();
             if (title.size() > 40) {
                 title = title.left(39);
                 if (title.at(title.size() - 1).isHighSurrogate()) title.chop(1);
                 title += QChar(0x2026);
             }
+        } else {
+            // 普通工具标题取共用的简短操作名，由 ElidedLabel 按实际宽度省略；原说明在展开区保留。
+            title = ShortToolLabel(event);
         }
         title_->setText(title.isEmpty() ? change_ ? QStringLiteral("修改前后值") : QStringLiteral("工具调用") : title);
         title_->setToolTip(title_->text() + QLatin1Char('\n') + originalTitle
             + QLatin1Char('\n') + event.value(QStringLiteral("target")).toString());
         state_->setText(state);
-        const QString statusKind = change_ ? QStringLiteral("change")
-            : state.contains(QStringLiteral("运行中")) ? QStringLiteral("running")
-            : state.contains(QStringLiteral("失败")) ? QStringLiteral("error")
-            : state.contains(QStringLiteral("成功")) ? QStringLiteral("ok") : QStringLiteral("done");
-        state_->setProperty("statusKind", statusKind);
+        toolKind_ = ClassifyToolState(state);
+        state_->setProperty("statusKind", change_ ? QStringLiteral("change") : ToolStateKindName(toolKind_));
         state_->style()->unpolish(state_);
         state_->style()->polish(state_);
-        if (icon_ != nullptr) {
-            const QIcon badge = change_ ? UiKit::SvgIcon(QStringLiteral("lucide/file-code-2"), QColor(110, 231, 183))
-                : statusKind == QStringLiteral("running") ? UiKit::SvgIcon(QStringLiteral("lucide/zap"), QColor(234, 179, 100))
-                : statusKind == QStringLiteral("error") ? UiKit::SvgIcon(QStringLiteral("lucide/circle-x"), QColor(242, 132, 124))
-                : statusKind == QStringLiteral("ok") ? UiKit::SvgIcon(QStringLiteral("lucide/check"), QColor(110, 231, 183))
-                : UiKit::SvgIcon(QStringLiteral("lucide/code-xml"));
-            icon_->setPixmap(badge.pixmap(14, 14));
-        }
+        UpdateBadge();
         duration_->setText(duration);
         kind_ = event.value(QStringLiteral("kind")).toString();
         objectId_ = event.value(QStringLiteral("object_id")).toString();
@@ -581,7 +534,35 @@ protected:
         setToolTip(duration_->text());
     }
 
+    void changeEvent(QEvent* event) override {
+        QFrame::changeEvent(event);
+        // 主题切换后按新令牌重新着色状态图标。
+        ScheduleThemeRetint(event, this, retintQueued_, [this] { UpdateBadge(); });
+    }
+
 private:
+    // 状态图标颜色只取当前主题令牌；“已停止”为中性色、“未收到结果”为琥珀色，均不显示成功。
+    void UpdateBadge() {
+        if (icon_ == nullptr) return;
+        const auto& c = UiKit::ThemeManager::ThemeForWidget(this).colors;
+        QIcon badge;
+        if (change_) {
+            badge = UiKit::SvgIcon(QStringLiteral("lucide/file-code-2"), UiKit::ToQColor(c.accent));
+        } else {
+            switch (toolKind_) {
+            case ToolStateKind::Running: badge = UiKit::SvgIcon(QStringLiteral("lucide/zap"), UiKit::ToQColor(c.amber)); break;
+            case ToolStateKind::Ok: badge = UiKit::SvgIcon(QStringLiteral("lucide/check"), UiKit::ToQColor(c.accent)); break;
+            case ToolStateKind::Error: badge = UiKit::SvgIcon(QStringLiteral("lucide/circle-x"), UiKit::ToQColor(c.red)); break;
+            case ToolStateKind::Stopped: badge = UiKit::SvgIcon(QStringLiteral("lucide/square"), UiKit::ToQColor(c.dim)); break;
+            case ToolStateKind::UnknownResult: badge = UiKit::SvgIcon(QStringLiteral("lucide/circle-help"), UiKit::ToQColor(c.amber)); break;
+            case ToolStateKind::Done: badge = UiKit::SvgIcon(QStringLiteral("lucide/code-xml")); break;
+            }
+        }
+        icon_->setPixmap(badge.pixmap(14, 14));
+    }
+
+    ToolStateKind toolKind_ = ToolStateKind::Done;
+    bool retintQueued_ = false;
     QToolButton* toggle_ = nullptr;
     QLabel* icon_ = nullptr;
     UiKit::ElidedLabel* title_ = nullptr;
@@ -622,6 +603,73 @@ private:
 
 } // namespace
 
+static_assert(static_cast<int>(ToolStateKind::Done) + 1 == kToolStateKindCount, "计数数组按枚举值下标");
+
+ToolStateKind ClassifyToolState(const QString& state) {
+    // 历史记录的状态带“（历史）”后缀，按前缀判断。
+    if (state.startsWith(QStringLiteral("运行中"))) return ToolStateKind::Running;
+    if (state.startsWith(QStringLiteral("失败"))) return ToolStateKind::Error;
+    if (state.startsWith(QStringLiteral("成功"))) return ToolStateKind::Ok;
+    if (state.startsWith(QStringLiteral("已停止"))) return ToolStateKind::Stopped;
+    if (state.startsWith(QStringLiteral("未收到结果"))) return ToolStateKind::UnknownResult;
+    return ToolStateKind::Done;
+}
+
+QString ToolStateKindName(ToolStateKind kind) {
+    switch (kind) {
+    case ToolStateKind::Running: return QStringLiteral("running");
+    case ToolStateKind::Ok: return QStringLiteral("ok");
+    case ToolStateKind::Error: return QStringLiteral("error");
+    case ToolStateKind::Stopped: return QStringLiteral("stopped");
+    case ToolStateKind::UnknownResult: return QStringLiteral("unknown");
+    case ToolStateKind::Done: break;
+    }
+    return QStringLiteral("done");
+}
+
+QString ShortToolLabel(const QJsonObject& event) {
+    QString title = event.value(QStringLiteral("title")).toString();
+    const QString toolName = event.value(QStringLiteral("tool_name")).toString();
+    if (!toolName.isEmpty()) {
+        // MCP description 是完整使用说明；工具卡只显示简短操作名，原说明在展开区保留。
+        static const QHash<QString, QString> labels{
+            {QStringLiteral("editor_state"), QStringLiteral("读取编辑器状态")},
+            {QStringLiteral("objects_list"), QStringLiteral("查找物编对象")},
+            {QStringLiteral("objects_get"), QStringLiteral("读取对象字段")},
+            {QStringLiteral("objects_text"), QStringLiteral("读取对象字段文本")},
+            {QStringLiteral("objects_set_fields"), QStringLiteral("修改对象字段")},
+            {QStringLiteral("objects_apply_text"), QStringLiteral("按文本修改对象字段")},
+            {QStringLiteral("objects_create"), QStringLiteral("创建物编对象")},
+            {QStringLiteral("objects_delete"), QStringLiteral("删除物编对象")},
+            {QStringLiteral("objects_field_options"), QStringLiteral("查询字段选项")},
+            {QStringLiteral("variables_list"), QStringLiteral("浏览变量")},
+            {QStringLiteral("variables_get"), QStringLiteral("读取变量")},
+            {QStringLiteral("variables_create"), QStringLiteral("创建变量")},
+            {QStringLiteral("variables_update"), QStringLiteral("修改变量")},
+            {QStringLiteral("variables_rename"), QStringLiteral("重命名变量")},
+            {QStringLiteral("variables_delete"), QStringLiteral("删除变量")},
+            {QStringLiteral("entities_query"), QStringLiteral("查询地图实体")},
+            {QStringLiteral("entities_set_fields"), QStringLiteral("修改实体字段")},
+            {QStringLiteral("entities_rotate"), QStringLiteral("调整实体朝向")},
+            {QStringLiteral("entities_transform"), QStringLiteral("移动或缩放实体")},
+            {QStringLiteral("entities_copy"), QStringLiteral("复制预放实体")},
+            {QStringLiteral("sounds_list"), QStringLiteral("查询声音定义")},
+            {QStringLiteral("sounds_get"), QStringLiteral("读取声音定义")},
+            {QStringLiteral("sounds_update"), QStringLiteral("修改声音参数")},
+            {QStringLiteral("imports_list"), QStringLiteral("查询导入资源")},
+            {QStringLiteral("imports_get"), QStringLiteral("读取导入信息")},
+            {QStringLiteral("editor_query_trigger_graph"), QStringLiteral("查询触发器结构")},
+            {QStringLiteral("editor_edit_trigger_graph"), QStringLiteral("编辑触发器")},
+            {QStringLiteral("editor_get_ui_catalog"), QStringLiteral("查询触发器函数库")},
+            {QStringLiteral("editor_save_map"), QStringLiteral("保存地图")},
+            {QStringLiteral("editor_true_save"), QStringLiteral("原版编辑器保存")}};
+        title = labels.value(toolName, title.size() > 40 || title.contains(QLatin1Char('\n')) || title.isEmpty() ? toolName : title);
+    }
+    if (title.isEmpty()) title = event.value(QStringLiteral("target")).toString();
+    title = title.simplified();
+    return title.isEmpty() ? QStringLiteral("工具调用") : title;
+}
+
 struct AgentConversationView::Private {
     explicit Private(AgentConversationView* owner) : q(owner) {}
     AgentConversationView* q;
@@ -629,6 +677,8 @@ struct AgentConversationView::Private {
     QWidget* column = nullptr;
     QVBoxLayout* flow = nullptr;
     QWidget* empty = nullptr;
+    QLabel* emptyBadge = nullptr;
+    bool retintQueued = false;
     MessageRow* active = nullptr;
     QList<MessageRow*> messages;
     QList<DisclosureRow*> changes;
@@ -646,6 +696,12 @@ struct AgentConversationView::Private {
         flow->addWidget(widget);
         widget->show();
         q->widget()->layout()->activate();
+    }
+
+    void TintEmptyBadge() {
+        if (emptyBadge == nullptr) return;
+        emptyBadge->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/sparkles"),
+            UiKit::ToQColor(UiKit::ThemeManager::ThemeForWidget(emptyBadge).colors.accent)).pixmap(20, 20));
     }
 };
 
@@ -684,24 +740,20 @@ AgentConversationView::AgentConversationView(QWidget* parent) : QScrollArea(pare
     emptyLayout->setSpacing(10);
     auto* badgeRow = new QHBoxLayout;
     badgeRow->addStretch();
-    auto* badge = new QLabel(d_->empty);
-    badge->setObjectName(QStringLiteral("agentEmptyBadge"));
-    badge->setFixedSize(40, 40);
-    badge->setAlignment(Qt::AlignCenter);
-    badge->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/sparkles"), QColor(110, 231, 183)).pixmap(20, 20));
-    badgeRow->addWidget(badge);
+    d_->emptyBadge = new QLabel(d_->empty);
+    d_->emptyBadge->setObjectName(QStringLiteral("agentEmptyBadge"));
+    d_->emptyBadge->setFixedSize(40, 40);
+    d_->emptyBadge->setAlignment(Qt::AlignCenter);
+    d_->TintEmptyBadge();
+    badgeRow->addWidget(d_->emptyBadge);
     badgeRow->addStretch();
     emptyLayout->addLayout(badgeRow);
     emptyLayout->addSpacing(4);
+    // 空白页只放图标与短标题，不加说明小字。
     auto* title = new QLabel(QStringLiteral("想对地图做些什么？"), d_->empty);
     title->setObjectName(QStringLiteral("agentEmptyTitle"));
     title->setAlignment(Qt::AlignCenter);
     emptyLayout->addWidget(title);
-    auto* hint = new QLabel(QStringLiteral("读取触发器、物编与双向引用，或按自然语言 T 修改地图逻辑"), d_->empty);
-    hint->setObjectName(QStringLiteral("agentEmptyHint"));
-    hint->setAlignment(Qt::AlignCenter);
-    hint->setWordWrap(true);
-    emptyLayout->addWidget(hint);
     // 常用任务：点一下填入输入框，不直接发送。
     emptyLayout->addSpacing(12);
     auto* suggestions = new QHBoxLayout;
@@ -843,6 +895,13 @@ void AgentConversationView::resizeEvent(QResizeEvent* event) {
     d_->canvas->setMinimumWidth(0);
     SetContentWidth(d_->contentWidth);
     ScheduleLayoutDiagnostics();
+}
+
+void AgentConversationView::changeEvent(QEvent* event) {
+    QScrollArea::changeEvent(event);
+    if (!d_) return;
+    // 空白页图标按当前主题令牌重新着色。
+    ScheduleThemeRetint(event, this, d_->retintQueued, [this] { d_->TintEmptyBadge(); });
 }
 
 void AgentConversationView::SetLayoutDiagnosticPath(const QString& path) {

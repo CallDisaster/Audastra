@@ -493,14 +493,8 @@ void MapSettingsModule::BuildForms() {
     };
 
     if (!draft_) {
-        auto* emptyForm = addForm(tr("地图描述"), "lucide/file");
-        auto* emptyHint = new QLabel(project_.mapDocument_ && project_.mapDocument_->LniSettings()
-            ? tr("当前 LNI 地图设置暂仅支持读取。")
-            : tr("尚未打开地图  ·  请先打开地图工程以查看和编辑地图描述、玩家、势力、载入画面与科技设置。"),
-            emptyForm->parentWidget());
-        emptyHint->setObjectName("emptyState");
-        emptyHint->setWordWrap(true);
-        emptyForm->addRow(emptyHint);
+        // 状态只写在底部消息里，表单区不重复说明。
+        addForm(tr("地图描述"), "lucide/file");
         sections_->setCurrentRow(0);
         apply_->setEnabled(false);
         discard_->setEnabled(false);

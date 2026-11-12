@@ -42,6 +42,8 @@
 #include <QTimer>
 #include <QtTest>
 
+#include <algorithm>
+#include <cmath>
 #include <stdexcept>
 
 using namespace War3Map::UiKit;
@@ -68,6 +70,19 @@ bool Near(const QColor& a, const QColor& b) {
     return qAbs(a.red() - b.red()) <= 2 && qAbs(a.green() - b.green()) <= 2 && qAbs(a.blue() - b.blue()) <= 2;
 }
 
+// WCAG 2 相对亮度与对比度。
+double RelativeLuminance(const QColor& color) {
+    const auto channel = [](double value) {
+        return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * channel(color.redF()) + 0.7152 * channel(color.greenF()) + 0.0722 * channel(color.blueF());
+}
+
+double Contrast(const QColor& a, const QColor& b) {
+    const double x = RelativeLuminance(a), y = RelativeLuminance(b);
+    return (std::max(x, y) + 0.05) / (std::min(x, y) + 0.05);
+}
+
 // offscreen 平台只认 Qt 自带字体目录；公式排版在正式窗口中使用系统数学字体，这里显式登记同一组系统字体，
 // 让离屏截图与测试看到真实字形而不是缺字方框。找不到时不登记，相关检查按缺字体处理。
 void RegisterSystemMathFonts() {
@@ -88,6 +103,8 @@ private slots:
     void styleSheetsResolveEveryToken();
     void unknownThemeFallsBackToDefault();
     void paletteFollowsTokens();
+    void paletteMapsBackToTheme();
+    void selectionStandsApartFromHoverAndLine();
     void svgIconsRecolorByState();
     void unknownIconIsNull();
     void fontsFallBackWithoutBundledFiles();
@@ -177,6 +194,35 @@ void UiKitTests::paletteFollowsTokens() {
     QCOMPARE(CurrentIconPalette().on, ToQColor(paper.colors.accent));
     manager.ApplyTheme(QString());
     QCOMPARE(manager.CurrentThemeId(), QStringLiteral("graphite"));
+}
+
+void UiKitTests::paletteMapsBackToTheme() {
+    for (const auto& theme : Tokens::kThemes) {
+        QCOMPARE(ThemeManager::ThemeForPalette(ThemeManager::PaletteFor(theme)).id, theme.id);
+    }
+    // 未套主题的调色板按明暗退回：浅色取浅色主题，深色取默认主题。
+    QPalette light;
+    light.setColor(QPalette::Window, QColor(250, 250, 250));
+    QVERIFY(!ThemeManager::ThemeForPalette(light).dark);
+    QPalette dark;
+    dark.setColor(QPalette::Window, QColor(10, 10, 10));
+    QCOMPARE(ThemeManager::ThemeForPalette(dark).id, Tokens::kDefaultTheme);
+}
+
+void UiKitTests::selectionStandsApartFromHoverAndLine() {
+    // 选中底与悬停底、细线必须一眼可分；选中底上的正文、弱化文字和焦点环（@accent）保持可读。
+    for (const auto& theme : Tokens::kThemes) {
+        const auto& c = theme.colors;
+        const QByteArray id(theme.id.data(), static_cast<qsizetype>(theme.id.size()));
+        const QColor selection = ToQColor(c.selection);
+        QVERIFY2(Contrast(selection, ToQColor(c.hover)) >= 1.3, id.constData());
+        QVERIFY2(Contrast(selection, ToQColor(c.line)) >= 1.3, id.constData());
+        QVERIFY2(Contrast(ToQColor(c.text), selection) >= 4.5, id.constData());
+        QVERIFY2(Contrast(ToQColor(c.muted), selection) >= 3.0, id.constData());
+        for (const auto surface : {c.panel, c.bg, c.raised, c.hover, c.selection}) {
+            QVERIFY2(Contrast(ToQColor(c.accent), ToQColor(surface)) >= 3.0, id.constData());
+        }
+    }
 }
 
 void UiKitTests::svgIconsRecolorByState() {

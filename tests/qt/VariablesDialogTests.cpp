@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QInputDialog>
+#include <QItemSelectionModel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
@@ -51,6 +52,7 @@ private slots:
     void UnsupportedReferenceRename();
     void AddRemoveAndUndoRefreshSelection();
     void MultiSelectRemoveIsOneUndo();
+    void FilterDeselectsHiddenRowsAndRemoveSkipsThem();
 };
 
 void VariablesDialogTests::EmbeddedEscapePreservesWorkspace() {
@@ -216,6 +218,64 @@ void VariablesDialogTests::MultiSelectRemoveIsOneUndo() {
     QCOMPARE(table->item(table->currentRow(), 0)->text(), QStringLiteral("Delta"));
     QVERIFY(table->selectionModel()->isRowSelected(1, {}));
     QCOMPARE(table->item(1, 0)->data(Qt::UserRole).toULongLong(), betaId);
+}
+
+void VariablesDialogTests::FilterDeselectsHiddenRowsAndRemoveSkipsThem() {
+    TriggerDocument document;
+    for (const char* name : {"UnitA", "ItemA", "UnitB", "ItemB"})
+        QVERIFY(TriggerDocumentEditor::AddVariable(document, name, "integer", false).Succeeded());
+    int shown = -1;
+    int total = -1;
+    bool filtered = false;
+    QUndoStack stack;
+    VariablesDialog editor(&document, &stack, nullptr, true);
+    editor.SetFilterObserver([&](int visible, int all, bool active) { shown = visible; total = all; filtered = active; });
+    editor.show();
+    auto* table = Table(editor);
+    QVERIFY(table != nullptr);
+    auto* selection = table->selectionModel();
+    table->selectAll();
+    QCOMPARE(selection->selectedRows().size(), qsizetype{4});
+    // 筛选隐藏的行同时取消选中。
+    editor.SetRowFilter(QStringLiteral("unit"));
+    QCOMPARE(shown, 2);
+    QCOMPARE(total, 4);
+    QVERIFY(filtered);
+    QVERIFY(!table->isRowHidden(0) && table->isRowHidden(1) && !table->isRowHidden(2) && table->isRowHidden(3));
+    QCOMPARE(selection->selectedRows().size(), qsizetype{2});
+    QVERIFY(!selection->isRowSelected(1, {}) && !selection->isRowSelected(3, {}));
+    // 与 Ctrl+A / Shift 范围选择相同，整段选择会把隐藏行也选上；删除只作用于可见的选中行。
+    selection->select(QItemSelection(table->model()->index(0, 0),
+        table->model()->index(table->rowCount() - 1, table->columnCount() - 1)), QItemSelectionModel::ClearAndSelect);
+    QCOMPARE(selection->selectedRows().size(), qsizetype{4});
+    QVERIFY(Button(editor, "removeVariableButton")->isEnabled());
+    QString question;
+    QTimer::singleShot(0, qApp, [&question] {
+        auto* confirm = qobject_cast<QMessageBox*>(QApplication::activeModalWidget());
+        QVERIFY(confirm != nullptr);
+        question = confirm->text();
+        confirm->button(QMessageBox::Yes)->click();
+    });
+    Button(editor, "removeVariableButton")->click();
+    QVERIFY(question.contains(QStringLiteral("2 个变量")));
+    QCOMPARE(stack.count(), 1);
+    QCOMPARE(document.variables.size(), std::size_t{2});
+    QCOMPARE(document.variables[0].name.text, std::string("ItemA"));
+    QCOMPARE(document.variables[1].name.text, std::string("ItemB"));
+    // 重建列表后按同一筛选词重新筛选一次。
+    QCOMPARE(table->rowCount(), 2);
+    QCOMPARE(shown, 0);
+    QCOMPARE(total, 2);
+    QVERIFY(table->isRowHidden(0) && table->isRowHidden(1));
+    QVERIFY(!Button(editor, "removeVariableButton")->isEnabled());
+    stack.undo();
+    QCOMPARE(table->rowCount(), 4);
+    QCOMPARE(shown, 2);
+    QVERIFY(!table->isRowHidden(0) && table->isRowHidden(1) && !table->isRowHidden(2) && table->isRowHidden(3));
+    editor.SetRowFilter({});
+    QCOMPARE(shown, 4);
+    QVERIFY(!filtered);
+    for (int row = 0; row < table->rowCount(); ++row) QVERIFY(!table->isRowHidden(row));
 }
 
 int main(int argc, char** argv) {

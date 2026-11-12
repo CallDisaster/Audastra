@@ -73,6 +73,16 @@ int ResultRows(const QTreeWidget* tree) {
     for (int index = 0; index < tree->topLevelItemCount(); ++index) count += tree->topLevelItem(index)->childCount();
     return count;
 }
+// 夹具每类 30 条匹配：分组标题写本页条数，本页不全时写成“本页/总数”。
+QString GroupCountMismatch(const QTreeWidget* tree) {
+    for (int index = 0; index < tree->topLevelItemCount(); ++index) {
+        const auto* group = tree->topLevelItem(index);
+        const int shown = group->childCount();
+        const QString expected = shown == 30 ? QStringLiteral("(30)") : QStringLiteral("(%1/30)").arg(shown);
+        if (!group->text(0).endsWith(expected)) return group->text(0) + QStringLiteral(" != ") + expected;
+    }
+    return {};
+}
 bool ReturnSignal(QLineEdit* edit) {
     // 生命周期反例会删除 edit。直接信号不再给已销毁对象发送第二个 KeyRelease。
     return QMetaObject::invokeMethod(edit, "returnPressed", Qt::DirectConnection);
@@ -177,6 +187,7 @@ void GlobalSearchDialogTests::GroupedPaginationAndEnterKeepsWindowOpen() {
     QVERIFY(tree->currentItem() && tree->currentItem()->parent());
     QVERIFY(dialog.isVisible()); QCOMPARE(accepted.count(), 0); QCOMPARE(finished.count(), 0);
     QVERIFY(!previous->isEnabled() && next->isEnabled());
+    QVERIFY2(GroupCountMismatch(tree).isEmpty(), qPrintable(GroupCountMismatch(tree)));
     if (captureRequested) {
         QVERIFY(displayedPage); QCOMPARE(displayedPage->contextRevision, fixture.context.revision);
         const auto error = CaptureGroupedFirstPage(dialog, *displayedPage, fixture.context.revision);
@@ -186,6 +197,7 @@ void GlobalSearchDialogTests::GroupedPaginationAndEnterKeepsWindowOpen() {
     QTest::mouseClick(next, Qt::LeftButton);
     QCOMPARE(queries, 2); QCOMPARE(ResultRows(tree), 20); QCOMPARE(tree->topLevelItemCount(), 1);
     QVERIFY(previous->isEnabled() && !next->isEnabled());
+    QVERIFY2(tree->topLevelItem(0)->text(0).endsWith(QStringLiteral("(20/30)")), qPrintable(tree->topLevelItem(0)->text(0)));
     QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("第 2 页")));
     QTest::mouseClick(previous, Qt::LeftButton);
     QCOMPARE(queries, 3); QCOMPARE(ResultRows(tree), 40); QVERIFY(!previous->isEnabled() && next->isEnabled());
@@ -202,8 +214,11 @@ void GlobalSearchDialogTests::ContextChangedSameQueryEnterReruns() {
         }, [&](const auto& row) { ++activations; activatedRevision = row.contextRevision; });
     dialog.FocusQuery("Needle"); QVERIFY(ReturnSignal(Edit(&dialog)));
     QCOMPARE(queries, 1); QCOMPARE(activations, 1); QCOMPARE(ResultRows(Tree(&dialog)), 40);
+    auto* locate = dialog.findChild<QPushButton*>("globalSearchLocate");
+    QVERIFY(locate && locate->isEnabled());
     fixture.context.revision = "owned-dialog/revision-2";
     dialog.ContextChanged(); QCOMPARE(ResultRows(Tree(&dialog)), 0);
+    QVERIFY(!locate->isEnabled()); // 列表清空后没有选中结果，不能保留可点的“定位选中”。
     QVERIFY(SearchStatusLabel(&dialog)->text().contains(QStringLiteral("内容已变化")));
     dialog.FocusQuery("Needle"); // 相同文本不会发 textChanged，必须仍可通过 Enter 重查。
     QVERIFY(ReturnSignal(Edit(&dialog)));

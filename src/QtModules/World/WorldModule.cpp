@@ -337,8 +337,11 @@ QWidget* WorldModule::Widget() {
         auto* label = new UiKit::ElidedLabel(title, titleBar);
         label->setObjectName(QStringLiteral("worldDockTitleLabel"));
         barRow->addWidget(label, 1);
+        // 两个按钮共用 worldDockTitleButton 样式，用无障碍名称与 dockAction 属性区分。
         auto* floatBtn = new QToolButton(titleBar);
         floatBtn->setObjectName(QStringLiteral("worldDockTitleButton"));
+        floatBtn->setProperty("dockAction", QStringLiteral("float"));
+        floatBtn->setAccessibleName(tr("浮动"));
         floatBtn->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/app-window")));
         floatBtn->setIconSize(QSize(13, 13));
         floatBtn->setFixedSize(20, 20);
@@ -347,12 +350,21 @@ QWidget* WorldModule::Widget() {
         barRow->addWidget(floatBtn);
         auto* closeBtn = new QToolButton(titleBar);
         closeBtn->setObjectName(QStringLiteral("worldDockTitleButton"));
+        closeBtn->setProperty("dockAction", QStringLiteral("close"));
+        closeBtn->setAccessibleName(tr("关闭"));
         closeBtn->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/x")));
         closeBtn->setIconSize(QSize(13, 13));
         closeBtn->setFixedSize(20, 20);
         closeBtn->setToolTip(tr("隐藏面板"));
         connect(closeBtn, &QToolButton::clicked, result, &QDockWidget::close);
         barRow->addWidget(closeBtn);
+        // 自定义标题栏不受 features 约束，按面板当前能力显示按钮。
+        const auto syncButtons = [floatBtn, closeBtn](QDockWidget::DockWidgetFeatures features) {
+            floatBtn->setVisible(features.testFlag(QDockWidget::DockWidgetFloatable));
+            closeBtn->setVisible(features.testFlag(QDockWidget::DockWidgetClosable));
+        };
+        syncButtons(result->features());
+        connect(result, &QDockWidget::featuresChanged, titleBar, syncButtons);
         result->setTitleBarWidget(titleBar);
         worldDockHost_->addDockWidget(area, result); return result;
     };
@@ -361,18 +373,10 @@ QWidget* WorldModule::Widget() {
     assetDock_ = dock("worldAssetDock", tr("资源浏览器"), assetBrowser_, Qt::LeftDockWidgetArea);
     inspectorDock_ = dock("worldInspectorDock", tr("属性"), BuildInspector(), Qt::RightDockWidgetArea);
     worldDockHost_->tabifyDockWidget(toolDock_, assetDock_); toolDock_->raise();
-    const auto syncAssetDockTitle = [this] {
-        if (!assetDock_ || !worldDockHost_) return;
-        if (auto* label = assetDock_->findChild<QLabel*>(QStringLiteral("worldDockTitleLabel"))) {
-            const bool tabbed = !assetDock_->isFloating() && !worldDockHost_->tabifiedDockWidgets(assetDock_).isEmpty();
-            label->setText(tabbed ? tr("按分类浏览模型与物体") : assetDock_->windowTitle());
-        }
-    };
-    syncAssetDockTitle();
-    connect(assetDock_, &QDockWidget::topLevelChanged, assetDock_, syncAssetDockTitle);
-    connect(assetDock_, &QDockWidget::dockLocationChanged, assetDock_, syncAssetDockTitle);
-    connect(toolDock_, &QDockWidget::topLevelChanged, this, &WorldModule::UpdateToolHint);
-    connect(toolDock_, &QDockWidget::dockLocationChanged, this, [this](Qt::DockWidgetArea) { UpdateToolHint(); });
+    // 资源浏览器与属性面板标题固定为功能名；场景目录的紧凑标题取决于它是否与其他面板成组。
+    // 任一面板浮动、移动或拆出分组都会使停靠布局重排，所以在停靠宿主每次重排后统一同步，
+    // 不只跟随场景目录自己的信号（另一面板移出分组时它收不到信号）。
+    worldDockHost_->installEventFilter(this);
     UpdateToolHint();
     worldDockHost_->resizeDocks({toolDock_, inspectorDock_}, {264, 292}, Qt::Horizontal);
     assetBrowser_->SetVerticalDock(true);
@@ -1469,6 +1473,9 @@ bool WorldModule::eventFilter(QObject* watched, QEvent* event) {
         CancelTerrainStroke(); resumeBrushAfterRender_ = false;
         event->accept(); return true;
     }
+    // 布局请求由宿主布局先处理（停靠分组已更新），再经过这里同步紧凑标题。
+    if (watched == worldDockHost_ && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Show))
+        SyncToolDockTitle();
     if (watched->objectName() == QStringLiteral("worldToolbar") &&
         (event->type() == QEvent::Resize || event->type() == QEvent::FontChange))
         QTimer::singleShot(0, this, &WorldModule::UpdateToolbarLayout);

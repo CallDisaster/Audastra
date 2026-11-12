@@ -53,6 +53,11 @@ public:
             painter->setPen(QPen(palette.color(QPalette::Mid), 1.0));
             painter->setBrush(palette.brush(QPalette::Highlight));
             painter->drawRoundedRect(QRectF(pill).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
+            // 选中行左侧强调条，与悬停行区分。
+            const QRectF bar(pill.left() + 3.0, pill.top() + 7.0, 3.0, std::max(4, pill.height() - 14));
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(palette.brush(QPalette::Accent));
+            painter->drawRoundedRect(bar, 1.5, 1.5);
         } else if (!header && enabled && (option.state & QStyle::State_MouseOver)) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(palette.brush(QPalette::Light));
@@ -66,7 +71,12 @@ public:
                 painter->drawLine(QPoint(option.rect.left() + 10, option.rect.top() + 2),
                     QPoint(option.rect.right() - 10, option.rect.top() + 2));
             }
-            font.setPointSizeF(std::max(8.5, font.pointSizeF() - 1.0));
+            // 样式表按像素设字号，此时 pointSizeF() 为 -1；按实际像素字号缩小一级。
+            if (font.pixelSize() > 0) {
+                font.setPixelSize(std::max(War3Map::UiKit::Tokens::Size::kFontTiny, font.pixelSize() - 1));
+            } else if (font.pointSizeF() > 0) {
+                font.setPointSizeF(std::max(8.5, font.pointSizeF() - 1.0));
+            }
             font.setWeight(QFont::Medium);
             painter->setPen(palette.color(QPalette::PlaceholderText));
             painter->setFont(font);
@@ -95,7 +105,14 @@ public:
                     QFontMetrics(option.font).elidedText(shortcut, Qt::ElideRight, static_cast<int>(key.width()) - 10));
             }
             if (!detail.isEmpty()) {
-                painter->setPen(enabled ? palette.color(QPalette::PlaceholderText) : palette.color(QPalette::Disabled, QPalette::Text));
+                // 说明行直接压在选中底上：取正文与弱化色的中间值保证对比度；未选中时保持弱化色。
+                QColor secondary = palette.color(QPalette::PlaceholderText);
+                if (selected) {
+                    const QColor text = palette.color(QPalette::Text);
+                    secondary = QColor::fromRgbF((text.redF() + secondary.redF()) / 2, (text.greenF() + secondary.greenF()) / 2,
+                        (text.blueF() + secondary.blueF()) / 2);
+                }
+                painter->setPen(enabled ? secondary : palette.color(QPalette::Disabled, QPalette::Text));
                 const QRect description(row.left(), row.top() + 25, row.width(), 19);
                 painter->drawText(description, Qt::AlignVCenter, QFontMetrics(option.font).elidedText(detail, Qt::ElideRight, description.width()));
             }
@@ -138,14 +155,11 @@ CommandPalette::CommandPalette(QWidget* parent) : QDialog(parent) {
     listView_->setSelectionMode(QAbstractItemView::SingleSelection);
     listView_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     listView_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
-    // 小屏幕先收缩可滚动的结果区，搜索框与快捷键页脚始终留在窗口内。
+    // 小屏幕先收缩可滚动的结果区，搜索框始终留在窗口内。快捷键说明在使用帮助里，面板不放提示行。
     listView_->setMinimumHeight(0);
-    listView_->setMaximumHeight(340);
+    listView_->setMaximumHeight(360);
     listView_->installEventFilter(this);
     layout->addWidget(listView_, 1);
-    auto* hint = new QLabel(tr("↑↓ 选择   ·   Enter 执行   ·   输入 > 仅筛选命令   ·   Esc 关闭"), this);
-    hint->setObjectName(QStringLiteral("commandPaletteHint"));
-    layout->addWidget(hint);
     connect(searchBox_, &QLineEdit::textChanged, this, &CommandPalette::FilterEntries);
     connect(listView_, &QListView::activated, this, &CommandPalette::ActivateIndex);
     connect(listView_, &QListView::clicked, this, &CommandPalette::ActivateIndex);

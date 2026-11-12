@@ -39,8 +39,14 @@ public:
     struct RemovalReview { QStringList lines; std::size_t references = 0; QString incomplete; };
     using RemovalCheck = std::function<std::optional<RemovalReview>(const std::vector<War3Map::Trigger::VariableRecord>&)>;
     void SetRemovalCheck(RemovalCheck check) { removalCheck_ = std::move(check); }
+    // 嵌入工作区的搜索：按显示文字筛选行，被隐藏的行同时取消选中；每次重建列表后按同一条件重新筛选一次。
+    void SetRowFilter(const QString& query);
+    // 每次筛选后回报显示行数、总行数以及是否有筛选词。
+    using FilterObserver = std::function<void(int shown, int total, bool filtered)>;
+    void SetFilterObserver(FilterObserver observer) { filterObserver_ = std::move(observer); }
 
 private:
+    void ApplyRowFilter();
     void RebuildList(std::optional<War3Map::StableId> preferredId = std::nullopt);
     void AddVariable();
     void EditSelected();
@@ -50,7 +56,7 @@ private:
     void UpdateButtons();
     // 当前行：属性、重命名等单项操作的对象。
     [[nodiscard]] std::optional<std::size_t> SelectedRow() const;
-    // 全部选中的行（升序）：删除等批量操作的对象。
+    // 全部选中且未被筛选隐藏的行（升序）：删除等批量操作的对象。
     [[nodiscard]] std::vector<std::size_t> SelectedRows() const;
 
     War3Map::Trigger::TriggerDocument* document_ = nullptr;
@@ -64,4 +70,6 @@ private:
     NameResolver nameResolver_;
     GraphEditing graphEditing_;
     RemovalCheck removalCheck_;
+    QString rowFilter_;
+    FilterObserver filterObserver_;
 };

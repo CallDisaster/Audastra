@@ -8,6 +8,7 @@
 #include "Icons/SvgIcons.h"
 #include "Modules/ModuleHost.h"
 #include "Theme/DesignTokens.generated.h"
+#include "Theme/ThemeManager.h"
 #include "Widgets/ColumnLayout.h"
 #include "Widgets/SearchField.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
@@ -134,8 +135,9 @@ public:
         const int badgeWidth = std::max(28, badgeMetrics.horizontalAdvance(value) + 16);
         const QRect badgeRect(inner.right() - chevronReserve - badgeWidth, inner.top() + (inner.height() - 20) / 2, badgeWidth, 20);
         const bool nonZeroClickable = clickable && value != QStringLiteral("0");
-        painter->setPen(QPen(nonZeroClickable ? QColor(138, 224, 179, 90) : pal.color(QPalette::Mid), 1.0));
-        painter->setBrush(nonZeroClickable ? QColor(138, 224, 179, 28) : pal.color(QPalette::Button));
+        const auto& tokens = UiKit::ThemeManager::ThemeForPalette(pal).colors;
+        painter->setPen(QPen(nonZeroClickable ? UiKit::ToQColor(tokens.accentLine) : pal.color(QPalette::Mid), 1.0));
+        painter->setBrush(nonZeroClickable ? UiKit::ToQColor(tokens.accentSoft) : pal.color(QPalette::Button));
         painter->drawRoundedRect(QRectF(badgeRect).adjusted(0.5, 0.5, -0.5, -0.5),
             UiKit::Tokens::Size::kRadiusSm, UiKit::Tokens::Size::kRadiusSm);
         painter->setFont(badgeFont);
@@ -248,7 +250,7 @@ void ManagerModule::BuildPage() {
     UiKit::InstallSearchIcon(search_);
     count_ = new QLabel(center);
     count_->setObjectName("paneHint");
-    overviewTitle_ = new QLabel(tr("工程健康与资产概况  ·  点击统计项可直接筛选查看"), center);
+    overviewTitle_ = new QLabel(Manager::PageLabel(Page::Overview), center);
     overviewTitle_->setObjectName("managerOverviewTitle");
     toolbar->addWidget(overviewTitle_);
     toolbar->addWidget(filter_);
@@ -333,15 +335,16 @@ void ManagerModule::BuildPage() {
         if (const auto* row = CurrentRow(); row != nullptr && row->open && host_ != nullptr) host_->Navigate(*row->open);
     });
     connect(detail_, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem* item) { OpenItem(item); });
-    const auto activateOverviewItem = [this](QListWidgetItem* item) {
-        if (!item) return;
-        const int index = item->data(kRowRole).toInt();
-        if (index < 0 || index >= static_cast<int>(overviewLines_.size()) || !overviewLines_[index].page) return;
+    // 统计项只在激活（双击或回车）时跳页：同时接单击会让一次双击跳两次，且第二击落在
+    // 刚换出的列表上打开无关对象。分组标题没有行号，不响应。
+    connect(overview_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
+        const QVariant row = item ? item->data(kRowRole) : QVariant{};
+        bool valid = false;
+        const int index = row.isValid() ? row.toInt(&valid) : -1;
+        if (!valid || index < 0 || index >= static_cast<int>(overviewLines_.size()) || !overviewLines_[index].page) return;
         if (!overviewLines_[index].filter.isEmpty()) filters_[static_cast<int>(*overviewLines_[index].page)] = overviewLines_[index].filter;
         ShowPage(*overviewLines_[index].page);
-    };
-    connect(overview_, &QListWidget::itemActivated, this, activateOverviewItem);
-    connect(overview_, &QListWidget::itemClicked, this, activateOverviewItem);
+    });
 }
 
 bool ManagerModule::eventFilter(QObject* watched, QEvent* event) {
@@ -416,7 +419,7 @@ void ManagerModule::PopulateOverview() {
         item->setData(kOverviewValueRole, line.value);
         item->setData(kOverviewClickableRole, static_cast<bool>(line.page));
         if (!line.page) item->setFlags(Qt::ItemIsEnabled);
-        else item->setToolTip(tr("点击跳转到对应列表"));
+        else item->setToolTip(tr("双击查看"));
     }
     count_->clear();
     detailTitle_->setText(Manager::PageLabel(Page::Overview));

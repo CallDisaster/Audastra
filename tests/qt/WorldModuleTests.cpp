@@ -1808,10 +1808,42 @@ void WorldModuleTests::DockWorkspaceUsesLeftTabsAndRestoresBottomAssets() {
     QVERIFY(module.Viewport()->width() > 0 && module.Viewport()->height() > 0);
     QCOMPARE(host->dockWidgetArea(assets), Qt::LeftDockWidgetArea);
     QVERIFY(host->tabifiedDockWidgets(tool).contains(assets)); QVERIFY(browser->Compact());
+    // 停靠栏标题：资源浏览器始终写功能名；场景目录成组时只写状态，资源浏览器移出分组后
+    // 场景目录自己没有收到停靠信号，也要补回“场景目录”。
+    auto* toolTitle = tool->titleBarWidget()->findChild<QLabel*>("worldDockTitleLabel");
+    auto* assetTitle = assets->titleBarWidget()->findChild<QLabel*>("worldDockTitleLabel");
+    auto* subtitle = page->findChild<QLabel*>("worldPanelSubtitle");
+    QVERIFY(toolTitle && assetTitle && subtitle && !subtitle->text().isEmpty());
+    QCOMPARE(assetTitle->text(), QStringLiteral("资源浏览器"));
+    QTRY_COMPARE(toolTitle->text(), subtitle->text());
+    // 浮动与关闭按钮共用样式名，以无障碍名称区分；面板不允许的操作不显示按钮。
+    QToolButton* floatButton = nullptr;
+    QToolButton* closeButton = nullptr;
+    for (auto* button : assets->titleBarWidget()->findChildren<QToolButton*>("worldDockTitleButton")) {
+        if (button->property("dockAction").toString() == QStringLiteral("float")) floatButton = button;
+        if (button->property("dockAction").toString() == QStringLiteral("close")) closeButton = button;
+    }
+    QVERIFY(floatButton && closeButton);
+    QCOMPARE(floatButton->accessibleName(), QStringLiteral("浮动"));
+    QCOMPARE(closeButton->accessibleName(), QStringLiteral("关闭"));
+    QVERIFY(!floatButton->isHidden() && !closeButton->isHidden());
+    const auto features = assets->features();
+    auto restricted = features; restricted.setFlag(QDockWidget::DockWidgetClosable, false);
+    assets->setFeatures(restricted);
+    QVERIFY(closeButton->isHidden() && !floatButton->isHidden());
+    restricted = features; restricted.setFlag(QDockWidget::DockWidgetFloatable, false);
+    assets->setFeatures(restricted);
+    QVERIFY(floatButton->isHidden() && !closeButton->isHidden());
+    assets->setFeatures(features);
+    QVERIFY(!floatButton->isHidden() && !closeButton->isHidden());
     host->addDockWidget(Qt::BottomDockWidgetArea, assets);
     QCOMPARE(host->dockWidgetArea(assets), Qt::BottomDockWidgetArea); QVERIFY(!browser->Compact());
+    QTRY_COMPARE(toolTitle->text(), QStringLiteral("场景目录 · %1").arg(subtitle->text()));
+    QCOMPARE(assetTitle->text(), QStringLiteral("资源浏览器"));
     const auto dockState = host->saveState(1);
     host->addDockWidget(Qt::LeftDockWidgetArea, assets); host->tabifyDockWidget(tool, assets);
+    QTRY_COMPARE(toolTitle->text(), subtitle->text());
+    QCOMPARE(assetTitle->text(), QStringLiteral("资源浏览器"));
     module.RestoreViewState({{"version", 2}, {"docks", QString::fromLatin1(dockState.toBase64())}});
     QCOMPARE(host->dockWidgetArea(assets), Qt::BottomDockWidgetArea);
     QCOMPARE(project.mapDataUndoStack_->count(), 0);

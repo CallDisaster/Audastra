@@ -290,7 +290,7 @@ void GameUiModule::BuildPage() {
     properties_->setWordWrap(true);
     auto* propsViewportLayout = new QVBoxLayout(properties_->viewport());
     propsViewportLayout->setContentsMargins(16, 24, 16, 24);
-    auto* propsEmpty = new QLabel(tr("点击左侧节点或画布控件以查看属性"), properties_->viewport());
+    auto* propsEmpty = new QLabel(tr("未选择"), properties_->viewport());
     propsEmpty->setObjectName(QStringLiteral("emptyState"));
     propsEmpty->setAlignment(Qt::AlignCenter);
     propsEmpty->setWordWrap(true);

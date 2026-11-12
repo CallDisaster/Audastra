@@ -1,6 +1,7 @@
 #include "TriggerSentenceDelegate.h"
 
 #include "TriggerModels.h"
+#include "Theme/ThemeManager.h"
 
 #include <QAbstractItemView>
 #include <QApplication>
@@ -127,7 +128,7 @@ void TriggerSentenceDelegate::paint(QPainter* painter, const QStyleOptionViewIte
         ? index.data(Qt::ForegroundRole).value<QColor>()
         : opt.palette.color(selected ? QPalette::HighlightedText : QPalette::Text);
     const QColor token = selected ? opt.palette.color(QPalette::HighlightedText) : opt.palette.color(QPalette::Link);
-    const QColor missing(0xe5, 0x53, 0x4b);
+    const QColor missing = War3Map::UiKit::ToQColor(War3Map::UiKit::ThemeManager::ThemeForPalette(opt.palette).colors.red);
     const QFontMetrics metrics(opt.font);
     const int baseline = layout.textRect.top() + (layout.textRect.height() + metrics.ascent() - metrics.descent()) / 2;
     int cursor = 0;

@@ -38,7 +38,8 @@ protected:
         const QRectF frame = QRectF(this->rect()).adjusted(0.5, 0.5, -0.5, -0.5);
         QPainterPath cardPath;
         cardPath.addRoundedRect(frame, 6.0, 6.0);
-        p.fillPath(cardPath, QColor(17, 18, 20));
+        // 卡片底色与描边跟随主题调色板（Base = 底色，Mid = 分隔线），浅色主题下不出现深色框。
+        p.fillPath(cardPath, palette().color(QPalette::Base));
         p.save();
         p.setClipPath(cardPath);
         if (!pixmap().isNull())
@@ -53,7 +54,7 @@ protected:
             p.drawPolygon(points);
         }
         p.restore();
-        p.setPen(QPen(QColor(42, 45, 52), 1.0));
+        p.setPen(QPen(palette().color(QPalette::Mid), 1.0));
         p.setBrush(Qt::NoBrush);
         p.drawPath(cardPath);
     }

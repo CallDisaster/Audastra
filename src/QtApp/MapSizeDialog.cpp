@@ -1,6 +1,7 @@
 #include "MapSizeDialog.h"
 #include "Icons/SvgIcons.h"
 #include "Widgets/SearchField.h"
+#include "Widgets/TableRowFilter.h"
 
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -140,22 +141,21 @@ MapSizeDialog::MapSizeDialog(Revision revision, Query query, Activate activate, 
     status_->setWordWrap(true); layout->addWidget(status_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     if (auto* close = buttons->button(QDialogButtonBox::Close)) close->setText(tr("关闭"));
-    auto* locate = buttons->addButton(tr("定位选中"), QDialogButtonBox::ActionRole);
-    locate->setObjectName(QStringLiteral("primaryButton"));
-    locate->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")));
-    locate->setEnabled(false);
-    locate->style()->unpolish(locate);
-    locate->style()->polish(locate);
+    locate_ = buttons->addButton(tr("定位选中"), QDialogButtonBox::ActionRole);
+    locate_->setObjectName(QStringLiteral("primaryButton"));
+    locate_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")));
+    locate_->setEnabled(false);
+    locate_->style()->unpolish(locate_);
+    locate_->style()->polish(locate_);
     auto* refresh = buttons->addButton(tr("刷新"), QDialogButtonBox::ActionRole);
     refresh->setObjectName(QStringLiteral("mapSizeRefresh"));
     refresh->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/rotate-ccw")));
     for (auto* button : buttons->findChildren<QPushButton*>()) button->setAutoDefault(false);
     layout->addWidget(buttons);
-    connect(filter_, &QLineEdit::textChanged, this, [this] { ApplyMemberFilter(); });
-    connect(locate, &QPushButton::clicked, this, [this] { ActivateCurrent(); });
-    connect(top_, &QTableWidget::itemSelectionChanged, this, [this, locate] {
-        locate->setEnabled(top_->currentRow() >= 0);
-    });
+    UiKit::BindRowFilterInput(filter_, [this] { ApplyMemberFilter(); });
+    connect(locate_, &QPushButton::clicked, this, [this] { ActivateCurrent(); });
+    connect(top_, &QTableWidget::itemSelectionChanged, this, [this] { UpdateLocate(); });
+    connect(top_, &QTableWidget::currentCellChanged, this, [this] { UpdateLocate(); });
     connect(refresh, &QPushButton::clicked, this, [this] { Refresh(); });
     connect(top_, &QTableWidget::itemActivated, this, [this] { ActivateCurrent(); });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::hide);
@@ -167,14 +167,14 @@ void MapSizeDialog::Focus() {
     if (dialog) top_->setFocus();
 }
 void MapSizeDialog::ContextChanged() {
-    ++requestGeneration_; report_.reset(); totals_->setRowCount(0); top_->setRowCount(0);
+    ++requestGeneration_; report_.reset(); totals_->setRowCount(0); top_->setRowCount(0); UpdateLocate();
     scope_->clear(); status_->setText(tr("内容已变化，请刷新"));
 }
 void MapSizeDialog::Refresh() {
     const auto generation = ++requestGeneration_;
     const QPointer<MapSizeDialog> dialog(this);
     const auto revision = revision_; const auto query = query_;
-    report_.reset(); totals_->setRowCount(0); top_->setRowCount(0); scope_->clear();
+    report_.reset(); totals_->setRowCount(0); top_->setRowCount(0); scope_->clear(); UpdateLocate();
     if (!revision || !query) { status_->setText(tr("没有可分析的地图")); return; }
     const auto expected = revision();
     if (!dialog || generation != requestGeneration_) return;
@@ -235,19 +235,15 @@ void MapSizeDialog::Populate(const Services::MapSizeReport& report) {
 }
 void MapSizeDialog::ApplyMemberFilter() {
     if (!filter_ || !top_) return;
-    const QString query = filter_->text().trimmed();
-    for (int row = 0; row < top_->rowCount(); ++row) {
-        bool match = query.isEmpty();
-        for (int col = 0; !match && col < top_->columnCount(); ++col) {
-            if (const auto* item = top_->item(row, col)) {
-                match = item->text().contains(query, Qt::CaseInsensitive);
-            }
-        }
-        top_->setRowHidden(row, !match);
-    }
+    UiKit::ApplyTableRowFilter(top_, filter_->text());
+    UpdateLocate();
+}
+void MapSizeDialog::UpdateLocate() {
+    // 当前行为空或已被筛选隐藏时不能定位。
+    if (locate_ && top_) locate_->setEnabled(UiKit::VisibleCurrentRow(top_) >= 0);
 }
 void MapSizeDialog::ActivateCurrent() {
-    const auto index = top_->currentRow();
+    const auto index = UiKit::VisibleCurrentRow(top_);
     if (!report_ || index < 0 || static_cast<std::size_t>(index) >= report_->top20.size()) return;
     const auto generation = requestGeneration_;
     const QPointer<MapSizeDialog> dialog(this);

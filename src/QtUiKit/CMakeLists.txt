@@ -45,6 +45,7 @@ qt_add_library(War3MapQtUiKit STATIC
     Widgets/ResponsiveToolBar.cpp
     Widgets/TablePopupAnchor.cpp
     Widgets/TablePopupAnchor.h
+    Widgets/TableRowFilter.cpp Widgets/TableRowFilter.h
     Widgets/ResponsiveToolBar.h
     Widgets/WarcraftTextPreview.cpp
     Widgets/WarcraftTextPreview.h)

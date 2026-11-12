@@ -46,6 +46,7 @@
 #include <QStatusBar>
 #include <QSignalBlocker>
 #include <QScopedValueRollback>
+#include <QSet>
 #include <QStyle>
 #include <QTimer>
 #include <QUndoGroup>
@@ -190,10 +191,25 @@ QString RandomToken() {
     return QString::fromLatin1(bytes.toHex());
 }
 
-void ApplySettings(War3Map::QtApp::AiWorkspace& state) {
-    state.tools->SetPolicy(Policy(state.settings));
-    state.controller->SetSettings(state.settings);
-    if (state.window) state.window->SetSettings(state.settings);
+// 把 MCP 服务与内置工具注册表的实际状态推给助手窗口；窗口不按设置推测运行状态。
+void PublishConnectorStatus(War3Map::QtApp::AiWorkspace& state) {
+    if (!state.window || !state.tools || !state.http) return;
+    War3Map::Agent::AgentConnectorStatus status;
+    status.mcpListening = state.http->IsListening();
+    if (status.mcpListening) status.mcpEndpoint = state.http->EndpointUrl().toString();
+    status.mcpError = state.serviceError;
+    const QStringList registered = state.tools->RegisteredToolNames();
+    status.registeredTools = static_cast<int>(registered.size());
+    // 只数实际注册过的工具；设置里残留的旧工具名不计入禁用数。
+    QSet<QString> disabled;
+    for (const auto& name : state.settings.disabledTools) {
+        if (registered.contains(name)) disabled.insert(name);
+    }
+    status.disabledTools = static_cast<int>(disabled.size());
+    state.window->SetConnectorStatus(status);
+}
+
+void RestartMcpService(War3Map::QtApp::AiWorkspace& state) {
     state.http->Stop();
     state.serviceError.clear();
     if (!state.settings.mcpEnabled) return;
@@ -215,6 +231,14 @@ void ApplySettings(War3Map::QtApp::AiWorkspace& state) {
     if (!state.http->Start(options, &state.serviceError)) return;
 }
 
+void ApplySettings(War3Map::QtApp::AiWorkspace& state) {
+    state.tools->SetPolicy(Policy(state.settings));
+    state.controller->SetSettings(state.settings);
+    if (state.window) state.window->SetSettings(state.settings);
+    RestartMcpService(state);
+    PublishConnectorStatus(state);
+}
+
 } // namespace
 
 quint16 MainWindow::StartAgentHttpProbe(const QByteArray& token, War3Map::QtApp::LiveEditorTools*& tools, QString& error) {
@@ -234,6 +258,7 @@ quint16 MainWindow::StartAgentHttpProbe(const QByteArray& token, War3Map::QtApp:
     options.port = 0;
     options.bearerToken = token;
     if (!state.http->Start(options, &error)) return 0;
+    PublishConnectorStatus(state);
     tools = state.tools.get();
     return state.http->Port();
 }
@@ -407,6 +432,7 @@ void MainWindow::PresentAgentWorkspace(int mode) {
     if (!state->window) {
         state->window = new War3Map::Agent::AgentWindow(this);
         state->window->SetSettings(state->settings);
+        PublishConnectorStatus(*state);
         connect(state->window, &War3Map::Agent::AgentWindow::PromptSubmitted, state,
             [state](const QString& text, const QString& provider, const QString& model) {
                 state->controller->StartPrompt(text, provider, model);
@@ -623,7 +649,7 @@ void MainWindow::ShowApplicationSettings() {
             legacyMapBackupCheck_->Start(directory);
         });
     }
-    dialog.AddApplicationPage(tr("地图测试与备份"), mapTestPage);
+    dialog.AddApplicationPage(tr("地图测试与备份"), mapTestPage, QStringLiteral("lucide/play"));
     auto* recoveryPage = new War3Map::QtApp::RecoverySettingsPage;
     dialog.AddApplicationPage(tr("编辑恢复"), recoveryPage);
     auto* worldEffectsPage = new War3Map::QtApp::WorldEffectsSettingsPage;

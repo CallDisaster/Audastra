@@ -16,7 +16,23 @@
 #include <QStyle>
 #include <QToolButton>
 
+#include <algorithm>
+
 namespace War3Map::Shell {
+namespace {
+constexpr auto kFullTitleProperty = "projectFullTitle";
+
+// 地图名过长时省略中间，保留末尾的版本号与扩展名。可用宽度取最大宽度扣除样式表内边距与边框，
+// 结果不超过内容区，ElidedLabel 不会再在末尾截断。
+void ElideProjectTitle(QLabel& label) {
+    label.ensurePolished();
+    const QString full = label.property(kFullTitleProperty).toString();
+    const QMargins margins = label.contentsMargins();
+    const int available = std::max(0, label.maximumWidth() - margins.left() - margins.right());
+    const QString shown = label.fontMetrics().elidedText(full, Qt::ElideMiddle, available);
+    if (label.text() != shown) label.setText(shown);
+}
+} // namespace
 
 HeaderBar::HeaderBar(QWidget* parent)
     : QFrame(parent) {
@@ -36,6 +52,7 @@ HeaderBar::HeaderBar(QWidget* parent)
     project_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     project_->setMaximumWidth(160);
     project_->setTextFormat(Qt::PlainText);
+    project_->setProperty(kFullTitleProperty, project_->text());
     layout->addWidget(brand);
     layout->addWidget(project_);
 
@@ -53,7 +70,8 @@ HeaderBar::HeaderBar(QWidget* parent)
 }
 
 void HeaderBar::SetProjectTitle(const QString& title, const QString& tooltip) {
-    project_->setText(title);
+    project_->setProperty(kFullTitleProperty, title);
+    ElideProjectTitle(*project_);
     project_->setToolTip(tooltip.isEmpty() ? title : tooltip);
 }
 
@@ -92,6 +110,8 @@ void HeaderBar::UpdateActionLayout() {
     actions_->Refresh();
     project_->setVisible(width() >= 1200);
     project_->setMaximumWidth(width() >= 1600 ? 160 : 80);
+    // 最大宽度随窗口变化，按完整标题重新省略中间部分。
+    ElideProjectTitle(*project_);
     const auto* brand = findChild<QLabel*>(QStringLiteral("brand"));
     const int identity = 22 + 40 + (brand ? brand->sizeHint().width() : 90)
         + (project_->isHidden() ? 0 : project_->maximumWidth());

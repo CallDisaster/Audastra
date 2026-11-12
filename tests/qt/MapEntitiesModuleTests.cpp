@@ -14,6 +14,8 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QInputDialog>
+#include <QItemSelectionModel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QJsonArray>
 #include <QScrollBar>
@@ -42,6 +44,7 @@ private slots:
     void NavigationBookmarkBlocksModalDraft();
     void AuxiliaryCrudUsesSharedUndoAndReferences();
     void AuxiliaryMultiDeleteIsOneUndo();
+    void FilterAppliesAfterRefreshAndDeleteSkipsHiddenRows();
     void AuxiliaryDialogsKeepCapturedProjectBinding();
 };
 
@@ -251,6 +254,60 @@ void MapEntitiesModuleTests::AuxiliaryMultiDeleteIsOneUndo() {
     QVERIFY(!module.DeleteAuxiliaryRows(MapDataKind::Regions, {0, 2}).Succeeded());
     QCOMPARE(module.UndoStack()->count(), refused);
     QCOMPARE(project.mapEdits_->Snapshot().Regions()->entries.size(), std::size_t{3});
+}
+
+void MapEntitiesModuleTests::FilterAppliesAfterRefreshAndDeleteSkipsHiddenRows() {
+    QtProject::EditorProject project;
+    MapData::RegionRecord south{}; south.name = "South1"; south.creationNumber = 1; south.right = south.top = 128;
+    auto north = south; north.name = "North1"; north.creationNumber = 2;
+    auto northLast = south; northLast.name = "North2"; northLast.creationNumber = 3;
+    const auto regions = MapData::RegionsDocument{5, {south, north, northLast}, {}}.Serialize();
+    QVERIFY(regions.Succeeded());
+    const std::vector<MapArchiveMember> members{{"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes},
+        {"war3map.w3r", *regions.value}};
+    project.mapDocument_ = std::make_unique<MapDocument>(MapDocument::FromMembers(members));
+    project.mapEdits_ = std::make_unique<MapData::MapDataEditSession>(*project.mapDocument_);
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>();
+    Modules::MapEntitiesModule module(project);
+    auto* page = module.Widget();
+    auto* tabs = page->findChild<QTabWidget*>();
+    auto* table = page->findChild<QTableWidget*>(QStringLiteral("mapEntitiesTable2"));
+    auto* filter = page->findChild<QLineEdit*>(QStringLiteral("mapEntitiesFilter"));
+    auto* remove = page->findChild<QPushButton*>("mapEntitiesDeleteAuxiliary");
+    QVERIFY(tabs && table && filter && remove);
+    tabs->setCurrentIndex(2);
+    QCOMPARE(table->rowCount(), 3);
+    filter->setText(QStringLiteral("north"));
+    QTRY_VERIFY(table->isRowHidden(0));
+    QVERIFY(!table->isRowHidden(1) && !table->isRowHidden(2));
+    // 刷新逐行插入后才填单元格；筛选必须在整表填完后执行，匹配的末行不能被误隐藏。
+    module.Refresh();
+    QCOMPARE(table->rowCount(), 3);
+    QVERIFY(table->isRowHidden(0));
+    QVERIFY(!table->isRowHidden(1) && !table->isRowHidden(2));
+    // 与 Ctrl+A / Shift 范围选择相同，整段选择包含隐藏行；删除只作用于可见的选中行。
+    auto* selection = table->selectionModel();
+    selection->select(QItemSelection(table->model()->index(0, 0),
+        table->model()->index(2, table->columnCount() - 1)), QItemSelectionModel::ClearAndSelect);
+    QCOMPARE(selection->selectedRows().size(), qsizetype{3});
+    const auto count = module.UndoStack()->count();
+    remove->click();
+    QCOMPARE(module.UndoStack()->count(), count + 1);
+    auto left = project.mapEdits_->Snapshot();
+    QCOMPARE(left.Regions()->entries.size(), std::size_t{1});
+    QCOMPARE(left.Regions()->entries[0].name, std::string("South1"));
+    // 撤销后的刷新同样筛选一次：不匹配的行隐藏且不保留选中。
+    module.UndoStack()->undo();
+    left = project.mapEdits_->Snapshot();
+    QCOMPARE(left.Regions()->entries.size(), std::size_t{3});
+    QCOMPARE(table->rowCount(), 3);
+    QVERIFY(table->isRowHidden(0) && !table->isRowHidden(1) && !table->isRowHidden(2));
+    QVERIFY(!selection->rowIntersectsSelection(0, {}));
+    // 定位前清空筛选，目标行立即可见。
+    QVERIFY(module.Reveal({"entities", "region", "South1", {}}));
+    QVERIFY(filter->text().isEmpty());
+    QVERIFY(!table->isRowHidden(0));
+    QCOMPARE(table->currentRow(), 0);
 }
 
 void MapEntitiesModuleTests::AuxiliaryDialogsKeepCapturedProjectBinding() {

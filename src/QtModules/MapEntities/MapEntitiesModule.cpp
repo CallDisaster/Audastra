@@ -7,6 +7,7 @@
 #include "Icons/IconProvider.h"
 #include "Icons/SvgIcons.h"
 #include "Widgets/SearchField.h"
+#include "Widgets/TableRowFilter.h"
 #include "ObjectNames.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapFields.h"
@@ -20,7 +21,6 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
-#include <QPointer>
 #include <QScrollBar>
 #include <QJsonArray>
 #include <QScopedValueRollback>
@@ -198,32 +198,21 @@ QWidget* MapEntitiesModule::Widget() {
     auto* remove = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/trash-2")), tr("删除选中"), page_);
     add->setObjectName("mapEntitiesAddAuxiliary");
     remove->setObjectName("mapEntitiesDeleteAuxiliary");
-    auto* filter = new QLineEdit(page_);
-    filter->setObjectName("mapEntitiesFilter");
-    filter->setPlaceholderText(tr("筛选当前页名称、ID 或坐标…"));
-    filter->setClearButtonEnabled(true);
-    filter->setFixedWidth(256);
-    UiKit::InstallSearchIcon(filter);
+    filter_ = new QLineEdit(page_);
+    filter_->setObjectName("mapEntitiesFilter");
+    filter_->setPlaceholderText(tr("筛选当前页名称、ID 或坐标…"));
+    filter_->setClearButtonEnabled(true);
+    filter_->setFixedWidth(256);
+    UiKit::InstallSearchIcon(filter_);
     rawFields_ = new QCheckBox(tr("显示原始字段"), page_);
     rawFields_->setObjectName("mapEntitiesRawFields");
     actions->addWidget(add);
     actions->addWidget(remove);
-    actions->addWidget(filter, 1);
+    actions->addWidget(filter_, 1);
     actions->addStretch();
     actions->addWidget(rawFields_);
     layout->addLayout(actions);
     tabs_ = new QTabWidget(page_);
-    const QPointer<QLineEdit> filterGuard(filter);
-    const auto filterSingleTable = [](QTableWidget* tbl, const QString& query) {
-        if (!tbl) return;
-        for (int r = 0; r < tbl->rowCount(); ++r) {
-            bool match = query.isEmpty();
-            for (int c = 0; !match && c < tbl->columnCount(); ++c) {
-                if (const auto* cell = tbl->item(r, c)) match = cell->text().contains(query, Qt::CaseInsensitive);
-            }
-            tbl->setRowHidden(r, !match);
-        }
-    };
     const QStringList titles{tr("单位与物品"), tr("装饰物"), tr("区域"), tr("镜头")};
     for (int kind = 0; kind < 4; ++kind) {
         auto* table = new QTableWidget(tabs_);
@@ -245,21 +234,13 @@ QWidget* MapEntitiesModule::Widget() {
         table->verticalHeader()->hide();
         tables_[kind] = table;
         tabs_->addTab(table, titles[kind]);
-        const QPointer<QTableWidget> tableGuard(table);
-        connect(table->model(), &QAbstractItemModel::rowsInserted, filter, [filterGuard, tableGuard, filterSingleTable] {
-            if (filterGuard && tableGuard) filterSingleTable(tableGuard.data(), filterGuard->text().trimmed());
-        });
-        connect(table->model(), &QAbstractItemModel::modelReset, filter, [filterGuard, tableGuard, filterSingleTable] {
-            if (filterGuard && tableGuard) filterSingleTable(tableGuard.data(), filterGuard->text().trimmed());
-        });
-        connect(filter, &QLineEdit::textChanged, table, [filterGuard, tableGuard, filterSingleTable] {
-            if (filterGuard && tableGuard) filterSingleTable(tableGuard.data(), filterGuard->text().trimmed());
-        });
         connect(table, &QTableWidget::cellDoubleClicked, this,
             [this, kind](int row, int column) { EditSelected(kind, row, column); });
         connect(table->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this, kind] { RefreshVisibleIcons(kind); });
     }
+    // 筛选只在筛选词变化（停顿后）与每次整表刷新完成后各执行一次。
+    UiKit::BindRowFilterInput(filter_, [this] { ApplyFilter(); });
     connect(rawFields_, &QCheckBox::toggled, this, [this](bool raw) {
         for (int kind = 0; kind < 4; ++kind)
             tables_[kind]->setHorizontalHeaderLabels(raw ? kFields[kind] : kLabels[kind]);
@@ -272,12 +253,12 @@ QWidget* MapEntitiesModule::Widget() {
     connect(remove, &QPushButton::clicked, this, [this] {
         const int category = tabs_->currentIndex();
         if (category < 2 || category > 3) return;
-        // 删除全部选中的行（Ctrl/Shift 多选），一次撤销恢复。
+        // 删除全部选中的可见行（Ctrl/Shift 多选），一次撤销恢复；被筛选隐藏的行即使被全选也不删除。
         std::vector<std::size_t> rows;
-        for (const auto& index : tables_[category]->selectionModel()->selectedRows())
-            rows.push_back(static_cast<std::size_t>(index.row()));
-        if (rows.empty() && tables_[category]->currentRow() >= 0)
-            rows.push_back(static_cast<std::size_t>(tables_[category]->currentRow()));
+        for (const int row : UiKit::VisibleSelectedRows(tables_[category]))
+            rows.push_back(static_cast<std::size_t>(row));
+        if (const int current = UiKit::VisibleCurrentRow(tables_[category]); rows.empty() && current >= 0)
+            rows.push_back(static_cast<std::size_t>(current));
         if (rows.empty()) return;
         ShowError(DeleteAuxiliaryRows(kKinds[category], std::move(rows)));
     });
@@ -375,18 +356,34 @@ void MapEntitiesModule::Refresh() {
             table->selectionModel()->setCurrentIndex(table->model()->index(restoredCurrent, 0), QItemSelectionModel::NoUpdate);
         } else if (selected >= 0 && selected < table->rowCount()) table->selectRow(selected);
     }
+    // 四个表全部填完后再按筛选词各遍历一次；隐藏行同时取消选中，再给可见行补图标。
+    ApplyFilter();
+}
+
+void MapEntitiesModule::ApplyFilter() {
+    if (!page_ || !tabs_) return;
+    const QString query = filter_ ? filter_->text() : QString{};
+    for (auto* table : tables_) UiKit::ApplyTableRowFilter(table, query);
     RefreshVisibleIcons(tabs_->currentIndex());
 }
 
 void MapEntitiesModule::RefreshVisibleIcons(int category) {
     if (category < 0 || category > 1 || !project_.iconProvider_ || !tables_[category]) return;
     auto* table = tables_[category];
-    if (table->rowCount() == 0) return;
+    const int rows = table->rowCount();
+    if (rows == 0) return;
     int first = table->rowAt(0);
     if (first < 0) first = 0;
-    int last = table->rowAt(table->viewport()->height() - 1);
-    if (last < first) last = std::min(first + 35, table->rowCount() - 1);
-    for (int row = first; row <= std::min(last + 3, table->rowCount() - 1); ++row) {
+    const int last = table->rowAt(table->viewport()->height() - 1);
+    // 视口内的可见行全部加载，之后再预取 3 个可见行；视口未布局或表格不满一屏时取 36 个可见行。
+    // 筛选隐藏的行不加载图标，也不占预取名额。
+    int ahead = last < first ? 36 : 3;
+    for (int row = first; row < rows; ++row) {
+        if (table->isRowHidden(row)) continue;
+        if (last < first || row > last) {
+            if (ahead <= 0) break;
+            --ahead;
+        }
         auto* item = table->item(row, 0);
         if (!item || item->data(Qt::UserRole + 2).toBool()) continue;
         const QString path = item->data(Qt::UserRole + 1).toString();
@@ -695,9 +692,7 @@ void MapEntitiesModule::EditSelected(int category, int row, int column) {
 bool MapEntitiesModule::Reveal(const Shell::NavigationTarget& target) {
     if (target.module != "entities") return false;
     (void)Widget();
-    if (auto* filter = page_->findChild<QLineEdit*>("mapEntitiesFilter"); filter && !filter->text().isEmpty()) {
-        filter->clear();
-    }
+    if (filter_ && !filter_->text().isEmpty()) filter_->clear();
     for (int category = 0; category < 4; ++category) {
         const QStringList categories{"unit", "doodad", "region", "camera"};
         if (target.kind != categories[category]) continue;

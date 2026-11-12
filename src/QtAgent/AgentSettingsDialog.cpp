@@ -759,7 +759,7 @@ void AgentSettingsDialog::AddGeneralSection(QWidget* section) {
     }
 }
 
-void AgentSettingsDialog::AddApplicationPage(const QString& label, QWidget* page) {
+void AgentSettingsDialog::AddApplicationPage(const QString& label, QWidget* page, const QString& iconName) {
     if (!page || label.isEmpty()) return;
     // 页面只负责内部排版；窗口统一留白，内容过高时在本页滚动。
     if (page->layout()) page->layout()->setContentsMargins(0, 0, 0, 0);
@@ -769,10 +769,9 @@ void AgentSettingsDialog::AddApplicationPage(const QString& label, QWidget* page
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setWidget(page);
-    const QString iconName = label.contains(QStringLiteral("测试"))
-        ? QStringLiteral("lucide/play")
-        : QStringLiteral("lucide/settings-2");
-    impl_->nav->addItem(new QListWidgetItem(UiKit::SvgIcon(iconName), label));
+    // 图标由调用方按页面给出稳定键，不按标签文字猜测。
+    const QString icon = !iconName.isEmpty() && UiKit::HasSvgIcon(iconName) ? iconName : QStringLiteral("lucide/settings-2");
+    impl_->nav->addItem(new QListWidgetItem(UiKit::SvgIcon(icon), label));
     impl_->pages->addWidget(scroll);
 }
 

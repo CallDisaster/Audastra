@@ -12,6 +12,7 @@
 #include "ObjectViewEntries.h"
 #include "Fonts/FontLoader.h"
 #include "Icons/SvgIcons.h"
+#include "Theme/ThemeManager.h"
 #include "Widgets/ElidedLabel.h"
 #include "Widgets/Motion.h"
 #include "Widgets/ResponsiveToolBar.h"
@@ -159,7 +160,8 @@ public:
                 .paint(painter, iconRect);
         } else if (index.column() == 2) {
             if (!checked && !hovered) return;
-            QColor tint = checked ? QColor(0xea, 0xb3, 0x64) : opt.palette.color(QPalette::PlaceholderText);
+            QColor tint = checked ? UiKit::ToQColor(UiKit::ThemeManager::ThemeForPalette(opt.palette).colors.amber)
+                : opt.palette.color(QPalette::PlaceholderText);
             if (!checked) tint.setAlpha(110);
             UiKit::SvgIcon(QStringLiteral("lucide/lock"), tint).paint(painter, iconRect);
         }
@@ -759,20 +761,7 @@ void WorldModule::UpdateToolState() {
 
 void WorldModule::UpdateToolHint() {
     if (!selectionStatus_ || !toolSubtitle_) return;
-    const auto syncDockHeader = qScopeGuard([this] {
-        if (!toolDock_ || !toolTitle_ || !toolSubtitle_) return;
-        if (auto* label = toolDock_->findChild<QLabel*>(QStringLiteral("worldDockTitleLabel"))) {
-            const bool tabbed = worldDockHost_ && !toolDock_->isFloating()
-                && !worldDockHost_->tabifiedDockWidgets(toolDock_).isEmpty();
-            const QString sub = toolSubtitle_->text();
-            if (tabbed && CurrentTool() == Tool::Select) {
-                label->setText(sub);
-            } else {
-                label->setText(sub.isEmpty() ? toolTitle_->text()
-                    : QStringLiteral("%1 · %2").arg(toolTitle_->text(), sub));
-            }
-        }
-    });
+    const auto syncDockHeader = qScopeGuard([this] { SyncToolDockTitle(); });
     if (terrainBlockSelecting_ || terrainBlockPasting_) {
         toolSubtitle_->setText(terrainBlockPasting_ ? tr("地形块粘贴 · 绝对高度") : tr("拖动框选地形 · Ctrl+C / Ctrl+V"));
         return;
@@ -814,6 +803,19 @@ void WorldModule::UpdateToolHint() {
         selectionStatus_->setText(tr("拖动中"));
     else if (SelectedRequest()) selectionStatus_->setText(tr("已选 %1 个").arg(selectedPlacements_.size()));
     else selectionStatus_->clear();
+}
+
+void WorldModule::SyncToolDockTitle() {
+    if (!toolDock_ || !toolTitle_ || !toolSubtitle_) return;
+    auto* bar = toolDock_->titleBarWidget();
+    auto* label = bar ? bar->findChild<QLabel*>(QStringLiteral("worldDockTitleLabel"), Qt::FindDirectChildrenOnly) : nullptr;
+    if (!label) return;
+    // 成组时标签页已写“场景目录”，选择工具下标题行只写状态；单独停靠或浮动时写“场景目录 · 状态”。
+    const bool tabbed = worldDockHost_ && !toolDock_->isFloating()
+        && !worldDockHost_->tabifiedDockWidgets(toolDock_).isEmpty();
+    const QString sub = toolSubtitle_->text();
+    if (tabbed && CurrentTool() == Tool::Select) label->setText(sub);
+    else label->setText(sub.isEmpty() ? toolTitle_->text() : QStringLiteral("%1 · %2").arg(toolTitle_->text(), sub));
 }
 
 void WorldModule::UpdateStatusIndicators() {

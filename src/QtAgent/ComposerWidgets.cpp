@@ -1,8 +1,11 @@
 #include "ComposerWidgets.h"
 
 #include "Icons/SvgIcons.h"
+#include "Theme/ThemeManager.h"
 
 #include <QEnterEvent>
+#include <QEvent>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QKeyEvent>
@@ -10,12 +13,44 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
 
 namespace War3Map::Agent {
+namespace {
+
+// 用量接近上限时的警示色（与圆环相同阈值）；未到阈值返回 normal。
+QColor ContextWarningColor(const UiKit::Tokens::ThemeTokens& theme, double fraction, const QColor& normal) {
+    if (fraction >= 0.9) return UiKit::ToQColor(theme.colors.red);
+    if (fraction >= 0.75) return UiKit::ToQColor(theme.colors.amber);
+    return normal;
+}
+
+} // namespace
+
+ContextSegmentColors ResolveContextSegmentColors(const UiKit::Tokens::ThemeTokens& theme) {
+    const auto& c = theme.colors;
+    const QColor input = UiKit::ToQColor(c.blue);
+    const QColor base = UiKit::ToQColor(c.bg);
+    // 缓存命中是输入的一部分：取输入色与主题底色的不透明混合，深浅主题下都比输入色更淡且同色系。
+    const QColor cache = QColor::fromRgbF(input.redF() * 0.55f + base.redF() * 0.45f,
+        input.greenF() * 0.55f + base.greenF() * 0.45f, input.blueF() * 0.55f + base.blueF() * 0.45f);
+    return {input, cache, UiKit::ToQColor(c.violet), UiKit::ToQColor(c.scrollbar)};
+}
+
+void ScheduleThemeRetint(const QEvent* event, QObject* context, bool& queued, std::function<void()> retint) {
+    if (event == nullptr || context == nullptr || !retint) return;
+    if (event->type() != QEvent::PaletteChange && event->type() != QEvent::StyleChange) return;
+    if (queued) return;
+    queued = true;
+    QTimer::singleShot(0, context, [&queued, retint = std::move(retint)] {
+        queued = false;
+        retint();
+    });
+}
 
 QString FormatTokens(qint64 tokens) {
     if (tokens < 1000) return QString::number(std::max<qint64>(0, tokens));
@@ -126,10 +161,8 @@ void ContextRing::paintEvent(QPaintEvent*) {
     }
     const double fraction = Fraction();
     if (fraction <= 0.0) return;
-    QColor used = colors.color(QPalette::Link);
-    if (!used.isValid()) used = colors.color(QPalette::Text);
-    if (fraction >= 0.9) used = QColor(242, 132, 124);
-    else if (fraction >= 0.75) used = QColor(234, 179, 100);
+    const auto& theme = UiKit::ThemeManager::ThemeForWidget(this);
+    const QColor used = ContextWarningColor(theme, fraction, UiKit::ToQColor(theme.colors.accent));
     painter.setPen(QPen(used, stroke, Qt::SolidLine, Qt::RoundCap));
     // Qt 角度单位为 1/16 度；从 12 点钟方向顺时针。
     painter.drawArc(ring, 90 * 16, -static_cast<int>(std::lround(fraction * 360.0 * 16.0)));
@@ -163,38 +196,36 @@ void ContextSegmentBar::paintEvent(QPaintEvent*) {
     clip.addRoundedRect(bar, radius, radius);
     painter.setClipPath(clip);
 
-    QColor track = palette().color(QPalette::Text);
-    track.setAlpha(24);
-    painter.fillRect(bar, track);
+    // 底槽与各分段的颜色和检查栏图例取自同一份令牌配色。
+    const auto& theme = UiKit::ThemeManager::ThemeForWidget(this);
+    const ContextSegmentColors colors = ResolveContextSegmentColors(theme);
+    painter.fillRect(bar, colors.remaining);
 
     if (limit_ <= 0 || used_ <= 0) return;
 
     const double totalCapacity = static_cast<double>(limit_);
-    const qint64 partsSum = uncachedInput_ + cachedRead_ + output_;
+    const qint64 classified = uncachedInput_ + cachedRead_ + output_;
+    // 提供商只给总量（或分项不足总量）时，剩下的已用量单独画成未分类段，不算到任何一项里。
+    const qint64 unclassified = std::max<qint64>(0, used_ - classified);
+    const qint64 drawn = classified + unclassified;
+    const double scale = drawn > limit_ ? totalCapacity / static_cast<double>(drawn) : 1.0;
     qreal cursor = bar.left();
 
     const auto drawPart = [&](qint64 tokens, const QColor& color) {
-        if (tokens <= 0 || cursor >= bar.right()) return;
+        const qint64 scaled = static_cast<qint64>(std::llround(static_cast<double>(tokens) * scale));
+        if (scaled <= 0 || cursor >= bar.right()) return;
         const qreal segWidth = std::min(bar.right() - cursor,
-            std::max<qreal>(2.0, static_cast<qreal>(static_cast<double>(tokens) / totalCapacity * bar.width())));
+            std::max<qreal>(2.0, static_cast<qreal>(static_cast<double>(scaled) / totalCapacity * bar.width())));
         painter.fillRect(QRectF(cursor, bar.top(), segWidth, bar.height()), color);
         cursor += segWidth;
     };
 
-    if (partsSum > 0) {
-        const double scale = used_ > 0 && partsSum > limit_
-            ? static_cast<double>(limit_) / static_cast<double>(partsSum) : 1.0;
-        drawPart(static_cast<qint64>(std::llround(static_cast<double>(uncachedInput_) * scale)), QColor(59, 130, 246));
-        drawPart(static_cast<qint64>(std::llround(static_cast<double>(cachedRead_) * scale)), QColor(56, 189, 248));
-        drawPart(static_cast<qint64>(std::llround(static_cast<double>(output_) * scale)), QColor(192, 132, 252));
-    } else {
-        QColor fill = palette().color(QPalette::Link);
-        if (!fill.isValid()) fill = QColor(110, 231, 183);
-        const double ratio = static_cast<double>(used_) / totalCapacity;
-        if (ratio >= 0.9) fill = QColor(242, 132, 124);
-        else if (ratio >= 0.75) fill = QColor(234, 179, 100);
-        drawPart(std::min(used_, limit_), fill);
-    }
+    drawPart(uncachedInput_, colors.input);
+    drawPart(cachedRead_, colors.cache);
+    drawPart(output_, colors.output);
+    QColor rest = UiKit::ToQColor(theme.colors.muted);
+    if (classified == 0) rest = ContextWarningColor(theme, static_cast<double>(used_) / totalCapacity, rest);
+    drawPart(unclassified, rest);
 }
 
 PermissionOption::PermissionOption(const QIcon& icon, const QString& title, const QString& description, QWidget* parent)
@@ -203,33 +234,28 @@ PermissionOption::PermissionOption(const QIcon& icon, const QString& title, cons
     setAttribute(Qt::WA_Hover);
     setCursor(Qt::PointingHandCursor);
     setAccessibleName(title);
+    // 单行：图标、标题、勾选三者垂直居中；说明只放悬停提示，菜单本身不堆小字。
     setToolTip(description);
+    setAccessibleDescription(description);
     auto* row = new QHBoxLayout(this);
-    row->setContentsMargins(14, 5, 14, 5);
+    row->setContentsMargins(14, 0, 14, 0);
     row->setSpacing(10);
     icon_ = new QLabel(this);
     icon_->setPixmap(icon.pixmap(15, 15));
     icon_->setFixedSize(16, 16);
     icon_->setAlignment(Qt::AlignCenter);
     row->addWidget(icon_, 0, Qt::AlignVCenter);
-    auto* textColumn = new QVBoxLayout;
-    textColumn->setContentsMargins(0, 0, 0, 0);
-    textColumn->setSpacing(1);
     title_ = new QLabel(title, this);
     title_->setObjectName(QStringLiteral("agentPermissionTitle"));
-    textColumn->addWidget(title_);
-    description_ = new QLabel(description, this);
-    description_->setObjectName(QStringLiteral("agentPermissionDetail"));
-    textColumn->addWidget(description_);
-    row->addLayout(textColumn, 1);
+    row->addWidget(title_, 1, Qt::AlignVCenter);
     check_ = new QLabel(this);
     check_->setFixedSize(16, 16);
-    check_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/check"), QColor(110, 231, 183)).pixmap(15, 15));
+    UpdateCheckIcon();
     check_->setVisible(false);
     QSizePolicy keep = check_->sizePolicy(); keep.setRetainSizeWhenHidden(true); check_->setSizePolicy(keep);
     row->addWidget(check_, 0, Qt::AlignVCenter);
-    setFixedHeight(48);
-    setMinimumWidth(252);
+    setFixedHeight(36);
+    setMinimumWidth(200);
 }
 
 void PermissionOption::SetChecked(bool checked) {
@@ -240,6 +266,18 @@ void PermissionOption::SetChecked(bool checked) {
 
 void PermissionOption::SetWarning(bool warning) {
     title_->setProperty("warning", warning);
+}
+
+void PermissionOption::UpdateCheckIcon() {
+    if (check_ == nullptr) return;
+    check_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/check"),
+        UiKit::ToQColor(UiKit::ThemeManager::ThemeForWidget(this).colors.accent)).pixmap(15, 15));
+}
+
+void PermissionOption::changeEvent(QEvent* event) {
+    QWidget::changeEvent(event);
+    // 主题切换后按新令牌重新着色勾选图标。
+    ScheduleThemeRetint(event, this, retintQueued_, [this] { UpdateCheckIcon(); });
 }
 
 void PermissionOption::enterEvent(QEnterEvent* event) { hovered_ = true; update(); QWidget::enterEvent(event); }

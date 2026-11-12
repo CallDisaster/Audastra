@@ -12,6 +12,7 @@
 class QTabWidget;
 class QTableWidget;
 class QCheckBox;
+class QLineEdit;
 namespace War3Map::QtProject { class EditorProject; struct AuxiliaryEditBinding; }
 
 namespace War3Map::Modules {
@@ -45,12 +46,15 @@ public:
 private:
     void EditSelected(int category, int row, int column);
     void RefreshVisibleIcons(int category);
+    // 按筛选框文字一次遍历四个表（隐藏行同时取消选中），再给可见行补图标。
+    void ApplyFilter();
     void AddAuxiliary();
     void ShowError(const Status& status);
     QtProject::EditorProject& project_;
     QPointer<QWidget> page_;
     QTabWidget* tabs_ = nullptr;
     QCheckBox* rawFields_ = nullptr;
+    QLineEdit* filter_ = nullptr;
     std::array<QTableWidget*, 4> tables_{};
     bool editingCell_ = false;
 };

@@ -12,6 +12,7 @@
 
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QTableWidget;
 
 namespace War3Map::QtApp {
@@ -27,6 +28,7 @@ private:
     void Refresh();
     void Populate(const Services::MapSizeReport& report);
     void ApplyMemberFilter();
+    void UpdateLocate();
     void ActivateCurrent();
     Revision revision_;
     Query query_;
@@ -34,6 +36,7 @@ private:
     QLabel* scope_ = nullptr;
     QLabel* status_ = nullptr;
     QLineEdit* filter_ = nullptr;
+    QPushButton* locate_ = nullptr;
     QTableWidget* totals_ = nullptr;
     QTableWidget* top_ = nullptr;
     std::optional<Services::MapSizeReport> report_;

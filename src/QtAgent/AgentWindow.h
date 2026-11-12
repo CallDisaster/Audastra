@@ -9,6 +9,15 @@
 
 namespace War3Map::Agent {
 
+// 连接器的实际运行状态：宿主在 MCP 服务启停、设置应用和工具注册后推送；窗口不按设置推测。
+struct AgentConnectorStatus {
+    bool mcpListening = false;
+    QString mcpEndpoint;      // 实际监听地址；未监听时为空
+    QString mcpError;         // 最近一次启动失败的原因；只进悬停提示
+    int registeredTools = 0;  // 编辑器实际注册的内置工具数
+    int disabledTools = 0;    // 已注册工具中被设置禁用的数量
+};
+
 // 原生独立助手窗口。这里只呈现实际运行事件，不执行地图编辑或保存。
 class AgentWindow final : public QWidget {
     Q_OBJECT
@@ -22,6 +31,8 @@ public:
     void SetSettings(const AgentSettings& settings);
     void SetActiveMap(QString title, QString identity);
     void SetMapSummary(QString summary);
+    // 收到第一次实际状态前，连接器行显示“—”。
+    void SetConnectorStatus(const AgentConnectorStatus& status);
     void AppendEvent(const QJsonObject& event);
     void SetBusy(bool busy);
     // 仅清除呈现；运行时会话与地图状态由 Controller 管理。

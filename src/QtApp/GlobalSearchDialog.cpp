@@ -10,15 +10,31 @@
 #include <QPointer>
 #include <QPushButton>
 #include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <array>
 
 namespace War3Map::QtApp {
 namespace {
 QString Text(std::string_view value) { return QString::fromUtf8(value.data(), static_cast<qsizetype>(value.size())); }
+
+// 分组标题和“位置”列用弱化色。颜色在绘制时从当前调色板取，切换主题后不会沿用旧色；
+// 选中行由样式表的 ::item:selected 颜色接管。
+class SearchResultDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+        if (index.column() == 1 || !index.parent().isValid())
+            option->palette.setBrush(QPalette::Text, option->palette.brush(QPalette::PlaceholderText));
+    }
+};
 QString Category(Services::ProjectSearchCategory category) {
     using C = Services::ProjectSearchCategory;
     switch (category) {
@@ -66,6 +82,7 @@ GlobalSearchDialog::GlobalSearchDialog(std::function<std::string()> revision, Qu
     results_->setAlternatingRowColors(true);
     results_->setRootIsDecorated(true);
     results_->setUniformRowHeights(true);
+    results_->setItemDelegate(new SearchResultDelegate(results_));
     layout->addWidget(results_, 1);
     status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("globalSearchStatus"));
@@ -92,9 +109,18 @@ GlobalSearchDialog::GlobalSearchDialog(std::function<std::string()> revision, Qu
     for (auto* button : buttons->findChildren<QPushButton*>()) button->setAutoDefault(false);
     layout->addWidget(buttons);
     connect(locate, &QPushButton::clicked, this, [this]() { ActivateCurrent(); });
-    connect(results_, &QTreeWidget::currentItemChanged, this, [locate](QTreeWidgetItem* current, QTreeWidgetItem*) {
-        locate->setEnabled(current && current->data(0, Qt::UserRole).isValid());
+    // 只有选中了一条结果才可定位。清空列表（重新搜索、翻页、内容变化）会重置模型，此时没有选中结果；
+    // 模型重置在列表析构时也会发出，那个回调只改按钮，不回读列表。
+    const auto locatable = [](const QTreeWidgetItem* item) {
+        return item && item->isSelected() && item->data(0, Qt::UserRole).isValid();
+    };
+    connect(results_, &QTreeWidget::currentItemChanged, locate, [locate, locatable](QTreeWidgetItem* current, QTreeWidgetItem*) {
+        locate->setEnabled(locatable(current));
     });
+    connect(results_, &QTreeWidget::itemSelectionChanged, locate, [this, locate, locatable]() {
+        locate->setEnabled(locatable(results_->currentItem()));
+    });
+    connect(results_->model(), &QAbstractItemModel::modelReset, locate, [locate]() { locate->setEnabled(false); });
     timer_ = new QTimer(this); timer_->setSingleShot(true); timer_->setInterval(150);
     connect(timer_, &QTimer::timeout, this, [this]() { Refresh(true); });
     connect(edit_, &QLineEdit::textChanged, this, [this]() {
@@ -173,19 +199,27 @@ void GlobalSearchDialog::Populate(const Services::ProjectSearchPage& page) {
             QFont groupFont = results_->font();
             groupFont.setWeight(QFont::Medium);
             group->setFont(0, groupFont);
-            group->setForeground(0, results_->palette().brush(QPalette::PlaceholderText));
             group->setExpanded(true);
         }
         auto* item = new QTreeWidgetItem(group, {Text(row.title), Text(row.detail)});
-        item->setForeground(1, results_->palette().brush(QPalette::PlaceholderText));
         item->setData(0, Qt::UserRole, static_cast<int>(i));
         const auto tooltip = Text(row.stableId) + (row.rawValue ? QStringLiteral("\n") + Text(*row.rawValue) : QString{});
         item->setToolTip(0, QStringLiteral("<qt>") + tooltip.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br/>")) + QStringLiteral("</qt>"));
         if (!first) first = item;
     }
+    // 分组计数：本页条数；该类匹配总数更多时写成“本页/总数”，覆盖不完整时总数带“+”表示至少。
     for (std::size_t category = 0; category < groups.size(); ++category) {
-        if (auto* group = groups[category]) {
-            group->setText(0, tr("%1 (%2)").arg(Category(static_cast<Services::ProjectSearchCategory>(category))).arg(group->childCount()));
+        auto* group = groups[category];
+        if (!group) continue;
+        const auto shown = static_cast<std::size_t>(group->childCount());
+        const auto& coverage = page.coverage[category];
+        const bool partial = coverage.state != Services::ProjectSearchState::Ready;
+        const QString name = Category(static_cast<Services::ProjectSearchCategory>(category));
+        if (coverage.matches > shown || partial) {
+            const QString total = QString::number(std::max(coverage.matches, shown)) + (partial ? QStringLiteral("+") : QString{});
+            group->setText(0, tr("%1 (%2/%3)").arg(name).arg(shown).arg(total));
+        } else {
+            group->setText(0, tr("%1 (%2)").arg(name).arg(shown));
         }
     }
     if (first) results_->setCurrentItem(first);

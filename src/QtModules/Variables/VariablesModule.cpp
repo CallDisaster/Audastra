@@ -6,6 +6,7 @@
 #include "TriggerCommands.h"
 #include "Modules/ModuleHost.h"
 #include "Widgets/SearchField.h"
+#include "Widgets/TableRowFilter.h"
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -66,7 +67,7 @@ QWidget* VariablesModule::Widget() {
         header->addStretch(1);
         header->addWidget(search_);
         layout_->addLayout(header);
-        connect(search_, &QLineEdit::textChanged, this, [this] { ApplySearchFilter(); });
+        UiKit::BindRowFilterInput(search_, [this] { ApplySearchFilter(); });
         Refresh();
     }
     return page_;
@@ -77,8 +78,6 @@ QUndoStack* VariablesModule::UndoStack() { return project_.triggerUndoStack_; }
 
 void VariablesModule::ReleaseEditor() {
     if (auto* oldEditor = editor_.data()) {
-        if (auto* table = oldEditor->findChild<QTableWidget*>("globalVariablesTable"); table && table->model() && search_)
-            table->model()->disconnect(search_.data());
         editor_.clear();
         delete oldEditor;
     }
@@ -132,15 +131,14 @@ void VariablesModule::Refresh() {
             }
             return VariablesDialog::RemovalReview{std::move(result->lines), result->references, std::move(result->incomplete)};
         });
+        // 编辑器每次重建列表后自行按同一筛选词筛选一次，这里只同步计数。
+        editor_->SetFilterObserver([this](int shown, int total, bool filtered) {
+            if (!count_) return;
+            count_->setText(filtered ? tr("显示 %1 / %2 项").arg(shown).arg(total) : tr("共 %1 项").arg(total));
+        });
         layout_->addWidget(editor_, 1);
-        if (auto* table = editor_->findChild<QTableWidget*>("globalVariablesTable"); table && table->model() && search_) {
-            connect(table->model(), &QAbstractItemModel::rowsInserted, search_.data(), [this] { ApplySearchFilter(); });
-            connect(table->model(), &QAbstractItemModel::rowsRemoved, search_.data(), [this] { ApplySearchFilter(); });
-            connect(table->model(), &QAbstractItemModel::modelReset, search_.data(), [this] { ApplySearchFilter(); });
-            connect(table->model(), &QAbstractItemModel::dataChanged, search_.data(), [this] { ApplySearchFilter(); });
-        }
     } else {
-        empty_ = new QLabel(tr("尚未加载触发器  ·  打开包含触发器的地图后在此管理全局变量"), page_);
+        empty_ = new QLabel(tr("未加载触发器"), page_);
         empty_->setObjectName("emptyState");
         empty_->setAlignment(Qt::AlignCenter);
         layout_->addWidget(empty_, 1);
@@ -153,28 +151,12 @@ void VariablesModule::Refresh() {
 }
 
 void VariablesModule::ApplySearchFilter() {
-    auto* table = editor_ ? editor_->findChild<QTableWidget*>("globalVariablesTable") : nullptr;
-    if (search_) search_->setEnabled(table != nullptr);
-    if (!table) {
+    if (search_) search_->setEnabled(!editor_.isNull());
+    if (!editor_) {
         if (count_) count_->clear();
         return;
     }
-    const QString query = search_ ? search_->text().trimmed() : QString{};
-    int shown = 0;
-    const int total = table->rowCount();
-    for (int row = 0; row < total; ++row) {
-        bool match = query.isEmpty();
-        for (int col = 0; !match && col < table->columnCount(); ++col) {
-            if (const auto* cell = table->item(row, col)) {
-                match = cell->text().contains(query, Qt::CaseInsensitive);
-            }
-        }
-        table->setRowHidden(row, !match);
-        if (match) ++shown;
-    }
-    if (count_) {
-        count_->setText(query.isEmpty() ? tr("共 %1 项").arg(total) : tr("显示 %1 / %2 项").arg(shown).arg(total));
-    }
+    editor_->SetRowFilter(search_ ? search_->text() : QString{});
 }
 
 bool VariablesModule::Reveal(const Shell::NavigationTarget& target) {

@@ -341,12 +341,13 @@ void GameUiCanvas::PaintCodeArea(QPainter& painter, const QRectF& screen, const 
             const double pillH = std::min(inner.height(), metrics.height() + 3.0);
             const QRectF pillRect(large ? inner.right() - pillW : inner.left(),
                 large ? inner.bottom() - pillH : inner.top(), pillW, pillH);
+            // 名称底衬取窗口底色、文字取次要文字色，明暗主题下都保持对比。
+            QColor pillFill = palette().color(QPalette::Window);
+            pillFill.setAlpha(200);
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(16, 18, 22, 185));
+            painter.setBrush(pillFill);
             painter.drawRoundedRect(pillRect, 3.0, 3.0);
-            QColor labelColor = palette().color(QPalette::PlaceholderText);
-            labelColor.setAlpha(210);
-            painter.setPen(labelColor);
+            painter.setPen(palette().color(QPalette::PlaceholderText));
             painter.drawText(pillRect.adjusted(5, 0, -5, 0), Qt::AlignCenter, label);
         }
         painter.restore();
@@ -373,7 +374,7 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
     painter.save();
     painter.setClipRect(screen.adjusted(-2, -2, 2, 2));
     // 缺贴图的位置始终标出，避免看起来像透明。
-    painter.setPen(QPen(UiKit::ToQColor(UiKit::ThemeManager::Theme({}).colors.red), 1.0, Qt::DashLine));
+    painter.setPen(QPen(UiKit::ToQColor(UiKit::ThemeManager::ThemeForPalette(palette()).colors.red), 1.0, Qt::DashLine));
     painter.setBrush(Qt::NoBrush);
     for (const auto& hit : hits_) {
         if (hit.image || hit.node >= tree_->Nodes().size()) continue;

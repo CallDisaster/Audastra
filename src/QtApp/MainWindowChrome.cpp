@@ -103,8 +103,8 @@ void MainWindow::BuildHeader() {
     globalSearch_->setPlaceholderText(tr("搜索工程…"));
     globalSearch_->setClearButtonEnabled(true);
     War3Map::UiKit::InstallSearchIcon(globalSearch_);
-    globalSearch_->setMinimumWidth(120);
-    globalSearch_->setMaximumWidth(200);
+    globalSearch_->setMinimumWidth(130);
+    globalSearch_->setMaximumWidth(230);
     globalSearch_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     connect(globalSearch_, &QLineEdit::textChanged, this, [this](const QString& text) {
         objectsModule_->SetSearchText(text);
@@ -218,7 +218,8 @@ void MainWindow::BuildHeader() {
     auto* testButton = header->AddAction(testMapAction_);
     testButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     testButton->setProperty("headerKeepIcon", true);
-    header->AddAction(luaReloadAction_);
+    // 与 ApplyLuaReloadButtonState 一致：始终带文字，窄窗口由顶栏统一收成图标。
+    header->AddAction(luaReloadAction_)->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     addAction(openMap);
     addAction(saveAs);
     header->AddSeparator();

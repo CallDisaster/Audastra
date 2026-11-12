@@ -10,6 +10,7 @@
 #include <QStyle>
 #include <QStyleFactory>
 #include <QStyleHints>
+#include <QWidget>
 
 namespace War3Map::UiKit {
 namespace {
@@ -119,6 +120,35 @@ const Tokens::ThemeTokens& ThemeManager::Theme(const QString& id) {
         }
     }
     return Tokens::kThemes.front();
+}
+
+const Tokens::ThemeTokens& ThemeManager::ThemeForColor(const QColor& window) {
+    for (const auto& theme : Tokens::kThemes) {
+        if (ToQColor(theme.colors.bg) == window) return theme;
+    }
+    // 样式表给面板、输入卡片等设了自己的底色；三套主题的这几种颜色互不相同，仍可精确识别。
+    for (const auto& theme : Tokens::kThemes) {
+        if (ToQColor(theme.colors.panel) == window || ToQColor(theme.colors.raised) == window) return theme;
+    }
+    if (window.lightness() > 128) {
+        for (const auto& theme : Tokens::kThemes) {
+            if (!theme.dark) return theme;
+        }
+    }
+    return Theme(FromView(Tokens::kDefaultTheme));
+}
+
+const Tokens::ThemeTokens& ThemeManager::ThemeForPalette(const QPalette& palette) {
+    return ThemeForColor(palette.color(QPalette::Window));
+}
+
+const Tokens::ThemeTokens& ThemeManager::ThemeForWidget(const QWidget* widget) {
+    // 样式表把 transparent 写进调色板时，沿父控件找第一个不透明的窗口底色。
+    for (const QWidget* current = widget; current != nullptr; current = current->parentWidget()) {
+        const QColor candidate = current->palette().color(QPalette::Window);
+        if (candidate.alpha() == 255) return ThemeForColor(candidate);
+    }
+    return ThemeForColor(QApplication::palette().color(QPalette::Window));
 }
 
 QString ThemeManager::CurrentThemeId() const {

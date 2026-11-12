@@ -199,6 +199,8 @@ private:
     [[nodiscard]] Tool CurrentTool() const;
     void UpdateToolState();
     void UpdateToolHint();
+    // 场景目录停靠栏的紧凑标题：随当前工具状态与是否和其他面板成组变化。
+    void SyncToolDockTitle();
     void UpdateStatusIndicators();
     void RefreshOutliner(std::shared_ptr<const MapDocument> owned = {});
     void SyncOutlinerSelection();

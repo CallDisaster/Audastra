@@ -2,6 +2,7 @@
 
 #include "Icons/SvgIcons.h"
 #include "Widgets/ColumnLayout.h"
+#include "Widgets/TableRowFilter.h"
 #include "TriggerCommands.h"
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -152,6 +153,7 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
     const QSignalBlocker selectionBlocker(table_->selectionModel());
     table_->setRowCount(0);
     if (document_ == nullptr) {
+        ApplyRowFilter();
         propertiesButton_->setEnabled(false);
         renameButton_->setEnabled(false);
         removeButton_->setEnabled(false);
@@ -202,7 +204,20 @@ void VariablesDialog::RebuildList(std::optional<War3Map::StableId> preferredId) 
         selection->select(table_->model()->index(row, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
     if (selectedRow >= 0)
         selection->setCurrentIndex(table_->model()->index(selectedRow, 0), QItemSelectionModel::Select | QItemSelectionModel::Rows);
+    // 整表填完后按当前筛选词统一筛选一次，不随逐格写入反复遍历。
+    ApplyRowFilter();
     UpdateButtons();
+}
+
+void VariablesDialog::SetRowFilter(const QString& query) {
+    rowFilter_ = query.trimmed();
+    ApplyRowFilter();
+    UpdateButtons();
+}
+
+void VariablesDialog::ApplyRowFilter() {
+    const auto counts = War3Map::UiKit::ApplyTableRowFilter(table_, rowFilter_);
+    if (filterObserver_) filterObserver_(counts.shown, counts.total, !rowFilter_.isEmpty());
 }
 
 void VariablesDialog::UpdateButtons() {
@@ -214,7 +229,7 @@ void VariablesDialog::UpdateButtons() {
 
 std::optional<std::size_t> VariablesDialog::SelectedRow() const {
     if (document_ == nullptr) return std::nullopt;
-    const int current = table_->currentRow();
+    const int current = War3Map::UiKit::VisibleCurrentRow(table_);
     if (current >= 0 && static_cast<std::size_t>(current) < document_->variables.size()
         && table_->selectionModel()->isRowSelected(current, {})) return static_cast<std::size_t>(current);
     const auto rows = SelectedRows();
@@ -223,10 +238,10 @@ std::optional<std::size_t> VariablesDialog::SelectedRow() const {
 }
 
 std::vector<std::size_t> VariablesDialog::SelectedRows() const {
+    // 筛选隐藏的行即使被 Ctrl+A / Shift 范围选中也不参与批量操作。
     std::vector<std::size_t> rows;
-    for (const auto& index : table_->selectionModel()->selectedRows())
-        rows.push_back(static_cast<std::size_t>(index.row()));
-    std::sort(rows.begin(), rows.end());
+    for (const int row : War3Map::UiKit::VisibleSelectedRows(table_))
+        rows.push_back(static_cast<std::size_t>(row));
     return rows;
 }
 

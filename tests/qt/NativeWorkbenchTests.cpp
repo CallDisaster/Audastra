@@ -3729,8 +3729,10 @@ void NativeWorkbenchTests::NativeMenusAndPickersExposeRealPopupGeometry() {
     const bool paletteInsideScreen = insideScreen(window.commandPalette_);
     auto* results = window.commandPalette_->findChild<QListView*>(QStringLiteral("commandPaletteResults"));
     QVERIFY(results && results->model() && results->model()->rowCount() > 0);
-    // 快捷键说明在使用帮助里，面板底部不放提示行。
+    // 快捷键说明在使用帮助里，面板底部不放提示行；换对象名的提示标签同样不允许，只剩搜索框图标。
     QVERIFY(!window.commandPalette_->findChild<QLabel*>(QStringLiteral("commandPaletteFooter")));
+    for (auto* label : window.commandPalette_->findChildren<QLabel*>())
+        QVERIFY2(label->objectName() == QStringLiteral("searchFieldIcon"), qPrintable(label->objectName() + QLatin1Char(' ') + label->text()));
     QVERIFY(window.commandPalette_->contentsRect().contains(QRect(results->mapTo(window.commandPalette_, QPoint{}), results->size())));
     QVERIFY(results->viewport()->height() >= 34); // 至少一行可读结果，其余由原列表滚动。
     auto* search = window.commandPalette_->findChild<QLineEdit*>(QStringLiteral("commandPaletteSearch"));

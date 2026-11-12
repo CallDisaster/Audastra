@@ -33,7 +33,8 @@ public:
     void SetCommitHandler(std::function<bool(const AgentSettings&, QString*)> handler);
     // 宿主注入应用级服务控件；不进入 AI 配置或设置迁移，取消不自动提交。
     void AddGeneralSection(QWidget* section);
-    void AddApplicationPage(const QString& label, QWidget* page);
+    // iconName 是导航图标的稳定键（assets/icons 下的相对名）；为空或不存在时用通用设置图标。
+    void AddApplicationPage(const QString& label, QWidget* page, const QString& iconName = {});
 
 public slots:
     void accept() override;

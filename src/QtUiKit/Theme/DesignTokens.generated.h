@@ -57,7 +57,7 @@ inline constexpr std::array<ThemeTokens, 3> kThemes{{
         {110, 231, 183, 255}, // accent
         {110, 231, 183, 34}, // accentSoft
         {59, 130, 102, 255}, // accentLine
-        {40, 44, 52, 255}, // selection
+        {44, 71, 63, 255}, // selection
         {59, 63, 72, 255}, // scrollbar
         {234, 179, 100, 255}, // amber
         {192, 132, 252, 255}, // violet
@@ -79,7 +79,7 @@ inline constexpr std::array<ThemeTokens, 3> kThemes{{
         {125, 211, 252, 255}, // accent
         {125, 211, 252, 26}, // accentSoft
         {59, 120, 158, 255}, // accentLine
-        {25, 50, 74, 255}, // selection
+        {49, 79, 99, 255}, // selection
         {57, 80, 104, 255}, // scrollbar
         {234, 179, 100, 255}, // amber
         {194, 168, 245, 255}, // violet
@@ -101,7 +101,7 @@ inline constexpr std::array<ThemeTokens, 3> kThemes{{
         {24, 107, 75, 255}, // accent
         {24, 107, 75, 20}, // accentSoft
         {122, 179, 153, 255}, // accentLine
-        {216, 239, 227, 255}, // selection
+        {167, 199, 186, 255}, // selection
         {178, 194, 186, 255}, // scrollbar
         {154, 103, 24, 255}, // amber
         {108, 73, 168, 255}, // violet
