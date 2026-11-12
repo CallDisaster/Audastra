@@ -6,6 +6,7 @@
 
 class VariablesDialog;
 class QLabel;
+class QLineEdit;
 class QVBoxLayout;
 namespace War3Map::QtProject { class EditorProject; }
 
@@ -29,11 +30,14 @@ public:
 
 private:
     void ReleaseEditor();
+    void ApplySearchFilter();
     QtProject::EditorProject& project_;
     Shell::ModuleHost* host_ = nullptr;
     QPointer<QWidget> page_;
     QPointer<VariablesDialog> editor_;
     QPointer<QLabel> empty_;
+    QPointer<QLineEdit> search_;
+    QPointer<QLabel> count_;
     QVBoxLayout* layout_ = nullptr;
     const void* boundDocument_ = nullptr;
     QPointer<QUndoStack> boundUndoStack_;

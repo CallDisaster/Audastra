@@ -4,7 +4,9 @@
 #include "ProviderCatalog.h"
 
 #include "Fonts/FontLoader.h"
+#include "Icons/SvgIcons.h"
 #include "Theme/ThemeManager.h"
+#include "Widgets/SearchField.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -138,8 +140,20 @@ public:
         body->setSpacing(0);
         nav = new QListWidget;
         nav->setObjectName(QStringLiteral("agentSettingsNavigation"));
-        nav->addItems({QStringLiteral("常规"), QStringLiteral("提供商与模型"), QStringLiteral("Agent 权限"), QStringLiteral("MCP 连接"), QStringLiteral("导入与导出")});
-        nav->setFixedWidth(170);
+        nav->setIconSize(QSize(15, 15));
+        nav->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        nav->setTextElideMode(Qt::ElideRight);
+        const struct { const char* icon; const char* title; } kBuiltInPages[] = {
+            {"lucide/sliders-horizontal", "常规"},
+            {"lucide/layers", "提供商与模型"},
+            {"lucide/shield", "Agent 权限"},
+            {"lucide/puzzle", "MCP 连接"},
+            {"lucide/folder-open", "导入与导出"},
+        };
+        for (const auto& entry : kBuiltInPages) {
+            nav->addItem(new QListWidgetItem(UiKit::SvgIcon(QString::fromLatin1(entry.icon)), QString::fromUtf8(entry.title)));
+        }
+        nav->setFixedWidth(182);
         nav->setFrameShape(QFrame::NoFrame);
         nav->setSpacing(3);
         nav->setContentsMargins(8, 14, 8, 0);
@@ -171,7 +185,10 @@ public:
         message->setObjectName(QStringLiteral("agentSettingsMessage"));
         footerLayout->addWidget(message, 1);
         auto* buttons = new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
-        buttons->button(QDialogButtonBox::Save)->setText(QStringLiteral("保存设置"));
+        auto* saveButton = buttons->button(QDialogButtonBox::Save);
+        saveButton->setObjectName(QStringLiteral("agentSaveSettings"));
+        saveButton->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/check")));
+        saveButton->setText(QStringLiteral("保存设置"));
         buttons->button(QDialogButtonBox::Cancel)->setText(QStringLiteral("取消"));
         footerLayout->addWidget(buttons);
         outer->addWidget(footer);
@@ -297,6 +314,8 @@ public:
         leftLayout->setContentsMargins(0, 0, 12, 0);
         providers = new QListWidget;
         providers->setObjectName(QStringLiteral("agentProviderList"));
+        providers->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        providers->setTextElideMode(Qt::ElideRight);
         leftLayout->addWidget(providers, 1);
         auto* providerButtons = new QHBoxLayout;
         auto* addProvider = Button(QStringLiteral("添加"), QStringLiteral("agentAddProvider"));
@@ -366,6 +385,7 @@ public:
         models->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
         models->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
         models->setShowGrid(false);
+        models->setAlternatingRowColors(true);
         models->setMinimumHeight(180);
         rightLayout->addWidget(models, 1);
         modelEditor = new QWidget;
@@ -392,7 +412,7 @@ public:
         rightLayout->addWidget(modelEditor);
         scroll->setWidget(providerEditor);
         split->addWidget(scroll);
-        split->setSizes({170, 550});
+        split->setSizes({196, 530});
         split->setStretchFactor(0, 0);
         split->setStretchFactor(1, 1);
         layout->addWidget(split, 1);
@@ -532,9 +552,12 @@ public:
         mcpStatus = Text(QString(), nullptr, true);
         layout->addWidget(mcpStatus);
         layout->addSpacing(12);
-        auto* search = Edit(QStringLiteral("agentToolSearch"), QStringLiteral("筛选工具名称"));
+        auto* search = Edit(QStringLiteral("agentToolSearch"), QStringLiteral("筛选工具名称…"));
+        search->setClearButtonEnabled(true);
+        UiKit::InstallSearchIcon(search);
         layout->addWidget(search);
         toolList = new QListWidget; toolList->setObjectName(QStringLiteral("agentMcpTools"));
+        toolList->setAlternatingRowColors(true);
         layout->addWidget(toolList, 1);
         pages->addWidget(page);
         QObject::connect(mcpEnabled, &QCheckBox::toggled, dialog, [this](bool value) { settings.mcpEnabled = value; });
@@ -746,7 +769,10 @@ void AgentSettingsDialog::AddApplicationPage(const QString& label, QWidget* page
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setWidget(page);
-    impl_->nav->addItem(label);
+    const QString iconName = label.contains(QStringLiteral("测试"))
+        ? QStringLiteral("lucide/play")
+        : QStringLiteral("lucide/settings-2");
+    impl_->nav->addItem(new QListWidgetItem(UiKit::SvgIcon(iconName), label));
     impl_->pages->addWidget(scroll);
 }
 

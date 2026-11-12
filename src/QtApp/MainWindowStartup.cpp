@@ -31,8 +31,10 @@ void MainWindow::SetupStartupPage() {
         if (auto* column = qobject_cast<QVBoxLayout*>(content->layout())) {
             column->addSpacing(24);
             auto* title = new QLabel(tr("最近地图"), content);
+            title->setObjectName(QStringLiteral("paneTitle"));
             title->setTextFormat(Qt::PlainText);
             column->addWidget(title);
+            column->addSpacing(6);
             startupRecentMaps_ = new War3Map::Shell::RecentMapsList(content);
             startupRecentMaps_->setObjectName(QStringLiteral("startupRecentMaps"));
             column->addWidget(startupRecentMaps_);

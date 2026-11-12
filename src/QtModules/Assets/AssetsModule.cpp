@@ -147,6 +147,7 @@ QWidget* AssetsModule::Widget() {
 
     auto* splitter = new QSplitter(Qt::Horizontal, page_);
     splitter->setObjectName("assetSplitter");
+    splitter->setHandleWidth(1);
     treeModel_ = new AssetItemModel(this);
     tree_ = new QTreeView(splitter);
     tree_->setObjectName("assetFolderTree");

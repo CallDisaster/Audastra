@@ -14,6 +14,7 @@
 #include "VariablesModule.h"
 #include "Widgets/PopoverSurface.h"
 #include "Widgets/ProblemList.h"
+#include "Widgets/SearchField.h"
 #include "HelpDialog.h"
 
 #include <QAction>
@@ -101,8 +102,9 @@ void MainWindow::BuildHeader() {
     globalSearch_->setObjectName("globalSearch");
     globalSearch_->setPlaceholderText(tr("搜索工程…"));
     globalSearch_->setClearButtonEnabled(true);
-    globalSearch_->setMinimumWidth(130);
-    globalSearch_->setMaximumWidth(230);
+    War3Map::UiKit::InstallSearchIcon(globalSearch_);
+    globalSearch_->setMinimumWidth(120);
+    globalSearch_->setMaximumWidth(200);
     globalSearch_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     connect(globalSearch_, &QLineEdit::textChanged, this, [this](const QString& text) {
         objectsModule_->SetSearchText(text);
@@ -216,7 +218,7 @@ void MainWindow::BuildHeader() {
     auto* testButton = header->AddAction(testMapAction_);
     testButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     testButton->setProperty("headerKeepIcon", true);
-    header->AddAction(luaReloadAction_)->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    header->AddAction(luaReloadAction_);
     addAction(openMap);
     addAction(saveAs);
     header->AddSeparator();

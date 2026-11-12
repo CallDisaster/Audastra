@@ -1,12 +1,14 @@
 #include "Widgets/ProblemList.h"
 
 #include "Icons/SvgIcons.h"
+#include "Theme/DesignTokens.generated.h"
 
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
 #include <QApplication>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QStyledItemDelegate>
 #include <QStyleOptionButton>
 #include <QSortFilterProxyModel>
@@ -42,18 +44,29 @@ public:
     std::function<void(const QModelIndex&)> activate;
     using QStyledItemDelegate::QStyledItemDelegate;
     static QRect ButtonRect(const QStyleOptionViewItem& option, const QString& label) {
-        const int width = option.fontMetrics.horizontalAdvance(label) + 24;
-        return {option.rect.right() - width, option.rect.top() + 1, width, option.rect.height() - 2};
+        const int width = option.fontMetrics.horizontalAdvance(label) + 20;
+        const int height = std::min(20, std::max(16, option.rect.height() - 4));
+        return {option.rect.right() - width - 6, option.rect.top() + (option.rect.height() - height) / 2, width, height};
     }
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         const auto label = index.data(ProblemList::ActionRole).toString();
         auto textOption = option;
-        if (!label.isEmpty()) textOption.rect.setRight(ButtonRect(option, label).left() - 4);
+        if (!label.isEmpty()) textOption.rect.setRight(ButtonRect(option, label).left() - 6);
         QStyledItemDelegate::paint(painter, textOption, index);
         if (!label.isEmpty()) {
-            QStyleOptionButton button;
-            button.rect = ButtonRect(option, label); button.text = label; button.state = QStyle::State_Enabled;
-            QApplication::style()->drawControl(QStyle::CE_PushButton, &button, painter);
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            const QRect btn = ButtonRect(option, label);
+            const bool hovered = option.state & QStyle::State_MouseOver;
+            const auto& pal = option.palette;
+            painter->setPen(QPen(pal.color(QPalette::Mid), 1.0));
+            painter->setBrush(hovered ? pal.color(QPalette::Light) : pal.color(QPalette::Button));
+            painter->drawRoundedRect(QRectF(btn).adjusted(0.5, 0.5, -0.5, -0.5),
+                Tokens::Size::kRadiusSm, Tokens::Size::kRadiusSm);
+            painter->setPen(pal.color(QPalette::Text));
+            painter->setFont(option.font);
+            painter->drawText(btn, Qt::AlignCenter, label);
+            painter->restore();
         }
     }
     bool editorEvent(QEvent* event, QAbstractItemModel*, const QStyleOptionViewItem& option, const QModelIndex& index) override {
@@ -80,10 +93,10 @@ ProblemList::ProblemList(QWidget* parent) : QWidget(parent) {
     setObjectName(QStringLiteral("problemList"));
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(2);
+    layout->setSpacing(0);
     auto* bar = new QHBoxLayout;
-    bar->setContentsMargins(0, 0, 0, 0);
-    bar->setSpacing(2);
+    bar->setContentsMargins(6, 4, 8, 4);
+    bar->setSpacing(4);
     for (std::size_t index = 0; index < kToggles.size(); ++index) {
         auto* toggle = new QToolButton(this);
         toggle->setObjectName(QString::fromLatin1(kToggles[index].name));

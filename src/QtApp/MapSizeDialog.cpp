@@ -1,11 +1,18 @@
 #include "MapSizeDialog.h"
+#include "Icons/SvgIcons.h"
+#include "Widgets/SearchField.h"
 
 #include <QDialogButtonBox>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
+#include <QLocale>
 #include <QPointer>
 #include <QPushButton>
 #include <QStringList>
+#include <QStyle>
+#include <QStyledItemDelegate>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -44,9 +51,43 @@ QString State(Services::MapSizeState state) {
     default: return QObject::tr("未知");
     }
 }
-void Cell(QTableWidget* table, int row, int column, const QString& text) {
+constexpr int kRawBytesRole = Qt::UserRole + 10;
+
+QString FormatHumanBytes(std::uint64_t bytes) {
+    const QString exact = QObject::tr("%1 B").arg(QLocale::c().toString(static_cast<qulonglong>(bytes)));
+    if (bytes >= 1024ULL * 1024ULL) {
+        return QStringLiteral("%1  (%2 MB)").arg(exact, QString::number(static_cast<double>(bytes) / (1024.0 * 1024.0), 'f', 2));
+    }
+    if (bytes >= 1024ULL) {
+        return QStringLiteral("%1  (%2 KB)").arg(exact, QString::number(static_cast<double>(bytes) / 1024.0, 'f', 1));
+    }
+    return exact;
+}
+
+class ByteCellDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+protected:
+    void initStyleOption(QStyleOptionViewItem* option, const QModelIndex& index) const override {
+        QStyledItemDelegate::initStyleOption(option, index);
+        option->displayAlignment = Qt::AlignRight | Qt::AlignVCenter;
+        if (const QVariant raw = index.data(kRawBytesRole); raw.isValid()) {
+            option->text = FormatHumanBytes(raw.toULongLong());
+        }
+    }
+};
+
+void Cell(QTableWidget* table, int row, int column, const QString& text, bool bold = false,
+    std::optional<std::uint64_t> rawBytes = std::nullopt, Qt::Alignment alignment = Qt::AlignLeft | Qt::AlignVCenter) {
     auto* item = new QTableWidgetItem(text);
     item->setFlags(item->flags() & ~Qt::ItemIsEditable);
+    item->setTextAlignment(alignment);
+    if (rawBytes) item->setData(kRawBytesRole, static_cast<qulonglong>(*rawBytes));
+    if (bold) {
+        QFont font = table->font();
+        font.setWeight(QFont::Medium);
+        item->setFont(font);
+    }
     table->setItem(row, column, item);
 }
 } // namespace
@@ -56,17 +97,42 @@ MapSizeDialog::MapSizeDialog(Revision revision, Query query, Activate activate, 
     setObjectName(QStringLiteral("mapSizeDialog"));
     setWindowTitle(tr("地图体积分析 · Audastra")); setModal(false); resize(980, 680); setMinimumSize(760, 540);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(8);
     scope_ = new QLabel(this); scope_->setObjectName(QStringLiteral("mapSizeScope"));
     scope_->setTextFormat(Qt::PlainText); scope_->setWordWrap(true); layout->addWidget(scope_);
     totals_ = new QTableWidget(this); totals_->setObjectName(QStringLiteral("mapSizeCategoryTotals"));
     totals_->setColumnCount(5); totals_->setHorizontalHeaderLabels({tr("类别"), tr("原始：已知逻辑字节"),
         tr("当前：已知逻辑字节"), tr("当前：上报未核验字节"), tr("当前：未知大小项")});
     totals_->verticalHeader()->hide(); totals_->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
-    totals_->setSelectionMode(QAbstractItemView::NoSelection); totals_->setMinimumHeight(220); layout->addWidget(totals_);
+    totals_->setShowGrid(false); totals_->setAlternatingRowColors(true);
+    totals_->setSelectionMode(QAbstractItemView::NoSelection); totals_->setMinimumHeight(210);
+    auto* byteDelegate = new ByteCellDelegate(this);
+    totals_->setItemDelegateForColumn(1, byteDelegate);
+    totals_->setItemDelegateForColumn(2, byteDelegate);
+    totals_->setItemDelegateForColumn(3, byteDelegate);
+    layout->addWidget(totals_);
+    auto* topHeader = new QHBoxLayout;
+    topHeader->setContentsMargins(0, 2, 0, 0);
+    topHeader->setSpacing(8);
+    auto* topTitle = new QLabel(tr("最大成员明细"), this);
+    topTitle->setObjectName(QStringLiteral("paneTitle"));
+    topHeader->addWidget(topTitle);
+    topHeader->addStretch();
+    filter_ = new QLineEdit(this);
+    filter_->setObjectName(QStringLiteral("mapSizeFilter"));
+    filter_->setPlaceholderText(tr("筛选成员路径、类别或来源…"));
+    filter_->setClearButtonEnabled(true);
+    filter_->setMaximumWidth(280);
+    UiKit::InstallSearchIcon(filter_);
+    topHeader->addWidget(filter_);
+    layout->addLayout(topHeader);
     top_ = new QTableWidget(this); top_->setObjectName(QStringLiteral("mapSizeTopMembers")); top_->setColumnCount(4);
     top_->setHorizontalHeaderLabels({tr("当前成员路径"), tr("类别"), tr("当前逻辑字节"), tr("大小来源")});
     top_->verticalHeader()->hide(); top_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     for (int column = 1; column < 4; ++column) top_->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+    top_->setShowGrid(false); top_->setAlternatingRowColors(true);
+    top_->setItemDelegateForColumn(2, byteDelegate);
     top_->setSelectionBehavior(QAbstractItemView::SelectRows); top_->setSelectionMode(QAbstractItemView::SingleSelection);
     layout->addWidget(top_, 1);
     status_ = new QLabel(this);
@@ -74,10 +140,22 @@ MapSizeDialog::MapSizeDialog(Revision revision, Query query, Activate activate, 
     status_->setWordWrap(true); layout->addWidget(status_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     if (auto* close = buttons->button(QDialogButtonBox::Close)) close->setText(tr("关闭"));
+    auto* locate = buttons->addButton(tr("定位选中"), QDialogButtonBox::ActionRole);
+    locate->setObjectName(QStringLiteral("primaryButton"));
+    locate->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")));
+    locate->setEnabled(false);
+    locate->style()->unpolish(locate);
+    locate->style()->polish(locate);
     auto* refresh = buttons->addButton(tr("刷新"), QDialogButtonBox::ActionRole);
     refresh->setObjectName(QStringLiteral("mapSizeRefresh"));
+    refresh->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/rotate-ccw")));
     for (auto* button : buttons->findChildren<QPushButton*>()) button->setAutoDefault(false);
     layout->addWidget(buttons);
+    connect(filter_, &QLineEdit::textChanged, this, [this] { ApplyMemberFilter(); });
+    connect(locate, &QPushButton::clicked, this, [this] { ActivateCurrent(); });
+    connect(top_, &QTableWidget::itemSelectionChanged, this, [this, locate] {
+        locate->setEnabled(top_->currentRow() >= 0);
+    });
     connect(refresh, &QPushButton::clicked, this, [this] { Refresh(); });
     connect(top_, &QTableWidget::itemActivated, this, [this] { ActivateCurrent(); });
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::hide);
@@ -121,22 +199,28 @@ void MapSizeDialog::Populate(const Services::MapSizeReport& report) {
     for (int row = 0; row <= categories; ++row) {
         const bool total = row == categories;
         const auto index = static_cast<std::size_t>(row);
-        Cell(totals_, row, 0, total ? tr("合计小计") : Category(report.baseline.categories[index].category));
-        Cell(totals_, row, 1, Bytes(total ? report.baseline.knownLogicalSubtotal : report.baseline.categories[index].knownBytes));
-        Cell(totals_, row, 2, Bytes(total ? report.effective.knownLogicalSubtotal : report.effective.categories[index].knownBytes));
-        Cell(totals_, row, 3, Bytes(total ? report.effective.reportedUnverifiedSubtotal : report.effective.categories[index].reportedUnverifiedBytes));
+        const auto baseKnown = total ? report.baseline.knownLogicalSubtotal : report.baseline.categories[index].knownBytes;
+        const auto effKnown = total ? report.effective.knownLogicalSubtotal : report.effective.categories[index].knownBytes;
+        const auto effReported = total ? report.effective.reportedUnverifiedSubtotal : report.effective.categories[index].reportedUnverifiedBytes;
+        Cell(totals_, row, 0, total ? tr("合计小计") : Category(report.baseline.categories[index].category), total);
+        Cell(totals_, row, 1, Bytes(baseKnown), total, baseKnown, Qt::AlignRight | Qt::AlignVCenter);
+        Cell(totals_, row, 2, Bytes(effKnown), total, effKnown, Qt::AlignRight | Qt::AlignVCenter);
+        Cell(totals_, row, 3, Bytes(effReported), total, effReported, Qt::AlignRight | Qt::AlignVCenter);
         Cell(totals_, row, 4, report.effectiveUnknown ? tr("未知")
-            : QString::number(total ? report.effective.unknownRows : report.effective.categories[index].unknownRows));
+            : QString::number(total ? report.effective.unknownRows : report.effective.categories[index].unknownRows),
+            total, std::nullopt, Qt::AlignRight | Qt::AlignVCenter);
     }
     const auto count = (std::min)(report.top20.size(), std::size_t{20}); top_->setRowCount(static_cast<int>(count));
     for (std::size_t index = 0; index < count; ++index) {
         const auto row = static_cast<int>(index); const auto& member = report.top20[index];
         Cell(top_, row, 0, Text(member.currentPath)); Cell(top_, row, 1, Category(member.category));
-        Cell(top_, row, 2, Bytes(member.currentLogicalBytes)); Cell(top_, row, 3, Trust(member.trust));
+        Cell(top_, row, 2, Bytes(member.currentLogicalBytes), false, member.currentLogicalBytes, Qt::AlignRight | Qt::AlignVCenter);
+        Cell(top_, row, 3, Trust(member.trust));
         const auto hint = tr("原始路径：%1\n来源身份：%2\n%3").arg(Text(member.originalPath), Text(member.identity),
             member.navigationAllowed ? tr("可定位当前资源") : tr("只显示元数据，不读取正文或自动编辑受管成员"));
         top_->item(row, 0)->setToolTip(QStringLiteral("<qt>") + hint.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br/>")) + QStringLiteral("</qt>"));
     }
+    ApplyMemberFilter();
     QStringList notices;
     notices << (report.topWindowComplete ? tr("已捕获范围内最多 20 个最大成员。") : tr("只列已处理窗口内最多 20 个成员，不能称为全图最大成员。"));
     notices << tr("原始快照已列未知大小 %1 项；当前未知大小项数：%2；已检查元数据 %3 项。")
@@ -148,6 +232,19 @@ void MapSizeDialog::Populate(const Services::MapSizeReport& report) {
     else if (report.opaqueMemberCount) notices << tr("另有 %1 个匿名成员，未计已知字节。" ).arg(report.opaqueMemberCount);
     for (const auto& diagnostic : report.diagnostics) notices << Text(diagnostic.message);
     status_->setText(notices.join(QLatin1Char('\n')));
+}
+void MapSizeDialog::ApplyMemberFilter() {
+    if (!filter_ || !top_) return;
+    const QString query = filter_->text().trimmed();
+    for (int row = 0; row < top_->rowCount(); ++row) {
+        bool match = query.isEmpty();
+        for (int col = 0; !match && col < top_->columnCount(); ++col) {
+            if (const auto* item = top_->item(row, col)) {
+                match = item->text().contains(query, Qt::CaseInsensitive);
+            }
+        }
+        top_->setRowHidden(row, !match);
+    }
 }
 void MapSizeDialog::ActivateCurrent() {
     const auto index = top_->currentRow();

@@ -9,6 +9,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QStyle>
 #include <QVBoxLayout>
 
 namespace War3Map::Modules {
@@ -21,7 +22,11 @@ AssetPropertiesDialog::AssetPropertiesDialog(const QtProject::AssetEntry& entry,
     setWindowTitle(tr("导入文件属性"));
     setMinimumWidth(520);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
     auto* form = new QFormLayout;
+    form->setHorizontalSpacing(14);
+    form->setVerticalSpacing(8);
     form->addRow(tr("文件名："), new QLabel(fileName_, this));
     form->addRow(tr("类型："), new QLabel(AssetsDetail::TypeText(fileName_), this));
     form->addRow(tr("大小："), new QLabel(AssetsDetail::SizeText(entry.size), this));
@@ -55,9 +60,15 @@ AssetPropertiesDialog::AssetPropertiesDialog(const QtProject::AssetEntry& entry,
     problem_ = new QLabel(this);
     problem_->setObjectName("assetPathProblem");
     problem_->setWordWrap(true);
-    problem_->setStyleSheet(QStringLiteral("color: #e5534b;"));
     layout->addWidget(problem_);
     buttons_ = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    if (auto* ok = buttons_->button(QDialogButtonBox::Ok)) {
+        ok->setObjectName(QStringLiteral("primaryButton"));
+        ok->setText(tr("确定"));
+        ok->style()->unpolish(ok);
+        ok->style()->polish(ok);
+    }
+    if (auto* cancel = buttons_->button(QDialogButtonBox::Cancel)) cancel->setText(tr("取消"));
     layout->addWidget(buttons_);
 
     connect(custom_, &QCheckBox::toggled, this, [this](bool checked) {

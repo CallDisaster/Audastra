@@ -9,6 +9,7 @@
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QTimer>
 #include <QVBoxLayout>
 
@@ -32,19 +33,29 @@ protected:
         Q_UNUSED(event);
         const auto rect = ImageRect();
         QPainter p(this);
-        p.fillRect(this->rect(), Qt::black);
+        p.setRenderHint(QPainter::Antialiasing);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
+        const QRectF frame = QRectF(this->rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(frame, 6.0, 6.0);
+        p.fillPath(cardPath, QColor(17, 18, 20));
+        p.save();
+        p.setClipPath(cardPath);
         if (!pixmap().isNull())
             p.drawPixmap(rect.toRect(), pixmap());
-        if (outline.isEmpty())
-            return;
-        p.setClipRect(rect);
-        QPolygonF points;
-        for (const auto& point : outline)
-            points << QPointF(rect.left() + point.x() * rect.width(), rect.top() + point.y() * rect.height());
-        p.setPen(QPen(Qt::white, 1.5));
+        if (!outline.isEmpty()) {
+            p.setClipRect(rect, Qt::IntersectClip);
+            QPolygonF points;
+            for (const auto& point : outline)
+                points << QPointF(rect.left() + point.x() * rect.width(), rect.top() + point.y() * rect.height());
+            p.setPen(QPen(Qt::white, 1.5));
+            p.setBrush(Qt::NoBrush);
+            p.drawPolygon(points);
+        }
+        p.restore();
+        p.setPen(QPen(QColor(42, 45, 52), 1.0));
         p.setBrush(Qt::NoBrush);
-        p.drawPolygon(points);
+        p.drawPath(cardPath);
     }
     void mousePressEvent(QMouseEvent* event) override {
         if (event->button() == Qt::LeftButton)
@@ -65,9 +76,10 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     : QWidget(parent), project_(project), preview_(project, this), viewport_(viewport) {
     setObjectName("worldMinimapPreview");
     auto* column = new QVBoxLayout(this);
-    column->setContentsMargins(10, 6, 10, 6);
-    column->setSpacing(4);
+    column->setContentsMargins(10, 8, 10, 8);
+    column->setSpacing(6);
     auto* row = new QHBoxLayout;
+    row->setSpacing(6);
     source_ = new QTabBar(this);
     source_->setObjectName("worldMinimapSource");
     source_->addTab(tr("当前编辑"));
@@ -77,6 +89,7 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     layers_ = new QToolButton(this);
     layers_->setText(tr("图层"));
     layers_->setObjectName("worldMinimapLayers");
+    layers_->setCursor(Qt::PointingHandCursor);
     auto *menu = new QMenu(layers_);
     layers_->setMenu(menu);
     layers_->setPopupMode(QToolButton::InstantPopup);
@@ -115,6 +128,7 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     }
     refresh_ = new QPushButton(tr("刷新"), this);
     refresh_->setObjectName("worldMinimapRefresh");
+    refresh_->setCursor(Qt::PointingHandCursor);
     row->addWidget(refresh_);
     column->addLayout(row);
     image_ = new MinimapCanvas(this);
@@ -122,7 +136,6 @@ WorldMinimapPreview::WorldMinimapPreview(QtProject::EditorProject& project, QWid
     image_->setAlignment(Qt::AlignCenter);
     image_->setMinimumSize(128, 128);
     image_->setMaximumHeight(160);
-    image_->setStyleSheet("background:#000");
     column->addWidget(image_);
     image_->pan = [this](QPointF point) {
         Pan(point);

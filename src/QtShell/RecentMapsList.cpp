@@ -4,6 +4,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QResizeEvent>
@@ -83,12 +84,12 @@ bool RecentMapsList::SetEntries(const QVector<RecentMapListEntry>& entries) {
     SetStatus({});
     empty_->setVisible(entries.isEmpty());
     for (const auto& entry : entries) {
-        auto* row = new QWidget(this);
+        auto* row = new QFrame(this);
         row->setObjectName(QStringLiteral("recentMapRow"));
         row->setProperty("recentMapPath", entry.path);
         auto* vertical = new QVBoxLayout(row);
-        vertical->setContentsMargins(0, 0, 0, 0);
-        vertical->setSpacing(2);
+        vertical->setContentsMargins(10, 8, 10, 8);
+        vertical->setSpacing(3);
         auto* top = new QHBoxLayout;
         top->setContentsMargins(0, 0, 0, 0);
         top->setSpacing(6);

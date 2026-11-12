@@ -2,6 +2,7 @@
 #include "GameUiModule.h"
 
 #include "EditorProject.h"
+#include "Icons/SvgIcons.h"
 #include "Widgets/ProblemList.h"
 #include "Widgets/ResponsiveToolBar.h"
 #include "Widgets/SearchField.h"
@@ -10,8 +11,10 @@
 #include <QComboBox>
 #include <QCompleter>
 #include <QHeaderView>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPointer>
 #include <QAction>
 #include <QPushButton>
 #include <QScopeGuard>
@@ -141,9 +144,10 @@ QString SeverityText(DiagnosticSeverity severity) {
     }
 }
 
-QPushButton* Toggle(QWidget* parent, const char* name, const QString& text, bool checked) {
+QPushButton* Toggle(QWidget* parent, const char* name, const QString& text, bool checked, const char* icon = nullptr) {
     auto* button = new QPushButton(text, parent);
     button->setObjectName(QLatin1String(name));
+    if (icon) button->setIcon(UiKit::SvgIcon(QLatin1String(icon)));
     button->setCheckable(true);
     button->setChecked(checked);
     button->setCursor(Qt::PointingHandCursor);
@@ -157,7 +161,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     toolbar->setObjectName(QStringLiteral("gameUiToolbar"));
     auto* row = toolbar->ContentLayout();
     row->setContentsMargins(10, 7, 10, 7);
-    row->setSpacing(8);
+    row->setSpacing(6);
 
     raceBox_ = new QComboBox(toolbar);
     raceBox_->setObjectName(QStringLiteral("gameUiRace"));
@@ -173,20 +177,20 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     aspectBox_->addItem(QStringLiteral("16:9"), 16.0 / 9.0);
     aspectBox_->addItem(QStringLiteral("16:10"), 16.0 / 10.0);
     aspectBox_->addItem(QStringLiteral("4:3"), 4.0 / 3.0);
-    showContent_ = Toggle(toolbar, "gameUiShowContent", tr("渲染"), true);
-    showBounds_ = Toggle(toolbar, "gameUiShowBounds", tr("边框"), false);
-    showNames_ = Toggle(toolbar, "gameUiShowNames", tr("名称"), false);
-    showHiddenButton_ = Toggle(toolbar, "gameUiShowHidden", tr("显示隐藏"), showHidden_);
+    showContent_ = Toggle(toolbar, "gameUiShowContent", tr("渲染"), true, "lucide/eye");
+    showBounds_ = Toggle(toolbar, "gameUiShowBounds", tr("边框"), false, "lucide/square-dashed");
+    showNames_ = Toggle(toolbar, "gameUiShowNames", tr("名称"), false, "lucide/info");
+    showHiddenButton_ = Toggle(toolbar, "gameUiShowHidden", tr("显示隐藏"), showHidden_, "lucide/eye-off");
     addRootBox_ = new QComboBox(toolbar);
     addRootBox_->setObjectName(QStringLiteral("gameUiAddRoot"));
     addRootBox_->setEditable(true);
     addRootBox_->setInsertPolicy(QComboBox::NoInsert);
     addRootBox_->setMinimumContentsLength(18);
-    addRootBox_->lineEdit()->setPlaceholderText(tr("添加界面"));
+    addRootBox_->lineEdit()->setPlaceholderText(tr("添加界面…"));
     addRootBox_->completer()->setFilterMode(Qt::MatchContains);
     addRootBox_->completer()->setCaseSensitivity(Qt::CaseInsensitive);
     addRootBox_->completer()->setCompletionMode(QCompleter::PopupCompletion);
-    auto* reload = new QPushButton(tr("重新读取"), toolbar);
+    auto* reload = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/rotate-ccw")), tr("重新读取"), toolbar);
     reload->setObjectName(QStringLiteral("gameUiReload"));
 
     for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_, showHiddenButton_})
@@ -240,6 +244,7 @@ void GameUiModule::BuildPage() {
     nodes_->header()->setSectionResizeMode(QHeaderView::Interactive);
     nodes_->header()->resizeSection(0, 200);
     nodes_->setUniformRowHeights(true);
+    nodes_->setAlternatingRowColors(true);
     nodes_->setContextMenuPolicy(Qt::CustomContextMenu);
     leftLayout->addWidget(search_);
     leftLayout->addWidget(nodes_, 1);
@@ -281,7 +286,25 @@ void GameUiModule::BuildPage() {
     properties_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
         QAbstractItemView::SelectedClicked);
     properties_->setRootIsDecorated(true);
+    properties_->setAlternatingRowColors(true);
     properties_->setWordWrap(true);
+    auto* propsViewportLayout = new QVBoxLayout(properties_->viewport());
+    propsViewportLayout->setContentsMargins(16, 24, 16, 24);
+    auto* propsEmpty = new QLabel(tr("点击左侧节点或画布控件以查看属性"), properties_->viewport());
+    propsEmpty->setObjectName(QStringLiteral("emptyState"));
+    propsEmpty->setAlignment(Qt::AlignCenter);
+    propsEmpty->setWordWrap(true);
+    propsEmpty->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    propsViewportLayout->addWidget(propsEmpty, 1, Qt::AlignCenter);
+    const QPointer<QLabel> safeEmpty(propsEmpty);
+    const QPointer<QTreeWidget> safeProps(properties_);
+    const auto syncPropsEmpty = [safeEmpty, safeProps] {
+        if (safeEmpty && safeProps) safeEmpty->setVisible(safeProps->topLevelItemCount() == 0);
+    };
+    connect(properties_->model(), &QAbstractItemModel::rowsInserted, propsEmpty, syncPropsEmpty);
+    connect(properties_->model(), &QAbstractItemModel::rowsRemoved, propsEmpty, syncPropsEmpty);
+    connect(properties_->model(), &QAbstractItemModel::modelReset, propsEmpty, syncPropsEmpty);
+    syncPropsEmpty();
     rightLayout->addWidget(rawFields_, 0, Qt::AlignRight);
     auto* rightSplit = new QSplitter(Qt::Vertical, right);
     rightSplit->setObjectName(QStringLiteral("gameUiRightSplit"));

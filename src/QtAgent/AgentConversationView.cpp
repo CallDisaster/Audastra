@@ -22,6 +22,7 @@
 #include <QResizeEvent>
 #include <QScrollBar>
 #include <QSet>
+#include <QStyle>
 #include <QTextBlockFormat>
 #include <QTextBrowser>
 #include <QTextCursor>
@@ -262,17 +263,17 @@ private:
         theme.muted = UiKit::ToQColor(c.muted);
         theme.link = UiKit::ToQColor(c.accent);
         theme.codeText = UiKit::ToQColor(c.text);
-        theme.codeBackground = UiKit::ToQColor(c.panel);
+        theme.codeBackground = UiKit::ToQColor(c.bg);
         theme.inlineCodeBackground = UiKit::ToQColor(c.raised);
         const QColor line = UiKit::ToQColor(c.line), ink = UiKit::ToQColor(c.text);
-        theme.border = QColor::fromRgbF(line.redF() * 0.7f + ink.redF() * 0.3f, line.greenF() * 0.7f + ink.greenF() * 0.3f,
-            line.blueF() * 0.7f + ink.blueF() * 0.3f);
-        theme.tableHeader = UiKit::ToQColor(c.panel);
+        theme.border = QColor::fromRgbF(line.redF() * 0.75f + ink.redF() * 0.25f, line.greenF() * 0.75f + ink.greenF() * 0.25f,
+            line.blueF() * 0.75f + ink.blueF() * 0.25f);
+        theme.tableHeader = UiKit::ToQColor(c.bg);
         theme.quoteBar = line;
         theme.dark = tokens->dark;
         theme.textFamily = font().family();
         theme.codeFamily = UiKit::MonoFont(13).family();
-        theme.pixelSize = 15;
+        theme.pixelSize = 14;
         theme.devicePixelRatio = devicePixelRatioF();
         UiKit::RenderMarkdown(*document(), source_, theme, math);
         settled_ = math;
@@ -301,14 +302,14 @@ public:
         setObjectName(user ? QStringLiteral("agentUserTurn") : QStringLiteral("agentAssistantTurn"));
         setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
         auto* row = new QHBoxLayout(this);
-        row->setContentsMargins(0, user ? 16 : 10, 0, user ? 16 : 12);
+        row->setContentsMargins(0, user ? 12 : 8, 0, user ? 12 : 10);
         row->setSpacing(0);
         if (user) row->addStretch();
         auto* surface = new QFrame(this);
         surface->setObjectName(user ? QStringLiteral("agentUserBubble") : QStringLiteral("agentAssistantBody"));
         surface_ = surface;
         auto* column = new QVBoxLayout(surface);
-        column->setContentsMargins(user ? 16 : 0, user ? 10 : 0, user ? 16 : 0, user ? 10 : 0);
+        column->setContentsMargins(user ? 14 : 0, user ? 9 : 0, user ? 14 : 0, user ? 9 : 0);
         column->setSpacing(4);
         if (speaker.contains(QStringLiteral("历史")) || speaker == QStringLiteral("错误")) {
             auto* label = new QLabel(speaker, surface);
@@ -325,7 +326,7 @@ public:
 protected:
     void resizeEvent(QResizeEvent* event) override {
         QWidget::resizeEvent(event);
-        if (user_) surface_->setMaximumWidth(std::max(150, static_cast<int>(width() * 0.78)));
+        if (user_) surface_->setMaximumWidth(std::max(150, static_cast<int>(width() * 0.76)));
     }
 
 private:
@@ -333,14 +334,15 @@ private:
     bool user_ = false;
 };
 
-class DisclosureRow final : public QWidget {
+class DisclosureRow final : public QFrame {
 public:
-    explicit DisclosureRow(bool change, QWidget* parent) : QWidget(parent), change_(change) {
+    explicit DisclosureRow(bool change, QWidget* parent) : QFrame(parent), change_(change) {
         setObjectName(change ? QStringLiteral("agentInlineChanges") : QStringLiteral("agentToolRow"));
+        setFrameShape(QFrame::NoFrame);
         // 行高只由内容决定：滚动区画布比内容高时，多余空间不能分进行里，否则回复和下一条提问之间出现空白。
         setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
         auto* layout = new QVBoxLayout(this);
-        layout->setContentsMargins(0, 2, 0, 4);
+        layout->setContentsMargins(change ? 10 : 2, change ? 7 : 2, change ? 10 : 2, change ? 7 : 3);
         layout->setSpacing(4);
         auto* line = new QWidget(this);
         auto* lineLayout = new QHBoxLayout(line);
@@ -349,12 +351,21 @@ public:
         toggle_ = new QToolButton(line);
         toggle_->setObjectName(change ? QStringLiteral("agentChangeToggle") : QStringLiteral("agentToolToggle"));
         toggle_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/chevron-right")));
-        toggle_->setFixedSize(22, 24);
+        toggle_->setIconSize(QSize(14, 14));
+        toggle_->setFixedSize(20, 22);
+        toggle_->setCursor(Qt::PointingHandCursor);
         toggle_->setCheckable(true);
         toggle_->setAccessibleName(change ? QStringLiteral("展开修改前后值") : QStringLiteral("展开工具参数与结果"));
         lineLayout->addWidget(toggle_);
+        icon_ = new QLabel(line);
+        icon_->setObjectName(QStringLiteral("agentDisclosureIcon"));
+        icon_->setFixedSize(14, 14);
+        icon_->setAlignment(Qt::AlignCenter);
+        icon_->setPixmap(UiKit::SvgIcon(change ? QStringLiteral("lucide/file-code-2") : QStringLiteral("lucide/code-xml")).pixmap(14, 14));
+        lineLayout->addWidget(icon_);
         title_ = new UiKit::ElidedLabel(line);
         title_->setObjectName(QStringLiteral("agentToolTitle"));
+        title_->setProperty("changeRow", change);
         title_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         lineLayout->addWidget(title_, 1);
         state_ = new QLabel(line);
@@ -362,17 +373,18 @@ public:
         lineLayout->addWidget(state_);
         duration_ = new QLabel(line);
         duration_->setObjectName(QStringLiteral("agentToolDuration"));
-        duration_->setFont(UiKit::MonoFont(12));
+        duration_->setFont(UiKit::MonoFont(11));
         lineLayout->addWidget(duration_);
         jump_ = new QPushButton(QStringLiteral("转到"), line);
         jump_->setObjectName(QStringLiteral("agentInlineNavigate"));
+        jump_->setCursor(Qt::PointingHandCursor);
         jump_->hide();
         lineLayout->addWidget(jump_);
         layout->addWidget(line);
         panel_ = new QWidget(this);
         panel_->setObjectName(QStringLiteral("agentDisclosureBody"));
         auto* panelLayout = new QVBoxLayout(panel_);
-        panelLayout->setContentsMargins(28, 4, 0, 4);
+        panelLayout->setContentsMargins(change ? 6 : 24, 4, 0, 2);
         panelLayout->setSpacing(4);
         tree_ = new QTreeWidget(panel_);
         tree_->setObjectName(change ? QStringLiteral("agentChangeDetails") : QStringLiteral("agentToolDetails"));
@@ -478,6 +490,21 @@ public:
         title_->setToolTip(title_->text() + QLatin1Char('\n') + originalTitle
             + QLatin1Char('\n') + event.value(QStringLiteral("target")).toString());
         state_->setText(state);
+        const QString statusKind = change_ ? QStringLiteral("change")
+            : state.contains(QStringLiteral("运行中")) ? QStringLiteral("running")
+            : state.contains(QStringLiteral("失败")) ? QStringLiteral("error")
+            : state.contains(QStringLiteral("成功")) ? QStringLiteral("ok") : QStringLiteral("done");
+        state_->setProperty("statusKind", statusKind);
+        state_->style()->unpolish(state_);
+        state_->style()->polish(state_);
+        if (icon_ != nullptr) {
+            const QIcon badge = change_ ? UiKit::SvgIcon(QStringLiteral("lucide/file-code-2"), QColor(110, 231, 183))
+                : statusKind == QStringLiteral("running") ? UiKit::SvgIcon(QStringLiteral("lucide/zap"), QColor(234, 179, 100))
+                : statusKind == QStringLiteral("error") ? UiKit::SvgIcon(QStringLiteral("lucide/circle-x"), QColor(242, 132, 124))
+                : statusKind == QStringLiteral("ok") ? UiKit::SvgIcon(QStringLiteral("lucide/check"), QColor(110, 231, 183))
+                : UiKit::SvgIcon(QStringLiteral("lucide/code-xml"));
+            icon_->setPixmap(badge.pixmap(14, 14));
+        }
         duration_->setText(duration);
         kind_ = event.value(QStringLiteral("kind")).toString();
         objectId_ = event.value(QStringLiteral("object_id")).toString();
@@ -556,6 +583,7 @@ protected:
 
 private:
     QToolButton* toggle_ = nullptr;
+    QLabel* icon_ = nullptr;
     UiKit::ElidedLabel* title_ = nullptr;
     QLabel* state_ = nullptr;
     QLabel* duration_ = nullptr;
@@ -652,14 +680,30 @@ AgentConversationView::AgentConversationView(QWidget* parent) : QScrollArea(pare
     d_->empty = new QWidget(d_->column);
     d_->empty->setObjectName(QStringLiteral("agentEmptyState"));
     auto* emptyLayout = new QVBoxLayout(d_->empty);
-    emptyLayout->setContentsMargins(0, 96, 0, 48);
-    emptyLayout->setSpacing(14);
+    emptyLayout->setContentsMargins(0, 82, 0, 40);
+    emptyLayout->setSpacing(10);
+    auto* badgeRow = new QHBoxLayout;
+    badgeRow->addStretch();
+    auto* badge = new QLabel(d_->empty);
+    badge->setObjectName(QStringLiteral("agentEmptyBadge"));
+    badge->setFixedSize(40, 40);
+    badge->setAlignment(Qt::AlignCenter);
+    badge->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/sparkles"), QColor(110, 231, 183)).pixmap(20, 20));
+    badgeRow->addWidget(badge);
+    badgeRow->addStretch();
+    emptyLayout->addLayout(badgeRow);
+    emptyLayout->addSpacing(4);
     auto* title = new QLabel(QStringLiteral("想对地图做些什么？"), d_->empty);
     title->setObjectName(QStringLiteral("agentEmptyTitle"));
     title->setAlignment(Qt::AlignCenter);
     emptyLayout->addWidget(title);
+    auto* hint = new QLabel(QStringLiteral("读取触发器、物编与双向引用，或按自然语言 T 修改地图逻辑"), d_->empty);
+    hint->setObjectName(QStringLiteral("agentEmptyHint"));
+    hint->setAlignment(Qt::AlignCenter);
+    hint->setWordWrap(true);
+    emptyLayout->addWidget(hint);
     // 常用任务：点一下填入输入框，不直接发送。
-    emptyLayout->addSpacing(14);
+    emptyLayout->addSpacing(12);
     auto* suggestions = new QHBoxLayout;
     suggestions->setSpacing(8);
     suggestions->addStretch();

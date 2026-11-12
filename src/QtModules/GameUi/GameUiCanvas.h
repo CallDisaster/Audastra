@@ -57,6 +57,7 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
@@ -86,6 +87,7 @@ private:
     bool showBounds_ = false;
     bool showNames_ = false;
     std::uint32_t selected_ = GameUi::kNoNode;
+    std::uint32_t hovered_ = GameUi::kNoNode;
     std::optional<GameUi::FrameRect> focus_;
     bool draggable_ = false;
     std::uint32_t dragNode_ = GameUi::kNoNode;  // 按下时可拖动的节点

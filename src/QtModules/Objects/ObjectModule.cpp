@@ -6,6 +6,7 @@
 #include "ObjectModels.h"
 #include "Widgets/ObjectTreeBrowser.h"
 #include "Widgets/ResponsiveToolBar.h"
+#include "Widgets/SearchField.h"
 #include "Icons/SvgIcons.h"
 
 #include "War3MapCore/Game/GameDataSource.h"
@@ -286,7 +287,7 @@ void ObjectModule::BuildPage() {
     layout->addWidget(objectCategories_);
 
     auto* splitter = new QSplitter;
-    splitter->setHandleWidth(4);
+    splitter->setHandleWidth(1);
     splitter->setChildrenCollapsible(false);
 
     objectSourceTabs_ = new QTabWidget;
@@ -316,6 +317,7 @@ void ObjectModule::BuildPage() {
     mapObjectSearch_ = new QLineEdit;
     mapObjectSearch_->setPlaceholderText(tr("搜索地图对象"));
     mapObjectSearch_->setClearButtonEnabled(true);
+    UiKit::InstallSearchIcon(mapObjectSearch_);
     mapObjectLayout->addWidget(mapObjectSearch_);
     mapObjectLayout->addWidget(objectListView_, 1);
     connect(mapObjectSearch_, &QLineEdit::textChanged, objectFilter_, &QSortFilterProxyModel::setFilterFixedString);
@@ -334,18 +336,20 @@ void ObjectModule::BuildPage() {
     properties->setObjectName("objectInspector");
     properties->setMinimumWidth(470);
     auto* propertyLayout = new QVBoxLayout(properties);
-    propertyLayout->setContentsMargins(18, 12, 18, 8);
+    propertyLayout->setContentsMargins(14, 12, 14, 10);
     propertyLayout->setSpacing(10);
-    auto* previewPanel = new QWidget;
+    auto* previewPanel = new QFrame;
     previewPanel->setObjectName("inspectorHeader");
     auto* preview = new QHBoxLayout(previewPanel);
-    preview->setContentsMargins(0, 2, 0, 12);
+    preview->setContentsMargins(14, 12, 14, 12);
+    preview->setSpacing(14);
     objectPreviewIcon_ = new QLabel;
     objectPreviewIcon_->setFixedSize(64, 64);
     objectPreviewIcon_->setAlignment(Qt::AlignCenter);
     objectPreviewIcon_->setObjectName("objectPreviewIcon");
     preview->addWidget(objectPreviewIcon_);
     auto* previewText = new QVBoxLayout;
+    previewText->setSpacing(4);
     objectPreviewName_ = new QLabel(tr("选择对象"));
     objectPreviewName_->setTextFormat(Qt::PlainText);
     objectPreviewName_->setObjectName("workspaceTitle");
@@ -355,11 +359,13 @@ void ObjectModule::BuildPage() {
     objectPreviewSource_->setObjectName("subtitle");
     objectPreviewSource_->setWordWrap(true);
     previewText->addWidget(objectPreviewSource_);
+    previewText->addStretch();
     preview->addLayout(previewText, 1);
     editStandardObject_ = new QPushButton(tr("修改此对象"));
     editStandardObject_->setObjectName("editStandardObjectButton");
+    editStandardObject_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/pencil")));
     editStandardObject_->setEnabled(false);
-    preview->addWidget(editStandardObject_, 0, Qt::AlignTop);
+    preview->addWidget(editStandardObject_, 0, Qt::AlignVCenter);
     connect(editStandardObject_, &QPushButton::clicked, this, &ObjectModule::EditSelectedStandardObject);
     propertyLayout->addWidget(previewPanel);
     auto* fieldToolbar = new QHBoxLayout;
@@ -367,6 +373,7 @@ void ObjectModule::BuildPage() {
     objectFieldSearch_ = new QLineEdit;
     objectFieldSearch_->setPlaceholderText(tr("搜索字段 / 值"));
     objectFieldSearch_->setClearButtonEnabled(true);
+    UiKit::InstallSearchIcon(objectFieldSearch_);
     fieldToolbar->addWidget(objectFieldSearch_, 1);
     objectFieldCategory_ = new QComboBox;
     objectFieldCategory_->setObjectName("fieldCategory");
@@ -380,8 +387,13 @@ void ObjectModule::BuildPage() {
     fieldActions->addWidget(objectFieldCount_);
     fieldActions->addStretch();
     undoObjectEdit_ = new QPushButton(tr("撤销"));
+    undoObjectEdit_->setObjectName("quietButton");
+    undoObjectEdit_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/undo-2")));
     redoObjectEdit_ = new QPushButton(tr("重做"));
+    redoObjectEdit_->setObjectName("quietButton");
+    redoObjectEdit_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/redo-2")));
     resetObjectField_ = new QPushButton(tr("重置字段"));
+    resetObjectField_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/rotate-ccw")));
     for (auto* button : {undoObjectEdit_, redoObjectEdit_, resetObjectField_}) {
         button->setEnabled(false);
         fieldActions->addWidget(button);

@@ -4,6 +4,7 @@
 #include "../NavigationBookmarkDetail.h"
 
 #include "EditorProject.h"
+#include "Icons/SvgIcons.h"
 #include "Widgets/WarcraftTextPreview.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/Hash.h"
@@ -315,9 +316,9 @@ void MapSettingsModule::BuildPage() {
     message_->setWordWrap(true);
     message_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     footer->addWidget(message_, 1);
-    discard_ = new QPushButton(tr("取消修改"), page_);
+    discard_ = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/rotate-ccw")), tr("取消修改"), page_);
     discard_->setObjectName("mapSettingsDiscard");
-    apply_ = new QPushButton(tr("应用"), page_);
+    apply_ = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/check")), tr("应用"), page_);
     apply_->setObjectName("mapSettingsApply");
     footer->addWidget(discard_);
     footer->addWidget(apply_);
@@ -465,9 +466,10 @@ void MapSettingsModule::BuildForms() {
     loadingBackground_ = nullptr;
     gameDataSet_ = nullptr;
 
-    const auto addForm = [this](const QString& name) {
-        sections_->addItem(name);
-        compactSections_->addItem(name);
+    sections_->setIconSize(QSize(15, 15));
+    const auto addForm = [this](const QString& name, const char* iconName) {
+        sections_->addItem(new QListWidgetItem(UiKit::SvgIcon(QLatin1String(iconName)), name));
+        compactSections_->addItem(UiKit::SvgIcon(QLatin1String(iconName)), name);
         auto* scroll = new QScrollArea(pages_);
         scroll->setWidgetResizable(true);
         scroll->setFrameShape(QFrame::NoFrame);
@@ -491,7 +493,14 @@ void MapSettingsModule::BuildForms() {
     };
 
     if (!draft_) {
-        addForm(tr("地图描述"));
+        auto* emptyForm = addForm(tr("地图描述"), "lucide/file");
+        auto* emptyHint = new QLabel(project_.mapDocument_ && project_.mapDocument_->LniSettings()
+            ? tr("当前 LNI 地图设置暂仅支持读取。")
+            : tr("尚未打开地图  ·  请先打开地图工程以查看和编辑地图描述、玩家、势力、载入画面与科技设置。"),
+            emptyForm->parentWidget());
+        emptyHint->setObjectName("emptyState");
+        emptyHint->setWordWrap(true);
+        emptyForm->addRow(emptyHint);
         sections_->setCurrentRow(0);
         apply_->setEnabled(false);
         discard_->setEnabled(false);
@@ -503,7 +512,7 @@ void MapSettingsModule::BuildForms() {
     }
 
     if (draft_->formatVersion != 25) {
-        auto* form = addForm(tr("地图描述"));
+        auto* form = addForm(tr("地图描述"), "lucide/file");
         QString mapName;
         bool local = false;
         if (!Decode(draft_->mapName, mapName, local)) mapName = tr("[无法安全解码的名称]");
@@ -524,7 +533,7 @@ void MapSettingsModule::BuildForms() {
         return;
     }
 
-    auto* general = addForm(tr("地图描述"));
+    auto* general = addForm(tr("地图描述"), "lucide/file");
     AddTextField(general, tr("名称"), "mapName", draft_->mapName);
     AddTextField(general, tr("作者"), "author", draft_->author);
     AddTextField(general, tr("说明"), "description", draft_->description, true);
@@ -583,9 +592,11 @@ void MapSettingsModule::BuildForms() {
     connect(gameDataSet_, qOverload<int>(&QComboBox::currentIndexChanged), this, &MapSettingsModule::MarkPending);
     general->addRow(dataSetLabel, gameDataSet_);
 
-    auto* playersForm = addForm(tr("玩家"));
+    auto* playersForm = addForm(tr("玩家"), "lucide/users");
     players_ = new QTableWidget(static_cast<int>(draft_->players.size()), 9, page_);
     players_->setObjectName("mapSettingsPlayers");
+    players_->verticalHeader()->hide();
+    players_->setShowGrid(false);
     players_->horizontalHeader()->setStretchLastSection(true);
     players_->setAlternatingRowColors(true);
     players_->setMinimumHeight(250);
@@ -613,9 +624,11 @@ void MapSettingsModule::BuildForms() {
     playersForm->addRow(players_);
     connect(players_, &QTableWidget::itemChanged, this, &MapSettingsModule::MarkPending);
 
-    auto* forcesForm = addForm(tr("势力"));
+    auto* forcesForm = addForm(tr("势力"), "lucide/flag");
     forces_ = new QTableWidget(static_cast<int>(draft_->forces.size()), 3, page_);
     forces_->setObjectName("mapSettingsForces");
+    forces_->verticalHeader()->hide();
+    forces_->setShowGrid(false);
     forces_->horizontalHeader()->setStretchLastSection(true);
     forces_->setAlternatingRowColors(true);
     forces_->setMinimumHeight(210);
@@ -632,7 +645,7 @@ void MapSettingsModule::BuildForms() {
     forcesForm->addRow(forces_);
     connect(forces_, &QTableWidget::itemChanged, this, &MapSettingsModule::MarkPending);
 
-    auto* screen = addForm(tr("载入画面"));
+    auto* screen = addForm(tr("载入画面"), "lucide/image");
     AddNumberField(screen, tr("背景编号"), "loadingBackground", draft_->loadingBackground, loadingBackground_);
     AddTextField(screen, tr("模型路径"), "loadingScreen.path", draft_->loadingScreen.path);
     AddTextField(screen, tr("标题"), "loadingScreen.title", draft_->loadingScreen.title);
@@ -643,7 +656,7 @@ void MapSettingsModule::BuildForms() {
     AddTextField(screen, tr("序章副标题"), "prologueScreen.subtitle", draft_->prologueScreen.subtitle);
     AddTextField(screen, tr("序章正文"), "prologueScreen.text", draft_->prologueScreen.text, true);
 
-    auto* tech = addForm(tr("科技与随机表"));
+    auto* tech = addForm(tr("科技与随机表"), "lucide/zap");
     if (draft_->custom) {
         // 科技行经共用自定义设置服务逐条提交（各一个撤销记录），与上方草稿的“应用”分开；草稿未应用时不接受。
         // 随机表资格看实际保存目标（经典 Lua 地图的 W3I 仍记为 JASS）；地图已有随机表时，科技修改也要它通过。

@@ -7,7 +7,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPushButton>
 #include <QSpinBox>
+#include <QStyle>
 #include <QVBoxLayout>
 #include <QVariant>
 #include <algorithm>
@@ -38,9 +40,13 @@ WorldAuxiliaryDialog::WorldAuxiliaryDialog(WorldAuxiliaryRecord record, const Ma
     bool creating, QWidget* parent) : QDialog(parent), original_(std::move(record)) {
     setObjectName(QStringLiteral("worldAuxiliaryDialog"));
     setWindowTitle(creating ? tr("新建区域或镜头") : tr("区域或镜头属性"));
-    setMinimumWidth(400);
+    setMinimumWidth(420);
     auto* column = new QVBoxLayout(this);
+    column->setContentsMargins(16, 14, 16, 14);
+    column->setSpacing(10);
     auto* form = new QFormLayout;
+    form->setHorizontalSpacing(14);
+    form->setVerticalSpacing(8);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     column->addLayout(form);
     const auto addText = [this, form](const char* id, const QString& label, const QString& value) {
@@ -107,6 +113,13 @@ WorldAuxiliaryDialog::WorldAuxiliaryDialog(WorldAuxiliaryRecord record, const Ma
     error_ = new QLabel(this); error_->setObjectName(QStringLiteral("worldAuxError"));
     error_->setWordWrap(true); error_->hide(); column->addWidget(error_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    if (auto* ok = buttons->button(QDialogButtonBox::Ok)) {
+        ok->setObjectName(QStringLiteral("primaryButton"));
+        ok->setText(tr("确定"));
+        ok->style()->unpolish(ok);
+        ok->style()->polish(ok);
+    }
+    if (auto* cancel = buttons->button(QDialogButtonBox::Cancel)) cancel->setText(tr("取消"));
     connect(buttons, &QDialogButtonBox::accepted, this, &WorldAuxiliaryDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject); column->addWidget(buttons);
 }

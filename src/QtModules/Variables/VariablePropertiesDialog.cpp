@@ -10,8 +10,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QLocale>
+#include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStyle>
 #include <algorithm>
 #include <unordered_set>
 
@@ -42,8 +44,11 @@ VariablePropertiesDialog::VariablePropertiesDialog(const UiCatalog& catalog, Obj
       original_(current) {
     setObjectName(QStringLiteral("variablePropertiesDialog"));
     setWindowTitle(creating_ ? tr("新建变量") : tr("变量属性"));
-    setMinimumWidth(400);
+    setMinimumWidth(420);
     auto* layout = new QFormLayout(this);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setHorizontalSpacing(14);
+    layout->setVerticalSpacing(10);
     layout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
 
     name_ = new QLineEdit(this);
@@ -108,6 +113,13 @@ VariablePropertiesDialog::VariablePropertiesDialog(const UiCatalog& catalog, Obj
     layout->addRow(initialized_, initial_);
     layout->addRow(problem_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
+    if (auto* ok = buttons->button(QDialogButtonBox::Ok)) {
+        ok->setObjectName(QStringLiteral("primaryButton"));
+        ok->setText(tr("确定"));
+        ok->style()->unpolish(ok);
+        ok->style()->polish(ok);
+    }
+    if (auto* cancel = buttons->button(QDialogButtonBox::Cancel)) cancel->setText(tr("取消"));
     layout->addRow(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, &VariablePropertiesDialog::Submit);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);

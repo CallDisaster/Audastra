@@ -9,6 +9,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QStyle>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -20,9 +21,13 @@ LevelAutofillDialog::LevelAutofillDialog(const QString& fieldName, LevelAutofill
     : QDialog(parent), kind_(kind), current_(std::move(current)), commit_(std::move(commit)) {
     setObjectName(QStringLiteral("levelAutofillDialog"));
     setWindowTitle(tr("自动填充等级 — %1").arg(fieldName));
-    setMinimumWidth(460);
+    setMinimumWidth(480);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(16, 14, 16, 14);
+    layout->setSpacing(10);
     auto* form = new QFormLayout;
+    form->setHorizontalSpacing(14);
+    form->setVerticalSpacing(8);
     form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     const int first = static_cast<int>(current_.front().first);
     const int last = static_cast<int>(current_.back().first);
@@ -107,7 +112,14 @@ LevelAutofillDialog::LevelAutofillDialog(const QString& fieldName, LevelAutofill
     problem_->hide();
     layout->addWidget(problem_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    okButton_ = buttons->button(QDialogButtonBox::Ok);
+    if (auto* okBtn = buttons->button(QDialogButtonBox::Ok)) {
+        okBtn->setObjectName(QStringLiteral("primaryButton"));
+        okBtn->setText(tr("填充"));
+        okBtn->style()->unpolish(okBtn);
+        okBtn->style()->polish(okBtn);
+        okButton_ = okBtn;
+    }
+    if (auto* cancel = buttons->button(QDialogButtonBox::Cancel)) cancel->setText(tr("取消"));
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, &LevelAutofillDialog::Submit);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);

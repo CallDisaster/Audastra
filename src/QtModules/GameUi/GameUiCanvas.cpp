@@ -112,6 +112,7 @@ void GameUiCanvas::SetScene(const FrameTree* tree, FrameDrawList list) {
 void GameUiCanvas::ClearScene() {
     SetScene(nullptr, {});
     selected_ = kNoNode;
+    hovered_ = kNoNode;
 }
 
 void GameUiCanvas::SetTextures(const QHash<QString, QImage>* textures) { textures_ = textures; update(); }
@@ -321,21 +322,33 @@ void GameUiCanvas::PaintCodeArea(QPainter& painter, const QRectF& screen, const 
     if (showContent_ || !hits) {
         painter.save();
         QColor line = palette().color(QPalette::PlaceholderText);
-        line.setAlpha(170);
+        line.setAlpha(90);
         painter.setPen(QPen(line, 1.0, Qt::DashLine));
         painter.setBrush(Qt::NoBrush);
         painter.drawRect(area.adjusted(0.5, 0.5, -0.5, -0.5));
         QFont small = font();
         small.setPixelSize(std::max(9, static_cast<int>(screen.height() / 64.0)));
         painter.setFont(small);
-        painter.setPen(line);
-        const QRectF inner = area.adjusted(3, 2, -3, -2);
-        const QString label = QFontMetricsF(small).elidedText(
+        const QFontMetricsF metrics(small);
+        const QRectF inner = area.adjusted(4, 3, -4, -3);
+        const QString label = metrics.elidedText(
             QString::fromStdString(tree_->Nodes()[command.node].codeLabel), Qt::ElideRight, inner.width());
-        // 大区域（世界画面、聊天消息等）互相重叠且左上角挤在一起，名字写在右下角。
-        const bool large = area.width() * area.height() > screen.width() * screen.height() * 0.2;
-        painter.setClipRect(area, Qt::IntersectClip);
-        painter.drawText(inner, (large ? Qt::AlignRight | Qt::AlignBottom : Qt::AlignLeft | Qt::AlignTop), label);
+        if (!label.isEmpty() && inner.width() > 16.0 && inner.height() > 10.0) {
+            // 大区域（世界画面、聊天消息等）互相重叠且左上角挤在一起，名字写在右下角。
+            const bool large = area.width() * area.height() > screen.width() * screen.height() * 0.2;
+            painter.setClipRect(area, Qt::IntersectClip);
+            const double pillW = std::min(inner.width(), metrics.horizontalAdvance(label) + 10.0);
+            const double pillH = std::min(inner.height(), metrics.height() + 3.0);
+            const QRectF pillRect(large ? inner.right() - pillW : inner.left(),
+                large ? inner.bottom() - pillH : inner.top(), pillW, pillH);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(16, 18, 22, 185));
+            painter.drawRoundedRect(pillRect, 3.0, 3.0);
+            QColor labelColor = palette().color(QPalette::PlaceholderText);
+            labelColor.setAlpha(210);
+            painter.setPen(labelColor);
+            painter.drawText(pillRect.adjusted(5, 0, -5, 0), Qt::AlignCenter, label);
+        }
         painter.restore();
     }
     if (hits) hits->push_back({command.node, area, nullptr, {}});
@@ -395,14 +408,34 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
             painter.drawText(chip.adjusted(3, 1, -3, -1), Qt::AlignLeft | Qt::AlignVCenter, name);
         }
     }
+    if (hovered_ != kNoNode && hovered_ != selected_) {
+        const QRectF hoveredRect = NodePixelRect(screen, hovered_);
+        if (!hoveredRect.isNull()) {
+            QColor hoverStroke = palette().color(QPalette::Accent);
+            hoverStroke.setAlpha(130);
+            painter.setPen(QPen(hoverStroke, 1.0));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(hoveredRect.adjusted(0.5, 0.5, -0.5, -0.5));
+        }
+    }
     if (selected_ != kNoNode) {
         const QRectF selected = NodePixelRect(screen, selected_);
         if (!selected.isNull()) {
-            painter.setPen(QPen(palette().color(QPalette::Accent), 2.0));
+            const QColor accent = palette().color(QPalette::Accent);
+            painter.setPen(QPen(accent, 1.5));
             painter.setBrush(Qt::NoBrush);
-            painter.drawRect(selected.adjusted(1, 1, -1, -1));
+            const QRectF box = selected.adjusted(0.75, 0.75, -0.75, -0.75);
+            painter.drawRect(box);
+            if (draggable_) {
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(accent);
+                for (const QPointF corner : {box.topLeft(), box.topRight(), box.bottomLeft(), box.bottomRight()}) {
+                    painter.drawRect(QRectF(corner.x() - 2.5, corner.y() - 2.5, 5.0, 5.0));
+                }
+            }
             if (dragging_ && dragNode_ == selected_) {
-                painter.setPen(QPen(palette().color(QPalette::Accent), 1.0, Qt::DashLine));
+                painter.setPen(QPen(accent, 1.0, Qt::DashLine));
+                painter.setBrush(Qt::NoBrush);
                 painter.drawRect(selected.translated(dragOffset_).adjusted(0.5, 0.5, -0.5, -0.5));
             }
         }
@@ -493,6 +526,10 @@ void GameUiCanvas::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
     const std::uint32_t node = NodeAt(event->position());
+    if (hovered_ != node) {
+        hovered_ = node;
+        update();
+    }
     if (!tree_ || node == kNoNode) {
         setToolTip({});
         return;
@@ -502,6 +539,14 @@ void GameUiCanvas::mouseMoveEvent(QMouseEvent* event) {
         : frame.name.empty()                      ? QString::fromStdString(frame.frameType)
                                                   : QString::fromStdString(frame.name);
     setToolTip(frame.frameType.empty() ? name : QStringLiteral("%1 · %2").arg(name, QString::fromStdString(frame.frameType)));
+}
+
+void GameUiCanvas::leaveEvent(QEvent* event) {
+    if (hovered_ != kNoNode) {
+        hovered_ = kNoNode;
+        update();
+    }
+    QWidget::leaveEvent(event);
 }
 
 } // namespace War3Map::Modules

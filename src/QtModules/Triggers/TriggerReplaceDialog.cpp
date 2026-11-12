@@ -1,4 +1,6 @@
 #include "TriggerReplaceDialog.h"
+#include "Icons/SvgIcons.h"
+#include "Widgets/SearchField.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -12,6 +14,7 @@
 #include <QPushButton>
 #include <QScopedValueRollback>
 #include <QSignalBlocker>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTreeWidget>
 #include <QVariant>
@@ -62,7 +65,7 @@ QPushButton* Button(const QString& text, const char* name, QWidget* parent) {
 }
 void ConfigureTable(QTreeWidget& tree, const QStringList& columns) {
     tree.setColumnCount(static_cast<int>(columns.size())); tree.setHeaderLabels(columns);
-    tree.setRootIsDecorated(false); tree.setUniformRowHeights(true);
+    tree.setRootIsDecorated(false); tree.setUniformRowHeights(true); tree.setAlternatingRowColors(true);
     tree.setSelectionMode(QAbstractItemView::SingleSelection);
     tree.header()->setSectionResizeMode(QHeaderView::Interactive);
     tree.header()->setStretchLastSection(true);
@@ -80,7 +83,10 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
     setObjectName(QStringLiteral("triggerReplaceDialog"));
     setWindowTitle(tr("触发器查找与替换 · Audastra")); setModal(false); resize(1000, 650); setMinimumSize(760, 540);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(8);
     auto* queryBar = new QHBoxLayout;
+    queryBar->setSpacing(6);
     scope_ = new QComboBox(this); scope_->setObjectName(QStringLiteral("triggerReplaceScope"));
     scope_->addItem(tr("全部传统触发器"), QVariant::fromValue<qulonglong>(0));
     mode_ = new QComboBox(this); mode_->setObjectName(QStringLiteral("triggerReplaceMode"));
@@ -89,23 +95,27 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
     mode_->addItem(tr("变量引用"), static_cast<int>(TriggerReplaceMode::Variable));
     mode_->addItem(tr("物体引用"), static_cast<int>(TriggerReplaceMode::ObjectReference));
     queryEdit_ = new QLineEdit(this); queryEdit_->setObjectName(QStringLiteral("triggerReplaceQuery"));
-    queryEdit_->setMaxLength(2048); queryEdit_->setPlaceholderText(tr("查找"));
+    queryEdit_->setMaxLength(2048); queryEdit_->setPlaceholderText(tr("输入查找关键字…"));
+    queryEdit_->setClearButtonEnabled(true); UiKit::InstallSearchIcon(queryEdit_);
     match_ = new QComboBox(this); match_->setObjectName(QStringLiteral("triggerReplaceMatch"));
     match_->addItem(tr("包含"), static_cast<int>(TriggerReplaceMatch::Substring));
     match_->addItem(tr("精确"), static_cast<int>(TriggerReplaceMatch::Exact));
     caseSensitive_ = new QCheckBox(tr("区分大小写"), this); caseSensitive_->setChecked(true);
     auto* search = Button(tr("查找"), "triggerReplaceSearch", this);
+    search->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/search")));
     for (auto* widget : std::initializer_list<QWidget*>{scope_, mode_, queryEdit_, match_, caseSensitive_, search})
         queryBar->addWidget(widget, widget == queryEdit_ ? 1 : 0);
     layout->addLayout(queryBar);
     auto* targetBar = new QHBoxLayout;
+    targetBar->setSpacing(6);
     targetBar->addWidget(new QLabel(tr("替换目标"), this));
     replacementKind_ = new QComboBox(this); replacementKind_->setObjectName(QStringLiteral("triggerReplaceTargetKind"));
     replacementKind_->addItem(tr("声明变量"), static_cast<int>(TriggerReplacementKind::Variable));
     replacementKind_->addItem(tr("物体编号"), static_cast<int>(TriggerReplacementKind::ObjectLiteral));
     replacementKind_->addItem(tr("预放物体"), static_cast<int>(TriggerReplacementKind::PreplacedObject));
     targetFilter_ = new QLineEdit(this); targetFilter_->setObjectName(QStringLiteral("triggerReplaceTargetFilter"));
-    targetFilter_->setMaxLength(2048); targetFilter_->setPlaceholderText(tr("名称、类型或四字码"));
+    targetFilter_->setMaxLength(2048); targetFilter_->setPlaceholderText(tr("名称、类型或四字码…"));
+    targetFilter_->setClearButtonEnabled(true); UiKit::InstallSearchIcon(targetFilter_);
     auto* targetSearch = Button(tr("查目录"), "triggerReplaceTargetSearch", this);
     targets_ = new QComboBox(this); targets_->setObjectName(QStringLiteral("triggerReplaceTarget"));
     targets_->setMinimumContentsLength(20); targets_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -139,10 +149,14 @@ TriggerReplaceDialog::TriggerReplaceDialog(std::function<std::string()> revision
     previous_ = buttons->addButton(tr("上一页"), QDialogButtonBox::ActionRole); previous_->setObjectName(QStringLiteral("triggerReplacePrevious"));
     next_ = buttons->addButton(tr("下一页"), QDialogButtonBox::ActionRole); next_->setObjectName(QStringLiteral("triggerReplaceNext"));
     auto* locate = buttons->addButton(tr("定位"), QDialogButtonBox::ActionRole); locate->setObjectName(QStringLiteral("triggerReplaceLocate"));
+    locate->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")));
     previewButton_ = buttons->addButton(tr("预览勾选项"), QDialogButtonBox::ActionRole); previewButton_->setObjectName(QStringLiteral("triggerReplacePreview"));
     cancelPreviewButton_ = buttons->addButton(tr("取消准备"), QDialogButtonBox::ActionRole);
     cancelPreviewButton_->setObjectName(QStringLiteral("triggerReplaceCancelPreview")); cancelPreviewButton_->setEnabled(false);
     applyButton_ = buttons->addButton(tr("应用已预览替换"), QDialogButtonBox::ActionRole); applyButton_->setObjectName(QStringLiteral("triggerReplaceApply"));
+    applyButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/check")));
+    applyButton_->style()->unpolish(applyButton_);
+    applyButton_->style()->polish(applyButton_);
     for (auto* button : buttons->findChildren<QPushButton*>()) { button->setAutoDefault(false); button->setDefault(false); }
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::hide);

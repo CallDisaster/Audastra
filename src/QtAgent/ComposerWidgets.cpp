@@ -126,11 +126,75 @@ void ContextRing::paintEvent(QPaintEvent*) {
     }
     const double fraction = Fraction();
     if (fraction <= 0.0) return;
-    QColor used = colors.color(QPalette::Text);
-    if (fraction >= 0.9) used = QColor(226, 142, 134);
+    QColor used = colors.color(QPalette::Link);
+    if (!used.isValid()) used = colors.color(QPalette::Text);
+    if (fraction >= 0.9) used = QColor(242, 132, 124);
+    else if (fraction >= 0.75) used = QColor(234, 179, 100);
     painter.setPen(QPen(used, stroke, Qt::SolidLine, Qt::RoundCap));
     // Qt 角度单位为 1/16 度；从 12 点钟方向顺时针。
     painter.drawArc(ring, 90 * 16, -static_cast<int>(std::lround(fraction * 360.0 * 16.0)));
+}
+
+ContextSegmentBar::ContextSegmentBar(QWidget* parent) : QWidget(parent) {
+    setObjectName(QStringLiteral("agentContextSegmentBar"));
+    setFixedHeight(7);
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+}
+
+QSize ContextSegmentBar::sizeHint() const { return {180, 7}; }
+
+void ContextSegmentBar::SetBreakdown(qint64 limit, qint64 used, qint64 uncachedInput, qint64 cachedRead, qint64 output) {
+    limit_ = std::max<qint64>(0, limit);
+    used_ = used;
+    uncachedInput_ = std::max<qint64>(0, uncachedInput);
+    cachedRead_ = std::max<qint64>(0, cachedRead);
+    output_ = std::max<qint64>(0, output);
+    update();
+}
+
+void ContextSegmentBar::paintEvent(QPaintEvent*) {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const QRectF bar = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    if (bar.width() <= 2.0 || bar.height() <= 2.0) return;
+    const qreal radius = bar.height() / 2.0;
+
+    QPainterPath clip;
+    clip.addRoundedRect(bar, radius, radius);
+    painter.setClipPath(clip);
+
+    QColor track = palette().color(QPalette::Text);
+    track.setAlpha(24);
+    painter.fillRect(bar, track);
+
+    if (limit_ <= 0 || used_ <= 0) return;
+
+    const double totalCapacity = static_cast<double>(limit_);
+    const qint64 partsSum = uncachedInput_ + cachedRead_ + output_;
+    qreal cursor = bar.left();
+
+    const auto drawPart = [&](qint64 tokens, const QColor& color) {
+        if (tokens <= 0 || cursor >= bar.right()) return;
+        const qreal segWidth = std::min(bar.right() - cursor,
+            std::max<qreal>(2.0, static_cast<qreal>(static_cast<double>(tokens) / totalCapacity * bar.width())));
+        painter.fillRect(QRectF(cursor, bar.top(), segWidth, bar.height()), color);
+        cursor += segWidth;
+    };
+
+    if (partsSum > 0) {
+        const double scale = used_ > 0 && partsSum > limit_
+            ? static_cast<double>(limit_) / static_cast<double>(partsSum) : 1.0;
+        drawPart(static_cast<qint64>(std::llround(static_cast<double>(uncachedInput_) * scale)), QColor(59, 130, 246));
+        drawPart(static_cast<qint64>(std::llround(static_cast<double>(cachedRead_) * scale)), QColor(56, 189, 248));
+        drawPart(static_cast<qint64>(std::llround(static_cast<double>(output_) * scale)), QColor(192, 132, 252));
+    } else {
+        QColor fill = palette().color(QPalette::Link);
+        if (!fill.isValid()) fill = QColor(110, 231, 183);
+        const double ratio = static_cast<double>(used_) / totalCapacity;
+        if (ratio >= 0.9) fill = QColor(242, 132, 124);
+        else if (ratio >= 0.75) fill = QColor(234, 179, 100);
+        drawPart(std::min(used_, limit_), fill);
+    }
 }
 
 PermissionOption::PermissionOption(const QIcon& icon, const QString& title, const QString& description, QWidget* parent)
@@ -139,30 +203,40 @@ PermissionOption::PermissionOption(const QIcon& icon, const QString& title, cons
     setAttribute(Qt::WA_Hover);
     setCursor(Qt::PointingHandCursor);
     setAccessibleName(title);
-    // 单行：图标、标题、勾选三者垂直居中；说明只放悬停提示，菜单本身不堆小字。
     setToolTip(description);
     auto* row = new QHBoxLayout(this);
-    row->setContentsMargins(14, 0, 14, 0);
+    row->setContentsMargins(14, 5, 14, 5);
     row->setSpacing(10);
     icon_ = new QLabel(this);
-    icon_->setPixmap(icon.pixmap(16, 16));
+    icon_->setPixmap(icon.pixmap(15, 15));
     icon_->setFixedSize(16, 16);
     icon_->setAlignment(Qt::AlignCenter);
     row->addWidget(icon_, 0, Qt::AlignVCenter);
+    auto* textColumn = new QVBoxLayout;
+    textColumn->setContentsMargins(0, 0, 0, 0);
+    textColumn->setSpacing(1);
     title_ = new QLabel(title, this);
     title_->setObjectName(QStringLiteral("agentPermissionTitle"));
-    row->addWidget(title_, 1, Qt::AlignVCenter);
+    textColumn->addWidget(title_);
+    description_ = new QLabel(description, this);
+    description_->setObjectName(QStringLiteral("agentPermissionDetail"));
+    textColumn->addWidget(description_);
+    row->addLayout(textColumn, 1);
     check_ = new QLabel(this);
     check_->setFixedSize(16, 16);
-    check_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/check")).pixmap(16, 16));
+    check_->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/check"), QColor(110, 231, 183)).pixmap(15, 15));
     check_->setVisible(false);
     QSizePolicy keep = check_->sizePolicy(); keep.setRetainSizeWhenHidden(true); check_->setSizePolicy(keep);
     row->addWidget(check_, 0, Qt::AlignVCenter);
-    setFixedHeight(36);
-    setMinimumWidth(200);
+    setFixedHeight(48);
+    setMinimumWidth(252);
 }
 
-void PermissionOption::SetChecked(bool checked) { check_->setVisible(checked); }
+void PermissionOption::SetChecked(bool checked) {
+    checked_ = checked;
+    check_->setVisible(checked);
+    update();
+}
 
 void PermissionOption::SetWarning(bool warning) {
     title_->setProperty("warning", warning);
@@ -177,14 +251,14 @@ void PermissionOption::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void PermissionOption::paintEvent(QPaintEvent*) {
-    if (!hovered_) return;
+    if (!hovered_ && !checked_) return;
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    QColor hover = palette().color(QPalette::Text);
-    hover.setAlpha(16);
+    QColor fill = palette().color(QPalette::Text);
+    fill.setAlpha(hovered_ ? 20 : 10);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(hover);
-    painter.drawRoundedRect(QRectF(rect()).adjusted(4, 1, -4, -1), 8, 8);
+    painter.setBrush(fill);
+    painter.drawRoundedRect(QRectF(rect()).adjusted(5, 2, -5, -2), 8, 8);
 }
 
 } // namespace War3Map::Agent

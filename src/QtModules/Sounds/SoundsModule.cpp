@@ -3,7 +3,9 @@
 #include "../NavigationBookmarkDetail.h"
 
 #include "EditorProject.h"
+#include "Icons/SvgIcons.h"
 #include "ObjectNames.h"
+#include "Widgets/SearchField.h"
 #include "Commands/MapDataCommands.h"
 #include "ProjectAuxiliaryEdits.h"
 #include "Modules/ModuleHost.h"
@@ -364,20 +366,26 @@ void SoundsModule::BuildPage() {
     page_ = new QWidget;
     page_->setObjectName("soundsWorkspace");
     auto* outer = new QVBoxLayout(page_);
-    outer->setContentsMargins(12, 10, 12, 10);
+    outer->setContentsMargins(14, 12, 14, 10);
+    outer->setSpacing(8);
     auto* title = new QLabel(tr("声音"), page_);
-    title->setObjectName("paneTitle");
+    title->setObjectName("workspaceTitle");
     outer->addWidget(title);
     auto* body = new QSplitter(Qt::Horizontal, page_);
     body->setObjectName("soundsSplitter");
 
     auto* resources = new QWidget(body);
     auto* left = new QVBoxLayout(resources);
-    left->addWidget(new QLabel(tr("资源文件"), resources));
+    left->setContentsMargins(0, 4, 8, 4);
+    left->setSpacing(8);
+    auto* resourcesHeading = new QLabel(tr("资源文件"), resources);
+    resourcesHeading->setObjectName("paneTitle");
+    left->addWidget(resourcesHeading);
     search_ = new QLineEdit(resources);
     search_->setObjectName("soundResourceSearch");
     search_->setPlaceholderText(tr("搜索文件或来源"));
     search_->setClearButtonEnabled(true);
+    UiKit::InstallSearchIcon(search_);
     left->addWidget(search_);
     resourceTable_ = new QTableWidget(resources);
     ConfigureWrappedTable(resourceTable_);
@@ -393,24 +401,34 @@ void SoundsModule::BuildPage() {
     resourceTable_->setSelectionMode(QAbstractItemView::SingleSelection);
     resourceTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     left->addWidget(resourceTable_, 1);
-    auto* resourceAction = new QPushButton(tr("用选中资源新建定义"), resources);
+    auto* resourceAction = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("用选中资源新建定义"), resources);
     resourceAction->setObjectName("soundCreateDefinition");
+    resourceAction->setIconSize(QSize(14, 14));
+    resourceAction->setCursor(Qt::PointingHandCursor);
     left->addWidget(resourceAction);
     auto* assignResource = new QPushButton(tr("设为当前定义的资源"), resources);
     assignResource->setObjectName("soundAssignResource");
+    assignResource->setCursor(Qt::PointingHandCursor);
     left->addWidget(assignResource);
 
     auto* definitions = new QWidget(body);
     auto* middle = new QVBoxLayout(definitions);
+    middle->setContentsMargins(8, 4, 8, 4);
+    middle->setSpacing(8);
     auto* heading = new QHBoxLayout;
-    heading->addWidget(new QLabel(tr("声音定义"), definitions));
+    heading->setSpacing(8);
+    auto* definitionsHeading = new QLabel(tr("声音定义"), definitions);
+    definitionsHeading->setObjectName("paneTitle");
+    heading->addWidget(definitionsHeading);
     heading->addStretch();
     showRawValues_ = new QCheckBox(tr("显示原始字段"), definitions);
     showRawValues_->setObjectName("soundRawValues");
     heading->addWidget(showRawValues_);
     connect(showRawValues_, &QCheckBox::toggled, this, [this] { RebuildDefinitions(); SyncFieldChoices(); });
-    auto* duplicate = new QPushButton(tr("复制定义"), definitions);
+    auto* duplicate = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/copy")), tr("复制定义"), definitions);
     duplicate->setObjectName("soundDuplicateDefinition");
+    duplicate->setIconSize(QSize(14, 14));
+    duplicate->setCursor(Qt::PointingHandCursor);
     heading->addWidget(duplicate);
     auto* remove = new QPushButton(tr("删除定义"), definitions);
     remove->setObjectName("soundDeleteDefinition");
@@ -445,7 +463,11 @@ void SoundsModule::BuildPage() {
 
     auto* inspector = new QWidget(body);
     auto* right = new QVBoxLayout(inspector);
-    right->addWidget(new QLabel(tr("定义属性"), inspector));
+    right->setContentsMargins(8, 4, 4, 8);
+    right->setSpacing(10);
+    auto* inspectorHeading = new QLabel(tr("定义属性"), inspector);
+    inspectorHeading->setObjectName("paneTitle");
+    right->addWidget(inspectorHeading);
     auto* normal = new QGroupBox(tr("基本"), inspector);
     auto* normalForm = new QFormLayout(normal);
     spatial_ = new QGroupBox(inspector);
@@ -528,10 +550,15 @@ void SoundsModule::BuildPage() {
     body->setSizes({280, 620, 300});
     outer->addWidget(body, 1);
     auto* preview = new QHBoxLayout;
-    auto* play = new QPushButton(tr("试听"), page_);
+    preview->setSpacing(8);
+    auto* play = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/play")), tr("试听"), page_);
     play->setObjectName("soundPreviewPlay");
-    auto* stop = new QPushButton(tr("停止"), page_);
+    play->setIconSize(QSize(14, 14));
+    play->setCursor(Qt::PointingHandCursor);
+    auto* stop = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/square")), tr("停止"), page_);
     stop->setObjectName("soundPreviewStop");
+    stop->setIconSize(QSize(13, 13));
+    stop->setCursor(Qt::PointingHandCursor);
     preview->addWidget(play);
     preview->addWidget(stop);
     status_ = new QLabel(page_);
