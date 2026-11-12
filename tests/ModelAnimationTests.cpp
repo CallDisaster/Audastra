@@ -577,6 +577,8 @@ void ParticleService() {
     auto lateMiddle=mixed; Patch(lateMiddle,"PRE2",160,std::bit_cast<std::uint32_t>(1.2f));
     // 原版暴雪特效常把 PRE2 静态发射率写成负数（实际靠 KP2E 关键帧发射）：不是预算越界，按不发射处理。
     auto negativeRate=mixed; Patch(negativeRate,"PRE2",128,std::bit_cast<std::uint32_t>(-25.0f));
+    // GEOA 标志只用 0x2 颜色位；导出器写入的 0x1A 之类在近似预览中按颜色位求值，不隐藏网格。
+    auto geoaFlags=mixed; Patch(geoaFlags,"GEOA",16,0x1Au);
     // 部分导出器在骨骼/条带上写未知节点标志（如 0x80000000）：严格拒绝，近似预览在副本上清掉后照常动画。
     auto unknownFlag=mixed;
     {
@@ -592,12 +594,13 @@ void ParticleService() {
     Patch(geoset,"GEOA",24,std::bit_cast<std::uint32_t>(0.5f)); Patch(geoset,"GEOA",28,std::bit_cast<std::uint32_t>(0.25f));
     Patch(geoset,"KGAO",20,std::bit_cast<std::uint32_t>(1.0f));
     MdxTest::Writer badGeoset; badGeoset.Tag("GEOA"); const auto geoChunk=badGeoset.Begin(),geoRecord=badGeoset.Begin();
-    badGeoset.F32(1); badGeoset.U32(1); for(int c=0;c<3;++c) badGeoset.F32(1); badGeoset.U32(0);
+    // 记录尾部带未知字节：真正未解释的 GEOA，严格与近似都隔离。仅含未用标志位的 GEOA 见下方 geoaFlags。
+    badGeoset.F32(1); badGeoset.U32(1); for(int c=0;c<3;++c) badGeoset.F32(1); badGeoset.U32(0); badGeoset.U32(0x5A5A5A5Au);
     badGeoset.EndInclusive(geoRecord); badGeoset.EndChunk(geoChunk); geoset.insert(geoset.end(),badGeoset.bytes.begin(),badGeoset.bytes.end());
     std::vector<std::byte> blp(1181); std::memcpy(blp.data(),"BLP1",4); blp[158]=std::byte{255};
     for(const auto offset:{4u,12u,16u,92u}) Patch(blp,"BLP1",offset,1); Patch(blp,"BLP1",28,1180);
     const auto read=[&](std::string_view path,std::uint64_t) { return Result<AnimationResource>::Success(
-        {path=="same.mdx"?mixed:path=="pure.mdx"?pure:path=="filter.mdx"?badFilter:path=="middle.mdx"?lateMiddle:path=="history.mdx"?history:path=="partial.mdx"?partial:path=="binding.mdx"?bindings:path=="geoset.mdx"?geoset:path=="rate.mdx"?negativeRate:path=="flags.mdx"?unknownFlag:blp,
+        {path=="same.mdx"?mixed:path=="pure.mdx"?pure:path=="filter.mdx"?badFilter:path=="middle.mdx"?lateMiddle:path=="history.mdx"?history:path=="partial.mdx"?partial:path=="binding.mdx"?bindings:path=="geoset.mdx"?geoset:path=="rate.mdx"?negativeRate:path=="flags.mdx"?unknownFlag:path=="geoa-flags.mdx"?geoaFlags:blp,
             "original-fixture",std::string(64,'a')}); };
     for(auto& spec:input.specs) { spec.sequenceIndex=0; spec.elapsedMs=0; spec.globalMs=0; }
     AnimationLimits limits; limits.enableParticles=true;
@@ -783,6 +786,18 @@ void ParticleService() {
     Require(masked==1 && flagFrame->animatedInstances==2 && flagFrame->particleLinks[0].simulated &&
         !flagFrame->particleVertices.empty(),"unknown node flag preview did not animate or lost its note");
     std::cout<<"negative_pre2_rate=no_emission unknown_node_flags=strict_reject preview_masked=1\n";
+    for(auto& item:shared) item.model.modelPath="geoa-flags.mdx";
+    const auto strictGeoaFlags=ModelAnimationService::Create({7,33,"geoa-flags"},shared,read,limits);
+    Require(!strictGeoaFlags.Succeeded() && strictGeoaFlags.diagnostics.front().code=="MDX_GEOA_UNINTERPRETED","strict unknown GEOA flags accepted");
+    auto geoaService=Good(ModelAnimationService::Create({7,33,"geoa-flags"},shared,read,tolerant));
+    auto geoaFrame=Good(geoaService->Prepare(nullptr,command));
+    const auto& geoaWarnings=geoaService->Scene()->geometry.warnings;
+    Require(std::count_if(geoaWarnings.begin(),geoaWarnings.end(),[](const Diagnostic& d) {
+            return d.code=="ANIMATION_GEOA_FLAGS_MASKED" && d.message.find("0x18")!=std::string::npos; })==1 &&
+        geoaFrame->animatedInstances==2 && geoaFrame->geosetIssues.empty() &&
+        std::any_of(geoaFrame->alphas.begin(),geoaFrame->alphas.end(),[](float alpha) { return alpha>0; }),
+        "unused GEOA flag bits hid the mesh in preview or lost the note");
+    std::cout<<"geoa_unused_flags=strict_reject preview_masked=1\n";
     {
         // 预览卡二次取景只看该帧可见网格：不会比全部网格更远、朝向不变；全部隐藏时原样沿用。
         const auto fallback=FitAnimationSceneCamera(*service->Scene());

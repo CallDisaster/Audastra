@@ -48,6 +48,23 @@ MaskedNodeFlags MaskUnknownNodeFlags(MdxModel& model) {
     for (auto& node : model.otherNodes) mask(node);
     return result;
 }
+// 近似预览：GEOA 标志除 0x2（使用静态颜色）外的位（0x1 投影及导出器写入的其他位）不改变透明度/颜色求值。
+// 严格核心按未知位整块拒绝；近似路径在副本上只保留 0x2，含未知尾部或重复轨迹的 GEOA 照旧拒绝。
+MaskedNodeFlags MaskUnknownGeosetAnimationFlags(MdxModel& model) {
+    MaskedNodeFlags result;
+    for (auto& geoset : model.geosets) {
+        if (!geoset.animation || geoset.animation->hasUninterpretedData) continue;
+        const auto unknown = geoset.animation->flags & ~2u;
+        if (!unknown) continue;
+        geoset.animation->flags &= 2u; ++result.nodes; result.bits |= unknown;
+    }
+    return result;
+}
+bool HasUnknownGeosetAnimationFlags(const MdxModel& model) {
+    return std::any_of(model.geosets.begin(), model.geosets.end(), [](const auto& geoset) {
+        return geoset.animation && !geoset.animation->hasUninterpretedData && (geoset.animation->flags & ~2u) != 0;
+    });
+}
 bool OnlyNodeFlagFailure(std::span<const Diagnostic> diagnostics) {
     const auto code = War3RenderCore::CodeName(War3RenderCore::Code::PoseNodeFlagsUnsupported);
     return OnlyErrors(diagnostics, [&](std::string_view value) { return value == code; });
@@ -451,6 +468,16 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
                         asset.parsed = cachedParsed ? std::move(cachedParsed)
                             : std::make_shared<const MdxModel>(std::move(*parsed.value));
                         ReadAnimationVisibilityBounds(asset, resource.value->bytes);
+                        if (limits.retainUnsupportedStatic && !asset.parsed->rigidStaticPreviewSource
+                            && HasUnknownGeosetAnimationFlags(*asset.parsed)) {
+                            auto masked = std::make_shared<MdxModel>(*asset.parsed);
+                            const auto cleared = MaskUnknownGeosetAnimationFlags(*masked);
+                            char bits[16]; std::snprintf(bits, sizeof bits, "0x%X", cleared.bits);
+                            warnings.push_back({DiagnosticSeverity::Warning, "Render.Animation", "ANIMATION_GEOA_FLAGS_MASKED",
+                                input.model.modelPath + "：" + std::to_string(cleared.nodes) + " 个 GEOA 含未用标志位 " + bits
+                                    + "，预览近似只按 0x2 颜色位求值；原文件未修改。", std::nullopt});
+                            asset.parsed = std::move(masked);
+                        }
                         const AssetIdentity assetIdentity{static_cast<std::uint64_t>(state->assets.size()+1), session.generation};
                         const auto compileBudget = std::min<std::uint64_t>(limits.maxAssetBytes, 128ull*1024*1024);
                         auto build = asset.parsed->rigidStaticPreviewSource

@@ -176,6 +176,7 @@ void WorldModelPreview::Present(const Built& built) {
             if (d.code=="ANIMATION_FIRST_SEQUENCE") omitted<<tr("无 Stand，播放首个动作");
             else if (d.code=="PARTICLE_PREM_UNSUPPORTED") omitted<<tr("PREM 子模型未显示");
             else if (d.code=="ANIMATION_NODE_FLAGS_MASKED") omitted<<tr("忽略未知节点标志");
+            else if (d.code=="ANIMATION_GEOA_FLAGS_MASKED") omitted<<tr("忽略 GEOA 未用标志");
         }
         std::size_t skipped=0; QStringList reasons;
         for (const auto& capability:scene.particleCapabilities) if (capability.skippedEmitters) {
