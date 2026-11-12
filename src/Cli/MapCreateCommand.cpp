@@ -15,12 +15,13 @@ int RunMapCreate(int argc, wchar_t** argv) {
     request.toolRoot = argv[5]; request.gameRoot = argv[6]; request.options.name = utf8(argv[7]);
     int index = 8;
     if (index < argc && std::wstring_view(argv[index]).substr(0, 2) != L"--") request.options.author = utf8(argv[index++]);
-    // 可选：初始化触发器的自定义代码行（例如 exec-lua 入口）与随图写入的文件。
+    // 可选：初始化触发器的自定义代码行（例如 exec-lua 入口）、地图脚本头代码行与随图写入的文件。
     for (; index < argc; ++index) {
         const std::wstring_view option = argv[index];
         if (option == L"--ui-root" && index + 1 < argc) request.uiRoot = argv[++index];
         else if (option == L"--init-trigger" && index + 1 < argc) request.options.initTriggerName = utf8(argv[++index]);
         else if (option == L"--init-code" && index + 1 < argc) request.options.initCustomScript.push_back(utf8(argv[++index]));
+        else if (option == L"--header-code" && index + 1 < argc) request.options.headerCustomScript.push_back(utf8(argv[++index]));
         else if (option == L"--add-file" && index + 2 < argc) {
             const auto member = utf8(argv[index + 1]);
             auto bytes = War3Map::IO::ReadFileBytes(argv[index + 2], 16u * 1024u * 1024u);

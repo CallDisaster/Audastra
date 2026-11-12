@@ -311,6 +311,7 @@ void TestOptionalRealLuaTutorialCreate() {
     request.options.initTriggerName = "Lua 入口";
     request.options.initCustomScript = {"call Cheat(\"exec-lua: \\\"main\\\"\")"};
     request.options.extraMembers = {{"main.lua", Bytes("require 'lessons.hello'\n")}, {"lessons\\hello.lua", Bytes("return {}\n")}};
+    request.options.headerCustomScript = {"function AudastraHeaderProbe takes nothing returns integer", "    return 7", "endfunction"};
     request.target = scratch.Path() / "tutorial.w3x";
     request.workspace = scratch.Path() / "work";
     request.toolRoot = ydwe; request.gameRoot = game;
@@ -323,6 +324,9 @@ void TestOptionalRealLuaTutorialCreate() {
     Require(script.Succeeded() && lesson.Succeeded() && *lesson.value == Bytes("return {}\n"), "Lua files written byte-for-byte");
     const std::string text(reinterpret_cast<const char*>(script.value->data()), script.value->size());
     Require(text.find("call Cheat(\"exec-lua: \\\"main\\\"\")") != std::string::npos, "exec-lua entry is in the generated script");
+    const auto header = text.find("function AudastraHeaderProbe takes nothing returns integer");
+    Require(header != std::string::npos && header < text.find("function InitCustomTriggers"),
+        "map header code is emitted before the generated trigger functions");
 }
 
 // 改动不影响脚本时沿用作者原脚本，避免本机函数库版本不同改写 war3map.j；触发器有改动才写入重建结果。

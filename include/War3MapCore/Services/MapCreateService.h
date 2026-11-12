@@ -17,6 +17,8 @@ struct MapCreateOptions {
     // 可选：新建一个“地图初始化”触发器，每行一个“自定义代码”动作（例如手写 Lua 的 exec-lua 入口）。
     std::string initTriggerName;
     std::vector<std::string> initCustomScript;
+    // 可选：地图自定义脚本头的代码行（例如扩展接口的 native 声明），与界面里的“地图脚本”同一位置。
+    std::vector<std::string> headerCustomScript;
 };
 
 struct MapCreateRequest {

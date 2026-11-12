@@ -147,6 +147,9 @@ Status ValidateMapCreateOptions(const MapCreateOptions& options) {
             || std::any_of(options.initCustomScript.begin(), options.initCustomScript.end(),
                 [](const auto& line) { return line.empty() || !TextValid(line, 1024); })))
         return Status::Failure("MapCreate", "CREATE_TRIGGER_INVALID", "初始化触发器需要名称；每行自定义代码须为非空单行 UTF-8 文本。");
+    if (options.headerCustomScript.size() > 256 || std::any_of(options.headerCustomScript.begin(), options.headerCustomScript.end(),
+            [](const auto& line) { return line.empty() || !TextValid(line, 1024); }))
+        return Status::Failure("MapCreate", "CREATE_HEADER_INVALID", "地图脚本头每行须为非空单行 UTF-8 文本，至多 256 行。");
     std::size_t extraBytes = 0;
     for (const auto& member : options.extraMembers) {
         extraBytes += member.data.size();
@@ -176,6 +179,11 @@ CreateResult CreateMapCandidate(const MapCreateRequest& request, const MapSaveSe
         if (!request.options.initCustomScript.empty()) {
             const auto added = AddInitTrigger(triggers, *catalog.value, request.options);
             if (!added.Succeeded()) return Forward<CreateResult>(added.diagnostics);
+        }
+        if (!request.options.headerCustomScript.empty()) {
+            std::string header;
+            for (const auto& line : request.options.headerCustomScript) header += line + "\r\n";
+            triggers.wct.customCode = Trigger::RawText{std::move(header), Trigger::TextEncoding::Utf8, {}};
         }
         auto members = Seed(request.options, triggers, *catalog.value);
         if (!members.Succeeded() || !members.value) return Forward<CreateResult>(std::move(members.diagnostics));
