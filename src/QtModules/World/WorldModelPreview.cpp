@@ -121,7 +121,8 @@ void WorldModelPreview::BeginNext() {
     if (worker_ || !pending_) return;
     auto input=std::move(*pending_); pending_.reset(); const auto serial=serial_;
     auto work=std::make_shared<Built>(); const auto epoch=Render::NextAnimationSerial();
-    const bool particles=viewport_->HasParticleSupport();
+    // 面板刚创建时视口还没显示、插件未载入；不先载入就会把第一次预览的粒子误判为不支持。
+    const bool particles=viewport_->LoadRenderPlugin() && viewport_->HasParticleSupport();
     auto* worker=QThread::create([input=std::move(input),work,epoch,particles] {
         try {
             auto reader=WorldResourceReader::Open(input.sources);
@@ -129,11 +130,7 @@ void WorldModelPreview::BeginNext() {
             work->source=std::shared_ptr<WorldResourceReader>(std::move(*reader.value));
             Render::AnimationInstanceSpec spec; spec.identity={1,epoch}; spec.hostKey=input.identity.rowKey; spec.model=input.request;
             spec.elapsedMs=0; spec.globalMs=0;
-            auto limits=Render::InteractiveAnimationPreviewLimits();
-            limits.geometry.maxModels=1; limits.geometry.maxInstances=1;
-            limits.enableParticles=particles;
-            limits.geometry.maxVertices=262144; limits.geometry.maxIndices=786432;
-            limits.geometry.maxTextureDimension=256; limits.geometry.maxTotalTextureBytes=32ull*1024*1024;
+            const auto limits=Render::ObjectPickerPreviewLimits(particles);
             auto service=Render::ModelAnimationService::Create({epoch,input.identity.editRevision,input.sources.archiveSha},std::span(&spec,1),
                 [&](auto path,auto maximum){return work->source->ReadAnimationResource(path,maximum);},limits);
             if (!service.Succeeded()) { work->error=service.diagnostics.empty()?QObject::tr("模型动画不可用"):

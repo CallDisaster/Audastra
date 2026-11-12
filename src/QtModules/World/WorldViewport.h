@@ -64,6 +64,8 @@ public:
     [[nodiscard]] bool HasModelInstances() const noexcept { return models_ && !models_->instances.empty(); }
     [[nodiscard]] bool HasAnimationSupport() const noexcept;
     [[nodiscard]] bool HasParticleSupport() const noexcept;
+    // 视口首次显示前插件尚未载入，能力查询一律为否；需要在显示前决定场景内容的调用方先显式载入。
+    bool LoadRenderPlugin() { return LoadPluginApi(); }
     [[nodiscard]] bool HasModelLayerSupport() const noexcept;
     [[nodiscard]] Status SetModelLayer(std::uint64_t id, std::shared_ptr<const Render::AnimatedModelScene> scene,
         std::shared_ptr<const Render::AnimationFrame> frame, std::uint32_t role = WAR3_RENDER_MODEL_LAYER_MODEL);
