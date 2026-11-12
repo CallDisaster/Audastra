@@ -12,21 +12,32 @@ namespace War3Map::Render {
 using namespace War3RenderCore;
 namespace {
 // 独立函数避免 MSVC 14.50 在捕获局部 constexpr 表的 lambda 上产生 C1001。
-Status PrepareParticleMaterial(const MdxModel& model, Particles::Emitter& e, float& alpha, bool& unfogged) {
+// approximate：预览近似。条带材质有多层、材质标志/优先级平面、动态透明度/贴图、TXAN、坐标组或光照标志时，
+// 不再整条隔离，只按首层的静态贴图、过滤模式和透明度绘制，并由 approximated 交给调用方写明。
+// 无图层、未知尾部和无效静态透明度在两种模式下都照旧拒绝。
+Status PrepareParticleMaterial(const MdxModel& model, Particles::Emitter& e, float& alpha, bool& unfogged,
+    bool approximate, bool& approximated) {
     constexpr Particles::Filter filters[]{Particles::Filter::Opaque, Particles::Filter::AlphaKey,
         Particles::Filter::Blend, Particles::Filter::Additive, Particles::Filter::AddAlpha,
         Particles::Filter::Modulate, Particles::Filter::Modulate2x};
+    approximated = false;
     if (e.kind == Particles::Kind::Ribbon) {
         if (e.materialId >= model.materials.size())
             return AnimationFailure("PARTICLE_MATERIAL_UNSUPPORTED", "条带材质索引不存在。");
         const auto& m = model.materials[e.materialId];
-        if (m.layers.size() != 1 || m.flags || m.priorityPlane || m.hasUninterpretedData)
-            return AnimationFailure("PARTICLE_MATERIAL_UNSUPPORTED", "条带只支持无未知尾部的单层静态材质。");
+        if (m.layers.size() != 1 || m.flags || m.priorityPlane || m.hasUninterpretedData) {
+            if (!approximate || m.layers.empty() || m.hasUninterpretedData)
+                return AnimationFailure("PARTICLE_MATERIAL_UNSUPPORTED", "条带只支持无未知尾部的单层静态材质。");
+            approximated = true;
+        }
         const auto& layer = m.layers.front();
+        const bool invalidLayer = layer.hasUninterpretedData || !std::isfinite(layer.alpha) || layer.alpha < 0 || layer.alpha > 1;
         if (layer.animatedTexture || layer.animatedAlpha || layer.textureAnimationId != UINT32_MAX ||
-            layer.coordId || layer.hasUninterpretedData || (layer.shadingFlags & ~0x31u) ||
-            !(layer.shadingFlags & 1u) || !std::isfinite(layer.alpha) || layer.alpha < 0 || layer.alpha > 1)
-            return AnimationFailure("PARTICLE_MATERIAL_UNSUPPORTED", "条带动态材质、光照、UV 或深度标志尚未完整表达。");
+            layer.coordId || (layer.shadingFlags & ~0x31u) || !(layer.shadingFlags & 1u) || invalidLayer) {
+            if (!approximate || invalidLayer)
+                return AnimationFailure("PARTICLE_MATERIAL_UNSUPPORTED", "条带动态材质、光照、UV 或深度标志尚未完整表达。");
+            approximated = true;
+        }
         const auto filter = static_cast<std::uint32_t>(layer.filterMode);
         if (filter >= std::size(filters)) return AnimationFailure("PARTICLE_MATERIAL_UNSUPPORTED", "未知条带过滤模式。");
         e.textureId = layer.textureId; e.filter = filters[filter]; alpha = layer.alpha;
@@ -87,8 +98,13 @@ Status ReadAnimationParticleAsset(AnimationAsset& a, std::span<const std::byte> 
     for (auto& e : particles->emitters) {
         const auto node = nodes.find(e.nodeId);
         if (node == nodes.end()) return AnimationFailure("PARTICLE_ANCHOR_UNAVAILABLE", "发射器没有对应的完整父链节点。");
-        float alpha = 1; bool unfogged = false;
-        auto material = PrepareParticleMaterial(*a.parsed, e, alpha, unfogged);
+        float alpha = 1; bool unfogged = false, approximated = false;
+        auto material = PrepareParticleMaterial(*a.parsed, e, alpha, unfogged, retainUnsupportedStatic, approximated);
+        if (material.Succeeded() && approximated)
+            read.diagnostics.push_back({DiagnosticSeverity::Warning, "Render.Animation", "PARTICLE_RIBBON_MATERIAL_APPROXIMATE",
+                "RIBB 源记录 " + std::to_string(e.sourceIndex)
+                    + " 的材质含多层、材质标志、动态透明度/贴图、坐标动画或光照：预览只按首层静态贴图、过滤模式与透明度绘制。",
+                std::nullopt});
         if (!material.Succeeded()) {
             if (!retainUnsupportedStatic) return material;
             const auto& diagnostic = material.diagnostics.front();

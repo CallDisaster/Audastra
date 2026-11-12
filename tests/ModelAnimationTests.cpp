@@ -574,6 +574,9 @@ void ParticleService() {
     AnimationParticleVisibilityPreviewTest::Run();
     Input input; const auto mixed=ParticleBytes(false),pure=ParticleBytes(true),partial=ParticleBytes(false,true),bindings=ParticleBytes(false,false,true);
     auto badFilter=mixed,history=mixed,geoset=mixed; Patch(badFilter,"PRE2",140,9); SingularScaleSegment(history);
+    // RIBB 记录：tag/大小/对象大小 12 字节 + 节点 96 + 7 个浮点 28 + 贴图槽/发射率/行/列 16，材质 ID 在 +152。
+    // 预览近似会按首层画多层/动态/带光照的条带材质，所以隔离用例改成真正不存在的材质索引。
+    auto missingRibbonMaterial=bindings; Patch(missingRibbonMaterial,"RIBB",152,99u);
     // 真实地图模型的PRE2分段时间可为1.2：粒子到不了中点，按前半段播放，不能整组跳过。
     auto lateMiddle=mixed; Patch(lateMiddle,"PRE2",160,std::bit_cast<std::uint32_t>(1.2f));
     // 原版暴雪特效常把 PRE2 静态发射率写成负数（实际靠 KP2E 关键帧发射）：不是预算越界，按不发射处理。
@@ -601,7 +604,7 @@ void ParticleService() {
     std::vector<std::byte> blp(1181); std::memcpy(blp.data(),"BLP1",4); blp[158]=std::byte{255};
     for(const auto offset:{4u,12u,16u,92u}) Patch(blp,"BLP1",offset,1); Patch(blp,"BLP1",28,1180);
     const auto read=[&](std::string_view path,std::uint64_t) { return Result<AnimationResource>::Success(
-        {path=="same.mdx"?mixed:path=="pure.mdx"?pure:path=="filter.mdx"?badFilter:path=="middle.mdx"?lateMiddle:path=="history.mdx"?history:path=="partial.mdx"?partial:path=="binding.mdx"?bindings:path=="geoset.mdx"?geoset:path=="rate.mdx"?negativeRate:path=="flags.mdx"?unknownFlag:path=="geoa-flags.mdx"?geoaFlags:blp,
+        {path=="same.mdx"?mixed:path=="pure.mdx"?pure:path=="filter.mdx"?badFilter:path=="middle.mdx"?lateMiddle:path=="history.mdx"?history:path=="partial.mdx"?partial:path=="binding.mdx"?missingRibbonMaterial:path=="ribbon.mdx"?bindings:path=="geoset.mdx"?geoset:path=="rate.mdx"?negativeRate:path=="flags.mdx"?unknownFlag:path=="geoa-flags.mdx"?geoaFlags:blp,
             "original-fixture",std::string(64,'a')}); };
     for(auto& spec:input.specs) { spec.sequenceIndex=0; spec.elapsedMs=0; spec.globalMs=0; }
     AnimationLimits limits; limits.enableParticles=true;
@@ -727,6 +730,20 @@ void ParticleService() {
         (*bindingIssues)[1].sourceIndex==0u && (*bindingIssues)[1].nodeId==5u && (*bindingIssues)[1].code=="PARTICLE_MATERIAL_UNSUPPORTED" &&
         bindingFrame->animatedInstances==2 && bindingFrame->particleLinks[0].simulated && bindingFrame->particleLinks[0].partial &&
         !bindingFrame->particleLinks[0].hidden && !bindingFrame->particleVertices.empty(),"binding skip lost later emitters or model geometry");
+    // 同一条带改用真实存在、但严格模式不接受的材质：预览按首层近似绘制并写明，只剩 PRE2 坏贴图被隔离。
+    for(auto& item:shared) item.model.modelPath="ribbon.mdx";
+    const auto strictRibbon=ModelAnimationService::Create({7,33,"ribbon-material"},shared,read,limits);
+    Require(!strictRibbon.Succeeded(),"strict ribbon material approximation accepted");
+    auto ribbonService=Good(ModelAnimationService::Create({7,33,"ribbon-material"},shared,read,tolerant));
+    const auto ribbonIssues=ribbonService->Scene()->particleCapabilities[0].skippedEmitters;
+    const auto& ribbonWarnings=ribbonService->Scene()->geometry.warnings;
+    auto ribbonFrame=Good(ribbonService->Prepare(nullptr,command));
+    Require(ribbonIssues && ribbonIssues->size()==1 && (*ribbonIssues)[0].kind=="PRE2" &&
+        std::any_of(ribbonWarnings.begin(),ribbonWarnings.end(),[](const Diagnostic& d) {
+            return d.code=="PARTICLE_RIBBON_MATERIAL_APPROXIMATE"; }) &&
+        ribbonFrame->animatedInstances==2 && ribbonFrame->particleLinks[0].simulated && !ribbonFrame->particleLinks[0].hidden,
+        "ribbon material approximation still isolated the ribbon or lost its note");
+    std::cout<<"ribbon_material=preview_first_layer strict=reject\n";
     // 粒子贴图在所有来源都不存在：严格模式照旧拒绝；预览只停这个实例的粒子，模型和其他实例照常求值。
     const auto missingTexture=[&](std::string_view path,std::uint64_t budget) -> Result<AnimationResource> {
         if(path.ends_with(".mdx")) return read(path,budget);
