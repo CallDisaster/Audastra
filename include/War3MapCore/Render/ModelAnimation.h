@@ -513,6 +513,10 @@ private:
 // 纯粒子模型没有网格边界：按 MODL 声明的范围取景；范围无效时用全部节点轴心，仍无则以原点为中心。
 // 粒子会飞出发射点，取景范围至少按 150 单位计。
 [[nodiscard]] War3RenderCameraV2 FitParticleOnlyModelCamera(const MdxModel& model);
+// 预览卡二次取景：只取该帧 GEOA 透明度 > 0 的网格的绑定姿势顶点包围盒，保持 fallback 的朝向；
+// 没有可见网格（纯粒子、首帧全隐藏）时原样返回 fallback。
+[[nodiscard]] War3RenderCameraV2 FitVisibleMeshCamera(const AnimatedModelScene& scene, const AnimationFrame& frame,
+    const War3RenderCameraV2& fallback);
 // 单模型预览卡的取景（预览卡与批量扫描共用）：模型未准入时返回其诊断代码；有网格按网格包围盒；
 // 纯粒子模型重新读取原模型，按 FitParticleOnlyModelCamera 取景；什么都不能画则返回 ANIMATION_EMPTY_MODEL。
 [[nodiscard]] Result<War3RenderCameraV2> SingleModelPreviewCamera(const AnimatedModelScene& scene,

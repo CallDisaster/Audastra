@@ -61,9 +61,11 @@ std::uint64_t Bursts(const Emitter& e,const Asset& a,const Timeline& t,std::uint
             n=through(finish)-(startsBeforeGlobalZero ? 0 : through(CheckedGlobalTime(t,begin)));
         } else n=through(end+offset)-(begin==0?through(offset==0?0:offset-1)-(offset==0&&key==0?1u:0u):through(begin+offset));
         if (!n) continue;
-        Require(n<=1000001 && std::isfinite(k.value[0]) && k.value[0]>=0 && k.value[0]<=1000000,
+        Require(n<=1000001 && std::isfinite(k.value[0]) && k.value[0]<=1000000,
             "PARTICLE_BURST_BUDGET","squirt原始键值或触发次数超出预算，未截小发射量。");
         // 预览仍按向下取整解释有限非负数量；先验证原值，禁止夹值后少记suppressed。
+        // 暴雪特效的 squirt 键在 -25 之类的负值（不喷）与喷发数量之间切换：负值与负发射率一样不发射。
+        if (k.value[0]<=0) continue;
         const auto amount=static_cast<std::uint64_t>(k.value[0]);count+=n*amount;
     }
     return count;

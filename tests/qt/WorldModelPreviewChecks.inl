@@ -108,6 +108,12 @@ void WorldViewportTests::ModelPreviewUsesGameOrderAndSubmitsMotion() {
     QVERIFY(!player->Frame()->states.front().playing);
     play->click(); QTRY_VERIFY(player->Frame()->states.front().elapsedMs < 1000);
     QVERIFY(player->Playing()); play->click(); QTRY_VERIFY(!player->Busy());
+    // 预览卡循环播放：不循环的动作自然播完后从头再来，播放状态不掉。
+    play->click(); QTRY_VERIFY(player->Playing());
+    AnimationEdit tail; tail.identity = player->Frame()->states.front().identity; tail.elapsedMs = 980;
+    player->Edit(tail); QTRY_VERIFY(player->Frame()->states.front().elapsedMs >= 980);
+    QTRY_VERIFY_WITH_TIMEOUT(player->Frame()->states.front().elapsedMs < 500 && player->Frame()->states.front().playing, 5000);
+    QVERIFY(player->Playing()); play->click(); QTRY_VERIFY(!player->Busy());
     current = false; play->click(); QVERIFY(!player->Ready());
     QVERIFY(!message->text().isEmpty());
     QCOMPARE(Sha256File(sources.archivePath).value, std::optional{sources.archiveSha});

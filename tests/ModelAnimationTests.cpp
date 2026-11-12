@@ -783,6 +783,18 @@ void ParticleService() {
     Require(masked==1 && flagFrame->animatedInstances==2 && flagFrame->particleLinks[0].simulated &&
         !flagFrame->particleVertices.empty(),"unknown node flag preview did not animate or lost its note");
     std::cout<<"negative_pre2_rate=no_emission unknown_node_flags=strict_reject preview_masked=1\n";
+    {
+        // 预览卡二次取景只看该帧可见网格：不会比全部网格更远、朝向不变；全部隐藏时原样沿用。
+        const auto fallback=FitAnimationSceneCamera(*service->Scene());
+        const auto fitted=FitVisibleMeshCamera(*service->Scene(),*first,fallback);
+        auto hidden=*first; std::fill(hidden.alphas.begin(),hidden.alphas.end(),0.0f);
+        const auto unchanged=FitVisibleMeshCamera(*service->Scene(),hidden,fallback);
+        Require(std::isfinite(fitted.distance) && fitted.distance<=fallback.distance+1e-3f &&
+            fitted.yawRadians==fallback.yawRadians && fitted.pitchRadians==fallback.pitchRadians &&
+            unchanged.distance==fallback.distance && unchanged.targetX==fallback.targetX &&
+            unchanged.targetZ==fallback.targetZ,"visible-mesh preview framing");
+        std::cout<<"visible_mesh_framing=1 hidden_meshes_keep_fallback=1\n";
+    }
     for(auto& item:shared) item.model.modelPath="geoset.mdx";
     const auto strictGeoset=ModelAnimationService::Create({7,33,"geosets"},shared,read,limits);
     Require(!strictGeoset.Succeeded() && strictGeoset.diagnostics.front().code=="MDX_GEOA_UNINTERPRETED","strict GEOA gate changed");

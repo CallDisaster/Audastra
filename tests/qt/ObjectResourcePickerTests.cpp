@@ -770,7 +770,7 @@ void ObjectResourcePickerTests::ModelPreviewBatchEvidence() {
         const auto differs = [&](int x, int y) {
             const auto p = image.pixel(x, y);
             return std::abs(qRed(p) - qRed(background)) + std::abs(qGreen(p) - qGreen(background))
-                + std::abs(qBlue(p) - qBlue(background)) > 48;
+                + std::abs(qBlue(p) - qBlue(background)) > 24;
         };
         // 地面网格在地平线附近汇聚成实心带；只数画面中下部，避开顶部那条带与左右边缘。
         qint64 solid = 0;

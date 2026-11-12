@@ -76,6 +76,8 @@ public:
     bool RecordInstanceOutlinerTiming(const WorldInstanceTiming& identity, std::uint64_t elapsedNs);
     [[nodiscard]] bool InstancesBusy() const noexcept;
     [[nodiscard]] bool Playing() const noexcept { return playing_; }
+    // 预览卡用：全部实例的不循环动作自然播完时从头再来，而不是停在结尾。用户暂停、单步不受影响。
+    void SetLoopFinishedActions(bool value) noexcept { loopFinished_ = value; }
     [[nodiscard]] bool Ready() const noexcept { return service_ != nullptr; }
     [[nodiscard]] bool Busy() const noexcept { return worker_ != nullptr || pending_.has_value(); }
     [[nodiscard]] QString LastDiagnostic() const { return lastDiagnostic_; }
@@ -154,6 +156,7 @@ private:
     std::uint64_t attemptSerial_ = 0; // 每次实际 worker 唯一，跨 Clear 保留测量身份。
     bool playing_ = false;
     bool playRequested_ = true; // 用户意图不随清场景、隐藏或异步取消而重置。
+    bool loopFinished_ = false;
     bool installing_ = false;
     QString lastDiagnostic_;
     int interval_ = 33;

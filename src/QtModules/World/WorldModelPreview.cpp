@@ -28,6 +28,7 @@ WorldModelPreview::WorldModelPreview(QWidget* parent,const War3RenderPluginApiV2
     viewport_=new WorldViewport(this,backend); viewport_->setObjectName(QStringLiteral("worldUnitPreviewViewport"));
     viewport_->setFixedHeight(188); viewport_->setFocusPolicy(Qt::NoFocus); viewport_->hide(); column->addWidget(viewport_);
     player_=new WorldAnimationPlayer(*viewport_,this);
+    player_->SetLoopFinishedActions(true); // 预览卡循环播放；特效动作播完常淡出成空白。
     message_=new QLabel(this); message_->setObjectName(QStringLiteral("worldUnitPreviewMessage")); message_->setWordWrap(true); column->addWidget(message_);
     auto* controls=new QHBoxLayout; controls->setSpacing(5);
     action_=new QComboBox(this); action_->setObjectName(QStringLiteral("worldUnitPreviewAction")); action_->setAccessibleName(tr("预览动作"));
@@ -151,6 +152,8 @@ void WorldModelPreview::BeginNext() {
             if (!frame.Succeeded()) { work->error=QString::fromUtf8(frame.diagnostics.front().code+"："+frame.diagnostics.front().message); return; }
             const auto verify=work->source->VerifyCurrentSource();
             if (!verify.Succeeded()) { work->error=QString::fromUtf8(verify.diagnostics.front().message); return; }
+            // 按首帧实际可见的网格重新取景：肖像背景板、建造脚手架等平时隐藏的大面片不再把模型挤成一个点。
+            work->camera=Render::FitVisibleMeshCamera(*work->service->Scene(),**frame.value,work->camera);
             work->frame=std::move(*frame.value);
         } catch (const std::exception& e) { work->error=QString::fromUtf8(e.what()); }
     });

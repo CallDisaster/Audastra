@@ -102,6 +102,9 @@ void Emission(){auto a=Fixture();auto s=Make(a);Timeline t;t.end=10000;
     const auto over=Advance(a,s,t,10,Anchors);
     Check(!over.Succeeded()&&over.diagnostics.front().code=="PARTICLE_BURST_BUDGET"&&Count(s).spawned==0,"oversized burst silently clamped");
     burst.keys[0].value[0]=1000000;s=Make(a);Check(Advance(a,s,t,10,Anchors).Succeeded()&&Count(s).spawned==100&&Count(s).suppressed==999900,"burst suppression accounting");
+    // 暴雪特效的 squirt 键在负值（不喷）与喷发数量之间切换：负键不喷也不拒绝。
+    burst.keys={{0,{-25,0,0},{},{}},{5,{44,0,0},{},{}},{8,{-25,0,0},{},{}}};s=Make(a);
+    Check(Advance(a,s,t,10,Anchors).Succeeded()&&Count(s).spawned==44&&Count(s).suppressed==0,"negative squirt key emitted or rejected");
     a.globalSequences={0};burst.globalSequence=0;burst.keys={{0,{5,0,0},{},{}},{10,{0,0,0},{},{}}};
     t.globalReferenceMs=700;s=Make(a);Check(Advance(a,s,t,500,Anchors).Succeeded()&&Count(s).spawned==5,"zero global squirt skipped or repeated");
     Check(Sample(burst,{1,0,0},a,t,900)[0]==5,"zero global particle track used action clock");

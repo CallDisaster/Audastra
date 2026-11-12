@@ -623,8 +623,13 @@ void WorldAnimationPlayer::StartNext() {
                 // 视野外、预算冻结和局部拒绝均不结束播放；时钟继续才能在回镜头/合法区间恢复。
                 if (playing_ && !resumePending_ && std::none_of(accepted_->states.begin(),accepted_->states.end(),
                     [](const auto& state) { return state.playing; })) {
-                    playing_ = false;
-                    timer_.stop();
+                    if (loopFinished_) {
+                        // 时钟继续：下一次推进重新激活全部实例，并让已结束的不循环动作从 0 开始。
+                        resumePending_ = true; restartPending_ = true;
+                    } else {
+                        playing_ = false;
+                        timer_.stop();
+                    }
                 }
                 // 旧pose已真实接收且其线程已finished：就绪名单现在即可用最新accepted重基。
                 // 重基只使用独立候选求值器，与下面同步状态/诊断通知重叠；不取消合法旧帧。

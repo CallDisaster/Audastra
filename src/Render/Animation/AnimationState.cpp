@@ -216,6 +216,40 @@ War3RenderCameraV2 FitParticleOnlyModelCamera(const MdxModel& model) {
     return {sizeof(War3RenderCameraV2),(low[0]+high[0])*0.5f,(low[1]+high[1])*0.5f,(low[2]+high[2])*0.5f,
         std::clamp(extent*2.4f,80.0f,100000.0f),-1.1f,0.5f};
 }
+War3RenderCameraV2 FitVisibleMeshCamera(const AnimatedModelScene& scene, const AnimationFrame& frame,
+    const War3RenderCameraV2& fallback) {
+    std::array<float,3> low{1e30f,1e30f,1e30f}, high{-1e30f,-1e30f,-1e30f};
+    bool any=false;
+    const auto& indices=scene.geometry.indices;
+    for (std::size_t i=0;i<frame.instances.size() && i<frame.poses.size();++i) {
+        const auto& instance=frame.instances[i];
+        if (frame.poses[i].hidden || instance.instance.model>=scene.models.size()) continue;
+        const auto& model=scene.models[instance.instance.model].model;
+        const auto& m=instance.instance.transform;
+        for (std::uint32_t local=0;local<model.meshCount;++local) {
+            const auto alpha=static_cast<std::size_t>(instance.firstAlpha)+local;
+            const auto meshIndex=static_cast<std::size_t>(model.firstMesh)+local;
+            if (alpha>=frame.alphas.size() || !(frame.alphas[alpha]>0) || meshIndex>=scene.meshes.size()) continue;
+            const auto& mesh=scene.meshes[meshIndex].mesh;
+            if (static_cast<std::uint64_t>(mesh.firstIndex)+mesh.indexCount>indices.size()) continue;
+            for (std::uint32_t k=0;k<mesh.indexCount;++k) {
+                const auto vertex=static_cast<std::size_t>(mesh.baseVertex)+indices[mesh.firstIndex+k];
+                if (vertex>=scene.vertices.size()) continue;
+                const auto& v=scene.vertices[vertex].vertex;
+                if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z)) continue;
+                for (std::size_t r=0;r<3;++r) {
+                    const auto w=m[r*4]*v.x+m[r*4+1]*v.y+m[r*4+2]*v.z+m[r*4+3];
+                    low[r]=std::min(low[r],w); high[r]=std::max(high[r],w);
+                }
+                any=true;
+            }
+        }
+    }
+    if (!any) return fallback;
+    const auto extent=std::max({high[0]-low[0],high[1]-low[1],high[2]-low[2],20.0f});
+    return {sizeof(War3RenderCameraV2),(low[0]+high[0])*0.5f,(low[1]+high[1])*0.5f,(low[2]+high[2])*0.5f,
+        std::clamp(extent*2.4f,80.0f,100000.0f),fallback.yawRadians,fallback.pitchRadians};
+}
 Result<War3RenderCameraV2> SingleModelPreviewCamera(const AnimatedModelScene& scene,
     const AnimationResourceReader& read, std::string_view modelPath) {
     using Out=Result<War3RenderCameraV2>;
