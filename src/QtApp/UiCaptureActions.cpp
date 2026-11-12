@@ -12,6 +12,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QImageReader>
+#include <QListWidget>
+#include <QMouseEvent>
 #include <QPixmap>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -134,6 +136,17 @@ bool MainWindow::CaptureUi(const std::filesystem::path& directory, QStringList& 
         for (const auto& id : modules_.AvailableIds()) {
             ActivateModule(id);
             settle(400);
+            if (captureTheme && id == "manager") {
+                // 同一张图同时显示被选中项和不同的悬停项，只向离屏控件送 Qt 事件。
+                auto* navigation = findChild<QListWidget*>(QStringLiteral("managerPages"));
+                if (navigation && navigation->isVisible() && navigation->currentRow() == 0 && navigation->count() > 1) {
+                    auto* viewport = navigation->viewport();
+                    const QPoint hovered = navigation->visualItemRect(navigation->item(1)).center();
+                    QMouseEvent event(QEvent::MouseMove, hovered, viewport->mapToGlobal(hovered),
+                        Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+                    QCoreApplication::sendEvent(viewport, &event);
+                }
+            }
             capture(*this, QString::fromStdString(id), QStringLiteral("module_window"));
         }
         // 变量属性表单是模态窗口：有可编辑变量时打开、抓取本次真实像素再取消，不提交任何修改。

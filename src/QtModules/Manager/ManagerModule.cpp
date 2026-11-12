@@ -107,7 +107,8 @@ public:
             QFont f = option.font;
             f.setWeight(QFont::Medium);
             painter->setFont(f);
-            painter->setPen(pal.color(QPalette::PlaceholderText));
+            // 分组标题不可点击，但仍需要用可读的次级文字，而非禁用文字。
+            painter->setPen(pal.color(QPalette::Active, QPalette::PlaceholderText));
             painter->drawText(r, Qt::AlignLeft | Qt::AlignVCenter, index.data(Qt::DisplayRole).toString());
             painter->setPen(pal.color(QPalette::Mid));
             painter->drawLine(QPoint(option.rect.left() + 12, option.rect.bottom()),
