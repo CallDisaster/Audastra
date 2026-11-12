@@ -29,6 +29,7 @@
 #include <QMouseEvent>
 #include <QSaveFile>
 #include <QScreen>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
 #include <QTemporaryDir>
@@ -97,6 +98,38 @@ bool InstallModelDefinitions(QtProject::EditorProject& project, bool evidence = 
     project.objectFieldSchema_ = std::make_shared<const ObjectFieldSchema>(std::move(*schema.value));
     return true;
 }
+// 原创资源图：两个动画模型、调色板 BLP（图标与贴图）和短正弦波声音，全部由测试生成。
+bool WriteOriginalResourceArchive(const std::filesystem::path& archivePath) {
+    auto modelBytes = AnimationTest::Bytes();
+    // 原创32x32调色板BLP与短正弦波；低振幅避免短试听突兀。
+    std::vector<std::byte> texture(1180 + 32 * 32);
+    std::memcpy(texture.data(), "BLP1", 4);
+    const auto word = [](auto& bytes, std::size_t at, std::uint32_t value) {
+        for (unsigned i = 0; i < 4; ++i) bytes[at + i] = static_cast<std::byte>((value >> (8 * i)) & 255u);
+    };
+    word(texture, 4, 1); word(texture, 12, 32); word(texture, 16, 32); word(texture, 28, 1180); word(texture, 92, 32 * 32);
+    texture[156] = std::byte{60}; texture[157] = std::byte{160}; texture[158] = std::byte{240};
+    texture[160] = std::byte{170}; texture[161] = std::byte{55}; texture[162] = std::byte{85};
+    for (std::size_t i = 0; i < 32 * 32; ++i) texture[1180 + i] = static_cast<std::byte>(((i / 32) / 4 + (i % 32) / 4) % 2);
+    constexpr std::uint32_t samples = 22050;
+    std::vector<std::byte> sound(44 + samples * 2);
+    std::memcpy(sound.data(), "RIFF", 4); word(sound, 4, static_cast<std::uint32_t>(sound.size() - 8));
+    std::memcpy(sound.data() + 8, "WAVEfmt ", 8); word(sound, 16, 16);
+    sound[20] = std::byte{1}; sound[22] = std::byte{1}; word(sound, 24, samples); word(sound, 28, samples * 2);
+    sound[32] = std::byte{2}; sound[34] = std::byte{16}; std::memcpy(sound.data() + 36, "data", 4); word(sound, 40, samples * 2);
+    for (std::uint32_t i = 0; i < samples; ++i) {
+        const auto value = static_cast<std::int16_t>(500 * std::sin(6.283185307179586 * 440 * i / samples));
+        sound[44 + i * 2] = static_cast<std::byte>(static_cast<std::uint16_t>(value) & 255);
+        sound[45 + i * 2] = static_cast<std::byte>(static_cast<std::uint16_t>(value) >> 8);
+    }
+    std::vector<Mpq::MpqBuildFile> files{{"EvidenceModel.mdx", modelBytes}, {"EvidenceModelB.mdx", modelBytes},
+        {"EvidenceIcon.blp", texture}, {"Textures/Crate.blp", texture}, {"EvidenceSound.wav", sound}};
+    auto imports = Resources::ImportTable::CreateEmpty();
+    for (const auto& file : files) if (!imports.Upsert(file.name).Succeeded()) return false;
+    auto importBytes = imports.Serialize(); if (!importBytes.Succeeded()) return false;
+    files.push_back({"war3map.imp", *importBytes.value});
+    return Mpq::WriteMpqArchive(archivePath, files).Succeeded();
+}
 }
 class ObjectResourcePickerTests final : public QObject {
     Q_OBJECT
@@ -111,6 +144,7 @@ private slots:
     void CommitMayCloseOwner();
     void AdapterOwnsSnapshotAndRejectsOversizedSource();
     void OwnedProductionResourceEvidence();
+    void ModelPreviewStaysVisibleAndResponsive();
 };
 void ObjectResourcePickerTests::SourcesHoverAndKeyboard() {
     bool current = true; QStringList previews;
@@ -356,35 +390,7 @@ void ObjectResourcePickerTests::OwnedProductionResourceEvidence() {
     QTemporaryDir fixture; QVERIFY(fixture.isValid());
     const auto root = std::filesystem::path(fixture.path().toStdWString());
     const auto archivePath = root / "original-resource-evidence.w3x";
-    auto modelBytes = AnimationTest::Bytes();
-    // 原创32x32调色板BLP与短正弦波；低振幅避免短试听突兀。
-    std::vector<std::byte> texture(1180 + 32 * 32);
-    std::memcpy(texture.data(), "BLP1", 4);
-    const auto word = [](auto& bytes, std::size_t at, std::uint32_t value) {
-        for (unsigned i = 0; i < 4; ++i) bytes[at + i] = static_cast<std::byte>((value >> (8 * i)) & 255u);
-    };
-    word(texture, 4, 1); word(texture, 12, 32); word(texture, 16, 32); word(texture, 28, 1180); word(texture, 92, 32 * 32);
-    texture[156] = std::byte{60}; texture[157] = std::byte{160}; texture[158] = std::byte{240};
-    texture[160] = std::byte{170}; texture[161] = std::byte{55}; texture[162] = std::byte{85};
-    for (std::size_t i = 0; i < 32 * 32; ++i) texture[1180 + i] = static_cast<std::byte>(((i / 32) / 4 + (i % 32) / 4) % 2);
-    constexpr std::uint32_t samples = 22050;
-    std::vector<std::byte> sound(44 + samples * 2);
-    std::memcpy(sound.data(), "RIFF", 4); word(sound, 4, static_cast<std::uint32_t>(sound.size() - 8));
-    std::memcpy(sound.data() + 8, "WAVEfmt ", 8); word(sound, 16, 16);
-    sound[20] = std::byte{1}; sound[22] = std::byte{1}; word(sound, 24, samples); word(sound, 28, samples * 2);
-    sound[32] = std::byte{2}; sound[34] = std::byte{16}; std::memcpy(sound.data() + 36, "data", 4); word(sound, 40, samples * 2);
-    for (std::uint32_t i = 0; i < samples; ++i) {
-        const auto value = static_cast<std::int16_t>(500 * std::sin(6.283185307179586 * 440 * i / samples));
-        sound[44 + i * 2] = static_cast<std::byte>(static_cast<std::uint16_t>(value) & 255);
-        sound[45 + i * 2] = static_cast<std::byte>(static_cast<std::uint16_t>(value) >> 8);
-    }
-    std::vector<Mpq::MpqBuildFile> files{{"EvidenceModel.mdx", modelBytes}, {"EvidenceModelB.mdx", modelBytes},
-        {"EvidenceIcon.blp", texture}, {"Textures/Crate.blp", texture}, {"EvidenceSound.wav", sound}};
-    auto imports = Resources::ImportTable::CreateEmpty();
-    for (const auto& file : files) QVERIFY(imports.Upsert(file.name).Succeeded());
-    auto importBytes = imports.Serialize(); QVERIFY(importBytes.Succeeded());
-    files.push_back({"war3map.imp", *importBytes.value});
-    QVERIFY(Mpq::WriteMpqArchive(archivePath, files).Succeeded());
+    QVERIFY(WriteOriginalResourceArchive(archivePath));
     auto archive = MapArchiveSession::Open(archivePath); QVERIFY(archive.Succeeded());
     const auto originalSha = Sha256File(archivePath); QVERIFY(originalSha.Succeeded());
     receipt.insert("source_sha256", QString::fromStdString(*originalSha.value));
@@ -552,10 +558,160 @@ void ObjectResourcePickerTests::OwnedProductionResourceEvidence() {
     receipt.insert("uncovered", "Full MainWindow anchor geometry and archive save reopen remain separate gates; audio evidence measures player state, not human listening.");
     QVERIFY(animationVerified && audioVerified); completed = true;
 }
+// 仅在测试机交互桌面显式启用。模型预览是原生 D3D 子窗口；选择面板若是分层（半透明）顶层窗口，
+// 子窗口内容不会合成上屏，面板也可能停止刷新。这里看真实屏幕像素和事件循环，不看控件自绘结果。
+void ObjectResourcePickerTests::ModelPreviewStaysVisibleAndResponsive() {
+    using namespace ObjectData;
+    const auto output = qEnvironmentVariable("AUD_RESOURCE_PICKER_SCREEN_DIR");
+    if (output.isEmpty()) QSKIP("Explicit on-screen picker check is not enabled");
+    QCOMPARE(QGuiApplication::platformName(), QStringLiteral("windows"));
+    QVERIFY(QDir::isAbsolutePath(output)); QVERIFY(QDir().mkpath(output));
+    UiKit::ThemeManager theme; theme.ApplyTheme(QStringLiteral("graphite"));
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    const auto root = std::filesystem::path(fixture.path().toStdWString());
+    const auto archivePath = root / "original-resource-screen.w3x";
+    QVERIFY(WriteOriginalResourceArchive(archivePath));
+    auto archive = MapArchiveSession::Open(archivePath); QVERIFY(archive.Succeeded());
+    QtProject::EditorProject project; QVERIFY(InstallModelDefinitions(project, true));
+    project.projectRoot_ = root; project.sourceArchivePath_ = archivePath;
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    auto ownedData = LniObjectCodec(ObjectData::ObjectType::Unit).Parse(Bytes("[u001]\nfile=\"EvidenceModel.mdx\"\n"));
+    QVERIFY(ownedData.Succeeded());
+    project.objectDocuments_[0].reset(dynamic_cast<LniObjectDocument*>(ownedData.document.release()));
+    QVERIFY(project.objectDocuments_[0]);
+    auto factory = QtApp::MakeObjectResourcePickerFactory(project);
+    const auto waitUntil = [](const std::function<bool()>& predicate, int timeout = 10000) {
+        QElapsedTimer wait; wait.start();
+        while (!predicate()) { if (wait.elapsed() >= timeout) return false; QTest::qWait(10); }
+        return true;
+    };
+    // 背后放一块纯品红窗口：预览区若没有合成上屏，屏幕上会透出它。
+    QWidget owner; owner.setObjectName(QStringLiteral("pickerScreenOwner"));
+    owner.setAttribute(Qt::WA_StyledBackground);
+    owner.setStyleSheet(QStringLiteral("QWidget#pickerScreenOwner { background: #ff00ff; }"));
+    owner.setGeometry(QRect(QPoint(40, 40), QSize(1100, 760))); owner.show(); owner.raise(); owner.activateWindow();
+    QVERIFY(QTest::qWaitForWindowExposed(&owner));
+    auto* picker = new ObjectResourcePicker({Services::ObjectResourceKind::Model, false, true}, "EvidenceModel.mdx", factory(), &owner);
+    QPointer<ObjectResourcePicker> pickerGuard(picker);
+    picker->move(owner.geometry().topLeft() + QPoint(100, 80)); picker->show(); picker->raise(); picker->activateWindow();
+    QVERIFY(QTest::qWaitForWindowExposed(picker));
+    auto* tabs = picker->findChild<QTabWidget*>("resourceSourceTabs");
+    auto* path = picker->findChild<QLineEdit*>("resourcePath");
+    auto* status = picker->findChild<QLabel*>("resourceStatus");
+    QVERIFY(tabs && path && status);
+    tabs->setCurrentIndex(2);
+    path->setFocus(); path->selectAll(); QTest::keyClicks(path, QStringLiteral("EvidenceModel.mdx"));
+    WorldViewport* viewport = nullptr; WorldAnimationPlayer* player = nullptr;
+    QVERIFY2(waitUntil([&] {
+        viewport = picker->findChild<WorldViewport*>(); player = picker->findChild<WorldAnimationPlayer*>();
+        return viewport && player && viewport->isVisible() && player->Ready() && viewport->RendererReady() && player->Frame();
+    }, 20000), qPrintable(status->text()));
+    QTest::qWait(500);
+    auto* screen = owner.screen(); QVERIFY(screen);
+    const auto grabScreen = [&](QWidget& widget) {
+        const QRect global(widget.mapToGlobal(QPoint(0, 0)), widget.size());
+        const auto origin = screen->geometry().topLeft();
+        return screen->grabWindow(0, global.x() - origin.x(), global.y() - origin.y(), global.width(), global.height())
+            .toImage().convertToFormat(QImage::Format_RGB32);
+    };
+    // 1) 动画播放时的事件循环：16ms 定时器两秒内的最大间隔，以及面板文字改动后屏幕上是否跟着变。
+    qint64 maxGap = 0, last = 0; int ticks = 0;
+    QElapsedTimer probe; probe.start();
+    QTimer ticker; ticker.setInterval(16);
+    QObject::connect(&ticker, &QTimer::timeout, &owner, [&] { const auto now = probe.elapsed(); maxGap = std::max(maxGap, now - last); last = now; ++ticks; });
+    ticker.start(); QTest::qWait(2000); ticker.stop();
+    maxGap = std::max(maxGap, probe.elapsed() - last);
+    grabScreen(*picker).save(QDir(output).filePath(QStringLiteral("picker-screen-playing.png")));
+    // 自定义页上可见的是路径输入框；只改显示文字（不触发 textEdited，不换预览）。
+    QVERIFY(path->isVisible() && path->width() > 40 && path->height() > 8);
+    const auto pathBefore = grabScreen(*path);
+    const auto typed = path->text();
+    path->setText(QStringLiteral("屏幕刷新探针/屏幕刷新探针.mdx"));
+    QTest::qWait(500);
+    const auto pathAfter = grabScreen(*path);
+    path->setText(typed);
+    const bool repainted = !pathBefore.isNull() && !pathAfter.isNull() && pathBefore != pathAfter;
+    // 2) 暂停后取已完成帧，与屏幕上预览区的实际像素对比；同时统计预览区透出的品红。
+    player->SetPlaying(false); QVERIFY(waitUntil([&] { return !player->Busy(); }));
+    Render::CapturedFrameRgba frame;
+    QVERIFY2(waitUntil([&] {
+        auto current = viewport->CaptureCompletedFrame(viewport->DocumentRevision());
+        if (!current.Succeeded() || !current.value->animation
+            || current.value->animation->contentVersion != player->Frame()->contentVersion) return false;
+        frame = std::move(*current.value); return true;
+    }), qPrintable(viewport->StatusText()));
+    QTest::qWait(500);
+    const QImage rendered = QImage(reinterpret_cast<const uchar*>(frame.rgba.data()), int(frame.view.physicalWidth),
+        int(frame.view.physicalHeight), int(frame.view.physicalWidth * 4), QImage::Format_RGBA8888).convertToFormat(QImage::Format_RGB32);
+    const auto onScreen = grabScreen(*viewport);
+    QVERIFY(!rendered.isNull() && !onScreen.isNull());
+    const auto compared = onScreen.size() == rendered.size() ? onScreen
+        : onScreen.scaled(rendered.size(), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    double difference = 0.0; qint64 magenta = 0;
+    for (int y = 0; y < rendered.height(); ++y)
+        for (int x = 0; x < rendered.width(); ++x) {
+            const auto a = compared.pixel(x, y), b = rendered.pixel(x, y);
+            difference += std::abs(qRed(a) - qRed(b)) + std::abs(qGreen(a) - qGreen(b)) + std::abs(qBlue(a) - qBlue(b));
+            magenta += qRed(a) > 230 && qGreen(a) < 25 && qBlue(a) > 230;
+        }
+    const double pixels = static_cast<double>(rendered.width()) * rendered.height();
+    const double meanDifference = difference / (pixels * 3.0), magentaShare = static_cast<double>(magenta) / pixels;
+    onScreen.save(QDir(output).filePath(QStringLiteral("viewport-screen.png")));
+    rendered.save(QDir(output).filePath(QStringLiteral("viewport-completed-frame.png")));
+    grabScreen(*picker).save(QDir(output).filePath(QStringLiteral("picker-screen.png")));
+    // 3) 系统真实鼠标（不是 Qt 合成事件）：先点预览区，再点“选择”页签。透明分层窗口里预览区会把点击漏给背后窗口。
+    int viewportPresses = 0;
+    struct PressCounter final : QObject {
+        int* count;
+        explicit PressCounter(int* target) : count(target) {}
+        bool eventFilter(QObject*, QEvent* event) override { if (event->type() == QEvent::MouseButtonPress) ++*count; return false; }
+    } counter(&viewportPresses);
+    viewport->installEventFilter(&counter);
+    POINT savedCursor{}; GetCursorPos(&savedCursor);
+    const auto realClick = [&](QWidget& widget, QPoint local) {
+        const auto global = widget.mapToGlobal(local);
+        const auto dpr = widget.devicePixelRatioF();
+        SetCursorPos(qRound(global.x() * dpr), qRound(global.y() * dpr));
+        QTest::qWait(120);
+        INPUT clicks[2]{};
+        clicks[0].type = INPUT_MOUSE; clicks[0].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+        clicks[1].type = INPUT_MOUSE; clicks[1].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+        return SendInput(2, clicks, sizeof(INPUT)) == 2;
+    };
+    const bool viewportClickSent = realClick(*viewport, viewport->rect().center());
+    const bool viewportClickReached = waitUntil([&] { return viewportPresses > 0; }, 2000);
+    auto* tabBar = tabs->tabBar();
+    const bool tabClickSent = realClick(*tabBar, tabBar->tabRect(0).center());
+    const bool tabClickSwitched = waitUntil([&] { return tabs->currentIndex() == 0; }, 3000);
+    SetCursorPos(savedCursor.x, savedCursor.y);
+    viewport->removeEventFilter(&counter);
+    const QJsonObject receipt{{"max_event_gap_ms", maxGap}, {"timer_ticks", ticks}, {"panel_repainted_on_screen", repainted},
+        {"real_click_sent", viewportClickSent && tabClickSent}, {"real_click_on_preview_reached_preview", viewportClickReached},
+        {"real_click_on_tab_switched_tab", tabClickSwitched},
+        {"viewport_mean_channel_difference", meanDifference}, {"viewport_magenta_share", magentaShare},
+        {"picker_translucent", picker->testAttribute(Qt::WA_TranslucentBackground)},
+        {"viewport_logical", QJsonObject{{"width", viewport->width()}, {"height", viewport->height()}}},
+        {"frame_physical", QJsonObject{{"width", rendered.width()}, {"height", rendered.height()}}},
+        {"renderer_status", viewport->StatusText()}};
+    QSaveFile file(QDir(output).filePath(QStringLiteral("picker-screen-receipt.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly)); file.write(QJsonDocument(receipt).toJson(QJsonDocument::Indented)); QVERIFY(file.commit());
+    QVERIFY2(maxGap < 500, qPrintable(QStringLiteral("event loop stalled %1 ms").arg(maxGap)));
+    QVERIFY2(repainted, "picker stopped repainting on screen");
+    QVERIFY2(magentaShare < 0.05, qPrintable(QStringLiteral("preview area shows the window behind: %1").arg(magentaShare)));
+    QVERIFY2(meanDifference < 24.0, qPrintable(QStringLiteral("preview area differs from the completed frame: %1").arg(meanDifference)));
+    QVERIFY(viewportClickSent && tabClickSent);
+    QVERIFY2(viewportClickReached, "a real click on the preview did not reach the preview");
+    QVERIFY2(tabClickSwitched, "a real click on the source tab did not switch the tab");
+    picker->close(); QTRY_VERIFY(!pickerGuard);
+}
 int main(int argc, char** argv) {
     if (!qEnvironmentVariableIsEmpty("AUD_RESOURCE_PREVIEW_EVIDENCE_DIR")) {
         bool explicitCase = false;
         for (int i = 1; i < argc; ++i) explicitCase |= QByteArray(argv[i]) == "OwnedProductionResourceEvidence";
+        if (!explicitCase || qEnvironmentVariable("QT_QPA_PLATFORM") != QStringLiteral("windows")) return 2;
+    } else if (!qEnvironmentVariableIsEmpty("AUD_RESOURCE_PICKER_SCREEN_DIR")) {
+        bool explicitCase = false;
+        for (int i = 1; i < argc; ++i) explicitCase |= QByteArray(argv[i]) == "ModelPreviewStaysVisibleAndResponsive";
         if (!explicitCase || qEnvironmentVariable("QT_QPA_PLATFORM") != QStringLiteral("windows")) return 2;
     } else qputenv("QT_QPA_PLATFORM", "offscreen");
     QApplication app(argc, argv);
