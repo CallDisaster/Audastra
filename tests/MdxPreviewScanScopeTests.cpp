@@ -102,7 +102,7 @@ void Identity(const std::vector<Row>& rows, std::string_view model, std::string_
         Check(row.state == "complete", "original scope fixture did not finish observation");
         policies.insert(row.policy);
     }
-    Check(policies == std::set<std::string>{"strict", "interactive"}, "scope scan lost a model or policy");
+    Check(policies == std::set<std::string>{"strict", "interactive", "picker"}, "scope scan lost a model or policy");
 }
 void Contains(const std::string& text, std::string_view expected, const char* message) {
     Check(text.find(expected) != std::string::npos, message);
@@ -144,7 +144,7 @@ void Run(const std::filesystem::path& scanner) {
     options.mode.clear(); options.tsv = temp.path / "a.tsv";
     Check(RunPreview(options, {}, 'A') == 2, "game listfile coverage limit must remain explicit");
     const auto aRows = Rows(options.tsv);
-    Check(aRows.size() == 14, "A merged context enumerated a wrong model set");
+    Check(aRows.size() == 21, "A merged context enumerated a wrong model set");
     const auto aLayer = "game:war3x.mpq|A.mpq|sha256:" + Good(Sha256(aBytes));
     Identity(aRows, "common.mdx", Good(Sha256(nestedModel)), aLayer);
     Identity(aRows, "variant.mdx", Good(Sha256(nestedModel)), aLayer);
@@ -163,7 +163,7 @@ void Run(const std::filesystem::path& scanner) {
     options.tsv = temp.path / "y.tsv";
     Check(RunPreview(options, {}, 'Y') == 0, "explicit Y list scan failed");
     const auto yRows = Rows(options.tsv);
-    Check(yRows.size() == 2, "explicit list was not passed to enumeration child");
+    Check(yRows.size() == 3, "explicit list was not passed to enumeration child");
     Identity(yRows, "common.mdx", Good(Sha256(nestedModel)), "game:war3x.mpq|Y.mpq|sha256:" + Good(Sha256(yBytes)));
     Contains(ReadText(Companion(options.tsv, ".scope.txt")), "game_context=tileset:Y\n", "Y context was omitted from scope");
     Contains(ReadText(Companion(options.tsv, ".diagnostics.tsv")), "SCAN_RESOURCE_UNTEXTURED", "Y dependency incorrectly used A/base texture");
@@ -171,7 +171,7 @@ void Run(const std::filesystem::path& scanner) {
     options.list.clear(); options.tsv = temp.path / "map.tsv";
     Check(RunPreview(options, map, 'A') == 0, "matching explicit/map terrain context was rejected");
     const auto mapRows = Rows(options.tsv);
-    Check(mapRows.size() == 2, "map scan was expanded into the game corpus");
+    Check(mapRows.size() == 3, "map scan was expanded into the game corpus");
     Identity(mapRows, "common.mdx", Good(Sha256(mapModel)), "map:original-map.w3x");
     options.mode = "enumerate"; options.tsv = temp.path / "map-auto.txt";
     Check(RunPreview(options, map) == 0, "existing automatic map terrain context regressed");

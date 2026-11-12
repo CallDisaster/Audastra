@@ -58,9 +58,10 @@ PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResourc
     const AnimationResourceReader& reader, const Limits& limits, const Checkpoint& checkpoint) {
     PreviewModelReport output{std::move(path), model.sourceLayer, model.digest, {}};
     const auto parsed = ParseMdx(model.bytes); checkpoint();
-    for (const bool interactive : {false, true}) {
+    for (const auto policy : kPreviewPolicies) {
+        const bool interactive = policy != "strict", picker = policy == "picker";
         auto& report = output.policies.emplace_back();
-        report.policy = interactive ? "interactive" : "strict";
+        report.policy = std::string(policy);
         Add(report, parsed.diagnostics);
         if (!parsed.Succeeded()) { report.state = Limited(report) ? "uncovered" : "parse_rejected"; continue; }
         std::uint64_t vertices = 0;
@@ -68,15 +69,19 @@ PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResourc
         if (MdxNodeCount(*parsed.value) > limits.maxNodes || vertices > limits.maxVertices) {
             report.state = "uncovered"; Add(report, "SCAN_MODEL_COMPLEXITY_LIMIT", "模型超过声明扫描预算。", "error"); continue;
         }
-        auto animationLimits = interactive ? InteractiveAnimationPreviewLimits() : AnimationLimits{};
-        animationLimits.retainUnsupportedStatic = true;
-        animationLimits.enableParticles = true;
-        animationLimits.enablePremPreview = true;
-        animationLimits.geometry.maxModels = 1;
-        animationLimits.geometry.maxInstances = 1;
-        animationLimits.geometry.maxVertices = limits.maxVertices;
-        animationLimits.geometry.maxTextureDimension = 256;
-        animationLimits.geometry.maxTotalTextureBytes = 32ull * 1024 * 1024;
+        // picker 与物编资源选择面板逐项相同（坏资产整体拒绝、无 PREM）；另两档为诊断用的宽松档。
+        auto animationLimits = picker ? ObjectPickerPreviewLimits(true)
+            : interactive ? InteractiveAnimationPreviewLimits() : AnimationLimits{};
+        if (!picker) {
+            animationLimits.retainUnsupportedStatic = true;
+            animationLimits.enableParticles = true;
+            animationLimits.enablePremPreview = true;
+            animationLimits.geometry.maxModels = 1;
+            animationLimits.geometry.maxInstances = 1;
+            animationLimits.geometry.maxVertices = limits.maxVertices;
+            animationLimits.geometry.maxTextureDimension = 256;
+            animationLimits.geometry.maxTotalTextureBytes = 32ull * 1024 * 1024;
+        }
         AnimationInstanceSpec instance; instance.identity = {1, 1}; instance.hostKey = "preview-scan";
         instance.model.modelPath = output.path; instance.elapsedMs = 0; instance.globalMs = 0;
         auto created = ModelAnimationService::Create({1, 0, model.digest}, std::span(&instance, 1), reader, animationLimits);
@@ -100,6 +105,17 @@ PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResourc
         // 纯粒子/节点模型没有网格取景框。扫描器使用声明的观察相机继续数值采样，
         // 不能让 Fit 的异常丢掉已取得的模型身份与此前诊断，也不声称此视点覆盖画面。
         const bool withoutGeometry = service->Scene()->geometry.instances.empty();
+        if (picker) {
+            // 面板对纯粒子模型不取景，直接显示“纯粒子没有可靠的模型取景边界”；首帧准备失败同样整体不显示。
+            if (withoutGeometry) {
+                Add(report, "PICKER_PARTICLE_ONLY", "没有可取景网格，选择面板不显示纯粒子模型。", "error");
+                report.state = "prepare_rejected"; continue;
+            }
+            AnimationAdvance first; first.worldCamera = AnimationWorldCamera(FitAnimationSceneCamera(*service->Scene()));
+            const auto opened = service->Prepare(nullptr, first); checkpoint();
+            Add(report, opened.diagnostics);
+            if (!opened.Succeeded()) { report.state = Limited(report) ? "uncovered" : "prepare_rejected"; continue; }
+        }
         const War3RenderCameraV2 camera = withoutGeometry
             ? War3RenderCameraV2{sizeof(War3RenderCameraV2), 0, 0, 0, 500, -1.1f, 0.5f}
             : FitAnimationSceneCamera(*service->Scene());

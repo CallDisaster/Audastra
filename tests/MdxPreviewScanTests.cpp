@@ -81,13 +81,13 @@ void ReadFailures() {
 void Run(){
     ReadFailures();
     const auto original=Evaluate(AnimationTest::Bytes());
-    Check(original.policies.size()==2&&!original.sha256.empty(),"scanner lost policy or identity");
+    Check(original.policies.size()==3&&!original.sha256.empty(),"scanner lost policy or identity");
     for(const auto& policy:original.policies){
         Check(policy.planned==6&&policy.sampled==6&&policy.state=="complete","two sequence sample coverage incomplete");
         Check(policy.animated==6&&policy.moving>0,"animated fixture did not reach production pose samples");
     }
     const auto inverse=Evaluate(AnimationPreviewFixture::InverseKeys());
-    Check(inverse.policies.size()==2,"inverse fixture lost a scan policy");
+    Check(inverse.policies.size()==3,"inverse fixture lost a scan policy");
     const auto& strict=inverse.policies[0];
     const auto& interactive=inverse.policies[1];
     // 逆序边只属于 Stand；严格求值逐动作拒绝，不能把仍合法的 Walk 一起算成拒绝。
@@ -104,6 +104,10 @@ void Run(){
         interactive.sampled==6&&interactive.animated==6&&interactive.visible==6&&interactive.moving==2,
         "interactive scan lost source-order sequence evaluation");
     Check(!interactive.issues.contains("MDX_POSE_KEYS_INVALID"),"interactive scan still rejected the source-order range");
+    const auto& picker=inverse.policies[2];
+    // 选择面板沿用交互预览的原序取键，同一逆序 Stand 不能在面板里整体被拒。
+    Check(picker.policy=="picker"&&picker.state=="complete"&&picker.sampled==6&&!picker.issues.contains("MDX_POSE_KEYS_INVALID"),
+        "picker scan diverged from the interactive source-order policy");
     Check(interactive.issues.contains("MDX_POSE_SOURCE_ORDER_PREVIEW"),"interactive scan lost source-order provenance");
     Check(interactive.issues.at("MDX_POSE_SOURCE_ORDER_PREVIEW").firstSequence==0,
         "interactive source-order notice was attributed to the wrong sequence");
@@ -130,8 +134,13 @@ void Run(){
     const auto particleScan = Evaluate(pureParticle);
     Check(particleScan.sha256 == *Sha256(pureParticle).value && particleScan.source == "original-fixture",
         "particle-only scan discarded the verified model identity");
-    Check(particleScan.policies.size() == 2, "particle-only scan lost a policy");
+    Check(particleScan.policies.size() == 3, "particle-only scan lost a policy");
+    // 选择面板对纯粒子模型不取景，不能按诊断档的显式相机继续采样。
+    const auto& particlePicker = particleScan.policies[2];
+    Check(particlePicker.policy == "picker" && particlePicker.state == "prepare_rejected" && particlePicker.sampled == 0 &&
+        particlePicker.issues.contains("PICKER_PARTICLE_ONLY"), "picker policy previewed a particle-only model");
     for (const auto& policy : particleScan.policies) {
+        if (policy.policy == "picker") continue;
         if (policy.sampled != 6 || policy.planned != 6) {
             std::cerr << "particle-only policy=" << policy.policy << " state=" << policy.state
                 << " planned=" << policy.planned << " sampled=" << policy.sampled << '\n';

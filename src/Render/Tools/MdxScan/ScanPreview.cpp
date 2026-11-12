@@ -134,8 +134,8 @@ void Write(const std::filesystem::path& path, const PreviewModelReport& model) {
 }
 PreviewModelReport Failure(const Options& options, std::string code) {
     PreviewModelReport model; model.path = options.model;
-    for (const auto* policy : {"strict", "interactive"}) {
-        PreviewPolicyReport result; result.policy = policy; result.state = "uncovered";
+    for (const auto policy : kPreviewPolicies) {
+        PreviewPolicyReport result; result.policy = std::string(policy); result.state = "uncovered";
         result.issues.emplace(code, PreviewIssue{std::string(PreviewDiagnosticCategory(code)), "error", code, 1});
         model.policies.push_back(std::move(result));
     }
@@ -327,7 +327,7 @@ int RunPreview(const Options& options, const std::filesystem::path& mapPath,
         try {
             rows = ReadLines(worker.tsv, 1024 * 1024, 16);
             issues = ReadLines(Companion(worker.tsv, ".diagnostics.tsv"), 16 * 1024 * 1024, 32768);
-            if (rows.size() != 2) throw std::runtime_error("SCAN_CHILD_REPORT_INCOMPLETE");
+            if (rows.size() != std::size(kPreviewPolicies)) throw std::runtime_error("SCAN_CHILD_REPORT_INCOMPLETE");
         } catch (const std::exception&) {
             Write(worker.tsv, Failure(worker, "SCAN_CHILD_REPORT_INCOMPLETE"));
             rows = ReadLines(worker.tsv, 1024 * 1024, 16);
@@ -362,7 +362,7 @@ int RunPreview(const Options& options, const std::filesystem::path& mapPath,
         partial |= line.starts_with("scope_notice=") || line == "complete_member_enumeration=0";
     }
     info << "quality=PreviewApproximate\ngpu_evidence=0\ngame_evidence=0\nsource_readonly=1\n"
-        << "samples=sequence-start-middle-end-with-explicit-camera\npolicies=strict,interactive\n"
+        << "samples=sequence-start-middle-end-with-explicit-camera\npolicies=strict,interactive,picker\n"
         << "model_ms=" << options.limits.modelMs << "\ntotal_seconds=" << options.limits.totalSeconds
         << "\nchild_memory_mib=" << options.limits.memoryMiB << "\nfile_mib=" << options.limits.fileMiB
         << "\nmax_models=" << options.limits.maxModels << "\nmax_samples_per_policy=" << options.limits.maxSamples

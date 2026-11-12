@@ -21,6 +21,8 @@ struct PreviewModelReport {
     std::string path, source, sha256;
     std::vector<PreviewPolicyReport> policies;
 };
+// 每个模型按此顺序各报告一行：两档诊断用的宽松设置，以及与物编资源选择面板相同的 picker。
+inline constexpr std::string_view kPreviewPolicies[]{"strict", "interactive", "picker"};
 // 分类只描述已知诊断含义；unknown 必须留待人工取证，不把“未实现”当成资产损坏。
 [[nodiscard]] std::string_view PreviewDiagnosticCategory(std::string_view code) noexcept;
 [[nodiscard]] PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResource& model,

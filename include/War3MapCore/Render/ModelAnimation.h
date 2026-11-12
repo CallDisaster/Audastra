@@ -82,6 +82,16 @@ struct AnimationLimits {
     limits.allowRigidStaticPreview = true;
     return limits;
 }
+// 物编资源选择面板“预览近似”：单模型、贴图边长与总量受限，资产问题整体拒绝（不保留静态）。
+// 面板与批量扫描共用这一份，扫描结论才代表面板实际能否显示。
+[[nodiscard]] inline AnimationLimits ObjectPickerPreviewLimits(bool particles) {
+    auto limits = InteractiveAnimationPreviewLimits();
+    limits.geometry.maxModels = 1; limits.geometry.maxInstances = 1;
+    limits.enableParticles = particles;
+    limits.geometry.maxVertices = 262144; limits.geometry.maxIndices = 786432;
+    limits.geometry.maxTextureDimension = 256; limits.geometry.maxTotalTextureBytes = 32ull * 1024 * 1024;
+    return limits;
+}
 struct AnimationInstanceState {
     War3RenderCore::InstanceIdentity identity;
     std::uint32_t sequenceIndex = 0;

@@ -31,7 +31,7 @@ int Main(const std::vector<std::string>& args) {
         if (args.size() == 1 && args[0] == "--help") {
             std::cout << "war3-mdx-scan --game-root <游戏根> [--list <UTF-8虚拟路径清单>] --tsv <新报告.tsv>\n"
                 "war3-mdx-scan --list <UTF-8磁盘模型路径清单> --tsv <新报告.tsv>\n"
-                "Windows 宿主：--preview 1 [--map <只读地图副本>]，同时报告 strict/interactive 诊断分类。\n"
+                "Windows 宿主：--preview 1 [--map <只读地图副本>]，同时报告 strict/interactive 诊断分类，picker 与物编资源选择面板设置相同。\n"
                 "游戏地形集：--preview 1 --game-root <游戏根> --tileset <A-Z>；可搭配 --list 冻结该上下文的模型名单。\n"
                 "预算：--model-ms 5000 --total-seconds 300 --memory-mib 512 --max-models 10000\n"
                 "      --file-mib 32 --max-samples 4096 --max-nodes 4096 --max-vertices 262144\n"
