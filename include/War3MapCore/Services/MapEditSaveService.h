@@ -11,6 +11,7 @@
 #include "War3MapCore/Services/MapSaveService.h"
 #include "War3MapCore/Services/MapRuntimePreparation.h"
 #include "War3MapCore/Services/TerrainMinimapSave.h"
+#include "War3MapCore/Services/MinimapMarkerEdits.h"
 #include "War3MapCore/Services/TerrainTextureSlotCommand.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 #include "War3MapCore/Trigger/TriggerEditBatch.h"
@@ -134,6 +135,8 @@ struct MapEditSaveRequest {
     std::optional<ParsedTriggerCodeIdentityEdit> triggerCodeIdentity;
     // 本次调用显式限制编译后端；普通保存沿用工具链配置和外部回退。
     bool inProcessOnly = false;
+    std::string minimapMarkerRevision;
+    std::vector<MinimapMarkerEdit> minimapMarkerEdits;
 };
 
 struct MapEditMemberReceipt {

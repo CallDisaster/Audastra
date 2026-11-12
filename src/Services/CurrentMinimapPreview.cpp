@@ -3,6 +3,8 @@
 #include "War3MapCore/Render/ClassicMinimapObjectAssets.h"
 #include "War3MapCore/MapData/NativeMinimapMarkers.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
+#include "War3MapCore/Services/MinimapMarkerEdits.h"
+#include "War3MapCore/Resources/ImportTable.h"
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/ProjectSaveControl.h"
 #include "War3MapCore/Text/TextUtil.h"
@@ -216,15 +218,25 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
                 drawDot(dots.records[0].positionRaw[0], dots.records[0].positionRaw[1], *color);
             }
             if (input.icons) {
-                const std::array<std::string, 1> names{"war3map.mmp"};
-                auto captured = Take(CaptureObjectCatalogSources(sources, names, 4U * 1024U * 1024U));
-                auto file = Take(captured.Read(names[0]));
-                if (file) {
-                    auto icons = Take(MapData::ParseMapMinimapMarkers(file->bytes));
-                    for (const auto &icon : icons.records)
+                const auto pending = std::find_if(input.replacements.begin(), input.replacements.end(), [](const auto& member) {
+                    auto key = Resources::CanonicalImportPath(member.name);
+                    return key.Succeeded() && key.value && *key.value == "AUDASTRA\\MINIMAP-MARKERS.BIN";
+                });
+                if (pending != input.replacements.end()) {
+                    const auto edits = Take(MinimapMarkerEdits::Read(source, pending->data));
+                    for (const auto &icon : Take(edits.View()).records)
                         drawDot(icon.positionRaw[0], icon.positionRaw[1], icon.colorBgra);
+                } else {
+                    const std::array<std::string, 1> names{"war3map.mmp"};
+                    auto captured = Take(CaptureObjectCatalogSources(sources, names, 4U * 1024U * 1024U));
+                    auto file = Take(captured.Read(names[0]));
+                    if (file) {
+                        auto icons = Take(MapData::ParseMapMinimapMarkers(file->bytes));
+                        for (const auto &icon : icons.records)
+                            drawDot(icon.positionRaw[0], icon.positionRaw[1], icon.colorBgra);
+                    }
+                    Check(captured.Verify());
                 }
-                Check(captured.Verify());
             }
         }
         output.rgbaSha256 = Take(Sha256(output.image.rgba));

@@ -23,12 +23,14 @@ inline QJsonObject Request(Fixture& fixture, QJsonObject command, bool dryRun) {
 }
 }
 
-void LiveEditorToolsTests::TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo() {
+void LiveEditorToolsTests::TextureSlotToolsCaptureActualResourcesAndKeepOriginalUndo() try {
     namespace P = AudastraTest::TextureSlot;
     for (const bool ground : {true, false}) {
         P::Fixture native; Fixture f;
         QVERIFY2(f.Initialize() && TerrainSlotLiveDetail::Install(f, native), qPrintable(f.error));
         auto* session = f.project.mapEdits_.get(); auto* undo = f.project.mapDataUndoStack_;
+        const QSignalSpy watchedFiles(f.project.projectWatch_, &QFileSystemWatcher::fileChanged);
+        const QSignalSpy watchedDirectories(f.project.projectWatch_, &QFileSystemWatcher::directoryChanged);
         const auto original = P::Take(MapData::SerializeMapTerrain(*session->Terrain()));
         const auto triggers = f.Fingerprint(); const auto initialContext = f.Context();
         const std::string prefix = ground ? "Tg" : "Cl";
@@ -90,7 +92,15 @@ void LiveEditorToolsTests::TextureSlotToolsCaptureActualResourcesAndKeepOriginal
         QVERIFY(!stale.value("ok").toBool()); QCOMPARE(undo->count(), 3);
         replace["slot"] = 0; replace["expected_rawcode"] = QString::fromStdString(prefix + "01"); replace["rawcode"] = replace["expected_rawcode"];
         const auto noOp = f.tools->Invoke("edit_terrain_texture_slot", TerrainSlotLiveDetail::Request(f, replace, false));
-        QVERIFY2(noOp.value("ok").toBool(), qPrintable(Explain(noOp))); QVERIFY(!noOp.value("applied").toBool()); QCOMPARE(undo->count(), 3);
+        const auto events = [&](const QSignalSpy& spy) {
+            QStringList paths;
+            for (const auto& row : spy) if (!row.isEmpty())
+                paths << QDir(f.sandbox.path()).relativeFilePath(row[0].toString());
+            return paths.join(';');
+        };
+        QVERIFY2(noOp.value("ok").toBool(), qPrintable(Explain(noOp)
+            + " watched-files=" + events(watchedFiles) + " watched-directories=" + events(watchedDirectories)));
+        QVERIFY(!noOp.value("applied").toBool()); QCOMPARE(undo->count(), 3);
         second["expected_count"] = 3; second["rawcode"] = "Miss";
         QVERIFY(!f.tools->Invoke("edit_terrain_texture_slot", TerrainSlotLiveDetail::Request(f, second, true)).value("ok").toBool());
         QCOMPARE(undo->count(), 3); QCOMPARE(f.Fingerprint(), triggers);
@@ -99,7 +109,7 @@ void LiveEditorToolsTests::TextureSlotToolsCaptureActualResourcesAndKeepOriginal
         QVERIFY(WriteFile(f.source.filePath("map/source-drift.txt"), "changed after capture"));
         QVERIFY(!f.tools->Invoke("edit_terrain_texture_slot", driftRequest).value("ok").toBool()); QCOMPARE(undo->count(), 3);
     }
-}
+} catch (const std::exception& error) { QFAIL(error.what()); }
 
 void LiveEditorToolsTests::TextureSlotPreparationRejectsConcurrentRevision() {
     namespace P = AudastraTest::TextureSlot;
@@ -117,6 +127,7 @@ void LiveEditorToolsTests::TextureSlotPreparationRejectsConcurrentRevision() {
     const auto rejected = f.tools->Invoke("edit_terrain_texture_slot", request);
     QVERIFY(timerRan); QVERIFY(authorChanged); QCOMPARE(ErrorCode(reentered), QStringLiteral("LIVE_EDITOR_BUSY"));
     QVERIFY(!rejected.value("ok").toBool()); QCOMPARE(ErrorCode(rejected), QStringLiteral("TERRAIN_EDIT_STALE"));
+    QVERIFY2(Explain(rejected).contains(QStringLiteral("session_revision")), qPrintable(Explain(rejected)));
     QCOMPARE(session->Revision(), std::uint64_t{1}); QCOMPARE(f.project.mapDataUndoStack_->count(), 0);
     QCOMPARE(session->Snapshot().Settings()->mapName, std::string("concurrent-author-palette-edit"));
     QCOMPARE(P::Take(MapData::SerializeMapTerrain(*session->Terrain())), original);

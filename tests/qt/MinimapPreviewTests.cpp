@@ -88,6 +88,7 @@ private slots:
     void CurrentKeepsPixelsUntilReplacementAndClearsFailures();
     void UnsavedObjectColorUsesFrozenNativeProjection();
     void OwnedImportUsesFrozenPayloadAndRejectsDiskSource();
+    void AuthoredMarkersUseOneUndoStepAndRejectStaleRows();
 };
 
 void MinimapPreviewTests::SharedPixelsAndCliExport() try {
@@ -433,5 +434,34 @@ void MinimapPreviewTests::ViewKeepsFailureDetailsInDiagnostics() try {
         }
     QVERIFY(found);
 } catch (const std::exception& error) { QFAIL(error.what()); }
+void MinimapPreviewTests::AuthoredMarkersUseOneUndoStepAndRejectStaleRows() try {
+    F::Fixture fixture;
+    auto members = fixture.members;
+    const auto path = F::Take(WriteVerifiedArchive(fixture.root / "marker-undo.w3x", members)).path;
+    QtProject::EditorProject project;
+    Install(project, path, members);
+    const auto baseline = F::Take(project.QueryMinimapMarkers());
+    const Services::MinimapMarkerEdit add{Services::MinimapMarkerOperation::Add, 0, {1, {43, 72}, {5, 9, 11, 255}}};
+    auto* history = project.AssetUndoStack();
+    QVERIFY(history);
+    const auto originalCount = history->count();
+    const auto edited = project.EditMinimapMarkers(baseline.revision, std::span(&add, 1));
+    QVERIFY2(edited.Succeeded(), edited.diagnostics.empty() ? "" : edited.diagnostics.front().message.c_str());
+    QCOMPARE(history->count(), originalCount + 1);
+    const auto draft = F::Take(project.QueryMinimapMarkers());
+    QCOMPARE(draft.records.size(), baseline.records.size() + 1);
+    QVERIFY(draft.records.back() == add.value);
+    QVERIFY(!project.EditMinimapMarkers(baseline.revision, std::span(&add, 1)).Succeeded());
+    QCOMPARE(history->count(), originalCount + 1);
+    history->undo();
+    const auto undone = F::Take(project.QueryMinimapMarkers());
+    QVERIFY(undone.records == baseline.records);
+    QCOMPARE(undone.revision, baseline.revision);
+    history->redo();
+    const auto redone = F::Take(project.QueryMinimapMarkers());
+    QVERIFY(redone.records == draft.records);
+    QCOMPARE(redone.revision, draft.revision);
+} catch (const std::exception& error) { QFAIL(error.what()); }
+
 QTEST_MAIN(MinimapPreviewTests)
 #include "MinimapPreviewTests.moc"

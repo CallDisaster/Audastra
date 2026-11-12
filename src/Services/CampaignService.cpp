@@ -114,6 +114,9 @@ const std::filesystem::path& CampaignSession::SourcePath() const noexcept {
     static const std::filesystem::path empty;
     return archive_ ? archive_->SourcePath() : empty;
 }
+std::string_view CampaignSession::SourceSha256() const noexcept {
+    return archive_ ? std::string_view(archive_->SourceSha256()) : std::string_view{};
+}
 Status CampaignSession::Check(CampaignRevision expected) const {
     return expected == Revision() ? Status::Ok() : Fail("CAMPAIGN_REVISION_STALE", "战役文档或修订已变化，请重新查询后再编辑。");
 }
@@ -198,6 +201,9 @@ Status CampaignSession::UpdateImports(State& state, std::span<const std::string>
 
 Result<StableId> CampaignSession::Apply(CampaignRevision expected, const CampaignCommand& command) {
     const auto bound = Check(expected); if (!bound.Succeeded()) return Forward<StableId>(bound);
+    if (!command.ids.empty() && (command.id || command.ids.size() > 4096
+        || (command.operation != CampaignOperation::RemoveMap && command.operation != CampaignOperation::RemoveButton)))
+        return Forward<StableId>(Fail("CAMPAIGN_REMOVE_IDS", "批量移除需提供最多 4096 个身份，不能同时指定单项。"));
     try {
         State next = state_; StableId resultId = command.id;
         auto map = Find(next.info.maps, command.id);
@@ -229,10 +235,27 @@ Result<StableId> CampaignSession::Apply(CampaignRevision expected, const Campaig
             break;
         }
         case CampaignOperation::RemoveMap:
-            if (map == next.info.maps.end()) return Forward<StableId>(Fail("CAMPAIGN_MAP_MISSING", "章节身份不存在。"));
-            if (std::any_of(next.info.buttons.begin(), next.info.buttons.end(), [&](const auto& row) { return Key(row.mapPath) == Key(map->path); }))
-                return Forward<StableId>(Fail("CAMPAIGN_MAP_REFERENCED", "菜单仍引用此章节，请先删除或修改菜单按钮；脚本中的动态切图引用也须作者核对。"));
-            next.removals.insert(Key(map->path)); next.replacements.erase(Key(map->path)); next.info.maps.erase(map); break;
+        case CampaignOperation::RemoveButton: {
+            const auto ids = command.ids.empty() ? std::span<const StableId>(&command.id, 1) : std::span<const StableId>(command.ids);
+            const std::set<StableId> selected(ids.begin(), ids.end());
+            if (selected.size() != ids.size() || selected.contains(0))
+                return Forward<StableId>(Fail("CAMPAIGN_REMOVE_IDS", "批次包含重复或无效的身份。"));
+            const auto marked = [&](const auto& row) { return selected.contains(row.id); };
+            if (command.operation == CampaignOperation::RemoveButton) {
+                if (std::erase_if(next.info.buttons, marked) != selected.size())
+                    return Forward<StableId>(Fail("CAMPAIGN_BUTTON_MISSING", "批次中的菜单身份不存在。"));
+                break;
+            }
+            std::set<std::string> paths;
+            for (const auto& entry : next.info.maps) if (marked(entry)) paths.insert(Key(entry.path));
+            if (paths.size() != selected.size())
+                return Forward<StableId>(Fail("CAMPAIGN_MAP_MISSING", "批次中的章节身份不存在。"));
+            if (std::any_of(next.info.buttons.begin(), next.info.buttons.end(), [&](const auto& row) { return paths.contains(Key(row.mapPath)); }))
+                return Forward<StableId>(Fail("CAMPAIGN_MAP_REFERENCED", "菜单仍引用所选章节，请先删除或修改菜单按钮；脚本中的动态切图引用也须作者核对。"));
+            for (const auto& path : paths) { next.removals.insert(path); next.replacements.erase(path); }
+            std::erase_if(next.info.maps, marked);
+            break;
+        }
         case CampaignOperation::MoveMap: status = Move(next.info.maps, command.id, command.position); break;
         case CampaignOperation::AddButton: {
             auto entry = command.button; entry.id = nextId_; resultId = entry.id; next.info.buttons.push_back(std::move(entry)); break;
@@ -240,9 +263,6 @@ Result<StableId> CampaignSession::Apply(CampaignRevision expected, const Campaig
         case CampaignOperation::UpdateButton:
             if (button == next.info.buttons.end()) return Forward<StableId>(Fail("CAMPAIGN_BUTTON_MISSING", "菜单身份不存在。"));
             *button = command.button; button->id = command.id; break;
-        case CampaignOperation::RemoveButton:
-            if (button == next.info.buttons.end()) return Forward<StableId>(Fail("CAMPAIGN_BUTTON_MISSING", "菜单身份不存在。"));
-            next.info.buttons.erase(button); break;
         case CampaignOperation::MoveButton: status = Move(next.info.buttons, command.id, command.position); break;
         case CampaignOperation::ReplaceSharedData:
         case CampaignOperation::ImportResource:

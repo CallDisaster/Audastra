@@ -642,6 +642,9 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const bool triggerRequest = request.triggerEdits.has_value() || request.triggerTransaction != nullptr;
         const bool objectRequest = !request.objectTransactions.empty();
         const bool auxiliaryRequest = request.auxiliaryTransaction != nullptr;
+        const bool markerRequest = !request.minimapMarkerEdits.empty();
+        if (markerRequest != !request.minimapMarkerRevision.empty())
+            return Fail("SAVE_MINIMAP_MARKER_REQUEST", "图标编辑需要同时提供操作和查询所得修订。");
         const bool terrainCompanion = terrainRequest && (fieldRequest || objectRequest)
             && !placementRequest && !triggerRequest && !auxiliaryRequest && !customRequest;
         const bool terrainUnitPlacementCompanion = terrainRequest && placementRequest
@@ -658,10 +661,11 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
             }))
             return Fail("SAVE_TERRAIN_FIELD_SCOPE_INVALID", "地形笔划只能与地图名称、作者、说明和建议人数的字段操作合并。");
         const bool shadowOnly = request.rebuildTerrainShadow && !fieldRequest && !placementRequest
-            && !terrainRequest && !triggerRequest && !objectRequest && !auxiliaryRequest && !customRequest;
+            && !terrainRequest && !triggerRequest && !objectRequest && !auxiliaryRequest && !customRequest && !markerRequest;
         const int domainCount = static_cast<int>(fieldRequest) + static_cast<int>(placementRequest)
             + static_cast<int>(terrainRequest) + static_cast<int>(triggerRequest) + static_cast<int>(objectRequest)
-            + static_cast<int>(auxiliaryRequest) + static_cast<int>(customRequest) - static_cast<int>(objectRequest && request.triggerTransaction != nullptr);
+            + static_cast<int>(auxiliaryRequest) + static_cast<int>(customRequest) + static_cast<int>(markerRequest)
+            - static_cast<int>(objectRequest && request.triggerTransaction != nullptr);
         const bool runtimeOnly = domainCount == 0 && request.runtime.decision.has_value() && !request.rebuildTerrainShadow;
         if (request.minimapChoice != TerrainMinimapSaveChoice::Automatic
             && request.minimapChoice != TerrainMinimapSaveChoice::Preserve
@@ -691,7 +695,7 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         const auto bounded = shadowOnly ? Status::Ok() : fieldRequest ? ValidateFieldOperations(request.fieldEdits)
             : placementRequest ? ValidatePlacementOperation(request.placementEdit)
             : request.triggerEdits ? Trigger::ValidateTriggerEditBatch(*request.triggerEdits)
-            : (request.triggerTransaction || objectRequest || auxiliaryRequest || runtimeOnly || customRequest) ? Status::Ok()
+            : (request.triggerTransaction || objectRequest || auxiliaryRequest || runtimeOnly || customRequest || markerRequest) ? Status::Ok()
                                          : ValidateStrokes(request.terrainStrokes);
         if (!bounded.Succeeded()) return Forward(bounded.diagnostics);
         if (terrainCompanion || terrainUnitPlacementCompanion) {
@@ -784,7 +788,13 @@ Result<MapEditSaveReceipt> SaveMapEditCandidate(
         inputTiming.Finish();
         Detail::SaveProgressStage editTiming(progress, "prepare-edit");
         std::optional<MapCustomSettingsValidation> customValidation;
-        if (customRequest) {
+        if (markerRequest) {
+            auto state = MinimapMarkerEdits::Read(source);
+            if (!state.Succeeded() || !state.value) return Forward(std::move(state.diagnostics));
+            auto staged = state.value->Apply(request.minimapMarkerRevision, request.minimapMarkerEdits);
+            if (!staged.Succeeded() || !staged.value) return Forward(std::move(staged.diagnostics));
+            replacements.push_back({kMinimapMarkerProvenance, std::move(*staged.value)});
+        } else if (customRequest) {
             ObjectCatalogSources inputs; inputs.archive = &source; inputs.gameRoot = request.gameRoot;
             auto catalog = ResolveEditCatalog(request.uiRoot.empty() ? request.toolRoot : request.uiRoot, request.effectiveLayers);
             if (!catalog.Succeeded()) return Forward(catalog.diagnostics);

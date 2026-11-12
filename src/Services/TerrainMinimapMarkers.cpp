@@ -582,8 +582,8 @@ Status AllocationFailure() {
     return Status::Failure(kSubsystem, "TERRAIN_MMP_ALLOCATION", "MMP捕获分配失败，未发布部分记录或保存资格。");
 }
 void RequireInstalled(const MapArchiveSession& source, std::span<const MemberReplacement> replacements,
-    std::span<const std::string> removals, std::span<const std::byte> expected) {
-    const auto name = Canonical("war3map.mmp");
+    std::span<const std::string> removals, std::string_view memberName, std::span<const std::byte> expected) {
+    const auto name = Canonical(memberName);
     for (const auto& removal : removals) {
         const auto path = Resources::CanonicalImportPath(removal);
         if (path.Succeeded() && path.value && *path.value == name)
@@ -620,15 +620,46 @@ Result<std::shared_ptr<const TerrainMinimapMarkers>> TerrainMinimapMarkers::Capt
     catch (const std::length_error&) { Result<Output> result; result.diagnostics = AllocationFailure().diagnostics; return result; }
 }
 
+Result<std::shared_ptr<const TerrainMinimapMarkers>> TerrainMinimapMarkers::Compose(
+    const MapArchiveSession& source, MinimapMarkerEdits edits,
+    const std::shared_ptr<const TerrainMinimapMarkers>& generated) {
+    using Output = std::shared_ptr<const TerrainMinimapMarkers>;
+    try {
+        if (generated && (generated->sourceSha256_ != source.SourceSha256() || generated->authored_))
+            Fail("TERRAIN_MMP_SOURCE_STALE", "不能用其它来源或已合成图标作为生成输入。");
+        const auto raw = generated ? std::span<const std::byte>(generated->bytes_) : std::span<const std::byte>{};
+        auto result = Take(edits.Project(raw));
+        auto owner = std::shared_ptr<TerrainMinimapMarkers>(new TerrainMinimapMarkers);
+        owner->sourceSha256_ = source.SourceSha256();
+        if (generated) {
+            owner->gameRoot_ = generated->gameRoot_;
+            owner->limits_ = generated->limits_;
+            owner->inputs_ = generated->inputs_;
+        }
+        owner->verifyGeneration_ = static_cast<bool>(generated);
+        owner->authored_.emplace(std::move(edits));
+        owner->bytes_ = std::move(result.markers);
+        owner->provenance_ = std::move(result.provenance);
+        owner->markerCount_ = result.count;
+        return Result<Output>::Success(std::move(owner));
+    } catch (const Failure& failure) { return {{}, failure.diagnostics}; }
+    catch (const std::bad_alloc&) { return {{}, AllocationFailure().diagnostics}; }
+}
+
 Status TerrainMinimapMarkers::VerifyFrozenOutput(const MapArchiveSession& source,
     std::span<const MemberReplacement> replacements, std::span<const std::string> removals) const {
     try {
         if (source.SourceSha256() != sourceSha256_)
             Fail("TERRAIN_MMP_SOURCE_STALE", "MMP源归档SHA已变化。");
-        RequireInstalled(source, replacements, removals, bytes_);
-        const auto current = CaptureMarkers(source, gameRoot_, replacements, removals, limits_);
-        if (current.dependencies != inputs_ || current.bytes != bytes_)
-            Fail("TERRAIN_MMP_DEPENDENCY_STALE", "MMP最终来源、游戏winner或正文与生成时不同。");
+        RequireInstalled(source, replacements, removals, "war3map.mmp", bytes_);
+        if (authored_) RequireInstalled(source, replacements, removals, kMinimapMarkerProvenance, provenance_);
+        if (verifyGeneration_) {
+            const auto current = CaptureMarkers(source, gameRoot_, replacements, removals, limits_);
+            const auto expected = authored_ ? Take(authored_->Project(current.bytes)) :
+                MinimapMarkerProjection{current.bytes, {}, current.count};
+            if (current.dependencies != inputs_ || expected.markers != bytes_ || expected.provenance != provenance_)
+                Fail("TERRAIN_MMP_DEPENDENCY_STALE", "MMP最终来源、游戏winner或正文与生成时不同。");
+        }
         return Status::Ok();
     } catch (const Failure& failure) { return Failed(failure.diagnostics); }
     catch (const std::bad_alloc&) { return AllocationFailure(); }
@@ -637,15 +668,24 @@ Status TerrainMinimapMarkers::VerifyFrozenOutput(const MapArchiveSession& source
 
 Status TerrainMinimapMarkers::VerifyReadback(const MapArchiveSession& saved) const {
     try {
-        const std::vector<std::string> names{"war3map.mmp"};
+        std::vector<std::string> names{"war3map.mmp"};
+        if (authored_) names.emplace_back(kMinimapMarkerProvenance);
         ArchiveExactMemberLimits limits;
-        limits.memberCount = 1; limits.memberBytes = limits.totalBytes = limits_.markers.maxBytes;
+        limits.memberCount = names.size();
+        limits.memberBytes = std::max(limits_.markers.maxBytes, provenance_.size());
+        limits.totalBytes = limits_.markers.maxBytes + provenance_.size();
         const auto members = Take(saved.CaptureExactMembers(names, limits));
         if (!members[0].present || members[0].bytes != bytes_)
             Fail("TERRAIN_MMP_READBACK_MISMATCH", "真实回读MMP缺失或正文不同。");
-        const auto current = CaptureMarkers(saved, gameRoot_, {}, {}, limits_);
-        if (current.dependencies != inputs_ || current.bytes != bytes_)
-            Fail("TERRAIN_MMP_READBACK_STALE", "真实回读MMP的依赖正文或游戏winner不同。");
+        if (authored_ && (!members[1].present || members[1].bytes != provenance_))
+            Fail("TERRAIN_MMP_READBACK_MISMATCH", "真实回读图标归属缺失或正文不同。");
+        if (verifyGeneration_) {
+            const auto current = CaptureMarkers(saved, gameRoot_, {}, {}, limits_);
+            const auto expected = authored_ ? Take(authored_->Project(current.bytes)) :
+                MinimapMarkerProjection{current.bytes, {}, current.count};
+            if (current.dependencies != inputs_ || expected.markers != bytes_ || expected.provenance != provenance_)
+                Fail("TERRAIN_MMP_READBACK_STALE", "真实回读MMP的依赖正文或游戏winner不同。");
+        }
         return Status::Ok();
     } catch (const Failure& failure) { return Failed(failure.diagnostics); }
     catch (const std::bad_alloc&) { return AllocationFailure(); }

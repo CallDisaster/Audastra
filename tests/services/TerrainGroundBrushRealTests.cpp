@@ -322,7 +322,7 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
         if (mixed) markerInputs.push_back({"war3map.w3u", expectedUnits});
         if (renamed) markerInputs.push_back({"war3map.w3i", expectedSettings});
         const auto expectedMarkerOwner = Take(TerrainMinimapMarkers::Capture(source, game, markerInputs));
-        Require(expectedMarkerOwner->Bytes() != markerBytes, "normal save must replace synthetic stale marker sentinels");
+        Require(expectedMarkerOwner->Bytes() != markerBytes, "native candidate differs from unclassified original markers");
         if (mixed || renamed) {
             const auto reject = [&](MapEditSaveRequest bad, std::string_view code, const char* filename) {
                 bad.targetCandidate = scenario / filename;
@@ -392,7 +392,7 @@ void CheckRealGroundBrushSave(const MapArchiveSession& original,
             if (renamed && (name == "war3map.w3i" || name == "war3map.wts")) continue;
             Require(Take(readback.ReadMember(member.name)) == member.data, "ground save preserves every unrelated member");
         }
-        verifyDerived(readback, "saved", cliff ? "cliff" : "texture", expectedMarkerOwner->Bytes());
+        verifyDerived(readback, "saved", cliff ? "cliff" : "texture", markerBytes);
         Require(expectedMarkerOwner->VerifyReadback(readback).Succeeded(), "actual final marker dependencies survive public save");
         Require(Take(Sha256File(source.SourcePath())) == source.SourceSha256(), "ground save leaves source untouched");
         std::cout << "playable_ground_save_passed kind=" << (cliff ? "cliff" : "texture")

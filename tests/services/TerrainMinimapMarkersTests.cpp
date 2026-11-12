@@ -403,7 +403,10 @@ void OrdinarySaveRebuildsMarkersWithoutMapBlpOrTerrainPlan() {
 void AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits() {
     Fixture fixture;
     const auto original = fixture.Capture()->Bytes();
+    const auto state = Take(MinimapMarkerEdits::Read(*fixture.source));
+    const auto projection = Take(state.Project(original));
     fixture.members.push_back({"war3map.mmp", original});
+    fixture.members.push_back({kMinimapMarkerProvenance, projection.provenance});
     fixture.units.units.push_back(Unit("Who?", 15, 0, 0, 9)); fixture.UpdateUnits();
     MapSaveTask task; fixture.Freeze(task);
     const auto native = UnitOverride(NativeValueType::Int32, std::int32_t{0});
@@ -420,6 +423,54 @@ void AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits() {
     Require(Take(readback.ReadMember("war3map.w3u")) == native, "保留图标不能丢掉本次真实物编修改");
     Require(Take(readback.ReadMember("war3mapMap.tga")) == fixture.Member("war3mapMap.tga"), "能力不足也保留作者图像");
 }
+void AuthorMarkersKeepIdentityThroughRegenerationAndLegacySave() {
+    Fixture fixture;
+    MapSaveTask seed;
+    fixture.Freeze(seed, "generated-base.w3x"); fixture.PrepareOrdinary(seed); MapSaveService::Run(seed);
+    if (!seed.succeeded) Check({seed.diagnostics});
+    fixture.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(seed.target)));
+    auto state = Take(MinimapMarkerEdits::Read(*fixture.source));
+    const auto before = Take(state.View());
+    Require(!before.legacy && before.records.size() == 4 && before.origins.front() == MinimapMarkerOrigin::Generated,
+        "generated baseline has exact persisted provenance");
+    const MinimapMarkerRecord author{1, {12, 31}, {1, 2, 3, 255}};
+    const std::array edits{MinimapMarkerEdit{MinimapMarkerOperation::Remove, 0, {}},
+        MinimapMarkerEdit{MinimapMarkerOperation::Add, 0, author}};
+    Rejected(state.Apply(std::string(64, '0'), edits), "MINIMAP_MARKER_STALE");
+    auto staged = Take(state.Apply(before.revision, edits));
+    auto pending = Take(MinimapMarkerEdits::Read(*fixture.source, staged));
+    const auto view = Take(pending.View());
+    Require(view.records.size() == 4 && view.records.back() == author && view.origins.back() == MinimapMarkerOrigin::Author,
+        "remove generated row and add one authored row");
+    const std::array move{MinimapMarkerEdit{MinimapMarkerOperation::Move, 3, {0, {67, 89}, {}}}};
+    staged = Take(pending.Apply(view.revision, move));
+    auto expected = author; expected.positionRaw = {67, 89};
+    MapSaveTask save;
+    fixture.Freeze(save, "author-first.w3x"); fixture.PrepareOrdinary(save);
+    save.replacements.push_back({kMinimapMarkerProvenance, staged}); MapSaveService::Run(save);
+    if (!save.succeeded) Check({save.diagnostics});
+    fixture.source = std::make_unique<MapArchiveSession>(Take(MapArchiveSession::Open(save.target)));
+    auto saved = Take(Take(MinimapMarkerEdits::Read(*fixture.source)).View());
+    Require(saved.records.size() == 4 && saved.records.front() == before.records[1] && saved.records.back() == expected,
+        "normal save regenerates the prefix without restoring deleted row; author position and color remain");
+    MapSaveTask next;
+    fixture.Freeze(next, "author-second.w3x"); fixture.PrepareOrdinary(next); MapSaveService::Run(next);
+    if (!next.succeeded) Check({next.diagnostics});
+    const auto roundtrip = Take(MapArchiveSession::OpenMinimapAudit(next.target));
+    Require(Take(Take(MinimapMarkerEdits::Read(roundtrip)).View()).records == saved.records,
+        "second automatic save retains explicit edits");
+
+    const auto legacyBytes = Take(SerializeMapMinimapMarkers({0, {{99, {-12, 300}, {3, 2, 1, 0}}}}));
+    fixture.members.push_back({"war3map.mmp", legacyBytes}); fixture.Open();
+    const auto legacy = Take(Take(MinimapMarkerEdits::Read(*fixture.source)).View());
+    Require(legacy.legacy && legacy.origins.front() == MinimapMarkerOrigin::Legacy, "unknown legacy row remains inspectable");
+    MapSaveTask old;
+    fixture.Freeze(old, "legacy-preserved.w3x"); fixture.PrepareOrdinary(old); MapSaveService::Run(old);
+    if (!old.succeeded) Check({old.diagnostics});
+    Code(old.diagnostics, "TERRAIN_MMP_PRESERVED_LEGACY");
+    Require(Take(Take(MapArchiveSession::Open(old.target)).ReadMember("war3map.mmp")) == legacyBytes,
+        "unclassified legacy rows are not replaced by native regeneration");
+}
 void PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate() {
     Fixture fixture; auto edits = fixture.TerrainSession();
     const auto baseline = Take(TerrainSavePlan::Prepare(*fixture.source, *edits)); Check(baseline.SaveGate());
@@ -430,6 +481,13 @@ void PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate() {
         "真实capture的canonical W3E允许把MMP安装进同一地形计划");
     Require(plan->Members()[3].outputBytes == task.minimapMarkers->Bytes().size(), "计划记录完整MMP输出大小");
     Check(plan->VerifyForSave(*edits, task.sourceSha256, task.replacements));
+    auto tampered = task.replacements;
+    auto sidecar = std::find_if(tampered.begin(), tampered.end(), [](const auto& entry) { return entry.name == kMinimapMarkerProvenance; });
+    Require(sidecar != tampered.end() && !sidecar->data.empty(), "terrain plan owns the actual marker provenance bytes");
+    sidecar->data.back() ^= std::byte{1};
+    Rejected(plan->VerifyForSave(*edits, task.sourceSha256, tampered), "TERRAIN_SAVE_PLAN_MARKER_PROVENANCE_MISMATCH");
+    tampered.erase(sidecar);
+    Rejected(plan->VerifyForSave(*edits, task.sourceSha256, tampered), "TERRAIN_SAVE_PLAN_MARKER_PROVENANCE_MISMATCH");
     task.beforePublish = [&] { return plan->VerifyFrozenOutput(task.sourceSha256, task.replacements, task.removals); };
     MapSaveService::Run(task);
     if (!task.succeeded) Check({task.diagnostics});
@@ -496,7 +554,8 @@ void AdapterConflictsAndFrozenSourceRemainHardFailures() {
     Check(PrepareTerrainMinimapMarkers(twice, fixture.game, nullptr, noPlan));
     const auto bytes = twice.minimapMarkers->Bytes();
     Rejected(PrepareTerrainMinimapMarkers(twice, fixture.game, nullptr, noPlan), "TERRAIN_MMP_FINAL_CONFLICT");
-    Require(twice.replacements.size() == 1 && twice.replacements.front().data == bytes, "重复准备不能覆盖第一次完整输出");
+    Require(twice.replacements.size() == 2 && twice.replacements.front().data == bytes &&
+        twice.replacements.back().data == twice.minimapMarkers->ProvenanceBytes(), "重复准备不能覆盖第一次完整输出");
     MapSaveTask stale; fixture.Freeze(stale); stale.sourceSha256[0] ^= 1;
     Rejected(PrepareTerrainMinimapMarkers(stale, fixture.game, nullptr, noPlan), "TERRAIN_MMP_SOURCE_STALE");
     Require(!stale.minimapMarkers && stale.replacements.empty(), "错误来源身份绝不能降级为保留警告");
@@ -584,6 +643,7 @@ int main() {
         FinalOverlayAndDrift(); RealMetadataAndAbilityInheritance();
         MissingSourcesBudgetsAndGameWinner(); EmptyUnitLayerDoesNotInventSources();
         OrdinarySaveRebuildsMarkersWithoutMapBlpOrTerrainPlan(); AutomaticUnsupportedKeepsOriginalMarkersAndSavesOtherEdits();
+        AuthorMarkersKeepIdentityThroughRegenerationAndLegacySave();
         PlanAdmissionUsesCanonicalTerrainAndKeepsRevisionGate(); PlanBudgetPreservesOriginalOutputWithoutPartialInstall();
         AdapterConflictsAndFrozenSourceRemainHardFailures(); BeforePublishCannotChangeMarkersOrConsumedDependencies();
         MinimapMarkerObjectCoverageCases();

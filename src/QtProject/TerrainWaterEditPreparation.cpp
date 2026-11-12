@@ -166,15 +166,23 @@ Result<TerrainWaterEditRequest> CaptureTerrainWaterEditRequest(const EditorProje
 
 bool TerrainWaterEditRequestCurrent(const EditorProject& project, const TerrainWaterEditRequest& request,
     bool enforceWaterLimits) {
-    return project.mapEdits_ && !project.HasPendingAssetEdits()
-        && !project.sourceChangeSuspected_ && !project.sourceChangeConfirmed_
-        && request.enforceWaterLimits == enforceWaterLimits
-        && project.mapEdits_->SessionIdentity() == request.sessionIdentity
-        && project.mapEdits_->Revision() == request.revision
-        && project.mapEdits_->TerrainSourceRevision() == request.terrainSourceRevision
-        && project.mapEdits_->Terrain() == request.terrain
-        && project.editRevision_.Generation() == request.projectGeneration
-        && project.editRevision_.Revision() == request.projectRevision && SameSource(project, request);
+    return *TerrainWaterEditRequestMismatch(project, request, enforceWaterLimits) == '\0';
+}
+
+const char* TerrainWaterEditRequestMismatch(const EditorProject& project, const TerrainWaterEditRequest& request,
+    bool enforceWaterLimits) {
+    if (!project.mapEdits_) return "missing_session";
+    if (project.HasPendingAssetEdits()) return "pending_assets";
+    if (project.sourceChangeSuspected_) return "source_suspected";
+    if (project.sourceChangeConfirmed_) return "source_confirmed";
+    if (request.enforceWaterLimits != enforceWaterLimits) return "water_limits";
+    if (project.mapEdits_->SessionIdentity() != request.sessionIdentity) return "session_identity";
+    if (project.mapEdits_->Revision() != request.revision) return "session_revision";
+    if (project.mapEdits_->TerrainSourceRevision() != request.terrainSourceRevision) return "terrain_source_revision";
+    if (project.mapEdits_->Terrain() != request.terrain) return "terrain_snapshot";
+    if (project.editRevision_.Generation() != request.projectGeneration) return "project_generation";
+    if (project.editRevision_.Revision() != request.projectRevision) return "project_revision";
+    return SameSource(project, request) ? "" : "source_binding";
 }
 
 Result<TerrainWaterEditCapture> LoadTerrainWaterEditResources(std::shared_ptr<const TerrainWaterEditRequest> request,

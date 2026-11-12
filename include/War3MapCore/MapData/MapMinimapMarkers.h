@@ -3,6 +3,7 @@
 #include "War3MapCore/Types.h"
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -21,6 +22,7 @@ struct MinimapMarkerRecord {
     std::int32_t typeRaw = 0;
     std::array<std::int32_t, 2> positionRaw{};
     std::array<std::uint8_t, 4> colorBgra{};
+    [[nodiscard]] auto operator<=>(const MinimapMarkerRecord&) const = default;
 };
 
 struct MinimapMarkersSnapshot {

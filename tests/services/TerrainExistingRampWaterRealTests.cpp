@@ -134,7 +134,7 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
             std::array<MemberReplacement, 1>{{{"war3map.wpm", oldPathing}}})).path));
         const auto expectedMarkers = Take(TerrainMinimapMarkers::Capture(source, game,
             std::array<MemberReplacement, 1>{{{"war3map.w3e", afterBytes}}}));
-        Require(expectedMarkers->Bytes() != staleMarkerBytes, "ordinary save must replace the deliberately stale MMP seed");
+        Require(expectedMarkers->Bytes() != staleMarkerBytes, "native candidate differs from unclassified original markers");
         MapEditSaveRequest request;
         request.sourceMap = source.SourcePath(); request.targetCandidate = scenario / "saved.w3x";
         request.toolRoot = tool; request.gameRoot = game; request.expectedSourceSha256 = source.SourceSha256();
@@ -152,9 +152,8 @@ void CheckRealExistingRampWaterSave(const MapArchiveSession& original,
             && std::count(shadow.intensities.begin(), shadow.intensities.end(), std::uint8_t{255}) == 37,
             "public water save preserves the complete asymmetric nonzero prior SHD");
         const auto markers = Take(ParseMapMinimapMarkers(actualMarkers));
-        Require(actualMarkers == expectedMarkers->Bytes() && markers.version == 0
-            && markers.records.size() == expectedMarkers->MarkerCount() && expectedMarkers->VerifyReadback(readback).Succeeded(),
-            "actual MMP is regenerated from final dependencies and independently parsed and verified after archive reopening");
+        Require(actualMarkers == staleMarkerBytes && markers.version == 0,
+            "an unclassified original MMP is preserved even when the terrain is edited");
         Require(saved.scriptPreserved && native.VerifyReadback(readback, kBytes).Succeeded()
             && resources.VerifyReadback(source, kBytes).Succeeded(), "actual rules and playable script keep their source identities");
         for (const auto& member : source.Members()) {
