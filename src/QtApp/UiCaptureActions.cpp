@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "AgentWindow.h"
 #include "Shell/StartupPage.h"
 #include "Widgets/PopoverSurface.h"
 
@@ -55,6 +56,14 @@ bool MainWindow::CaptureUi(const std::filesystem::path& directory, QStringList& 
     if (startupMode_ == StartupMode::Normal || QApplication::platformName() != QStringLiteral("offscreen")) {
         log << QStringLiteral("capture-ui=requires-nonpersistent-offscreen-probe"); return false;
     }
+    const bool captureTheme = arguments.contains(QStringLiteral("--capture-ui-theme"));
+    if (captureTheme) {
+        const auto theme = value(QStringLiteral("--capture-ui-theme"));
+        if (!theme || !themeManager_ || !War3Map::UiKit::ThemeManager::ThemeIds().contains(*theme)) {
+            log << QStringLiteral("capture-ui=invalid-theme"); return false;
+        }
+        themeManager_->ApplyTheme(*theme);
+    }
     const double requestedPixels = std::ceil(requested.width() * devicePixelRatioF())
         * std::ceil(requested.height() * devicePixelRatioF());
     if (!std::isfinite(requestedPixels) || requestedPixels > 16 * 1024 * 1024) {
@@ -101,6 +110,7 @@ bool MainWindow::CaptureUi(const std::filesystem::path& directory, QStringList& 
         const bool pixelsMatch = pixmap.size() == QSize(qRound(subject.width() * ratio), qRound(subject.height() * ratio))
             && std::abs(pixmap.devicePixelRatioF() - ratio) < 1e-6 && pngSize == pixmap.size();
         QJsonObject receipt{{"file", fileName}, {"kind", kind}, {"capture_method", "QWidget::grab"},
+            {"theme", themeManager_ ? themeManager_->CurrentThemeId() : QString{}},
             {"captured_at_utc", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
             {"qt_platform", QApplication::platformName()}, {"requested_window_logical", dimensions(requested)},
             {"actual_window_logical", dimensions(size())}, {"window_geometry_logical", geometry(this->geometry())},
@@ -147,6 +157,34 @@ bool MainWindow::CaptureUi(const std::filesystem::path& directory, QStringList& 
             settle(500);
             if (!formCaptured) { log << QStringLiteral("capture-ui=variables-properties-unavailable"); ok = false; }
         }
+    }
+    if (captureTheme) {
+        const auto captureVisible = [&](QWidget* subject, const QString& name) {
+            if (subject && subject->isVisible()) capture(*subject, name, QStringLiteral("theme_review"));
+            else { log << QStringLiteral("capture-ui=%1-unavailable").arg(name); ok = false; }
+        };
+        if (!startup) {
+            // 使用空的离屏助手配置；不加载用户账号、对话或连接器配置。
+            SetupAgentWorkspace(false);
+            ShowAgentWindow();
+            settle(400);
+            captureVisible(AgentWorkspaceVisible() ? this : nullptr, QStringLiteral("agent-workspace"));
+            PresentAgentWorkspace(static_cast<int>(War3Map::Agent::AgentWindow::PresentationMode::Sidebar));
+            settle(300);
+            auto* sidebar = findChild<QWidget*>(QStringLiteral("agentWorkspaceDock"));
+            captureVisible(sidebar && sidebar->isVisible() ? this : nullptr, QStringLiteral("agent-sidebar"));
+            HideAgentWorkspace();
+        }
+        ShowHelp();
+        settle(250);
+        auto* help = findChild<QWidget*>(QStringLiteral("helpDialog"));
+        captureVisible(help, QStringLiteral("help"));
+        if (help) help->close();
+        ShowCommandPalette(QStringLiteral(">"));
+        settle(350);
+        auto* palette = findChild<QDialog*>(QStringLiteral("commandPalette"));
+        captureVisible(palette, QStringLiteral("command-palette"));
+        if (palette) palette->reject();
     }
     ShowAbout();
     settle(200);

@@ -9,7 +9,7 @@ QWidget {
 }
 QWidget:disabled { color: @disabled; }
 QMainWindow, QDialog, QStackedWidget#shellMain,
-QWidget#startupPage, QWidget#triggerWorkspace, QWidget#workspacePane, QWidget#triggerLogicPane,
+QWidget#startupPage, QWidget#triggerWorkspace, QWidget#triggerLogicPane,
 QWidget#objectWorkspace, QWidget#objectInspector, QWidget#objectManager,
 QWidget#assetsWorkspace, QWidget#variablesWorkspace, QWidget#mapSettingsWorkspace,
 QWidget#soundsWorkspace, QWidget#worldModule,
@@ -156,19 +156,6 @@ QPushButton#quietButton:hover { color: @text; background: @hover; border-color: 
 QPushButton#quietButton:focus { border-color: @accent; }
 QPushButton#quietButton:disabled { color: @disabled; background: transparent; border-color: transparent; }
 
-/* 侧栏与导航项 */
-QFrame#sidebar { background: @panel; border: 0; border-right: 1px solid @line; }
-QPushButton[navigationItem="true"] {
-    text-align: left; color: @muted; background: transparent;
-    border: 1px solid transparent; border-left: 2px solid transparent; border-radius: @radiusMd;
-    padding: 6px 10px 6px 9px; min-height: 18px; font-size: @fontSmall;
-}
-QPushButton[navigationItem="true"]:hover { color: @text; background: @hover; }
-/* 选中导航项：薄荷色调底 + 左侧强调条。 */
-QPushButton[navigationItem="true"]:checked { color: @text; background: @selection; border-left-color: @accent; font-weight: @weightMedium; }
-QPushButton[navigationItem="true"]:focus { border-color: @accent; }
-QPushButton[navigationItem="true"]:disabled { color: @disabled; background: transparent; border-color: transparent; font-weight: @weightRegular; }
-
 /* 输入控件与下拉框：统一 @radiusMd 圆角，去掉下拉箭头左侧竖向割裂线 */
 QLineEdit, QSpinBox, QDoubleSpinBox, QDateTimeEdit {
     color: @text; background: @bg; border: 1px solid @line;
@@ -217,7 +204,6 @@ QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover, QDateTimeEdit::up-bu
 QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover, QDateTimeEdit::down-button:hover { background: @hover; border-radius: @radiusXs; }
 QTextEdit, QPlainTextEdit, QTextBrowser { color: @text; background: @bg; border: 1px solid @line; border-radius: @radiusMd; padding: 7px; }
 QTextEdit:focus, QPlainTextEdit:focus { border-color: @accent; }
-QTextBrowser#triggerParamEditor { background: @panel; border: 0; border-top: 1px solid @line; padding: 10px 12px; }
 QTextBrowser#definitionDetails { background: @panel; border: 0; border-left: 1px solid @line; padding: 12px; }
 
 /* 树、表、列表：去网格化、中性石墨选中底色、白色清晰文字 */
@@ -564,7 +550,6 @@ QFrame#edgeDropZone { background: @accentSoft; border: 1px dashed @accentLine; b
 QFrame#edgeDropZone[active="true"] { background: @selection; border: 1px solid @accent; }
 QFrame#edgeDropZone QLabel { color: @accent; background: transparent; font-size: @fontSmall; }
 QWidget#floatStrip { background: @panel; border: 0; border-bottom: 1px solid @line; }
-QLabel#floatStripHint { color: @dim; font-size: @fontTiny; }
 QToolButton#floatStripButton { background: transparent; border: 1px solid transparent; border-radius: @radiusSmall; padding: 3px; }
 QToolButton#floatStripButton:hover { background: @hover; }
 
@@ -578,8 +563,6 @@ QToolButton#worldDockTitleButton {
     color: @muted; background: transparent; border: 0; border-radius: @radiusXs; padding: 2px;
 }
 QToolButton#worldDockTitleButton:hover { color: @text; background: @hover; }
-QSplitter#worldSplitter::handle { background: @line; width: 1px; }
-QSplitter#worldSplitter::handle:hover { background: @accent; }
 
 QFrame#worldToolbar { background: @panel; border: 0; border-bottom: 1px solid @line; }
 QFrame#worldToolbarDivider { background: @line; border: 0; }
@@ -611,7 +594,6 @@ QPushButton[worldToggle="true"]:focus { border-color: @accent; }
 QFrame#worldPanelHeader { background: transparent; border: 0; }
 QLabel#worldPanelTitle { color: @text; font-size: 13px; font-weight: @weightMedium; }
 QLabel#worldPanelSubtitle { color: @muted; font-size: @fontSmall; }
-QLabel#worldPanelHint { color: @dim; font-size: @fontSmall; }
 QLabel#worldSectionLabel { color: @muted; font-size: @fontTiny; font-weight: @weightMedium; padding-top: 4px; }
 QLabel#worldFieldLabel { color: @muted; font-size: @fontSmall; }
 

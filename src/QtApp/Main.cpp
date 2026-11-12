@@ -84,7 +84,8 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         || captureUiOption + 1 >= arguments.size() || arguments[captureUiOption + 1].isEmpty()
         || arguments[captureUiOption + 1].startsWith(QStringLiteral("--")))) return 1;
     if (!captureUiRequested && (arguments.contains(QStringLiteral("--capture-ui-size"))
-        || arguments.contains(QStringLiteral("--capture-ui-expected-dpr")))) return 1;
+        || arguments.contains(QStringLiteral("--capture-ui-expected-dpr"))
+        || arguments.contains(QStringLiteral("--capture-ui-theme")))) return 1;
     const bool requireLoadedWorkspace =
         arguments.contains(QStringLiteral("--require-loaded-workspace"));
     const bool runtimeSaveProbe = arguments.contains(QStringLiteral("--probe-runtime-save"));
