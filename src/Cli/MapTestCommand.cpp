@@ -131,8 +131,6 @@ int RunMapTest(int argc, wchar_t** argv) {
         + L"-" + std::to_wstring(GetTickCount64()));
     std::error_code error;
     if (!std::filesystem::create_directory(run, error) || error) { std::cerr << "cannot create test directory\n"; return 1; }
-    auto workspace = Services::FreezeMapTestWorkspace(run);
-    if (!workspace.Succeeded() || !workspace.value) { Print(workspace.diagnostics); return 1; }
 
     Services::MapTestRequest request;
     request.inputMap = std::filesystem::absolute(map); request.sourceMap = request.inputMap;
@@ -143,8 +141,11 @@ int RunMapTest(int argc, wchar_t** argv) {
     request.runtimeBridge = std::filesystem::absolute(helpers) / "audastra-warcraft-launcher.exe";
     request.runtimeBootstrap = std::filesystem::absolute(helpers) / "audastra-warcraft-bootstrap.dll";
     request.handwrittenLuaEngine = engine; request.handwrittenLuaHotReload = hotReload;
+    // Lua 文件夹输入要先写进本次目录再冻结：冻结后的根目录句柄不允许候选保存再锁父目录。
     const auto luaInput = Services::PrepareLuaFolderTestInput(request, luaFolderOverride, luaDeletionApproval);
-    if (!luaInput.Succeeded()) { Print(luaInput.diagnostics); return 1; }
+    if (!luaInput.Succeeded()) { Print(luaInput.diagnostics); std::filesystem::remove_all(run, error); return 1; }
+    auto workspace = Services::FreezeMapTestWorkspace(run);
+    if (!workspace.Succeeded() || !workspace.value) { Print(workspace.diagnostics); return 1; }
     const auto progress = [](std::string_view stage) { std::cout << "stage=" << stage << '\n'; };
     auto artifact = Services::PrepareLuaAwareMapTest(request, {}, progress);
     Print(artifact.diagnostics);
