@@ -349,12 +349,24 @@ void MinimapPreviewTests::CurrentKeepsPixelsUntilReplacementAndClearsFailures() 
                              15000);
     QVERIFY(!view.property("updating").toBool());
     QAction* pathing = nullptr;
+    QAction* blight = nullptr;
     for (auto* action : view.findChildren<QAction*>()) {
         if (action->text() == "通行")
             pathing = action;
+        if (action->text() == "荒芜")
+            blight = action;
     }
-    QVERIFY(pathing);
+    QVERIFY(pathing && blight);
+    // 通行层可用：夹具 WPM 全为不可走，替换为叠红后的新图。
+    const auto raised = view.property("rgbaSha256");
     pathing->setChecked(true);
+    QCOMPARE(state->text(), QString("更新中…"));
+    QVERIFY(!image->pixmap().isNull());
+    QTRY_VERIFY2_WITH_TIMEOUT(!view.property("rgbaSha256").toString().isEmpty() && view.property("rgbaSha256") != raised,
+        PreviewDiagnostics(project).constData(), 15000);
+    QVERIFY(!image->pixmap().isNull());
+    // 夹具没有荒芜纹理定义：失败时清除旧图。
+    blight->setChecked(true);
     QCOMPARE(state->text(), QString("更新中…"));
     QVERIFY(!image->pixmap().isNull());
     QTRY_COMPARE_WITH_TIMEOUT(state->text(), QString("当前不可用"), 15000);
