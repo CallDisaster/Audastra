@@ -67,6 +67,7 @@ WorldModelPreview::WorldModelPreview(QWidget* parent,const War3RenderPluginApiV2
                 if (!player_->Scene()->particlesEnabled && !capabilities.empty() &&
                     (capabilities.front().particle2Count || capabilities.front().ribbonCount || capabilities.front().premCount))
                     text+=tr(" · 当前插件不支持粒子预览");
+                if (!omissions_.isEmpty()) text+=tr(" · 近似：%1").arg(omissions_);
                 SetMessage(text);
             }
         }
@@ -90,7 +91,7 @@ bool WorldModelPreview::Matches(const QString& key,std::uint64_t generation,std:
         identity_->teamColor==r.teamColor && identity_->tint==r.tint && identity_->animationProperties==r.animationProperties;
 }
 void WorldModelPreview::ClearSelection() {
-    ++serial_; pending_.reset(); identity_.reset(); displayedContentVersion_=0; player_->Clear();
+    ++serial_; pending_.reset(); identity_.reset(); displayedContentVersion_=0; omissions_.clear(); player_->Clear();
     { const QSignalBlocker blocker(action_); action_->clear(); }
     action_->hide(); playPause_->hide(); step_->hide();
     (void)viewport_->SetModelScene(nullptr); viewport_->ClearMesh(++viewportRevision_); viewport_->hide(); hide();
@@ -130,16 +131,18 @@ void WorldModelPreview::BeginNext() {
             work->source=std::shared_ptr<WorldResourceReader>(std::move(*reader.value));
             Render::AnimationInstanceSpec spec; spec.identity={1,epoch}; spec.hostKey=input.identity.rowKey; spec.model=input.request;
             spec.elapsedMs=0; spec.globalMs=0;
-            const auto limits=Render::ObjectPickerPreviewLimits(particles);
+            const auto limits=Render::SingleModelPreviewLimits(particles);
             auto service=Render::ModelAnimationService::Create({epoch,input.identity.editRevision,input.sources.archiveSha},std::span(&spec,1),
                 [&](auto path,auto maximum){return work->source->ReadAnimationResource(path,maximum);},limits);
             if (!service.Succeeded()) { work->error=service.diagnostics.empty()?QObject::tr("模型动画不可用"):
                 QString::fromUtf8(service.diagnostics.front().code+"："+service.diagnostics.front().message); return; }
             work->service=std::move(*service.value);
-            if (work->service->Scene()->geometry.instances.empty()) {
-                work->error=QObject::tr("纯粒子没有可靠的模型取景边界；请在世界视图中查看，或使用显式 camera 的捕获清单。"); return;
+            auto camera=Render::SingleModelPreviewCamera(*work->service->Scene(),
+                [&](auto path,auto maximum){return work->source->ReadAnimationResource(path,maximum);},spec.model.modelPath);
+            if (!camera.Succeeded()) {
+                work->error=QObject::tr("模型无法预览：%1").arg(QString::fromUtf8(camera.diagnostics.front().code)); return;
             }
-            work->camera=Render::FitAnimationSceneCamera(*work->service->Scene());
+            work->camera=*camera.value;
             Render::AnimationAdvance first; first.worldCamera=Render::AnimationWorldCamera(work->camera);
             auto frame=work->service->Prepare(nullptr,first);
             if (!frame.Succeeded()) { work->error=QString::fromUtf8(frame.diagnostics.front().code+"："+frame.diagnostics.front().message); return; }
@@ -160,6 +163,23 @@ void WorldModelPreview::BeginNext() {
 }
 void WorldModelPreview::Present(const Built& built) {
     if (!built.frame) { SetMessage(built.error.isEmpty()?tr("模型动画不可用"):built.error); return; }
+    {
+        // 预览近似省略的部分逐项写进状态行，不把近似画面当成完整模型。
+        QStringList omitted; const auto& scene=*built.service->Scene();
+        for (const auto& d:scene.geometry.warnings) {
+            if (d.code=="ANIMATION_FIRST_SEQUENCE") omitted<<tr("无 Stand，播放首个动作");
+            else if (d.code=="PARTICLE_PREM_UNSUPPORTED") omitted<<tr("PREM 子模型未显示");
+        }
+        std::size_t skipped=0; QStringList reasons;
+        for (const auto& capability:scene.particleCapabilities) if (capability.skippedEmitters) {
+            skipped+=capability.skippedEmitters->size();
+            for (const auto& issue:*capability.skippedEmitters) reasons<<QString::fromUtf8(issue.code);
+        }
+        reasons.removeDuplicates();
+        if (skipped) omitted<<tr("跳过 %1 个粒子发射器（%2）").arg(skipped).arg(reasons.join(QLatin1Char(',')));
+        if (scene.geometry.untexturedLayers) omitted<<tr("%1 层缺贴图").arg(scene.geometry.untexturedLayers);
+        omitted.removeDuplicates(); omissions_=omitted.join(tr("、"));
+    }
     viewport_->ClearMesh(++viewportRevision_);
     if (!viewport_->SetCamera(built.camera,viewportRevision_).Succeeded() ||
         !player_->Install(built.service,built.frame,built.source,[this] {return identity_ && (!identity_->isCurrent || identity_->isCurrent());})) {

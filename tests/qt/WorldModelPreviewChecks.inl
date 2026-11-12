@@ -154,13 +154,15 @@ void WorldViewportTests::ModelPreviewParticleGameOrderStaysStrictAboutInvalidDat
     QTRY_VERIFY(player->Frame()->states.front().sequenceIndex == 1 && !player->Busy());
     QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{0});
 
-    // UI 不能通过把 retainUnsupportedStatic 打开来修复：真实无效材质必须整体拒绝。
+    // 预览卡按预览近似跳过材质无效的发射器、照常显示网格；跳过几个、原因代码都必须写在状态行，不能静默。
     const auto invalid = AnimationParticleVisibilityPreviewTest::Model(true, true).bytes;
     const auto invalidSources = PreviewFixtureArchive(root / L"invalid.w3x", invalid);
     preview.ShowSelection(QStringLiteral("invalid-particles"), 2, 0, {}, "invalid-emitter", request,
         Result<WorldTerrainSources>::Success(invalidSources), [] { return true; });
-    QTRY_VERIFY_WITH_TIMEOUT(message->text().contains(QStringLiteral("PARTICLE_TEXTURE_INVALID")), 5000);
-    QVERIFY(!player->Ready());
+    QTRY_VERIFY_WITH_TIMEOUT(player->Ready() && message->text().contains(QStringLiteral("PARTICLE_TEXTURE_INVALID")), 5000);
+    QVERIFY2(message->text().contains(QStringLiteral("跳过 1 个粒子发射器")), qPrintable(message->text()));
+    QVERIFY(!player->Frame()->poses.front().hidden);
+    QVERIFY(player->Frame()->particleVertices.empty());
     QCOMPARE(Sha256File(sources.archivePath).value, std::optional{sources.archiveSha});
     QCOMPARE(Sha256File(invalidSources.archivePath).value, std::optional{invalidSources.archiveSha});
 }

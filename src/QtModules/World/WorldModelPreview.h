@@ -55,5 +55,6 @@ private:
     std::optional<Identity> identity_;
     std::optional<Pending> pending_;
     std::uint64_t serial_=0,viewportRevision_=0,displayedContentVersion_=0;
+    QString omissions_; // 预览近似省略的部分（无 Stand、跳过的发射器、缺贴图等），随状态行显示
 };
 } // namespace War3Map::Modules

@@ -70,7 +70,7 @@ PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResourc
             report.state = "uncovered"; Add(report, "SCAN_MODEL_COMPLEXITY_LIMIT", "模型超过声明扫描预算。", "error"); continue;
         }
         // picker 与物编资源选择面板逐项相同（坏资产整体拒绝、无 PREM）；另两档为诊断用的宽松档。
-        auto animationLimits = picker ? ObjectPickerPreviewLimits(true)
+        auto animationLimits = picker ? SingleModelPreviewLimits(true)
             : interactive ? InteractiveAnimationPreviewLimits() : AnimationLimits{};
         if (!picker) {
             animationLimits.retainUnsupportedStatic = true;
@@ -105,21 +105,23 @@ PreviewModelReport EvaluatePreviewModel(std::string path, const AnimationResourc
         // 纯粒子/节点模型没有网格取景框。扫描器使用声明的观察相机继续数值采样，
         // 不能让 Fit 的异常丢掉已取得的模型身份与此前诊断，也不声称此视点覆盖画面。
         const bool withoutGeometry = service->Scene()->geometry.instances.empty();
+        std::optional<War3RenderCameraV2> pickerCamera;
         if (picker) {
-            // 面板对纯粒子模型不取景，直接显示“纯粒子没有可靠的模型取景边界”；首帧准备失败同样整体不显示。
-            if (withoutGeometry) {
-                Add(report, "PICKER_PARTICLE_ONLY", "没有可取景网格，选择面板不显示纯粒子模型。", "error");
-                report.state = "prepare_rejected"; continue;
-            }
-            AnimationAdvance first; first.worldCamera = AnimationWorldCamera(FitAnimationSceneCamera(*service->Scene()));
+            // 与预览卡相同：同一取景函数决定能否显示（未准入/空模型整体不显示，纯粒子按 MODL 范围取景），
+            // 再做一次无编辑的首帧准备。
+            auto framed = SingleModelPreviewCamera(*service->Scene(), reader, instance.model.modelPath); checkpoint();
+            Add(report, framed.diagnostics);
+            if (!framed.Succeeded()) { report.state = Limited(report) ? "uncovered" : "prepare_rejected"; continue; }
+            pickerCamera = *framed.value;
+            AnimationAdvance first; first.worldCamera = AnimationWorldCamera(*pickerCamera);
             const auto opened = service->Prepare(nullptr, first); checkpoint();
             Add(report, opened.diagnostics);
             if (!opened.Succeeded()) { report.state = Limited(report) ? "uncovered" : "prepare_rejected"; continue; }
         }
-        const War3RenderCameraV2 camera = withoutGeometry
+        const War3RenderCameraV2 camera = pickerCamera ? *pickerCamera : withoutGeometry
             ? War3RenderCameraV2{sizeof(War3RenderCameraV2), 0, 0, 0, 500, -1.1f, 0.5f}
             : FitAnimationSceneCamera(*service->Scene());
-        if (withoutGeometry)
+        if (withoutGeometry && !picker)
             Add(report, "SCAN_EXPLICIT_CAMERA_NO_GEOMETRY", "没有可取景网格；使用目标(0,0,0)、距离500、偏航-1.1、俯仰0.5的显式相机进行CPU采样，不证明可见画面。", "notice");
         const auto& sequences = parsed.value->sequences;
         report.planned = sequences.size() * 3;

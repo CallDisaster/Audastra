@@ -82,10 +82,13 @@ struct AnimationLimits {
     limits.allowRigidStaticPreview = true;
     return limits;
 }
-// 物编资源选择面板“预览近似”：单模型、贴图边长与总量受限，资产问题整体拒绝（不保留静态）。
-// 面板与批量扫描共用这一份，扫描结论才代表面板实际能否显示。
-[[nodiscard]] inline AnimationLimits ObjectPickerPreviewLimits(bool particles) {
+// 单模型预览卡（物编资源选择面板、世界检查器）：单模型、贴图边长与总量受限。
+// 与世界浏览相同按预览近似处理：没有 Stand 时用模型首个动作，跳过不支持的粒子发射器，
+// 能静态表达就保留静态；被省略的内容由宿主逐项显示，不当作完整画面。
+// 预览卡与批量扫描 picker 档共用这一份，扫描结论才代表预览卡实际能否显示。
+[[nodiscard]] inline AnimationLimits SingleModelPreviewLimits(bool particles) {
     auto limits = InteractiveAnimationPreviewLimits();
+    limits.retainUnsupportedStatic = true;
     limits.geometry.maxModels = 1; limits.geometry.maxInstances = 1;
     limits.enableParticles = particles;
     limits.geometry.maxVertices = 262144; limits.geometry.maxIndices = 786432;
@@ -507,6 +510,13 @@ private:
 [[nodiscard]] std::optional<std::uint32_t> FindAnimationSequence(
     std::span<const MdxSequence> sequences, std::string_view action, std::string_view requiredProperties = {});
 [[nodiscard]] War3RenderCameraV2 FitAnimationSceneCamera(const AnimatedModelScene& scene);
+// 纯粒子模型没有网格边界：按 MODL 声明的范围取景；范围无效时用全部节点轴心，仍无则以原点为中心。
+// 粒子会飞出发射点，取景范围至少按 150 单位计。
+[[nodiscard]] War3RenderCameraV2 FitParticleOnlyModelCamera(const MdxModel& model);
+// 单模型预览卡的取景（预览卡与批量扫描共用）：模型未准入时返回其诊断代码；有网格按网格包围盒；
+// 纯粒子模型重新读取原模型，按 FitParticleOnlyModelCamera 取景；什么都不能画则返回 ANIMATION_EMPTY_MODEL。
+[[nodiscard]] Result<War3RenderCameraV2> SingleModelPreviewCamera(const AnimatedModelScene& scene,
+    const AnimationResourceReader& read, std::string_view modelPath);
 [[nodiscard]] War3RenderCore::LocalCamera AnimationWorldCamera(const War3RenderCameraV2& camera);
 // 仅复制点选所需包围盒/实例，绝不复制大顶点/贴图池。点选仍是预览 AABB，不是骨骼精确命中。
 [[nodiscard]] std::shared_ptr<WorldModelScene> AnimationPickingScene(const AnimatedModelScene& scene,

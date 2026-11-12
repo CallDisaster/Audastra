@@ -135,10 +135,24 @@ void Run(){
     Check(particleScan.sha256 == *Sha256(pureParticle).value && particleScan.source == "original-fixture",
         "particle-only scan discarded the verified model identity");
     Check(particleScan.policies.size() == 3, "particle-only scan lost a policy");
-    // 选择面板对纯粒子模型不取景，不能按诊断档的显式相机继续采样。
+    // 预览卡按 MODL 范围给纯粒子模型取景，不借用诊断档的固定显式相机。
     const auto& particlePicker = particleScan.policies[2];
-    Check(particlePicker.policy == "picker" && particlePicker.state == "prepare_rejected" && particlePicker.sampled == 0 &&
-        particlePicker.issues.contains("PICKER_PARTICLE_ONLY"), "picker policy previewed a particle-only model");
+    if (particlePicker.state != "complete") for (const auto& [code, issue] : particlePicker.issues) std::cerr << code << ": " << issue.message << '\n';
+    Check(particlePicker.policy == "picker" && particlePicker.state == "complete" && particlePicker.sampled == 6 &&
+        !particlePicker.issues.contains("SCAN_EXPLICIT_CAMERA_NO_GEOMETRY"), "picker policy did not frame a particle-only model");
+    {
+        // MODL 声明范围优先；范围无效时退回节点轴心；粒子飞出发射点，取景范围不小于 150。
+        MdxModel declared; declared.minimum = {-400, -100, 0}; declared.maximum = {400, 100, 300};
+        const auto wide = FitParticleOnlyModelCamera(declared);
+        Check(wide.targetX == 0 && wide.targetY == 0 && wide.targetZ == 150 && wide.distance == 800.0f * 2.4f,
+            "particle-only camera ignored the declared model extent");
+        MdxModel pivots; pivots.pivots = {{10, 20, 30}, {30, 20, 50}};
+        const auto near = FitParticleOnlyModelCamera(pivots);
+        Check(near.targetX == 20 && near.targetY == 20 && near.targetZ == 40 && near.distance == 150.0f * 2.4f,
+            "particle-only camera did not fall back to pivots with a minimum extent");
+        const auto empty = FitParticleOnlyModelCamera(MdxModel{});
+        Check(empty.targetX == 0 && empty.targetZ == 0 && empty.distance == 150.0f * 2.4f, "empty particle-only camera left the origin");
+    }
     for (const auto& policy : particleScan.policies) {
         if (policy.policy == "picker") continue;
         if (policy.sampled != 6 || policy.planned != 6) {

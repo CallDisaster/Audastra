@@ -191,6 +191,43 @@ War3RenderCameraV2 FitAnimationSceneCamera(const AnimatedModelScene& scene) {
     return {sizeof(War3RenderCameraV2),(low[0]+high[0])*0.5f,(low[1]+high[1])*0.5f,(low[2]+high[2])*0.5f,
         std::clamp(extent*2.4f,80.0f,100000.0f),-1.1f,0.5f};
 }
+War3RenderCameraV2 FitParticleOnlyModelCamera(const MdxModel& model) {
+    std::array<float,3> low{0,0,0}, high{0,0,0};
+    const auto finite=[](const std::array<float,3>& v) { return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]); };
+    const bool declared=finite(model.minimum) && finite(model.maximum) &&
+        std::max({model.maximum[0]-model.minimum[0],model.maximum[1]-model.minimum[1],model.maximum[2]-model.minimum[2]})>=1.0f &&
+        model.minimum[0]<=model.maximum[0] && model.minimum[1]<=model.maximum[1] && model.minimum[2]<=model.maximum[2];
+    if (declared) { low=model.minimum; high=model.maximum; }
+    else {
+        bool any=false;
+        for (const auto& pivot:model.pivots) {
+            if (!finite(pivot)) continue;
+            for (std::size_t r=0;r<3;++r) {
+                low[r]=any?std::min(low[r],pivot[r]):pivot[r]; high[r]=any?std::max(high[r],pivot[r]):pivot[r];
+            }
+            any=true;
+        }
+    }
+    const auto extent=std::clamp(std::max({high[0]-low[0],high[1]-low[1],high[2]-low[2],150.0f}),150.0f,40000.0f);
+    return {sizeof(War3RenderCameraV2),(low[0]+high[0])*0.5f,(low[1]+high[1])*0.5f,(low[2]+high[2])*0.5f,
+        std::clamp(extent*2.4f,80.0f,100000.0f),-1.1f,0.5f};
+}
+Result<War3RenderCameraV2> SingleModelPreviewCamera(const AnimatedModelScene& scene,
+    const AnimationResourceReader& read, std::string_view modelPath) {
+    using Out=Result<War3RenderCameraV2>;
+    if (!scene.unavailableInstances.empty()) {
+        const auto& code=scene.unavailableInstances.front().code;
+        return Out::Failure("Render.Animation", code.empty() ? "ANIMATION_GEOMETRY_UNAVAILABLE" : code.c_str(),
+            "模型没有准入预览，原始诊断代码保留。");
+    }
+    if (!scene.geometry.instances.empty()) return Out::Success(FitAnimationSceneCamera(scene));
+    if (!scene.particleInstanceCount) return Out::Failure("Render.Animation", "ANIMATION_EMPTY_MODEL", "模型没有可显示的网格或粒子。");
+    // 场景只保留了可运行的发射器，没有网格包围盒；取景所需的 MODL 范围与轴心回到原模型读取。
+    auto bytes=read(modelPath, 16ull*1024*1024);
+    MdxModel parsed;
+    if (bytes.Succeeded()) if (auto model=ParseMdx(bytes.value->bytes); model.Succeeded()) parsed=std::move(*model.value);
+    return Out::Success(FitParticleOnlyModelCamera(parsed));
+}
 War3RenderCore::LocalCamera AnimationWorldCamera(const War3RenderCameraV2& c) {
     const auto horizontal = c.distance * std::cos(c.pitchRadians);
     return {{c.targetX + horizontal * std::cos(c.yawRadians), c.targetY + horizontal * std::sin(c.yawRadians),
