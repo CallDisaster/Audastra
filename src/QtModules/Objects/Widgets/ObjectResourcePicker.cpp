@@ -37,7 +37,8 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
       services_(std::move(services)), alive_(std::make_shared<std::atomic_bool>(true)) {
     setObjectName(QStringLiteral("objectResourcePicker"));
     setAttribute(Qt::WA_DeleteOnClose); setWindowModality(Qt::NonModal);
-    UiKit::ConfigureRoundedPopup(*this);
+    // 模型预览是原生 D3D 子窗口；半透明圆角浮层不会把它合成上屏，面板会停在旧画面无法操作。
+    UiKit::ConfigureOpaquePopup(*this);
     auto* column = new QVBoxLayout(this); column->setSpacing(8);
     // 三种来源只是切换，不需要各自的说明页；标签栏只占一行，筛选条按来源显示需要的控件。
     tabs_ = new QTabWidget(this); tabs_->setObjectName(QStringLiteral("resourceSourceTabs")); tabs_->setDocumentMode(true);

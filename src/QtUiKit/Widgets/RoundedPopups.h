@@ -22,6 +22,10 @@ void PaintRoundedSurface(QPainter& painter, const QRectF& outer, const QPalette&
 // 此函数会将现有布局增加阴影/内容留白，重复调用无额外影响。
 void ConfigureRoundedPopup(QWidget& popup);
 
+// 承载原生子窗口（如 D3D 模型视口）的浮层。Windows 的分层透明窗口不合成原生子窗口，
+// 圆角柔影版会让视口不上屏、整块面板停在旧画面；这里用同色的不透明直角表面，不做透明。
+void ConfigureOpaquePopup(QWidget& popup);
+
 // 自动处理 QMenu 与 QComboBox 的原生下拉容器。可重复调用，应用只保留一份过滤器。
 void InstallRoundedPopups(QApplication& app);
 

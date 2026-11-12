@@ -22,6 +22,7 @@
 #include <QDir>
 #include <QImage>
 #include <QMenu>
+#include <QFrame>
 #include <QComboBox>
 #include <QAbstractItemView>
 #include <QPainter>
@@ -125,6 +126,7 @@ private slots:
     void roundedPopoverHasTransparentCorners();
     void roundedMenuHasTransparentCorners_data();
     void roundedMenuHasTransparentCorners();
+    void opaquePopupKeepsNativeChildrenComposited();
     void comboPopupUsesSameRoundedSurface();
     void comboPopupCreatedBeforePolishStaysTranslucent();
     void themedComboPopupListsRowsBelowWithoutScroller();
@@ -669,6 +671,32 @@ void UiKitTests::roundedPopoverHasTransparentCorners() {
     QVERIFY(surface.testAttribute(Qt::WA_TranslucentBackground));
     QVERIFY(surface.windowFlags().testFlag(Qt::NoDropShadowWindowHint));
     QVERIFY(surface.windowFlags().testFlag(Qt::FramelessWindowHint));
+}
+
+// 承载原生 D3D 视口的浮层不能是分层透明窗口；表面整块不透明，四角与中心同为浮层底色，边线来自共用过滤器。
+void UiKitTests::opaquePopupKeepsNativeChildrenComposited() {
+    InstallRoundedPopups(*qApp);
+    QFrame popup(nullptr, Qt::Tool | Qt::FramelessWindowHint);
+    const auto palette = ThemeManager::PaletteFor(ThemeManager::Theme(QStringLiteral("graphite")));
+    popup.setPalette(palette);
+    ConfigureOpaquePopup(popup);
+    popup.resize(200, 120);
+    popup.ensurePolished();
+    QVERIFY(!popup.testAttribute(Qt::WA_TranslucentBackground));
+    QVERIFY(!popup.testAttribute(Qt::WA_NoSystemBackground));
+    QVERIFY(popup.windowFlags().testFlag(Qt::FramelessWindowHint));
+    QVERIFY(!popup.property("forgeRoundedSurface").toBool());
+    QImage image(popup.size(), QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    popup.render(&painter);
+    painter.end();
+    for (const QPoint point : {QPoint(0, 0), QPoint(image.width() - 1, 0), QPoint(0, image.height() - 1),
+             QPoint(image.width() - 1, image.height() - 1), QPoint(image.width() / 2, image.height() / 2)}) {
+        QCOMPARE(image.pixelColor(point).alpha(), 255);
+    }
+    QCOMPARE(image.pixelColor(image.width() / 2, image.height() / 2).rgb(), palette.color(QPalette::ToolTipBase).rgb());
+    QVERIFY(image.pixelColor(0, image.height() / 2).rgb() != palette.color(QPalette::ToolTipBase).rgb());
 }
 
 void UiKitTests::roundedMenuHasTransparentCorners_data() {

@@ -19,6 +19,7 @@
 namespace War3Map::UiKit {
 namespace {
 constexpr auto kConfigured = "forgeRoundedSurface";
+constexpr auto kOpaque = "forgeOpaqueSurface";
 constexpr auto kOwnPaint = "forgeSurfaceOwnPaint";
 constexpr auto kInstaller = "forgeRoundedPopupInstaller";
 constexpr int kQtDefaultComboRows = 10;
@@ -71,6 +72,15 @@ protected:
             // 让原容器的 paintEvent 再画 PE_PanelMenu 会把透明边角重新填满。
             if (IsComboContainer(*widget)) return true;
             // 正常 paintEvent 仍负责菜单项、焦点和选择；它的窗口底色已设为透明。
+        }
+        if (event->type() == QEvent::Paint && widget->property(kOpaque).toBool()) {
+            QPainter painter(widget);
+            const QPalette& palette = widget->palette();
+            QColor border = palette.color(QPalette::Mid);
+            border.setAlpha(std::min(border.alpha(), 190));
+            painter.fillRect(widget->rect(), palette.brush(QPalette::ToolTipBase));
+            painter.setPen(QPen(border, 1.0));
+            painter.drawRect(QRectF(widget->rect()).adjusted(0.5, 0.5, -0.5, -0.5));
         }
         return false;
     }
@@ -168,6 +178,17 @@ void ConfigureRoundedPopup(QWidget& popup) {
             }
         }
     }
+}
+
+void ConfigureOpaquePopup(QWidget& popup) {
+    popup.setProperty(kOpaque, true);
+    popup.setAttribute(Qt::WA_TranslucentBackground, false);
+    popup.setAttribute(Qt::WA_NoSystemBackground, false);
+    // 底色在过滤器里与圆角浮层同色绘制；未装过滤器时退回窗口自身的不透明底色。
+    popup.setAutoFillBackground(true);
+    popup.setBackgroundRole(QPalette::ToolTipBase);
+    popup.setWindowFlag(Qt::FramelessWindowHint, true);
+    if (auto* frame = qobject_cast<QFrame*>(&popup)) frame->setFrameShape(QFrame::NoFrame);
 }
 
 void InstallRoundedPopups(QApplication& app) {
