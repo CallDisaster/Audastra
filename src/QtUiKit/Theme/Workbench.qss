@@ -12,7 +12,8 @@ QMainWindow, QDialog, QStackedWidget#shellMain,
 QWidget#startupPage, QWidget#triggerWorkspace, QWidget#workspacePane, QWidget#triggerLogicPane,
 QWidget#objectWorkspace, QWidget#objectInspector, QWidget#objectManager,
 QWidget#assetsWorkspace, QWidget#variablesWorkspace, QWidget#mapSettingsWorkspace,
-QWidget#soundsWorkspace, QWidget#worldModule {
+QWidget#soundsWorkspace, QWidget#worldModule,
+QWidget#campaignWorkspace, QWidget#gameUiWorkspace, QWidget#mapEntitiesWorkspace {
     background: @bg;
 }
 QLabel { background: transparent; border: 0; }
@@ -78,7 +79,7 @@ QFrame#triggerCommandBar QPushButton#accentButton:enabled {
 QFrame#triggerCommandBar QPushButton#primaryButton:hover:enabled,
 QFrame#triggerCommandBar QPushButton#accentButton:hover:enabled { border-color: @accent; }
 QLabel#emptyState { color: @muted; font-size: @fontBody; }
-QLabel#formProblem { color: @red; }
+QLabel#formProblem, QLabel#assetPathProblem, QLabel#worldAuxError { color: @red; }
 QFrame#valuePanelCurrentCard { background: @raised; border: 1px solid @line; border-radius: @radiusMd; }
 QLabel#valuePanelCurrentName { color: @text; font-weight: @weightMedium; }
 QLabel#valuePanelCurrentSummary { color: @muted; font-size: @fontSmall; }
@@ -132,15 +133,21 @@ QPushButton::menu-indicator {
     subcontrol-origin: padding; subcontrol-position: right center; right: 9px; width: 8px; height: 8px;
 }
 QPushButton#primaryButton, QPushButton#accentButton, QPushButton#createCustomObjectButton,
-QPushButton#addVariableButton, QPushButton#mapSettingsApply, QPushButton#soundCreateDefinition {
+QPushButton#addVariableButton, QPushButton#mapSettingsApply, QPushButton#soundCreateDefinition,
+QPushButton#changesSave, QPushButton#agentSaveSettings, QPushButton#triggerReplaceApply,
+QPushButton#uiLibraryApply, QPushButton#saveCampaign, QPushButton#globalSearchLocate {
     background: @accentSoft; color: @accent; border-color: @accentLine; font-weight: @weightMedium;
 }
 QPushButton#primaryButton:hover, QPushButton#accentButton:hover, QPushButton#createCustomObjectButton:hover,
-QPushButton#addVariableButton:hover, QPushButton#mapSettingsApply:hover, QPushButton#soundCreateDefinition:hover {
+QPushButton#addVariableButton:hover, QPushButton#mapSettingsApply:hover, QPushButton#soundCreateDefinition:hover,
+QPushButton#changesSave:hover, QPushButton#agentSaveSettings:hover, QPushButton#triggerReplaceApply:hover,
+QPushButton#uiLibraryApply:hover, QPushButton#saveCampaign:hover, QPushButton#globalSearchLocate:hover {
     background: @accentSoft; border-color: @accent;
 }
 QPushButton#primaryButton:disabled, QPushButton#accentButton:disabled, QPushButton#createCustomObjectButton:disabled,
-QPushButton#addVariableButton:disabled, QPushButton#mapSettingsApply:disabled, QPushButton#soundCreateDefinition:disabled {
+QPushButton#addVariableButton:disabled, QPushButton#mapSettingsApply:disabled, QPushButton#soundCreateDefinition:disabled,
+QPushButton#changesSave:disabled, QPushButton#agentSaveSettings:disabled, QPushButton#triggerReplaceApply:disabled,
+QPushButton#uiLibraryApply:disabled, QPushButton#saveCampaign:disabled, QPushButton#globalSearchLocate:disabled {
     color: @disabled; background: @panel; border-color: @line; font-weight: @weightRegular;
 }
 QPushButton#quietButton { color: @muted; background: transparent; border-color: transparent; padding: 5px 9px; }
@@ -214,7 +221,7 @@ QTextBrowser#definitionDetails { background: @panel; border: 0; border-left: 1px
 QTreeView, QTreeWidget, QTableView, QTableWidget, QListView, QListWidget {
     color: @text; background: @bg; alternate-background-color: @panel;
     border: 1px solid @line; border-radius: @radiusMd; outline: 0;
-    gridline-color: @panel; selection-background-color: @selection; selection-color: @text;
+    gridline-color: transparent; selection-background-color: @selection; selection-color: @text;
 }
 QTreeView:focus, QTableView:focus, QListView:focus { border-color: @accentLine; }
 QTreeView::item, QListView::item { min-height: 24px; padding: 3px 6px; border: 0; }
@@ -308,25 +315,35 @@ QTableView#objectProperties, QTableView#standardObjectFields, QTableView#objectM
     background: @bg; border: 1px solid @line; border-radius: @radiusMd;
 }
 
-/* 物体管理（ManagerModule）、地图设置（MapSettingsModule）、声音（SoundsModule）与资源（AssetsModule） */
+/* 物体管理（ManagerModule）、地图设置（MapSettingsModule）、战役、帮助、声音与资源 */
 QListWidget#managerPages {
     background: @panel; border: 0; border-right: 1px solid @line; border-radius: 0;
     outline: 0; padding: 8px 6px;
 }
-QListWidget#mapSettingsSections {
+QListWidget#mapSettingsSections, QListWidget#helpTopics {
     background: @panel; border: 1px solid @line; border-radius: @radiusLg;
     outline: 0; padding: 6px;
 }
-QListWidget#managerPages::item, QListWidget#mapSettingsSections::item {
+QListWidget#managerPages::item, QListWidget#mapSettingsSections::item, QListWidget#helpTopics::item {
     padding: 7px 10px; margin: 1px 0; border: 0; border-radius: @radiusMd; color: @muted; min-height: 20px;
 }
-QListWidget#managerPages::item:hover, QListWidget#mapSettingsSections::item:hover { background: @hover; color: @text; }
+QListWidget#managerPages::item:hover, QListWidget#mapSettingsSections::item:hover, QListWidget#helpTopics::item:hover {
+    background: @hover; color: @text;
+}
 QListWidget#managerPages::item:selected, QListWidget#managerPages::item:selected:!active,
-QListWidget#mapSettingsSections::item:selected, QListWidget#mapSettingsSections::item:selected:!active {
+QListWidget#mapSettingsSections::item:selected, QListWidget#mapSettingsSections::item:selected:!active,
+QListWidget#helpTopics::item:selected, QListWidget#helpTopics::item:selected:!active {
     background: @selection; color: @text; font-weight: @weightMedium;
 }
+QTextBrowser#helpPage { background: @bg; border: 1px solid @line; border-radius: @radiusLg; padding: 10px 14px; }
 QLabel#mapSettingsMessage { color: @muted; font-size: @fontSmall; padding: 2px 2px; }
 QLabel#mapSettingsMessage[error="true"] { color: @red; }
+QLabel#campaignStatus {
+    color: @muted; background: @panel; border: 1px solid @line;
+    border-radius: @radiusMd; padding: 6px 12px; font-size: @fontSmall;
+}
+QLabel#mapSizeScope, QLabel#managerOverviewTitle { color: @text; font-weight: @weightMedium; }
+QLabel#mapSizeStatus, QLabel#variablesCount { color: @muted; font-size: @fontSmall; }
 QListWidget#managerOverview, QTreeWidget#managerTable, QTreeWidget#managerDetail {
     background: @bg; border: 1px solid @line; border-radius: @radiusMd;
 }
@@ -342,11 +359,20 @@ QLabel#assetSummary { color: @muted; font-size: @fontSmall; padding: 2px 2px 0 2
 QDialog#commandPalette { background: @panel; border: 1px solid @line; border-radius: @radiusLg; }
 QLineEdit#commandPaletteSearch {
     background: @panel; color: @text; border: 0; border-bottom: 1px solid @line;
-    border-radius: 0; padding: 11px 14px; font-size: 14px;
+    border-radius: 0; border-top-left-radius: @radiusLg; border-top-right-radius: @radiusLg;
+    padding: 11px 14px 11px 10px; font-size: 14px;
 }
-QListView#commandPaletteResults { background: @panel; border: 0; border-radius: @radiusMd; }
+QListView#commandPaletteResults { background: @panel; border: 0; border-radius: 0; }
+QLabel#commandPaletteHint {
+    color: @dim; background: @panel; border-top: 1px solid @line;
+    padding: 6px 14px; font-size: @fontTiny;
+    border-bottom-left-radius: @radiusLg; border-bottom-right-radius: @radiusLg;
+}
 QWidget#changesPanel { background: @panel; }
 QTreeView#changesTree { background: @bg; border: 1px solid @line; border-radius: @radiusMd; }
+QFrame#changesDiffCard { background: @bg; border: 1px solid @line; border-radius: @radiusMd; }
+QLabel#changesBefore { color: @muted; font-size: @fontSmall; }
+QLabel#changesAfter { color: @accent; font-size: @fontSmall; font-weight: @weightMedium; }
 QWidget#problemList { background: @panel; }
 QTreeView#problemListView { background: @bg; border: 0; border-top: 1px solid @line; border-radius: 0; }
 QToolButton#problemErrors, QToolButton#problemWarnings, QToolButton#problemMessages {
@@ -374,8 +400,10 @@ QPushButton#editStandardObjectButton {
 QPushButton#editStandardObjectButton:hover { background: @accentSoft; border-color: @accent; }
 QPushButton#editStandardObjectButton:disabled { color: @disabled; background: @panel; border-color: @line; font-weight: @weightRegular; }
 
-QSplitter::handle { background: @line; width: 1px; height: 1px; }
+QSplitter::handle { image: none; background: @line; width: 1px; height: 1px; }
 QSplitter::handle:hover { background: @accent; }
+QMainWindow::separator { image: none; background: @line; width: 1px; height: 1px; border: 0; }
+QMainWindow::separator:hover { background: @accent; }
 QDockWidget { background: @panel; color: @text; border: 1px solid @line; }
 QDockWidget::title { background: @panel; color: @muted; text-align: left; padding: 6px 10px; border-bottom: 1px solid @line; font-weight: @weightMedium; }
 QGroupBox {
@@ -389,19 +417,31 @@ QGroupBox::title {
 QCheckBox, QRadioButton { background: transparent; spacing: 7px; padding: 2px; border: 1px solid transparent; border-radius: @radiusSm; }
 QCheckBox:focus, QRadioButton:focus { border-color: @accentLine; }
 QCheckBox:disabled, QRadioButton:disabled { color: @disabled; }
-QCheckBox::indicator, QRadioButton::indicator { width: 14px; height: 14px; }
-/* 未勾选框明确描边；含边框仍占 14px，勾选态继续使用圆角底与深色勾。 */
-QCheckBox::indicator:unchecked {
+QCheckBox::indicator, QRadioButton::indicator,
+QTreeView::indicator, QTableView::indicator, QListView::indicator { width: 14px; height: 14px; }
+/* 未勾选框明确描边；含边框仍占 14px，勾选态（含树/表内复选单元格）统一使用圆角底与深色勾。 */
+QCheckBox::indicator:unchecked,
+QTreeView::indicator:unchecked, QTableView::indicator:unchecked, QListView::indicator:unchecked {
     width: 12px; height: 12px; border: 1px solid @muted;
     border-radius: @radiusXs; background: @bg;
 }
-QCheckBox::indicator:unchecked:hover { border-color: @accent; }
-QCheckBox::indicator:unchecked:disabled { border-color: @disabled; background: @panel; }
-QCheckBox::indicator:checked {
+QCheckBox::indicator:unchecked:hover,
+QTreeView::indicator:unchecked:hover, QTableView::indicator:unchecked:hover, QListView::indicator:unchecked:hover {
+    border-color: @accent;
+}
+QCheckBox::indicator:unchecked:disabled,
+QTreeView::indicator:unchecked:disabled, QTableView::indicator:unchecked:disabled, QListView::indicator:unchecked:disabled {
+    border-color: @disabled; background: @panel;
+}
+QCheckBox::indicator:checked,
+QTreeView::indicator:checked, QTableView::indicator:checked, QListView::indicator:checked {
     width: 12px; height: 12px; border: 1px solid @accent;
     border-radius: @radiusXs; background: @accent; image: url(:/war3map/icons/qss/check-dark.svg);
 }
-QCheckBox::indicator:checked:disabled { border-color: @disabled; background: @disabled; }
+QCheckBox::indicator:checked:disabled,
+QTreeView::indicator:checked:disabled, QTableView::indicator:checked:disabled, QListView::indicator:checked:disabled {
+    border-color: @disabled; background: @disabled;
+}
 
 /* AI 设置窗口：左侧导航无焦点框，圆角选中；分隔线用细线令牌。 */
 QDialog#AgentSettingsDialog { background: @panel; }

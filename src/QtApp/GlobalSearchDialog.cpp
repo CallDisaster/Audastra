@@ -1,4 +1,6 @@
 #include "GlobalSearchDialog.h"
+#include "Icons/SvgIcons.h"
+#include "Widgets/SearchField.h"
 
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -7,6 +9,7 @@
 #include <QLineEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QStyle>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
@@ -43,10 +46,14 @@ GlobalSearchDialog::GlobalSearchDialog(std::function<std::string()> revision, Qu
     resize(820, 560);
     setMinimumSize(640, 420);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(8);
     edit_ = new QLineEdit(this);
     edit_->setObjectName(QStringLiteral("globalSearchQuery"));
     edit_->setMaxLength(256);
-    edit_->setPlaceholderText(tr("搜索名称、ID 或触发器参数"));
+    edit_->setClearButtonEnabled(true);
+    edit_->setPlaceholderText(tr("搜索名称、ID 或触发器参数…"));
+    UiKit::InstallSearchIcon(edit_);
     layout->addWidget(edit_);
     results_ = new QTreeWidget(this);
     results_->setObjectName(QStringLiteral("globalSearchResults"));
@@ -55,24 +62,39 @@ GlobalSearchDialog::GlobalSearchDialog(std::function<std::string()> revision, Qu
     results_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     results_->header()->setSectionResizeMode(1, QHeaderView::Interactive);
     results_->setColumnWidth(1, 220);
+    results_->setIndentation(16);
+    results_->setAlternatingRowColors(true);
     results_->setRootIsDecorated(true);
     results_->setUniformRowHeights(true);
     layout->addWidget(results_, 1);
     status_ = new QLabel(this);
     status_->setObjectName(QStringLiteral("globalSearchStatus"));
+    status_->setForegroundRole(QPalette::PlaceholderText);
     status_->setTextFormat(Qt::PlainText);
     status_->setWordWrap(true);
     layout->addWidget(status_);
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
     if (auto* close = buttons->button(QDialogButtonBox::Close)) close->setText(tr("关闭"));
+    auto* locate = buttons->addButton(tr("定位选中"), QDialogButtonBox::ActionRole);
+    locate->setObjectName(QStringLiteral("globalSearchLocate"));
+    locate->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")));
+    locate->setEnabled(false);
+    locate->style()->unpolish(locate);
+    locate->style()->polish(locate);
     previous_ = buttons->addButton(tr("上一页"), QDialogButtonBox::ActionRole);
     next_ = buttons->addButton(tr("下一页"), QDialogButtonBox::ActionRole);
+    previous_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-left")));
+    next_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")));
     previous_->setObjectName(QStringLiteral("globalSearchPrevious"));
     next_->setObjectName(QStringLiteral("globalSearchNext"));
     previous_->setEnabled(false); next_->setEnabled(false);
     previous_->setAutoDefault(false); next_->setAutoDefault(false);
     for (auto* button : buttons->findChildren<QPushButton*>()) button->setAutoDefault(false);
     layout->addWidget(buttons);
+    connect(locate, &QPushButton::clicked, this, [this]() { ActivateCurrent(); });
+    connect(results_, &QTreeWidget::currentItemChanged, this, [locate](QTreeWidgetItem* current, QTreeWidgetItem*) {
+        locate->setEnabled(current && current->data(0, Qt::UserRole).isValid());
+    });
     timer_ = new QTimer(this); timer_->setSingleShot(true); timer_->setInterval(150);
     connect(timer_, &QTimer::timeout, this, [this]() { Refresh(true); });
     connect(edit_, &QLineEdit::textChanged, this, [this]() {
@@ -148,13 +170,23 @@ void GlobalSearchDialog::Populate(const Services::ProjectSearchPage& page) {
         if (!group) {
             group = new QTreeWidgetItem(results_, {Category(row.category)});
             group->setFlags(group->flags() & ~Qt::ItemIsSelectable);
+            QFont groupFont = results_->font();
+            groupFont.setWeight(QFont::Medium);
+            group->setFont(0, groupFont);
+            group->setForeground(0, results_->palette().brush(QPalette::PlaceholderText));
             group->setExpanded(true);
         }
         auto* item = new QTreeWidgetItem(group, {Text(row.title), Text(row.detail)});
+        item->setForeground(1, results_->palette().brush(QPalette::PlaceholderText));
         item->setData(0, Qt::UserRole, static_cast<int>(i));
         const auto tooltip = Text(row.stableId) + (row.rawValue ? QStringLiteral("\n") + Text(*row.rawValue) : QString{});
         item->setToolTip(0, QStringLiteral("<qt>") + tooltip.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br/>")) + QStringLiteral("</qt>"));
         if (!first) first = item;
+    }
+    for (std::size_t category = 0; category < groups.size(); ++category) {
+        if (auto* group = groups[category]) {
+            group->setText(0, tr("%1 (%2)").arg(Category(static_cast<Services::ProjectSearchCategory>(category))).arg(group->childCount()));
+        }
     }
     if (first) results_->setCurrentItem(first);
     previous_->setEnabled(pageIndex_ > 0); next_->setEnabled(nextCursor_.has_value());

@@ -2,6 +2,8 @@
 
 #include "EditorProject.h"
 #include "Icons/IconProvider.h"
+#include "Icons/SvgIcons.h"
+#include "Widgets/SearchField.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/StandardObjectCatalog.h"
@@ -157,7 +159,9 @@ WorldAssetBrowser::WorldAssetBrowser(QtApp::IconProvider* icons, const War3Rende
     body->addLayout(filters_);
     auto* searchRow = new QHBoxLayout;
     search_ = new QLineEdit(content_); search_->setObjectName(QStringLiteral("worldAssetSearch"));
-    search_->setPlaceholderText(tr("搜索名称或 ID")); search_->setMaxLength(256);
+    search_->setPlaceholderText(tr("搜索名称或 ID…")); search_->setMaxLength(256);
+    search_->setClearButtonEnabled(true);
+    UiKit::InstallSearchIcon(search_);
     search_->setAttribute(Qt::WA_InputMethodEnabled, true); searchRow->addWidget(search_, 1); body->addLayout(searchRow);
     rows_ = new QListWidget(content_); rows_->setObjectName(QStringLiteral("worldAssetRows"));
     rows_->setSelectionMode(QAbstractItemView::SingleSelection); rows_->setViewMode(QListView::IconMode);

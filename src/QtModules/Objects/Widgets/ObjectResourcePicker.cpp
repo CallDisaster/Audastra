@@ -1,5 +1,7 @@
 #include "Widgets/ObjectResourcePicker.h"
+#include "Icons/SvgIcons.h"
 #include "Widgets/RoundedPopups.h"
+#include "Widgets/SearchField.h"
 #include "War3MapCore/ObjectData/ProfileList.h"
 
 #include <QComboBox>
@@ -54,17 +56,19 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     const QStringList categories{tr("单位"), tr("技能"), tr("物品"), tr("魔法效果"), tr("科技"), tr("装饰物"), tr("可破坏物")};
     for (int i = 0; i < categories.size(); ++i) category_->addItem(categories[i], i);
     filter->addWidget(category_);
-    up_ = new QPushButton(tr("上级"), filterBar_); up_->setObjectName(QStringLiteral("resourceDirectoryUp"));
+    up_ = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/arrow-up")), tr("上级"), filterBar_); up_->setObjectName(QStringLiteral("resourceDirectoryUp"));
     up_->setToolTip(tr("返回上级目录")); filter->addWidget(up_);
     location_ = new QLabel(filterBar_); location_->setObjectName(QStringLiteral("resourceDirectory"));
     location_->setTextFormat(Qt::PlainText); location_->setMinimumWidth(40); filter->addWidget(location_);
     search_ = new QLineEdit(filterBar_); search_->setObjectName(QStringLiteral("resourceSearch"));
-    search_->setPlaceholderText(tr("搜索名称、四字码或路径")); search_->setClearButtonEnabled(true);
+    search_->setPlaceholderText(tr("搜索名称、四字码或路径…")); search_->setClearButtonEnabled(true);
+    UiKit::InstallSearchIcon(search_);
     filter->addWidget(search_, 1); column->addWidget(filterBar_);
     auto* body = new QHBoxLayout; body->setSpacing(8);
     candidates_ = new QTreeWidget(this); candidates_->setObjectName(QStringLiteral("resourceCandidates"));
     candidates_->setColumnCount(3); candidates_->setHeaderLabels({tr("名称"), tr("资源"), tr("来源")});
-    candidates_->setRootIsDecorated(false); candidates_->setMouseTracking(true); candidates_->setMinimumWidth(220);
+    candidates_->setRootIsDecorated(false); candidates_->setUniformRowHeights(true); candidates_->setAlternatingRowColors(true);
+    candidates_->setMouseTracking(true); candidates_->setMinimumWidth(220);
     candidates_->header()->setSectionResizeMode(QHeaderView::Interactive);
     candidates_->header()->setStretchLastSection(true);
     candidates_->setColumnWidth(0, 130); candidates_->setColumnWidth(1, 250);
@@ -109,7 +113,14 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
         connect(add, &QPushButton::clicked, this, [this] { replacing_ = false; AddOrReplace(); });
     }
     column->addLayout(pathRow);
-    auto* actions = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this); column->addWidget(actions);
+    auto* actions = new QDialogButtonBox(QDialogButtonBox::Apply | QDialogButtonBox::Cancel, this);
+    if (auto* applyBtn = actions->button(QDialogButtonBox::Apply)) {
+        applyBtn->setObjectName(QStringLiteral("primaryButton"));
+        applyBtn->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/check")));
+        applyBtn->setText(tr("应用"));
+    }
+    if (auto* cancelBtn = actions->button(QDialogButtonBox::Cancel)) cancelBtn->setText(tr("取消"));
+    column->addWidget(actions);
     connect(actions->button(QDialogButtonBox::Apply), &QPushButton::clicked, this, &ObjectResourcePicker::Apply);
     connect(actions, &QDialogButtonBox::rejected, this, &QWidget::close);
     connect(tabs_, &QTabWidget::currentChanged, this, &ObjectResourcePicker::SelectSource);

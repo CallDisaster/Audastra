@@ -2,6 +2,7 @@
 
 #include "Theme/DesignTokens.generated.h"
 #include "Widgets/RoundedPopups.h"
+#include "Widgets/SearchField.h"
 
 #include <QApplication>
 #include <QDebug>
@@ -36,48 +37,66 @@ class PaletteRowDelegate final : public QStyledItemDelegate {
 public:
     using QStyledItemDelegate::QStyledItemDelegate;
     QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex& index) const override {
-        return {0, index.data(HeaderRole).toBool() ? 26 : index.data(DetailRole).toString().isEmpty() ? 34 : 48};
+        return {0, index.data(HeaderRole).toBool() ? 28 : index.data(DetailRole).toString().isEmpty() ? 36 : 50};
     }
     void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
         painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
         const auto& palette = option.palette;
         const bool header = index.data(HeaderRole).toBool();
         const bool enabled = index.flags().testFlag(Qt::ItemIsEnabled);
         const bool selected = !header && enabled && (option.state & QStyle::State_Selected);
         QRect row = option.rect;
+        const QRect pill = row.adjusted(6, 2, -6, -2);
+        const qreal radius = War3Map::UiKit::Tokens::Size::kRadiusMd;
         if (selected) {
-            painter->fillRect(row, palette.brush(QPalette::Highlight));
-            painter->fillRect(QRect(row.left(), row.top(), 2, row.height()), palette.brush(QPalette::Accent));
+            painter->setPen(QPen(palette.color(QPalette::Mid), 1.0));
+            painter->setBrush(palette.brush(QPalette::Highlight));
+            painter->drawRoundedRect(QRectF(pill).adjusted(0.5, 0.5, -0.5, -0.5), radius, radius);
         } else if (!header && enabled && (option.state & QStyle::State_MouseOver)) {
-            painter->fillRect(row, palette.brush(QPalette::Light));
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(palette.brush(QPalette::Light));
+            painter->drawRoundedRect(QRectF(pill), radius, radius);
         }
-        row.adjust(12, 0, -12, 0);
+        row.adjust(16, 0, -16, 0);
         QFont font = option.font;
         if (header) {
+            if (index.row() > 0) {
+                painter->setPen(palette.color(QPalette::Mid));
+                painter->drawLine(QPoint(option.rect.left() + 10, option.rect.top() + 2),
+                    QPoint(option.rect.right() - 10, option.rect.top() + 2));
+            }
+            font.setPointSizeF(std::max(8.5, font.pointSizeF() - 1.0));
+            font.setWeight(QFont::Medium);
             painter->setPen(palette.color(QPalette::PlaceholderText));
             painter->setFont(font);
-            painter->drawText(row, Qt::AlignVCenter, index.data().toString());
-            painter->setPen(palette.color(QPalette::Mid));
-            painter->drawLine(option.rect.bottomLeft(), option.rect.bottomRight());
+            painter->drawText(row.adjusted(0, 4, 0, 0), Qt::AlignVCenter, index.data().toString());
         } else {
             const QString shortcut = index.data(ShortcutRole).toString();
             const QString detail = index.data(DetailRole).toString();
-            const int keyWidth = std::min(row.width() / 3, QFontMetrics(font).horizontalAdvance(shortcut) + 14);
-            const QRect title(row.left(), row.top(), std::max(0, row.width() - (shortcut.isEmpty() ? 0 : keyWidth + 10)), detail.isEmpty() ? row.height() : 26);
-            font.setWeight(QFont::Medium);
+            const int keyWidth = std::min(row.width() / 3, QFontMetrics(option.font).horizontalAdvance(shortcut) + 16);
+            const QRect title(row.left(), row.top() + (detail.isEmpty() ? 0 : 4),
+                std::max(0, row.width() - (shortcut.isEmpty() ? 0 : keyWidth + 10)),
+                detail.isEmpty() ? row.height() : 22);
+            font.setWeight(selected ? QFont::Medium : QFont::Normal);
             painter->setFont(font);
-            painter->setPen(enabled ? palette.color(selected ? QPalette::Accent : QPalette::Text) : palette.color(QPalette::Disabled, QPalette::Text));
+            painter->setPen(enabled ? palette.color(QPalette::Text) : palette.color(QPalette::Disabled, QPalette::Text));
             painter->drawText(title, Qt::AlignVCenter, QFontMetrics(font).elidedText(index.data().toString(), Qt::ElideRight, title.width()));
             painter->setFont(option.font);
-            painter->setPen(enabled ? palette.color(QPalette::PlaceholderText) : palette.color(QPalette::Disabled, QPalette::Text));
             if (!shortcut.isEmpty()) {
-                const QRect key(row.right() - keyWidth, row.top() + 6, keyWidth, 22);
-                painter->drawRoundedRect(key, War3Map::UiKit::Tokens::Size::kRadiusXs,
-                    War3Map::UiKit::Tokens::Size::kRadiusXs);
-                painter->drawText(key.adjusted(5, 0, -5, 0), Qt::AlignCenter, QFontMetrics(option.font).elidedText(shortcut, Qt::ElideRight, key.width() - 10));
+                const int keyY = detail.isEmpty() ? row.top() + (row.height() - 20) / 2 : row.top() + 5;
+                const QRectF key(row.right() - keyWidth + 0.5, keyY + 0.5, keyWidth - 1.0, 19.0);
+                painter->setPen(QPen(palette.color(QPalette::Mid), 1.0));
+                painter->setBrush(palette.color(QPalette::Window));
+                painter->drawRoundedRect(key, War3Map::UiKit::Tokens::Size::kRadiusSm,
+                    War3Map::UiKit::Tokens::Size::kRadiusSm);
+                painter->setPen(enabled ? palette.color(QPalette::PlaceholderText) : palette.color(QPalette::Disabled, QPalette::Text));
+                painter->drawText(key.adjusted(5, 0, -5, 0), Qt::AlignCenter,
+                    QFontMetrics(option.font).elidedText(shortcut, Qt::ElideRight, static_cast<int>(key.width()) - 10));
             }
             if (!detail.isEmpty()) {
-                const QRect description(row.left(), row.top() + 26, row.width(), 20);
+                painter->setPen(enabled ? palette.color(QPalette::PlaceholderText) : palette.color(QPalette::Disabled, QPalette::Text));
+                const QRect description(row.left(), row.top() + 25, row.width(), 19);
                 painter->drawText(description, Qt::AlignVCenter, QFontMetrics(option.font).elidedText(detail, Qt::ElideRight, description.width()));
             }
         }
@@ -105,6 +124,7 @@ CommandPalette::CommandPalette(QWidget* parent) : QDialog(parent) {
     searchBox_->setMaxLength(512);
     searchBox_->setClearButtonEnabled(true);
     searchBox_->setAttribute(Qt::WA_InputMethodEnabled);
+    War3Map::UiKit::InstallSearchIcon(searchBox_);
     searchBox_->installEventFilter(this);
     layout->addWidget(searchBox_);
     listView_ = new QListView;
@@ -120,9 +140,12 @@ CommandPalette::CommandPalette(QWidget* parent) : QDialog(parent) {
     listView_->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     // 小屏幕先收缩可滚动的结果区，搜索框与快捷键页脚始终留在窗口内。
     listView_->setMinimumHeight(0);
-    listView_->setMaximumHeight(360);
+    listView_->setMaximumHeight(340);
     listView_->installEventFilter(this);
     layout->addWidget(listView_, 1);
+    auto* hint = new QLabel(tr("↑↓ 选择   ·   Enter 执行   ·   输入 > 仅筛选命令   ·   Esc 关闭"), this);
+    hint->setObjectName(QStringLiteral("commandPaletteHint"));
+    layout->addWidget(hint);
     connect(searchBox_, &QLineEdit::textChanged, this, &CommandPalette::FilterEntries);
     connect(listView_, &QListView::activated, this, &CommandPalette::ActivateIndex);
     connect(listView_, &QListView::clicked, this, &CommandPalette::ActivateIndex);

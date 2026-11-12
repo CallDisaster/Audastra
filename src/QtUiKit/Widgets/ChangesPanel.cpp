@@ -1,4 +1,5 @@
 #include "ChangesPanel.h"
+#include "Icons/SvgIcons.h"
 #include "Widgets/ElidedLabel.h"
 
 #include <QFormLayout>
@@ -59,21 +60,32 @@ ChangesPanel::ChangesPanel(QWidget* parent) : QWidget(parent) {
     tree_->setTextElideMode(Qt::ElideRight);
     model_ = new QStandardItemModel(tree_); tree_->setModel(model_);
     layout->addWidget(tree_, 1);
-    auto* fields = new QFormLayout;
-    before_ = new War3Map::UiKit::ElidedLabel(this); before_->setObjectName(QStringLiteral("changesBefore"));
-    after_ = new War3Map::UiKit::ElidedLabel(this); after_->setObjectName(QStringLiteral("changesAfter"));
+    auto* diffCard = new QFrame(this);
+    diffCard->setObjectName(QStringLiteral("changesDiffCard"));
+    auto* fields = new QFormLayout(diffCard);
+    fields->setContentsMargins(10, 8, 10, 8);
+    fields->setHorizontalSpacing(10);
+    fields->setVerticalSpacing(5);
+    before_ = new War3Map::UiKit::ElidedLabel(diffCard); before_->setObjectName(QStringLiteral("changesBefore"));
+    after_ = new War3Map::UiKit::ElidedLabel(diffCard); after_->setObjectName(QStringLiteral("changesAfter"));
     fields->addRow(tr("原值"), before_); fields->addRow(tr("当前值"), after_);
-    layout->addLayout(fields);
+    layout->addWidget(diffCard);
     reason_ = PlainLabel(this, QString(), QStringLiteral("changesReason"));
     reason_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     layout->addWidget(reason_);
     auto* rowActions = new QHBoxLayout;
-    reveal_ = new QPushButton(tr("转到"), this); reveal_->setObjectName(QStringLiteral("changesReveal"));
-    revert_ = new QPushButton(tr("撤销这项"), this); revert_->setObjectName(QStringLiteral("changesRevert"));
+    rowActions->setSpacing(6);
+    reveal_ = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/arrow-right")), tr("转到"), this);
+    reveal_->setObjectName(QStringLiteral("changesReveal"));
+    revert_ = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/undo-2")), tr("撤销这项"), this);
+    revert_->setObjectName(QStringLiteral("changesRevert"));
     reveal_->setEnabled(false); revert_->setEnabled(false);
     rowActions->addWidget(reveal_); rowActions->addWidget(revert_); rowActions->addStretch();
     layout->addLayout(rowActions);
-    auto* separator = new QFrame(this); separator->setFrameShape(QFrame::HLine); layout->addWidget(separator);
+    auto* separator = new QFrame(this);
+    separator->setObjectName(QStringLiteral("commandDivider"));
+    separator->setFixedHeight(1);
+    layout->addWidget(separator);
     preflight_ = PlainLabel(this, tr("尚未检查保存。"), QStringLiteral("changesPreflight"));
     layout->addWidget(preflight_);
     preflightDetails_ = new QTextEdit(this);
@@ -81,8 +93,11 @@ ChangesPanel::ChangesPanel(QWidget* parent) : QWidget(parent) {
     preflightDetails_->setReadOnly(true); preflightDetails_->setMaximumHeight(110);
     preflightDetails_->hide(); layout->addWidget(preflightDetails_);
     auto* saveActions = new QHBoxLayout;
-    check_ = new QPushButton(tr("检查保存"), this); check_->setObjectName(QStringLiteral("changesCheckSave"));
-    save_ = new QPushButton(tr("保存"), this); save_->setObjectName(QStringLiteral("changesSave"));
+    saveActions->setSpacing(6);
+    check_ = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/shield")), tr("检查保存"), this);
+    check_->setObjectName(QStringLiteral("changesCheckSave"));
+    save_ = new QPushButton(War3Map::UiKit::SvgIcon(QStringLiteral("lucide/save")), tr("保存"), this);
+    save_->setObjectName(QStringLiteral("changesSave"));
     saveActions->addWidget(check_); saveActions->addStretch(); saveActions->addWidget(save_);
     layout->addLayout(saveActions);
     saveReason_ = PlainLabel(this, {}, QStringLiteral("changesSaveReason"));

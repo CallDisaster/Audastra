@@ -1,10 +1,14 @@
 #include "HelpDialog.h"
+#include "Icons/SvgIcons.h"
+#include "Widgets/SearchField.h"
+
 #include <QFile>
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QListWidget>
 #include <QSplitter>
 #include <QTextBrowser>
+#include <QTextDocument>
 #include <QVBoxLayout>
 
 namespace {
@@ -36,29 +40,42 @@ QStringList HelpDialog::SplitSections(const QString& markdown) {
 
 HelpDialog::HelpDialog(QWidget* parent) : QDialog(parent) {
     setObjectName(QStringLiteral("helpDialog"));
-    setWindowTitle(tr("使用帮助"));
+    setWindowTitle(tr("使用帮助 · Audastra"));
     setAttribute(Qt::WA_DeleteOnClose);
     resize(980, 680);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
     auto* splitter = new QSplitter(this);
+    splitter->setChildrenCollapsible(false);
     auto* side = new QWidget(splitter);
     auto* sideLayout = new QVBoxLayout(side);
-    sideLayout->setContentsMargins(0, 0, 0, 0);
+    sideLayout->setContentsMargins(0, 0, 6, 0);
+    sideLayout->setSpacing(8);
     search_ = new QLineEdit(side);
     search_->setObjectName(QStringLiteral("helpSearch"));
-    search_->setPlaceholderText(tr("搜索"));
+    search_->setPlaceholderText(tr("搜索帮助章节或正文…"));
     search_->setClearButtonEnabled(true);
+    War3Map::UiKit::InstallSearchIcon(search_);
     sideLayout->addWidget(search_);
     topics_ = new QListWidget(side);
     topics_->setObjectName(QStringLiteral("helpTopics"));
+    topics_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    topics_->setTextElideMode(Qt::ElideRight);
     sideLayout->addWidget(topics_, 1);
     page_ = new QTextBrowser(splitter);
     page_->setObjectName(QStringLiteral("helpPage"));
     page_->setOpenExternalLinks(true);
+    page_->document()->setDocumentMargin(14);
+    page_->document()->setDefaultStyleSheet(QStringLiteral(
+        "h2 { color: #e8eaed; margin-top: 4px; margin-bottom: 10px; }"
+        "h3 { color: #e8eaed; margin-top: 14px; margin-bottom: 6px; }"
+        "p, li { color: #d5d8de; line-height: 155%; }"
+        "code { background-color: #22252b; color: #8ae0b3; }"));
     splitter->addWidget(side);
     splitter->addWidget(page_);
     splitter->setStretchFactor(1, 1);
-    splitter->setSizes({220, 760});
+    splitter->setSizes({236, 720});
     layout->addWidget(splitter);
 
     QFile file(QString::fromLatin1(kHelpResource));

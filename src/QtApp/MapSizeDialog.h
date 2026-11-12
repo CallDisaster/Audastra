@@ -11,6 +11,7 @@
 #include <string_view>
 
 class QLabel;
+class QLineEdit;
 class QTableWidget;
 
 namespace War3Map::QtApp {
@@ -25,12 +26,14 @@ public:
 private:
     void Refresh();
     void Populate(const Services::MapSizeReport& report);
+    void ApplyMemberFilter();
     void ActivateCurrent();
     Revision revision_;
     Query query_;
     Activate activate_;
     QLabel* scope_ = nullptr;
     QLabel* status_ = nullptr;
+    QLineEdit* filter_ = nullptr;
     QTableWidget* totals_ = nullptr;
     QTableWidget* top_ = nullptr;
     std::optional<Services::MapSizeReport> report_;

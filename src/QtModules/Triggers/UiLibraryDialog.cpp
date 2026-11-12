@@ -2,6 +2,7 @@
 
 #include "BundledUiLibrary.h"
 #include "EditorProject.h"
+#include "Icons/SvgIcons.h"
 #include "Widgets/ColumnLayout.h"
 
 #include "War3MapCore/Trigger/UiCatalog.h"
@@ -14,6 +15,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -37,24 +39,31 @@ bool Contains(const std::vector<std::string>& values, const std::string& id) {
 
 UiLibraryDialog::UiLibraryDialog(const QtProject::EditorProject& project, QWidget* parent)
     : QDialog(parent), project_(project), settings_(project.uiLibraryGlobal_), mapOnly_(project.uiLibraryMapOnly_) {
-    setWindowTitle(tr("函数库"));
-    resize(820, 520);
+    setWindowTitle(tr("函数库 · Audastra"));
+    resize(840, 540);
     auto* layout = new QVBoxLayout(this);
+    layout->setContentsMargins(14, 12, 14, 12);
+    layout->setSpacing(8);
     auto* tabs = new QTabWidget(this);
     auto* packagePage = new QWidget(tabs);
     auto* packageLayout = new QVBoxLayout(packagePage);
+    packageLayout->setContentsMargins(0, 8, 0, 0);
+    packageLayout->setSpacing(8);
     packages_ = new QTableWidget(0, kColumnCount, packagePage);
     packages_->setObjectName("uiLibraryPackages");
     packages_->setHorizontalHeaderLabels({tr("启用"), tr("仅本图"), tr("函数库"), tr("来源"), tr("本图函数"), tr("本图状态"), tr("文件")});
     packages_->setSelectionBehavior(QAbstractItemView::SelectRows);
     packages_->setSelectionMode(QAbstractItemView::SingleSelection);
     packages_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    packages_->setShowGrid(false);
+    packages_->setAlternatingRowColors(true);
     packages_->verticalHeader()->hide();
     UiKit::ConfigureResizableColumns(packages_->horizontalHeader(), {220});
     packageLayout->addWidget(packages_, 1);
     auto* orderRow = new QHBoxLayout;
-    auto* up = new QPushButton(tr("上移"), packagePage);
-    auto* down = new QPushButton(tr("下移"), packagePage);
+    orderRow->setSpacing(6);
+    auto* up = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/chevron-up")), tr("上移"), packagePage);
+    auto* down = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/chevron-down")), tr("下移"), packagePage);
     orderRow->addWidget(up);
     orderRow->addWidget(down);
     orderRow->addStretch();
@@ -66,6 +75,7 @@ UiLibraryDialog::UiLibraryDialog(const QtProject::EditorProject& project, QWidge
 
     auto* conflicts = new QListWidget(tabs);
     conflicts->setObjectName("uiLibraryConflicts");
+    conflicts->setAlternatingRowColors(true);
     if (project.uiCatalog_) {
         for (const auto& conflict : UiLibrary::FindConflicts(*project.uiCatalog_)) {
             QStringList providers;
@@ -79,7 +89,13 @@ UiLibraryDialog::UiLibraryDialog(const QtProject::EditorProject& project, QWidge
     layout->addWidget(tabs, 1);
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
-    buttons->button(QDialogButtonBox::Ok)->setText(tr("应用并重新载入触发器"));
+    auto* ok = buttons->button(QDialogButtonBox::Ok);
+    ok->setObjectName(QStringLiteral("uiLibraryApply"));
+    ok->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/check")));
+    ok->setText(tr("应用并重新载入触发器"));
+    ok->style()->unpolish(ok);
+    ok->style()->polish(ok);
+    if (auto* cancel = buttons->button(QDialogButtonBox::Cancel)) cancel->setText(tr("取消"));
     layout->addWidget(buttons);
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);

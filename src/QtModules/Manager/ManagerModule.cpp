@@ -7,6 +7,7 @@
 #include "EditorProject.h"
 #include "Icons/SvgIcons.h"
 #include "Modules/ModuleHost.h"
+#include "Theme/DesignTokens.generated.h"
 #include "Widgets/ColumnLayout.h"
 #include "Widgets/SearchField.h"
 #include "War3MapCore/Trigger/TriggerDocument.h"
@@ -22,9 +23,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPainter>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStackedWidget>
+#include <QStyledItemDelegate>
 #include <QTreeWidget>
 #include <QUndoStack>
 #include <QVBoxLayout>
@@ -42,6 +45,10 @@ using Manager::Page;
 constexpr int kRowRole = Qt::UserRole + 1;
 constexpr int kNumberRole = Qt::UserRole + 2;
 constexpr int kTargetRole = Qt::UserRole + 3;
+constexpr int kOverviewHeaderRole = Qt::UserRole + 10;
+constexpr int kOverviewLabelRole = Qt::UserRole + 11;
+constexpr int kOverviewValueRole = Qt::UserRole + 12;
+constexpr int kOverviewClickableRole = Qt::UserRole + 13;
 // 单个分组最多渲染的引用条数；函数可能被调用上万次，逐条生成自然语言会拖慢界面。
 constexpr std::size_t kMaxRenderedUsages = 500;
 constexpr std::size_t kNavigationRows = 4096;
@@ -80,6 +87,73 @@ std::optional<Page> PageOfKind(const QString& kind) {
     const auto found = kPages.find(kind.toLower());
     return found == kPages.end() ? std::nullopt : std::optional<Page>(found->second);
 }
+
+class OverviewItemDelegate final : public QStyledItemDelegate {
+public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    QSize sizeHint(const QStyleOptionViewItem&, const QModelIndex& index) const override {
+        return {0, index.data(kOverviewHeaderRole).toBool() ? 34 : 32};
+    }
+
+    void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        const auto& pal = option.palette;
+        const bool isHeader = index.data(kOverviewHeaderRole).toBool();
+        if (isHeader) {
+            QRect r = option.rect.adjusted(14, 6, -14, -2);
+            QFont f = option.font;
+            f.setWeight(QFont::Medium);
+            painter->setFont(f);
+            painter->setPen(pal.color(QPalette::PlaceholderText));
+            painter->drawText(r, Qt::AlignLeft | Qt::AlignVCenter, index.data(Qt::DisplayRole).toString());
+            painter->setPen(pal.color(QPalette::Mid));
+            painter->drawLine(QPoint(option.rect.left() + 12, option.rect.bottom()),
+                QPoint(option.rect.right() - 12, option.rect.bottom()));
+            painter->restore();
+            return;
+        }
+        const bool clickable = index.data(kOverviewClickableRole).toBool();
+        const bool hovered = clickable && (option.state & QStyle::State_MouseOver);
+        const bool selected = clickable && (option.state & QStyle::State_Selected);
+        const QRect pill = option.rect.adjusted(10, 2, -10, -2);
+        if (selected || hovered) {
+            painter->setPen(selected ? QPen(pal.color(QPalette::Mid), 1.0) : Qt::NoPen);
+            painter->setBrush(selected ? pal.brush(QPalette::Highlight) : pal.brush(QPalette::Light));
+            painter->drawRoundedRect(QRectF(pill).adjusted(0.5, 0.5, -0.5, -0.5),
+                UiKit::Tokens::Size::kRadiusMd, UiKit::Tokens::Size::kRadiusMd);
+        }
+        const QString label = index.data(kOverviewLabelRole).toString();
+        const QString value = index.data(kOverviewValueRole).toString();
+        const QRect inner = pill.adjusted(10, 0, -10, 0);
+        QFont badgeFont = option.font;
+        badgeFont.setWeight(QFont::Medium);
+        const QFontMetrics badgeMetrics(badgeFont);
+        const int chevronReserve = clickable ? 16 : 0;
+        const int badgeWidth = std::max(28, badgeMetrics.horizontalAdvance(value) + 16);
+        const QRect badgeRect(inner.right() - chevronReserve - badgeWidth, inner.top() + (inner.height() - 20) / 2, badgeWidth, 20);
+        const bool nonZeroClickable = clickable && value != QStringLiteral("0");
+        painter->setPen(QPen(nonZeroClickable ? QColor(138, 224, 179, 90) : pal.color(QPalette::Mid), 1.0));
+        painter->setBrush(nonZeroClickable ? QColor(138, 224, 179, 28) : pal.color(QPalette::Button));
+        painter->drawRoundedRect(QRectF(badgeRect).adjusted(0.5, 0.5, -0.5, -0.5),
+            UiKit::Tokens::Size::kRadiusSm, UiKit::Tokens::Size::kRadiusSm);
+        painter->setFont(badgeFont);
+        painter->setPen(nonZeroClickable ? pal.color(QPalette::Accent) : pal.color(QPalette::Text));
+        painter->drawText(badgeRect, Qt::AlignCenter, value);
+        if (clickable) {
+            painter->setFont(option.font);
+            painter->setPen(hovered || selected ? pal.color(QPalette::Text) : pal.color(QPalette::PlaceholderText));
+            painter->drawText(QRect(inner.right() - 12, inner.top(), 12, inner.height()), Qt::AlignCenter, QStringLiteral("›"));
+        }
+        painter->setFont(option.font);
+        painter->setPen(pal.color(QPalette::Text));
+        const QRect labelRect(inner.left(), inner.top(), std::max(0, badgeRect.left() - inner.left() - 12), inner.height());
+        painter->drawText(labelRect, Qt::AlignLeft | Qt::AlignVCenter,
+            QFontMetrics(option.font).elidedText(label, Qt::ElideRight, labelRect.width()));
+        painter->restore();
+    }
+};
 
 } // namespace
 
@@ -156,6 +230,7 @@ void ManagerModule::BuildPage() {
     layout->addWidget(pages_);
 
     auto* splitter = new QSplitter(page_);
+    splitter_ = splitter;
     splitter->setHandleWidth(1);
     splitter->setChildrenCollapsible(false);
     auto* center = new QWidget(splitter);
@@ -173,6 +248,9 @@ void ManagerModule::BuildPage() {
     UiKit::InstallSearchIcon(search_);
     count_ = new QLabel(center);
     count_->setObjectName("paneHint");
+    overviewTitle_ = new QLabel(tr("工程健康与资产概况  ·  点击统计项可直接筛选查看"), center);
+    overviewTitle_->setObjectName("managerOverviewTitle");
+    toolbar->addWidget(overviewTitle_);
     toolbar->addWidget(filter_);
     rawValues_ = new QCheckBox(tr("显示原始字段"), center);
     rawValues_->setObjectName("managerRawValues");
@@ -184,6 +262,8 @@ void ManagerModule::BuildPage() {
     center_ = new QStackedWidget(center);
     overview_ = new QListWidget(center_);
     overview_->setObjectName("managerOverview");
+    overview_->setMouseTracking(true);
+    overview_->setItemDelegate(new OverviewItemDelegate(overview_));
     table_ = new QTreeWidget(center_);
     table_->setObjectName("managerTable");
     table_->setRootIsDecorated(false);
@@ -197,6 +277,7 @@ void ManagerModule::BuildPage() {
     splitter->addWidget(center);
 
     auto* detail = new QWidget(splitter);
+    detailPane_ = detail;
     auto* detailLayout = new QVBoxLayout(detail);
     detailLayout->setContentsMargins(10, 10, 12, 10);
     detailLayout->setSpacing(6);
@@ -227,6 +308,7 @@ void ManagerModule::BuildPage() {
     splitter->addWidget(detail);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
+    splitter->setSizes({640, 420});
     layout->addWidget(splitter, 1);
 
     connect(pages_, &QListWidget::currentRowChanged, this, [this](int row) {
@@ -251,12 +333,15 @@ void ManagerModule::BuildPage() {
         if (const auto* row = CurrentRow(); row != nullptr && row->open && host_ != nullptr) host_->Navigate(*row->open);
     });
     connect(detail_, &QTreeWidget::itemActivated, this, [this](QTreeWidgetItem* item) { OpenItem(item); });
-    connect(overview_, &QListWidget::itemActivated, this, [this](QListWidgetItem* item) {
+    const auto activateOverviewItem = [this](QListWidgetItem* item) {
+        if (!item) return;
         const int index = item->data(kRowRole).toInt();
         if (index < 0 || index >= static_cast<int>(overviewLines_.size()) || !overviewLines_[index].page) return;
         if (!overviewLines_[index].filter.isEmpty()) filters_[static_cast<int>(*overviewLines_[index].page)] = overviewLines_[index].filter;
         ShowPage(*overviewLines_[index].page);
-    });
+    };
+    connect(overview_, &QListWidget::itemActivated, this, activateOverviewItem);
+    connect(overview_, &QListWidget::itemClicked, this, activateOverviewItem);
 }
 
 bool ManagerModule::eventFilter(QObject* watched, QEvent* event) {
@@ -274,9 +359,23 @@ void ManagerModule::ShowPage(Page page) {
     QString& saved = filters_[static_cast<int>(page)];
     if (saved.isEmpty() && !filters.empty()) saved = filters.front().id;
     filter_->setCurrentIndex(std::max(0, filter_->findData(saved)));
+    const bool isOverview = page == Page::Overview;
+    if (overviewTitle_) overviewTitle_->setVisible(isOverview);
     filter_->setVisible(!filters.empty());
-    search_->setVisible(page != Page::Overview);
-    center_->setCurrentWidget(page == Page::Overview ? static_cast<QWidget*>(overview_) : table_);
+    if (rawValues_) rawValues_->setVisible(!isOverview);
+    search_->setVisible(!isOverview);
+    if (detailPane_) {
+        const bool wasHidden = detailPane_->isHidden();
+        detailPane_->setVisible(!isOverview);
+        if (!isOverview && wasHidden && splitter_) {
+            const auto sizes = splitter_->sizes();
+            if (sizes.size() == 2 && sizes[1] < 160) {
+                const int total = std::max(splitter_->width(), 1000);
+                splitter_->setSizes({total * 3 / 5, total * 2 / 5});
+            }
+        }
+    }
+    center_->setCurrentWidget(isOverview ? static_cast<QWidget*>(overview_) : table_);
     populating_ = false;
     Refresh(true);
 }
@@ -305,6 +404,7 @@ void ManagerModule::PopulateOverview() {
         if (line.section != section) {
             section = line.section;
             auto* header = new QListWidgetItem(section, overview_);
+            header->setData(kOverviewHeaderRole, true);
             header->setFlags(Qt::NoItemFlags);
             QFont font = header->font();
             font.setBold(true);
@@ -312,8 +412,11 @@ void ManagerModule::PopulateOverview() {
         }
         auto* item = new QListWidgetItem(QStringLiteral("%1　%2").arg(line.label, line.value), overview_);
         item->setData(kRowRole, static_cast<int>(index));
+        item->setData(kOverviewLabelRole, line.label);
+        item->setData(kOverviewValueRole, line.value);
+        item->setData(kOverviewClickableRole, static_cast<bool>(line.page));
         if (!line.page) item->setFlags(Qt::ItemIsEnabled);
-        else item->setToolTip(tr("双击查看"));
+        else item->setToolTip(tr("点击跳转到对应列表"));
     }
     count_->clear();
     detailTitle_->setText(Manager::PageLabel(Page::Overview));

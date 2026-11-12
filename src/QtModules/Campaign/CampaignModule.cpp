@@ -110,49 +110,54 @@ bool CampaignModule::Failed(const std::vector<Diagnostic>& diagnostics) {
 
 void CampaignModule::BuildPage() {
     page_ = new QWidget; page_->setObjectName("campaignWorkspace");
-    auto* layout = new QVBoxLayout(page_); layout->setContentsMargins(12, 12, 12, 12);
-    auto* toolbar = new QHBoxLayout;
-    const auto action = [&](const QString& text, const char* name, const auto& handler) {
-        auto* button = new QPushButton(text, page_); button->setObjectName(name); toolbar->addWidget(button);
+    auto* layout = new QVBoxLayout(page_); layout->setContentsMargins(12, 10, 12, 10); layout->setSpacing(8);
+    auto* toolbar = new QHBoxLayout; toolbar->setSpacing(6);
+    const auto action = [&](const QString& text, const char* name, const char* icon, const auto& handler) {
+        auto* button = new QPushButton(text, page_); button->setObjectName(name);
+        if (icon) button->setIcon(UiKit::SvgIcon(QLatin1String(icon)));
+        toolbar->addWidget(button);
         connect(button, &QPushButton::clicked, this, handler); return button;
     };
-    action(tr("新建战役"), "newCampaign", [this] { (void)New(); });
-    action(tr("打开战役…"), "openCampaign", [this] {
+    action(tr("新建战役"), "newCampaign", "lucide/file-plus-2", [this] { (void)New(); });
+    action(tr("打开战役…"), "openCampaign", "lucide/folder-open", [this] {
         const auto context = FreezeContext();
         const QScopedValueRollback guard(modalOperation_, true);
         const auto path = QFileDialog::getOpenFileName(page_, tr("打开战役"), {}, tr("Warcraft III 战役 (*.w3n)"));
         if (!path.isEmpty() && CheckContext(context)) (void)Open(std::filesystem::path(path.toStdWString()));
     });
-    action(tr("保存"), "saveCampaign", [this] { (void)Save(); });
-    action(tr("另存为…"), "saveCampaignAs", [this] { (void)Save(true); });
+    action(tr("保存"), "saveCampaign", "lucide/save", [this] { (void)Save(); });
+    action(tr("另存为…"), "saveCampaignAs", nullptr, [this] { (void)Save(true); });
     toolbar->addStretch();
-    action(tr("应用共享修改"), "applyCampaignShared", [this] { (void)FlushDraft(); });
-    action(tr("放弃共享草稿"), "discardCampaignShared", [this] { ReloadShared(); RefreshSettings(); settingsDirty_ = false; emit Changed(); });
+    action(tr("应用共享修改"), "applyCampaignShared", "lucide/check", [this] { (void)FlushDraft(); });
+    action(tr("放弃共享草稿"), "discardCampaignShared", "lucide/rotate-ccw", [this] { ReloadShared(); RefreshSettings(); settingsDirty_ = false; emit Changed(); });
     layout->addLayout(toolbar);
     summary_ = new QLabel(tr("未打开战役"), page_); summary_->setWordWrap(true); summary_->setObjectName("campaignStatus"); layout->addWidget(summary_);
     tabs_ = new QTabWidget(page_); tabs_->setObjectName("campaignTabs"); layout->addWidget(tabs_, 1);
     for (bool menu : {false, true}) {
-        auto* container = new QWidget(tabs_); auto* area = new QVBoxLayout(container); area->setContentsMargins(0, 8, 0, 0);
-        auto* row = new QHBoxLayout;
-        const auto add = [&](const QString& text, const char* name, const auto& handler) {
-            auto* control = new QPushButton(text, container); control->setObjectName(name); row->addWidget(control);
+        auto* container = new QWidget(tabs_); auto* area = new QVBoxLayout(container); area->setContentsMargins(0, 8, 0, 0); area->setSpacing(8);
+        auto* row = new QHBoxLayout; row->setSpacing(6);
+        const auto add = [&](const QString& text, const char* name, const char* icon, const auto& handler) {
+            auto* control = new QPushButton(text, container); control->setObjectName(name);
+            if (icon) control->setIcon(UiKit::SvgIcon(QLatin1String(icon)));
+            row->addWidget(control);
             connect(control, &QPushButton::clicked, this, handler);
         };
-        add(menu ? tr("新增菜单按钮") : tr("添加地图…"), menu ? "addCampaignButton" : "addCampaignMap", [this, menu] { if (menu) EditButton(true); else AddMap(false); });
-        add(menu ? tr("编辑按钮") : tr("替换地图…"), menu ? "editCampaignButton" : "replaceCampaignMap", [this, menu] { if (menu) EditButton(false); else AddMap(true); });
-        add(tr("移除"), menu ? "removeCampaignButton" : "removeCampaignMap", [this, menu] { RemoveSelection(menu); });
-        add(tr("上移"), menu ? "upCampaignButton" : "upCampaignMap", [this, menu] { MoveSelection(menu, -1); });
-        add(tr("下移"), menu ? "downCampaignButton" : "downCampaignMap", [this, menu] { MoveSelection(menu, 1); });
+        add(menu ? tr("新增菜单按钮") : tr("添加地图…"), menu ? "addCampaignButton" : "addCampaignMap", "lucide/plus", [this, menu] { if (menu) EditButton(true); else AddMap(false); });
+        add(menu ? tr("编辑按钮") : tr("替换地图…"), menu ? "editCampaignButton" : "replaceCampaignMap", "lucide/pencil", [this, menu] { if (menu) EditButton(false); else AddMap(true); });
+        add(tr("移除"), menu ? "removeCampaignButton" : "removeCampaignMap", "lucide/trash-2", [this, menu] { RemoveSelection(menu); });
+        add(tr("上移"), menu ? "upCampaignButton" : "upCampaignMap", "lucide/chevron-up", [this, menu] { MoveSelection(menu, -1); });
+        add(tr("下移"), menu ? "downCampaignButton" : "downCampaignMap", "lucide/chevron-down", [this, menu] { MoveSelection(menu, 1); });
         if (!menu) {
-            add(tr("打开章节"), "openCampaignChapter", [this] { (void)OpenChapter(SelectedId(false)); });
-            add(tr("更新已打开章节"), "updateCampaignChapter", [this] { (void)UpdateOpenedChapter(); });
-            add(tr("导出…"), "exportCampaignMap", [this] { ExportSelection(); });
+            add(tr("打开章节"), "openCampaignChapter", "lucide/arrow-right", [this] { (void)OpenChapter(SelectedId(false)); });
+            add(tr("更新已打开章节"), "updateCampaignChapter", "lucide/rotate-ccw", [this] { (void)UpdateOpenedChapter(); });
+            add(tr("导出…"), "exportCampaignMap", "lucide/folder-open", [this] { ExportSelection(); });
         }
         row->addStretch(); area->addLayout(row);
         auto* table = new QTableWidget(container); table->setObjectName(menu ? "campaignButtons" : "campaignMaps");
         table->setColumnCount(menu ? 5 : 3);
         table->setHorizontalHeaderLabels(menu ? QStringList{tr("按钮身份"), tr("章节标题"), tr("关卡标题"), tr("地图路径"), tr("初始可见")}
             : QStringList{tr("地图身份"), tr("地图路径"), tr("菜单入口数")});
+        table->verticalHeader()->hide(); table->setShowGrid(false); table->setAlternatingRowColors(true);
         table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
         table->horizontalHeader()->setStretchLastSection(true); table->setSelectionBehavior(QAbstractItemView::SelectRows);
         table->setSelectionMode(QAbstractItemView::SingleSelection); table->setEditTriggers(QAbstractItemView::NoEditTriggers);

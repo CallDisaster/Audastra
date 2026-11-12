@@ -5,6 +5,8 @@
 #include "Commands/MapDataCommands.h"
 #include "ProjectAuxiliaryEdits.h"
 #include "Icons/IconProvider.h"
+#include "Icons/SvgIcons.h"
+#include "Widgets/SearchField.h"
 #include "ObjectNames.h"
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapFields.h"
@@ -18,6 +20,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPointer>
 #include <QScrollBar>
 #include <QJsonArray>
 #include <QScopedValueRollback>
@@ -188,17 +191,39 @@ QWidget* MapEntitiesModule::Widget() {
     page_->setObjectName("mapEntitiesWorkspace");
     auto* layout = new QVBoxLayout(page_);
     layout->setContentsMargins(12, 10, 12, 10);
+    layout->setSpacing(8);
     auto* actions = new QHBoxLayout;
-    auto* add = new QPushButton(tr("新建"), page_);
-    auto* remove = new QPushButton(tr("删除选中"), page_);
+    actions->setSpacing(8);
+    auto* add = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/plus")), tr("新建"), page_);
+    auto* remove = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/trash-2")), tr("删除选中"), page_);
     add->setObjectName("mapEntitiesAddAuxiliary");
     remove->setObjectName("mapEntitiesDeleteAuxiliary");
-    actions->addWidget(add); actions->addWidget(remove); actions->addStretch();
-    layout->addLayout(actions);
+    auto* filter = new QLineEdit(page_);
+    filter->setObjectName("mapEntitiesFilter");
+    filter->setPlaceholderText(tr("筛选当前页名称、ID 或坐标…"));
+    filter->setClearButtonEnabled(true);
+    filter->setFixedWidth(256);
+    UiKit::InstallSearchIcon(filter);
     rawFields_ = new QCheckBox(tr("显示原始字段"), page_);
     rawFields_->setObjectName("mapEntitiesRawFields");
-    layout->addWidget(rawFields_, 0, Qt::AlignRight);
+    actions->addWidget(add);
+    actions->addWidget(remove);
+    actions->addWidget(filter, 1);
+    actions->addStretch();
+    actions->addWidget(rawFields_);
+    layout->addLayout(actions);
     tabs_ = new QTabWidget(page_);
+    const QPointer<QLineEdit> filterGuard(filter);
+    const auto filterSingleTable = [](QTableWidget* tbl, const QString& query) {
+        if (!tbl) return;
+        for (int r = 0; r < tbl->rowCount(); ++r) {
+            bool match = query.isEmpty();
+            for (int c = 0; !match && c < tbl->columnCount(); ++c) {
+                if (const auto* cell = tbl->item(r, c)) match = cell->text().contains(query, Qt::CaseInsensitive);
+            }
+            tbl->setRowHidden(r, !match);
+        }
+    };
     const QStringList titles{tr("单位与物品"), tr("装饰物"), tr("区域"), tr("镜头")};
     for (int kind = 0; kind < 4; ++kind) {
         auto* table = new QTableWidget(tabs_);
@@ -213,11 +238,23 @@ QWidget* MapEntitiesModule::Widget() {
             table->setColumnWidth(column, 98);
         if (kind == 0) table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
         table->setIconSize({28, 28});
+        table->setShowGrid(false);
+        table->setAlternatingRowColors(true);
         table->setEditTriggers(QAbstractItemView::NoEditTriggers);
         table->setSelectionBehavior(QAbstractItemView::SelectRows);
         table->verticalHeader()->hide();
         tables_[kind] = table;
         tabs_->addTab(table, titles[kind]);
+        const QPointer<QTableWidget> tableGuard(table);
+        connect(table->model(), &QAbstractItemModel::rowsInserted, filter, [filterGuard, tableGuard, filterSingleTable] {
+            if (filterGuard && tableGuard) filterSingleTable(tableGuard.data(), filterGuard->text().trimmed());
+        });
+        connect(table->model(), &QAbstractItemModel::modelReset, filter, [filterGuard, tableGuard, filterSingleTable] {
+            if (filterGuard && tableGuard) filterSingleTable(tableGuard.data(), filterGuard->text().trimmed());
+        });
+        connect(filter, &QLineEdit::textChanged, table, [filterGuard, tableGuard, filterSingleTable] {
+            if (filterGuard && tableGuard) filterSingleTable(tableGuard.data(), filterGuard->text().trimmed());
+        });
         connect(table, &QTableWidget::cellDoubleClicked, this,
             [this, kind](int row, int column) { EditSelected(kind, row, column); });
         connect(table->verticalScrollBar(), &QScrollBar::valueChanged, this,
@@ -605,6 +642,9 @@ void MapEntitiesModule::EditSelected(int category, int row, int column) {
 bool MapEntitiesModule::Reveal(const Shell::NavigationTarget& target) {
     if (target.module != "entities") return false;
     (void)Widget();
+    if (auto* filter = page_->findChild<QLineEdit*>("mapEntitiesFilter"); filter && !filter->text().isEmpty()) {
+        filter->clear();
+    }
     for (int category = 0; category < 4; ++category) {
         const QStringList categories{"unit", "doodad", "region", "camera"};
         if (target.kind != categories[category]) continue;
