@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-const { runHarness, compactHistory, redact, providerToolNames } = await import(process.env.FORGE_RUNTIME_TEST_ENTRY || '../worker.mjs');
+const { runHarness, compactHistory, redact, providerToolNames, inlineSchemaRefs } = await import(process.env.FORGE_RUNTIME_TEST_ENTRY || '../worker.mjs');
 
 function chunk(response, choices, usage) {
   response.write(`data: ${JSON.stringify({ id: 'forge-fixture', object: 'chat.completion.chunk',
@@ -187,6 +187,75 @@ test('停止流式请求保留已有事件并正常收口', async () => {
     assert(events.some(event => event.type === 'run_end' && !event.success));
   } finally {
     clearTimeout(timeout);
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+// 与编辑器触发器图工具同形：定义在根 $defs，eca 与 argument 互相递归。
+const recursiveSchema = {
+  type: 'object', additionalProperties: false, required: ['plan'],
+  properties: {
+    plan: { type: 'object', properties: { root: { $ref: '#/$defs/eca' }, value: { $ref: '#/$defs/argument' } } },
+    $defs: { type: 'string', description: '名为 $defs 的普通字段' },
+  },
+  $defs: {
+    eca: { type: 'object', properties: { function: { type: 'string' },
+      arguments: { type: 'array', items: { $ref: '#/$defs/argument' } }, children: { type: 'array', items: { $ref: '#/$defs/eca' } } } },
+    argument: { type: 'object', properties: { scalar: { type: 'string' }, call: { $ref: '#/$defs/eca' }, index: { $ref: '#/$defs/argument' } } },
+  },
+};
+
+test('Gemini 参数 schema 展开引用并打断递归', () => {
+  const inlined = inlineSchemaRefs(recursiveSchema);
+  const text = JSON.stringify(inlined);
+  assert(!text.includes('"$ref"'));
+  assert(!Object.hasOwn(inlined, '$defs'));
+  assert.equal(inlined.properties.$defs.type, 'string');
+  const root = inlined.properties.plan.properties.root;
+  assert.equal(root.properties.function.type, 'string');
+  const argument = root.properties.arguments.items;
+  assert.equal(argument.properties.scalar.type, 'string');
+  assert.equal(argument.properties.call.type, 'object');
+  assert(!Object.hasOwn(argument.properties.call, 'properties'));
+  assert.equal(root.properties.children.items.type, 'object');
+  assert(!Object.hasOwn(root.properties.children.items, 'properties'));
+  assert.equal(inlined.properties.plan.properties.value.properties.call.properties.function.type, 'string');
+  assert.deepEqual(inlineSchemaRefs({ type: 'object', properties: { x: { $ref: '#/$defs/missing' } } }).properties.x.type, 'object');
+  assert(JSON.stringify(recursiveSchema).includes('"$ref"'));
+});
+
+test('发给 Gemini 的工具声明不含 $ref 与 $defs', async () => {
+  const bodies = [];
+  const server = createServer(async (request, response) => {
+    let source = '';
+    for await (const part of request) source += part;
+    bodies.push({ url: request.url, body: JSON.parse(source) });
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    response.end(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: '已收到。' }] },
+      finishReason: 'STOP', index: 0 }], usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7 } })}
+
+`);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const events = [];
+  try {
+    await runHarness({ provider: { id: 'gemini-fixture', name: '本机测试', protocol: 'gemini',
+      baseUrl: `http://127.0.0.1:${server.address().port}`, apiKey: 'fixture-gemini-key' },
+      model: { id: 'fixture-gemini', contextWindow: 262144 }, prompt: '看看当前地图。', systemPrompt: '只读。',
+      tools: [{ name: 'editor_query_trigger_graph', description: '查询触发器', inputSchema: recursiveSchema }] },
+    event => events.push(event), async () => ({}));
+    assert.equal(bodies.length, 1);
+    const declarations = bodies[0].body.tools.flatMap(tool => tool.functionDeclarations ?? []);
+    assert.equal(declarations.length, 1);
+    const parameters = declarations[0].parametersJsonSchema ?? declarations[0].parameters;
+    assert(parameters);
+    assert(!JSON.stringify(parameters).includes('"$ref"'));
+    assert(!Object.hasOwn(parameters, '$defs'));
+    assert(events.some(event => event.type === 'run_end' && event.success));
+    assert(!JSON.stringify(events).includes('fixture-gemini-key'));
+  } finally {
     server.closeAllConnections();
     server.close();
   }

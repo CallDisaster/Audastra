@@ -1066,10 +1066,12 @@ QJsonObject EcaFunctionFilterSchema() {
 
 QJsonObject GraphQueryProperties() {
     const auto id = QJsonObject{{"type", "string"}, {"pattern", "^[1-9][0-9]*$"}};
+    auto plan = GraphOperationSchema();
+    plan.remove("$defs");
     return {{"schema_version", QJsonObject{{"type", "integer"}, {"enum", QJsonArray{1}}}},
         {"table", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"categories", "variables", "triggers", "ecas", "arguments",
             "map_objects", "trigger_text", "feature_text", "presets", "function_examples", "outline", "legacy_trigger_references", "remove_audit"}}}},
-        {"plan", GraphOperationSchema()}, {"operation_index", QJsonObject{{"type", "integer"}, {"minimum", 0}}},
+        {"plan", plan}, {"operation_index", QJsonObject{{"type", "integer"}, {"minimum", 0}}},
         {"start", QJsonObject{{"type", "integer"}, {"minimum", 0}}}, {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 128}}},
         {"argument_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
         {"variable_ids", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 16}, {"uniqueItems", true}, {"items", id}}},
@@ -1088,6 +1090,11 @@ QJsonObject GraphOperationSchema() {
     return schema;
 }
 
+QJsonObject WithGraphQueryDefinitions(QJsonObject schema) {
+    schema.insert("$defs", GraphSchema().value("$defs"));
+    return schema;
+}
+
 QJsonObject QueryGraphDocument(const Trigger::TriggerDocument& document, const Trigger::UiCatalog& catalog,
     const Trigger::MapObjectReferenceSnapshot* mapObjects, const QJsonObject& request, const GraphNameResolver& names, const Trigger::TriggerGraphEditLimits& limits) {
     try { return QueryDocumentImpl(document, catalog, mapObjects, request, names, limits); }
@@ -1101,7 +1108,7 @@ void RegisterTriggerGraphTools(McpServer& server) {
         "trigger_text 表配 trigger_id 把整个触发器导出为紧凑 T 写法；feature_text 表配 category_id 把整个类别（触发器与引用的变量）导出为功能写法；"
         "presets 表（可配 type）列出函数库预设；function_examples 表配 functions 给出这些函数在本图里的真实用法原句；"
         "outline 表一次列出全部类别和触发器的名字与编号，可用 match 按名字筛选。";
-    query.inputSchema = BasicSchema(GraphQueryProperties(), {"table"});
+    query.inputSchema = WithGraphQueryDefinitions(BasicSchema(GraphQueryProperties(), {"table"}));
     query.maxResponseBytes = kResponseBytes;
     query.handler = [&server](const QJsonObject& request) -> QJsonValue {
         QJsonObject error; auto* workspace = RequireWorkspace(server, error); if (!workspace) return error;

@@ -3,6 +3,7 @@
 #include "McpResources.h"
 #include "McpHttpTransport.h"
 #include "McpTriggerGraphJson.h"
+#include "../support/JsonSchemaRefs.h"
 
 #include <QDir>
 #include <QEventLoop>
@@ -101,6 +102,7 @@ private slots:
     void HostHandlerKeepsSchemaAndPolicy();
     void SkillResourcesOwnVersionedBytes();
     void GraphDecoderKeepsStrictDtoBoundary();
+    void EveryToolSchemaRefResolvesFromItsRoot();
     void HttpPostsRequestsAndAcceptsNotifications();
     void HttpValidatesTokenOriginAndProtocol();
     void HttpHasBudgetsAndStopsCleanly();
@@ -239,6 +241,28 @@ void McpAgentTransportTests::GraphDecoderKeepsStrictDtoBoundary() {
     QVERIFY(!DecodeGraphBatch({{"expected", QJsonObject{}}, {"operations", QJsonArray{}}, {"transaction_id", "1"}}).Succeeded());
     QVERIFY(!ParseRequest(R"({"jsonrpc":"2.0","id":true,"method":"ping"})"));
     QVERIFY(!ParseRequest(R"({"jsonrpc":"2.0","method":"ping","params":[]})"));
+}
+
+void McpAgentTransportTests::EveryToolSchemaRefResolvesFromItsRoot() {
+    // 检查器本身：定义嵌在属性下而引用从根写，必须判为解析不到。
+    const QJsonObject nested{{"type", "object"}, {"properties", QJsonObject{{"plan", QJsonObject{
+        {"$defs", QJsonObject{{"eca", QJsonObject{{"type", "object"}}}}}, {"items", QJsonObject{{"$ref", "#/$defs/eca"}}}}}}}};
+    QCOMPARE(UnresolvedSchemaRefs(nested).size(), 1);
+    McpServer server;
+    RegisterAllTools(server);
+    const auto tools = ListTools(server);
+    QVERIFY(HasTool(tools, "query_trigger_graph"));
+    QVERIFY(HasTool(tools, "edit_trigger_graph"));
+    for (const auto& value : tools) {
+        const auto tool = value.toObject();
+        const auto missing = UnresolvedSchemaRefs(tool.value("inputSchema").toObject());
+        QVERIFY2(missing.isEmpty(), qPrintable(tool.value("name").toString() + ": " + missing.join("; ")));
+        if (tool.value("name") == "query_trigger_graph") {
+            const auto schema = tool.value("inputSchema").toObject();
+            QVERIFY(schema.value("$defs").toObject().contains("argument"));
+            QVERIFY(!schema.value("properties").toObject().value("plan").toObject().contains("$defs"));
+        }
+    }
 }
 
 void McpAgentTransportTests::HttpPostsRequestsAndAcceptsNotifications() {

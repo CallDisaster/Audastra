@@ -38,6 +38,42 @@ export function providerToolNames(names) {
   return toProvider;
 }
 
+// Gemini 对 $ref 的支持不完整，递归引用可能被拒绝整次请求。发给它的参数 schema 就地展开 $ref、去掉 $defs；
+// 同一展开路径上再遇到同一定义时换成普通对象，打断递归。编辑器收到调用后仍按原 schema 严格校验。
+export function inlineSchemaRefs(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+  const resolveRef = ref => {
+    if (typeof ref !== 'string' || !ref.startsWith('#/')) return undefined;
+    let current = schema;
+    for (const raw of ref.slice(2).split('/')) {
+      const part = raw.replaceAll('~1', '/').replaceAll('~0', '~');
+      if (!current || typeof current !== 'object' || !Object.hasOwn(current, part)) return undefined;
+      current = current[part];
+    }
+    return current && typeof current === 'object' ? current : undefined;
+  };
+  const walk = (node, stack) => {
+    if (Array.isArray(node)) return node.map(item => walk(item, stack));
+    if (!node || typeof node !== 'object') return node;
+    if (typeof node.$ref === 'string') {
+      const { $ref, ...siblings } = node;
+      const target = resolveRef($ref);
+      if (!target || stack.includes($ref))
+        return { type: 'object', description: '结构与上层同名定义相同，按相同字段嵌套填写。', ...walk(siblings, stack) };
+      return { ...walk(target, [...stack, $ref]), ...walk(siblings, stack) };
+    }
+    const result = {};
+    for (const [key, value] of Object.entries(node)) {
+      if (key === '$defs' || key === 'definitions') continue;
+      result[key] = key === 'properties' && value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.fromEntries(Object.entries(value).map(([name, child]) => [name, walk(child, stack)]))
+        : walk(value, stack);
+    }
+    return result;
+  };
+  return walk(schema, []);
+}
+
 // 历史中的工具请求/结果使用与本次工具表一致的合规名，否则严格站点会拒绝整段历史。
 function renameHistoryTools(messages, rename) {
   return messages.map(message => {
@@ -106,7 +142,8 @@ export async function runHarness(input, emit, invokeTool, signal) {
   const editorName = name => toEditor.get(name) ?? name;
   const tools = (input.tools ?? []).map(tool => ({
     name: providerName(tool.name), label: tool.description?.split('\n')[0] || tool.name,
-    description: tool.description || tool.name, parameters: tool.inputSchema,
+    description: tool.description || tool.name,
+    parameters: api === 'google-generative-ai' ? inlineSchemaRefs(tool.inputSchema) : tool.inputSchema,
     executionMode: 'sequential',
     execute: async (id, arguments_, toolSignal) => {
       const result = await invokeTool({ id, name: tool.name, arguments: arguments_ }, toolSignal);

@@ -2110,7 +2110,8 @@ private:
             "presets 表（可配 type）列预设；function_examples 表配 functions 给出本图里的真实用法原句；"
             "outline 表一次列出全部类别和触发器的名字与编号，可用 match 按名字筛选；"
             "legacy_trigger_references 表（可配 trigger_id）列出旧版本编辑器写法的触发器引用，附带可直接交给 editor_edit_trigger_graph 的改正 operations", Mcp::ToolPermission::Query,
-            Schema(query, {"project_identity", "expected_revision", "table"}), [this](const QJsonObject& arguments) { return Query(arguments); });
+            Mcp::WithGraphQueryDefinitions(Schema(query, {"project_identity", "expected_revision", "table"})),
+            [this](const QJsonObject& arguments) { return Query(arguments); });
         auto edit = Mcp::GraphOperationSchema();
         auto properties = edit.value("properties").toObject();
         const auto identity = IdentityProperties();

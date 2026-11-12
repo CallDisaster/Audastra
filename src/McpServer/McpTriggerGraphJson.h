@@ -20,8 +20,11 @@ using GraphNameResolver = std::function<Services::NameResolution(std::string_vie
 [[nodiscard]] QJsonObject GraphOperationSchema();
 // ecas 表按函数名筛选的共用输入 schema（离线 MCP 与活动编辑器共用）。
 [[nodiscard]] QJsonObject EcaFunctionFilterSchema();
-// 图查询的输入字段（不含身份字段；离线 MCP 与活动编辑器共用）。
+// 图查询的输入字段（不含身份字段；离线 MCP 与活动编辑器共用）。plan 里的 $ref 指向根 $defs，
+// 组成完整输入 schema 后须经 WithGraphQueryDefinitions。
 [[nodiscard]] QJsonObject GraphQueryProperties();
+// 把图批次的 $defs 放到工具输入 schema 根上。$ref 从根解析；定义嵌在 plan 下时严格站点（如 Gemini）会拒绝整次请求。
+[[nodiscard]] QJsonObject WithGraphQueryDefinitions(QJsonObject schema);
 [[nodiscard]] QJsonObject GraphVariableRowJson(const Trigger::VariableRecord& record);
 [[nodiscard]] QJsonObject GraphBindingJson(const Trigger::TriggerGraphBinding& binding);
 [[nodiscard]] QJsonObject GraphRenameCodeAuditSchema();

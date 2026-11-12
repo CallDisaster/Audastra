@@ -12,6 +12,7 @@
 #include "MapTechPage.h"
 #include "Theme/ThemeManager.h"
 #include "../support/MapCustomSettingsFixture.h"
+#include "../support/JsonSchemaRefs.h"
 #include "McpMapRuntimeTools.h"
 #include "McpToolInternal.h"
 #include "War3MapCore/Services/MinimapPreview.h"
@@ -404,6 +405,9 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
     QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
     for (const auto& value : f.tools->Tools()) {
         const auto tool = value.toObject();
+        // 每个 $ref 都须从该工具输入根解析；定义嵌错位置时 Gemini 会拒绝整次助手请求。
+        const auto missing = UnresolvedSchemaRefs(tool.value("inputSchema").toObject());
+        QVERIFY2(missing.isEmpty(), qPrintable(tool.value("name").toString() + ": " + missing.join("; ")));
         if (tool.value("name") == previewDefinition.name)
             QCOMPARE(tool.value("inputSchema").toObject(), WithBindingToken(previewDefinition.inputSchema));
         if (tool.value("name") == "editor_edit_minimap_marker") {
