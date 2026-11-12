@@ -28,6 +28,7 @@
 #include <QTest>
 #include <QTabBar>
 #include <QTimer>
+#include <array>
 #include <QToolButton>
 #include <QUndoStack>
 
@@ -94,6 +95,7 @@ private slots:
     void ViewKeepsFailureDetailsInDiagnostics();
     void CurrentDefaultsAndStaleRequest();
     void CurrentKeepsPixelsUntilReplacementAndClearsFailures();
+    void CurrentPathingLayerBlendsFinalWpm();
     void UnsavedObjectColorUsesFrozenNativeProjection();
     void OwnedImportUsesFrozenPayloadAndRejectsDiskSource();
     void AuthoredMarkersUseOneUndoStepAndRejectStaleRows();
@@ -271,6 +273,35 @@ void MinimapPreviewTests::MissingCorruptBudgetAndStale() try {
             F::Take(WriteVerifiedArchive(fixture.root / ("bad" + std::to_string(type) + ".w3x"), members));
         QVERIFY(!Services::OpenMinimapPreview(output.path, output.sha256).Succeeded());
     }
+} catch (const std::exception& error) {
+    QFAIL(error.what());
+}
+
+// 夹具 WPM 全为 0x82（不可走）：通行层按原版红色、64/255 单精度截断混合；补边与 alpha 不变。
+void MinimapPreviewTests::CurrentPathingLayerBlendsFinalWpm() try {
+    F::Fixture fixture;
+    const auto members = Tests::MinimapPreviewFixtures::MapMembers();
+    const auto archive = F::Take(WriteVerifiedArchive(fixture.root / "pathing-layer.w3x", members));
+    const auto plain = F::Take(Services::OpenCurrentMinimapPreview(archive.path, archive.sha256, fixture.game, 0x8b));
+    const auto layered = F::Take(Services::OpenCurrentMinimapPreview(archive.path, archive.sha256, fixture.game, 0x8f));
+    QCOMPARE(layered.image.rgba.size(), plain.image.rgba.size());
+    const float alpha = static_cast<float>(64.0 / 255.0), keep = static_cast<float>(1.0 - alpha);
+    std::size_t blended = 0;
+    for (std::size_t at = 0; at < plain.image.rgba.size(); at += 4) {
+        std::array<int, 3> expected{};
+        for (std::size_t c = 0; c < 3; ++c)
+            expected[c] = static_cast<int>(static_cast<float>(std::to_integer<int>(plain.image.rgba[at + c])) * keep
+                + (c == 0 ? 255.0f : 0.0f) * alpha);
+        bool same = true, mixed = true;
+        for (std::size_t c = 0; c < 3; ++c) {
+            same = same && layered.image.rgba[at + c] == plain.image.rgba[at + c];
+            mixed = mixed && std::to_integer<int>(layered.image.rgba[at + c]) == expected[c];
+        }
+        QVERIFY(same || mixed);
+        QCOMPARE(layered.image.rgba[at + 3], plain.image.rgba[at + 3]);
+        if (mixed && !same) ++blended;
+    }
+    QVERIFY(blended > 4096);
 } catch (const std::exception& error) {
     QFAIL(error.what());
 }

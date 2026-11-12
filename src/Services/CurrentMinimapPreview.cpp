@@ -1,6 +1,9 @@
 #include "War3MapCore/Services/MinimapPreview.h"
 #include "War3MapCore/Services/ObjectCatalogSources.h"
 #include "War3MapCore/Render/ClassicMinimapObjectAssets.h"
+#include "War3MapCore/Render/ClassicMinimapPathing.h"
+#include "War3MapCore/MapData/MapPathing.h"
+#include "War3MapCore/Services/TerrainPathingSave.h"
 #include "War3MapCore/MapData/NativeMinimapMarkers.h"
 #include "War3MapCore/MapData/MapMinimapMarkers.h"
 #include "War3MapCore/Services/MinimapMarkerEdits.h"
@@ -31,6 +34,30 @@ void Check(Status value) {
     if (!value.Succeeded())
         throw Failure{std::move(value.diagnostics)};
 }
+
+// 与保存同一入口取得本次保存会写出的 WPM：有相关变化时由保存计划重建，否则沿用会话草稿或来源原图。
+// 不另行推算通行；保存计划拒绝的情况（来源不可解释、资源缺失等）原样报告。
+MapData::PathingGridSnapshot FinalPathing(const CurrentMinimapPreviewInput& input, const MapArchiveSession& source,
+                                          std::vector<MemberReplacement> finalMembers,
+                                          const MapData::TerrainHeader& header) {
+    auto plan = Take(TerrainPathingSave::PrepareFinalForSave(source, input.edits.get(), input.gameRoot, {},
+                                                             finalMembers, input.removals));
+    if (plan)
+        Check(plan->InstallPathingOutput(*input.edits, finalMembers));
+    std::optional<std::vector<std::byte>> bytes;
+    for (auto& member : finalMembers) {
+        if (Take(Resources::CanonicalImportPath(member.name)) == "WAR3MAP.WPM") {
+            bytes = std::move(member.data);
+            break;
+        }
+    }
+    if (!bytes)
+        bytes = Take(source.ReadMember("war3map.wpm", input.control.get()));
+    const auto parsed = Take(MapData::ParseMapPathing(*bytes, &header));
+    if (!parsed.Snapshot())
+        Fail("MINIMAP_CURRENT_PATHING", "通行图未能读取。");
+    return *parsed.Snapshot();
+}
 } // namespace
 
 Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreviewInput& input) {
@@ -45,9 +72,6 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
             Fail("MINIMAP_CURRENT_SOURCE", "当前地形未就绪。");
         if (input.layers & ~0x4afu)
             Fail("MINIMAP_CURRENT_LAYERS", "小地图图层参数无效。");
-        // 通行位的配色需独立原版证据；不能从位号猜颜色后冒充原版。
-        if (input.layers & 4u)
-            Fail("MINIMAP_CURRENT_PATHING_UNVERIFIED", "通行层的原版配色尚未核定。");
         if (input.replacements.size() > 8192 || input.removals.size() > 8192)
             Fail("MINIMAP_PREVIEW_BUDGET", "显示资源覆盖超过数量预算。");
         std::size_t overlayBytes = 0;
@@ -185,6 +209,13 @@ Result<MinimapPreview> GenerateCurrentMinimapPreview(const CurrentMinimapPreview
         output.pixelRectangle = frame.pixelRectangle;
         // 与保存后真正解码的JPEG保持同一像素语义，不拿编码前RGBA冒充保存图。
         output.image = Take(Image::DecodeBlp(candidate.encoded.bytes));
+        if (input.layers & 4u) {
+            // 原版在底图后处理完成后叠通行层，图标与点在其后绘制。
+            const auto pathing = FinalPathing(input, source, replacements, grid->header);
+            checkpoint();
+            Check(Render::CompositeClassicMinimapPathing(output.image, candidate.manifest.postprocessFacts,
+                                                         output.sourceRectangle, pathing));
+        }
         if (input.units || input.starts || input.icons) {
             const auto drawDot = [&](int x, int y, std::array<std::uint8_t, 4> bgra) {
                 if (x < -1 || x > 256 || y < -1 || y > 256)

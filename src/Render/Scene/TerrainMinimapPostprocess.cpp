@@ -175,6 +175,25 @@ Result<TerrainMinimapPostprocessResult> FailureResult(const char* code, const ch
 
 } // namespace
 
+std::optional<std::array<std::uint32_t, 2>> TerrainMinimapCanvasSource(
+    const TerrainMinimapPostprocessFacts& facts, std::uint32_t canvasX, std::uint32_t canvasY) noexcept {
+    if (!facts.contentWidth || !facts.contentHeight || facts.contentWidth > kCanvasSize || facts.contentHeight > kCanvasSize
+        || canvasX >= kCanvasSize || canvasY >= kCanvasSize)
+        return std::nullopt;
+    // 与 Canvas 同一补边与翻转：内容第 y 行写到画布第 255-(offsetY+y) 行。
+    const auto offsetX = (kCanvasSize - facts.contentWidth) / 2;
+    const auto offsetY = (kCanvasSize - facts.contentHeight) / 2;
+    if (canvasX < offsetX || canvasX - offsetX >= facts.contentWidth || canvasY > kCanvasSize - 1 - offsetY)
+        return std::nullopt;
+    const auto x = canvasX - offsetX, y = kCanvasSize - 1 - offsetY - canvasY;
+    if (y >= facts.contentHeight) return std::nullopt;
+    // 与 Scale 同一 16.16 截断步长。
+    const auto sourceX = static_cast<std::uint32_t>((static_cast<std::uint64_t>(x) * facts.stepX16_16) >> 16);
+    const auto sourceY = static_cast<std::uint32_t>((static_cast<std::uint64_t>(y) * facts.stepY16_16) >> 16);
+    if (sourceX >= facts.sourceWidth || sourceY >= facts.sourceHeight) return std::nullopt;
+    return std::array<std::uint32_t, 2>{sourceX, sourceY};
+}
+
 Result<TerrainMinimapPostprocessResult> PostprocessTerrainMinimap(const TerrainMinimapPostprocessInput& input,
     const TerrainMinimapPostprocessSettings& settings, const TerrainMinimapPostprocessLimits& limits) {
     try {

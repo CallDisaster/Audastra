@@ -73,4 +73,10 @@ struct TerrainMinimapPostprocessResult {
     const TerrainMinimapPostprocessSettings& settings = {},
     const TerrainMinimapPostprocessLimits& limits = {});
 
+// 256画布像素对应的缩放前源像素 {x, y}（源图行优先、第0行在画布底部）。
+// 与上面的最近邻采样、居中补边和上下翻转同一几何；补边像素或facts无效时返回nullopt。
+// 叠加层用它与底图共享采样位置，不另写缩放算法。
+[[nodiscard]] std::optional<std::array<std::uint32_t, 2>> TerrainMinimapCanvasSource(
+    const TerrainMinimapPostprocessFacts& facts, std::uint32_t canvasX, std::uint32_t canvasY) noexcept;
+
 } // namespace War3Map::Render
