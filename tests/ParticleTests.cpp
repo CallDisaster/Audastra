@@ -355,10 +355,10 @@ void Parsing(){
         const auto parsed=Read(odd);
         Check(parsed.Succeeded()&&parsed.value->emitters[0].tailLength==-2.0f&&parsed.value->emitters[0].rate==-25.0f&&
             parsed.value->skippedEmitters.empty(),"negative PRE2 tail length or static rate rejected");
-        auto asset=*parsed.value;auto quiet=Make(asset);Timeline clock;clock.end=1000;
-        Check(Advance(asset,quiet,clock,300,Anchors).Succeeded()&&quiet.emitters[0].particles.empty(),"negative static PRE2 rate emitted");
+        auto asset=*parsed.value;auto quiet=Make(asset);Timeline quietClock;quietClock.end=1000;
+        Check(Advance(asset,quiet,quietClock,300,Anchors).Succeeded()&&quiet.emitters[0].particles.empty(),"negative static PRE2 rate emitted");
         Particle moving;moving.life=1;moving.age=0.1f;moving.velocity={10,0,0};quiet.emitters[0].particles.push_back(moving);
-        const auto drawn=Build(asset,quiet,clock,{0,-100,100},{0,0,1});
+        const auto drawn=Build(asset,quiet,quietClock,{0,-100,100},{0,0,1});
         Check(drawn.Succeeded()&&!drawn.value->vertices.empty(),"negative PRE2 tail did not draw");
         float maxX=-1e9f;for(const auto& v:drawn.value->vertices)maxX=std::max(maxX,v.position[0]);
         Check(maxX>moving.position[0]+10,"negative PRE2 tail did not extend along velocity");
