@@ -146,6 +146,7 @@ private slots:
     void AdapterOwnsSnapshotAndRejectsOversizedSource();
     void OwnedProductionResourceEvidence();
     void ModelPreviewStaysVisibleAndResponsive();
+    void ModelPreviewBatchEvidence();
 };
 void ObjectResourcePickerTests::SourcesHoverAndKeyboard() {
     bool current = true; QStringList previews;
@@ -722,10 +723,142 @@ void ObjectResourcePickerTests::ModelPreviewStaysVisibleAndResponsive() {
     QVERIFY2(tabClickSwitched, "a real click on the source tab did not switch the tab");
     picker->close(); QTRY_VERIFY(!pickerGuard);
 }
+// 仅在测试机显式启用：用正式资源选择面板逐个预览只读地图副本里的模型，记录是否真的画出了模型。
+// 按真实 D3D11 完成帧判断：画面里有成片（3×3 全部不同于底色）的像素才算显示出模型，一像素宽的网格线不算。
+// 这是测量，不对单个模型断言；只断言地图副本未被改动、每个模型都有结论。
+void ObjectResourcePickerTests::ModelPreviewBatchEvidence() {
+    using namespace ObjectData;
+    const auto output = qEnvironmentVariable("AUD_MODEL_PREVIEW_BATCH_DIR");
+    if (output.isEmpty()) QSKIP("Explicit model preview batch is not enabled");
+    QCOMPARE(QGuiApplication::platformName(), QStringLiteral("windows"));
+    const auto mapPath = qEnvironmentVariable("AUD_MODEL_PREVIEW_BATCH_MAP");
+    const auto listPath = qEnvironmentVariable("AUD_MODEL_PREVIEW_BATCH_LIST");
+    QVERIFY(QDir::isAbsolutePath(output) && QDir::isAbsolutePath(mapPath) && QDir::isAbsolutePath(listPath));
+    QVERIFY(QDir().mkpath(QDir(output).filePath(QStringLiteral("thumbs"))));
+    QFile list(listPath); QVERIFY(list.open(QIODevice::ReadOnly));
+    QStringList models;
+    for (const auto& line : QString::fromUtf8(list.readAll()).split(QLatin1Char('\n'))) {
+        const auto model = line.trimmed();
+        if (!model.isEmpty() && !model.startsWith(QLatin1Char('#'))) models << model;
+    }
+    QVERIFY(!models.isEmpty());
+    const auto archivePath = std::filesystem::path(mapPath.toStdWString());
+    const auto sourceSha = Sha256File(archivePath); QVERIFY(sourceSha.Succeeded());
+    UiKit::ThemeManager theme; theme.ApplyTheme(QStringLiteral("graphite"));
+    QTemporaryDir fixture; QVERIFY(fixture.isValid());
+    auto archive = MapArchiveSession::Open(archivePath); QVERIFY(archive.Succeeded());
+    QtProject::EditorProject project; QVERIFY(InstallModelDefinitions(project, true));
+    project.projectRoot_ = std::filesystem::path(fixture.path().toStdWString()); project.sourceArchivePath_ = archivePath;
+    project.archiveSession_ = std::make_unique<MapArchiveSession>(std::move(*archive.value));
+    project.war3GameRoot_ = qEnvironmentVariable("FORGE_WORLD_GAME_ROOT").toStdWString();
+    auto ownedData = LniObjectCodec(ObjectType::Unit).Parse({}); QVERIFY(ownedData.Succeeded());
+    project.objectDocuments_[0].reset(dynamic_cast<LniObjectDocument*>(ownedData.document.release()));
+    QVERIFY(project.objectDocuments_[0]);
+    auto factory = QtApp::MakeObjectResourcePickerFactory(project);
+    const auto waitUntil = [](const std::function<bool()>& predicate, int timeout) {
+        QElapsedTimer wait; wait.start();
+        while (!predicate()) { if (wait.elapsed() >= timeout) return false; QTest::qWait(10); }
+        return true;
+    };
+    const auto solidForeground = [](const QImage& image) {
+        QHash<QRgb, int> colours;
+        for (int y = 0; y < image.height(); ++y)
+            for (int x = 0; x < image.width(); ++x) ++colours[image.pixel(x, y)];
+        QRgb background = 0; int most = -1;
+        for (auto it = colours.cbegin(); it != colours.cend(); ++it)
+            if (it.value() > most) { background = it.key(); most = it.value(); }
+        const auto differs = [&](int x, int y) {
+            const auto p = image.pixel(x, y);
+            return std::abs(qRed(p) - qRed(background)) + std::abs(qGreen(p) - qGreen(background))
+                + std::abs(qBlue(p) - qBlue(background)) > 48;
+        };
+        qint64 solid = 0;
+        for (int y = 1; y + 1 < image.height(); ++y)
+            for (int x = 1; x + 1 < image.width(); ++x) {
+                bool all = true;
+                for (int dy = -1; dy <= 1 && all; ++dy)
+                    for (int dx = -1; dx <= 1 && all; ++dx) all = differs(x + dx, y + dy);
+                solid += all;
+            }
+        return solid;
+    };
+    const auto capture = [&](WorldViewport& viewport, QImage& image) {
+        return waitUntil([&] {
+            auto frame = viewport.CaptureCompletedFrame(viewport.DocumentRevision());
+            if (!frame.Succeeded()) return false;
+            image = QImage(reinterpret_cast<const uchar*>(frame.value->rgba.data()), int(frame.value->view.physicalWidth),
+                int(frame.value->view.physicalHeight), int(frame.value->view.physicalWidth * 4), QImage::Format_RGBA8888)
+                .convertToFormat(QImage::Format_RGB32);
+            return !image.isNull();
+        }, 3000);
+    };
+    QWidget owner; owner.resize(1200, 800); owner.move(40, 40); owner.show();
+    auto* picker = new ObjectResourcePicker({Services::ObjectResourceKind::Model, false, true}, QString{}, factory(), &owner);
+    QPointer<ObjectResourcePicker> pickerGuard(picker);
+    picker->move(owner.geometry().topLeft() + QPoint(80, 60)); picker->show();
+    QVERIFY(QTest::qWaitForWindowExposed(picker));
+    auto* tabs = picker->findChild<QTabWidget*>("resourceSourceTabs");
+    auto* path = picker->findChild<QLineEdit*>("resourcePath");
+    QVERIFY(tabs && path); tabs->setCurrentIndex(2);
+    QFile tsvFile(QDir(output).filePath(QStringLiteral("results.tsv")));
+    QVERIFY(tsvFile.open(QIODevice::WriteOnly | QIODevice::Text));
+    QTextStream tsv(&tsvFile); tsv.setEncoding(QStringConverter::Utf8);
+    tsv << "index\tmodel\toutcome\tms\tsolid_pixels\tmessage\n";
+    QMap<QString, int> outcomes;
+    for (int index = 0; index < models.size(); ++index) {
+        const auto& model = models[index];
+        auto* preview = picker->findChild<WorldModelPreview*>();
+        auto* player = preview ? preview->findChild<WorldAnimationPlayer*>() : nullptr;
+        const auto before = player ? player->Frame() : nullptr;
+        QElapsedTimer timer; timer.start();
+        path->setText(model); emit path->textEdited(model);
+        QTest::qWait(30);
+        WorldViewport* viewport = nullptr; QLabel* message = nullptr;
+        const bool settled = waitUntil([&] {
+            preview = picker->findChild<WorldModelPreview*>(); if (!preview) return false;
+            viewport = preview->findChild<WorldViewport*>(); player = preview->findChild<WorldAnimationPlayer*>();
+            message = preview->findChild<QLabel*>(QStringLiteral("worldUnitPreviewMessage"));
+            if (!viewport || !player || !message) return false;
+            if (viewport->isVisible() && player->Ready() && player->Frame() && player->Frame() != before) return true;
+            return !viewport->isVisible() && !message->text().isEmpty() && message->text() != QStringLiteral("正在准备模型动作…");
+        }, 30000);
+        QString outcome = settled ? QStringLiteral("failed") : QStringLiteral("timeout");
+        qint64 solid = -1; QImage best;
+        if (settled && viewport->isVisible() && player->Frame()) {
+            // 粒子要先发射一阵；取两次完成帧中成片像素较多的一张。
+            for (const int pause : {300, 900}) {
+                QTest::qWait(pause); QImage image;
+                if (!capture(*viewport, image)) continue;
+                if (const auto count = solidForeground(image); count > solid) { solid = count; best = image; }
+            }
+            outcome = solid >= 40 ? QStringLiteral("shown") : solid >= 0 ? QStringLiteral("blank") : QStringLiteral("no-frame");
+        }
+        if (!best.isNull())
+            best.scaledToWidth(320, Qt::SmoothTransformation).save(QDir(output).filePath(
+                QStringLiteral("thumbs/%1.png").arg(index, 4, 10, QLatin1Char('0'))));
+        auto text = message ? message->text() : QString{};
+        text.replace(QLatin1Char('\t'), QLatin1Char(' ')).replace(QLatin1Char('\n'), QLatin1Char(' '));
+        tsv << index << '\t' << model << '\t' << outcome << '\t' << timer.elapsed() << '\t' << solid << '\t' << text << '\n';
+        tsv.flush(); ++outcomes[outcome];
+    }
+    picker->close(); QTRY_VERIFY(!pickerGuard);
+    const auto after = Sha256File(archivePath); QVERIFY(after.Succeeded()); QCOMPARE(*after.value, *sourceSha.value);
+    QJsonObject summary{{"models", int(models.size())}, {"source_sha256", QString::fromStdString(*sourceSha.value)},
+        {"renderer", "D3D11 completed frame via production ObjectResourcePicker"}};
+    for (auto it = outcomes.cbegin(); it != outcomes.cend(); ++it) summary.insert(it.key(), it.value());
+    QSaveFile file(QDir(output).filePath(QStringLiteral("summary.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly)); file.write(QJsonDocument(summary).toJson(QJsonDocument::Indented)); QVERIFY(file.commit());
+    int total = 0; for (const auto count : outcomes) total += count;
+    QCOMPARE(total, int(models.size()));
+}
 int main(int argc, char** argv) {
     if (!qEnvironmentVariableIsEmpty("AUD_RESOURCE_PREVIEW_EVIDENCE_DIR")) {
         bool explicitCase = false;
         for (int i = 1; i < argc; ++i) explicitCase |= QByteArray(argv[i]) == "OwnedProductionResourceEvidence";
+        if (!explicitCase || qEnvironmentVariable("QT_QPA_PLATFORM") != QStringLiteral("windows")) return 2;
+    } else if (!qEnvironmentVariableIsEmpty("AUD_MODEL_PREVIEW_BATCH_DIR")) {
+        bool explicitCase = false;
+        for (int i = 1; i < argc; ++i) explicitCase |= QByteArray(argv[i]) == "ModelPreviewBatchEvidence";
         if (!explicitCase || qEnvironmentVariable("QT_QPA_PLATFORM") != QStringLiteral("windows")) return 2;
     } else if (!qEnvironmentVariableIsEmpty("AUD_RESOURCE_PICKER_SCREEN_DIR")) {
         bool explicitCase = false;
