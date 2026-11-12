@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -48,7 +49,7 @@ std::uint32_t ReadWord(std::span<const std::byte> bytes, std::size_t at) {
 }
 
 std::vector<std::byte> DescendingModel(std::uint32_t extraHelpers = 0, bool invalidRotation = false,
-    bool dependentLastHelper = false) {
+    bool dependentLastHelper = false, bool zeroRotation = false) {
     // 只替换现有原创夹具的 HELP 块；骨骼、网格和 PRE2 发射器保持真实父链。
     // 不读取原图，不排序/删除原始轨迹；该测试资源不是 Warcraft 游戏资产。
     auto bytes = AnimationParticleContinuityTest::Model();
@@ -58,7 +59,7 @@ std::vector<std::byte> DescendingModel(std::uint32_t extraHelpers = 0, bool inva
     constexpr std::array<std::uint32_t, 7> frames{0, 400, 600, 400, 1000, 2000, 3000};
     constexpr std::array<float, 7> values{0, 4, 6, 40, 10, 20, 60};
     Check(extraHelpers <= 8, "original extra-helper fixture exceeded its explicit bound");
-    Check((!invalidRotation && !dependentLastHelper) || extraHelpers > 0,
+    Check((!invalidRotation && !dependentLastHelper && !zeroRotation) || extraHelpers > 0,
         "dependent helper needs an original second helper");
     for (std::uint32_t h = 0; h <= extraHelpers; ++h) {
         const auto node = helper.Begin();
@@ -67,7 +68,7 @@ std::vector<std::byte> DescendingModel(std::uint32_t extraHelpers = 0, bool inva
         // 错误反例与成功对照都依赖节点1；内部先完成其平移，再采样最后节点。
         // 批量求值失败时只发布真正Error，不能把内部已产生的warning视为失败回执。
         // 普通和拥挤警告夹具的父链保持原样。
-        helper.U32((invalidRotation || dependentLastHelper) && h == extraHelpers ? 1u : UINT32_MAX);
+        helper.U32((invalidRotation || dependentLastHelper || zeroRotation) && h == extraHelpers ? 1u : UINT32_MAX);
         helper.U32(0);
         helper.Tag("KGTR");
         helper.U32(7);
@@ -79,12 +80,13 @@ std::vector<std::byte> DescendingModel(std::uint32_t extraHelpers = 0, bool inva
             helper.F32(0);
             helper.F32(0);
         }
-        if (invalidRotation && h == extraHelpers) {
-            // 二进制中的有限零四元数可解析，只有实际节点采样归一化时才拒绝。
+        if ((invalidRotation || zeroRotation) && h == extraHelpers) {
+            // 二进制中的非有限四元数可解析，只有实际节点采样时才拒绝；零四元数按原版建矩阵即单位旋转，预览接受。
             helper.Tag("KGRT"); helper.U32(2); helper.U32(1); helper.U32(UINT32_MAX);
             for (const auto frame : {0u, 1000u}) {
                 helper.U32(frame);
-                for (unsigned axis = 0; axis < 4; ++axis) helper.F32(0);
+                helper.F32(invalidRotation ? std::numeric_limits<float>::infinity() : 0.0f);
+                for (unsigned axis = 1; axis < 4; ++axis) helper.F32(0);
             }
         }
         helper.EndInclusive(node);
@@ -127,8 +129,9 @@ struct Fixture {
     std::vector<std::byte> texture = AnimationParticleContinuityTest::Texture();
     AnimationInstanceSpec spec;
 
-    explicit Fixture(std::uint32_t extraHelpers = 0, bool invalidRotation = false, bool dependentLastHelper = false)
-        : model(DescendingModel(extraHelpers, invalidRotation, dependentLastHelper)), original(model) {
+    explicit Fixture(std::uint32_t extraHelpers = 0, bool invalidRotation = false, bool dependentLastHelper = false,
+        bool zeroRotation = false)
+        : model(DescendingModel(extraHelpers, invalidRotation, dependentLastHelper, zeroRotation)), original(model) {
         spec.identity = {17, 9};
         spec.hostKey = "original-source-order:17";
         spec.model.modelPath = "original-source-order.mdx";
@@ -481,7 +484,7 @@ void Warnings() {
         return record.code == Code::NodeSourceOrderPreview && record.severity == War3RenderCore::Severity::Warning;
     });
     const auto laterError = std::find_if(brokenFrame->diagnostics.begin(), brokenFrame->diagnostics.end(), [](const auto& record) {
-        return record.code == Code::PoseRotationInvalid && record.severity == War3RenderCore::Severity::Error;
+        return record.code == Code::PoseNumberInvalid && record.severity == War3RenderCore::Severity::Error;
     });
     std::cout << "BROKEN_FRAME diagnostics=" << brokenFrame->diagnostics.size()
         << " omittedDiagnostics=" << brokenFrame->omittedDiagnostics
@@ -516,7 +519,7 @@ void Warnings() {
         laterError->leftFrame == 0 && laterError->rightFrame == 0 && brokenFrame->omittedDiagnostics == 0 &&
         brokenFrame->hiddenInstances == 1 && brokenFrame->animatedInstances == 0 && brokenFrame->poses.size() == 1 &&
         brokenFrame->poses[0].hidden && !brokenFrame->poses[0].animated &&
-        brokenFrame->poses[0].rejection.code == Code::PoseRotationInvalid &&
+        brokenFrame->poses[0].rejection.code == Code::PoseNumberInvalid &&
         brokenFrame->poses[0].rejection.severity == War3RenderCore::Severity::Error &&
         brokenFrame->poses[0].rejection.objectId == 3 &&
         brokenFrame->poses[0].rejection.track == War3RenderCore::TrackKind::Rotation &&
@@ -529,13 +532,31 @@ void Warnings() {
     auto refusing = Good(broken.Create(limits));
     const auto rejected = refusing->Prepare(nullptr);
     Check(!rejected.Succeeded() && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
-        return diagnostic.code == "MDX_POSE_ROTATION_INVALID" && diagnostic.severity == DiagnosticSeverity::Error;
+        return diagnostic.code == "MDX_POSE_NUMBER_INVALID" && diagnostic.severity == DiagnosticSeverity::Error;
     }), "strict failure retention changed for a real later-node rotation error");
     limits.playbackPolicy = AnimationPlaybackPolicy::StrictReplay;
     auto strictBroken = Good(broken.Create(limits));
     Check(HasKeysError(strictBroken->Prepare(nullptr).diagnostics),
         "default strict node policy no longer rejected the first descending track before later errors");
     broken.Unchanged();
+    // 零长度旋转键：原版建矩阵即单位旋转。显式预览照常求值并在场景警告里写明，严格回放仍拒绝。
+    Fixture zero(1, false, false, true);
+    limits.playbackPolicy = AnimationPlaybackPolicy::InteractivePreview;
+    limits.allowSourceOrderNodePreview = true;
+    limits.retainUnsupportedStatic = true;
+    auto zeroService = Good(zero.Create(limits));
+    const auto zeroFrame = Good(zeroService->Prepare(nullptr));
+    const auto& zeroWarnings = zeroService->Scene()->geometry.warnings;
+    Check(zeroFrame->hiddenInstances == 0 && zeroFrame->animatedInstances > 0 && !zeroFrame->poses.empty() &&
+        !zeroFrame->poses[0].hidden && std::any_of(zeroWarnings.begin(), zeroWarnings.end(), [](const auto& diagnostic) {
+            return diagnostic.code == "ANIMATION_ZERO_ROTATION_PREVIEW"; }),
+        "zero-length rotation keys hid the preview instead of sampling identity, or lost the scene note");
+    limits.playbackPolicy = AnimationPlaybackPolicy::StrictReplay;
+    limits.retainUnsupportedStatic = false;
+    auto strictZero = Good(zero.Create(limits));
+    Check(!strictZero->Prepare(nullptr).Succeeded(), "strict replay accepted descending or zero-length rotation keys");
+    zero.Unchanged();
+    std::cout << "zero_rotation_preview=identity zero_rotation_strict=reject" << std::endl;
     std::cout << "owned_warning_after_global256=1 clean_same_asset=1 invalid_bindings=12 fixed8_omitted=1 source_order_priority=1\n";
     std::cout << "actual_success_parent_warnings=2 failed_receipt_only_error=1 hidden_actual_rotation_error=1 strict_retention_reject=1\n";
     std::cout << "defensive_selector_pure_input=1 typed_fallback=1\n";

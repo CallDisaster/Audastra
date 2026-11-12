@@ -60,6 +60,28 @@ MaskedNodeFlags MaskUnknownGeosetAnimationFlags(MdxModel& model) {
     }
     return result;
 }
+// 近似预览按原版取值、但严格模式拒绝的两类节点轨迹（核心 0.1.21）：零长度旋转键（原版建矩阵即单位旋转）
+// 与全局序列逆序键（原版整表按源序查找）。只统计节点数供状态行说明，取值本身在核心预览策略里完成。
+struct PreviewTrackNotes { std::size_t zeroRotationNodes = 0, globalOrderNodes = 0; };
+PreviewTrackNotes ScanPreviewTrackNotes(const MdxModel& model) {
+    PreviewTrackNotes notes;
+    const auto descendingGlobal = [](const auto& track) {
+        if (!track || track->globalSequence == UINT32_MAX) return false;
+        for (std::size_t i = 1; i < track->keys.size(); ++i)
+            if (track->keys[i].frame < track->keys[i - 1].frame) return true;
+        return false;
+    };
+    ForEachMdxNode(model, [&](const MdxNode& node) {
+        if (node.rotation && std::any_of(node.rotation->keys.begin(), node.rotation->keys.end(), [](const auto& key) {
+                double squared = 0;
+                for (const auto component : key.value) squared += static_cast<double>(component) * component;
+                return std::isfinite(squared) && squared < 1e-20;
+            })) ++notes.zeroRotationNodes;
+        if (descendingGlobal(node.translation) || descendingGlobal(node.rotation) || descendingGlobal(node.scaling))
+            ++notes.globalOrderNodes;
+    });
+    return notes;
+}
 bool HasUnknownGeosetAnimationFlags(const MdxModel& model) {
     return std::any_of(model.geosets.begin(), model.geosets.end(), [](const auto& geoset) {
         return geoset.animation && !geoset.animation->hasUninterpretedData && (geoset.animation->flags & ~2u) != 0;
@@ -496,6 +518,17 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
                                 asset.parsed = std::move(masked);
                                 build = std::move(retry);
                             }
+                        }
+                        if (limits.retainUnsupportedStatic && build.Succeeded() && !asset.parsed->rigidStaticPreviewSource) {
+                            const auto notes = ScanPreviewTrackNotes(*asset.parsed);
+                            if (notes.zeroRotationNodes)
+                                warnings.push_back({DiagnosticSeverity::Warning, "Render.Animation", "ANIMATION_ZERO_ROTATION_PREVIEW",
+                                    input.model.modelPath + "：" + std::to_string(notes.zeroRotationNodes)
+                                        + " 个节点的旋转键含零长度四元数，预览按原版取单位旋转（键间为近似插值）。", std::nullopt});
+                            if (notes.globalOrderNodes)
+                                warnings.push_back({DiagnosticSeverity::Warning, "Render.Animation", "ANIMATION_GLOBAL_KEY_ORDER_PREVIEW",
+                                    input.model.modelPath + "：" + std::to_string(notes.globalOrderNodes)
+                                        + " 个节点的全局序列关键帧顺序倒置，预览按原版顺序查找。", std::nullopt});
                         }
                         if (build.Succeeded() && !asset.parsed->sequences.empty()) {
                             asset.compiled = std::move(*build.value);

@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "version": "0.1.20",
+  "version": "0.1.21",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "2573eb48e74d81794cc368854cd06c979db021c5",
+  "commit": "2ea9b6261f23c46d5c21c25b7d29bd1c7709738c",
   "files": [
     {
       "path": ".gitattributes",
@@ -14,7 +14,7 @@
     },
     {
       "path": "CMakeLists.txt",
-      "sha256": "c34ceed8d8b945d2d74d57822a7400ad5e6a2fb3e9daf830b7ff33146aabec88"
+      "sha256": "3dcbdaa621f24710f6cae97bc67c1d60ffd079366fddbbe1eef376c3516d977b"
     },
     {
       "path": "COPYRIGHT.md",
@@ -26,7 +26,7 @@
     },
     {
       "path": "README.md",
-      "sha256": "d541065ac855228f2d3680f24d6c76925a6995b4fc76a9dc492d38ffad980ffa"
+      "sha256": "47b3e006925b547a8497248652b5aa51aeb82b07e9cda2fa4598cc03054f36cc"
     },
     {
       "path": "docs/DRAW_ASSET_VIEW.md",
@@ -70,7 +70,7 @@
     },
     {
       "path": "docs/SOURCE_ORDER_NODE_PREVIEW.md",
-      "sha256": "af3a4a1dac72de707893a7ce564dde198c1034cc9e3508b51d27bb782d8806ad"
+      "sha256": "9493ab1200bbe005bd95c7a898fee5f56f0ffdcd0b77bee8efe9ff6241a5f132"
     },
     {
       "path": "docs/UPDATES_0_1_1.md",
@@ -262,7 +262,7 @@
     },
     {
       "path": "include/War3RenderCore/PoseTypes.h",
-      "sha256": "1b14a1aa115ae541edeef1a9df2a73575de13ab2832ce889ab2e1bc88fbcca30"
+      "sha256": "1ea647f8c0c5f660bca1a7da5b284f8e3fb2df3af79beee1d4d64fa475cd18d9"
     },
     {
       "path": "include/War3RenderCore/Result.h",
@@ -274,7 +274,7 @@
     },
     {
       "path": "src/Render/Assets/MdxGeosetSample.inl",
-      "sha256": "e38b8e8eed7846c3aa00b3708fa95a99443de2d7b1af16daa3a3798c307326a7"
+      "sha256": "24b85782e8bd2fe6cce46b01f3418c3351e83ea0fb31660014e26434dd8e34e0"
     },
     {
       "path": "src/Render/Assets/MdxInheritanceReference.inl",
@@ -302,7 +302,7 @@
     },
     {
       "path": "src/Render/Assets/MdxPose.cpp",
-      "sha256": "376ebb1ba10fd5fa6a4c5bb77e4420fbf438351b88b25bd735a9d543db13d197"
+      "sha256": "84a0ebf5a164c48a7f424be30f953c6d7ce14b9975a1fc144feea32ab7a21341"
     },
     {
       "path": "src/Render/Assets/MdxPremRead.h",
@@ -366,11 +366,11 @@
     },
     {
       "path": "src/RenderCore/Diagnostics.cpp",
-      "sha256": "bd853e684e0442f67a3b7e2a24b47a109698b84c278fd008e89dc056a67a4f0a"
+      "sha256": "b0abceae6ef084a16299de20dda994d9af1148453c749f2f4d87e8143a3209e7"
     },
     {
       "path": "src/RenderCore/GeosetChannels.cpp",
-      "sha256": "080e2042575f28c3cd7ed1e26e0cc1f554d9d9c967e1e7394e7415d65b9234af"
+      "sha256": "685377261b017082379fe11bc72a15a61e0c72526a29341b7b60a8354cd05af3"
     },
     {
       "path": "src/RenderCore/GeosetChannels.h",
@@ -390,7 +390,7 @@
     },
     {
       "path": "src/RenderCore/MaterialTextures.cpp",
-      "sha256": "204c11f394751ebee217d7692448c51b5bc1025e48f32b44049ebb34eb4f8a18"
+      "sha256": "1aa15209dcc938b5e0bec5fe239f0a6941808c55566002de265b7ae08da77a4f"
     },
     {
       "path": "src/RenderCore/MaterialTextures.h",
@@ -398,15 +398,15 @@
     },
     {
       "path": "src/RenderCore/ModelData.h",
-      "sha256": "a42716cd4f10d919f556a4a1ddbf26d2982ce443dc1864abebda6f883621ee12"
+      "sha256": "14945c862ca4b45076c90919f88e7678050e040712f586bf08a86584e6885d10"
     },
     {
       "path": "src/RenderCore/NodeTrackCompile.h",
-      "sha256": "3b5febc985265fce0265bfa6028f9a9d0c84898e6d57969a33f1afcb8ec39b8d"
+      "sha256": "3412ca652c3c8367311fc63e8ebf4a57ae7db505cce37aea37b0fbc3718746ba"
     },
     {
       "path": "src/RenderCore/PoseBatch.cpp",
-      "sha256": "5b9b462318d8eb8a6f57c3087b715bee926cc75de5330231f2347b2200e8bda3"
+      "sha256": "67ca4716649b60da8ce1e8d31533796b919fa091a4f35425407d6123a388e10a"
     },
     {
       "path": "src/RenderCore/PoseInheritance.cpp",
@@ -414,7 +414,7 @@
     },
     {
       "path": "src/RenderCore/PoseMath.cpp",
-      "sha256": "9dbe3f21486d1a62fe8975392ea604046fb6c23534c90766946df22e57539825"
+      "sha256": "9a637d8edd7954df2d98d37b0ab5326e361bef2b68b2786c2f77c3eedf0ae4c4"
     },
     {
       "path": "src/RenderCore/PoseMath.h",
@@ -422,7 +422,7 @@
     },
     {
       "path": "src/RenderCore/PoseTracks.cpp",
-      "sha256": "b63d264d4655e1af8266df0efbc1fc1069c2653212241addf5c5e2343022aead"
+      "sha256": "4828a71613c80c235496b4d5c19ba63d6ffb00d9e18c6ec2213e13f44a161f64"
     },
     {
       "path": "src/RenderCore/PoseTracks.h",
@@ -458,7 +458,7 @@
     },
     {
       "path": "tests/GeosetChannelTests.cpp",
-      "sha256": "f96af2d0316788d02f6a1946f3b78da91ed48b621bb789bbe19f345d3a1ae22a"
+      "sha256": "9d5baf837f59a9ed1327ee42d2772b1a36998f0a874d49713b9664e4280f47a5"
     },
     {
       "path": "tests/GeosetColorCoreTests.cpp",
@@ -586,7 +586,7 @@
     },
     {
       "path": "tests/SourceOrderPreviewTests.cpp",
-      "sha256": "29b567b2486a4b873e59036372e867ab76765aef359f2a346c5772cb498ed4a4"
+      "sha256": "78a00b5b3e45b396fa0794c98cb16e325929a0af9116e5c4e30449a51da5ceed"
     },
     {
       "path": "tests/StaticSamplerContractTests.cpp",

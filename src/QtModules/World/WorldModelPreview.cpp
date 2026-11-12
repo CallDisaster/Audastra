@@ -177,6 +177,8 @@ void WorldModelPreview::Present(const Built& built) {
             else if (d.code=="PARTICLE_PREM_UNSUPPORTED") omitted<<tr("PREM 子模型未显示");
             else if (d.code=="ANIMATION_NODE_FLAGS_MASKED") omitted<<tr("忽略未知节点标志");
             else if (d.code=="ANIMATION_GEOA_FLAGS_MASKED") omitted<<tr("忽略 GEOA 未用标志");
+            else if (d.code=="ANIMATION_ZERO_ROTATION_PREVIEW") omitted<<tr("零长度旋转按不旋转");
+            else if (d.code=="ANIMATION_GLOBAL_KEY_ORDER_PREVIEW") omitted<<tr("全局关键帧倒序按原版查找");
         }
         std::size_t skipped=0; QStringList reasons;
         for (const auto& capability:scene.particleCapabilities) if (capability.skippedEmitters) {
