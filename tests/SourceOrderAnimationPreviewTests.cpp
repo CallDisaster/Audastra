@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <span>
 #include <stdexcept>
@@ -69,7 +68,8 @@ std::vector<std::byte> DescendingModel(std::uint32_t extraHelpers = 0, bool inva
         // 批量求值失败时只发布真正Error，不能把内部已产生的warning视为失败回执。
         // 普通和拥挤警告夹具的父链保持原样。
         helper.U32((invalidRotation || dependentLastHelper || zeroRotation) && h == extraHelpers ? 1u : UINT32_MAX);
-        helper.U32(0);
+        // 后节点真实错误：最后节点不继承缩放（0x2），父节点 1 的 X 缩放为 0，剥离时基列退化，只在采样该节点时拒绝。
+        helper.U32(invalidRotation && h == extraHelpers ? 2u : 0u);
         helper.Tag("KGTR");
         helper.U32(7);
         helper.U32(1);
@@ -80,13 +80,16 @@ std::vector<std::byte> DescendingModel(std::uint32_t extraHelpers = 0, bool inva
             helper.F32(0);
             helper.F32(0);
         }
-        if ((invalidRotation || zeroRotation) && h == extraHelpers) {
-            // 二进制中的非有限四元数可解析，只有实际节点采样时才拒绝；零四元数按原版建矩阵即单位旋转，预览接受。
+        if (invalidRotation && h == 0) {
+            helper.Tag("KGSC"); helper.U32(1); helper.U32(0); helper.U32(UINT32_MAX);
+            helper.U32(0); helper.F32(0); helper.F32(1); helper.F32(1);
+        }
+        if (zeroRotation && h == extraHelpers) {
+            // 零四元数按原版建矩阵即单位旋转，预览接受；严格回放仍拒绝。
             helper.Tag("KGRT"); helper.U32(2); helper.U32(1); helper.U32(UINT32_MAX);
             for (const auto frame : {0u, 1000u}) {
                 helper.U32(frame);
-                helper.F32(invalidRotation ? std::numeric_limits<float>::infinity() : 0.0f);
-                for (unsigned axis = 1; axis < 4; ++axis) helper.F32(0);
+                for (unsigned axis = 0; axis < 4; ++axis) helper.F32(0);
             }
         }
         helper.EndInclusive(node);
@@ -484,7 +487,7 @@ void Warnings() {
         return record.code == Code::NodeSourceOrderPreview && record.severity == War3RenderCore::Severity::Warning;
     });
     const auto laterError = std::find_if(brokenFrame->diagnostics.begin(), brokenFrame->diagnostics.end(), [](const auto& record) {
-        return record.code == Code::PoseNumberInvalid && record.severity == War3RenderCore::Severity::Error;
+        return record.code == Code::PoseInheritanceSingular && record.severity == War3RenderCore::Severity::Error;
     });
     std::cout << "BROKEN_FRAME diagnostics=" << brokenFrame->diagnostics.size()
         << " omittedDiagnostics=" << brokenFrame->omittedDiagnostics
@@ -515,14 +518,14 @@ void Warnings() {
     // PoseBatch失败分支重置诊断范围，只公开第一条Error；先前内部warning必须消失。
     Check(brokenFrame->diagnostics.size() == 1 && firstWarning == brokenFrame->diagnostics.end() &&
         laterError == brokenFrame->diagnostics.begin() && laterError->objectId == 3 &&
-        laterError->track == War3RenderCore::TrackKind::Rotation &&
+        laterError->track == War3RenderCore::TrackKind::Scale &&
         laterError->leftFrame == 0 && laterError->rightFrame == 0 && brokenFrame->omittedDiagnostics == 0 &&
         brokenFrame->hiddenInstances == 1 && brokenFrame->animatedInstances == 0 && brokenFrame->poses.size() == 1 &&
         brokenFrame->poses[0].hidden && !brokenFrame->poses[0].animated &&
-        brokenFrame->poses[0].rejection.code == Code::PoseNumberInvalid &&
+        brokenFrame->poses[0].rejection.code == Code::PoseInheritanceSingular &&
         brokenFrame->poses[0].rejection.severity == War3RenderCore::Severity::Error &&
         brokenFrame->poses[0].rejection.objectId == 3 &&
-        brokenFrame->poses[0].rejection.track == War3RenderCore::TrackKind::Rotation &&
+        brokenFrame->poses[0].rejection.track == War3RenderCore::TrackKind::Scale &&
         brokenFrame->poses[0].rejection.leftFrame == 0 && brokenFrame->poses[0].rejection.rightFrame == 0 &&
         brokenFrame->poses[0].poseVersion == 0 && brokenFrame->poses[0].warnings.count == 0 &&
         brokenFrame->poses[0].warnings.omitted == 0 &&
@@ -532,7 +535,7 @@ void Warnings() {
     auto refusing = Good(broken.Create(limits));
     const auto rejected = refusing->Prepare(nullptr);
     Check(!rejected.Succeeded() && std::any_of(rejected.diagnostics.begin(), rejected.diagnostics.end(), [](const auto& diagnostic) {
-        return diagnostic.code == "MDX_POSE_NUMBER_INVALID" && diagnostic.severity == DiagnosticSeverity::Error;
+        return diagnostic.code == "MDX_POSE_INHERITANCE_SINGULAR" && diagnostic.severity == DiagnosticSeverity::Error;
     }), "strict failure retention changed for a real later-node rotation error");
     limits.playbackPolicy = AnimationPlaybackPolicy::StrictReplay;
     auto strictBroken = Good(broken.Create(limits));
