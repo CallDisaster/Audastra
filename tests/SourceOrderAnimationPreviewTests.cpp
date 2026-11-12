@@ -518,14 +518,14 @@ void Warnings() {
     // PoseBatch失败分支重置诊断范围，只公开第一条Error；先前内部warning必须消失。
     Check(brokenFrame->diagnostics.size() == 1 && firstWarning == brokenFrame->diagnostics.end() &&
         laterError == brokenFrame->diagnostics.begin() && laterError->objectId == 3 &&
-        laterError->track == War3RenderCore::TrackKind::Scale &&
+        laterError->track == War3RenderCore::TrackKind::None &&
         laterError->leftFrame == 0 && laterError->rightFrame == 0 && brokenFrame->omittedDiagnostics == 0 &&
         brokenFrame->hiddenInstances == 1 && brokenFrame->animatedInstances == 0 && brokenFrame->poses.size() == 1 &&
         brokenFrame->poses[0].hidden && !brokenFrame->poses[0].animated &&
         brokenFrame->poses[0].rejection.code == Code::PoseInheritanceSingular &&
         brokenFrame->poses[0].rejection.severity == War3RenderCore::Severity::Error &&
         brokenFrame->poses[0].rejection.objectId == 3 &&
-        brokenFrame->poses[0].rejection.track == War3RenderCore::TrackKind::Scale &&
+        brokenFrame->poses[0].rejection.track == War3RenderCore::TrackKind::None &&
         brokenFrame->poses[0].rejection.leftFrame == 0 && brokenFrame->poses[0].rejection.rightFrame == 0 &&
         brokenFrame->poses[0].poseVersion == 0 && brokenFrame->poses[0].warnings.count == 0 &&
         brokenFrame->poses[0].warnings.omitted == 0 &&
