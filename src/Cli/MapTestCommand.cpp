@@ -131,6 +131,8 @@ int RunMapTest(int argc, wchar_t** argv) {
         + L"-" + std::to_wstring(GetTickCount64()));
     std::error_code error;
     if (!std::filesystem::create_directory(run, error) || error) { std::cerr << "cannot create test directory\n"; return 1; }
+    auto workspace = Services::FreezeMapTestWorkspace(run);
+    if (!workspace.Succeeded() || !workspace.value) { Print(workspace.diagnostics); return 1; }
 
     Services::MapTestRequest request;
     request.inputMap = std::filesystem::absolute(map); request.sourceMap = request.inputMap;
@@ -141,11 +143,25 @@ int RunMapTest(int argc, wchar_t** argv) {
     request.runtimeBridge = std::filesystem::absolute(helpers) / "audastra-warcraft-launcher.exe";
     request.runtimeBootstrap = std::filesystem::absolute(helpers) / "audastra-warcraft-bootstrap.dll";
     request.handwrittenLuaEngine = engine; request.handwrittenLuaHotReload = hotReload;
-    // Lua 文件夹输入要先写进本次目录再冻结：冻结后的根目录句柄不允许候选保存再锁父目录。
-    const auto luaInput = Services::PrepareLuaFolderTestInput(request, luaFolderOverride, luaDeletionApproval);
-    if (!luaInput.Succeeded()) { Print(luaInput.diagnostics); std::filesystem::remove_all(run, error); return 1; }
-    auto workspace = Services::FreezeMapTestWorkspace(run);
-    if (!workspace.Succeeded() || !workspace.value) { Print(workspace.diagnostics); return 1; }
+    // Lua 文件夹输入与界面一样写进独立的输入目录再冻结：本次运行目录须在初次冻结时为空，
+    // 冻结后的目录句柄也不允许候选保存再锁父目录。
+    std::shared_ptr<Services::MapTestWorkspaceLease> inputFiles;
+    {
+        const auto inputRun = std::filesystem::path(run.native() + L".input");
+        if (!std::filesystem::create_directory(inputRun, error) || error) { std::cerr << "cannot create test input directory\n"; return 1; }
+        auto staged = request;
+        staged.workspace = inputRun / "prepared";
+        const auto luaInput = Services::PrepareLuaFolderTestInput(staged, luaFolderOverride, luaDeletionApproval);
+        if (!luaInput.Succeeded()) { Print(luaInput.diagnostics); return 1; }
+        if (staged.inputMap == request.inputMap) std::filesystem::remove(inputRun, error);
+        else {
+            auto frozen = Services::FreezeMapTestWorkspace(inputRun);
+            if (!frozen.Succeeded() || !frozen.value) { Print(frozen.diagnostics); return 1; }
+            inputFiles = std::move(*frozen.value);
+            request.inputMap = staged.inputMap;
+            request.expectedInputSha256 = staged.expectedInputSha256;
+        }
+    }
     const auto progress = [](std::string_view stage) { std::cout << "stage=" << stage << '\n'; };
     auto artifact = Services::PrepareLuaAwareMapTest(request, {}, progress);
     Print(artifact.diagnostics);
@@ -157,7 +173,11 @@ int RunMapTest(int argc, wchar_t** argv) {
     artifact.value->cloakedWindow = cloaked;
     auto launched = Script::LaunchMapTest(*artifact.value, progress);
     Print(launched.diagnostics);
-    if (!launched.Succeeded() || !launched.value) { (void)(*workspace.value)->Cleanup(true); return 1; }
+    if (!launched.Succeeded() || !launched.value) {
+        (void)(*workspace.value)->Cleanup(true);
+        if (inputFiles) (void)inputFiles->Cleanup(true);
+        return 1;
+    }
     const auto& receipt = *launched.value;
     std::cout << "launched=true\nlauncher_pid=" << receipt.launcherProcessId << "\nlua_entries=" << receipt.luaEntryModules.size()
         << "\nlua_mailbox=" << (receipt.luaMailbox ? "true" : "false") << "\nlua_hot_reload=" << (receipt.luaHotReload ? "true" : "false")
@@ -393,7 +413,11 @@ int RunMapTest(int argc, wchar_t** argv) {
     }
     const auto cleaned = receipt.lease ? receipt.lease->Cleanup() : War3Map::Status::Ok();
     Print(cleaned.diagnostics);
-    const auto files = (*workspace.value)->Cleanup(true);
+    auto files = (*workspace.value)->Cleanup(true);
+    if (inputFiles) {
+        const auto input = inputFiles->Cleanup(true);
+        files.diagnostics.insert(files.diagnostics.end(), input.diagnostics.begin(), input.diagnostics.end());
+    }
     Print(files.diagnostics);
     // 游戏被强制结束时退出码非零，租约照常清理副本；两者分别报告。
     std::cout << "game_exited=true\ngame_exit_clean=" << (cleaned.Succeeded() ? "true" : "false")
