@@ -51,8 +51,14 @@ MapData::PathingGridSnapshot FinalPathing(const CurrentMinimapPreviewInput& inpu
             break;
         }
     }
-    if (!bytes)
-        bytes = Take(source.ReadMember("war3map.wpm", input.control.get()));
+    if (!bytes) {
+        // 固定快照不复制 WPM；在同一已固定的只读来源租约内按名精确捕获。
+        const std::array<std::string, 1> names{"war3map.wpm"};
+        auto captured = Take(source.CaptureExactMembers(names));
+        if (captured.size() != 1 || !captured.front().present)
+            Fail("MINIMAP_CURRENT_PATHING_MISSING", "地图没有通行图（war3map.wpm），无法显示通行层。");
+        bytes = std::move(captured.front().bytes);
+    }
     const auto parsed = Take(MapData::ParseMapPathing(*bytes, &header));
     if (!parsed.Snapshot())
         Fail("MINIMAP_CURRENT_PATHING", "通行图未能读取。");
