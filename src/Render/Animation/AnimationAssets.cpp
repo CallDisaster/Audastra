@@ -519,7 +519,9 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
                                 build = std::move(retry);
                             }
                         }
-                        if (limits.retainUnsupportedStatic && build.Succeeded() && !asset.parsed->rigidStaticPreviewSource) {
+                        // 只有核心实际按显式预览策略求值时才写这两条说明；严格回放仍按原拒绝码处理。
+                        if (AnimationNodeKeyPolicy(limits) == War3RenderCore::NodeKeySamplingPolicy::SourceOrderPreview
+                            && build.Succeeded() && !asset.parsed->rigidStaticPreviewSource) {
                             const auto notes = ScanPreviewTrackNotes(*asset.parsed);
                             if (notes.zeroRotationNodes)
                                 warnings.push_back({DiagnosticSeverity::Warning, "Render.Animation", "ANIMATION_ZERO_ROTATION_PREVIEW",
