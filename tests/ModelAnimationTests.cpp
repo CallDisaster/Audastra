@@ -582,8 +582,11 @@ void ParticleService() {
     {
         const auto at=std::string_view(reinterpret_cast<const char*>(unknownFlag.data()),unknownFlag.size()).find("BONE");
         Require(at!=std::string_view::npos && at+104<=unknownFlag.size(),"bone fixture");
-        std::uint32_t flags=0; std::memcpy(&flags,unknownFlag.data()+at+100,4);
-        Require((flags&0x100u)!=0,"bone flags offset"); Patch(unknownFlag,"BONE",100,flags|0x80000000u);
+        // BONE 块：+12 节点名、+92 objectId、+100 flags（共享夹具写 "Geometry"、0、0）。
+        std::uint32_t objectId=UINT32_MAX,flags=UINT32_MAX;
+        std::memcpy(&objectId,unknownFlag.data()+at+92,4); std::memcpy(&flags,unknownFlag.data()+at+100,4);
+        Require(!std::memcmp(unknownFlag.data()+at+12,"Geometry",8) && objectId==0 && flags==0,"bone flags offset");
+        Patch(unknownFlag,"BONE",100,0x80000000u);
     }
     Patch(geoset,"GEOA",16,2); Patch(geoset,"GEOA",20,std::bit_cast<std::uint32_t>(1.0f));
     Patch(geoset,"GEOA",24,std::bit_cast<std::uint32_t>(0.5f)); Patch(geoset,"GEOA",28,std::bit_cast<std::uint32_t>(0.25f));
