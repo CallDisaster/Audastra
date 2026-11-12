@@ -513,6 +513,17 @@ struct RunReceipt {
             json += ",\"loaded\":" + std::string(flag(module.loaded != 0)) + ",\"initializeCalled\":" + flag(module.initializeCalled != 0) + '}';
         }
         json += ']';
+        if (evidence && evidence->legacyPluginCount) {
+            json += ",\"legacyPlugins\":[";
+            for (DWORD i = 0; i < (std::min)(evidence->legacyPluginCount, static_cast<DWORD>(kLegacyPluginLimit)); ++i) {
+                if (i) json += ',';
+                const auto& plugin = evidence->legacyPlugins[i];
+                json += "{\"path\":" + Json(Utf8(plugin.file.path)) + ",\"providerId\":" + Json(plugin.providerId)
+                    + ",\"expectedSha256\":" + Json(plugin.file.expectedSha256) + ",\"sha256\":" + Json(plugin.file.actualSha256)
+                    + ",\"loaded\":" + flag(plugin.file.loaded != 0) + '}';
+            }
+            json += ']';
+        }
         if (evidence && evidence->providerModuleCount) {
             json += ",\"providerRegistrationsVerified\":" + std::string(flag(evidence->providerRegistrationsVerified != 0));
             json += ",\"providerVerifiedInitializations\":" + std::to_string(evidence->providerVerifiedInitializations);
@@ -597,7 +608,7 @@ int Run(int argc, wchar_t** argv) {
     std::filesystem::path probeScript;
     std::wstring expectedProbeScriptSha;
     std::vector<std::filesystem::path> nonfatalBlockedPaths;
-    std::vector<std::wstring> providerModuleSpecs, providerNativeSpecs;
+    std::vector<std::wstring> providerModuleSpecs, providerNativeSpecs, legacyPluginSpecs;
     DWORD probeTimeout = 45000;
     bool probeTimeoutSpecified = false;
     for (int index = 1; index < argc; index += 2) {
@@ -611,6 +622,8 @@ int Run(int argc, wchar_t** argv) {
             providerModuleSpecs.emplace_back(argv[index + 1]);
         else if (key == L"--provider-native" && providerNativeSpecs.size() < kProviderNativeLimit)
             providerNativeSpecs.emplace_back(argv[index + 1]);
+        else if (key == L"--legacy-plugin" && legacyPluginSpecs.size() < kLegacyPluginLimit)
+            legacyPluginSpecs.emplace_back(argv[index + 1]);
         else if (key == L"--runtime-layout" && !layoutSpecified) {
             const std::wstring value(argv[index + 1]);
             if (value == L"ydwe-tree") layout = RuntimeLayout::YdweTree;
@@ -894,6 +907,33 @@ int Run(int argc, wchar_t** argv) {
         native.moduleIndex = moduleIndex;
         strcpy_s(native.name, nativeName.c_str());
         strcpy_s(native.signature, Utf8(signature).c_str());
+    }
+    // 旧平台插件只按 SHA 装入，不调用入口；名字不能与游戏、YDWE 链或系统 VERSION 冲突。
+    for (const auto& spec : legacyPluginSpecs) {
+        const auto first = spec.find(L'|');
+        const auto second = first == spec.npos ? spec.npos : spec.find(L'|', first + 1);
+        if (second == spec.npos) return fail("legacy-plugin-plan", ERROR_INVALID_DATA);
+        const auto sha = spec.substr(0, first), providerId = spec.substr(first + 1, second - first - 1);
+        auto path = std::filesystem::path(spec.substr(second + 1)).lexically_normal();
+        path.make_preferred();
+        const auto leaf = path.filename().wstring();
+        if (!lowercaseHex(sha, 64) || providerId.empty() || providerId.size() > 128 || !ascii(providerId) || !PlainPath(path)
+            || !EqualPath(path.extension().wstring(), L".dll") || EqualPath(leaf, L"Game.dll") || EqualPath(leaf, L"Storm.dll")
+            || EqualPath(leaf, L"version.dll")
+            || std::any_of(kModules.begin(), kModules.end(), [&](const auto* known) { return EqualPath(leaf, known); }))
+            return fail("legacy-plugin-plan", ERROR_INVALID_DATA);
+        for (DWORD i = 0; i < shared->legacyPluginCount; ++i)
+            if (EqualPath(std::filesystem::path(shared->legacyPlugins[i].file.path).filename().wstring(), leaf))
+                return fail("legacy-plugin-plan-duplicate", ERROR_INVALID_DATA);
+        auto& plugin = shared->legacyPlugins[shared->legacyPluginCount++];
+        wcscpy_s(plugin.file.path, path.c_str());
+        strcpy_s(plugin.file.expectedSha256, Utf8(sha).c_str());
+        strcpy_s(plugin.providerId, Utf8(providerId).c_str());
+        auto file = std::make_unique<Handle>(OpenLockedFile(path));
+        if (file->value == INVALID_HANDLE_VALUE || !IsX86Image(file->value) ||
+            Sha256(file->value, 32u * 1024u * 1024u) != plugin.file.expectedSha256)
+            return fail("legacy-plugin-file-identity", ERROR_CRC);
+        runtimeFiles.push_back(std::move(file));
     }
     const auto importPath = ImportPath(bootstrap);
     if (importPath.empty()) return fail("bootstrap-path-encoding", ERROR_NO_UNICODE_TRANSLATION);

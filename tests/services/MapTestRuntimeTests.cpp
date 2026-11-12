@@ -6,6 +6,7 @@
 #include "War3MapCore/Mpq/MpqArchive.h"
 #include "War3MapCore/VerifiedFile.h"
 #include "War3MapCore/Services/ClassicLuaMapSources.h"
+#include "War3MapCore/Services/LuaObjectSnapshot.h"
 #include "War3MapCore/Runtime/LuaModuleNames.h"
 #include "../MapDataFixtures.h"
 #include "../../src/Core/Mpq/MpqCrypt.h"
@@ -283,7 +284,10 @@ void ExternalDependencyCatalog() {
         Write(builtin / relative, bytes);
     }
     Write(directory / "kkwe" / L"插件" / "version.dll", Pe(true));
-    Write(directory / "kkwe" / L"插件" / "dz_w3_plugin.dll", Pe(true));
+    auto dzBytes = Pe(true);
+    const auto dzNames = Bytes(std::string_view("\0DzFixtureUi\0", 13));
+    dzBytes.insert(dzBytes.end(), dzNames.begin(), dzNames.end());
+    Write(directory / "kkwe" / L"插件" / "dz_w3_plugin.dll", dzBytes);
     status = Services::QueryExternalDependencies(directory);
     Success(status, "unrelated files and directories do not exhaust provider budget");
     // 重复键已使原来的描述整体失效，因此原 DLL 与根目录未声明 DLL 都应报告。
@@ -300,7 +304,9 @@ void ExternalDependencyCatalog() {
         "bin and plugin belong to the single YDWE installation and are not rescanned");
     const auto dz = std::find_if(status.value->providers.begin(), status.value->providers.end(),
         [](const auto& item) { return item.kind == Services::ExternalDependencyKind::KkweDz; });
-    Require(dz != status.value->providers.end() && !dz->usable && dz->files.size() == 2, "Dz status does not authorize loading");
+    Require(dz != status.value->providers.end() && dz->usable && dz->files.size() == 2
+        && dz->files.front().path.filename() == L"dz_w3_plugin.dll"
+        && dz->files.front().candidateNatives == std::vector<std::string>{"DzFixtureUi"}, "Dz plugin names its interfaces; the proxy is only inspected");
 
     Write(provider / "provider.json", Bytes(R"json({"schema":1,"id":"original","abi":"audastra-native-provider-v1","modules":[
         {"file":"original.dll","entry":"Initialize","natives":{"AudastraFixtureAdd":"(I)I"}}]})json"));
@@ -316,6 +322,20 @@ void ExternalDependencyCatalog() {
     legacyPlan = Script::BuildIndependentMapTestLaunchPlan(legacy);
     Success(legacyPlan, "explicit runtime takes precedence over the matching folder layout");
     Require(legacyPlan.value->runtimeRoot == fixture.runtime, "explicit runtime selected");
+
+    // Dz 接口由 KKWE Dz 插件认领；插件只在已核验的 1.27a 上装入，合成 Game.dll 因此被拒。
+    auto dzMap = fixture.Artifact(Script("call DzFixtureUi()", "native DzFixtureUi takes nothing returns nothing\n"));
+    dzMap.externalDependenciesDirectory = directory;
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(dzMap), "EXTERNAL_DEPENDENCY_DZ_GAME",
+        "a map that only needs Dz interfaces selects the plugin and still requires the verified game");
+    auto mixed = fixture.Artifact(Script("call DzFixtureUi()\n    call EXFixtureTest()",
+        "native DzFixtureUi takes nothing returns nothing\nnative EXFixtureTest takes nothing returns nothing\n"));
+    mixed.externalDependenciesDirectory = directory;
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(mixed), "EXTERNAL_DEPENDENCY_DZ_GAME",
+        "the remaining EX interface is still covered by the folder's YDWE layout");
+    Write(directory / "kkwe" / L"插件" / "dz_w3_plugin.dll", Pe(true));
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(dzMap), "EXTERNAL_DEPENDENCY_NATIVE_MISSING",
+        "a plugin without the interface name is not loaded");
 }
 
 void CliAndHLuaDependencyPreferences() {
@@ -701,6 +721,35 @@ void LuaMapsAreExplicitRuntimeInputs() {
     fixture.Unchanged(map);
 }
 // 原创手写 Lua 地图：初始化里 Cheat("exec-lua: \"main\"")（YDWE 约定），Lua 文件作为普通成员导入。
+// YDWE 的 Lua 引擎运行时不认 |xxxx|：测试副本里的 Lua 改成整数，作者地图原文不变。
+void TestCopyTranslatesYdweRawcodes() {
+    const auto common = std::string(kCommon) + "native Cheat takes string cheatStr returns nothing\n";
+    Fixture fixture(common);
+    const auto lua = Bytes("local id = |Hpal| -- |AHhb| stays in comments\nlocal s = '|hfoo|'\n");
+    const std::vector<MapArchiveMember> members{{"war3map.j", Bytes(Script("    call Cheat(\"exec-lua: \\\"main\\\"\")"))},
+        {"war3map.w3i", MapDataFixtures::FullMapSettingsV25().bytes}, {"main.lua", lua}, {"plain.lua", Bytes("return 1\n")}};
+    const auto source = WriteVerifiedArchive(fixture.root / "rawcodes.w3x", members);
+    Success(source, "write rawcode Lua fixture");
+    Services::MapTestRequest request;
+    request.inputMap = source.value->path; request.sourceMap = source.value->path;
+    request.expectedInputSha256 = source.value->sha256; request.gameRoot = fixture.game;
+    request.workspace = fixture.root / "prepared-rawcodes";
+    request.handwrittenLuaEngine = Services::MapTestLuaEngine::Ydwe;
+    const auto prepared = Services::PrepareLuaAwareMapTest(request);
+    Success(prepared, "prepare a YDWE Lua test copy");
+    Require(Code(prepared, "MAP_TEST_LUA_RAWCODE_TRANSLATED") && prepared.value->testMap.filename() == L"lua-rawcode-test.w3x",
+        "rawcode translation is reported and becomes the test map");
+    auto copy = MapArchiveSession::Open(prepared.value->testMap);
+    Success(copy, "open translated test copy");
+    const auto main = copy.value->ReadMember("main.lua");
+    const auto plain = copy.value->ReadMember("plain.lua");
+    Success(main, "read translated main.lua"); Success(plain, "read untouched plain.lua");
+    Require(*main.value == Bytes("local id = 1215324524 -- |AHhb| stays in comments\nlocal s = '|hfoo|'\n")
+        && *plain.value == Bytes("return 1\n"), "only code rawcodes change, comments and strings stay");
+    const auto original = Sha256File(source.value->path);
+    Require(original.Succeeded() && *original.value == source.value->sha256, "author map bytes are unchanged");
+}
+
 void HandwrittenLuaEntriesSelectRuntime() {
     const auto common = std::string(kCommon) + "native Cheat takes string cheatStr returns nothing\n";
     Fixture fixture(common);
@@ -1257,7 +1306,8 @@ int wmain(int argc, wchar_t** argv) {
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();
         YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions();
         UnusedUiPreferencesCannotBlockNativeMaps();
-        LuaMapsAreExplicitRuntimeInputs(); HandwrittenLuaEntriesSelectRuntime(); MissingMalformedAndOversizeScriptsStopPlanning();
+        LuaMapsAreExplicitRuntimeInputs(); HandwrittenLuaEntriesSelectRuntime(); TestCopyTranslatesYdweRawcodes();
+        MissingMalformedAndOversizeScriptsStopPlanning();
         AnonymousScriptFlagsAreCheckedBeforeDecoding();
         std::cout << "Independent map runtime preflight fixtures passed; registry settings were process-isolated; no game or DLL executed\n";
         OptionalRealNativeMapPlan();

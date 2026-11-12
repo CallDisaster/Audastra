@@ -17,7 +17,10 @@ CLI 默认读取编辑器的目录设置，显式目录优先。状态回执包�
 ## 已知目录布局
 
 - **YDWE EX** 支持六个 DLL 平铺，或保留 `bin/{ydbase,lua53,ydwar3}.dll` 与 `plugin/warcraft3/{yd_loader,yd_jass_api,yd_lua_engine}.dll`。目录状态检查 x86 PE、导入关系、两个 `Initialize` 导出与各文件 SHA，并列出 EX 名称候选。识别到的布局等同于配置了 YDWE 目录：JASS 测试用旧初始化链；手写 Lua 需要这些扩展时退回 YDWE Lua 引擎。这六个 DLL 不加载到自带 Lua 会话。
-- **KKWE Dz** 可识别 `dz_w3_plugin.dll` 与相邻的 `version.dll`，包括其原发行版的 `插件` 子目录。当前只显示静态状态，不加载这套文件。独立离线登记和兼容性有待验证。
+- **KKWE Dz** 可识别 `dz_w3_plugin.dll`，包括其原发行版的 `插件` 子目录。相邻的 `version.dll` 只核对身份，不加载，也不需要放进游戏目录。
+  - 地图脚本声明的 Dz 接口名能在插件里找到原名时，测试只在 1.27a 上进行。启动组件在游戏进程启动时按 SHA 装入 `dz_w3_plugin.dll`，时机与原平台相同。
+  - 其余扩展接口照常选择声明提供者或 YDWE。
+  - 编辑器不逐个核验 Dz 接口的实际登记；状态和测试回执会写明这一点。
 
 ## 提供者声明
 

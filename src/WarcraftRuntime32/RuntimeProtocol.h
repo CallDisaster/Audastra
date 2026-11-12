@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 11;
+inline constexpr std::uint32_t kVersion = 12;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -51,6 +51,8 @@ struct BlockedWriteEvidence {
 };
 inline constexpr std::size_t kProviderModuleLimit = 8;
 inline constexpr std::size_t kProviderNativeLimit = 256;
+// 旧平台插件（KKWE Dz）：没有入口导出，按原平台 VERSION 代理的时机在进程启动时装入。
+inline constexpr std::size_t kLegacyPluginLimit = 2;
 struct ProviderModuleEvidence {
     ModuleEvidence file;
     char entry[129]{};
@@ -120,6 +122,8 @@ struct SharedEvidence {
     char providerFailureText[4096]{};
     std::array<ProviderModuleEvidence, kProviderModuleLimit> providerModules{};
     std::array<ProviderNativeEvidence, kProviderNativeLimit> providerNatives{};
+    DWORD legacyPluginCount = 0;
+    std::array<ProviderModuleEvidence, kLegacyPluginLimit> legacyPlugins{};
     // 自有元数据探针的匿名 IPC；默认关闭，普通 F9 不观察 Lua 或限制文件写出。
     LONG probeEnabled = 0;
     char probeNonce[33]{};
@@ -153,7 +157,9 @@ inline SharedEvidence* OpenChannel() {
     auto* shared = static_cast<SharedEvidence*>(MapViewOfFile(reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(value)), FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedEvidence)));
     if (shared && (shared->magic != kMagic || shared->version != kVersion || !ValidLayout(shared->runtimeLayout)
         || !ValidMode(shared->runtimeMode) || shared->providerModuleCount > kProviderModuleLimit
-        || shared->providerNativeCount > kProviderNativeLimit)) { UnmapViewOfFile(shared); return nullptr; }
+        || shared->providerNativeCount > kProviderNativeLimit || shared->legacyPluginCount > kLegacyPluginLimit)) {
+        UnmapViewOfFile(shared); return nullptr;
+    }
     return shared;
 }
 } // namespace Audastra::Runtime32

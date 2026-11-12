@@ -70,6 +70,8 @@ struct MapTestArtifact {
     bool cloakedWindow = false;
     std::filesystem::path externalDependenciesDirectory;
     std::vector<ExternalDependencyFile> externalDependencyFiles;
+    // 旧平台插件（KKWE Dz）：没有入口导出，由启动组件在游戏进程启动时按 SHA 装入。
+    std::vector<ExternalDependencyFile> legacyPluginFiles;
 };
 
 struct MapTestSlkRequest {

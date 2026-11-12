@@ -270,7 +270,10 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
     const bool described = !artifact.externalDependencyFiles.empty();
     if (described && (!artifact.runtimeRoot.empty() || plan.gameModuleSha256 != kMapTestGame127ModuleSha256))
         return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_GAME", "已声明提供者需要已核验的 1.27a，不能与旧 YDWE 路径混装。");
-    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || described || plan.backgroundPlay) {
+    const bool legacyPlugins = !artifact.legacyPluginFiles.empty();
+    if (legacyPlugins && plan.gameModuleSha256 != kMapTestGame127ModuleSha256)
+        return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_DZ_GAME", "KKWE Dz 插件只在已核验的 1.27a 上装入。");
+    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || described || legacyPlugins || plan.backgroundPlay) {
         // 裸模式：地图不需要扩展运行库，只为后台运行钩子经过启动器。
         const bool bare = !artifact.useOwnedLuaRuntime && artifact.runtimeRoot.empty();
         if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree)
@@ -315,6 +318,10 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
         auto provider = BuildMapTestProviderArguments(artifact.externalDependencyFiles, artifact.useOwnedLuaRuntime);
         if (!provider.Succeeded()) return {std::nullopt, std::move(provider.diagnostics)};
         plan.arguments.insert(plan.arguments.end(), provider.value->begin(), provider.value->end());
+        for (const auto& file : artifact.legacyPluginFiles) {
+            const std::wstring sha(file.sha256.begin(), file.sha256.end()), id(file.providerId.begin(), file.providerId.end());
+            plan.arguments.insert(plan.arguments.end(), {L"--legacy-plugin", sha + L"|" + id + L"|" + file.path.wstring()});
+        }
         if (plan.backgroundPlay) plan.arguments.insert(plan.arguments.end(), {L"--background-play", L"enabled"});
         if (plan.cloakedWindow) plan.arguments.insert(plan.arguments.end(), {L"--window-cloak", L"enabled"});
         // 看不见的后台测试不出声。经典 1.27a 不认 -nosound（会连带丢掉 -loadfile），

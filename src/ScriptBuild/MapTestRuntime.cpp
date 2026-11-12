@@ -703,6 +703,8 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         std::vector<Diagnostic> providerIssues;
         bool directoryUnavailable = false;
         std::optional<std::pair<std::filesystem::path, Services::MapTestRuntimeLayout>> legacyLayout;
+        // 认领 Dz 接口后剩下的扩展接口；后续选择与报错都只看这一部分。
+        bool remainingRequired = required;
         if ((required || wantsYdweLua) && !selected.externalDependenciesDirectory.empty()) {
             const auto inventory = Services::QueryExternalDependencies(selected.externalDependenciesDirectory);
             if (!inventory.Succeeded()) {
@@ -711,8 +713,26 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                     notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "EXTERNAL_DEPENDENCY_DIRECTORY_UNAVAILABLE",
                         inventory.diagnostics.front().message});
             } else {
+                // KKWE Dz：插件里能找到原名的接口由 dz_w3_plugin.dll 提供；逐接口注册未核验。
+                for (const auto& provider : inventory.value->providers) {
+                    if (!required || provider.kind != Services::ExternalDependencyKind::KkweDz || !provider.usable) continue;
+                    const auto& plugin = provider.files.front();
+                    std::size_t claimed = 0;
+                    for (auto item = needed.begin(); item != needed.end();) {
+                        if (!std::binary_search(plugin.candidateNatives.begin(), plugin.candidateNatives.end(), item->first)) { ++item; continue; }
+                        item = needed.erase(item);
+                        ++claimed;
+                    }
+                    if (!claimed) continue;
+                    selected.legacyPluginFiles.push_back(plugin);
+                    notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "EXTERNAL_DEPENDENCY_DZ_SELECTED",
+                        "本次装入 KKWE Dz 插件 " + IO::PathUtf8(plugin.path) + "，SHA-256 " + plugin.sha256 + "，提供 "
+                        + std::to_string(claimed) + " 个 Dz 接口。按插件内的接口名认领，逐接口注册未核验。"});
+                    break;
+                }
+                remainingRequired = !needed.empty();
                 // 仅必需接口可以选中提供者；主动选用 YDWE 的 Lua 也不与声明式提供者混装。
-                if (required && !wantsYdweLua) {
+                if (remainingRequired && !wantsYdweLua) {
                     auto files = Services::SelectExternalDependencyFiles(*inventory.value, needed);
                     if (files.Succeeded()) selected.externalDependencyFiles = std::move(*files.value);
                     else providerIssues = std::move(files.diagnostics);
@@ -727,7 +747,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                                     != file.candidateNatives.end();
                             });
                         };
-                        if (required && !std::all_of(needed.begin(), needed.end(), contains)) continue;
+                        if (remainingRequired && !std::all_of(needed.begin(), needed.end(), contains)) continue;
                         if (legacy) {
                             notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "EXTERNAL_DEPENDENCY_YDWE_CONFLICT",
                                 "有多套 YDWE 扩展匹配本图；请在地图测试设置中明确选择运行时目录。"});
@@ -771,7 +791,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             for (std::size_t i = 0; i < entries.size() && i < 3; ++i) modules += (i ? "、" : "") + entries[i];
             if (entries.size() > 3) modules += " 等";
             const auto& nonUtf8 = requirements.value->nonUtf8Lua;
-            if (selected.handwrittenLuaEngine == Services::MapTestLuaEngine::Owned && (!required || covered) && nonUtf8.empty()) {
+            if (selected.handwrittenLuaEngine == Services::MapTestLuaEngine::Owned && (!remainingRequired || covered) && nonUtf8.empty()) {
                 selected.useOwnedLuaRuntime = true;
                 selected.enableLuaHotReload = selected.handwrittenLuaHotReload;
                 notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_LUA_OWNED",
@@ -784,7 +804,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                         "作者选择 YDWE 的 Lua 环境加载模块 " + modules + "；本次不使用自带环境，不能热重载。",{}});
                 if (selected.handwrittenLuaEngine == Services::MapTestLuaEngine::Owned)
                     notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "MAP_TEST_LUA_YDWE_FALLBACK",
-                        (required ? std::string("地图还用到原版游戏没有的接口")
+                        (remainingRequired ? std::string("地图还用到原版游戏没有的接口")
                             : "Lua 文件 " + nonUtf8.front() + " 不是 UTF-8 编码")
                         + "，自带 Lua 环境不支持，本次改用 YDWE 的 Lua 引擎（不能热重载）。", std::nullopt});
             }
@@ -808,7 +828,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                     : "这些可选 jass.japi 接口没有匹配的提供者，查询将返回 nil：" + unavailable + "。"});
             selected.runtimeRoot.clear(); selected.runtimeYdweRoot.clear();
         }
-        const bool extension = (required && !covered) || handwrittenYdwe;
+        const bool extension = (remainingRequired && !covered) || handwrittenYdwe;
         if (extension && selected.runtimeRoot.empty()) {
             if (legacyLayout) {
                 selected.runtimeRoot = legacyLayout->first;
@@ -823,7 +843,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                 : "MAP_TEST_RUNTIME_REQUIRED";
             std::string message;
             auto primaryCode = std::string(code);
-            if (required) {
+            if (remainingRequired) {
                 if (!providerIssues.empty()) {
                     primaryCode = providerIssues.front().code;
                     message = std::move(providerIssues.front().message);
@@ -843,7 +863,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                 message = "此地图用 exec-lua 加载 Lua，需要 YDWE 的 Lua 引擎。请";
             }
             message += "在设置中配置本机 YDWE 目录或包含六个 DLL 的独立运行时目录，无需启动 YDWE。";
-            if (handwrittenYdwe && !required)
+            if (handwrittenYdwe && !remainingRequired)
                 message += " 也可在地图测试设置中改用 Audastra 自带 Lua 环境。";
             auto rejected = Failure<LaunchPlan>(std::move(primaryCode), std::move(message));
             rejected.diagnostics.insert(rejected.diagnostics.end(), notes.begin(), notes.end());
@@ -855,7 +875,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         plan.value->luaEntryModules = entries;
         plan.diagnostics.insert(plan.diagnostics.end(), notes.begin(), notes.end());
         if (!selected.runtimeRoot.empty()) {
-            if (required) plan.diagnostics.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime",
+            if (remainingRequired) plan.diagnostics.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime",
                 "MAP_TEST_LEGACY_NATIVE_UNVERIFIED", "旧 YDWE 路径按六 DLL 兼容布局启动，无法逐接口核验其实际注册。"});
             std::size_t index = 0;
             for (const auto& [name, initialize] : {std::pair{"ydbase.dll", false}, std::pair{"lua53.dll", false},
@@ -873,7 +893,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                 }
             }
         }
-        if (selected.useOwnedLuaRuntime || !selected.runtimeRoot.empty() || covered) {
+        if (selected.useOwnedLuaRuntime || !selected.runtimeRoot.empty() || covered || !selected.legacyPluginFiles.empty()) {
             for (const auto& [file, dll] : {std::pair{selected.runtimeBridge, false}, std::pair{selected.runtimeBootstrap, true},
                     std::pair{selected.gameRoot / "war3.exe", false}, std::pair{selected.gameRoot / "Game.dll", true}}) {
                 const auto status = CheckRuntimePe(file, dll, false);

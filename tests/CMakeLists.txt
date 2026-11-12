@@ -198,7 +198,7 @@ add_test(NAME services-map-test-screenshot-files COMMAND war3-map-test-screensho
 set_tests_properties(services-map-test-screenshot-files PROPERTIES TIMEOUT 15)
 
 add_executable(war3-map-test-runtime-tests services/MapTestRuntimeTests.cpp)
-target_link_libraries(war3-map-test-runtime-tests PRIVATE War3MapEditor::ScriptBuild)
+target_link_libraries(war3-map-test-runtime-tests PRIVATE War3MapEditor::ScriptBuild War3MapEditor::Services)
 target_compile_definitions(war3-map-test-runtime-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(war3-map-test-runtime-tests PRIVATE /W4 /permissive- /utf-8)
 add_test(NAME services-map-test-runtime COMMAND war3-map-test-runtime-tests)

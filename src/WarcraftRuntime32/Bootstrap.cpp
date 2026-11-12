@@ -120,25 +120,43 @@ void InstallMutedSound() {
     if (!GameTest::InstallMutedSound(error)) Fail("mute-sound-install", ERROR_PROC_NOT_FOUND);
     InterlockedExchange(&evidence->muteSoundInstalled, 1);
 }
+struct LoadStages { const char* lease; const char* preloadSha; const char* load; const char* path; const char* loadedLease; const char* loadedSha; };
+constexpr LoadStages kRuntimeStages{"runtime-file-lease", "runtime-preload-sha", "runtime-load-library",
+    "runtime-module-path", "runtime-loaded-file-lease", "runtime-loaded-sha"};
+constexpr LoadStages kLegacyPluginStages{"legacy-plugin-file-lease", "legacy-plugin-preload-sha", "legacy-plugin-load-library",
+    "legacy-plugin-module-path", "legacy-plugin-loaded-file-lease", "legacy-plugin-loaded-sha"};
+// 按启动器冻结的 SHA 装入一个模块：装前、装后各核一次，实际路径必须与计划一致。
+HMODULE LoadVerifiedModule(ModuleEvidence& module, const std::filesystem::path& expected, const LoadStages& stages) {
+    Handle input(OpenLockedFile(expected));
+    if (input.value == INVALID_HANDLE_VALUE || !IsX86Image(input.value)) Fail(stages.lease, ERROR_BAD_EXE_FORMAT);
+    const auto before = Sha256(input.value);
+    if (before.empty() || before != module.expectedSha256) Fail(stages.preloadSha, ERROR_CRC);
+    const auto loaded = LoadLibraryExW(expected.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!loaded) Fail(stages.load);
+    const auto length = GetModuleFileNameW(loaded, module.path, static_cast<DWORD>(kPathCapacity));
+    if (!length || length >= kPathCapacity || !EqualPath(module.path, expected.wstring())) Fail(stages.path, ERROR_INVALID_DATA);
+    Handle actual(OpenLockedFile(module.path));
+    if (actual.value == INVALID_HANDLE_VALUE) Fail(stages.loadedLease);
+    const auto actualSha = Sha256(actual.value);
+    if (actualSha.empty() || actualSha != module.expectedSha256) Fail(stages.loadedSha, ERROR_CRC);
+    strcpy_s(module.actualSha256, actualSha.c_str());
+    InterlockedExchange(&module.loaded, 1);
+    return loaded;
+}
+// 旧平台插件在 DllMain 里自行挂钩，原平台由 Storm 导入的 VERSION 代理在 Game.dll 之前装入；这里取同一时机。
+void LoadLegacyPlugins() {
+    for (DWORD index = 0; index < evidence->legacyPluginCount; ++index) {
+        auto& plugin = evidence->legacyPlugins[index].file;
+        const std::filesystem::path expected(plugin.path);
+        (void)LoadVerifiedModule(plugin, expected, kLegacyPluginStages);
+    }
+}
 void InitializeRuntime() {
     if (!InstallLuaProbeWriteGuard(evidence)) Fail("lua-probe-write-guard-install", ERROR_ACCESS_DENIED);
     for (std::size_t index = 0; index < kModules.size(); ++index) {
         auto& module = evidence->modules[index];
         const auto expected = std::filesystem::path(evidence->runtimeRoot) / ModuleRelativePath(evidence->runtimeLayout, index);
-        Handle input(OpenLockedFile(expected));
-        if (input.value == INVALID_HANDLE_VALUE || !IsX86Image(input.value)) Fail("runtime-file-lease", ERROR_BAD_EXE_FORMAT);
-        const auto before = Sha256(input.value);
-        if (before.empty() || before != module.expectedSha256) Fail("runtime-preload-sha", ERROR_CRC);
-        const auto loaded = LoadLibraryExW(expected.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-        if (!loaded) Fail("runtime-load-library");
-        const auto length = GetModuleFileNameW(loaded, module.path, static_cast<DWORD>(kPathCapacity));
-        if (!length || length >= kPathCapacity || !EqualPath(module.path, expected.wstring())) Fail("runtime-module-path", ERROR_INVALID_DATA);
-        Handle actual(OpenLockedFile(module.path));
-        if (actual.value == INVALID_HANDLE_VALUE) Fail("runtime-loaded-file-lease");
-        const auto actualSha = Sha256(actual.value);
-        if (actualSha.empty() || actualSha != module.expectedSha256) Fail("runtime-loaded-sha", ERROR_CRC);
-        strcpy_s(module.actualSha256, actualSha.c_str());
-        InterlockedExchange(&module.loaded, 1);
+        const auto loaded = LoadVerifiedModule(module, expected, kRuntimeStages);
         if (index == 1 && !InstallLuaProbeObserver(loaded)) Fail("lua-probe-observer-install", ERROR_PROC_NOT_FOUND);
         if (index >= 4) {
             const auto initialize = GetProcAddress(loaded, "Initialize");
@@ -319,6 +337,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID) {
             InterlockedExchange(&evidence->failed, 1);
             return FALSE;
         }
+        LoadLegacyPlugins();
     }
     return TRUE;
 }

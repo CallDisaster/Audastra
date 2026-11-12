@@ -212,13 +212,17 @@ void InspectBuiltins(ExternalDependenciesStatus& status, const fs::path& root, s
         provider.id = "KKWE-Dz";
         provider.kind = ExternalDependencyKind::KkweDz;
         provider.root = directory;
-        for (const auto* name : {L"version.dll", L"dz_w3_plugin.dll"}) {
+        // 只装入 dz_w3_plugin.dll；原平台的 version.dll 代理有则核对身份，不装入。
+        for (const auto* name : {L"dz_w3_plugin.dll", L"version.dll"}) {
+            if (std::wstring_view(name) == L"version.dll" && !Present(directory / name)) continue;
             auto& file = provider.files.emplace_back();
             file.path = directory / name;
             InspectFile(provider, file, remaining, "Dz");
         }
-        Problem(provider, "EXTERNAL_DEPENDENCY_DZ_OFFLINE_UNVERIFIED",
-            "识别到 KKWE Dz 布局；独立离线注册尚未核验，当前只报告状态。");
+        const auto& plugin = provider.files.front();
+        if (provider.diagnostics.empty() && plugin.candidateNatives.empty())
+            Problem(provider, "EXTERNAL_DEPENDENCY_DZ_EMPTY", "dz_w3_plugin.dll 里没有找到 Dz 接口名，不装入。");
+        provider.usable = provider.diagnostics.empty();
         status.providers.push_back(std::move(provider));
     }
 }
