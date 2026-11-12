@@ -832,6 +832,13 @@ void ObjectResourcePickerTests::ModelPreviewBatchEvidence() {
                 if (!capture(*viewport, image)) continue;
                 if (const auto count = solidForeground(image); count > solid) { solid = count; best = image; }
             }
+            // 刀光、闪光类特效只在动作里短暂出现：两帧都空时再每 250 ms 补截，最多 8 帧（约 2 秒），
+            // 仍取成片像素最多的一张。只影响判定取样，不改预览本身。
+            for (int extra = 0; extra < 8 && solid < 40; ++extra) {
+                QTest::qWait(250); QImage image;
+                if (!capture(*viewport, image)) continue;
+                if (const auto count = solidForeground(image); count > solid) { solid = count; best = image; }
+            }
             outcome = solid >= 40 ? QStringLiteral("shown") : solid >= 0 ? QStringLiteral("blank") : QStringLiteral("no-frame");
             if (player->Frame() && !player->Frame()->states.empty())
                 animationMs = qint64(player->Frame()->states.front().globalMs);
