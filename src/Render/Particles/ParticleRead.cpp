@@ -113,7 +113,9 @@ void ReadEmitters(Reader r,Kind kind,Asset& out,std::uint32_t& keys,
             for(auto& i:e.intervals){i.first=v.U32();i.last=v.U32();i.repeat=v.U32();}
             e.textureId=v.U32();e.squirt=v.U32();e.priority=std::bit_cast<std::int32_t>(v.U32());e.replaceableId=v.U32();
             // 分段时间可大于1：粒子到不了中点，整个寿命按 life/middle 走前半段（见 ParticleGeometry）。
-            v.LocalRequire(e.headOrTail<=2&&e.squirt<=1&&std::isfinite(e.middle)&&e.middle>=0&&e.tailLength>=0,
+            // 尾长可为负：1.27a 读取 6F836840 不校验，6F19E1D0 尾部分支直接用尾长乘速度、不截断，
+            // 负值只是让尾巴朝速度方向伸出；ParticleGeometry 同样按线性计算。
+            v.LocalRequire(e.headOrTail<=2&&e.squirt<=1&&std::isfinite(e.middle)&&e.middle>=0&&std::isfinite(e.tailLength),
                 "PARTICLE_PARAMETER_UNSUPPORTED","PRE2头尾、squirt或分段时间无效。");
         } else {
             e.above=v.Float();e.below=v.Float();e.alpha=v.Float();e.ribbonColor=v.Vector();

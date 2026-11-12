@@ -345,6 +345,25 @@ void Parsing(){
     const auto rendered=Build(ribbons,strip,clock,{0,-100,100},{0,0,1});
     Check(rendered.Succeeded()&&!rendered.value->vertices.empty()&&
         rendered.value->vertices[0].color==std::array<float,4>{0.3f,0.2f,0.1f,0.5f},"KRCO RGB did not reach ribbon vertex");
+    {
+        // 1.27a 6F836840 读取尾长与静态发射率都不校验符号；6F19E1D0 尾部分支直接用尾长乘速度。
+        // 负尾长让尾巴朝速度方向伸出；负静态发射率（暴雪特效靠 KP2E 发射）不发射。
+        auto odd=Binary();
+        const auto at=std::string_view(reinterpret_cast<const char*>(odd.data()),odd.size()).find("PRE2");
+        Check(at!=std::string_view::npos&&at+164<=odd.size(),"PRE2 fixture offsets");
+        const float tail=-2.0f,rate=-25.0f;std::memcpy(odd.data()+at+156,&tail,4);std::memcpy(odd.data()+at+128,&rate,4);
+        const auto parsed=Read(odd);
+        Check(parsed.Succeeded()&&parsed.value->emitters[0].tailLength==-2.0f&&parsed.value->emitters[0].rate==-25.0f&&
+            parsed.value->skippedEmitters.empty(),"negative PRE2 tail length or static rate rejected");
+        auto asset=*parsed.value;auto quiet=Make(asset);Timeline clock;clock.end=1000;
+        Check(Advance(asset,quiet,clock,300,Anchors).Succeeded()&&quiet.emitters[0].particles.empty(),"negative static PRE2 rate emitted");
+        Particle moving;moving.life=1;moving.age=0.1f;moving.velocity={10,0,0};quiet.emitters[0].particles.push_back(moving);
+        const auto drawn=Build(asset,quiet,clock,{0,-100,100},{0,0,1});
+        Check(drawn.Succeeded()&&!drawn.value->vertices.empty(),"negative PRE2 tail did not draw");
+        float maxX=-1e9f;for(const auto& v:drawn.value->vertices)maxX=std::max(maxX,v.position[0]);
+        Check(maxX>moving.position[0]+10,"negative PRE2 tail did not extend along velocity");
+        std::cout<<"negative_pre2_tail=forward negative_static_rate=no_emission\n";
+    }
     binary.pop_back();Check(!Read(binary).Succeeded(),"tail truncation");
 
     const std::array<std::byte,16> bad{};Check(!Read(bad).Succeeded(),"bad magic");
