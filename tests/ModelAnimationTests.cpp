@@ -458,7 +458,8 @@ void AssetIsolation() {
     };
     remove(fixed,"SEQS"); Patch(fixed,"GEOA",16,2); Patch(fixed,"GEOA",24,std::bit_cast<std::uint32_t>(0.5f));
     Patch(fixed,"GEOA",28,std::bit_cast<std::uint32_t>(0.25f)); Patch(fixed,"KGAO",20,std::bit_cast<std::uint32_t>(1.0f));
-    Patch(bad,"GEOA",16,1); remove(empty,"GEOS"); remove(empty,"GEOA");
+    // 坏 GEOA：轨迹标签改成未知的 KGAX，记录长度不变，解析器标为未解释数据（仅含未用标志位的 GEOA 预览会放行）。
+    Patch(bad,"KGAO",0,0x5841474Bu); remove(empty,"GEOS"); remove(empty,"GEOA");
     std::array<AnimationInstanceSpec,4> specs;
     const std::array paths{"same.mdx","static.mdx","bad.mdx","empty.mdx"};
     for (std::size_t i=0;i<specs.size();++i) { specs[i]=in.specs[0]; specs[i].identity={i+1,7}; specs[i].model.modelPath=paths[i]; specs[i].sequenceIndex.reset(); }
@@ -902,7 +903,7 @@ void ParticleService() {
     } else std::cout<<"geoa_backend_step step=next attempted=0\ngeoa_backend_step step=repeat attempted=0\n";
     Require(geoSubmitted.Succeeded() && geoNextAccepted && geoRepeatAccepted && geoMock.staticUploads==1 && geoMock.updates==3,
         "GEOA partial rebuilt static assets");
-    auto allGeosets=geoset; Patch(allGeosets,"GEOA",16,1);
+    auto allGeosets=geoset; Patch(allGeosets,"KGAO",0,0x5841474Bu); // 首个 GEOA 改成未知轨迹标签 KGAX
     auto allService=Good(ModelAnimationService::Create({7,33,"all-geosets"},shared,[&](auto path,auto count) {
         return path=="geoset.mdx"?Result<AnimationResource>::Success({allGeosets,"original-fixture",std::string(64,'a')}):read(path,count); },tolerant));
     auto allFrame=Good(allService->Prepare(nullptr,command));
