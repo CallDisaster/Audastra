@@ -7,9 +7,14 @@
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QRubberBand>
+#include <QScrollBar>
 #include <QWheelEvent>
 
+#include <algorithm>
 #include <cmath>
+#include <set>
+#include <utility>
 
 // 蓝图交互：缩放、选择、参数记号、端口拉线（移动 / 新建语句）与右键菜单。
 using namespace TriggerBlueprintDetail;
@@ -89,6 +94,11 @@ void TriggerBlueprint::wheelEvent(QWheelEvent* event) {
 }
 
 void TriggerBlueprint::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Space && event->modifiers() == Qt::NoModifier) {
+        spaceDown_ = true;
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_F && event->modifiers() == Qt::NoModifier) {
         Fit();
         return;
@@ -100,10 +110,41 @@ void TriggerBlueprint::keyPressEvent(QKeyEvent* event) {
             dragWire_ = nullptr;
             return;
         }
-        scene_->clearSelection();
+        if (panButton_ != Qt::NoButton || (rubberBand_ && rubberBand_->isVisible())) {
+            CancelViewGesture();
+            return;
+        }
+        Select(0, false);
+        PublishSelection();
         return;
     }
     QGraphicsView::keyPressEvent(event);
+}
+
+void TriggerBlueprint::keyReleaseEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Space) {
+        if (!event->isAutoRepeat()) spaceDown_ = false;
+        event->accept();
+        return;
+    }
+    QGraphicsView::keyReleaseEvent(event);
+}
+
+void TriggerBlueprint::focusOutEvent(QFocusEvent* event) {
+    spaceDown_ = false;
+    CancelViewGesture();
+    QGraphicsView::focusOutEvent(event);
+}
+
+void TriggerBlueprint::PublishSelection() {
+    if (callbacks_.selected) callbacks_.selected(SelectedEcas(), SelectedEca());
+}
+
+void TriggerBlueprint::CancelViewGesture() {
+    if (rubberBand_) rubberBand_->hide();
+    if (panButton_ != Qt::NoButton) viewport()->unsetCursor();
+    panButton_ = Qt::NoButton;
+    multiClick_ = false;
 }
 
 // 右键：端口 → 只提供“在这里添加”；语句节点 → 添加位置 + 语句命令；空白处 → 添加事件 / 条件 / 动作。
@@ -123,15 +164,31 @@ void TriggerBlueprint::contextMenuEvent(QContextMenuEvent* event) {
     const std::vector<PinTarget> targets = node->MenuTargets();
     const War3Map::StableId id = node->Id();
     if (id != 0) {
-        Select(id, false);
-        if (callbacks_.selected) callbacks_.selected(id);
+        if (!node->isSelected()) Select(id, false);
+        else selectionFocus_ = id;
+        PublishSelection();
     }
     callbacks_.contextMenu(id, targets, event->globalPos());
 }
 
 void TriggerBlueprint::mousePressEvent(QMouseEvent* event) {
+    const auto point = event->position().toPoint();
+    if (!dragPin_ && (event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && spaceDown_))) {
+        CancelViewGesture();
+        panButton_ = event->button();
+        panLast_ = point;
+        viewport()->setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::RightButton) {
+        event->accept(); // 右键在 contextMenuEvent 中决定是否保留已有选区。
+        return;
+    }
     if (event->button() == Qt::LeftButton) {
-        if (Pin* pin = PinAt(event->pos())) {
+        setFocus(Qt::MouseFocusReason);
+        multiClick_ = bool(event->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier));
+        if (Pin* pin = PinAt(point)) {
             // 从端口拉线：不进入画布拖动。
             dragPin_ = pin;
             dragStart_ = event->pos();
@@ -141,11 +198,46 @@ void TriggerBlueprint::mousePressEvent(QMouseEvent* event) {
             event->accept();
             return;
         }
+        if (Node* node = NodeAt(point)) {
+            if (node->Id() != 0) {
+                if (!multiClick_) Select(node->Id(), false);
+                else {
+                    node->setSelected(!node->isSelected());
+                    selectionFocus_ = node->isSelected() ? node->Id() : SelectedEca();
+                }
+                PublishSelection();
+            }
+            event->accept();
+            return;
+        }
+        if (!rubberBand_) rubberBand_ = new QRubberBand(QRubberBand::Rectangle, viewport());
+        gestureOrigin_ = point;
+        rubberToggle_ = multiClick_;
+        rubberBand_->setGeometry(QRect(point, QSize(1, 1)));
+        rubberBand_->show();
+        event->accept();
+        return;
     }
     QGraphicsView::mousePressEvent(event);
 }
 
 void TriggerBlueprint::mouseMoveEvent(QMouseEvent* event) {
+    if (panButton_ != Qt::NoButton) {
+        const auto point = event->position().toPoint();
+        const QPoint delta = point - panLast_;
+        panLast_ = point;
+        auto* horizontal = horizontalScrollBar();
+        auto* vertical = verticalScrollBar();
+        horizontal->setValue(horizontal->value() + (isRightToLeft() ? delta.x() : -delta.x()));
+        vertical->setValue(vertical->value() - delta.y());
+        event->accept();
+        return;
+    }
+    if (rubberBand_ && rubberBand_->isVisible()) {
+        rubberBand_->setGeometry(QRect(gestureOrigin_, event->position().toPoint()).normalized());
+        event->accept();
+        return;
+    }
     if (dragPin_ != nullptr && dragWire_ != nullptr) {
         const QPointF end = mapToScene(event->pos());
         const QPointF from = dragPin_->scenePos();
@@ -193,15 +285,42 @@ void TriggerBlueprint::FinishPinDrag(const QPoint& viewPos) {
 }
 
 void TriggerBlueprint::mouseReleaseEvent(QMouseEvent* event) {
+    if (panButton_ != Qt::NoButton && event->button() == panButton_) {
+        CancelViewGesture();
+        event->accept();
+        return;
+    }
+    if (event->button() == Qt::LeftButton && rubberBand_ && rubberBand_->isVisible()) {
+        rubberBand_->hide();
+        const auto end = event->position().toPoint();
+        const auto area = QRect(gestureOrigin_, end).normalized();
+        auto selected = rubberToggle_ ? SelectedEcas() : std::vector<War3Map::StableId>{};
+        if ((end - gestureOrigin_).manhattanLength() >= QApplication::startDragDistance()) {
+            const auto focus = SelectedEca();
+            std::set<War3Map::StableId> rows(selected.begin(), selected.end());
+            // 只有语句节点本体参与框选，线、引脚、开始和条件容器不参与。
+            for (const auto& [id, node] : nodes_) {
+                if (!area.intersects(mapFromScene(node->sceneBoundingRect()).boundingRect())) continue;
+                if (rows.erase(id) == 0) rows.insert(id);
+            }
+            selected.assign(rows.begin(), rows.end());
+            SetSelection(selected, focus);
+        } else if (!rubberToggle_) Select(0, false);
+        PublishSelection();
+        event->accept();
+        return;
+    }
     if (dragPin_ != nullptr && event->button() == Qt::LeftButton) {
         FinishPinDrag(event->pos());
         event->accept();
         return;
     }
-    QGraphicsView::mouseReleaseEvent(event);
     if (event->button() != Qt::LeftButton) {
+        QGraphicsView::mouseReleaseEvent(event);
         return;
     }
+    event->accept();
+    if (std::exchange(multiClick_, false)) return;
     Node* node = NodeAt(event->pos());
     if (node == nullptr) {
         return;
@@ -212,7 +331,7 @@ void TriggerBlueprint::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
     if (anchor.startsWith(QLatin1String("arg:")) && node->Id() != 0) {
-        if (callbacks_.selected) callbacks_.selected(node->Id());
+        if (!node->isSelected()) return;
         const QPoint global = viewport()->mapToGlobal(event->pos());
         const QRect anchorRect(global - QPoint(4, 8), QSize(8, 16));
         const auto position = anchor.mid(4).toULongLong();

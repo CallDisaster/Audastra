@@ -85,12 +85,18 @@ void TriggerModule::AddEcaCommands(
     edit->setShortcutVisibleInContextMenu(true);
     edit->setEnabled(!eca->uiSource.empty() && !eca->arguments.empty());
     bind(edit, [this, ecaId]() { EditEcaParameters(ecaId); });
-    QAction* toggle = menu.addAction(!multi ? (enabled ? tr("禁用") : tr("启用"))
-        : (enabled ? tr("禁用 %1 条语句") : tr("启用 %1 条语句")).arg(rows.size()));
-    toggle->setToolTip(tr("禁用后该语句显示为灰字，不会编译进脚本"));
     if (multi) {
-        bind(toggle, [this, enabled]() { SetSelectedEcaEnabled(!enabled); });
+        for (const bool next : {true, false}) {
+            auto* action = menu.addAction((next ? tr("启用 %1 条语句") : tr("禁用 %1 条语句")).arg(rows.size()));
+            action->setEnabled(std::ranges::any_of(rows, [&](StableId id) {
+                const auto* row = Editor::FindEca(*document, id);
+                return row != nullptr && (row->enabled != 0) != next;
+            }));
+            bind(action, [this, next] { SetSelectedEcaEnabled(next); });
+        }
     } else {
+        auto* toggle = menu.addAction(enabled ? tr("禁用") : tr("启用"));
+        toggle->setToolTip(tr("禁用后该语句显示为灰字，不会编译进脚本"));
         bind(toggle, [this, document, ecaId, enabled]() {
             project_.triggerUndoStack_->push(new SetEcaEnabledUndoCommand(
                 document, ecaId, enabled, !enabled, enabled ? tr("禁用语句") : tr("启用语句")));

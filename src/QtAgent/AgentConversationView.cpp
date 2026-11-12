@@ -678,6 +678,7 @@ struct AgentConversationView::Private {
     QVBoxLayout* flow = nullptr;
     QWidget* empty = nullptr;
     QLabel* emptyBadge = nullptr;
+    QBoxLayout* suggestions = nullptr;
     bool retintQueued = false;
     MessageRow* active = nullptr;
     QList<MessageRow*> messages;
@@ -702,6 +703,21 @@ struct AgentConversationView::Private {
         if (emptyBadge == nullptr) return;
         emptyBadge->setPixmap(UiKit::SvgIcon(QStringLiteral("lucide/sparkles"),
             UiKit::ToQColor(UiKit::ThemeManager::ThemeForWidget(emptyBadge).colors.accent)).pixmap(20, 20));
+    }
+
+    void FitSuggestions() {
+        if (!suggestions || !empty->isVisible()) return;
+        int width = 0;
+        int count = 0;
+        for (int i = 0; i < suggestions->count(); ++i) {
+            if (auto* button = suggestions->itemAt(i)->widget()) {
+                width += button->sizeHint().width();
+                ++count;
+            }
+        }
+        const auto direction = width + std::max(0, count - 1) * suggestions->spacing() <= column->width()
+            ? QBoxLayout::LeftToRight : QBoxLayout::TopToBottom;
+        if (suggestions->direction() != direction) suggestions->setDirection(direction);
     }
 };
 
@@ -756,18 +772,17 @@ AgentConversationView::AgentConversationView(QWidget* parent) : QScrollArea(pare
     emptyLayout->addWidget(title);
     // 常用任务：点一下填入输入框，不直接发送。
     emptyLayout->addSpacing(12);
-    auto* suggestions = new QHBoxLayout;
+    auto* suggestions = d_->suggestions = new QBoxLayout(QBoxLayout::TopToBottom);
     suggestions->setSpacing(8);
-    suggestions->addStretch();
+    suggestions->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     for (const auto& text : {QStringLiteral("检查触发器里的错误"), QStringLiteral("列出使用某个单位的触发器"),
              QStringLiteral("优化高频单位事件")}) {
         auto* chip = new QPushButton(text, d_->empty);
         chip->setObjectName(QStringLiteral("agentSuggestion"));
         chip->setCursor(Qt::PointingHandCursor);
         QObject::connect(chip, &QPushButton::clicked, this, [this, text] { emit SuggestionChosen(text); });
-        suggestions->addWidget(chip);
+        suggestions->addWidget(chip, 0, Qt::AlignHCenter);
     }
-    suggestions->addStretch();
     emptyLayout->addLayout(suggestions);
     d_->flow->addWidget(d_->empty);
     setWidget(d_->canvas);
@@ -918,8 +933,10 @@ void AgentConversationView::ScheduleLayoutDiagnostics() {
 
 bool AgentConversationView::eventFilter(QObject* watched, QEvent* event) {
     if ((watched == d_->column || watched == d_->canvas)
-        && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize || event->type() == QEvent::Show))
+        && (event->type() == QEvent::LayoutRequest || event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
+        if (watched == d_->column) d_->FitSuggestions();
         ScheduleLayoutDiagnostics();
+    }
     return QScrollArea::eventFilter(watched, event);
 }
 

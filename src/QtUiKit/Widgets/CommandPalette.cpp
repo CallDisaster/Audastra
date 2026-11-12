@@ -78,7 +78,7 @@ public:
                 font.setPointSizeF(std::max(8.5, font.pointSizeF() - 1.0));
             }
             font.setWeight(QFont::Medium);
-            painter->setPen(palette.color(QPalette::PlaceholderText));
+            painter->setPen(palette.color(QPalette::Active, QPalette::PlaceholderText));
             painter->setFont(font);
             painter->drawText(row.adjusted(0, 4, 0, 0), Qt::AlignVCenter, index.data().toString());
         } else {

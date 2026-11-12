@@ -567,6 +567,13 @@ void AgentWindowTests::presentationSizesShrinkAndKeepComposer() {
         QVERIFY(prompt->isEnabled());
         QCOMPARE(prompt->toPlainText(), QStringLiteral("保留切换中的任务草稿"));
         QCOMPARE(window.minimumWidth(), 360);
+        const auto suggestions = column->findChildren<QPushButton*>(QStringLiteral("agentSuggestion"));
+        QCOMPARE(suggestions.size(), 3);
+        for (const auto* button : suggestions) {
+            QVERIFY(button->isVisible());
+            QVERIFY(button->width() >= button->sizeHint().width());
+            QVERIFY(column->rect().contains(QRect(button->mapTo(column, QPoint()), button->size())));
+        }
         if (mode == AgentWindow::PresentationMode::Page) {
             QVERIFY(column->width() >= 680);
             QVERIFY(column->width() <= 760);

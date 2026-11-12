@@ -1,4 +1,5 @@
 #include "WorldMinimapPreview.h"
+#include "WorldMinimapMarkerDialog.h"
 #include "EditorProject.h"
 #include "Commands/MapDataCommands.h"
 #include "McpToolInternal.h"
@@ -12,15 +13,22 @@
 #include "../support/MinimapPreviewFixture.h"
 #include <QApplication>
 #include <QAction>
+#include <QColorDialog>
+#include <QComboBox>
+#include <QDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QListView>
 #include <QProcess>
 #include <QPushButton>
 #include <QSettings>
+#include <QScopeGuard>
 #include <QStandardItemModel>
 #include <QTest>
 #include <QTabBar>
+#include <QTimer>
+#include <QToolButton>
 #include <QUndoStack>
 
 using namespace War3Map;
@@ -89,7 +97,79 @@ private slots:
     void UnsavedObjectColorUsesFrozenNativeProjection();
     void OwnedImportUsesFrozenPayloadAndRejectsDiskSource();
     void AuthoredMarkersUseOneUndoStepAndRejectStaleRows();
+    void MarkerDialogPlacesDragsAndRemovesBatch();
 };
+
+void MinimapPreviewTests::MarkerDialogPlacesDragsAndRemovesBatch() try {
+    F::Fixture fixture;
+    auto members = fixture.members;
+    std::erase_if(members, [](const auto& member) { return member.name == "war3map.mmp" || member.name == "war3mapMap.blp"; });
+    members.push_back({"war3mapMap.blp", ImageBytes()});
+    const auto path = F::Take(WriteVerifiedArchive(fixture.root / "marker-dialog.w3x", members)).path;
+    QtProject::EditorProject project;
+    Install(project, path, members);
+    const int base = project.assetUndoStack_->index();
+    QWidget parent;
+    parent.show();
+    QTimer::singleShot(0, &parent, [&] {
+        auto* dialog = parent.findChild<QDialog*>(QStringLiteral("minimapMarkerDialog"));
+        QVERIFY(dialog);
+        const auto close = qScopeGuard([dialog] { dialog->reject(); });
+        auto* type = dialog->findChild<QComboBox*>(QStringLiteral("minimapMarkerType"));
+        auto* color = dialog->findChild<QPushButton*>(QStringLiteral("minimapMarkerColor"));
+        auto* place = dialog->findChild<QToolButton*>(QStringLiteral("minimapMarkerPlace"));
+        auto* remove = dialog->findChild<QPushButton*>(QStringLiteral("minimapMarkerRemove"));
+        auto* canvas = dialog->findChild<QWidget*>(QStringLiteral("minimapMarkerCanvas"));
+        auto* list = dialog->findChild<QListView*>(QStringLiteral("minimapMarkerList"));
+        QVERIFY(type && color && place && remove && canvas && list);
+        QTRY_VERIFY_WITH_TIMEOUT(place->isEnabled(), 10000);
+        QCOMPARE(type->count(), 3);
+        QCOMPARE(type->itemText(1), QStringLiteral("中立建筑"));
+        type->setCurrentIndex(1);
+        QTimer::singleShot(0, dialog, [dialog] {
+            if (auto* picker = dialog->findChild<QColorDialog*>()) {
+                picker->setCurrentColor(QColor(241, 77, 124, 181));
+                picker->accept();
+            }
+        });
+        color->click();
+        const QPoint center = canvas->rect().center();
+        const QPoint moved = center + QPoint(36, -42);
+        place->click();
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, center);
+        auto first = project.QueryMinimapMarkers();
+        QVERIFY(first.Succeeded() && first.value);
+        QCOMPARE(first.value->records.size(), std::size_t{1});
+        QCOMPARE(first.value->records[0].typeRaw, 1);
+        QCOMPARE(first.value->records[0].colorBgra, (std::array<std::uint8_t, 4>{124, 77, 241, 181}));
+        QTest::mousePress(canvas, Qt::LeftButton, {}, center);
+        QTest::mouseMove(canvas, moved);
+        QTest::mouseRelease(canvas, Qt::LeftButton, {}, moved);
+        auto movedRecord = project.QueryMinimapMarkers();
+        QVERIFY(movedRecord.Succeeded() && movedRecord.value);
+        QCOMPARE(movedRecord.value->records.size(), std::size_t{1});
+        QVERIFY(movedRecord.value->records[0].positionRaw[0] > first.value->records[0].positionRaw[0]);
+        QVERIFY(movedRecord.value->records[0].positionRaw[1] < first.value->records[0].positionRaw[1]);
+        QCOMPARE(movedRecord.value->records[0].colorBgra, first.value->records[0].colorBgra);
+
+        type->setCurrentIndex(2);
+        place->click();
+        QTest::mouseClick(canvas, Qt::LeftButton, {}, center);
+        QCOMPARE(list->model()->rowCount(), 2);
+        list->selectAll();
+        QVERIFY(remove->isEnabled());
+        const int beforeDelete = project.assetUndoStack_->index();
+        remove->click();
+        QCOMPARE(project.assetUndoStack_->index(), beforeDelete + 1);
+        QCOMPARE(list->model()->rowCount(), 0);
+    });
+    Modules::OpenMinimapMarkerDialog(project, &parent);
+    QCOMPARE(project.assetUndoStack_->index(), base + 4);
+    project.assetUndoStack_->undo();
+    const auto restored = project.QueryMinimapMarkers();
+    QVERIFY(restored.Succeeded() && restored.value);
+    QCOMPARE(restored.value->records.size(), std::size_t{2});
+} catch (const std::exception& error) { QFAIL(error.what()); }
 
 void MinimapPreviewTests::SharedPixelsAndCliExport() try {
     F::Fixture fixture; auto members = fixture.members;
