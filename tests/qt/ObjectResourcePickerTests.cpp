@@ -772,9 +772,10 @@ void ObjectResourcePickerTests::ModelPreviewBatchEvidence() {
             return std::abs(qRed(p) - qRed(background)) + std::abs(qGreen(p) - qGreen(background))
                 + std::abs(qBlue(p) - qBlue(background)) > 48;
         };
+        // 地面网格在地平线附近汇聚成实心带；只数画面中下部，避开顶部那条带与左右边缘。
         qint64 solid = 0;
-        for (int y = 1; y + 1 < image.height(); ++y)
-            for (int x = 1; x + 1 < image.width(); ++x) {
+        for (int y = std::max(1, image.height() / 4); y + 1 < image.height(); ++y)
+            for (int x = std::max(1, image.width() / 10); x + 1 < image.width() - image.width() / 10; ++x) {
                 bool all = true;
                 for (int dy = -1; dy <= 1 && all; ++dy)
                     for (int dx = -1; dx <= 1 && all; ++dx) all = differs(x + dx, y + dy);
@@ -803,7 +804,7 @@ void ObjectResourcePickerTests::ModelPreviewBatchEvidence() {
     QFile tsvFile(QDir(output).filePath(QStringLiteral("results.tsv")));
     QVERIFY(tsvFile.open(QIODevice::WriteOnly | QIODevice::Text));
     QTextStream tsv(&tsvFile); tsv.setEncoding(QStringConverter::Utf8);
-    tsv << "index\tmodel\toutcome\tms\tsolid_pixels\tmessage\n";
+    tsv << "index\tmodel\toutcome\tms\tsolid_pixels\tanimation_ms\tmessage\n";
     QMap<QString, int> outcomes;
     for (int index = 0; index < models.size(); ++index) {
         const auto& model = models[index];
@@ -823,7 +824,7 @@ void ObjectResourcePickerTests::ModelPreviewBatchEvidence() {
             return !viewport->isVisible() && !message->text().isEmpty() && message->text() != QStringLiteral("正在准备模型动作…");
         }, 30000);
         QString outcome = settled ? QStringLiteral("failed") : QStringLiteral("timeout");
-        qint64 solid = -1; QImage best;
+        qint64 solid = -1; QImage best; qint64 animationMs = -1;
         if (settled && viewport->isVisible() && player->Frame()) {
             // 粒子要先发射一阵；取两次完成帧中成片像素较多的一张。
             for (const int pause : {300, 900}) {
@@ -832,13 +833,16 @@ void ObjectResourcePickerTests::ModelPreviewBatchEvidence() {
                 if (const auto count = solidForeground(image); count > solid) { solid = count; best = image; }
             }
             outcome = solid >= 40 ? QStringLiteral("shown") : solid >= 0 ? QStringLiteral("blank") : QStringLiteral("no-frame");
+            if (player->Frame() && !player->Frame()->states.empty())
+                animationMs = qint64(player->Frame()->states.front().globalMs);
         }
         if (!best.isNull())
             best.scaledToWidth(320, Qt::SmoothTransformation).save(QDir(output).filePath(
                 QStringLiteral("thumbs/%1.png").arg(index, 4, 10, QLatin1Char('0'))));
         auto text = message ? message->text() : QString{};
         text.replace(QLatin1Char('\t'), QLatin1Char(' ')).replace(QLatin1Char('\n'), QLatin1Char(' '));
-        tsv << index << '\t' << model << '\t' << outcome << '\t' << timer.elapsed() << '\t' << solid << '\t' << text << '\n';
+        tsv << index << '\t' << model << '\t' << outcome << '\t' << timer.elapsed() << '\t' << solid << '\t' << animationMs
+            << '\t' << text << '\n';
         tsv.flush(); ++outcomes[outcome];
     }
     picker->close(); QTRY_VERIFY(!pickerGuard);

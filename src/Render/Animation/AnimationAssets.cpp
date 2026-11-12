@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cctype>
+#include <cstdio>
 #include <chrono>
 #include <set>
 #include <map>
@@ -25,14 +26,31 @@ template<class Predicate> bool OnlyErrors(std::span<const Diagnostic> diagnostic
     return error;
 }
 bool MissingResource(std::span<const Diagnostic> diagnostics) {
-    return OnlyErrors(diagnostics, [](std::string_view code) {
-        return code == "RESOURCE_NOT_FOUND" || code == "file-not-found" || code == "WORLD_ASSET_MISSING" ||
-            code == "missing" || code == "MISSING";
-    });
+    return OnlyErrors(diagnostics, [](std::string_view code) { return AnimationResourceUnavailable(code); });
 }
 std::string FirstError(std::span<const Diagnostic> diagnostics) {
     for (const auto& d : diagnostics) if (d.severity == DiagnosticSeverity::Error) return d.code;
     return {};
+}
+// 近似预览：节点里除类型/发射器位与低 8 位继承/公告板位以外的未知标志不参与变换，
+// 部分导出器会在条带/骨骼上写 0x400000、0x80000000 等位。严格路径照旧拒绝；近似路径在副本上清掉后再编译，
+// 返回被清理的节点数与合并后的位。
+struct MaskedNodeFlags { std::size_t nodes = 0; std::uint32_t bits = 0; };
+MaskedNodeFlags MaskUnknownNodeFlags(MdxModel& model) {
+    MaskedNodeFlags result;
+    const auto mask = [&](MdxNode& node) {
+        const auto unknown = node.flags & ~(MdxNodeNonTransformFlags(node.kind) | 0xFFu);
+        if (!unknown) return;
+        node.flags &= ~unknown; ++result.nodes; result.bits |= unknown;
+    };
+    for (auto& node : model.bones) mask(node);
+    for (auto& node : model.helpers) mask(node);
+    for (auto& node : model.otherNodes) mask(node);
+    return result;
+}
+bool OnlyNodeFlagFailure(std::span<const Diagnostic> diagnostics) {
+    const auto code = War3RenderCore::CodeName(War3RenderCore::Code::PoseNodeFlagsUnsupported);
+    return OnlyErrors(diagnostics, [&](std::string_view value) { return value == code; });
 }
 bool PreviewColorFailure(GeosetColorError error) {
     return error == GeosetColorError::Uninterpreted || error == GeosetColorError::InvalidNumber;
@@ -438,6 +456,20 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
                         auto build = asset.parsed->rigidStaticPreviewSource
                             ? CompileMdxRigidStaticPreview(*asset.parsed, assetIdentity, asset.source, compileBudget)
                             : CompileMdxModel(*asset.parsed, assetIdentity, asset.source, compileBudget);
+                        if (limits.retainUnsupportedStatic && !build.Succeeded() && !asset.parsed->rigidStaticPreviewSource
+                            && OnlyNodeFlagFailure(build.diagnostics)) {
+                            auto masked = std::make_shared<MdxModel>(*asset.parsed);
+                            const auto cleared = MaskUnknownNodeFlags(*masked);
+                            auto retry = CompileMdxModel(*masked, assetIdentity, asset.source, compileBudget);
+                            if (cleared.nodes && retry.Succeeded()) {
+                                char bits[16]; std::snprintf(bits, sizeof bits, "0x%X", cleared.bits);
+                                warnings.push_back({DiagnosticSeverity::Warning, "Render.Animation", "ANIMATION_NODE_FLAGS_MASKED",
+                                    input.model.modelPath + "：" + std::to_string(cleared.nodes) + " 个节点含未知标志位 " + bits
+                                        + "，预览近似按不影响变换处理；原文件未修改。", std::nullopt});
+                                asset.parsed = std::move(masked);
+                                build = std::move(retry);
+                            }
+                        }
                         if (build.Succeeded() && !asset.parsed->sequences.empty()) {
                             asset.compiled = std::move(*build.value);
                             // KMTF 或 TXAN 引用都需要材质贴图 sidecar；坏/缺 TXAN 由 sidecar 保持静态并报告。

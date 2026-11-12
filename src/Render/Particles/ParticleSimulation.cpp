@@ -95,8 +95,10 @@ Status Advance(const Asset& a,State& s,const Timeline& t,std::uint64_t target,co
             std::erase_if(q.segments,[&](const Segment& p){return p.age+1e-6f>=e.life;});
             const float visible=Value(e,Parameter::Visibility,1,a,t,next);
             if(visible<=0||e.life<=0){q.accumulator=0;continue;}
-            const auto rate=Value(e,Parameter::Rate,e.rate,a,t,next);
-            Require(rate>=0&&rate<=1000000,"PARTICLE_RATE_BUDGET","粒子发射率超出预算。");
+            // 负发射率（静态值或关键帧）不发射，累加器不能变负。
+            const auto sampledRate=Value(e,Parameter::Rate,e.rate,a,t,next);
+            Require(std::isfinite(sampledRate)&&sampledRate<=1000000,"PARTICLE_RATE_BUDGET","粒子发射率超出预算。");
+            const auto rate=std::max(0.0f,sampledRate);
             std::uint64_t desired=0;
             if(e.kind==Kind::Particle2&&e.squirt)desired=Bursts(e,a,t,s.tickMs,next);
             else {q.accumulator+=static_cast<double>(rate)*static_cast<double>(FixedStepMs)/1000.0;

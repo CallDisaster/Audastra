@@ -40,7 +40,7 @@ bool OnlyMissingResource(std::span<const Diagnostic> diagnostics) {
     bool error = false;
     for (const auto& d : diagnostics) if (d.severity == DiagnosticSeverity::Error) {
         error = true;
-        if (d.code != "RESOURCE_NOT_FOUND" && d.code != "file-not-found" && d.code != "WORLD_ASSET_MISSING") return false;
+        if (!AnimationResourceUnavailable(d.code)) return false;
     }
     return error;
 }
@@ -172,7 +172,8 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
     host->simulation = {p.maxParticles, p.maxRibbonSegments, p.maxPerEmitter, p.maxAnchorSamples};
     std::unordered_map<std::string, std::uint32_t> textures;
     std::unordered_map<std::string, std::string> objectTexturePaths;
-    std::unordered_set<std::string> missingTextures; // 同一模型的多个实例不重复走全部来源查找
+    // 同一模型的多个实例不重复走全部来源查找；值是该贴图让粒子停用的原因码。
+    std::unordered_map<std::string, std::string_view> missingTextures;
     std::uint64_t textureBytes = 0, modelTextureBytes = 0;
     const auto& geometry=std::as_const(scene.geometry);
     const auto& residentTextures=std::as_const(scene.particleTextures);
@@ -247,6 +248,7 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
         AnimationParticleBinding binding; binding.requestIndex = r; binding.assetIndex = requestAssets[r];
         std::uint32_t bindingParticles = 0, bindingRibbons = 0;
         bool textureMissing = false;
+        std::string_view textureRejection = "PARTICLE_TEXTURE_MISSING";
         for (const auto& e : a.particles->emitters) {
             if (e.kind == Particles::Kind::Particle2) ++bindingParticles; else ++bindingRibbons;
             MdxTexture texture;
@@ -256,7 +258,9 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
             if (path.empty()) return fail("PARTICLE_TEXTURE_INVALID", "粒子没有可解析贴图路径，未填白。");
             const bool objectReplacement = texture.replaceableId >= 3;
             const auto requestKey = std::string(objectReplacement ? "object:" : "exact:") + AnimationPathKey(path);
-            if (missingTextures.contains(requestKey)) { textureMissing = true; break; }
+            if (const auto known = missingTextures.find(requestKey); known != missingTextures.end()) {
+                textureMissing = true; textureRejection = known->second; break;
+            }
             std::optional<AnimationResource> selectedResource;
             if (objectReplacement) {
                 if (const auto found = objectTexturePaths.find(requestKey); found != objectTexturePaths.end()) path = found->second;
@@ -266,7 +270,7 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
                     if (!selected.Succeeded()) {
                         if (!limits.retainUnsupportedStatic || !OnlyMissingResource(selected.diagnostics))
                             return {std::nullopt, std::move(selected.diagnostics)};
-                        missingTextures.insert(requestKey); textureMissing = true; break;
+                        missingTextures.emplace(requestKey, textureRejection); textureMissing = true; break;
                     }
                     path = std::move(selected.value->path);
                     selectedResource = std::move(selected.value->resource);
@@ -297,12 +301,17 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
                         // 不让一张缺失贴图拖垮整个动画场景（模型、选取圈都会随之消失）。
                         if (!limits.retainUnsupportedStatic || !OnlyMissingResource(resource.diagnostics))
                             return {std::nullopt, std::move(resource.diagnostics)};
-                        missingTextures.insert(requestKey); textureMissing = true; break;
+                        missingTextures.emplace(requestKey, textureRejection); textureMissing = true; break;
                     }
                     if (!ValidTextureResource(*resource.value, limits.geometry.maxTextureBytes))
                         return fail("ANIMATION_TEXTURE_SOURCE", "粒子贴图缺少真实来源、SHA-256 或超过读取预算。");
                     auto image = DecodeModelTexture(path, resource.value->bytes, limits.geometry.maxTextureDimension,remaining);
-                    if (!image.Succeeded()) return {std::nullopt, std::move(image.diagnostics)};
+                    if (!image.Succeeded()) {
+                        // 近似预览：粒子贴图解不开时与缺失同样只停这组粒子并记原因，模型本体照常显示。
+                        if (!limits.retainUnsupportedStatic) return {std::nullopt, std::move(image.diagnostics)};
+                        textureRejection = "PARTICLE_TEXTURE_UNDECODABLE";
+                        missingTextures.emplace(requestKey, textureRejection); textureMissing = true; break;
+                    }
                     decoded = std::move(*image.value);
                     scene.sources.push_back({key, resource.value->sourceLayer, resource.value->digest});
                 }
@@ -319,7 +328,7 @@ Result<std::shared_ptr<AnimationParticleHost>> CreateAnimationParticles(Animated
         if (textureMissing) {
             bindingBytes -= cost;
             auto& capability = scene.particleCapabilities[r]; capability.available = false;
-            capability.rejectionCode = "PARTICLE_TEXTURE_MISSING"; continue;
+            capability.rejectionCode = std::string(textureRejection); continue;
         }
         particleEmitters += bindingParticles; ribbonEmitters += bindingRibbons;
         binding.layerAlpha = a.particleLayerAlpha;

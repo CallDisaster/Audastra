@@ -184,6 +184,9 @@ struct ModelAnimationService::State {
     const WorldModelLimits& limits);
 [[nodiscard]] bool AnimationLocalDataFailure(War3RenderCore::Code code) noexcept;
 [[nodiscard]] bool AnimationLocalDataFailure(std::string_view code) noexcept;
+// 资源在所有来源都读不到（含游戏同样无法打开的不安全路径，如重制版 `_hd.w3mod:` 前缀）。
+// 调用方据此按缺贴图/缺资源处理，而不是把整个场景当作读取故障拒绝。
+[[nodiscard]] bool AnimationResourceUnavailable(std::string_view code) noexcept;
 [[nodiscard]] Status CheckAnimationState(const AnimationInstanceState& state);
 [[nodiscard]] Result<AnimationInstanceState> MakeAnimationInitialState(const AnimationInstanceSpec& input,
     const AnimationAsset& asset, bool retainUnsupported, std::vector<Diagnostic>& warnings);

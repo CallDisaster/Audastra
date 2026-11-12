@@ -162,7 +162,10 @@ void WorldViewportTests::ModelPreviewParticleGameOrderStaysStrictAboutInvalidDat
     QTRY_VERIFY_WITH_TIMEOUT(player->Ready() && message->text().contains(QStringLiteral("PARTICLE_TEXTURE_INVALID")), 5000);
     QVERIFY2(message->text().contains(QStringLiteral("跳过 1 个粒子发射器")), qPrintable(message->text()));
     QVERIFY(!player->Frame()->poses.front().hidden);
-    QVERIFY(player->Frame()->particleVertices.empty());
+    // 换模型后自动播放（上一个模型暂停过也一样）；剩下那个有效发射器照常出粒子。
+    QVERIFY(player->Playing());
+    QTRY_VERIFY_WITH_TIMEOUT(!player->Frame()->particleVertices.empty(), 5000);
+    QVERIFY(message->text().contains(QStringLiteral("跳过 1 个粒子发射器")));
     QCOMPARE(Sha256File(sources.archivePath).value, std::optional{sources.archiveSha});
     QCOMPARE(Sha256File(invalidSources.archivePath).value, std::optional{invalidSources.archiveSha});
 }

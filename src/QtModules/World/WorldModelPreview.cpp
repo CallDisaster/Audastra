@@ -41,11 +41,14 @@ WorldModelPreview::WorldModelPreview(QWidget* parent,const War3RenderPluginApiV2
         if (index<0 || !player_->Ready() || !identity_) return;
         bool ok=false; const auto sequence=action_->itemData(index).toUInt(&ok); if (!ok) return;
         if (identity_->isCurrent && !identity_->isCurrent()) { ClearSelection(); return; }
+        // 切换动作保持原来的播放/暂停状态；先停下让编辑从 0 ms 落定，再按原状态恢复。
+        const bool resume=player_->Playing();
         player_->SetPlaying(false);
         Render::AnimationEdit edit; edit.identity=player_->Frame()->states.front().identity; edit.sequenceIndex=sequence;
         // 动作选择始终从头开始，不能由当前插件是否支持粒子决定起点。
         edit.elapsedMs=0; edit.globalMs=0;
         player_->Edit(std::move(edit));
+        if (resume) player_->SetPlaying(true);
     });
     connect(player_,&WorldAnimationPlayer::Changed,this,[this] {
         const auto ready=player_->Ready(); playPause_->setEnabled(ready); step_->setEnabled(ready && !player_->Playing() && !player_->Busy());
@@ -169,6 +172,7 @@ void WorldModelPreview::Present(const Built& built) {
         for (const auto& d:scene.geometry.warnings) {
             if (d.code=="ANIMATION_FIRST_SEQUENCE") omitted<<tr("无 Stand，播放首个动作");
             else if (d.code=="PARTICLE_PREM_UNSUPPORTED") omitted<<tr("PREM 子模型未显示");
+            else if (d.code=="ANIMATION_NODE_FLAGS_MASKED") omitted<<tr("忽略未知节点标志");
         }
         std::size_t skipped=0; QStringList reasons;
         for (const auto& capability:scene.particleCapabilities) if (capability.skippedEmitters) {
@@ -185,6 +189,10 @@ void WorldModelPreview::Present(const Built& built) {
         !player_->Install(built.service,built.frame,built.source,[this] {return identity_ && (!identity_->isCurrent || identity_->isCurrent());})) {
         SetMessage(tr("模型上传失败：渲染插件拒绝动画场景")); viewport_->hide(); return;
     }
+    // 每个新模型打开即循环播放：特效和动作在 0 ms 常常不可见。上一个模型被清除时隐藏会撤销播放意图，
+    // 这里按新模型重新请求；纯静态模型不请求，免得“只有静态模型”的提示盖掉状态行。
+    if (const auto& scene=*built.service->Scene(); scene.animatedInstances || scene.particleInstanceCount)
+        player_->SetPlaying(true);
     {
         const QSignalBlocker blocker(action_); action_->clear();
         // 按模型里的原顺序列出全部动作（SEQS），附时长与是否循环；损坏的序列保留但不可选。
@@ -203,10 +211,10 @@ void WorldModelPreview::Present(const Built& built) {
             if (index==built.frame->states.front().sequenceIndex) selected=action_->count()-1;
         }
         action_->setCurrentIndex(selected); action_->setEnabled(true);
-        action_->setToolTip(tr("切换动作从局部/全局 0/0 ms 开始。"));
+        action_->setToolTip(tr("切换动作从局部/全局 0/0 ms 开始，保持当前播放状态。"));
     }
     QStringList diagnostics;
-    diagnostics<<tr("新建预览和切换动作从局部/全局 0/0 ms 开始。");
+    diagnostics<<tr("新建预览和切换动作从局部/全局 0/0 ms 开始并自动播放。");
     for (const auto& d:built.service->Scene()->geometry.warnings) diagnostics<<QString::fromUtf8(d.message);
     message_->setToolTip(diagnostics.join(QLatin1Char('\n')));
     action_->show(); playPause_->show(); step_->show(); viewport_->show();

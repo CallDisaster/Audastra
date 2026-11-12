@@ -575,6 +575,16 @@ void ParticleService() {
     auto badFilter=mixed,history=mixed,geoset=mixed; Patch(badFilter,"PRE2",140,9); SingularScaleSegment(history);
     // 真实地图模型的PRE2分段时间可为1.2：粒子到不了中点，按前半段播放，不能整组跳过。
     auto lateMiddle=mixed; Patch(lateMiddle,"PRE2",160,std::bit_cast<std::uint32_t>(1.2f));
+    // 原版暴雪特效常把 PRE2 静态发射率写成负数（实际靠 KP2E 关键帧发射）：不是预算越界，按不发射处理。
+    auto negativeRate=mixed; Patch(negativeRate,"PRE2",128,std::bit_cast<std::uint32_t>(-25.0f));
+    // 部分导出器在骨骼/条带上写未知节点标志（如 0x80000000）：严格拒绝，近似预览在副本上清掉后照常动画。
+    auto unknownFlag=mixed;
+    {
+        const auto at=std::string_view(reinterpret_cast<const char*>(unknownFlag.data()),unknownFlag.size()).find("BONE");
+        Require(at!=std::string_view::npos && at+104<=unknownFlag.size(),"bone fixture");
+        std::uint32_t flags=0; std::memcpy(&flags,unknownFlag.data()+at+100,4);
+        Require((flags&0x100u)!=0,"bone flags offset"); Patch(unknownFlag,"BONE",100,flags|0x80000000u);
+    }
     Patch(geoset,"GEOA",16,2); Patch(geoset,"GEOA",20,std::bit_cast<std::uint32_t>(1.0f));
     Patch(geoset,"GEOA",24,std::bit_cast<std::uint32_t>(0.5f)); Patch(geoset,"GEOA",28,std::bit_cast<std::uint32_t>(0.25f));
     Patch(geoset,"KGAO",20,std::bit_cast<std::uint32_t>(1.0f));
@@ -584,7 +594,7 @@ void ParticleService() {
     std::vector<std::byte> blp(1181); std::memcpy(blp.data(),"BLP1",4); blp[158]=std::byte{255};
     for(const auto offset:{4u,12u,16u,92u}) Patch(blp,"BLP1",offset,1); Patch(blp,"BLP1",28,1180);
     const auto read=[&](std::string_view path,std::uint64_t) { return Result<AnimationResource>::Success(
-        {path=="same.mdx"?mixed:path=="pure.mdx"?pure:path=="filter.mdx"?badFilter:path=="middle.mdx"?lateMiddle:path=="history.mdx"?history:path=="partial.mdx"?partial:path=="binding.mdx"?bindings:path=="geoset.mdx"?geoset:blp,
+        {path=="same.mdx"?mixed:path=="pure.mdx"?pure:path=="filter.mdx"?badFilter:path=="middle.mdx"?lateMiddle:path=="history.mdx"?history:path=="partial.mdx"?partial:path=="binding.mdx"?bindings:path=="geoset.mdx"?geoset:path=="rate.mdx"?negativeRate:path=="flags.mdx"?unknownFlag:blp,
             "original-fixture",std::string(64,'a')}); };
     for(auto& spec:input.specs) { spec.sequenceIndex=0; spec.elapsedMs=0; spec.globalMs=0; }
     AnimationLimits limits; limits.enableParticles=true;
@@ -727,6 +737,49 @@ void ParticleService() {
         !missingFrame->particleLinks[0].simulated && !missingFrame->particleLinks[0].hidden &&
         missingFrame->particleLinks[0].rejectionCode=="PARTICLE_TEXTURE_MISSING","missing particle texture failed whole scene or lost reason");
     std::cout<<"particle_texture_missing=PARTICLE_TEXTURE_MISSING preview_keeps_models=1 strict_reject=1\n";
+    // 重制版前缀等不安全路径游戏同样打不开：近似预览按缺失只停粒子；严格模式照旧拒绝。
+    const auto unsafeTexture=[&](std::string_view path,std::uint64_t budget) -> Result<AnimationResource> {
+        if(path.ends_with(".mdx")) return read(path,budget);
+        return Result<AnimationResource>::Failure("Resources","RESOURCE_PATH_UNSAFE","资源路径不是安全的相对虚拟路径");
+    };
+    const auto strictUnsafe=ModelAnimationService::Create({7,33,"unsafe-texture"},input.specs,unsafeTexture,limits);
+    Require(!strictUnsafe.Succeeded() && strictUnsafe.diagnostics.front().code=="RESOURCE_PATH_UNSAFE","strict unsafe particle texture accepted");
+    auto unsafeService=Good(ModelAnimationService::Create({7,33,"unsafe-texture"},input.specs,unsafeTexture,tolerant));
+    auto unsafeFrame=Good(unsafeService->Prepare(nullptr,command));
+    Require(unsafeService->Scene()->particleCapabilities[0].rejectionCode=="PARTICLE_TEXTURE_MISSING" &&
+        unsafeFrame->animatedInstances==2 && !unsafeFrame->particleLinks[0].hidden &&
+        unsafeFrame->particleLinks[0].rejectionCode=="PARTICLE_TEXTURE_MISSING","unsafe texture path failed whole preview");
+    // 贴图读到但解不开：近似预览同样只停粒子，原因单列，不冒充缺失。
+    const std::vector<std::byte> junk(256,std::byte{0x5A});
+    const auto junkTexture=[&](std::string_view path,std::uint64_t budget) -> Result<AnimationResource> {
+        if(path.ends_with(".mdx")) return read(path,budget);
+        return Result<AnimationResource>::Success({junk,"original-fixture",std::string(64,'b')});
+    };
+    Require(!ModelAnimationService::Create({7,33,"junk-texture"},input.specs,junkTexture,limits).Succeeded(),
+        "strict undecodable particle texture accepted");
+    auto junkService=Good(ModelAnimationService::Create({7,33,"junk-texture"},input.specs,junkTexture,tolerant));
+    auto junkFrame=Good(junkService->Prepare(nullptr,command));
+    Require(junkService->Scene()->particleCapabilities[0].rejectionCode=="PARTICLE_TEXTURE_UNDECODABLE" &&
+        junkFrame->animatedInstances==2 && !junkFrame->particleLinks[0].hidden &&
+        junkFrame->particleLinks[0].rejectionCode=="PARTICLE_TEXTURE_UNDECODABLE","undecodable particle texture failed whole preview or lost reason");
+    std::cout<<"particle_texture_unsafe=PARTICLE_TEXTURE_MISSING particle_texture_undecodable=PARTICLE_TEXTURE_UNDECODABLE\n";
+    for(auto& item:shared) item.model.modelPath="rate.mdx";
+    auto rateService=Good(ModelAnimationService::Create({7,33,"negative-rate"},shared,read,limits));
+    auto rateFrame=Good(rateService->Prepare(nullptr,command));
+    Require(rateFrame->animatedInstances==2 && rateFrame->particleLinks[0].simulated && !rateFrame->particleLinks[0].hidden &&
+        rateFrame->particleLinks[0].particleCount==0 && rateFrame->particleLinks[1].particleCount==0,
+        "negative static PRE2 rate rejected or emitted particles");
+    for(auto& item:shared) item.model.modelPath="flags.mdx";
+    const auto strictFlags=ModelAnimationService::Create({7,33,"node-flags"},shared,read,limits);
+    Require(!strictFlags.Succeeded() && strictFlags.diagnostics.front().code=="MDX_POSE_NODE_FLAGS_UNSUPPORTED","strict unknown node flag accepted");
+    auto flagService=Good(ModelAnimationService::Create({7,33,"node-flags"},shared,read,tolerant));
+    auto flagFrame=Good(flagService->Prepare(nullptr,command));
+    const auto& flagWarnings=flagService->Scene()->geometry.warnings;
+    const auto masked=std::count_if(flagWarnings.begin(),flagWarnings.end(),[](const Diagnostic& d) {
+        return d.code=="ANIMATION_NODE_FLAGS_MASKED" && d.message.find("0x80000000")!=std::string::npos; });
+    Require(masked==1 && flagFrame->animatedInstances==2 && flagFrame->particleLinks[0].simulated &&
+        !flagFrame->particleVertices.empty(),"unknown node flag preview did not animate or lost its note");
+    std::cout<<"negative_pre2_rate=no_emission unknown_node_flags=strict_reject preview_masked=1\n";
     for(auto& item:shared) item.model.modelPath="geoset.mdx";
     const auto strictGeoset=ModelAnimationService::Create({7,33,"geosets"},shared,read,limits);
     Require(!strictGeoset.Succeeded() && strictGeoset.diagnostics.front().code=="MDX_GEOA_UNINTERPRETED","strict GEOA gate changed");

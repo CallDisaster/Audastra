@@ -48,6 +48,10 @@ bool AnimationLocalDataFailure(std::string_view code) noexcept {
         return code == War3RenderCore::CodeName(value);
     });
 }
+bool AnimationResourceUnavailable(std::string_view code) noexcept {
+    return code == "RESOURCE_NOT_FOUND" || code == "file-not-found" || code == "WORLD_ASSET_MISSING" ||
+        code == "missing" || code == "MISSING" || code == "RESOURCE_PATH_UNSAFE" || code == "IMPORT_PATH_UNSAFE";
+}
 Status AnimationFailure(std::string code, std::string message) {
     return Status::Failure("Render.Animation", std::move(code), std::move(message));
 }

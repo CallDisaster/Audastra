@@ -124,8 +124,10 @@ void ReadEmitters(Reader r,Kind kind,Asset& out,std::uint32_t& keys,
         Require(e.rows<=256&&e.columns<=256,"PARTICLE_ATLAS_INVALID","粒子图集行列无效。");
         v.LocalRequire(e.rows&&e.columns,"PARTICLE_ATLAS_INVALID","粒子图集行列无效。");
         // 非有限字段已有局部诊断；有限字段的资源预算仍不能降级成单发射器跳过。
+        // 负的静态发射率不是预算越界：原版暴雪特效常写 -25 等静态值、实际靠 KP2E 关键帧发射；
+        // 取值落到静态值时与配额估计、burst 一样按不发射处理（ParticleSimulation 截到 0）。
         Require((!std::isfinite(e.life)||(e.life>=0&&e.life<=600))&&
-            (!std::isfinite(e.rate)||(e.rate>=0&&e.rate<=1000000))&&
+            (!std::isfinite(e.rate)||e.rate<=1000000)&&
             (!std::isfinite(e.variation)||e.variation>=0),
             "PARTICLE_PARAMETER_BUDGET","发射率、寿命或变化超出预览预算。");
         if(kind==Kind::Particle2) {
