@@ -667,8 +667,23 @@ Result<std::unique_ptr<ModelAnimationService::State>> ModelAnimationService::Bui
     scene.geometry.requestedInstances = inputs.size();
     scene.geometry.warnings.insert(scene.geometry.warnings.end(),warnings.begin(),warnings.end());
     if ((!limits.retainUnsupportedStatic && scene.geometry.skippedInstances) ||
-        (!resident && scene.geometry.instances.empty() && !scene.particleInstanceCount))
-        return fail("ANIMATION_GEOMETRY_UNAVAILABLE", "未生成全部请求实例的可绘制几何。");
+        (!resident && scene.geometry.instances.empty() && !scene.particleInstanceCount)) {
+        // 无可画内容时把实际原因（资产不可用码、粒子停用码、被跳过发射器的码）写进消息，状态行不只剩通用码。
+        std::set<std::string> reasons;
+        for (const auto& unavailable : scene.unavailableInstances) if (!unavailable.code.empty()) reasons.insert(unavailable.code);
+        for (const auto& capability : scene.particleCapabilities) {
+            if (!capability.rejectionCode.empty()) reasons.insert(capability.rejectionCode);
+            if (capability.skippedEmitters)
+                for (const auto& issue : *capability.skippedEmitters) if (reasons.size() < 8) reasons.insert(issue.code);
+        }
+        std::string message = "未生成全部请求实例的可绘制几何。";
+        if (!reasons.empty()) {
+            message += "原因：";
+            for (const auto& reason : reasons) message += (message.ends_with("：") ? "" : "、") + reason;
+            message += "。";
+        }
+        return fail("ANIMATION_GEOMETRY_UNAVAILABLE", message.c_str());
+    }
     const auto& g = scene.geometry;
     scene.vertices.reserve(g.vertices.size());
     for (std::size_t i=0;i<g.vertices.size();++i) scene.vertices.push_back({g.vertices[i],g.vertexGroups.at(i)});
