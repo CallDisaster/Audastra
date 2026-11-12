@@ -2,7 +2,7 @@
   "schema": 1,
   "version": "0.1.21",
   "repository": "https://github.com/CallDisaster/Audastra-RenderCore.git",
-  "commit": "2ea9b6261f23c46d5c21c25b7d29bd1c7709738c",
+  "commit": "66f3194bcd7aaf6f29af47ce2aa48e6265e0978d",
   "files": [
     {
       "path": ".gitattributes",
@@ -458,7 +458,7 @@
     },
     {
       "path": "tests/GeosetChannelTests.cpp",
-      "sha256": "9d5baf837f59a9ed1327ee42d2772b1a36998f0a874d49713b9664e4280f47a5"
+      "sha256": "0f321771ce2b332babcc886fe034b7a48586906c08b77a5fb23585e35440ad9e"
     },
     {
       "path": "tests/GeosetColorCoreTests.cpp",
