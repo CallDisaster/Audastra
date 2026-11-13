@@ -239,6 +239,7 @@ private slots:
     void YdweLocalsAndReplacingCalls();
     void PreplacedReferencesUseCaptureTypesAndUndo();
     void ExistingTriggersAreListedForTriggerParameters();
+    void ParameterDialogListsReferencesAndGuardsTargets();
     void PreplacedCaptureUsesCurrentOverlays();
     void MissingReferenceSourcesKeepOrdinaryParametersEditable();
 };
@@ -850,6 +851,124 @@ void TriggerValueTests::ExistingTriggersAreListedForTriggerParameters() {
     QVERIFY(chosen->mapObjectSnapshotIdentity.empty());
     const auto resolved = Trigger::ResolveVariableReference(document, chosen->value);
     QVERIFY(resolved.Succeeded() && resolved.value->kind == Trigger::VariableReferenceKind::GeneratedTrigger);
+}
+
+// 传统参数对话框的“变量”来源与取值面板同一候选（变量、已有触发器），可搜索选择；
+// 设置变量的左侧只能选变量，存成文字的提交经共用管线拒绝。
+void TriggerValueTests::ParameterDialogListsReferencesAndGuardsTargets() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "define.txt", "[TriggerTypes]\ninteger=0,1,1,整数\ntrigger=0,1,1,触发器\n");
+    WriteUtf8(ui / "ui" / "base" / "action.txt",
+        "[RunTrig]\ndescription=\"运行 ${触发器}\"\n[[.args]]\ntype=trigger\n");
+    const auto catalog = Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    Trigger::TriggerDocument document;
+    Trigger::EcaNode action;
+    action.id = 1; action.sourceTriggerId = 3; action.type = 2; action.name.text = "RunTrig"; action.arguments = {0};
+    document.ecaNodes = {action};
+    Trigger::ArgumentNode argument;
+    argument.id = 10; argument.type = 3;
+    document.argumentNodes = {argument};
+    const auto trigger = [&](StableId id, const char* name, std::int32_t enabled) {
+        Trigger::TriggerRecord record; record.id = id; record.name.text = name; record.type = 0; record.enabled = enabled;
+        document.triggers.push_back(record);
+    };
+    trigger(3, "Init", 1);
+    trigger(5, "Off", 0);
+    trigger(6, "A b", 1);
+    trigger(7, "A_b", 1);
+    Trigger::VariableRecord variable;
+    variable.id = 20; variable.name.text = "NULLTrigger"; variable.typeName.text = "trigger";
+    document.variables.push_back(variable);
+    variable.id = 21; variable.name.text = "Count"; variable.typeName.text = "integer";
+    document.variables.push_back(variable);
+    {
+        TriggerParameterDialog dialog(document, *catalog.value, 1);
+        auto* kind = dialog.findChild<QComboBox*>(QStringLiteral("parameterValueKind"));
+        auto* references = dialog.findChild<QComboBox*>(QStringLiteral("parameterVariableValue"));
+        QVERIFY(kind && references);
+        // 新语句的空参数：触发器没有固定值写法，直接落在“变量”来源。
+        QCOMPARE(kind->currentData().toInt(), 1);
+        QCOMPARE(dialog.findChildren<QWidget*>(QStringLiteral("parameterRow")).front()->findChild<QStackedWidget*>()->currentWidget(),
+            static_cast<QWidget*>(references));
+        QVERIFY(references->currentText().isEmpty());
+        QVERIFY(references->findData(QStringLiteral("NULLTrigger")) >= 0);
+        const int init = references->findData(QStringLiteral("gg_trg_Init"));
+        QVERIFY(init >= 0);
+        QCOMPARE(references->itemText(init), QStringLiteral("Init　触发器"));
+        for (const auto& hidden : {QStringLiteral("Count"), QStringLiteral("gg_trg_Off"), QStringLiteral("gg_trg_A_b")})
+            QCOMPARE(references->findData(hidden), -1);
+        references->setCurrentIndex(init);
+        QCOMPARE(dialog.PendingEdits().front().valueKind, 1);
+        QCOMPARE(dialog.PendingEdits().front().value, std::string("gg_trg_Init"));
+        // 只打名称也交出实际引用；无法匹配的文字原样交给提交时校验。
+        references->setEditText(QStringLiteral("Init"));
+        QCOMPARE(dialog.PendingEdits().front().value, std::string("gg_trg_Init"));
+        references->setEditText(QStringLiteral("Missing"));
+        QCOMPARE(dialog.PendingEdits().front().value, std::string("Missing"));
+    }
+
+    QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    QtProject::EditorProject project;
+    const auto initialized = MakePreplacedProject(project, temporary.path().toStdWString());
+    QVERIFY2(initialized.Succeeded(), initialized.diagnostics.empty() ? "" : initialized.diagnostics.front().message.c_str());
+    auto& doc = *project.triggerDocument_;
+    {
+        TriggerParameterDialog dialog(doc, *project.uiCatalog_, RootEca(project, 1).id);
+        const auto rows = dialog.findChildren<QWidget*>(QStringLiteral("parameterRow"));
+        QCOMPARE(rows.size(), 2);
+        auto* kind = rows[0]->findChild<QComboBox*>(QStringLiteral("parameterValueKind"));
+        auto* references = rows[0]->findChild<QComboBox*>(QStringLiteral("parameterVariableValue"));
+        QVERIFY(kind && references);
+        // 赋值目标只能选变量：五个用户变量都在，预放对象和直接值都不在。
+        QCOMPARE(kind->count(), 1);
+        QCOMPARE(kind->currentData().toInt(), 1);
+        QCOMPARE(references->count(), 5);
+        QCOMPARE(references->currentData().toString(), QStringLiteral("PickedUnit"));
+        QCOMPARE(references->findData(QStringLiteral("gg_unit_hfoo_0007")), -1);
+    }
+    const auto appended = Trigger::TriggerDocumentEditor::AppendRootEca(doc, *project.uiCatalog_,
+        doc.triggers.front().id, Trigger::UiDefinitionKind::Action, "SetVariable");
+    QVERIFY(appended.Succeeded());
+    {
+        // 新加的“设置变量”：左侧默认就是变量来源，不会让作者把变量名填成文字。
+        TriggerParameterDialog dialog(doc, *project.uiCatalog_, appended.value->rootEcaId);
+        auto* kind = dialog.findChildren<QWidget*>(QStringLiteral("parameterRow"))[0]
+            ->findChild<QComboBox*>(QStringLiteral("parameterValueKind"));
+        QVERIFY(kind);
+        QCOMPARE(kind->count(), 1);
+        QCOMPARE(kind->currentData().toInt(), 1);
+    }
+    QVERIFY(Trigger::TriggerDocumentEditor::UndoAppend(doc, *appended.value).Succeeded());
+
+    Modules::TriggerModule module(project);
+    QWidget* page = module.Widget();
+    page->resize(1000, 650);
+    page->show();
+    QVERIFY(module.Reveal({"triggers", "trigger", "ReadPlaced", {}}));
+    const auto pristine = Trigger::WtgWctCodec{}.Serialize(doc, *project.uiCatalog_);
+    QVERIFY(pristine.Succeeded());
+    const auto unchanged = [&] {
+        const auto bytes = Trigger::WtgWctCodec{}.Serialize(doc, *project.uiCatalog_);
+        return bytes.Succeeded() && bytes.value->wtg == pristine.value->wtg && bytes.value->wct == pristine.value->wct
+            && project.triggerUndoStack_->index() == 0;
+    };
+    TriggerValueChoice text;
+    text.valueKind = 3;
+    text.value = "PickedUnit";
+    QVERIFY(!module.ApplyValueChoice(RootEca(project, 1).id, 0, text)); // 左侧存成文字。
+    QVERIFY(unchanged());
+    TriggerValueChoice item;
+    item.valueKind = 1;
+    item.value = "PickedItem";
+    QVERIFY(module.ApplyValueChoice(RootEca(project, 1).id, 0, item));
+    QCOMPARE(RootArgument(project, 1, 0).value.text, std::string("PickedItem"));
+    project.triggerUndoStack_->undo();
+    QVERIFY(unchanged());
 }
 
 void TriggerValueTests::PreplacedReferencesUseCaptureTypesAndUndo() {

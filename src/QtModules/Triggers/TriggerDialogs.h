@@ -101,6 +101,11 @@ private:
     void UpdateNaturalPreview();
     void FlashRow(Row* row);
     void RefreshPresets(Row* row, const War3Map::Trigger::ArgumentNode& argument);
+    void PrepareVariableKind(Row* row, const War3Map::Trigger::ArgumentNode& argument,
+        const War3Map::Trigger::TriggerTypeSystem& types);
+    void PopulateVariables(Row* row);
+    [[nodiscard]] static QString VariableName(const Row* row);
+    [[nodiscard]] static QString VariableValue(const Row* row);
     void RestrictKinds(Row* row, const War3Map::Trigger::TriggerTypeSystem& types);
     void AddArgumentRow(
         std::size_t position,

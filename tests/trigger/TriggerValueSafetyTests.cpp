@@ -89,5 +89,40 @@ void Publishing() {
     Require(!renamed.Succeeded() && Code(renamed, "TRIGGER_VALUE_CHECK_CONTEXT_INCOMPLETE"), "editing a nested name rechecks its containing generic read");
     std::error_code ec; std::filesystem::remove_all(root, ec);
 }
+// 设置变量的目标被存成文字时，值槽（Null）定不下类型：报出真实原因，不报“Null 没有存取宏”，也不去要 Null 的存取能力。
+void UnresolvedNull() {
+    const auto root = std::filesystem::temp_directory_path() / ("Audastra-ValueNull-" + std::to_string(GetCurrentProcessId()) + '-' + std::to_string(GetTickCount64()));
+    Require(std::filesystem::create_directory(root), "fresh null fixture");
+    std::filesystem::create_directories(root / "ui/base");
+    std::ofstream(root / "ui/config") << "base\n";
+    std::ofstream(root / "ui/base/define.txt") << "[TriggerTypes]\nunit=0,1,1,Unit,unit\nstring=0,1,1,String,string\nAnyGlobal=0,0,0,Variable\nNull=0,0,0,Value\n";
+    std::ofstream(root / "ui/base/action.txt") << "[SetVariable]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n";
+    std::ofstream(root / "ui/base/call.txt") << "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n";
+    const auto loaded = UiCatalog::Load(root / "ui"); Good(loaded, "null catalog");
+    const auto& catalog = *loaded.value;
+    auto created = WtgWctCodec{}.CreateEmpty(catalog); Good(created, "null source"); auto doc = *created.value;
+    const auto category = TriggerDirectoryEditor::AddCategory(doc, "Original"); Good(category, "null category");
+    const auto trigger = TriggerDocumentEditor::AddTrigger(doc, *category.value, "Bind"); Good(trigger, "null trigger");
+    Good(TriggerDocumentEditor::AddVariable(doc, "Hero", "unit"), "unit variable");
+    const auto set = TriggerDocumentEditor::AppendRootEca(doc, catalog, *trigger.value, UiDefinitionKind::Action, "SetVariable"); Good(set, "set");
+    const auto* eca = TriggerDocumentEditor::FindEca(doc, set.value->rootEcaId);
+    const auto target = doc.argumentNodes[eca->arguments[0]].id, value = doc.argumentNodes[eca->arguments[1]].id;
+    Good(TriggerDocumentEditor::SetScalarArgument(doc, target, 3, "Hero"), "target stored as text");
+    const auto read = TriggerDocumentEditor::AppendArgumentCall(doc, catalog, value, "Null", "YDWEGetAnyTypeLocalVariable"); Good(read, "local read");
+    const auto* call = TriggerDocumentEditor::FindEca(doc, read.value->rootEcaId);
+    Good(TriggerDocumentEditor::SetScalarArgument(doc, doc.argumentNodes[call->arguments[0]].id, 3, "u"), "local name");
+    auto report = AnalyzeTriggerValues(doc, catalog); Good(report, "analysis");
+    Require(report.value->issues.size() == 1, "one unresolved issue");
+    const auto& issue = report.value->issues.front();
+    Require(issue.diagnostic.code == "TRIGGER_LOCAL_VALUE_TYPE_UNRESOLVED" && issue.diagnostic.severity == DiagnosticSeverity::Error
+        && issue.storageType.empty() && issue.diagnostic.message.find("直接值") != std::string::npos
+        && issue.diagnostic.message.find("Hero") != std::string::npos && issue.diagnostic.message.find("父槽") == std::string::npos,
+        "names the text target instead of a missing Null storage macro");
+    Require(RequiredTriggerStorageTypes(doc, catalog).empty(), "no capability request for Null");
+    Good(TriggerDocumentEditor::SetScalarArgument(doc, target, 1, "Hero"), "target as variable");
+    report = AnalyzeTriggerValues(doc, catalog); Good(report, "reanalysis");
+    Require(report.value->issues.empty(), "unit variable target resolves the read");
+    std::error_code ec; std::filesystem::remove_all(root, ec);
 }
-int main() { try { Numbers(); Publishing(); std::cout << "trigger value safety passed\n"; return 0; } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }
+}
+int main() { try { Numbers(); Publishing(); UnresolvedNull(); std::cout << "trigger value safety passed\n"; return 0; } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; } }

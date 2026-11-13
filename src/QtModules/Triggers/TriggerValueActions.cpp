@@ -28,6 +28,8 @@
 #include <QTreeView>
 #include <QUndoStack>
 
+#include <algorithm>
+
 // 参数编辑的公共管线（参数对话框与取值面板共用）与取值面板的打开 / 应用。
 namespace War3Map::Modules {
 namespace {
@@ -204,6 +206,14 @@ bool TriggerModule::ApplyArgumentEdits(StableId ecaId, const std::vector<Trigger
         if (request.valueKind == 2) continue;
         if (!setScalar(request.argumentId, request.valueKind, request.value)) failed = true;
     }
+    if (!failed) {
+        std::vector<StableId> changed;
+        for (const auto& change : scalarChanges) changed.push_back(change.argumentId);
+        if (const QString message = CheckChangedReferences(ecaId, changed); !message.isEmpty()) {
+            failed = true;
+            failureMessage = message;
+        }
+    }
 
     if (failed || !ValidateOrReport()) {
         for (auto it = scalarChanges.rbegin(); it != scalarChanges.rend(); ++it) {
@@ -243,6 +253,49 @@ bool TriggerModule::ApplyArgumentEdits(StableId ecaId, const std::vector<Trigger
         RefreshEditor(ecaId);
     }
     return true;
+}
+
+// 参数对话框可以手填引用：改过的参数与取值面板走同一来源和类型资格。
+// 赋值目标只接受真实可写变量（不能是直接值、预设或生成的触发器），读取只接受真实变量、触发器或预放对象。
+QString TriggerModule::CheckChangedReferences(StableId ecaId, const std::vector<StableId>& changed) {
+    const auto& document = *project_.triggerDocument_;
+    const auto* eca = Editor::FindEca(document, ecaId);
+    if (eca == nullptr || changed.empty()) return {};
+    const auto* definition = project_.uiCatalog_->Find(eca->type, eca->name.text);
+    const Trigger::TriggerTypeSystem types(*project_.uiCatalog_);
+    std::shared_ptr<const Trigger::MapObjectReferenceSnapshot> mapObjects;
+    bool captured = false;
+    for (std::size_t position = 0; position < eca->arguments.size(); ++position) {
+        if (eca->arguments[position] >= document.argumentNodes.size()) continue;
+        const auto& argument = document.argumentNodes[eca->arguments[position]];
+        if (std::find(changed.begin(), changed.end(), argument.id) == changed.end()) continue;
+        const bool writable = (eca->name.text == "SetVariable" && position == 0) ||
+            (definition && Trigger::TriggerTypeSystem::DeclaredType(*definition, position) == "AnyGlobal");
+        if (writable) {
+            const auto checked = types.ValidateWritableVariable(document, argument, types.ValueType(document, argument));
+            if (!checked.Succeeded()) return FirstMessage(checked.diagnostics, tr("赋值目标必须是变量。"));
+            continue;
+        }
+        if (argument.type != 1) continue;
+        auto resolved = Trigger::ResolveVariableReference(document, argument.value.text);
+        if (!resolved.Succeeded()) {
+            if (!captured) {
+                captured = true;
+                const auto snapshot = project_.CaptureTriggerMapObjectReferences();
+                if (snapshot.Succeeded() && snapshot.value) mapObjects = *snapshot.value;
+            }
+            if (mapObjects) resolved = Trigger::ResolveVariableReference(document, argument.value.text, mapObjects.get());
+        }
+        const QString name = QString::fromStdString(argument.value.text);
+        if (!resolved.Succeeded() || !resolved.value) return tr("“%1”不是已有的变量、触发器或预放对象。").arg(name);
+        if (resolved.value->isArray && !argument.indexArgument) return tr("数组变量“%1”需要下标，请在取值面板中选择。").arg(name);
+        const auto expected = ResolvedArgumentType(*eca, position);
+        if (!types.Accepts(expected, resolved.value->type)) {
+            return tr("“%1”的类型“%2”不能用于“%3”参数。").arg(name,
+                QString::fromStdString(types.DisplayName(resolved.value->type)), QString::fromStdString(types.DisplayName(expected)));
+        }
+    }
+    return {};
 }
 
 bool TriggerModule::ApplyValueChoice(StableId ecaId, std::size_t position, const TriggerValueChoice& choice) {

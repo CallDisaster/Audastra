@@ -287,6 +287,8 @@ private:
     void AddEcaStructureMenu(QMenu& menu, const QModelIndex& index, std::vector<std::pair<QAction*, std::function<void()>>>& actions);
     // 编辑后的整图验证；失败时写诊断并返回 false，调用方负责回滚。
     [[nodiscard]] bool ValidateOrReport();
+    // 改过的参数的引用资格（ApplyArgumentEdits 内调用）；返回空表示通过，否则为拒绝原因。
+    [[nodiscard]] QString CheckChangedReferences(StableId ecaId, const std::vector<StableId>& changed);
 
     // 多选（TriggerSelectionView.cpp）
     void ConfigureMultiSelection();

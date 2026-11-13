@@ -2079,8 +2079,8 @@ void TestWritableLoopGeneration(const std::filesystem::path& root) {
     using namespace Trigger;
     WriteText(root / "ui/config", "base\n");
     WriteText(root / "ui/base/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n"
-        "integervar=1,0,0,IntegerVariable,integer\nreal=0,1,1,Real,real\n");
-    WriteText(root / "ui/base/action.txt", "[Marker]\n"
+        "integervar=1,0,0,IntegerVariable,integer\nreal=0,1,1,Real,real\nAnyGlobal=0,0,0,Variable\nNull=0,0,0,Value\n");
+    WriteText(root / "ui/base/action.txt", "[Marker]\n[SetVariable]\n[[.args]]\ntype=AnyGlobal\n[[.args]]\ntype=Null\n"
         "[ForLoopVarMultiple]\n[[.args]]\ntype=integervar\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[ForLoopVar]\n[[.args]]\ntype=integervar\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n[[.args]]\ntype=code\n");
     WriteText(root / "ui/base/call.txt", "[LoopIndex]\nreturns=integer\n[LoopStart]\nreturns=integer\n[LoopEnd]\nreturns=integer\n");
@@ -2152,6 +2152,17 @@ void TestWritableLoopGeneration(const std::filesystem::path& root) {
         auto duplicate = invalid.variables[0]; duplicate.id = nextId++; duplicate.name.text = "udg_Counter"; invalid.variables.push_back(duplicate);
         invalid.argumentNodes[targets[0]].value.text = "udg_Counter";
     }, "TRIGGER_WRITABLE_VARIABLE_AMBIGUOUS");
+    // 设置变量的左侧存成文字时不按名字猜成变量写进 set（旧参数对话框曾产生这种数据）。
+    rejects([&](auto& invalid) {
+        const auto text = [&](std::int32_t kind, const std::string& value) {
+            ArgumentNode node; node.id = nextId++; node.type = kind; node.value.text = value;
+            invalid.argumentNodes.push_back(std::move(node)); return static_cast<std::uint32_t>(invalid.argumentNodes.size() - 1);
+        };
+        EcaNode set; set.id = nextId++; set.type = 2; set.enabled = 1; set.name.text = "SetVariable";
+        set.arguments = {text(3, "Counter"), text(3, "1")};
+        invalid.ecaNodes.push_back(std::move(set));
+        invalid.triggers.front().ecas.push_back(static_cast<std::uint32_t>(invalid.ecaNodes.size() - 1));
+    }, "TRIGGER_WRITABLE_VARIABLE_REQUIRED");
 
     // 原创最小 API 验证最终 JASS 可编译；不把它当作原版 GUI 或 VM 副作用顺序的证明。
     WriteText(root / "compiler/jass/24/common.j", "type trigger extends handle\ntype triggeraction extends handle\ntype weathereffect extends handle\n"

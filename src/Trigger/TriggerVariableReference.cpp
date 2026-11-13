@@ -1,6 +1,9 @@
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 
 #include "War3MapCore/Trigger/TriggerDirectory.h"
+#include "War3MapCore/Trigger/TriggerTypes.h"
+
+#include <map>
 
 namespace War3Map::Trigger {
 
@@ -39,6 +42,28 @@ Result<VariableReference> ResolveVariableReference(const TriggerDocument& docume
     if (!selected) return Output::Failure("Trigger.GraphEdit", "TRIGGER_GRAPH_VARIABLE_UNKNOWN",
         "参数变量未有真实声明/类型资格：" + std::string(name));
     return Output::Success(std::move(*selected));
+}
+
+GlobalReferenceCandidates CollectGlobalReferenceCandidates(const TriggerDocument& document,
+    const TriggerTypeSystem& types, std::string_view expectedType, bool anyGlobal, bool writableTarget) {
+    GlobalReferenceCandidates result;
+    for (const auto& variable : document.variables) {
+        if (!anyGlobal && !types.Accepts(expectedType, variable.typeName.text)) continue;
+        if (variable.isArray != 0) { ++result.arrays; continue; }
+        result.items.push_back({VariableReferenceKind::Declared, variable.name.text, variable.name.text, variable.typeName.text});
+    }
+    // 与脚本生成同一资格：注释、禁用的不生成全局；生成名冲突的提交时也会被拒绝，这里不列出。
+    if (writableTarget || anyGlobal || !types.Accepts(expectedType, "trigger")) return result;
+    std::map<std::string, std::size_t> owners;
+    for (const auto& trigger : document.triggers)
+        if (trigger.type == 0 && trigger.enabled != 0) ++owners[TriggerDirectoryEditor::TriggerSymbol(trigger.name)];
+    for (const auto& trigger : document.triggers) {
+        if (trigger.type != 0 || trigger.enabled == 0) continue;
+        auto symbol = TriggerDirectoryEditor::TriggerSymbol(trigger.name);
+        if (owners[symbol] != 1) { ++result.clashingTriggers; continue; }
+        result.items.push_back({VariableReferenceKind::GeneratedTrigger, std::move(symbol), trigger.name.text, "trigger"});
+    }
+    return result;
 }
 
 } // namespace War3Map::Trigger

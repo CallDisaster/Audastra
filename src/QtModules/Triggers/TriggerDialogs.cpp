@@ -5,12 +5,14 @@
 
 #include "War3MapCore/Trigger/TriggerPresentation.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
+#include "War3MapCore/Trigger/TriggerVariableReference.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <QAbstractItemView>
 #include <QCheckBox>
 #include <QCollator>
 #include <QComboBox>
+#include <QCompleter>
 #include <QDialogButtonBox>
 #include <QHash>
 #include <QFormLayout>
@@ -48,6 +50,9 @@
 #include <utility>
 
 namespace {
+
+// 变量下拉条目的显示名（条目文字可能带类型后缀）。
+constexpr int kVariableNameRole = Qt::UserRole + 2;
 
 using TriggerUiText::CallReturnType;
 using TriggerUiText::Field;
@@ -305,6 +310,11 @@ struct TriggerParameterDialog::Row {
     QLineEdit* scalar = nullptr;
     QComboBox* booleanValue = nullptr;
     bool booleanLiteral = false;
+    // “变量”来源：可搜索的全局变量/触发器列表（与取值面板同一候选），首次切到变量时才填充。
+    QComboBox* variable = nullptr;
+    bool variablesLoaded = false;
+    bool anyGlobal = false;
+    bool writableTarget = false;
     QLabel* function = nullptr;
     QPushButton* functionButton = nullptr;
     std::optional<std::string> selectedCall;
@@ -396,9 +406,14 @@ TriggerParameterDialog::TriggerParameterDialog(
             ? labels[position]
             : "参数 " + std::to_string(position + 1);
         AddArgumentRow(position, definition, label, document_.argumentNodes[argumentIndex]);
-        rows_.back()->expectedType = types.ExpectedType(document_, *eca, position, locals);
-        RefreshPresets(rows_.back(), document_.argumentNodes[argumentIndex]);
-        RestrictKinds(rows_.back(), types);
+        Row* row = rows_.back();
+        row->expectedType = types.ExpectedType(document_, *eca, position, locals);
+        // 赋值目标（AnyGlobal / 设置变量的左侧）只能是真实可写变量，与取值面板相同。
+        row->anyGlobal = definition != nullptr && definition->type == "AnyGlobal";
+        row->writableTarget = row->anyGlobal || (eca->name.text == "SetVariable" && position == 0);
+        RefreshPresets(row, document_.argumentNodes[argumentIndex]);
+        PrepareVariableKind(row, document_.argumentNodes[argumentIndex], types);
+        RestrictKinds(row, types);
         form->addWidget(rows_.back()->panel);
     }
     form->addStretch();
@@ -479,10 +494,19 @@ void TriggerParameterDialog::AddArgumentRow(
     row->functionButton = new QPushButton(tr("选择函数…"));
     functionLayout->addWidget(row->function, 1);
     functionLayout->addWidget(row->functionButton);
+    row->variable = new QComboBox;
+    row->variable->setObjectName("parameterVariableValue");
+    row->variable->setEditable(true);
+    row->variable->setInsertPolicy(QComboBox::NoInsert);
+    row->variable->setMaxVisibleItems(16);
+    row->variable->completer()->setCompletionMode(QCompleter::PopupCompletion);
+    row->variable->completer()->setFilterMode(Qt::MatchContains);
+    row->variable->completer()->setCaseSensitivity(Qt::CaseInsensitive);
     row->valueStack->addWidget(row->preset);
     row->valueStack->addWidget(row->scalar);
     row->valueStack->addWidget(functionPanel);
     row->valueStack->addWidget(row->booleanValue);
+    row->valueStack->addWidget(row->variable);
     layout->addWidget(row->valueStack, 1);
 
     const int kindIndex = row->kind->findData(argument.insertCall != 0 ? 2 : argument.type);
@@ -509,11 +533,15 @@ void TriggerParameterDialog::AddArgumentRow(
 
     const auto updateStack = [row]() {
         const int valueKind = row->kind->currentData().toInt();
-        row->valueStack->setCurrentIndex(valueKind == 0 ? 0 : valueKind == 2 ? 2
+        row->valueStack->setCurrentIndex(valueKind == 0 ? 0 : valueKind == 1 && !row->readOnly ? 4 : valueKind == 2 ? 2
             : valueKind == 3 && row->booleanLiteral ? 3 : 1);
     };
-    connect(row->kind, &QComboBox::currentIndexChanged, panel, [this, updateStack]() {
+    connect(row->kind, &QComboBox::currentIndexChanged, panel, [this, row, updateStack]() {
+        if (row->kind->currentData().toInt() == 1) PopulateVariables(row);
         updateStack();
+        UpdateNaturalPreview();
+    });
+    connect(row->variable, &QComboBox::currentTextChanged, panel, [this]() {
         UpdateNaturalPreview();
     });
     connect(row->preset, &QComboBox::currentTextChanged, panel, [this]() {
@@ -550,6 +578,74 @@ void TriggerParameterDialog::AddArgumentRow(
     rows_.push_back(row);
 }
 
+// 新语句的空直接值：赋值目标及只能引用对象的类型（没有固定值写法、没有预设）默认改用“变量”，
+// 免得作者把变量名当文字填进去。已有值不改种类。
+void TriggerParameterDialog::PrepareVariableKind(Row* row, const War3Map::Trigger::ArgumentNode& argument,
+    const War3Map::Trigger::TriggerTypeSystem& types) {
+    if (row->readOnly) return;
+    if (argument.type == 1 && argument.insertCall == 0) {
+        PopulateVariables(row);
+        return;
+    }
+    const bool fresh = argument.type == 3 && argument.value.text.empty() && argument.insertCall == 0;
+    if (!fresh) return;
+    const auto kinds = types.AllowedValueKinds(row->expectedType);
+    const bool referenceOnly = kinds.variable && !kinds.preset && !row->booleanLiteral
+        && types.LiteralKind(row->expectedType) == War3Map::Trigger::TriggerTypeSystem::Literal::Other;
+    if (row->writableTarget || referenceOnly) row->kind->setCurrentIndex(row->kind->findData(1));
+}
+
+void TriggerParameterDialog::PopulateVariables(Row* row) {
+    if (row->variablesLoaded) return;
+    row->variablesLoaded = true;
+    const QSignalBlocker blocker(row->variable);
+    const War3Map::Trigger::TriggerTypeSystem types(catalog_);
+    const auto globals = War3Map::Trigger::CollectGlobalReferenceCandidates(
+        document_, types, row->expectedType, row->anyGlobal, row->writableTarget);
+    const QString current = row->originalKind == 1 ? Utf8(row->originalValue) : QString{};
+    int selected = -1;
+    for (const auto& candidate : globals.items) {
+        const QString name = Utf8(candidate.name), value = Utf8(candidate.value);
+        const bool trigger = candidate.kind == War3Map::Trigger::VariableReferenceKind::GeneratedTrigger;
+        const QString detail = trigger ? tr("触发器")
+            : candidate.type == row->expectedType ? QString{} : Utf8(types.DisplayName(candidate.type));
+        row->variable->addItem(detail.isEmpty() ? name : name + QStringLiteral("　") + detail, value);
+        row->variable->setItemData(row->variable->count() - 1, name, kVariableNameRole);
+        if (trigger) row->variable->setItemData(row->variable->count() - 1, value, Qt::ToolTipRole);
+        if (!current.isEmpty() && (value == current || (current.startsWith(QStringLiteral("udg_")) && value == current.mid(4))))
+            selected = row->variable->count() - 1;
+    }
+    // 不在候选里的已有引用（预放对象、旧数据）原样保留。
+    if (selected < 0 && !current.isEmpty()) {
+        row->variable->addItem(current, current);
+        row->variable->setItemData(row->variable->count() - 1, current, kVariableNameRole);
+        selected = row->variable->count() - 1;
+    }
+    row->variable->setCurrentIndex(selected);
+    if (selected < 0) row->variable->setEditText(QString{});
+    row->variable->lineEdit()->setPlaceholderText(globals.items.empty() ? tr("没有该类型的变量")
+        : types.Accepts(row->expectedType, "trigger") && !row->writableTarget && !row->anyGlobal
+            ? tr("搜索变量或触发器") : tr("搜索变量"));
+}
+
+// 下拉文字可以是条目全文、名称或直接写的引用；匹配到条目时交出它实际存的引用（如 gg_trg_ 生成名）。
+QString TriggerParameterDialog::VariableName(const Row* row) {
+    const QString text = row->variable->currentText().trimmed();
+    for (int index = 0; index < row->variable->count(); ++index) {
+        if (row->variable->itemText(index) == text) return row->variable->itemData(index, kVariableNameRole).toString();
+    }
+    return text;
+}
+
+QString TriggerParameterDialog::VariableValue(const Row* row) {
+    const QString text = row->variable->currentText().trimmed();
+    for (int index = 0; index < row->variable->count(); ++index) {
+        if (row->variable->itemText(index) == text || row->variable->itemData(index, kVariableNameRole).toString() == text)
+            return row->variable->itemData(index).toString();
+    }
+    return text;
+}
+
 // 按函数库定义去掉该类型不能使用的取值种类；当前已用的种类保留，已有数据不会被隐藏。
 void TriggerParameterDialog::RestrictKinds(Row* row, const War3Map::Trigger::TriggerTypeSystem& types) {
     if (row->readOnly) return;
@@ -559,6 +655,12 @@ void TriggerParameterDialog::RestrictKinds(Row* row, const War3Map::Trigger::Tri
         if (allowed || kind == current) return;
         if (const int index = row->kind->findData(kind); index >= 0) row->kind->removeItem(index);
     };
+    if (row->writableTarget) {
+        drop(0, false);
+        drop(2, false);
+        drop(3, false);
+        return;
+    }
     drop(0, kinds.preset || row->booleanLiteral);
     drop(1, kinds.variable);
     drop(2, kinds.function);
@@ -655,6 +757,8 @@ void TriggerParameterDialog::UpdateNaturalPreview() {
                 value = row->function->text();
             } else if (valueKind == 3 && row->booleanLiteral) {
                 value = row->booleanValue->currentText();
+            } else if (valueKind == 1 && !row->readOnly) {
+                value = VariableName(row);
             } else {
                 value = row->scalar->text();
             }
@@ -706,6 +810,8 @@ std::vector<TriggerArgumentEditRequest> TriggerParameterDialog::PendingEdits() c
             request.callFunction = row->selectedCall;
         } else if (request.valueKind == 3 && row->booleanLiteral) {
             request.value = row->booleanValue->currentData().toString().toUtf8().toStdString();
+        } else if (request.valueKind == 1) {
+            request.value = VariableValue(row).toUtf8().toStdString();
         } else {
             request.value = row->scalar->text().toUtf8().toStdString();
         }

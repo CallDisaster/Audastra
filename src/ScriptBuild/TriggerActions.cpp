@@ -468,6 +468,13 @@ void TriggerEmitter::PutActionEx(const Eca& eca, const std::string& name) {
         break;
     }
     case Gui::SetVariable:
+        // 左侧必须是变量引用；存成直接值/预设/函数的不能按名字猜成变量写进 set。
+        if (const auto* target = ArgAt(eca, 0); target == nullptr || target->type != 1 || target->callEca || target->insertCall != 0) {
+            diagnostics_.push_back({DiagnosticSeverity::Error, "Script.Trigger", "TRIGGER_WRITABLE_VARIABLE_REQUIRED",
+                "“设置变量”的目标" + (target ? "“" + target->value.text + "”" : std::string{})
+                    + "不是变量引用（存成了直接值、预设或函数）。请点击该参数，从变量列表重新选择变量。", eca.origin});
+            return;
+        }
         out_.Begin();
         out_.Put("set ");
         PutVar(eca, name, 0);

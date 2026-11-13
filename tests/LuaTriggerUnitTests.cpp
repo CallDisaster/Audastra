@@ -209,6 +209,9 @@ void TestLuaBoundGlobals(const std::filesystem::path& root) {
     rejected(changed, fixture.profile, globals, "LUA_ARRAY_SHAPE");
     changed = fixture.doc; changed.ecaNodes[changed.triggers[0].ecas[0]].arguments[0] = global;
     rejected(changed, fixture.profile, globals, "LUA_ASSIGNMENT_TARGET");
+    // 左侧存成同名文字也不能当成变量赋值。
+    changed = fixture.doc; changed.argumentNodes[changed.ecaNodes[changed.triggers[0].ecas[0]].arguments[0]].type = 3;
+    rejected(changed, fixture.profile, globals, "LUA_ASSIGNMENT_TARGET");
     auto profile = fixture.profile; profile.constants[0].type = "unit";
     rejected(fixture.doc, profile, globals, "LUA_TYPE_MISMATCH");
     Write(root / "runner.lua", R"lua(assert(_VERSION == "Lua 5.3")

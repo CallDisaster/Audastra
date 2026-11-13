@@ -26,7 +26,7 @@ void AppendMapTriggerValueDiagnostics(MapScriptResult& generated, const Trigger:
         }
     }
     std::set<StableId> replacedStorageEcas;
-    for (const auto& issue : analyzed.value->issues) if (!issue.storageType.empty()) {
+    for (const auto& issue : analyzed.value->issues) if (!issue.storageType.empty() || issue.diagnostic.code == "TRIGGER_LOCAL_VALUE_TYPE_UNRESOLVED") {
         const auto argument = std::find_if(document.argumentNodes.begin(), document.argumentNodes.end(), [&](const auto& row) { return row.id == issue.argumentId; });
         if (argument != document.argumentNodes.end() && argument->callEca && *argument->callEca < document.ecaNodes.size())
             replacedStorageEcas.insert(document.ecaNodes[*argument->callEca].id);

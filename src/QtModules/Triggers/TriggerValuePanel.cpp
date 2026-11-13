@@ -378,16 +378,12 @@ void TriggerValuePanel::Rebuild() {
 void TriggerValuePanel::RebuildVariables(const QString& query) {
     const auto matches = [&query](const QString& text) { return query.isEmpty() || text.contains(query, Qt::CaseInsensitive); };
     const bool anyGlobal = declared_ == "AnyGlobal";
-    std::size_t arrays = 0;
-    for (const auto& variable : document_.variables) {
-        const std::string& type = variable.typeName.text;
-        if (!anyGlobal && !types_->Accepts(type_, type)) continue;
-        if (variable.isArray != 0) {
-            ++arrays;
-            continue;
-        }
-        const QString name = Utf8(variable.name.text);
-        if (matches(name)) Item(list_, name, type == type_ ? QString{} : Utf8(types_->DisplayName(type)), 1, name);
+    const auto globals = Trigger::CollectGlobalReferenceCandidates(document_, *types_, type_, anyGlobal, writableTarget_);
+    const std::size_t arrays = globals.arrays;
+    for (const auto& variable : globals.items) {
+        if (variable.kind != Trigger::VariableReferenceKind::Declared) continue;
+        const QString name = Utf8(variable.name);
+        if (matches(name)) Item(list_, name, variable.type == type_ ? QString{} : Utf8(types_->DisplayName(variable.type)), 1, name);
     }
     // 预放单位/物品是读取来源，不是用户可赋值的全局变量或数组。
     if (!writableTarget_ && mapObjects_) {
@@ -410,21 +406,13 @@ void TriggerValuePanel::RebuildVariables(const QString& query) {
                 .arg(detail, Utf8(object.memberName), Utf8(object.classificationSource)));
         }
     }
-    // 地图里已有的触发器：与脚本生成和 ResolveVariableReference 同一资格（注释、禁用的不生成全局）。
-    // 生成名冲突的提交时也会被拒绝，这里不列出；只读引用，左值不列。
-    std::size_t clashingTriggers = 0;
-    if (!writableTarget_ && !anyGlobal && types_->Accepts(type_, "trigger")) {
-        std::map<std::string, std::size_t> owners;
-        for (const auto& trigger : document_.triggers)
-            if (trigger.type == 0 && trigger.enabled != 0) ++owners[Trigger::TriggerDirectoryEditor::TriggerSymbol(trigger.name)];
-        for (const auto& trigger : document_.triggers) {
-            if (trigger.type != 0 || trigger.enabled == 0) continue;
-            const auto symbol = Trigger::TriggerDirectoryEditor::TriggerSymbol(trigger.name);
-            if (owners[symbol] != 1) { ++clashingTriggers; continue; }
-            const QString name = Utf8(trigger.name.text), value = Utf8(symbol);
-            if (!matches(name) && !matches(value)) continue;
-            Item(list_, name, tr("触发器"), 1, value)->setToolTip(value);
-        }
+    // 地图里已有的触发器（只读引用，左值不列）：资格由共用候选列表决定。
+    const std::size_t clashingTriggers = globals.clashingTriggers;
+    for (const auto& trigger : globals.items) {
+        if (trigger.kind != Trigger::VariableReferenceKind::GeneratedTrigger) continue;
+        const QString name = Utf8(trigger.name), value = Utf8(trigger.value);
+        if (!matches(name) && !matches(value)) continue;
+        Item(list_, name, tr("触发器"), 1, value)->setToolTip(value);
     }
     // YDWE 局部变量（本触发器）：选择后生成 loc_ / loop_ 读取函数。
     const bool hasGetter = catalog_.Find(Trigger::UiDefinitionKind::Call, Trigger::kLocalGet) != nullptr;

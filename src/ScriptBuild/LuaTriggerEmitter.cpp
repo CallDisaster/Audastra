@@ -260,6 +260,8 @@ void Emitter::StatementBody(const Trigger::EcaNode& node, MappedText& output) {
     if (node.name.text == "SetVariable" && node.arguments.size() == 2 && node.children.empty()) {
         if (node.arguments[0] >= document_.argumentNodes.size()) Fail("LUA_ARGUMENT_INDEX", "赋值目标索引越界。");
         const auto& target = document_.argumentNodes[node.arguments[0]];
+        if (target.type != 1 || target.callEca || target.insertCall != 0)
+            Fail("LUA_ASSIGNMENT_TARGET", "赋值目标“" + target.value.text + "”不是变量引用（存成了直接值、预设或函数），请重新选择变量。");
         if (!variables_.contains(target.value.text)) Fail("LUA_ASSIGNMENT_TARGET", "赋值目标必须是用户变量；生成对象绑定只读。");
         const auto variable = Variable(target);
         const auto value = Argument(node.arguments[1], variables_.at(target.value.text)->typeName.text);

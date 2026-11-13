@@ -11,6 +11,27 @@ std::string StorageType(const TriggerTypeSystem& types, std::string expected) {
     if (const auto* type = types.Find(expected); type && !type->baseType.empty() && StorageFor(type->baseType).known) return {};
     return expected;
 }
+// 空类型来自目录里没有的定义，保持原有处理；只有解析后仍为 Null 的槽算“类型定不下来”。
+bool Unresolved(std::string_view expected) { return expected == "Null"; }
+// 函数库声明为 Null 的槽要由前面的类型选择器或前一个参数定类型；定不下来时说清是哪一个参数的问题，
+// 不把“Null”当成缺存取宏的类型报给作者。
+std::string UnresolvedMessage(const TriggerDocument& document, const UiCatalog& catalog, const TriggerTypeSystem& types,
+    const EcaNode& eca, std::size_t position) {
+    const std::string head = "泛型局部读取的取值类型无法确定：此参数在函数库里声明为 Null，类型由";
+    if (const auto* definition = catalog.Find(eca.type, eca.name.text))
+        for (std::size_t index = position; index-- > 0;)
+            if (types.IsTypeSelector(TriggerTypeSystem::DeclaredType(*definition, index)))
+                return head + "前面的类型参数决定，但它不是有效的类型预设。请重新选择类型。";
+    if (position > 0 && eca.arguments[position - 1] < document.argumentNodes.size()) {
+        const auto& previous = document.argumentNodes[eca.arguments[position - 1]];
+        const std::string kind = previous.type == 0 ? "预设" : previous.type == 3 ? "直接值（文字）" : previous.type == -1 ? "未设置" : "";
+        if (!kind.empty()) return head + "前一个参数的变量决定，但前一个参数存成了" + kind + "“" + previous.value.text
+            + "”，不是变量。请点击前一个参数，从变量列表重新选择变量。";
+        if (previous.type == 1) return head + "前一个参数的变量决定，但变量“" + previous.value.text
+            + "”没有唯一的真实声明。请检查该变量是否存在或重名。";
+    }
+    return head + "前一个参数决定，但它没有具体类型。请先读入unit等具体类型变量，再传给该参数。";
+}
 }
 std::optional<bool> TriggerStorageCapabilities::Supports(std::string_view catalogSha256, std::string_view type) const {
     if (catalogSha256_ != catalogSha256 || binding_.empty()) return {};
@@ -30,7 +51,9 @@ std::vector<std::string> RequiredTriggerStorageTypes(const TriggerDocument& docu
         if (argument.type != 2 || !argument.callEca || *argument.callEca >= document.ecaNodes.size()) continue;
         const auto& call = document.ecaNodes[*argument.callEca];
         if (call.name.text != kLocalGet && call.name.text != kLocalGetArray) continue;
-        const auto storage = StorageType(types, types.ExpectedType(document, eca, i));
+        const auto expected = types.ExpectedType(document, eca, i);
+        if (Unresolved(expected)) continue; // 类型定不下来另行报错，不去要“Null”的存取能力。
+        const auto storage = StorageType(types, expected);
         if (!storage.empty()) required.insert(storage);
     }
     return {required.begin(), required.end()};
@@ -94,7 +117,10 @@ Result<TriggerValueSafetyReport> AnalyzeTriggerValues(const TriggerDocument& doc
                     issue = CheckTriggerRealLiteral(argument.value.text);
                 if (argument.type == 2 && argument.callEca && *argument.callEca < document.ecaNodes.size()) {
                     const auto& call = document.ecaNodes[*argument.callEca];
-                    if (call.name.text == kLocalGet || call.name.text == kLocalGetArray) {
+                    if ((call.name.text == kLocalGet || call.name.text == kLocalGetArray) && Unresolved(expected)) {
+                        issue = Diagnostic{enabled ? DiagnosticSeverity::Error : DiagnosticSeverity::Warning,
+                            "Trigger.Value", "TRIGGER_LOCAL_VALUE_TYPE_UNRESOLVED", UnresolvedMessage(document, catalog, types, eca, i)};
+                    } else if (call.name.text == kLocalGet || call.name.text == kLocalGetArray) {
                         const auto storage = StorageType(types, expected);
                         requiredStorage = storage;
                         if (capabilities && enabled && !storage.empty() && !capabilitiesValidated) {
