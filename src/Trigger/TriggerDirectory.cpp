@@ -202,7 +202,7 @@ Status TriggerDirectoryEditor::ValidateTriggerName(
     if (const auto* conflict = FindScriptNameConflict(document, trimmed, self)) {
         return Status::Failure(kDomain, "TRIGGER_SCRIPT_NAME_DUPLICATE",
             "“" + std::string(trimmed) + "”与触发器“" + conflict->name.text + "”在脚本中的名称相同（gg_trg_" +
-                ScriptName(trimmed) + "），请换一个名称。");
+                ScriptName(trimmed) + "）：中文和符号在脚本名里只按字节数换算。请换一个名称，例如加上数字或英文。");
     }
     return Status::Ok();
 }

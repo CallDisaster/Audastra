@@ -387,6 +387,7 @@ private slots:
     void MissingMapScriptKeepsLogicView();
     void DirectoryEditsUndoAndReferences();
     void RenameStaysWithinBudgetOnLargeCodeMaps();
+    void RenameChineseNamesAndSharedSymbols();
     void DirectoryReferenceConfirmationUsesSharedSymbols();
     void StatementsMoveAndFillEmptyBranches();
     void CallbackActionShowsActionBranch();
@@ -1838,6 +1839,72 @@ void TriggerModuleTests::RenameStaysWithinBudgetOnLargeCodeMaps() {
     QCOMPARE(project.triggerUndoStack_->count(), 1);
     project.triggerUndoStack_->undo();
     QVERIFY(Named(project, "Target") != nullptr && Named(project, "123-45 Test") == nullptr);
+}
+
+// 中文名改名：GBK 旧图改成单字中文名，引用按 GBK 字节换算；脚本名撞了要说清和谁撞；
+// 旧图里两个触发器脚本名本就相同时也能靠改名消除冲突，判定不了的引用保留并提醒。
+void TriggerModuleTests::RenameChineseNamesAndSharedSymbols() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "action.txt",
+        "[PlainAction]\ntitle=\"Plain\"\ndescription=\"Plain action\"\n"
+        "[RunTrigger]\ntitle=\"Run\"\ndescription=\"Run ${trigger}\"\n[[.args]]\ntype=trigger\n");
+    const auto load = [&ui](std::string_view first, std::string_view second, QtProject::EditorProject& project) {
+        auto catalog = Trigger::UiCatalog::Load(ui);
+        if (!catalog.Succeeded()) return false;
+        auto parsed = Trigger::WtgWctCodec{}.Parse(DirectoryWtg(first, second), DirectoryWct(), *catalog.value);
+        if (!parsed.Succeeded()) return false;
+        project.triggerUndoStack_ = new QUndoStack(&project);
+        project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value));
+        project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value));
+        return true;
+    };
+    {
+        // GBK 字节：“未命名触发器 006”“英雄”。
+        const std::string untitled = "\xCE\xB4\xC3\xFC\xC3\xFB\xB4\xA5\xB7\xA2\xC6\xF7 006", hero = "\xD3\xA2\xD0\xDB";
+        QtProject::EditorProject project;
+        QVERIFY(load(untitled, hero, project));
+        const auto* target = Named(project, "未命名触发器 006");
+        QVERIFY(target != nullptr && Named(project, "英雄") != nullptr);
+        Modules::TriggerModule module(project);
+        (void)module.Widget();
+        QVERIFY(module.RenameDirectoryItem({false, target->id, target->categoryId}, QStringLiteral("额")));
+        QTRY_VERIFY(Named(project, "额") != nullptr);
+        // “额”按原编码 GBK 写出两字节，脚本名 __u。
+        QCOMPARE(project.triggerDocument_->argumentNodes.front().value.text, std::string("gg_trg___u"));
+        const auto* hero2 = Named(project, "英雄");
+        const auto clash = Trigger::TriggerDirectoryEditor::ValidateTriggerName(*project.triggerDocument_, "嗯", hero2->id);
+        QVERIFY(!clash.Succeeded());
+        QVERIFY2(clash.diagnostics.front().message.find("额") != std::string::npos, clash.diagnostics.front().message.c_str());
+        QVERIFY(!module.RenameDirectoryItem({false, hero2->id, hero2->categoryId}, QStringLiteral("嗯")));
+        QVERIFY(Named(project, "英雄") != nullptr);
+        QVERIFY(module.RenameDirectoryItem({false, hero2->id, hero2->categoryId}, QStringLiteral("英雄 2")));
+        QTRY_VERIFY(Named(project, "英雄 2") != nullptr);
+        QCOMPARE(project.triggerUndoStack_->count(), 2);
+    }
+    {
+        const std::string first = "中文 A!", second = "中文 A?";
+        QtProject::EditorProject project;
+        QVERIFY(load(first, second, project));
+        const std::string symbol = project.triggerDocument_->argumentNodes.front().value.text;
+        Modules::TriggerModule module(project);
+        (void)module.Widget();
+        const auto* target = Named(project, first);
+        QVERIFY(target != nullptr);
+        QVERIFY(module.RenameDirectoryItem({false, target->id, target->categoryId}, QStringLiteral("Alpha")));
+        QTRY_VERIFY(Named(project, "Alpha") != nullptr);
+        QCOMPARE(project.triggerDocument_->argumentNodes.front().value.text, symbol);
+        QString kept;
+        const auto* model = project.diagnosticsModel_;
+        for (int row = 0; row < model->rowCount(); ++row)
+            if (model->index(row, 2).data().toString() == QStringLiteral("TRIGGER_RENAME_SHARED_SYMBOL"))
+                kept = model->index(row, 3).data().toString();
+        QVERIFY2(kept.contains(QStringLiteral("中文 A?")) && kept.contains(QStringLiteral("1 处")), qPrintable(kept));
+        project.triggerUndoStack_->undo();
+        QVERIFY(Named(project, first) != nullptr && Named(project, "Alpha") == nullptr);
+    }
 }
 
 void TriggerModuleTests::DirectoryEditsUndoAndReferences() {

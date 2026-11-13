@@ -1299,8 +1299,15 @@ void TestAtomicRename(const std::filesystem::path& fixture) {
         && !TriggerDocumentEditor::RenameTriggerAtomic(document, *catalog.value, *trigger.value, "Existing").Succeeded(), "declaration conflicts rejected");
     TriggerRecord colliding; colliding.id = 12; colliding.categoryId = 1; colliding.name.text = "全新入口";
     document.triggers.push_back(colliding);
-    Expect(!TriggerDocumentEditor::RenameTriggerAtomic(document, *catalog.value, *trigger.value, "SafeName").Succeeded(),
-        "pre-existing Chinese generated symbol collision cannot steal either reference");
+    {
+        // 旧图里两个触发器脚本名本就相同：改名正是消除冲突的办法；判定不了的引用原样保留并回报，任一方都不能抢走。
+        auto shared = document;
+        const auto renamedShared = TriggerDocumentEditor::RenameTriggerAtomic(shared, *catalog.value, *trigger.value, "SafeName");
+        Expect(renamedShared.Succeeded() && renamedShared.value->changedArgumentIds.empty()
+            && !renamedShared.value->sharedSymbolArgumentIds.empty() && renamedShared.value->sharedSymbolTrigger == "全新入口"
+            && shared.argumentNodes[encodedTrigger].value.text == document.argumentNodes[encodedTrigger].value.text,
+            "pre-existing Chinese generated symbol collision renames without stealing either reference");
+    }
     document.triggers.back().type = 1;
     Expect(TriggerDocumentEditor::RenameTriggerAtomic(document, *catalog.value, *trigger.value, "SafeName").Succeeded()
         && TriggerDocumentEditor::RenameTriggerAtomic(document, *catalog.value, *trigger.value, "战斗入口").Succeeded(),

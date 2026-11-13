@@ -64,6 +64,10 @@ struct AtomicRenameReceipt {
     std::string oldName, newName;
     std::string oldSymbol, newSymbol;
     std::vector<StableId> changedArgumentIds;
+    // 旧名称在脚本里与另一触发器同名（中文/符号只按字节数换算）时，引用该脚本名的参数判定不了指哪一个：
+    // 原样保留（改名后归另一个触发器），列在这里供调用方提醒作者。
+    std::vector<StableId> sharedSymbolArgumentIds;
+    std::string sharedSymbolTrigger;
     std::vector<AtomicRenameCodeAudit> externallyAuditedCode;
     AtomicRenameCodeCoverage codeCoverage = AtomicRenameCodeCoverage::NoOpaqueCode;
     // 只覆盖该 WTG/WCT 文档；外部库、include 和动态字符串分发未经本接口证明。

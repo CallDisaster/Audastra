@@ -347,6 +347,14 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
         ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("引用同步校验失败"))), 10000);
         return;
     }
+    for (const auto& receipt : renamed.value->renames) {
+        if (receipt.sharedSymbolArgumentIds.empty()) continue;
+        // 改名前两个触发器在脚本里同名，这些引用判定不了指哪一个，留给另一个触发器；作者需要时重新选择。
+        project_.AddDiagnostics({Diagnostic{DiagnosticSeverity::Warning, "Trigger.Edit", "TRIGGER_RENAME_SHARED_SYMBOL",
+            "触发器“" + oldName + "”改名前与“" + receipt.sharedSymbolTrigger + "”在脚本中的名称相同（" + receipt.oldSymbol
+                + "），" + std::to_string(receipt.sharedSymbolArgumentIds.size()) + " 处触发器参数判定不了指哪一个，保持原样，现在指向“"
+                + receipt.sharedSymbolTrigger + "”。如果原本指的是“" + name + "”，请重新选择。", std::nullopt}});
+    }
     if (!dynamicBlocks.empty()) {
         std::vector<Diagnostic> warnings;
         for (const auto& row : dynamicBlocks) {

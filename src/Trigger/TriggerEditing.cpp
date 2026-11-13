@@ -1306,16 +1306,24 @@ Result<AtomicRenameReceipt> TriggerDocumentEditor::RenameTriggerAtomic(
     receipt.oldSymbol = TriggerDirectoryEditor::TriggerSymbol(trigger->name);
     receipt.newSymbol = TriggerDirectoryEditor::TriggerSymbol(*renamed.value);
     if (receipt.oldName == receipt.newName) return RenameResult::Success(std::move(receipt));
-    if (RuntimeScriptNameConflict(document, receipt.oldName, triggerId))
-        return RenameResult::Failure("Trigger.Edit", "TRIGGER_RENAME_SOURCE_AMBIGUOUS",
-            "旧触发器名的生成符号与另一触发器冲突，不能判定引用属于哪一项。");
-    if (RuntimeScriptNameConflict(document, receipt.newName, triggerId))
-        return RenameResult::Failure("Trigger.Edit", "TRIGGER_SCRIPT_NAME_DUPLICATE", "新触发器名的生成符号已存在。");
+    if (const auto* clash = RuntimeScriptNameConflict(document, receipt.newName, triggerId))
+        return RenameResult::Failure("Trigger.Edit", "TRIGGER_SCRIPT_NAME_DUPLICATE",
+            "“" + receipt.newName + "”与触发器“" + clash->name.text + "”在脚本中的名称相同（gg_trg_"
+                + TriggerDirectoryEditor::ScriptName(receipt.newName)
+                + "）：中文和符号在脚本名里只按字节数换算。请换一个名称，例如加上数字或英文。");
+    // 旧名称已与另一触发器同名（旧图或其他工具写出）时，改名正是消除冲突的办法，不能拒绝。
+    // 引用该脚本名的参数判定不了指哪一个，原样保留并回报，由调用方提醒作者核对。
+    const auto* shared = RuntimeScriptNameConflict(document, receipt.oldName, triggerId);
+    if (shared) receipt.sharedSymbolTrigger = shared->name.text;
     std::vector<ArgumentNode*> references;
     // 引用改写成 WE 写法；旧版本编辑器写过的形式也一并改正。
     const std::string referenceValue = receipt.newSymbol;
     for (auto& argument : document.argumentNodes) {
         if (argument.type != 1 || !TriggerDirectoryEditor::IsTriggerSymbolOf(argument.value.text, trigger->name)) continue;
+        if (shared) {
+            receipt.sharedSymbolArgumentIds.push_back(argument.id);
+            continue;
+        }
         if (argument.callEca)
             return RenameResult::Failure("Trigger.Edit", "TRIGGER_RENAME_REFERENCE_AMBIGUOUS",
                 "触发器变量参数同时挂接函数，不能当作确定的直接引用改名。");

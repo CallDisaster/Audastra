@@ -874,6 +874,8 @@ QJsonObject GraphReceipt(const TriggerGraphEditReceipt& receipt, McpWorkspace& w
     for (const auto& rename : receipt.renames) {
         renames.append(QJsonObject{{"declaration_id", QString::number(rename.declarationId)},
             {"changed_argument_count", QString::number(rename.changedArgumentIds.size())},
+            {"kept_shared_symbol_argument_count", QString::number(rename.sharedSymbolArgumentIds.size())},
+            {"shared_symbol_trigger", QString::fromStdString(rename.sharedSymbolTrigger)},
             {"references_available_via", "query_trigger_graph"}, {"code_coverage", rename.codeCoverage == AtomicRenameCodeCoverage::NoOpaqueCode
                 ? "NoOpaqueCode" : "CallerAssertedNotRuntimeProven"},
             {"externally_audited_blocks", QString::number(rename.externallyAuditedCode.size())}, {"external_dependencies_verified", false},
