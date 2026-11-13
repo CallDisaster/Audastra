@@ -327,7 +327,10 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
             trigger = FindTrigger(*document, item.triggerId);
             if (trigger == nullptr || trigger->name.text != expected.text) return;
         }
+        // 只提交需要作者决定的块；核查过不含旧名称、也没有按名称动态调用的块由核心改名时自行补齐。
+        // 大图（YDWE 自定义脚本动辄上万块）若逐块提交，请求会超出图编辑预算而改不了名。
         for (auto& row : *review.value) {
+            if (!row.mayReference) continue;
             if (row.evidence == Evidence::NameUse) row.audit.reason = "作者确认改名后自行处理这段代码。";
             if (row.evidence == Evidence::DynamicLookup) {
                 row.audit.reason = "编辑器核查：按名称动态调用，无法静态判断；改名后已在问题列表提醒作者。";

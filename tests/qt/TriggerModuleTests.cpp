@@ -137,6 +137,29 @@ std::vector<std::byte> CodeWct(std::string_view header, int slotCount = 3) {
     return std::move(w.data);
 }
 
+// 一个普通触发器 Target，加一个带 scripts 条自定义脚本动作的触发器（模拟 YDWE 大图里成千上万的代码块）。
+std::vector<std::byte> LargeCodeWtg(int scripts) {
+    Bytes w;
+    for (const char c : std::string_view("WTG!")) w.data.push_back(static_cast<std::byte>(c));
+    w.I32(7);
+    w.I32(1);
+    w.I32(1); w.Text("System"); w.I32(0);
+    w.I32(2);
+    w.I32(0);
+    w.I32(2);
+    w.Text("Target"); w.Text(""); w.I32(0); w.I32(1); w.I32(0); w.I32(0); w.I32(0); w.I32(1);
+    w.I32(1);
+    w.I32(2); w.Text("PlainAction"); w.I32(1); w.I32(0);
+    w.Text("Scripts"); w.Text(""); w.I32(0); w.I32(1); w.I32(0); w.I32(0); w.I32(0); w.I32(1);
+    w.I32(scripts);
+    for (int index = 0; index < scripts; ++index) {
+        w.I32(2); w.Text("CustomScriptCode"); w.I32(1);
+        w.I32(3); w.Text("call DoNothing()"); w.I32(0); w.I32(0);
+        w.I32(0);
+    }
+    return std::move(w.data);
+}
+
 std::vector<std::byte> EmptyCodeWtg() {
     Bytes w;
     for (const char c : std::string_view("WTG!")) w.data.push_back(static_cast<std::byte>(c));
@@ -363,6 +386,7 @@ private slots:
     void MapScriptOpensReadOnlyAndSearches();
     void MissingMapScriptKeepsLogicView();
     void DirectoryEditsUndoAndReferences();
+    void RenameStaysWithinBudgetOnLargeCodeMaps();
     void DirectoryReferenceConfirmationUsesSharedSymbols();
     void StatementsMoveAndFillEmptyBranches();
     void CallbackActionShowsActionBranch();
@@ -1779,6 +1803,41 @@ void TriggerModuleTests::DirectoryReferenceConfirmationUsesSharedSymbols() {
     }
     QCOMPARE(project.triggerUndoStack_->count(), 0);
     QCOMPARE(project.triggerDocument_->argumentNodes.front().value.text, symbol);
+}
+
+// 大图改名：两万块自定义脚本都不含旧名称。逐块提交审计约 5 MiB，会超过图编辑 4 MiB 请求预算而改不了名；
+// 只提交需要作者决定的块，其余由核心补齐。
+void TriggerModuleTests::RenameStaysWithinBudgetOnLargeCodeMaps() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "define.txt", "[TriggerTypes]\nstring=0,1,1,字符串\nscriptcode=1,0,0,脚本代码,string\n");
+    WriteUtf8(ui / "ui" / "base" / "action.txt",
+        "[PlainAction]\ntitle=\"Plain\"\ndescription=\"Plain action\"\n"
+        "[CustomScriptCode]\ntitle=\"Custom script\"\ndescription=\"自定义代码: ${code}\"\n[[.args]]\ntype=scriptcode\n");
+    auto catalog = Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    auto parsed = Trigger::WtgWctCodec{}.Parse(LargeCodeWtg(20000), CodeWct("", 2), *catalog.value);
+    QVERIFY2(parsed.Succeeded(), parsed.diagnostics.empty() ? "" : parsed.diagnostics.front().message.c_str());
+    QtProject::EditorProject project;
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value));
+    const auto blocks = Trigger::TriggerDocumentEditor::ReviewTriggerRenameCode(*project.triggerDocument_, *project.uiCatalog_,
+        Named(project, "Target")->id, "123-45 Test");
+    QVERIFY(blocks.Succeeded());
+    QCOMPARE(blocks.value->size(), std::size_t{20000});
+    Modules::TriggerModule module(project);
+    (void)module.Widget();
+    const auto* target = Named(project, "Target");
+    QVERIFY(target != nullptr);
+    QVERIFY(module.RenameDirectoryItem({false, target->id, target->categoryId}, QStringLiteral("123-45 Test")));
+    QTRY_VERIFY_WITH_TIMEOUT(Named(project, "123-45 Test") != nullptr, 120000);
+    QVERIFY(Named(project, "Target") == nullptr);
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+    project.triggerUndoStack_->undo();
+    QVERIFY(Named(project, "Target") != nullptr && Named(project, "123-45 Test") == nullptr);
 }
 
 void TriggerModuleTests::DirectoryEditsUndoAndReferences() {
