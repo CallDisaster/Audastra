@@ -142,10 +142,9 @@ void ObjectModule::ShowObjectTreeMenu(const QPoint& globalPos) {
     }
     QAction* batch = mapSelection > 1 ? menu.addAction(tr("批量修改 %1 个物体…").arg(mapSelection)) : nullptr;
     menu.addSeparator();
-    QAction* remove = menu.addAction(tr("删除"));
-    remove->setEnabled(false);
-    remove->setToolTip(tr("尚未接入完整引用审计，删除暂不可用。"));
-    menu.setToolTipsVisible(true);
+    QAction* remove = menu.addAction(customSelection.size() > 1
+        ? tr("删除 %1 个自定义物体").arg(customSelection.size()) : tr("删除"));
+    remove->setEnabled(!customSelection.isEmpty());
     const QAction* chosen = menu.exec(globalPos);
     if (chosen == nullptr) {
         return;
@@ -160,6 +159,8 @@ void ObjectModule::ShowObjectTreeMenu(const QPoint& globalPos) {
         EditSelectedStandardObject();
     } else if (chosen == batch) {
         BatchEditObjects();
+    } else if (chosen == remove) {
+        DeleteSelectedObject();
     }
 }
 

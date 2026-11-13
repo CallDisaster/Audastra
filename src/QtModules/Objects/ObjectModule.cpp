@@ -648,10 +648,7 @@ void ObjectModule::ShowObjectListContextMenu(const QPoint& pos) {
     cloneAction->setEnabled(custom);
     menu.addSeparator();
     auto* deleteAction = menu.addAction(tr("删除选中物体"));
-
-    deleteAction->setEnabled(false);
-    deleteAction->setToolTip(tr("尚未接入完整引用审计，删除暂不可用。"));
-    menu.setToolTipsVisible(true);
+    deleteAction->setEnabled(custom);
 
     const QAction* chosen = menu.exec(objectListView_->viewport()->mapToGlobal(pos));
     if (chosen == referencesAction && object != nullptr) {
@@ -665,12 +662,5 @@ void ObjectModule::ShowObjectListContextMenu(const QPoint& pos) {
     }
 }
 
-
-void ObjectModule::DeleteSelectedObject() {
-    // P1：接通真实跨模块引用审计后再恢复删除，不能以手造报告换取删除令牌。
-    project_->AddDiagnostic(tr("警告"), tr("物体数据"), tr("OBJECT_DELETE_AUDIT_UNAVAILABLE"),
-        tr("物体删除尚未接入完整引用审计，当前入口已停用。"));
-    ShowStatus(tr("删除不可用 · 等待引用审计"), 5000);
-}
 
 } // namespace War3Map::Modules

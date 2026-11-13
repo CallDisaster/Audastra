@@ -4634,12 +4634,20 @@ void NativeWorkbenchTests::UnauditedDeleteIsUnavailable() {
     auto* document = window.project_->objectDocuments_[0].get();
     QVERIFY(document);
     const auto before = document->DocumentFingerprint();
+    // 没有触发器与函数目录时引用看不全：作者确认也不删，原因进错误列表。
+    int asked = 0;
+    window.objectsModule_->SetConfirmHandler([&asked](const QString&, const QString&, bool question) {
+        if (question) ++asked;
+        return true;
+    });
+    window.objectsModule_->SelectMapObject(0, QStringLiteral("U001"));
     window.objectsModule_->DeleteSelectedObject();
+    QCOMPARE(asked, 0);
     QVERIFY(document->DocumentFingerprint() == before);
     QCOMPARE(document->Objects().size(), std::size_t{1});
     QVERIFY(!window.project_->objectDirty_[0]);
     QVERIFY(window.project_->diagnosticsModel_->match(window.project_->diagnosticsModel_->index(0, 2), Qt::DisplayRole,
-        QStringLiteral("OBJECT_DELETE_AUDIT_UNAVAILABLE"), 1, Qt::MatchExactly).size() == 1);
+        QStringLiteral("OBJECT_DELETE_COVERAGE_INCOMPLETE"), 1, Qt::MatchExactly).size() == 1);
 }
 
 void NativeWorkbenchTests::ChineseFieldsRawToggleAndSearchPreserveDocument() {

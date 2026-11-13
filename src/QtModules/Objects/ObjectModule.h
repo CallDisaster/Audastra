@@ -11,6 +11,7 @@
 #include <QVector>
 
 #include <array>
+#include <functional>
 #include <vector>
 
 class QCheckBox;
@@ -75,6 +76,9 @@ public:
     void RefreshIcons();
     void SetSearchText(const QString& text);
     void SetResourcePickerFactory(ObjectResourcePickerFactory factory);
+    // 删除确认框可替换（测试与自动化）：question 为 true 时返回作者是否确认；false 时只告知被拒绝的原因。
+    using ConfirmHandler = std::function<bool(const QString& title, const QString& body, bool question)>;
+    void SetConfirmHandler(ConfirmHandler handler) { confirm_ = std::move(handler); }
     [[nodiscard]] bool HasLoadedContent() const;
     [[nodiscard]] int CurrentObjectType() const noexcept { return currentObjectType_; }
     [[nodiscard]] bool EditingMapObjects() const;
@@ -138,6 +142,7 @@ private:
 
     // 字段沿用旧主窗口命名，便于既有回归按原语义检查。
     QtProject::EditorProject* project_ = nullptr;
+    ConfirmHandler confirm_;
     Shell::ModuleHost* host_ = nullptr;
     QPointer<QWidget> page_;
     QListWidget* objectCategories_ = nullptr;

@@ -86,4 +86,9 @@ struct ObjectCommandPlan {
 [[nodiscard]] Result<ObjectCommandPlan> PlanObjectDeletion(
     const ObjectCommandContext& context, const std::string& id,
     const ObjectDeletionAssessment& assessment);
+// 作者看过同一份审计后确认删除自定义物体。确定的引用、读不全的来源、原版物体仍拒绝；
+// 只有“可能引用”和静态检查覆盖不到的部分由作者确认放行（authorConfirmed 必须来自作者本人的操作）。
+[[nodiscard]] Result<ObjectCommandPlan> PlanConfirmedObjectDeletion(
+    const ObjectCommandContext& context, const std::string& id,
+    const ObjectDeletionAssessment& assessment, bool authorConfirmed);
 } // namespace War3Map::Services

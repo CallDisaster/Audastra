@@ -4,6 +4,7 @@ qt_add_library(War3MapQtModuleObjects STATIC
     ObjectNavigation.cpp
     ObjectFieldsView.cpp
     ObjectCreation.cpp
+    ObjectDeletion.cpp
     ObjectBatchActions.cpp
     ObjectTreeActions.cpp
     ObjectClassification.cpp ObjectClassification.h

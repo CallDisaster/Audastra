@@ -649,7 +649,10 @@ void ManagerModule::ShowDetail() {
                 reasons << tr("GUI 中有 %1 处变量、函数或数组取值需要分析")
                     .arg(audit.dynamicValueCount);
             if (!warning.isEmpty()) warning += QStringLiteral("\n");
-            warning += tr("删除暂不可用：%1").arg(reasons.isEmpty() ? tr("引用审计尚未完成") : reasons.first());
+            // 物编里删除：确定的引用拦下；其余不确定项列给作者确认（与删除对话框同一份审计）。
+            warning += audit.objectReferences.definite.empty()
+                ? tr("删除时需确认：%1").arg(reasons.isEmpty() ? tr("引用审计尚未完成") : reasons.first())
+                : tr("还在被使用，不能删除");
             detailWarning_->setToolTip(reasons.join(QStringLiteral("\n")));
         }
     } else detailWarning_->setToolTip({});

@@ -528,7 +528,7 @@ void ManagerModuleTests::PagesFiltersAndDetail() {
     QVERIFY(module.Reveal({"manager", "object", "unit:h000", {}}));
     auto* deletionWarning = page->findChild<QLabel*>("managerWarning");
     QVERIFY(deletionWarning != nullptr);
-    QVERIFY(deletionWarning->text().contains(QStringLiteral("删除暂不可用")));
+    QVERIFY(deletionWarning->text().contains(QStringLiteral("删除时需确认")));
     QVERIFY(deletionWarning->toolTip().contains(QStringLiteral("JASS")));
     filter->setCurrentIndex(filter->findData("modified"));
     QCOMPARE(Column(table, 1), QStringList{"hfoo"});

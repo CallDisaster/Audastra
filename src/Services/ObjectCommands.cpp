@@ -492,4 +492,56 @@ Result<ObjectCommandPlan> PlanObjectDeletion(const ObjectCommandContext& context
         "删除未执行：引用审计尚未证明脚本和动态引用全覆盖；请查看返回的引用位置与覆盖范围。");
 }
 
+namespace {
+// 作者看过审计后可以自行判断的“不确定”项：只是可能引用，或静态检查覆盖不到。
+// 其余原因（目标不唯一、原版对象、来源未载入或读坏）不交给作者确认，直接拒绝；新增原因默认也拒绝。
+bool AuthorReviewable(std::string_view code) {
+    static constexpr std::string_view kReviewable[] = {
+        "possible-object-reference", "trigger-source-unverified", "wct-custom-code", "trigger-custom-text",
+        "dynamic-gui-value", "untyped-gui-reference", "possible-script-reference", "script-hints-truncated",
+        "dynamic-values-truncated", "script-source-unverified", "source-incomplete"};
+    return std::find(std::begin(kReviewable), std::end(kReviewable), code) != std::end(kReviewable);
+}
+} // namespace
+
+Result<ObjectCommandPlan> PlanConfirmedObjectDeletion(const ObjectCommandContext& context, const std::string& id,
+    const ObjectDeletionAssessment& assessment, bool authorConfirmed) {
+    const ObjectKey key{context.type, id};
+    const auto* record = context.document ? context.document->FindObject(key) : nullptr;
+    if (!record) return Fail<ObjectCommandPlan>("OBJECT_NOT_IN_MAP", "当前地图中没有自定义物体 " + id + "。");
+    if (!record->parentRawcode)
+        return Fail<ObjectCommandPlan>("OBJECT_DELETE_ORIGINAL", "原版物体不能删除，只能清除地图里对它的修改。");
+    if (assessment.subject != key) return Fail<ObjectCommandPlan>("OBJECT_DELETE_AUDIT_MISMATCH", "引用审计不属于当前对象。");
+    // 确定的引用（物编字段、放置实例等已知类型）不交给作者跳过：删了会留下坏引用。
+    if (!assessment.objectReferences.definite.empty())
+        return Fail<ObjectCommandPlan>("OBJECT_DELETE_REFERENCED",
+            id + " 仍被使用：" + assessment.objectReferences.definite.front().location + "。先改掉这些引用再删除。");
+    // 原图没有的成员（Missing）不含引用；读到一半、读坏或来源重复的成员看不全，不能删。
+    for (const auto& coverage : assessment.coverage) {
+        if (coverage.state == ReferenceInputState::Ready || coverage.state == ReferenceInputState::Missing) continue;
+        return Fail<ObjectCommandPlan>("OBJECT_DELETE_COVERAGE_INCOMPLETE",
+            coverage.memberName + " 未能完整读取，不能确认是否用到 " + id + "。");
+    }
+    for (const auto& reason : assessment.reasons)
+        if (!AuthorReviewable(reason.code))
+            return Fail<ObjectCommandPlan>("OBJECT_DELETE_COVERAGE_INCOMPLETE", reason.message);
+    // 能列出的不确定位置随报告一并记录，均不阻断；放行由作者显式确认决定。
+    ReferenceAuditReport report;
+    report.subject = key;
+    report.documentFingerprint = context.document->DocumentFingerprint();
+    report.inspectedSources = RequiredReferenceSources();
+    for (const auto& possible : assessment.objectReferences.possible)
+        report.references.push_back({ReferenceSource::ObjectData, possible.location, "类型不确定的同名编号", false});
+    for (const auto& usage : assessment.untypedGuiReferences)
+        report.references.push_back({ReferenceSource::Trigger, usage.owner, "GUI 参数里的同名编号", false});
+    for (const auto& hint : assessment.scriptHints)
+        report.references.push_back({ReferenceSource::Jass, hint.source + ":" + std::to_string(hint.line), "代码里的同名文字", false});
+    auto token = ReferenceAuditAuthority::IssueDeletionToken(report, authorConfirmed);
+    if (!token.Succeeded() || !token.value) return CopyFailure<ObjectCommandPlan>(token);
+    ObjectCommandPlan plan{key, *context.document, *context.document, {}, "删除物体 " + id};
+    if (auto removed = plan.after.DeleteObject(key, *token.value); !removed.Succeeded())
+        return CopyFailure<ObjectCommandPlan>(removed);
+    return Seal(std::move(plan));
+}
+
 } // namespace War3Map::Services

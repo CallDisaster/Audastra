@@ -15,6 +15,8 @@
 #include "War3MapCore/MapDocument.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/Game/GameDataSource.h"
+#include "War3MapCore/Trigger/TriggerDocument.h"
+#include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <QStandardItemModel>
 #include <QApplication>
@@ -39,6 +41,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 
@@ -118,6 +121,7 @@ private slots:
     void MapFieldNamesUseSharedStringResolutionWithoutWritingRawValues();
     void RealAudastraBatchNamesReadOnlyProjection();
     void TreeMultiSelectClonesAsOneUndoAndPrefillsBatch();
+    void DeleteCustomObjectsAfterConfirmation();
 };
 
 void ObjectDirectEditTests::RealAudastraBatchNamesReadOnlyProjection() {
@@ -539,6 +543,86 @@ void ObjectDirectEditTests::TreeMultiSelectClonesAsOneUndoAndPrefillsBatch() {
     QVERIFY(project.objectDocuments_[0]->FindObject({ObjectType::Unit, "h001"}));
     project.objectUndoStacks_[0]->redo();
     QCOMPARE(project.objectDocuments_[0]->Objects().size(), std::size_t{4});
+}
+
+// 删除自定义物体：确定的引用（h003 以 h001 为父物体）作者确认也不删；只有“可能引用”
+// （触发器参数、全局代码里出现同一编号）列给作者确认，确认后一条撤销。
+void ObjectDirectEditTests::DeleteCustomObjectsAfterConfirmation() {
+    War3Map::QtProject::EditorProject project;
+    QVERIFY(InstallSyntheticDefinitions(project));
+    auto parsed = LniObjectCodec(ObjectType::Unit).Parse(Bytes(
+        "[h001]\n_parent=\"hfoo\"\n[h002]\n_parent=\"hrif\"\n[h003]\n_parent=\"h001\"\n"));
+    QVERIFY(parsed.Succeeded());
+    project.objectDocuments_[0].reset(dynamic_cast<LniObjectDocument*>(parsed.document.release()));
+    QVERIFY(project.objectDocuments_[0]);
+    project.objectUndoStacks_[0] = new QUndoStack(&project);
+    project.mapDocument_ = std::make_unique<War3Map::MapDocument>(War3Map::MapDocument::FromMembers({}));
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    std::filesystem::create_directories(ui / "ui" / "base");
+    std::ofstream(ui / "ui" / "config", std::ios::binary) << "base\n";
+    std::ofstream(ui / "ui" / "base" / "action.txt", std::ios::binary)
+        << "[CreateUnit]\ntitle=\"Create\"\ndescription=\"Create ${unit}\"\n[[.args]]\ntype=unitcode\n";
+    auto catalog = War3Map::Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    project.uiCatalog_ = std::make_unique<War3Map::Trigger::UiCatalog>(std::move(*catalog.value));
+    auto triggers = std::make_unique<War3Map::Trigger::TriggerDocument>();
+    War3Map::Trigger::TriggerRecord spawn;
+    spawn.id = 1; spawn.name.text = "Spawn"; spawn.categoryId = 1; spawn.ecas = {0};
+    triggers->triggers.push_back(spawn);
+    War3Map::Trigger::EcaNode create;
+    create.id = 1; create.sourceTriggerId = 1; create.type = 2; create.name.text = "CreateUnit"; create.arguments = {0};
+    triggers->ecaNodes.push_back(create);
+    War3Map::Trigger::ArgumentNode code;
+    code.id = 1; code.type = 3; code.value.text = "h002";
+    triggers->argumentNodes.push_back(code);
+    triggers->wct.customCode.text = "// spawn h002\n";
+    project.triggerDocument_ = std::move(triggers);
+
+    War3Map::Modules::ObjectModule module(project);
+    (void)module.Widget();
+    module.objectFieldModel_->SetContext(project.standardCatalog_.get(), project.objectFieldSchema_.get());
+    module.UpdateObjectReferenceEntries();
+    module.ShowObjectType(0);
+    QStringList bodies;
+    bool answer = false;
+    int questions = 0;
+    module.SetConfirmHandler([&](const QString&, const QString& body, bool question) {
+        bodies << body;
+        if (question) ++questions;
+        return answer;
+    });
+    auto* tree = module.objectTree_;
+    QVERIFY(tree);
+    const auto fingerprint = project.objectDocuments_[0]->DocumentFingerprint();
+
+    tree->SelectObjects({{QStringLiteral("h001"), true}}, std::pair{QStringLiteral("h001"), true});
+    answer = true;
+    module.DeleteSelectedObject();
+    QCOMPARE(questions, 0);
+    QVERIFY2(!bodies.isEmpty() && bodies.back().contains(QStringLiteral("h003")) && bodies.back().contains(QStringLiteral("父物体")),
+        qPrintable(bodies.join(QLatin1Char('\n'))));
+    QCOMPARE(project.objectDocuments_[0]->DocumentFingerprint(), fingerprint);
+    QCOMPARE(project.objectUndoStacks_[0]->count(), 0);
+
+    tree->SelectObjects({{QStringLiteral("h002"), true}}, std::pair{QStringLiteral("h002"), true});
+    answer = false;
+    module.DeleteSelectedObject();
+    QCOMPARE(questions, 1);
+    QVERIFY2(bodies.back().contains(QStringLiteral("Spawn")) && bodies.back().contains(QStringLiteral("全局自定义代码")),
+        qPrintable(bodies.back()));
+    QCOMPARE(project.objectDocuments_[0]->DocumentFingerprint(), fingerprint);
+
+    answer = true;
+    module.DeleteSelectedObject();
+    QCOMPARE(questions, 2);
+    QVERIFY(!project.objectDocuments_[0]->FindObject({ObjectType::Unit, "h002"}));
+    QVERIFY(project.objectDocuments_[0]->FindObject({ObjectType::Unit, "h001"}));
+    QCOMPARE(project.objectUndoStacks_[0]->count(), 1);
+    project.objectUndoStacks_[0]->undo();
+    QVERIFY(project.objectDocuments_[0]->FindObject({ObjectType::Unit, "h002"}));
+    QCOMPARE(project.objectDocuments_[0]->DocumentFingerprint(), fingerprint);
 }
 
 QTEST_MAIN(ObjectDirectEditTests)
