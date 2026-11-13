@@ -9,6 +9,7 @@
 
 #include "War3MapCore/Image/BlpImage.h"
 #include "War3MapCore/Lua/LuaSyntax.h"
+#include "War3MapCore/Lua/YdweRawcode.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/MapData/TerrainSavePlan.h"
 #include "War3MapCore/MapArchiveSession.h"
@@ -255,6 +256,7 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
     }
     // 作者手写的 Lua 文件按普通导入资源写入地图（YDWE 约定：由 Cheat("exec-lua: ...") 加载）；
     // 写入前用内置 Lua 5.3（含 YDWE |xxxx| 四字码）检查语法，有错误时不保存并指出文件与行。
+    std::vector<std::pair<std::string, std::string>> luaTexts;
     for (const auto& pending : pendingImports_) {
         const auto path = CanonicalMember(pending.archivePath.toStdString());
         if (!(pending.runtimeLuaDraft || path.ends_with(".lua"))) continue;
@@ -269,11 +271,43 @@ std::unique_ptr<MapSaveJob> EditorProject::PrepareMapSaveImpl(
             text.assign(bytes.constData(), static_cast<std::size_t>(bytes.size()));
         }
         const auto checked = Lua::CheckSyntax(text, "@" + pending.archivePath.toStdString());
-        if (checked.Succeeded()) continue;
-        const auto& first = checked.diagnostics.empty() ? Lua::SyntaxDiagnostic{"LUA_SYNTAX", "语法检查未完成。", 0}
-            : checked.diagnostics.front();
-        return fail(tr("MAP_LUA_SYNTAX"), tr("Lua 文件 %1 第 %2 行有语法错误，地图未保存：%3")
-            .arg(pending.archivePath).arg(first.line).arg(QString::fromStdString(first.message)));
+        if (!checked.Succeeded()) {
+            const auto& first = checked.diagnostics.empty() ? Lua::SyntaxDiagnostic{"LUA_SYNTAX", "语法检查未完成。", 0}
+                : checked.diagnostics.front();
+            return fail(tr("MAP_LUA_SYNTAX"), tr("Lua 文件 %1 第 %2 行有语法错误，地图未保存：%3")
+                .arg(pending.archivePath).arg(first.line).arg(QString::fromStdString(first.message)));
+        }
+        luaTexts.emplace_back(path, std::move(text));
+    }
+    // YDWE 和对战平台的 Lua 引擎运行时不认 |xxxx| 四字码（11-12 测试机实测：整份文件不执行，退出还会崩）。
+    // 测试副本会自动换成整数，但保存进地图的仍是作者原文（改写会让地图与 Lua 文件夹不一致），
+    // 所以保存时逐个文件提醒，并给出可以直接替换的整数。自带运行时的 Lua 地图档案在加载时转换，不提醒。
+    if (!luaMapTarget_) {
+        std::set<std::string> pendingPaths;
+        for (const auto& entry : luaTexts) pendingPaths.insert(entry.first);
+        if (archiveSession_) {
+            if (auto files = Services::CaptureMapLuaFiles(*archiveSession_); files.Succeeded()) {
+                for (const auto& file : *files.value) {
+                    if (!file.bytes || pendingPaths.contains(CanonicalMember(file.path))) continue;
+                    luaTexts.emplace_back(file.path, std::string(reinterpret_cast<const char*>(file.bytes->data()), file.bytes->size()));
+                }
+            }
+        }
+        std::vector<Diagnostic> rawcodeWarnings;
+        for (const auto& [path, text] : luaTexts) {
+            std::size_t total = 0;
+            const auto uses = Lua::FindYdweRawcodes(text, 3, &total);
+            if (uses.empty()) continue;
+            std::string examples;
+            for (const auto& use : uses)
+                examples += (examples.empty() ? "" : "；") + std::string("第 ") + std::to_string(use.line) + " 行 |" + use.code
+                    + "| 改成 " + std::to_string(use.value);
+            rawcodeWarnings.push_back({DiagnosticSeverity::Warning, "Lua.Rawcode", "LUA_YDWE_RAWCODE_RUNTIME",
+                "Lua 文件 " + path + " 有 " + std::to_string(total) + " 处 |xxxx| 四字码。YDWE 和对战平台的 Lua 引擎不认这种写法，"
+                "整份文件都不会执行；Audastra 测试时会自动换成整数，但保存进地图的仍是原文。请改成整数：" + examples
+                + (total > uses.size() ? "……" : "。"), std::nullopt});
+        }
+        ReplaceDiagnostics(QStringLiteral("Lua.Rawcode"), std::move(rawcodeWarnings));
     }
     if (sourceArchivePath_.empty()) {
         return fail(tr("REPACK_NO_SOURCE"), tr("当前工程没有源地图归档。"));

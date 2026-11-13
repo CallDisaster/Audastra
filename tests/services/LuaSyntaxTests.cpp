@@ -35,6 +35,13 @@ int main() {
         Require(rawcodes && *rawcodes == "local id = 1095264354\n-- |Abcd| comment\nlocal s = '|Abcd|' .. [[|Abcd|]]\n"
             "local or1 = a|b|c\nreturn id ~= 1751543663", "YDWE rawcode rewrite outside strings and comments only");
         Require(!TranslateYdweRawcodes("local x = a | b\nlocal y = '|Abcd|'"), "no rawcode leaves the source untouched");
+        // 保存提醒用的位置：只数代码里的四字码，行号从 1 起，超过上限只计总数。
+        std::size_t rawcodeTotal = 0;
+        const auto uses = FindYdweRawcodes(
+            "local id = |AHhb|\n-- |Abcd|\nlocal s = '|Abcd|'\nlocal a, b = |hfoo|, |Hpal|", 2, &rawcodeTotal);
+        Require(rawcodeTotal == 3 && uses.size() == 2 && uses[0].line == 1 && uses[0].code == "AHhb"
+            && uses[0].value == 1095264354u && uses[1].line == 4 && uses[1].code == "hfoo" && uses[1].value == 1751543663u,
+            "rawcode positions skip strings/comments and report line, code and integer");
         Require(CheckSyntax("local id = |AHhb|\nreturn id == 1095264354", "ydwe-rawcode.lua").Succeeded(), "checker accepts YDWE rawcode");
         const auto rawcodeError = CheckSyntax("local id = |AHhb|\nlocal broken = )", "ydwe-error.lua");
         Require(!rawcodeError.Succeeded() && !rawcodeError.diagnostics.empty() && rawcodeError.diagnostics.front().line == 2,
