@@ -153,8 +153,14 @@ Status Conflicts(const MapSettings& settings) {
 
 Status MapCustomSettingsEditing::WriteQualification(const MapDocument& document, bool allowOmittedTables) {
     const auto& member = document.Member(MapDataKind::Settings);
-    if (member.state != MapDataState::Ready || member.sources.size() != 1 || document.LniSettings() || !document.Settings()
-        || !(document.Settings()->FullyParsed() || (allowOmittedTables && document.Settings()->OmitsCustomTables())))
+    // 省略了自定义表的 W3I 读作“部分”，唯一原因就是那条省略提示；其余原因一律仍只读。
+    const bool omitted = allowOmittedTables && document.Settings() && document.Settings()->OmitsCustomTables()
+        && member.state == MapDataState::Partial
+        && std::all_of(member.diagnostics.begin(), member.diagnostics.end(), [](const Diagnostic& diagnostic) {
+            return diagnostic.severity != DiagnosticSeverity::Error && diagnostic.code == "W3I_CUSTOM_TABLES_OMITTED";
+        });
+    if ((member.state != MapDataState::Ready && !omitted) || member.sources.size() != 1 || document.LniSettings()
+        || !document.Settings() || !(document.Settings()->FullyParsed() || omitted))
         return Bad("SETTINGS_CUSTOM_SOURCE_READ_ONLY", "自定义表修改需要唯一、完整且无未知尾的原生 W3I；缺席或 FF 省略不能当成空表。");
     if (document.Settings()->SourceFormatVersion() != 25 || document.Settings()->formatVersion != 25)
         return Bad("SETTINGS_CUSTOM_VERSION_READ_ONLY", "本轮只开放来源为原生 W3I v25 的修改，其它版本仅查询。");
