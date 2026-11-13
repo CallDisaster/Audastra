@@ -95,11 +95,16 @@ Json Key(Section section, const MapCustomSettingsValue& record, int version) {
 Result<MapCustomSettingsEditRequest> ParseMapCustomSettingsEdit(std::string_view text) {
     using R = Result<MapCustomSettingsEditRequest>;
     try {
-        const auto root = Parse(text); Shape(root, {"expected_member_sha256", "operations"});
+        const auto root = Parse(text); Shape(root, {"expected_member_sha256", "operations"}, {"create_omitted_tables"});
         MapCustomSettingsEditRequest result; result.expectedMemberSha256 = String(root.at("expected_member_sha256"));
         if (!Sha(result.expectedMemberSha256)) Invalid("expected_member_sha256 须为小写 SHA-256。");
+        if (root.contains("create_omitted_tables")) {
+            if (!root.at("create_omitted_tables").is_boolean()) Invalid("create_omitted_tables 须为布尔值。");
+            result.createOmittedTables = root.at("create_omitted_tables").get<bool>();
+        }
         const auto& operations = root.at("operations");
-        if (!operations.is_array() || operations.empty() || operations.size() > 128) Invalid("operations 须为 1 到 128 项。");
+        if (!operations.is_array() || (operations.empty() && !result.createOmittedTables) || operations.size() > 128)
+            Invalid("operations 须为 1 到 128 项（create_omitted_tables 为 true 时可以为空）。");
         for (const auto& operation : operations) {
             Shape(operation, {"section", "op"}, {"expected_count", "index", "number", "expected_row_key", "expected_table_key", "value"});
             MapCustomSettingsCommand command; command.section = SectionOf(String(operation.at("section")));
@@ -166,7 +171,8 @@ Result<std::string> QueryMapCustomSettings(const MapDocument& document, const Ma
         const auto& member = document.Member(MapDataKind::Settings);
         constexpr std::string_view states[]{"missing", "ready", "partial", "invalid", "ambiguous", "unreadable"};
         Json result{{"settings_binding", settingsBinding}, {"member_state", states[static_cast<unsigned>(member.state)]}, {"diagnostics", Diagnostics(member.diagnostics)},
-            {"native_v25_writable", allowed.Succeeded()}, {"write_blockers", Diagnostics(allowed.diagnostics)}, {"random_commit_supported", Script::RandomMapInitializationAvailable()}};
+            {"native_v25_writable", allowed.Succeeded()}, {"write_blockers", Diagnostics(allowed.diagnostics)}, {"random_commit_supported", Script::RandomMapInitializationAvailable()},
+            {"can_create_omitted_tables", !allowed.Succeeded() && MapCustomSettingsEditing::WriteQualification(document, true).Succeeded()}};
         if (!document.Settings()) { result["custom_present"] = nullptr; return R::Success(result.dump()); }
         const auto& settings = *document.Settings(); result["version"] = settings.formatVersion; result["custom_present"] = settings.custom.has_value();
         result["unknown_tail_bytes"] = settings.UnknownTail().size();

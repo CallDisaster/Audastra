@@ -648,38 +648,55 @@ void MapTechPage::DeleteRandom() {
     problem_->setVisible(!problem.isEmpty());
 }
 
+namespace {
+// 地图设置页的科技/随机表提交：准备与校验同步完成，发布推迟到下一轮事件循环。
+// createTables 时先把 0xff 省略的自定义表换成四张空表（作者点了“建立自定义表”）。
+QString SubmitCustomSettings(const QPointer<QtProject::EditorProject>& guard, const QPointer<QObject>& owner,
+    std::vector<Services::MapCustomSettingsCommand> commands, bool createTables, const QString& label,
+    const std::function<QString()>& blocked, const std::function<void(const QString&)>& report) {
+    if (!guard || !owner) return QObject::tr("地图已关闭。");
+    if (commands.empty() && !createTables) return {};
+    if (blocked) if (const auto reason = blocked(); !reason.isEmpty()) return reason;
+    auto* session = guard->MapEdits();
+    if (!session) return QObject::tr("当前没有打开地图。");
+    const auto current = std::make_shared<const MapDocument>(session->Snapshot());
+    const auto identity = Services::MapCustomSettingsEditing::MemberIdentity(*current);
+    if (!identity.Succeeded()) return FirstProblem(identity.diagnostics);
+    auto validation = QtProject::CaptureProjectMapCustomSettingsValidation(*guard);
+    if (!validation.Succeeded()) return FirstProblem(validation.diagnostics);
+    Services::MapCustomSettingsEditRequest request;
+    request.expectedMemberSha256 = *identity.value;
+    request.operations = std::move(commands);
+    request.createOmittedTables = createTables;
+    auto plan = Services::MapCustomSettingsEditing::Prepare(current, request, *validation.value);
+    if (!plan.Succeeded()) return FirstProblem(plan.diagnostics);
+    if (!plan.value->HasChanges()) return {};
+    if (!plan.value->CanCommit()) return QObject::tr("当前构建不支持随机单位/物品表初始化，此修改暂不能提交。");
+    auto prepared = std::make_shared<const Services::PreparedMapCustomSettingsEdit>(std::move(*plan.value));
+    auto checks = std::make_shared<const Services::MapCustomSettingsValidation>(std::move(*validation.value));
+    // 发布会发出地图变化并重建设置页（含发起本次提交的表单与按钮），推迟到当前调用栈结束后。
+    QTimer::singleShot(0, owner.data(), [guard, prepared, checks, label, report] {
+        if (!guard) return;
+        const auto applied = QtProject::ApplyProjectMapCustomSettings(*guard, *prepared, *checks, label, "地图设置页修改科技设置");
+        if (!applied.Succeeded() && report) report(FirstProblem(applied.diagnostics));
+    });
+    return {};
+}
+} // namespace
+
 MapTechPage::Commit MapTechPage::ProjectCommit(QtProject::EditorProject& project, QObject* context,
     std::function<QString()> blocked, std::function<void(const QString&)> report) {
     QPointer<QtProject::EditorProject> guard(&project);
     QPointer<QObject> owner(context);
     return [guard, owner, blocked, report](std::vector<Services::MapCustomSettingsCommand> commands, const QString& label) -> QString {
-        if (!guard || !owner) return QObject::tr("地图已关闭。");
-        if (commands.empty()) return {};
-        if (blocked) if (const auto reason = blocked(); !reason.isEmpty()) return reason;
-        auto* session = guard->MapEdits();
-        if (!session) return QObject::tr("当前没有打开地图。");
-        const auto current = std::make_shared<const MapDocument>(session->Snapshot());
-        const auto identity = Services::MapCustomSettingsEditing::MemberIdentity(*current);
-        if (!identity.Succeeded()) return FirstProblem(identity.diagnostics);
-        auto validation = QtProject::CaptureProjectMapCustomSettingsValidation(*guard);
-        if (!validation.Succeeded()) return FirstProblem(validation.diagnostics);
-        Services::MapCustomSettingsEditRequest request;
-        request.expectedMemberSha256 = *identity.value;
-        request.operations = std::move(commands);
-        auto plan = Services::MapCustomSettingsEditing::Prepare(current, request, *validation.value);
-        if (!plan.Succeeded()) return FirstProblem(plan.diagnostics);
-        if (!plan.value->HasChanges()) return {};
-        if (!plan.value->CanCommit()) return QObject::tr("当前构建不支持随机单位/物品表初始化，此修改暂不能提交。");
-        auto prepared = std::make_shared<const Services::PreparedMapCustomSettingsEdit>(std::move(*plan.value));
-        auto checks = std::make_shared<const Services::MapCustomSettingsValidation>(std::move(*validation.value));
-        // 发布会发出地图变化并重建设置页（含发起本次提交的表单与按钮），推迟到当前调用栈结束后。
-        QTimer::singleShot(0, owner.data(), [guard, prepared, checks, label, report] {
-            if (!guard) return;
-            const auto applied = QtProject::ApplyProjectMapCustomSettings(*guard, *prepared, *checks, label, "地图设置页修改科技设置");
-            if (!applied.Succeeded() && report) report(FirstProblem(applied.diagnostics));
-        });
-        return {};
+        return SubmitCustomSettings(guard, owner, std::move(commands), false, label, blocked, report);
     };
+}
+
+QString MapTechPage::CreateOmittedTables(QtProject::EditorProject& project, QObject* context,
+    std::function<QString()> blocked, std::function<void(const QString&)> report) {
+    return SubmitCustomSettings(QPointer<QtProject::EditorProject>(&project), QPointer<QObject>(context), {}, true,
+        QObject::tr("建立自定义表"), blocked, report);
 }
 
 } // namespace War3Map::Modules

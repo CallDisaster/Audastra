@@ -274,6 +274,20 @@ void TestUnknownTailAndOmittedTables() {
     Require(omitted.Succeeded() && !omitted.value->FullyParsed() && !omitted.value->custom.has_value()
         && HasCode(omitted, "W3I_CUSTOM_TABLES_OMITTED"), "omitted custom tables must not turn into empty tables");
     Require(omitted.value->OriginalBytes() == fixture.bytes, "omitted tables source must remain byte-identical");
+    // 作者明确建立自定义表：省略标记换成四张空表，写出后完整可读；已有表或未知尾不受影响。
+    auto adopted = *omitted.value;
+    Require(adopted.OmitsCustomTables() && adopted.AdoptEmptyCustomTables() && adopted.FullyParsed()
+        && adopted.custom->upgrades.empty() && adopted.custom->randomItems.empty(), "omitted tables become explicit empty tables");
+    const auto written = adopted.Serialize();
+    auto expected = FullMapSettingsV25();
+    expected.bytes.resize(expected.offsets.at("upgrades"));
+    for (int table = 0; table < 4; ++table) expected.Int(0);
+    Require(written.Succeeded() && *written.value == expected.bytes, "adopted empty tables serialize as four zero counts");
+    const auto reread = MapSettings::Parse(*written.value);
+    Require(reread.Succeeded() && reread.value->FullyParsed(), "adopted tables reparse fully");
+    auto present = *parsed.value;
+    Require(!present.OmitsCustomTables() && !present.AdoptEmptyCustomTables() && present.UnknownTail() == tail,
+        "only the single 0xff omission marker can be adopted");
 }
 
 void TestEmptyTablesAndCount255() {

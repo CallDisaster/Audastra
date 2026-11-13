@@ -673,9 +673,23 @@ void MapSettingsModule::BuildForms() {
             tech->parentWidget());
         tech->addRow(techPage_);
     } else {
-        auto* techStatus = new QLabel(tr("原地图未提供自定义表 · 只读"), page_);
+        // 原图用 0xff 省略了这几张表：不能当成空表静默写出，作者点“建立自定义表”才换成四张空表。
+        const auto* session = project_.MapEdits();
+        const bool creatable = session && Services::MapCustomSettingsEditing::WriteQualification(session->Snapshot(), true).Succeeded();
+        auto* techStatus = new QLabel(creatable ? tr("原地图没有自定义表") : tr("原地图未提供自定义表 · 只读"), page_);
         techStatus->setWordWrap(true);
         tech->addRow(techStatus);
+        if (creatable) {
+            auto* create = new QPushButton(tr("建立自定义表"), page_);
+            create->setObjectName(QStringLiteral("mapCreateCustomTables"));
+            connect(create, &QPushButton::clicked, this, [this] {
+                const auto problem = MapTechPage::CreateOmittedTables(project_, this,
+                    [this] { return pending_ ? tr("先应用或放弃上方未应用的地图设置修改。") : QString{}; },
+                    [this](const QString& reason) { SetMessage(reason, true); });
+                if (!problem.isEmpty()) SetMessage(problem, true);
+            });
+            tech->addRow(create);
+        }
     }
 
     UpdateLabels();

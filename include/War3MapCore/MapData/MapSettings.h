@@ -164,6 +164,17 @@ struct MapSettings {
     [[nodiscard]] const std::vector<std::byte>& OriginalBytes() const noexcept { return originalBytes_; }
     [[nodiscard]] const std::vector<std::byte>& UnknownTail() const noexcept { return unknownTail_; }
     [[nodiscard]] bool FullyParsed() const noexcept { return custom.has_value() && unknownTail_.empty(); }
+    // 自定义表正好由单字节 0xff 省略（其余均已解析）。
+    [[nodiscard]] bool OmitsCustomTables() const noexcept {
+        return !custom && unknownTail_.size() == 1 && unknownTail_.front() == std::byte{0xff};
+    }
+    // 作者明确要建立自定义表时，把省略标记换成四张空表；不是这种情况时不改并返回 false。
+    [[nodiscard]] bool AdoptEmptyCustomTables() {
+        if (!OmitsCustomTables()) return false;
+        custom.emplace();
+        unknownTail_.clear();
+        return true;
+    }
     [[nodiscard]] const MapSettingsLayout* Layout() const noexcept { return FindMapSettingsLayout(formatVersion); }
     [[nodiscard]] std::optional<std::int32_t> SourceFormatVersion() const noexcept;
     // 仅格式资格，不证明初始化引用、脚本或完整地图可用。

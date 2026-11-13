@@ -151,10 +151,10 @@ Status Conflicts(const MapSettings& settings) {
 }
 } // namespace
 
-Status MapCustomSettingsEditing::WriteQualification(const MapDocument& document) {
+Status MapCustomSettingsEditing::WriteQualification(const MapDocument& document, bool allowOmittedTables) {
     const auto& member = document.Member(MapDataKind::Settings);
-    if (member.state != MapDataState::Ready || member.sources.size() != 1 || document.LniSettings()
-        || !document.Settings() || !document.Settings()->FullyParsed())
+    if (member.state != MapDataState::Ready || member.sources.size() != 1 || document.LniSettings() || !document.Settings()
+        || !(document.Settings()->FullyParsed() || (allowOmittedTables && document.Settings()->OmitsCustomTables())))
         return Bad("SETTINGS_CUSTOM_SOURCE_READ_ONLY", "自定义表修改需要唯一、完整且无未知尾的原生 W3I；缺席或 FF 省略不能当成空表。");
     if (document.Settings()->SourceFormatVersion() != 25 || document.Settings()->formatVersion != 25)
         return Bad("SETTINGS_CUSTOM_VERSION_READ_ONLY", "本轮只开放来源为原生 W3I v25 的修改，其它版本仅查询。");
@@ -201,16 +201,19 @@ Result<PreparedMapCustomSettingsEdit> MapCustomSettingsEditing::Prepare(std::sha
     using R = Result<PreparedMapCustomSettingsEdit>;
     const auto fail = [](Status s) -> R { return {{}, std::move(s.diagnostics)}; };
     if (!current) return fail(Bad("SETTINGS_DOCUMENT_REQUIRED", "需要当前地图文档。"));
-    auto allowed = WriteQualification(*current); if (!allowed.Succeeded()) return fail(allowed);
+    auto allowed = WriteQualification(*current, request.createOmittedTables); if (!allowed.Succeeded()) return fail(allowed);
     auto identity = MemberIdentity(*current);
     if (!identity.Succeeded()) return {{}, identity.diagnostics};
     if (*identity.value != request.expectedMemberSha256) return fail(Bad("SETTINGS_MEMBER_STALE", "W3I SHA 已变化，请重新查询。"));
-    if (request.operations.empty() || request.operations.size() > 128) return fail(Bad("SETTINGS_COMMAND_BUDGET", "批次须含 1 到 128 条操作。"));
+    if ((request.operations.empty() && !request.createOmittedTables) || request.operations.size() > 128)
+        return fail(Bad("SETTINGS_COMMAND_BUDGET", "批次须含 1 到 128 条操作。"));
     if (sources.verify) { auto verified = sources.verify(); if (!verified.Succeeded()) return fail(verified); }
     PreparedMapCustomSettingsEdit result;
     result.before_ = current; result.request_ = request;
     result.randomAvailable_ = Script::RandomMapInitializationAvailable();
     auto settings = *current->Settings();
+    if (request.createOmittedTables && !settings.AdoptEmptyCustomTables())
+        return fail(Bad("SETTINGS_CUSTOM_TABLES_PRESENT", "这张地图的自定义表没有被省略，不需要建立。"));
     if (!settings.custom->randomUnits.empty() || !settings.custom->randomItems.empty()
         || std::any_of(request.operations.begin(), request.operations.end(), [](const auto& operation) {
             return operation.section == Section::RandomUnits || operation.section == Section::RandomItems;

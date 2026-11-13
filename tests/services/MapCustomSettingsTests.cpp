@@ -29,7 +29,24 @@ void QueryAndReadOnly() {
     Require(!MapCustomSettingsEditing::WriteQualification(partial).Succeeded(), "unknown tail read only");
     fixture.bytes.resize(fixture.offsets.at("upgrades")); fixture.bytes.push_back(std::byte{255});
     auto omitted = MapDocument::FromMembers(std::vector<MapArchiveMember>{{"war3map.w3i", fixture.bytes}});
-    Require(Json::parse(Take(QueryMapCustomSettings(omitted, binding, R"({"section":"summary"})")))["custom_present"] == false, "FF omission is not empty");
+    const auto omittedSummary = Json::parse(Take(QueryMapCustomSettings(omitted, binding, R"({"section":"summary"})")));
+    Require(omittedSummary["custom_present"] == false && omittedSummary["native_v25_writable"] == false
+        && omittedSummary["can_create_omitted_tables"] == true, "FF omission is not empty but can be created on request");
+    // 不把省略当空表：普通编辑仍拒绝；作者明确“建立自定义表”才换成四张空表。
+    const auto omittedDocument = std::make_shared<const MapDocument>(omitted);
+    MapCustomSettingsEditRequest create;
+    create.expectedMemberSha256 = Take(MapCustomSettingsEditing::MemberIdentity(omitted));
+    Require(Code(MapCustomSettingsEditing::Prepare(omittedDocument, create, {}), "SETTINGS_CUSTOM_SOURCE_READ_ONLY"),
+        "omission is never silently treated as empty");
+    create.createOmittedTables = true;
+    const auto created = Take(MapCustomSettingsEditing::Prepare(omittedDocument, create, {}));
+    Require(created.HasChanges() && created.CanCommit() && created.After().Settings()
+        && created.After().Settings()->FullyParsed() && created.After().Settings()->custom->upgrades.empty(),
+        "explicit creation adopts four empty tables");
+    const auto present = std::make_shared<const MapDocument>(document);
+    create.expectedMemberSha256 = Take(MapCustomSettingsEditing::MemberIdentity(document));
+    Require(Code(MapCustomSettingsEditing::Prepare(present, create, {}), "SETTINGS_CUSTOM_TABLES_PRESENT"),
+        "creation refuses maps whose tables are already present");
     for (const auto version : {18, 28, 31, 32, 33}) {
         const auto classic = MapDataFixtures::FullMapSettingsV25(); auto versioned = classic;
         const auto insert = [&](std::size_t offset, std::initializer_list<std::uint32_t> values) {

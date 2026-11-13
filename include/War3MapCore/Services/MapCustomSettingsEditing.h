@@ -30,6 +30,9 @@ struct MapCustomSettingsCommand {
 struct MapCustomSettingsEditRequest {
     std::string expectedMemberSha256;
     std::vector<MapCustomSettingsCommand> operations;
+    // W3I 用 0xff 省略了自定义表时，作者明确要建立：先换成四张空表再执行 operations（可为空）。
+    // 不能把省略静默当成空表；不是省略形式时此项被拒绝。
+    bool createOmittedTables = false;
 };
 
 // 只由宿主建立：对象来自真实层序和当前物编覆盖；verify 在准备及发布前复核来源。
@@ -72,7 +75,8 @@ public:
     [[nodiscard]] static Status Apply(MapData::MapDataEditSession& session,
         const PreparedMapCustomSettingsEdit& plan, const MapCustomSettingsValidation& validation,
         const MapData::MapDataPublishValidator& validator = {});
-    [[nodiscard]] static Status WriteQualification(const MapDocument& document);
+    // allowOmittedTables：只用 0xff 省略了自定义表、其余完整的 v25 也算合格（供“建立自定义表”）。
+    [[nodiscard]] static Status WriteQualification(const MapDocument& document, bool allowOmittedTables = false);
     // 基础布局/保存目标资格；对象、引用及最终整图初始化仍在Prepare和正常保存中核对。
     [[nodiscard]] static Status RandomWriteQualification(const MapDocument& document,
         const LuaMapTargetRequest* selectedLuaTarget = nullptr);

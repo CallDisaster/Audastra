@@ -95,6 +95,7 @@ private slots:
     void ReferencedTextRejectsConflictsUnsafeAndChangedSources();
     void NavigationRestoresSectionAndPreservesUnappliedDraft();
     void WarcraftPreviewUsesCurrentWtsAndExistingApplyUndo();
+    void OmittedCustomTablesOfferCreation();
 };
 
 void MapSettingsModuleTests::WarcraftPreviewUsesCurrentWtsAndExistingApplyUndo() {
@@ -195,6 +196,25 @@ void MapSettingsModuleTests::NewFormatIsVisibleButCannotEnterClassicSavePath() {
     QVERIFY(!module.ApplyDraft());
     QVERIFY(!module.HasPendingDraft());
     QVERIFY(project.MapEdits()->Replacements().empty());
+}
+
+// 原图用 0xff 省略了自定义表时提供“建立自定义表”；表已存在（哪怕为空）时直接是编辑页。
+void MapSettingsModuleTests::OmittedCustomTablesOfferCreation() {
+    auto fixture = MapDataFixtures::FullMapSettingsV25();
+    fixture.bytes.resize(fixture.offsets.at("upgrades"));
+    fixture.bytes.push_back(std::byte{0xff});
+    {
+        QtProject::EditorProject project;
+        OpenSyntheticMap(project, fixture.bytes);
+        Modules::MapSettingsModule module(project);
+        auto* page = module.Widget();
+        QVERIFY(page && page->findChild<QPushButton*>("mapCreateCustomTables") != nullptr);
+    }
+    QtProject::EditorProject project;
+    OpenSyntheticMap(project);
+    Modules::MapSettingsModule module(project);
+    auto* page = module.Widget();
+    QVERIFY(page && page->findChild<QPushButton*>("mapCreateCustomTables") == nullptr);
 }
 
 void MapSettingsModuleTests::NarrowLayoutKeepsDraftNavigationAndActions() {

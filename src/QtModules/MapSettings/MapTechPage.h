@@ -30,6 +30,9 @@ public:
     // 实际发布推迟到事件循环下一轮（发布会重建本页），发布失败经 report 显示。
     [[nodiscard]] static Commit ProjectCommit(QtProject::EditorProject& project, QObject* context,
         std::function<QString()> blocked, std::function<void(const QString&)> report);
+    // 原图用 0xff 省略了自定义表：作者点“建立自定义表”后换成四张空表（一条撤销），之后按普通表编辑。
+    [[nodiscard]] static QString CreateOmittedTables(QtProject::EditorProject& project, QObject* context,
+        std::function<QString()> blocked, std::function<void(const QString&)> report);
 
 private:
     void Fill();
