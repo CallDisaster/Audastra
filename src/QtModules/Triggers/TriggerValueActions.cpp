@@ -258,7 +258,7 @@ bool TriggerModule::ApplyArgumentEdits(StableId ecaId, const std::vector<Trigger
 // 参数对话框可以手填引用：改过的参数与取值面板走同一来源和类型资格。
 // 赋值目标只接受真实可写变量（不能是直接值、预设或生成的触发器），读取只接受真实变量、触发器或预放对象。
 QString TriggerModule::CheckChangedReferences(StableId ecaId, const std::vector<StableId>& changed) {
-    const auto& document = *project_.triggerDocument_;
+    auto& document = *project_.triggerDocument_;
     const auto* eca = Editor::FindEca(document, ecaId);
     if (eca == nullptr || changed.empty()) return {};
     const auto* definition = project_.uiCatalog_->Find(eca->type, eca->name.text);
