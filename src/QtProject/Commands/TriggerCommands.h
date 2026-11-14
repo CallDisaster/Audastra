@@ -317,6 +317,9 @@ public:
         Trigger::TriggerGraphScalarEditReceipt receipt,
         QString label, QUndoCommand* parent = nullptr);
     [[nodiscard]] bool Ready() const;
+    // 发布方刚从当前文档复制 before、复制之后没有回调或资源准备能改动工程时登记复制时的栈位置与修订；
+    // 首次 Ready() 两者未变即不再整图核对 before。
+    void TrustFreshBefore(int stackIndex, std::uint64_t revision);
     [[nodiscard]] Status PrepareAssets(const std::function<Status(AssetState&)>& prepare);
     [[nodiscard]] bool HasAssetChanges() const noexcept { return bool(assets_); }
     [[nodiscard]] std::shared_ptr<const bool> FirstPublication() const { return firstPublication_; }
@@ -333,7 +336,10 @@ private:
         SnapshotStorage(Trigger::TriggerDocument beforeValue, Trigger::TriggerDocument afterValue)
             : before(std::move(beforeValue)), after(std::move(afterValue)) {}
         Trigger::TriggerDocument before, after;
-        std::optional<Trigger::TriggerGraphReplayIdentity> beforeBinding, afterBinding;
+        // before 身份按需捕获（before 副本不再改动，推迟捕获结果相同）。
+        mutable std::optional<Trigger::TriggerGraphReplayIdentity> beforeBinding;
+        mutable bool beforeCaptureFailed = false;
+        std::optional<Trigger::TriggerGraphReplayIdentity> afterBinding;
         std::optional<Trigger::TriggerDocument> preparedFirst;
         std::vector<Trigger::GuiConversionSnapshots::PreparedSnapshot> changedSnapshots;
     };
@@ -347,6 +353,8 @@ private:
     // 不在 Ready→push→redo 之间重复整图扫描。
     struct VerifiedReady { const Trigger::TriggerDocument* document = nullptr; int stackIndex = -1; std::uint64_t revision = 0; };
     mutable std::optional<VerifiedReady> verifiedReady_;
+    std::optional<VerifiedReady> freshBefore_;
+    [[nodiscard]] const Trigger::TriggerGraphReplayIdentity* BeforeBinding() const;
     [[nodiscard]] bool CanApply(bool forward, bool graphVerified = false) const;
 };
 

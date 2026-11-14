@@ -627,13 +627,13 @@ TriggerGraphSnapshotUndoCommand::TriggerGraphSnapshotUndoCommand(EditorProject& 
       generation_(project.editRevision_.Generation()), snapshot_(std::in_place, std::move(before), std::move(after)) {
     if (!catalog_) return;
     auto& storage = *snapshot_;
-    const auto beforeIdentity = Trigger::CaptureTriggerGraphReplayIdentity(storage.before, *catalog_);
+    // before 副本在命令内不再改动，它的整图身份推迟到第一次需要时捕获（见 BeforeBinding）；
+    // after 身份现在捕获，保证发布后的撤销能核对当前图。
     const auto afterIdentity = Trigger::CaptureTriggerGraphReplayIdentity(storage.after, *catalog_);
-    if (beforeIdentity.Succeeded() && afterIdentity.Succeeded()
+    if (afterIdentity.Succeeded()
         && storage.before.SourceWtgSha256() == storage.after.SourceWtgSha256()
         && storage.before.SourceWctSha256() == storage.after.SourceWctSha256()
         && storage.before.UiCatalogSha256() == storage.after.UiCatalogSha256()) {
-        storage.beforeBinding = *beforeIdentity.value;
         storage.afterBinding = *afterIdentity.value;
         try {
             storage.preparedFirst.emplace(storage.after);
@@ -656,9 +656,30 @@ TriggerGraphSnapshotUndoCommand::TriggerGraphSnapshotUndoCommand(EditorProject& 
       document_(project.triggerDocument_.get()), catalog_(project.uiCatalog_.get()),
       generation_(project.editRevision_.Generation()), scalarReceipt_(std::move(receipt)) {}
 
+void TriggerGraphSnapshotUndoCommand::TrustFreshBefore(int stackIndex, std::uint64_t revision) {
+    if (snapshot_ && !*firstPublication_ && !assets_) freshBefore_ = VerifiedReady{document_, stackIndex, revision};
+}
+
+const Trigger::TriggerGraphReplayIdentity* TriggerGraphSnapshotUndoCommand::BeforeBinding() const {
+    if (!snapshot_ || !catalog_) return nullptr;
+    auto& storage = *snapshot_;
+    if (!storage.beforeBinding && !storage.beforeCaptureFailed) {
+        try {
+            auto captured = Trigger::CaptureTriggerGraphReplayIdentity(storage.before, *catalog_);
+            if (captured.Succeeded()) storage.beforeBinding = std::move(*captured.value);
+            else storage.beforeCaptureFailed = true;
+        } catch (...) { storage.beforeCaptureFailed = true; }
+    }
+    return storage.beforeBinding ? &*storage.beforeBinding : nullptr;
+}
+
 bool TriggerGraphSnapshotUndoCommand::Ready() const {
     verifiedReady_.reset();
-    const bool ready = CanApply(true);
+    // before 刚从当前文档复制、其间没有回调能改动工程：栈位置与修订未变即视为同一内容。
+    const bool fresh = freshBefore_ && snapshot_ && !*firstPublication_ && project_ && project_->triggerUndoStack_
+        && freshBefore_->document == document_ && freshBefore_->stackIndex == project_->triggerUndoStack_->index()
+        && freshBefore_->revision == project_->editRevision_.Revision();
+    const bool ready = CanApply(true, fresh);
     if (ready && snapshot_ && !*firstPublication_ && project_->triggerUndoStack_)
         verifiedReady_ = VerifiedReady{document_, project_->triggerUndoStack_->index(), project_->editRevision_.Revision()};
     return ready;
@@ -684,10 +705,10 @@ bool TriggerGraphSnapshotUndoCommand::CanApply(bool forward, bool graphVerified)
             && document_->UiCatalogSha256() == expected.uiCatalogSha256
             && project_->uiCatalog_->Sha256() == expected.uiCatalogSha256;
     }
-    if (!snapshot_ || !snapshot_->beforeBinding || !snapshot_->afterBinding) return false;
+    if (!snapshot_ || !snapshot_->afterBinding) return false;
     if (graphVerified) return true;
-    const auto& expected = forward ? *snapshot_->beforeBinding : *snapshot_->afterBinding;
-    return Trigger::VerifyTriggerGraphReplayIdentity(*document_, *project_->uiCatalog_, expected).Succeeded();
+    const auto* expected = forward ? BeforeBinding() : &*snapshot_->afterBinding;
+    return expected && Trigger::VerifyTriggerGraphReplayIdentity(*document_, *project_->uiCatalog_, *expected).Succeeded();
 }
 
 void TriggerGraphSnapshotUndoCommand::Apply(bool forward) {
@@ -800,6 +821,7 @@ Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
     if (!project.triggerDocument_ || !project.uiCatalog_ || !project.triggerUndoStack_)
         return Result<Receipt>::Failure(kSubsystem, "TRIGGER_GRAPH_UNAVAILABLE", "当前工程没有可编辑的触发器文档。");
     std::optional<Trigger::TriggerDocument> before, candidate;
+    std::pair<int, std::uint64_t> copiedAt{-1, 0};
     Result<Receipt> edited;
     try {
         const auto references = project.CaptureTriggerMapObjectReferences();
@@ -810,6 +832,7 @@ Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
         Trigger::TriggerGraphEditBatch batch;
         batch.expected = *binding.value;
         batch.operations = std::move(operations);
+        copiedAt = {project.triggerUndoStack_->index(), project.editRevision_.Revision()};
         before.emplace(*project.triggerDocument_);
         candidate.emplace(*before);
         if (batch.operations.empty() && prepareAssets) {
@@ -840,6 +863,8 @@ Result<Trigger::TriggerGraphEditReceipt> PublishGraph(EditorProject& project,
     std::unique_ptr<TriggerGraphSnapshotUndoCommand> command;
     try {
         command = std::make_unique<TriggerGraphSnapshotUndoCommand>(project, std::move(*before), std::move(*candidate), undoLabel);
+        // 复制 before 之后只在副本上应用了批次，没有回调或资源准备能改动当前文档。
+        if (!beforePublish && !prepareAssets) command->TrustFreshBefore(copiedAt.first, copiedAt.second);
         if (prepareAssets) {
             const auto prepared = command->PrepareAssets(prepareAssets);
             if (!prepared.Succeeded()) return failed(prepared.diagnostics);
