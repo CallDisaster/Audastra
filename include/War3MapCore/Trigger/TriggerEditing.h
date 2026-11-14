@@ -236,12 +236,13 @@ public:
     [[nodiscard]] static Result<std::vector<RenameCodeReview>> ReviewTriggerRenameCode(
         const TriggerDocument& document, const UiCatalog& catalog,
         StableId triggerId, const std::string& name);
-    // 调用方已给的审计原样保留；没给审计、编辑器核查无证据的块补编辑器审计；
-    // 有证据却没给审计的块逐块报 TRIGGER_RENAME_CODE_AUDIT_REQUIRED（位置、行号、原文和审计字段）。
-    [[nodiscard]] static Result<std::vector<AtomicRenameCodeAudit>> CompleteTriggerRenameAudits(
-        const TriggerDocument& document, const UiCatalog& catalog,
-        StableId triggerId, const std::string& name,
-        std::span<const AtomicRenameCodeAudit> provided);
+    // 图编辑改名：调用方给了审计的块按审计核对；没给审计的块由编辑器当场按 ReviewTriggerRenameCode
+    // 同一规则核查，无证据直接放行；acceptDynamicLookups 时只是按名称动态调用的块也放行（界面改名，作者 11-14）。
+    // 其余块逐块报 TRIGGER_RENAME_CODE_AUDIT_REQUIRED（位置、行号、原文和审计字段）。代码只扫一遍。
+    [[nodiscard]] static Result<AtomicRenameReceipt> RenameTriggerReviewed(
+        TriggerDocument& document, const UiCatalog& catalog,
+        StableId triggerId, std::string name,
+        std::span<const AtomicRenameCodeAudit> provided, bool acceptDynamicLookups);
 
     // 删除整个触发器的回执（含其全部 ECA 子树快照）。
     struct TriggerRemoveReceipt {

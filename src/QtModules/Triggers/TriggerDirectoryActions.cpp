@@ -280,15 +280,23 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
     if (trigger == nullptr || trigger->name.text == name) {
         return;
     }
-    // 逐块核查不透明代码，代码本身不改：
-    // - 直接按旧名称使用（gg_trg_X、Trig_X_Actions、ExecuteFunc("InitTrig_X")…）的块请作者确认；
-    // - 只是按名称动态调用（ExecuteFunc(s) 等）的块无法静态判断，不打断改名，改完在问题列表提醒；
-    // - 其余块由编辑器放行。
+    // 先直接提交：核心按同一词法规则核查作者代码（只扫一遍），代码本身不改：
+    // - 只是按名称动态调用（ExecuteFunc(s) 等）的块判断不了指向谁，不打断也不提醒（作者 11-14：误报太多）；
+    // - 直接按旧名称使用（gg_trg_X、Trig_X_Actions、ExecuteFunc("InitTrig_X")…）的块被核心拒绝，
+    //   这时才逐块列出请作者确认，确认后只为这些块提交审计再改名。
     using Evidence = Trigger::TriggerDocumentEditor::RenameEvidence;
-    std::vector<Trigger::AtomicRenameCodeAudit> audits;
-    std::vector<Trigger::TriggerDocumentEditor::RenameCodeReview> dynamicBlocks;
     const std::string oldName = trigger->name.text;
-    if (project_.uiCatalog_ != nullptr) {
+    const auto publish = [&](std::vector<Trigger::AtomicRenameCodeAudit> audits) {
+        std::vector<Trigger::GraphEditOperation> operations;
+        operations.emplace_back(Trigger::GraphRename{{Trigger::GraphRecordKind::Trigger, item.triggerId, {}}, trigger->name, name,
+            std::move(audits), true});
+        return QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("重命名触发器"));
+    };
+    auto renamed = publish({});
+    const bool needsAuthor = !renamed.Succeeded() && !renamed.diagnostics.empty() && project_.uiCatalog_ != nullptr
+        && std::all_of(renamed.diagnostics.begin(), renamed.diagnostics.end(),
+            [](const Diagnostic& diagnostic) { return diagnostic.code == "TRIGGER_RENAME_CODE_AUDIT_REQUIRED"; });
+    if (needsAuthor) {
         auto review = Trigger::TriggerDocumentEditor::ReviewTriggerRenameCode(*document, *project_.uiCatalog_, item.triggerId, name);
         if (!review.Succeeded()) {
             project_.AddDiagnostics(review.diagnostics);
@@ -296,52 +304,45 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
             return;
         }
         QStringList named;
-        for (const auto& row : *review.value) {
+        std::vector<Trigger::AtomicRenameCodeAudit> audits;
+        for (auto& row : *review.value) {
             if (row.evidence != Evidence::NameUse) continue;
             QString line = U8(row.location);
             if (row.line != 0) line += tr(" 第 %1 行").arg(row.line);
             if (!row.excerpt.empty()) line += QStringLiteral("：") + U8(row.excerpt);
             named.push_back(line);
-        }
-        if (!named.isEmpty()) {
-            const QString title = tr("重命名触发器");
-            constexpr qsizetype shown = 6;
-            QString list = QStringLiteral("• ") + QStringList(named.mid(0, shown)).join(QStringLiteral("\n• "));
-            if (named.size() > shown) list += tr("\n……另有 %1 处").arg(named.size() - shown);
-            const QString body = tr("这些代码按旧名称“%1”使用这个触发器，改名不会修改它们，需要时请手动改：\n\n%2")
-                .arg(U8(oldName), list);
-            const auto expected = trigger->name;
-            bool accepted = false;
-            if (confirm_) {
-                accepted = confirm_(title, body, {});
-            } else {
-                QMessageBox box(QMessageBox::Question, title, body, QMessageBox::NoButton, page_);
-                QPushButton* rename = box.addButton(tr("仍然改名"), QMessageBox::AcceptRole);
-                box.addButton(tr("取消"), QMessageBox::RejectRole);
-                box.setDefaultButton(qobject_cast<QPushButton*>(box.buttons().last()));
-                box.exec();
-                accepted = box.clickedButton() == rename;
-            }
-            // 对话框期间文档可能被换掉或改名；核查结果绑定的是打开对话框时的文档。
-            if (!accepted || project_.triggerDocument_.get() != document) return;
-            trigger = FindTrigger(*document, item.triggerId);
-            if (trigger == nullptr || trigger->name.text != expected.text) return;
-        }
-        // 只提交需要作者决定的块；核查过不含旧名称、也没有按名称动态调用的块由核心改名时自行补齐。
-        // 大图（YDWE 自定义脚本动辄上万块）若逐块提交，请求会超出图编辑预算而改不了名。
-        for (auto& row : *review.value) {
-            if (!row.mayReference) continue;
-            if (row.evidence == Evidence::NameUse) row.audit.reason = "作者确认改名后自行处理这段代码。";
-            if (row.evidence == Evidence::DynamicLookup) {
-                row.audit.reason = "编辑器核查：按名称动态调用，无法静态判断；改名后已在问题列表提醒作者。";
-                dynamicBlocks.push_back(row);
-            }
+            row.audit.reason = "作者确认改名后自行处理这段代码。";
             audits.push_back(std::move(row.audit));
         }
+        if (named.isEmpty()) {
+            project_.AddDiagnostics(renamed.diagnostics);
+            ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("代码核查失败"))), 10000);
+            return;
+        }
+        const QString title = tr("重命名触发器");
+        constexpr qsizetype shown = 6;
+        QString list = QStringLiteral("• ") + QStringList(named.mid(0, shown)).join(QStringLiteral("\n• "));
+        if (named.size() > shown) list += tr("\n……另有 %1 处").arg(named.size() - shown);
+        const QString body = tr("这些代码按旧名称“%1”使用这个触发器，改名不会修改它们，需要时请手动改：\n\n%2")
+            .arg(U8(oldName), list);
+        const auto expected = trigger->name;
+        bool accepted = false;
+        if (confirm_) {
+            accepted = confirm_(title, body, {});
+        } else {
+            QMessageBox box(QMessageBox::Question, title, body, QMessageBox::NoButton, page_);
+            QPushButton* rename = box.addButton(tr("仍然改名"), QMessageBox::AcceptRole);
+            box.addButton(tr("取消"), QMessageBox::RejectRole);
+            box.setDefaultButton(qobject_cast<QPushButton*>(box.buttons().last()));
+            box.exec();
+            accepted = box.clickedButton() == rename;
+        }
+        // 对话框期间文档可能被换掉或改名；核查结果绑定的是打开对话框时的文档。
+        if (!accepted || project_.triggerDocument_.get() != document) return;
+        trigger = FindTrigger(*document, item.triggerId);
+        if (trigger == nullptr || trigger->name.text != expected.text) return;
+        renamed = publish(std::move(audits));
     }
-    std::vector<Trigger::GraphEditOperation> operations;
-    operations.emplace_back(Trigger::GraphRename{{Trigger::GraphRecordKind::Trigger, item.triggerId, {}}, trigger->name, name, std::move(audits)});
-    const auto renamed = QtProject::PublishTriggerGraphOperations(project_, std::move(operations), tr("重命名触发器"));
     if (!renamed.Succeeded()) {
         project_.AddDiagnostics(renamed.diagnostics);
         ShowStatus(tr("未重命名：%1").arg(FirstMessage(renamed.diagnostics, tr("引用同步校验失败"))), 10000);
@@ -354,18 +355,6 @@ void TriggerModule::ApplyRename(const TriggerDirectoryItem& item, const std::str
             "触发器“" + oldName + "”改名前与“" + receipt.sharedSymbolTrigger + "”在脚本中的名称相同（" + receipt.oldSymbol
                 + "），" + std::to_string(receipt.sharedSymbolArgumentIds.size()) + " 处触发器参数判定不了指哪一个，保持原样，现在指向“"
                 + receipt.sharedSymbolTrigger + "”。如果原本指的是“" + name + "”，请重新选择。", std::nullopt}});
-    }
-    if (!dynamicBlocks.empty()) {
-        std::vector<Diagnostic> warnings;
-        for (const auto& row : dynamicBlocks) {
-            std::string message = "触发器“" + oldName + "”已改名为“" + name + "”。" + row.location;
-            if (row.line != 0) message += " 第 " + std::to_string(row.line) + " 行";
-            message += "按名称动态调用";
-            if (!row.excerpt.empty()) message += "（" + row.excerpt + "）";
-            message += "，如果它会调用这个触发器，请手动改。";
-            warnings.push_back(Diagnostic{DiagnosticSeverity::Warning, "Trigger.Edit", "TRIGGER_RENAME_DYNAMIC_LOOKUP", std::move(message), std::nullopt});
-        }
-        project_.AddDiagnostics(warnings);
     }
     RefreshExplorer();
 }
@@ -466,12 +455,10 @@ bool TriggerModule::Confirm(const QString& title, const QString& body, const QSt
 std::optional<QtProject::RemovalCodeNotice> TriggerModule::CheckRemovalCode(const std::vector<StableId>& triggerIds) {
     const auto* document = project_.triggerDocument_.get();
     std::vector<Trigger::GraphRemove> targets;
-    bool customCode = false;
     for (const StableId id : triggerIds) {
         const auto* trigger = document ? FindTrigger(*document, id) : nullptr;
-        if (trigger == nullptr) continue;
-        // 删除投影只支持普通触发器；自定义代码触发器的生成符号暂不查。
-        if (trigger->customTextFlag != 0) { customCode = true; continue; }
+        // 说明条目不生成脚本符号。
+        if (trigger == nullptr || trigger->type != 0) continue;
         Trigger::GraphRemove remove;
         remove.target = {Trigger::GraphRecordKind::Trigger, id, {}};
         remove.expectedName = trigger->name.text;
@@ -497,7 +484,6 @@ std::optional<QtProject::RemovalCodeNotice> TriggerModule::CheckRemovalCode(cons
         }
         notice = std::move(*result);
     }
-    if (customCode && notice.incomplete.isEmpty()) notice.incomplete = tr("代码里对自定义代码触发器的引用暂不检查");
     return notice;
 }
 

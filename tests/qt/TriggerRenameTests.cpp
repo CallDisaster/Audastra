@@ -95,12 +95,6 @@ bool HasDiagnostic(const EditorProject& project, const char* code) {
         if (model->item(row, 2)->text() == QLatin1String(code)) return true;
     return false;
 }
-QString DiagnosticText(const EditorProject& project, const char* code) {
-    const auto* model = project.diagnosticsModel_;
-    for (int row = 0; model && row < model->rowCount(); ++row)
-        if (model->item(row, 2)->text() == QLatin1String(code)) return model->item(row, 3)->text();
-    return {};
-}
 const TriggerRecord* Named(const EditorProject& project, std::string_view name) {
     const auto& rows = project.triggerDocument_->triggers;
     const auto it = std::find_if(rows.begin(), rows.end(), [&](const auto& row) { return row.name.text == name; });
@@ -319,9 +313,9 @@ void TriggerRenameTests::DynamicLookupWarnsWithoutAsking() {
     int asked = 0;
     f.module->SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++asked; return false; });
     QVERIFY(f.RenameThroughModel(QStringLiteral("Changed"))); QTRY_VERIFY(Named(f.project, "Changed"));
+    // 界面改名：动态调用判断不了指向谁，既不打断也不在问题列表提醒（作者 11-14）。
     QCOMPARE(asked, 0); QVERIFY(f.ReferencesEqual("Changed")); QVERIFY(f.Pair().wct == f.original.wct);
-    const auto warning = DiagnosticText(f.project, "TRIGGER_RENAME_DYNAMIC_LOOKUP");
-    QVERIFY2(warning.contains(QStringLiteral("全局代码 第 2 行")) && warning.contains(QStringLiteral("call ExecuteFunc(s)")), qPrintable(warning));
+    QVERIFY(!HasDiagnostic(f.project, "TRIGGER_RENAME_DYNAMIC_LOOKUP"));
 }
 
 void TriggerRenameTests::LiteralCommentAndLookalikeCodeStaysClean() {

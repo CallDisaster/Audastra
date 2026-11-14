@@ -403,6 +403,7 @@ private slots:
     void RealAudastraNameSamplesRenderReadOnlyProjection();
     void CustomCodeHeaderEncodingAndOneUndo();
     void DeleteListsCodeReferences();
+    void DeleteIgnoresDynamicCallsAndDisplayNames();
     void CodeUnicodeDisplayBaselinePreservesOriginalBytes_data();
     void CodeUnicodeDisplayBaselinePreservesOriginalBytes();
     void OrdinaryChineseCodeRemainsEditableAndUsesOneUndo_data();
@@ -949,6 +950,27 @@ void TriggerModuleTests::DeleteListsCodeReferences() {
     module.SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++confirmations; return true; });
     module.DeleteCurrentItem();
     QCOMPARE(confirmations, 2);
+    QVERIFY(Named(project, "Spawn") == nullptr);
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+    project.triggerUndoStack_->undo();
+    QVERIFY(Named(project, "Spawn") != nullptr);
+}
+
+void TriggerModuleTests::DeleteIgnoresDynamicCallsAndDisplayNames() {
+    // 作者 11-14：按名称动态调用、提示文字里的触发器名都判断不了指向谁，删除时不提示，直接删、可撤销。
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    QtProject::EditorProject project;
+    const std::string header = "function Dyn takes string s returns nothing\n    call ExecuteFunc(s)\n"
+        "    call BJDebugMsg(\"Spawn\")\n    // gg_trg_Spawn 旧注释\nendfunction\n";
+    QVERIFY(InstallCodeProject(project, root.path().toStdWString(), false, header));
+    Modules::TriggerModule module(project);
+    auto* page = module.Widget(); page->resize(1450, 900); page->show();
+    QVERIFY(module.Reveal({"triggers", "trigger", "Spawn", {}}));
+    int confirmations = 0;
+    module.SetConfirmHandler([&](const QString&, const QString&, const QStringList&) { ++confirmations; return false; });
+    module.DeleteCurrentItem();
+    QCOMPARE(confirmations, 0);
     QVERIFY(Named(project, "Spawn") == nullptr);
     QCOMPARE(project.triggerUndoStack_->count(), 1);
     project.triggerUndoStack_->undo();

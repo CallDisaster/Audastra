@@ -84,6 +84,8 @@ struct GraphRename {
     RawText expectedName; // 编码、原字节与解码值均核对。
     std::string name;
     std::vector<AtomicRenameCodeAudit> codeAudits;
+    // 只用于界面改名（作者 11-14）：只是按名称动态调用的代码块判断不了指向谁，不要求审计。MCP 不设置。
+    bool acceptDynamicLookups = false;
 };
 struct GraphMove {
     GraphRecordRef target;

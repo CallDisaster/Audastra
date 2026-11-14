@@ -479,15 +479,9 @@ struct Editor {
             return TriggerDirectoryEditor::RenameCategory(doc, category, op.name);
         }
         if (op.target.kind == GraphRecordKind::Trigger) {
-            // 编辑器核查过不含旧名称、也没有按名称动态调用的块自动放行；其余块逐块报位置和原文，等调用方审计。
-            const auto audits = TriggerDocumentEditor::CompleteTriggerRenameAudits(doc, catalog, *id.value, op.name, op.codeAudits);
-            // 缺审计时仍按调用方原审计走一遍严格改名：名称、重名、结构等错误优先报出，只缺审计才换成逐块说明。
-            auto renamed = TriggerDocumentEditor::RenameTriggerAtomic(doc, catalog, *id.value, op.name,
-                audits.Succeeded() ? std::span<const AtomicRenameCodeAudit>(*audits.value) : std::span<const AtomicRenameCodeAudit>(op.codeAudits));
-            if (!renamed.Succeeded() && !audits.Succeeded()
-                && std::all_of(renamed.diagnostics.begin(), renamed.diagnostics.end(),
-                    [](const auto& diagnostic) { return diagnostic.code == "TRIGGER_RENAME_CODE_AUDIT_REQUIRED"; }))
-                return {audits.diagnostics};
+            // 名称、重名、结构等错误优先报出；编辑器核查过不含旧名称、也没有按名称动态调用的块自动放行，
+            // 其余块逐块报位置和原文，等调用方审计。代码只扫一遍。
+            auto renamed = TriggerDocumentEditor::RenameTriggerReviewed(doc, catalog, *id.value, op.name, op.codeAudits, op.acceptDynamicLookups);
             if (!renamed.Succeeded()) return {renamed.diagnostics};
             receipt.renames.push_back(std::move(*renamed.value)); return Status::Ok();
         }

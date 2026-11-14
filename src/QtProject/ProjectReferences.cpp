@@ -36,10 +36,14 @@ std::uint64_t EditorProject::ContentCacheEpoch() const {
     return contentCacheEpoch_;
 }
 
-std::string EditorProject::ReferenceStamp() const {
-    std::string stamp = std::to_string(reinterpret_cast<std::uintptr_t>(triggerDocument_.get())) + '|' +
-        std::to_string(reinterpret_cast<std::uintptr_t>(uiCatalog_.get())) + '|' +
-        std::to_string(reinterpret_cast<std::uintptr_t>(mapDocument_.get())) + '|' +
+namespace {
+void AddStack(std::string& stamp, const QUndoStack* stack) {
+    stamp += stack == nullptr ? std::string("|-") : '|' + std::to_string(stack->index()) + ':' + std::to_string(stack->count());
+}
+} // namespace
+
+std::string EditorProject::ObjectSourceStamp() const {
+    std::string stamp = std::to_string(reinterpret_cast<std::uintptr_t>(mapDocument_.get())) + '|' +
         std::to_string(reinterpret_cast<std::uintptr_t>(objectFieldSchema_.get()));
     for (const auto& document : objectDocuments_) {
         stamp += '|' + std::to_string(reinterpret_cast<std::uintptr_t>(document.get()));
@@ -49,11 +53,15 @@ std::string EditorProject::ReferenceStamp() const {
     }
     stamp += '|' + std::to_string(reinterpret_cast<std::uintptr_t>(mapEdits_.get())) + ':' +
         std::to_string(mapEdits_ ? mapEdits_->Revision() : 0);
-    const auto add = [&stamp](const QUndoStack* stack) {
-        stamp += stack == nullptr ? std::string("|-") : '|' + std::to_string(stack->index()) + ':' + std::to_string(stack->count());
-    };
-    add(triggerUndoStack_);
-    for (const auto* stack : objectUndoStacks_) add(stack);
+    AddStack(stamp, mapDataUndoStack_);
+    for (const auto* stack : objectUndoStacks_) AddStack(stamp, stack);
+    return stamp;
+}
+
+std::string EditorProject::ReferenceStamp() const {
+    std::string stamp = std::to_string(reinterpret_cast<std::uintptr_t>(triggerDocument_.get())) + '|' +
+        std::to_string(reinterpret_cast<std::uintptr_t>(uiCatalog_.get())) + '|' + ObjectSourceStamp();
+    AddStack(stamp, triggerUndoStack_);
     return stamp + '|' + std::to_string(ContentCacheEpoch());
 }
 

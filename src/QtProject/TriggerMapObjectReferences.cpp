@@ -13,8 +13,9 @@
 
 namespace War3Map::QtProject {
 
-// 捕获只读这些输入：文档、撤销栈与编辑修订（ReferenceStamp）、来源归档/目录/战役、游戏目录、
-// 原版目录、物编修改标记和导入资源。全部相同时复用上次成功的快照。
+// 捕获只读这些输入：物编/地图数据文档与撤销栈（ObjectSourceStamp，不含触发器）、来源归档/目录/战役、
+// 游戏目录、原版目录、物编修改标记和导入资源。全部相同时复用上次成功的快照；
+// 触发器编辑不影响预放对象，不让快照失效（大图上重捕获要数秒）。
 struct EditorProject::TriggerMapObjectCache {
     struct Key {
         std::string references, archiveSha;
@@ -35,7 +36,7 @@ struct EditorProject::TriggerMapObjectCache {
 
 Result<std::shared_ptr<const Trigger::MapObjectReferenceSnapshot>>
 EditorProject::CaptureTriggerMapObjectReferences() const {
-    TriggerMapObjectCache::Key key{ReferenceStamp(), archiveSession_ ? archiveSession_->SourceSha256() : std::string{},
+    TriggerMapObjectCache::Key key{ObjectSourceStamp(), archiveSession_ ? archiveSession_->SourceSha256() : std::string{},
         archiveSession_.get(), readOnlyArchive_.get(), directorySnapshot_.get(), campaignScope_.get(), standardCatalog_.get(),
         campaignScope_ ? campaignScope_->Revision() : Services::CampaignRevision{}, projectRoot_, war3GameRoot_,
         objectDirty_, CaptureAssets()};

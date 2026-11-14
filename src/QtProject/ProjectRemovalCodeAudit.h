@@ -18,14 +18,15 @@ struct RemovalCodeNotice {
     QString incomplete;         // 没能检查完的原因；空表示检查完整
 };
 
-// 与 Agent 删除门禁同一审计（直接引用、按名调用、预处理展开后的库文件）。
+// 只查作者写的代码（全局自定义代码、自定义代码触发器、自定义脚本、变量初值）里的直接引用，
+// 不生成整图脚本、不展开函数库；按名称动态调用判断不了指向谁，不提示（作者 11-14）。
 // Prepare 在界面线程冻结工程快照；Run 只用冻结快照，可在工作线程调用；应用结果前用 Current 核对工程未变。
 class RemovalCodeAudit {
 public:
     // removedTriggers：同一次删除里一起删掉的触发器，它们自己代码里的引用不算。
     [[nodiscard]] static RemovalCodeAudit Prepare(const EditorProject& project,
         std::vector<Trigger::GraphRemove> targets, std::set<StableId> removedTriggers);
-    // stop 置位后在两个目标之间停下，返回空。
+    // stop 置位后返回空。
     [[nodiscard]] std::optional<RemovalCodeNotice> Run(
         const std::function<void(std::size_t done, std::size_t total)>& progress, const std::atomic_bool& stop) const;
     [[nodiscard]] bool Current(const EditorProject& project) const;
@@ -33,7 +34,6 @@ public:
 
 private:
     std::shared_ptr<const Services::CodeCheckProjectSnapshot> snapshot_;
-    std::shared_ptr<const Trigger::MapObjectReferenceSnapshot> mapObjects_;
     std::vector<Trigger::GraphRemove> targets_;
     std::set<StableId> removedTriggers_;
     QString unavailable_;

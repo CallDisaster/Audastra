@@ -594,6 +594,8 @@ private:
     std::uint64_t changeBaselineGeneration_ = 0;
     EditScopeSnapshot changeContentBaselineScopes_;
     [[nodiscard]] std::string ReferenceStamp() const;
+    // 只含物编与地图数据来源（不含触发器）：触发器编辑不让预放对象等缓存失效。
+    [[nodiscard]] std::string ObjectSourceStamp() const;
     mutable std::unique_ptr<Services::ProjectReferenceIndex> referenceIndex_;
     mutable std::string referenceStamp_;
     mutable qint64 referenceBuildMs_ = 0;

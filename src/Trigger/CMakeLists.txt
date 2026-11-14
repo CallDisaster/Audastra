@@ -52,6 +52,7 @@ add_library(War3MapTrigger STATIC
     TriggerEditing.cpp
     TriggerCodeAuditBlocks.cpp
     TriggerRenameEvidence.cpp
+    TriggerCodeReferences.cpp
     TriggerRemovalAudit.cpp
     TriggerEditBatch.cpp
     TriggerTransactionSnapshot.cpp

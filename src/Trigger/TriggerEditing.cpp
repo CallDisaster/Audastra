@@ -613,10 +613,70 @@ RenameResult RenameCommentMetadata(TriggerDocument& document, TriggerRecord& tri
     return result;
 }
 
-// 不解析或改写代码：每个当前代码块必须有绑定本次符号对的显式外部审计。
+// 改名代码块给人看的位置：全局代码、触发器“X”的自定义代码……参数归属表用到时才建。
+class RenameLocations {
+public:
+    explicit RenameLocations(const TriggerDocument& document) : document_(document) {}
+    std::string operator()(AtomicRenameCodeKind kind, StableId id) {
+        switch (kind) {
+        case AtomicRenameCodeKind::GlobalCustomCode: return "全局代码";
+        case AtomicRenameCodeKind::TriggerCustomCode: return "触发器“" + TriggerName(id) + "”的自定义代码";
+        case AtomicRenameCodeKind::ArgumentCode: {
+            if (!ownersBuilt_) {
+                ownersBuilt_ = true;
+                for (const auto& eca : document_.ecaNodes)
+                    for (const auto index : eca.arguments)
+                        if (index < document_.argumentNodes.size()) argumentTrigger_.emplace(document_.argumentNodes[index].id, eca.sourceTriggerId);
+            }
+            const auto owner = argumentTrigger_.find(id);
+            return owner == argumentTrigger_.end() ? std::string("代码参数") : "触发器“" + TriggerName(owner->second) + "”里的代码参数";
+        }
+        case AtomicRenameCodeKind::VariableInitialValue: {
+            const auto row = std::find_if(document_.variables.begin(), document_.variables.end(), [id](const VariableRecord& v) { return v.id == id; });
+            return row == document_.variables.end() ? std::string("变量初始值") : "变量“" + row->name.text + "”的初始值";
+        }
+        }
+        return "代码";
+    }
+
+private:
+    std::string TriggerName(StableId id) const {
+        const auto row = std::find_if(document_.triggers.begin(), document_.triggers.end(), [id](const TriggerRecord& t) { return t.id == id; });
+        return row == document_.triggers.end() ? std::string{} : row->name.text;
+    }
+    const TriggerDocument& document_;
+    std::unordered_map<StableId, StableId> argumentTrigger_;
+    bool ownersBuilt_ = false;
+};
+
+std::string RenameAuditRequiredMessage(const std::string& location, const detail::TriggerRenameEvidence& evidence,
+    const AtomicRenameCodeAudit& audit) {
+    constexpr std::string_view kindNames[] = {"global_custom_code", "trigger_custom_code", "argument_code", "variable_initial_value"};
+    constexpr std::string_view encodingNames[] = {"utf8", "utf8_bom", "gb18030", "latin1"};
+    std::string message = location;
+    if (evidence.line != 0) message += " 第 " + std::to_string(evidence.line) + " 行";
+    message += evidence.kind == TriggerDocumentEditor::RenameEvidence::NameUse
+        ? " 按旧名称使用了这个触发器" : " 按名称动态调用，无法静态判断是否用到这个触发器";
+    if (!evidence.excerpt.empty()) message += "：" + evidence.excerpt;
+    message += "。核对后为该块提交审计：kind=" + std::string(kindNames[static_cast<std::size_t>(audit.kind)])
+        + " id=" + std::to_string(audit.id) + " encoding=" + std::string(encodingNames[static_cast<std::size_t>(audit.encoding)])
+        + " source_sha256=" + audit.sourceSha256 + " ui_catalog_sha256=" + audit.uiCatalogSha256
+        + " old_symbol=" + audit.oldSymbol + " new_symbol=" + audit.newSymbol + "，并写明 reason。代码保持原样，改名未提交。";
+    return message;
+}
+
+// 图编辑改名时由编辑器当场核查调用方没给审计的块（与 ReviewTriggerRenameCode 同一词法规则）。
+struct RenameAutoReview {
+    std::string oldName;
+    std::array<std::string, 2> scriptNames;
+    bool acceptDynamicLookups = false;
+};
+
+// 不解析或改写代码：每个当前代码块必须有绑定本次符号对的显式外部审计；
+// 给了 review 时，没给审计的块由编辑器按词法核查，无证据直接放行，不计算指纹。
 // 普通字面量、rawcode 与 type=1 引用不进入此机制。
 Status CheckRenameCode(const TriggerDocument& document, const UiCatalog& catalog,
-    AtomicRenameReceipt& receipt, std::span<const AtomicRenameCodeAudit> audits) {
+    AtomicRenameReceipt& receipt, std::span<const AtomicRenameCodeAudit> audits, const RenameAutoReview* review = nullptr) {
     constexpr std::size_t maxCodeBytes = 64 * 1024 * 1024;
     std::size_t auditBytes = 0;
     std::unordered_map<std::string, const AtomicRenameCodeAudit*> byBlock;
@@ -640,6 +700,10 @@ Status CheckRenameCode(const TriggerDocument& document, const UiCatalog& catalog
         }
     }
     std::size_t codeBytes = 0;
+    bool anyCode = false;
+    std::unordered_set<StableId> unresolvedDispatch;
+    std::optional<RenameLocations> locations;
+    Status missing = Status::Ok();
     const auto check = [&](AtomicRenameCodeKind kind, StableId id, const RawText& text) -> Status {
         if (text.text.empty()) return Status::Ok();
         // 原始编码可能比 UTF-8 正文大；在编码/哈希分配之前核对输入和累计预算。
@@ -649,10 +713,32 @@ Status CheckRenameCode(const TriggerDocument& document, const UiCatalog& catalog
                 "原子改名的代码审计原文超过 64 MiB 预算，未修改文档。");
         }
         codeBytes += bytes;
-        const auto sha = detail::CodeBlockSha256(text);
-        if (!sha.Succeeded()) return {sha.diagnostics};
+        anyCode = true;
         const auto key = AuditKey(kind, id);
         const auto found = byBlock.find(key);
+        if (found == byBlock.end() && review) {
+            auto evidence = detail::FindTriggerRenameEvidence(text.text, review->oldName, review->scriptNames);
+            if (evidence.kind == TriggerDocumentEditor::RenameEvidence::None && kind == AtomicRenameCodeKind::ArgumentCode
+                && unresolvedDispatch.contains(id)) {
+                evidence.kind = TriggerDocumentEditor::RenameEvidence::DynamicLookup;
+                evidence.excerpt = "ExecuteFunc 的函数名参数不是固定文字";
+            }
+            if (evidence.kind == TriggerDocumentEditor::RenameEvidence::None
+                || (evidence.kind == TriggerDocumentEditor::RenameEvidence::DynamicLookup && review->acceptDynamicLookups))
+                return Status::Ok();
+            // 有证据却没给审计：逐块报位置、原文和审计字段，扫完再一起返回。
+            const auto sha = detail::CodeBlockSha256(text);
+            if (!sha.Succeeded()) return {sha.diagnostics};
+            if (!locations) locations.emplace(document);
+            const AtomicRenameCodeAudit expected{kind, id, text.encoding, *sha.value, catalog.Sha256(),
+                receipt.oldName, receipt.newName, receipt.oldSymbol, receipt.newSymbol, {}};
+            auto failure = Status::Failure("Trigger.Edit", "TRIGGER_RENAME_CODE_AUDIT_REQUIRED",
+                RenameAuditRequiredMessage((*locations)(kind, id), evidence, expected));
+            missing.diagnostics.insert(missing.diagnostics.end(), failure.diagnostics.begin(), failure.diagnostics.end());
+            return Status::Ok();
+        }
+        const auto sha = detail::CodeBlockSha256(text);
+        if (!sha.Succeeded()) return {sha.diagnostics};
         if (found == byBlock.end()) {
             return Status::Failure("Trigger.Edit", "TRIGGER_RENAME_CODE_AUDIT_REQUIRED",
                 "代码块 " + key + " 含未解析的潜在引用；需先证明本次改名不影响它。"
@@ -665,16 +751,24 @@ Status CheckRenameCode(const TriggerDocument& document, const UiCatalog& catalog
                 "代码块 " + key + " 的原字节或编码已变化，拒绝复用旧改名审计。");
         }
         receipt.externallyAuditedCode.push_back(audit);
-        receipt.codeCoverage = AtomicRenameCodeCoverage::CallerAssertedNotRuntimeProven;
         byBlock.erase(found);
         return Status::Ok();
     };
+    // 派发参数不是字面量时运行期字符串无法静态判断（与 ReviewTriggerRenameCode 一致）。
+    const detail::ArgumentClassObserver dispatch = [&](const ArgumentNode& argument, std::string_view, bool, bool dispatched) {
+        if (dispatched && argument.type != 3) unresolvedDispatch.insert(argument.id);
+        return Status::Ok();
+    };
     const std::array symbols{receipt.oldSymbol};
-    if (auto status = detail::VisitOpaqueCodeBlocks(document, catalog, symbols, check); !status.Succeeded()) return status;
+    if (auto status = detail::VisitOpaqueCodeBlocks(document, catalog, symbols, check, review ? dispatch : detail::ArgumentClassObserver{});
+        !status.Succeeded()) return status;
+    if (!missing.Succeeded()) return missing;
     if (!byBlock.empty()) {
         return Status::Failure("Trigger.Edit", "TRIGGER_RENAME_CODE_AUDIT_STALE",
             "审计包含当前文档未消费的代码块；拒绝旧槽位、错误种类或冗余放行。");
     }
+    // 有代码块时只是调用方/编辑器静态核查，不是运行期证明。
+    if (anyCode) receipt.codeCoverage = AtomicRenameCodeCoverage::CallerAssertedNotRuntimeProven;
     return Status::Ok();
 }
 
@@ -683,8 +777,8 @@ struct RenameTextChange { RawText* target; RawText replacement; };
 RenameResult CommitAtomicRename(TriggerDocument& document, const UiCatalog& catalog,
     RawText& declaration, AtomicRenameReceipt receipt,
     std::vector<ArgumentNode*> references, std::string referenceValue,
-    std::span<const AtomicRenameCodeAudit> audits) {
-    if (auto status = CheckRenameCode(document, catalog, receipt, audits); !status.Succeeded())
+    std::span<const AtomicRenameCodeAudit> audits, const RenameAutoReview* review = nullptr) {
+    if (auto status = CheckRenameCode(document, catalog, receipt, audits, review); !status.Succeeded())
         return RenameFailure(std::move(status.diagnostics));
     std::vector<RenameTextChange> changes;
     changes.reserve(references.size() + 1);
@@ -1279,11 +1373,30 @@ Status TriggerDocumentEditor::RenameTrigger(
     return Status::Ok();
 }
 
+namespace {
+// RenameTriggerAtomic 与 RenameTriggerReviewed 共用：名称、重名、结构检查在前，代码核查只扫一遍。
+RenameResult RenameTriggerImpl(TriggerDocument& document, const UiCatalog& catalog, StableId triggerId, std::string name,
+    std::span<const AtomicRenameCodeAudit> codeAudits, std::optional<bool> reviewAcceptingDynamic);
+}
+
 Result<AtomicRenameReceipt> TriggerDocumentEditor::RenameTriggerAtomic(
     TriggerDocument& document, const UiCatalog& catalog,
     StableId triggerId, std::string name,
     std::span<const AtomicRenameCodeAudit> codeAudits) {
-    auto* trigger = FindTrigger(document, triggerId);
+    return RenameTriggerImpl(document, catalog, triggerId, std::move(name), codeAudits, std::nullopt);
+}
+
+Result<AtomicRenameReceipt> TriggerDocumentEditor::RenameTriggerReviewed(
+    TriggerDocument& document, const UiCatalog& catalog,
+    StableId triggerId, std::string name,
+    std::span<const AtomicRenameCodeAudit> provided, bool acceptDynamicLookups) {
+    return RenameTriggerImpl(document, catalog, triggerId, std::move(name), provided, acceptDynamicLookups);
+}
+
+namespace {
+RenameResult RenameTriggerImpl(TriggerDocument& document, const UiCatalog& catalog, StableId triggerId, std::string name,
+    std::span<const AtomicRenameCodeAudit> codeAudits, std::optional<bool> reviewAcceptingDynamic) {
+    auto* trigger = TriggerDocumentEditor::FindTrigger(document, triggerId);
     if (!trigger) return RenameResult::Failure("Trigger.Edit", "TRIGGER_MISSING", "找不到目标触发器。");
     if (name.size() > 4096 || name.empty() || name.find('\0') != std::string::npos
         || TriggerDirectoryEditor::ScriptName(name).empty())
@@ -1332,9 +1445,17 @@ Result<AtomicRenameReceipt> TriggerDocumentEditor::RenameTriggerAtomic(
             return RenameResult::Failure("Trigger.Edit", "TRIGGER_RENAME_REFERENCE_BUDGET", "改名引用超过 owned 字节预算。");
         references.push_back(&argument);
     }
+    std::optional<RenameAutoReview> review;
+    if (reviewAcceptingDynamic) {
+        // 按写出字节和按 UTF-8 正文换算的脚本名都查，名称原文只在字符串里查（与 ReviewTriggerRenameCode 一致）。
+        review.emplace(RenameAutoReview{receipt.oldName,
+            {TriggerDirectoryEditor::ScriptName(trigger->name), TriggerDirectoryEditor::ScriptName(trigger->name.text)},
+            *reviewAcceptingDynamic});
+    }
     return CommitAtomicRename(document, catalog, trigger->name, std::move(receipt),
-        std::move(references), referenceValue, codeAudits);
+        std::move(references), referenceValue, codeAudits, review ? &*review : nullptr);
 }
+} // namespace
 
 Result<std::vector<TriggerDocumentEditor::RenameCodeReview>> TriggerDocumentEditor::ReviewTriggerRenameCode(
     const TriggerDocument& document, const UiCatalog& catalog, StableId triggerId, const std::string& name) {
@@ -1351,29 +1472,7 @@ Result<std::vector<TriggerDocumentEditor::RenameCodeReview>> TriggerDocumentEdit
     // 按写出字节和按 UTF-8 正文换算的脚本名都查，名称原文只在字符串里查。
     const std::array scriptNames{TriggerDirectoryEditor::ScriptName(found->name),
         TriggerDirectoryEditor::ScriptName(found->name.text)};
-    std::unordered_map<StableId, StableId> argumentTrigger;
-    for (const auto& eca : document.ecaNodes)
-        for (const auto index : eca.arguments)
-            if (index < document.argumentNodes.size()) argumentTrigger.emplace(document.argumentNodes[index].id, eca.sourceTriggerId);
-    const auto triggerName = [&](StableId id) -> std::string {
-        const auto row = std::find_if(document.triggers.begin(), document.triggers.end(), [id](const TriggerRecord& t) { return t.id == id; });
-        return row == document.triggers.end() ? std::string{} : row->name.text;
-    };
-    const auto location = [&](AtomicRenameCodeKind kind, StableId id) -> std::string {
-        switch (kind) {
-        case AtomicRenameCodeKind::GlobalCustomCode: return "全局代码";
-        case AtomicRenameCodeKind::TriggerCustomCode: return "触发器“" + triggerName(id) + "”的自定义代码";
-        case AtomicRenameCodeKind::ArgumentCode: {
-            const auto owner = argumentTrigger.find(id);
-            return owner == argumentTrigger.end() ? std::string("代码参数") : "触发器“" + triggerName(owner->second) + "”里的代码参数";
-        }
-        case AtomicRenameCodeKind::VariableInitialValue: {
-            const auto row = std::find_if(document.variables.begin(), document.variables.end(), [id](const VariableRecord& v) { return v.id == id; });
-            return row == document.variables.end() ? std::string("变量初始值") : "变量“" + row->name.text + "”的初始值";
-        }
-        }
-        return "代码";
-    };
+    RenameLocations location(document);
     std::unordered_set<StableId> unresolvedDispatch;
     std::vector<RenameCodeReview> reviews;
     const std::array symbols{oldSymbol};
@@ -1403,37 +1502,6 @@ Result<std::vector<TriggerDocumentEditor::RenameCodeReview>> TriggerDocumentEdit
         });
     if (!status.Succeeded()) return {std::nullopt, status.diagnostics};
     return Output::Success(std::move(reviews));
-}
-
-Result<std::vector<AtomicRenameCodeAudit>> TriggerDocumentEditor::CompleteTriggerRenameAudits(
-    const TriggerDocument& document, const UiCatalog& catalog, StableId triggerId, const std::string& name,
-    std::span<const AtomicRenameCodeAudit> provided) {
-    using Output = Result<std::vector<AtomicRenameCodeAudit>>;
-    auto reviews = ReviewTriggerRenameCode(document, catalog, triggerId, name);
-    if (!reviews.Succeeded()) return {std::nullopt, reviews.diagnostics};
-    std::vector<AtomicRenameCodeAudit> audits(provided.begin(), provided.end());
-    std::unordered_set<std::string> given;
-    for (const auto& audit : provided) given.insert(AuditKey(audit.kind, audit.id));
-    constexpr std::string_view kindNames[] = {"global_custom_code", "trigger_custom_code", "argument_code", "variable_initial_value"};
-    constexpr std::string_view encodingNames[] = {"utf8", "utf8_bom", "gb18030", "latin1"};
-    Status missing = Status::Ok();
-    for (auto& review : *reviews.value) {
-        if (given.contains(AuditKey(review.audit.kind, review.audit.id))) continue;
-        if (!review.mayReference) { audits.push_back(std::move(review.audit)); continue; }
-        const auto& audit = review.audit;
-        std::string message = review.location;
-        if (review.line != 0) message += " 第 " + std::to_string(review.line) + " 行";
-        message += review.evidence == RenameEvidence::NameUse ? " 按旧名称使用了这个触发器" : " 按名称动态调用，无法静态判断是否用到这个触发器";
-        if (!review.excerpt.empty()) message += "：" + review.excerpt;
-        message += "。核对后为该块提交审计：kind=" + std::string(kindNames[static_cast<std::size_t>(audit.kind)])
-            + " id=" + std::to_string(audit.id) + " encoding=" + std::string(encodingNames[static_cast<std::size_t>(audit.encoding)])
-            + " source_sha256=" + audit.sourceSha256 + " ui_catalog_sha256=" + audit.uiCatalogSha256
-            + " old_symbol=" + audit.oldSymbol + " new_symbol=" + audit.newSymbol + "，并写明 reason。代码保持原样，改名未提交。";
-        auto failure = Status::Failure("Trigger.Edit", "TRIGGER_RENAME_CODE_AUDIT_REQUIRED", std::move(message));
-        missing.diagnostics.insert(missing.diagnostics.end(), failure.diagnostics.begin(), failure.diagnostics.end());
-    }
-    if (!missing.Succeeded()) return {std::nullopt, std::move(missing.diagnostics)};
-    return Output::Success(std::move(audits));
 }
 
 Result<TriggerDocumentEditor::TriggerRemoveReceipt>
