@@ -226,25 +226,38 @@ std::string_view TrimSpaces(std::string_view value) {
 }
 } // namespace
 
+namespace {
+// 固定值规则（ValidateLiteral 与 IsValidLiteral 共用）：合法时返回空；否则返回原因，不含预设列举。
+std::string LiteralProblem(const LiteralResolution& resolved, std::string_view type, std::string_view value) {
+    using Literal = TriggerTypeSystem::Literal;
+    const Literal kind = resolved.kind;
+    if (value.find('\0') != std::string_view::npos) return "参数文本不能包含 NUL 字符。";
+    if (!resolved.valid)
+        return "对象编号的类型未定义、别名成环，或没有有效的整数父链：" + std::string(type) + "。";
+    if (kind == Literal::ObjectCode && !TriggerTypeSystem::IsObjectCodeLiteral(value))
+        return "对象编号固定值必须是四个可打印 ASCII 字节；不加引号、不使用反斜杠、转义或 null。";
+    // 数值前后的空格（WE 原样存下、原样写进脚本，JASS 也接受）不是表达式，核对时忽略。
+    if (kind == Literal::Integer && !TriggerTypeSystem::IsIntegerLiteral(TrimSpaces(value)))
+        return "请输入 int32 十进制或32位十六进制整数（0x 或 $ 前缀）；固定值不接受表达式。";
+    if (kind == Literal::Real && !TriggerTypeSystem::IsRealLiteral(TrimSpaces(value)))
+        return "请输入有限的十进制实数；固定值不接受指数、NaN 或表达式。";
+    if (kind == Literal::Boolean && value != "true" && value != "false")
+        return "布尔固定值只能是真（true）或假（false）。";
+    if (kind == Literal::String && std::any_of(value.begin(), value.end(), [](unsigned char c) {
+            return c < 32 && c != '\n' && c != '\r';
+        })) return "字符串含尚未支持的控制字符。";
+    return {};
+}
+} // namespace
+
+bool TriggerTypeSystem::IsValidLiteral(std::string_view type, std::string_view value) const {
+    return LiteralProblem(ResolveLiteral(*this, type), type, value).empty();
+}
+
 Status TriggerTypeSystem::ValidateLiteral(std::string_view type, std::string_view value) const {
     const auto resolved = ResolveLiteral(*this, type);
     const Literal kind = resolved.kind;
-    std::string message;
-    if (value.find('\0') != std::string_view::npos) message = "参数文本不能包含 NUL 字符。";
-    else if (!resolved.valid)
-        message = "对象编号的类型未定义、别名成环，或没有有效的整数父链：" + std::string(type) + "。";
-    else if (kind == Literal::ObjectCode && !IsObjectCodeLiteral(value))
-        message = "对象编号固定值必须是四个可打印 ASCII 字节；不加引号、不使用反斜杠、转义或 null。";
-    // 数值前后的空格（WE 原样存下、原样写进脚本，JASS 也接受）不是表达式，核对时忽略。
-    else if (kind == Literal::Integer && !IsIntegerLiteral(TrimSpaces(value)))
-        message = "请输入 int32 十进制或32位十六进制整数（0x 或 $ 前缀）；固定值不接受表达式。";
-    else if (kind == Literal::Real && !IsRealLiteral(TrimSpaces(value)))
-        message = "请输入有限的十进制实数；固定值不接受指数、NaN 或表达式。";
-    else if (kind == Literal::Boolean && value != "true" && value != "false")
-        message = "布尔固定值只能是真（true）或假（false）。";
-    else if (kind == Literal::String && std::any_of(value.begin(), value.end(), [](unsigned char c) {
-            return c < 32 && c != '\n' && c != '\r';
-        })) message = "字符串含尚未支持的控制字符。";
+    std::string message = LiteralProblem(resolved, type, value);
     // 该类型有预设时列出几个，免得只看到底层整数/实数格式要求而猜不出该写什么。
     if (!message.empty() && kind != Literal::String) {
         const auto presets = PresetsOfType(catalog_, type);

@@ -54,6 +54,8 @@ public:
     // 类型选择器/未知类型仍由原目录处理，不按任意名称后缀猜测对象角色。
     [[nodiscard]] Literal LiteralKind(std::string_view type) const;
     [[nodiscard]] Status ValidateLiteral(std::string_view type, std::string_view value) const;
+    // 与 ValidateLiteral(...).Succeeded() 相同的结论，只是不生成提示（失败提示要列举预设，大图逐参数核对时很慢）。
+    [[nodiscard]] bool IsValidLiteral(std::string_view type, std::string_view value) const;
     // 与现有 JASS 后端共用同一数值字面量规则，不接受表达式或静默转换。
     [[nodiscard]] static bool IsIntegerLiteral(std::string_view value);
     // 十进制 int32 或 JASS 的 0x/$ 十六进制32位字面量；返回相同有符号位模式。

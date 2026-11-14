@@ -53,7 +53,7 @@ Status VisitOpaqueCodeBlocks(const TriggerDocument& document, const UiCatalog& c
         if (kind == TriggerTypeSystem::Literal::Integer || kind == TriggerTypeSystem::Literal::Real
             || kind == TriggerTypeSystem::Literal::Boolean || kind == TriggerTypeSystem::Literal::ObjectCode
             || kind == TriggerTypeSystem::Literal::String)
-            return types.ValidateLiteral(type, value).Succeeded();
+            return types.IsValidLiteral(type, value);
         // scriptcode 即使声明string基础类型也按源码发射；未知类型不能借null字样绕过清单。
         return kind == TriggerTypeSystem::Literal::Other && !type.empty() && type != "AnyReturnType" && value == "null"
             && (types.Accepts("handle", type) || types.Accepts("code", type));
@@ -103,7 +103,7 @@ Result<OpaqueArgumentInventory> InspectOpaqueArgumentInventory(const TriggerDocu
             if (bytes > 64 * 1024 * 1024 - inventory.totalBytes)
                 return Status::Failure("Trigger.CodeAudit", "TRIGGER_CODE_INVENTORY_BUDGET", "分类统计超过64MiB文本预算，未截断统计。");
             inventory.totalBytes += bytes; ++inventory.arguments;
-            const bool valid = types.ValidateLiteral(expected, argument.value.text).Succeeded();
+            const bool valid = types.IsValidLiteral(expected, argument.value.text);
             const auto key = std::tuple{std::string(expected), valid, opaque, dispatch};
             auto [entry, inserted] = groups.emplace(key, inventory.classes.size());
             if (inserted) {

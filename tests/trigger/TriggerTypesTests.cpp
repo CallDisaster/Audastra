@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <windows.h>
@@ -236,6 +237,13 @@ void TestTriggerTypes() {
     }
     for (const auto text : {"0x", "$", "0x100000000", "$100000000", "0x1+1", "0xGG", "0x1);evil()", "1e2"})
         Check(!types.ValidateLiteral("integer", text).Succeeded(), "hex prefix does not admit overflow or expressions");
+    // 不生成提示的快速核对与完整核对结论一致（含带预设的类型、实数精度提醒和各种失败）。
+    const std::pair<const char*, const char*> literalCases[] = {{"integer", "1234"}, {"integer", "A0E0"}, {"integer", " 7 "},
+        {"real", "0.5"}, {"real", "1e2"}, {"real", "0.100000001490116119384765625"}, {"degree", "90"}, {"boolean", "true"},
+        {"boolean", "1"}, {"string", "a\nb"}, {"string", "a\x01"}, {"abilcode", "A0E0"},
+        {"abilcode", "1234"}, {"unit", "null"}, {"typename", "legacy-selector-text"}, {"UnknownLegacyType", "x"}};
+    for (const auto& [literalType, literalValue] : literalCases)
+        Check(types.IsValidLiteral(literalType, literalValue) == types.ValidateLiteral(literalType, literalValue).Succeeded(), "fast literal check matches full check");
     Check(types.ValidateLiteral("unit", "null").Succeeded()
         && types.ValidateLiteral("typename", "legacy-selector-text").Succeeded()
         && types.ValidateLiteral("UnknownLegacyType", "legacy-other-text").Succeeded(), "non-object rules remain unchanged");
