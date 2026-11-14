@@ -912,6 +912,14 @@ set_tests_properties(qt-code-project-real PROPERTIES TIMEOUT 90 SKIP_RETURN_CODE
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
+# 真实大地图上触发器改名/删除耗时；只按显式环境变量运行，不登记为 CTest。
+qt_add_executable(war3-trigger-edit-timing TriggerEditTimingReal.cpp)
+target_link_libraries(war3-trigger-edit-timing PRIVATE War3MapEditor::QtProject War3MapEditor::QtModuleTriggers Qt6::Test)
+target_include_directories(war3-trigger-edit-timing PRIVATE "${PROJECT_SOURCE_DIR}/src/Trigger")
+target_compile_definitions(war3-trigger-edit-timing PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
+target_compile_options(war3-trigger-edit-timing PRIVATE /W4 /permissive- /utf-8)
+war3map_deploy_qt_runtime(war3-trigger-edit-timing)
+
 qt_add_executable(war3-code-index-project-tests CodeIndexProjectTests.cpp)
 target_link_libraries(war3-code-index-project-tests PRIVATE War3MapEditor::QtProject War3MapEditor::QtModuleTriggers Qt6::Test)
 target_compile_definitions(war3-code-index-project-tests PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
