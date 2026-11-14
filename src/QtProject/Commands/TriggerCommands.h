@@ -343,7 +343,11 @@ private:
     struct AssetStorage;
     std::shared_ptr<AssetStorage> assets_;
     std::shared_ptr<bool> firstPublication_ = std::make_shared<bool>(false);
-    [[nodiscard]] bool CanApply(bool forward) const;
+    // Ready() 刚核对过整图、紧接着入栈的首次发布复用该结论（同一文档、栈位置与修订，只用一次），
+    // 不在 Ready→push→redo 之间重复整图扫描。
+    struct VerifiedReady { const Trigger::TriggerDocument* document = nullptr; int stackIndex = -1; std::uint64_t revision = 0; };
+    mutable std::optional<VerifiedReady> verifiedReady_;
+    [[nodiscard]] bool CanApply(bool forward, bool graphVerified = false) const;
 };
 
 // 按当前触发器文档签发绑定，在副本上应用整批图操作；内容有变化时作为一条撤销命令发布。

@@ -656,9 +656,15 @@ TriggerGraphSnapshotUndoCommand::TriggerGraphSnapshotUndoCommand(EditorProject& 
       document_(project.triggerDocument_.get()), catalog_(project.uiCatalog_.get()),
       generation_(project.editRevision_.Generation()), scalarReceipt_(std::move(receipt)) {}
 
-bool TriggerGraphSnapshotUndoCommand::Ready() const { return CanApply(true); }
+bool TriggerGraphSnapshotUndoCommand::Ready() const {
+    verifiedReady_.reset();
+    const bool ready = CanApply(true);
+    if (ready && snapshot_ && !*firstPublication_ && project_->triggerUndoStack_)
+        verifiedReady_ = VerifiedReady{document_, project_->triggerUndoStack_->index(), project_->editRevision_.Revision()};
+    return ready;
+}
 
-bool TriggerGraphSnapshotUndoCommand::CanApply(bool forward) const {
+bool TriggerGraphSnapshotUndoCommand::CanApply(bool forward, bool graphVerified) const {
     if (!project_ || !document_ || project_->triggerDocument_.get() != document_ || !catalog_
         || project_->uiCatalog_.get() != catalog_ || project_->editRevision_.Generation() != generation_
         || project_->sourceChangeSuspected_ || project_->sourceChangeConfirmed_) return false;
@@ -679,12 +685,17 @@ bool TriggerGraphSnapshotUndoCommand::CanApply(bool forward) const {
             && project_->uiCatalog_->Sha256() == expected.uiCatalogSha256;
     }
     if (!snapshot_ || !snapshot_->beforeBinding || !snapshot_->afterBinding) return false;
+    if (graphVerified) return true;
     const auto& expected = forward ? *snapshot_->beforeBinding : *snapshot_->afterBinding;
     return Trigger::VerifyTriggerGraphReplayIdentity(*document_, *project_->uiCatalog_, expected).Succeeded();
 }
 
 void TriggerGraphSnapshotUndoCommand::Apply(bool forward) {
-    if (!CanApply(forward)) {
+    const auto verified = std::exchange(verifiedReady_, std::nullopt);
+    const bool reuse = forward && verified && project_ && !*firstPublication_ && project_->triggerUndoStack_
+        && verified->document == document_ && verified->stackIndex == project_->triggerUndoStack_->index()
+        && verified->revision == project_->editRevision_.Revision();
+    if (!CanApply(forward, reuse)) {
         if (!project_) { setObsolete(true); return; }
         const QPointer<EditorProject> project(project_);
         setObsolete(true);

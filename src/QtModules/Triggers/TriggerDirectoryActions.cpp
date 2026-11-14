@@ -209,39 +209,31 @@ bool TriggerModule::RenameDirectoryItem(const TriggerDirectoryItem& item, const 
         ShowStatus(tr("未重命名：%1").arg(FirstMessage(valid.diagnostics, tr("名称无效"))), 6000);
         return false;
     }
-    // 捕获排队前的会话与真实 codec 绑定，不能在回调时借用另一张图的相同 ID。
+    // 捕获排队前的会话、撤销栈位置与修订，不能在回调时借用另一张图的相同 ID。
+    // 不在排队前后各做整图核对（大图上各要数百毫秒）：发布时核心按当前文档重新签发绑定、
+    // 核对旧名称与新名称，排队这一拍内的变化由栈位置与修订识别。
     const auto generation = project_.editRevision_.Generation();
+    const auto revision = project_.editRevision_.Revision();
+    const int stackIndex = project_.triggerUndoStack_->index();
     const auto* identity = project_.triggerDocument_.get();
     const auto* catalog = project_.uiCatalog_.get();
-    std::optional<Trigger::TriggerGraphReplayIdentity> binding;
     if (project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) {
         ShowStatus(tr("未重命名：地图来源已发生变化，请先核对来源。"), 10000);
         return false;
     }
-    if (!item.category) {
-        if (!catalog) return false;
-        const auto captured = Trigger::CaptureTriggerGraphReplayIdentity(*document, *catalog);
-        if (!captured.Succeeded()) {
-            project_.AddDiagnostics(captured.diagnostics);
-            ShowStatus(tr("未重命名：%1").arg(FirstMessage(captured.diagnostics, tr("无法确认触发器来源"))), 10000);
-            return false;
-        }
-        binding = *captured.value;
-    }
+    if (!item.category && !catalog) return false;
     // 编辑器仍在提交数据：排队执行，避免在模型回调中重置模型。
-    QTimer::singleShot(0, this, [this, item, text, generation, identity, catalog, binding]() {
+    QTimer::singleShot(0, this, [this, item, text, generation, revision, stackIndex, identity, catalog]() {
         if (project_.triggerDocument_.get() != identity || project_.uiCatalog_.get() != catalog
             || project_.editRevision_.Generation() != generation
             || project_.sourceChangeSuspected_ || project_.sourceChangeConfirmed_) {
             ShowStatus(tr("未重命名：当前地图会话或函数目录已变化。"), 10000);
             return;
         }
-        if (binding) {
-            const auto current = Trigger::VerifyTriggerGraphReplayIdentity(*identity, *catalog, *binding);
-            if (!current.Succeeded()) {
-                ShowStatus(tr("未重命名：排队期间触发器图或来源已变化。"), 10000);
-                return;
-            }
+        if (project_.triggerUndoStack_ == nullptr || project_.triggerUndoStack_->index() != stackIndex
+            || project_.editRevision_.Revision() != revision) {
+            ShowStatus(tr("未重命名：排队期间触发器图或来源已变化。"), 10000);
+            return;
         }
         ApplyRename(item, text);
     });

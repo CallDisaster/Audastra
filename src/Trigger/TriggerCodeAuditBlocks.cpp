@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <map>
 #include <tuple>
+#include <unordered_map>
 
 namespace War3Map::Trigger::detail {
 Result<std::string> CodeBlockSha256(const RawText& text) {
@@ -60,19 +61,25 @@ Status VisitOpaqueCodeBlocks(const TriggerDocument& document, const UiCatalog& c
     const auto mentions = [&](std::string_view text) {
         return std::any_of(symbols.begin(), symbols.end(), [&](const auto& symbol) { return text.find(symbol) != std::string_view::npos; });
     };
+    // 预设按名缓存是否需要当代码看（大图上同名预设重复数万次，每次构造显示名要数百毫秒）。
+    std::unordered_map<std::string_view, bool> presetOpaque;
+    const auto opaquePreset = [&](std::string_view name) {
+        if (const auto found = presetOpaque.find(name); found != presetOpaque.end()) return found->second;
+        const auto preset = FindPreset(catalog, name);
+        return presetOpaque.emplace(name, !preset || mentions(preset->script)).first->second;
+    };
     for (std::size_t i = 0; i < document.argumentNodes.size(); ++i) {
         const auto& arg = document.argumentNodes[i];
         const bool direct = arg.type != 0 && arg.type != 1 && arg.type != 2;
         const std::string expected = direct ? expectedType(i) : std::string{};
         bool opaque = direct && !literal(expected, arg.value.text);
-        if (arg.type == 0) { const auto preset = FindPreset(catalog, arg.value.text); opaque = !preset || mentions(preset->script); }
+        if (arg.type == 0) opaque = opaquePreset(arg.value.text);
         if (observer) if (const auto status = observer(arg, expected, opaque || dispatch[i], dispatch[i]); !status.Succeeded()) return status;
         if (opaque || dispatch[i])
             if (auto s = visit(AtomicRenameCodeKind::ArgumentCode, arg.id, arg.value); !s.Succeeded()) return s;
     }
     for (const auto& row : document.variables) if (!row.value.text.empty() && !literal(row.typeName.text, row.value.text)) {
-        const auto preset = FindPreset(catalog, row.value.text);
-        if (!preset || mentions(preset->script))
+        if (opaquePreset(row.value.text))
             if (auto s = visit(AtomicRenameCodeKind::VariableInitialValue, row.id, row.value); !s.Succeeded()) return s;
     }
     return Status::Ok();
