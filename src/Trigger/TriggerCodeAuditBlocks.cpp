@@ -18,8 +18,12 @@ Status VisitOpaqueCodeBlocks(const TriggerDocument& document, const UiCatalog& c
     if (auto s = visit(AtomicRenameCodeKind::GlobalCustomCode, 0, document.wct.customCode); !s.Succeeded()) return s;
     for (const auto& row : document.triggers)
         if (auto s = visit(AtomicRenameCodeKind::TriggerCustomCode, row.id, row.customText); !s.Succeeded()) return s;
-    const TriggerTypeSystem types(catalog);
-    std::vector<std::string> expected(document.argumentNodes.size());
+    // 文档在本次遍历中不变：变量参数的类型按名缓存。
+    TriggerTypeSystem types(catalog);
+    types.MemoizeVariableTypes(document);
+    // 期望类型只有直接值（type 3）用得到，按需计算；其余参数给观察者空类型。
+    struct Slot { const EcaNode* eca = nullptr; std::size_t position = 0; bool index = false; };
+    std::vector<Slot> slots(document.argumentNodes.size());
     std::vector<bool> dispatch(document.argumentNodes.size());
     for (const auto& eca : document.ecaNodes) {
         const auto* definition = catalog.Find(eca.type, eca.name.text);
@@ -29,15 +33,20 @@ Status VisitOpaqueCodeBlocks(const TriggerDocument& document, const UiCatalog& c
             || eca.name.text == "YDWECustomScriptCode" || (script && *script == "ExecuteFunc")
             || (alternate && *alternate == "ExecuteFunc");
         for (std::size_t i = 0; i < eca.arguments.size(); ++i) {
-            if (eca.arguments[i] >= expected.size()) return Status::Failure("Trigger.CodeAudit", "TRIGGER_CODE_AUDIT_STRUCTURE", "代码块参数索引越界。");
-            expected[eca.arguments[i]] = types.ExpectedType(document, eca, i);
+            if (eca.arguments[i] >= slots.size()) return Status::Failure("Trigger.CodeAudit", "TRIGGER_CODE_AUDIT_STRUCTURE", "代码块参数索引越界。");
+            slots[eca.arguments[i]].eca = &eca;
+            slots[eca.arguments[i]].position = i;
             dispatch[eca.arguments[i]] = dynamic;
         }
     }
     for (const auto& arg : document.argumentNodes) if (arg.indexArgument) {
-        if (*arg.indexArgument >= expected.size()) return Status::Failure("Trigger.CodeAudit", "TRIGGER_CODE_AUDIT_STRUCTURE", "代码块数组索引越界。");
-        expected[*arg.indexArgument] = "integer";
+        if (*arg.indexArgument >= slots.size()) return Status::Failure("Trigger.CodeAudit", "TRIGGER_CODE_AUDIT_STRUCTURE", "代码块数组索引越界。");
+        slots[*arg.indexArgument].index = true;
     }
+    const auto expectedType = [&](std::size_t i) -> std::string {
+        if (slots[i].index) return "integer";
+        return slots[i].eca ? types.ExpectedType(document, *slots[i].eca, slots[i].position) : std::string{};
+    };
     const auto literal = [&](std::string_view type, std::string_view value) {
         const auto kind = types.LiteralKind(type);
         if (kind == TriggerTypeSystem::Literal::Integer || kind == TriggerTypeSystem::Literal::Real
@@ -53,9 +62,11 @@ Status VisitOpaqueCodeBlocks(const TriggerDocument& document, const UiCatalog& c
     };
     for (std::size_t i = 0; i < document.argumentNodes.size(); ++i) {
         const auto& arg = document.argumentNodes[i];
-        bool opaque = arg.type != 0 && arg.type != 1 && arg.type != 2 && !literal(expected[i], arg.value.text);
+        const bool direct = arg.type != 0 && arg.type != 1 && arg.type != 2;
+        const std::string expected = direct ? expectedType(i) : std::string{};
+        bool opaque = direct && !literal(expected, arg.value.text);
         if (arg.type == 0) { const auto preset = FindPreset(catalog, arg.value.text); opaque = !preset || mentions(preset->script); }
-        if (observer) if (const auto status = observer(arg, expected[i], opaque || dispatch[i], dispatch[i]); !status.Succeeded()) return status;
+        if (observer) if (const auto status = observer(arg, expected, opaque || dispatch[i], dispatch[i]); !status.Succeeded()) return status;
         if (opaque || dispatch[i])
             if (auto s = visit(AtomicRenameCodeKind::ArgumentCode, arg.id, arg.value); !s.Succeeded()) return s;
     }

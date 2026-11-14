@@ -385,6 +385,14 @@ std::string TriggerTypeSystem::ValueType(const TriggerDocument& document, const 
     switch (argument.type) {
     case 0: return PresetType(argument.value.text).value_or(std::string{});
     case 1: {
+        if (memoDocument_ == &document) {
+            const auto [found, inserted] = memoTypes_.try_emplace(argument.value.text);
+            if (inserted) {
+                const auto reference = ResolveVariableReference(document, argument.value.text, mapObjects_);
+                if (reference.Succeeded()) found->second = reference.value->type;
+            }
+            return found->second;
+        }
         const auto reference = ResolveVariableReference(document, argument.value.text, mapObjects_);
         return reference.Succeeded() ? reference.value->type : std::string{};
     }

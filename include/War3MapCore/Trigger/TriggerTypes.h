@@ -111,6 +111,10 @@ public:
     struct ValueKinds { bool preset = true; bool variable = true; bool function = true; };
     [[nodiscard]] ValueKinds AllowedValueKinds(std::string_view expected) const;
 
+    // 一次性遍历用：document 在本对象使用期间不变时，按变量名缓存变量参数的类型
+    // （每次都按名遍历全部变量和触发器，大图上逐参数查要数百毫秒）。文档改动后不得继续使用本对象。
+    void MemoizeVariableTypes(const TriggerDocument& document) { memoDocument_ = &document; memoTypes_.clear(); }
+
 private:
     [[nodiscard]] std::string_view CanonicalUiType(std::string_view type) const;
     const UiCatalog& catalog_;
@@ -118,6 +122,8 @@ private:
     std::unordered_map<std::string, TriggerTypeInfo> types_;
     std::unordered_map<std::string, std::string> presetTypes_;
     std::set<std::string> selectors_;
+    const TriggerDocument* memoDocument_ = nullptr;
+    mutable std::unordered_map<std::string, std::string> memoTypes_;
 };
 
 // YDWE 局部变量相关函数名（读取 / 设置 / 循环）。
