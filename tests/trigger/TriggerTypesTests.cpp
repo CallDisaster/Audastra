@@ -70,7 +70,7 @@ std::filesystem::path CreateUi() {
         "abilityalias2=0,1,1,二级别名,abilityalias\r\ncustomcode=0,1,1,普通整数,integer\r\n"
         "scriptcode=1,0,0,代码,string\r\n"
         "typename=1,0,0,参数类型,string\r\nobjecttype=1,0,0,物体类型,string\r\n"
-        "StringExt=0,0,0,长文本,string\r\nmodelfile=0,0,0,模型文件,string,Model,1\r\nplainalias=0,0,0,无标记别名,string\r\n"
+        "eventcall=0,0,0,事件\r\nStringExt=0,0,0,长文本,string\r\nmodelfile=0,0,0,模型文件,string,Model,1\r\nplainalias=0,0,0,无标记别名,string\r\n"
         "[TriggerParams]\r\n"
         "typename01_real=0,typename,1,实数\r\ntypename07_unit=0,typename,7,单位\r\n"
         "objecttype02_unitcode=0,objecttype,2,单位\r\nPresetHalf=0,real,0.5,一半\r\n");
@@ -80,6 +80,7 @@ std::filesystem::path CreateUi() {
         "[[.args]]\r\ntype=typename\r\n[[.args]]\r\ntype=scriptcode\r\n[[.args]]\r\ntype=Null\r\n"
         "[UseReal]\r\ndescription=\"用 ${实数}\"\r\n[[.args]]\r\ntype=real\r\n"
         "[UseInteger]\r\ndescription=\"用 ${整数}\"\r\n[[.args]]\r\ntype=integer\r\n");
+    WriteText(ui / "base" / "event.txt", "[MapInitializationEvent]\r\ndescription=\"地图初始化\"\r\n");
     WriteText(ui / "base" / "call.txt",
         "[YDWEGetAnyTypeLocalVariable]\r\ndescription=\"loc_${名}\"\r\nreturns=AnyReturnType\r\n[[.args]]\r\ntype=scriptcode\r\n"
         "[GetDegree]\r\nreturns=degree\r\n"
@@ -186,6 +187,9 @@ void TestTriggerTypes() {
     const auto selector = types.AllowedValueKinds("typename");
     Check(!selector.variable && !selector.function && selector.preset, "typename is preset-only");
     Check(!types.AllowedValueKinds("unit").preset, "unit has no presets");
+    // 函数槽：AddTriggerEvent 的 eventcall 不能声明变量、没有预设，但与 WE 相同可选事件函数。
+    const auto eventSlot = types.AllowedValueKinds("eventcall");
+    Check(eventSlot.function && !eventSlot.variable && !eventSlot.preset, "eventcall slot offers event functions");
     const auto unknown = types.AllowedValueKinds("Null");
     Check(unknown.variable && unknown.function && unknown.preset, "unresolved types stay unrestricted");
 

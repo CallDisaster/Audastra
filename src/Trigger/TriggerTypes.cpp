@@ -320,6 +320,8 @@ TriggerTypeSystem::ValueKinds TriggerTypeSystem::AllowedValueKinds(std::string_v
     }
     kinds.preset = !PresetsOfType(catalog_, expected).empty();
     kinds.function = info != nullptr && info->canBeGlobal;
+    // 函数槽（eventcall/boolexpr/code）与 WE 相同，可选事件/条件/动作函数。
+    if (const auto slot = FunctionSlotKind(expected); slot && !catalog_.Definitions(*slot).empty()) kinds.function = true;
     if (!kinds.function) {
         for (const auto* definition : catalog_.Definitions(UiDefinitionKind::Call)) {
             const auto returns = Field(definition->Active(), "returns").value_or(std::string_view{});

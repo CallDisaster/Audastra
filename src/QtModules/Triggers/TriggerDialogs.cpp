@@ -559,9 +559,11 @@ void TriggerParameterDialog::AddArgumentRow(
             accept();
             return;
         }
+        // 函数槽（如 AddTriggerEvent 的事件）与 WE 相同，从事件/条件/动作函数中选。
+        const auto slot = War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(row->expectedType);
         UiDefinitionPickerDialog picker(
             catalog_,
-            War3Map::Trigger::UiDefinitionKind::Call,
+            slot && !catalog_.Definitions(*slot).empty() ? *slot : War3Map::Trigger::UiDefinitionKind::Call,
             row->expectedType,
             categoryIcons_,
             this);
@@ -593,6 +595,9 @@ void TriggerParameterDialog::PrepareVariableKind(Row* row, const War3Map::Trigge
     const bool referenceOnly = kinds.variable && !kinds.preset && !row->booleanLiteral
         && types.LiteralKind(row->expectedType) == War3Map::Trigger::TriggerTypeSystem::Literal::Other;
     if (row->writableTarget || referenceOnly) row->kind->setCurrentIndex(row->kind->findData(1));
+    // 事件/条件/动作槽没有直接值写法，空槽默认改用“函数”。
+    else if (kinds.function && War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(row->expectedType))
+        row->kind->setCurrentIndex(row->kind->findData(2));
 }
 
 void TriggerParameterDialog::PopulateVariables(Row* row) {
