@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "War3MapCore/Feedback/RunLog.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "RecoveryPreferences.h"
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
@@ -103,6 +105,7 @@ bool MainWindow::SaveEditorProjectToPath(const std::filesystem::path& target, bo
 }
 
 bool MainWindow::OpenEditorProjectPath(const std::filesystem::path& path) {
+    War3Map::RunLog::Info("打开", "工程 " + War3Map::IO::PathUtf8(path));
     auto prepared = War3Map::QtProject::PrepareProjectOpen(path, project_->war3GameRoot_);
     if (!prepared.Succeeded()) {
         for (const auto& diagnostic : prepared.diagnostics)

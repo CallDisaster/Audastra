@@ -306,6 +306,12 @@ void MainWindow::BuildHeader() {
     auto* feedback = helpMenu->addAction(tr("反馈…"), this, &MainWindow::ShowFeedback);
     feedback->setObjectName(QStringLiteral("applicationFeedbackAction"));
     RegisterCommandAction("application.feedback", feedback, tr("帮助"));
+    auto* errorReport = helpMenu->addAction(tr("导出错误报告…"), this, &MainWindow::ShowErrorReport);
+    errorReport->setObjectName(QStringLiteral("applicationErrorReportAction"));
+    RegisterCommandAction("application.error_report", errorReport, tr("帮助"));
+    auto* logFolder = helpMenu->addAction(tr("打开日志文件夹"), this, &MainWindow::OpenLogFolder);
+    logFolder->setObjectName(QStringLiteral("applicationLogFolderAction"));
+    RegisterCommandAction("application.log_folder", logFolder, tr("帮助"));
     auto* help = MenuAction(this, "lucide/circle-help", tr("帮助"));
     help->setMenu(helpMenu);
     header->AddAction(help);

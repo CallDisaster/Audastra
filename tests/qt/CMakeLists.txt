@@ -4,7 +4,7 @@ target_compile_options(audastra-diagnostic-timings-tests PRIVATE /W4 /permissive
 add_test(NAME qt-diagnostic-timings COMMAND audastra-diagnostic-timings-tests)
 set_tests_properties(qt-diagnostic-timings PROPERTIES TIMEOUT 30
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-foreach(product_unit IN ITEMS UpdateClient UpdateDialog FeedbackClient FeedbackDialog ProgramIssueReporter)
+foreach(product_unit IN ITEMS UpdateClient UpdateDialog FeedbackClient FeedbackDialog ProgramIssueReporter ErrorReportDialog)
     string(TOLOWER "${product_unit}" product_unit_lower)
     qt_add_executable(audastra-${product_unit_lower}-tests ${product_unit}Tests.cpp)
     if(product_unit MATCHES "^Update")

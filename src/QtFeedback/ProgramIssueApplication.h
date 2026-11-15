@@ -1,14 +1,17 @@
 #pragma once
 
 #include "ProgramIssueReporter.h"
+#include "War3MapCore/Feedback/RunLog.h"
 
 #include <QApplication>
+#include <QEvent>
 #include <QMetaObject>
 #include <QThread>
 
 #include <exception>
 #include <atomic>
 #include <memory>
+#include <string>
 #include <utility>
 
 namespace War3Map::QtFeedback {
@@ -23,14 +26,23 @@ public:
     }
     [[nodiscard]] std::shared_ptr<ProgramIssueReporter> Reporter() const { return reporter_.load(); }
     void ReportStartupException(bool standardException) noexcept {
+        RunLog::Error("异常", standardException ? "启动时抛出异常。" : "启动时抛出未知异常。");
         if (const auto reporter = Reporter()) (void)reporter->UnhandledException(ExceptionBoundary::Startup, standardException);
     }
     [[nodiscard]] bool HadUnhandledException() const noexcept { return failed_.load(); }
 
     bool notify(QObject* receiver, QEvent* event) override {
         try { return QApplication::notify(receiver, event); }
-        catch (const std::exception&) { FailEvent(true); }
-        catch (...) { FailEvent(false); }
+        catch (const std::exception& error) {
+            // 本机运行日志记下异常文字与接收者，便于错误报告定位；反馈队列仍只收固定代码。
+            RunLog::Error("异常", std::string("事件处理抛出异常：") + error.what() + "；接收者 "
+                + (receiver ? receiver->metaObject()->className() : "未知") + "，事件 " + std::to_string(event ? static_cast<int>(event->type()) : 0));
+            FailEvent(true);
+        }
+        catch (...) {
+            RunLog::Error("异常", std::string("事件处理抛出未知异常；接收者 ") + (receiver ? receiver->metaObject()->className() : "未知"));
+            FailEvent(false);
+        }
         return false;
     }
 

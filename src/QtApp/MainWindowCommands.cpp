@@ -6,6 +6,7 @@
 #include "ObjectModule.h"
 #include "TriggerModule.h"
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/Feedback/RunLog.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/MapData/MapDataEditSession.h"
 #include "War3MapCore/ObjectData/LniObjectCodec.h"
@@ -26,8 +27,25 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 
 namespace {
+// 运行日志：每次撤销栈变化记一行（新编辑 / 撤销 / 重做 + 命令名）。命令名是界面文字，不含地图内容。
+void LogUndoStack(QObject* owner, QUndoStack* stack, const char* area) {
+    if (!stack) return;
+    const auto last = std::make_shared<std::pair<int, int>>(stack->index(), stack->count());
+    QObject::connect(stack, &QUndoStack::indexChanged, owner, [stack, area, last](int index) {
+        const auto [previousIndex, previousCount] = *last;
+        *last = {index, stack->count()};
+        if (stack->count() == 0) return; // 历史清空（换图、重载）
+        if (index > previousIndex && index > 0) {
+            const bool fresh = stack->count() != previousCount || (index == stack->count() && previousIndex == previousCount);
+            War3Map::RunLog::Info(area, std::string(fresh ? "编辑：" : "重做：") + stack->text(index - 1).toStdString());
+        } else if (index < previousIndex) {
+            War3Map::RunLog::Info(area, "撤销：" + stack->text(index).toStdString());
+        }
+    });
+}
 namespace Services = War3Map::Services;
 
 QString Text(std::string_view value) {
@@ -70,6 +88,11 @@ void MainWindow::RegisterCommandAction(const std::string& id, QAction* action, c
     std::string error;
     if (!commandRegistry_.Register(std::move(command), &error)) ShowStatusMessage(Text(error));
     action->setProperty("forgeCommandId", Text(id));
+    // 运行日志：菜单、工具栏、快捷键与命令面板共用同一 QAction，在这里统一记下用户做了什么。
+    connect(action, &QAction::triggered, this, [id, guarded]() {
+        War3Map::RunLog::Info("操作", (guarded ? guarded->text().remove(QLatin1Char('&')).toStdString() : std::string())
+            + "（" + id + "）");
+    });
 }
 
 void MainWindow::SetupCommandPalette() {
@@ -166,6 +189,10 @@ void MainWindow::SetupCommandPalette() {
     connect(project_->triggerUndoStack_, &QUndoStack::indexChanged, this, invalidate);
     connect(project_->mapDataUndoStack_, &QUndoStack::indexChanged, this, invalidate);
     for (auto* stack : project_->objectUndoStacks_) connect(stack, &QUndoStack::indexChanged, this, invalidate);
+    LogUndoStack(this, project_->triggerUndoStack_, "触发器");
+    LogUndoStack(this, project_->mapDataUndoStack_, "地图数据");
+    for (auto* stack : project_->objectUndoStacks_) LogUndoStack(this, stack, "物编");
+    LogUndoStack(this, project_->AssetUndoStack(), "资源");
     if (startupMode_ == StartupMode::Normal) {
         std::vector<std::string> recent;
         for (const auto& id : QSettings().value("ui/commandRecent").toStringList()) recent.push_back(id.toStdString());

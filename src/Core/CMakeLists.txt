@@ -149,7 +149,8 @@ target_sources(War3MapCore PRIVATE
     Update/UpdateInstaller.cpp Update/UpdateInstallerFiles.cpp Update/UpdateInstallerProcess.cpp
     Update/UpdateInstallerJournal.cpp Update/UpdateInstallerRecovery.cpp
     Feedback/Privacy.cpp Feedback/Report.cpp Feedback/JsonCodec.cpp
-    Feedback/FeedbackStorage.cpp Feedback/Queue.cpp Feedback/Export.cpp)
+    Feedback/FeedbackStorage.cpp Feedback/Queue.cpp Feedback/Export.cpp
+    Feedback/RunLog.cpp Feedback/ErrorReport.cpp)
 target_link_libraries(War3MapCore PRIVATE audastra-sodium audastra-miniz audastra-json)
 
 add_library(War3MapEditor::Core ALIAS War3MapCore)

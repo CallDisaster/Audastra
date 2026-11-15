@@ -12,6 +12,9 @@
 #include "War3MapCore/HLua/Test.h"
 #include "War3MapCore/Services/MapTestWorkspace.h"
 #include "War3MapCore/Script/MapTestToolchain.h"
+#include "War3MapCore/Feedback/RunLog.h"
+#include "War3MapCore/IO/FileBytes.h"
+#include "ErrorReportEnvironment.h"
 
 #include <QDir>
 #include <QAction>
@@ -197,6 +200,20 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
         ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned;
     request.handwrittenLuaHotReload = settings.value("mapTest/hotReloadEnabled", true).toBool();
     if (!snapshot) request.expectedInputSha256 = project_->archiveSession_->SourceSha256();
+    {
+        // 运行日志：本次测试用到的全部目录与选项，出问题时不必再问作者怎么配置的。
+        const auto version = QtFeedback::FileVersion(request.gameRoot / L"Game.dll");
+        War3Map::RunLog::Info("测试", "开始准备：" + War3Map::IO::PathUtf8(project_->sourceArchivePath_)
+            + (snapshot ? "（含未保存修改，先生成测试副本）" : "") + "\n游戏目录 " + gameRoot.toStdString()
+            + (version.isEmpty() ? std::string() : "（Game.dll " + version.toStdString() + "）")
+            + "\nYDWE / KKWE 目录 " + (runtimeYdweRoot.isEmpty() ? std::string("未设置") : runtimeYdweRoot.toStdString())
+            + "\n运行库目录 " + (runtimeRoot.isEmpty() ? std::string("未设置") : runtimeRoot.toStdString())
+            + "\n外部依赖目录 " + War3Map::IO::PathUtf8(request.externalDependenciesDirectory)
+            + "\nLua：" + (ownedLua ? "经典 Lua 地图" : request.handwrittenLuaEngine == Services::MapTestLuaEngine::Ydwe
+                ? "手写 Lua 用 YDWE 引擎" : "手写 Lua 用自带环境") + (testHotReload ? "，热重载" : "")
+            + "；SLK 优化 " + (request.optimizeSlk ? "开" : "关") + (interactive ? "" : "；助手后台测试")
+            + (hiddenDesktop ? "；不可见" : ""));
+    }
 
     QProgressDialog dialog(tr("正在准备测试地图…"), QString(), 0, 0, this);
     dialog.setWindowTitle(tr("地图测试"));
@@ -266,11 +283,14 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
         const auto detail = diagnostics.empty() ? tr("测试准备未通过，请查看诊断。")
             : QString::fromStdString((reason != diagnostics.end() ? *reason : diagnostics.front()).message);
         if (workspaceReady.Succeeded()) cleanupUnstarted(false);
+        War3Map::RunLog::Error("测试", "未启动：" + detail.toStdString());
         return fail(tr("地图测试未启动"), detail + tr("\n原图和当前编辑均保留。"));
     }
     // 仅用户点击测试时发起游戏；预检、SHA与复制均在低优先级worker完成。
     mapTestLease_ = launched.value->lease;
     mapTestRunName_ = runName; mapTestCaptures_ = 0;
+    War3Map::RunLog::Info("测试", "已启动：启动器进程 " + std::to_string(launched.value->launcherProcessId)
+        + "，测试地图 " + War3Map::IO::PathUtf8(artifact.value->testMap));
     if (scenarioPlan) mapTestScenario_ = MapTestScenarioRun{std::move(*scenarioPlan), scenarioResult};
     if (launched.value->luaMailbox) {
         luaRuntimeMailbox_ = launched.value->luaMailbox;
@@ -313,6 +333,18 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
         const auto result = std::make_shared<War3Map::Status>();
         auto* worker = QThread::create([files, lease, result] {
             try {
+                // 运行日志：各进程退出码与启动器回执（装了哪些模块、失败在哪一步）。
+                if (lease) {
+                    std::string exits;
+                    for (const auto& process : lease->ProcessExits())
+                        exits += "\n进程 " + std::to_string(process.processId) + (process.game ? "（游戏）" : process.launcher ? "（启动器）" : "")
+                            + (process.known ? "，退出码 " + std::to_string(process.exitCode) : std::string("，退出码未知"));
+                    War3Map::RunLog::Info("测试", "游戏已结束" + (exits.empty() ? std::string("（没有进程退出记录）") : exits));
+                    if (const auto state = lease->InspectRetainedState(); state.Succeeded() && !state.value->launcherReceipt.empty()) {
+                        if (const auto receipt = War3Map::IO::ReadFileBytes(state.value->launcherReceipt, 256 * 1024); receipt.Succeeded())
+                            War3Map::RunLog::Info("测试", "启动器回执：" + std::string(reinterpret_cast<const char*>(receipt.value->data()), receipt.value->size()));
+                    }
+                }
                 *result = lease ? lease->Cleanup() : War3Map::Status::Ok();
                 const bool unknownTree = std::any_of(result->diagnostics.begin(), result->diagnostics.end(), [](const auto& diagnostic) {
                     return diagnostic.code == "MAP_TEST_LIFETIME_UNCONFIRMED";

@@ -18,6 +18,12 @@
 #include <QTranslator>
 #include <QScreen>
 #include <QRegularExpression>
+#include <QStandardPaths>
+#include <QSysInfo>
+
+#include "War3MapCore/Feedback/RunLog.h"
+#include "ErrorReportEnvironment.h"
+#include "AudastraVersion.generated.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -25,6 +31,33 @@
 #include <optional>
 
 namespace {
+QtMessageHandler previousMessageHandler = nullptr;
+
+// Qt 自身的警告与错误也进运行日志；调试信息不记。
+void RunLogMessages(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (type != QtDebugMsg && type != QtInfoMsg) {
+        std::string text = message.toStdString();
+        if (context.category && std::string_view(context.category) != "default") text += "（" + std::string(context.category) + "）";
+        War3Map::RunLog::Write(type == QtWarningMsg ? War3Map::RunLog::Level::Warning : War3Map::RunLog::Level::Error, "Qt", text);
+    }
+    if (previousMessageHandler) previousMessageHandler(type, context, message);
+}
+
+// 运行日志：每次运行一份，放在本机数据目录 logs 下，出错时随错误报告导出。自动化探针不记。
+void StartRunLog(const QStringList& arguments) {
+    const auto directory = std::filesystem::path(
+        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation).toStdWString()) / L"logs";
+    War3Map::RunLog::Options options;
+    options.directory = directory;
+    options.header = "Audastra " + std::string(War3Map::BuildInfo::Version) + "（" + std::string(War3Map::BuildInfo::Commit) + "）\n"
+        + "程序：" + QCoreApplication::applicationFilePath().toStdString() + "\n"
+        + "参数：" + arguments.mid(1).join(QLatin1Char(' ')).toStdString() + "\n"
+        + "系统：" + QSysInfo::prettyProductName().toStdString() + "（" + QSysInfo::kernelVersion().toStdString() + "）";
+    if (!War3Map::RunLog::Start(options).Succeeded()) return;
+    War3Map::QtFeedback::InstallCrashCapture(directory);
+    previousMessageHandler = qInstallMessageHandler(RunLogMessages);
+}
+
 int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     const QStringList arguments = application.arguments();
     const auto profileIndex = arguments.indexOf(QStringLiteral("--settings-profile"));
@@ -91,6 +124,7 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
     const bool runtimeSaveProbe = arguments.contains(QStringLiteral("--probe-runtime-save"));
     const bool headlessProbe = exitAfterOpen || requireLoadedWorkspace || captureUiRequested || runtimeSaveProbe;
     if (healthRequested && headlessProbe) return 1;
+    if (!headlessProbe) StartRunLog(arguments);
     const auto worldOption = arguments.indexOf(QStringLiteral("--probe-world"));
     const auto worldTimeoutOption = arguments.indexOf(QStringLiteral("--probe-world-ready-timeout"));
     const bool passiveWorldProbe = arguments.contains(QStringLiteral("--probe-world-passive"));
@@ -343,6 +377,8 @@ int RunApplication(War3Map::QtFeedback::ProgramIssueApplication& application) {
         window.move(desktop.left() - window.width() - 256, desktop.top() - window.height() - 256);
     }
     window.show();
+    if (measurementOption < 0 && !War3Map::RunLog::UncleanPreviousRunFiles().empty())
+        QTimer::singleShot(800, &window, [&window]() { window.OfferErrorReportAfterUncleanExit(); });
     if (healthRequested) {
         // 真实事件循环开始后，主窗口与服务已经构造；不能在构造之前宣称启动健康。
         QTimer::singleShot(0, &window, [healthTransaction, healthChallenge, healthPipe] {
@@ -385,6 +421,9 @@ int main(int argc, char* argv[]) {
         War3Map::QtFeedback::ProgramIssueApplication application(argc, argv);
         try {
             const auto result = RunApplication(application);
+            // 未处理异常退出时保留运行标记，下次启动按“上次没有正常退出”提示导出报告。
+            if (application.HadUnhandledException()) War3Map::RunLog::Error("退出", "因未处理的异常退出。");
+            else War3Map::RunLog::Stop("退出码 " + std::to_string(result));
             return application.HadUnhandledException() ? War3Map::QtFeedback::ProgramIssueApplication::kUnhandledExceptionExitCode : result;
         }
         catch (const std::exception&) { application.ReportStartupException(true); }

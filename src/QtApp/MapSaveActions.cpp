@@ -16,6 +16,8 @@
 #include "TriggerModule.h"
 #include "MapSettingsModule.h"
 #include "SoundsModule.h"
+#include "War3MapCore/Feedback/RunLog.h"
+#include "War3MapCore/IO/FileBytes.h"
 
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -81,6 +83,10 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     War3Map::Services::MapRuntimeSavePurpose runtimePurpose, MinimapRiskSave minimapRisk) {
     War3Map::QtCommon::DiagnosticTimingScope totalTiming("save-total");
     War3Map::QtCommon::DiagnosticTimingScope prepareTiming("save-prepare");
+    // 运行日志：保存从开始到结果的全过程；失败原因同时进诊断，诊断也会记入日志。
+    War3Map::RunLog::Scope runLog(testSnapshot ? "测试" : "保存", std::string(testSnapshot ? "生成测试副本 "
+        : inPlace ? "保存 " : "另存为 ") + War3Map::IO::PathUtf8(inPlace ? project_->sourceArchivePath_ : target)
+        + (background ? "（后台）" : ""));
     if (!CheckPendingTerrainCommit(testSnapshot ? tr("测试地图") : tr("保存地图"))) return false;
     // 测试快照绝不能进入原地保存分支，也不能把当前工程切换到测试副本。
     if ((testSnapshot && inPlace) || (testHotReload && !testSnapshot)) return false;
@@ -116,6 +122,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
     // 测试副本的结果由地图测试自己交代（界面弹说明，助手调用返回原因），这里只写状态栏。
     const bool notify = background && !testSnapshot;
     const auto reportFailure = [&](const QString& summary, const MapSaveJob* job = nullptr) {
+        runLog.Failed(summary.toStdString() + (job && !job->written.empty() ? "；已写出 " + War3Map::IO::PathUtf8(job->written) : std::string()));
         ReportProgramSaveFailures(firstDiagnostic);
         const auto errors = DiagnosticLines(*project_, firstDiagnostic, tr("错误"));
         const auto warnings = DiagnosticLines(*project_, firstDiagnostic, tr("警告"));
@@ -330,6 +337,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             luaTestInstalledBindings_ = std::move(job->luaTestInstalledBindings);
             luaTestMapBinding_ = std::move(job->luaTestMapBinding);
         }
+        runLog.Succeeded("；写出 " + ChangedMembers(*job).toStdString());
         return true;
     }
     War3Map::QtCommon::DiagnosticTimingScope commitTiming("save-commit");
@@ -377,6 +385,7 @@ bool MainWindow::RunMapSave(const std::filesystem::path& target, bool inPlace, b
             .arg(static_cast<qulonglong>(job->inPlaceOptions.keepBackups)));
     const auto summary = (saved->inPlace ? tr("地图已保存 · %1 秒") : tr("地图已另存为 · %1 秒")).arg(saved->seconds, 0, 'f', 1);
     project_->AddDiagnostic(tr("信息"), tr("地图"), QStringLiteral("MAP_SAVE_COMPLETED"), details.join(QLatin1Char('\n')));
+    runLog.Succeeded("；" + details.join(QStringLiteral("；")).toStdString());
     SaveNotice(*this, notify, true, summary, details);
     if ((luaReloadController_ || luaFileReload_) && luaAutoReloadAction_ && luaAutoReloadAction_->isChecked())
         QTimer::singleShot(0, this, [this] { (void)LuaTestReload(true); });

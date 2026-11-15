@@ -580,7 +580,7 @@ target_link_libraries(audastra-update-packaging-probe PRIVATE War3MapEditor::Cor
 target_compile_definitions(audastra-update-packaging-probe PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(audastra-update-packaging-probe PRIVATE /W4 /permissive- /utf-8)
 
-foreach(feedback_test IN ITEMS Privacy Queue Export)
+foreach(feedback_test IN ITEMS Privacy Queue Export RunLog)
     string(TOLOWER "${feedback_test}" feedback_test_name)
     add_executable(audastra-feedback-${feedback_test_name}-tests feedback/${feedback_test}Tests.cpp)
     target_include_directories(audastra-feedback-${feedback_test_name}-tests PRIVATE "${PROJECT_SOURCE_DIR}/src")

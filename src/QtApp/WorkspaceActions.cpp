@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "War3MapCore/Feedback/RunLog.h"
+#include "War3MapCore/IO/FileBytes.h"
 #include "AppHelpers.h"
 #include "../QtCommon/DiagnosticTimings.h"
 #include "../QtCommon/OwnedWork.h"
@@ -164,6 +166,10 @@ bool MainWindow::OpenUserMapArchivePath(const std::filesystem::path& archivePath
 
 bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
     War3Map::QtCommon::DiagnosticTimingScope totalTiming("open-total");
+    std::error_code sizeError;
+    const auto archiveSize = std::filesystem::file_size(archivePath, sizeError);
+    War3Map::RunLog::Scope runLog("打开", War3Map::IO::PathUtf8(archivePath)
+        + (sizeError ? std::string("（无法读取大小）") : "（" + std::to_string(archiveSize) + " 字节）"));
     if (QString::fromStdWString(archivePath.extension().wstring()).compare(".w3n", Qt::CaseInsensitive) == 0)
         return OpenCampaignPath(archivePath);
     if (project_->savingMap_ || changesChecking_) {
@@ -339,9 +345,12 @@ bool MainWindow::OpenMapArchivePath(const std::filesystem::path& archivePath) {
     for (const auto& diagnostic : intake.diagnostics)
         AddDiagnostic(DiagnosticLevel(diagnostic.severity), Utf8(diagnostic.subsystem), Utf8(diagnostic.code), Utf8(diagnostic.message));
     if (openedOk) {
+        runLog.Succeeded();
         statusBar()->showMessage(
             tr("已打开 %1").arg(QString::fromStdWString(archivePath.filename().wstring())),
             8000);
+    } else {
+        runLog.Failed("详见诊断");
     }
     return openedOk;
 }
@@ -361,6 +370,7 @@ bool MainWindow::OpenWorkspacePath(const std::filesystem::path& path) {
 }
 
 bool MainWindow::OpenWorkspacePathImpl(const std::filesystem::path& path, ArchiveOpenBinding* archive) {
+    if (!archive) War3Map::RunLog::Info("打开", "目录 " + War3Map::IO::PathUtf8(path));
     War3Map::QtCommon::DiagnosticTimingScope directoryTiming("open-bind-directory-snapshot");
     const QPointer<MainWindow> liveWindow(this);
     const QPointer<War3Map::QtProject::EditorProject> liveProject(project_.get());

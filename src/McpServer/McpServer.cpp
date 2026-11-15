@@ -5,6 +5,7 @@
 #include "AudastraVersion.generated.h"
 
 #include "War3MapCore/EditorSession.h"
+#include "War3MapCore/Feedback/RunLog.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -12,6 +13,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -388,6 +390,14 @@ JsonRpcResponse McpServer::HandleToolsCall(const JsonRpcRequest& req) {
             reqId, JsonRpcResponse::kInvalidParams, *schemaError);
     }
 
+    // 运行日志：工具名、参数名、结果与用时；参数值可能是脚本或大段数据，不记。
+    const auto started = std::chrono::steady_clock::now();
+    const auto logCall = [&](bool failed, const std::string& detail) {
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+        War3Map::RunLog::Write(failed ? War3Map::RunLog::Level::Warning : War3Map::RunLog::Level::Info, "助手",
+            toolName.toStdString() + "（参数 " + arguments.keys().join(QLatin1Char(',')).toStdString() + "）"
+            + (failed ? "失败" : "完成") + "，" + std::to_string(elapsed) + " 毫秒" + detail);
+    };
     try {
         QJsonValue toolResult = it->second.handler(arguments);
         QJsonObject imageContent;
@@ -422,6 +432,15 @@ JsonRpcResponse McpServer::HandleToolsCall(const JsonRpcRequest& req) {
         result["isError"] = toolResult.isObject() &&
             toolResult.toObject().value("ok").isBool() &&
             !toolResult.toObject().value("ok").toBool();
+        {
+            std::string detail;
+            const auto diagnostics = toolResult.toObject().value("diagnostics").toArray();
+            if (!diagnostics.isEmpty()) {
+                const auto first = diagnostics.first().toObject();
+                detail = "；" + first.value("code").toString().toStdString() + " " + first.value("message").toString().left(1000).toStdString();
+            }
+            logCall(result["isError"].toBool(), detail);
+        }
         auto response = JsonRpcResponse::Success(reqId, result);
         if (it->second.maxResponseBytes != 0 &&
             static_cast<std::size_t>(SerializeResponse(response).size()) > it->second.maxResponseBytes) {
@@ -438,6 +457,7 @@ JsonRpcResponse McpServer::HandleToolsCall(const JsonRpcRequest& req) {
         }
         return response;
     } catch (const std::exception& ex) {
+        logCall(true, std::string("；抛出异常：") + ex.what());
         QJsonObject result;
         QJsonArray content;
         QJsonObject textContent;

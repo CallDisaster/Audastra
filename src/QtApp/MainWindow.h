@@ -102,6 +102,8 @@ class QAction;
 
 // 编辑器主窗口：外壳（顶栏模块切换器 + 停靠区）加工程生命周期的组装。
 // 模块、工程与撤销栈在 EditorParts 中先于外壳构造；这里只负责顶栏操作、状态栏与打开 / 保存流程。
+namespace War3Map::Feedback { struct ErrorReportInput; }
+
 class MainWindow final : private EditorParts, public War3Map::Shell::ShellWindow {
     friend class NativeWorkbenchTests;
     friend class ProjectWatchTests;
@@ -131,6 +133,8 @@ public:
     bool OpenMapArchivePath(const std::filesystem::path& archivePath);
     // 只有真实用户打开成功才登记；默认外部/探针/工程私有基线入口不登记历史。
     bool OpenUserMapArchivePath(const std::filesystem::path& archivePath);
+    // 上次运行没有正常退出时，启动后询问是否导出错误报告（ErrorReportActions.cpp）。
+    void OfferErrorReportAfterUncleanExit();
     bool OpenCampaignPath(const std::filesystem::path& path);
 
     // 将当前工作区重打包为 .w3x（另存为）。
@@ -192,6 +196,9 @@ private:
     void SetupProductServices();
     void ReportProgramSaveFailures(int firstDiagnostic);
     void ShowFeedback();
+    void ShowErrorReport();
+    void OpenLogFolder();
+    [[nodiscard]] War3Map::Feedback::ErrorReportInput CollectErrorReport() const;
     void ShowUpdates();
     void BeginProductUpdate(const War3Map::QtUpdate::PreparedUpdate& prepared);
     [[nodiscard]] bool CommitProductUpdateExit();
