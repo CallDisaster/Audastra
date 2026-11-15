@@ -286,24 +286,62 @@ void TriggerModule::BindDocument() {
         return;
     }
     UpdateSummary();
-    collapsedCategories_.clear();
+    auto* document = project_.triggerDocument_.get();
+    // 同一份文档整图编辑后重新绑定（改名、变量模块修改等）：保留折叠的类别、选中项和滚动位置，
+    // 不把作者折叠的文件夹全部展开、跳回第一个触发器。换文档才回到默认。
+    const bool sameDocument = document != nullptr && document == boundExplorerDocument_
+        && boundExplorerGeneration_ == navigationDocumentGeneration_;
+    const int explorerScroll = explorerView_->verticalScrollBar()->value();
+    const auto keptSelection = explorerSelection_;
+    const auto keptTrigger = selectedTrigger_;
+    const auto keptCategory = selectedCategory_, keptSelectionCategory = selectionCategory_;
+    if (!sameDocument) collapsedCategories_.clear();
     triggerClipboard_.clear();
     triggerCut_.clear();
     explorerSelection_ = {};
     ecaSelection_.clear();
-    auto* document = project_.triggerDocument_.get();
     if (document == nullptr) {
+        boundExplorerDocument_ = nullptr;
         if (!pendingViewState_.isEmpty()) {
             const QJsonObject restore = pendingViewState_;
             RestoreViewState(restore);
         }
         return;
     }
-    explorerModel_->SetDocument(document);
-    ecaModel_->SetDocument(document, project_.uiCatalog_.get());
-    ApplyExplorerExpansion();
+    boundExplorerDocument_ = document;
+    boundExplorerGeneration_ = navigationDocumentGeneration_;
+    bool restored = false;
+    {
+        // 保留现场时模型重置引起的选区信号不改当前项，最后按原项恢复。
+        const QScopedValueRollback quiet(refreshingExplorer_, sameDocument || refreshingExplorer_);
+        explorerModel_->SetDocument(document);
+        ecaModel_->SetDocument(document, project_.uiCatalog_.get());
+        ApplyExplorerExpansion();
+        if (sameDocument) {
+            StableId trigger = keptTrigger;
+            auto category = keptCategory;
+            QModelIndex source = trigger != 0 ? explorerModel_->IndexForTriggerId(trigger)
+                : category ? explorerModel_->IndexForCategoryId(*category) : QModelIndex{};
+            if (!source.isValid() && keptSelectionCategory) {
+                // 当前项已被删除（例如撤销了新建）：退回到它所在的类别。
+                trigger = 0;
+                category = keptSelectionCategory;
+                source = explorerModel_->IndexForCategoryId(*category);
+            }
+            if (source.isValid()) {
+                selectedTrigger_ = trigger;
+                selectedCategory_ = category;
+                selectionCategory_ = keptSelectionCategory;
+                explorerSelection_ = keptSelection;
+                RestoreExplorerSelection(filter_->mapFromSource(source));
+                explorerView_->verticalScrollBar()->setValue(explorerScroll);
+                restored = true;
+            }
+        }
+    }
+    if (restored) ShowSelectedTrigger();
     // 默认选中第一个非空类别的第一个触发器。
-    for (int categoryRow = 0; categoryRow < filter_->rowCount(); ++categoryRow) {
+    for (int categoryRow = 0; !restored && categoryRow < filter_->rowCount(); ++categoryRow) {
         const QModelIndex category = filter_->index(categoryRow, 0);
         if (filter_->rowCount(category) == 0) {
             continue;

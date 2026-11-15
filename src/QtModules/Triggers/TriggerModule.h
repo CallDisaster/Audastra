@@ -468,6 +468,10 @@ private:
     // 只用于丢弃晚到的视图恢复；不持有文档正文、模型索引或裸回调控件。
     std::uint64_t navigationRestoreGeneration_ = 0;
     std::uint64_t navigationDocumentGeneration_ = 0;
+    // 上次绑定目录时的文档与文档代次：同一份文档整图编辑（改名等）后重新绑定时，
+    // 保留折叠的类别、选中项和滚动位置；换文档（ReleaseDocument 递增代次）才回到默认。
+    const Trigger::TriggerDocument* boundExplorerDocument_ = nullptr;
+    std::uint64_t boundExplorerGeneration_ = 0;
     QMetaObject::Connection navigationTextLoaded_;
 };
 

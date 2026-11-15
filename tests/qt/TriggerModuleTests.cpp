@@ -388,6 +388,7 @@ private slots:
     void DirectoryEditsUndoAndReferences();
     void RenameStaysWithinBudgetOnLargeCodeMaps();
     void RenameChineseNamesAndSharedSymbols();
+    void RenameKeepsCollapsedFoldersAndSelection();
     void DirectoryReferenceConfirmationUsesSharedSymbols();
     void StatementsMoveAndFillEmptyBranches();
     void CallbackActionShowsActionBranch();
@@ -1927,6 +1928,45 @@ void TriggerModuleTests::RenameChineseNamesAndSharedSymbols() {
         project.triggerUndoStack_->undo();
         QVERIFY(Named(project, first) != nullptr && Named(project, "Alpha") == nullptr);
     }
+}
+
+// 用户反馈：改名后折叠的文件夹全部展开、选中跳回第一个触发器，还得往下翻找。
+// 同一份文档的整图编辑（改名、撤销）保留折叠、选中项；换文档才回到默认。
+void TriggerModuleTests::RenameKeepsCollapsedFoldersAndSelection() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "action.txt",
+        "[PlainAction]\ntitle=\"Plain\"\ndescription=\"Plain action\"\n"
+        "[RunTrigger]\ntitle=\"Run\"\ndescription=\"Run ${trigger}\"\n[[.args]]\ntype=trigger\n");
+    auto catalog = Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    auto parsed = Trigger::WtgWctCodec{}.Parse(DirectoryWtg(), DirectoryWct(), *catalog.value);
+    QVERIFY(parsed.Succeeded());
+    QtProject::EditorProject project;
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*catalog.value));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*parsed.value));
+    Modules::TriggerModule module(project);
+    auto* page = module.Widget();
+    auto* tree = page->findChild<QTreeView*>("triggerExplorer");
+    QVERIFY(tree);
+    QVERIFY(module.Reveal({"triggers", "trigger", "Caller", {}}));
+    const auto system = tree->model()->index(0, 0);
+    tree->collapse(system);
+    QVERIFY(!tree->isExpanded(system));
+    const auto* caller = Named(project, "Caller");
+    QVERIFY(caller != nullptr);
+    QVERIFY(module.RenameDirectoryItem({false, caller->id, caller->categoryId}, QStringLiteral("Caller 2")));
+    QTRY_VERIFY(Named(project, "Caller 2") != nullptr);
+    QVERIFY(!tree->isExpanded(tree->model()->index(0, 0)));
+    QVERIFY(tree->isExpanded(tree->model()->index(1, 0)));
+    QCOMPARE(tree->currentIndex().siblingAtColumn(0).data().toString(), QStringLiteral("Caller 2"));
+    project.triggerUndoStack_->undo();
+    QVERIFY(Named(project, "Caller") != nullptr);
+    QVERIFY(!tree->isExpanded(tree->model()->index(0, 0)));
+    QCOMPARE(tree->currentIndex().siblingAtColumn(0).data().toString(), QStringLiteral("Caller"));
 }
 
 void TriggerModuleTests::DirectoryEditsUndoAndReferences() {
