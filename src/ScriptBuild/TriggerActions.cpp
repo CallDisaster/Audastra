@@ -455,6 +455,12 @@ void TriggerEmitter::PutActionEx(const Eca& eca, const std::string& name) {
         PutUserData(eca, name, gui);
         out_.End();
         break;
+    case Gui::KKWESetObjectTableData:
+    case Gui::KKWEFlushObjectTableData:
+        out_.Begin();
+        PutObjectTableData(eca, name, gui);
+        out_.End();
+        break;
     case Gui::YDWEActivateTrigger: {
         const std::string trigger = ArgValue(eca, 0);
         const std::string mode = ArgValue(eca, 1);

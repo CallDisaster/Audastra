@@ -59,6 +59,9 @@ const std::unordered_map<std::string_view, Gui>& GuiTable() {
         {"DzTriggerRegisterWindowResizeEventMultiple", Gui::DzTriggerRegisterWindowResizeEventMultiple},
         {"DzFrameSetUpdateCallbackMultiple", Gui::DzFrameSetUpdateCallbackMultiple},
         {"DzFrameSetScriptMultiple", Gui::DzFrameSetScriptMultiple},
+        {"KKGetHandleId", Gui::KKGetHandleId}, {"KKWESetObjectTableData", Gui::KKWESetObjectTableData},
+        {"KKWEGetObjectTableData", Gui::KKWEGetObjectTableData},
+        {"KKWEFlushObjectTableData", Gui::KKWEFlushObjectTableData},
     };
     return table;
 }
@@ -151,10 +154,13 @@ std::string TriggerEmitter::ResolvedType(const Eca& eca, std::size_t index) cons
     else if (gui == Gui::YDWESaveAnyTypeDataByUserData && index == 4) source = 3;
     else if (index == 1 && (gui == Gui::YDWELoadAnyTypeDataByUserData || gui == Gui::YDWEHaveSavedAnyTypeDataByUserData ||
                                gui == Gui::YDWEFlushAnyTypeDataByUserData || gui == Gui::YDWEFlushAllByUserData ||
-                               name == "KKGetHandleId" ||
                                name == "YDWEGetObjectPropertyInteger" || name == "YDWEGetObjectPropertyReal" ||
                                name == "YDWEGetObjectPropertyString")) {
         source = 0;
+    } else if (index % 2 == 1 && (gui == Gui::KKGetHandleId || gui == Gui::KKWESetObjectTableData ||
+                                     gui == Gui::KKWEGetObjectTableData || gui == Gui::KKWEFlushObjectTableData)) {
+        // KKWE：每个值紧跟在决定其类型的类型参数之后。
+        source = index - 1;
     }
     if (source != index) {
         const std::string preset = ArgValue(eca, source);

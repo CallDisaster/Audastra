@@ -39,7 +39,7 @@ enum class Gui : std::uint16_t {
     GetFilterUnit, TriggerSleepAction, PolledWait, YDWERegionMultiple, YDWEExecuteTriggerMultiple,
     DzTriggerRegisterMouseEventMultiple, DzTriggerRegisterKeyEventMultiple, DzTriggerRegisterMouseWheelEventMultiple,
     DzTriggerRegisterMouseMoveEventMultiple, DzTriggerRegisterWindowResizeEventMultiple, DzFrameSetUpdateCallbackMultiple,
-    DzFrameSetScriptMultiple,
+    DzFrameSetScriptMultiple, KKGetHandleId, KKWESetObjectTableData, KKWEGetObjectTableData, KKWEFlushObjectTableData,
 };
 
 // Dz“异步注册（多项）”：回调函数名后缀（<名><后缀>T），不是这类动作时为空。
@@ -178,6 +178,7 @@ private:
     void LocvarReturnBefore();
     void LocvarFlush(Gui gui);
     void PutUserData(const Eca& eca, const std::string& name, Gui gui);
+    void PutObjectTableData(const Eca& eca, const std::string& name, Gui gui);
     void CheckSaveLoad(const std::string& varName, const std::string& typeName);
     // YDTrigger 存储的展开写法：table 为 YDLOC / YDHT，page 为页表达式；index 非空时键为“常量 + (index)”。
     struct StorageKey {

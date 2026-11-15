@@ -90,13 +90,19 @@ Fixture MakeFixture(const std::filesystem::path& root) {
         "typename03_boolean=0,typename,3,Boolean\ntypename04_string=0,typename,4,String\ntypename07_unit=0,typename,7,Unit\n");
     WriteText(result.ui / "probe/call.txt",
         "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n"
-        "[KKGetHandleId]\nreturns=integer\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n[ProbeUnit]\nreturns=unit\n");
+        "[KKGetHandleId]\nreturns=integer\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n[ProbeUnit]\nreturns=unit\n"
+        "[KKWEGetObjectTableData]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n"
+        "[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n");
     WriteText(result.ui / "probe/action.txt",
         "[ProbeModuleCreate]\ntitle=\"Probe - create module\"\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[ProbeEnum]\ntitle=\"Probe - 选取探针做动作 (多项)\"\n[[.args]]\ntype=integer\n"
         // 局部变量名在 YDWE 中是代码参数；公共 T 图批次不接受代码参数，合成库改用字符串，生成时同样取原值。
         "[YDWESetAnyTypeLocalVariable]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=Null\n"
         "[RecordInteger]\n[[.args]]\ntype=integer\n"
+        "[KKWESetObjectTableData]\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n"
+        "[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n"
+        "[KKWEFlushObjectTableData]\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n"
+        "[[.args]]\ntype=typename\n"
         "[DzFrameSetScriptMultiple]\n[[.args]]\ntype=player\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[DzTriggerRegisterKeyEventMultiple]\n[[.args]]\ntype=player\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[YDWEExecuteTriggerMultiple]\n[[.args]]\ntype=integer\n[[.args]]\ntype=boolean\n"
@@ -408,6 +414,24 @@ void Run(const std::filesystem::path& root) {
     const auto boolHandle = GenerateMapScript(boolInputs);
     Require(HasCode(boolHandle.diagnostics, "kk-handle-type"), "a boolean has no integer conversion and is reported: "
         + Details(boolHandle.diagnostics));
+    // KKWE 对象表：主键、子键按各自类型转换为整数，值按第三个类型存取 YDHT。
+    auto table = MakeDocument(*catalog.value, {
+        Action("KKWESetObjectTableData", {Scalar(0, "typename07_unit"), callValue("ProbeUnit", {}),
+            Scalar(0, "typename04_string"), Scalar(3, "hp"), Scalar(0, "typename01_integer"), Scalar(3, "5")}),
+        Action("RecordInteger", {callValue("KKWEGetObjectTableData", {Scalar(0, "typename07_unit"), callValue("ProbeUnit", {}),
+            Scalar(0, "typename04_string"), Scalar(3, "hp")})}),
+        Action("KKWEFlushObjectTableData", {Scalar(0, "typename07_unit"), callValue("ProbeUnit", {}),
+            Scalar(0, "typename04_string"), Scalar(3, "hp"), Scalar(0, "typename01_integer")}),
+    });
+    MapScriptInputs tableInputs; tableInputs.catalog = &*catalog.value; tableInputs.triggers = &table;
+    const auto tableScript = GenerateMapScript(tableInputs);
+    Require(tableScript.Succeeded() && !HasCode(tableScript.diagnostics, "storage-key-unsupported"),
+        "object table generation: " + Details(tableScript.diagnostics));
+    Require(tableScript.text.find("call SaveInteger(YDHT, GetHandleId(ProbeUnit()), StringHash(\"hp\"), 5)") != std::string::npos
+        && tableScript.text.find("call RecordInteger(LoadInteger(YDHT, GetHandleId(ProbeUnit()), StringHash(\"hp\")))") != std::string::npos
+        && tableScript.text.find("call RemoveSavedInteger(YDHT, GetHandleId(ProbeUnit()), StringHash(\"hp\"))") != std::string::npos
+        && tableScript.text.find("ObjectTableData") == std::string::npos,
+        "object table set/get/flush expand like KKWE:\n" + tableScript.text);
 
     // Dz 异步注册（多项）：只在指定玩家本机注册 ByCode 回调；回调读取的外层局部变量先拷进常量闭包页
     // （回调基础名的 StringHash），回调内从该页读取。

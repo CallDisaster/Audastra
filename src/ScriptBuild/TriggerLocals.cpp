@@ -450,4 +450,19 @@ void TriggerEmitter::PutUserData(const Eca& eca, const std::string& name, Gui gu
     out_.Line(")");
 }
 
+// KKWE 对象表（设置 / 清除）：主键与子键都按所选类型转换为整数，值按第三个类型存取 YDHT。
+void TriggerEmitter::PutObjectTableData(const Eca& eca, const std::string& name, Gui gui) {
+    const bool save = gui == Gui::KKWESetObjectTableData;
+    const auto natives = Storage(LocalTypeOf(eca, 4));
+    out_.Put("call " + (save ? natives.save : natives.remove) + "(" + std::string(kUserDataTable) + ", ");
+    PutUserDataTable(LocalTypeOf(eca, 0), eca, name, 1);
+    out_.Put(", ");
+    PutUserDataTable(LocalTypeOf(eca, 2), eca, name, 3);
+    if (save) {
+        out_.Put(", ");
+        PutVar(eca, name, 5);
+    }
+    out_.Line(")");
+}
+
 } // namespace War3Map::Script::detail

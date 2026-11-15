@@ -250,13 +250,9 @@ void TriggerEmitter::PutCallValue(const std::string& slotType, const Eca& call, 
         PutVar(call, child, 1);
         out_.Put(")");
         return;
-    default:
-        break;
-    }
-    const std::string_view callName = call.name.text;
-    // KKWE“获取对象handle值”(类型, 值)没有同名脚本函数：与 KKWE 的 YDTrigger 一样按 YDHashAny2I(类型, 值)
-    // 的展开结果生成（句柄 GetHandleId、字符串 StringHash、实数 R2I、整数与物体类型原值）。
-    if (callName == "KKGetHandleId" && call.arguments.size() == 2) {
+    // KKWE 的以下函数没有同名脚本函数，与 KKWE 的 YDTrigger 一样按 YDHashAny2I(类型, 值) 的展开结果生成
+    // （句柄 GetHandleId、字符串 StringHash、实数 R2I、整数与物体类型原值）。
+    case Gui::KKGetHandleId: {
         const auto type = LocalTypeOf(call, 0);
         const auto wrap = detail::UserDataTableWrap(type);
         if (type.empty() || !wrap.known)
@@ -267,6 +263,18 @@ void TriggerEmitter::PutCallValue(const std::string& slotType, const Eca& call, 
         out_.Put(wrap.suffix);
         return;
     }
+    case Gui::KKWEGetObjectTableData:
+        // 对象表读取：值类型随所在参数槽（同“读取自定义值”）。
+        out_.Put(Storage(slotType).load + "(" + std::string(kUserDataTable) + ", ");
+        PutUserDataTable(LocalTypeOf(call, 0), call, child, 1);
+        out_.Put(", ");
+        PutUserDataTable(LocalTypeOf(call, 2), call, child, 3);
+        out_.Put(")");
+        return;
+    default:
+        break;
+    }
+    const std::string_view callName = call.name.text;
     // 保留实际Property宏调用供注入器识别，再由同源YDTrigger.h展开。
     // 提前展开为EXExecuteScript会丢失cfg登记的依赖；注释不能充当代码依赖。
     if (callName == "YDWEGetObjectPropertyInteger" || callName == "YDWEGetObjectPropertyReal" ||
