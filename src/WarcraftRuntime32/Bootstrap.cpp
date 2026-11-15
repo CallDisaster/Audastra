@@ -9,6 +9,7 @@
 #include "GameTest/MutedSound.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <detours.h>
+#include <algorithm>
 #include <cstring>
 #include <type_traits>
 
@@ -153,12 +154,15 @@ void LoadLegacyPlugins() {
 }
 void InitializeRuntime() {
     if (!InstallLuaProbeWriteGuard(evidence)) Fail("lua-probe-write-guard-install", ERROR_ACCESS_DENIED);
-    for (std::size_t index = 0; index < kModules.size(); ++index) {
+    // 启动器按装入顺序写好每个模块的完整路径和 SHA；与原平台装载器相同，逐个装入并调用 Initialize。
+    const auto count = (std::min)(evidence->runtimeModuleCount, static_cast<DWORD>(kRuntimeModuleLimit));
+    if (!count) Fail("runtime-module-plan", ERROR_INVALID_DATA);
+    for (DWORD index = 0; index < count; ++index) {
         auto& module = evidence->modules[index];
-        const auto expected = std::filesystem::path(evidence->runtimeRoot) / ModuleRelativePath(evidence->runtimeLayout, index);
+        const std::filesystem::path expected(std::wstring(module.path));
         const auto loaded = LoadVerifiedModule(module, expected, kRuntimeStages);
-        if (index == 1 && !InstallLuaProbeObserver(loaded)) Fail("lua-probe-observer-install", ERROR_PROC_NOT_FOUND);
-        if (index >= 4) {
+        if (index == evidence->runtimeLuaModule && !InstallLuaProbeObserver(loaded)) Fail("lua-probe-observer-install", ERROR_PROC_NOT_FOUND);
+        if (evidence->runtimeModuleInitialize[index]) {
             const auto initialize = GetProcAddress(loaded, "Initialize");
             if (!initialize) Fail("runtime-initialize-export", ERROR_PROC_NOT_FOUND);
             if (!CallInitialize(initialize)) Fail("runtime-initialize-exception", ERROR_EXCEPTION_IN_SERVICE);

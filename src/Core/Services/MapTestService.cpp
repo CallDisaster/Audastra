@@ -276,8 +276,13 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
     if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || described || legacyPlugins || plan.backgroundPlay) {
         // 裸模式：地图不需要扩展运行库，只为后台运行钩子经过启动器。
         const bool bare = !artifact.useOwnedLuaRuntime && artifact.runtimeRoot.empty();
-        if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree)
+        if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat
+            && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree && artifact.runtimeLayout != MapTestRuntimeLayout::PluginConfig)
             return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_LAYOUT", "扩展运行时目录布局无效，未启动游戏。");
+        // 按 config.cfg 装插件的运行库必须带着装入清单；其他布局不接受清单。
+        const bool pluginConfig = !artifact.useOwnedLuaRuntime && !bare && artifact.runtimeLayout == MapTestRuntimeLayout::PluginConfig;
+        if (pluginConfig == artifact.runtimeModules.empty())
+            return Fail<MapTestLaunchPlan>("MAP_TEST_RUNTIME_LAYOUT", "扩展运行时的插件装入清单无效，未启动游戏。");
         if (!artifact.runtimeBridge.is_absolute() || !artifact.runtimeBootstrap.is_absolute()
             || (!artifact.useOwnedLuaRuntime && !bare && (!artifact.runtimeRoot.is_absolute()
                 || !OrdinaryAncestors(artifact.runtimeRoot) || !std::filesystem::is_directory(artifact.runtimeRoot, ec) || ec)))
@@ -314,6 +319,18 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
         if (!artifact.useOwnedLuaRuntime && !bare && artifact.runtimeLayout == MapTestRuntimeLayout::YdweTree) {
             plan.arguments.push_back(L"--runtime-layout");
             plan.arguments.push_back(L"ydwe-tree");
+        }
+        if (pluginConfig) {
+            plan.arguments.push_back(L"--runtime-layout");
+            plan.arguments.push_back(L"plugin-config");
+            for (const auto& module : artifact.runtimeModules) {
+                std::wstring flags = module.initialize ? L"i" : L"";
+                if (module.luaCore) flags += L'l';
+                auto relative = module.relativePath;
+                relative.make_preferred();
+                plan.arguments.push_back(L"--runtime-module");
+                plan.arguments.push_back((flags.empty() ? std::wstring(L"-") : flags) + L"|" + relative.wstring());
+            }
         }
         auto provider = BuildMapTestProviderArguments(artifact.externalDependencyFiles, artifact.useOwnedLuaRuntime);
         if (!provider.Succeeded()) return {std::nullopt, std::move(provider.diagnostics)};

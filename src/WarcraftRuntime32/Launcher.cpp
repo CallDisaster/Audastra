@@ -456,7 +456,8 @@ struct RunReceipt {
         json += ",\"hookInstalled\":" + std::string(flag(evidence && evidence->hookInstalled));
         json += ",\"gameObserved\":" + std::string(flag(evidence && evidence->gameObserved));
         json += ",\"runtimeInitialized\":" + std::string(flag(evidence && evidence->runtimeInitialized));
-        json += ",\"runtimeLayout\":" + Json(evidence && evidence->runtimeLayout == RuntimeLayout::YdweTree ? "ydwe-tree" : "flat");
+        json += ",\"runtimeLayout\":" + Json(!evidence ? "flat" : evidence->runtimeLayout == RuntimeLayout::YdweTree ? "ydwe-tree"
+            : evidence->runtimeLayout == RuntimeLayout::PluginConfig ? "plugin-config" : "flat");
         const auto modeName = !evidence ? "external-ydwe" : evidence->runtimeMode == RuntimeMode::OwnedLua ? "owned-lua"
             : evidence->runtimeMode == RuntimeMode::Bare ? "bare"
             : evidence->runtimeMode == RuntimeMode::ExternalProviders ? "external-providers" : "external-ydwe";
@@ -505,10 +506,15 @@ struct RunReceipt {
         if (evidence && evidence->nativeObserverFailureText[0])
             json += ",\"nativeObserverFailureText\":" + Json(evidence->nativeObserverFailureText);
         json += ",\"errorWin32\":" + std::to_string(evidence && evidence->failed && !witnessCleanupFailed ? evidence->errorWin32 : error) + ",\"modules\":[";
-        if (evidence) for (std::size_t index = 0; index < kModules.size(); ++index) {
+        // 老六件套固定列出六项（未装入的也列出）；PluginConfig 列出本次清单。
+        const bool pluginConfig = evidence && evidence->runtimeLayout == RuntimeLayout::PluginConfig;
+        const std::size_t listed = !evidence ? 0 : pluginConfig
+            ? (std::min)(static_cast<std::size_t>(evidence->runtimeModuleCount), kRuntimeModuleLimit) : kModules.size();
+        for (std::size_t index = 0; index < listed; ++index) {
             if (index) json += ',';
             const auto& module = evidence->modules[index];
-            json += "{\"name\":" + Json(Utf8(kModules[index])) + ",\"path\":" + Json(Utf8(module.path));
+            const auto name = pluginConfig ? std::filesystem::path(std::wstring(module.path)).filename().wstring() : std::wstring(kModules[index]);
+            json += "{\"name\":" + Json(Utf8(name)) + ",\"path\":" + Json(Utf8(module.path));
             json += ",\"expectedSha256\":" + Json(module.expectedSha256) + ",\"sha256\":" + Json(module.actualSha256);
             json += ",\"loaded\":" + std::string(flag(module.loaded != 0)) + ",\"initializeCalled\":" + flag(module.initializeCalled != 0) + '}';
         }
@@ -591,7 +597,8 @@ struct RunReceipt {
 };
 int Run(int argc, wchar_t** argv) {
     if (argc < 11 || argc % 2 != 1) {
-        std::fputs("Required: --game --map --runtime --bootstrap --receipt [--runtime-layout flat|ydwe-tree]"
+        std::fputs("Required: --game --map --runtime --bootstrap --receipt [--runtime-layout flat|ydwe-tree"
+            "|plugin-config --runtime-module -|i|l|il|<bin\\x.dll or plugin\\warcraft3\\x.dll> ...]"
             " | --runtime-mode bare (no --runtime) [--background-play enabled] [--game-nosound enabled] [--window-cloak enabled]\n", stderr);
         return 64;
     }
@@ -608,7 +615,7 @@ int Run(int argc, wchar_t** argv) {
     std::filesystem::path probeScript;
     std::wstring expectedProbeScriptSha;
     std::vector<std::filesystem::path> nonfatalBlockedPaths;
-    std::vector<std::wstring> providerModuleSpecs, providerNativeSpecs, legacyPluginSpecs;
+    std::vector<std::wstring> providerModuleSpecs, providerNativeSpecs, legacyPluginSpecs, runtimeModuleSpecs;
     DWORD probeTimeout = 45000;
     bool probeTimeoutSpecified = false;
     for (int index = 1; index < argc; index += 2) {
@@ -627,8 +634,13 @@ int Run(int argc, wchar_t** argv) {
         else if (key == L"--runtime-layout" && !layoutSpecified) {
             const std::wstring value(argv[index + 1]);
             if (value == L"ydwe-tree") layout = RuntimeLayout::YdweTree;
+            else if (value == L"plugin-config") layout = RuntimeLayout::PluginConfig;
             else if (value != L"flat") return 64;
             layoutSpecified = true;
+        }
+        else if (key == L"--runtime-module") {
+            if (runtimeModuleSpecs.size() >= kRuntimeModuleLimit) return 64;
+            runtimeModuleSpecs.emplace_back(argv[index + 1]);
         }
         else if (key == L"--runtime-mode" && !modeSpecified) {
             const std::wstring value(argv[index + 1]);
@@ -714,6 +726,9 @@ int Run(int argc, wchar_t** argv) {
         || !SafeMap(map) || !EqualPath(game.filename().wstring(), L"war3.exe")) return 64;
     // 裸模式不加载任何扩展运行库，也不承担探针。
     if (bare && (!runtime.empty() || layoutSpecified || !probeNonce.empty())) return 64;
+    // 只有 PluginConfig 由参数逐项给出装入清单，且只用于外部 YDWE 运行库模式。
+    if ((layout == RuntimeLayout::PluginConfig) != !runtimeModuleSpecs.empty()
+        || (layout == RuntimeLayout::PluginConfig && !legacy)) return 64;
     if ((described && (!runtime.empty() || layoutSpecified || !probeNonce.empty() || providerModuleSpecs.empty()))
         || ((!described && !owned) && !providerModuleSpecs.empty())
         || (providerModuleSpecs.empty() != providerNativeSpecs.empty())) return 64;
@@ -848,14 +863,67 @@ int Run(int argc, wchar_t** argv) {
     if (gameDllSha.empty()) return fail("game-dll-sha", ERROR_CRC);
     strcpy_s(shared->gameModule.expectedSha256, gameDllSha.c_str());
     std::vector<std::unique_ptr<Handle>> runtimeFiles;
-    for (std::size_t index = 0; legacy && index < kModules.size(); ++index) {
-        auto file = std::make_unique<Handle>(OpenLockedFile(runtime / ModuleRelativePath(layout, index)));
+    // 运行库装入清单。老六件套按固定顺序（后两个调用 Initialize，第二个是 Lua 核心）；
+    // PluginConfig 按参数顺序，每项只能是运行库根下 bin\ 或 plugin\warcraft3\ 里的 .dll，不能重名。
+    struct PlannedModule { std::filesystem::path path; bool initialize = false; bool lua = false; };
+    std::vector<PlannedModule> planned;
+    if (legacy && layout != RuntimeLayout::PluginConfig) {
+        for (std::size_t index = 0; index < kModules.size(); ++index)
+            planned.push_back({runtime / ModuleRelativePath(layout, index), index >= 4, index == 1});
+    }
+    for (const auto& spec : runtimeModuleSpecs) {
+        const auto split = spec.find(L'|');
+        if (split == spec.npos) return fail("runtime-module-plan", ERROR_INVALID_DATA);
+        const auto flags = spec.substr(0, split);
+        const std::filesystem::path relative(spec.substr(split + 1));
+        PlannedModule module;
+        if (flags != L"-") {
+            for (const wchar_t flag : flags) {
+                if (flag == L'i' && !module.initialize) module.initialize = true;
+                else if (flag == L'l' && !module.lua) module.lua = true;
+                else return fail("runtime-module-plan", ERROR_INVALID_DATA);
+            }
+        }
+        if (relative.empty() || relative.has_root_name() || relative.has_root_directory())
+            return fail("runtime-module-plan", ERROR_INVALID_DATA);
+        std::vector<std::wstring> parts;
+        for (const auto& part : relative) {
+            const auto text = part.wstring();
+            if (text.empty() || text == L"." || text == L".." || text.find(L':') != std::wstring::npos
+                || text.back() == L'.' || text.back() == L' ') return fail("runtime-module-plan", ERROR_INVALID_DATA);
+            parts.push_back(text);
+        }
+        const bool inBin = parts.size() == 2 && EqualPath(parts[0], L"bin");
+        const bool inPlugins = parts.size() == 3 && EqualPath(parts[0], L"plugin") && EqualPath(parts[1], L"warcraft3");
+        const auto& leaf = parts.back();
+        if ((!inBin && !inPlugins) || !EqualPath(std::filesystem::path(leaf).extension().wstring(), L".dll")
+            || EqualPath(leaf, L"Game.dll") || EqualPath(leaf, L"Storm.dll") || EqualPath(leaf, L"version.dll"))
+            return fail("runtime-module-plan", ERROR_INVALID_DATA);
+        for (const auto& prior : planned) {
+            if (EqualPath(prior.path.filename().wstring(), leaf) || (module.lua && prior.lua))
+                return fail("runtime-module-plan-duplicate", ERROR_INVALID_DATA);
+        }
+        module.path = (runtime / relative).lexically_normal();
+        module.path.make_preferred();
+        planned.push_back(std::move(module));
+    }
+    for (std::size_t index = 0; index < planned.size(); ++index) {
+        const auto& module = planned[index];
+        if (module.path.native().size() >= kPathCapacity) return fail("runtime-module-path", ERROR_FILENAME_EXCED_RANGE);
+        auto file = std::make_unique<Handle>(OpenLockedFile(module.path));
         if (file->value == INVALID_HANDLE_VALUE || !IsX86Image(file->value)) return fail("runtime-preflight", ERROR_BAD_EXE_FORMAT);
         const auto sha = Sha256(file->value);
         if (sha.empty()) return fail("runtime-sha", ERROR_CRC);
+        wcscpy_s(shared->modules[index].path, module.path.c_str());
         strcpy_s(shared->modules[index].expectedSha256, sha.c_str());
+        shared->runtimeModuleInitialize[index] = module.initialize ? 1 : 0;
+        if (module.lua) shared->runtimeLuaModule = static_cast<DWORD>(index);
         runtimeFiles.push_back(std::move(file));
     }
+    shared->runtimeModuleCount = static_cast<DWORD>(planned.size());
+    const auto plannedName = [&planned](const std::wstring& leaf) {
+        return std::any_of(planned.begin(), planned.end(), [&](const auto& module) { return EqualPath(module.path.filename().wstring(), leaf); });
+    };
     const auto parts = [](const std::wstring& value) -> std::array<std::wstring, 3> {
         const auto first = value.find(L'|');
         const auto second = first == value.npos ? value.npos : value.find(L'|', first + 1);
@@ -919,7 +987,7 @@ int Run(int argc, wchar_t** argv) {
         const auto leaf = path.filename().wstring();
         if (!lowercaseHex(sha, 64) || providerId.empty() || providerId.size() > 128 || !ascii(providerId) || !PlainPath(path)
             || !EqualPath(path.extension().wstring(), L".dll") || EqualPath(leaf, L"Game.dll") || EqualPath(leaf, L"Storm.dll")
-            || EqualPath(leaf, L"version.dll")
+            || EqualPath(leaf, L"version.dll") || plannedName(leaf)
             || std::any_of(kModules.begin(), kModules.end(), [&](const auto* known) { return EqualPath(leaf, known); }))
             return fail("legacy-plugin-plan", ERROR_INVALID_DATA);
         for (DWORD i = 0; i < shared->legacyPluginCount; ++i)

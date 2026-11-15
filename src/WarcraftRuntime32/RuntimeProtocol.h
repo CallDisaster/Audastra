@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 12;
+inline constexpr std::uint32_t kVersion = 13;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -18,7 +18,11 @@ inline constexpr std::size_t kBlockedWriteCapacity = 32;
 inline constexpr std::size_t kNonfatalBlockedPathCapacity = 4;
 inline constexpr std::array<const wchar_t*, 6> kModules = {
     L"ydbase.dll", L"lua53.dll", L"ydwar3.dll", L"yd_loader.dll", L"yd_jass_api.dll", L"yd_lua_engine.dll"};
-enum class RuntimeLayout : std::uint32_t { Flat = 0, YdweTree = 1 };
+// PluginConfig：KKWE 等按 plugin\warcraft3\config.cfg 启用插件的运行库；装入清单由启动参数逐项给出。
+enum class RuntimeLayout : std::uint32_t { Flat = 0, YdweTree = 1, PluginConfig = 2 };
+// 一次测试最多装入的运行库模块数（PluginConfig 的 bin 依赖加启用的插件）。
+inline constexpr std::size_t kRuntimeModuleLimit = 32;
+inline constexpr DWORD kNoLuaModule = 0xffffffffu;
 // Bare：不加载扩展运行库，只装测试钩子（如后台运行）。
 enum class RuntimeMode : std::uint32_t { ExternalYdwe = 0, OwnedLua = 1, Bare = 2, ExternalProviders = 3 };
 inline bool ValidMode(RuntimeMode mode) {
@@ -26,11 +30,11 @@ inline bool ValidMode(RuntimeMode mode) {
         || mode == RuntimeMode::ExternalProviders;
 }
 inline bool ValidLayout(RuntimeLayout layout) {
-    return layout == RuntimeLayout::Flat || layout == RuntimeLayout::YdweTree;
+    return layout == RuntimeLayout::Flat || layout == RuntimeLayout::YdweTree || layout == RuntimeLayout::PluginConfig;
 }
-// 同一清单固定先加载 bin 的三个依赖，再加载 plugin/warcraft3 的三个插件。
+// 老 YDWE 六件套：同一清单固定先加载 bin 的三个依赖，再加载 plugin/warcraft3 的三个插件。PluginConfig 不用此清单。
 inline std::wstring ModuleRelativePath(RuntimeLayout layout, std::size_t index) {
-    if (!ValidLayout(layout) || index >= kModules.size()) return {};
+    if ((layout != RuntimeLayout::Flat && layout != RuntimeLayout::YdweTree) || index >= kModules.size()) return {};
     if (layout == RuntimeLayout::YdweTree)
         return std::wstring(index < 3 ? L"bin\\" : L"plugin\\warcraft3\\") + kModules[index];
     return kModules[index];
@@ -112,7 +116,12 @@ struct SharedEvidence {
     LONG fixtureConcurrentPass = 0;
     LONG fixtureConcurrentWaitObserved = 0;
     ModuleEvidence gameModule{};
-    std::array<ModuleEvidence, kModules.size()> modules{};
+    // 按顺序装入的运行库模块（启动器写入完整路径与 SHA）；Initialize 标记的模块装入后立即调用其入口。
+    std::array<ModuleEvidence, kRuntimeModuleLimit> modules{};
+    DWORD runtimeModuleCount = 0;
+    std::array<LONG, kRuntimeModuleLimit> runtimeModuleInitialize{};
+    // Lua 核心（lua53.dll / luacore.dll）的序号；只在元数据探针打开时挂钩。
+    DWORD runtimeLuaModule = kNoLuaModule;
     DWORD providerModuleCount = 0;
     DWORD providerNativeCount = 0;
     LONG providerRegistrationsVerified = 0;

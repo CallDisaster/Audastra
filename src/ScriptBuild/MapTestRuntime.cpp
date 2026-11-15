@@ -15,6 +15,7 @@
 #include "War3MapCore/Runtime/LuaObjectSnapshot.h"
 #include "War3MapCore/Lua/LuaModuleScan.h"
 #include "RuntimePeInspection.h"
+#include "MapTestPluginRuntime.h"
 
 #include <algorithm>
 #include <array>
@@ -661,6 +662,30 @@ Status CheckRuntimePe(const std::filesystem::path& path, bool dll, bool initiali
         return Status::Failure("Map.Test.Runtime", "MAP_TEST_RUNTIME_EXPORT", "JASS / Lua 插件未提供有效的 Initialize 导出，不能声称已具备加载链。");
     return Status::Ok();
 }
+
+// 老 YDWE 六件套是否齐全；KKWE 没有 lua53.dll / ydwar3.dll，要按 config.cfg 装入。
+bool SixModuleRuntime(const std::filesystem::path& root, Services::MapTestRuntimeLayout layout) {
+    const bool tree = layout == Services::MapTestRuntimeLayout::YdweTree;
+    std::size_t index = 0;
+    for (const auto* name : {"ydbase.dll", "lua53.dll", "ydwar3.dll", "yd_loader.dll", "yd_jass_api.dll", "yd_lua_engine.dll"}) {
+        auto path = root;
+        if (tree) path /= index < 3 ? "bin" : "plugin/warcraft3";
+        ++index;
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path / name, error) || error) return false;
+    }
+    return true;
+}
+
+std::string JoinNames(const std::vector<std::string>& names) {
+    std::string list;
+    for (const auto& name : names) {
+        if (list.size() >= 4096) { list += "等"; break; }
+        if (!list.empty()) list += "、";
+        list += name;
+    }
+    return list;
+}
 } // namespace
 
 Result<std::vector<std::string>> InspectExternalDependencyPe(std::span<const std::byte> bytes, std::string_view entry) {
@@ -675,6 +700,18 @@ Result<std::vector<std::string>> InspectExternalDependencyPe(std::span<const std
     if (!imports)
         return Failure<std::vector<std::string>>("EXTERNAL_DEPENDENCY_IMPORTS", "DLL 导入表损坏或超过预算。");
     return Result<std::vector<std::string>>::Success(std::move(*imports));
+}
+
+Result<RuntimeModuleImage> InspectRuntimeModulePe(std::span<const std::byte> bytes) {
+    PeBytes image(bytes);
+    if (!image.Header(true))
+        return Failure<RuntimeModuleImage>("MAP_TEST_RUNTIME_PE", "不是有效的 x86 PE DLL。");
+    auto imports = image.Imports();
+    if (!imports) return Failure<RuntimeModuleImage>("MAP_TEST_RUNTIME_PE", "DLL 导入表损坏或超过预算。");
+    RuntimeModuleImage result;
+    result.imports = std::move(*imports);
+    result.initialize = image.EntryExport("Initialize");
+    return Result<RuntimeModuleImage>::Success(std::move(result));
 }
 
 Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Services::MapTestArtifact& artifact,
@@ -836,7 +873,34 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             } else if (!selected.runtimeYdweRoot.empty()) {
                 selected.runtimeRoot = Services::MapTestYdweInstallRoot(selected.runtimeYdweRoot);
                 selected.runtimeLayout = Services::MapTestRuntimeLayout::YdweTree;
+            } else if (IsPluginConfigRuntime(selected.externalDependenciesDirectory)) {
+                selected.runtimeRoot = selected.externalDependenciesDirectory;
+                selected.runtimeLayout = Services::MapTestRuntimeLayout::YdweTree;
             }
+        }
+        // KKWE：没有老 YDWE 的六件套，按 plugin/warcraft3/config.cfg 启用的插件及其 bin 依赖逐个装入。
+        const bool pluginConfig = !selected.useOwnedLuaRuntime && !selected.runtimeRoot.empty()
+            && !SixModuleRuntime(selected.runtimeRoot, selected.runtimeLayout) && IsPluginConfigRuntime(selected.runtimeRoot);
+        std::vector<std::string> unmatchedNatives;
+        if (pluginConfig) {
+            std::vector<std::string> natives;
+            if (remainingRequired && !covered)
+                for (const auto& [name, signature] : needed) natives.push_back(name);
+            auto modules = PlanPluginConfigRuntime(selected.runtimeRoot, natives);
+            if (!modules.Succeeded()) {
+                auto diagnostics = std::move(modules.diagnostics);
+                diagnostics.insert(diagnostics.end(), notes.begin(), notes.end());
+                return {std::nullopt, std::move(diagnostics)};
+            }
+            selected.runtimeLayout = Services::MapTestRuntimeLayout::PluginConfig;
+            selected.runtimeModules = std::move(modules.value->modules);
+            notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_PLUGIN_RUNTIME_SELECTED",
+                "本次按 KKWE 运行库 " + IO::PathUtf8(selected.runtimeRoot) + " 的 config.cfg 装入插件："
+                + JoinNames(modules.value->plugins) + "。"});
+            if (!modules.value->missing.empty())
+                notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "MAP_TEST_PLUGIN_RUNTIME_MISSING_PLUGIN",
+                    "config.cfg 启用了、plugin/warcraft3 里却没有的插件，本次不装：" + JoinNames(modules.value->missing) + "。"});
+            unmatchedNatives = std::move(modules.value->unmatchedNatives);
         }
         if (extension && selected.runtimeRoot.empty()) {
             const auto code = handwrittenYdwe ? "MAP_TEST_LUA_RUNTIME_REQUIRED"
@@ -862,7 +926,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             } else {
                 message = "此地图用 exec-lua 加载 Lua，需要 YDWE 的 Lua 引擎。请";
             }
-            message += "在设置中配置本机 YDWE 目录或包含六个 DLL 的独立运行时目录，无需启动 YDWE。";
+            message += "在设置中配置本机 YDWE / KKWE 目录或包含六个 DLL 的独立运行时目录，无需启动 YDWE。";
             if (handwrittenYdwe && !remainingRequired)
                 message += " 也可在地图测试设置中改用 Audastra 自带 Lua 环境。";
             auto rejected = Failure<LaunchPlan>(std::move(primaryCode), std::move(message));
@@ -874,7 +938,10 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         if (!plan.Succeeded()) return plan;
         plan.value->luaEntryModules = entries;
         plan.diagnostics.insert(plan.diagnostics.end(), notes.begin(), notes.end());
-        if (!selected.runtimeRoot.empty()) {
+        if (pluginConfig && !unmatchedNatives.empty())
+            plan.diagnostics.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "MAP_TEST_PLUGIN_RUNTIME_NATIVE_UNMATCHED",
+                "这些接口在 KKWE 运行库的文件里没找到名字，进图后可能不可用：" + JoinNames(unmatchedNatives) + "。"});
+        if (!selected.runtimeRoot.empty() && !pluginConfig) {
             if (remainingRequired) plan.diagnostics.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime",
                 "MAP_TEST_LEGACY_NATIVE_UNVERIFIED", "旧 YDWE 路径按六 DLL 兼容布局启动，无法逐接口核验其实际注册。"});
             std::size_t index = 0;
@@ -902,6 +969,8 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             plan.diagnostics.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_RUNTIME_PROFILE",
                 selected.useOwnedLuaRuntime
                     ? "自有经典 Lua 运行时来源与语法预检通过；实际 Game.dll 身份与 Lua 初始化由独立启动器及 bootstrap 回执确认。"
+                    : pluginConfig
+                    ? "KKWE 运行库预检通过；实际 Game.dll 身份与插件初始化由独立启动器及 bootstrap 回执确认。"
                     : "独立 x86 Lua 5.3 扩展运行时预检通过；实际 Game.dll 身份与插件初始化由独立启动器及 bootstrap 回执确认。", std::nullopt});
         }
         return plan;

@@ -10,7 +10,14 @@
 
 namespace War3Map::Services {
 
-enum class MapTestRuntimeLayout { Flat, YdweTree };
+// PluginConfig：KKWE 等按 plugin/warcraft3/config.cfg 启用插件的运行库，装入清单见 runtimeModules。
+enum class MapTestRuntimeLayout { Flat, YdweTree, PluginConfig };
+// PluginConfig 运行库的一项：相对运行库根的文件（bin/ 或 plugin/warcraft3/ 下），按清单顺序装入。
+struct MapTestRuntimeModule {
+    std::filesystem::path relativePath;
+    bool initialize = false; // 装入后调用其 Initialize（原平台装载器对插件的做法）
+    bool luaCore = false;    // Lua 核心（luacore.dll / lua53.dll）
+};
 // 作者手写 Lua（脚本里 Cheat("exec-lua: \"模块\"")）的测试运行环境。
 // Owned：Audastra 自带 Lua，可热重载；地图还需要原版没有的扩展接口时改用 YDWE 引擎并提示。
 // Ydwe：始终使用本机 YDWE 的 Lua 引擎（不能热重载）。
@@ -57,6 +64,7 @@ struct MapTestArtifact {
     std::filesystem::path runtimeBootstrap;
     std::filesystem::path runtimeYdweRoot;
     MapTestRuntimeLayout runtimeLayout = MapTestRuntimeLayout::Flat;
+    std::vector<MapTestRuntimeModule> runtimeModules; // 仅 PluginConfig
     bool useOwnedLuaRuntime = false;
     bool enableLuaHotReload = false;
     MapTestLuaEngine handwrittenLuaEngine = MapTestLuaEngine::Owned;

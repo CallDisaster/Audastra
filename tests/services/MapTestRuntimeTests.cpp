@@ -125,6 +125,22 @@ std::vector<std::byte> Pe(bool dll, bool initialize = false, std::uint16_t machi
     }
     return bytes;
 }
+// 原创 KKWE 形态插件：最多 5 个导入 DLL（名字不超过 15 字节），text 放进节里供接口名查找。
+std::vector<std::byte> PluginPe(bool initialize, const std::vector<std::string>& imports, std::string_view text = {}) {
+    auto bytes = Pe(true, initialize);
+    Require(imports.size() <= 5 && text.size() < 0xf0, "plugin PE fixture stays within its fixed layout");
+    const auto u32 = [&](std::size_t offset, std::uint32_t value) { std::memcpy(bytes.data() + offset, &value, 4); };
+    constexpr std::size_t optional = 0x98;
+    u32(optional + 104, 0x1200); u32(optional + 108, static_cast<std::uint32_t>((imports.size() + 1) * 20));
+    for (std::size_t i = 0; i < imports.size(); ++i) {
+        Require(imports[i].size() < 16, "plugin PE fixture import name fits its slot");
+        u32(0x400 + i * 20 + 12, static_cast<std::uint32_t>(0x1280 + i * 16));
+        u32(0x400 + i * 20 + 16, 0x13f0);
+        std::memcpy(bytes.data() + 0x480 + i * 16, imports[i].data(), imports[i].size());
+    }
+    std::memcpy(bytes.data() + 0x501, text.data(), text.size());
+    return bytes;
+}
 constexpr std::string_view kCommon = R"JASS(native DebugMessage takes string message returns nothing
 native GetRandomInt takes integer low, integer high returns integer
 native ScheduleCallback takes code callback returns nothing
@@ -680,6 +696,61 @@ void YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions() {
     explicitMap.runtimeLayout = static_cast<Services::MapTestRuntimeLayout>(99);
     Require(Code(Script::BuildIndependentMapTestLaunchPlan(explicitMap), "MAP_TEST_RUNTIME_LAYOUT"), "invalid layout cannot reach launcher");
     flatFixture.Unchanged(explicitMap);
+}
+// KKWE：bin 只有 ydbase / luacore 等依赖，插件由 plugin/warcraft3/config.cfg 启用；按依赖在前的顺序逐个装入。
+void PluginConfigRuntimeFollowsConfigAndImports() {
+    Fixture fixture;
+    const auto kkwe = fixture.root / "kkwe";
+    Write(kkwe / "bin/ydbase.dll", PluginPe(false, {"kernel32.dll"}));
+    Write(kkwe / "bin/LuaCore.dll", PluginPe(false, {"ydbase.dll", "api-ms-win-crt"}));
+    Write(kkwe / "bin/SlkLib.dll", PluginPe(false, {}));
+    Write(kkwe / "bin/unused.dll", Bytes("never inspected because nothing imports it"));
+    Write(kkwe / "plugin/warcraft3/yd_loader.dll", Pe(true));
+    Write(kkwe / "plugin/warcraft3/yd_jass_api.dll", PluginPe(true, {"YDBASE.DLL"}, "EXNative"));
+    Write(kkwe / "plugin/warcraft3/yd_lua_engine.dll", PluginPe(true, {"luacore.dll", "slklib.dll", "ydbase.dll"}));
+    Write(kkwe / "plugin/warcraft3/yd_disabled.dll", Bytes("disabled plugin is never read"));
+    const auto config = kkwe / "plugin/warcraft3/config.cfg";
+    Write(config, Bytes("[Enable]\r\nyd_loader.dll = 1\r\nyd_jass_api.dll = 1\r\n; comment\r\nyd_lua_engine.dll=1\r\n"
+        "yd_disabled.dll = 0\r\nyd_absent.dll = 1\r\n[Other]\r\nignored.dll = 1\r\n"));
+    Write(fixture.helper / "audastra-warcraft-launcher.exe", Pe(false)); Write(fixture.helper / "audastra-warcraft-bootstrap.dll", Pe(true));
+    const auto prepare = [&](Services::MapTestArtifact map) {
+        map.runtimeYdweRoot = kkwe;
+        map.runtimeBridge = fixture.helper / "audastra-warcraft-launcher.exe";
+        map.runtimeBootstrap = fixture.helper / "audastra-warcraft-bootstrap.dll";
+        return map;
+    };
+    const auto modules = [](const Services::MapTestLaunchPlan& plan) {
+        std::vector<std::wstring> values;
+        for (std::size_t i = 0; i + 1 < plan.arguments.size(); ++i)
+            if (plan.arguments[i] == L"--runtime-module") values.push_back(plan.arguments[i + 1]);
+        return values;
+    };
+    auto map = prepare(fixture.Artifact(Script("    call EXNative()", "native EXNative takes nothing returns nothing\n")));
+    const auto plan = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(plan, "KKWE tree without lua53.dll plans its config.cfg plugins");
+    const auto layout = std::find(plan.value->arguments.begin(), plan.value->arguments.end(), L"--runtime-layout");
+    Require(plan.value->runtimeLayout == Services::MapTestRuntimeLayout::PluginConfig && plan.value->runtimeRoot == kkwe
+        && layout != plan.value->arguments.end() && *(layout + 1) == L"plugin-config", "KKWE layout is explicit in the frozen launcher plan");
+    const std::vector<std::wstring> expected{L"-|bin\\ydbase.dll", L"i|plugin\\warcraft3\\yd_jass_api.dll", L"l|bin\\LuaCore.dll",
+        L"-|bin\\SlkLib.dll", L"i|plugin\\warcraft3\\yd_lua_engine.dll"};
+    Require(modules(*plan.value) == expected, "bin dependencies load before each plugin, in config.cfg order, without yd_loader or disabled plugins");
+    Require(Code(plan, "MAP_TEST_PLUGIN_RUNTIME_SELECTED") && Code(plan, "MAP_TEST_PLUGIN_RUNTIME_MISSING_PLUGIN")
+        && !Code(plan, "MAP_TEST_PLUGIN_RUNTIME_NATIVE_UNMATCHED") && !Code(plan, "MAP_TEST_LEGACY_NATIVE_UNVERIFIED"),
+        "KKWE notes name loaded and missing plugins; a native found by name raises no warning");
+
+    auto other = prepare(fixture.Artifact(Script("    call EXOther()", "native EXOther takes nothing returns nothing\n")));
+    const auto unmatched = Script::BuildIndependentMapTestLaunchPlan(other);
+    Success(unmatched, "an interface not found by name still launches with a warning");
+    Require(Code(unmatched, "MAP_TEST_PLUGIN_RUNTIME_NATIVE_UNMATCHED"), "interfaces absent from every module file are reported");
+
+    Write(kkwe / "plugin/warcraft3/yd_jass_api.dll", Bytes("damaged plugin"));
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_RUNTIME_PE", "damaged enabled plugin stops planning");
+    Write(kkwe / "plugin/warcraft3/yd_jass_api.dll", PluginPe(true, {"YDBASE.DLL"}, "EXNative"));
+    Write(config, Bytes("[Enable]\r\n../escape.dll = 1\r\n"));
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_PLUGIN_CONFIG", "plugin names cannot leave plugin/warcraft3");
+    Write(config, Bytes("[Enable]\r\nyd_jass_api.dll = 0\r\n"));
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_PLUGIN_CONFIG", "a config with nothing enabled cannot launch");
+    fixture.Unchanged(map); fixture.Unchanged(other);
 }
 void UnusedUiPreferencesCannotBlockNativeMaps() {
     Fixture fixture;
@@ -1305,6 +1376,7 @@ int wmain(int argc, wchar_t** argv) {
         CompiledJassOpaqueBytesPreserveRuntimeClassification(); CompiledJassByteRawcodesAndMalformedBoundaries();
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();
         YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions();
+        PluginConfigRuntimeFollowsConfigAndImports();
         UnusedUiPreferencesCannotBlockNativeMaps();
         LuaMapsAreExplicitRuntimeInputs(); HandwrittenLuaEntriesSelectRuntime(); TestCopyTranslatesYdweRawcodes();
         MissingMalformedAndOversizeScriptsStopPlanning();

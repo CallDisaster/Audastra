@@ -42,6 +42,7 @@ add_library(War3MapScriptBuild STATIC
     MapTestInput.cpp
     MapTestLaunch.cpp
     MapTestRuntime.cpp
+    MapTestPluginRuntime.cpp
     ExternalDependencies.cpp
     ../WarcraftRuntime32/OwnLua/NativeSignature.cpp
     LuaTemplateSandbox.cpp

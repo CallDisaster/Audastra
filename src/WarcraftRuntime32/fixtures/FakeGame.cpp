@@ -1,15 +1,23 @@
 #include "../RuntimeProtocol.h"
+#include <algorithm>
 #include <filesystem>
 #include <string>
 
 extern "C" int StartFakeGame() {
     auto* shared = Audastra::Runtime32::OpenChannel();
     if (!shared) return 43;
-    // 裸模式不加载任何扩展插件；其余模式要求两个插件都真正初始化。
+    // 裸模式不加载任何扩展插件；其余模式要求装入清单里标了 Initialize 的插件（至少两个）都真正初始化。
+    // 插件在清单里的位置随布局不同（六件套是第 5、6 个，KKWE 按 config.cfg 与依赖排序）。
     const bool bare = shared->runtimeMode == Audastra::Runtime32::RuntimeMode::Bare;
+    DWORD flagged = 0, initialized = 0;
+    const auto count = (std::min)(shared->runtimeModuleCount, static_cast<DWORD>(Audastra::Runtime32::kRuntimeModuleLimit));
+    for (DWORD index = 0; index < count; ++index) {
+        if (shared->runtimeModuleInitialize[index]) ++flagged;
+        if (shared->modules[index].initializeCalled) ++initialized;
+    }
     const auto success = shared->hookInstalled && shared->gameObserved && shared->runtimeInitialized
-        && (bare ? shared->fixturePluginBits == 0 && !shared->modules[4].initializeCalled && !shared->modules[5].initializeCalled
-            : shared->fixturePluginBits == 3 && shared->modules[4].initializeCalled && shared->modules[5].initializeCalled);
+        && (bare ? shared->fixturePluginBits == 0 && initialized == 0
+            : shared->fixturePluginBits == 3 && flagged >= 2 && initialized == flagged);
     if (success && shared->probeEnabled) {
         if (!shared->probeWriteGuardInstalled || !shared->probeObserverInstalled) return 61;
         const std::wstring command(GetCommandLineW());

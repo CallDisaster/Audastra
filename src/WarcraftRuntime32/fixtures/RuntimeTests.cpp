@@ -1,11 +1,13 @@
 #include "../RuntimeProtocol.h"
 #include "../RuntimeFiles.h"
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <cstring>
 #include <memory>
+#include <tuple>
 #include <tlhelp32.h>
 
 using namespace Audastra::Runtime32;
@@ -175,7 +177,7 @@ void CleanupOwned(const std::filesystem::path& base, const std::filesystem::path
         Require(FileHash(path) == hash, "cleanup member still has its creation SHA");
     }
     for (const auto& [path, hash] : files) { (void)hash; Require(std::filesystem::remove(path), "remove only verified created fixture file"); }
-    if (layout == RuntimeLayout::YdweTree) {
+    if (layout != RuntimeLayout::Flat) {
         Require(std::filesystem::remove(work / L"runtime" / L"plugin" / L"warcraft3"), "remove empty owned YDWE plugin directory");
         Require(std::filesystem::remove(work / L"runtime" / L"plugin"), "remove empty owned plugin parent");
         Require(std::filesystem::remove(work / L"runtime" / L"bin"), "remove empty owned bin directory");
@@ -199,9 +201,25 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     std::vector<std::pair<std::filesystem::path, std::string>> ownedFiles;
     const auto remember = [&](const std::filesystem::path& path) { ownedFiles.emplace_back(path, FileHash(path)); };
     std::filesystem::create_directory(runtime);
-    if (layout == RuntimeLayout::YdweTree) {
+    if (layout != RuntimeLayout::Flat) {
         std::filesystem::create_directory(runtime / L"bin");
         std::filesystem::create_directories(runtime / L"plugin" / L"warcraft3");
+    }
+    // KKWE 形态：bin 里只有 ydbase 与 luacore（无 lua53/ydwar3/yd_loader），插件逐项由参数给出，依赖在前。
+    std::wstring moduleArguments;
+    if (layout == RuntimeLayout::PluginConfig) {
+        const std::array<std::tuple<const wchar_t*, const wchar_t*, const wchar_t*>, 4> plan{{
+            {L"-", L"bin\\ydbase.dll", L"ydbase.dll"}, {L"i", L"plugin\\warcraft3\\yd_jass_api.dll", L"yd_jass_api.dll"},
+            {L"l", L"bin\\luacore.dll", L"lua53.dll"}, {L"i", L"plugin\\warcraft3\\yd_lua_engine.dll", L"yd_lua_engine.dll"}}};
+        for (const auto& [flags, relativePath, source] : plan) {
+            const std::wstring target(relativePath);
+            moduleArguments += L" --runtime-module " + Quote(std::wstring(flags) + L"|"
+                + (loadFlavor == L"escape" && target.ends_with(L"yd_lua_engine.dll") ? L"plugin\\..\\..\\yd_lua_engine.dll" : target));
+            if (missingPlugin && target.ends_with(L"yd_lua_engine.dll")) continue;
+            const auto from = missingInitialize && target.ends_with(L"yd_jass_api.dll") ? fakeRuntime / L"ydbase.dll" : fakeRuntime / source;
+            std::filesystem::copy_file(from, runtime / target);
+            remember(runtime / target);
+        }
     }
     std::filesystem::create_directories(work / L"Maps" / L"Test");
     std::filesystem::copy_file(fakeWar3, work / L"war3.exe");
@@ -209,6 +227,7 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     std::filesystem::copy_file(fakeGame, work / L"Game.dll");
     remember(work / L"Game.dll");
     for (std::size_t index = 0; index < kModules.size(); ++index) {
+        if (layout == RuntimeLayout::PluginConfig) break;
         const auto* module = kModules[index];
         if (missingPlugin && std::wstring(module) == L"yd_lua_engine.dll") continue;
         const auto source = missingInitialize && std::wstring(module) == L"yd_jass_api.dll" ? fakeRuntime / L"ydbase.dll" : fakeRuntime / module;
@@ -225,7 +244,8 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
         + L" --map " + Quote(relative)
         + L" --bootstrap " + Quote(bootstrap.wstring()) + L" --receipt " + Quote(receipt.wstring());
     command += L" --runtime " + Quote(runtime.wstring());
-    if (layout == RuntimeLayout::YdweTree || explicitLayout)
+    if (layout == RuntimeLayout::PluginConfig) command += L" --runtime-layout plugin-config" + moduleArguments;
+    else if (layout == RuntimeLayout::YdweTree || explicitLayout)
         command += layout == RuntimeLayout::YdweTree ? L" --runtime-layout ydwe-tree" : L" --runtime-layout flat";
     // Job只拥有本测试新建的原创控制台进程；不启动/捕获作者游戏。
     Handle job(CreateJobObjectW(nullptr, nullptr));
@@ -250,7 +270,8 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
     const auto text = Read(receipt);
     Require(text.find("\"schema\":\"audastra-warcraft-launch-v1\"") != std::string::npos, "receipt schema");
     Require(text.find("\"gameRuntimeVerified\":false") != std::string::npos, "fixture cannot claim gameplay");
-    Require(text.find(layout == RuntimeLayout::YdweTree ? "\"runtimeLayout\":\"ydwe-tree\"" : "\"runtimeLayout\":\"flat\"")
+    Require(text.find(layout == RuntimeLayout::YdweTree ? "\"runtimeLayout\":\"ydwe-tree\""
+        : layout == RuntimeLayout::PluginConfig ? "\"runtimeLayout\":\"plugin-config\"" : "\"runtimeLayout\":\"flat\"")
         != std::string::npos, "receipt reports the exact selected runtime layout");
     if (expectSuccess) {
         Require(exit == 0, "valid runtime bridge exit");
@@ -264,6 +285,9 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
             Require(!std::filesystem::exists(runtime / L"ydbase.dll") && !std::filesystem::exists(runtime / L"yd_jass_api.dll"),
                 "bootstrap loads the original two-level paths without flattening or copying DLLs");
         }
+        if (layout == RuntimeLayout::PluginConfig)
+            Require(text.find("bin\\\\luacore.dll") != std::string::npos && text.find("lua53.dll") == std::string::npos
+                && text.find("yd_loader.dll") == std::string::npos, "KKWE modules load exactly as planned, without the old six-module set");
         if (loadFlavor == L"concurrent") {
             Require(text.find("\"fixtureConcurrentPass\":2") != std::string::npos, "both concurrent Game enters see fully initialized runtime");
             Require(text.find("\"fixtureConcurrentWaitObserved\":1") != std::string::npos, "second Game loader really raced inside first Initialize");
@@ -273,6 +297,7 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
         Require(text.find("\"runtimeInitialized\":false") != std::string::npos, "no false runtime success");
         if (missingPlugin) Require(text.find("runtime-preflight") != std::string::npos, "missing plugin preflight");
         if (missingInitialize) Require(text.find("runtime-initialize-export") != std::string::npos, "missing export caught in child");
+        if (loadFlavor == L"escape") Require(text.find("runtime-module-plan") != std::string::npos, "module path cannot leave the runtime root");
         if (noGame) Require(text.find("runtime-initialization-unconfirmed") != std::string::npos, "missing Game.dll observation fails closed");
         if (loadFlavor == L"hang") {
             Require(text.find("runtime-initialization-timeout") != std::string::npos, "unobserved live process has bounded handshake");
@@ -550,7 +575,7 @@ int wmain(int argc, wchar_t** argv) {
         Require(std::filesystem::create_directory(base), "unique root");
         const std::filesystem::path launcher(argv[1]), bootstrap(argv[2]), war3(argv[3]), game(argv[4]), runtime(argv[5]);
         if (onlyProbeCase) {
-            std::cout << "FILTERED diagnostic 1 case: probe-blocked-duplicate; this is not the default 34-case suite.\n";
+            std::cout << "FILTERED diagnostic 1 case: probe-blocked-duplicate; this is not the default 38-case suite.\n";
             ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-duplicate", false);
             std::cout << "FILTERED 1/1 original diagnostic fixture passed; not a full-suite result.\n";
             return 0;
@@ -569,6 +594,10 @@ int wmain(int argc, wchar_t** argv) {
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-hook-and-initialize", true, false, false, false, {}, true, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-plugin", false, true, false, false, {}, false, RuntimeLayout::YdweTree);
         Case(base, launcher, bootstrap, war3, game, runtime, "ydwe-tree-missing-initialize", false, false, true, false, {}, false, RuntimeLayout::YdweTree);
+        Case(base, launcher, bootstrap, war3, game, runtime, "plugin-config-hook-and-initialize", true, false, false, false, {}, false, RuntimeLayout::PluginConfig);
+        Case(base, launcher, bootstrap, war3, game, runtime, "plugin-config-missing-plugin", false, true, false, false, {}, false, RuntimeLayout::PluginConfig);
+        Case(base, launcher, bootstrap, war3, game, runtime, "plugin-config-missing-initialize", false, false, true, false, {}, false, RuntimeLayout::PluginConfig);
+        Case(base, launcher, bootstrap, war3, game, runtime, "plugin-config-escaping-module", false, false, false, false, L"escape", false, RuntimeLayout::PluginConfig);
         BareCase(base, launcher, bootstrap, war3, game, "bare-mode", BareHook::None);
         BareCase(base, launcher, bootstrap, war3, game, "bare-background-play-identity", BareHook::BackgroundPlay);
         BareCase(base, launcher, bootstrap, war3, game, "bare-window-cloak", BareHook::WindowCloak);
@@ -591,7 +620,7 @@ int wmain(int argc, wchar_t** argv) {
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-short-duplicate", false);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-capacity", false);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-blocked-invalid", false);
-        std::cout << "34/34 original console fixtures passed; no Warcraft/YDWE/GUI/GPU executed.\n";
+        std::cout << "38/38 original console fixtures passed; no Warcraft/YDWE/GUI/GPU executed.\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL " << error.what() << '\n'; return 1; }
 }
