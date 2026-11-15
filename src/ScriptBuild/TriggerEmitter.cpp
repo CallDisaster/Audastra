@@ -151,6 +151,7 @@ std::string TriggerEmitter::ResolvedType(const Eca& eca, std::size_t index) cons
     else if (gui == Gui::YDWESaveAnyTypeDataByUserData && index == 4) source = 3;
     else if (index == 1 && (gui == Gui::YDWELoadAnyTypeDataByUserData || gui == Gui::YDWEHaveSavedAnyTypeDataByUserData ||
                                gui == Gui::YDWEFlushAnyTypeDataByUserData || gui == Gui::YDWEFlushAllByUserData ||
+                               name == "KKGetHandleId" ||
                                name == "YDWEGetObjectPropertyInteger" || name == "YDWEGetObjectPropertyReal" ||
                                name == "YDWEGetObjectPropertyString")) {
         source = 0;

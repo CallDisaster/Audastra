@@ -85,9 +85,12 @@ Fixture MakeFixture(const std::filesystem::path& root) {
     WriteText(result.ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\n"
         "typename=1,0,0,Type,string\nstring=0,1,1,String,string\nscriptcode=1,0,0,Code,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
         "frame=0,1,1,Frame,integer\nprobegroup=0,1,1,Group,handle\nplayer=0,1,1,Player,player\nboolean=0,1,1,Boolean,boolean\n"
-        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename39_frame=0,typename,39,Frame\ntypename91_probegroup=0,typename,91,Group\nProbeTop =0,integer,1,Top\nPlayer00=0,player,Player(0),Player 1\nProbeNoCheck=0,boolean,false,No check\n");
+        "unit=0,1,1,Unit,unit\n"
+        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename39_frame=0,typename,39,Frame\ntypename91_probegroup=0,typename,91,Group\nProbeTop =0,integer,1,Top\nPlayer00=0,player,Player(0),Player 1\nProbeNoCheck=0,boolean,false,No check\n"
+        "typename03_boolean=0,typename,3,Boolean\ntypename04_string=0,typename,4,String\ntypename07_unit=0,typename,7,Unit\n");
     WriteText(result.ui / "probe/call.txt",
-        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n");
+        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n"
+        "[KKGetHandleId]\nreturns=integer\n[[.args]]\ntype=typename\n[[.args]]\ntype=Null\n[ProbeUnit]\nreturns=unit\n");
     WriteText(result.ui / "probe/action.txt",
         "[ProbeModuleCreate]\ntitle=\"Probe - create module\"\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
         "[ProbeEnum]\ntitle=\"Probe - 选取探针做动作 (多项)\"\n[[.args]]\ntype=integer\n"
@@ -375,6 +378,36 @@ void Run(const std::filesystem::path& root) {
     const auto top = GenerateMapScript(spacedInputs);
     Require(top.Succeeded() && top.text.find("call RecordInteger(1)") != std::string::npos,
         "preset names with surrounding spaces resolve to their value:\n" + top.text);
+
+    // “获取对象handle值”(类型, 值) 没有同名脚本函数：按所选类型展开成整数转换，不能原样写出调用。
+    const auto callValue = [](std::string function, std::vector<GraphArgumentValue> args) {
+        GraphArgumentValue result;
+        auto call = std::make_shared<GraphEcaValue>();
+        call->function = std::move(function); call->kind = UiDefinitionKind::Call; call->arguments = std::move(args);
+        result.call = call;
+        return result;
+    };
+    const auto handleId = [&](const char* type, GraphArgumentValue value) {
+        return Action("RecordInteger", {callValue("KKGetHandleId", {Scalar(0, type), std::move(value)})});
+    };
+    auto handles = MakeDocument(*catalog.value, {
+        handleId("typename07_unit", callValue("ProbeUnit", {})),
+        handleId("typename04_string", Scalar(3, "abc")),
+        handleId("typename01_integer", Scalar(3, "5")),
+    });
+    MapScriptInputs handleInputs; handleInputs.catalog = &*catalog.value; handleInputs.triggers = &handles;
+    const auto handle = GenerateMapScript(handleInputs);
+    Require(handle.Succeeded() && !HasCode(handle.diagnostics, "kk-handle-type"), "handle id generation: " + Details(handle.diagnostics));
+    Require(handle.text.find("call RecordInteger(GetHandleId(ProbeUnit()))") != std::string::npos
+        && handle.text.find("call RecordInteger(StringHash(\"abc\"))") != std::string::npos
+        && handle.text.find("call RecordInteger(5)") != std::string::npos
+        && handle.text.find("KKGetHandleId") == std::string::npos,
+        "handles use GetHandleId, strings StringHash, integers their own value:\n" + handle.text);
+    auto unconvertible = MakeDocument(*catalog.value, {handleId("typename03_boolean", Scalar(3, "true"))});
+    MapScriptInputs boolInputs; boolInputs.catalog = &*catalog.value; boolInputs.triggers = &unconvertible;
+    const auto boolHandle = GenerateMapScript(boolInputs);
+    Require(HasCode(boolHandle.diagnostics, "kk-handle-type"), "a boolean has no integer conversion and is reported: "
+        + Details(boolHandle.diagnostics));
 
     // Dz 异步注册（多项）：只在指定玩家本机注册 ByCode 回调；回调读取的外层局部变量先拷进常量闭包页
     // （回调基础名的 StringHash），回调内从该页读取。

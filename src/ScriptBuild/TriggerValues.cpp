@@ -253,9 +253,22 @@ void TriggerEmitter::PutCallValue(const std::string& slotType, const Eca& call, 
     default:
         break;
     }
+    const std::string_view callName = call.name.text;
+    // KKWE“获取对象handle值”(类型, 值)没有同名脚本函数：与 KKWE 的 YDTrigger 一样按 YDHashAny2I(类型, 值)
+    // 的展开结果生成（句柄 GetHandleId、字符串 StringHash、实数 R2I、整数与物体类型原值）。
+    if (callName == "KKGetHandleId" && call.arguments.size() == 2) {
+        const auto type = LocalTypeOf(call, 0);
+        const auto wrap = detail::UserDataTableWrap(type);
+        if (type.empty() || !wrap.known)
+            Warn("kk-handle-type", "“获取对象handle值”不能把“" + (type.empty() ? ArgValue(call, 0) : type)
+                + "”类型转换为整数，生成的调用无法通过语法检查。");
+        out_.Put(wrap.prefix);
+        PutVar(call, child, 1);
+        out_.Put(wrap.suffix);
+        return;
+    }
     // 保留实际Property宏调用供注入器识别，再由同源YDTrigger.h展开。
     // 提前展开为EXExecuteScript会丢失cfg登记的依赖；注释不能充当代码依赖。
-    const std::string_view callName = call.name.text;
     if (callName == "YDWEGetObjectPropertyInteger" || callName == "YDWEGetObjectPropertyReal" ||
         callName == "YDWEGetObjectPropertyString") {
         const std::string objectType = Capture([&] { PutVar(call, child, 0); });
