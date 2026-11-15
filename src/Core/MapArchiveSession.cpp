@@ -738,8 +738,14 @@ Result<CandidateTargetLease> LockCandidateTarget(const std::filesystem::path& ta
         auto handle = std::make_unique<FileHandle>(CreateFileW(ancestor.c_str(),
             FILE_READ_ATTRIBUTES | FILE_TRAVERSE, FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
-        if (!handle->Valid()) return Result<CandidateTargetLease>::Failure(
-            "MapArchiveSession", "TARGET_ANCESTOR_LEASE_FAILED", "无法锁定候选目录的完整路径。");
+        if (!handle->Valid()) {
+            // 写明哪一级目录、Windows 错误码；32 是共享冲突（该目录被别的句柄以不允许共享的方式打开）。
+            const auto error = GetLastError();
+            const auto text = ancestor.u8string();
+            return Result<CandidateTargetLease>::Failure("MapArchiveSession", "TARGET_ANCESTOR_LEASE_FAILED",
+                "无法锁定候选目录的完整路径：" + std::string(text.begin(), text.end())
+                + "（Windows 错误 " + std::to_string(error) + "）。");
+        }
         lease.handles.push_back(std::move(handle));
         ancestor = next;
     }

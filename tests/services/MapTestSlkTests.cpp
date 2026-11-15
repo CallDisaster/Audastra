@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/MapTestService.h"
+#include "War3MapCore/Services/MapTestWorkspace.h"
 #include "War3MapCore/Script/MapTestToolchain.h"
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/NativeObjectCodec.h"
@@ -99,9 +100,13 @@ int main(int argc, char** argv) {
             {"opaque/resource.bin", {std::byte{19}, std::byte{0}, std::byte{99}}}};
         const auto source = WriteVerifiedArchive(temp.root / "source.w3x", members); Success(source, "write original map fixture");
 
+        // 与编辑器、命令行相同：测试任务目录先加清理租约，再在其下的 prepared 里准备；SLK 产物不能直接在锁住的目录里保存。
+        const auto run = temp.root / "run";
+        Require(std::filesystem::create_directory(run), "create test run directory");
+        auto runLease = Services::FreezeMapTestWorkspace(run); Success(runLease, "lock the test run directory like the editor does");
         Services::MapTestRequest request;
         request.inputMap = source.value->path; request.expectedInputSha256 = source.value->sha256; request.sourceMap = source.value->path;
-        request.gameRoot = game; request.workspace = temp.root / "prepared"; request.optimizeSlk = true;
+        request.gameRoot = game; request.workspace = run / "prepared"; request.optimizeSlk = true;
         const auto optimized = Services::PrepareMapTest(request, Script::OptimizeMapTestSlk);
         Success(optimized, "native SLK conversion with real game tables");
         Require(HasCode(optimized, "MAP_TEST_SLK_SUMMARY"), "conversion summary reaches the caller");

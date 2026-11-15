@@ -440,6 +440,36 @@ void WorkspaceFreezeRejectsPreexistingHardlinks() {
     Require(*Sha256File(external).value == externalSha, "failed freeze leaves external hardlink source unchanged");
     Require(*Sha256File(f.source).value == f.sha, "failed freeze leaves author source unchanged");
 }
+// 编辑器给测试目录加的清理租约（带删除权限）与归档写出时的上级目录锁冲突：直接写进测试目录失败并说清目录与错误码，
+// 公共的“目录外保存、回读、复制进来”流程在同样上锁的测试目录里成功（SLK 优化与 Lua 测试副本共用）。
+void LockedRunDirectoryUsesOutsideCandidate() {
+    Fixture f;
+    const auto archive = WriteVerifiedArchive(f.root / "synthetic-archive.w3x",
+        std::vector<MapArchiveMember>{{"war3map.j", {std::byte{0x2f}, std::byte{0x2f}}}});
+    Require(archive.Succeeded(), "write synthetic archive");
+    auto source = MapArchiveSession::Open(archive.value->path); Require(source.Succeeded(), "open synthetic archive");
+    const auto run = f.root / "locked-run";
+    Require(std::filesystem::create_directory(run), "create run directory");
+    auto lease = FreezeMapTestWorkspace(run); Require(lease.Succeeded(), "lock the run directory like the editor does");
+    Require(std::filesystem::create_directory(run / "prepared"), "create prepared directory under the lock");
+    const std::vector<MemberReplacement> members{{"war3map.j", {std::byte{0x6f}, std::byte{0x6b}}}};
+    const auto direct = source.value->SaveCandidate(run / "prepared" / "direct.w3x", members);
+    Require(Code(direct, "TARGET_ANCESTOR_LEASE_FAILED"), "saving inside the locked run directory hits the ancestor lock conflict");
+    Require(std::any_of(direct.diagnostics.begin(), direct.diagnostics.end(), [](const auto& diagnostic) {
+        return diagnostic.message.find("Windows") != std::string::npos && diagnostic.message.find("locked-run") != std::string::npos;
+    }), "lock failure names the directory and the Windows error code");
+    Require(!std::filesystem::exists(run / "prepared" / "direct.w3x"), "failed direct save leaves no output");
+    const auto outside = SaveMapTestCopyOutside(*source.value, members, run / "prepared" / "test.w3x", 1u << 20,
+        "Map.Test.Fixture", "MAP_TEST_FIXTURE");
+    Require(outside.Succeeded(), "outside candidate is copied into the locked run directory");
+    Require(outside.value->path == run / "prepared" / "test.w3x"
+        && *Sha256File(outside.value->path).value == outside.value->sha256, "copied test map matches the verified candidate");
+    auto copied = MapArchiveSession::Open(outside.value->path); Require(copied.Succeeded(), "reopen copied test map");
+    const auto script = copied.value->ReadMember("war3map.j");
+    Require(script.Succeeded() && *script.value == members.front().data, "replacement member survives the copy");
+    Require(Code(SaveMapTestCopyOutside(*source.value, members, run / "prepared" / "test.w3x", 1u << 20,
+        "Map.Test.Fixture", "MAP_TEST_FIXTURE"), "MAP_TEST_FIXTURE_COPY_FAILED"), "an existing test map is never overwritten");
+}
 void OwnedLuaOptionsDoNotFallBack() {
     Fixture f;
     auto request = f.Request("lua-test");
@@ -478,7 +508,7 @@ void OwnedLuaOptionsDoNotFallBack() {
 }
 }
 int main() {
-    try { OwnedLuaOptionsDoNotFallBack(); CopyAndPlanKeepSource(); SlkFailureNeverFallsBack(); ProgressStagesAndFinalCopyIdentity(); LaunchProtectionFailsClosed(); NativeW3mAndLegacyConfigurationIgnored(); RuntimePlanRequiresIndependentHelpers(); YdweFallbackFreezesWithoutBecomingAnExplicitRuntime(); StaleSourceAndInstallationWorkspaceRejected(); WorkspaceLeaseCleansOnlyFrozenIdentity(); EmptyWorkspaceRefreshKeepsRootDuringPreparation(); FailedWorkspaceRefreshRetainsRootAndDisablesCleanup(); WorkspaceFreezeRejectsPreexistingHardlinks();
+    try { OwnedLuaOptionsDoNotFallBack(); CopyAndPlanKeepSource(); SlkFailureNeverFallsBack(); ProgressStagesAndFinalCopyIdentity(); LaunchProtectionFailsClosed(); NativeW3mAndLegacyConfigurationIgnored(); RuntimePlanRequiresIndependentHelpers(); YdweFallbackFreezesWithoutBecomingAnExplicitRuntime(); StaleSourceAndInstallationWorkspaceRejected(); WorkspaceLeaseCleansOnlyFrozenIdentity(); EmptyWorkspaceRefreshKeepsRootDuringPreparation(); FailedWorkspaceRefreshRetainsRootAndDisablesCleanup(); WorkspaceFreezeRejectsPreexistingHardlinks(); LockedRunDirectoryUsesOutsideCandidate();
         std::cout << "Map test service tests passed (no YDWE or game process launched)\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

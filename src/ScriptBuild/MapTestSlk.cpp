@@ -4,6 +4,7 @@
 #include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/ObjectData/ObjectFieldSchema.h"
 #include "War3MapCore/ObjectData/SlkOptimizer.h"
+#include "War3MapCore/Services/MapTestWorkspace.h"
 #include "War3MapCore/VerifiedFile.h"
 
 #include <algorithm>
@@ -83,7 +84,9 @@ Status OptimizeMapTestSlk(const Services::MapTestSlkRequest& request) {
     replacements.reserve(optimized.value->replacements.size());
     for (const auto& replacement : optimized.value->replacements) replacements.push_back({replacement.name, replacement.bytes});
     // 没有可转换物体时也写出候选，测试流程始终从本次独占目录的产物启动。
-    auto saved = source.value->SaveCandidate(request.outputMap, replacements);
+    // 测试目录被清理租约锁着，不能直接在里面保存归档；先在目录外保存回读，再复制进来核对 SHA。
+    auto saved = Services::SaveMapTestCopyOutside(*source.value, replacements, request.outputMap,
+        1024ull * 1024 * 1024, "Map.Test.Slk", "MAP_TEST_SLK");
     if (!saved.Succeeded()) return Diagnostics(saved);
 
     auto output = MapArchiveSession::Open(request.outputMap);

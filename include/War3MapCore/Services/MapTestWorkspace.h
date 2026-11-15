@@ -1,8 +1,11 @@
 #pragma once
 
+#include "War3MapCore/MapArchiveSession.h"
 #include "War3MapCore/Types.h"
 
 #include <memory>
+#include <span>
+#include <string_view>
 
 namespace War3Map::Services {
 
@@ -33,5 +36,13 @@ private:
 // 上限16目录/512文件/4GiB。重解析、硬链接或未知身份拒绝，析构只关句柄不删除。
 [[nodiscard]] Result<std::shared_ptr<MapTestWorkspaceLease>> FreezeMapTestWorkspace(
     const std::filesystem::path& ownedRoot);
+
+// 测试目录由上面的租约持有带删除权限的原句柄；归档写出又要锁住目标的每一级上级目录，且不允许别人持有删除权限。
+// 两者在同一测试目录上冲突（Windows 共享冲突）。所以测试副本（SLK 优化、Lua 四字码、Lua 物编资料等）一律
+// 先在测试目录外的独占临时目录保存并回读核对，再复制到 target（必须尚不存在）并按 SHA 核对；临时目录随后按租约清理。
+// 返回结果的 path 是 target。
+[[nodiscard]] Result<ArchiveSaveResult> SaveMapTestCopyOutside(const MapArchiveSession& source,
+    std::span<const MemberReplacement> members, const std::filesystem::path& target, std::uint64_t maxMapBytes,
+    std::string_view subsystem, std::string_view code);
 
 } // namespace War3Map::Services

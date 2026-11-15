@@ -14,26 +14,14 @@
 
 namespace War3Map::Services {
 namespace {
-// 按测试副本合同替换成员：先在独占临时目录完成原保存与回读，再复制进测试工作区成为新的测试图。
-// 测试目录由清理租约持有 DELETE 句柄，归档发布另取完整祖先租约，所以不直接在测试目录里保存。
+// 按测试副本合同替换成员：经公共的测试目录外候选流程保存、回读、复制进测试工作区，成为新的测试图。
 Status ReplaceTestCopyMembers(MapTestArtifact& artifact, const MapArchiveSession& source,
     const std::vector<MemberReplacement>& members, const wchar_t* name, std::uint64_t maxMapBytes,
     std::string_view subsystem, std::string_view code) {
-    const auto staging = std::filesystem::temp_directory_path() / (std::wstring(L"audastra-") + name + L"-"
-        + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
-    if (!std::filesystem::create_directory(staging))
-        return Status::Failure(std::string(subsystem), std::string(code) + "_WORKSPACE", "无法创建独占测试副本候选目录。");
-    auto saved = source.SaveCandidate(staging / "candidate.w3x", members);
+    auto saved = SaveMapTestCopyOutside(source, members, artifact.workspace / (std::wstring(name) + L".w3x"),
+        maxMapBytes, subsystem, code);
     if (!saved.Succeeded()) return {std::move(saved.diagnostics)};
-    auto lease = FreezeMapTestWorkspace(staging);
-    if (!lease.Succeeded()) return {std::move(lease.diagnostics)};
-    struct Cleanup { std::shared_ptr<MapTestWorkspaceLease> lease; ~Cleanup() { (void)lease->Cleanup(true); } } cleanup{*lease.value};
-    const auto target = artifact.workspace / (std::wstring(name) + L".w3x");
-    if (!CopyFileW(saved.value->path.c_str(), target.c_str(), TRUE))
-        return Status::Failure(std::string(subsystem), std::string(code) + "_COPY_FAILED", "冻结测试副本复制失败。");
-    auto copied = ReadVerifiedFile(target, saved.value->sha256, maxMapBytes);
-    if (!copied.Succeeded()) return {std::move(copied.diagnostics)};
-    artifact.testMap = target;
+    artifact.testMap = saved.value->path;
     artifact.testMapSha256 = saved.value->sha256;
     return Status::Ok();
 }

@@ -1,8 +1,10 @@
 #include "War3MapCore/Services/MapTestWorkspace.h"
 
 #include "War3MapCore/Hash.h"
+#include "War3MapCore/VerifiedFile.h"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <set>
 #include <utility>
@@ -234,6 +236,37 @@ Status MapTestWorkspaceLease::Cleanup(bool gameTerminalConfirmed) {
     return Status::Ok();
 #else
     return fail("MAP_TEST_PLATFORM", "测试目录原句柄清理租约仅支持Windows。");
+#endif
+}
+Result<ArchiveSaveResult> SaveMapTestCopyOutside(const MapArchiveSession& source,
+    std::span<const MemberReplacement> members, const std::filesystem::path& target, std::uint64_t maxMapBytes,
+    std::string_view subsystem, std::string_view code) {
+    using Return = Result<ArchiveSaveResult>;
+    const auto fail = [&](std::string_view suffix, std::string message) {
+        return Return::Failure(std::string(subsystem), std::string(code) + std::string(suffix), std::move(message));
+    };
+#ifdef _WIN32
+    static std::atomic_uint sequence{0};
+    std::error_code ec;
+    const auto staging = std::filesystem::temp_directory_path(ec) / (L"audastra-" + target.stem().wstring() + L"-"
+        + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(++sequence));
+    if (ec || !std::filesystem::create_directory(staging, ec) || ec)
+        return fail("_WORKSPACE", "无法在测试目录外创建独占候选目录。");
+    auto saved = source.SaveCandidate(staging / "candidate.w3x", members);
+    if (!saved.Succeeded()) { std::filesystem::remove(staging, ec); return saved; }
+    auto lease = FreezeMapTestWorkspace(staging);
+    if (!lease.Succeeded()) return {std::nullopt, std::move(lease.diagnostics)};
+    struct Cleanup { std::shared_ptr<MapTestWorkspaceLease> lease; ~Cleanup() { (void)lease->Cleanup(true); } } cleanup{*lease.value};
+    if (!CopyFileW(saved.value->path.c_str(), target.c_str(), TRUE))
+        return fail("_COPY_FAILED", "冻结测试副本复制进测试目录失败（Windows 错误 " + std::to_string(GetLastError()) + "）。");
+    auto copied = ReadVerifiedFile(target, saved.value->sha256, maxMapBytes);
+    if (!copied.Succeeded()) return {std::nullopt, std::move(copied.diagnostics)};
+    auto result = std::move(*saved.value);
+    result.path = target;
+    return Return::Success(std::move(result));
+#else
+    (void)source; (void)members; (void)target; (void)maxMapBytes;
+    return fail("_PLATFORM", "测试副本候选只支持 Windows。");
 #endif
 }
 } // namespace War3Map::Services
