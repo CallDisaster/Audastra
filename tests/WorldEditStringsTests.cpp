@@ -109,6 +109,22 @@ void TestOverlayDiscoveryAndFallback() {
     Require(english.Resolve("WESTRING_TRIGCAT_UNIT") == "单位", "zh-CN overlay still fills gaps like YDWE");
 }
 
+// 旧布局（share/mpq/config）：中文覆盖在 share/mpq/units，按游戏内路径组织；数据根可以选到 share/mpq。
+void TestLegacyOverlay() {
+    TempDirectory root;
+    const auto legacy = root.Path() / "Legacy";
+    WriteText(legacy / "share" / "mpq" / "config", "ydwe\n");
+    WriteText(legacy / "share" / "mpq" / "units" / "ui" / "WorldEditStrings.txt",
+        "[WorldEditStrings]\nWESTRING_PERIODICOPTION_ONETIME=\"一次\"\n");
+    Require(War3Map::Game::YdweOverlayRoots(legacy).size() == 1, "legacy overlay found from tool root");
+    Require(War3Map::Game::YdweOverlayRoots(legacy / "share" / "mpq").size() == 1, "legacy overlay found from share/mpq");
+    Require(War3Map::Game::YdweRootDirectories(legacy / "share" / "mpq").size() == 2, "share/mpq selection also reaches the install root");
+    War3Map::Game::WorldEditStringSources sources;
+    sources.toolRoot = legacy / "share" / "mpq";
+    const auto strings = War3Map::Game::LoadWorldEditStrings(sources);
+    Require(strings.Resolve("WESTRING_PERIODICOPTION_ONETIME") == "一次", "legacy Chinese overlay used before game strings");
+}
+
 void TestDecoding() {
     const std::string utf8 = "\xEF\xBB\xBF" "单位";
     const auto* bytes = reinterpret_cast<const std::byte*>(utf8.data());
@@ -152,9 +168,10 @@ int main() {
     try {
         TestParsingAndPriority();
         TestOverlayDiscoveryAndFallback();
+        TestLegacyOverlay();
         TestDecoding();
         TestSoundChannels();
-        std::cout << "WorldEditStrings: 4 scenarios passed\n";
+        std::cout << "WorldEditStrings: 5 scenarios passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

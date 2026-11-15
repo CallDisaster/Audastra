@@ -69,9 +69,14 @@ void AddRoot(std::vector<std::filesystem::path>& roots, const std::filesystem::p
 std::vector<std::filesystem::path> ToolRoots(const std::filesystem::path& toolRoot) {
     std::vector<std::filesystem::path> result;
     if (toolRoot.empty()) return result;
-    result.push_back(toolRoot);
-    // 选的是 ui 目录时，share 在其上一级。
-    if (LowerWide(toolRoot.filename().wstring()) == L"ui" && toolRoot.has_parent_path()) result.push_back(toolRoot.parent_path());
+    auto root = toolRoot.lexically_normal();
+    if (root.has_relative_path() && root.filename().empty()) root = root.parent_path();
+    result.push_back(root);
+    // 选的是 ui 目录时，share 在其上一级；旧布局（share/mpq/config）选到 share/mpq 时安装根在上两级。
+    if (LowerWide(root.filename().wstring()) == L"ui" && root.has_parent_path()) result.push_back(root.parent_path());
+    else if (LowerWide(root.filename().wstring()) == L"mpq" && root.has_parent_path()
+        && LowerWide(root.parent_path().filename().wstring()) == L"share" && root.parent_path().has_parent_path())
+        result.push_back(root.parent_path().parent_path());
     return result;
 }
 
@@ -82,6 +87,20 @@ std::vector<std::filesystem::path> ShareRoots(const std::filesystem::path& toolR
             const auto wide = std::filesystem::path(std::u8string(language.begin(), language.end())).wstring();
             if (const auto lang = FindChild(*share, wide)) {
                 if (const auto mpq = FindChild(*lang, L"mpq")) AddRoot(roots, *mpq);
+            }
+        }
+    }
+    return roots;
+}
+
+// 旧布局（YDWE 1.31 及以前、KKWE 等）把中文覆盖文件放在 share/mpq/units，按游戏内路径组织
+// （units/ui/WorldEditStrings.txt 即 ui\WorldEditStrings.txt），编辑器启动时整目录挂成虚拟 MPQ。
+std::vector<std::filesystem::path> LegacyOverlayRoots(const std::filesystem::path& toolRoot) {
+    std::vector<std::filesystem::path> roots;
+    for (const auto& root : ToolRoots(toolRoot)) {
+        if (const auto share = FindChild(root, L"share")) {
+            if (const auto mpq = FindChild(*share, L"mpq")) {
+                if (const auto units = FindChild(*mpq, L"units")) AddRoot(roots, *units);
             }
         }
     }
@@ -100,6 +119,7 @@ std::vector<std::filesystem::path> YdweOverlayRoots(const std::filesystem::path&
     if (language != "zh-CN") {
         for (auto& root : ShareRoots(toolRoot, "zh-CN")) AddRoot(roots, root);
     }
+    for (auto& root : LegacyOverlayRoots(toolRoot)) AddRoot(roots, root);
     return roots;
 }
 

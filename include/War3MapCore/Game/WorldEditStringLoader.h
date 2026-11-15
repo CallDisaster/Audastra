@@ -20,7 +20,8 @@ namespace War3Map::Game {
 
 class GameDataSource;
 
-// toolRoot 可以是 YDWE 根目录，也可以是其 ui 子目录。按优先级返回存在的 share/<语言>/mpq 目录。
+// toolRoot 可以是 YDWE 根目录，也可以是其 ui 子目录或旧布局的 share/mpq。按优先级返回存在的 share/<语言>/mpq 目录，
+// 最后是旧布局（YDWE 1.31 及以前、KKWE 等）的 share/mpq/units 覆盖层。
 [[nodiscard]] std::vector<std::filesystem::path> YdweOverlayRoots(
     const std::filesystem::path& toolRoot, std::string_view language = "zh-CN");
 // YDWE 根目录本身（toolRoot 为 ui 目录时依次为 ui 目录与其上一级）；函数库图标常写成相对这里的路径。
