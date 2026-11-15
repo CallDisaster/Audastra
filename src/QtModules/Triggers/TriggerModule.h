@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Modules/EditorModule.h"
+#include "Widgets/ObjectResourcePicker.h"
 
 #include "War3MapCore/Trigger/TriggerDirectory.h"
 #include "War3MapCore/Script/MapScript.h"
@@ -119,6 +120,8 @@ public:
     // 删除前确认：title、正文与引用位置（最多列 8 条），返回是否继续。测试可替换为非模态实现。
     using ConfirmHandler = std::function<bool(const QString& title, const QString& body, const QStringList& references)>;
     void SetConfirmHandler(ConfirmHandler handler) { confirm_ = std::move(handler); }
+    // 模型、图像类参数的“选择…”按钮打开物编同一个资源选择器（与物编共用索引）。
+    void SetResourcePickerFactory(ObjectResourcePickerFactory factory) { resourcePickerFactory_ = std::move(factory); }
     void NewTrigger();
     // 新建注释条目（原版“新建注释”：WTG isComment = 1，只有说明文字）。
     void NewComment();
@@ -464,6 +467,7 @@ private:
     std::optional<std::int32_t> selectionCategory_;
     std::optional<std::int32_t> selectedCategory_;
     ConfirmHandler confirm_;
+    ObjectResourcePickerFactory resourcePickerFactory_;
     QJsonObject pendingViewState_;
     // 只用于丢弃晚到的视图恢复；不持有文档正文、模型索引或裸回调控件。
     std::uint64_t navigationRestoreGeneration_ = 0;

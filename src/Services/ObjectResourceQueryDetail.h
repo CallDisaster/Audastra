@@ -64,8 +64,9 @@ public:
     bool Add(ObjectResourceCandidate row) {
         if (exhausted_ || cancelled_) return false;
         const auto bytes = row.id.size() + row.title.size() + row.value.size() + row.previewPath.size()
-            + row.sourceId.size() + row.state.size() + row.fieldId.size() + (row.object ? row.object->rawcode.size() : 0);
-        if (row.value.size() > 4096 || row.previewPath.size() > 4096 || row.title.size() > 4096) {
+            + row.sourceId.size() + row.state.size() + row.fieldId.size() + row.fieldLabel.size()
+            + (row.object ? row.object->rawcode.size() : 0);
+        if (row.value.size() > 4096 || row.previewPath.size() > 4096 || row.title.size() > 4096 || row.fieldLabel.size() > 4096) {
             catalog_->complete = false;
             if (!longValue_) catalog_->diagnostics.push_back(Warning("OBJECT_RESOURCE_TEXT_LIMIT", "部分资源字段超过4096字节，未作为候选列出。"));
             longValue_ = true; return true;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "TriggerFunctionList.h"
+#include "Widgets/ObjectResourcePicker.h"
 
 #include "War3MapCore/Trigger/TriggerDocument.h"
 #include "War3MapCore/Trigger/TriggerTypes.h"
@@ -96,6 +97,8 @@ public:
     [[nodiscard]] std::vector<TriggerArgumentEditRequest> PendingEdits() const;
     // 函数列表与选择器的分类图标来源。
     void SetCategoryIcons(TriggerFunctionList::CategoryIcon icons);
+    // 模型、图像参数的“值”旁显示“选择…”，打开物编的资源选择器；未设置时只能手填路径。
+    void SetResourcePickerFactory(War3Map::Modules::ObjectResourcePickerFactory factory);
     [[nodiscard]] std::optional<War3Map::StableId> RequestedNestedEca() const noexcept;
 
 protected:
@@ -119,6 +122,7 @@ private:
     void PopulateVariables(Row* row);
     void PopulateFunctions(Row* row);
     void BrowseFunction(Row* row);
+    void BrowseResource(Row* row);
     void UpdateFunctionLine(Row* row);
     [[nodiscard]] TriggerFunctionList& Functions();
     [[nodiscard]] static int CurrentSource(const Row* row);
@@ -139,6 +143,7 @@ private:
     std::optional<War3Map::StableId> requestedNestedEca_;
     TriggerFunctionList::CategoryIcon categoryIcons_;
     std::optional<TriggerFunctionList> functions_;
+    War3Map::Modules::ObjectResourcePickerFactory resourcePickerFactory_;
 };
 
 // 兼容旧调用入口；变量编辑器由独立模块提供。

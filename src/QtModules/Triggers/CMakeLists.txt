@@ -33,10 +33,11 @@ qt_add_library(War3MapQtModuleTriggers STATIC
     TriggerEcaModelSlots.cpp)
 add_library(War3MapEditor::QtModuleTriggers ALIAS War3MapQtModuleTriggers)
 target_include_directories(War3MapQtModuleTriggers PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-# TriggerDialogs.h 仍转发包含变量对话框（旧头入口），因此公开依赖变量模块。
+# TriggerDialogs.h 仍转发包含变量对话框（旧头入口），因此公开依赖变量模块；
+# 模型、图像参数复用物编的资源选择器，公开依赖物编模块。
 target_link_libraries(War3MapQtModuleTriggers PUBLIC
     War3MapEditor::QtProject War3MapEditor::QtShell War3MapEditor::QtUiKit
-    War3MapEditor::QtModuleVariables Qt6::Widgets)
+    War3MapEditor::QtModuleVariables War3MapEditor::QtModuleObjects Qt6::Widgets)
 target_link_libraries(War3MapQtModuleTriggers PRIVATE War3MapEditor::Services)
 target_compile_definitions(War3MapQtModuleTriggers PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(War3MapQtModuleTriggers PRIVATE /W4 /permissive- /utf-8)

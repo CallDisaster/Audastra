@@ -1,5 +1,6 @@
 #include "WorldModelPreview.h"
 #include "WorldAnimationPlayer.h"
+#include <QAbstractItemView>
 #include <QComboBox>
 #include <QHideEvent>
 #include <QHBoxLayout>
@@ -11,6 +12,7 @@
 #include <QThread>
 #include <QVariant>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <exception>
 
 namespace War3Map::Modules {
@@ -29,9 +31,15 @@ WorldModelPreview::WorldModelPreview(QWidget* parent,const War3RenderPluginApiV2
     viewport_->setFixedHeight(188); viewport_->setFocusPolicy(Qt::NoFocus); viewport_->hide(); column->addWidget(viewport_);
     player_=new WorldAnimationPlayer(*viewport_,this);
     player_->SetLoopFinishedActions(true); // 预览卡循环播放；特效动作播完常淡出成空白。
+    // 帧行逐帧刷新：单行、不换行、由主题画不透明底。旁边是原生 D3D 子窗口，透明标签反复改字会留下旧字迹。
+    frame_=new QLabel(this); frame_->setObjectName(QStringLiteral("worldUnitPreviewFrame"));
+    frame_->setTextFormat(Qt::PlainText); frame_->setWordWrap(false); frame_->setAttribute(Qt::WA_StyledBackground);
+    frame_->hide(); column->addWidget(frame_);
     message_=new QLabel(this); message_->setObjectName(QStringLiteral("worldUnitPreviewMessage")); message_->setWordWrap(true); column->addWidget(message_);
     auto* controls=new QHBoxLayout; controls->setSpacing(5);
     action_=new QComboBox(this); action_->setObjectName(QStringLiteral("worldUnitPreviewAction")); action_->setAccessibleName(tr("预览动作"));
+    // 卡片很窄：下拉框本身按可用宽度省略，展开的列表按最长动作名加宽，不再显示成“D…环”。
+    action_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon); action_->setMinimumContentsLength(6);
     controls->addWidget(action_,1);
     playPause_=new QPushButton(tr("播放"),this); playPause_->setObjectName(QStringLiteral("worldUnitPreviewPlayPause")); controls->addWidget(playPause_);
     step_=new QPushButton(tr("单步"),this); step_->setObjectName(QStringLiteral("worldUnitPreviewStep")); controls->addWidget(step_);
@@ -59,25 +67,33 @@ WorldModelPreview::WorldModelPreview(QWidget* parent,const War3RenderPluginApiV2
             const auto& state=player_->Frame()->states.front();
             const auto& names=player_->Scene()->sequences.front();
             if (state.sequenceIndex<names.size()) {
-                title_->setText(tr("预览近似 · %1").arg(QString::fromUtf8(names[state.sequenceIndex].name)));
-                QString text=tr("局部/全局 %1/%2 ms").arg(state.elapsedMs).arg(state.globalMs);
-                if (!player_->Frame()->poses.empty()) text+=tr(" · 目标姿势 %1").arg(player_->Frame()->poses.front().poseVersion);
+                const auto& sequence=names[state.sequenceIndex];
+                title_->setText(tr("预览近似 · %1").arg(QString::fromUtf8(sequence.name)));
+                // 显示当前动作在模型时间轴上的帧号（与模型编辑器里的关键帧对应）和该动作的帧区间。
+                const std::uint64_t length=sequence.end>sequence.start?static_cast<std::uint64_t>(sequence.end-sequence.start):0;
+                std::uint64_t local=state.elapsedMs;
+                if (length && local>length) local=sequence.flags==1?length:local%length;
+                QString frame=tr("第 %1 帧 · 区间 %2–%3").arg(static_cast<std::uint64_t>(sequence.start)+local).arg(sequence.start).arg(sequence.end);
+                QStringList notes;
                 for (const auto& particle:player_->Frame()->particleLinks) {
                     if (!particle.rejectionCode.empty())
-                        text+=(particle.partial?tr(" · 粒子部分显示：%1"):tr(" · 粒子不可用：%1")).arg(QString::fromUtf8(particle.rejectionCode));
-                    if (particle.simulated) text+=tr(" · %1 粒子 · %2 条带段").arg(particle.particleCount).arg(particle.ribbonSegmentCount);
+                        notes<<(particle.partial?tr("粒子部分显示：%1"):tr("粒子不可用：%1")).arg(QString::fromUtf8(particle.rejectionCode));
+                    if (particle.simulated && particle.particleCount) frame+=tr(" · %1 粒子").arg(particle.particleCount);
                 }
+                frame_->setText(frame); frame_->setToolTip(frame); frame_->show();
                 const auto& capabilities=player_->Scene()->particleCapabilities;
                 if (!player_->Scene()->particlesEnabled && !capabilities.empty() &&
                     (capabilities.front().particle2Count || capabilities.front().ribbonCount || capabilities.front().premCount))
-                    text+=tr(" · 当前插件不支持粒子预览");
-                if (!omissions_.isEmpty()) text+=tr(" · 近似：%1").arg(omissions_);
-                SetMessage(text);
+                    notes<<tr("当前插件不支持粒子预览");
+                if (!omissions_.isEmpty()) notes<<tr("近似：%1").arg(omissions_);
+                notes.removeDuplicates();
+                // 说明行只在内容变化时改，不随帧闪动。
+                if (const auto text=notes.join(tr(" · ")); text!=message_->text()) SetMessage(text);
             }
         }
     });
     connect(player_,&WorldAnimationPlayer::Message,this,[this](const QString& text) {
-        SetMessage(text); if (!player_->Ready()) { viewport_->hide(); action_->setEnabled(false); }
+        SetMessage(text); if (!player_->Ready()) { viewport_->hide(); frame_->hide(); action_->setEnabled(false); }
     });
     hide();
 }
@@ -97,7 +113,7 @@ bool WorldModelPreview::Matches(const QString& key,std::uint64_t generation,std:
 void WorldModelPreview::ClearSelection() {
     ++serial_; pending_.reset(); identity_.reset(); displayedContentVersion_=0; omissions_.clear(); player_->Clear();
     { const QSignalBlocker blocker(action_); action_->clear(); }
-    action_->hide(); playPause_->hide(); step_->hide();
+    action_->hide(); playPause_->hide(); step_->hide(); frame_->clear(); frame_->hide();
     (void)viewport_->SetModelScene(nullptr); viewport_->ClearMesh(++viewportRevision_); viewport_->hide(); hide();
 }
 void WorldModelPreview::ShowUnavailable(QString key,std::uint64_t generation,std::uint64_t revision,
@@ -202,7 +218,7 @@ void WorldModelPreview::Present(const Built& built) {
         player_->SetPlaying(true);
     {
         const QSignalBlocker blocker(action_); action_->clear();
-        // 按模型里的原顺序列出全部动作（SEQS），附时长与是否循环；损坏的序列保留但不可选。
+        // 按模型里的原顺序列出全部动作（SEQS），附帧区间与是否循环；时长放悬停详情。损坏的序列保留但不可选。
         const auto& sequences=built.service->Scene()->sequences.front(); int selected=-1;
         for (std::uint32_t index=0; index<sequences.size(); ++index) {
             const auto& sequence=sequences[index];
@@ -212,16 +228,19 @@ void WorldModelPreview::Present(const Built& built) {
                 if (auto* model=qobject_cast<QStandardItemModel*>(action_->model())) model->item(action_->count()-1)->setEnabled(false);
                 continue;
             }
+            const auto loops=sequence.flags==1?tr(" · 不循环"):QString{};
+            action_->addItem(tr("%1 · %2–%3%4").arg(name).arg(sequence.start).arg(sequence.end).arg(loops), QVariant::fromValue(index));
             const auto seconds=static_cast<double>(sequence.end-sequence.start)/1000.0;
-            action_->addItem(tr("%1 · %2 秒%3").arg(name).arg(seconds,0,'f',2).arg(sequence.flags==1?tr(" · 不循环"):QString{}),
-                QVariant::fromValue(index));
+            action_->setItemData(action_->count()-1, tr("%1\n帧区间 %2–%3，时长 %4 秒%5").arg(name).arg(sequence.start).arg(sequence.end)
+                .arg(seconds,0,'f',2).arg(loops), Qt::ToolTipRole);
             if (index==built.frame->states.front().sequenceIndex) selected=action_->count()-1;
         }
         action_->setCurrentIndex(selected); action_->setEnabled(true);
-        action_->setToolTip(tr("切换动作从局部/全局 0/0 ms 开始，保持当前播放状态。"));
+        action_->setToolTip(tr("切换动作从该动作第一帧开始，保持当前播放状态。"));
+        action_->view()->setMinimumWidth(std::max(action_->width(), action_->view()->sizeHintForColumn(0)+32));
     }
     QStringList diagnostics;
-    diagnostics<<tr("新建预览和切换动作从局部/全局 0/0 ms 开始并自动播放。");
+    diagnostics<<tr("新建预览和切换动作从该动作第一帧开始并自动播放。");
     for (const auto& d:built.service->Scene()->geometry.warnings) diagnostics<<QString::fromUtf8(d.message);
     message_->setToolTip(diagnostics.join(QLatin1Char('\n')));
     action_->show(); playPause_->show(); step_->show(); viewport_->show();

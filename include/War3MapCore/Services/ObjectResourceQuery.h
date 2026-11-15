@@ -31,6 +31,7 @@ struct ObjectResourceCandidate {
     ObjectResourceOrigin origin = ObjectResourceOrigin::Object;
     std::optional<ObjectData::ObjectKey> object;
     std::string fieldId;
+    std::string fieldLabel; // 物体字段的显示名（元数据原文），界面据此写成 WE 式“名称 <投射物>”。
     bool customObject = false;
     bool directory = false;
     // 候选来源是列举来源；选中后的实际覆盖层由 InspectObjectResource 确认。

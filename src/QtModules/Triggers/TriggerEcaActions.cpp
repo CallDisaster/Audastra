@@ -302,6 +302,7 @@ void TriggerModule::EditEcaParameters(StableId ecaId) {
         }
         TriggerParameterDialog dialog(document, *project_.uiCatalog_, ecaId, page_);
         dialog.SetCategoryIcons(CategoryIcons());
+        dialog.SetResourcePickerFactory(resourcePickerFactory_);
         std::optional<StableId> nested;
         if (dialog.exec() == QDialog::Accepted) {
             std::optional<StableId> newNestedEcaId;

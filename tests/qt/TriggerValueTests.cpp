@@ -17,8 +17,14 @@
 #include "War3MapCore/ObjectData/ObjectImport.h"
 #include "War3MapCore/Services/MapObjectReferenceCapture.h"
 
+#include "Widgets/ObjectResourcePicker.h"
+
 #include <QApplication>
 #include <QAbstractAnimation>
+#include <QDialogButtonBox>
+#include <QPointer>
+#include <QToolButton>
+#include <QTreeWidget>
 #include <QCryptographicHash>
 #include <QElapsedTimer>
 #include <QFocusEvent>
@@ -244,7 +250,85 @@ private slots:
     void ParameterDialogListsReferencesAndGuardsTargets();
     void PreplacedCaptureUsesCurrentOverlays();
     void MissingReferenceSourcesKeepOrdinaryParametersEditable();
+    void ParameterDialogPicksModelFiles();
 };
+
+// 模型文件参数与 WE 相同可以“选择模型”：打开物编同一个资源选择器，选中后填回“值”；没有选择器服务时只能手填。
+// 同时核对主题下输入框里的清空按钮垂直居中（通用按钮的最小高度曾把它撑到底边）。
+void TriggerValueTests::ParameterDialogPicksModelFiles() {
+    QTemporaryDir root;
+    QVERIFY(root.isValid());
+    const std::filesystem::path ui = root.path().toStdWString();
+    WriteUtf8(ui / "ui" / "config", "base\n");
+    WriteUtf8(ui / "ui" / "base" / "define.txt", "[TriggerTypes]\nstring=0,1,1,字符串\nmodelfile=1,0,0,模型文件,string\n");
+    WriteUtf8(ui / "ui" / "base" / "action.txt", "[AddFx]\ndescription=\"创建 ${模型}\"\n[[.args]]\ntype=modelfile\n");
+    const auto catalog = Trigger::UiCatalog::Load(ui);
+    QVERIFY(catalog.Succeeded());
+    Trigger::TriggerDocument document;
+    Trigger::EcaNode action;
+    action.id = 1; action.sourceTriggerId = 3; action.type = 2; action.name.text = "AddFx"; action.arguments = {0};
+    document.ecaNodes = {action};
+    Trigger::ArgumentNode argument;
+    argument.id = 10; argument.type = 3; argument.value.text = "Old.mdl";
+    document.argumentNodes = {argument};
+    Trigger::TriggerRecord record; record.id = 3; record.name.text = "Init"; record.type = 0; record.enabled = 1;
+    document.triggers.push_back(record);
+
+    UiKit::ThemeManager theme; theme.ApplyTheme(QStringLiteral("graphite"));
+    TriggerParameterDialog dialog(document, *catalog.value, 1);
+    auto* browse = dialog.findChild<QPushButton*>(QStringLiteral("parameterResourceBrowse"));
+    auto* scalar = dialog.findChild<QLineEdit*>(QStringLiteral("parameterScalarValue"));
+    QVERIFY(browse && scalar);
+    QVERIFY(!browse->isVisibleTo(&dialog));
+    bool current = true;
+    dialog.SetResourcePickerFactory([&current] {
+        Modules::ObjectResourcePickerServices services; services.revision = "dialog:1";
+        services.isCurrent = [&current] { return current; };
+        services.load = [](Services::ObjectResourceOrigin origin, const auto&) {
+            auto catalog = std::make_shared<Services::ObjectResourceCatalog>();
+            catalog->revision = "dialog:1"; catalog->identity = "fixture"; catalog->origin = origin;
+            Services::ObjectResourceCandidate row;
+            row.id = "fixture"; row.title = "合成特效"; row.value = "Fx.mdx"; row.sourceId = "synthetic";
+            row.kind = Services::ObjectResourceKind::Model; row.origin = origin;
+            catalog->rows.push_back(row);
+            return Result<std::shared_ptr<const Services::ObjectResourceCatalog>>::Success(std::move(catalog));
+        };
+        return services;
+    });
+    dialog.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&dialog));
+    QVERIFY(browse->isVisible());
+    QCOMPARE(browse->text(), QStringLiteral("选择模型…"));
+    // 清空按钮：Qt 在输入框内把它垂直居中，主题不能再把它撑高。
+    auto* clear = scalar->findChild<QToolButton*>();
+    QVERIFY(clear);
+    QVERIFY2(std::abs(clear->geometry().center().y() - scalar->rect().center().y()) <= 1 && clear->height() < scalar->height(),
+        qPrintable(QStringLiteral("clear %1,%2 %3x%4 in %5")
+            .arg(clear->x()).arg(clear->y()).arg(clear->width()).arg(clear->height()).arg(scalar->height())));
+    QTest::mouseClick(browse, Qt::LeftButton);
+    auto* picker = dialog.findChild<Modules::ObjectResourcePicker*>(QStringLiteral("parameterResourcePicker"));
+    QVERIFY(picker);
+    QPointer<Modules::ObjectResourcePicker> guard(picker);
+    auto* path = picker->findChild<QLineEdit*>(QStringLiteral("resourcePath"));
+    QVERIFY(path);
+    QCOMPARE(path->text(), QStringLiteral("Old.mdl"));
+    // 默认按目录浏览游戏文件，列出的文件名按使用它的物体显示。
+    auto* list = picker->findChild<QTreeWidget*>(QStringLiteral("resourceCandidates"));
+    QVERIFY(list);
+    QTRY_COMPARE(list->topLevelItemCount(), 1);
+    QTRY_COMPARE(list->topLevelItem(0)->text(0), QStringLiteral("合成特效"));
+    QCOMPARE(list->topLevelItem(0)->text(1), QStringLiteral("Fx.mdx"));
+    list->setCurrentItem(list->topLevelItem(0)); QTest::keyClick(list, Qt::Key_Return);
+    QCOMPARE(path->text(), QStringLiteral("Fx.mdx"));
+    QTest::mouseClick(picker->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Apply), Qt::LeftButton);
+    QTRY_VERIFY(!guard);
+    QCOMPARE(scalar->text(), QStringLiteral("Fx.mdx"));
+    QVERIFY(dialog.findChild<QRadioButton*>(QStringLiteral("parameterSourceValue"))->isChecked());
+    const auto edits = dialog.PendingEdits();
+    QCOMPARE(edits.size(), std::size_t{1});
+    QCOMPARE(edits.front().valueKind, 3);
+    QCOMPARE(edits.front().value, std::string("Fx.mdx"));
+}
 
 void TriggerValueTests::CurrentValueStaysSeparateFromChoicesAndNotes() {
     QTemporaryDir root;

@@ -46,6 +46,7 @@ private:
     void SetMessage(QString text);
     QLabel* title_=nullptr;
     QLabel* message_=nullptr;
+    QLabel* frame_=nullptr; // 当前动作在模型时间轴上的帧与区间，逐帧刷新，单行、不透明底
     QComboBox* action_=nullptr;
     QPushButton* playPause_=nullptr;
     QPushButton* step_=nullptr;

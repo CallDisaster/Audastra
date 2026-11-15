@@ -166,6 +166,11 @@ QComboBox {
     border-radius: @radiusMd; padding: 5px 26px 5px 10px; min-height: 18px;
     combobox-popup: 0;
 }
+/* 输入框里的清空、搜索图标按钮由 Qt 自己定位并居中；通用按钮的最小高度和内边距会把它撑高，图标就贴到底边。 */
+QLineEdit QToolButton, QLineEdit QToolButton:hover, QLineEdit QToolButton:pressed,
+QLineEdit QToolButton:focus, QLineEdit QToolButton:disabled {
+    min-height: 0; min-width: 0; padding: 0; margin: 0; border: 0; background: transparent;
+}
 QLineEdit:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover, QDateTimeEdit:hover { border-color: @scrollbar; }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus { border-color: @accent; }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QDateTimeEdit:disabled {
@@ -193,6 +198,10 @@ QWidget[forgeRoundedSurface="true"] QHeaderView, QWidget[forgeRoundedSurface="tr
 QWidget#resourcePreviewPanel { background: @bg; border: 1px solid @line; border-radius: @radiusMd; }
 QWidget#resourcePreviewPanel QLabel#resourcePreviewName { font-weight: @weightMedium; }
 QWidget#resourcePreviewPanel QLabel#resourcePreviewSource { color: @muted; }
+/* 预览帧行逐帧改字，必须自己画不透明底（与所在卡片同色），否则旧字迹留在原生预览窗口旁。 */
+QWidget#resourcePreviewPanel QLabel#worldUnitPreviewFrame { background: @bg; color: @muted; }
+QFrame#worldSelectionCard QLabel#worldUnitPreviewFrame { background: @raised; color: @muted; }
+QLabel#worldUnitPreviewFrame { background: @panel; color: @muted; }
 
 QSpinBox, QDoubleSpinBox, QDateTimeEdit { padding-right: 22px; }
 QSpinBox::up-button, QDoubleSpinBox::up-button, QDateTimeEdit::up-button,

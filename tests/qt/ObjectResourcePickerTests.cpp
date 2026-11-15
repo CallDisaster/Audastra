@@ -144,6 +144,7 @@ private slots:
     void StandardFieldUsesSameCommand();
     void CommitMayCloseOwner();
     void AdapterOwnsSnapshotAndRejectsOversizedSource();
+    void AdapterSharesIndexByContent();
     void OwnedProductionResourceEvidence();
     void ModelPreviewStaysVisibleAndResponsive();
     void ModelPreviewBatchEvidence();
@@ -232,6 +233,9 @@ void ObjectResourcePickerTests::ComboPopupDoesNotCloseAnchoredPicker() {
     view.resize(760, 480); view.show(); view.setCurrentIndex(model.index(row, 3)); QTest::keyClick(&view, Qt::Key_Return);
     QTRY_VERIFY(view.findChild<ObjectResourcePicker*>());
     auto* picker = view.findChild<ObjectResourcePicker*>(); QPointer<ObjectResourcePicker> guard(picker);
+    auto* browse = picker->findChild<QComboBox*>("resourceBrowseMode"); QVERIFY(browse);
+    QCOMPARE(browse->currentData().toInt(), static_cast<int>(Services::ObjectResourceOrigin::Game)); // 默认浏览游戏文件
+    browse->setCurrentIndex(browse->findData(static_cast<int>(Services::ObjectResourceOrigin::Object)));
     auto* category = picker->findChild<QComboBox*>("resourceObjectCategory"); QVERIFY(category && category->isVisible());
     category->showPopup();
     auto* popupView = category->view(); QTRY_VERIFY(popupView->isVisible());
@@ -266,7 +270,7 @@ void ObjectResourcePickerTests::GameIconsBehindManyFilesFillFirstPage() {
     auto* picker = new ObjectResourcePicker({Services::ObjectResourceKind::Icon, false, true}, "", services);
     QPointer<ObjectResourcePicker> guard(picker); picker->show();
     auto* browse = picker->findChild<QComboBox*>("resourceBrowseMode"); QVERIFY(browse);
-    browse->setCurrentIndex(1);
+    browse->setCurrentIndex(browse->findData(static_cast<int>(Services::ObjectResourceOrigin::Game)));
     auto* list = picker->findChild<QTreeWidget*>("resourceCandidates");
     QTRY_COMPARE(list->topLevelItemCount(), 4);
     QCOMPARE(list->topLevelItem(0)->text(1), QStringLiteral("ReplaceableTextures\\CommandButtons\\BTNFixture0.blp"));
@@ -346,6 +350,46 @@ void ObjectResourcePickerTests::AdapterOwnsSnapshotAndRejectsOversizedSource() {
     factory = QtApp::MakeObjectResourcePickerFactory(*project); services = factory();
     catalog = services.load(Services::ObjectResourceOrigin::Object, [](std::size_t) { return true; }); QVERIFY(!catalog.Succeeded());
     QCOMPARE(catalog.diagnostics.front().code, std::string("OBJECT_RESOURCE_SNAPSHOT_LIMIT"));
+}
+
+// 索引按内容身份共用：与物编无关的修改（修订戳变了）直接复用同一份；物编内容变了才重建。
+// 选择器拿到旧修订建的同一份索引也能照常查询。
+void ObjectResourcePickerTests::AdapterSharesIndexByContent() {
+    using namespace ObjectData;
+    QtProject::EditorProject project; QVERIFY(InstallModelDefinitions(project));
+    const auto install = [&project](const char* text) {
+        auto parsed = LniObjectCodec(ObjectType::Unit).Parse(Bytes(text));
+        if (!parsed.Succeeded()) return false;
+        project.objectDocuments_[0].reset(dynamic_cast<LniObjectDocument*>(parsed.document.release()));
+        return project.objectDocuments_[0] != nullptr;
+    };
+    QVERIFY(install("[u001]\nfile = \"First.mdx\"\n"));
+    const auto progress = [](std::size_t) { return true; };
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    auto factory = QtApp::MakeObjectResourcePickerFactory(project);
+    const auto first = factory().load(Services::ObjectResourceOrigin::Object, progress); QVERIFY(first.Succeeded());
+    project.triggerUndoStack_->push(new QUndoCommand(QStringLiteral("与物编无关的触发器修改")));
+    const auto services = factory();
+    QVERIFY(services.revision != (*first.value)->revision);
+    const auto reused = services.load(Services::ObjectResourceOrigin::Object, progress); QVERIFY(reused.Succeeded());
+    QCOMPARE(reused.value->get(), first.value->get());
+    bool current = true;
+    auto pickerServices = services; pickerServices.isCurrent = [&current] { return current; };
+    auto* picker = new ObjectResourcePicker({Services::ObjectResourceKind::Model, false, true}, "", pickerServices);
+    QPointer<ObjectResourcePicker> guard(picker); picker->show();
+    auto* browse = picker->findChild<QComboBox*>("resourceBrowseMode"); QVERIFY(browse);
+    browse->setCurrentIndex(browse->findData(static_cast<int>(Services::ObjectResourceOrigin::Object)));
+    auto* list = picker->findChild<QTreeWidget*>("resourceCandidates");
+    QTRY_VERIFY(list->topLevelItemCount() > 0);
+    bool listed = false;
+    for (int row = 0; row < list->topLevelItemCount(); ++row) listed |= list->topLevelItem(row)->text(1) == QStringLiteral("First.mdx");
+    QVERIFY(listed);
+    delete guard.data();
+    QVERIFY(install("[u001]\nfile = \"Second.mdx\"\n"));
+    project.projectRoot_ = L"object-change";
+    const auto rebuilt = factory().load(Services::ObjectResourceOrigin::Object, progress); QVERIFY(rebuilt.Succeeded());
+    QVERIFY(rebuilt.value->get() != first.value->get());
+    QVERIFY(std::any_of((*rebuilt.value)->rows.begin(), (*rebuilt.value)->rows.end(), [](const auto& row) { return row.value == "Second.mdx"; }));
 }
 
 // 仅显式补证时启用：生产Adapter、资源选择器、D3D11完成帧与声音播放器，
@@ -440,6 +484,8 @@ void ObjectResourcePickerTests::OwnedProductionResourceEvidence() {
         auto* source = picker->findChild<QLabel*>("resourcePreviewSource");
         QVERIFY(tabs && list && path && search && status && source);
         const auto chosen = fields[field].first.orderedList ? QStringLiteral("EvidenceModel.mdx") : fields[field].second;
+        auto* browseMode = picker->findChild<QComboBox*>("resourceBrowseMode"); QVERIFY(browseMode);
+        browseMode->setCurrentIndex(browseMode->findData(static_cast<int>(Services::ObjectResourceOrigin::Object)));
         for (int origin = 0; origin < 3; ++origin) {
             tabs->setCurrentIndex(origin);
             if (origin < 2) {
@@ -538,7 +584,7 @@ void ObjectResourcePickerTests::OwnedProductionResourceEvidence() {
                 const auto now = indexing.elapsed(); longestGap = std::max(longestGap, now - previous); previous = now; ++heartbeats;
                 progressSeen |= status->text().contains(QStringLiteral("正在建立"));
             });
-            heartbeat.start(10); browse->setCurrentIndex(1);
+            heartbeat.start(10); browse->setCurrentIndex(browse->findData(static_cast<int>(Services::ObjectResourceOrigin::Game)));
             QVERIFY2(waitUntil([&] { return list->topLevelItemCount() > 0 && !status->text().contains(QStringLiteral("正在建立")); }, 30000), qPrintable(status->text()));
             const auto coldMs = indexing.elapsed();
             const auto discovered = list->topLevelItem(0)->data(0, Qt::UserRole).toString();

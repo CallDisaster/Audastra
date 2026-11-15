@@ -3,6 +3,7 @@
 #include "War3MapCore/Services/ObjectResourceQuery.h"
 
 #include <QFrame>
+#include <QHash>
 #include <QPointer>
 #include <QStringList>
 #include <atomic>
@@ -56,6 +57,8 @@ private:
     [[nodiscard]] bool BrowsesDirectories() const;
     void Requery();
     void AppendPage();
+    void Label(QTreeWidgetItem* item) const;
+    void LoadUsage();
     void Choose(QTreeWidgetItem* item, bool activate);
     void ShowPreview(const QString& value);
     void AddOrReplace();
@@ -88,5 +91,8 @@ private:
     std::shared_ptr<std::atomic_bool> alive_;
     std::uint64_t request_ = 0;
     bool replacing_ = false;
+    // 资源路径（比较键）→ 使用它的物体，如“风暴之锤 <投射物>”；用于游戏文件、导入文件的中文名。
+    QHash<QString, QStringList> usage_;
+    bool usageRequested_ = false;
 };
 } // namespace War3Map::Modules

@@ -19,6 +19,7 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QVBoxLayout>
+#include <algorithm>
 #include <exception>
 
 namespace War3Map::Modules {
@@ -28,6 +29,56 @@ QString Notes(const std::vector<Diagnostic>& notes) {
     QStringList values;
     for (const auto& note : notes) { if (values.size() >= 4) break; values.push_back(U8(note.message)); }
     return values.join(QLatin1Char('\n'));
+}
+constexpr int kValueRole = Qt::UserRole, kDirectoryRole = Qt::UserRole + 1, kTitleRole = Qt::UserRole + 2;
+// 游戏包里常见目录的中文名；其余目录按其中同名模型被哪些物体使用来命名，再不行显示原名。
+QString KnownDirectoryName(const QString& name) {
+    static const QHash<QString, QString> names{
+        {QStringLiteral("abilities"), QStringLiteral("技能")}, {QStringLiteral("spells"), QStringLiteral("法术")},
+        {QStringLiteral("weapons"), QStringLiteral("投射物")}, {QStringLiteral("items"), QStringLiteral("物品")},
+        {QStringLiteral("human"), QStringLiteral("人族")}, {QStringLiteral("orc"), QStringLiteral("兽族")},
+        {QStringLiteral("nightelf"), QStringLiteral("暗夜精灵")}, {QStringLiteral("undead"), QStringLiteral("不死族")},
+        {QStringLiteral("demon"), QStringLiteral("恶魔")}, {QStringLiteral("naga"), QStringLiteral("娜迦")},
+        {QStringLiteral("creeps"), QStringLiteral("中立敌对")}, {QStringLiteral("critters"), QStringLiteral("小动物")},
+        {QStringLiteral("other"), QStringLiteral("其他")}, {QStringLiteral("units"), QStringLiteral("单位")},
+        {QStringLiteral("buildings"), QStringLiteral("建筑")}, {QStringLiteral("doodads"), QStringLiteral("装饰物")},
+        {QStringLiteral("environment"), QStringLiteral("环境")}, {QStringLiteral("objects"), QStringLiteral("物体")},
+        {QStringLiteral("spawnmodels"), QStringLiteral("生成效果")}, {QStringLiteral("cinematic"), QStringLiteral("过场动画")},
+        {QStringLiteral("sharedmodels"), QStringLiteral("共享模型")}, {QStringLiteral("splats"), QStringLiteral("地面纹理")},
+        {QStringLiteral("textures"), QStringLiteral("贴图")}, {QStringLiteral("replaceabletextures"), QStringLiteral("可替换贴图")},
+        {QStringLiteral("commandbuttons"), QStringLiteral("命令按钮")}, {QStringLiteral("passivebuttons"), QStringLiteral("被动按钮")},
+        {QStringLiteral("commandbuttonsdisabled"), QStringLiteral("命令按钮（禁用）")}, {QStringLiteral("ui"), QStringLiteral("界面")},
+        {QStringLiteral("ashenvale"), QStringLiteral("灰谷")}, {QStringLiteral("barrens"), QStringLiteral("贫瘠之地")},
+        {QStringLiteral("blackcitadel"), QStringLiteral("黑色城堡")}, {QStringLiteral("cityscape"), QStringLiteral("城邦")},
+        {QStringLiteral("dalaran"), QStringLiteral("达拉然")}, {QStringLiteral("dalaranruins"), QStringLiteral("达拉然废墟")},
+        {QStringLiteral("dungeon"), QStringLiteral("地下城")}, {QStringLiteral("felwood"), QStringLiteral("费伍德森林")},
+        {QStringLiteral("icecrown"), QStringLiteral("冰冠冰川")}, {QStringLiteral("lordaeronfall"), QStringLiteral("洛丹伦（秋）")},
+        {QStringLiteral("lordaeronsummer"), QStringLiteral("洛丹伦（夏）")}, {QStringLiteral("lordaeronwinter"), QStringLiteral("洛丹伦（冬）")},
+        {QStringLiteral("northrend"), QStringLiteral("诺森德")}, {QStringLiteral("outland"), QStringLiteral("外域")},
+        {QStringLiteral("village"), QStringLiteral("村庄")}, {QStringLiteral("villagefall"), QStringLiteral("村庄（秋）")}};
+    return names.value(name.toLower());
+}
+// 资源路径的比较键：不分大小写与斜杠方向，不看扩展名（物编里常写 .mdl 或不写扩展名，游戏包里是 .mdx）。
+QString UsageKey(QString path) {
+    path = path.trimmed().toLower(); path.replace(QLatin1Char('/'), QLatin1Char('\\'));
+    const auto slash = path.lastIndexOf(QLatin1Char('\\')), dot = path.lastIndexOf(QLatin1Char('.'));
+    if (dot > slash) path.truncate(dot);
+    return path;
+}
+// 元数据显示名如“图像 - 投射物图像”；取末段并去掉“图像”这类通用尾巴，写成 WE 的“风暴之锤 <投射物>”。
+QString FieldShortName(QString label) {
+    label = label.trimmed();
+    if (const auto dash = label.lastIndexOf(QStringLiteral(" - ")); dash >= 0) label = label.mid(dash + 3).trimmed();
+    if (label.size() > 2 && label.endsWith(QStringLiteral("图像"))) label.chop(2);
+    return label.trimmed();
+}
+QString UsageTitle(const Services::ObjectResourceCandidate& row) {
+    const auto field = FieldShortName(U8(row.fieldLabel));
+    return field.isEmpty() ? U8(row.title) : QStringLiteral("%1 <%2>").arg(U8(row.title), field);
+}
+bool SameResourceFamily(Services::ObjectResourceKind a, Services::ObjectResourceKind b) {
+    const auto image = [](auto kind) { return kind == Services::ObjectResourceKind::Icon || kind == Services::ObjectResourceKind::Texture; };
+    return a == b || (image(a) && image(b));
 }
 }
 
@@ -49,9 +100,12 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     filterBar_ = new QWidget(this); filterBar_->setObjectName(QStringLiteral("resourceFilterBar"));
     auto* filter = new QHBoxLayout(filterBar_); filter->setContentsMargins(0, 0, 0, 0); filter->setSpacing(6);
     browse_ = new QComboBox(filterBar_); browse_->setObjectName(QStringLiteral("resourceBrowseMode"));
-    browse_->addItems({tr("其他物体用过的"), tr("游戏文件")}); filter->addWidget(browse_);
-    browse_->setItemData(0, tr("列出原版与本图各物体在同类字段里用过的资源，名称列是使用它的物体，可按类别筛选。"), Qt::ToolTipRole);
-    browse_->setItemData(1, tr("按目录浏览游戏 MPQ 中的文件；图标字段只列命令按钮与被动按钮图标。"), Qt::ToolTipRole);
+    // 默认按目录浏览游戏文件；名称列按使用它的物体写成中文，原路径在资源列。
+    browse_->addItem(tr("游戏文件"), static_cast<int>(Services::ObjectResourceOrigin::Game));
+    browse_->addItem(tr("其他物体用过的"), static_cast<int>(Services::ObjectResourceOrigin::Object));
+    filter->addWidget(browse_);
+    browse_->setItemData(0, tr("按目录浏览游戏 MPQ 中的文件；图标字段只列命令按钮与被动按钮图标。"), Qt::ToolTipRole);
+    browse_->setItemData(1, tr("列出原版与本图各物体在同类字段里用过的资源，名称列是使用它的物体，可按类别筛选。"), Qt::ToolTipRole);
     category_ = new QComboBox(filterBar_); category_->setObjectName(QStringLiteral("resourceObjectCategory"));
     category_->addItem(tr("全部类别"), -1);
     const QStringList categories{tr("单位"), tr("技能"), tr("物品"), tr("魔法效果"), tr("科技"), tr("装饰物"), tr("可破坏物")};
@@ -153,7 +207,9 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
 }
 ObjectResourcePicker::~ObjectResourcePicker() { alive_->store(false); ++request_; }
 void ObjectResourcePicker::SetCommit(std::function<bool(const QString&)> commit) { commit_ = std::move(commit); }
-void ObjectResourcePicker::BrowseGameFiles() { browse_->setCurrentIndex(1); }
+void ObjectResourcePicker::BrowseGameFiles() {
+    browse_->setCurrentIndex(browse_->findData(static_cast<int>(Services::ObjectResourceOrigin::Game)));
+}
 QString ObjectResourcePicker::Value() const {
     if (!selected_) return path_->text();
     QStringList values;
@@ -167,7 +223,7 @@ void ObjectResourcePicker::SelectSource() {
     const bool custom = tabs_->currentIndex() == 2;
     candidates_->setVisible(!custom); filterBar_->setVisible(!custom); more_->hide();
     origin_ = tabs_->currentIndex() == 1 ? Services::ObjectResourceOrigin::Import
-        : browse_->currentIndex() == 1 ? Services::ObjectResourceOrigin::Game : Services::ObjectResourceOrigin::Object;
+        : static_cast<Services::ObjectResourceOrigin>(browse_->currentData().toInt());
     browse_->setVisible(tabs_->currentIndex() == 0);
     category_->setVisible(tabs_->currentIndex() == 0 && origin_ == Services::ObjectResourceOrigin::Object);
     const bool directories = BrowsesDirectories();
@@ -182,6 +238,7 @@ void ObjectResourcePicker::SelectSource() {
     if (origin_ == Services::ObjectResourceOrigin::Import && !field_.storesPath) {
         status_->setText(tr("此字段只接受声音标签")); return;
     }
+    if (origin_ != Services::ObjectResourceOrigin::Object) LoadUsage();
     if (const auto cached = catalogs_[static_cast<int>(origin_)]) { catalog_ = cached; Requery(); return; }
     StartLoad(origin_);
 }
@@ -238,7 +295,9 @@ void ObjectResourcePicker::AppendPage() {
     if (!catalog_) return;
     if (services_.isCurrent && !services_.isCurrent()) { status_->setText(tr("来源已变化，请重新打开资源选择器。")); more_->hide(); return; }
     Services::ObjectResourceQuery query;
-    query.expectedRevision = services_.revision; query.kind = field_.kind; query.search = search_->text().toStdString();
+    // 索引按内容身份在修订之间共用（宿主保证内容未变才复用），查询核对的是索引自身的修订；
+    // 工程是否已变化仍由 isCurrent 判断。
+    query.expectedRevision = catalog_->revision; query.kind = field_.kind; query.search = search_->text().toStdString();
     if (origin_ == Services::ObjectResourceOrigin::Object && category_->currentData().toInt() >= 0)
         query.objectType = static_cast<ObjectData::ObjectType>(category_->currentData().toInt());
     if (BrowsesDirectories() && search_->text().isEmpty()) query.directory = directory_.toStdString();
@@ -257,22 +316,79 @@ void ObjectResourcePicker::AppendPage() {
     } while (cursor_ && rows.size() < kPageRows);
     for (const auto& row : rows) {
         auto* item = new QTreeWidgetItem(candidates_);
-        item->setText(0, row.directory ? tr("目录 · %1").arg(U8(row.title)) : U8(row.title));
         item->setText(1, U8(row.value));
         // 正常行只写来源；缺失、歧义等需要作者注意的状态才追加。
         const auto state = row.state == "missing" ? tr("缺失") : row.state == "unresolved" ? tr("来源歧义")
             : row.state == "oversized" ? tr("文件过大，未核对") : QString{};
         const auto source = ObjectResourceSourceText(row.sourceId);
         item->setText(2, state.isEmpty() ? source : source + QStringLiteral(" · ") + state);
-        item->setData(0, Qt::UserRole, U8(row.value)); item->setData(0, Qt::UserRole + 1, row.directory);
-        const auto tip = U8(row.title) + QStringLiteral("\n") + U8(row.value) + QStringLiteral("\n") + item->text(2);
-        for (int column = 0; column < 3; ++column) item->setToolTip(column, tip);
+        item->setData(0, kValueRole, U8(row.value)); item->setData(0, kDirectoryRole, row.directory);
+        item->setData(0, kTitleRole, origin_ == Services::ObjectResourceOrigin::Object ? UsageTitle(row) : U8(row.title));
+        Label(item);
     }
     more_->setVisible(cursor_.has_value());
     status_->setText(tr("已显示 %1 项%2").arg(candidates_->topLevelItemCount())
         .arg(cursor_ ? tr(" · 还有更多") : page->complete ? QString{} : tr(" · 列表可能不完整，悬停查看原因")));
     // 来源说明（例如某个游戏包没有文件清单）放在悬停详情，状态行只提示列表可能不完整。
     status_->setToolTip(Notes(page->diagnostics));
+}
+// 名称列：物体用过的资源写“物体名 <字段>”；游戏文件和导入文件写使用它的物体，目录写中文目录名。
+// 资源列始终是原路径，悬停详情同时列出两者。
+void ObjectResourcePicker::Label(QTreeWidgetItem* item) const {
+    const auto title = item->data(0, kTitleRole).toString();
+    const auto value = item->data(0, kValueRole).toString();
+    const bool directory = item->data(0, kDirectoryRole).toBool();
+    QString name = title;
+    QStringList users;
+    if (origin_ != Services::ObjectResourceOrigin::Object) {
+        const auto lastSlash = std::max(value.lastIndexOf(QLatin1Char('/')), value.lastIndexOf(QLatin1Char('\\')));
+        users = usage_.value(directory ? UsageKey(value + QLatin1Char('\\') + value.mid(lastSlash + 1)) : UsageKey(value));
+        if (directory) {
+            const auto known = KnownDirectoryName(title);
+            name = !known.isEmpty() ? known : !users.isEmpty() ? users.front() : title;
+        } else if (!users.isEmpty()) {
+            name = users.size() == 1 ? users.front()
+                : users.size() == 2 ? users.join(tr("、"))
+                : tr("%1、%2 等 %3 个").arg(users[0], users[1]).arg(users.size());
+        }
+    }
+    item->setText(0, directory ? tr("目录 · %1").arg(name) : name);
+    QString tip = name + QStringLiteral("\n") + value + QStringLiteral("\n") + item->text(2);
+    if (users.size() > 1) tip += QStringLiteral("\n") + tr("使用它的物体：%1").arg(users.mid(0, 12).join(tr("、")));
+    for (int column = 0; column < 3; ++column) item->setToolTip(column, tip);
+}
+// 游戏文件、导入文件的中文名来自“其他物体用过的”索引；后台读取，好了再把当前列表换成中文名。
+void ObjectResourcePicker::LoadUsage() {
+    if (usageRequested_ || !services_.load || !field_.storesPath) return;
+    usageRequested_ = true;
+    using Usage = QHash<QString, QStringList>;
+    auto usage = std::make_shared<Usage>();
+    auto catalog = std::make_shared<std::shared_ptr<const Services::ObjectResourceCatalog>>(
+        catalogs_[static_cast<int>(Services::ObjectResourceOrigin::Object)]);
+    auto* worker = QThread::create([loader = services_.load, alive = alive_, usage, catalog, kind = field_.kind] {
+        try {
+            if (!*catalog) {
+                auto loaded = loader(Services::ObjectResourceOrigin::Object, [alive](std::size_t) { return alive->load(); });
+                if (!loaded.Succeeded()) return;
+                *catalog = *loaded.value;
+            }
+            for (const auto& row : (*catalog)->rows) {
+                if (!alive->load()) return;
+                if (!SameResourceFamily(row.kind, kind)) continue;
+                auto& users = (*usage)[UsageKey(U8(row.value))];
+                const auto title = UsageTitle(row);
+                if (users.size() < 24 && !users.contains(title)) users.push_back(title);
+            }
+        } catch (const std::exception&) { usage->clear(); }
+    });
+    connect(worker, &QThread::finished, this, [this, usage, catalog] {
+        if (*catalog) catalogs_[static_cast<int>(Services::ObjectResourceOrigin::Object)] = *catalog;
+        usage_ = std::move(*usage);
+        if (origin_ == Services::ObjectResourceOrigin::Object) return;
+        for (int index = 0; index < candidates_->topLevelItemCount(); ++index) Label(candidates_->topLevelItem(index));
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    worker->start(QThread::LowPriority);
 }
 void ObjectResourcePicker::Choose(QTreeWidgetItem* item, bool activate) {
     if (!item) return;

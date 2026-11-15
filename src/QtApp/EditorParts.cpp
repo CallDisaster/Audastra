@@ -15,6 +15,7 @@
 #include "WorldModule.h"
 
 #include <QCoreApplication>
+#include <QTimer>
 #include <QUndoStack>
 
 namespace {
@@ -44,9 +45,12 @@ EditorParts::EditorParts(bool persistentSettings)
     using War3Map::Shell::PlaceholderModule;
     const QString pending = QCoreApplication::translate("EditorParts", "原生模块尚未接通");
     const auto key = [](Qt::Key k) { return QKeySequence(Qt::ALT | k); };
+    // 资源选择器的索引全工程共用一份：物编、界面编辑与触发器参数打开的是同一个缓存。
+    const auto resourcePickers = War3Map::QtApp::MakeObjectResourcePickerFactory(*project_);
     triggersModule_ = Add(modules_, std::make_unique<War3Map::Modules::TriggerModule>(*project_));
+    triggersModule_->SetResourcePickerFactory(resourcePickers);
     objectsModule_ = Add(modules_, std::make_unique<War3Map::Modules::ObjectModule>(*project_));
-    objectsModule_->SetResourcePickerFactory(War3Map::QtApp::MakeObjectResourcePickerFactory(*project_));
+    objectsModule_->SetResourcePickerFactory(resourcePickers);
     variablesModule_ = Add(modules_, std::make_unique<War3Map::Modules::VariablesModule>(*project_));
     soundsModule_ = Add(modules_, std::make_unique<War3Map::Modules::SoundsModule>(*project_));
     assetsModule_ = Add(modules_, std::make_unique<War3Map::Modules::AssetsModule>(*project_));
@@ -58,7 +62,19 @@ EditorParts::EditorParts(bool persistentSettings)
         QCoreApplication::translate("EditorParts", "AI"), "lucide/shield", key(Qt::Key_8), pending));
     worldModule_ = Add(modules_, std::make_unique<War3Map::Modules::WorldModule>(*project_));
     gameUiModule_ = Add(modules_, std::make_unique<War3Map::Modules::GameUiModule>(*project_));
-    gameUiModule_->SetResourcePickerFactory(War3Map::QtApp::MakeObjectResourcePickerFactory(*project_));
+    gameUiModule_->SetResourcePickerFactory(resourcePickers);
+    // 打开地图（编辑基线重置）后稍等界面安定，再在后台建资源索引；启动探针与测试不预热。
+    if (persistentSettings) {
+        auto* project = project_.get();
+        auto* prewarmDelay = new QTimer(project);
+        prewarmDelay->setSingleShot(true); prewarmDelay->setInterval(1500);
+        QObject::connect(prewarmDelay, &QTimer::timeout, project,
+            [project, prewarm = War3Map::QtApp::MakeObjectResourcePrewarm(resourcePickers, project)] {
+                if (project->archiveSession_ || project->directorySnapshot_) prewarm();
+            });
+        QObject::connect(project, &War3Map::QtProject::EditorProject::EditTrackingBaselineChanged,
+            prewarmDelay, qOverload<>(&QTimer::start));
+    }
 }
 
 EditorParts::~EditorParts() = default;

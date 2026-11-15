@@ -23,6 +23,7 @@
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QItemSelectionModel>
+#include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -31,7 +32,9 @@
 #include <QRadioButton>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QScreen>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QSize>
 #include <QSizePolicy>
@@ -358,6 +361,13 @@ const War3Map::Trigger::UiDefinition* FindFunction(
     return catalog.Find(War3Map::Trigger::UiDefinitionKind::Call, name);
 }
 
+// 与 WE 相同：模型文件参数可以选模型，图像文件参数可以选图像；其余字符串只能手填。
+std::optional<War3Map::Services::ObjectResourceKind> ResourceKindForType(std::string_view type) {
+    if (type == "modelfile") return War3Map::Services::ObjectResourceKind::Model;
+    if (type == "imagefile") return War3Map::Services::ObjectResourceKind::Texture;
+    return std::nullopt;
+}
+
 } // namespace
 
 struct TriggerParameterDialog::Row {
@@ -390,6 +400,7 @@ struct TriggerParameterDialog::Row {
     QLabel* callText = nullptr;
     QLineEdit* scalar = nullptr;
     QComboBox* booleanValue = nullptr;
+    QPushButton* resourceBrowse = nullptr;
 };
 
 TriggerParameterDialog::TriggerParameterDialog(
@@ -612,8 +623,12 @@ void TriggerParameterDialog::AddArgumentRow(
     row->booleanValue->setObjectName("parameterBooleanValue");
     row->booleanValue->addItem(tr("真"), QStringLiteral("true"));
     row->booleanValue->addItem(tr("假"), QStringLiteral("false"));
+    row->resourceBrowse = new QPushButton;
+    row->resourceBrowse->setObjectName("parameterResourceBrowse");
+    row->resourceBrowse->hide();
     valueLine.second->addWidget(row->scalar, 1);
     valueLine.second->addWidget(row->booleanValue, 1);
+    valueLine.second->addWidget(row->resourceBrowse);
     if (argument.type == Value) row->scalar->setText(Utf8(argument.value.text));
 
     if (row->readOnly) {
@@ -647,6 +662,7 @@ void TriggerParameterDialog::AddArgumentRow(
     connect(row->booleanValue, &QComboBox::activated, panel, pick(Value));
     connect(row->booleanValue, &QComboBox::currentIndexChanged, panel, changed);
     connect(row->functionBrowse, &QToolButton::clicked, panel, [this, row]() { BrowseFunction(row); });
+    connect(row->resourceBrowse, &QPushButton::clicked, panel, [this, row]() { BrowseResource(row); });
     connect(row->functionEdit, &QPushButton::clicked, panel, [this, row]() {
         SelectSource(row, Function);
         // 原函数：打开它的参数；新选的函数：应用后接着打开它的参数（EditEcaParameters 的嵌套流程）。
@@ -697,6 +713,9 @@ void TriggerParameterDialog::ConfigureRow(Row* row, bool initial) {
     }
     row->scalar->setVisible(!row->booleanLiteral);
     row->booleanValue->setVisible(row->booleanLiteral);
+    const auto resource = ResourceKindForType(type);
+    row->resourceBrowse->setVisible(!row->readOnly && resource.has_value() && resourcePickerFactory_ != nullptr);
+    if (resource) row->resourceBrowse->setText(*resource == War3Map::Services::ObjectResourceKind::Model ? tr("选择模型…") : tr("选择图像…"));
 
     // 变量、函数候选按新类型重新列出（展开或获得焦点时填充）。
     if (!initial) {
@@ -901,6 +920,43 @@ void TriggerParameterDialog::BrowseFunction(Row* row) {
     }
     row->function->setCurrentIndex(index);
     SelectSource(row, Function);
+}
+
+void TriggerParameterDialog::SetResourcePickerFactory(War3Map::Modules::ObjectResourcePickerFactory factory) {
+    resourcePickerFactory_ = std::move(factory);
+    for (Row* row : rows_) {
+        const auto resource = ResourceKindForType(row->expectedType);
+        row->resourceBrowse->setVisible(!row->readOnly && resource.has_value() && resourcePickerFactory_ != nullptr);
+        if (resource) row->resourceBrowse->setText(*resource == War3Map::Services::ObjectResourceKind::Model ? tr("选择模型…") : tr("选择图像…"));
+    }
+}
+
+// 打开物编同一个资源选择器（游戏文件、导入、其他物体用过的、自定义），选中后填回“值”并选中这一来源。
+void TriggerParameterDialog::BrowseResource(Row* row) {
+    const auto kind = ResourceKindForType(row->expectedType);
+    if (!kind || !resourcePickerFactory_) return;
+    for (auto* open : findChildren<War3Map::Modules::ObjectResourcePicker*>()) open->close();
+    auto* picker = new War3Map::Modules::ObjectResourcePicker(
+        War3Map::Services::ObjectResourceField{*kind, false, true}, row->scalar->text(), resourcePickerFactory_(), this);
+    picker->setObjectName(QStringLiteral("parameterResourcePicker"));
+    picker->SetCommit([this, row](const QString& value) {
+        row->scalar->setText(value);
+        SelectSource(row, Value);
+        return true;
+    });
+    auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), picker);
+    connect(escape, &QShortcut::activated, picker, &QWidget::close);
+    // 贴在“值”输入框下方；放不下时放到上方，并留在当前屏幕工作区内。
+    const auto available = row->scalar->screen()->availableGeometry();
+    QRect geometry(row->scalar->mapToGlobal(QPoint(0, row->scalar->height() + 4)), picker->size());
+    if (geometry.bottom() > available.bottom())
+        geometry.moveBottom(row->scalar->mapToGlobal(QPoint(0, -4)).y());
+    geometry.moveLeft(std::clamp(geometry.left(), available.left(), std::max(available.left(), available.right() - geometry.width())));
+    geometry.moveTop(std::max(geometry.top(), available.top()));
+    picker->move(geometry.topLeft());
+    picker->show();
+    picker->raise();
+    picker->activateWindow();
 }
 
 void TriggerParameterDialog::UpdateFunctionLine(Row* row) {

@@ -168,7 +168,8 @@ Result<std::shared_ptr<const ObjectResourceCatalog>> CaptureObjectResourceCatalo
                 ObjectResourceCandidate row;
                 row.id = "object:" + std::string(ToString(type)) + ':' + rawcode + ':' + address + ':' + std::to_string(index);
                 row.title = title; row.value = value; row.kind = spec->kind; row.object = key; row.customObject = custom;
-                row.fieldId = field.definition->fieldId; row.sourceId = custom ? "map-object" : "standard-object";
+                row.fieldId = field.definition->fieldId; row.fieldLabel = field.definition->displayName;
+                row.sourceId = custom ? "map-object" : "standard-object";
                 row.state = "unverified";
                 if (spec->storesPath) row.previewPath = value;
                 if (!builder.Add(std::move(row))) break;
