@@ -260,8 +260,11 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     if (!artifact.Succeeded() || !workspaceReady.Succeeded() || !launched.Succeeded()) {
         const auto& diagnostics = !artifact.Succeeded() ? artifact.diagnostics
             : !workspaceReady.Succeeded() ? workspaceReady.diagnostics : launched.diagnostics;
+        // 失败原因是第一条错误；附带的说明（如本次装入了哪个插件）排在它后面，不能顶替它。
+        const auto reason = std::find_if(diagnostics.begin(), diagnostics.end(),
+            [](const auto& diagnostic) { return diagnostic.severity == War3Map::DiagnosticSeverity::Error; });
         const auto detail = diagnostics.empty() ? tr("测试准备未通过，请查看诊断。")
-            : QString::fromStdString(diagnostics.back().message);
+            : QString::fromStdString((reason != diagnostics.end() ? *reason : diagnostics.front()).message);
         if (workspaceReady.Succeeded()) cleanupUnstarted(false);
         return fail(tr("地图测试未启动"), detail + tr("\n原图和当前编辑均保留。"));
     }

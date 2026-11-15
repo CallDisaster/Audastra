@@ -725,9 +725,11 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                     }
                     if (!claimed) continue;
                     selected.legacyPluginFiles.push_back(plugin);
+                    // 外部依赖会随原平台更新：每次测试都用目录里现有的版本，不按固定 SHA 拒绝；
+                    // SHA 只记在测试回执里，供本次装入前后核对是同一个文件。
                     notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "EXTERNAL_DEPENDENCY_DZ_SELECTED",
-                        "本次装入 KKWE Dz 插件 " + IO::PathUtf8(plugin.path) + "，SHA-256 " + plugin.sha256 + "，提供 "
-                        + std::to_string(claimed) + " 个 Dz 接口。按插件内的接口名认领，逐接口注册未核验。"});
+                        "本次装入 KKWE Dz 插件 " + IO::PathUtf8(plugin.path) + "，提供本图用到的 "
+                        + std::to_string(claimed) + " 个 Dz 接口。"});
                     break;
                 }
                 remainingRequired = !needed.empty();
@@ -761,8 +763,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                             ? Services::MapTestRuntimeLayout::YdweTree : Services::MapTestRuntimeLayout::Flat);
                         for (const auto& file : legacy->files)
                             notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "EXTERNAL_DEPENDENCY_YDWE_SELECTED",
-                                "本次使用识别出的 YDWE 目录，文件 " + IO::PathUtf8(file.path)
-                                + "，SHA-256 " + file.sha256 + "。使用旧 Initialize 链，逐接口注册未核验。"});
+                                "本次使用识别出的 YDWE 目录，文件 " + IO::PathUtf8(file.path) + "。"});
                     }
                 }
             }
@@ -776,8 +777,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             selected.runtimeYdweRoot.clear();
             for (const auto& file : selected.externalDependencyFiles)
                 notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "EXTERNAL_DEPENDENCY_SELECTED",
-                    "本次选择提供者 " + file.providerId + "，文件 " + IO::PathUtf8(file.path)
-                    + "，SHA-256 " + file.sha256 + "。游戏将核验实际注册。"});
+                    "本次选择提供者 " + file.providerId + "，文件 " + IO::PathUtf8(file.path) + "。"});
         }
         // 作者手写 Lua 必须有 Lua 运行环境才会执行；普通游戏会把 exec-lua 当作无效作弊码忽略。
         bool handwrittenYdwe = false;
