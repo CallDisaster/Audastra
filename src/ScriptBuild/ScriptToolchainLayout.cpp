@@ -157,6 +157,18 @@ bool SameBindings(const ScriptToolchainLayout& a, const ScriptToolchainLayout& b
 
 } // namespace
 
+std::filesystem::path ScriptToolchainInstallRoot(const std::filesystem::path& selected) {
+    if (selected.empty()) return {};
+    std::error_code error;
+    auto root = std::filesystem::absolute(selected, error).lexically_normal();
+    if (error) return selected;
+    if (root.has_relative_path() && root.filename().empty()) root = root.parent_path();
+    if (Named(root, L"ui") && Regular(root / "config") && ModernMarker(root.parent_path())) return root.parent_path();
+    if (Named(root, L"mpq") && Named(root.parent_path(), L"share") &&
+        Regular(root / "config") && LegacyMarker(root.parent_path().parent_path())) return root.parent_path().parent_path();
+    return root;
+}
+
 Result<ScriptToolchainLayout> ResolveScriptToolchainLayout(const ToolchainLayoutRequest& request) {
     try {
         if (request.toolRoot.empty() || (request.warcraftVersion != 20 && request.warcraftVersion != 24) ||
@@ -165,13 +177,11 @@ Result<ScriptToolchainLayout> ResolveScriptToolchainLayout(const ToolchainLayout
                 "工具根不能为空；校验版本仅支持20/24，实际经典版本宏必须在100至199之间。");
         }
         std::error_code error;
-        auto root = std::filesystem::absolute(request.toolRoot, error).lexically_normal();
-        if (root.has_relative_path() && root.filename().empty()) root = root.parent_path();
-        if (error || !Directory(root)) return LayoutResult::Failure("Script.Layout", "SCRIPT_LAYOUT_ROOT_MISSING", "工具根不是可读取目录。");
+        auto selected = std::filesystem::absolute(request.toolRoot, error).lexically_normal();
+        if (selected.has_relative_path() && selected.filename().empty()) selected = selected.parent_path();
+        if (error || !Directory(selected)) return LayoutResult::Failure("Script.Layout", "SCRIPT_LAYOUT_ROOT_MISSING", "工具根不是可读取目录。");
         // 固定回溯，无任意父级搜索；候选根仍接受后续冲突检查。
-        if (Named(root, L"ui") && Regular(root / "config") && ModernMarker(root.parent_path())) root = root.parent_path();
-        else if (Named(root, L"mpq") && Named(root.parent_path(), L"share") &&
-            Regular(root / "config") && LegacyMarker(root.parent_path().parent_path())) root = root.parent_path().parent_path();
+        const auto root = ScriptToolchainInstallRoot(selected);
         const bool modern = ModernMarker(root);
         const bool legacy = LegacyMarker(root);
         if (modern && legacy) return LayoutResult::Failure("Script.Layout", "SCRIPT_LAYOUT_AMBIGUOUS", "同一工具根同时具有现代和旧雪月布局；不能任意择一。");

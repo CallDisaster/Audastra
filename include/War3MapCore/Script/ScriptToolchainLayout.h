@@ -47,6 +47,9 @@ struct ScriptToolchainLayout {
     std::vector<ScriptToolchainFileBinding> bindingFiles;
 };
 
+// 数据根选到安装根下的 ui（现代布局）或 share/mpq（旧布局）时回到安装根；固定回溯一层/两层，不做任意父级搜索。
+// 其他情况原样返回（规范化后）。
+[[nodiscard]] std::filesystem::path ScriptToolchainInstallRoot(const std::filesystem::path& selected);
 // 只读、有界解析关键路径与文件；旧布局只有FrameworkInputsRequired资格，不授予整链语义。
 [[nodiscard]] Result<ScriptToolchainLayout> ResolveScriptToolchainLayout(const ToolchainLayoutRequest& request);
 // 只验证解析时绑定的关键文件/路径，不代表整棵 include 树或外部执行仍持有租约。

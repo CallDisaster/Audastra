@@ -1,4 +1,5 @@
 #include "War3MapCore/Script/LuaTemplateSandbox.h"
+#include "War3MapCore/Script/ScriptToolchainLayout.h"
 #include "War3MapCore/Script/ScriptToolchainProfile.h"
 
 #include "LuaTemplateSlkBridge.h"
@@ -433,7 +434,9 @@ Result<TemplateTransactionOutput> Fail(std::string code, std::string message) {
 
 std::optional<std::filesystem::path> FindTemplateW3x2lniRoot(const std::filesystem::path& toolRoot) {
     std::error_code error;
-    for (const auto& candidate : {toolRoot, toolRoot / "share" / "w3x2lni"}) {
+    // 数据根可能选的是安装根下的 ui 或 share/mpq：与编译链一样先回到安装根。
+    const auto root = ScriptToolchainInstallRoot(toolRoot);
+    for (const auto& candidate : {root, root / "share" / "w3x2lni"}) {
         // 新版 core 或旧入口 prebuilt 的 metadata 任一存在；具体用哪套由 DetectSlkDatasetLayout 判定。
         const auto script = candidate / "plugin" / "w3x2lni" / "script";
         if (std::filesystem::is_regular_file(script / "core" / "defined" / "metadata.ini", error) ||

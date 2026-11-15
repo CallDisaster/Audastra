@@ -13,6 +13,7 @@
 #include "War3MapCore/Script/ScriptInjectionSources.h"
 #include "War3MapCore/Script/ScriptPipeline.h"
 #include "War3MapCore/Script/ScriptQueries.h"
+#include "War3MapCore/Script/ScriptToolchainLayout.h"
 #include "War3MapCore/Services/ScriptSavePreparation.h"
 #include "War3MapCore/Trigger/TriggerEditing.h"
 #include "War3MapCore/Trigger/TriggerTextNotation.h"
@@ -918,7 +919,8 @@ Result<std::string> RemovalTemplateIdentity(const CodeCheckProjectCache::Impl& o
         add(edit.name); add(*hash.value);
     }
     for (const auto& removal : owned.templateRemovals) { add("removed"); add(removal); }
-    for (const auto& directory : {snapshot.toolRoot / "compiler/script/computed", snapshot.toolRoot / "share/script/computed"}) {
+    const auto installRoot = Script::ScriptToolchainInstallRoot(snapshot.toolRoot);
+    for (const auto& directory : {installRoot / "compiler/script/computed", installRoot / "share/script/computed"}) {
         for (const auto* name : {"abilityOrder.lua", "ability2order.lua", "order_id.lua", "order_list.lua"}) {
             auto source = Script::CaptureReadOnlyScriptSource(directory / name);
             if (!source.Succeeded() || !source.value) return {{}, source.diagnostics};

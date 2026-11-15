@@ -972,7 +972,18 @@ void TestToolchainLayouts(const std::filesystem::path& root) {
         Require(layout.waveExecutable.empty() && layout.jassHelperExecutable.empty() && layout.pjassExecutable.empty(),
             std::string(item.name) + ": absent/empty external tools cannot be selected, modern builtin remains usable");
         Require(VerifyScriptToolchainLayout(layout).Succeeded(), std::string(item.name) + ": unchanged frozen binding verifies");
+        Require(ScriptToolchainInstallRoot(item.request.toolRoot) == layout.root,
+            std::string(item.name) + ": the shared install-root rule matches the layout");
     }
+    // 模板物编库的数据目录与编译链用同一条回溯规则：数据根选到 ui 或 share/mpq 时同样找得到。
+    modern(root / "modern-slk"); legacy(root / "legacy-slk");
+    WriteText(root / "modern-slk" / "plugin" / "w3x2lni" / "script" / "core" / "defined" / "metadata.ini", "; synthetic\n");
+    WriteText(root / "legacy-slk" / "plugin" / "w3x2lni" / "script" / "prebuilt" / "defined" / "metadata.ini", "; synthetic\n");
+    Require(FindTemplateW3x2lniRoot(root / "modern-slk" / "ui") == ScriptToolchainInstallRoot(root / "modern-slk"),
+        "w3x2lni data found when the ui directory was selected");
+    Require(FindTemplateW3x2lniRoot(root / "legacy-slk" / "share" / "mpq") == ScriptToolchainInstallRoot(root / "legacy-slk"),
+        "w3x2lni data found when share/mpq was selected");
+    Require(!FindTemplateW3x2lniRoot(root / "modern" / "ui").has_value(), "a toolchain without w3x2lni data still reports it missing");
     const auto frozen = ResolveScriptToolchainLayout({root / "modern", 24, {}});
     Require(frozen.Succeeded(), "layout for stale binding check");
     TestScriptUserSources(root, *frozen.value);
