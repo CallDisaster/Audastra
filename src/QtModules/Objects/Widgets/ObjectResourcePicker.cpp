@@ -4,6 +4,7 @@
 #include "Widgets/SearchField.h"
 #include "War3MapCore/ObjectData/ProfileList.h"
 
+#include <QCollator>
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QHBoxLayout>
@@ -80,6 +81,34 @@ bool SameResourceFamily(Services::ObjectResourceKind a, Services::ObjectResource
     const auto image = [](auto kind) { return kind == Services::ObjectResourceKind::Icon || kind == Services::ObjectResourceKind::Texture; };
     return a == b || (image(a) && image(b));
 }
+QIcon CandidateIcon(bool directory, Services::ObjectResourceKind kind) {
+    using Kind = Services::ObjectResourceKind;
+    if (directory) return UiKit::SvgIcon(QStringLiteral("lucide/folder"));
+    if (kind == Kind::Model) return UiKit::SvgIcon(QStringLiteral("lucide/box"));
+    if (kind == Kind::Icon || kind == Kind::Texture) return UiKit::SvgIcon(QStringLiteral("lucide/image"));
+    if (kind == Kind::SoundFile || kind == Kind::SoundLabel || kind == Kind::UnitSoundSet) return UiKit::SvgIcon(QStringLiteral("lucide/music-2"));
+    return UiKit::SvgIcon(QStringLiteral("lucide/file"));
+}
+// 候选行排序：目录总在文件前面（升序降序都一样），同类按当前列的文字自然排序（不分大小写，数字按数值），
+// 文字相同再按资源路径。
+class CandidateItem final : public QTreeWidgetItem {
+public:
+    using QTreeWidgetItem::QTreeWidgetItem;
+    bool operator<(const QTreeWidgetItem& other) const override {
+        const bool directory = data(0, kDirectoryRole).toBool(), otherDirectory = other.data(0, kDirectoryRole).toBool();
+        const auto* tree = treeWidget();
+        if (directory != otherDirectory) {
+            const bool ascending = !tree || tree->header()->sortIndicatorOrder() == Qt::AscendingOrder;
+            return ascending ? directory : otherDirectory;
+        }
+        static const QCollator collator = [] {
+            QCollator value; value.setNumericMode(true); value.setCaseSensitivity(Qt::CaseInsensitive); return value;
+        }();
+        const int column = tree ? tree->sortColumn() : 0;
+        if (const auto order = collator.compare(text(column), other.text(column)); order != 0) return order < 0;
+        return collator.compare(text(1), other.text(1)) < 0;
+    }
+};
 }
 
 ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, QString original,
@@ -126,7 +155,9 @@ ObjectResourcePicker::ObjectResourcePicker(Services::ObjectResourceField field, 
     candidates_->setMouseTracking(true); candidates_->setMinimumWidth(220);
     candidates_->header()->setSectionResizeMode(QHeaderView::Interactive);
     candidates_->header()->setStretchLastSection(true);
-    candidates_->setColumnWidth(0, 130); candidates_->setColumnWidth(1, 250);
+    candidates_->setColumnWidth(0, 180); candidates_->setColumnWidth(1, 230);
+    // 点表头按该列排序，再点切换升降序；默认按名称升序，目录始终在文件前面。
+    candidates_->setSortingEnabled(true); candidates_->sortByColumn(0, Qt::AscendingOrder);
     body->addWidget(candidates_, 1);
     if (services_.preview) preview_ = services_.preview(this);
     if (preview_.widget) { preview_.widget->setFixedWidth(240); body->addWidget(preview_.widget); }
@@ -300,39 +331,46 @@ void ObjectResourcePicker::AppendPage() {
     query.expectedRevision = catalog_->revision; query.kind = field_.kind; query.search = search_->text().toStdString();
     if (origin_ == Services::ObjectResourceOrigin::Object && category_->currentData().toInt() >= 0)
         query.objectType = static_cast<ObjectData::ObjectType>(category_->currentData().toInt());
-    if (BrowsesDirectories() && search_->text().isEmpty()) query.directory = directory_.toStdString();
+    const bool browsingDirectory = BrowsesDirectories() && search_->text().isEmpty();
+    if (browsingDirectory) query.directory = directory_.toStdString();
     // 每次查询只检查有限行；匹配项可能集中在目录后部（如游戏图标目录），
     // 所以一页没凑满就沿游标继续查，直到凑满一页或查完，不让作者对着空页反复点“加载更多”。
-    constexpr std::size_t kPageRows = 128;
+    // 按目录浏览时一次列完整个目录（有上限），排序才是整个目录的顺序。
+    const std::size_t pageRows = browsingDirectory ? 4096 : 128;
     std::vector<Services::ObjectResourceCandidate> rows;
     std::optional<Services::ObjectResourcePage> page;
     do {
-        query.limit = kPageRows - rows.size();
+        query.limit = std::min<std::size_t>(128, pageRows - rows.size());
         auto next = Services::QueryObjectResources(*catalog_, query, cursor_);
         if (!next.Succeeded()) { status_->setText(Notes(next.diagnostics)); more_->hide(); return; }
         rows.insert(rows.end(), next.value->rows.begin(), next.value->rows.end());
         cursor_ = next.value->next;
         page = std::move(*next.value);
-    } while (cursor_ && rows.size() < kPageRows);
+    } while (cursor_ && rows.size() < pageRows);
+    // 填充时先关排序，填完按当前表头一次排好。
+    candidates_->setSortingEnabled(false);
     for (const auto& row : rows) {
-        auto* item = new QTreeWidgetItem(candidates_);
+        auto* item = new CandidateItem(candidates_);
         item->setText(1, U8(row.value));
-        // 正常行只写来源；缺失、歧义等需要作者注意的状态才追加。
+        // 正常行只写来源；缺失、歧义等需要作者注意的状态才追加。目录不写来源。
         const auto state = row.state == "missing" ? tr("缺失") : row.state == "unresolved" ? tr("来源歧义")
             : row.state == "oversized" ? tr("文件过大，未核对") : QString{};
-        const auto source = ObjectResourceSourceText(row.sourceId);
+        const auto source = row.directory ? QString{} : ObjectResourceSourceText(row.sourceId);
         item->setText(2, state.isEmpty() ? source : source + QStringLiteral(" · ") + state);
+        item->setIcon(0, CandidateIcon(row.directory, row.kind));
         item->setData(0, kValueRole, U8(row.value)); item->setData(0, kDirectoryRole, row.directory);
         item->setData(0, kTitleRole, origin_ == Services::ObjectResourceOrigin::Object ? UsageTitle(row) : U8(row.title));
         Label(item);
     }
+    candidates_->setSortingEnabled(true);
     more_->setVisible(cursor_.has_value());
     status_->setText(tr("已显示 %1 项%2").arg(candidates_->topLevelItemCount())
         .arg(cursor_ ? tr(" · 还有更多") : page->complete ? QString{} : tr(" · 列表可能不完整，悬停查看原因")));
     // 来源说明（例如某个游戏包没有文件清单）放在悬停详情，状态行只提示列表可能不完整。
     status_->setToolTip(Notes(page->diagnostics));
 }
-// 名称列：物体用过的资源写“物体名 <字段>”；游戏文件和导入文件写使用它的物体，目录写中文目录名。
+// 名称列：物体用过的资源写“物体名 <字段>”；游戏文件和导入文件写使用它的物体，目录写中文目录名
+// （常见目录用固定译名，其余按目录里同名模型的原版物体名）。目录用文件夹图标区分，不加文字前缀。
 // 资源列始终是原路径，悬停详情同时列出两者。
 void ObjectResourcePicker::Label(QTreeWidgetItem* item) const {
     const auto title = item->data(0, kTitleRole).toString();
@@ -341,27 +379,31 @@ void ObjectResourcePicker::Label(QTreeWidgetItem* item) const {
     QString name = title;
     QStringList users;
     if (origin_ != Services::ObjectResourceOrigin::Object) {
-        const auto lastSlash = std::max(value.lastIndexOf(QLatin1Char('/')), value.lastIndexOf(QLatin1Char('\\')));
-        users = usage_.value(directory ? UsageKey(value + QLatin1Char('\\') + value.mid(lastSlash + 1)) : UsageKey(value));
         if (directory) {
+            const auto lastSlash = std::max(value.lastIndexOf(QLatin1Char('/')), value.lastIndexOf(QLatin1Char('\\')));
             const auto known = KnownDirectoryName(title);
-            name = !known.isEmpty() ? known : !users.isEmpty() ? users.front() : title;
-        } else if (!users.isEmpty()) {
-            name = users.size() == 1 ? users.front()
+            const auto user = usageNames_.value(UsageKey(value + QLatin1Char('\\') + value.mid(lastSlash + 1)));
+            name = !known.isEmpty() ? known : !user.isEmpty() ? user : title;
+        } else {
+            users = usage_.value(UsageKey(value));
+            if (!users.isEmpty()) name = users.size() == 1 ? users.front()
                 : users.size() == 2 ? users.join(tr("、"))
                 : tr("%1、%2 等 %3 个").arg(users[0], users[1]).arg(users.size());
         }
     }
-    item->setText(0, directory ? tr("目录 · %1").arg(name) : name);
-    QString tip = name + QStringLiteral("\n") + value + QStringLiteral("\n") + item->text(2);
-    if (users.size() > 1) tip += QStringLiteral("\n") + tr("使用它的物体：%1").arg(users.mid(0, 12).join(tr("、")));
-    for (int column = 0; column < 3; ++column) item->setToolTip(column, tip);
+    item->setText(0, name);
+    QStringList tip{name};
+    if (value != name) tip << value;
+    if (!item->text(2).isEmpty()) tip << item->text(2);
+    if (users.size() > 1) tip << tr("使用它的物体：%1").arg(users.mid(0, 12).join(tr("、")));
+    for (int column = 0; column < 3; ++column) item->setToolTip(column, tip.join(QLatin1Char('\n')));
 }
 // 游戏文件、导入文件的中文名来自“其他物体用过的”索引；后台读取，好了再把当前列表换成中文名。
+// 原版物体排在地图物体前面：地图常拿原版模型做自己的单位并改名，译名应先取原版名。
 void ObjectResourcePicker::LoadUsage() {
     if (usageRequested_ || !services_.load || !field_.storesPath) return;
     usageRequested_ = true;
-    using Usage = QHash<QString, QStringList>;
+    struct Usage { QHash<QString, QStringList> users; QHash<QString, QString> names; };
     auto usage = std::make_shared<Usage>();
     auto catalog = std::make_shared<std::shared_ptr<const Services::ObjectResourceCatalog>>(
         catalogs_[static_cast<int>(Services::ObjectResourceOrigin::Object)]);
@@ -372,20 +414,25 @@ void ObjectResourcePicker::LoadUsage() {
                 if (!loaded.Succeeded()) return;
                 *catalog = *loaded.value;
             }
-            for (const auto& row : (*catalog)->rows) {
+            for (const bool standard : {true, false}) for (const auto& row : (*catalog)->rows) {
                 if (!alive->load()) return;
-                if (!SameResourceFamily(row.kind, kind)) continue;
-                auto& users = (*usage)[UsageKey(U8(row.value))];
+                if (row.customObject == standard || !SameResourceFamily(row.kind, kind)) continue;
+                const auto key = UsageKey(U8(row.value));
+                auto& users = usage->users[key];
                 const auto title = UsageTitle(row);
                 if (users.size() < 24 && !users.contains(title)) users.push_back(title);
+                if (!usage->names.contains(key)) usage->names.insert(key, U8(row.title));
             }
-        } catch (const std::exception&) { usage->clear(); }
+        } catch (const std::exception&) { usage->users.clear(); usage->names.clear(); }
     });
     connect(worker, &QThread::finished, this, [this, usage, catalog] {
         if (*catalog) catalogs_[static_cast<int>(Services::ObjectResourceOrigin::Object)] = *catalog;
-        usage_ = std::move(*usage);
+        usage_ = std::move(usage->users); usageNames_ = std::move(usage->names);
         if (origin_ == Services::ObjectResourceOrigin::Object) return;
+        // 换名时先关排序，换完按当前表头一次重排。
+        candidates_->setSortingEnabled(false);
         for (int index = 0; index < candidates_->topLevelItemCount(); ++index) Label(candidates_->topLevelItem(index));
+        candidates_->setSortingEnabled(true);
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start(QThread::LowPriority);

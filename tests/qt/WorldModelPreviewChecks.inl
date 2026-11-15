@@ -93,14 +93,16 @@ void WorldViewportTests::ModelPreviewUsesGameOrderAndSubmitsMotion() {
     QVERIFY(step->isEnabled()); step->click();
     QTRY_VERIFY(player->Frame()->contentVersion > start->contentVersion && !player->Busy());
     QCOMPARE(player->Frame()->states.front().elapsedMs, std::uint64_t{33});
-    // 帧行写当前动作在模型时间轴上的帧号与区间（不再写局部/全局毫秒和姿势计数），动作列表写帧区间而不是秒数。
+    // 帧行写当前动作在模型时间轴上的帧号与区间（不再写局部/全局毫秒和姿势计数）；窄卡片里的动作下拉框只写动作名，
+    // 帧区间在悬停详情。
     auto* frameLine = preview.findChild<QLabel*>(QStringLiteral("worldUnitPreviewFrame")); QVERIFY(frameLine);
     const auto& firstSequence = player->Scene()->sequences.front()[0];
     QTRY_COMPARE(frameLine->text(), QStringLiteral("第 %1 帧 · 区间 %2–%3")
         .arg(static_cast<std::uint64_t>(firstSequence.start) + 33).arg(firstSequence.start).arg(firstSequence.end));
     QVERIFY(!message->text().contains(QStringLiteral("ms")) && !message->text().contains(QStringLiteral("姿势")));
-    QVERIFY(actions->itemText(0).contains(QStringLiteral("%1–%2").arg(firstSequence.start).arg(firstSequence.end))
-        && !actions->itemText(0).contains(QStringLiteral("秒")));
+    QVERIFY(!actions->itemText(0).contains(QStringLiteral("–")) && !actions->itemText(0).contains(QStringLiteral("秒")));
+    QVERIFY(actions->itemData(0, Qt::ToolTipRole).toString().contains(
+        QStringLiteral("%1–%2").arg(firstSequence.start).arg(firstSequence.end)));
     QVERIFY(!player->Frame()->poses.front().hidden);
     QVERIFY(player->Frame()->poses.front().matrixHash != start->poses.front().matrixHash);
     QVERIFY(state.matrixUploads > uploads);

@@ -30,6 +30,7 @@
 #include <QSaveFile>
 #include <QScreen>
 #include <QHash>
+#include <QHeaderView>
 #include <QTabBar>
 #include <QTabWidget>
 #include <QTableView>
@@ -141,6 +142,7 @@ private slots:
     void FieldDelegateUsesSameUndoAndSerialization();
     void ComboPopupDoesNotCloseAnchoredPicker();
     void GameIconsBehindManyFilesFillFirstPage();
+    void DirectoriesFirstSortedAndTranslated();
     void StandardFieldUsesSameCommand();
     void CommitMayCloseOwner();
     void AdapterOwnsSnapshotAndRejectsOversizedSource();
@@ -275,6 +277,57 @@ void ObjectResourcePickerTests::GameIconsBehindManyFilesFillFirstPage() {
     QTRY_COMPARE(list->topLevelItemCount(), 4);
     QCOMPARE(list->topLevelItem(0)->text(1), QStringLiteral("ReplaceableTextures\\CommandButtons\\BTNFixture0.blp"));
     QVERIFY(!picker->findChild<QPushButton*>("resourceMore")->isVisible());
+    delete guard.data();
+}
+void ObjectResourcePickerTests::DirectoriesFirstSortedAndTranslated() {
+    bool current = true;
+    auto services = ServicesFor(&current);
+    services.load = [](Services::ObjectResourceOrigin origin, const auto&) {
+        auto catalog = std::make_shared<Services::ObjectResourceCatalog>();
+        catalog->revision = "picker:1"; catalog->identity = std::to_string(static_cast<int>(origin)); catalog->origin = origin;
+        const bool objects = origin == Services::ObjectResourceOrigin::Object;
+        const auto add = [&](std::string value, bool directory, std::string title = {}, bool custom = false) {
+            Services::ObjectResourceCandidate row;
+            row.id = std::to_string(catalog->rows.size()); row.directory = directory; row.customObject = custom;
+            row.title = title.empty() ? value.substr(value.rfind('\\') + 1) : title; row.value = std::move(value);
+            row.kind = Services::ObjectResourceKind::Model; row.origin = origin;
+            row.sourceId = directory ? "" : objects ? (custom ? "map-object" : "standard-object") : "War3.mpq";
+            if (objects) row.fieldLabel = "模型文件";
+            catalog->rows.push_back(std::move(row));
+        };
+        // 地图物体排在原版物体前面并改了名：目录译名仍应取原版物体名。
+        if (objects) { add("Altar\\Altar.mdx", false, "长者祭坛", true); add("Altar\\Altar.mdx", false, "深渊祭坛"); }
+        else { add("b10.mdx", false); add("Altar", true); add("b9.mdx", false); add("Altar\\Altar.mdx", false); add("Coral", true); add("A.mdx", false); }
+        return Result<std::shared_ptr<const Services::ObjectResourceCatalog>>::Success(std::move(catalog));
+    };
+    auto* picker = new ObjectResourcePicker({Services::ObjectResourceKind::Model, false, true}, "", services);
+    QPointer<ObjectResourcePicker> guard(picker); picker->show();
+    auto* list = picker->findChild<QTreeWidget*>("resourceCandidates"); QVERIFY(list);
+    const auto names = [list] {
+        QStringList values; for (int row = 0; row < list->topLevelItemCount(); ++row) values << list->topLevelItem(row)->text(0);
+        return values;
+    };
+    const auto directoryAt = [list](int row) { return list->topLevelItem(row)->data(0, Qt::UserRole + 1).toBool(); };
+    QTRY_COMPARE(list->topLevelItemCount(), 5);
+    QTRY_VERIFY2(names().contains(QStringLiteral("深渊祭坛")), qPrintable(names().join(QLatin1Char('|'))));
+    QVERIFY(!names().contains(QStringLiteral("长者祭坛")));
+    // 目录在前：文件夹图标区分，不加“目录”前缀，不写来源；文件按自然顺序（不分大小写，数字按数值）。
+    for (int row = 0; row < 2; ++row) {
+        auto* item = list->topLevelItem(row);
+        QVERIFY(directoryAt(row)); QVERIFY(!item->icon(0).isNull());
+        QVERIFY(!item->text(0).startsWith(QStringLiteral("目录"))); QVERIFY(item->text(2).isEmpty());
+    }
+    QCOMPARE(names().mid(2), (QStringList{QStringLiteral("A.mdx"), QStringLiteral("b9.mdx"), QStringLiteral("b10.mdx")}));
+    // 点名称表头切换为降序：目录仍在前，文件倒排。
+    auto* header = list->header();
+    QTest::mouseClick(header->viewport(), Qt::LeftButton, {}, QPoint(header->sectionViewportPosition(0) + 20, header->height() / 2));
+    QCOMPARE(header->sortIndicatorOrder(), Qt::DescendingOrder);
+    QVERIFY(directoryAt(0) && directoryAt(1));
+    QCOMPARE(names().mid(2), (QStringList{QStringLiteral("b10.mdx"), QStringLiteral("b9.mdx"), QStringLiteral("A.mdx")}));
+    // 按资源列排序同样目录在前。
+    QTest::mouseClick(header->viewport(), Qt::LeftButton, {}, QPoint(header->sectionViewportPosition(1) + 20, header->height() / 2));
+    QCOMPARE(header->sortIndicatorSection(), 1);
+    QVERIFY(directoryAt(0) && directoryAt(1) && !directoryAt(2));
     delete guard.data();
 }
 void ObjectResourcePickerTests::StandardFieldUsesSameCommand() {

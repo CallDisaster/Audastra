@@ -218,7 +218,8 @@ void WorldModelPreview::Present(const Built& built) {
         player_->SetPlaying(true);
     {
         const QSignalBlocker blocker(action_); action_->clear();
-        // 按模型里的原顺序列出全部动作（SEQS），附帧区间与是否循环；时长放悬停详情。损坏的序列保留但不可选。
+        // 按模型里的原顺序列出全部动作（SEQS）。卡片窄，下拉框只写动作名；当前动作的帧区间在帧行，
+        // 各动作的帧区间、时长与是否循环在悬停详情。损坏的序列保留但不可选。
         const auto& sequences=built.service->Scene()->sequences.front(); int selected=-1;
         for (std::uint32_t index=0; index<sequences.size(); ++index) {
             const auto& sequence=sequences[index];
@@ -228,8 +229,8 @@ void WorldModelPreview::Present(const Built& built) {
                 if (auto* model=qobject_cast<QStandardItemModel*>(action_->model())) model->item(action_->count()-1)->setEnabled(false);
                 continue;
             }
-            const auto loops=sequence.flags==1?tr(" · 不循环"):QString{};
-            action_->addItem(tr("%1 · %2–%3%4").arg(name).arg(sequence.start).arg(sequence.end).arg(loops), QVariant::fromValue(index));
+            const auto loops=sequence.flags==1?tr("，不循环"):QString{};
+            action_->addItem(name, QVariant::fromValue(index));
             const auto seconds=static_cast<double>(sequence.end-sequence.start)/1000.0;
             action_->setItemData(action_->count()-1, tr("%1\n帧区间 %2–%3，时长 %4 秒%5").arg(name).arg(sequence.start).arg(sequence.end)
                 .arg(seconds,0,'f',2).arg(loops), Qt::ToolTipRole);
