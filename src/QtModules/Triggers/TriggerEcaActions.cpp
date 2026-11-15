@@ -292,7 +292,9 @@ void TriggerModule::PasteEca() {
 }
 
 void TriggerModule::EditEcaParameters(StableId ecaId) {
-    // 参数对话框（F2 / 双击）：接受后按与取值面板相同的管线应用；请求编辑嵌套函数时继续打开它的对话框。
+    // 参数对话框（F2 / 双击）：接受后按与取值面板相同的管线应用。编辑嵌套函数（原有的，或新选的带参数函数）
+    // 时打开它的对话框，关掉后回到外层对话框（与 WE 相同），外层已应用的修改保留。
+    std::vector<StableId> parents;
     while (ecaId != 0 && project_.triggerDocument_ != nullptr && project_.uiCatalog_ != nullptr) {
         auto& document = *project_.triggerDocument_;
         if (Editor::FindEca(document, ecaId) == nullptr) {
@@ -300,21 +302,31 @@ void TriggerModule::EditEcaParameters(StableId ecaId) {
         }
         TriggerParameterDialog dialog(document, *project_.uiCatalog_, ecaId, page_);
         dialog.SetCategoryIcons(CategoryIcons());
-        if (dialog.exec() != QDialog::Accepted) {
+        std::optional<StableId> nested;
+        if (dialog.exec() == QDialog::Accepted) {
+            std::optional<StableId> newNestedEcaId;
+            if (!ApplyArgumentEdits(ecaId, dialog.PendingEdits(), tr("编辑参数"), nullptr, &newNestedEcaId)) {
+                return;
+            }
+            nested = dialog.RequestedNestedEca();
+            if (!nested.has_value()) {
+                nested = newNestedEcaId;
+            }
+            if (nested.has_value()) {
+                const auto* call = Editor::FindEca(document, *nested);
+                if (call == nullptr || call->arguments.empty()) nested.reset();
+            }
+        }
+        if (nested.has_value()) {
+            parents.push_back(ecaId);
+            ecaId = *nested;
+            continue;
+        }
+        if (parents.empty()) {
             return;
         }
-        std::optional<StableId> newNestedEcaId;
-        if (!ApplyArgumentEdits(ecaId, dialog.PendingEdits(), tr("编辑参数"), nullptr, &newNestedEcaId)) {
-            return;
-        }
-        auto nested = dialog.RequestedNestedEca();
-        if (!nested.has_value()) {
-            nested = newNestedEcaId;
-        }
-        if (!nested.has_value()) {
-            return;
-        }
-        ecaId = *nested;
+        ecaId = parents.back();
+        parents.pop_back();
     }
 }
 

@@ -79,6 +79,8 @@ struct TriggerArgumentEditRequest {
     std::vector<std::pair<std::int32_t, std::string>> callArguments;
 };
 
+// 传统参数对话框（WE 式）：每个参数把可用的来源（预设、变量、函数、值）同时列出，单选决定使用哪一个；
+// 函数行只列返回类型匹配的函数，可直接换函数。类型选择器（typename 等）改了，后面跟随它的参数立即换类型。
 class TriggerParameterDialog final : public QDialog {
 public:
     TriggerParameterDialog(
@@ -88,9 +90,12 @@ public:
         QWidget* parent = nullptr);
     ~TriggerParameterDialog() override;
 
+    // 来源编号与 ArgumentNode::type 相同。
+    enum Source { Preset = 0, Variable = 1, Function = 2, Value = 3 };
+
     [[nodiscard]] std::vector<TriggerArgumentEditRequest> PendingEdits() const;
-    // 嵌套函数选择器的分类图标来源。
-    void SetCategoryIcons(TriggerFunctionList::CategoryIcon icons) { categoryIcons_ = std::move(icons); }
+    // 函数列表与选择器的分类图标来源。
+    void SetCategoryIcons(TriggerFunctionList::CategoryIcon icons);
     [[nodiscard]] std::optional<War3Map::StableId> RequestedNestedEca() const noexcept;
 
 protected:
@@ -100,27 +105,40 @@ private:
     struct Row;
     void UpdateNaturalPreview();
     void FlashRow(Row* row);
-    void RefreshPresets(Row* row, const War3Map::Trigger::ArgumentNode& argument);
-    void PrepareVariableKind(Row* row, const War3Map::Trigger::ArgumentNode& argument,
-        const War3Map::Trigger::TriggerTypeSystem& types);
-    void PopulateVariables(Row* row);
-    [[nodiscard]] static QString VariableName(const Row* row);
-    [[nodiscard]] static QString VariableValue(const Row* row);
-    void RestrictKinds(Row* row, const War3Map::Trigger::TriggerTypeSystem& types);
     void AddArgumentRow(
-        std::size_t position,
         const War3Map::Trigger::UiArgumentDefinition* definition,
         std::string label,
         const War3Map::Trigger::ArgumentNode& argument);
+    // 按当前期望类型重建预设、变量、函数候选与可见的来源行；initial 时选中参数原有的值。
+    void ConfigureRow(Row* row, bool initial);
+    [[nodiscard]] int DefaultSource(const Row* row) const;
+    // 跟随类型选择器或前一个参数的 Null 参数按对话框里当前的选择重新定类型；unresolvedOnly 时只补还没解析出的。
+    void RecomputeTypes(bool unresolvedOnly = false);
+    [[nodiscard]] std::string PendingExpectedType(std::size_t index) const;
+    [[nodiscard]] std::string PendingValueType(const Row* row) const;
+    void PopulateVariables(Row* row);
+    void PopulateFunctions(Row* row);
+    void BrowseFunction(Row* row);
+    void UpdateFunctionLine(Row* row);
+    [[nodiscard]] TriggerFunctionList& Functions();
+    [[nodiscard]] static int CurrentSource(const Row* row);
+    static void SelectSource(Row* row, int source);
+    [[nodiscard]] static QString PresetValue(const Row* row);
+    [[nodiscard]] static QString VariableName(const Row* row);
+    [[nodiscard]] static QString VariableValue(const Row* row);
+    [[nodiscard]] static std::optional<std::string> FunctionName(const Row* row);
 
     const War3Map::Trigger::TriggerDocument& document_;
     const War3Map::Trigger::UiCatalog& catalog_;
     War3Map::StableId ecaId_ = 0;
+    War3Map::Trigger::TriggerTypeSystem types_;
+    std::vector<War3Map::Trigger::LocalVariable> locals_;
     QLabel* naturalPreview_ = nullptr;
     QScrollArea* scroll_ = nullptr;
     std::vector<Row*> rows_;
     std::optional<War3Map::StableId> requestedNestedEca_;
     TriggerFunctionList::CategoryIcon categoryIcons_;
+    std::optional<TriggerFunctionList> functions_;
 };
 
 // 兼容旧调用入口；变量编辑器由独立模块提供。

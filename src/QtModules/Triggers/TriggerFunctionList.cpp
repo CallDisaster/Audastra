@@ -2,6 +2,7 @@
 
 #include "TriggerUiText.h"
 
+#include "War3MapCore/Trigger/TriggerTypes.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <QCollator>
@@ -52,6 +53,30 @@ bool TriggerFunctionList::Matches(const War3Map::Trigger::UiDefinition& definiti
     if (description.has_value() && contains(Utf8(*description))) return true;
     const QString category = CategoryId(definition);
     return contains(category) || contains(CategoryName(category)) || contains(Utf8(definition.Active().layer));
+}
+
+bool TriggerFunctionList::Fits(const War3Map::Trigger::TriggerTypeSystem& types, std::string_view expected,
+    const War3Map::Trigger::UiDefinition& definition) {
+    if (expected == "Null") return false;
+    const std::string returns = TriggerUiText::CallReturnType(definition);
+    return !returns.empty() && types.Accepts(expected, returns);
+}
+
+TriggerFunctionList::Choices TriggerFunctionList::ForType(const War3Map::Trigger::TriggerTypeSystem& types,
+    std::string_view expected, const QString& query) const {
+    Choices choices;
+    if (const auto slot = War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(expected)) {
+        for (const auto* definition : catalog_.Definitions(*slot))
+            if (Matches(*definition, query)) choices.slot.push_back(definition);
+    }
+    for (const auto* definition : catalog_.Definitions(War3Map::Trigger::UiDefinitionKind::Call)) {
+        if (!Fits(types, expected, *definition) || !Matches(*definition, query)) continue;
+        const std::string returns = TriggerUiText::CallReturnType(*definition);
+        (returns == expected ? choices.exact : returns == "AnyReturnType" ? choices.generic : choices.compatible)
+            .push_back(definition);
+    }
+    for (auto* group : {&choices.slot, &choices.exact, &choices.compatible, &choices.generic}) Sort(*group);
+    return choices;
 }
 
 void TriggerFunctionList::Sort(std::vector<const War3Map::Trigger::UiDefinition*>& definitions) const {

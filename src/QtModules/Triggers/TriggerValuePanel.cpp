@@ -450,28 +450,13 @@ void TriggerValuePanel::RebuildVariables(const QString& query) {
 void TriggerValuePanel::RebuildFunctions(const QString& query) {
     // 同类型在前，兼容类型（基础类型互通）其次，YDWE 的 AnyReturnType 函数最后；组内按 WE 列表标题排序。
     // 函数槽（如 AddTriggerEvent 的事件）与 WE 相同，先列事件/条件/动作函数。
-    if (const auto slot = Trigger::TriggerTypeSystem::FunctionSlotKind(type_)) {
-        std::vector<const Trigger::UiDefinition*> slotted;
-        for (const auto* definition : catalog_.Definitions(*slot))
-            if (functions_.Matches(*definition, query)) slotted.push_back(definition);
-        functions_.Sort(slotted);
-        for (const auto* definition : slotted) {
-            auto* item = Item(list_, functions_.Title(*definition), Utf8(definition->name), 2, Utf8(definition->name));
-            item->setIcon(functions_.Icon(*definition));
-            item->setToolTip(QStringLiteral("%1\n%2").arg(functions_.Title(*definition), Utf8(definition->name)));
-        }
+    const auto choices = functions_.ForType(*types_, type_, query);
+    for (const auto* definition : choices.slot) {
+        auto* item = Item(list_, functions_.Title(*definition), Utf8(definition->name), 2, Utf8(definition->name));
+        item->setIcon(functions_.Icon(*definition));
+        item->setToolTip(QStringLiteral("%1\n%2").arg(functions_.Title(*definition), Utf8(definition->name)));
     }
-    std::vector<const Trigger::UiDefinition*> exact;
-    std::vector<const Trigger::UiDefinition*> compatible;
-    std::vector<const Trigger::UiDefinition*> generic;
-    for (const auto* definition : catalog_.Definitions(Trigger::UiDefinitionKind::Call)) {
-        const std::string returns = CallReturnType(*definition);
-        if (returns.empty() || !types_->Accepts(type_, returns)) continue;
-        if (!functions_.Matches(*definition, query)) continue;
-        (returns == type_ ? exact : returns == "AnyReturnType" ? generic : compatible).push_back(definition);
-    }
-    for (auto* group : {&exact, &compatible, &generic}) {
-        functions_.Sort(*group);
+    for (const auto* group : {&choices.exact, &choices.compatible, &choices.generic}) {
         for (const auto* definition : *group) {
             const std::string returns = CallReturnType(*definition);
             const QString detail = returns == type_ ? Utf8(definition->name)

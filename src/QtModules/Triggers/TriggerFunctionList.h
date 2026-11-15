@@ -9,7 +9,10 @@
 #include <functional>
 #include <vector>
 
+#include <string_view>
+
 namespace War3Map::Trigger {
+class TriggerTypeSystem;
 class UiCatalog;
 struct UiDefinition;
 }
@@ -35,6 +38,18 @@ public:
     // 按列表标题排序（与 WE 列表一致，同名再按原始函数名），稳定。
     void Sort(std::vector<const War3Map::Trigger::UiDefinition*>& definitions) const;
     [[nodiscard]] const War3Map::Trigger::TriggerCategoryTable& Categories() const noexcept { return categories_; }
+
+    // 调用函数能否放进期望类型的参数：返回类型须被期望类型接受（YDWE 的 AnyReturnType 处处可用）。
+    // 期望类型尚未解析（Null，如类型选择器还没选）时一个也不放，不列出全部函数。
+    [[nodiscard]] static bool Fits(const War3Map::Trigger::TriggerTypeSystem& types, std::string_view expected,
+        const War3Map::Trigger::UiDefinition& definition);
+    // 参数可选的函数（取值面板与参数对话框共用）：函数槽（事件/条件/动作）的定义在前；
+    // 其余按同类型、兼容类型、任意类型分组，组内按列表标题排序。
+    struct Choices {
+        std::vector<const War3Map::Trigger::UiDefinition*> slot, exact, compatible, generic;
+    };
+    [[nodiscard]] Choices ForType(const War3Map::Trigger::TriggerTypeSystem& types, std::string_view expected,
+        const QString& query = {}) const;
 
 private:
     const War3Map::Trigger::UiCatalog& catalog_;

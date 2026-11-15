@@ -101,10 +101,17 @@ struct Builder {
             argument.id = AllocateId(counter);
             argument.value = RawText{argumentDefinition.defaultValue, encoding, {}};
 
-            const UiDefinition* defaultCall = argumentDefinition.defaultValue.empty()
+            // 新格式函数库（default = "\"overhead\""）去掉外层转义后仍带一对引号：与 WE 相同，
+            // 引号表示文字默认值，存进参数的是引号里的文字（旧格式 TriggerData 解析时已去掉引号）。
+            const std::string_view defaultText = argumentDefinition.defaultValue;
+            const bool quotedText = defaultText.size() >= 2 && defaultText.front() == '"' && defaultText.back() == '"';
+            const UiDefinition* defaultCall = defaultText.empty() || quotedText
                 ? nullptr
                 : catalog.Find(UiDefinitionKind::Call, argumentDefinition.defaultValue);
-            if (defaultCall != nullptr) {
+            if (quotedText) {
+                argument.type = 3;
+                argument.value = RawText{std::string(defaultText.substr(1, defaultText.size() - 2)), encoding, {}};
+            } else if (defaultCall != nullptr) {
                 auto call = Build(*defaultCall, depth + 1);
                 if (!call.Succeeded()) {
                     return call;
@@ -417,12 +424,13 @@ Status TriggerDocumentEditor::SetScalarArgument(
         return Status::Failure(
             "Trigger.Edit", "TRIGGER_ARGUMENT_MISSING", "找不到目标参数。");
     }
-    if (argument->insertCall != 0 || argument->callEca.has_value() ||
-        argument->insertIndex != 0 || argument->indexArgument.has_value()) {
+    if (argument->callEca.has_value() || argument->insertIndex != 0 || argument->indexArgument.has_value()) {
         return Status::Failure(
             "Trigger.Edit", "TRIGGER_COMPLEX_ARGUMENT_READ_ONLY",
             "嵌套函数或数组索引参数需要进入对应节点编辑，不能改写为标量。");
     }
+    // 标着“函数”却没有挂接任何函数节点：没有子树要保留，按作者选的值改写并清掉标记。
+    argument->insertCall = 0;
     // -1 是 WE 的“参数未设置”，只能是空值。
     if ((valueKind != 0 && valueKind != 1 && valueKind != 3 && valueKind != -1) || (valueKind == -1 && !value.empty())) {
         return Status::Failure(

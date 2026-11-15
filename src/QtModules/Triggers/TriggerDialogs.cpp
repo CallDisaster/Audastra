@@ -9,12 +9,14 @@
 #include "War3MapCore/Trigger/UiCatalog.h"
 
 #include <QAbstractItemView>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QCollator>
 #include <QComboBox>
 #include <QCompleter>
 #include <QDialogButtonBox>
 #include <QHash>
+#include <QFocusEvent>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -26,6 +28,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QScrollArea>
@@ -33,18 +36,20 @@
 #include <QSize>
 #include <QSizePolicy>
 #include <QSplitter>
-#include <QStackedWidget>
 #include <QStandardItemModel>
 #include <QTableWidget>
 #include <QTextBrowser>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeView>
 #include <QUndoStack>
 #include <QUrl>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -166,7 +171,7 @@ UiDefinitionPickerDialog::UiDefinitionPickerDialog(
     const War3Map::Trigger::TriggerTypeSystem types(catalog_);
     for (const auto* definition : catalog_.Definitions(kind_)) {
         if (kind_ == War3Map::Trigger::UiDefinitionKind::Call && !expectedReturnType_.empty() &&
-            (CallReturnType(*definition).empty() || !types.Accepts(expectedReturnType_, CallReturnType(*definition)))) {
+            !TriggerFunctionList::Fits(types, expectedReturnType_, *definition)) {
             continue;
         }
         candidates_.push_back(definition);
@@ -298,28 +303,93 @@ void UiDefinitionPickerDialog::ShowCurrentDefinition() {
         .arg(comment.has_value() ? Utf8(*comment).toHtmlEscaped() : QString{}));
 }
 
+namespace {
+
+using Literal = War3Map::Trigger::TriggerTypeSystem::Literal;
+
+// 首次展开或获得焦点时才填充候选（大图上变量、函数都很多）；只填一次，换类型后重新挂上。
+class LazyComboBox final : public QComboBox {
+public:
+    using QComboBox::QComboBox;
+    void SetFill(std::function<void()> fill) { fill_ = std::move(fill); }
+    void showPopup() override {
+        Fill();
+        QComboBox::showPopup();
+    }
+
+protected:
+    void focusInEvent(QFocusEvent* event) override {
+        Fill();
+        QComboBox::focusInEvent(event);
+    }
+
+private:
+    void Fill() {
+        if (!fill_) return;
+        auto run = std::move(fill_);
+        fill_ = nullptr;
+        run();
+    }
+    std::function<void()> fill_;
+};
+
+// 可输入搜索的下拉：按包含匹配弹出候选，不把输入的文字插成新条目。
+void MakeSearchable(QComboBox* combo) {
+    combo->setEditable(true);
+    combo->setInsertPolicy(QComboBox::NoInsert);
+    combo->setMaxVisibleItems(16);
+    combo->completer()->setCompletionMode(QCompleter::PopupCompletion);
+    combo->completer()->setFilterMode(Qt::MatchContains);
+    combo->completer()->setCaseSensitivity(Qt::CaseInsensitive);
+}
+
+std::size_t ArgumentCount(const War3Map::Trigger::UiDefinition& definition) {
+    const auto& arguments = definition.Active().arguments;
+    return static_cast<std::size_t>(std::count_if(arguments.begin(), arguments.end(),
+        [](const auto& argument) { return argument.type != "nothing"; }));
+}
+
+// 参数位置上的函数定义：函数槽（事件/条件/动作）先查对应种类，其余为调用函数。
+const War3Map::Trigger::UiDefinition* FindFunction(
+    const War3Map::Trigger::UiCatalog& catalog, std::string_view expected, const std::string& name) {
+    if (const auto slot = War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(expected)) {
+        if (const auto* found = catalog.Find(*slot, name)) return found;
+    }
+    return catalog.Find(War3Map::Trigger::UiDefinitionKind::Call, name);
+}
+
+} // namespace
+
 struct TriggerParameterDialog::Row {
     War3Map::StableId argumentId = 0;
+    std::string declaredType;
     std::string expectedType;
+    bool selector = false;
     std::int32_t originalKind = 3;
     std::string originalValue;
-    QWidget* panel = nullptr;
-    QComboBox* kind = nullptr;
-    QStackedWidget* valueStack = nullptr;
-    QComboBox* preset = nullptr;
-    QLineEdit* scalar = nullptr;
-    QComboBox* booleanValue = nullptr;
-    bool booleanLiteral = false;
-    // “变量”来源：可搜索的全局变量/触发器列表（与取值面板同一候选），首次切到变量时才填充。
-    QComboBox* variable = nullptr;
-    bool variablesLoaded = false;
+    // 新语句的空参数（或标着函数却没挂函数）：按类型选默认来源。
+    bool fresh = false;
+    bool readOnly = false;
     bool anyGlobal = false;
     bool writableTarget = false;
-    QLabel* function = nullptr;
-    QPushButton* functionButton = nullptr;
-    std::optional<std::string> selectedCall;
+    bool booleanLiteral = false;
+    bool variablesLoaded = false;
+    bool functionsLoaded = false;
+    std::optional<std::string> originalCall;
     std::optional<War3Map::StableId> nestedEcaId;
-    bool readOnly = false;
+    QString label;
+    QWidget* panel = nullptr;
+    QLabel* name = nullptr;
+    QButtonGroup* sources = nullptr;
+    std::array<QWidget*, 4> lines{};
+    QComboBox* preset = nullptr;
+    LazyComboBox* variable = nullptr;
+    LazyComboBox* function = nullptr;
+    QToolButton* functionBrowse = nullptr;
+    QPushButton* functionEdit = nullptr;
+    QLabel* callText = nullptr;
+    QLineEdit* scalar = nullptr;
+    QComboBox* booleanValue = nullptr;
 };
 
 TriggerParameterDialog::TriggerParameterDialog(
@@ -327,15 +397,15 @@ TriggerParameterDialog::TriggerParameterDialog(
     const War3Map::Trigger::UiCatalog& catalog,
     War3Map::StableId ecaId,
     QWidget* parent)
-    : QDialog(parent), document_(document), catalog_(catalog), ecaId_(ecaId) {
+    : QDialog(parent), document_(document), catalog_(catalog), ecaId_(ecaId), types_(catalog) {
     const auto* eca = FindEca(document_, ecaId_);
     if (eca == nullptr) {
         return;
     }
     const auto* uiDefinition = catalog_.Find(eca->type, eca->name.text);
     setWindowTitle(tr("编辑参数 · %1").arg(Utf8(eca->name.text)));
-    resize(900, 640);
     setModal(true);
+    setSizeGripEnabled(true);
 
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(20, 18, 20, 18);
@@ -375,7 +445,7 @@ TriggerParameterDialog::TriggerParameterDialog(
     auto* content = new QWidget;
     auto* form = new QVBoxLayout(content);
     form->setContentsMargins(0, 4, 6, 4);
-    form->setSpacing(8);
+    form->setSpacing(4);
     scroll_->setWidget(content);
     layout->addWidget(scroll_, 1);
 
@@ -391,10 +461,8 @@ TriggerParameterDialog::TriggerParameterDialog(
         ? std::vector<std::string>{}
         : PlaceholderLabels(*uiDefinition);
     // 期望类型按类型系统解析（Null 跟随类型选择器或前一个参数）。
-    const War3Map::Trigger::TriggerTypeSystem types(catalog_);
-    std::vector<War3Map::Trigger::LocalVariable> locals;
     for (const auto& trigger : document_.triggers) {
-        if (trigger.id == eca->sourceTriggerId) locals = types.CollectLocals(document_, trigger);
+        if (trigger.id == eca->sourceTriggerId) locals_ = types_.CollectLocals(document_, trigger);
     }
     for (std::size_t position = 0; position < eca->arguments.size(); ++position) {
         const std::uint32_t argumentIndex = eca->arguments[position];
@@ -405,23 +473,22 @@ TriggerParameterDialog::TriggerParameterDialog(
         const std::string label = position < labels.size() && !labels[position].empty()
             ? labels[position]
             : "参数 " + std::to_string(position + 1);
-        AddArgumentRow(position, definition, label, document_.argumentNodes[argumentIndex]);
+        AddArgumentRow(definition, label, document_.argumentNodes[argumentIndex]);
         Row* row = rows_.back();
-        row->expectedType = types.ExpectedType(document_, *eca, position, locals);
+        row->declaredType = uiDefinition == nullptr
+            ? std::string{} : War3Map::Trigger::TriggerTypeSystem::DeclaredType(*uiDefinition, position);
+        row->selector = types_.IsTypeSelector(row->declaredType);
+        row->expectedType = types_.ExpectedType(document_, *eca, position, locals_);
         // 赋值目标（AnyGlobal / 设置变量的左侧）只能是真实可写变量，与取值面板相同。
         row->anyGlobal = definition != nullptr && definition->type == "AnyGlobal";
         row->writableTarget = row->anyGlobal || (eca->name.text == "SetVariable" && position == 0);
-        RefreshPresets(row, document_.argumentNodes[argumentIndex]);
-        PrepareVariableKind(row, document_.argumentNodes[argumentIndex], types);
-        RestrictKinds(row, types);
-        form->addWidget(rows_.back()->panel);
+        ConfigureRow(row, true);
+        form->addWidget(row->panel);
     }
+    // 新语句的类型选择器默认选了第一个预设，跟随它的参数随之定下类型。
+    RecomputeTypes(true);
     form->addStretch();
     UpdateNaturalPreview();
-    resize(900, std::clamp(
-        340 + static_cast<int>(rows_.size()) * 76,
-        430,
-        700));
 
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Save | QDialogButtonBox::Cancel);
@@ -430,6 +497,7 @@ TriggerParameterDialog::TriggerParameterDialog(
     connect(buttons, &QDialogButtonBox::accepted, this, &TriggerParameterDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &TriggerParameterDialog::reject);
     layout->addWidget(buttons);
+    resize(940, std::clamp(content->sizeHint().height() + 220, 430, 860));
 }
 
 TriggerParameterDialog::~TriggerParameterDialog() {
@@ -438,182 +506,334 @@ TriggerParameterDialog::~TriggerParameterDialog() {
     }
 }
 
+void TriggerParameterDialog::SetCategoryIcons(TriggerFunctionList::CategoryIcon icons) {
+    categoryIcons_ = std::move(icons);
+    functions_.reset();
+}
+
+TriggerFunctionList& TriggerParameterDialog::Functions() {
+    if (!functions_) functions_.emplace(catalog_, categoryIcons_);
+    return *functions_;
+}
+
 void TriggerParameterDialog::AddArgumentRow(
-    std::size_t position,
     const War3Map::Trigger::UiArgumentDefinition* definition,
     std::string label,
     const War3Map::Trigger::ArgumentNode& argument) {
-    (void)position;
     auto* row = new Row;
+    rows_.push_back(row);
     row->argumentId = argument.id;
     row->expectedType = definition == nullptr ? std::string{} : definition->type;
     row->originalKind = argument.type;
     row->originalValue = argument.value.text;
+    row->label = Utf8(label);
+    row->readOnly = argument.insertIndex != 0;
+    row->fresh = !argument.callEca.has_value() &&
+        ((argument.type == Value && argument.value.text.empty()) || argument.type == Function);
+    if (argument.callEca.has_value() && *argument.callEca < document_.ecaNodes.size()) {
+        const auto& call = document_.ecaNodes[*argument.callEca];
+        row->originalCall = call.name.text;
+        row->nestedEcaId = call.id;
+    }
 
     auto* panel = new QWidget;
     panel->setObjectName("parameterRow");
     panel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    panel->setFixedHeight(68);
     auto* layout = new QHBoxLayout(panel);
-    layout->setContentsMargins(12, 10, 12, 10);
-    layout->setSpacing(10);
-    auto* name = new QLabel(
-        Utf8(label) + (row->expectedType.empty()
-            ? QString{}
-            : QStringLiteral("\n") + Utf8(row->expectedType)));
-    name->setObjectName("parameterName");
-    name->setMinimumWidth(180);
-    layout->addWidget(name);
+    layout->setContentsMargins(12, 8, 12, 8);
+    layout->setSpacing(12);
+    row->name = new QLabel;
+    row->name->setObjectName("parameterName");
+    row->name->setMinimumWidth(180);
+    row->name->setMaximumWidth(240);
+    row->name->setWordWrap(true);
+    layout->addWidget(row->name, 0, Qt::AlignTop);
+    auto* lines = new QVBoxLayout;
+    lines->setSpacing(6);
+    layout->addLayout(lines, 1);
 
-    row->kind = new QComboBox(panel);
-    row->kind->setObjectName("parameterValueKind");
-    row->kind->setMinimumWidth(110);
-    row->kind->addItem(tr("预设值"), 0);
-    row->kind->addItem(tr("变量"), 1);
-    row->kind->addItem(tr("直接值"), 3);
-    row->kind->addItem(tr("函数"), 2);
-    layout->addWidget(row->kind);
+    // 与 WE 相同：可用的来源同时列出，单选决定使用哪一个。
+    row->sources = new QButtonGroup(panel);
+    const auto addLine = [row, lines](int source, const QString& text, const char* objectName) {
+        auto* line = new QWidget;
+        auto* outer = new QVBoxLayout(line);
+        outer->setContentsMargins(0, 0, 0, 0);
+        outer->setSpacing(2);
+        auto* inner = new QHBoxLayout;
+        inner->setSpacing(8);
+        outer->addLayout(inner);
+        auto* radio = new QRadioButton(text);
+        radio->setObjectName(QString::fromLatin1(objectName));
+        radio->setMinimumWidth(56);
+        row->sources->addButton(radio, source);
+        inner->addWidget(radio);
+        row->lines[static_cast<std::size_t>(source)] = line;
+        lines->addWidget(line);
+        return std::pair{outer, inner};
+    };
 
-    row->valueStack = new QStackedWidget(panel);
-    row->valueStack->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    row->valueStack->setFixedHeight(38);
+    const auto presetLine = addLine(Preset, tr("预设"), "parameterSourcePreset");
     row->preset = new QComboBox;
     row->preset->setObjectName("parameterPresetValue");
-    row->preset->setEditable(true);
+    MakeSearchable(row->preset);
+    presetLine.second->addWidget(row->preset, 1);
+
+    const auto variableLine = addLine(Variable, tr("变量"), "parameterSourceVariable");
+    row->variable = new LazyComboBox;
+    row->variable->setObjectName("parameterVariableValue");
+    MakeSearchable(row->variable);
+    variableLine.second->addWidget(row->variable, 1);
+
+    const auto functionLine = addLine(Function, tr("函数"), "parameterSourceFunction");
+    row->function = new LazyComboBox;
+    row->function->setObjectName("parameterFunctionValue");
+    MakeSearchable(row->function);
+    row->functionBrowse = new QToolButton;
+    row->functionBrowse->setObjectName("parameterFunctionBrowse");
+    row->functionBrowse->setText(QStringLiteral("…"));
+    row->functionBrowse->setToolTip(tr("按分类选择函数"));
+    row->functionEdit = new QPushButton(tr("编辑参数"));
+    row->functionEdit->setObjectName("parameterFunctionEdit");
+    functionLine.second->addWidget(row->function, 1);
+    functionLine.second->addWidget(row->functionBrowse);
+    functionLine.second->addWidget(row->functionEdit);
+    row->callText = new QLabel;
+    row->callText->setObjectName("functionValue");
+    row->callText->setWordWrap(true);
+    row->callText->setTextFormat(Qt::PlainText);
+    row->callText->setIndent(64);
+    functionLine.first->addWidget(row->callText);
+
+    const auto valueLine = addLine(Value, tr("值"), "parameterSourceValue");
     row->scalar = new QLineEdit;
+    row->scalar->setObjectName("parameterScalarValue");
     row->scalar->setClearButtonEnabled(true);
     row->booleanValue = new QComboBox;
     row->booleanValue->setObjectName("parameterBooleanValue");
     row->booleanValue->addItem(tr("真"), QStringLiteral("true"));
     row->booleanValue->addItem(tr("假"), QStringLiteral("false"));
-    auto* functionPanel = new QWidget;
-    auto* functionLayout = new QHBoxLayout(functionPanel);
-    functionLayout->setContentsMargins(0, 0, 0, 0);
-    row->function = new QLabel(tr("尚未选择函数"));
-    row->function->setObjectName("functionValue");
-    row->functionButton = new QPushButton(tr("选择函数…"));
-    functionLayout->addWidget(row->function, 1);
-    functionLayout->addWidget(row->functionButton);
-    row->variable = new QComboBox;
-    row->variable->setObjectName("parameterVariableValue");
-    row->variable->setEditable(true);
-    row->variable->setInsertPolicy(QComboBox::NoInsert);
-    row->variable->setMaxVisibleItems(16);
-    row->variable->completer()->setCompletionMode(QCompleter::PopupCompletion);
-    row->variable->completer()->setFilterMode(Qt::MatchContains);
-    row->variable->completer()->setCaseSensitivity(Qt::CaseInsensitive);
-    row->valueStack->addWidget(row->preset);
-    row->valueStack->addWidget(row->scalar);
-    row->valueStack->addWidget(functionPanel);
-    row->valueStack->addWidget(row->booleanValue);
-    row->valueStack->addWidget(row->variable);
-    layout->addWidget(row->valueStack, 1);
+    valueLine.second->addWidget(row->scalar, 1);
+    valueLine.second->addWidget(row->booleanValue, 1);
+    if (argument.type == Value) row->scalar->setText(Utf8(argument.value.text));
 
-    const int kindIndex = row->kind->findData(argument.insertCall != 0 ? 2 : argument.type);
-    row->kind->setCurrentIndex(kindIndex >= 0 ? kindIndex : row->kind->findData(3));
-    row->scalar->setText(Utf8(argument.value.text));
-
-    if (argument.insertCall != 0 && argument.callEca.has_value() &&
-        *argument.callEca < document_.ecaNodes.size()) {
-        const auto& call = document_.ecaNodes[*argument.callEca];
-        row->selectedCall = call.name.text;
-        row->nestedEcaId = call.id;
-        row->function->setText(Utf8(PresentEca(document_, call, catalog_).text));
-        row->functionButton->setText(tr("编辑函数参数"));
-        // 种类仍可改：换成预设 / 变量 / 直接值时，应用时先摘除原函数（可撤销）。
-    }
-    if (argument.insertIndex != 0) {
-        row->readOnly = true;
-        row->kind->setEnabled(false);
-        row->scalar->setReadOnly(true);
-        row->preset->setEnabled(false);
-        row->functionButton->setEnabled(false);
+    if (row->readOnly) {
         row->scalar->setText(tr("数组索引"));
+        for (QWidget* line : row->lines) line->setEnabled(false);
     }
 
-    const auto updateStack = [row]() {
-        const int valueKind = row->kind->currentData().toInt();
-        row->valueStack->setCurrentIndex(valueKind == 0 ? 0 : valueKind == 1 && !row->readOnly ? 4 : valueKind == 2 ? 2
-            : valueKind == 3 && row->booleanLiteral ? 3 : 1);
+    // 在某一行里选值或输入时自动选中这一行的来源。
+    const auto pick = [row](int source) { return [row, source]() { SelectSource(row, source); }; };
+    const auto changed = [this]() {
+        RecomputeTypes();
+        UpdateNaturalPreview();
     };
-    connect(row->kind, &QComboBox::currentIndexChanged, panel, [this, row, updateStack]() {
-        if (row->kind->currentData().toInt() == 1) PopulateVariables(row);
-        updateStack();
-        UpdateNaturalPreview();
+    connect(row->sources, &QButtonGroup::idToggled, panel, [changed](int, bool checked) {
+        if (checked) changed();
     });
-    connect(row->variable, &QComboBox::currentTextChanged, panel, [this]() {
-        UpdateNaturalPreview();
+    connect(row->preset, &QComboBox::activated, panel, pick(Preset));
+    connect(row->preset->lineEdit(), &QLineEdit::textEdited, panel, pick(Preset));
+    connect(row->preset, &QComboBox::currentTextChanged, panel, changed);
+    connect(row->variable, &QComboBox::activated, panel, pick(Variable));
+    connect(row->variable->lineEdit(), &QLineEdit::textEdited, panel, pick(Variable));
+    connect(row->variable, &QComboBox::currentTextChanged, panel, changed);
+    connect(row->function, &QComboBox::activated, panel, pick(Function));
+    connect(row->function->lineEdit(), &QLineEdit::textEdited, panel, pick(Function));
+    connect(row->function, &QComboBox::currentTextChanged, panel, [this, row, changed]() {
+        UpdateFunctionLine(row);
+        changed();
     });
-    connect(row->preset, &QComboBox::currentTextChanged, panel, [this]() {
-        UpdateNaturalPreview();
-    });
-    connect(row->scalar, &QLineEdit::textChanged, panel, [this]() {
-        UpdateNaturalPreview();
-    });
-    connect(row->booleanValue, &QComboBox::currentIndexChanged, panel, [this]() {
-        UpdateNaturalPreview();
-    });
-    connect(row->functionButton, &QPushButton::clicked, panel, [this, row]() {
-        if (row->nestedEcaId.has_value()) {
+    connect(row->scalar, &QLineEdit::textEdited, panel, pick(Value));
+    connect(row->scalar, &QLineEdit::textChanged, panel, changed);
+    connect(row->booleanValue, &QComboBox::activated, panel, pick(Value));
+    connect(row->booleanValue, &QComboBox::currentIndexChanged, panel, changed);
+    connect(row->functionBrowse, &QToolButton::clicked, panel, [this, row]() { BrowseFunction(row); });
+    connect(row->functionEdit, &QPushButton::clicked, panel, [this, row]() {
+        SelectSource(row, Function);
+        // 原函数：打开它的参数；新选的函数：应用后接着打开它的参数（EditEcaParameters 的嵌套流程）。
+        if (row->nestedEcaId.has_value() && FunctionName(row) == row->originalCall) {
             requestedNestedEca_ = row->nestedEcaId;
-            accept();
-            return;
         }
-        // 函数槽（如 AddTriggerEvent 的事件）与 WE 相同，从事件/条件/动作函数中选。
-        const auto slot = War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(row->expectedType);
-        UiDefinitionPickerDialog picker(
-            catalog_,
-            slot && !catalog_.Definitions(*slot).empty() ? *slot : War3Map::Trigger::UiDefinitionKind::Call,
-            row->expectedType,
-            categoryIcons_,
-            this);
-        if (picker.exec() != QDialog::Accepted || picker.SelectedDefinition() == nullptr) {
-            return;
-        }
-        row->selectedCall = picker.SelectedDefinition()->name;
-        row->function->setText(TriggerFunctionList(catalog_).Title(*picker.SelectedDefinition()));
-        row->kind->setCurrentIndex(row->kind->findData(2));
-        UpdateNaturalPreview();
+        accept();
     });
     row->panel = panel;
-    updateStack();
-    rows_.push_back(row);
 }
 
-// 新语句的空直接值：赋值目标及只能引用对象的类型（没有固定值写法、没有预设）默认改用“变量”，
-// 免得作者把变量名当文字填进去。已有值不改种类。
-void TriggerParameterDialog::PrepareVariableKind(Row* row, const War3Map::Trigger::ArgumentNode& argument,
-    const War3Map::Trigger::TriggerTypeSystem& types) {
-    if (row->readOnly) return;
-    if (argument.type == 1 && argument.insertCall == 0) {
-        PopulateVariables(row);
-        return;
+void TriggerParameterDialog::ConfigureRow(Row* row, bool initial) {
+    const QSignalBlocker presetBlocker(row->preset), variableBlocker(row->variable),
+        functionBlocker(row->function), booleanBlocker(row->booleanValue), sourceBlocker(row->sources);
+    const std::string type = row->expectedType;
+    row->name->setText(type.empty() ? row->label
+        : QString(row->label + QLatin1Char('\n') + Utf8(types_.DisplayName(type))));
+
+    // 预设：换类型后保留仍然有效的选择；首次打开时选中原值（不在预设表里的旧值原样保留）。
+    const QString keepPreset = initial
+        ? (row->originalKind == Preset ? Utf8(row->originalValue) : QString{})
+        : PresetValue(row);
+    row->preset->clear();
+    const auto presets = TriggerUiText::PresetsFor(catalog_, type);
+    for (const auto& preset : presets) {
+        row->preset->addItem(preset.display, Utf8(preset.name));
+        row->preset->setItemData(row->preset->count() - 1, tr("原始预设：%1").arg(Utf8(preset.name)), Qt::ToolTipRole);
     }
-    const bool fresh = argument.type == 3 && argument.value.text.empty() && argument.insertCall == 0;
-    if (!fresh) return;
-    const auto kinds = types.AllowedValueKinds(row->expectedType);
-    const bool referenceOnly = kinds.variable && !kinds.preset && !row->booleanLiteral
-        && types.LiteralKind(row->expectedType) == War3Map::Trigger::TriggerTypeSystem::Literal::Other;
-    if (row->writableTarget || referenceOnly) row->kind->setCurrentIndex(row->kind->findData(1));
-    // 事件/条件/动作槽没有直接值写法，空槽默认改用“函数”。
-    else if (kinds.function && War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(row->expectedType))
-        row->kind->setCurrentIndex(row->kind->findData(2));
+    int presetIndex = keepPreset.isEmpty() ? -1 : row->preset->findData(keepPreset);
+    if (presetIndex < 0 && initial && !keepPreset.isEmpty()) {
+        row->preset->addItem(keepPreset, keepPreset);
+        presetIndex = row->preset->count() - 1;
+    }
+    row->preset->setCurrentIndex(presetIndex);
+    if (presetIndex < 0) row->preset->setEditText(QString{});
+
+    // 值：布尔原语用真/假下拉，派生专用枚举保留自身预设（与取值面板同一规则）。
+    const auto literal = types_.LiteralKind(type);
+    row->booleanLiteral = !row->readOnly && literal == Literal::Boolean && (type == "boolean" || presets.empty());
+    if (initial && row->originalKind == Value) {
+        const QString original = Utf8(row->originalValue);
+        int index = row->booleanValue->findData(original);
+        if (index < 0 && row->booleanLiteral && !original.isEmpty()) {
+            row->booleanValue->addItem(original, original); // 未知旧值保持原样，不隐式改成真。
+            index = row->booleanValue->count() - 1;
+        }
+        row->booleanValue->setCurrentIndex(std::max(index, 0));
+    }
+    row->scalar->setVisible(!row->booleanLiteral);
+    row->booleanValue->setVisible(row->booleanLiteral);
+
+    // 变量、函数候选按新类型重新列出（展开或获得焦点时填充）。
+    if (!initial) {
+        row->variable->clear();
+        row->variable->setEditText(QString{});
+        row->variablesLoaded = false;
+        const auto name = FunctionName(row);
+        const auto* definition = name ? FindFunction(catalog_, type, *name) : nullptr;
+        if (definition == nullptr || !TriggerFunctionList::Fits(types_, type, *definition)) {
+            row->function->clear();
+            row->function->setEditText(QString{});
+        }
+        row->functionsLoaded = false;
+    } else if (row->originalCall.has_value()) {
+        const auto* call = FindEca(document_, *row->nestedEcaId);
+        const auto* definition = call == nullptr ? nullptr : catalog_.Find(call->type, call->name.text);
+        row->function->addItem(definition == nullptr ? Utf8(*row->originalCall) : Functions().Title(*definition),
+            Utf8(*row->originalCall));
+        row->function->setCurrentIndex(0);
+    }
+    row->variable->SetFill([this, row]() { PopulateVariables(row); });
+    row->function->SetFill([this, row]() { PopulateFunctions(row); });
+
+    // 可用的来源行：依据函数库定义（AllowedValueKinds），没有固定值写法的类型不给“值”。
+    std::array<bool, 4> show{};
+    if (row->readOnly) {
+        show[Value] = true;
+    } else if (row->writableTarget) {
+        show[Variable] = true;
+    } else {
+        const auto kinds = types_.AllowedValueKinds(type);
+        show[Preset] = kinds.preset && row->preset->count() > 0;
+        show[Variable] = kinds.variable;
+        show[Function] = kinds.function;
+        show[Value] = !types_.IsTypeSelector(type) &&
+            (row->booleanLiteral || literal != Literal::Other || types_.Find(type) == nullptr);
+    }
+    int current = initial
+        ? (row->nestedEcaId.has_value() ? Function : row->fresh ? -1 : row->originalKind)
+        : CurrentSource(row);
+    if (row->readOnly) current = Value;
+    // 已有数据用的来源始终保留，不因类型规则被藏起来。
+    if (initial && current >= Preset && current <= Value) show[static_cast<std::size_t>(current)] = true;
+    for (std::size_t source = 0; source < show.size(); ++source) row->lines[source]->setVisible(show[source]);
+    if (current < Preset || current > Value || !show[static_cast<std::size_t>(current)]) {
+        current = DefaultSource(row);
+        row->lines[static_cast<std::size_t>(current)]->setVisible(true);
+    }
+    SelectSource(row, current);
+    if (current == Preset && row->preset->currentIndex() < 0 && row->preset->count() > 0) {
+        row->preset->setCurrentIndex(0);
+    }
+    if (current == Variable) PopulateVariables(row);
+    UpdateFunctionLine(row);
+}
+
+// 新参数或换类型后原来源不可用时的来源：赋值目标用变量，函数槽用函数，
+// 类型选择器与只能取预设/引用的类型用第一个预设，其余先用值。
+int TriggerParameterDialog::DefaultSource(const Row* row) const {
+    const auto shown = [row](int source) { return !row->lines[static_cast<std::size_t>(source)]->isHidden(); };
+    if (row->writableTarget) return Variable;
+    if (shown(Function) && War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(row->expectedType)) return Function;
+    if (shown(Preset) && (types_.IsTypeSelector(row->expectedType) ||
+            types_.LiteralKind(row->expectedType) == Literal::Other)) {
+        return Preset;
+    }
+    for (const int source : {Value, Preset, Variable, Function}) {
+        if (shown(source)) return source;
+    }
+    return Value;
+}
+
+void TriggerParameterDialog::RecomputeTypes(bool unresolvedOnly) {
+    for (std::size_t index = 0; index < rows_.size(); ++index) {
+        Row* row = rows_[index];
+        if (row->declaredType != "Null" || row->readOnly) continue;
+        if (unresolvedOnly && row->expectedType != "Null") continue;
+        std::string type = PendingExpectedType(index);
+        if (type == row->expectedType) continue;
+        row->expectedType = std::move(type);
+        ConfigureRow(row, false);
+    }
+}
+
+// 与 TriggerTypeSystem::ExpectedType 同一规则，只是读对话框里尚未应用的选择。
+std::string TriggerParameterDialog::PendingExpectedType(std::size_t index) const {
+    for (std::size_t position = index; position-- > 0;) {
+        const Row* selector = rows_[position];
+        if (!selector->selector) continue;
+        if (CurrentSource(selector) != Preset) return "Null";
+        const std::string type = War3Map::Trigger::TriggerTypeSystem::TypeFromTypename(
+            PresetValue(selector).toUtf8().toStdString());
+        return type.empty() ? "Null" : type;
+    }
+    if (index == 0) return "Null";
+    const Row* previous = rows_[index - 1];
+    std::string type = PendingValueType(previous);
+    if (type.empty()) type = previous->expectedType;
+    return type.empty() || type == "AnyGlobal" || type == "AnyType" || type == "anytype" ? "Null" : type;
+}
+
+std::string TriggerParameterDialog::PendingValueType(const Row* row) const {
+    switch (CurrentSource(row)) {
+    case Preset:
+        return types_.PresetType(PresetValue(row).toUtf8().toStdString()).value_or(std::string{});
+    case Variable: {
+        const auto reference = War3Map::Trigger::ResolveVariableReference(
+            document_, VariableValue(row).toUtf8().toStdString());
+        return reference.Succeeded() && reference.value ? reference.value->type : std::string{};
+    }
+    case Function: {
+        const auto name = FunctionName(row);
+        if (!name.has_value()) return {};
+        if (row->nestedEcaId.has_value() && name == row->originalCall) {
+            if (const auto* call = FindEca(document_, *row->nestedEcaId)) return types_.ReturnType(document_, *call, locals_);
+        }
+        const auto* definition = FindFunction(catalog_, row->expectedType, *name);
+        return definition == nullptr ? std::string{} : CallReturnType(*definition);
+    }
+    default:
+        return {};
+    }
 }
 
 void TriggerParameterDialog::PopulateVariables(Row* row) {
     if (row->variablesLoaded) return;
     row->variablesLoaded = true;
     const QSignalBlocker blocker(row->variable);
-    const War3Map::Trigger::TriggerTypeSystem types(catalog_);
     const auto globals = War3Map::Trigger::CollectGlobalReferenceCandidates(
-        document_, types, row->expectedType, row->anyGlobal, row->writableTarget);
-    const QString current = row->originalKind == 1 ? Utf8(row->originalValue) : QString{};
+        document_, types_, row->expectedType, row->anyGlobal, row->writableTarget);
+    const QString current = row->originalKind == Variable ? Utf8(row->originalValue) : QString{};
     int selected = -1;
     for (const auto& candidate : globals.items) {
         const QString name = Utf8(candidate.name), value = Utf8(candidate.value);
         const bool trigger = candidate.kind == War3Map::Trigger::VariableReferenceKind::GeneratedTrigger;
         const QString detail = trigger ? tr("触发器")
-            : candidate.type == row->expectedType ? QString{} : Utf8(types.DisplayName(candidate.type));
+            : candidate.type == row->expectedType ? QString{} : Utf8(types_.DisplayName(candidate.type));
         row->variable->addItem(detail.isEmpty() ? name : name + QStringLiteral("　") + detail, value);
         row->variable->setItemData(row->variable->count() - 1, name, kVariableNameRole);
         if (trigger) row->variable->setItemData(row->variable->count() - 1, value, Qt::ToolTipRole);
@@ -629,8 +849,95 @@ void TriggerParameterDialog::PopulateVariables(Row* row) {
     row->variable->setCurrentIndex(selected);
     if (selected < 0) row->variable->setEditText(QString{});
     row->variable->lineEdit()->setPlaceholderText(globals.items.empty() ? tr("没有该类型的变量")
-        : types.Accepts(row->expectedType, "trigger") && !row->writableTarget && !row->anyGlobal
+        : types_.Accepts(row->expectedType, "trigger") && !row->writableTarget && !row->anyGlobal
             ? tr("搜索变量或触发器") : tr("搜索变量"));
+}
+
+void TriggerParameterDialog::PopulateFunctions(Row* row) {
+    if (row->functionsLoaded) return;
+    row->functionsLoaded = true;
+    const QSignalBlocker blocker(row->function);
+    const auto current = FunctionName(row);
+    row->function->clear();
+    auto& functions = Functions();
+    const auto choices = functions.ForType(types_, row->expectedType);
+    for (const auto* group : {&choices.slot, &choices.exact, &choices.compatible, &choices.generic}) {
+        for (const auto* definition : *group) {
+            row->function->addItem(functions.Icon(*definition), functions.Title(*definition), Utf8(definition->name));
+            row->function->setItemData(row->function->count() - 1, Utf8(definition->name), Qt::ToolTipRole);
+        }
+    }
+    int index = current.has_value() ? row->function->findData(Utf8(*current)) : -1;
+    if (index < 0 && current.has_value()) {
+        // 已有函数不在候选里（旧数据）：原样保留，交给应用时的类型校验。
+        const auto* definition = FindFunction(catalog_, row->expectedType, *current);
+        row->function->addItem(definition == nullptr ? Utf8(*current) : functions.Title(*definition), Utf8(*current));
+        index = row->function->count() - 1;
+    }
+    row->function->setCurrentIndex(index);
+    if (index < 0) row->function->setEditText(QString{});
+    UpdateFunctionLine(row);
+}
+
+void TriggerParameterDialog::BrowseFunction(Row* row) {
+    // 函数槽（如 AddTriggerEvent 的事件）与 WE 相同，从事件/条件/动作函数中选。
+    const auto slot = War3Map::Trigger::TriggerTypeSystem::FunctionSlotKind(row->expectedType);
+    UiDefinitionPickerDialog picker(
+        catalog_,
+        slot && !catalog_.Definitions(*slot).empty() ? *slot : War3Map::Trigger::UiDefinitionKind::Call,
+        row->expectedType,
+        categoryIcons_,
+        this);
+    if (picker.exec() != QDialog::Accepted || picker.SelectedDefinition() == nullptr) {
+        return;
+    }
+    PopulateFunctions(row);
+    const auto* definition = picker.SelectedDefinition();
+    const QString name = Utf8(definition->name);
+    int index = row->function->findData(name);
+    if (index < 0) {
+        row->function->addItem(Functions().Icon(*definition), Functions().Title(*definition), name);
+        index = row->function->count() - 1;
+    }
+    row->function->setCurrentIndex(index);
+    SelectSource(row, Function);
+}
+
+void TriggerParameterDialog::UpdateFunctionLine(Row* row) {
+    const auto name = FunctionName(row);
+    const auto* definition = name.has_value() ? FindFunction(catalog_, row->expectedType, *name) : nullptr;
+    row->functionEdit->setEnabled(!row->readOnly && definition != nullptr && ArgumentCount(*definition) > 0);
+    // 原函数带参数时在下方显示整句，点“编辑参数”修改。
+    QString sentence;
+    if (row->nestedEcaId.has_value() && name == row->originalCall) {
+        if (const auto* call = FindEca(document_, *row->nestedEcaId); call != nullptr && !call->arguments.empty()) {
+            sentence = Utf8(PresentEca(document_, *call, catalog_).text);
+        }
+    }
+    row->callText->setText(sentence);
+    row->callText->setVisible(!sentence.isEmpty());
+}
+
+int TriggerParameterDialog::CurrentSource(const Row* row) {
+    return row->sources->checkedId();
+}
+
+void TriggerParameterDialog::SelectSource(Row* row, int source) {
+    if (auto* button = row->sources->button(source); button != nullptr && !button->isChecked()) {
+        button->setChecked(true);
+    }
+}
+
+// 下拉文字可以是条目显示名或原始预设名；匹配不到时原样交出，由应用时校验。
+QString TriggerParameterDialog::PresetValue(const Row* row) {
+    const QString text = row->preset->currentText().trimmed();
+    const int index = row->preset->currentIndex();
+    if (index >= 0 && row->preset->itemText(index) == text) return row->preset->itemData(index).toString();
+    for (int item = 0; item < row->preset->count(); ++item) {
+        if (row->preset->itemText(item) == text || row->preset->itemData(item).toString() == text)
+            return row->preset->itemData(item).toString();
+    }
+    return text;
 }
 
 // 下拉文字可以是条目全文、名称或直接写的引用；匹配到条目时交出它实际存的引用（如 gg_trg_ 生成名）。
@@ -651,67 +958,18 @@ QString TriggerParameterDialog::VariableValue(const Row* row) {
     return text;
 }
 
-// 按函数库定义去掉该类型不能使用的取值种类；当前已用的种类保留，已有数据不会被隐藏。
-void TriggerParameterDialog::RestrictKinds(Row* row, const War3Map::Trigger::TriggerTypeSystem& types) {
-    if (row->readOnly) return;
-    const auto kinds = types.AllowedValueKinds(row->expectedType);
-    const int current = row->kind->currentData().toInt();
-    const auto drop = [row, current](int kind, bool allowed) {
-        if (allowed || kind == current) return;
-        if (const int index = row->kind->findData(kind); index >= 0) row->kind->removeItem(index);
-    };
-    if (row->writableTarget) {
-        drop(0, false);
-        drop(2, false);
-        drop(3, false);
-        return;
+// 函数下拉的文字须对应一个条目（显示名或原始函数名）；任意文字不算选了函数。
+std::optional<std::string> TriggerParameterDialog::FunctionName(const Row* row) {
+    const QString text = row->function->currentText().trimmed();
+    if (text.isEmpty()) return std::nullopt;
+    const int index = row->function->currentIndex();
+    if (index >= 0 && row->function->itemText(index) == text)
+        return row->function->itemData(index).toString().toUtf8().toStdString();
+    for (int item = 0; item < row->function->count(); ++item) {
+        if (row->function->itemText(item) == text || row->function->itemData(item).toString() == text)
+            return row->function->itemData(item).toString().toUtf8().toStdString();
     }
-    drop(0, kinds.preset || row->booleanLiteral);
-    drop(1, kinds.variable);
-    drop(2, kinds.function);
-    if (row->booleanLiteral && current == 3) row->valueStack->setCurrentIndex(3);
-}
-
-void TriggerParameterDialog::RefreshPresets(Row* row, const War3Map::Trigger::ArgumentNode& argument) {
-    const QSignalBlocker blocker(row->preset);
-    row->preset->clear();
-    const War3Map::Trigger::TriggerTypeSystem types(catalog_);
-    const auto presets = TriggerUiText::PresetsFor(catalog_, row->expectedType);
-    // 与取值面板使用同一类型规则：boolean 原语始终可选，派生专用枚举保留自身预设。
-    row->booleanLiteral = !row->readOnly &&
-        types.LiteralKind(row->expectedType) == War3Map::Trigger::TriggerTypeSystem::Literal::Boolean &&
-        (row->expectedType == "boolean" || presets.empty());
-    if (row->booleanLiteral) {
-        for (int index = 0; index < row->booleanValue->count(); ++index) {
-            row->preset->addItem(row->booleanValue->itemText(index), row->booleanValue->itemData(index));
-            row->preset->setItemData(row->preset->count() - 1, 3, Qt::UserRole + 1);
-        }
-        const QString original = Utf8(argument.value.text);
-        int index = row->booleanValue->findData(original);
-        if (index < 0 && argument.type == 3) {
-            row->booleanValue->addItem(original, original); // 未知旧值保持原样，不隐式改成真。
-            index = row->booleanValue->count() - 1;
-        }
-        if (index >= 0) row->booleanValue->setCurrentIndex(index);
-        if (argument.type == 3) row->preset->setCurrentIndex(row->preset->findData(original));
-    }
-    for (const auto& preset : presets) {
-        row->preset->addItem(preset.display, Utf8(preset.name));
-        row->preset->setItemData(row->preset->count() - 1, tr("原始预设：%1").arg(Utf8(preset.name)), Qt::ToolTipRole);
-    }
-    if (argument.type == 0) {
-        int presetIndex = -1;
-        for (int index = 0; index < row->preset->count(); ++index) {
-            if (row->preset->itemData(index).toString() == Utf8(argument.value.text) &&
-                row->preset->itemData(index, Qt::UserRole + 1).toInt() == 0) { presetIndex = index; break; }
-        }
-        if (presetIndex >= 0) {
-            row->preset->setCurrentIndex(presetIndex);
-        } else {
-            row->preset->addItem(Utf8(argument.value.text), Utf8(argument.value.text));
-            row->preset->setCurrentIndex(row->preset->count() - 1);
-        }
-    }
+    return std::nullopt;
 }
 
 void TriggerParameterDialog::UpdateNaturalPreview() {
@@ -749,23 +1007,19 @@ void TriggerParameterDialog::UpdateNaturalPreview() {
             html += raw.mid(cursor).toHtmlEscaped();
             break;
         }
-        // 追加占位符前的普通文本
         html += raw.mid(cursor, start - cursor).toHtmlEscaped();
-        // 获取当前行值
         QString value;
         if (rowIdx < static_cast<int>(rows_.size())) {
             const Row* row = rows_[static_cast<std::size_t>(rowIdx)];
-            const int valueKind = row->kind->currentData().toInt();
-            if (valueKind == 0) {
-                value = row->preset->currentText();
-            } else if (valueKind == 2) {
-                value = row->function->text();
-            } else if (valueKind == 3 && row->booleanLiteral) {
-                value = row->booleanValue->currentText();
-            } else if (valueKind == 1 && !row->readOnly) {
-                value = VariableName(row);
-            } else {
-                value = row->scalar->text();
+            switch (CurrentSource(row)) {
+            case Preset: value = row->preset->currentText(); break;
+            case Variable: value = VariableName(row); break;
+            case Function:
+                value = row->callText->text().isEmpty() ? row->function->currentText() : row->callText->text();
+                break;
+            default:
+                value = row->booleanLiteral ? row->booleanValue->currentText() : row->scalar->text();
+                break;
             }
         }
         if (value.isEmpty()) {
@@ -803,22 +1057,17 @@ std::vector<TriggerArgumentEditRequest> TriggerParameterDialog::PendingEdits() c
         }
         TriggerArgumentEditRequest request;
         request.argumentId = row->argumentId;
-        request.valueKind = row->kind->currentData().toInt();
         request.expectedType = row->expectedType;
-        if (request.valueKind == 0) {
-            const int index = row->preset->currentIndex();
-            if (index >= 0) request.valueKind = row->preset->itemData(index, Qt::UserRole + 1).toInt();
-            request.value = index >= 0 && row->preset->itemData(index).isValid()
-                ? row->preset->itemData(index).toString().toUtf8().toStdString()
-                : row->preset->currentText().toUtf8().toStdString();
-        } else if (request.valueKind == 2) {
-            request.callFunction = row->selectedCall;
-        } else if (request.valueKind == 3 && row->booleanLiteral) {
-            request.value = row->booleanValue->currentData().toString().toUtf8().toStdString();
-        } else if (request.valueKind == 1) {
-            request.value = VariableValue(row).toUtf8().toStdString();
-        } else {
-            request.value = row->scalar->text().toUtf8().toStdString();
+        const int source = CurrentSource(row);
+        request.valueKind = source < Preset ? Value : source;
+        switch (request.valueKind) {
+        case Preset: request.value = PresetValue(row).toUtf8().toStdString(); break;
+        case Variable: request.value = VariableValue(row).toUtf8().toStdString(); break;
+        case Function: request.callFunction = FunctionName(row); break;
+        default:
+            request.value = (row->booleanLiteral ? row->booleanValue->currentData().toString() : row->scalar->text())
+                .toUtf8().toStdString();
+            break;
         }
         result.push_back(std::move(request));
     }
@@ -830,12 +1079,14 @@ std::optional<War3Map::StableId> TriggerParameterDialog::RequestedNestedEca() co
 }
 
 void TriggerParameterDialog::accept() {
-    for (const Row* row : rows_) {
-        if (row->kind->currentData().toInt() == 2 && !row->selectedCall.has_value()) {
+    for (Row* row : rows_) {
+        if (!row->readOnly && CurrentSource(row) == Function && !FunctionName(row).has_value()) {
+            FlashRow(row);
+            requestedNestedEca_.reset();
             QMessageBox::warning(
                 this,
                 tr("尚未选择函数"),
-                tr("函数型参数必须先从当前 UI Catalog 选择一个返回类型匹配的函数。"));
+                tr("“%1”选了函数，请从列表里选一个函数。").arg(row->label));
             return;
         }
     }

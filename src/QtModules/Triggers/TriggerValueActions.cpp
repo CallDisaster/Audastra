@@ -144,7 +144,9 @@ bool TriggerModule::ApplyArgumentEdits(StableId ecaId, const std::vector<Trigger
     };
     const auto setScalar = [&](StableId argumentId, std::int32_t kind, const std::string& value) {
         const auto* argument = Editor::FindArgument(document, argumentId);
-        if (argument == nullptr || (argument->type == kind && argument->value.text == value)) return true;
+        // 标着函数却没挂函数的旧参数即使值相同也要改写，清掉标记。
+        if (argument == nullptr || (argument->type == kind && argument->value.text == value && argument->insertCall == 0))
+            return true;
         TriggerArgumentChange change;
         change.argumentId = argumentId;
         change.before = *argument;

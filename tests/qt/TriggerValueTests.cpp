@@ -21,6 +21,7 @@
 #include <QAbstractAnimation>
 #include <QCryptographicHash>
 #include <QElapsedTimer>
+#include <QFocusEvent>
 #include <QComboBox>
 #include <QDir>
 #include <QFontMetrics>
@@ -39,6 +40,7 @@
 #include <QLayout>
 #include <QListWidget>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QStackedWidget>
 #include <QTabBar>
 #include <QTemporaryDir>
@@ -637,6 +639,7 @@ void TriggerValueTests::YdweLocalsAndReplacingCalls() {
         "[YDWESetAnyTypeLocalVariable]\ndescription=\"[${类型}] loc_${变量名} = ${值}\"\n"
         "[[.args]]\ntype=typename\n[[.args]]\ntype=scriptcode\n[[.args]]\ntype=Null\n"
         "[DestroyEffect]\ndescription=\"删除 ${特效}\"\n[[.args]]\ntype=effect\n"
+        "[AttachFx]\ndescription=\"挂在 ${附加点}\"\n[[.args]]\ntype=string\ndefault=\"\\\"overhead\\\"\"\n"
         "[CommentString]\ndescription=\"-------- ${注释文本} --------\"\n[[.args]]\ntype=scriptcode\n"
         "[UseValues]\n[[.args]]\ntype=boolean\n[[.args]]\ntype=aliasbool\n[[.args]]\ntype=AttrType\n[[.args]]\ntype=integer\n[[.args]]\ntype=real\n[[.args]]\ntype=string\n");
     WriteUtf8(ui / "ui" / "base" / "call.txt",
@@ -691,27 +694,123 @@ void TriggerValueTests::YdweLocalsAndReplacingCalls() {
     };
     const auto pristine = encode();
 
-    // 真正的传统参数对话框：布尔比较 B 的直接值与预设共用 literal 请求，YDWE 预设保留原 kind。
+    // 真正的传统参数对话框（WE 式）：可用来源同时列出。布尔比较 B 的真/假在“值”行，专用预设在“预设”行。
+    const auto source = [](QWidget* row, const char* name) {
+        return row->findChild<QRadioButton*>(QString::fromLatin1(name));
+    };
+    const auto shown = [&](QWidget* row, const char* name) {
+        auto* radio = source(row, name);
+        return radio != nullptr && radio->isVisibleTo(row);
+    };
+    const auto fillList = [](QComboBox* combo) {
+        QFocusEvent focus(QEvent::FocusIn);
+        QApplication::sendEvent(combo, &focus);
+        QStringList names;
+        for (int index = 0; index < combo->count(); ++index) names << combo->itemData(index).toString();
+        return names;
+    };
     {
         TriggerParameterDialog dialog(document, *project.uiCatalog_, rootEca(4).id);
         const auto parameterRows = dialog.findChildren<QWidget*>(QStringLiteral("parameterRow"));
         QCOMPARE(parameterRows.size(), 3);
         QWidget* b = parameterRows[2];
-        auto* kind = b->findChild<QComboBox*>(QStringLiteral("parameterValueKind"));
         auto* direct = b->findChild<QComboBox*>(QStringLiteral("parameterBooleanValue"));
         auto* presets = b->findChild<QComboBox*>(QStringLiteral("parameterPresetValue"));
-        QVERIFY(kind && direct && presets);
-        QCOMPARE(b->findChild<QStackedWidget*>()->currentWidget(), static_cast<QWidget*>(direct));
+        QVERIFY(direct && presets);
+        QVERIFY(source(b, "parameterSourceValue")->isChecked());
+        QVERIFY(shown(b, "parameterSourceValue") && shown(b, "parameterSourcePreset") && shown(b, "parameterSourceVariable"));
+        QVERIFY(direct->isVisibleTo(b));
         QCOMPARE(direct->currentData().toString(), QStringLiteral("true"));
         direct->setCurrentIndex(direct->findData(QStringLiteral("false")));
         QCOMPARE(dialog.PendingEdits()[2].value, std::string("false"));
         QCOMPARE(dialog.PendingEdits()[2].valueKind, 3);
-        kind->setCurrentIndex(kind->findData(0));
-        QCOMPARE(presets->count(), 3); QVERIFY(presets->findData(QStringLiteral("true")) >= 0);
-        presets->setCurrentIndex(presets->findData(QStringLiteral("false")));
-        QCOMPARE(dialog.PendingEdits()[2].value, std::string("false")); QCOMPARE(dialog.PendingEdits()[2].valueKind, 3);
+        QCOMPARE(presets->count(), 1);
         presets->setCurrentIndex(presets->findData(QStringLiteral("LastFlag")));
+        source(b, "parameterSourcePreset")->setChecked(true);
         QCOMPARE(dialog.PendingEdits()[2].value, std::string("LastFlag")); QCOMPARE(dialog.PendingEdits()[2].valueKind, 0);
+        // 比较运算符只有预设：只列“预设”行。
+        QWidget* op = parameterRows[1];
+        QVERIFY(source(op, "parameterSourcePreset")->isChecked());
+        QVERIFY(!shown(op, "parameterSourceValue") && !shown(op, "parameterSourceFunction"));
+        QVERIFY(encode() == pristine);
+    }
+
+    // 已有函数可以直接换：函数行只列返回特效的函数（含任意类型读取），原函数的整句显示在下方。
+    {
+        TriggerParameterDialog dialog(document, *project.uiCatalog_, rootEca(1).id);
+        QWidget* row = dialog.findChildren<QWidget*>(QStringLiteral("parameterRow")).front();
+        auto* function = row->findChild<QComboBox*>(QStringLiteral("parameterFunctionValue"));
+        auto* edit = row->findChild<QPushButton*>(QStringLiteral("parameterFunctionEdit"));
+        QVERIFY(function && edit);
+        QVERIFY(source(row, "parameterSourceFunction")->isChecked());
+        QVERIFY(!shown(row, "parameterSourceValue"));
+        QCOMPARE(function->currentData().toString(), QStringLiteral("YDWEGetAnyTypeLocalVariable"));
+        QVERIFY(row->findChild<QLabel*>(QStringLiteral("functionValue"))->isVisibleTo(row));
+        QVERIFY(edit->isEnabled());
+        QCOMPARE(fillList(function), (QStringList{QStringLiteral("GetLastCreatedEffectBJ"), QStringLiteral("YDWEGetAnyTypeLocalVariable")}));
+        QCOMPARE(function->currentData().toString(), QStringLiteral("YDWEGetAnyTypeLocalVariable"));
+        function->setCurrentIndex(function->findData(QStringLiteral("GetLastCreatedEffectBJ")));
+        QVERIFY(!edit->isEnabled());
+        QVERIFY(!row->findChild<QLabel*>(QStringLiteral("functionValue"))->isVisibleTo(row));
+        QCOMPARE(dialog.PendingEdits()[0].valueKind, 2);
+        QCOMPARE(dialog.PendingEdits()[0].callFunction.value_or(std::string{}), std::string("GetLastCreatedEffectBJ"));
+        function->setEditText(QStringLiteral("随便写的"));
+        QVERIFY(!dialog.PendingEdits()[0].callFunction.has_value());
+        QVERIFY(encode() == pristine);
+    }
+
+    // 新加的“设置局部变量”：类型默认第一个预设；改类型后“值”参数立即换类型，函数只列该类型的。
+    {
+        const auto appended = Trigger::TriggerDocumentEditor::AppendRootEca(document, *project.uiCatalog_,
+            document.triggers.front().id, Trigger::UiDefinitionKind::Action, "YDWESetAnyTypeLocalVariable");
+        QVERIFY(appended.Succeeded());
+        {
+            TriggerParameterDialog dialog(document, *project.uiCatalog_, appended.value->rootEcaId);
+            const auto parameterRows = dialog.findChildren<QWidget*>(QStringLiteral("parameterRow"));
+            QCOMPARE(parameterRows.size(), 3);
+            QWidget* typeRow = parameterRows[0];
+            QWidget* valueRow = parameterRows[2];
+            auto* typeName = typeRow->findChild<QComboBox*>(QStringLiteral("parameterPresetValue"));
+            QVERIFY(source(typeRow, "parameterSourcePreset")->isChecked());
+            QVERIFY(!shown(typeRow, "parameterSourceValue"));
+            QVERIFY(typeName->currentIndex() >= 0);
+            typeName->setCurrentIndex(typeName->findData(QStringLiteral("typename20_effect")));
+            QCOMPARE(dialog.PendingEdits()[2].expectedType, std::string("effect"));
+            QVERIFY(!shown(valueRow, "parameterSourceValue"));
+            QVERIFY(source(valueRow, "parameterSourceVariable")->isChecked());
+            auto* function = valueRow->findChild<QComboBox*>(QStringLiteral("parameterFunctionValue"));
+            QCOMPARE(fillList(function), (QStringList{QStringLiteral("GetLastCreatedEffectBJ"), QStringLiteral("YDWEGetAnyTypeLocalVariable")}));
+            typeName->setCurrentIndex(typeName->findData(QStringLiteral("typename04_string")));
+            QCOMPARE(dialog.PendingEdits()[2].expectedType, std::string("string"));
+            QVERIFY(shown(valueRow, "parameterSourceValue"));
+            QCOMPARE(fillList(function), (QStringList{QStringLiteral("GetUnitName"), QStringLiteral("YDWEGetAnyTypeLocalVariable")}));
+            function->setCurrentIndex(function->findData(QStringLiteral("GetUnitName")));
+            source(valueRow, "parameterSourceFunction")->setChecked(true);
+            const auto edits = dialog.PendingEdits();
+            QCOMPARE(edits[0].valueKind, 0);
+            QCOMPARE(edits[0].value, std::string("typename04_string"));
+            QCOMPARE(edits[2].valueKind, 2);
+            QCOMPARE(edits[2].callFunction.value_or(std::string{}), std::string("GetUnitName"));
+        }
+        QVERIFY(Trigger::TriggerDocumentEditor::UndoAppend(document, *appended.value).Succeeded());
+        QVERIFY(encode() == pristine);
+    }
+
+    // 新格式函数库的带引号默认值（default = "\"overhead\""）按文字存，不把引号写进参数；
+    // 标着函数却没挂函数的参数可以直接改成文字，并清掉标记。
+    {
+        const auto appended = Trigger::TriggerDocumentEditor::AppendRootEca(document, *project.uiCatalog_,
+            document.triggers.front().id, Trigger::UiDefinitionKind::Action, "AttachFx");
+        QVERIFY(appended.Succeeded());
+        const auto& eca = *Trigger::TriggerDocumentEditor::FindEca(document, appended.value->rootEcaId);
+        auto& attach = document.argumentNodes[eca.arguments[0]];
+        QCOMPARE(attach.type, 3);
+        QCOMPARE(attach.value.text, std::string("overhead"));
+        attach.insertCall = 1;
+        QVERIFY(Trigger::TriggerDocumentEditor::SetScalarArgument(document, attach.id, 3, "chest").Succeeded());
+        QCOMPARE(attach.insertCall, 0);
+        QCOMPARE(attach.value.text, std::string("chest"));
+        QVERIFY(Trigger::TriggerDocumentEditor::UndoAppend(document, *appended.value).Succeeded());
         QVERIFY(encode() == pristine);
     }
 
@@ -887,13 +986,12 @@ void TriggerValueTests::ParameterDialogListsReferencesAndGuardsTargets() {
     document.variables.push_back(variable);
     {
         TriggerParameterDialog dialog(document, *catalog.value, 1);
-        auto* kind = dialog.findChild<QComboBox*>(QStringLiteral("parameterValueKind"));
+        auto* variableSource = dialog.findChild<QRadioButton*>(QStringLiteral("parameterSourceVariable"));
         auto* references = dialog.findChild<QComboBox*>(QStringLiteral("parameterVariableValue"));
-        QVERIFY(kind && references);
-        // 新语句的空参数：触发器没有固定值写法，直接落在“变量”来源。
-        QCOMPARE(kind->currentData().toInt(), 1);
-        QCOMPARE(dialog.findChildren<QWidget*>(QStringLiteral("parameterRow")).front()->findChild<QStackedWidget*>()->currentWidget(),
-            static_cast<QWidget*>(references));
+        QVERIFY(variableSource && references);
+        // 新语句的空参数：触发器没有固定值写法，直接落在“变量”来源，“值”行不出现。
+        QVERIFY(variableSource->isChecked());
+        QVERIFY(!dialog.findChild<QRadioButton*>(QStringLiteral("parameterSourceValue"))->isVisibleTo(&dialog));
         QVERIFY(references->currentText().isEmpty());
         QVERIFY(references->findData(QStringLiteral("NULLTrigger")) >= 0);
         const int init = references->findData(QStringLiteral("gg_trg_Init"));
@@ -917,16 +1015,24 @@ void TriggerValueTests::ParameterDialogListsReferencesAndGuardsTargets() {
     const auto initialized = MakePreplacedProject(project, temporary.path().toStdWString());
     QVERIFY2(initialized.Succeeded(), initialized.diagnostics.empty() ? "" : initialized.diagnostics.front().message.c_str());
     auto& doc = *project.triggerDocument_;
+    // 只列出且选中“变量”来源。
+    const auto onlyVariable = [](QWidget* row) {
+        const auto visible = [row](const char* name) {
+            auto* radio = row->findChild<QRadioButton*>(QString::fromLatin1(name));
+            return radio != nullptr && radio->isVisibleTo(row);
+        };
+        auto* variable = row->findChild<QRadioButton*>(QStringLiteral("parameterSourceVariable"));
+        return variable != nullptr && variable->isChecked() && visible("parameterSourceVariable") &&
+            !visible("parameterSourcePreset") && !visible("parameterSourceFunction") && !visible("parameterSourceValue");
+    };
     {
         TriggerParameterDialog dialog(doc, *project.uiCatalog_, RootEca(project, 1).id);
         const auto rows = dialog.findChildren<QWidget*>(QStringLiteral("parameterRow"));
         QCOMPARE(rows.size(), 2);
-        auto* kind = rows[0]->findChild<QComboBox*>(QStringLiteral("parameterValueKind"));
         auto* references = rows[0]->findChild<QComboBox*>(QStringLiteral("parameterVariableValue"));
-        QVERIFY(kind && references);
+        QVERIFY(references);
         // 赋值目标只能选变量：五个用户变量都在，预放对象和直接值都不在。
-        QCOMPARE(kind->count(), 1);
-        QCOMPARE(kind->currentData().toInt(), 1);
+        QVERIFY(onlyVariable(rows[0]));
         QCOMPARE(references->count(), 5);
         QCOMPARE(references->currentData().toString(), QStringLiteral("PickedUnit"));
         QCOMPARE(references->findData(QStringLiteral("gg_unit_hfoo_0007")), -1);
@@ -937,11 +1043,7 @@ void TriggerValueTests::ParameterDialogListsReferencesAndGuardsTargets() {
     {
         // 新加的“设置变量”：左侧默认就是变量来源，不会让作者把变量名填成文字。
         TriggerParameterDialog dialog(doc, *project.uiCatalog_, appended.value->rootEcaId);
-        auto* kind = dialog.findChildren<QWidget*>(QStringLiteral("parameterRow"))[0]
-            ->findChild<QComboBox*>(QStringLiteral("parameterValueKind"));
-        QVERIFY(kind);
-        QCOMPARE(kind->count(), 1);
-        QCOMPARE(kind->currentData().toInt(), 1);
+        QVERIFY(onlyVariable(dialog.findChildren<QWidget*>(QStringLiteral("parameterRow"))[0]));
     }
     QVERIFY(Trigger::TriggerDocumentEditor::UndoAppend(doc, *appended.value).Succeeded());
 
