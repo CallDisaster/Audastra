@@ -92,7 +92,12 @@ void ClassicEntrySyntax() {
         const auto result = ParseLuaEntryCommand(accepted);
         Check(result.recognized && !result.module.empty() && result.error.empty(), "documented quoted module entry");
     }
-    for (const auto bad : {"exec-lua:", "exec-lua:main", "exec-lua:'main'", "exec-lua:\"\"", "exec-lua:\"../escape\"",
+    // YDWE 的 Lua 引擎不要求引号：KKWE 演示图写成 exec-lua:init。
+    for (const auto [unquoted, module] : {std::pair{"exec-lua:init", "init"}, std::pair{"exec-lua: lib.value ", "lib.value"}}) {
+        const auto result = ParseLuaEntryCommand(unquoted);
+        Check(result.recognized && result.module == module && result.error.empty(), "unquoted module entry as in the original engine");
+    }
+    for (const auto bad : {"exec-lua:", "exec-lua:\"", "exec-lua:'main'", "exec-lua:a b", "exec-lua:\"\"", "exec-lua:\"../escape\"",
         "exec-lua:\"main\"; error('executed')", "exec-lua:\"C:/outside\"", "exec-lua:\"a..b\"", "exec-lua:\"a/\""}) {
         const auto result = ParseLuaEntryCommand(bad);
         Check(result.recognized && result.module.empty() && !result.error.empty(), "malformed Lua entry never falls back to ordinary Cheat");

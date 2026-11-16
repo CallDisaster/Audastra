@@ -32,8 +32,9 @@ struct LuaEntryCommand {
     std::string error;
 };
 
-// 已核对的 YDWE 地图约定：Cheat("exec-lua: \"module\"")。
-// 此入口只接受一个模块文本，绝不把冒号后的任意内容作为 Lua 代码求值。
+// 已核对的 YDWE 地图约定：Cheat("exec-lua: \"module\"")。与 YDWE 的 Lua 引擎相同，去掉两端空白后
+// 两头都是双引号才剥掉，不加引号也可以（KKWE 演示图写成 Cheat("exec-lua:init")）。
+// 此入口只接受一个模块文本，绝不把冒号后的任意内容作为 Lua 代码求值；不加引号时不许含空白和引号。
 [[nodiscard]] inline LuaEntryCommand ParseLuaEntryCommand(std::string_view command) {
     constexpr std::string_view prefix = "exec-lua:";
     if (!command.starts_with(prefix)) return {};
@@ -42,10 +43,14 @@ struct LuaEntryCommand {
     const auto space = [](char ch) { return ch == ' ' || ch == '\t'; };
     while (!value.empty() && space(value.front())) value.remove_prefix(1);
     while (!value.empty() && space(value.back())) value.remove_suffix(1);
-    if (value.size() < 3 || value.size() > 242 || value.front() != '"' || value.back() != '"') {
-        result.error = "exec-lua 入口需要一个双引号包裹的地图模块名。"; return result;
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        value = value.substr(1, value.size() - 2);
+    } else if (value.find_first_of(" \t\"'") != std::string_view::npos) {
+        value = {};
     }
-    value = value.substr(1, value.size() - 2);
+    if (value.empty() || value.size() > 240) {
+        result.error = "exec-lua 入口需要一个地图模块名，例如 exec-lua: \"main\"。"; return result;
+    }
     if (LuaModuleMember(value).empty()) { result.error = "exec-lua 模块名不是有效的地图内相对成员。"; return result; }
     result.module = value;
     return result;

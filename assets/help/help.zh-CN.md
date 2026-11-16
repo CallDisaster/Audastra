@@ -71,7 +71,7 @@ scripts/ 或 main.lua 的修改可以热重载，只发送作者模块。hslk/ �
   call Cheat("exec-lua: \"main\"")
   ```
 
-  它会加载地图根目录的 main.lua。子目录用点号，例如 lua\main.lua 写成 `lua.main`。
+  它会加载地图根目录的 main.lua。子目录用点号，例如 lua\main.lua 写成 `lua.main`。和 YDWE 一样，模块名不加引号也可以，例如 `call Cheat("exec-lua:main")`。
 - 完整示例：菜单“新建 Lua 教程地图”，教程里每个文件都有注释。
 - 测试地图时修改并应用 Lua 文件，再点工具栏的“热重载”，新代码会送进正在运行的游戏。
 - 不是 UTF-8 编码、或含特殊空白字符的文件只读查看，原字节保留。
