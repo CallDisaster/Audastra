@@ -3,6 +3,7 @@
 #include "War3MapCore/GameUi/FrameLibrary.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
+#include "War3MapCore/GameUi/UiStyles.h"
 #include "War3MapCore/Jass/JassChecker.h"
 #include "War3MapCore/Jass/VJass.h"
 #include "War3MapCore/Trigger/TriggerCodec.h"
@@ -18,6 +19,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <stdexcept>
 
 // 界面描述生成的自然 T：用合成的原版签名基础层加仓库里真实的 AudastraUI 函数库，
@@ -693,6 +695,63 @@ void TestRefusalsAndTemplates() {
         "进度条没写宽度只报一次：" + First(widthless.diagnostics));
 }
 
+// 原版样式与模板文字：按钮的文字写进 ButtonText 子框架（沿 INHERITS 查找），文字模板写进自身；不能写文字的模板拒绝。
+void TestStylesAndTemplateText() {
+    const auto fdf = ParseFdf(
+        "Frame \"GLUETEXTBUTTON\" \"BaseButton\" {\r\n    Width 0.1,\r\n    Height 0.03,\r\n}\r\n"
+        "Frame \"GLUETEXTBUTTON\" \"DialogButton\" INHERITS WITHCHILDREN \"BaseButton\" {\r\n    ButtonText \"DialogButtonText\",\r\n"
+        "    Frame \"TEXT\" \"DialogButtonText\" {\r\n        Text \"\",\r\n    }\r\n}\r\n"
+        "Frame \"GLUETEXTBUTTON\" \"WideButton\" INHERITS WITHCHILDREN \"DialogButton\" {\r\n}\r\n"
+        "Frame \"TEXT\" \"TitleText\" {\r\n}\r\n"
+        "Frame \"BACKDROP\" \"PlainBack\" {\r\n}\r\n",
+        "styles.fdf");
+    Require(fdf.Succeeded(), "样式模板解析：" + First(fdf.diagnostics));
+    FrameLibrary library;
+    library.AddParsed(*fdf.value, "game");
+    Require(UiTemplateTextTarget(library, "DialogButton") == std::optional<std::string>("DialogButtonText"), "按钮的文字子框架");
+    Require(UiTemplateTextTarget(library, "WideButton") == std::optional<std::string>("DialogButtonText"), "沿 INHERITS 找到文字子框架");
+    Require(UiTemplateTextTarget(library, "TitleText") == std::optional<std::string>(""), "文字模板写自身");
+    Require(!UiTemplateTextTarget(library, "PlainBack") && !UiTemplateTextTarget(library, "BaseButton")
+            && !UiTemplateTextTarget(library, "Missing"),
+        "不能写文字的模板");
+
+    // 样式表：编号唯一、前缀可作控件编号、默认框架合法。
+    std::set<std::string_view> ids;
+    for (const auto& style : UiStyles()) {
+        Require(ids.insert(style.id).second && FindUiStyle(style.id) == &style, "样式编号唯一");
+        const UiFrame frame = StyleUiFrame(style, std::string(style.prefix) + "1");
+        Require(IsValidUiId(frame.id) && frame.type == UiFrameType::Template && frame.templateName == style.templateName, "样式默认框架");
+    }
+
+    UiDescription d;
+    d.id = "dlg";
+    UiFrame ok;
+    ok.id = "ok";
+    ok.type = UiFrameType::Template;
+    ok.templateName = "DialogButton";
+    ok.anchors = {UiAnchor{}};
+    ok.text = "确定";
+    UiFrame title = ok;
+    title.id = "title";
+    title.templateName = "TitleText";
+    title.text = "标题";
+    d.frames = {ok, title};
+    UiTriggerOptions options;
+    options.library = &library;
+    const auto plan = GenerateUiTriggers(d, options);
+    Require(plan.Succeeded(), "模板文字可生成：" + First(plan.diagnostics));
+    const std::string& text = plan.value->featureText;
+    Require(Contains(text, "AudastraUIFindFrame(\"DialogButtonText\", ") && Contains(text, "AudastraUISetText(udg_AUIK_dlg_ok_text, \"确定\")")
+            && Contains(text, "AudastraUISetText(udg_AUI_dlg_title, \"标题\")"),
+        "按钮文字写进子框架、文字模板写自身：\n" + text);
+    Fixture f;
+    Require(f.Apply(text).Succeeded(), "模板文字写进触发器文档");
+
+    d.frames[0].templateName = "PlainBack";
+    const auto refused = GenerateUiTriggers(d, options);
+    Require(!refused.Succeeded() && Contains(First(refused.diagnostics), "不能显示文字"), "不能写文字的模板拒绝：" + First(refused.diagnostics));
+}
+
 // 脚本部分与函数库定义一一对应：cfg 列出全部函数，.j 的参数个数与类型同定义（事件前补触发器），
 // 并能经 vJass 翻译与 JASS 检查。
 void TestScriptLibrary() {
@@ -783,6 +842,7 @@ int main() {
         TestScriptLibrary();
         TestModelFrames();
         TestHitAreaAndAlpha();
+        TestStylesAndTemplateText();
         TestTemplatedTextures();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -71,7 +71,8 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
         if (tool.name == "game_ui_view_read") {
             tool.description = "读取界面工作区的预览设置（种族、版本、宽高比、根界面、是否显示隐藏框架）、读取状态、问题、地图自带界面列表、"
                 "地图脚本创建的界面数量与预览未还原的界面调用，地图自己的界面描述（AudastraUI，含数值、状态、事件与当前预览取值），"
-                "以及可新建的界面类型 frame_kinds（作用、用法、可换项与默认框架，与编辑器右键“创建界面”同一份）";
+                "以及可新建的界面类型 frame_kinds（作用、用法、可换项与默认框架，与编辑器右键“添加控件”同一份）、"
+                "原版样式 styles（游戏模板的中文名、用途与默认框架；verified 为假的还没在 1.27a 进图核实）";
         } else if (tool.name == "game_ui_view_set") {
             tool.description = "设置界面预览：种族、版本、宽高比、增删根界面（GameUI 为游戏代码区域，MapScriptUI 为地图脚本创建的界面）、只显示某节点；只改预览，不改地图";
             properties.insert("race", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"Human", "Orc", "NightElf", "Undead"}}});

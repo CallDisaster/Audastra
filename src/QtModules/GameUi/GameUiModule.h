@@ -150,6 +150,8 @@ public:
     // 从文件导入一份界面描述（例如 examples/game-ui 里的示例）。withTriggers 时把同目录的 triggers.txt 按功能写法
     // 写进以界面显示名命名的类别，经共用触发器事务发布，描述在发布前放入；任一步失败都不改地图。
     bool ImportDescriptionFile(const QString& path, bool withTriggers, QString* error = nullptr);
+    // 界面上的导入：同目录有 triggers.txt 时问一次是否一并写入，失败写进问题列表。
+    void ImportExample(const QString& path);
     // 在所选描述框架下（选中描述根节点时为顶层）添加一个框架并选中它；kind 为 UiFrameKinds 的编号，模板类型给模板名。
     // 返回新框架编号，失败为空。
     QString AddDescriptionFrame(const QString& kind, QString* error = nullptr, const QString& templateName = {});
@@ -168,6 +170,8 @@ public:
         std::optional<GameUi::FrameRect> focus;  // 框架所占区域
     };
     [[nodiscard]] FramePreview PreviewFrame(const GameUi::UiFrame& frame);
+    // 整份界面的预览（创建卡片里的示例）；放大到顶层控件合起来的范围。
+    [[nodiscard]] FramePreview PreviewDescription(const GameUi::UiDescription& description);
     [[nodiscard]] const QHash<QString, QImage>& Textures() const noexcept { return textures_; }
     [[nodiscard]] const QHash<QString, QString>& FontFamilies() const noexcept { return fontFamilies_; }
     // 右键创建：打开类型选取，放进 node 所在的描述框架（不在描述里时为所选或第一份描述的顶层）；

@@ -2,8 +2,12 @@
 
 #include "GameUiCanvas.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiStyles.h"
+#include "War3MapCore/Workspace.h"
 
 #include <QComboBox>
+#include <QDir>
+#include <QFile>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -59,23 +63,64 @@ GameUiKindPicker::GameUiKindPicker(GameUiModule& module, QList<Target> targets, 
     kinds_->setIndentation(12);
     kinds_->setFixedWidth(150);
     QTreeWidgetItem* group = nullptr;
+    const auto addGroup = [this](const QString& title) {
+        auto* item = new QTreeWidgetItem(kinds_, {title});
+        item->setFlags(Qt::ItemIsEnabled);
+        QFont bold = item->font(0);
+        bold.setBold(true);
+        item->setFont(0, bold);
+        item->setExpanded(true);
+        return item;
+    };
+    // 基础控件（模板类型放到最后，改名“全部模板（原名）”）。
+    const UiFrameKind* templateKind = nullptr;
     for (const auto& kind : UiFrameKinds()) {
-        if (!group || group->text(0) != Text(kind.group)) {
-            group = new QTreeWidgetItem(kinds_, {Text(kind.group)});
-            group->setFlags(Qt::ItemIsEnabled);
-            QFont bold = group->font(0);
-            bold.setBold(true);
-            group->setFont(0, bold);
-            group->setExpanded(true);
+        if (kind.type == UiFrameType::Template) {
+            templateKind = &kind;
+            continue;
         }
+        if (!group || group->text(0) != Text(kind.group)) group = addGroup(Text(kind.group));
         auto* item = new QTreeWidgetItem(group, {Text(kind.label)});
         item->setData(0, kKindRole, Text(kind.id));
     }
+    // 原版样式：已在 1.27a 进图核实过的游戏模板，中文名。
+    group = nullptr;
+    for (const auto& style : UiStyles()) {
+        if (!style.verified) continue;
+        if (!group) group = addGroup(tr("原版样式"));
+        auto* item = new QTreeWidgetItem(group, {Text(style.label)});
+        item->setData(0, kKindRole, QStringLiteral("style:") + Text(style.id));
+        item->setToolTip(0, Text(style.templateName));
+    }
+    // 示例：随编辑器带的整份界面（examples/game-ui），创建即导入。
+    const QDir examples(QString::fromStdWString((CurrentInstallationRoot() / "examples" / "game-ui").wstring()));
+    group = nullptr;
+    for (const QString& folder : examples.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name)) {
+        const QDir dir(examples.filePath(folder));
+        for (const QString& file : dir.entryList({QStringLiteral("*.json")}, QDir::Files, QDir::Name)) {
+            QFile input(dir.filePath(file));
+            if (!input.open(QIODevice::ReadOnly) || input.size() > 8 * 1024 * 1024) continue;
+            const QByteArray bytes = input.readAll();
+            auto parsed = ParseUiDescription(std::string_view(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+            if (!parsed.value) continue;
+            if (!group) group = addGroup(tr("示例"));
+            const QString label = parsed.value->label.empty() ? Text(parsed.value->id) : Text(parsed.value->label);
+            auto* item = new QTreeWidgetItem(group, {label});
+            item->setData(0, kKindRole, QStringLiteral("example:") + dir.filePath(file));
+            item->setToolTip(0, Text(parsed.value->id));
+            examples_.insert(dir.filePath(file), std::move(*parsed.value));
+        }
+    }
+    if (templateKind) {
+        group = addGroup(Text(templateKind->group));
+        auto* item = new QTreeWidgetItem(group, {tr("全部模板（原名）")});
+        item->setData(0, kKindRole, Text(templateKind->id));
+    }
     kinds_->expandAll();
-    // 类型不多，全部列出不滚动。
+    // 类型不多时全部列出不滚动，多了限高滚动。
     int rows = 0;
     for (QTreeWidgetItemIterator it(kinds_); *it; ++it) ++rows;
-    kinds_->setMinimumHeight(rows * kinds_->sizeHintForRow(0) + 2 * kinds_->frameWidth() + 4);
+    kinds_->setMinimumHeight(std::min(rows, 22) * kinds_->sizeHintForRow(0) + 2 * kinds_->frameWidth() + 4);
     body->addWidget(kinds_);
 
     auto* right = new QVBoxLayout;
@@ -169,13 +214,37 @@ bool GameUiKindPicker::SelectKind(const QString& kind) {
 }
 
 void GameUiKindPicker::ShowKind() {
-    const UiFrameKind* kind = FindUiFrameKind(Kind().toStdString());
-    const bool isTemplate = kind && kind->type == UiFrameType::Template;
-    if (templates_->isVisibleTo(this) != isTemplate) {
-        templateSearch_->setVisible(isTemplate);
-        templates_->setVisible(isTemplate);
-        adjustSize();
+    const QString current = Kind();
+    if (const UiStyle* style = current.startsWith(QLatin1String("style:")) ? FindUiStyle(current.mid(6).toStdString()) : nullptr) {
+        ShowTemplateList(false);
+        title_->setText(Text(style->label));
+        purpose_->setText(Text(style->purpose));
+        usage_->setText(tr("游戏模板 %1").arg(Text(style->templateName)));
+        slots_->setText(style->text.empty() ? QString() : tr("可换：文字"));
+        create_->setEnabled(!targets_.isEmpty());
+        ShowPreview(StyleUiFrame(*style, "preview"));
+        return;
     }
+    if (current.startsWith(QLatin1String("example:"))) {
+        ShowTemplateList(false);
+        const auto found = examples_.constFind(current.mid(8));
+        if (found == examples_.constEnd()) {
+            create_->setEnabled(false);
+            return;
+        }
+        title_->setText(found->label.empty() ? Text(found->id) : Text(found->label));
+        purpose_->setText(tr("整份示例界面，导入后是一份新界面，可以照着改。"));
+        usage_->setText(tr("编号 %1，%2 个控件").arg(Text(found->id)).arg(found->frames.size()));
+        slots_->clear();
+        create_->setEnabled(true);
+        preview_ = module_.PreviewDescription(*found);
+        canvas_->SetScene(preview_.tree.get(), preview_.list);
+        canvas_->SetFocusRect(preview_.focus);
+        return;
+    }
+    const UiFrameKind* kind = FindUiFrameKind(current.toStdString());
+    const bool isTemplate = kind && kind->type == UiFrameType::Template;
+    ShowTemplateList(isTemplate);
     if (!kind) {
         create_->setEnabled(false);
         return;
@@ -200,6 +269,13 @@ void GameUiKindPicker::ShowKind() {
     }
     if (frame.type == UiFrameType::Bar) frame.value.literal = 0.65;
     ShowPreview(frame);
+}
+
+void GameUiKindPicker::ShowTemplateList(bool show) {
+    if (templates_->isVisibleTo(this) == show) return;
+    templateSearch_->setVisible(show);
+    templates_->setVisible(show);
+    adjustSize();
 }
 
 void GameUiKindPicker::ShowPreview(const UiFrame& frame) {

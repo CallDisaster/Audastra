@@ -180,6 +180,23 @@ private:
             node.fill = static_cast<float>(change && change->value ? *change->value : Number(frame.value, instance));
             node.fillStretch = true;
         }
+        if (frame.type == UiFrameType::Template && !frame.text.empty()) {
+            // 模板控件的文字：写进模板自身（TEXT）或 ButtonText 指定的子框架，字体颜色仍用模板的。
+            std::optional<std::uint32_t> target;
+            if (IsTextNode(tree_.Nodes()[*id])) {
+                target = *id;
+            } else if (const FdfProperty* button = FindProperty(tree_.Nodes()[*id].properties, "buttontext"); button && !button->values.empty()) {
+                for (const std::uint32_t child : tree_.Nodes()[*id].children) {
+                    if (tree_.Nodes()[child].name == button->values.front().text) target = child;
+                }
+            }
+            if (target) {
+                FrameNode& textNode = tree_.MutableNode(*target);
+                if (!textNode.text) textNode.text = TextInfo{};
+                textNode.text->text = FormatUiText(description_, state_, change && change->text ? *change->text : frame.text, instance);
+                textNode.text->source = "description";
+            }
+        }
         if (frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) {
             TextInfo text;
             text.text = FormatUiText(description_, state_, change && change->text ? *change->text : frame.text, instance);

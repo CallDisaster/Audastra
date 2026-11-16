@@ -4,6 +4,7 @@
 #include "GameUiModule.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiStyles.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
 #include <QBuffer>
@@ -274,6 +275,14 @@ QJsonObject View(const GameUiModule& module, QJsonObject result) {
     result.insert("descriptions", descriptions);
     result.insert("description_count", static_cast<qint64>(files.size()));
     result.insert("frame_kinds", FrameKindsJson());
+    // 原版样式：游戏模板配中文名；verified 为假的还没在 1.27a 进图核实，编辑器创建卡片里不列出。
+    QJsonArray styles;
+    for (const auto& style : UiStyles()) {
+        styles.append(QJsonObject{{"style", Text(style.id)}, {"group", Text(style.group)}, {"label", Text(style.label)},
+            {"purpose", Text(style.purpose)}, {"template", Text(style.templateName)}, {"verified", style.verified},
+            {"frame", QJsonDocument::fromJson(QByteArray::fromStdString(SerializeUiFrame(StyleUiFrame(style, std::string(style.prefix) + "1")))).object()}});
+    }
+    result.insert("styles", styles);
     return result;
 }
 

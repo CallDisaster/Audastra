@@ -3,6 +3,7 @@
 #include "War3MapCore/GameUi/FrameTree.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
+#include "War3MapCore/GameUi/UiStyles.h"
 #include "FeatureTextWriter.h"
 #include "UiDescriptionText.h"
 
@@ -191,6 +192,8 @@ private:
         if (frame.repeat) group = index;
         frames_.push_back(FrameInfo{&frame, parent, index + 1, group, frame.type == UiFrameType::Template && IsSimpleTemplate(frame)});
         byId_[frame.id] = index;
+        // 写了文字的模板控件：文字写进模板自身（TEXT）或它的 ButtonText 子框架。
+        if (frame.type == UiFrameType::Template && options_.library) templateText_[frame.id] = UiTemplateTextTarget(*options_.library, frame.templateName);
         for (const auto& child : frame.children) Collect(child, index, group);
     }
 
@@ -332,6 +335,9 @@ private:
         case UiFrameType::Button:
             if (ClickButton(info)) return {{"AudastraClickButtonText", "text"}};
             return {{"AudastraButtonText", "text"}, {"AudastraButtonBackdrop", "backdrop"}, {"AudastraButtonPushed", "pushed"}};
+        case UiFrameType::Template:
+            if (const std::string* child = TemplateTextChild(*info.frame); child && !info.frame->text.empty()) return {{*child, "text"}};
+            return {};
         default:
             return {};
         }
@@ -346,7 +352,22 @@ private:
     }
 
     // 文字所在的框架：按钮的文字在模板里的子框架上。
+    // 模板的文字子框架名；模板自身就是文字或不能写文字时为空。
+    [[nodiscard]] const std::string* TemplateTextChild(const UiFrame& frame) const {
+        const auto found = templateText_.find(frame.id);
+        return found != templateText_.end() && found->second && !found->second->empty() ? &*found->second : nullptr;
+    }
+    [[nodiscard]] bool HasText(const UiFrame& frame) const {
+        if (frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) return true;
+        const auto found = templateText_.find(frame.id);
+        return frame.type == UiFrameType::Template && found != templateText_.end() && found->second.has_value();
+    }
+
     [[nodiscard]] std::string TextTarget(const FrameInfo& info) const {
+        if (info.frame->type == UiFrameType::Template) {
+            const std::string* child = TemplateTextChild(*info.frame);
+            return child ? Child(info, *child) : Self(info);
+        }
         if (info.frame->type != UiFrameType::Button) return Self(info);
         return Child(info, ClickButton(info) ? "AudastraClickButtonText" : "AudastraButtonText");
     }
@@ -669,8 +690,17 @@ private:
         case UiFrameType::Model:
             if (!frame.model.empty() && !HasReferences(frame.model)) Append(out, Model(info, frame.model));
             break;
-        case UiFrameType::Panel:
         case UiFrameType::Template:
+            if (frame.text.empty()) break;
+            if (!HasText(frame)) {
+                Error("模板控件 " + frame.id + " 的模板 " + frame.templateName + " 不能显示文字");
+            } else if (!HasReferences(frame.text)) {
+                if (auto text = TextExpression(info, frame.text)) out.push_back(Call("AudastraUISetText", {TextTarget(info), *text}));
+            } else if (const auto format = NumericTextFormat(info, frame.text)) {
+                out.push_back(Call("AudastraUIRegisterTextFormat", {TextTarget(info), Quote(format->format)}));
+            }
+            break;
+        case UiFrameType::Panel:
             break;
         }
         if (!frame.visible.binding && !frame.visible.literal) out.push_back(Call("AudastraUIShow", {Self(info), "false"}));
@@ -960,7 +990,7 @@ private:
     Lines Updates(const FrameInfo& info) {
         const UiFrame& frame = *info.frame;
         Lines out;
-        if ((frame.type == UiFrameType::Text || frame.type == UiFrameType::Button) && HasReferences(frame.text)) {
+        if (HasText(frame) && HasReferences(frame.text)) {
             if (const auto format = NumericTextFormat(info, frame.text)) {
                 Append(out, Guarded(info, Property::Text, TextArguments(info, *format)));
             } else if (auto text = TextExpression(info, frame.text)) {
@@ -1021,7 +1051,7 @@ private:
                 if (auto lines = Texture(*info, *entry.texture)) Append(statements, *lines);
             }
             if (entry.text) {
-                if (info->frame->type != UiFrameType::Text && info->frame->type != UiFrameType::Button) {
+                if (!HasText(*info->frame)) {
                     Error("状态 " + state.id + " 给框架 " + entry.frame + " 改文字，它没有文字");
                 } else if (auto text = TextExpression(*info, *entry.text)) {
                     statements.push_back(Call("AudastraUISetText", {TextTarget(*info), *text}));
@@ -1145,6 +1175,7 @@ private:
     std::uint32_t contextBase_ = 0;
     std::vector<FrameInfo> frames_;
     std::unordered_map<std::string, std::size_t> byId_;
+    std::map<std::string, std::optional<std::string>, std::less<>> templateText_;  // 模板控件编号 → 文字所在框架
     std::unordered_map<std::string, std::map<Property, std::vector<std::string>>> overrides_;
     std::vector<Diagnostic> errors_;
     std::vector<Diagnostic> warnings_;

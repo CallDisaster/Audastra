@@ -9,6 +9,7 @@
 #include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiStyles.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -206,6 +207,18 @@ bool GameUiModule::ImportDescriptionFile(const QString& path, bool withTriggers,
     return true;
 }
 
+void GameUiModule::ImportExample(const QString& path) {
+    bool withTriggers = false;
+    if (QFileInfo::exists(QFileInfo(path).dir().filePath(QStringLiteral("triggers.txt")))) {
+        const auto answer = QMessageBox::question(page_, tr("导入界面"), tr("同一目录里有 triggers.txt，一并写进触发器？"),
+            QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Yes);
+        if (answer == QMessageBox::Cancel) return;
+        withTriggers = answer == QMessageBox::Yes;
+    }
+    QString error;
+    if (!ImportDescriptionFile(path, withTriggers, &error)) ReportAuthoring(error);
+}
+
 bool GameUiModule::EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error) {
     const UiDescription* base = Description(id);
     if (!base) {
@@ -241,9 +254,11 @@ QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QStrin
         if (error) *error = message;
         return QString();
     };
-    const UiFrameKind* kind = FindUiFrameKind(kindId.toStdString());
-    if (!kind) return fail(tr("没有控件类型 %1").arg(kindId));
-    if (kind->type == UiFrameType::Template && templateName.trimmed().isEmpty()) return fail(tr("模板名为空"));
+    // 原版样式写作 style:<编号>，其余为控件类型编号。
+    const UiStyle* style = kindId.startsWith(QLatin1String("style:")) ? FindUiStyle(kindId.mid(6).toStdString()) : nullptr;
+    const UiFrameKind* kind = style ? nullptr : FindUiFrameKind(kindId.toStdString());
+    if (!kind && !style) return fail(tr("没有控件类型 %1").arg(kindId));
+    if (kind && kind->type == UiFrameType::Template && templateName.trimmed().isEmpty()) return fail(tr("模板名为空"));
     if (!definitions_) return fail(tr("界面定义仍在读取"));
     // 没有指定界面：新建一份，与控件同一步撤销。
     std::optional<UiDescription> fresh;
@@ -258,7 +273,8 @@ QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QStrin
     const QString descriptionId = Text(description->id);
     if (!parent.isEmpty() && !FindUiFrame(*description, parent.toStdString()))
         return fail(tr("界面 %1 里没有控件 %2").arg(descriptionId, parent));
-    UiFrame frame = DefaultUiFrame(*kind, NextUiFrameId(*description, UiFrameIdPrefix(*kind)), templateName.trimmed().toStdString());
+    UiFrame frame = style ? StyleUiFrame(*style, NextUiFrameId(*description, style->prefix))
+                          : DefaultUiFrame(*kind, NextUiFrameId(*description, UiFrameIdPrefix(*kind)), templateName.trimmed().toStdString());
     // 父控件中心：顶层控件的父节点是铺满画面的界面根。
     std::optional<QPointF> parentCenter;
     if (fresh) {
@@ -294,11 +310,15 @@ QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QStrin
 }
 
 GameUiModule::FramePreview GameUiModule::PreviewFrame(const UiFrame& frame) {
-    FramePreview preview;
-    if (!definitions_ || !definitions_->library) return preview;
     UiDescription description;
     description.id = "AudastraKindPreview";
     description.frames.push_back(frame);
+    return PreviewDescription(description);
+}
+
+GameUiModule::FramePreview GameUiModule::PreviewDescription(const UiDescription& description) {
+    FramePreview preview;
+    if (!definitions_ || !definitions_->library) return preview;
     const UiSkin skin = MakeSkin();
     FrameTreeOptions options;
     options.race = race_.toStdString();
@@ -308,11 +328,20 @@ GameUiModule::FramePreview GameUiModule::PreviewFrame(const UiFrame& frame) {
     (void)AddUiDescription(*preview.tree, *definitions_->library, &skin, description, {}, diagnostics);
     (void)preview.tree->Layout();
     preview.list = BuildDrawList(*preview.tree, {});
+    // 放大到顶层控件合起来的范围。
     for (const auto& node : preview.tree->Nodes()) {
-        if (node.uiFrame && node.uiFrame->frame == frame.id && node.layout == LayoutState::Placed) {
+        if (!node.uiFrame || node.uiFrame->frame.empty() || node.layout != LayoutState::Placed) continue;
+        const bool top = std::any_of(description.frames.begin(), description.frames.end(),
+            [&](const UiFrame& frame) { return frame.id == node.uiFrame->frame; });
+        if (!top) continue;
+        if (!preview.focus) {
             preview.focus = node.rect;
-            break;
+            continue;
         }
+        preview.focus->left = std::min(preview.focus->left, node.rect.left);
+        preview.focus->bottom = std::min(preview.focus->bottom, node.rect.bottom);
+        preview.focus->right = std::max(preview.focus->right, node.rect.right);
+        preview.focus->top = std::max(preview.focus->top, node.rect.top);
     }
     previewDrawList_ = preview.list;
     StartAssetsJob();
@@ -355,6 +384,10 @@ QPointer<QWidget> GameUiModule::OpenKindPicker(std::uint32_t node, std::optional
     auto* picker = new GameUiKindPicker(*this, std::move(targets), current, page_);
     connect(picker, &GameUiKindPicker::Chosen, this,
         [this, at](const QString& kind, const QString& templateName, const QString& description, const QString& frame) {
+            if (kind.startsWith(QLatin1String("example:"))) {
+                ImportExample(kind.mid(8));
+                return;
+            }
             QString error;
             if (CreateDescriptionFrame(kind, description, frame, at, templateName, &error).isEmpty()) ReportAuthoring(error);
         });
@@ -599,16 +632,7 @@ QList<QWidget*> GameUiModule::BuildAuthoringControls(QWidget* toolbar) {
         const QString examples = QString::fromStdWString((CurrentInstallationRoot() / "examples" / "game-ui").wstring());
         const QString path = QFileDialog::getOpenFileName(page_, tr("导入界面"), QDir(examples).exists() ? examples : QString(),
             tr("界面文件 (*.json)"));
-        if (path.isEmpty()) return;
-        bool withTriggers = false;
-        if (QFileInfo::exists(QFileInfo(path).dir().filePath(QStringLiteral("triggers.txt")))) {
-            const auto answer = QMessageBox::question(page_, tr("导入界面"), tr("同一目录里有 triggers.txt，一并写进触发器？"),
-                QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Yes);
-            if (answer == QMessageBox::Cancel) return;
-            withTriggers = answer == QMessageBox::Yes;
-        }
-        QString error;
-        if (!ImportDescriptionFile(path, withTriggers, &error)) ReportAuthoring(error);
+        if (!path.isEmpty()) ImportExample(path);
     });
     newDescriptionButton_->setMenu(createMenu);
 

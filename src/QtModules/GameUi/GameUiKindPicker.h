@@ -3,6 +3,7 @@
 #include "GameUiModule.h"
 
 #include <QFrame>
+#include <QHash>
 #include <QList>
 #include <QString>
 
@@ -16,8 +17,8 @@ class QTreeWidget;
 
 namespace War3Map::Modules {
 
-// 右键“创建界面”的类型选取：左侧按用途分组的类型，右侧预览、作用、用法与可换项；模板类型改为搜索模板。
-// 放进哪个描述或框架可改。选定后发出 Chosen，由工作区创建；本身不改地图。
+// 右键“添加控件”的选取：左侧按用途分组的基础控件、原版样式（style:编号）、示例（example:文件路径）与全部模板，
+// 右侧预览、作用、用法与可换项；全部模板改为搜索模板。放进哪个界面或控件可改。选定后发出 Chosen，由工作区创建；本身不改地图。
 class GameUiKindPicker final : public QFrame {
     Q_OBJECT
 public:
@@ -39,6 +40,7 @@ signals:
 private:
     void ShowKind();
     void ShowPreview(const GameUi::UiFrame& frame);
+    void ShowTemplateList(bool show);
     void FilterTemplates(const QString& text);
 
     GameUiModule& module_;
@@ -55,6 +57,7 @@ private:
     QListWidget* templates_ = nullptr;
     QComboBox* target_ = nullptr;
     QPushButton* create_ = nullptr;
+    QHash<QString, GameUi::UiDescription> examples_;  // 示例文件路径 → 读入的界面
 };
 
 } // namespace War3Map::Modules

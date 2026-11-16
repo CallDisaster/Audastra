@@ -24,6 +24,7 @@ add_library(War3MapGameUi STATIC
     UiDescriptionTree.cpp
     UiOrigins.cpp
     UiFrameKinds.cpp
+    UiStyles.cpp
     UiSkin.cpp
     UiTriggers.cpp)
 add_library(War3MapEditor::GameUi ALIAS War3MapGameUi)

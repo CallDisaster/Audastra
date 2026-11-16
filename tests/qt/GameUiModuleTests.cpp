@@ -6,6 +6,7 @@
 #include "GameUiToolService.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiStyles.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Script/MapScript.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -1047,6 +1048,15 @@ void GameUiModuleTests::KindPickerCreatesTypedFrames() {
     QVERIFY2(module.EditDescription(QStringLiteral("Hud"), QString::fromUtf8(QJsonDocument(edits).toJson(QJsonDocument::Compact)), {}, &error),
         qPrintable(error));
     QVERIFY(FindUiFrame(*description(), "hp"));
+
+    // 原版样式：style:编号 建出模板控件，带默认大小与文字；助手读到同一份样式表。
+    const QString styled = module.CreateDescriptionFrame(QStringLiteral("style:dialog-button"), QStringLiteral("Hud"), {}, std::nullopt, {}, &error);
+    QVERIFY2(!styled.isEmpty(), qPrintable(error));
+    const UiFrame* button = FindUiFrame(*description(), styled.toStdString());
+    QVERIFY(button && button->type == UiFrameType::Template && button->templateName == "ScriptDialogButton" && button->text == "按钮");
+    QVERIFY(module.CreateDescriptionFrame(QStringLiteral("style:nope"), QStringLiteral("Hud"), {}, std::nullopt, {}, &error).isEmpty());
+    QCOMPARE(service.Invoke(QStringLiteral("game_ui_view_read"), {}).value("styles").toArray().size(),
+        static_cast<qsizetype>(UiStyles().size()));
 }
 
 void GameUiModuleTests::FrameSettingsCardAndTexturePicker() {
@@ -1572,10 +1582,13 @@ void GameUiModuleTests::GroupedPropertiesUnitsAndEvents() {
     const auto bag = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.name.text == "打开背包"; });
     QVERIFY(bag != rows.end());
     const StableId bagId = bag->id;
+    const QString bagBefore = render(bagId);
+    QVERIFY2(bagBefore.startsWith(QStringLiteral("events:")), qPrintable(bagBefore));
     const auto linked = module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("back1"), UiEventKind::Enter, bagId, &error);
     QVERIFY2(linked && *linked == bagId, qPrintable(error));
-    QVERIFY(render(bagId).contains(QStringLiteral("TriggerRegisterTimerEventPeriodic(1)")));
-    QVERIFY(render(bagId).contains(QStringLiteral("AudastraUITriggerRegisterEvent(\"Hud.back1_enter\")")));
+    const QString bagLinked = render(bagId);
+    for (const QString& line : bagBefore.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) QVERIFY2(bagLinked.contains(line), qPrintable(bagLinked));
+    QVERIFY2(bagLinked.contains(QStringLiteral("AudastraUITriggerRegisterEvent(\"Hud.back1_enter\")")), qPrintable(bagLinked));
     QCOMPARE(module.FrameEventTriggers(QStringLiteral("Hud"), QStringLiteral("back1"), UiEventKind::Enter).triggers.size(), qsizetype{1});
     // 同一个再选一次不产生修改。
     const auto steps = project.triggerUndoStack_->count();
@@ -1583,8 +1596,7 @@ void GameUiModuleTests::GroupedPropertiesUnitsAndEvents() {
     QCOMPARE(project.triggerUndoStack_->count(), steps);
     // 解除：事件与订阅行一起去掉，触发器其余内容不动；只有这一个事件的触发器连“events:”一起去掉。
     QVERIFY2(module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("back1"), UiEventKind::Enter, StableId{0}, &error), qPrintable(error));
-    QVERIFY(!render(bagId).contains(QStringLiteral("AudastraUITriggerRegisterEvent")));
-    QVERIFY(render(bagId).contains(QStringLiteral("TriggerRegisterTimerEventPeriodic(1)")));
+    QCOMPARE(render(bagId), bagBefore);
     QVERIFY2(module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("panel1"), UiEventKind::Click, StableId{0}, &error), qPrintable(error));
     QVERIFY(module.Description(QStringLiteral("Hud"))->events.empty());
     QVERIFY(!render(*created).contains(QStringLiteral("events:")));

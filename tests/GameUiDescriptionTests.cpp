@@ -125,8 +125,8 @@ void TestErrors() {
         "unterminated placeholder");
     Require(HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel", "text": "x"}]})"), "AUI_FIELD_UNKNOWN"),
         "text on panel");
-    Require(!HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel"}], "events": [{"id": "e", "frame": "a", "on": "click"}]})"),
-                "AUI_EVENT_FRAME"),
+    Require(ParseUiDescription(base + R"( "frames": [{"id": "a", "type": "panel"}], "events": [{"id": "e", "frame": "a", "on": "click"}]})",
+                "test.json").value.has_value(),
         "click on a panel is allowed (generated hit area)");
     Require(HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel"}], "events": [{"id": "e", "frame": "b", "on": "click"}]})"),
                 "AUI_EVENT_FRAME"),

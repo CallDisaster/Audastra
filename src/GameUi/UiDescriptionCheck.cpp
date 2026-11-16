@@ -189,7 +189,8 @@ private:
         only(frame.type == UiFrameType::Bar, !frame.background.empty(), "background");
         only(frame.type == UiFrameType::Button, !frame.pushed.empty(), "pushed");
         only(frame.type == UiFrameType::Model, !frame.model.empty(), "model");
-        only(textType, !frame.text.empty(), "text");
+        // 模板控件能不能写文字由模板决定（生成时按界面目录检查）。
+        only(textType || hasTemplate, !frame.text.empty(), "text");
         only(textType, !frame.font.empty(), "font");
         only(frame.type == UiFrameType::Bar, frame.value.binding || frame.value.literal != 1.0, "value");
         std::set<FramePoint> points;
@@ -238,7 +239,8 @@ private:
                     Error(at + "/texture", "AUI_FIELD_UNKNOWN", "该框架没有贴图");
                 }
                 if (entry.text) {
-                    if (type != UiFrameType::Text && type != UiFrameType::Button) Error(at + "/text", "AUI_FIELD_UNKNOWN", "该框架没有文字");
+                    if (type != UiFrameType::Text && type != UiFrameType::Button && type != UiFrameType::Template)
+                        Error(at + "/text", "AUI_FIELD_UNKNOWN", "该框架没有文字");
                     else CheckText(*entry.text, found->second, at + "/text");
                 }
                 if (entry.value && type != UiFrameType::Bar) Error(at + "/value", "AUI_FIELD_UNKNOWN", "只有进度条有进度");

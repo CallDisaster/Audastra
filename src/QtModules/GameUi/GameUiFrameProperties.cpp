@@ -4,6 +4,7 @@
 #include "GameUiChoice.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "War3MapCore/GameUi/UiStyles.h"
 #include "Modules/ModuleHost.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/ScriptFrames.h"
@@ -263,6 +264,11 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* root, const UiFrame& frame) 
             Text(std::string_view(frame.justifyH == JustifyH::Left ? "left" : frame.justifyH == JustifyH::Right ? "right" : "center")));
         choice(look, tr("竖直对齐"), QStringLiteral("justifyV"), JustifyOptions(false, raw),
             Text(std::string_view(frame.justifyV == JustifyV::Top ? "top" : frame.justifyV == JustifyV::Bottom ? "bottom" : "middle")));
+    }
+    // 模板控件：模板能写文字（文字模板或带 ButtonText 的按钮）时可改文字，字体颜色仍用模板的。
+    if (frame.type == UiFrameType::Template && definitions_ && definitions_->library
+        && UiTemplateTextTarget(*definitions_->library, frame.templateName)) {
+        editable(look, tr("文字"), QStringLiteral("text"), Text(frame.text));
     }
     if (frame.type == UiFrameType::Bar) {
         editable(look, tr("进度"), QStringLiteral("value"),
