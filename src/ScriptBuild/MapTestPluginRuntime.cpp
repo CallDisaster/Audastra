@@ -114,7 +114,10 @@ void MarkNatives(std::span<const std::byte> bytes, const std::set<std::string>& 
 
 bool IsPluginConfigRuntime(const fs::path& root) {
     std::error_code error;
-    return !root.empty() && Regular(root / "bin" / "ydbase.dll") && fs::is_directory(root / "plugin" / "warcraft3", error) && !error;
+    if (root.empty() || !Regular(root / "bin" / "ydbase.dll") || !fs::is_directory(root / "plugin" / "warcraft3", error) || error)
+        return false;
+    // 老 YDWE 的目录（bin 里有 lua53.dll、没有 config.cfg）缺了六件套里的文件时，按六件套报缺哪个，不改按插件目录装入。
+    return Regular(root / "plugin" / "warcraft3" / "config.cfg") || !Regular(root / "bin" / "lua53.dll");
 }
 
 Result<Plan> PlanPluginConfigRuntime(const fs::path& root, const std::vector<std::string>& natives) {

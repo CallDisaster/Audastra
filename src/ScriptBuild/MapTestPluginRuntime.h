@@ -9,7 +9,7 @@
 
 namespace War3Map::Script {
 
-// KKWE 等新版 YDWE 的运行库：bin/ydbase.dll 加 plugin/warcraft3 插件目录（config.cfg 可有可无）。
+// KKWE 等新版 YDWE 的运行库：bin/ydbase.dll 加 plugin/warcraft3 插件目录，并且有 config.cfg 或 bin 里没有 lua53.dll。
 // 没有老 YDWE 的 lua53.dll / ydwar3.dll，不能按六件套装入。
 [[nodiscard]] bool IsPluginConfigRuntime(const std::filesystem::path& root);
 
