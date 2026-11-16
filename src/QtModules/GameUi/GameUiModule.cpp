@@ -446,6 +446,7 @@ QJsonObject GameUiModule::SaveViewState() const {
     if (showBounds_) state.insert(QStringLiteral("bounds"), showBounds_->isChecked());
     if (showNames_) state.insert(QStringLiteral("names"), showNames_->isChecked());
     if (showGrid_) state.insert(QStringLiteral("grid"), showGrid_->isChecked());
+    if (canvas_) state.insert(QStringLiteral("gridSpacing"), canvas_->GridSpacing());
     if (!referencePath_.isEmpty()) state.insert(QStringLiteral("reference"), referencePath_);
     state.insert(QStringLiteral("referenceOpacity"), referenceOpacity_);
     state.insert(QStringLiteral("showHidden"), showHidden_);
@@ -494,6 +495,7 @@ void GameUiModule::RestoreViewState(const QJsonObject& state) {
         showBounds_->setChecked(state.value(QStringLiteral("bounds")).toBool(false));
         showNames_->setChecked(state.value(QStringLiteral("names")).toBool(false));
         showGrid_->setChecked(state.value(QStringLiteral("grid")).toBool(false));
+        canvas_->SetGridSpacing(state.value(QStringLiteral("gridSpacing")).toInt(0));
         canvas_->SetMeasure(pixelUnits_, resolution_);
         const QString reference = state.value(QStringLiteral("reference")).toString();
         if (!reference.isEmpty() || !referencePath_.isEmpty())

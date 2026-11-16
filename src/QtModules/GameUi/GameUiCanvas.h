@@ -50,7 +50,10 @@ public:
     // 标注与微调用的长度单位：像素时按参考分辨率换算（方向键一次 1 像素，Shift 10 像素）。
     void SetMeasure(bool pixels, GameUi::UiResolution resolution);
     void SetShowGrid(bool show);
-    // 参考图：铺满游戏画面、半透明画在界面上面，用来对照设计稿；空图为不显示。
+    // 网格间距（参考分辨率下的像素）；0 为按缩放自动取。
+    void SetGridSpacing(int pixels);
+    [[nodiscard]] int GridSpacing() const noexcept { return gridSpacing_; }
+    // 参考图：铺满游戏画面垫在界面下面（如自己的游戏截图），可调透明度，用来对照摆位置；空图为不显示。
     void SetReferenceImage(const QImage& image, double opacity);
     [[nodiscard]] bool ShowGrid() const noexcept { return showGrid_; }
     [[nodiscard]] double Zoom() const noexcept { return zoom_; }
@@ -101,7 +104,12 @@ private:
     void CancelDrag();
     [[nodiscard]] double GridStep(const QRectF& screen) const;  // 网格间距（像素）
     [[nodiscard]] QString MeasureText(double units, bool horizontal) const;
-    void PaintMeasures(QPainter& painter, const QRectF& screen, const QRectF& box) const;
+    [[nodiscard]] QString NodeLabel(const GameUi::FrameNode& node) const;
+    void PaintChip(QPainter& painter, const QRectF& screen, const QPointF& anchor, const QString& text, bool below, const QColor& fill) const;
+    void PaintNameChip(QPainter& painter, const QRectF& screen, const GameUi::FrameNode& node, const QRectF& box, const QColor& fill) const;
+    void PaintAnchorLines(QPainter& painter, const QRectF& screen, const GameUi::FrameNode& node, const QRectF& original, const QRectF& shown,
+        const QColor& color, bool labels) const;
+    void PaintMeasures(QPainter& painter, const QRectF& screen, const QRectF& original, const QRectF& shown) const;
     struct HitBox {
         std::uint32_t node = GameUi::kNoNode;
         QRectF rect;
@@ -148,6 +156,7 @@ private:
     bool measurePixels_ = false;
     GameUi::UiResolution resolution_;
     bool showGrid_ = false;
+    int gridSpacing_ = 0;
     QImage reference_;
     double referenceOpacity_ = 0.5;
     double zoom_ = 1.0;

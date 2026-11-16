@@ -8,6 +8,7 @@
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 
 #include <QAbstractItemDelegate>
+#include <QCheckBox>
 #include <QDir>
 #include <QDropEvent>
 #include <QEvent>

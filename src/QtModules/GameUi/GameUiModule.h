@@ -425,7 +425,7 @@ private:
     QPushButton* showContent_ = nullptr;
     QPushButton* showBounds_ = nullptr;
     QPushButton* showNames_ = nullptr;
-    QPushButton* showGrid_ = nullptr;
+    QToolButton* showGrid_ = nullptr;
     QToolButton* referenceButton_ = nullptr;
     QPushButton* showHiddenButton_ = nullptr;
     QLineEdit* search_ = nullptr;

@@ -36,6 +36,7 @@
 #include <QTest>
 #include <QMouseEvent>
 #include <QWheelEvent>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QUndoStack>
@@ -1696,10 +1697,11 @@ void GameUiModuleTests::CanvasResizeSnapAndNudge() {
     QCOMPARE(canvas->ScreenRect(), beforeZoom);
 
     // 网格与参考图记在视图状态里；读不出的参考图清掉并报告。
-    auto* grid = page->findChild<QPushButton*>(QStringLiteral("gameUiShowGrid"));
+    auto* grid = page->findChild<QToolButton*>(QStringLiteral("gameUiShowGrid"));
     QVERIFY(grid);
     grid->click();
     QVERIFY(canvas->ShowGrid());
+    canvas->SetGridSpacing(16);
     QTemporaryDir dir;
     QVERIFY(dir.isValid());
     QImage design(64, 48, QImage::Format_ARGB32);
@@ -1710,6 +1712,7 @@ void GameUiModuleTests::CanvasResizeSnapAndNudge() {
     QCOMPARE(module.ReferenceImagePath(), designPath);
     const QJsonObject view = module.SaveViewState();
     QVERIFY(view.value(QStringLiteral("grid")).toBool());
+    QCOMPARE(view.value(QStringLiteral("gridSpacing")).toInt(), 16);
     QCOMPARE(view.value(QStringLiteral("reference")).toString(), designPath);
     QCOMPARE(view.value(QStringLiteral("referenceOpacity")).toDouble(), 0.25);
     module.SetReferenceImage(dir.filePath(QStringLiteral("missing.png")), 0.25);

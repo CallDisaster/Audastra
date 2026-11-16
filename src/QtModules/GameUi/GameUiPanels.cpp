@@ -154,7 +154,27 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     showContent_ = Toggle(toolbar, "gameUiShowContent", tr("渲染"), true, "lucide/eye");
     showBounds_ = Toggle(toolbar, "gameUiShowBounds", tr("边框"), false, "lucide/square-dashed");
     showNames_ = Toggle(toolbar, "gameUiShowNames", tr("名称"), false, "lucide/info");
-    showGrid_ = Toggle(toolbar, "gameUiShowGrid", tr("网格"), false, "lucide/layout-grid");
+    // 网格：按下开关，箭头里选间距（参考分辨率下的像素）。
+    showGrid_ = new QToolButton(toolbar);
+    showGrid_->setObjectName(QStringLiteral("gameUiShowGrid"));
+    showGrid_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/layout-grid")));
+    showGrid_->setText(tr("网格"));
+    showGrid_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    showGrid_->setCheckable(true);
+    showGrid_->setPopupMode(QToolButton::MenuButtonPopup);
+    auto* gridMenu = new QMenu(showGrid_);
+    showGrid_->setMenu(gridMenu);
+    connect(gridMenu, &QMenu::aboutToShow, this, [this, gridMenu] {
+        gridMenu->clear();
+        for (const int spacing : {0, 8, 16, 32, 64}) {
+            QAction* action = gridMenu->addAction(spacing == 0 ? tr("自动间距") : tr("%1 像素").arg(spacing), this, [this, spacing] {
+                canvas_->SetGridSpacing(spacing);
+                showGrid_->setChecked(true);
+            });
+            action->setCheckable(true);
+            action->setChecked(canvas_->GridSpacing() == spacing);
+        }
+    });
     auto* fit = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/maximize-2")), tr("适应窗口"), toolbar);
     fit->setObjectName(QStringLiteral("gameUiFitView"));
     fit->setToolTip(tr("适应窗口 (Ctrl+0)"));
@@ -213,7 +233,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     connect(showContent_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowContent(on); });
     connect(showBounds_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowBounds(on); });
     connect(showNames_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowNames(on); });
-    connect(showGrid_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowGrid(on); });
+    connect(showGrid_, &QToolButton::toggled, this, [this](bool on) { canvas_->SetShowGrid(on); });
     connect(fit, &QPushButton::clicked, this, [this] { canvas_->FitView(); });
     connect(showHiddenButton_, &QPushButton::toggled, this, [this](bool on) { SetShowHidden(on); });
     connect(originSelectableButton_, &QPushButton::toggled, this, [this](bool on) { SetOriginSelectable(on); });

@@ -145,6 +145,7 @@ void GameUiCanvas::SetMeasure(bool pixels, UiResolution resolution) {
 }
 
 void GameUiCanvas::SetShowGrid(bool show) { showGrid_ = show; update(); }
+void GameUiCanvas::SetGridSpacing(int pixels) { gridSpacing_ = std::clamp(pixels, 0, 512); update(); }
 
 void GameUiCanvas::SetReferenceImage(const QImage& image, double opacity) {
     reference_ = image;
@@ -198,6 +199,11 @@ void GameUiCanvas::paintEvent(QPaintEvent*) {
     const QRectF screen = ScreenRect();
     if (screen.isEmpty()) return;
     painter.fillRect(screen, QColor(10, 12, 13));
+    if (!reference_.isNull()) {
+        painter.setOpacity(referenceOpacity_);
+        painter.drawImage(screen, reference_);
+        painter.setOpacity(1.0);
+    }
     hits_.clear();
     PaintScene(painter, screen, true, &hits_);
     painter.setPen(QPen(palette().mid().color(), 1.0));
@@ -404,6 +410,12 @@ QRectF GameUiCanvas::NodePixelRect(const QRectF& screen, std::uint32_t node) con
 double GameUiCanvas::GridStep(const QRectF& screen) const {
     // 参考分辨率下的像素间距，取画面上不小于 10 像素的最小一档。
     const double perPixel = screen.width() / resolution_.width;
+    if (gridSpacing_ > 0) {
+        // 设了间距时按设的画；画面上太密时成倍放大。
+        double step = gridSpacing_ * perPixel;
+        while (step < 4.0) step *= 2.0;
+        return step;
+    }
     for (const double step : {4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0}) {
         if (step * perPixel >= 10.0) return step * perPixel;
     }
@@ -414,11 +426,6 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
     const auto& options = tree_->Options();
     painter.save();
     painter.setClipRect(screen);
-    if (!reference_.isNull()) {
-        painter.setOpacity(referenceOpacity_);
-        painter.drawImage(screen, reference_);
-        painter.setOpacity(1.0);
-    }
     if (showGrid_) {
         // 网格从画面左上角起算（与截图、设计稿的像素坐标一致），每 4 格一条稍深的线。
         const double step = GridStep(screen);
@@ -463,10 +470,23 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
         small.setPixelSize(10);
         painter.setFont(small);
         const QFontMetricsF metrics(small);
+        // 自己的控件：父子连线、位移与宽高全部标出（选中的另画）；其余只写名字。
+        QColor ownLine = palette().color(QPalette::Accent);
+        ownLine.setAlpha(150);
+        for (const auto& node : tree_->Nodes()) {
+            if (node.id == selected_ || !node.uiFrame || node.uiFrame->frame.empty() || !Pickable(node.id)
+                || (node.layout != LayoutState::Placed && node.layout != LayoutState::SizeFromContent)) {
+                continue;
+            }
+            const QRectF frame = UiToPixelRect(screen, options, node.rect);
+            painter.setFont(small);
+            PaintAnchorLines(painter, screen, node, frame, frame, ownLine, true);
+            PaintNameChip(painter, screen, node, frame, ownLine);
+        }
         for (const auto& node : tree_->Nodes()) {
             // 代码区域的占位框已写中文名。
             if (node.id == kScreenNode || node.kind != DefinitionKind::Frame || node.name.empty() ||
-                !node.codeLabel.empty() || node.layout != LayoutState::Placed) {
+                !node.codeLabel.empty() || node.layout != LayoutState::Placed || (node.uiFrame && !node.uiFrame->frame.empty())) {
                 continue;
             }
             const QRectF frame = UiToPixelRect(screen, options, node.rect);
@@ -485,6 +505,13 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
             painter.setPen(QPen(hoverStroke, 1.0));
             painter.setBrush(Qt::NoBrush);
             painter.drawRect(hoveredRect.adjusted(0.5, 0.5, -0.5, -0.5));
+            // 悬停的控件写名字与宽高（拖动时不写，免得挡住）。
+            if (!dragging_ && hovered_ < tree_->Nodes().size()) {
+                QFont small = font();
+                small.setPixelSize(11);
+                painter.setFont(small);
+                PaintNameChip(painter, screen, tree_->Nodes()[hovered_], hoveredRect, hoverStroke);
+            }
         }
     }
     if (selected_ != kNoNode) {
@@ -522,7 +549,7 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
                     painter.drawRect(QRectF(corner.x() - 2.5, corner.y() - 2.5, 5.0, 5.0));
                 }
             }
-            PaintMeasures(painter, screen, shown);
+            PaintMeasures(painter, screen, selected, shown);
         }
     }
     // 吸附参考线。

@@ -62,71 +62,97 @@ QString GameUiCanvas::MeasureText(double units, bool horizontal) const {
     return text == QLatin1String("-0") ? QStringLiteral("0") : text;
 }
 
-// 选中控件的标注：名字与宽高写在框下面；到父控件最近两边的距离画成线并写上数值，父控件画成虚线框。
-void GameUiCanvas::PaintMeasures(QPainter& painter, const QRectF& screen, const QRectF& box) const {
+namespace {
+
+// 矩形上对齐点的像素位置（像素坐标上为负方向）。
+QPointF PixelPoint(const QRectF& rect, FramePoint point) {
+    static constexpr std::array<std::pair<double, double>, 9> kFractions{{
+        {0.0, 0.0}, {0.5, 0.0}, {1.0, 0.0}, {0.0, 0.5}, {0.5, 0.5}, {1.0, 0.5}, {0.0, 1.0}, {0.5, 1.0}, {1.0, 1.0}}};
+    const auto [fx, fy] = kFractions[static_cast<std::size_t>(point)];
+    return {rect.left() + rect.width() * fx, rect.top() + rect.height() * fy};
+}
+
+} // namespace
+
+void GameUiCanvas::PaintChip(QPainter& painter, const QRectF& screen, const QPointF& anchor, const QString& text, bool below,
+    const QColor& fill) const {
+    const QFontMetricsF metrics(painter.font());
+    const QSizeF size(metrics.horizontalAdvance(text) + 8.0, metrics.height() + 2.0);
+    QRectF rect(anchor.x() - size.width() / 2.0, below ? anchor.y() + 3.0 : anchor.y() - size.height() - 3.0, size.width(), size.height());
+    rect.moveLeft(std::clamp(rect.left(), screen.left() + 1.0, std::max(screen.left() + 1.0, screen.right() - rect.width() - 1.0)));
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(fill);
+    painter.drawRoundedRect(rect, 3.0, 3.0);
+    painter.setPen(fill.lightnessF() > 0.6 ? QColor(20, 20, 20) : QColor(245, 245, 245));
+    painter.drawText(rect, Qt::AlignCenter, text);
+}
+
+QString GameUiCanvas::NodeLabel(const FrameNode& node) const {
+    if (node.uiFrame && !node.uiFrame->frame.empty()) return QString::fromStdString(node.name);
+    if (!node.codeLabel.empty()) return QString::fromStdString(node.codeLabel);
+    return QString::fromStdString(node.name.empty() ? node.frameType : node.name);
+}
+
+// 名字与宽高写在框下面（下面放不下时写在上面）。
+void GameUiCanvas::PaintNameChip(QPainter& painter, const QRectF& screen, const FrameNode& node, const QRectF& box, const QColor& fill) const {
     const auto& options = tree_->Options();
-    const FrameNode& node = tree_->Nodes()[selected_];
     const double unitX = options.screenWidth / screen.width();
     const double unitY = options.screenHeight / screen.height();
+    const QString name = NodeLabel(node);
+    const QString size = QStringLiteral("%1 × %2").arg(MeasureText(box.width() * unitX, true), MeasureText(box.height() * unitY, false));
+    const bool below = box.bottom() + QFontMetricsF(painter.font()).height() + 8.0 < screen.bottom();
+    PaintChip(painter, screen, QPointF(box.center().x(), below ? box.bottom() : box.top()),
+        name.isEmpty() ? size : name + QStringLiteral("  ") + size, below, fill);
+}
+
+// 父子连线：从对齐到的目标点画到控件自己的对齐点，线上写横纵位移。shown 为拖动、微调中的新位置。
+void GameUiCanvas::PaintAnchorLines(QPainter& painter, const QRectF& screen, const FrameNode& node, const QRectF& original,
+    const QRectF& shown, const QColor& color, bool labels) const {
+    const auto& options = tree_->Options();
+    const auto& nodes = tree_->Nodes();
+    const double unitX = options.screenWidth / screen.width();
+    const double unitY = options.screenHeight / screen.height();
+    for (const FrameAnchor& anchor : node.anchors) {
+        const std::uint32_t target = anchor.relativeNode != kNoNode ? anchor.relativeNode : node.parent;
+        if (target >= nodes.size()) continue;
+        const FrameNode& targetNode = nodes[target];
+        if (target != kScreenNode && targetNode.layout != LayoutState::Placed && targetNode.layout != LayoutState::SizeFromContent) continue;
+        const QRectF targetRect = target == kScreenNode ? screen : UiToPixelRect(screen, options, targetNode.rect);
+        const QPointF from = PixelPoint(targetRect, anchor.relativePoint);
+        const QPointF to = PixelPoint(shown, anchor.point);
+        const QPointF moved = to - PixelPoint(original, anchor.point);
+        painter.setPen(QPen(color, 1.0));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawLine(from, to);
+        painter.setBrush(color);
+        painter.drawEllipse(from, 2.5, 2.5);
+        painter.drawRect(QRectF(to.x() - 2.0, to.y() - 2.0, 4.0, 4.0));
+        if (!labels) continue;
+        const QString text = QStringLiteral("%1, %2").arg(MeasureText(anchor.x + moved.x() * unitX, true), MeasureText(anchor.y - moved.y() * unitY, false));
+        PaintChip(painter, screen, (from + to) / 2.0, text, false, color);
+    }
+}
+
+// 选中控件的标注：父控件画成虚线框，父子连线与位移，名字与宽高。
+void GameUiCanvas::PaintMeasures(QPainter& painter, const QRectF& screen, const QRectF& original, const QRectF& shown) const {
+    const auto& options = tree_->Options();
+    const FrameNode& node = tree_->Nodes()[selected_];
     QFont small = font();
     small.setPixelSize(11);
     painter.setFont(small);
-    const QFontMetricsF metrics(small);
     const QColor accent = palette().color(QPalette::Accent);
-    const auto chip = [&](const QPointF& anchor, const QString& text, bool below) {
-        const QSizeF size(metrics.horizontalAdvance(text) + 8.0, metrics.height() + 2.0);
-        QRectF rect(anchor.x() - size.width() / 2.0, below ? anchor.y() + 3.0 : anchor.y() - size.height() - 3.0, size.width(), size.height());
-        rect.moveLeft(std::clamp(rect.left(), screen.left() + 1.0, std::max(screen.left() + 1.0, screen.right() - rect.width() - 1.0)));
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(accent);
-        painter.drawRoundedRect(rect, 3.0, 3.0);
-        painter.setPen(palette().color(QPalette::HighlightedText));
-        painter.drawText(rect, Qt::AlignCenter, text);
-    };
-    // 父控件与距离线。
-    QRectF parent = screen;
     if (node.parent != kNoNode && node.parent != kScreenNode && node.parent < tree_->Nodes().size()) {
         const FrameNode& parentNode = tree_->Nodes()[node.parent];
-        if (parentNode.layout == LayoutState::Placed || parentNode.layout == LayoutState::SizeFromContent)
-            parent = UiToPixelRect(screen, options, parentNode.rect);
+        if (parentNode.layout == LayoutState::Placed || parentNode.layout == LayoutState::SizeFromContent) {
+            QColor parentLine = accent;
+            parentLine.setAlpha(120);
+            painter.setPen(QPen(parentLine, 1.0, Qt::DotLine));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawRect(UiToPixelRect(screen, options, parentNode.rect).adjusted(0.5, 0.5, -0.5, -0.5));
+        }
     }
-    QColor parentLine = accent;
-    parentLine.setAlpha(120);
-    painter.setPen(QPen(parentLine, 1.0, Qt::DotLine));
-    painter.setBrush(Qt::NoBrush);
-    if (parent != screen) painter.drawRect(parent.adjusted(0.5, 0.5, -0.5, -0.5));
-    const double leftGap = box.left() - parent.left();
-    const double rightGap = parent.right() - box.right();
-    const double topGap = box.top() - parent.top();
-    const double bottomGap = parent.bottom() - box.bottom();
-    painter.setPen(QPen(accent, 1.0));
-    if (std::max(std::abs(leftGap), std::abs(rightGap)) >= 1.0) {
-        const bool left = std::abs(leftGap) <= std::abs(rightGap);
-        const double from = left ? parent.left() : box.right();
-        const double to = left ? box.left() : parent.right();
-        const double y = box.center().y();
-        painter.setPen(QPen(accent, 1.0));
-        painter.drawLine(QPointF(from, y), QPointF(to, y));
-        chip(QPointF((from + to) / 2.0, y), MeasureText((left ? leftGap : rightGap) * unitX, true), false);
-    }
-    if (std::max(std::abs(topGap), std::abs(bottomGap)) >= 1.0) {
-        const bool top = std::abs(topGap) <= std::abs(bottomGap);
-        const double from = top ? parent.top() : box.bottom();
-        const double to = top ? box.top() : parent.bottom();
-        const double x = box.center().x();
-        painter.setPen(QPen(accent, 1.0));
-        painter.drawLine(QPointF(x, from), QPointF(x, to));
-        const QString text = MeasureText((top ? topGap : bottomGap) * unitY, false);
-        const double width = metrics.horizontalAdvance(text) + 8.0;
-        chip(QPointF(x + width / 2.0 + 4.0, (from + to) / 2.0 + metrics.height() / 2.0), text, false);
-    }
-    // 名字与宽高。
-    const QString name = node.uiFrame && !node.uiFrame->frame.empty() ? QString::fromStdString(node.uiFrame->frame)
-        : !node.name.empty()                                         ? QString::fromStdString(node.name)
-                                                                     : QString::fromStdString(node.frameType);
-    const QString size = QStringLiteral("%1 × %2").arg(MeasureText(box.width() * unitX, true), MeasureText(box.height() * unitY, false));
-    const bool below = box.bottom() + metrics.height() + 8.0 < screen.bottom();
-    chip(QPointF(box.center().x(), below ? box.bottom() : box.top()), name.isEmpty() ? size : name + QStringLiteral("  ") + size, below);
+    PaintAnchorLines(painter, screen, node, original, shown, accent, true);
+    PaintNameChip(painter, screen, node, shown, accent);
 }
 
 void GameUiCanvas::mousePressEvent(QMouseEvent* event) {
