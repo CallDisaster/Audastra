@@ -107,6 +107,7 @@ void GameUiModule::ScheduleReload() {
 
 void GameUiModule::Reload() {
     ++generation_;
+    SyncMapView();
     reader_ = std::make_shared<GameUiReader>(CaptureGameUiSources(project_));
     sourceNote_ = reader_->Sources().mapNote;
     textures_.clear();
@@ -289,6 +290,7 @@ void GameUiModule::RebuildDrawList() {
         canvas_->SetScene(tree_.get(), drawList_);
         canvas_->SetSelected(selected_);
     }
+    UpdatePickable();
 }
 
 QString GameUiModule::NodeKey(std::uint32_t node) const {
@@ -444,6 +446,7 @@ QJsonObject GameUiModule::SaveViewState() const {
     if (showBounds_) state.insert(QStringLiteral("bounds"), showBounds_->isChecked());
     if (showNames_) state.insert(QStringLiteral("names"), showNames_->isChecked());
     state.insert(QStringLiteral("showHidden"), showHidden_);
+    if (!mapViews_.isEmpty()) state.insert(QStringLiteral("maps"), mapViews_);
     if (mainSplit_) state.insert(QStringLiteral("mainSplit"), QString::fromLatin1(mainSplit_->saveState().toBase64()));
     if (centerSplit_) state.insert(QStringLiteral("centerSplit"), QString::fromLatin1(centerSplit_->saveState().toBase64()));
     return state;
@@ -460,6 +463,11 @@ void GameUiModule::RestoreViewState(const QJsonObject& state) {
     if (const QString race = state.value(QStringLiteral("race")).toString(); !race.isEmpty()) race_ = race;
     expansion_ = state.value(QStringLiteral("expansion")).toBool(expansion_);
     showHidden_ = state.value(QStringLiteral("showHidden")).toBool(showHidden_);
+    if (const auto maps = state.value(QStringLiteral("maps")); maps.isArray()) {
+        mapViews_ = maps.toArray();
+        mapViewKey_.clear();  // 重新取当前地图的可见、可选，不把内存里的旧状态写回
+        SyncMapView();
+    }
     if (showHiddenButton_) showHiddenButton_->setChecked(showHidden_);
     if (!page_) {
         pendingView_ = state;

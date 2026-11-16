@@ -126,6 +126,12 @@ void GameUiCanvas::SetDraggable(bool draggable) { draggable_ = draggable; }
 
 void GameUiCanvas::SetFocusRect(std::optional<FrameRect> rect) { focus_ = rect; update(); }
 
+void GameUiCanvas::SetPickable(std::vector<bool> pickable) {
+    pickable_ = std::move(pickable);
+    if (hovered_ != kNoNode && !Pickable(hovered_)) hovered_ = kNoNode;
+    update();
+}
+
 namespace {
 
 QPointF ToPixel(const QRectF& screen, const FrameTreeOptions& options, float x, float y) {
@@ -451,7 +457,7 @@ std::uint32_t GameUiCanvas::NodeAt(const QPointF& position) const {
     // 代码区域互相重叠（聊天消息几乎占满中部），压在其上的界面内容优先；只剩代码区域时取最小的一个。
     const HitBox* codeHit = nullptr;
     for (auto it = hits_.rbegin(); it != hits_.rend(); ++it) {
-        if (!it->rect.contains(position)) continue;
+        if (!it->rect.contains(position) || !Pickable(it->node)) continue;
         if (isCodeArea(*it)) {
             const double area = it->rect.width() * it->rect.height();
             if (!codeHit || area < codeHit->rect.width() * codeHit->rect.height()) codeHit = &*it;
@@ -473,7 +479,7 @@ std::uint32_t GameUiCanvas::NodeAt(const QPointF& position) const {
     std::uint32_t best = kNoNode;
     double bestArea = 0.0;
     for (const auto& node : tree_->Nodes()) {
-        if (node.id == kScreenNode || node.kind != DefinitionKind::Frame || node.layout != LayoutState::Placed) continue;
+        if (node.id == kScreenNode || node.kind != DefinitionKind::Frame || node.layout != LayoutState::Placed || !Pickable(node.id)) continue;
         const QRectF frame = ToPixelRect(screen, tree_->Options(), node.rect);
         const double area = frame.width() * frame.height();
         if (frame.contains(position) && (best == kNoNode || area < bestArea)) {

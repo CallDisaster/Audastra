@@ -21,6 +21,7 @@
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPointer>
 #include <QPushButton>
 #include <QScreen>
@@ -98,6 +99,8 @@ private slots:
     void TriggerSimulationRunsAuthorTriggers();
     void OriginAndClipboardTransactions();
     void OriginalScalePinsPosition();
+    void VisibleSelectableAndPicking();
+    void NewUiFlowAndLayerOrder();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -230,20 +233,23 @@ void GameUiModuleTests::RootsRaceAndVisibility() {
     const auto before = module.DrawList().commands.size();
     QVERIFY(before >= 2);
     auto* nodes = page->findChild<QTreeWidget*>(QStringLiteral("gameUiNodes"));
-    auto* tile = FindItem(nodes, QStringLiteral("ConsoleTile"));
-    QVERIFY(tile);
-    tile->setCheckState(0, Qt::Unchecked);
+    const auto nodeOf = [nodes](const QString& name) {
+        QTreeWidgetItem* item = FindItem(nodes, name);
+        return item ? item->data(0, Qt::UserRole + 1).toUInt() : kNoNode;
+    };
+    QVERIFY(nodeOf(QStringLiteral("ConsoleTile")) != kNoNode);
+    module.SetNodeVisible(nodeOf(QStringLiteral("ConsoleTile")), false);
     QCOMPARE(module.DrawList().commands.size(), before - 1);
     // 隐藏按节点身份保存，种族切换重建后仍然隐藏。
     module.SetRace(QStringLiteral("Human"));
     QCOMPARE(module.DrawList().commands.size(), before - 1);
-    QCOMPARE(FindItem(nodes, QStringLiteral("ConsoleTile"))->checkState(0), Qt::Unchecked);
+    QVERIFY(!module.NodeVisible(nodeOf(QStringLiteral("ConsoleTile"))));
 
     // 只显示一项：同级隐藏，自身与父节点显示。
-    FindItem(nodes, QStringLiteral("ConsoleText"))->setCheckState(0, Qt::Unchecked);
-    module.ShowOnly(*module.Tree()->FindByName("ConsoleText"));
-    QCOMPARE(FindItem(nodes, QStringLiteral("ConsoleText"))->checkState(0), Qt::Checked);
-    QCOMPARE(FindItem(nodes, QStringLiteral("层 BACKGROUND"))->checkState(0), Qt::Unchecked);
+    module.SetNodeVisible(nodeOf(QStringLiteral("ConsoleText")), false);
+    module.ShowOnly(nodeOf(QStringLiteral("ConsoleText")));
+    QVERIFY(module.NodeVisible(nodeOf(QStringLiteral("ConsoleText"))));
+    QVERIFY(!module.NodeVisible(nodeOf(QStringLiteral("层 BACKGROUND"))));
     std::vector<FrameDrawCommand> content;
     for (const auto& command : module.DrawList().commands) {
         if (command.kind != DrawKind::CodeArea) content.push_back(command);
@@ -312,6 +318,17 @@ void GameUiModuleTests::CanvasDrawsAndHitsTextures() {
     // 透明贴图处退回到包含该点的最小框架。
     const auto right = canvas.NodeAt(screen.center() + QPointF(screen.width() / 4.0, 0));
     QCOMPARE(tree.Nodes()[right].name, std::string("Root"));
+
+    // 不能点中的节点照常画，点击穿过它：先落到能点中的父框架，再都不能点中时落到空白处。
+    std::vector<bool> pickable(tree.Nodes().size(), true);
+    pickable[left] = false;
+    canvas.SetPickable(pickable);
+    (void)canvas.grab();
+    QCOMPARE(tree.Nodes()[canvas.NodeAt(screen.center() - QPointF(screen.width() / 4.0, 0))].name, std::string("Root"));
+    pickable[right] = false;
+    canvas.SetPickable(pickable);
+    QCOMPARE(canvas.NodeAt(screen.center() - QPointF(screen.width() / 4.0, 0)), kNoNode);
+    QCOMPARE(canvas.RenderImage(QSize(400, 300)).pixelColor(100, 150), QColor(255, 0, 0));
 }
 
 void GameUiModuleTests::SimulationDrivesScriptFrames() {
@@ -940,7 +957,15 @@ void GameUiModuleTests::KindPickerCreatesTypedFrames() {
     Modules::GameUiModule module(project);
     QVERIFY(module.Widget());
     module.LoadDefinitionsForTesting(SyntheticDefinitions());
-    QVERIFY(!module.OpenKindPicker(kNoNode, std::nullopt, QPoint(10, 10)));  // 没有描述时不打开
+    // 还没有界面时也能打开，放进“新界面 ui1”。
+    {
+        QPointer<Modules::GameUiKindPicker> first =
+            qobject_cast<Modules::GameUiKindPicker*>(module.OpenKindPicker(kNoNode, std::nullopt, QPoint(10, 10)).data());
+        QVERIFY(first);
+        auto* target = first->findChild<QComboBox*>(QStringLiteral("gameUiKindTarget"));
+        QVERIFY(target && target->currentText().contains(QStringLiteral("ui1")));
+        first->close();
+    }
     QString error;
     QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error), qPrintable(error));
     const auto description = [&module] { return module.Description(QStringLiteral("Hud")); };
@@ -1240,6 +1265,159 @@ void GameUiModuleTests::TriggerSimulationRunsAuthorTriggers() {
     QVERIFY(!status.ready && status.description.isEmpty() && status.fired == 0);
     QCOMPARE(QString::fromStdString(preview().values.at("hp")), QStringLiteral("1"));
     QVERIFY(preview().state.empty());
+}
+
+void GameUiModuleTests::VisibleSelectableAndPicking() {
+    QtProject::EditorProject project;
+    project.sourceArchivePath_ = std::filesystem::path(L"C:/Synthetic/ui-pick.w3x");  // Synthetic：可见、可选按这张图记住
+    const auto nodeIn = [](const Modules::GameUiModule& module, const char* name) { return *module.Tree()->FindByName(name); };
+    QJsonObject saved;
+    {
+        Modules::GameUiModule module(project);
+        module.RestoreViewState(QJsonObject{{QStringLiteral("maps"), QJsonArray{}}});
+        auto* page = module.Widget();
+        page->resize(1400, 900);
+        page->show();
+        module.LoadDefinitionsForTesting(SyntheticDefinitions());
+        const auto node = [&](const char* name) { return nodeIn(module, name); };
+
+        // 原版界面默认可见、不可选：画布上点不中。
+        QVERIFY(module.NodeVisible(node("ConsoleUI")));
+        QVERIFY(!module.NodeSelectable(node("ConsoleTile")));
+        QVERIFY(!module.NodePickable(node("ConsoleTile")));
+        auto* canvas = page->findChild<Modules::GameUiCanvas*>(QStringLiteral("gameUiCanvas"));
+        QVERIFY(canvas && !canvas->Pickable(node("ConsoleTile")));
+
+        // “原版可选”打开后都能点中；再切换时清掉原版节点各自的设置。
+        auto* origin = page->findChild<QPushButton*>(QStringLiteral("gameUiOriginSelectable"));
+        QVERIFY(origin && !origin->isChecked());
+        origin->click();
+        QVERIFY(module.OriginSelectable());
+        QVERIFY(module.NodePickable(node("ConsoleTile")) && canvas->Pickable(node("ConsoleTile")));
+        module.SetNodeSelectable(node("ConsoleUI"), false);  // 对整棵子树
+        QVERIFY(!module.NodeSelectable(node("ConsoleText")));
+        module.SetOriginSelectable(false);
+        module.SetOriginSelectable(true);
+        QVERIFY(module.NodeSelectable(node("ConsoleText")));
+        module.SetOriginSelectable(false);
+        QVERIFY(!origin->isChecked());
+        module.SetNodeSelectable(node("ConsoleUI"), true);
+        QVERIFY(module.NodeSelectable(node("ConsoleText")));
+
+        // 不可见：不画，可选也点不中；自身可见但父节点不可见时同样画不出来。
+        module.SetNodeVisible(node("ConsoleUI"), false);
+        QVERIFY(!module.NodeVisible(node("ConsoleTile")));
+        QVERIFY(!module.NodePickable(node("ConsoleTile")));
+        module.SetNodeVisible(node("ConsoleTile"), true);
+        QVERIFY(module.NodeVisible(node("ConsoleTile")));
+        QVERIFY(!module.NodePickable(node("ConsoleTile")));
+
+        // 节点树按下可见列即切换整棵子树，不改选中行。
+        QVERIFY(module.SelectFrame(QStringLiteral("ConsoleText")));
+        auto* nodes = page->findChild<QTreeWidget*>(QStringLiteral("gameUiNodes"));
+        QTreeWidgetItem* consoleUi = FindItem(nodes, QStringLiteral("ConsoleUI"));
+        QVERIFY(consoleUi);
+        nodes->scrollToItem(consoleUi);
+        const QRect eye = nodes->visualRect(nodes->indexFromItem(consoleUi, 3));
+        QVERIFY(eye.isValid());
+        QTest::mouseClick(nodes->viewport(), Qt::LeftButton, {}, eye.center());
+        QVERIFY(module.NodeVisible(node("ConsoleUI")));
+        QVERIFY(module.NodePickable(node("ConsoleTile")));
+        QCOMPARE(module.Tree()->Nodes()[module.SelectedNode()].name, std::string("ConsoleText"));
+
+        module.SetNodeVisible(node("ConsoleUI"), false);
+        saved = module.SaveViewState();
+        QVERIFY(!saved.value(QStringLiteral("maps")).toArray().isEmpty());
+    }
+
+    // 同一张图：可见、可选取回。
+    Modules::GameUiModule restored(project);
+    restored.RestoreViewState(saved);
+    (void)restored.Widget();
+    restored.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(!restored.NodeVisible(nodeIn(restored, "ConsoleUI")));
+    QVERIFY(restored.NodeSelectable(nodeIn(restored, "ConsoleText")));
+
+    // 别的图不带这些设置。
+    project.sourceArchivePath_ = std::filesystem::path(L"C:/Synthetic/ui-other.w3x");
+    Modules::GameUiModule other(project);
+    other.RestoreViewState(saved);
+    (void)other.Widget();
+    other.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QVERIFY(other.NodeVisible(nodeIn(other, "ConsoleUI")));
+    QVERIFY(!other.NodeSelectable(nodeIn(other, "ConsoleText")));
+}
+
+void GameUiModuleTests::NewUiFlowAndLayerOrder() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    const auto byName = [&module](const char* name) { return *module.Tree()->FindByName(name); };
+    QString error;
+
+    // 编号写错当场说明，“创建”不可点；建议编号从 ui1 起。
+    QVERIFY(!module.CheckNewDescriptionId(QStringLiteral("2234")).isEmpty());
+    QCOMPARE(module.SuggestDescriptionId(), QStringLiteral("ui1"));
+    auto* button = page->findChild<QPushButton*>(QStringLiteral("gameUiNewDescription"));
+    QVERIFY(button && button->menu());
+    QMenu* menu = button->menu();
+    emit menu->aboutToShow();
+    auto* idEdit = menu->findChild<QLineEdit*>(QStringLiteral("gameUiNewDescriptionId"));
+    auto* labelEdit = menu->findChild<QLineEdit*>(QStringLiteral("gameUiNewDescriptionLabel"));
+    auto* create = menu->findChild<QPushButton*>(QStringLiteral("gameUiNewDescriptionCreate"));
+    auto* problem = menu->findChild<QLabel*>(QStringLiteral("formProblem"));
+    QVERIFY(idEdit && labelEdit && create && problem);
+    QCOMPARE(idEdit->text(), QStringLiteral("ui1"));
+    QVERIFY(create->isEnabled());
+    idEdit->setText(QStringLiteral("2234"));
+    emit idEdit->textEdited(idEdit->text());
+    QVERIFY(!create->isEnabled());
+    QVERIFY(idEdit->property("invalid").toBool());
+    QVERIFY(!problem->text().isEmpty());
+    idEdit->setText(QStringLiteral("ui1"));
+    emit idEdit->textEdited(idEdit->text());
+    QVERIFY(create->isEnabled());
+    QVERIFY(!idEdit->property("invalid").toBool());
+
+    // 新界面自带面板并选中它；之后新控件默认放进这份界面。
+    labelEdit->setText(QStringLiteral("背包"));
+    create->click();
+    const UiDescription* bag = module.Description(QStringLiteral("ui1"));
+    QVERIFY(bag);
+    QCOMPARE(bag->label, std::string("背包"));
+    QCOMPARE(bag->frames.size(), std::size_t{1});
+    QCOMPARE(bag->frames[0].id, std::string("panel1"));
+    QCOMPARE(module.Tree()->Nodes()[module.SelectedNode()].name, std::string("panel1"));
+    QCOMPARE(module.CurrentDescription(), QStringLiteral("ui1"));
+    QCOMPARE(module.SuggestDescriptionId(), QStringLiteral("ui2"));
+    QVERIFY(!module.CheckNewDescriptionId(QStringLiteral("UI1")).isEmpty());
+
+    // 自己的控件能点中；界面的根铺满画面，不点中。
+    QVERIFY(module.NodePickable(byName("panel1")));
+    QVERIFY(!module.NodePickable(byName("ui1")));
+
+    // 选中原版节点时添加控件：放进当前界面。
+    QVERIFY(module.SelectFrame(QStringLiteral("ConsoleUI")));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back1"));
+    QCOMPARE(module.Description(QStringLiteral("ui1"))->frames.size(), std::size_t{2});
+
+    // 置于底层、顶层改同级顺序（后面的画在上面）；已在那一层时不产生修改。
+    QVERIFY2(module.RaiseDescriptionFrame(byName("back1"), false, &error), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("ui1"))->frames[0].id, std::string("back1"));
+    QVERIFY2(module.RaiseDescriptionFrame(byName("back1"), true, &error), qPrintable(error));
+    QCOMPARE(module.Description(QStringLiteral("ui1"))->frames[1].id, std::string("back1"));
+    QVERIFY(!module.RaiseDescriptionFrame(byName("back1"), true, &error));
+
+    // 不指定界面：新建一份界面放进去，与新建同一步撤销。
+    const int undoBefore = project.AssetUndoStack()->count();
+    QCOMPARE(module.CreateDescriptionFrame(QStringLiteral("text"), {}, {}, QPointF(0.2, 0.2), {}, &error), QStringLiteral("text1"));
+    const UiDescription* fresh = module.Description(QStringLiteral("ui2"));
+    QVERIFY(fresh);
+    QCOMPARE(fresh->label, std::string("界面2"));
+    QCOMPARE(fresh->frames[0].anchors[0].x, -0.2);
+    QCOMPARE(project.AssetUndoStack()->count(), undoBefore + 1);
+    QCOMPARE(module.CurrentDescription(), QStringLiteral("ui2"));
 }
 
 int main(int argc, char** argv) {

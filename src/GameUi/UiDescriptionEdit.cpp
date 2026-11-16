@@ -1,5 +1,6 @@
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
+#include "War3MapCore/Text/TextUtil.h"
 
 #include "UiDescriptionText.h"
 #include "../Core/Serialization/StrictJson.h"
@@ -444,6 +445,52 @@ std::string NextUiFrameId(const UiDescription& description, std::string_view pre
         std::string id = std::string(prefix) + std::to_string(n);
         if (!FindUiFrame(description, id)) return id;
     }
+}
+
+std::string NextUiDescriptionId(const std::vector<std::string>& used) {
+    std::vector<std::string> lower;
+    lower.reserve(used.size());
+    for (const auto& id : used) lower.push_back(Text::LowerAscii(id));
+    for (std::uint32_t n = 1;; ++n) {
+        std::string id = "ui" + std::to_string(n);
+        if (std::find(lower.begin(), lower.end(), id) == lower.end()) return id;
+    }
+}
+
+namespace {
+
+// 在 frames（父框架为 parent，顶层为空）里找 id；找到时写出父框架编号与位置。
+bool LocateFrame(const std::vector<UiFrame>& frames, const std::string& parent, std::string_view id, std::string& owner,
+    std::size_t& index, std::size_t& count) {
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        if (frames[i].id == id) {
+            owner = parent;
+            index = i;
+            count = frames.size();
+            return true;
+        }
+        if (LocateFrame(frames[i].children, frames[i].id, id, owner, index, count)) return true;
+    }
+    return false;
+}
+
+} // namespace
+
+std::string UiFrameParentId(const UiDescription& description, std::string_view frame, bool* found) {
+    std::string owner;
+    std::size_t index = 0;
+    std::size_t count = 0;
+    const bool located = LocateFrame(description.frames, {}, frame, owner, index, count);
+    if (found) *found = located;
+    return located ? owner : std::string();
+}
+
+std::optional<std::pair<std::size_t, std::size_t>> UiFrameSiblingIndex(const UiDescription& description, std::string_view frame) {
+    std::string owner;
+    std::size_t index = 0;
+    std::size_t count = 0;
+    if (!LocateFrame(description.frames, {}, frame, owner, index, count)) return std::nullopt;
+    return std::pair{index, count};
 }
 
 } // namespace War3Map::GameUi

@@ -3,8 +3,12 @@
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/Types.h"
 
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 // 界面描述的编辑：编辑器界面与 Agent 共用。一组编辑是 JSON 数组，每项一个 op；框架与字段用 audastra.ui 的
 // 写法表示，由同一个严格读取器检查。任一步或编辑后的描述不合法时整组不生效。
@@ -35,5 +39,14 @@ namespace War3Map::GameUi {
 
 // 描述里还没用过的框架编号：prefix 后接从 1 起最小的可用序号。
 [[nodiscard]] std::string NextUiFrameId(const UiDescription& description, std::string_view prefix);
+
+// 新界面的编号：ui 后接从 1 起最小的、used 里没有的序号（比较不区分大小写，与地图成员路径一致）。
+[[nodiscard]] std::string NextUiDescriptionId(const std::vector<std::string>& used);
+
+// 父框架编号；顶层框架为空，找不到时为空且 found 为假。
+[[nodiscard]] std::string UiFrameParentId(const UiDescription& description, std::string_view frame, bool* found = nullptr);
+// 框架在其父框架（顶层为描述）子列表里的位置与同级个数；找不到时为空。
+[[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>> UiFrameSiblingIndex(const UiDescription& description,
+    std::string_view frame);
 
 } // namespace War3Map::GameUi

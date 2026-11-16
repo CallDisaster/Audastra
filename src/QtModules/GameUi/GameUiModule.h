@@ -12,6 +12,7 @@
 
 #include <QHash>
 #include <QImage>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QObject>
 #include <QPointF>
@@ -34,7 +35,6 @@
 class QCheckBox;
 class QComboBox;
 class QFrame;
-class QJsonArray;
 class QLabel;
 class QLineEdit;
 class QMenu;
@@ -124,9 +124,27 @@ public:
     // 也画脚本或描述设为隐藏的框架。
     [[nodiscard]] bool ShowHidden() const noexcept { return showHidden_; }
     void SetShowHidden(bool show);
+    // 节点树每行的“可见”“可选”：不可见的节点不画，画布上也点不中；不可选的照常画，画布上的点击、右键与悬停穿过它。
+    // 设置一个节点时对它下面所有节点做同样的设置，之后子节点仍可单独改。原版界面默认不可选，自己的界面默认可选；
+    // 两项按节点身份记住，按地图保存。节点树里点击任何节点都能选中，不受“可选”限制。
+    void SetNodeVisible(std::uint32_t node, bool visible);
+    void SetNodeSelectable(std::uint32_t node, bool selectable);
+    [[nodiscard]] bool NodeVisible(std::uint32_t node) const;
+    [[nodiscard]] bool NodeSelectable(std::uint32_t node) const;
+    // 画布上能否点中：自身可选、自身与各级父节点都画出来；界面的根不点中（它铺满整个画面）。
+    [[nodiscard]] bool NodePickable(std::uint32_t node) const;
+    // 原版界面的默认“可选”。切换时清掉原版节点各自的设置。
+    void SetOriginSelectable(bool selectable);
+    [[nodiscard]] bool OriginSelectable() const noexcept { return originSelectable_; }
+    // 新界面的建议编号（ui1、ui2…）；检查新界面编号，合法时返回空，否则返回原因。
+    [[nodiscard]] QString SuggestDescriptionId() const;
+    [[nodiscard]] QString CheckNewDescriptionId(const QString& id) const;
+    // 当前界面：最近选中或新建的那份，新控件默认放进它；没有界面时为空。
+    [[nodiscard]] QString CurrentDescription() const;
     // 编写地图界面描述。编辑先按 audastra.ui 的规则检查，再作为导入文件 AudastraUI\<编号>.json 放进地图的待保存修改，
     // 与导入文件同一撤销栈和保存流程。失败时给出原因，什么都不改。edits 的写法见 UiDescriptionEdit.h。
-    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr);
+    // starter 为真时新界面自带一个面板（StarterUiFrame）并选中它，与新建同一步撤销。
+    bool CreateDescription(const QString& id, const QString& label, QString* error = nullptr, bool starter = false);
     bool EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error = nullptr);
     // 从文件导入一份界面描述（例如 examples/game-ui 里的示例）。withTriggers 时把同目录的 triggers.txt 按功能写法
     // 写进以界面显示名命名的类别，经共用触发器事务发布，描述在发布前放入；任一步失败都不改地图。
@@ -135,8 +153,11 @@ public:
     // 返回新框架编号，失败为空。
     QString AddDescriptionFrame(const QString& kind, QString* error = nullptr, const QString& templateName = {});
     // 在描述 description 的框架 parent 下（空为顶层）添加；at 为新框架中心（屏幕单位，左下为原点），空为居中于父框架。
+    // description 为空时新建一份界面（建议编号）再放进去，与新建同一步撤销。
     QString CreateDescriptionFrame(const QString& kind, const QString& description, const QString& parent,
         std::optional<QPointF> at, const QString& templateName = {}, QString* error = nullptr);
+    // 把控件移到同级的最上层（最后画）或最下层。
+    bool RaiseDescriptionFrame(std::uint32_t node, bool top, QString* error = nullptr);
     // 在所选描述框架下添加游戏或地图界面文件里的模板框架。
     QString AddDescriptionTemplate(const QString& templateName, QString* error = nullptr);
     // 类型预览：只含这一个框架的界面树与绘制清单；用到的贴图与字体按需读取，读到后发出 AssetsChanged。
@@ -158,7 +179,9 @@ public:
     void SetResourcePickerFactory(ObjectResourcePickerFactory factory) { resourcePickerFactory_ = std::move(factory); }
     bool RemoveSelectedDescriptionFrame(QString* error = nullptr);
     bool CopySelectedDescriptionFrame(QString* error = nullptr);
+    // 粘贴到所选控件下；没选中自己的界面时粘贴到当前界面的顶层。
     bool PasteDescriptionFrame(QString* error = nullptr);
+    [[nodiscard]] bool HasClipboardFrame() const;
     [[nodiscard]] QString OriginNodeName(std::uint32_t node) const;
     [[nodiscard]] QString OriginDescriptionId(const QString& name) const;
     bool EditOriginNode(const QString& name, const QJsonObject& fields, QString* error = nullptr);
@@ -228,7 +251,23 @@ signals:
     void AssetsChanged();
     void TriggerSimulationChanged();
 
+protected:
+    // 节点树的可见、可选两列：按下即切换，不改选中行。
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
 private:
+    // 可见改动后重建绘制清单；可点中表与节点树图标随之更新。
+    void ApplyNodeVisibility();
+    void UpdatePickable();
+    void RefreshNodeToggles();
+    // 自己的界面里的节点（含界面的根）。
+    [[nodiscard]] bool OwnNode(std::uint32_t node) const;
+    // 节点自身与各级父节点都画出来（作者设的可见与脚本、描述设的隐藏）。
+    [[nodiscard]] bool NodeShown(std::uint32_t node) const;
+    // 可见、可选按地图保存：换地图时存下当前地图的，再取出新地图的。
+    void SyncMapView();
+    void StoreMapView();
+    void SetCurrentDescription(const QString& id);
     void BuildPage();
     void BuildToolbar(QWidget* page, QVBoxLayout* layout);
     void ScheduleReload();
@@ -309,7 +348,6 @@ private:
     void ReportAuthoring(const QString& error);
     // 生成成功后：本工程还没批准运行库时问作者一次，没有可用包时在问题列表里说明。
     void OfferMapRuntime(bool choosePackage = false);
-    void OnItemChanged(QTreeWidgetItem* item, int column);
     [[nodiscard]] QString NodeKey(std::uint32_t node) const;
 
     QtProject::EditorProject& project_;
@@ -346,7 +384,13 @@ private:
     GameUi::FrameDrawList previewDrawList_;  // 类型预览用到的贴图与字体，随画面一起读取
     std::vector<Diagnostic> sceneDiagnostics_;
     std::vector<Diagnostic> loadDiagnostics_;
-    QSet<QString> hiddenKeys_;
+    QSet<QString> hiddenKeys_;               // 作者设为不可见的节点
+    QHash<QString, bool> selectOverrides_;  // 作者单独设过“可选”的节点
+    bool originSelectable_ = false;
+    QPushButton* originSelectableButton_ = nullptr;
+    QString mapViewKey_;  // 可见、可选当前对应的地图；空为没有地图
+    QJsonArray mapViews_;  // 各地图的可见、可选，最近的在前
+    QString currentDescription_;
     QHash<QString, QImage> textures_;
     QHash<QString, QString> fontFamilies_;
     QHash<QString, QString> assetOrigins_;

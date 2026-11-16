@@ -94,4 +94,12 @@ UiFrame DefaultUiFrame(const UiFrameKind& kind, std::string id, std::string temp
     return frame;
 }
 
+UiFrame StarterUiFrame(std::string id) {
+    UiFrame frame = DefaultUiFrame(*FindUiFrameKind("backdrop"), std::move(id));
+    frame.label = "面板";
+    frame.width = 0.24;
+    frame.height = 0.16;
+    return frame;
+}
+
 } // namespace War3Map::GameUi

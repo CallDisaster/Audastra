@@ -176,6 +176,8 @@ QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateTim
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QDateTimeEdit:disabled {
     color: @disabled; background: @panel; border-color: @line;
 }
+/* 输入不合法：边框标红，原因写在旁边的 formProblem 标签里。 */
+QLineEdit[invalid="true"], QLineEdit[invalid="true"]:hover, QLineEdit[invalid="true"]:focus { border-color: @red; }
 QComboBox::drop-down { width: 24px; border: 0; background: transparent; }
 QComboBox::down-arrow { image: url(:/war3map/icons/qss/chevron-down.svg); width: 12px; height: 12px; }
 QComboBox QAbstractItemView {

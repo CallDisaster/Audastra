@@ -96,9 +96,11 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             required.append("description");
         } else if (tool.name == "game_ui_description_create") {
-            tool.description = "新建一份空白的地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程";
+            tool.description = "新建一份地图界面描述（编号为 ASCII 标识符），作为导入文件放进地图的待保存修改；与导入文件同一撤销与保存流程。"
+                "starter 为真时与编辑器里新建一样自带一个面板（panel1，居中、提示框底板）";
             properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
             properties.insert("label", QJsonObject{{"type", "string"}, {"maxLength", 256}});
+            properties.insert("starter", QJsonObject{{"type", "boolean"}});
             required.append("description");
         } else if (tool.name == "game_ui_description_edit") {
             tool.description = "按顺序作用一组编辑到地图界面描述，整组检查，任何一步或结果不合法都不改。每步一个 op："

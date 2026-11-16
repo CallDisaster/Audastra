@@ -44,5 +44,7 @@ struct UiFrameKind {
 [[nodiscard]] UiFrame DefaultUiFrame(const UiFrameKind& kind, std::string id, std::string templateName = {});
 // 新框架编号的前缀（同一描述里按前缀取下一个空号）。
 [[nodiscard]] std::string_view UiFrameIdPrefix(const UiFrameKind& kind);
+// 新建界面时自带的面板：居中、带提示框底板、尺寸足够放几个控件，新界面一建出来就看得见、能直接拖动和改参数。
+[[nodiscard]] UiFrame StarterUiFrame(std::string id);
 
 } // namespace War3Map::GameUi

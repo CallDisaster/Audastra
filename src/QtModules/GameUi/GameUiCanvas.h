@@ -35,6 +35,12 @@ public:
     void SetDraggable(bool draggable);
     // 放大到该区域（屏幕单位）铺满控件，留出边距；空为显示整个画面。用于类型预览。
     void SetFocusRect(std::optional<GameUi::FrameRect> rect);
+    // 画布上能点中的节点（下标为节点编号）；空为全部能点中。不能点中的节点照常绘制，
+    // 点击、右键与悬停穿过它落到后面能点中的节点或空白处。
+    void SetPickable(std::vector<bool> pickable);
+    [[nodiscard]] bool Pickable(std::uint32_t node) const noexcept {
+        return pickable_.empty() || (node < pickable_.size() && pickable_[node]);
+    }
 
     [[nodiscard]] double Aspect() const noexcept { return aspect_; }
     [[nodiscard]] std::uint32_t Selected() const noexcept { return selected_; }
@@ -94,6 +100,7 @@ private:
     QPointF dragStart_;
     QPointF dragOffset_;  // 当前位移（像素）；超过阈值后才算拖动
     bool dragging_ = false;
+    std::vector<bool> pickable_;
     mutable std::vector<HitBox> hits_;
 };
 

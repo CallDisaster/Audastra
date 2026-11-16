@@ -1,5 +1,6 @@
 #include "GameUiCanvas.h"
 #include "GameUiModule.h"
+#include "GameUiNodeTree.h"
 
 #include "EditorProject.h"
 #include "Icons/SvgIcons.h"
@@ -35,10 +36,7 @@ namespace War3Map::Modules {
 namespace {
 
 using namespace War3Map::GameUi;
-
-constexpr int kNodeRole = Qt::UserRole + 1;
-// 节点名（代码区域显示中文名，搜索仍可按标识查）。
-constexpr int kNameRole = Qt::UserRole + 2;
+using namespace War3Map::Modules::GameUiNodeTree;
 
 QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 QString Number(float value) { return QString::number(static_cast<double>(value), 'f', 4); }
@@ -49,35 +47,6 @@ QString RaceLabel(const QString& race) {
     if (race.compare(QLatin1String("NightElf"), Qt::CaseInsensitive) == 0) return QObject::tr("暗夜精灵");
     if (race.compare(QLatin1String("Undead"), Qt::CaseInsensitive) == 0) return QObject::tr("不死族");
     return race;
-}
-
-QString DisplayName(const FrameNode& node) {
-    if (!node.codeLabel.empty()) return Text(node.codeLabel);
-    if (!node.name.empty()) return Text(node.name);
-    switch (node.kind) {
-    case DefinitionKind::Texture: return QObject::tr("（贴图）");
-    case DefinitionKind::String: return QObject::tr("（文字）");
-    case DefinitionKind::Layer: return QObject::tr("层 %1").arg(Text(node.frameType));
-    default: return QObject::tr("（未命名）");
-    }
-}
-
-QString TypeText(const FrameNode& node) {
-    switch (node.kind) {
-    case DefinitionKind::Texture: return QStringLiteral("Texture");
-    case DefinitionKind::String: return QStringLiteral("String");
-    case DefinitionKind::Layer: return QStringLiteral("Layer");
-    default: return Text(node.frameType);
-    }
-}
-
-QString LayoutText(LayoutState state) {
-    switch (state) {
-    case LayoutState::Placed: return QObject::tr("已定位");
-    case LayoutState::SizeFromContent: return QObject::tr("随文字");
-    case LayoutState::Cycle: return QObject::tr("锚点循环");
-    default: return QObject::tr("未定位");
-    }
 }
 
 QString SkinSourceText(const std::string& source) {
@@ -181,6 +150,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     showBounds_ = Toggle(toolbar, "gameUiShowBounds", tr("边框"), false, "lucide/square-dashed");
     showNames_ = Toggle(toolbar, "gameUiShowNames", tr("名称"), false, "lucide/info");
     showHiddenButton_ = Toggle(toolbar, "gameUiShowHidden", tr("显示隐藏"), showHidden_, "lucide/eye-off");
+    originSelectableButton_ = Toggle(toolbar, "gameUiOriginSelectable", tr("原版可选"), originSelectable_, "lucide/mouse-pointer-2");
     addRootBox_ = new QComboBox(toolbar);
     addRootBox_->setObjectName(QStringLiteral("gameUiAddRoot"));
     addRootBox_->setEditable(true);
@@ -193,7 +163,8 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     auto* reload = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/rotate-ccw")), tr("重新读取"), toolbar);
     reload->setObjectName(QStringLiteral("gameUiReload"));
 
-    for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_, showHiddenButton_})
+    for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_, showHiddenButton_,
+             originSelectableButton_})
         row->addWidget(widget);
     row->addStretch(1);
     for (QWidget* widget : BuildAuthoringControls(toolbar)) row->addWidget(widget);
@@ -208,6 +179,7 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     connect(showBounds_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowBounds(on); });
     connect(showNames_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowNames(on); });
     connect(showHiddenButton_, &QPushButton::toggled, this, [this](bool on) { SetShowHidden(on); });
+    connect(originSelectableButton_, &QPushButton::toggled, this, [this](bool on) { SetOriginSelectable(on); });
     const auto add = [this] {
         if (AddRoot(addRootBox_->currentText())) addRootBox_->setEditText({});
     };
@@ -239,10 +211,25 @@ void GameUiModule::BuildPage() {
     UiKit::InstallSearchIcon(search_);
     nodes_ = new QTreeWidget(left);
     nodes_->setObjectName(QStringLiteral("gameUiNodes"));
-    nodes_->setColumnCount(3);
-    nodes_->setHeaderLabels({tr("名称"), tr("类型"), tr("状态")});
+    nodes_->setColumnCount(kColumnCount);
+    nodes_->setHeaderLabels({tr("名称"), tr("类型"), tr("状态"), QString(), QString()});
+    nodes_->headerItem()->setIcon(kVisibleColumn, UiKit::SvgIcon(QStringLiteral("lucide/eye")));
+    nodes_->headerItem()->setToolTip(kVisibleColumn, tr("可见"));
+    nodes_->headerItem()->setIcon(kSelectColumn, UiKit::SvgIcon(QStringLiteral("lucide/mouse-pointer-2")));
+    nodes_->headerItem()->setToolTip(kSelectColumn, tr("可选"));
     nodes_->header()->setSectionResizeMode(QHeaderView::Interactive);
-    nodes_->header()->resizeSection(0, 200);
+    nodes_->header()->setStretchLastSection(false);
+    // 可见、可选两列排在最前，窄列不随拖动；树的展开标记留在名称列。
+    for (const int column : {kVisibleColumn, kSelectColumn}) {
+        nodes_->header()->setSectionResizeMode(column, QHeaderView::Fixed);
+        nodes_->header()->resizeSection(column, 26);
+    }
+    nodes_->header()->moveSection(kVisibleColumn, 0);
+    nodes_->header()->moveSection(kSelectColumn, 1);
+    nodes_->setTreePosition(kNameColumn);
+    nodes_->header()->resizeSection(kNameColumn, 190);
+    nodes_->header()->resizeSection(kTypeColumn, 90);
+    nodes_->viewport()->installEventFilter(this);
     nodes_->setUniformRowHeights(true);
     nodes_->setAlternatingRowColors(true);
     nodes_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -330,7 +317,6 @@ void GameUiModule::BuildPage() {
         if (populating_ || !item) return;
         SelectNode(item->data(0, kNodeRole).toUInt());
     });
-    connect(nodes_, &QTreeWidget::itemChanged, this, &GameUiModule::OnItemChanged);
     connect(nodes_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& position) {
         QTreeWidgetItem* item = nodes_->itemAt(position);
         ShowContextMenu(item ? item->data(0, kNodeRole).toUInt() : kNoNode, std::nullopt, nodes_->viewport()->mapToGlobal(position), true);
@@ -375,85 +361,6 @@ void GameUiModule::BuildPage() {
     }
 }
 
-void GameUiModule::PopulateTree() {
-    if (!nodes_) return;
-    populating_ = true;
-    nodes_->clear();
-    if (tree_) {
-        const std::unordered_set<std::uint32_t> stateOnly(drawList_.stateOnlyNodes.begin(), drawList_.stateOnlyNodes.end());
-        const QColor dim = nodes_->palette().color(QPalette::PlaceholderText);
-        std::vector<QTreeWidgetItem*> items(tree_->Nodes().size(), nullptr);
-        for (const auto& node : tree_->Nodes()) {
-            if (node.id == kScreenNode) continue;
-            QTreeWidgetItem* parent = node.parent == kScreenNode ? nullptr : items[node.parent];
-            auto* item = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(nodes_);
-            item->setText(0, DisplayName(node));
-            item->setText(1, TypeText(node));
-            const bool state = stateOnly.contains(node.id);
-            item->setText(2, state         ? tr("状态显示")
-                             : node.hidden ? tr("隐藏")
-                             : node.layout == LayoutState::Placed ? QString()
-                                                                  : LayoutText(node.layout));
-            item->setData(0, kNodeRole, node.id);
-            item->setData(0, kNameRole, Text(node.name));
-            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-            item->setCheckState(0, hiddenKeys_.contains(NodeKey(node.id)) ? Qt::Unchecked : Qt::Checked);
-            if (state || node.hidden || node.layout == LayoutState::Unplaced || node.layout == LayoutState::Cycle) {
-                for (int column = 0; column < 3; ++column) item->setForeground(column, dim);
-            }
-            items[node.id] = item;
-            if (node.id == selected_) nodes_->setCurrentItem(item);
-        }
-        for (int i = 0; i < nodes_->topLevelItemCount(); ++i) nodes_->topLevelItem(i)->setExpanded(true);
-    }
-    populating_ = false;
-    ApplyFilter();
-}
-
-void GameUiModule::ApplyFilter() {
-    if (!nodes_) return;
-    const QString needle = search_ ? search_->text().trimmed() : QString();
-    const std::function<bool(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* item) {
-        bool any = false;
-        for (int i = 0; i < item->childCount(); ++i) any = visit(item->child(i)) || any;
-        const bool match = needle.isEmpty() || item->text(0).contains(needle, Qt::CaseInsensitive) ||
-            item->text(1).contains(needle, Qt::CaseInsensitive) ||
-            item->data(0, kNameRole).toString().contains(needle, Qt::CaseInsensitive);
-        item->setHidden(!(match || any));
-        if (!needle.isEmpty() && any) item->setExpanded(true);
-        return match || any;
-    };
-    for (int i = 0; i < nodes_->topLevelItemCount(); ++i) visit(nodes_->topLevelItem(i));
-}
-
-void GameUiModule::OnItemChanged(QTreeWidgetItem* item, int column) {
-    if (populating_ || column != 0 || !item || !tree_) return;
-    const QString key = NodeKey(item->data(0, kNodeRole).toUInt());
-    if (item->checkState(0) == Qt::Checked) hiddenKeys_.remove(key);
-    else hiddenKeys_.insert(key);
-    RebuildDrawList();
-    StartAssetsJob();
-}
-
-void GameUiModule::ShowOnly(std::uint32_t node) {
-    if (!tree_ || node >= tree_->Nodes().size() || node == kScreenNode) return;
-    // 同级节点全部隐藏，自身与各级父节点显示；用于游戏里同一时间只显示其中之一的面板。
-    for (std::uint32_t current = node; current != kScreenNode && current != kNoNode;) {
-        const FrameNode& item = tree_->Nodes()[current];
-        hiddenKeys_.remove(NodeKey(current));
-        if (current == node) {
-            for (const std::uint32_t sibling : tree_->Nodes()[item.parent].children) {
-                if (sibling != current) hiddenKeys_.insert(NodeKey(sibling));
-            }
-        }
-        current = item.parent;
-    }
-    RebuildDrawList();
-    PopulateTree();
-    StartAssetsJob();
-    SelectNode(node);
-}
-
 void GameUiModule::SelectNode(std::uint32_t node) {
     pendingSelection_.clear();
     if (!tree_ || node >= tree_->Nodes().size() || node == kScreenNode) node = kNoNode;
@@ -474,6 +381,8 @@ void GameUiModule::SelectNode(std::uint32_t node) {
         if (match) nodes_->scrollToItem(match);
         populating_ = false;
     }
+    // 选中自己界面里的节点时，那份界面成为当前界面。
+    if (node != kNoNode && tree_->Nodes()[node].uiFrame) SetCurrentDescription(Text(tree_->Nodes()[node].uiFrame->description));
     UpdateProperties();
 }
 
