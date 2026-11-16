@@ -987,9 +987,15 @@ void HandwrittenLuaEntriesSelectRuntime() {
     const auto syntax = Script::BuildIndependentMapTestLaunchPlan(broken);
     FailureCode(syntax, "MAP_TEST_LUA_SYNTAX", "syntax error in any map Lua file stops before launch");
     Require(syntax.diagnostics.back().message.find("lib\\bad.lua") != std::string::npos, "syntax error names the file");
-    auto invalid = fixture.Artifact(members(Script("    call Cheat(\"exec-lua: main\")"), {{"main.lua", Bytes("return 1\n")}}));
+    // 与 YDWE 的 Lua 引擎相同，模块名可以不加引号（KKWE 演示图写成 exec-lua:init）。
+    auto unquoted = fixture.Artifact(members(Script("    call Cheat(\"exec-lua:main\")"), {{"main.lua", Bytes("return 1\n")}}));
+    helpers(unquoted);
+    const auto unquotedPlan = Script::BuildIndependentMapTestLaunchPlan(unquoted);
+    Success(unquotedPlan, "unquoted module name launches like the original engine");
+    Require(unquotedPlan.value->luaEntryModules == std::vector<std::string>{"main"}, "unquoted entry names the same module");
+    auto invalid = fixture.Artifact(members(Script("    call Cheat(\"exec-lua: main lib\")"), {{"main.lua", Bytes("return 1\n")}}));
     helpers(invalid);
-    FailureCode(Script::BuildIndependentMapTestLaunchPlan(invalid), "MAP_TEST_LUA_ENTRY_INVALID", "unquoted module is reported with its line");
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(invalid), "MAP_TEST_LUA_ENTRY_INVALID", "an unquoted name with spaces is reported with its line");
 
     auto ordinary = fixture.Artifact(members(Script("    call Cheat(\"greedisgood 500\")"), {{"main.lua", Bytes("return (\n")}}));
     plan = Script::BuildIndependentMapTestLaunchPlan(ordinary);
