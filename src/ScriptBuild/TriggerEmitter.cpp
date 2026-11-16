@@ -62,6 +62,12 @@ const std::unordered_map<std::string_view, Gui>& GuiTable() {
         {"KKGetHandleId", Gui::KKGetHandleId}, {"KKWESetObjectTableData", Gui::KKWESetObjectTableData},
         {"KKWEGetObjectTableData", Gui::KKWEGetObjectTableData},
         {"KKWEFlushObjectTableData", Gui::KKWEFlushObjectTableData},
+        {"MHModule_Evaluate", Gui::MHModuleEvaluate}, {"MHModule_SetRetval", Gui::MHModuleSetRetval},
+        {"MHModule_SetArrayRetval", Gui::MHModuleSetArrayRetval},
+        {"KKAPISetLocalVariables", Gui::KKAPISetLocalVariables}, {"KKAPIGetLocalVariables", Gui::KKAPIGetLocalVariables},
+        {"KKAPISetAnyTypeLocalArray", Gui::KKAPISetAnyTypeLocalArray},
+        {"KKAPIGetAnyTypeLocalArray", Gui::KKAPIGetAnyTypeLocalArray},
+        {"KKAPIEnumUnitsInRangeMultiple", Gui::KKAPIEnumUnitsInRangeMultiple}, {"YDWEExitLoop", Gui::YDWEExitLoop},
     };
     return table;
 }
@@ -148,8 +154,10 @@ std::string TriggerEmitter::ResolvedType(const Eca& eca, std::size_t index) cons
     // （typename07_unit → unit，objecttype00_abilcode → abilcode）。
     std::size_t source = index;
     const std::string_view name = eca.name.text;
-    if (gui == Gui::YDWESetAnyTypeLocalVariable && index == 2) source = 0;
-    else if (gui == Gui::YDWESetAnyTypeLocalArray && index == 3) source = 0;
+    if ((gui == Gui::YDWESetAnyTypeLocalVariable || gui == Gui::MHModuleSetRetval || gui == Gui::KKAPISetLocalVariables)
+        && index == 2) source = 0;
+    else if ((gui == Gui::YDWESetAnyTypeLocalArray || gui == Gui::MHModuleSetArrayRetval || gui == Gui::KKAPISetAnyTypeLocalArray)
+        && index == 3) source = 0;
     else if (gui == Gui::YDWESaveAnyTypeDataByUserData && index == 1) source = 0;
     else if (gui == Gui::YDWESaveAnyTypeDataByUserData && index == 4) source = 3;
     else if (index == 1 && (gui == Gui::YDWELoadAnyTypeDataByUserData || gui == Gui::YDWEHaveSavedAnyTypeDataByUserData ||
@@ -200,6 +208,10 @@ Slot TriggerEmitter::SlotOf(const Eca& eca, std::size_t index) const {
 const Trigger::UiCallbackAction* TriggerEmitter::CallbackOf(const Eca& eca) const {
     if (eca.type != 2 || GuiOf(eca) != Gui::None) return nullptr;
     return catalog_.CallbackActions().Find(eca.name.text);
+}
+
+bool TriggerEmitter::IsModuleCreate(const Eca& eca) const {
+    return eca.name.text == "MHModule_Create" && CallbackOf(eca) != nullptr;
 }
 
 std::string TriggerEmitter::Numbered(const std::string& name, std::size_t index) {
@@ -315,10 +327,25 @@ void TriggerEmitter::PutExternTopDown(const Eca& eca, const std::string& name) {
             out_.Line("");
         }
     }
-    PutExternItems(eca, name);
-    if (DzCallbackSuffix(parent) == nullptr && CallbackOf(eca) != nullptr) PutCallbackFunction(eca, name);
+    {
+        // KKWE 模块：块内（含其中再生成的函数）的局部变量都在模块页上，外层闭包的状态不延续进来。
+        const auto savedModule = moduleFunction_;
+        const LocvarState savedLocvar = locvar_;
+        const bool module = IsModuleCreate(eca);
+        if (module) {
+            moduleFunction_ = name + "A";
+            locvar_ = {};
+        }
+        PutExternItems(eca, name);
+        if (DzCallbackSuffix(parent) == nullptr && CallbackOf(eca) != nullptr) PutCallbackFunction(eca, name);
+        if (module) {
+            moduleFunction_ = savedModule;
+            locvar_ = savedLocvar;
+        }
+    }
     switch (parent) {
     case Gui::ForGroupMultiple:
+    case Gui::KKAPIEnumUnitsInRangeMultiple:
     case Gui::ForForceMultiple:
     case Gui::EnumDestructablesInRectAllMultiple:
     case Gui::EnumDestructablesInCircleBJMultiple:

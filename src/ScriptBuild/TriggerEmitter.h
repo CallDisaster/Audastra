@@ -40,6 +40,9 @@ enum class Gui : std::uint16_t {
     DzTriggerRegisterMouseEventMultiple, DzTriggerRegisterKeyEventMultiple, DzTriggerRegisterMouseWheelEventMultiple,
     DzTriggerRegisterMouseMoveEventMultiple, DzTriggerRegisterWindowResizeEventMultiple, DzFrameSetUpdateCallbackMultiple,
     DzFrameSetScriptMultiple, KKGetHandleId, KKWESetObjectTableData, KKWEGetObjectTableData, KKWEFlushObjectTableData,
+    // KKWE 生成器自己展开的条目：模块（运行、设置返回值）、真局部变量、选取单位到单位组（多动作），以及 YDWE 跳出循环。
+    MHModuleEvaluate, MHModuleSetRetval, MHModuleSetArrayRetval, KKAPISetLocalVariables, KKAPIGetLocalVariables,
+    KKAPISetAnyTypeLocalArray, KKAPIGetAnyTypeLocalArray, KKAPIEnumUnitsInRangeMultiple, YDWEExitLoop,
 };
 
 // Dz“异步注册（多项）”：回调函数名后缀（<名><后缀>T），不是这类动作时为空。
@@ -116,6 +119,8 @@ private:
     [[nodiscard]] Slot SlotOf(const Eca& eca, std::size_t index) const;
     // 函数库声明多一个末尾 code 参数的动作：块内动作写成独立函数作为该参数传入。
     [[nodiscard]] const Trigger::UiCallbackAction* CallbackOf(const Eca& eca) const;
+    // KKWE“创建模块”：回调块，块内局部变量放在模块自己的页上（见 ModulePage）。
+    [[nodiscard]] bool IsModuleCreate(const Eca& eca) const;
     [[nodiscard]] static long Block(const Eca& eca) { return eca.childId.value_or(-1); }
     [[nodiscard]] static std::string Numbered(const std::string& name, std::size_t index);
     [[nodiscard]] static std::string FuncName(const std::string& name, std::size_t index);
@@ -179,6 +184,18 @@ private:
     void LocvarFlush(Gui gui);
     void PutUserData(const Eca& eca, const std::string& name, Gui gui);
     void PutObjectTableData(const Eca& eca, const std::string& name, Gui gui);
+    // 本函数局部变量所在的页：模块体内为模块的当前页，否则为本次执行的帧（1：主动作函数，2：其他函数）。
+    [[nodiscard]] std::string FramePage() const;
+    // 调用方的页（运行模块时作为模块的上级页）：闭包内为闭包页，否则同 FramePage。
+    [[nodiscard]] std::string CallerPage() const;
+    // KKWE 模块的页：YDLOC[StringHash(模块函数名)][StringHash(slot)]，slot 为 Current 或 Parent。
+    [[nodiscard]] std::string ModulePage(std::string_view slot) const;
+    void PutModuleEvaluate(const Eca& eca, const std::string& name);
+    void PutModuleRetval(const Eca& eca, const std::string& name, bool array);
+    // KKWE 真局部变量：声明成同名 JASS 局部变量（名称按局部变量名规则转换），数组加 array。
+    void TrueLocalDeclare(const Eca& eca, bool array);
+    [[nodiscard]] std::string TrueLocalName(const Eca& eca, bool set);
+    void PutTrueLocalSet(const Eca& eca, const std::string& name, bool array);
     void CheckSaveLoad(const std::string& varName, const std::string& typeName);
     // YDTrigger 存储的展开写法：table 为 YDLOC / YDHT，page 为页表达式；index 非空时键为“常量 + (index)”。
     struct StorageKey {
@@ -214,7 +231,15 @@ private:
     const Trigger::TriggerRecord* trigger_ = nullptr;
     LocvarState locvar_;
     std::map<std::string, std::map<std::string, std::string>> registerVar_;
-    std::vector<std::pair<int, std::string>> localVars_;
+    std::vector<std::pair<int, std::string>> localVars_; // (类型序号, 完整变量名)
+    struct TrueLocal {
+        std::string name, type;
+        bool array = false, handle = false;
+    };
+    std::vector<TrueLocal> trueLocals_;
+    // 正在写的 KKWE 模块函数名（模块体及其内部生成的函数）；运行模块参数区的局部变量写进被调模块的页。
+    std::optional<std::string> moduleFunction_;
+    std::optional<std::string> moduleParamPage_;
     std::map<std::string, std::string> saveLoadTypes_;
     bool localInMainProc_ = false;
     bool enumUnitsInRange_ = false;

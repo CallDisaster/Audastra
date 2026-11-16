@@ -2,6 +2,7 @@
 
 #include "ScriptNames.h"
 
+#include <algorithm>
 #include <array>
 #include <set>
 #include <string_view>
@@ -74,14 +75,65 @@ const char* LocalTypeName(int index) {
 }
 
 void TriggerEmitter::LocalDeclare(int type, const std::string& prefix, const std::string& name) {
+    const std::string variable = prefix + "_" + ConvertLocalName(name);
     for (const auto& [existingType, existing] : localVars_) {
         (void)existingType;
-        if (existing == name) return;
+        if (existing == variable) return;
     }
     if (localVars_.size() >= 0x100) return;
-    localVars_.emplace_back(type, name);
+    localVars_.emplace_back(type, variable);
     out_.Begin();
-    out_.Line(std::string("local ") + LocalTypeName(type) + " " + prefix + "_" + ConvertLocalName(name));
+    out_.Line(std::string("local ") + LocalTypeName(type) + " " + variable);
+    out_.End();
+}
+
+// KKWE 真局部变量：同一函数内同名只声明一次；类型或是否数组不一致时照先出现的声明，并说明后者会被检查拒绝。
+void TriggerEmitter::TrueLocalDeclare(const Eca& eca, bool array) {
+    const std::string type = LocalTypeOf(eca, 0);
+    const std::string name = ConvertLocalName(ArgValue(eca, 1));
+    if (type.empty() || !IsJassIdentifier(name)) {
+        Warn("true-local-invalid", "真局部变量“" + ArgValue(eca, 1) + "”缺少有效的类型或名称，不会声明。");
+        return;
+    }
+    const std::string jassType = BaseType(type);
+    for (const auto& local : trueLocals_) {
+        if (local.name != name) continue;
+        if (local.type != jassType || local.array != array) {
+            Warn("true-local-conflict", "真局部变量“" + name + "”在同一函数里先后以 " + local.type + (local.array ? " 数组" : "")
+                + " 和 " + jassType + (array ? " 数组" : "") + " 使用，只能按前者声明。");
+        }
+        return;
+    }
+    const bool handle = StorageFor(jassType).have == "HaveSavedHandle";
+    trueLocals_.push_back({name, jassType, array, handle});
+    out_.Begin();
+    out_.Line("local " + jassType + (array ? " array " : " ") + name);
+    out_.End();
+}
+
+std::string TriggerEmitter::TrueLocalName(const Eca& eca, bool set) {
+    const std::string name = ConvertLocalName(ArgValue(eca, set ? 1 : 0));
+    const bool declared = std::any_of(trueLocals_.begin(), trueLocals_.end(),
+        [&](const TrueLocal& local) { return local.name == name; });
+    if (!declared) {
+        Warn("true-local-undeclared", "真局部变量“" + ArgValue(eca, set ? 1 : 0) + "”在这个函数里没有设置过。真局部变量只在设置它的"
+            "同一个函数里有效，计时器、触发器和“做动作”类的块内动作都在单独的函数里，读不到外面的值。");
+    }
+    return name;
+}
+
+void TriggerEmitter::PutTrueLocalSet(const Eca& eca, const std::string& name, bool array) {
+    const std::string local = TrueLocalName(eca, true);
+    out_.Begin();
+    out_.Put("set " + local);
+    if (array) {
+        out_.Put("[");
+        PutVar(eca, name, 2);
+        out_.Put("]");
+    }
+    out_.Put(" = ");
+    PutVar(eca, name, array ? 3 : 2);
+    out_.Line("");
     out_.End();
 }
 
@@ -93,6 +145,9 @@ void TriggerEmitter::LocalSearchVar(const Eca& eca, bool searchHash) {
         if (searchHash && (gui == Gui::YDWEGetAnyTypeLocalVariable || gui == Gui::YDWEGetAnyTypeLocalArray)) {
             localInMainProc_ = true;
         }
+        // “如果-那么-否则”等把动作写在参数里，其中设置的真局部变量也属于本函数。
+        if (gui == Gui::KKAPISetLocalVariables || gui == Gui::KKAPISetAnyTypeLocalArray)
+            TrueLocalDeclare(*call, gui == Gui::KKAPISetAnyTypeLocalArray);
         LocalSearchVar(*call, searchHash);
     }
 }
@@ -150,6 +205,19 @@ void TriggerEmitter::LocalSearch(Children children, bool searchHash, long block)
         case Gui::YDWESetAnyTypeLocalArray:
             if (searchHash) localInMainProc_ = true;
             break;
+        case Gui::KKAPISetLocalVariables:
+        case Gui::KKAPISetAnyTypeLocalArray:
+            TrueLocalDeclare(eca, GuiOf(eca) == Gui::KKAPISetAnyTypeLocalArray);
+            break;
+        case Gui::MHModuleEvaluate:
+            // 本函数的页作为模块的上级页传入（模块写回返回值的地方）；参数区的动作就地生成。
+            if (searchHash) localInMainProc_ = true;
+            LocalSearch(eca.children, searchHash, -1);
+            break;
+        case Gui::KKAPIEnumUnitsInRangeMultiple:
+            LocalDeclare(kGroup, "KKWE", "Group");
+            if (searchHash) LocalSearch(eca.children, searchHash, -1);
+            break;
         case Gui::DzTriggerRegisterMouseEventMultiple:
         case Gui::DzTriggerRegisterKeyEventMultiple:
         case Gui::DzTriggerRegisterMouseWheelEventMultiple:
@@ -170,6 +238,7 @@ void TriggerEmitter::LocalSearch(Children children, bool searchHash, long block)
 
 void TriggerEmitter::LocalBegin(Children children, bool isTimer, bool searchHash) {
     localVars_.clear();
+    trueLocals_.clear();
     if (searchHash) localInMainProc_ = false;
     LocalSearch(children, searchHash, -1);
     if (!isTimer && searchHash && localInMainProc_) {
@@ -186,15 +255,22 @@ void TriggerEmitter::LocalEnd(bool isTimer, bool isEnd) {
         out_.Line("call FlushChildHashtable(YDLOC, " + LocalPage(1) + ")");
         out_.End();
     }
-    for (const auto& [type, name] : localVars_) {
+    for (const auto& [type, variable] : localVars_) {
         if (type == kUnit || type == kGroup || type == kTimer || type == kTrigger || type == kForce) {
             out_.Begin();
-            out_.Line("set ydl_" + ConvertLocalName(name) + " = null");
+            out_.Line("set " + variable + " = null");
             out_.End();
         }
     }
+    for (const auto& local : trueLocals_) {
+        if (!local.handle || local.array) continue;
+        out_.Begin();
+        out_.Line("set " + local.name + " = null");
+        out_.End();
+    }
     if (isEnd) {
         localVars_.clear();
+        trueLocals_.clear();
         localInMainProc_ = false;
     }
 }
@@ -263,22 +339,28 @@ void TriggerEmitter::LocvarGet(const std::string& typeName, const std::string& v
         PutStorageLoad(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key);
     } else {
         CheckSaveLoad(varName, typeName);
-        PutStorageLoad(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key);
+        PutStorageLoad(kLocalTable, typeName, FramePage(), key);
     }
 }
 
 void TriggerEmitter::LocvarSet(const std::string& typeName, std::uint32_t id, const std::string& varName,
     const LocvarState& state, const std::function<void()>& value) {
     out_.Begin();
-    if (id == 0) id = state.motherId;
     const StorageKey key{varName};
+    // “运行模块”参数区里直接设置的局部变量写进被调模块的页（与 KKWE 相同，读取仍读本函数的页）。
+    if (id == 0 && moduleParamPage_) {
+        PutStorageSave(kLocalTable, typeName, *moduleParamPage_, key, value);
+        out_.End();
+        return;
+    }
+    if (id == 0) id = state.motherId;
     if ((id & 0xFFFFu) == Id(Gui::YDWEExecuteTriggerMultiple)) {
         PutStorageSave(kLocalTable, typeName, LocalPage(5), key, value);
     } else if ((id & kParamsFlag) != 0 || ClosureMother(id)) {
         PutStorageSave(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key, value);
     } else {
         CheckSaveLoad(varName, typeName);
-        PutStorageSave(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key, value);
+        PutStorageSave(kLocalTable, typeName, FramePage(), key, value);
     }
     out_.End();
     if ((state.motherId & kParamsFlag) != 0) {
@@ -297,22 +379,27 @@ void TriggerEmitter::LocvarGetArray(const std::string& typeName, const std::stri
         PutStorageLoad(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key);
     } else {
         CheckSaveLoad(varName, typeName);
-        PutStorageLoad(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key);
+        PutStorageLoad(kLocalTable, typeName, FramePage(), key);
     }
 }
 
 void TriggerEmitter::LocvarSetArray(const std::string& typeName, std::uint32_t id, const std::string& varName,
     const LocvarState& state, const std::function<void()>& index, const std::function<void()>& value) {
     out_.Begin();
-    if (id == 0) id = state.motherId;
     const StorageKey key{varName, &index};
+    if (id == 0 && moduleParamPage_) {
+        PutStorageSave(kLocalTable, typeName, *moduleParamPage_, key, value);
+        out_.End();
+        return;
+    }
+    if (id == 0) id = state.motherId;
     if ((id & 0xFFFFu) == Id(Gui::YDWEExecuteTriggerMultiple)) {
         PutStorageSave(kLocalTable, typeName, LocalPage(5), key, value);
     } else if ((id & kParamsFlag) != 0 || ClosureMother(id)) {
         PutStorageSave(kLocalTable, typeName, ClosurePage(state.handle.value_or("")), key, value);
     } else {
         CheckSaveLoad(varName, typeName);
-        PutStorageSave(kLocalTable, typeName, LocalPage(localInMainProc_ ? 1 : 2), key, value);
+        PutStorageSave(kLocalTable, typeName, FramePage(), key, value);
     }
     out_.End();
 }
@@ -414,6 +501,65 @@ void TriggerEmitter::LocvarFlush(Gui gui) {
     usesStorage_ = true;
     out_.Line("call FlushChildHashtable(YDLOC, " + LocalPage(timer ? 3 : 4) + ")");
     out_.Line(timer ? "call DestroyTimer(GetExpiredTimer())" : "call DestroyTrigger(GetTriggeringTrigger())");
+    out_.End();
+}
+
+std::string TriggerEmitter::FramePage() const {
+    return moduleFunction_ ? ModulePage("Current") : LocalPage(localInMainProc_ ? 1 : 2);
+}
+
+std::string TriggerEmitter::CallerPage() const {
+    if ((locvar_.motherId & kParamsFlag) != 0 && locvar_.prevHandle) return ClosurePage(*locvar_.prevHandle);
+    if (ClosureMother(locvar_.motherId)) return ClosurePage(locvar_.handle.value_or(""));
+    return FramePage();
+}
+
+std::string TriggerEmitter::ModulePage(std::string_view slot) const {
+    return "LoadInteger(" + std::string(kLocalTable) + ", " + detail::StorageKey(moduleFunction_.value_or("")) + ", "
+        + detail::StorageKey(slot) + ")";
+}
+
+// KKWE“运行模块”：以模块函数名的 StringHash 为模块页，先写上级页（调用方的页）和当前页，参数区动作就地生成，
+// 运行后清掉模块页。运行时用 MHGame_GetCodeName 取模块函数名，与生成时写进模块体的函数名相同。
+void TriggerEmitter::PutModuleEvaluate(const Eca& eca, const std::string& name) {
+    const std::string args = Capture([&] {
+        PutVar(eca, name, 0);
+        out_.Put(", ");
+        PutVar(eca, name, 1);
+    });
+    const std::string page = "StringHash(MHGame_GetCodeName(MHModule_GetCode(" + args + ")))";
+    const std::string table(kLocalTable);
+    usesStorage_ = true;
+    out_.Begin();
+    out_.Line("call SaveInteger(" + table + ", " + page + ", " + detail::StorageKey("Parent") + ", " + CallerPage() + ")");
+    out_.Line("call SaveInteger(" + table + ", " + page + ", " + detail::StorageKey("Current") + ", " + page + ")");
+    out_.End();
+    const auto savedParam = moduleParamPage_;
+    moduleParamPage_ = page;
+    PutBlockAction(eca, name, -1);
+    moduleParamPage_ = savedParam;
+    out_.Begin();
+    out_.Line("call " + ScriptName(eca) + "(" + args + ")");
+    out_.Line("call FlushChildHashtable(" + table + ", " + page + ")");
+    out_.End();
+}
+
+// KKWE“设置当前模块返回值”：写进模块的上级页（运行模块的那一方），对方之后按同名局部变量读取。
+// 不在“创建模块”的块内时 KKWE 不生成代码，只给出警告；这里同样处理。
+void TriggerEmitter::PutModuleRetval(const Eca& eca, const std::string& name, bool array) {
+    const std::string type = LocalTypeOf(eca, 0);
+    if (type.empty()) {
+        Warn("local-type-missing", "“设置当前模块返回值”缺少有效的类型参数。");
+        return;
+    }
+    if (!moduleFunction_) {
+        Warn("module-retval-outside", "“设置当前模块返回值”只能放在“创建模块”的块内，这里不会生成代码（与 KKWE 相同）。");
+        return;
+    }
+    const std::function<void()> index = [&] { PutVar(eca, name, 2); };
+    out_.Begin();
+    PutStorageSave(kLocalTable, type, ModulePage("Parent"), StorageKey{ArgValue(eca, 1), array ? &index : nullptr},
+        [&] { PutVar(eca, name, array ? 3 : 2); });
     out_.End();
 }
 

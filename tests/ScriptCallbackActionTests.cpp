@@ -11,6 +11,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -224,8 +225,171 @@ void TestCatalog(const Fixture& fixture, const UiCatalog& catalog, const std::ve
         "modern layer jass directory is scanned");
 }
 
+std::string HashKey(std::string_view text) {
+    char buffer[16];
+    std::snprintf(buffer, sizeof(buffer), "0x%08X", StormStringHash(text));
+    return buffer;
+}
+
+// KKWE 生成器自己展开的条目：模块（创建 / 运行 / 设置返回值）、真局部变量、选取单位到单位组（多动作）、跳出循环。
+// 原创合成函数库；名称用 KKWE 的定义名，因为生成规则按名称识别。只验证生成文本与严格检查，不代表游戏运行。
+void TestKkweGeneratedEntries(const std::filesystem::path& root) {
+    const auto tool = root / "kkwe";
+    const auto ui = tool / "share/mpq";
+    WriteText(ui / "config", "probe\n");
+    WriteText(ui / "probe/define.txt", "[TriggerTypes]\ninteger=0,1,1,Integer,integer\nreal=0,1,1,Real,real\n"
+        "string=0,1,1,String,string\nunit=0,1,1,Unit,unit\ngroup=0,1,1,Group,group\nfilter=0,1,1,Filter,boolexpr\n"
+        "typename=1,0,0,Type,string\nNull=0,0,0,Value\nAnyReturnType=0,0,0,Any\n"
+        "[TriggerParams]\ntypename01_integer=0,typename,1,Integer\ntypename02_real=0,typename,2,Real\n"
+        "typename07_unit=0,typename,7,Unit\nProbeNoFilter=0,filter,null,No filter\n");
+    // 变量名在 KKWE 中是代码参数；公共 T 图批次不接受代码参数，合成库改用字符串，生成时同样取原值。
+    WriteText(ui / "probe/action.txt",
+        "[MHModule_Create]\ntitle=\"Probe - create module\"\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
+        "[MHModule_Evaluate]\n[[.args]]\ntype=integer\n[[.args]]\ntype=integer\n"
+        "[MHModule_SetRetval]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=Null\n"
+        "[MHModule_SetArrayRetval]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=integer\n[[.args]]\ntype=Null\n"
+        "[YDWESetAnyTypeLocalVariable]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=Null\n"
+        "[KKAPISetLocalVariables]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=Null\n"
+        "[KKAPISetAnyTypeLocalArray]\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n[[.args]]\ntype=integer\n[[.args]]\ntype=Null\n"
+        "[KKAPIEnumUnitsInRangeMultiple]\n[[.args]]\ntype=group\n[[.args]]\ntype=real\n[[.args]]\ntype=real\n[[.args]]\ntype=real\n"
+        "[[.args]]\ntype=filter\n"
+        "[YDWEExitLoop]\n[RecordReal]\n[[.args]]\ntype=real\n[ProbeKill]\n[[.args]]\ntype=unit\n");
+    WriteText(ui / "probe/call.txt",
+        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n"
+        "[KKAPIGetLocalVariables]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n"
+        "[KKAPIGetAnyTypeLocalArray]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n[[.args]]\ntype=integer\n"
+        "[ProbeGroup]\nreturns=group\n[ProbeHero]\nreturns=unit\n[GetEnumUnit]\nreturns=unit\n");
+    const std::string common = "type agent extends handle\ntype widget extends agent\ntype unit extends widget\n"
+        "type group extends agent\ntype trigger extends agent\ntype triggeraction extends handle\ntype hashtable extends agent\n"
+        "type boolexpr extends agent\n"
+        "native CreateTrigger takes nothing returns trigger\n"
+        "native TriggerAddAction takes trigger t, code action returns triggeraction\n"
+        "native GetTriggeringTrigger takes nothing returns trigger\nnative GetHandleId takes handle h returns integer\n"
+        "native StringHash takes string s returns integer\n"
+        "native SaveInteger takes hashtable t, integer p, integer c, integer v returns nothing\n"
+        "native LoadInteger takes hashtable t, integer p, integer c returns integer\n"
+        "native SaveReal takes hashtable t, integer p, integer c, real v returns nothing\n"
+        "native LoadReal takes hashtable t, integer p, integer c returns real\n"
+        "native FlushChildHashtable takes hashtable t, integer p returns nothing\n"
+        "native GroupEnumUnitsInRange takes group g, real x, real y, real r, boolexpr f returns nothing\n"
+        "native ForGroup takes group g, code c returns nothing\nnative GetEnumUnit takes nothing returns unit\n"
+        "native MHModule_Create takes integer a, integer b, code c returns nothing\n"
+        "native MHModule_Evaluate takes integer a, integer b returns boolean\n"
+        "native MHModule_GetCode takes integer a, integer b returns code\n"
+        "native MHGame_GetCodeName takes code c returns string\n"
+        "native RecordReal takes real v returns nothing\nnative ProbeKill takes unit u returns nothing\n"
+        "native ProbeGroup takes nothing returns group\nnative ProbeHero takes nothing returns unit\n";
+    // 回调块识别读函数库 J 的声明：模块函数多一个末尾 code 参数。
+    WriteText(tool / "jass/module.j", common);
+    const auto catalog = UiCatalog::Load(ui);
+    Require(catalog.Succeeded(), "KKWE probe catalog: " + Details(catalog.diagnostics));
+    Require(catalog.value->CallbackActions().Find("MHModule_Create") != nullptr, "module creation is a callback block");
+
+    const auto callValue = [](std::string function, std::vector<GraphArgumentValue> args) {
+        GraphArgumentValue result;
+        auto call = std::make_shared<GraphEcaValue>();
+        call->function = std::move(function); call->kind = UiDefinitionKind::Call; call->arguments = std::move(args);
+        result.call = call;
+        return result;
+    };
+    const auto readLocal = [&](const char* type, const char* name) {
+        return callValue("YDWEGetAnyTypeLocalVariable", {Scalar(0, type), Scalar(3, name)});
+    };
+    auto document = MakeDocument(*catalog.value, {
+        Action("MHModule_Create", {Scalar(3, "1"), Scalar(3, "2")}, {
+            Child(Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename02_real"), Scalar(3, "Damage"), Scalar(3, "5.0")})),
+            Child(Action("MHModule_SetRetval", {Scalar(0, "typename02_real"), Scalar(3, "Damage"), readLocal("typename02_real", "Damage")})),
+            Child(Action("MHModule_SetArrayRetval", {Scalar(0, "typename01_integer"), Scalar(3, "Hits"), Scalar(3, "3"), Scalar(3, "7")})),
+        }),
+        Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename02_real"), Scalar(3, "Damage"), Scalar(3, "1.0")}),
+        Action("MHModule_Evaluate", {Scalar(3, "1"), Scalar(3, "2")}, {
+            Child(Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename01_integer"), Scalar(3, "Arg"), Scalar(3, "9")})),
+        }),
+        Action("RecordReal", {readLocal("typename02_real", "Damage")}),
+        Action("MHModule_SetRetval", {Scalar(0, "typename02_real"), Scalar(3, "Lost"), Scalar(3, "1.0")}),
+        Action("KKAPISetLocalVariables", {Scalar(0, "typename07_unit"), Scalar(3, "Hero"), callValue("ProbeHero", {})}),
+        Action("KKAPISetAnyTypeLocalArray", {Scalar(0, "typename02_real"), Scalar(3, "Scale"), Scalar(3, "2"), Scalar(3, "1.5")}),
+        Action("RecordReal", {callValue("KKAPIGetAnyTypeLocalArray", {Scalar(3, "Scale"), Scalar(3, "2")})}),
+        Action("ProbeKill", {callValue("KKAPIGetLocalVariables", {Scalar(3, "Hero")})}),
+        Action("KKAPIEnumUnitsInRangeMultiple", {callValue("ProbeGroup", {}), Scalar(3, "0"), Scalar(3, "0"), Scalar(3, "512"),
+            Scalar(0, "ProbeNoFilter")}, {Child(Action("ProbeKill", {callValue("GetEnumUnit", {})}))}),
+    });
+    MapScriptInputs inputs; inputs.catalog = &*catalog.value; inputs.triggers = &document;
+    const auto generated = GenerateMapScript(inputs);
+    Require(generated.Succeeded(), "KKWE entry generation: " + Details(generated.diagnostics));
+    const auto& text = generated.text;
+    const auto bodyOf = [&](std::string_view function) {
+        const auto begin = text.find("function " + std::string(function) + " takes");
+        Require(begin != std::string::npos, "missing " + std::string(function) + ":\n" + text);
+        return text.substr(begin, text.find("endfunction", begin) - begin);
+    };
+    const std::string current = "LoadInteger(YDLOC, " + HashKey("Trig_CallbackFunc001A") + ", " + HashKey("Current") + ")";
+    const std::string parent = "LoadInteger(YDLOC, " + HashKey("Trig_CallbackFunc001A") + ", " + HashKey("Parent") + ")";
+    const auto module = bodyOf("Trig_CallbackFunc001A");
+    Require(module.find("ydl_localvar_step") == std::string::npos
+        && module.find("call SaveReal(YDLOC, " + current + ", " + HashKey("Damage") + ", 5.0)") != std::string::npos,
+        "module locals live on the module's current page without a frame of their own:\n" + module);
+    Require(module.find("call SaveReal(YDLOC, " + parent + ", " + HashKey("Damage") + ", LoadReal(YDLOC, " + current + ", "
+            + HashKey("Damage") + "))") != std::string::npos
+        && module.find("call SaveInteger(YDLOC, " + parent + ", " + HashKey("Hits") + " + (3), 7)") != std::string::npos,
+        "return values are written to the caller's page, arrays by key + index:\n" + module);
+    Require(!HasCode(generated.diagnostics, "callback-local-scope"), "module locals are not reported as lost: "
+        + Details(generated.diagnostics));
+    const auto main = bodyOf("Trig_CallbackActions");
+    const std::string page = "StringHash(MHGame_GetCodeName(MHModule_GetCode(1, 2)))";
+    const auto parentSave = main.find("call SaveInteger(YDLOC, " + page + ", " + HashKey("Parent")
+        + ", GetHandleId(GetTriggeringTrigger())*ydl_localvar_step)");
+    const auto currentSave = main.find("call SaveInteger(YDLOC, " + page + ", " + HashKey("Current") + ", " + page + ")");
+    const auto argument = main.find("call SaveInteger(YDLOC, " + page + ", " + HashKey("Arg") + ", 9)");
+    const auto evaluate = main.find("call MHModule_Evaluate(1, 2)");
+    const auto flush = main.find("call FlushChildHashtable(YDLOC, " + page + ")");
+    Require(main.find("local integer ydl_localvar_step") != std::string::npos && parentSave != std::string::npos
+        && currentSave != std::string::npos && argument != std::string::npos && evaluate != std::string::npos
+        && flush != std::string::npos && parentSave < currentSave && currentSave < argument && argument < evaluate && evaluate < flush,
+        "evaluating a module passes this frame as its parent, writes parameters to the module page and clears it after:\n" + main);
+    Require(main.find("call RecordReal(LoadReal(YDLOC, GetHandleId(GetTriggeringTrigger())*ydl_localvar_step, "
+            + HashKey("Damage") + "))") != std::string::npos,
+        "the caller reads the returned value as its own local:\n" + main);
+    Require(HasCode(generated.diagnostics, "module-retval-outside") && text.find(HashKey("Lost")) == std::string::npos,
+        "a return value outside any module is reported and not generated: " + Details(generated.diagnostics));
+    Require(main.find("local unit Hero") != std::string::npos && main.find("local real array Scale") != std::string::npos
+        && main.find("set Hero = ProbeHero()") != std::string::npos && main.find("set Scale[2] = 1.5") != std::string::npos
+        && main.find("call RecordReal(Scale[2])") != std::string::npos && main.find("call ProbeKill(Hero)") != std::string::npos
+        && main.find("set Hero = null") != std::string::npos,
+        "true locals are plain JASS locals, handles cleared at the end:\n" + main);
+    Require(main.find("local group KKWE_Group") != std::string::npos && main.find("set KKWE_Group = ProbeGroup()") != std::string::npos
+        && main.find("call GroupEnumUnitsInRange(KKWE_Group, 0, 0, 512, null)") != std::string::npos
+        && main.find("call ForGroup(KKWE_Group, function Trig_CallbackFunc010A)") != std::string::npos
+        && main.find("set KKWE_Group = null") != std::string::npos
+        && bodyOf("Trig_CallbackFunc010A").find("call ProbeKill(GetEnumUnit())") != std::string::npos,
+        "the enumeration block fills the group and runs its actions for each unit:\n" + text);
+    Require(text.find("MHModule_SetRetval") == std::string::npos && text.find("MHModule_SetArrayRetval") == std::string::npos
+        && text.find("KKAPI") == std::string::npos,
+        "no generated entry is written as an undeclared call:\n" + text);
+
+    // 严格检查生成的触发器函数（与原始错误同类：保存前的语法与类型检查）。
+    const auto first = text.find("function Trig_Callback");
+    const auto last = text.find("function InitCustomTriggers");
+    Require(first != std::string::npos && last != std::string::npos && first < last, "trigger section:\n" + text);
+    const std::string checked = "globals\n    hashtable YDLOC = null\n    trigger gg_trg_Callback = null\nendglobals\n"
+        + text.substr(first, text.rfind("//====", last) - first);
+    const std::array<Jass::JassSource, 2> sources{{{"common.j", common}, {"war3map.j", checked}}};
+    Jass::JassCheckOptions checks; checks.threads = 1;
+    const auto result = Jass::CheckJass(sources, checks);
+    Require(result.Succeeded() && result.errorsIgnored == 0, "strict check of the generated triggers: " + Details(result.diagnostics)
+        + "\n" + checked);
+
+    // YDWE“跳出循环”：写成 exitwhen true，不是一个不存在的函数调用。
+    auto exit = MakeDocument(*catalog.value, {Action("YDWEExitLoop")});
+    MapScriptInputs exitInputs; exitInputs.catalog = &*catalog.value; exitInputs.triggers = &exit;
+    const auto exitScript = GenerateMapScript(exitInputs);
+    Require(exitScript.Succeeded() && exitScript.text.find("exitwhen true") != std::string::npos
+        && exitScript.text.find("YDWEExitLoop") == std::string::npos, "exit loop:\n" + exitScript.text);
+}
+
 void Run(const std::filesystem::path& root) {
     TestScanner();
+    TestKkweGeneratedEntries(root);
     const auto fixture = MakeFixture(root / "valid");
     const auto catalog = UiCatalog::Load(fixture.ui);
     Require(catalog.Succeeded(), "original callback catalog: " + Details(catalog.diagnostics));

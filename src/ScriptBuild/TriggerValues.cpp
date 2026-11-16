@@ -220,6 +220,14 @@ void TriggerEmitter::PutCallValue(const std::string& slotType, const Eca& call, 
     case Gui::YDWEGetAnyTypeLocalArray:
         LocvarGetArray(slotType, ArgValue(call, 0), locvar_, [&] { PutVar(call, child, 1); });
         return;
+    case Gui::KKAPIGetLocalVariables:
+        out_.Put(TrueLocalName(call, false));
+        return;
+    case Gui::KKAPIGetAnyTypeLocalArray:
+        out_.Put(TrueLocalName(call, false) + "[");
+        PutVar(call, child, 1);
+        out_.Put("]");
+        return;
     case Gui::YDWELoadAnyTypeDataByUserData: {
         const auto keyType = LocalTypeOf(call, 0);
         if (keyType.empty()) return;

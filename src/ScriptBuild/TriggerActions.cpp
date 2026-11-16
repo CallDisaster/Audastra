@@ -263,6 +263,21 @@ void TriggerEmitter::PutCallbackFunction(const Eca& eca, const std::string& name
     const bool savedEnum = enumUnitsInRange_;
     locvar_ = {};
     enumUnitsInRange_ = false;
+    if (IsModuleCreate(eca)) {
+        // KKWE 模块：不开新帧，局部变量读写模块的当前页；页由“运行模块”在调用前写好、调用后清除。
+        const bool savedMain = localInMainProc_;
+        localInMainProc_ = false;
+        out_.Line("function " + name + "A takes nothing returns nothing");
+        LocalBegin(eca.children, false, false);
+        PutBlockAction(eca, name, -1);
+        LocalEnd(false, true);
+        out_.Line("endfunction");
+        out_.Line("");
+        localInMainProc_ = savedMain;
+        locvar_ = saved;
+        enumUnitsInRange_ = savedEnum;
+        return;
+    }
     out_.Line("function " + name + "A takes nothing returns nothing");
     LocalBegin(eca.children, false, true);
     if (localInMainProc_) {
@@ -376,6 +391,40 @@ void TriggerEmitter::PutActionEx(const Eca& eca, const std::string& name) {
         break;
     case Gui::YDWESetAnyTypeLocalArray:
         LocvarSetAction(eca, name, 0, true);
+        break;
+    case Gui::MHModuleEvaluate:
+        PutModuleEvaluate(eca, name);
+        break;
+    case Gui::MHModuleSetRetval:
+    case Gui::MHModuleSetArrayRetval:
+        PutModuleRetval(eca, name, gui == Gui::MHModuleSetArrayRetval);
+        break;
+    case Gui::KKAPISetLocalVariables:
+    case Gui::KKAPISetAnyTypeLocalArray:
+        PutTrueLocalSet(eca, name, gui == Gui::KKAPISetAnyTypeLocalArray);
+        break;
+    case Gui::YDWEExitLoop:
+        out_.Begin();
+        out_.Line("exitwhen true");
+        out_.End();
+        break;
+    case Gui::KKAPIEnumUnitsInRangeMultiple:
+        // 与 KKWE 相同：先把目标单位组存进 KKWE_Group，选取范围内满足条件的单位后逐个执行块内动作。
+        out_.Begin();
+        out_.Put("set KKWE_Group = ");
+        PutVar(eca, name, 0);
+        out_.Line("");
+        out_.Put("call GroupEnumUnitsInRange(KKWE_Group, ");
+        PutVar(eca, name, 1);
+        out_.Put(", ");
+        PutVar(eca, name, 2);
+        out_.Put(", ");
+        PutVar(eca, name, 3);
+        out_.Put(", ");
+        PutVar(eca, name, 4);
+        out_.Line(")");
+        out_.Line("call ForGroup(KKWE_Group, function " + name + "A)");
+        out_.End();
         break;
     case Gui::YDWETimerStartMultiple:
         out_.Begin();
