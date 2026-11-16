@@ -7,7 +7,7 @@ extern "C" int StartFakeGame() {
     auto* shared = Audastra::Runtime32::OpenChannel();
     if (!shared) return 43;
     // 裸模式不加载任何扩展插件；其余模式要求装入清单里标了 Initialize 的插件（至少两个）都真正初始化。
-    // 插件在清单里的位置随布局不同（六件套是第 5、6 个，KKWE 按 config.cfg 与依赖排序）。
+    // 插件在清单里的位置随布局不同（六件套是第 5、6 个，KKWE 按插件目录顺序与依赖排序）。
     const bool bare = shared->runtimeMode == Audastra::Runtime32::RuntimeMode::Bare;
     DWORD flagged = 0, initialized = 0;
     const auto count = (std::min)(shared->runtimeModuleCount, static_cast<DWORD>(Audastra::Runtime32::kRuntimeModuleLimit));

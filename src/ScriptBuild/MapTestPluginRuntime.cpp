@@ -44,25 +44,22 @@ bool ApiSet(std::string_view name) {
     return name.starts_with("api-ms-") || name.starts_with("ext-ms-");
 }
 
-// config.cfg 里的插件名只能是 plugin/warcraft3 下的 DLL 文件名。
-bool PluginFileName(std::string_view name) {
-    if (name.size() < 5 || name.size() > 128 || name.find_first_of("/\\:") != std::string_view::npos) return false;
-    if (name.front() == '.' || name.back() == ' ') return false;
-    if (std::any_of(name.begin(), name.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e; }))
-        return false;
-    return Lower(std::string(name.substr(name.size() - 4))) == ".dll";
-}
-
-// config.cfg 的 [Enable] 段，按文件顺序；值为 0 或空的不装。
-Result<std::vector<std::string>> EnabledPlugins(const fs::path& config) {
+// config.cfg 的 [Enable] 段：插件文件名（小写）→ 是否启用。与原平台相同，只有值为 0 才算关掉；
+// 没写的插件照常装入。名字以文件里第一次出现为准。
+struct PluginSwitches {
+    std::map<std::string, bool> enabled;
+    std::vector<std::string> listed; // 写了启用的名字（原样），用来提示目录里缺的插件
+};
+Result<PluginSwitches> ReadPluginSwitches(const fs::path& config) {
+    PluginSwitches switches;
+    std::error_code error;
+    if (!fs::exists(config, error) && !error) return Result<PluginSwitches>::Success(std::move(switches));
     const auto bytes = IO::ReadFileBytes(config, kConfigBudget);
     if (!bytes.Succeeded())
-        return Result<std::vector<std::string>>::Failure("Map.Test.Runtime", "MAP_TEST_PLUGIN_CONFIG",
-            "无法读取 " + IO::PathUtf8(config) + "（不存在或超过 64 KiB）。");
+        return Result<PluginSwitches>::Failure("Map.Test.Runtime", "MAP_TEST_PLUGIN_CONFIG",
+            "无法读取 " + IO::PathUtf8(config) + "（被占用或超过 64 KiB）。");
     std::string_view text(reinterpret_cast<const char*>(bytes.value->data()), bytes.value->size());
     if (text.starts_with("\xEF\xBB\xBF")) text.remove_prefix(3);
-    std::vector<std::string> enabled;
-    std::set<std::string> seen;
     std::string section;
     while (!text.empty()) {
         const auto end = text.find('\n');
@@ -79,13 +76,18 @@ Result<std::vector<std::string>> EnabledPlugins(const fs::path& config) {
         if (equal == std::string_view::npos) continue;
         const auto name = Text::TrimCWhitespaceCopy(line.substr(0, equal));
         const auto value = Text::TrimCWhitespaceCopy(line.substr(equal + 1));
-        if (value.empty() || value == "0") continue;
-        if (!PluginFileName(name))
-            return Result<std::vector<std::string>>::Failure("Map.Test.Runtime", "MAP_TEST_PLUGIN_CONFIG",
-                IO::PathUtf8(config) + " 里的“" + name + "”不是 plugin/warcraft3 下的 DLL 文件名。");
-        if (seen.insert(Lower(name)).second) enabled.push_back(name);
+        if (name.empty() || name.size() > 260) continue;
+        const bool on = value != "0";
+        if (switches.enabled.emplace(Lower(name), on).second && on) switches.listed.push_back(name);
     }
-    return Result<std::vector<std::string>>::Success(std::move(enabled));
+    return Result<PluginSwitches>::Success(std::move(switches));
+}
+
+// 与 NTFS 目录顺序相同：按大写后的字节比较。
+bool DirectoryOrder(const std::string& left, const std::string& right) {
+    const auto upper = [](char c) { return static_cast<unsigned char>(c >= 'a' && c <= 'z' ? c - 'a' + 'A' : c); };
+    return std::lexicographical_compare(left.begin(), left.end(), right.begin(), right.end(),
+        [&](char a, char b) { return upper(a) < upper(b); });
 }
 
 // 在文件里找地图要的接口名（以非标识符字符隔开的完整名字）。
@@ -111,16 +113,37 @@ void MarkNatives(std::span<const std::byte> bytes, const std::set<std::string>& 
 } // namespace
 
 bool IsPluginConfigRuntime(const fs::path& root) {
-    return !root.empty() && Regular(root / "bin" / "ydbase.dll") && Regular(root / "plugin" / "warcraft3" / "config.cfg");
+    std::error_code error;
+    return !root.empty() && Regular(root / "bin" / "ydbase.dll") && fs::is_directory(root / "plugin" / "warcraft3", error) && !error;
 }
 
 Result<Plan> PlanPluginConfigRuntime(const fs::path& root, const std::vector<std::string>& natives) {
     if (!IsPluginConfigRuntime(root))
-        return Fail("MAP_TEST_PLUGIN_RUNTIME_MISSING", "所选目录不是 KKWE 运行库（缺少 bin/ydbase.dll 或 plugin/warcraft3/config.cfg）："
+        return Fail("MAP_TEST_PLUGIN_RUNTIME_MISSING", "所选目录不是 KKWE 运行库（缺少 bin/ydbase.dll 或 plugin/warcraft3 目录）："
             + IO::PathUtf8(root));
     const auto pluginDirectory = root / "plugin" / "warcraft3";
-    auto enabled = EnabledPlugins(pluginDirectory / "config.cfg");
-    if (!enabled.Succeeded()) return {std::nullopt, std::move(enabled.diagnostics)};
+    auto switches = ReadPluginSwitches(pluginDirectory / "config.cfg");
+    if (!switches.Succeeded()) return {std::nullopt, std::move(switches.diagnostics)};
+
+    // 插件目录里的 DLL：按目录顺序；yd_loader.dll 与写成 0 的跳过。
+    std::vector<std::string> candidates;
+    std::set<std::string> present;
+    std::error_code listError;
+    for (fs::directory_iterator it(pluginDirectory, listError), end; !listError && it != end; it.increment(listError)) {
+        if (present.size() >= kBinListingLimit) break;
+        std::error_code typeError;
+        if (!it->is_regular_file(typeError) || typeError) continue;
+        const auto name = IO::PathUtf8(it->path().filename());
+        const auto lower = Lower(name);
+        if (lower.size() < 5 || !lower.ends_with(".dll")) continue;
+        present.insert(lower);
+        if (lower == "yd_loader.dll") continue;
+        const auto setting = switches.value->enabled.find(lower);
+        if (setting != switches.value->enabled.end() && !setting->second) continue;
+        candidates.push_back(name);
+    }
+    if (listError) return Fail("MAP_TEST_PLUGIN_RUNTIME_MISSING", "无法列出 " + IO::PathUtf8(pluginDirectory) + "。");
+    std::sort(candidates.begin(), candidates.end(), DirectoryOrder);
 
     // bin 里的文件：小写名 → 实际文件名（导入表里的大小写与磁盘不一定一致）。
     std::map<std::string, fs::path> bin;
@@ -138,6 +161,7 @@ Result<Plan> PlanPluginConfigRuntime(const fs::path& root, const std::vector<std
     const std::set<std::string> wanted(natives.begin(), natives.end());
     std::set<std::string> found;
     std::set<std::string> added;
+    std::vector<PlannedRuntimeModule> planned;
     std::optional<Result<Plan>> failure;
     const auto inspect = [&](const fs::path& path) -> std::optional<RuntimeModuleImage> {
         const auto bytes = IO::ReadFileBytes(path, kPeBudget);
@@ -153,12 +177,13 @@ Result<Plan> PlanPluginConfigRuntime(const fs::path& root, const std::vector<std
         MarkNatives(*bytes.value, wanted, found);
         return std::move(*image.value);
     };
-    const auto push = [&](Services::MapTestRuntimeModule module) {
+    const auto push = [&](Services::MapTestRuntimeModule module, RuntimeModuleImage image) {
         if (plan.modules.size() >= kModuleLimit) {
             failure = Fail("MAP_TEST_PLUGIN_RUNTIME_LIMIT", "KKWE 运行库要装入的文件超过 "
-                + std::to_string(kModuleLimit) + " 个，请在 plugin/warcraft3/config.cfg 里关掉不用的插件。");
+                + std::to_string(kModuleLimit) + " 个，请在 plugin/warcraft3/config.cfg 里把不用的插件设为 0。");
             return false;
         }
+        planned.push_back({IO::GenericPathUtf8(module.relativePath), std::move(image)});
         plan.modules.push_back(std::move(module));
         return true;
     };
@@ -172,32 +197,32 @@ Result<Plan> PlanPluginConfigRuntime(const fs::path& root, const std::vector<std
             return false;
         }
         added.insert(lower);
-        const auto image = inspect(root / "bin" / file->second);
+        auto image = inspect(root / "bin" / file->second);
         if (!image) return false;
         for (const auto& name : image->imports)
             if (!addBin(name, depth + 1)) return false;
         const bool lua = lower == "luacore.dll" || lower == "lua53.dll";
-        return push({fs::path("bin") / file->second, false, lua});
+        return push({fs::path("bin") / file->second, false, lua}, std::move(*image));
     };
-    for (const auto& plugin : *enabled.value) {
+    for (const auto& plugin : candidates) {
         const auto lower = Lower(plugin);
-        if (lower == "yd_loader.dll") continue;
-        const auto path = pluginDirectory / plugin;
-        if (!Regular(path)) {
-            plan.missing.push_back(plugin);
-            continue;
-        }
         if (added.contains(lower)) continue;
         added.insert(lower);
-        const auto image = inspect(path);
+        const auto file = IO::PathFromUtf8(plugin);
+        auto image = inspect(pluginDirectory / file);
         if (!image) return std::move(*failure);
         for (const auto& name : image->imports)
             if (!addBin(name, 0)) return std::move(*failure);
-        if (!push({fs::path("plugin") / "warcraft3" / plugin, image->initialize, false})) return std::move(*failure);
+        const bool initialize = image->initialize;
+        if (!push({fs::path("plugin") / "warcraft3" / file, initialize, false}, std::move(*image))) return std::move(*failure);
         plan.plugins.push_back(plugin);
     }
+    for (const auto& name : switches.value->listed)
+        if (!present.contains(Lower(name))) plan.missing.push_back(name);
     if (plan.plugins.empty())
-        return Fail("MAP_TEST_PLUGIN_CONFIG", IO::PathUtf8(pluginDirectory / "config.cfg") + " 没有启用任何可装入的插件。");
+        return Fail("MAP_TEST_PLUGIN_CONFIG", IO::PathUtf8(pluginDirectory) + " 里没有可装入的插件（目录为空或都被 config.cfg 设为 0）。");
+    const auto versions = CheckRuntimeModuleVersions(planned, root);
+    if (!versions.Succeeded()) return {std::nullopt, versions.diagnostics};
     for (const auto& name : wanted)
         if (!found.contains(name)) plan.unmatchedNatives.push_back(name);
     return Result<Plan>::Success(std::move(plan));

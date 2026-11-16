@@ -167,14 +167,20 @@ void LoadLegacyPlugins() {
 }
 void InitializeRuntime() {
     if (!InstallLuaProbeWriteGuard(evidence)) Fail("lua-probe-write-guard-install", ERROR_ACCESS_DENIED);
-    // 启动器按装入顺序写好每个模块的完整路径和 SHA；与原平台装载器相同，逐个装入并调用 Initialize。
+    // 启动器按装入顺序写好每个模块的完整路径和 SHA；与原平台装载器相同，先全部装入，再逐个调用 Initialize。
     const auto count = (std::min)(evidence->runtimeModuleCount, static_cast<DWORD>(kRuntimeModuleLimit));
     if (!count) Fail("runtime-module-plan", ERROR_INVALID_DATA);
+    std::array<HMODULE, kRuntimeModuleLimit> loadedModules{};
     for (DWORD index = 0; index < count; ++index) {
         auto& module = evidence->modules[index];
         const std::filesystem::path expected(std::wstring(module.path));
         const auto loaded = LoadVerifiedModule(module, expected, kRuntimeStages);
         if (index == evidence->runtimeLuaModule && !InstallLuaProbeObserver(loaded)) Fail("lua-probe-observer-install", ERROR_PROC_NOT_FOUND);
+        loadedModules[index] = loaded;
+    }
+    for (DWORD index = 0; index < count; ++index) {
+        auto& module = evidence->modules[index];
+        const auto loaded = loadedModules[index];
         if (evidence->runtimeModuleInitialize[index]) {
             const auto initialize = GetProcAddress(loaded, "Initialize");
             if (!initialize) Fail("runtime-initialize-export", ERROR_PROC_NOT_FOUND);

@@ -35,8 +35,10 @@ std::string DirectoryState(const QString& text) {
     if (leaf == QLatin1String("ui")) root = root.parent_path();
     const auto has = [&](const wchar_t* relative) { return fs::exists(root / relative, error); };
     std::string kind;
-    if (has(L"bin/lua53.dll") && has(L"plugin/warcraft3/yd_jass_api.dll")) kind = "，YDWE 运行库";
-    else if (has(L"bin/ydbase.dll") && has(L"plugin/warcraft3/config.cfg")) kind = "，KKWE 运行库";
+    // 同时有 YDWE 的 lua53.dll 与 KKWE 的 luacore.dll，多半是两种编辑器的文件混放，测试时会对不上。
+    if (has(L"bin/lua53.dll") && has(L"bin/luacore.dll")) kind = "，YDWE 与 KKWE 文件混放";
+    else if (has(L"bin/lua53.dll") && has(L"plugin/warcraft3/yd_jass_api.dll")) kind = "，YDWE 运行库";
+    else if (has(L"bin/ydbase.dll") && has(L"plugin/warcraft3")) kind = "，KKWE 运行库";
     else if (has(L"lua53.dll") && has(L"yd_jass_api.dll")) kind = "，独立六件套运行库";
     return text.toStdString() + kind;
 }

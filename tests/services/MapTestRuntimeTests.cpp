@@ -141,6 +141,51 @@ std::vector<std::byte> PluginPe(bool initialize, const std::vector<std::string>&
     std::memcpy(bytes.data() + 0x501, text.data(), text.size());
     return bytes;
 }
+// 原创带名字表的 PE：按名字导出 exports，从 importDll 按名字导入 importNames（各最多 8 个）。
+// 只给版本核对做静态检查；节扩到 0xe00 字节，RVA = 文件偏移 + 0xe00。
+std::vector<std::byte> SymbolPe(const std::vector<std::string>& exports, std::string_view importDll = {},
+    const std::vector<std::string>& importNames = {}) {
+    auto bytes = Pe(true);
+    bytes.resize(0x1000);
+    Require(exports.size() <= 8 && importNames.size() <= 8, "symbol PE fixture stays within its fixed layout");
+    const auto u16 = [&](std::size_t offset, std::uint16_t value) { std::memcpy(bytes.data() + offset, &value, 2); };
+    const auto u32 = [&](std::size_t offset, std::uint32_t value) { std::memcpy(bytes.data() + offset, &value, 4); };
+    const auto rva = [](std::size_t offset) { return static_cast<std::uint32_t>(offset + 0xe00); };
+    constexpr std::size_t optional = 0x98, section = optional + 224;
+    u32(section + 8, 0xe00); u32(section + 16, 0xe00);
+    std::size_t cursor = 0x700;
+    const auto text = [&](std::string_view value) {
+        const auto at = cursor;
+        std::memcpy(bytes.data() + at, value.data(), value.size());
+        cursor += value.size() + 1;
+        Require(cursor < bytes.size(), "symbol PE fixture strings fit");
+        return at;
+    };
+    if (!exports.empty()) {
+        constexpr std::size_t directory = 0x300, names = 0x340, ordinals = 0x380, functions = 0x3a0;
+        u32(optional + 96, rva(directory)); u32(optional + 100, 0x40);
+        const auto count = static_cast<std::uint32_t>(exports.size());
+        u32(directory + 20, count); u32(directory + 24, count);
+        u32(directory + 28, rva(functions)); u32(directory + 32, rva(names)); u32(directory + 36, rva(ordinals));
+        for (std::size_t i = 0; i < exports.size(); ++i) {
+            u32(names + i * 4, rva(text(exports[i])));
+            u16(ordinals + i * 2, static_cast<std::uint16_t>(i));
+            u32(functions + i * 4, 0x1000);
+        }
+    }
+    if (!importDll.empty()) {
+        constexpr std::size_t descriptor = 0x400, thunks = 0x440, iat = 0x480;
+        u32(optional + 104, rva(descriptor)); u32(optional + 108, 40);
+        u32(descriptor, rva(thunks)); u32(descriptor + 12, rva(text(importDll))); u32(descriptor + 16, rva(iat));
+        for (std::size_t i = 0; i < importNames.size(); ++i) {
+            const auto hint = cursor;
+            cursor += 2;
+            text(importNames[i]);
+            u32(thunks + i * 4, rva(hint));
+        }
+    }
+    return bytes;
+}
 constexpr std::string_view kCommon = R"JASS(native DebugMessage takes string message returns nothing
 native GetRandomInt takes integer low, integer high returns integer
 native ScheduleCallback takes code callback returns nothing
@@ -697,7 +742,8 @@ void YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions() {
     Require(Code(Script::BuildIndependentMapTestLaunchPlan(explicitMap), "MAP_TEST_RUNTIME_LAYOUT"), "invalid layout cannot reach launcher");
     flatFixture.Unchanged(explicitMap);
 }
-// KKWE：bin 只有 ydbase / luacore 等依赖，插件由 plugin/warcraft3/config.cfg 启用；按依赖在前的顺序逐个装入。
+// KKWE：bin 只有 ydbase / luacore 等依赖。与原平台相同，plugin/warcraft3 下的 DLL 按目录顺序全装，
+// 只跳过 config.cfg 写成 0 的；没有 config.cfg 时全装。每个插件前先放它在 bin 里的依赖。
 void PluginConfigRuntimeFollowsConfigAndImports() {
     Fixture fixture;
     const auto kkwe = fixture.root / "kkwe";
@@ -709,6 +755,8 @@ void PluginConfigRuntimeFollowsConfigAndImports() {
     Write(kkwe / "plugin/warcraft3/yd_jass_api.dll", PluginPe(true, {"YDBASE.DLL"}, "EXNative"));
     Write(kkwe / "plugin/warcraft3/yd_lua_engine.dll", PluginPe(true, {"luacore.dll", "slklib.dll", "ydbase.dll"}));
     Write(kkwe / "plugin/warcraft3/yd_disabled.dll", Bytes("disabled plugin is never read"));
+    Write(kkwe / "plugin/warcraft3/kk_unlisted.dll", PluginPe(true, {"ydbase.dll"}));
+    Write(kkwe / "plugin/warcraft3/readme.txt", Bytes("not a plugin"));
     const auto config = kkwe / "plugin/warcraft3/config.cfg";
     Write(config, Bytes("[Enable]\r\nyd_loader.dll = 1\r\nyd_jass_api.dll = 1\r\n; comment\r\nyd_lua_engine.dll=1\r\n"
         "yd_disabled.dll = 0\r\nyd_absent.dll = 1\r\n[Other]\r\nignored.dll = 1\r\n"));
@@ -727,13 +775,14 @@ void PluginConfigRuntimeFollowsConfigAndImports() {
     };
     auto map = prepare(fixture.Artifact(Script("    call EXNative()", "native EXNative takes nothing returns nothing\n")));
     const auto plan = Script::BuildIndependentMapTestLaunchPlan(map);
-    Success(plan, "KKWE tree without lua53.dll plans its config.cfg plugins");
+    Success(plan, "KKWE tree without lua53.dll plans its plugin directory");
     const auto layout = std::find(plan.value->arguments.begin(), plan.value->arguments.end(), L"--runtime-layout");
     Require(plan.value->runtimeLayout == Services::MapTestRuntimeLayout::PluginConfig && plan.value->runtimeRoot == kkwe
         && layout != plan.value->arguments.end() && *(layout + 1) == L"plugin-config", "KKWE layout is explicit in the frozen launcher plan");
-    const std::vector<std::wstring> expected{L"-|bin\\ydbase.dll", L"i|plugin\\warcraft3\\yd_jass_api.dll", L"l|bin\\LuaCore.dll",
-        L"-|bin\\SlkLib.dll", L"i|plugin\\warcraft3\\yd_lua_engine.dll"};
-    Require(modules(*plan.value) == expected, "bin dependencies load before each plugin, in config.cfg order, without yd_loader or disabled plugins");
+    const std::vector<std::wstring> expected{L"-|bin\\ydbase.dll", L"i|plugin\\warcraft3\\kk_unlisted.dll",
+        L"i|plugin\\warcraft3\\yd_jass_api.dll", L"l|bin\\LuaCore.dll", L"-|bin\\SlkLib.dll", L"i|plugin\\warcraft3\\yd_lua_engine.dll"};
+    Require(modules(*plan.value) == expected,
+        "bin dependencies load before each plugin, in directory order, unlisted plugins included, without yd_loader or plugins set to 0");
     Require(Code(plan, "MAP_TEST_PLUGIN_RUNTIME_SELECTED") && Code(plan, "MAP_TEST_PLUGIN_RUNTIME_MISSING_PLUGIN")
         && !Code(plan, "MAP_TEST_PLUGIN_RUNTIME_NATIVE_UNMATCHED") && !Code(plan, "MAP_TEST_LEGACY_NATIVE_UNVERIFIED"),
         "KKWE notes name loaded and missing plugins; a native found by name raises no warning");
@@ -746,11 +795,57 @@ void PluginConfigRuntimeFollowsConfigAndImports() {
     Write(kkwe / "plugin/warcraft3/yd_jass_api.dll", Bytes("damaged plugin"));
     FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_RUNTIME_PE", "damaged enabled plugin stops planning");
     Write(kkwe / "plugin/warcraft3/yd_jass_api.dll", PluginPe(true, {"YDBASE.DLL"}, "EXNative"));
-    Write(config, Bytes("[Enable]\r\n../escape.dll = 1\r\n"));
-    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_PLUGIN_CONFIG", "plugin names cannot leave plugin/warcraft3");
-    Write(config, Bytes("[Enable]\r\nyd_jass_api.dll = 0\r\n"));
-    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_PLUGIN_CONFIG", "a config with nothing enabled cannot launch");
+    // config.cfg 里的名字只当开关用，不决定装入路径。
+    Write(config, Bytes("[Enable]\r\n../escape.dll = 1\r\nyd_disabled.dll = 0\r\n"));
+    const auto escape = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(escape, "a config name outside plugin/warcraft3 never becomes a load path");
+    Require(modules(*escape.value) == expected && Code(escape, "MAP_TEST_PLUGIN_RUNTIME_MISSING_PLUGIN"),
+        "the odd name is only reported as missing");
+    // 没有 config.cfg：原平台全装，包括之前写成 0 的那个。
+    std::filesystem::remove(config);
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_RUNTIME_PE", "without config.cfg every plugin DLL is planned and checked");
+    Write(kkwe / "plugin/warcraft3/yd_disabled.dll", PluginPe(false, {}));
+    const auto all = Script::BuildIndependentMapTestLaunchPlan(map);
+    Success(all, "KKWE without config.cfg still launches");
+    auto everything = expected;
+    everything.insert(everything.begin() + 2, L"-|plugin\\warcraft3\\yd_disabled.dll");
+    Require(all.value->runtimeLayout == Services::MapTestRuntimeLayout::PluginConfig && modules(*all.value) == everything
+        && !Code(all, "MAP_TEST_PLUGIN_RUNTIME_MISSING_PLUGIN"), "without config.cfg all plugin DLLs except yd_loader load in directory order");
+    Write(config, Bytes("[Enable]\r\nkk_unlisted.dll = 0\r\nyd_jass_api.dll = 0\r\nyd_lua_engine.dll=0\r\nyd_disabled.dll = 0\r\n"));
+    FailureCode(Script::BuildIndependentMapTestLaunchPlan(map), "MAP_TEST_PLUGIN_CONFIG", "a config with every plugin set to 0 cannot launch");
     fixture.Unchanged(map); fixture.Unchanged(other);
+}
+// 不同版本的 YDWE / KKWE 文件混放：插件要的函数在 bin 的同名 DLL 里没有，游戏装入会以 Win32 127 失败。
+// 启动前按导入、导出名字核对并说明是哪两个文件；同一版本的文件照常启动。
+void MixedRuntimeVersionsAreRejectedBeforeLaunch() {
+    Fixture fixture;
+    const auto kkwe = fixture.root / "kkwe-mixed";
+    Write(kkwe / "bin/ydbase.dll", SymbolPe({"base_old"}));
+    Write(kkwe / "plugin/warcraft3/yd_jass_api.dll", SymbolPe({"Initialize"}, "ydbase.dll", {"base_old", "base_new", "base_newer"}));
+    Write(fixture.helper / "audastra-warcraft-launcher.exe", Pe(false)); Write(fixture.helper / "audastra-warcraft-bootstrap.dll", Pe(true));
+    auto map = fixture.Artifact(Script("    call EXNative()", "native EXNative takes nothing returns nothing\n"));
+    map.runtimeYdweRoot = kkwe;
+    map.runtimeBridge = fixture.helper / "audastra-warcraft-launcher.exe";
+    map.runtimeBootstrap = fixture.helper / "audastra-warcraft-bootstrap.dll";
+    const auto mixed = Script::BuildIndependentMapTestLaunchPlan(map);
+    Require(Code(mixed, "MAP_TEST_RUNTIME_MISMATCH") && !mixed.Succeeded(), "KKWE plugin missing bin functions is refused before launch");
+    const auto& message = mixed.diagnostics.front().message;
+    Require(message.find("plugin/warcraft3/yd_jass_api.dll") != std::string::npos && message.find("bin/ydbase.dll") != std::string::npos
+        && message.find(" 2 个函数") != std::string::npos && message.find("base_new") != std::string::npos,
+        "the refusal names both files, the missing count and one missing function");
+    Write(kkwe / "bin/ydbase.dll", SymbolPe({"base_newer", "base_new", "base_old"}));
+    Success(Script::BuildIndependentMapTestLaunchPlan(map), "matching KKWE versions launch");
+
+    // 六件套：KKWE 的 yd_loader 配老 YDWE 的 ydbase（群友实际遇到的情况）。
+    auto legacy = fixture.Artifact(Script("    call EXNative()", "native EXNative takes nothing returns nothing\n"));
+    fixture.Runtime(legacy, Services::MapTestRuntimeLayout::YdweTree, true);
+    Success(Script::BuildIndependentMapTestLaunchPlan(legacy), "a consistent six-module tree launches");
+    Write(fixture.runtime / "plugin/warcraft3/yd_loader.dll", SymbolPe({}, "ydbase.dll", {"get_war3_searcher"}));
+    const auto tree = Script::BuildIndependentMapTestLaunchPlan(legacy);
+    Require(Code(tree, "MAP_TEST_RUNTIME_MISMATCH") && !tree.Succeeded()
+        && tree.diagnostics.front().message.find("plugin/warcraft3/yd_loader.dll") != std::string::npos,
+        "six-module tree with a newer yd_loader is refused before launch");
+    fixture.Unchanged(map); fixture.Unchanged(legacy);
 }
 void UnusedUiPreferencesCannotBlockNativeMaps() {
     Fixture fixture;
@@ -1377,6 +1472,7 @@ int wmain(int argc, wchar_t** argv) {
         ExplicitAndUnknownInterfacesNeedRuntime(); RuntimeFilesAndProfileAreCheckedWithoutExecution();
         YdweTreeFallbackIsReadonlyAndOnlyNeededForExtensions();
         PluginConfigRuntimeFollowsConfigAndImports();
+        MixedRuntimeVersionsAreRejectedBeforeLaunch();
         UnusedUiPreferencesCannotBlockNativeMaps();
         LuaMapsAreExplicitRuntimeInputs(); HandwrittenLuaEntriesSelectRuntime(); TestCopyTranslatesYdweRawcodes();
         MissingMalformedAndOversizeScriptsStopPlanning();

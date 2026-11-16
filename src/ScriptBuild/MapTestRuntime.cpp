@@ -38,6 +38,10 @@ constexpr std::size_t kScriptBudget = 16u * 1024u * 1024u;
 // 与保存检查共用记号上限：16 MiB 内的实际大图主脚本可超过两百万个记号。
 const std::size_t kTokenBudget = Jass::JassCheckOptions{}.maxTokens;
 constexpr std::size_t kPeBudget = 32u * 1024u * 1024u;
+// 版本核对读的符号：C++ 修饰名可以很长；导出名、按名字导入的函数各自有总数上限。
+constexpr unsigned kSymbolBytes = 4096;
+constexpr std::uint32_t kExportNameLimit = 65536;
+constexpr std::size_t kImportSymbolLimit = 65536;
 using LaunchPlan = Services::MapTestLaunchPlan;
 using namespace Jass::detail;
 
@@ -568,9 +572,9 @@ public:
         }
         return {};
     }
-    std::optional<std::string> Name(std::uint32_t address) const {
+    std::optional<std::string> Name(std::uint32_t address, unsigned limit = 256) const {
         std::string result;
-        for (unsigned i = 0; i < 256; ++i) {
+        for (unsigned i = 0; i < limit; ++i) {
             if (address > std::numeric_limits<std::uint32_t>::max() - i) return {};
             const auto offset = Rva(address + i, 1); if (!offset) return {};
             const char c = static_cast<char>(std::to_integer<unsigned char>(bytes_[*offset]));
@@ -628,6 +632,60 @@ public:
         }
         return {};
     }
+    // 按名字的导出（已排序）。没有导出表或没有名字时为空；表损坏或超过预算时为 nullopt。
+    std::optional<std::vector<std::string>> ExportNames() const {
+        std::vector<std::string> names;
+        if (U32(optional_ + 92) < 1) return names;
+        const auto address = U32(optional_ + 96), size = U32(optional_ + 100);
+        if (!address && !size) return names;
+        if (!address || size < 40) return {};
+        const auto directory = Rva(address, 40); if (!directory) return {};
+        const auto count = U32(*directory + 24);
+        if (!count) return names;
+        if (count > kExportNameLimit) return {};
+        const auto table = Rva(U32(*directory + 32), static_cast<std::size_t>(count) * 4); if (!table) return {};
+        names.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            auto name = Name(U32(*table + i * 4), kSymbolBytes); if (!name) return {};
+            names.push_back(std::move(*name));
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    }
+    // 每个导入 DLL（小写）按名字导入的函数；按序号导入的不列。表损坏或超过预算时为 nullopt。
+    std::optional<std::vector<std::pair<std::string, std::vector<std::string>>>> NamedImports() const {
+        std::vector<std::pair<std::string, std::vector<std::string>>> result;
+        if (U32(optional_ + 92) < 2) return result;
+        if (optionalBytes_ < 112) return {};
+        const auto address = U32(optional_ + 104), size = U32(optional_ + 108);
+        if (!address && !size) return result;
+        if (!address || size < 20 || size > 1024 * 1024) return {};
+        constexpr auto kMax = std::numeric_limits<std::uint32_t>::max();
+        std::size_t total = 0;
+        for (std::uint32_t i = 0; i < size / 20 && i < 4096; ++i) {
+            if (static_cast<std::uint64_t>(address) + static_cast<std::uint64_t>(i) * 20 > kMax) return {};
+            const auto offset = Rva(address + i * 20, 20); if (!offset) return {};
+            if (!U32(*offset) && !U32(*offset + 4) && !U32(*offset + 8) && !U32(*offset + 12) && !U32(*offset + 16)) return result;
+            auto dll = Name(U32(*offset + 12)); if (!dll || dll->empty()) return {};
+            for (auto& c : *dll) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            // 名字表优先；旧链接器只留 IAT 时用 IAT（未绑定时内容相同）。
+            const auto thunks = U32(*offset) ? U32(*offset) : U32(*offset + 16);
+            std::vector<std::string> functions;
+            for (std::uint32_t j = 0; thunks; ++j) {
+                if (++total > kImportSymbolLimit) return {};
+                if (static_cast<std::uint64_t>(thunks) + static_cast<std::uint64_t>(j) * 4 > kMax) return {};
+                const auto entry = Rva(thunks + j * 4, 4); if (!entry) return {};
+                const auto value = U32(*entry);
+                if (!value) break;
+                if (value & 0x80000000u) continue;
+                if (value > kMax - 2) return {};
+                auto function = Name(value + 2, kSymbolBytes); if (!function) return {};
+                functions.push_back(std::move(*function));
+            }
+            result.emplace_back(std::move(*dll), std::move(functions));
+        }
+        return {};
+    }
     bool CompatibleLuaImports() const {
         const auto imports = Imports();
         return imports && std::none_of(imports->begin(), imports->end(), [](const auto& name) {
@@ -663,7 +721,7 @@ Status CheckRuntimePe(const std::filesystem::path& path, bool dll, bool initiali
     return Status::Ok();
 }
 
-// 老 YDWE 六件套是否齐全；KKWE 没有 lua53.dll / ydwar3.dll，要按 config.cfg 装入。
+// 老 YDWE 六件套是否齐全；KKWE 没有 lua53.dll / ydwar3.dll，要按插件目录装入。
 bool SixModuleRuntime(const std::filesystem::path& root, Services::MapTestRuntimeLayout layout) {
     const bool tree = layout == Services::MapTestRuntimeLayout::YdweTree;
     std::size_t index = 0;
@@ -711,7 +769,45 @@ Result<RuntimeModuleImage> InspectRuntimeModulePe(std::span<const std::byte> byt
     RuntimeModuleImage result;
     result.imports = std::move(*imports);
     result.initialize = image.EntryExport("Initialize");
+    if (auto named = image.NamedImports()) { result.namedImports = std::move(*named); result.namedImportsKnown = true; }
+    if (auto exports = image.ExportNames()) { result.exports = std::move(*exports); result.exportsKnown = true; }
     return Result<RuntimeModuleImage>::Success(std::move(result));
+}
+
+Status CheckRuntimeModuleVersions(const std::vector<PlannedRuntimeModule>& modules, const std::filesystem::path& root) {
+    const auto lower = [](std::string text) {
+        for (auto& c : text) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        return text;
+    };
+    const auto fileName = [](const std::string& label) {
+        const auto slash = label.find_last_of("/\\");
+        return slash == std::string::npos ? label : label.substr(slash + 1);
+    };
+    // 同名文件只认计划里第一个：游戏里后面的导入按名字绑到已装入的那个。
+    std::map<std::string, const PlannedRuntimeModule*> providers;
+    for (const auto& module : modules) providers.emplace(lower(fileName(module.label)), &module);
+    for (const auto& module : modules) {
+        if (!module.image.namedImportsKnown) continue;
+        for (const auto& [dll, functions] : module.image.namedImports) {
+            const auto provider = providers.find(dll);
+            if (provider == providers.end() || provider->second == &module || !provider->second->image.exportsKnown) continue;
+            const auto& exports = provider->second->image.exports;
+            std::size_t missing = 0;
+            const std::string* example = nullptr;
+            for (const auto& function : functions) {
+                if (std::binary_search(exports.begin(), exports.end(), function)) continue;
+                ++missing;
+                if (!example) example = &function;
+            }
+            if (!missing) continue;
+            const auto& source = provider->second->label;
+            return Status::Failure("Map.Test.Runtime", "MAP_TEST_RUNTIME_MISMATCH",
+                "运行库目录 " + IO::PathUtf8(root) + " 里的文件不是同一版本：" + module.label + " 要用 " + source + " 里的 "
+                + std::to_string(missing) + " 个函数，这个 " + fileName(source) + " 里没有（如 " + example->substr(0, 120)
+                + "）。游戏装入时会失败（Win32 127）。请把这个目录换回同一版本的完整 YDWE / KKWE，或在设置里改选别的目录。");
+        }
+    }
+    return Status::Ok();
 }
 
 Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Services::MapTestArtifact& artifact,
@@ -878,7 +974,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
                 selected.runtimeLayout = Services::MapTestRuntimeLayout::YdweTree;
             }
         }
-        // KKWE：没有老 YDWE 的六件套，按 plugin/warcraft3/config.cfg 启用的插件及其 bin 依赖逐个装入。
+        // KKWE：没有老 YDWE 的六件套，按 plugin/warcraft3 里的插件（config.cfg 设为 0 的除外）及其 bin 依赖装入。
         const bool pluginConfig = !selected.useOwnedLuaRuntime && !selected.runtimeRoot.empty()
             && !SixModuleRuntime(selected.runtimeRoot, selected.runtimeLayout) && IsPluginConfigRuntime(selected.runtimeRoot);
         std::vector<std::string> unmatchedNatives;
@@ -895,7 +991,7 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
             selected.runtimeLayout = Services::MapTestRuntimeLayout::PluginConfig;
             selected.runtimeModules = std::move(modules.value->modules);
             notes.push_back({DiagnosticSeverity::Info, "Map.Test.Runtime", "MAP_TEST_PLUGIN_RUNTIME_SELECTED",
-                "本次按 KKWE 运行库 " + IO::PathUtf8(selected.runtimeRoot) + " 的 config.cfg 装入插件："
+                "本次按 KKWE 运行库 " + IO::PathUtf8(selected.runtimeRoot) + " 装入插件："
                 + JoinNames(modules.value->plugins) + "。"});
             if (!modules.value->missing.empty())
                 notes.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime", "MAP_TEST_PLUGIN_RUNTIME_MISSING_PLUGIN",
@@ -944,21 +1040,30 @@ Result<Services::MapTestLaunchPlan> BuildIndependentMapTestLaunchPlan(const Serv
         if (!selected.runtimeRoot.empty() && !pluginConfig) {
             if (remainingRequired) plan.diagnostics.push_back({DiagnosticSeverity::Warning, "Map.Test.Runtime",
                 "MAP_TEST_LEGACY_NATIVE_UNVERIFIED", "旧 YDWE 路径按六 DLL 兼容布局启动，无法逐接口核验其实际注册。"});
+            const auto rejected = [&](const Status& status) -> Result<LaunchPlan> {
+                auto diagnostics = status.diagnostics;
+                diagnostics.insert(diagnostics.end(), notes.begin(), notes.end());
+                return {std::nullopt, std::move(diagnostics)};
+            };
+            const bool tree = selected.runtimeLayout == Services::MapTestRuntimeLayout::YdweTree;
+            std::vector<PlannedRuntimeModule> planned;
             std::size_t index = 0;
             for (const auto& [name, initialize] : {std::pair{"ydbase.dll", false}, std::pair{"lua53.dll", false},
                     std::pair{"ydwar3.dll", false}, std::pair{"yd_loader.dll", false},
                     std::pair{"yd_jass_api.dll", true}, std::pair{"yd_lua_engine.dll", true}}) {
-                auto path = selected.runtimeRoot;
-                if (selected.runtimeLayout == Services::MapTestRuntimeLayout::YdweTree)
-                    path /= index < 3 ? "bin" : "plugin/warcraft3";
+                const std::string folder = tree ? (index < 3 ? "bin" : "plugin/warcraft3") : "";
                 ++index;
-                const auto status = CheckRuntimePe(path / name, true, initialize);
-                if (!status.Succeeded()) {
-                    auto diagnostics = status.diagnostics;
-                    diagnostics.insert(diagnostics.end(), notes.begin(), notes.end());
-                    return {std::nullopt, std::move(diagnostics)};
-                }
+                const auto path = folder.empty() ? selected.runtimeRoot / name : selected.runtimeRoot / folder / name;
+                const auto status = CheckRuntimePe(path, true, initialize);
+                if (!status.Succeeded()) return rejected(status);
+                const auto bytes = IO::ReadFileBytes(path, kPeBudget);
+                if (!bytes.Succeeded()) continue;
+                auto image = InspectRuntimeModulePe(*bytes.value);
+                if (image.Succeeded()) planned.push_back({folder.empty() ? name : folder + "/" + name, std::move(*image.value)});
             }
+            // 六个文件来自不同版本时（例如 KKWE 插件配老 YDWE 的 bin），游戏装入插件会以 Win32 127 失败；启动前拦下。
+            const auto versions = CheckRuntimeModuleVersions(planned, selected.runtimeRoot);
+            if (!versions.Succeeded()) return rejected(versions);
         }
         if (selected.useOwnedLuaRuntime || !selected.runtimeRoot.empty() || covered || !selected.legacyPluginFiles.empty()) {
             for (const auto& [file, dll] : {std::pair{selected.runtimeBridge, false}, std::pair{selected.runtimeBootstrap, true},
