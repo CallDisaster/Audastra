@@ -640,7 +640,7 @@ void TestArrange() {
     Require(same(ArrangeUiRects(two, UiArrangeMode::DistributeX)[1], rects[1]), "两个不分布");
     for (const auto name : {"left", "center_x", "right", "top", "center_y", "bottom", "distribute_x", "distribute_y", "same_width", "same_height"}) {
         const auto mode = ParseUiArrangeMode(name);
-        Require(mode && UiArrangeModeName(*mode) == name, std::string("排列方式名称 ") + name);
+        Require(mode && UiArrangeModeName(*mode) == name, (std::string("排列方式名称 ") + name).c_str());
     }
     Require(!ParseUiArrangeMode("middle"), "未知排列方式");
 }
@@ -655,7 +655,7 @@ void TestSnippets() {
         d.frames.push_back(SnippetUiFrame(snippet));
         Require(!d.frames.front().children.empty(), "片段带子控件");
         const auto problems = ValidateUiDescription(d);
-        Require(problems.empty(), "片段合法：" + std::string(snippet.id) + " " + First(problems));
+        Require(problems.empty(), ("片段合法：" + std::string(snippet.id) + " " + First(problems)).c_str());
         const auto clip = CopyUiFrame(d, d.frames.front().id);
         Require(clip.value.has_value(), "片段可复制");
         const auto pasted = PasteUiFrame(d, *clip.value);
