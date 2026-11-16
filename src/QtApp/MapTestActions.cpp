@@ -7,6 +7,7 @@
 #include "ProgramIssueReporter.h"
 #include "../QtCommon/ApplicationPaths.h"
 #include "../QtCommon/LocalConsentPreference.h"
+#include "../QtCommon/MapTestDisplayPreference.h"
 
 #include "War3MapCore/Hash.h"
 #include "War3MapCore/HLua/Test.h"
@@ -199,6 +200,8 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
     request.handwrittenLuaEngine = settings.value("mapTest/luaEngine").toString() == QLatin1String("ydwe")
         ? Services::MapTestLuaEngine::Ydwe : Services::MapTestLuaEngine::Owned;
     request.handwrittenLuaHotReload = settings.value("mapTest/hotReloadEnabled", true).toBool();
+    // 窗口方式、限制鼠标与渲染方式只用于作者自己按的测试；助手的后台测试一律普通窗口、不抢鼠标。
+    const auto display = interactive ? QtCommon::ReadMapTestDisplay(settings) : Services::MapTestDisplay{};
     if (!snapshot) request.expectedInputSha256 = project_->archiveSession_->SourceSha256();
     {
         // 运行日志：本次测试用到的全部目录与选项，出问题时不必再问作者怎么配置的。
@@ -212,7 +215,10 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
             + "\nLua：" + (ownedLua ? "经典 Lua 地图" : request.handwrittenLuaEngine == Services::MapTestLuaEngine::Ydwe
                 ? "手写 Lua 用 YDWE 引擎" : "手写 Lua 用自带环境") + (testHotReload ? "，热重载" : "")
             + "；SLK 优化 " + (request.optimizeSlk ? "开" : "关") + (interactive ? "" : "；助手后台测试")
-            + (hiddenDesktop ? "；不可见" : ""));
+            + (hiddenDesktop ? "；不可见" : "")
+            + "\n窗口 " + std::string(Services::MapTestWindowModeName(display.windowMode))
+            + "，渲染 " + std::string(Services::MapTestRendererName(display.renderer))
+            + (display.cursorLock ? "，鼠标限制在窗口内" : ""));
     }
 
     QProgressDialog dialog(tr("正在准备测试地图…"), QString(), 0, 0, this);
@@ -253,6 +259,7 @@ QString MainWindow::StartMapTest(bool interactive, bool hiddenDesktop) {
                 artifact.value->backgroundPlay = !interactive;
                 // 看不见的测试优先用隐身窗口（1.27a 上照常绘制、能截图），否则开在不可见桌面上。
                 artifact.value->cloakedWindow = hiddenDesktop;
+                artifact.value->display = display;
                 launched = Script::LaunchMapTest(*artifact.value, update);
             }
         } catch (const std::exception&) {

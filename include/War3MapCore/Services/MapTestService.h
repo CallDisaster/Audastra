@@ -3,7 +3,9 @@
 #include "War3MapCore/Types.h"
 #include "War3MapCore/Services/ExternalDependencies.h"
 
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +14,36 @@ namespace War3Map::Services {
 
 // PluginConfig：KKWE 等按 plugin/warcraft3/config.cfg 启用插件的运行库，装入清单见 runtimeModules。
 enum class MapTestRuntimeLayout { Flat, YdweTree, PluginConfig };
+// 测试游戏的窗口方式：窗口化（-window）、无边框窗口化（窗口铺满所在显示器、没有标题栏）、全屏。
+enum class MapTestWindowMode : std::uint8_t { Windowed, Borderless, Fullscreen };
+// 渲染方式：Direct3D（默认）或 OpenGL（-opengl）。
+enum class MapTestRenderer : std::uint8_t { Direct3D, OpenGL };
+// 作者看着的测试的显示设置；看不见的测试（隐身窗口、不可见桌面）一律普通窗口、不限制鼠标、用默认渲染。
+struct MapTestDisplay {
+    MapTestWindowMode windowMode = MapTestWindowMode::Windowed;
+    // 游戏窗口在前台时鼠标不出画面，切到别的窗口或退出时放开。
+    bool cursorLock = false;
+    MapTestRenderer renderer = MapTestRenderer::Direct3D;
+    [[nodiscard]] bool operator==(const MapTestDisplay&) const noexcept = default;
+};
+// 设置与命令行共用的稳定名称：windowed / borderless / fullscreen；direct3d / opengl。
+[[nodiscard]] constexpr std::string_view MapTestWindowModeName(MapTestWindowMode mode) noexcept {
+    return mode == MapTestWindowMode::Borderless ? "borderless" : mode == MapTestWindowMode::Fullscreen ? "fullscreen" : "windowed";
+}
+[[nodiscard]] constexpr std::optional<MapTestWindowMode> ParseMapTestWindowMode(std::string_view name) noexcept {
+    if (name == "windowed") return MapTestWindowMode::Windowed;
+    if (name == "borderless") return MapTestWindowMode::Borderless;
+    if (name == "fullscreen") return MapTestWindowMode::Fullscreen;
+    return std::nullopt;
+}
+[[nodiscard]] constexpr std::string_view MapTestRendererName(MapTestRenderer renderer) noexcept {
+    return renderer == MapTestRenderer::OpenGL ? "opengl" : "direct3d";
+}
+[[nodiscard]] constexpr std::optional<MapTestRenderer> ParseMapTestRenderer(std::string_view name) noexcept {
+    if (name == "direct3d") return MapTestRenderer::Direct3D;
+    if (name == "opengl") return MapTestRenderer::OpenGL;
+    return std::nullopt;
+}
 // PluginConfig 运行库的一项：相对运行库根的文件（bin/ 或 plugin/warcraft3/ 下），按清单顺序装入。
 struct MapTestRuntimeModule {
     std::filesystem::path relativePath;
@@ -76,6 +108,7 @@ struct MapTestArtifact {
     // 看不见但照常绘制：游戏留在用户桌面上，窗口隐身、不进任务栏、不激活，能截图。
     // 自动要求后台运行能力（1.27a）；身份不符则拒绝，不能静默切换到不可见桌面。
     bool cloakedWindow = false;
+    MapTestDisplay display;
     std::filesystem::path externalDependenciesDirectory;
     std::vector<ExternalDependencyFile> externalDependencyFiles;
     // 旧平台插件（KKWE Dz）：没有入口导出，由启动组件在游戏进程启动时按 SHA 装入。
@@ -127,6 +160,8 @@ struct MapTestLaunchPlan {
     bool backgroundPlay = false;
     // 启动器在游戏建窗口前挂上窗口隐身；这时不再建不可见桌面。
     bool cloakedWindow = false;
+    // 实际采用的显示设置（看不见的测试已退回默认）。无边框与限制鼠标由启动组件在游戏进程里处理，只在 1.27a 上提供。
+    MapTestDisplay display;
 };
 
 // 核验所选游戏和本轮短路径复制目标；不启动进程、不写安装配置或注册表。

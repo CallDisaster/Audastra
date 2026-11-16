@@ -40,6 +40,7 @@ add_library(audastra-warcraft-bootstrap SHARED Bootstrap.cpp Bootstrap.def Runti
     GameTest/BackgroundPlay127.cpp
     GameTest/CloakedWindow.cpp
     GameTest/WindowInput.cpp
+    GameTest/WindowMode.cpp
     GameTest/MutedSound.cpp)
 target_compile_definitions(audastra-warcraft-bootstrap PRIVATE
     AUD_JAPI_BRIDGE_EXPERIMENTAL=$<BOOL:${AUD_JAPI_BRIDGE_EXPERIMENTAL}>)
@@ -97,6 +98,11 @@ if(BUILD_TESTING)
     target_link_libraries(audastra-window-input-isolation-tests PRIVATE audastra-detours comctl32 dwmapi)
     add_test(NAME audastra-window-input-isolation COMMAND audastra-window-input-isolation-tests)
     set_tests_properties(audastra-window-input-isolation PROPERTIES TIMEOUT 15)
+    add_executable(audastra-window-mode-tests fixtures/WindowModeTests.cpp GameTest/WindowMode.cpp)
+    target_compile_definitions(audastra-window-mode-tests PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(audastra-window-mode-tests PRIVATE /utf-8 /W4 /permissive-)
+    add_test(NAME audastra-window-mode COMMAND audastra-window-mode-tests)
+    set_tests_properties(audastra-window-mode PROPERTIES TIMEOUT 20)
     add_library(audastra-chain-base SHARED fixtures/HookChainBase.cpp fixtures/HookChainBase.def)
     add_library(audastra-chain-provider SHARED fixtures/HookChainProvider.cpp fixtures/HookChainProvider.def)
     add_executable(audastra-hook-chain-tests fixtures/HookChainTests.cpp Japi/HookSite.cpp OwnLua/Pe32OriginalCode.cpp)

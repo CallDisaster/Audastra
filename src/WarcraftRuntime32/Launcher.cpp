@@ -469,6 +469,14 @@ struct RunReceipt {
         json += ",\"cloakedWindows\":" + std::to_string(evidence ? evidence->cloakedWindows : 0);
         json += ",\"gameNoSound\":" + std::string(flag(evidence && evidence->muteSound));
         json += ",\"gameNoSoundInstalled\":" + std::string(flag(evidence && evidence->muteSoundInstalled));
+        const auto windowMode = !evidence ? 0 : evidence->gameWindowMode;
+        json += ",\"gameWindow\":" + Json(windowMode == 1 ? "borderless" : windowMode == 2 ? "fullscreen" : "windowed");
+        json += ",\"gameRenderer\":" + Json(evidence && evidence->openGl ? "opengl" : "game-default");
+        json += ",\"borderlessWindowInstalled\":" + std::string(flag(evidence && evidence->borderlessWindowInstalled));
+        json += ",\"borderlessApplied\":" + std::to_string(evidence ? evidence->borderlessApplied : 0);
+        json += ",\"cursorLock\":" + std::string(flag(evidence && evidence->cursorLock));
+        json += ",\"cursorLockInstalled\":" + std::string(flag(evidence && evidence->cursorLockInstalled));
+        json += ",\"cursorClips\":" + std::to_string(evidence ? evidence->cursorClips : 0);
         if (evidence && evidence->runtimeMode == RuntimeMode::OwnedLua) {
             const auto& owned = evidence->ownedLua;
             json += ",\"ownedLua\":{\"mapSha256\":" + Json(owned.mapSha256) + ",\"nonce\":" + Json(owned.nonce);
@@ -599,7 +607,8 @@ int Run(int argc, wchar_t** argv) {
     if (argc < 11 || argc % 2 != 1) {
         std::fputs("Required: --game --map --runtime --bootstrap --receipt [--runtime-layout flat|ydwe-tree"
             "|plugin-config --runtime-module -|i|l|il|<bin\\x.dll or plugin\\warcraft3\\x.dll> ...]"
-            " | --runtime-mode bare (no --runtime) [--background-play enabled] [--game-nosound enabled] [--window-cloak enabled]\n", stderr);
+            " | --runtime-mode bare (no --runtime) [--background-play enabled] [--game-nosound enabled] [--window-cloak enabled]"
+            " [--game-window borderless|fullscreen] [--game-renderer opengl] [--cursor-lock enabled]\n", stderr);
         return 64;
     }
     std::filesystem::path game, runtime, bootstrap, receiptPath;
@@ -608,6 +617,9 @@ int Run(int argc, wchar_t** argv) {
     bool layoutSpecified = false;
     RuntimeMode mode = RuntimeMode::ExternalYdwe;
     bool modeSpecified = false, hotReload = false, backgroundPlay = false, noSound = false, windowCloak = false;
+    // 显示设置：省略即窗口化、Direct3D、不限制鼠标。
+    std::wstring gameWindow;
+    bool openGl = false, cursorLock = false;
     std::wstring ownedMapSha, ownedNonce, ownedMailboxHandle, ownedWindowPolicy;
     DWORD ownedTimeout = 0;
     std::wstring probeNonce, expectedProbeMapSha, desktop, probeRenderer;
@@ -662,6 +674,18 @@ int Run(int argc, wchar_t** argv) {
         else if (key == L"--window-cloak" && !windowCloak) {
             if (std::wstring_view(argv[index + 1]) != L"enabled") return 64;
             windowCloak = true;
+        }
+        else if (key == L"--game-window" && gameWindow.empty()) {
+            gameWindow = argv[index + 1];
+            if (gameWindow != L"borderless" && gameWindow != L"fullscreen") return 64;
+        }
+        else if (key == L"--game-renderer" && !openGl) {
+            if (std::wstring_view(argv[index + 1]) != L"opengl") return 64;
+            openGl = true;
+        }
+        else if (key == L"--cursor-lock" && !cursorLock) {
+            if (std::wstring_view(argv[index + 1]) != L"enabled") return 64;
+            cursorLock = true;
         }
         else if (key == L"--lua-map-sha256" && ownedMapSha.empty()) ownedMapSha = argv[index + 1];
         else if (key == L"--lua-session-nonce" && ownedNonce.empty()) ownedNonce = argv[index + 1];
@@ -757,6 +781,9 @@ int Run(int argc, wchar_t** argv) {
             static_cast<DWORD>(actualDesktop.size() * sizeof(wchar_t)), &returned)
             || std::wstring(actualDesktop.data()) != L"AudastraRuntimeProbe-" + probeNonce) return 64;
     } else if (!expectedProbeMapSha.empty() || (!owned && !desktop.empty()) || probeTimeoutSpecified || !probeScript.empty() || !expectedProbeScriptSha.empty() || !nonfatalBlockedPaths.empty() || desktopWitnessRequested || windowDiagnosticsRequested || !probeRenderer.empty()) return 64;
+    // 显示设置只给作者看着的测试：不与隐身窗口、探针或无人值守观察窗口同用。
+    if ((!gameWindow.empty() || openGl || cursorLock) && (windowCloak || probe || !ownedWindowPolicy.empty())) return 64;
+    const bool borderless = gameWindow == L"borderless";
     game = game.lexically_normal(); runtime = runtime.lexically_normal(); bootstrap = bootstrap.lexically_normal();
     Handle output(CreateFileW(receiptPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
     if (output.value == INVALID_HANDLE_VALUE) return 65;
@@ -831,6 +858,9 @@ int Run(int argc, wchar_t** argv) {
     shared->backgroundPlay = backgroundPlay ? 1 : 0;
     shared->cloakWindow = windowCloak ? 1 : 0;
     shared->muteSound = noSound ? 1 : 0;
+    shared->gameWindowMode = borderless ? 1 : gameWindow == L"fullscreen" ? 2 : 0;
+    shared->openGl = openGl ? 1 : 0;
+    shared->cursorLock = cursorLock ? 1 : 0;
     if (owned) {
         wcscpy_s(shared->ownedLua.mapPath, (game.parent_path() / map).c_str());
         strcpy_s(shared->ownedLua.mapSha256, Utf8(ownedMapSha).c_str());
@@ -1008,8 +1038,9 @@ int Run(int argc, wchar_t** argv) {
     AttributeList attributes;
     if (!attributes.Initialize(mapping.value, owned ? luaMapping.value : nullptr)) return fail("channel-handle-whitelist");
     auto environment = ChildEnvironment(mapping.value, (probe || owned) ? (game.parent_path() / map).parent_path() : std::filesystem::path{});
-    result.gameArgv = {game.wstring(), L"-window"};
-    if (!probeRenderer.empty()) result.gameArgv.push_back(L"-opengl");
+    result.gameArgv = {game.wstring()};
+    if (gameWindow != L"fullscreen") result.gameArgv.push_back(L"-window");
+    if (!probeRenderer.empty() || openGl) result.gameArgv.push_back(L"-opengl");
     result.gameArgv.push_back(L"-loadfile"); result.gameArgv.push_back(map);
     // 唯一向量既形成实际 CreateProcessW 命令，也进入回执；缺省命令字节形态保持不变。
     std::wstring command = Quote(result.gameArgv.front());
@@ -1052,7 +1083,8 @@ int Run(int argc, wchar_t** argv) {
         if (shared->failed) return abort("bootstrap-reported-failure", shared->errorWin32);
         if (shared->hookInstalled && shared->gameObserved && shared->runtimeInitialized
             && (!backgroundPlay || shared->backgroundPlayInstalled) && (!windowCloak || shared->cloakWindowInstalled)
-            && (!noSound || shared->muteSoundInstalled)) break;
+            && (!noSound || shared->muteSoundInstalled) && (!borderless || shared->borderlessWindowInstalled)
+            && (!cursorLock || shared->cursorLockInstalled)) break;
         const auto terminal = WaitForSingleObject(target.value, 50);
         if (terminal == WAIT_OBJECT_0) break;
         if (terminal != WAIT_TIMEOUT) return abort("game-initialization-wait");
@@ -1099,7 +1131,8 @@ int Run(int argc, wchar_t** argv) {
     MemoryBarrier();
     if (shared->failed || !shared->hookInstalled || !shared->gameObserved || !shared->runtimeInitialized
         || (backgroundPlay && !shared->backgroundPlayInstalled) || (windowCloak && !shared->cloakWindowInstalled)
-        || (noSound && !shared->muteSoundInstalled)) {
+        || (noSound && !shared->muteSoundInstalled) || (borderless && !shared->borderlessWindowInstalled)
+        || (cursorLock && !shared->cursorLockInstalled)) {
         if (!shared->failed) { result.stage = "runtime-initialization-unconfirmed"; result.error = ERROR_INVALID_DATA; }
         result.bridgeExit = kRuntimeFailure;
     } else if (shared->providerModuleCount && !shared->providerRegistrationsVerified) {

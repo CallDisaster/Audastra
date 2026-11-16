@@ -2,6 +2,7 @@
 
 #include "ErrorReportDialog.h"
 #include "ErrorReportEnvironment.h"
+#include "../QtCommon/MapTestDisplayPreference.h"
 #include "War3MapCore/Feedback/ErrorReport.h"
 #include "War3MapCore/Feedback/RunLog.h"
 #include "War3MapCore/IO/FileBytes.h"
@@ -68,6 +69,11 @@ War3Map::Feedback::ErrorReportInput MainWindow::CollectErrorReport() const {
     editor.emplace_back("外部依赖目录", dependencies.trimmed().isEmpty() ? std::string("默认") : DirectoryState(dependencies));
     editor.emplace_back("测试 Lua 环境", settings.value(QStringLiteral("mapTest/luaEngine")).toString() == QLatin1String("ydwe")
         ? "YDWE 引擎" : "自带环境");
+    const auto display = War3Map::QtCommon::ReadMapTestDisplay(settings);
+    editor.emplace_back("测试窗口", std::string(display.windowMode == War3Map::Services::MapTestWindowMode::Borderless ? "无边框窗口化"
+        : display.windowMode == War3Map::Services::MapTestWindowMode::Fullscreen ? "全屏" : "窗口化")
+        + (display.renderer == War3Map::Services::MapTestRenderer::OpenGL ? "，OpenGL" : "，Direct3D")
+        + (display.cursorLock ? "，鼠标限制在窗口内" : ""));
     editor.emplace_back("界面主题", settings.value(QStringLiteral("ui/theme")).toString().toStdString());
     input.sections.push_back({"编辑器设置", std::move(editor)});
     Rows map;

@@ -63,6 +63,8 @@ int RunMapTest(int argc, wchar_t** argv) {
     std::vector<Reload> reloads;
     std::vector<Event> events;
     bool closeRequested = false;
+    Services::MapTestDisplay display;
+    bool windowSpecified = false, rendererSpecified = false;
     try {
     for (int index = 5; index < argc; ++index) {
         const std::wstring option = argv[index];
@@ -81,6 +83,18 @@ int RunMapTest(int argc, wchar_t** argv) {
         else if (option == L"--stop") stopAfter = true;
         else if (option == L"--hidden") hidden = true;
         else if (option == L"--background-play") backgroundPlay = true;
+        // 显示设置（与编辑器设置 → 地图测试相同）；看不见的测试会退回默认。
+        else if (option == L"--window-mode" && index + 1 < argc && !windowSpecified) {
+            const auto mode = Services::ParseMapTestWindowMode(Utf8(argv[++index]));
+            if (!mode) return 2;
+            display.windowMode = *mode; windowSpecified = true;
+        }
+        else if (option == L"--renderer" && index + 1 < argc && !rendererSpecified) {
+            const auto renderer = Services::ParseMapTestRenderer(Utf8(argv[++index]));
+            if (!renderer) return 2;
+            display.renderer = *renderer; rendererSpecified = true;
+        }
+        else if (option == L"--cursor-lock") display.cursorLock = true;
         // 隐身同时要求已核验的后台能力，不静默改成其他桌面策略。
         else if (option == L"--cloaked") { cloaked = true; hidden = true; }
         // 每 2 秒给游戏发一次空格，越过载入后的“按任意键继续”。
@@ -171,6 +185,7 @@ int RunMapTest(int argc, wchar_t** argv) {
     artifact.value->hiddenDesktop = hidden;
     artifact.value->backgroundPlay = backgroundPlay;
     artifact.value->cloakedWindow = cloaked;
+    artifact.value->display = display;
     auto launched = Script::LaunchMapTest(*artifact.value, progress);
     Print(launched.diagnostics);
     if (!launched.Succeeded() || !launched.value) {

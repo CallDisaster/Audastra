@@ -11,6 +11,7 @@
 #include <QFileInfo>
 #include <QSettings>
 #include "War3MapCore/Services/ExternalDependencies.h"
+#include "War3MapCore/Services/MapTestService.h"
 #include <QStringList>
 #include <QVariant>
 #include <QUrl>
@@ -172,6 +173,10 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
     if (services.worldEffectQuality && *services.worldEffectQuality != QStringLiteral("complete")
         && *services.worldEffectQuality != QStringLiteral("balanced") && *services.worldEffectQuality != QStringLiteral("power-saving"))
         return Fail(error, QStringLiteral("特效显示须为完整、平衡或省电。"));
+    if (services.mapTestWindowMode && !Services::ParseMapTestWindowMode(services.mapTestWindowMode->toStdString()))
+        return Fail(error, QStringLiteral("测试窗口方式须为窗口化、无边框窗口化或全屏。"));
+    if (services.mapTestRenderer && !Services::ParseMapTestRenderer(services.mapTestRenderer->toStdString()))
+        return Fail(error, QStringLiteral("测试渲染方式须为 Direct3D 或 OpenGL。"));
     PrimaryStorage primary(preferences);
     if (!Sync(preferences, ApplicationSettingsSyncStage::Preflight, synchronize, &diagnostic)
         || !preferences.isWritable() || !preferences.isAtomicSyncRequired())
@@ -209,6 +214,9 @@ bool ApplicationSettingsCommit::Commit(QSettings& preferences, const AgentSettin
         keys.push_back({QStringLiteral("mapTest/externalDependenciesDirectory"), {}, *services.externalDependenciesDirectory});
     if (services.hluaFrameworkRoot) keys.push_back({QStringLiteral("hlua/frameworkRoot"), {}, *services.hluaFrameworkRoot});
     if (services.mapTestSlk) keys.push_back({QStringLiteral("mapTest/slkEnabled"), {}, *services.mapTestSlk});
+    if (services.mapTestWindowMode) keys.push_back({QStringLiteral("mapTest/windowMode"), {}, *services.mapTestWindowMode});
+    if (services.mapTestCursorLock) keys.push_back({QStringLiteral("mapTest/cursorLock"), {}, *services.mapTestCursorLock});
+    if (services.mapTestRenderer) keys.push_back({QStringLiteral("mapTest/renderer"), {}, *services.mapTestRenderer});
     if (services.recoveryEnabled) keys.push_back({QString::fromLatin1(kRecoveryEnabledSettingsKey), {}, *services.recoveryEnabled});
     if (services.recoveryIntervalMinutes) keys.push_back({QString::fromLatin1(kRecoveryIntervalSettingsKey), {}, *services.recoveryIntervalMinutes});
     if (services.worldEffectQuality) keys.push_back({QStringLiteral("world/effectQuality"), {}, *services.worldEffectQuality});

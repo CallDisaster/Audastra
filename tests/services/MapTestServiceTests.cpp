@@ -113,6 +113,38 @@ void CopyAndPlanKeepSource() {
     Require(*Sha256File(plan.value->gameMapCopy).value == existingCopySha && *Sha256File(f.source).value == f.sha,
         "stale input rejection preserves prior short copy and author source");
 }
+// 作者看着的测试的显示设置：全屏去掉 -window、OpenGL 加 -opengl；无边框与限制鼠标只在 1.27a 上；看不见的测试退回默认。
+void DisplaySettingsShapeLaunch() {
+    Fixture f;
+    const auto artifact = PrepareMapTest(f.Request("display"));
+    Require(artifact.Succeeded(), "prepare display task");
+    auto shaped = *artifact.value;
+    shaped.display.windowMode = MapTestWindowMode::Fullscreen;
+    shaped.display.renderer = MapTestRenderer::OpenGL;
+    const auto fullscreen = BuildMapTestLaunchPlan(shaped);
+    Require(fullscreen.Succeeded() && fullscreen.value->arguments.size() == 3 && fullscreen.value->arguments[0] == L"-opengl"
+        && fullscreen.value->arguments[1] == L"-loadfile" && fullscreen.value->display == shaped.display,
+        "fullscreen drops -window and OpenGL adds -opengl on the direct game command line");
+    shaped.display.windowMode = MapTestWindowMode::Windowed;
+    const auto windowedGl = BuildMapTestLaunchPlan(shaped);
+    Require(windowedGl.Succeeded() && windowedGl.value->arguments.size() == 4 && windowedGl.value->arguments[0] == L"-window"
+        && windowedGl.value->arguments[1] == L"-opengl" && windowedGl.value->arguments[2] == L"-loadfile",
+        "windowed OpenGL keeps -window before -opengl");
+    shaped.display.windowMode = MapTestWindowMode::Borderless;
+    Require(Code(BuildMapTestLaunchPlan(shaped), "MAP_TEST_WINDOW_MODE_GAME"), "borderless needs the verified 1.27a game");
+    shaped.display = {};
+    shaped.display.cursorLock = true;
+    Require(Code(BuildMapTestLaunchPlan(shaped), "MAP_TEST_WINDOW_MODE_GAME"), "cursor lock needs the verified 1.27a game");
+    shaped.hiddenDesktop = true;
+    shaped.display.windowMode = MapTestWindowMode::Fullscreen;
+    const auto hidden = BuildMapTestLaunchPlan(shaped);
+    Require(hidden.Succeeded() && hidden.value->display == MapTestDisplay{} && hidden.value->arguments.size() == 3
+        && hidden.value->arguments[0] == L"-window", "unseen tests ignore display settings");
+    Require(ParseMapTestWindowMode(MapTestWindowModeName(MapTestWindowMode::Borderless)) == MapTestWindowMode::Borderless
+        && ParseMapTestWindowMode("fullscreen") == MapTestWindowMode::Fullscreen && ParseMapTestRenderer("opengl") == MapTestRenderer::OpenGL
+        && MapTestRendererName(MapTestRenderer::Direct3D) == "direct3d" && !ParseMapTestWindowMode("Borderless") && !ParseMapTestRenderer(""),
+        "stable names round trip and reject unknown spellings");
+}
 void SlkFailureNeverFallsBack() {
     Fixture f; auto request = f.Request("missing"); request.optimizeSlk = true;
     Require(Code(PrepareMapTest(request), "MAP_TEST_SLK_UNAVAILABLE"), "SLK requires explicit adapter");
@@ -508,7 +540,7 @@ void OwnedLuaOptionsDoNotFallBack() {
 }
 }
 int main() {
-    try { OwnedLuaOptionsDoNotFallBack(); CopyAndPlanKeepSource(); SlkFailureNeverFallsBack(); ProgressStagesAndFinalCopyIdentity(); LaunchProtectionFailsClosed(); NativeW3mAndLegacyConfigurationIgnored(); RuntimePlanRequiresIndependentHelpers(); YdweFallbackFreezesWithoutBecomingAnExplicitRuntime(); StaleSourceAndInstallationWorkspaceRejected(); WorkspaceLeaseCleansOnlyFrozenIdentity(); EmptyWorkspaceRefreshKeepsRootDuringPreparation(); FailedWorkspaceRefreshRetainsRootAndDisablesCleanup(); WorkspaceFreezeRejectsPreexistingHardlinks(); LockedRunDirectoryUsesOutsideCandidate();
+    try { OwnedLuaOptionsDoNotFallBack(); CopyAndPlanKeepSource(); DisplaySettingsShapeLaunch(); SlkFailureNeverFallsBack(); ProgressStagesAndFinalCopyIdentity(); LaunchProtectionFailsClosed(); NativeW3mAndLegacyConfigurationIgnored(); RuntimePlanRequiresIndependentHelpers(); YdweFallbackFreezesWithoutBecomingAnExplicitRuntime(); StaleSourceAndInstallationWorkspaceRejected(); WorkspaceLeaseCleansOnlyFrozenIdentity(); EmptyWorkspaceRefreshKeepsRootDuringPreparation(); FailedWorkspaceRefreshRetainsRootAndDisablesCleanup(); WorkspaceFreezeRejectsPreexistingHardlinks(); LockedRunDirectoryUsesOutsideCandidate();
         std::cout << "Map test service tests passed (no YDWE or game process launched)\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

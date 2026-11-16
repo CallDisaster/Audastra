@@ -3,9 +3,11 @@
 #include "War3MapCore/Services/ExternalDependencies.h"
 #include "../QtCommon/LocalConsentPreference.h"
 #include "../QtCommon/MapBackupPaths.h"
+#include "../QtCommon/MapTestDisplayPreference.h"
 #include "MapBackupMigrationService.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QDesktopServices>
 #include <QFileDialog>
@@ -136,6 +138,26 @@ MapTestSettingsPage::MapTestSettingsPage(
     slkEnabled_->setObjectName(QStringLiteral("mapTestSlkEnabled"));
     slkEnabled_->setChecked(QtCommon::ReadExplicitLocalConsent(stored, QStringLiteral("mapTest/slkEnabled")));
     testForm->addRow(slkEnabled_);
+    const auto display = QtCommon::ReadMapTestDisplay(stored);
+    windowMode_ = new QComboBox(testGroup);
+    windowMode_->setObjectName(QStringLiteral("mapTestWindowMode"));
+    windowMode_->addItem(tr("窗口化"), QStringLiteral("windowed"));
+    windowMode_->addItem(tr("无边框窗口化"), QStringLiteral("borderless"));
+    windowMode_->addItem(tr("全屏"), QStringLiteral("fullscreen"));
+    windowMode_->setCurrentIndex(windowMode_->findData(QString::fromLatin1(Services::MapTestWindowModeName(display.windowMode))));
+    windowMode_->setMaximumWidth(220);
+    testForm->addRow(tr("窗口方式"), windowMode_);
+    renderer_ = new QComboBox(testGroup);
+    renderer_->setObjectName(QStringLiteral("mapTestRenderer"));
+    renderer_->addItem(QStringLiteral("Direct3D"), QStringLiteral("direct3d"));
+    renderer_->addItem(QStringLiteral("OpenGL"), QStringLiteral("opengl"));
+    renderer_->setCurrentIndex(renderer_->findData(QString::fromLatin1(Services::MapTestRendererName(display.renderer))));
+    renderer_->setMaximumWidth(220);
+    testForm->addRow(tr("渲染方式"), renderer_);
+    cursorLock_ = new QCheckBox(tr("鼠标限制在游戏窗口内"), testGroup);
+    cursorLock_->setObjectName(QStringLiteral("mapTestCursorLock"));
+    cursorLock_->setChecked(display.cursorLock);
+    testForm->addRow(cursorLock_);
     hluaFrameworkRoot_=new QLineEdit(stored.value("hlua/frameworkRoot").toString(),testGroup);
     hluaFrameworkRoot_->setObjectName("hluaFrameworkRoot");
     testForm->addRow(tr("h-lua 框架目录"),DirectoryRow(hluaFrameworkRoot_,"hluaFrameworkRootBrowse",tr("选择 h-lua 框架目录"),installationRoot,testGroup));
@@ -257,6 +279,9 @@ Agent::ApplicationServicePreferences MapTestSettingsPage::Preferences() const {
     preferences.externalDependenciesDirectory = externalDependencies_->text().trimmed();
     preferences.hluaFrameworkRoot = hluaFrameworkRoot_->text().trimmed();
     preferences.mapTestSlk = slkEnabled_->isChecked();
+    preferences.mapTestWindowMode = windowMode_->currentData().toString();
+    preferences.mapTestCursorLock = cursorLock_->isChecked();
+    preferences.mapTestRenderer = renderer_->currentData().toString();
     return preferences;
 }
 

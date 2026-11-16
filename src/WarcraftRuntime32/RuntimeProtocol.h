@@ -9,7 +9,7 @@
 
 namespace Audastra::Runtime32 {
 inline constexpr std::uint32_t kMagic = 0x41555254;
-inline constexpr std::uint32_t kVersion = 13;
+inline constexpr std::uint32_t kVersion = 14;
 inline constexpr DWORD kRuntimeFailure = 0xA001;
 inline constexpr std::size_t kPathCapacity = 4096;
 inline constexpr std::size_t kLuaProbePayloadCapacity = 512 * 1024;
@@ -106,6 +106,15 @@ struct SharedEvidence {
     // 测试静音：1.27a 不认 -nosound，改由 bootstrap 让 Miles 打不开声卡。
     LONG muteSound = 0;
     LONG muteSoundInstalled = 0;
+    // 作者看着的测试的显示设置：窗口方式（0 窗口化、1 无边框窗口化、2 全屏）与 OpenGL 由启动参数决定，这里只记录；
+    // 无边框与限制鼠标由 bootstrap 接管游戏主窗口，Applied/Clips 计数实际生效的次数供回执核对。
+    LONG gameWindowMode = 0;
+    LONG openGl = 0;
+    LONG borderlessWindowInstalled = 0;
+    LONG borderlessApplied = 0;
+    LONG cursorLock = 0;
+    LONG cursorLockInstalled = 0;
+    LONG cursorClips = 0;
     DWORD errorWin32 = 0;
     char errorStage[96]{};
     char nativeObserverFailureText[4096]{};

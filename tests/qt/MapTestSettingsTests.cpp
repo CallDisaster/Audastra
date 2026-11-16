@@ -10,6 +10,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -163,6 +164,16 @@ void MapTestSettingsTests::DefaultsAndPlaceholders() {
     QVERIFY(preferences.mapBackupLimit.has_value()); QCOMPARE(*preferences.mapBackupLimit, 10);
     QVERIFY(preferences.mapTestRuntimeRoot.has_value()); QVERIFY(preferences.mapTestRuntimeRoot->isEmpty());
     QVERIFY(preferences.mapTestSlk.has_value()); QVERIFY(!*preferences.mapTestSlk);
+    // 显示设置默认窗口化、Direct3D、不限制鼠标。
+    auto* windowMode = page.findChild<QComboBox*>(QStringLiteral("mapTestWindowMode"));
+    auto* renderer = page.findChild<QComboBox*>(QStringLiteral("mapTestRenderer"));
+    auto* cursorLock = page.findChild<QCheckBox*>(QStringLiteral("mapTestCursorLock"));
+    QVERIFY(windowMode); QVERIFY(renderer); QVERIFY(cursorLock);
+    QCOMPARE(windowMode->count(), 3); QCOMPARE(windowMode->currentText(), QStringLiteral("窗口化"));
+    QCOMPARE(renderer->currentText(), QStringLiteral("Direct3D")); QVERIFY(!cursorLock->isChecked());
+    QCOMPARE(*preferences.mapTestWindowMode, QStringLiteral("windowed"));
+    QCOMPARE(*preferences.mapTestRenderer, QStringLiteral("direct3d"));
+    QVERIFY(preferences.mapTestCursorLock.has_value()); QVERIFY(!*preferences.mapTestCursorLock);
     QString error = QStringLiteral("旧错误");
     QVERIFY(page.Validate(&error)); QVERIFY(error.isEmpty());
     QVERIFY(StoredValues().isEmpty());
@@ -196,10 +207,18 @@ void MapTestSettingsTests::StoredValuesAndUnlimitedRetention() {
     stored.setValue(QStringLiteral("mapTest/slkToolRoot"), slkTool);
     stored.setValue(QStringLiteral("mapTest/runtimeRoot"), runtime);
     stored.setValue(QStringLiteral("mapTest/slkEnabled"), true);
+    stored.setValue(QStringLiteral("mapTest/windowMode"), QStringLiteral("borderless"));
+    stored.setValue(QStringLiteral("mapTest/cursorLock"), true);
+    stored.setValue(QStringLiteral("mapTest/renderer"), QStringLiteral("opengl"));
     stored.sync(); QCOMPARE(stored.status(), QSettings::NoError);
     const auto before = StoredValues();
     MapTestSettingsPage page(settingsRoot_.path(), settingsRoot_.filePath(QStringLiteral("local-data")));
     const auto preferences = page.Preferences();
+    QCOMPARE(page.findChild<QComboBox*>(QStringLiteral("mapTestWindowMode"))->currentText(), QStringLiteral("无边框窗口化"));
+    QCOMPARE(page.findChild<QComboBox*>(QStringLiteral("mapTestRenderer"))->currentText(), QStringLiteral("OpenGL"));
+    QVERIFY(page.findChild<QCheckBox*>(QStringLiteral("mapTestCursorLock"))->isChecked());
+    QCOMPARE(*preferences.mapTestWindowMode, QStringLiteral("borderless"));
+    QCOMPARE(*preferences.mapTestRenderer, QStringLiteral("opengl")); QVERIFY(*preferences.mapTestCursorLock);
     QVERIFY(preferences.mapBackupDirectory.has_value()); QCOMPARE(*preferences.mapBackupDirectory, backup);
     QVERIFY(preferences.mapBackupLimit.has_value()); QCOMPARE(*preferences.mapBackupLimit, 0);
     QVERIFY(preferences.mapTestRuntimeRoot.has_value()); QCOMPARE(*preferences.mapTestRuntimeRoot, runtime);

@@ -7,6 +7,7 @@
 #include "GameTest/BackgroundPlay127.h"
 #include "GameTest/CloakedWindow.h"
 #include "GameTest/MutedSound.h"
+#include "GameTest/WindowMode.h"
 #include "War3MapCore/Runtime/LuaTestMailboxValidation.h"
 #include <detours.h>
 #include <algorithm>
@@ -115,6 +116,18 @@ void InstallCloakedWindow() {
     if (!GameTest::InstallCloakedWindow(&evidence->cloakedWindows, error)) Fail("cloak-window-install", ERROR_INVALID_DATA);
     InterlockedExchange(&evidence->cloakWindowInstalled, 1);
 }
+// 无边框窗口化与限制鼠标：后台线程等游戏主窗口出现后接管；起不来就结束这次测试，不让设置静默失效。
+void InstallWindowMode() {
+    GameTest::WindowModeOptions options;
+    options.borderless = evidence->gameWindowMode == 1;
+    options.cursorLock = evidence->cursorLock != 0;
+    options.applied = &evidence->borderlessApplied;
+    options.clips = &evidence->cursorClips;
+    std::string error;
+    if (!GameTest::StartWindowMode(options, error)) Fail("window-mode-install", ERROR_INVALID_DATA);
+    if (options.borderless) InterlockedExchange(&evidence->borderlessWindowInstalled, 1);
+    if (options.cursorLock) InterlockedExchange(&evidence->cursorLockInstalled, 1);
+}
 // 静音要在游戏初始化声音之前装好；装不上就结束这次测试，不让测试游戏出声。
 void InstallMutedSound() {
     std::string error;
@@ -212,6 +225,7 @@ void ObserveModule(HMODULE loaded, bool requestedGame) {
         if (evidence->cloakWindow) InstallCloakedWindow();
         if (evidence->muteSound) InstallMutedSound();
         if (evidence->backgroundPlay) InstallBackgroundPlay(loaded);
+        if (evidence->gameWindowMode == 1 || evidence->cursorLock) InstallWindowMode();
         if (evidence->runtimeMode == RuntimeMode::ExternalYdwe) {
             InitializeRuntime();
             return;

@@ -30,6 +30,10 @@ struct ApplicationServicePreferences {
     std::optional<QString> mapTestRuntimeRoot;
     std::optional<QString> hluaFrameworkRoot;
     std::optional<bool> mapTestSlk;
+    // 作者看着的测试的显示设置：windowed/borderless/fullscreen、是否限制鼠标、direct3d/opengl。
+    std::optional<QString> mapTestWindowMode;
+    std::optional<bool> mapTestCursorLock;
+    std::optional<QString> mapTestRenderer;
     std::optional<bool> recoveryEnabled;
     std::optional<int> recoveryIntervalMinutes;
     std::optional<QString> worldEffectQuality;

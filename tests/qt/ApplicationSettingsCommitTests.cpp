@@ -111,6 +111,7 @@ private slots:
     void failedFinalSaveRestoresRecoveryTypesAndAbsentKeys();
     void recoveryRollbackPreservesConcurrentInterval();
     void worldEffectsCommitAndRollback();
+    void mapTestDisplayCommitAndValidation();
 };
 
 void ApplicationSettingsCommitTests::temporaryIniSuccessPreservesOtherSettings() {
@@ -813,6 +814,36 @@ void ApplicationSettingsCommitTests::worldEffectsCommitAndRollback() {
         QCOMPARE(actual.value(QStringLiteral("world/effectQuality")).toString(), name);
         QCOMPARE(actual.value(QStringLiteral("world/unrelated")).toInt(), 17);
     }
+}
+
+// 地图测试的显示设置：只认稳定名称，认不出的值不写入。
+void ApplicationSettingsCommitTests::mapTestDisplayCommitAndValidation() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto ini = directory.filePath(QStringLiteral("display.ini"));
+    QSettings preferences(ini, QSettings::IniFormat);
+    preferences.setFallbacksEnabled(false);
+    preferences.setValue(QStringLiteral("mapTest/windowMode"), QStringLiteral("windowed"));
+    preferences.sync();
+    AgentSettingsStore store(directory.filePath(QStringLiteral("ai.json")));
+    QVERIFY(Write(store.FilePath(), originalJson));
+    ApplicationServicePreferences services;
+    QString error;
+    services.mapTestWindowMode = QStringLiteral("maximized");
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services));
+    services.mapTestWindowMode = QStringLiteral("borderless");
+    services.mapTestRenderer = QStringLiteral("vulkan");
+    QVERIFY(!ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services));
+    QCOMPARE(preferences.value(QStringLiteral("mapTest/windowMode")).toString(), QStringLiteral("windowed"));
+    QVERIFY(!preferences.contains(QStringLiteral("mapTest/renderer")));
+    services.mapTestRenderer = QStringLiteral("opengl");
+    services.mapTestCursorLock = true;
+    QVERIFY2(ApplicationSettingsCommit::Commit(preferences, store, Candidate(), Preferences(), &error, {}, services), qPrintable(error));
+    QSettings actual(ini, QSettings::IniFormat);
+    actual.setFallbacksEnabled(false);
+    QCOMPARE(actual.value(QStringLiteral("mapTest/windowMode")).toString(), QStringLiteral("borderless"));
+    QCOMPARE(actual.value(QStringLiteral("mapTest/renderer")).toString(), QStringLiteral("opengl"));
+    QCOMPARE(actual.value(QStringLiteral("mapTest/cursorLock")).toBool(), true);
 }
 
 QTEST_MAIN(ApplicationSettingsCommitTests)

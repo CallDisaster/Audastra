@@ -311,7 +311,8 @@ void Case(const std::filesystem::path& base, const std::filesystem::path& launch
 // 裸模式：不加载扩展运行库，只装测试钩子。原创 Game.dll 不是 1.27a，后台运行钩子必须拒绝安装；
 // 窗口隐身与游戏版本无关，原创游戏建的顶层窗口必须被隐身、不进任务栏、不激活。
 // 静音同样与版本无关：要求静音时 Miles 替身打开声卡必须失败，没要求时必须照常成功。
-enum class BareHook { None, BackgroundPlay, WindowCloak };
+// Display：作者看着的测试的显示设置（无边框窗口化 + OpenGL + 限制鼠标），不带静音。
+enum class BareHook { None, BackgroundPlay, WindowCloak, Display };
 void BareCase(const std::filesystem::path& base, const std::filesystem::path& launcher,
     const std::filesystem::path& bootstrap, const std::filesystem::path& fakeWar3,
     const std::filesystem::path& fakeGame, const char* name, BareHook hook) {
@@ -362,19 +363,33 @@ void BareCase(const std::filesystem::path& base, const std::filesystem::path& la
     Require(run(prefix + L" --runtime-layout flat", 5000) == 64 && !std::filesystem::exists(receipt), "bare mode rejects a runtime layout");
     Require(run(prefix + L" --background-play on", 5000) == 64 && !std::filesystem::exists(receipt), "background play accepts only explicit enabled");
     Require(run(prefix + L" --game-nosound on", 5000) == 64 && !std::filesystem::exists(receipt), "nosound accepts only explicit enabled");
+    Require(run(prefix + L" --game-window maximized", 5000) == 64 && !std::filesystem::exists(receipt), "window mode accepts only borderless or fullscreen");
+    Require(run(prefix + L" --game-renderer direct3d", 5000) == 64 && !std::filesystem::exists(receipt), "renderer accepts only explicit opengl");
+    Require(run(prefix + L" --cursor-lock on", 5000) == 64 && !std::filesystem::exists(receipt), "cursor lock accepts only explicit enabled");
+    Require(run(prefix + L" --game-window borderless --window-cloak enabled", 5000) == 64 && !std::filesystem::exists(receipt),
+        "display settings never combine with the unseen cloaked window");
     // 静音不走游戏命令行（1.27a 不认 -nosound，会连带丢掉 -loadfile），由 bootstrap 让 Miles 替身打不开声卡。
-    const bool muted = hook != BareHook::None;
+    const bool muted = hook == BareHook::BackgroundPlay || hook == BareHook::WindowCloak;
     auto command = prefix;
     if (muted) command += L" --game-nosound enabled";
     if (hook == BareHook::BackgroundPlay) command += L" --background-play enabled";
     if (hook == BareHook::WindowCloak) command += L" --window-cloak enabled";
+    if (hook == BareHook::Display) command += L" --game-window borderless --game-renderer opengl --cursor-lock enabled";
     const auto exit = run(command, 22000);
     const auto text = Read(receipt);
     Require(text.find("\"runtimeMode\":\"bare\"") != std::string::npos, "receipt reports bare mode");
     Require(text.find("\"gameRuntimeVerified\":false") != std::string::npos, "bare fixture cannot claim gameplay");
     Require(text.find("\"fixturePluginBits\":0") != std::string::npos, "bare mode loads no extension runtime");
-    Require(text.find("\"-window\",\"-loadfile\"") != std::string::npos && text.find("-nosound") == std::string::npos,
-        "the game argv never carries -nosound");
+    Require(text.find(hook == BareHook::Display ? "\"-window\",\"-opengl\",\"-loadfile\"" : "\"-window\",\"-loadfile\"") != std::string::npos
+        && text.find("-nosound") == std::string::npos, "the game argv never carries -nosound; OpenGL adds -opengl after -window");
+    if (hook == BareHook::Display)
+        Require(text.find("\"gameWindow\":\"borderless\",\"gameRenderer\":\"opengl\",\"borderlessWindowInstalled\":true") != std::string::npos
+            && text.find("\"cursorLock\":true,\"cursorLockInstalled\":true") != std::string::npos,
+            "borderless window and cursor lock are installed inside the game process before ready");
+    else
+        Require(text.find("\"gameWindow\":\"windowed\",\"gameRenderer\":\"game-default\",\"borderlessWindowInstalled\":false") != std::string::npos
+            && text.find("\"cursorLock\":false,\"cursorLockInstalled\":false") != std::string::npos,
+            "display takeover stays off unless requested");
     if (hook != BareHook::BackgroundPlay) {
         Require(exit == 0, "bare launcher exit (the fake game checked the sound driver state itself)");
         Require(text.find(muted ? "\"gameNoSound\":true,\"gameNoSoundInstalled\":true" : "\"gameNoSound\":false,\"gameNoSoundInstalled\":false")
@@ -601,6 +616,7 @@ int wmain(int argc, wchar_t** argv) {
         BareCase(base, launcher, bootstrap, war3, game, "bare-mode", BareHook::None);
         BareCase(base, launcher, bootstrap, war3, game, "bare-background-play-identity", BareHook::BackgroundPlay);
         BareCase(base, launcher, bootstrap, war3, game, "bare-window-cloak", BareHook::WindowCloak);
+        BareCase(base, launcher, bootstrap, war3, game, "bare-display", BareHook::Display);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-valid", true);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-sandbox", true);
         ProbeCase(base, launcher, bootstrap, war3, game, runtime, L"probe-redirect", true);

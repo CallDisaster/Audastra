@@ -8,6 +8,7 @@
 #include <functional>
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QPushButton;
@@ -39,6 +40,9 @@ private:
     QLineEdit* externalDependencies_ = nullptr;
     QLineEdit* hluaFrameworkRoot_ = nullptr;
     QCheckBox* slkEnabled_ = nullptr;
+    QComboBox* windowMode_ = nullptr;
+    QCheckBox* cursorLock_ = nullptr;
+    QComboBox* renderer_ = nullptr;
     QLabel* legacyBackupInspection_ = nullptr;
     QPushButton* legacyBackupBrowse_ = nullptr;
     bool legacyBackupInspectionBusy_ = false;

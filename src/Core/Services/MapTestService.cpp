@@ -266,15 +266,25 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
     plan.cloakedWindow = artifact.cloakedWindow && plan.backgroundPlay;
     if (plan.cloakedWindow) plan.hiddenDesktop = false;
     const bool silent = artifact.hiddenDesktop || plan.cloakedWindow;
-    plan.arguments = {L"-window", L"-loadfile", relative.wstring()};
+    // 窗口方式只用于作者看着的测试；看不见的测试一律普通窗口、不限制鼠标、默认渲染。
+    plan.display = silent ? MapTestDisplay{} : artifact.display;
+    // 无边框窗口化与限制鼠标由启动组件在游戏进程里接管窗口，只在已核验的 1.27a 上提供。
+    const bool windowInProcess = plan.display.windowMode == MapTestWindowMode::Borderless || plan.display.cursorLock;
+    if (windowInProcess && plan.gameModuleSha256 != kMapTestGame127ModuleSha256)
+        return Fail<MapTestLaunchPlan>("MAP_TEST_WINDOW_MODE_GAME",
+            "无边框窗口化和限制鼠标只支持经典 1.27a；所选游戏不是已核验的 1.27a，请在设置的地图测试里改用窗口化或全屏、关闭限制鼠标后再测试。");
+    plan.arguments.clear();
+    if (plan.display.windowMode != MapTestWindowMode::Fullscreen) plan.arguments.push_back(L"-window");
+    if (plan.display.renderer == MapTestRenderer::OpenGL) plan.arguments.push_back(L"-opengl");
+    plan.arguments.insert(plan.arguments.end(), {L"-loadfile", relative.wstring()});
     const bool described = !artifact.externalDependencyFiles.empty();
     if (described && (!artifact.runtimeRoot.empty() || plan.gameModuleSha256 != kMapTestGame127ModuleSha256))
         return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_GAME", "已声明提供者需要已核验的 1.27a，不能与旧 YDWE 路径混装。");
     const bool legacyPlugins = !artifact.legacyPluginFiles.empty();
     if (legacyPlugins && plan.gameModuleSha256 != kMapTestGame127ModuleSha256)
         return Fail<MapTestLaunchPlan>("EXTERNAL_DEPENDENCY_DZ_GAME", "KKWE Dz 插件只在已核验的 1.27a 上装入。");
-    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || described || legacyPlugins || plan.backgroundPlay) {
-        // 裸模式：地图不需要扩展运行库，只为后台运行钩子经过启动器。
+    if (artifact.useOwnedLuaRuntime || !artifact.runtimeRoot.empty() || described || legacyPlugins || plan.backgroundPlay || windowInProcess) {
+        // 裸模式：地图不需要扩展运行库，只为后台运行、无边框或限制鼠标经过启动器。
         const bool bare = !artifact.useOwnedLuaRuntime && artifact.runtimeRoot.empty();
         if (!artifact.useOwnedLuaRuntime && artifact.runtimeLayout != MapTestRuntimeLayout::Flat
             && artifact.runtimeLayout != MapTestRuntimeLayout::YdweTree && artifact.runtimeLayout != MapTestRuntimeLayout::PluginConfig)
@@ -344,6 +354,14 @@ Result<MapTestLaunchPlan> BuildMapTestLaunchPlan(const MapTestArtifact& artifact
         // 看不见的后台测试不出声。经典 1.27a 不认 -nosound（会连带丢掉 -loadfile），
         // 静音只能经启动器在游戏进程内完成；直接启动的不可见桌面测试无法静音。
         if (silent) plan.arguments.insert(plan.arguments.end(), {L"--game-nosound", L"enabled"});
+        // 启动器只接受显式选项；省略即窗口化、Direct3D、不限制鼠标，缺省命令不变。
+        if (plan.display.windowMode == MapTestWindowMode::Borderless)
+            plan.arguments.insert(plan.arguments.end(), {L"--game-window", L"borderless"});
+        else if (plan.display.windowMode == MapTestWindowMode::Fullscreen)
+            plan.arguments.insert(plan.arguments.end(), {L"--game-window", L"fullscreen"});
+        if (plan.display.renderer == MapTestRenderer::OpenGL)
+            plan.arguments.insert(plan.arguments.end(), {L"--game-renderer", L"opengl"});
+        if (plan.display.cursorLock) plan.arguments.insert(plan.arguments.end(), {L"--cursor-lock", L"enabled"});
     }
     const auto executableSha = Sha256File(plan.executable);
     if (!executableSha.Succeeded()) { Result<MapTestLaunchPlan> result; result.diagnostics = executableSha.diagnostics; return result; }
