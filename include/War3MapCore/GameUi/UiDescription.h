@@ -129,6 +129,7 @@ struct UiFrame {
     JustifyV justifyV = JustifyV::Middle;
     UiNumber value;  // Bar 填充比例 0..1
     UiFlag visible;
+    double alpha = 1.0;  // 不透明度 0..1（游戏里换算成 0..255），子框架随父框架一起变淡
     std::optional<UiRepeat> repeat;
     std::vector<UiFrame> children;
 

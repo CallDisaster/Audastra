@@ -3,6 +3,8 @@
 #include "GameUiAuthoringJson.h"
 #include "GameUiChoice.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiDescriptionEdit.h"
+#include "Modules/ModuleHost.h"
 #include "War3MapCore/GameUi/GameCodeLayout.h"
 #include "War3MapCore/GameUi/ScriptFrames.h"
 #include "Widgets/TablePopupAnchor.h"
@@ -28,11 +30,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <set>
 
-// 界面工作区属性树里“编辑”一组：描述框架可直接改的字段（尺寸、贴图、文字、字体、颜色、对齐、进度、显示、
-// 锚点、重复）。选择类字段用列表选取，贴图用资源选择器，改动整批经 UiDescriptionEdit 检查后放进待保存修改。
-// 右键“设置界面”的卡片用同一套字段与修改。
+// 界面工作区属性树里自己控件的可改字段，分组为 基本 / 位置与大小 / 外观 / 事件 / 阵列。选择类字段用列表选取，
+// 贴图用资源选择器，长度可按像素输入；改动经 UiDescriptionEdit 检查后放进待保存修改。右键“设置…”的卡片用同一套字段与修改。
 namespace War3Map::Modules {
 namespace {
 
@@ -43,6 +45,14 @@ QString Text(std::string_view text) { return QString::fromUtf8(text.data(), stat
 constexpr int kFieldRole = Qt::UserRole + 40;
 constexpr int kResourceRole = Qt::UserRole + 41;  // 贴图、模型字段：双击打开资源选择器；值为资源类型加 1
 constexpr int kColorRole = Qt::UserRole + 42;     // 颜色字段：双击或右键打开取色器
+constexpr int kGroupRole = Qt::UserRole + 43;     // 分组行：基本、位置与大小……（记住折叠）
+
+QString KindLabel(UiFrameType type) {
+    for (const auto& candidate : UiFrameKinds()) {
+        if (candidate.type == type) return Text(candidate.label);
+    }
+    return Text(UiFrameTypeName(type));
+}
 
 double Round4(double value) { return std::round(value * 10000.0) / 10000.0; }
 
@@ -111,9 +121,20 @@ QJsonValue BindingValue(const QJsonValue& previous, const QString& reference) {
 
 } // namespace
 
-// 描述框架可直接改的字段：中文名默认，勾选“显示原始字段”时显示文件里的字段名。
-void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame) {
+/// 自己控件的可改字段，分组列出：中文名默认，勾选“显示原始字段”时显示文件里的字段名。
+void GameUiModule::AddEditableRows(QTreeWidgetItem* root, const UiFrame& frame) {
     const bool raw = rawFields_ && rawFields_->isChecked();
+    QString descriptionId;
+    SelectedDescriptionFrame(&descriptionId);
+    const auto group = [this](QTreeWidgetItem* parent, const QString& title, const QString& key) {
+        auto* item = new QTreeWidgetItem(parent, {title});
+        item->setFirstColumnSpanned(true);
+        QFont font = item->font(0);
+        font.setWeight(QFont::DemiBold);
+        item->setFont(0, font);
+        MarkPropertyGroup(item, key);
+        return item;
+    };
     const auto editable = [&](QTreeWidgetItem* parent, const QString& label, const QString& key, const QString& value) {
         const QString rawLabel = key.section(QLatin1Char(':'), -1);
         auto* item = new QTreeWidgetItem(parent, {raw ? rawLabel : label, value});
@@ -129,23 +150,87 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame)
         item->setData(1, kGameUiChoiceRole, value);
         return item;
     };
-    const auto number = [](const std::optional<double>& value) { return value ? QString::number(*value) : QString(); };
+    // 长度：按当前单位显示，提示里给出另一种单位。
+    const auto length = [&](QTreeWidgetItem* parent, const QString& label, const QString& key, std::optional<double> units, bool horizontal) {
+        auto* item = editable(parent, label, key, units ? LengthText(*units, horizontal) : QString());
+        if (units) {
+            const double pixels = horizontal ? UiPixelsFromUnitsX(*units, resolution_) : UiPixelsFromUnitsY(*units, resolution_);
+            item->setToolTip(1, pixelUnits_ ? QString::number(*units)
+                                            : tr("%1 像素（%2×%3）").arg(std::round(pixels * 100.0) / 100.0).arg(resolution_.width).arg(resolution_.height));
+        }
+        return item;
+    };
     const auto binding = [](const UiBinding& bound) {
         QString text = Text(bound.value);
         if (bound.perInstance) text += QStringLiteral("[]");
         else if (bound.index) text += QStringLiteral("[%1]").arg(*bound.index);
         return text;
     };
-    editable(group, tr("编号"), QStringLiteral("id"), Text(frame.id));
-    editable(group, tr("显示名"), QStringLiteral("label"), Text(frame.label));
+
+    // 基本
+    auto* basic = group(root, tr("基本"), QStringLiteral("basic"));
+    editable(basic, tr("名称"), QStringLiteral("label"), Text(frame.label));
+    editable(basic, tr("编号"), QStringLiteral("id"), Text(frame.id));
+    auto* typeRow = new QTreeWidgetItem(basic, {raw ? QStringLiteral("type") : tr("种类"), KindLabel(frame.type)});
+    typeRow->setToolTip(1, Text(UiFrameTypeName(frame.type)));
     if (frame.type == UiFrameType::Template) {
-        choice(group, tr("模板"), QStringLiteral("template"), PropertyChoices(QStringLiteral("template")), Text(frame.templateName));
+        choice(basic, tr("模板"), QStringLiteral("template"), PropertyChoices(QStringLiteral("template")), Text(frame.templateName));
     }
-    editable(group, tr("宽"), QStringLiteral("width"), number(frame.width));
-    editable(group, tr("高"), QStringLiteral("height"), number(frame.height));
+    if (const UiDescription* description = Description(descriptionId)) {
+        const QString parent = Text(UiFrameParentId(*description, frame.id));
+        choice(basic, tr("父控件"), QStringLiteral("parent"), PropertyChoices(QStringLiteral("parent")), parent);
+    }
+    const QString visible = frame.visible.binding ? binding(*frame.visible.binding)
+                                                  : (frame.visible.literal ? QStringLiteral("true") : QStringLiteral("false"));
+    choice(basic, tr("显示"), QStringLiteral("visible"), PropertyChoices(QStringLiteral("visible")), visible);
+    editable(basic, tr("透明度"), QStringLiteral("alpha"), QStringLiteral("%1%").arg(std::round(frame.alpha * 1000.0) / 10.0))
+        ->setToolTip(1, tr("100% 不透明，0% 全透明；子控件随之变淡"));
+
+    // 位置与大小
+    auto* place = group(root, tr("位置与大小"), QStringLiteral("place"));
+    choice(place, tr("单位"), QStringLiteral("unit"), PropertyChoices(QStringLiteral("unit")),
+        pixelUnits_ ? QStringLiteral("pixel") : QStringLiteral("war3"));
+    choice(place, tr("参考分辨率"), QStringLiteral("resolution"), PropertyChoices(QStringLiteral("resolution")),
+        QStringLiteral("%1×%2").arg(resolution_.width).arg(resolution_.height));
+    const bool fill = FillsParent(frame);
+    choice(place, tr("铺满父控件"), QStringLiteral("fill"), PropertyChoices(QStringLiteral("fill")), fill ? QStringLiteral("true") : QStringLiteral("false"));
+    const GameUiOptions points = PointOptions(raw);
+    if (!fill) {
+        length(place, tr("宽"), QStringLiteral("width"), frame.width, true);
+        length(place, tr("高"), QStringLiteral("height"), frame.height, false);
+        const auto anchorRows = [&](QTreeWidgetItem* parent, std::size_t i) {
+            const QString prefix = QStringLiteral("anchor:%1:").arg(i);
+            if (i >= frame.anchors.size()) {
+                choice(parent, tr("对齐点"), prefix + QStringLiteral("point"), points, QString())->setText(1, tr("（未定位）"));
+                return;
+            }
+            const UiAnchor& anchor = frame.anchors[i];
+            choice(parent, tr("对齐点"), prefix + QStringLiteral("point"), points, Text(FramePointName(anchor.point)));
+            choice(parent, tr("对齐到"), prefix + QStringLiteral("to"), PropertyChoices(prefix + QStringLiteral("to")), TargetValue(anchor));
+            choice(parent, tr("目标点"), prefix + QStringLiteral("toPoint"), points, Text(FramePointName(anchor.targetPoint)));
+            length(parent, tr("X"), prefix + QStringLiteral("x"), anchor.x, true);
+            length(parent, tr("Y"), prefix + QStringLiteral("y"), anchor.y, false)->setToolTip(0, tr("向上为正"));
+        };
+        // 第一个锚点直接列在组里，其余锚点各占一组。
+        anchorRows(place, 0);
+        for (std::size_t i = 1; i < frame.anchors.size(); ++i) {
+            const UiAnchor& anchor = frame.anchors[i];
+            const QString prefix = QStringLiteral("anchor:%1:").arg(i);
+            auto* item = new QTreeWidgetItem(place, {raw ? QStringLiteral("anchors[%1]").arg(i) : tr("锚点 %1").arg(i + 1),
+                tr("%1 → %2 的 %3").arg(GameUiChoiceLabel(points, Text(FramePointName(anchor.point))),
+                    GameUiChoiceLabel(PropertyChoices(prefix + QStringLiteral("to")), TargetValue(anchor)),
+                    GameUiChoiceLabel(points, Text(FramePointName(anchor.targetPoint))))});
+            item->setData(0, kFieldRole, prefix);
+            item->setExpanded(true);
+            anchorRows(item, i);
+        }
+    }
+
+    // 外观
+    auto* look = group(root, tr("外观"), QStringLiteral("look"));
     // 贴图与模型：有资源选择器时双击打开它（自定义页可写路径或 {编号} 模板）；贴图行首显示已读到的贴图。
     const auto resource = [&](const QString& label, const QString& key, const std::string& value, Services::ObjectResourceKind kind) {
-        auto* item = editable(group, label, key, Text(value));
+        auto* item = editable(look, label, key, Text(value));
         if (resourcePickerFactory_) {
             item->setFlags(item->flags() & ~Qt::ItemIsEditable);
             item->setData(1, kResourceRole, static_cast<int>(kind) + 1);
@@ -166,56 +251,58 @@ void GameUiModule::AddEditableRows(QTreeWidgetItem* group, const UiFrame& frame)
     if (frame.type == UiFrameType::Button) texture(tr("按下贴图"), QStringLiteral("pushed"), frame.pushed);
     if (frame.type == UiFrameType::Model) resource(tr("模型"), QStringLiteral("model"), frame.model, Services::ObjectResourceKind::Model);
     if (text) {
-        editable(group, tr("文字"), QStringLiteral("text"), Text(frame.text));
-        editable(group, tr("字体"), QStringLiteral("font"), Text(frame.font));
-        editable(group, tr("字号"), QStringLiteral("fontHeight"), QString::number(frame.fontHeight));
-        auto* color = editable(group, tr("颜色"), QStringLiteral("color"), ColorValue(frame.color));
+        editable(look, tr("文字"), QStringLiteral("text"), Text(frame.text));
+        editable(look, tr("字体"), QStringLiteral("font"), Text(frame.font));
+        length(look, tr("字号"), QStringLiteral("fontHeight"), frame.fontHeight, false);
+        auto* color = editable(look, tr("颜色"), QStringLiteral("color"), ColorValue(frame.color));
         color->setData(1, Qt::DecorationRole, QColor::fromRgbF(static_cast<float>(frame.color[0]),
             static_cast<float>(frame.color[1]), static_cast<float>(frame.color[2]), static_cast<float>(frame.color[3])));
         color->setFlags(color->flags() & ~Qt::ItemIsEditable);
         color->setData(1, kColorRole, true);
-        choice(group, tr("水平对齐"), QStringLiteral("justifyH"), JustifyOptions(true, raw),
+        choice(look, tr("水平对齐"), QStringLiteral("justifyH"), JustifyOptions(true, raw),
             Text(std::string_view(frame.justifyH == JustifyH::Left ? "left" : frame.justifyH == JustifyH::Right ? "right" : "center")));
-        choice(group, tr("竖直对齐"), QStringLiteral("justifyV"), JustifyOptions(false, raw),
+        choice(look, tr("竖直对齐"), QStringLiteral("justifyV"), JustifyOptions(false, raw),
             Text(std::string_view(frame.justifyV == JustifyV::Top ? "top" : frame.justifyV == JustifyV::Bottom ? "bottom" : "middle")));
     }
     if (frame.type == UiFrameType::Bar) {
-        editable(group, tr("进度"), QStringLiteral("value"),
+        editable(look, tr("进度"), QStringLiteral("value"),
             frame.value.binding ? binding(*frame.value.binding) : QString::number(frame.value.literal));
     }
-    const QString visible = frame.visible.binding ? binding(*frame.visible.binding)
-                                                  : (frame.visible.literal ? QStringLiteral("true") : QStringLiteral("false"));
-    choice(group, tr("显示"), QStringLiteral("visible"), PropertyChoices(QStringLiteral("visible")), visible);
+    if (look->childCount() == 0) delete look;
 
-    const GameUiOptions points = PointOptions(raw);
-    for (std::size_t i = 0; i < frame.anchors.size(); ++i) {
-        const UiAnchor& anchor = frame.anchors[i];
-        const QString prefix = QStringLiteral("anchor:%1:").arg(i);
-        const QString target = TargetValue(anchor);
-        auto* item = new QTreeWidgetItem(group, {raw ? QStringLiteral("anchors[%1]").arg(i) : tr("锚点 %1").arg(i + 1),
-            tr("%1 → %2 的 %3").arg(GameUiChoiceLabel(points, Text(FramePointName(anchor.point))),
-                GameUiChoiceLabel(PropertyChoices(prefix + QStringLiteral("to")), target),
-                GameUiChoiceLabel(points, Text(FramePointName(anchor.targetPoint))))});
-        item->setData(0, kFieldRole, prefix);
-        item->setExpanded(true);
-        choice(item, tr("对齐点"), prefix + QStringLiteral("point"), points, Text(FramePointName(anchor.point)));
-        choice(item, tr("目标"), prefix + QStringLiteral("to"), PropertyChoices(prefix + QStringLiteral("to")), target);
-        choice(item, tr("目标点"), prefix + QStringLiteral("toPoint"), points, Text(FramePointName(anchor.targetPoint)));
-        editable(item, tr("横向偏移"), prefix + QStringLiteral("x"), QString::number(anchor.x));
-        editable(item, tr("纵向偏移"), prefix + QStringLiteral("y"), QString::number(anchor.y));
-    }
+    // 事件
+    AddEventRows(group(root, tr("事件"), QStringLiteral("events")), descriptionId, frame);
 
-    // 重复：次数留空即不重复；有重复时才列出间距。
-    auto* repeat = new QTreeWidgetItem(group, {raw ? QStringLiteral("repeat") : tr("重复"),
-        frame.repeat ? tr("%1 个").arg(frame.repeat->count) : tr("不重复")});
-    repeat->setExpanded(true);
-    editable(repeat, tr("次数"), QStringLiteral("repeat:count"), frame.repeat ? QString::number(frame.repeat->count) : QString());
+    // 阵列：数量留空即只有一个；有阵列时才列出间距。
+    auto* repeat = group(root, raw ? QStringLiteral("repeat") : tr("阵列"), QStringLiteral("repeat"));
+    editable(repeat, tr("数量"), QStringLiteral("repeat:count"), frame.repeat ? QString::number(frame.repeat->count) : QString());
     if (frame.repeat) {
-        editable(repeat, tr("横向间距"), QStringLiteral("repeat:dx"), QString::number(frame.repeat->dx));
-        editable(repeat, tr("纵向间距"), QStringLiteral("repeat:dy"), QString::number(frame.repeat->dy));
+        length(repeat, tr("横向间距"), QStringLiteral("repeat:dx"), frame.repeat->dx, true);
+        length(repeat, tr("纵向间距"), QStringLiteral("repeat:dy"), frame.repeat->dy, false);
         editable(repeat, tr("每行个数"), QStringLiteral("repeat:columns"), frame.repeat->columns ? QString::number(frame.repeat->columns) : QString());
-        editable(repeat, tr("换行横向"), QStringLiteral("repeat:rowDx"), QString::number(frame.repeat->rowDx));
-        editable(repeat, tr("换行纵向"), QStringLiteral("repeat:rowDy"), QString::number(frame.repeat->rowDy));
+        length(repeat, tr("换行横向"), QStringLiteral("repeat:rowDx"), frame.repeat->rowDx, true);
+        length(repeat, tr("换行纵向"), QStringLiteral("repeat:rowDy"), frame.repeat->rowDy, false);
+    }
+}
+
+// 事件：点击、鼠标进入、鼠标离开各一行，值为订阅它的触发器；选“新建触发器”建好后跳过去。
+void GameUiModule::AddEventRows(QTreeWidgetItem* group, const QString& description, const UiFrame& frame) {
+    const bool raw = rawFields_ && rawFields_->isChecked();
+    struct Kind { UiEventKind kind; const char* label; const char* on; };
+    static const std::array<Kind, 3> kinds{{{UiEventKind::Click, "点击", "click"}, {UiEventKind::Enter, "鼠标进入", "enter"},
+        {UiEventKind::Leave, "鼠标离开", "leave"}}};
+    for (const Kind& kind : kinds) {
+        const QString key = QStringLiteral("event:") + QLatin1String(kind.on);
+        const FrameEventLink link = FrameEventTriggers(description, Text(frame.id), kind.kind);
+        QStringList names;
+        for (const auto& trigger : link.triggers) names.push_back(trigger.second);
+        const QString value = link.triggers.isEmpty() ? QString() : QStringLiteral("trigger:%1").arg(link.triggers.front().first);
+        const QString shown = !names.isEmpty() ? names.join(QStringLiteral("、")) : link.eventId.isEmpty() ? tr("（无）") : tr("（无触发器）");
+        auto* item = new QTreeWidgetItem(group, {raw ? QString::fromLatin1(kind.on) : tr(kind.label), shown});
+        item->setData(1, kFieldRole, key);
+        item->setData(1, kGameUiChoiceRole, value);
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        item->setToolTip(1, link.key.isEmpty() ? shown : tr("%1\n事件名 %2").arg(shown, link.key));
     }
 }
 
@@ -242,10 +329,38 @@ QList<std::pair<QString, QString>> GameUiModule::PropertyChoices(const QString& 
         auto result = PointOptions(false); result.prepend({tr("原样"), ""}); return result;
     }
     const bool raw = rawFields_ && rawFields_->isChecked();
+    if (key == QLatin1String("unit")) return {{tr("魔兽单位"), QStringLiteral("war3")}, {tr("像素"), QStringLiteral("pixel")}};
+    if (key == QLatin1String("resolution")) {
+        GameUiOptions options;
+        for (const char* size : {"1920×1080", "2560×1440", "3840×2160", "1600×900", "1366×768", "1280×720", "1280×1024", "1024×768"}) {
+            options.push_back({QString::fromUtf8(size), QString::fromUtf8(size)});
+        }
+        return options;
+    }
+    if (key == QLatin1String("fill")) return {{tr("是"), QStringLiteral("true")}, {tr("否"), QStringLiteral("false")}};
+    if (key.startsWith(QLatin1String("event:"))) {
+        GameUiOptions options{{tr("（无）"), QString()}, {tr("新建触发器"), QStringLiteral("new")}};
+        for (const auto& [trigger, name] : EventTriggerCandidates()) options.push_back({name, QStringLiteral("trigger:%1").arg(trigger)});
+        return options;
+    }
     QString id;
     const UiFrame* frame = SelectedDescriptionFrame(&id);
     const UiDescription* description = frame ? Description(id) : nullptr;
     if (!description) return {};
+    if (key == QLatin1String("parent")) {
+        // 界面顶层与同一界面里自身以外的控件（不含自己的子控件，免得成环）。
+        GameUiOptions options{{tr("（界面顶层）"), QString()}};
+        std::set<std::string> own;
+        CollectIds(*frame, own);
+        std::vector<const UiFrame*> frames;
+        CollectFrames(description->frames, frames);
+        for (const UiFrame* other : frames) {
+            if (own.contains(other->id)) continue;
+            options.push_back({raw || other->label.empty() ? Text(other->id) : QStringLiteral("%1  %2").arg(Text(other->label), Text(other->id)),
+                Text(other->id)});
+        }
+        return options;
+    }
     const auto valueIds = [&](std::initializer_list<UiValueType> types) {
         GameUiOptions options;
         for (const auto& value : description->values) {
@@ -274,8 +389,8 @@ QList<std::pair<QString, QString>> GameUiModule::PropertyChoices(const QString& 
         return PointOptions(raw);
     }
     if (key.startsWith(QLatin1String("anchor:")) && key.endsWith(QLatin1String(":to"))) {
-        // 父框架、屏幕、同一描述里自身以外的框架（不含自己的子框架，免得成环）、游戏界面区域。
-        GameUiOptions options{{raw ? QStringLiteral("parent") : tr("父框架"), QStringLiteral("parent")},
+        // 父控件、屏幕、同一界面里自身以外的控件（不含自己的子控件，免得成环）、游戏界面区域。
+        GameUiOptions options{{raw ? QStringLiteral("parent") : tr("父控件"), QStringLiteral("parent")},
             {raw ? QStringLiteral("screen") : tr("屏幕"), QStringLiteral("screen")}};
         std::set<std::string> own;
         CollectIds(*frame, own);
@@ -299,7 +414,9 @@ QList<std::pair<QString, QString>> GameUiModule::PropertyChoices(const QString& 
 
 bool GameUiModule::PropertyFreeText(const QString& key) const {
     // 显示与进度可取数值，也可直接写字面值或 编号[下标]；模板名可写列表外的名字（例如地图界面文件里的）。
-    return key == QLatin1String("visible") || key == QLatin1String("value") || key == QLatin1String("template");
+    // 参考分辨率可写列表外的 宽×高；父控件与事件的触发器可输入筛选。
+    return key == QLatin1String("visible") || key == QLatin1String("value") || key == QLatin1String("template")
+        || key == QLatin1String("resolution") || key == QLatin1String("parent") || key.startsWith(QLatin1String("event:"));
 }
 
 void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
@@ -311,19 +428,100 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
     if (!frame) return;
     const QVariant chosen = item->data(1, kGameUiChoiceRole);
     const QString text = (chosen.isValid() ? chosen.toString() : item->text(1)).trimmed();
+    const QString frameId = Text(frame->id);
+    // 修改会重建属性树（删掉正在发出信号的行），放到下一轮事件里；失败时报告并恢复成描述里的值。
+    const auto later = [this](std::function<bool(QString*)> apply) {
+        QTimer::singleShot(0, this, [this, apply = std::move(apply)] {
+            QString error;
+            if (apply(&error)) return;
+            if (!error.isEmpty()) ReportAuthoring(error);
+            UpdateProperties();
+        });
+    };
+    if (key == QLatin1String("unit")) {
+        QTimer::singleShot(0, this, [this, pixels = text == QLatin1String("pixel")] { SetPixelUnits(pixels); });
+        return;
+    }
+    if (key == QLatin1String("resolution")) {
+        const QStringList parts = QString(text).replace(QChar(0x00D7), QLatin1Char('x')).replace(QLatin1Char('*'), QLatin1Char('x'))
+                                      .split(QLatin1Char('x'), Qt::SkipEmptyParts);
+        bool okWidth = false;
+        bool okHeight = false;
+        const UiResolution resolution{parts.size() == 2 ? parts[0].trimmed().toInt(&okWidth) : 0,
+            parts.size() == 2 ? parts[1].trimmed().toInt(&okHeight) : 0};
+        if (!okWidth || !okHeight || !resolution.Valid()) {
+            ReportAuthoring(tr("参考分辨率写作 宽×高，例如 1920×1080"));
+            QTimer::singleShot(0, this, &GameUiModule::UpdateProperties);
+            return;
+        }
+        QTimer::singleShot(0, this, [this, resolution] { SetReferenceResolution(resolution); });
+        return;
+    }
+    if (key == QLatin1String("parent")) {
+        later([this, id, frameId, text](QString* error) {
+            if (!ReparentDescriptionFrame(id, frameId, text, error)) return false;
+            SelectFrameWhenReady(frameId);
+            return true;
+        });
+        return;
+    }
+    if (key == QLatin1String("fill")) {
+        later([this, id, frameId, fill = text == QLatin1String("true")](QString* error) {
+            return SetDescriptionFrameFill(id, frameId, fill, error);
+        });
+        return;
+    }
+    if (key.startsWith(QLatin1String("event:"))) {
+        const QString on = key.section(QLatin1Char(':'), 1);
+        const UiEventKind kind = on == QLatin1String("enter") ? UiEventKind::Enter : on == QLatin1String("leave") ? UiEventKind::Leave : UiEventKind::Click;
+        std::optional<StableId> trigger = StableId{0};
+        if (text == QLatin1String("new")) {
+            trigger = std::nullopt;
+        } else if (text.startsWith(QLatin1String("trigger:"))) {
+            trigger = text.section(QLatin1Char(':'), 1).toULongLong();
+        } else if (!text.isEmpty() && text != tr("（无）")) {
+            // 列表外的输入：按触发器名字找。
+            const auto candidates = EventTriggerCandidates();
+            const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const auto& row) { return row.second == text; });
+            if (found == candidates.end()) {
+                ReportAuthoring(tr("没有可订阅界面事件的触发器 %1").arg(text));
+                QTimer::singleShot(0, this, &GameUiModule::UpdateProperties);
+                return;
+            }
+            trigger = found->first;
+        }
+        later([this, id, frameId, kind, trigger](QString* error) {
+            const auto linked = LinkFrameEvent(id, frameId, kind, trigger, error);
+            if (!linked) return false;
+            if (*linked != 0) OfferMapRuntime();
+            // 新建的触发器：跳过去写动作。
+            if (!trigger && *linked != 0 && host_) host_->Navigate(Shell::NavigationTarget{"triggers", "trigger", QString::number(*linked), {}});
+            return true;
+        });
+        return;
+    }
     const QJsonObject current = FrameObject(*frame);
     QString error;
     QJsonObject fields;
-    const auto parseNumber = [&](const QString& what, double* out) {
-        bool ok = false;
-        *out = text.toDouble(&ok);
-        if (!ok) error = tr("%1 应为数值").arg(what);
-        return ok;
+    // 长度按当前单位换算，带 px 时按像素。
+    const auto parseLength = [&](const QString& what, bool horizontal, double* out) {
+        const auto value = ParseLength(text, horizontal);
+        if (!value) error = tr("%1 应为数值（像素可写 64px）").arg(what);
+        else *out = *value;
+        return value.has_value();
     };
     if (key == QLatin1String("width") || key == QLatin1String("height") || key == QLatin1String("fontHeight")) {
         double number = 0.0;
         if (text.isEmpty()) fields.insert(key, QJsonValue::Null);
-        else if (parseNumber(item->text(0), &number)) fields.insert(key, number);
+        else if (parseLength(item->text(0), key == QLatin1String("width"), &number)) fields.insert(key, number);
+    } else if (key == QLatin1String("alpha")) {
+        QString percent = text;
+        if (percent.endsWith(QLatin1Char('%'))) percent.chop(1);
+        bool ok = false;
+        const double value = percent.trimmed().toDouble(&ok);
+        if (text.isEmpty()) fields.insert(key, QJsonValue::Null);
+        else if (!ok || value < 0.0 || value > 100.0) error = tr("透明度写 0 到 100 的百分数");
+        else fields.insert(key, std::round(value * 10.0) / 1000.0);
     } else if (key == QLatin1String("value") || key == QLatin1String("visible")) {
         bool ok = false;
         const double number = text.toDouble(&ok);
@@ -350,13 +548,13 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
             if (text.isEmpty()) {
                 fields.insert(QStringLiteral("repeat"), QJsonValue::Null);
             } else if (!ok || count < 1) {
-                error = tr("重复次数应为正整数");
+                error = tr("阵列数量应为正整数");
             } else {
                 repeat.insert(QStringLiteral("count"), count);
                 fields.insert(QStringLiteral("repeat"), repeat);
             }
         } else if (repeat.isEmpty()) {
-            error = tr("先填写重复次数");
+            error = tr("先填写阵列数量");
         } else if (part == QLatin1String("columns")) {
             // 空为不换行。
             bool ok = false;
@@ -372,7 +570,7 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
             }
         } else {
             double number = 0.0;
-            if (parseNumber(item->text(0), &number)) {
+            if (parseLength(item->text(0), part == QLatin1String("dx") || part == QLatin1String("rowDx"), &number)) {
                 repeat.insert(part, number);
                 fields.insert(QStringLiteral("repeat"), repeat);
             }
@@ -381,11 +579,13 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
         QJsonArray anchors = current.value(QStringLiteral("anchors")).toArray();
         const qsizetype index = key.section(QLatin1Char(':'), 1, 1).toInt();
         const QString part = key.section(QLatin1Char(':'), 2);
+        // 没有锚点时“对齐点”一行新建第一个锚点。
+        if (index == anchors.size() && part == QLatin1String("point") && !text.isEmpty()) anchors.append(QJsonObject{{"point", text}});
         if (index < 0 || index >= anchors.size()) return;
         QJsonObject anchor = anchors[index].toObject();
         double number = 0.0;
         if (part == QLatin1String("x") || part == QLatin1String("y")) {
-            if (parseNumber(item->text(0), &number)) anchor.insert(part, number);
+            if (parseLength(item->text(0), part == QLatin1String("x"), &number)) anchor.insert(part, number);
         } else if (part == QLatin1String("point")) {
             // 目标点未单独写出时跟着对齐点；改对齐点时先把原来的目标点写明，目标点不变。
             if (!anchor.contains(QStringLiteral("toPoint"))) anchor.insert(QStringLiteral("toPoint"), anchor.value(QStringLiteral("point")));
@@ -406,9 +606,8 @@ void GameUiModule::OnPropertyEdited(QTreeWidgetItem* item, int column) {
         QTimer::singleShot(0, this, &GameUiModule::UpdateProperties);  // 恢复成描述里的值
         return;
     }
-    const QString frameId = Text(frame->id);
     const QJsonObject edit{{"op", "set_frame"}, {"frame", frameId}, {"fields", fields}};
-    // 改编号或重复次数后原来的节点名不在了：仍选中这个框架（重复时选第一个实例）。
+    // 改编号或阵列数量后原来的节点名不在了：仍选中这个控件（阵列时选第一个）。
     const QString target = key == QLatin1String("id") ? text : frameId;
     auto after = [this, target] {
         if (const UiFrame* selected = SelectedDescriptionFrame(); selected && Text(selected->id) == target) return;
@@ -421,7 +620,7 @@ bool GameUiModule::AddDescriptionAnchor(QString* error) {
     QString id;
     const UiFrame* frame = SelectedDescriptionFrame(&id);
     if (!frame) {
-        if (error) *error = tr("先选中一个界面描述里的框架");
+        if (error) *error = tr("先选中一个自己界面里的控件");
         return false;
     }
     QJsonArray anchors = AnchorsOf(*frame);
@@ -455,8 +654,20 @@ bool GameUiModule::RemoveDescriptionAnchor(int index, QString* error) {
     return EditDescription(id, CompactEdits({edit}), tr("界面 %1：%2 删除锚点 %3").arg(id, Text(frame->id)).arg(index + 1), error);
 }
 
+void GameUiModule::MarkPropertyGroup(QTreeWidgetItem* group, const QString& key, bool expandedByDefault) {
+    group->setData(0, kGroupRole, key);
+    group->setExpanded(groupExpanded_.value(key, expandedByDefault));
+}
+
 void GameUiModule::InstallPropertyEditors(QTreeWidget* tree) {
     const auto key = [](const QModelIndex& index) { return index.data(kFieldRole).toString(); };
+    // 分组的展开、折叠按组记住，换选控件后照旧（填表时信号已屏蔽，不算作者的操作）。
+    const auto remember = [this](QTreeWidgetItem* item, bool expanded) {
+        const QString group = item ? item->data(0, kGroupRole).toString() : QString();
+        if (!group.isEmpty()) groupExpanded_.insert(group, expanded);
+    };
+    connect(tree, &QTreeWidget::itemExpanded, this, [remember](QTreeWidgetItem* item) { remember(item, true); });
+    connect(tree, &QTreeWidget::itemCollapsed, this, [remember](QTreeWidgetItem* item) { remember(item, false); });
     tree->setItemDelegateForColumn(1, new GameUiChoiceDelegate(
         [this, key](const QModelIndex& index) { return PropertyChoices(key(index)); }, tree,
         [this, key](const QModelIndex& index) { return PropertyFreeText(key(index)); }));
@@ -480,6 +691,19 @@ void GameUiModule::ShowPropertyMenu(QTreeWidget* tree, const QPoint& position) {
     } else if (item && item->data(1, kColorRole).toBool()) {
         menu.addAction(tr("选择颜色…"), this, [tree, item] { PickColor(tree, item); });
         menu.addSeparator();
+    } else if (const QString key = item ? item->data(1, kFieldRole).toString() : QString(); key.startsWith(QLatin1String("event:"))) {
+        // 事件：打开订阅它的触发器。
+        QString id;
+        const UiFrame* frame = SelectedDescriptionFrame(&id);
+        const QString on = key.section(QLatin1Char(':'), 1);
+        const UiEventKind kind = on == QLatin1String("enter") ? UiEventKind::Enter : on == QLatin1String("leave") ? UiEventKind::Leave : UiEventKind::Click;
+        const FrameEventLink link = frame ? FrameEventTriggers(id, Text(frame->id), kind) : FrameEventLink{};
+        for (const auto& [trigger, name] : link.triggers) {
+            menu.addAction(tr("打开触发器 %1").arg(name), this, [this, trigger] {
+                if (host_) host_->Navigate(Shell::NavigationTarget{"triggers", "trigger", QString::number(trigger), {}});
+            });
+        }
+        if (!link.triggers.isEmpty()) menu.addSeparator();
     } else if (item && item->data(1, kFieldRole).toString() == QLatin1String("text")) {
         // 插入取值：把本界面的一个数值写成 {编号}（数组为 {编号[]}，按所在重复实例取格）接在文字后面。
         QString id;

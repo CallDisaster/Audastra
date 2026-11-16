@@ -101,6 +101,7 @@ private slots:
     void OriginalScalePinsPosition();
     void VisibleSelectableAndPicking();
     void NewUiFlowAndLayerOrder();
+    void GroupedPropertiesUnitsAndEvents();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -895,26 +896,27 @@ void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
     edit(field(QStringLiteral("字体")), QStringLiteral("Fonts\\FRIZQT__.TTF"));
     QCOMPARE(frame("text1")->font, std::string("Fonts\\FRIZQT__.TTF"));
 
-    // 锚点：目标只列自身以外的框架；改对齐点时目标点保持不变。
-    QComboBox* targets = open(field(QStringLiteral("目标"), QStringLiteral("锚点 1")));
+    // 锚点：第一个锚点直接列在“位置与大小”里；目标只列自身以外的控件；改对齐点时目标点保持不变。
+    const QString place = QStringLiteral("位置与大小");
+    QComboBox* targets = open(field(QStringLiteral("对齐到"), place));
     QVERIFY(targets);
     QVERIFY(targets->findData(QStringLiteral("back1")) >= 0);
     QVERIFY(targets->findData(QStringLiteral("text1")) < 0);
     QVERIFY(targets->findData(QStringLiteral("game:Minimap")) >= 0);
     emit properties->itemDelegateForColumn(1)->closeEditor(targets);
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-    choose(field(QStringLiteral("目标"), QStringLiteral("锚点 1")), QStringLiteral("back1"));
-    choose(field(QStringLiteral("对齐点"), QStringLiteral("锚点 1")), QStringLiteral("TOPLEFT"));
+    choose(field(QStringLiteral("对齐到"), place), QStringLiteral("back1"));
+    choose(field(QStringLiteral("对齐点"), place), QStringLiteral("TOPLEFT"));
     QCOMPARE(frame("text1")->anchors.size(), std::size_t{1});
     QVERIFY(frame("text1")->anchors[0].target == UiAnchorTarget::Frame);
     QCOMPARE(frame("text1")->anchors[0].targetId, std::string("back1"));
     QVERIFY(frame("text1")->anchors[0].point == FramePoint::TopLeft);
     QVERIFY(frame("text1")->anchors[0].targetPoint == FramePoint::Center);
-    choose(field(QStringLiteral("目标点"), QStringLiteral("锚点 1")), QStringLiteral("BOTTOMLEFT"));
+    choose(field(QStringLiteral("目标点"), place), QStringLiteral("BOTTOMLEFT"));
     QVERIFY(frame("text1")->anchors[0].targetPoint == FramePoint::BottomLeft);
-    edit(field(QStringLiteral("横向偏移"), QStringLiteral("锚点 1")), QStringLiteral("0.01"));
+    edit(field(QStringLiteral("X"), place), QStringLiteral("0.01"));
     QCOMPARE(frame("text1")->anchors[0].x, 0.01);
-    choose(field(QStringLiteral("目标"), QStringLiteral("锚点 1")), QStringLiteral("parent"));
+    choose(field(QStringLiteral("对齐到"), place), QStringLiteral("parent"));
     QVERIFY(frame("text1")->anchors[0].target == UiAnchorTarget::Parent);
 
     QVERIFY2(module.AddDescriptionAnchor(&error), qPrintable(error));
@@ -927,17 +929,21 @@ void GameUiModuleTests::FramePropertiesEditLayoutAndText() {
     QVERIFY2(module.RemoveDescriptionAnchor(0, &error), qPrintable(error));
     QVERIFY(frame("text1")->anchors.empty());
     QVERIFY(!module.RemoveDescriptionAnchor(0, &error));
+    // 没有锚点时“对齐点”一行新建第一个锚点。
+    QCOMPARE(field(QStringLiteral("对齐点"), place)->text(1), QStringLiteral("（未定位）"));
+    choose(field(QStringLiteral("对齐点"), place), QStringLiteral("CENTER"));
+    QCOMPARE(frame("text1")->anchors.size(), std::size_t{1});
 
-    // 重复：填次数才有间距，清空次数即不重复。
-    QVERIFY(field(QStringLiteral("次数")));
+    // 阵列：填数量才有间距，清空数量即只有一个。
+    QVERIFY(field(QStringLiteral("数量"), QStringLiteral("阵列")));
     QVERIFY(!field(QStringLiteral("横向间距")));
-    edit(field(QStringLiteral("次数")), QStringLiteral("3"));
+    edit(field(QStringLiteral("数量")), QStringLiteral("3"));
     QVERIFY(frame("text1")->repeat && frame("text1")->repeat->count == 3);
     edit(field(QStringLiteral("横向间距")), QStringLiteral("0.02"));
     QCOMPARE(frame("text1")->repeat->dx, 0.02);
-    edit(field(QStringLiteral("次数")), QStringLiteral("0"));
+    edit(field(QStringLiteral("数量")), QStringLiteral("0"));
     QCOMPARE(frame("text1")->repeat->count, 3u);
-    edit(field(QStringLiteral("次数")), QString());
+    edit(field(QStringLiteral("数量")), QString());
     QVERIFY(!frame("text1")->repeat);
 
     // 模板框架：从游戏界面文件的模板添加，模板名可从列表改。
@@ -1418,6 +1424,177 @@ void GameUiModuleTests::NewUiFlowAndLayerOrder() {
     QCOMPARE(fresh->frames[0].anchors[0].x, -0.2);
     QCOMPARE(project.AssetUndoStack()->count(), undoBefore + 1);
     QCOMPARE(module.CurrentDescription(), QStringLiteral("ui2"));
+}
+
+void GameUiModuleTests::GroupedPropertiesUnitsAndEvents() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error, true), qPrintable(error));
+    const auto frame = [&module](const char* id) { return FindUiFrame(*module.Description(QStringLiteral("Hud")), id); };
+    const auto rectOf = [&module](const char* id) { return *module.DescriptionFrameRect(QStringLiteral("Hud"), QString::fromLatin1(id)); };
+    auto* properties = page->findChild<QTreeWidget*>(QStringLiteral("gameUiProperties"));
+    QVERIFY(properties);
+    const auto field = [properties](const QString& label) -> QTreeWidgetItem* {
+        for (QTreeWidgetItemIterator it(properties); *it; ++it) {
+            if ((*it)->text(0) == label && ((*it)->flags() & Qt::ItemIsEditable)) return *it;
+        }
+        return nullptr;
+    };
+    const auto edit = [](QTreeWidgetItem* item, const QString& text) {
+        QVERIFY(item);
+        item->setText(1, text);
+        QCoreApplication::processEvents();
+    };
+    const auto choose = [&](QTreeWidgetItem* item, const QString& value) {
+        QVERIFY(item);
+        properties->setCurrentItem(item, 1);
+        properties->editItem(item, 1);
+        auto* box = properties->viewport()->findChild<QComboBox*>();
+        QVERIFY(box);
+        const int index = box->findData(value);
+        QVERIFY2(index >= 0, qPrintable(value));
+        box->setCurrentIndex(index);
+        emit box->activated(index);
+        QCoreApplication::processEvents();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    };
+
+    // 分组：可改字段在前，只读的节点信息收进“详细”，默认折叠。
+    QStringList groups;
+    for (int i = 0; i < properties->topLevelItemCount(); ++i) groups << properties->topLevelItem(i)->text(0);
+    QCOMPARE(groups, (QStringList{QStringLiteral("基本"), QStringLiteral("位置与大小"), QStringLiteral("外观"), QStringLiteral("事件"),
+                         QStringLiteral("阵列"), QStringLiteral("详细")}));
+    QVERIFY(!properties->topLevelItem(5)->isExpanded());
+    QCOMPARE(field(QStringLiteral("父控件"))->text(1), QStringLiteral("（界面顶层）"));
+    QCOMPARE(field(QStringLiteral("点击"))->text(1), QStringLiteral("（无）"));
+
+    // 像素：参考 1920×1080，面板 0.24 宽即 576 像素；64×64 像素换成 0.026667 × 0.035556。
+    choose(field(QStringLiteral("单位")), QStringLiteral("pixel"));
+    QVERIFY(module.PixelUnits());
+    QCOMPARE(field(QStringLiteral("宽"))->text(1), QStringLiteral("576"));
+    edit(field(QStringLiteral("宽")), QStringLiteral("64"));
+    edit(field(QStringLiteral("高")), QStringLiteral("64"));
+    QCOMPARE(*frame("panel1")->width, RoundUiUnits(64.0 * 0.8 / 1920.0));
+    QCOMPARE(*frame("panel1")->height, RoundUiUnits(64.0 * 0.6 / 1080.0));
+    QCOMPARE(field(QStringLiteral("宽"))->text(1), QStringLiteral("64"));
+    choose(field(QStringLiteral("单位")), QStringLiteral("war3"));
+    QVERIFY(!module.PixelUnits());
+    edit(field(QStringLiteral("宽")), QStringLiteral("128px"));  // 魔兽单位下带 px 也按像素
+    QCOMPARE(*frame("panel1")->width, RoundUiUnits(128.0 * 0.8 / 1920.0));
+    edit(field(QStringLiteral("宽")), QStringLiteral("0.24"));
+    edit(field(QStringLiteral("高")), QStringLiteral("0.16"));
+    module.SetReferenceResolution({2560, 1440});
+    QCOMPARE(field(QStringLiteral("参考分辨率"))->text(1), QStringLiteral("2560×1440"));
+    module.SetReferenceResolution({0, 1440});  // 不合法的不改
+    QCOMPARE(module.ReferenceResolution().width, 2560);
+    const QJsonObject view = module.SaveViewState();
+    QCOMPARE(view.value(QStringLiteral("resolution")).toArray(), (QJsonArray{2560, 1440}));
+    {
+        QtProject::EditorProject other;
+        Modules::GameUiModule restored(other);
+        restored.RestoreViewState(view);
+        QCOMPARE(restored.ReferenceResolution().height, 1440);
+    }
+    module.SetReferenceResolution({1920, 1080});
+
+    // 透明度按百分数写；超出范围不改。
+    edit(field(QStringLiteral("透明度")), QStringLiteral("50%"));
+    QCOMPARE(frame("panel1")->alpha, 0.5);
+    edit(field(QStringLiteral("透明度")), QStringLiteral("150"));
+    QCOMPARE(frame("panel1")->alpha, 0.5);
+    QCOMPARE(field(QStringLiteral("透明度"))->text(1), QStringLiteral("50%"));
+
+    // 铺满父控件：去掉宽高，与父控件同样大；取消后居中、宽高取当前大小，画面上不动。
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back1"));
+    choose(field(QStringLiteral("铺满父控件")), QStringLiteral("true"));
+    QVERIFY(Modules::GameUiModule::FillsParent(*frame("back1")));
+    QVERIFY(!frame("back1")->width && !field(QStringLiteral("宽")));
+    QVERIFY(qAbs(rectOf("back1").left - rectOf("panel1").left) < 1e-5f && qAbs(rectOf("back1").top - rectOf("panel1").top) < 1e-5f);
+    choose(field(QStringLiteral("铺满父控件")), QStringLiteral("false"));
+    QVERIFY(!Modules::GameUiModule::FillsParent(*frame("back1")));
+    QVERIFY(qAbs(*frame("back1")->width - 0.24) < 1e-5);
+    QVERIFY(qAbs(rectOf("back1").right - rectOf("panel1").right) < 1e-5f);
+
+    // 换父控件：位置不变；不能放进自己的子控件。
+    QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back2"));
+    QVERIFY2(module.MoveDescriptionFrame(module.SelectedNode(), 0.1, 0.05, &error), qPrintable(error));
+    const FrameRect before = rectOf("back2");
+    QVERIFY2(module.ReparentDescriptionFrame(QStringLiteral("Hud"), QStringLiteral("back2"), QStringLiteral("back1"), &error), qPrintable(error));
+    QCOMPARE(UiFrameParentId(*module.Description(QStringLiteral("Hud")), "back2"), std::string("back1"));
+    QVERIFY(qAbs(rectOf("back2").left - before.left) < 1e-5f && qAbs(rectOf("back2").bottom - before.bottom) < 1e-5f);
+    QVERIFY(!module.ReparentDescriptionFrame(QStringLiteral("Hud"), QStringLiteral("panel1"), QStringLiteral("back2"), &error));
+    QVERIFY(module.SelectFrame(QStringLiteral("back2")));
+    choose(field(QStringLiteral("父控件")), QString());
+    QCOMPARE(UiFrameParentId(*module.Description(QStringLiteral("Hud")), "back2"), std::string());
+    QVERIFY(qAbs(rectOf("back2").left - before.left) < 1e-5f && qAbs(rectOf("back2").bottom - before.bottom) < 1e-5f);
+
+    // 助手的单位换算与属性同一套公式。
+    Modules::GameUiToolService service([&module] { return &module; });
+    const QJsonObject converted = service.Invoke(QStringLiteral("game_ui_convert_units"), {{"pixels", QJsonArray{64, 64}}});
+    QCOMPARE(converted.value("units").toArray(), (QJsonArray{RoundUiUnits(64.0 * 0.8 / 1920.0), RoundUiUnits(64.0 * 0.6 / 1080.0)}));
+
+    // 事件交给触发器：新建、让已有触发器订阅、解除；界面触发器随之重新生成。
+    AudastraUiTest::Catalog files;
+    const auto loaded = files.Load();
+    QVERIFY2(loaded.empty(), loaded.c_str());
+    project.uiCatalog_ = std::make_unique<Trigger::UiCatalog>(std::move(*files.catalog));
+    project.triggerDocument_ = std::make_unique<Trigger::TriggerDocument>(std::move(*files.document));
+    project.triggerUndoStack_ = new QUndoStack(&project);
+    const auto render = [&project](StableId id) {
+        const auto text = Trigger::RenderTriggerText(*project.triggerDocument_, *project.uiCatalog_, id, 1 << 20, nullptr, nullptr);
+        return text.value ? QString::fromStdString(*text.value) : QString();
+    };
+    const auto created = module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("panel1"), UiEventKind::Click, std::nullopt, &error);
+    QVERIFY2(created && *created != 0, qPrintable(error));
+    QCOMPARE(project.triggerUndoStack_->count(), 1);
+    QVERIFY(render(*created).contains(QStringLiteral("AudastraUITriggerRegisterEvent(\"Hud.panel1_click\")")));
+    QCOMPARE(module.Description(QStringLiteral("Hud"))->events.size(), std::size_t{1});
+    const auto& rows = project.triggerDocument_->triggers;
+    QVERIFY(std::any_of(rows.begin(), rows.end(), [](const auto& row) { return row.name.text.ends_with("Hud_Create"); }));
+    // 生成的界面触发器不能订阅；新建的响应触发器可以。
+    const auto candidates = module.EventTriggerCandidates();
+    QVERIFY(std::none_of(candidates.begin(), candidates.end(), [](const auto& row) { return row.second.endsWith(QStringLiteral("Hud_Create")); }));
+    QVERIFY(std::any_of(candidates.begin(), candidates.end(), [&](const auto& row) { return row.first == *created; }));
+    QVERIFY(module.SelectFrame(QStringLiteral("panel1")));
+    QCOMPARE(field(QStringLiteral("点击"))->data(1, Qt::UserRole + 41).toString(), QStringLiteral("trigger:%1").arg(*created));
+
+    const std::string author = "触发器 打开背包:\n    events:\n        TriggerRegisterTimerEventPeriodic(1)\n"
+                               "    actions:\n        CommentString(\"open\")\n";
+    const auto binding = Trigger::CaptureTriggerGraphBinding(*project.triggerDocument_, *project.uiCatalog_);
+    QVERIFY(binding.Succeeded());
+    Trigger::TriggerGraphEditBatch batch{*binding.value, {}};
+    batch.operations.emplace_back(Trigger::GraphApplyFeatureText{"背包", author, {}, std::nullopt});
+    QVERIFY(Trigger::ApplyTriggerGraphEditBatch(*project.triggerDocument_, *project.uiCatalog_, batch).Succeeded());
+    const auto bag = std::find_if(rows.begin(), rows.end(), [](const auto& row) { return row.name.text == "打开背包"; });
+    QVERIFY(bag != rows.end());
+    const StableId bagId = bag->id;
+    const auto linked = module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("back1"), UiEventKind::Enter, bagId, &error);
+    QVERIFY2(linked && *linked == bagId, qPrintable(error));
+    QVERIFY(render(bagId).contains(QStringLiteral("TriggerRegisterTimerEventPeriodic(1)")));
+    QVERIFY(render(bagId).contains(QStringLiteral("AudastraUITriggerRegisterEvent(\"Hud.back1_enter\")")));
+    QCOMPARE(module.FrameEventTriggers(QStringLiteral("Hud"), QStringLiteral("back1"), UiEventKind::Enter).triggers.size(), qsizetype{1});
+    // 同一个再选一次不产生修改。
+    const auto steps = project.triggerUndoStack_->count();
+    QVERIFY(module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("back1"), UiEventKind::Enter, bagId, &error));
+    QCOMPARE(project.triggerUndoStack_->count(), steps);
+    // 解除：事件与订阅行一起去掉，触发器其余内容不动；只有这一个事件的触发器连“events:”一起去掉。
+    QVERIFY2(module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("back1"), UiEventKind::Enter, StableId{0}, &error), qPrintable(error));
+    QVERIFY(!render(bagId).contains(QStringLiteral("AudastraUITriggerRegisterEvent")));
+    QVERIFY(render(bagId).contains(QStringLiteral("TriggerRegisterTimerEventPeriodic(1)")));
+    QVERIFY2(module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("panel1"), UiEventKind::Click, StableId{0}, &error), qPrintable(error));
+    QVERIFY(module.Description(QStringLiteral("Hud"))->events.empty());
+    QVERIFY(!render(*created).contains(QStringLiteral("events:")));
+    QVERIFY(render(*created).contains(QStringLiteral("actions:")));
+    // 助手读到同一份订阅。
+    QVERIFY(module.LinkFrameEvent(QStringLiteral("Hud"), QStringLiteral("panel1"), UiEventKind::Leave, bagId, &error));
+    const QJsonObject events = service.Invoke(QStringLiteral("game_ui_frame_event"),
+        {{"description", "Hud"}, {"frame", "panel1"}, {"event", "leave"}});
+    QCOMPARE(events.value("event_key").toString(), QStringLiteral("Hud.panel1_leave"));
+    QCOMPARE(events.value("triggers").toArray().size(), qsizetype{1});
 }
 
 int main(int argc, char** argv) {

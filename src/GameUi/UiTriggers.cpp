@@ -423,7 +423,22 @@ private:
         for (const auto& child : Children(info)) {
             out.push_back(Call("SetVariable", {Child(info, child.name), Call("AudastraUIFindFrame", {Quote(child.name), Context(info)})}));
         }
+        // 不是按钮的框架游戏不把鼠标交给它：登记了界面事件时铺一层透明点击区。点击区是它的子框架，
+        // 鼠标停在点击区上就算停在它上面；之后创建的子框架画在点击区上面，照常接收鼠标。
+        if (frame.type != UiFrameType::Button && HasEvents(frame)) {
+            if (info.simple) {
+                warnings_.push_back(Note(DiagnosticSeverity::Warning, "AUI_TRIGGER_EVENT_SIMPLE",
+                    "框架 " + frame.id + " 的模板 " + frame.templateName + " 是 Simple 框架，不能铺点击区，它的界面事件在游戏里不会发生"));
+            } else {
+                out.push_back(Call("AudastraUISetAllPoints",
+                    {Call("AudastraUICreateFrame", {Quote("AudastraHitArea"), Self(info), "0", Context(info)}), Self(info)}));
+            }
+        }
         return out;
+    }
+
+    [[nodiscard]] bool HasEvents(const UiFrame& frame) const {
+        return std::any_of(d_.events.begin(), d_.events.end(), [&](const UiEvent& event) { return event.frame == frame.id; });
     }
 
     // 进度条用两层普通框架：框架本身是底图，子框架 AudastraBarFill 是填充，靠左对齐，按比例改宽度。
@@ -659,6 +674,9 @@ private:
             break;
         }
         if (!frame.visible.binding && !frame.visible.literal) out.push_back(Call("AudastraUIShow", {Self(info), "false"}));
+        if (frame.alpha != 1.0) {
+            out.push_back(Call("AudastraUISetAlpha", {Self(info), std::to_string(std::lround(std::clamp(frame.alpha, 0.0, 1.0) * 255.0))}));
+        }
         for (const auto& event : d_.events) {
             if (event.frame != frame.id) continue;
             const std::string_view kind = event.kind == UiEventKind::Click ? "AudastraFrameEventClick"
@@ -1246,6 +1264,18 @@ std::string UiTemplateFdfText() {
         "        FontJustificationV JUSTIFYMIDDLE,\r\n"
         "        FontShadowColor 0.0 0.0 0.0 0.9,\r\n"
         "        FontShadowOffset 0.001 -0.001,\r\n"
+        "    }\r\n"
+        "}\r\n"
+        "\r\n"
+        "// 背景、图标、容器、文字、模型登记界面事件时铺在上面的透明点击区：不画东西、没有高亮，只接收鼠标。\r\n"
+        "Frame \"GLUETEXTBUTTON\" \"AudastraHitArea\" {\r\n"
+        "    Width 0.1,\r\n"
+        "    Height 0.03,\r\n"
+        "    ControlStyle \"AUTOTRACK\",\r\n"
+        "    ButtonText \"AudastraHitAreaText\",\r\n"
+        "    Frame \"TEXT\" \"AudastraHitAreaText\" {\r\n"
+        "        DecorateFileNames,\r\n"
+        "        FrameFont \"MasterFont\", 0.011, \"\",\r\n"
         "    }\r\n"
         "}\r\n";
     return std::string(text);

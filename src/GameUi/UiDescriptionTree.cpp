@@ -193,6 +193,15 @@ private:
             text.justifyV = std::string(JustifyName(frame.justifyV));
             node.text = std::move(text);
         }
+        // 不透明度随父框架相乘（与游戏里子框架随父框架变淡一致）；模板展开出的子节点一起变淡。
+        if (const float opacity = tree_.Nodes()[parent].previewOpacity * static_cast<float>(frame.alpha); opacity != 1.0f) {
+            const auto fade = [this, opacity](const auto& self, std::uint32_t current) -> void {
+                tree_.MutableNode(current).previewOpacity = opacity;
+                const std::vector<std::uint32_t> children = tree_.Nodes()[current].children;
+                for (const std::uint32_t child : children) self(self, child);
+            };
+            fade(fade, *id);
+        }
         nodes_.emplace(Key(frame.id, instance), *id);
         placed_.push_back(Placed{&frame, *id, instance, repeatRoot});
         for (const auto& child : frame.children) Build(child, *id, instance);

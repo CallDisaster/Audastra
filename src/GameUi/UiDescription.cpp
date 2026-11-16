@@ -246,7 +246,7 @@ void ReadFrame(Reader& reader, const Json& json, const std::string& path, std::s
     }
     if (!reader.Object(json, path,
             {"id", "label", "type", "template", "anchors", "width", "height", "texture", "background", "pushed", "model", "text",
-                "font", "fontHeight", "color", "justifyH", "justifyV", "value", "visible", "repeat", "children"})) {
+                "font", "fontHeight", "color", "justifyH", "justifyV", "value", "visible", "alpha", "repeat", "children"})) {
         return;
     }
     UiFrame frame;
@@ -288,6 +288,7 @@ void ReadFrame(Reader& reader, const Json& json, const std::string& path, std::s
     frame.text = reader.String(json, "text", path, false).value_or("");
     frame.font = reader.String(json, "font", path, false, kMaxPathBytes).value_or("");
     frame.fontHeight = reader.Number(json, "fontHeight", path, false, 0.001, 0.1).value_or(frame.fontHeight);
+    frame.alpha = reader.Number(json, "alpha", path, false, 0.0, 1.0).value_or(frame.alpha);
     if (const Json* color = reader.Field(json, "color", path, false)) {
         if (!color->is_array() || color->size() != 4) {
             reader.Error(path + "/color", "AUI_TYPE", "应为 4 个 0 到 1 的数值（红、绿、蓝、不透明度）");
@@ -472,6 +473,7 @@ OrderedJson FrameJson(const UiFrame& frame) {
     else if (frame.value.literal != 1.0) json["value"] = Num(frame.value.literal);
     if (frame.visible.binding) json["visible"] = BindingJson(*frame.visible.binding);
     else if (!frame.visible.literal) json["visible"] = false;
+    if (frame.alpha != 1.0) json["alpha"] = Num(frame.alpha);
     if (frame.repeat) {
         OrderedJson repeat;
         repeat["count"] = frame.repeat->count;

@@ -53,7 +53,7 @@ std::shared_ptr<const std::vector<std::byte>> Bytes(const std::string& text) {
 std::optional<GameUiModule::TriggerGeneration> GameUiModule::GenerateDescriptionTriggers(const QString& id, bool preview, QString* error) {
     const UiDescription* description = Description(id);
     if (!description) {
-        if (error) *error = tr("地图里没有界面描述 %1").arg(id);
+        if (error) *error = tr("地图里没有界面 %1").arg(id);
         return std::nullopt;
     }
     return PublishDescriptionTriggers(*description, preview, {}, tr("生成界面 %1 的触发器").arg(id), {}, error);
@@ -150,7 +150,7 @@ std::optional<StableId> GameUiModule::CreateEventTrigger(const QString& id, cons
     const auto event = description ? std::find_if(description->events.begin(), description->events.end(),
         [&](const UiEvent& row) { return Text(row.id) == eventId; }) : std::vector<UiEvent>::const_iterator{};
     if (!description || event == description->events.end()) {
-        if (error) *error = description ? tr("界面 %1 没有事件 %2").arg(id, eventId) : tr("地图里没有界面描述 %1").arg(id);
+        if (error) *error = description ? tr("界面 %1 没有事件 %2").arg(id, eventId) : tr("地图里没有界面 %1").arg(id);
         return std::nullopt;
     }
     const std::string kind = event->kind == UiEventKind::Click ? "点击" : event->kind == UiEventKind::Enter ? "鼠标进入" : "鼠标离开";
@@ -164,7 +164,7 @@ std::optional<StableId> GameUiModule::CreateSimulationTrigger(const QString& id,
     const auto& timers = description ? description->simulation.timers : std::vector<UiSimulationTimer>{};
     const auto timer = std::find_if(timers.begin(), timers.end(), [&](const UiSimulationTimer& row) { return Text(row.id) == timerId; });
     if (!description || timer == timers.end()) {
-        if (error) *error = description ? tr("界面 %1 没有模拟计时器 %2").arg(id, timerId) : tr("地图里没有界面描述 %1").arg(id);
+        if (error) *error = description ? tr("界面 %1 没有模拟计时器 %2").arg(id, timerId) : tr("地图里没有界面 %1").arg(id);
         return std::nullopt;
     }
     return CreateHandlerTrigger(*description, "模拟 " + timer->id, "Sim_" + timer->id,

@@ -114,19 +114,24 @@ void GameUiModule::AddOriginProperties() {
     const auto* description = Description(OriginDescriptionId(name));
     QJsonObject current;
     if (description) for (const auto& change : description->origins) if (Text(change.name) == name) current = OriginJson(change);
+    const auto* part = FindUiOriginPart(name.toStdString());
+    const bool any = part && (part->visibility || part->scale || part->alpha || part->position);
+    const bool all = part && part->visibility && part->scale && part->alpha && part->position;
+    // 整个节点都不能调整时只写一行原因，不逐项列“不支持”。
+    if (!any) {
+        const QString reason = part ? Text(part->reason) : tr("不支持：没有该节点的调整能力");
+        auto* item = new QTreeWidgetItem(properties_, {tr("原版界面调整"), reason});
+        item->setToolTip(1, reason);
+        return;
+    }
     auto* group = new QTreeWidgetItem(properties_, {tr("原版界面调整")}); group->setExpanded(true);
-    if (const auto* part = FindUiOriginPart(name.toStdString()); part && !part->reason.empty()) {
-        auto* support = new QTreeWidgetItem(group, {tr("支持范围"), Text(part->reason)});
+    if (!all && !part->reason.empty()) {
+        auto* support = new QTreeWidgetItem(group, {tr("其余项"), Text(part->reason)});
         support->setToolTip(1, Text(part->reason));
     }
     const auto row = [&](const QString& label, const QString& key, const QString& value) {
-        const auto* part = FindUiOriginPart(name.toStdString());
-        const bool supported = part && (key == "visible" ? part->visibility : key == "scale" ? part->scale : key == "alpha" ? part->alpha : part->position);
-        if (!supported) {
-            auto* item = new QTreeWidgetItem(group, {label, value.isEmpty() ? tr("不支持") : tr("%1（不支持）").arg(value)});
-            item->setToolTip(1, part ? Text(part->reason) : tr("没有该节点"));
-            return;
-        }
+        const bool supported = key == "visible" ? part->visibility : key == "scale" ? part->scale : key == "alpha" ? part->alpha : part->position;
+        if (!supported) return;  // 不支持的项不列出，原因写在“其余项”
         const auto options = PropertyChoices("origin:" + key);
         auto* item = new QTreeWidgetItem(group, {label, options.isEmpty() ? value : GameUiChoiceLabel(options, value)});
         item->setData(1, kFieldRole, "origin:" + key);

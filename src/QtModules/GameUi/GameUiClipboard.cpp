@@ -45,7 +45,7 @@ bool GameUiModule::PasteDescriptionFrame(QString* error) {
     const QByteArray bytes = mime->data(kClipboardType);
     if (bytes.size() > 2 * 1024 * 1024) return fail(tr("界面剪贴板超过2 MiB"));
     const auto json = QJsonDocument::fromJson(bytes);
-    if (!json.isObject()) return fail(tr("界面剪贴板不是有效的描述"));
+    if (!json.isObject()) return fail(tr("剪贴板里不是有效的控件"));
     QString id, parent;
     if (tree_ && selected_ < tree_->Nodes().size() && tree_->Nodes()[selected_].uiFrame) {
         const auto& link = *tree_->Nodes()[selected_].uiFrame;

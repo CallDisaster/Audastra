@@ -59,10 +59,11 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     std::vector<ToolDefinition> tools;
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
-             "game_ui_description_triggers", "game_ui_trigger_simulation"}) {
+             "game_ui_description_triggers", "game_ui_trigger_simulation", "game_ui_frame_reparent", "game_ui_frame_event",
+             "game_ui_convert_units"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
-                           || tool.name == "game_ui_description_read";
+                           || tool.name == "game_ui_description_read" || tool.name == "game_ui_convert_units";
         tool.permission = query ? ToolPermission::Query : ToolPermission::Edit;
         QJsonObject properties{{"project_identity", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 128}}},
             {"expected_revision", IdSchema()}};
@@ -138,6 +139,37 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             properties.insert("steps", IntegerSchema(1, 1000));
             properties.insert("wait_ms", IntegerSchema(0, 60000));
             required.append("action");
+        } else if (tool.name == "game_ui_frame_reparent") {
+            tool.description = "把界面描述里的控件 frame 移到控件 parent 下（parent 为空字符串时放到界面顶层，排在最后）。"
+                "以父控件为目标的锚点按新旧父控件上对应点的位置差改偏移，画面上位置不变（两边有一边还没排出位置时偏移不改）；"
+                "不能放进自己或自己的子控件。与编辑器属性“父控件”同一操作，结果作为导入文件进入待保存修改";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("frame", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("parent", QJsonObject{{"type", "string"}, {"maxLength", kMaxUiIdLength}});
+            required.append("description");
+            required.append("frame");
+            required.append("parent");
+        } else if (tool.name == "game_ui_frame_event") {
+            tool.description = "控件事件交给触发器：event 为 click（点击）、enter（鼠标进入）、leave（鼠标离开）。"
+                "trigger 为 new 时新建响应触发器（已有同名的直接用它），为 none 时解除（删去这个事件和各触发器里订阅它的那一行），"
+                "为触发器编号时让它用事件“界面事件”订阅；不给 trigger 时只读出当前订阅它的触发器。事件不在时先加上，"
+                "界面触发器随之重新生成，与描述、触发器的修改同一步撤销。背景、图标、面板等非按钮控件生成时自带透明点击区域。"
+                "生成的界面触发器与自定义代码触发器不能订阅。需要函数库已启用 AudastraUI";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("frame", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("event", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"click", "enter", "leave"}}});
+            properties.insert("trigger", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", 32}});
+            required.append("description");
+            required.append("frame");
+            required.append("event");
+        } else if (tool.name == "game_ui_convert_units") {
+            tool.description = "界面长度换算：经典版界面坐标宽 0.8、高 0.6 铺满整个画面（宽屏横向拉伸），同样的像素数横向与纵向对应不同的界面长度。"
+                "给 pixels [宽, 高] 换成界面单位，或给 units [宽, 高] 换成像素；resolution 为参考分辨率 [宽, 高]，默认 1920×1080";
+            const QJsonObject pair{{"type", "array"}, {"minItems", 2}, {"maxItems", 2}, {"items", QJsonObject{{"type", "number"}}}};
+            properties.insert("pixels", pair);
+            properties.insert("units", pair);
+            properties.insert("resolution", QJsonObject{{"type", "array"}, {"minItems", 2}, {"maxItems", 2},
+                {"items", QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 16384}}}});
         } else if (tool.name == "game_ui_preview_set") {
             tool.description = "地图界面描述的预览：切换状态（空字符串为基础状态）、按 编号 或 编号[下标] 给数值（文字、数值或布尔），"
                 "之后的节点查询与绘图显示这组取值。整批检查，任何一项不合法都不改。只改预览，不改地图";
@@ -172,7 +204,7 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
     if (!identity.isString() || identity.toString().isEmpty() || identity.toString().size() > 128 || identity.toString().contains(QChar::Null)
         || !ParseUnsignedId(args, "expected_revision", true).Succeeded())
         return Failure("GAME_UI_ARGUMENT", "工程身份或修订无效。");
-    for (const auto* key : {"race", "aspect", "action"}) {
+    for (const auto* key : {"race", "aspect", "action", "event"}) {
         if (!args.contains(key)) continue;
         const auto allowed = properties.value(key).toObject().value("enum").toArray();
         if (!allowed.contains(args.value(key))) return Failure("GAME_UI_ARGUMENT", std::string(key) + " 不在可选范围内。");
@@ -189,6 +221,32 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
             || !std::all_of(edits.begin(), edits.end(), [](const QJsonValue& item) { return item.isObject(); }))
             return Failure("GAME_UI_ARGUMENT", "edits 必须是 1 到 256 个编辑对象。");
     }
+    for (const auto* key : {"frame", "parent"}) {
+        if (!args.contains(key)) continue;
+        const auto value = args.value(key);
+        if (!value.isString() || value.toString().size() > kMaxUiIdLength || value.toString().contains(QChar::Null)
+            || (QLatin1String(key) == QLatin1String("frame") && value.toString().isEmpty()))
+            return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是不超过 64 字的编号。");
+    }
+    if (args.contains("trigger")) {
+        const QString trigger = args.value("trigger").toString();
+        bool numeric = false;
+        trigger.toULongLong(&numeric);
+        if (!args.value("trigger").isString() || (trigger != QLatin1String("new") && trigger != QLatin1String("none") && !numeric))
+            return Failure("GAME_UI_ARGUMENT", "trigger 为 new、none 或触发器编号。");
+    }
+    for (const auto* key : {"pixels", "units", "resolution"}) {
+        if (!args.contains(key)) continue;
+        const QJsonArray pair = args.value(key).toArray();
+        const bool integers = QLatin1String(key) == QLatin1String("resolution");
+        if (!args.value(key).isArray() || pair.size() != 2 || !std::all_of(pair.begin(), pair.end(), [integers](const QJsonValue& item) {
+                return item.isDouble() && std::isfinite(item.toDouble()) && std::abs(item.toDouble()) <= 1.0e6
+                    && (!integers || (item.toDouble() == std::floor(item.toDouble()) && item.toDouble() >= 1.0 && item.toDouble() <= 16384.0));
+            }))
+            return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是两个有限数值" + (integers ? "（1 到 16384 的整数）" : "") + "。");
+    }
+    if (args.contains("pixels") == args.contains("units") && QLatin1String("game_ui_convert_units") == name)
+        return Failure("GAME_UI_ARGUMENT", "pixels 与 units 给出其中一个。");
     for (const auto* key : {"description", "state"}) {
         if (!args.contains(key)) continue;
         const auto value = args.value(key);

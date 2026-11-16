@@ -388,6 +388,41 @@ void TestModelFrames() {
     Require(!GenerateUiTriggers(wrong, {}).Succeeded(), "给背景写模型拒绝");
 }
 
+// 不是按钮的框架登记事件时铺透明点击区；不透明度在创建时设一次（0..1 换算成 0..255）。
+void TestHitAreaAndAlpha() {
+    UiDescription d;
+    d.id = "bag";
+    d.label = "背包";
+    UiFrame panel;
+    panel.id = "panel1";
+    panel.type = UiFrameType::Backdrop;
+    panel.anchors = {Anchor(FramePoint::Center, UiAnchorTarget::Screen, FramePoint::Center)};
+    panel.width = 0.24;
+    panel.height = 0.16;
+    panel.texture = "UI\\Widgets\\ToolTips\\Human\\human-tooltip-background";
+    panel.alpha = 0.5;
+    d.frames = {panel};
+    d.events = {UiEvent{"open", "panel1", UiEventKind::Click}};
+    const auto plan = GenerateUiTriggers(d, {});
+    Require(plan.Succeeded(), "背景登记点击事件可生成：" + First(plan.diagnostics));
+    const std::string& text = plan.value->featureText;
+    Require(Contains(text, "AudastraUISetAllPoints(AudastraUICreateFrame(\"AudastraHitArea\", udg_AUI_bag_panel1, 0, ")
+            && Contains(text, "), udg_AUI_bag_panel1)"),
+        "背景上铺透明点击区：\n" + text);
+    Require(Contains(text, "AudastraUIWatchFrame(udg_AUI_bag_panel1, AudastraFrameEventClick"), "事件仍登记在背景本身：\n" + text);
+    Require(Contains(text, "AudastraUISetAlpha(udg_AUI_bag_panel1, 128)"), "不透明度 0.5 → 128：\n" + text);
+    Require(Contains(UiTemplateFdfText(), "Frame \"GLUETEXTBUTTON\" \"AudastraHitArea\""), "基础模板里有透明点击区");
+
+    // 没有事件的背景不铺点击区。
+    d.events.clear();
+    const auto quiet = GenerateUiTriggers(d, {});
+    Require(quiet.Succeeded() && !Contains(quiet.value->featureText, "AudastraHitArea"), "没有事件不铺点击区");
+
+    Fixture f;
+    const auto applied = f.Apply(text);
+    Require(applied.Succeeded(), "点击区与不透明度写进触发器文档：" + First(applied.diagnostics) + "\n" + text);
+}
+
 // 取值模板的贴图：取值为空（没登记的数组项在脚本里是 null）时发透明贴图、只发一次，与预览里空贴图透明一致；有值时按变化发路径。
 void TestTemplatedTextures() {
     UiDescription d;
@@ -589,7 +624,7 @@ void TestRefusalsAndTemplates() {
     FrameLibrary library;
     library.AddParsed(*fdf.value, "map");
     for (const auto* name : {"AudastraPanel", "AudastraBackdrop", "AudastraText", "AudastraBar", "AudastraBarClear", "AudastraButton",
-             "AudastraClickButton"}) {
+             "AudastraClickButton", "AudastraHitArea"}) {
         Require(library.FindTemplate(name).has_value(), std::string("基础模板 ") + name);
     }
     Require(ParseToc(UiTemplateTocText()) == std::vector<std::string>{std::string(kUiTemplateFdfMember)}, "基础 toc 列出基础 fdf");
@@ -747,6 +782,7 @@ int main() {
         TestRefusalsAndTemplates();
         TestScriptLibrary();
         TestModelFrames();
+        TestHitAreaAndAlpha();
         TestTemplatedTextures();
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

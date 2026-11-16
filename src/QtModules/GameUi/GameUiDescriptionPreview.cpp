@@ -76,7 +76,7 @@ UiInstanceState GameUiModule::DescriptionPreview(const QString& id) const {
 bool GameUiModule::SetDescriptionState(const QString& id, const QString& state, QString* error) {
     const UiDescription* description = Description(id);
     if (!description) {
-        if (error) *error = tr("没有界面描述 %1").arg(id);
+        if (error) *error = tr("没有界面 %1").arg(id);
         return false;
     }
     if (!state.isEmpty() && std::none_of(description->states.begin(), description->states.end(),
@@ -95,7 +95,7 @@ bool GameUiModule::SetDescriptionValues(const QString& id, const std::map<std::s
         if (error) *error = message;
         return false;
     };
-    if (!description) return fail(tr("没有界面描述 %1").arg(id));
+    if (!description) return fail(tr("没有界面 %1").arg(id));
     std::map<std::string, std::string> accepted;
     for (const auto& [key, text] : values) {
         const auto parsed = ParseKey(key);

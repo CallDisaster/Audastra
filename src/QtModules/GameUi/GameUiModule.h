@@ -5,6 +5,7 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 #include "War3MapCore/GameUi/UiSkin.h"
+#include "War3MapCore/GameUi/UiUnits.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Services/MapRuntimePackage.h"
 #include "War3MapCore/Trigger/TriggerGraphEditing.h"
@@ -193,6 +194,33 @@ public:
     bool RemoveDescriptionAnchor(int index, QString* error = nullptr);
     // 平移描述框架的全部锚点（屏幕单位）；重复实例平移的是整组。
     bool MoveDescriptionFrame(std::uint32_t node, double dx, double dy, QString* error = nullptr);
+    // 换父控件（parent 为空时放到界面顶层，排在最后）。以父控件为目标的锚点按新旧父控件上对应点的位置差改偏移，
+    // 画面上位置不变；两边有一边还没排出位置时偏移不改。不能放进自己或自己的子控件。
+    bool ReparentDescriptionFrame(const QString& description, const QString& frame, const QString& parent, QString* error = nullptr);
+    // 控件（阵列时为第一个）或界面根（frame 为空）当前排出的位置；还没排出时为空。
+    [[nodiscard]] std::optional<GameUi::FrameRect> DescriptionFrameRect(const QString& description, const QString& frame) const;
+    // 铺满父控件：两个锚点左上、右下对齐父控件，去掉宽高；取消时改为居中于父控件、宽高取当前大小，画面上不动。
+    bool SetDescriptionFrameFill(const QString& description, const QString& frame, bool fill, QString* error = nullptr);
+    [[nodiscard]] static bool FillsParent(const GameUi::UiFrame& frame);
+    // 尺寸与偏移的显示单位：魔兽界面单位，或参考分辨率下的像素（UiUnits.h）。属性里输入带 px 时总按像素换算。
+    void SetPixelUnits(bool pixels);
+    [[nodiscard]] bool PixelUnits() const noexcept { return pixelUnits_; }
+    void SetReferenceResolution(GameUi::UiResolution resolution);
+    [[nodiscard]] GameUi::UiResolution ReferenceResolution() const noexcept { return resolution_; }
+    // 控件事件与触发器（GameUiFrameEvents.cpp）。一个控件每种事件对应一个界面事件，可由多个触发器用“界面事件”订阅。
+    struct FrameEventLink {
+        QString eventId;  // 空为还没有这个事件
+        QString key;      // 触发器事件“界面事件”里填的事件名
+        QList<std::pair<StableId, QString>> triggers;  // 订阅它的触发器（编号、名称），按触发器顺序
+    };
+    [[nodiscard]] FrameEventLink FrameEventTriggers(const QString& description, const QString& frame, GameUi::UiEventKind kind) const;
+    // 可订阅界面事件的触发器：不含生成的界面触发器与自定义代码触发器，按触发器顺序。
+    [[nodiscard]] QList<std::pair<StableId, QString>> EventTriggerCandidates() const;
+    // trigger 为空时新建响应触发器（已有同名的直接用它）；为 0 时解除：删去这个事件和各触发器里订阅它的那一行；
+    // 其余为让该触发器订阅它。事件不在时先加上。界面触发器随之重新生成，与描述、触发器的修改同一步撤销。
+    // 返回响应的触发器（解除时为 0）；失败时什么都不改。
+    std::optional<StableId> LinkFrameEvent(const QString& description, const QString& frame, GameUi::UiEventKind kind,
+        std::optional<StableId> trigger, QString* error = nullptr);
     // 由界面描述生成自然 T（UiTriggers.h），整批写进触发器编辑器的 AudastraUI 类别，走触发器撤销栈；
     // 生成的触发器用到的基础模板随同放进地图的待保存修改。preview 为真时只给出生成结果，不改地图。
     // 函数库没有启用 AudastraUI、描述生成不了或写入被拒绝时给出原因，什么都不改。
@@ -331,7 +359,14 @@ private:
         std::vector<Trigger::GraphEditOperation> extra, const QString& undoLabel, const std::function<Status()>& stage, QString* error);
     // 属性树“编辑”一组与设置卡片（GameUiFrameProperties.cpp）：两处用同一套字段、选择器与修改。
     void InstallPropertyEditors(QTreeWidget* tree);
-    void AddEditableRows(QTreeWidgetItem* group, const GameUi::UiFrame& frame);
+    // 自己控件的可改字段，分组为 基本 / 位置与大小 / 外观 / 事件 / 阵列，挂在 root 下。
+    void AddEditableRows(QTreeWidgetItem* root, const GameUi::UiFrame& frame);
+    void AddEventRows(QTreeWidgetItem* group, const QString& description, const GameUi::UiFrame& frame);
+    // 分组行：记下组名，展开状态取作者上次的选择（没有时 expandedByDefault）。
+    void MarkPropertyGroup(QTreeWidgetItem* group, const QString& key, bool expandedByDefault = true);
+    // 长度字段按当前单位显示与解析（horizontal 为横向）。
+    [[nodiscard]] QString LengthText(double units, bool horizontal) const;
+    [[nodiscard]] std::optional<double> ParseLength(const QString& text, bool horizontal) const;
     void OnPropertyEdited(QTreeWidgetItem* item, int column);
     void ShowPropertyMenu(QTreeWidget* tree, const QPoint& position);
     void OpenResourcePicker(QTreeWidget* tree, QTreeWidgetItem* item);
@@ -391,6 +426,9 @@ private:
     QString mapViewKey_;  // 可见、可选当前对应的地图；空为没有地图
     QJsonArray mapViews_;  // 各地图的可见、可选，最近的在前
     QString currentDescription_;
+    QHash<QString, bool> groupExpanded_;  // 属性分组的展开状态
+    bool pixelUnits_ = false;
+    GameUi::UiResolution resolution_;
     QHash<QString, QImage> textures_;
     QHash<QString, QString> fontFamilies_;
     QHash<QString, QString> assetOrigins_;

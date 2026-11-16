@@ -178,7 +178,7 @@ bool GameUiModule::BeginTriggerSimulation(const QString& id, QString* error) {
         return false;
     };
     const UiDescription* description = Description(id);
-    if (!description) return fail(tr("没有界面描述 %1").arg(id));
+    if (!description) return fail(tr("没有界面 %1").arg(id));
     if (description->simulation.timers.empty()) return fail(tr("界面 %1 没有模拟计时器").arg(id));
     auto& sim = *triggerSim_;
     if (sim.description != id) {
@@ -234,7 +234,7 @@ bool GameUiModule::PrepareTriggerSimulation(const QString& id, QString* error) {
         return false;
     };
     const UiDescription* description = Description(id);
-    if (!description) return fail(tr("没有界面描述 %1").arg(id));
+    if (!description) return fail(tr("没有界面 %1").arg(id));
     if (!project_.triggerDocument_ || !project_.uiCatalog_) return fail(tr("当前地图没有可编辑的触发器"));
     auto snapshot = project_.CaptureCodeCheckSnapshot();
     if (!snapshot || !snapshot->catalog) return fail(tr("当前地图没有可生成脚本的完整来源"));

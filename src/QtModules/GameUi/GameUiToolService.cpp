@@ -434,9 +434,62 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const auto& files = module->Descriptions();
         const auto file = std::find_if(files.begin(), files.end(),
             [&](const GameUiDescriptionFile& candidate) { return Text(candidate.description.id) == id; });
-        if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面描述 %1。").arg(id));
+        if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面 %1。").arg(id));
         binding.insert("path", Text(file->path));
         binding.insert("text", Text(SerializeUiDescription(file->description)));
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_convert_units")) {
+        UiResolution resolution;
+        if (const QJsonArray size = args.value("resolution").toArray(); size.size() == 2) resolution = {size[0].toInt(), size[1].toInt()};
+        if (!resolution.Valid()) return Failure("GAME_UI_ARGUMENT", QObject::tr("参考分辨率无效。"));
+        const bool fromPixels = args.contains("pixels");
+        const QJsonArray pair = args.value(fromPixels ? "pixels" : "units").toArray();
+        const double width = pair.at(0).toDouble();
+        const double height = pair.at(1).toDouble();
+        binding.insert("resolution", QJsonArray{resolution.width, resolution.height});
+        binding.insert("pixels", fromPixels ? pair : QJsonArray{UiPixelsFromUnitsX(width, resolution), UiPixelsFromUnitsY(height, resolution)});
+        binding.insert("units", fromPixels ? QJsonArray{RoundUiUnits(UiUnitsFromPixelsX(width, resolution)), RoundUiUnits(UiUnitsFromPixelsY(height, resolution))}
+                                           : pair);
+        binding.insert("screen_units", QJsonArray{kUiScreenWidth, kUiScreenHeight});
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_frame_reparent")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString id = args.value("description").toString();
+        QString error;
+        if (!module->ReparentDescriptionFrame(id, args.value("frame").toString(), args.value("parent").toString(), &error))
+            return Failure("GAME_UI_DESCRIPTION", error);
+        const UiDescription* description = module->Description(id);
+        if (description) binding.insert("text", Text(SerializeUiDescription(*description)));
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_frame_event")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString id = args.value("description").toString();
+        const QString frame = args.value("frame").toString();
+        const QString on = args.value("event").toString();
+        const UiEventKind kind = on == QLatin1String("enter") ? UiEventKind::Enter : on == QLatin1String("leave") ? UiEventKind::Leave : UiEventKind::Click;
+        if (args.contains("trigger")) {
+            const QString value = args.value("trigger").toString();
+            std::optional<StableId> trigger = value == QLatin1String("new") ? std::nullopt
+                : std::optional<StableId>(value == QLatin1String("none") ? 0 : value.toULongLong());
+            QString error;
+            const auto linked = module->LinkFrameEvent(id, frame, kind, trigger, &error);
+            if (!linked) return Failure("GAME_UI_EVENT", error);
+            binding.insert("applied", true);
+            if (*linked != 0) binding.insert("trigger", QString::number(*linked));
+            if (*linked != 0) binding.insert("runtime", RuntimeJson(*module));
+        }
+        const auto link = module->FrameEventTriggers(id, frame, kind);
+        binding.insert("event_id", link.eventId);
+        binding.insert("event_key", link.key);
+        QJsonArray triggers;
+        for (const auto& [trigger, triggerName] : link.triggers) triggers.append(QJsonObject{{"id", QString::number(trigger)}, {"name", triggerName}});
+        binding.insert("triggers", triggers);
         return binding;
     }
 
@@ -499,7 +552,7 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         const auto& files = module->Descriptions();
         const auto file = std::find_if(files.begin(), files.end(),
             [&](const GameUiDescriptionFile& candidate) { return Text(candidate.description.id) == id; });
-        if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面描述 %1。").arg(id));
+        if (file == files.end()) return Failure("GAME_UI_DESCRIPTION", QObject::tr("地图里没有界面 %1。").arg(id));
         QString error;
         // 先检查数值再换状态：任何一项不合法都不改预览。
         if (args.contains("state")) {

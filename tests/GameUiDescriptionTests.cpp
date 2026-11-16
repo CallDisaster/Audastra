@@ -3,6 +3,7 @@
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
+#include "War3MapCore/GameUi/UiUnits.h"
 #include "GameUiTestSupport.h"
 
 #include <algorithm>
@@ -124,9 +125,13 @@ void TestErrors() {
         "unterminated placeholder");
     Require(HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel", "text": "x"}]})"), "AUI_FIELD_UNKNOWN"),
         "text on panel");
-    Require(HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel"}], "events": [{"id": "e", "frame": "a", "on": "click"}]})"),
+    Require(!HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel"}], "events": [{"id": "e", "frame": "a", "on": "click"}]})"),
                 "AUI_EVENT_FRAME"),
-        "click needs a button");
+        "click on a panel is allowed (generated hit area)");
+    Require(HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel"}], "events": [{"id": "e", "frame": "b", "on": "click"}]})"),
+                "AUI_EVENT_FRAME"),
+        "event frame must exist");
+    Require(HasCode(Errors(base + R"( "frames": [{"id": "a", "type": "panel", "alpha": 1.5}]})"), "AUI_RANGE"), "alpha is 0..1");
     Require(HasCode(Errors(R"({"format": "audastra.ui", "version": 1, "id": "T", "values": [{"id": "v", "type": "integer", "default": 1.5}]})"),
                 "AUI_TYPE"),
         "default must match type");
@@ -590,6 +595,20 @@ void TestOrigins() {
         "six native inventory buttons follow their runtime info parent despite the flat preview registry");
 }
 
+// 像素与界面单位：界面宽 0.8、高 0.6 铺满画面，横纵分别按参考分辨率换算；往返误差不到 0.01 像素。
+void TestUnits() {
+    const UiResolution full;
+    Require(full.width == 1920 && full.height == 1080 && full.Valid(), "默认参考分辨率");
+    Require(RoundUiUnits(UiUnitsFromPixelsX(64.0, full)) == 0.026667, "64 像素宽");
+    Require(RoundUiUnits(UiUnitsFromPixelsY(64.0, full)) == 0.035556, "64 像素高");
+    Require(std::abs(UiPixelsFromUnitsX(0.8, full) - 1920.0) < 1e-9 && std::abs(UiPixelsFromUnitsY(0.6, full) - 1080.0) < 1e-9, "满屏");
+    for (int pixels = 1; pixels <= 4096; pixels += 7) {
+        const double back = UiPixelsFromUnitsX(RoundUiUnits(UiUnitsFromPixelsX(pixels, full)), full);
+        Require(std::abs(back - pixels) < 0.01, "像素往返");
+    }
+    Require(!UiResolution{0, 1080}.Valid() && !UiResolution{20000, 1080}.Valid(), "不合法的分辨率");
+}
+
 int main() {
     try {
         TestRoundTrip();
@@ -605,6 +624,7 @@ int main() {
         TestModel();
         TestClipboard();
         TestOrigins();
+        TestUnits();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;

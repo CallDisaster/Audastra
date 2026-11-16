@@ -3,7 +3,7 @@
 qt_add_library(War3MapQtModuleGameUi STATIC
     GameUiModule.cpp GameUiModule.h GameUiPanels.cpp GameUiClipboard.cpp GameUiOrigins.cpp
     GameUiCanvas.cpp GameUiCanvas.h
-    GameUiAuthoring.cpp GameUiAuthoringJson.h GameUiChoice.cpp GameUiChoice.h GameUiDescriptionData.cpp GameUiDescriptionPreview.cpp GameUiFrameProperties.cpp GameUiInputs.h
+    GameUiAuthoring.cpp GameUiAuthoringJson.h GameUiChoice.cpp GameUiChoice.h GameUiDescriptionData.cpp GameUiDescriptionPreview.cpp GameUiFrameEdits.cpp GameUiFrameEvents.cpp GameUiFrameProperties.cpp GameUiInputs.h
     GameUiKindPicker.cpp GameUiKindPicker.h GameUiNodeTree.cpp GameUiNodeTree.h
     GameUiSimulation.cpp GameUiSources.cpp GameUiSources.h
     GameUiTables.h GameUiToolService.cpp GameUiToolService.h GameUiTriggers.cpp

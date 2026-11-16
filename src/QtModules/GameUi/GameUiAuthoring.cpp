@@ -209,7 +209,7 @@ bool GameUiModule::ImportDescriptionFile(const QString& path, bool withTriggers,
 bool GameUiModule::EditDescription(const QString& id, const QString& edits, const QString& undoLabel, QString* error) {
     const UiDescription* base = Description(id);
     if (!base) {
-        if (error) *error = tr("地图里没有界面描述 %1").arg(id);
+        if (error) *error = tr("地图里没有界面 %1").arg(id);
         return false;
     }
     auto edited = ApplyUiEdits(*base, edits.toStdString());

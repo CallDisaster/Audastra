@@ -52,7 +52,7 @@ QString RaceLabel(const QString& race) {
 QString SkinSourceText(const std::string& source) {
     if (source == "literal") return QObject::tr("直接路径");
     if (source == "script") return QObject::tr("地图脚本");
-    if (source == "description") return QObject::tr("界面描述");
+    if (source == "description") return QObject::tr("自己的界面");
     if (source == "map:customskin") return QObject::tr("地图皮肤 CustomSkin");
     if (source.rfind("game:", 0) == 0) return QObject::tr("游戏皮肤 [%1]").arg(Text(source.substr(5)));
     return Text(source);
@@ -63,7 +63,7 @@ QString TextSourceText(const std::string& source) {
     if (source == "fdf") return QObject::tr("界面文字表");
     if (source == "literal") return QObject::tr("原文");
     if (source == "script") return QObject::tr("地图脚本");
-    if (source == "description") return QObject::tr("界面描述");
+    if (source == "description") return QObject::tr("自己的界面");
     return Text(source);
 }
 
@@ -404,12 +404,27 @@ void GameUiModule::UpdateProperties() {
     if (!tree_ || selected_ == kNoNode || selected_ >= tree_->Nodes().size()) return;
     const FrameNode& node = tree_->Nodes()[selected_];
     AddOriginProperties();
-    const auto group = [this](const QString& title) {
-        auto* item = new QTreeWidgetItem(properties_, {title});
+    // 自己的控件：可改字段分组在前，只读的节点信息收进“详细”（默认折叠）。
+    QTreeWidgetItem* detail = nullptr;
+    const UiFrame* ownFrame = nullptr;
+    if (node.uiFrame && !node.uiFrame->frame.empty()) {
+        if (const UiDescription* description = Description(Text(node.uiFrame->description))) ownFrame = FindUiFrame(*description, node.uiFrame->frame);
+    }
+    const auto bold = [](QTreeWidgetItem* item) {
         item->setFirstColumnSpanned(true);
         QFont font = item->font(0);
         font.setWeight(QFont::DemiBold);
         item->setFont(0, font);
+    };
+    if (ownFrame) {
+        AddEditableRows(properties_->invisibleRootItem(), *ownFrame);
+        detail = new QTreeWidgetItem(properties_, {tr("详细")});
+        bold(detail);
+        MarkPropertyGroup(detail, QStringLiteral("detail"), false);
+    }
+    const auto group = [this, detail, bold](const QString& title) {
+        auto* item = detail ? new QTreeWidgetItem(detail, {title}) : new QTreeWidgetItem(properties_, {title});
+        bold(item);
         item->setExpanded(true);
         return item;
     };
@@ -469,13 +484,13 @@ void GameUiModule::UpdateProperties() {
             const auto rows = std::min(static_cast<std::uint32_t>(frame.leaderboard->size), 24u);
             row(script, tr("项"), tr("%1 项，显示 %2 行").arg(frame.leaderboard->items.size()).arg(rows));
         }
-        if (frame.nameDynamic) row(script, tr("框架名"), tr("运行时拼出"));
+        if (frame.nameDynamic) row(script, tr("控件名"), tr("运行时拼出"));
         QString parent = tr("未确定");
         if (frame.parent.target == ScriptFrameTarget::CodeArea || frame.parent.target == ScriptFrameTarget::Named ||
             frame.parent.target == ScriptFrameTarget::Script) {
             parent = Text(frame.parent.name);
         }
-        row(script, tr("父框架"), parent);
+        row(script, tr("父控件"), parent);
         row(script, tr("创建后显示"), !frame.visible ? tr("默认显示") : (*frame.visible ? tr("显示") : tr("隐藏")));
         if (!frame.dynamic.empty()) {
             QStringList items;
@@ -492,17 +507,16 @@ void GameUiModule::UpdateProperties() {
         const auto named = [](const std::string& label, const std::string& id) {
             return label.empty() ? Text(id) : QStringLiteral("%1  %2").arg(Text(label), Text(id));
         };
-        auto* own = group(tr("界面描述"));
+        auto* own = group(tr("界面"));
         row(own, tr("界面"), description ? named(description->label, description->id) : Text(node.uiFrame->description));
         row(own, tr("文件"), Text(node.sourceFile));
         if (const UiFrame* frame = description ? FindUiFrame(*description, node.uiFrame->frame) : nullptr) {
-            row(own, tr("框架"), named(frame->label, frame->id));
+            row(own, tr("控件"), named(frame->label, frame->id));
             row(own, tr("种类"), UiTypeText(frame->type));
-            if (node.uiFrame->instance) row(own, tr("重复实例"), QString::number(*node.uiFrame->instance));
+            if (node.uiFrame->instance) row(own, tr("阵列序号"), QString::number(*node.uiFrame->instance));
             if (frame->value.binding) row(own, tr("进度取自"), BindingText(*frame->value.binding));
             if (frame->visible.binding) row(own, tr("显示取自"), BindingText(*frame->visible.binding));
             if (!frame->text.empty()) row(own, tr("文字模板"), Text(frame->text));
-            AddEditableRows(group(tr("编辑")), *frame);
         }
         row(own, tr("当前显示"), node.hidden ? tr("隐藏") : tr("显示"));
         if (node.fill) row(own, tr("当前进度"), Number(*node.fill));
@@ -530,7 +544,7 @@ void GameUiModule::UpdateProperties() {
     if (!node.anchors.empty()) {
         auto* anchors = group(tr("锚点"));
         for (const auto& anchor : node.anchors) {
-            QString target = anchor.relativeName.empty() ? tr("父框架") : Text(anchor.relativeName);
+            QString target = anchor.relativeName.empty() ? tr("父控件") : Text(anchor.relativeName);
             if (anchor.relativeNode == kNoNode && !anchor.relativeName.empty()) target += tr("（未找到）");
             row(anchors, Text(std::string(FramePointName(anchor.point))), tr("%1 的 %2  偏移 %3, %4")
                 .arg(target, Text(std::string(FramePointName(anchor.relativePoint))), Number(anchor.x), Number(anchor.y)));

@@ -254,11 +254,8 @@ private:
             const std::string path = "/events/" + std::to_string(i);
             if (!IsValidUiId(event.id)) Error(path + "/id", "AUI_ID_INVALID", "事件编号无效");
             else if (!seen.insert(event.id).second) Error(path + "/id", "AUI_ID_DUPLICATE", "事件编号 " + event.id + " 重复");
-            const auto found = frames_.find(event.frame);
-            if (found == frames_.end()) Error(path + "/frame", "AUI_EVENT_FRAME", "框架 " + event.frame + " 不存在");
-            else if (event.kind == UiEventKind::Click && found->second.frame->type != UiFrameType::Button) {
-                Error(path + "/on", "AUI_EVENT_FRAME", "只有按钮有点击事件");
-            }
+            // 任何框架都能登记事件：不是按钮的，生成触发器时在上面铺一层透明点击区。
+            if (!frames_.contains(event.frame)) Error(path + "/frame", "AUI_EVENT_FRAME", "框架 " + event.frame + " 不存在");
         }
     }
 
