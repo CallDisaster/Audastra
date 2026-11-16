@@ -17,6 +17,7 @@
 #include <QSplitter>
 #include <QThread>
 #include <QTimer>
+#include <QToolButton>
 
 #include <algorithm>
 #include <cmath>

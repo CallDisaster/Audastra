@@ -180,6 +180,12 @@ void GameUiCanvas::mousePressEvent(QMouseEvent* event) {
         return;
     }
     const std::uint32_t node = NodeAt(event->position());
+    if (event->modifiers() & Qt::ControlModifier) {
+        dragNode_ = kNoNode;
+        dragMode_ = DragMode::None;
+        if (node != kNoNode) emit NodeToggled(node);
+        return;
+    }
     emit NodeClicked(node);
     // 点中的节点被选中且可拖动时，准备拖动。
     dragNode_ = draggable_ && node != kNoNode && node == selected_ ? node : kNoNode;

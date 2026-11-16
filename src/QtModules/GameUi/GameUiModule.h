@@ -5,6 +5,7 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
 #include "War3MapCore/GameUi/ScriptSimulation.h"
 #include "War3MapCore/GameUi/UiSkin.h"
+#include "War3MapCore/GameUi/UiArrange.h"
 #include "War3MapCore/GameUi/UiUnits.h"
 #include "War3MapCore/Services/MapRuntimeCatalog.h"
 #include "War3MapCore/Services/MapRuntimePackage.h"
@@ -170,6 +171,8 @@ public:
         std::optional<GameUi::FrameRect> focus;  // 框架所占区域
     };
     [[nodiscard]] FramePreview PreviewFrame(const GameUi::UiFrame& frame);
+    // 放进布局片段（UiSnippets.h）：编号冲突的自动换掉；id 为空时新建一份界面。返回片段根控件的编号。
+    QString CreateSnippet(const QString& snippet, const QString& id, const QString& parent, std::optional<QPointF> at, QString* error = nullptr);
     // 整份界面的预览（创建卡片里的示例）；放大到顶层控件合起来的范围。
     [[nodiscard]] FramePreview PreviewDescription(const GameUi::UiDescription& description);
     [[nodiscard]] const QHash<QString, QImage>& Textures() const noexcept { return textures_; }
@@ -224,6 +227,16 @@ public:
         const QString& undoLabel, QString* error = nullptr);
     // 画布上拖控制柄：node 为所拖的实例，rect 为它的新矩形；阵列按同样的变化改第一个实例。
     bool ResizeDescriptionFrame(std::uint32_t node, const GameUi::FrameRect& rect, QString* error = nullptr);
+    // 对齐、等间距分布、同宽同高（UiArrange.h）：一个控件时对齐父控件。同一步撤销；画布多选与助手工具共用。
+    bool ArrangeDescriptionFrames(const QString& description, const QStringList& frames, GameUi::UiArrangeMode mode, QString* error = nullptr);
+    // 多选：主选中（属性面板显示的）之外，节点树 Ctrl/Shift 或画布 Ctrl+点击加选的节点。
+    [[nodiscard]] std::vector<std::uint32_t> ExtraSelectedNodes() const;
+    void ToggleExtraSelection(std::uint32_t node);
+    // 多选里属于当前主选中所在界面的自己的控件（去掉阵列的重复实例），按选中先后。
+    [[nodiscard]] QStringList SelectedDescriptionFrames() const;
+    [[nodiscard]] static QString ArrangeLabel(GameUi::UiArrangeMode mode);
+    void AddArrangeMenu(QMenu& menu);
+    [[nodiscard]] std::optional<QPointF> ParentCenter(const QString& description, const QString& parent) const;
     // 尺寸与偏移的显示单位：魔兽界面单位，或参考分辨率下的像素（UiUnits.h）。属性里输入带 px 时总按像素换算。
     void SetPixelUnits(bool pixels);
     [[nodiscard]] bool PixelUnits() const noexcept { return pixelUnits_; }
@@ -337,6 +350,8 @@ private:
     void OnNodeItemChanged(QTreeWidgetItem* item, int column);
     void OnNodeEditorClosed();
     void RefreshTypeColumn();
+    void SyncExtraSelection();
+    void OnNodeSelectionChanged();
     void UpdateProperties();
     void UpdateProblems();
     void SelectNode(std::uint32_t node);
@@ -478,6 +493,7 @@ private:
     QTreeWidgetItem* originGroupItem_ = nullptr;  // 节点树分组“原版界面”
     std::optional<bool> originGroupExpanded_;      // 作者展开或收起过“原版界面”后按作者的
     QTreeWidgetItem* renameItem_ = nullptr;        // 正在 F2 改名的行
+    QStringList extraKeys_;                        // 多选里主选中之外的节点（按节点身份，重建后仍在）
     QString renameDisplay_;
     std::uint32_t selected_ = GameUi::kNoNode;
     QString selectedKey_;

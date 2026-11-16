@@ -229,6 +229,79 @@ bool GameUiModule::SetDescriptionFrameRects(const QString& descriptionId, const 
     return EditDescription(descriptionId, CompactEdits(edits), undoLabel, error);
 }
 
+bool GameUiModule::ArrangeDescriptionFrames(const QString& descriptionId, const QStringList& frames, UiArrangeMode mode, QString* error) {
+    const auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return false;
+    };
+    const UiDescription* description = Description(descriptionId);
+    if (!description) return fail(tr("地图里没有界面 %1").arg(descriptionId));
+    QStringList unique;
+    for (const QString& frame : frames) {
+        if (!unique.contains(frame)) unique.push_back(frame);
+    }
+    if (static_cast<std::size_t>(unique.size()) < UiArrangeMinimum(mode))
+        return fail(tr("至少要选 %1 个控件").arg(UiArrangeMinimum(mode)));
+    std::vector<FrameRect> rects;
+    for (const QString& frame : unique) {
+        if (!FindUiFrame(*description, frame.toStdString())) return fail(tr("界面 %1 里没有控件 %2").arg(descriptionId, frame));
+        const auto rect = DescriptionFrameRect(descriptionId, frame);
+        if (!rect) return fail(tr("控件 %1 在画面上还没排出位置").arg(frame));
+        rects.push_back(*rect);
+    }
+    // 只有一个控件时对齐父控件（界面顶层的控件对齐整个画面）。
+    std::optional<FrameRect> reference;
+    if (unique.size() == 1) {
+        reference = DescriptionFrameRect(descriptionId, Text(UiFrameParentId(*description, unique.front().toStdString())));
+        if (!reference) reference = FrameRect{0.0f, 0.0f, static_cast<float>(kUiScreenWidth), static_cast<float>(kUiScreenHeight)};
+    }
+    const auto arranged = ArrangeUiRects(rects, mode, reference);
+    QList<std::pair<QString, FrameRect>> targets;
+    for (qsizetype i = 0; i < unique.size(); ++i) targets.push_back({unique[i], arranged[static_cast<std::size_t>(i)]});
+    return SetDescriptionFrameRects(descriptionId, targets,
+        tr("界面 %1：%2 个控件%3").arg(descriptionId).arg(unique.size()).arg(ArrangeLabel(mode)), error);
+}
+
+QString GameUiModule::ArrangeLabel(UiArrangeMode mode) {
+    switch (mode) {
+    case UiArrangeMode::AlignLeft: return tr("左对齐");
+    case UiArrangeMode::AlignCenterX: return tr("水平居中");
+    case UiArrangeMode::AlignRight: return tr("右对齐");
+    case UiArrangeMode::AlignTop: return tr("顶对齐");
+    case UiArrangeMode::AlignCenterY: return tr("垂直居中");
+    case UiArrangeMode::AlignBottom: return tr("底对齐");
+    case UiArrangeMode::DistributeX: return tr("横向等间距");
+    case UiArrangeMode::DistributeY: return tr("纵向等间距");
+    case UiArrangeMode::SameWidth: return tr("同宽");
+    case UiArrangeMode::SameHeight: return tr("同高");
+    }
+    return {};
+}
+
+std::vector<std::uint32_t> GameUiModule::ExtraSelectedNodes() const {
+    std::vector<std::uint32_t> nodes;
+    if (!tree_ || extraKeys_.isEmpty()) return nodes;
+    for (const auto& node : tree_->Nodes()) {
+        if (node.id != selected_ && node.id != kScreenNode && extraKeys_.contains(NodeKey(node.id))) nodes.push_back(node.id);
+    }
+    return nodes;
+}
+
+QStringList GameUiModule::SelectedDescriptionFrames() const {
+    QStringList frames;
+    if (!tree_ || selected_ >= tree_->Nodes().size() || !tree_->Nodes()[selected_].uiFrame) return frames;
+    const std::string& description = tree_->Nodes()[selected_].uiFrame->description;
+    std::vector<std::uint32_t> nodes{selected_};
+    for (const std::uint32_t node : ExtraSelectedNodes()) nodes.push_back(node);
+    for (const std::uint32_t node : nodes) {
+        const auto& link = tree_->Nodes()[node].uiFrame;
+        if (!link || link->frame.empty() || link->description != description) continue;
+        const QString frame = Text(link->frame);
+        if (!frames.contains(frame)) frames.push_back(frame);
+    }
+    return frames;
+}
+
 bool GameUiModule::ResizeDescriptionFrame(std::uint32_t node, const FrameRect& rect, QString* error) {
     if (!tree_ || node >= tree_->Nodes().size() || !tree_->Nodes()[node].uiFrame || tree_->Nodes()[node].uiFrame->frame.empty()) {
         if (error) *error = tr("只能改自己界面里控件的大小");

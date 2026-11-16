@@ -6,6 +6,7 @@
 #include "GameUiToolService.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiSnippets.h"
 #include "War3MapCore/GameUi/UiStyles.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/Script/MapScript.h"
@@ -111,6 +112,7 @@ private slots:
     void GroupedPropertiesUnitsAndEvents();
     void CanvasResizeSnapAndNudge();
     void NodeTreeGroupsRenameAndDrop();
+    void MultiSelectArrangeAndSnippets();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -1865,6 +1867,99 @@ void GameUiModuleTests::NodeTreeGroupsRenameAndDrop() {
         {{"description", "Hud"}, {"frame", "back2"}, {"parent", ""}, {"index", 0}});
     QVERIFY2(placed.value("ok").toBool(), qPrintable(QJsonDocument(placed).toJson()));
     QCOMPARE(ids(description()->frames), (QStringList{QStringLiteral("back2"), QStringLiteral("panel1")}));
+}
+
+// 多选：节点树与画布共用加选；对齐、等间距、同宽同高同一步撤销，与助手工具同一操作；布局片段放进界面。
+void GameUiModuleTests::MultiSelectArrangeAndSnippets() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    page->resize(1400, 900);
+    page->show();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error, true), qPrintable(error));
+    for (int i = 0; i < 3; ++i) {
+        QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
+        QVERIFY2(!module.AddDescriptionFrame(QStringLiteral("backdrop"), &error).isEmpty(), qPrintable(error));
+    }
+    const QString hud = QStringLiteral("Hud");
+    QVERIFY2(module.SetDescriptionFrameRects(hud, {{QStringLiteral("back1"), {0.1f, 0.1f, 0.15f, 0.14f}},
+                                                      {QStringLiteral("back2"), {0.3f, 0.2f, 0.36f, 0.26f}},
+                                                      {QStringLiteral("back3"), {0.5f, 0.3f, 0.54f, 0.33f}}},
+                 QStringLiteral("测试"), &error),
+        qPrintable(error));
+    const auto nodeOf = [&module](const char* name) { return *module.Tree()->FindByName(name); };
+    const auto rectOf = [&module](const char* id) { return *module.DescriptionFrameRect(QStringLiteral("Hud"), QString::fromLatin1(id)); };
+    const QStringList three{QStringLiteral("back1"), QStringLiteral("back2"), QStringLiteral("back3")};
+
+    // 加选：节点树一起选上，重建后仍在。
+    QVERIFY(module.SelectFrame(QStringLiteral("back1")));
+    module.ToggleExtraSelection(nodeOf("back2"));
+    module.ToggleExtraSelection(nodeOf("back3"));
+    QCOMPARE(module.SelectedDescriptionFrames(), three);
+    auto* nodes = page->findChild<QTreeWidget*>(QStringLiteral("gameUiNodes"));
+    QVERIFY(nodes);
+    QCOMPARE(nodes->selectedItems().size(), qsizetype{3});
+    QVERIFY2(module.ArrangeDescriptionFrames(hud, module.SelectedDescriptionFrames(), UiArrangeMode::AlignLeft, &error), qPrintable(error));
+    QVERIFY(qAbs(rectOf("back2").left - 0.1f) < 1e-5f && qAbs(rectOf("back3").left - 0.1f) < 1e-5f);
+    QVERIFY(qAbs(rectOf("back2").Width() - 0.06f) < 1e-5f);  // 只移动不改大小
+    QCOMPARE(module.SelectedDescriptionFrames(), three);
+    QCOMPARE(nodes->selectedItems().size(), qsizetype{3});
+
+    // 助手工具：纵向等间距，两端不动。
+    Modules::GameUiToolService service([&module] { return &module; });
+    const QJsonObject spread = service.Invoke(QStringLiteral("game_ui_frames_arrange"),
+        {{"description", "Hud"}, {"frames", QJsonArray{"back1", "back2", "back3"}}, {"mode", "distribute_y"}});
+    QVERIFY2(spread.value("ok").toBool(), qPrintable(QJsonDocument(spread).toJson()));
+    const float gapLow = rectOf("back2").bottom - rectOf("back1").top;
+    const float gapHigh = rectOf("back3").bottom - rectOf("back2").top;
+    QVERIFY(qAbs(gapLow - gapHigh) < 1e-5f);
+    QVERIFY(qAbs(rectOf("back1").bottom - 0.1f) < 1e-5f && qAbs(rectOf("back3").top - 0.33f) < 1e-5f);
+    // 个数不够不改；只给一个时对齐父控件（顶层控件对齐整个画面）。
+    QVERIFY(!module.ArrangeDescriptionFrames(hud, {QStringLiteral("back1"), QStringLiteral("back2")}, UiArrangeMode::DistributeX, &error));
+    QVERIFY(!service.Invoke(QStringLiteral("game_ui_frames_arrange"), {{"description", "Hud"}, {"frames", QJsonArray{"back1"}}, {"mode", "middle"}})
+                 .value("ok")
+                 .toBool());
+    QVERIFY2(module.ArrangeDescriptionFrames(hud, {QStringLiteral("back3")}, UiArrangeMode::AlignRight, &error), qPrintable(error));
+    QVERIFY(qAbs(rectOf("back3").right - 0.8f) < 1e-5f);
+
+    // 画布：普通点击换主选中并清掉加选；Ctrl+点击加选。
+    auto* canvas = page->findChild<Modules::GameUiCanvas*>(QStringLiteral("gameUiCanvas"));
+    QVERIFY(canvas);
+    QCoreApplication::processEvents();
+    const auto centerOf = [canvas, &rectOf](const char* id) {
+        const GameUi::FrameRect rect = rectOf(id);
+        const QRectF screen = canvas->ScreenRect();
+        return QPointF(screen.left() + (rect.left + rect.right) / 2.0 / 0.8 * screen.width(),
+            screen.top() + (0.6 - (rect.bottom + rect.top) / 2.0) / 0.6 * screen.height());
+    };
+    const auto click = [canvas](const QPointF& at, Qt::KeyboardModifiers modifiers) {
+        QMouseEvent press(QEvent::MouseButtonPress, at, canvas->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton, modifiers);
+        QApplication::sendEvent(canvas, &press);
+        QMouseEvent release(QEvent::MouseButtonRelease, at, canvas->mapToGlobal(at), Qt::LeftButton, Qt::NoButton, modifiers);
+        QApplication::sendEvent(canvas, &release);
+        QCoreApplication::processEvents();
+    };
+    click(centerOf("back2"), Qt::NoModifier);
+    QCOMPARE(module.SelectedDescriptionFrames(), QStringList{QStringLiteral("back2")});
+    click(centerOf("back1"), Qt::ControlModifier);
+    QCOMPARE(module.SelectedDescriptionFrames(), (QStringList{QStringLiteral("back2"), QStringLiteral("back1")}));
+    click(centerOf("back1"), Qt::ControlModifier);
+    QCOMPARE(module.SelectedDescriptionFrames(), QStringList{QStringLiteral("back2")});
+
+    // 布局片段：放进已有界面（编号冲突自动换开）、没有界面时新建一份；助手读到同一份列表。
+    const QString window = module.CreateDescriptionFrame(QStringLiteral("snippet:window"), hud, {}, std::nullopt, {}, &error);
+    QCOMPARE(window, QStringLiteral("window"));
+    QCOMPARE(FindUiFrame(*module.Description(hud), "window")->children.size(), std::size_t{3});
+    const QString again = module.CreateDescriptionFrame(QStringLiteral("snippet:window"), hud, {}, std::nullopt, {}, &error);
+    QVERIFY2(!again.isEmpty() && again != window, qPrintable(again + error));
+    QVERIFY(ValidateUiDescription(*module.Description(hud)).empty());
+    QVERIFY(module.CreateDescriptionFrame(QStringLiteral("snippet:nope"), hud, {}, std::nullopt, {}, &error).isEmpty());
+    const auto before = module.Descriptions().size();
+    QVERIFY2(!module.CreateDescriptionFrame(QStringLiteral("snippet:icon-grid"), {}, {}, std::nullopt, {}, &error).isEmpty(), qPrintable(error));
+    QCOMPARE(module.Descriptions().size(), before + 1);
+    QCOMPARE(service.Invoke(QStringLiteral("game_ui_view_read"), {}).value("snippets").toArray().size(), static_cast<qsizetype>(UiSnippets().size()));
 }
 
 int main(int argc, char** argv) {

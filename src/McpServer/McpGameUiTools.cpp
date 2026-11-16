@@ -60,7 +60,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
              "game_ui_description_triggers", "game_ui_trigger_simulation", "game_ui_frame_reparent", "game_ui_frame_event",
-             "game_ui_convert_units", "game_ui_frame_rect"}) {
+             "game_ui_convert_units", "game_ui_frame_rect", "game_ui_frames_arrange"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read" || tool.name == "game_ui_convert_units";
@@ -72,7 +72,8 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             tool.description = "读取界面工作区的预览设置（种族、版本、宽高比、根界面、是否显示隐藏框架）、读取状态、问题、地图自带界面列表、"
                 "地图脚本创建的界面数量与预览未还原的界面调用，地图自己的界面描述（AudastraUI，含数值、状态、事件与当前预览取值），"
                 "以及可新建的界面类型 frame_kinds（作用、用法、可换项与默认框架，与编辑器右键“添加控件”同一份）、"
-                "原版样式 styles（游戏模板的中文名、用途与默认框架；verified 为假的还没在 1.27a 进图核实）";
+                "原版样式 styles（游戏模板的中文名、用途与默认框架；verified 为假的还没在 1.27a 进图核实）、"
+                "布局片段 snippets（窗口、图标格子、分页标签栏、列表行，只有布局，frame 带子控件，可作 add_frame 的控件放进界面，编号与界面已有的冲突时先改编号）";
         } else if (tool.name == "game_ui_view_set") {
             tool.description = "设置界面预览：种族、版本、宽高比、增删根界面（GameUI 为游戏代码区域，MapScriptUI 为地图脚本创建的界面）、只显示某节点；只改预览，不改地图";
             properties.insert("race", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"Human", "Orc", "NightElf", "Undead"}}});
@@ -166,6 +167,18 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
                     {"required", QJsonArray{"frame", "left", "bottom", "right", "top"}}}}});
             required.append("description");
             required.append("rects");
+        } else if (tool.name == "game_ui_frames_arrange") {
+            tool.description = "对齐、等间距分布或同宽同高界面描述里的几个控件 frames：mode 为 left、center_x、right、top、center_y、bottom"
+                "（两个以上以合起来的范围为准，只给一个时对齐父控件）、distribute_x、distribute_y（至少三个，两端不动）、"
+                "same_width、same_height（取第一个的宽或高）。锚点按新位置改偏移，同一步撤销；与编辑器多选右键“对齐与分布”同一操作";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            properties.insert("frames", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 64},
+                {"items", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}}}});
+            properties.insert("mode", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"left", "center_x", "right", "top", "center_y", "bottom",
+                "distribute_x", "distribute_y", "same_width", "same_height"}}});
+            required.append("description");
+            required.append("frames");
+            required.append("mode");
         } else if (tool.name == "game_ui_frame_event") {
             tool.description = "控件事件交给触发器：event 为 click（点击）、enter（鼠标进入）、leave（鼠标离开）。"
                 "trigger 为 new 时新建响应触发器（已有同名的直接用它），为 none 时解除（删去这个事件和各触发器里订阅它的那一行），"
@@ -261,6 +274,19 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
                     && (!integers || (item.toDouble() == std::floor(item.toDouble()) && item.toDouble() >= 1.0 && item.toDouble() <= 16384.0));
             }))
             return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是两个有限数值" + (integers ? "（1 到 16384 的整数）" : "") + "。");
+    }
+    if (args.contains("frames")) {
+        const QJsonArray frames = args.value("frames").toArray();
+        if (!args.value("frames").isArray() || frames.isEmpty() || frames.size() > 64
+            || !std::all_of(frames.begin(), frames.end(), [](const QJsonValue& value) {
+                   return value.isString() && !value.toString().isEmpty() && value.toString().size() <= kMaxUiIdLength && !value.toString().contains(QChar::Null);
+               }))
+            return Failure("GAME_UI_ARGUMENT", "frames 为 1 到 64 个控件编号。");
+    }
+    if (args.contains("mode")) {
+        const QJsonArray modes = properties.value("mode").toObject().value("enum").toArray();
+        if (!args.value("mode").isString() || !modes.contains(args.value("mode")))
+            return Failure("GAME_UI_ARGUMENT", "mode 不是可用的排列方式。");
     }
     if (args.contains("rects")) {
         const QJsonArray rects = args.value("rects").toArray();

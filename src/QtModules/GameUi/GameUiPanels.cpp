@@ -292,6 +292,7 @@ void GameUiModule::BuildPage() {
     nodes_->setDragDropMode(QAbstractItemView::InternalMove);
     nodes_->setDefaultDropAction(Qt::MoveAction);
     nodes_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    nodes_->setSelectionMode(QAbstractItemView::ExtendedSelection);
     nodes_->setUniformRowHeights(true);
     nodes_->setAlternatingRowColors(true);
     nodes_->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -381,6 +382,7 @@ void GameUiModule::BuildPage() {
         SelectNode(item->data(0, kNodeRole).toUInt());
     });
     connect(nodes_, &QTreeWidget::itemChanged, this, &GameUiModule::OnNodeItemChanged);
+    connect(nodes_, &QTreeWidget::itemSelectionChanged, this, &GameUiModule::OnNodeSelectionChanged);
     connect(nodes_->itemDelegate(), &QAbstractItemDelegate::closeEditor, this, &GameUiModule::OnNodeEditorClosed);
     for (const auto signal : {&QTreeWidget::itemExpanded, &QTreeWidget::itemCollapsed}) {
         connect(nodes_, signal, this, [this, signal](QTreeWidgetItem* item) {
@@ -400,6 +402,11 @@ void GameUiModule::BuildPage() {
         ShowContextMenu(node, point, global, false);
     });
     connect(canvas_, &GameUiCanvas::NodeClicked, this, [this](std::uint32_t node) { SelectNode(node); });
+    connect(canvas_, &GameUiCanvas::NodeToggled, this, [this](std::uint32_t node) {
+        // Ctrl+点击：还没有主选中时它成为主选中，否则加选或取消加选。
+        if (selected_ == kNoNode) SelectNode(node);
+        else ToggleExtraSelection(node);
+    });
     connect(canvas_, &GameUiCanvas::NodeDragged, this, [this](std::uint32_t node, double dx, double dy) {
         QString error;
         const bool ok = OriginNodeName(node).isEmpty() ? MoveDescriptionFrame(node, dx, dy, &error) : MoveOriginNode(node, dx, dy, &error);
@@ -447,6 +454,12 @@ void GameUiModule::SelectNode(std::uint32_t node) {
     selected_ = node;
     selectedKey_ = node == kNoNode ? QString() : NodeKey(node);
     if (canvas_) canvas_->SetSelected(node);
+    // 从画布或代码换了主选中时多选清掉；节点树里 Ctrl/Shift 选的由节点树的选中改动维护。
+    const bool fromTree = nodes_ && nodes_->currentItem() && nodes_->currentItem()->data(0, kNodeRole).toUInt() == node && node != kNoNode;
+    if (!fromTree && !extraKeys_.isEmpty()) {
+        extraKeys_.clear();
+        if (canvas_) canvas_->SetExtraSelected({});
+    }
     if (nodes_) {
         populating_ = true;
         QTreeWidgetItemIterator it(nodes_);
@@ -457,7 +470,9 @@ void GameUiModule::SelectNode(std::uint32_t node) {
                 break;
             }
         }
-        nodes_->setCurrentItem(match);
+        // 明确只选这一行：不受按住的 Shift/Ctrl 影响（那是节点树自己的多选）。
+        if (match != nodes_->currentItem() || !match)
+            nodes_->setCurrentItem(match, 0, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
         if (match) {
             // 选中收起的分组或父节点里的项时展开到它。
             for (QTreeWidgetItem* parent = match->parent(); parent; parent = parent->parent()) parent->setExpanded(true);

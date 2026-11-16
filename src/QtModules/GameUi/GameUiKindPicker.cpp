@@ -3,6 +3,7 @@
 #include "GameUiCanvas.h"
 #include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiSnippets.h"
 #include "War3MapCore/GameUi/UiStyles.h"
 
 #include <QComboBox>
@@ -82,6 +83,13 @@ GameUiKindPicker::GameUiKindPicker(GameUiModule& module, QList<Target> targets, 
         if (!group || group->text(0) != Text(kind.group)) group = addGroup(Text(kind.group));
         auto* item = new QTreeWidgetItem(group, {Text(kind.label)});
         item->setData(0, kKindRole, Text(kind.id));
+    }
+    // 布局片段：摆好位置的一组控件，只有布局。
+    group = nullptr;
+    for (const auto& snippet : UiSnippets()) {
+        if (!group) group = addGroup(tr("布局片段"));
+        auto* item = new QTreeWidgetItem(group, {Text(snippet.label)});
+        item->setData(0, kKindRole, QStringLiteral("snippet:") + Text(snippet.id));
     }
     // 原版样式：已在 1.27a 进图核实过的游戏模板，中文名。
     group = nullptr;
@@ -223,6 +231,16 @@ void GameUiKindPicker::ShowKind() {
         slots_->setText(style->text.empty() ? QString() : tr("可换：文字"));
         create_->setEnabled(!targets_.isEmpty());
         ShowPreview(StyleUiFrame(*style, "preview"));
+        return;
+    }
+    if (const UiSnippet* snippet = current.startsWith(QLatin1String("snippet:")) ? FindUiSnippet(current.mid(8).toStdString()) : nullptr) {
+        ShowTemplateList(false);
+        title_->setText(Text(snippet->label));
+        purpose_->setText(Text(snippet->purpose));
+        usage_->setText(tr("布局片段：只摆好位置，不带逻辑；放进后各控件照常改。"));
+        slots_->clear();
+        create_->setEnabled(!targets_.isEmpty());
+        ShowPreview(SnippetUiFrame(*snippet));
         return;
     }
     if (current.startsWith(QLatin1String("example:"))) {

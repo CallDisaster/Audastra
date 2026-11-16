@@ -249,6 +249,12 @@ void GameUiModule::PopulateTree() {
         for (QTreeWidgetItem* at = current; at && !originOpen; at = at->parent()) originOpen = at == originGroupItem_;
         originGroupItem_->setExpanded(originOpen);
         if (current) nodes_->setCurrentItem(current);
+        // 加选的节点重建后仍选着。
+        if (!extraKeys_.isEmpty()) {
+            for (std::size_t id = 0; id < items.size(); ++id) {
+                if (items[id] && items[id] != current && extraKeys_.contains(NodeKey(static_cast<std::uint32_t>(id)))) items[id]->setSelected(true);
+            }
+        }
     }
     populating_ = false;
     RefreshNodeToggles();
@@ -558,6 +564,40 @@ void GameUiModule::OnNodeEditorClosed() {
     renameItem_->setText(kNameColumn, renameDisplay_);
     populating_ = false;
     renameItem_ = nullptr;
+}
+
+void GameUiModule::ToggleExtraSelection(std::uint32_t node) {
+    if (!tree_ || node >= tree_->Nodes().size() || node == kScreenNode || node == selected_) return;
+    const QString key = NodeKey(node);
+    if (extraKeys_.contains(key)) extraKeys_.removeAll(key);
+    else extraKeys_.push_back(key);
+    SyncExtraSelection();
+}
+
+// 加选写回节点树与画布（节点树的选中改动不再反过来改加选）。
+void GameUiModule::SyncExtraSelection() {
+    if (nodes_) {
+        populating_ = true;
+        for (QTreeWidgetItemIterator it(nodes_); *it; ++it) {
+            const auto node = (*it)->data(kNameColumn, kNodeRole).toUInt();
+            if (!tree_ || node >= tree_->Nodes().size() || node == selected_) continue;
+            const bool extra = extraKeys_.contains(NodeKey(node));
+            if ((*it)->isSelected() != extra) (*it)->setSelected(extra);
+        }
+        populating_ = false;
+    }
+    if (canvas_) canvas_->SetExtraSelected(ExtraSelectedNodes());
+}
+
+void GameUiModule::OnNodeSelectionChanged() {
+    if (populating_ || !nodes_ || !tree_) return;
+    QStringList keys;
+    for (QTreeWidgetItem* item : nodes_->selectedItems()) {
+        const auto node = item->data(kNameColumn, kNodeRole).toUInt();
+        if (node < tree_->Nodes().size() && node != selected_ && node != kScreenNode) keys.push_back(NodeKey(node));
+    }
+    extraKeys_ = keys;
+    if (canvas_) canvas_->SetExtraSelected(ExtraSelectedNodes());
 }
 
 void GameUiModule::RefreshTypeColumn() {

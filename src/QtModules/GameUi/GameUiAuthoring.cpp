@@ -9,6 +9,7 @@
 #include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiSnippets.h"
 #include "War3MapCore/GameUi/UiStyles.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
@@ -255,6 +256,7 @@ QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QStrin
         if (error) *error = message;
         return QString();
     };
+    if (kindId.startsWith(QLatin1String("snippet:"))) return CreateSnippet(kindId.mid(8), id, parent, at, error);
     // 原版样式写作 style:<编号>，其余为控件类型编号。
     const UiStyle* style = kindId.startsWith(QLatin1String("style:")) ? FindUiStyle(kindId.mid(6).toStdString()) : nullptr;
     const UiFrameKind* kind = style ? nullptr : FindUiFrameKind(kindId.toStdString());
@@ -276,20 +278,7 @@ QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QStrin
         return fail(tr("界面 %1 里没有控件 %2").arg(descriptionId, parent));
     UiFrame frame = style ? StyleUiFrame(*style, NextUiFrameId(*description, style->prefix))
                           : DefaultUiFrame(*kind, NextUiFrameId(*description, UiFrameIdPrefix(*kind)), templateName.trimmed().toStdString());
-    // 父控件中心：顶层控件的父节点是铺满画面的界面根。
-    std::optional<QPointF> parentCenter;
-    if (fresh) {
-        const FrameTreeOptions options = tree_ ? tree_->Options() : FrameTreeOptions{};
-        parentCenter = QPointF(options.screenWidth / 2.0, options.screenHeight / 2.0);
-    } else if (tree_) {
-        for (const auto& node : tree_->Nodes()) {
-            if (node.uiFrame && Text(node.uiFrame->description) == descriptionId && Text(node.uiFrame->frame) == parent) {
-                if (node.layout == LayoutState::Placed)
-                    parentCenter = QPointF((node.rect.left + node.rect.right) / 2.0, (node.rect.top + node.rect.bottom) / 2.0);
-                break;
-            }
-        }
-    }
+    const std::optional<QPointF> parentCenter = ParentCenter(fresh ? QString() : descriptionId, parent);
     if (at && parentCenter && !frame.anchors.empty()) {
         frame.anchors.front().x = Round4(at->x() - parentCenter->x());
         frame.anchors.front().y = Round4(at->y() - parentCenter->y());
@@ -308,6 +297,76 @@ QString GameUiModule::CreateDescriptionFrame(const QString& kindId, const QStrin
     if (!EditDescription(id, CompactEdits({edit}), tr("界面 %1：添加 %2").arg(id, frameId), error)) return {};
     SelectFrameWhenReady(frameId);
     return frameId;
+}
+
+// 父控件中心：顶层控件的父节点是铺满画面的界面根；新建的界面（description 为空）也按整个画面。
+std::optional<QPointF> GameUiModule::ParentCenter(const QString& descriptionId, const QString& parent) const {
+    if (descriptionId.isEmpty()) {
+        const FrameTreeOptions options = tree_ ? tree_->Options() : FrameTreeOptions{};
+        return QPointF(options.screenWidth / 2.0, options.screenHeight / 2.0);
+    }
+    if (!tree_) return std::nullopt;
+    for (const auto& node : tree_->Nodes()) {
+        if (node.uiFrame && Text(node.uiFrame->description) == descriptionId && Text(node.uiFrame->frame) == parent) {
+            if (node.layout != LayoutState::Placed) return std::nullopt;
+            return QPointF((node.rect.left + node.rect.right) / 2.0, (node.rect.top + node.rect.bottom) / 2.0);
+        }
+    }
+    return std::nullopt;
+}
+
+// 布局片段：经界面剪贴板放进去，编号与界面里已有的冲突时自动换掉；返回片段根控件的编号。
+QString GameUiModule::CreateSnippet(const QString& snippetId, const QString& id, const QString& parent, std::optional<QPointF> at,
+    QString* error) {
+    const auto fail = [error](const QString& message) {
+        if (error) *error = message;
+        return QString();
+    };
+    const UiSnippet* snippet = FindUiSnippet(snippetId.toStdString());
+    if (!snippet) return fail(tr("没有布局片段 %1").arg(snippetId));
+    if (!definitions_) return fail(tr("界面定义仍在读取"));
+    std::optional<UiDescription> fresh;
+    if (id.isEmpty()) {
+        const QString newId = SuggestDescriptionId();
+        auto created = NewUiDescription(newId.toStdString(), NewDescriptionLabel(newId).toStdString());
+        if (!created.value) return fail(FirstMessage(created.diagnostics));
+        fresh = std::move(*created.value);
+    }
+    const UiDescription* description = fresh ? &*fresh : Description(id);
+    if (!description) return fail(tr("地图里没有界面 %1").arg(id));
+    const QString descriptionId = Text(description->id);
+    if (!parent.isEmpty() && !FindUiFrame(*description, parent.toStdString()))
+        return fail(tr("界面 %1 里没有控件 %2").arg(descriptionId, parent));
+    UiFrame root = SnippetUiFrame(*snippet);
+    if (const auto center = ParentCenter(fresh ? QString() : descriptionId, parent); at && center && !root.anchors.empty()) {
+        root.anchors.front().x = Round4(at->x() - center->x());
+        root.anchors.front().y = Round4(at->y() - center->y());
+    }
+    UiDescription holder;
+    holder.id = "AudastraSnippet";
+    holder.frames.push_back(root);
+    const auto clipboard = CopyUiFrame(holder, root.id);
+    if (!clipboard.value) return fail(FirstMessage(clipboard.diagnostics));
+    const auto rootOf = [&parent](const UiDescription& after) {
+        const UiFrame* holderFrame = parent.isEmpty() ? nullptr : FindUiFrame(after, parent.toStdString());
+        const auto& siblings = holderFrame ? holderFrame->children : after.frames;
+        return siblings.empty() ? QString() : Text(siblings.back().id);
+    };
+    QString rootId;
+    if (fresh) {
+        auto pasted = PasteUiFrame(*fresh, *clipboard.value, parent.toStdString());
+        if (!pasted.value) return fail(FirstMessage(pasted.diagnostics));
+        rootId = rootOf(*pasted.value);
+        if (!StageDescription(std::move(*pasted.value), true, tr("新建界面 %1").arg(descriptionId), error)) return {};
+        SetCurrentDescription(descriptionId);
+    } else {
+        QJsonObject edit{{"op", "paste_frame"}, {"clipboard", QJsonDocument::fromJson(QByteArray::fromStdString(*clipboard.value)).object()}};
+        if (!parent.isEmpty()) edit.insert("parent", parent);
+        if (!EditDescription(descriptionId, CompactEdits({edit}), tr("界面 %1：添加%2").arg(descriptionId, Text(snippet->label)), error)) return {};
+        if (const UiDescription* after = Description(descriptionId)) rootId = rootOf(*after);
+    }
+    if (!rootId.isEmpty()) SelectFrameWhenReady(rootId);
+    return rootId;
 }
 
 GameUiModule::FramePreview GameUiModule::PreviewFrame(const UiFrame& frame) {
@@ -404,12 +463,34 @@ QPointer<QWidget> GameUiModule::OpenKindPicker(std::uint32_t node, std::optional
     return picker;
 }
 
+// 对齐与分布：多选时对整组，只选一个时对齐父控件。
+void GameUiModule::AddArrangeMenu(QMenu& menu) {
+    const QStringList frames = SelectedDescriptionFrames();
+    if (frames.isEmpty() || !tree_ || selected_ >= tree_->Nodes().size()) return;
+    const QString description = Text(tree_->Nodes()[selected_].uiFrame->description);
+    menu.addSeparator();
+    QMenu* arrange = menu.addMenu(frames.size() > 1 ? tr("对齐与分布（%1 个）").arg(frames.size()) : tr("对齐到父控件"));
+    for (const UiArrangeMode mode : {UiArrangeMode::AlignLeft, UiArrangeMode::AlignCenterX, UiArrangeMode::AlignRight, UiArrangeMode::AlignTop,
+             UiArrangeMode::AlignCenterY, UiArrangeMode::AlignBottom, UiArrangeMode::DistributeX, UiArrangeMode::DistributeY,
+             UiArrangeMode::SameWidth, UiArrangeMode::SameHeight}) {
+        if (mode == UiArrangeMode::DistributeX || mode == UiArrangeMode::SameWidth) arrange->addSeparator();
+        QAction* action = arrange->addAction(ArrangeLabel(mode), this, [this, description, frames, mode] {
+            QString error;
+            if (!ArrangeDescriptionFrames(description, frames, mode, &error)) ReportAuthoring(error);
+        });
+        action->setEnabled(static_cast<std::size_t>(frames.size()) >= UiArrangeMinimum(mode));
+    }
+}
+
 void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at, const QPoint& global, bool fromTree) {
     if (!tree_ || !page_) return;
     // 画布上只认能点中的节点（不可选的原版界面上右键等于在空白处右键）；节点树里任何节点都可以。
     if (!fromTree && !NodePickable(node)) node = kNoNode;
     const FrameNode* item = node < tree_->Nodes().size() && node != kScreenNode ? &tree_->Nodes()[node] : nullptr;
-    SelectNode(item ? node : kNoNode);
+    // 在多选里的节点上右键不改选中，菜单对整组生效。
+    const auto extras = ExtraSelectedNodes();
+    const bool inSelection = item && (node == selected_ || std::find(extras.begin(), extras.end(), node) != extras.end());
+    if (!inSelection) SelectNode(item ? node : kNoNode);
     const bool isFrame = item && item->uiFrame && !item->uiFrame->frame.empty();
     const bool isRoot = item && item->uiFrame && item->uiFrame->frame.empty();
     const bool hasClip = HasClipboardFrame();
@@ -428,6 +509,7 @@ void GameUiModule::ShowContextMenu(std::uint32_t node, std::optional<QPointF> at
             QString error;
             if (!RemoveSelectedDescriptionFrame(&error) && !error.isEmpty()) ReportAuthoring(error);
         });
+        AddArrangeMenu(menu);
         menu.addSeparator();
         menu.addAction(tr("置于顶层"), this, [this, node] { QString error; if (!RaiseDescriptionFrame(node, true, &error) && !error.isEmpty()) ReportAuthoring(error); });
         menu.addAction(tr("置于底层"), this, [this, node] { QString error; if (!RaiseDescriptionFrame(node, false, &error) && !error.isEmpty()) ReportAuthoring(error); });

@@ -135,6 +135,7 @@ void GameUiCanvas::SetShowContent(bool show) { showContent_ = show; update(); }
 void GameUiCanvas::SetShowBounds(bool show) { showBounds_ = show; update(); }
 void GameUiCanvas::SetShowNames(bool show) { showNames_ = show; update(); }
 void GameUiCanvas::SetSelected(std::uint32_t node) { selected_ = node; update(); }
+void GameUiCanvas::SetExtraSelected(std::vector<std::uint32_t> nodes) { extraSelected_ = std::move(nodes); update(); }
 void GameUiCanvas::SetDraggable(bool draggable) { draggable_ = draggable; }
 void GameUiCanvas::SetResizable(bool resizable) { resizable_ = resizable; update(); }
 
@@ -512,6 +513,15 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
                 painter.setFont(small);
                 PaintNameChip(painter, screen, tree_->Nodes()[hovered_], hoveredRect, hoverStroke);
             }
+        }
+    }
+    if (!extraSelected_.empty()) {
+        QPen pen(palette().color(QPalette::Accent), 1.5, Qt::DashLine);
+        painter.setPen(pen);
+        painter.setBrush(Qt::NoBrush);
+        for (const std::uint32_t node : extraSelected_) {
+            const QRectF rect = NodePixelRect(screen, node);
+            if (!rect.isNull()) painter.drawRect(rect.adjusted(0.75, 0.75, -0.75, -0.75));
         }
     }
     if (selected_ != kNoNode) {

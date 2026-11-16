@@ -1,7 +1,9 @@
 #include "War3MapCore/GameUi/FrameDraw.h"
+#include "War3MapCore/GameUi/UiArrange.h"
 #include "War3MapCore/GameUi/UiDescription.h"
 #include "War3MapCore/GameUi/UiDescriptionEdit.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
+#include "War3MapCore/GameUi/UiSnippets.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 #include "War3MapCore/GameUi/UiUnits.h"
 #include "GameUiTestSupport.h"
@@ -9,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -609,6 +612,58 @@ void TestUnits() {
     Require(!UiResolution{0, 1080}.Valid() && !UiResolution{20000, 1080}.Valid(), "不合法的分辨率");
 }
 
+// 对齐、等间距与同宽同高：两个以上以合起来的范围为准，一个以父控件为准；分布两端不动。
+void TestArrange() {
+    const auto same = [](const FrameRect& a, const FrameRect& b) {
+        return std::abs(a.left - b.left) < 1e-6f && std::abs(a.bottom - b.bottom) < 1e-6f && std::abs(a.right - b.right) < 1e-6f
+            && std::abs(a.top - b.top) < 1e-6f;
+    };
+    const std::vector<FrameRect> rects{{0.1f, 0.1f, 0.2f, 0.15f}, {0.3f, 0.2f, 0.34f, 0.3f}, {0.5f, 0.05f, 0.6f, 0.1f}};
+    const auto left = ArrangeUiRects(rects, UiArrangeMode::AlignLeft);
+    Require(same(left[1], {0.1f, 0.2f, 0.14f, 0.3f}) && same(left[0], rects[0]), "左对齐");
+    const auto top = ArrangeUiRects(rects, UiArrangeMode::AlignTop);
+    Require(same(top[2], {0.5f, 0.25f, 0.6f, 0.3f}), "顶对齐");
+    const auto centerX = ArrangeUiRects(rects, UiArrangeMode::AlignCenterX);
+    Require(same(centerX[0], {0.3f, 0.1f, 0.4f, 0.15f}), "水平居中");
+    const auto distributed = ArrangeUiRects(rects, UiArrangeMode::DistributeX);
+    // 总宽 0.5，控件共 0.24，两处空隙各 0.13。
+    Require(same(distributed[0], rects[0]) && same(distributed[2], rects[2]) && same(distributed[1], {0.33f, 0.2f, 0.37f, 0.3f}), "横向等间距");
+    const auto width = ArrangeUiRects(rects, UiArrangeMode::SameWidth);
+    Require(same(width[1], {0.3f, 0.2f, 0.4f, 0.3f}), "同宽");
+    const auto height = ArrangeUiRects(rects, UiArrangeMode::SameHeight);
+    Require(same(height[1], {0.3f, 0.25f, 0.34f, 0.3f}), "同高（上边不动）");
+    // 一个控件以父控件为准；没有父控件或个数不够时原样。
+    const std::vector<FrameRect> one{rects[0]};
+    Require(same(ArrangeUiRects(one, UiArrangeMode::AlignRight, FrameRect{0.0f, 0.0f, 0.8f, 0.6f})[0], {0.7f, 0.1f, 0.8f, 0.15f}), "单个对齐父控件");
+    Require(same(ArrangeUiRects(one, UiArrangeMode::AlignRight)[0], rects[0]), "单个且无父控件不动");
+    const std::vector<FrameRect> two{rects[0], rects[1]};
+    Require(same(ArrangeUiRects(two, UiArrangeMode::DistributeX)[1], rects[1]), "两个不分布");
+    for (const auto name : {"left", "center_x", "right", "top", "center_y", "bottom", "distribute_x", "distribute_y", "same_width", "same_height"}) {
+        const auto mode = ParseUiArrangeMode(name);
+        Require(mode && UiArrangeModeName(*mode) == name, std::string("排列方式名称 ") + name);
+    }
+    Require(!ParseUiArrangeMode("middle"), "未知排列方式");
+}
+
+// 布局片段：每个都是合法的界面；同一片段放两次时编号自动换开。
+void TestSnippets() {
+    std::set<std::string_view> ids;
+    for (const auto& snippet : UiSnippets()) {
+        Require(ids.insert(snippet.id).second && FindUiSnippet(snippet.id) == &snippet, "片段编号唯一");
+        UiDescription d;
+        d.id = "snip";
+        d.frames.push_back(SnippetUiFrame(snippet));
+        Require(!d.frames.front().children.empty(), "片段带子控件");
+        const auto problems = ValidateUiDescription(d);
+        Require(problems.empty(), "片段合法：" + std::string(snippet.id) + " " + First(problems));
+        const auto clip = CopyUiFrame(d, d.frames.front().id);
+        Require(clip.value.has_value(), "片段可复制");
+        const auto pasted = PasteUiFrame(d, *clip.value);
+        Require(pasted.value && pasted.value->frames.size() == 2 && ValidateUiDescription(*pasted.value).empty(), "片段放两次编号不冲突");
+    }
+    Require(!FindUiSnippet("nope"), "未知片段");
+}
+
 int main() {
     try {
         TestRoundTrip();
@@ -625,6 +680,8 @@ int main() {
         TestClipboard();
         TestOrigins();
         TestUnits();
+        TestArrange();
+        TestSnippets();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << "\n";
         return 1;

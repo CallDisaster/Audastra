@@ -35,6 +35,8 @@ public:
     void SetShowBounds(bool show);
     void SetShowNames(bool show);
     void SetSelected(std::uint32_t node);
+    // 多选里主选中之外的节点：画虚线框。
+    void SetExtraSelected(std::vector<std::uint32_t> nodes);
     // 选中节点能否拖动（自有界面描述的框架）。
     void SetDraggable(bool draggable);
     // 放大到该区域（屏幕单位）铺满控件，留出边距；空为显示整个画面。用于类型预览。
@@ -71,6 +73,8 @@ public:
 
 signals:
     void NodeClicked(std::uint32_t node);
+    // Ctrl+点击：加选或取消加选。
+    void NodeToggled(std::uint32_t node);
     // 拖动松开或方向键微调：位移为屏幕单位（右、上为正），已取到 0.0001。
     void NodeDragged(std::uint32_t node, double dx, double dy);
     // 拖控制柄松开：该实例的新矩形（屏幕单位）。
@@ -137,6 +141,7 @@ private:
     bool showBounds_ = false;
     bool showNames_ = false;
     std::uint32_t selected_ = GameUi::kNoNode;
+    std::vector<std::uint32_t> extraSelected_;
     std::uint32_t hovered_ = GameUi::kNoNode;
     std::optional<GameUi::FrameRect> focus_;
     bool draggable_ = false;

@@ -4,6 +4,7 @@
 #include "GameUiModule.h"
 #include "War3MapCore/GameUi/UiOrigins.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
+#include "War3MapCore/GameUi/UiSnippets.h"
 #include "War3MapCore/GameUi/UiStyles.h"
 #include "War3MapCore/GameUi/UiTriggers.h"
 
@@ -283,6 +284,13 @@ QJsonObject View(const GameUiModule& module, QJsonObject result) {
             {"frame", QJsonDocument::fromJson(QByteArray::fromStdString(SerializeUiFrame(StyleUiFrame(style, std::string(style.prefix) + "1")))).object()}});
     }
     result.insert("styles", styles);
+    // 布局片段：只有布局；frame 带子控件，可作 add_frame 的控件放进界面（编号与界面已有的冲突时先改编号）。
+    QJsonArray snippets;
+    for (const auto& snippet : UiSnippets()) {
+        snippets.append(QJsonObject{{"snippet", Text(snippet.id)}, {"label", Text(snippet.label)}, {"purpose", Text(snippet.purpose)},
+            {"frame", QJsonDocument::fromJson(QByteArray::fromStdString(SerializeUiFrame(SnippetUiFrame(snippet)))).object()}});
+    }
+    result.insert("snippets", snippets);
     return result;
 }
 
@@ -475,6 +483,26 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
             return Failure("GAME_UI_DESCRIPTION", error);
         const UiDescription* description = module->Description(id);
         if (description) binding.insert("text", Text(SerializeUiDescription(*description)));
+        return binding;
+    }
+
+    if (name == QLatin1String("game_ui_frames_arrange")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString id = args.value("description").toString();
+        const auto mode = ParseUiArrangeMode(args.value("mode").toString().toStdString());
+        if (!mode) return Failure("GAME_UI_ARGUMENT", QObject::tr("mode 不是可用的排列方式。"));
+        QStringList frames;
+        for (const auto& value : args.value("frames").toArray()) frames.push_back(value.toString());
+        QString error;
+        if (!module->ArrangeDescriptionFrames(id, frames, *mode, &error)) return Failure("GAME_UI_DESCRIPTION", error);
+        QJsonArray placed;
+        for (const QString& frame : frames) {
+            QJsonObject row{{"frame", frame}};
+            if (const auto now = module->DescriptionFrameRect(id, frame))
+                row.insert("rect", QJsonArray{RoundUiUnits(now->left), RoundUiUnits(now->bottom), RoundUiUnits(now->right), RoundUiUnits(now->top)});
+            placed.append(row);
+        }
+        binding.insert("frames", placed);
         return binding;
     }
 
