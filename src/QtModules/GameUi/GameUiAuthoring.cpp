@@ -362,7 +362,7 @@ QString GameUiModule::CreateSnippet(const QString& snippetId, const QString& id,
     } else {
         QJsonObject edit{{"op", "paste_frame"}, {"clipboard", QJsonDocument::fromJson(QByteArray::fromStdString(*clipboard.value)).object()}};
         if (!parent.isEmpty()) edit.insert("parent", parent);
-        if (!EditDescription(descriptionId, CompactEdits({edit}), tr("界面 %1：添加%2").arg(descriptionId, Text(snippet->label)), error)) return {};
+        if (!EditDescription(descriptionId, CompactEdits({edit}), tr("界面 %1：添加%2").arg(descriptionId, Text(std::string(snippet->label))), error)) return {};
         if (const UiDescription* after = Description(descriptionId)) rootId = rootOf(*after);
     }
     if (!rootId.isEmpty()) SelectFrameWhenReady(rootId);
