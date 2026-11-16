@@ -206,7 +206,7 @@ std::optional<StableId> GameUiModule::LinkFrameEvent(const QString& descriptionI
         }
         const char* what = kind == UiEventKind::Click ? "点击" : kind == UiEventKind::Enter ? "鼠标进入" : "鼠标离开";
         const std::string text = "触发器 " + newTriggerName + ":\n    events:\n    " + line + "\n    actions:\n        CommentString(\""
-            + "界面 " + base->id + " 的事件 " + eventId + "：" + frame->id + " " + what + "\")\n";
+            + "界面 " + base->id + " 的事件 " + eventId + "：" + frame->id + " " + what + "；界面事件只在本机发生，改动游戏的处理要先同步\")\n";
         const std::string category = base->label.empty() ? base->id : base->label;
         operations.emplace_back(Trigger::GraphApplyFeatureText{category, text, "uievent", std::nullopt});
     }

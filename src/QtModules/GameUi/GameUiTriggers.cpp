@@ -156,7 +156,7 @@ std::optional<StableId> GameUiModule::CreateEventTrigger(const QString& id, cons
     const std::string kind = event->kind == UiEventKind::Click ? "点击" : event->kind == UiEventKind::Enter ? "鼠标进入" : "鼠标离开";
     return CreateHandlerTrigger(*description, "事件 " + event->id, "On_" + event->id,
         "AudastraUITriggerRegisterEvent(\"" + UiEventKey(description->id, event->id) + "\")",
-        "界面 " + description->id + " 的事件 " + event->id + "：" + event->frame + " " + kind, tr("新建 %1 的响应触发器").arg(eventId), error);
+        "界面 " + description->id + " 的事件 " + event->id + "：" + event->frame + " " + kind + "；界面事件只在本机发生，改动游戏的处理要先同步", tr("新建 %1 的响应触发器").arg(eventId), error);
 }
 
 std::optional<StableId> GameUiModule::CreateSimulationTrigger(const QString& id, const QString& timerId, QString* error) {
