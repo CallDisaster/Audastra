@@ -1,9 +1,9 @@
 #include "GameUiKindPicker.h"
 
 #include "GameUiCanvas.h"
+#include "War3MapCore/ApplicationPaths.h"
 #include "War3MapCore/GameUi/UiFrameKinds.h"
 #include "War3MapCore/GameUi/UiStyles.h"
-#include "War3MapCore/Workspace.h"
 
 #include <QComboBox>
 #include <QDir>

@@ -32,7 +32,7 @@ QJsonObject Failure(const char* code, const QString& message) {
         {"code", code}, {"message", message}}}}};
 }
 
-QString Text(const std::string& text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
+QString Text(std::string_view text) { return QString::fromUtf8(text.data(), static_cast<qsizetype>(text.size())); }
 
 const char* SeverityName(DiagnosticSeverity severity) {
     switch (severity) {
