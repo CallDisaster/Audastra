@@ -1522,7 +1522,7 @@ void GameUiModuleTests::GroupedPropertiesUnitsAndEvents() {
     QVERIFY(module.SelectFrame(QStringLiteral("Hud")));
     QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back2"));
     QVERIFY2(module.MoveDescriptionFrame(module.SelectedNode(), 0.1, 0.05, &error), qPrintable(error));
-    const FrameRect before = rectOf("back2");
+    const GameUi::FrameRect before = rectOf("back2");
     QVERIFY2(module.ReparentDescriptionFrame(QStringLiteral("Hud"), QStringLiteral("back2"), QStringLiteral("back1"), &error), qPrintable(error));
     QCOMPARE(UiFrameParentId(*module.Description(QStringLiteral("Hud")), "back2"), std::string("back1"));
     QVERIFY(qAbs(rectOf("back2").left - before.left) < 1e-5f && qAbs(rectOf("back2").bottom - before.bottom) < 1e-5f);
