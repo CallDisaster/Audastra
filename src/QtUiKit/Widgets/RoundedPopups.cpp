@@ -16,10 +16,17 @@
 
 #include <algorithm>
 
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <dwmapi.h>
+#endif
+
 namespace War3Map::UiKit {
 namespace {
 constexpr auto kConfigured = "forgeRoundedSurface";
 constexpr auto kOpaque = "forgeOpaqueSurface";
+constexpr auto kNativeRound = "forgeNativeRoundCorners";
+constexpr auto kCornerFilter = "forgeOpaqueCornerFilter";
 constexpr auto kOwnPaint = "forgeSurfaceOwnPaint";
 constexpr auto kInstaller = "forgeRoundedPopupInstaller";
 constexpr int kQtDefaultComboRows = 10;
@@ -28,6 +35,57 @@ constexpr int kComboRows = 20;
 bool IsComboContainer(const QWidget& widget) {
     return widget.inherits("QComboBoxPrivateContainer");
 }
+
+// 浮层边线颜色：半透明的 Mid 叠在浮层底色上的实际颜色（系统边框不支持透明度）。
+QColor SurfaceBorder(const QPalette& palette) {
+    QColor border = palette.color(QPalette::Mid);
+    border.setAlpha(std::min(border.alpha(), 190));
+    const QColor base = palette.color(QPalette::ToolTipBase);
+    const qreal a = border.alphaF();
+    return QColor::fromRgbF(border.redF() * a + base.redF() * (1 - a), border.greenF() * a + base.greenF() * (1 - a),
+        border.blueF() * a + base.blueF() * (1 - a));
+}
+
+// 不透明浮层的圆角交给系统窗口合成（Windows 11 起）：系统连同原生子窗口（模型视口）一起裁成圆角，
+// 不需要透明窗口；边框颜色与其他浮层一致。旧系统不支持时返回假，保持直角并由过滤器画边线。
+bool RoundNativeCorners(QWidget& popup) {
+#ifdef Q_OS_WIN
+    const auto window = reinterpret_cast<HWND>(popup.winId());
+    if (!window) return false;
+    const DWM_WINDOW_CORNER_PREFERENCE preference = DWMWCP_ROUND;
+    if (FAILED(DwmSetWindowAttribute(window, DWMWA_WINDOW_CORNER_PREFERENCE, &preference, sizeof(preference)))) return false;
+    const QColor border = SurfaceBorder(popup.palette());
+    const COLORREF color = RGB(border.red(), border.green(), border.blue());
+    DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &color, sizeof(color));
+    return true;
+#else
+    (void)popup;
+    return false;
+#endif
+}
+
+// 不透明浮层显示时与切换主题后重设系统圆角与边框颜色。
+class OpaqueCornerFilter final : public QObject {
+public:
+    explicit OpaqueCornerFilter(QWidget& popup) : QObject(&popup) {
+        setObjectName(QLatin1String(kCornerFilter));
+        popup.installEventFilter(this);
+    }
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        auto* popup = qobject_cast<QWidget*>(watched);
+        if (popup && (event->type() == QEvent::Show || event->type() == QEvent::PaletteChange || event->type() == QEvent::WinIdChange)
+            && popup->isWindow() && popup->testAttribute(Qt::WA_WState_Created)) {
+            const bool rounded = RoundNativeCorners(*popup);
+            if (rounded != popup->property(kNativeRound).toBool()) {
+                popup->setProperty(kNativeRound, rounded);
+                popup->update();
+            }
+        }
+        return false;
+    }
+};
 
 class RoundedPopupFilter final : public QObject {
 public:
@@ -76,11 +134,12 @@ protected:
         if (event->type() == QEvent::Paint && widget->property(kOpaque).toBool()) {
             QPainter painter(widget);
             const QPalette& palette = widget->palette();
-            QColor border = palette.color(QPalette::Mid);
-            border.setAlpha(std::min(border.alpha(), 190));
             painter.fillRect(widget->rect(), palette.brush(QPalette::ToolTipBase));
-            painter.setPen(QPen(border, 1.0));
-            painter.drawRect(QRectF(widget->rect()).adjusted(0.5, 0.5, -0.5, -0.5));
+            // 系统已画圆角边框时不再画直角边线，否则四角会露出直线头。
+            if (!widget->property(kNativeRound).toBool()) {
+                painter.setPen(QPen(SurfaceBorder(palette), 1.0));
+                painter.drawRect(QRectF(widget->rect()).adjusted(0.5, 0.5, -0.5, -0.5));
+            }
         }
         return false;
     }
@@ -189,6 +248,7 @@ void ConfigureOpaquePopup(QWidget& popup) {
     popup.setBackgroundRole(QPalette::ToolTipBase);
     popup.setWindowFlag(Qt::FramelessWindowHint, true);
     if (auto* frame = qobject_cast<QFrame*>(&popup)) frame->setFrameShape(QFrame::NoFrame);
+    if (!popup.findChild<QObject*>(QLatin1String(kCornerFilter), Qt::FindDirectChildrenOnly)) new OpaqueCornerFilter(popup);
 }
 
 void InstallRoundedPopups(QApplication& app) {

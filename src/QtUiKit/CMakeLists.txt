@@ -83,6 +83,8 @@ qt_add_resources(War3MapQtUiKit "audastra_brand"
 
 target_include_directories(War3MapQtUiKit PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(War3MapQtUiKit PUBLIC Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Svg War3MapEditor::WarcraftText)
+# 不透明浮层的系统圆角（Windows 11 DWM 窗口圆角偏好）。
+target_link_libraries(War3MapQtUiKit PRIVATE dwmapi)
 target_compile_definitions(War3MapQtUiKit PRIVATE NOMINMAX UNICODE _UNICODE WIN32_LEAN_AND_MEAN)
 target_compile_options(War3MapQtUiKit PRIVATE /W4 /permissive- /utf-8)
 

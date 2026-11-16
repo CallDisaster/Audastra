@@ -11,6 +11,7 @@
 #include <QStandardItemModel>
 #include <QTreeView>
 #include "Widgets/RoundedPopups.h"
+#include "Widgets/TablePopupAnchor.h"
 #include "Widgets/ToolPopupDismissal.h"
 
 #include <QApplication>
@@ -26,7 +27,9 @@
 #include <QComboBox>
 #include <QAbstractItemView>
 #include <QPainter>
+#include <QPointer>
 #include <QPushButton>
+#include <QScreen>
 #include <QVBoxLayout>
 #include <QInputMethodEvent>
 #include <QLineEdit>
@@ -44,6 +47,7 @@
 #include <QtTest>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <stdexcept>
 
@@ -132,6 +136,8 @@ private slots:
     void themedComboPopupListsRowsBelowWithoutScroller();
     void popoverAnchorsFlipAndClampToScreen();
     void popoverTogglesAndDismissesFromChildKeyboard();
+    void fieldPopupPlacesByScreenHalfAndFits();
+    void fieldPopupFollowsMovedWindow();
     void markdownTypographyUsesQuietCodeAndEvenRhythm();
 };
 
@@ -834,6 +840,70 @@ void UiKitTests::popoverAnchorsFlipAndClampToScreen() {
     QVERIFY(screen.contains(above));
     QVERIFY(above.top() + PopupShadowExtent() > topAnchor.bottom());
     QCOMPARE(PopoverSurface::AnchoredGeometry(topAnchor, QSize(1200, 900), screen).size(), screen.size());
+}
+
+// 字段浮层：上半屏放下方、下半屏放上方；贴右边时向左平移；低分辨率时整块缩进工作区（不低于最小尺寸）。
+void UiKitTests::fieldPopupPlacesByScreenHalfAndFits() {
+    const QRect screen(0, 0, 1366, 728);
+    const std::array down{PopupSide::Below, PopupSide::Above};
+    const std::array up{PopupSide::Above, PopupSide::Below};
+    const QSize preferred(820, 475);
+    const QSize minimum(500, 300);
+    const QRect upper(100, 120, 300, 24);
+    const QRect placedBelow = PlaceAnchoredPopup(upper, preferred, minimum, screen, down, 4);
+    QCOMPARE(placedBelow, QRect(QPoint(100, upper.bottom() + 5), preferred));
+    const QRect lower(100, 600, 300, 24);
+    const QRect placedAbove = PlaceAnchoredPopup(lower, preferred, minimum, screen, up, 4);
+    QCOMPARE(placedAbove.bottom(), lower.top() - 5);
+    QVERIFY(screen.contains(placedAbove));
+    // 下方放不下时换到上方。
+    const QRect flipped = PlaceAnchoredPopup(QRect(100, 500, 300, 24), QSize(400, 300), QSize(200, 150), screen, down, 4);
+    QCOMPARE(flipped, QRect(QPoint(100, 500 - 4 - 300), QSize(400, 300)));
+    // 贴着右边：整块向左移进屏幕。
+    const QRect right = PlaceAnchoredPopup(QRect(1300, 120, 60, 24), preferred, minimum, screen, down, 4);
+    QCOMPARE(right.left(), screen.right() - preferred.width() + 1);
+    QVERIFY(screen.contains(right));
+    // 低分辨率：两侧都放不下时取较大一侧压低高度；仍放不下才盖住锚点，整块留在屏幕里。
+    const QRect small(0, 0, 800, 440);
+    const QRect squeezed = PlaceAnchoredPopup(QRect(40, 200, 300, 24), preferred, minimum, small, down, 4);
+    QVERIFY(small.contains(squeezed));
+    QCOMPARE(squeezed.width(), 800);
+    QVERIFY(squeezed.height() >= minimum.height());
+    const QRect tiny = PlaceAnchoredPopup(QRect(40, 100, 300, 24), preferred, QSize(500, 600), small, down, 4);
+    QVERIFY(small.contains(tiny));
+    QCOMPARE(tiny.height(), small.height());
+}
+
+// 字段浮层跟着所在窗口移动；面板自己长高后重新放置；锚点所在窗口隐藏时关闭。
+void UiKitTests::fieldPopupFollowsMovedWindow() {
+    QWidget host;
+    auto* layout = new QVBoxLayout(&host);
+    auto* anchor = new QLineEdit(&host);
+    layout->addWidget(anchor);
+    layout->addStretch(1);
+    host.resize(360, 160);
+    const QRect available = host.screen()->availableGeometry();
+    host.move(available.topLeft() + QPoint(40, 40));
+    host.show();
+    QVERIFY(QTest::qWaitForWindowExposed(&host));
+    auto* panel = new QFrame(&host, Qt::Tool | Qt::FramelessWindowHint);
+    panel->setAttribute(Qt::WA_DeleteOnClose);
+    panel->resize(300, 200);
+    QPointer<QFrame> guard(panel);
+    AnchorFieldPopup(panel, anchor);
+    panel->show();
+    QVERIFY(QTest::qWaitForWindowExposed(panel));
+    const auto anchorTop = [anchor] { return anchor->mapToGlobal(QPoint()).y(); };
+    QTRY_COMPARE(panel->y(), anchorTop() + anchor->height() + 4);
+    QCOMPARE(panel->x(), anchor->mapToGlobal(QPoint()).x());
+    const QPoint before = panel->pos();
+    host.move(host.pos() + QPoint(60, 30));
+    QTRY_COMPARE(panel->pos(), before + QPoint(60, 30));
+    panel->resize(300, 260);
+    QTRY_COMPARE(panel->height(), 260);
+    QTRY_COMPARE(panel->y(), anchorTop() + anchor->height() + 4);
+    host.hide();
+    QTRY_VERIFY(!guard);
 }
 
 void UiKitTests::popoverTogglesAndDismissesFromChildKeyboard() {

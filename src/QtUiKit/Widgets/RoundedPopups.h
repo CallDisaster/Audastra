@@ -23,7 +23,8 @@ void PaintRoundedSurface(QPainter& painter, const QRectF& outer, const QPalette&
 void ConfigureRoundedPopup(QWidget& popup);
 
 // 承载原生子窗口（如 D3D 模型视口）的浮层。Windows 的分层透明窗口不合成原生子窗口，
-// 圆角柔影版会让视口不上屏、整块面板停在旧画面；这里用同色的不透明直角表面，不做透明。
+// 圆角柔影版会让视口不上屏、整块面板停在旧画面；这里用同色的不透明表面，不做透明。
+// Windows 11 起由系统窗口合成裁成圆角（连同原生子窗口），旧系统保持直角。
 void ConfigureOpaquePopup(QWidget& popup);
 
 // 自动处理 QMenu 与 QComboBox 的原生下拉容器。可重复调用，应用只保留一份过滤器。

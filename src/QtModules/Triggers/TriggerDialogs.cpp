@@ -7,6 +7,7 @@
 #include "War3MapCore/Trigger/TriggerTypes.h"
 #include "War3MapCore/Trigger/TriggerVariableReference.h"
 #include "War3MapCore/Trigger/UiCatalog.h"
+#include "Widgets/TablePopupAnchor.h"
 
 #include <QAbstractItemView>
 #include <QButtonGroup>
@@ -19,6 +20,7 @@
 #include <QFocusEvent>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGuiApplication>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -508,7 +510,11 @@ TriggerParameterDialog::TriggerParameterDialog(
     connect(buttons, &QDialogButtonBox::accepted, this, &TriggerParameterDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &TriggerParameterDialog::reject);
     layout->addWidget(buttons);
-    resize(940, std::clamp(content->sizeHint().height() + 220, 430, 860));
+    // 低分辨率时整个对话框（连同底部“应用参数”）留在屏幕工作区内；参数区本身可滚动。
+    QSize size(940, std::clamp(content->sizeHint().height() + 220, 430, 860));
+    if (const QScreen* screen = parent ? parent->screen() : QGuiApplication::primaryScreen())
+        size = size.boundedTo(screen->availableGeometry().size() - QSize(24, 48));  // 留出标题栏与边框
+    resize(size);
 }
 
 TriggerParameterDialog::~TriggerParameterDialog() {
@@ -946,14 +952,9 @@ void TriggerParameterDialog::BrowseResource(Row* row) {
     });
     auto* escape = new QShortcut(QKeySequence(Qt::Key_Escape), picker);
     connect(escape, &QShortcut::activated, picker, &QWidget::close);
-    // 贴在“值”输入框下方；放不下时放到上方，并留在当前屏幕工作区内。
-    const auto available = row->scalar->screen()->availableGeometry();
-    QRect geometry(row->scalar->mapToGlobal(QPoint(0, row->scalar->height() + 4)), picker->size());
-    if (geometry.bottom() > available.bottom())
-        geometry.moveBottom(row->scalar->mapToGlobal(QPoint(0, -4)).y());
-    geometry.moveLeft(std::clamp(geometry.left(), available.left(), std::max(available.left(), available.right() - geometry.width())));
-    geometry.moveTop(std::max(geometry.top(), available.top()));
-    picker->move(geometry.topLeft());
+    // 贴着“值”输入框：上半屏放下方、下半屏放上方，左右越界时平移，尺寸受屏幕工作区限制；
+    // 对话框拖动、改大小或选择器自己长高时实时重新放置。
+    War3Map::UiKit::AnchorFieldPopup(picker, row->scalar);
     picker->show();
     picker->raise();
     picker->activateWindow();

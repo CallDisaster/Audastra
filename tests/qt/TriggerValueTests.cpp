@@ -309,6 +309,14 @@ void TriggerValueTests::ParameterDialogPicksModelFiles() {
     auto* picker = dialog.findChild<Modules::ObjectResourcePicker*>(QStringLiteral("parameterResourcePicker"));
     QVERIFY(picker);
     QPointer<Modules::ObjectResourcePicker> guard(picker);
+    // 选择器整块留在屏幕工作区内、不压住“值”输入框；对话框移动后跟着走。
+    const QRect available = scalar->screen()->availableGeometry();
+    const auto field = [scalar] { return QRect(scalar->mapToGlobal(QPoint()), scalar->size()); };
+    QTRY_VERIFY2(available.contains(picker->geometry()) && !picker->geometry().intersects(field()),
+        qPrintable(QStringLiteral("picker %1,%2 %3x%4").arg(picker->x()).arg(picker->y()).arg(picker->width()).arg(picker->height())));
+    const QPoint offset = picker->pos() - field().topLeft();
+    dialog.move(dialog.pos() + QPoint(-20, -10));
+    QTRY_COMPARE(picker->pos() - field().topLeft(), offset);
     auto* path = picker->findChild<QLineEdit*>(QStringLiteral("resourcePath"));
     QVERIFY(path);
     QCOMPARE(path->text(), QStringLiteral("Old.mdl"));
