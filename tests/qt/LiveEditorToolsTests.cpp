@@ -382,7 +382,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "export_campaign_member",
         "feedback.draft", "feedback.list", "feedback.status",
         "game_ui_convert_units", "game_ui_description_create", "game_ui_description_edit", "game_ui_description_read",
-        "game_ui_description_triggers", "game_ui_frame_event", "game_ui_frame_reparent", "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_trigger_simulation",
+        "game_ui_description_triggers", "game_ui_frame_event", "game_ui_frame_rect", "game_ui_frame_reparent", "game_ui_nodes_query", "game_ui_preview_set", "game_ui_render", "game_ui_simulate", "game_ui_trigger_simulation",
         "game_ui_view_read", "game_ui_view_set",
         "get_terrain_edit_state",
         "imports_add", "imports_get", "imports_list", "imports_remove", "lua_file_read", "lua_file_write", "lua_files_list",
@@ -400,7 +400,7 @@ void LiveEditorToolsTests::OnlyLiveToolsAndActualCatalogAreExposed() {
         "world_viewport_camera_read", "world_viewport_camera_set", "world_viewport_capture", "world_viewport_capture_result"};
     QCOMPARE(Names(f.tools->Tools()), expected);
     QCOMPARE(f.tools->RegisteredToolNames(), expected);
-    QCOMPARE(expected.size(), qsizetype{106});
+    QCOMPARE(expected.size(), qsizetype{107});
     const auto previewDefinition = Mcp::MinimapPreviewToolDefinition();
     QCOMPARE(previewDefinition.permission, Mcp::ToolPermission::Query);
     for (const auto& value : f.tools->Tools()) {
@@ -2915,6 +2915,7 @@ void LiveEditorToolsTests::GameUiToolsUseHostAndValidateArguments() {
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_trigger_simulation"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_frame_reparent"));
     QVERIFY(!Names(f.tools->Tools()).contains("game_ui_frame_event"));
+    QVERIFY(!Names(f.tools->Tools()).contains("game_ui_frame_rect"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_description_read"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_render"));
     QVERIFY(Names(f.tools->Tools()).contains("game_ui_convert_units"));

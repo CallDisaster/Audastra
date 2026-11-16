@@ -1,5 +1,6 @@
 #include "GameUiCanvas.h"
 
+#include "GameUiCanvasPixels.h"
 #include "GameUiSources.h"
 #include "Theme/ThemeManager.h"
 #include "War3MapCore/Text/WarcraftText.h"
@@ -10,6 +11,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPolygonF>
+#include <QTimer>
 #include <QToolTip>
 
 #include <algorithm>
@@ -100,9 +102,20 @@ GameUiCanvas::GameUiCanvas(QWidget* parent) : QWidget(parent) {
     setMouseTracking(true);
     setMinimumSize(320, 240);
     setFocusPolicy(Qt::ClickFocus);
+    nudgeTimer_ = new QTimer(this);
+    nudgeTimer_->setSingleShot(true);
+    nudgeTimer_->setInterval(450);
+    connect(nudgeTimer_, &QTimer::timeout, this, &GameUiCanvas::CommitNudge);
 }
 
 void GameUiCanvas::SetScene(const FrameTree* tree, FrameDrawList list) {
+    // 场景换了（修改生效、撤销）：节点编号可能已变，未提交的微调与拖动作废。
+    if (tree != tree_) {
+        nudgeTimer_->stop();
+        nudgeNode_ = kNoNode;
+        nudge_ = {};
+        CancelDrag();
+    }
     tree_ = tree;
     list_ = std::move(list);
     hits_.clear();
@@ -123,6 +136,27 @@ void GameUiCanvas::SetShowBounds(bool show) { showBounds_ = show; update(); }
 void GameUiCanvas::SetShowNames(bool show) { showNames_ = show; update(); }
 void GameUiCanvas::SetSelected(std::uint32_t node) { selected_ = node; update(); }
 void GameUiCanvas::SetDraggable(bool draggable) { draggable_ = draggable; }
+void GameUiCanvas::SetResizable(bool resizable) { resizable_ = resizable; update(); }
+
+void GameUiCanvas::SetMeasure(bool pixels, UiResolution resolution) {
+    measurePixels_ = pixels;
+    if (resolution.Valid()) resolution_ = resolution;
+    update();
+}
+
+void GameUiCanvas::SetShowGrid(bool show) { showGrid_ = show; update(); }
+
+void GameUiCanvas::SetReferenceImage(const QImage& image, double opacity) {
+    reference_ = image;
+    referenceOpacity_ = std::clamp(opacity, 0.05, 1.0);
+    update();
+}
+
+void GameUiCanvas::FitView() {
+    zoom_ = 1.0;
+    pan_ = {};
+    update();
+}
 
 void GameUiCanvas::SetFocusRect(std::optional<FrameRect> rect) { focus_ = rect; update(); }
 
@@ -131,19 +165,6 @@ void GameUiCanvas::SetPickable(std::vector<bool> pickable) {
     if (hovered_ != kNoNode && !Pickable(hovered_)) hovered_ = kNoNode;
     update();
 }
-
-namespace {
-
-QPointF ToPixel(const QRectF& screen, const FrameTreeOptions& options, float x, float y) {
-    return {screen.left() + static_cast<double>(x) / options.screenWidth * screen.width(),
-        screen.top() + (options.screenHeight - static_cast<double>(y)) / options.screenHeight * screen.height()};
-}
-
-QRectF ToPixelRect(const QRectF& screen, const FrameTreeOptions& options, const FrameRect& rect) {
-    return QRectF(ToPixel(screen, options, rect.left, rect.top), ToPixel(screen, options, rect.right, rect.bottom)).normalized();
-}
-
-} // namespace
 
 QRectF GameUiCanvas::ScreenRect() const {
     const QRectF available = QRectF(rect()).adjusted(kMargin, kMargin, -kMargin, -kMargin);
@@ -154,10 +175,15 @@ QRectF GameUiCanvas::ScreenRect() const {
         height = available.height();
         width = height * aspect_;
     }
-    const QRectF screen(available.center().x() - width / 2.0, available.center().y() - height / 2.0, width, height);
-    if (!focus_ || !tree_) return screen;
+    const QRectF fit(available.center().x() - width / 2.0, available.center().y() - height / 2.0, width, height);
+    if (!focus_ || !tree_) {
+        // 视图缩放与平移：以适应窗口的画面为基准。
+        const QSizeF size(width * zoom_, height * zoom_);
+        return QRectF(fit.center() + pan_ - QPointF(size.width() / 2.0, size.height() / 2.0), size);
+    }
+    const QRectF& screen = fit;
     // 放大：焦点区域缩放到可用区域的八成，中心对齐。
-    const QRectF target = ToPixelRect(screen, tree_->Options(), *focus_);
+    const QRectF target = UiToPixelRect(screen, tree_->Options(), *focus_);
     if (target.width() < 1.0 || target.height() < 1.0) return screen;
     const double scale = std::min(available.width() / target.width(), available.height() / target.height()) * 0.8;
     const QPointF center = target.center();
@@ -210,7 +236,7 @@ void GameUiCanvas::PaintImage(QPainter& painter, const QRectF& screen, const Fra
     std::vector<HitBox>* hits) const {
     const auto& options = tree_->Options();
     const ImageDraw& draw = command.image;
-    const QRectF dest = ToPixelRect(screen, options, draw.rect);
+    const QRectF dest = UiToPixelRect(screen, options, draw.rect);
     const QImage* image = nullptr;
     if (textures_) {
         const auto found = textures_->constFind(GameUiAssetKey(QString::fromStdString(draw.path)));
@@ -225,9 +251,9 @@ void GameUiCanvas::PaintImage(QPainter& painter, const QRectF& screen, const Fra
     const auto texel = [&](int corner) { return QPointF(draw.uv[corner].u * width, draw.uv[corner].v * height); };
     // 四角顺序：左上、右上、右下、左下。
     const QPolygonF source{texel(0), texel(1), texel(3), texel(2)};
-    const QPolygonF target{ToPixel(screen, options, draw.rect.left, draw.rect.top),
-        ToPixel(screen, options, draw.rect.right, draw.rect.top), ToPixel(screen, options, draw.rect.right, draw.rect.bottom),
-        ToPixel(screen, options, draw.rect.left, draw.rect.bottom)};
+    const QPolygonF target{UiToPixel(screen, options, draw.rect.left, draw.rect.top),
+        UiToPixel(screen, options, draw.rect.right, draw.rect.top), UiToPixel(screen, options, draw.rect.right, draw.rect.bottom),
+        UiToPixel(screen, options, draw.rect.left, draw.rect.bottom)};
     QTransform mapping;
     if (!QTransform::quadToQuad(source, target, mapping)) return;
     if (showContent_ || !hits) {
@@ -259,7 +285,7 @@ void GameUiCanvas::PaintText(QPainter& painter, const QRectF& screen, const Fram
     const float height = draw.fontHeight > 0.0f ? draw.fontHeight : kDefaultFontHeight;
     font.setPixelSize(std::max(1, static_cast<int>(std::lround(height / options.screenHeight * screen.height()))));
     const QFontMetricsF metrics(font);
-    const QRectF area = ToPixelRect(screen, options, draw.rect);
+    const QRectF area = UiToPixelRect(screen, options, draw.rect);
     const bool fixedWidth = area.width() > 0.5;
     const bool fixedHeight = area.height() > 0.5;
     std::vector<Line> lines = ParseLines(draw.text, FromFloats(draw.color));
@@ -324,7 +350,7 @@ void GameUiCanvas::PaintText(QPainter& painter, const QRectF& screen, const Fram
 // 游戏代码自行绘制的区域：虚线占位框加中文名。
 void GameUiCanvas::PaintCodeArea(QPainter& painter, const QRectF& screen, const FrameDrawCommand& command,
     std::vector<HitBox>* hits) const {
-    const QRectF area = ToPixelRect(screen, tree_->Options(), command.image.rect);
+    const QRectF area = UiToPixelRect(screen, tree_->Options(), command.image.rect);
     if (showContent_ || !hits) {
         painter.save();
         QColor line = palette().color(QPalette::PlaceholderText);
@@ -369,15 +395,51 @@ QRectF GameUiCanvas::NodePixelRect(const QRectF& screen, std::uint32_t node) con
     }
     const FrameNode& frame = tree_->Nodes()[node];
     if (frame.layout == LayoutState::Placed) {
-        const QRectF own = ToPixelRect(screen, tree_->Options(), frame.rect);
+        const QRectF own = UiToPixelRect(screen, tree_->Options(), frame.rect);
         result = result.isNull() ? own : result.united(own);
     }
     return result;
 }
 
+double GameUiCanvas::GridStep(const QRectF& screen) const {
+    // 参考分辨率下的像素间距，取画面上不小于 10 像素的最小一档。
+    const double perPixel = screen.width() / resolution_.width;
+    for (const double step : {4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0}) {
+        if (step * perPixel >= 10.0) return step * perPixel;
+    }
+    return 512.0 * perPixel;
+}
+
 void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const {
     const auto& options = tree_->Options();
     painter.save();
+    painter.setClipRect(screen);
+    if (!reference_.isNull()) {
+        painter.setOpacity(referenceOpacity_);
+        painter.drawImage(screen, reference_);
+        painter.setOpacity(1.0);
+    }
+    if (showGrid_) {
+        // 网格从画面左上角起算（与截图、设计稿的像素坐标一致），每 4 格一条稍深的线。
+        const double step = GridStep(screen);
+        QColor minor = palette().color(QPalette::WindowText);
+        minor.setAlpha(28);
+        QColor major = minor;
+        major.setAlpha(60);
+        const QRectF visible = screen.intersected(QRectF(rect()));
+        const int firstX = static_cast<int>(std::ceil((visible.left() - screen.left()) / step));
+        const int firstY = static_cast<int>(std::ceil((visible.top() - screen.top()) / step));
+        for (int i = firstX; screen.left() + i * step <= visible.right(); ++i) {
+            painter.setPen(QPen(i % 4 == 0 ? major : minor, 1.0));
+            const double x = std::round(screen.left() + i * step) + 0.5;
+            painter.drawLine(QPointF(x, visible.top()), QPointF(x, visible.bottom()));
+        }
+        for (int i = firstY; screen.top() + i * step <= visible.bottom(); ++i) {
+            painter.setPen(QPen(i % 4 == 0 ? major : minor, 1.0));
+            const double y = std::round(screen.top() + i * step) + 0.5;
+            painter.drawLine(QPointF(visible.left(), y), QPointF(visible.right(), y));
+        }
+    }
     painter.setClipRect(screen.adjusted(-2, -2, 2, 2));
     // 缺贴图的位置始终标出，避免看起来像透明。
     painter.setPen(QPen(UiKit::ToQColor(UiKit::ThemeManager::ThemeForPalette(palette()).colors.red), 1.0, Qt::DashLine));
@@ -393,7 +455,7 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
         painter.setPen(QPen(line, 1.0));
         for (const auto& node : tree_->Nodes()) {
             if (node.id == kScreenNode || node.kind != DefinitionKind::Frame || node.layout != LayoutState::Placed) continue;
-            painter.drawRect(ToPixelRect(screen, options, node.rect).adjusted(0.5, 0.5, -0.5, -0.5));
+            painter.drawRect(UiToPixelRect(screen, options, node.rect).adjusted(0.5, 0.5, -0.5, -0.5));
         }
     }
     if (showNames_) {
@@ -407,7 +469,7 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
                 !node.codeLabel.empty() || node.layout != LayoutState::Placed) {
                 continue;
             }
-            const QRectF frame = ToPixelRect(screen, options, node.rect);
+            const QRectF frame = UiToPixelRect(screen, options, node.rect);
             const QString name = QString::fromStdString(node.name);
             const QRectF chip(frame.left() + 1, frame.top() + 1, metrics.horizontalAdvance(name) + 6, metrics.height() + 2);
             painter.fillRect(chip, QColor(0, 0, 0, 170));
@@ -426,26 +488,48 @@ void GameUiCanvas::PaintOverlays(QPainter& painter, const QRectF& screen) const 
         }
     }
     if (selected_ != kNoNode) {
-        const QRectF selected = NodePixelRect(screen, selected_);
+        const QRectF selected = SelectionPixelRect(screen);
         if (!selected.isNull()) {
             const QColor accent = palette().color(QPalette::Accent);
+            const bool moving = dragging_ && dragNode_ == selected_;
+            const bool nudging = nudgeNode_ == selected_ && !nudge_.isNull();
+            QRectF shown = selected;
+            if (moving) {
+                shown = dragPreview_;
+            } else if (nudging) {
+                shown = selected.translated(nudge_.x() / options.screenWidth * screen.width(), -nudge_.y() / options.screenHeight * screen.height());
+            }
+            if (moving || nudging) {
+                // 原位置淡显，新位置实线。
+                QColor faded = accent;
+                faded.setAlpha(110);
+                painter.setPen(QPen(faded, 1.0, Qt::DashLine));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(selected.adjusted(0.5, 0.5, -0.5, -0.5));
+            }
             painter.setPen(QPen(accent, 1.5));
             painter.setBrush(Qt::NoBrush);
-            const QRectF box = selected.adjusted(0.75, 0.75, -0.75, -0.75);
+            const QRectF box = shown.adjusted(0.75, 0.75, -0.75, -0.75);
             painter.drawRect(box);
-            if (draggable_) {
+            if (draggable_ && resizable_) {
+                painter.setPen(QPen(accent, 1.0));
+                painter.setBrush(palette().color(QPalette::Base));
+                for (const QPointF& point : HandlePoints(box)) painter.drawRect(QRectF(point.x() - 3.0, point.y() - 3.0, 6.0, 6.0));
+            } else if (draggable_) {
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(accent);
                 for (const QPointF corner : {box.topLeft(), box.topRight(), box.bottomLeft(), box.bottomRight()}) {
                     painter.drawRect(QRectF(corner.x() - 2.5, corner.y() - 2.5, 5.0, 5.0));
                 }
             }
-            if (dragging_ && dragNode_ == selected_) {
-                painter.setPen(QPen(accent, 1.0, Qt::DashLine));
-                painter.setBrush(Qt::NoBrush);
-                painter.drawRect(selected.translated(dragOffset_).adjusted(0.5, 0.5, -0.5, -0.5));
-            }
+            PaintMeasures(painter, screen, shown);
         }
+    }
+    // 吸附参考线。
+    if (dragging_ && !guides_.empty()) {
+        painter.setClipRect(screen);
+        painter.setPen(QPen(QColor(255, 64, 160), 1.0));
+        for (const QLineF& line : guides_) painter.drawLine(line);
     }
     painter.restore();
 }
@@ -480,7 +564,7 @@ std::uint32_t GameUiCanvas::NodeAt(const QPointF& position) const {
     double bestArea = 0.0;
     for (const auto& node : tree_->Nodes()) {
         if (node.id == kScreenNode || node.kind != DefinitionKind::Frame || node.layout != LayoutState::Placed || !Pickable(node.id)) continue;
-        const QRectF frame = ToPixelRect(screen, tree_->Options(), node.rect);
+        const QRectF frame = UiToPixelRect(screen, tree_->Options(), node.rect);
         const double area = frame.width() * frame.height();
         if (frame.contains(position) && (best == kNoNode || area < bestArea)) {
             best = node.id;
@@ -488,72 +572,6 @@ std::uint32_t GameUiCanvas::NodeAt(const QPointF& position) const {
         }
     }
     return best;
-}
-
-void GameUiCanvas::mousePressEvent(QMouseEvent* event) {
-    if (event->button() != Qt::LeftButton) return QWidget::mousePressEvent(event);
-    const std::uint32_t node = NodeAt(event->position());
-    emit NodeClicked(node);
-    // 点中的节点被选中且可拖动时，准备拖动。
-    dragNode_ = draggable_ && node != kNoNode && node == selected_ ? node : kNoNode;
-    dragStart_ = event->position();
-    dragOffset_ = {};
-    dragging_ = false;
-}
-
-void GameUiCanvas::mouseReleaseEvent(QMouseEvent* event) {
-    if (event->button() != Qt::LeftButton || dragNode_ == kNoNode) return QWidget::mouseReleaseEvent(event);
-    const std::uint32_t node = std::exchange(dragNode_, kNoNode);
-    const bool moved = std::exchange(dragging_, false);
-    update();
-    const QRectF screen = ScreenRect();
-    if (!moved || !tree_ || screen.isEmpty()) return;
-    const auto& options = tree_->Options();
-    const auto snap = [](double value) { return std::round(value * 1000.0) / 1000.0; };
-    const double dx = snap(dragOffset_.x() / screen.width() * options.screenWidth);
-    const double dy = snap(-dragOffset_.y() / screen.height() * options.screenHeight);
-    if (dx != 0.0 || dy != 0.0) emit NodeDragged(node, dx, dy);
-}
-
-void GameUiCanvas::contextMenuEvent(QContextMenuEvent* event) {
-    const QRectF screen = ScreenRect();
-    if (!tree_ || screen.isEmpty()) return QWidget::contextMenuEvent(event);
-    const auto& options = tree_->Options();
-    const QPointF position = event->pos();
-    const QPointF point((position.x() - screen.left()) / screen.width() * options.screenWidth,
-        (screen.bottom() - position.y()) / screen.height() * options.screenHeight);
-    emit ContextMenuRequested(NodeAt(position), point, event->globalPos());
-}
-
-void GameUiCanvas::mouseMoveEvent(QMouseEvent* event) {
-    if (dragNode_ != kNoNode && (event->buttons() & Qt::LeftButton)) {
-        dragOffset_ = event->position() - dragStart_;
-        if (!dragging_ && dragOffset_.manhattanLength() >= 4.0) dragging_ = true;
-        if (dragging_) update();
-        return;
-    }
-    const std::uint32_t node = NodeAt(event->position());
-    if (hovered_ != node) {
-        hovered_ = node;
-        update();
-    }
-    if (!tree_ || node == kNoNode) {
-        setToolTip({});
-        return;
-    }
-    const FrameNode& frame = tree_->Nodes()[node];
-    const QString name = !frame.codeLabel.empty() ? QString::fromStdString(frame.codeLabel)
-        : frame.name.empty()                      ? QString::fromStdString(frame.frameType)
-                                                  : QString::fromStdString(frame.name);
-    setToolTip(frame.frameType.empty() ? name : QStringLiteral("%1 · %2").arg(name, QString::fromStdString(frame.frameType)));
-}
-
-void GameUiCanvas::leaveEvent(QEvent* event) {
-    if (hovered_ != kNoNode) {
-        hovered_ = kNoNode;
-        update();
-    }
-    QWidget::leaveEvent(event);
 }
 
 } // namespace War3Map::Modules

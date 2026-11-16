@@ -476,6 +476,32 @@ QJsonObject GameUiToolService::Invoke(const QString& name, const QJsonObject& ar
         return binding;
     }
 
+    if (name == QLatin1String("game_ui_frame_rect")) {
+        if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
+        const QString id = args.value("description").toString();
+        QList<std::pair<QString, FrameRect>> rects;
+        for (const auto& item : args.value("rects").toArray()) {
+            const QJsonObject rect = item.toObject();
+            rects.push_back({rect.value("frame").toString(), FrameRect{static_cast<float>(rect.value("left").toDouble()),
+                static_cast<float>(rect.value("bottom").toDouble()), static_cast<float>(rect.value("right").toDouble()),
+                static_cast<float>(rect.value("top").toDouble())}});
+        }
+        QString error;
+        if (!module->SetDescriptionFrameRects(id, rects, QObject::tr("界面 %1：Agent 摆放控件").arg(id), &error))
+            return Failure("GAME_UI_DESCRIPTION", error);
+        // 回读排出的位置（画布按修改后的界面重排之后）。
+        QJsonArray placed;
+        for (const auto& [frame, rect] : rects) {
+            QJsonObject row{{"frame", frame}};
+            if (const auto now = module->DescriptionFrameRect(id, frame))
+                row.insert("rect", QJsonArray{RoundUiUnits(now->left), RoundUiUnits(now->bottom), RoundUiUnits(now->right), RoundUiUnits(now->top)});
+            placed.append(row);
+        }
+        binding.insert("frames", placed);
+        if (const UiDescription* description = module->Description(id)) binding.insert("text", Text(SerializeUiDescription(*description)));
+        return binding;
+    }
+
     if (name == QLatin1String("game_ui_frame_event")) {
         if (!module->Tree()) return Failure("GAME_UI_LOADING", QObject::tr("界面定义仍在读取，请稍后重试。"));
         const QString id = args.value("description").toString();

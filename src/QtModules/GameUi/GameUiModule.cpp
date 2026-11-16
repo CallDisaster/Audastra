@@ -445,6 +445,9 @@ QJsonObject GameUiModule::SaveViewState() const {
     if (showContent_) state.insert(QStringLiteral("content"), showContent_->isChecked());
     if (showBounds_) state.insert(QStringLiteral("bounds"), showBounds_->isChecked());
     if (showNames_) state.insert(QStringLiteral("names"), showNames_->isChecked());
+    if (showGrid_) state.insert(QStringLiteral("grid"), showGrid_->isChecked());
+    if (!referencePath_.isEmpty()) state.insert(QStringLiteral("reference"), referencePath_);
+    state.insert(QStringLiteral("referenceOpacity"), referenceOpacity_);
     state.insert(QStringLiteral("showHidden"), showHidden_);
     if (!mapViews_.isEmpty()) state.insert(QStringLiteral("maps"), mapViews_);
     state.insert(QStringLiteral("pixelUnits"), pixelUnits_);
@@ -490,6 +493,11 @@ void GameUiModule::RestoreViewState(const QJsonObject& state) {
         showContent_->setChecked(state.value(QStringLiteral("content")).toBool(true));
         showBounds_->setChecked(state.value(QStringLiteral("bounds")).toBool(false));
         showNames_->setChecked(state.value(QStringLiteral("names")).toBool(false));
+        showGrid_->setChecked(state.value(QStringLiteral("grid")).toBool(false));
+        canvas_->SetMeasure(pixelUnits_, resolution_);
+        const QString reference = state.value(QStringLiteral("reference")).toString();
+        if (!reference.isEmpty() || !referencePath_.isEmpty())
+            SetReferenceImage(reference, state.value(QStringLiteral("referenceOpacity")).toDouble(referenceOpacity_));
         if (const QString split = state.value(QStringLiteral("mainSplit")).toString(); !split.isEmpty())
             mainSplit_->restoreState(QByteArray::fromBase64(split.toLatin1()));
         if (const QString split = state.value(QStringLiteral("centerSplit")).toString(); !split.isEmpty())

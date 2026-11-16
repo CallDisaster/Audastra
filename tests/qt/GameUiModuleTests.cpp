@@ -18,6 +18,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
@@ -31,6 +32,8 @@
 #include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QMouseEvent>
+#include <QWheelEvent>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QUndoStack>
@@ -103,6 +106,7 @@ private slots:
     void VisibleSelectableAndPicking();
     void NewUiFlowAndLayerOrder();
     void GroupedPropertiesUnitsAndEvents();
+    void CanvasResizeSnapAndNudge();
 };
 
 void GameUiModuleTests::BuildsSceneFromDefinitions() {
@@ -1607,6 +1611,143 @@ void GameUiModuleTests::GroupedPropertiesUnitsAndEvents() {
         {{"description", "Hud"}, {"frame", "panel1"}, {"event", "leave"}});
     QCOMPARE(events.value("event_key").toString(), QStringLiteral("Hud.panel1_leave"));
     QCOMPARE(events.value("triggers").toArray().size(), qsizetype{1});
+}
+
+// 画布编辑：拖控制柄改大小、吸附、方向键微调、缩放平移、网格与参考图；按矩形摆放与助手工具同一操作。
+void GameUiModuleTests::CanvasResizeSnapAndNudge() {
+    QtProject::EditorProject project;
+    Modules::GameUiModule module(project);
+    auto* page = module.Widget();
+    page->resize(1400, 900);
+    page->show();
+    module.LoadDefinitionsForTesting(SyntheticDefinitions());
+    QString error;
+    QVERIFY2(module.CreateDescription(QStringLiteral("Hud"), {}, &error, true), qPrintable(error));
+    const auto frame = [&module](const char* id) { return FindUiFrame(*module.Description(QStringLiteral("Hud")), id); };
+    const auto rectOf = [&module](const char* id) { return *module.DescriptionFrameRect(QStringLiteral("Hud"), QString::fromLatin1(id)); };
+    auto* canvas = page->findChild<Modules::GameUiCanvas*>(QStringLiteral("gameUiCanvas"));
+    QVERIFY(canvas);
+    QVERIFY(module.SelectFrame(QStringLiteral("panel1")));
+    QCoreApplication::processEvents();
+    const auto send = [canvas](QEvent::Type type, const QPointF& at, Qt::MouseButton button, Qt::MouseButtons buttons,
+                          Qt::KeyboardModifiers modifiers) {
+        QMouseEvent event(type, at, canvas->mapToGlobal(at), button, buttons, modifiers);
+        QApplication::sendEvent(canvas, &event);
+    };
+    const auto drag = [&](const QPointF& from, const QPointF& to, Qt::KeyboardModifiers modifiers) {
+        send(QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton, modifiers);
+        send(QEvent::MouseMove, (from + to) / 2.0, Qt::NoButton, Qt::LeftButton, modifiers);
+        send(QEvent::MouseMove, to, Qt::NoButton, Qt::LeftButton, modifiers);
+        send(QEvent::MouseButtonRelease, to, Qt::LeftButton, Qt::NoButton, modifiers);
+        QCoreApplication::processEvents();
+    };
+    const auto pixel = [canvas](float x, float y) {
+        const QRectF screen = canvas->ScreenRect();
+        return QPointF(screen.left() + x / 0.8 * screen.width(), screen.top() + (0.6 - y) / 0.6 * screen.height());
+    };
+    const double unitsPerPixel = 0.8 / canvas->ScreenRect().width();
+
+    // 拖右下角控制柄（Alt 不吸附）：右边、下边跟着动，左上不动；宽高写进控件。
+    const GameUi::FrameRect start = rectOf("panel1");
+    drag(pixel(start.right, start.bottom), pixel(start.right, start.bottom) + QPointF(40.0, 20.0), Qt::AltModifier);
+    const GameUi::FrameRect resized = rectOf("panel1");
+    QVERIFY2(qAbs(resized.left - start.left) < 2e-4f && qAbs(resized.top - start.top) < 2e-4f,
+        qPrintable(QStringLiteral("%1 %2").arg(resized.left).arg(resized.top)));
+    QVERIFY(qAbs(resized.Width() - (start.Width() + 40.0 * unitsPerPixel)) < 3e-4);
+    QVERIFY(qAbs(resized.Height() - (start.Height() + 20.0 * 0.6 / canvas->ScreenRect().height())) < 3e-4);
+    QVERIFY(qAbs(*frame("panel1")->width - resized.Width()) < 1e-5);
+
+    // 吸附：中线离画面中线 3 像素时贴上去；按住 Alt 不吸附。
+    const GameUi::FrameRect placed = rectOf("panel1");
+    const QPointF center = pixel((placed.left + placed.right) / 2.0f, (placed.bottom + placed.top) / 2.0f);
+    const double toMiddle = canvas->ScreenRect().center().x() - center.x();
+    drag(center, center + QPointF(toMiddle + 3.0, 0.0), {});
+    QVERIFY2(qAbs((rectOf("panel1").left + rectOf("panel1").right) / 2.0f - 0.4f) < 2e-4f, qPrintable(QString::number(rectOf("panel1").left)));
+    const GameUi::FrameRect snapped = rectOf("panel1");
+    const QPointF middle = pixel((snapped.left + snapped.right) / 2.0f, (snapped.bottom + snapped.top) / 2.0f);
+    drag(middle, middle + QPointF(5.0, 0.0), Qt::AltModifier);  // 拖动阈值 4 像素
+    QVERIFY(qAbs((rectOf("panel1").left + rectOf("panel1").right) / 2.0f - 0.4f) > 2.0 * unitsPerPixel);
+
+    // 方向键微调：一次 1 像素（参考 1920×1080），Shift 10 像素；连按合成一步修改。
+    const GameUi::FrameRect beforeNudge = rectOf("panel1");
+    QTest::keyClick(canvas, Qt::Key_Right);
+    QTest::keyClick(canvas, Qt::Key_Right);
+    QTest::keyClick(canvas, Qt::Key_Up, Qt::ShiftModifier);
+    QCOMPARE(rectOf("panel1").left, beforeNudge.left);  // 停下之前还没改
+    QTRY_VERIFY(qAbs(rectOf("panel1").left - beforeNudge.left - 2.0f * 0.8f / 1920.0f) < 2e-6f);
+    QVERIFY(qAbs(rectOf("panel1").bottom - beforeNudge.bottom - 10.0f * 0.6f / 1080.0f) < 2e-6f);
+
+    // 滚轮以光标为中心缩放：光标下的画面位置不动；适应窗口回到整个画面。
+    const QPointF cursor = pixel(0.2f, 0.4f);
+    const QRectF beforeZoom = canvas->ScreenRect();
+    QWheelEvent wheel(cursor, canvas->mapToGlobal(cursor), {}, QPoint(0, 240), Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+    QApplication::sendEvent(canvas, &wheel);
+    const QRectF afterZoom = canvas->ScreenRect();
+    QVERIFY(canvas->Zoom() > 1.4);
+    QVERIFY(qAbs((cursor.x() - beforeZoom.left()) / beforeZoom.width() - (cursor.x() - afterZoom.left()) / afterZoom.width()) < 1e-9);
+    QVERIFY(qAbs((cursor.y() - beforeZoom.top()) / beforeZoom.height() - (cursor.y() - afterZoom.top()) / afterZoom.height()) < 1e-9);
+    auto* fit = page->findChild<QPushButton*>(QStringLiteral("gameUiFitView"));
+    QVERIFY(fit);
+    fit->click();
+    QCOMPARE(canvas->Zoom(), 1.0);
+    QCOMPARE(canvas->ScreenRect(), beforeZoom);
+
+    // 网格与参考图记在视图状态里；读不出的参考图清掉并报告。
+    auto* grid = page->findChild<QPushButton*>(QStringLiteral("gameUiShowGrid"));
+    QVERIFY(grid);
+    grid->click();
+    QVERIFY(canvas->ShowGrid());
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    QImage design(64, 48, QImage::Format_ARGB32);
+    design.fill(Qt::red);
+    const QString designPath = dir.filePath(QStringLiteral("design.png"));
+    QVERIFY(design.save(designPath));
+    module.SetReferenceImage(designPath, 0.25);
+    QCOMPARE(module.ReferenceImagePath(), designPath);
+    const QJsonObject view = module.SaveViewState();
+    QVERIFY(view.value(QStringLiteral("grid")).toBool());
+    QCOMPARE(view.value(QStringLiteral("reference")).toString(), designPath);
+    QCOMPARE(view.value(QStringLiteral("referenceOpacity")).toDouble(), 0.25);
+    module.SetReferenceImage(dir.filePath(QStringLiteral("missing.png")), 0.25);
+    QVERIFY(module.ReferenceImagePath().isEmpty());
+    module.SetReferenceImage({}, 0.5);
+
+    // 按矩形摆放：同一批里父控件和铺满父控件的子控件一起改，子控件不会被父控件的移动再带走一次。
+    QCOMPARE(module.AddDescriptionFrame(QStringLiteral("backdrop"), &error), QStringLiteral("back1"));
+    QVERIFY(module.SetDescriptionFrameFill(QStringLiteral("Hud"), QStringLiteral("back1"), true, &error));
+    const GameUi::FrameRect panelTarget{0.2f, 0.2f, 0.5f, 0.4f};
+    const GameUi::FrameRect backTarget{0.25f, 0.22f, 0.45f, 0.38f};
+    QVERIFY2(module.SetDescriptionFrameRects(QStringLiteral("Hud"), {{QStringLiteral("panel1"), panelTarget}, {QStringLiteral("back1"), backTarget}},
+                 QStringLiteral("测试摆放"), &error),
+        qPrintable(error));
+    const auto near = [](const GameUi::FrameRect& a, const GameUi::FrameRect& b) {
+        return qAbs(a.left - b.left) < 1e-5f && qAbs(a.bottom - b.bottom) < 1e-5f && qAbs(a.right - b.right) < 1e-5f && qAbs(a.top - b.top) < 1e-5f;
+    };
+    QVERIFY(near(rectOf("panel1"), panelTarget));
+    QVERIFY(near(rectOf("back1"), backTarget));
+    QVERIFY(!frame("back1")->width && !frame("back1")->height);  // 两个锚点定住两个方向，不写宽高
+    QVERIFY(qAbs(*frame("panel1")->width - 0.3) < 1e-6);
+    // 不合法的整批不改。
+    const std::string beforeBad = SerializeUiDescription(*module.Description(QStringLiteral("Hud")));
+    QVERIFY(!module.SetDescriptionFrameRects(QStringLiteral("Hud"), {{QStringLiteral("panel1"), {0.1f, 0.1f, 0.3f, 0.3f}},
+                                                                   {QStringLiteral("back1"), {0.2f, 0.2f, 0.2f, 0.3f}}},
+        QStringLiteral("测试"), &error));
+    QVERIFY(!module.SetDescriptionFrameRects(QStringLiteral("Hud"), {{QStringLiteral("nope"), {0.1f, 0.1f, 0.3f, 0.3f}}}, QStringLiteral("测试"), &error));
+    QCOMPARE(SerializeUiDescription(*module.Description(QStringLiteral("Hud"))), beforeBad);
+
+    // 助手工具同一操作，回读排出的位置。
+    Modules::GameUiToolService service([&module] { return &module; });
+    const QJsonObject result = service.Invoke(QStringLiteral("game_ui_frame_rect"),
+        {{"description", "Hud"}, {"rects", QJsonArray{QJsonObject{{"frame", "panel1"}, {"left", 0.1}, {"bottom", 0.1}, {"right", 0.34}, {"top", 0.26}}}}});
+    QVERIFY2(result.value("ok").toBool(), qPrintable(QJsonDocument(result).toJson()));
+    const QJsonArray placedRect = result.value("frames").toArray().at(0).toObject().value("rect").toArray();
+    QCOMPARE(placedRect.size(), qsizetype{4});
+    QVERIFY(qAbs(placedRect.at(0).toDouble() - 0.1) < 1e-5 && qAbs(placedRect.at(3).toDouble() - 0.26) < 1e-5);
+    QVERIFY(!service.Invoke(QStringLiteral("game_ui_frame_rect"),
+                        {{"description", "Hud"}, {"rects", QJsonArray{QJsonObject{{"frame", "nope"}, {"left", 0.1}, {"bottom", 0.1}, {"right", 0.2}, {"top", 0.2}}}}})
+                 .value("ok")
+                 .toBool());
 }
 
 int main(int argc, char** argv) {

@@ -82,8 +82,8 @@ bool GameUiModule::MoveOriginNode(std::uint32_t node, double dx, double dy, QStr
         return false;
     }
     const auto rect = tree_->Nodes()[node].rect;
-    return EditOriginNode(name, {{"position", QJsonObject{{"point", "BOTTOMLEFT"}, {"x", std::round((rect.left + dx) * 10000) / 10000},
-        {"y", std::round((rect.bottom + dy) * 10000) / 10000}}}}, error);
+    return EditOriginNode(name, {{"position", QJsonObject{{"point", "BOTTOMLEFT"}, {"x", RoundUiUnits(rect.left + dx)},
+        {"y", RoundUiUnits(rect.bottom + dy)}}}}, error);
 }
 
 bool GameUiModule::CopyOriginTemplate(std::uint32_t nodeId, QString* error) {

@@ -206,10 +206,20 @@ public:
     // 铺满父控件：两个锚点左上、右下对齐父控件，去掉宽高；取消时改为居中于父控件、宽高取当前大小，画面上不动。
     bool SetDescriptionFrameFill(const QString& description, const QString& frame, bool fill, QString* error = nullptr);
     [[nodiscard]] static bool FillsParent(const GameUi::UiFrame& frame);
+    // 按矩形摆放控件（屏幕单位，阵列时为第一个实例）：每个锚点按自己对齐点在新旧矩形上的位置差改偏移，
+    // 锚点没定住的方向改宽高；没有锚点的控件按左下角相对屏幕放下。锚点目标也在这一批里时扣掉目标的移动。
+    // 整批检查、同一步撤销。画布改大小、对齐分布与助手工具共用。
+    bool SetDescriptionFrameRects(const QString& description, const QList<std::pair<QString, GameUi::FrameRect>>& rects,
+        const QString& undoLabel, QString* error = nullptr);
+    // 画布上拖控制柄：node 为所拖的实例，rect 为它的新矩形；阵列按同样的变化改第一个实例。
+    bool ResizeDescriptionFrame(std::uint32_t node, const GameUi::FrameRect& rect, QString* error = nullptr);
     // 尺寸与偏移的显示单位：魔兽界面单位，或参考分辨率下的像素（UiUnits.h）。属性里输入带 px 时总按像素换算。
     void SetPixelUnits(bool pixels);
     [[nodiscard]] bool PixelUnits() const noexcept { return pixelUnits_; }
     void SetReferenceResolution(GameUi::UiResolution resolution);
+    // 画布参考图：路径为空时不显示；读不出时清掉并报告。
+    void SetReferenceImage(const QString& path, double opacity);
+    [[nodiscard]] QString ReferenceImagePath() const { return referencePath_; }
     [[nodiscard]] GameUi::UiResolution ReferenceResolution() const noexcept { return resolution_; }
     // 控件事件与触发器（GameUiFrameEvents.cpp）。一个控件每种事件对应一个界面事件，可由多个触发器用“界面事件”订阅。
     struct FrameEventLink {
@@ -399,6 +409,8 @@ private:
     QPushButton* showContent_ = nullptr;
     QPushButton* showBounds_ = nullptr;
     QPushButton* showNames_ = nullptr;
+    QPushButton* showGrid_ = nullptr;
+    QToolButton* referenceButton_ = nullptr;
     QPushButton* showHiddenButton_ = nullptr;
     QLineEdit* search_ = nullptr;
     QTreeWidget* nodes_ = nullptr;
@@ -433,6 +445,8 @@ private:
     QHash<QString, bool> groupExpanded_;  // 属性分组的展开状态
     bool pixelUnits_ = false;
     GameUi::UiResolution resolution_;
+    QString referencePath_;  // 画布参考图（只在本机视图状态里记路径）
+    double referenceOpacity_ = 0.5;
     QHash<QString, QImage> textures_;
     QHash<QString, QString> fontFamilies_;
     QHash<QString, QString> assetOrigins_;

@@ -529,12 +529,12 @@ bool GameUiModule::MoveDescriptionFrame(std::uint32_t node, double dx, double dy
     if (anchors.isEmpty()) {
         // 没有锚点（游戏中不显示）：按当前位置相对屏幕放下。
         anchors.append(QJsonObject{{"point", "BOTTOMLEFT"}, {"to", "screen"},
-            {"x", Round4(target.rect.left + dx)}, {"y", Round4(target.rect.bottom + dy)}});
+            {"x", RoundUiUnits(target.rect.left + dx)}, {"y", RoundUiUnits(target.rect.bottom + dy)}});
     } else {
         for (qsizetype i = 0; i < anchors.size(); ++i) {
             QJsonObject anchor = anchors[i].toObject();
-            anchor.insert("x", Round4(anchor.value("x").toDouble() + dx));
-            anchor.insert("y", Round4(anchor.value("y").toDouble() + dy));
+            anchor.insert("x", RoundUiUnits(anchor.value("x").toDouble() + dx));
+            anchor.insert("y", RoundUiUnits(anchor.value("y").toDouble() + dy));
             anchors[i] = anchor;
         }
     }
@@ -737,7 +737,10 @@ void GameUiModule::UpdateAuthoringControls() {
     if (generateTriggersButton_) generateTriggersButton_->setEnabled(inDescription || (isOrigin && !OriginDescriptionId(OriginNodeName(selected_)).isEmpty()));
     if (runtimeSettingsButton_) runtimeSettingsButton_->setEnabled(project_.editTrackingReady_ && !project_.savingMap_);
     const auto* origin = isOrigin ? FindUiOriginPart(OriginNodeName(selected_).toStdString()) : nullptr;
-    if (canvas_) canvas_->SetDraggable(isFrame || (origin && origin->position));
+    if (canvas_) {
+        canvas_->SetDraggable(isFrame || (origin && origin->position));
+        canvas_->SetResizable(isFrame);
+    }
 }
 
 void GameUiModule::CommitDescriptionEdits(const QString& id, const QJsonArray& edits, const QString& undoLabel,

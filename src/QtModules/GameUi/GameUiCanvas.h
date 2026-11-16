@@ -1,11 +1,15 @@
 #pragma once
 
 #include "War3MapCore/GameUi/FrameDraw.h"
+#include "War3MapCore/GameUi/UiUnits.h"
 
 #include <QHash>
 #include <QImage>
+#include <QLineF>
 #include <QString>
 #include <QWidget>
+
+class QTimer;
 
 #include <cstdint>
 #include <optional>
@@ -41,6 +45,17 @@ public:
     [[nodiscard]] bool Pickable(std::uint32_t node) const noexcept {
         return pickable_.empty() || (node < pickable_.size() && pickable_[node]);
     }
+    // 选中节点能否拖控制柄改大小（自己界面的控件）。
+    void SetResizable(bool resizable);
+    // 标注与微调用的长度单位：像素时按参考分辨率换算（方向键一次 1 像素，Shift 10 像素）。
+    void SetMeasure(bool pixels, GameUi::UiResolution resolution);
+    void SetShowGrid(bool show);
+    // 参考图：铺满游戏画面、半透明画在界面上面，用来对照设计稿；空图为不显示。
+    void SetReferenceImage(const QImage& image, double opacity);
+    [[nodiscard]] bool ShowGrid() const noexcept { return showGrid_; }
+    [[nodiscard]] double Zoom() const noexcept { return zoom_; }
+    // 视图缩放（滚轮，以光标为中心）与平移（中键或按住空格拖动）；适应窗口回到整个画面。
+    void FitView();
 
     [[nodiscard]] double Aspect() const noexcept { return aspect_; }
     [[nodiscard]] std::uint32_t Selected() const noexcept { return selected_; }
@@ -53,8 +68,10 @@ public:
 
 signals:
     void NodeClicked(std::uint32_t node);
-    // 拖动松开：位移为屏幕单位（右、上为正），已取到 0.001。
+    // 拖动松开或方向键微调：位移为屏幕单位（右、上为正），已取到 0.0001。
     void NodeDragged(std::uint32_t node, double dx, double dy);
+    // 拖控制柄松开：该实例的新矩形（屏幕单位）。
+    void NodeResized(std::uint32_t node, GameUi::FrameRect rect);
     // 右键：所点节点（没有为 kNoNode）、所点位置（屏幕单位，左下为原点）与全局像素位置。
     void ContextMenuRequested(std::uint32_t node, QPointF point, QPoint global);
 
@@ -65,8 +82,26 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
+    void wheelEvent(QWheelEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
+    void focusOutEvent(QFocusEvent* event) override;
 
 private:
+    enum class DragMode : std::uint8_t { None, Move, Resize };
+    // 控制柄：0 左上、1 上、2 右上、3 右、4 右下、5 下、6 左下、7 左。
+    [[nodiscard]] int HandleAt(const QPointF& position) const;
+    [[nodiscard]] std::vector<QPointF> HandlePoints(const QRectF& box) const;
+    void UpdateCursor(const QPointF& position);
+    // 吸附：拖动开始时收集候选线（像素）；移动时让边或中线贴近候选线，并记下参考线。
+    void CollectSnapLines(std::uint32_t node);
+    [[nodiscard]] double SnapValue(double value, bool horizontal, double* snapped) const;
+    void UpdateDragPreview(const QPointF& position, Qt::KeyboardModifiers modifiers);
+    void CommitNudge();
+    void CancelDrag();
+    [[nodiscard]] double GridStep(const QRectF& screen) const;  // 网格间距（像素）
+    [[nodiscard]] QString MeasureText(double units, bool horizontal) const;
+    void PaintMeasures(QPainter& painter, const QRectF& screen, const QRectF& box) const;
     struct HitBox {
         std::uint32_t node = GameUi::kNoNode;
         QRectF rect;
@@ -83,6 +118,7 @@ private:
         std::vector<HitBox>* hits) const;
     void PaintOverlays(QPainter& painter, const QRectF& screen) const;
     [[nodiscard]] QRectF NodePixelRect(const QRectF& screen, std::uint32_t node) const;
+    [[nodiscard]] QRectF SelectionPixelRect(const QRectF& screen) const;
 
     const GameUi::FrameTree* tree_ = nullptr;
     GameUi::FrameDrawList list_;
@@ -96,12 +132,33 @@ private:
     std::uint32_t hovered_ = GameUi::kNoNode;
     std::optional<GameUi::FrameRect> focus_;
     bool draggable_ = false;
+    bool resizable_ = false;
     std::uint32_t dragNode_ = GameUi::kNoNode;  // 按下时可拖动的节点
+    DragMode dragMode_ = DragMode::None;
+    int dragHandle_ = -1;
     QPointF dragStart_;
-    QPointF dragOffset_;  // 当前位移（像素）；超过阈值后才算拖动
-    bool dragging_ = false;
+    QRectF dragOrigin_;   // 按下时节点的像素矩形
+    QRectF dragPreview_;  // 拖动中的新矩形（像素，已吸附）
+    bool dragging_ = false;  // 超过阈值后才算拖动
+    std::vector<double> snapXs_;
+    std::vector<double> snapYs_;
+    std::vector<QLineF> guides_;
     std::vector<bool> pickable_;
     mutable std::vector<HitBox> hits_;
+    bool measurePixels_ = false;
+    GameUi::UiResolution resolution_;
+    bool showGrid_ = false;
+    QImage reference_;
+    double referenceOpacity_ = 0.5;
+    double zoom_ = 1.0;
+    QPointF pan_;  // 相对适应窗口的平移（像素）
+    bool spaceHeld_ = false;
+    bool panning_ = false;
+    QPointF panStart_;
+    QPointF panOrigin_;
+    std::uint32_t nudgeNode_ = GameUi::kNoNode;
+    QPointF nudge_;  // 累计的方向键位移（屏幕单位，上为正）；停下一会儿再一次提交
+    QTimer* nudgeTimer_ = nullptr;
 };
 
 } // namespace War3Map::Modules

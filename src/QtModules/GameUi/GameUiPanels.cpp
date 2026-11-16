@@ -11,6 +11,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -23,11 +25,13 @@
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStandardItemModel>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <unordered_set>
 #include <utility>
@@ -149,6 +153,36 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     showContent_ = Toggle(toolbar, "gameUiShowContent", tr("渲染"), true, "lucide/eye");
     showBounds_ = Toggle(toolbar, "gameUiShowBounds", tr("边框"), false, "lucide/square-dashed");
     showNames_ = Toggle(toolbar, "gameUiShowNames", tr("名称"), false, "lucide/info");
+    showGrid_ = Toggle(toolbar, "gameUiShowGrid", tr("网格"), false, "lucide/layout-grid");
+    auto* fit = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/maximize-2")), tr("适应窗口"), toolbar);
+    fit->setObjectName(QStringLiteral("gameUiFitView"));
+    fit->setToolTip(tr("适应窗口 (Ctrl+0)"));
+    referenceButton_ = new QToolButton(toolbar);
+    referenceButton_->setObjectName(QStringLiteral("gameUiReference"));
+    referenceButton_->setIcon(UiKit::SvgIcon(QStringLiteral("lucide/image")));
+    referenceButton_->setText(tr("参考图"));
+    referenceButton_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    referenceButton_->setPopupMode(QToolButton::InstantPopup);
+    referenceButton_->setCheckable(true);
+    auto* referenceMenu = new QMenu(referenceButton_);
+    referenceButton_->setMenu(referenceMenu);
+    connect(referenceMenu, &QMenu::aboutToShow, this, [this, referenceMenu] {
+        referenceMenu->clear();
+        referenceMenu->addAction(tr("选择图片…"), this, [this] {
+            const QString path = QFileDialog::getOpenFileName(page_, tr("参考图"), QFileInfo(referencePath_).absolutePath(),
+                tr("图片 (*.png *.jpg *.jpeg *.bmp *.webp)"));
+            if (!path.isEmpty()) SetReferenceImage(path, referenceOpacity_);
+        });
+        auto* opacity = referenceMenu->addMenu(tr("透明度"));
+        for (const int percent : {25, 50, 75, 100}) {
+            QAction* action = opacity->addAction(QStringLiteral("%1%").arg(percent), this,
+                [this, percent] { SetReferenceImage(referencePath_, percent / 100.0); });
+            action->setCheckable(true);
+            action->setChecked(std::abs(referenceOpacity_ * 100.0 - percent) < 1.0);
+        }
+        QAction* clear = referenceMenu->addAction(tr("不显示参考图"), this, [this] { SetReferenceImage({}, referenceOpacity_); });
+        clear->setEnabled(!referencePath_.isEmpty());
+    });
     showHiddenButton_ = Toggle(toolbar, "gameUiShowHidden", tr("显示隐藏"), showHidden_, "lucide/eye-off");
     originSelectableButton_ = Toggle(toolbar, "gameUiOriginSelectable", tr("原版可选"), originSelectable_, "lucide/mouse-pointer-2");
     addRootBox_ = new QComboBox(toolbar);
@@ -163,8 +197,8 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     auto* reload = new QPushButton(UiKit::SvgIcon(QStringLiteral("lucide/rotate-ccw")), tr("重新读取"), toolbar);
     reload->setObjectName(QStringLiteral("gameUiReload"));
 
-    for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_, showHiddenButton_,
-             originSelectableButton_})
+    for (QWidget* widget : std::initializer_list<QWidget*>{raceBox_, versionBox_, aspectBox_, showContent_, showBounds_, showNames_, showGrid_,
+             referenceButton_, fit, showHiddenButton_, originSelectableButton_})
         row->addWidget(widget);
     row->addStretch(1);
     for (QWidget* widget : BuildAuthoringControls(toolbar)) row->addWidget(widget);
@@ -178,6 +212,8 @@ void GameUiModule::BuildToolbar(QWidget* page, QVBoxLayout* layout) {
     connect(showContent_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowContent(on); });
     connect(showBounds_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowBounds(on); });
     connect(showNames_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowNames(on); });
+    connect(showGrid_, &QPushButton::toggled, this, [this](bool on) { canvas_->SetShowGrid(on); });
+    connect(fit, &QPushButton::clicked, this, [this] { canvas_->FitView(); });
     connect(showHiddenButton_, &QPushButton::toggled, this, [this](bool on) { SetShowHidden(on); });
     connect(originSelectableButton_, &QPushButton::toggled, this, [this](bool on) { SetOriginSelectable(on); });
     const auto add = [this] {
@@ -243,6 +279,7 @@ void GameUiModule::BuildPage() {
     canvas_->SetTextures(&textures_);
     canvas_->SetFontFamilies(&fontFamilies_);
     canvas_->SetAspect(aspectBox_->currentData().toDouble());
+    canvas_->SetMeasure(pixelUnits_, resolution_);
     problemModel_ = new QStandardItemModel(0, 3, page_);
     problemModel_->setObjectName(QStringLiteral("gameUiProblemModel"));
     problemModel_->setHorizontalHeaderLabels({tr("级别"), tr("说明"), tr("代码")});
@@ -329,6 +366,10 @@ void GameUiModule::BuildPage() {
         QString error;
         const bool ok = OriginNodeName(node).isEmpty() ? MoveDescriptionFrame(node, dx, dy, &error) : MoveOriginNode(node, dx, dy, &error);
         if (!ok) ReportAuthoring(error);
+    });
+    connect(canvas_, &GameUiCanvas::NodeResized, this, [this](std::uint32_t node, GameUi::FrameRect rect) {
+        QString error;
+        if (!ResizeDescriptionFrame(node, rect, &error)) ReportAuthoring(error);
     });
     connect(rawFields_, &QCheckBox::toggled, this, &GameUiModule::UpdateProperties);
     InstallPropertyEditors(properties_);

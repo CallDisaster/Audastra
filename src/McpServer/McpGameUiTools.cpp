@@ -60,7 +60,7 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
     for (const auto* name : {"game_ui_view_read", "game_ui_view_set", "game_ui_nodes_query", "game_ui_render", "game_ui_simulate",
              "game_ui_preview_set", "game_ui_description_read", "game_ui_description_create", "game_ui_description_edit",
              "game_ui_description_triggers", "game_ui_trigger_simulation", "game_ui_frame_reparent", "game_ui_frame_event",
-             "game_ui_convert_units"}) {
+             "game_ui_convert_units", "game_ui_frame_rect"}) {
         ToolDefinition tool; tool.name = name;
         const bool query = tool.name == "game_ui_view_read" || tool.name == "game_ui_nodes_query" || tool.name == "game_ui_render"
                            || tool.name == "game_ui_description_read" || tool.name == "game_ui_convert_units";
@@ -150,6 +150,20 @@ std::vector<ToolDefinition> GameUiToolDefinitions() {
             required.append("description");
             required.append("frame");
             required.append("parent");
+        } else if (tool.name == "game_ui_frame_rect") {
+            tool.description = "按矩形摆放界面描述里的控件：rects 每项给控件 frame 与新矩形 left、bottom、right、top（屏幕单位，左下为原点，"
+                "画面宽 0.8、高 0.6；阵列时为第一个实例）。每个锚点按自己对齐点在新旧矩形上的位置差改偏移，锚点没定住的方向改宽高；"
+                "没有锚点的控件按左下角相对屏幕放下；锚点目标也在这一批里时扣掉目标的移动。整批检查、同一步撤销，"
+                "与编辑器画布拖控制柄改大小、对齐分布同一操作。像素换算见 game_ui_convert_units";
+            properties.insert("description", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}});
+            const QJsonObject number{{"type", "number"}, {"minimum", -10}, {"maximum", 10}};
+            properties.insert("rects", QJsonObject{{"type", "array"}, {"minItems", 1}, {"maxItems", 64},
+                {"items", QJsonObject{{"type", "object"}, {"additionalProperties", false},
+                    {"properties", QJsonObject{{"frame", QJsonObject{{"type", "string"}, {"minLength", 1}, {"maxLength", kMaxUiIdLength}}},
+                        {"left", number}, {"bottom", number}, {"right", number}, {"top", number}}},
+                    {"required", QJsonArray{"frame", "left", "bottom", "right", "top"}}}}});
+            required.append("description");
+            required.append("rects");
         } else if (tool.name == "game_ui_frame_event") {
             tool.description = "控件事件交给触发器：event 为 click（点击）、enter（鼠标进入）、leave（鼠标离开）。"
                 "trigger 为 new 时新建响应触发器（已有同名的直接用它），为 none 时解除（删去这个事件和各触发器里订阅它的那一行），"
@@ -245,6 +259,27 @@ QJsonObject InvokeGameUiTool(const QString& name, const QJsonObject& args, const
                     && (!integers || (item.toDouble() == std::floor(item.toDouble()) && item.toDouble() >= 1.0 && item.toDouble() <= 16384.0));
             }))
             return Failure("GAME_UI_ARGUMENT", std::string(key) + " 必须是两个有限数值" + (integers ? "（1 到 16384 的整数）" : "") + "。");
+    }
+    if (args.contains("rects")) {
+        const QJsonArray rects = args.value("rects").toArray();
+        if (!args.value("rects").isArray() || rects.isEmpty() || rects.size() > 64)
+            return Failure("GAME_UI_ARGUMENT", "rects 为 1 到 64 项。");
+        for (const auto& item : rects) {
+            const QJsonObject rect = item.toObject();
+            const QString frame = rect.value("frame").toString();
+            if (!item.isObject() || frame.isEmpty() || frame.size() > kMaxUiIdLength || frame.contains(QChar::Null))
+                return Failure("GAME_UI_ARGUMENT", "rects 每项要有控件编号 frame。");
+            for (auto it = rect.begin(); it != rect.end(); ++it) {
+                if (it.key() == QLatin1String("frame")) continue;
+                const bool edge = it.key() == QLatin1String("left") || it.key() == QLatin1String("bottom") || it.key() == QLatin1String("right")
+                    || it.key() == QLatin1String("top");
+                if (!edge || !it.value().isDouble() || !std::isfinite(it.value().toDouble()) || std::abs(it.value().toDouble()) > 10.0)
+                    return Failure("GAME_UI_ARGUMENT", "rects 每项只有 frame 与 left、bottom、right、top（-10 到 10 的数值）。");
+            }
+            if (rect.size() != 5) return Failure("GAME_UI_ARGUMENT", "rects 每项要给齐 left、bottom、right、top。");
+            if (!(rect.value("right").toDouble() > rect.value("left").toDouble()) || !(rect.value("top").toDouble() > rect.value("bottom").toDouble()))
+                return Failure("GAME_UI_ARGUMENT", "rects 里 right 要大于 left、top 要大于 bottom。");
+        }
     }
     if (args.contains("pixels") == args.contains("units") && QLatin1String("game_ui_convert_units") == name)
         return Failure("GAME_UI_ARGUMENT", "pixels 与 units 给出其中一个。");
