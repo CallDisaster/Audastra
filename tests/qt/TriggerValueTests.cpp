@@ -315,7 +315,7 @@ void TriggerValueTests::ParameterDialogPicksModelFiles() {
     QTRY_VERIFY2(available.contains(picker->geometry()) && !picker->geometry().intersects(field()),
         qPrintable(QStringLiteral("picker %1,%2 %3x%4").arg(picker->x()).arg(picker->y()).arg(picker->width()).arg(picker->height())));
     const QPoint offset = picker->pos() - field().topLeft();
-    dialog.move(dialog.pos() + QPoint(-20, -10));
+    dialog.move(dialog.pos() + QPoint(0, -10));  // 左右可能已贴屏幕边被夹住，只上下移动
     QTRY_COMPARE(picker->pos() - field().topLeft(), offset);
     auto* path = picker->findChild<QLineEdit*>(QStringLiteral("resourcePath"));
     QVERIFY(path);
