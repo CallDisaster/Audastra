@@ -1,5 +1,6 @@
 #include "War3MapCore/ObjectData/ObjectBatchEdit.h"
 #include "War3MapCore/ObjectData/LevelAutofill.h"
+#include "War3MapCore/ObjectData/LevelCount.h"
 
 #include <array>
 #include <iostream>
@@ -73,12 +74,43 @@ void LevelAutofillSequences() {
     Require(!ComputeLevelAutofill(huge, LevelAutofillKind::Integer).Succeeded(), "integer overflow rejected");
 }
 
+// 技能等级数：提高时新等级沿用下面最近一级的值，已有值的等级与本来就在范围内的等级不动；不提高时不补。
+void LevelCountFillsAddedLevels() {
+    ObjectFieldDefinition levels; levels.objectType = ObjectType::Ability; levels.sourceField = "levels"; levels.sourceTable = "AbilityData";
+    ObjectFieldDefinition damage; damage.objectType = ObjectType::Ability; damage.sourceField = "Data"; damage.repeat = 1; damage.data = 1;
+    ObjectFieldDefinition cooldown; cooldown.objectType = ObjectType::Ability; cooldown.sourceField = "Cool"; cooldown.repeat = 1;
+    Require(IsLevelCountField(levels) && !IsLevelCountField(damage), "levels field recognised");
+    Require(!IsPerLevelField(damage, {"Hbz1", 0u, 1u, {}}) && IsPerLevelField(damage, {"Hbz1", 2u, 1u, {}}), "level 0 is not a level");
+    Require(LevelCountValue(std::int32_t{4}) == 4u && !LevelCountValue(std::int32_t{0}) && !LevelCountValue(std::string("4")), "count value");
+    const std::array<LevelFieldValue, 5> fields{{
+        {{"Hbz1", 1u, 1u, {}}, &damage, 10.0f},
+        {{"Hbz1", 2u, 1u, {}}, &damage, 20.0f},
+        {{"Hbz1", 5u, 1u, {}}, &damage, 99.0f},  // 之前调高时写过、调低后保留的第 5 级
+        {{"acdn", 1u, 0u, {}}, &cooldown, 8.0f},
+        {{"anam", 0u, 0u, {}}, &levels, std::int32_t{1}},
+    }};
+    Require(FillAddedLevels(fields, 4, 4).empty() && FillAddedLevels(fields, 4, 2).empty(), "no raise, no fill");
+    const auto added = FillAddedLevels(fields, 1, 6);
+    // Hbz1：2 已有不动，3、4 沿用 2，5 已有不动，6 沿用 5；acdn：2..6 沿用 1。
+    Require(added.size() == 8, "added level count");
+    Require(added[0].key.fieldId == "Hbz1" && added[0].key.level == 3u && std::get<float>(added[0].value) == 20.0f, "carry level 2");
+    Require(added[1].key.level == 4u && std::get<float>(added[1].value) == 20.0f, "carry to level 4");
+    Require(added[2].key.level == 6u && std::get<float>(added[2].value) == 99.0f && added[2].key.dataIndex == 1u, "carry kept level 5");
+    Require(added[3].key.fieldId == "acdn" && added[3].key.level == 2u && std::get<float>(added[7].value) == 8.0f
+        && added[7].key.level == 6u && added[7].definition == &cooldown, "cooldown carried from level 1");
+    // 已在原等级数以内但缺值的等级不补（不替作者编造低等级数据）。
+    const std::array<LevelFieldValue, 1> sparse{{{{"acdn", 3u, 0u, {}}, &cooldown, 5.0f}}};
+    const auto raised = FillAddedLevels(sparse, 4, 5);
+    Require(raised.size() == 1 && raised[0].key.level == 5u && std::get<float>(raised[0].value) == 5.0f, "only above old count");
+}
+
 } // namespace
 
 int main() {
     try {
         AtomicBatch();
         LevelAutofillSequences();
+        LevelCountFillsAddedLevels();
         std::cout << "ObjectBatchEdit: atomic multi-object edit and level autofill passed\n";
         return 0;
     } catch (const std::exception& error) {

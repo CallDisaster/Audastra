@@ -44,10 +44,11 @@ inline QString ToQString(const std::string& value) {
 
 inline QString IndexText(const ModificationKey& key) {
     QStringList parts;
-    if (key.level) {
+    // 技能、科技、装饰物的每个字段都带等级与数据序号，0 表示不分等级、不是数据字段，不显示。
+    if (key.level && *key.level > 0) {
         parts.append(QObject::tr("等级 %1").arg(*key.level));
     }
-    if (key.dataIndex) {
+    if (key.dataIndex && *key.dataIndex > 0) {
         parts.append(QObject::tr("数据 %1").arg(*key.dataIndex));
     }
     if (key.variation) {

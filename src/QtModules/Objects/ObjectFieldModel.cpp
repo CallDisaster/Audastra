@@ -1,5 +1,6 @@
 #include "ObjectModels.h"
 #include "ObjectModelsDetail.h"
+#include "War3MapCore/ObjectData/LevelCount.h"
 
 #include <exception>
 #include <utility>
@@ -66,6 +67,7 @@ void ObjectFieldModel::RebuildRows() {
     beginResetModel();
     rows_.clear();
     visible_.clear();
+    levelCount_.reset();
     inheritanceIssue_.clear();
     const ObjectRecord* object = CurrentObject();
     if (object) {
@@ -239,9 +241,14 @@ void ObjectFieldModel::RebuildRows() {
                 }
             }
         }
+        // 技能只显示不超过“等级”的各级；调低后高等级的修改仍留在地图里，调回时恢复。
+        for (const auto& row : rows_)
+            if (row.definition && IsLevelCountField(*row.definition)) { levelCount_ = LevelCountValue(row.effective.value); break; }
         // 同一字段的多个源映射不能静默合并；显示已有记录，新增覆盖由唯一canonical地址定位。
         for (std::size_t i = 0; i < rows_.size(); ++i) {
             const FieldRow& row = rows_[i];
+            if (levelCount_ && row.definition && IsPerLevelField(*row.definition, row.canonicalKey)
+                && *row.canonicalKey.level > *levelCount_) continue;
             const QString category = ObjectFieldCategory(row.definition);
             const QString text = ObjectFieldLabel(row.definition) + QChar(' ') +
                 ToQString(row.effective.key.fieldId) + QChar(' ') + ToQString(row.effective.sourceKey) +
@@ -399,7 +406,7 @@ std::vector<std::size_t> ObjectFieldModel::LevelFamily(const FieldRow& field) co
     for (std::size_t i = 0; i < rows_.size(); ++i) {
         const auto& other = rows_[i].canonicalKey;
         if (other.fieldId == key.fieldId && other.dataIndex == key.dataIndex && other.variation == key.variation
-            && other.level && *other.level > 0) family.push_back(i);
+            && other.level && *other.level > 0 && (!levelCount_ || *other.level <= *levelCount_)) family.push_back(i);
     }
     std::stable_sort(family.begin(), family.end(), [this](std::size_t left, std::size_t right) {
         return *rows_[left].canonicalKey.level < *rows_[right].canonicalKey.level;
@@ -484,6 +491,19 @@ bool ObjectFieldModel::setData(const QModelIndex& index, const QVariant& input, 
     LniObjectDocument next = *document_;
     const auto status = next.SetModification(*object_, field->effective.key, *converted);
     if (!status.Succeeded()) return false;
+    // 提高技能等级数：新等级沿用上一级的值一起写入，同一步撤销（游戏不会替缺数据的等级补值）。
+    if (field->definition && IsLevelCountField(*field->definition)) {
+        const auto before = LevelCountValue(field->effective.value);
+        const auto after = LevelCountValue(*converted);
+        if (before && after && *after > *before) {
+            std::vector<LevelFieldValue> known;
+            for (const auto& row : rows_)
+                if (row.definition && IsPerLevelField(*row.definition, row.canonicalKey))
+                    known.push_back({row.canonicalKey, row.definition, row.effective.value});
+            for (const auto& fill : FillAddedLevels(known, *before, *after))
+                if (!next.SetModification(*object_, fill.key, fill.value).Succeeded()) return false;
+        }
+    }
     CommitSnapshot(std::move(next), tr("修改 %1").arg(field->definition ? ObjectFieldLabel(field->definition) : ToQString(field->effective.key.fieldId)));
     return true;
 }

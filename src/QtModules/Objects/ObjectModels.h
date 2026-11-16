@@ -141,6 +141,8 @@ private:
     QPointer<QUndoStack> undoStack_;
     std::vector<FieldRow> rows_;
     std::vector<std::size_t> visible_;
+    // 技能“等级”字段的当前值：只显示不超过它的各级。
+    std::optional<std::uint32_t> levelCount_;
 };
 
 // 按字段值类型提供合适编辑器（int→SpinBox, float→DoubleSpinBox, bool→CheckBox, 其余→LineEdit）。

@@ -62,14 +62,15 @@ struct Fixture {
                 {"uabi", "abilList", "UnitAbilities", "abilityList", "普通技能", "abilities", "0", "0", "-1", "", "1", "1", "1"}
             })},
             {"ability-meta.slk", Table(fields, {
+                {"alev", "levels", "AbilityData", "int", "等级", "stats", "0", "0", "-1", "", "1", "1", "1", "1", "100"},
                 {"Hbz1", "Data", "AbilityData", "unreal", "暴风雪伤害", "stats", "1", "1", "-1", "AHbz", "1", "1", "1"},
                 {"acdn", "Cool", "AbilityData", "real", "冷却时间", "stats", "1", "0", "-1", "", "1", "1", "1"},
                 {"atp1", "Tip", "Profile", "string", "提示", "text", "1", "0", "0", "", "1", "1", "1"}
             })},
             {"unit.slk", Table({"ID", "HP", "spd", "isbldg", "abilList", "code"}, {
                 {"hfoo", "420", "270.125", "0", "A001,A002", "hfoo"}})},
-            {"ability.slk", Table({"ID", "code", "DataA1", "DataA2", "Cool1", "Cool2"}, {
-                {"AHbz", "AHbz", "75.5", "100.25", "8", "6"}})},
+            {"ability.slk", Table({"ID", "code", "levels", "DataA1", "DataA2", "Cool1", "Cool2"}, {
+                {"AHbz", "AHbz", "2", "75.5", "100.25", "8", "6"}})},
             {"unit.txt", "[hfoo]\nName=\"步兵\"\nUbertip=\"原版说明\"\n"},
             {"ability.txt", "[AHbz]\nTip=\"第一等级,含逗号\",\"第二等级\"\n"},
             {"world.txt", "[ObjectEditorCategories]\nstats=属性\nmovement=移动\ntext=文本\nabilities=技能\n"}
@@ -136,6 +137,7 @@ private slots:
     void InvalidInheritedValuesStayReadOnly();
     void NearParentValueShadowsFarParentAmbiguity();
     void LevelAutofillWritesAllLevelsAsOneUndo();
+    void LevelCountHidesAndCarriesLevels();
 };
 
 void ObjectFieldModelTests::EffectiveInheritedFieldsCreateOverlaysAndUndo() {
@@ -846,6 +848,49 @@ void ObjectFieldModelTests::NearParentValueShadowsFarParentAmbiguity() {
     const auto source = Serialize(*document);
     QVERIFY(source.find("HP=500\nuhpm=550\n") != std::string::npos);
     QVERIFY(source.find("[H001]\n_parent=\"H000\"\nuhpm=600\n") != std::string::npos);
+}
+
+// 技能“等级”：调低只显示前几级（高等级的修改仍保留），调高时新等级沿用上一级的值一起写入，一步撤销。
+void ObjectFieldModelTests::LevelCountHidesAndCarriesLevels() {
+    Fixture fixture;
+    QVERIFY(fixture.valid);
+    auto document = Parse(ObjectType::Ability, "[A000]\n_parent=\"AHbz\"\nHbz1[2,1]=125.25\n");
+    QVERIFY(document);
+    const ObjectKey object{ObjectType::Ability, "A000"};
+    ObjectFieldModel model;
+    QUndoStack undo;
+    model.SetUndoStack(&undo);
+    model.SetContext(&fixture.catalog, &fixture.schema);
+    model.SetDocument(document.get(), &object);
+    const auto original = Serialize(*document);
+    const int levels = FindRow(model, "alev");
+    QVERIFY(levels >= 0);
+    QCOMPARE(model.index(levels, 3).data().toString(), QStringLiteral("2"));
+    QCOMPARE(model.index(levels, 1).data().toString(), QStringLiteral("—"));
+    QVERIFY(FindRow(model, "Hbz1", 2) >= 0 && FindRow(model, "acdn", 2) >= 0 && FindRow(model, "atp1", 2) >= 0);
+
+    QVERIFY(model.setData(model.index(levels, 3), 1, Qt::EditRole));
+    QCOMPARE(FindRow(model, "Hbz1", 2), -1);
+    QCOMPARE(FindRow(model, "acdn", 2), -1);
+    QCOMPARE(FindRow(model, "atp1", 2), -1);
+    QVERIFY(FindRow(model, "Hbz1", 1) >= 0);
+    QVERIFY(Serialize(*document).find("Hbz1[2,1]") != std::string::npos);
+    QCOMPARE(model.LevelValuesOf(FindRow(model, "Hbz1", 1)).size(), std::size_t{1});
+
+    QVERIFY(model.setData(model.index(FindRow(model, "alev"), 3), 4, Qt::EditRole));
+    QCOMPARE(model.index(FindRow(model, "Hbz1", 2), 3).data().toString(), QStringLiteral("125.25"));
+    QCOMPARE(model.index(FindRow(model, "Hbz1", 4), 3).data().toString(), QStringLiteral("125.25"));
+    QCOMPARE(model.index(FindRow(model, "acdn", 3), 3).data().toString(), QStringLiteral("6"));
+    QCOMPARE(model.index(FindRow(model, "atp1", 4), 3).data().toString(), QStringLiteral("第二等级"));
+    QCOMPARE(model.index(FindRow(model, "acdn", 4), 4).data().toString(), QStringLiteral("已修改"));
+    QCOMPARE(model.LevelValuesOf(FindRow(model, "Hbz1", 1)).size(), std::size_t{4});
+    undo.undo();
+    QCOMPARE(FindRow(model, "Hbz1", 3), -1);
+    QCOMPARE(FindRow(model, "Hbz1", 2), -1);
+    undo.undo();
+    QVERIFY(FindRow(model, "Hbz1", 2) >= 0);
+    QCOMPARE(Serialize(*document), original);
+    undo.clear();
 }
 
 // 自动填充等级：预览按原版公式算出各级，确定后一次撤销写入；无效值整批拒绝，表单保留并显示原因。

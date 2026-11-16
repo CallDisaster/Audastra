@@ -1,4 +1,5 @@
 #include "War3MapCore/Services/ObjectCommands.h"
+#include "War3MapCore/ObjectData/LevelCount.h"
 
 #include <algorithm>
 #include <charconv>
@@ -410,6 +411,7 @@ Result<ObjectCommandPlan> PlanObjectFieldChanges(const ObjectCommandContext& con
     if (!before.Succeeded()) return CopyFailure<ObjectCommandPlan>(before);
     ObjectCommandPlan plan{{context.type, id}, *before.value, *before.value, {}, "Agent 修改物编 " + id};
     std::vector<ModificationKey> seen;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> raisedLevels;
     if (!plan.after.FindObject(plan.subject)) {
         const auto added = plan.after.AddOriginalObject(id);
         if (!added.Succeeded()) return CopyFailure<ObjectCommandPlan>(added);
@@ -434,8 +436,25 @@ Result<ObjectCommandPlan> PlanObjectFieldChanges(const ObjectCommandContext& con
                 if (existing.definition && existing.modification == canonical) { target = modification.key; break; }
             }
         }
+        // 提高技能等级数：新等级沿用上一级的值一起写入（与物编界面同一规则），本批明确改到的等级不覆盖。
+        if (ObjectData::IsLevelCountField(*match.value->definition) && old != fields.value->end() && old->value) {
+            const auto oldCount = ObjectData::LevelCountValue(*old->value);
+            const auto newCount = ObjectData::LevelCountValue(*normalized.value);
+            if (oldCount && newCount && *newCount > *oldCount) raisedLevels = std::pair{*oldCount, *newCount};
+        }
         const auto applied = plan.after.SetModification(plan.subject, target, std::move(*normalized.value));
         if (!applied.Succeeded()) return CopyFailure<ObjectCommandPlan>(applied);
+    }
+    if (raisedLevels) {
+        std::vector<ObjectData::LevelFieldValue> known;
+        for (const auto& row : *fields.value)
+            if (row.definition && row.value && ObjectData::IsPerLevelField(*row.definition, row.key))
+                known.push_back({row.key, row.definition, *row.value});
+        for (const auto& fill : ObjectData::FillAddedLevels(known, raisedLevels->first, raisedLevels->second)) {
+            if (std::find(seen.begin(), seen.end(), fill.key) != seen.end()) continue;
+            const auto applied = plan.after.SetModification(plan.subject, fill.key, fill.value);
+            if (!applied.Succeeded()) return CopyFailure<ObjectCommandPlan>(applied);
+        }
     }
     return Seal(std::move(plan));
 }
