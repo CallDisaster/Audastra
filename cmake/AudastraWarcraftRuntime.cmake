@@ -5,7 +5,7 @@ set(AUDASTRA_RUNTIME32_OUTPUT_DIR "${AUDASTRA_RUNTIME32_BINARY_DIR}/$<CONFIG>")
 set(runtime_targets audastra-warcraft-launcher audastra-warcraft-bootstrap)
 if(WAR3MAPEDITOR_BUILD_TESTS)
     set(runtime_targets audastra-runtime-fixture-tests audastra-runtime-witness-tests
-        audastra-window-input-isolation-tests
+        audastra-window-input-isolation-tests audastra-window-mode-tests
         audastra-external-native-provider-tests
         audastra-ui-number-format-tests audastra-hook-chain-tests audastra-module-entry-tests
         audastra-own-lua-protocol-tests audastra-own-lua-host-tests audastra-own-lua-native-tests
