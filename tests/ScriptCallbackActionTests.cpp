@@ -255,7 +255,7 @@ void TestKkweGeneratedEntries(const std::filesystem::path& root) {
         "[[.args]]\ntype=filter\n"
         "[YDWEExitLoop]\n[RecordReal]\n[[.args]]\ntype=real\n[ProbeKill]\n[[.args]]\ntype=unit\n");
     WriteText(ui / "probe/call.txt",
-        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=typename\n[[.args]]\ntype=string\n"
+        "[YDWEGetAnyTypeLocalVariable]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n"
         "[KKAPIGetLocalVariables]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n"
         "[KKAPIGetAnyTypeLocalArray]\nreturns=AnyReturnType\n[[.args]]\ntype=string\n[[.args]]\ntype=integer\n"
         "[ProbeGroup]\nreturns=group\n[ProbeHero]\nreturns=unit\n[GetEnumUnit]\nreturns=unit\n");
@@ -292,20 +292,21 @@ void TestKkweGeneratedEntries(const std::filesystem::path& root) {
         result.call = call;
         return result;
     };
-    const auto readLocal = [&](const char* type, const char* name) {
-        return callValue("YDWEGetAnyTypeLocalVariable", {Scalar(0, type), Scalar(3, name)});
+    // 与 YDWE 函数库相同：读取局部变量只有变量名参数，类型取自所在参数位。
+    const auto readLocal = [&](const char* name) {
+        return callValue("YDWEGetAnyTypeLocalVariable", {Scalar(3, name)});
     };
     auto document = MakeDocument(*catalog.value, {
         Action("MHModule_Create", {Scalar(3, "1"), Scalar(3, "2")}, {
             Child(Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename02_real"), Scalar(3, "Damage"), Scalar(3, "5.0")})),
-            Child(Action("MHModule_SetRetval", {Scalar(0, "typename02_real"), Scalar(3, "Damage"), readLocal("typename02_real", "Damage")})),
+            Child(Action("MHModule_SetRetval", {Scalar(0, "typename02_real"), Scalar(3, "Damage"), readLocal("Damage")})),
             Child(Action("MHModule_SetArrayRetval", {Scalar(0, "typename01_integer"), Scalar(3, "Hits"), Scalar(3, "3"), Scalar(3, "7")})),
         }),
         Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename02_real"), Scalar(3, "Damage"), Scalar(3, "1.0")}),
         Action("MHModule_Evaluate", {Scalar(3, "1"), Scalar(3, "2")}, {
             Child(Action("YDWESetAnyTypeLocalVariable", {Scalar(0, "typename01_integer"), Scalar(3, "Arg"), Scalar(3, "9")})),
         }),
-        Action("RecordReal", {readLocal("typename02_real", "Damage")}),
+        Action("RecordReal", {readLocal("Damage")}),
         Action("MHModule_SetRetval", {Scalar(0, "typename02_real"), Scalar(3, "Lost"), Scalar(3, "1.0")}),
         Action("KKAPISetLocalVariables", {Scalar(0, "typename07_unit"), Scalar(3, "Hero"), callValue("ProbeHero", {})}),
         Action("KKAPISetAnyTypeLocalArray", {Scalar(0, "typename02_real"), Scalar(3, "Scale"), Scalar(3, "2"), Scalar(3, "1.5")}),
